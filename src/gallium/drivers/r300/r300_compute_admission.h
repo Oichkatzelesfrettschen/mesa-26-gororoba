@@ -238,8 +238,9 @@ void r300_nir_detect_binary_transcendental(
  * destination per bit, so byte boundaries are irrelevant and the result is
  * bit-exact -- no FP, no precision tier.  AND/OR/XOR commute, so operand order is
  * not tracked.  Disjoint from binary_map (iadd/imul/imin/...) and binary_
- * transcendental (fpow/fdiv) by op set.  Shifts (ishl/ishr/ushr) are NOT logic
- * ops and stay genuinely beyond the substrate. */
+ * transcendental (fpow/fdiv) by op set.  Logical shifts ride a separate byte
+ * carrier (see r300_compute_shift_logical_pattern); only signed ishr and
+ * variable shift amounts stay genuinely beyond the substrate. */
 struct r300_compute_bitwise_logicop_pattern {
    bool       is_bitwise_logicop;
    uint16_t   alu_op;                 /* nir_op: iand, ior, or ixor */
@@ -253,6 +254,31 @@ struct r300_compute_bitwise_logicop_pattern {
 void r300_nir_detect_bitwise_logicop(
    const struct nir_shader *s,
    struct r300_compute_bitwise_logicop_pattern *out);
+
+/* Logical shift by a compile-time constant: out[gid] = a[gid] << k  (ishl) or
+ * a[gid] >> k  (ushr, unsigned), for a constant k in [1, 31].  The FP24 ALU has
+ * no shift, but a shift is a byte re-pack: each uint32 packs as RGBA8, and a
+ * single fragment pass recombines the bytes -- out_byte[j] gathers the low 8-r
+ * bits of one source byte and the high r bits of its neighbour, where k = 8*q+r,
+ * q = byte distance, r = within-byte bit distance.  Byte values are 0..255 and
+ * byte*2^r < 2^17, so every intermediate is an exact FP24 integer and the result
+ * is bit-exact (the same UNORM8 round-trip the identity-map verb relies on).
+ * SCOPE: logical (zero-fill) shifts by a constant only.  Signed ishr (sign-
+ * extension) and variable shift amounts are NOT recognised -- they stay
+ * UNKNOWN_SHAPE rather than silently produce a logical-fill or wrong result. */
+struct r300_compute_shift_logical_pattern {
+   bool       is_shift_logical;
+   bool       is_left;                /* ishl (true) vs ushr (false) */
+   uint8_t    shift_amount;           /* k in [1, 31] */
+   uint32_t   input_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+   uint8_t    value_components;       /* scalar uint32 (1) */
+   uint8_t    value_bit_size;         /* 32 */
+};
+
+void r300_nir_detect_shift_logical(
+   const struct nir_shader *s,
+   struct r300_compute_shift_logical_pattern *out);
 
 /* Blend-add-reduction kernel pattern: a kernel whose store value is an
  * atomicAdd of a load_ssbo result, where the atomic's target buffer is a

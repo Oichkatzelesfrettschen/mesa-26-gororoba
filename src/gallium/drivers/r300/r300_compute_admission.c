@@ -1048,6 +1048,97 @@ r300_nir_detect_bitwise_logicop(
    out->is_bitwise_logicop = true;
 }
 
+/* Logical-shift-by-constant detector.  out[gid] = a[gid] << k  (ishl) or
+ * a[gid] >> k  (ushr): exactly one store_ssbo whose value is a 2-input shift ALU
+ * op whose first source is the identity load and whose second source is a scalar
+ * compile-time constant k in [1, 31].  Scalar uint32 only -- one element per
+ * RGBA8 texel for the byte-recombination carrier.  A variable shift amount (the
+ * second source is a load, not a constant), a constant outside [1, 31] (k = 0 is
+ * the identity, k >= 32 is GLSL-undefined), and signed ishr (op not matched) all
+ * leave is_shift_logical false, so they stay UNKNOWN_SHAPE rather than produce a
+ * wrong logical-fill result.  Pure read-only NIR walk. */
+void
+r300_nir_detect_shift_logical(
+   const nir_shader *s,
+   struct r300_compute_shift_logical_pattern *out)
+{
+   out->is_shift_logical    = false;
+   out->is_left             = false;
+   out->shift_amount        = 0;
+   out->input_ssbo_binding  = 0;
+   out->output_ssbo_binding = 0;
+   out->value_components    = 0;
+   out->value_bit_size      = 0;
+
+   const nir_intrinsic_instr *store = NULL;
+   const nir_intrinsic_instr *load  = NULL;
+   unsigned store_count = 0;
+   unsigned load_count  = 0;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               load = intr;
+               load_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || load_count != 1)
+      return;
+   if (!store->src[0].ssa)
+      return;
+
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!alu)
+      return;
+   bool is_left;
+   if (alu->op == nir_op_ishl)
+      is_left = true;
+   else if (alu->op == nir_op_ushr)
+      is_left = false;
+   else
+      return;
+   if (nir_op_infos[alu->op].num_inputs != 2)
+      return;
+
+   const unsigned components = store->num_components;
+   if (!unary_alu_src_is_identity_load(alu, 0, &load->def, components))
+      return;
+
+   /* The shift amount must be a scalar compile-time constant in [1, 31]. */
+   if (!nir_src_is_const(alu->src[1].src))
+      return;
+   const uint64_t k =
+      nir_src_comp_as_uint(alu->src[1].src, alu->src[1].swizzle[0]);
+   if (k < 1 || k > 31)
+      return;
+
+   if (store->num_components != 1 || store->src[0].ssa->bit_size != 32)
+      return;
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
+      return;
+
+   if (nir_src_is_const(load->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->is_left = is_left;
+   out->shift_amount = (uint8_t)k;
+   out->value_components = store->num_components;
+   out->value_bit_size = store->src[0].ssa->bit_size;
+   out->is_shift_logical = true;
+}
+
 /* Blend-add reduction detector.  Recognises the histogram / accumulator shape
  * that lowers to RB3D COMB_FCN_ADD blend accumulation:
  *

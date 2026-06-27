@@ -2089,6 +2089,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_unary_transcendental_pattern *transc,
                                struct r300_compute_binary_transcendental_pattern *btransc,
                                struct r300_compute_bitwise_logicop_pattern *bitwise,
+                               struct r300_compute_shift_logical_pattern *shift,
                                struct r300_compute_blend_acc_reduction_pattern *blendacc,
                                struct r300_compute_zpass_reduction_pattern *zpass,
                                struct r300_compute_multipass_scan_pattern *multiscan,
@@ -2198,6 +2199,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_unary_transcendental(nir, transc);
    r300_nir_detect_binary_transcendental(nir, btransc);
    r300_nir_detect_bitwise_logicop(nir, bitwise);
+   r300_nir_detect_shift_logical(nir, shift);
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
    r300_nir_detect_zpass_reduction(nir, zpass);
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
@@ -2729,6 +2731,135 @@ r300vk_binary_transcendental_synthesize_shaders(struct r300vk_device *device,
    pl->fs_cso = r300vk_synthesize_binary_transcendental_fs(
       pipe, pl->binary_transcendental.alu_op,
       pl->binary_transcendental.value_components);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
+/* Gather a vec4 from B where output lane j takes B[chan[j]], with chan[j] outside
+ * [0,3] meaning a zero fill.  Two MOVs: zero the temp, then write the in-range
+ * lanes through one swizzle.  Used to apply the byte distance q of a shift as a
+ * channel permutation. */
+static void
+shift_emit_gather(struct ureg_program *ureg, struct ureg_dst dst,
+                  struct ureg_src srcB, const int chan[4])
+{
+   ureg_MOV(ureg, dst, ureg_imm4f(ureg, 0.0f, 0.0f, 0.0f, 0.0f));
+   unsigned mask = 0;
+   int sw[4] = {0, 0, 0, 0};
+   for (unsigned j = 0; j < 4; j++) {
+      if (chan[j] >= 0 && chan[j] <= 3) {
+         mask |= 1u << j;
+         sw[j] = chan[j];
+      }
+   }
+   if (mask)
+      ureg_MOV(ureg, ureg_writemask(dst, mask),
+               ureg_swizzle(srcB, sw[0], sw[1], sw[2], sw[3]));
+}
+
+/* Logical-shift FS: out[gid] = a << k (ishl) or a >> k (ushr).  The uint32 packs
+ * as RGBA8 with R = byte 0 (LSB) ... A = byte 3 (MSB).  Write k = 8*q + r.  The
+ * four bytes are recovered exactly with round(c*255) (the UNORM8 value), each
+ * output lane is gathered from its source byte(s) with the byte distance q as a
+ * channel permutation, and the within-byte bit move r combines the low 8-r bits
+ * of one byte with the high r bits of its neighbour.  Every intermediate is a
+ * byte times a power of two below 2^17, an exact FP24 integer, so the result is
+ * bit-exact.  The carry term vanishes for r = 0 (pure byte shift). */
+static void *
+r300vk_synthesize_shift_logical_fs(struct pipe_context *pipe, bool is_left,
+                                   unsigned shift_amount)
+{
+   const unsigned q = shift_amount / 8;
+   const unsigned r = shift_amount % 8;
+   const float pow2_r        = (float)(1u << r);
+   const float pow2_8mr      = (float)(1u << (8 - r));
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                            TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out   = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst B     = ureg_DECL_temporary(ureg);
+   struct ureg_dst Bmain = ureg_DECL_temporary(ureg);
+   struct ureg_dst Bcar  = ureg_DECL_temporary(ureg);
+   struct ureg_dst t     = ureg_DECL_temporary(ureg);
+   struct ureg_dst f     = ureg_DECL_temporary(ureg);
+   struct ureg_dst term1 = ureg_DECL_temporary(ureg);
+   struct ureg_dst term2 = ureg_DECL_temporary(ureg);
+
+   /* B = round(tex * 255): the four byte values, 0..255. */
+   ureg_TEX(ureg, ureg_writemask(B, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tex, samp);
+   ureg_MUL(ureg, B, ureg_src(B), ureg_imm1f(ureg, 255.0f));
+   ureg_ROUND(ureg, B, ureg_src(B));
+
+   /* Per output lane, the main source byte is q away (toward the LSB for a left
+    * shift, toward the MSB for a right shift) and the carry byte is one further. */
+   int main_chan[4], carry_chan[4];
+   for (int j = 0; j < 4; j++) {
+      const int step = is_left ? -(int)q : (int)q;
+      const int carry_step = is_left ? -1 : 1;
+      main_chan[j]  = j + step;
+      carry_chan[j] = j + step + carry_step;
+   }
+   shift_emit_gather(ureg, Bmain, ureg_src(B), main_chan);
+   shift_emit_gather(ureg, Bcar,  ureg_src(B), carry_chan);
+
+   if (is_left) {
+      /* term1 = (Bmain << r) mod 256 = Bmain*2^r - 256*floor(Bmain*2^r/256). */
+      ureg_MUL(ureg, t, ureg_src(Bmain), ureg_imm1f(ureg, pow2_r));
+      ureg_MUL(ureg, f, ureg_src(t), ureg_imm1f(ureg, 1.0f / 256.0f));
+      ureg_FLR(ureg, f, ureg_src(f));
+      ureg_MAD(ureg, term1, ureg_src(f), ureg_imm1f(ureg, -256.0f), ureg_src(t));
+      /* term2 = Bcar >> (8-r) = floor(Bcar / 2^(8-r)). */
+      ureg_MUL(ureg, f, ureg_src(Bcar), ureg_imm1f(ureg, 1.0f / pow2_8mr));
+      ureg_FLR(ureg, term2, ureg_src(f));
+   } else {
+      /* term1 = Bmain >> r = floor(Bmain / 2^r). */
+      ureg_MUL(ureg, f, ureg_src(Bmain), ureg_imm1f(ureg, 1.0f / pow2_r));
+      ureg_FLR(ureg, term1, ureg_src(f));
+      /* term2 = (Bcar << (8-r)) mod 256. */
+      ureg_MUL(ureg, t, ureg_src(Bcar), ureg_imm1f(ureg, pow2_8mr));
+      ureg_MUL(ureg, f, ureg_src(t), ureg_imm1f(ureg, 1.0f / 256.0f));
+      ureg_FLR(ureg, f, ureg_src(f));
+      ureg_MAD(ureg, term2, ureg_src(f), ureg_imm1f(ureg, -256.0f), ureg_src(t));
+   }
+
+   /* out_byte = term1 + term2; pack back to UNORM8 as out_byte / 255. */
+   ureg_ADD(ureg, term1, ureg_src(term1), ureg_src(term2));
+   ureg_MUL(ureg, out, ureg_src(term1), ureg_imm1f(ureg, 1.0f / 255.0f));
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+/* Logical-shift VS+FS synthesis: the passthrough VS plus the byte-recombination
+ * FS.  Reuses the device-cached identity-map state CSOs and the scalar 1-in/1-out
+ * replay core (UNORM8 in/out). */
+static bool
+r300vk_shift_logical_synthesize_shaders(struct r300vk_device *device,
+                                        struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_shift_logical_fs(
+      pipe, pl->shift_logical.is_left, pl->shift_logical.shift_amount);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4454,6 +4585,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->bitwise_logicop.is_bitwise_logicop = false;
       return VK_SUCCESS;
    }
+   if (pl->shift_logical.is_shift_logical) {
+      if (!r300vk_shift_logical_synthesize_shaders(device, pl))
+         pl->shift_logical.is_shift_logical = false;
+      return VK_SUCCESS;
+   }
    if (pl->affine_iota.is_affine_iota) {
       if (!r300vk_affine_iota_synthesize_shaders(device, pl))
          pl->affine_iota.is_affine_iota = false;
@@ -4597,6 +4733,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_unary_transcendental_pattern transc_pat = {0};
    struct r300_compute_binary_transcendental_pattern btransc_pat = {0};
    struct r300_compute_bitwise_logicop_pattern bitwise_pat = {0};
+   struct r300_compute_shift_logical_pattern shift_pat = {0};
    struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
    struct r300_compute_zpass_reduction_pattern zpass = {0};
    struct r300_compute_multipass_scan_pattern multiscan = {0};
@@ -4632,6 +4769,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &unary_pat,
                                        &transc_pat, &btransc_pat, &bitwise_pat,
+                                       &shift_pat,
                                        &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
                                        &qmul_pat, &qdiv_pat, &mat4vec_pat, &qfmul_pat,
@@ -4680,6 +4818,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->unary_transcendental = transc_pat;
    pl->binary_transcendental = btransc_pat;
    pl->bitwise_logicop = bitwise_pat;
+   pl->shift_logical = shift_pat;
    pl->dp4 = dp4_pat;
    pl->qmul = qmul_pat;
    pl->qdiv = qdiv_pat;

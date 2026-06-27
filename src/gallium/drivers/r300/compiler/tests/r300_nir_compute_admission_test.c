@@ -245,6 +245,36 @@ build_bitwise_logicop(nir_op op)
    return b.shader;
 }
 
+/* Logical shift by a constant: out[gid] = a[gid] OP k for OP in {ishl, ushr}.
+ * binding 0 = a, binding 1 = out; the shift amount k is an immediate. */
+static nir_shader *
+build_shift_logical(nir_op op, uint32_t k)
+{
+   nir_builder b = cs_builder("cs_shift_logical");
+   nir_def *a = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *y = nir_build_alu2(&b, op, a, nir_imm_int(&b, k));
+   nir_store_ssbo(&b, y, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* Variable shift: out[gid] = a[gid] << b[gid] -- the amount is a second load,
+ * not a constant.  Must stay unmatched (no exact per-element 2^b carrier). */
+static nir_shader *
+build_shift_variable(void)
+{
+   nir_builder b = cs_builder("cs_shift_variable");
+   nir_def *a = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *amt = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                                .align_mul = 4, .align_offset = 0);
+   nir_def *y = nir_build_alu2(&b, nir_op_ishl, a, amt);
+   nir_store_ssbo(&b, y, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 /* QFMUL: out[gid] = a[gid] * s, a per-element vec4 quaternion (binding 1) times a
  * BROADCAST scalar s (binding 0, a one-float buffer).  nir_fmul broadcasts the
  * 1-component scalar across the vec4, so the fmul's scalar source carries a
@@ -1278,6 +1308,60 @@ case_bitwise_logicop_metadata(void)
    CHECK(!add_bw.is_bitwise_logicop,
          "binary_map fadd rejected by bitwise-logicop detector");
    ralloc_free(add);
+}
+
+static void
+case_shift_logical_metadata(void)
+{
+   /* ishl / ushr by a constant k in [1,31] detect, record direction + amount +
+    * bindings, admit, and are not mistaken for any other verb. */
+   const struct { nir_op op; bool is_left; } variants[] = {
+      { nir_op_ishl, true }, { nir_op_ushr, false } };
+   const uint32_t amounts[] = { 1, 8, 31 };
+   for (unsigned v = 0; v < ARRAY_SIZE(variants); v++) {
+      for (unsigned a = 0; a < ARRAY_SIZE(amounts); a++) {
+         nir_shader *nir = build_shift_logical(variants[v].op, amounts[a]);
+         struct r300_compute_admission adm;
+         struct r300_compute_shift_logical_pattern sh = {0};
+         struct r300_compute_unary_transcendental_pattern tr = {0};
+         prepare_detect_shader(nir);
+         r300_nir_classify_compute(nir, &adm);
+         CHECK(adm.admissible, "shift logical admits");
+         r300_nir_detect_shift_logical(nir, &sh);
+         CHECK(sh.is_shift_logical, "shift logical detected");
+         CHECK(sh.is_left == variants[v].is_left,
+               "shift logical records direction");
+         CHECK(sh.shift_amount == amounts[a], "shift logical records amount");
+         CHECK(sh.input_ssbo_binding == 0 && sh.output_ssbo_binding == 1,
+               "shift logical records bindings 0 -> 1");
+         CHECK(sh.value_components == 1 && sh.value_bit_size == 32,
+               "shift logical records scalar 32-bit");
+         /* A unary integer shift must not look like the float transcendental. */
+         r300_nir_detect_unary_transcendental(nir, &tr);
+         CHECK(!tr.is_unary_transcendental, "shift logical is not transcendental");
+         ralloc_free(nir);
+      }
+   }
+
+   /* The four shapes that MUST stay unmatched (so they no-op as UNKNOWN_SHAPE
+    * rather than produce a wrong result): k = 0 (identity), k = 32 (GLSL-
+    * undefined), a variable amount, and signed ishr (sign-extension). */
+   const struct { nir_shader *(*build)(void); nir_shader *(*build_k)(nir_op, uint32_t);
+                  nir_op op; uint32_t k; const char *msg; } negs[] = {
+      { NULL, build_shift_logical, nir_op_ishl, 0,  "k=0 stays unmatched (identity)" },
+      { NULL, build_shift_logical, nir_op_ishl, 32, "k=32 stays unmatched (undefined)" },
+      { NULL, build_shift_logical, nir_op_ishr, 4,  "signed ishr stays unmatched" },
+      { build_shift_variable, NULL, nir_op_ishl, 0, "variable shift stays unmatched" },
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(negs); i++) {
+      nir_shader *nir = negs[i].build ? negs[i].build()
+                                      : negs[i].build_k(negs[i].op, negs[i].k);
+      struct r300_compute_shift_logical_pattern sh = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_shift_logical(nir, &sh);
+      CHECK(!sh.is_shift_logical, negs[i].msg);
+      ralloc_free(nir);
+   }
 }
 
 static void
@@ -2758,6 +2842,7 @@ main(void)
    case_unary_transcendental_metadata();
    case_binary_transcendental_metadata();
    case_bitwise_logicop_metadata();
+   case_shift_logical_metadata();
    case_multitap_metadata();
    case_qmul_metadata();
    case_qrotate_metadata();

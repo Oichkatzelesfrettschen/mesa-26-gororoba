@@ -1582,6 +1582,41 @@ r300vk_unary_transcendental_dispatch_replay(
       PIPE_FORMAT_R32_FLOAT);
 }
 
+/* Logical-shift dispatch replay: out[gid] = a[gid] << k or >> k.  Reuses the
+ * 1-in/1-out replay core over the UNORM8 carrier -- the input uint32 wraps as an
+ * RGBA8 sampler, the byte-recombination FS writes the shifted bytes to an RGBA8
+ * RT, and the raw RT bytes (output_buffer_fmt = NONE) copy straight back to the
+ * uint32 output, the same exact UNORM8 round-trip the identity-map verb uses. */
+bool
+r300vk_shift_logical_dispatch_replay(
+   struct r300vk_device *device,
+   const struct r300vk_pipeline *pl,
+   const struct r300vk_cmd_dispatch *dispatch,
+   const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!device || !device->screen)
+      return false;
+   if (pl->shift_logical.value_bit_size != 32 ||
+       pl->shift_logical.value_components != 1)
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW) ||
+       !device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   const bool captured = (pl->shift_logical.input_ssbo_binding != 0 ||
+                          pl->shift_logical.output_ssbo_binding != 0);
+   return r300vk_one_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->shift_logical.input_ssbo_binding,
+      pl->shift_logical.output_ssbo_binding,
+      captured,
+      PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_FORMAT_R8G8B8A8_UNORM,
+      PIPE_FORMAT_NONE);
+}
+
 /* Shared 2-in / 1-out compute-as-raster replay core.  Wraps two input SSBOs as
  * sampler views at fragment stages 0 + 1, draws the fullscreen quad with the
  * pipeline's synthesized VS + FS (pl->fs_cso -- the binary-map ALU FS or the
