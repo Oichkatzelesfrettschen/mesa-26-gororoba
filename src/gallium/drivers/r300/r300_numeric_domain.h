@@ -151,7 +151,7 @@ enum r300_numeric_domain {
 
    /* Stencil U8 per-pixel state machine.  Per-pixel value in Z/256 or a
     * saturating/replace form depending on the stencil op.
-    * INCR is hardware-confirmed; DECR/INVERT/WRAP need targeted probes. */
+    * INCR and INVERT are hardware-confirmed on RS482; DECR/WRAP need probes. */
    R300_NUM_DOMAIN_U8_STENCIL,
 
    /* ZPASS fragment-count reduction.  N = sum_{p in Omega} [predicate(p)].
