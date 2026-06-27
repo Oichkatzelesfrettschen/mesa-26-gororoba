@@ -3728,6 +3728,7 @@ r300_nir_detect_qfmadd_pattern(const nir_shader *s,
                                struct r300_compute_qfmadd_pattern *out)
 {
    out->is_qfmadd           = false;
+   out->is_sub              = false;
    out->input_a_ssbo_binding = 0;
    out->input_b_ssbo_binding = 0;
    out->input_c_ssbo_binding = 0;
@@ -3743,16 +3744,25 @@ r300_nir_detect_qfmadd_pattern(const nir_shader *s,
    if (!store_is_full_width(store[0]))
       return;
 
-   /* Store = a*b + c: the Hamilton product of the first two loads plus the third.
-    * fadd is commutative, so the product and the addend appear in either order. */
+   /* Store = a*b +/- c: the Hamilton product of the first two loads combined with
+    * the third by fadd (QFMADD) or fsub (QFMSUB).  fadd is commutative so the
+    * product and addend may appear in either src order; fsub is not commutative so
+    * the product must be src[0] (left operand). */
    const nir_def *a = &load[0]->def, *b = &load[1]->def, *c = &load[2]->def;
    const nir_alu_instr *top = nir_def_as_alu_or_null(store[0]->src[0].ssa);
-   if (!top || top->op != nir_op_fadd)
+   if (!top || (top->op != nir_op_fadd && top->op != nir_op_fsub))
       return;
-   bool ok = (qmul_match(top->src[0].src.ssa, a, b) &&
-              qfm_is_identity(&top->src[1], c)) ||
-             (qmul_match(top->src[1].src.ssa, a, b) &&
-              qfm_is_identity(&top->src[0], c));
+   bool ok;
+   if (top->op == nir_op_fadd) {
+      ok = (qmul_match(top->src[0].src.ssa, a, b) &&
+            qfm_is_identity(&top->src[1], c)) ||
+           (qmul_match(top->src[1].src.ssa, a, b) &&
+            qfm_is_identity(&top->src[0], c));
+   } else {
+      /* fsub(product, c): product must be src[0] */
+      ok = qmul_match(top->src[0].src.ssa, a, b) &&
+           qfm_is_identity(&top->src[1], c);
+   }
    if (!ok)
       return;
 
@@ -3764,6 +3774,7 @@ r300_nir_detect_qfmadd_pattern(const nir_shader *s,
       out->input_c_ssbo_binding = nir_src_as_uint(load[2]->src[0]);
    if (nir_src_is_const(store[0]->src[1]))
       out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_sub    = (top->op == nir_op_fsub);
    out->is_qfmadd = true;
 }
 

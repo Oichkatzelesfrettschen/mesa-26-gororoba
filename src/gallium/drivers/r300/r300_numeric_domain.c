@@ -830,7 +830,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "QFMTRANS = affine(q*v*conj(q)) (QROTATE then MAD, eight DP4s) -- "
                          "compose the HW-confirmed QMUL/QDIV/QROTATE primitives; QFMSUB is "
                          "the QFMADD detector with fsub, the others are multi-pass chains",
-      .mesa_hook       = NULL,  /* composition of QMUL/QDIV/QROTATE; QFMSUB = QFMADD w/ fsub */
+      .mesa_hook       = "r300_nir_detect_qfmadd_pattern",  /* is_sub=true branch; multi-pass ops (QFMDIV, QFMTRANS) remain NULL */
    },
    /* NULL sentinel -- keep last */
    { .op_name = NULL },

@@ -792,6 +792,7 @@ void r300_nir_detect_otrans_pattern(const struct nir_shader *s,
  * are not constants (positional fallback: a=0, b=1, c=2, out=3). */
 struct r300_compute_qfmadd_pattern {
    bool       is_qfmadd;
+   bool       is_sub;   /* true when the final vec4 combine is fsub (QFMSUB) */
    uint32_t   input_a_ssbo_binding;
    uint32_t   input_b_ssbo_binding;
    uint32_t   input_c_ssbo_binding;
