@@ -824,6 +824,8 @@ r300vk_replay_dispatch(struct r300vk_device *device,
    else if (pl->binary_transcendental.is_binary_transcendental)
       ok = r300vk_binary_transcendental_dispatch_replay(device, pl, d,
                                                         last_bind_dsets);
+   else if (pl->bitwise_logicop.is_bitwise_logicop)
+      ok = r300vk_bitwise_logicop_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->dp4.is_dp4)
       ok = r300vk_dp4_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qmul.is_qmul)

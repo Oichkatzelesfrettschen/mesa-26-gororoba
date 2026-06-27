@@ -19,6 +19,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
+#include "compiler/nir/nir_opcodes.h"
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_surface.h"
@@ -1922,6 +1923,231 @@ r300vk_binary_transcendental_dispatch_replay(
       pl->binary_transcendental.input_b_ssbo_binding,
       pl->binary_transcendental.output_ssbo_binding,
       in_fmt, PIPE_FORMAT_R16G16B16A16_FLOAT, in_fmt);
+}
+
+/* Map the bitwise nir_op to the Gallium logic op the RB3D ROP applies. */
+static unsigned
+bitwise_pipe_logicop(uint16_t alu_op)
+{
+   switch ((nir_op)alu_op) {
+   case nir_op_iand: return PIPE_LOGICOP_AND;
+   case nir_op_ior:  return PIPE_LOGICOP_OR;
+   case nir_op_ixor: return PIPE_LOGICOP_XOR;
+   default:          return PIPE_LOGICOP_COPY;
+   }
+}
+
+/* Bitwise-logicop dispatch replay: out[gid] = a[gid] OP b[gid] for OP in
+ * {iand, ior, ixor}.  The FP24 ALU cannot do bitwise, so the op rides the RB3D
+ * ROP output stage: each uint32 packs as one RGBA8 texel, and the logic op
+ * combines source against destination per bit.  Two draws into one RGBA8 RT:
+ * draw 1 copies b into the RT (default copy blend), draw 2 draws a with the
+ * logic op enabled so the ROP reads dst = b and writes a OP b.  The result is
+ * bit-exact (UNORM8 round-trips 0..255 exactly, dithering is off in the
+ * substrate's blend state).  pl->vs_cso / pl->fs_cso are the identity-map
+ * passthrough VS + copy FS (both draws just sample and export). */
+bool
+r300vk_bitwise_logicop_dispatch_replay(
+   struct r300vk_device *device,
+   const struct r300vk_pipeline *pl,
+   const struct r300vk_cmd_dispatch *dispatch,
+   const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device ? device->pipe : NULL;
+   struct pipe_screen  *screen = device ? device->screen : NULL;
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !pl->fs_cso)
+      return false;
+   if (binds->first_set != 0)
+      return false;
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout)
+      return false;
+
+   uint32_t in_a_binding = pl->bitwise_logicop.input_a_ssbo_binding;
+   uint32_t in_b_binding = pl->bitwise_logicop.input_b_ssbo_binding;
+   uint32_t out_binding  = pl->bitwise_logicop.output_ssbo_binding;
+   if (in_a_binding == 0 && in_b_binding == 0 && out_binding == 0) {
+      if (!nth_storage_buffer_binding(set, 0, &in_a_binding) ||
+          !nth_storage_buffer_binding(set, 1, &in_b_binding) ||
+          !nth_storage_buffer_binding(set, 2, &out_binding))
+         return false;
+   }
+
+   const struct r300vk_descriptor *desc_in_a =
+      find_descriptor_by_binding(set, in_a_binding);
+   const struct r300vk_descriptor *desc_in_b =
+      find_descriptor_by_binding(set, in_b_binding);
+   const struct r300vk_descriptor *desc_out =
+      find_descriptor_by_binding(set, out_binding);
+   if (!desc_in_a || !desc_in_b || !desc_out)
+      return false;
+   if (!desc_in_a->buf.buffer || !desc_in_b->buf.buffer || !desc_out->buf.buffer)
+      return false;
+   VK_FROM_HANDLE(r300vk_buffer, buf_in_a, desc_in_a->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, buf_in_b, desc_in_b->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, buf_out,  desc_out->buf.buffer);
+   if (!buf_in_a || !buf_in_b || !buf_out ||
+       !buf_in_a->resource || !buf_in_b->resource || !buf_out->resource)
+      return false;
+
+   const uint64_t total_invocations = r300vk_idm_total_invocations(dispatch, pl);
+   if (total_invocations == 0 || total_invocations > 2048u * 2048u)
+      return false;
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total_invocations, &width, &height);
+   if (width > 2048 || height > 2048)
+      return false;
+
+   /* RGBA8 carrier: one uint32 per texel, the logic op works per bit. */
+   const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+   struct pipe_sampler_view *sv_a =
+      r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_a->resource,
+                                                     (unsigned)desc_in_a->buf.offset,
+                                                     width, height,
+                                                     total_invocations, fmt);
+   if (!sv_a)
+      return false;
+   struct pipe_sampler_view *sv_b =
+      r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_b->resource,
+                                                     (unsigned)desc_in_b->buf.offset,
+                                                     width, height,
+                                                     total_invocations, fmt);
+   if (!sv_b) {
+      pipe_sampler_view_reference(&sv_a, NULL);
+      return false;
+   }
+
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = fmt;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (!rt) {
+      pipe_sampler_view_reference(&sv_b, NULL);
+      pipe_sampler_view_reference(&sv_a, NULL);
+      return false;
+   }
+   struct pipe_surface surf_templ;
+   memset(&surf_templ, 0, sizeof(surf_templ));
+   surf_templ.format  = fmt;
+   surf_templ.texture = rt;
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&sv_b, NULL);
+      pipe_sampler_view_reference(&sv_a, NULL);
+      return false;
+   }
+
+   /* The logic-op blend state for draw 2.  logicop_enable routes the colour
+    * output through R300_RB3D_ROPCNTL; logicop_func is the PIPE_LOGICOP_* the
+    * r300 backend emits without translation. */
+   struct pipe_blend_state lblend;
+   memset(&lblend, 0, sizeof(lblend));
+   lblend.rt[0].colormask = PIPE_MASK_RGBA;
+   lblend.logicop_enable  = 1;
+   lblend.logicop_func    = bitwise_pipe_logicop(pl->bitwise_logicop.alu_op);
+   void *logicop_cso = pipe->create_blend_state(pipe, &lblend);
+   if (!logicop_cso) {
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&sv_b, NULL);
+      pipe_sampler_view_reference(&sv_a, NULL);
+      return false;
+   }
+
+   void *samp = device->identity_map_cso.sampler;
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+   info.instance_count = 1;
+   info.max_index      = 3;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+
+   /* Draw 1: RT = b, plain copy (default blend, sampler stage 0 = b). */
+   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                        device->identity_map_cso.blend,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
+                                        pl->vs_cso, pl->fs_cso, velems_cso);
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &samp);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &sv_b);
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+
+   /* Draw 2: RT = a OP b.  The logic-op blend makes the ROP read dst = b (draw
+    * 1's result) and write a OP b; sampler stage 0 = a. */
+   pipe->bind_blend_state(pipe, logicop_cso);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &sv_a);
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   pipe->flush(pipe, NULL, 0);
+
+   /* Copy the RGBA8 RT straight back into the uint32 output buffer (the element
+    * format equals the RT format, so the shared helper does a raw byte copy). */
+   struct pipe_box copy_box;
+   memset(&copy_box, 0, sizeof(copy_box));
+   copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+   bool copy_ok = false;
+   {
+      struct pipe_transfer *rt_xfer = NULL;
+      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                             &copy_box, &rt_xfer);
+      if (rt_map) {
+         struct pipe_transfer *out_xfer = NULL;
+         struct pipe_box out_box;
+         memset(&out_box, 0, sizeof(out_box));
+         out_box.x = (unsigned)desc_out->buf.offset;
+         const unsigned buf_bs = util_format_get_blocksize(fmt);
+         uint64_t out_byte_count = 0;
+         if (r300vk_idm_element_byte_count(total_invocations, buf_bs,
+                                           &out_byte_count)) {
+            out_box.width  = (int)out_byte_count;
+            out_box.height = 1;
+            out_box.depth  = 1;
+            void *out_bytes = pipe->buffer_map(
+               pipe, buf_out->resource, 0,
+               r300vk_idm_buffer_write_flags((unsigned)desc_out->buf.offset,
+                                             out_byte_count, buf_out->resource),
+               &out_box, &out_xfer);
+            if (out_bytes) {
+               copy_ok = r300vk_idm_copy_rt_rows_to_buffer(
+                  out_bytes, rt_map, rt_xfer->stride, width, height,
+                  total_invocations, fmt, fmt, buf_bs);
+               pipe->buffer_unmap(pipe, out_xfer);
+            }
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      }
+   }
+
+   struct pipe_sampler_view *no_view = NULL;
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 1, &no_view);
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe->bind_blend_state(pipe, device->identity_map_cso.blend);
+   pipe->delete_blend_state(pipe, logicop_cso);
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&sv_b, NULL);
+   pipe_sampler_view_reference(&sv_a, NULL);
+   pipe_resource_reference(&vb, NULL);
+   pipe_resource_reference(&rt, NULL);
+   return copy_ok;
 }
 
 bool

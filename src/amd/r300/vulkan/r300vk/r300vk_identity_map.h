@@ -121,6 +121,16 @@ r300vk_binary_transcendental_dispatch_replay(
    const struct r300vk_cmd_dispatch *dispatch,
    const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* Bitwise-logicop dispatch replay: out[i] = a[i] OP b[i] for OP in
+ * {iand, ior, ixor}, uint32 packed as RGBA8.  Two draws into one RGBA8 RT (b,
+ * then a with the RB3D ROP logic op enabled); bit-exact, no FP. */
+bool
+r300vk_bitwise_logicop_dispatch_replay(
+   struct r300vk_device *device,
+   const struct r300vk_pipeline *pl,
+   const struct r300vk_cmd_dispatch *dispatch,
+   const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* Unary affine-map dispatch replay: out[i] = in[i]*c0 + c1.  Reuses the
  * identity 1-in/1-out replay core -- r300vk_unary_map_synthesize_shaders
  * mirrored the bindings + value format into pl->identity_map and bound the MAD

@@ -136,6 +136,13 @@ struct r300vk_pipeline {
     * the 2-TEX componentwise FS.  Precision is FP16-RT-carrier bounded. */
    struct r300_compute_binary_transcendental_pattern binary_transcendental;
 
+   /* Two-input bitwise map out[gid] = a[gid] OP b[gid] (iand/ior/ixor) detected
+    * at pipeline-create time.  The FP24 ALU has no bitwise op, so the dispatch
+    * rides the RB3D ROP logic-op output stage: uint32 packed as RGBA8, two draws
+    * into one RT (b, then a with the logic op).  Bit-exact, no FP.  pl->vs_cso /
+    * pl->fs_cso are the identity-map passthrough VS + copy FS. */
+   struct r300_compute_bitwise_logicop_pattern bitwise_logicop;
+
    /* Quantized dot-product (DP4) kernel detected at pipeline-create time:
     * out[gid] = dot(in_a[gid], in_b[gid]).  Lowered to a fullscreen draw whose
     * pure-NIR FS samples in_a + in_b and writes their FP24 DP4 to the RT. */
@@ -446,6 +453,7 @@ r300vk_pipeline_matched_raster_verb(const struct r300vk_pipeline *pl)
           pl->unary_map.is_unary_map ||
           pl->unary_transcendental.is_unary_transcendental ||
           pl->binary_transcendental.is_binary_transcendental ||
+          pl->bitwise_logicop.is_bitwise_logicop ||
           pl->dp4.is_dp4 ||
           pl->qmul.is_qmul ||
           pl->qdiv.is_qdiv ||
