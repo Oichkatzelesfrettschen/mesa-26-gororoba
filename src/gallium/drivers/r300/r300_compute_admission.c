@@ -934,6 +934,120 @@ r300_nir_detect_binary_transcendental(
    out->is_binary_transcendental = true;
 }
 
+/* The bitwise binaries the RB3D ROP logic op computes: AND, OR, XOR.  All three
+ * commute, so the detector does not track operand order.  Shifts are not logic
+ * ops and are deliberately absent. */
+static bool
+bitwise_logicop_op_admitted(uint16_t op)
+{
+   switch ((nir_op)op) {
+   case nir_op_iand:
+   case nir_op_ior:
+   case nir_op_ixor:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* Two-input bitwise-map detector.  out[gid] = a[gid] OP b[gid] for OP in
+ * {iand, ior, ixor}: one store_ssbo whose value is a 2-input bitwise ALU op of
+ * two distinct load_ssbo defs.  Order-independent (the ops commute).  Scalar
+ * uint32 only -- each element packs as one RGBA8 texel for the ROP logic op.
+ * Disjoint from binary_map (iadd/imul/...) and binary_transcendental (fpow/fdiv)
+ * by op set.  Pure read-only NIR walk. */
+void
+r300_nir_detect_bitwise_logicop(
+   const nir_shader *s,
+   struct r300_compute_bitwise_logicop_pattern *out)
+{
+   out->is_bitwise_logicop   = false;
+   out->alu_op               = 0;
+   out->input_a_ssbo_binding = 0;
+   out->input_b_ssbo_binding = 0;
+   out->output_ssbo_binding  = 0;
+   out->value_components     = 0;
+   out->value_bit_size       = 0;
+
+   const nir_intrinsic_instr *store = NULL;
+   const nir_intrinsic_instr *load0 = NULL;
+   const nir_intrinsic_instr *load1 = NULL;
+   unsigned store_count = 0;
+   unsigned load_count  = 0;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               if (load_count == 0)
+                  load0 = intr;
+               else if (load_count == 1)
+                  load1 = intr;
+               load_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || load_count != 2)
+      return;
+   if (!store->src[0].ssa)
+      return;
+
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!alu || !bitwise_logicop_op_admitted(alu->op))
+      return;
+   if (nir_op_infos[alu->op].num_inputs != 2)
+      return;
+
+   const unsigned components = store->num_components;
+   const nir_def *s0 = alu->src[0].src.ssa;
+   const nir_def *s1 = alu->src[1].src.ssa;
+   const nir_intrinsic_instr *a_load;
+   const nir_intrinsic_instr *b_load;
+   if (s0 == &load0->def && s1 == &load1->def) {
+      a_load = load0;
+      b_load = load1;
+   } else if (s0 == &load1->def && s1 == &load0->def) {
+      a_load = load1;
+      b_load = load0;
+   } else {
+      return;
+   }
+   if (!unary_alu_src_is_identity_load(alu, 0, &a_load->def, components) ||
+       !unary_alu_src_is_identity_load(alu, 1, &b_load->def, components))
+      return;
+
+   if (load0->def.num_components != load1->def.num_components)
+      return;
+
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
+      return;
+
+   /* Scalar 32-bit only: one uint32 element per RGBA8 texel.  Wider widths would
+    * need a multi-texel carrier the ROP path does not provide. */
+   if (store->num_components != 1 || store->src[0].ssa->bit_size != 32)
+      return;
+
+   if (nir_src_is_const(a_load->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(a_load->src[0]);
+   if (nir_src_is_const(b_load->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(b_load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->alu_op = (uint16_t)alu->op;
+   out->value_components = store->num_components;
+   out->value_bit_size = store->src[0].ssa->bit_size;
+   out->is_bitwise_logicop = true;
+}
+
 /* Blend-add reduction detector.  Recognises the histogram / accumulator shape
  * that lowers to RB3D COMB_FCN_ADD blend accumulation:
  *

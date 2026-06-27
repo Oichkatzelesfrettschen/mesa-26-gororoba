@@ -228,6 +228,23 @@ build_binary_transcendental(nir_op op, bool swap, unsigned comps)
    return b.shader;
 }
 
+/* Two-input bitwise map: out[gid] = a[gid] OP b[gid] for OP in {iand,ior,ixor},
+ * scalar uint32 (binding 0 = a, 1 = b, 2 = out).  The ops commute, so order is
+ * not tracked. */
+static nir_shader *
+build_bitwise_logicop(nir_op op)
+{
+   nir_builder b = cs_builder("cs_bitwise_logicop");
+   nir_def *a = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *c = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *y = nir_build_alu2(&b, op, a, c);
+   nir_store_ssbo(&b, y, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 /* QFMUL: out[gid] = a[gid] * s, a per-element vec4 quaternion (binding 1) times a
  * BROADCAST scalar s (binding 0, a one-float buffer).  nir_fmul broadcasts the
  * 1-component scalar across the vec4, so the fmul's scalar source carries a
@@ -1218,6 +1235,48 @@ case_binary_transcendental_metadata(void)
    r300_nir_detect_binary_transcendental(add, &add_bt);
    CHECK(!add_bt.is_binary_transcendental,
          "binary_map fadd rejected by binary-transcendental detector");
+   ralloc_free(add);
+}
+
+static void
+case_bitwise_logicop_metadata(void)
+{
+   /* iand / ior / ixor detect, record their op + bindings, admit, and are NOT
+    * mistaken for binary_map (arithmetic) or binary_transcendental. */
+   const nir_op ops[] = { nir_op_iand, nir_op_ior, nir_op_ixor };
+   for (unsigned i = 0; i < ARRAY_SIZE(ops); i++) {
+      nir_shader *nir = build_bitwise_logicop(ops[i]);
+      struct r300_compute_admission adm;
+      struct r300_compute_bitwise_logicop_pattern bw = {0};
+      struct r300_compute_binary_map_pattern bm = {0};
+      struct r300_compute_binary_transcendental_pattern bt = {0};
+      prepare_detect_shader(nir);
+      r300_nir_classify_compute(nir, &adm);
+      CHECK(adm.admissible, "bitwise logicop admits");
+      r300_nir_detect_bitwise_logicop(nir, &bw);
+      CHECK(bw.is_bitwise_logicop, "bitwise logicop detected");
+      CHECK(bw.alu_op == ops[i], "bitwise logicop records its nir_op");
+      CHECK(bw.input_a_ssbo_binding == 0 && bw.input_b_ssbo_binding == 1 &&
+            bw.output_ssbo_binding == 2,
+            "bitwise logicop records bindings a=0 b=1 out=2");
+      CHECK(bw.value_components == 1 && bw.value_bit_size == 32,
+            "bitwise logicop records scalar 32-bit");
+      r300_nir_detect_binary_map(nir, &bm);
+      CHECK(!bm.is_binary_map, "bitwise logicop is not a binary_map");
+      r300_nir_detect_binary_transcendental(nir, &bt);
+      CHECK(!bt.is_binary_transcendental,
+            "bitwise logicop is not a binary_transcendental");
+      ralloc_free(nir);
+   }
+
+   /* The arithmetic binary map (fadd) must NOT match the bitwise detector --
+    * the op sets are disjoint. */
+   nir_shader *add = build_binary_map_f32vec4();
+   struct r300_compute_bitwise_logicop_pattern add_bw = {0};
+   prepare_detect_shader(add);
+   r300_nir_detect_bitwise_logicop(add, &add_bw);
+   CHECK(!add_bw.is_bitwise_logicop,
+         "binary_map fadd rejected by bitwise-logicop detector");
    ralloc_free(add);
 }
 
@@ -2698,6 +2757,7 @@ main(void)
    case_unary_push_metadata();
    case_unary_transcendental_metadata();
    case_binary_transcendental_metadata();
+   case_bitwise_logicop_metadata();
    case_multitap_metadata();
    case_qmul_metadata();
    case_qrotate_metadata();

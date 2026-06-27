@@ -2088,6 +2088,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_unary_map_pattern *unary,
                                struct r300_compute_unary_transcendental_pattern *transc,
                                struct r300_compute_binary_transcendental_pattern *btransc,
+                               struct r300_compute_bitwise_logicop_pattern *bitwise,
                                struct r300_compute_blend_acc_reduction_pattern *blendacc,
                                struct r300_compute_zpass_reduction_pattern *zpass,
                                struct r300_compute_multipass_scan_pattern *multiscan,
@@ -2196,6 +2197,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_unary_map(nir, unary);
    r300_nir_detect_unary_transcendental(nir, transc);
    r300_nir_detect_binary_transcendental(nir, btransc);
+   r300_nir_detect_bitwise_logicop(nir, bitwise);
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
    r300_nir_detect_zpass_reduction(nir, zpass);
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
@@ -4444,6 +4446,14 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->binary_transcendental.is_binary_transcendental = false;
       return VK_SUCCESS;
    }
+   if (pl->bitwise_logicop.is_bitwise_logicop) {
+      /* Both draws of the bitwise carrier are plain texel copies -- the ROP
+       * logic op does the bitwise combine -- so the passthrough VS + copy FS the
+       * identity map synthesizes serve unchanged. */
+      if (r300vk_identity_map_synthesize_shaders(device, pl) != VK_SUCCESS)
+         pl->bitwise_logicop.is_bitwise_logicop = false;
+      return VK_SUCCESS;
+   }
    if (pl->affine_iota.is_affine_iota) {
       if (!r300vk_affine_iota_synthesize_shaders(device, pl))
          pl->affine_iota.is_affine_iota = false;
@@ -4586,6 +4596,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_unary_map_pattern unary_pat = {0};
    struct r300_compute_unary_transcendental_pattern transc_pat = {0};
    struct r300_compute_binary_transcendental_pattern btransc_pat = {0};
+   struct r300_compute_bitwise_logicop_pattern bitwise_pat = {0};
    struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
    struct r300_compute_zpass_reduction_pattern zpass = {0};
    struct r300_compute_multipass_scan_pattern multiscan = {0};
@@ -4620,7 +4631,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &unary_pat,
-                                       &transc_pat, &btransc_pat,
+                                       &transc_pat, &btransc_pat, &bitwise_pat,
                                        &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
                                        &qmul_pat, &qdiv_pat, &mat4vec_pat, &qfmul_pat,
@@ -4668,6 +4679,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->unary_map = unary_pat;
    pl->unary_transcendental = transc_pat;
    pl->binary_transcendental = btransc_pat;
+   pl->bitwise_logicop = bitwise_pat;
    pl->dp4 = dp4_pat;
    pl->qmul = qmul_pat;
    pl->qdiv = qdiv_pat;
