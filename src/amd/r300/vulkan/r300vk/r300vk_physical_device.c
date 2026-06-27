@@ -974,6 +974,14 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
 
       if (!util_format_is_pure_integer(pipe_format))
          image_features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+
+      /* r300 exposes depth comparison (shadow) samplers for every depth/stencil
+       * format that the sampler can read.  The TX unit's SHADOWCOMP bit enables
+       * the per-texel compare against a reference value.  Advertise the
+       * VkFormatFeatureFlags2 flag so drivers and CTS agree on which formats
+       * support VkSamplerCreateInfo::compareEnable. */
+      if (util_format_is_depth_or_stencil(pipe_format))
+         image_features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT;
    }
 
    if (supports_render_target) {
