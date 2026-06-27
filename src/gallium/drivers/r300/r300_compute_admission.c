@@ -3834,6 +3834,145 @@ r300_nir_detect_qfmmul_pattern(const nir_shader *s,
    out->is_qfmmul = true;
 }
 
+/* Return the non-const operand of iand(X, mask) when the other operand is the
+ * given compile-time mask, or NULL when the shape does not match. */
+static const nir_def *
+as_iand_const(const nir_def *val, uint32_t mask)
+{
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(val);
+   if (!alu || alu->op != nir_op_iand)
+      return NULL;
+   for (unsigned k = 0; k < 2; k++) {
+      if (!nir_src_is_const(alu->src[k].src))
+         continue;
+      if (nir_src_comp_as_uint(alu->src[k].src, alu->src[k].swizzle[0]) == mask)
+         return alu->src[1 - k].src.ssa;
+   }
+   return NULL;
+}
+
+/* Return the shifted value if val = ushr(X, shift) with a constant shift, or NULL. */
+static const nir_def *
+as_ushr_const(const nir_def *val, uint32_t shift)
+{
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(val);
+   if (!alu || alu->op != nir_op_ushr)
+      return NULL;
+   if (!nir_src_is_const(alu->src[1].src))
+      return NULL;
+   if (nir_src_comp_as_uint(alu->src[1].src, alu->src[1].swizzle[0]) != shift)
+      return NULL;
+   return alu->src[0].src.ssa;
+}
+
+/* Return the shifted value if val = ishl(X, shift) with a constant shift, or NULL. */
+static const nir_def *
+as_ishl_const(const nir_def *val, uint32_t shift)
+{
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(val);
+   if (!alu || alu->op != nir_op_ishl)
+      return NULL;
+   if (!nir_src_is_const(alu->src[1].src))
+      return NULL;
+   if (nir_src_comp_as_uint(alu->src[1].src, alu->src[1].swizzle[0]) != shift)
+      return NULL;
+   return alu->src[0].src.ssa;
+}
+
+void
+r300_nir_detect_q16_16_add_pattern(const nir_shader *s,
+                                   struct r300_compute_q16_16_add_pattern *out)
+{
+   memset(out, 0, sizeof(*out));
+
+   const nir_intrinsic_instr *load[2] = {0}, *store[1] = {0};
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 2, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 2 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store[0] || !store[0]->src[0].ssa || !load[0] || !load[1])
+      return;
+
+   const nir_def *val = store[0]->src[0].ssa;
+   if (val->num_components != 1 || val->bit_size != 32)
+      return;
+
+   /* Top node: ior(ishl(hi_result, 16), iand(lo_sum, 0xFFFF)).  ior is
+    * commutative so either ordering is accepted. */
+   const nir_alu_instr *top = nir_def_as_alu_or_null(val);
+   if (!top || top->op != nir_op_ior)
+      return;
+
+   const nir_def *a = &load[0]->def, *b = &load[1]->def;
+   const nir_def *lo_sum = NULL;    /* iadd(iand(a,0xFFFF), iand(b,0xFFFF)) */
+   const nir_def *hi_result = NULL; /* iadd(iadd(ushr(a,16), ushr(b,16)), carry) */
+
+   for (unsigned k = 0; k < 2; k++) {
+      const nir_def *s0 = top->src[k].src.ssa;
+      const nir_def *s1 = top->src[1 - k].src.ssa;
+
+      hi_result = as_ishl_const(s0, 16);
+      const nir_def *lo_inner = as_iand_const(s1, 0xFFFF);
+      if (!hi_result || !lo_inner)
+         continue;
+
+      /* lo_inner must be an iadd -- that is the lo_sum node. */
+      const nir_alu_instr *loa = nir_def_as_alu_or_null(lo_inner);
+      if (!loa || loa->op != nir_op_iadd)
+         continue;
+
+      /* lo_sum = iadd(iand(a, 0xFFFF), iand(b, 0xFFFF)) */
+      const nir_def *la = as_iand_const(loa->src[0].src.ssa, 0xFFFF);
+      const nir_def *lb = as_iand_const(loa->src[1].src.ssa, 0xFFFF);
+      if (!la || !lb)
+         continue;
+      if (!((la == a && lb == b) || (la == b && lb == a)))
+         continue;
+
+      lo_sum = lo_inner;
+      break;
+   }
+   if (!lo_sum || !hi_result)
+      return;
+
+   /* hi_result = iadd(inner_pair, carry) or iadd(carry, inner_pair).
+    * carry = ushr(lo_sum, 16); inner_pair = iadd(ushr(a,16), ushr(b,16)). */
+   const nir_alu_instr *hi_top = nir_def_as_alu_or_null(hi_result);
+   if (!hi_top || hi_top->op != nir_op_iadd)
+      return;
+
+   bool hi_ok = false;
+   for (unsigned k = 0; k < 2; k++) {
+      const nir_def *carry_src = as_ushr_const(hi_top->src[k].src.ssa, 16);
+      if (carry_src != lo_sum)
+         continue;
+      /* Other operand: iadd(ushr(a,16), ushr(b,16)). */
+      const nir_alu_instr *hi_pair = nir_def_as_alu_or_null(hi_top->src[1 - k].src.ssa);
+      if (!hi_pair || hi_pair->op != nir_op_iadd)
+         continue;
+      const nir_def *ha = as_ushr_const(hi_pair->src[0].src.ssa, 16);
+      const nir_def *hb = as_ushr_const(hi_pair->src[1].src.ssa, 16);
+      if (!ha || !hb)
+         continue;
+      if (!((ha == a && hb == b) || (ha == b && hb == a)))
+         continue;
+      hi_ok = true;
+      break;
+   }
+   if (!hi_ok)
+      return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(load[1]->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load[1]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_q16_16_add = true;
+}
+
 void
 r300_nir_detect_qdiv_pattern(const nir_shader *s,
                              struct r300_compute_qdiv_pattern *out)

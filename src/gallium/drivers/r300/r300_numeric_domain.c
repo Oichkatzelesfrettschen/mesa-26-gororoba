@@ -330,7 +330,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .domain          = R300_NUM_DOMAIN_Q16_16,
       .status          = R300_VOP_NUMERIC_DERIVED,
       .theorem         = "(2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17; limb carry exact",
-      .mesa_hook       = NULL,  /* no detector yet; requires limb-add NIR pattern */
+      .mesa_hook       = "r300_nir_detect_q16_16_add_pattern",
    },
    {
       .op_name         = "Q16_16_MUL",
@@ -801,7 +801,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "probe ladder "
                          "advance(0) = all, advance(0) = none, advance(1) = all, "
                          "end state EQUAL 2 = all",
-      .mesa_hook       = NULL,
+      .mesa_hook       = NULL,  /* no NIR kernel: dispatched via stencil-op HW state (not pattern recognition) */
    },
    {
       /* CAS ROUTE A: per-element constant-operand compare-and-swap on the

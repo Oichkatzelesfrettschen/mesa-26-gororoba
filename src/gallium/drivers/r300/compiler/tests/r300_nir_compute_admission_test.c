@@ -2869,6 +2869,75 @@ case_affine_iota(void)
    ralloc_free(zero_workgroup);
 }
 
+/* Q16.16 fixed-point addition: out = a + b in 2-limb carry form.
+ *   lo_sum = iadd(iand(a, 0xFFFF), iand(b, 0xFFFF))
+ *   carry  = ushr(lo_sum, 16)
+ *   hi_sum = iadd(iadd(ushr(a, 16), ushr(b, 16)), carry)
+ *   out    = ior(ishl(hi_sum, 16), iand(lo_sum, 0xFFFF))
+ * All intermediates <= 2^17 - 1 (FP24 exact-integer range). */
+static nir_shader *
+build_q16_16_add_u32(void)
+{
+   nir_builder b = cs_builder("cs_q16_16_add_u32");
+   nir_def *a = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *bv = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                               .align_mul = 4, .align_offset = 0);
+   nir_def *lo_a    = nir_iand_imm(&b, a, 0xFFFF);
+   nir_def *lo_b    = nir_iand_imm(&b, bv, 0xFFFF);
+   nir_def *lo_sum  = nir_iadd(&b, lo_a, lo_b);
+   nir_def *carry   = nir_ushr_imm(&b, lo_sum, 16);
+   nir_def *lo_out  = nir_iand_imm(&b, lo_sum, 0xFFFF);
+   nir_def *hi_a    = nir_ushr_imm(&b, a, 16);
+   nir_def *hi_b    = nir_ushr_imm(&b, bv, 16);
+   nir_def *hi_pair = nir_iadd(&b, hi_a, hi_b);
+   nir_def *hi_sum  = nir_iadd(&b, hi_pair, carry);
+   nir_def *hi_out  = nir_ishl_imm(&b, hi_sum, 16);
+   nir_def *out     = nir_ior(&b, hi_out, lo_out);
+   nir_store_ssbo(&b, out, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_q16_16_add(void)
+{
+   printf("Q16_16_ADD detector\n");
+
+   nir_shader *nir = build_q16_16_add_u32();
+   struct r300_compute_q16_16_add_pattern qa = {0};
+   r300_nir_detect_q16_16_add_pattern(nir, &qa);
+   CHECK(qa.is_q16_16_add, "q16_16_add: 2-limb carry shape detected");
+   CHECK(qa.input_a_ssbo_binding == 0, "q16_16_add: input_a binding 0");
+   CHECK(qa.input_b_ssbo_binding == 1, "q16_16_add: input_b binding 1");
+   CHECK(qa.output_ssbo_binding  == 2, "q16_16_add: output binding 2");
+   ralloc_free(nir);
+
+   /* A plain iadd (BINARY_MAP shape) must not fire the Q16_16_ADD detector.
+    * Distinguishes the carry form from a bare elementwise add. */
+   nir_shader *plain = build_binary_map_f32vec4();
+   struct r300_compute_q16_16_add_pattern plain_qa = {0};
+   r300_nir_detect_q16_16_add_pattern(plain, &plain_qa);
+   CHECK(!plain_qa.is_q16_16_add, "q16_16_add: plain iadd rejects (no carry chain)");
+   ralloc_free(plain);
+
+   /* A plain u32 imul must not fire: it has no iand/ushr/ior carry structure. */
+   {
+      nir_builder nb = cs_builder("cs_q16_16_add_reject_imul");
+      nir_def *ra = nir_load_ssbo(&nb, 1, 32, nir_imm_int(&nb, 0), nir_imm_int(&nb, 0),
+                                  .align_mul = 4, .align_offset = 0);
+      nir_def *rb = nir_load_ssbo(&nb, 1, 32, nir_imm_int(&nb, 1), nir_imm_int(&nb, 0),
+                                  .align_mul = 4, .align_offset = 0);
+      nir_def *rprod = nir_imul(&nb, ra, rb);
+      nir_store_ssbo(&nb, rprod, nir_imm_int(&nb, 2), nir_imm_int(&nb, 0),
+                     .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+      struct r300_compute_q16_16_add_pattern mul_qa = {0};
+      r300_nir_detect_q16_16_add_pattern(nb.shader, &mul_qa);
+      CHECK(!mul_qa.is_q16_16_add, "q16_16_add: imul kernel rejects (no carry chain)");
+      ralloc_free(nb.shader);
+   }
+}
+
 /* out[gid] = a[gid] * b[gid] for u32: the multilimb-multiply shape. */
 static nir_shader *
 build_multilimb_mul_u32(void)
@@ -3153,6 +3222,7 @@ main(void)
    case_index_consumption();
    case_compute_global_id_system_value_lowering();
    case_affine_iota();
+   case_q16_16_add();
    case_multilimb_mul();
    case_log4_pool();
    case_cas();
