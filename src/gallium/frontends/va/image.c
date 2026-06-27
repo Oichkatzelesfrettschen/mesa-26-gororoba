@@ -482,7 +482,20 @@ vlVaGetImage(VADriverContextP ctx, VASurfaceID surface, int x, int y,
       return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
    }
 
-   if (format != surf->buffer->buffer_format) {
+   /* A 3-plane planar YUV 4:2:0 decode surface read back as packed NV12 is a
+    * pure layout change -- same color space and chroma siting -- so copy the
+    * luma plane and interleave the two chroma planes.  The post-process
+    * compositor path color-converts through RGB and loses precision on
+    * non-constant content; repack directly when the conversion is layout-only.
+    * YV12 stores Cr before Cb, so it keeps the compositor path. */
+   bool nv12_repack =
+      format == PIPE_FORMAT_NV12 && !surf->templat.interlaced &&
+      surf->buffer->buffer_format != PIPE_FORMAT_YV12 &&
+      util_format_get_num_planes(surf->buffer->buffer_format) == 3 &&
+      pipe_format_to_chroma_format(surf->buffer->buffer_format) ==
+         PIPE_VIDEO_CHROMA_FORMAT_420;
+
+   if (format != surf->buffer->buffer_format && !nv12_repack) {
       tmp_surf.templat.buffer_format = format;
       tmp_surf.templat.width = vaimage->width;
       tmp_surf.templat.height = vaimage->height;
@@ -545,6 +558,34 @@ vlVaGetImage(VADriverContextP ctx, VASurfaceID surface, int x, int y,
       vl_video_buffer_adjust_size(&box_x, &box_y, i,
                                   pipe_format_to_chroma_format(surf->templat.buffer_format),
                                   surf->templat.interlaced);
+      if (nv12_repack && i == 1) {
+         /* Interleave the planar Cb (view_resources[1]) and Cr
+          * (view_resources[2]) planes into the NV12 chroma plane. */
+         struct pipe_box box;
+         u_box_3d(box_x, box_y, 0, box_w, box_h, 1, &box);
+         struct pipe_transfer *tcb, *tcr;
+         uint8_t *mcb = drv->pipe->texture_map(drv->pipe, view_resources[1], 0,
+                                               PIPE_MAP_READ, &box, &tcb);
+         uint8_t *mcr = view_resources[2] ?
+            drv->pipe->texture_map(drv->pipe, view_resources[2], 0,
+                                   PIPE_MAP_READ, &box, &tcr) : NULL;
+         if (mcb && mcr) {
+            for (unsigned r = 0; r < box.height; r++) {
+               uint8_t *dst = data[1] + pitches[1] * r;
+               const uint8_t *scb = mcb + tcb->stride * r;
+               const uint8_t *scr = mcr + tcr->stride * r;
+               for (unsigned c = 0; c < box.width; c++) {
+                  dst[c * 2] = scb[c];
+                  dst[c * 2 + 1] = scr[c];
+               }
+            }
+         }
+         if (mcb)
+            pipe_texture_unmap(drv->pipe, tcb);
+         if (mcr)
+            pipe_texture_unmap(drv->pipe, tcr);
+         continue;
+      }
       for (j = 0; j < view_resources[i]->array_size; ++j) {
          struct pipe_box box;
          u_box_3d(box_x, box_y, j, box_w, box_h, 1, &box);
