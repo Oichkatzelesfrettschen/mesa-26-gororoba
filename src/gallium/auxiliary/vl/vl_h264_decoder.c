@@ -211,14 +211,22 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
                                     ref_luma->texture->width0,
                                     ref_luma->texture->height0, &dec->frame);
 
-      struct pipe_sampler_view *ref_chroma = ref_planes[1];
-      if (ref_chroma)
-         vl_h264_emit_chroma_inter_unorm(dec->emit, &target_surfaces[1],
-                                         ref_chroma->texture->width0,
-                                         ref_chroma->texture->height0, ref_chroma,
-                                         ref_chroma->texture->width0,
-                                         ref_chroma->texture->height0,
+      /* Planar Y8_U8_V8_420 carries Cb and Cr as separate R8 planes
+       * (target_surfaces[2], ref_planes[2]); packed NV12 has neither, so the
+       * emit takes NULL for the Cr surface and view and de-interleaves one R8G8
+       * plane instead. */
+      struct pipe_sampler_view *ref_chroma_cb = ref_planes[1];
+      if (ref_chroma_cb) {
+         struct pipe_surface *dst_cr =
+            target_surfaces[2].texture ? &target_surfaces[2] : NULL;
+         vl_h264_emit_chroma_inter_unorm(dec->emit, &target_surfaces[1], dst_cr,
+                                         ref_chroma_cb->texture->width0,
+                                         ref_chroma_cb->texture->height0,
+                                         ref_chroma_cb, ref_planes[2],
+                                         ref_chroma_cb->texture->width0,
+                                         ref_chroma_cb->texture->height0,
                                          &dec->frame);
+      }
    }
 
    /* The intra macroblocks reconstruct on the CPU after the back half, so they

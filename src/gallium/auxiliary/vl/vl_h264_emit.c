@@ -1336,21 +1336,27 @@ vl_h264_emit_luma_inter_unorm(struct vl_h264_emit *emit,
 
 void
 vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
-                                struct pipe_surface *dst_chroma, unsigned width,
+                                struct pipe_surface *dst_cb,
+                                struct pipe_surface *dst_cr, unsigned width,
                                 unsigned height,
-                                struct pipe_sampler_view *ref_chroma,
+                                struct pipe_sampler_view *ref_chroma_cb,
+                                struct pipe_sampler_view *ref_chroma_cr,
                                 unsigned ref_width, unsigned ref_height,
                                 const struct vl_h264_slice_contract *slice)
 {
    struct pipe_context *pipe = emit->pipe;
    struct pipe_screen *screen = pipe->screen;
+   bool planar = dst_cr != NULL;
 
    set_pipeline_state(emit);
 
-   /* NV12 chroma is one R8G8 plane with Cb in the R lane and Cr in the G lane.
-    * De-interleave the reference into two R32_FLOAT working planes scaled to the
-    * integer 0..255 domain, reconstruct each component, then recombine the two
-    * results into the interleaved target. */
+   /* The reference and target are either planar Y8_U8_V8_420 (separate R8 Cb and
+    * Cr planes) or packed NV12 (one R8G8 plane, Cb in the R lane, Cr in the G
+    * lane).  Sample the reference into two R32_FLOAT working planes in the
+    * integer 0..255 domain, reconstruct each component, deblock, then write each
+    * component to its target.  A planar reference reads Cb and Cr from separate
+    * single-component views (both lane 0); a packed reference de-interleaves the
+    * two lanes of one R8G8 view. */
    struct pipe_resource *ref_cb = make_plane(screen, ref_width, ref_height);
    struct pipe_resource *ref_cr = make_plane(screen, ref_width, ref_height);
    struct pipe_resource *recon_cb = make_plane(screen, width, height);
@@ -1374,9 +1380,11 @@ vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
    recon_cr_surf.texture = recon_cr;
 
    scale_copy(emit, emit->fs_scale, &ref_cb_surf, ref_width, ref_height,
-              ref_chroma, 255.0f);
-   scale_copy(emit, emit->fs_scale_cr, &ref_cr_surf, ref_width, ref_height,
-              ref_chroma, 255.0f);
+              ref_chroma_cb, 255.0f);
+   /* Planar Cr is lane 0 of its own view; packed Cr is lane 1 of the Cb view. */
+   scale_copy(emit, planar ? emit->fs_scale : emit->fs_scale_cr, &ref_cr_surf,
+              ref_width, ref_height, planar ? ref_chroma_cr : ref_chroma_cb,
+              255.0f);
    pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
 
    vl_h264_emit_chroma_inter(emit, &recon_cb_surf, width, height, ref_cb_view,
@@ -1387,7 +1395,7 @@ vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
                              VL_H264_LUMA_4X4_BLOCKS + CHROMA_BLOCKS_PER_COMPONENT);
    pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
 
-   /* In-loop chroma deblock on the integer Cb and Cr planes before the NV12 scale
+   /* In-loop chroma deblock on the integer Cb and Cr planes before the scale
     * out, sharing one scratch plane for the ping-pong.  Cb uses qp_cb, Cr uses
     * qp_cr; the boundary strength is inherited from the co-located luma edge. */
    struct pipe_resource *scratch = make_plane(screen, width, height);
@@ -1399,8 +1407,16 @@ vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
                                scratch_view, width, height, slice, true);
    pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
 
-   interleave_copy(emit, dst_chroma, width, height, recon_cb_view, recon_cr_view,
-                   1.0f / 255.0f);
+   if (planar) {
+      /* Write each reconstructed component to its own R8 plane (lane 0). */
+      scale_copy(emit, emit->fs_scale, dst_cb, width, height, recon_cb_view,
+                 1.0f / 255.0f);
+      scale_copy(emit, emit->fs_scale, dst_cr, width, height, recon_cr_view,
+                 1.0f / 255.0f);
+   } else {
+      interleave_copy(emit, dst_cb, width, height, recon_cb_view, recon_cr_view,
+                      1.0f / 255.0f);
+   }
    pipe->flush(pipe, NULL, 0);
 
    pipe_sampler_view_reference(&ref_cb_view, NULL);
