@@ -255,20 +255,23 @@ void r300_nir_detect_bitwise_logicop(
    const struct nir_shader *s,
    struct r300_compute_bitwise_logicop_pattern *out);
 
-/* Logical shift by a compile-time constant: out[gid] = a[gid] << k  (ishl) or
- * a[gid] >> k  (ushr, unsigned), for a constant k in [1, 31].  The FP24 ALU has
+/* Constant-amount integer shift: out[gid] = a[gid] << k (ishl), >> k unsigned
+ * (ushr), or >> k signed (ishr), for a constant k in [1, 31].  The FP24 ALU has
  * no shift, but a shift is a byte re-pack: each uint32 packs as RGBA8, and a
  * single fragment pass recombines the bytes -- out_byte[j] gathers the low 8-r
  * bits of one source byte and the high r bits of its neighbour, where k = 8*q+r,
  * q = byte distance, r = within-byte bit distance.  Byte values are 0..255 and
  * byte*2^r < 2^17, so every intermediate is an exact FP24 integer and the result
  * is bit-exact (the same UNORM8 round-trip the identity-map verb relies on).
- * SCOPE: logical (zero-fill) shifts by a constant only.  Signed ishr (sign-
- * extension) and variable shift amounts are NOT recognised -- they stay
- * UNKNOWN_SHAPE rather than silently produce a logical-fill or wrong result. */
+ * Arithmetic ishr adds the sign-extension fill ushr left at zero -- those bits
+ * are disjoint from the logical result, so it is an exact add.  The struct name
+ * keeps the original logical-shift scope; is_arithmetic distinguishes ishr.
+ * SCOPE: constant shift amounts only.  Variable shift amounts (needing an exact
+ * per-element 2^b) stay UNKNOWN_SHAPE rather than produce a wrong result. */
 struct r300_compute_shift_logical_pattern {
    bool       is_shift_logical;
-   bool       is_left;                /* ishl (true) vs ushr (false) */
+   bool       is_left;                /* ishl (true) vs right shift (false) */
+   bool       is_arithmetic;          /* ishr (sign-extend) vs ushr (zero-fill) */
    uint8_t    shift_amount;           /* k in [1, 31] */
    uint32_t   input_ssbo_binding;
    uint32_t   output_ssbo_binding;
