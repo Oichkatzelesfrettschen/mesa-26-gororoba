@@ -5816,6 +5816,116 @@ r300vk_shift_variable_gather(struct r300vk_device *device,
    return ok;
 }
 
+/* Sign-extension pass for variable ishr: out = ushr + sign(a) * fill[b].  Samples
+ * the logical ushr result (sampler 0), a for its sign (sampler 1), b for the fill
+ * index (sampler 2), and the device fill lookup (sampler 3), then reads the RT
+ * back into the output buffer.  The signfill FS does the disjoint per-byte add. */
+static bool
+r300vk_shift_variable_signfill(struct r300vk_device *device,
+                               const struct r300vk_pipeline *pl,
+                               struct pipe_resource *ushr_res,
+                               struct pipe_resource *a_res, unsigned a_off,
+                               struct pipe_resource *b_res, unsigned b_off,
+                               struct pipe_resource *out_res, unsigned out_off,
+                               uint64_t total)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl->shift_variable_signfill_fs ||
+       !device->shift_variable_fill_lut_view)
+      return false;
+
+   struct r300_grid_fold fold;
+   if (!r300_grid_fold_1d(total, &fold))
+      return false;
+   const unsigned width = fold.width, height = fold.height;
+
+   /* sampler 0 = logical ushr, 1 = a (sign), 2 = b (fill index). */
+   struct pipe_resource *in_res[3] = { ushr_res, a_res, b_res };
+   unsigned in_off[3] = { 0, a_off, b_off };
+   struct pipe_sampler_view *views[4] = { NULL, NULL, NULL,
+                                          device->shift_variable_fill_lut_view };
+   for (unsigned i = 0; i < 3; i++) {
+      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, in_res[i], in_off[i], width, height, total,
+         PIPE_FORMAT_R8G8B8A8_UNORM);
+      if (!views[i]) {
+         for (unsigned j = 0; j < i; j++)
+            pipe_sampler_view_reference(&views[j], NULL);
+         return false;
+      }
+   }
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      for (unsigned i = 0; i < 3; i++)
+         pipe_sampler_view_reference(&views[i], NULL);
+      return false;
+   }
+
+   bool ok = false;
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = PIPE_FORMAT_R8G8B8A8_UNORM;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (rt) {
+      struct pipe_surface surf_templ;
+      memset(&surf_templ, 0, sizeof(surf_templ));
+      surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
+      surf_templ.texture = rt;
+      r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                           device->identity_map_cso.blend,
+                                           device->identity_map_cso.rasterizer,
+                                           device->identity_map_cso.dsa,
+                                           pl->vs_cso,
+                                           pl->shift_variable_signfill_fs,
+                                           velems_cso);
+      void *samplers[4] = { device->identity_map_cso.sampler,
+                            device->identity_map_cso.sampler,
+                            device->identity_map_cso.sampler,
+                            device->identity_map_cso.sampler };
+      pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 4, samplers);
+      pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 4, 0, views);
+
+      struct pipe_vertex_buffer vb_state;
+      memset(&vb_state, 0, sizeof(vb_state));
+      vb_state.buffer.resource = vb;
+      pipe->set_vertex_buffers(pipe, 1, &vb_state);
+      struct pipe_draw_info info;
+      memset(&info, 0, sizeof(info));
+      info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+      info.instance_count = 1;
+      info.max_index      = 3;
+      struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+      pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+      pipe->flush(pipe, NULL, 0);
+
+      ok = r300vk_identity_map_readback_rt(pipe, rt, out_res, out_off,
+                                           width, height,
+                                           PIPE_FORMAT_R8G8B8A8_UNORM,
+                                           width * 4u, total);
+      pipe_resource_reference(&rt, NULL);
+   }
+
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   for (unsigned i = 0; i < 3; i++)
+      pipe_sampler_view_reference(&views[i], NULL);
+   pipe_resource_reference(&vb, NULL);
+   return ok;
+}
+
 bool
 r300vk_shift_variable_dispatch_replay(struct r300vk_device *device,
                                       const struct r300vk_pipeline *pl,
@@ -5876,19 +5986,41 @@ r300vk_shift_variable_dispatch_replay(struct r300vk_device *device,
    if (!c_res)
       return false;
 
+   /* ishr convolves into a transient logical-ushr buffer, then the sign-fill pass
+    * writes the final output; ishl/ushr convolve straight into the output. */
+   const unsigned out_shift = pl->shift_variable.is_left ? 0u : 31u;
+   struct pipe_resource *ushr_res = NULL;
+   struct pipe_resource *conv_dst = buf[2]->resource;
+   unsigned conv_off = (unsigned)desc[2]->buf.offset;
+   if (pl->shift_variable.is_arithmetic) {
+      ushr_res = screen->resource_create(screen, &c_templ);
+      if (!ushr_res) {
+         pipe_resource_reference(&c_res, NULL);
+         return false;
+      }
+      conv_dst = ushr_res;
+      conv_off = 0;
+   }
+
    bool ok = r300vk_shift_variable_gather(device, pl, buf[1]->resource,
                                           (unsigned)desc[1]->buf.offset,
                                           c_res, total);
    if (ok)
       ok = r300vk_multilimb_convolve(device, pl,
               buf[0]->resource, (unsigned)desc[0]->buf.offset,
-              c_res, 0,
-              buf[2]->resource, (unsigned)desc[2]->buf.offset,
-              total, pl->shift_variable.is_left ? 0u : 31u);
+              c_res, 0, conv_dst, conv_off, total, out_shift);
+   if (ok && pl->shift_variable.is_arithmetic)
+      ok = r300vk_shift_variable_signfill(device, pl,
+              ushr_res,
+              buf[0]->resource, (unsigned)desc[0]->buf.offset,
+              buf[1]->resource, (unsigned)desc[1]->buf.offset,
+              buf[2]->resource, (unsigned)desc[2]->buf.offset, total);
 
+   pipe_resource_reference(&ushr_res, NULL);
    pipe_resource_reference(&c_res, NULL);
-   IDM_LOG("shift_variable done total=%llu left=%d ok=%d",
-           (unsigned long long)total, (int)pl->shift_variable.is_left, (int)ok);
+   IDM_LOG("shift_variable done total=%llu left=%d arith=%d ok=%d",
+           (unsigned long long)total, (int)pl->shift_variable.is_left,
+           (int)pl->shift_variable.is_arithmetic, (int)ok);
    return ok;
 }
 

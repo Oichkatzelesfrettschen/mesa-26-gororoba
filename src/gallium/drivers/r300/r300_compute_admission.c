@@ -1144,15 +1144,16 @@ r300_nir_detect_shift_logical(
    out->is_shift_logical = true;
 }
 
-/* The logical shifts the variable-amount carrier admits.  Both lower onto the
- * per-element 2^b lookup + multilimb multiply; signed ishr is absent (its
- * sign-extension mask varies with the per-element amount). */
+/* The shifts the variable-amount carrier admits.  All lower onto the per-element
+ * 2^M lookup + multilimb multiply; ishr adds the per-element sign-extension fill
+ * on top of the ushr result. */
 static bool
 shift_variable_op_admitted(uint16_t op)
 {
    switch ((nir_op)op) {
    case nir_op_ishl:
    case nir_op_ushr:
+   case nir_op_ishr:
       return true;
    default:
       return false;
@@ -1173,6 +1174,7 @@ r300_nir_detect_shift_variable(
 {
    out->is_shift_variable   = false;
    out->is_left             = false;
+   out->is_arithmetic       = false;
    out->input_a_ssbo_binding = 0;
    out->input_b_ssbo_binding = 0;
    out->output_ssbo_binding  = 0;
@@ -1216,6 +1218,7 @@ r300_nir_detect_shift_variable(
    if (nir_op_infos[alu->op].num_inputs != 2)
       return;
    const bool is_left = (alu->op == nir_op_ishl);
+   const bool is_arithmetic = (alu->op == nir_op_ishr);
 
    const unsigned components = store->num_components;
    const nir_def *s0 = alu->src[0].src.ssa;   /* value a */
@@ -1251,6 +1254,7 @@ r300_nir_detect_shift_variable(
    if (nir_src_is_const(store->src[1]))
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
    out->is_left = is_left;
+   out->is_arithmetic = is_arithmetic;
    out->value_components = store->num_components;
    out->value_bit_size = store->src[0].ssa->bit_size;
    out->is_shift_variable = true;

@@ -2318,29 +2318,24 @@ r300vk_device_init_identity_map_state(struct r300vk_device *device)
    return ok;
 }
 
-/* Build the 32x1 RGBA8 power-of-two lookup the variable-shift gather samples.
- * Texel j carries the little-endian bytes of 2^j, matching the RGBA8 byte order
- * the convolution decodes (R = byte 0 = LSB).  The gather indexes it at b (left)
- * or 31-b (right) so a per-element shift amount becomes the exact 2^M multiplier
- * the convolution multiplies by.  Device-global and read-only, so it is created
- * once; the caller holds identity_map_cso_lock.  Freed in r300vk_DestroyDevice. */
+/* Create one 32x1 RGBA8 lookup texture whose texel j holds the little-endian
+ * bytes of values[j], matching the RGBA8 byte order the carrier decodes (R =
+ * byte 0 = LSB).  Used for both variable-shift lookups (2^j and the sign-fill
+ * mask).  Returns the resource + a NEAREST-swizzle sampler view through out
+ * params; the caller holds identity_map_cso_lock. */
 static bool
-r300vk_device_ensure_shift_variable_lut_locked(struct r300vk_device *device)
+r300vk_create_shift_lut_locked(struct pipe_context *pipe,
+                               struct pipe_screen *screen,
+                               const uint32_t values[32],
+                               struct pipe_resource **out_res,
+                               struct pipe_sampler_view **out_view)
 {
-   if (device->shift_variable_lut_view)
-      return true;
-   struct pipe_context *pipe   = device->pipe;
-   struct pipe_screen  *screen = device->screen;
-   if (!pipe || !screen)
-      return false;
-
    uint8_t texels[32][4];
    for (unsigned j = 0; j < 32; j++) {
-      const uint32_t v = 1u << j;
-      texels[j][0] = (uint8_t)(v & 0xFF);
-      texels[j][1] = (uint8_t)((v >> 8) & 0xFF);
-      texels[j][2] = (uint8_t)((v >> 16) & 0xFF);
-      texels[j][3] = (uint8_t)((v >> 24) & 0xFF);
+      texels[j][0] = (uint8_t)(values[j] & 0xFF);
+      texels[j][1] = (uint8_t)((values[j] >> 8) & 0xFF);
+      texels[j][2] = (uint8_t)((values[j] >> 16) & 0xFF);
+      texels[j][3] = (uint8_t)((values[j] >> 24) & 0xFF);
    }
 
    struct pipe_resource templ;
@@ -2380,8 +2375,42 @@ r300vk_device_ensure_shift_variable_lut_locked(struct r300vk_device *device)
       return false;
    }
 
-   device->shift_variable_lut      = lut;
-   device->shift_variable_lut_view = view;
+   *out_res  = lut;
+   *out_view = view;
+   return true;
+}
+
+/* Build the two variable-shift lookups the gather and sign-fill passes sample.
+ * The 2^j lookup (texel j = 2^j) feeds the multiply; the fill lookup (texel b =
+ * 0xFFFFFFFF << (32-b), the top b bits, b=0 -> 0) supplies the ishr sign
+ * extension.  Device-global and read-only, created once; the caller holds
+ * identity_map_cso_lock.  Freed in r300vk_DestroyDevice. */
+static bool
+r300vk_device_ensure_shift_variable_lut_locked(struct r300vk_device *device)
+{
+   if (device->shift_variable_lut_view && device->shift_variable_fill_lut_view)
+      return true;
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen)
+      return false;
+
+   uint32_t pow2[32], fill[32];
+   for (unsigned j = 0; j < 32; j++) {
+      pow2[j] = 1u << j;
+      fill[j] = j == 0 ? 0u : (uint32_t)(0xFFFFFFFFu << (32 - j));
+   }
+
+   if (!device->shift_variable_lut_view &&
+       !r300vk_create_shift_lut_locked(pipe, screen, pow2,
+                                       &device->shift_variable_lut,
+                                       &device->shift_variable_lut_view))
+      return false;
+   if (!device->shift_variable_fill_lut_view &&
+       !r300vk_create_shift_lut_locked(pipe, screen, fill,
+                                       &device->shift_variable_fill_lut,
+                                       &device->shift_variable_fill_lut_view))
+      return false;
    return true;
 }
 
@@ -3296,6 +3325,79 @@ r300vk_synthesize_shift_variable_gather_fs(struct pipe_context *pipe,
    return ureg_create_shader_and_destroy(ureg, pipe);
 }
 
+/* Variable-shift sign-extension fill FS for ishr.  After the gather + convolution
+ * have produced the logical ushr result, add sign(a) * fill[b].  Sampler 0 is the
+ * logical ushr bytes, sampler 1 the original a (sign = bit 31 of byte 3), sampler
+ * 2 the amount b (the fill index), sampler 3 the fill lookup.  out_byte = ushr +
+ * sign * fill_byte; ushr occupies bits [0,31-b] and the fill bits [32-b,31], so
+ * the per-byte sum is disjoint, never carries, and never exceeds 255. */
+static void *
+r300vk_synthesize_shift_variable_signfill_fs(struct pipe_context *pipe)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp[4];
+   for (unsigned s = 0; s < 4; s++) {
+      samp[s] = ureg_DECL_sampler(ureg, s);
+      ureg_DECL_sampler_view(ureg, s, TGSI_TEXTURE_2D, TGSI_RETURN_TYPE_FLOAT,
+                             TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                             TGSI_RETURN_TYPE_FLOAT);
+   }
+   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                           TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out   = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst ushr  = ureg_DECL_temporary(ureg);
+   struct ureg_dst aval  = ureg_DECL_temporary(ureg);
+   struct ureg_dst sign  = ureg_DECL_temporary(ureg);
+   struct ureg_dst idx   = ureg_DECL_temporary(ureg);
+   struct ureg_dst coord = ureg_DECL_temporary(ureg);
+   struct ureg_dst fill  = ureg_DECL_temporary(ureg);
+
+   /* ushr bytes and the fill bytes, recovered exactly from UNORM8. */
+   ureg_TEX(ureg, ushr, TGSI_TEXTURE_2D, tc, samp[0]);
+   ureg_MUL(ureg, ushr, ureg_src(ushr), ureg_imm1f(ureg, 255.0f));
+   ureg_ADD(ureg, ushr, ureg_src(ushr), ureg_imm1f(ureg, 0.5f));
+   ureg_FLR(ureg, ushr, ureg_src(ushr));
+
+   /* sign = bit 31 of a = floor(round(a.w * 255) / 128). */
+   ureg_TEX(ureg, aval, TGSI_TEXTURE_2D, tc, samp[1]);
+   ureg_MUL(ureg, ureg_writemask(sign, TGSI_WRITEMASK_X),
+            ureg_scalar(ureg_src(aval), TGSI_SWIZZLE_W),
+            ureg_imm1f(ureg, 255.0f));
+   ureg_ADD(ureg, ureg_writemask(sign, TGSI_WRITEMASK_X), ureg_src(sign),
+            ureg_imm1f(ureg, 0.5f));
+   ureg_FLR(ureg, ureg_writemask(sign, TGSI_WRITEMASK_X), ureg_src(sign));
+   ureg_MUL(ureg, ureg_writemask(sign, TGSI_WRITEMASK_X), ureg_src(sign),
+            ureg_imm1f(ureg, 1.0f / 128.0f));
+   ureg_FLR(ureg, ureg_writemask(sign, TGSI_WRITEMASK_X), ureg_src(sign));
+
+   /* fill[b]: idx = round(b.x * 255), NEAREST dependent read at (idx+0.5)/32. */
+   ureg_TEX(ureg, idx, TGSI_TEXTURE_2D, tc, samp[2]);
+   ureg_MUL(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X),
+            ureg_scalar(ureg_src(idx), TGSI_SWIZZLE_X),
+            ureg_imm1f(ureg, 255.0f));
+   ureg_ADD(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X), ureg_src(idx),
+            ureg_imm1f(ureg, 0.5f));
+   ureg_FLR(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X), ureg_src(idx));
+   ureg_MAD(ureg, ureg_writemask(coord, TGSI_WRITEMASK_X), ureg_src(idx),
+            ureg_imm1f(ureg, 1.0f / 32.0f), ureg_imm1f(ureg, 0.5f / 32.0f));
+   ureg_MOV(ureg, ureg_writemask(coord, TGSI_WRITEMASK_Y),
+            ureg_imm1f(ureg, 0.5f));
+   ureg_TEX(ureg, fill, TGSI_TEXTURE_2D, ureg_src(coord), samp[3]);
+   ureg_MUL(ureg, fill, ureg_src(fill), ureg_imm1f(ureg, 255.0f));
+   ureg_ADD(ureg, fill, ureg_src(fill), ureg_imm1f(ureg, 0.5f));
+   ureg_FLR(ureg, fill, ureg_src(fill));
+
+   /* out_byte = ushr_byte + sign * fill_byte (disjoint -> exact), packed /255. */
+   ureg_MAD(ureg, ushr, ureg_scalar(ureg_src(sign), TGSI_SWIZZLE_X),
+            ureg_src(fill), ureg_src(ushr));
+   ureg_MUL(ureg, out, ureg_src(ushr), ureg_imm1f(ureg, 1.0f / 255.0f));
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
 static bool
 r300vk_shift_variable_synthesize_shaders(struct r300vk_device *device,
                                          struct r300vk_pipeline *pl)
@@ -3338,6 +3440,25 @@ r300vk_shift_variable_synthesize_shaders(struct r300vk_device *device,
          return false;
       }
    }
+
+   /* ishr needs a third pass that adds the sign-extension fill onto the logical
+    * ushr result; ishl/ushr leave it NULL. */
+   if (pl->shift_variable.is_arithmetic) {
+      pl->shift_variable_signfill_fs =
+         r300vk_synthesize_shift_variable_signfill_fs(pipe);
+      if (!pl->shift_variable_signfill_fs) {
+         for (unsigned k = 0; k < 9; k++) {
+            pipe->delete_fs_state(pipe, pl->multilimb_fs[k]);
+            pl->multilimb_fs[k] = NULL;
+         }
+         pipe->delete_fs_state(pipe, pl->shift_variable_gather_fs);
+         pl->shift_variable_gather_fs = NULL;
+         pipe->delete_vs_state(pipe, pl->vs_cso);
+         pl->vs_cso = NULL;
+         return false;
+      }
+   }
+
    /* The dispatch validation prologue requires a non-NULL fs_cso; the gather and
     * column draws bind their own shaders explicitly. */
    pl->fs_cso = pl->multilimb_fs[0];
@@ -5147,6 +5268,8 @@ r300vk_DestroyPipeline(VkDevice _device,
          device->pipe->delete_fs_state(device->pipe, pl->multilimb_fs[k]);
    if (pl->shift_variable_gather_fs)
       device->pipe->delete_fs_state(device->pipe, pl->shift_variable_gather_fs);
+   if (pl->shift_variable_signfill_fs)
+      device->pipe->delete_fs_state(device->pipe, pl->shift_variable_signfill_fs);
    if (pl->blend_cso)
       device->pipe->delete_blend_state(device->pipe, pl->blend_cso);
    if (pl->rasterizer_cso)

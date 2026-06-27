@@ -114,6 +114,14 @@ struct r300vk_device {
     * r300vk_DestroyDevice. */
    struct pipe_resource      *shift_variable_lut;
    struct pipe_sampler_view  *shift_variable_lut_view;
+
+   /* Sign-extension fill lookup for the variable signed right shift (ishr):
+    * a 32x1 RGBA8 texture whose texel b holds the four little-endian bytes of
+    * 0xFFFFFFFF << (32-b) (the top b bits; b=0 -> 0).  ishr = ushr + sign(a) *
+    * fill[b], the two operands bit-disjoint so the per-byte add is exact.
+    * Created beside the 2^j lookup, freed in r300vk_DestroyDevice. */
+   struct pipe_resource      *shift_variable_fill_lut;
+   struct pipe_sampler_view  *shift_variable_fill_lut_view;
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)

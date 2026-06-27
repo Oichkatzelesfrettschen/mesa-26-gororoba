@@ -227,6 +227,8 @@ r300vk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
                                        device->blend_acc_reduction_blend_cso);
    pipe_sampler_view_reference(&device->shift_variable_lut_view, NULL);
    pipe_resource_reference(&device->shift_variable_lut, NULL);
+   pipe_sampler_view_reference(&device->shift_variable_fill_lut_view, NULL);
+   pipe_resource_reference(&device->shift_variable_fill_lut, NULL);
 
    /* Destroy in ownership order: context -> screen (which also destroys
     * the radeon_winsys backing store and closes the internal DRM fd). */
