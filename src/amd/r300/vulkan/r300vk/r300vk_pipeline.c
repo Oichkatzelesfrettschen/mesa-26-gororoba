@@ -2643,13 +2643,20 @@ r300vk_unary_transcendental_synthesize_shaders(struct r300vk_device *device,
 
 /* Binary-transcendental FS: 2 TEX + a componentwise non-commutative binary,
  * built in ureg like the binary_map FS (GENERIC[0] PERSPECTIVE, two samplers).
- * POW and RCP are scalar r300 ALU ops, so each of the four lanes is computed
- * separately: out.c = pow(a.c, b.c) for fpow, out.c = a.c * rcp(b.c) for fdiv.
- * Returns NULL for an op outside {fpow, fdiv}. */
+ * POW and RCP are scalar r300 ALU ops, so each lane is computed separately:
+ * out.c = pow(a.c, b.c) for fpow, out.c = a.c * rcp(b.c) for fdiv.  A scalar
+ * kernel (components == 1) computes lane 0 and broadcasts it -- the scalar
+ * carrier's X-lane gather reads channel 0.  Returns NULL for an op outside
+ * {fpow, fdiv}. */
 static void *
 r300vk_synthesize_binary_transcendental_fs(struct pipe_context *pipe,
-                                           uint16_t alu_op)
+                                           uint16_t alu_op, unsigned components)
 {
+   const bool is_pow = (nir_op)alu_op == nir_op_fpow;
+   const bool is_div = (nir_op)alu_op == nir_op_fdiv;
+   if (!is_pow && !is_div)
+      return NULL;
+
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
       return NULL;
@@ -2673,19 +2680,28 @@ r300vk_synthesize_binary_transcendental_fs(struct pipe_context *pipe,
    ureg_TEX(ureg, ureg_writemask(b, TGSI_WRITEMASK_XYZW),
             TGSI_TEXTURE_2D, tex, samp_b);
 
-   if ((nir_op)alu_op == nir_op_fdiv) {
+   if (components == 1) {
+      /* Scalar: compute lane 0 and broadcast across the export. */
+      if (is_div) {
+         struct ureg_dst rb = ureg_DECL_temporary(ureg);
+         ureg_RCP(ureg, ureg_writemask(rb, TGSI_WRITEMASK_X),
+                  ureg_scalar(ureg_src(b), TGSI_SWIZZLE_X));
+         ureg_MUL(ureg, out, ureg_scalar(ureg_src(a), TGSI_SWIZZLE_X),
+                  ureg_scalar(ureg_src(rb), TGSI_SWIZZLE_X));
+      } else {
+         ureg_POW(ureg, out, ureg_scalar(ureg_src(a), TGSI_SWIZZLE_X),
+                  ureg_scalar(ureg_src(b), TGSI_SWIZZLE_X));
+      }
+   } else if (is_div) {
       struct ureg_dst rb = ureg_DECL_temporary(ureg);
       for (unsigned c = 0; c < 4; c++)
          ureg_RCP(ureg, ureg_writemask(rb, 1u << c),
                   ureg_scalar(ureg_src(b), c));
       ureg_MUL(ureg, out, ureg_src(a), ureg_src(rb));
-   } else if ((nir_op)alu_op == nir_op_fpow) {
+   } else {
       for (unsigned c = 0; c < 4; c++)
          ureg_POW(ureg, ureg_writemask(out, 1u << c),
                   ureg_scalar(ureg_src(a), c), ureg_scalar(ureg_src(b), c));
-   } else {
-      ureg_destroy(ureg);
-      return NULL;
    }
    ureg_END(ureg);
    return ureg_create_shader_and_destroy(ureg, pipe);
@@ -2709,7 +2725,8 @@ r300vk_binary_transcendental_synthesize_shaders(struct r300vk_device *device,
       return false;
 
    pl->fs_cso = r300vk_synthesize_binary_transcendental_fs(
-      pipe, pl->binary_transcendental.alu_op);
+      pipe, pl->binary_transcendental.alu_op,
+      pl->binary_transcendental.value_components);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;

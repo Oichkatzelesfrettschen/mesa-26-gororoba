@@ -114,6 +114,61 @@ r300vk_identity_map_copy_rows(void *dst_map, unsigned dst_stride,
    }
 }
 
+/* Copy the rendered RT rows back into the output SSBO, resolving the three carrier
+ * shapes the dispatch-replay cores use.  Shared by the one-in and two-in cores so
+ * both gain the same readback semantics from one place:
+ *   buf_fmt == fmt        raw byte copy (the encode-into-RT patterns, where the
+ *                         RT format already is the output element format);
+ *   buf_fmt == R32_FLOAT  scalar carrier -- util_format_unpack_rgba always yields
+ *                         four floats per pixel, so unpack each row to a staging
+ *                         buffer and gather the X lane at the 4-byte stride;
+ *   otherwise             the vec4 float path -- unpack each row straight to the
+ *                         R32G32B32A32 output (buf_bs == 16).
+ * Returns false only when the scalar staging allocation fails. */
+static bool
+r300vk_idm_copy_rt_rows_to_buffer(void *out_bytes, const uint8_t *rt_map,
+                                  unsigned rt_stride, unsigned width,
+                                  unsigned height, uint64_t total_invocations,
+                                  enum pipe_format fmt, enum pipe_format buf_fmt,
+                                  unsigned buf_bs)
+{
+   if (buf_fmt == fmt) {
+      r300vk_identity_map_copy_rows(out_bytes, width * buf_bs, rt_map, rt_stride,
+                                    width, height, buf_bs, total_invocations);
+      return true;
+   }
+   if (buf_fmt == PIPE_FORMAT_R32_FLOAT) {
+      float *row_rgba = malloc((size_t)width * 4 * sizeof(float));
+      if (!row_rgba)
+         return false;
+      float *dst = out_bytes;
+      const uint8_t *src = rt_map;
+      uint64_t remaining = total_invocations;
+      for (unsigned r = 0; r < height && remaining; r++) {
+         unsigned n = remaining < width ? (unsigned)remaining : width;
+         util_format_unpack_rgba(fmt, row_rgba, src, n);
+         for (unsigned i = 0; i < n; i++)
+            dst[i] = row_rgba[4 * i];
+         dst += n;
+         src += rt_stride;
+         remaining -= n;
+      }
+      free(row_rgba);
+      return true;
+   }
+   uint8_t *dst = out_bytes;
+   const uint8_t *src = rt_map;
+   uint64_t remaining = total_invocations;
+   for (unsigned r = 0; r < height && remaining; r++) {
+      unsigned n = remaining < width ? (unsigned)remaining : width;
+      util_format_unpack_rgba(fmt, dst, src, n);
+      dst += (size_t)n * buf_bs;
+      src += rt_stride;
+      remaining -= n;
+   }
+   return true;
+}
+
 
 /* Forward declaration used by buffer-resolution helpers. */
 static const struct r300vk_descriptor *
@@ -1762,29 +1817,10 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
                                              buf_out->resource),
                &out_box, &out_xfer);
             if (out_bytes) {
-               if (buf_fmt == fmt) {
-                  r300vk_identity_map_copy_rows(out_bytes, width * buf_bs,
-                                                rt_map, rt_xfer->stride,
-                                                width, height, buf_bs,
-                                                total_invocations);
-               } else {
-                  /* util_format_unpack_rgba unpacks each RT row to RGBA32_FLOAT, so
-                   * output_buffer_fmt must be R32G32B32A32_FLOAT.  Clamp to
-                   * total_invocations so the trailing padding lanes of the last
-                   * raster row never overrun the output buffer. */
-                  uint8_t *dst = out_bytes;
-                  const uint8_t *src = rt_map;
-                  uint64_t remaining = total_invocations;
-                  for (unsigned r = 0; r < height && remaining; r++) {
-                     unsigned n = remaining < width ? (unsigned)remaining : width;
-                     util_format_unpack_rgba(fmt, dst, src, n);
-                     dst += (size_t)n * buf_bs;
-                     src += rt_xfer->stride;
-                     remaining -= n;
-                  }
-               }
+               copy_ok = r300vk_idm_copy_rt_rows_to_buffer(
+                  out_bytes, rt_map, rt_xfer->stride, width, height,
+                  total_invocations, fmt, buf_fmt, buf_bs);
                pipe->buffer_unmap(pipe, out_xfer);
-               copy_ok = true;
             }
          }
          pipe->texture_unmap(pipe, rt_xfer);
@@ -1855,9 +1891,10 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
 }
 
 /* Binary-transcendental dispatch replay: out[gid] = f(a[gid], b[gid]) for f in
- * {fpow, fdiv}, vec4 componentwise.  Reuses the two-in/one-out vec4 carrier the
- * binary_map float path uses -- R32G32B32A32 samplers -> FP16 RT -> RGBA32
- * unpack -- with pl->fs_cso holding the componentwise transcendental FS. */
+ * {fpow, fdiv}.  Two carriers selected by the detected element width: a scalar
+ * kernel rides the R32_FLOAT -> FP16 RT -> X-lane gather path, a vec4 kernel the
+ * R32G32B32A32 -> FP16 RT -> RGBA32 unpack path the binary_map float path uses.
+ * pl->fs_cso holds the matching componentwise transcendental FS. */
 bool
 r300vk_binary_transcendental_dispatch_replay(
    struct r300vk_device *device,
@@ -1868,20 +1905,23 @@ r300vk_binary_transcendental_dispatch_replay(
    if (!device || !device->screen)
       return false;
    if (!device->screen->is_format_supported(device->screen,
-          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
-          PIPE_BIND_SAMPLER_VIEW))
-      return false;
-   if (!device->screen->is_format_supported(device->screen,
           PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
+
+   const bool scalar = pl->binary_transcendental.value_components == 1;
+   const enum pipe_format in_fmt =
+      scalar ? PIPE_FORMAT_R32_FLOAT : PIPE_FORMAT_R32G32B32A32_FLOAT;
+   if (!device->screen->is_format_supported(device->screen, in_fmt,
+          PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW))
+      return false;
+
    return r300vk_two_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->binary_transcendental.input_a_ssbo_binding,
       pl->binary_transcendental.input_b_ssbo_binding,
       pl->binary_transcendental.output_ssbo_binding,
-      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
-      PIPE_FORMAT_R32G32B32A32_FLOAT);
+      in_fmt, PIPE_FORMAT_R16G16B16A16_FLOAT, in_fmt);
 }
 
 bool
@@ -2206,47 +2246,9 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
                                              buf_out->resource),
                &out_box, &out_xfer);
             if (out_bytes) {
-               if (buf_fmt == fmt) {
-                  r300vk_identity_map_copy_rows(out_bytes, width * buf_bs,
-                                                rt_map, rt_xfer->stride,
-                                                width, height, buf_bs,
-                                                total_invocations);
-                  copy_ok = true;
-               } else if (buf_fmt == PIPE_FORMAT_R32_FLOAT) {
-                  /* Scalar carrier: util_format_unpack_rgba always yields four
-                   * floats per pixel, so unpack each row to a staging buffer and
-                   * gather the X lane at the 4-byte output stride. */
-                  float *row_rgba = malloc((size_t)width * 4 * sizeof(float));
-                  if (row_rgba) {
-                     float *dst = out_bytes;
-                     const uint8_t *src = rt_map;
-                     uint64_t remaining = total_invocations;
-                     for (unsigned r = 0; r < height && remaining; r++) {
-                        unsigned n =
-                           remaining < width ? (unsigned)remaining : width;
-                        util_format_unpack_rgba(fmt, row_rgba, src, n);
-                        for (unsigned i = 0; i < n; i++)
-                           dst[i] = row_rgba[4 * i];
-                        dst += n;
-                        src += rt_xfer->stride;
-                        remaining -= n;
-                     }
-                     free(row_rgba);
-                     copy_ok = true;
-                  }
-               } else {
-                  uint8_t *dst = out_bytes;
-                  const uint8_t *src = rt_map;
-                  uint64_t remaining = total_invocations;
-                  for (unsigned r = 0; r < height && remaining; r++) {
-                     unsigned n = remaining < width ? (unsigned)remaining : width;
-                     util_format_unpack_rgba(fmt, dst, src, n);
-                     dst += (size_t)n * buf_bs;
-                     src += rt_xfer->stride;
-                     remaining -= n;
-                  }
-                  copy_ok = true;
-               }
+               copy_ok = r300vk_idm_copy_rt_rows_to_buffer(
+                  out_bytes, rt_map, rt_xfer->stride, width, height,
+                  total_invocations, fmt, buf_fmt, buf_bs);
                pipe->buffer_unmap(pipe, out_xfer);
             }
          }
