@@ -440,6 +440,8 @@ files_libgalliumvl = files(
   'vl/vl_h264_param_parser.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
+  'vl/vl_h264_deblock_cpu.c',
+  'vl/vl_h264_deblock_cpu.h',
   'vl/vl_h264_decoder.c',
   'vl/vl_h264_decoder.h',
   'vl/vl_h264_idct.c',
@@ -648,6 +650,20 @@ if with_tests
     ),
     args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
                        'h264_cb_idr_slice.bin')],
+    suite: 'gallium',
+  )
+
+  # CPU whole-frame in-loop deblock (vl_h264_deblock_cpu): the decode path's
+  # deblock after the inter back half and CPU intra pass, checked sample-for-
+  # sample against the shared integer reference (luma and both chroma planes).
+  test('vl-h264-deblock-cpu',
+    executable(
+      'vl_h264_deblock_cpu_test',
+      ['vl/vl_h264_deblock_cpu.c', 'vl/tests/vl_h264_deblock_cpu_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
     suite: 'gallium',
   )
 
