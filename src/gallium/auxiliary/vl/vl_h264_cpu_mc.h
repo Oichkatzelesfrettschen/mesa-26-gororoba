@@ -44,6 +44,29 @@ void vl_h264_cpu_luma_diag_fallback(const struct vl_h264_mb_contract *mbs,
                                     int ref_h, unsigned ref_stride,
                                     uint8_t *luma, unsigned stride);
 
+/* One reference picture's luma plane in RefPicList0 order. */
+struct vl_h264_ref_plane {
+   const uint8_t *pixels;
+   int w, h;
+   unsigned stride;
+};
+
+/*
+ * Reconstruct on the CPU every inter luma block whose back-half result is wrong:
+ * a block referencing a RefPicList0 entry past index 0 (the GPU back half samples
+ * only refs[0]) at any quarter-pel position, and a block referencing refs[0] at a
+ * diagonal-center position that needs the 2D half-pel j.  refs is RefPicList0
+ * (refs[0] is the back half's reference); each block's ref_l0 selects the entry.
+ * A block referencing refs[0] at a position the back half already produced is left
+ * untouched.
+ */
+void vl_h264_cpu_luma_mc_multiref(const struct vl_h264_mb_contract *mbs,
+                                  unsigned num_mbs, unsigned width_in_mbs,
+                                  unsigned height_in_mbs,
+                                  const struct vl_h264_ref_plane *refs,
+                                  unsigned num_refs, uint8_t *luma,
+                                  unsigned stride);
+
 #ifdef __cplusplus
 }
 #endif

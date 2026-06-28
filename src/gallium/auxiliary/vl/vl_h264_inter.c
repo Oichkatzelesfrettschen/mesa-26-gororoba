@@ -74,7 +74,7 @@ enum mvp_pref { PREF_NONE, PREF_A, PREF_B, PREF_C };
 static void
 predict_mv(const struct vl_h264_mb_decoder *dec, unsigned cur, unsigned mb_x,
            unsigned mb_y, int px, int py, int pw, enum mvp_pref pref,
-           int *mvp_x, int *mvp_y)
+           int ref_idx, int *mvp_x, int *mvp_y)
 {
    int ax, ay, aref, bx, by, bref, cx, cy, cref;
    bool av_a = neighbor_mv(dec, cur, mb_x, mb_y, px - 1, py, &ax, &ay, &aref);
@@ -94,15 +94,15 @@ predict_mv(const struct vl_h264_mb_decoder *dec, unsigned cur, unsigned mb_x,
    if (!av_b) { bx = by = 0; bref = -1; }
    if (!av_c) { cx = cy = 0; cref = -1; }
 
-   if (pref == PREF_A && aref == 0) { *mvp_x = ax; *mvp_y = ay; return; }
-   if (pref == PREF_B && bref == 0) { *mvp_x = bx; *mvp_y = by; return; }
-   if (pref == PREF_C && cref == 0) { *mvp_x = cx; *mvp_y = cy; return; }
+   if (pref == PREF_A && aref == ref_idx) { *mvp_x = ax; *mvp_y = ay; return; }
+   if (pref == PREF_B && bref == ref_idx) { *mvp_x = bx; *mvp_y = by; return; }
+   if (pref == PREF_C && cref == ref_idx) { *mvp_x = cx; *mvp_y = cy; return; }
 
    /* The unique matching reference, else the component-wise median (8-164/8-165). */
-   int match = (aref == 0) + (bref == 0) + (cref == 0);
+   int match = (aref == ref_idx) + (bref == ref_idx) + (cref == ref_idx);
    if (match == 1) {
-      *mvp_x = aref == 0 ? ax : bref == 0 ? bx : cx;
-      *mvp_y = aref == 0 ? ay : bref == 0 ? by : cy;
+      *mvp_x = aref == ref_idx ? ax : bref == ref_idx ? bx : cx;
+      *mvp_y = aref == ref_idx ? ay : bref == ref_idx ? by : cy;
    } else {
       *mvp_x = median3(ax, bx, cx);
       *mvp_y = median3(ay, by, cy);
@@ -115,18 +115,31 @@ predict_mv(const struct vl_h264_mb_decoder *dec, unsigned cur, unsigned mb_x,
 static void
 fill_part(struct vl_h264_mb_decoder *dec, unsigned cur,
           struct vl_h264_mb_contract *mb, int x0, int y0, int w, int h, int mvx,
-          int mvy)
+          int mvy, int ref_idx)
 {
    for (int y = y0; y < y0 + h; y++)
       for (int x = x0; x < x0 + w; x++) {
          int blk = y * 4 + x;
          mb->mv_l0[blk][0] = (int16_t)mvx;
          mb->mv_l0[blk][1] = (int16_t)mvy;
-         mb->ref_l0[blk] = 0;
+         mb->ref_l0[blk] = (int8_t)ref_idx;
          dec->mv_l0_frame[(cur * 16 + blk) * 2] = (int16_t)mvx;
          dec->mv_l0_frame[(cur * 16 + blk) * 2 + 1] = (int16_t)mvy;
-         dec->ref_l0_frame[cur * 16 + blk] = 0;
+         dec->ref_l0_frame[cur * 16 + blk] = (int8_t)ref_idx;
       }
+}
+
+/* ref_idx_l0 (sec 7.4.5.1): te(v) collapses to one inverted bit when only two
+ * references are active, ue(v) for more, and is not coded for one. */
+static int
+read_ref_idx_l0(struct vl_h264_mb_decoder *dec, struct vl_h264_reader *reader)
+{
+   unsigned active = dec->slice->num_ref_idx_l0_active;
+   if (active <= 1)
+      return 0;
+   if (active == 2)
+      return !vl_h264_u(reader, 1);
+   return (int)vl_h264_ue(reader);
 }
 
 /* One predicted partition: mv = mvp + mvd, filled into the contract. */
@@ -134,13 +147,13 @@ static void
 decode_partition(struct vl_h264_mb_decoder *dec, unsigned cur,
                  struct vl_h264_reader *reader, unsigned mb_x, unsigned mb_y,
                  struct vl_h264_mb_contract *mb, int x0, int y0, int w, int h,
-                 enum mvp_pref pref)
+                 enum mvp_pref pref, int ref_idx)
 {
    int mvp_x, mvp_y;
-   predict_mv(dec, cur, mb_x, mb_y, x0, y0, w, pref, &mvp_x, &mvp_y);
+   predict_mv(dec, cur, mb_x, mb_y, x0, y0, w, pref, ref_idx, &mvp_x, &mvp_y);
    int mvd_x = vl_h264_se(reader);
    int mvd_y = vl_h264_se(reader);
-   fill_part(dec, cur, mb, x0, y0, w, h, mvp_x + mvd_x, mvp_y + mvd_y);
+   fill_part(dec, cur, mb, x0, y0, w, h, mvp_x + mvd_x, mvp_y + mvd_y, ref_idx);
 }
 
 /* The four P sub-macroblock types (Table 7-17) as their sub-partition rectangles
@@ -201,8 +214,8 @@ vl_h264_decode_p_mb(struct vl_h264_mb_decoder *dec, struct vl_h264_reader *reade
       bool av_b = neighbor_mv(dec, cur, mb_x, mb_y, 0, -1, &bx, &by, &bref);
       if (av_a && av_b && !(aref == 0 && ax == 0 && ay == 0) &&
           !(bref == 0 && bx == 0 && by == 0))
-         predict_mv(dec, cur, mb_x, mb_y, 0, 0, 4, PREF_NONE, &mvx, &mvy);
-      fill_part(dec, cur, mb, 0, 0, 4, 4, mvx, mvy);
+         predict_mv(dec, cur, mb_x, mb_y, 0, 0, 4, PREF_NONE, 0, &mvx, &mvy);
+      fill_part(dec, cur, mb, 0, 0, 4, 4, mvx, mvy, 0);
       mb->cbp_luma = 0;
       mb->cbp_chroma = 0;
       /* A skipped macroblock has no mb_qp_delta and inherits the running QP.  The
@@ -233,18 +246,26 @@ vl_h264_decode_p_mb(struct vl_h264_mb_decoder *dec, struct vl_h264_reader *reade
       return VL_H264_P_MB_INTRA;
    }
 
+   /* mb_pred (sec 7.3.5.1) codes ref_idx_l0 for every partition before any
+    * mvd_l0, so parse the reference indices first, then the motion vectors. */
    switch (mb_type) {
-   case 0: /* P_L0_16x16 */
-      decode_partition(dec, cur, reader, mb_x, mb_y, mb, 0, 0, 4, 4, PREF_NONE);
+   case 0: { /* P_L0_16x16 */
+      int r = read_ref_idx_l0(dec, reader);
+      decode_partition(dec, cur, reader, mb_x, mb_y, mb, 0, 0, 4, 4, PREF_NONE, r);
       break;
-   case 1: /* P_L0_L0_16x8: the top takes B, the bottom A (8-156, 8-157) */
-      decode_partition(dec, cur, reader, mb_x, mb_y, mb, 0, 0, 4, 2, PREF_B);
-      decode_partition(dec, cur, reader, mb_x, mb_y, mb, 0, 2, 4, 2, PREF_A);
+   }
+   case 1: { /* P_L0_L0_16x8: the top takes B, the bottom A (8-156, 8-157) */
+      int r0 = read_ref_idx_l0(dec, reader), r1 = read_ref_idx_l0(dec, reader);
+      decode_partition(dec, cur, reader, mb_x, mb_y, mb, 0, 0, 4, 2, PREF_B, r0);
+      decode_partition(dec, cur, reader, mb_x, mb_y, mb, 0, 2, 4, 2, PREF_A, r1);
       break;
-   case 2: /* P_L0_L0_8x16: the left takes A, the right C (8-158, 8-159) */
-      decode_partition(dec, cur, reader, mb_x, mb_y, mb, 0, 0, 2, 4, PREF_A);
-      decode_partition(dec, cur, reader, mb_x, mb_y, mb, 2, 0, 2, 4, PREF_C);
+   }
+   case 2: { /* P_L0_L0_8x16: the left takes A, the right C (8-158, 8-159) */
+      int r0 = read_ref_idx_l0(dec, reader), r1 = read_ref_idx_l0(dec, reader);
+      decode_partition(dec, cur, reader, mb_x, mb_y, mb, 0, 0, 2, 4, PREF_A, r0);
+      decode_partition(dec, cur, reader, mb_x, mb_y, mb, 2, 0, 2, 4, PREF_C, r1);
       break;
+   }
    default: { /* 3: P_8x8, 4: P_8x8ref0 */
       unsigned sub[4];
       for (int q = 0; q < 4; q++) {
@@ -252,13 +273,18 @@ vl_h264_decode_p_mb(struct vl_h264_mb_decoder *dec, struct vl_h264_reader *reade
          if (sub[q] > 3)
             return VL_H264_P_MB_ERROR;
       }
-      /* ref_idx_l0 is not coded for a single reference. */
+      /* sub_mb_pred (sec 7.3.5.2) codes one ref_idx_l0 per 8x8 sub-macroblock
+       * between sub_mb_type and the mvds; P_8x8ref0 (mb_type 4) leaves them 0. */
+      int ref[4] = { 0, 0, 0, 0 };
+      if (mb_type != 4)
+         for (int q = 0; q < 4; q++)
+            ref[q] = read_ref_idx_l0(dec, reader);
       for (int q = 0; q < 4; q++) {
          int qx = (q & 1) * 2, qy = (q >> 1) * 2;
          for (int s = 0; s < sub_part_count[sub[q]]; s++) {
             const struct sub_part *sp = &sub_parts[sub[q]][s];
             decode_partition(dec, cur, reader, mb_x, mb_y, mb, qx + sp->x,
-                             qy + sp->y, sp->w, sp->h, PREF_NONE);
+                             qy + sp->y, sp->w, sp->h, PREF_NONE, ref[q]);
          }
       }
       break;
