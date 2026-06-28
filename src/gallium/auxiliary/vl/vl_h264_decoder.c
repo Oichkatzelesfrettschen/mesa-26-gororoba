@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "util/macros.h"
@@ -178,7 +179,8 @@ reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
       /* The plane now holds the whole frame -- inter macroblocks from the back
        * half, intra from the pass above -- so the in-loop deblock runs once over
        * all luma edges. */
-      vl_h264_deblock_cpu(&dec->frame, w, h, y, yx->stride, NULL, NULL, 0);
+      if (!getenv("R300_H264_NO_DEBLOCK"))
+         vl_h264_deblock_cpu(&dec->frame, w, h, y, yx->stride, NULL, NULL, 0);
       pipe_texture_unmap(ctx, yx);
    }
 
@@ -199,7 +201,8 @@ reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
       if (cb && cr && cbx->stride == crx->stride) {
          vl_h264_intra_reconstruct_chroma(dec->frame.macroblocks, num_mbs, w, h,
                                           cb, cr, cbx->stride);
-         vl_h264_deblock_cpu(&dec->frame, w, h, NULL, 0, cb, cr, cbx->stride);
+         if (!getenv("R300_H264_NO_DEBLOCK"))
+            vl_h264_deblock_cpu(&dec->frame, w, h, NULL, 0, cb, cr, cbx->stride);
       }
       if (cb)
          pipe_texture_unmap(ctx, cbx);
@@ -224,7 +227,8 @@ reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
          }
       vl_h264_intra_reconstruct_chroma(dec->frame.macroblocks, num_mbs, w, h, cb,
                                        cr, chroma_w);
-      vl_h264_deblock_cpu(&dec->frame, w, h, NULL, 0, cb, cr, chroma_w);
+      if (!getenv("R300_H264_NO_DEBLOCK"))
+         vl_h264_deblock_cpu(&dec->frame, w, h, NULL, 0, cb, cr, chroma_w);
       for (unsigned r = 0; r < chroma_h; r++)
          for (unsigned col = 0; col < chroma_w; col++) {
             c[r * cx->stride + col * 2] = cb[r * chroma_w + col];
