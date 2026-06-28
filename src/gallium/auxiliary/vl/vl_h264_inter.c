@@ -205,6 +205,15 @@ vl_h264_decode_p_mb(struct vl_h264_mb_decoder *dec, struct vl_h264_reader *reade
       fill_part(dec, cur, mb, 0, 0, 4, 4, mvx, mvy);
       mb->cbp_luma = 0;
       mb->cbp_chroma = 0;
+      /* A skipped macroblock has no mb_qp_delta and inherits the running QP.  The
+       * deblock reads qp_y/qp_cb/qp_cr per macroblock for its alpha/beta/tc0
+       * thresholds, so without this the skip leaves them at zero and the edges it
+       * borders are filtered at the wrong QP index. */
+      mb->qp_y = dec->qp_y;
+      mb->qp_cb = vl_h264_chroma_qp_from_luma(dec->qp_y,
+                                              dec->pps->chroma_qp_index_offset);
+      mb->qp_cr = vl_h264_chroma_qp_from_luma(dec->qp_y,
+                                              dec->pps->second_chroma_qp_index_offset);
       mark_no_coeffs(dec, mb_x, mb_y);
       return VL_H264_P_MB_SKIP;
    }
