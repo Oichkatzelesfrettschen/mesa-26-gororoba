@@ -3,6 +3,9 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <stdio.h>
+#include <stdlib.h>
+
 #include "vl_h264_cpu_mc.h"
 
 #include "vl_h264_intra_reconstruct.h"
@@ -148,6 +151,17 @@ vl_h264_cpu_luma_mc_multiref(const struct vl_h264_mb_contract *mbs,
    (void) height_in_mbs;
    if (num_refs == 0)
       return;
+   if (getenv("R300_H264_REF_DUMP")) {
+      int hi = 0, n_hi = 0, n_inter = 0;
+      for (unsigned a = 0; a < num_mbs; a++)
+         for (int blk = 0; blk < 16; blk++) {
+            int ri = mbs[a].ref_l0[blk];
+            if (ri >= 0) n_inter++;
+            if (ri > 0) { n_hi++; if (ri > hi) hi = ri; }
+         }
+      fprintf(stderr, "h264ref num_refs=%u inter_blocks=%d ref_idx>0_blocks=%d "
+              "max_ref_idx=%d\n", num_refs, n_inter, n_hi, hi);
+   }
    for (unsigned a = 0; a < num_mbs; a++) {
       const struct vl_h264_mb_contract *mb = &mbs[a];
       if (mb->ref_l0[0] < 0)
