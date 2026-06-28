@@ -175,9 +175,11 @@ vl_h264_cpu_luma_mc_multiref(const struct vl_h264_mb_contract *mbs,
             if (ref_idx < 0)
                continue; /* intra block in an inter macroblock */
             int mvx = mb->mv_l0[blk][0], mvy = mb->mv_l0[blk][1];
-            /* The back half already produced refs[0] at the non-j positions. */
-            if (ref_idx == 0 && !vl_h264_luma_mv_needs_j(mvx, mvy))
-               continue;
+            /* Recompute every inter luma block exactly on the CPU.  The FP24 back
+             * half is within a least-significant bit on most positions, but H.264
+             * reconstruction must be bit-exact or the residual compounds down the
+             * prediction chain; predict_luma is the integer-exact six-tap for all
+             * sixteen quarter-pel positions, so it overwrites the back half. */
             /* A reference past the built list cannot be resolved (an unsupported
              * reordering or a frame-number gap); leave the back half's block. */
             if ((unsigned)ref_idx >= num_refs)
