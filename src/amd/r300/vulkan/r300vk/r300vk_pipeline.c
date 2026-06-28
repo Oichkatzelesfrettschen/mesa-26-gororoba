@@ -1945,6 +1945,44 @@ r300vk_graphics_pipeline_create_result(VkResult result)
    }
 }
 
+/* Build a minimal fragment program that writes a constant colour.  A graphics
+ * pipeline can omit the fragment stage (a depth- or stencil-only draw produces
+ * no colour), but the draw still rasterizes: the depth and stencil tests are ROP
+ * functions that run without a fragment program.  r300_update_rs_block, however,
+ * dereferences r300_fs()->shader unconditionally, so the SW-TCL draw needs a
+ * bound fragment program -- and r300vk_replay_draw skips any draw whose fs_cso is
+ * NULL, which silently drops the depth/stencil work (the
+ * dEQP-VK.pipeline.monolithic.stencil.nocolor.* cluster renders nothing).  Binding
+ * this no-op fragment program lets the rasterizer execute the depth/stencil ops;
+ * with no colour attachment the colour write is masked. */
+static void *
+r300vk_synthesize_noop_fs(struct pipe_context *pipe)
+{
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_noop_fs");
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, nir_imm_vec4(&b, 0.0f, 0.0f, 0.0f, 0.0f), 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   nir_shader *fs_nir = b.shader;
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, fs_nir, true);
+
+   struct pipe_shader_state state = { .type   = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = fs_nir };
+   void *fs_cso = pipe->create_fs_state(pipe, &state);
+   if (!fs_cso)
+      ralloc_free(fs_nir);
+   return fs_cso;
+}
+
 static VkResult
 r300vk_create_one_pipeline(struct r300vk_device *device,
                              const VkGraphicsPipelineCreateInfo *info,
@@ -2027,6 +2065,23 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
                                          info->pVertexInputState);
       if (r != VK_SUCCESS)
          FAIL_PIPELINE(r);
+   }
+
+   /* A pipeline with no fragment stage still rasterizes depth/stencil, but
+    * r300vk_replay_draw skips a draw whose fs_cso is NULL (r300_update_rs_block
+    * would otherwise NULL-deref r300_fs()->shader).  Supply a no-op fragment
+    * program so the depth/stencil ops run.  A pipeline that statically discards
+    * rasterization produces nothing, so leave its fs_cso NULL and let the replay
+    * skip it. */
+   if (!pl->fs_cso) {
+      const VkPipelineRasterizationStateCreateInfo *rs =
+         info->pRasterizationState;
+      if (!(rs && rs->rasterizerDiscardEnable)) {
+         pl->fs_cso = r300vk_synthesize_noop_fs(device->pipe);
+         if (!pl->fs_cso)
+            FAIL_PIPELINE(vk_error(device, VK_ERROR_INITIALIZATION_FAILED));
+         pl->fs_hw_valid = r300_fs_get_hw_code(pl->fs_cso, &pl->fs_hw);
+      }
    }
 
    /* r300 has separate vertex and fragment constant files, so a single shader
