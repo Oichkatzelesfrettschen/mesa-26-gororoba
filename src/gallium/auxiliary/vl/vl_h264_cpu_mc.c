@@ -183,3 +183,89 @@ vl_h264_cpu_luma_mc_multiref(const struct vl_h264_mb_contract *mbs,
          }
    }
 }
+
+/* The eighth-pel chroma bilinear prediction for one sample (ITU-T H.264 sec
+ * 8.4.2.2.2).  The luma vector doubles as the chroma vector: in 4:2:0 a
+ * quarter-luma-sample step is an eighth-chroma-sample step, so mvx and mvy index
+ * the chroma plane directly in eighth-sample units -- the integer part is the
+ * arithmetic-shift floor, the fraction the low three bits.  The four weights sum
+ * to 64 and the sum rounds with +32 before the >>6, matching the FP24 back
+ * half's bilinear blend in vl_h264_chroma.c. */
+static int
+predict_chroma(const uint8_t *ref, unsigned stride, int rw, int rh, int px,
+               int py, int mvx, int mvy)
+{
+   int xi = px + (mvx >> 3), yi = py + (mvy >> 3);
+   int xf = mvx & 7, yf = mvy & 7;
+   int a = ref_at(ref, stride, rw, rh, xi, yi);
+   int b = ref_at(ref, stride, rw, rh, xi + 1, yi);
+   int c = ref_at(ref, stride, rw, rh, xi, yi + 1);
+   int d = ref_at(ref, stride, rw, rh, xi + 1, yi + 1);
+   return ((8 - xf) * (8 - yf) * a + xf * (8 - yf) * b +
+           (8 - xf) * yf * c + xf * yf * d + 32) >> 6;
+}
+
+void
+vl_h264_cpu_chroma_mc_multiref(const struct vl_h264_mb_contract *mbs,
+                               unsigned num_mbs, unsigned width_in_mbs,
+                               unsigned height_in_mbs,
+                               const struct vl_h264_ref_plane *refs_cb,
+                               const struct vl_h264_ref_plane *refs_cr,
+                               unsigned num_refs, uint8_t *cb, uint8_t *cr,
+                               unsigned stride)
+{
+   (void) height_in_mbs;
+   if (num_refs == 0)
+      return;
+   uint8_t *plane[2] = { cb, cr };
+   const struct vl_h264_ref_plane *refs[2] = { refs_cb, refs_cr };
+
+   for (unsigned a = 0; a < num_mbs; a++) {
+      const struct vl_h264_mb_contract *mb = &mbs[a];
+      if (mb->ref_l0[0] < 0)
+         continue; /* intra macroblock: the CPU intra pass owns its chroma */
+      unsigned mb_x = a % width_in_mbs, mb_y = a / width_in_mbs;
+
+      /* Each 4x4 chroma block co-locates with an 8x8 luma region -- a 2x2 group
+       * of luma 4x4 blocks, each with its own vector and reference.  The back
+       * half built every chroma sample from refs[0]; recompute a block only when
+       * one of its luma blocks selects a later reference, and only when every
+       * selected reference is in the built list. */
+      for (unsigned blk = 0; blk < 4; blk++) {
+         int qx = (int)(blk % 2) * 4, qy = (int)(blk / 2) * 4;
+         bool needs_fix = false, resolvable = true;
+         for (int sy = 0; sy < 2; sy++)
+            for (int sx = 0; sx < 2; sx++) {
+               int lblk = (qy / 2 + sy) * 4 + (qx / 2 + sx);
+               int ri = mb->ref_l0[lblk];
+               if (ri > 0)
+                  needs_fix = true;
+               if (ri < 0 || (unsigned) ri >= num_refs)
+                  resolvable = false;
+            }
+         if (!needs_fix || !resolvable)
+            continue;
+
+         for (unsigned comp = 0; comp < 2; comp++) {
+            int16_t res[16];
+            vl_h264_idct4(mb->coeff4x4[VL_H264_LUMA_4X4_BLOCKS + comp * 4 + blk],
+                          res);
+            for (int y = 0; y < 4; y++)
+               for (int x = 0; x < 4; x++) {
+                  int cx = qx + x, cy = qy + y;       /* chroma sample in the MB */
+                  int lblk = (cy / 2) * 4 + (cx / 2); /* its luma 4x4 block */
+                  int ref_idx = mb->ref_l0[lblk];
+                  const struct vl_h264_ref_plane *r = &refs[comp][ref_idx];
+                  if (!r->pixels)
+                     continue; /* unmapped reference: leave the back half's sample */
+                  int px = (int) mb_x * 8 + cx, py = (int) mb_y * 8 + cy;
+                  int pred = predict_chroma(r->pixels, r->stride, r->w, r->h, px,
+                                            py, mb->mv_l0[lblk][0],
+                                            mb->mv_l0[lblk][1]);
+                  plane[comp][py * (int) stride + px] =
+                     (uint8_t) clip1(pred + res[y * 4 + x]);
+               }
+         }
+      }
+   }
+}

@@ -67,6 +67,23 @@ void vl_h264_cpu_luma_mc_multiref(const struct vl_h264_mb_contract *mbs,
                                   unsigned num_refs, uint8_t *luma,
                                   unsigned stride);
 
+/*
+ * Reconstruct on the CPU every inter chroma block the back half built from the
+ * wrong reference: a 4x4 chroma block one of whose co-located luma blocks selects
+ * a RefPicList0 entry past index 0 (the back half samples only refs[0]).  refs_cb
+ * and refs_cr are the Cb and Cr planes of RefPicList0 in list order; cb and cr are
+ * the target component planes (stride bytes per row).  Prediction is the eighth-pel
+ * bilinear (sec 8.4.2.2.2) plus the block residual and Clip1.  A block whose luma
+ * blocks all reference refs[0] is left as the back half produced it.
+ */
+void vl_h264_cpu_chroma_mc_multiref(const struct vl_h264_mb_contract *mbs,
+                                    unsigned num_mbs, unsigned width_in_mbs,
+                                    unsigned height_in_mbs,
+                                    const struct vl_h264_ref_plane *refs_cb,
+                                    const struct vl_h264_ref_plane *refs_cr,
+                                    unsigned num_refs, uint8_t *cb, uint8_t *cr,
+                                    unsigned stride);
+
 #ifdef __cplusplus
 }
 #endif

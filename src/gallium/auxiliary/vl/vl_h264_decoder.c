@@ -156,6 +156,130 @@ luma_mc_multiref(struct vl_h264_decoder *dec, struct pipe_surface *surfaces,
          pipe_texture_unmap(ctx, rx[i]);
 }
 
+/* Map one chroma component plane of every RefPicList0 entry past index 0 into a
+ * ref_plane array.  plane is 1 for Cb (sampler view 1) and 2 for Cr (sampler view
+ * 2 of planar Y8_U8_V8_420); on a packed NV12 reference (no third view) the
+ * interleaved view is de-interleaved into scratch instead, returned in
+ * scratch[i].  Entry 0 is skipped: the back half already produced it. */
+static void
+map_ref_chroma(struct pipe_context *ctx, struct pipe_video_buffer **list0,
+               unsigned n0, unsigned plane, unsigned chroma_w, unsigned chroma_h,
+               struct vl_h264_ref_plane *refs, struct pipe_transfer **rx,
+               uint8_t **scratch)
+{
+   for (unsigned i = 1; i < n0 && i < 16; i++) {
+      struct pipe_sampler_view **pv = list0[i]->get_sampler_view_planes(list0[i]);
+      if (!pv)
+         continue;
+      if (pv[2] && pv[2]->texture) {
+         struct pipe_resource *tex = pv[plane] ? pv[plane]->texture : NULL;
+         if (!tex)
+            continue;
+         refs[i].pixels = pipe_texture_map(ctx, tex, 0, 0, PIPE_MAP_READ, 0, 0,
+                                           tex->width0, tex->height0, &rx[i]);
+         refs[i].w = tex->width0;
+         refs[i].h = tex->height0;
+         refs[i].stride = rx[i] ? rx[i]->stride : 0;
+      } else if (pv[1] && pv[1]->texture) {
+         /* Packed NV12: de-interleave the requested component into scratch. */
+         struct pipe_resource *tex = pv[1]->texture;
+         struct pipe_transfer *itx;
+         uint8_t *packed = pipe_texture_map(ctx, tex, 0, 0, PIPE_MAP_READ, 0, 0,
+                                            tex->width0, tex->height0, &itx);
+         if (!packed)
+            continue;
+         scratch[i] = MALLOC(chroma_w * chroma_h);
+         if (scratch[i]) {
+            for (unsigned r = 0; r < chroma_h; r++)
+               for (unsigned col = 0; col < chroma_w; col++)
+                  scratch[i][r * chroma_w + col] =
+                     packed[r * itx->stride + col * 2 + (plane - 1)];
+            refs[i].pixels = scratch[i];
+            refs[i].w = chroma_w;
+            refs[i].h = chroma_h;
+            refs[i].stride = chroma_w;
+         }
+         pipe_texture_unmap(ctx, itx);
+      }
+   }
+}
+
+/* Fix up on the CPU the inter chroma blocks the back half built from RefPicList0[0]
+ * but which reference a later entry.  Mirrors luma_mc_multiref for the Cb and Cr
+ * planes: maps each reference's chroma, recomputes the affected blocks, and writes
+ * them back before the intra pass and the chroma deblock read the corrected
+ * neighbors.  Handles the planar Y8_U8_V8_420 target directly and a packed NV12
+ * target by de-interleaving into scratch, like reconstruct_intra. */
+static void
+chroma_mc_multiref(struct vl_h264_decoder *dec, struct pipe_surface *surfaces,
+                   struct pipe_video_buffer **list0, unsigned n0)
+{
+   struct pipe_context *ctx = dec->context;
+   unsigned w = dec->width_in_mbs, h = dec->height_in_mbs;
+   unsigned chroma_w = w * 8, chroma_h = h * 8;
+   if (n0 < 2)
+      return; /* only RefPicList0[0] is in use; the back half covered it */
+
+   struct vl_h264_ref_plane rcb[16] = {0}, rcr[16] = {0};
+   struct pipe_transfer *rxb[16] = {0}, *rxr[16] = {0};
+   uint8_t *scb[16] = {0}, *scr[16] = {0};
+   map_ref_chroma(ctx, list0, n0, 1, chroma_w, chroma_h, rcb, rxb, scb);
+   map_ref_chroma(ctx, list0, n0, 2, chroma_w, chroma_h, rcr, rxr, scr);
+
+   if (surfaces[2].texture) {
+      struct pipe_transfer *cbx, *crx;
+      uint8_t *cb = pipe_texture_map(ctx, surfaces[1].texture, 0, 0,
+                                     PIPE_MAP_READ_WRITE, 0, 0, chroma_w,
+                                     chroma_h, &cbx);
+      uint8_t *cr = pipe_texture_map(ctx, surfaces[2].texture, 0, 0,
+                                     PIPE_MAP_READ_WRITE, 0, 0, chroma_w,
+                                     chroma_h, &crx);
+      if (cb && cr && cbx->stride == crx->stride)
+         vl_h264_cpu_chroma_mc_multiref(dec->frame.macroblocks,
+                                        dec->frame.num_macroblocks, w, h, rcb, rcr,
+                                        n0, cb, cr, cbx->stride);
+      if (cb)
+         pipe_texture_unmap(ctx, cbx);
+      if (cr)
+         pipe_texture_unmap(ctx, crx);
+   } else if (surfaces[1].texture) {
+      struct pipe_transfer *cx;
+      uint8_t *c = pipe_texture_map(ctx, surfaces[1].texture, 0, 0,
+                                    PIPE_MAP_READ_WRITE, 0, 0, chroma_w, chroma_h,
+                                    &cx);
+      uint8_t *cb = c ? MALLOC(chroma_w * chroma_h) : NULL;
+      uint8_t *cr = c ? MALLOC(chroma_w * chroma_h) : NULL;
+      if (c && cb && cr) {
+         for (unsigned r = 0; r < chroma_h; r++)
+            for (unsigned col = 0; col < chroma_w; col++) {
+               cb[r * chroma_w + col] = c[r * cx->stride + col * 2];
+               cr[r * chroma_w + col] = c[r * cx->stride + col * 2 + 1];
+            }
+         vl_h264_cpu_chroma_mc_multiref(dec->frame.macroblocks,
+                                        dec->frame.num_macroblocks, w, h, rcb, rcr,
+                                        n0, cb, cr, chroma_w);
+         for (unsigned r = 0; r < chroma_h; r++)
+            for (unsigned col = 0; col < chroma_w; col++) {
+               c[r * cx->stride + col * 2] = cb[r * chroma_w + col];
+               c[r * cx->stride + col * 2 + 1] = cr[r * chroma_w + col];
+            }
+      }
+      FREE(cb);
+      FREE(cr);
+      if (c)
+         pipe_texture_unmap(ctx, cx);
+   }
+
+   for (unsigned i = 1; i < n0 && i < 16; i++) {
+      if (rxb[i])
+         pipe_texture_unmap(ctx, rxb[i]);
+      if (rxr[i])
+         pipe_texture_unmap(ctx, rxr[i]);
+      FREE(scb[i]);
+      FREE(scr[i]);
+   }
+}
+
 /* Reconstruct the intra macroblocks on the CPU into the target planes (sec 8.3).
  * Every macroblock of an I frame is intra; the inter macroblocks of a P frame
  * carry a reference index of 0 and are skipped, so this fills the intra ones,
@@ -297,6 +421,11 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
        * index 0 (the back half sampled only list0[0]).  This runs before the intra
        * pass and the deblock read the corrected neighbors. */
       luma_mc_multiref(dec, target_surfaces, list0, n0);
+
+      /* The chroma emit above produced every block from RefPicList0[0]; correct
+       * the blocks that reference a later entry on the CPU, before the intra pass
+       * and the chroma deblock read them. */
+      chroma_mc_multiref(dec, target_surfaces, list0, n0);
    }
 
    /* The intra macroblocks reconstruct on the CPU after the back half, so they
