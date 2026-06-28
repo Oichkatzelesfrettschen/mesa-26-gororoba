@@ -191,4 +191,10 @@ extern bool r300_nir_lower_vs_system_values_to_inputs(nir_shader *s,
                                                       int vertex_id_slot,
                                                       int instance_id_slot);
 
+/* Rewrite VS gl_VertexIndex/gl_InstanceIndex to the native load_vertex_id/
+ * load_instance_id intrinsics the SW draw module supplies, consuming no vertex
+ * element.  Correct for non-indexed draws (any firstVertex) and base-zero
+ * instancing; the synthetic-input path remains the base-inclusive default. */
+extern bool r300_nir_lower_vs_system_values_to_intrinsics(nir_shader *s);
+
 #endif /* R300_NIR_H */
