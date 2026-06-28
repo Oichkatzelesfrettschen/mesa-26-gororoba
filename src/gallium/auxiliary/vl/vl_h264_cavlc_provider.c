@@ -165,8 +165,15 @@ vl_h264_cavlc_decode_slice(struct vl_h264_vld_provider *provider,
       }
    }
 
-   if (ok)
+   if (ok) {
       out->slice_type = sh.slice_type;
+      /* Carry this slice's RefPicList0 reordering to end_frame.  A Constrained
+       * Baseline frame is a single slice, so the slice's commands are the
+       * frame's; build_ref_pic_list0 reconstructs the reordered list. */
+      out->num_reorder_l0 = sh.num_reorder_l0;
+      memcpy(out->reorder_l0, sh.reorder_l0,
+             sh.num_reorder_l0 * sizeof(sh.reorder_l0[0]));
+   }
    vl_h264_mb_decoder_fini(&dec);
    vl_h264_reader_fini(&reader);
    return ok;

@@ -121,6 +121,16 @@ struct vl_h264_mb_contract {
    int8_t slice_beta_offset_div2;
 };
 
+/* A ref_pic_list_modification command (sec 7.3.3.1): modification_of_pic_nums_idc
+ * 0 and 1 reorder short-term references by an abs_diff_pic_num, 2 selects a
+ * long-term reference by long_term_pic_num.  value carries
+ * abs_diff_pic_num_minus1 (idc 0/1) or long_term_pic_num (idc 2). */
+#define VL_H264_MAX_REORDER_L0 32
+struct vl_h264_ref_reorder {
+   uint8_t idc;
+   uint32_t value;
+};
+
 /* One slice's worth of macroblocks plus the provider/contract identity the back
  * half validates before consuming the records. */
 struct vl_h264_slice_contract {
@@ -132,6 +142,13 @@ struct vl_h264_slice_contract {
    int32_t coeff_contract;   /* enum vl_h264_coeff_contract */
    uint32_t num_macroblocks;
    struct vl_h264_mb_contract *macroblocks;
+
+   /* RefPicList0 reordering for the frame's reconstructed slice (sec 8.2.4.3.1).
+    * Zero when ref_pic_list_modification_flag_l0 is 0.  Single-slice frames carry
+    * one slice's commands; the back half and the multiref fixups read the
+    * reordered list0 in end_frame. */
+   uint32_t num_reorder_l0;
+   struct vl_h264_ref_reorder reorder_l0[VL_H264_MAX_REORDER_L0];
 };
 
 #ifdef __cplusplus

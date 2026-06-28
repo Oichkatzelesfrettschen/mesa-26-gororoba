@@ -79,14 +79,27 @@ vl_h264_decode_bitstream(struct pipe_video_codec *codec,
                                   &dec->frame);
 }
 
-/* Build RefPicList0 for a P slice (ITU-T H.264 sec 8.2.4.2.1): the short-term
- * references ordered by descending frame_num, then the long-term references.
- * The bitstream's ref_pic_list_modification is consumed by the entropy provider
- * and not reconstructed here, so an explicitly reordered list falls back to this
- * default order, and a frame_num wrap (long sequence) is left to the descending
- * sort.  Returns the list length; list[0] is the back half's reference. */
+/* PicNum of a short-term reference for frame decoding (ITU-T H.264 sec 8.2.4.1):
+ * FrameNumWrap, the stored frame_num pulled back by MaxFrameNum once it is ahead
+ * of the current frame_num. */
+static int
+short_term_pic_num(const struct pipe_h264_picture_desc *h264, unsigned r,
+                   int curr_frame_num, int max_frame_num)
+{
+   int fn = (int) h264->frame_num_list[r];
+   return (fn > curr_frame_num) ? fn - max_frame_num : fn;
+}
+
+/* Build RefPicList0 for a P slice (ITU-T H.264 sec 8.2.4.2.1): short-term
+ * references ordered by descending frame_num, then long-term, then the slice's
+ * ref_pic_list_modification reordering (sec 8.2.4.3.1) when frame carries it.
+ * With no reordering the result is the plain descending-frame_num list.  list[0]
+ * is the back half's reference; the multiref fixups index list[ref_idx].  Returns
+ * the list length. */
 static unsigned
 build_ref_pic_list0(const struct pipe_h264_picture_desc *h264,
+                    const struct vl_h264_slice_contract *frame,
+                    const struct pipe_h264_sps *sps,
                     struct pipe_video_buffer **list)
 {
    unsigned st[16], lt[16], nst = 0, nlt = 0;
@@ -108,11 +121,62 @@ build_ref_pic_list0(const struct pipe_h264_picture_desc *h264,
       }
       st[j + 1] = key;
    }
-   unsigned n = 0;
-   for (unsigned i = 0; i < nst; i++)
-      list[n++] = h264->ref[st[i]];
-   for (unsigned i = 0; i < nlt; i++)
-      list[n++] = h264->ref[lt[i]];
+   /* The default list as indices into h264->ref[]: short-term then long-term. */
+   unsigned idx[VL_H264_MAX_REORDER_L0 + 1], n = 0;
+   for (unsigned i = 0; i < nst && n + 1 < ARRAY_SIZE(idx); i++)
+      idx[n++] = st[i];
+   for (unsigned i = 0; i < nlt && n + 1 < ARRAY_SIZE(idx); i++)
+      idx[n++] = lt[i];
+
+   /* Reconstruct the reordering (sec 8.2.4.3.1).  Only the short-term commands
+    * (modification_of_pic_nums_idc 0 and 1) are applied; the shift needs a list of
+    * at least num_ref_idx_l0_active entries.  RefPicList0 is the leading
+    * num_ref_idx_l0_active entries, which is all the back half and the multiref
+    * fixups read, so entries past it are left untouched. */
+   unsigned num_active = h264->num_ref_idx_l0_active_minus1 + 1;
+   if (frame && frame->num_reorder_l0 > 0 && num_active <= n &&
+       num_active + 1 <= ARRAY_SIZE(idx) && sps) {
+      int curr = (int) h264->frame_num;
+      int max_fn = 1 << (sps->log2_max_frame_num_minus4 + 4);
+      int pred = curr;
+      unsigned ref_idx = 0;
+      for (unsigned c = 0; c < frame->num_reorder_l0 && ref_idx < num_active; c++) {
+         unsigned op = frame->reorder_l0[c].idc;
+         if (op != 0 && op != 1)
+            continue;                  /* long-term reorder is not reconstructed */
+         int abs_diff = (int) frame->reorder_l0[c].value + 1;
+         int no_wrap = (op == 0)
+            ? ((pred - abs_diff < 0) ? pred - abs_diff + max_fn : pred - abs_diff)
+            : ((pred + abs_diff >= max_fn) ? pred + abs_diff - max_fn : pred + abs_diff);
+         pred = no_wrap;
+         int pic_num = (no_wrap > curr) ? no_wrap - max_fn : no_wrap;
+         unsigned target = ARRAY_SIZE(h264->ref);
+         for (unsigned r = 0; r < ARRAY_SIZE(h264->ref); r++) {
+            if (!h264->ref[r] || h264->is_long_term[r])
+               continue;
+            if (short_term_pic_num(h264, r, curr, max_fn) == pic_num) {
+               target = r;
+               break;
+            }
+         }
+         if (target == ARRAY_SIZE(h264->ref))
+            continue;                  /* not in the DPB; leave the default entry */
+         for (unsigned cidx = num_active; cidx > ref_idx; cidx--)
+            idx[cidx] = idx[cidx - 1];
+         idx[ref_idx++] = target;
+         unsigned nidx = ref_idx;
+         for (unsigned cidx = ref_idx; cidx <= num_active; cidx++) {
+            unsigned rr = idx[cidx];
+            int pn = h264->is_long_term[rr] ? -1
+                     : short_term_pic_num(h264, rr, curr, max_fn);
+            if (pn != pic_num)
+               idx[nidx++] = idx[cidx];
+         }
+      }
+   }
+
+   for (unsigned i = 0; i < n; i++)
+      list[i] = h264->ref[idx[i]];
    return n;
 }
 
@@ -378,7 +442,8 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
     * entirely to the CPU intra pass below.  The back half samples RefPicList0[0];
     * blocks that reference a later list entry are fixed up on the CPU. */
    struct pipe_video_buffer *list0[16];
-   unsigned n0 = build_ref_pic_list0(h264, list0);
+   unsigned n0 = build_ref_pic_list0(h264, &dec->frame,
+                                     h264->pps ? h264->pps->sps : NULL, list0);
    struct pipe_sampler_view **ref_planes =
       n0 ? list0[0]->get_sampler_view_planes(list0[0]) : NULL;
 

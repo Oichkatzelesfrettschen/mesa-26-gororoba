@@ -27,15 +27,18 @@ chroma_array_type(const struct pipe_h264_sps *sps)
    return sps->separate_colour_plane_flag ? 0 : sps->chroma_format_idc;
 }
 
-/* ref_pic_list_modification (sec 7.3.3.1): consume the list-0 (and, for B, the
- * list-1) reordering commands.  Constrained Baseline uses a single reference, so
- * the commands are skipped, not retained. */
+/* ref_pic_list_modification (sec 7.3.3.1): parse the list-0 (and, for B, the
+ * list-1) reordering commands.  The list-0 commands are retained in out so
+ * build_ref_pic_list0 can reorder RefPicList0 (sec 8.2.4.3.1); list-1 (B only) is
+ * consumed without retention. */
 static void
 parse_ref_pic_list_modification(struct vl_h264_reader *reader,
-                                enum vl_h264_slice_type slice_type)
+                                struct vl_h264_slice_header *out)
 {
+   enum vl_h264_slice_type slice_type = out->slice_type;
    unsigned lists = (slice_type == VL_H264_SLICE_B) ? 2 : 1;
 
+   out->num_reorder_l0 = 0;
    if (slice_type == VL_H264_SLICE_I || slice_type == VL_H264_SLICE_SI)
       return;
 
@@ -47,8 +50,15 @@ parse_ref_pic_list_modification(struct vl_h264_reader *reader,
       unsigned idc;
       do {
          idc = vl_h264_ue(reader);
+         unsigned value = 0;
          if (idc == 0 || idc == 1 || idc == 2)
-            (void) vl_h264_ue(reader); /* abs_diff_pic_num_minus1 / long_term_pic_num */
+            value = vl_h264_ue(reader); /* abs_diff_pic_num_minus1 / long_term_pic_num */
+         if (list == 0 && idc != 3 &&
+             out->num_reorder_l0 < VL_H264_MAX_REORDER_L0) {
+            out->reorder_l0[out->num_reorder_l0].idc = (uint8_t) idc;
+            out->reorder_l0[out->num_reorder_l0].value = value;
+            out->num_reorder_l0++;
+         }
       } while (idc != 3);
    }
 }
@@ -208,7 +218,7 @@ vl_h264_parse_slice_header(struct vl_h264_reader *reader,
          out->num_ref_idx_l0_active = vl_h264_ue(reader) + 1;
    }
 
-   parse_ref_pic_list_modification(reader, out->slice_type);
+   parse_ref_pic_list_modification(reader, out);
 
    if (pps->weighted_pred_flag && out->slice_type == VL_H264_SLICE_P)
       parse_pred_weight_table(reader, sps, out->slice_type,

@@ -45,6 +45,11 @@ struct vl_h264_slice_header {
    int disable_deblocking_filter_idc;   /* 0 when deblock control is absent */
    int slice_alpha_c0_offset_div2;
    int slice_beta_offset_div2;
+
+   /* ref_pic_list_modification commands for list 0 (sec 7.3.3.1); zero when
+    * ref_pic_list_modification_flag_l0 is 0. */
+   uint32_t num_reorder_l0;
+   struct vl_h264_ref_reorder reorder_l0[VL_H264_MAX_REORDER_L0];
 };
 
 /*
