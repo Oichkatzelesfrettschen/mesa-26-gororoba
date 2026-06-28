@@ -55,14 +55,26 @@ r300vk_find_vertex_binding_desc(const VkPipelineVertexInputStateCreateInfo *vi,
 }
 
 static uint32_t
-r300vk_vertex_fetch_size(enum pipe_format format)
+r300vk_vertex_attr_data_size(enum pipe_format format)
 {
-   /* r300_create_vertex_elements_state stores r300_vertex_element_state
-    * format_size as a dword-aligned byte count, and r300_emit_vertex_arrays
-    * emits it through R300_VBPNTR_SIZE*.  Clamp robust vertex counts against
-    * that same fetch span so tightly packed 8/16/24-bit attributes cannot
-    * expose a final vertex whose r300 hardware fetch crosses the binding end. */
-   return align(util_format_get_blocksize(format), 4);
+   /* The robust vertex count counts vertices whose ATTRIBUTE DATA lies inside
+    * the bound buffer range -- that span, not a dword-rounded fetch width, is
+    * what robustBufferAccess defines as in-bounds.  Use the format block size
+    * (the bytes the shader actually consumes).
+    *
+    * r300 fetches vertex data in dword units, so the final vertex of a tightly
+    * packed 8/16/24-bit attribute makes the hardware read up to 3 bytes past the
+    * attribute end.  Those bytes fall inside the vertex BO -- the radeon winsys
+    * rounds every allocation up to a page -- and the attribute's component count
+    * discards them, so the over-read is harmless.  r300_emit_vertex_arrays emits
+    * its own dword-aligned R300_VBPNTR_SIZE from the gallium velem format_size,
+    * independent of this value, and the kernel CS validator bounds that against
+    * the page-aligned BO, not the tight binding range.  Counting by the dword
+    * span instead dropped the final in-bounds vertex and violated the
+    * robustBufferAccess this driver advertises (manifested as a one-pixel
+    * image-compare miss on the sparsest draw of
+    * dEQP-VK.memory.pipeline_barrier.transfer_dst_vertex_buffer.*_stride_2). */
+   return util_format_get_blocksize(format);
 }
 
 static VkResult
@@ -1506,7 +1518,7 @@ r300vk_populate_vertex_element(struct r300vk_device *device,
       return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                        "r300vk: unsupported vertex attribute format %d "
                        "at location %u", attr->format, attr->location);
-   const uint32_t attr_size = r300vk_vertex_fetch_size(elem_fmt);
+   const uint32_t attr_size = r300vk_vertex_attr_data_size(elem_fmt);
    if (attr->offset > UINT32_MAX - attr_size)
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: vertex attribute offset %u exceeds "
