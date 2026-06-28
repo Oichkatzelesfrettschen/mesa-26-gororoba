@@ -73,6 +73,20 @@ decode_one_macroblock(struct vl_h264_mb_decoder *dec,
    } else {
       memset(mb->coeff4x4, 0, sizeof(mb->coeff4x4));
    }
+
+   /* The deblock reads qp_y/qp_cb/qp_cr per macroblock for its thresholds.  The
+    * intra macroblock layer sets them, but a P-slice inter or skip macroblock
+    * carries no mb_qp_delta and was left at zero, so the deblock derived alpha and
+    * beta of zero and never filtered the inter edges.  Set them from the running
+    * QP, which is inherited across uncoded macroblocks and updated by the coded
+    * ones, so the inter deblock uses the correct thresholds. */
+   if (p_slice) {
+      mb->qp_y = dec->qp_y;
+      mb->qp_cb = vl_h264_chroma_qp_from_luma(dec->qp_y,
+                                              dec->pps->chroma_qp_index_offset);
+      mb->qp_cr = vl_h264_chroma_qp_from_luma(
+         dec->qp_y, dec->pps->second_chroma_qp_index_offset);
+   }
    return true;
 }
 
