@@ -11,6 +11,8 @@
 #include "draw/draw_vbuf.h"
 
 #include "util/u_inlines.h"
+#include "util/u_framebuffer.h"
+#include "util/u_sampler.h"
 
 #include "util/format/u_format.h"
 #include "util/u_draw.h"
@@ -847,6 +849,91 @@ r300_rasterizer_emits_points(struct r300_context *r300, unsigned prim)
     return front_rasterized || back_rasterized;
 }
 
+/* >64-ALU FS multipass (R300_FS_MULTIPASS): render the split FS in two draws.
+ * Pass A (the bound code) renders the byte-packed carry to a scratch RGBA8 target;
+ * pass B samples that scratch, unpacks the carry, and finishes the program to the
+ * real framebuffer.  Gated and entered only when the picked FS code carries a
+ * multipass_pass_b partner.  The app re-binds its own samplers before its next
+ * draw, so the transient scratch sampler bound at unit 0 needs no explicit
+ * restore; a fragment shader that itself samples unit 0 is the refinement (use a
+ * reserved high unit) tracked for the conformance pass. */
+static void r300_fs_multipass_draw(struct pipe_context *pipe,
+                                   const struct pipe_draw_info *dinfo,
+                                   unsigned drawid_offset,
+                                   const struct pipe_draw_indirect_info *indirect,
+                                   const struct pipe_draw_start_count_bias *draws,
+                                   unsigned num_draws,
+                                   struct r300_fragment_shader_code *pass_a)
+{
+    struct r300_context *r300 = r300_context(pipe);
+    struct pipe_screen *screen = pipe->screen;
+    struct pipe_framebuffer_state *fb = r300->fb_state.state;
+
+    struct pipe_resource tmpl = {
+        .target = PIPE_TEXTURE_2D,
+        .format = PIPE_FORMAT_R8G8B8A8_UNORM,
+        .bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
+        .width0 = fb->width,
+        .height0 = fb->height,
+        .depth0 = 1,
+        .array_size = 1,
+    };
+    struct pipe_resource *scratch = screen->resource_create(screen, &tmpl);
+
+    r300->in_multipass = true;
+
+    if (!scratch) {
+        /* No carry target: render pass A alone (a gated, experimental path). */
+        pipe->draw_vbo(pipe, dinfo, drawid_offset, indirect, draws, num_draws);
+        r300->in_multipass = false;
+        return;
+    }
+
+    struct pipe_framebuffer_state saved_fb;
+    memset(&saved_fb, 0, sizeof(saved_fb));
+    util_copy_framebuffer_state(&saved_fb, fb);
+
+    /* Pass A -> scratch. */
+    struct pipe_framebuffer_state fb1;
+    memset(&fb1, 0, sizeof(fb1));
+    fb1.width = fb->width;
+    fb1.height = fb->height;
+    fb1.nr_cbufs = 1;
+    fb1.cbufs[0].texture = scratch;
+    fb1.cbufs[0].format = PIPE_FORMAT_R8G8B8A8_UNORM;
+    pipe->set_framebuffer_state(pipe, &fb1);
+    pipe->draw_vbo(pipe, dinfo, drawid_offset, indirect, draws, num_draws);
+
+    /* Pass B (samples the scratch) -> the real framebuffer. */
+    pipe->set_framebuffer_state(pipe, &saved_fb);
+
+    struct pipe_sampler_view sv_tmpl;
+    u_sampler_view_default_template(&sv_tmpl, scratch, scratch->format);
+    struct pipe_sampler_view *sv = pipe->create_sampler_view(pipe, scratch, &sv_tmpl);
+
+    struct pipe_sampler_state sstate;
+    memset(&sstate, 0, sizeof(sstate));
+    sstate.wrap_s = sstate.wrap_t = sstate.wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+    sstate.min_img_filter = sstate.mag_img_filter = PIPE_TEX_FILTER_NEAREST;
+    void *scso = pipe->create_sampler_state(pipe, &sstate);
+
+    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &sv);
+    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &scso);
+
+    r300->multipass_override_fs = pass_a->multipass_pass_b;
+    pipe->draw_vbo(pipe, dinfo, drawid_offset, indirect, draws, num_draws);
+    r300->multipass_override_fs = NULL;
+
+    void *null_cso = NULL;
+    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &null_cso);
+    pipe->delete_sampler_state(pipe, scso);
+    pipe_sampler_view_reference(&sv, NULL);
+    pipe->set_framebuffer_state(pipe, &saved_fb);
+    util_unreference_framebuffer_state(&saved_fb);
+    pipe_resource_reference(&scratch, NULL);
+    r300->in_multipass = false;
+}
+
 static void r300_draw_vbo(struct pipe_context* pipe,
                           const struct pipe_draw_info *dinfo,
                           unsigned drawid_offset,
@@ -1350,6 +1437,18 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
     r300->derivative_via_draw = derivative_via_draw;
 
     r300_update_derived_state(r300);
+
+    /* >64-ALU FS multipass: if the picked fragment shader split into two passes,
+     * run the 2-pass scratch-RT draw instead of a single draw (gated, default off;
+     * the in_multipass guard stops the wrapper's inner draws re-entering here). */
+    if (!r300->in_multipass) {
+        struct r300_fragment_shader_code *mp = r300_fs(r300)->shader;
+        if (mp && mp->multipass_pass_b) {
+            r300_fs_multipass_draw(pipe, info, drawid_offset, indirect,
+                                   draws, num_draws, mp);
+            return;
+        }
+    }
 
     /* With the FS now picked, enable (or update) the draw-module derivative
      * injection for shaders that actually read a derivative. deriv_src_generic

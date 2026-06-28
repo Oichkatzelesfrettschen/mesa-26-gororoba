@@ -1089,6 +1089,16 @@ bool r300_pick_fragment_shader(struct r300_context *r300,
 {
     struct r300_fragment_shader_code* ptr;
 
+    /* The >64-ALU multipass draw orchestration forces pass B for its second draw;
+     * honour the override rather than re-picking pass A by texture-compare state. */
+    if (r300->multipass_override_fs) {
+        if (fs->shader != r300->multipass_override_fs) {
+            fs->shader = r300->multipass_override_fs;
+            return true;
+        }
+        return false;
+    }
+
     if (!fs->first) {
         /* Build the fragment shader for the first time. */
         fs->first = fs->shader = CALLOC_STRUCT(r300_fragment_shader_code);

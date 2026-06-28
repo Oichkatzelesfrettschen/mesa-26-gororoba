@@ -613,6 +613,15 @@ struct r300_context {
      * one varying and the RS routes the two gradient vectors as vertex texcoords
      * into the rewritten FS inputs. Set per draw at draw entry. */
     bool derivative_via_draw;
+
+    /* >64-ALU FS multipass (R300_FS_MULTIPASS): in_multipass guards the two inner
+     * draws the 2-pass orchestration issues against re-entering the wrapper.
+     * multipass_override_fs, when set, is the pass-B code object that
+     * r300_pick_fragment_shader binds for the second draw instead of re-picking
+     * pass A by texture-compare state. */
+    bool in_multipass;
+    struct r300_fragment_shader_code *multipass_override_fs;
+
     /* Differentiated varying's generic index last applied to the draw module's
      * derivative injection (0 = injection off; real indices are >= 9). Tracks
      * transitions so draw_enable_derivative_injection's flush fires only when the
