@@ -127,7 +127,16 @@ build_scale_channel(struct vl_nir_fs *fs, unsigned channel)
    nir_def *tc = fs->texcoord[0];
    nir_def *uv = nir_vec2(b, nir_channel(b, tc, 0), nir_channel(b, tc, 1));
    nir_def *sample = nir_channel(b, vl_nir_tex(fs, 0, uv), channel);
-   nir_def *scaled = nir_fmul(b, sample, nir_channel(b, fs->texcoord[1], 0));
+   nir_def *par = fs->texcoord[1];
+   /* Convert in the integer 0..255 domain and round to the exact integer the
+    * H.264 reconstruction produces, so the UNORM round-trip is lossless instead
+    * of leaking a least-significant bit through the FP24 scale.  Reading a UNORM
+    * reference (par.x = 255) the round lands the six-tap on exact integer samples;
+    * writing a 0..255 recon plane (par.x = 1) it lands the exact recon value, and
+    * the UNORM target store (par.y = 1/255) rounds that integer back exactly. */
+   nir_def *v = nir_fmul(b, sample, nir_channel(b, par, 0));
+   v = nir_ffloor(b, nir_fadd(b, v, nir_imm_float(b, 0.5f)));
+   nir_def *scaled = nir_fmul(b, v, nir_channel(b, par, 1));
    return nir_replicate(b, scaled, 4);
 }
 
@@ -1269,10 +1278,11 @@ vl_h264_emit_deblock_chroma(struct vl_h264_emit *emit, struct pipe_resource *rec
 static void
 scale_copy(struct vl_h264_emit *emit, void *fs, struct pipe_surface *dst,
            unsigned width, unsigned height, struct pipe_sampler_view *src,
-           float scale)
+           float pre_scale, float post_scale)
 {
    draw_pass(emit, fs, dst, width, height, 0, 0, width, height, 0, 0, 1, 1,
-             1.0f / (float)width, 1.0f / (float)height, scale, 0, 0, 0, &src, 1);
+             1.0f / (float)width, 1.0f / (float)height, pre_scale, post_scale, 0,
+             0, &src, 1);
 }
 
 /* Recombine the reconstructed Cb and Cr planes into an interleaved NV12 chroma
@@ -1320,7 +1330,7 @@ vl_h264_emit_luma_inter_unorm(struct vl_h264_emit *emit,
    recon_surf.texture = recon;
 
    scale_copy(emit, emit->fs_scale, &ref_scaled_surf, ref_width, ref_height,
-              ref_luma, 255.0f);
+              ref_luma, 255.0f, 1.0f);
    pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
 
    vl_h264_emit_luma_inter(emit, &recon_surf, width, height, ref_scaled_view,
@@ -1339,7 +1349,7 @@ vl_h264_emit_luma_inter_unorm(struct vl_h264_emit *emit,
    }
 
    scale_copy(emit, emit->fs_scale, dst_luma, width, height, recon_view,
-              1.0f / 255.0f);
+              1.0f, 1.0f / 255.0f);
    pipe->flush(pipe, NULL, 0);
 
    pipe_sampler_view_reference(&ref_scaled_view, NULL);
@@ -1396,11 +1406,11 @@ vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
    recon_cr_surf.texture = recon_cr;
 
    scale_copy(emit, emit->fs_scale, &ref_cb_surf, ref_width, ref_height,
-              ref_chroma_cb, 255.0f);
+              ref_chroma_cb, 255.0f, 1.0f);
    /* Planar Cr is lane 0 of its own view; packed Cr is lane 1 of the Cb view. */
    scale_copy(emit, planar ? emit->fs_scale : emit->fs_scale_cr, &ref_cr_surf,
               ref_width, ref_height, planar ? ref_chroma_cr : ref_chroma_cb,
-              255.0f);
+              255.0f, 1.0f);
    pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
 
    vl_h264_emit_chroma_inter(emit, &recon_cb_surf, width, height, ref_cb_view,
@@ -1432,9 +1442,9 @@ vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
    if (planar) {
       /* Write each reconstructed component to its own R8 plane (lane 0). */
       scale_copy(emit, emit->fs_scale, dst_cb, width, height, recon_cb_view,
-                 1.0f / 255.0f);
+                 1.0f, 1.0f / 255.0f);
       scale_copy(emit, emit->fs_scale, dst_cr, width, height, recon_cr_view,
-                 1.0f / 255.0f);
+                 1.0f, 1.0f / 255.0f);
    } else {
       interleave_copy(emit, dst_cb, width, height, recon_cb_view, recon_cr_view,
                       1.0f / 255.0f);
