@@ -1919,7 +1919,8 @@ static void
 r300vk_dyn_overlay_apply(struct r300vk_device *device,
                          const struct r300vk_pipeline *pl,
                          struct r300vk_dyn_overlay *ov,
-                         bool has_zs)
+                         bool has_zs,
+                         bool has_stencil)
 {
    if (!ov->dirty || !pl)
       return;
@@ -1972,8 +1973,11 @@ r300vk_dyn_overlay_apply(struct r300vk_device *device,
     * kill every fragment). */
    const bool template_uses_zs = pl->dsa_template.depth_enabled ||
                                  pl->dsa_template.stencil[0].enabled;
+   const bool template_uses_stencil = pl->dsa_template.stencil[0].enabled ||
+                                      pl->dsa_template.stencil[1].enabled;
    void *new_dsa_cso = NULL;
-   if ((eff & R300VK_DYN_DSA_BITS) || (!has_zs && template_uses_zs)) {
+   if ((eff & R300VK_DYN_DSA_BITS) || (!has_zs && template_uses_zs) ||
+       (!has_stencil && template_uses_stencil)) {
       struct pipe_depth_stencil_alpha_state dsa = pl->dsa_template;
       if (eff & R300VK_DYN_DEPTH_TEST)
          dsa.depth_enabled = ov->depth_test;
@@ -2003,6 +2007,15 @@ r300vk_dyn_overlay_apply(struct r300vk_device *device,
       if (!has_zs) {
          dsa.depth_enabled   = false;
          dsa.depth_writemask = false;
+         dsa.stencil[0].enabled = false;
+         dsa.stencil[1].enabled = false;
+      } else if (!has_stencil) {
+         /* Depth-only attachment (e.g. D16_UNORM, X8_D24_UNORM_PACK32): there is
+          * no stencil aspect to test against, so per Vulkan the stencil test must
+          * behave as if it always passes.  Leaving it enabled runs the r300
+          * stencil test against a nonexistent stencil buffer, which kills every
+          * fragment -- the draw renders black where it should show (the
+          * dEQP-VK.pipeline.monolithic.stencil.no_stencil_att.* cluster). */
          dsa.stencil[0].enabled = false;
          dsa.stencil[1].enabled = false;
       }
@@ -2072,6 +2085,7 @@ r300vk_replay_draw(struct r300vk_device *device,
                     struct util_dynarray *transient_vbs,
                     struct r300vk_dyn_overlay *dyn,
                     bool render_pass_has_zs,
+                    bool render_pass_has_stencil,
                     const VkDeviceSize *vb_strides,
                     uint32_t vb_strides_mask)
 {
@@ -2116,7 +2130,7 @@ r300vk_replay_draw(struct r300vk_device *device,
     * before any draw-time binds. */
    if (dyn)
       r300vk_dyn_overlay_apply(device, bound_pipeline, dyn,
-                               render_pass_has_zs);
+                               render_pass_has_zs, render_pass_has_stencil);
 
    /* Dynamic vertex strides: when a vkCmdBindVertexBuffers2 stride differs
     * from the vertex-input description's, rebuild the element CSO with the
@@ -3258,6 +3272,10 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
                             tile_height, transient_vbs, &state->dyn_ov,
                             current_render_pass &&
                             current_render_pass->begin_rp.ds_image,
+                            current_render_pass &&
+                            current_render_pass->begin_rp.ds_image &&
+                            util_format_has_stencil(util_format_description(
+                               current_render_pass->begin_rp.ds_format)),
                             state->vb_strides, state->vb_strides_mask);
          *gpu_pending = true;
          break;
@@ -3317,6 +3335,10 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
                                tile_height, transient_vbs, &state->dyn_ov,
                                current_render_pass &&
                                current_render_pass->begin_rp.ds_image,
+                               current_render_pass &&
+                               current_render_pass->begin_rp.ds_image &&
+                               util_format_has_stencil(util_format_description(
+                                  current_render_pass->begin_rp.ds_format)),
                                state->vb_strides, state->vb_strides_mask);
          }
          pipe_buffer_unmap(pipe, ixfer);
@@ -3378,6 +3400,10 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
                                tile_height, transient_vbs, &state->dyn_ov,
                                current_render_pass &&
                                current_render_pass->begin_rp.ds_image,
+                               current_render_pass &&
+                               current_render_pass->begin_rp.ds_image &&
+                               util_format_has_stencil(util_format_description(
+                                  current_render_pass->begin_rp.ds_format)),
                                state->vb_strides, state->vb_strides_mask);
          }
          pipe_buffer_unmap(pipe, ixfer);
