@@ -573,9 +573,13 @@ static void r300_init_screen_caps(struct r300_screen* r300screen)
    caps->user_vertex_buffers =
    caps->vs_window_space_position = !r300screen->caps.has_tcl;
 
-   /* HWTCL-only features / limitations. */
-   caps->vertex_input_alignment =
-      r300screen->caps.has_tcl ? PIPE_VERTEX_INPUT_ALIGNMENT_4BYTE : PIPE_VERTEX_INPUT_ALIGNMENT_NONE;
+   /* The hardware vertex-fetch stride field is dword-granular regardless of TCL
+    * mode: R300_VBPNTR_STRIDE0(x) encodes (x >> 2), so a sub-dword binding stride
+    * (e.g. 2 bytes) collapses to 0 and every vertex is fetched from the same
+    * offset.  The SW-TCL passthrough path still feeds the app buffer straight to
+    * VBPNTR, so 4-byte alignment is required there too; declaring it lets the
+    * state tracker translate a non-dword-strided buffer before the driver sees it. */
+   caps->vertex_input_alignment = PIPE_VERTEX_INPUT_ALIGNMENT_4BYTE;
 
    /* Texturing. */
    caps->max_texture_2d_size = is_r500 ? 4096 : 2048;
