@@ -869,8 +869,10 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
     struct pipe_screen *screen = pipe->screen;
     struct pipe_framebuffer_state *fb = r300->fb_state.state;
 
+    /* PIPE_TEXTURE_RECT so pass B's RECT sampler reads at the fragment window
+     * coordinate; the compiler's RC_STATE_R300_TEXRECT_FACTOR normalizes it. */
     struct pipe_resource tmpl = {
-        .target = PIPE_TEXTURE_2D,
+        .target = PIPE_TEXTURE_RECT,
         .format = PIPE_FORMAT_R8G8B8A8_UNORM,
         .bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
         .width0 = fb->width,

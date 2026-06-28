@@ -818,11 +818,16 @@ r300_nir_fs_emit_pass_b(nir_shader *src, unsigned per_pass_budget)
     }
 
     /* Sample the scratch target at the top of the block, before any use of the
-     * carry, and unpack the byte-packed value pass A wrote. */
+     * carry, and unpack the byte-packed value pass A wrote.  A RECT sampler reads
+     * at the fragment's window coordinate directly: the r300 compiler inserts the
+     * RC_STATE_R300_TEXRECT_FACTOR scale (1/width, 1/height of the bound scratch)
+     * the driver fills, so gl_FragCoord normalizes to the matching scratch texel
+     * with no separate uniform.  The draw orchestration allocates the scratch as
+     * PIPE_TEXTURE_RECT to match. */
     nir_builder b = nir_builder_at(nir_before_block(block));
     nir_variable *samp = nir_variable_create(
         bsh, nir_var_uniform,
-        glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+        glsl_sampler_type(GLSL_SAMPLER_DIM_RECT, false, false, GLSL_TYPE_FLOAT),
         "r300_mp_scratch");
     samp->data.binding = 0;
     nir_deref_instr *deref = nir_build_deref_var(&b, samp);
