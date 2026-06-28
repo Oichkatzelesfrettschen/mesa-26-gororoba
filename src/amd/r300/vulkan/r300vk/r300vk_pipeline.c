@@ -1399,6 +1399,15 @@ r300vk_compile_shader(struct r300vk_device *device,
        * both the deref and the lowered-intrinsic form instead. */
       bool needs_vid = false, needs_iid = false;
       r300_nir_vs_reads_system_values(nir, &needs_vid, &needs_iid);
+      /* The r300 VERTEX stage carries caps->integers = true (r300_screen.c), so
+       * the SW-TCL VS nir_to_tgsi keeps load_vertex_id/load_instance_id as native
+       * int system values and draw_vs_exec supplies them.  R300VK_NATIVE_VERTEXID
+       * keeps that native path (no synthetic vertex element), which frees a PSC
+       * velem slot so 16 attributes plus VertexID fit the 16-element budget.  The
+       * synthetic-stream path stays as the gated fallback. */
+      if ((needs_vid || needs_iid) && getenv("R300VK_NATIVE_VERTEXID")) {
+         needs_vid = needs_iid = false;
+      }
       if (needs_vid || needs_iid) {
          int vid_slot = -1;
          int iid_slot = -1;
