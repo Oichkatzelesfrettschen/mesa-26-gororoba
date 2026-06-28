@@ -238,6 +238,15 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
                                          ref_chroma_cb->texture->height0,
                                          &dec->frame);
       }
+
+      /* The GPU back half has no kernel for the five 2D diagonal half-pel
+       * positions f, i, j, k, q: the center half-pel j builds a six-tap over the
+       * unclipped horizontal six-tap intermediate, which overflows the FP24
+       * integer-exact range, so the dispatch leaves those blocks at the integer
+       * position.  Recompute them on the CPU from the reference, overwriting the
+       * integer-pel copy, before the intra pass and the deblock read the
+       * corrected neighbors. */
+      luma_diag_fallback(dec, target_surfaces, ref_luma);
    }
 
    /* The intra macroblocks reconstruct on the CPU after the back half, so they
