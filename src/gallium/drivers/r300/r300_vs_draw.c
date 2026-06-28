@@ -167,6 +167,16 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
     nir_variable *wpos_var = NULL;
     NIR_PASS(_, nir, r300_nir_add_wpos, &wpos_var);
 
+    /* RS480 has no hardware TCL, so the vertex shader runs in the gallium draw
+     * module's TGSI interpreter.  A dynamic index into a temporary array makes
+     * the interpreter walk a per-element index path that does not finish in
+     * bounded time (dEQP-GLES2.functional.shaders.indexing.tmp_array.*_dyn hangs
+     * the SW vertex shader in tgsi_exec).  Lower indirect temp derefs to
+     * if-ladders so the interpreted VS only ever sees static register indices --
+     * the fragment path already does this in nir_to_rc. */
+    NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
+             nir_var_function_temp, UINT32_MAX);
+
     /* Fill in the r300 rasterizer outputs and assign driver locations. */
     r300_draw_fill_vs_outputs(nir, wpos_var, vs->shader);
 
