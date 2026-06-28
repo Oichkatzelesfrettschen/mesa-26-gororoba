@@ -653,6 +653,20 @@ if with_tests
     suite: 'gallium',
   )
 
+  # CPU whole-frame in-loop deblock (vl_h264_deblock_cpu): the decode path's
+  # deblock after the inter back half and CPU intra pass, checked sample-for-
+  # sample against the shared integer reference (luma and both chroma planes).
+  test('vl-h264-deblock-cpu',
+    executable(
+      'vl_h264_deblock_cpu_test',
+      ['vl/vl_h264_deblock_cpu.c', 'vl/tests/vl_h264_deblock_cpu_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    suite: 'gallium',
+  )
+
   # The CAVLC codeword decoders over the generated tables.  The test round-trips
   # every table entry, so it needs no fixture argument.
   test('vl-h264-cavlc-tables',
