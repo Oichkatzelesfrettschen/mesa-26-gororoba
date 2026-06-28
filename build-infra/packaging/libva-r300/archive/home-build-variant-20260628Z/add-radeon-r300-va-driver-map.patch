@@ -1,0 +1,22 @@
+diff --git a/va/drm/va_drm_utils.c b/va/drm/va_drm_utils.c
+index e6a477f..878e913 100644
+--- a/va/drm/va_drm_utils.c
++++ b/va/drm/va_drm_utils.c
+@@ -53,7 +53,7 @@ va_DRM_GetDrmDriverName(int fd)
+ VAStatus
+ VA_DRM_GetDriverNames(VADriverContextP ctx, char **drivers, unsigned *num_drivers)
+ {
+-#define MAX_NAMES 2 // Adjust if needed
++#define MAX_NAMES 3 // 3 to fit radeon's r600/radeonsi/r300 candidates
+ 
+     static const struct {
+         const char * const drm_driver;
+@@ -62,7 +62,7 @@ VA_DRM_GetDriverNames(VADriverContextP ctx, char **drivers, unsigned *num_driver
+         { "xe",         { "iHD"              } },
+         { "i915",       { "iHD", "i965"      } }, // Intel Media and OTC GenX
+         { "pvrsrvkm",   { "pvr"              } }, // Intel UMG PVR
+-        { "radeon",     { "r600", "radeonsi" } }, // Mesa Gallium
++        { "radeon",     { "r600", "radeonsi", "r300" } }, // Mesa Gallium (r300 for RS4xx/RS482 IGP, no UVD)
+         { "amdgpu",     { "radeonsi"         } }, // Mesa Gallium
+         { "WSL",        { "d3d12"            } }, // Mesa Gallium
+         { "nvidia-drm", { "nvidia"           } }, // Unofficial NVIDIA
