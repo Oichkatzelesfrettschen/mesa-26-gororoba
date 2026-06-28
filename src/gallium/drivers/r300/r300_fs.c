@@ -942,12 +942,20 @@ static void r300_translate_fragment_shader(
             mp_gate = (e && e[0] == '1') ? 1 : 0;
         }
         if (mp_gate) {
+            /* The authoritative >64-ALU ceiling is emit_alu in r300_fragprog_emit.c:
+             * code->alu.length >= max_alu_insts errors the compile.  This NIR-level
+             * estimate runs before nir_to_rc lowers trig/pow/etc, so it UNDERCOUNTS;
+             * gating at the raw max_alu_insts would let a shader whose estimate lands
+             * under the ceiling still overflow at emit and fall back to the dummy FS.
+             * Gate instead at the inflation-safe per-pass capacity (also the per-pass
+             * split budget): a shader whose estimate exceeds what one safe pass holds
+             * is split at NIR, so the authoritative emit ceiling is never reached for
+             * the straight-line single-frontier shapes the partition handles. */
+            const unsigned safe_pass_alu = 56;
             unsigned est = r300_nir_fs_estimate_alu_pairs(clone);
-            if (est > (unsigned)compiler.Base.max_alu_insts) {
-                /* Target ~56 of the 64-slot envelope per pass so the NIR->RC
-                 * inflation never pushes a pass over the hardware ceiling. */
-                nir_shader *pass_a = r300_nir_fs_emit_pass_a(clone, 56);
-                nir_shader *pass_b = r300_nir_fs_emit_pass_b(clone, 56);
+            if (est > safe_pass_alu) {
+                nir_shader *pass_a = r300_nir_fs_emit_pass_a(clone, safe_pass_alu);
+                nir_shader *pass_b = r300_nir_fs_emit_pass_b(clone, safe_pass_alu);
                 if (pass_a && pass_b) {
                     /* Compile pass B into a partner code object -- it is below
                      * budget so the recursive translate will not re-split -- store

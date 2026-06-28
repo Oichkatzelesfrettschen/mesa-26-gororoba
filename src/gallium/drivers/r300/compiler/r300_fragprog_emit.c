@@ -138,7 +138,15 @@ emit_alu(struct r300_emit_state *emit, struct rc_pair_instruction *inst)
    PROG_CODE;
 
    if (code->alu.length >= c->Base.max_alu_insts) {
-      /* rc_recompute_ips does not give an exact count, because it counts extra stuff
+      /* The authoritative >64-ALU ceiling.  A straight-line single-frontier
+       * fragment shader can stay under it by splitting across two passes through
+       * a scratch render target: r300_fs.c gates R300_FS_MULTIPASS on the NIR-level
+       * ALU estimate (conservatively, at the inflation-safe per-pass capacity, since
+       * that estimate undercounts what nir_to_rc lowers) so the partition happens
+       * before this point is reached.  A shader that still arrives here is either
+       * not straight-line-splittable or has the gate off, and is a hard ceiling hit.
+       *
+       * rc_recompute_ips does not give an exact count, because it counts extra stuff
        * like BEGINTEX, but here it is intended to be only approximative anyway,
        * just to give some idea how close to the limit we are. */
       rc_error(&c->Base, "Too many ALU instructions used: %u, max: %u",
