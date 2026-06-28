@@ -540,6 +540,37 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     return true;
 }
 
+/* Estimate the paired-ALU instruction count a fragment program will need at the
+ * non-r500 hardware (R300_PFS_MAX_ALU_INST budget), from NIR, before nir_to_rc.
+ * The r300 fragment ALU issues an RGB op and an alpha op per paired-ALU slot, so
+ * the scalar/vector NIR ALU instruction count roughly maps to slots after the
+ * RC pair scheduler packs them.  This is intentionally an OVER-estimate: count
+ * every ALU and texture instruction in the entrypoint and scale by 1.09 (the
+ * NIR->RC inflation measured in the R400_US sweep) so the multipass split is
+ * triggered slightly early rather than late.  nir_to_rc's exact rc_recompute_ips
+ * count and the emit-time ceiling remain the authority; this estimate only
+ * decides whether to attempt the (phase 2) partition. */
+static unsigned
+r300_nir_fs_estimate_alu_pairs(nir_shader *nir)
+{
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    unsigned alu = 0, tex = 0;
+
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_alu)
+                alu++;
+            else if (instr->type == nir_instr_type_tex)
+                tex++;
+        }
+    }
+
+    /* TEX instructions consume a texture-instruction slot, not an ALU slot, but
+     * each typically anchors a small ALU coord/result sequence already counted in
+     * alu; include a token weight so a texture-heavy shader is not under-counted. */
+    return (unsigned)(((uint64_t)alu * 109) / 100) + tex;
+}
+
 static void r300_translate_fragment_shader(
     struct r300_context* r300,
     struct r300_fragment_shader_code* shader,
@@ -605,6 +636,32 @@ static void r300_translate_fragment_shader(
     compiler.UserData = &shader->inputs;
 
     nir_shader *clone = nir_shader_clone(NULL, state.ir.nir);
+
+    /* Multipass auto-partition, phase 1 (R300_FS_MULTIPASS, default off): estimate
+     * the paired-ALU instruction count this fragment program will need at the NIR
+     * level, before nir_to_rc, so a future pass can split a program that would
+     * overflow R300_PFS_MAX_ALU_INST into a chain of <=budget passes carried
+     * through a scratch render target.  The estimate counts NIR ALU + texture
+     * instructions and applies the ~1.09x NIR->RC inflation the R400_US sweep
+     * measured; nir_to_rc's exact rc_recompute_ips count and the emit-time ceiling
+     * (r300_fragprog_emit.c) stay the authority and the backstop, so an estimate
+     * error only mis-times the (not-yet-built) split, never miscompiles.  Phase 2
+     * replaces this diagnostic with the actual NIR DAG partition. */
+    if (!compiler.Base.is_r500 && !us_envelope) {
+        static int mp_gate = -1;
+        if (mp_gate < 0) {
+            const char *e = getenv("R300_FS_MULTIPASS");
+            mp_gate = (e && e[0] == '1') ? 1 : 0;
+        }
+        if (mp_gate) {
+            unsigned est = r300_nir_fs_estimate_alu_pairs(clone);
+            if (est > (unsigned)compiler.Base.max_alu_insts)
+                fprintf(stderr,
+                        "r300 FS multipass: estimate %u paired-ALU > budget %u; "
+                        "partition needed (phase 2 not yet wired)\n",
+                        est, (unsigned)compiler.Base.max_alu_insts);
+        }
+    }
 
     /* R300-class parts have no fragment dFdx/dFdy hardware. Rewrite a varying's
      * derivatives to read draw-module-supplied per-triangle gradients instead of
