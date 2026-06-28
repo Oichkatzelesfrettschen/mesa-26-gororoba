@@ -652,10 +652,23 @@ r300_nir_fs_analyze_cut(nir_shader *nir, unsigned per_pass_budget,
  * integer-accumulator partition produces.  Pass B reverses it: byte_k =
  * round(channel_k * 255), x = sum_k byte_k * 256^k.  This pack/unpack pair is the
  * shared keystone of the FS partition and the multipass programmable-blend. */
+/* The carry is mapped to a non-negative fixed-point integer before the byte
+ * split so a signed, fractional carry survives: v = (carry + BIAS) * SCALE.
+ * BIAS recentres the signed range onto [0, 2*BIAS); SCALE adds fractional bits.
+ * The product must stay inside the FP24 integer-exact window (< 2^17) for the
+ * floor/byte arithmetic to be lossless, so 2*BIAS*SCALE == 2^17: carry in
+ * (-64, 64) with 1/1024 (~10-bit) resolution.  A carry outside that range clamps
+ * at the window edge -- the residual HW precision limit of an 8-bit-per-channel
+ * RT plus float-only ALU; a full-range encoding needs the log-float limb. */
+#define R300_MP_CARRY_BIAS  64.0
+#define R300_MP_CARRY_SCALE 1024.0
+
 static nir_def *
 r300_nir_fs_pack_carry_rgba8(nir_builder *b, nir_def *carry)
 {
-    nir_def *x = nir_ffloor(b, carry);
+    nir_def *v = nir_fmul_imm(b,
+        nir_fadd_imm(b, carry, R300_MP_CARRY_BIAS), R300_MP_CARRY_SCALE);
+    nir_def *x = nir_ffloor(b, nir_fmax(b, v, nir_imm_float(b, 0.0f)));
     nir_def *bytes[4];
     for (unsigned k = 0; k < 4; k++) {
         nir_def *shifted = (k == 0)
@@ -669,17 +682,19 @@ r300_nir_fs_pack_carry_rgba8(nir_builder *b, nir_def *carry)
 }
 
 /* Reverse r300_nir_fs_pack_carry_rgba8: recover the scalar carry from an RGBA8
- * scratch sample.  byte_k = round(channel_k * 255), x = sum_k byte_k * 256^k. */
+ * scratch sample.  byte_k = round(channel_k * 255), v = sum_k byte_k * 256^k,
+ * carry = v / SCALE - BIAS. */
 static nir_def *
 r300_nir_fs_unpack_carry_rgba8(nir_builder *b, nir_def *rgba)
 {
-    nir_def *x = nir_imm_float(b, 0.0f);
+    nir_def *v = nir_imm_float(b, 0.0f);
     for (unsigned k = 0; k < 4; k++) {
         nir_def *byte = nir_fround_even(
             b, nir_fmul_imm(b, nir_channel(b, rgba, k), 255.0));
-        x = nir_fadd(b, x, nir_fmul_imm(b, byte, (double)(1u << (8 * k))));
+        v = nir_fadd(b, v, nir_fmul_imm(b, byte, (double)(1u << (8 * k))));
     }
-    return x;
+    return nir_fadd_imm(b, nir_fmul_imm(b, v, 1.0 / R300_MP_CARRY_SCALE),
+                        -R300_MP_CARRY_BIAS);
 }
 
 /* Phase 2b: emit pass A of a straight-line single-frontier split.  Clone the
