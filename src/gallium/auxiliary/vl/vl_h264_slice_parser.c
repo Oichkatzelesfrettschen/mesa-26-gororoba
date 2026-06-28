@@ -195,7 +195,14 @@ vl_h264_parse_slice_header(struct vl_h264_reader *reader,
    if (pps->redundant_pic_cnt_present_flag)
       (void) vl_h264_ue(reader);        /* redundant_pic_cnt */
 
-   out->num_ref_idx_l0_active = pps->num_ref_idx_l0_default_active_minus1 + 1;
+   /* The default active count is the slice-header fallback when
+    * num_ref_idx_active_override_flag is 0.  VAPictureParameterBufferH264 carries
+    * no num_ref_idx_l0_default_active_minus1, so pps->num_ref_idx_l0_default_active_minus1
+    * is always zero here; the VA frontend instead reports the effective per-slice
+    * count in num_ref_idx_l0_active_minus1 (VASliceParameterBufferH264), which
+    * already reflects any override.  Seed the default from it so a slice that omits
+    * the override decodes ref_idx_l0 with the correct active count. */
+   out->num_ref_idx_l0_active = picture->num_ref_idx_l0_active_minus1 + 1;
    if (out->slice_type == VL_H264_SLICE_P) {
       if (vl_h264_u(reader, 1))         /* num_ref_idx_active_override_flag */
          out->num_ref_idx_l0_active = vl_h264_ue(reader) + 1;
