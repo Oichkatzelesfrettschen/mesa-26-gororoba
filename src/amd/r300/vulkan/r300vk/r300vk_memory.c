@@ -449,6 +449,16 @@ r300vk_UnmapMemory(VkDevice _device,
               (unsigned)util_dynarray_num_elements(
                  &mem->bound_buffers, struct r300vk_bound_buffer_slice));
 
+   /* Flush the host map into every bound buffer before tearing the map down.  An
+    * owns_buffer (map-before-bind, or a memory promoted on aliasing) holds the
+    * app's writes only in mem->resource's map; the submit-boundary host->buffer
+    * sync skips a memory whose map_ptr is already NULL, so an app that writes then
+    * unmaps before queue submit would never propagate those writes to the bound
+    * VkBuffers and the deferred draw would read the stale per-buffer BO. */
+   if (mem->owns_buffer && mem->map_ptr)
+      r300vk_sync_owns_buffer(device, mem, true /* host -> buffer */, 0,
+                              VK_WHOLE_SIZE);
+
    if (!mem->transfer)
       return;
 
@@ -728,6 +738,51 @@ r300vk_BindBufferMemory2(VkDevice _device,
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       VK_FROM_HANDLE(r300vk_buffer, buf, pBindInfos[i].buffer);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
+
+      /* Memory aliasing: a second DISTINCT VkBuffer binding a memory already bound
+       * to another buffer.  r300vk backs every VkBuffer with its own BO, so the
+       * host map -- which follows mem->resource -- would populate only the
+       * last-bound buffer and leave earlier-bound aliased buffers reading
+       * uninitialised BOs (the dEQP host_write_index_buffer wrong-pixels case: the
+       * index buffer's BO never receives the CPU writes that land in the
+       * later-bound buffer).  Promote to allocation-sized owns storage and record
+       * the evicted buffer as a bound_buffers slice; the new buffer is appended by
+       * the owns branch below, and the submit/unmap host->buffer sync then
+       * propagates the host map to every aliased buffer.  Guarded to !map_ptr so a
+       * live map is never orphaned by the mem->resource swap, and to a distinct
+       * resource so the single-buffer borrow path (the byte-exact dispatch/compute
+       * route) is never promoted. */
+      if (!mem->owns_buffer && !mem->map_ptr && mem->resource &&
+          mem->resource != buf->resource && mem->size <= UINT_MAX) {
+         struct pipe_resource tmpl = {
+            .target = PIPE_BUFFER,
+            .format = PIPE_FORMAT_R8_UNORM,
+            .bind = PIPE_BIND_VERTEX_BUFFER,
+            .usage = PIPE_USAGE_DYNAMIC,
+            .width0 = (unsigned)mem->size,
+            .height0 = 1,
+            .depth0 = 1,
+            .array_size = 1,
+         };
+         struct pipe_resource *owned =
+            device->screen->resource_create(device->screen, &tmpl);
+         if (!owned)
+            return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
+         struct r300vk_bound_buffer_slice evicted = {
+            .resource = NULL,
+            .offset = mem->memory_offset,
+         };
+         pipe_resource_reference(&evicted.resource, mem->resource);
+         simple_mtx_lock(&device->memory_list_lock);
+         util_dynarray_append_typed(&mem->bound_buffers,
+                                    struct r300vk_bound_buffer_slice, evicted);
+         simple_mtx_unlock(&device->memory_list_lock);
+
+         pipe_resource_reference(&mem->resource, NULL);
+         mem->resource = owned;
+         mem->owns_buffer = true;
+      }
 
       if (mem->owns_buffer) {
          /* Map-before-bind: the memory has its own host pipe_buffer
