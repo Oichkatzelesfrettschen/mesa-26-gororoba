@@ -1021,6 +1021,32 @@ r300vk_nir_push_const_shape_ok(struct pipe_screen *pscreen, nir_shader *nir)
 static bool
 r300vk_device_init_identity_map_state(struct r300vk_device *device);
 
+/* True if the shader reads gl_ViewIndex (multiview), in either the deref form
+ * vk_spirv_to_nir emits or the lowered load_view_index intrinsic. */
+static bool
+r300vk_nir_uses_view_index(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_load_view_index)
+               return true;
+            if (intr->intrinsic == nir_intrinsic_load_deref) {
+               nir_deref_instr *d = nir_src_as_deref(intr->src[0]);
+               if (d && d->deref_type == nir_deref_type_var && d->var &&
+                   d->var->data.mode == nir_var_system_value &&
+                   d->var->data.location == SYSTEM_VALUE_VIEW_INDEX)
+                  return true;
+            }
+         }
+      }
+   }
+   return false;
+}
+
 static VkResult
 r300vk_compile_shader(struct r300vk_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
@@ -1314,6 +1340,20 @@ r300vk_compile_shader(struct r300vk_device *device,
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                        "r300vk: %s shader uses a dynamic uniform-buffer offset; "
                        "r300's constant file is addressed by a static vec4 slot",
+                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                       ? "vertex" : "fragment");
+   }
+
+   /* r300vk is apiVersion 1.0 with no VK_KHR_multiview: it reserves no per-view
+    * VS system-value stream and the SW-TCL nir_to_tgsi path has no mapping for the
+    * view-index builtin, so a shader reading gl_ViewIndex reaches ureg_swizzle as a
+    * null TGSI source and aborts (tgsi_ureg.h reg.File != TGSI_FILE_NULL).  Reject
+    * the multiview shader rather than crash. */
+   if (r300vk_nir_uses_view_index(nir)) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: %s shader reads gl_ViewIndex; multiview is not "
+                       "supported on the RS480 SW-TCL path",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
    }
