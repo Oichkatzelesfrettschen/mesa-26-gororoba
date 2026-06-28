@@ -925,29 +925,44 @@ static void r300_translate_fragment_shader(
             unsigned est = r300_nir_fs_estimate_alu_pairs(clone);
             if (est > (unsigned)compiler.Base.max_alu_insts) {
                 /* Target ~56 of the 64-slot envelope per pass so the NIR->RC
-                 * inflation never pushes a pass over the hardware ceiling.  Emit
-                 * and validate pass A of the split; pass B (the scratch-RT reload)
-                 * and the driver orchestration of the two draws are the remaining
-                 * phases, so the emitted pass A is freed here rather than compiled. */
+                 * inflation never pushes a pass over the hardware ceiling. */
                 nir_shader *pass_a = r300_nir_fs_emit_pass_a(clone, 56);
                 nir_shader *pass_b = r300_nir_fs_emit_pass_b(clone, 56);
-                if (pass_a && pass_b)
-                    fprintf(stderr,
-                            "r300 FS multipass: estimate %u > budget %u; pass A "
-                            "(%u paired-ALU) + pass B (%u) emitted and validated; "
-                            "scratch-RT orchestration (P3) pending\n",
-                            est, (unsigned)compiler.Base.max_alu_insts,
-                            r300_nir_fs_estimate_alu_pairs(pass_a),
-                            r300_nir_fs_estimate_alu_pairs(pass_b));
-                else
+                if (pass_a && pass_b) {
+                    /* Compile pass B into a partner code object -- it is below
+                     * budget so the recursive translate will not re-split -- store
+                     * it for the draw path, and fall through to compile pass A as
+                     * this shader's code by swapping the clone the main path
+                     * compiles.  The draw path renders pass A to a scratch target,
+                     * then pass B (sampling that scratch) to the real attachment. */
+                    struct r300_fragment_shader_code *pb =
+                        CALLOC_STRUCT(r300_fragment_shader_code);
+                    if (pb) {
+                        struct pipe_shader_state pb_state = {
+                            .type = PIPE_SHADER_IR_NIR, .ir.nir = pass_b };
+                        r300_translate_fragment_shader(r300, pb, pb_state);
+                        shader->multipass_pass_b = pb;
+                        ralloc_free(pass_b);
+                        ralloc_free(clone);
+                        clone = pass_a;
+                        fprintf(stderr,
+                                "r300 FS multipass: estimate %u > budget %u; split "
+                                "compiled (pass A as FS, pass B partner stored)\n",
+                                est, (unsigned)compiler.Base.max_alu_insts);
+                    } else {
+                        ralloc_free(pass_a);
+                        ralloc_free(pass_b);
+                    }
+                } else {
+                    if (pass_a)
+                        ralloc_free(pass_a);
+                    if (pass_b)
+                        ralloc_free(pass_b);
                     fprintf(stderr,
                             "r300 FS multipass: estimate %u > budget %u but not a "
                             "straight-line single-frontier split; partition deferred\n",
                             est, (unsigned)compiler.Base.max_alu_insts);
-                if (pass_a)
-                    ralloc_free(pass_a);
-                if (pass_b)
-                    ralloc_free(pass_b);
+                }
             }
         }
     }

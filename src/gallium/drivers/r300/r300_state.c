@@ -1444,6 +1444,16 @@ static void r300_delete_fs_state(struct pipe_context* pipe, void* shader)
     while (ptr) {
         tmp = ptr;
         ptr = ptr->next;
+        /* The >64-ALU multipass partner (pass B) is a separate code object, not
+         * in the per-compare-state list, so free it alongside its pass A. */
+        if (tmp->multipass_pass_b) {
+            struct r300_fragment_shader_code *pb = tmp->multipass_pass_b;
+            FREE(pb->code.constants_remap_table);
+            rc_constants_destroy(&pb->code.constants);
+            FREE(pb->cb_code);
+            free(pb->error);
+            FREE(pb);
+        }
         FREE(tmp->code.constants_remap_table);
         rc_constants_destroy(&tmp->code.constants);
         FREE(tmp->cb_code);
