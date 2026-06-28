@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -17,6 +18,7 @@
 #include "pipe/p_video_state.h"
 
 #include "vl_defines.h"
+#include "vl_h264_contract_wire.h"
 #include "vl_h264_cpu_mc.h"
 #include "vl_h264_deblock_cpu.h"
 #include "vl_h264_decoder.h"
@@ -252,6 +254,27 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
    struct pipe_surface *target_surfaces = target->get_surfaces(target);
    if (!target_surfaces)
       return 0;
+
+   /* Diagnostic: serialize each frame's macroblock contract to
+    * R300_H264_CONTRACT_DUMP.<n> so a host harness can replay the deblock against
+    * ffmpeg edge by edge. */
+   const char *contract_dump = getenv("R300_H264_CONTRACT_DUMP");
+   if (contract_dump) {
+      static int contract_frame;
+      char path[512];
+      snprintf(path, sizeof path, "%s.%d", contract_dump, contract_frame++);
+      size_t sz = vl_h264_contract_wire_size(dec->frame.num_macroblocks);
+      uint8_t *buf = malloc(sz);
+      if (buf) {
+         size_t wrote = vl_h264_contract_serialize(&dec->frame, buf, sz);
+         FILE *f = fopen(path, "wb");
+         if (f) {
+            fwrite(buf, 1, wrote, f);
+            fclose(f);
+         }
+         free(buf);
+      }
+   }
 
    /* Inter macroblocks predict from a reference, so the back half reconstructs
     * them when one is in the DPB.  An I frame has no reference and is left
