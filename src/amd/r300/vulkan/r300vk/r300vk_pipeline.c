@@ -1402,10 +1402,19 @@ r300vk_compile_shader(struct r300vk_device *device,
       /* The r300 VERTEX stage carries caps->integers = true (r300_screen.c), so
        * the SW-TCL VS nir_to_tgsi keeps load_vertex_id/load_instance_id as native
        * int system values and draw_vs_exec supplies them.  R300VK_NATIVE_VERTEXID
-       * keeps that native path (no synthetic vertex element), which frees a PSC
-       * velem slot so 16 attributes plus VertexID fit the 16-element budget.  The
-       * synthetic-stream path stays as the gated fallback. */
+       * takes that native path (no synthetic vertex element), which frees a PSC
+       * velem slot so 16 attributes plus VertexID fit the 16-element budget.
+       * spirv_to_nir leaves gl_VertexIndex/gl_InstanceIndex as a system-value
+       * deref, so rewrite it to the native intrinsic here; nir_to_tgsi rejects
+       * the raw deref.  The synthetic-stream path stays as the gated fallback
+       * and remains the base-inclusive route for indexed/firstInstance draws. */
       if ((needs_vid || needs_iid) && getenv("R300VK_NATIVE_VERTEXID")) {
+         if (!r300_nir_lower_vs_system_values_to_intrinsics(nir)) {
+            ralloc_free(nir);
+            return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                             "r300vk: failed to lower VS system values to "
+                             "native intrinsics");
+         }
          needs_vid = needs_iid = false;
       }
       if (needs_vid || needs_iid) {

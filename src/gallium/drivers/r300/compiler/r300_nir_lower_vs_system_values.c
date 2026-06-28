@@ -176,3 +176,63 @@ r300_nir_lower_vs_system_values_to_inputs(nir_shader *s, int vertex_id_slot,
    }
    return progress;
 }
+
+/* Rewrite the spirv_to_nir system-value deref into the native intrinsic the SW
+ * draw module already supplies.  draw_vs_exec fills TGSI_SEMANTIC_VERTEXID from
+ * (i + start_index) and TGSI_SEMANTIC_INSTANCEID from draw->instance_id, and the
+ * r300 VERTEX stage carries integers = true, so nir_to_tgsi keeps
+ * load_vertex_id / load_instance_id as native int system values rather than
+ * rejecting them.  Emitting the intrinsic instead of a synthetic vertex input
+ * consumes no vertex element, so a shader reading VertexID alongside the full
+ * maxVertexInputAttributes set still fits the 16-element PSC budget.
+ *
+ * load_vertex_id delivers i + start_index, which matches gl_VertexIndex for a
+ * non-indexed draw at any firstVertex; an indexed draw drops the vertexOffset
+ * (draw_vs_exec supplies the raw index) and load_instance_id is the zero-based
+ * instance number, dropping firstInstance.  The base-inclusive synthetic path
+ * stays the default for those cases; this native path is an opt-in slot-budget
+ * route for base-zero draws. */
+static bool
+lower_vs_sysval_to_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
+                             void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_deref)
+      return false;
+
+   nir_def *value;
+   switch (vs_sysval_of_intrinsic(intr)) {
+   case SYSTEM_VALUE_VERTEX_ID:
+      b->cursor = nir_before_instr(&intr->instr);
+      value = nir_load_vertex_id(b);
+      break;
+   case SYSTEM_VALUE_INSTANCE_ID:
+      b->cursor = nir_before_instr(&intr->instr);
+      value = nir_load_instance_id(b);
+      break;
+   default:
+      return false;
+   }
+
+   nir_def_rewrite_uses(&intr->def, value);
+   nir_instr_remove(&intr->instr);
+   return true;
+}
+
+bool
+r300_nir_lower_vs_system_values_to_intrinsics(nir_shader *s)
+{
+   if (s->info.stage != MESA_SHADER_VERTEX)
+      return false;
+
+   bool progress = nir_shader_intrinsics_pass(s, lower_vs_sysval_to_intrinsic,
+                                              nir_metadata_control_flow, NULL);
+   if (progress) {
+      /* The rewrite leaves the deref_var feeding each load_deref dead; DCE it
+       * before dropping the nir_var_system_value declarations, then re-gather
+       * so system_values_read reflects the native intrinsics downstream. */
+      nir_opt_dce(s);
+      nir_remove_dead_variables(s, nir_var_system_value, NULL);
+      nir_shader_gather_info(s, nir_shader_get_entrypoint(s));
+   }
+   return progress;
+}
