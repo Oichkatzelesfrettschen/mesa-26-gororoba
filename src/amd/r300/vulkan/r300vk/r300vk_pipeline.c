@@ -380,9 +380,11 @@ r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir,
  * sampler variable's data.binding.  The descriptor identity stays separate:
  * replay matches the original (set, binding), while the texture fetch uses
  * R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT because r300g sampler updates must start
- * at unit zero.  A multisample subpass input (GLSL_SAMPLER_DIM_SUBPASS_MS) is
- * left unlowered so the pipeline reject path catches it -- r300 is
- * single-sample.
+ * at unit zero.  A multisample subpass input (GLSL_SAMPLER_DIM_SUBPASS_MS) does
+ * not match the GLSL_SAMPLER_DIM_SUBPASS filter below and is left unlowered, but
+ * it sets no reject flag -- it is unreachable because r300 is single-sample and
+ * r300vk_CreateImage rejects samples != 1, so no multisample image (hence no
+ * GLSL_SAMPLER_DIM_SUBPASS_MS input) can ever exist to drive this pass.
  *
  * The replay binds one input attachment per pipeline (the single descriptor
  * identity), so reading two distinct input descriptors cannot be honored:
