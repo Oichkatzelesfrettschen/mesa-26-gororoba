@@ -177,6 +177,19 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
     NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
              nir_var_function_temp, UINT32_MAX);
 
+    /* A dynamically indexed vertex-input array (dEQP vertex_input.max_attributes
+     * reads in_attr[i] across a loop) reaches the interpreted VS as an indirect
+     * shader_in deref.  nir_to_tgsi only lowers indirect shader_in derefs for the
+     * fragment stage; for every other stage its nir_lower_io converts the deref
+     * to an indirect load_input that the later nir_lower_indirect_derefs cannot
+     * touch, so the indirect input survives to emit and ntt leaves the selected
+     * value in TGSI_FILE_NULL and aborts.  Lower it to the same if/else selection
+     * trees here, before draw hands the shader to nir_to_tgsi, so the interpreter
+     * only ever sees constant input indices.  The native GL path is unaffected:
+     * st/mesa already lowers shader_in indirects up front, leaving nothing to do. */
+    NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
+             nir_var_shader_in, UINT32_MAX);
+
     /* Fill in the r300 rasterizer outputs and assign driver locations. */
     r300_draw_fill_vs_outputs(nir, wpos_var, vs->shader);
 
