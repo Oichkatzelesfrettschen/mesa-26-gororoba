@@ -73,6 +73,17 @@ decode_one_macroblock(struct vl_h264_mb_decoder *dec,
    } else {
       memset(mb->coeff4x4, 0, sizeof(mb->coeff4x4));
    }
+
+   /* The in-loop deblock reads disable_deblock_idc and the alpha/beta offsets per
+    * macroblock to index the filter thresholds (sec 8.7.2.2).  The slice parser
+    * decodes them into the slice header, but only the macroblock contract reaches
+    * the deblock, so without this copy every macroblock carried offset zero and a
+    * stream signalling non-default slice_alpha_c0_offset/slice_beta_offset was
+    * filtered at the wrong QP index. */
+   mb->disable_deblock_idc = (int8_t) dec->slice->disable_deblocking_filter_idc;
+   mb->slice_alpha_c0_offset_div2 =
+      (int8_t) dec->slice->slice_alpha_c0_offset_div2;
+   mb->slice_beta_offset_div2 = (int8_t) dec->slice->slice_beta_offset_div2;
    return true;
 }
 
