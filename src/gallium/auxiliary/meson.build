@@ -440,6 +440,8 @@ files_libgalliumvl = files(
   'vl/vl_h264_param_parser.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
+  'vl/vl_h264_deblock_cpu.c',
+  'vl/vl_h264_deblock_cpu.h',
   'vl/vl_h264_decoder.c',
   'vl/vl_h264_decoder.h',
   'vl/vl_h264_idct.c',

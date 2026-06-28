@@ -142,6 +142,21 @@ if with_tests and with_gallium_softpipe
     suite: 'gallium',
   )
 
+  # CPU whole-frame in-loop deblock (vl_h264_deblock_cpu): the decode path's
+  # deblock after the inter back half and CPU intra pass, checked sample-for-
+  # sample against the shared integer reference (luma and both chroma planes).
+  test('vl-h264-deblock-cpu',
+    executable(
+      'vl_h264_deblock_cpu_test',
+      'auxiliary/vl/tests/vl_h264_deblock_cpu_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('auxiliary/vl')],
+      link_with : [libgalliumvl, libgallium],
+      dependencies : [idep_mesautil, dep_thread],
+    ),
+    suite: 'gallium',
+  )
+
   # Render-to-texture verification of the H.264 sample-reconstruction fragment
   # program (vl_h264_reconstruct.c): Clip1(prediction + residual) over both
   # planes, checked against the integer spec including the clip on both ends.

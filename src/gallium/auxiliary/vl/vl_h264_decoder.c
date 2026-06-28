@@ -17,6 +17,7 @@
 
 #include "vl_defines.h"
 #include "vl_h264_cpu_mc.h"
+#include "vl_h264_deblock_cpu.h"
 #include "vl_h264_decoder.h"
 #include "vl_h264_emit.h"
 #include "vl_h264_intra_reconstruct.h"
@@ -123,6 +124,10 @@ reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
    if (y) {
       vl_h264_intra_reconstruct_luma(dec->frame.macroblocks, num_mbs, w, h, y,
                                      yx->stride);
+      /* The plane now holds the whole frame -- inter macroblocks from the back
+       * half, intra from the pass above -- so the in-loop deblock runs once over
+       * all luma edges. */
+      vl_h264_deblock_cpu(&dec->frame, w, h, y, yx->stride, NULL, NULL, 0);
       pipe_texture_unmap(ctx, yx);
    }
 
@@ -140,9 +145,11 @@ reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
                                      chroma_h, &crx);
       /* The Cb and Cr planes are identical R8 allocations, so they share a
        * stride; reconstruct both with it. */
-      if (cb && cr && cbx->stride == crx->stride)
+      if (cb && cr && cbx->stride == crx->stride) {
          vl_h264_intra_reconstruct_chroma(dec->frame.macroblocks, num_mbs, w, h,
                                           cb, cr, cbx->stride);
+         vl_h264_deblock_cpu(&dec->frame, w, h, NULL, 0, cb, cr, cbx->stride);
+      }
       if (cb)
          pipe_texture_unmap(ctx, cbx);
       if (cr)
@@ -166,6 +173,7 @@ reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
          }
       vl_h264_intra_reconstruct_chroma(dec->frame.macroblocks, num_mbs, w, h, cb,
                                        cr, chroma_w);
+      vl_h264_deblock_cpu(&dec->frame, w, h, NULL, 0, cb, cr, chroma_w);
       for (unsigned r = 0; r < chroma_h; r++)
          for (unsigned col = 0; col < chroma_w; col++) {
             c[r * cx->stride + col * 2] = cb[r * chroma_w + col];
@@ -204,6 +212,9 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
          dec->emit = vl_h264_emit_create(dec->context);
          if (!dec->emit)
             return 0;
+         /* The whole frame is deblocked on the CPU after reconstruct_intra, so
+          * the inter emit must not also deblock. */
+         vl_h264_emit_set_skip_deblock(dec->emit, true);
       }
       struct pipe_sampler_view *ref_luma = ref_planes[0];
       vl_h264_emit_luma_inter_unorm(dec->emit, &target_surfaces[0],

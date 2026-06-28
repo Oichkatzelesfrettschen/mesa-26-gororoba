@@ -82,6 +82,12 @@ struct vl_h264_emit {
    void *fs_chroma_strong_v; /* chroma bS=4 two-tap deblock, vertical edge */
    void *fs_chroma_strong_h; /* chroma bS=4 two-tap deblock, horizontal edge */
    void *sampler;       /* NEAREST, clamp-to-edge, shared by every pass */
+
+   /* The decode path runs one CPU deblock over the whole frame after both the
+    * inter back half and the CPU intra pass, so the GPU in-loop deblock here is
+    * skipped: it would run before the intra macroblocks exist and double-filter
+    * the inter edges. */
+   bool skip_deblock;
 };
 
 /* Integer-pel prediction kernel: sample the reference at the fragment's
@@ -216,6 +222,12 @@ vl_h264_emit_create(struct pipe_context *pipe)
    emit->sampler = pipe->create_sampler_state(pipe, &samp);
 
    return emit;
+}
+
+void
+vl_h264_emit_set_skip_deblock(struct vl_h264_emit *emit, bool skip)
+{
+   emit->skip_deblock = skip;
 }
 
 void
@@ -1317,10 +1329,14 @@ vl_h264_emit_luma_inter_unorm(struct vl_h264_emit *emit,
 
    /* In-loop deblock filters the reconstructed luma in the integer domain before
     * it leaves for the UNORM target.  The even-pass ping-pong lands the result
-    * back in recon, so the scale-out below reads the deblocked picture. */
-   vl_h264_emit_deblock_luma(emit, recon, recon_view, scratch, scratch_view,
-                             width, height, slice);
-   pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+    * back in recon, so the scale-out below reads the deblocked picture.  The
+    * decode path filters on the CPU after the intra pass instead, so this is
+    * skipped there. */
+   if (!emit->skip_deblock) {
+      vl_h264_emit_deblock_luma(emit, recon, recon_view, scratch, scratch_view,
+                                width, height, slice);
+      pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+   }
 
    scale_copy(emit, emit->fs_scale, dst_luma, width, height, recon_view,
               1.0f / 255.0f);
@@ -1397,15 +1413,21 @@ vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
 
    /* In-loop chroma deblock on the integer Cb and Cr planes before the scale
     * out, sharing one scratch plane for the ping-pong.  Cb uses qp_cb, Cr uses
-    * qp_cr; the boundary strength is inherited from the co-located luma edge. */
-   struct pipe_resource *scratch = make_plane(screen, width, height);
-   struct pipe_sampler_view *scratch_view = make_view(pipe, scratch);
-   vl_h264_emit_deblock_chroma(emit, recon_cb, recon_cb_view, scratch,
-                               scratch_view, width, height, slice, false);
-   pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
-   vl_h264_emit_deblock_chroma(emit, recon_cr, recon_cr_view, scratch,
-                               scratch_view, width, height, slice, true);
-   pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+    * qp_cr; the boundary strength is inherited from the co-located luma edge.
+    * Skipped on the decode path, which deblocks on the CPU after the intra
+    * pass. */
+   if (!emit->skip_deblock) {
+      struct pipe_resource *scratch = make_plane(screen, width, height);
+      struct pipe_sampler_view *scratch_view = make_view(pipe, scratch);
+      vl_h264_emit_deblock_chroma(emit, recon_cb, recon_cb_view, scratch,
+                                  scratch_view, width, height, slice, false);
+      pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+      vl_h264_emit_deblock_chroma(emit, recon_cr, recon_cr_view, scratch,
+                                  scratch_view, width, height, slice, true);
+      pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+      pipe_sampler_view_reference(&scratch_view, NULL);
+      pipe_resource_reference(&scratch, NULL);
+   }
 
    if (planar) {
       /* Write each reconstructed component to its own R8 plane (lane 0). */

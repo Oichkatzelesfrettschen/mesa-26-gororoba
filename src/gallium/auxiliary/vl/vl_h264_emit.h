@@ -45,6 +45,10 @@ struct vl_h264_emit *vl_h264_emit_create(struct pipe_context *pipe);
 
 void vl_h264_emit_destroy(struct vl_h264_emit *emit);
 
+/* Skip the GPU in-loop deblock inside the inter emit; the decode path filters
+ * the whole frame on the CPU after the intra pass instead. */
+void vl_h264_emit_set_skip_deblock(struct vl_h264_emit *emit, bool skip);
+
 /*
  * Reconstruct the luma plane of an inter frame from slice into dst_luma.  For
  * each macroblock the orchestrator motion-compensates a prediction from ref_luma
