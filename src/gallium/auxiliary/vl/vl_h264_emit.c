@@ -1445,10 +1445,8 @@ vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
    pipe_sampler_view_reference(&ref_cr_view, NULL);
    pipe_sampler_view_reference(&recon_cb_view, NULL);
    pipe_sampler_view_reference(&recon_cr_view, NULL);
-   pipe_sampler_view_reference(&scratch_view, NULL);
    pipe_resource_reference(&ref_cb, NULL);
    pipe_resource_reference(&ref_cr, NULL);
    pipe_resource_reference(&recon_cb, NULL);
    pipe_resource_reference(&recon_cr, NULL);
-   pipe_resource_reference(&scratch, NULL);
 }
