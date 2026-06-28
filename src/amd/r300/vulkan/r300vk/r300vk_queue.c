@@ -1687,7 +1687,7 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
  * correct choice because the lowered coordinate is already in [0,1].  Identity
  * swizzle (XYZW) is used because subpassLoad returns the raw attachment value
  * without component remapping (Vulkan spec, section "Input Attachment Reads"). */
-static void
+static bool
 r300vk_bind_input_attachment(struct r300vk_device *device,
                              const struct r300vk_pipeline *pipeline,
                              const struct r300vk_cmd_bind_descriptor_sets *binds,
@@ -1698,7 +1698,7 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
 {
    struct pipe_context *pipe = device->pipe;
    if (!binds || !pipeline)
-      return;
+      return false;
 
    for (uint32_t s = 0; s < binds->set_count; s++) {
       const uint32_t descriptor_set = binds->first_set + s;
@@ -1715,19 +1715,19 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
 
          const unsigned unit = R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT;
          if (bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
-            return;
+            return false;
 
          const struct r300vk_descriptor *desc = &set->descriptors[bnd->offset];
          VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
          if (!iv || !iv->vk.image)
-            return;
+            return false;
          if (iv->vk.view_type != VK_IMAGE_VIEW_TYPE_2D)
-            return;
+            return false;
 
          struct r300vk_image *img =
             container_of(iv->vk.image, struct r300vk_image, vk);
          if (!img->resource)
-            return;
+            return false;
 
          uint32_t input_tile_origin_x = 0;
          uint32_t input_tile_origin_y = 0;
@@ -1741,12 +1741,12 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
                                                   &input_width,
                                                   &input_height);
          if (!input_resource || input_width == 0 || input_height == 0)
-            return;
+            return false;
 
          const enum pipe_format fmt =
             r300vk_vk_format_to_pipe_format(iv->vk.view_format);
          if (fmt == PIPE_FORMAT_NONE)
-            return;
+            return false;
 
          struct pipe_sampler_view sv_templ;
          memset(&sv_templ, 0, sizeof(sv_templ));
@@ -1759,7 +1759,7 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
          struct pipe_sampler_view *view =
             pipe->create_sampler_view(pipe, input_resource, &sv_templ);
          if (!view)
-            return;
+            return false;
 
          inv_extent[0] = 1.0f / (float)input_width;
          inv_extent[1] = 1.0f / (float)input_height;
@@ -1779,9 +1779,16 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
          bound->units[bound->count] = unit;
          bound->views[bound->count] = view;
          bound->count++;
-         return;
+         return true;
       }
    }
+
+   /* The pipeline declares an input attachment (the caller gated on
+    * fs_has_input_attachment) but the descriptor set supplied no matching bound
+    * view -- or a bind step above failed.  Return false so the caller skips the
+    * draw rather than letting the fragment shader sample sampler unit 0's
+    * stale/undefined view and render garbage.  Unreachable under valid usage. */
+   return false;
 }
 
 /* Release the transient sampler views bound for one draw.  Unbind each unit
@@ -2317,10 +2324,11 @@ r300vk_replay_draw(struct r300vk_device *device,
        * ia_inv_extent lives in this frame, valid through draw_vbo below -- the
        * same lifetime contract as r300vk_multitap_gather_dispatch_replay. */
       float ia_inv_extent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+      bool ia_bind_ok = true;
       if (bound_pipeline && bound_pipeline->fs_has_input_attachment)
-         r300vk_bind_input_attachment(device, bound_pipeline, last_bind_dsets,
-                                      &bound_tex, tile_origin_x, tile_origin_y,
-                                      ia_inv_extent);
+         ia_bind_ok = r300vk_bind_input_attachment(device, bound_pipeline,
+                                      last_bind_dsets, &bound_tex,
+                                      tile_origin_x, tile_origin_y, ia_inv_extent);
 
       if (device->dbg_log_draws) {
          fprintf(stderr,
@@ -2373,7 +2381,12 @@ r300vk_replay_draw(struct r300vk_device *device,
             fprintf(stderr, "\n");
          }
       }
-      pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+      /* Skip the draw when an expected input attachment could not be bound: the
+       * FS samples sampler unit 0, which would otherwise hold a stale/undefined
+       * view -- a defined no-op beats rendering garbage.  ia_bind_ok is always
+       * true under valid usage, so a conformant draw is never skipped. */
+      if (ia_bind_ok)
+         pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
       r300vk_unbind_descriptor_textures(device, &bound_tex);
    }
 }
