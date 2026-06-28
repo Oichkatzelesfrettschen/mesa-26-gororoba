@@ -137,3 +137,49 @@ vl_h264_cpu_luma_diag_fallback(const struct vl_h264_mb_contract *mbs,
          }
    }
 }
+
+void
+vl_h264_cpu_luma_mc_multiref(const struct vl_h264_mb_contract *mbs,
+                             unsigned num_mbs, unsigned width_in_mbs,
+                             unsigned height_in_mbs,
+                             const struct vl_h264_ref_plane *refs,
+                             unsigned num_refs, uint8_t *luma, unsigned stride)
+{
+   (void) height_in_mbs;
+   if (num_refs == 0)
+      return;
+   for (unsigned a = 0; a < num_mbs; a++) {
+      const struct vl_h264_mb_contract *mb = &mbs[a];
+      if (mb->ref_l0[0] < 0)
+         continue; /* intra macroblock */
+      unsigned mb_x = a % width_in_mbs, mb_y = a / width_in_mbs;
+
+      for (int by = 0; by < 4; by++)
+         for (int bx = 0; bx < 4; bx++) {
+            int blk = by * 4 + bx;
+            int ref_idx = mb->ref_l0[blk];
+            if (ref_idx < 0)
+               continue; /* intra block in an inter macroblock */
+            int mvx = mb->mv_l0[blk][0], mvy = mb->mv_l0[blk][1];
+            /* The back half already produced refs[0] at the non-j positions. */
+            if (ref_idx == 0 && !vl_h264_luma_mv_needs_j(mvx, mvy))
+               continue;
+            /* A reference past the built list cannot be resolved (an unsupported
+             * reordering or a frame-number gap); leave the back half's block. */
+            if ((unsigned)ref_idx >= num_refs)
+               continue;
+            const struct vl_h264_ref_plane *r = &refs[ref_idx];
+
+            int16_t res[16];
+            vl_h264_idct4(mb->coeff4x4[blk], res);
+            for (int ly = 0; ly < 4; ly++)
+               for (int lx = 0; lx < 4; lx++) {
+                  int px = (int)mb_x * 16 + bx * 4 + lx;
+                  int py = (int)mb_y * 16 + by * 4 + ly;
+                  int pred = predict_luma(r->pixels, r->stride, r->w, r->h, px, py,
+                                          mvx, mvy);
+                  luma[py * stride + px] = (uint8_t)clip1(pred + res[ly * 4 + lx]);
+               }
+         }
+   }
+}

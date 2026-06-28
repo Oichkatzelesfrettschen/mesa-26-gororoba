@@ -79,30 +79,81 @@ vl_h264_decode_bitstream(struct pipe_video_codec *codec,
                                   &dec->frame);
 }
 
-/* Reconstruct on the CPU the inter luma blocks the back half could not produce:
- * the diagonal-center quarter-pel positions whose 2D half-pel overflows FP24.
- * Maps the reference and target luma planes and overwrites those blocks. */
+/* Build RefPicList0 for a P slice (ITU-T H.264 sec 8.2.4.2.1): the short-term
+ * references ordered by descending frame_num, then the long-term references.
+ * The bitstream's ref_pic_list_modification is consumed by the entropy provider
+ * and not reconstructed here, so an explicitly reordered list falls back to this
+ * default order, and a frame_num wrap (long sequence) is left to the descending
+ * sort.  Returns the list length; list[0] is the back half's reference. */
+static unsigned
+build_ref_pic_list0(const struct pipe_h264_picture_desc *h264,
+                    struct pipe_video_buffer **list)
+{
+   unsigned st[16], lt[16], nst = 0, nlt = 0;
+   for (unsigned i = 0; i < ARRAY_SIZE(h264->ref); i++) {
+      if (!h264->ref[i])
+         continue;
+      if (h264->is_long_term[i])
+         lt[nlt++] = i;
+      else
+         st[nst++] = i;
+   }
+   for (unsigned i = 1; i < nst; i++) {     /* insertion sort, the list is tiny */
+      unsigned key = st[i];
+      int j = (int) i - 1;
+      while (j >= 0 &&
+             h264->frame_num_list[st[j]] < h264->frame_num_list[key]) {
+         st[j + 1] = st[j];
+         j--;
+      }
+      st[j + 1] = key;
+   }
+   unsigned n = 0;
+   for (unsigned i = 0; i < nst; i++)
+      list[n++] = h264->ref[st[i]];
+   for (unsigned i = 0; i < nlt; i++)
+      list[n++] = h264->ref[lt[i]];
+   return n;
+}
+
+/* Reconstruct on the CPU the inter luma blocks the back half got wrong: the
+ * diagonal-center quarter-pel positions whose 2D half-pel overflows FP24, and
+ * every block that references a RefPicList0 entry past index 0 (the back half
+ * samples only list0[0]).  Maps each reference's luma and the target, then
+ * overwrites those blocks. */
 static void
-luma_diag_fallback(struct vl_h264_decoder *dec, struct pipe_surface *surfaces,
-                   struct pipe_sampler_view *ref_luma)
+luma_mc_multiref(struct vl_h264_decoder *dec, struct pipe_surface *surfaces,
+                 struct pipe_video_buffer **list0, unsigned n0)
 {
    struct pipe_context *ctx = dec->context;
    unsigned w = dec->width_in_mbs, h = dec->height_in_mbs;
-   int rw = ref_luma->texture->width0, rh = ref_luma->texture->height0;
 
-   struct pipe_transfer *rx, *tx;
-   const uint8_t *r = pipe_texture_map(ctx, ref_luma->texture, 0, 0,
-                                       PIPE_MAP_READ, 0, 0, rw, rh, &rx);
+   struct vl_h264_ref_plane refs[16] = {0};
+   struct pipe_transfer *rx[16] = {0};
+   for (unsigned i = 0; i < n0 && i < 16; i++) {
+      struct pipe_sampler_view **pv = list0[i]->get_sampler_view_planes(list0[i]);
+      struct pipe_resource *tex = (pv && pv[0]) ? pv[0]->texture : NULL;
+      if (!tex)
+         continue;
+      refs[i].pixels = pipe_texture_map(ctx, tex, 0, 0, PIPE_MAP_READ, 0, 0,
+                                        tex->width0, tex->height0, &rx[i]);
+      refs[i].w = tex->width0;
+      refs[i].h = tex->height0;
+      refs[i].stride = rx[i] ? rx[i]->stride : 0;
+   }
+
+   struct pipe_transfer *tx;
    uint8_t *t = pipe_texture_map(ctx, surfaces[0].texture, 0, 0,
                                  PIPE_MAP_READ_WRITE, 0, 0, w * 16, h * 16, &tx);
-   if (r && t)
-      vl_h264_cpu_luma_diag_fallback(dec->frame.macroblocks,
-                                     dec->frame.num_macroblocks, w, h, r, rw, rh,
-                                     rx->stride, t, tx->stride);
+   if (t && refs[0].pixels)
+      vl_h264_cpu_luma_mc_multiref(dec->frame.macroblocks,
+                                   dec->frame.num_macroblocks, w, h, refs, n0, t,
+                                   tx->stride);
    if (t)
       pipe_texture_unmap(ctx, tx);
-   if (r)
-      pipe_texture_unmap(ctx, rx);
+   for (unsigned i = 0; i < n0 && i < 16; i++)
+      if (rx[i])
+         pipe_texture_unmap(ctx, rx[i]);
 }
 
 /* Reconstruct the intra macroblocks on the CPU into the target planes (sec 8.3).
@@ -200,12 +251,12 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
 
    /* Inter macroblocks predict from a reference, so the back half reconstructs
     * them when one is in the DPB.  An I frame has no reference and is left
-    * entirely to the CPU intra pass below.  The first reference is the
-    * prediction source; multiple references per frame are a separate rung. */
-   struct pipe_sampler_view **ref_planes = NULL;
-   for (unsigned i = 0; i < ARRAY_SIZE(h264->ref) && !ref_planes; ++i)
-      if (h264->ref[i])
-         ref_planes = h264->ref[i]->get_sampler_view_planes(h264->ref[i]);
+    * entirely to the CPU intra pass below.  The back half samples RefPicList0[0];
+    * blocks that reference a later list entry are fixed up on the CPU. */
+   struct pipe_video_buffer *list0[16];
+   unsigned n0 = build_ref_pic_list0(h264, list0);
+   struct pipe_sampler_view **ref_planes =
+      n0 ? list0[0]->get_sampler_view_planes(list0[0]) : NULL;
 
    if (ref_planes && ref_planes[0]) {
       if (!dec->emit) {
@@ -239,14 +290,13 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
                                          &dec->frame);
       }
 
-      /* The GPU back half has no kernel for the five 2D diagonal half-pel
-       * positions f, i, j, k, q: the center half-pel j builds a six-tap over the
-       * unclipped horizontal six-tap intermediate, which overflows the FP24
-       * integer-exact range, so the dispatch leaves those blocks at the integer
-       * position.  Recompute them on the CPU from the reference, overwriting the
-       * integer-pel copy, before the intra pass and the deblock read the
-       * corrected neighbors. */
-      luma_diag_fallback(dec, target_surfaces, ref_luma);
+      /* Fix up on the CPU the inter luma blocks the back half got wrong: the five
+       * 2D diagonal half-pel positions f, i, j, k, q (the center half-pel j
+       * overflows the FP24 integer-exact range, so the dispatch leaves them at the
+       * integer position), and every block that references a RefPicList0 entry past
+       * index 0 (the back half sampled only list0[0]).  This runs before the intra
+       * pass and the deblock read the corrected neighbors. */
+      luma_mc_multiref(dec, target_surfaces, list0, n0);
    }
 
    /* The intra macroblocks reconstruct on the CPU after the back half, so they
