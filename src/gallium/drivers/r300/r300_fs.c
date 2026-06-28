@@ -643,11 +643,36 @@ r300_nir_fs_analyze_cut(nir_shader *nir, unsigned per_pass_budget,
     return cut;
 }
 
+/* Pack a scalar FP24-integer-window carry into an RGBA8 colour byte-exact so an
+ * 8-bit scratch render target preserves it for pass B.  r300's fragment ALU is
+ * float-only, so the integer is split with float arithmetic: byte_k =
+ * floor(x / 256^k) - 256 * floor(x / 256^(k+1)), scaled to a unorm channel.  This
+ * is exact while the carry stays in the FP24 integer-exact window |x| < 2^17
+ * (r300-fp-format-lut-and-fp24-exact-window), which is the shape the straight-line
+ * integer-accumulator partition produces.  Pass B reverses it: byte_k =
+ * round(channel_k * 255), x = sum_k byte_k * 256^k.  This pack/unpack pair is the
+ * shared keystone of the FS partition and the multipass programmable-blend. */
+static nir_def *
+r300_nir_fs_pack_carry_rgba8(nir_builder *b, nir_def *carry)
+{
+    nir_def *x = nir_ffloor(b, carry);
+    nir_def *bytes[4];
+    for (unsigned k = 0; k < 4; k++) {
+        nir_def *shifted = (k == 0)
+            ? x
+            : nir_ffloor(b, nir_fmul_imm(b, x, 1.0 / (double)(1u << (8 * k))));
+        nir_def *hi = nir_ffloor(b, nir_fmul_imm(b, shifted, 1.0 / 256.0));
+        bytes[k] = nir_fsub(b, shifted, nir_fmul_imm(b, hi, 256.0));
+    }
+    return nir_fmul_imm(b, nir_vec4(b, bytes[0], bytes[1], bytes[2], bytes[3]),
+                        1.0 / 255.0);
+}
+
 /* Phase 2b: emit pass A of a straight-line single-frontier split.  Clone the
  * fragment shader, find the same cut and the one carry value crossing it, drop
  * every instruction after the cut (including the original colour store), and
- * write the carry to the colour output so a scratch render target captures it
- * for pass B.  Returns the truncated clone, or NULL when the straight-line
+ * write the byte-packed carry to the colour output so a scratch render target
+ * captures it for pass B.  Returns the truncated clone, or NULL when the straight-line
  * single-frontier shape does not hold (the caller keeps the single-pass compile
  * and the existing >64-ALU emit error).
  *
@@ -691,7 +716,9 @@ r300_nir_fs_emit_pass_a(nir_shader *src, unsigned per_pass_budget)
         if (carry)
             break;
     }
-    if (!carry) {
+    /* The byte-pack carries one scalar through the four RGBA8 channels, so a
+     * multi-component carry does not fit; fall back to the single-pass compile. */
+    if (!carry || carry->num_components != 1) {
         ralloc_free(a);
         return NULL;
     }
@@ -716,14 +743,10 @@ r300_nir_fs_emit_pass_a(nir_shader *src, unsigned per_pass_budget)
             nir_instr_remove(instr);
     }
 
-    /* Write the carry to the colour output, replicating its channels into the
-     * vec4 so every component reaches the scratch target. */
+    /* Byte-pack the scalar carry into the RGBA8 colour output so the 8-bit scratch
+     * render target preserves it exactly for pass B to reload and unpack. */
     nir_builder b = nir_builder_at(nir_after_block(block));
-    nir_def *c0 = nir_channel(&b, carry, 0);
-    nir_def *chans[4];
-    for (unsigned i = 0; i < 4; i++)
-        chans[i] = (i < carry->num_components) ? nir_channel(&b, carry, i) : c0;
-    nir_store_var(&b, out, nir_vec(&b, chans, 4), 0xf);
+    nir_store_var(&b, out, r300_nir_fs_pack_carry_rgba8(&b, carry), 0xf);
 
     nir_index_ssa_defs(impl);
     nir_progress(true, impl, nir_metadata_none);
