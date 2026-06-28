@@ -643,6 +643,222 @@ r300_nir_fs_analyze_cut(nir_shader *nir, unsigned per_pass_budget,
     return cut;
 }
 
+/* Pack a scalar FP24-integer-window carry into an RGBA8 colour byte-exact so an
+ * 8-bit scratch render target preserves it for pass B.  r300's fragment ALU is
+ * float-only, so the integer is split with float arithmetic: byte_k =
+ * floor(x / 256^k) - 256 * floor(x / 256^(k+1)), scaled to a unorm channel.  This
+ * is exact while the carry stays in the FP24 integer-exact window |x| < 2^17
+ * (r300-fp-format-lut-and-fp24-exact-window), which is the shape the straight-line
+ * integer-accumulator partition produces.  Pass B reverses it: byte_k =
+ * round(channel_k * 255), x = sum_k byte_k * 256^k.  This pack/unpack pair is the
+ * shared keystone of the FS partition and the multipass programmable-blend. */
+/* The carry is mapped to a non-negative fixed-point integer before the byte
+ * split so a signed, fractional carry survives: v = (carry + BIAS) * SCALE.
+ * BIAS recentres the signed range onto [0, 2*BIAS); SCALE adds fractional bits.
+ * The product must stay inside the FP24 integer-exact window (< 2^17) for the
+ * floor/byte arithmetic to be lossless, so 2*BIAS*SCALE == 2^17: carry in
+ * (-64, 64) with 1/1024 (~10-bit) resolution.  A carry outside that range clamps
+ * at the window edge -- the residual HW precision limit of an 8-bit-per-channel
+ * RT plus float-only ALU; a full-range encoding needs the log-float limb. */
+#define R300_MP_CARRY_BIAS  64.0
+#define R300_MP_CARRY_SCALE 1024.0
+
+static nir_def *
+r300_nir_fs_pack_carry_rgba8(nir_builder *b, nir_def *carry)
+{
+    nir_def *v = nir_fmul_imm(b,
+        nir_fadd_imm(b, carry, R300_MP_CARRY_BIAS), R300_MP_CARRY_SCALE);
+    nir_def *x = nir_ffloor(b, nir_fmax(b, v, nir_imm_float(b, 0.0f)));
+    nir_def *bytes[4];
+    for (unsigned k = 0; k < 4; k++) {
+        nir_def *shifted = (k == 0)
+            ? x
+            : nir_ffloor(b, nir_fmul_imm(b, x, 1.0 / (double)(1u << (8 * k))));
+        nir_def *hi = nir_ffloor(b, nir_fmul_imm(b, shifted, 1.0 / 256.0));
+        bytes[k] = nir_fsub(b, shifted, nir_fmul_imm(b, hi, 256.0));
+    }
+    return nir_fmul_imm(b, nir_vec4(b, bytes[0], bytes[1], bytes[2], bytes[3]),
+                        1.0 / 255.0);
+}
+
+/* Reverse r300_nir_fs_pack_carry_rgba8: recover the scalar carry from an RGBA8
+ * scratch sample.  byte_k = round(channel_k * 255), v = sum_k byte_k * 256^k,
+ * carry = v / SCALE - BIAS. */
+static nir_def *
+r300_nir_fs_unpack_carry_rgba8(nir_builder *b, nir_def *rgba)
+{
+    nir_def *v = nir_imm_float(b, 0.0f);
+    for (unsigned k = 0; k < 4; k++) {
+        nir_def *byte = nir_fround_even(
+            b, nir_fmul_imm(b, nir_channel(b, rgba, k), 255.0));
+        v = nir_fadd(b, v, nir_fmul_imm(b, byte, (double)(1u << (8 * k))));
+    }
+    return nir_fadd_imm(b, nir_fmul_imm(b, v, 1.0 / R300_MP_CARRY_SCALE),
+                        -R300_MP_CARRY_BIAS);
+}
+
+/* Phase 2b: emit pass A of a straight-line single-frontier split.  Clone the
+ * fragment shader, find the same cut and the one carry value crossing it, drop
+ * every instruction after the cut (including the original colour store), and
+ * write the byte-packed carry to the colour output so a scratch render target
+ * captures it for pass B.  Returns the truncated clone, or NULL when the straight-line
+ * single-frontier shape does not hold (the caller keeps the single-pass compile
+ * and the existing >64-ALU emit error).
+ *
+ * The carry is written raw here; pass B reads it back through the scratch render
+ * target.  r300 has only 8-bit-per-channel render targets, so a float carry that
+ * leaves the FP24 integer-exact window (|x| <= 2^17, the window measured in
+ * r300-fp-format-lut-and-fp24-exact-window) must be byte-packed across the four
+ * RGBA8 channels rather than stored as a clamped colour -- that pack/unpack pair
+ * is the shared keystone this and the multipass programmable-blend both need, and
+ * is wired in the orchestration phase (P3) alongside the scratch-RT bind. */
+static nir_shader *
+r300_nir_fs_emit_pass_a(nir_shader *src, unsigned per_pass_budget)
+{
+    nir_shader *a = nir_shader_clone(NULL, src);
+    unsigned frontier = 0;
+    nir_instr *cut = r300_nir_fs_analyze_cut(a, per_pass_budget, &frontier);
+    if (!cut || frontier != 1) {
+        ralloc_free(a);
+        return NULL;
+    }
+
+    nir_function_impl *impl = nir_shader_get_entrypoint(a);
+    nir_block *block = nir_start_block(impl);
+
+    /* The single carry def: the ALU result at/before the cut used after it. */
+    nir_def *carry = NULL;
+    nir_foreach_instr(instr, block) {
+        if (instr->index > cut->index)
+            break;
+        if (instr->type != nir_instr_type_alu)
+            continue;
+        nir_def *def = &nir_instr_as_alu(instr)->def;
+        nir_foreach_use(use, def) {
+            if (nir_src_is_if(use))
+                continue;
+            if (nir_src_use_instr(use)->index > cut->index) {
+                carry = def;
+                break;
+            }
+        }
+        if (carry)
+            break;
+    }
+    /* The byte-pack carries one scalar through the four RGBA8 channels, so a
+     * multi-component carry does not fit; fall back to the single-pass compile. */
+    if (!carry || carry->num_components != 1) {
+        ralloc_free(a);
+        return NULL;
+    }
+
+    nir_variable *out = NULL;
+    nir_foreach_shader_out_variable(var, a) {
+        if (var->data.location == FRAG_RESULT_COLOR ||
+            var->data.location == FRAG_RESULT_DATA0) {
+            out = var;
+            break;
+        }
+    }
+    if (!out) {
+        ralloc_free(a);
+        return NULL;
+    }
+
+    /* Drop everything strictly after the cut, including the original colour
+     * store; the carry and its producers (index <= cut) stay. */
+    nir_foreach_instr_safe(instr, block) {
+        if (instr->index > cut->index)
+            nir_instr_remove(instr);
+    }
+
+    /* Byte-pack the scalar carry into the RGBA8 colour output so the 8-bit scratch
+     * render target preserves it exactly for pass B to reload and unpack. */
+    nir_builder b = nir_builder_at(nir_after_block(block));
+    nir_store_var(&b, out, r300_nir_fs_pack_carry_rgba8(&b, carry), 0xf);
+
+    nir_index_ssa_defs(impl);
+    nir_progress(true, impl, nir_metadata_none);
+    nir_validate_shader(a, "r300 FS multipass pass A");
+    return a;
+}
+
+/* Phase 2b: emit pass B, the second sub-shader.  Clone the fragment shader, find
+ * the same cut and scalar carry, then read the carry back from the scratch render
+ * target that pass A wrote: sample a 2D sampler, unpack the RGBA8 bytes into the
+ * carry value, and rewrite every use of the original carry to that value.  The
+ * carry's producers (the instructions up to the cut) lose all uses and are
+ * removed by the dead-code pass inside nir_to_rc, leaving only the scratch read
+ * plus the post-cut instructions -- the second half of the program.
+ *
+ * The orchestration phase (P3) binds the scratch image at sampler unit 0 and
+ * drives the fullscreen pass; the sample coordinate convention (here the
+ * normalized fragment position) is matched there.  Returns the rewritten clone or
+ * NULL when the straight-line single-frontier shape does not hold. */
+static nir_shader *
+r300_nir_fs_emit_pass_b(nir_shader *src, unsigned per_pass_budget)
+{
+    nir_shader *bsh = nir_shader_clone(NULL, src);
+    unsigned frontier = 0;
+    nir_instr *cut = r300_nir_fs_analyze_cut(bsh, per_pass_budget, &frontier);
+    if (!cut || frontier != 1) {
+        ralloc_free(bsh);
+        return NULL;
+    }
+
+    nir_function_impl *impl = nir_shader_get_entrypoint(bsh);
+    nir_block *block = nir_start_block(impl);
+
+    nir_def *carry = NULL;
+    nir_foreach_instr(instr, block) {
+        if (instr->index > cut->index)
+            break;
+        if (instr->type != nir_instr_type_alu)
+            continue;
+        nir_def *def = &nir_instr_as_alu(instr)->def;
+        nir_foreach_use(use, def) {
+            if (nir_src_is_if(use))
+                continue;
+            if (nir_src_use_instr(use)->index > cut->index) {
+                carry = def;
+                break;
+            }
+        }
+        if (carry)
+            break;
+    }
+    if (!carry || carry->num_components != 1) {
+        ralloc_free(bsh);
+        return NULL;
+    }
+
+    /* Sample the scratch target at the top of the block, before any use of the
+     * carry, and unpack the byte-packed value pass A wrote.  A RECT sampler reads
+     * at the fragment's window coordinate directly: the r300 compiler inserts the
+     * RC_STATE_R300_TEXRECT_FACTOR scale (1/width, 1/height of the bound scratch)
+     * the driver fills, so gl_FragCoord normalizes to the matching scratch texel
+     * with no separate uniform.  The draw orchestration allocates the scratch as
+     * PIPE_TEXTURE_RECT to match. */
+    nir_builder b = nir_builder_at(nir_before_block(block));
+    nir_variable *samp = nir_variable_create(
+        bsh, nir_var_uniform,
+        glsl_sampler_type(GLSL_SAMPLER_DIM_RECT, false, false, GLSL_TYPE_FLOAT),
+        "r300_mp_scratch");
+    samp->data.binding = 0;
+    nir_deref_instr *deref = nir_build_deref_var(&b, samp);
+    nir_def *coord = nir_trim_vector(&b, nir_load_frag_coord(&b), 2);
+    nir_def *rgba = nir_tex(&b, coord, .texture_deref = deref,
+                            .sampler_deref = deref);
+    nir_def *value = r300_nir_fs_unpack_carry_rgba8(&b, rgba);
+
+    nir_def_rewrite_uses(carry, value);
+
+    nir_index_ssa_defs(impl);
+    nir_progress(true, impl, nir_metadata_none);
+    nir_validate_shader(bsh, "r300 FS multipass pass B");
+    return bsh;
+}
+
 static void r300_translate_fragment_shader(
     struct r300_context* r300,
     struct r300_fragment_shader_code* shader,
@@ -726,24 +942,55 @@ static void r300_translate_fragment_shader(
             mp_gate = (e && e[0] == '1') ? 1 : 0;
         }
         if (mp_gate) {
+            /* The authoritative >64-ALU ceiling is emit_alu in r300_fragprog_emit.c:
+             * code->alu.length >= max_alu_insts errors the compile.  This NIR-level
+             * estimate runs before nir_to_rc lowers trig/pow/etc, so it UNDERCOUNTS;
+             * gating at the raw max_alu_insts would let a shader whose estimate lands
+             * under the ceiling still overflow at emit and fall back to the dummy FS.
+             * Gate instead at the inflation-safe per-pass capacity (also the per-pass
+             * split budget): a shader whose estimate exceeds what one safe pass holds
+             * is split at NIR, so the authoritative emit ceiling is never reached for
+             * the straight-line single-frontier shapes the partition handles. */
+            const unsigned safe_pass_alu = 56;
             unsigned est = r300_nir_fs_estimate_alu_pairs(clone);
-            if (est > (unsigned)compiler.Base.max_alu_insts) {
-                /* Target ~56 of the 64-slot envelope per pass so the NIR->RC
-                 * inflation never pushes a pass over the hardware ceiling. */
-                unsigned frontier = 0;
-                nir_instr *cut = r300_nir_fs_analyze_cut(clone, 56, &frontier);
-                if (cut)
+            if (est > safe_pass_alu) {
+                nir_shader *pass_a = r300_nir_fs_emit_pass_a(clone, safe_pass_alu);
+                nir_shader *pass_b = r300_nir_fs_emit_pass_b(clone, safe_pass_alu);
+                if (pass_a && pass_b) {
+                    /* Compile pass B into a partner code object -- it is below
+                     * budget so the recursive translate will not re-split -- store
+                     * it for the draw path, and fall through to compile pass A as
+                     * this shader's code by swapping the clone the main path
+                     * compiles.  The draw path renders pass A to a scratch target,
+                     * then pass B (sampling that scratch) to the real attachment. */
+                    struct r300_fragment_shader_code *pb =
+                        CALLOC_STRUCT(r300_fragment_shader_code);
+                    if (pb) {
+                        struct pipe_shader_state pb_state = {
+                            .type = PIPE_SHADER_IR_NIR, .ir.nir = pass_b };
+                        r300_translate_fragment_shader(r300, pb, pb_state);
+                        shader->multipass_pass_b = pb;
+                        ralloc_free(pass_b);
+                        ralloc_free(clone);
+                        clone = pass_a;
+                        fprintf(stderr,
+                                "r300 FS multipass: estimate %u > budget %u; split "
+                                "compiled (pass A as FS, pass B partner stored)\n",
+                                est, (unsigned)compiler.Base.max_alu_insts);
+                    } else {
+                        ralloc_free(pass_a);
+                        ralloc_free(pass_b);
+                    }
+                } else {
+                    if (pass_a)
+                        ralloc_free(pass_a);
+                    if (pass_b)
+                        ralloc_free(pass_b);
                     fprintf(stderr,
-                            "r300 FS multipass: estimate %u > budget %u; cut at instr "
-                            "%u, carry frontier %u value(s) (phase 2b emit pending)\n",
-                            est, (unsigned)compiler.Base.max_alu_insts,
-                            cut->index, frontier);
-                else
-                    fprintf(stderr,
-                            "r300 FS multipass: estimate %u > budget %u but no "
-                            "straight-line cut (control flow or unsplittable); "
-                            "partition deferred\n",
+                            "r300 FS multipass: estimate %u > budget %u but not a "
+                            "straight-line single-frontier split; partition deferred\n",
                             est, (unsigned)compiler.Base.max_alu_insts);
+                }
             }
         }
     }
@@ -869,6 +1116,16 @@ bool r300_pick_fragment_shader(struct r300_context *r300,
                                struct r300_fragment_program_external_state *state)
 {
     struct r300_fragment_shader_code* ptr;
+
+    /* The >64-ALU multipass draw orchestration forces pass B for its second draw;
+     * honour the override rather than re-picking pass A by texture-compare state. */
+    if (r300->multipass_override_fs) {
+        if (fs->shader != r300->multipass_override_fs) {
+            fs->shader = r300->multipass_override_fs;
+            return true;
+        }
+        return false;
+    }
 
     if (!fs->first) {
         /* Build the fragment shader for the first time. */
