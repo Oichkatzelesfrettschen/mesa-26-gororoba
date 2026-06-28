@@ -14,101 +14,85 @@ Codex and compatible agents read `AGENTS.md` directly. Human contributors read `
 
 ## Hard rules
 
-The following rules are enforceable. Later sections may explain mechanism or rationale, but no later section may weaken or contradict these rules.
+These rules are enforceable. Later sections explain mechanism or rationale and never weaken or contradict them.
 
 ### Boundary, paths, and instruction files
 
-- MUST keep Mesa normal flows independent of `steinmarder`: build, install, test, source-comment, upstream-sync, and submission. `steinmarder` may supply evidence only; its bundles and findings stay out of Mesa, and Mesa driver changes stay out of `steinmarder`.
-- MUST use repository-relative paths, generated native files, PATH-resolved tools, or explicit user roots. Discover the repository root with `repo_root=$(git rev-parse --show-toplevel)`.
-- MUST NOT put local absolute paths, private host FQDNs, per-user toolchains, raw IP literals, or worktree names in checked-in files.
-- MUST keep instruction files as real tracked files: no symlinks, copied bodies, or divergent loader instructions.
+- Mesa normal flows -- build, install, test, source-comment, upstream-sync, submission -- stay independent of `steinmarder`. `steinmarder` supplies evidence only; its bundles and findings stay out of Mesa, and Mesa driver changes stay out of `steinmarder`.
+- Paths in checked-in work are repository-relative, generated native files, PATH-resolved tools, or explicit user roots. Discover the repository root with `repo_root=$(git rev-parse --show-toplevel)`.
+- Checked-in files carry no local absolute paths, private host FQDNs, per-user toolchains, raw IP literals, or worktree names.
+- Instruction files stay real tracked files: no symlinks, copied bodies, or divergent loader instructions.
 
 ### Root cause, evidence, and conformance
 
-- MUST identify the exact driver path, chip, test, spec rule, and kernel or Mesa mechanism before changing behavior.
-- MUST prefer PCI IDs, ISA/register sources, and measurements over PALM/Wrestler family nicknames.
-- MUST establish root cause from primary sources before opinion: ISA section, kernel function, spec paragraph, and test oracle.
-- MUST mark known, hypothesized, and speculative claims distinctly in findings and code comments.
-- MUST cite the symbol-discovery method, not only `file:line`: `(clangd: textDocument/references on FUNC)`, `(global -r SYMBOL)`, `(ast-grep --pattern PATTERN)`, or `(rg --fixed-strings SYMBOL src/)`.
-- MUST record the observation, source or spec constraint, implementation hypothesis, falsifier, validation command or retained bundle path, and expected CTS, Piglit, or deqp movement before any hardware-RCA or conformance fix.
-- MUST check `dmesg` for DRM CS validation errors before GPU-behavior analysis.
-- MUST verify module reachability with `/proc/PID/maps` or `gdb info sharedlibrary` before symbolizing a crash address.
-- MUST keep evidence classes separate: build, runtime, conformance, and silicon.
-- MUST NOT claim a CTS, Piglit, or deqp fix from build-only evidence.
-- MUST NOT revise predictions after observation, silently rerun tests until output matches a hypothesis, or propose a workaround without naming its spec-conformance cost.
+- A behavior change names the exact driver path, chip, test, spec rule, and kernel or Mesa mechanism first.
+- PCI IDs, ISA and register sources, and measurements identify silicon; PALM/Wrestler family nicknames stay out of that role.
+- Root cause comes from primary sources before opinion: ISA section, kernel function, spec paragraph, test oracle.
+- Findings and code comments mark known, hypothesized, and speculative claims distinctly.
+- A code claim carries its symbol-discovery method with the location: `(clangd: textDocument/references on FUNC)`, `(global -r SYMBOL)`, `(ast-grep --pattern PATTERN)`, `(rg --fixed-strings SYMBOL src/)`.
+- A hardware-RCA or conformance fix records the observation, source or spec constraint, implementation hypothesis, falsifier, validation command or retained bundle path, and expected CTS/Piglit/deqp movement before the change.
+- GPU-behavior analysis starts from a `dmesg` check for DRM CS validation errors.
+- Crash symbolization starts from module reachability via `/proc/PID/maps` or `gdb info sharedlibrary`.
+- Build, runtime, conformance, and silicon stay separate evidence classes.
+- A CTS/Piglit/deqp fix claim rests on test evidence; build-only evidence proves a build.
+- A recorded prediction stands after observation; a probe runs once and its result stands; a workaround names its spec-conformance cost.
 
 ### Builds, tests, and verdicts
 
-- MUST treat warnings and unexpected tool, CTS, Piglit, or deqp output as defects until explained.
-- MUST report unexpected results immediately.
-- MUST build touched code cleanly under configured warning flags and add no new warnings.
-- MUST record what was built, tested, skipped, blocked, or unavailable.
-- MUST say `not run` and give the reason when a test was not run.
-- MUST calibrate every new probe, lint, or verdict-producing script against known-good and known-bad inputs before trusting its verdict.
-- MUST NOT remove build targets, tests, or validation checks as collateral for a narrow fix.
-- MUST NOT change generated files without running the generator or documenting why it is unavailable.
+- Warnings and unexpected tool, CTS, Piglit, or deqp output are defects until explained.
+- Unexpected results surface immediately.
+- Touched code builds cleanly under the configured warning flags and adds no warnings.
+- The report records what was built, tested, skipped, blocked, or unavailable.
+- An unrun test reads `not run` with its reason.
+- A new probe, lint, or verdict-producing script earns trust by calibration against known-good and known-bad inputs first.
+- Build targets, tests, and validation checks survive a narrow fix.
+- A generated-file change runs the generator, or documents why the generator is unavailable.
 
 ### Languages and scripts
 
-- MUST keep each translation unit in its existing language and configured standard.
-- MUST keep C translation units at C11 or newer, never pre-C11.
-- MUST keep C++ backends at C++11 or newer, never below the configured standard.
-- MUST treat C11 and C++11 as floors, not ceilings.
-- MUST NOT mix C and C++ in one translation unit.
-- MUST write Python tooling for CPython 3.12 through 3.14 inclusive. Avoid APIs deprecated for removal after 3.14 where practical.
-- MUST write shell scripts as POSIX `sh` unless a script explicitly requires and declares `bash`.
+- Each translation unit keeps its existing language and configured standard.
+- C translation units stay at C11 or newer.
+- C++ backends stay at C++11 or newer, at or above the configured standard.
+- C11 and C++11 are floors; later standards are open.
+- One translation unit holds one language; C and C++ stay separate.
+- Python tooling targets CPython 3.12 through 3.14 inclusive, and avoids APIs deprecated for removal after 3.14 where practical.
+- Shell scripts are POSIX `sh`; a script that requires `bash` declares it.
 
 ### Build orchestration
 
-- MUST preserve Meson plus Make. Meson owns configuration and Ninja generation.
-  Make and build-infra own host selection, audit checks, generated native
-  overlays, clean, build, and install.
-- MUST model Meson defaults in build audits. When an option is omitted or set to `auto`, audit the dependencies Meson will enable on the target host.
-- MUST NOT treat absent or `auto` Meson options as disabled.
-- MUST require exact opt-in values for hazard gates, such as `R300_TRACE_HAZARD_ACCEPTED=1`.
-- MUST reject unset, empty, and zero-valued hazard gates.
-- MUST NOT use `getenv()` presence as hazardous-path consent.
-- MUST use Meson `[binaries]` plus `CCACHE_PREFIX=distcc` for distcc/ccache integration.
-- MUST NOT chain `ccache distcc compiler` through a shell wrapper.
-- MUST NOT revive a C or C++ distcc-pump lane that puts `ccache` or
-  `sccache` before distcc-pump.
-- MUST NOT assume `RUSTC_WRAPPER` affects Meson Rust.
-- MUST NOT hardcode `~/.rustup/toolchains/.../bin/rustc` in a Meson native file.
-- MUST NOT add standalone build helper scripts for compiler selection, audit policy, clean, build, install, or hazard consent.
+- Meson plus Make both stand. Meson owns configuration and Ninja generation. Make and build-infra own host selection, audit checks, generated native overlays, clean, build, and install.
+- Build audits model Meson defaults: for an omitted or `auto` option, audit the dependencies Meson enables on the target host. An absent or `auto` option resolves to what Meson will do, not to disabled.
+- Hazard gates take an exact opt-in value such as `R300_TRACE_HAZARD_ACCEPTED=1`. Unset, empty, and zero-valued gates stay closed, and `getenv()` presence alone is not consent.
+- distcc/ccache integration uses Meson `[binaries]` plus `CCACHE_PREFIX=distcc`. A shell wrapper chaining `ccache distcc compiler` stays retired, as does any C/C++ distcc-pump lane that puts `ccache` or `sccache` before distcc-pump.
+- Meson Rust ignores `RUSTC_WRAPPER`; a Meson native file names the Rust toolchain by a stable path, never a hardcoded `~/.rustup/toolchains/.../bin/rustc`.
+- Compiler selection, audit policy, clean, build, install, and hazard consent live in Make and build-infra; standalone helper scripts for them stay out.
 
 ### Git, merge, and submission
 
-- MUST use durable mechanism names in branches, commit subjects, PR titles, source comments, finding filenames, and bundle directories.
-- MUST set the branch name, first commit subject, and PR title before first push.
-- MUST NOT use wave, phase, mission, session, PR, reviewer, agent, or worktree labels as load-bearing identity.
-- MUST preserve all non-refuted content during merges. Default additive resolution is union plus synthesis.
-- MUST NOT use `git merge -X theirs`, `git checkout --theirs`, blanket conflict-marker stripping such as `sed -i '/^<<</d; ...'`, or unreviewed deletion as synthesis.
-- MUST force-push `main` or shared branches only with explicit user sign-off and a commit message explaining why.
-- MUST skip pre-commit hooks only in emergencies and only with the reason in the commit message.
-- MUST NOT push `upstream/main` directly to fork `main` with `git push origin upstream/main:main`; integrate through an intentional rebase.
-- MUST NOT submit Mesa patches through an autonomous tool. The submitter must understand and own the change.
+- Branches, commit subjects, PR titles, source comments, finding filenames, and bundle directories carry durable mechanism names. The branch name, first commit subject, and PR title are set before first push. Wave, phase, mission, session, PR, reviewer, agent, and worktree labels stay out of load-bearing identity.
+- Merges preserve all non-refuted content; the default resolution is union plus synthesis. `git merge -X theirs`, `git checkout --theirs`, blanket conflict-marker stripping such as `sed -i '/^<<</d; ...'`, and unreviewed deletion are not synthesis.
+- A force-push to `main` or a shared branch carries explicit user sign-off and a commit message explaining why.
+- A skipped pre-commit hook is an emergency move, with the reason in the commit message.
+- `upstream/main` integrates into fork `main` through an intentional rebase; `git push origin upstream/main:main` stays out.
+- A human submitter understands and owns each Mesa patch; no autonomous tool submits Mesa patches.
 
 ### AI disclosure, authorship, and copyright
 
-- MUST disclose AI involvement with the Mesa-required `Assisted-by:` trailer, or `Generated-by:` when AI generated almost the entire change, when policy requires disclosure.
-- MUST use `Co-authored-by:` only for human co-authors.
-- MUST NOT add `(LLM-assisted)`, `Generated by Claude`, or any AI tag to source headers.
-- MUST NOT force-push to scrub historical pre-policy `Co-Authored-By: Claude` trailers.
-- MUST preserve upstream copyright headers verbatim, including author name and year.
-- MUST NOT fabricate personal-name copyright lines such as `Copyright (c) YYYY Eirikr Hinngart` or `Copyright (c) YYYY <git config user.name>`.
-- MUST NOT keep LLM-default copyright names.
-- MUST NOT use `Copyright (c) YYYY steinmarder project`.
-- MUST NOT strip upstream copyrights, rewrite them during file movement, or add a second project-collective line above them.
+- When policy requires disclosure, the commit carries the Mesa `Assisted-by:` trailer, or `Generated-by:` when AI generated almost the entire change.
+- `Co-authored-by:` names human co-authors only.
+- Source headers carry no AI tag: no `(LLM-assisted)`, `Generated by Claude`, or similar.
+- Historical pre-policy `Co-Authored-By: Claude` trailers stand; a force-push to scrub them stays out.
+- Upstream copyright headers stay verbatim through file movement, author name and year intact, with no second project-collective line above them.
+- A new file header carries a real copyright line: not a fabricated personal name (`Copyright (c) YYYY Eirikr Hinngart`, `Copyright (c) YYYY <git config user.name>`), not an LLM-default name, and not `Copyright (c) YYYY steinmarder project`.
 
 ### Comments, prose, and safety
 
-- MUST write source comments so a Mesa maintainer six months later can understand them without this project's task tracker.
-- MUST NOT cite internal GitHub or GitLab fork issue numbers, private PR chronology, wave labels, task numbers, author tags, local paths, private hosts, or deictic time in source comments.
-- MUST use American (United States) English spelling in new or modified source comments, commit messages, and documentation authored by this project's contributors.
-- MUST NOT mass-reformat code, churn upstream comment spelling when the patch is about behavior, produce stubs, placeholders, dead code, or `TODO: finish later` prose without explicit tracked rationale and user agreement.
-- MUST report results and decisions directly: state what a thing is and does, drop contrast framing (`X, not Y`) and side commentary, and add no narration of internal deliberation.
-- MUST stop normal feature work for a critical security or unsafe hardware-access defect, then contain and report before resuming.
-- MUST NOT run destructive commands such as `sudo rm -rf` on shared workspace paths.
+- A source comment stands on its own for a Mesa maintainer six months later, without this project's task tracker. It cites no internal GitHub/GitLab fork issue number, private PR chronology, wave label, task number, author tag, local path, private host, or deictic time.
+- New or modified source comments, commit messages, and documentation by this project's contributors use American (United States) English spelling. A behavior patch leaves upstream comment spelling alone.
+- A patch changes behavior or structure with intent: no mass reformat, no stub, placeholder, dead code, or `TODO: finish later` prose absent explicit tracked rationale and user agreement.
+- Reports state results and decisions directly: what a thing is and does, no contrast framing (`X, not Y`), no side commentary, no narration of internal deliberation.
+- A critical security or unsafe hardware-access defect stops normal feature work; contain and report it, then resume.
+- Shared workspace paths stay intact; a destructive command such as `sudo rm -rf` on them stays out.
 
 ## Workspace roots
 
