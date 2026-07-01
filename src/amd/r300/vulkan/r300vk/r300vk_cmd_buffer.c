@@ -125,8 +125,25 @@ r300vk_cmd_buffer_create(struct vk_command_pool *pool,
    if (!cmd)
       return vk_error(pool->base.device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   VkResult result = vk_command_buffer_init(pool, &cmd->base,
-                                             &r300vk_cmd_buffer_ops, level);
+   /* r300vk records into its own entry stream (r300vk_cmd_append) for a
+    * primary command buffer, replayed directly at submit.  A secondary
+    * command buffer's commands are not tied to a submission until
+    * vkCmdExecuteCommands merges them into a primary buffer, so the
+    * vk_common entrypoint generator routes secondary-buffer recording
+    * through vk_cmd_enqueue_unless_primary_* into cmd_queue instead of
+    * the driver's own entrypoints, then vkCmdExecuteCommands replays that
+    * queue (vk_cmd_queue_execute in vk_command_buffer.c) into the primary
+    * buffer's real entry stream.  vk_command_buffer_init leaves cmd_queue
+    * uninitialized (ctx stays NULL) unless needs_cmd_queue is requested;
+    * request it exactly when a secondary buffer will need that queue. */
+   VkResult result = vk_command_buffer_init_with_params(
+      &cmd->base,
+      &(struct vk_command_buffer_init_params){
+         .pool = pool,
+         .ops = &r300vk_cmd_buffer_ops,
+         .level = level,
+         .needs_cmd_queue = level == VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+      });
    if (result != VK_SUCCESS) {
       vk_free(&pool->alloc, cmd);
       return result;
