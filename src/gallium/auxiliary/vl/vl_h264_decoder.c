@@ -350,7 +350,8 @@ chroma_mc_multiref(struct vl_h264_decoder *dec, struct pipe_surface *surfaces,
  * reading the inter neighbors the back half wrote.  The chroma plane is
  * interleaved NV12, so it is de-interleaved per component and re-interleaved. */
 static void
-reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
+reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces,
+                  bool constrained_intra)
 {
    struct pipe_context *ctx = dec->context;
    unsigned w = dec->width_in_mbs, h = dec->height_in_mbs;
@@ -362,7 +363,7 @@ reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
                                  PIPE_MAP_READ_WRITE, 0, 0, w * 16, h * 16, &yx);
    if (y) {
       vl_h264_intra_reconstruct_luma(dec->frame.macroblocks, num_mbs, w, h, y,
-                                     yx->stride);
+                                     yx->stride, constrained_intra);
       /* The plane now holds the whole frame -- inter macroblocks from the back
        * half, intra from the pass above -- so the in-loop deblock runs once over
        * all luma edges. */
@@ -386,7 +387,7 @@ reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
        * stride; reconstruct both with it. */
       if (cb && cr && cbx->stride == crx->stride) {
          vl_h264_intra_reconstruct_chroma(dec->frame.macroblocks, num_mbs, w, h,
-                                          cb, cr, cbx->stride);
+                                          cb, cr, cbx->stride, constrained_intra);
          vl_h264_deblock_cpu(&dec->frame, w, h, NULL, 0, cb, cr, cbx->stride);
       }
       if (cb)
@@ -411,7 +412,7 @@ reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
             cr[r * chroma_w + col] = c[r * cx->stride + col * 2 + 1];
          }
       vl_h264_intra_reconstruct_chroma(dec->frame.macroblocks, num_mbs, w, h, cb,
-                                       cr, chroma_w);
+                                       cr, chroma_w, constrained_intra);
       vl_h264_deblock_cpu(&dec->frame, w, h, NULL, 0, cb, cr, chroma_w);
       for (unsigned r = 0; r < chroma_h; r++)
          for (unsigned col = 0; col < chroma_w; col++) {
@@ -494,8 +495,12 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
    }
 
    /* The intra macroblocks reconstruct on the CPU after the back half, so they
-    * read any inter neighbors from the written planes. */
-   reconstruct_intra(dec, target_surfaces);
+    * read any inter neighbors from the written planes.  constrained_intra_pred
+    * bars those inter neighbors from intra prediction; a NULL pps leaves it
+    * off. */
+   bool constrained_intra =
+      h264->pps && h264->pps->constrained_intra_pred_flag;
+   reconstruct_intra(dec, target_surfaces, constrained_intra);
    return 0;
 }
 

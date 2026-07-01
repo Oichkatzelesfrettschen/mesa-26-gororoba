@@ -19,6 +19,7 @@
 #ifndef vl_h264_intra_reconstruct_h
 #define vl_h264_intra_reconstruct_h
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "vl_h264_mb_contract.h"
@@ -42,12 +43,14 @@ void vl_h264_idct4(const int16_t coeff[16], int16_t residual[16]);
  * width_in_mbs*16 by height_in_mbs*16 plane, stride bytes per row.  Each
  * macroblock predicts from already reconstructed neighbours -- Intra_4x4 as a
  * sub-block wavefront, Intra_16x16 whole-block -- adds the inverse-transformed
- * residual, and writes Clip1 back so later blocks read it.
+ * residual, and writes Clip1 back so later blocks read it.  When
+ * constrained_intra is set, an inter-coded neighbor is excluded from the
+ * prediction sample derivation.
  */
 void vl_h264_intra_reconstruct_luma(const struct vl_h264_mb_contract *mbs,
                                     unsigned num_mbs, unsigned width_in_mbs,
                                     unsigned height_in_mbs, uint8_t *luma,
-                                    unsigned stride);
+                                    unsigned stride, bool constrained_intra);
 
 /*
  * The Intra_4x4 prediction for one block (sec 8.3.1.2), exposed for validation:
@@ -69,12 +72,14 @@ void vl_h264_intra_predict_4x4(const uint8_t *luma, unsigned stride,
  * height_in_mbs*8 planes, stride bytes per row.  Both components of a macroblock
  * share intra_chroma_pred_mode; each predicts from its neighbour row and column,
  * adds the inverse-transformed residual (chroma DC Hadamard plus AC), and writes
- * Clip1.
+ * Clip1.  When constrained_intra is set, an inter-coded neighbor is excluded
+ * from the prediction.
  */
 void vl_h264_intra_reconstruct_chroma(const struct vl_h264_mb_contract *mbs,
                                       unsigned num_mbs, unsigned width_in_mbs,
                                       unsigned height_in_mbs, uint8_t *cb,
-                                      uint8_t *cr, unsigned stride);
+                                      uint8_t *cr, unsigned stride,
+                                      bool constrained_intra);
 
 #ifdef __cplusplus
 }

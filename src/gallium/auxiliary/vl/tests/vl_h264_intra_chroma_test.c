@@ -143,7 +143,7 @@ main(int argc, char **argv)
    cr = calloc(CHROMA_W, CHROMA_H);
    CHECK(cb && cr);
    vl_h264_intra_reconstruct_chroma(mbs, NUM_MBS, WIDTH_IN_MBS, HEIGHT_IN_MBS, cb,
-                                    cr, CHROMA_W);
+                                    cr, CHROMA_W, false);
 
    /* The reference is I420: Cb (U) then Cr (V) after the luma plane. */
    const uint8_t *ref_cb = ref + LUMA_W * LUMA_H;
