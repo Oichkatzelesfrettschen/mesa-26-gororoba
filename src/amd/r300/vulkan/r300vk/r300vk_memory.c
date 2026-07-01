@@ -872,22 +872,72 @@ r300vk_BindImageMemory2(VkDevice _device,
           image_size > mem->size - pBindInfos[i].memoryOffset)
          return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
+      /* Memory aliasing, image-over-buffer: binding an image to a memory
+       * whose live view is a borrowed VkBuffer resource would evict that
+       * buffer from the memory's host-map path -- vkMapMemory would map the
+       * image's storage while GPU consumers of the still-bound buffer read
+       * its own never-written BO.  Promote to allocation-sized owns storage
+       * exactly like the buffer-over-buffer alias path: the evicted buffer
+       * becomes a bound_buffers slice, so the Flush/Unmap/submit
+       * host -> buffer sync propagates host writes to it, and the image half
+       * rides the bound_image_tile pull below.  The slice keeps the OLD
+       * memory_offset (the buffer bind's offset), so the promote runs before
+       * this bind overwrites it.  Guarded to !map_ptr so a live transfer is
+       * never orphaned, to a distinct resource so re-binding the same image
+       * never promotes, and to a PIPE_BUFFER view so an image-over-image
+       * rebind keeps the single-active-view model. */
+      if (!mem->owns_buffer && !mem->map_ptr && mem->resource &&
+          mem->resource != img->resource &&
+          mem->resource->target == PIPE_BUFFER && mem->size <= UINT_MAX) {
+         struct pipe_resource tmpl = {
+            .target = PIPE_BUFFER,
+            .format = PIPE_FORMAT_R8_UNORM,
+            .bind = PIPE_BIND_VERTEX_BUFFER,
+            .usage = PIPE_USAGE_DYNAMIC,
+            .width0 = (unsigned)mem->size,
+            .height0 = 1,
+            .depth0 = 1,
+            .array_size = 1,
+         };
+         struct pipe_resource *owned =
+            device->screen->resource_create(device->screen, &tmpl);
+         if (!owned)
+            return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
+         struct r300vk_bound_buffer_slice evicted = {
+            .resource = NULL,
+            .offset = mem->memory_offset,
+         };
+         pipe_resource_reference(&evicted.resource, mem->resource);
+         simple_mtx_lock(&device->memory_list_lock);
+         util_dynarray_append_typed(&mem->bound_buffers,
+                                    struct r300vk_bound_buffer_slice, evicted);
+         simple_mtx_unlock(&device->memory_list_lock);
+
+         pipe_resource_reference(&mem->resource, NULL);
+         mem->resource = owned;
+         mem->owns_buffer = true;
+      }
+
       mem->memory_offset = pBindInfos[i].memoryOffset;
       r300vk_clear_bound_image(mem);
       mem->bound_image_offset = pBindInfos[i].memoryOffset;
       mem->bound_image_size = image_size;
 
-      if (mem->owns_buffer && img->vk.tiling == VK_IMAGE_TILING_LINEAR) {
-         /* Map-before-bind linear image: vkMapMemory already created the
-          * memory's own host pipe_buffer and a live map (the deqp default
-          * allocator maps before bind).  The image's pixels live in its own
-          * r300g tile, written by a GPU copy, so the host map and the tile are
-          * separate storage -- mirror the owns_buffer VkBuffer path: keep the
-          * live map, record the tile slice, and re-sync after submit or
-          * Invalidate so HOST_COHERENT readers observe the GPU-filled tile
-          * through the mapped pointer without an explicit invalidate. */
-         pipe_resource_reference(&mem->bound_image_tile, img->resource);
-         mem->bound_image_row_pitch = img->linear_row_pitch;
+      if (mem->owns_buffer) {
+         /* Owns storage (map-before-bind, or an alias promote above): the
+          * memory keeps its own host pipe_buffer and any live map.  A linear
+          * image's pixels live in a separate row-major r300g tile that a GPU
+          * copy fills -- record the tile so the submit-exit and Invalidate
+          * syncs pull it into the host map, mirroring the owns_buffer
+          * VkBuffer slices.  An optimal-tiling image has no host-linear
+          * layout to pull; its content is reachable only through GPU image
+          * ops, which read img->resource directly, so the owns storage stays
+          * the memory's host view. */
+         if (img->vk.tiling == VK_IMAGE_TILING_LINEAR) {
+            pipe_resource_reference(&mem->bound_image_tile, img->resource);
+            mem->bound_image_row_pitch = img->linear_row_pitch;
+         }
       } else {
          /* Map-after-bind (or optimal tiling): borrow the image's tiled
           * resource as mem->resource so a later vkMapMemory maps the texture
