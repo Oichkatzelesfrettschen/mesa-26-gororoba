@@ -41,7 +41,7 @@ gles2 = 'enabled'
 glvnd = 'enabled'
 glx = 'dri'
 egl = 'enabled'
-egl-native-platform = 'drm'
+egl-native-platform = 'surfaceless'
 gbm = 'enabled'
 
 # r600 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.

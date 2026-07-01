@@ -68,13 +68,13 @@ gles1 = 'enabled'
 gles2 = 'enabled'
 
 # Loader and window-system surfaces.  GLVND vendor dispatch, GLX over DRI, EGL,
-# and GBM.  egl-native-platform='drm' makes EGL_DEFAULT_DISPLAY use the DRM
+# and GBM.  egl-native-platform='surfaceless' makes EGL_DEFAULT_DISPLAY use the surfaceless
 # native platform for the renderD128 headless path the Piglit/deqp lane runs on;
 # x11/wayland callers select their platform explicitly.
 glvnd = 'enabled'
 glx = 'dri'
 egl = 'enabled'
-egl-native-platform = 'drm'
+egl-native-platform = 'surfaceless'
 gbm = 'enabled'
 
 # r300 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.
