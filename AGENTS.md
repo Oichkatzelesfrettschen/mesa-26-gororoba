@@ -598,7 +598,7 @@ Examples of forbidden source-comment authority include `companion to PR #...`, `
 
 Source comments name durable mechanisms: exact chip, ISA/register rule, API/spec rule, kernel validator, test class, or measured behavior.
 
-Commit messages and finding documents may carry chronology when useful. Source comments do not.
+Commit messages and finding documents may carry chronology and the spec section number when useful. Source comments carry neither: a source comment states the mechanism or names the controlling rule in its own terms, without a spec section number, so a reader does not need the spec open to parse it. The section-number provenance lives in the commit message and the finding. Like the American-spelling rule, this governs new or modified comments only; do not churn existing comments to strip a section number.
 
 Preferred shape:
 
@@ -632,7 +632,7 @@ Use these examples as style anchors: the WORD0 fix block in `src/amd/terascale/v
 A mechanism comment has this order:
 
 1. Load-bearing claim: `WORD0 carries the per-BO byte offset.`
-2. Public or source authority by name: `evergreen_packet3_check`, AMD ISA chapter, register macro, or spec section.
+2. Public or source authority by name: `evergreen_packet3_check`, AMD ISA chapter, register macro, or the named rule -- not a spec section number, which the commit message and finding carry.
 3. Consequence, with an inline code fragment when clearer than prose: `ib[WORD0] = reloc->gpu_offset + offset`.
 4. Test reference when the comment explains a fixed failure: CTS case or `dEQP-VK.<group>.*`.
 5. Env knobs or flags, grouped at the end of the block when relevant.
@@ -641,11 +641,11 @@ Default to short comments. A one-line trailing comment on the load-bearing line 
 
 Use one thought per comment. Stack separate comments when steps are distinct. Do not fuse separate steps into one multi-clause sentence.
 
-Do not paraphrase the next line of code. If the code already says what happens, the comment explains why the code has that shape: silicon constraint, spec section, kernel validator, measurement, or non-local invariant.
+Do not paraphrase the next line of code. If the code already says what happens, the comment explains why the code has that shape: silicon constraint, spec rule, kernel validator, measurement, or non-local invariant.
 
 Do not comment mechanical code. Comments earn space by carrying information that does not survive in code alone.
 
-Name citations by authority, not by internal line number or private path: AMD Evergreen-Family ISA section, `SQ_TEX_RESOURCE_WORD4.DST_SEL_X`, Vulkan spec section, or kernel function.
+Name citations by concrete authority, not by internal line number, spec section number, or private path: `SQ_TEX_RESOURCE_WORD4.DST_SEL_X`, the named AMD Evergreen-Family ISA rule, the named Vulkan spec rule, or the kernel function. The section number itself lives in the commit message and finding.
 
 Use active voice and sequence. `The kernel reads WORD0. Then it adds reloc->gpu_offset. Then the shader sees the intended VA.` is better than one passive sentence with three clauses.
 
