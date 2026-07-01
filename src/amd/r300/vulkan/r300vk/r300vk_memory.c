@@ -16,6 +16,8 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 #include "util/u_inlines.h"
+#include "util/u_math.h"
+#include "util/os_misc.h"
 #include "frontend/winsys_handle.h"
 #include "vk_util.h"
 
@@ -335,14 +337,24 @@ r300vk_memory_map_texture_resource(struct r300vk_device *device,
 {
    /* Texture resources map as full mip-level surfaces.  The only valid Vulkan
     * byte offset is the image's bind offset; sub-ranges that need byte-granular
-    * access must use a buffer resource instead.  The explicit map range still
-    * has to fit inside the bound image's byte span because texture_map returns
-    * a pointer to the whole surface rather than a byte-windowed view. */
+    * access must use a buffer resource instead.  The map range may exceed the
+    * image's tight byte span up to the page-rounded capacity of the backing
+    * BO: radeon_winsys_bo_create aligns every allocation to gart_page_size,
+    * which the winsys itself derives from os_get_page_size because TTM rounds
+    * BO sizes to the CPU page.  Bytes between the image span and the page
+    * boundary are allocated storage, so a host map covering them cannot fault;
+    * the whole range stays clamped to the VkDeviceMemory allocation size. */
    if (offset < mem->bound_image_offset)
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 
+   uint64_t page_size = 0;
+   if (!os_get_page_size(&page_size))
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+
+   const VkDeviceSize mappable_size =
+      MIN2(mem->size, align64(mem->bound_image_size, page_size));
    const VkDeviceSize image_offset = offset - mem->bound_image_offset;
-   if (image_offset != 0 || map_range_size > mem->bound_image_size)
+   if (image_offset != 0 || map_range_size > mappable_size)
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 
    struct pipe_box box;
