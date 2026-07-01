@@ -111,11 +111,21 @@ build_ref_pic_list0(const struct pipe_h264_picture_desc *h264,
       else
          st[nst++] = i;
    }
+   /* Order the short-term references by descending PicNum (sec 8.2.4.2.1).  PicNum
+    * is FrameNumWrap, so at a frame_num wrap a reference whose FrameNum exceeds
+    * the current frame_num is the older picture; a raw-FrameNum sort would place
+    * it first.  Without an sps the wrap is unknown, so fall back to raw FrameNum,
+    * which equals PicNum until a wrap occurs. */
+   int curr = (int) h264->frame_num;
+   int max_fn = sps ? (1 << (sps->log2_max_frame_num_minus4 + 4)) : 0;
    for (unsigned i = 1; i < nst; i++) {     /* insertion sort, the list is tiny */
       unsigned key = st[i];
+      int key_pn = max_fn ? short_term_pic_num(h264, key, curr, max_fn)
+                          : (int) h264->frame_num_list[key];
       int j = (int) i - 1;
       while (j >= 0 &&
-             h264->frame_num_list[st[j]] < h264->frame_num_list[key]) {
+             (max_fn ? short_term_pic_num(h264, st[j], curr, max_fn)
+                     : (int) h264->frame_num_list[st[j]]) < key_pn) {
          st[j + 1] = st[j];
          j--;
       }
@@ -128,36 +138,50 @@ build_ref_pic_list0(const struct pipe_h264_picture_desc *h264,
    for (unsigned i = 0; i < nlt && n + 1 < ARRAY_SIZE(idx); i++)
       idx[n++] = lt[i];
 
-   /* Reconstruct the reordering (sec 8.2.4.3.1).  Only the short-term commands
-    * (modification_of_pic_nums_idc 0 and 1) are applied; the shift needs a list of
-    * at least num_ref_idx_l0_active entries.  RefPicList0 is the leading
-    * num_ref_idx_l0_active entries, which is all the back half and the multiref
-    * fixups read, so entries past it are left untouched. */
+   /* Reconstruct the reordering (sec 8.2.4.3.1 and 8.2.4.3.2).  Short-term
+    * commands (modification_of_pic_nums_idc 0 and 1) select a reference by
+    * PicNum; a long-term command (idc 2) selects by LongTermPicNum.  The shift
+    * needs a list of at least num_ref_idx_l0_active entries.  RefPicList0 is the
+    * leading num_ref_idx_l0_active entries, which is all the back half and the
+    * multiref fixups read, so entries past it are left untouched. */
    unsigned num_active = h264->num_ref_idx_l0_active_minus1 + 1;
    if (frame && frame->num_reorder_l0 > 0 && num_active <= n &&
        num_active + 1 <= ARRAY_SIZE(idx) && sps) {
-      int curr = (int) h264->frame_num;
-      int max_fn = 1 << (sps->log2_max_frame_num_minus4 + 4);
       int pred = curr;
       unsigned ref_idx = 0;
       for (unsigned c = 0; c < frame->num_reorder_l0 && ref_idx < num_active; c++) {
          unsigned op = frame->reorder_l0[c].idc;
-         if (op != 0 && op != 1)
-            continue;                  /* long-term reorder is not reconstructed */
-         int abs_diff = (int) frame->reorder_l0[c].value + 1;
-         int no_wrap = (op == 0)
-            ? ((pred - abs_diff < 0) ? pred - abs_diff + max_fn : pred - abs_diff)
-            : ((pred + abs_diff >= max_fn) ? pred + abs_diff - max_fn : pred + abs_diff);
-         pred = no_wrap;
-         int pic_num = (no_wrap > curr) ? no_wrap - max_fn : no_wrap;
          unsigned target = ARRAY_SIZE(h264->ref);
-         for (unsigned r = 0; r < ARRAY_SIZE(h264->ref); r++) {
-            if (!h264->ref[r] || h264->is_long_term[r])
-               continue;
-            if (short_term_pic_num(h264, r, curr, max_fn) == pic_num) {
-               target = r;
-               break;
+         if (op == 0 || op == 1) {
+            int abs_diff = (int) frame->reorder_l0[c].value + 1;
+            int no_wrap = (op == 0)
+               ? ((pred - abs_diff < 0) ? pred - abs_diff + max_fn : pred - abs_diff)
+               : ((pred + abs_diff >= max_fn) ? pred + abs_diff - max_fn : pred + abs_diff);
+            pred = no_wrap;
+            int pic_num = (no_wrap > curr) ? no_wrap - max_fn : no_wrap;
+            for (unsigned r = 0; r < ARRAY_SIZE(h264->ref); r++) {
+               if (!h264->ref[r] || h264->is_long_term[r])
+                  continue;
+               if (short_term_pic_num(h264, r, curr, max_fn) == pic_num) {
+                  target = r;
+                  break;
+               }
             }
+         } else if (op == 2) {
+            /* LongTermPicNum is LongTermFrameIdx for frame coding, which the VA
+             * reference carries in frame_num_list, the same field short-term
+             * references use for FrameNum. */
+            unsigned long_term_pic_num = frame->reorder_l0[c].value;
+            for (unsigned r = 0; r < ARRAY_SIZE(h264->ref); r++) {
+               if (!h264->ref[r] || !h264->is_long_term[r])
+                  continue;
+               if (h264->frame_num_list[r] == long_term_pic_num) {
+                  target = r;
+                  break;
+               }
+            }
+         } else {
+            continue;                  /* idc 3 ends the list */
          }
          if (target == ARRAY_SIZE(h264->ref))
             continue;                  /* not in the DPB; leave the default entry */
@@ -165,13 +189,9 @@ build_ref_pic_list0(const struct pipe_h264_picture_desc *h264,
             idx[cidx] = idx[cidx - 1];
          idx[ref_idx++] = target;
          unsigned nidx = ref_idx;
-         for (unsigned cidx = ref_idx; cidx <= num_active; cidx++) {
-            unsigned rr = idx[cidx];
-            int pn = h264->is_long_term[rr] ? -1
-                     : short_term_pic_num(h264, rr, curr, max_fn);
-            if (pn != pic_num)
+         for (unsigned cidx = ref_idx; cidx <= num_active; cidx++)
+            if (idx[cidx] != target)
                idx[nidx++] = idx[cidx];
-         }
       }
    }
 
