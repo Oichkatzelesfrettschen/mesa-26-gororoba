@@ -243,7 +243,8 @@ main(int argc, char **argv)
    vl_h264_mb_decoder_begin_slice(&dec, &sh);
    CHECK(decode_slice(&dec, &reader, false, idr_mbs));
    vl_h264_intra_reconstruct_chroma(idr_mbs, NUM_MBS, WIDTH_IN_MBS,
-                                    HEIGHT_IN_MBS, ref_cb, ref_cr, CHROMA_W);
+                                    HEIGHT_IN_MBS, ref_cb, ref_cr, CHROMA_W,
+                                    false);
    vl_h264_mb_decoder_fini(&dec);
    vl_h264_reader_fini(&reader);
 
@@ -303,7 +304,7 @@ main(int argc, char **argv)
 
    /* The intra macroblocks, reading their reconstructed inter neighbors. */
    vl_h264_intra_reconstruct_chroma(p_mbs, NUM_MBS, WIDTH_IN_MBS, HEIGHT_IN_MBS,
-                                    cb, cr, CHROMA_W);
+                                    cb, cr, CHROMA_W, false);
 
    const uint8_t *ref_cb_ff = ref + LUMA_W * LUMA_H;
    const uint8_t *ref_cr_ff = ref_cb_ff + CHROMA_SIZE;

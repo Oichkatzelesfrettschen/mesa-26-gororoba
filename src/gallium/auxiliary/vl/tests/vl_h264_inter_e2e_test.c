@@ -208,7 +208,7 @@ main(int argc, char **argv)
    vl_h264_mb_decoder_begin_slice(&dec, &sh);
    CHECK(decode_slice(&dec, &reader, false, idr_mbs));
    vl_h264_intra_reconstruct_luma(idr_mbs, NUM_MBS, WIDTH_IN_MBS, HEIGHT_IN_MBS,
-                                  ref_luma, LUMA_W);
+                                  ref_luma, LUMA_W, false);
    vl_h264_mb_decoder_fini(&dec);
    vl_h264_reader_fini(&reader);
 
@@ -299,7 +299,7 @@ main(int argc, char **argv)
    /* The intra macroblocks read their reconstructed inter neighbors from the
     * plane, so they fill after the back half. */
    vl_h264_intra_reconstruct_luma(p_mbs, NUM_MBS, WIDTH_IN_MBS, HEIGHT_IN_MBS,
-                                  out, LUMA_W);
+                                  out, LUMA_W, false);
 
    /* Every luma sample now matches ffmpeg: the back half did the FP24-feasible
     * inter blocks, the CPU fallback the diagonal-center ones, the CPU intra path

@@ -4,6 +4,7 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "vl_h264_intra_reconstruct.h"
 
@@ -35,9 +36,9 @@ xy_to_blk(unsigned bx, unsigned by)
 
 /*
  * A reconstructed sample at (ax, ay) is available to predict block cur_blk of
- * macroblock cur_mb when three conditions hold: the sample lies inside the
- * frame, its macroblock is already decoded, and its macroblock shares cur_mb's
- * slice.
+ * macroblock cur_mb when four conditions hold: the sample lies inside the
+ * frame, its macroblock is already decoded, its macroblock shares cur_mb's
+ * slice, and -- under constrained_intra_pred -- its macroblock is not inter.
  *
  * Decode order inside a macroblock follows the 4x4 scan index, so a sample in
  * cur_mb is decoded only once its 4x4 block precedes cur_blk.  The top-right
@@ -48,16 +49,25 @@ xy_to_blk(unsigned bx, unsigned by)
  * Constrained Baseline disables FMO, so a slice is a contiguous ascending
  * macroblock range; a neighbor macroblock is in an earlier slice exactly when
  * its raster address is below slice_first_mb.
+ *
+ * constrained_intra_pred bars intra prediction from an inter-coded neighbor:
+ * that neighbor carries samples predicted from a reference picture, which must
+ * not seed intra prediction.  The contract marks an inter macroblock with a
+ * non-negative list-0 reference index.  cur_mb is the intra macroblock under
+ * reconstruction, so its own samples stay available.
  */
 static bool
 sample_available(int ax, int ay, unsigned width, unsigned height,
                  unsigned width_in_mbs, unsigned cur_mb, unsigned slice_first_mb,
-                 unsigned cur_blk)
+                 unsigned cur_blk, const struct vl_h264_mb_contract *mbs,
+                 bool constrained_intra)
 {
    if (ax < 0 || ay < 0 || (unsigned)ax >= width || (unsigned)ay >= height)
       return false;
    unsigned nb_mb = ((unsigned)ay / 16) * width_in_mbs + (unsigned)ax / 16;
    if (nb_mb < slice_first_mb)
+      return false;
+   if (constrained_intra && nb_mb != cur_mb && mbs[nb_mb].ref_l0[0] >= 0)
       return false;
    if (nb_mb < cur_mb)
       return true;
@@ -81,6 +91,7 @@ static void
 build_neighbors4(const uint8_t *luma, unsigned stride, unsigned width,
                  unsigned height, unsigned width_in_mbs, unsigned mb_x,
                  unsigned mb_y, unsigned slice_first_mb, unsigned s,
+                 const struct vl_h264_mb_contract *mbs, bool constrained_intra,
                  struct neighbors4 *n)
 {
    unsigned cur_mb = mb_y * width_in_mbs + mb_x;
@@ -89,16 +100,18 @@ build_neighbors4(const uint8_t *luma, unsigned stride, unsigned width,
 
    for (int k = 0; k < 8; k++) {
       n->a_av[k] = sample_available(x0 + k, y0 - 1, width, height, width_in_mbs,
-                                    cur_mb, slice_first_mb, s);
+                                    cur_mb, slice_first_mb, s, mbs,
+                                    constrained_intra);
       n->a[k] = n->a_av[k] ? luma[(y0 - 1) * (int)stride + x0 + k] : 0;
    }
    for (int k = 0; k < 4; k++) {
       n->l_av[k] = sample_available(x0 - 1, y0 + k, width, height, width_in_mbs,
-                                    cur_mb, slice_first_mb, s);
+                                    cur_mb, slice_first_mb, s, mbs,
+                                    constrained_intra);
       n->l[k] = n->l_av[k] ? luma[(y0 + k) * (int)stride + x0 - 1] : 0;
    }
    n->tl_av = sample_available(x0 - 1, y0 - 1, width, height, width_in_mbs,
-                               cur_mb, slice_first_mb, s);
+                               cur_mb, slice_first_mb, s, mbs, constrained_intra);
    n->tl = n->tl_av ? luma[(y0 - 1) * (int)stride + x0 - 1] : 0;
 
    /* Above-right substitution (sec 8.3.1.2): when p[4..7,-1] are unavailable but
@@ -219,18 +232,32 @@ predict4_sample(const struct neighbors4 *n, int mode, int x, int y)
    }
 }
 
+/* Build the neighbor samples and run the Intra_4x4 mode.  mbs and
+ * constrained_intra carry the inter-neighbor exclusion; the public entry below
+ * passes NULL and false for single-block validation with no macroblock array. */
+static void
+predict_intra_4x4(const uint8_t *luma, unsigned stride, unsigned width_in_mbs,
+                  unsigned height_in_mbs, unsigned mb_x, unsigned mb_y, unsigned s,
+                  unsigned slice_first_mb, const struct vl_h264_mb_contract *mbs,
+                  bool constrained_intra, int mode, int16_t pred[16])
+{
+   struct neighbors4 n;
+   build_neighbors4(luma, stride, width_in_mbs * 16, height_in_mbs * 16,
+                    width_in_mbs, mb_x, mb_y, slice_first_mb, s, mbs,
+                    constrained_intra, &n);
+   for (int y = 0; y < 4; y++)
+      for (int x = 0; x < 4; x++)
+         pred[y * 4 + x] = (int16_t)predict4_sample(&n, mode, x, y);
+}
+
 void
 vl_h264_intra_predict_4x4(const uint8_t *luma, unsigned stride,
                           unsigned width_in_mbs, unsigned height_in_mbs,
                           unsigned mb_x, unsigned mb_y, unsigned s,
                           unsigned slice_first_mb, int mode, int16_t pred[16])
 {
-   struct neighbors4 n;
-   build_neighbors4(luma, stride, width_in_mbs * 16, height_in_mbs * 16,
-                    width_in_mbs, mb_x, mb_y, slice_first_mb, s, &n);
-   for (int y = 0; y < 4; y++)
-      for (int x = 0; x < 4; x++)
-         pred[y * 4 + x] = (int16_t)predict4_sample(&n, mode, x, y);
+   predict_intra_4x4(luma, stride, width_in_mbs, height_in_mbs, mb_x, mb_y, s,
+                     slice_first_mb, NULL, false, mode, pred);
 }
 
 /* Predict and reconstruct one Intra_4x4 block, writing Clip1(pred + residual)
@@ -238,12 +265,13 @@ vl_h264_intra_predict_4x4(const uint8_t *luma, unsigned stride,
 static void
 reconstruct_block4(const uint8_t *luma_ro, uint8_t *luma, unsigned stride,
                    unsigned width_in_mbs, unsigned height_in_mbs, unsigned mb_x,
-                   unsigned mb_y, unsigned slice_first_mb, unsigned s, int mode,
-                   const int16_t coeff[16])
+                   unsigned mb_y, unsigned slice_first_mb, unsigned s,
+                   const struct vl_h264_mb_contract *mbs, bool constrained_intra,
+                   int mode, const int16_t coeff[16])
 {
    int16_t pred[16], residual[16];
-   vl_h264_intra_predict_4x4(luma_ro, stride, width_in_mbs, height_in_mbs, mb_x,
-                             mb_y, s, slice_first_mb, mode, pred);
+   predict_intra_4x4(luma_ro, stride, width_in_mbs, height_in_mbs, mb_x, mb_y, s,
+                     slice_first_mb, mbs, constrained_intra, mode, pred);
    vl_h264_idct4(coeff, residual);
 
    int bx = mb_x * 16 + blk_x[s] * 4;
@@ -331,7 +359,7 @@ void
 vl_h264_intra_reconstruct_luma(const struct vl_h264_mb_contract *mbs,
                                unsigned num_mbs, unsigned width_in_mbs,
                                unsigned height_in_mbs, uint8_t *luma,
-                               unsigned stride)
+                               unsigned stride, bool constrained_intra)
 {
    for (unsigned addr = 0; addr < num_mbs; addr++) {
       const struct vl_h264_mb_contract *mb = &mbs[addr];
@@ -348,19 +376,24 @@ vl_h264_intra_reconstruct_luma(const struct vl_h264_mb_contract *mbs,
          /* Intra_4x4: each block reads the plane the previous block wrote. */
          for (unsigned s = 0; s < 16; s++)
             reconstruct_block4(luma, luma, stride, width_in_mbs, height_in_mbs,
-                               mb_x, mb_y, slice_first_mb, s,
-                               mb->intra4x4_pred_mode[s],
+                               mb_x, mb_y, slice_first_mb, s, mbs,
+                               constrained_intra, mb->intra4x4_pred_mode[s],
                                mb->coeff4x4[blk_y[s] * 4 + blk_x[s]]);
       } else {
          /* Intra_16x16: predict the whole macroblock, then add each 4x4
           * block's residual (the DC from the Hadamard plus the AC).  The above
           * and left neighbor macroblocks are available only when they exist and
           * lie in this slice; the mb_y > 0 and mb_x > 0 tests guard
-          * the unsigned address subtractions. */
+          * the unsigned address subtractions.  Under constrained_intra_pred an
+          * inter-coded neighbor is unavailable as well, which a non-negative
+          * list-0 reference index marks. */
          int pred[256];
          unsigned cur_addr = mb_y * width_in_mbs + mb_x;
-         bool top_av = mb_y > 0 && cur_addr - width_in_mbs >= slice_first_mb;
-         bool left_av = mb_x > 0 && cur_addr - 1 >= slice_first_mb;
+         bool top_av = mb_y > 0 && cur_addr - width_in_mbs >= slice_first_mb &&
+                       !(constrained_intra &&
+                         mbs[cur_addr - width_in_mbs].ref_l0[0] >= 0);
+         bool left_av = mb_x > 0 && cur_addr - 1 >= slice_first_mb &&
+                        !(constrained_intra && mbs[cur_addr - 1].ref_l0[0] >= 0);
          predict_16x16(luma, stride, mb_x, mb_y, top_av, left_av,
                        (mb->mb_type - 1) % 4, pred);
          for (unsigned s = 0; s < 16; s++) {
@@ -524,7 +557,7 @@ build_chroma_neighbors(const uint8_t *plane, unsigned stride, unsigned mb_x,
 static void
 reconstruct_chroma_plane(const struct vl_h264_mb_contract *mbs, unsigned num_mbs,
                          unsigned width_in_mbs, uint8_t *plane, unsigned stride,
-                         unsigned comp)
+                         unsigned comp, bool constrained_intra)
 {
    for (unsigned addr = 0; addr < num_mbs; addr++) {
       const struct vl_h264_mb_contract *mb = &mbs[addr];
@@ -538,11 +571,15 @@ reconstruct_chroma_plane(const struct vl_h264_mb_contract *mbs, unsigned num_mbs
          continue;
 
       /* The chroma neighbor macroblocks follow the same slice availability as
-       * luma: present only when the above or left macroblock exists
-       * and lies in this slice. */
+       * luma: present only when the above or left macroblock exists and lies in
+       * this slice.  Under constrained_intra_pred an inter-coded neighbor is
+       * unavailable as well, which a non-negative list-0 reference index marks. */
       unsigned cur_addr = mb_y * width_in_mbs + mb_x;
-      bool top_av = mb_y > 0 && cur_addr - width_in_mbs >= slice_first_mb;
-      bool left_av = mb_x > 0 && cur_addr - 1 >= slice_first_mb;
+      bool top_av = mb_y > 0 && cur_addr - width_in_mbs >= slice_first_mb &&
+                    !(constrained_intra &&
+                      mbs[cur_addr - width_in_mbs].ref_l0[0] >= 0);
+      bool left_av = mb_x > 0 && cur_addr - 1 >= slice_first_mb &&
+                     !(constrained_intra && mbs[cur_addr - 1].ref_l0[0] >= 0);
       build_chroma_neighbors(plane, stride, mb_x, mb_y, top_av, left_av, &n);
       predict_chroma(&n, mb->intra_chroma_pred_mode, pred);
 
@@ -563,9 +600,11 @@ void
 vl_h264_intra_reconstruct_chroma(const struct vl_h264_mb_contract *mbs,
                                  unsigned num_mbs, unsigned width_in_mbs,
                                  unsigned height_in_mbs, uint8_t *cb, uint8_t *cr,
-                                 unsigned stride)
+                                 unsigned stride, bool constrained_intra)
 {
    (void)height_in_mbs;
-   reconstruct_chroma_plane(mbs, num_mbs, width_in_mbs, cb, stride, 0);
-   reconstruct_chroma_plane(mbs, num_mbs, width_in_mbs, cr, stride, 1);
+   reconstruct_chroma_plane(mbs, num_mbs, width_in_mbs, cb, stride, 0,
+                            constrained_intra);
+   reconstruct_chroma_plane(mbs, num_mbs, width_in_mbs, cr, stride, 1,
+                            constrained_intra);
 }

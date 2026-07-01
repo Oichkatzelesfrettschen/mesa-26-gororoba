@@ -98,10 +98,11 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
          uint8_t *cr = calloc(WIDTH_IN_MBS * 8, HEIGHT_IN_MBS * 8);
          if (luma && cb && cr) {
             vl_h264_intra_reconstruct_luma(mbs, NUM_MBS, WIDTH_IN_MBS,
-                                           HEIGHT_IN_MBS, luma, WIDTH_IN_MBS * 16);
+                                           HEIGHT_IN_MBS, luma, WIDTH_IN_MBS * 16,
+                                           false);
             vl_h264_intra_reconstruct_chroma(mbs, NUM_MBS, WIDTH_IN_MBS,
                                              HEIGHT_IN_MBS, cb, cr,
-                                             WIDTH_IN_MBS * 8);
+                                             WIDTH_IN_MBS * 8, false);
          }
          free(luma);
          free(cb);

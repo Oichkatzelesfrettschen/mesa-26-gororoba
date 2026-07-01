@@ -143,7 +143,7 @@ main(int argc, char **argv)
    luma = calloc(WIDTH, HEIGHT);
    CHECK(luma != NULL);
    vl_h264_intra_reconstruct_luma(mbs, NUM_MBS, WIDTH_IN_MBS, HEIGHT_IN_MBS,
-                                  luma, WIDTH);
+                                  luma, WIDTH, false);
 
    /* Localizer: every Intra_4x4 block's prediction matches the oracle dump.  The
     * neighbours come from earlier blocks, never overwritten, so re-deriving from
