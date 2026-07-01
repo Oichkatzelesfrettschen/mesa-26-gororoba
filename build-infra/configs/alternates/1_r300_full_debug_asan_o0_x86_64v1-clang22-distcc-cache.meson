@@ -61,7 +61,7 @@ cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relr
 # Window-system platforms only.  Current Mesa's platforms option accepts just
 # the window systems (x11, wayland, ...); the DRM-native and surfaceless EGL
 # platforms are no longer listed here -- they build unconditionally with
-# egl=enabled and the default is chosen by egl-native-platform (set to 'drm'
+# egl=enabled and the default is chosen by egl-native-platform (set to 'surfaceless'
 # below for headless deqp/piglit and renderD128-only Vulkan).  XCB is Mesa's
 # internal transport for the x11 platform and is not a separate option.
 platforms = ['x11', 'wayland']
@@ -83,7 +83,7 @@ gles2 = 'enabled'
 glvnd = 'enabled'
 glx = 'dri'
 egl = 'enabled'
-egl-native-platform = 'drm'
+egl-native-platform = 'surfaceless'
 gbm = 'enabled'
 
 # r300 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.

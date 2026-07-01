@@ -149,6 +149,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
       .KHR_shader_untyped_pointers = true,
 #ifdef KK_USE_WSI_PLATFORM
       .KHR_swapchain = true,
+      .KHR_swapchain_maintenance1 = true,
       .KHR_swapchain_mutable_format = true,
 #endif
       .KHR_unified_image_layouts = true,
@@ -165,6 +166,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
       .EXT_extended_dynamic_state3 = true,
       .EXT_external_memory_metal = true,
       .EXT_external_memory_host = true,
+      .EXT_hdr_metadata = true,
       .EXT_image_2d_view_of_3d = true,
       .EXT_load_store_op_none = true,
       .EXT_memory_budget = true,
@@ -180,6 +182,9 @@ kk_get_device_extensions(const struct kk_instance *instance,
       .EXT_shader_replicated_composites = true,
       .EXT_shader_subgroup_ballot = true,
       .EXT_shader_subgroup_vote = true,
+#ifdef KK_USE_WSI_PLATFORM
+      .EXT_swapchain_maintenance1 = true,
+#endif
       .EXT_vertex_attribute_robustness = true,
 
       .GOOGLE_decorate_string = true,
@@ -368,6 +373,11 @@ kk_get_device_features(
       /* VK_KHR_shader_untyped_pointers */
       .shaderUntypedPointers = true,
 
+#ifdef KK_USE_WSI_PLATFORM
+      /* VK_KHR_swapchain_maintenance1 */
+      .swapchainMaintenance1 = true,
+#endif
+
       /* VK_KHR_unified_image_layouts */
       .unifiedImageLayouts = true,
       .unifiedImageLayoutsVideo = false,
@@ -467,10 +477,10 @@ kk_get_device_properties(const struct kk_physical_device *pdev,
       /* Vulkan 1.0 limits */
       /* Values taken from Apple7
          https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf */
-      .maxImageDimension1D = kk_image_max_dimension(VK_IMAGE_TYPE_2D),
-      .maxImageDimension2D = kk_image_max_dimension(VK_IMAGE_TYPE_2D),
-      .maxImageDimension3D = kk_image_max_dimension(VK_IMAGE_TYPE_3D),
-      .maxImageDimensionCube = 16384,
+      .maxImageDimension1D = kk_image_max_dimension(pdev, VK_IMAGE_TYPE_1D),
+      .maxImageDimension2D = kk_image_max_dimension(pdev, VK_IMAGE_TYPE_2D),
+      .maxImageDimension3D = kk_image_max_dimension(pdev, VK_IMAGE_TYPE_3D),
+      .maxImageDimensionCube = kk_image_max_dimension(pdev, VK_IMAGE_TYPE_2D),
       .maxImageArrayLayers = 2048,
       .maxTexelBufferElements = 16384 * 16384,
       .maxUniformBufferRange = 65536,
@@ -999,6 +1009,8 @@ get_metal_limits(struct kk_physical_device *pdev)
       mtl_device_max_threadgroup_memory_length(pdev->mtl_dev_handle);
    pdev->info.max_buffer_size =
       mtl_device_max_buffer_length(pdev->mtl_dev_handle);
+   pdev->info.gpu_apple_family =
+      mtl_device_get_gpu_apple_family(pdev->mtl_dev_handle);
 
    pdev->supported_sample_counts = VK_SAMPLE_COUNT_1_BIT;
    for (uint32_t sample_count = VK_SAMPLE_COUNT_2_BIT;

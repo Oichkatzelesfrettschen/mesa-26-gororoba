@@ -42,9 +42,12 @@ that branch is an after-baseline performance lane.  It is not the canonical
 release profile because draw LLVM changes the SW-TCL execution substrate being
 measured.
 
-`egl-native-platform = 'drm'` makes `EGL_DEFAULT_DISPLAY` use the DRM native
-platform, the renderD128 headless path the Piglit/deqp lane runs on; X11 and
-Wayland callers select their platform explicitly.
+`egl-native-platform = 'surfaceless'` makes `EGL_DEFAULT_DISPLAY` use the
+surfaceless platform, the renderD128 headless path the Piglit/deqp lane runs
+on; X11 and Wayland callers select their platform explicitly. Upstream Mesa
+commit b0050c4e754 ("meson: drop misleading `-D egl-native-platform` values")
+removed `'drm'`, `'wayland'`, `'windows'`, and `'macos'` from this option's
+choices, keeping only the values EGL_DEFAULT_DISPLAY can actually honor.
 
 ## The two profiles are the whole r300 lane
 

@@ -125,7 +125,8 @@ enum radv_cmd_dirty_bits {
    RADV_CMD_DIRTY_PS_EPILOG_SHADER = 1ull << 37,
    RADV_CMD_DIRTY_PS_EPILOG_STATE = 1ull << 38,
    RADV_CMD_DIRTY_GFX12_HIZ_WA_STATE = 1ull << 39,
-   RADV_CMD_DIRTY_ALL = (1ull << 40) - 1,
+   RADV_CMD_DIRTY_OVERRIDE_VRS_STATE = 1ull << 40,
+   RADV_CMD_DIRTY_ALL = (1ull << 41) - 1,
 
    RADV_CMD_DIRTY_SHADER_QUERY = RADV_CMD_DIRTY_NGG_STATE | RADV_CMD_DIRTY_TASK_STATE,
 };
@@ -442,7 +443,7 @@ struct radv_cmd_state {
    bool uses_out_of_order_rast;
    bool uses_vrs;
    bool uses_vrs_attachment;
-   bool uses_vrs_coarse_shading;
+   bool uses_vrs_flat_shading;
 
    uint64_t shader_query_buf_va; /* GFX12+ */
 
@@ -528,6 +529,11 @@ struct radv_cmd_buffer_queue_state {
 
 struct radv_cmd_buffer {
    struct vk_command_buffer vk;
+
+   struct {
+      struct u_trace *trace;
+      uint32_t last_cdw;
+   } utrace;
 
    VkCommandBufferUsageFlags usage_flags;
    struct radv_cmd_stream *cs;

@@ -12,6 +12,7 @@
 
 #include "common/intel_common.h"
 #include "common/intel_uuid.h"
+#include "common/xe/intel_gem.h"
 #include "common/xe/intel_queue.h"
 
 #include "perf/intel_perf.h"
@@ -101,8 +102,8 @@ get_device_descriptor_limits(const struct anv_physical_device *device,
     */
    const uint64_t descriptor_heap_size =
       device->indirect_descriptors ?
-      device->va.indirect_descriptor_pool.size :
-      device->va.bindless_surface_state_pool.size;;
+      anv_physical_device_get_indirect_descriptor_pool_va(device)->size :
+      anv_physical_device_get_bindless_surface_state_pool_va(device)->size;
 
    const uint32_t buffer_descriptor_size =
       device->indirect_descriptors ?
@@ -159,6 +160,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .KHR_depth_clamp_zero_one              = true,
       .KHR_depth_stencil_resolve             = true,
       .KHR_descriptor_update_template        = true,
+      .KHR_device_fault                      = device->can_get_vm_faults,
       .KHR_device_group                      = true,
       .KHR_device_address_commands           = true,
       .KHR_draw_indirect_count               = true,
@@ -295,7 +297,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .EXT_depth_clip_enable                 = true,
       .EXT_depth_range_unrestricted          = device->info.ver >= 20,
       .EXT_descriptor_buffer                 = true,
-      .EXT_descriptor_heap                   = ANV_DEBUG(EXPERIMENTAL),
+      .EXT_descriptor_heap                   = true,
       .EXT_descriptor_indexing               = true,
       .EXT_device_address_binding_report     = true,
       /* Emitting a single compute dispatch potentially lot of memory (> 4KiB)
@@ -309,6 +311,7 @@ get_device_extensions(const struct anv_physical_device *device,
        * for later.
        */
       .EXT_device_generated_commands         = device->info.verx10 >= 125 || ANV_DEBUG(EXPERIMENTAL),
+      .EXT_device_fault                      = device->can_get_vm_faults,
       .EXT_device_memory_report              = true,
 #ifdef VK_USE_PLATFORM_DISPLAY_KHR
       .EXT_display_control                   = true,
@@ -1064,6 +1067,12 @@ get_features(const struct anv_physical_device *pdevice,
 
       /* VK_EXT_swapchain_compression_control */
       .imageCompressionControlSwapchain = pdevice->expose_compression_control,
+
+      /* VK_EXT_device_fault */
+      .deviceFaultEXT = pdevice->can_get_vm_faults,
+
+      /* VK_KHR_device_fault */
+      .deviceFault = pdevice->can_get_vm_faults,
    };
 
    /* The new DOOM and Wolfenstein games require depthBounds without
@@ -1784,12 +1793,12 @@ get_properties(const struct anv_physical_device *pdevice,
       props->robustStorageBufferDescriptorSize = ANV_SURFACE_STATE_SIZE;
       props->inputAttachmentDescriptorSize = ANV_SURFACE_STATE_SIZE;
       props->accelerationStructureDescriptorSize = sizeof(struct anv_address_range_descriptor);
-      props->maxSamplerDescriptorBufferRange = pdevice->va.dynamic_visible_pool.size;
+      props->maxSamplerDescriptorBufferRange = anv_physical_device_get_dynamic_visible_pool_va(pdevice)->size;
       props->maxResourceDescriptorBufferRange = anv_physical_device_bindless_heap_size(pdevice,
                                                                                        true);
-      props->resourceDescriptorBufferAddressSpaceSize = pdevice->va.dynamic_visible_pool.size;
-      props->descriptorBufferAddressSpaceSize = pdevice->va.dynamic_visible_pool.size;
-      props->samplerDescriptorBufferAddressSpaceSize = pdevice->va.dynamic_visible_pool.size;
+      props->resourceDescriptorBufferAddressSpaceSize = anv_physical_device_get_dynamic_visible_pool_va(pdevice)->size;
+      props->descriptorBufferAddressSpaceSize = anv_physical_device_get_dynamic_visible_pool_va(pdevice)->size;
+      props->samplerDescriptorBufferAddressSpaceSize = anv_physical_device_get_dynamic_visible_pool_va(pdevice)->size;
    }
 
    /* VK_EXT_descriptor_heap */
@@ -2226,6 +2235,11 @@ get_properties(const struct anv_physical_device *pdevice,
    /* VK_KHR_copy_memory_indirect */
    {
       props->supportedQueues = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+   }
+
+   /* VK_KHR_device_fault */
+   {
+      props->maxDeviceFaultCount = UINT32_MAX;
    }
 }
 
@@ -2900,9 +2914,7 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
       goto fail_base;
 
    device->has_cooperative_matrix =
-      (device->info.has_systolic ||
-       debug_get_bool_option("INTEL_LOWER_DPAS", false)) &&
-      !intel_use_jay_any_stage(&device->info);
+      device->info.has_systolic || debug_get_bool_option("INTEL_LOWER_DPAS", false);
 
    /* Because of Xe2 PAT selected compression and the Vulkan spec requirement
     * to always return the same memory types for Images with same properties
@@ -2978,6 +2990,9 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
    device->has_scratch_page =
       device->info.ver < 20 || device->info.kmd_type == INTEL_KMD_TYPE_I915 ||
       instance->drirc.features.scratch_page;
+
+   device->can_get_vm_faults =
+      !device->has_scratch_page && xe_gem_supports_get_vm_faults(device->local_fd);
 
    device->compiler = brw_compiler_create(NULL, &device->info);
    if (device->compiler == NULL) {

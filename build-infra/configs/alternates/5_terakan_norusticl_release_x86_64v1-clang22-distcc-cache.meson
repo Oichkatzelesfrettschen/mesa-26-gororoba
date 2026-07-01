@@ -40,7 +40,7 @@ gles2 = 'enabled'
 glvnd = 'enabled'
 glx = 'dri'
 egl = 'enabled'
-egl-native-platform = 'drm'
+egl-native-platform = 'surfaceless'
 gbm = 'enabled'
 
 # display-info disabled: this is the no-Rusticl fallback advertised for the

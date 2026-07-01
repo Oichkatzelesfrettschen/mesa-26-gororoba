@@ -339,8 +339,10 @@ DEFINE_CODECAPI_GUID( AVEncVideoRateControlFramePreAnalysisExternalReconDownscal
 
 #if MFT_CODEC_H264ENC
 #define HMFT_GUID "8994db7c-288a-4c62-a136-a3c3c2a208a8"
+#define AVC_LOG2_MAX_FRAME_NUM_MINUS4 4
 #elif MFT_CODEC_H265ENC
 #define HMFT_GUID "e7ffb8eb-fa0b-4fb0-acdf-1202f663cde5"
+#define HEVC_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4 4
 #elif MFT_CODEC_AV1ENC
 #define HMFT_GUID "1a6f3150-b121-4ce9-9497-50fedb3dcb70"
 #endif
@@ -425,6 +427,13 @@ class __declspec( uuid( HMFT_GUID ) ) CDX12EncHMFT : CMFD3DManager,
                                      DWORD dwReceivedInput,
                                      BOOL bIsLastSlice,
                                      uint64_t ResolveStatsCompletionFenceValue );
+
+   HRESULT ProcessDX12EncodeContext( CDX12EncHMFT *pThis,
+                                     LPDX12EncodeContext pDX12EncodeContext,
+                                     pipe_enc_feedback_metadata &metadata,
+                                     DWORD &dwReceivedInput,
+                                     uint64_t &ResolveStatsCompletionFenceValue,
+                                     unsigned int &encoded_bitstream_bytes );
 
    HRESULT UpdateAvailableInputType();
    HRESULT InternalCheckInputType( IMFMediaType *pType );
