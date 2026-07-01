@@ -80,7 +80,12 @@ stored_block_mode(struct vl_h264_mb_decoder *dec, unsigned mb_raster,
 }
 
 /* The Intra_4x4 mode contributed by a neighbor macroblock's block, or
- * MODE_UNAVAILABLE when that neighbor is outside the frame or the slice. */
+ * MODE_UNAVAILABLE when that neighbor is outside the frame or the slice, or --
+ * under constrained_intra_pred -- when the neighbor is an inter macroblock.  An
+ * unavailable neighbor sets dcPredModePredictedFlag, forcing predIntra to DC;
+ * an inter neighbor under constrained_intra_pred must set it the same way, so an
+ * inter neighbor does not pull the prediction toward its own (non-Intra_4x4)
+ * mode.  A non-negative list-0 reference index marks an inter macroblock. */
 static int
 neighbour_block_mode(struct vl_h264_mb_decoder *dec, unsigned cur_mb_addr,
                      int nb_mb_x, int nb_mb_y, unsigned bx, unsigned by)
@@ -92,6 +97,10 @@ neighbour_block_mode(struct vl_h264_mb_decoder *dec, unsigned cur_mb_addr,
 
    unsigned nb_mb_addr = nb_mb_y * dec->width_in_mbs + nb_mb_x;
    if (nb_mb_addr < dec->slice->first_mb_in_slice || nb_mb_addr >= cur_mb_addr)
+      return MODE_UNAVAILABLE;
+
+   if (dec->pps->constrained_intra_pred_flag &&
+       dec->ref_l0_frame[nb_mb_addr * 16] >= 0)
       return MODE_UNAVAILABLE;
 
    return stored_block_mode(dec, nb_mb_addr, bx, by);
