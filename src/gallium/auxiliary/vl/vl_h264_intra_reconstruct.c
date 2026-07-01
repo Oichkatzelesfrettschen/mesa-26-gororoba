@@ -37,7 +37,7 @@ xy_to_blk(unsigned bx, unsigned by)
  * A reconstructed sample at (ax, ay) is available to predict block cur_blk of
  * macroblock cur_mb when three conditions hold: the sample lies inside the
  * frame, its macroblock is already decoded, and its macroblock shares cur_mb's
- * slice (sec 6.4.9).
+ * slice.
  *
  * Decode order inside a macroblock follows the 4x4 scan index, so a sample in
  * cur_mb is decoded only once its 4x4 block precedes cur_blk.  The top-right
@@ -355,7 +355,7 @@ vl_h264_intra_reconstruct_luma(const struct vl_h264_mb_contract *mbs,
          /* Intra_16x16: predict the whole macroblock, then add each 4x4
           * block's residual (the DC from the Hadamard plus the AC).  The above
           * and left neighbor macroblocks are available only when they exist and
-          * lie in this slice (sec 6.4.9); the mb_y > 0 and mb_x > 0 tests guard
+          * lie in this slice; the mb_y > 0 and mb_x > 0 tests guard
           * the unsigned address subtractions. */
          int pred[256];
          unsigned cur_addr = mb_y * width_in_mbs + mb_x;
@@ -538,7 +538,7 @@ reconstruct_chroma_plane(const struct vl_h264_mb_contract *mbs, unsigned num_mbs
          continue;
 
       /* The chroma neighbor macroblocks follow the same slice availability as
-       * luma (sec 6.4.9): present only when the above or left macroblock exists
+       * luma: present only when the above or left macroblock exists
        * and lies in this slice. */
       unsigned cur_addr = mb_y * width_in_mbs + mb_x;
       bool top_av = mb_y > 0 && cur_addr - width_in_mbs >= slice_first_mb;

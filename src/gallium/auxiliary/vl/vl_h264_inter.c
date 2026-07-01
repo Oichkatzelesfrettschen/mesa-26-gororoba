@@ -38,7 +38,7 @@ median3(int a, int b, int c)
  * store.  (bx, by) is the within-macroblock 4x4 position and may be -1 or 4 for a
  * neighboring macroblock.  Returns false when the block is outside the frame, in
  * an earlier slice, or not yet decoded; an available intra block returns
- * reference -1 and a zero vector (sec 8.4.1.3.2). */
+ * reference -1 and a zero vector. */
 static bool
 neighbor_mv(const struct vl_h264_mb_decoder *dec, unsigned cur, unsigned mb_x,
              unsigned mb_y, int bx, int by, int *mvx, int *mvy, int *ref)
@@ -51,8 +51,8 @@ neighbor_mv(const struct vl_h264_mb_decoder *dec, unsigned cur, unsigned mb_x,
    unsigned fi = nmb * 16 + ((unsigned)aby % 4) * 4 + (unsigned)abx % 4;
    if (nmb > cur)
       return false;
-   /* A neighbor in an earlier slice is not available for prediction (sec
-    * 8.4.1.3.2), the same rule the intra mode and sample neighbors follow. */
+   /* A neighbor in an earlier slice is not available for prediction, the same
+    * rule the intra mode and sample neighbors follow. */
    if (nmb < dec->slice->first_mb_in_slice)
       return false;
    if (nmb == cur && dec->ref_l0_frame[fi] < 0)
