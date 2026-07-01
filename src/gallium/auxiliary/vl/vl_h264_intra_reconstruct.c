@@ -34,20 +34,31 @@ xy_to_blk(unsigned bx, unsigned by)
 }
 
 /*
- * Whether the reconstructed sample at (ax, ay) is available to predict block
- * cur_blk of macroblock cur_mb: it must be in the frame and already decoded.  A
- * sample in an earlier macroblock is decoded; one in the current macroblock is
- * decoded only if its 4x4 block precedes cur_blk in scan order.  This makes the
- * top-right of blocks 3 and 11 unavailable for free -- the block holding it has a
- * later scan index -- without the spec's special case.
+ * A reconstructed sample at (ax, ay) is available to predict block cur_blk of
+ * macroblock cur_mb when three conditions hold: the sample lies inside the
+ * frame, its macroblock is already decoded, and its macroblock shares cur_mb's
+ * slice (sec 6.4.9).
+ *
+ * Decode order inside a macroblock follows the 4x4 scan index, so a sample in
+ * cur_mb is decoded only once its 4x4 block precedes cur_blk.  The top-right
+ * predictor sample of blocks 3 and 11 sits in a block with a later scan index,
+ * so this scan-order test reports that sample unavailable on its own and the
+ * spec's top-right special case is unnecessary.
+ *
+ * Constrained Baseline disables FMO, so a slice is a contiguous ascending
+ * macroblock range; a neighbor macroblock is in an earlier slice exactly when
+ * its raster address is below slice_first_mb.
  */
 static bool
 sample_available(int ax, int ay, unsigned width, unsigned height,
-                 unsigned width_in_mbs, unsigned cur_mb, unsigned cur_blk)
+                 unsigned width_in_mbs, unsigned cur_mb, unsigned slice_first_mb,
+                 unsigned cur_blk)
 {
    if (ax < 0 || ay < 0 || (unsigned)ax >= width || (unsigned)ay >= height)
       return false;
    unsigned nb_mb = ((unsigned)ay / 16) * width_in_mbs + (unsigned)ax / 16;
+   if (nb_mb < slice_first_mb)
+      return false;
    if (nb_mb < cur_mb)
       return true;
    if (nb_mb > cur_mb)
@@ -69,7 +80,8 @@ struct neighbors4 {
 static void
 build_neighbors4(const uint8_t *luma, unsigned stride, unsigned width,
                  unsigned height, unsigned width_in_mbs, unsigned mb_x,
-                 unsigned mb_y, unsigned s, struct neighbors4 *n)
+                 unsigned mb_y, unsigned slice_first_mb, unsigned s,
+                 struct neighbors4 *n)
 {
    unsigned cur_mb = mb_y * width_in_mbs + mb_x;
    int x0 = mb_x * 16 + blk_x[s] * 4;
@@ -77,16 +89,16 @@ build_neighbors4(const uint8_t *luma, unsigned stride, unsigned width,
 
    for (int k = 0; k < 8; k++) {
       n->a_av[k] = sample_available(x0 + k, y0 - 1, width, height, width_in_mbs,
-                                    cur_mb, s);
+                                    cur_mb, slice_first_mb, s);
       n->a[k] = n->a_av[k] ? luma[(y0 - 1) * (int)stride + x0 + k] : 0;
    }
    for (int k = 0; k < 4; k++) {
       n->l_av[k] = sample_available(x0 - 1, y0 + k, width, height, width_in_mbs,
-                                    cur_mb, s);
+                                    cur_mb, slice_first_mb, s);
       n->l[k] = n->l_av[k] ? luma[(y0 + k) * (int)stride + x0 - 1] : 0;
    }
    n->tl_av = sample_available(x0 - 1, y0 - 1, width, height, width_in_mbs,
-                               cur_mb, s);
+                               cur_mb, slice_first_mb, s);
    n->tl = n->tl_av ? luma[(y0 - 1) * (int)stride + x0 - 1] : 0;
 
    /* Above-right substitution (sec 8.3.1.2): when p[4..7,-1] are unavailable but
@@ -210,12 +222,12 @@ predict4_sample(const struct neighbors4 *n, int mode, int x, int y)
 void
 vl_h264_intra_predict_4x4(const uint8_t *luma, unsigned stride,
                           unsigned width_in_mbs, unsigned height_in_mbs,
-                          unsigned mb_x, unsigned mb_y, unsigned s, int mode,
-                          int16_t pred[16])
+                          unsigned mb_x, unsigned mb_y, unsigned s,
+                          unsigned slice_first_mb, int mode, int16_t pred[16])
 {
    struct neighbors4 n;
    build_neighbors4(luma, stride, width_in_mbs * 16, height_in_mbs * 16,
-                    width_in_mbs, mb_x, mb_y, s, &n);
+                    width_in_mbs, mb_x, mb_y, slice_first_mb, s, &n);
    for (int y = 0; y < 4; y++)
       for (int x = 0; x < 4; x++)
          pred[y * 4 + x] = (int16_t)predict4_sample(&n, mode, x, y);
@@ -226,11 +238,12 @@ vl_h264_intra_predict_4x4(const uint8_t *luma, unsigned stride,
 static void
 reconstruct_block4(const uint8_t *luma_ro, uint8_t *luma, unsigned stride,
                    unsigned width_in_mbs, unsigned height_in_mbs, unsigned mb_x,
-                   unsigned mb_y, unsigned s, int mode, const int16_t coeff[16])
+                   unsigned mb_y, unsigned slice_first_mb, unsigned s, int mode,
+                   const int16_t coeff[16])
 {
    int16_t pred[16], residual[16];
    vl_h264_intra_predict_4x4(luma_ro, stride, width_in_mbs, height_in_mbs, mb_x,
-                             mb_y, s, mode, pred);
+                             mb_y, s, slice_first_mb, mode, pred);
    vl_h264_idct4(coeff, residual);
 
    int bx = mb_x * 16 + blk_x[s] * 4;
@@ -283,10 +296,9 @@ predict16_plane(const int top[16], const int left[16], int tl, int pred[256])
  * p[0..15,-1], left is p[-1,0..15], tl is p[-1,-1].  Writes predL[y*16 + x]. */
 static void
 predict_16x16(const uint8_t *luma, unsigned stride, unsigned mb_x,
-              unsigned mb_y, int mode, int pred[256])
+              unsigned mb_y, bool top_av, bool left_av, int mode, int pred[256])
 {
    int x0 = mb_x * 16, y0 = mb_y * 16;
-   bool top_av = mb_y > 0, left_av = mb_x > 0;
    int top[16] = { 0 }, left[16] = { 0 };
 
    for (int k = 0; k < 16; k++) {
@@ -324,6 +336,7 @@ vl_h264_intra_reconstruct_luma(const struct vl_h264_mb_contract *mbs,
    for (unsigned addr = 0; addr < num_mbs; addr++) {
       const struct vl_h264_mb_contract *mb = &mbs[addr];
       unsigned mb_x = (unsigned)mb->mb_x, mb_y = (unsigned)mb->mb_y;
+      unsigned slice_first_mb = (unsigned)mb->slice_first_mb;
 
       /* In a P frame the inter macroblocks are reconstructed by the GPU back
        * half from the reference; this pass fills only the intra macroblocks,
@@ -335,13 +348,21 @@ vl_h264_intra_reconstruct_luma(const struct vl_h264_mb_contract *mbs,
          /* Intra_4x4: each block reads the plane the previous block wrote. */
          for (unsigned s = 0; s < 16; s++)
             reconstruct_block4(luma, luma, stride, width_in_mbs, height_in_mbs,
-                               mb_x, mb_y, s, mb->intra4x4_pred_mode[s],
+                               mb_x, mb_y, slice_first_mb, s,
+                               mb->intra4x4_pred_mode[s],
                                mb->coeff4x4[blk_y[s] * 4 + blk_x[s]]);
       } else {
          /* Intra_16x16: predict the whole macroblock, then add each 4x4
-          * block's residual (DC from the Hadamard plus the AC). */
+          * block's residual (the DC from the Hadamard plus the AC).  The above
+          * and left neighbor macroblocks are available only when they exist and
+          * lie in this slice (sec 6.4.9); the mb_y > 0 and mb_x > 0 tests guard
+          * the unsigned address subtractions. */
          int pred[256];
-         predict_16x16(luma, stride, mb_x, mb_y, (mb->mb_type - 1) % 4, pred);
+         unsigned cur_addr = mb_y * width_in_mbs + mb_x;
+         bool top_av = mb_y > 0 && cur_addr - width_in_mbs >= slice_first_mb;
+         bool left_av = mb_x > 0 && cur_addr - 1 >= slice_first_mb;
+         predict_16x16(luma, stride, mb_x, mb_y, top_av, left_av,
+                       (mb->mb_type - 1) % 4, pred);
          for (unsigned s = 0; s < 16; s++) {
             int16_t residual[16];
             vl_h264_idct4(mb->coeff4x4[blk_y[s] * 4 + blk_x[s]], residual);
@@ -485,11 +506,12 @@ predict_chroma(const struct neighbors_c *n, int mode, int pred[64])
 
 static void
 build_chroma_neighbors(const uint8_t *plane, unsigned stride, unsigned mb_x,
-                       unsigned mb_y, struct neighbors_c *n)
+                       unsigned mb_y, bool top_av, bool left_av,
+                       struct neighbors_c *n)
 {
    int x0 = mb_x * 8, y0 = mb_y * 8;
-   n->top_av = mb_y > 0;
-   n->left_av = mb_x > 0;
+   n->top_av = top_av;
+   n->left_av = left_av;
    for (int k = 0; k < 8; k++) {
       n->top[k] = n->top_av ? plane[(y0 - 1) * (int)stride + x0 + k] : 0;
       n->left[k] = n->left_av ? plane[(y0 + k) * (int)stride + x0 - 1] : 0;
@@ -501,11 +523,13 @@ build_chroma_neighbors(const uint8_t *plane, unsigned stride, unsigned mb_x,
  * 8x8 from the neighbors, then add the four 4x4 residual blocks. */
 static void
 reconstruct_chroma_plane(const struct vl_h264_mb_contract *mbs, unsigned num_mbs,
-                         uint8_t *plane, unsigned stride, unsigned comp)
+                         unsigned width_in_mbs, uint8_t *plane, unsigned stride,
+                         unsigned comp)
 {
    for (unsigned addr = 0; addr < num_mbs; addr++) {
       const struct vl_h264_mb_contract *mb = &mbs[addr];
       unsigned mb_x = (unsigned)mb->mb_x, mb_y = (unsigned)mb->mb_y;
+      unsigned slice_first_mb = (unsigned)mb->slice_first_mb;
       struct neighbors_c n;
       int pred[64];
 
@@ -513,7 +537,13 @@ reconstruct_chroma_plane(const struct vl_h264_mb_contract *mbs, unsigned num_mbs
       if (mb->ref_l0[0] >= 0)
          continue;
 
-      build_chroma_neighbors(plane, stride, mb_x, mb_y, &n);
+      /* The chroma neighbor macroblocks follow the same slice availability as
+       * luma (sec 6.4.9): present only when the above or left macroblock exists
+       * and lies in this slice. */
+      unsigned cur_addr = mb_y * width_in_mbs + mb_x;
+      bool top_av = mb_y > 0 && cur_addr - width_in_mbs >= slice_first_mb;
+      bool left_av = mb_x > 0 && cur_addr - 1 >= slice_first_mb;
+      build_chroma_neighbors(plane, stride, mb_x, mb_y, top_av, left_av, &n);
       predict_chroma(&n, mb->intra_chroma_pred_mode, pred);
 
       for (unsigned blk = 0; blk < 4; blk++) {
@@ -535,8 +565,7 @@ vl_h264_intra_reconstruct_chroma(const struct vl_h264_mb_contract *mbs,
                                  unsigned height_in_mbs, uint8_t *cb, uint8_t *cr,
                                  unsigned stride)
 {
-   (void)width_in_mbs;
    (void)height_in_mbs;
-   reconstruct_chroma_plane(mbs, num_mbs, cb, stride, 0);
-   reconstruct_chroma_plane(mbs, num_mbs, cr, stride, 1);
+   reconstruct_chroma_plane(mbs, num_mbs, width_in_mbs, cb, stride, 0);
+   reconstruct_chroma_plane(mbs, num_mbs, width_in_mbs, cr, stride, 1);
 }
