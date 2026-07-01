@@ -931,9 +931,6 @@ static bool visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
    case nir_op_b2b1: /* after loads */
       result = emit_i2b(&ctx->ac, src[0]);
       break;
-   case nir_op_b2b16: /* before stores */
-      result = LLVMBuildZExt(ctx->ac.builder, src[0], ctx->ac.i16, "");
-      break;
    case nir_op_b2b32: /* before stores */
       result = LLVMBuildZExt(ctx->ac.builder, src[0], ctx->ac.i32, "");
       break;
@@ -2022,7 +2019,7 @@ static LLVMValueRef visit_load_ubo_buffer(struct ac_nir_context *ctx, nir_intrin
 
 static void visit_store_output(struct ac_nir_context *ctx, nir_intrinsic_instr *instr)
 {
-   nir_shader *nir = nir_cf_node_get_function(&instr->instr.block->cf_node)->function->shader;
+   nir_shader *nir = instr->instr.block->impl->function->shader;
    unsigned base = ac_nir_get_io_driver_location(nir, nir_intrinsic_io_semantics(instr).location, false);
    unsigned writemask = nir_intrinsic_write_mask(instr);
    unsigned component = nir_intrinsic_component(instr);

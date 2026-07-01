@@ -23,8 +23,7 @@ option(
   type : 'combo',
   value : 'auto',
   choices : [
-    'auto', 'x11', 'wayland', 'haiku', 'android', 'windows',
-    'surfaceless', 'drm',
+    'auto', 'x11', 'haiku', 'android', 'surfaceless',
   ],
   description : 'the window system EGL assumes for EGL_DEFAULT_DISPLAY',
 )
@@ -552,7 +551,7 @@ option(
   value : [],
   choices : ['amd', 'asahi', 'dlclose-skip', 'drm-shim', 'etnaviv', 'freedreno',
              'glsl', 'imagination', 'intel', 'intel-ui', 'lima', 'nir', 'nouveau',
-             'panfrost', 'zink', 'all'],
+             'panfrost', 'rti', 'zink', 'all'],
   description : 'List of tools to build. (Note: `intel-ui` selects `intel`)',
 )
 
@@ -750,6 +749,13 @@ option(
   value : '',
   description : 'Override build id for shader cache keys (hex string). ' +
                 'Can be extracted with readelf -x .note.gnu.build-id'
+)
+
+option(
+  'radv-u_trace',
+  type : 'boolean',
+  value : false,
+  description : 'Enable u_trace profiling features.'
 )
 
 option(

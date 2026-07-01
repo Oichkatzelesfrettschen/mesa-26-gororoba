@@ -1887,7 +1887,7 @@ resource_create(struct pipe_screen *pscreen,
           */
          res->base.b.flags |= PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY;
       }
-      if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
+      if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB || screen->info.have_KHR_device_address_commands)
          zink_resource_get_address(screen, res);
    } else {
       if (templ->flags & PIPE_RESOURCE_FLAG_SPARSE)
@@ -3049,6 +3049,8 @@ zink_image_subdata(struct pipe_context *pctx,
    /* fallback case for per-resource unsupported or device-level unsupported */
    u_default_texture_subdata(pctx, pres, level, usage, box, data, stride, layer_stride);
    res->subdata = false;
+   if (res->fb_bind_count)
+      ctx->rp_tc_info_updated = true;
 }
 
 static void

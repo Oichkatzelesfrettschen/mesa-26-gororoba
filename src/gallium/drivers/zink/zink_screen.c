@@ -1212,6 +1212,10 @@ zink_init_screen_caps(struct zink_screen *screen)
 
    caps->max_texture_lod_bias = screen->info.props.limits.maxSamplerLodBias;
 
+   /* supporting negative offsets in software is non-trivial */
+   if (zink_driverid(screen) != VK_DRIVER_ID_MESA_LLVMPIPE)
+      caps->signed_vertex_buffer_offset = screen->info.have_KHR_device_address_commands;
+
    /* not about to deal with mesh + non-optimal */
    caps->mesh_shader = screen->info.have_EXT_mesh_shader && screen->optimal_keys;
 
@@ -3104,6 +3108,7 @@ init_driver_workarounds(struct zink_screen *screen)
    case VK_DRIVER_ID_MESA_LLVMPIPE:
    case VK_DRIVER_ID_MESA_PANVK:
    case VK_DRIVER_ID_ARM_PROPRIETARY:
+   case VK_DRIVER_ID_QUALCOMM_PROPRIETARY:
       screen->driver_workarounds.can_do_invalid_linear_modifier = true;
       break;
    default:
@@ -3134,6 +3139,10 @@ init_driver_workarounds(struct zink_screen *screen)
       /* this has bad perf on AMD */
       screen->info.have_KHR_push_descriptor = false;
       /* Interpolation is not consistent between two triangles of a rectangle. */
+      screen->driver_workarounds.inconsistent_interpolation = true;
+      break;
+   case VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA:
+   case VK_DRIVER_ID_MESA_TURNIP:
       screen->driver_workarounds.inconsistent_interpolation = true;
       break;
    default:
@@ -3176,6 +3185,9 @@ init_driver_workarounds(struct zink_screen *screen)
 
    if (zink_debug & ZINK_DEBUG_NOGENERAL)
       screen->driver_workarounds.general_layout = false;
+
+   if (!screen->info.have_EXT_vertex_input_dynamic_state || !screen->info.have_EXT_transform_feedback)
+      screen->info.have_KHR_device_address_commands = false;
 
    if (!screen->resizable_bar)
       screen->info.have_EXT_host_image_copy = false;
