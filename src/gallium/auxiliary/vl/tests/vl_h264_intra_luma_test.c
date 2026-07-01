@@ -157,7 +157,7 @@ main(int argc, char **argv)
          CHECK(dumped != NULL);
          int16_t pred[16];
          vl_h264_intra_predict_4x4(luma, WIDTH, WIDTH_IN_MBS, HEIGHT_IN_MBS,
-                                   mbs[addr].mb_x, mbs[addr].mb_y, s,
+                                   mbs[addr].mb_x, mbs[addr].mb_y, s, 0,
                                    mbs[addr].intra4x4_pred_mode[s], pred);
          for (unsigned i = 0; i < 16; i++) {
             if (pred[i] != dumped[i]) {
