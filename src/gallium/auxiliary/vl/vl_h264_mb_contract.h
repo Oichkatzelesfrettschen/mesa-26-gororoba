@@ -121,8 +121,8 @@ struct vl_h264_mb_contract {
    int8_t slice_beta_offset_div2;
 
    /* Raster address of the first macroblock of this macroblock's slice
-    * (first_mb_in_slice, sec 7.3.3).  Intra prediction may use a neighbor only
-    * from the same slice (sec 6.4.9); Constrained Baseline disables FMO, so a
+    * (first_mb_in_slice).  Intra prediction may use a neighbor only
+    * from the same slice; Constrained Baseline disables FMO, so a
     * slice is a contiguous ascending macroblock range and a neighbor at raster
     * address n shares this slice when n >= slice_first_mb.  The CPU-VLD provider
     * stamps this field per macroblock; the wire and replay path leaves it zero,

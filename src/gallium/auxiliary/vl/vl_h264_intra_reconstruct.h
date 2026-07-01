@@ -55,7 +55,7 @@ void vl_h264_intra_reconstruct_luma(const struct vl_h264_mb_contract *mbs,
  * the macroblock at (mb_x, mb_y), run prediction mode, and write the 4x4
  * prediction in raster order (pred[y*4 + x]).  slice_first_mb is the raster
  * address of the first macroblock of this macroblock's slice; a neighbor in an
- * earlier slice is unavailable (sec 6.4.9).  Pass 0 for a single-slice frame.
+ * earlier slice is unavailable.  Pass 0 for a single-slice frame.
  */
 void vl_h264_intra_predict_4x4(const uint8_t *luma, unsigned stride,
                                unsigned width_in_mbs, unsigned height_in_mbs,

@@ -148,7 +148,7 @@ vl_h264_cavlc_decode_slice(struct vl_h264_vld_provider *provider,
     * bounds the loop and an end-of-bitstream overrun stops it at the slice's
     * last macroblock, so a frame split into several slices is decoded one
     * decode_slice call per slice.  A P slice can end with one mb_skip_run that
-    * infers the trailing skipped macroblocks (sec 7.3.4), so more_rbsp_data
+    * infers the trailing skipped macroblocks, so more_rbsp_data
     * turns false while skip macroblocks remain to emit and the loop must run
     * past it. */
    bool p_slice = sh.slice_type == VL_H264_SLICE_P;
@@ -164,7 +164,7 @@ vl_h264_cavlc_decode_slice(struct vl_h264_vld_provider *provider,
          break;
       }
       /* Record this macroblock's slice so intra prediction can reject a
-       * neighbor across the slice boundary (sec 6.4.9). */
+       * neighbor across the slice boundary. */
       out->macroblocks[addr].slice_first_mb = (int32_t) sh.first_mb_in_slice;
    }
 
