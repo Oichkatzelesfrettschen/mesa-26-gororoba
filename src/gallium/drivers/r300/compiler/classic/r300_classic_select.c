@@ -501,6 +501,52 @@ select_alu(struct sel_ctx *ctx, nir_alu_instr *alu)
       return reject(ctx, "nir op '%s' outside the classic subset",
                     nir_op_infos[alu->op].name);
 
+   /* The RC scalar ops replicate one source lane, so a vector-width
+    * transcendental expands to one scalar instruction per destination
+    * channel plus a collect -- the shape ntr_emit_scalar produces. */
+   const bool is_scalar_op =
+      op == R300C_OP_RCP || op == R300C_OP_RSQ || op == R300C_OP_EX2 ||
+      op == R300C_OP_LG2 || op == R300C_OP_SIN || op == R300C_OP_COS ||
+      op == R300C_OP_POW;
+   if (is_scalar_op && alu->def.num_components > 1) {
+      struct r300_classic_instr *chan[4] = {0};
+      for (unsigned c = 0; c < alu->def.num_components; c++) {
+         struct r300_classic_instr *s =
+            r300_classic_instr_append(ctx->prog, op);
+         if (!s)
+            return reject(ctx, "out of memory");
+         s->writemask = 0x1;
+         for (unsigned si = 0; si < s->num_srcs; si++) {
+            struct r300_classic_src src;
+            if (!get_alu_src(ctx, alu, si, &src))
+               return false;
+            const unsigned lane = GET_SWZ(src.swizzle, c);
+            src.swizzle = RC_MAKE_SWIZZLE(lane, lane, lane, lane);
+            s->src[si] = src;
+         }
+         chan[c] = s;
+      }
+      struct r300_classic_instr *vec =
+         r300_classic_instr_append(ctx->prog, R300C_OP_VEC);
+      if (!vec)
+         return reject(ctx, "out of memory");
+      vec->num_srcs = alu->def.num_components;
+      vec->writemask = (uint8_t)BITFIELD_MASK(alu->def.num_components);
+      for (unsigned c = 0; c < alu->def.num_components; c++) {
+         vec->src[c] = (struct r300_classic_src){
+            .file = R300C_FILE_SSA,
+            .def = chan[c],
+            .swizzle = RC_SWIZZLE_XXXX,
+         };
+      }
+      map_def(ctx, &alu->def, (struct r300_classic_src){
+         .file = R300C_FILE_SSA,
+         .def = vec,
+         .swizzle = RC_SWIZZLE_XYZW,
+      });
+      return true;
+   }
+
    struct r300_classic_instr *i = r300_classic_instr_append(ctx->prog, op);
    if (!i)
       return reject(ctx, "out of memory");

@@ -1008,7 +1008,14 @@ static void r300_translate_fragment_shader(
     unsigned i;
     union r300_shader_code code;
     code.f = shader;
+    /* A classic-front-end program can exceed backend budgets nir_to_rc's
+     * shapes stay under (temporaries, ALU slots, constants); retrying the
+     * whole translation with the classic gate closed keeps gate-on failure
+     * behavior a subset of gate-off instead of substituting the dummy
+     * shader. */
+    bool allow_classic = true;
 
+retry:
     r300_shader_semantics_reset(&shader->inputs);
 
     shader->deriv_src_generic = -1;
@@ -1172,7 +1179,7 @@ static void r300_translate_fragment_shader(
         const char *e = getenv("R300_USE_CLASSIC_FS");
         classic_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    if (classic_gate) {
+    if (classic_gate && allow_classic) {
         /* Plainness is per lowering trigger, not a whole-struct compare:
          * sampler_state_count only counts bound samplers and drives no
          * lowering, and texture_swizzle/texture_compare_func carry meaning
@@ -1234,6 +1241,14 @@ static void r300_translate_fragment_shader(
                   shader->compare_state, code, &compiler.Base);
 
     if (compiler.Base.Error) {
+        if (classic_done) {
+            if (DBG_ON(r300, DBG_FP))
+                fprintf(stderr, "r300 classic FS backend retry: %s\n",
+                        compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg : "");
+            rc_destroy(&compiler.Base);
+            allow_classic = false;
+            goto retry;
+        }
         shader->error = strdup(compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg
                                                       : "Cannot translate shader from NIR.");
         rc_destroy(&compiler.Base);
@@ -1256,6 +1271,16 @@ static void r300_translate_fragment_shader(
     r3xx_compile_fragment_program(&compiler);
 
     if (compiler.Base.Error) {
+        if (classic_done) {
+            if (DBG_ON(r300, DBG_FP))
+                fprintf(stderr, "r300 classic FS backend retry: %s\n",
+                        compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg : "");
+            free(compiler.code->constants.Constants);
+            free(compiler.code->constants_remap_table);
+            rc_destroy(&compiler.Base);
+            allow_classic = false;
+            goto retry;
+        }
         shader->error = strdup(compiler.Base.ErrorMsg);
 
         if (shader->dummy) {
@@ -1275,6 +1300,10 @@ static void r300_translate_fragment_shader(
      * use the dummy shader instead. */
     if (shader->code.code.r500.inst_end == -1) {
         rc_destroy(&compiler.Base);
+        if (classic_done) {
+            allow_classic = false;
+            goto retry;
+        }
         r300_dummy_fragment_shader(r300, shader);
         return;
     }

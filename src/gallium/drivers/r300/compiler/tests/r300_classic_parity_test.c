@@ -746,6 +746,28 @@ build_txp_modulate(void)
    return b.shader;
 }
 
+/* Vector-width scalar ops: RC RCP/POW replicate one lane, so vec2 frcp
+ * must expand per channel -- one RCP writing 1/x to both lanes is the
+ * operator.binary_operator.div regression shape. */
+static nir_shader *
+build_vector_rcp_pow(void)
+{
+   nir_builder b = fs_builder("parity_vecrcp");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *safe = nir_fadd_imm(&b, nir_fabs(&b, v), 0.5f);
+   nir_def *rcp2 = nir_frcp(&b, nir_trim_vector(&b, safe, 2));
+   nir_def *powv = nir_fpow(&b, nir_trim_vector(&b, safe, 2),
+                            nir_imm_vec2(&b, 2.0f, 3.0f));
+   nir_def *x = nir_channel(&b, rcp2, 0);
+   nir_def *y = nir_channel(&b, rcp2, 1);
+   nir_def *z = nir_channel(&b, powv, 0);
+   nir_def *w = nir_channel(&b, powv, 1);
+   nir_store_var(&b, out, nir_vec4(&b, x, y, z, w), 0xf);
+   return b.shader;
+}
+
 int
 main(void)
 {
@@ -763,6 +785,7 @@ main(void)
    parity("vec3_wide_read", build_vec3_wide_read);
    parity("int_index_ladder", build_int_index_ladder);
    parity("txp_modulate", build_txp_modulate);
+   parity("vector_rcp_pow", build_vector_rcp_pow);
    parity("transcendentals", build_transcendentals);
    parity("floor_round", build_floor_round);
    glsl_type_singleton_decref();
