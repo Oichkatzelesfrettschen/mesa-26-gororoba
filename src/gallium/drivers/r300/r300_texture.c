@@ -1094,6 +1094,39 @@ bool r300_resource_get_handle(struct pipe_screen* screen,
     return rws->buffer_get_handle(rws, tex->buf, whandle);
 }
 
+/* The heap domains a texture starts from: staging and transfer temporaries go
+ * to GTT, multisample surfaces need VRAM, everything else takes either. */
+static unsigned r300_texture_initial_domain(const struct pipe_resource *base)
+{
+    return (base->flags & R300_RESOURCE_FLAG_TRANSFER ||
+            base->usage == PIPE_USAGE_STAGING) ? RADEON_DOMAIN_GTT :
+           base->nr_samples > 1 ? RADEON_DOMAIN_VRAM :
+                                  RADEON_DOMAIN_VRAM | RADEON_DOMAIN_GTT;
+}
+
+/* Demote a texture that does not fit its heap: too large for VRAM falls back
+ * to GTT, too large for GTT leaves no domain and the caller fails the
+ * creation.  The ceiling is half of each heap, because the kernel command
+ * stream pins every buffer of a submission simultaneously and the relocation
+ * parse returns ENOMEM for a resource that leaves no room for the rest of the
+ * working set.  r300_setup_miptree saturates an overflowing size to
+ * UINT32_MAX, so a texture whose true size exceeds 32 bits always lands in
+ * the no-domain case. */
+static unsigned r300_texture_placement(struct r300_screen *rscreen,
+                                       unsigned domain, unsigned size_in_bytes)
+{
+    if (domain & RADEON_DOMAIN_VRAM &&
+        size_in_bytes >= (uint64_t)rscreen->info.vram_size_kb * 1024 / 2) {
+        domain &= ~RADEON_DOMAIN_VRAM;
+        domain |= RADEON_DOMAIN_GTT;
+    }
+    if (domain & RADEON_DOMAIN_GTT &&
+        size_in_bytes >= (uint64_t)rscreen->info.gart_size_kb * 1024 / 2) {
+        domain &= ~RADEON_DOMAIN_GTT;
+    }
+    return domain;
+}
+
 /* The common texture constructor. */
 static struct r300_resource*
 r300_texture_create_object(struct r300_screen *rscreen,
@@ -1120,24 +1153,13 @@ r300_texture_create_object(struct r300_screen *rscreen,
     tex->tex.microtile = microtile;
     tex->tex.macrotile[0] = macrotile;
     tex->tex.stride_in_bytes_override = stride_in_bytes_override;
-    tex->domain = (base->flags & R300_RESOURCE_FLAG_TRANSFER ||
-                   base->usage == PIPE_USAGE_STAGING) ? RADEON_DOMAIN_GTT :
-                  base->nr_samples > 1 ? RADEON_DOMAIN_VRAM :
-                                         RADEON_DOMAIN_VRAM | RADEON_DOMAIN_GTT;
+    tex->domain = r300_texture_initial_domain(base);
     tex->buf = buffer;
 
     r300_texture_desc_init(rscreen, tex, base);
 
-    /* Figure out the ideal placement for the texture.. */
-    if (tex->domain & RADEON_DOMAIN_VRAM &&
-        tex->tex.size_in_bytes >= (uint64_t)rscreen->info.vram_size_kb * 1024) {
-        tex->domain &= ~RADEON_DOMAIN_VRAM;
-        tex->domain |= RADEON_DOMAIN_GTT;
-    }
-    if (tex->domain & RADEON_DOMAIN_GTT &&
-        tex->tex.size_in_bytes >= (uint64_t)rscreen->info.gart_size_kb * 1024) {
-        tex->domain &= ~RADEON_DOMAIN_GTT;
-    }
+    tex->domain = r300_texture_placement(rscreen, tex->domain,
+                                         tex->tex.size_in_bytes);
     /* Just fail if the texture is too large. */
     if (!tex->domain) {
         goto fail;
@@ -1201,6 +1223,38 @@ struct pipe_resource *r300_texture_create(struct pipe_screen *screen,
     return (struct pipe_resource*)
            r300_texture_create_object(rscreen, base, microtile, macrotile,
                                       0, NULL);
+}
+
+/* The proxy-texture and renderbuffer feasibility check: dry-run the miptree
+ * layout on a stack resource and apply the same placement rule the real
+ * constructor uses.  r300_texture_desc_init only computes fields on tex, and a
+ * NULL buf skips its pre-allocated-buffer path, so nothing is allocated. */
+bool r300_can_create_resource(struct pipe_screen *screen,
+                              const struct pipe_resource *base)
+{
+    struct r300_screen *rscreen = r300_screen(screen);
+    struct r300_resource tex;
+
+    if (base->target == PIPE_BUFFER)
+        return base->width0 < (uint64_t)rscreen->info.gart_size_kb * 1024 / 2;
+
+    memset(&tex, 0, sizeof(tex));
+    tex.b.usage = base->usage;
+    tex.b.bind = base->bind;
+    tex.b.flags = base->flags;
+    if (base->flags & R300_RESOURCE_FLAG_TRANSFER ||
+        base->bind & PIPE_BIND_LINEAR) {
+        tex.tex.microtile = RADEON_LAYOUT_LINEAR;
+        tex.tex.macrotile[0] = RADEON_LAYOUT_LINEAR;
+    } else {
+        tex.tex.microtile = RADEON_LAYOUT_UNKNOWN;
+        tex.tex.macrotile[0] = RADEON_LAYOUT_UNKNOWN;
+    }
+
+    r300_texture_desc_init(rscreen, &tex, base);
+
+    return r300_texture_placement(rscreen, r300_texture_initial_domain(base),
+                                  tex.tex.size_in_bytes) != 0;
 }
 
 struct pipe_resource *r300_texture_from_handle(struct pipe_screen *screen,

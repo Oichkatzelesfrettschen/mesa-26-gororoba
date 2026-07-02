@@ -62,6 +62,9 @@ struct pipe_resource*
 r300_texture_create(struct pipe_screen* screen,
 		    const struct pipe_resource* templ);
 
+bool r300_can_create_resource(struct pipe_screen *screen,
+                              const struct pipe_resource *templ);
+
 struct pipe_surface* r300_create_surface_custom(struct pipe_context * ctx,
                                          struct pipe_resource* texture,
                                          const struct pipe_surface *surf_tmpl,

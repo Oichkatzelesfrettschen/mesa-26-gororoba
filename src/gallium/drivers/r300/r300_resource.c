@@ -99,6 +99,7 @@ void r300_init_resource_functions(struct r300_context *r300)
 void r300_init_screen_resource_functions(struct r300_screen *r300screen)
 {
    r300screen->screen.resource_create = r300_resource_create;
+   r300screen->screen.can_create_resource = r300_can_create_resource;
    r300screen->screen.resource_from_handle = r300_texture_from_handle;
    r300screen->screen.resource_get_handle = r300_resource_get_handle;
    r300screen->screen.resource_destroy = r300_resource_destroy;
