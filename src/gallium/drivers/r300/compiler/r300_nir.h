@@ -138,6 +138,8 @@ char *r300_check_control_flow(nir_shader *s);
 
 void r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen);
 
+bool r300_nir_stub_deriv(nir_shader *s);
+
 extern bool r300_transform_vs_trig_input(struct nir_shader *shader);
 
 extern bool r300_transform_fs_trig_input(struct nir_shader *shader);
