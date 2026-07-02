@@ -498,6 +498,21 @@ r300_deriv_build_gradient(nir_builder *b, nir_def *def,
         return NULL;
 
     nir_alu_instr *alu = nir_instr_as_alu(parent);
+
+    /* A vecN gathers a scalar per output component; its gradient is the vector
+     * of the sources' scalar gradients, each taken through its own swizzle. */
+    if (nir_op_is_vec(alu->op)) {
+        nir_def *comps[NIR_MAX_VEC_COMPONENTS];
+        for (unsigned i = 0; i < def->num_components; i++) {
+            nir_def *gi = r300_deriv_build_gradient(b, alu->src[i].src.ssa,
+                                                    src_var, grad_var);
+            if (!gi)
+                return NULL;
+            comps[i] = nir_channel(b, gi, alu->src[i].swizzle[0]);
+        }
+        return nir_vec(b, comps, def->num_components);
+    }
+
     const unsigned n = nir_op_infos[alu->op].num_inputs;
     nir_def *g[4], *v[4];
     for (unsigned i = 0; i < n && i < 4; i++) {
