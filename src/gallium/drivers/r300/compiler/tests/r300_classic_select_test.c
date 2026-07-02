@@ -384,8 +384,10 @@ case_integer_op_rejects(void)
    struct r300_classic_select_result r;
    CHECK(r300_classic_select(ctx, b.shader, t, 0, NULL, &r), "selection ran");
    CHECK(r.program == NULL, "integer op rejected");
-   CHECK(r.reject_reason && strstr(r.reject_reason, "outside the classic") !=
-         NULL, "integer reject named");
+   /* The entry lowering carries most integer math to float; a bitwise op
+    * with no FP24-exact lowering is the named remainder. */
+   CHECK(r.reject_reason && strstr(r.reject_reason, "bitwise") != NULL,
+         "integer reject named");
    ralloc_free(ctx);
 }
 
