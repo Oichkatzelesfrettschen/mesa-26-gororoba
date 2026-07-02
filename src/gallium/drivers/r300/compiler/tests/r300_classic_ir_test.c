@@ -167,6 +167,55 @@ negative_cases(void)
       ralloc_free(ctx);
    }
    {
+      /* VEC width outside 2-4. */
+      void *ctx = ralloc_context(NULL);
+      struct r300_classic_program *p = r300_classic_program_create(ctx, t);
+      struct r300_classic_instr *vec =
+         r300_classic_instr_append(p, R300C_OP_VEC);
+      vec->num_srcs = 1;
+      vec->writemask = 0x1;
+      vec->src[0] = src_input(0);
+      err[0] = 0;
+      CHECK(!r300_classic_program_validate(p, err, sizeof(err)),
+            "vec width 1 rejected");
+      CHECK(strstr(err, "vec width") != NULL, "vec width named");
+      ralloc_free(ctx);
+   }
+   {
+      /* VEC writemask must cover exactly its width. */
+      void *ctx = ralloc_context(NULL);
+      struct r300_classic_program *p = r300_classic_program_create(ctx, t);
+      struct r300_classic_instr *vec =
+         r300_classic_instr_append(p, R300C_OP_VEC);
+      vec->num_srcs = 3;
+      vec->writemask = 0xf;
+      vec->src[0] = src_input(0);
+      vec->src[1] = src_input(0);
+      vec->src[2] = src_input(0);
+      err[0] = 0;
+      CHECK(!r300_classic_program_validate(p, err, sizeof(err)),
+            "vec writemask mismatch rejected");
+      ralloc_free(ctx);
+   }
+   {
+      /* A well-formed vec3 collect validates. */
+      void *ctx = ralloc_context(NULL);
+      struct r300_classic_program *p = r300_classic_program_create(ctx, t);
+      struct r300_classic_instr *vec =
+         r300_classic_instr_append(p, R300C_OP_VEC);
+      vec->num_srcs = 3;
+      vec->writemask = 0x7;
+      vec->src[0] = src_input(0);
+      vec->src[1] = src_input(1);
+      vec->src[2] = src_const(0);
+      err[0] = 0;
+      CHECK(r300_classic_program_validate(p, err, sizeof(err)),
+            "vec3 collect validates");
+      if (err[0])
+         fprintf(stderr, "  said: %s\n", err);
+      ralloc_free(ctx);
+   }
+   {
       /* A sink (export) must not claim a writemask. */
       void *ctx = ralloc_context(NULL);
       struct r300_classic_program *p = r300_classic_program_create(ctx, t);

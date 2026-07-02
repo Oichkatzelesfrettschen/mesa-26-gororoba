@@ -27,15 +27,33 @@ static const struct r300_classic_op_info op_info[R300C_OP_COUNT] = {
    [R300C_OP_ADD]          = {"add", 2, true},
    [R300C_OP_MUL]          = {"mul", 2, true},
    [R300C_OP_MAD]          = {"mad", 3, true},
+   [R300C_OP_DP2]          = {"dp2", 2, true},
    [R300C_OP_DP3]          = {"dp3", 2, true},
    [R300C_OP_DP4]          = {"dp4", 2, true},
    [R300C_OP_MIN]          = {"min", 2, true},
    [R300C_OP_MAX]          = {"max", 2, true},
    [R300C_OP_FRC]          = {"frc", 1, true},
+   [R300C_OP_ROUND]        = {"round", 1, true},
    [R300C_OP_RCP]          = {"rcp", 1, true},
    [R300C_OP_RSQ]          = {"rsq", 1, true},
+   [R300C_OP_EX2]          = {"ex2", 1, true},
+   [R300C_OP_LG2]          = {"lg2", 1, true},
+   [R300C_OP_SIN]          = {"sin", 1, true},
+   [R300C_OP_COS]          = {"cos", 1, true},
+   [R300C_OP_POW]          = {"pow", 2, true},
+   [R300C_OP_SLT]          = {"slt", 2, true},
+   [R300C_OP_SGE]          = {"sge", 2, true},
+   [R300C_OP_SEQ]          = {"seq", 2, true},
+   [R300C_OP_SNE]          = {"sne", 2, true},
+   [R300C_OP_CMP]          = {"cmp", 3, true},
+   [R300C_OP_DDX]          = {"ddx", 1, true},
+   [R300C_OP_DDY]          = {"ddy", 1, true},
+   /* Variable arity (2-4); selection sets num_srcs to the vector width and
+    * the validator checks the range instead of this table row. */
+   [R300C_OP_VEC]          = {"vec", 0, true},
    [R300C_OP_TEX]          = {"tex", 1, true},
    [R300C_OP_KIL]          = {"kil", 1, false},
+   [R300C_OP_KILP]         = {"kilp", 0, false},
    [R300C_OP_EXPORT_COLOR] = {"export_color", 1, false},
    [R300C_OP_EXPORT_DEPTH] = {"export_depth", 1, false},
 };
@@ -119,7 +137,17 @@ r300_classic_program_validate(const struct r300_classic_program *p,
       }
       const struct r300_classic_op_info *info = &op_info[i->op];
 
-      if (i->num_srcs != info->num_srcs) {
+      if (i->op == R300C_OP_VEC) {
+         if (i->num_srcs < 2 || i->num_srcs > 4) {
+            ok = fail(err, err_size, i, "vec width outside 2-4");
+            break;
+         }
+         if (i->writemask != BITFIELD_MASK(i->num_srcs)) {
+            ok = fail(err, err_size, i,
+                      "vec writemask does not cover its width");
+            break;
+         }
+      } else if (i->num_srcs != info->num_srcs) {
          ok = fail(err, err_size, i, "source count does not match opcode");
          break;
       }

@@ -139,6 +139,11 @@ eval_program(struct rc_eval *e, struct radeon_compiler *c)
          for (unsigned ch = 0; ch < 4; ch++)
             r[ch] = s[0][ch] * s[1][ch] + s[2][ch];
          break;
+      case RC_OPCODE_DP2: {
+         const float d = s[0][0] * s[1][0] + s[0][1] * s[1][1];
+         for (unsigned ch = 0; ch < 4; ch++) r[ch] = d;
+         break;
+      }
       case RC_OPCODE_DP3: {
          const float d = s[0][0] * s[1][0] + s[0][1] * s[1][1] +
                          s[0][2] * s[1][2];
@@ -167,6 +172,41 @@ eval_program(struct rc_eval *e, struct radeon_compiler *c)
       case RC_OPCODE_RSQ:
          for (unsigned ch = 0; ch < 4; ch++)
             r[ch] = 1.0f / sqrtf(fabsf(s[0][0]));
+         break;
+      case RC_OPCODE_ROUND:
+         for (unsigned ch = 0; ch < 4; ch++) r[ch] = rintf(s[0][ch]);
+         break;
+      case RC_OPCODE_EX2:
+         for (unsigned ch = 0; ch < 4; ch++) r[ch] = exp2f(s[0][0]);
+         break;
+      case RC_OPCODE_LG2:
+         for (unsigned ch = 0; ch < 4; ch++) r[ch] = log2f(s[0][0]);
+         break;
+      case RC_OPCODE_SIN:
+         for (unsigned ch = 0; ch < 4; ch++) r[ch] = sinf(s[0][0]);
+         break;
+      case RC_OPCODE_COS:
+         for (unsigned ch = 0; ch < 4; ch++) r[ch] = cosf(s[0][0]);
+         break;
+      case RC_OPCODE_POW:
+         for (unsigned ch = 0; ch < 4; ch++)
+            r[ch] = powf(s[0][0], s[1][0]);
+         break;
+      case RC_OPCODE_SLT:
+         for (unsigned ch = 0; ch < 4; ch++)
+            r[ch] = s[0][ch] < s[1][ch] ? 1.0f : 0.0f;
+         break;
+      case RC_OPCODE_SGE:
+         for (unsigned ch = 0; ch < 4; ch++)
+            r[ch] = s[0][ch] >= s[1][ch] ? 1.0f : 0.0f;
+         break;
+      case RC_OPCODE_SEQ:
+         for (unsigned ch = 0; ch < 4; ch++)
+            r[ch] = s[0][ch] == s[1][ch] ? 1.0f : 0.0f;
+         break;
+      case RC_OPCODE_SNE:
+         for (unsigned ch = 0; ch < 4; ch++)
+            r[ch] = s[0][ch] != s[1][ch] ? 1.0f : 0.0f;
          break;
       case RC_OPCODE_CMP:
          /* cmp: dst = src0 < 0 ? src1 : src2 (per channel). */
@@ -385,6 +425,7 @@ fs_builder(const char *name)
       .float_mul_add32 =
          nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
       .lower_flrp32 = true,
+      .fdot_replicates = true,
    };
    return nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &options, "%s",
                                          name);
@@ -507,6 +548,91 @@ build_tex_modulate(void)
    return b.shader;
 }
 
+/* vec4 of four distinct defs: the VEC collect path, plus the fsub fold. */
+static nir_shader *
+build_vec_compose(void)
+{
+   nir_builder b = fs_builder("parity_vec");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *x = nir_fmul(&b, nir_channel(&b, v, 0), nir_channel(&b, v, 1));
+   nir_def *y = nir_fadd_imm(&b, nir_channel(&b, v, 2), 0.25f);
+   nir_def *z = nir_ffract(&b, nir_channel(&b, v, 3));
+   nir_def *w = nir_fsub(&b, nir_channel(&b, v, 0), nir_channel(&b, v, 2));
+   nir_store_var(&b, out, nir_vec4(&b, x, y, z, w), 0xf);
+   return b.shader;
+}
+
+/* Replicated dot products of three widths, collected per channel. */
+static nir_shader *
+build_dots_replicated(void)
+{
+   nir_builder b = fs_builder("parity_dots");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *c3 = nir_imm_vec3(&b, 0.5f, -0.25f, 1.5f);
+   nir_def *c4 = nir_imm_vec4(&b, 0.125f, 2.0f, -1.0f, 0.5f);
+   nir_def *d3 = nir_fdot(&b, nir_trim_vector(&b, v, 3), c3);
+   nir_def *d4 = nir_fdot(&b, v, c4);
+   nir_def *d2 = nir_fdot(&b, nir_trim_vector(&b, v, 2),
+                          nir_imm_vec2(&b, 0.75f, 0.25f));
+   nir_def *one = nir_imm_float(&b, 1.0f);
+   nir_store_var(&b, out, nir_vec4(&b, d3, d4, d2, one), 0xf);
+   return b.shader;
+}
+
+/* SLT/SGE set-compares steering a per-channel CMP select. */
+static nir_shader *
+build_setcmp_csel(void)
+{
+   nir_builder b = fs_builder("parity_setcmp");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *half = nir_imm_vec4(&b, 0.5f, 0.5f, 0.5f, 0.5f);
+   nir_def *lt = nir_slt(&b, v, half);
+   nir_def *ge = nir_sge(&b, v, half);
+   nir_def *sel = nir_build_alu3(&b, nir_op_fcsel, lt,
+                                 nir_fmul_imm(&b, v, 0.25f), ge);
+   nir_store_var(&b, out, sel, 0xf);
+   return b.shader;
+}
+
+/* Scalar transcendentals collected per channel; operands are shifted into
+ * safe domains so both evaluations stay finite on every input set. */
+static nir_shader *
+build_transcendentals(void)
+{
+   nir_builder b = fs_builder("parity_transc");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *x = nir_fexp2(&b, nir_channel(&b, v, 0));
+   nir_def *y = nir_flog2(&b, nir_fadd_imm(&b, nir_fabs(&b, nir_channel(&b, v, 1)), 1.5f));
+   nir_def *z = nir_fpow(&b, nir_fadd_imm(&b, nir_fabs(&b, nir_channel(&b, v, 2)), 0.5f),
+                         nir_imm_float(&b, 2.0f));
+   nir_def *w = nir_fmul(&b, nir_fsin(&b, nir_channel(&b, v, 3)),
+                         nir_fcos(&b, nir_channel(&b, v, 3)));
+   nir_store_var(&b, out, nir_vec4(&b, x, y, z, w), 0xf);
+   return b.shader;
+}
+
+/* ffloor's FRC expansion and fround_even's ROUND row. */
+static nir_shader *
+build_floor_round(void)
+{
+   nir_builder b = fs_builder("parity_floor");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *fl = nir_ffloor(&b, nir_fmul_imm(&b, v, 1.7f));
+   nir_def *rn = nir_fround_even(&b, nir_fmul_imm(&b, v, 2.3f));
+   nir_store_var(&b, out, nir_fadd(&b, fl, rn), 0xf);
+   return b.shader;
+}
+
 int
 main(void)
 {
@@ -517,6 +643,11 @@ main(void)
    parity("minmax_frc", build_minmax_chain);
    parity("swizzle_negate", build_swizzle_negate);
    parity("tex_modulate", build_tex_modulate);
+   parity("vec_compose", build_vec_compose);
+   parity("dots_replicated", build_dots_replicated);
+   parity("setcmp_csel", build_setcmp_csel);
+   parity("transcendentals", build_transcendentals);
+   parity("floor_round", build_floor_round);
    glsl_type_singleton_decref();
    if (failures) {
       fprintf(stderr, "r300_classic_parity_test: %d failures\n", failures);
