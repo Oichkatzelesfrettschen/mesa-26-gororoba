@@ -215,6 +215,10 @@ r300_classic_emit(const struct r300_classic_program *p,
       case R300C_OP_TXP:
          inst->U.I.TexSrcUnit = i->tex_unit;
          inst->U.I.TexSrcTarget = i->tex_target;
+         /* A fresh rc_instruction zeroes TexSwizzle to .xxxx;
+          * rc_normal_rewrite_writemask requires the identity swizzle
+          * nir_to_rc always sets before it will trim a TEX writemask. */
+         inst->U.I.TexSwizzle = RC_SWIZZLE_XYZW;
          FALLTHROUGH;
       default: {
          inst->U.I.DstReg.File = RC_FILE_TEMPORARY;
