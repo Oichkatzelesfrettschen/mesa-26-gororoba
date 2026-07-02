@@ -34,7 +34,7 @@ r300_nir_stub_deriv_instr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
-static bool
+bool
 r300_nir_stub_deriv(nir_shader *s)
 {
    return nir_shader_intrinsics_pass(s, r300_nir_stub_deriv_instr,
@@ -238,10 +238,11 @@ r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen)
       NIR_PASS(_, s, nir_lower_point_size, 1.0f, screen->screen.caps.max_point_size);
    }
 
-   /* R300/R400 doesn't support derivatives in FS, we replace it with zero,
-    * emit warning and hope for the best. */
-   if (s->info.stage == MESA_SHADER_FRAGMENT && !is_r500)
-      NIR_PASS(_, s, r300_nir_stub_deriv);
+   /* R300/R400 has no fragment dFdx/dFdy hardware. The stub that rewrites the
+    * derivatives to MOV 0 runs later, in r300_translate_fragment_shader, after
+    * r300_nir_lower_derivatives_swtcl has had its chance to claim a varying's
+    * derivatives as draw-supplied analytic gradients; running it here would
+    * zero them first and the analytic pass would see nothing. */
 
    bool progress;
    do {

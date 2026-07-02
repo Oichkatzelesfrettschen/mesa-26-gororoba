@@ -19,6 +19,7 @@
 #include "r300_texture.h"
 
 #include "compiler/radeon_compiler.h"
+#include "compiler/r300_nir.h"
 #include "compiler/nir_to_rc.h"
 #include "compiler/classic/r300_classic_emit.h"
 #include "nir.h"
@@ -1009,6 +1010,13 @@ static void r300_translate_fragment_shader(
         }
         if (deriv_gate)
             r300_nir_lower_derivatives_swtcl(clone, shader);
+
+        /* Zero any derivative the analytic pass could not claim (multi-varying,
+         * non-VARn source, or the gate off).  r300_optimize_nir leaves the
+         * derivatives as intrinsics so the analytic pass above can run first;
+         * the r300 RC backend has no DDX/DDY emit, so the residue must become
+         * MOV 0 here before nir_to_rc. */
+        NIR_PASS(_, clone, r300_nir_stub_deriv);
     }
 
     /* Classic front end, opt-in via R300_USE_CLASSIC_FS=1 (unset, empty, or
