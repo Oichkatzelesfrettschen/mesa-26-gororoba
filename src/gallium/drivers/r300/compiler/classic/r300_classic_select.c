@@ -235,6 +235,53 @@ select_intrinsic(struct sel_ctx *ctx, nir_intrinsic_instr *intr)
       e->src[0] = src;
       return true;
    }
+   case nir_intrinsic_terminate: {
+      struct r300_classic_instr *k =
+         r300_classic_instr_append(ctx->prog, R300C_OP_KILP);
+      if (!k)
+         return reject(ctx, "out of memory");
+      return true;
+   }
+   case nir_intrinsic_terminate_if: {
+      /* Bools reach selection lowered to 0.0/1.0; KIL discards where its
+       * source is negative, so the negated channel-0 condition kills exactly
+       * the true lanes (the ntr_emit_intrinsic_kill mapping). */
+      struct r300_classic_src cond;
+      if (!get_plain_src(ctx, intr->src[0].ssa, "terminate_if condition",
+                         &cond))
+         return false;
+      const unsigned lane = GET_SWZ(cond.swizzle, 0);
+      cond.swizzle = RC_MAKE_SWIZZLE(lane, lane, lane, lane);
+      cond.negate = !cond.negate;
+      struct r300_classic_instr *k =
+         r300_classic_instr_append(ctx->prog, R300C_OP_KIL);
+      if (!k)
+         return reject(ctx, "out of memory");
+      k->src[0] = cond;
+      return true;
+   }
+   case nir_intrinsic_ddx:
+   case nir_intrinsic_ddx_coarse:
+   case nir_intrinsic_ddy:
+   case nir_intrinsic_ddy_coarse: {
+      const bool is_ddx = intr->intrinsic == nir_intrinsic_ddx ||
+                          intr->intrinsic == nir_intrinsic_ddx_coarse;
+      struct r300_classic_src src;
+      if (!get_plain_src(ctx, intr->src[0].ssa, "derivative operand", &src))
+         return false;
+      struct r300_classic_instr *d = r300_classic_instr_append(
+         ctx->prog, is_ddx ? R300C_OP_DDX : R300C_OP_DDY);
+      if (!d)
+         return reject(ctx, "out of memory");
+      d->writemask = (uint8_t)BITFIELD_MASK(intr->def.num_components);
+      d->src[0] = src;
+      map_def(ctx, &intr->def, (struct r300_classic_src){
+         .file = R300C_FILE_SSA,
+         .def = d,
+         .swizzle = RC_SWIZZLE_XYZW,
+      });
+      return true;
+   }
    default:
       return reject(ctx, "intrinsic '%s' outside the classic subset",
                     nir_intrinsic_infos[intr->intrinsic].name);
@@ -252,13 +299,26 @@ alu_op_map(nir_op op, enum r300_classic_op *out)
    case nir_op_fmul:   *out = R300C_OP_MUL; return true;
    case nir_op_ffma:
    case nir_op_fmad:   *out = R300C_OP_MAD; return true;
-   case nir_op_fdot3:  *out = R300C_OP_DP3; return true;
-   case nir_op_fdot4:  *out = R300C_OP_DP4; return true;
+   case nir_op_fdot2_replicated: *out = R300C_OP_DP2; return true;
+   case nir_op_fdot3:
+   case nir_op_fdot3_replicated: *out = R300C_OP_DP3; return true;
+   case nir_op_fdot4:
+   case nir_op_fdot4_replicated: *out = R300C_OP_DP4; return true;
    case nir_op_fmin:   *out = R300C_OP_MIN; return true;
    case nir_op_fmax:   *out = R300C_OP_MAX; return true;
    case nir_op_ffract: *out = R300C_OP_FRC; return true;
+   case nir_op_fround_even: *out = R300C_OP_ROUND; return true;
    case nir_op_frcp:   *out = R300C_OP_RCP; return true;
    case nir_op_frsq:   *out = R300C_OP_RSQ; return true;
+   case nir_op_fexp2:  *out = R300C_OP_EX2; return true;
+   case nir_op_flog2:  *out = R300C_OP_LG2; return true;
+   case nir_op_fsin:   *out = R300C_OP_SIN; return true;
+   case nir_op_fcos:   *out = R300C_OP_COS; return true;
+   case nir_op_fpow:   *out = R300C_OP_POW; return true;
+   case nir_op_slt:    *out = R300C_OP_SLT; return true;
+   case nir_op_sge:    *out = R300C_OP_SGE; return true;
+   case nir_op_seq:    *out = R300C_OP_SEQ; return true;
+   case nir_op_sne:    *out = R300C_OP_SNE; return true;
    default:            return false;
    }
 }
@@ -282,32 +342,130 @@ select_alu(struct sel_ctx *ctx, nir_alu_instr *alu)
       return true;
    }
 
-   /* A vecN whose lanes all read one def is a swizzle; distinct defs need a
-    * channel-merge the SSA IR does not model until register allocation. */
+   /* A vecN whose lanes all read one def is a swizzle; distinct defs become
+    * a VEC collect whose source s carries destination channel s through its
+    * own channel-s select. */
    if (alu->op == nir_op_vec2 || alu->op == nir_op_vec3 ||
        alu->op == nir_op_vec4) {
       const unsigned num = nir_op_infos[alu->op].num_inputs;
       const nir_def *def0 = alu->src[0].src.ssa;
+      bool same_def = true;
       for (unsigned s = 1; s < num; s++)
          if (alu->src[s].src.ssa != def0)
-            return reject(ctx, "vec%u composes distinct defs", num);
-      const struct r300_classic_src *base = lookup_def(ctx, def0);
-      if (!base)
-         return reject(ctx, "vec%u operand has no selected value", num);
-      uint8_t select[4];
-      for (unsigned c = 0; c < 4; c++)
-         select[c] = alu->src[c < num ? c : num - 1].swizzle[0];
-      struct r300_classic_src src = *base;
-      src.swizzle = compose_swizzle(base->swizzle, select, 4);
-      map_def(ctx, &alu->def, src);
+            same_def = false;
+      if (same_def) {
+         const struct r300_classic_src *base = lookup_def(ctx, def0);
+         if (!base)
+            return reject(ctx, "vec%u operand has no selected value", num);
+         uint8_t select[4];
+         for (unsigned c = 0; c < 4; c++)
+            select[c] = alu->src[c < num ? c : num - 1].swizzle[0];
+         struct r300_classic_src src = *base;
+         src.swizzle = compose_swizzle(base->swizzle, select, 4);
+         map_def(ctx, &alu->def, src);
+         return true;
+      }
+
+      struct r300_classic_instr *i =
+         r300_classic_instr_append(ctx->prog, R300C_OP_VEC);
+      if (!i)
+         return reject(ctx, "out of memory");
+      i->num_srcs = num;
+      i->writemask = (uint8_t)BITFIELD_MASK(num);
+      for (unsigned s = 0; s < num; s++) {
+         const struct r300_classic_src *base =
+            lookup_def(ctx, alu->src[s].src.ssa);
+         if (!base)
+            return reject(ctx, "vec%u operand has no selected value", num);
+         /* Replicate the lane across all channels so channel s (and any
+          * grouping neighbor) selects the same value. */
+         const uint8_t select[4] = {
+            alu->src[s].swizzle[0], alu->src[s].swizzle[0],
+            alu->src[s].swizzle[0], alu->src[s].swizzle[0],
+         };
+         i->src[s] = *base;
+         i->src[s].swizzle = compose_swizzle(base->swizzle, select, 4);
+      }
+      map_def(ctx, &alu->def, (struct r300_classic_src){
+         .file = R300C_FILE_SSA,
+         .def = i,
+         .swizzle = RC_SWIZZLE_XYZW,
+      });
       return true;
    }
 
-   /* fsat is a saturating MOV: RC carries the [0,1] clamp on the dst. */
+   /* CMP chooses src1 where src0 < 0, so the fcsel family is a source-fold:
+    * fcsel tests src0 != 0 through -|src0|, fcsel_gt negates, and fcsel_ge
+    * swaps the chosen operands (the ntr_emit_alu_special mappings). */
+   if (alu->op == nir_op_fcsel || alu->op == nir_op_fcsel_gt ||
+       alu->op == nir_op_fcsel_ge) {
+      struct r300_classic_instr *i =
+         r300_classic_instr_append(ctx->prog, R300C_OP_CMP);
+      if (!i)
+         return reject(ctx, "out of memory");
+      i->writemask = (uint8_t)BITFIELD_MASK(alu->def.num_components);
+      if (!get_alu_src(ctx, alu, 0, &i->src[0]))
+         return false;
+      const unsigned then_src = alu->op == nir_op_fcsel_ge ? 2 : 1;
+      const unsigned else_src = alu->op == nir_op_fcsel_ge ? 1 : 2;
+      if (!get_alu_src(ctx, alu, then_src, &i->src[1]) ||
+          !get_alu_src(ctx, alu, else_src, &i->src[2]))
+         return false;
+      if (alu->op == nir_op_fcsel) {
+         i->src[0].abs = true;
+         i->src[0].negate = true;
+      } else if (alu->op == nir_op_fcsel_gt) {
+         i->src[0].negate = !i->src[0].negate;
+      }
+      map_def(ctx, &alu->def, (struct r300_classic_src){
+         .file = R300C_FILE_SSA,
+         .def = i,
+         .swizzle = RC_SWIZZLE_XYZW,
+      });
+      return true;
+   }
+
+   /* FRC is exactly src - floor(src), so floor(x) = x - FRC(x) -- the same
+    * two-instruction expansion ntr_emit_alu_special uses because RC has no
+    * FLR opcode for an FP destination. */
+   if (alu->op == nir_op_ffloor) {
+      struct r300_classic_src src;
+      if (!get_alu_src(ctx, alu, 0, &src))
+         return false;
+      struct r300_classic_instr *frc =
+         r300_classic_instr_append(ctx->prog, R300C_OP_FRC);
+      if (!frc)
+         return reject(ctx, "out of memory");
+      frc->writemask = (uint8_t)BITFIELD_MASK(alu->def.num_components);
+      frc->src[0] = src;
+      struct r300_classic_instr *sub =
+         r300_classic_instr_append(ctx->prog, R300C_OP_ADD);
+      if (!sub)
+         return reject(ctx, "out of memory");
+      sub->writemask = frc->writemask;
+      sub->src[0] = src;
+      sub->src[1] = (struct r300_classic_src){
+         .file = R300C_FILE_SSA,
+         .def = frc,
+         .swizzle = RC_SWIZZLE_XYZW,
+         .negate = true,
+      };
+      map_def(ctx, &alu->def, (struct r300_classic_src){
+         .file = R300C_FILE_SSA,
+         .def = sub,
+         .swizzle = RC_SWIZZLE_XYZW,
+      });
+      return true;
+   }
+
+   /* fsat is a saturating MOV: RC carries the [0,1] clamp on the dst.
+    * fsub is ADD with the second operand's sign folded. */
    const bool saturate = alu->op == nir_op_fsat;
    enum r300_classic_op op;
    if (saturate)
       op = R300C_OP_MOV;
+   else if (alu->op == nir_op_fsub)
+      op = R300C_OP_ADD;
    else if (!alu_op_map(alu->op, &op))
       return reject(ctx, "nir op '%s' outside the classic subset",
                     nir_op_infos[alu->op].name);
@@ -320,6 +478,8 @@ select_alu(struct sel_ctx *ctx, nir_alu_instr *alu)
    for (unsigned s = 0; s < i->num_srcs; s++)
       if (!get_alu_src(ctx, alu, s, &i->src[s]))
          return false;
+   if (alu->op == nir_op_fsub)
+      i->src[1].negate = !i->src[1].negate;
 
    map_def(ctx, &alu->def, (struct r300_classic_src){
       .file = R300C_FILE_SSA,

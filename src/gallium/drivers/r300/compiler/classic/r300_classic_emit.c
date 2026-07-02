@@ -18,15 +18,32 @@ rc_opcode_for(enum r300_classic_op op)
    case R300C_OP_ADD: return RC_OPCODE_ADD;
    case R300C_OP_MUL: return RC_OPCODE_MUL;
    case R300C_OP_MAD: return RC_OPCODE_MAD;
+   case R300C_OP_DP2: return RC_OPCODE_DP2;
    case R300C_OP_DP3: return RC_OPCODE_DP3;
    case R300C_OP_DP4: return RC_OPCODE_DP4;
    case R300C_OP_MIN: return RC_OPCODE_MIN;
    case R300C_OP_MAX: return RC_OPCODE_MAX;
    case R300C_OP_FRC: return RC_OPCODE_FRC;
+   case R300C_OP_ROUND: return RC_OPCODE_ROUND;
    case R300C_OP_RCP: return RC_OPCODE_RCP;
    case R300C_OP_RSQ: return RC_OPCODE_RSQ;
+   case R300C_OP_EX2: return RC_OPCODE_EX2;
+   case R300C_OP_LG2: return RC_OPCODE_LG2;
+   case R300C_OP_SIN: return RC_OPCODE_SIN;
+   case R300C_OP_COS: return RC_OPCODE_COS;
+   case R300C_OP_POW: return RC_OPCODE_POW;
+   case R300C_OP_SLT: return RC_OPCODE_SLT;
+   case R300C_OP_SGE: return RC_OPCODE_SGE;
+   case R300C_OP_SEQ: return RC_OPCODE_SEQ;
+   case R300C_OP_SNE: return RC_OPCODE_SNE;
+   case R300C_OP_CMP: return RC_OPCODE_CMP;
+   case R300C_OP_DDX: return RC_OPCODE_DDX;
+   case R300C_OP_DDY: return RC_OPCODE_DDY;
    case R300C_OP_TEX: return RC_OPCODE_TEX;
    case R300C_OP_KIL: return RC_OPCODE_KIL;
+   case R300C_OP_KILP: return RC_OPCODE_KILP;
+   /* The collect expands to MOVs, one per channel group. */
+   case R300C_OP_VEC: return RC_OPCODE_MOV;
    /* Exports emit as MOVs into RC_FILE_OUTPUT. */
    case R300C_OP_EXPORT_COLOR:
    case R300C_OP_EXPORT_DEPTH:
@@ -127,6 +144,44 @@ r300_classic_emit(const struct r300_classic_program *p,
       if (op == RC_OPCODE_ILLEGAL_OPCODE)
          return false;
 
+      /* The collect writes one destination temp channel by channel; adjacent
+       * channels reading the same register merge into one MOV whose swizzle
+       * carries each channel's own select.  Register allocation guarantees
+       * the destination aliases no source, so the MOV order is free. */
+      if (i->op == R300C_OP_VEC) {
+         const unsigned temp = ra->temp_of_ssa[i->ssa_id];
+         if (temp == R300_CLASSIC_NO_TEMP)
+            return false;
+         unsigned ch = 0;
+         while (ch < i->num_srcs) {
+            unsigned end = ch + 1;
+            while (end < i->num_srcs &&
+                   i->src[end].file == i->src[ch].file &&
+                   i->src[end].def == i->src[ch].def &&
+                   i->src[end].index == i->src[ch].index &&
+                   i->src[end].negate == i->src[ch].negate &&
+                   i->src[end].abs == i->src[ch].abs)
+               end++;
+            struct rc_instruction *mov =
+               rc_insert_new_instruction(c, c->Program.Instructions.Prev);
+            mov->U.I.Opcode = RC_OPCODE_MOV;
+            if (!convert_src(&i->src[ch], ra, imm, imm_rc_index,
+                             &mov->U.I.SrcReg[0]))
+               return false;
+            unsigned swz = mov->U.I.SrcReg[0].Swizzle;
+            for (unsigned k = ch; k < end; k++) {
+               swz &= ~(0x7u << (3 * k));
+               swz |= GET_SWZ(i->src[k].swizzle, k) << (3 * k);
+            }
+            mov->U.I.SrcReg[0].Swizzle = swz;
+            mov->U.I.DstReg.File = RC_FILE_TEMPORARY;
+            mov->U.I.DstReg.Index = temp;
+            mov->U.I.DstReg.WriteMask = BITFIELD_RANGE(ch, end - ch);
+            ch = end;
+         }
+         continue;
+      }
+
       struct rc_instruction *inst =
          rc_insert_new_instruction(c, c->Program.Instructions.Prev);
       inst->U.I.Opcode = op;
@@ -135,6 +190,14 @@ r300_classic_emit(const struct r300_classic_program *p,
          if (!convert_src(&i->src[s], ra, imm, imm_rc_index,
                           &inst->U.I.SrcReg[s]))
             return false;
+
+      /* r500 MDH/MDV computes A*B+C; B = -1 encodes as an all-ones swizzle
+       * with full negate, the constant second source nir_to_rc always
+       * supplies. */
+      if (i->op == R300C_OP_DDX || i->op == R300C_OP_DDY) {
+         inst->U.I.SrcReg[1].Swizzle = RC_SWIZZLE_1111;
+         inst->U.I.SrcReg[1].Negate = RC_MASK_XYZW;
+      }
 
       switch (i->op) {
       case R300C_OP_EXPORT_COLOR:
@@ -154,7 +217,8 @@ r300_classic_emit(const struct r300_classic_program *p,
          break;
       }
       case R300C_OP_KIL:
-         /* KIL has no destination. */
+      case R300C_OP_KILP:
+         /* Discards have no destination. */
          break;
       case R300C_OP_TEX:
          inst->U.I.TexSrcUnit = i->tex_unit;

@@ -42,13 +42,20 @@ r300_classic_regalloc(void *mem_ctx, const struct r300_classic_program *p,
    unsigned high_water = 0;
    pos = 0;
    list_for_each_entry (struct r300_classic_instr, i, &p->instrs, link) {
-      for (unsigned s = 0; s < i->num_srcs; s++) {
-         if (i->src[s].file != R300C_FILE_SSA || !i->src[s].def)
-            continue;
-         const unsigned id = i->src[s].def->ssa_id;
-         if (last_use[id] == pos &&
-             temp_of_ssa[id] != R300_CLASSIC_NO_TEMP)
-            BITSET_CLEAR(in_use, temp_of_ssa[id]);
+      /* VEC expands to a MOV sequence at emission, so the read-all-before-
+       * write rule that lets a def reuse a dying operand's slot does not
+       * hold for it: a later MOV in the sequence would read a source the
+       * earlier MOVs already overwrote.  Keep dying VEC sources live until
+       * after the def allocates, so the destination never aliases one. */
+      if (i->op != R300C_OP_VEC) {
+         for (unsigned s = 0; s < i->num_srcs; s++) {
+            if (i->src[s].file != R300C_FILE_SSA || !i->src[s].def)
+               continue;
+            const unsigned id = i->src[s].def->ssa_id;
+            if (last_use[id] == pos &&
+                temp_of_ssa[id] != R300_CLASSIC_NO_TEMP)
+               BITSET_CLEAR(in_use, temp_of_ssa[id]);
+         }
       }
 
       if (i->writemask) {
@@ -75,6 +82,17 @@ r300_classic_regalloc(void *mem_ctx, const struct r300_classic_program *p,
           * dead def cannot poison the pool. */
          if (last_use[i->ssa_id] <= pos)
             BITSET_CLEAR(in_use, slot);
+      }
+
+      if (i->op == R300C_OP_VEC) {
+         for (unsigned s = 0; s < i->num_srcs; s++) {
+            if (i->src[s].file != R300C_FILE_SSA || !i->src[s].def)
+               continue;
+            const unsigned id = i->src[s].def->ssa_id;
+            if (last_use[id] == pos &&
+                temp_of_ssa[id] != R300_CLASSIC_NO_TEMP)
+               BITSET_CLEAR(in_use, temp_of_ssa[id]);
+         }
       }
       pos++;
    }

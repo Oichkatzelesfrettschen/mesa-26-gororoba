@@ -28,15 +28,37 @@ enum r300_classic_op {
    R300C_OP_ADD,
    R300C_OP_MUL,
    R300C_OP_MAD,
+   R300C_OP_DP2,
    R300C_OP_DP3,
    R300C_OP_DP4,
    R300C_OP_MIN,
    R300C_OP_MAX,
    R300C_OP_FRC,
+   R300C_OP_ROUND,
    R300C_OP_RCP,
    R300C_OP_RSQ,
+   R300C_OP_EX2,
+   R300C_OP_LG2,
+   R300C_OP_SIN,
+   R300C_OP_COS,
+   R300C_OP_POW,
+   R300C_OP_SLT,
+   R300C_OP_SGE,
+   R300C_OP_SEQ,
+   R300C_OP_SNE,
+   R300C_OP_CMP,
+   R300C_OP_DDX,
+   R300C_OP_DDY,
+   /* Channel collect: source s supplies destination channel s, each read
+    * through its own descriptor's channel-s select.  num_srcs is the vector
+    * width (2-4) and the writemask covers exactly the low num_srcs channels.
+    * Emission expands the collect into per-channel-group MOVs; register
+    * allocation keeps its destination disjoint from every source because the
+    * expansion is a MOV sequence, not one read-all-then-write instruction. */
+   R300C_OP_VEC,
    R300C_OP_TEX,
    R300C_OP_KIL,
+   R300C_OP_KILP,
    R300C_OP_EXPORT_COLOR,
    R300C_OP_EXPORT_DEPTH,
 
@@ -80,7 +102,7 @@ struct r300_classic_instr {
    /* Clamp the result to [0, 1] (RC SaturateMode ZERO_ONE on the dst). */
    bool saturate;
    unsigned num_srcs;
-   struct r300_classic_src src[3];
+   struct r300_classic_src src[4];
    /* R300C_OP_TEX only. */
    unsigned tex_unit;
 };

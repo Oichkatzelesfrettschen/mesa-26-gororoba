@@ -133,11 +133,47 @@ case_fan_boundary(void)
    }
 }
 
+/* VEC expands to a MOV sequence at emission, so its destination must not
+ * reuse the slot of a source dying at the VEC -- the standard recycling
+ * rule would corrupt channels the earlier MOVs already wrote. */
+static void
+case_vec_dst_never_aliases_sources(void)
+{
+   void *ctx = ralloc_context(NULL);
+   const struct r300_classic_target *t = r300_classic_target_get(false, false);
+   struct r300_classic_program *p = r300_classic_program_create(ctx, t);
+
+   struct r300_classic_instr *a = append_input_mov(p);
+   struct r300_classic_instr *bdef = append_input_mov(p);
+   struct r300_classic_instr *vec =
+      r300_classic_instr_append(p, R300C_OP_VEC);
+   vec->num_srcs = 2;
+   vec->writemask = 0x3;
+   vec->src[0] = src_ssa(a);
+   vec->src[1] = src_ssa(bdef);
+   struct r300_classic_instr *use =
+      r300_classic_instr_append(p, R300C_OP_MOV);
+   use->writemask = 0xf;
+   use->src[0] = src_ssa(vec);
+
+   struct r300_classic_regalloc_result r;
+   CHECK(r300_classic_regalloc(ctx, p, &r), "allocation ran");
+   CHECK(r.temp_of_ssa != NULL, "vec program allocates");
+   if (r.temp_of_ssa) {
+      CHECK(r.temp_of_ssa[vec->ssa_id] != r.temp_of_ssa[a->ssa_id],
+            "vec dst disjoint from source a");
+      CHECK(r.temp_of_ssa[vec->ssa_id] != r.temp_of_ssa[bdef->ssa_id],
+            "vec dst disjoint from source b");
+   }
+   ralloc_free(ctx);
+}
+
 int
 main(void)
 {
    case_chain_recycles();
    case_fan_boundary();
+   case_vec_dst_never_aliases_sources();
    if (failures) {
       fprintf(stderr, "r300_classic_regalloc_test: %d failures\n", failures);
       return 1;
