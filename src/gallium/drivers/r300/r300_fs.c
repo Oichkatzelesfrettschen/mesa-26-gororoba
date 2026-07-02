@@ -1173,9 +1173,21 @@ static void r300_translate_fragment_shader(
         classic_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
     if (classic_gate) {
-        static const struct r300_fragment_program_external_state plain_ext;
-        if (memcmp(&shader->compare_state, &plain_ext,
-                   sizeof(plain_ext)) == 0) {
+        /* Plainness is per lowering trigger, not a whole-struct compare:
+         * sampler_state_count only counts bound samplers and drives no
+         * lowering, and texture_swizzle/texture_compare_func carry meaning
+         * only under compare_mode_enabled.  The fields that summon
+         * nir_to_rc-resident lowerings are the per-unit shadow compare,
+         * NPOT wrap emulation, and 3D clamp-and-scale, plus alpha_to_one. */
+        bool plain_ext = !shader->compare_state.alpha_to_one;
+        for (unsigned u = 0;
+             plain_ext && u < ARRAY_SIZE(shader->compare_state.unit); u++) {
+            if (shader->compare_state.unit[u].compare_mode_enabled ||
+                shader->compare_state.unit[u].wrap_mode != RC_WRAP_NONE ||
+                shader->compare_state.unit[u].clamp_and_scale_before_fetch)
+                plain_ext = false;
+        }
+        if (plain_ext) {
             void *cctx = ralloc_context(NULL);
             nir_shader *cclone = nir_shader_clone(cctx, clone);
             const struct r300_classic_target *ct = r300_classic_target_get(
