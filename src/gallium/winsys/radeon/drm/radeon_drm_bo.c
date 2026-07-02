@@ -1048,6 +1048,23 @@ radeon_winsys_bo_create(struct radeon_winsys *rws,
 
    bo->u.real.use_reusable_pool = use_reusable_pool;
 
+   /* The kernel zeroes fresh GTT pages, but a VRAM allocation reuses device
+    * memory without clearing, and on a UMA part the VRAM carve-out is system
+    * RAM still holding another process's data: piglit
+    * security@initialized-fbo and security@initialized-texmemory read prior
+    * framebuffer contents through a fresh renderbuffer or texture.  Clear a
+    * new VRAM allocation where the mapping is a plain RAM write; a memset
+    * through a discrete card's BAR is too slow to impose on every
+    * allocation.  Reclaimed cache buffers return above and never leave the
+    * process, so they keep their contents. */
+   if (domain & RADEON_DOMAIN_VRAM && !ws->info.has_dedicated_vram) {
+      void *ptr = radeon_bo_do_map(bo);
+      if (ptr) {
+         memset(ptr, 0, size);
+         radeon_bo_unmap(&ws->base, &bo->base);
+      }
+   }
+
    mtx_lock(&ws->bo_handles_mutex);
    _mesa_hash_table_insert(ws->bo_handles, (void*)(uintptr_t)bo->handle, bo);
    mtx_unlock(&ws->bo_handles_mutex);
