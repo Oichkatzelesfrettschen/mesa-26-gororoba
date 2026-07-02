@@ -43,8 +43,13 @@ reject(struct sel_ctx *ctx, const char *fmt, ...)
 
 /* Record an input's varying slot at its RC input index, mirroring
  * ntr_read_input_output so AllocateHwInputs routes classic-path inputs the
- * same way it routes nir_to_rc's.  Slots the classic subset cannot honor
- * (WPOS needs the window transform, FACE the face lowering) reject. */
+ * same way it routes nir_to_rc's.  WPOS and FACE record and the shared
+ * post-frontend machinery does the rest: the vertex side mirrors
+ * gl_Position into the wpos varying (r300_nir_add_wpos) and the rasterizer
+ * routes it by inputs.wpos, and rc_transform_fragment_face rewrites face
+ * reads on the emitted rc_program regardless of front end.  Pointcoord
+ * arrives as VAR8 through ntr_fixup_varying_slots and records as a
+ * generic. */
 static bool
 record_input_semantics(struct sel_ctx *ctx, gl_varying_slot location,
                        unsigned base)
@@ -55,6 +60,12 @@ record_input_semantics(struct sel_ctx *ctx, gl_varying_slot location,
    if (base >= sem->num_total)
       sem->num_total = base + 1;
    switch (location) {
+   case VARYING_SLOT_POS:
+      sem->wpos = base;
+      return true;
+   case VARYING_SLOT_FACE:
+      sem->face = base;
+      return true;
    case VARYING_SLOT_COL0:
       sem->color[0] = base;
       return true;
@@ -514,7 +525,12 @@ select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
    case GLSL_SAMPLER_DIM_EXTERNAL: target = RC_TEXTURE_2D; break;
    case GLSL_SAMPLER_DIM_3D:       target = RC_TEXTURE_3D; break;
    case GLSL_SAMPLER_DIM_CUBE:     target = RC_TEXTURE_CUBE; break;
-   case GLSL_SAMPLER_DIM_RECT:     target = RC_TEXTURE_RECT; break;
+   case GLSL_SAMPLER_DIM_RECT:
+      /* R300 cannot sample rectangles; ntr_lower_backend_tex normalizes
+       * the coordinate by the RC_STATE_R300_TEXRECT_FACTOR state constant
+       * and retargets to 2D, a lowering the classic entry does not carry
+       * yet. */
+      return reject(ctx, "RECT sampling needs the texrect-factor lowering");
    default:
       return reject(ctx, "sampler dim %d outside the classic subset",
                     (int)tex->sampler_dim);
