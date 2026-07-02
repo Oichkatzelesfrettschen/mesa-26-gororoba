@@ -292,7 +292,7 @@ select_alu(struct sel_ctx *ctx, nir_alu_instr *alu)
    if (!i)
       return reject(ctx, "out of memory");
    i->saturate = saturate;
-   i->writemask = BITFIELD_MASK(alu->def.num_components);
+   i->writemask = (uint8_t)BITFIELD_MASK(alu->def.num_components);
    for (unsigned s = 0; s < i->num_srcs; s++)
       if (!get_alu_src(ctx, alu, s, &i->src[s]))
          return false;
@@ -336,7 +336,7 @@ select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
       r300_classic_instr_append(ctx->prog, R300C_OP_TEX);
    if (!i)
       return reject(ctx, "out of memory");
-   i->writemask = BITFIELD_MASK(tex->def.num_components);
+   i->writemask = (uint8_t)BITFIELD_MASK(tex->def.num_components);
    i->tex_unit = tex->texture_index;
    i->src[0] = coord;
 
