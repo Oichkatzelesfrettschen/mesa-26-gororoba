@@ -1402,6 +1402,16 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
         char *msg = r300_check_control_flow(fs->state.ir.nir);
         if (msg) {
             if (fs->state.ir.nir->info.num_inlinable_uniforms > 0) {
+                /* Deferral rests on the state tracker calling
+                 * set_inlinable_constants before the first draw's
+                 * r300_pick_fragment_shader: st_update_constants pushes the
+                 * values during st_validate_state, ahead of draw_vbo ->
+                 * update_derived_state -> pick, and set_inlinable_constants
+                 * marks the FS dirty so validate re-picks. A deferred variant
+                 * reaching translate with fs_num_inlinable == 0 would carry the
+                 * loop into nir_to_rc; r300_translate_fragment_shader's
+                 * post-inline control-flow re-check dummies it out rather than
+                 * spin. */
                 defer_inlinable = true;
             } else if (shader->report_compile_error) {
                 fprintf(stderr, "r300 FP: Compiler error: %s\n", msg);
