@@ -607,16 +607,35 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
    NIR_PASS(_, nir, nir_lower_samplers);
    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
             io_type_size, (nir_lower_io_options)0);
+   /* Integer ops survive the production optimizer (dynamic-index select
+    * ladders compare integer indices; GL uniforms arrive typed), and
+    * nir_lower_bool_to_float treats operands as floats, so the integer
+    * lowering must land first: bool lowering over raw integer bits turns
+    * an index compare into a float compare of denormals and the ladder
+    * constants fold to zero.  This is nir_to_rc's entry block in its
+    * exact order. */
+   bool int_unsupported = false;
+   NIR_PASS(_, nir, r300_nir_lower_bitwise_to_arith, &int_unsupported);
+   if (int_unsupported) {
+      result->reject_reason = ralloc_strdup(
+         mem_ctx, "integer bitwise op without an FP24-exact lowering");
+      return true;
+   }
+   NIR_PASS(_, nir, nir_lower_int_to_float);
+   NIR_PASS(_, nir, nir_opt_copy_prop);
+   NIR_PASS(_, nir, r300_nir_post_integer_lowering);
    /* r300_nir_lower_bool_to_float_fs is pattern-based, so booleans can
     * survive the production optimizer (a bare flt feeding terminate_if);
     * the full lowering turns them into slt/sge/seq/sne float compares.
-    * The R300 fragment US has no comparison opcodes (radeonTransformALU
-    * asserts on them), so the comparison lowering rewrites the compares
-    * into the fcsel_ge shapes CMP carries -- the same two-pass backstop
-    * nir_to_rc runs at its entry. */
+    * The R300 fragment US has no set-compare opcodes (radeonTransformALU
+    * asserts on them; CMP and CND conditional selects are the hardware's
+    * only comparison primitives), so the comparison lowering rewrites the
+    * compares into the fcsel_ge shapes CMP carries -- the same two-pass
+    * backstop nir_to_rc runs at its entry. */
    NIR_PASS(_, nir, nir_lower_bool_to_float, true);
    NIR_PASS(_, nir, nir_opt_copy_prop);
    NIR_PASS(_, nir, r300_nir_lower_comparison_fs);
+   NIR_PASS(_, nir, nir_opt_cse);
    /* The production optimizer splits fmad into fmul+fadd; nir_to_rc refuses
     * them in its late-algebraic stage (nir_opt_algebraic_late under
     * nir_float_muladd_support_fuse).  Selection consumes the same re-fused

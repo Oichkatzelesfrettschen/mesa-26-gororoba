@@ -661,6 +661,29 @@ build_vec3_wide_read(void)
    return b.shader;
 }
 
+/* An integer-indexed select ladder -- the deqp dynamic-read shape.  The
+ * index math is genuinely integer (f2i32, ieq), so selection's entry must
+ * run the integer lowering before the bool lowering: bool-to-float over
+ * raw integer bits folds the ladder constants to zero. */
+static nir_shader *
+build_int_index_ladder(void)
+{
+   nir_builder b = fs_builder("parity_intladder");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *idx = nir_f2i32(&b, nir_fmul_imm(&b, nir_channel(&b, v, 0), 4.0f));
+   nir_def *acc = nir_imm_float(&b, 0.0625f);
+   for (int step = 1; step <= 3; step++) {
+      nir_def *hit = nir_ieq_imm(&b, idx, step);
+      acc = nir_bcsel(&b, hit,
+                      nir_imm_float(&b, 0.25f * (float)step), acc);
+   }
+   nir_def *one = nir_imm_float(&b, 1.0f);
+   nir_store_var(&b, out, nir_vec4(&b, acc, acc, acc, one), 0xf);
+   return b.shader;
+}
+
 /* ffloor's FRC expansion and fround_even's ROUND row. */
 static nir_shader *
 build_floor_round(void)
@@ -690,6 +713,7 @@ main(void)
    parity("setcmp_csel", build_setcmp_csel);
    parity("csel_variants", build_csel_variants);
    parity("vec3_wide_read", build_vec3_wide_read);
+   parity("int_index_ladder", build_int_index_ladder);
    parity("transcendentals", build_transcendentals);
    parity("floor_round", build_floor_round);
    glsl_type_singleton_decref();
