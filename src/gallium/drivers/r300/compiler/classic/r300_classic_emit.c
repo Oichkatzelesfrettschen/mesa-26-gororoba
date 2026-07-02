@@ -51,21 +51,16 @@ rc_opcode_for(enum r300_classic_op op)
 
 static bool
 convert_src(const struct r300_classic_src *src,
-            const struct r300_classic_regalloc_result *ra,
             const struct r300_classic_immediates *imm,
             const unsigned *imm_rc_index,
             struct rc_src_register *out)
 {
    memset(out, 0, sizeof(*out));
    switch (src->file) {
-   case R300C_FILE_SSA: {
-      const unsigned temp = ra->temp_of_ssa[src->def->ssa_id];
-      if (temp == R300_CLASSIC_NO_TEMP)
-         return false;
+   case R300C_FILE_SSA:
       out->File = RC_FILE_TEMPORARY;
-      out->Index = temp;
+      out->Index = src->def->ssa_id;
       break;
-   }
    case R300C_FILE_INPUT:
       out->File = RC_FILE_INPUT;
       out->Index = src->index;
@@ -92,7 +87,6 @@ convert_src(const struct r300_classic_src *src,
 
 bool
 r300_classic_emit(const struct r300_classic_program *p,
-                  const struct r300_classic_regalloc_result *ra,
                   const struct r300_classic_immediates *imm,
                   struct r300_fragment_program_compiler *fc)
 {
@@ -142,12 +136,10 @@ r300_classic_emit(const struct r300_classic_program *p,
 
       /* The collect writes one destination temp channel by channel; adjacent
        * channels reading the same register merge into one MOV whose swizzle
-       * carries each channel's own select.  Register allocation guarantees
-       * the destination aliases no source, so the MOV order is free. */
+       * carries each channel's own select.  SSA-indexed temps make the
+       * destination inherently disjoint from every source, so the MOV order
+       * is free. */
       if (i->op == R300C_OP_VEC) {
-         const unsigned temp = ra->temp_of_ssa[i->ssa_id];
-         if (temp == R300_CLASSIC_NO_TEMP)
-            return false;
          unsigned ch = 0;
          while (ch < i->num_srcs) {
             unsigned end = ch + 1;
@@ -161,7 +153,7 @@ r300_classic_emit(const struct r300_classic_program *p,
             struct rc_instruction *mov =
                rc_insert_new_instruction(c, c->Program.Instructions.Prev);
             mov->U.I.Opcode = RC_OPCODE_MOV;
-            if (!convert_src(&i->src[ch], ra, imm, imm_rc_index,
+            if (!convert_src(&i->src[ch], imm, imm_rc_index,
                              &mov->U.I.SrcReg[0]))
                return false;
             unsigned swz = mov->U.I.SrcReg[0].Swizzle;
@@ -171,7 +163,7 @@ r300_classic_emit(const struct r300_classic_program *p,
             }
             mov->U.I.SrcReg[0].Swizzle = swz;
             mov->U.I.DstReg.File = RC_FILE_TEMPORARY;
-            mov->U.I.DstReg.Index = temp;
+            mov->U.I.DstReg.Index = i->ssa_id;
             mov->U.I.DstReg.WriteMask = BITFIELD_RANGE(ch, end - ch);
             ch = end;
          }
@@ -183,7 +175,7 @@ r300_classic_emit(const struct r300_classic_program *p,
       inst->U.I.Opcode = op;
 
       for (unsigned s = 0; s < i->num_srcs; s++)
-         if (!convert_src(&i->src[s], ra, imm, imm_rc_index,
+         if (!convert_src(&i->src[s], imm, imm_rc_index,
                           &inst->U.I.SrcReg[s]))
             return false;
 
@@ -221,11 +213,8 @@ r300_classic_emit(const struct r300_classic_program *p,
          inst->U.I.TexSrcTarget = i->tex_target;
          FALLTHROUGH;
       default: {
-         const unsigned temp = ra->temp_of_ssa[i->ssa_id];
-         if (temp == R300_CLASSIC_NO_TEMP)
-            return false;
          inst->U.I.DstReg.File = RC_FILE_TEMPORARY;
-         inst->U.I.DstReg.Index = temp;
+         inst->U.I.DstReg.Index = i->ssa_id;
          inst->U.I.DstReg.WriteMask = i->writemask;
          if (i->saturate)
             inst->U.I.SaturateMode = RC_SATURATE_ZERO_ONE;

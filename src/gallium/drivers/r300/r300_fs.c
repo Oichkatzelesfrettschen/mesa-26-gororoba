@@ -22,6 +22,7 @@
 #include "compiler/r300_nir.h"
 #include "compiler/nir_to_rc.h"
 #include "compiler/classic/r300_classic_emit.h"
+#include "compiler/classic/r300_classic_regalloc.h"
 #include "nir.h"
 #include "compiler/nir/nir_builder.h"
 
@@ -1054,7 +1055,7 @@ static void r300_translate_fragment_shader(
             } else if (!r300_classic_regalloc(cctx, sel.program, &ra) ||
                        !ra.temp_of_ssa) {
                 why = ra.reject_reason ? ra.reject_reason : "allocation";
-            } else if (!r300_classic_emit(sel.program, &ra, &sel.immediates,
+            } else if (!r300_classic_emit(sel.program, &sel.immediates,
                                           &compiler)) {
                 why = "emission";
             } else {

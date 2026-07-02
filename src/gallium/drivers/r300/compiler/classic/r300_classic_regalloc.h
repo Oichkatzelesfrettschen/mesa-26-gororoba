@@ -8,12 +8,15 @@
 
 #include "r300_classic_ir.h"
 
-/* Register allocation on the SSA program.  The R300 temp file is a flat
- * array of vec4 slots addressed by a scalar index -- no register classes, no
- * contiguity, no pairing -- so allocation is a linear scan over the
- * straight-line instruction list: each value-producing instruction takes the
- * lowest free slot, and a slot returns to the pool at its value's last use.
- * One SSA value per slot; no coalescing and no channel packing. */
+/* Temp-file fit gate on the SSA program.  Emission gives every SSA def its
+ * own RC temporary (the RC optimizer requires SSA-like temp usage) and
+ * rc_pair_regalloc owns the hardware register packing, so this linear scan
+ * exists to answer one question early: does the program's peak vec4
+ * liveness fit the target's flat temp file?  A program it rejects falls
+ * back to nir_to_rc cleanly instead of failing deep inside the backend.
+ * Each value-producing instruction takes the lowest free slot and a slot
+ * returns to the pool at its value's last use; one SSA value per slot, no
+ * coalescing and no channel packing, so the estimate is conservative. */
 
 struct r300_classic_regalloc_result {
    /* Temp slot per ssa_id; R300_CLASSIC_NO_TEMP for sinks. */
