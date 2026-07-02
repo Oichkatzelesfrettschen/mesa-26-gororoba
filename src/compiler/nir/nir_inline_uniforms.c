@@ -214,6 +214,49 @@ collect_src_uniforms(const nir_src *src, int component,
          return true;
       }
 
+      /* Same for the vec4-addressed UBO load that r300/r600-class drivers use
+       * (their constant file is vec4 rows, so uniforms arrive as load_ubo_vec4
+       * rather than load_ubo). The scalar for result component c sits at row
+       * (base + offset), row-component (nir_intrinsic_component + c). Convert to
+       * the same byte offset the load_ubo path records, which
+       * nir_find_inlinable_uniforms divides by four to get the dword index. */
+      if (intr->intrinsic == nir_intrinsic_load_ubo_vec4 &&
+          nir_src_is_const(intr->src[0]) && nir_src_num_components(intr->src[0]) == 1 &&
+          nir_src_as_uint(intr->src[0]) < max_num_bo &&
+          nir_src_is_const(intr->src[1]) &&
+          /* TODO: Can't handle other bit sizes for now. */
+          intr->def.bit_size == 32) {
+         assert((num_uniforms != NULL) && (uni_offsets != NULL));
+
+         const unsigned ubo = nir_src_as_uint(intr->src[0]);
+         uint32_t row = nir_intrinsic_base(intr) + nir_src_as_uint(intr->src[1]);
+         uint32_t offset = (row * 4 + nir_intrinsic_component(intr) + component) * 4;
+
+         if (offset > max_offset) {
+            set_instr_flag(instr, component, INSTR_SRCS_NOT_INLINABLE);
+            return false;
+         }
+         assert(offset < MAX_OFFSET);
+
+         /* Already recorded by another component. */
+         for (int i = 0; i < num_uniforms[ubo]; i++) {
+            if (uni_offsets[ubo * MAX_INLINABLE_UNIFORMS + i] == offset) {
+               set_instr_flag(instr, component, INSTR_SRCS_INLINABLE);
+               return true;
+            }
+         }
+
+         /* Exceed uniform number limit. */
+         if (num_uniforms[ubo] == MAX_INLINABLE_UNIFORMS) {
+            set_instr_flag(instr, component, INSTR_SRCS_NOT_INLINABLE);
+            return false;
+         }
+
+         uni_offsets[ubo * MAX_INLINABLE_UNIFORMS + num_uniforms[ubo]++] = offset;
+         set_instr_flag(instr, component, INSTR_SRCS_INLINABLE);
+         return true;
+      }
+
       set_instr_flag(instr, component, INSTR_SRCS_NOT_INLINABLE);
       return false;
    }
@@ -499,6 +542,50 @@ nir_inline_uniforms_impl(nir_builder *b, nir_intrinsic_instr *intr, void *state)
 
          return true;
       }
+   }
+
+   /* Same for the vec4-addressed UBO load. Result component i sits at dword
+    * (base + offset) * 4 + nir_intrinsic_component + i; replace the matched
+    * components with constants and reload the rest as scalar vec4 loads. */
+   if (intr->intrinsic == nir_intrinsic_load_ubo_vec4 &&
+       nir_src_is_const(intr->src[0]) &&
+       nir_src_as_uint(intr->src[0]) == 0 &&
+       nir_src_is_const(intr->src[1]) &&
+       /* TODO: Can't handle other bit sizes for now. */
+       intr->def.bit_size == 32) {
+      int num_components = intr->def.num_components;
+      unsigned base = nir_intrinsic_base(intr);
+      unsigned start_comp = nir_intrinsic_component(intr);
+      uint32_t offset = (base + nir_src_as_uint(intr->src[1])) * 4 + start_comp;
+      uint32_t max_offset = offset + num_components;
+      nir_def *components[NIR_MAX_VEC_COMPONENTS] = { 0 };
+      bool found = false;
+
+      b->cursor = nir_before_instr(&intr->instr);
+
+      for (unsigned i = 0; i < s->num_uniforms; i++) {
+         uint32_t uni_offset = s->uniform_dw_offsets[i];
+         if (uni_offset >= offset && uni_offset < max_offset) {
+            components[uni_offset - offset] = nir_imm_int(b, s->uniform_values[i]);
+            found = true;
+         }
+      }
+
+      if (!found)
+         return false;
+
+      /* Reload the components that were not inlined as scalar vec4 loads. */
+      for (unsigned i = 0; i < num_components; i++) {
+         if (!components[i]) {
+            components[i] = nir_load_ubo_vec4(b, 1, intr->def.bit_size,
+                                              intr->src[0].ssa, intr->src[1].ssa,
+                                              .base = base,
+                                              .component = start_comp + i);
+         }
+      }
+
+      nir_def_replace(&intr->def, nir_vec(b, components, num_components));
+      return true;
    }
 
    return false;
