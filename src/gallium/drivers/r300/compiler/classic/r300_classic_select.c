@@ -61,8 +61,12 @@ record_input_semantics(struct sel_ctx *ctx, gl_varying_slot location,
       sem->num_total = base + 1;
    switch (location) {
    case VARYING_SLOT_POS:
-      sem->wpos = base;
-      return true;
+      /* The wpos varying carries the vertex side's mirrored clip-space
+       * gl_Position; nir_to_rc rebuilds gl_FragCoord from it with a
+       * perspective divide and the viewport scale/bias state constants
+       * (RCP w, MUL, MAD in its frag-coord lowering).  Classic has no
+       * state-constant machinery yet, and a raw read renders wrong. */
+      return reject(ctx, "wpos needs the frag-coord reconstruction");
    case VARYING_SLOT_FACE:
       sem->face = base;
       return true;
