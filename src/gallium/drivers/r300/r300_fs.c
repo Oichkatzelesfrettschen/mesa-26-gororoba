@@ -463,7 +463,7 @@ r300_collect_swtcl_derivatives(nir_function_impl *impl, struct util_dynarray *de
  * caller bails the whole shader to the MOV-0 stub. */
 static nir_def *
 r300_deriv_build_gradient(nir_builder *b, nir_def *def,
-                          nir_variable *src_var, nir_variable *grad_var)
+                          nir_variable *src_var, nir_def *seed)
 {
     nir_instr *parent = nir_def_instr(def);
 
@@ -477,8 +477,7 @@ r300_deriv_build_gradient(nir_builder *b, nir_def *def,
             nir_variable *var =
                 deref ? nir_deref_instr_get_variable(deref) : NULL;
             if (var == src_var)
-                return nir_trim_vector(b, nir_load_var(b, grad_var),
-                                       def->num_components);
+                return nir_trim_vector(b, seed, def->num_components);
         }
         /* A uniform or UBO value is constant across the primitive, so its
          * screen-space derivative is zero. r300 lowers a literal like 40.0 to
@@ -505,7 +504,7 @@ r300_deriv_build_gradient(nir_builder *b, nir_def *def,
         nir_def *comps[NIR_MAX_VEC_COMPONENTS];
         for (unsigned i = 0; i < def->num_components; i++) {
             nir_def *gi = r300_deriv_build_gradient(b, alu->src[i].src.ssa,
-                                                    src_var, grad_var);
+                                                    src_var, seed);
             if (!gi)
                 return NULL;
             comps[i] = nir_channel(b, gi, alu->src[i].swizzle[0]);
@@ -517,7 +516,7 @@ r300_deriv_build_gradient(nir_builder *b, nir_def *def,
     nir_def *g[4], *v[4];
     for (unsigned i = 0; i < n && i < 4; i++) {
         nir_def *gi = r300_deriv_build_gradient(b, alu->src[i].src.ssa,
-                                                src_var, grad_var);
+                                                src_var, seed);
         if (!gi)
             return NULL;
         /* The op reads its source through a swizzle; the gradient of the
@@ -572,41 +571,51 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     util_dynarray_init(&derivs, NULL);
     nir_variable *src_var = r300_collect_swtcl_derivatives(impl, &derivs);
 
-    /* Only the VARn user-varying range maps cleanly onto a spare generic slot
-     * the draw module can fill; the position/face/texcoord ranges do not. */
+    /* Two source classes are analytically differentiable here. A VARn user
+     * varying maps onto a spare generic slot the draw module fills with the
+     * per-triangle gradient. gl_FragCoord (VARYING_SLOT_POS) needs no injection:
+     * its window-space xy gradient is the compile-time constant dFdx=(1,0),
+     * dFdy=(0,1). The face and texcoord ranges do not map. */
+    const bool is_pos = src_var && src_var->data.location == VARYING_SLOT_POS;
     if (!src_var || util_dynarray_num_elements(&derivs, nir_intrinsic_instr *) == 0 ||
-        src_var->data.location < VARYING_SLOT_VAR0 ||
-        src_var->data.location > VARYING_SLOT_VAR31) {
+        (!is_pos && (src_var->data.location < VARYING_SLOT_VAR0 ||
+                     src_var->data.location > VARYING_SLOT_VAR31))) {
         util_dynarray_fini(&derivs);
         return false;
     }
 
-    /* Post-fixup r300 generic indices: VARn -> n + 9. Reserve the two highest
-     * generic slots (30, 31) for the gradients; their pre-fixup VARn locations
-     * are 21 and 22. */
-    const int src_generic = (src_var->data.location - VARYING_SLOT_VAR0) + 9;
-    const int ddx_generic = 30;
-    const int ddy_generic = 31;
+    /* Injection slots for the VARn path; the gl_FragCoord path leaves them -1
+     * so r300_draw_vbo does not enable draw-module gradient injection. */
+    int src_generic = -1, ddx_generic = -1, ddy_generic = -1;
+    nir_variable *ddx_var = NULL, *ddy_var = NULL;
 
-    nir_variable *ddx_var = nir_variable_create(
-        s, nir_var_shader_in, glsl_vec4_type(), "r300_deriv_ddx");
-    nir_variable *ddy_var = nir_variable_create(
-        s, nir_var_shader_in, glsl_vec4_type(), "r300_deriv_ddy");
-    ddx_var->data.location = VARYING_SLOT_VAR0 + (ddx_generic - 9);
-    ddy_var->data.location = VARYING_SLOT_VAR0 + (ddy_generic - 9);
+    if (!is_pos) {
+        /* Post-fixup r300 generic indices: VARn -> n + 9. Reserve the two
+         * highest generic slots (30, 31) for the gradients. */
+        src_generic = (src_var->data.location - VARYING_SLOT_VAR0) + 9;
+        ddx_generic = 30;
+        ddy_generic = 31;
 
-    /* nir_lower_io (run later inside nir_to_rc) bases each load_input on the
-     * variable's driver_location, so give the new inputs unique slots past the
-     * existing ones. */
-    unsigned max_drv = 0;
-    nir_foreach_shader_in_variable (var, s) {
-        if (var == ddx_var || var == ddy_var)
-            continue;
-        max_drv = MAX2(max_drv, var->data.driver_location +
-                                    glsl_count_attribute_slots(var->type, false));
+        ddx_var = nir_variable_create(
+            s, nir_var_shader_in, glsl_vec4_type(), "r300_deriv_ddx");
+        ddy_var = nir_variable_create(
+            s, nir_var_shader_in, glsl_vec4_type(), "r300_deriv_ddy");
+        ddx_var->data.location = VARYING_SLOT_VAR0 + (ddx_generic - 9);
+        ddy_var->data.location = VARYING_SLOT_VAR0 + (ddy_generic - 9);
+
+        /* nir_lower_io (run later inside nir_to_rc) bases each load_input on the
+         * variable's driver_location, so give the new inputs unique slots past
+         * the existing ones. */
+        unsigned max_drv = 0;
+        nir_foreach_shader_in_variable (var, s) {
+            if (var == ddx_var || var == ddy_var)
+                continue;
+            max_drv = MAX2(max_drv, var->data.driver_location +
+                                        glsl_count_attribute_slots(var->type, false));
+        }
+        ddx_var->data.driver_location = max_drv;
+        ddy_var->data.driver_location = max_drv + 1;
     }
-    ddx_var->data.driver_location = max_drv;
-    ddy_var->data.driver_location = max_drv + 1;
 
     const unsigned num_derivs =
         util_dynarray_num_elements(&derivs, nir_intrinsic_instr *);
@@ -622,11 +631,20 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     unsigned di = 0;
     util_dynarray_foreach (&derivs, nir_intrinsic_instr *, intrp) {
         nir_intrinsic_instr *intr = *intrp;
-        nir_variable *grad_var =
-            r300_is_ddx_intrinsic(intr->intrinsic) ? ddx_var : ddy_var;
+        bool is_ddx = r300_is_ddx_intrinsic(intr->intrinsic);
         b.cursor = nir_before_instr(&intr->instr);
+        /* Seed d(src_var)/d(screen axis): the injected per-triangle gradient
+         * for a VARn, or the constant window-space gradient for gl_FragCoord.
+         * gl_FragCoord z (depth) and w (1/wclip) are left zero, so a shader
+         * that differentiates gl_FragCoord.zw is not covered by this path. */
+        nir_def *seed;
+        if (is_pos)
+            seed = is_ddx ? nir_imm_vec4(&b, 1, 0, 0, 0)
+                          : nir_imm_vec4(&b, 0, 1, 0, 0);
+        else
+            seed = nir_load_var(&b, is_ddx ? ddx_var : ddy_var);
         nir_def *res = all_ok ? r300_deriv_build_gradient(&b, intr->src[0].ssa,
-                                                          src_var, grad_var)
+                                                          src_var, seed)
                               : NULL;
         if (!res)
             all_ok = false;
