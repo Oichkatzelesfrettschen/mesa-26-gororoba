@@ -1666,6 +1666,63 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
    }
 }
 
+/* Snapshot the attachment a self-dependent subpass both writes and reads, so
+ * the input read samples the copy while the RB3D/ZB pipes keep writing the
+ * real surface -- the TX unit never samples the live render target.  The
+ * device-cached snapshot is keyed to one attachment tile resource and
+ * re-copied while ia_snapshot_stale is raised (render pass begin,
+ * next-subpass, and each in-pass pipeline barrier raise it), so reads observe
+ * exactly the writes made visible by the last barrier -- the Vulkan
+ * self-dependency contract.  Returns NULL when the snapshot cannot be
+ * created; the caller skips the draw. */
+static struct pipe_resource *
+r300vk_ia_self_dep_snapshot(struct r300vk_device *device,
+                            struct pipe_resource *src)
+{
+   struct pipe_context *pipe = device->pipe;
+
+   if (device->ia_snapshot_src != src || !device->ia_snapshot) {
+      pipe_resource_reference(&device->ia_snapshot, NULL);
+      pipe_resource_reference(&device->ia_snapshot_src, NULL);
+
+      struct pipe_resource tmpl;
+      memset(&tmpl, 0, sizeof(tmpl));
+      tmpl.target     = src->target;
+      tmpl.format     = src->format;
+      tmpl.width0     = src->width0;
+      tmpl.height0    = src->height0;
+      tmpl.depth0     = 1;
+      tmpl.array_size = 1;
+      tmpl.usage      = PIPE_USAGE_DEFAULT;
+      tmpl.bind       = PIPE_BIND_SAMPLER_VIEW |
+                        (util_format_is_depth_or_stencil(src->format) ?
+                            PIPE_BIND_DEPTH_STENCIL : PIPE_BIND_RENDER_TARGET);
+
+      device->ia_snapshot =
+         pipe->screen->resource_create(pipe->screen, &tmpl);
+      if (!device->ia_snapshot)
+         return NULL;
+      pipe_resource_reference(&device->ia_snapshot_src, src);
+      device->ia_snapshot_stale = true;
+   }
+
+   if (device->ia_snapshot_stale) {
+      /* Resolve pending color/Z writes before the copy samples src -- the
+       * same render-to-texture barrier the subpass boundary uses
+       * (r300_texture_barrier flushes the RB3D cache and invalidates stale
+       * texture lines before the blitter's copy draw). */
+      pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+
+      struct pipe_box box;
+      u_box_2d(0, 0, src->width0, src->height0, &box);
+      pipe->resource_copy_region(pipe, device->ia_snapshot, 0, 0, 0, 0,
+                                 src, 0, &box);
+      device->ia_snapshot_stale = false;
+   }
+
+   return device->ia_snapshot;
+}
+
 /* Bind the single input attachment the FS reads via the lowered subpassLoad.
  *
  * The NIR pass r300vk_nir_lower_subpass_input rewrites subpassLoad into a
@@ -1694,6 +1751,7 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
                              struct r300vk_bound_textures *bound,
                              uint32_t tile_origin_x,
                              uint32_t tile_origin_y,
+                             bool input_self_dep,
                              float *inv_extent)
 {
    struct pipe_context *pipe = device->pipe;
@@ -1742,6 +1800,15 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
                                                   &input_height);
          if (!input_resource || input_width == 0 || input_height == 0)
             return false;
+
+         /* Self-dependent subpass: the attachment is also this subpass's
+          * render target, so sample its snapshot instead. */
+         if (input_self_dep) {
+            input_resource =
+               r300vk_ia_self_dep_snapshot(device, input_resource);
+            if (!input_resource)
+               return false;
+         }
 
          const enum pipe_format fmt =
             r300vk_vk_format_to_pipe_format(iv->vk.view_format);
@@ -2093,6 +2160,7 @@ r300vk_replay_draw(struct r300vk_device *device,
                     struct r300vk_dyn_overlay *dyn,
                     bool render_pass_has_zs,
                     bool render_pass_has_stencil,
+                    bool input_self_dep,
                     const VkDeviceSize *vb_strides,
                     uint32_t vb_strides_mask)
 {
@@ -2342,7 +2410,8 @@ r300vk_replay_draw(struct r300vk_device *device,
       if (bound_pipeline && bound_pipeline->fs_has_input_attachment)
          ia_bind_ok = r300vk_bind_input_attachment(device, bound_pipeline,
                                       last_bind_dsets, &bound_tex,
-                                      tile_origin_x, tile_origin_y, ia_inv_extent);
+                                      tile_origin_x, tile_origin_y,
+                                      input_self_dep, ia_inv_extent);
 
       if (device->dbg_log_draws) {
          fprintf(stderr,
@@ -3173,6 +3242,9 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
                                          &tile_width, &tile_height,
                                          &skip_render_pass);
          current_render_pass = e;
+         /* A new subpass is a self-dependency visibility point: the next
+          * self-dependent input bind re-copies its snapshot. */
+         device->ia_snapshot_stale = true;
          /* The pass boundary can change zsbuf presence, which feeds the
           * depth/stencil clamp; re-overlay at the next draw. */
          state->dyn_ov.dirty = true;
@@ -3219,6 +3291,7 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
                                          &tile_width, &tile_height,
                                          &skip_render_pass);
          current_render_pass = e;
+         device->ia_snapshot_stale = true;
          state->dyn_ov.dirty = true;
          if (!skip_render_pass) {
             if (state->last_viewport)
@@ -3289,6 +3362,8 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
                             current_render_pass->begin_rp.ds_image &&
                             util_format_has_stencil(util_format_description(
                                current_render_pass->begin_rp.ds_format)),
+                            current_render_pass &&
+                            current_render_pass->begin_rp.input_self_dep,
                             state->vb_strides, state->vb_strides_mask);
          *gpu_pending = true;
          break;
@@ -3352,6 +3427,8 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
                                current_render_pass->begin_rp.ds_image &&
                                util_format_has_stencil(util_format_description(
                                   current_render_pass->begin_rp.ds_format)),
+                               current_render_pass &&
+                               current_render_pass->begin_rp.input_self_dep,
                                state->vb_strides, state->vb_strides_mask);
          }
          pipe_buffer_unmap(pipe, ixfer);
@@ -3417,6 +3494,8 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
                                current_render_pass->begin_rp.ds_image &&
                                util_format_has_stencil(util_format_description(
                                   current_render_pass->begin_rp.ds_format)),
+                               current_render_pass &&
+                               current_render_pass->begin_rp.input_self_dep,
                                state->vb_strides, state->vb_strides_mask);
          }
          pipe_buffer_unmap(pipe, ixfer);
@@ -3468,6 +3547,11 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
 
       case R300VK_CMD_PIPELINE_BARRIER:
          r300vk_replay_pipeline_barrier(device, e, skip_render_pass);
+         /* An in-pass barrier is the self-dependency visibility point: the
+          * next self-dependent input bind re-copies its snapshot so the read
+          * sees the writes this barrier makes visible. */
+         if (current_render_pass)
+            device->ia_snapshot_stale = true;
          break;
 
       case R300VK_CMD_BIND_DESCRIPTOR_SETS:

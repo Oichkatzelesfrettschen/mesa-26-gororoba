@@ -157,10 +157,12 @@ r300vk_subpass_self_dependency(const struct r300vk_subpass *sp)
    return VK_ATTACHMENT_UNUSED;
 }
 
-/* After every subpass's references are stored in rp->subpasses, validate each
- * subpass's self-dependency, compute first_use_subpass (the subpass where each
- * attachment's loadOp applies), and mirror subpass 0 into the legacy members the
- * begin recorder reads.  Shared by the 1.0 and 2.0 create paths. */
+/* After every subpass's references are stored in rp->subpasses, mark each
+ * subpass whose input attachment aliases one of its own writable outputs (the
+ * replay routes that read through a snapshot copy), compute first_use_subpass
+ * (the subpass where each attachment's loadOp applies), and mirror subpass 0
+ * into the legacy members the begin recorder reads.  Shared by the 1.0 and
+ * 2.0 create paths. */
 static VkResult
 r300vk_render_pass_finalize(struct r300vk_device *device,
                             const VkAllocationCallbacks *pAllocator,
@@ -170,16 +172,9 @@ r300vk_render_pass_finalize(struct r300vk_device *device,
       rp->first_use_subpass[a] = R300VK_ATTACHMENT_NO_FIRST_USE;
 
    for (uint32_t s = 0; s < rp->subpass_count; s++) {
-      const struct r300vk_subpass *sp = &rp->subpasses[s];
+      struct r300vk_subpass *sp = &rp->subpasses[s];
 
-      const uint32_t dep = r300vk_subpass_self_dependency(sp);
-      if (dep != VK_ATTACHMENT_UNUSED) {
-         r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-         return vk_errorf(device, VK_ERROR_UNKNOWN,
-                          "r300vk: attachment %u is both an output and an input "
-                          "attachment in subpass %u; r300 cannot read an "
-                          "attachment it is concurrently writing", dep, s);
-      }
+      sp->self_dep_attachment = r300vk_subpass_self_dependency(sp);
 
       for (uint32_t i = 0; i < sp->color_attachment_count; i++) {
          const uint32_t a = sp->color_attachment_refs[i];

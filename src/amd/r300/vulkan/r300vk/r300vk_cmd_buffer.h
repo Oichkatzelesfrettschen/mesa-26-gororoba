@@ -91,6 +91,10 @@ struct r300vk_cmd_begin_render_pass {
    VkAttachmentLoadOp    ds_load_op;
    float                 clear_depth;
    uint32_t              clear_stencil;
+   /* The subpass reads an attachment it also writes (self-dependency); the
+    * replay binds the input attachment through a snapshot copy refreshed at
+    * each in-pass pipeline barrier. */
+   bool                  input_self_dep;
 };
 
 struct r300vk_cmd_bind_pipeline {
