@@ -1076,6 +1076,21 @@ static void r300_translate_fragment_shader(
         nir_inline_uniforms(clone, n, shader->inlinable_values,
                             clone->info.inlinable_uniform_dw_offsets);
         r300_optimize_nir(clone, r300->screen);
+
+        /* nir_opt_loop_unroll refuses a trip count past the FS unroll cap
+         * (max_unroll_iterations), so a loop bound larger than that survives
+         * the inline. nir_to_rc cannot lower R300/R400 control flow and would
+         * spin on it, so fail this variant to the dummy FS rather than let the
+         * compile hang. */
+        if (!r300->screen->caps.is_r500) {
+            char *msg = r300_check_control_flow(clone);
+            if (msg) {
+                ralloc_free(clone);
+                r300_dummy_fragment_shader(r300, shader);
+                shader->error = strdup(msg);
+                return;
+            }
+        }
     }
 
     /* Multipass auto-partition, phase 1 (R300_FS_MULTIPASS, default off): estimate
