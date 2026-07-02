@@ -85,6 +85,19 @@ r300_classic_emit(const struct r300_classic_program *p,
 {
    struct radeon_compiler *c = &fc->Base;
 
+   /* External (UBO) constants occupy list positions 0..first_index-1 so a
+    * classic FILE_CONST index equals its Program.Constants position, the
+    * layout ntr_add_constants produces and the driver's constant upload
+    * expects. */
+   for (unsigned n = 0; n < imm->first_index; n++) {
+      struct rc_constant constant;
+      memset(&constant, 0, sizeof(constant));
+      constant.Type = RC_CONSTANT_EXTERNAL;
+      constant.UseMask = RC_MASK_XYZW;
+      constant.u.External = n;
+      rc_constants_add(&c->Program.Constants, &constant);
+   }
+
    unsigned imm_rc_index[R300_CLASSIC_MAX_IMMEDIATES];
    for (unsigned n = 0; n < imm->count; n++)
       imm_rc_index[n] =

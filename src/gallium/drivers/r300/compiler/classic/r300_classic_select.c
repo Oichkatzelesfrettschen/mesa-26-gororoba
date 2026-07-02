@@ -189,6 +189,30 @@ select_intrinsic(struct sel_ctx *ctx, nir_intrinsic_instr *intr)
       });
       return true;
    }
+   case nir_intrinsic_load_ubo_vec4: {
+      /* The r300 exposes a single UBO; indirect array indexing is lowered
+       * before selection.  A block-0 constant-offset read is a plain
+       * constant-file vec4 reference at base + offset, the same index
+       * ntr_emit_load_ubo computes. */
+      if (!nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]))
+         return reject(ctx, "load_ubo_vec4 from a block other than 0");
+      if (!nir_src_is_const(intr->src[1]))
+         return reject(ctx, "indirect constant addressing");
+      const unsigned index =
+         nir_intrinsic_base(intr) + nir_src_as_uint(intr->src[1]);
+      if (index >= ctx->result->immediates.first_index)
+         return reject(ctx, "constant read past the prescanned file");
+      const unsigned ubo_component = nir_intrinsic_component(intr);
+      uint8_t ubo_select[4];
+      for (unsigned c = 0; c < 4; c++)
+         ubo_select[c] = MIN2(ubo_component + c, 3);
+      map_def(ctx, &intr->def, (struct r300_classic_src){
+         .file = R300C_FILE_CONST,
+         .index = index,
+         .swizzle = compose_swizzle(RC_SWIZZLE_XYZW, ubo_select, 4),
+      });
+      return true;
+   }
    case nir_intrinsic_store_output: {
       if (!nir_src_is_const(intr->src[1]) || nir_src_as_uint(intr->src[1]))
          return reject(ctx, "indirect output addressing");
@@ -401,7 +425,23 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
    if (!ctx.prog || !ctx.value_map)
       return false;
 
+   /* Immediates append to Program.Constants after the external (UBO)
+    * constants, so their indices start past the highest block-0 vec4 the
+    * shader reads -- the same layout ntr_add_constants produces. */
    nir_block *block = nir_start_block(impl);
+   nir_foreach_instr (instr, block) {
+      if (instr->type != nir_instr_type_intrinsic)
+         continue;
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+      if (intr->intrinsic != nir_intrinsic_load_ubo_vec4 ||
+          !nir_src_is_const(intr->src[1]))
+         continue;
+      const unsigned extent = nir_intrinsic_base(intr) +
+                              nir_src_as_uint(intr->src[1]) + 1;
+      if (extent > result->immediates.first_index)
+         result->immediates.first_index = extent;
+   }
+
    nir_foreach_instr (instr, block) {
       bool ok;
       switch (instr->type) {
