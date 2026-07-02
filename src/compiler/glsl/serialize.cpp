@@ -322,6 +322,19 @@ write_xfb(struct blob *metadata, struct gl_shader_program *shProg)
       return;
    }
 
+   /* last_vert_prog can survive from a previous link of the same program
+    * object: linking a separable program with no attached shaders succeeds
+    * with an empty linked_stages while the pointer still names the old
+    * vertex-pipeline program (the reset in gl_nir_link_glsl sits behind
+    * early exits that an empty program never reaches).  Serializing that
+    * stage would produce a blob whose xfb stage is absent from its own
+    * stage mask, and read_xfb dereferences the missing linked shader.
+    * Write the no-xfb marker unless the stage is linked in this program. */
+   if (!(shProg->data->linked_stages & (1u << prog->info.stage))) {
+      blob_write_uint32(metadata, ~0u);
+      return;
+   }
+
    struct gl_transform_feedback_info *ltf = prog->sh.LinkedTransformFeedback;
 
    blob_write_uint32(metadata, prog->info.stage);
