@@ -32,4 +32,14 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
 void
 ntr_fixup_varying_slots(struct nir_shader *s, nir_variable_mode mode);
 
+/* Lowers texture projectors a TXP cannot carry (lod, offset, cube, or a
+ * 3-coordinate compare), leaving the rest for the backend TXP opcode. */
+void
+nir_to_rc_lower_txp(struct nir_shader *s);
+
+/* Packs coordinate/comparator/bias/lod/projector into the backend tex
+ * source vec4s the RC TEX opcodes consume. */
+bool
+nir_to_rc_lower_tex(struct nir_shader *s);
+
 #endif /* NIR_TO_RC_H */

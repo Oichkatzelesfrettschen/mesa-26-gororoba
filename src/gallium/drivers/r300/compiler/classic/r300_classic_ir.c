@@ -48,6 +48,8 @@ static const struct r300_classic_op_info op_info[R300C_OP_COUNT] = {
     * the validator checks the range instead of this table row. */
    [R300C_OP_VEC]          = {"vec", 0, true},
    [R300C_OP_TEX]          = {"tex", 1, true},
+   [R300C_OP_TXB]          = {"txb", 1, true},
+   [R300C_OP_TXP]          = {"txp", 1, true},
    [R300C_OP_KIL]          = {"kil", 1, false},
    [R300C_OP_KILP]         = {"kilp", 0, false},
    [R300C_OP_EXPORT_COLOR] = {"export_color", 1, false},
@@ -155,14 +157,16 @@ r300_classic_program_validate(const struct r300_classic_program *p,
          ok = fail(err, err_size, i, "sink op with nonzero writemask");
          break;
       }
-      if (i->op == R300C_OP_TEX && i->tex_unit >= R300C_MAX_TEX_UNITS) {
+      const bool is_tex = i->op == R300C_OP_TEX || i->op == R300C_OP_TXB ||
+                          i->op == R300C_OP_TXP;
+      if (is_tex && i->tex_unit >= R300C_MAX_TEX_UNITS) {
          ok = fail(err, err_size, i, "texture unit out of range");
          break;
       }
       /* The TX block samples 1D/2D/3D/CUBE/RECT; array targets (the enum
        * values below RC_TEXTURE_CUBE, including the zero-initialized
        * RC_TEXTURE_2D_ARRAY) never come from selection. */
-      if (i->op == R300C_OP_TEX &&
+      if (is_tex &&
           (i->tex_target < RC_TEXTURE_CUBE || i->tex_target > RC_TEXTURE_1D)) {
          ok = fail(err, err_size, i, "texture target outside 1D/2D/3D/CUBE/RECT");
          break;

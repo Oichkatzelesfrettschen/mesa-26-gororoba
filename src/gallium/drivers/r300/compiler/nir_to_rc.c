@@ -2044,7 +2044,7 @@ nir_to_rc_lower_tex_instr(nir_builder *b, nir_tex_instr *tex, void *data)
    return true;
 }
 
-static bool
+bool
 nir_to_rc_lower_tex(nir_shader *s)
 {
    return nir_shader_tex_pass(s, nir_to_rc_lower_tex_instr,
@@ -2052,7 +2052,7 @@ nir_to_rc_lower_tex(nir_shader *s)
 }
 
 /* Lowers texture projectors if we can't do them as RC_OPCODE_TXP. */
-static void
+void
 nir_to_rc_lower_txp(nir_shader *s)
 {
    nir_lower_tex_options lower_tex_options = {
