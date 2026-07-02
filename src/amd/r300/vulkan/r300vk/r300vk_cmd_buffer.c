@@ -255,6 +255,8 @@ r300vk_record_subpass_framebuffer(struct r300vk_cmd_buffer *cmd,
    e->begin_rp.render_area_offset_y = cmd->current_rp_offset_y;
    e->begin_rp.width  = cmd->current_rp_width;
    e->begin_rp.height = cmd->current_rp_height;
+   e->begin_rp.input_self_dep =
+      sp->self_dep_attachment != VK_ATTACHMENT_UNUSED;
 
    struct r300vk_image *ref_color = NULL;
    const uint32_t color_count =

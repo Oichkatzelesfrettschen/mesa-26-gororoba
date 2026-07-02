@@ -43,6 +43,11 @@ struct r300vk_subpass {
    uint32_t depth_stencil_attachment_ref;  /* VK_ATTACHMENT_UNUSED if none */
    VkImageLayout depth_stencil_attachment_layout;
    VkImageLayout depth_stencil_stencil_layout;
+   /* Attachment this subpass both reads as input and writes as color or
+    * depth/stencil (VK_ATTACHMENT_UNUSED if none).  The replay reads it
+    * through a snapshot copy so the TX unit never samples the live render
+    * target. */
+   uint32_t self_dep_attachment;
 };
 
 struct r300vk_render_pass {

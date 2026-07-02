@@ -122,6 +122,17 @@ struct r300vk_device {
     * Created beside the 2^j lookup, freed in r300vk_DestroyDevice. */
    struct pipe_resource      *shift_variable_fill_lut;
    struct pipe_sampler_view  *shift_variable_fill_lut_view;
+
+   /* Self-dependent subpass-input snapshot: a copy of the attachment a
+    * subpass both writes and reads, sampled in place of the live render
+    * target.  ia_snapshot_src keys the copy to one attachment tile resource;
+    * ia_snapshot_stale is raised at render pass begin, next-subpass, and each
+    * in-pass pipeline barrier, and the next self-dependent draw re-copies --
+    * so input reads observe exactly the writes made visible by the last
+    * barrier.  Freed in r300vk_DestroyDevice. */
+   struct pipe_resource      *ia_snapshot;
+   struct pipe_resource      *ia_snapshot_src;
+   bool                       ia_snapshot_stale;
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
