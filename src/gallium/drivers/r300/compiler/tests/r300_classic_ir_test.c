@@ -72,6 +72,7 @@ positive_program(void)
       r300_classic_instr_append(p, R300C_OP_TEX);
    tex->writemask = 0xf;
    tex->tex_unit = 2;
+   tex->tex_target = RC_TEXTURE_2D;
    tex->src[0] = src_ssa(mad);
 
    struct r300_classic_instr *dp3 =
@@ -161,9 +162,24 @@ negative_cases(void)
          r300_classic_instr_append(p, R300C_OP_TEX);
       tex->writemask = 0xf;
       tex->tex_unit = R300C_MAX_TEX_UNITS;
+      tex->tex_target = RC_TEXTURE_2D;
       tex->src[0] = src_input(0);
       CHECK(!r300_classic_program_validate(p, err, sizeof(err)),
             "tex unit out of range rejected");
+      ralloc_free(ctx);
+   }
+   {
+      /* TEX with an array/zero-initialized target. */
+      void *ctx = ralloc_context(NULL);
+      struct r300_classic_program *p = r300_classic_program_create(ctx, t);
+      struct r300_classic_instr *tex =
+         r300_classic_instr_append(p, R300C_OP_TEX);
+      tex->writemask = 0xf;
+      tex->src[0] = src_input(0);
+      err[0] = 0;
+      CHECK(!r300_classic_program_validate(p, err, sizeof(err)),
+            "unset tex target rejected");
+      CHECK(strstr(err, "texture target") != NULL, "tex target named");
       ralloc_free(ctx);
    }
    {

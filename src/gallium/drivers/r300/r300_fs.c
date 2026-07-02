@@ -1070,6 +1070,13 @@ static void r300_translate_fragment_shader(
                     fprintf(stderr, "r300 classic FS fallback: %s\n", why);
             }
             ralloc_free(cctx);
+        } else if (DBG_ON(r300, DBG_FP)) {
+            /* The census separates guard skips from absent compiles: the
+             * shadow-compare / wpos / alpha-to-one lowerings live inside
+             * nir_to_rc, so a non-plain external state never enters
+             * selection. */
+            fprintf(stderr,
+                    "r300 classic FS skipped: non-plain compare state\n");
         }
     }
 

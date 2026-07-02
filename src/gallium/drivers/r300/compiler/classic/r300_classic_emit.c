@@ -32,10 +32,6 @@ rc_opcode_for(enum r300_classic_op op)
    case R300C_OP_SIN: return RC_OPCODE_SIN;
    case R300C_OP_COS: return RC_OPCODE_COS;
    case R300C_OP_POW: return RC_OPCODE_POW;
-   case R300C_OP_SLT: return RC_OPCODE_SLT;
-   case R300C_OP_SGE: return RC_OPCODE_SGE;
-   case R300C_OP_SEQ: return RC_OPCODE_SEQ;
-   case R300C_OP_SNE: return RC_OPCODE_SNE;
    case R300C_OP_CMP: return RC_OPCODE_CMP;
    case R300C_OP_DDX: return RC_OPCODE_DDX;
    case R300C_OP_DDY: return RC_OPCODE_DDY;
@@ -222,7 +218,7 @@ r300_classic_emit(const struct r300_classic_program *p,
          break;
       case R300C_OP_TEX:
          inst->U.I.TexSrcUnit = i->tex_unit;
-         inst->U.I.TexSrcTarget = RC_TEXTURE_2D;
+         inst->U.I.TexSrcTarget = i->tex_target;
          FALLTHROUGH;
       default: {
          const unsigned temp = ra->temp_of_ssa[i->ssa_id];

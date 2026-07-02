@@ -619,6 +619,24 @@ build_transcendentals(void)
    return b.shader;
 }
 
+/* fcsel_gt and fcsel_ge take distinct CMP source folds (negate vs operand
+ * swap); both must match ntr_emit_alu_special's mapping per channel. */
+static nir_shader *
+build_csel_variants(void)
+{
+   nir_builder b = fs_builder("parity_cselvar");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *cond = nir_fadd_imm(&b, v, -0.4f);
+   nir_def *a = nir_fmul_imm(&b, v, 0.5f);
+   nir_def *c = nir_imm_vec4(&b, 0.125f, 0.25f, 0.375f, 0.5f);
+   nir_def *gt = nir_build_alu3(&b, nir_op_fcsel_gt, cond, a, c);
+   nir_def *ge = nir_build_alu3(&b, nir_op_fcsel_ge, cond, c, a);
+   nir_store_var(&b, out, nir_fadd(&b, gt, ge), 0xf);
+   return b.shader;
+}
+
 /* ffloor's FRC expansion and fround_even's ROUND row. */
 static nir_shader *
 build_floor_round(void)
@@ -646,6 +664,7 @@ main(void)
    parity("vec_compose", build_vec_compose);
    parity("dots_replicated", build_dots_replicated);
    parity("setcmp_csel", build_setcmp_csel);
+   parity("csel_variants", build_csel_variants);
    parity("transcendentals", build_transcendentals);
    parity("floor_round", build_floor_round);
    glsl_type_singleton_decref();

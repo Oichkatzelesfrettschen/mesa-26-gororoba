@@ -10,6 +10,7 @@
 #include "util/ralloc.h"
 
 #include "../nir_to_rc.h"
+#include "../r300_nir.h"
 #include "../radeon_program_constants.h"
 #include "r300_shader_semantics.h"
 
@@ -316,10 +317,9 @@ alu_op_map(nir_op op, enum r300_classic_op *out)
    case nir_op_fsin:   *out = R300C_OP_SIN; return true;
    case nir_op_fcos:   *out = R300C_OP_COS; return true;
    case nir_op_fpow:   *out = R300C_OP_POW; return true;
-   case nir_op_slt:    *out = R300C_OP_SLT; return true;
-   case nir_op_sge:    *out = R300C_OP_SGE; return true;
-   case nir_op_seq:    *out = R300C_OP_SEQ; return true;
-   case nir_op_sne:    *out = R300C_OP_SNE; return true;
+   /* No slt/sge/seq/sne rows: the R300 fragment US has no comparison
+    * opcodes (radeonTransformALU asserts on them); the entry lowering
+    * rewrites every set-compare into a CMP-carried fcsel_ge shape. */
    default:            return false;
    }
 }
@@ -496,6 +496,25 @@ select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
    if (tex->op != nir_texop_tex)
       return reject(ctx, "texop %d outside the classic subset",
                     (int)tex->op);
+   if (tex->is_shadow)
+      return reject(ctx, "shadow comparison lowering lives in nir_to_rc");
+   if (tex->is_array)
+      return reject(ctx, "r300 has no array textures");
+
+   /* The TX block samples 1D/2D/3D/CUBE/RECT targets; the same mapping
+    * rc_texture_target_from_sampler_dim applies for nir_to_rc. */
+   unsigned target;
+   switch (tex->sampler_dim) {
+   case GLSL_SAMPLER_DIM_1D:       target = RC_TEXTURE_1D; break;
+   case GLSL_SAMPLER_DIM_2D:
+   case GLSL_SAMPLER_DIM_EXTERNAL: target = RC_TEXTURE_2D; break;
+   case GLSL_SAMPLER_DIM_3D:       target = RC_TEXTURE_3D; break;
+   case GLSL_SAMPLER_DIM_CUBE:     target = RC_TEXTURE_CUBE; break;
+   case GLSL_SAMPLER_DIM_RECT:     target = RC_TEXTURE_RECT; break;
+   default:
+      return reject(ctx, "sampler dim %d outside the classic subset",
+                    (int)tex->sampler_dim);
+   }
 
    int coord_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
    if (coord_idx < 0)
@@ -523,6 +542,7 @@ select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
       return reject(ctx, "out of memory");
    i->writemask = (uint8_t)BITFIELD_MASK(tex->def.num_components);
    i->tex_unit = tex->texture_index;
+   i->tex_target = target;
    i->src[0] = coord;
 
    map_def(ctx, &tex->def, (struct r300_classic_src){
@@ -567,6 +587,16 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
    NIR_PASS(_, nir, nir_lower_samplers);
    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
             io_type_size, (nir_lower_io_options)0);
+   /* r300_nir_lower_bool_to_float_fs is pattern-based, so booleans can
+    * survive the production optimizer (a bare flt feeding terminate_if);
+    * the full lowering turns them into slt/sge/seq/sne float compares.
+    * The R300 fragment US has no comparison opcodes (radeonTransformALU
+    * asserts on them), so the comparison lowering rewrites the compares
+    * into the fcsel_ge shapes CMP carries -- the same two-pass backstop
+    * nir_to_rc runs at its entry. */
+   NIR_PASS(_, nir, nir_lower_bool_to_float, true);
+   NIR_PASS(_, nir, nir_opt_copy_prop);
+   NIR_PASS(_, nir, r300_nir_lower_comparison_fs);
    /* The production optimizer splits fmad into fmul+fadd; nir_to_rc refuses
     * them in its late-algebraic stage (nir_opt_algebraic_late under
     * nir_float_muladd_support_fuse).  Selection consumes the same re-fused

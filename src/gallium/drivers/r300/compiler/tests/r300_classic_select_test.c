@@ -14,6 +14,7 @@
 #include "r300_nir.h"
 #include "r300_screen.h"
 #include "r300_shader_semantics.h"
+#include "radeon_program_constants.h"
 
 /* Phase-2 exit criterion: selection covers the phase-1 opcode subset for
  * every corpus shader or cleanly rejects with a named reason.  The corpus
@@ -193,6 +194,75 @@ case_tex(void)
    ralloc_free(ctx);
 }
 
+/* Build a one-sample shader over the given sampler dim; returns the
+ * selection result through *r. */
+static void
+select_tex_dim(void *ctx, enum glsl_sampler_dim dim, unsigned coord_comps,
+               bool shadow, struct r300_classic_select_result *r)
+{
+   nir_builder b = fs_builder("classic_tex_dim");
+   nir_variable *in = add_varying(&b, "in_uv");
+   nir_variable *out = add_color_output(&b);
+
+   const struct glsl_type *stype =
+      glsl_sampler_type(dim, shadow, false, GLSL_TYPE_FLOAT);
+   nir_variable *sampler = nir_variable_create(b.shader, nir_var_uniform,
+                                               stype, "tex0");
+   sampler->data.binding = 0;
+   nir_deref_instr *deref = nir_build_deref_var(&b, sampler);
+
+   nir_def *coord =
+      nir_trim_vector(&b, nir_load_var(&b, in), coord_comps);
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, 3);
+   tex->op = nir_texop_tex;
+   tex->sampler_dim = dim;
+   tex->is_shadow = shadow;
+   tex->coord_components = coord_comps;
+   tex->dest_type = nir_type_float32;
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_texture_deref, &deref->def);
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_sampler_deref, &deref->def);
+   tex->src[2] = nir_tex_src_for_ssa(nir_tex_src_coord, coord);
+   nir_def_init(&tex->instr, &tex->def, 4, 32);
+   nir_builder_instr_insert(&b, &tex->instr);
+   nir_store_var(&b, out, &tex->def, 0xf);
+
+   select_shader(ctx, b.shader, r);
+}
+
+/* Every sampled target must reach the TX block with its own rc target --
+ * a cube sample emitted as RC_TEXTURE_2D is silently wrong on hardware --
+ * and shadow comparison stays in nir_to_rc. */
+static void
+case_tex_targets(void)
+{
+   {
+      void *ctx = ralloc_context(NULL);
+      struct r300_classic_select_result r;
+      select_tex_dim(ctx, GLSL_SAMPLER_DIM_CUBE, 3, false, &r);
+      CHECK(r.program != NULL, "cube tex selects");
+      if (r.program) {
+         bool cube_target = false;
+         list_for_each_entry (struct r300_classic_instr, i,
+                              &r.program->instrs, link)
+            if (i->op == R300C_OP_TEX && i->tex_target == RC_TEXTURE_CUBE)
+               cube_target = true;
+         CHECK(cube_target, "cube tex carries RC_TEXTURE_CUBE");
+      } else if (r.reject_reason) {
+         fprintf(stderr, "  rejected: %s\n", r.reject_reason);
+      }
+      ralloc_free(ctx);
+   }
+   {
+      void *ctx = ralloc_context(NULL);
+      struct r300_classic_select_result r;
+      select_tex_dim(ctx, GLSL_SAMPLER_DIM_2D, 2, true, &r);
+      CHECK(r.program == NULL, "shadow tex rejects");
+      CHECK(r.reject_reason &&
+            strstr(r.reject_reason, "shadow") != NULL, "shadow reject named");
+      ralloc_free(ctx);
+   }
+}
+
 static void
 case_passthrough(void)
 {
@@ -301,6 +371,7 @@ main(void)
    case_varying_semantics_match_fixup();
    case_flrp_lowers_before_selection();
    case_tex();
+   case_tex_targets();
    case_passthrough();
    case_control_flow_rejects();
    case_integer_op_rejects();

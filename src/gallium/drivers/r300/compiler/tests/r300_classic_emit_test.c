@@ -146,11 +146,101 @@ case_full_ladder_compiles_to_hw_code(void)
    ralloc_free(ctx);
 }
 
+static nir_shader *
+build_discard_shader(void)
+{
+   nir_builder b = fs_builder("classic_emit_discard");
+   nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                          glsl_vec4_type(), "in_color");
+   in->data.location = VARYING_SLOT_VAR0;
+   in->data.driver_location = 0;
+   in->data.interpolation = INTERP_MODE_SMOOTH;
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *cond = nir_flt(&b, nir_channel(&b, v, 3),
+                           nir_imm_float(&b, 0.5f));
+   nir_terminate_if(&b, cond);
+   nir_store_var(&b, out, v, 0xf);
+   return b.shader;
+}
+
+/* A discard shader must carry KIL through the whole ladder into hardware
+ * code -- the backend pass chain, not just the front end, accepts it. */
+static void
+case_discard_ladder_compiles_to_hw_code(void)
+{
+   void *ctx = ralloc_context(NULL);
+   nir_shader *s = build_discard_shader();
+
+   static struct r300_screen screen;
+   struct pipe_screen *ps = fake_r300_screen(&screen);
+   r300_optimize_nir(s, r300_screen(ps));
+
+   const struct r300_classic_target *t = r300_classic_target_get(false, false);
+   struct r300_classic_select_result sel;
+   CHECK(r300_classic_select(ctx, s, t, 0, NULL, &sel), "selection ran");
+   CHECK(sel.program != NULL, "discard shader selected");
+   if (!sel.program) {
+      if (sel.reject_reason)
+         fprintf(stderr, "  rejected: %s\n", sel.reject_reason);
+      ralloc_free(ctx);
+      return;
+   }
+
+   struct r300_classic_regalloc_result ra;
+   CHECK(r300_classic_regalloc(ctx, sel.program, &ra), "allocation ran");
+   CHECK(ra.temp_of_ssa != NULL, "allocation fits");
+
+   struct rc_regalloc_state rs;
+   rc_init_regalloc_state(&rs, RC_FRAGMENT_PROGRAM);
+   struct r300_fragment_program_compiler fc;
+   memset(&fc, 0, sizeof(fc));
+   rc_init(&fc.Base, &rs);
+   fc.Base.type = RC_FRAGMENT_PROGRAM;
+   fc.Base.has_half_swizzles = true;
+   fc.Base.has_presub = true;
+   fc.Base.has_omod = true;
+   fc.Base.max_temp_regs = t->max_temp_regs;
+   fc.Base.max_constants = t->max_const_regs;
+   fc.Base.max_alu_insts = t->max_alu_insts;
+   fc.Base.max_tex_insts = t->max_tex_insts;
+   struct rX00_fragment_program_code code;
+   memset(&code, 0, sizeof(code));
+   fc.code = &code;
+   fc.AllocateHwInputs = allocate_identity_inputs;
+
+   CHECK(r300_classic_emit(sel.program, &ra, &sel.immediates, &fc),
+         "emission succeeded");
+
+   bool has_kil = false;
+   for (struct rc_instruction *inst = fc.Base.Program.Instructions.Next;
+        inst != &fc.Base.Program.Instructions; inst = inst->Next)
+      if (inst->U.I.Opcode == RC_OPCODE_KIL ||
+          inst->U.I.Opcode == RC_OPCODE_KILP)
+         has_kil = true;
+   CHECK(has_kil, "emitted program carries a discard");
+
+   r3xx_compile_fragment_program(&fc);
+   CHECK(!fc.Base.Error, "backend pass chain accepts the discard program");
+   if (fc.Base.Error && fc.Base.ErrorMsg)
+      fprintf(stderr, "  backend said: %s\n", fc.Base.ErrorMsg);
+   CHECK(code.code.r300.alu.length > 0, "hardware ALU code generated");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+   ralloc_free(ctx);
+}
+
 int
 main(void)
 {
    glsl_type_singleton_init_or_ref();
    case_full_ladder_compiles_to_hw_code();
+   case_discard_ladder_compiles_to_hw_code();
    glsl_type_singleton_decref();
    if (failures) {
       fprintf(stderr, "r300_classic_emit_test: %d failures\n", failures);
