@@ -142,6 +142,16 @@ get_alu_src(struct sel_ctx *ctx, const nir_alu_instr *alu, unsigned s,
    return true;
 }
 
+/* nir_lower_int_to_float float-encodes integer-typed constants (a ubo
+ * slot offset 1 becomes the bits of 1.0f); decode with the same
+ * heuristic ntr_src_as_uint uses. */
+static unsigned
+src_as_index(nir_src src)
+{
+   const uint32_t v = nir_src_as_uint(src);
+   return v >= fui(1.0) ? (unsigned)uif(v) : v;
+}
+
 static bool
 get_plain_src(struct sel_ctx *ctx, const nir_def *def, const char *what,
               struct r300_classic_src *out)
@@ -216,12 +226,12 @@ select_intrinsic(struct sel_ctx *ctx, nir_intrinsic_instr *intr)
        * before selection.  A block-0 constant-offset read is a plain
        * constant-file vec4 reference at base + offset, the same index
        * ntr_emit_load_ubo computes. */
-      if (!nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]))
+      if (!nir_src_is_const(intr->src[0]) || src_as_index(intr->src[0]))
          return reject(ctx, "load_ubo_vec4 from a block other than 0");
       if (!nir_src_is_const(intr->src[1]))
          return reject(ctx, "indirect constant addressing");
       const unsigned index =
-         nir_intrinsic_base(intr) + nir_src_as_uint(intr->src[1]);
+         nir_intrinsic_base(intr) + src_as_index(intr->src[1]);
       if (index >= ctx->result->immediates.first_index)
          return reject(ctx, "constant read past the prescanned file");
       const unsigned ubo_component = nir_intrinsic_component(intr);
@@ -699,7 +709,7 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
           !nir_src_is_const(intr->src[1]))
          continue;
       const unsigned extent = nir_intrinsic_base(intr) +
-                              nir_src_as_uint(intr->src[1]) + 1;
+                              src_as_index(intr->src[1]) + 1;
       if (extent > result->immediates.first_index)
          result->immediates.first_index = extent;
    }

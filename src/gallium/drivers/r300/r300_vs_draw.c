@@ -187,6 +187,45 @@ r300_draw_scalarize_bool_cmp_cb(const nir_instr *instr, const void *data)
     }
 }
 
+/* nir_lower_int_to_float float-encodes integer-typed constants (its
+ * nir_gather_types walk includes intrinsic sources, so a load_ubo_vec4
+ * slot offset 1 becomes the bits of 1.0f), and consumers in that world
+ * decode them heuristically -- nir_to_rc's ntr_src_as_uint treats any
+ * value >= fui(1.0) as an encoded float.  nir_to_tgsi inside draw does
+ * no such decode, so re-encode the offsets as integers at the boundary
+ * or every uniform read past slot 0 indexes garbage. */
+static bool
+r300_nir_decode_float_ubo_offsets(nir_shader *nir)
+{
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    nir_builder b = nir_builder_create(impl);
+    bool progress = false;
+
+    nir_foreach_block (block, impl) {
+        nir_foreach_instr_safe (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_ubo &&
+                intr->intrinsic != nir_intrinsic_load_ubo_vec4)
+                continue;
+            for (unsigned si = 0; si < 2; si++) {
+                if (!nir_src_is_const(intr->src[si]))
+                    continue;
+                const uint32_t v = nir_src_as_uint(intr->src[si]);
+                if (v < fui(1.0))
+                    continue;
+                b.cursor = nir_before_instr(instr);
+                nir_src_rewrite(&intr->src[si],
+                                nir_imm_int(&b, (int)uif(v)));
+                progress = true;
+            }
+        }
+    }
+
+    return nir_progress(progress, impl, nir_metadata_control_flow);
+}
+
 /* Rebuild boolean branch conditions after bool-to-float lowering: the
  * lowering rewrites bool defs to 0.0/1.0 floats without touching nir_if
  * sources, so a float-typed condition reaches structured control flow and
@@ -275,6 +314,7 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
      * branches, so every condition needs the boolean rebuilt from the
      * 0.0/1.0 float. */
     NIR_PASS(_, nir, r300_nir_fixup_float_if_conditions);
+    NIR_PASS(_, nir, r300_nir_decode_float_ubo_offsets);
     NIR_PASS(_, nir, nir_opt_copy_prop);
     NIR_PASS(_, nir, nir_opt_dce);
 
