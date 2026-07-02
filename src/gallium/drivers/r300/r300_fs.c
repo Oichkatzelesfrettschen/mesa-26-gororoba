@@ -1053,8 +1053,14 @@ static void r300_translate_fragment_shader(
                 shader->inputs = classic_inputs;
                 classic_done = true;
             }
-            if (!classic_done && DBG_ON(r300, DBG_FP))
-                fprintf(stderr, "r300 classic FS fallback: %s\n", why);
+            /* Both verdicts print under DBG_FP so a gate-on hardware run can
+             * prove which front end compiled each shader. */
+            if (DBG_ON(r300, DBG_FP)) {
+                if (classic_done)
+                    fprintf(stderr, "r300 classic FS: compiled\n");
+                else
+                    fprintf(stderr, "r300 classic FS fallback: %s\n", why);
+            }
             ralloc_free(cctx);
         }
     }
