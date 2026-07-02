@@ -54,6 +54,8 @@ files_r300 = files(
   'r300_vs.h',
   'compiler/classic/r300_classic_ir.c',
   'compiler/classic/r300_classic_ir.h',
+  'compiler/classic/r300_classic_select.c',
+  'compiler/classic/r300_classic_select.h',
   'compiler/classic/r300_classic_target.c',
   'compiler/classic/r300_classic_target.h',
   'compiler/memory_pool.c',
@@ -264,6 +266,24 @@ if with_tests
     executable(
       'r300_classic_target_test',
       files('compiler/tests/r300_classic_target_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # Classic fragment-compiler NIR selection: the phase-1 subset selects, and
+  # everything outside it rejects with a named reason.
+  test(
+    'r300-classic-select',
+    executable(
+      'r300_classic_select_test',
+      files('compiler/tests/r300_classic_select_test.c'),
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),

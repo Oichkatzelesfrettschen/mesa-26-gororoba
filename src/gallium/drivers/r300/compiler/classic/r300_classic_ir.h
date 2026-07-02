@@ -87,6 +87,10 @@ struct r300_classic_instr {
  * num_tex_units); the descriptor does not vary this across PFS classes. */
 #define R300C_MAX_TEX_UNITS 16
 
+/* Immediates a shader can materialize into constant-file slots; bounded by
+ * the smallest constant file (R300_PFS_NUM_CONST_REGS). */
+#define R300_CLASSIC_MAX_IMMEDIATES 32
+
 struct r300_classic_program {
    const struct r300_classic_target *target;
    /* Straight-line instruction list in execution order. */
