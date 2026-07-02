@@ -481,12 +481,11 @@ case_fmad_emits_mad(void)
 
 /* flrp is the fog / mix() path.  r300_nir_lower_flrp rewrites it into a nested
  * fmad chain, so it compiles cleanly, emits MAD, and leaves no raw flrp for the
- * emitter's defensive case to reject.
- *
- * TODO: RS482/RS485 render evidence for the GLSL mix()/nir_op_flrp path is
- *       missing.  Add a mix()/flrp rung to the RS482 EGL/GBM fragment ladder
- *       runner and confirm the rendered center pixel before treating this
- *       host-only flrp-to-fmad-to-MAD harness as silicon evidence. */
+ * emitter's defensive case to reject.  Silicon evidence lives in the mixflrp
+ * rung of the RS482 EGL/GBM fragment ladder (r300_egl_gbm_render_probe):
+ * uniform-fed mix(0.25, 0.75, 0.25) renders the FP24-exact 0.375 center pixel,
+ * a value a swapped lerp cannot produce, so this harness checks the compile
+ * shape only. */
 static void
 case_flrp_lowers_to_mad(void)
 {
