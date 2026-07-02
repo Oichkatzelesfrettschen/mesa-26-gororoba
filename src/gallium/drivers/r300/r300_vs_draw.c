@@ -154,6 +154,64 @@ r300_draw_fill_vs_outputs(nir_shader *nir, nir_variable *wpos_var,
     }
 }
 
+/* nir_lower_bool_to_float asserts on vector comparisons; scalarize the
+ * bool-producing comparison ops (and the ball/bany reductions that hide
+ * them) so the lowering sees only scalar compares. */
+static bool
+r300_draw_scalarize_bool_cmp_cb(const nir_instr *instr, const void *data)
+{
+    if (instr->type != nir_instr_type_alu)
+        return false;
+    const nir_alu_instr *alu = nir_instr_as_alu(instr);
+    switch (alu->op) {
+    case nir_op_flt:
+    case nir_op_fge:
+    case nir_op_feq:
+    case nir_op_fneu:
+        return alu->def.num_components > 1;
+    case nir_op_ball_fequal2:
+    case nir_op_ball_fequal3:
+    case nir_op_ball_fequal4:
+    case nir_op_bany_fnequal2:
+    case nir_op_bany_fnequal3:
+    case nir_op_bany_fnequal4:
+    case nir_op_ball_iequal2:
+    case nir_op_ball_iequal3:
+    case nir_op_ball_iequal4:
+    case nir_op_bany_inequal2:
+    case nir_op_bany_inequal3:
+    case nir_op_bany_inequal4:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Rebuild boolean branch conditions after bool-to-float lowering: the
+ * lowering rewrites bool defs to 0.0/1.0 floats without touching nir_if
+ * sources, so a float-typed condition reaches structured control flow and
+ * later select flattening (nir_opt_peephole_select inside nir_to_tgsi)
+ * builds a bcsel whose condition width fails nir_validate. */
+static bool
+r300_nir_fixup_float_if_conditions(nir_shader *nir)
+{
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    nir_builder b = nir_builder_create(impl);
+    bool progress = false;
+
+    nir_foreach_block (block, impl) {
+        nir_if *nif = nir_block_get_following_if(block);
+        if (!nif || nif->condition.ssa->bit_size == 1)
+            continue;
+        b.cursor = nir_before_cf_node(&nif->cf_node);
+        nir_src_rewrite(&nif->condition,
+                        nir_fneu_imm(&b, nif->condition.ssa, 0.0));
+        progress = true;
+    }
+
+    return nir_progress(progress, impl, nir_metadata_control_flow);
+}
+
 void
 r300_draw_init_vertex_shader(struct r300_context *r300,
                              struct r300_vertex_shader *vs)
@@ -189,6 +247,36 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
      * st/mesa already lowers shader_in indirects up front, leaving nothing to do. */
     NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
              nir_var_shader_in, UINT32_MAX);
+
+    /* Mesa stores GL integer uniforms converted to float
+     * (uniform_int_float in uniform_query.cpp) because the fragment caps
+     * make NativeIntegers false for the whole context, but the draw
+     * module advertises integer support, so an int-preserving vertex
+     * shader reads float bit patterns as integers: a uniform-bounded
+     * loop sees 4.0f as 1082130432 and iterates for hours, and an ivec2
+     * uniform converts to garbage
+     * (dEQP-GLES2.functional.shaders.indexing.*dynamic_loop*_vertex,
+     * shaders.linkage.uniform_struct_partial_ivec2_*).  Lower the
+     * interpreted shader to the float domain -- the same
+     * nir_lower_int_to_float + nir_lower_bool_to_float prep the HW-TCL
+     * vertex path runs in nir_to_rc -- so consumption matches storage.
+     * GLSL 1.20 and ES 1.00 have no bitwise operators, so nothing this
+     * path receives needs the bitwise-to-arith guard.  This runs after
+     * the indirect-deref lowerings because those build integer
+     * comparison ladders of their own. */
+    NIR_PASS(_, nir, nir_lower_int_to_float);
+    NIR_PASS(_, nir, nir_opt_copy_prop);
+    NIR_PASS(_, nir, nir_lower_alu_to_scalar, r300_draw_scalarize_bool_cmp_cb,
+             NULL);
+    NIR_PASS(_, nir, nir_lower_bool_to_float, false);
+    /* nir_lower_bool_to_float converts instructions and phis but leaves
+     * nir_if conditions alone -- sufficient for the flattened HW-TCL
+     * vertex path, but the interpreted shader keeps its loops and
+     * branches, so every condition needs the boolean rebuilt from the
+     * 0.0/1.0 float. */
+    NIR_PASS(_, nir, r300_nir_fixup_float_if_conditions);
+    NIR_PASS(_, nir, nir_opt_copy_prop);
+    NIR_PASS(_, nir, nir_opt_dce);
 
     /* Fill in the r300 rasterizer outputs and assign driver locations. */
     r300_draw_fill_vs_outputs(nir, wpos_var, vs->shader);
