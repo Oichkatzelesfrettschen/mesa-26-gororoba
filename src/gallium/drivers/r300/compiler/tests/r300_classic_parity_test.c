@@ -12,6 +12,7 @@
 #include "util/ralloc.h"
 
 #include "classic/r300_classic_emit.h"
+#include "classic/r300_classic_regalloc.h"
 #include "nir_to_rc.h"
 #include "r300_fs.h"
 #include "r300_nir.h"
@@ -319,7 +320,7 @@ compile_classic(void *ctx, nir_shader *s,
       return false;
    }
    fs_compiler_init(fc, rs);
-   if (!r300_classic_emit(sel.program, &ra, &sel.immediates, fc)) {
+   if (!r300_classic_emit(sel.program, &sel.immediates, fc)) {
       *why = "emission failed";
       return false;
    }
