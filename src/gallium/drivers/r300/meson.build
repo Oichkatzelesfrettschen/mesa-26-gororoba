@@ -52,6 +52,8 @@ files_r300 = files(
   'r300_vs.c',
   'r300_vs_draw.c',
   'r300_vs.h',
+  'compiler/classic/r300_classic_emit.c',
+  'compiler/classic/r300_classic_emit.h',
   'compiler/classic/r300_classic_ir.c',
   'compiler/classic/r300_classic_ir.h',
   'compiler/classic/r300_classic_regalloc.c',
@@ -268,6 +270,24 @@ if with_tests
     executable(
       'r300_classic_target_test',
       files('compiler/tests/r300_classic_target_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # Classic fragment-compiler emission: the whole classic ladder feeding the
+  # real backend pass chain through hardware code generation.
+  test(
+    'r300-classic-emit',
+    executable(
+      'r300_classic_emit_test',
+      files('compiler/tests/r300_classic_emit_test.c'),
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
