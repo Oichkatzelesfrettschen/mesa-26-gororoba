@@ -52,6 +52,8 @@ files_r300 = files(
   'r300_vs.c',
   'r300_vs_draw.c',
   'r300_vs.h',
+  'compiler/classic/r300_classic_target.c',
+  'compiler/classic/r300_classic_target.h',
   'compiler/memory_pool.c',
   'compiler/memory_pool.h',
   'compiler/nir_to_rc.c',
@@ -242,6 +244,24 @@ if with_tests
     executable(
       'r300_nir_to_rc_test',
       files('compiler/tests/r300_nir_to_rc_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # Classic fragment-compiler target descriptor: diffs every budget field
+  # against the radeon_code.h authority and the r300_fs.c selection logic.
+  test(
+    'r300-classic-target',
+    executable(
+      'r300_classic_target_test',
+      files('compiler/tests/r300_classic_target_test.c'),
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
