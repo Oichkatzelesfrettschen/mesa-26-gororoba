@@ -210,8 +210,19 @@ r300_nir_decode_float_ubo_offsets(nir_shader *nir)
                 intr->intrinsic != nir_intrinsic_load_ubo_vec4)
                 continue;
             for (unsigned si = 0; si < 2; si++) {
-                if (!nir_src_is_const(intr->src[si]))
+                if (!nir_src_is_const(intr->src[si])) {
+                    /* A dynamic offset chain lives in the float domain
+                     * after the lowering (an integer index uniform is
+                     * stored as float and read through an identity mov),
+                     * but nir_to_tgsi emits UARL, which consumes integer
+                     * bits: 1.0f addresses constant slot 1065353216.
+                     * Rebuild the integer at the boundary. */
+                    b.cursor = nir_before_instr(instr);
+                    nir_src_rewrite(&intr->src[si],
+                                    nir_f2i32(&b, intr->src[si].ssa));
+                    progress = true;
                     continue;
+                }
                 const uint32_t v = nir_src_as_uint(intr->src[si]);
                 if (v < fui(1.0))
                     continue;
