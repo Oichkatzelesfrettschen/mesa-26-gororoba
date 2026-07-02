@@ -261,6 +261,65 @@ case_tex_targets(void)
             strstr(r.reject_reason, "shadow") != NULL, "shadow reject named");
       ralloc_free(ctx);
    }
+   {
+      /* R300 cannot sample rectangles; the texrect-factor lowering lives
+       * in ntr_lower_backend_tex, so RECT rejects by name. */
+      void *ctx = ralloc_context(NULL);
+      struct r300_classic_select_result r;
+      select_tex_dim(ctx, GLSL_SAMPLER_DIM_RECT, 2, false, &r);
+      CHECK(r.program == NULL, "rect tex rejects");
+      CHECK(r.reject_reason &&
+            strstr(r.reject_reason, "texrect") != NULL, "rect reject named");
+      ralloc_free(ctx);
+   }
+}
+
+/* WPOS and FACE record into the semantics table; the shared post-frontend
+ * machinery (wpos varying routing, rc_transform_fragment_face) consumes
+ * them identically for both front ends. */
+static void
+case_wpos_face_semantics(void)
+{
+   static const struct {
+      gl_varying_slot location;
+      const char *what;
+   } rows[] = {
+      { VARYING_SLOT_POS, "wpos" },
+      { VARYING_SLOT_FACE, "face" },
+   };
+   for (unsigned n = 0; n < ARRAY_SIZE(rows); n++) {
+      void *ctx = ralloc_context(NULL);
+      nir_builder b = fs_builder("classic_special_input");
+      nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "in_special");
+      in->data.location = rows[n].location;
+      in->data.driver_location = 0;
+      in->data.interpolation = rows[n].location == VARYING_SLOT_FACE
+                                  ? INTERP_MODE_FLAT
+                                  : INTERP_MODE_SMOOTH;
+      nir_variable *out = add_color_output(&b);
+      nir_store_var(&b, out, nir_load_var(&b, in), 0xf);
+
+      static struct r300_screen screen;
+      struct pipe_screen *ps = fake_r300_screen(&screen);
+      r300_optimize_nir(b.shader, r300_screen(ps));
+
+      struct r300_shader_semantics sem;
+      r300_shader_semantics_reset(&sem);
+      const struct r300_classic_target *t =
+         r300_classic_target_get(false, false);
+      struct r300_classic_select_result r;
+      CHECK(r300_classic_select(ctx, b.shader, t, 0, &sem, &r),
+            "selection ran");
+      CHECK(r.program != NULL, rows[n].what);
+      if (r.reject_reason)
+         fprintf(stderr, "  rejected: %s\n", r.reject_reason);
+      if (rows[n].location == VARYING_SLOT_POS)
+         CHECK(sem.wpos == 0, "POS input records at wpos");
+      else
+         CHECK(sem.face == 0, "FACE input records at face");
+      ralloc_free(ctx);
+   }
 }
 
 static void
@@ -372,6 +431,7 @@ main(void)
    case_flrp_lowers_before_selection();
    case_tex();
    case_tex_targets();
+   case_wpos_face_semantics();
    case_passthrough();
    case_control_flow_rejects();
    case_integer_op_rejects();
