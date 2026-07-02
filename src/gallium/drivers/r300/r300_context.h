@@ -21,6 +21,7 @@
 #include "r300_screen.h"
 #include "compiler/radeon_regalloc.h"
 #include "compiler/radeon_code.h"
+#include "compiler/shader_info.h"
 
 struct u_upload_mgr;
 struct r300_context;
@@ -562,6 +563,14 @@ struct r300_context {
 
     /* The pointers to the first and the last atom. */
     struct r300_atom *first_dirty, *last_dirty;
+
+    /* Default-block uniform values the state tracker flagged inlinable for the
+     * fragment shader (set_inlinable_constants); keyed into the FS variant to
+     * inline and statically unroll a uniform-bounded loop. Kept outside the
+     * contiguous atom block above, which foreach_atom walks by pointer
+     * increment. */
+    uint32_t fs_inlinable_values[MAX_INLINABLE_UNIFORMS];
+    unsigned fs_num_inlinable;
 
     /* Vertex elements for Gallium. */
     struct r300_vertex_element_state *velems;
