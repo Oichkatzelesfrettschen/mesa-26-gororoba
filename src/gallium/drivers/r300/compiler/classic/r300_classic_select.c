@@ -9,6 +9,7 @@
 #include "util/hash_table.h"
 #include "util/ralloc.h"
 
+#include "../nir_to_rc.h"
 #include "../radeon_program_constants.h"
 #include "r300_shader_semantics.h"
 
@@ -557,6 +558,12 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
    /* The entry lowering the selector owns: samplers to indices and IO
     * variables to load_input/store_output, the same shapes nir_to_rc
     * consumes them in. */
+   /* The r300 varying-slot convention packs texcoords at generic 0-7,
+    * pointcoord at 8, and user varyings from 9 (ntr_fixup_varying_slots);
+    * the SW-TCL vertex path applies the same remap to its outputs
+    * (r300_vs_draw.c), so input semantics recorded without it index the
+    * rasterizer block nine slots low and the varying never routes. */
+   ntr_fixup_varying_slots(nir, nir_var_shader_in);
    NIR_PASS(_, nir, nir_lower_samplers);
    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
             io_type_size, (nir_lower_io_options)0);
