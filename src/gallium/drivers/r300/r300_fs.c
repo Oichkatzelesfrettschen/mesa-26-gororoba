@@ -1192,8 +1192,13 @@ retry:
         NIR_PASS(_, clone, r300_nir_stub_deriv);
     }
 
-    /* Classic front end, opt-in via R300_USE_CLASSIC_FS=1 (unset, empty, or
-     * any other value stays closed).  The classic path selects the NIR into
+    /* Classic front end, default open; R300_USE_CLASSIC_FS=0 opts out.
+     * Qualified on RS482 against the full deqp-gles2 functional suite with
+     * zero attributable gate-on deltas: every rejection falls back to
+     * nir_to_rc by name, non-plain external state never enters selection,
+     * and a post-classic backend error retries the whole translation with
+     * the gate closed, so failure behavior stays a subset of the nir_to_rc
+     * path by construction.  The classic path selects the NIR into
      * its own SSA IR, allocates, and emits into the same rc_program object
      * nir_to_rc fills, so everything downstream (face transform,
      * r3xx_compile_fragment_program, the emitters) is shared.  It runs only
@@ -1206,7 +1211,7 @@ retry:
     static int classic_gate = -1;
     if (classic_gate < 0) {
         const char *e = getenv("R300_USE_CLASSIC_FS");
-        classic_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        classic_gate = (e && strcmp(e, "0") == 0) ? 0 : 1;
     }
     if (classic_gate && allow_classic) {
         /* Plainness is per lowering trigger, not a whole-struct compare:
