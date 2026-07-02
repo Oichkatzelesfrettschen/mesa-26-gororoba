@@ -429,22 +429,30 @@ static unsigned blend_read_enable(unsigned eqRGB, unsigned eqA,
     return blend_control;
 }
 
-/* An intensity or luminance render target (I8/L8/R8 take the I8 hardware format,
- * COLORMASK_RRRR) has no independent alpha channel: the single stored component
- * is replicated to the alpha the blender reads, so a SRC_ALPHA or DST_ALPHA
- * factor aliases to the color value instead of a real alpha.  An additive pass
- * with rgb_src_factor == SRC_ALPHA then squares the color.  Neutralize every
- * alpha-derived factor to its constant for such targets, paralleling the
- * DST_ALPHA -> ONE handling already applied to alpha-less RGBX formats. */
+/* An I8/L8/R8 render target (COLORMASK_RRRR) has no independent alpha
+ * channel, so a read of the destination alpha returns no stored value.  The
+ * OpenGL 1.x LUMINANCE/framebuffer convention -- validated by
+ * fbo-blending-formats' own DST_ALPHA subtest -- is an implied destination
+ * alpha of 1.0, so DST_ALPHA reads as ONE and INV_DST_ALPHA reads as ZERO.
+ *
+ * SRC_ALPHA carries no such aliasing: it reads the fragment-shader output
+ * alpha, a value the FS computes independently of the target's storage
+ * format (glColor4fv() sets R, G, B, and A as four separate components).
+ * fbo-blending-formats' SRC_ALPHA subtest probes this directly -- res5 uses
+ * the literal fragment alpha as the blend factor for every internal format,
+ * intensity and luminance included -- so SRC_ALPHA and INV_SRC_ALPHA must
+ * pass through unchanged.
+ *
+ * SRC_ALPHA_SATURATE is i = min(As, 1 - Ad); with Ad implied 1.0, i is
+ * min(As, 0), which is 0 for the valid As range [0, 1]. */
 static unsigned r300_blend_factor_no_alpha(unsigned factor)
 {
     switch (factor) {
-    case PIPE_BLENDFACTOR_SRC_ALPHA:
     case PIPE_BLENDFACTOR_DST_ALPHA:
-    case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
         return PIPE_BLENDFACTOR_ONE;
-    case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
     case PIPE_BLENDFACTOR_INV_DST_ALPHA:
+        return PIPE_BLENDFACTOR_ZERO;
+    case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
         return PIPE_BLENDFACTOR_ZERO;
     default:
         return factor;
