@@ -221,7 +221,15 @@ static void r300_setup_miptree(struct r300_screen *screen,
                                bool align_for_cbzb)
 {
     struct pipe_resource *base = &tex->b;
-    unsigned stride, size, layer_size, nblocksy, i;
+    unsigned stride, nblocksy, i;
+    /* The recorded size fields are 32 bits wide, and a maximum-size 3D texture
+     * overflows them: 2048x2048x2048 RGBA8 is 2^35 bytes.  A wrapped total
+     * passes the placement check after r300_texture_desc_init and allocates a
+     * buffer far smaller than the sampler is programmed for, which the GPU
+     * then walks past -- fatal on a host with no GPU reset.  Accumulate in 64
+     * bits and saturate each stored field to UINT32_MAX, so an oversized
+     * texture reports a size no heap can hold and placement rejects it. */
+    uint64_t size, layer_size, total_size = 0;
     bool rv350_mode = screen->caps.family >= CHIP_R350;
     bool aligned_for_cbzb;
 
@@ -249,7 +257,7 @@ static void r300_setup_miptree(struct r300_screen *screen,
         else
             nblocksy = r300_texture_get_nblocksy(tex, i, NULL);
 
-        layer_size = stride * nblocksy;
+        layer_size = (uint64_t)stride * nblocksy;
 
         if (base->nr_samples > 1) {
             layer_size *= base->nr_samples;
@@ -268,9 +276,13 @@ static void r300_setup_miptree(struct r300_screen *screen,
         else
             size = layer_size * u_minify(tex->tex.depth0, i);
 
-        tex->tex.offset_in_bytes[i] = tex->tex.size_in_bytes;
-        tex->tex.size_in_bytes = tex->tex.offset_in_bytes[i] + size;
-        tex->tex.layer_size_in_bytes[i] = layer_size;
+        tex->tex.offset_in_bytes[i] =
+            total_size > UINT32_MAX ? UINT32_MAX : (unsigned)total_size;
+        total_size += size;
+        tex->tex.size_in_bytes =
+            total_size > UINT32_MAX ? UINT32_MAX : (unsigned)total_size;
+        tex->tex.layer_size_in_bytes[i] =
+            layer_size > UINT32_MAX ? UINT32_MAX : (unsigned)layer_size;
         tex->tex.stride_in_bytes[i] = stride;
         tex->tex.cbzb_allowed[i] = tex->tex.cbzb_allowed[i] && aligned_for_cbzb;
 
