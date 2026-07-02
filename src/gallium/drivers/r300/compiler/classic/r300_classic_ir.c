@@ -41,10 +41,6 @@ static const struct r300_classic_op_info op_info[R300C_OP_COUNT] = {
    [R300C_OP_SIN]          = {"sin", 1, true},
    [R300C_OP_COS]          = {"cos", 1, true},
    [R300C_OP_POW]          = {"pow", 2, true},
-   [R300C_OP_SLT]          = {"slt", 2, true},
-   [R300C_OP_SGE]          = {"sge", 2, true},
-   [R300C_OP_SEQ]          = {"seq", 2, true},
-   [R300C_OP_SNE]          = {"sne", 2, true},
    [R300C_OP_CMP]          = {"cmp", 3, true},
    [R300C_OP_DDX]          = {"ddx", 1, true},
    [R300C_OP_DDY]          = {"ddy", 1, true},
@@ -161,6 +157,14 @@ r300_classic_program_validate(const struct r300_classic_program *p,
       }
       if (i->op == R300C_OP_TEX && i->tex_unit >= R300C_MAX_TEX_UNITS) {
          ok = fail(err, err_size, i, "texture unit out of range");
+         break;
+      }
+      /* The TX block samples 1D/2D/3D/CUBE/RECT; array targets (the enum
+       * values below RC_TEXTURE_CUBE, including the zero-initialized
+       * RC_TEXTURE_2D_ARRAY) never come from selection. */
+      if (i->op == R300C_OP_TEX &&
+          (i->tex_target < RC_TEXTURE_CUBE || i->tex_target > RC_TEXTURE_1D)) {
+         ok = fail(err, err_size, i, "texture target outside 1D/2D/3D/CUBE/RECT");
          break;
       }
 
