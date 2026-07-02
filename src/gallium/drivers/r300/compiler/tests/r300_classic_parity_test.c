@@ -638,6 +638,29 @@ build_csel_variants(void)
    return b.shader;
 }
 
+/* A vec3 collect of distinct defs read back through a four-channel .xyyz
+ * swizzle -- the deqp scalar-operator packing shape.  The compose bound is
+ * the reading op's source width, not the def's: bounding by the vec3 width
+ * drops the w select and reads .xyyy. */
+static nir_shader *
+build_vec3_wide_read(void)
+{
+   nir_builder b = fs_builder("parity_vec3wide");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *a = nir_fabs(&b, nir_channel(&b, v, 0));
+   nir_def *y = nir_fmul_imm(&b, nir_channel(&b, v, 1), 2.0f);
+   nir_def *z = nir_fadd_imm(&b, nir_channel(&b, v, 2), 0.75f);
+   nir_def *v3 = nir_vec3(&b, a, y, z);
+   nir_def *wide = nir_swizzle(&b, v3, (unsigned[]){0, 1, 1, 2}, 4);
+   nir_def *scale = nir_imm_vec4(&b, 0.5f, 0.5f, 0.5f, 0.5f);
+   nir_def *bias = nir_imm_vec4(&b, 0.25f, 0.25f, 0.25f, 0.25f);
+   nir_store_var(&b, out, nir_build_alu3(&b, nir_op_fmad, wide, scale, bias),
+                 0xf);
+   return b.shader;
+}
+
 /* ffloor's FRC expansion and fround_even's ROUND row. */
 static nir_shader *
 build_floor_round(void)
@@ -666,6 +689,7 @@ main(void)
    parity("dots_replicated", build_dots_replicated);
    parity("setcmp_csel", build_setcmp_csel);
    parity("csel_variants", build_csel_variants);
+   parity("vec3_wide_read", build_vec3_wide_read);
    parity("transcendentals", build_transcendentals);
    parity("floor_round", build_floor_round);
    glsl_type_singleton_decref();

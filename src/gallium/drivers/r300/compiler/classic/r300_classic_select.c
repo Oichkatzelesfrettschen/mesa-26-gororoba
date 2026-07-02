@@ -111,7 +111,11 @@ compose_swizzle(unsigned base, const uint8_t *select, unsigned num)
 }
 
 /* Resolve a NIR ALU source to a classic descriptor with the NIR swizzle
- * composed in. */
+ * composed in.  The swizzle array is indexed by destination channel and
+ * every entry up to the op's per-source read width selects a lane of the
+ * source def, so the compose bound is nir_ssa_alu_instr_src_components --
+ * bounding by the def's own width instead drops a wide op's high selects
+ * (a vec3 collect read as .xyyz would compose to .xyyy). */
 static bool
 get_alu_src(struct sel_ctx *ctx, const nir_alu_instr *alu, unsigned s,
             struct r300_classic_src *out)
@@ -123,7 +127,7 @@ get_alu_src(struct sel_ctx *ctx, const nir_alu_instr *alu, unsigned s,
                     nir_op_infos[alu->op].name);
    *out = *base;
    out->swizzle = compose_swizzle(base->swizzle, alu->src[s].swizzle,
-                                  alu->src[s].src.ssa->num_components);
+                                  nir_ssa_alu_instr_src_components(alu, s));
    return true;
 }
 
