@@ -10,6 +10,7 @@
 
 #include "pipe/p_state.h"
 #include "compiler/radeon_code.h"
+#include "compiler/shader_info.h"
 #include "r300_shader_semantics.h"
 
 struct r300_context;
@@ -32,6 +33,14 @@ struct r300_fragment_shader_code {
     uint32_t us_out_w;          /* R300_US_W_FMT:     0x46b4 */
 
     struct r300_fragment_program_external_state compare_state;
+
+    /* Default-block uniform values this variant was specialized with: a
+     * uniform used as a loop bound or branch condition is inlined as a constant
+     * so the loop can be statically unrolled (R300/R400 have no dynamic control
+     * flow). Part of the variant key alongside compare_state; the values come
+     * from r300_set_inlinable_constants at draw time. */
+    uint32_t inlinable_values[MAX_INLINABLE_UNIFORMS];
+    unsigned num_inlinable;
 
     unsigned cb_code_size;
     uint32_t *cb_code;

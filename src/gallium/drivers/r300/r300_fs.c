@@ -1064,6 +1064,20 @@ static void r300_translate_fragment_shader(
 
     nir_shader *clone = nir_shader_clone(NULL, state.ir.nir);
 
+    /* Specialize this variant on the inlinable-uniform values it was keyed on
+     * (r300_pick_fragment_shader): inline the draw-time value and re-run the
+     * optimizer so nir_opt_loop_unroll can resolve a now-constant loop bound
+     * that r300_create_fs_state deferred (R300/R400 have no dynamic control
+     * flow). If the loop still cannot be unrolled the ordinary compile path
+     * reports the error for this variant only. */
+    if (shader->num_inlinable > 0 && clone->info.num_inlinable_uniforms > 0) {
+        unsigned n = MIN2(shader->num_inlinable,
+                          clone->info.num_inlinable_uniforms);
+        nir_inline_uniforms(clone, n, shader->inlinable_values,
+                            clone->info.inlinable_uniform_dw_offsets);
+        r300_optimize_nir(clone, r300->screen);
+    }
+
     /* Multipass auto-partition, phase 1 (R300_FS_MULTIPASS, default off): estimate
      * the paired-ALU instruction count this fragment program will need at the NIR
      * level, before nir_to_rc, so a future pass can split a program that would
@@ -1318,6 +1332,31 @@ static void r300_translate_fragment_shader(
     r300_emit_fs_code_to_buffer(r300, shader);
 }
 
+/* A compiled FS variant is keyed on the texture-compare state and on the
+ * inlinable-uniform values it was specialized with, so a shader whose loop
+ * bound changes at draw time gets a fresh unroll. */
+static bool
+r300_fs_variant_matches(const struct r300_fragment_shader_code *code,
+                        const struct r300_fragment_program_external_state *state,
+                        const struct r300_context *r300)
+{
+    return memcmp(&code->compare_state, state, sizeof(*state)) == 0 &&
+           code->num_inlinable == r300->fs_num_inlinable &&
+           memcmp(code->inlinable_values, r300->fs_inlinable_values,
+                  r300->fs_num_inlinable * sizeof(uint32_t)) == 0;
+}
+
+static void
+r300_fs_variant_set_key(struct r300_fragment_shader_code *code,
+                        const struct r300_fragment_program_external_state *state,
+                        const struct r300_context *r300)
+{
+    code->compare_state = *state;
+    code->num_inlinable = r300->fs_num_inlinable;
+    memcpy(code->inlinable_values, r300->fs_inlinable_values,
+           r300->fs_num_inlinable * sizeof(uint32_t));
+}
+
 bool r300_pick_fragment_shader(struct r300_context *r300,
                                struct r300_fragment_shader* fs,
                                struct r300_fragment_program_external_state *state)
@@ -1338,18 +1377,18 @@ bool r300_pick_fragment_shader(struct r300_context *r300,
         /* Build the fragment shader for the first time. */
         fs->first = fs->shader = CALLOC_STRUCT(r300_fragment_shader_code);
 
-        memcpy(&fs->shader->compare_state, state, sizeof(*state));
+        r300_fs_variant_set_key(fs->shader, state, r300);
         r300_translate_fragment_shader(r300, fs->shader, fs->state);
         return true;
 
     } else {
-        /* Check if the currently-bound shader has been compiled
-         * with the texture-compare state we need. */
-        if (memcmp(&fs->shader->compare_state, state, sizeof(*state)) != 0) {
+        /* Check if the currently-bound shader has been compiled with the
+         * texture-compare state and inlinable-uniform values we need. */
+        if (!r300_fs_variant_matches(fs->shader, state, r300)) {
             /* Search for the right shader. */
             ptr = fs->first;
             while (ptr) {
-                if (memcmp(&ptr->compare_state, state, sizeof(*state)) == 0) {
+                if (r300_fs_variant_matches(ptr, state, r300)) {
                     if (fs->shader != ptr) {
                         fs->shader = ptr;
                         return true;
@@ -1365,7 +1404,7 @@ bool r300_pick_fragment_shader(struct r300_context *r300,
             ptr->next = fs->first;
             fs->first = fs->shader = ptr;
 
-            memcpy(&ptr->compare_state, state, sizeof(*state));
+            r300_fs_variant_set_key(ptr, state, r300);
             r300_translate_fragment_shader(r300, ptr, fs->state);
             return true;
         }

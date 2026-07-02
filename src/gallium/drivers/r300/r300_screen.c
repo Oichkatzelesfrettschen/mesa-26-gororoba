@@ -17,6 +17,7 @@
 #include "vl/vl_video_buffer.h"
 
 #include "r300_context.h"
+#include "compiler/r300_nir.h"
 #include "r300_texture.h"
 #include "r300_screen_buffer.h"
 #include "r300_state_inlines.h"
@@ -513,6 +514,10 @@ static void r300_init_screen_caps(struct r300_screen* r300screen)
    bool is_r500 = r300screen->caps.is_r500;
 
    /* Supported features (boolean caps). */
+   /* Run finalize_nir (and nir_find_inlinable_uniforms) in the linker so the
+    * inlinable-uniform flags reach gl_program->info before the state tracker
+    * pushes their values through set_inlinable_constants. */
+   caps->call_finalize_nir_in_linker = true;
    caps->npot_textures = true;
    caps->mixed_framebuffer_sizes = true;
    caps->mixed_color_depth_bits = true;
@@ -808,6 +813,7 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
     r300screen->screen.get_screen_fd = r300_screen_get_fd;
     r300screen->screen.is_format_supported = r300_is_format_supported;
     r300screen->screen.context_create = r300_create_context;
+    r300screen->screen.finalize_nir = r300_finalize_nir;
     r300screen->screen.fence_reference = r300_fence_reference;
     r300screen->screen.fence_finish = r300_fence_finish;
     r300screen->screen.query_memory_info = r300_query_memory_info;

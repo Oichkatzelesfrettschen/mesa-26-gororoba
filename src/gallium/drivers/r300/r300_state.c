@@ -1387,15 +1387,29 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
 
     r300_optimize_nir(fs->state.ir.nir, r300->screen);
 
-    /* R300/R400 can not do any kind of control flow, so abort early here. */
+    /* r300_finalize_nir flagged the default-block uniforms used as a loop bound
+     * or branch condition (info.num_inlinable_uniforms); the state tracker
+     * pushes their values through set_inlinable_constants and
+     * r300_translate_fragment_shader specializes a variant with the value
+     * inlined so a uniform-bounded loop can be statically unrolled. */
+    bool defer_inlinable = false;
+
+    /* R300/R400 can not do any kind of control flow, so abort early here --
+     * unless the surviving loop's bound is an inlinable uniform, in which case
+     * the per-draw specialized variant retries the unroll and only that variant
+     * fails if the loop still cannot be resolved. */
     if (!r300->screen->caps.is_r500) {
         char *msg = r300_check_control_flow(fs->state.ir.nir);
-        if (msg && shader->report_compile_error) {
-            fprintf(stderr, "r300 FP: Compiler error: %s\n", msg);
-            ((struct pipe_shader_state *)shader)->error_message = strdup(msg);
-            ralloc_free(fs->state.ir.nir);
-            FREE(fs);
-            return NULL;
+        if (msg) {
+            if (fs->state.ir.nir->info.num_inlinable_uniforms > 0) {
+                defer_inlinable = true;
+            } else if (shader->report_compile_error) {
+                fprintf(stderr, "r300 FP: Compiler error: %s\n", msg);
+                ((struct pipe_shader_state *)shader)->error_message = strdup(msg);
+                ralloc_free(fs->state.ir.nir);
+                FREE(fs);
+                return NULL;
+            }
         }
     }
 
@@ -1424,19 +1438,24 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
             }
         }
     }
-    r300_pick_fragment_shader(r300, fs, &precompile_state);
+    /* A deferred-inlinable shader can only be compiled once the draw-time
+     * uniform value is known, so skip the value-less precompile; the first draw
+     * builds the specialized variant through r300_pick_fragment_shader. */
+    if (!defer_inlinable) {
+        r300_pick_fragment_shader(r300, fs, &precompile_state);
 
-    if (fs->shader->error) {
-        if (shader->report_compile_error && !DBG_ON(r300, DBG_DUMMYSH)) {
+        if (fs->shader->error) {
+            if (shader->report_compile_error && !DBG_ON(r300, DBG_DUMMYSH)) {
+                fprintf(stderr, "r300 FP: Compiler error: %s\n"
+                        "r300 FP: Use RADEON_DEBUG=dummysh to force dummy shader instead.\n",
+                        fs->shader->error);
+                ((struct pipe_shader_state *)shader)->error_message = strdup(fs->shader->error);
+                r300_delete_fs_state(pipe, fs);
+                return NULL;
+            }
             fprintf(stderr, "r300 FP: Compiler error: %s\n"
-                    "r300 FP: Use RADEON_DEBUG=dummysh to force dummy shader instead.\n",
-                    fs->shader->error);
-            ((struct pipe_shader_state *)shader)->error_message = strdup(fs->shader->error);
-            r300_delete_fs_state(pipe, fs);
-            return NULL;
+                    "r300 FP: Using a dummy shader instead.\n", fs->shader->error);
         }
-        fprintf(stderr, "r300 FP: Compiler error: %s\n"
-                "r300 FP: Using a dummy shader instead.\n", fs->shader->error);
     }
 
     return (void *)fs;
@@ -2521,6 +2540,26 @@ static void r300_delete_vs_state(struct pipe_context* pipe, void* shader)
     FREE(shader);
 }
 
+/* The state tracker pushes the values of the default-block uniforms that
+ * r300_create_fs_state flagged inlinable (loop bounds, branch conditions). Keep
+ * them on the context; r300_pick_fragment_shader keys the FS variant on them so
+ * a uniform-bounded loop is inlined to a constant and statically unrolled. */
+static void r300_set_inlinable_constants(struct pipe_context *pipe,
+                                         mesa_shader_stage shader,
+                                         uint num_values, uint32_t *values)
+{
+    struct r300_context *r300 = r300_context(pipe);
+
+    if (shader != MESA_SHADER_FRAGMENT)
+        return;
+
+    r300->fs_num_inlinable = MIN2(num_values, MAX_INLINABLE_UNIFORMS);
+    memcpy(r300->fs_inlinable_values, values,
+           r300->fs_num_inlinable * sizeof(uint32_t));
+    /* Re-pick the FS variant so the new values take effect. */
+    r300->fs_status = FRAGMENT_SHADER_DIRTY;
+}
+
 static void r300_set_constant_buffer(struct pipe_context *pipe,
                                      mesa_shader_stage shader, uint index,
                                      const struct pipe_constant_buffer *cb)
@@ -2617,6 +2656,7 @@ void r300_init_state_functions(struct r300_context* r300)
     r300->context.set_sample_mask = r300_set_sample_mask;
 
     r300->context.set_constant_buffer = r300_set_constant_buffer;
+    r300->context.set_inlinable_constants = r300_set_inlinable_constants;
 
     r300->context.create_depth_stencil_alpha_state = r300_create_dsa_state;
     r300->context.bind_depth_stencil_alpha_state = r300_bind_dsa_state;
