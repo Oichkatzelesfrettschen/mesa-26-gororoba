@@ -154,6 +154,8 @@ r300_classic_emit(const struct r300_classic_program *p,
          inst->U.I.DstReg.File = RC_FILE_TEMPORARY;
          inst->U.I.DstReg.Index = temp;
          inst->U.I.DstReg.WriteMask = i->writemask;
+         if (i->saturate)
+            inst->U.I.SaturateMode = RC_SATURATE_ZERO_ONE;
          break;
       }
       }

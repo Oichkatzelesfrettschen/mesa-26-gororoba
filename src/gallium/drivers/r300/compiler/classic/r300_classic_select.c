@@ -10,6 +10,7 @@
 #include "util/ralloc.h"
 
 #include "../radeon_program_constants.h"
+#include "r300_shader_semantics.h"
 
 /* The selector maps each nir_def to a classic source descriptor: inputs,
  * constants, and immediates map to file references with a composed swizzle,
@@ -22,6 +23,7 @@ struct sel_ctx {
    void *mem_ctx;
    struct r300_classic_program *prog;
    struct r300_classic_select_result *result;
+   struct r300_shader_semantics *semantics;
    /* nir_def* -> struct r300_classic_src* (ralloc'd). */
    struct hash_table *value_map;
    const char *reject;
@@ -36,6 +38,43 @@ reject(struct sel_ctx *ctx, const char *fmt, ...)
    va_end(args);
    return false;
 }
+
+/* Record an input's varying slot at its RC input index, mirroring
+ * ntr_read_input_output so AllocateHwInputs routes classic-path inputs the
+ * same way it routes nir_to_rc's.  Slots the classic subset cannot honor
+ * (WPOS needs the window transform, FACE the face lowering) reject. */
+static bool
+record_input_semantics(struct sel_ctx *ctx, gl_varying_slot location,
+                       unsigned base)
+{
+   struct r300_shader_semantics *sem = ctx->semantics;
+   if (!sem)
+      return true;
+   if (base >= sem->num_total)
+      sem->num_total = base + 1;
+   switch (location) {
+   case VARYING_SLOT_COL0:
+      sem->color[0] = base;
+      return true;
+   case VARYING_SLOT_COL1:
+      sem->color[1] = base;
+      return true;
+   case VARYING_SLOT_FOGC:
+      sem->fog = base;
+      return true;
+   default:
+      if (location >= VARYING_SLOT_VAR0 && location <= VARYING_SLOT_VAR31) {
+         const unsigned index = location - VARYING_SLOT_VAR0;
+         if (sem->generic[index] == ATTR_UNUSED)
+            sem->num_generic++;
+         sem->generic[index] = base;
+         return true;
+      }
+      return reject(ctx, "input varying slot %u outside the classic subset",
+                    (unsigned)location);
+   }
+}
+
 
 static void
 map_def(struct sel_ctx *ctx, const nir_def *def,
@@ -135,6 +174,10 @@ select_intrinsic(struct sel_ctx *ctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_load_input: {
       if (!nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]))
          return reject(ctx, "indirect input addressing");
+      const nir_io_semantics in_sem = nir_intrinsic_io_semantics(intr);
+      if (!record_input_semantics(ctx, in_sem.location,
+                                  nir_intrinsic_base(intr)))
+         return false;
       const unsigned component = nir_intrinsic_component(intr);
       uint8_t select[4];
       for (unsigned c = 0; c < 4; c++)
@@ -236,14 +279,19 @@ select_alu(struct sel_ctx *ctx, nir_alu_instr *alu)
       return true;
    }
 
+   /* fsat is a saturating MOV: RC carries the [0,1] clamp on the dst. */
+   const bool saturate = alu->op == nir_op_fsat;
    enum r300_classic_op op;
-   if (!alu_op_map(alu->op, &op))
+   if (saturate)
+      op = R300C_OP_MOV;
+   else if (!alu_op_map(alu->op, &op))
       return reject(ctx, "nir op '%s' outside the classic subset",
                     nir_op_infos[alu->op].name);
 
    struct r300_classic_instr *i = r300_classic_instr_append(ctx->prog, op);
    if (!i)
       return reject(ctx, "out of memory");
+   i->saturate = saturate;
    i->writemask = BITFIELD_MASK(alu->def.num_components);
    for (unsigned s = 0; s < i->num_srcs; s++)
       if (!get_alu_src(ctx, alu, s, &i->src[s]))
@@ -310,6 +358,7 @@ bool
 r300_classic_select(void *mem_ctx, nir_shader *nir,
                     const struct r300_classic_target *target,
                     unsigned num_driver_consts,
+                    struct r300_shader_semantics *semantics,
                     struct r300_classic_select_result *result)
 {
    memset(result, 0, sizeof(*result));
@@ -345,6 +394,7 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
    struct sel_ctx ctx = {
       .mem_ctx = mem_ctx,
       .result = result,
+      .semantics = semantics,
       .prog = r300_classic_program_create(mem_ctx, target),
       .value_map = _mesa_pointer_hash_table_create(mem_ctx),
    };

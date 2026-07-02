@@ -77,6 +77,8 @@ struct r300_classic_instr {
    /* Channels this def produces (RC_MASK-style 4-bit mask).  Exports and
     * KIL produce no SSA value and keep writemask 0. */
    uint8_t writemask;
+   /* Clamp the result to [0, 1] (RC SaturateMode ZERO_ONE on the dst). */
+   bool saturate;
    unsigned num_srcs;
    struct r300_classic_src src[3];
    /* R300C_OP_TEX only. */
