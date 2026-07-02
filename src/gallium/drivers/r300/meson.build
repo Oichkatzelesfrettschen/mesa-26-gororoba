@@ -281,6 +281,24 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Classic fragment-compiler golden parity: both front ends into rc_programs,
+  # executed by a CPU evaluator on shared inputs; outputs must agree.
+  test(
+    'r300-classic-parity',
+    executable(
+      'r300_classic_parity_test',
+      files('compiler/tests/r300_classic_parity_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # Classic fragment-compiler emission: the whole classic ladder feeding the
   # real backend pass chain through hardware code generation.
   test(

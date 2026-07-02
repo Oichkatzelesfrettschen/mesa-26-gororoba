@@ -91,7 +91,7 @@ select_shader(void *ctx, nir_shader *s,
    r300_optimize_nir(s, r300_screen(ps));
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
-   CHECK(r300_classic_select(ctx, s, t, 4, result), "selection ran");
+   CHECK(r300_classic_select(ctx, s, t, 4, NULL, result), "selection ran");
    if (result->program) {
       char err[128] = {0};
       CHECK(r300_classic_program_validate(result->program, err, sizeof(err)),
@@ -230,7 +230,7 @@ case_control_flow_rejects(void)
     * control-flow reject. */
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result r;
-   CHECK(r300_classic_select(ctx, b.shader, t, 0, &r), "selection ran");
+   CHECK(r300_classic_select(ctx, b.shader, t, 0, NULL, &r), "selection ran");
    CHECK(r.program == NULL, "control flow rejected");
    CHECK(r.reject_reason && strstr(r.reject_reason, "control flow") != NULL,
          "control-flow reject named");
@@ -252,7 +252,7 @@ case_integer_op_rejects(void)
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result r;
-   CHECK(r300_classic_select(ctx, b.shader, t, 0, &r), "selection ran");
+   CHECK(r300_classic_select(ctx, b.shader, t, 0, NULL, &r), "selection ran");
    CHECK(r.program == NULL, "integer op rejected");
    CHECK(r.reject_reason && strstr(r.reject_reason, "outside the classic") !=
          NULL, "integer reject named");

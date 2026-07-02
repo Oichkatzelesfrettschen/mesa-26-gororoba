@@ -20,6 +20,7 @@
 
 #include "compiler/radeon_compiler.h"
 #include "compiler/nir_to_rc.h"
+#include "compiler/classic/r300_classic_emit.h"
 #include "nir.h"
 #include "compiler/nir/nir_builder.h"
 
@@ -1010,8 +1011,57 @@ static void r300_translate_fragment_shader(
             r300_nir_lower_derivatives_swtcl(clone, shader);
     }
 
-    nir_to_rc(clone, (struct pipe_screen *)r300->screen, shader->compare_state,
-              code, &compiler.Base);
+    /* Classic front end, opt-in via R300_USE_CLASSIC_FS=1 (unset, empty, or
+     * any other value stays closed).  The classic path selects the NIR into
+     * its own SSA IR, allocates, and emits into the same rc_program object
+     * nir_to_rc fills, so everything downstream (face transform,
+     * r3xx_compile_fragment_program, the emitters) is shared.  It runs only
+     * when the external compare state is plain -- shadow-sampler, wpos, and
+     * alpha-to-one lowering live inside nir_to_rc -- and any selection,
+     * allocation, or emission reject falls back to nir_to_rc unchanged.
+     * Input semantics record into a local table and reach shader->inputs
+     * only on full success, so a fallback never leaves a partial record. */
+    bool classic_done = false;
+    static int classic_gate = -1;
+    if (classic_gate < 0) {
+        const char *e = getenv("R300_USE_CLASSIC_FS");
+        classic_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    if (classic_gate) {
+        static const struct r300_fragment_program_external_state plain_ext;
+        if (memcmp(&shader->compare_state, &plain_ext,
+                   sizeof(plain_ext)) == 0) {
+            void *cctx = ralloc_context(NULL);
+            nir_shader *cclone = nir_shader_clone(cctx, clone);
+            const struct r300_classic_target *ct = r300_classic_target_get(
+                compiler.Base.is_r400, compiler.Base.is_r500);
+            struct r300_shader_semantics classic_inputs;
+            r300_shader_semantics_reset(&classic_inputs);
+            struct r300_classic_select_result sel;
+            struct r300_classic_regalloc_result ra;
+            const char *why = NULL;
+            if (!r300_classic_select(cctx, cclone, ct, 0, &classic_inputs,
+                                     &sel) || !sel.program) {
+                why = sel.reject_reason ? sel.reject_reason : "selection";
+            } else if (!r300_classic_regalloc(cctx, sel.program, &ra) ||
+                       !ra.temp_of_ssa) {
+                why = ra.reject_reason ? ra.reject_reason : "allocation";
+            } else if (!r300_classic_emit(sel.program, &ra, &sel.immediates,
+                                          &compiler)) {
+                why = "emission";
+            } else {
+                shader->inputs = classic_inputs;
+                classic_done = true;
+            }
+            if (!classic_done && DBG_ON(r300, DBG_FP))
+                fprintf(stderr, "r300 classic FS fallback: %s\n", why);
+            ralloc_free(cctx);
+        }
+    }
+
+    if (!classic_done)
+        nir_to_rc(clone, (struct pipe_screen *)r300->screen,
+                  shader->compare_state, code, &compiler.Base);
 
     if (compiler.Base.Error) {
         shader->error = strdup(compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg

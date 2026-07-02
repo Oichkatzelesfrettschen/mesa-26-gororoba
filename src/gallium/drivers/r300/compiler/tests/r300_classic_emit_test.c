@@ -101,7 +101,7 @@ case_full_ladder_compiles_to_hw_code(void)
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result sel;
-   CHECK(r300_classic_select(ctx, s, t, 0, &sel), "selection ran");
+   CHECK(r300_classic_select(ctx, s, t, 0, NULL, &sel), "selection ran");
    CHECK(sel.program != NULL, "shader selected");
    if (!sel.program) {
       if (sel.reject_reason)

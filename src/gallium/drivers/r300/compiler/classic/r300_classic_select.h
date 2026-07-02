@@ -27,6 +27,8 @@ struct r300_classic_immediates {
    float values[R300_CLASSIC_MAX_IMMEDIATES][4];
 };
 
+struct r300_shader_semantics;
+
 struct r300_classic_select_result {
    struct r300_classic_program *program;
    struct r300_classic_immediates immediates;
@@ -38,12 +40,17 @@ struct r300_classic_select_result {
 /* Select nir into a classic program.  nir is consumed (lowering passes run
  * on it in place); run it on a clone.  num_driver_consts reserves the front
  * of the constant file for driver-owned constants, so immediates land after
- * them.  Returns false only on out-of-memory; a rejected shader returns true
- * with result->program NULL and reject_reason set. */
+ * them.  semantics, when non-NULL, records each selected input's varying
+ * slot at its RC input index -- the r300_shader_semantics contract
+ * AllocateHwInputs consumes at pair-regalloc time, recorded the way
+ * ntr_read_input_output records it.  Returns false only on out-of-memory;
+ * a rejected shader returns true with result->program NULL and
+ * reject_reason set. */
 bool
 r300_classic_select(void *mem_ctx, nir_shader *nir,
                     const struct r300_classic_target *target,
                     unsigned num_driver_consts,
+                    struct r300_shader_semantics *semantics,
                     struct r300_classic_select_result *result);
 
 #endif /* R300_CLASSIC_SELECT_H */
