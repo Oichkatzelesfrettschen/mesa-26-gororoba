@@ -56,6 +56,11 @@ enum r300_classic_op {
     * expansion is a MOV sequence, not one read-all-then-write instruction. */
    R300C_OP_VEC,
    R300C_OP_TEX,
+   /* Biased sample: the packed source carries the LOD bias in .w. */
+   R300C_OP_TXB,
+   /* Projective sample: the TX block divides the coordinate by the
+    * packed source's projector lane. */
+   R300C_OP_TXP,
    R300C_OP_KIL,
    R300C_OP_KILP,
    R300C_OP_EXPORT_COLOR,

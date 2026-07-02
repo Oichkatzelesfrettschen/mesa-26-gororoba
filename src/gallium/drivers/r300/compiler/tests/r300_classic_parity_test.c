@@ -217,6 +217,18 @@ eval_program(struct rc_eval *e, struct radeon_compiler *c)
       case RC_OPCODE_TEX:
          eval_tex(inst->U.I.TexSrcUnit, s[0], r);
          break;
+      case RC_OPCODE_TXB:
+         /* The model has no mip chain; bias cannot move the result. */
+         eval_tex(inst->U.I.TexSrcUnit, s[0], r);
+         break;
+      case RC_OPCODE_TXP: {
+         /* 2D projective: the packed source carries the projector in the
+          * lane after the coordinate. */
+         const float q = s[0][2] != 0.0f ? s[0][2] : 1.0f;
+         const float c[4] = {s[0][0] / q, s[0][1] / q, 0.0f, 1.0f};
+         eval_tex(inst->U.I.TexSrcUnit, c, r);
+         break;
+      }
       default:
          e->error = info->Name;
          return false;
@@ -698,6 +710,42 @@ build_floor_round(void)
    return b.shader;
 }
 
+/* Projective sampling: the entry packing carries the projector in the
+ * lane after the coordinate and selection picks TXP by the width rule. */
+static nir_shader *
+build_txp_modulate(void)
+{
+   nir_builder b = fs_builder("parity_txp");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+
+   const struct glsl_type *sampler2d =
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
+   nir_variable *sampler = nir_variable_create(b.shader, nir_var_uniform,
+                                               sampler2d, "tex0");
+   sampler->data.binding = 0;
+   nir_deref_instr *deref = nir_build_deref_var(&b, sampler);
+
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *uv = nir_trim_vector(&b, v, 2);
+   nir_def *proj = nir_fadd_imm(&b, nir_fabs(&b, nir_channel(&b, v, 3)),
+                                1.0f);
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, 4);
+   tex->op = nir_texop_tex;
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->coord_components = 2;
+   tex->dest_type = nir_type_float32;
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_texture_deref, &deref->def);
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_sampler_deref, &deref->def);
+   tex->src[2] = nir_tex_src_for_ssa(nir_tex_src_coord, uv);
+   tex->src[3] = nir_tex_src_for_ssa(nir_tex_src_projector, proj);
+   nir_def_init(&tex->instr, &tex->def, 4, 32);
+   nir_builder_instr_insert(&b, &tex->instr);
+
+   nir_store_var(&b, out, nir_fmul(&b, &tex->def, v), 0xf);
+   return b.shader;
+}
+
 int
 main(void)
 {
@@ -714,6 +762,7 @@ main(void)
    parity("csel_variants", build_csel_variants);
    parity("vec3_wide_read", build_vec3_wide_read);
    parity("int_index_ladder", build_int_index_ladder);
+   parity("txp_modulate", build_txp_modulate);
    parity("transcendentals", build_transcendentals);
    parity("floor_round", build_floor_round);
    glsl_type_singleton_decref();

@@ -513,7 +513,9 @@ select_alu(struct sel_ctx *ctx, nir_alu_instr *alu)
 static bool
 select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
 {
-   if (tex->op != nir_texop_tex)
+   /* txl and txd are r500-only at the TEX unit (r500_fragprog_emit.c);
+    * the R300 encodings are LD, TXB, and TXP. */
+   if (tex->op != nir_texop_tex && tex->op != nir_texop_txb)
       return reject(ctx, "texop %d outside the classic subset",
                     (int)tex->op);
    if (tex->is_shadow)
@@ -541,12 +543,15 @@ select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
                     (int)tex->sampler_dim);
    }
 
-   int coord_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   /* The entry lowering packed coordinate/bias/projector into backend1
+    * (nir_to_rc_lower_tex); a projector that TXP cannot carry was divided
+    * away before packing (nir_to_rc_lower_txp). */
+   int coord_idx = nir_tex_instr_src_index(tex, nir_tex_src_backend1);
    if (coord_idx < 0)
-      return reject(ctx, "tex without a coordinate source");
+      return reject(ctx, "tex without a packed backend source");
    for (unsigned s = 0; s < tex->num_srcs; s++) {
       switch (tex->src[s].src_type) {
-      case nir_tex_src_coord:
+      case nir_tex_src_backend1:
       case nir_tex_src_texture_deref:
       case nir_tex_src_sampler_deref:
          break;
@@ -561,8 +566,18 @@ select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
                       &coord))
       return false;
 
-   struct r300_classic_instr *i =
-      r300_classic_instr_append(ctx->prog, R300C_OP_TEX);
+   /* A plain sample whose packed source is wider than the coordinate
+    * carries a projector in the extra lane: the ntr_emit_texture width
+    * rule that selects RC_OPCODE_TXP. */
+   enum r300_classic_op op = R300C_OP_TEX;
+   if (tex->op == nir_texop_txb) {
+      op = R300C_OP_TXB;
+   } else if ((unsigned)nir_tex_instr_src_size(tex, coord_idx) >
+              MAX2(tex->coord_components, 2)) {
+      op = R300C_OP_TXP;
+   }
+
+   struct r300_classic_instr *i = r300_classic_instr_append(ctx->prog, op);
    if (!i)
       return reject(ctx, "out of memory");
    i->writemask = (uint8_t)BITFIELD_MASK(tex->def.num_components);
@@ -612,6 +627,12 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
    NIR_PASS(_, nir, nir_lower_samplers);
    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
             io_type_size, (nir_lower_io_options)0);
+   /* Divide away projectors TXP cannot carry, then pack coordinate, bias,
+    * and the surviving projector into the backend tex source -- the same
+    * two passes nir_to_rc runs so selection consumes identical tex
+    * shapes. */
+   nir_to_rc_lower_txp(nir);
+   NIR_PASS(_, nir, nir_to_rc_lower_tex);
    /* Integer ops survive the production optimizer (dynamic-index select
     * ladders compare integer indices; GL uniforms arrive typed), and
     * nir_lower_bool_to_float treats operands as floats, so the integer

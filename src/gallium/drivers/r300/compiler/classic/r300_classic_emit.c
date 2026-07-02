@@ -36,6 +36,8 @@ rc_opcode_for(enum r300_classic_op op)
    case R300C_OP_DDX: return RC_OPCODE_DDX;
    case R300C_OP_DDY: return RC_OPCODE_DDY;
    case R300C_OP_TEX: return RC_OPCODE_TEX;
+   case R300C_OP_TXB: return RC_OPCODE_TXB;
+   case R300C_OP_TXP: return RC_OPCODE_TXP;
    case R300C_OP_KIL: return RC_OPCODE_KIL;
    case R300C_OP_KILP: return RC_OPCODE_KILP;
    /* The collect expands to MOVs, one per channel group. */
@@ -209,6 +211,8 @@ r300_classic_emit(const struct r300_classic_program *p,
          /* Discards have no destination. */
          break;
       case R300C_OP_TEX:
+      case R300C_OP_TXB:
+      case R300C_OP_TXP:
          inst->U.I.TexSrcUnit = i->tex_unit;
          inst->U.I.TexSrcTarget = i->tex_target;
          FALLTHROUGH;
