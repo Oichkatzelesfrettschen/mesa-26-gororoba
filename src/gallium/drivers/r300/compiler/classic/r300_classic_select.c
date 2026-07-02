@@ -171,8 +171,13 @@ select_load_const(struct sel_ctx *ctx, const nir_load_const_instr *lc)
    if (slot == imm->count) {
       if (imm->count >= R300_CLASSIC_MAX_IMMEDIATES)
          return reject(ctx, "immediate table full");
-      if (imm->first_index + imm->count >= ctx->prog->target->max_const_regs)
-         return reject(ctx, "immediates exceed the constant file");
+      /* first_index + count can exceed the physical constant file here:
+       * the UBO prescan counts the block-0 extent whether or not every
+       * slot is read, and the shared dead-constants pass compacts unused
+       * externals and immediates alike after emission
+       * (remove_unused_constants, the same fit path nir_to_rc relies
+       * on).  A file that still does not fit fails in the backend with
+       * the same result either front end produces. */
       memcpy(imm->values[imm->count++], v, sizeof(v));
    }
 
