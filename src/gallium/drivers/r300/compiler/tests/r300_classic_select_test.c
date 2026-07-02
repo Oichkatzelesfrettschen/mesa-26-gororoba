@@ -13,6 +13,7 @@
 #include "classic/r300_classic_select.h"
 #include "r300_nir.h"
 #include "r300_screen.h"
+#include "r300_shader_semantics.h"
 
 /* Phase-2 exit criterion: selection covers the phase-1 opcode subset for
  * every corpus shader or cleanly rejects with a named reason.  The corpus
@@ -259,11 +260,45 @@ case_integer_op_rejects(void)
    ralloc_free(ctx);
 }
 
+/* The r300 varying-slot convention packs texcoords at generic 0-7,
+ * pointcoord at 8, and user varyings from 9 (ntr_fixup_varying_slots, applied
+ * to VS outputs by the SW-TCL path).  Selection must record a VAR0 input at
+ * generic[9], the index ntr_read_input_output records after the fixup --
+ * generic[0] leaves the rasterizer route unassigned and the varying reads
+ * garbage on hardware. */
+static void
+case_varying_semantics_match_fixup(void)
+{
+   void *ctx = ralloc_context(NULL);
+   nir_builder b = fs_builder("classic_semantics");
+   nir_variable *in = add_varying(&b, "in_color");
+   nir_variable *out = add_color_output(&b);
+   nir_store_var(&b, out, nir_load_var(&b, in), 0xf);
+
+   static struct r300_screen screen;
+   struct pipe_screen *ps = fake_r300_screen(&screen);
+   r300_optimize_nir(b.shader, r300_screen(ps));
+
+   struct r300_shader_semantics sem;
+   r300_shader_semantics_reset(&sem);
+   const struct r300_classic_target *t = r300_classic_target_get(false, false);
+   struct r300_classic_select_result r;
+   CHECK(r300_classic_select(ctx, b.shader, t, 0, &sem, &r), "selection ran");
+   CHECK(r.program != NULL, "varying shader selects");
+   if (r.reject_reason)
+      fprintf(stderr, "  rejected: %s\n", r.reject_reason);
+   CHECK(sem.generic[9] == 0, "VAR0 input records at generic[9]");
+   CHECK(sem.generic[0] == ATTR_UNUSED, "generic[0] stays unused");
+   CHECK(sem.num_generic == 1, "one generic input recorded");
+   ralloc_free(ctx);
+}
+
 int
 main(void)
 {
    glsl_type_singleton_init_or_ref();
    case_fmad();
+   case_varying_semantics_match_fixup();
    case_flrp_lowers_before_selection();
    case_tex();
    case_passthrough();
