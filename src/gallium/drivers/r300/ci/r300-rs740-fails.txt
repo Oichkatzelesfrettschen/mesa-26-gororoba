@@ -493,8 +493,6 @@ dEQP-GLES2.functional.uniform_api.value.assigned.by_pointer.render.nested_struct
 shaders@glsl-arb-fragment-coord-conventions,Fail
 shaders@glsl-derivs,Fail
 shaders@glsl-fs-fogscale@vs and fs,Fail
-shaders@glsl-fs-loop,Fail
-shaders@glsl-fs-loop-nested,Fail
 shaders@glsl-fwidth,Fail
 shaders@glsl-max-varyings >max_varying_components,Fail
 shaders@glsl-max-varyings,Fail
