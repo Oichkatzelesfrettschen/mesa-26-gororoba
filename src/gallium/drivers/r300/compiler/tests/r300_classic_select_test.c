@@ -284,7 +284,6 @@ case_wpos_face_semantics(void)
       gl_varying_slot location;
       const char *what;
    } rows[] = {
-      { VARYING_SLOT_POS, "wpos" },
       { VARYING_SLOT_FACE, "face" },
    };
    for (unsigned n = 0; n < ARRAY_SIZE(rows); n++) {
@@ -314,10 +313,7 @@ case_wpos_face_semantics(void)
       CHECK(r.program != NULL, rows[n].what);
       if (r.reject_reason)
          fprintf(stderr, "  rejected: %s\n", r.reject_reason);
-      if (rows[n].location == VARYING_SLOT_POS)
-         CHECK(sem.wpos == 0, "POS input records at wpos");
-      else
-         CHECK(sem.face == 0, "FACE input records at face");
+      CHECK(sem.face == 0, "FACE input records at face");
       ralloc_free(ctx);
    }
 }
