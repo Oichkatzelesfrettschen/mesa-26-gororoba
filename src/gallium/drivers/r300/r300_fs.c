@@ -1178,6 +1178,8 @@ retry:
     if (shader->num_inlinable > 0 && clone->info.num_inlinable_uniforms > 0) {
         unsigned n = MIN2(shader->num_inlinable,
                           clone->info.num_inlinable_uniforms);
+        if (getenv("R300_INL_DUMP"))
+            nir_print_shader(clone, stderr);
         uint32_t decoded[MAX_INLINABLE_UNIFORMS];
         r300_decode_inlinable_values(clone, n, shader->inlinable_values,
                                      clone->info.inlinable_uniform_dw_offsets,
