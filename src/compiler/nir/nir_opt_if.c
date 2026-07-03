@@ -781,68 +781,105 @@ opt_if_simplification(nir_builder *b, nir_if *nif)
    return true;
 }
 
-/* When one branch of an if ends in an unconditional jump, the code after
- * the if executes only under the other branch, so that branch's body can
- * hoist out to follow the if:
+/* Flatten a loop break nested one if level down so terminator discovery
+ * can see it:
  *
- *     if (a) { continue; } else { X }  ->  if (a) { continue; } X
+ *     if (a) { if (b) break; X }   ->   if (a && b) break;
+ *                                       if (a) { X }
  *
- * Values the hoisted body defines dominate everything after the if once
- * moved, and the phis at the old merge block are single-source (the
- * jumping side contributes no edge), so they rewrite to their lone
- * source.  Loop-terminator discovery only recognizes breaks in the
- * immediate then/else block of a top-level if, so this canonicalization
- * is what lets a "if (a) continue; else if (b) break;" loop acquire a
- * terminator and unroll.
+ * The break fired before X ran, so hoisting it above the outer if with
+ * the conjoined condition preserves execution order exactly.  Loop
+ * analysis only recognizes a terminator whose break is the immediate
+ * then or else block of a top-level if; the nested shape marks the
+ * whole loop complex and a backend with no hardware control flow then
+ * rejects the shader outright.
+ *
+ * The transform requires the outer branch to lead with the breaking if
+ * (only condition-computing ALU/constants before it, which hoist along),
+ * the breaking if's other side to be empty, and the break edge's exit
+ * phis to accept the new predecessor.
  */
 static bool
-block_ends_in_loop_jump(nir_block *block)
+opt_if_flatten_nested_break(nir_builder *b, nir_if *outer)
 {
-   if (exec_list_is_empty(&block->instr_list))
+   /* The outer if must sit inside a loop. */
+   nir_cf_node *parent = outer->cf_node.parent;
+   while (parent && parent->type == nir_cf_node_if)
+      parent = parent->parent;
+   if (!parent || parent->type != nir_cf_node_loop)
       return false;
-   nir_instr *instr = nir_block_last_instr(block);
-   if (instr->type != nir_instr_type_jump)
-      return false;
-   nir_jump_type t = nir_instr_as_jump(instr)->type;
-   return t == nir_jump_break || t == nir_jump_continue;
-}
+   nir_loop *loop = nir_cf_node_as_loop(parent);
 
-static bool
-opt_if_hoist_after_jump(nir_if *nif)
-{
-   nir_block *last_then = nir_if_last_then_block(nif);
-   nir_block *last_else = nir_if_last_else_block(nif);
-   const bool then_jumps = block_ends_in_loop_jump(last_then);
-   const bool else_jumps = block_ends_in_loop_jump(last_else);
+   for (unsigned side = 0; side < 2; side++) {
+      struct exec_list *list = side ? &outer->else_list : &outer->then_list;
 
-   /* Exactly one side must jump, and the other must have content.
-    * Loop jumps only: hoisting past return/halt reshapes function
-    * epilogues for no loop-analysis benefit. */
-   if (then_jumps == else_jumps)
-      return false;
-   struct exec_list *hoist_list = then_jumps ? &nif->else_list
-                                             : &nif->then_list;
-   nir_block *hoist_first = nir_cf_node_as_block(
-      exec_node_data(nir_cf_node,
-                     exec_list_get_head(hoist_list), node));
-   if (exec_list_length(hoist_list) == 1 &&
-       exec_list_is_empty(&hoist_first->instr_list))
-      return false;
+      /* First block: only speculatable ALU / constants allowed. */
+      nir_block *first = nir_cf_node_as_block(
+         exec_node_data(nir_cf_node, exec_list_get_head(list), node));
+      bool clean = true;
+      nir_foreach_instr(instr, first) {
+         if (instr->type != nir_instr_type_alu &&
+             instr->type != nir_instr_type_load_const)
+            clean = false;
+      }
+      if (!clean)
+         continue;
 
-   /* The merge block's phis are single-source; rewrite them to their
-    * lone source before moving that source out of the branch. */
-   nir_block *next_block =
-      nir_cf_node_as_block(nir_cf_node_next(&nif->cf_node));
-   nir_remove_single_src_phis_block(next_block);
+      nir_cf_node *next = nir_cf_node_next(&first->cf_node);
+      if (!next || next->type != nir_cf_node_if)
+         continue;
+      nir_if *inner = nir_cf_node_as_if(next);
+      if (nir_src_is_phi(inner->condition) ||
+          nir_src_is_phi(outer->condition))
+         continue;
 
-   nir_cf_list tmp;
-   nir_cf_extract(&tmp, nir_before_cf_list(hoist_list),
-                  nir_after_cf_list(hoist_list));
-   nir_cf_reinsert(&tmp, nir_after_cf_node(&nif->cf_node));
+      nir_block *inner_then = nir_if_last_then_block(inner);
+      nir_block *inner_else = nir_if_last_else_block(inner);
+      nir_block *break_blk = NULL;
+      bool break_in_then = false;
+      if (nir_block_ends_in_break(inner_then) &&
+          exec_list_length(&inner->then_list) == 1 &&
+          exec_list_length(&inner_then->instr_list) == 1 &&
+          nir_cf_list_is_empty_block(&inner->else_list)) {
+         break_blk = inner_then;
+         break_in_then = true;
+      } else if (nir_block_ends_in_break(inner_else) &&
+                 exec_list_length(&inner->else_list) == 1 &&
+                 exec_list_length(&inner_else->instr_list) == 1 &&
+                 nir_cf_list_is_empty_block(&inner->then_list)) {
+         break_blk = inner_else;
+      }
+      if (!break_blk)
+         continue;
 
-   if (getenv("NIR_HOIST_TRACE"))
-      fprintf(stderr, "HOIST: fired\n");
-   return true;
+      /* Move the condition-computing instructions above the outer if. */
+      nir_cf_list tmp;
+      nir_cf_extract(&tmp, nir_before_block(first), nir_after_block(first));
+      nir_cf_reinsert(&tmp, nir_before_cf_node(&outer->cf_node));
+
+      /* Build the top-level terminator. */
+      b->cursor = nir_before_cf_node(&outer->cf_node);
+      nir_def *ocond = outer->condition.ssa;
+      if (side)
+         ocond = nir_inot(b, ocond);
+      nir_def *icond = inner->condition.ssa;
+      if (!break_in_then)
+         icond = nir_inot(b, icond);
+      nir_push_if(b, nir_iand(b, ocond, icond));
+      nir_jump(b, nir_jump_break);
+      nir_pop_if(b, NULL);
+
+      /* The old nested break is now unreachable: whenever the inner
+       * condition selects it, the new top-level terminator fired first.
+       * Constant-false the inner condition and let dead-CF cleanup
+       * delete the branch and rebalance the phis. */
+      b->cursor = nir_before_src(&inner->condition);
+      nir_src_rewrite(&inner->condition,
+                      break_in_then ? nir_imm_false(b) : nir_imm_true(b));
+
+      return true;
+   }
+   return false;
 }
 
 /* Find phi statements after an if that choose between true and false, and
@@ -1523,7 +1560,7 @@ opt_if_cf_list(nir_builder *b, struct exec_list *cf_list,
                                     options);
          progress |= opt_if_merge(nif);
          progress |= opt_if_simplification(b, nif);
-         progress |= opt_if_hoist_after_jump(nif);
+         progress |= opt_if_flatten_nested_break(b, nif);
          if (options & nir_opt_if_optimize_phi_true_false)
             progress |= opt_if_phi_is_condition(b, nif);
          break;
