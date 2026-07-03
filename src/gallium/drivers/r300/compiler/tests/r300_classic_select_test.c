@@ -468,6 +468,45 @@ case_wpos_reconstruction(void)
    ralloc_free(ctx);
 }
 
+/* A second color attachment selects as its own export and emission gives
+ * it a distinct output register (the census's store_output-to-DATA1
+ * fallback class). */
+static void
+case_mrt_data1_export(void)
+{
+   void *ctx = ralloc_context(NULL);
+   nir_builder b = fs_builder("classic_mrt");
+   nir_variable *in = add_varying(&b, "in0");
+   nir_variable *out0 = add_color_output(&b);
+   nir_variable *out1 = nir_variable_create(b.shader, nir_var_shader_out,
+                                            glsl_vec4_type(), "out1");
+   out1->data.location = FRAG_RESULT_DATA1;
+   out1->data.driver_location = 1;
+   nir_def *v = nir_load_var(&b, in);
+   nir_store_var(&b, out0, v, 0xf);
+   nir_store_var(&b, out1, nir_fneg(&b, v), 0xf);
+
+   struct r300_classic_select_result r;
+   select_shader(ctx, b.shader, &r);
+   CHECK(r.program != NULL, "mrt shader selects");
+   if (!r.program && r.reject_reason)
+      fprintf(stderr, "  rejected: %s\n", r.reject_reason);
+   if (r.program) {
+      unsigned exports = 0, data1 = 0;
+      list_for_each_entry (struct r300_classic_instr, i, &r.program->instrs,
+                           link) {
+         if (i->op == R300C_OP_EXPORT_COLOR) {
+            exports++;
+            if (i->export_index == 1)
+               data1++;
+         }
+      }
+      CHECK(exports == 2, "two color exports selected");
+      CHECK(data1 == 1, "DATA1 carries export index 1");
+   }
+   ralloc_free(ctx);
+}
+
 int
 main(void)
 {
@@ -479,6 +518,7 @@ main(void)
    case_tex_targets();
    case_wpos_face_semantics();
    case_wpos_reconstruction();
+   case_mrt_data1_export();
    case_passthrough();
    case_control_flow_rejects();
    case_integer_op_rejects();

@@ -140,17 +140,17 @@ r300_classic_emit(const struct r300_classic_program *p,
     * range so the backend's OutputColor/OutputDepth comparisons never
     * alias a real register. */
    unsigned num_outputs = 0;
-   unsigned color_index = ~0u;
+   unsigned color_reg[4] = {~0u, ~0u, ~0u, ~0u};
    unsigned depth_index = ~0u;
    list_for_each_entry (struct r300_classic_instr, i, &p->instrs, link) {
-      if (i->op == R300C_OP_EXPORT_COLOR && color_index == ~0u)
-         color_index = num_outputs++;
+      if (i->op == R300C_OP_EXPORT_COLOR &&
+          color_reg[i->export_index & 3] == ~0u)
+         color_reg[i->export_index & 3] = num_outputs++;
       if (i->op == R300C_OP_EXPORT_DEPTH && depth_index == ~0u)
          depth_index = num_outputs++;
    }
-   fc->OutputColor[0] = color_index != ~0u ? color_index : num_outputs;
-   for (unsigned n = 1; n < 4; n++)
-      fc->OutputColor[n] = num_outputs;
+   for (unsigned n = 0; n < 4; n++)
+      fc->OutputColor[n] = color_reg[n] != ~0u ? color_reg[n] : num_outputs;
    fc->OutputDepth = depth_index != ~0u ? depth_index : num_outputs;
 
    list_for_each_entry (struct r300_classic_instr, i, &p->instrs, link) {
@@ -216,7 +216,7 @@ r300_classic_emit(const struct r300_classic_program *p,
       switch (i->op) {
       case R300C_OP_EXPORT_COLOR:
          inst->U.I.DstReg.File = RC_FILE_OUTPUT;
-         inst->U.I.DstReg.Index = color_index;
+         inst->U.I.DstReg.Index = color_reg[i->export_index & 3];
          inst->U.I.DstReg.WriteMask = RC_MASK_XYZW;
          break;
       case R300C_OP_EXPORT_DEPTH: {
