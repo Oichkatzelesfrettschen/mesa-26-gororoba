@@ -1059,10 +1059,14 @@ r300_inlinable_dw_is_int(nir_shader *nir, unsigned dw_offset)
                         continue;
                     base_dw = nir_src_as_uint(intr->src[1]) / 4;
                 } else if (intr->intrinsic == nir_intrinsic_load_ubo_vec4) {
-                    /* nir_lower_ubo_vec4 offsets count vec4 slots. */
+                    /* nir_lower_ubo_vec4 counts vec4 slots split across
+                     * the base index, the offset source, and a starting
+                     * component. */
                     if (!nir_src_is_const(intr->src[1]))
                         continue;
-                    base_dw = nir_src_as_uint(intr->src[1]) * 4;
+                    base_dw = (nir_intrinsic_base(intr) +
+                               nir_src_as_uint(intr->src[1])) * 4 +
+                              nir_intrinsic_component(intr);
                 } else {
                     continue;
                 }
