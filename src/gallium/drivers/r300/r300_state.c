@@ -1758,8 +1758,18 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
     }
 
     /* Vertex color clamping. FP20 means no clamping. */
+    /* Color/texcoord interpolants keep the register's zero default of
+     * round-toward-zero unless NEAREST is set, and truncation delivers a
+     * constant-valued varying one FP24 ulp low: a -32.0 attribute reaches
+     * the fragment shader as -31.9995..., so int() truncates a whole unit
+     * off and every exact-compare against an integer reference fails.
+     * Measured on RS480: attribute-fed varyings of every width read
+     * fract(|x|) = 0.999+ under TRUNC and exactly 0.0 under NEAREST,
+     * while a VS-computed ramp crossing the same value is exact either
+     * way. */
     round_mode =
       R300_GA_ROUND_MODE_GEOMETRY_ROUND_NEAREST |
+      R300_GA_ROUND_MODE_COLOR_ROUND_NEAREST |
       (!vclamp ? (R300_GA_ROUND_MODE_RGB_CLAMP_FP20 |
                   R300_GA_ROUND_MODE_ALPHA_CLAMP_FP20) : 0);
 
