@@ -980,6 +980,123 @@ r300_nir_fs_emit_pass_b(nir_shader *src, unsigned per_pass_budget)
     return bsh;
 }
 
+/* The state tracker pushes inlinable-uniform values straight from uniform
+ * storage, where GL integer uniforms live float-converted (NativeIntegers
+ * is false, uniform_int_float storage).  The NIR consuming them at this
+ * point still carries native integer ops -- int lowering runs later in the
+ * front end -- so an integer-consumed uniform must decode back from its
+ * float encoding before nir_inline_uniforms folds it, or the inlined bit
+ * pattern (fui(1) = 0x3f800000) reads as a huge integer: a constant-folded
+ * array index then clamps out of bounds to the last element and a loop
+ * bound exceeds the unroll cap.  Classify each inlinable dword by its
+ * load's consumers: any use whose nir_op_infos input type is int- or
+ * uint-based marks the dword integer-consumed. */
+static bool
+r300_inlinable_comp_is_int(nir_def *def, unsigned comp, unsigned depth)
+{
+    if (depth > 8)
+        return false;
+    nir_foreach_use(use, def) {
+        if (nir_src_is_if(use))
+            continue;
+        nir_instr *parent = nir_src_use_instr(use);
+        if (parent->type == nir_instr_type_intrinsic) {
+            /* An offset operand of another constant-buffer load is an
+             * integer consumer (a folded dynamic index). */
+            nir_intrinsic_instr *pi = nir_instr_as_intrinsic(parent);
+            if ((pi->intrinsic == nir_intrinsic_load_ubo ||
+                 pi->intrinsic == nir_intrinsic_load_ubo_vec4) &&
+                use == &pi->src[1])
+                return true;
+            continue;
+        }
+        if (parent->type != nir_instr_type_alu)
+            continue;
+        nir_alu_instr *alu = nir_instr_as_alu(parent);
+        for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+            if (&alu->src[i].src != use)
+                continue;
+            const unsigned width = nir_ssa_alu_instr_src_components(alu, i);
+            for (unsigned c = 0; c < width; c++) {
+                if (alu->src[i].swizzle[c] != comp)
+                    continue;
+                /* Typeless movers pass the component through; follow it
+                 * to the real consumer. */
+                if (alu->op == nir_op_mov ||
+                    (alu->op == nir_op_bcsel && i > 0) ||
+                    (alu->op == nir_op_b32csel && i > 0)) {
+                    if (r300_inlinable_comp_is_int(&alu->def, c, depth + 1))
+                        return true;
+                    continue;
+                }
+                if (nir_op_is_vec(alu->op)) {
+                    if (r300_inlinable_comp_is_int(&alu->def, i, depth + 1))
+                        return true;
+                    continue;
+                }
+                const nir_alu_type t = nir_alu_type_get_base_type(
+                    nir_op_infos[alu->op].input_types[i]);
+                if (t == nir_type_int || t == nir_type_uint)
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool
+r300_inlinable_dw_is_int(nir_shader *nir, unsigned dw_offset)
+{
+    nir_foreach_function_impl(impl, nir) {
+        nir_foreach_block(block, impl) {
+            nir_foreach_instr(instr, block) {
+                if (instr->type != nir_instr_type_intrinsic)
+                    continue;
+                nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+                unsigned base_dw;
+                if (intr->intrinsic == nir_intrinsic_load_ubo) {
+                    if (!nir_src_is_const(intr->src[1]))
+                        continue;
+                    base_dw = nir_src_as_uint(intr->src[1]) / 4;
+                } else if (intr->intrinsic == nir_intrinsic_load_ubo_vec4) {
+                    /* nir_lower_ubo_vec4 counts vec4 slots split across
+                     * the base index, the offset source, and a starting
+                     * component. */
+                    if (!nir_src_is_const(intr->src[1]))
+                        continue;
+                    base_dw = (nir_intrinsic_base(intr) +
+                               nir_src_as_uint(intr->src[1])) * 4 +
+                              nir_intrinsic_component(intr);
+                } else {
+                    continue;
+                }
+                if (!nir_src_is_const(intr->src[0]) ||
+                    nir_src_as_uint(intr->src[0]) != 0)
+                    continue;
+                if (dw_offset < base_dw ||
+                    dw_offset >= base_dw + intr->def.num_components)
+                    continue;
+                if (r300_inlinable_comp_is_int(&intr->def,
+                                               dw_offset - base_dw, 0))
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
+static void
+r300_decode_inlinable_values(nir_shader *nir, unsigned n,
+                             const uint32_t *raw, const uint16_t *offsets,
+                             uint32_t *out)
+{
+    for (unsigned i = 0; i < n; i++) {
+        out[i] = raw[i];
+        if (r300_inlinable_dw_is_int(nir, offsets[i]))
+            out[i] = (uint32_t)(int32_t)uif(raw[i]);
+    }
+}
+
 static void r300_translate_fragment_shader(
     struct r300_context* r300,
     struct r300_fragment_shader_code* shader,
@@ -1062,7 +1179,11 @@ retry:
     if (shader->num_inlinable > 0 && clone->info.num_inlinable_uniforms > 0) {
         unsigned n = MIN2(shader->num_inlinable,
                           clone->info.num_inlinable_uniforms);
-        nir_inline_uniforms(clone, n, shader->inlinable_values,
+        uint32_t decoded[MAX_INLINABLE_UNIFORMS];
+        r300_decode_inlinable_values(clone, n, shader->inlinable_values,
+                                     clone->info.inlinable_uniform_dw_offsets,
+                                     decoded);
+        nir_inline_uniforms(clone, n, decoded,
                             clone->info.inlinable_uniform_dw_offsets);
         r300_optimize_nir(clone, r300->screen);
 
