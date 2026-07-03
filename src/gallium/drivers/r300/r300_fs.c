@@ -992,6 +992,59 @@ r300_nir_fs_emit_pass_b(nir_shader *src, unsigned per_pass_budget)
  * load's consumers: any use whose nir_op_infos input type is int- or
  * uint-based marks the dword integer-consumed. */
 static bool
+r300_inlinable_comp_is_int(nir_def *def, unsigned comp, unsigned depth)
+{
+    if (depth > 8)
+        return false;
+    nir_foreach_use(use, def) {
+        if (nir_src_is_if(use))
+            continue;
+        nir_instr *parent = nir_src_use_instr(use);
+        if (parent->type == nir_instr_type_intrinsic) {
+            /* An offset operand of another constant-buffer load is an
+             * integer consumer (a folded dynamic index). */
+            nir_intrinsic_instr *pi = nir_instr_as_intrinsic(parent);
+            if ((pi->intrinsic == nir_intrinsic_load_ubo ||
+                 pi->intrinsic == nir_intrinsic_load_ubo_vec4) &&
+                use == &pi->src[1])
+                return true;
+            continue;
+        }
+        if (parent->type != nir_instr_type_alu)
+            continue;
+        nir_alu_instr *alu = nir_instr_as_alu(parent);
+        for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+            if (&alu->src[i].src != use)
+                continue;
+            const unsigned width = nir_ssa_alu_instr_src_components(alu, i);
+            for (unsigned c = 0; c < width; c++) {
+                if (alu->src[i].swizzle[c] != comp)
+                    continue;
+                /* Typeless movers pass the component through; follow it
+                 * to the real consumer. */
+                if (alu->op == nir_op_mov ||
+                    (alu->op == nir_op_bcsel && i > 0) ||
+                    (alu->op == nir_op_b32csel && i > 0)) {
+                    if (r300_inlinable_comp_is_int(&alu->def, c, depth + 1))
+                        return true;
+                    continue;
+                }
+                if (nir_op_is_vec(alu->op)) {
+                    if (r300_inlinable_comp_is_int(&alu->def, i, depth + 1))
+                        return true;
+                    continue;
+                }
+                const nir_alu_type t = nir_alu_type_get_base_type(
+                    nir_op_infos[alu->op].input_types[i]);
+                if (t == nir_type_int || t == nir_type_uint)
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool
 r300_inlinable_dw_is_int(nir_shader *nir, unsigned dw_offset)
 {
     nir_foreach_function_impl(impl, nir) {
@@ -1000,52 +1053,28 @@ r300_inlinable_dw_is_int(nir_shader *nir, unsigned dw_offset)
                 if (instr->type != nir_instr_type_intrinsic)
                     continue;
                 nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-                if (intr->intrinsic != nir_intrinsic_load_ubo) {
-                    if (instr->type == nir_instr_type_intrinsic)
-                        fprintf(stderr, "INLSCAN: intr=%s\n",
-                                nir_intrinsic_infos[intr->intrinsic].name);
+                unsigned base_dw;
+                if (intr->intrinsic == nir_intrinsic_load_ubo) {
+                    if (!nir_src_is_const(intr->src[1]))
+                        continue;
+                    base_dw = nir_src_as_uint(intr->src[1]) / 4;
+                } else if (intr->intrinsic == nir_intrinsic_load_ubo_vec4) {
+                    /* nir_lower_ubo_vec4 offsets count vec4 slots. */
+                    if (!nir_src_is_const(intr->src[1]))
+                        continue;
+                    base_dw = nir_src_as_uint(intr->src[1]) * 4;
+                } else {
                     continue;
                 }
-                fprintf(stderr, "INLSCAN: load_ubo blk_const=%d off_const=%d\n",
-                        nir_src_is_const(intr->src[0]),
-                        nir_src_is_const(intr->src[1]));
                 if (!nir_src_is_const(intr->src[0]) ||
                     nir_src_as_uint(intr->src[0]) != 0)
                     continue;
-                if (!nir_src_is_const(intr->src[1]))
-                    continue;
-                const unsigned base_dw =
-                    nir_src_as_uint(intr->src[1]) / 4;
                 if (dw_offset < base_dw ||
                     dw_offset >= base_dw + intr->def.num_components)
                     continue;
-                const unsigned comp = dw_offset - base_dw;
-                nir_foreach_use(use, &intr->def) {
-                    if (nir_src_is_if(use))
-                        continue;
-                    nir_instr *parent = nir_src_use_instr(use);
-                    if (parent->type != nir_instr_type_alu)
-                        continue;
-                    nir_alu_instr *alu = nir_instr_as_alu(parent);
-                    for (unsigned i = 0;
-                         i < nir_op_infos[alu->op].num_inputs; i++) {
-                        if (&alu->src[i].src != use)
-                            continue;
-                        bool reads_comp = false;
-                        const unsigned width =
-                            nir_ssa_alu_instr_src_components(alu, i);
-                        for (unsigned c = 0; c < width; c++)
-                            if (alu->src[i].swizzle[c] == comp)
-                                reads_comp = true;
-                        if (!reads_comp)
-                            continue;
-                        const nir_alu_type t =
-                            nir_alu_type_get_base_type(
-                                nir_op_infos[alu->op].input_types[i]);
-                        if (t == nir_type_int || t == nir_type_uint)
-                            return true;
-                    }
-                }
+                if (r300_inlinable_comp_is_int(&intr->def,
+                                               dw_offset - base_dw, 0))
+                    return true;
             }
         }
     }
