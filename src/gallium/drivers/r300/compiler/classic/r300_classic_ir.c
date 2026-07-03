@@ -163,6 +163,10 @@ r300_classic_program_validate(const struct r300_classic_program *p,
          ok = fail(err, err_size, i, "texture unit out of range");
          break;
       }
+      if (i->op == R300C_OP_EXPORT_COLOR && i->export_index >= 4) {
+         ok = fail(err, err_size, i, "color export index outside 0-3");
+         break;
+      }
       /* The TX block samples 1D/2D/3D/CUBE/RECT; array targets (the enum
        * values below RC_TEXTURE_CUBE, including the zero-initialized
        * RC_TEXTURE_2D_ARRAY) never come from selection. */

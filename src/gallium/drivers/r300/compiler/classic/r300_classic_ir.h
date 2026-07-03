@@ -113,6 +113,11 @@ struct r300_classic_instr {
    struct r300_classic_src src[4];
    /* R300C_OP_TEX only. */
    unsigned tex_unit;
+   /* R300C_OP_EXPORT_COLOR only: the color attachment (0-3) the export
+    * feeds; emission allocates one output register per used attachment
+    * and populates the compiler's OutputColor[] the way nir_to_rc's
+    * ntr_fs_output_index does. */
+   unsigned export_index;
    /* R300C_OP_TEX only: the rc_texture_target the TX block samples
     * (RC_TEXTURE_1D/2D/3D/CUBE/RECT), recorded from the NIR sampler dim the
     * way rc_texture_target_from_sampler_dim maps it. */

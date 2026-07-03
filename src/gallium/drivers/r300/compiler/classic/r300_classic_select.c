@@ -352,13 +352,18 @@ select_intrinsic(struct sel_ctx *ctx, nir_intrinsic_instr *intr)
          return reject(ctx, "indirect output addressing");
       const nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
       enum r300_classic_op op;
-      if (sem.location == FRAG_RESULT_COLOR ||
-          sem.location == FRAG_RESULT_DATA0)
+      unsigned export_index = 0;
+      const int color = mesa_frag_result_get_color_index(sem.location);
+      if (sem.location == FRAG_RESULT_COLOR || (color >= 0 && color < 4)) {
          op = R300C_OP_EXPORT_COLOR;
-      else if (sem.location == FRAG_RESULT_DEPTH)
+         export_index = color > 0 ? (unsigned)color : 0;
+      } else if (sem.location == FRAG_RESULT_DEPTH) {
          op = R300C_OP_EXPORT_DEPTH;
-      else
+      } else {
          return reject(ctx, "store_output to location %u", sem.location);
+      }
+      if (sem.dual_source_blend_index)
+         return reject(ctx, "dual-source blend index");
 
       struct r300_classic_src src;
       if (!get_plain_src(ctx, intr->src[0].ssa, "store_output value", &src))
@@ -366,6 +371,7 @@ select_intrinsic(struct sel_ctx *ctx, nir_intrinsic_instr *intr)
       struct r300_classic_instr *e = r300_classic_instr_append(ctx->prog, op);
       if (!e)
          return reject(ctx, "out of memory");
+      e->export_index = export_index;
       e->src[0] = src;
       return true;
    }
