@@ -1392,6 +1392,15 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
      * pushes their values through set_inlinable_constants and
      * r300_translate_fragment_shader specializes a variant with the value
      * inlined so a uniform-bounded loop can be statically unrolled. */
+    if (fs->state.ir.nir) {
+        const struct shader_info *pre_info =
+            &((nir_shader *)fs->state.ir.nir)->info;
+        fs->st_num_inlinable = MIN2(pre_info->num_inlinable_uniforms,
+                                    MAX_INLINABLE_UNIFORMS);
+        memcpy(fs->st_inlinable_offsets, pre_info->inlinable_uniform_dw_offsets,
+               fs->st_num_inlinable * sizeof(uint16_t));
+    }
+
     bool defer_inlinable = false;
 
     /* R300/R400 can not do any kind of control flow, so abort early here --

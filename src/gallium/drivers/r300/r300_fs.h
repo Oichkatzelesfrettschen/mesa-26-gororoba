@@ -42,6 +42,12 @@ struct r300_fragment_shader_code {
     uint32_t inlinable_values[MAX_INLINABLE_UNIFORMS];
     unsigned num_inlinable;
 
+    /* The state tracker's offsets the values above are ordered by, copied
+     * from the shader-level snapshot at variant-key time so translate can
+     * pair values with the clone's re-gathered offsets by identity. */
+    uint16_t st_inlinable_offsets[MAX_INLINABLE_UNIFORMS];
+    unsigned st_num_inlinable;
+
     unsigned cb_code_size;
     uint32_t *cb_code;
 
@@ -83,6 +89,16 @@ struct r300_fragment_shader {
     /* List of the same shaders compiled with different texture-compare
      * states. */
     struct r300_fragment_shader_code* first;
+
+    /* The state tracker's inlinable-uniform dword offsets, snapshotted at
+     * create time before any driver NIR pass mutates the shader info.  The
+     * values r300_set_inlinable_constants receives are ordered by THIS
+     * array (st_atom_constbuf reads its own program info); the variant
+     * clone's re-gathered info can differ in count and order, so the
+     * inline pairs values with clone offsets by offset identity, never by
+     * position. */
+    uint16_t st_inlinable_offsets[MAX_INLINABLE_UNIFORMS];
+    unsigned st_num_inlinable;
 
     /* SWTCL (!has_tcl) only: the gallium draw module's copy of this shader.
      * The wide-point stage reads it to find the gl_PointCoord input and
