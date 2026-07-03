@@ -1952,7 +1952,23 @@ ntr_lower_backend_tex_instr(nir_builder *b, nir_tex_instr *tex, void *data)
    if (clamp_scale) {
       nir_def *xyz =
          nir_channels(b, coord, (nir_component_mask_t)BITFIELD_MASK(MIN2(coord->num_components, 3)));
-      coord = ntr_tex_coord_replace_xyz(b, coord, nir_fsat(b, xyz));
+
+      /* 3D NPOT textures are stored POT-padded and the padding holds no
+       * data, so a LINEAR fetch at the far edge must not straddle into it.
+       * Clamping to the half-texel inset of the logical texture collapses
+       * both filter taps onto the edge texel, which is what CLAMP_TO_EDGE
+       * requires there.  2D NPOT uses stride addressing without padding
+       * and keeps the plain saturate. */
+      if (tex->sampler_dim == GLSL_SAMPLER_DIM_3D) {
+         nir_def *edge =
+            state->load_state(state->load_state_ctx, b,
+                              RC_STATE_R300_TEXEDGE_FACTOR, sampler, 3);
+         xyz = nir_fmin(b, nir_fmax(b, xyz, edge),
+                        nir_fadd_imm(b, nir_fneg(b, edge), 1.0));
+      } else {
+         xyz = nir_fsat(b, xyz);
+      }
+      coord = ntr_tex_coord_replace_xyz(b, coord, xyz);
 
       nir_def *factor =
          state->load_state(state->load_state_ctx, b,

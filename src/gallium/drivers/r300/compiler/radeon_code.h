@@ -47,6 +47,9 @@ enum {
 enum {
    RC_STATE_R300_TEXRECT_FACTOR = 0,
    RC_STATE_R300_TEXSCALE_FACTOR,
+   /* Half a texel in each axis of the texture's normalized coordinate
+    * space: (0.5/width, 0.5/height, 0.5/depth, 0). */
+   RC_STATE_R300_TEXEDGE_FACTOR,
    RC_STATE_R300_VIEWPORT_SCALE,
    RC_STATE_R300_VIEWPORT_OFFSET
 };

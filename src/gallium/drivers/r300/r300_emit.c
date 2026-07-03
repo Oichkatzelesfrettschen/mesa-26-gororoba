@@ -155,6 +155,15 @@ static void get_rc_constant_state(
             vec[3] = 1;
             break;
 
+        case RC_STATE_R300_TEXEDGE_FACTOR:
+            tex = r300_resource(texstate->sampler_views[constant->u.State[1]]->base.texture);
+            /* Half a texel in the logical texture's normalized space. */
+            vec[0] = 0.5f / tex->b.width0;
+            vec[1] = 0.5f / tex->b.height0;
+            vec[2] = 0.5f / tex->b.depth0;
+            vec[3] = 0;
+            break;
+
         case RC_STATE_R300_VIEWPORT_SCALE:
             vec[0] = r300->viewport.scale[0];
             vec[1] = r300->viewport.scale[1];
