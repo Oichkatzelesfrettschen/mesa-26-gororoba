@@ -1197,6 +1197,18 @@ retry:
                 }
             }
         }
+        if (getenv("R300_VARINL")) {
+            fprintf(stderr, "VARINL: st_n=%u pushed_n=%u clone_n=%u matched=%u\n",
+                    shader->st_num_inlinable, shader->num_inlinable,
+                    clone->info.num_inlinable_uniforms, n);
+            for (unsigned j = 0; j < shader->st_num_inlinable; j++)
+                fprintf(stderr, "VARINL: st_off[%u]=%u val=0x%08x\n", j,
+                        shader->st_inlinable_offsets[j],
+                        shader->inlinable_values[j]);
+            for (unsigned i = 0; i < n; i++)
+                fprintf(stderr, "VARINL: inline dw%u = 0x%08x\n",
+                        aligned_offs[i], aligned[i]);
+        }
         uint32_t decoded[MAX_INLINABLE_UNIFORMS];
         if (n) {
             r300_decode_inlinable_values(clone, n, aligned, aligned_offs,
