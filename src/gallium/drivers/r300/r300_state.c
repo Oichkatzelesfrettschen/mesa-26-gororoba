@@ -1968,9 +1968,14 @@ static void*
 
     sampler->filter0 |= r300_anisotropy(state->max_anisotropy);
 
-    /* Unfortunately, r300-r500 don't support floating-point mipmap lods. */
-    /* We must pass these to the merge function to clamp them properly. */
-    sampler->min_lod = (unsigned)MAX2(state->min_lod, 0);
+    /* The TX unit clamps mip selection with the integer
+     * TX_FILTER0.MAX_MIP_LEVEL and TX_FORMAT0.NUM_LEVELS fields; no
+     * fractional LOD-clamp register exists.  Round the fractional min LOD
+     * to the nearest representable level: truncation turns min_lod = 0.5
+     * into no clamp at all, while rounding keeps the clamp within half a
+     * level of the request.  The max LOD keeps the ceiling so the window
+     * never cuts levels the request allows. */
+    sampler->min_lod = (unsigned)MAX2(state->min_lod + 0.5f, 0);
     sampler->max_lod = (unsigned)MAX2(ceilf(state->max_lod), 0);
 
     lod_bias = CLAMP((int)(state->lod_bias * 32 + 1), -(1 << 9), (1 << 9) - 1);
