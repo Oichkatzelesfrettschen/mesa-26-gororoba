@@ -52,6 +52,29 @@ package() {
   # Stage the prebuilt /opt tree ONLY.  --no-rebuild: never recompile here.  The
   # builddir prefix is /opt/mesa-gororoba-debug-o0 (set by the profile install
   # prefix), so meson install lands the whole -O0 driver there.
+  # The builddir is shared with the devenv flow (Makefile PREFIX defaults to
+  # /opt/local/<namespace>-<profile>), and meson bakes prefix-derived paths into
+  # the driver objects at configure time -- util/xmlconfig.c reads
+  # SYSCONFDIR/drirc and DATADIR/drirc.d from those bakes.  Repacking a
+  # devenv-configured builddir ships dangling baked paths and silently disables
+  # driconf, so refuse any builddir whose configured prefix or sysconfdir
+  # disagrees with this package.
+  python3 - "${_builddir}" "${_prefix}" <<'PYGATE'
+import json, sys
+opts = {o["name"]: o["value"]
+        for o in json.load(open(sys.argv[1] + "/meson-info/intro-buildoptions.json"))}
+bad = []
+if opts.get("prefix") != sys.argv[2]:
+    bad.append("prefix=%r (need %r)" % (opts.get("prefix"), sys.argv[2]))
+if opts.get("sysconfdir") != "/etc":
+    bad.append("sysconfdir=%r (need '/etc')" % (opts.get("sysconfdir"),))
+if bad:
+    sys.exit("builddir configure mismatch: %s -- reconfigure via the"
+             " build-infra Makefile (make configure PROFILE=... PREFIX=%s;"
+             " it passes --sysconfdir=/etc) before packaging"
+             % ("; ".join(bad), sys.argv[2]))
+PYGATE
+
   meson install -C "${_builddir}" --no-rebuild --destdir "${pkgdir}"
 
   # The only /usr file: the run-wrapper.  Everything else stays under /opt so the
