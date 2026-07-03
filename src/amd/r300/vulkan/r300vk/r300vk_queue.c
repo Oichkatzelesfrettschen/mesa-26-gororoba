@@ -1013,6 +1013,82 @@ r300vk_blit_aspect_mask(VkImageAspectFlags aspect)
  * across the boundary and a rounded cut can shift a NEAREST sample one texel.
  * This is a silicon limit (the sampler cannot address past the cap in one view),
  * not a driver defect. */
+
+/* The RS482 TX unit applies the DXT1 endpoint-order rule to DXT3/DXT5 color
+ * blocks: when color0 <= color1 it decodes 3-color + black where those formats
+ * require always-4-color mode (hardware-confirmed by the BC2/BC3 endpoint-order
+ * probe; Mesa's S3TC encoder carries the matching workaround in
+ * texcompress_s3tc_tmp.h).  Every such block has an equivalent color0 > color1
+ * encoding with an identical specified decode: swap the endpoints and invert
+ * the low bit of every 2-bit index (code 0 <-> 1, 2 <-> 3).  An equal-endpoint
+ * block decodes to one color everywhere, re-encoded as (color0, 0, all-code-0)
+ * -- except color0 == 0, where code-3 black already equals the block's color
+ * so the block is left as stored.  The image's stored bytes stay untouched, so
+ * buffer/image transfer round-trips remain byte-exact; only the scratch copy
+ * the sampler reads is canonicalized. */
+static struct pipe_resource *
+r300vk_dxt35_canonical_source(struct r300vk_device *device,
+                              struct pipe_resource *sres)
+{
+   struct pipe_context *pipe = device->pipe;
+   struct pipe_resource tmpl = *sres;
+   tmpl.bind = PIPE_BIND_SAMPLER_VIEW;
+   tmpl.usage = PIPE_USAGE_DEFAULT;
+   struct pipe_resource *scratch =
+      device->screen->resource_create(device->screen, &tmpl);
+   if (!scratch)
+      return NULL;
+
+   const unsigned nbx = util_format_get_nblocksx(sres->format, sres->width0);
+   const unsigned nby = util_format_get_nblocksy(sres->format, sres->height0);
+   struct pipe_box box;
+   u_box_2d(0, 0, sres->width0, sres->height0, &box);
+
+   struct pipe_transfer *sxfer = NULL, *dxfer = NULL;
+   const uint8_t *smap =
+      pipe->texture_map(pipe, sres, 0, PIPE_MAP_READ, &box, &sxfer);
+   uint8_t *dmap = smap ? pipe->texture_map(pipe, scratch, 0, PIPE_MAP_WRITE,
+                                            &box, &dxfer)
+                        : NULL;
+   if (!smap || !dmap) {
+      if (smap)
+         pipe->texture_unmap(pipe, sxfer);
+      pipe_resource_reference(&scratch, NULL);
+      return NULL;
+   }
+
+   for (unsigned by = 0; by < nby; by++) {
+      const uint8_t *srow = smap + (size_t)by * sxfer->stride;
+      uint8_t *drow = dmap + (size_t)by * dxfer->stride;
+      for (unsigned bx = 0; bx < nbx; bx++) {
+         uint8_t blk[16];
+         memcpy(blk, srow + (size_t)bx * 16, 16);
+         /* Bytes 0-7 are the alpha sub-block (mode-free); bytes 8-15 are the
+          * color sub-block: two little-endian RGB565 endpoints, then sixteen
+          * 2-bit codes.  XOR 0x55 flips the low bit of all four codes in one
+          * index byte. */
+         const uint16_t c0 = blk[8] | (uint16_t)blk[9] << 8;
+         const uint16_t c1 = blk[10] | (uint16_t)blk[11] << 8;
+         if (c0 < c1) {
+            blk[8] = c1 & 0xff;
+            blk[9] = c1 >> 8;
+            blk[10] = c0 & 0xff;
+            blk[11] = c0 >> 8;
+            for (unsigned k = 12; k < 16; k++)
+               blk[k] ^= 0x55;
+         } else if (c0 == c1 && c0 != 0) {
+            blk[10] = 0;
+            blk[11] = 0;
+            blk[12] = blk[13] = blk[14] = blk[15] = 0;
+         }
+         memcpy(drow + (size_t)bx * 16, blk, 16);
+      }
+   }
+   pipe->texture_unmap(pipe, sxfer);
+   pipe->texture_unmap(pipe, dxfer);
+   return scratch;
+}
+
 static void
 r300vk_replay_blit(struct r300vk_device *device,
                    const struct r300vk_cmd_entry *e)
@@ -1031,6 +1107,16 @@ r300vk_replay_blit(struct r300vk_device *device,
       r300vk_blit_aspect_mask(b->region.srcSubresource.aspectMask);
    if (!mask)
       return;
+
+   /* DXT3/DXT5 sources are sampled through a canonicalized scratch copy so a
+    * color0 <= color1 block decodes per the always-4-color rule instead of the
+    * silicon's DXT1-mode 3-color + black.  One scratch per source tile, built
+    * lazily; DXT1 keeps its stored blocks (punch-through is part of that
+    * format's specified decode). */
+   const bool canonicalize_dxt35 =
+      src_fmt == PIPE_FORMAT_DXT3_RGBA || src_fmt == PIPE_FORMAT_DXT3_SRGBA ||
+      src_fmt == PIPE_FORMAT_DXT5_RGBA || src_fmt == PIPE_FORMAT_DXT5_SRGBA;
+   struct pipe_resource *canonical_tiles[4] = { NULL, NULL, NULL, NULL };
    const enum pipe_tex_filter filter =
       b->filter == VK_FILTER_NEAREST ? PIPE_TEX_FILTER_NEAREST
                                      : PIPE_TEX_FILTER_LINEAR;
@@ -1098,6 +1184,18 @@ r300vk_replay_blit(struct r300vk_device *device,
          if (!sres || !dres)
             continue;
 
+         if (canonicalize_dxt35) {
+            const uint32_t sidx = srow * src->tile_cols + scol;
+            if (!canonical_tiles[sidx])
+               canonical_tiles[sidx] =
+                  r300vk_dxt35_canonical_source(device, sres);
+            /* A failed scratch (allocation or map) falls back to the stored
+             * blocks: color0 <= color1 blocks then take the silicon decode --
+             * degraded for those blocks only, never fatal. */
+            if (canonical_tiles[sidx])
+               sres = canonical_tiles[sidx];
+         }
+
          const int32_t sox = (int32_t)r300vk_image_tile_origin_x(src, scol);
          const int32_t soy = (int32_t)r300vk_image_tile_origin_y(src, srow);
          const int32_t dox = (int32_t)r300vk_image_tile_origin_x(dst, dcol);
@@ -1142,6 +1240,11 @@ r300vk_replay_blit(struct r300vk_device *device,
             pipe->flush(pipe, NULL, 0);
       }
    }
+
+   /* The driver holds its own references for commands in flight, so dropping
+    * the scratch references after the loop is safe. */
+   for (unsigned i = 0; i < 4; i++)
+      pipe_resource_reference(&canonical_tiles[i], NULL);
 }
 
 static void
