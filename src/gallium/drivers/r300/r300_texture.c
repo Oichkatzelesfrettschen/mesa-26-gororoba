@@ -52,6 +52,25 @@ enum pipe_format r300_unbyteswap_array_format(enum pipe_format format)
     }
 }
 
+/* The format whose byte layout the TX unit fetches for a sampled resource.
+ *
+ * The RB3D render backend stores the formats remapped above through
+ * R300_SURF_DWORD_SWAP, so the colorbuffer, shader-output, and colormask
+ * translators use the swapped alias.  The TX unit maps fetched bytes through
+ * the per-sampler component swizzle computed from the format description
+ * instead, and on little-endian the storage bytes follow the logical packed
+ * format, so that format is authoritative for sampling.  On big-endian the
+ * surface bytes are DWORD-swapped in memory and the alias description
+ * matches them, so sampling keeps the render-target alias there. */
+static enum pipe_format r300_sampler_storage_format(enum pipe_format format)
+{
+#if UTIL_ARCH_BIG_ENDIAN
+    return r300_unbyteswap_array_format(format);
+#else
+    return format;
+#endif
+}
+
 static unsigned r300_get_endian_swap(enum pipe_format format,
                                      struct r300_resource *tex)
 {
@@ -204,7 +223,7 @@ uint32_t r300_translate_texformat(enum pipe_format format,
         R300_TX_FORMAT_SIGNED_X,
     };
 
-    format = r300_unbyteswap_array_format(format);
+    format = r300_sampler_storage_format(format);
     desc = util_format_description(format);
 
     /* Colorspace (return non-RGB formats directly). */
