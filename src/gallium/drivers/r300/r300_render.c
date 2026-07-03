@@ -879,13 +879,14 @@ r300_rasterizer_emits_points(struct r300_context *r300, unsigned prim)
 }
 
 /* >64-ALU FS multipass (R300_FS_MULTIPASS): render the split FS in two draws.
- * Pass A (the bound code) renders the byte-packed carry to a scratch RGBA8 target;
- * pass B samples that scratch, unpacks the carry, and finishes the program to the
- * real framebuffer.  Gated and entered only when the picked FS code carries a
- * multipass_pass_b partner.  The app re-binds its own samplers before its next
- * draw, so the transient scratch sampler bound at unit 0 needs no explicit
- * restore; a fragment shader that itself samples unit 0 is the refinement (use a
- * reserved high unit) tracked for the conformance pass. */
+ * Pass A (the bound code) renders the byte-packed carry to N scratch RGBA8
+ * MRTs (two carried scalar components per target); pass B samples them at
+ * units 0..N-1, unpacks the carry, and finishes the program to the real
+ * framebuffer.  Gated and entered only when the picked FS code carries a
+ * multipass_pass_b partner.  The app re-binds its own samplers before its
+ * next draw, so the transient scratch samplers need no explicit restore; a
+ * fragment shader that itself samples the low units is rejected at partition
+ * time. */
 static void r300_fs_multipass_draw(struct pipe_context *pipe,
                                    const struct pipe_draw_info *dinfo,
                                    unsigned drawid_offset,
@@ -897,8 +898,9 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
     struct r300_context *r300 = r300_context(pipe);
     struct pipe_screen *screen = pipe->screen;
     struct pipe_framebuffer_state *fb = r300->fb_state.state;
+    const unsigned nrt = CLAMP(pass_a->multipass_num_scratch, 1, 4);
 
-    /* PIPE_TEXTURE_RECT so pass B's RECT sampler reads at the fragment window
+    /* PIPE_TEXTURE_RECT so pass B's RECT samplers read at the fragment window
      * coordinate; the compiler's RC_STATE_R300_TEXRECT_FACTOR normalizes it. */
     struct pipe_resource tmpl = {
         .target = PIPE_TEXTURE_RECT,
@@ -909,12 +911,20 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
         .depth0 = 1,
         .array_size = 1,
     };
-    struct pipe_resource *scratch = screen->resource_create(screen, &tmpl);
+    struct pipe_resource *scratch[4] = { NULL };
+    bool scratch_ok = true;
+    for (unsigned k = 0; k < nrt; k++) {
+        scratch[k] = screen->resource_create(screen, &tmpl);
+        if (!scratch[k])
+            scratch_ok = false;
+    }
 
     r300->in_multipass = true;
 
-    if (!scratch) {
-        /* No carry target: render pass A alone (a gated, experimental path). */
+    if (!scratch_ok) {
+        /* No carry targets: render pass A alone (a gated, experimental path). */
+        for (unsigned k = 0; k < nrt; k++)
+            pipe_resource_reference(&scratch[k], NULL);
         pipe->draw_vbo(pipe, dinfo, drawid_offset, indirect, draws, num_draws);
         r300->in_multipass = false;
         return;
@@ -924,44 +934,53 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
     memset(&saved_fb, 0, sizeof(saved_fb));
     util_copy_framebuffer_state(&saved_fb, fb);
 
-    /* Pass A -> scratch. */
+    /* Pass A -> the scratch MRTs. */
     struct pipe_framebuffer_state fb1;
     memset(&fb1, 0, sizeof(fb1));
     fb1.width = fb->width;
     fb1.height = fb->height;
-    fb1.nr_cbufs = 1;
-    fb1.cbufs[0].texture = scratch;
-    fb1.cbufs[0].format = PIPE_FORMAT_R8G8B8A8_UNORM;
+    fb1.nr_cbufs = nrt;
+    for (unsigned k = 0; k < nrt; k++) {
+        fb1.cbufs[k].texture = scratch[k];
+        fb1.cbufs[k].format = PIPE_FORMAT_R8G8B8A8_UNORM;
+    }
     pipe->set_framebuffer_state(pipe, &fb1);
     pipe->draw_vbo(pipe, dinfo, drawid_offset, indirect, draws, num_draws);
 
-    /* Pass B (samples the scratch) -> the real framebuffer. */
+    /* Pass B (samples the scratch set) -> the real framebuffer. */
     pipe->set_framebuffer_state(pipe, &saved_fb);
 
-    struct pipe_sampler_view sv_tmpl;
-    u_sampler_view_default_template(&sv_tmpl, scratch, scratch->format);
-    struct pipe_sampler_view *sv = pipe->create_sampler_view(pipe, scratch, &sv_tmpl);
-
+    struct pipe_sampler_view *sv[4] = { NULL };
+    void *scso[4] = { NULL };
     struct pipe_sampler_state sstate;
     memset(&sstate, 0, sizeof(sstate));
     sstate.wrap_s = sstate.wrap_t = sstate.wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
     sstate.min_img_filter = sstate.mag_img_filter = PIPE_TEX_FILTER_NEAREST;
-    void *scso = pipe->create_sampler_state(pipe, &sstate);
+    for (unsigned k = 0; k < nrt; k++) {
+        struct pipe_sampler_view sv_tmpl;
+        u_sampler_view_default_template(&sv_tmpl, scratch[k],
+                                        scratch[k]->format);
+        sv[k] = pipe->create_sampler_view(pipe, scratch[k], &sv_tmpl);
+        scso[k] = pipe->create_sampler_state(pipe, &sstate);
+    }
 
-    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &sv);
-    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &scso);
+    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, nrt, 0, sv);
+    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, nrt, scso);
 
     r300->multipass_override_fs = pass_a->multipass_pass_b;
     pipe->draw_vbo(pipe, dinfo, drawid_offset, indirect, draws, num_draws);
     r300->multipass_override_fs = NULL;
 
-    void *null_cso = NULL;
-    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &null_cso);
-    pipe->delete_sampler_state(pipe, scso);
-    pipe_sampler_view_reference(&sv, NULL);
+    void *null_cso[4] = { NULL };
+    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, nrt, null_cso);
+    for (unsigned k = 0; k < nrt; k++) {
+        pipe->delete_sampler_state(pipe, scso[k]);
+        pipe_sampler_view_reference(&sv[k], NULL);
+    }
     pipe->set_framebuffer_state(pipe, &saved_fb);
     util_unreference_framebuffer_state(&saved_fb);
-    pipe_resource_reference(&scratch, NULL);
+    for (unsigned k = 0; k < nrt; k++)
+        pipe_resource_reference(&scratch[k], NULL);
     r300->in_multipass = false;
 }
 

@@ -53,14 +53,14 @@ struct r300_fragment_shader_code {
 
     struct r300_fragment_shader_code* next;
 
-    /* >64-ALU FS auto-partition (R300_FS_MULTIPASS): when this code is pass A of
-     * a straight-line split, multipass_pass_b holds the second pass, which
-     * reloads the carry from a scratch render target and finishes the program.
-     * NULL for an ordinary single-pass fragment shader.  The draw path renders
-     * pass A to a scratch RGBA8 target, then binds that target as sampler unit 0
-     * and renders pass B to the real colour attachment (the #110 compute-as-raster
-     * substrate; the carry is the FP24-exact RGBA8 byte-pack). */
+    /* >64-ALU FS auto-partition (R300_FS_MULTIPASS): when this code is pass A
+     * of a DAG split, multipass_pass_b holds the second pass, which reloads
+     * the carry from multipass_num_scratch RGBA8 scratch render targets
+     * (sampled as RECT at the fragment position, units 0..N-1) and finishes
+     * the program.  NULL for an ordinary single-pass fragment shader.  Each
+     * scratch carries two scalar components as FP24-exact hi/lo byte pairs. */
     struct r300_fragment_shader_code* multipass_pass_b;
+    unsigned multipass_num_scratch;
 
     bool write_all;
     bool uses_discard;
