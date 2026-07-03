@@ -592,19 +592,28 @@ r300vk_image_memory_size(const struct r300vk_image *img)
 {
    const VkExtent3D *ext = &img->vk.extent;
 
-   /* A linear image's bytes are r300g's row-major tile: stride times height.
-    * Reporting the same value GetImageSubresourceLayout returns keeps the
-    * BindImageMemory2 bound check and the deqp readback walk consistent. */
-   if (img->vk.tiling == VK_IMAGE_TILING_LINEAR)
-      return (VkDeviceSize)img->linear_row_pitch * ext->height;
+   const enum pipe_format pipe_fmt =
+      r300vk_vk_format_to_pipe_format(img->vk.format);
 
-   const unsigned bpp =
-      util_format_get_blocksize(r300vk_vk_format_to_pipe_format(img->vk.format));
+   /* A linear image's bytes are r300g's row-major tile: stride times the row
+    * count.  Rows are block rows (util_format_get_blocksize is bytes per
+    * block, and r300g's stride spans one row of blocks), so a block-compressed
+    * format counts nblocksy rows, not texel rows; for plain formats the two
+    * are equal.  Reporting the same value GetImageSubresourceLayout returns
+    * keeps the BindImageMemory2 bound check and the deqp readback walk
+    * consistent. */
+   if (img->vk.tiling == VK_IMAGE_TILING_LINEAR)
+      return (VkDeviceSize)img->linear_row_pitch *
+             util_format_get_nblocksy(pipe_fmt, ext->height);
+
+   const unsigned bytes_per_block = util_format_get_blocksize(pipe_fmt);
    VkDeviceSize total = 0;
    for (uint32_t level = 0; level < img->vk.mip_levels; level++) {
-      const VkDeviceSize w = MAX2(ext->width >> level, 1u);
-      const VkDeviceSize h = MAX2(ext->height >> level, 1u);
-      total += w * h * MAX2(1u, img->vk.samples) * bpp;
+      const uint32_t w = MAX2(ext->width >> level, 1u);
+      const uint32_t h = MAX2(ext->height >> level, 1u);
+      total += (VkDeviceSize)util_format_get_nblocksx(pipe_fmt, w) *
+               util_format_get_nblocksy(pipe_fmt, h) *
+               MAX2(1u, img->vk.samples) * bytes_per_block;
    }
    return total;
 }
@@ -632,11 +641,17 @@ r300vk_image_subresource_layout(VkImage _image,
    if (img->vk.tiling == VK_IMAGE_TILING_LINEAR) {
       /* The single linear tile is row-major from offset 0.  rowPitch is the
        * stride r300g's transfer map returns, so the mapped readback walks the
-       * same rows.  One 2D layer, no depth, so array/depth pitch are the layer
-       * size. */
+       * same rows.  Rows are block rows (for a block-compressed format
+       * rowPitch spans one row of blocks, per the Vulkan compressed-layout
+       * rule), so size counts nblocksy rows -- equal to texel rows for plain
+       * formats -- matching r300vk_image_memory_size.  One 2D layer, no depth,
+       * so array/depth pitch are the layer size. */
       layout->offset = 0;
       layout->rowPitch = img->linear_row_pitch;
-      layout->size = (VkDeviceSize)img->linear_row_pitch * img->vk.extent.height;
+      layout->size = (VkDeviceSize)img->linear_row_pitch *
+                     util_format_get_nblocksy(
+                        r300vk_vk_format_to_pipe_format(img->vk.format),
+                        img->vk.extent.height);
       layout->arrayPitch = layout->size;
       layout->depthPitch = layout->size;
    } else {
