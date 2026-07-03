@@ -1400,8 +1400,6 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
      * fails if the loop still cannot be resolved. */
     if (!r300->screen->caps.is_r500) {
         char *msg = r300_check_control_flow(fs->state.ir.nir);
-            if (msg && getenv("R300_CF_DUMP"))
-                nir_print_shader(fs->state.ir.nir, stderr);
         if (msg) {
             if (fs->state.ir.nir->info.num_inlinable_uniforms > 0) {
                 /* Deferral rests on the state tracker calling

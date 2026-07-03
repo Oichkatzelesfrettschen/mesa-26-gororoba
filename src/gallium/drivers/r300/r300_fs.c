@@ -1194,8 +1194,6 @@ retry:
          * compile hang. */
         if (!r300->screen->caps.is_r500) {
             char *msg = r300_check_control_flow(clone);
-            if (msg && getenv("R300_CF_DUMP"))
-                nir_print_shader(clone, stderr);
             if (msg) {
                 ralloc_free(clone);
                 r300_dummy_fragment_shader(r300, shader);
