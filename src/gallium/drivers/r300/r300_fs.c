@@ -1000,8 +1000,15 @@ r300_inlinable_dw_is_int(nir_shader *nir, unsigned dw_offset)
                 if (instr->type != nir_instr_type_intrinsic)
                     continue;
                 nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-                if (intr->intrinsic != nir_intrinsic_load_ubo)
+                if (intr->intrinsic != nir_intrinsic_load_ubo) {
+                    if (instr->type == nir_instr_type_intrinsic)
+                        fprintf(stderr, "INLSCAN: intr=%s\n",
+                                nir_intrinsic_infos[intr->intrinsic].name);
                     continue;
+                }
+                fprintf(stderr, "INLSCAN: load_ubo blk_const=%d off_const=%d\n",
+                        nir_src_is_const(intr->src[0]),
+                        nir_src_is_const(intr->src[1]));
                 if (!nir_src_is_const(intr->src[0]) ||
                     nir_src_as_uint(intr->src[0]) != 0)
                     continue;
