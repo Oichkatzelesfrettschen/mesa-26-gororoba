@@ -883,7 +883,9 @@ opt_if_flatten_nested_break(nir_builder *b, nir_if *outer)
                val = psrc->src.ssa;
          }
          assert(val);
-         nir_phi_instr_add_src(phi, new_break_blk, val);
+         nir_phi_src *new_src =
+            nir_phi_instr_add_src(phi, new_break_blk, val);
+         list_addtail(&new_src->src.use_link, &val->uses);
       }
 
       /* The old nested break is now unreachable: whenever the inner
