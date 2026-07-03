@@ -132,6 +132,8 @@ needs_vs_trig_input_fixup(UNUSED const nir_search_state *state, const nir_alu_in
    return false;
 }
 
+bool r300_nir_fold_periodic_loops(nir_shader *s);
+
 bool r300_is_only_used_as_float(const nir_alu_instr *instr);
 
 char *r300_check_control_flow(nir_shader *s);

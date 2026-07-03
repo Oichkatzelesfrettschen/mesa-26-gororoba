@@ -318,6 +318,7 @@ r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen)
       NIR_PASS(progress, s, nir_opt_undef);
       if (!progress)
          NIR_PASS(progress, s, nir_lower_undef_to_zero, NULL);
+      NIR_PASS(progress, s, r300_nir_fold_periodic_loops);
       NIR_PASS(progress, s, nir_opt_loop_unroll);
       NIR_PASS(progress, s, nir_opt_licm, NULL);
 
