@@ -42,4 +42,29 @@ nir_to_rc_lower_txp(struct nir_shader *s);
 bool
 nir_to_rc_lower_tex(struct nir_shader *s);
 
+/* Loads a driver-updated RC_CONSTANT_STATE vec4 during a NIR lowering;
+ * the implementation dedups into its own state table and returns the
+ * load_uniform marker whose base indexes that table. */
+typedef struct nir_def *(*nir_to_rc_load_state_cb)(void *ctx,
+                                                   struct nir_builder *b,
+                                                   unsigned rc_state,
+                                                   unsigned sampler,
+                                                   unsigned num_components);
+
+struct r300_fragment_program_external_state;
+
+/* Rewrites texture coordinates for the sampler states the hardware cannot
+ * honor natively: RECT normalization, NPOT wrap emulation, and the 3D
+ * clamp-and-scale, each drawing factors through the state loader. */
+bool
+nir_to_rc_lower_backend_tex(struct nir_shader *s,
+                            const struct r300_fragment_program_external_state *fs_state,
+                            bool is_r500, nir_to_rc_load_state_cb load_state,
+                            void *load_state_ctx);
+
+/* Forces the alpha channel of every color output to one, including
+ * FRAG_RESULT_COLOR and partial stores. */
+bool
+r300_nir_lower_alpha_to_one(struct nir_shader *s);
+
 #endif /* NIR_TO_RC_H */

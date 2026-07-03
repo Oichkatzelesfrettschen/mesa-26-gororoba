@@ -1214,21 +1214,12 @@ retry:
         classic_gate = (e && strcmp(e, "0") == 0) ? 0 : 1;
     }
     if (classic_gate && allow_classic) {
-        /* Plainness is per lowering trigger, not a whole-struct compare:
-         * sampler_state_count only counts bound samplers and drives no
-         * lowering, and texture_swizzle/texture_compare_func carry meaning
-         * only under compare_mode_enabled.  The fields that summon
-         * nir_to_rc-resident lowerings are the per-unit shadow compare,
-         * NPOT wrap emulation, and 3D clamp-and-scale, plus alpha_to_one. */
-        bool plain_ext = !shader->compare_state.alpha_to_one;
-        for (unsigned u = 0;
-             plain_ext && u < ARRAY_SIZE(shader->compare_state.unit); u++) {
-            if (shader->compare_state.unit[u].compare_mode_enabled ||
-                shader->compare_state.unit[u].wrap_mode != RC_WRAP_NONE ||
-                shader->compare_state.unit[u].clamp_and_scale_before_fetch)
-                plain_ext = false;
-        }
-        if (plain_ext) {
+        /* Selection carries the sampler-state lowerings itself (shadow
+         * compare, RECT normalization, NPOT wrap emulation, 3D
+         * clamp-and-scale, alpha-to-one) through the shared nir_to_rc
+         * passes and the classic state-constant table, so every external
+         * state enters the gate. */
+        {
             void *cctx = ralloc_context(NULL);
             nir_shader *cclone = nir_shader_clone(cctx, clone);
             const struct r300_classic_target *ct = r300_classic_target_get(
@@ -1238,8 +1229,10 @@ retry:
             struct r300_classic_select_result sel;
             struct r300_classic_regalloc_result ra;
             const char *why = NULL;
-            if (!r300_classic_select(cctx, cclone, ct, 0, &classic_inputs,
-                                     &sel) || !sel.program) {
+            if (!r300_classic_select(cctx, cclone, ct,
+                                     &shader->compare_state, 0,
+                                     &classic_inputs, &sel) ||
+                !sel.program) {
                 why = sel.reject_reason ? sel.reject_reason : "selection";
             } else if (!r300_classic_regalloc(cctx, sel.program, &ra) ||
                        !ra.temp_of_ssa) {
@@ -1260,13 +1253,6 @@ retry:
                     fprintf(stderr, "r300 classic FS fallback: %s\n", why);
             }
             ralloc_free(cctx);
-        } else if (DBG_ON(r300, DBG_FP)) {
-            /* The census separates guard skips from absent compiles: the
-             * shadow-compare / wpos / alpha-to-one lowerings live inside
-             * nir_to_rc, so a non-plain external state never enters
-             * selection. */
-            fprintf(stderr,
-                    "r300 classic FS skipped: non-plain compare state\n");
         }
     }
 
