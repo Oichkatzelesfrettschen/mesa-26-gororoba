@@ -781,6 +781,68 @@ opt_if_simplification(nir_builder *b, nir_if *nif)
    return true;
 }
 
+/* When one branch of an if ends in an unconditional jump, the code after
+ * the if executes only under the other branch, so that branch's body can
+ * hoist out to follow the if:
+ *
+ *     if (a) { continue; } else { X }  ->  if (a) { continue; } X
+ *
+ * Values the hoisted body defines dominate everything after the if once
+ * moved, and the phis at the old merge block are single-source (the
+ * jumping side contributes no edge), so they rewrite to their lone
+ * source.  Loop-terminator discovery only recognizes breaks in the
+ * immediate then/else block of a top-level if, so this canonicalization
+ * is what lets a "if (a) continue; else if (b) break;" loop acquire a
+ * terminator and unroll.
+ */
+static bool
+block_ends_in_loop_jump(nir_block *block)
+{
+   if (exec_list_is_empty(&block->instr_list))
+      return false;
+   nir_instr *instr = nir_block_last_instr(block);
+   if (instr->type != nir_instr_type_jump)
+      return false;
+   nir_jump_type t = nir_instr_as_jump(instr)->type;
+   return t == nir_jump_break || t == nir_jump_continue;
+}
+
+static bool
+opt_if_hoist_after_jump(nir_if *nif)
+{
+   nir_block *last_then = nir_if_last_then_block(nif);
+   nir_block *last_else = nir_if_last_else_block(nif);
+   const bool then_jumps = block_ends_in_loop_jump(last_then);
+   const bool else_jumps = block_ends_in_loop_jump(last_else);
+
+   /* Exactly one side must jump, and the other must have content.
+    * Loop jumps only: hoisting past return/halt reshapes function
+    * epilogues for no loop-analysis benefit. */
+   if (then_jumps == else_jumps)
+      return false;
+   struct exec_list *hoist_list = then_jumps ? &nif->else_list
+                                             : &nif->then_list;
+   nir_block *hoist_first = nir_cf_node_as_block(
+      exec_node_data(nir_cf_node,
+                     exec_list_get_head(hoist_list), node));
+   if (exec_list_length(hoist_list) == 1 &&
+       exec_list_is_empty(&hoist_first->instr_list))
+      return false;
+
+   /* The merge block's phis are single-source; rewrite them to their
+    * lone source before moving that source out of the branch. */
+   nir_block *next_block =
+      nir_cf_node_as_block(nir_cf_node_next(&nif->cf_node));
+   nir_remove_single_src_phis_block(next_block);
+
+   nir_cf_list tmp;
+   nir_cf_extract(&tmp, nir_before_cf_list(hoist_list),
+                  nir_after_cf_list(hoist_list));
+   nir_cf_reinsert(&tmp, nir_after_cf_node(&nif->cf_node));
+
+   return true;
+}
+
 /* Find phi statements after an if that choose between true and false, and
  * replace them with the if statement's condition (or an inot of it).
  */
@@ -1459,6 +1521,7 @@ opt_if_cf_list(nir_builder *b, struct exec_list *cf_list,
                                     options);
          progress |= opt_if_merge(nif);
          progress |= opt_if_simplification(b, nif);
+         progress |= opt_if_hoist_after_jump(nif);
          if (options & nir_opt_if_optimize_phi_true_false)
             progress |= opt_if_phi_is_condition(b, nif);
          break;
