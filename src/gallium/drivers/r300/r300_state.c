@@ -2439,6 +2439,15 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
        vs->state.type = PIPE_SHADER_IR_NIR;
     }
 
+    /* Hardware points are clamped by GA_POINT_MINMAX, but the draw wide-point
+     * stage expands points to quads before the GA sees PSIZE
+     * (draw_pipe_wide_point.c reads the raw per-vertex size), so a shader
+     * writing a sub-pixel or oversized gl_PointSize renders wrong on the
+     * SWTCL route.  Clamp the PSIZE output to the advertised range on both
+     * TCL routes so software expansion and hardware rasterization agree. */
+    NIR_PASS(_, vs->state.ir.nir, nir_lower_point_size, 1.0f,
+             r300->screen->screen.caps.max_point_size);
+
     if (r300->screen->caps.has_tcl) {
         r300_optimize_nir(vs->state.ir.nir, r300->screen);
         /* R300/R400 can not do any kind of control flow, so abort early here. */
