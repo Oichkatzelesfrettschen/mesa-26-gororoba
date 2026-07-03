@@ -1176,6 +1176,9 @@ retry:
      * that r300_create_fs_state deferred (R300/R400 have no dynamic control
      * flow). If the loop still cannot be unrolled the ordinary compile path
      * reports the error for this variant only. */
+    if (getenv("R300_VARINL"))
+        fprintf(stderr, "VARINL: pushed=%u nir=%u\n", shader->num_inlinable,
+                clone->info.num_inlinable_uniforms);
     if (shader->num_inlinable > 0 && clone->info.num_inlinable_uniforms > 0) {
         unsigned n = MIN2(shader->num_inlinable,
                           clone->info.num_inlinable_uniforms);
