@@ -1521,12 +1521,26 @@ r300_fs_variant_set_key(struct r300_fragment_shader_code *code,
                         const struct r300_fragment_shader *fs)
 {
     code->compare_state = *state;
-    code->num_inlinable = r300->fs_num_inlinable;
-    memcpy(code->inlinable_values, r300->fs_inlinable_values,
-           r300->fs_num_inlinable * sizeof(uint32_t));
+    /* Read each inlinable uniform's draw-time value straight from the
+     * bound constant buffer at the offsets snapshotted from the shader's
+     * own info: the values the state tracker pushes through
+     * set_inlinable_constants are ordered by ITS program-info copy, which
+     * diverges from the driver-finalized NIR's re-gathered offsets, and a
+     * positional pairing then inlines the wrong uniform.  Sourcing by
+     * offset makes the key and the inline self-consistent by
+     * construction. */
+    const struct r300_constant_buffer *cbuf =
+        (struct r300_constant_buffer *)r300->fs_constants.state;
+    code->num_inlinable = 0;
     code->st_num_inlinable = fs->st_num_inlinable;
     memcpy(code->st_inlinable_offsets, fs->st_inlinable_offsets,
            fs->st_num_inlinable * sizeof(uint16_t));
+    if (cbuf && cbuf->ptr) {
+        code->num_inlinable = fs->st_num_inlinable;
+        for (unsigned j = 0; j < fs->st_num_inlinable; j++)
+            code->inlinable_values[j] =
+                cbuf->ptr[fs->st_inlinable_offsets[j]];
+    }
 }
 
 bool r300_pick_fragment_shader(struct r300_context *r300,
