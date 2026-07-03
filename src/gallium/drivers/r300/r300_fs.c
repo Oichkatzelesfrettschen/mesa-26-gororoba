@@ -860,16 +860,23 @@ r300_mp_collect(nir_block *block, unsigned cut_index,
     return p->num_bases > 0;
 }
 
-/* Scan every admissible cut position in a single-block program and keep the
- * one with the smallest carry, tie-broken toward a balanced ALU split.  Any
- * cut whose two halves both compile under the emit ceiling is correct; the
- * scan only orders candidates, the compile decides. */
-static bool
-r300_mp_find_cut(nir_shader *nir, struct r300_mp_partition *best)
+#define R300_MP_MAX_CANDIDATES 6
+
+/* Scan every admissible cut position in a single-block program and rank the
+ * candidates: smallest carry first, tie-broken toward a balanced ALU split.
+ * Any cut whose two halves both compile under the emit ceiling is correct --
+ * the scan only orders candidates, the compile decides -- so the caller
+ * walks the ranked list until a candidate's halves both compile.  A serial
+ * dependence chain may have only a narrow window of feasible cuts around
+ * the balance point (each half pays the pack or unpack overhead on top of
+ * its share), which is exactly what the multi-candidate walk recovers. */
+static unsigned
+r300_mp_find_cuts(nir_shader *nir, struct r300_mp_partition *cands,
+                  unsigned max_cands)
 {
     nir_function_impl *impl = nir_shader_get_entrypoint(nir);
     if (!exec_list_is_singular(&impl->body))
-        return false;
+        return 0;
     nir_block *block = nir_start_block(impl);
 
     unsigned idx = 0, total = 0;
@@ -880,10 +887,10 @@ r300_mp_find_cut(nir_shader *nir, struct r300_mp_partition *best)
             total++;
     }
     if (total < 16)
-        return false;
+        return 0;
 
-    bool found = false;
-    unsigned best_cost = ~0u;
+    unsigned num = 0;
+    unsigned costs[R300_MP_MAX_CANDIDATES];
     unsigned raw = 0;
     nir_foreach_instr(instr, block) {
         if (instr->type != nir_instr_type_alu &&
@@ -900,13 +907,23 @@ r300_mp_find_cut(nir_shader *nir, struct r300_mp_partition *best)
         unsigned balance = (raw * 2 > total) ? raw * 2 - total
                                              : total - raw * 2;
         unsigned cost = p.total_comps * 1024 + balance;
-        if (cost < best_cost) {
-            best_cost = cost;
-            *best = p;
-            found = true;
+        /* Insertion sort into the ranked candidate list. */
+        unsigned pos = num;
+        while (pos > 0 && costs[pos - 1] > cost)
+            pos--;
+        if (pos >= max_cands)
+            continue;
+        unsigned last = MIN2(num, max_cands - 1);
+        for (unsigned j = last; j > pos; j--) {
+            cands[j] = cands[j - 1];
+            costs[j] = costs[j - 1];
         }
+        cands[pos] = p;
+        costs[pos] = cost;
+        if (num < max_cands)
+            num++;
     }
-    return found;
+    return num;
 }
 
 /* Flatten the carried bases into per-component float scalars, in base order.
@@ -1232,22 +1249,17 @@ r300_nir_fs_emit_pass_b(nir_shader *src, const struct r300_mp_partition *part)
     return bsh;
 }
 
-/* Partition entry: choose the cut, emit both halves.  Returns false when no
- * admissible cut exists (control flow, oversized or type-ambiguous carry),
- * reporting the shape so the deferral is diagnosable from the gate log. */
+/* Emit both halves for one ranked cut candidate.  Returns false when the
+ * candidate's shape does not re-collect in the clones. */
 static bool
-r300_nir_fs_partition(nir_shader *nir, nir_shader **pass_a,
-                      nir_shader **pass_b, unsigned *num_scratch)
+r300_nir_fs_partition(nir_shader *nir, const struct r300_mp_partition *part,
+                      nir_shader **pass_a, nir_shader **pass_b,
+                      unsigned *num_scratch)
 {
-    struct r300_mp_partition part;
-    if (!r300_mp_find_cut(nir, &part)) {
-        r300_nir_fs_report_defer_shape(nir, 56);
-        return false;
-    }
-    *pass_a = r300_nir_fs_emit_pass_a(nir, &part, num_scratch);
+    *pass_a = r300_nir_fs_emit_pass_a(nir, part, num_scratch);
     if (!*pass_a)
         return false;
-    *pass_b = r300_nir_fs_emit_pass_b(nir, &part);
+    *pass_b = r300_nir_fs_emit_pass_b(nir, part);
     if (!*pass_b) {
         ralloc_free(*pass_a);
         *pass_a = NULL;
@@ -1745,68 +1757,85 @@ static void r300_translate_fragment_shader(
         !strstr(shader->error, "Too many ALU instructions"))
         return;
 
-    nir_shader *pass_a = NULL, *pass_b = NULL;
-    unsigned num_scratch = 0;
-    if (!r300_nir_fs_partition(state.ir.nir, &pass_a, &pass_b,
-                               &num_scratch)) {
+    struct r300_mp_partition cands[R300_MP_MAX_CANDIDATES];
+    unsigned num_cands = r300_mp_find_cuts(state.ir.nir, cands,
+                                           R300_MP_MAX_CANDIDATES);
+    if (!num_cands) {
         fprintf(stderr, "r300 FS multipass: emit ceiling hit but no "
                         "admissible cut; compile stays failed\n");
+        r300_nir_fs_report_defer_shape(state.ir.nir, 56);
         return;
     }
 
-    /* Pass B first, into the partner code object: its verdict is free to
-     * take without disturbing the failed compile this shader still holds. */
-    struct r300_fragment_shader_code *pb =
-        CALLOC_STRUCT(r300_fragment_shader_code);
-    if (!pb) {
-        ralloc_free(pass_a);
+    /* Walk the ranked candidates: a serial chain may leave only a narrow
+     * window where both halves plus their pack/unpack overhead compile, so
+     * a candidate whose half rejects just moves the walk to the next cut. */
+    for (unsigned ci = 0; ci < num_cands; ci++) {
+        nir_shader *pass_a = NULL, *pass_b = NULL;
+        unsigned num_scratch = 0;
+        if (!r300_nir_fs_partition(state.ir.nir, &cands[ci], &pass_a,
+                                   &pass_b, &num_scratch))
+            continue;
+
+        /* Pass B first, into the partner code object: its verdict is free
+         * to take without disturbing the failed compile this shader still
+         * holds. */
+        struct r300_fragment_shader_code *pb =
+            CALLOC_STRUCT(r300_fragment_shader_code);
+        if (!pb) {
+            ralloc_free(pass_a);
+            ralloc_free(pass_b);
+            return;
+        }
+        pb->compare_state = shader->compare_state;
+        memcpy(pb->inlinable_values, shader->inlinable_values,
+               sizeof(pb->inlinable_values));
+        pb->num_inlinable = shader->num_inlinable;
+        memcpy(pb->st_inlinable_offsets, shader->st_inlinable_offsets,
+               sizeof(pb->st_inlinable_offsets));
+        pb->st_num_inlinable = shader->st_num_inlinable;
+
+        struct pipe_shader_state pb_state = {
+            .type = PIPE_SHADER_IR_NIR, .ir.nir = pass_b };
+        r300_translate_fragment_shader_body(r300, pb, pb_state);
         ralloc_free(pass_b);
-        return;
-    }
-    pb->compare_state = shader->compare_state;
-    memcpy(pb->inlinable_values, shader->inlinable_values,
-           sizeof(pb->inlinable_values));
-    pb->num_inlinable = shader->num_inlinable;
-    memcpy(pb->st_inlinable_offsets, shader->st_inlinable_offsets,
-           sizeof(pb->st_inlinable_offsets));
-    pb->st_num_inlinable = shader->st_num_inlinable;
+        if (pb->dummy || pb->error) {
+            fprintf(stderr, "r300 FS multipass: cut %u pass B rejected "
+                            "(%s)\n", cands[ci].cut_index,
+                    pb->error ? pb->error : "dummy");
+            r300_fs_code_reset(pb);
+            FREE(pb);
+            ralloc_free(pass_a);
+            continue;
+        }
 
-    struct pipe_shader_state pb_state = {
-        .type = PIPE_SHADER_IR_NIR, .ir.nir = pass_b };
-    r300_translate_fragment_shader_body(r300, pb, pb_state);
-    ralloc_free(pass_b);
-    if (pb->dummy || pb->error) {
-        fprintf(stderr, "r300 FS multipass: pass B rejected (%s); "
-                        "compile stays failed\n",
-                pb->error ? pb->error : "dummy");
-        r300_fs_code_reset(pb);
-        FREE(pb);
+        /* Pass A replaces the failed compile in place. */
+        r300_fs_code_reset(shader);
+        struct pipe_shader_state pa_state = {
+            .type = PIPE_SHADER_IR_NIR, .ir.nir = pass_a };
+        r300_translate_fragment_shader_body(r300, shader, pa_state);
         ralloc_free(pass_a);
+        if (shader->dummy || shader->error) {
+            fprintf(stderr, "r300 FS multipass: cut %u pass A rejected "
+                            "(%s)\n", cands[ci].cut_index,
+                    shader->error ? shader->error : "dummy");
+            r300_fs_code_reset(pb);
+            FREE(pb);
+            continue;
+        }
+
+        shader->multipass_pass_b = pb;
+        shader->multipass_num_scratch = num_scratch;
+        fprintf(stderr, "r300 FS multipass: split admitted at cut %u "
+                        "(pass A %u ALU + pass B %u ALU, %u scratch RT%s)\n",
+                cands[ci].cut_index,
+                shader->code.code.r300.alu.length,
+                pb->code.code.r300.alu.length,
+                num_scratch, num_scratch > 1 ? "s" : "");
         return;
     }
-
-    /* Pass A replaces the failed compile in place. */
-    r300_fs_code_reset(shader);
-    struct pipe_shader_state pa_state = {
-        .type = PIPE_SHADER_IR_NIR, .ir.nir = pass_a };
-    r300_translate_fragment_shader_body(r300, shader, pa_state);
-    ralloc_free(pass_a);
-    if (shader->dummy || shader->error) {
-        fprintf(stderr, "r300 FS multipass: pass A rejected (%s); "
-                        "compile stays failed\n",
-                shader->error ? shader->error : "dummy");
-        r300_fs_code_reset(pb);
-        FREE(pb);
-        return;
-    }
-
-    shader->multipass_pass_b = pb;
-    shader->multipass_num_scratch = num_scratch;
-    fprintf(stderr, "r300 FS multipass: split admitted "
-                    "(pass A %u ALU + pass B %u ALU, %u scratch RT%s)\n",
-            shader->code.code.r300.alu.length,
-            pb->code.code.r300.alu.length,
-            num_scratch, num_scratch > 1 ? "s" : "");
+    fprintf(stderr, "r300 FS multipass: all %u cut candidates rejected; "
+                    "compile stays failed\n", num_cands);
 }
 
 /* A compiled FS variant is keyed on the texture-compare state and on the
