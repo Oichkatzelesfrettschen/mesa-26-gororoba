@@ -1052,8 +1052,11 @@ r300_decode_inlinable_values(nir_shader *nir, unsigned n,
 {
     for (unsigned i = 0; i < n; i++) {
         out[i] = raw[i];
-        if (r300_inlinable_dw_is_int(nir, offsets[i]))
+        const bool is_int = r300_inlinable_dw_is_int(nir, offsets[i]);
+        if (is_int)
             out[i] = (uint32_t)(int32_t)uif(raw[i]);
+        fprintf(stderr, "INLDEC: i=%u dw=%u raw=0x%08x int=%d out=0x%08x\n",
+                i, offsets[i], raw[i], is_int, out[i]);
     }
 }
 
