@@ -947,6 +947,13 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
     pipe->set_framebuffer_state(pipe, &fb1);
     pipe->draw_vbo(pipe, dinfo, drawid_offset, indirect, draws, num_draws);
 
+    /* Pass A's colour writes sit in the CB destination cache, which pass B's
+     * texture fetches do not snoop; flush it and invalidate the texture cache
+     * before the same command stream samples the scratch.  Without this the
+     * carry reads back stale memory (zeros on a fresh BO), which is exactly
+     * what a CPU map between the passes -- a full sync -- was masking. */
+    pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+
     /* Pass B (samples the scratch set) -> the real framebuffer. */
     pipe->set_framebuffer_state(pipe, &saved_fb);
 

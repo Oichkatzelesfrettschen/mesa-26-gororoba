@@ -696,6 +696,9 @@ enum r300_mp_carry_type {
      * small integers are exact in the fixed-point window and bool32's
      * 0/0xffffffff is exactly the signed pair 0/-1. */
     R300_MP_CARRY_INT,
+    /* A 1-bit boolean def (a comparison result feeding bcsel conditions)
+     * carries as b2f32 0.0/1.0 and reconstitutes through fneu-zero. */
+    R300_MP_CARRY_BOOL1,
 };
 
 struct r300_mp_partition {
@@ -847,8 +850,12 @@ r300_mp_collect(nir_block *block, unsigned cut_index,
         if (p->num_bases >= R300_MP_MAX_CARRY_COMPS ||
             p->total_comps + base->num_components > R300_MP_MAX_CARRY_COMPS)
             return false;
+        if (base->bit_size != 32 && base->bit_size != 1)
+            return false;
         enum r300_mp_carry_type ct;
-        if (base_instr->type == nir_instr_type_tex)
+        if (base->bit_size == 1)
+            ct = R300_MP_CARRY_BOOL1;
+        else if (base_instr->type == nir_instr_type_tex)
             ct = R300_MP_CARRY_FLOAT;
         else if (!r300_mp_classify_carry(base, &ct))
             return false;
@@ -938,6 +945,8 @@ r300_mp_flatten_carries(nir_builder *b, const struct r300_mp_partition *p,
         nir_def *v = p->bases[i];
         if (p->base_type[i] == R300_MP_CARRY_INT)
             v = nir_i2f32(b, v);
+        else if (p->base_type[i] == R300_MP_CARRY_BOOL1)
+            v = nir_b2f32(b, v);
         for (unsigned c = 0; c < p->bases[i]->num_components; c++)
             scalars[n++] = nir_channel(b, v, c);
     }
@@ -1240,6 +1249,8 @@ r300_nir_fs_emit_pass_b(nir_shader *src, const struct r300_mp_partition *part)
         comp += base->num_components;
         if (p.base_type[i] == R300_MP_CARRY_INT)
             value = nir_f2i32(&b, value);
+        else if (p.base_type[i] == R300_MP_CARRY_BOOL1)
+            value = nir_fneu(&b, value, nir_imm_float(&b, 0.0f));
         nir_def_rewrite_uses(base, value);
     }
 
