@@ -1777,6 +1777,13 @@ static void r300_translate_fragment_shader(
                                    &pass_b, &num_scratch))
             continue;
 
+        /* The partition leaves each half's severed chain in place (pass A's
+         * post-cut half, pass B's carried producers); dead-code and
+         * re-optimize both so the halves the backend counts are the real
+         * halves, not the whole program twice. */
+        r300_optimize_nir(pass_a, r300->screen);
+        r300_optimize_nir(pass_b, r300->screen);
+
         /* Pass B first, into the partner code object: its verdict is free
          * to take without disturbing the failed compile this shader still
          * holds. */
