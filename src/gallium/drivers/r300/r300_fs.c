@@ -452,99 +452,67 @@ r300_collect_swtcl_derivatives(nir_function_impl *impl, struct util_dynarray *de
     return src_var;
 }
 
-/* Forward-mode automatic differentiation for the SWTCL analytic-derivative
- * lowering. Returns d(def)/d(one screen axis) as new NIR, seeded at the source
- * varying's load with the draw-injected per-triangle gradient (grad_var), and
- * propagated by the chain and product rules so a derivative of an expression
- * of the varying (num = texCoords*40 -> d/dx = 40*d(texCoords)/dx) is exact,
- * not just the raw varying gradient. NIR is scalarized here (lower_alu_to_scalar
- * ran in r300_optimize_nir), so gradients are component-wise. Returns NULL for
- * a constant-free non-varying leaf or an op it cannot differentiate, so the
- * caller bails the whole shader to the MOV-0 stub. */
+/* Rebuild the differentiated expression with the source varying's load shifted
+ * by `shift`; the caller subtracts a quad-hi and quad-lo rebuild to form the
+ * 2x2-quad finite difference (exact at a non-smooth point). Scalarized NIR. */
 static nir_def *
-r300_deriv_build_gradient(nir_builder *b, nir_def *def,
-                          nir_variable *src_var, nir_def *seed)
+r300_deriv_build_shifted(nir_builder *b, nir_def *def,
+                         nir_variable *src_var, nir_def *shift)
 {
     nir_instr *parent = nir_def_instr(def);
-
     if (parent->type == nir_instr_type_load_const)
-        return nir_imm_zero(b, def->num_components, def->bit_size);
-
+        return def;
     if (parent->type == nir_instr_type_intrinsic) {
         nir_intrinsic_instr *load = nir_instr_as_intrinsic(parent);
         if (load->intrinsic == nir_intrinsic_load_deref) {
             nir_deref_instr *deref = nir_src_as_deref(load->src[0]);
-            nir_variable *var =
-                deref ? nir_deref_instr_get_variable(deref) : NULL;
+            nir_variable *var = deref ? nir_deref_instr_get_variable(deref) : NULL;
             if (var == src_var)
-                return nir_trim_vector(b, seed, def->num_components);
+                return nir_fadd(b, def, nir_trim_vector(b, shift, def->num_components));
+            return NULL;
         }
-        /* A uniform or UBO value is constant across the primitive, so its
-         * screen-space derivative is zero. r300 lowers a literal like 40.0 to
-         * a load_ubo_vec4, so this is the common constant-factor case. */
         switch (load->intrinsic) {
         case nir_intrinsic_load_ubo:
         case nir_intrinsic_load_ubo_vec4:
         case nir_intrinsic_load_uniform:
-            return nir_imm_zero(b, def->num_components, def->bit_size);
-        default:
-            break;
+            return def;
+        default: break;
         }
         return NULL;
     }
-
     if (parent->type != nir_instr_type_alu)
         return NULL;
-
     nir_alu_instr *alu = nir_instr_as_alu(parent);
-
-    /* A vecN gathers a scalar per output component; its gradient is the vector
-     * of the sources' scalar gradients, each taken through its own swizzle. */
     if (nir_op_is_vec(alu->op)) {
         nir_def *comps[NIR_MAX_VEC_COMPONENTS];
         for (unsigned i = 0; i < def->num_components; i++) {
-            nir_def *gi = r300_deriv_build_gradient(b, alu->src[i].src.ssa,
-                                                    src_var, seed);
-            if (!gi)
-                return NULL;
-            comps[i] = nir_channel(b, gi, alu->src[i].swizzle[0]);
+            nir_def *si = r300_deriv_build_shifted(b, alu->src[i].src.ssa, src_var, shift);
+            if (!si) return NULL;
+            comps[i] = nir_channel(b, si, alu->src[i].swizzle[0]);
         }
         return nir_vec(b, comps, def->num_components);
     }
-
     const unsigned n = nir_op_infos[alu->op].num_inputs;
-    nir_def *g[4], *v[4];
+    nir_def *sr[4];
     for (unsigned i = 0; i < n && i < 4; i++) {
-        nir_def *gi = r300_deriv_build_gradient(b, alu->src[i].src.ssa,
-                                                src_var, seed);
-        if (!gi)
-            return NULL;
-        /* The op reads its source through a swizzle; the gradient of the
-         * swizzled source is the swizzle of the source's gradient. */
+        nir_def *si = r300_deriv_build_shifted(b, alu->src[i].src.ssa, src_var, shift);
+        if (!si) return NULL;
         unsigned sw[4] = {0};
         for (unsigned c = 0; c < def->num_components; c++)
             sw[c] = alu->src[i].swizzle[c];
-        g[i] = nir_swizzle(b, gi, sw, def->num_components);
-        v[i] = nir_swizzle(b, alu->src[i].src.ssa, sw, def->num_components);
+        sr[i] = nir_swizzle(b, si, sw, def->num_components);
     }
-
     switch (alu->op) {
-    case nir_op_mov:
-        return g[0];
-    case nir_op_fneg:
-        return nir_fneg(b, g[0]);
-    case nir_op_fadd:
-        return nir_fadd(b, g[0], g[1]);
-    case nir_op_fmul: /* product rule: d(a*b) = da*b + a*db */
-        return nir_fadd(b, nir_fmul(b, g[0], v[1]), nir_fmul(b, v[0], g[1]));
-    case nir_op_ffma: /* d(a*b + c) */
-        return nir_fadd(b, nir_fadd(b, nir_fmul(b, g[0], v[1]),
-                                    nir_fmul(b, v[0], g[1])), g[2]);
-    default:
-        return NULL;
+    case nir_op_mov:  return sr[0];
+    case nir_op_fneg: return nir_fneg(b, sr[0]);
+    case nir_op_fadd: return nir_fadd(b, sr[0], sr[1]);
+    case nir_op_fmul: return nir_fmul(b, sr[0], sr[1]);
+    case nir_op_ffma: return nir_ffma(b, sr[0], sr[1], sr[2]);
+    case nir_op_fabs: return nir_fabs(b, sr[0]);
+    case nir_op_fsign: return nir_fsign(b, sr[0]);
+    default: return NULL;
     }
 }
-
 /* SWTCL analytic-derivative lowering for R300-class parts, which have no
  * dFdx/dFdy hardware (radeonStubDeriv otherwise turns them into MOV 0, zeroing
  * any normal built as normalize(cross(dFdx(pos), dFdy(pos)))). Rewrite the
@@ -613,8 +581,14 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
             max_drv = MAX2(max_drv, var->data.driver_location +
                                         glsl_count_attribute_slots(var->type, false));
         }
-        ddx_var->data.driver_location = max_drv;
-        ddy_var->data.driver_location = max_drv + 1;
+        /* The quad-parity anchor reads gl_FragCoord, so nir_to_rc adds a wpos
+         * input and places it at the next free driver_location (max_drv). Skip
+         * that slot for the gradient generics: nir_to_rc's input_index_map is
+         * keyed by driver_location, so a gradient generic sharing max_drv with
+         * wpos aliases it and reads the wrong interpolated input instead of the
+         * draw-injected gradient. */
+        ddx_var->data.driver_location = max_drv + 1;
+        ddy_var->data.driver_location = max_drv + 2;
     }
 
     const unsigned num_derivs =
@@ -643,9 +617,17 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
                           : nir_imm_vec4(&b, 0, 1, 0, 0);
         else
             seed = nir_load_var(&b, is_ddx ? ddx_var : ddy_var);
-        nir_def *res = all_ok ? r300_deriv_build_gradient(&b, intr->src[0].ssa,
-                                                          src_var, seed)
-                              : NULL;
+        nir_def *coord = nir_channel(&b, nir_load_frag_coord(&b), is_ddx ? 0 : 1);
+        nir_def *half = nir_fmul_imm(&b, nir_ffloor(&b, coord), 0.5);
+        nir_def *is_odd = nir_fneu(&b, half, nir_ffloor(&b, half));
+        nir_def *zero = nir_imm_zero(&b, seed->num_components, seed->bit_size);
+        nir_def *shift_hi = nir_bcsel(&b, is_odd, zero, seed);
+        nir_def *shift_lo = nir_bcsel(&b, is_odd, nir_fneg(&b, seed), zero);
+        nir_def *hi = all_ok ?
+            r300_deriv_build_shifted(&b, intr->src[0].ssa, src_var, shift_hi) : NULL;
+        nir_def *lo = hi ?
+            r300_deriv_build_shifted(&b, intr->src[0].ssa, src_var, shift_lo) : NULL;
+        nir_def *res = lo ? nir_fsub(&b, hi, lo) : NULL;
         if (!res)
             all_ok = false;
         results[di++] = res;
