@@ -840,6 +840,8 @@ opt_if_hoist_after_jump(nir_if *nif)
                   nir_after_cf_list(hoist_list));
    nir_cf_reinsert(&tmp, nir_after_cf_node(&nif->cf_node));
 
+   if (getenv("NIR_HOIST_TRACE"))
+      fprintf(stderr, "HOIST: fired\n");
    return true;
 }
 
