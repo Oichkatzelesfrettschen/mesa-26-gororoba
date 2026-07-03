@@ -6680,9 +6680,21 @@ ast_function_definition::hir(ir_exec_list *instructions,
       }
    }
 
+   /* GLSL ES follows C scoping here: the function body forms its own
+    * scope nested inside the parameters' scope, so a local declared in
+    * the body's outermost block may hide a parameter of the same name.
+    * Desktop GLSL 1.10 instead makes the parameters and the outermost
+    * body block a single scope where that redeclaration is an error, so
+    * the extra scope is ES-only. */
+   if (state->es_shader)
+      state->symbols->push_scope();
+
    /* Convert the body of the function to HIR. */
    this->body->hir(&signature->body, state);
    signature->is_defined = true;
+
+   if (state->es_shader)
+      state->symbols->pop_scope();
 
    state->symbols->pop_scope();
 
