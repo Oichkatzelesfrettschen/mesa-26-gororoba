@@ -818,6 +818,75 @@ r300_nir_fs_unpack_carry_rgba8(nir_builder *b, nir_def *rgba)
                         -R300_MP_CARRY_BIAS);
 }
 
+/* Decompose a deferred partition's shape so the cut criterion is visible from
+ * the gate log: the control-flow structure (block count), the raw ALU/TEX mass,
+ * and -- for a single-block program -- every SSA def crossing the naive budget
+ * cut, with opcode and component count.  Measured on the three RS482 capacity
+ * cases, this shows the deferral cause is frontier width, not control flow:
+ * every case is single-block at this point (ifs bcsel-flatten upstream) with
+ * frontiers of one vec4, four vec4s (an fmul/fabs/fneg tail over two bases),
+ * and seven mixed-type defs of fifteen components. */
+static void
+r300_nir_fs_report_defer_shape(nir_shader *nir, unsigned per_pass_budget)
+{
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    unsigned blocks = 0, alu = 0, tex = 0;
+
+    nir_foreach_block(block, impl) {
+        blocks++;
+        nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_alu)
+                alu++;
+            else if (instr->type == nir_instr_type_tex)
+                tex++;
+        }
+    }
+    fprintf(stderr, "r300 FS multipass defer shape: blocks=%u alu=%u tex=%u\n",
+            blocks, alu, tex);
+    if (!exec_list_is_singular(&impl->body))
+        return;
+
+    nir_block *block = nir_start_block(impl);
+    unsigned idx = 0;
+    nir_foreach_instr(instr, block)
+        instr->index = idx++;
+
+    nir_instr *cut = NULL;
+    unsigned raw = 0;
+    nir_foreach_instr(instr, block) {
+        if (instr->type == nir_instr_type_alu ||
+            instr->type == nir_instr_type_tex)
+            raw++;
+        if (((uint64_t)raw * 109) / 100 >= per_pass_budget) {
+            cut = instr;
+            break;
+        }
+    }
+    if (!cut)
+        return;
+
+    nir_foreach_instr(instr, block) {
+        if (instr->index > cut->index)
+            break;
+        if (instr->type != nir_instr_type_alu)
+            continue;
+        nir_alu_instr *alu_instr = nir_instr_as_alu(instr);
+        nir_def *def = &alu_instr->def;
+        nir_foreach_use(use, def) {
+            if (nir_src_is_if(use))
+                continue;
+            if (nir_src_use_instr(use)->index > cut->index) {
+                fprintf(stderr,
+                        "r300 FS multipass defer frontier: idx=%u op=%s "
+                        "comps=%u\n",
+                        instr->index, nir_op_infos[alu_instr->op].name,
+                        def->num_components);
+                break;
+            }
+        }
+    }
+}
+
 /* Phase 2b: emit pass A of a straight-line single-frontier split.  Clone the
  * fragment shader, find the same cut and the one carry value crossing it, drop
  * every instruction after the cut (including the original colour store), and
@@ -1286,6 +1355,7 @@ retry:
                             "r300 FS multipass: estimate %u > budget %u but not a "
                             "straight-line single-frontier split; partition deferred\n",
                             est, (unsigned)compiler.Base.max_alu_insts);
+                    r300_nir_fs_report_defer_shape(clone, safe_pass_alu);
                 }
             }
         }
