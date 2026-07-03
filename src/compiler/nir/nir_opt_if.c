@@ -867,7 +867,24 @@ opt_if_flatten_nested_break(nir_builder *b, nir_if *outer)
          icond = nir_inot(b, icond);
       nir_push_if(b, nir_iand(b, ocond, icond));
       nir_jump(b, nir_jump_break);
+      nir_block *new_break_blk = nir_cursor_current_block(b->cursor);
       nir_pop_if(b, NULL);
+
+      /* The loop-exit block gains the new break edge; each of its phis
+       * takes the same value the old nested-break edge carried (those
+       * values dominate the new break block: they are defined before
+       * the outer if or in the hoisted condition block). */
+      nir_block *exit_block =
+         nir_cf_node_as_block(nir_cf_node_next(&loop->cf_node));
+      nir_foreach_phi(phi, exit_block) {
+         nir_def *val = NULL;
+         nir_foreach_phi_src(psrc, phi) {
+            if (psrc->pred == break_blk)
+               val = psrc->src.ssa;
+         }
+         assert(val);
+         nir_phi_instr_add_src(phi, new_break_blk, val);
+      }
 
       /* The old nested break is now unreachable: whenever the inner
        * condition selects it, the new top-level terminator fired first.
