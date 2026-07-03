@@ -1197,8 +1197,12 @@ retry:
          * compile hang. */
         if (!r300->screen->caps.is_r500) {
             char *msg = r300_check_control_flow(clone);
+            if (getenv("R300_VARINL"))
+                fprintf(stderr, "VARINL: cfcheck=%s\n", msg ? msg : "ok");
             if (msg) {
                 ralloc_free(clone);
+                if (getenv("R300_VARINL"))
+                    fprintf(stderr, "VARINL: DUMMY substituted\n");
                 r300_dummy_fragment_shader(r300, shader);
                 shader->error = strdup(msg);
                 return;
