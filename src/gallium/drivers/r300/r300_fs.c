@@ -1176,9 +1176,6 @@ retry:
      * that r300_create_fs_state deferred (R300/R400 have no dynamic control
      * flow). If the loop still cannot be unrolled the ordinary compile path
      * reports the error for this variant only. */
-    if (getenv("R300_VARINL"))
-        fprintf(stderr, "VARINL: pushed=%u nir=%u\n", shader->num_inlinable,
-                clone->info.num_inlinable_uniforms);
     if (shader->num_inlinable > 0 && clone->info.num_inlinable_uniforms > 0) {
         unsigned n = MIN2(shader->num_inlinable,
                           clone->info.num_inlinable_uniforms);
@@ -1197,12 +1194,8 @@ retry:
          * compile hang. */
         if (!r300->screen->caps.is_r500) {
             char *msg = r300_check_control_flow(clone);
-            if (getenv("R300_VARINL"))
-                fprintf(stderr, "VARINL: cfcheck=%s\n", msg ? msg : "ok");
             if (msg) {
                 ralloc_free(clone);
-                if (getenv("R300_VARINL"))
-                    fprintf(stderr, "VARINL: DUMMY substituted\n");
                 r300_dummy_fragment_shader(r300, shader);
                 shader->error = strdup(msg);
                 return;
