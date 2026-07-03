@@ -360,6 +360,26 @@ rc_remove_unused_constants(struct radeon_compiler *c, void *user)
       }
    }
 
+   if (getenv("R300_CONST_REMAP_DUMP")) {
+      for (unsigned j = 0; j < s->new_constants.Count; j++) {
+         fprintf(stderr, "REMAPTBL: slot=%u type=%d usemask=0x%x", j,
+                 s->new_constants.Constants[j].Type,
+                 s->new_constants.Constants[j].UseMask);
+         for (unsigned chan = 0; chan < 4; chan++)
+            fprintf(stderr, " [%c<-src%d.%d]", "xyzw"[chan],
+                    s->remap_table[j].index[chan],
+                    s->remap_table[j].swizzle[chan]);
+         if (s->new_constants.Constants[j].Type == RC_CONSTANT_IMMEDIATE)
+            fprintf(stderr, " imm={%f %f %f %f}",
+                    s->new_constants.Constants[j].u.Immediate[0],
+                    s->new_constants.Constants[j].u.Immediate[1],
+                    s->new_constants.Constants[j].u.Immediate[2],
+                    s->new_constants.Constants[j].u.Immediate[3]);
+         fprintf(stderr, "\n");
+      }
+   }
+
+
    /*  is_identity ==> new_count == old_count
     * !is_identity ==> new_count <  old_count */
    assert(!((s->has_rel_addr || !c->remove_unused_constants) && s->are_externals_remapped));
