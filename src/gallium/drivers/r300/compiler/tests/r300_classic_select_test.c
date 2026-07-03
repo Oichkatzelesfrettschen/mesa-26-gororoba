@@ -420,6 +420,44 @@ case_varying_semantics_match_fixup(void)
    ralloc_free(ctx);
 }
 
+/* A POS input selects through the frag-coord reconstruction: the raw
+ * varying feeds an RCP-led perspective divide with the viewport
+ * scale/offset state constants, wpos records in the semantics table,
+ * and the state table carries exactly the two viewport entries. */
+static void
+case_wpos_reconstruction(void)
+{
+   void *ctx = ralloc_context(NULL);
+   nir_builder b = fs_builder("classic_wpos");
+   nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                          glsl_vec4_type(), "gl_FragCoord");
+   in->data.location = VARYING_SLOT_POS;
+   in->data.driver_location = 0;
+   in->data.interpolation = INTERP_MODE_NOPERSPECTIVE;
+   nir_variable *out = add_color_output(&b);
+   nir_store_var(&b, out, nir_load_var(&b, in), 0xf);
+
+   static struct r300_screen screen;
+   struct pipe_screen *ps = fake_r300_screen(&screen);
+   r300_optimize_nir(b.shader, r300_screen(ps));
+
+   struct r300_shader_semantics sem;
+   r300_shader_semantics_reset(&sem);
+   const struct r300_classic_target *t = r300_classic_target_get(false, false);
+   struct r300_classic_select_result r;
+   CHECK(r300_classic_select(ctx, b.shader, t, 0, &sem, &r), "selection ran");
+   CHECK(r.program != NULL, "wpos shader selects");
+   if (r.reject_reason)
+      fprintf(stderr, "  rejected: %s\n", r.reject_reason);
+   if (r.program) {
+      CHECK(sem.wpos == 0, "POS input records at wpos");
+      CHECK(count_op(r.program, R300C_OP_RCP) >= 1,
+            "reconstruction leads with RCP");
+      CHECK(r.states.count == 2, "viewport scale and offset in the table");
+   }
+   ralloc_free(ctx);
+}
+
 int
 main(void)
 {
@@ -430,6 +468,7 @@ main(void)
    case_tex();
    case_tex_targets();
    case_wpos_face_semantics();
+   case_wpos_reconstruction();
    case_passthrough();
    case_control_flow_rejects();
    case_integer_op_rejects();

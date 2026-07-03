@@ -133,7 +133,7 @@ case_full_ladder_compiles_to_hw_code(void)
    fc.code = &code;
    fc.AllocateHwInputs = allocate_identity_inputs;
 
-   CHECK(r300_classic_emit(sel.program, &sel.immediates, &fc),
+   CHECK(r300_classic_emit(sel.program, &sel.immediates, &sel.states, &fc),
          "emission succeeded");
 
    r3xx_compile_fragment_program(&fc);
@@ -214,7 +214,7 @@ case_discard_ladder_compiles_to_hw_code(void)
    fc.code = &code;
    fc.AllocateHwInputs = allocate_identity_inputs;
 
-   CHECK(r300_classic_emit(sel.program, &sel.immediates, &fc),
+   CHECK(r300_classic_emit(sel.program, &sel.immediates, &sel.states, &fc),
          "emission succeeded");
 
    bool has_kil = false;

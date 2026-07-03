@@ -78,6 +78,10 @@ enum r300_classic_file {
    R300C_FILE_INPUT,
    /* A constant-file vec4, bounded by the target's max_const_regs. */
    R300C_FILE_CONST,
+   /* A driver-updated RC_CONSTANT_STATE vec4; index addresses the
+    * selection's state table and emission remaps it into the constant
+    * file. */
+   R300C_FILE_STATE,
 };
 
 struct r300_classic_instr;

@@ -61,12 +61,12 @@ record_input_semantics(struct sel_ctx *ctx, gl_varying_slot location,
       sem->num_total = base + 1;
    switch (location) {
    case VARYING_SLOT_POS:
-      /* The wpos varying carries the vertex side's mirrored clip-space
-       * gl_Position; nir_to_rc rebuilds gl_FragCoord from it with a
-       * perspective divide and the viewport scale/bias state constants
-       * (RCP w, MUL, MAD in its frag-coord lowering).  Classic has no
-       * state-constant machinery yet, and a raw read renders wrong. */
-      return reject(ctx, "wpos needs the frag-coord reconstruction");
+      /* The raw read never survives selection: the entry's frag-coord
+       * reconstruction (classic_lower_wpos) rebuilds gl_FragCoord with a
+       * perspective divide and the viewport scale/offset state
+       * constants before the value walk. */
+      sem->wpos = base;
+      return true;
    case VARYING_SLOT_FACE:
       sem->face = base;
       return true;
@@ -144,6 +144,87 @@ get_alu_src(struct sel_ctx *ctx, const nir_alu_instr *alu, unsigned s,
    out->swizzle = compose_swizzle(base->swizzle, alu->src[s].swizzle,
                                   nir_ssa_alu_instr_src_components(alu, s));
    return true;
+}
+
+/* Dedup a driver-updated state constant into the selection's table; the
+ * ntr_add_state_constant discipline. */
+static int
+add_state_constant(struct r300_classic_select_result *result,
+                   unsigned rc_state, unsigned sampler)
+{
+   struct r300_classic_state_constants *st = &result->states;
+   for (unsigned i = 0; i < st->count; i++)
+      if (st->entries[i].rc_state == rc_state &&
+          st->entries[i].sampler == sampler)
+         return (int)i;
+   if (st->count >= R300_CLASSIC_MAX_STATE_CONSTANTS)
+      return -1;
+   st->entries[st->count].rc_state = rc_state;
+   st->entries[st->count].sampler = sampler;
+   return (int)st->count++;
+}
+
+/* Rebuild gl_FragCoord from the clip-space wpos varying: the vertex side
+ * mirrors gl_Position into the varying (r300_nir_add_wpos), and the
+ * fragment read needs the perspective divide and the viewport transform
+ * -- rcp w, xyz * rcp_w, then xyz * VIEWPORT_SCALE + VIEWPORT_OFFSET with
+ * w = rcp_w, the same math ntr_lower_wpos emits.  State constants ride a
+ * private load_uniform marker whose base indexes the selection's state
+ * table (the ntr_load_state_constant convention); selection maps it to
+ * R300C_FILE_STATE. */
+static bool
+classic_lower_wpos_instr(nir_builder *b, nir_intrinsic_instr *intr,
+                         void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_input)
+      return false;
+   if (nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_POS)
+      return false;
+
+   struct r300_classic_select_result *result = data;
+   const int scale_idx =
+      add_state_constant(result, RC_STATE_R300_VIEWPORT_SCALE, 0);
+   const int offset_idx =
+      add_state_constant(result, RC_STATE_R300_VIEWPORT_OFFSET, 0);
+   if (scale_idx < 0 || offset_idx < 0)
+      return false;
+
+   b->cursor = nir_after_instr(&intr->instr);
+   nir_def *raw = nir_load_input(b, 4, 32, nir_imm_int(b, 0),
+                                 .base = nir_intrinsic_base(intr),
+                                 .component = 0,
+                                 .io_semantics =
+                                    nir_intrinsic_io_semantics(intr),
+                                 .dest_type = nir_type_float32);
+   nir_def *rcp_w = nir_frcp(b, nir_channel(b, raw, 3));
+   nir_def *xyz =
+      nir_fmul(b, nir_channels(b, raw, nir_component_mask(3)), rcp_w);
+   nir_def *scale = nir_load_uniform(b, 4, 32, nir_imm_int(b, 0),
+                                     .base = (unsigned)scale_idx, .range = 4,
+                                     .dest_type = nir_type_float32);
+   nir_def *offset = nir_load_uniform(b, 4, 32, nir_imm_int(b, 0),
+                                      .base = (unsigned)offset_idx,
+                                      .range = 4,
+                                      .dest_type = nir_type_float32);
+   xyz = nir_fadd(b,
+                  nir_fmul(b, xyz,
+                           nir_channels(b, scale, nir_component_mask(3))),
+                  nir_channels(b, offset, nir_component_mask(3)));
+   nir_def *wpos = nir_vec4(b, nir_channel(b, xyz, 0),
+                            nir_channel(b, xyz, 1), nir_channel(b, xyz, 2),
+                            rcp_w);
+   const unsigned component = nir_intrinsic_component(intr);
+   nir_def *replacement = nir_channels(
+      b, wpos, nir_component_mask(intr->num_components) << component);
+   nir_def_rewrite_uses_after(&intr->def, replacement);
+   return true;
+}
+
+static bool
+classic_lower_wpos(nir_shader *nir, struct r300_classic_select_result *result)
+{
+   return nir_shader_intrinsics_pass(nir, classic_lower_wpos_instr,
+                                     nir_metadata_control_flow, result);
 }
 
 /* nir_lower_int_to_float float-encodes integer-typed constants (a ubo
@@ -269,6 +350,19 @@ select_intrinsic(struct sel_ctx *ctx, nir_intrinsic_instr *intr)
       if (!e)
          return reject(ctx, "out of memory");
       e->src[0] = src;
+      return true;
+   }
+   case nir_intrinsic_load_uniform: {
+      /* The private state-constant marker from classic_lower_wpos: base
+       * indexes the selection's state table. */
+      const unsigned sidx = nir_intrinsic_base(intr);
+      if (sidx >= ctx->result->states.count)
+         return reject(ctx, "state-constant marker out of range");
+      map_def(ctx, &intr->def, (struct r300_classic_src){
+         .file = R300C_FILE_STATE,
+         .index = sidx,
+         .swizzle = RC_SWIZZLE_XYZW,
+      });
       return true;
    }
    case nir_intrinsic_terminate: {
@@ -693,6 +787,7 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
     * shapes. */
    nir_to_rc_lower_txp(nir);
    NIR_PASS(_, nir, nir_to_rc_lower_tex);
+   NIR_PASS(_, nir, classic_lower_wpos, result);
    /* Integer ops survive the production optimizer (dynamic-index select
     * ladders compare integer indices; GL uniforms arrive typed), and
     * nir_lower_bool_to_float treats operands as floats, so the integer

@@ -29,9 +29,22 @@ struct r300_classic_immediates {
 
 struct r300_shader_semantics;
 
+/* Driver-updated state constants the selection materialized (viewport
+ * scale/offset for the frag-coord reconstruction); emission adds them as
+ * RC_CONSTANT_STATE entries the same way nir_to_rc's state table lands. */
+#define R300_CLASSIC_MAX_STATE_CONSTANTS 8
+struct r300_classic_state_constants {
+   unsigned count;
+   struct {
+      unsigned rc_state;
+      unsigned sampler;
+   } entries[R300_CLASSIC_MAX_STATE_CONSTANTS];
+};
+
 struct r300_classic_select_result {
    struct r300_classic_program *program;
    struct r300_classic_immediates immediates;
+   struct r300_classic_state_constants states;
    /* NULL on success; the named rejection reason otherwise (ralloc'd on
     * mem_ctx). */
    const char *reject_reason;
