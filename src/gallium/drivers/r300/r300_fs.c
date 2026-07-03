@@ -1177,14 +1177,32 @@ retry:
      * flow). If the loop still cannot be unrolled the ordinary compile path
      * reports the error for this variant only. */
     if (shader->num_inlinable > 0 && clone->info.num_inlinable_uniforms > 0) {
-        unsigned n = MIN2(shader->num_inlinable,
-                          clone->info.num_inlinable_uniforms);
+        /* The pushed values are ordered by the state tracker's offset
+         * array; the clone's re-gathered info can differ in count and
+         * order, so pair by offset identity.  A clone offset absent from
+         * the snapshot has no pushed value and stays a uniform. */
+        uint32_t aligned[MAX_INLINABLE_UNIFORMS];
+        uint16_t aligned_offs[MAX_INLINABLE_UNIFORMS];
+        unsigned n = 0;
+        for (unsigned i = 0; i < clone->info.num_inlinable_uniforms; i++) {
+            const uint16_t off = clone->info.inlinable_uniform_dw_offsets[i];
+            const unsigned lim = MIN2(shader->st_num_inlinable,
+                                      shader->num_inlinable);
+            for (unsigned j = 0; j < lim; j++) {
+                if (shader->st_inlinable_offsets[j] == off) {
+                    aligned[n] = shader->inlinable_values[j];
+                    aligned_offs[n] = off;
+                    n++;
+                    break;
+                }
+            }
+        }
         uint32_t decoded[MAX_INLINABLE_UNIFORMS];
-        r300_decode_inlinable_values(clone, n, shader->inlinable_values,
-                                     clone->info.inlinable_uniform_dw_offsets,
-                                     decoded);
-        nir_inline_uniforms(clone, n, decoded,
-                            clone->info.inlinable_uniform_dw_offsets);
+        if (n) {
+            r300_decode_inlinable_values(clone, n, aligned, aligned_offs,
+                                         decoded);
+            nir_inline_uniforms(clone, n, decoded, aligned_offs);
+        }
         r300_optimize_nir(clone, r300->screen);
 
         /* nir_opt_loop_unroll refuses a trip count past the FS unroll cap
@@ -1487,12 +1505,30 @@ r300_fs_variant_matches(const struct r300_fragment_shader_code *code,
 static void
 r300_fs_variant_set_key(struct r300_fragment_shader_code *code,
                         const struct r300_fragment_program_external_state *state,
-                        const struct r300_context *r300)
+                        const struct r300_context *r300,
+                        const struct r300_fragment_shader *fs)
 {
     code->compare_state = *state;
-    code->num_inlinable = r300->fs_num_inlinable;
-    memcpy(code->inlinable_values, r300->fs_inlinable_values,
-           r300->fs_num_inlinable * sizeof(uint32_t));
+    /* Read each inlinable uniform's draw-time value straight from the
+     * bound constant buffer at the offsets snapshotted from the shader's
+     * own info: the values the state tracker pushes through
+     * set_inlinable_constants are ordered by ITS program-info copy, which
+     * diverges from the driver-finalized NIR's re-gathered offsets, and a
+     * positional pairing then inlines the wrong uniform.  Sourcing by
+     * offset makes the key and the inline self-consistent by
+     * construction. */
+    const struct r300_constant_buffer *cbuf =
+        (struct r300_constant_buffer *)r300->fs_constants.state;
+    code->num_inlinable = 0;
+    code->st_num_inlinable = fs->st_num_inlinable;
+    memcpy(code->st_inlinable_offsets, fs->st_inlinable_offsets,
+           fs->st_num_inlinable * sizeof(uint16_t));
+    if (cbuf && cbuf->ptr) {
+        code->num_inlinable = fs->st_num_inlinable;
+        for (unsigned j = 0; j < fs->st_num_inlinable; j++)
+            code->inlinable_values[j] =
+                cbuf->ptr[fs->st_inlinable_offsets[j]];
+    }
 }
 
 bool r300_pick_fragment_shader(struct r300_context *r300,
@@ -1515,7 +1551,7 @@ bool r300_pick_fragment_shader(struct r300_context *r300,
         /* Build the fragment shader for the first time. */
         fs->first = fs->shader = CALLOC_STRUCT(r300_fragment_shader_code);
 
-        r300_fs_variant_set_key(fs->shader, state, r300);
+        r300_fs_variant_set_key(fs->shader, state, r300, fs);
         r300_translate_fragment_shader(r300, fs->shader, fs->state);
         return true;
 
@@ -1542,7 +1578,7 @@ bool r300_pick_fragment_shader(struct r300_context *r300,
             ptr->next = fs->first;
             fs->first = fs->shader = ptr;
 
-            r300_fs_variant_set_key(ptr, state, r300);
+            r300_fs_variant_set_key(ptr, state, r300, fs);
             r300_translate_fragment_shader(r300, ptr, fs->state);
             return true;
         }

@@ -1385,6 +1385,15 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
        fs->state.type = PIPE_SHADER_IR_NIR;
     }
 
+    if (fs->state.ir.nir) {
+        const struct shader_info *pre_info =
+            &((nir_shader *)fs->state.ir.nir)->info;
+        fs->st_num_inlinable = MIN2(pre_info->num_inlinable_uniforms,
+                                    MAX_INLINABLE_UNIFORMS);
+        memcpy(fs->st_inlinable_offsets, pre_info->inlinable_uniform_dw_offsets,
+               fs->st_num_inlinable * sizeof(uint16_t));
+    }
+
     r300_optimize_nir(fs->state.ir.nir, r300->screen);
 
     /* r300_finalize_nir flagged the default-block uniforms used as a loop bound
