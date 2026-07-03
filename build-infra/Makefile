@@ -44,6 +44,13 @@ INSTALL_NAMESPACE ?= mesa
 # artifacts that are absent from the current profile.  Override PREFIX=... on
 # the make line when intentionally installing into a shared active tree.
 PREFIX   ?= /opt/local/$(INSTALL_NAMESPACE)-$(PROFILE)
+# drirc/driconf is host configuration, not an install artifact: meson bakes
+# SYSCONFDIR into the driver objects (util/xmlconfig.c reads SYSCONFDIR/drirc),
+# so an install-prefix-derived sysconfdir leaves a repacked or relocated driver
+# pointing at a directory that never exists.  Bake the real /etc for every
+# profile; the admin's /etc/drirc then applies to devenv and packaged drivers
+# alike.
+SYSCONFDIR ?= /etc
 # Pair-member descriptor: one space-separated row per build variant.
 # Field order: profile hostenv builddir prefix namespace.  Accessors:
 # $(call PAIR_PROFILE,LIST), $(call PAIR_HOSTENV,LIST), etc.  Adding a
@@ -126,7 +133,7 @@ LOCKED_TOOL_ENV := \
         help
 
 help:
-	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [BUILDDIR=<path>] [PREFIX=<path>]"
+	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"
 	@echo ""
 	@echo "targets:"
 	@echo "  configure         meson setup the builddir from configs/[alternates/]\$$(PROFILE).meson"
@@ -447,7 +454,7 @@ configure: vostro-prefix-check
 	echo "wrote Meson toolchain overlay: $(TOOLCHAIN_NATIVE) (LLVM $$llvm_version, $(COMPILER_CHAIN))"
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-	meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC)
+	meson setup $(SETUP_ARGS) --prefix=$(PREFIX) --sysconfdir=$(SYSCONFDIR) $(BUILDDIR) $(TOPSRC)
 
 build:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
