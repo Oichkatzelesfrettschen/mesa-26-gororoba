@@ -1092,11 +1092,8 @@ r300_decode_inlinable_values(nir_shader *nir, unsigned n,
 {
     for (unsigned i = 0; i < n; i++) {
         out[i] = raw[i];
-        const bool is_int = r300_inlinable_dw_is_int(nir, offsets[i]);
-        if (is_int)
+        if (r300_inlinable_dw_is_int(nir, offsets[i]))
             out[i] = (uint32_t)(int32_t)uif(raw[i]);
-        fprintf(stderr, "INLDEC: i=%u dw=%u raw=0x%08x int=%d out=0x%08x\n",
-                i, offsets[i], raw[i], is_int, out[i]);
     }
 }
 
@@ -1182,8 +1179,6 @@ retry:
     if (shader->num_inlinable > 0 && clone->info.num_inlinable_uniforms > 0) {
         unsigned n = MIN2(shader->num_inlinable,
                           clone->info.num_inlinable_uniforms);
-        if (getenv("R300_INL_DUMP"))
-            nir_print_shader(clone, stderr);
         uint32_t decoded[MAX_INLINABLE_UNIFORMS];
         r300_decode_inlinable_values(clone, n, shader->inlinable_values,
                                      clone->info.inlinable_uniform_dw_offsets,
