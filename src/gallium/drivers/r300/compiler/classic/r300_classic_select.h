@@ -28,6 +28,7 @@ struct r300_classic_immediates {
 };
 
 struct r300_shader_semantics;
+struct r300_fragment_program_external_state;
 
 /* Driver-updated state constants the selection materialized (viewport
  * scale/offset for the frag-coord reconstruction); emission adds them as
@@ -62,6 +63,7 @@ struct r300_classic_select_result {
 bool
 r300_classic_select(void *mem_ctx, nir_shader *nir,
                     const struct r300_classic_target *target,
+                    const struct r300_fragment_program_external_state *ext,
                     unsigned num_driver_consts,
                     struct r300_shader_semantics *semantics,
                     struct r300_classic_select_result *result);

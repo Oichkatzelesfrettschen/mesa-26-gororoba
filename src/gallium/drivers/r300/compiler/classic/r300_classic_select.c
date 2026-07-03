@@ -11,6 +11,7 @@
 
 #include "../nir_to_rc.h"
 #include "../r300_nir.h"
+#include "../radeon_code.h"
 #include "../radeon_program_constants.h"
 #include "r300_shader_semantics.h"
 
@@ -162,6 +163,22 @@ add_state_constant(struct r300_classic_select_result *result,
    st->entries[st->count].rc_state = rc_state;
    st->entries[st->count].sampler = sampler;
    return (int)st->count++;
+}
+
+/* The classic state loader for nir_to_rc's shared texture lowering:
+ * dedup into the selection's table and emit the load_uniform marker. */
+static nir_def *
+classic_load_state_cb(void *ctx, nir_builder *b, unsigned rc_state,
+                      unsigned sampler, unsigned num_components)
+{
+   struct r300_classic_select_result *result = ctx;
+   const int idx = add_state_constant(result, rc_state, sampler);
+   if (idx < 0)
+      return NULL;
+   return nir_load_uniform(b, num_components, 32, nir_imm_int(b, 0),
+                           .base = (unsigned)idx,
+                           .range = num_components,
+                           .dest_type = nir_type_float32);
 }
 
 /* Rebuild gl_FragCoord from the clip-space wpos varying: the vertex side
@@ -687,11 +704,11 @@ select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
    case GLSL_SAMPLER_DIM_3D:       target = RC_TEXTURE_3D; break;
    case GLSL_SAMPLER_DIM_CUBE:     target = RC_TEXTURE_CUBE; break;
    case GLSL_SAMPLER_DIM_RECT:
-      /* R300 cannot sample rectangles; ntr_lower_backend_tex normalizes
-       * the coordinate by the RC_STATE_R300_TEXRECT_FACTOR state constant
-       * and retargets to 2D, a lowering the classic entry does not carry
-       * yet. */
-      return reject(ctx, "RECT sampling needs the texrect-factor lowering");
+      /* The entry's backend-tex lowering normalizes RECT coordinates by
+       * the texrect factor and retargets to 2D on non-r500, so a RECT
+       * sample reaching selection is the native r500 path. */
+      target = RC_TEXTURE_RECT;
+      break;
    default:
       return reject(ctx, "sampler dim %d outside the classic subset",
                     (int)tex->sampler_dim);
@@ -756,6 +773,7 @@ io_type_size(const struct glsl_type *type, bool bindless)
 bool
 r300_classic_select(void *mem_ctx, nir_shader *nir,
                     const struct r300_classic_target *target,
+                    const struct r300_fragment_program_external_state *ext,
                     unsigned num_driver_consts,
                     struct r300_shader_semantics *semantics,
                     struct r300_classic_select_result *result)
@@ -785,9 +803,38 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
     * and the surviving projector into the backend tex source -- the same
     * two passes nir_to_rc runs so selection consumes identical tex
     * shapes. */
+   NIR_PASS(_, nir, classic_lower_wpos, result);
+   /* The sampler-state lowerings, in nir_to_rc's order: shadow comparison
+    * first, then the coordinate rewrites (RECT normalization, NPOT wrap
+    * emulation, 3D clamp-and-scale) drawing factors through the classic
+    * state table, before the projector and packing passes consume the
+    * final coordinates. */
+   if (ext && ext->sampler_state_count > 0) {
+      const unsigned n = (unsigned)ext->sampler_state_count;
+      nir_lower_tex_shadow_swizzle tex_swizzle[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+      enum compare_func tex_compare_func[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+      for (unsigned i = 0; i < n; i++) {
+         tex_compare_func[i] = ext->unit[i].texture_compare_func;
+         tex_swizzle[i].swizzle_r = GET_SWZ(ext->unit[i].texture_swizzle, 0);
+         tex_swizzle[i].swizzle_g = GET_SWZ(ext->unit[i].texture_swizzle, 1);
+         tex_swizzle[i].swizzle_b = GET_SWZ(ext->unit[i].texture_swizzle, 2);
+         tex_swizzle[i].swizzle_a = GET_SWZ(ext->unit[i].texture_swizzle, 3);
+      }
+      NIR_PASS(_, nir, nir_lower_tex_shadow, n, tex_compare_func, tex_swizzle,
+               true);
+   }
+   {
+      static const struct r300_fragment_program_external_state plain_state;
+      const bool is_r500 =
+         target->pfs_class == R300_CLASSIC_PFS_R500;
+      NIR_PASS(_, nir, nir_to_rc_lower_backend_tex,
+               ext ? ext : &plain_state, is_r500, classic_load_state_cb,
+               result);
+   }
    nir_to_rc_lower_txp(nir);
    NIR_PASS(_, nir, nir_to_rc_lower_tex);
-   NIR_PASS(_, nir, classic_lower_wpos, result);
+   if (ext && ext->alpha_to_one)
+      NIR_PASS(_, nir, r300_nir_lower_alpha_to_one);
    /* Integer ops survive the production optimizer (dynamic-index select
     * ladders compare integer indices; GL uniforms arrive typed), and
     * nir_lower_bool_to_float treats operands as floats, so the integer

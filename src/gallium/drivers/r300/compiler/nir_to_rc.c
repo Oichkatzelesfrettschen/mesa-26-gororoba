@@ -1787,10 +1787,20 @@ ntr_should_vectorize_instr(const nir_instr *instr, const void *data)
 }
 
 struct ntr_lower_backend_tex_state {
-   struct ntr_compile *c;
+   nir_to_rc_load_state_cb load_state;
+   void *load_state_ctx;
    const struct r300_fragment_program_external_state *fs_state;
    bool is_r500;
 };
+
+/* The nir_to_rc-internal state loader: dedup into the ntr_compile table
+ * and emit the load_uniform marker. */
+static nir_def *
+ntr_load_state_cb(void *ctx, nir_builder *b, unsigned rc_state,
+                  unsigned sampler, unsigned num_components)
+{
+   return ntr_load_state_constant(ctx, b, rc_state, sampler, num_components);
+}
 
 static bool
 ntr_lower_wpos_instr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
@@ -1914,8 +1924,9 @@ ntr_lower_backend_tex_instr(nir_builder *b, nir_tex_instr *tex, void *data)
     */
    if (is_rect && (!state->is_r500 || wrapmode != RC_WRAP_NONE)) {
       nir_def *factor =
-         ntr_load_state_constant(state->c, b, RC_STATE_R300_TEXRECT_FACTOR,
-                                 sampler, coord->num_components);
+         state->load_state(state->load_state_ctx, b,
+                           RC_STATE_R300_TEXRECT_FACTOR, sampler,
+                           coord->num_components);
       coord = nir_fmul(b, coord, factor);
       tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
       progress = true;
@@ -1944,8 +1955,9 @@ ntr_lower_backend_tex_instr(nir_builder *b, nir_tex_instr *tex, void *data)
       coord = ntr_tex_coord_replace_xyz(b, coord, nir_fsat(b, xyz));
 
       nir_def *factor =
-         ntr_load_state_constant(state->c, b, RC_STATE_R300_TEXSCALE_FACTOR,
-                                 sampler, coord->num_components);
+         state->load_state(state->load_state_ctx, b,
+                           RC_STATE_R300_TEXSCALE_FACTOR, sampler,
+                           coord->num_components);
       coord = nir_fmul(b, coord, factor);
       progress = true;
    }
@@ -1958,13 +1970,15 @@ ntr_lower_backend_tex_instr(nir_builder *b, nir_tex_instr *tex, void *data)
    return progress;
 }
 
-static bool
-ntr_lower_backend_tex(nir_shader *s, struct ntr_compile *c,
-                      const struct r300_fragment_program_external_state *fs_state,
-                      bool is_r500)
+bool
+nir_to_rc_lower_backend_tex(nir_shader *s,
+                            const struct r300_fragment_program_external_state *fs_state,
+                            bool is_r500, nir_to_rc_load_state_cb load_state,
+                            void *load_state_ctx)
 {
    struct ntr_lower_backend_tex_state state = {
-      .c = c,
+      .load_state = load_state,
+      .load_state_ctx = load_state_ctx,
       .fs_state = fs_state,
       .is_r500 = is_r500,
    };
@@ -2146,7 +2160,7 @@ r300_nir_lower_alpha_to_one_instr(nir_builder *b, nir_intrinsic_instr *intr, voi
 /* The common nir_lower_alpha_to_one() only handles DATA outputs with
  * full-vec4 sources. r300 also needs FRAG_RESULT_COLOR and partial stores.
  */
-static bool
+bool
 r300_nir_lower_alpha_to_one(nir_shader *s)
 {
    return nir_shader_intrinsics_pass(s, r300_nir_lower_alpha_to_one_instr,
@@ -2239,7 +2253,8 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
                   tex_swizzle, true);
       }
 
-      NIR_PASS(_, s, ntr_lower_backend_tex, c, &state, is_r500);
+      NIR_PASS(_, s, nir_to_rc_lower_backend_tex, &state, is_r500,
+               ntr_load_state_cb, c);
       nir_to_rc_lower_txp(s);
       NIR_PASS(_, s, nir_to_rc_lower_tex);
 

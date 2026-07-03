@@ -93,7 +93,7 @@ select_shader(void *ctx, nir_shader *s,
    r300_optimize_nir(s, r300_screen(ps));
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
-   CHECK(r300_classic_select(ctx, s, t, 4, NULL, result), "selection ran");
+   CHECK(r300_classic_select(ctx, s, t, NULL, 4, NULL, result), "selection ran");
    if (result->program) {
       char err[128] = {0};
       CHECK(r300_classic_program_validate(result->program, err, sizeof(err)),
@@ -262,14 +262,24 @@ case_tex_targets(void)
       ralloc_free(ctx);
    }
    {
-      /* R300 cannot sample rectangles; the texrect-factor lowering lives
-       * in ntr_lower_backend_tex, so RECT rejects by name. */
+      /* R300 cannot sample rectangles natively: the entry's backend-tex
+       * lowering normalizes the coordinate by the texrect-factor state
+       * constant and retargets the sample to 2D. */
       void *ctx = ralloc_context(NULL);
       struct r300_classic_select_result r;
       select_tex_dim(ctx, GLSL_SAMPLER_DIM_RECT, 2, false, &r);
-      CHECK(r.program == NULL, "rect tex rejects");
-      CHECK(r.reject_reason &&
-            strstr(r.reject_reason, "texrect") != NULL, "rect reject named");
+      CHECK(r.program != NULL, "rect tex selects");
+      if (r.reject_reason)
+         fprintf(stderr, "  rejected: %s\n", r.reject_reason);
+      if (r.program) {
+         CHECK(r.states.count >= 1, "texrect factor in the state table");
+         bool retargeted = true;
+         list_for_each_entry (struct r300_classic_instr, i,
+                              &r.program->instrs, link)
+            if (i->op == R300C_OP_TEX && i->tex_target != RC_TEXTURE_2D)
+               retargeted = false;
+         CHECK(retargeted, "rect sample retargets to 2D");
+      }
       ralloc_free(ctx);
    }
 }
@@ -308,7 +318,7 @@ case_wpos_face_semantics(void)
       const struct r300_classic_target *t =
          r300_classic_target_get(false, false);
       struct r300_classic_select_result r;
-      CHECK(r300_classic_select(ctx, b.shader, t, 0, &sem, &r),
+      CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, &sem, &r),
             "selection ran");
       CHECK(r.program != NULL, rows[n].what);
       if (r.reject_reason)
@@ -356,7 +366,7 @@ case_control_flow_rejects(void)
     * control-flow reject. */
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result r;
-   CHECK(r300_classic_select(ctx, b.shader, t, 0, NULL, &r), "selection ran");
+   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, NULL, &r), "selection ran");
    CHECK(r.program == NULL, "control flow rejected");
    CHECK(r.reject_reason && strstr(r.reject_reason, "control flow") != NULL,
          "control-flow reject named");
@@ -378,7 +388,7 @@ case_integer_op_rejects(void)
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result r;
-   CHECK(r300_classic_select(ctx, b.shader, t, 0, NULL, &r), "selection ran");
+   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, NULL, &r), "selection ran");
    CHECK(r.program == NULL, "integer op rejected");
    /* The entry lowering carries most integer math to float; a bitwise op
     * with no FP24-exact lowering is the named remainder. */
@@ -410,7 +420,7 @@ case_varying_semantics_match_fixup(void)
    r300_shader_semantics_reset(&sem);
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result r;
-   CHECK(r300_classic_select(ctx, b.shader, t, 0, &sem, &r), "selection ran");
+   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, &sem, &r), "selection ran");
    CHECK(r.program != NULL, "varying shader selects");
    if (r.reject_reason)
       fprintf(stderr, "  rejected: %s\n", r.reject_reason);
@@ -445,7 +455,7 @@ case_wpos_reconstruction(void)
    r300_shader_semantics_reset(&sem);
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result r;
-   CHECK(r300_classic_select(ctx, b.shader, t, 0, &sem, &r), "selection ran");
+   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, &sem, &r), "selection ran");
    CHECK(r.program != NULL, "wpos shader selects");
    if (r.reject_reason)
       fprintf(stderr, "  rejected: %s\n", r.reject_reason);
