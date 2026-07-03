@@ -26,6 +26,7 @@ struct r300_fragment_program_compiler;
 bool
 r300_classic_emit(const struct r300_classic_program *p,
                   const struct r300_classic_immediates *imm,
+                  const struct r300_classic_state_constants *states,
                   struct r300_fragment_program_compiler *fc);
 
 #endif /* R300_CLASSIC_EMIT_H */

@@ -332,7 +332,7 @@ compile_classic(void *ctx, nir_shader *s,
       return false;
    }
    fs_compiler_init(fc, rs);
-   if (!r300_classic_emit(sel.program, &sel.immediates, fc)) {
+   if (!r300_classic_emit(sel.program, &sel.immediates, &sel.states, fc)) {
       *why = "emission failed";
       return false;
    }

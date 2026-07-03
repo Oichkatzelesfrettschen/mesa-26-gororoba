@@ -197,6 +197,7 @@ r300_classic_program_validate(const struct r300_classic_program *p,
             }
             break;
          case R300C_FILE_INPUT:
+         case R300C_FILE_STATE:
             break;
          default:
             ok = fail(err, err_size, i, "unknown source file");
@@ -241,6 +242,9 @@ print_src(const struct r300_classic_src *src, FILE *f)
       break;
    case R300C_FILE_CONST:
       fprintf(f, "c%u", src->index);
+      break;
+   case R300C_FILE_STATE:
+      fprintf(f, "s%u", src->index);
       break;
    }
    if (src->abs)

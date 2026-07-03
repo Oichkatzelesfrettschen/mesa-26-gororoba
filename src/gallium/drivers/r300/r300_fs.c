@@ -1245,7 +1245,7 @@ retry:
                        !ra.temp_of_ssa) {
                 why = ra.reject_reason ? ra.reject_reason : "allocation";
             } else if (!r300_classic_emit(sel.program, &sel.immediates,
-                                          &compiler)) {
+                                          &sel.states, &compiler)) {
                 why = "emission";
             } else {
                 shader->inputs = classic_inputs;

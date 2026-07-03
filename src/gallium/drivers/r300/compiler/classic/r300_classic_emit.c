@@ -55,6 +55,7 @@ static bool
 convert_src(const struct r300_classic_src *src,
             const struct r300_classic_immediates *imm,
             const unsigned *imm_rc_index,
+            const unsigned *state_rc_index, unsigned num_states,
             struct rc_src_register *out)
 {
    memset(out, 0, sizeof(*out));
@@ -62,6 +63,12 @@ convert_src(const struct r300_classic_src *src,
    case R300C_FILE_SSA:
       out->File = RC_FILE_TEMPORARY;
       out->Index = src->def->ssa_id;
+      break;
+   case R300C_FILE_STATE:
+      if (src->index >= num_states)
+         return false;
+      out->File = RC_FILE_CONSTANT;
+      out->Index = state_rc_index[src->index];
       break;
    case R300C_FILE_INPUT:
       out->File = RC_FILE_INPUT;
@@ -90,6 +97,7 @@ convert_src(const struct r300_classic_src *src,
 bool
 r300_classic_emit(const struct r300_classic_program *p,
                   const struct r300_classic_immediates *imm,
+                  const struct r300_classic_state_constants *states,
                   struct r300_fragment_program_compiler *fc)
 {
    struct radeon_compiler *c = &fc->Base;
@@ -105,6 +113,20 @@ r300_classic_emit(const struct r300_classic_program *p,
       constant.UseMask = RC_MASK_XYZW;
       constant.u.External = n;
       rc_constants_add(&c->Program.Constants, &constant);
+   }
+
+   /* Driver-updated state constants precede the immediates, the position
+    * nir_to_rc's table takes; the driver's constant upload walks
+    * Program.Constants by type, so only the reference remap matters. */
+   unsigned state_rc_index[R300_CLASSIC_MAX_STATE_CONSTANTS];
+   for (unsigned n = 0; n < states->count; n++) {
+      struct rc_constant constant;
+      memset(&constant, 0, sizeof(constant));
+      constant.Type = RC_CONSTANT_STATE;
+      constant.UseMask = RC_MASK_XYZW;
+      constant.u.State[0] = states->entries[n].rc_state;
+      constant.u.State[1] = states->entries[n].sampler;
+      state_rc_index[n] = rc_constants_add(&c->Program.Constants, &constant);
    }
 
    unsigned imm_rc_index[R300_CLASSIC_MAX_IMMEDIATES];
@@ -156,6 +178,7 @@ r300_classic_emit(const struct r300_classic_program *p,
                rc_insert_new_instruction(c, c->Program.Instructions.Prev);
             mov->U.I.Opcode = RC_OPCODE_MOV;
             if (!convert_src(&i->src[ch], imm, imm_rc_index,
+                             state_rc_index, states->count,
                              &mov->U.I.SrcReg[0]))
                return false;
             unsigned swz = mov->U.I.SrcReg[0].Swizzle;
@@ -178,6 +201,7 @@ r300_classic_emit(const struct r300_classic_program *p,
 
       for (unsigned s = 0; s < i->num_srcs; s++)
          if (!convert_src(&i->src[s], imm, imm_rc_index,
+                          state_rc_index, states->count,
                           &inst->U.I.SrcReg[s]))
             return false;
 
