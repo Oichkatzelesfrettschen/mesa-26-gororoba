@@ -21,23 +21,19 @@
 #include "pipe/p_screen.h"
 #include "frontend/winsys_handle.h"
 
-/* These formats are supported by swapping their bytes.
- * The swizzles must be set exactly like their non-swapped counterparts,
- * because byte-swapping is what reverses the component order, not swizzling.
+/* The format whose description matches the bytes an A8R8G8B8/X8R8G8B8
+ * surface holds in memory.
  *
- * This function returns the format that must be used to handle component order
- * for r300 byte-swapped array formats.
- */
+ * On big-endian these surfaces are stored through R300_SURF_DWORD_SWAP, so
+ * every translator (texture sampling, colorbuffer, shader output, colormask,
+ * CBZB clear packing) must describe the storage with the byte-reversed
+ * B8G8R8A8/B8G8R8X8 alias.  On little-endian no swap is applied and the
+ * logical packed format is the storage description, so the function is an
+ * identity there and the colorbuffer-side translators carry explicit native
+ * cases for these formats instead. */
 enum pipe_format r300_unbyteswap_array_format(enum pipe_format format)
 {
-    /* Only BGRA 8888 array formats are supported for simplicity of
-     * the implementation.  These formats render through
-     * R300_SURF_DWORD_SWAP, which the CRTC display controller does not
-     * apply during scanout.  r300_is_format_supported() therefore excludes
-     * them from PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET so that only
-     * render-target use is enabled.
-     * TODO: Verify A8R8G8B8/X8R8G8B8 render-target output on little-endian
-     * hardware with GL draw calls. */
+#if UTIL_ARCH_BIG_ENDIAN
     switch (format) {
     case PIPE_FORMAT_A8R8G8B8_UNORM:
         return PIPE_FORMAT_B8G8R8A8_UNORM;
@@ -48,27 +44,10 @@ enum pipe_format r300_unbyteswap_array_format(enum pipe_format format)
     case PIPE_FORMAT_X8R8G8B8_SRGB:
         return PIPE_FORMAT_B8G8R8X8_SRGB;
     default:
-        return format;
+        break;
     }
-}
-
-/* The format whose byte layout the TX unit fetches for a sampled resource.
- *
- * The RB3D render backend stores the formats remapped above through
- * R300_SURF_DWORD_SWAP, so the colorbuffer, shader-output, and colormask
- * translators use the swapped alias.  The TX unit maps fetched bytes through
- * the per-sampler component swizzle computed from the format description
- * instead, and on little-endian the storage bytes follow the logical packed
- * format, so that format is authoritative for sampling.  On big-endian the
- * surface bytes are DWORD-swapped in memory and the alias description
- * matches them, so sampling keeps the render-target alias there. */
-static enum pipe_format r300_sampler_storage_format(enum pipe_format format)
-{
-#if UTIL_ARCH_BIG_ENDIAN
-    return r300_unbyteswap_array_format(format);
-#else
-    return format;
 #endif
+    return format;
 }
 
 static unsigned r300_get_endian_swap(enum pipe_format format,
@@ -223,7 +202,7 @@ uint32_t r300_translate_texformat(enum pipe_format format,
         R300_TX_FORMAT_SIGNED_X,
     };
 
-    format = r300_sampler_storage_format(format);
+    format = r300_unbyteswap_array_format(format);
     desc = util_format_description(format);
 
     /* Colorspace (return non-RGB formats directly). */
@@ -566,6 +545,10 @@ static uint32_t r300_translate_colorformat(enum pipe_format format)
         /*case PIPE_FORMAT_B8G8R8A8_SNORM:*/
         case PIPE_FORMAT_B8G8R8X8_UNORM:
         /*case PIPE_FORMAT_B8G8R8X8_SNORM:*/
+        /* Little-endian storage of the ARGB byte-order formats; the shader
+         * output and colormask swizzles route the channels. */
+        case PIPE_FORMAT_A8R8G8B8_UNORM:
+        case PIPE_FORMAT_X8R8G8B8_UNORM:
         case PIPE_FORMAT_R8G8B8A8_UNORM:
         case PIPE_FORMAT_R8G8B8A8_SNORM:
         case PIPE_FORMAT_R8G8B8X8_UNORM:
@@ -796,6 +779,10 @@ static uint32_t r300_translate_out_fmt(enum pipe_format format)
         case PIPE_FORMAT_A16_SNORM:
         case PIPE_FORMAT_A16_FLOAT:
         case PIPE_FORMAT_A32_FLOAT:
+        /* Little-endian ARGB byte order: lane n stores byte n, so the
+         * shader channels rotate one lane up and alpha wraps to lane 0. */
+        case PIPE_FORMAT_A8R8G8B8_UNORM:
+        case PIPE_FORMAT_X8R8G8B8_UNORM:
             return modifier |
                 R300_C0_SEL_A | R300_C1_SEL_R |
                 R300_C2_SEL_G | R300_C3_SEL_B;
@@ -915,6 +902,12 @@ static uint32_t r300_translate_colormask_swizzle(enum pipe_format format)
     /*case PIPE_FORMAT_B8G8R8X8_SNORM:*/
     case PIPE_FORMAT_B10G10R10X2_UNORM:
         return COLORMASK_BGRX;
+
+    /* Little-endian ARGB byte order: mask lanes follow the byte lanes. */
+    case PIPE_FORMAT_A8R8G8B8_UNORM:
+        return COLORMASK_ARGB;
+    case PIPE_FORMAT_X8R8G8B8_UNORM:
+        return COLORMASK_ARGX;
 
 #if !UTIL_ARCH_BIG_ENDIAN
     case PIPE_FORMAT_B5G6R5_UNORM:

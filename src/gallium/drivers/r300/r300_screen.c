@@ -378,13 +378,24 @@ static bool r300_is_format_supported(struct pipe_screen* screen,
         /* 2101010 cannot be rendered to on non-r5xx. */
         (!is_color2101010 || is_r500) &&
         r300_is_colorbuffer_format_supported(format)) {
-        /* Formats remapped by r300_unbyteswap_array_format require
-         * DWORD_SWAP in the render backend.  Scanout reads the same memory
-         * without that render-backend swap, so expose only RENDER_TARGET
-         * and SHARED for those formats. */
-        bool needs_dword_swap =
-            r300_unbyteswap_array_format(format) != format;
-        unsigned scanout_mask = needs_dword_swap
+        /* ARGB byte-order surface memory never matches the CRTC ARGB8888
+         * scanout layout: big-endian stores them through the render
+         * backend's DWORD_SWAP, which the display controller does not
+         * apply, and on little-endian the byte order itself differs from
+         * the scanout convention.  Expose only RENDER_TARGET and SHARED. */
+        bool scanout_byte_order_mismatch;
+        switch (format) {
+        case PIPE_FORMAT_A8R8G8B8_UNORM:
+        case PIPE_FORMAT_A8R8G8B8_SRGB:
+        case PIPE_FORMAT_X8R8G8B8_UNORM:
+        case PIPE_FORMAT_X8R8G8B8_SRGB:
+            scanout_byte_order_mismatch = true;
+            break;
+        default:
+            scanout_byte_order_mismatch = false;
+            break;
+        }
+        unsigned scanout_mask = scanout_byte_order_mismatch
             ? (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SHARED)
             : (PIPE_BIND_RENDER_TARGET |
                PIPE_BIND_DISPLAY_TARGET |

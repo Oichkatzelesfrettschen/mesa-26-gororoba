@@ -340,6 +340,13 @@ static unsigned rgba_cmask(unsigned mask)
     return mask & PIPE_MASK_RGBA;
 }
 
+/* ARGB byte order: RGB shift one lane up, alpha wraps to lane 0. */
+static unsigned argb_cmask(unsigned mask)
+{
+    return ((mask & PIPE_MASK_A) >> 3) |
+           ((mask & (PIPE_MASK_R | PIPE_MASK_G | PIPE_MASK_B)) << 1);
+}
+
 static unsigned rrrr_cmask(unsigned mask)
 {
     return (mask & PIPE_MASK_R) |
@@ -632,11 +639,14 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
             grrg_cmask,
             arra_cmask,
             bgra_cmask,
-            rgba_cmask
+            rgba_cmask,
+            argb_cmask,
+            argb_cmask
         };
 
         for (i = 0; i < COLORMASK_NUM_SWIZZLES; i++) {
-            bool has_alpha = i != COLORMASK_RGBX && i != COLORMASK_BGRX;
+            bool has_alpha = i != COLORMASK_RGBX && i != COLORMASK_BGRX &&
+                             i != COLORMASK_ARGX;
             bool intensity = i == COLORMASK_RRRR;
 
             BEGIN_CB(blend->cb_clamp[i], 8);
