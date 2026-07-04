@@ -17,16 +17,18 @@
 #include "radeon_code.h"
 #include "radeon_compiler.h"
 
-/* Phase-0 exit criterion, oracle (c): a determinism check on the reference
- * path itself, not a cross-implementation comparison.  Compiling the
+/* Oracle (c), reference-path determinism: a determinism check on the
+ * reference path itself, not a cross-implementation comparison.  Compiling the
  * unmodified legacy path (nir_to_rc -> r3xx_compile_fragment_program) twice
  * from two independently built NIR shaders of the same shape must produce
  * byte-identical R300 hardware code -- same ALU/TEX instruction words, same
- * config/code_offset/code_addr layout.  This proves the harness itself
- * before Phases 1-3 trust a byte-diff for anything: if the reference
- * compiler were sensitive to allocation addresses, hash-iteration order, or
- * uninitialized memory, a future byte-diff against it would be noise, not
- * signal. */
+ * config/code_offset/code_addr layout, and the same uploaded constant file
+ * (rc_constants_copy's code.constants, which the ALU words index into and a
+ * diff scoped to the instruction words alone would miss).  This proves the
+ * harness itself before any later byte-diff work trusts it for anything: if
+ * the reference compiler were sensitive to allocation addresses,
+ * hash-iteration order, or uninitialized memory, a future byte-diff against
+ * it would be noise, not signal. */
 
 static int failures;
 
@@ -191,6 +193,27 @@ build_tex_modulate(void)
    return b.shader;
 }
 
+/* rc_constant's Type/UseMask bitfields share storage with each other, so
+ * they are compared by name rather than folded into a struct-wide memcmp;
+ * the union payload (u) is a real value union rc_constants_add_immediate_vec4
+ * and friends always populate in full, so comparing it as bytes is a
+ * legitimate whole-value compare, not a bitfield-hazard one. */
+static bool
+constants_equal(const struct rc_constant_list *a, const struct rc_constant_list *b)
+{
+   if (a->Count != b->Count)
+      return false;
+   for (unsigned i = 0; i < a->Count; i++) {
+      const struct rc_constant *ca = &a->Constants[i];
+      const struct rc_constant *cb = &b->Constants[i];
+      if (ca->Type != cb->Type || ca->UseMask != cb->UseMask)
+         return false;
+      if (memcmp(&ca->u, &cb->u, sizeof(ca->u)) != 0)
+         return false;
+   }
+   return true;
+}
+
 static void
 selfdiff_case(const char *name, nir_shader *(*build)(void))
 {
@@ -225,6 +248,16 @@ selfdiff_case(const char *name, nir_shader *(*build)(void))
       CHECK(memcmp(&code_a.code.code.r300, &code_b.code.code.r300,
                    sizeof(code_a.code.code.r300)) == 0,
             what);
+
+      /* The instruction/config block above is only half of what the two
+       * compiles must agree on: rc_constants_copy (r3xx_fragprog.c) also
+       * populates code.constants with the constant file the ALU words
+       * index into, and a byte-diff that skips it would miss a divergence
+       * in constant ordering or values while the instruction words still
+       * matched. */
+      snprintf(what, sizeof(what),
+              "%s: two compiles upload identical constants", name);
+      CHECK(constants_equal(&code_a.code.constants, &code_b.code.constants), what);
    }
 
    if (ok_a) {

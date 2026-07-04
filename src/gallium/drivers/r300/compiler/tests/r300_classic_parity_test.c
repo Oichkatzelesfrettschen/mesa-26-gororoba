@@ -23,7 +23,7 @@
 #include "radeon_program_constants.h"
 #include "radeon_regalloc.h"
 
-/* Phase-5 exit criterion: zero semantic divergence between the classic front
+/* Front-end parity oracle: zero semantic divergence between the classic front
  * end and nir_to_rc on the corpus.  Each corpus shader compiles through BOTH
  * front ends into two rc_programs, and a CPU evaluator of the RC IR executes
  * both on the same input vectors, the same constant files, and the same

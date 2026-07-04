@@ -97,9 +97,23 @@ gather_temp_reads(const struct rc_pair_instruction *p, unsigned *out, unsigned c
    return count;
 }
 
+/* A pair writes RC_FILE_OUTPUT (the fragment color export) through
+ * OutputWriteMask/Target rather than through DestIndex (rc_pair_translate's
+ * destination handling), and writes depth through the separate
+ * Alpha.DepthWriteMask bit -- neither carries a temporary index the writer[]
+ * map can key on.  Two such writes must keep their original relative order:
+ * a later export must not race ahead of an earlier one to the same output. */
+static bool
+pair_writes_output(const struct rc_pair_instruction *p)
+{
+   return p->RGB.OutputWriteMask || p->Alpha.OutputWriteMask || p->Alpha.DepthWriteMask;
+}
+
 /* Up to four source slots on each of two pipes bound the distinct
- * temporaries one pair can read, and therefore its predecessor count. */
-#define R300_CLASSIC_MAX_PREDS 8
+ * temporaries one pair can read (eight), plus the single output/depth
+ * write-order edge every pair may carry -- nine predecessors bounds any
+ * pair's dependency set. */
+#define R300_CLASSIC_MAX_PREDS 9
 
 struct sched_node {
    struct rc_instruction *inst;
@@ -108,7 +122,23 @@ struct sched_node {
    unsigned num_pred;
    unsigned unresolved;
    bool emitted;
+   /* Index of the nearest earlier output/depth-writing pair, or -1; folded
+    * into pred[] as a WAW ordering edge alongside the RAW temp edges. */
+   int output_pred;
 };
+
+/* DestIndex and Src[].Index are RC_REGISTER_INDEX_BITS-wide bitfields, so a
+ * value assigned through that field is always inside [0, RC_REGISTER_MAX_INDEX)
+ * by construction; writer[] is sized to match.  The check below is a
+ * defense against that invariant changing under a future encoding, not a
+ * condition this subset's inputs can currently trigger: an index outside the
+ * bound is treated as an unmodeled hazard and the whole pass defers rather
+ * than indexing writer[] on trust. */
+static bool
+temp_index_in_range(int idx)
+{
+   return idx >= 0 && (unsigned)idx < RC_REGISTER_MAX_INDEX;
+}
 
 void
 r300_classic_schedule(struct radeon_compiler *cc, void *user)
@@ -118,7 +148,15 @@ r300_classic_schedule(struct radeon_compiler *cc, void *user)
    /* The subset shape is a straight line of ALU pairs in single-assignment
     * form.  A TEX block, control flow, a still-normal instruction, or a
     * destination index written twice all break the RAW-only ordering this
-    * pass relies on, so defer to the legacy scheduler that models them. */
+    * pass relies on, so defer to the legacy scheduler that models them.
+    *
+    * user carries the same disable_optimizations flag rc_pair_schedule reads
+    * as its Opt field (radeon_pair_schedule.c's pair_instructions gates the
+    * extra try_convert_and_pair RGB<->Alpha conversion search on it).  This
+    * pass performs no such heuristic search and no RGB/Alpha merging -- only
+    * a canonical dependency-preserving reorder of the pairs rc_pair_translate
+    * already produced -- so it has no analogous lever the flag could gate,
+    * and it forwards user unread to whichever scheduler ends up running. */
    unsigned n = 0;
    for (struct rc_instruction *i = sentinel->Next; i != sentinel; i = i->Next) {
       if (i->Type != RC_INSTRUCTION_PAIR) {
@@ -129,6 +167,18 @@ r300_classic_schedule(struct radeon_compiler *cc, void *user)
    }
    if (n == 0)
       return;
+
+   /* This pass only reorders the pairs rc_pair_translate already emitted; it
+    * never merges a half-full RGB-only pair with a half-full Alpha-only one
+    * the way rc_pair_schedule's merge_instructions() does.  When the
+    * translated stream is already longer than the hardware ALU-instruction
+    * envelope, only that merging compaction can still fit it, so defer to
+    * the scheduler that can attempt it instead of handing
+    * rc_validate_final_shader a schedule already too long to pass. */
+   if (cc->max_alu_insts > 0 && n > (unsigned)cc->max_alu_insts) {
+      rc_pair_schedule(cc, user);
+      return;
+   }
 
    struct sched_node *nodes = calloc(n, sizeof(*nodes));
    int *writer = malloc(RC_REGISTER_MAX_INDEX * sizeof(*writer));
@@ -144,8 +194,13 @@ r300_classic_schedule(struct radeon_compiler *cc, void *user)
       writer[i] = -1;
 
    /* Map every temporary to its single defining pair; a second, distinct
-    * definer means the stream is not single-assignment and the pass defers. */
+    * definer means the stream is not single-assignment and the pass defers.
+    * The same walk threads the output/depth write-order chain (WAW ordering
+    * for RC_FILE_OUTPUT and depth writes, which carry no temporary index of
+    * their own to key writer[] on) and rejects any out-of-range register
+    * index the pass cannot safely model. */
    bool ssa = true;
+   int last_output_writer = -1;
    unsigned pos = 0;
    for (struct rc_instruction *i = sentinel->Next; i != sentinel; i = i->Next, pos++) {
       nodes[pos].inst = i;
@@ -154,10 +209,19 @@ r300_classic_schedule(struct radeon_compiler *cc, void *user)
       for (unsigned d = 0; d < 2 && ssa; d++) {
          if (defs[d] < 0)
             continue;
-         if (writer[defs[d]] >= 0 && writer[defs[d]] != (int)pos)
+         if (!temp_index_in_range(defs[d])) {
             ssa = false;
-         else
+         } else if (writer[defs[d]] >= 0 && writer[defs[d]] != (int)pos) {
+            ssa = false;
+         } else {
             writer[defs[d]] = (int)pos;
+         }
+      }
+
+      nodes[pos].output_pred = -1;
+      if (pair_writes_output(&i->U.P)) {
+         nodes[pos].output_pred = last_output_writer;
+         last_output_writer = (int)pos;
       }
    }
    if (!ssa) {
@@ -169,13 +233,20 @@ r300_classic_schedule(struct radeon_compiler *cc, void *user)
    }
 
    /* Predecessor sets: a pair depends on the definer of each temporary it
-    * reads.  Under single assignment these RAW edges are the only ordering
-    * constraint, so any topological order preserves every computed value. */
+    * reads, plus the nearest earlier output/depth writer if it is one
+    * itself.  Under single assignment these RAW edges, together with the
+    * output WAW chain, are the only ordering constraints, so any
+    * topological order preserves every computed value and every export. */
+   bool reads_out_of_range = false;
    for (unsigned j = 0; j < n; j++) {
       unsigned reads[R300_CLASSIC_MAX_PREDS];
       const unsigned num_reads =
          gather_temp_reads(&nodes[j].inst->U.P, reads, R300_CLASSIC_MAX_PREDS);
       for (unsigned r = 0; r < num_reads; r++) {
+         if (!temp_index_in_range((int)reads[r])) {
+            reads_out_of_range = true;
+            continue;
+         }
          const int w = writer[reads[r]];
          if (w < 0 || w == (int)j)
             continue;
@@ -185,7 +256,21 @@ r300_classic_schedule(struct radeon_compiler *cc, void *user)
          if (!dup && nodes[j].num_pred < R300_CLASSIC_MAX_PREDS)
             nodes[j].pred[nodes[j].num_pred++] = w;
       }
+      if (nodes[j].output_pred >= 0 && nodes[j].output_pred != (int)j) {
+         bool dup = false;
+         for (unsigned k = 0; k < nodes[j].num_pred; k++)
+            dup |= (nodes[j].pred[k] == nodes[j].output_pred);
+         if (!dup && nodes[j].num_pred < R300_CLASSIC_MAX_PREDS)
+            nodes[j].pred[nodes[j].num_pred++] = nodes[j].output_pred;
+      }
       nodes[j].unresolved = nodes[j].num_pred;
+   }
+   if (reads_out_of_range) {
+      free(nodes);
+      free(writer);
+      free(order);
+      rc_pair_schedule(cc, user);
+      return;
    }
 
    /* Greedy list schedule: emit the lowest-original-index ready pair, which
@@ -199,13 +284,16 @@ r300_classic_schedule(struct radeon_compiler *cc, void *user)
          if (pick < 0 || nodes[j].orig_index < nodes[pick].orig_index)
             pick = (int)j;
       }
-      /* A single-assignment RAW graph is acyclic, so a ready pair always
-       * exists until every pair is placed. */
+      /* A single-assignment RAW-plus-output-WAW graph is acyclic for any
+       * program a real front end emits; a dependency cycle here is an
+       * unmodeled hazard the pass cannot schedule around.  Defer to the
+       * legacy scheduler on the untouched instruction list (nothing has
+       * been unlinked yet) instead of hard-failing the compile. */
       if (pick < 0) {
          free(nodes);
          free(writer);
          free(order);
-         rc_error(cc, "r300_classic_schedule: dependency cycle");
+         rc_pair_schedule(cc, user);
          return;
       }
       nodes[pick].emitted = true;

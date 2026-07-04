@@ -21,10 +21,10 @@
 #include "radeon_program_constants.h"
 #include "radeon_program_pair.h"
 
-/* Phase-0 exit criterion, oracle (b): the schedule-legality validator must
- * PASS on the unmodified legacy path (nir_to_rc -> r3xx_compile_fragment_program,
- * the pairer/scheduler/regalloc this mission does not touch) before it can be
- * trusted to gate a from-scratch scheduler later.  Two halves:
+/* Oracle (b), schedule legality: the validator must PASS on the unmodified
+ * legacy path (nir_to_rc -> r3xx_compile_fragment_program, the
+ * pairer/scheduler/regalloc this file does not touch) before it can be
+ * trusted to gate a from-scratch scheduler.  Two halves:
  *
  *   - a corpus of shaders compiled through the full legacy backend pass
  *     chain, including ones shaped to force RGB.REPL_ALPHA and Alpha.DP
