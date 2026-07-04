@@ -179,19 +179,24 @@ r300_nir_lower_vs_system_values_to_inputs(nir_shader *s, int vertex_id_slot,
 
 /* Rewrite the spirv_to_nir system-value deref into the native intrinsic the SW
  * draw module already supplies.  draw_vs_exec fills TGSI_SEMANTIC_VERTEXID from
- * (i + start_index) and TGSI_SEMANTIC_INSTANCEID from draw->instance_id, and the
- * r300 VERTEX stage carries integers = true, so nir_to_tgsi keeps
- * load_vertex_id / load_instance_id as native int system values rather than
- * rejecting them.  Emitting the intrinsic instead of a synthetic vertex input
- * consumes no vertex element, so a shader reading VertexID alongside the full
- * maxVertexInputAttributes set still fits the 16-element PSC budget.
+ * the vsplit frontend's fetch_elts (an indexed draw's raw index plus eltBias,
+ * draw_pt_vsplit.c's vsplit_add_cache_uint32) or i + start_index for a
+ * non-indexed draw, and the r300 VERTEX stage carries integers = true, so
+ * nir_to_tgsi keeps load_vertex_id / load_instance_id as native int system
+ * values rather than rejecting them.  Emitting the intrinsic instead of a
+ * synthetic vertex input consumes no vertex element, so a shader reading
+ * VertexID alongside the full maxVertexInputAttributes set still fits the
+ * 16-element PSC budget.
  *
- * load_vertex_id delivers i + start_index, which matches gl_VertexIndex for a
- * non-indexed draw at any firstVertex; an indexed draw drops the vertexOffset
- * (draw_vs_exec supplies the raw index) and load_instance_id is the zero-based
- * instance number, dropping firstInstance.  The base-inclusive synthetic path
- * stays the default for those cases; this native path is an opt-in slot-budget
- * route for base-zero draws. */
+ * load_vertex_id already matches Vulkan's base-inclusive gl_VertexIndex for
+ * both indexed and non-indexed draws at any firstVertex/vertexOffset -- GL's
+ * gl_VertexID carries the same base-inclusive contract, and draw_vs_exec
+ * supplies one value for both.  load_instance_id is the GL-defined
+ * gl_InstanceID (TGSI_SEMANTIC_INSTANCEID's documented contract in
+ * p_shader_tokens.h: "doesn't include start_instance"), so Vulkan's
+ * base-inclusive gl_InstanceIndex needs the firstInstance addend the draw
+ * module tracks separately as TGSI_SEMANTIC_BASEINSTANCE
+ * (draw_vs_exec.c, shader->draw->start_instance). */
 static bool
 lower_vs_sysval_to_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
                              void *data)
@@ -207,7 +212,7 @@ lower_vs_sysval_to_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
       break;
    case SYSTEM_VALUE_INSTANCE_ID:
       b->cursor = nir_before_instr(&intr->instr);
-      value = nir_load_instance_id(b);
+      value = nir_iadd(b, nir_load_instance_id(b), nir_load_base_instance(b));
       break;
    default:
       return false;

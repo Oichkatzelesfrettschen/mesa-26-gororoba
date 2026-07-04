@@ -69,16 +69,24 @@ vs_exec_prepare(struct draw_vertex_shader *shader,
    struct exec_vertex_shader *evs = exec_vertex_shader(shader);
 
    assert(!draw->llvm);
-   /* Specify the vertex program to interpret/execute.
-    * Avoid rebinding when possible.
-    */
-   if (evs->machine->Tokens != shader->state.tokens) {
-      tgsi_exec_machine_bind_shader(evs->machine,
-                                    shader->state.tokens,
-                                    draw->vs.tgsi.sampler,
-                                    draw->vs.tgsi.image,
-                                    draw->vs.tgsi.buffer);
-   }
+   /* draw_create_vs_exec assigns every exec_vertex_shader the SAME shared
+    * draw->vs.tgsi.machine, so evs->machine->Tokens holds whichever shader's
+    * tokens last bound it -- possibly a since-destroyed shader's token buffer
+    * whose allocation a later shader's tokens then reused at the same
+    * address.  Comparing that pointer against shader->state.tokens ("avoid
+    * rebinding when possible") reads as a match on that address coincidence
+    * and skips the rebind, leaving mach->SysSemanticToIndex built for the
+    * freed shader's declarations while the current shader's info (e.g.
+    * uses_vertexid) expects its own.  A shader whose system-value read the
+    * stale table never declared reads the -1 sentinel and asserts (or, absent
+    * an assert, silently reads UB).  Always rebind: tgsi_exec_machine_bind_shader
+    * re-parses shader->state.tokens into the shared machine every prepare,
+    * so no stale declaration table can survive a shader that never bound it. */
+   tgsi_exec_machine_bind_shader(evs->machine,
+                                 shader->state.tokens,
+                                 draw->vs.tgsi.sampler,
+                                 draw->vs.tgsi.image,
+                                 draw->vs.tgsi.buffer);
 }
 
 
@@ -113,6 +121,19 @@ vs_exec_run_linear(struct draw_vertex_shader *shader,
       assert(i < ARRAY_SIZE(machine->SystemValue));
       for (j = 0; j < TGSI_QUAD_SIZE; j++)
          machine->SystemValue[i].xyzw[0].i[j] = shader->draw->instance_id;
+   }
+
+   /* TGSI_SEMANTIC_INSTANCEID is the GL-defined gl_InstanceID: the loop
+    * counter alone, excluding start_instance (see the TGSI_SEMANTIC_INSTANCEID
+    * comment in p_shader_tokens.h).  A caller that needs the Vulkan-defined
+    * gl_InstanceIndex (InstanceID + firstInstance) adds this system value to
+    * it at the NIR level; supply the addend here the same way vertex_id
+    * already gets its basevertex addend from the fetch/start_index path. */
+   if (shader->info.uses_baseinstance) {
+      unsigned i = machine->SysSemanticToIndex[TGSI_SEMANTIC_BASEINSTANCE];
+      assert(i < ARRAY_SIZE(machine->SystemValue));
+      for (j = 0; j < TGSI_QUAD_SIZE; j++)
+         machine->SystemValue[i].xyzw[0].i[j] = shader->draw->start_instance;
    }
 
    for (i = 0; i < count; i += MAX_TGSI_VERTICES) {

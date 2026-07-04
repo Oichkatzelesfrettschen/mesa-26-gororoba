@@ -343,6 +343,20 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
     NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
              nir_var_shader_in, UINT32_MAX);
 
+    /* A structured SPIR-V loop with a break nested inside its body keeps a
+     * bool function_temp variable (loop_break/loop_continue) live across
+     * blocks instead of an SSA phi.  nir_lower_bool_to_float rewrites the
+     * false/true constants stored through that deref to 32-bit floats but
+     * leaves the variable's glsl_type at bool (1-bit); the vars-to-ssa pass
+     * draw's nir_to_tgsi runs at emit time then builds the phi for that
+     * variable at its declared 1-bit width and asserts when it meets the
+     * 32-bit float store (nir_phi_builder_value_set_block_def,
+     * def->bit_size != val->bit_size).  Converting every eligible variable
+     * to SSA here, before the bool/int-to-float rewrites run, removes the
+     * deref indirection those rewrites do not track -- nir_to_tgsi's own
+     * nir_lower_vars_to_ssa call later is then a no-op for this shader. */
+    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+
     /* Mesa stores GL integer uniforms converted to float
      * (uniform_int_float in uniform_query.cpp) because the fragment caps
      * make NativeIntegers false for the whole context, but the draw
