@@ -1691,6 +1691,17 @@ retry:
                 why = "emission";
             } else {
                 shader->inputs = classic_inputs;
+                /* nir_to_rc() sets rc.f->uses_discard from s->info.fs.uses_discard
+                 * (gathered before either front end runs); r300_update_ztop reads
+                 * shader->uses_discard to disable ZTOP whenever the fragment
+                 * shader can kill a pixel (r300_hyperz.c, ZTOP condition 2: texture
+                 * kill instructions).  The classic front end emits KIL/KILP
+                 * directly into rc_program without going through nir_to_rc, so it
+                 * must copy the same NIR gather-info flag or a discarding
+                 * classic-compiled shader leaves ZTOP enabled and its early depth
+                 * write reaches the Z buffer before the pixel shader can discard
+                 * it. */
+                shader->uses_discard = clone->info.fs.uses_discard;
                 classic_done = true;
             }
             /* Both verdicts print under DBG_FP so a gate-on hardware run can
