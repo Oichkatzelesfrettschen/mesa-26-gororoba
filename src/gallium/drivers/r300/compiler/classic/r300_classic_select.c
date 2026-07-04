@@ -376,6 +376,23 @@ select_intrinsic(struct sel_ctx *ctx, nir_intrinsic_instr *intr)
          return reject(ctx, "out of memory");
       e->export_index = export_index;
       e->src[0] = src;
+      /* R300C_OP_EXPORT_COLOR: record which destination channels this store
+       * actually covers so emission can mask the export MOV instead of
+       * always writing XYZW (radeon_pair_translate.c's RGB.OutputWriteMask /
+       * Alpha.OutputWriteMask honor an arbitrary per-channel mask on an
+       * RC_FILE_OUTPUT dst exactly like a temp write); two masked stores to
+       * the same color attachment then accumulate into the shared output
+       * register the way ntr_emit_store_output's masked MOV does in
+       * nir_to_rc.c.  component is the destination's base channel (nonzero
+       * only for a component-packed scalar/vec2 output sharing a slot);
+       * write_mask bits are relative to that base.  R300C_OP_EXPORT_DEPTH
+       * stays a true sink (writemask 0): emission always targets the output
+       * register's .w lane regardless of which source component held the
+       * depth value, so there is no destination mask to record. */
+      if (op == R300C_OP_EXPORT_COLOR) {
+         const unsigned component = nir_intrinsic_component(intr);
+         e->writemask = (uint8_t)(nir_intrinsic_write_mask(intr) << component);
+      }
       return true;
    }
    case nir_intrinsic_load_uniform: {

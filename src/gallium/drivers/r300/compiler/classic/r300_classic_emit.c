@@ -217,7 +217,7 @@ r300_classic_emit(const struct r300_classic_program *p,
       case R300C_OP_EXPORT_COLOR:
          inst->U.I.DstReg.File = RC_FILE_OUTPUT;
          inst->U.I.DstReg.Index = color_reg[i->export_index & 3];
-         inst->U.I.DstReg.WriteMask = RC_MASK_XYZW;
+         inst->U.I.DstReg.WriteMask = i->writemask;
          break;
       case R300C_OP_EXPORT_DEPTH: {
          /* The backend reads fragment depth from the .w channel; route the

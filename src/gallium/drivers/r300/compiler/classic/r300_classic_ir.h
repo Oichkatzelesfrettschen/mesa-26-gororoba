@@ -104,8 +104,13 @@ struct r300_classic_instr {
    enum r300_classic_op op;
    /* Dense SSA id, assigned at append time; the printer's t<id> name. */
    unsigned ssa_id;
-   /* Channels this def produces (RC_MASK-style 4-bit mask).  Exports and
-    * KIL produce no SSA value and keep writemask 0. */
+   /* Channels this def produces (RC_MASK-style 4-bit mask).  KIL produces no
+    * SSA value and keeps writemask 0.  R300C_OP_EXPORT_COLOR repurposes this
+    * as the destination write mask instead of an SSA-def mask: the store's
+    * nir_intrinsic_write_mask, so two differently-masked stores to the same
+    * color attachment accumulate into the shared output register rather than
+    * each clobbering the other's channels.  R300C_OP_EXPORT_DEPTH keeps
+    * writemask 0; emission always targets the output register's .w lane. */
    uint8_t writemask;
    /* Clamp the result to [0, 1] (RC SaturateMode ZERO_ONE on the dst). */
    bool saturate;
@@ -166,5 +171,14 @@ r300_classic_op_name(enum r300_classic_op op);
 
 unsigned
 r300_classic_op_num_srcs(enum r300_classic_op op);
+
+/* True when op allocates a temp register for its result -- an SSA def a
+ * later instruction can read by ssa_id.  False for KIL/KILP (no result) and
+ * for R300C_OP_EXPORT_COLOR/R300C_OP_EXPORT_DEPTH, whose writemask instead
+ * names the destination output-register channels: an export's ssa_id is
+ * never itself a temp register, so regalloc must not reserve a slot for
+ * it. */
+bool
+r300_classic_op_has_def(enum r300_classic_op op);
 
 #endif /* R300_CLASSIC_IR_H */

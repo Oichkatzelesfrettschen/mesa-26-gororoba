@@ -58,7 +58,10 @@ r300_classic_regalloc(void *mem_ctx, const struct r300_classic_program *p,
          }
       }
 
-      if (i->writemask) {
+      /* r300_classic_op_has_def, not i->writemask: R300C_OP_EXPORT_COLOR
+       * carries a nonzero writemask for its destination output channels, not
+       * an SSA def, and must not consume a temp register slot. */
+      if (r300_classic_op_has_def(i->op)) {
          int slot = -1;
          for (unsigned t = 0; t < p->target->max_temp_regs; t++) {
             if (!BITSET_TEST(in_use, t)) {

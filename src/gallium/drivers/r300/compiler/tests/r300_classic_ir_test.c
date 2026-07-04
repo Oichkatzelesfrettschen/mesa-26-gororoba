@@ -16,7 +16,8 @@
  * varying through MAD, a dependent texture read, a DP3, a color export) and
  * requires validation plus a stable text dump.  Each negative case flips one
  * rule (use-before-def, empty writemask, constant out of file range, TEX
- * unit out of range, writemask on a sink) and requires validation to fail
+ * unit out of range, writemask on a depth sink, empty export destination
+ * mask) and requires validation to fail
  * with the offending instruction named. */
 
 static int failures;
@@ -84,6 +85,7 @@ positive_program(void)
 
    struct r300_classic_instr *out =
       r300_classic_instr_append(p, R300C_OP_EXPORT_COLOR);
+   out->writemask = 0xf;
    out->src[0] = src_ssa(dp3);
    out->src[0].swizzle = RC_MAKE_SWIZZLE_SMEAR(RC_SWIZZLE_X);
 
@@ -232,7 +234,25 @@ negative_cases(void)
       ralloc_free(ctx);
    }
    {
-      /* A sink (export) must not claim a writemask. */
+      /* A true sink (depth export) must not claim a writemask: emission
+       * always targets the output register's .w lane regardless. */
+      void *ctx = ralloc_context(NULL);
+      struct r300_classic_program *p = r300_classic_program_create(ctx, t);
+      struct r300_classic_instr *mov =
+         r300_classic_instr_append(p, R300C_OP_MOV);
+      mov->writemask = 0xf;
+      mov->src[0] = src_input(0);
+      struct r300_classic_instr *out =
+         r300_classic_instr_append(p, R300C_OP_EXPORT_DEPTH);
+      out->writemask = 0xf;
+      out->src[0] = src_ssa(mov);
+      CHECK(!r300_classic_program_validate(p, err, sizeof(err)),
+            "sink writemask rejected");
+      ralloc_free(ctx);
+   }
+   {
+      /* A color export must claim a nonzero destination mask: an empty
+       * mask would silently drop the store instead of writing anything. */
       void *ctx = ralloc_context(NULL);
       struct r300_classic_program *p = r300_classic_program_create(ctx, t);
       struct r300_classic_instr *mov =
@@ -241,10 +261,9 @@ negative_cases(void)
       mov->src[0] = src_input(0);
       struct r300_classic_instr *out =
          r300_classic_instr_append(p, R300C_OP_EXPORT_COLOR);
-      out->writemask = 0xf;
       out->src[0] = src_ssa(mov);
       CHECK(!r300_classic_program_validate(p, err, sizeof(err)),
-            "sink writemask rejected");
+            "empty export writemask rejected");
       ralloc_free(ctx);
    }
 }
