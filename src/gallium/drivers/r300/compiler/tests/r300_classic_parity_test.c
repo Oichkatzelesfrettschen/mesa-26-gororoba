@@ -377,11 +377,11 @@ run_eval(struct r300_fragment_program_compiler *fc, unsigned input_set,
 /* The parity core: both front ends, four input sets, tolerance compare.
  * ext carries per-unit sampler state (shadow compare func, swizzle) through
  * both compilers; NULL compiles the plain zero state every non-shadow
- * corpus shader uses.  count_diverge_as_failure is false only for a
- * reachability probe documenting a still-open front-end divergence: the
- * per-channel mismatch is reported but does not fail the suite, so a
- * confirmed-but-unfixed defect does not red-line the build.  Returns true
- * if any input set showed a per-channel mismatch. */
+ * corpus shader uses.  count_diverge_as_failure gates whether a per-channel
+ * mismatch fails the suite; every corpus entry currently runs with it true,
+ * so parity_probe is a superset of parity() available for a shader that
+ * needs a non-NULL ext.  Returns true if any input set showed a per-channel
+ * mismatch. */
 static bool
 parity_probe(const char *name, nir_shader *(*build)(void),
             const struct r300_fragment_program_external_state *ext,
@@ -805,14 +805,15 @@ build_vector_rcp_pow(void)
 }
 
 /* Two masked stores to the same fragment color: .xy from one value, then
- * .zw from an independent one.  ntr_emit_store_output (nir_to_rc.c) reads
- * nir_intrinsic_write_mask and MOVs only the covered channels; the classic
- * front end's store_output case (select_intrinsic, r300_classic_select.c)
- * takes only intr->src[0] and r300_classic_emit.c's R300C_OP_EXPORT_COLOR
- * always sets WriteMask to RC_MASK_XYZW, so the export ignores the mask
- * entirely.  The second, .zw-only store's classic export therefore
- * re-exports its own X,Y lanes (an unrelated stomp value) over the first
- * store's X,Y result. */
+ * .zw from an independent one.  ntr_emit_store_output (nir_to_rc.c) MOVs
+ * only the covered channels into RC_FILE_OUTPUT; select_intrinsic's
+ * store_output case (r300_classic_select.c) records the same
+ * nir_intrinsic_write_mask on the R300C_OP_EXPORT_COLOR instruction, and
+ * r300_classic_emit.c propagates it as the export MOV's WriteMask, so the
+ * second store's masked export touches only Z/W and cannot stomp the first
+ * store's X/Y result -- radeon_pair_translate.c's RGB.OutputWriteMask /
+ * Alpha.OutputWriteMask honor an arbitrary per-channel mask on an
+ * RC_FILE_OUTPUT dst exactly like a temp register write. */
 static nir_shader *
 build_masked_output_store(void)
 {
@@ -832,6 +833,71 @@ build_masked_output_store(void)
 
    nir_def *store_zw = nir_vec4(&b, stomp, stomp, z, w);
    nir_store_var(&b, out, store_zw, 0xc);
+
+   return b.shader;
+}
+
+/* A single-channel store (.x, mask 0x1) followed by a three-channel store
+ * (.yzw, mask 0xe starting at bit 1) to the same fragment color: the
+ * narrowest and widest non-full masks the write-mask fix has to carry
+ * correctly, as distinct from build_masked_output_store's even .xy/.zw
+ * split. */
+static nir_shader *
+build_masked_output_store_single_channel(void)
+{
+   nir_builder b = fs_builder("parity_maskedout_single");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *x = nir_fmul_imm(&b, nir_channel(&b, v, 0), 0.5f);
+   nir_def *y = nir_fadd_imm(&b, nir_channel(&b, v, 1), 0.25f);
+   nir_def *z = nir_ffract(&b, nir_channel(&b, v, 2));
+   nir_def *w = nir_fmul_imm(&b, nir_channel(&b, v, 3), 2.0f);
+   nir_def *stomp = nir_imm_float(&b, -3.0f);
+
+   nir_def *store_x = nir_vec4(&b, x, stomp, stomp, stomp);
+   nir_store_var(&b, out, store_x, 0x1);
+
+   nir_def *store_yzw = nir_vec4(&b, stomp, y, z, w);
+   nir_store_var(&b, out, store_yzw, 0xe);
+
+   return b.shader;
+}
+
+/* A masked color store (.xy then .zw, mirroring build_masked_output_store)
+ * beside an independent gl_FragDepth store: selection, regalloc, and
+ * emission must carry a masked R300C_OP_EXPORT_COLOR and an unmasked
+ * R300C_OP_EXPORT_DEPTH through the same program without the depth export's
+ * writemask-0 sink (r300_classic_ir.c's has_output_mask split) disturbing
+ * the color export's nonzero destination mask, or vice versa. */
+static nir_shader *
+build_masked_output_store_with_depth(void)
+{
+   nir_builder b = fs_builder("parity_maskedout_depth");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_variable *depth = nir_variable_create(b.shader, nir_var_shader_out,
+                                             glsl_float_type(), "gl_FragDepth");
+   depth->data.location = FRAG_RESULT_DEPTH;
+   depth->data.driver_location = 1;
+
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *x = nir_fmul_imm(&b, nir_channel(&b, v, 0), 0.5f);
+   nir_def *y = nir_fadd_imm(&b, nir_channel(&b, v, 1), 0.25f);
+   nir_def *z = nir_ffract(&b, nir_channel(&b, v, 2));
+   nir_def *w = nir_fmul_imm(&b, nir_channel(&b, v, 3), 2.0f);
+   nir_def *stomp = nir_imm_float(&b, -7.0f);
+   nir_def *unused = nir_imm_float(&b, 0.0f);
+
+   nir_def *store_xy = nir_vec4(&b, x, y, unused, unused);
+   nir_store_var(&b, out, store_xy, 0x3);
+
+   nir_def *store_zw = nir_vec4(&b, stomp, stomp, z, w);
+   nir_store_var(&b, out, store_zw, 0xc);
+
+   nir_def *depth_val = nir_fadd_imm(&b, nir_fabs(&b, nir_channel(&b, v, 3)),
+                                     0.1f);
+   nir_store_var(&b, depth, depth_val, 0x1);
 
    return b.shader;
 }
@@ -966,32 +1032,22 @@ main(void)
    parity("transcendentals", build_transcendentals);
    parity("floor_round", build_floor_round);
 
-   /* Regression gates for the fixed TEX-writemask and shadow-compare
-    * classic/nir_to_rc divergences: both front ends must agree. */
+   /* Regression gates for the fixed TEX-writemask, shadow-compare, and
+    * store_output write-mask classic/nir_to_rc divergences: both front ends
+    * must agree.  select_intrinsic's store_output case (r300_classic_select.c)
+    * records nir_intrinsic_write_mask on the R300C_OP_EXPORT_COLOR
+    * instruction and r300_classic_emit.c propagates it as the export MOV's
+    * WriteMask, so two differently-masked stores to the same color
+    * attachment accumulate the way ntr_emit_store_output's masked MOV does
+    * in nir_to_rc.c instead of one clobbering the other. */
    parity("tex_r_channel_independent", build_tex_r_channel_independent);
    parity_probe("shadow_compare_always", build_shadow_compare_always,
                &shadow_always_ext, true);
-
-   /* Reachability probe for the still-open store_output write-mask
-    * divergence: the classic front end's EXPORT_COLOR ignores
-    * nir_intrinsic_write_mask entirely (r300_classic_emit.c), so two
-    * differently-masked stores to the same fragment color diverge from
-    * nir_to_rc's masked-MOV translation.  count_diverge_as_failure is
-    * false so this documents the gap without red-lining the suite; once
-    * the classic emitter honors the write mask, flip this to a plain
-    * parity() call to turn it into a permanent regression gate. */
-   const bool store_output_diverges =
-      parity_probe("masked_output_store", build_masked_output_store, NULL,
-                  false);
-   if (store_output_diverges) {
-      fprintf(stderr,
-             "r300_classic_parity_test: CONFIRMED DEFECT -- classic "
-             "store_output ignores the NIR write mask (see "
-             "select_intrinsic's nir_intrinsic_store_output case in "
-             "r300_classic_select.c and R300C_OP_EXPORT_COLOR in "
-             "r300_classic_emit.c); masked_output_store diverges from "
-             "nir_to_rc above.\n");
-   }
+   parity("masked_output_store", build_masked_output_store);
+   parity("masked_output_store_single_channel",
+         build_masked_output_store_single_channel);
+   parity("masked_output_store_with_depth",
+         build_masked_output_store_with_depth);
 
    glsl_type_singleton_decref();
    if (failures) {
