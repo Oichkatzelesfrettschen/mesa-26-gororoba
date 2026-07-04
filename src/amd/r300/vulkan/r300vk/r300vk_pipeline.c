@@ -1399,41 +1399,52 @@ r300vk_compile_shader(struct r300vk_device *device,
        * both the deref and the lowered-intrinsic form instead. */
       bool needs_vid = false, needs_iid = false;
       r300_nir_vs_reads_system_values(nir, &needs_vid, &needs_iid);
-      /* The r300 VERTEX stage carries caps->integers = true (r300_screen.c), so
-       * the SW-TCL VS nir_to_tgsi keeps load_vertex_id/load_instance_id as native
-       * int system values and draw_vs_exec supplies them.  R300VK_NATIVE_VERTEXID
-       * takes that native path (no synthetic vertex element), which frees a PSC
-       * velem slot so 16 attributes plus VertexID fit the 16-element budget.
-       * spirv_to_nir leaves gl_VertexIndex/gl_InstanceIndex as a system-value
-       * deref, so rewrite it to the native intrinsic here; nir_to_tgsi rejects
-       * the raw deref.  The synthetic-stream path stays as the gated fallback
-       * and remains the base-inclusive route for indexed/firstInstance draws. */
-      if ((needs_vid || needs_iid) && getenv("R300VK_NATIVE_VERTEXID")) {
-         if (!r300_nir_lower_vs_system_values_to_intrinsics(nir)) {
-            ralloc_free(nir);
-            return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                             "r300vk: failed to lower VS system values to "
-                             "native intrinsics");
-         }
-         needs_vid = needs_iid = false;
-      }
+      /* The synthetic-attribute stream is the default: it delivers
+       * VertexIndex/InstanceIndex through an ordinary shader_in variable, the
+       * same load_deref form nir_lower_int_to_float leaves untouched as any
+       * other integer vertex attribute, so a shader that compares
+       * gl_VertexIndex against a reference attribute (both sides' raw bit
+       * patterns reinterpreted as float compare equal iff the original ints
+       * did) reads correctly.  The native-intrinsic path
+       * (r300_nir_lower_vs_system_values_to_intrinsics) instead becomes a
+       * load_vertex_id / load_instance_id the draw module's tgsi_exec supplies
+       * directly, consuming no PSC velem slot -- but r300_vs_draw.c's
+       * r300_nir_float_encode_int_sysvals float-encodes that intrinsic's
+       * result (needed so instance/vertex-id arithmetic, e.g. an array index,
+       * lands in the same float domain as the rest of the shader), which
+       * breaks the raw-bit-pattern symmetry the synthetic path relied on.  Try
+       * the synthetic reservation first and take the native, slot-freeing path
+       * only when the synthetic stream has no room -- the worst-case
+       * maxVertexInputAttributes-plus-VertexIndex shape this frees is rare,
+       * and every ordinary shader keeps the synthetic path's exact prior
+       * behavior. */
       if (needs_vid || needs_iid) {
          int vid_slot = -1;
          int iid_slot = -1;
          VkResult r = r300vk_reserve_vs_system_value_streams(
             device, pl, vi, needs_vid, needs_iid, &vid_slot, &iid_slot);
-         if (r != VK_SUCCESS) {
+         if (r == VK_ERROR_FEATURE_NOT_PRESENT) {
+            if (!r300_nir_lower_vs_system_values_to_intrinsics(nir)) {
+               ralloc_free(nir);
+               return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                                "r300vk: failed to lower VS system values to "
+                                "native intrinsics");
+            }
+            needs_vid = needs_iid = false;
+         } else if (r != VK_SUCCESS) {
             ralloc_free(nir);
             return r;
+         } else {
+            if (!r300_nir_lower_vs_system_values_to_inputs(nir, vid_slot,
+                                                           iid_slot)) {
+               ralloc_free(nir);
+               return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                                "r300vk: failed to lower VS system values");
+            }
+            needs_vid = needs_iid = false;
          }
-
-         if (!r300_nir_lower_vs_system_values_to_inputs(nir, vid_slot,
-                                                        iid_slot)) {
-            ralloc_free(nir);
-            return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                             "r300vk: failed to lower VS system values");
-         }
-
+      }
+      if (needs_vid || needs_iid) {
          bool still_needs_vid = false, still_needs_iid = false;
          r300_nir_vs_reads_system_values(nir, &still_needs_vid,
                                          &still_needs_iid);
