@@ -646,7 +646,8 @@ struct r300_context {
     /* Differentiated varying's generic index last applied to the draw module's
      * derivative injection (0 = injection off; real indices are >= 9). Tracks
      * transitions so draw_enable_derivative_injection's flush fires only when the
-     * shader's differentiated varying actually changes. */
+     * shader's differentiated varying actually changes.  -1 = injection off,
+     * -2 = unknown (context creation); 0 is a real index (TEXn sources). */
     int draw_deriv_src;
     bool scissor_enabled;
     /* Whether two-sided color selection is enabled (AKA light_twoside). */

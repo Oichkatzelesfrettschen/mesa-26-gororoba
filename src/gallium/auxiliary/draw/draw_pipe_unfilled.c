@@ -139,11 +139,10 @@ inject_screen_gradient_info(struct draw_stage *stage,
     * them; that yields d(varying)/dx and d(varying)/dy. For a position varying,
     * cross(dFdx, dFdy) is along the geometric face normal, so a shader building
     * its normal as normalize(cross(dFdx(pos), dFdy(pos))) recovers the exact
-    * normal that R500 quad-difference hardware computes. Clip-space xy (the
-    * same coordinates draw_pipe_cull reads for the signed area) is an affine
-    * image of window space, so it keeps the gradient direction correct for the
-    * normalize(cross()) consumer; only the absolute magnitude differs, and only
-    * for perspective-interpolated varyings. */
+    * normal that R500 quad-difference hardware computes. The position data the
+    * pipeline stages carry is WINDOW-space xy (measured: an interior quad in a
+    * 200x200 target reads 0..32 window units at this point), so the solve
+    * yields per-pixel gradients directly; no viewport scaling applies. */
    const unsigned pos = draw_current_shader_position_output(stage->draw);
 
    if (getenv("R300_DERIV_DEBUG")) {
@@ -352,8 +351,12 @@ unfilled_first_tri(struct draw_stage *stage,
 
    /* Same idea for the per-triangle screen-space gradients: allocate the two
     * extra outputs during the pipeline run and locate the differentiated VS
-    * output. draw_alloc_extra_vertex_attrib is idempotent. */
-   if (draw->pipeline.derivative_inject && fs && fs->info.uses_derivatives) {
+    * output. draw_alloc_extra_vertex_attrib is idempotent.  The base
+    * fragment shader's info is not consulted: the driver enables injection
+    * per draw for the picked VARIANT, whose derivatives (a fractional
+    * LOD-clamp lowering) never appear in the base shader. */
+   if (draw->pipeline.derivative_inject &&
+       draw->pipeline.derivative_src_generic >= 0) {
       unfilled->ddx_slot = draw_alloc_extra_vertex_attrib(
          draw, TGSI_SEMANTIC_GENERIC, draw->pipeline.derivative_ddx_generic);
       unfilled->ddy_slot = draw_alloc_extra_vertex_attrib(
@@ -419,8 +422,8 @@ draw_unfilled_prepare_outputs(struct draw_context *draw,
       unfilled->face_slot = -1;
    }
 
-   if (draw && draw->pipeline.derivative_inject && fs &&
-       fs->info.uses_derivatives) {
+   if (draw && draw->pipeline.derivative_inject &&
+       draw->pipeline.derivative_src_generic >= 0) {
       unfilled->ddx_slot = draw_alloc_extra_vertex_attrib(
          stage->draw, TGSI_SEMANTIC_GENERIC, draw->pipeline.derivative_ddx_generic);
       unfilled->ddy_slot = draw_alloc_extra_vertex_attrib(
