@@ -13,6 +13,8 @@
  * and the second renders back faces with the other reference value.
  */
 
+#include "util/u_draw.h"
+
 #include "r300_context.h"
 #include "r300_reg.h"
 
@@ -94,6 +96,14 @@ static void r300_stencilref_draw_vbo(struct pipe_context *pipe,
 
     if (!r300_stencilref_needed(r300)) {
         sr->draw_vbo(pipe, info, drawid_offset, NULL, draws, num_draws);
+    } else if (num_draws > 1) {
+        /* Split multi-draws before the two-pass state mutation.  The inner
+         * draw paths split num_draws > 1 through util_draw_multi, which
+         * re-enters pipe->draw_vbo -- this wrapper -- once per sub-draw.
+         * A nested entry runs r300_stencilref_begin on the already-mutated
+         * cull mode and stencil refmask and overwrites the context's single
+         * save slot, so the outer restore leaves back-face state live. */
+        util_draw_multi(pipe, info, drawid_offset, NULL, draws, num_draws);
     } else {
         r300_stencilref_begin(r300);
         sr->draw_vbo(pipe, info, drawid_offset, NULL, draws, num_draws);
