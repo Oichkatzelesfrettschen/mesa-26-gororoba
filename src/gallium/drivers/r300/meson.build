@@ -305,7 +305,7 @@ if with_tests
     suite : ['r300'],
   )
 
-  # Phase-0 oracle (b): schedule legality on the emitted rc_pair_instruction
+  # Oracle (b), schedule legality: legality on the emitted rc_pair_instruction
   # stream, checked against the register-documented RGB/Alpha cross-pipe
   # coupling and presub-NOP hazard, independent of the CPU-evaluator parity
   # check above.  Corpus half compiles through the unmodified legacy
@@ -326,10 +326,10 @@ if with_tests
     suite : ['r300'],
   )
 
-  # Phase-0 oracle (c): a determinism check on the unmodified legacy path --
-  # compiling the same shader shape twice through nir_to_rc and the full
-  # backend pass chain must produce byte-identical R300 hardware code. This
-  # proves the harness itself before a byte-diff gates any new backend work.
+  # Oracle (c), reference-path determinism: compiling the same shader shape
+  # twice through nir_to_rc and the full backend pass chain must produce
+  # byte-identical R300 hardware code. This proves the harness itself before
+  # a byte-diff gates any new backend work.
   test(
     'r300-classic-byte-exact-selfdiff',
     executable(

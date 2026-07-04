@@ -120,17 +120,6 @@ compile_classic(void *ctx, nir_shader *s,
 
 /* ---------- pair-stream oracles ---------- */
 
-static unsigned
-count_pairs(struct radeon_compiler *c)
-{
-   unsigned n = 0;
-   for (struct rc_instruction *i = c->Program.Instructions.Next;
-        i != &c->Program.Instructions; i = i->Next)
-      if (i->Type == RC_INSTRUCTION_PAIR)
-         n++;
-   return n;
-}
-
 /* Snapshot every pair's operation with the NOP bubble cleared, so a
  * post-schedule multiset compare ignores the one field scheduling is allowed
  * to add.  rc_pair_instruction is pointer-free, so a value copy is exact. */
@@ -150,6 +139,44 @@ snapshot_pairs(struct radeon_compiler *c, struct rc_pair_instruction *out,
    return n;
 }
 
+/* rc_pair_sub_instruction and rc_pair_instruction are bitfield structs: a
+ * struct-wide memcmp folds every field's storage together and a stray
+ * compiler-inserted padding bit (real for a mixed-width bitfield layout)
+ * would read as a mismatch that has no named field behind it, or mask an
+ * actual field divergence sharing the same byte.  Naming each field keeps
+ * the comparison tied to what the pair form actually encodes. */
+static bool
+sub_instruction_equal(const struct rc_pair_sub_instruction *a,
+                      const struct rc_pair_sub_instruction *b)
+{
+   if (a->Opcode != b->Opcode || a->DestIndex != b->DestIndex ||
+       a->WriteMask != b->WriteMask || a->Target != b->Target ||
+       a->OutputWriteMask != b->OutputWriteMask ||
+       a->DepthWriteMask != b->DepthWriteMask || a->Saturate != b->Saturate ||
+       a->Omod != b->Omod)
+      return false;
+   for (unsigned i = 0; i < 4; i++) {
+      if (a->Src[i].Used != b->Src[i].Used || a->Src[i].File != b->Src[i].File ||
+          a->Src[i].Index != b->Src[i].Index)
+         return false;
+   }
+   for (unsigned i = 0; i < 3; i++) {
+      if (a->Arg[i].Source != b->Arg[i].Source || a->Arg[i].Swizzle != b->Arg[i].Swizzle ||
+          a->Arg[i].Abs != b->Arg[i].Abs || a->Arg[i].Negate != b->Arg[i].Negate)
+         return false;
+   }
+   return true;
+}
+
+static bool
+pair_instruction_equal(const struct rc_pair_instruction *a, const struct rc_pair_instruction *b)
+{
+   return sub_instruction_equal(&a->RGB, &b->RGB) && sub_instruction_equal(&a->Alpha, &b->Alpha) &&
+          a->WriteALUResult == b->WriteALUResult &&
+          a->ALUResultCompare == b->ALUResultCompare && a->Nop == b->Nop &&
+          a->SemWait == b->SemWait;
+}
+
 /* Every post-schedule pair matches exactly one pre-schedule snapshot: the
  * scheduler reordered the pairs without adding, dropping, or mutating any. */
 static bool
@@ -166,7 +193,7 @@ multiset_unchanged(const struct rc_pair_instruction *before, unsigned nbefore,
       for (unsigned b = 0; b < nbefore; b++) {
          if (matched[b])
             continue;
-         if (memcmp(&after[a], &before[b], sizeof(after[a])) == 0) {
+         if (pair_instruction_equal(&after[a], &before[b])) {
             matched[b] = true;
             found = true;
             break;
@@ -561,6 +588,213 @@ build_tex(void)
    return b.shader;
 }
 
+/* ---------- safety tests: defer instead of hard-fail ----------
+ *
+ * These three shapes cannot arise from any real front end (a genuine RAW
+ * cycle, an already-over-budget translated stream, and so on are not
+ * something straight-line dataflow code compiles to), so they are built
+ * directly in RC_INSTRUCTION_PAIR form -- skipping rc_pair_translate --
+ * the same way r300_classic_validate_schedule_test.c's synth_case corpus
+ * isolates one hazard at a time. */
+
+static struct rc_instruction *
+append_pair(struct radeon_compiler *c, struct rc_instruction *tail,
+           const struct rc_pair_instruction *p)
+{
+   struct rc_instruction *inst = rc_insert_new_instruction(c, tail);
+   inst->Type = RC_INSTRUCTION_PAIR;
+   inst->U.P = *p;
+   return inst;
+}
+
+static unsigned
+count_pairs(const struct radeon_compiler *c)
+{
+   unsigned n = 0;
+   for (const struct rc_instruction *i = c->Program.Instructions.Next;
+        i != &c->Program.Instructions; i = i->Next)
+      if (i->Type == RC_INSTRUCTION_PAIR)
+         n++;
+   return n;
+}
+
+/* A mutual RAW cycle -- pair0 reads what pair1 writes and pair1 reads what
+ * pair0 writes -- has no topological order and is exactly the "no ready
+ * node left" shape r300_classic_schedule must defer on rather than
+ * rc_error hard-failing.  Proves the defer by running the identical
+ * hand-built stream through r300_classic_schedule and through
+ * rc_pair_schedule directly on two separate compiler instances and
+ * requiring the same outcome: no error raised, no pair silently dropped.
+ * This is a scheduling-pass-level proof; a stream with no valid order is
+ * not a meaningful input to the unrelated, unmodified regalloc/emit tail,
+ * so it is not driven through those stages. */
+static void
+test_cycle_defers_without_hard_fail(void)
+{
+   struct rc_pair_instruction p0, p1;
+
+   memset(&p0, 0, sizeof(p0));
+   p0.RGB.Opcode = RC_OPCODE_MOV;
+   p0.RGB.WriteMask = RC_MASK_XYZ;
+   p0.RGB.DestIndex = 0;
+   p0.RGB.Src[0].Used = 1;
+   p0.RGB.Src[0].File = RC_FILE_TEMPORARY;
+   p0.RGB.Src[0].Index = 1; /* reads pair1's destination */
+
+   memset(&p1, 0, sizeof(p1));
+   p1.RGB.Opcode = RC_OPCODE_MOV;
+   p1.RGB.WriteMask = RC_MASK_XYZ;
+   p1.RGB.DestIndex = 1;
+   p1.RGB.Src[0].Used = 1;
+   p1.RGB.Src[0].File = RC_FILE_TEMPORARY;
+   p1.RGB.Src[0].Index = 0; /* reads pair0's destination: the cycle */
+
+   struct r300_fragment_program_compiler fc_new;
+   struct rc_regalloc_state rs_new;
+   fs_compiler_init(&fc_new, &rs_new);
+   struct rc_instruction *tail_new =
+      append_pair(&fc_new.Base, &fc_new.Base.Program.Instructions, &p0);
+   append_pair(&fc_new.Base, tail_new, &p1);
+
+   struct r300_fragment_program_compiler fc_legacy;
+   struct rc_regalloc_state rs_legacy;
+   fs_compiler_init(&fc_legacy, &rs_legacy);
+   struct rc_instruction *tail_legacy =
+      append_pair(&fc_legacy.Base, &fc_legacy.Base.Program.Instructions, &p0);
+   append_pair(&fc_legacy.Base, tail_legacy, &p1);
+
+   int opt = 0;
+   r300_classic_schedule(&fc_new.Base, &opt);
+   rc_pair_schedule(&fc_legacy.Base, &opt);
+
+   CHECK(!fc_new.Base.Error,
+        "cycle: r300_classic_schedule defers instead of rc_error hard-failing");
+   CHECK(!fc_legacy.Base.Error, "cycle: rc_pair_schedule control raises no error");
+   CHECK(count_pairs(&fc_new.Base) == 2,
+        "cycle: deferred schedule still carries both pairs");
+   CHECK(count_pairs(&fc_new.Base) == count_pairs(&fc_legacy.Base),
+        "cycle: deferred schedule matches rc_pair_schedule's own outcome");
+
+   rc_destroy(&fc_new.Base);
+   rc_destroy_regalloc_state(&rs_new);
+   rc_destroy(&fc_legacy.Base);
+   rc_destroy_regalloc_state(&rs_legacy);
+}
+
+/* Three pairs with no temporary dependency between the two output writers:
+ * D defines temp10 with no reads, B reads temp10 and exports it to
+ * COLOR[0], and C exports an unrelated value to the SAME COLOR[0] with no
+ * reads at all, in program order B, C, D.  Without an output/depth
+ * write-after-write edge the greedy scheduler would place C (ready from
+ * the start) ahead of B (blocked on D), inverting the two exports'
+ * relative order.  Walking the final RC_OPCODE tags (MOV=B, ADD=C,
+ * MUL=D) proves B still precedes C. */
+static void
+test_output_waw_preserves_order(void)
+{
+   struct rc_pair_instruction b, c, d;
+
+   memset(&d, 0, sizeof(d));
+   d.RGB.Opcode = RC_OPCODE_MUL;
+   d.RGB.WriteMask = RC_MASK_XYZ;
+   d.RGB.DestIndex = 10;
+
+   memset(&b, 0, sizeof(b));
+   b.RGB.Opcode = RC_OPCODE_MOV;
+   b.RGB.Src[0].Used = 1;
+   b.RGB.Src[0].File = RC_FILE_TEMPORARY;
+   b.RGB.Src[0].Index = 10;
+   b.RGB.Target = 0;
+   b.RGB.OutputWriteMask = RC_MASK_XYZ;
+
+   memset(&c, 0, sizeof(c));
+   c.RGB.Opcode = RC_OPCODE_ADD;
+   c.RGB.Target = 0;
+   c.RGB.OutputWriteMask = RC_MASK_XYZ;
+
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+   struct rc_instruction *tail = append_pair(&fc.Base, &fc.Base.Program.Instructions, &b);
+   tail = append_pair(&fc.Base, tail, &c);
+   append_pair(&fc.Base, tail, &d);
+
+   int opt = 0;
+   r300_classic_schedule(&fc.Base, &opt);
+
+   CHECK(!fc.Base.Error, "output_waw: schedule raises no error");
+
+   int pos_mov = -1, pos_add = -1, pos_mul = -1, pos = 0;
+   for (struct rc_instruction *i = fc.Base.Program.Instructions.Next;
+        i != &fc.Base.Program.Instructions; i = i->Next, pos++) {
+      if (i->Type != RC_INSTRUCTION_PAIR)
+         continue;
+      if (i->U.P.RGB.Opcode == RC_OPCODE_MOV)
+         pos_mov = pos;
+      else if (i->U.P.RGB.Opcode == RC_OPCODE_ADD)
+         pos_add = pos;
+      else if (i->U.P.RGB.Opcode == RC_OPCODE_MUL)
+         pos_mul = pos;
+   }
+   CHECK(pos_mov >= 0 && pos_add >= 0 && pos_mul >= 0,
+        "output_waw: all three pairs survive scheduling");
+   CHECK(pos_mov < pos_add,
+        "output_waw: the earlier COLOR[0] export (MOV) still precedes the later one (ADD)");
+   CHECK(pos_mul < pos_mov,
+        "output_waw: MOV's temp10 producer (MUL) still precedes its reader");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
+/* Two independent half-full pairs -- an RGB-only MOV and an Alpha-only
+ * MOV -- that rc_pair_schedule's merge_instructions() can fold into one
+ * full pair, but r300_classic_schedule only reorders and never merges.
+ * With max_alu_insts capped at 1, the translated pair count (2) already
+ * exceeds the envelope before any scheduling runs, so the pass must defer
+ * to rc_pair_schedule rather than hand rc_validate_final_shader a
+ * two-instruction schedule that cannot fit.  The merge landing gives a
+ * one-pair result: the observable proof that compaction, not just
+ * ordering, ran. */
+static void
+test_compaction_defers_to_merge(void)
+{
+   struct rc_pair_instruction rgb_only, alpha_only;
+
+   memset(&rgb_only, 0, sizeof(rgb_only));
+   rgb_only.RGB.Opcode = RC_OPCODE_MOV;
+   rgb_only.RGB.WriteMask = RC_MASK_XYZ;
+   rgb_only.RGB.DestIndex = 0;
+   rgb_only.Alpha.Opcode = RC_OPCODE_NOP;
+
+   memset(&alpha_only, 0, sizeof(alpha_only));
+   alpha_only.RGB.Opcode = RC_OPCODE_NOP;
+   alpha_only.Alpha.Opcode = RC_OPCODE_MOV;
+   alpha_only.Alpha.WriteMask = RC_MASK_W;
+   alpha_only.Alpha.DestIndex = 1;
+
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+   fc.Base.max_alu_insts = 1;
+   struct rc_instruction *tail =
+      append_pair(&fc.Base, &fc.Base.Program.Instructions, &rgb_only);
+   append_pair(&fc.Base, tail, &alpha_only);
+
+   CHECK(count_pairs(&fc.Base) == 2,
+        "compaction: the translated stream starts at two half-full pairs");
+
+   int opt = 1;
+   r300_classic_schedule(&fc.Base, &opt);
+
+   CHECK(!fc.Base.Error, "compaction: deferred schedule raises no error");
+   CHECK(count_pairs(&fc.Base) == 1,
+        "compaction: rc_pair_schedule merged the two half-full pairs to fit max_alu_insts");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
 int
 main(void)
 {
@@ -598,6 +832,13 @@ main(void)
     * must still leave a legality-passing stream. */
    fallback_check("vec_collect", build_vec_collect);
    fallback_check("tex", build_tex);
+
+   /* Safety: every shape the scheduler cannot handle itself defers to
+    * rc_pair_schedule rather than emitting something illegal or hard-failing
+    * the compile. */
+   test_cycle_defers_without_hard_fail();
+   test_output_waw_preserves_order();
+   test_compaction_defers_to_merge();
 
    glsl_type_singleton_decref();
    if (failures) {

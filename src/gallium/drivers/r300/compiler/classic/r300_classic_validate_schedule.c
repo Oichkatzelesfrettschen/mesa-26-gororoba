@@ -36,31 +36,53 @@ check_rgb_reads_alpha(const struct rc_pair_instruction *p, const char **why)
  * computing an independent dot from its own operand fields.
  * radeon_pair_translate.c's classify_instruction sets needrgb and needalpha
  * together off the same source instruction for DP3(.w-written)/DP4, so a
- * legally translated pair with Alpha in DP mode always carries the
- * matching RGB dot opcode. */
+ * legally translated pair with Alpha in DP mode always carries the matching
+ * RGB dot opcode -- the SAME opcode (DP3 broadcasts a DP3, DP4 a DP4), not
+ * merely some dot product.  set_pair_instruction allocates the RGB and Alpha
+ * source slots for a shared instruction operand through two independent
+ * rc_pair_alloc_source calls (one per pipe), so RGB.Arg[i].Source and
+ * Alpha.Arg[i].Source can land on different slot numbers in their own Src[]
+ * arrays; what must agree is the register each slot resolves to, since Alpha
+ * broadcasts the value RGB's operands compute. */
 static bool
 check_alpha_reads_rgb_dot(const struct rc_pair_instruction *p, const char **why)
 {
    const bool alpha_is_dp =
       p->Alpha.Opcode == RC_OPCODE_DP3 || p->Alpha.Opcode == RC_OPCODE_DP4;
-   const bool rgb_is_dot =
-      p->RGB.Opcode == RC_OPCODE_DP3 || p->RGB.Opcode == RC_OPCODE_DP4;
-   if (alpha_is_dp && !rgb_is_dot) {
-      *why = "Alpha.DP reads an RGB lane that is not computing a dot product";
+   if (!alpha_is_dp)
+      return true;
+
+   if (p->RGB.Opcode != p->Alpha.Opcode) {
+      *why = "Alpha.DP does not match the RGB lane's dot-product opcode";
       return false;
+   }
+
+   const struct rc_opcode_info *info = rc_get_opcode_info(p->RGB.Opcode);
+   for (unsigned i = 0; i < info->NumSrcRegs && i < 3; i++) {
+      const struct rc_pair_instruction_source *rgb_src = &p->RGB.Src[p->RGB.Arg[i].Source];
+      const struct rc_pair_instruction_source *alpha_src = &p->Alpha.Src[p->Alpha.Arg[i].Source];
+      if (!rgb_src->Used && !alpha_src->Used)
+         continue;
+      if (rgb_src->File != alpha_src->File || rgb_src->Index != alpha_src->Index) {
+         *why = "Alpha.DP reads a different source than the RGB dot product it broadcasts";
+         return false;
+      }
    }
    return true;
 }
 
 /* WriteALUResult and an output write share encoding bits on both targets:
  * r500_fragprog_emit.c's emit_paired refuses "Cannot write output and ALU
- * result at the same time", and radeon_pair_schedule.c's merge_instructions
- * enforces the same rule before merging two half-full pairs.  A pair that
- * reaches final validation with both set slipped past that guard. */
+ * result at the same time" for RGB.OutputWriteMask, Alpha.OutputWriteMask,
+ * OR Alpha.DepthWriteMask together with WriteALUResult, and
+ * radeon_pair_schedule.c's merge_instructions enforces the same rule before
+ * merging two half-full pairs.  A pair that reaches final validation with
+ * both set slipped past that guard. */
 static bool
 check_no_double_issue(const struct rc_pair_instruction *p, const char **why)
 {
-   if (p->WriteALUResult && (p->RGB.OutputWriteMask || p->Alpha.OutputWriteMask)) {
+   if (p->WriteALUResult &&
+       (p->RGB.OutputWriteMask || p->Alpha.OutputWriteMask || p->Alpha.DepthWriteMask)) {
       *why = "WriteALUResult and an output write are both set on one pair";
       return false;
    }
@@ -120,19 +142,30 @@ check_presub_hazard_nop(const struct rc_instruction *prev, const struct rc_instr
 bool
 r300_classic_validate_schedule(struct radeon_compiler *c, const char **reject_reason)
 {
+   /* reject_reason is an optional out-parameter; every check_* helper writes
+    * through a non-NULL pointer unconditionally, so route them through a
+    * local that always exists and only copy out to the caller's pointer,
+    * if any, at the point of rejection.  A caller that does pass a pointer
+    * sees it cleared here rather than holding a stale reason from an
+    * earlier, unrelated call. */
+   if (reject_reason)
+      *reject_reason = NULL;
+
+   const char *local_reason = NULL;
    const struct rc_instruction *prev = NULL;
 
    for (const struct rc_instruction *inst = c->Program.Instructions.Next;
         inst != &c->Program.Instructions; inst = inst->Next) {
       if (inst->Type == RC_INSTRUCTION_PAIR) {
-         if (!check_rgb_reads_alpha(&inst->U.P, reject_reason))
+         const bool legal = check_rgb_reads_alpha(&inst->U.P, &local_reason) &&
+                            check_alpha_reads_rgb_dot(&inst->U.P, &local_reason) &&
+                            check_no_double_issue(&inst->U.P, &local_reason) &&
+                            check_presub_hazard_nop(prev, inst, &local_reason);
+         if (!legal) {
+            if (reject_reason)
+               *reject_reason = local_reason;
             return false;
-         if (!check_alpha_reads_rgb_dot(&inst->U.P, reject_reason))
-            return false;
-         if (!check_no_double_issue(&inst->U.P, reject_reason))
-            return false;
-         if (!check_presub_hazard_nop(prev, inst, reject_reason))
-            return false;
+         }
       }
       prev = inst;
    }
