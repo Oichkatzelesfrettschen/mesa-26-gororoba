@@ -187,6 +187,51 @@ r300_draw_scalarize_bool_cmp_cb(const nir_instr *instr, const void *data)
     }
 }
 
+/* nir_lower_int_to_float converts ALU instructions and constants but
+ * leaves intrinsics alone, so an integer system value (gl_InstanceID
+ * as load_instance_id) enters the float-domain shader as raw integer
+ * bits.  Every converted consumer -- float ALU, and the load_ubo
+ * offset rebuild that applies f2i32 at the nir_to_tgsi boundary --
+ * then misreads those bits as a float: f2i32 of the denormal bit
+ * pattern of integer 1 yields 0, so Pos[gl_InstanceID] collapses to
+ * Pos[0] for every instance (piglit arb_draw_instanced-drawarrays
+ * draws all instances at the instance-0 offset).  Encode the system
+ * value as float at its definition so the float-domain model holds
+ * for the whole chain. */
+static bool
+r300_nir_float_encode_int_sysvals(nir_shader *nir)
+{
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    nir_builder b = nir_builder_create(impl);
+    bool progress = false;
+
+    nir_foreach_block (block, impl) {
+        nir_foreach_instr_safe (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            switch (intr->intrinsic) {
+            case nir_intrinsic_load_instance_id:
+            case nir_intrinsic_load_vertex_id:
+            case nir_intrinsic_load_vertex_id_zero_base:
+            case nir_intrinsic_load_base_vertex:
+            case nir_intrinsic_load_first_vertex:
+            case nir_intrinsic_load_base_instance:
+            case nir_intrinsic_load_draw_id:
+                break;
+            default:
+                continue;
+            }
+            b.cursor = nir_after_instr(instr);
+            nir_def *as_float = nir_i2f32(&b, &intr->def);
+            nir_def_rewrite_uses_after(&intr->def, as_float);
+            progress = true;
+        }
+    }
+
+    return nir_progress(progress, impl, nir_metadata_control_flow);
+}
+
 /* nir_lower_int_to_float float-encodes integer-typed constants (its
  * nir_gather_types walk includes intrinsic sources, so a load_ubo_vec4
  * slot offset 1 becomes the bits of 1.0f), and consumers in that world
@@ -315,6 +360,7 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
      * the indirect-deref lowerings because those build integer
      * comparison ladders of their own. */
     NIR_PASS(_, nir, nir_lower_int_to_float);
+    NIR_PASS(_, nir, r300_nir_float_encode_int_sysvals);
     NIR_PASS(_, nir, nir_opt_copy_prop);
     NIR_PASS(_, nir, nir_lower_alu_to_scalar, r300_draw_scalarize_bool_cmp_cb,
              NULL);
