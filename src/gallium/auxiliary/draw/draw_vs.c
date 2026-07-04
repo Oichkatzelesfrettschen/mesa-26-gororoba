@@ -121,6 +121,22 @@ draw_bind_vertex_shader(struct draw_context *draw,
       dvs->prepare(dvs, draw);
       draw_update_clip_flags(draw);
       draw_update_viewport_flags(draw);
+
+      /* Derivative-injection gradient outputs are slot-numbered relative to
+       * the bound vertex shader's output count, so extras allocated under
+       * the previous shader are stale for this one.  Re-arm them now: a
+       * backend that drives the draw module directly (r300) sizes its
+       * vertex stride from draw_total_vs_outputs before any pipeline stage
+       * runs, so a first-triangle allocation lands past the stride. */
+      if (draw->pipeline.derivative_inject &&
+          draw->pipeline.derivative_ddx_generic >= 0 &&
+          draw->pipeline.derivative_ddy_generic >= 0) {
+         draw_remove_extra_vertex_attribs(draw);
+         draw_alloc_extra_vertex_attrib(draw, TGSI_SEMANTIC_GENERIC,
+                                        draw->pipeline.derivative_ddx_generic);
+         draw_alloc_extra_vertex_attrib(draw, TGSI_SEMANTIC_GENERIC,
+                                        draw->pipeline.derivative_ddy_generic);
+      }
    } else {
       draw->vs.vertex_shader = NULL;
       draw->vs.num_vs_outputs = 0;
