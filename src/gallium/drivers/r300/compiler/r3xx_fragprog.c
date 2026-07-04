@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 
+#include "classic/r300_classic_schedule.h"
 #include "r300_fragprog.h"
 #include "r300_fragprog_swizzle.h"
 #include "r500_fragprog.h"
@@ -111,6 +112,14 @@ r3xx_compile_fragment_program(struct r300_fragment_program_compiler *c)
    int opt = !c->Base.disable_optimizations;
    bool dbg = c->Base.Debug & RC_DBG_LOG;
 
+   /* The purpose-built R300 pair scheduler replaces rc_pair_schedule on the
+    * non-r500 target class it models, and only when R300_CLASSIC_NEW_SCHED is
+    * set; every other configuration keeps the legacy scheduler, so default
+    * output is byte identical.  A stream outside the scheduler's subset shape
+    * defers to rc_pair_schedule from inside the pass itself. */
+   int new_sched = !is_r500 && r300_classic_new_sched_enabled();
+   int legacy_sched = !new_sched;
+
    /* Lists of instruction transformations. */
    struct radeon_program_transformation native_rewrite[] = {{&radeonTransformALU, NULL},
                                                            {NULL, NULL}};
@@ -132,7 +141,8 @@ r3xx_compile_fragment_program(struct r300_fragment_program_compiler *c)
       {"dataflow swizzles",       1,   1,               rc_dataflow_swizzles,           NULL},
       {"dataflow presubtract",    1,   opt,             rc_local_transform,             opt_presubtract},
       {"pair translate",          1,   1,               rc_pair_translate,              NULL},
-      {"pair scheduling",         1,   1,               rc_pair_schedule,               &opt},
+      {"pair scheduling",         1,   legacy_sched,    rc_pair_schedule,               &opt},
+      {"classic pair scheduling", 1,   new_sched,       r300_classic_schedule,          &opt},
       {"dead sources",            1,   1,               rc_pair_remove_dead_sources,    NULL},
       {"register allocation",     1,   1,               rc_pair_regalloc,               &opt},
       {"final code validation",   0,   1,               rc_validate_final_shader,       NULL},
