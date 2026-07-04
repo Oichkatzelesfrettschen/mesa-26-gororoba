@@ -352,6 +352,32 @@ MacroBlockTypeToPipeWeights(const struct pipe_mpeg12_macroblock *mb, unsigned we
    }
 }
 
+/* DUAL_PRIME and 16x8 field motion compensation are not yet decoded here.
+ * Both carry a frame_motion_type / field_motion_type value the switch below
+ * does not handle, and without a defined store MotionVectorToPipe would return
+ * an uninitialized vl_motionvector once UNREACHABLE lowers to
+ * __builtin_unreachable in a release build (DEBUG off) -- the caller then
+ * writes garbage motion into mv_stream.  Fall back to a defined zero-motion
+ * prediction so the macroblock is copied straight from its co-located
+ * reference: a visibly static block signals the missing mode without the crash
+ * or the plausible-looking wrong pixels that a single-vector duplication into
+ * both output-field slots would produce.  The dual-prime (dmv-derived half-pel
+ * field-scaled predictions with the +-1 opposite-parity correction) and 16x8
+ * (two independent field vectors over the upper and lower 8-line bands)
+ * algorithms are defined in the MPEG-2 (ISO/IEC 13818-2) motion-compensation
+ * clause 7.6 and are the follow-up. */
+static inline void
+MotionVectorDeferUnsupported(struct vl_motionvector *mv, unsigned weight)
+{
+   mv->top.x = mv->top.y = 0;
+   mv->top.field_select = PIPE_VIDEO_FRAME;
+   mv->top.weight = weight;
+
+   mv->bottom.x = mv->bottom.y = 0;
+   mv->bottom.field_select = PIPE_VIDEO_FRAME;
+   mv->bottom.weight = weight;
+}
+
 static inline struct vl_motionvector
 MotionVectorToPipe(const struct pipe_mpeg12_macroblock *mb, unsigned vector,
                    unsigned field_select_mask, unsigned weight)
@@ -411,12 +437,14 @@ MotionVectorToPipe(const struct pipe_mpeg12_macroblock *mb, unsigned vector,
             break;
 
          default:
-            UNREACHABLE("TODO: Support DUALPRIME and 16x8 field motion types");
+            MotionVectorDeferUnsupported(&mv, weight);
+            break;
          }
          break;
 
       default:
-         UNREACHABLE("TODO: Support DUALPRIME and 16x8");
+         MotionVectorDeferUnsupported(&mv, weight);
+         break;
       }
    } else {
       mv.top.x = mv.top.y = 0;
