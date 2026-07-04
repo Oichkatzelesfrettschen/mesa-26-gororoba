@@ -206,7 +206,16 @@ vl_vb_get_ves_mv(struct pipe_context *pipe)
    vertex_elems[VS_I_MV_BOTTOM].src_stride = sizeof(struct vertex2f);
 
    vl_vb_element_helper(&vertex_elems[VS_I_MV_TOP], 2, 2);
+   /* Both motion-vector elements index the same interleaved vl_motionvector
+    * stream (element helper places TOP at offset 0, BOTTOM at offset 8), so
+    * both must advance one whole vl_motionvector per instance.  The helper
+    * leaves src_stride untouched, so set both to the record size; without the
+    * BOTTOM assignment it keeps the vertex2f (8-byte) stride and the
+    * bottom-field MV fetch steps half a record, reading the next record's
+    * top-field data for every instance after the first (interlaced content
+    * corrupts progressively; top-field/progressive is unaffected). */
    vertex_elems[VS_I_MV_TOP].src_stride = sizeof(struct vl_motionvector);
+   vertex_elems[VS_I_MV_BOTTOM].src_stride = sizeof(struct vl_motionvector);
 
    return pipe->create_vertex_elements_state(pipe, NUM_VS_INPUTS, vertex_elems);
 }
