@@ -293,15 +293,20 @@ fs_compiler_init(struct r300_fragment_program_compiler *fc,
    fc->Base.max_tex_insts = 32;
 }
 
-/* Compile through nir_to_rc (consumes s). */
+/* Compile through nir_to_rc (consumes s).  ext_in carries per-unit sampler
+ * state (shadow compare func, swizzle); a NULL ext_in compiles with the
+ * all-zero state every non-shadow corpus shader uses. */
 static bool
 compile_reference(nir_shader *s, struct r300_fragment_program_compiler *fc,
                   struct rc_regalloc_state *rs,
-                  struct r300_fragment_shader_code *fs_code)
+                  struct r300_fragment_shader_code *fs_code,
+                  const struct r300_fragment_program_external_state *ext_in)
 {
    static struct r300_screen screen;
    struct pipe_screen *ps = fake_r300_screen(&screen);
-   const struct r300_fragment_program_external_state ext = {0};
+   const struct r300_fragment_program_external_state zero_ext = {0};
+   const struct r300_fragment_program_external_state ext =
+      ext_in ? *ext_in : zero_ext;
    union r300_shader_code code = {.f = fs_code};
 
    fs_compiler_init(fc, rs);
@@ -310,11 +315,15 @@ compile_reference(nir_shader *s, struct r300_fragment_program_compiler *fc,
    return !fc->Base.Error;
 }
 
-/* Compile through the classic ladder (consumes s). */
+/* Compile through the classic ladder (consumes s).  ext_in mirrors the
+ * nir_to_rc argument above; r300_classic_select reads the same
+ * sampler_state_count/texture_compare_func fields for its own
+ * nir_lower_tex_shadow call. */
 static bool
 compile_classic(void *ctx, nir_shader *s,
                 struct r300_fragment_program_compiler *fc,
-                struct rc_regalloc_state *rs, const char **why)
+                struct rc_regalloc_state *rs, const char **why,
+                const struct r300_fragment_program_external_state *ext_in)
 {
    static struct r300_screen screen;
    struct pipe_screen *ps = fake_r300_screen(&screen);
@@ -322,7 +331,7 @@ compile_classic(void *ctx, nir_shader *s,
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result sel;
-   if (!r300_classic_select(ctx, s, t, NULL, 0, NULL, &sel) || !sel.program) {
+   if (!r300_classic_select(ctx, s, t, ext_in, 0, NULL, &sel) || !sel.program) {
       *why = sel.reject_reason ? sel.reject_reason : "selection failed";
       return false;
    }
@@ -365,13 +374,23 @@ run_eval(struct r300_fragment_program_compiler *fc, unsigned input_set,
    return true;
 }
 
-/* The parity core: both front ends, four input sets, tolerance compare. */
-static void
-parity(const char *name, nir_shader *(*build)(void))
+/* The parity core: both front ends, four input sets, tolerance compare.
+ * ext carries per-unit sampler state (shadow compare func, swizzle) through
+ * both compilers; NULL compiles the plain zero state every non-shadow
+ * corpus shader uses.  count_diverge_as_failure is false only for a
+ * reachability probe documenting a still-open front-end divergence: the
+ * per-channel mismatch is reported but does not fail the suite, so a
+ * confirmed-but-unfixed defect does not red-line the build.  Returns true
+ * if any input set showed a per-channel mismatch. */
+static bool
+parity_probe(const char *name, nir_shader *(*build)(void),
+            const struct r300_fragment_program_external_state *ext,
+            bool count_diverge_as_failure)
 {
    void *ctx = ralloc_context(NULL);
    nir_shader *for_ref = build();
    nir_shader *for_classic = build();
+   bool diverged = false;
 
    struct r300_fragment_program_compiler ref_fc, cls_fc;
    struct rc_regalloc_state ref_rs, cls_rs;
@@ -380,13 +399,14 @@ parity(const char *name, nir_shader *(*build)(void))
 
    char what[256];
    snprintf(what, sizeof(what), "%s: reference front end compiles", name);
-   const bool ref_ok = compile_reference(for_ref, &ref_fc, &ref_rs, &ref_code);
+   const bool ref_ok =
+      compile_reference(for_ref, &ref_fc, &ref_rs, &ref_code, ext);
    CHECK(ref_ok, what);
 
    const char *why = NULL;
    snprintf(what, sizeof(what), "%s: classic front end compiles", name);
    const bool cls_ok = compile_classic(ctx, for_classic, &cls_fc, &cls_rs,
-                                       &why);
+                                       &why, ext);
    CHECK(cls_ok, what);
    if (!cls_ok && why)
       fprintf(stderr, "  classic: %s\n", why);
@@ -409,10 +429,18 @@ parity(const char *name, nir_shader *(*build)(void))
          for (unsigned ch = 0; ch < 4; ch++) {
             const float d = fabsf(ref_color[ch] - cls_color[ch]);
             if (d > 1e-4f) {
-               fprintf(stderr,
-                       "DIVERGE %s set %u ch %u: reference %g classic %g\n",
-                       name, set, ch, ref_color[ch], cls_color[ch]);
-               failures++;
+               diverged = true;
+               if (count_diverge_as_failure) {
+                  fprintf(stderr,
+                          "DIVERGE %s set %u ch %u: reference %g classic %g\n",
+                          name, set, ch, ref_color[ch], cls_color[ch]);
+                  failures++;
+               } else {
+                  fprintf(stderr,
+                          "KNOWN-DIVERGENCE %s set %u ch %u: reference %g "
+                          "classic %g\n",
+                          name, set, ch, ref_color[ch], cls_color[ch]);
+               }
             }
          }
       }
@@ -427,6 +455,14 @@ parity(const char *name, nir_shader *(*build)(void))
       rc_destroy_regalloc_state(&cls_rs);
    }
    ralloc_free(ctx);
+   return diverged;
+}
+
+/* The regression-gate entry: a channel mismatch fails the suite. */
+static void
+parity(const char *name, nir_shader *(*build)(void))
+{
+   parity_probe(name, build, NULL, true);
 }
 
 /* ---------- corpus ---------- */
@@ -768,6 +804,147 @@ build_vector_rcp_pow(void)
    return b.shader;
 }
 
+/* Two masked stores to the same fragment color: .xy from one value, then
+ * .zw from an independent one.  ntr_emit_store_output (nir_to_rc.c) reads
+ * nir_intrinsic_write_mask and MOVs only the covered channels; the classic
+ * front end's store_output case (select_intrinsic, r300_classic_select.c)
+ * takes only intr->src[0] and r300_classic_emit.c's R300C_OP_EXPORT_COLOR
+ * always sets WriteMask to RC_MASK_XYZW, so the export ignores the mask
+ * entirely.  The second, .zw-only store's classic export therefore
+ * re-exports its own X,Y lanes (an unrelated stomp value) over the first
+ * store's X,Y result. */
+static nir_shader *
+build_masked_output_store(void)
+{
+   nir_builder b = fs_builder("parity_maskedout");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *x = nir_fmul_imm(&b, nir_channel(&b, v, 0), 0.5f);
+   nir_def *y = nir_fadd_imm(&b, nir_channel(&b, v, 1), 0.25f);
+   nir_def *z = nir_ffract(&b, nir_channel(&b, v, 2));
+   nir_def *w = nir_fmul_imm(&b, nir_channel(&b, v, 3), 2.0f);
+   nir_def *stomp = nir_imm_float(&b, -7.0f);
+   nir_def *unused = nir_imm_float(&b, 0.0f);
+
+   nir_def *store_xy = nir_vec4(&b, x, y, unused, unused);
+   nir_store_var(&b, out, store_xy, 0x3);
+
+   nir_def *store_zw = nir_vec4(&b, stomp, stomp, z, w);
+   nir_store_var(&b, out, store_zw, 0xc);
+
+   return b.shader;
+}
+
+/* texture(s,uv).r beside an independent value.  R300/R400 emit_tex has no
+ * writemask field (r300_fragprog_emit.c) and always writes all four TEX
+ * destination channels; select_tex declares the full XYZW liveness for
+ * TEX/TXB/TXP on non-r500 rather than the narrowed one-component mask
+ * tex->def.num_components would give, because the shared register packer
+ * (radeon_dataflow.c writes_normal, radeon_optimize.c) reads that declared
+ * mask verbatim and can only narrow it, never widen it: a narrow
+ * declaration lets the packer place an independent live value in the
+ * "unused" G/B/A lanes the hardware write then clobbers.  This shader keeps
+ * that shape in the parity corpus as a permanent regression gate on the
+ * full-liveness declaration. */
+static nir_shader *
+build_tex_r_channel_independent(void)
+{
+   nir_builder b = fs_builder("parity_texr_indep");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+
+   const struct glsl_type *sampler2d =
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
+   nir_variable *sampler = nir_variable_create(b.shader, nir_var_uniform,
+                                               sampler2d, "tex0");
+   sampler->data.binding = 0;
+   nir_deref_instr *deref = nir_build_deref_var(&b, sampler);
+
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *uv = nir_trim_vector(&b, v, 2);
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, 3);
+   tex->op = nir_texop_tex;
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->coord_components = 2;
+   tex->dest_type = nir_type_float32;
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_texture_deref, &deref->def);
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_sampler_deref, &deref->def);
+   tex->src[2] = nir_tex_src_for_ssa(nir_tex_src_coord, uv);
+   nir_def_init(&tex->instr, &tex->def, 4, 32);
+   nir_builder_instr_insert(&b, &tex->instr);
+   /* Narrow the read to .r: nir_opt_shrink_vectors (run inside
+    * r300_optimize_nir) turns this into the tex->def.num_components == 1
+    * declaration select_tex saw before the #941 fix. */
+   nir_def *texr = nir_channel(&b, &tex->def, 0);
+
+   /* An independent value computed the same cycle as the TEX result, with
+    * no data dependency on it -- exactly what the packer is free to place
+    * in the TEX destination's unused lanes absent full declared liveness. */
+   nir_def *indep_g = nir_fmul_imm(&b, nir_channel(&b, v, 1), 3.0f);
+   nir_def *indep_b = nir_fadd_imm(&b, nir_channel(&b, v, 2), 0.5f);
+   nir_def *indep_a = nir_ffract(&b, nir_channel(&b, v, 3));
+
+   nir_store_var(&b, out, nir_vec4(&b, texr, indep_g, indep_b, indep_a), 0xf);
+   return b.shader;
+}
+
+/* Shadow compare with COMPARE_FUNC_ALWAYS.  nir_lower_tex_shadow (run
+ * inside both nir_to_rc and r300_classic_select) builds the ALWAYS case as
+ * nir_b2f32(nir_imm_int(b, ~0)) -- nir_compare_func's own encoding of the
+ * trivial case (nir_builder.c) -- and folding that to the float constant
+ * 1.0 requires the same nir_opt_algebraic/nir_opt_constant_folding
+ * fixed-point loop nir_to_rc runs at its entry to run before int-to-float
+ * lowering; running int lowering first turns the ALWAYS case into -1.0
+ * instead, the r300_classic_select() ordering this shader locks in as a
+ * permanent regression gate.  ext's texture_compare_func =
+ * RC_COMPARE_FUNC_ALWAYS drives both front ends down that exact lowering
+ * path. */
+static nir_shader *
+build_shadow_compare_always(void)
+{
+   nir_builder b = fs_builder("parity_shadow_always");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+
+   const struct glsl_type *sampler2d_shadow =
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, true, false, GLSL_TYPE_FLOAT);
+   nir_variable *sampler = nir_variable_create(b.shader, nir_var_uniform,
+                                               sampler2d_shadow, "shadow0");
+   sampler->data.binding = 0;
+   nir_deref_instr *deref = nir_build_deref_var(&b, sampler);
+
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *uv = nir_trim_vector(&b, v, 2);
+   nir_def *cmp = nir_channel(&b, v, 2);
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, 4);
+   tex->op = nir_texop_tex;
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->is_shadow = true;
+   tex->coord_components = 2;
+   tex->dest_type = nir_type_float32;
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_texture_deref, &deref->def);
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_sampler_deref, &deref->def);
+   tex->src[2] = nir_tex_src_for_ssa(nir_tex_src_coord, uv);
+   tex->src[3] = nir_tex_src_for_ssa(nir_tex_src_comparator, cmp);
+   nir_def_init(&tex->instr, &tex->def, 4, 32);
+   nir_builder_instr_insert(&b, &tex->instr);
+
+   nir_store_var(&b, out, nir_fmul(&b, &tex->def, v), 0xf);
+   return b.shader;
+}
+
+/* External sampler state for build_shadow_compare_always: unit 0 is a
+ * shadow sampler with GL_ALWAYS as its EXT_shadow_func compare mode; the
+ * zeroed texture_swizzle replicates the compare result to all four output
+ * channels, the same INTENSITY-style default nir_lower_tex_shadow applies
+ * when no swizzle override is supplied. */
+static const struct r300_fragment_program_external_state
+   shadow_always_ext = {
+      .unit[0].texture_compare_func = RC_COMPARE_FUNC_ALWAYS,
+      .sampler_state_count = 1,
+   };
+
 int
 main(void)
 {
@@ -788,6 +965,34 @@ main(void)
    parity("vector_rcp_pow", build_vector_rcp_pow);
    parity("transcendentals", build_transcendentals);
    parity("floor_round", build_floor_round);
+
+   /* Regression gates for the fixed TEX-writemask and shadow-compare
+    * classic/nir_to_rc divergences: both front ends must agree. */
+   parity("tex_r_channel_independent", build_tex_r_channel_independent);
+   parity_probe("shadow_compare_always", build_shadow_compare_always,
+               &shadow_always_ext, true);
+
+   /* Reachability probe for the still-open store_output write-mask
+    * divergence: the classic front end's EXPORT_COLOR ignores
+    * nir_intrinsic_write_mask entirely (r300_classic_emit.c), so two
+    * differently-masked stores to the same fragment color diverge from
+    * nir_to_rc's masked-MOV translation.  count_diverge_as_failure is
+    * false so this documents the gap without red-lining the suite; once
+    * the classic emitter honors the write mask, flip this to a plain
+    * parity() call to turn it into a permanent regression gate. */
+   const bool store_output_diverges =
+      parity_probe("masked_output_store", build_masked_output_store, NULL,
+                  false);
+   if (store_output_diverges) {
+      fprintf(stderr,
+             "r300_classic_parity_test: CONFIRMED DEFECT -- classic "
+             "store_output ignores the NIR write mask (see "
+             "select_intrinsic's nir_intrinsic_store_output case in "
+             "r300_classic_select.c and R300C_OP_EXPORT_COLOR in "
+             "r300_classic_emit.c); masked_output_store diverges from "
+             "nir_to_rc above.\n");
+   }
+
    glsl_type_singleton_decref();
    if (failures) {
       fprintf(stderr, "r300_classic_parity_test: %d failures\n", failures);
