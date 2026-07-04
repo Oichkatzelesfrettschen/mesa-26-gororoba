@@ -742,9 +742,23 @@ static void r300_resource_copy_region(struct pipe_context *pipe,
     u_box_3d(dstx, dsty, dstz, abs(src_box->width), abs(src_box->height),
              abs(src_box->depth), &dstbox);
 
+    /* A POT-padded 3D NPOT texture is sampled through the compiler's
+     * logical-to-padded coordinate scale (RC_STATE_R300_TEXSCALE_FACTOR),
+     * which rewrites the blitter's fragment shader like any other.  The
+     * sampler view keeps the padded extent for the TX size fields, but the
+     * blitter must normalize the source box against the LOGICAL extent so
+     * the scale applies exactly once; padded normalization compresses the
+     * copy a second time and resamples it at the logical/padded rate. */
+    unsigned src_norm_width0 = src_width0;
+    unsigned src_norm_height0 = src_height0;
+    if (src->target == PIPE_TEXTURE_3D && r300_resource(src)->tex.is_npot) {
+        src_norm_width0 = src->width0;
+        src_norm_height0 = src->height0;
+    }
+
     r300_blitter_begin(r300, R300_COPY);
     util_blitter_blit_generic(r300->blitter, dst_view, &dstbox,
-                              src_view, src_box, src_width0, src_height0,
+                              src_view, src_box, src_norm_width0, src_norm_height0,
                               PIPE_MASK_RGBAZS, PIPE_TEX_FILTER_NEAREST, NULL,
                               false, false, 0, NULL);
     r300_blitter_end(r300);
