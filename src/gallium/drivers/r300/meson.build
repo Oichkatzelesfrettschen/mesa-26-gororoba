@@ -58,6 +58,8 @@ files_r300 = files(
   'compiler/classic/r300_classic_ir.h',
   'compiler/classic/r300_classic_regalloc.c',
   'compiler/classic/r300_classic_regalloc.h',
+  'compiler/classic/r300_classic_schedule.c',
+  'compiler/classic/r300_classic_schedule.h',
   'compiler/classic/r300_classic_select.c',
   'compiler/classic/r300_classic_select.h',
   'compiler/classic/r300_classic_target.c',
@@ -333,6 +335,26 @@ if with_tests
     executable(
       'r300_classic_byte_exact_selfdiff_test',
       files('compiler/tests/r300_classic_byte_exact_selfdiff_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # New R300 pair scheduler (R300_CLASSIC_NEW_SCHED path): the subset ALU
+  # corpus is translated then scheduled by r300_classic_schedule, and gated by
+  # the schedule-legality oracle plus a pure-reordering / topological-order
+  # equivalence check; a legacy control and a texture-deferral case bound it.
+  test(
+    'r300-classic-new-sched',
+    executable(
+      'r300_classic_new_sched_test',
+      files('compiler/tests/r300_classic_new_sched_test.c'),
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
