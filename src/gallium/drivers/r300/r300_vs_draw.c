@@ -291,21 +291,38 @@ r300_nir_float_encode_synthetic_sysval_index_uses(nir_shader *nir)
 
             /* Redirect every consumer except the raw-bit equality/inequality
              * (feq/fneu, lowered from the shader's own ieq/ine) to a single
-             * numeric i2f32 clone, created lazily on the first such consumer
-             * found for this load_deref. */
-            nir_def *numeric = NULL;
+             * numeric i2f32 clone.  Check for a qualifying consumer with a
+             * read-only walk first: nir_i2f32 itself consumes intr->def, so
+             * building the clone while an nir_foreach_use_safe walk of
+             * intr->def's own use list is in progress would insert a fresh
+             * use into the list that same walk is iterating. */
+            bool needs_numeric = false;
+            nir_foreach_use (use, &intr->def) {
+                nir_instr *user = nir_src_use_instr(use);
+                if (user->type != nir_instr_type_alu)
+                    continue;
+                nir_alu_instr *alu = nir_instr_as_alu(user);
+                if (alu->op != nir_op_feq && alu->op != nir_op_fneu) {
+                    needs_numeric = true;
+                    break;
+                }
+            }
+            if (!needs_numeric)
+                continue;
+
+            b.cursor = nir_after_instr(instr);
+            nir_def *numeric = nir_i2f32(&b, &intr->def);
+            nir_instr *numeric_instr = nir_def_instr(numeric);
+
             nir_foreach_use_safe (use, &intr->def) {
                 nir_instr *user = nir_src_use_instr(use);
+                if (user == numeric_instr)
+                    continue;  /* the i2f32 clone's own operand stays raw */
                 if (user->type != nir_instr_type_alu)
                     continue;
                 nir_alu_instr *alu = nir_instr_as_alu(user);
                 if (alu->op == nir_op_feq || alu->op == nir_op_fneu)
                     continue;
-
-                if (!numeric) {
-                    b.cursor = nir_after_instr(instr);
-                    numeric = nir_i2f32(&b, &intr->def);
-                }
                 nir_src_rewrite(use, numeric);
                 progress = true;
             }
