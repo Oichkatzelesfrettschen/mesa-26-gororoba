@@ -989,29 +989,11 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
     if (mp_snap)
         r300_mp_snapshot(r300, "post-A");
 
-    /* Pass A's colour writes sit in the CB destination cache, which pass B's
-     * texture fetches do not snoop; texture_barrier marks the GPU cache-flush
-     * and texture-cache-invalidate atoms dirty so their registers are
-     * re-emitted before the next draw's state validation.  That alone does
-     * not fix the carry read: r300_fs_multipass_draw's own
-     * set_framebuffer_state call between the passes already dirties the
-     * same atoms as an ordinary side effect of switching color buffers, so
-     * texture_barrier's dirty-marking is redundant with what the state
-     * tracker already does, and pass B then samples stale carry data on
-     * RS4xx silicon.  A bare CS boundary (pipe->flush, with or without a
-     * fence_finish wait for pass A to retire) makes it worse: pass B's draw
-     * then leaves the destination untouched entirely, so neither the
-     * cache-flush registers alone nor a flush-plus-retire-wait lands the
-     * carry read.  What does land it, silicon-verified pixel-exact at
-     * framebuffer sizes 64 through 2048, is a read map of each scratch
-     * texture: r300_texture_transfer_map detiles the tiled scratch with a
-     * util_blitter blit (a full bind/restore cycle over framebuffer,
-     * shader, sampler and viewport state), flushes, and waits on the BO --
-     * and after that sequence pass B renders the correct carries.  Map one
-     * texel of each scratch target and discard it to force that sequence;
-     * the map is the only intervention found that makes pass B execute
-     * correctly, so it stays until the underlying mid-callback flush
-     * hazard in the atom re-emit path is root-caused. */
+    /* Pass A's colour writes sit in the CB cache; pass B's texture fetches
+     * do not snoop it.  A read map of each scratch texture forces
+     * r300_texture_transfer_map's detile+blit+flush+BO-wait sequence, which
+     * ensures pass B reads the correct scratch data.  Map one texel and
+     * discard it to force this sequence. */
     pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
 
     for (unsigned k = 0; k < nrt; k++) {

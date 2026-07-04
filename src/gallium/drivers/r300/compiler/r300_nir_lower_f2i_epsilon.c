@@ -5,10 +5,10 @@
 
 /*
  * RS48x delivers an interpolated varying roughly 2^-17 of the plane's
- * magnitude off its analytic value (r300-fp-format-lut-and-fp24-exact-window:
- * FP24 holds an integer exactly only up to 2^17, and the plane-equation
- * delivery error documented against attribute interpolation sits at that
- * same order).  A GLSL int() truncation fed from such a varying can arrive
+ * magnitude off its analytic value.  FP24 holds an integer exactly only up
+ * to 2^17, and the plane-equation delivery error documented against attribute
+ * interpolation sits at that same order.  A GLSL int() truncation fed from
+ * such a varying can arrive
  * a few ULPs to the wrong side of an intended integer boundary and
  * truncate one integer low: an attribute carrying -32.0 across a triangle
  * interpolates to -31.9995, and ftrunc(-31.9995) is -31, not -32.
@@ -25,8 +25,8 @@
  * asked it to.
  *
  * This targets nir_op_f2i32 and nir_op_f2u32 specifically, ahead of
- * nir_lower_int_to_float (which rewrites f2i32/f2u32 to nir_op_ftrunc in
- * place): running before that rewrite means the nudge cannot see or affect
+ * nir_lower_int_to_float (which rewrites f2i32 to nir_op_ftrunc and f2u32 to
+ * nir_op_ffloor): running before that rewrite means the nudge cannot see or affect
  * a shader-written trunc()/floor(), only the compiler's own float-to-int
  * conversion lowering.
  */
@@ -50,7 +50,7 @@ r300_nir_nudge_f2i_instr(nir_builder *b, nir_instr *instr, UNUSED void *data)
    /* x + copysign(eps * |x|, x) folds to x * (1 + eps): sign(x) * |x| = x,
     * so the away-from-zero nudge is a single multiply -- no fsign, which
     * nir_to_rc has no opcode for at this point in the lowering. */
-   nir_def *nudged = nir_fmul_imm(b, x, 1.0 + R300_F2I_EPS_REL);
+   nir_def *nudged = nir_fmul_imm(b, x, 1.0f + R300_F2I_EPS_REL);
    nir_src_rewrite(&alu->src[0].src, nudged);
    for (unsigned c = 0; c < NIR_MAX_VEC_COMPONENTS; c++)
       alu->src[0].swizzle[c] = MIN2(c, nudged->num_components - 1);

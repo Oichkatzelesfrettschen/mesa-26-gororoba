@@ -30,7 +30,7 @@ struct sel_ctx {
    /* nir_def* -> struct r300_classic_src* (ralloc'd). */
    struct hash_table *value_map;
    const char *reject;
-   /* R500 emit honours a per-instruction destination writemask; R300/R400
+   /* R500 emit honors a per-instruction destination writemask; R300/R400
     * emit_tex has no writemask field and always writes all four channels. */
    bool is_r500;
 };
@@ -768,7 +768,7 @@ select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
     * this declared mask verbatim (writes_normal) and can only narrow, never
     * widen it.  Declare the full XYZW liveness on non-r500 so the packer
     * reserves the whole register; consumers still select their channel by
-    * swizzle.  R500 emit honours DstReg.WriteMask, so keep the narrow mask
+    * swizzle.  R500 emit honors DstReg.WriteMask, so keep the narrow mask
     * there -- the same split nir_to_rc's needs_mov workaround makes. */
    i->writemask = ctx->is_r500
                      ? (uint8_t)BITFIELD_MASK(tex->def.num_components)

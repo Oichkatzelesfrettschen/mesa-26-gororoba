@@ -97,7 +97,7 @@ calc_addr(nir_builder *b, nir_def *addr[2], nir_def *tc, nir_def *start,
 }
 
 /* Step both addresses by pos texels along the tc lane, walking the eight matrix
- * rows (mismatch) or the +-2 coefficient neighbourhood (stage 1).  pos is
+ * rows (mismatch) or the +-2 coefficient neighborhood (stage 1).  pos is
  * signed; the start lane is copied through unchanged. */
 static void
 increment_addr(nir_builder *b, nir_def *daddr[2], nir_def *saddr[2],
@@ -207,7 +207,7 @@ create_mismatch_vert_shader(struct vl_idct *idct)
     * y = vpos*scale + (7.5/8)*scale the last row's center.  A whole-scale
     * offset instead puts the point on the block's far corner, an exact texel
     * boundary tie: the rasterizer then lands the point one texel low/right,
-    * overwriting the NEIGHBOUR block's first texel (its DC among the four
+    * overwriting the NEIGHBOR block's first texel (its DC among the four
     * coefficients) with this block's mismatch output instead of correcting
     * this block's coefficient 63. */
    nir_def *pos_center = nir_imm_vec2(&b,
