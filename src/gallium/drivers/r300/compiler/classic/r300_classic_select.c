@@ -841,6 +841,23 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
    NIR_PASS(_, nir, nir_to_rc_lower_tex);
    if (ext && ext->alpha_to_one)
       NIR_PASS(_, nir, r300_nir_lower_alpha_to_one);
+   /* nir_lower_tex_shadow builds its ALWAYS/NEVER compare result from
+    * nir_imm_int(~0)/nir_imm_int(0) fed through b2f32, so the b2f32 still
+    * carries a raw 32-bit int source at this point.  nir_lower_int_to_float
+    * converts that source by its int type, not by the boolean test the
+    * shadow lowering intended, and turns the ALWAYS case into -1.0 instead
+    * of 1.0 (texdepth EXT_shadow_func: GL_ALWAYS, depth-tex-compare).
+    * nir_opt_constant_folding evaluates b2f32 by nir_op_b2f32's own
+    * semantics (nonzero test) while the source is still typed int, the same
+    * fixed-point loop nir_to_rc runs at its entry, so running it here before
+    * the int/bool lowering below folds the shadow compare to the correct
+    * float constant first. */
+   bool progress;
+   do {
+      progress = false;
+      NIR_PASS(progress, nir, nir_opt_algebraic);
+      NIR_PASS(progress, nir, nir_opt_constant_folding);
+   } while (progress);
    /* Integer ops survive the production optimizer (dynamic-index select
     * ladders compare integer indices; GL uniforms arrive typed), and
     * nir_lower_bool_to_float treats operands as floats, so the integer
