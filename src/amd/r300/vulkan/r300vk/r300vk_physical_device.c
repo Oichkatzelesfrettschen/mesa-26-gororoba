@@ -763,7 +763,18 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
 #endif
 
    /* Slot 0 is the GPU-fence-backed binary cpu_sync; slot 1 is a timeline
-    * emulated on it (radeon has no DRM_CAP_SYNCOBJ, so no hardware timeline).
+    * emulated on it.  radeon.ko does not set DRIVER_SYNCOBJ (amdgpu does), so
+    * drm_syncobj_create_ioctl's drm_core_check_feature(dev, DRIVER_SYNCOBJ)
+    * gate returns -EOPNOTSUPP and DRM_CAP_SYNCOBJ reads 0 on the render node
+    * (measured on RS482: DRM_IOCTL_SYNCOBJ_CREATE returns errno 95).  No
+    * DRM syncobj means vk_drm_syncobj_get_type() would report features == 0,
+    * so there is no slot for it here.  The consequence reaches past the
+    * timeline: VK_KHR_external_semaphore_fd / VK_KHR_external_fence_fd stay
+    * unadvertised because both handle types are unreachable -- OPAQUE_FD needs
+    * a syncobj handle, and SYNC_FD needs a struct sync_file the radeon CS
+    * submit ioctl never emits.  Cross-process interop on radeon is implicit
+    * dma_resv fencing on the shared BO (the path VK_KHR_external_memory_fd
+    * already rides), not an explicit exported semaphore.
     * vk_sync_timeline_get_type returns the wrapper type by value, so it is
     * stored on the physical device and the table points at its embedded sync. */
    device->timeline_sync_type = vk_sync_timeline_get_type(&r300vk_cpu_sync_type);
