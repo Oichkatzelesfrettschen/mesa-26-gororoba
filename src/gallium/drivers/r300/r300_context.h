@@ -597,6 +597,16 @@ struct r300_context {
     bool skip_rendering;
     /* The flag above saved by blitter. */
     unsigned char blitter_saved_skip_rendering;
+    /* 32x32 polygon stipple pattern from pipe_poly_stipple, and precomputed
+     * trivial-pattern flags. R3xx has no stipple-pattern register, so the
+     * draw path resolves the all-zero (mask everything) and all-one/never-set
+     * (no-op) cases driver-side instead of emulating the pattern in hardware. */
+    uint32_t poly_stipple_pattern[32];
+    bool poly_stipple_all_zero;
+    bool poly_stipple_all_one;
+    /* Whether set_polygon_stipple has been called at least once. GL's default
+     * stipple pattern is all-ones, so an unset pattern behaves like all_one. */
+    bool poly_stipple_set;
     /* Point sprites texcoord index,  1 bit per texcoord */
     int sprite_coord_enable;
     /* Whether we are drawing points, to disable sprite coord if not */
