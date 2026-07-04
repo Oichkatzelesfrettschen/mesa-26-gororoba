@@ -1052,56 +1052,154 @@ r300_mp_flatten_carries(nir_builder *b, const struct r300_mp_partition *p,
     return n;
 }
 
-/* Pack up to eight carried scalars into ceil(n/2) RGBA8 scratch colours.
- * Each scalar becomes a hi/lo byte pair: v = clamp((x + BIAS) * SCALE,
- * 0, 65535), hi = floor(floor(v) / 256), lo = floor(v) - 256 * hi; the
- * channels are hi/255 and lo/255 so the unorm write is byte-exact.  All
- * arithmetic stays in the FP24 integer-exact window.  A carry outside
- * (-BIAS, BIAS) clamps at the window edge -- the documented residual of an
- * 8-bit-per-channel scratch plus a float-only ALU. */
+#define R300_MP_C8_BIAS 128.0
+
+/* Channel layout for the multipass carry encoding, derived once from the
+ * partition and consumed identically by the packer (pass A) and the
+ * unpacker (pass B): a bool1 or int-typed carry scalar is exact as a
+ * single UNORM8 byte (bool: the b2f32 0.0/1.0 value written directly;
+ * small int: biased by 128 so any integer in [-128, 127] round-trips
+ * through byte = round(x) + 128), while a float-typed carry keeps the
+ * wider hi/lo 16-bit fixed-point pair.  Byte-tier scalars pack four to an
+ * RGBA8 scratch target instead of two, and their pack/unpack is a single
+ * add-clamp-floor instead of the float tier's floor/floor/sub ladder, so
+ * a frontier that is mostly bool/int (the common case: loop counters,
+ * comparison results, small array indices) both fits in fewer scratch
+ * targets and costs a fraction of the ALU per carried component.  Byte
+ * targets are ordered before float16 targets; both sides compute this
+ * split from the same r300_mp_partition, so a writer/reader mismatch is
+ * structurally impossible. */
+struct r300_mp_layout {
+    unsigned n;
+    enum r300_mp_carry_type stype[R300_MP_MAX_CARRY_COMPS];
+    unsigned order[R300_MP_MAX_CARRY_COMPS];
+    unsigned num_byte;
+    unsigned num_float;
+    unsigned num_byte_rts;
+    unsigned num_float_rts;
+    unsigned num_rts;
+};
+
 static void
-r300_mp_pack_carries(nir_builder *b, nir_def **scalars, unsigned n,
-                     nir_def **rt_colors, unsigned *num_rts)
+r300_mp_build_layout(const struct r300_mp_partition *p,
+                     struct r300_mp_layout *L)
 {
-    nir_def *hi[R300_MP_MAX_CARRY_COMPS], *lo[R300_MP_MAX_CARRY_COMPS];
-    for (unsigned i = 0; i < n; i++) {
-        nir_def *v = nir_fmul_imm(b,
-            nir_fadd_imm(b, scalars[i], R300_MP_C16_BIAS), R300_MP_C16_SCALE);
-        v = nir_fmin(b, nir_fmax(b, v, nir_imm_float(b, 0.0f)),
-                     nir_imm_float(b, 65535.0f));
-        nir_def *vf = nir_ffloor(b, v);
-        hi[i] = nir_ffloor(b, nir_fmul_imm(b, vf, 1.0 / 256.0));
-        lo[i] = nir_fsub(b, vf, nir_fmul_imm(b, hi[i], 256.0));
+    L->n = 0;
+    for (unsigned i = 0; i < p->num_bases; i++)
+        for (unsigned c = 0; c < p->bases[i]->num_components; c++)
+            L->stype[L->n++] = p->base_type[i];
+
+    L->num_byte = 0;
+    for (unsigned i = 0; i < L->n; i++)
+        if (L->stype[i] != R300_MP_CARRY_FLOAT)
+            L->order[L->num_byte++] = i;
+    L->num_float = 0;
+    for (unsigned i = 0; i < L->n; i++)
+        if (L->stype[i] == R300_MP_CARRY_FLOAT)
+            L->order[L->num_byte + L->num_float++] = i;
+
+    L->num_byte_rts = DIV_ROUND_UP(L->num_byte, 4);
+    L->num_float_rts = DIV_ROUND_UP(L->num_float, 2);
+    L->num_rts = L->num_byte_rts + L->num_float_rts;
+}
+
+/* Pack the flattened carry scalars into L->num_rts RGBA8 scratch colours
+ * per r300_mp_layout: byte tier first (up to four scalars per target),
+ * then float16 tier (the hi/lo pair this replaces for float-typed
+ * carries).  All arithmetic stays in the FP24 integer-exact window; a
+ * byte-tier carry outside [-128, 127] and a float16-tier carry outside
+ * (-BIAS, BIAS) both clamp at the window edge. */
+static void
+r300_mp_pack_carries(nir_builder *b, nir_def **scalars,
+                     const struct r300_mp_layout *L, nir_def **rt_colors)
+{
+    for (unsigned k = 0; k < L->num_byte_rts; k++) {
+        nir_def *chan[4];
+        for (unsigned c = 0; c < 4; c++) {
+            unsigned si = k * 4 + c;
+            if (si >= L->num_byte) {
+                chan[c] = nir_imm_float(b, 0.0f);
+                continue;
+            }
+            unsigned fi = L->order[si];
+            nir_def *x = scalars[fi];
+            if (L->stype[fi] == R300_MP_CARRY_BOOL1) {
+                chan[c] = x;
+            } else {
+                nir_def *v = nir_fmin(b, nir_fmax(b,
+                    nir_fadd_imm(b, x, R300_MP_C8_BIAS), nir_imm_float(b, 0.0f)),
+                    nir_imm_float(b, 255.0f));
+                chan[c] = nir_fmul_imm(b,
+                    nir_ffloor(b, nir_fadd_imm(b, v, 0.5f)), 1.0 / 255.0);
+            }
+        }
+        rt_colors[k] = nir_vec4(b, chan[0], chan[1], chan[2], chan[3]);
     }
-    *num_rts = DIV_ROUND_UP(n, 2);
-    for (unsigned k = 0; k < *num_rts; k++) {
-        unsigned a = 2 * k, c = 2 * k + 1;
-        nir_def *zero = nir_imm_float(b, 0.0f);
-        nir_def *rgba = nir_vec4(b, hi[a], lo[a],
-                                 c < n ? hi[c] : zero,
-                                 c < n ? lo[c] : zero);
-        rt_colors[k] = nir_fmul_imm(b, rgba, 1.0 / 255.0);
+    for (unsigned k = 0; k < L->num_float_rts; k++) {
+        unsigned sa = L->num_byte + 2 * k, sc = sa + 1;
+        nir_def *xa = scalars[L->order[sa]];
+        nir_def *xc = (sc < L->n) ? scalars[L->order[sc]] : nir_imm_float(b, 0.0f);
+        nir_def *va = nir_fmul_imm(b,
+            nir_fadd_imm(b, xa, R300_MP_C16_BIAS), R300_MP_C16_SCALE);
+        nir_def *vc = nir_fmul_imm(b,
+            nir_fadd_imm(b, xc, R300_MP_C16_BIAS), R300_MP_C16_SCALE);
+        va = nir_fmin(b, nir_fmax(b, va, nir_imm_float(b, 0.0f)),
+                     nir_imm_float(b, 65535.0f));
+        vc = nir_fmin(b, nir_fmax(b, vc, nir_imm_float(b, 0.0f)),
+                     nir_imm_float(b, 65535.0f));
+        nir_def *vaf = nir_ffloor(b, va), *vcf = nir_ffloor(b, vc);
+        nir_def *hia = nir_ffloor(b, nir_fmul_imm(b, vaf, 1.0 / 256.0));
+        nir_def *loa = nir_fsub(b, vaf, nir_fmul_imm(b, hia, 256.0));
+        nir_def *hic = nir_ffloor(b, nir_fmul_imm(b, vcf, 1.0 / 256.0));
+        nir_def *loc = nir_fsub(b, vcf, nir_fmul_imm(b, hic, 256.0));
+        nir_def *rgba = nir_vec4(b, hia, loa, hic, loc);
+        rt_colors[L->num_byte_rts + k] = nir_fmul_imm(b, rgba, 1.0 / 255.0);
     }
 }
 
-/* Reverse r300_mp_pack_carries for one scratch sample: byte = round(ch * 255),
- * v = hi * 256 + lo, x = v / SCALE - BIAS.  Returns the two scalars carried in
- * this RGBA8 target. */
+/* Reverse r300_mp_pack_carries.  rt_texs holds one sampled RGBA8 value per
+ * scratch target, in the same byte-tier-then-float16-tier order the
+ * packer used; scalars_out is filled back at each scalar's original
+ * flatten index so the base-order reconstruction in emit_pass_b is
+ * unchanged. */
 static void
-r300_mp_unpack_carry_pair(nir_builder *b, nir_def *rgba, nir_def **s0,
-                          nir_def **s1)
+r300_mp_unpack_carries(nir_builder *b, nir_def **rt_texs,
+                       const struct r300_mp_layout *L, nir_def **scalars_out)
 {
-    nir_def *bytes = nir_fround_even(b, nir_fmul_imm(b, rgba, 255.0));
-    nir_def *v0 = nir_fadd(b,
-        nir_fmul_imm(b, nir_channel(b, bytes, 0), 256.0),
-        nir_channel(b, bytes, 1));
-    nir_def *v1 = nir_fadd(b,
-        nir_fmul_imm(b, nir_channel(b, bytes, 2), 256.0),
-        nir_channel(b, bytes, 3));
-    *s0 = nir_fadd_imm(b, nir_fmul_imm(b, v0, 1.0 / R300_MP_C16_SCALE),
-                       -R300_MP_C16_BIAS);
-    *s1 = nir_fadd_imm(b, nir_fmul_imm(b, v1, 1.0 / R300_MP_C16_SCALE),
-                       -R300_MP_C16_BIAS);
+    for (unsigned k = 0; k < L->num_byte_rts; k++) {
+        nir_def *rgba = rt_texs[k];
+        nir_def *bytes = nir_ffloor(b,
+            nir_fadd_imm(b, nir_fmul_imm(b, rgba, 255.0f), 0.5f));
+        for (unsigned c = 0; c < 4; c++) {
+            unsigned si = k * 4 + c;
+            if (si >= L->num_byte)
+                continue;
+            unsigned fi = L->order[si];
+            if (L->stype[fi] == R300_MP_CARRY_BOOL1)
+                scalars_out[fi] = nir_channel(b, rgba, c);
+            else
+                scalars_out[fi] = nir_fadd_imm(b, nir_channel(b, bytes, c),
+                                               -R300_MP_C8_BIAS);
+        }
+    }
+    for (unsigned k = 0; k < L->num_float_rts; k++) {
+        nir_def *rgba = rt_texs[L->num_byte_rts + k];
+        nir_def *bytes = nir_fround_even(b, nir_fmul_imm(b, rgba, 255.0));
+        nir_def *v0 = nir_fadd(b,
+            nir_fmul_imm(b, nir_channel(b, bytes, 0), 256.0),
+            nir_channel(b, bytes, 1));
+        nir_def *v1 = nir_fadd(b,
+            nir_fmul_imm(b, nir_channel(b, bytes, 2), 256.0),
+            nir_channel(b, bytes, 3));
+        nir_def *s0 = nir_fadd_imm(b, nir_fmul_imm(b, v0, 1.0 / R300_MP_C16_SCALE),
+                                   -R300_MP_C16_BIAS);
+        nir_def *s1 = nir_fadd_imm(b, nir_fmul_imm(b, v1, 1.0 / R300_MP_C16_SCALE),
+                                   -R300_MP_C16_BIAS);
+        unsigned sa = L->num_byte + 2 * k, sc = sa + 1;
+        scalars_out[L->order[sa]] = s0;
+        if (sc < L->n)
+            scalars_out[L->order[sc]] = s1;
+    }
 }
 
 /* Decompose a deferred partition's shape so the cut criterion is visible from
@@ -1195,8 +1293,9 @@ r300_mp_recollect(nir_shader *sh, const struct r300_mp_partition *want,
 }
 
 /* Emit pass A: everything up to the cut, with the program's own outputs
- * replaced by the byte-packed carry written across ceil(comps/2) scratch
- * colour targets (FRAG_RESULT_DATA0..3).  The original output variables and
+ * replaced by the tier-encoded carry written across the scratch colour
+ * targets r300_mp_build_layout allocates (FRAG_RESULT_DATA0..3).  The
+ * original output variables and
  * every store to them are dropped -- a leftover gl_FragColor variable would
  * turn write_all back on and broadcast one value over the per-MRT carries. */
 static nir_shader *
@@ -1257,12 +1356,19 @@ r300_nir_fs_emit_pass_a(nir_shader *src, const struct r300_mp_partition *part,
         exec_node_remove(&var->node);
     a->info.outputs_written = 0;
 
+    struct r300_mp_layout layout;
+    r300_mp_build_layout(&p, &layout);
+    if (layout.num_rts > R300_MP_MAX_SCRATCH) {
+        ralloc_free(a);
+        return NULL;
+    }
+
     nir_builder b = nir_builder_at(nir_after_block(block));
     nir_def *scalars[R300_MP_MAX_CARRY_COMPS];
-    unsigned n = r300_mp_flatten_carries(&b, &p, scalars);
+    r300_mp_flatten_carries(&b, &p, scalars);
     nir_def *rt_colors[R300_MP_MAX_SCRATCH];
-    unsigned num_rts = 0;
-    r300_mp_pack_carries(&b, scalars, n, rt_colors, &num_rts);
+    r300_mp_pack_carries(&b, scalars, &layout, rt_colors);
+    unsigned num_rts = layout.num_rts;
 
     for (unsigned k = 0; k < num_rts; k++) {
         char name[24];
@@ -1320,11 +1426,17 @@ r300_nir_fs_emit_pass_b(nir_shader *src, const struct r300_mp_partition *part)
         }
     }
 
-    unsigned num_rts = DIV_ROUND_UP(p.total_comps, 2);
+    struct r300_mp_layout layout;
+    r300_mp_build_layout(&p, &layout);
+    if (layout.num_rts > R300_MP_MAX_SCRATCH) {
+        ralloc_free(bsh);
+        return NULL;
+    }
+    unsigned num_rts = layout.num_rts;
     nir_builder b = nir_builder_at(nir_before_block(block));
     nir_def *coord = nir_trim_vector(&b, nir_load_frag_coord(&b), 2);
 
-    nir_def *scalars[R300_MP_MAX_CARRY_COMPS + 1];
+    nir_def *rt_texs[R300_MP_MAX_SCRATCH];
     for (unsigned k = 0; k < num_rts; k++) {
         char name[24];
         snprintf(name, sizeof(name), "r300_mp_scratch%u", k);
@@ -1335,11 +1447,11 @@ r300_nir_fs_emit_pass_b(nir_shader *src, const struct r300_mp_partition *part)
             name);
         samp->data.binding = k;
         nir_deref_instr *deref = nir_build_deref_var(&b, samp);
-        nir_def *rgba = nir_tex(&b, coord, .texture_deref = deref,
-                                .sampler_deref = deref);
-        r300_mp_unpack_carry_pair(&b, rgba, &scalars[2 * k],
-                                  &scalars[2 * k + 1]);
+        rt_texs[k] = nir_tex(&b, coord, .texture_deref = deref,
+                            .sampler_deref = deref);
     }
+    nir_def *scalars[R300_MP_MAX_CARRY_COMPS];
+    r300_mp_unpack_carries(&b, rt_texs, &layout, scalars);
 
     unsigned comp = 0;
     for (unsigned i = 0; i < p.num_bases; i++) {
