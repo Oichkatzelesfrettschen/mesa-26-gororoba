@@ -200,9 +200,20 @@ create_mismatch_vert_shader(struct vl_idct *idct)
       (float)VL_BLOCK_WIDTH / idct->buffer_width,
       (float)VL_BLOCK_HEIGHT / idct->buffer_height);
 
-   /* o_vpos.xy = vpos*scale + scale (the +7/VL_BLOCK_WIDTH half-block centring
-    * folded into the MAD); o_vpos.zw = 1. */
-   nir_def *pos_xy = nir_fmad(&b, vpos, scale, scale);
+   /* The mismatch point must cover the block's last source texel, whose .w
+    * carries coefficient 63: texel column 2*vpos.x+1 (the second of the
+    * block's texel pair), row 8*vpos.y+7.  Center the point on that texel:
+    * x = vpos*scale + (1.5/2)*scale reaches the second texel's center and
+    * y = vpos*scale + (7.5/8)*scale the last row's center.  A whole-scale
+    * offset instead puts the point on the block's far corner, an exact texel
+    * boundary tie: the rasterizer then lands the point one texel low/right,
+    * overwriting the NEIGHBOUR block's first texel (its DC among the four
+    * coefficients) with this block's mismatch output instead of correcting
+    * this block's coefficient 63. */
+   nir_def *pos_center = nir_imm_vec2(&b,
+      0.75f * (float)VL_BLOCK_WIDTH / idct->buffer_width,
+      0.9375f * (float)VL_BLOCK_HEIGHT / idct->buffer_height);
+   nir_def *pos_xy = nir_fmad(&b, vpos, scale, pos_center);
    nir_variable *ov_pos = nir_variable_create(b.shader, nir_var_shader_out,
                                               glsl_vec4_type(), "pos_out");
    ov_pos->data.location = VARYING_SLOT_POS;
@@ -210,10 +221,18 @@ create_mismatch_vert_shader(struct vl_idct *idct)
       nir_vec4(&b, nir_channel(&b, pos_xy, 0), nir_channel(&b, pos_xy, 1),
                nir_imm_float(&b, 1.0f), nir_imm_float(&b, 1.0f)), 0xf);
 
-   /* o_l_addr = calc_addr(t_tex, t_tex), t_tex = vpos*scale */
+   /* o_l_addr = calc_addr(t_tex, t_tex), t_tex = vpos*scale.  A point's
+    * varyings are not interpolated toward fragment centers the way a quad's
+    * are, so the read address arrives at the exact block-corner texel edge;
+    * center both lanes (half a four-coefficient texel in x, half a row in y),
+    * the same NEAREST-tie discipline as the first-pass l_center bias. */
    nir_def *t_tex = nir_fmul(&b, vpos, scale);
    nir_def *addr[2];
    calc_addr(&b, addr, t_tex, t_tex, false, false, idct->buffer_width / 4);
+   nir_def *read_center = nir_imm_vec2(&b,
+      2.0f / idct->buffer_width, 0.5f / idct->buffer_height);
+   addr[0] = nir_fadd(&b, addr[0], read_center);
+   addr[1] = nir_fadd(&b, addr[1], read_center);
 
    for (unsigned k = 0; k < 2; ++k) {
       nir_variable *ov = nir_variable_create(b.shader, nir_var_shader_out,
