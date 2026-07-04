@@ -388,6 +388,33 @@ MotionVectorToPipe(const struct pipe_mpeg12_macroblock *mb, unsigned vector,
          mv.bottom.weight = weight;
          break;
 
+      /* frame_motion_type stays RESERVED (macroblock_modes.value's reset value)
+       * for every macroblock of a genuine field-structure picture -- the
+       * bitstream parser (vl_mpeg12_bitstream.c, macroblock_modes()) only ever
+       * writes frame_motion_type when picture_structure == FRAME, and writes
+       * the disjoint field_motion_type bitfield otherwise.  Dispatch on that
+       * field instead of falling to UNREACHABLE. */
+      case PIPE_MPEG12_MO_TYPE_RESERVED:
+         switch (mb->macroblock_modes.bits.field_motion_type) {
+         case PIPE_MPEG12_MO_TYPE_FIELD:
+            /* One motion vector predicts the whole macroblock -- it belongs to
+             * a single coded field, not two interleaved output fields -- so
+             * top and bottom both carry it, with the field it references
+             * selected by the single motion_vertical_field_select bit
+             * (vl_mpeg12_bitstream.c, motion_vector_field()). */
+            mv.top.x = mv.bottom.x = mb->PMV[0][vector][0];
+            mv.top.y = mv.bottom.y = mb->PMV[0][vector][1];
+            mv.top.field_select = mv.bottom.field_select =
+               (mb->motion_vertical_field_select & field_select_mask) ?
+               PIPE_VIDEO_BOTTOM_FIELD : PIPE_VIDEO_TOP_FIELD;
+            mv.top.weight = mv.bottom.weight = weight;
+            break;
+
+         default:
+            UNREACHABLE("TODO: Support DUALPRIME and 16x8 field motion types");
+         }
+         break;
+
       default:
          UNREACHABLE("TODO: Support DUALPRIME and 16x8");
       }

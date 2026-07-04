@@ -685,13 +685,19 @@ motion_vector_field(struct vl_mpg12_bs *bs, int s, struct pipe_mpeg12_macroblock
    if (mb->macroblock_modes.bits.field_motion_type == PIPE_MPEG12_MO_TYPE_16x8) {
       mb->motion_vertical_field_select |= vl_vlc_get_uimsbf(&bs->vlc, 1) << s;
       motion_vector(bs, 0, s, dmv, delta, dmvector);
+      mb->PMV[0][s][0] = wrap(mb->PMV[0][s][0] + delta[0], bs->desc->f_code[s][0]);
+      mb->PMV[0][s][1] = wrap(mb->PMV[0][s][1] + delta[1], bs->desc->f_code[s][1]);
 
       mb->motion_vertical_field_select |= vl_vlc_get_uimsbf(&bs->vlc, 1) << (s + 2);
       motion_vector(bs, 1, s, dmv, delta, dmvector);
+      mb->PMV[1][s][0] = wrap(mb->PMV[1][s][0] + delta[0], bs->desc->f_code[s][0]);
+      mb->PMV[1][s][1] = wrap(mb->PMV[1][s][1] + delta[1], bs->desc->f_code[s][1]);
    } else {
       if (!dmv)
          mb->motion_vertical_field_select |= vl_vlc_get_uimsbf(&bs->vlc, 1) << s;
       motion_vector(bs, 0, s, dmv, delta, dmvector);
+      mb->PMV[0][s][0] = wrap(mb->PMV[0][s][0] + delta[0], bs->desc->f_code[s][0]);
+      mb->PMV[0][s][1] = wrap(mb->PMV[0][s][1] + delta[1], bs->desc->f_code[s][1]);
    }
 }
 
