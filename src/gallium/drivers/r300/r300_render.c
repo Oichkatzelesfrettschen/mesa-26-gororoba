@@ -878,6 +878,37 @@ r300_rasterizer_emits_points(struct r300_context *r300, unsigned prim)
     return front_rasterized || back_rasterized;
 }
 
+/* Multipass state-lifetime snapshot (R300_MP_SNAPSHOT=1): the pass A and
+ * pass B draws issue back-to-back inside one draw_vbo callback, so a CS
+ * boundary between them exercises state paths no ordinary draw sequence
+ * does.  The snapshot separates the three loss classes at each stage: the
+ * FS override (pass B drawn with the wrong program), the geometry and its
+ * dirty re-emission (pass B not drawn at all), and the transient
+ * framebuffer/sampler bindings (pass B sampling or writing the wrong
+ * surface). */
+static void
+r300_mp_snapshot(struct r300_context *r300, const char *tag)
+{
+    struct pipe_framebuffer_state *fb = r300->fb_state.state;
+    struct r300_textures_state *ts = r300->textures_state.state;
+
+    fprintf(stderr,
+            "MP_SNAP %-10s flush=%" PRIu64 " in_mp=%d override=%p fs_code=%p "
+            "fb=%ux%u/%u cb0=%p zs=%p views=%u/%u samp0=%p "
+            "dirty[fb=%d tex=%d fs=%d fsc=%d rs=%d va=%d] hw_dirty=%d\n",
+            tag, (uint64_t)r300->flush_counter, r300->in_multipass,
+            (void *)r300->multipass_override_fs,
+            r300->fs.state ? (void *)r300_fs(r300)->shader : NULL,
+            fb->width, fb->height, fb->nr_cbufs,
+            (void *)fb->cbufs[0].texture, (void *)fb->zsbuf.texture,
+            ts->sampler_view_count, ts->sampler_state_count,
+            ts->sampler_views[0] ? (void *)ts->sampler_views[0]->base.texture
+                                 : NULL,
+            r300->fb_state.dirty, r300->textures_state.dirty, r300->fs.dirty,
+            r300->fs_constants.dirty, r300->rs_block_state.dirty,
+            r300->vertex_arrays_dirty, r300->dirty_hw != 0);
+}
+
 /* >64-ALU FS multipass (R300_FS_MULTIPASS): render the split FS in two draws.
  * Pass A (the bound code) renders the byte-packed carry to N scratch RGBA8
  * MRTs (two carried scalar components per target); pass B samples them at
@@ -921,6 +952,14 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
 
     r300->in_multipass = true;
 
+    static int mp_snap = -1;
+    if (mp_snap < 0) {
+        const char *e = getenv("R300_MP_SNAPSHOT");
+        mp_snap = (e && e[0] == '1') ? 1 : 0;
+    }
+    if (mp_snap)
+        r300_mp_snapshot(r300, "entry");
+
     if (!scratch_ok) {
         /* No carry targets: render pass A alone (a gated, experimental path). */
         for (unsigned k = 0; k < nrt; k++)
@@ -947,12 +986,28 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
     pipe->set_framebuffer_state(pipe, &fb1);
     pipe->draw_vbo(pipe, dinfo, drawid_offset, indirect, draws, num_draws);
 
+    if (mp_snap)
+        r300_mp_snapshot(r300, "post-A");
+
     /* Pass A's colour writes sit in the CB destination cache, which pass B's
      * texture fetches do not snoop; flush it and invalidate the texture cache
      * before the same command stream samples the scratch.  Without this the
      * carry reads back stale memory (zeros on a fresh BO), which is exactly
      * what a CPU map between the passes -- a full sync -- was masking. */
     pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+
+    /* Gated experiment: a CS boundary between the passes, the mitigation the
+     * CPU-map experiment proved sufficient.  The snapshot pair around it
+     * names which pass B state the boundary loses. */
+    static int mp_flush = -1;
+    if (mp_flush < 0) {
+        const char *e = getenv("R300_MP_FLUSH");
+        mp_flush = (e && e[0] == '1') ? 1 : 0;
+    }
+    if (mp_flush)
+        pipe->flush(pipe, NULL, 0);
+    if (mp_snap)
+        r300_mp_snapshot(r300, "post-flush");
 
     /* Pass B (samples the scratch set) -> the real framebuffer. */
     pipe->set_framebuffer_state(pipe, &saved_fb);
@@ -975,7 +1030,11 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
     pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, nrt, scso);
 
     r300->multipass_override_fs = pass_a->multipass_pass_b;
+    if (mp_snap)
+        r300_mp_snapshot(r300, "pre-B");
     pipe->draw_vbo(pipe, dinfo, drawid_offset, indirect, draws, num_draws);
+    if (mp_snap)
+        r300_mp_snapshot(r300, "post-B");
     r300->multipass_override_fs = NULL;
 
     void *null_cso[4] = { NULL };
