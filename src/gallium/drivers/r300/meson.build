@@ -62,6 +62,8 @@ files_r300 = files(
   'compiler/classic/r300_classic_select.h',
   'compiler/classic/r300_classic_target.c',
   'compiler/classic/r300_classic_target.h',
+  'compiler/classic/r300_classic_validate_schedule.c',
+  'compiler/classic/r300_classic_validate_schedule.h',
   'compiler/memory_pool.c',
   'compiler/memory_pool.h',
   'compiler/nir_to_rc.c',
@@ -290,6 +292,47 @@ if with_tests
     executable(
       'r300_classic_parity_test',
       files('compiler/tests/r300_classic_parity_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # Phase-0 oracle (b): schedule legality on the emitted rc_pair_instruction
+  # stream, checked against the register-documented RGB/Alpha cross-pipe
+  # coupling and presub-NOP hazard, independent of the CPU-evaluator parity
+  # check above.  Corpus half compiles through the unmodified legacy
+  # pipeline; synthetic half isolates each check against a hand-built pair.
+  test(
+    'r300-classic-validate-schedule',
+    executable(
+      'r300_classic_validate_schedule_test',
+      files('compiler/tests/r300_classic_validate_schedule_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # Phase-0 oracle (c): a determinism check on the unmodified legacy path --
+  # compiling the same shader shape twice through nir_to_rc and the full
+  # backend pass chain must produce byte-identical R300 hardware code. This
+  # proves the harness itself before a byte-diff gates any new backend work.
+  test(
+    'r300-classic-byte-exact-selfdiff',
+    executable(
+      'r300_classic_byte_exact_selfdiff_test',
+      files('compiler/tests/r300_classic_byte_exact_selfdiff_test.c'),
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
