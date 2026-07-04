@@ -147,11 +147,22 @@ build_fmad(void)
    return b.shader;
 }
 
-/* exp2(v.x) broadcast to all four channels: classify_instruction forces
- * needrgb (write mask includes xyz) and needalpha (transcendent opcodes set
- * it unconditionally), so pair translate emits RGB.REPL_ALPHA paired with
- * Alpha.EX2 in the same instruction -- a real positive instance of the
- * RGB-reads-alpha coupling. */
+/* Four DIFFERENT per-channel scalar producers (EX2/LG2/RCP/RSQ) collected
+ * into one vec4 output write.  This shape matters: a single broadcast
+ * scalar (all four channels reading the same def) gets caught by
+ * r3xx_fragprog.c's rc_convert_rgb_alpha pass, which demotes any standalone
+ * (non-Friended) scalar-opcode instruction's destination to W-only before
+ * pairing -- a broadcast EX2 never reaches pair translate with an xyz-
+ * carrying mask.  Four DIFFERENT channel writers of the same destination
+ * temp, all consumed by the same later vec4-read instruction, make
+ * rc_get_variables() Friend them together (radeon_variable.c: "Any two
+ * variables that share a reader are considered 'friends'"), which exempts
+ * them from the demotion.  classify_instruction then sees EX2/LG2/RCP
+ * writing an xyz channel (needrgb) with the unconditional needalpha the
+ * transcendent case sets, so pair translate emits RGB.REPL_ALPHA paired
+ * with the matching Alpha opcode -- a real positive instance of the
+ * RGB-reads-alpha coupling in actual compiled output, confirmed by the
+ * corpus's own opcode count, not asserted on faith. */
 static nir_shader *
 build_sop_repl_alpha(void)
 {
@@ -159,8 +170,12 @@ build_sop_repl_alpha(void)
    nir_variable *in = add_varying(&b);
    nir_variable *out = add_color_output(&b);
    nir_def *v = nir_load_var(&b, in);
-   nir_def *e = nir_fexp2(&b, nir_channel(&b, v, 0));
-   nir_store_var(&b, out, nir_vec4(&b, e, e, e, e), 0xf);
+   nir_def *safe = nir_fadd_imm(&b, nir_fabs(&b, v), 0.5f);
+   nir_def *x = nir_fexp2(&b, nir_channel(&b, safe, 0));
+   nir_def *y = nir_flog2(&b, nir_channel(&b, safe, 1));
+   nir_def *z = nir_frcp(&b, nir_channel(&b, safe, 2));
+   nir_def *w = nir_frsq(&b, nir_channel(&b, safe, 3));
+   nir_store_var(&b, out, nir_vec4(&b, x, y, z, w), 0xf);
    return b.shader;
 }
 
@@ -213,8 +228,32 @@ build_tex_modulate(void)
    return b.shader;
 }
 
+/* Count how many emitted pairs actually exercise the two cross-pipe
+ * couplings, so a corpus case that claims to force RGB.REPL_ALPHA or
+ * Alpha.DP can be held to actually containing one -- a validator that
+ * always returns true on a corpus that never produces the shape it checks
+ * would pass vacuously, proving nothing about that check. */
 static void
-corpus_case(const char *name, nir_shader *(*build)(void))
+count_cross_pipe_pairs(const struct radeon_compiler *c, unsigned *repl_alpha_count,
+                       unsigned *alpha_dp_count)
+{
+   *repl_alpha_count = 0;
+   *alpha_dp_count = 0;
+   for (const struct rc_instruction *inst = c->Program.Instructions.Next;
+        inst != &c->Program.Instructions; inst = inst->Next) {
+      if (inst->Type != RC_INSTRUCTION_PAIR)
+         continue;
+      if (inst->U.P.RGB.Opcode == RC_OPCODE_REPL_ALPHA)
+         (*repl_alpha_count)++;
+      if (inst->U.P.Alpha.Opcode == RC_OPCODE_DP3 ||
+          inst->U.P.Alpha.Opcode == RC_OPCODE_DP4)
+         (*alpha_dp_count)++;
+   }
+}
+
+static void
+corpus_case(const char *name, nir_shader *(*build)(void),
+           unsigned min_repl_alpha, unsigned min_alpha_dp)
 {
    struct r300_fragment_program_compiler fc;
    struct rc_regalloc_state rs;
@@ -232,6 +271,17 @@ corpus_case(const char *name, nir_shader *(*build)(void))
          fprintf(stderr, "  backend said: %s\n", fc.Base.ErrorMsg);
       return;
    }
+
+   unsigned repl_alpha_count, alpha_dp_count;
+   count_cross_pipe_pairs(&fc.Base, &repl_alpha_count, &alpha_dp_count);
+   snprintf(what, sizeof(what),
+           "%s: compiled output actually contains >=%u RGB.REPL_ALPHA pair(s)",
+           name, min_repl_alpha);
+   CHECK(repl_alpha_count >= min_repl_alpha, what);
+   snprintf(what, sizeof(what),
+           "%s: compiled output actually contains >=%u Alpha.DP pair(s)",
+           name, min_alpha_dp);
+   CHECK(alpha_dp_count >= min_alpha_dp, what);
 
    const char *reject_reason = NULL;
    snprintf(what, sizeof(what), "%s: schedule legality validator accepts",
@@ -414,10 +464,10 @@ main(void)
 {
    glsl_type_singleton_init_or_ref();
 
-   corpus_case("fmad", build_fmad);
-   corpus_case("sop_repl_alpha", build_sop_repl_alpha);
-   corpus_case("alpha_dp_dot", build_alpha_dp_dot);
-   corpus_case("tex_modulate", build_tex_modulate);
+   corpus_case("fmad", build_fmad, 0, 0);
+   corpus_case("sop_repl_alpha", build_sop_repl_alpha, 1, 0);
+   corpus_case("alpha_dp_dot", build_alpha_dp_dot, 0, 1);
+   corpus_case("tex_modulate", build_tex_modulate, 0, 0);
 
    synth_case("repl_alpha_valid", fill_repl_alpha_valid, true, NULL);
    synth_case("repl_alpha_reads_nop", fill_repl_alpha_reads_nop, false,
