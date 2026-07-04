@@ -30,6 +30,9 @@ struct sel_ctx {
    /* nir_def* -> struct r300_classic_src* (ralloc'd). */
    struct hash_table *value_map;
    const char *reject;
+   /* R500 emit honours a per-instruction destination writemask; R300/R400
+    * emit_tex has no writemask field and always writes all four channels. */
+   bool is_r500;
 };
 
 static bool
@@ -757,7 +760,19 @@ select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
    struct r300_classic_instr *i = r300_classic_instr_append(ctx->prog, op);
    if (!i)
       return reject(ctx, "out of memory");
-   i->writemask = (uint8_t)BITFIELD_MASK(tex->def.num_components);
+   /* R300/R400 emit_tex has no writemask field: the hardware TEX writes all
+    * four channels of its destination register.  A narrowed declared mask
+    * (from texture(s,uv).r and the nir_opt_shrink_vectors that produces it)
+    * lets the register packer place an independent live value in a channel
+    * the hardware write then clobbers, because the shared dataflow reads
+    * this declared mask verbatim (writes_normal) and can only narrow, never
+    * widen it.  Declare the full XYZW liveness on non-r500 so the packer
+    * reserves the whole register; consumers still select their channel by
+    * swizzle.  R500 emit honours DstReg.WriteMask, so keep the narrow mask
+    * there -- the same split nir_to_rc's needs_mov workaround makes. */
+   i->writemask = ctx->is_r500
+                     ? (uint8_t)BITFIELD_MASK(tex->def.num_components)
+                     : (uint8_t)RC_MASK_XYZW;
    i->tex_unit = tex->texture_index;
    i->tex_target = target;
    i->src[0] = coord;
@@ -912,6 +927,7 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
       .semantics = semantics,
       .prog = r300_classic_program_create(mem_ctx, target),
       .value_map = _mesa_pointer_hash_table_create(mem_ctx),
+      .is_r500 = target->pfs_class == R300_CLASSIC_PFS_R500,
    };
    if (!ctx.prog || !ctx.value_map)
       return false;
