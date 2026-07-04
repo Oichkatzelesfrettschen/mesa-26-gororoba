@@ -366,6 +366,28 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Oracle (a) on the scheduled-and-merged pair stream: a value-level CPU
+  # evaluator over RC_INSTRUCTION_PAIR itself, exercised on hand-built
+  # merge/reorder/refusal corpora with directly computable expected values
+  # and on a real-front-end shader chained to the existing nir_to_rc
+  # reference oracle.  Gates the cross-instruction RGB+Alpha merge and the
+  # critical-path reorder tie-break r300_classic_schedule now performs.
+  test(
+    'r300-classic-pair-value',
+    executable(
+      'r300_classic_pair_value_test',
+      files('compiler/tests/r300_classic_pair_value_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # Classic fragment-compiler emission: the whole classic ladder feeding the
   # real backend pass chain through hardware code generation.
   test(

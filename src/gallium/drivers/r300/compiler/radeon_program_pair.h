@@ -6,6 +6,8 @@
 #ifndef __RADEON_PROGRAM_PAIR_H_
 #define __RADEON_PROGRAM_PAIR_H_
 
+#include <stdbool.h>
+
 #include "radeon_code.h"
 #include "radeon_opcodes.h"
 #include "radeon_program_constants.h"
@@ -101,6 +103,18 @@ void rc_pair_translate(struct radeon_compiler *cc, void *user);
 void rc_pair_schedule(struct radeon_compiler *cc, void *user);
 void rc_pair_regalloc(struct radeon_compiler *cc, void *user);
 void rc_pair_remove_dead_sources(struct radeon_compiler *c, void *user);
+
+/* Fold alpha's Alpha lane into rgb's Alpha lane, producing one full pair from
+ * two half-full ones -- the same RGB/Alpha co-issue merge
+ * radeon_pair_schedule.c's pair_instructions() applies during legacy
+ * scheduling, exposed so another scheduler over the same pair IR can reuse
+ * the presubtract-source reallocation and operand-copy machinery instead of
+ * duplicating it.  Requires rgb->Alpha.Opcode == RC_OPCODE_NOP and
+ * alpha->RGB.Opcode == RC_OPCODE_NOP (an already-full rgb or alpha refuses
+ * rather than asserting).  On success rgb is mutated in place to carry both
+ * lanes and true is returned; on failure (a source-slot, presubtract, or
+ * output/ALU-result conflict) rgb is left unchanged and false is returned. */
+bool rc_pair_try_merge(struct rc_pair_instruction *rgb, struct rc_pair_instruction *alpha);
 /*@}*/
 
 #endif /* __RADEON_PROGRAM_PAIR_H_ */
