@@ -232,6 +232,83 @@ r300_nir_float_encode_int_sysvals(nir_shader *nir)
     return nir_progress(progress, impl, nir_metadata_control_flow);
 }
 
+/* r300_nir_lower_vs_system_values_to_inputs's make_sysval_input models the
+ * default (non-R300VK_NATIVE_VERTEXID) VertexIndex/InstanceIndex delivery as
+ * a plain int shader_in variable named "sys_vertex_index"/"sys_instance_index",
+ * read back through an ordinary load_deref.  nir_lower_int_to_float leaves
+ * every intrinsic result untouched (its nir_instr_type_intrinsic case is a
+ * no-op), so that load_deref keeps the raw integer bit pattern after the
+ * pass runs, while a literal threshold nir_lower_indirect_derefs_to_if_else_trees
+ * built earlier (an ilt_imm binary search over an indirect array index --
+ * see nir_lower_indirect_derefs_to_if_else_trees.c) is a load_const and gets
+ * numerically re-encoded by the same pass.  A raw-bit small non-negative
+ * integer reinterpreted as float is always a subnormal below every numeric
+ * literal threshold, so an ordering compare (ilt/ige, converted to flt/fge)
+ * between the raw sysval and a numeric threshold always resolves to the
+ * first branch: VertexFetchInstancedFirstInstance.vert's
+ * perInstance[gl_InstanceIndex] reads as perInstance[0] on every instance.
+ *
+ * The same two variables also feed a raw-bit equality in sibling shaders --
+ * VertexFetch.vert's gl_VertexIndex == in_refVertexIndex,
+ * VertexFetchInstanceIndex.vert's gl_InstanceIndex == in_refInstanceIndex --
+ * which nir_lower_int_to_float turns from ieq/ine into feq/fneu without
+ * touching either raw-bit operand, so the comparison of two identical raw
+ * bit patterns still resolves correctly (mesa #942 depends on this staying
+ * raw).  Converting the load_deref's definition once, the way
+ * r300_nir_float_encode_int_sysvals converts the native load_instance_id /
+ * load_vertex_id intrinsics below, would fix the ordering compare and break
+ * the equality in the same shader, so the fix has to live at each consuming
+ * instruction instead of at the shared definition. */
+static bool
+r300_nir_float_encode_synthetic_sysval_index_uses(nir_shader *nir)
+{
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    nir_builder b = nir_builder_create(impl);
+    bool progress = false;
+
+    nir_foreach_block_safe (block, impl) {
+        nir_foreach_instr_safe (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_deref)
+                continue;
+
+            nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+            if (!deref || !nir_deref_mode_is(deref, nir_var_shader_in))
+                continue;
+            nir_variable *var = nir_deref_instr_get_variable(deref);
+            if (!var ||
+                (strcmp(var->name, "sys_vertex_index") != 0 &&
+                 strcmp(var->name, "sys_instance_index") != 0))
+                continue;
+
+            /* Redirect every consumer except the raw-bit equality/inequality
+             * (feq/fneu, lowered from the shader's own ieq/ine) to a single
+             * numeric i2f32 clone, created lazily on the first such consumer
+             * found for this load_deref. */
+            nir_def *numeric = NULL;
+            nir_foreach_use_safe (use, &intr->def) {
+                nir_instr *user = nir_src_use_instr(use);
+                if (user->type != nir_instr_type_alu)
+                    continue;
+                nir_alu_instr *alu = nir_instr_as_alu(user);
+                if (alu->op == nir_op_feq || alu->op == nir_op_fneu)
+                    continue;
+
+                if (!numeric) {
+                    b.cursor = nir_after_instr(instr);
+                    numeric = nir_i2f32(&b, &intr->def);
+                }
+                nir_src_rewrite(use, numeric);
+                progress = true;
+            }
+        }
+    }
+
+    return nir_progress(progress, impl, nir_metadata_control_flow);
+}
+
 /* nir_lower_int_to_float float-encodes integer-typed constants (its
  * nir_gather_types walk includes intrinsic sources, so a load_ubo_vec4
  * slot offset 1 becomes the bits of 1.0f), and consumers in that world
@@ -375,6 +452,7 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
      * comparison ladders of their own. */
     NIR_PASS(_, nir, nir_lower_int_to_float);
     NIR_PASS(_, nir, r300_nir_float_encode_int_sysvals);
+    NIR_PASS(_, nir, r300_nir_float_encode_synthetic_sysval_index_uses);
     NIR_PASS(_, nir, nir_opt_copy_prop);
     NIR_PASS(_, nir, nir_lower_alu_to_scalar, r300_draw_scalarize_bool_cmp_cb,
              NULL);
