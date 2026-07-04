@@ -643,6 +643,19 @@ struct r300_context {
     bool in_multipass;
     struct r300_fragment_shader_code *multipass_override_fs;
 
+    /* Polygon stipple (no 32x32 stipple-pattern register on r3xx): the
+     * pattern lives in a driver-owned texture that a fragment-shader
+     * variant samples and discards against.  pstipple_draw is derived per
+     * draw from the rasterizer state and the reduced primitive type. */
+    bool pstipple_draw;
+    struct pipe_resource *pstipple_tex;
+    struct pipe_sampler_view *pstipple_sampler_view;
+    void *pstipple_sampler;
+    /* Sampler-view slot currently holding a spliced reference to the stipple
+     * view, or -1.  The slot keeps the reference while the merged texture
+     * state can name it (emit-time relocation validation re-reads it). */
+    int pstipple_bound_unit;
+
     /* Differentiated varying's generic index last applied to the draw module's
      * derivative injection (0 = injection off; real indices are >= 9). Tracks
      * transitions so draw_enable_derivative_injection's flush fires only when the

@@ -74,6 +74,14 @@ static void r300_destroy_context(struct pipe_context* context)
     if (r300->draw)
         draw_destroy(r300->draw);
 
+    /* Polygon-stipple texture, view, and sampler (lazily built by
+     * r300_set_polygon_stipple). */
+    pipe_sampler_view_reference(&r300->pstipple_sampler_view, NULL);
+    pipe_resource_reference(&r300->pstipple_tex, NULL);
+    if (r300->pstipple_sampler)
+        r300->context.delete_sampler_state(&r300->context,
+                                           r300->pstipple_sampler);
+
     /* R2VB MVP transform cache (lazily built by the experiment route). */
     if (r300->r2vb_transform_fs)
         r300->context.delete_fs_state(&r300->context, r300->r2vb_transform_fs);
@@ -406,6 +414,7 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
     /* -2 = unknown, so the first draw always programs the injection state
      * (0 is a real generic index for a TEXn derivative source). */
     r300->draw_deriv_src = -2;
+    r300->pstipple_bound_unit = -1;
 
     r300->context.screen = screen;
     r300->context.priv = priv;

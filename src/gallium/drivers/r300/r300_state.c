@@ -14,6 +14,7 @@
 #include "util/u_pack_color.h"
 #include "util/u_transfer.h"
 #include "util/u_blend.h"
+#include "util/u_pstipple.h"
 
 #include "nir/tgsi_to_nir.h"
 
@@ -1402,6 +1403,16 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
                                     MAX_INLINABLE_UNIFORMS);
         memcpy(fs->st_inlinable_offsets, pre_info->inlinable_uniform_dw_offsets,
                fs->st_num_inlinable * sizeof(uint16_t));
+
+        /* First unit past the program's own sampler bindings, with the same
+         * walk nir_lower_pstipple_fs uses, so a polygon-stipple variant and
+         * the merged texture state agree on where the stipple texture sits
+         * before any variant compiles. */
+        nir_foreach_uniform_variable(var, (nir_shader *)fs->state.ir.nir) {
+            if (glsl_type_is_sampler(var->type) &&
+                var->data.binding >= fs->pstipple_sampler_unit)
+                fs->pstipple_sampler_unit = var->data.binding + 1;
+        }
     }
 
     r300_optimize_nir(fs->state.ir.nir, r300->screen);
@@ -1587,12 +1598,30 @@ static void r300_set_polygon_stipple(struct pipe_context* pipe,
         all_bits_and &= state->stipple[i];
     }
 
-    /* R3xx has no 32x32 stipple-pattern register; only the trivial all-zero
-     * and all-one patterns are resolved here (all-zero at draw time, see
-     * r300_render.c; all-one is a no-op). */
+    /* R3xx has no 32x32 stipple-pattern register.  The trivial patterns
+     * resolve driver-side (all-zero masks the draw at r300_render.c draw
+     * time, all-one is a no-op); every other pattern lives in a
+     * driver-owned texture that a fragment-shader variant samples and
+     * discards against (r300_fragment_program_external_state.pstipple). */
     r300->poly_stipple_all_zero = (all_bits_or == 0);
     r300->poly_stipple_all_one = (all_bits_and == ~(uint32_t)0);
     r300->poly_stipple_set = true;
+
+    if (!r300->pstipple_tex) {
+        r300->pstipple_tex =
+            util_pstipple_create_stipple_texture(pipe, state->stipple);
+        if (!r300->pstipple_tex)
+            return;
+        r300->pstipple_sampler_view =
+            util_pstipple_create_sampler_view(pipe, r300->pstipple_tex);
+        r300->pstipple_sampler = util_pstipple_create_sampler(pipe);
+    } else {
+        util_pstipple_update_stipple_texture(pipe, r300->pstipple_tex,
+                                             state->stipple);
+    }
+
+    if (r300->pstipple_draw)
+        r300_mark_atom_dirty(r300, &r300->textures_state);
 }
 
 /* Create a new rasterizer state based on the CSO rasterizer state.
