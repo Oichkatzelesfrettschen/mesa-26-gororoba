@@ -249,17 +249,30 @@ create_ycbcr_vert_shader(struct vl_mc *r, vl_mc_ycbcr_vert_shader vs_callback, v
    /* The decoder fills the source texcoord (or the IDCT addresses) at VS_O_VTEX. */
    vs_callback(callback_priv, r, &b, VS_O_VTEX, t_vpos);
 
-   /* o_flags.z = intra * 0.5; o_flags.w defaults to -1 (no field split). */
+   /* o_flags.z = intra * 0.5; o_flags.w defaults to -1 (no field split).
+    *
+    * vpos.w (stream->coding, UploadYcbcrBlocks in vl_mpeg12_decoder.c) carries
+    * two independent, mutually exclusive split requests: 1 selects the
+    * existing per-macroblock dct_type split below (a frame-structure
+    * macroblock whose own luma blocks are field-DCT-coded interleaves its
+    * top-block-row half with its bottom-block-row half); 2/3 select a
+    * whole-picture field-structure split (a genuine TOP_FIELD/BOTTOM_FIELD
+    * picture, field_split_coding()) where every block of every macroblock
+    * gets the identical transform -- the complementary field's lines come
+    * from a separate, later decode pass into the same destination target
+    * (additively blended, prepare_pipe_4_rendering's surface_cleared state),
+    * not from a sibling block of this one macroblock. */
    nir_def *o_flags_z = nir_fmul(&b, nir_channel(&b, vpos, 2), nir_imm_float(&b, 0.5f));
    nir_def *o_flags_w = nir_imm_float(&b, -1.0f);
    nir_def *o_vpos_y = nir_channel(&b, t_vpos, 1);
+   nir_def *zero = nir_imm_float(&b, 0.0f);
+   nir_def *raw_w = nir_channel(&b, vpos, 3);
 
    if (r->macroblock_size == VL_MACROBLOCK_HEIGHT) {
-      /* Interlaced macroblock: vpos.w selects whether this row takes the field
-       * offset.  Every branch is a pure value select -- the TGSI IF only guarded
-       * the same arithmetic. */
-      nir_def *zero = nir_imm_float(&b, 0.0f);
-      nir_def *do_split = nir_fneu(&b, nir_channel(&b, vpos, 3), zero);
+      /* Interlaced macroblock: vpos.w == 1 selects whether this row takes the
+       * field offset.  Every branch is a pure value select -- the TGSI IF
+       * only guarded the same arithmetic. */
+      nir_def *do_split = nir_feq(&b, raw_w, nir_imm_float(&b, 1.0f));
 
       /* t_vtex.xy = (vrect.y > 0) ? (0, scale.y) : (-scale.y, 0) */
       nir_def *vry = nir_flt(&b, zero, nir_channel(&b, vrect, 1));
@@ -277,6 +290,37 @@ create_ycbcr_vert_shader(struct vl_mc *r, vl_mc_ycbcr_vert_shader vs_callback, v
       o_vpos_y = nir_bcsel(&b, do_split, new_vpos_y, o_vpos_y);
       nir_def *new_flags_w = nir_bcsel(&b, tz, zero, nir_imm_float(&b, 1.0f));
       o_flags_w = nir_bcsel(&b, do_split, new_flags_w, o_flags_w);
+   }
+
+   {
+      /* vpos.w >= 2 (2 == top field, 3 == bottom field): this block's own
+       * field-relative Y position doubles -- the physical line span its
+       * source content covers doubles too, one line per source line
+       * becoming two, spaced apart to leave room for the other field's
+       * lines -- offset by one physical line for the bottom field.
+       * new_vpos_y = 2 * t_vpos.y + parity * one_line exactly reproduces,
+       * for every corner of this block's own quad, the physical-line
+       * placement ISO/IEC 13818-2's frame_store weave order requires
+       * (physical line 2*n holds top-field line n, 2*n+1 holds bottom-field
+       * line n) -- applies identically to luma (any macroblock_size branch
+       * above already ran) and chroma (VL_BLOCK_HEIGHT, which never takes
+       * the dct_type branch: 4:2:0 chroma has one block per macroblock, no
+       * in-block DCT-field split exists for it). */
+      nir_def *is_field_mode = nir_fge(&b, raw_w, nir_imm_float(&b, 2.0f));
+      nir_def *parity = nir_fsub(&b, raw_w, nir_imm_float(&b, 2.0f));
+      /* One physical row in this clip-space convention is one VL_BLOCK_HEIGHT-th
+       * of a whole block's own clip-space height (scale.y): chroma's block_scale.y
+       * is baked twice luma's (both against the luma-resolution buffer_height, so
+       * chroma's half-height real surface reads back the right pixel count once
+       * rasterized) -- dividing by VL_BLOCK_HEIGHT rather than reading
+       * buffer_height directly keeps this correct for both planes. */
+      nir_def *one_line = nir_imm_float(&b, scale.y / VL_BLOCK_HEIGHT);
+      nir_def *new_vpos_y = nir_fmad(&b, parity, one_line,
+         nir_fmul(&b, nir_imm_float(&b, 2.0f), nir_channel(&b, t_vpos, 1)));
+      nir_def *new_flags_w = nir_fsub(&b, nir_imm_float(&b, 1.0f), parity);
+
+      o_vpos_y = nir_bcsel(&b, is_field_mode, new_vpos_y, o_vpos_y);
+      o_flags_w = nir_bcsel(&b, is_field_mode, new_flags_w, o_flags_w);
    }
 
    /* Override o_vpos.y by rewriting the full position.  nir_store_var must
