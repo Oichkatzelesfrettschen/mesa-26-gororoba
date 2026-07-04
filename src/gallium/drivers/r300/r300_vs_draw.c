@@ -277,8 +277,14 @@ r300_nir_float_encode_synthetic_sysval_index_uses(nir_shader *nir)
             nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
             if (!deref || !nir_deref_mode_is(deref, nir_var_shader_in))
                 continue;
+            /* Ordinary SPIR-V vertex-attribute variables (in_position,
+             * in_color, in_refVertexIndex, ...) carry no OpName debug
+             * decoration in these dEQP-VK shaders, so var->name is NULL for
+             * every load_deref except the two synthetic sysval inputs
+             * make_sysval_input names explicitly; check for NULL before
+             * strcmp instead of relying on short-circuit alone. */
             nir_variable *var = nir_deref_instr_get_variable(deref);
-            if (!var ||
+            if (!var || !var->name ||
                 (strcmp(var->name, "sys_vertex_index") != 0 &&
                  strcmp(var->name, "sys_instance_index") != 0))
                 continue;
