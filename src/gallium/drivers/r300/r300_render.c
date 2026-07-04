@@ -1050,6 +1050,23 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
     r300->in_multipass = false;
 }
 
+/* An all-zero 32x32 GL polygon stipple masks every polygon fragment, so a
+ * filled-triangle draw under that pattern produces no visible output. R3xx
+ * has no stipple-pattern register to encode the pattern in hardware; the
+ * all-zero and all-one/never-set cases are the only ones resolved here, so
+ * this only applies to unstippled fill of MESA_PRIM_TRIANGLES. */
+static bool r300_poly_stipple_masks_draw(struct r300_context *r300,
+                                          enum mesa_prim reduced_prim)
+{
+    struct r300_rs_state *rs = (struct r300_rs_state*)r300->rs_state.state;
+
+    return rs && rs->rs.poly_stipple_enable &&
+           rs->rs.fill_front == PIPE_POLYGON_MODE_FILL &&
+           rs->rs.fill_back == PIPE_POLYGON_MODE_FILL &&
+           reduced_prim == MESA_PRIM_TRIANGLES &&
+           r300->poly_stipple_set && r300->poly_stipple_all_zero;
+}
+
 static void r300_draw_vbo(struct pipe_context* pipe,
                           const struct pipe_draw_info *dinfo,
                           unsigned drawid_offset,
@@ -1068,6 +1085,10 @@ static void r300_draw_vbo(struct pipe_context* pipe,
 
     if (r300->skip_rendering ||
         !u_trim_pipe_prim(info.mode, &draw.count)) {
+        return;
+    }
+
+    if (r300_poly_stipple_masks_draw(r300, u_reduced_prim(info.mode))) {
         return;
     }
 
@@ -1471,6 +1492,10 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
 
     if (!u_trim_pipe_prim(info->mode, &draw.count))
        return;
+
+    if (r300_poly_stipple_masks_draw(r300, u_reduced_prim(info->mode))) {
+        return;
+    }
 
     if (info->index_size) {
         draw_set_indexes(r300->draw,

@@ -1577,6 +1577,22 @@ static void r300_delete_fs_state(struct pipe_context* pipe, void* shader)
 static void r300_set_polygon_stipple(struct pipe_context* pipe,
                                      const struct pipe_poly_stipple* state)
 {
+    struct r300_context* r300 = r300_context(pipe);
+    unsigned i;
+    uint32_t all_bits_or = 0, all_bits_and = ~(uint32_t)0;
+
+    for (i = 0; i < 32; i++) {
+        r300->poly_stipple_pattern[i] = state->stipple[i];
+        all_bits_or |= state->stipple[i];
+        all_bits_and &= state->stipple[i];
+    }
+
+    /* R3xx has no 32x32 stipple-pattern register; only the trivial all-zero
+     * and all-one patterns are resolved here (all-zero at draw time, see
+     * r300_render.c; all-one is a no-op). */
+    r300->poly_stipple_all_zero = (all_bits_or == 0);
+    r300->poly_stipple_all_one = (all_bits_and == ~(uint32_t)0);
+    r300->poly_stipple_set = true;
 }
 
 /* Create a new rasterizer state based on the CSO rasterizer state.
