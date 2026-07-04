@@ -1974,8 +1974,22 @@ static void*
      * to the nearest representable level: truncation turns min_lod = 0.5
      * into no clamp at all, while rounding keeps the clamp within half a
      * level of the request.  The max LOD keeps the ceiling so the window
-     * never cuts levels the request allows. */
-    sampler->min_lod = (unsigned)MAX2(state->min_lod + 0.5f, 0);
+     * never cuts levels the request allows.
+     *
+     * On SWTCL parts a fractional clamp is instead lowered into the
+     * fragment shader (TXB with an analytic-gradient bias,
+     * r300_nir_lower_frac_lod_clamp), which needs the integer window
+     * widened to floor/ceil so both blend levels of the fractional target
+     * stay reachable.  The same fractional predicate drives the
+     * external-state bit in r300_fragment_program_get_external_state. */
+    if (!r300->screen->caps.has_tcl &&
+        state->min_mip_filter != PIPE_TEX_MIPFILTER_NONE &&
+        (state->min_lod != floorf(state->min_lod) ||
+         state->max_lod != ceilf(state->max_lod))) {
+        sampler->min_lod = (unsigned)MAX2(floorf(state->min_lod), 0);
+    } else {
+        sampler->min_lod = (unsigned)MAX2(state->min_lod + 0.5f, 0);
+    }
     sampler->max_lod = (unsigned)MAX2(ceilf(state->max_lod), 0);
 
     lod_bias = CLAMP((int)(state->lod_bias * 32 + 1), -(1 << 9), (1 << 9) - 1);

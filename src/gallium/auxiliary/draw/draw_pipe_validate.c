@@ -115,10 +115,13 @@ draw_need_pipeline(const struct draw_context *draw,
           draw->fs.fragment_shader->info.uses_frontface)
          return true;
 
-      /* CPU-injected screen-space derivatives for filled triangles */
+      /* CPU-injected screen-space derivatives for filled triangles.  The
+       * bound fragment shader's info is not consulted: the driver enables
+       * the injection per draw for the fragment-shader VARIANT it picked,
+       * and a variant-generated derivative (a fractional LOD-clamp
+       * lowering) never appears in the base shader the draw module holds. */
       if (draw->pipeline.derivative_inject &&
-          draw->fs.fragment_shader &&
-          draw->fs.fragment_shader->info.uses_derivatives)
+          draw->pipeline.derivative_src_generic >= 0)
          return true;
 
       /* polygon offset */
@@ -231,8 +234,7 @@ validate_pipeline(struct draw_stage *stage)
         draw->fs.fragment_shader &&
         draw->fs.fragment_shader->info.uses_frontface) ||
        (draw->pipeline.derivative_inject &&
-        draw->fs.fragment_shader &&
-        draw->fs.fragment_shader->info.uses_derivatives)) {
+        draw->pipeline.derivative_src_generic >= 0)) {
       draw->pipeline.unfilled->next = next;
       next = draw->pipeline.unfilled;
       precalc_flat = true;		/* only needed for triangles really */

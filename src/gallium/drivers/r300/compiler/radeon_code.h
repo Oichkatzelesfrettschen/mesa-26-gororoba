@@ -156,6 +156,18 @@ struct r300_fragment_program_external_state {
        * and right before texture fetch. The scaling factor is given by
        * RC_STATE_R300_TEXSCALE_FACTOR. */
       unsigned clamp_and_scale_before_fetch : 1;
+
+      /**
+       * Fractional MIN/MAX LOD clamp lowered into the shader: plain 2D
+       * fetches on this unit become TXB with an analytic-gradient bias.
+       * The clamp range and the base-level texture size bake into the
+       * program as immediates, so quantized copies join the variant key
+       * here (8.8 fixed point for the range). */
+      unsigned frac_lod_clamp : 1;
+      unsigned lod_min_q88 : 16;
+      unsigned lod_max_q88 : 16;
+      unsigned tex_width : 16;
+      unsigned tex_height : 16;
    } unit[16];
 
    unsigned alpha_to_one : 1;

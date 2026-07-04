@@ -161,6 +161,27 @@ void r300_fragment_program_get_external_state(
             if (t->b.target == PIPE_TEXTURE_3D)
                 state->unit[i].clamp_and_scale_before_fetch = true;
         }
+
+        /* Fractional MIN/MAX LOD clamp: the TX unit only clamps on integer
+         * levels, so a fractional window lowers into the shader as TXB with
+         * an analytic-gradient bias.  SWTCL only -- the ddx/ddy the lowering
+         * emits ride the draw-module gradient injection, which HW-TCL parts
+         * do not run.  The same fractional predicate widens the sampler's
+         * integer window to floor/ceil in r300_create_sampler_state. */
+        if (!r300->screen->caps.has_tcl &&
+            t->b.target == PIPE_TEXTURE_2D &&
+            s->state.min_mip_filter != PIPE_TEX_MIPFILTER_NONE &&
+            (s->state.min_lod != floorf(s->state.min_lod) ||
+             s->state.max_lod != ceilf(s->state.max_lod))) {
+            float minl = CLAMP(s->state.min_lod, 0.0f, 255.0f);
+            float maxl = CLAMP(s->state.max_lod, 0.0f, 255.0f);
+
+            state->unit[i].frac_lod_clamp = 1;
+            state->unit[i].lod_min_q88 = (unsigned)(minl * 256.0f + 0.5f);
+            state->unit[i].lod_max_q88 = (unsigned)(maxl * 256.0f + 0.5f);
+            state->unit[i].tex_width = MIN2(t->tex.width0, 0xffff);
+            state->unit[i].tex_height = MIN2(t->tex.height0, 0xffff);
+        }
     }
 }
 
@@ -379,6 +400,74 @@ static void r300_emit_fs_code_to_buffer(
     END_CB;
 }
 
+/* Fractional MIN/MAX LOD clamp lowering.  The TX unit clamps mip selection
+ * only on integer levels, so a fractional clamp window rewrites every plain
+ * 2D fetch on the unit into TXB: the bias is clamp(lod, min, max) - lod with
+ * lod computed analytically as 0.5 * log2(max(|ddx(st) * size|^2,
+ * |ddy(st) * size|^2)).  The hardware adds the bias to its own lod, so the
+ * result lands on the clamp exactly where the shader-computed lod matches
+ * the hardware's; the clamp range and texture size arrive as immediates
+ * baked into this variant (quantized copies sit in the variant key).  The
+ * ddx/ddy emitted here are claimed by the SWTCL derivative lowering that
+ * runs next. */
+static bool
+r300_nir_lower_frac_lod_clamp(nir_shader *s,
+                              const struct r300_fragment_program_external_state *state)
+{
+    nir_function_impl *impl = nir_shader_get_entrypoint(s);
+    nir_builder b = nir_builder_create(impl);
+    bool progress = false;
+
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_tex)
+                continue;
+
+            nir_tex_instr *tex = nir_instr_as_tex(instr);
+            unsigned unit = tex->sampler_index;
+
+            if (unit >= ARRAY_SIZE(state->unit) ||
+                !state->unit[unit].frac_lod_clamp ||
+                tex->op != nir_texop_tex ||
+                tex->sampler_dim != GLSL_SAMPLER_DIM_2D)
+                continue;
+
+            int ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+            if (ci < 0)
+                continue;
+
+            b.cursor = nir_before_instr(instr);
+
+            nir_def *st = nir_trim_vector(&b, tex->src[ci].src.ssa, 2);
+            nir_def *size =
+                nir_imm_vec2(&b, state->unit[unit].tex_width,
+                             state->unit[unit].tex_height);
+            nir_def *sx = nir_fmul(&b, nir_ddx(&b, st), size);
+            nir_def *sy = nir_fmul(&b, nir_ddy(&b, st), size);
+            nir_def *rho2 = nir_fmax(&b, nir_fdot2(&b, sx, sx),
+                                     nir_fdot2(&b, sy, sy));
+            /* LG2 of a zero gradient (constant coord) must not poison the
+             * bias; the floor pins the unclamped lod at a large negative
+             * value the clamp then lifts. */
+            rho2 = nir_fmax(&b, rho2, nir_imm_float(&b, 1e-10f));
+            nir_def *lod = nir_fmul_imm(&b, nir_flog2(&b, rho2), 0.5f);
+            nir_def *clamped =
+                nir_fclamp(&b, lod,
+                           nir_imm_float(&b, state->unit[unit].lod_min_q88 /
+                                         256.0f),
+                           nir_imm_float(&b, state->unit[unit].lod_max_q88 /
+                                         256.0f));
+
+            nir_tex_instr_add_src(tex, nir_tex_src_bias,
+                                  nir_fsub(&b, clamped, lod));
+            tex->op = nir_texop_txb;
+            progress = true;
+        }
+    }
+
+    return nir_progress(progress, impl, nir_metadata_control_flow);
+}
+
 /* Trace a derivative intrinsic's source back to the fragment-shader input
  * variable it differentiates. The chain is short (the shader reads a varying
  * and takes its dFdx/dFdy, sometimes through a swizzle/mov), so walk through ALU
@@ -542,15 +631,22 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     util_dynarray_init(&derivs, NULL);
     nir_variable *src_var = r300_collect_swtcl_derivatives(impl, &derivs);
 
-    /* Two source classes are analytically differentiable here. A VARn user
-     * varying maps onto a spare generic slot the draw module fills with the
-     * per-triangle gradient. gl_FragCoord (VARYING_SLOT_POS) needs no injection:
-     * its window-space xy gradient is the compile-time constant dFdx=(1,0),
-     * dFdy=(0,1). The face and texcoord ranges do not map. */
+    /* Three source classes are analytically differentiable here. VARn user
+     * varyings and TEXn fixed-function texcoords both map onto generic slots
+     * the draw module fills with the per-triangle gradient
+     * (ntr_fixup_varying_slots and the draw module's nir_to_tgsi agree on
+     * the numbering: VARn -> n + 9, TEXn -> n). gl_FragCoord
+     * (VARYING_SLOT_POS) needs no injection: its window-space xy gradient
+     * is the compile-time constant dFdx=(1,0), dFdy=(0,1). The face range
+     * does not map. */
     const bool is_pos = src_var && src_var->data.location == VARYING_SLOT_POS;
+    const bool is_tex = src_var &&
+                        src_var->data.location >= VARYING_SLOT_TEX0 &&
+                        src_var->data.location <= VARYING_SLOT_TEX7;
     if (!src_var || util_dynarray_num_elements(&derivs, nir_intrinsic_instr *) == 0 ||
-        (!is_pos && (src_var->data.location < VARYING_SLOT_VAR0 ||
-                     src_var->data.location > VARYING_SLOT_VAR31))) {
+        (!is_pos && !is_tex &&
+         (src_var->data.location < VARYING_SLOT_VAR0 ||
+          src_var->data.location > VARYING_SLOT_VAR31))) {
         util_dynarray_fini(&derivs);
         return false;
     }
@@ -561,9 +657,12 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     nir_variable *ddx_var = NULL, *ddy_var = NULL;
 
     if (!is_pos) {
-        /* Post-fixup r300 generic indices: VARn -> n + 9. Reserve the two
-         * highest generic slots (30, 31) for the gradients. */
-        src_generic = (src_var->data.location - VARYING_SLOT_VAR0) + 9;
+        /* Post-fixup r300 generic indices: VARn -> n + 9, TEXn -> n.
+         * Reserve the two highest generic slots (30, 31) for the
+         * gradients. */
+        src_generic = is_tex ?
+            (int)(src_var->data.location - VARYING_SLOT_TEX0) :
+            (int)(src_var->data.location - VARYING_SLOT_VAR0) + 9;
         ddx_generic = 30;
         ddy_generic = 31;
 
