@@ -81,6 +81,7 @@ files_r300 = files(
   'compiler/r300_nir_fold_periodic_loops.c',
   'compiler/r300_nir.h',
   'compiler/r300_nir_lower_bitwise_to_arith.c',
+  'compiler/r300_nir_lower_f2i_epsilon.c',
   'compiler/r300_nir_lower_ieee16.c',
   'compiler/r300_nir_lower_vs_system_values.c',
   'compiler/r500_nir_lower_fcsel.c',
