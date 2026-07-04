@@ -750,10 +750,18 @@ static void r2vb_cd_mul(const float *a, const float *b, float *o, int n)
     float ac[16], db[16], da[16], bc[16], cj[16];
     r2vb_cd_mul(A, C, ac, h);
     for (int i = 0; i < h; i++) cj[i] = (i == 0) ? D[i] : -D[i]; /* conj(D) */
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+    /* GCC 16.1.1 false positive: for loop above initializes cj[0..h-1]. */
     r2vb_cd_mul(cj, B, db, h);
+    #pragma GCC diagnostic pop
     r2vb_cd_mul(D, A, da, h);
     for (int i = 0; i < h; i++) cj[i] = (i == 0) ? C[i] : -C[i]; /* conj(C) */
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+    /* GCC 16.1.1 false positive: for loop above initializes cj[0..h-1]. */
     r2vb_cd_mul(B, cj, bc, h);
+    #pragma GCC diagnostic pop
     for (int i = 0; i < h; i++) { o[i] = ac[i] - db[i]; o[i + h] = da[i] + bc[i]; }
 }
 

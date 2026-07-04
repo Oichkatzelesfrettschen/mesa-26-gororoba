@@ -114,9 +114,15 @@ static bool
 fail(char *err, size_t err_size, const struct r300_classic_instr *i,
      const char *msg)
 {
-   if (err && err_size)
-      snprintf(err, err_size, "t%u (%s): %s", i->ssa_id,
-               op_info[i->op].name, msg);
+   if (err && err_size) {
+      const char *op_name;
+      #pragma GCC diagnostic push
+      #pragma GCC diagnostic ignored "-Warray-bounds"
+      /* GCC 16.1.1 false positive: access only when i->op < R300C_OP_COUNT. */
+      op_name = i->op < R300C_OP_COUNT ? op_info[i->op].name : "INVALID";
+      #pragma GCC diagnostic pop
+      snprintf(err, err_size, "t%u (%s): %s", i->ssa_id, op_name, msg);
+   }
    return false;
 }
 
