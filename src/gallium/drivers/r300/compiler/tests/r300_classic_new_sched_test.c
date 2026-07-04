@@ -4,6 +4,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nir.h"
@@ -248,6 +249,64 @@ schedule_and_check(const char *name, nir_shader *(*build)(void))
    snprintf(what, sizeof(what), "%s: new schedule is a valid topological order",
             name);
    CHECK(topological_order_valid(&fc.Base), what);
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+   ralloc_free(ctx);
+}
+
+static void
+allocate_identity_inputs(struct r300_fragment_program_compiler *c,
+                         void (*allocate)(void *data, unsigned input,
+                                          unsigned hwreg),
+                         void *mydata)
+{
+   (void)c;
+   for (unsigned i = 0; i < 8; i++)
+      allocate(mydata, i, i);
+}
+
+/* End-to-end: with R300_CLASSIC_NEW_SCHED set, run the whole backend pass
+ * chain -- r300_classic_schedule then rc_pair_remove_dead_sources,
+ * rc_pair_regalloc, rc_validate_final_shader, and r300BuildFragmentProgramHwCode
+ * -- and require it to accept the new-scheduled stream and emit nonempty R300
+ * hardware code.  This proves the reordered, unmerged pair stream is
+ * emittable through the unchanged regalloc/validation/emit tail, rather than
+ * assuming it. */
+static void
+end_to_end_emit(const char *name, nir_shader *(*build)(void))
+{
+   void *ctx = ralloc_context(NULL);
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   const char *why = NULL;
+
+   char what[256];
+   const bool ok = compile_classic(ctx, build(), &fc, &rs, &why);
+   snprintf(what, sizeof(what), "%s: classic front end compiles", name);
+   CHECK(ok, what);
+   if (!ok) {
+      if (why)
+         fprintf(stderr, "  classic: %s\n", why);
+      ralloc_free(ctx);
+      return;
+   }
+
+   struct rX00_fragment_program_code code;
+   memset(&code, 0, sizeof(code));
+   fc.code = &code;
+   fc.AllocateHwInputs = allocate_identity_inputs;
+
+   r3xx_compile_fragment_program(&fc);
+
+   snprintf(what, sizeof(what),
+            "%s: backend accepts the new-scheduled stream", name);
+   CHECK(!fc.Base.Error, what);
+   if (fc.Base.Error && fc.Base.ErrorMsg)
+      fprintf(stderr, "  backend said: %s\n", fc.Base.ErrorMsg);
+
+   snprintf(what, sizeof(what), "%s: hardware ALU code generated", name);
+   CHECK(code.code.r300.alu.length > 0, what);
 
    rc_destroy(&fc.Base);
    rc_destroy_regalloc_state(&rs);
@@ -505,6 +564,10 @@ build_tex(void)
 int
 main(void)
 {
+   /* Route the backend pass chain through r300_classic_schedule before the
+    * gate's env is first read (r3xx_compile_fragment_program caches it). */
+   setenv("R300_CLASSIC_NEW_SCHED", "1", 1);
+
    glsl_type_singleton_init_or_ref();
 
    schedule_and_check("mov", build_mov);
@@ -513,6 +576,15 @@ main(void)
    schedule_and_check("mad", build_mad);
    schedule_and_check("chain", build_chain);
    schedule_and_check("parallel", build_parallel);
+
+   /* Prove the new-scheduled stream is emittable through the unchanged
+    * regalloc/validation/machine-code tail, flag on. */
+   end_to_end_emit("mov", build_mov);
+   end_to_end_emit("add", build_add);
+   end_to_end_emit("mul", build_mul);
+   end_to_end_emit("mad", build_mad);
+   end_to_end_emit("chain", build_chain);
+   end_to_end_emit("parallel", build_parallel);
 
    legacy_control("mov", build_mov);
    legacy_control("add", build_add);
