@@ -139,11 +139,10 @@ inject_screen_gradient_info(struct draw_stage *stage,
     * them; that yields d(varying)/dx and d(varying)/dy. For a position varying,
     * cross(dFdx, dFdy) is along the geometric face normal, so a shader building
     * its normal as normalize(cross(dFdx(pos), dFdy(pos))) recovers the exact
-    * normal that R500 quad-difference hardware computes. Clip-space xy (the
-    * same coordinates draw_pipe_cull reads for the signed area) is an affine
-    * image of window space, so it keeps the gradient direction correct for the
-    * normalize(cross()) consumer; only the absolute magnitude differs, and only
-    * for perspective-interpolated varyings. */
+    * normal that R500 quad-difference hardware computes. The position data the
+    * pipeline stages carry is WINDOW-space xy (measured: an interior quad in a
+    * 200x200 target reads 0..32 window units at this point), so the solve
+    * yields per-pixel gradients directly; no viewport scaling applies. */
    const unsigned pos = draw_current_shader_position_output(stage->draw);
 
    if (getenv("R300_DERIV_DEBUG")) {
@@ -167,18 +166,6 @@ inject_screen_gradient_info(struct draw_stage *stage,
    const float det = ex * fy - ey * fx;
    const float inv = det != 0.0f ? 1.0f / det : 0.0f;
 
-   /* The 2x2 solve above works in clip xy, so its gradients are per clip
-    * unit.  Screen-space consumers -- fwidth, and the analytic LOD a
-    * fractional clamp lowering computes -- need per-PIXEL magnitude, and
-    * d(clip)/d(pixel) is 1 / viewport_scale per axis (2 / viewport extent,
-    * signed, so a flipped y keeps its orientation).  The
-    * normalize(cross()) face-normal consumer is invariant under this
-    * per-axis scaling: each gradient vector scales as a whole, so the
-    * cross-product direction is unchanged. */
-   const float *vps = stage->draw->viewports[0].scale;
-   const float px_scale = vps[0] != 0.0f ? 1.0f / vps[0] : 0.0f;
-   const float py_scale = vps[1] != 0.0f ? 1.0f / vps[1] : 0.0f;
-
    const float *v0 = header->v[0]->data[src_slot];
    const float *v1 = header->v[1]->data[src_slot];
    const float *v2 = header->v[2]->data[src_slot];
@@ -187,8 +174,8 @@ inject_screen_gradient_info(struct draw_stage *stage,
    for (unsigned c = 0; c < 4; ++c) {
       const float d1 = v1[c] - v0[c];
       const float d2 = v2[c] - v0[c];
-      ddx[c] = (d1 * fy - d2 * ey) * inv * px_scale;
-      ddy[c] = (d2 * ex - d1 * fx) * inv * py_scale;
+      ddx[c] = (d1 * fy - d2 * ey) * inv;
+      ddy[c] = (d2 * ex - d1 * fx) * inv;
    }
 
    for (unsigned i = 0; i < 3; ++i) {
