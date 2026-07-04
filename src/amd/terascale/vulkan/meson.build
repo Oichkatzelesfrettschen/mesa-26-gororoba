@@ -143,6 +143,8 @@ libterakan_files = files(
   'terakan_palm_sync.h',
   'terakan_carrier_queue.c',
   'terakan_carrier_queue.h',
+  'terakan_external_sync.c',
+  'terakan_external_sync.h',
   'terakan_vertex_input.c',
   'terakan_vertex_input.h',
   'terakan_wsi.c',
