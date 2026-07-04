@@ -2316,9 +2316,10 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
                             "lowering; substituting a dummy shader\n");
 
    /* Nudge the fragment stage's float-to-int conversions across the FP24
-    * interpolation-delivery error before nir_lower_int_to_float rewrites
-    * them to ftrunc; the vertex stage keeps native integers (r300_vs_draw.c)
-    * and does not carry the same interpolated-varying delivery error. */
+    * interpolation-delivery error before nir_lower_int_to_float lowers them
+    * (f2i32 to ftrunc, f2u32 to ffloor); the vertex stage keeps native
+    * integers (r300_vs_draw.c) and does not carry the same
+    * interpolated-varying delivery error. */
    if (s->info.stage == MESA_SHADER_FRAGMENT)
       NIR_PASS(_, s, r300_nir_lower_f2i_epsilon);
    NIR_PASS(_, s, nir_lower_int_to_float);
