@@ -2114,6 +2114,16 @@ void r300_blitter_draw_rectangle(struct blitter_context *blitter,
      * any value left over from a prior point draw before the derived-state
      * rebuild so it does not divert this RS block. */
     r300->point_sprite_via_draw = false;
+    /* Same staleness class for polygon stipple: this path bypasses the
+     * draw_vbo entry that derives pstipple_draw, so a value left over from a
+     * stippled app draw would compile the blitter's own fragment shader with
+     * the stipple lowering.  The blitter never stipples. */
+    if (r300->pstipple_draw) {
+        r300->pstipple_draw = false;
+        r300_mark_atom_dirty(r300, &r300->textures_state);
+        if (r300->fs_status == FRAGMENT_SHADER_VALID)
+            r300->fs_status = FRAGMENT_SHADER_MAYBE_DIRTY;
+    }
     r300_update_derived_state(r300);
 
     /* Mark some states we don't care about as non-dirty. */
