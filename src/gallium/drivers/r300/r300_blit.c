@@ -190,6 +190,33 @@ static uint32_t r300_depth_clear_value(enum pipe_format format,
     }
 }
 
+/* The GA rasterizer stores an interpolated window Z of exactly k / 2^n as
+ * code k - 1 for k above the 2^(n-2) region boundary and as k at or below
+ * it, while the US depth output stores floor(z * 2^n).  A blitter clear
+ * draws a quad through the rasterizer, so a cleared depth disagrees with an
+ * equal gl_FragDepth export by one code on any value whose product with 2^n
+ * is integral -- which holds for every half-float value large enough that
+ * its ulp spans at least one code.  Steer the quad depth onto the
+ * fragment-export convention: convert
+ * to the target code floor(z * 2^n) and pick the exact k / 2^n input whose
+ * measured rasterizer conversion stores that code.  k and k + 1 stay
+ * integers <= 2^24, so the value survives the float32 vertex path intact. */
+static double r300_blitter_clear_depth(enum pipe_format format, double depth)
+{
+    unsigned bits;
+    uint64_t scale, code;
+
+    bits = util_format_get_component_bits(format,
+                                          UTIL_FORMAT_COLORSPACE_ZS, 0);
+    if (!bits)
+        return depth;
+
+    scale = 1ull << bits;
+    code = MIN2((uint64_t)(CLAMP(depth, 0.0, 1.0) * (double)scale),
+                scale - 1);
+    return (code <= scale >> 2 ? code : code + 1) / (double)scale;
+}
+
 static uint32_t r300_hiz_clear_value(double depth)
 {
     uint32_t r = (uint32_t)(CLAMP(depth, 0, 1) * 255.5);
@@ -387,6 +414,8 @@ static void r300_clear(struct pipe_context* pipe,
     /* Clear. */
     if (buffers) {
         /* Clear using the blitter. */
+        if ((buffers & PIPE_CLEAR_DEPTH) && fb->zsbuf.texture)
+            depth = r300_blitter_clear_depth(fb->zsbuf.format, depth);
         r300_blitter_begin(r300, R300_CLEAR);
         util_blitter_clear(r300->blitter, width, height, 1,
                            buffers, color, depth, stencil,
@@ -505,6 +534,8 @@ static void r300_clear_depth_stencil(struct pipe_context *pipe,
     }
 
     /* XXX Do not decompress ZMask of the currently-set zbuffer. */
+    if (clear_flags & PIPE_CLEAR_DEPTH)
+        depth = r300_blitter_clear_depth(dst->format, depth);
     r300_blitter_begin(r300, R300_CLEAR_SURFACE |
                        (render_condition_enabled ? 0 : R300_IGNORE_RENDER_COND));
     util_blitter_clear_depth_stencil(r300->blitter, dst, clear_flags, depth, stencil,
