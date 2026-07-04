@@ -855,6 +855,10 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
          mem_ctx, "integer bitwise op without an FP24-exact lowering");
       return true;
    }
+   /* Nudge float-to-int conversions across the FP24 interpolation-delivery
+    * error before int_to_float rewrites them to ftrunc; the classic path
+    * compiles fragment programs only, so no stage check is needed. */
+   NIR_PASS(_, nir, r300_nir_lower_f2i_epsilon);
    NIR_PASS(_, nir, nir_lower_int_to_float);
    NIR_PASS(_, nir, nir_opt_copy_prop);
    NIR_PASS(_, nir, r300_nir_post_integer_lowering);
