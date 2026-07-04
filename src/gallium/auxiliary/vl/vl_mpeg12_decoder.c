@@ -430,13 +430,49 @@ MotionVectorToPipe(const struct pipe_mpeg12_macroblock *mb, unsigned vector,
    return mv;
 }
 
+/* MPEG-2 slice() (ISO/IEC 13818-2 6.3.16) codes slice_vertical_position, and
+ * therefore mb->y, relative to the current CODED PICTURE: for a field
+ * picture that picture is one field, so mb->y ranges over that field's own
+ * macroblock rows starting at 0, the same range a top-half frame row would
+ * use. The destination surface stores both fields of a frame interleaved in
+ * one frame-height texture in weave order (physical line 2*n holds top-field
+ * line n, line 2*n+1 holds bottom-field line n), the same order
+ * create_ref_frag_shader's y_scale/ref.z snap in vl_mc.c already assumes
+ * when sampling a reference for a field-predicted vector. Doubling mb->y at
+ * this vertex-buffer-addressing layer only relocates whole 16-line
+ * macroblock bands (a stacked-halves layout, not a weave); real weave needs
+ * every physical scanline picked from the correct field, which vl_mc.c's
+ * create_ycbcr_vert_shader/create_ycbcr_frag_shader already do for a
+ * frame-structure macroblock's own field-coded DCT halves (dct_type) via a
+ * stretch-then-discard-by-line-parity pair. Encode a genuine field picture
+ * the same way: field_split_coding() returns a stream->coding value the
+ * vertex shader recognizes as "every block of this picture, not just this
+ * macroblock's own DCT halves, splits by physical line parity" -- 2 for the
+ * top field, 3 for the bottom, leaving 0/1 exactly as dct_type already
+ * produces for frame-structure content. */
+static inline unsigned
+field_split_coding(unsigned dct_type, unsigned picture_structure)
+{
+   switch (picture_structure) {
+   case PIPE_MPEG12_PICTURE_STRUCTURE_FIELD_TOP:
+      return 2;
+   case PIPE_MPEG12_PICTURE_STRUCTURE_FIELD_BOTTOM:
+      return 3;
+   default:
+      return dct_type;
+   }
+}
+
 static inline void
 UploadYcbcrBlocks(struct vl_mpeg12_decoder *dec,
                   struct vl_mpeg12_buffer *buf,
-                  const struct pipe_mpeg12_macroblock *mb)
+                  const struct pipe_mpeg12_macroblock *mb,
+                  unsigned picture_structure)
 {
    unsigned intra;
    unsigned tb, x, y, num_blocks = 0;
+   unsigned coding = field_split_coding(mb->macroblock_modes.bits.dct_type,
+                                        picture_structure);
 
    assert(dec && buf);
    assert(mb);
@@ -454,7 +490,7 @@ UploadYcbcrBlocks(struct vl_mpeg12_decoder *dec,
             stream->x = mb->x * 2 + x;
             stream->y = mb->y * 2 + y;
             stream->intra = intra;
-            stream->coding = mb->macroblock_modes.bits.dct_type;
+            stream->coding = coding;
             stream->block_num = buf->block_num++;
 
             buf->num_ycbcr_blocks[0]++;
@@ -475,7 +511,11 @@ UploadYcbcrBlocks(struct vl_mpeg12_decoder *dec,
          stream->x = mb->x;
          stream->y = mb->y;
          stream->intra = intra;
-         stream->coding = 0;
+         /* Chroma has one 8x8 block per macroblock in 4:2:0 -- no per-mb
+          * dct_type in-block split applies (or is needed, hence the literal
+          * 0), but a genuine field-structure picture's chroma still has to
+          * weave the same way luma does. */
+         stream->coding = field_split_coding(0, picture_structure);
          stream->block_num = buf->block_num++;
 
          buf->num_ycbcr_blocks[tb]++;
@@ -699,10 +739,19 @@ vl_mpeg12_decode_macroblock(struct pipe_video_codec *decoder,
    assert(buf);
 
    for (; num_macroblocks > 0; --num_macroblocks) {
+      /* mb_addr indexes dec->pos/buf->mv_stream, sized and addressed by
+       * frame-relative macroblock rows; mb->y is field-relative for a
+       * genuine field picture (see field_split_coding()'s comment).  The
+       * motion-compensation reference-fetch geometry (vl_mc_render_ref,
+       * create_ref_vert_shader/create_ref_frag_shader) does not yet carry
+       * the same per-line field split UploadYcbcrBlocks below wires for the
+       * intra/residual path, so mb_addr is left field-relative here too --
+       * doubling it without a matching MC-side split would only relocate
+       * whole macroblock bands, not weave them. */
       unsigned mb_addr = mb->y * dec->width_in_macroblocks + mb->x;
 
       if (mb->macroblock_type & (PIPE_MPEG12_MB_TYPE_PATTERN | PIPE_MPEG12_MB_TYPE_INTRA))
-         UploadYcbcrBlocks(dec, buf, mb);
+         UploadYcbcrBlocks(dec, buf, mb, desc->picture_structure);
 
       MacroBlockTypeToPipeWeights(mb, mv_weights);
 
