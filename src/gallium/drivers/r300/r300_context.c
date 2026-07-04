@@ -403,6 +403,9 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
 
     r300->rws = rws;
     r300->screen = r300screen;
+    /* -2 = unknown, so the first draw always programs the injection state
+     * (0 is a real generic index for a TEXn derivative source). */
+    r300->draw_deriv_src = -2;
 
     r300->context.screen = screen;
     r300->context.priv = priv;

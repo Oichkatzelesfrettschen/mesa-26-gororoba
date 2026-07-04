@@ -628,15 +628,22 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     util_dynarray_init(&derivs, NULL);
     nir_variable *src_var = r300_collect_swtcl_derivatives(impl, &derivs);
 
-    /* Two source classes are analytically differentiable here. A VARn user
-     * varying maps onto a spare generic slot the draw module fills with the
-     * per-triangle gradient. gl_FragCoord (VARYING_SLOT_POS) needs no injection:
-     * its window-space xy gradient is the compile-time constant dFdx=(1,0),
-     * dFdy=(0,1). The face and texcoord ranges do not map. */
+    /* Three source classes are analytically differentiable here. VARn user
+     * varyings and TEXn fixed-function texcoords both map onto generic slots
+     * the draw module fills with the per-triangle gradient
+     * (ntr_fixup_varying_slots and the draw module's nir_to_tgsi agree on
+     * the numbering: VARn -> n + 9, TEXn -> n). gl_FragCoord
+     * (VARYING_SLOT_POS) needs no injection: its window-space xy gradient
+     * is the compile-time constant dFdx=(1,0), dFdy=(0,1). The face range
+     * does not map. */
     const bool is_pos = src_var && src_var->data.location == VARYING_SLOT_POS;
+    const bool is_tex = src_var &&
+                        src_var->data.location >= VARYING_SLOT_TEX0 &&
+                        src_var->data.location <= VARYING_SLOT_TEX7;
     if (!src_var || util_dynarray_num_elements(&derivs, nir_intrinsic_instr *) == 0 ||
-        (!is_pos && (src_var->data.location < VARYING_SLOT_VAR0 ||
-                     src_var->data.location > VARYING_SLOT_VAR31))) {
+        (!is_pos && !is_tex &&
+         (src_var->data.location < VARYING_SLOT_VAR0 ||
+          src_var->data.location > VARYING_SLOT_VAR31))) {
         util_dynarray_fini(&derivs);
         return false;
     }
@@ -647,9 +654,12 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     nir_variable *ddx_var = NULL, *ddy_var = NULL;
 
     if (!is_pos) {
-        /* Post-fixup r300 generic indices: VARn -> n + 9. Reserve the two
-         * highest generic slots (30, 31) for the gradients. */
-        src_generic = (src_var->data.location - VARYING_SLOT_VAR0) + 9;
+        /* Post-fixup r300 generic indices: VARn -> n + 9, TEXn -> n.
+         * Reserve the two highest generic slots (30, 31) for the
+         * gradients. */
+        src_generic = is_tex ?
+            (int)(src_var->data.location - VARYING_SLOT_TEX0) :
+            (int)(src_var->data.location - VARYING_SLOT_VAR0) + 9;
         ddx_generic = 30;
         ddy_generic = 31;
 

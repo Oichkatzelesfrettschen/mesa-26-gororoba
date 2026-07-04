@@ -1490,7 +1490,9 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
         struct r300_fragment_shader_code *fscode = r300_fs(r300)->shader;
         bool want = derivative_via_draw && fscode &&
                     fscode->deriv_src_generic >= 0;
-        int want_src = want ? fscode->deriv_src_generic : 0;
+        /* -1 is the injection-off sentinel: a TEXn source maps to generic
+         * index 0, so 0 is a real index and cannot mark the off state. */
+        int want_src = want ? fscode->deriv_src_generic : -1;
         if (want_src != r300->draw_deriv_src) {
             draw_enable_derivative_injection(
                 r300->draw, want,
