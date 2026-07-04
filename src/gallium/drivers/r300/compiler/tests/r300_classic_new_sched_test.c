@@ -48,7 +48,17 @@
  * A control drives the same corpus through the legacy rc_pair_schedule and
  * asserts legality there too, proving the harness before trusting it, and a
  * texture shader confirms the pass defers to rc_pair_schedule outside its
- * subset. */
+ * subset.
+ *
+ * The MOV/ADD/MUL/MAD shapes above never produce a half-full pair (each
+ * always dual-issues across both lanes from one original instruction), so
+ * the multiset-invariance oracle still holds for them unchanged.
+ * r300_classic_schedule's cross-instruction RGB+Alpha merge and
+ * critical-path reorder tie-break -- which do change the pair multiset and
+ * do produce a non-identity order -- are exercised below (VEC-collect and
+ * the compaction tests) and value-checked in
+ * r300_classic_pair_value_test.c's pair-form CPU evaluator, the oracle a
+ * multiset-invariance proof no longer stands in for once merging is live. */
 
 static int failures;
 
@@ -373,11 +383,14 @@ legacy_control(const char *name, nir_shader *(*build)(void))
    ralloc_free(ctx);
 }
 
-/* Outside the straight-line ALU subset the pass defers to rc_pair_schedule;
- * a texture program carries a TEX block the pass does not model.  Driving it
- * through r300_classic_schedule must still leave a legal stream. */
+/* A shape r300_classic_schedule does not reorder+merge identically to the
+ * schedule_and_check corpus -- either because it defers to rc_pair_schedule
+ * entirely (a TEX block, outside the pass's model) or because it merges
+ * pairs itself (a VEC-collect's per-channel writes, which changes the pair
+ * count so schedule_and_check's multiset-invariance check no longer
+ * applies) -- must still leave a legality-passing stream either way. */
 static void
-fallback_check(const char *name, nir_shader *(*build)(void))
+legal_after_schedule_check(const char *name, nir_shader *(*build)(void))
 {
    void *ctx = ralloc_context(NULL);
    struct r300_fragment_program_compiler fc;
@@ -400,8 +413,7 @@ fallback_check(const char *name, nir_shader *(*build)(void))
    r300_classic_schedule(&fc.Base, &opt);
 
    const char *reject = NULL;
-   snprintf(what, sizeof(what), "%s: deferred schedule passes legality oracle",
-            name);
+   snprintf(what, sizeof(what), "%s: schedule passes legality oracle", name);
    CHECK(r300_classic_validate_schedule(&fc.Base, &reject), what);
    if (reject)
       fprintf(stderr, "  legality: %s\n", reject);
@@ -536,10 +548,13 @@ build_parallel(void)
 }
 
 /* Distinct per-channel arithmetic recombined through a vec4: classic emit
- * expands the collect into per-channel MOVs writing one temporary index, so
- * that index has more than one definer.  The per-index single-assignment
- * precondition does not hold, and the scheduler defers to rc_pair_schedule --
- * the legal-but-merged path this case pins. */
+ * expands the collect into per-channel MOVs writing disjoint channels of one
+ * temporary index.  Single assignment is tracked per (index, channel), so
+ * this index having more than one definer is legal as long as no two
+ * definers claim the same channel; three of the four channels translate to
+ * RGB-only pairs and the fourth to an Alpha-only pair, so
+ * r300_classic_schedule's own merge search folds one RGB-only/Alpha-only
+ * pair together here too. */
 static nir_shader *
 build_vec_collect(void)
 {
@@ -747,17 +762,13 @@ test_output_waw_preserves_order(void)
    rc_destroy_regalloc_state(&rs);
 }
 
-/* Two independent half-full pairs -- an RGB-only MOV and an Alpha-only
- * MOV -- that rc_pair_schedule's merge_instructions() can fold into one
- * full pair, but r300_classic_schedule only reorders and never merges.
- * With max_alu_insts capped at 1, the translated pair count (2) already
- * exceeds the envelope before any scheduling runs, so the pass must defer
- * to rc_pair_schedule rather than hand rc_validate_final_shader a
- * two-instruction schedule that cannot fit.  The merge landing gives a
- * one-pair result: the observable proof that compaction, not just
- * ordering, ran. */
+/* Two independent half-full pairs -- an RGB-only MOV and an Alpha-only MOV --
+ * that r300_classic_schedule's own merge search (rc_pair_try_merge, the same
+ * source-slot machinery rc_pair_schedule's merge_instructions() uses) now
+ * folds into one full pair itself, so a translated stream that starts over
+ * budget can still fit without ever calling the legacy scheduler. */
 static void
-test_compaction_defers_to_merge(void)
+test_compaction_merges_itself(void)
 {
    struct rc_pair_instruction rgb_only, alpha_only;
 
@@ -784,15 +795,81 @@ test_compaction_defers_to_merge(void)
    CHECK(count_pairs(&fc.Base) == 2,
         "compaction: the translated stream starts at two half-full pairs");
 
-   int opt = 1;
+   int opt = 0;
    r300_classic_schedule(&fc.Base, &opt);
 
-   CHECK(!fc.Base.Error, "compaction: deferred schedule raises no error");
+   CHECK(!fc.Base.Error, "compaction: schedule raises no error");
    CHECK(count_pairs(&fc.Base) == 1,
-        "compaction: rc_pair_schedule merged the two half-full pairs to fit max_alu_insts");
+        "compaction: r300_classic_schedule's own merge fits the one-slot budget without deferring");
 
    rc_destroy(&fc.Base);
    rc_destroy_regalloc_state(&rs);
+}
+
+/* Three independent RGB-only pairs and no Alpha-only partner: the merge
+ * search can pair at most one of them away (there is nothing to pair the
+ * other two with), so the merged count (2) still exceeds a one-slot budget
+ * and the pass must defer to rc_pair_schedule -- proven the same way
+ * test_cycle_defers_without_hard_fail proves a defer, by running the
+ * identical hand-built stream through r300_classic_schedule and through
+ * rc_pair_schedule directly on two separately-seeded compiler instances and
+ * requiring the same final pair count. */
+static void
+test_compaction_still_defers_when_merge_insufficient(void)
+{
+   struct rc_pair_instruction rgb_a, rgb_b, alpha_c;
+
+   memset(&rgb_a, 0, sizeof(rgb_a));
+   rgb_a.RGB.Opcode = RC_OPCODE_MOV;
+   rgb_a.RGB.WriteMask = RC_MASK_XYZ;
+   rgb_a.RGB.DestIndex = 0;
+   rgb_a.Alpha.Opcode = RC_OPCODE_NOP;
+
+   memset(&rgb_b, 0, sizeof(rgb_b));
+   rgb_b.RGB.Opcode = RC_OPCODE_MOV;
+   rgb_b.RGB.WriteMask = RC_MASK_XYZ;
+   rgb_b.RGB.DestIndex = 1;
+   rgb_b.Alpha.Opcode = RC_OPCODE_NOP;
+
+   memset(&alpha_c, 0, sizeof(alpha_c));
+   alpha_c.RGB.Opcode = RC_OPCODE_NOP;
+   alpha_c.Alpha.Opcode = RC_OPCODE_MOV;
+   alpha_c.Alpha.WriteMask = RC_MASK_W;
+   alpha_c.Alpha.DestIndex = 2;
+
+   struct r300_fragment_program_compiler fc_new;
+   struct rc_regalloc_state rs_new;
+   fs_compiler_init(&fc_new, &rs_new);
+   fc_new.Base.max_alu_insts = 1;
+   struct rc_instruction *tail_new =
+      append_pair(&fc_new.Base, &fc_new.Base.Program.Instructions, &rgb_a);
+   tail_new = append_pair(&fc_new.Base, tail_new, &rgb_b);
+   append_pair(&fc_new.Base, tail_new, &alpha_c);
+
+   struct r300_fragment_program_compiler fc_legacy;
+   struct rc_regalloc_state rs_legacy;
+   fs_compiler_init(&fc_legacy, &rs_legacy);
+   fc_legacy.Base.max_alu_insts = 1;
+   struct rc_instruction *tail_legacy =
+      append_pair(&fc_legacy.Base, &fc_legacy.Base.Program.Instructions, &rgb_a);
+   tail_legacy = append_pair(&fc_legacy.Base, tail_legacy, &rgb_b);
+   append_pair(&fc_legacy.Base, tail_legacy, &alpha_c);
+
+   int opt = 0;
+   r300_classic_schedule(&fc_new.Base, &opt);
+   rc_pair_schedule(&fc_legacy.Base, &opt);
+
+   CHECK(!fc_new.Base.Error,
+        "compaction_insufficient: r300_classic_schedule defers instead of handing over "
+        "a still-over-budget schedule");
+   CHECK(!fc_legacy.Base.Error, "compaction_insufficient: rc_pair_schedule control raises no error");
+   CHECK(count_pairs(&fc_new.Base) == count_pairs(&fc_legacy.Base),
+        "compaction_insufficient: deferred schedule matches rc_pair_schedule's own outcome");
+
+   rc_destroy(&fc_new.Base);
+   rc_destroy_regalloc_state(&rs_new);
+   rc_destroy(&fc_legacy.Base);
+   rc_destroy_regalloc_state(&rs_legacy);
 }
 
 int
@@ -827,18 +904,20 @@ main(void)
    legacy_control("chain", build_chain);
    legacy_control("parallel", build_parallel);
 
-   /* Outside the per-index single-assignment subset the pass defers to the
-    * legacy scheduler; both a VEC-collect ALU program and a texture program
-    * must still leave a legality-passing stream. */
-   fallback_check("vec_collect", build_vec_collect);
-   fallback_check("tex", build_tex);
+   /* A VEC-collect ALU program is handled directly now (per-channel single
+    * assignment plus the pair's own merge search); a texture program still
+    * defers to the legacy scheduler entirely (a TEX block is outside the
+    * pass's model).  Both must still leave a legality-passing stream. */
+   legal_after_schedule_check("vec_collect", build_vec_collect);
+   legal_after_schedule_check("tex", build_tex);
 
    /* Safety: every shape the scheduler cannot handle itself defers to
     * rc_pair_schedule rather than emitting something illegal or hard-failing
     * the compile. */
    test_cycle_defers_without_hard_fail();
    test_output_waw_preserves_order();
-   test_compaction_defers_to_merge();
+   test_compaction_merges_itself();
+   test_compaction_still_defers_when_merge_insufficient();
 
    glsl_type_singleton_decref();
    if (failures) {

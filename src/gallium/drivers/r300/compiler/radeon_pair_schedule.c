@@ -711,6 +711,18 @@ merge_instructions(struct rc_pair_instruction *rgb, struct rc_pair_instruction *
    return 0;
 }
 
+bool
+rc_pair_try_merge(struct rc_pair_instruction *rgb, struct rc_pair_instruction *alpha)
+{
+   /* destructive_merge_instructions() asserts these two preconditions
+    * instead of checking them, so a caller outside this file's own
+    * ReadyRGB/ReadyAlpha bookkeeping (which only ever holds instructions
+    * already known half-full) must confirm them itself before the call. */
+   if (rgb->Alpha.Opcode != RC_OPCODE_NOP || alpha->RGB.Opcode != RC_OPCODE_NOP)
+      return false;
+   return merge_instructions(rgb, alpha) != 0;
+}
+
 static void
 presub_nop(struct rc_instruction *emitted)
 {
