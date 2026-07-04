@@ -254,7 +254,8 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
          struct dri2_egl_buffer *buffer = &dri2_surf->color_buffers[i];
 
          if (buffer->locked ||
-             dri2_surf->current == buffer)
+             dri2_surf->current == buffer ||
+             dri2_surf->gbm_front == buffer)
             continue;
 
          if (buffer->bo &&
@@ -338,6 +339,44 @@ dri2_drm_image_get_buffers(struct dri_drawable *driDrawable, unsigned int format
    buffers->image_mask = __DRI_IMAGE_BUFFER_BACK;
    buffers->back = bo->image;
 
+   /* GL front-buffer rendering under gbm: gbm_front names the presented
+    * buffer -- the buffer the last swap moved out of back -- independently
+    * of dri2_surf->current, which a consumer's gbm_surface_lock_front_buffer
+    * clears.  Swapping keeps the true-swap semantics: the just-presented
+    * buffer becomes the front, and get_back_bo excludes it from the back
+    * rotation so back rendering never clobbers it.  Before the first swap
+    * no presented buffer exists; allocate a free slot so
+    * glDrawBuffer(GL_FRONT) has a target.  Rendering lands directly in the
+    * bo, so the no-op flush_front_buffer stays correct.  While a consumer
+    * holds the front locked, front-buffer rendering writes the buffer the
+    * consumer reads -- the single-buffered contract front rendering asks
+    * for. */
+   if (buffer_mask & __DRI_IMAGE_BUFFER_FRONT) {
+      struct dri2_egl_display *dri2_dpy =
+         dri2_egl_display(dri2_surf->base.Resource.Display);
+      struct gbm_dri_surface *surf = dri2_surf->gbm_surf;
+
+      if (dri2_surf->gbm_front == NULL) {
+         for (unsigned i = 0; i < ARRAY_SIZE(dri2_surf->color_buffers); i++) {
+            struct dri2_egl_buffer *buffer = &dri2_surf->color_buffers[i];
+
+            if (!buffer->locked && buffer != dri2_surf->back &&
+                buffer != dri2_surf->current) {
+               dri2_surf->gbm_front = buffer;
+               break;
+            }
+         }
+      }
+      if (dri2_surf->gbm_front && dri2_surf->gbm_front->bo == NULL)
+         dri2_surf->gbm_front->bo = gbm_bo_create(
+            &dri2_dpy->gbm_dri->base, surf->base.v0.width,
+            surf->base.v0.height, surf->base.v0.format, surf->base.v0.flags);
+      if (dri2_surf->gbm_front && dri2_surf->gbm_front->bo) {
+         buffers->image_mask |= __DRI_IMAGE_BUFFER_FRONT;
+         buffers->front = gbm_dri_bo(dri2_surf->gbm_front->bo)->image;
+      }
+   }
+
    return 1;
 }
 
@@ -379,6 +418,9 @@ dri2_drm_swap_buffers(_EGLDisplay *disp, _EGLSurface *draw)
 
    dri2_surf->current = dri2_surf->back;
    dri2_surf->current->age = 1;
+   /* The just-presented buffer is the new GL front; the slot it replaces
+    * returns to the back rotation. */
+   dri2_surf->gbm_front = dri2_surf->current;
    dri2_surf->back = NULL;
 
    return EGL_TRUE;

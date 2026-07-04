@@ -360,7 +360,7 @@ struct dri2_egl_surface {
 #endif
       bool locked;
       int age;
-   } color_buffers[4], *back, *current;
+   } color_buffers[4], *back, *current, *gbm_front;
 #endif
 
 #ifdef HAVE_ANDROID_PLATFORM
