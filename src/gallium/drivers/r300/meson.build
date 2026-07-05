@@ -229,6 +229,26 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Vertex sibling of r300-dp2-lowering: the r300..r500 vertex engine's only dot
+  # is DP4, so transform_r300_vertex_DP2/DP3 widen DP2/DP3 to DP4 with the surplus
+  # terms' swizzles forced to ZERO (Z+W for DP2, W for DP3).  Nothing pinned these
+  # widenings -- there was no vertex-ALU-transform test at all.
+  test(
+    'r300-vertex-dot-lowering',
+    executable(
+      'r300_vertex_dot_lowering_test',
+      files('compiler/tests/r300_vertex_dot_lowering_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # Fragment-stage admission harness for nir_to_rc: proves the
   # multiply-add family compiles.  nir_op_fmad must emit RC_OPCODE_MAD, and
   # nir_op_flrp (fog / mix) must lower to a fmad chain before the emitter
