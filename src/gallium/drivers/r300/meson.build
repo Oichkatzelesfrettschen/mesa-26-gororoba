@@ -209,6 +209,26 @@ if with_tests
     suite : ['r300'],
   )
 
+  # transform_DP2 lowering guard: RC_OPCODE_DP2 -> RC_OPCODE_DP3 with the Z/W
+  # swizzles of both sources forced to ZERO, so the three-term dot reproduces the
+  # true two-term dot.  Nothing else pins this rc-level lowering (the pair value
+  # oracle never sees DP2; the parity test only evaluates opcode semantics).
+  test(
+    'r300-dp2-lowering',
+    executable(
+      'r300_dp2_lowering_test',
+      files('compiler/tests/r300_dp2_lowering_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # Fragment-stage admission harness for nir_to_rc: proves the
   # multiply-add family compiles.  nir_op_fmad must emit RC_OPCODE_MAD, and
   # nir_op_flrp (fog / mix) must lower to a fmad chain before the emitter
