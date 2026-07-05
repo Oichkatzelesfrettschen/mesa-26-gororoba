@@ -259,7 +259,7 @@ r300_nir_float_encode_int_sysvals(nir_shader *nir)
  * load_vertex_id intrinsics below, would fix the ordering compare and break
  * the equality in the same shader, so the fix has to live at each consuming
  * instruction instead of at the shared definition. */
-static bool
+bool
 r300_nir_float_encode_synthetic_sysval_index_uses(nir_shader *nir)
 {
     nir_function_impl *impl = nir_shader_get_entrypoint(nir);
