@@ -6,7 +6,6 @@
 #include "r3v_cmd_buffer.h"
 #include "r3v_descriptor.h"
 #include "r3v_format.h"
-#include "util/u_simple_shaders.h"
 #include "pipe/p_shader_tokens.h"
 #include "tgsi/tgsi_from_mesa.h"
 #include "tgsi/tgsi_ureg.h"
@@ -2592,95 +2591,153 @@ r3v_device_ensure_shift_variable_lut_locked(struct r3v_device *device)
  * sampling normalises UNORM8 bytes to [0,1] floats anyway -- the byte
  * round-trip stays bit-exact when the operator obeys the FP24 integer-exact
  * envelope. */
-static bool
-emit_binary_op(struct ureg_program *ureg, uint16_t nir_op,
-               struct ureg_dst dst,
-               struct ureg_src a, struct ureg_src b)
+/* Shared nir_builder plumbing for the synthesized replay shaders.  The
+ * interpolant is VARYING_SLOT_TEX0 on both the VS output and the FS input:
+ * nir_to_rc maps TEX0 to generic0 while VARYING_SLOT_VAR0 shifts to generic9
+ * during varying-slot fixup, so TEX0 is the slot that pairs across the
+ * synthesized pipeline (the same law r3v_dp4_fs_nir.c records). */
+static nir_def *
+r3v_synth_load_texcoord(nir_builder *b)
 {
-   switch (nir_op) {
-   case nir_op_fadd: case nir_op_iadd:
-      ureg_ADD(ureg, dst, a, b); return true;
-   case nir_op_fsub: case nir_op_isub:
-      /* TGSI has no SUB opcode; ureg_ADD with the second operand negated
-       * is the canonical lowering (and what gallium drivers expect). */
-      ureg_ADD(ureg, dst, a, ureg_negate(b)); return true;
-   case nir_op_fmul: case nir_op_imul:
-      ureg_MUL(ureg, dst, a, b); return true;
-   case nir_op_fmin: case nir_op_imin: case nir_op_umin:
-      ureg_MIN(ureg, dst, a, b); return true;
-   case nir_op_fmax: case nir_op_imax: case nir_op_umax:
-      ureg_MAX(ureg, dst, a, b); return true;
-   default:
-      return false;
-   }
+   nir_variable *in_tc = nir_variable_create(b->shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "tc");
+   in_tc->data.location = VARYING_SLOT_TEX0;
+   return nir_trim_vector(b, nir_load_var(b, in_tc), 2);
+}
+
+static nir_def *
+r3v_synth_sample2d(nir_builder *b, unsigned binding, nir_def *coord)
+{
+   char name[8];
+   snprintf(name, sizeof(name), "samp%u", binding);
+   nir_variable *samp = nir_variable_create(
+      b->shader, nir_var_uniform,
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+      name);
+   samp->data.binding = binding;
+   nir_deref_instr *d = nir_build_deref_var(b, samp);
+   return nir_tex(b, coord, .texture_deref = d, .sampler_deref = d);
+}
+
+static void
+r3v_synth_store_color(nir_builder *b, nir_def *value)
+{
+   nir_variable *out = nir_variable_create(b->shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(b, out, value, 0xf);
+}
+
+static void *
+r3v_synth_fs_cso(struct pipe_context *pipe, nir_builder *b)
+{
+   nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
+   nir_assign_io_var_locations(b->shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b->shader, nir_var_shader_out);
+
+   nir_shader *fs_nir = b->shader;
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, fs_nir, true);
+
+   struct pipe_shader_state state = { .type   = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = fs_nir };
+   void *fs_cso = pipe->create_fs_state(pipe, &state);
+   if (!fs_cso)
+      ralloc_free(fs_nir);
+   return fs_cso;
 }
 
 /* Synthesise the 2-sampler fragment program for the binary-map lowering:
- *   TEX  tmp0, IN[0], SAMP[0]   (sample in_a)
- *   TEX  tmp1, IN[0], SAMP[1]   (sample in_b)
- *   <op> tmp0, tmp0, tmp1       (the binary ALU op)
- *   MOV  OUT[0], tmp0
- *   END
+ * sample in_a and in_b at the fullscreen texcoord, apply the binary ALU op,
+ * and write the result to the color export.  Integer NIR opcodes fold into
+ * the same float ALU because the texture sampling normalises UNORM8 bytes
+ * to [0,1] floats anyway -- the byte round-trip stays bit-exact when the
+ * operator obeys the FP24 integer-exact envelope.
  *
  * Costs: 2 TEX + 2 ALU = 4/96 of the R300 PFS budget
  * (R300_PFS_MAX_ALU_INST=64 / R300_PFS_MAX_TEX_INST=32). */
 static void *
 r3v_synthesize_binary_map_fs(struct pipe_context *pipe, uint16_t alu_op)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_binary_map");
+   nir_def *coord = r3v_synth_load_texcoord(&b);
+   nir_def *va = r3v_synth_sample2d(&b, 0, coord);
+   nir_def *vb = r3v_synth_sample2d(&b, 1, coord);
 
-   struct ureg_src samp_a = ureg_DECL_sampler(ureg, 0);
-   struct ureg_src samp_b = ureg_DECL_sampler(ureg, 1);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   ureg_DECL_sampler_view(ureg, 1, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-
-   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                            TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst tmp_a = ureg_DECL_temporary(ureg);
-   struct ureg_dst tmp_b = ureg_DECL_temporary(ureg);
-
-   /* ureg_load_tex (u_simple_shaders.c) is file-static and not exported;
-    * call ureg_TEX directly with TGSI_TEXTURE_2D + the (coord, sampler)
-    * pair, which is the same opcode the helper emits for use_txf=false. */
-   ureg_TEX(ureg, ureg_writemask(tmp_a, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tex, samp_a);
-   ureg_TEX(ureg, ureg_writemask(tmp_b, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tex, samp_b);
-
-   if (!emit_binary_op(ureg, alu_op,
-                       ureg_writemask(tmp_a, TGSI_WRITEMASK_XYZW),
-                       ureg_src(tmp_a), ureg_src(tmp_b))) {
-      ureg_destroy(ureg);
+   nir_def *result;
+   switch (alu_op) {
+   case nir_op_fadd: case nir_op_iadd:
+      result = nir_fadd(&b, va, vb); break;
+   case nir_op_fsub: case nir_op_isub:
+      result = nir_fsub(&b, va, vb); break;
+   case nir_op_fmul: case nir_op_imul:
+      result = nir_fmul(&b, va, vb); break;
+   case nir_op_fmin: case nir_op_imin: case nir_op_umin:
+      result = nir_fmin(&b, va, vb); break;
+   case nir_op_fmax: case nir_op_imax: case nir_op_umax:
+      result = nir_fmax(&b, va, vb); break;
+   default:
+      ralloc_free(b.shader);
       return NULL;
    }
 
-   ureg_MOV(ureg, out, ureg_src(tmp_a));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   r3v_synth_store_color(&b, result);
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* Synthesise the binary-map VS + FS pair on the pipeline.  Reuses the
  * device-cached state CSOs (blend / raster / dsa / sampler) the identity-map
  * synthesis populates -- the binary-map and identity-map paths share every
  * per-draw state object; only the FS differs. */
-/* Fullscreen-quad vertex shader synthesis: 2 attributes (POSITION + GENERIC).
+/* Fullscreen-quad vertex shader synthesis: 2 attributes (position + texcoord).
  * Identity-map coordinate interpolation and per-vertex reduction values use
  * this passthrough shape.  Cached on the pipeline object; the existing
- * destroy path frees it. */
+ * destroy path frees it.  Pure NIR: attribute 0 passes through to
+ * VARYING_SLOT_POS, attribute 1 to VARYING_SLOT_TEX0 -- the slot every
+ * synthesized replay FS names its interpolant (nir_to_rc maps TEX0 to
+ * generic0, the pairing r3v_dp4_fs_nir.c records). */
 static void *
 r3v_synthesize_passthrough_vs(struct pipe_context *pipe)
 {
-   const enum tgsi_semantic names[]   = { TGSI_SEMANTIC_POSITION,
-                                          TGSI_SEMANTIC_GENERIC };
-   const unsigned          indices[] = { 0, 0 };
-   return util_make_vertex_passthrough_shader(pipe, 2, names, indices, false);
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_VERTEX];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, opts,
+                                                  "r3v_passthrough_vs");
+
+   nir_variable *in_pos = nir_variable_create(b.shader, nir_var_shader_in,
+                                              glsl_vec4_type(), "in_pos");
+   in_pos->data.location = VERT_ATTRIB_GENERIC0;
+   nir_variable *in_tc = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "in_tc");
+   in_tc->data.location = VERT_ATTRIB_GENERIC0 + 1;
+
+   nir_variable *out_pos = nir_variable_create(b.shader, nir_var_shader_out,
+                                               glsl_vec4_type(), "pos");
+   out_pos->data.location = VARYING_SLOT_POS;
+   nir_variable *out_tc = nir_variable_create(b.shader, nir_var_shader_out,
+                                              glsl_vec4_type(), "tc");
+   out_tc->data.location = VARYING_SLOT_TEX0;
+
+   nir_store_var(&b, out_pos, nir_load_var(&b, in_pos), 0xf);
+   nir_store_var(&b, out_tc, nir_load_var(&b, in_tc), 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   nir_shader *vs_nir = b.shader;
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, vs_nir, false);
+
+   struct pipe_shader_state state = { .type   = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = vs_nir };
+   void *vs_cso = pipe->create_vs_state(pipe, &state);
+   if (!vs_cso)
+      ralloc_free(vs_nir);
+   return vs_cso;
 }
 
 static bool
@@ -2718,45 +2775,42 @@ r3v_binary_map_synthesize_shaders(struct r3v_device *device,
  * push window at FS CONST[0], mapping push byte offset N to CONST[N/16]
  * component (N%16)/4.  MUL + ADD (not a single MAD) stays within the opcode
  * set the binary-map FS already uses.  Cost: 1 TEX + 2 ALU. */
-static struct ureg_src
-r3v_unary_map_const_src(struct ureg_program *ureg, bool from_push,
-                           uint16_t push_offset, float literal)
+static nir_def *
+r3v_unary_map_const(nir_builder *b, bool from_push,
+                    uint16_t push_offset, float literal)
 {
-   if (!from_push)
-      return ureg_imm4f(ureg, literal, literal, literal, literal);
-   return ureg_scalar(ureg_DECL_constant(ureg, push_offset / 16),
-                      (push_offset % 16) / 4);
+   nir_def *scalar;
+   if (!from_push) {
+      scalar = nir_imm_float(b, literal);
+   } else {
+      /* The dispatch replay binds the 128-byte push window at FS CONST[0];
+       * push byte offset N is a scalar load at that offset in UBO 0. */
+      scalar = nir_load_ubo(b, 1, 32, nir_imm_int(b, 0),
+                            nir_imm_int(b, push_offset),
+                            .align_mul = 4, .range_base = 0, .range = 128);
+   }
+   return nir_swizzle(b, scalar, (unsigned[]){0, 0, 0, 0}, 4);
 }
 
 static void *
 r3v_synthesize_unary_map_fs(struct pipe_context *pipe,
                                const struct r300_compute_unary_map_pattern *um)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_unary_map");
+   nir_def *coord = r3v_synth_load_texcoord(&b);
+   nir_def *value = r3v_synth_sample2d(&b, 0, coord);
+   nir_def *c0 = r3v_unary_map_const(
+      &b, um->mul_const_from_push, um->mul_const_push_offset, um->mul_const);
+   nir_def *c1 = r3v_unary_map_const(
+      &b, um->add_const_from_push, um->add_const_push_offset, um->add_const);
 
-   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-
-   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                            TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst tmp = ureg_DECL_temporary(ureg);
-   struct ureg_src c0s = r3v_unary_map_const_src(
-      ureg, um->mul_const_from_push, um->mul_const_push_offset, um->mul_const);
-   struct ureg_src c1s = r3v_unary_map_const_src(
-      ureg, um->add_const_from_push, um->add_const_push_offset, um->add_const);
-
-   ureg_TEX(ureg, ureg_writemask(tmp, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tex, samp);
-   ureg_MUL(ureg, ureg_writemask(tmp, TGSI_WRITEMASK_XYZW),
-            ureg_src(tmp), c0s);
-   ureg_ADD(ureg, out, ureg_src(tmp), c1s);
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   /* MUL then ADD (not one fused MAD) preserves the exact operation order
+    * the FP24 integer-exact envelope was validated against. */
+   r3v_synth_store_color(&b, nir_fadd(&b, nir_fmul(&b, value, c0), c1));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* Synthesize the unary-map VS + FS.  The dispatch replay uses the unary-map
@@ -2835,55 +2889,47 @@ r3v_dp4_synthesize_shaders(struct r3v_device *device,
 }
 
 /* Unary-transcendental FS: 1 TEX + one native US scalar transcendental,
- * parameterized by the detector's recorded nir_op.  Built in ureg/TGSI, like
- * the affine map FS, declaring its texcoord as GENERIC[0] PERSPECTIVE.  A
- * standalone NIR FS naming the interpolant VARYING_SLOT_TEX0 does not link to
- * the passthrough VS's GENERIC[0] output in the scalar 1-in/1-out carrier, so
- * every fragment samples the same texel; declaring GENERIC[0] directly reads
- * per-fragment.  fsqrt composes as RCP(RSQ(x)) (the US ALU has no SQRT).
- * Returns NULL for an op outside the admitted set. */
+ * parameterized by the detector's recorded nir_op.  Pure NIR paired with the
+ * NIR passthrough VS: both sides name the interpolant VARYING_SLOT_TEX0, so
+ * nir_to_rc maps VS output and FS input to the same generic0 -- the
+ * TEX0-vs-GENERIC mismatch that broke the earlier mixed NIR-FS/TGSI-VS
+ * pairing in the scalar carrier cannot recur when one convention feeds both
+ * stages.  fsqrt lowers through the r300 NIR pipeline (the US ALU has no
+ * SQRT).  Returns NULL for an op outside the admitted set. */
 static void *
 r3v_synthesize_unary_transcendental_fs(struct pipe_context *pipe,
                                           uint16_t alu_op)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   /* Deliberately NOT r3v_-prefixed: the virtual-FP gate in r300_nir.c
+    * overloads fsin/fpow/fldexp as 4-component placeholders in shaders
+    * carrying the prefix, and this program computes the REAL
+    * transcendental -- a prefixed name would hijack it. */
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "replay_unary_transc");
+   nir_def *coord = r3v_synth_load_texcoord(&b);
+   nir_def *value = r3v_synth_sample2d(&b, 0, coord);
 
-   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                            TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst tmp = ureg_DECL_temporary(ureg);
-   const unsigned wm = TGSI_WRITEMASK_XYZW;
-
-   ureg_TEX(ureg, ureg_writemask(tmp, wm), TGSI_TEXTURE_2D, tex, samp);
-
+   nir_def *result;
    switch ((nir_op)alu_op) {
-   case nir_op_fsqrt: {
-      struct ureg_dst rs = ureg_DECL_temporary(ureg);
-      ureg_RSQ(ureg, ureg_writemask(rs, wm), ureg_src(tmp));
-      ureg_RCP(ureg, out, ureg_src(rs));
-      break;
-   }
-   case nir_op_frsq:        ureg_RSQ(ureg, out, ureg_src(tmp)); break;
-   case nir_op_frcp:        ureg_RCP(ureg, out, ureg_src(tmp)); break;
-   case nir_op_fexp2:       ureg_EX2(ureg, out, ureg_src(tmp)); break;
-   case nir_op_flog2:       ureg_LG2(ureg, out, ureg_src(tmp)); break;
-   case nir_op_fsin:        ureg_SIN(ureg, out, ureg_src(tmp)); break;
-   case nir_op_fcos:        ureg_COS(ureg, out, ureg_src(tmp)); break;
-   case nir_op_ffract:      ureg_FRC(ureg, out, ureg_src(tmp)); break;
-   case nir_op_ffloor:      ureg_FLR(ureg, out, ureg_src(tmp)); break;
-   case nir_op_fround_even: ureg_ROUND(ureg, out, ureg_src(tmp)); break;
+   case nir_op_fsqrt:       result = nir_fsqrt(&b, value); break;
+   case nir_op_frsq:        result = nir_frsq(&b, value); break;
+   case nir_op_frcp:        result = nir_frcp(&b, value); break;
+   case nir_op_fexp2:       result = nir_fexp2(&b, value); break;
+   case nir_op_flog2:       result = nir_flog2(&b, value); break;
+   case nir_op_fsin:        result = nir_fsin(&b, value); break;
+   case nir_op_fcos:        result = nir_fcos(&b, value); break;
+   case nir_op_ffract:      result = nir_ffract(&b, value); break;
+   case nir_op_ffloor:      result = nir_ffloor(&b, value); break;
+   case nir_op_fround_even: result = nir_fround_even(&b, value); break;
    default:
-      ureg_destroy(ureg);
+      ralloc_free(b.shader);
       return NULL;
    }
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+
+   r3v_synth_store_color(&b, result);
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* Unary-transcendental VS+FS synthesis: the passthrough VS plus the
@@ -2929,54 +2975,34 @@ r3v_synthesize_binary_transcendental_fs(struct pipe_context *pipe,
    if (!is_pow && !is_div)
       return NULL;
 
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   /* Deliberately NOT r3v_-prefixed: fpow is one of the opcodes the
+    * virtual-FP gate overloads as a placeholder in prefixed shaders, and
+    * this program computes the real power/divide. */
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "replay_binary_transc");
+   nir_def *coord = r3v_synth_load_texcoord(&b);
+   nir_def *va = r3v_synth_sample2d(&b, 0, coord);
+   nir_def *vb = r3v_synth_sample2d(&b, 1, coord);
 
-   struct ureg_src samp_a = ureg_DECL_sampler(ureg, 0);
-   struct ureg_src samp_b = ureg_DECL_sampler(ureg, 1);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   ureg_DECL_sampler_view(ureg, 1, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                            TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst a = ureg_DECL_temporary(ureg);
-   struct ureg_dst b = ureg_DECL_temporary(ureg);
-
-   ureg_TEX(ureg, ureg_writemask(a, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tex, samp_a);
-   ureg_TEX(ureg, ureg_writemask(b, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tex, samp_b);
-
+   nir_def *result;
    if (components == 1) {
-      /* Scalar: compute lane 0 and broadcast across the export. */
-      if (is_div) {
-         struct ureg_dst rb = ureg_DECL_temporary(ureg);
-         ureg_RCP(ureg, ureg_writemask(rb, TGSI_WRITEMASK_X),
-                  ureg_scalar(ureg_src(b), TGSI_SWIZZLE_X));
-         ureg_MUL(ureg, out, ureg_scalar(ureg_src(a), TGSI_SWIZZLE_X),
-                  ureg_scalar(ureg_src(rb), TGSI_SWIZZLE_X));
-      } else {
-         ureg_POW(ureg, out, ureg_scalar(ureg_src(a), TGSI_SWIZZLE_X),
-                  ureg_scalar(ureg_src(b), TGSI_SWIZZLE_X));
-      }
+      /* Scalar: compute lane 0 and broadcast across the export -- the
+       * scalar carrier's X-lane gather reads channel 0. */
+      nir_def *a0 = nir_channel(&b, va, 0);
+      nir_def *b0 = nir_channel(&b, vb, 0);
+      nir_def *r0 = is_div ? nir_fmul(&b, a0, nir_frcp(&b, b0))
+                           : nir_fpow(&b, a0, b0);
+      result = nir_swizzle(&b, r0, (unsigned[]){0, 0, 0, 0}, 4);
    } else if (is_div) {
-      struct ureg_dst rb = ureg_DECL_temporary(ureg);
-      for (unsigned c = 0; c < 4; c++)
-         ureg_RCP(ureg, ureg_writemask(rb, 1u << c),
-                  ureg_scalar(ureg_src(b), c));
-      ureg_MUL(ureg, out, ureg_src(a), ureg_src(rb));
+      result = nir_fmul(&b, va, nir_frcp(&b, vb));
    } else {
-      for (unsigned c = 0; c < 4; c++)
-         ureg_POW(ureg, ureg_writemask(out, 1u << c),
-                  ureg_scalar(ureg_src(a), c), ureg_scalar(ureg_src(b), c));
+      result = nir_fpow(&b, va, vb);
    }
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+
+   r3v_synth_store_color(&b, result);
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* Binary-transcendental VS+FS synthesis: the passthrough VS plus the two-input
@@ -4400,9 +4426,23 @@ r3v_qfmmul_synthesize_shaders(struct r3v_device *device,
  * to the bound color RT.  Both CSOs are cached on the pipeline; the existing
  * destroy path frees vs_cso / fs_cso conditionally.
  *
- * util_make_fragment_tex_shader is the Mesa-canonical TGSI helper for this
- * sampler FS.  Synthesis failure is an allocation failure: return the VkResult
- * from pipeline creation instead of hiding it behind a no-op dispatch path. */
+ * The sampler FS is a pure-NIR texel copy (TEX at the TEX0 interpolant, MOV
+ * to the color export); NEAREST filtering comes from the sampler state bound
+ * at dispatch replay, not the shader.  Synthesis failure is an allocation
+ * failure: return the VkResult from pipeline creation instead of hiding it
+ * behind a no-op dispatch path. */
+static void *
+r3v_synthesize_identity_tex_fs(struct pipe_context *pipe)
+{
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_identity_tex");
+   nir_def *coord = r3v_synth_load_texcoord(&b);
+   r3v_synth_store_color(&b, r3v_synth_sample2d(&b, 0, coord));
+   return r3v_synth_fs_cso(pipe, &b);
+}
+
 static VkResult
 r3v_identity_map_synthesize_shaders(struct r3v_device *device,
                                         struct r3v_pipeline *pl)
@@ -4428,11 +4468,7 @@ r3v_identity_map_synthesize_shaders(struct r3v_device *device,
                        "r3v: failed to synthesize identity-map VS");
    }
 
-   pl->fs_cso = util_make_fragment_tex_shader(
-                    pipe, TGSI_TEXTURE_2D,
-                    TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                    false /* use_txf: emit TEX; sampler state chooses NEAREST */,
-                    true  /* use_persp: perspective-correct interpolation */);
+   pl->fs_cso = r3v_synthesize_identity_tex_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
