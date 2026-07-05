@@ -20,6 +20,7 @@
 
 #include "compiler/radeon_compiler.h"
 #include "compiler/r300_nir.h"
+#include "nir/nir_draw_helpers.h"
 #include "compiler/nir_to_rc.h"
 #include "compiler/classic/r300_classic_emit.h"
 #include "compiler/classic/r300_classic_regalloc.h"
@@ -102,6 +103,7 @@ void r300_fragment_program_get_external_state(
     unsigned i;
 
     state->alpha_to_one = r300->alpha_to_one && r300->msaa_enable;
+    state->pstipple = r300->pstipple_draw;
     state->sampler_state_count = texstate->sampler_state_count;
 
     for (i = 0; i < texstate->sampler_state_count; i++) {
@@ -1679,6 +1681,18 @@ retry:
     compiler.UserData = &shader->inputs;
 
     nir_shader *clone = nir_shader_clone(NULL, state.ir.nir);
+
+    /* Polygon-stipple variant: rewrite the program to sample the 32x32
+     * driver-owned stipple texture at the window position and discard masked
+     * fragments.  The pass binds the sampler right past the program's own
+     * bindings -- the same unit r300_merge_textures_and_samplers splices the
+     * stipple texture into for stippled draws. */
+    if (shader->compare_state.pstipple) {
+        unsigned stipple_unit = 0;
+        NIR_PASS(_, clone, nir_lower_pstipple_fs, &stipple_unit, 0, true,
+                 nir_type_bool1);
+        nir_shader_gather_info(clone, nir_shader_get_entrypoint(clone));
+    }
 
     /* Specialize this variant on the inlinable-uniform values it was keyed on
      * (r300_pick_fragment_shader): inline the draw-time value and re-run the

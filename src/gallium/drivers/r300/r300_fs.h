@@ -104,6 +104,13 @@ struct r300_fragment_shader {
      * The wide-point stage reads it to find the gl_PointCoord input and
      * generate sprite texcoords for SW-expanded points. NULL on HW-TCL chips. */
     void* draw_fs;
+
+    /* Sampler unit the polygon-stipple variant reads the stipple texture
+     * from: the first unit past the program's own sampler bindings, computed
+     * from the base NIR at create time with the same walk
+     * nir_lower_pstipple_fs uses, so the texture bind and the variant
+     * compile agree without the variant existing yet. */
+    unsigned pstipple_sampler_unit;
 };
 
 /* Return TRUE if the shader was switched and should be re-emitted. */

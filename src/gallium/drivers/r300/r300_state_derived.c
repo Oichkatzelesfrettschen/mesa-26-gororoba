@@ -901,6 +901,50 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
     if (!count && !r300->screen->caps.is_r500)
         count = 1;
 
+    /* Polygon-stipple draws sample the driver-owned stipple texture from the
+     * unit right past the program's own bindings.  The view is spliced into
+     * the slot with a reference and stays there while the merged state can
+     * name it: r300_emit_buffer_validate re-reads sampler_views[] by
+     * tx_enable to validate relocations, the same contract the texkill
+     * sampler below relies on.  The sampler CSO is merge-local. */
+    int pstip_want = -1;
+    if (r300->pstipple_draw && r300->fs.state && r300->pstipple_sampler_view &&
+        r300->pstipple_sampler &&
+        r300_fs(r300)->pstipple_sampler_unit < r300->screen->caps.num_tex_units)
+        pstip_want = r300_fs(r300)->pstipple_sampler_unit;
+
+    if (r300->pstipple_bound_unit >= 0) {
+        unsigned bound = r300->pstipple_bound_unit;
+        if (state->sampler_views[bound] !=
+            (struct r300_sampler_view*)r300->pstipple_sampler_view) {
+            /* The app bound its own view over the slot; nothing to clear. */
+            r300->pstipple_bound_unit = -1;
+        } else if (pstip_want != (int)bound) {
+            pipe_sampler_view_reference(
+                (struct pipe_sampler_view**)&state->sampler_views[bound],
+                NULL);
+            r300->pstipple_bound_unit = -1;
+        }
+    }
+
+    struct r300_sampler_state *pstip_saved_state = NULL;
+    bool pstip_injected = false;
+    unsigned pstip_unit = 0;
+    if (pstip_want >= 0) {
+        pstip_unit = pstip_want;
+        if (r300->pstipple_bound_unit < 0) {
+            pipe_sampler_view_reference(
+                (struct pipe_sampler_view**)&state->sampler_views[pstip_unit],
+                r300->pstipple_sampler_view);
+            r300->pstipple_bound_unit = pstip_unit;
+        }
+        pstip_saved_state = state->sampler_states[pstip_unit];
+        state->sampler_states[pstip_unit] =
+            (struct r300_sampler_state*)r300->pstipple_sampler;
+        count = MAX2(count, pstip_unit + 1);
+        pstip_injected = true;
+    }
+
     state->tx_enable = 0;
     state->count = 0;
     size = 2;
@@ -1093,6 +1137,9 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
             }
         }
     }
+
+    if (pstip_injected)
+        state->sampler_states[pstip_unit] = pstip_saved_state;
 
     r300->textures_state.size = size;
 

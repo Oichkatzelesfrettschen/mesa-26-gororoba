@@ -1050,8 +1050,9 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
 /* An all-zero 32x32 GL polygon stipple masks every polygon fragment, so a
  * filled-triangle draw under that pattern produces no visible output. R3xx
  * has no stipple-pattern register to encode the pattern in hardware; the
- * all-zero and all-one/never-set cases are the only ones resolved here, so
- * this only applies to unstippled fill of MESA_PRIM_TRIANGLES. */
+ * all-zero case short-circuits the draw here and every other pattern rides
+ * the fragment-shader stipple variant, so this only applies to unstippled
+ * fill of MESA_PRIM_TRIANGLES. */
 static bool r300_poly_stipple_masks_draw(struct r300_context *r300,
                                           enum mesa_prim reduced_prim)
 {
@@ -1062,6 +1063,28 @@ static bool r300_poly_stipple_masks_draw(struct r300_context *r300,
            rs->rs.fill_back == PIPE_POLYGON_MODE_FILL &&
            reduced_prim == MESA_PRIM_TRIANGLES &&
            r300->poly_stipple_set && r300->poly_stipple_all_zero;
+}
+
+/* Polygon stipple applies to filled triangle draws only; derive the per-draw
+ * flag the fragment-shader variant key and the merged texture state read.
+ * A transition re-merges the texture state (the stipple texture splices in
+ * at the unit past the program's own bindings) and revalidates the FS. */
+static void r300_update_pstipple_draw(struct r300_context *r300,
+                                      enum mesa_prim mode)
+{
+    struct r300_rs_state *rs = (struct r300_rs_state*)r300->rs_state.state;
+    bool pstipple = rs && rs->rs.poly_stipple_enable &&
+                    rs->rs.fill_front == PIPE_POLYGON_MODE_FILL &&
+                    rs->rs.fill_back == PIPE_POLYGON_MODE_FILL &&
+                    r300->pstipple_sampler_view &&
+                    u_reduced_prim(mode) == MESA_PRIM_TRIANGLES;
+
+    if (pstipple != r300->pstipple_draw) {
+        r300->pstipple_draw = pstipple;
+        r300_mark_atom_dirty(r300, &r300->textures_state);
+        if (r300->fs_status == FRAGMENT_SHADER_VALID)
+            r300->fs_status = FRAGMENT_SHADER_MAYBE_DIRTY;
+    }
 }
 
 static void r300_draw_vbo(struct pipe_context* pipe,
@@ -1098,6 +1121,8 @@ static void r300_draw_vbo(struct pipe_context* pipe,
             r300_mark_atom_dirty(r300, &r300->rs_block_state);
         }
     }
+
+    r300_update_pstipple_draw(r300, info.mode);
 
     r300_update_derived_state(r300);
 
@@ -1573,6 +1598,8 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
         derivative_via_draw = gate != 0;
     }
     r300->derivative_via_draw = derivative_via_draw;
+
+    r300_update_pstipple_draw(r300, info->mode);
 
     r300_update_derived_state(r300);
 
@@ -2087,6 +2114,16 @@ void r300_blitter_draw_rectangle(struct blitter_context *blitter,
      * any value left over from a prior point draw before the derived-state
      * rebuild so it does not divert this RS block. */
     r300->point_sprite_via_draw = false;
+    /* Same staleness class for polygon stipple: this path bypasses the
+     * draw_vbo entry that derives pstipple_draw, so a value left over from a
+     * stippled app draw would compile the blitter's own fragment shader with
+     * the stipple lowering.  The blitter never stipples. */
+    if (r300->pstipple_draw) {
+        r300->pstipple_draw = false;
+        r300_mark_atom_dirty(r300, &r300->textures_state);
+        if (r300->fs_status == FRAGMENT_SHADER_VALID)
+            r300->fs_status = FRAGMENT_SHADER_MAYBE_DIRTY;
+    }
     r300_update_derived_state(r300);
 
     /* Mark some states we don't care about as non-dirty. */

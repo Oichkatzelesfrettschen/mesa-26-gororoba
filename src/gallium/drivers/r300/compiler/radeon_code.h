@@ -172,6 +172,14 @@ struct r300_fragment_program_external_state {
 
    unsigned alpha_to_one : 1;
 
+   /**
+    * Rewrite the program to sample the driver-owned 32x32 polygon-stipple
+    * texture at the window position and discard masked fragments.  R3xx has
+    * no stipple-pattern register, so stippled polygon draws compile a
+    * fragment-shader variant instead.
+    */
+   unsigned pstipple : 1;
+
    int sampler_state_count;
 };
 
