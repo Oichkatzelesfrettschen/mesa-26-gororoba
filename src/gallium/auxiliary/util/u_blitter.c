@@ -43,6 +43,7 @@
 #include "util/u_math.h"
 #include "util/u_blitter.h"
 #include "util/u_draw_quad.h"
+#include "util/u_resource.h"
 #include "util/u_sampler.h"
 #include "util/u_simple_shaders.h"
 #include "util/u_surface.h"
@@ -152,6 +153,13 @@ struct blitter_context_priv
    bool has_layered;
    bool has_stream_out;
    bool has_stencil_export;
+   /* Screen supports PIPE_SHADER_IR_NIR: the reachable shader
+    * constructors build NIR twins instead of TGSI (the stencil-export,
+    * TXF/TXQ, F64-pack, and MSAA constructors stay TGSI -- their own
+    * capability gates keep NIR-only fixed-function hardware off those
+    * paths, and drivers that do reach them accept TGSI through their own
+    * converters). */
+   bool use_nir;
    bool has_texture_multisample;
    bool has_txf_txq;
    bool has_sample_shading;
@@ -213,6 +221,8 @@ struct blitter_context *util_blitter_create(struct pipe_context *pipe)
    ctx->has_stream_out = pipe->screen->caps.max_stream_output_buffers != 0;
 
    ctx->has_stencil_export = pipe->screen->caps.shader_stencil_export;
+   ctx->use_nir = pipe->screen->shader_caps[MESA_SHADER_FRAGMENT].supported_irs &
+                  (1 << PIPE_SHADER_IR_NIR);
 
    ctx->has_texture_multisample =
       pipe->screen->caps.texture_multisample;
@@ -362,6 +372,25 @@ void *util_blitter_get_discard_rasterizer_state(struct blitter_context *blitter)
    return ctx->rs_discard_state;
 }
 
+
+/* pipe_texture_target -> the sampler dim the NIR twin constructors take
+ * (array-ness travels separately via util_texture_is_array). */
+static enum glsl_sampler_dim
+util_pipe_tex_to_glsl_dim(enum pipe_texture_target target)
+{
+   switch (target) {
+   case PIPE_TEXTURE_1D:
+   case PIPE_TEXTURE_1D_ARRAY:   return GLSL_SAMPLER_DIM_1D;
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_2D_ARRAY:   return GLSL_SAMPLER_DIM_2D;
+   case PIPE_TEXTURE_RECT:       return GLSL_SAMPLER_DIM_RECT;
+   case PIPE_TEXTURE_3D:         return GLSL_SAMPLER_DIM_3D;
+   case PIPE_TEXTURE_CUBE:
+   case PIPE_TEXTURE_CUBE_ARRAY: return GLSL_SAMPLER_DIM_CUBE;
+   default: UNREACHABLE("unhandled blit texture target");
+   }
+}
+
 static void *get_vs_passthrough_pos_generic(struct blitter_context *blitter)
 {
    struct blitter_context_priv *ctx = (struct blitter_context_priv*)blitter;
@@ -371,9 +400,12 @@ static void *get_vs_passthrough_pos_generic(struct blitter_context *blitter)
       static const enum tgsi_semantic semantic_names[] =
          { TGSI_SEMANTIC_POSITION, TGSI_SEMANTIC_GENERIC };
       const unsigned semantic_indices[] = { 0, 0 };
-      ctx->vs =
-         util_make_vertex_passthrough_shader(pipe, 2, semantic_names,
-                                             semantic_indices, false);
+      ctx->vs = ctx->use_nir
+         ? util_make_vertex_passthrough_shader_nir(pipe, 2, semantic_names,
+                                                   semantic_indices, false,
+                                                   false)
+         : util_make_vertex_passthrough_shader(pipe, 2, semantic_names,
+                                               semantic_indices, false);
    }
    return ctx->vs;
 }
@@ -388,10 +420,13 @@ static void *get_vs_passthrough_pos(struct blitter_context *blitter)
          { TGSI_SEMANTIC_POSITION };
       const unsigned semantic_indices[] = { 0 };
 
-      ctx->vs_nogeneric =
-         util_make_vertex_passthrough_shader(pipe, 1,
-                                             semantic_names,
-                                             semantic_indices, false);
+      ctx->vs_nogeneric = ctx->use_nir
+         ? util_make_vertex_passthrough_shader_nir(pipe, 1, semantic_names,
+                                                   semantic_indices, false,
+                                                   false)
+         : util_make_vertex_passthrough_shader(pipe, 1,
+                                               semantic_names,
+                                               semantic_indices, false);
    }
    return ctx->vs_nogeneric;
 }
@@ -402,7 +437,13 @@ static void *get_vs_layered(struct blitter_context *blitter)
    struct pipe_context *pipe = ctx->base.pipe;
 
    if (!ctx->vs_layered) {
-      ctx->vs_layered = util_make_layered_clear_vertex_shader(pipe);
+      static const enum tgsi_semantic names[] =
+         { TGSI_SEMANTIC_POSITION, TGSI_SEMANTIC_GENERIC };
+      static const unsigned indices[] = { 0, 0 };
+      ctx->vs_layered = ctx->use_nir
+         ? util_make_vertex_passthrough_shader_nir(pipe, 2, names, indices,
+                                                   false, true)
+         : util_make_layered_clear_vertex_shader(pipe);
    }
    return ctx->vs_layered;
 }
@@ -413,7 +454,9 @@ static void bind_fs_empty(struct blitter_context_priv *ctx)
 
    if (!ctx->fs_empty) {
       assert(!ctx->cached_all_shaders);
-      ctx->fs_empty = util_make_empty_fragment_shader(pipe);
+      ctx->fs_empty = ctx->use_nir
+         ? util_make_empty_fragment_shader_nir(pipe)
+         : util_make_empty_fragment_shader(pipe);
    }
 
    ctx->bind_fs_state(pipe, ctx->fs_empty);
@@ -426,12 +469,12 @@ static void bind_fs_clear_color(struct blitter_context_priv *ctx,
 
    if (!ctx->fs_clear_color[fs]) {
       assert(!ctx->cached_all_shaders);
-      ctx->fs_clear_color[fs] =
-         util_make_fs_clear_color(
-            pipe,
-            fs == BLITTER_FS_CLEAR_COL_ALL_CBUF,
-            fs == BLITTER_FS_CLEAR_COL_ALL_CBUF ||
-               fs == BLITTER_FS_CLEAR_COL_ONE_CBUF_USE_CONST_BUF);
+      const bool all_cbufs = fs == BLITTER_FS_CLEAR_COL_ALL_CBUF;
+      const bool const_buf =
+         all_cbufs || fs == BLITTER_FS_CLEAR_COL_ONE_CBUF_USE_CONST_BUF;
+      ctx->fs_clear_color[fs] = ctx->use_nir
+         ? util_make_fs_clear_color_nir(pipe, all_cbufs, const_buf)
+         : util_make_fs_clear_color(pipe, all_cbufs, const_buf);
    }
 
    ctx->bind_fs_state(pipe, ctx->fs_clear_color[fs]);
@@ -1056,13 +1099,24 @@ static void *blitter_get_fs_texfetch_col(struct blitter_context_priv *ctx,
       else
          shader = &ctx->fs_texfetch_col[type][target][0];
 
-      /* Create the fragment shader on-demand. */
+      /* Create the fragment shader on-demand.  The NIR twin covers the
+       * float TEX shape; txf and integer return types keep the TGSI
+       * constructor (their capability gates never fire on NIR-only
+       * fixed-function hardware). */
       if (!*shader) {
          assert(!ctx->cached_all_shaders);
-         *shader = util_make_fragment_tex_shader(pipe, tgsi_tex,
-                                                 stype, dtype,
-                                                 use_txf,
-                                                 ctx->use_persp);
+         if (ctx->use_nir && !use_txf &&
+             stype == TGSI_RETURN_TYPE_FLOAT &&
+             dtype == TGSI_RETURN_TYPE_FLOAT) {
+            *shader = util_make_fragment_tex_shader_nir(
+               pipe, util_pipe_tex_to_glsl_dim(target),
+               util_texture_is_array(target), ctx->use_persp);
+         } else {
+            *shader = util_make_fragment_tex_shader(pipe, tgsi_tex,
+                                                    stype, dtype,
+                                                    use_txf,
+                                                    ctx->use_persp);
+         }
       }
 
       return *shader;
@@ -1141,14 +1195,21 @@ void *blitter_get_fs_texfetch_depth(struct blitter_context_priv *ctx,
       else
          shader = &ctx->fs_texfetch_depth[target][0];
 
-      /* Create the fragment shader on-demand. */
+      /* Create the fragment shader on-demand.  The NIR twin covers the
+       * depth-only float TEX shape; txf keeps the TGSI constructor. */
       if (!*shader) {
          enum tgsi_texture_type tgsi_tex;
          assert(!ctx->cached_all_shaders);
          tgsi_tex = util_pipe_tex_to_tgsi_tex(target, 0);
-         *shader = util_make_fs_blit_zs(pipe, PIPE_MASK_Z, tgsi_tex,
-                                        use_txf,
-                                        ctx->use_persp);
+         if (ctx->use_nir && !use_txf) {
+            *shader = util_make_fs_blit_z_nir(
+               pipe, util_pipe_tex_to_glsl_dim(target),
+               util_texture_is_array(target), ctx->use_persp);
+         } else {
+            *shader = util_make_fs_blit_zs(pipe, PIPE_MASK_Z, tgsi_tex,
+                                           use_txf,
+                                           ctx->use_persp);
+         }
       }
 
       return *shader;
