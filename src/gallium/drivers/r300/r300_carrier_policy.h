@@ -17,7 +17,7 @@
  * byte readback must be encoded through a byte carrier such as RGBA8.
  *
  * The carrier policy provides a single definition shared by the orchestrator
- * (r300vk_compute.c dispatch-replay) and the readback logic so both sides
+ * (r3v_compute.c dispatch-replay) and the readback logic so both sides
  * agree on how to pack and unpack results.
  */
 

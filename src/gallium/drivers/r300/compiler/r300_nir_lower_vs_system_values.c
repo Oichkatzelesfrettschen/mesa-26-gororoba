@@ -39,7 +39,7 @@ struct lower_vs_sysval_state {
  * SYSTEM_VALUE_VERTEX_ID and gl_InstanceIndex to SYSTEM_VALUE_INSTANCE_INDEX --
  * note INSTANCE_INDEX, not INSTANCE_ID).  nir_lower_system_values,
  * when a driver runs it, rewrites that to the load_vertex_id / load_instance_id
- * intrinsic.  R300VK runs neither nir_lower_system_values nor a gather of
+ * intrinsic.  R3V runs neither nir_lower_system_values nor a gather of
  * system_values_read before lowering, so both forms must be matched directly
  * here. */
 static gl_system_value

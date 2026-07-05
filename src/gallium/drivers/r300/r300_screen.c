@@ -637,7 +637,7 @@ static void r300_init_screen_caps(struct r300_screen* r300screen)
     * are our practical rendering limits" -- conflated two distinct quantities:
     * the render-target dimension (the colorbuffer size, 2560 native on r3xx)
     * and the largest point/line the rasterizer covers like the reference.  The
-    * r300vk Vulkan driver proves the split on the same silicon: it advertises
+    * r3v Vulkan driver proves the split on the same silicon: it advertises
     * VkPhysicalDeviceLimits::maxImageDimension2D = 4096 (composed from a 2560
     * hardware span plus tiled residual blits) for the render target, but
     * pointSizeRange = [1, 64] and lineWidthRange = [1, 8] for the rasterizer
@@ -645,9 +645,9 @@ static void r300_init_screen_caps(struct r300_screen* r300screen)
     * colorbuffer dimension as the point/line max handed back sizes the GA
     * quad-expansion cannot cover conformantly (dEQP rasterization.limits.points
     * renders the advertised max-size point and the coverage misses), so mirror
-    * the r300vk conformant point limit.  Lines stay at the coverage-strict 4 the
+    * the r3v conformant point limit.  Lines stay at the coverage-strict 4 the
     * GA end-cap quad matches -- a width-5 line already misses interpolated cap
-    * pixels -- below the r300vk HW-line 8, because the gallium SWTCL path
+    * pixels -- below the r3v HW-line 8, because the gallium SWTCL path
     * expands lines through the GA into quads. */
    caps->max_point_size =
    caps->max_point_size_aa = 64.0f;

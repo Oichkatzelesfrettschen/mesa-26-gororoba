@@ -15,7 +15,7 @@
  * the input-collapse class where every input aliases IN[0].  Second, an
  * unsupported VS system value (VertexIndex / InstanceIndex) must fail
  * compilation deterministically -- rc_error sets compiler->Error so pipeline
- * creation fails -- rather than aborting the process, because R300VK ingests
+ * creation fails -- rather than aborting the process, because R3V ingests
  * arbitrary user SPIR-V.  This is admission correctness, not system-value
  * support.
  */
@@ -113,7 +113,7 @@ build_vs(enum vs_sysval sysval)
  * variable -- the form spirv_to_nir emits (vtn maps gl_VertexIndex /
  * gl_InstanceIndex to SYSTEM_VALUE_VERTEX_ID / SYSTEM_VALUE_INSTANCE_INDEX),
  * before any nir_lower_system_values runs.  build_vs emits the post-lowering
- * intrinsic form; this pins the pre-lowering deref form the real R300VK
+ * intrinsic form; this pins the pre-lowering deref form the real R3V
  * SPIR-V path produces, which reaches nir_to_rc as "Unknown intrinsic:
  * load_deref" when detection misses it. */
 static nir_shader *
@@ -298,7 +298,7 @@ case_system_value_lowered_to_input(void)
    teardown_vs(&c, &rs);
 }
 
-/* Calibration for the real R300VK SPIR-V path.  Detection and lowering must
+/* Calibration for the real R3V SPIR-V path.  Detection and lowering must
  * handle the load_deref(nir_var_system_value) form, not just the intrinsic the
  * nir_builder cases emit.  vk_spirv_to_nir leaves the deref form and never
  * gathers system_values_read, so r3v_pipeline.c detects the read by scanning

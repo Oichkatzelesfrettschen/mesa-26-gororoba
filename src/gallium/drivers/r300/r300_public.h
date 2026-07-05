@@ -18,7 +18,7 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
 /*
  * ICD direct-emit extraction API.
  *
- * These functions allow a Vulkan ICD (r300vk) to retrieve pre-compiled
+ * These functions allow a Vulkan ICD (r3v) to retrieve pre-compiled
  * hardware machine code from opaque Gallium CSO handles without depending
  * on r300g private headers.  The private-struct knowledge stays inside r300g;
  * only value-type descriptors cross the public boundary.
