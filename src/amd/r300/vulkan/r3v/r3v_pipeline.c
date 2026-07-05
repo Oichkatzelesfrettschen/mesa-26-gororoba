@@ -8,7 +8,6 @@
 #include "r3v_format.h"
 #include "pipe/p_shader_tokens.h"
 #include "tgsi/tgsi_from_mesa.h"
-#include "tgsi/tgsi_ureg.h"
 #include "compiler/nir/nir_opcodes.h"
 #include "r3v_device.h"
 #include "r3v_dp4_fs_nir.h"
@@ -2583,8 +2582,8 @@ r3v_device_ensure_shift_variable_lut_locked(struct r3v_device *device)
    return true;
 }
 
-/* Emit the binary ALU op into a ureg fragment program.  Maps the detected
- * NIR opcode to its TGSI counterpart via the tgsi_ureg helpers.  The
+/* Shared nir_builder helpers for the synthesized replay shaders.  The
+ * detected NIR opcode maps directly onto builder arithmetic.  The
  * admitted op set mirrors r300_compute_admission.c
  * binary_map_op_admitted().  TGSI ADD / SUB / MUL / MIN / MAX are float;
  * integer NIR opcodes fold into the same float ALU because the texture
@@ -2978,7 +2977,7 @@ r3v_unary_transcendental_synthesize_shaders(struct r3v_device *device,
 }
 
 /* Binary-transcendental FS: 2 TEX + a componentwise non-commutative binary,
- * built in ureg like the binary_map FS (GENERIC[0] PERSPECTIVE, two samplers).
+ * built like the binary_map FS (TEX0 interpolant, two samplers).
  * POW and RCP are scalar r300 ALU ops, so each lane is computed separately:
  * out.c = pow(a.c, b.c) for fpow, out.c = a.c * rcp(b.c) for fdiv.  A scalar
  * kernel (components == 1) computes lane 0 and broadcasts it -- the scalar
@@ -3051,28 +3050,6 @@ r3v_binary_transcendental_synthesize_shaders(struct r3v_device *device,
    return true;
 }
 
-/* Gather a vec4 from B where output lane j takes B[chan[j]], with chan[j] outside
- * [0,3] meaning a zero fill.  Two MOVs: zero the temp, then write the in-range
- * lanes through one swizzle.  Used to apply the byte distance q of a shift as a
- * channel permutation. */
-static void
-shift_emit_gather(struct ureg_program *ureg, struct ureg_dst dst,
-                  struct ureg_src srcB, const int chan[4])
-{
-   ureg_MOV(ureg, dst, ureg_imm4f(ureg, 0.0f, 0.0f, 0.0f, 0.0f));
-   unsigned mask = 0;
-   int sw[4] = {0, 0, 0, 0};
-   for (unsigned j = 0; j < 4; j++) {
-      if (chan[j] >= 0 && chan[j] <= 3) {
-         mask |= 1u << j;
-         sw[j] = chan[j];
-      }
-   }
-   if (mask)
-      ureg_MOV(ureg, ureg_writemask(dst, mask),
-               ureg_swizzle(srcB, sw[0], sw[1], sw[2], sw[3]));
-}
-
 /* Logical-shift FS: out[gid] = a << k (ishl) or a >> k (ushr).  The uint32 packs
  * as RGBA8 with R = byte 0 (LSB) ... A = byte 3 (MSB).  Write k = 8*q + r.  The
  * four bytes are recovered exactly with round(c*255) (the UNORM8 value), each
@@ -3092,87 +3069,73 @@ r3v_synthesize_shift_logical_fs(struct pipe_context *pipe, bool is_left,
    assert(shift_amount >= 1 && shift_amount <= 31);
    const unsigned q = shift_amount / 8;
    const unsigned r = shift_amount % 8;
-   const float pow2_r        = (float)(1u << r);
-   const float pow2_8mr      = (float)(1u << (8 - r));
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const float pow2_r   = (float)(1u << r);
+   const float pow2_8mr = (float)(1u << (8 - r));
 
-   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                            TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out   = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst B     = ureg_DECL_temporary(ureg);
-   struct ureg_dst Bmain = ureg_DECL_temporary(ureg);
-   struct ureg_dst Bcar  = ureg_DECL_temporary(ureg);
-   struct ureg_dst t     = ureg_DECL_temporary(ureg);
-   struct ureg_dst f     = ureg_DECL_temporary(ureg);
-   struct ureg_dst term1 = ureg_DECL_temporary(ureg);
-   struct ureg_dst term2 = ureg_DECL_temporary(ureg);
-
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_shift_logical");
+   nir_def *tc = r3v_synth_load_texcoord(&b);
    /* B = round(tex * 255): the four byte values, 0..255. */
-   ureg_TEX(ureg, ureg_writemask(B, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tex, samp);
-   ureg_MUL(ureg, B, ureg_src(B), ureg_imm1f(ureg, 255.0f));
-   ureg_ROUND(ureg, B, ureg_src(B));
+   nir_def *B = nir_fround_even(
+      &b, nir_fmul_imm(&b, r3v_synth_sample2d(&b, 0, tc), 255.0));
 
-   /* Per output lane, the main source byte is q away (toward the LSB for a left
-    * shift, toward the MSB for a right shift) and the carry byte is one further. */
-   int main_chan[4], carry_chan[4];
+   /* Per output lane, the main source byte is q away (toward the LSB for a
+    * left shift, toward the MSB for a right shift) and the carry byte is one
+    * further; a lane outside [0,3] is a zero fill. */
+   nir_def *zero = nir_imm_float(&b, 0.0);
+   nir_def *mainl[4], *carryl[4];
    for (int j = 0; j < 4; j++) {
       const int step = is_left ? -(int)q : (int)q;
       const int carry_step = is_left ? -1 : 1;
-      main_chan[j]  = j + step;
-      carry_chan[j] = j + step + carry_step;
+      const int mc = j + step;
+      const int cc = j + step + carry_step;
+      mainl[j]  = (mc >= 0 && mc <= 3) ? nir_channel(&b, B, mc) : zero;
+      carryl[j] = (cc >= 0 && cc <= 3) ? nir_channel(&b, B, cc) : zero;
    }
-   shift_emit_gather(ureg, Bmain, ureg_src(B), main_chan);
-   shift_emit_gather(ureg, Bcar,  ureg_src(B), carry_chan);
+   nir_def *Bmain = nir_vec4(&b, mainl[0], mainl[1], mainl[2], mainl[3]);
+   nir_def *Bcar  = nir_vec4(&b, carryl[0], carryl[1], carryl[2], carryl[3]);
 
+   nir_def *term1, *term2;
    if (is_left) {
-      /* term1 = (Bmain << r) mod 256 = Bmain*2^r - 256*floor(Bmain*2^r/256). */
-      ureg_MUL(ureg, t, ureg_src(Bmain), ureg_imm1f(ureg, pow2_r));
-      ureg_MUL(ureg, f, ureg_src(t), ureg_imm1f(ureg, 1.0f / 256.0f));
-      ureg_FLR(ureg, f, ureg_src(f));
-      ureg_MAD(ureg, term1, ureg_src(f), ureg_imm1f(ureg, -256.0f), ureg_src(t));
-      /* term2 = Bcar >> (8-r) = floor(Bcar / 2^(8-r)). */
-      ureg_MUL(ureg, f, ureg_src(Bcar), ureg_imm1f(ureg, 1.0f / pow2_8mr));
-      ureg_FLR(ureg, term2, ureg_src(f));
+      /* term1 = (Bmain << r) mod 256 = Bmain*2^r - 256*floor(Bmain*2^r/256);
+       * term2 = Bcar >> (8-r) = floor(Bcar / 2^(8-r)). */
+      nir_def *t = nir_fmul_imm(&b, Bmain, pow2_r);
+      nir_def *f = nir_ffloor(&b, nir_fmul_imm(&b, t, 1.0 / 256.0));
+      term1 = nir_fadd(&b, nir_fmul_imm(&b, f, -256.0), t);
+      term2 = nir_ffloor(&b, nir_fmul_imm(&b, Bcar, 1.0 / pow2_8mr));
    } else {
-      /* term1 = Bmain >> r = floor(Bmain / 2^r). */
-      ureg_MUL(ureg, f, ureg_src(Bmain), ureg_imm1f(ureg, 1.0f / pow2_r));
-      ureg_FLR(ureg, term1, ureg_src(f));
-      /* term2 = (Bcar << (8-r)) mod 256. */
-      ureg_MUL(ureg, t, ureg_src(Bcar), ureg_imm1f(ureg, pow2_8mr));
-      ureg_MUL(ureg, f, ureg_src(t), ureg_imm1f(ureg, 1.0f / 256.0f));
-      ureg_FLR(ureg, f, ureg_src(f));
-      ureg_MAD(ureg, term2, ureg_src(f), ureg_imm1f(ureg, -256.0f), ureg_src(t));
+      /* term1 = Bmain >> r; term2 = (Bcar << (8-r)) mod 256. */
+      term1 = nir_ffloor(&b, nir_fmul_imm(&b, Bmain, 1.0 / pow2_r));
+      nir_def *t = nir_fmul_imm(&b, Bcar, pow2_8mr);
+      nir_def *f = nir_ffloor(&b, nir_fmul_imm(&b, t, 1.0 / 256.0));
+      term2 = nir_fadd(&b, nir_fmul_imm(&b, f, -256.0), t);
    }
+   nir_def *result = nir_fadd(&b, term1, term2);
 
-   /* out_byte = term1 + term2 (the logical-shift result so far). */
-   ureg_ADD(ureg, term1, ureg_src(term1), ureg_src(term2));
-
-   /* Arithmetic right shift fills the top k bits -- the ones ushr zeroed -- with
-    * the sign bit (bit 31 = high bit of byte 3).  Those bits are disjoint from
-    * the logical result, so adding sign * fill recovers ishr exactly.  fill is the
-    * byte decomposition of (0xFFFFFFFF << (32-k)), baked per amount. */
+   /* Arithmetic right shift fills the top k bits -- the ones ushr zeroed --
+    * with the sign bit (bit 31 = high bit of byte 3).  Those bits are
+    * disjoint from the logical result, so adding sign * fill recovers ishr
+    * exactly.  fill is the byte decomposition of (0xFFFFFFFF << (32-k)),
+    * baked per amount. */
    if (is_arithmetic) {
       const uint32_t fill = 0xFFFFFFFFu << (32 - shift_amount);
-      ureg_MUL(ureg, f, ureg_scalar(ureg_src(B), TGSI_SWIZZLE_W),
-               ureg_imm1f(ureg, 1.0f / 128.0f));
-      ureg_FLR(ureg, f, ureg_src(f));               /* f = sign (0 or 1) */
-      ureg_MAD(ureg, term1, ureg_scalar(ureg_src(f), TGSI_SWIZZLE_X),
-               ureg_imm4f(ureg, (float)(fill & 0xFF), (float)((fill >> 8) & 0xFF),
-                          (float)((fill >> 16) & 0xFF), (float)((fill >> 24) & 0xFF)),
-               ureg_src(term1));
+      nir_def *sign = nir_ffloor(
+         &b, nir_fmul_imm(&b, nir_channel(&b, B, 3), 1.0 / 128.0));
+      nir_def *fillb = nir_imm_vec4(
+         &b, (float)(fill & 0xFF), (float)((fill >> 8) & 0xFF),
+         (float)((fill >> 16) & 0xFF), (float)((fill >> 24) & 0xFF));
+      result = nir_fadd(
+         &b,
+         nir_fmul(&b, nir_swizzle(&b, sign, (unsigned[]){0, 0, 0, 0}, 4),
+                  fillb),
+         result);
    }
 
    /* Pack back to UNORM8 as out_byte / 255. */
-   ureg_MUL(ureg, out, ureg_src(term1), ureg_imm1f(ureg, 1.0f / 255.0f));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   r3v_synth_store_color(&b, nir_fmul_imm(&b, result, 1.0 / 255.0));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* Logical-shift VS+FS synthesis: the passthrough VS plus the byte-recombination
@@ -3308,145 +3271,65 @@ r3v_qdiv_synthesize_shaders(struct r3v_device *device,
  * 17-bit column little-endian into the RGBA8 export.  The dispatch reads
  * the nine columns back and assembles the carries on the host. */
 static void
-multilimb_extract_limbs(struct ureg_program *ureg, struct ureg_src bytes,
-                        struct ureg_dst floors, struct ureg_dst limbs01,
-                        struct ureg_dst limbs234)
+multilimb_extract_limbs(nir_builder *b, nir_def *bytes, nir_def *limb[5])
 {
-   /* floors = floor(bytes * (1/128, 1/64, 1/32, 1/16)) per lane. */
-   struct ureg_src inv = ureg_imm4f(ureg, 1.0f / 128.0f, 1.0f / 64.0f,
-                                    1.0f / 32.0f, 1.0f / 16.0f);
-   struct ureg_dst t = ureg_DECL_temporary(ureg);
-   ureg_MUL(ureg, t, bytes, inv);
-   ureg_FLR(ureg, floors, ureg_src(t));
-
-   struct ureg_src f = ureg_src(floors);
-   struct ureg_src m128 = ureg_imm1f(ureg, -128.0f);
-   /* limbs01.x = B0 - 128 f0 */
-   ureg_MAD(ureg, ureg_writemask(limbs01, TGSI_WRITEMASK_X),
-            ureg_scalar(f, TGSI_SWIZZLE_X), m128,
-            ureg_scalar(bytes, TGSI_SWIZZLE_X));
-   /* limbs01.y = (f0 + 2 B1) - 128 g1 */
-   ureg_MAD(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
-            ureg_scalar(bytes, TGSI_SWIZZLE_Y), ureg_imm1f(ureg, 2.0f),
-            ureg_scalar(f, TGSI_SWIZZLE_X));
-   ureg_MAD(ureg, ureg_writemask(limbs01, TGSI_WRITEMASK_Y),
-            ureg_scalar(f, TGSI_SWIZZLE_Y), m128,
-            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X));
-   /* limbs234.x = (g1 + 4 B2) - 128 g2 */
-   ureg_MAD(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
-            ureg_scalar(bytes, TGSI_SWIZZLE_Z), ureg_imm1f(ureg, 4.0f),
-            ureg_scalar(f, TGSI_SWIZZLE_Y));
-   ureg_MAD(ureg, ureg_writemask(limbs234, TGSI_WRITEMASK_X),
-            ureg_scalar(f, TGSI_SWIZZLE_Z), m128,
-            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X));
-   /* limbs234.y = (g2 + 8 B3) - 128 g3 */
-   ureg_MAD(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
-            ureg_scalar(bytes, TGSI_SWIZZLE_W), ureg_imm1f(ureg, 8.0f),
-            ureg_scalar(f, TGSI_SWIZZLE_Z));
-   ureg_MAD(ureg, ureg_writemask(limbs234, TGSI_WRITEMASK_Y),
-            ureg_scalar(f, TGSI_SWIZZLE_W), m128,
-            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X));
-   /* limbs234.z = g3 */
-   ureg_MOV(ureg, ureg_writemask(limbs234, TGSI_WRITEMASK_Z),
-            ureg_scalar(f, TGSI_SWIZZLE_W));
-   ureg_release_temporary(ureg, t);
-}
-
-static struct ureg_src
-multilimb_limb(struct ureg_src limbs01, struct ureg_src limbs234, unsigned i)
-{
-   switch (i) {
-   case 0: return ureg_scalar(limbs01, TGSI_SWIZZLE_X);
-   case 1: return ureg_scalar(limbs01, TGSI_SWIZZLE_Y);
-   case 2: return ureg_scalar(limbs234, TGSI_SWIZZLE_X);
-   case 3: return ureg_scalar(limbs234, TGSI_SWIZZLE_Y);
-   default: return ureg_scalar(limbs234, TGSI_SWIZZLE_Z);
+   nir_def *floors = nir_ffloor(
+      b, nir_fmul(b, bytes,
+                  nir_imm_vec4(b, 1.0f / 128.0f, 1.0f / 64.0f, 1.0f / 32.0f,
+                               1.0f / 16.0f)));
+   nir_def *B[4], *f[4];
+   for (unsigned c = 0; c < 4; c++) {
+      B[c] = nir_channel(b, bytes, c);
+      f[c] = nir_channel(b, floors, c);
    }
+   limb[0] = nir_fadd(b, nir_fmul_imm(b, f[0], -128.0), B[0]);
+   limb[1] = nir_fadd(b, nir_fmul_imm(b, f[1], -128.0),
+                      nir_fadd(b, f[0], nir_fmul_imm(b, B[1], 2.0)));
+   limb[2] = nir_fadd(b, nir_fmul_imm(b, f[2], -128.0),
+                      nir_fadd(b, f[1], nir_fmul_imm(b, B[2], 4.0)));
+   limb[3] = nir_fadd(b, nir_fmul_imm(b, f[3], -128.0),
+                      nir_fadd(b, f[2], nir_fmul_imm(b, B[3], 8.0)));
+   limb[4] = f[3];
 }
 
 static void *
 r3v_synthesize_multilimb_fs(struct pipe_context *pipe, unsigned column)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_multilimb");
+   nir_def *tc = r3v_synth_load_texcoord(&b);
 
-   struct ureg_src samp[2];
-   for (unsigned s = 0; s < 2; s++) {
-      samp[s] = ureg_DECL_sampler(ureg, s);
-      ureg_DECL_sampler_view(ureg, s, TGSI_TEXTURE_2D,
-                             TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                             TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   }
-   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                           TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   #define SNAP(v) nir_ffloor(&b, nir_fadd_imm(&b, nir_fmul_imm(&b, (v), 255.0), 0.5))
+   nir_def *bytes_a = SNAP(r3v_synth_sample2d(&b, 0, tc));
+   nir_def *bytes_b = SNAP(r3v_synth_sample2d(&b, 1, tc));
+   #undef SNAP
 
-   struct ureg_dst bytes_a = ureg_DECL_temporary(ureg);
-   struct ureg_dst bytes_b = ureg_DECL_temporary(ureg);
-   ureg_TEX(ureg, bytes_a, TGSI_TEXTURE_2D, tc, samp[0]);
-   ureg_TEX(ureg, bytes_b, TGSI_TEXTURE_2D, tc, samp[1]);
-   ureg_MAD(ureg, bytes_a, ureg_src(bytes_a), ureg_imm1f(ureg, 255.0f),
-            ureg_imm1f(ureg, 0.5f));
-   ureg_FLR(ureg, bytes_a, ureg_src(bytes_a));
-   ureg_MAD(ureg, bytes_b, ureg_src(bytes_b), ureg_imm1f(ureg, 255.0f),
-            ureg_imm1f(ureg, 0.5f));
-   ureg_FLR(ureg, bytes_b, ureg_src(bytes_b));
-
-   struct ureg_dst fl_a = ureg_DECL_temporary(ureg);
-   struct ureg_dst la01 = ureg_DECL_temporary(ureg);
-   struct ureg_dst la234 = ureg_DECL_temporary(ureg);
-   struct ureg_dst fl_b = ureg_DECL_temporary(ureg);
-   struct ureg_dst lb01 = ureg_DECL_temporary(ureg);
-   struct ureg_dst lb234 = ureg_DECL_temporary(ureg);
-   multilimb_extract_limbs(ureg, ureg_src(bytes_a), fl_a, la01, la234);
-   multilimb_extract_limbs(ureg, ureg_src(bytes_b), fl_b, lb01, lb234);
+   nir_def *la[5], *lb[5];
+   multilimb_extract_limbs(&b, bytes_a, la);
+   multilimb_extract_limbs(&b, bytes_b, lb);
 
    /* c = sum over the column's limb pairs. */
-   struct ureg_dst c = ureg_DECL_temporary(ureg);
-   bool first = true;
+   nir_def *c = NULL;
    for (unsigned i = 0; i < 5; i++) {
       if (column < i || column - i > 4)
          continue;
-      const unsigned j = column - i;
-      struct ureg_src ai = multilimb_limb(ureg_src(la01), ureg_src(la234), i);
-      struct ureg_src bj = multilimb_limb(ureg_src(lb01), ureg_src(lb234), j);
-      if (first) {
-         ureg_MUL(ureg, ureg_writemask(c, TGSI_WRITEMASK_X), ai, bj);
-         first = false;
-      } else {
-         ureg_MAD(ureg, ureg_writemask(c, TGSI_WRITEMASK_X), ai, bj,
-                  ureg_scalar(ureg_src(c), TGSI_SWIZZLE_X));
-      }
+      nir_def *term = nir_fmul(&b, la[i], lb[column - i]);
+      c = c ? nir_fadd(&b, c, term) : term;
    }
 
    /* Byte-decompose c <= 80645 < 2^17 little-endian into the RGBA8 export. */
-   struct ureg_dst e = ureg_DECL_temporary(ureg);
-   struct ureg_dst v = ureg_DECL_temporary(ureg);
-   struct ureg_src csrc = ureg_scalar(ureg_src(c), TGSI_SWIZZLE_X);
-   ureg_MUL(ureg, ureg_writemask(v, TGSI_WRITEMASK_X), csrc,
-            ureg_imm1f(ureg, 1.0f / 256.0f));
-   ureg_FLR(ureg, ureg_writemask(v, TGSI_WRITEMASK_Y),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_X));
-   ureg_MUL(ureg, ureg_writemask(v, TGSI_WRITEMASK_X), csrc,
-            ureg_imm1f(ureg, 1.0f / 65536.0f));
-   ureg_FLR(ureg, ureg_writemask(v, TGSI_WRITEMASK_Z),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_X));
-   ureg_MAD(ureg, ureg_writemask(e, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Y),
-            ureg_imm1f(ureg, -256.0f), csrc);
-   ureg_MAD(ureg, ureg_writemask(e, TGSI_WRITEMASK_Y),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Z),
-            ureg_imm1f(ureg, -256.0f),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Y));
-   ureg_MOV(ureg, ureg_writemask(e, TGSI_WRITEMASK_Z),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Z));
-   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_XYZ), ureg_src(e),
-            ureg_imm1f(ureg, 1.0f / 255.0f));
-   ureg_MOV(ureg, ureg_writemask(out, TGSI_WRITEMASK_W),
-            ureg_imm1f(ureg, 0.0f));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   nir_def *vy = nir_ffloor(&b, nir_fmul_imm(&b, c, 1.0 / 256.0));
+   nir_def *vz = nir_ffloor(&b, nir_fmul_imm(&b, c, 1.0 / 65536.0));
+   nir_def *e0 = nir_fadd(&b, nir_fmul_imm(&b, vy, -256.0), c);
+   nir_def *e1 = nir_fadd(&b, nir_fmul_imm(&b, vz, -256.0), vy);
+   r3v_synth_store_color(
+      &b, nir_vec4(&b, nir_fmul_imm(&b, e0, 1.0 / 255.0),
+                   nir_fmul_imm(&b, e1, 1.0 / 255.0),
+                   nir_fmul_imm(&b, vz, 1.0 / 255.0),
+                   nir_imm_float(&b, 0.0)));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* MULTILIMB VS+FS synthesis: shared passthrough VS + one specialized column
@@ -4493,16 +4376,9 @@ r3v_blend_acc_reduction_synthesize_shaders(struct r3v_device *device,
  * ZPASS counter matters).  Cost: 1 MOV + 1 KILL_IF + 1 MOV out = 3
  * ALU / 64-slot R300 PFS budget.
  *
- * Mesa's tgsi_ureg has no ureg_KILL_IF helper, so we emit through the
- * TGSI macro path: ureg_insn with TGSI_OPCODE_KILL_IF takes one source
- * and discards the fragment when src.x < 0.  We negate the predicate
- * before emitting so KILL_IF(-predicate) discards when predicate < 0 --
- * we want discard when predicate == 0, but the canonical r300 predicate
- * convention here is "1.0 = pass, 0.0 = kill"; KILL_IF(-1.0) does NOT
- * trigger discard (negative-of-positive is negative, KILL_IF discards
- * on negative, so KILL_IF(-1.0) discards), so KILL_IF(predicate-0.5)
- * gives the right shape: discard when predicate < 0.5 (i.e. 0.0 baked
- * value), pass when predicate >= 0.5 (i.e. 1.0). */
+ * The canonical r300 predicate convention here is "1.0 = pass,
+ * 0.0 = kill", so the discard condition is predicate < 0.5: kill the
+ * 0.0-baked fragments, pass the 1.0 survivors. */
 static void *
 r3v_synthesize_zpass_reduction_fs(struct pipe_context *pipe)
 {
@@ -4838,8 +4714,6 @@ r3v_ieee16_mul_synthesize_shaders(struct r3v_device *device,
    }
    return true;
 }
-
-
 
 static VkResult
 r3v_synthesize_compute_shaders(struct r3v_device *device,
@@ -5204,7 +5078,6 @@ r3v_create_one_compute_pipeline(struct r3v_device *device,
    *out_pipeline = pl;
    return VK_SUCCESS;
 }
-
 
 VkResult
 r3v_CreateComputePipelines(VkDevice _device,
