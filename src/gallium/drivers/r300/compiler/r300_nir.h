@@ -170,6 +170,13 @@ extern bool r300_nir_post_integer_lowering(struct nir_shader *shader);
 extern bool r300_nir_lower_bitwise_to_arith(struct nir_shader *shader,
                                             bool *out_unsupported);
 
+/* Defined in r300_vs_draw.c: on the SW-TCL vertex path, after
+ * nir_lower_int_to_float, redirect the synthetic VertexIndex/InstanceIndex
+ * shader_in's numeric-index consumers to an i2f32 clone while leaving the
+ * raw-bit equality operands untouched.  Declared here so the r300 test suite
+ * can exercise it directly. */
+extern bool r300_nir_float_encode_synthetic_sysval_index_uses(struct nir_shader *nir);
+
 extern bool r300_nir_lower_f2i_epsilon(struct nir_shader *shader);
 
 extern bool r300_nir_lower_fcsel_r500(nir_shader *shader);

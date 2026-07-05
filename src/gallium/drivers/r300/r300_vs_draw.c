@@ -232,6 +232,106 @@ r300_nir_float_encode_int_sysvals(nir_shader *nir)
     return nir_progress(progress, impl, nir_metadata_control_flow);
 }
 
+/* r300_nir_lower_vs_system_values_to_inputs's make_sysval_input models the
+ * default (non-R300VK_NATIVE_VERTEXID) VertexIndex/InstanceIndex delivery as
+ * a plain int shader_in variable named "sys_vertex_index"/"sys_instance_index",
+ * read back through an ordinary load_deref.  nir_lower_int_to_float leaves
+ * every intrinsic result untouched (its nir_instr_type_intrinsic case is a
+ * no-op), so that load_deref keeps the raw integer bit pattern after the
+ * pass runs, while a literal threshold nir_lower_indirect_derefs_to_if_else_trees
+ * built earlier (an ilt_imm binary search over an indirect array index --
+ * see nir_lower_indirect_derefs_to_if_else_trees.c) is a load_const and gets
+ * numerically re-encoded by the same pass.  A raw-bit small non-negative
+ * integer reinterpreted as float is always a subnormal below every numeric
+ * literal threshold, so an ordering compare (ilt/ige, converted to flt/fge)
+ * between the raw sysval and a numeric threshold always resolves to the
+ * first branch: VertexFetchInstancedFirstInstance.vert's
+ * perInstance[gl_InstanceIndex] reads as perInstance[0] on every instance.
+ *
+ * The same two variables also feed a raw-bit equality in sibling shaders --
+ * VertexFetch.vert's gl_VertexIndex == in_refVertexIndex,
+ * VertexFetchInstanceIndex.vert's gl_InstanceIndex == in_refInstanceIndex --
+ * which nir_lower_int_to_float turns from ieq/ine into feq/fneu without
+ * touching either raw-bit operand, so the comparison of two identical raw
+ * bit patterns still resolves correctly (mesa #942 depends on this staying
+ * raw).  Converting the load_deref's definition once, the way
+ * r300_nir_float_encode_int_sysvals converts the native load_instance_id /
+ * load_vertex_id intrinsics below, would fix the ordering compare and break
+ * the equality in the same shader, so the fix has to live at each consuming
+ * instruction instead of at the shared definition. */
+bool
+r300_nir_float_encode_synthetic_sysval_index_uses(nir_shader *nir)
+{
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    nir_builder b = nir_builder_create(impl);
+    bool progress = false;
+
+    nir_foreach_block_safe (block, impl) {
+        nir_foreach_instr_safe (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_deref)
+                continue;
+
+            nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+            if (!deref || !nir_deref_mode_is(deref, nir_var_shader_in))
+                continue;
+            /* Ordinary SPIR-V vertex-attribute variables (in_position,
+             * in_color, in_refVertexIndex, ...) carry no OpName debug
+             * decoration in these dEQP-VK shaders, so var->name is NULL for
+             * every load_deref except the two synthetic sysval inputs
+             * make_sysval_input names explicitly; check for NULL before
+             * strcmp instead of relying on short-circuit alone. */
+            nir_variable *var = nir_deref_instr_get_variable(deref);
+            if (!var || !var->name ||
+                (strcmp(var->name, "sys_vertex_index") != 0 &&
+                 strcmp(var->name, "sys_instance_index") != 0))
+                continue;
+
+            /* Redirect every consumer except the raw-bit equality/inequality
+             * (feq/fneu, lowered from the shader's own ieq/ine) to a single
+             * numeric i2f32 clone.  Check for a qualifying consumer with a
+             * read-only walk first: nir_i2f32 itself consumes intr->def, so
+             * building the clone while an nir_foreach_use_safe walk of
+             * intr->def's own use list is in progress would insert a fresh
+             * use into the list that same walk is iterating. */
+            bool needs_numeric = false;
+            nir_foreach_use (use, &intr->def) {
+                nir_instr *user = nir_src_use_instr(use);
+                if (user->type != nir_instr_type_alu)
+                    continue;
+                nir_alu_instr *alu = nir_instr_as_alu(user);
+                if (alu->op != nir_op_feq && alu->op != nir_op_fneu) {
+                    needs_numeric = true;
+                    break;
+                }
+            }
+            if (!needs_numeric)
+                continue;
+
+            b.cursor = nir_after_instr(instr);
+            nir_def *numeric = nir_i2f32(&b, &intr->def);
+            nir_instr *numeric_instr = nir_def_instr(numeric);
+
+            nir_foreach_use_safe (use, &intr->def) {
+                nir_instr *user = nir_src_use_instr(use);
+                if (user == numeric_instr)
+                    continue;  /* the i2f32 clone's own operand stays raw */
+                if (user->type != nir_instr_type_alu)
+                    continue;
+                nir_alu_instr *alu = nir_instr_as_alu(user);
+                if (alu->op == nir_op_feq || alu->op == nir_op_fneu)
+                    continue;
+                nir_src_rewrite(use, numeric);
+                progress = true;
+            }
+        }
+    }
+
+    return nir_progress(progress, impl, nir_metadata_control_flow);
+}
+
 /* nir_lower_int_to_float float-encodes integer-typed constants (its
  * nir_gather_types walk includes intrinsic sources, so a load_ubo_vec4
  * slot offset 1 becomes the bits of 1.0f), and consumers in that world
@@ -369,12 +469,26 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
      * interpreted shader to the float domain -- the same
      * nir_lower_int_to_float + nir_lower_bool_to_float prep the HW-TCL
      * vertex path runs in nir_to_rc -- so consumption matches storage.
-     * GLSL 1.20 and ES 1.00 have no bitwise operators, so nothing this
-     * path receives needs the bitwise-to-arith guard.  This runs after
-     * the indirect-deref lowerings because those build integer
-     * comparison ladders of their own. */
+     * This runs after the indirect-deref lowerings because those build
+     * integer comparison ladders of their own. */
+
+    /* GL SW-TCL (GLSL 1.20 / ES 1.00) has no bitwise operators, but this
+     * same draw path also lowers r300vk's Vulkan SPIR-V, which does.  An
+     * unsigned shift or bitwise op then reaches nir_lower_int_to_float,
+     * whose default arm asserts its operand is not integer-typed and
+     * aborts the process (nir_lower_int_to_float.c lower_alu_instr, a
+     * nir_op_ushr abort on the native VertexIndex/InstanceIndex path).
+     * Run the fragment path's r300_nir_lower_bitwise_to_arith first: it
+     * rewrites the FP24-exact idioms (constant unsigned shift, low-bit
+     * mask) to udiv/umod and drops the rest to operand 0, so no integer
+     * bit op survives into int_to_float.  The draw path has no rc_error
+     * hook, so a non-exact op degrades to its operand rather than being
+     * rejected -- the same graceful drop the fragment translator flags. */
+    bool vs_bitwise_unsupported = false;
+    NIR_PASS(_, nir, r300_nir_lower_bitwise_to_arith, &vs_bitwise_unsupported);
     NIR_PASS(_, nir, nir_lower_int_to_float);
     NIR_PASS(_, nir, r300_nir_float_encode_int_sysvals);
+    NIR_PASS(_, nir, r300_nir_float_encode_synthetic_sysval_index_uses);
     NIR_PASS(_, nir, nir_opt_copy_prop);
     NIR_PASS(_, nir, nir_lower_alu_to_scalar, r300_draw_scalarize_bool_cmp_cb,
              NULL);

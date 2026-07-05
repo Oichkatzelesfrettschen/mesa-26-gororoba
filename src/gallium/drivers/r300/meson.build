@@ -193,6 +193,22 @@ if with_tests
     suite : ['r300'],
   )
 
+  test(
+    'r300-vs-ushr-int-lowering',
+    executable(
+      'r300_vs_ushr_int_lowering_test',
+      files('compiler/tests/r300_vs_ushr_int_lowering_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # Fragment-stage admission harness for nir_to_rc: proves the
   # multiply-add family compiles.  nir_op_fmad must emit RC_OPCODE_MAD, and
   # nir_op_flrp (fog / mix) must lower to a fmad chain before the emitter
