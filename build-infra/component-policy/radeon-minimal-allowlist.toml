@@ -1,0 +1,53 @@
+# Component allowlist for the Radeon-minimal build profiles.
+# One row per config basename under build-infra/configs{,/alternates}/.
+# profile_audit.py fails on any selected driver outside its row and on
+# any config without a row.  The allowlist PERMITS; the configs CHOOSE:
+# zink is allowed in every row (standing decision: the zink-upon-r3v and
+# zink-on-terakan lanes must never trip the audit), while the r300
+# release CONFIG still selects only r300.  The terakan rows also carry
+# the software rasterizers their x130e reference runs compare against.
+
+[profile."3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache"]
+tag = "debug"
+gallium-drivers = ["r300", "zink"]
+vulkan-drivers = ["ati_r300"]
+
+[profile."4_r300_full_release_x86_64v1-clang22-distcc-cache"]
+tag = "release"
+gallium-drivers = ["r300", "zink"]
+vulkan-drivers = ["ati_r300"]
+
+[profile."1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache"]
+tag = "debug"
+gallium-drivers = ["r300", "zink"]
+vulkan-drivers = ["ati_r300"]
+
+[profile."2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache"]
+tag = "debug"
+gallium-drivers = ["r300", "zink"]
+vulkan-drivers = ["ati_r300"]
+
+[profile."r300_h264dec_full_debug_x86_64v1-clang22-distcc-cache"]
+tag = "experimental"
+gallium-drivers = ["r300", "zink", "softpipe"]
+vulkan-drivers = ["ati_r300"]
+
+[profile."3_terakan_full_release_x86_64v1-clang22-distcc-cache"]
+tag = "release"
+gallium-drivers = ["r600", "zink", "softpipe", "llvmpipe"]
+vulkan-drivers = ["amd_terascale"]
+
+[profile."4_terakan_full_debug_x86_64v1-clang22-distcc-cache"]
+tag = "debug"
+gallium-drivers = ["r600", "zink", "softpipe", "llvmpipe"]
+vulkan-drivers = ["amd_terascale"]
+
+[profile."5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache"]
+tag = "release"
+gallium-drivers = ["r600", "zink", "softpipe", "llvmpipe"]
+vulkan-drivers = ["amd_terascale"]
+
+[profile."6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache"]
+tag = "debug"
+gallium-drivers = ["r600", "zink", "softpipe", "llvmpipe"]
+vulkan-drivers = ["amd_terascale"]

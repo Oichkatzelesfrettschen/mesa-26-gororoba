@@ -132,6 +132,12 @@ LOCKED_TOOL_ENV := \
         pkg-mesa-gororoba deploy-mesa-gororoba \
         help
 
+# Component-policy gate: every profile config must stay inside its
+# allowlist row (build-infra/component-policy/radeon-minimal-allowlist.toml).
+.PHONY: profile-audit
+profile-audit:
+	python3 $(CURDIR)/scripts/profile_audit.py --repo-root $(CURDIR)/..
+
 help:
 	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"
 	@echo ""
