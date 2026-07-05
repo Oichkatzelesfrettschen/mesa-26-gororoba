@@ -1354,3 +1354,209 @@ util_make_fs_clear_color(struct pipe_context *pipe,
 
    return pipe->create_fs_state(pipe, &state);
 }
+
+
+/* NIR twins of the constructors u_blitter reaches on NIR-preferring
+ * screens.  Scope follows hardware reachability: the float TEX sampling,
+ * passthrough, clear, and depth-only-blit shapes convert; the
+ * stencil-export, TXF/TXQ, F64 pack, and MSAA constructors stay TGSI
+ * because the blitter's own capability gates (shader_stencil_export,
+ * glsl_feature_level >= 130, MSAA surfaces) keep NIR-only fixed-function
+ * hardware off those paths, and drivers that do reach them accept TGSI
+ * through their own converters. */
+
+#include "nir/nir_builder.h"
+#include "pipe/p_screen.h"
+#include "util/macros.h"
+
+static void *
+util_nir_vs_cso(struct pipe_context *pipe, nir_builder *b)
+{
+   nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
+   nir_assign_io_var_locations(b->shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b->shader, nir_var_shader_out);
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, b->shader, false);
+   struct pipe_shader_state state = { .type   = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = b->shader };
+   void *cso = pipe->create_vs_state(pipe, &state);
+   if (!cso)
+      ralloc_free(b->shader);
+   return cso;
+}
+
+static void *
+util_nir_fs_cso(struct pipe_context *pipe, nir_builder *b)
+{
+   nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
+   nir_assign_io_var_locations(b->shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b->shader, nir_var_shader_out);
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, b->shader, false);
+   struct pipe_shader_state state = { .type   = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = b->shader };
+   void *cso = pipe->create_fs_state(pipe, &state);
+   if (!cso)
+      ralloc_free(b->shader);
+   return cso;
+}
+
+/* TGSI semantic -> NIR varying slot for the passthrough outputs.  GENERIC
+ * maps onto the TEX slots: backends that keep the legacy texcoord
+ * vocabulary (r300's nir_to_rc maps TEX0 to generic0 while VAR0 shifts to
+ * generic9) link them against the fragment twins below, which read the
+ * same slots. */
+static gl_varying_slot
+util_nir_varying_slot(enum tgsi_semantic name, unsigned index)
+{
+   switch (name) {
+   case TGSI_SEMANTIC_POSITION: return VARYING_SLOT_POS;
+   case TGSI_SEMANTIC_COLOR:    return VARYING_SLOT_COL0 + index;
+   case TGSI_SEMANTIC_GENERIC:  return VARYING_SLOT_TEX0 + index;
+   case TGSI_SEMANTIC_FOG:      return VARYING_SLOT_FOGC;
+   case TGSI_SEMANTIC_PSIZE:    return VARYING_SLOT_PSIZ;
+   default: UNREACHABLE("unhandled passthrough semantic");
+   }
+}
+
+void *
+util_make_vertex_passthrough_shader_nir(struct pipe_context *pipe,
+                                        unsigned num_attribs,
+                                        const enum tgsi_semantic *semantic_names,
+                                        const unsigned *semantic_indexes,
+                                        bool window_space, bool layered)
+{
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_VERTEX];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, opts,
+                                                  "blitter_passthrough_vs");
+   b.shader->info.vs.window_space_position = window_space;
+
+   for (unsigned i = 0; i < num_attribs; i++) {
+      nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "in");
+      in->data.location = VERT_ATTRIB_GENERIC0 + i;
+      nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                              glsl_vec4_type(), "out");
+      out->data.location =
+         util_nir_varying_slot(semantic_names[i], semantic_indexes[i]);
+      nir_store_var(&b, out, nir_load_var(&b, in), 0xf);
+   }
+
+   if (layered) {
+      nir_variable *layer = nir_variable_create(b.shader, nir_var_shader_out,
+                                                glsl_int_type(), "layer");
+      layer->data.location = VARYING_SLOT_LAYER;
+      nir_store_var(&b, layer, nir_load_instance_id(&b), 0x1);
+   }
+
+   return util_nir_vs_cso(pipe, &b);
+}
+
+void *
+util_make_empty_fragment_shader_nir(struct pipe_context *pipe)
+{
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "blitter_empty_fs");
+   return util_nir_fs_cso(pipe, &b);
+}
+
+void *
+util_make_fs_clear_color_nir(struct pipe_context *pipe, bool write_all_cbufs,
+                             bool use_const_buf)
+{
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "blitter_clear_color_fs");
+   /* FRAG_RESULT_COLOR is the broadcast-to-every-cbuf export
+    * (gl_FragColor semantics); FRAG_RESULT_DATA0 writes cbuf 0 only --
+    * the NIR spelling of TGSI's FS_COLOR0_WRITES_ALL_CBUFS property. */
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = write_all_cbufs ? FRAG_RESULT_COLOR
+                                        : FRAG_RESULT_DATA0;
+   nir_def *value = use_const_buf
+      ? nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                     .align_mul = 16, .range_base = 0, .range = 16)
+      : nir_imm_vec4(&b, 0.0f, 0.0f, 0.0f, 0.0f);
+   nir_store_var(&b, out, value, 0xf);
+   return util_nir_fs_cso(pipe, &b);
+}
+
+static unsigned
+util_nir_tex_coord_components(enum glsl_sampler_dim dim, bool is_array)
+{
+   unsigned comps;
+   switch (dim) {
+   case GLSL_SAMPLER_DIM_1D:   comps = 1; break;
+   case GLSL_SAMPLER_DIM_2D:
+   case GLSL_SAMPLER_DIM_RECT: comps = 2; break;
+   case GLSL_SAMPLER_DIM_3D:
+   case GLSL_SAMPLER_DIM_CUBE: comps = 3; break;
+   default: UNREACHABLE("unhandled blit sampler dim");
+   }
+   return comps + (is_array ? 1 : 0);
+}
+
+static nir_def *
+util_nir_sample(nir_builder *b, enum glsl_sampler_dim dim, bool is_array,
+                nir_def *coord_vec4)
+{
+   nir_variable *samp = nir_variable_create(
+      b->shader, nir_var_uniform,
+      glsl_sampler_type(dim, false, is_array, GLSL_TYPE_FLOAT), "samp");
+   samp->data.binding = 0;
+   nir_deref_instr *deref = nir_build_deref_var(b, samp);
+   nir_def *coord = nir_trim_vector(
+      b, coord_vec4, util_nir_tex_coord_components(dim, is_array));
+   return nir_tex(b, coord, .texture_deref = deref, .sampler_deref = deref);
+}
+
+static nir_def *
+util_nir_load_texcoord(nir_builder *b, bool use_persp)
+{
+   nir_variable *in = nir_variable_create(b->shader, nir_var_shader_in,
+                                          glsl_vec4_type(), "tc");
+   in->data.location = VARYING_SLOT_TEX0;
+   in->data.interpolation = use_persp ? INTERP_MODE_SMOOTH
+                                      : INTERP_MODE_NOPERSPECTIVE;
+   return nir_load_var(b, in);
+}
+
+void *
+util_make_fragment_tex_shader_nir(struct pipe_context *pipe,
+                                  enum glsl_sampler_dim dim, bool is_array,
+                                  bool use_persp)
+{
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "blitter_tex_fs");
+   nir_def *tc = util_nir_load_texcoord(&b, use_persp);
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, util_nir_sample(&b, dim, is_array, tc), 0xf);
+   return util_nir_fs_cso(pipe, &b);
+}
+
+void *
+util_make_fs_blit_z_nir(struct pipe_context *pipe, enum glsl_sampler_dim dim,
+                        bool is_array, bool use_persp)
+{
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "blitter_blit_z_fs");
+   nir_def *tc = util_nir_load_texcoord(&b, use_persp);
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_float_type(), "depth");
+   out->data.location = FRAG_RESULT_DEPTH;
+   nir_store_var(&b, out,
+                 nir_channel(&b, util_nir_sample(&b, dim, is_array, tc), 0),
+                 0x1);
+   return util_nir_fs_cso(pipe, &b);
+}

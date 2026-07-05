@@ -174,6 +174,34 @@ util_make_fs_stencil_blit(struct pipe_context *pipe, bool msaa_src, bool has_txq
 void *
 util_make_fs_clear_color(struct pipe_context *pipe, bool write_all_cbufs, bool use_const_buf);
 
+
+/* NIR twins of the u_blitter-reachable constructors; selected when the
+ * screen supports PIPE_SHADER_IR_NIR (see u_blitter's use_nir gate). */
+void *
+util_make_vertex_passthrough_shader_nir(struct pipe_context *pipe,
+                                        unsigned num_attribs,
+                                        const enum tgsi_semantic *semantic_names,
+                                        const unsigned *semantic_indexes,
+                                        bool window_space, bool layered);
+
+void *
+util_make_empty_fragment_shader_nir(struct pipe_context *pipe);
+
+void *
+util_make_fs_clear_color_nir(struct pipe_context *pipe, bool write_all_cbufs,
+                             bool use_const_buf);
+
+enum glsl_sampler_dim;
+
+void *
+util_make_fragment_tex_shader_nir(struct pipe_context *pipe,
+                                  enum glsl_sampler_dim dim, bool is_array,
+                                  bool use_persp);
+
+void *
+util_make_fs_blit_z_nir(struct pipe_context *pipe, enum glsl_sampler_dim dim,
+                        bool is_array, bool use_persp);
+
 #ifdef __cplusplus
 }
 #endif
