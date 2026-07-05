@@ -181,7 +181,7 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
      * the const file from the nir_var_mem_ubo interface declaration; a raw
      * load_ubo with only info.num_ubos set carries no size, so externals_count
      * stays 0 and set_constant_buffer(FRAGMENT, 0) is silently ignored (the FS
-     * dots its input against garbage).  Same shape r300vk_shape_block0_ubo uses
+     * dots its input against garbage).  Same shape r3v_shape_block0_ubo uses
      * for the push-constant UBO: glsl_array_type(vec4, n, 16) under a one-field
      * std430 interface (4 vec4 rows = 64 bytes). */
     b.shader->info.num_ubos = 1;
@@ -1498,7 +1498,7 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
 
     cfg->do_submit = (mode && strcmp(mode, "submit") == 0);
     /* NOWAIT: submit and hand the fence back to the caller (r300_flush's out
-     * param -> r300vk's Vulkan fence) instead of waiting via the raw winsys
+     * param -> r3v's Vulkan fence) instead of waiting via the raw winsys
      * BO-wait poll, so the GPU completion is timed through the fast fence path. */
     const char *nw = getenv("R300_R2VB_NOWAIT");
     cfg->nowait = cfg->do_submit && nw && strcmp(nw, "1") == 0;
@@ -1661,7 +1661,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
     }
 
     if (cfg.nowait) {
-        /* Submit and hand the fence to the caller's out param (becomes r300vk's
+        /* Submit and hand the fence to the caller's out param (becomes r3v's
          * Vulkan fence); do NOT wait here.  The application's vkWaitForFences then
          * times GPU completion through the fast fence path.  A fence cannot signal
          * before the GPU retires the work, so if that wait is sub-millisecond the
@@ -2660,7 +2660,7 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
                 if (streams[i].kind != R2VB_STREAM_PASSTHROUGH)
                     continue;
                 /* A passthrough source is the application vertex buffer, which in
-                 * the r300vk SWTCL context is a CPU-shadow (or user) buffer with no
+                 * the r3v SWTCL context is a CPU-shadow (or user) buffer with no
                  * winsys BO.  r300_r2vb_exec_passthrough_draw uploads it to a fresh
                  * BO and fetches from that, so a lookup of the ORIGINAL resource is
                  * expected to miss (orig_reloc=-1) -- the routing to the app source

@@ -406,7 +406,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "(R300_PFS_MAX_ALU_INST), so no MRT split is needed.  Admitted by "
                          "r300_nir_detect_qdiv_pattern (matches the single-self-dot reciprocal "
                          "1/dot(b,b), conj(b)*r, and the qmul_match Hamilton product a*inv(b)), "
-                         "synthesized by r300vk_build_qdiv_fs_nir, dispatched on the QMUL "
+                         "synthesized by r3v_build_qdiv_fs_nir, dispatched on the QMUL "
                          "two-in/one-out replay core; HW-confirmed 4/4 on RS480 by qdiv_vk_probe "
                          "(a/1=a, 1/(2i)=-0.5i, 4i/2i=2 bit-exact; x/x=1 within FP16 RT tol), the "
                          "FS compiling to 23 fragment ALU ops -- far under the 64-ALU limit",
@@ -462,7 +462,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "norm multiplicative |xy|^2 = |x|^2 |y|^2 (Hurwitz at dim 8).  "
                          "r300_nir_detect_omul_pattern admits the eight-wide kernel (four "
                          "quaternion inputs, two output halves), the two synthesized FS "
-                         "passes (r300vk_build_omul_lo/hi_fs_nir) emit the halves, and the "
+                         "passes (r3v_build_omul_lo/hi_fs_nir) emit the halves, and the "
                          "two-pass dispatch fills the result -- HW-confirmed 4/4 exact on "
                          "RS482 by omul_vk_probe, the Hurwitz norm holding exactly",
       .mesa_hook       = "r300_nir_detect_omul_pattern",
@@ -876,7 +876,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       /* Four independent RGBA8_UNORM render targets written in parallel by
        * a single fragment shader with layout(location=0..3) outputs.
-       * r300vk exposes maxColorAttachments=4 (r300vk_physical_device.c:265).
+       * r3v exposes maxColorAttachments=4 (r3v_physical_device.c:265).
        * independentBlend=false: all 4 attachments share RB3D_CBLEND state,
        * but distinct FS output locations route to distinct color buffers.
        * RS482 probe: 4-attachment framebuffer, FS writes 0x01020304 /
@@ -893,7 +893,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       /* VK_STENCIL_OP_INVERT flips all 8 bits of the stencil plane per
        * fragment.  PIPE_STENCIL_OP_INVERT maps to R300_ZS_INVERT in
-       * r300_state_inlines.h; wired at r300vk_pipeline.c:1605.
+       * r300_state_inlines.h; wired at r3v_pipeline.c:1605.
        * Bitwise contract: INVERT(x) = ~x for all x in [0, 255].
        * RS482 probe: fill 0xA5, INVERT once, readback 0x5A -- exact.
        * Enables bitwise NOT on U8 stencil payloads without the ALU. */

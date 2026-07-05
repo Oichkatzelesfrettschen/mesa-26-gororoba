@@ -223,7 +223,7 @@ void r300_nir_detect_unary_transcendental(
    struct r300_compute_unary_transcendental_pattern *out);
 
 /* True when op is one of the single-input transcendentals the unary-transcendental
- * verb covers -- shared by the detector and the r300vk FS synthesis so both agree
+ * verb covers -- shared by the detector and the r3v FS synthesis so both agree
  * on the admitted op set. */
 bool r300_nir_is_unary_transcendental_op(uint16_t nir_op);
 
@@ -419,7 +419,7 @@ void r300_nir_detect_zpass_reduction(const struct nir_shader *s,
  * mechanism is hardware-confirmed at the EGL/GBM render-ladder level.
  *
  * The kernel NIR is classified-then-discarded (ralloc_free in
- * r300vk_classify_compute_kernel), never compiled to the R300 fragment
+ * r3v_classify_compute_kernel), never compiled to the R300 fragment
  * program, so the runtime loop is a detection-time signal only -- the
  * recognised shape is realized entirely by the orchestrator's pass ladder,
  * not by executing the kernel's own loop.
@@ -557,7 +557,7 @@ void r300_nir_detect_dp4_pattern(const struct nir_shader *s,
  * never a structurally-similar kernel the substrate's Hamilton FS would silently
  * recompute differently.  A natural component-wise quat_mul that the compiler
  * lowers to an fmul/fadd tree is NOT this shape; the kernel must be written as
- * the four sign-permuted dots (the form r300vk_build_qmul_fs_nir emits).  The
+ * the four sign-permuted dots (the form r3v_build_qmul_fs_nir emits).  The
  * dot runs in FP24 and is exact for operands inside the FP24 window; the result
  * carries to the substrate's FP16 quaternion render target.  Bindings stay 0
  * when the post-explicit_io sources are not constants (the orchestrator's

@@ -106,7 +106,7 @@ enum r300_numeric_domain {
     * Theorem: 4*(2^7-1)^2 = 64516 < 2^17 = 131072.
     * Hardware-confirmed: RS482 surfaceless-EGL dp4 probe (6/6 exact,
     * including 64516, signed cancellation, and random cases) and
-    * end-to-end r300vk Vulkan DP4 readback (4/4 byte-exact). */
+    * end-to-end r3v Vulkan DP4 readback (4/4 byte-exact). */
    R300_NUM_DOMAIN_U7_DOT,
 
    /* Unsigned 7-bit five-term convolution column: 0 <= a_i, b_i <= 127,

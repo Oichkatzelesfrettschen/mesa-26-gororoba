@@ -8,10 +8,10 @@
  * Implements r300_vs_get_hw_code() and r300_fs_get_hw_code() declared in
  * r300_public.h.  These are the only functions that legitimately access r300g
  * private types (r300_vertex_shader, r300_fragment_shader) from code that
- * will be called from outside the r300g translation unit (r300vk ICD).
+ * will be called from outside the r300g translation unit (r3v ICD).
  * Keeping the casts here (inside r300g) ensures that any layout change to the
  * private structs produces a compile error at the definition site, not a
- * silent runtime misread at the call site in r300vk.
+ * silent runtime misread at the call site in r3v.
  */
 
 #include "r300_public.h"

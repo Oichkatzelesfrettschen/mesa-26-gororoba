@@ -913,7 +913,7 @@ prepare_detect_shader(nir_shader *nir)
       progress = false;
       NIR_PASS(progress, nir, nir_opt_dce);
       NIR_PASS(progress, nir, nir_opt_cse);
-      /* Parity with the r300vk classify prep: fold offset arithmetic to the
+      /* Parity with the r3v classify prep: fold offset arithmetic to the
        * inline constants the detectors capture from. */
       NIR_PASS(progress, nir, nir_opt_constant_folding);
    } while (progress);

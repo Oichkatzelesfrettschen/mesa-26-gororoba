@@ -233,7 +233,7 @@ r300_nir_float_encode_int_sysvals(nir_shader *nir)
 }
 
 /* r300_nir_lower_vs_system_values_to_inputs's make_sysval_input models the
- * default (non-R300VK_NATIVE_VERTEXID) VertexIndex/InstanceIndex delivery as
+ * default (non-R3V_NATIVE_VERTEXID) VertexIndex/InstanceIndex delivery as
  * a plain int shader_in variable named "sys_vertex_index"/"sys_instance_index",
  * read back through an ordinary load_deref.  nir_lower_int_to_float leaves
  * every intrinsic result untouched (its nir_instr_type_intrinsic case is a
@@ -473,7 +473,7 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
      * integer comparison ladders of their own. */
 
     /* GL SW-TCL (GLSL 1.20 / ES 1.00) has no bitwise operators, but this
-     * same draw path also lowers r300vk's Vulkan SPIR-V, which does.  An
+     * same draw path also lowers r3v's Vulkan SPIR-V, which does.  An
      * unsigned shift or bitwise op then reaches nir_lower_int_to_float,
      * whose default arm asserts its operand is not integer-typed and
      * aborts the process (nir_lower_int_to_float.c lower_alu_instr, a

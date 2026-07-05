@@ -303,7 +303,9 @@ endif
 with_intel_vk = _vulkan_drivers.contains('intel')
 with_intel_hasvk = _vulkan_drivers.contains('intel_hasvk')
 with_amd_vk = _vulkan_drivers.contains('amd')
-with_amd_r300_vk = _vulkan_drivers.contains('amd_r300')
+# ati_r300 is the canonical selector for the R300-family (ATI-era) Vulkan
+# driver; amd_r300 stays an accepted alias until its removal branch lands.
+with_amd_r300_vk = _vulkan_drivers.contains('ati_r300') or _vulkan_drivers.contains('amd_r300')
 with_amd_terascale_vk = _vulkan_drivers.contains('amd_terascale')
 with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_panfrost_vk = _vulkan_drivers.contains('panfrost')

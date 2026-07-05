@@ -6,7 +6,7 @@
  *
  * These static instances define the canonical buffer format and stride
  * contracts for each admitted virtual op family.  The orchestrator in
- * r300vk_compute.c and the readback path both reference these instances
+ * r3v_compute.c and the readback path both reference these instances
  * so format and stride decisions have a single authoritative definition.
  */
 

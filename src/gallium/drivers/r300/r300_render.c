@@ -1189,7 +1189,7 @@ static void r300_draw_vbo(struct pipe_context* pipe,
  *
  * Execute a PASSTHROUGH-classified draw via the direct-VB route: re-ingest the
  * application vertex arrays at TCL_BYPASS, skipping the gallivm draw module.
- * r300vk feeds the SWTCL path USER vertex buffers (CPU pointers, no winsys BO);
+ * r3v feeds the SWTCL path USER vertex buffers (CPU pointers, no winsys BO);
  * a LOAD_VBPNTR relocation needs a BO, so upload each used user buffer's range to
  * one via r300->uploader, swap r300->vertex_buffer to the uploads for the emit,
  * then restore and unref.  The upload is a memcpy of already-mapped data, far
@@ -1341,7 +1341,7 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
          *  - a real-BO resource (->buf set): used as-is, no upload;
          *  - a CPU-only resource (malloced_buffer, ->buf NULL): r300's SWTCL path
          *    keeps real-resource vertex buffers as a CPU shadow with no winsys BO
-         *    (r300_set_vertex_buffers_swtcl), which is what r300vk binds; upload
+         *    (r300_set_vertex_buffers_swtcl), which is what r3v binds; upload
          *    that shadow.
          * Anything else cannot be re-ingested -> fall back. */
         const void *cpu_src = NULL;
@@ -1647,7 +1647,7 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
      * built, would transform + re-ingest it instead of running the gallivm CPU
      * draw module.  Returns false today (classifier only), so this falls through
      * to gallivm with zero behaviour change.  This is the single choke point for
-     * both GL and r300vk-Vulkan draws -- r300vk replays through this same gallium
+     * both GL and r3v-Vulkan draws -- r3v replays through this same gallium
      * draw_vbo, so no separate Vulkan-side wiring is needed. */
     /* Passthrough direct-VB route: re-ingest the app vertex arrays at TCL_BYPASS,
      * skipping the gallivm draw module.  Falls back to gallivm if the route

@@ -34,7 +34,9 @@ identity_map_debug_enabled(void)
 {
    static int cached = -1;
    if (cached < 0) {
-      const char *flags = getenv("R300VK_DEBUG");
+      const char *flags = getenv("R3V_DEBUG");
+      if (!flags)
+         flags = getenv("R300VK_DEBUG");
       cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
    }
    return cached != 0;
@@ -253,7 +255,7 @@ r300_nir_detect_identity_map(const nir_shader *s,
    /* The store's write mask must cover every component.  The downstream
     * carriers copy whole elements sized from util_format_get_blocksize (the
     * default R8G8B8A8 path and the opt-in R32G32B32A32 FP32x4 path selected in
-    * r300vk_identity_map_replay_format), so a partial-mask store -- one writing
+    * r3v_identity_map_replay_format), so a partial-mask store -- one writing
     * only some lanes of its vec -- cannot be transported faithfully: the
     * unwritten lanes would receive carrier bytes.  Admit only a fully-written
     * store; a masked store falls through to the no-op compute lifecycle. */
@@ -4706,7 +4708,7 @@ r300_nir_detect_ieee16_mul(const nir_shader *s,
  *     out_buffer[gid] = C;     // C is a compile-time constant, no loads
  *
  * which is the limiting case of the identity-map where the stored value is
- * independent of gid and independent of any memory read.  R300VK replays this
+ * independent of gid and independent of any memory read.  R3V replays this
  * as a CPU buffer fill, so the store offset must name the same contiguous
  * element slots the replay writes.
  *
