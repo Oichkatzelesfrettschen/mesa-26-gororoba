@@ -8,7 +8,7 @@
 #include "compiler/nir/nir_builder.h"
 
 static nir_def *
-r300vk_dp4_pack_uint32_to_rgba8(nir_builder *b, nir_def *value)
+r3v_dp4_pack_uint32_to_rgba8(nir_builder *b, nir_def *value)
 {
    nir_def *fl256 = nir_ffloor(b, nir_fmul_imm(b, value, 1.0 / 256.0));
    nir_def *enc_r = nir_fsub(b, value, nir_fmul_imm(b, fl256, 256.0));
@@ -29,7 +29,7 @@ r300vk_dp4_pack_uint32_to_rgba8(nir_builder *b, nir_def *value)
 }
 
 static nir_def *
-r300vk_load_fs_texcoord(nir_builder *b)
+r3v_load_fs_texcoord(nir_builder *b)
 {
    nir_variable *in_tc = nir_variable_create(b->shader, nir_var_shader_in,
                                              glsl_vec4_type(), "tc");
@@ -48,13 +48,13 @@ r300vk_load_fs_texcoord(nir_builder *b)
  * info and assign IO locations here because nir_to_rc keys interpolators off
  * driver_location. */
 nir_shader *
-r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
+r3v_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
                         unsigned components)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_dp4");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_dp4");
 
-   nir_def *coord = r300vk_load_fs_texcoord(&b);
+   nir_def *coord = r3v_load_fs_texcoord(&b);
 
    nir_def *tex[2];
    for (unsigned s = 0; s < 2; s++) {
@@ -84,7 +84,7 @@ r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
     * truncating toward zero before the byte split, then carry all four
     * little-endian bytes through RGBA8.  R300 has no FP32 render target, so the
     * replay copies these RT bytes directly into the uint output SSBO. */
-   nir_def *enc = r300vk_dp4_pack_uint32_to_rgba8(&b, nir_ftrunc(&b, dot));
+   nir_def *enc = r3v_dp4_pack_uint32_to_rgba8(&b, nir_ftrunc(&b, dot));
    nir_store_var(&b, out, enc, 0xf);
 
    nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
@@ -121,12 +121,12 @@ hamilton_product(nir_builder *b, nir_def *q1, nir_def *q2)
 /* QMUL_HAMILTON: sample q1, q2 at the fullscreen texcoord and write q1*q2 to the
  * FP16 color export -- one Hamilton product, four DP4s. */
 nir_shader *
-r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_qmul_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qmul");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_qmul");
 
-   nir_def *coord = r300vk_load_fs_texcoord(&b);
+   nir_def *coord = r3v_load_fs_texcoord(&b);
 
    nir_def *q[2];
    for (unsigned s = 0; s < 2; s++) {
@@ -165,12 +165,12 @@ r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts)
  * the rotated v (the scalar lane is ~0 for a unit q).  Writes the result to the
  * FP16 color export, like QMUL. */
 nir_shader *
-r300vk_build_qrotate_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_qrotate_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qrotate");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_qrotate");
 
-   nir_def *coord = r300vk_load_fs_texcoord(&b);
+   nir_def *coord = r3v_load_fs_texcoord(&b);
 
    nir_def *tex[2];
    for (unsigned s = 0; s < 2; s++) {
@@ -214,7 +214,7 @@ r300vk_build_qrotate_fs_nir(const nir_shader_compiler_options *opts)
 static nir_def *
 sample_single_quaternion(nir_builder *b)
 {
-   nir_def *coord = r300vk_load_fs_texcoord(b);
+   nir_def *coord = r3v_load_fs_texcoord(b);
 
    nir_variable *samp = nir_variable_create(
       b->shader, nir_var_uniform,
@@ -230,10 +230,10 @@ sample_single_quaternion(nir_builder *b)
  * zero DP4.  The negated lanes are native fneg in the vec4 constructor (correct
  * since the nir_to_rc srcmod-fold register-dest fix). */
 nir_shader *
-r300vk_build_qconj_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_qconj_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qconj");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_qconj");
 
    nir_def *a = sample_single_quaternion(&b);
    nir_def *conj = nir_vec4(&b, nir_channel(&b, a, 0),
@@ -257,10 +257,10 @@ r300vk_build_qconj_fs_nir(const nir_shader_compiler_options *opts)
  * FP16 color export -- one DP4.  The substrate reads lane 0; broadcasting keeps
  * the vec4 readback path (the kernel's output SSBO is vec4 FP32). */
 nir_shader *
-r300vk_build_qnorm_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_qnorm_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qnorm");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_qnorm");
 
    nir_def *a = sample_single_quaternion(&b);
    nir_def *n = nir_fdot(&b, a, a);
@@ -282,10 +282,10 @@ r300vk_build_qnorm_fs_nir(const nir_shader_compiler_options *opts)
  * direction.  One DP4 for the squared norm, the US RSQ for the reciprocal length,
  * one vec4 scale.  ROCQ ground: quat_normalize_unit (QuatNormalize.v). */
 nir_shader *
-r300vk_build_qnormalize_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_qnormalize_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qnormalize");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_qnormalize");
 
    nir_def *a = sample_single_quaternion(&b);
    nir_def *r = nir_frsq(&b, nir_fdot(&b, a, a));
@@ -319,7 +319,7 @@ static void
 sample_octonion_halves(nir_builder *b, nir_def **a, nir_def **bb,
                        nir_def **c, nir_def **d)
 {
-   nir_def *coord = r300vk_load_fs_texcoord(b);
+   nir_def *coord = r3v_load_fs_texcoord(b);
 
    nir_def *t[4];
    for (unsigned s = 0; s < 4; s++) {
@@ -338,10 +338,10 @@ sample_octonion_halves(nir_builder *b, nir_def **a, nir_def **bb,
  * a*c - conj(d)*b (Cayley-Dickson doubling).  Two Hamilton products = eight DP4s,
  * differenced, to the FP16 color export.  Samples a,b,c,d at bindings 0..3. */
 nir_shader *
-r300vk_build_omul_lo_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_omul_lo_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_omul_lo");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_omul_lo");
 
    nir_def *a, *bb, *c, *d;
    sample_octonion_halves(&b, &a, &bb, &c, &d);
@@ -365,10 +365,10 @@ r300vk_build_omul_lo_fs_nir(const nir_shader_compiler_options *opts)
  * Hamilton products = eight DP4s, summed, to the FP16 color export.  Samples
  * a,b,c,d at bindings 0..3, like the lower-half pass. */
 nir_shader *
-r300vk_build_omul_hi_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_omul_hi_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_omul_hi");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_omul_hi");
 
    nir_def *a, *bb, *c, *d;
    sample_octonion_halves(&b, &a, &bb, &c, &d);
@@ -395,10 +395,10 @@ r300vk_build_omul_hi_fs_nir(const nir_shader_compiler_options *opts)
  * when the screen supports two simultaneous FP16 render targets; otherwise the
  * substrate falls back to the two single-output passes (omul_lo + omul_hi). */
 nir_shader *
-r300vk_build_omul_mrt_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_omul_mrt_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_omul_mrt");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_omul_mrt");
 
    nir_def *a, *bb, *c, *d;
    sample_octonion_halves(&b, &a, &bb, &c, &d);
@@ -428,7 +428,7 @@ r300vk_build_omul_mrt_fs_nir(const nir_shader_compiler_options *opts)
 static nir_def *
 make_fs_coord(nir_builder *b)
 {
-   return r300vk_load_fs_texcoord(b);
+   return r3v_load_fs_texcoord(b);
 }
 
 /* Sample the 2D input at sampler binding `stage`. */
@@ -465,10 +465,10 @@ store_color_at(nir_builder *b, nir_def *val, int location, const char *name)
 /* ONORM: |(a,b)|^2 = dot(a,a) + dot(b,b) broadcast across four lanes; a at
  * sampler stage 0, b at stage 1.  Two DP4s.  The kernel reads lane 0. */
 nir_shader *
-r300vk_build_onorm_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_onorm_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_onorm");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_onorm");
    nir_def *coord = make_fs_coord(&b);
    nir_def *a = sample_stage(&b, coord, 0), *bb = sample_stage(&b, coord, 1);
    nir_def *n = nir_fadd(&b, nir_fdot(&b, a, a), nir_fdot(&b, bb, bb));
@@ -479,10 +479,10 @@ r300vk_build_onorm_fs_nir(const nir_shader_compiler_options *opts)
 /* OCONJ as one MRT pass: conj(a) = (a.x,-a.y,-a.z,-a.w) to color output 0, -b to
  * output 1.  a at sampler stage 0, b at stage 1. */
 nir_shader *
-r300vk_build_oconj_mrt_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_oconj_mrt_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_oconj_mrt");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_oconj_mrt");
    nir_def *coord = make_fs_coord(&b);
    nir_def *a = sample_stage(&b, coord, 0), *bb = sample_stage(&b, coord, 1);
    nir_def *lo = nir_vec4(&b, nir_channel(&b, a, 0), nir_fneg(&b, nir_channel(&b, a, 1)),
@@ -496,10 +496,10 @@ r300vk_build_oconj_mrt_fs_nir(const nir_shader_compiler_options *opts)
  * upper b (+|-) d to output 1.  The dispatch binds the four inputs as
  * stage0=a, stage1=c, stage2=b, stage3=d so each half reads a contiguous pair. */
 nir_shader *
-r300vk_build_oaddsub_mrt_fs_nir(const nir_shader_compiler_options *opts, bool is_sub)
+r3v_build_oaddsub_mrt_fs_nir(const nir_shader_compiler_options *opts, bool is_sub)
 {
    nir_builder b = nir_builder_init_simple_shader(
-      MESA_SHADER_FRAGMENT, opts, is_sub ? "r300vk_osub_mrt" : "r300vk_oadd_mrt");
+      MESA_SHADER_FRAGMENT, opts, is_sub ? "r3v_osub_mrt" : "r3v_oadd_mrt");
    nir_def *coord = make_fs_coord(&b);
    nir_def *s0 = sample_stage(&b, coord, 0), *s1 = sample_stage(&b, coord, 1);
    nir_def *s2 = sample_stage(&b, coord, 2), *s3 = sample_stage(&b, coord, 3);
@@ -532,10 +532,10 @@ odiv_inverse_halves(nir_builder *b, nir_def *ylo, nir_def *yhi,
  * passes, each recomputing the shared reciprocal and emitting one half (eight DP4s
  * plus the inverse).  Samples x = (a,b) at stages 0,1 and y = (ylo,yhi) at 2,3. */
 nir_shader *
-r300vk_build_odiv_lo_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_odiv_lo_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_odiv_lo");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_odiv_lo");
 
    nir_def *a, *bb, *yl, *yh;
    sample_octonion_halves(&b, &a, &bb, &yl, &yh);   /* a=xlo, bb=xhi, yl=ylo, yh=yhi */
@@ -550,10 +550,10 @@ r300vk_build_odiv_lo_fs_nir(const nir_shader_compiler_options *opts)
 /* ODIV upper half (route A): out.hi = d*a + b*conj(c).  See the lower-half pass for
  * why division uses two single-output passes instead of one MRT pass. */
 nir_shader *
-r300vk_build_odiv_hi_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_odiv_hi_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_odiv_hi");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_odiv_hi");
 
    nir_def *a, *bb, *yl, *yh;
    sample_octonion_halves(&b, &a, &bb, &yl, &yh);   /* a=xlo, bb=xhi, yl=ylo, yh=yhi */
@@ -570,10 +570,10 @@ r300vk_build_odiv_hi_fs_nir(const nir_shader_compiler_options *opts)
  * differs from right (octonions are non-commutative + non-associative) but stays
  * parenthesis-safe (Artin).  Same two-pass split and inverse recompute as ODIV. */
 nir_shader *
-r300vk_build_odiv_l_lo_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_odiv_l_lo_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_odiv_l_lo");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_odiv_l_lo");
 
    nir_def *a, *bb, *yl, *yh;
    sample_octonion_halves(&b, &a, &bb, &yl, &yh);   /* a=xlo, bb=xhi, yl=ylo, yh=yhi */
@@ -587,10 +587,10 @@ r300vk_build_odiv_l_lo_fs_nir(const nir_shader_compiler_options *opts)
 
 /* ODIV_L upper half (left division, route A): out.hi = b*c + d*conj(a). */
 nir_shader *
-r300vk_build_odiv_l_hi_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_odiv_l_hi_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_odiv_l_hi");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_odiv_l_hi");
 
    nir_def *a, *bb, *yl, *yh;
    sample_octonion_halves(&b, &a, &bb, &yl, &yh);   /* a=xlo, bb=xhi, yl=ylo, yh=yhi */
@@ -609,10 +609,10 @@ r300vk_build_odiv_l_hi_fs_nir(const nir_shader_compiler_options *opts)
  * pass.  Samples t = (tlo,thi) at stages 0,1 and x = (xlo,xhi) at stages 2,3.
  * out.lo = tlo*conj(xlo) - conj(-xhi)*thi (the OMUL lower half of t and conj(x)). */
 nir_shader *
-r300vk_build_otrans_p2_lo_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_otrans_p2_lo_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_otrans_p2_lo");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_otrans_p2_lo");
 
    nir_def *tlo, *thi, *xlo, *xhi;
    sample_octonion_halves(&b, &tlo, &thi, &xlo, &xhi);   /* t at 0,1; x at 2,3 */
@@ -627,10 +627,10 @@ r300vk_build_otrans_p2_lo_fs_nir(const nir_shader_compiler_options *opts)
 /* OTRANS second-pass upper half: out.hi = (-xhi)*tlo + thi*conj(conj(xlo)) =
  * (-xhi)*tlo + thi*xlo (the OMUL upper half of t and conj(x)). */
 nir_shader *
-r300vk_build_otrans_p2_hi_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_otrans_p2_hi_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_otrans_p2_hi");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_otrans_p2_hi");
 
    nir_def *tlo, *thi, *xlo, *xhi;
    sample_octonion_halves(&b, &tlo, &thi, &xlo, &xhi);   /* t at 0,1; x at 2,3 */
@@ -647,10 +647,10 @@ r300vk_build_otrans_p2_hi_fs_nir(const nir_shader_compiler_options *opts)
  * (The ADD of c could ride the RB3D COMB_FCN_ADD blend over a c-preloaded target,
  * a substrate-native FMA; here it is a straightforward ALU add.) */
 nir_shader *
-r300vk_build_qfmadd_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_qfmadd_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qfmadd");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_qfmadd");
    nir_def *coord = make_fs_coord(&b);
    nir_def *a = sample_stage(&b, coord, 0);
    nir_def *bb = sample_stage(&b, coord, 1);
@@ -664,10 +664,10 @@ r300vk_build_qfmadd_fs_nir(const nir_shader_compiler_options *opts)
  * pass -- well under the 64-ALU fragment limit, and associativity in H makes the
  * parenthesization irrelevant.  Samples a,b,c at sampler stages 0,1,2. */
 nir_shader *
-r300vk_build_qfmmul_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_qfmmul_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qfmmul");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_qfmmul");
    nir_def *coord = make_fs_coord(&b);
    nir_def *a = sample_stage(&b, coord, 0);
    nir_def *bb = sample_stage(&b, coord, 1);
@@ -685,10 +685,10 @@ r300vk_build_qfmmul_fs_nir(const nir_shader_compiler_options *opts)
  * The reciprocal is the R300 US RCP; |b|^2 > 0 for any nonzero quaternion.  Samples
  * a at sampler stage 0, b at stage 1; writes a*inv(b) to the FP16 color export. */
 nir_shader *
-r300vk_build_qdiv_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_qdiv_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qdiv");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_qdiv");
    nir_def *coord = make_fs_coord(&b);
    nir_def *a = sample_stage(&b, coord, 0);
    nir_def *bb = sample_stage(&b, coord, 1);
@@ -702,17 +702,17 @@ r300vk_build_qdiv_fs_nir(const nir_shader_compiler_options *opts)
 }
 
 /* MAT4VEC's fragment program is synthesized directly in ureg/TGSI by
- * r300vk_synthesize_mat4vec_fs (r3v_pipeline.c): the broadcast 4x4 lives in
+ * r3v_synthesize_mat4vec_fs (r3v_pipeline.c): the broadcast 4x4 lives in
  * the constant file (CONST[0..3] = the four rows) so each output lane is one DP4
  * of a const row with the per-element vertex -- 1 TEX + 4 DP4, no matrix sampler.
  * A NIR builder here would re-sample the matrix from a texture (four extra TEX
  * plus four coordinate-staging MOVs), so it is intentionally absent. */
 
 nir_shader *
-r300vk_build_ieee16_classify_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_ieee16_classify_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_ieee16_classify");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_ieee16_classify");
    nir_def *coord = make_fs_coord(&b);
    nir_def *tex = sample_stage(&b, coord, 0);
    nir_def *bits = nir_channel(&b, tex, 0);
@@ -726,10 +726,10 @@ r300vk_build_ieee16_classify_fs_nir(const nir_shader_compiler_options *opts)
 }
 
 nir_shader *
-r300vk_build_ieee16_mul_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_ieee16_mul_fs_nir(const nir_shader_compiler_options *opts)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_ieee16_mul");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_ieee16_mul");
    nir_def *coord = make_fs_coord(&b);
    nir_def *tex = sample_stage(&b, coord, 0);
    nir_def *ua = nir_channel(&b, tex, 0);

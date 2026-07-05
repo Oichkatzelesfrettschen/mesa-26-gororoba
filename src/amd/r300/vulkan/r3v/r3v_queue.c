@@ -20,7 +20,7 @@ identity_map_debug_enabled(void)
 {
    static int cached = -1;
    if (cached < 0) {
-      const char *flags = getenv("R300VK_DEBUG");
+      const char *flags = getenv("R3V_DEBUG");
       cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
    }
    return cached != 0;
@@ -70,15 +70,15 @@ viewport_vk_to_gallium(const VkViewport *vp,
 }
 
 static void
-r300vk_clear_synthetic_stream(struct pipe_vertex_buffer *vb_cache,
+r3v_clear_synthetic_stream(struct pipe_vertex_buffer *vb_cache,
                               uint8_t binding)
 {
-   if (binding < R300VK_MAX_VERTEX_BINDINGS)
+   if (binding < R3V_MAX_VERTEX_BINDINGS)
       memset(&vb_cache[binding], 0, sizeof(vb_cache[binding]));
 }
 
 static bool
-r300vk_bind_synthetic_identity_stream(struct r300vk_device *device,
+r3v_bind_synthetic_identity_stream(struct r3v_device *device,
                                       struct pipe_context *pipe,
                                       struct pipe_vertex_buffer *vb_cache,
                                       uint8_t binding,
@@ -88,11 +88,11 @@ r300vk_bind_synthetic_identity_stream(struct r300vk_device *device,
    if (total_count == 0)
       return true;
 
-   if (binding >= R300VK_MAX_VERTEX_BINDINGS)
+   if (binding >= R3V_MAX_VERTEX_BINDINGS)
       return false;
 
    if (total_count > UINT32_MAX / sizeof(int32_t)) {
-      r300vk_clear_synthetic_stream(vb_cache, binding);
+      r3v_clear_synthetic_stream(vb_cache, binding);
       return false;
    }
 
@@ -109,7 +109,7 @@ r300vk_bind_synthetic_identity_stream(struct r300vk_device *device,
    struct pipe_resource *res =
       device->screen->resource_create(device->screen, &tmpl);
    if (!res) {
-      r300vk_clear_synthetic_stream(vb_cache, binding);
+      r3v_clear_synthetic_stream(vb_cache, binding);
       return false;
    }
 
@@ -118,7 +118,7 @@ r300vk_bind_synthetic_identity_stream(struct r300vk_device *device,
                                   PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                   &xfer);
    if (!map) {
-      r300vk_clear_synthetic_stream(vb_cache, binding);
+      r3v_clear_synthetic_stream(vb_cache, binding);
       pipe_resource_reference(&res, NULL);
       return false;
    }
@@ -140,7 +140,7 @@ r300vk_bind_synthetic_identity_stream(struct r300vk_device *device,
  * elements.  The owner reference is held in transient_vbs until the submit fence
  * completes; set_vertex_buffers takes its own references. */
 static bool
-r300vk_bind_synthetic_index_stream(struct r300vk_device *device,
+r3v_bind_synthetic_index_stream(struct r3v_device *device,
                                    struct pipe_context *pipe,
                                    struct pipe_vertex_buffer *vb_cache,
                                    uint8_t binding, uint32_t base, uint32_t count,
@@ -150,16 +150,16 @@ r300vk_bind_synthetic_index_stream(struct r300vk_device *device,
       return true;
 
    if (count > UINT32_MAX - base) {
-      r300vk_clear_synthetic_stream(vb_cache, binding);
+      r3v_clear_synthetic_stream(vb_cache, binding);
       return false;
    }
 
-   return r300vk_bind_synthetic_identity_stream(device, pipe, vb_cache, binding,
+   return r3v_bind_synthetic_identity_stream(device, pipe, vb_cache, binding,
                                                 base + count, transient_vbs);
 }
 
 static uint32_t
-r300vk_index_value_load(const uint8_t *ptr, uint32_t index_size)
+r3v_index_value_load(const uint8_t *ptr, uint32_t index_size)
 {
    switch (index_size) {
    case 1:
@@ -180,8 +180,8 @@ r300vk_index_value_load(const uint8_t *ptr, uint32_t index_size)
 }
 
 static bool
-r300vk_indexed_draw_map_indices(struct pipe_context *pipe,
-                                const struct r300vk_cmd_draw_indexed *draw,
+r3v_indexed_draw_map_indices(struct pipe_context *pipe,
+                                const struct r3v_cmd_draw_indexed *draw,
                                 uint32_t start_elem,
                                 uint32_t count,
                                 const uint8_t **indices,
@@ -216,9 +216,9 @@ r300vk_indexed_draw_map_indices(struct pipe_context *pipe,
  * index buffer as app vertex attributes, so the stream must be an identity
  * table over the fetched index + vertexOffset domain. */
 static bool
-r300vk_indexed_vertex_index_stream_count(
+r3v_indexed_vertex_index_stream_count(
    struct pipe_context *pipe,
-   const struct r300vk_cmd_draw_indexed *draw,
+   const struct r3v_cmd_draw_indexed *draw,
    uint32_t start_elem,
    uint32_t count,
    uint32_t *total_count)
@@ -234,14 +234,14 @@ r300vk_indexed_vertex_index_stream_count(
 
    struct pipe_transfer *index_xfer = NULL;
    const uint8_t *indices = NULL;
-   if (!r300vk_indexed_draw_map_indices(pipe, draw, start_elem, count,
+   if (!r3v_indexed_draw_map_indices(pipe, draw, start_elem, count,
                                         &indices, &index_xfer))
       return false;
 
    int64_t max_vertex_index = -1;
    for (uint32_t i = 0; i < count; i++) {
       const uint32_t index =
-         r300vk_index_value_load(indices + (uint64_t)i * draw->index_size,
+         r3v_index_value_load(indices + (uint64_t)i * draw->index_size,
                                  draw->index_size);
       const int64_t vertex_index = (int64_t)index + draw->vertex_offset;
       if (vertex_index < 0 ||
@@ -260,7 +260,7 @@ r300vk_indexed_vertex_index_stream_count(
 }
 
 static bool
-r300vk_binding_index_inside(const struct r300vk_pipeline *pl,
+r3v_binding_index_inside(const struct r3v_pipeline *pl,
                             const struct pipe_vertex_buffer *vb_cache,
                             const VkDeviceSize *vb_sizes,
                             const VkDeviceSize *vb_strides,
@@ -293,7 +293,7 @@ r300vk_binding_index_inside(const struct r300vk_pipeline *pl,
 }
 
 static bool
-r300vk_vertex_index_inside_bindings(const struct r300vk_pipeline *pl,
+r3v_vertex_index_inside_bindings(const struct r3v_pipeline *pl,
                                     const struct pipe_vertex_buffer *vb_cache,
                                     const VkDeviceSize *vb_sizes,
                                     const VkDeviceSize *vb_strides,
@@ -308,11 +308,11 @@ r300vk_vertex_index_inside_bindings(const struct r300vk_pipeline *pl,
    const uint32_t per_vertex_mask =
       pl->vertex_binding_mask & ~pl->vertex_instance_binding_mask;
    const uint64_t vertex = (uint64_t)vertex_index;
-   for (uint32_t b = 0; b < R300VK_MAX_VERTEX_BINDINGS; b++) {
+   for (uint32_t b = 0; b < R3V_MAX_VERTEX_BINDINGS; b++) {
       if (!(per_vertex_mask & BITFIELD_BIT(b)))
          continue;
 
-      if (!r300vk_binding_index_inside(pl, vb_cache, vb_sizes, vb_strides,
+      if (!r3v_binding_index_inside(pl, vb_cache, vb_sizes, vb_strides,
                                        vb_strides_mask, b, vertex))
          return false;
    }
@@ -321,13 +321,13 @@ r300vk_vertex_index_inside_bindings(const struct r300vk_pipeline *pl,
 }
 
 static uint32_t
-r300vk_robust_indexed_vertex_count(struct pipe_context *pipe,
-                                   const struct r300vk_pipeline *pl,
+r3v_robust_indexed_vertex_count(struct pipe_context *pipe,
+                                   const struct r3v_pipeline *pl,
                                    const struct pipe_vertex_buffer *vb_cache,
                                    const VkDeviceSize *vb_sizes,
                                    const VkDeviceSize *vb_strides,
                                    uint32_t vb_strides_mask,
-                                   const struct r300vk_cmd_draw_indexed *draw,
+                                   const struct r3v_cmd_draw_indexed *draw,
                                    uint32_t start_elem,
                                    uint32_t count)
 {
@@ -336,17 +336,17 @@ r300vk_robust_indexed_vertex_count(struct pipe_context *pipe,
 
    struct pipe_transfer *index_xfer = NULL;
    const uint8_t *indices = NULL;
-   if (!r300vk_indexed_draw_map_indices(pipe, draw, start_elem, count,
+   if (!r3v_indexed_draw_map_indices(pipe, draw, start_elem, count,
                                         &indices, &index_xfer))
       return 0;
 
    uint32_t clamped_count = count;
    for (uint32_t i = 0; i < count; i++) {
       const uint32_t index =
-         r300vk_index_value_load(indices + (uint64_t)i * draw->index_size,
+         r3v_index_value_load(indices + (uint64_t)i * draw->index_size,
                                  draw->index_size);
       const int64_t vertex_index = (int64_t)index + draw->vertex_offset;
-      if (!r300vk_vertex_index_inside_bindings(pl, vb_cache, vb_sizes,
+      if (!r3v_vertex_index_inside_bindings(pl, vb_cache, vb_sizes,
                                                vb_strides, vb_strides_mask,
                                                vertex_index)) {
          clamped_count = i;
@@ -359,41 +359,41 @@ r300vk_robust_indexed_vertex_count(struct pipe_context *pipe,
 }
 
 static bool
-r300vk_bind_synthetic_indexed_vertex_index_stream(
-   struct r300vk_device *device,
+r3v_bind_synthetic_indexed_vertex_index_stream(
+   struct r3v_device *device,
    struct pipe_context *pipe,
    struct pipe_vertex_buffer *vb_cache,
    uint8_t binding,
-   const struct r300vk_cmd_draw_indexed *draw,
+   const struct r3v_cmd_draw_indexed *draw,
    uint32_t start_elem,
    uint32_t count,
    struct util_dynarray *transient_vbs)
 {
    uint32_t total_count = 0;
-   if (!r300vk_indexed_vertex_index_stream_count(pipe, draw, start_elem, count,
+   if (!r3v_indexed_vertex_index_stream_count(pipe, draw, start_elem, count,
                                                  &total_count)) {
-      r300vk_clear_synthetic_stream(vb_cache, binding);
+      r3v_clear_synthetic_stream(vb_cache, binding);
       return false;
    }
 
-   return r300vk_bind_synthetic_identity_stream(device, pipe, vb_cache, binding,
+   return r3v_bind_synthetic_identity_stream(device, pipe, vb_cache, binding,
                                                 total_count, transient_vbs);
 }
 
 static uint32_t
-r300vk_image_tile_origin_x(const struct r300vk_image *img, uint32_t tile_col)
+r3v_image_tile_origin_x(const struct r3v_image *img, uint32_t tile_col)
 {
    return img && tile_col > 0 ? img->tile_width[0] : 0;
 }
 
 static uint32_t
-r300vk_image_tile_origin_y(const struct r300vk_image *img, uint32_t tile_row)
+r3v_image_tile_origin_y(const struct r3v_image *img, uint32_t tile_row)
 {
    return img && tile_row > 0 ? img->tile_height[0] : 0;
 }
 
 static uint32_t
-r300vk_image_extent_width(const struct r300vk_image *img)
+r3v_image_extent_width(const struct r3v_image *img)
 {
    if (!img || !img->tile_cols)
       return 0;
@@ -403,7 +403,7 @@ r300vk_image_extent_width(const struct r300vk_image *img)
 }
 
 static uint32_t
-r300vk_image_extent_height(const struct r300vk_image *img)
+r3v_image_extent_height(const struct r3v_image *img)
 {
    if (!img || !img->tile_rows)
       return 0;
@@ -413,7 +413,7 @@ r300vk_image_extent_height(const struct r300vk_image *img)
 }
 
 static bool
-r300vk_image_tile_for_origin(const struct r300vk_image *img,
+r3v_image_tile_for_origin(const struct r3v_image *img,
                              uint32_t origin_x,
                              uint32_t origin_y,
                              uint32_t *tile_index,
@@ -425,8 +425,8 @@ r300vk_image_tile_for_origin(const struct r300vk_image *img,
    if (!img || !img->tile_cols || !img->tile_rows)
       return false;
 
-   if (origin_x >= r300vk_image_extent_width(img) ||
-       origin_y >= r300vk_image_extent_height(img))
+   if (origin_x >= r3v_image_extent_width(img) ||
+       origin_y >= r3v_image_extent_height(img))
       return false;
 
    const uint32_t col =
@@ -437,15 +437,15 @@ r300vk_image_tile_for_origin(const struct r300vk_image *img,
       return false;
 
    *tile_index = row * img->tile_cols + col;
-   *tile_origin_x = r300vk_image_tile_origin_x(img, col);
-   *tile_origin_y = r300vk_image_tile_origin_y(img, row);
+   *tile_origin_x = r3v_image_tile_origin_x(img, col);
+   *tile_origin_y = r3v_image_tile_origin_y(img, row);
    *remaining_width = img->tile_width[col] - (origin_x - *tile_origin_x);
    *remaining_height = img->tile_height[row] - (origin_y - *tile_origin_y);
    return true;
 }
 
 static struct pipe_resource *
-r300vk_image_tile_resource_for_origin(const struct r300vk_image *img,
+r3v_image_tile_resource_for_origin(const struct r3v_image *img,
                                       uint32_t origin_x,
                                       uint32_t origin_y,
                                       uint32_t *tile_origin_x,
@@ -454,7 +454,7 @@ r300vk_image_tile_resource_for_origin(const struct r300vk_image *img,
                                       uint32_t *remaining_height)
 {
    uint32_t tile_index = 0;
-   if (!r300vk_image_tile_for_origin(img, origin_x, origin_y, &tile_index,
+   if (!r3v_image_tile_for_origin(img, origin_x, origin_y, &tile_index,
                                      tile_origin_x, tile_origin_y,
                                      remaining_width, remaining_height))
       return NULL;
@@ -462,16 +462,16 @@ r300vk_image_tile_resource_for_origin(const struct r300vk_image *img,
    return img->tiles[tile_index] ? img->tiles[tile_index] : img->resource;
 }
 
-#define R300VK_RENDER_AREA_MAX_CUTS (PIPE_MAX_COLOR_BUFS + 3)
+#define R3V_RENDER_AREA_MAX_CUTS (PIPE_MAX_COLOR_BUFS + 3)
 
 static void
-r300vk_render_area_insert_cut(uint32_t *cuts, uint32_t *count, uint32_t cut)
+r3v_render_area_insert_cut(uint32_t *cuts, uint32_t *count, uint32_t cut)
 {
    for (uint32_t i = 0; i < *count; i++) {
       if (cuts[i] == cut)
          return;
       if (cuts[i] > cut) {
-         if (*count >= R300VK_RENDER_AREA_MAX_CUTS)
+         if (*count >= R3V_RENDER_AREA_MAX_CUTS)
             return;
          memmove(&cuts[i + 1], &cuts[i], (*count - i) * sizeof(cuts[0]));
          cuts[i] = cut;
@@ -480,14 +480,14 @@ r300vk_render_area_insert_cut(uint32_t *cuts, uint32_t *count, uint32_t cut)
       }
    }
 
-   if (*count < R300VK_RENDER_AREA_MAX_CUTS) {
+   if (*count < R3V_RENDER_AREA_MAX_CUTS) {
       cuts[*count] = cut;
       (*count)++;
    }
 }
 
 static void
-r300vk_begin_rp_add_image_tile_cuts(const struct r300vk_image *img,
+r3v_begin_rp_add_image_tile_cuts(const struct r3v_image *img,
                                     uint32_t area_width,
                                     uint32_t area_height,
                                     uint32_t *x_cuts,
@@ -499,13 +499,13 @@ r300vk_begin_rp_add_image_tile_cuts(const struct r300vk_image *img,
       return;
 
    if (img->tile_cols > 1 && img->tile_width[0] < area_width)
-      r300vk_render_area_insert_cut(x_cuts, x_count, img->tile_width[0]);
+      r3v_render_area_insert_cut(x_cuts, x_count, img->tile_width[0]);
    if (img->tile_rows > 1 && img->tile_height[0] < area_height)
-      r300vk_render_area_insert_cut(y_cuts, y_count, img->tile_height[0]);
+      r3v_render_area_insert_cut(y_cuts, y_count, img->tile_height[0]);
 }
 
 static void
-r300vk_begin_rp_collect_tile_cuts(const struct r300vk_cmd_begin_render_pass *rp,
+r3v_begin_rp_collect_tile_cuts(const struct r3v_cmd_begin_render_pass *rp,
                                   uint32_t *x_cuts,
                                   uint32_t *x_count,
                                   uint32_t *y_cuts,
@@ -517,33 +517,33 @@ r300vk_begin_rp_collect_tile_cuts(const struct r300vk_cmd_begin_render_pass *rp,
    if (rp->width == 0 || rp->height == 0)
       return;
 
-   r300vk_render_area_insert_cut(x_cuts, x_count, 0);
-   r300vk_render_area_insert_cut(x_cuts, x_count, rp->width);
-   r300vk_render_area_insert_cut(y_cuts, y_count, 0);
-   r300vk_render_area_insert_cut(y_cuts, y_count, rp->height);
+   r3v_render_area_insert_cut(x_cuts, x_count, 0);
+   r3v_render_area_insert_cut(x_cuts, x_count, rp->width);
+   r3v_render_area_insert_cut(y_cuts, y_count, 0);
+   r3v_render_area_insert_cut(y_cuts, y_count, rp->height);
 
    for (uint32_t slot = 0; slot < rp->color_count; slot++)
-      r300vk_begin_rp_add_image_tile_cuts(rp->color_image[slot], rp->width,
+      r3v_begin_rp_add_image_tile_cuts(rp->color_image[slot], rp->width,
                                           rp->height, x_cuts, x_count,
                                           y_cuts, y_count);
-   r300vk_begin_rp_add_image_tile_cuts(rp->ds_image, rp->width, rp->height,
+   r3v_begin_rp_add_image_tile_cuts(rp->ds_image, rp->width, rp->height,
                                        x_cuts, x_count, y_cuts, y_count);
 }
 
 static bool
-r300vk_begin_rp_tile_geometry(const struct r300vk_cmd_begin_render_pass *rp,
+r3v_begin_rp_tile_geometry(const struct r3v_cmd_begin_render_pass *rp,
                               uint32_t tile_pass,
                               uint32_t *tile_origin_x,
                               uint32_t *tile_origin_y,
                               uint32_t *tile_width,
                               uint32_t *tile_height)
 {
-   uint32_t x_cuts[R300VK_RENDER_AREA_MAX_CUTS];
-   uint32_t y_cuts[R300VK_RENDER_AREA_MAX_CUTS];
+   uint32_t x_cuts[R3V_RENDER_AREA_MAX_CUTS];
+   uint32_t y_cuts[R3V_RENDER_AREA_MAX_CUTS];
    uint32_t x_count = 0;
    uint32_t y_count = 0;
 
-   r300vk_begin_rp_collect_tile_cuts(rp, x_cuts, &x_count, y_cuts, &y_count);
+   r3v_begin_rp_collect_tile_cuts(rp, x_cuts, &x_count, y_cuts, &y_count);
    if (x_count < 2 || y_count < 2)
       return false;
 
@@ -564,8 +564,8 @@ r300vk_begin_rp_tile_geometry(const struct r300vk_cmd_begin_render_pass *rp,
 /* Return a representative attachment for optional diagnostics and quick
  * render-pass presence checks.  Replay tile selection uses the render-area
  * cut grid above, not this image's tile numbering. */
-static struct r300vk_image *
-r300vk_begin_rp_ref_image(const struct r300vk_cmd_begin_render_pass *rp)
+static struct r3v_image *
+r3v_begin_rp_ref_image(const struct r3v_cmd_begin_render_pass *rp)
 {
    for (uint32_t slot = 0; slot < rp->color_count; slot++)
       if (rp->color_image[slot])
@@ -574,14 +574,14 @@ r300vk_begin_rp_ref_image(const struct r300vk_cmd_begin_render_pass *rp)
 }
 
 static uint32_t
-r300vk_begin_rp_tile_pass_count(const struct r300vk_cmd_begin_render_pass *rp)
+r3v_begin_rp_tile_pass_count(const struct r3v_cmd_begin_render_pass *rp)
 {
-   uint32_t x_cuts[R300VK_RENDER_AREA_MAX_CUTS];
-   uint32_t y_cuts[R300VK_RENDER_AREA_MAX_CUTS];
+   uint32_t x_cuts[R3V_RENDER_AREA_MAX_CUTS];
+   uint32_t y_cuts[R3V_RENDER_AREA_MAX_CUTS];
    uint32_t x_count = 0;
    uint32_t y_count = 0;
 
-   r300vk_begin_rp_collect_tile_cuts(rp, x_cuts, &x_count, y_cuts, &y_count);
+   r3v_begin_rp_collect_tile_cuts(rp, x_cuts, &x_count, y_cuts, &y_count);
    if (x_count < 2 || y_count < 2)
       return 0;
 
@@ -589,25 +589,25 @@ r300vk_begin_rp_tile_pass_count(const struct r300vk_cmd_begin_render_pass *rp)
 }
 
 static uint32_t
-r300vk_cmd_tile_pass_count(const struct r300vk_cmd_buffer *cmd)
+r3v_cmd_tile_pass_count(const struct r3v_cmd_buffer *cmd)
 {
    uint32_t pass_count = 1;
 
    for (uint32_t i = 0; i < cmd->entry_count; i++) {
-      const struct r300vk_cmd_entry *entry = &cmd->entries[i];
-      if (entry->type != R300VK_CMD_BEGIN_RENDER_PASS &&
-          entry->type != R300VK_CMD_NEXT_SUBPASS)
+      const struct r3v_cmd_entry *entry = &cmd->entries[i];
+      if (entry->type != R3V_CMD_BEGIN_RENDER_PASS &&
+          entry->type != R3V_CMD_NEXT_SUBPASS)
          continue;
 
       pass_count = MAX2(pass_count,
-                        r300vk_begin_rp_tile_pass_count(&entry->begin_rp));
+                        r3v_begin_rp_tile_pass_count(&entry->begin_rp));
    }
 
    return pass_count;
 }
 
 static void
-r300vk_scissor_vk_to_tile(const VkRect2D *rect,
+r3v_scissor_vk_to_tile(const VkRect2D *rect,
                           uint32_t tile_origin_x,
                           uint32_t tile_origin_y,
                           uint32_t tile_width,
@@ -640,7 +640,7 @@ r300vk_scissor_vk_to_tile(const VkRect2D *rect,
 }
 
 static uint32_t
-r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
+r3v_robust_vertex_count(const struct r3v_pipeline *pl,
                            const struct pipe_vertex_buffer *vb_cache,
                            const VkDeviceSize *vb_sizes,
                            const VkDeviceSize *vb_strides,
@@ -657,7 +657,7 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
       return vertex_count;
 
    uint32_t max_count = vertex_count;
-   for (uint32_t b = 0; b < R300VK_MAX_VERTEX_BINDINGS; b++) {
+   for (uint32_t b = 0; b < R3V_MAX_VERTEX_BINDINGS; b++) {
       if (!(per_vertex_mask & BITFIELD_BIT(b)))
          continue;
 
@@ -693,7 +693,7 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
 }
 
 static uint32_t
-r300vk_robust_instance_count(const struct r300vk_pipeline *pl,
+r3v_robust_instance_count(const struct r3v_pipeline *pl,
                              const struct pipe_vertex_buffer *vb_cache,
                              const VkDeviceSize *vb_sizes,
                              const VkDeviceSize *vb_strides,
@@ -705,12 +705,12 @@ r300vk_robust_instance_count(const struct r300vk_pipeline *pl,
       return instance_count;
 
    uint32_t max_count = instance_count;
-   for (uint32_t b = 0; b < R300VK_MAX_VERTEX_BINDINGS; b++) {
+   for (uint32_t b = 0; b < R3V_MAX_VERTEX_BINDINGS; b++) {
       if (!(pl->vertex_instance_binding_mask & BITFIELD_BIT(b)))
          continue;
 
       const uint64_t first = first_instance;
-      if (!r300vk_binding_index_inside(pl, vb_cache, vb_sizes, vb_strides,
+      if (!r3v_binding_index_inside(pl, vb_cache, vb_sizes, vb_strides,
                                        vb_strides_mask, b, first))
          return 0;
 
@@ -734,22 +734,22 @@ r300vk_robust_instance_count(const struct r300vk_pipeline *pl,
 }
 
 /* CCN is proportional to the number of command types dispatched; one case
- * per r300vk_cmd_type is the minimum correct structure. */
+ * per r3v_cmd_type is the minimum correct structure. */
 static void
-r300vk_replay_bind_descriptor_sets(struct r300vk_cmd_bind_descriptor_sets *accum,
-                                    const struct r300vk_cmd_entry *e)
+r3v_replay_bind_descriptor_sets(struct r3v_cmd_bind_descriptor_sets *accum,
+                                    const struct r3v_cmd_entry *e)
 {
    /* Descriptor-set bindings persist across vkCmdBindDescriptorSets calls: each
     * call replaces only sets [firstSet, firstSet+count), leaving the rest bound.
     * Accumulate per absolute set index so a draw sees every set bound so far --
     * e.g. a UBO in set 0 and a combined image sampler in set 1 bound by two
     * separate calls -- instead of only the most recent call's sets. */
-   const struct r300vk_cmd_bind_descriptor_sets *b = &e->bind_dsets;
+   const struct r3v_cmd_bind_descriptor_sets *b = &e->bind_dsets;
    accum->bind_point      = b->bind_point;
    accum->pipeline_layout = b->pipeline_layout;
    for (uint32_t i = 0; i < b->set_count; i++) {
       const uint32_t abs_set = b->first_set + i;
-      if (abs_set >= R300VK_MAX_BOUND_DESCRIPTOR_SETS)
+      if (abs_set >= R3V_MAX_BOUND_DESCRIPTOR_SETS)
          continue;
       accum->sets[abs_set] = b->sets[i];
       if (abs_set + 1 > accum->set_count)
@@ -757,7 +757,7 @@ r300vk_replay_bind_descriptor_sets(struct r300vk_cmd_bind_descriptor_sets *accum
    }
    accum->first_set = 0;
    /* Dynamic offsets apply to the dynamic descriptors of the sets in this call;
-    * r300vk binds only static uniform buffers, so carry the latest call's offsets
+    * r3v binds only static uniform buffers, so carry the latest call's offsets
     * rather than tracking them per set. */
    accum->dynamic_offset_count = b->dynamic_offset_count;
    for (uint32_t i = 0; i < b->dynamic_offset_count; i++)
@@ -765,20 +765,20 @@ r300vk_replay_bind_descriptor_sets(struct r300vk_cmd_bind_descriptor_sets *accum
 }
 
 static VkResult
-r300vk_replay_dispatch(struct r300vk_device *device,
-                        const struct r300vk_cmd_entry *e,
-                        const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets,
+r3v_replay_dispatch(struct r3v_device *device,
+                        const struct r3v_cmd_entry *e,
+                        const struct r3v_cmd_bind_descriptor_sets *last_bind_dsets,
                         const uint8_t *push_data)
 {
-   const struct r300vk_cmd_dispatch *d = &e->dispatch;
-   const struct r300vk_pipeline *pl = d->pipeline;
+   const struct r3v_cmd_dispatch *d = &e->dispatch;
+   const struct r3v_pipeline *pl = d->pipeline;
    bool ok = false;
 
    if (!pl)
       return VK_SUCCESS;
 
    if (!pl->admission.admissible) {
-      mesa_logw("r300vk: dispatch no-op (admission): %s (%s)",
+      mesa_logw("r3v: dispatch no-op (admission): %s (%s)",
                 r300_compute_reject_name(pl->admission.reason),
                 pl->admission.detail ? pl->admission.detail : "no detail");
       return VK_SUCCESS;
@@ -790,8 +790,8 @@ r300vk_replay_dispatch(struct r300vk_device *device,
     * UNKNOWN_SHAPE, the dispatch becomes an explicit logged no-op rather
     * than a poisoned queue. */
    const char *index_reject = NULL;
-   if (!r300vk_dispatch_index_exact(pl, d, &index_reject)) {
-      mesa_logw("r300vk: dispatch no-op (index exactness): %s "
+   if (!r3v_dispatch_index_exact(pl, d, &index_reject)) {
+      mesa_logw("r3v: dispatch no-op (index exactness): %s "
                 "consumption=%d stride=%u offset=%u gx=%u gy=%u gz=%u",
                 index_reject ? index_reject : "unknown",
                 pl ? (int)pl->index_consumption.consumption : -1,
@@ -802,82 +802,82 @@ r300vk_replay_dispatch(struct r300vk_device *device,
    }
 
    if (pl->identity_map.is_identity_map)
-      ok = r300vk_identity_map_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_identity_map_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->const_fill.is_const_fill)
-      ok = r300vk_const_fill_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_const_fill_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->affine_iota.is_affine_iota)
-      ok = r300vk_affine_iota_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_affine_iota_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->multilimb_mul.is_multilimb_mul)
-      ok = r300vk_multilimb_mul_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_multilimb_mul_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->cas.is_cas)
-      ok = r300vk_cas_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_cas_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->log4_pool.is_log4_pool)
-      ok = r300vk_log4_pool_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_log4_pool_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->binary_map.is_binary_map)
-      ok = r300vk_binary_map_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_binary_map_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->unary_map.is_unary_map)
-      ok = r300vk_unary_map_dispatch_replay(device, pl, d, last_bind_dsets,
+      ok = r3v_unary_map_dispatch_replay(device, pl, d, last_bind_dsets,
                                             push_data);
    else if (pl->unary_transcendental.is_unary_transcendental)
-      ok = r300vk_unary_transcendental_dispatch_replay(device, pl, d,
+      ok = r3v_unary_transcendental_dispatch_replay(device, pl, d,
                                                        last_bind_dsets);
    else if (pl->binary_transcendental.is_binary_transcendental)
-      ok = r300vk_binary_transcendental_dispatch_replay(device, pl, d,
+      ok = r3v_binary_transcendental_dispatch_replay(device, pl, d,
                                                         last_bind_dsets);
    else if (pl->bitwise_logicop.is_bitwise_logicop)
-      ok = r300vk_bitwise_logicop_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_bitwise_logicop_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->shift_logical.is_shift_logical)
-      ok = r300vk_shift_logical_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_shift_logical_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->shift_variable.is_shift_variable)
-      ok = r300vk_shift_variable_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_shift_variable_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->dp4.is_dp4)
-      ok = r300vk_dp4_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_dp4_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qmul.is_qmul)
-      ok = r300vk_qmul_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_qmul_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qdiv.is_qdiv)
-      ok = r300vk_qdiv_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_qdiv_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->mat4vec.is_mat4vec)
-      ok = r300vk_mat4vec_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_mat4vec_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qfmul.is_qfmul)
-      ok = r300vk_qfmul_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_qfmul_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qrotate.is_qrotate)
-      ok = r300vk_qrotate_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_qrotate_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qconj.is_qconj)
-      ok = r300vk_qconj_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_qconj_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qnorm.is_qnorm)
-      ok = r300vk_qnorm_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_qnorm_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qnormalize.is_qnormalize)
-      ok = r300vk_qnormalize_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_qnormalize_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->omul.is_omul)
-      ok = r300vk_omul_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_omul_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->oaddsub.is_oaddsub)
-      ok = r300vk_oaddsub_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_oaddsub_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->oconj.is_oconj)
-      ok = r300vk_oconj_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_oconj_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->onorm.is_onorm)
-      ok = r300vk_onorm_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_onorm_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->odiv.is_odiv)
-      ok = r300vk_odiv_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_odiv_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->otrans.is_otrans)
-      ok = r300vk_otrans_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_otrans_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qfmadd.is_qfmadd)
-      ok = r300vk_qfmadd_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_qfmadd_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qfmmul.is_qfmmul)
-      ok = r300vk_qfmmul_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_qfmmul_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->blend_acc_reduction.is_blend_acc_reduction)
-      ok = r300vk_blend_acc_reduction_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_blend_acc_reduction_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->zpass_reduction.is_zpass_reduction)
-      ok = r300vk_zpass_reduction_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_zpass_reduction_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->multipass_scan.is_multipass_scan)
-      ok = r300vk_multipass_scan_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_multipass_scan_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->predicated_store.is_predicated_store)
-      ok = r300vk_predicated_store_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_predicated_store_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->multitap_gather.is_multitap_gather)
-      ok = r300vk_multitap_gather_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_multitap_gather_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->ieee16_classify.is_ieee16_classify)
-      ok = r300vk_ieee16_classify_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_ieee16_classify_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->ieee16_mul.is_ieee16_mul)
-      ok = r300vk_ieee16_mul_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r3v_ieee16_mul_dispatch_replay(device, pl, d, last_bind_dsets);
 
    if (ok)
       return VK_SUCCESS;
@@ -889,7 +889,7 @@ r300vk_replay_dispatch(struct r300vk_device *device,
     * and subsequent commands on the same queue proceed normally.
     * R300_COMPUTE_REJECT_UNKNOWN_SHAPE is the canonical label for this case. */
    if (pl) {
-      mesa_logw("r300vk: dispatch no-op (unknown shape): admit=%d "
+      mesa_logw("r3v: dispatch no-op (unknown shape): admit=%d "
                 "identity=%d binary=%d unary=%d const_fill=%d",
                 (int)pl->admission.admissible,
                 (int)pl->identity_map.is_identity_map,
@@ -907,7 +907,7 @@ r300vk_replay_dispatch(struct r300vk_device *device,
  * on magnitudes with the sign restored.  Exact for a 1:1 or integer-ratio blit;
  * a fractional ratio rounds, which is where a tile seam can land one texel off. */
 static int32_t
-r300vk_blit_affine(int32_t x, int32_t a0, int32_t a1, int32_t b0, int32_t b1)
+r3v_blit_affine(int32_t x, int32_t a0, int32_t a1, int32_t b0, int32_t b1)
 {
    int64_t num = (int64_t)(x - a0) * (b1 - b0);
    int64_t den = (int64_t)a1 - a0;
@@ -925,17 +925,17 @@ r300vk_blit_affine(int32_t x, int32_t a0, int32_t a1, int32_t b0, int32_t b1)
  * boundary, and the destination pre-image of the source tile boundary, so every
  * resulting interval lies within one destination tile and maps into one source
  * tile.  An axis is at most two tiles, so at most four cuts (three intervals). */
-struct r300vk_blit_axis {
+struct r3v_blit_axis {
    uint32_t count;
    int32_t  dst[4];
    int32_t  src[4];
 };
 
 static void
-r300vk_blit_build_axis(int32_t d_lo, int32_t d_hi,
+r3v_blit_build_axis(int32_t d_lo, int32_t d_hi,
                        int32_t s_lo, int32_t s_hi,
                        int32_t dst_bound, int32_t src_bound,
-                       struct r300vk_blit_axis *ax)
+                       struct r3v_blit_axis *ax)
 {
    int32_t cuts[4];
    uint32_t n = 0;
@@ -953,7 +953,7 @@ r300vk_blit_build_axis(int32_t d_lo, int32_t d_hi,
       const int32_t s_max = MAX2(s_lo, s_hi);
       if (src_bound > s_min && src_bound < s_max) {
          const int32_t dcut =
-            r300vk_blit_affine(src_bound, s_lo, s_hi, d_lo, d_hi);
+            r3v_blit_affine(src_bound, s_lo, s_hi, d_lo, d_hi);
          if (dcut > d_lo && dcut < d_hi)
             cuts[n++] = dcut;
       }
@@ -972,13 +972,13 @@ r300vk_blit_build_axis(int32_t d_lo, int32_t d_hi,
       if (i > 0 && cuts[i] == cuts[i - 1])
          continue;
       ax->dst[ax->count] = cuts[i];
-      ax->src[ax->count] = r300vk_blit_affine(cuts[i], d_lo, d_hi, s_lo, s_hi);
+      ax->src[ax->count] = r3v_blit_affine(cuts[i], d_lo, d_hi, s_lo, s_hi);
       ax->count++;
    }
 }
 
 static unsigned
-r300vk_blit_aspect_mask(VkImageAspectFlags aspect)
+r3v_blit_aspect_mask(VkImageAspectFlags aspect)
 {
    unsigned mask = 0;
 
@@ -998,8 +998,8 @@ r300vk_blit_aspect_mask(VkImageAspectFlags aspect)
  *
  * r300 samples the blit source as a texture and takes TX_WIDTH/TX_HEIGHT from
  * the source resource, so a source resource wider than the sampler cap wraps the
- * 11-bit field and samples garbage.  r300vk therefore tiles every optimal image
- * at the sampler cap (see r300vk_split_image_axis), and this walks the source
+ * 11-bit field and samples garbage.  r3v therefore tiles every optimal image
+ * at the sampler cap (see r3v_split_image_axis), and this walks the source
  * and destination tile grids together: each sub-blit reads one source tile and
  * writes one destination tile, both within the cap.  The cut list places every
  * sub-blit's source inside one source tile and destination inside one
@@ -1027,7 +1027,7 @@ r300vk_blit_aspect_mask(VkImageAspectFlags aspect)
  * buffer/image transfer round-trips remain byte-exact; only the scratch copy
  * the sampler reads is canonicalized. */
 static struct pipe_resource *
-r300vk_dxt35_canonical_source(struct r300vk_device *device,
+r3v_dxt35_canonical_source(struct r3v_device *device,
                               struct pipe_resource *sres)
 {
    struct pipe_context *pipe = device->pipe;
@@ -1090,13 +1090,13 @@ r300vk_dxt35_canonical_source(struct r300vk_device *device,
 }
 
 static void
-r300vk_replay_blit(struct r300vk_device *device,
-                   const struct r300vk_cmd_entry *e)
+r3v_replay_blit(struct r3v_device *device,
+                   const struct r3v_cmd_entry *e)
 {
    struct pipe_context *pipe = device->pipe;
-   const struct r300vk_cmd_blit_image *b = &e->blit_image;
-   const struct r300vk_image *src = b->src;
-   const struct r300vk_image *dst = b->dst;
+   const struct r3v_cmd_blit_image *b = &e->blit_image;
+   const struct r3v_image *src = b->src;
+   const struct r3v_image *dst = b->dst;
 
    if (!src->resource || !dst->resource)
       return;
@@ -1104,7 +1104,7 @@ r300vk_replay_blit(struct r300vk_device *device,
    const enum pipe_format src_fmt = src->resource->format;
    const enum pipe_format dst_fmt = dst->resource->format;
    const unsigned mask =
-      r300vk_blit_aspect_mask(b->region.srcSubresource.aspectMask);
+      r3v_blit_aspect_mask(b->region.srcSubresource.aspectMask);
    if (!mask)
       return;
 
@@ -1147,9 +1147,9 @@ r300vk_replay_blit(struct r300vk_device *device,
    const int32_t dst_bound_x = dst->tile_cols == 2 ? (int32_t)dst->tile_width[0] : 0;
    const int32_t dst_bound_y = dst->tile_rows == 2 ? (int32_t)dst->tile_height[0] : 0;
 
-   struct r300vk_blit_axis ax, ay;
-   r300vk_blit_build_axis(dx_lo, dx_hi, sx_lo, sx_hi, dst_bound_x, src_bound_x, &ax);
-   r300vk_blit_build_axis(dy_lo, dy_hi, sy_lo, sy_hi, dst_bound_y, src_bound_y, &ay);
+   struct r3v_blit_axis ax, ay;
+   r3v_blit_build_axis(dx_lo, dx_hi, sx_lo, sx_hi, dst_bound_x, src_bound_x, &ax);
+   r3v_blit_build_axis(dy_lo, dy_hi, sy_lo, sy_hi, dst_bound_y, src_bound_y, &ay);
 
    /* A cap-sized (2048x2048) blit fills much of the r300 command stream, and
     * the kernel CS parser rejects a submission that batches several of them
@@ -1188,7 +1188,7 @@ r300vk_replay_blit(struct r300vk_device *device,
             const uint32_t sidx = srow * src->tile_cols + scol;
             if (!canonical_tiles[sidx])
                canonical_tiles[sidx] =
-                  r300vk_dxt35_canonical_source(device, sres);
+                  r3v_dxt35_canonical_source(device, sres);
             /* A failed scratch (allocation or map) falls back to the stored
              * blocks: color0 <= color1 blocks then take the silicon decode --
              * degraded for those blocks only, never fatal. */
@@ -1196,10 +1196,10 @@ r300vk_replay_blit(struct r300vk_device *device,
                sres = canonical_tiles[sidx];
          }
 
-         const int32_t sox = (int32_t)r300vk_image_tile_origin_x(src, scol);
-         const int32_t soy = (int32_t)r300vk_image_tile_origin_y(src, srow);
-         const int32_t dox = (int32_t)r300vk_image_tile_origin_x(dst, dcol);
-         const int32_t doy = (int32_t)r300vk_image_tile_origin_y(dst, drow);
+         const int32_t sox = (int32_t)r3v_image_tile_origin_x(src, scol);
+         const int32_t soy = (int32_t)r3v_image_tile_origin_y(src, srow);
+         const int32_t dox = (int32_t)r3v_image_tile_origin_x(dst, dcol);
+         const int32_t doy = (int32_t)r3v_image_tile_origin_y(dst, drow);
 
          /* The destination cuts are exact, so a cell sits inside its
           * destination tile.  A fractional-ratio source coordinate is rounded,
@@ -1248,7 +1248,7 @@ r300vk_replay_blit(struct r300vk_device *device,
 }
 
 static void
-r300vk_replay_end_render_pass(struct r300vk_device *device,
+r3v_replay_end_render_pass(struct r3v_device *device,
                                bool *skip_render_pass,
                                uint32_t *tile_origin_x,
                                uint32_t *tile_origin_y,
@@ -1270,8 +1270,8 @@ r300vk_replay_end_render_pass(struct r300vk_device *device,
 }
 
 static void
-r300vk_replay_pipeline_barrier(struct r300vk_device *device,
-                                const struct r300vk_cmd_entry *e,
+r3v_replay_pipeline_barrier(struct r3v_device *device,
+                                const struct r3v_cmd_entry *e,
                                 bool skip_render_pass)
 {
    struct pipe_context *pipe = device->pipe;
@@ -1288,20 +1288,20 @@ r300vk_replay_pipeline_barrier(struct r300vk_device *device,
 }
 
 static const uint8_t
-r300vk_zero_ubo[R300VK_VK10_MIN_UNIFORM_BUFFER_RANGE];
+r3v_zero_ubo[R3V_VK10_MIN_UNIFORM_BUFFER_RANGE];
 
 /* r300g's set_constant_buffer hook ignores NULL, so a missing descriptor must
  * bind a valid buffer to replace stale CONST[0] state from an earlier draw.  The
  * zero buffer is sized to the advertised Vulkan UBO range; the compiler already
  * rejects offsets the r300 constant file cannot represent. */
 static void
-r300vk_bind_missing_stage_ubo_zero(struct r300vk_device *device,
+r3v_bind_missing_stage_ubo_zero(struct r3v_device *device,
                                    mesa_shader_stage stage)
 {
    struct pipe_constant_buffer cb;
    memset(&cb, 0, sizeof(cb));
-   cb.user_buffer = r300vk_zero_ubo;
-   cb.buffer_size = sizeof(r300vk_zero_ubo);
+   cb.user_buffer = r3v_zero_ubo;
+   cb.buffer_size = sizeof(r3v_zero_ubo);
    device->pipe->set_constant_buffer(device->pipe, stage, 0, &cb);
 }
 
@@ -1311,12 +1311,12 @@ r300vk_bind_missing_stage_ubo_zero(struct r300vk_device *device,
  * while the shader reads only a later one, and binding the first UBO in layout
  * order would feed CONST[0] the wrong buffer.  The set index in binds->sets[] is
  * relative to binds->first_set, so the absolute Vulkan set number is
- * first_set + s.  r300vk buffers are host-visible Gallium PIPE_BUFFERs, so
+ * first_set + s.  r3v buffers are host-visible Gallium PIPE_BUFFERs, so
  * cb.buffer feeds r300_set_constant_buffer directly (it reads malloced_buffer
  * with no GPU upload), matching the compute identity-map path. */
 static bool
-r300vk_try_bind_one_stage_ubo(struct r300vk_device *device,
-                              const struct r300vk_cmd_bind_descriptor_sets *binds,
+r3v_try_bind_one_stage_ubo(struct r3v_device *device,
+                              const struct r3v_cmd_bind_descriptor_sets *binds,
                               mesa_shader_stage stage,
                               uint32_t ubo_set, uint32_t ubo_binding)
 {
@@ -1324,16 +1324,16 @@ r300vk_try_bind_one_stage_ubo(struct r300vk_device *device,
    for (uint32_t s = 0; s < binds->set_count; s++) {
       if (binds->first_set + s != ubo_set)
          continue;
-      const struct r300vk_descriptor_set *set = binds->sets[s];
+      const struct r3v_descriptor_set *set = binds->sets[s];
       if (!set || !set->layout)
          continue;
       for (uint32_t b = 0; b < set->layout->binding_count; b++) {
-         const struct r300vk_dsl_binding *bnd = &set->layout->bindings[b];
+         const struct r3v_dsl_binding *bnd = &set->layout->bindings[b];
          if (bnd->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
              bnd->binding != ubo_binding)
             continue;
-         const struct r300vk_descriptor *desc = &set->descriptors[bnd->offset];
-         VK_FROM_HANDLE(r300vk_buffer, buf, desc->buf.buffer);
+         const struct r3v_descriptor *desc = &set->descriptors[bnd->offset];
+         VK_FROM_HANDLE(r3v_buffer, buf, desc->buf.buffer);
          if (!buf || !buf->resource)
             return false;
 
@@ -1351,7 +1351,7 @@ r300vk_try_bind_one_stage_ubo(struct r300vk_device *device,
                                                     MIN2(cb.buffer_size, 32),
                                                     PIPE_MAP_READ, &cx);
             if (cf) {
-               fprintf(stderr, "r300vk vs-ubo: off=%u size=%u "
+               fprintf(stderr, "r3v vs-ubo: off=%u size=%u "
                        "c0=[%g %g %g %g][%g %g %g %g]\n",
                        cb.buffer_offset, cb.buffer_size,
                        cf[0], cf[1], cf[2], cf[3],
@@ -1368,14 +1368,14 @@ r300vk_try_bind_one_stage_ubo(struct r300vk_device *device,
 }
 
 static void
-r300vk_bind_one_stage_ubo(struct r300vk_device *device,
-                          const struct r300vk_cmd_bind_descriptor_sets *binds,
+r3v_bind_one_stage_ubo(struct r3v_device *device,
+                          const struct r3v_cmd_bind_descriptor_sets *binds,
                           mesa_shader_stage stage,
                           uint32_t ubo_set, uint32_t ubo_binding)
 {
-   if (!r300vk_try_bind_one_stage_ubo(device, binds, stage,
+   if (!r3v_try_bind_one_stage_ubo(device, binds, stage,
                                       ubo_set, ubo_binding))
-      r300vk_bind_missing_stage_ubo_zero(device, stage);
+      r3v_bind_missing_stage_ubo_zero(device, stage);
 }
 
 /* r300 has separate vertex and fragment constant files, so bind each stage's
@@ -1383,17 +1383,17 @@ r300vk_bind_one_stage_ubo(struct r300vk_device *device,
  * two bindings of the same buffer (dEQP-VK.ubo.link_by_binding) -- so neither is
  * forced onto the other.  A stage that reads no UBO binds nothing. */
 static void
-r300vk_bind_descriptor_ubo(struct r300vk_device *device,
-                           const struct r300vk_pipeline *pipeline,
-                           const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_bind_descriptor_ubo(struct r3v_device *device,
+                           const struct r3v_pipeline *pipeline,
+                           const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!binds || !pipeline)
       return;
    if (pipeline->vs_has_ubo)
-      r300vk_bind_one_stage_ubo(device, binds, MESA_SHADER_VERTEX,
+      r3v_bind_one_stage_ubo(device, binds, MESA_SHADER_VERTEX,
                                 pipeline->vs_ubo_set, pipeline->vs_ubo_binding);
    if (pipeline->fs_has_ubo)
-      r300vk_bind_one_stage_ubo(device, binds, MESA_SHADER_FRAGMENT,
+      r3v_bind_one_stage_ubo(device, binds, MESA_SHADER_FRAGMENT,
                                 pipeline->fs_ubo_set, pipeline->fs_ubo_binding);
 }
 
@@ -1410,13 +1410,13 @@ r300vk_bind_descriptor_ubo(struct r300vk_device *device,
  * into the caller's scratch (valid through draw_vbo) so the recorded window is
  * left intact for the next draw. */
 static void
-r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data,
+r3v_bind_push_constants(struct r3v_device *device, const uint8_t *data,
                            uint32_t int_word_mask, uint8_t *scratch)
 {
    struct pipe_context *pipe = device->pipe;
    const uint8_t *bind_data = data;
    if (int_word_mask) {
-      memcpy(scratch, data, R300VK_MAX_PUSH_CONSTANTS_SIZE);
+      memcpy(scratch, data, R3V_MAX_PUSH_CONSTANTS_SIZE);
       for (unsigned w = 0; w < 32; w++) {
          if (!(int_word_mask & (1u << w)))
             continue;
@@ -1430,12 +1430,12 @@ r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data,
    struct pipe_constant_buffer cb;
    memset(&cb, 0, sizeof(cb));
    cb.user_buffer = bind_data;
-   cb.buffer_size = R300VK_MAX_PUSH_CONSTANTS_SIZE;
+   cb.buffer_size = R3V_MAX_PUSH_CONSTANTS_SIZE;
    pipe->set_constant_buffer(pipe, MESA_SHADER_VERTEX, 0, &cb);
    pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
 }
 
-/* R300VK_MAX_FS_SAMPLER_UNITS (the fixed fragment texture-unit count) is shared
+/* R3V_MAX_FS_SAMPLER_UNITS (the fixed fragment texture-unit count) is shared
  * with the pipeline via r3v_private.h, which sizes the per-draw bookkeeping
  * arrays here and the (set,binding)->unit map there from the same bound. */
 
@@ -1460,9 +1460,9 @@ vk_swizzle_to_pipe(VkComponentSwizzle s)
 
 /* The transient fragment sampler views bound for one draw, recorded so the same
  * draw can release them after draw_vbo returns. */
-struct r300vk_bound_textures {
-   struct pipe_sampler_view *views[R300VK_MAX_FS_SAMPLER_UNITS];
-   unsigned                  units[R300VK_MAX_FS_SAMPLER_UNITS];
+struct r3v_bound_textures {
+   struct pipe_sampler_view *views[R3V_MAX_FS_SAMPLER_UNITS];
+   unsigned                  units[R3V_MAX_FS_SAMPLER_UNITS];
    unsigned                  count;
 };
 
@@ -1472,8 +1472,8 @@ struct r300vk_bound_textures {
  * resource of a split image.  Built as PIPE_TEXTURE_2D, so only a plain 2D view
  * is correct. */
 static struct pipe_sampler_view *
-r300vk_create_resource_sampler_view(struct pipe_context *pipe,
-                                    const struct r300vk_descriptor *desc,
+r3v_create_resource_sampler_view(struct pipe_context *pipe,
+                                    const struct r3v_descriptor *desc,
                                     struct pipe_resource *res,
                                     void **sampler_state)
 {
@@ -1481,7 +1481,7 @@ r300vk_create_resource_sampler_view(struct pipe_context *pipe,
    if (desc->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || !res)
       return NULL;
 
-   VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
+   VK_FROM_HANDLE(r3v_image_view, iv, desc->img.image_view);
    if (!iv || !iv->vk.image || iv->vk.view_type != VK_IMAGE_VIEW_TYPE_2D)
       return NULL;
 
@@ -1495,12 +1495,12 @@ r300vk_create_resource_sampler_view(struct pipe_context *pipe,
       return NULL;
 
    struct vk_sampler *vks = vk_sampler_from_handle(desc->img.sampler);
-   void *samp_cso = vks ? r300vk_sampler_from_vk(vks)->pipe_cso : NULL;
+   void *samp_cso = vks ? r3v_sampler_from_vk(vks)->pipe_cso : NULL;
    if (!samp_cso)
       return NULL;
 
    const enum pipe_format fmt =
-      r300vk_vk_format_to_pipe_format(iv->vk.view_format);
+      r3v_vk_format_to_pipe_format(iv->vk.view_format);
    if (fmt == PIPE_FORMAT_NONE)
       return NULL;
 
@@ -1527,21 +1527,21 @@ r300vk_create_resource_sampler_view(struct pipe_context *pipe,
  * gives wrong texels outside one tile, so it is left unbound here unless the
  * experimental tile-stitch path handles it per tile. */
 static struct pipe_sampler_view *
-r300vk_create_descriptor_sampler_view(struct pipe_context *pipe,
-                                      const struct r300vk_descriptor *desc,
+r3v_create_descriptor_sampler_view(struct pipe_context *pipe,
+                                      const struct r3v_descriptor *desc,
                                       void **sampler_state)
 {
    *sampler_state = NULL;
    if (desc->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
       return NULL;
-   VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
+   VK_FROM_HANDLE(r3v_image_view, iv, desc->img.image_view);
    if (!iv || !iv->vk.image)
       return NULL;
-   struct r300vk_image *img =
-      container_of(iv->vk.image, struct r300vk_image, vk);
+   struct r3v_image *img =
+      container_of(iv->vk.image, struct r3v_image, vk);
    if (img->tile_cols > 1 || img->tile_rows > 1 || !img->resource)
       return NULL;
-   return r300vk_create_resource_sampler_view(pipe, desc, img->resource,
+   return r3v_create_resource_sampler_view(pipe, desc, img->resource,
                                               sampler_state);
 }
 
@@ -1551,16 +1551,16 @@ r300vk_create_descriptor_sampler_view(struct pipe_context *pipe,
  * tile or single-axis image fills the missing tiles with the nearest existing
  * tile and sets that axis' threshold to 2.0 so the select collapses to it. */
 static void
-r300vk_stitch_bind_one(struct r300vk_device *device,
-                       const struct r300vk_descriptor *desc, unsigned base_unit,
+r3v_stitch_bind_one(struct r3v_device *device,
+                       const struct r3v_descriptor *desc, unsigned base_unit,
                        struct pipe_sampler_view **views, void **sampler_states,
                        unsigned *max_unit_plus_one,
-                       struct r300vk_bound_textures *bound, float geom[8])
+                       struct r3v_bound_textures *bound, float geom[8])
 {
    struct pipe_context *pipe = device->pipe;
-   VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
-   struct r300vk_image *img =
-      (iv && iv->vk.image) ? container_of(iv->vk.image, struct r300vk_image, vk)
+   VK_FROM_HANDLE(r3v_image_view, iv, desc->img.image_view);
+   struct r3v_image *img =
+      (iv && iv->vk.image) ? container_of(iv->vk.image, struct r3v_image, vk)
                            : NULL;
    if (!img || !img->tile_cols || !img->tile_rows)
       return;
@@ -1572,8 +1572,8 @@ r300vk_stitch_bind_one(struct r300vk_device *device,
    const bool multitile = (img->tile_cols > 1 || img->tile_rows > 1);
 
    struct vk_sampler *vks = vk_sampler_from_handle(desc->img.sampler);
-   const struct r300vk_sampler *s =
-      vks ? r300vk_sampler_from_vk(vks) : NULL;
+   const struct r3v_sampler *s =
+      vks ? r3v_sampler_from_vk(vks) : NULL;
 
    /* Pick the charts and the per-chart affine/select geometry.  A single-tile
     * image collapses to tile 0 (threshold 2.0) for any sampler.  A split image
@@ -1585,7 +1585,7 @@ r300vk_stitch_bind_one(struct r300vk_device *device,
    unsigned acols = img->tile_cols, arows = img->tile_rows;
 
    if (multitile && s && s->linear_stitch_eligible) {
-      if (!r300vk_image_ensure_sampler_atlas(device, img))
+      if (!r3v_image_ensure_sampler_atlas(device, img))
          return;
       src = img->sampler_atlas.tiles;
       acols = img->sampler_atlas.cols;
@@ -1620,17 +1620,17 @@ r300vk_stitch_bind_one(struct r300vk_device *device,
       geom[7] = (img->tile_rows > 1) ? (h0 / H) : 2.0f;
    }
 
-   for (unsigned ti = 0; ti < R300VK_NEAREST_STITCH_TILE_UNITS; ti++) {
+   for (unsigned ti = 0; ti < R3V_NEAREST_STITCH_TILE_UNITS; ti++) {
       const unsigned unit = base_unit + ti;
-      if (unit >= R300VK_MAX_FS_SAMPLER_UNITS ||
-          bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
+      if (unit >= R3V_MAX_FS_SAMPLER_UNITS ||
+          bound->count >= R3V_MAX_FS_SAMPLER_UNITS)
          break;
       const unsigned trow = MIN2(ti / 2, arows - 1);
       const unsigned tcol = MIN2(ti % 2, acols - 1);
       struct pipe_resource *res = src[trow * acols + tcol];
       void *samp_cso = NULL;
       struct pipe_sampler_view *view =
-         r300vk_create_resource_sampler_view(pipe, desc, res, &samp_cso);
+         r3v_create_resource_sampler_view(pipe, desc, res, &samp_cso);
       if (!view || views[unit]) {
          if (view)
             pipe_sampler_view_reference(&view, NULL);
@@ -1654,7 +1654,7 @@ r300vk_stitch_bind_one(struct r300vk_device *device,
  * updates to start at unit zero, so this replay gathers all touched units and
  * commits one contiguous [0, max_unit] sampler array.
  *
- * Descriptor sets above zero are skipped until r300vk lowers sampler variables
+ * Descriptor sets above zero are skipped until r3v lowers sampler variables
  * onto a flattened set+binding namespace.  Binding them by binding number alone
  * would alias set 1 binding 0 over set 0 binding 0 and render the wrong image.
  * Only the fragment stage is bound: the RS480 SW-TCL vertex path has no sampler
@@ -1667,10 +1667,10 @@ r300vk_stitch_bind_one(struct r300vk_device *device,
  * left unbound here, preserving its prior unsampled behavior rather than
  * sampling wrong.  Records the bound (unit, view) pairs for the caller to release. */
 static void
-r300vk_bind_descriptor_textures(struct r300vk_device *device,
-                                const struct r300vk_pipeline *pipeline,
-                                const struct r300vk_cmd_bind_descriptor_sets *binds,
-                                struct r300vk_bound_textures *bound,
+r3v_bind_descriptor_textures(struct r3v_device *device,
+                                const struct r3v_pipeline *pipeline,
+                                const struct r3v_cmd_bind_descriptor_sets *binds,
+                                struct r3v_bound_textures *bound,
                                 float *stitch_geom)
 {
    struct pipe_context *pipe = device->pipe;
@@ -1678,23 +1678,23 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
    if (!binds || !pipeline)
       return;
 
-   void *sampler_states[R300VK_MAX_FS_SAMPLER_UNITS] = {0};
-   struct pipe_sampler_view *views[R300VK_MAX_FS_SAMPLER_UNITS] = {0};
+   void *sampler_states[R3V_MAX_FS_SAMPLER_UNITS] = {0};
+   struct pipe_sampler_view *views[R3V_MAX_FS_SAMPLER_UNITS] = {0};
    unsigned max_unit_plus_one = 0;
    bool stitched = false;
 
    for (uint32_t s = 0; s < binds->set_count; s++) {
       const uint32_t descriptor_set = binds->first_set + s;
-      const struct r300vk_descriptor_set *set = binds->sets[s];
+      const struct r3v_descriptor_set *set = binds->sets[s];
       if (!set || !set->layout)
          continue;
       for (uint32_t b = 0; b < set->layout->binding_count; b++) {
-         const struct r300vk_dsl_binding *bnd = &set->layout->bindings[b];
+         const struct r3v_dsl_binding *bnd = &set->layout->bindings[b];
          if (bnd->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
             continue;
 
          /* The flat unit the pipeline assigned this (set, binding) is the unit the
-          * fragment shader samples (r300vk_nir_remap_sampler_units rewrote the
+          * fragment shader samples (r3v_nir_remap_sampler_units rewrote the
           * sampler binding to it).  A binding absent from the map is one the
           * pipeline does not sample; skip it. */
          int base_unit = -1;
@@ -1712,7 +1712,7 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
           * the four tile views and fill the per-image geometry rather than one
           * whole-image view (which would wrap past the 2048 sampler cap). */
          if (pipeline->fs_nearest_stitch && stitch_geom) {
-            r300vk_stitch_bind_one(device, &set->descriptors[bnd->offset], base_unit,
+            r3v_stitch_bind_one(device, &set->descriptors[bnd->offset], base_unit,
                                    views, sampler_states, &max_unit_plus_one,
                                    bound, stitch_geom);
             stitched = true;
@@ -1720,17 +1720,17 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
          }
 
          const uint32_t count =
-            MIN2(bnd->count, R300VK_MAX_FS_SAMPLER_UNITS - base_unit);
+            MIN2(bnd->count, R3V_MAX_FS_SAMPLER_UNITS - base_unit);
          for (uint32_t elem = 0; elem < count; elem++) {
             const unsigned unit = base_unit + elem;
-            if (bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
+            if (bound->count >= R3V_MAX_FS_SAMPLER_UNITS)
                break;
 
-            const struct r300vk_descriptor *desc =
+            const struct r3v_descriptor *desc =
                &set->descriptors[bnd->offset + elem];
             void *samp_cso = NULL;
             struct pipe_sampler_view *view =
-               r300vk_create_descriptor_sampler_view(pipe, desc, &samp_cso);
+               r3v_create_descriptor_sampler_view(pipe, desc, &samp_cso);
             if (!view)
                continue;
 
@@ -1764,7 +1764,7 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
       struct pipe_constant_buffer cb;
       memset(&cb, 0, sizeof(cb));
       cb.user_buffer = stitch_geom;
-      cb.buffer_size = R300VK_NEAREST_STITCH_CONST_VEC4S * 16;
+      cb.buffer_size = R3V_NEAREST_STITCH_CONST_VEC4S * 16;
       pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
    }
 }
@@ -1779,7 +1779,7 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
  * self-dependency contract.  Returns NULL when the snapshot cannot be
  * created; the caller skips the draw. */
 static struct pipe_resource *
-r300vk_ia_self_dep_snapshot(struct r300vk_device *device,
+r3v_ia_self_dep_snapshot(struct r3v_device *device,
                             struct pipe_resource *src)
 {
    struct pipe_context *pipe = device->pipe;
@@ -1828,30 +1828,30 @@ r300vk_ia_self_dep_snapshot(struct r300vk_device *device,
 
 /* Bind the single input attachment the FS reads via the lowered subpassLoad.
  *
- * The NIR pass r300vk_nir_lower_subpass_input rewrites subpassLoad into a
+ * The NIR pass r3v_nir_lower_subpass_input rewrites subpassLoad into a
  * normalized texture() read: tex_coord = gl_FragCoord.xy * inv_extent.  Replay
  * translates the viewport into tile-local coordinates, so split images bind the
  * matching tile resource and use that tile's {1/W, 1/H, 0, 0} in FS CONST[0].
  * This function supplies both the sampler view and the constant.
  *
  * inv_extent must outlive the draw_vbo call; pass a float[4] allocated in the
- * caller's frame (r300vk_replay_draw), which matches the lifetime rule in
- * r300vk_multitap_gather_dispatch_replay: "the float4 is consumed before this
+ * caller's frame (r3v_replay_draw), which matches the lifetime rule in
+ * r3v_multitap_gather_dispatch_replay: "the float4 is consumed before this
  * stack frame unwinds at the draw below."
  *
- * The collision check at pipeline compile (r300vk_compile_shader) ensures the
+ * The collision check at pipeline compile (r3v_compile_shader) ensures the
  * FS cannot combine subpassInput with UBO or push_const, so FS CONST[0] is
  * always free for inv_extent here.  A VS using push_const is still valid --
- * r300vk_bind_push_constants set VS+FS CONST[0]; this call overrides FS CONST[0]
+ * r3v_bind_push_constants set VS+FS CONST[0]; this call overrides FS CONST[0]
  * only.  The identity sampler (NEAREST, CLAMP_TO_EDGE, normalized coords) is the
  * correct choice because the lowered coordinate is already in [0,1].  Identity
  * swizzle (XYZW) is used because subpassLoad returns the raw attachment value
  * without component remapping (Vulkan spec, section "Input Attachment Reads"). */
 static bool
-r300vk_bind_input_attachment(struct r300vk_device *device,
-                             const struct r300vk_pipeline *pipeline,
-                             const struct r300vk_cmd_bind_descriptor_sets *binds,
-                             struct r300vk_bound_textures *bound,
+r3v_bind_input_attachment(struct r3v_device *device,
+                             const struct r3v_pipeline *pipeline,
+                             const struct r3v_cmd_bind_descriptor_sets *binds,
+                             struct r3v_bound_textures *bound,
                              uint32_t tile_origin_x,
                              uint32_t tile_origin_y,
                              bool input_self_dep,
@@ -1865,28 +1865,28 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
       const uint32_t descriptor_set = binds->first_set + s;
       if (descriptor_set != pipeline->fs_input_attachment_set)
          continue;
-      const struct r300vk_descriptor_set *set = binds->sets[s];
+      const struct r3v_descriptor_set *set = binds->sets[s];
       if (!set || !set->layout)
          continue;
       for (uint32_t b = 0; b < set->layout->binding_count; b++) {
-         const struct r300vk_dsl_binding *bnd = &set->layout->bindings[b];
+         const struct r3v_dsl_binding *bnd = &set->layout->bindings[b];
          if (bnd->type != VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT ||
              bnd->binding != pipeline->fs_input_attachment_binding)
             continue;
 
-         const unsigned unit = R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT;
-         if (bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
+         const unsigned unit = R3V_INPUT_ATTACHMENT_SAMPLER_UNIT;
+         if (bound->count >= R3V_MAX_FS_SAMPLER_UNITS)
             return false;
 
-         const struct r300vk_descriptor *desc = &set->descriptors[bnd->offset];
-         VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
+         const struct r3v_descriptor *desc = &set->descriptors[bnd->offset];
+         VK_FROM_HANDLE(r3v_image_view, iv, desc->img.image_view);
          if (!iv || !iv->vk.image)
             return false;
          if (iv->vk.view_type != VK_IMAGE_VIEW_TYPE_2D)
             return false;
 
-         struct r300vk_image *img =
-            container_of(iv->vk.image, struct r300vk_image, vk);
+         struct r3v_image *img =
+            container_of(iv->vk.image, struct r3v_image, vk);
          if (!img->resource)
             return false;
 
@@ -1895,7 +1895,7 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
          uint32_t input_width = 0;
          uint32_t input_height = 0;
          struct pipe_resource *input_resource =
-            r300vk_image_tile_resource_for_origin(img, tile_origin_x,
+            r3v_image_tile_resource_for_origin(img, tile_origin_x,
                                                   tile_origin_y,
                                                   &input_tile_origin_x,
                                                   &input_tile_origin_y,
@@ -1908,13 +1908,13 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
           * render target, so sample its snapshot instead. */
          if (input_self_dep) {
             input_resource =
-               r300vk_ia_self_dep_snapshot(device, input_resource);
+               r3v_ia_self_dep_snapshot(device, input_resource);
             if (!input_resource)
                return false;
          }
 
          const enum pipe_format fmt =
-            r300vk_vk_format_to_pipe_format(iv->vk.view_format);
+            r3v_vk_format_to_pipe_format(iv->vk.view_format);
          if (fmt == PIPE_FORMAT_NONE)
             return false;
 
@@ -1965,15 +1965,15 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
  * first so the pipe_context drops its internal reference before the view's last
  * reference is dropped -- the identity-map teardown order. */
 static void
-r300vk_unbind_descriptor_textures(struct r300vk_device *device,
-                                  struct r300vk_bound_textures *bound)
+r3v_unbind_descriptor_textures(struct r3v_device *device,
+                                  struct r3v_bound_textures *bound)
 {
    struct pipe_context *pipe = device->pipe;
    if (!bound->count)
       return;
 
-   void *sampler_states[R300VK_MAX_FS_SAMPLER_UNITS] = {0};
-   struct pipe_sampler_view *views[R300VK_MAX_FS_SAMPLER_UNITS] = {0};
+   void *sampler_states[R3V_MAX_FS_SAMPLER_UNITS] = {0};
+   struct pipe_sampler_view *views[R3V_MAX_FS_SAMPLER_UNITS] = {0};
    unsigned max_unit_plus_one = 0;
    for (unsigned i = 0; i < bound->count; i++)
       max_unit_plus_one = MAX2(max_unit_plus_one, bound->units[i] + 1);
@@ -1989,28 +1989,28 @@ r300vk_unbind_descriptor_textures(struct r300vk_device *device,
 }
 
 /* The replay-side dynamic-state overlay.  vkCmdSet* calls are recorded as
- * R300VK_CMD_SET_DYNAMIC_STATE entries; the walker merges them in stream
+ * R3V_CMD_SET_DYNAMIC_STATE entries; the walker merges them in stream
  * order into this shadow and, at each draw, overlays the bound pipeline's
  * rs/dsa templates with the fields that are BOTH set in the command buffer
  * and declared dynamic by that pipeline (Vulkan's static-else-dynamic rule).
  * Stencil per-face fields keep separate front/back values because successive
  * vkCmdSetStencil* calls may target either face mask. */
-struct r300vk_dyn_face {
-   uint32_t    set;          /* R300VK_DYN_STENCIL_* bits set on this face */
+struct r3v_dyn_face {
+   uint32_t    set;          /* R3V_DYN_STENCIL_* bits set on this face */
    VkStencilOp sfail, spass, sdepth_fail;
    VkCompareOp scompare;
    uint32_t    cmp_mask, wr_mask, ref;
 };
 
-struct r300vk_dyn_overlay {
-   uint32_t            flags;  /* accumulated R300VK_DYN_* set bits */
+struct r3v_dyn_overlay {
+   uint32_t            flags;  /* accumulated R3V_DYN_* set bits */
    VkCullModeFlags     cull;
    VkFrontFace         front_face;
    VkPrimitiveTopology topology;
    VkBool32            depth_test, depth_write;
    VkCompareOp         depth_op;
    VkBool32            stencil_test;
-   struct r300vk_dyn_face face[2];   /* 0 = front, 1 = back */
+   struct r3v_dyn_face face[2];   /* 0 = front, 1 = back */
    float               bias_const, bias_clamp, bias_slope;
    VkBool32            bias_enable;
    float               blend_const[4];
@@ -2025,63 +2025,63 @@ struct r300vk_dyn_overlay {
    bool                dirty;
 };
 
-#define R300VK_DYN_RS_BITS (R300VK_DYN_CULL | R300VK_DYN_FRONT_FACE | \
-                            R300VK_DYN_LINE_WIDTH | R300VK_DYN_DEPTH_BIAS | \
-                            R300VK_DYN_DEPTH_BIAS_EN | R300VK_DYN_LINE_STIPPLE)
-#define R300VK_DYN_DSA_BITS (R300VK_DYN_DEPTH_TEST | R300VK_DYN_DEPTH_WRITE | \
-                             R300VK_DYN_DEPTH_OP | R300VK_DYN_STENCIL_TEST | \
-                             R300VK_DYN_STENCIL_OP | \
-                             R300VK_DYN_STENCIL_CMP_MASK | \
-                             R300VK_DYN_STENCIL_WR_MASK)
+#define R3V_DYN_RS_BITS (R3V_DYN_CULL | R3V_DYN_FRONT_FACE | \
+                            R3V_DYN_LINE_WIDTH | R3V_DYN_DEPTH_BIAS | \
+                            R3V_DYN_DEPTH_BIAS_EN | R3V_DYN_LINE_STIPPLE)
+#define R3V_DYN_DSA_BITS (R3V_DYN_DEPTH_TEST | R3V_DYN_DEPTH_WRITE | \
+                             R3V_DYN_DEPTH_OP | R3V_DYN_STENCIL_TEST | \
+                             R3V_DYN_STENCIL_OP | \
+                             R3V_DYN_STENCIL_CMP_MASK | \
+                             R3V_DYN_STENCIL_WR_MASK)
 
 static void
-r300vk_dyn_overlay_merge(struct r300vk_dyn_overlay *ov,
-                         const struct r300vk_cmd_set_dynamic *d)
+r3v_dyn_overlay_merge(struct r3v_dyn_overlay *ov,
+                         const struct r3v_cmd_set_dynamic *d)
 {
    const uint32_t f = d->flags;
    ov->flags |= f;
-   if (f & R300VK_DYN_CULL)         ov->cull = d->cull;
-   if (f & R300VK_DYN_FRONT_FACE)   ov->front_face = d->front;
-   if (f & R300VK_DYN_TOPOLOGY)     ov->topology = d->topology;
-   if (f & R300VK_DYN_DEPTH_TEST)   ov->depth_test = d->depth_test;
-   if (f & R300VK_DYN_DEPTH_WRITE)  ov->depth_write = d->depth_write;
-   if (f & R300VK_DYN_DEPTH_OP)     ov->depth_op = d->depth_op;
-   if (f & R300VK_DYN_STENCIL_TEST) ov->stencil_test = d->stencil_test;
-   if (f & R300VK_DYN_DEPTH_BIAS) {
+   if (f & R3V_DYN_CULL)         ov->cull = d->cull;
+   if (f & R3V_DYN_FRONT_FACE)   ov->front_face = d->front;
+   if (f & R3V_DYN_TOPOLOGY)     ov->topology = d->topology;
+   if (f & R3V_DYN_DEPTH_TEST)   ov->depth_test = d->depth_test;
+   if (f & R3V_DYN_DEPTH_WRITE)  ov->depth_write = d->depth_write;
+   if (f & R3V_DYN_DEPTH_OP)     ov->depth_op = d->depth_op;
+   if (f & R3V_DYN_STENCIL_TEST) ov->stencil_test = d->stencil_test;
+   if (f & R3V_DYN_DEPTH_BIAS) {
       ov->bias_const = d->bias_const;
       ov->bias_clamp = d->bias_clamp;
       ov->bias_slope = d->bias_slope;
    }
-   if (f & R300VK_DYN_DEPTH_BIAS_EN) ov->bias_enable = d->bias_enable;
-   if (f & R300VK_DYN_BLEND_CONST)
+   if (f & R3V_DYN_DEPTH_BIAS_EN) ov->bias_enable = d->bias_enable;
+   if (f & R3V_DYN_BLEND_CONST)
       memcpy(ov->blend_const, d->blend_const, sizeof(ov->blend_const));
-   if (f & R300VK_DYN_LINE_WIDTH)   ov->line_width = d->line_width;
-   if (f & R300VK_DYN_LINE_STIPPLE) {
+   if (f & R3V_DYN_LINE_WIDTH)   ov->line_width = d->line_width;
+   if (f & R3V_DYN_LINE_STIPPLE) {
       ov->stipple_factor  = d->stipple_factor;
       ov->stipple_pattern = d->stipple_pattern;
    }
 
-   const uint32_t face_bits = f & (R300VK_DYN_STENCIL_OP |
-                                   R300VK_DYN_STENCIL_CMP_MASK |
-                                   R300VK_DYN_STENCIL_WR_MASK |
-                                   R300VK_DYN_STENCIL_REF);
+   const uint32_t face_bits = f & (R3V_DYN_STENCIL_OP |
+                                   R3V_DYN_STENCIL_CMP_MASK |
+                                   R3V_DYN_STENCIL_WR_MASK |
+                                   R3V_DYN_STENCIL_REF);
    if (face_bits) {
       for (unsigned i = 0; i < 2; i++) {
          const VkStencilFaceFlags want =
             i == 0 ? VK_STENCIL_FACE_FRONT_BIT : VK_STENCIL_FACE_BACK_BIT;
          if (!(d->face_mask & want))
             continue;
-         struct r300vk_dyn_face *fc = &ov->face[i];
+         struct r3v_dyn_face *fc = &ov->face[i];
          fc->set |= face_bits;
-         if (f & R300VK_DYN_STENCIL_OP) {
+         if (f & R3V_DYN_STENCIL_OP) {
             fc->sfail = d->sfail;
             fc->spass = d->spass;
             fc->sdepth_fail = d->sdepth_fail;
             fc->scompare = d->scompare;
          }
-         if (f & R300VK_DYN_STENCIL_CMP_MASK) fc->cmp_mask = d->cmp_mask;
-         if (f & R300VK_DYN_STENCIL_WR_MASK)  fc->wr_mask = d->wr_mask;
-         if (f & R300VK_DYN_STENCIL_REF)      fc->ref = d->ref;
+         if (f & R3V_DYN_STENCIL_CMP_MASK) fc->cmp_mask = d->cmp_mask;
+         if (f & R3V_DYN_STENCIL_WR_MASK)  fc->wr_mask = d->wr_mask;
+         if (f & R3V_DYN_STENCIL_REF)      fc->ref = d->ref;
       }
    }
    ov->dirty = true;
@@ -2093,9 +2093,9 @@ r300vk_dyn_overlay_merge(struct r300vk_dyn_overlay *ov,
  * the old transient is deleted after its replacement is bound, and r300g's
  * delete_rs/dsa_state unbind-if-bound covers the final cleanup. */
 static void
-r300vk_dyn_overlay_apply(struct r300vk_device *device,
-                         const struct r300vk_pipeline *pl,
-                         struct r300vk_dyn_overlay *ov,
+r3v_dyn_overlay_apply(struct r3v_device *device,
+                         const struct r3v_pipeline *pl,
+                         struct r3v_dyn_overlay *ov,
                          bool has_zs,
                          bool has_stencil)
 {
@@ -2113,25 +2113,25 @@ r300vk_dyn_overlay_apply(struct r300vk_device *device,
    const uint32_t eff = ov->flags & pl->dyn_mask;
 
    void *new_rs_cso = NULL;
-   if (eff & R300VK_DYN_RS_BITS) {
+   if (eff & R3V_DYN_RS_BITS) {
       struct pipe_rasterizer_state rs = pl->rs_template;
-      if (eff & R300VK_DYN_CULL)
-         rs.cull_face = r300vk_cull_mode_to_pipe(ov->cull);
-      if (eff & R300VK_DYN_FRONT_FACE)
+      if (eff & R3V_DYN_CULL)
+         rs.cull_face = r3v_cull_mode_to_pipe(ov->cull);
+      if (eff & R3V_DYN_FRONT_FACE)
          rs.front_ccw = ov->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE;
-      if (eff & R300VK_DYN_LINE_WIDTH)
+      if (eff & R3V_DYN_LINE_WIDTH)
          rs.line_width = ov->line_width != 0.0f ? ov->line_width : 1.0f;
       /* Stipple enable is pipeline-static; the dynamic state carries only
        * factor and pattern. */
-      if ((eff & R300VK_DYN_LINE_STIPPLE) && rs.line_stipple_enable) {
+      if ((eff & R3V_DYN_LINE_STIPPLE) && rs.line_stipple_enable) {
          rs.line_stipple_factor  = ov->stipple_factor
                                    ? ov->stipple_factor - 1 : 0;
          rs.line_stipple_pattern = ov->stipple_pattern;
       }
-      const bool bias = (eff & R300VK_DYN_DEPTH_BIAS_EN)
+      const bool bias = (eff & R3V_DYN_DEPTH_BIAS_EN)
                         ? (bool)ov->bias_enable : pl->rs_template.offset_tri;
       rs.offset_tri = rs.offset_line = rs.offset_point = bias;
-      if (eff & R300VK_DYN_DEPTH_BIAS) {
+      if (eff & R3V_DYN_DEPTH_BIAS) {
          rs.offset_units = ov->bias_const;
          rs.offset_scale = ov->bias_slope;
          rs.offset_clamp = ov->bias_clamp;
@@ -2153,32 +2153,32 @@ r300vk_dyn_overlay_apply(struct r300vk_device *device,
    const bool template_uses_stencil = pl->dsa_template.stencil[0].enabled ||
                                       pl->dsa_template.stencil[1].enabled;
    void *new_dsa_cso = NULL;
-   if ((eff & R300VK_DYN_DSA_BITS) || (!has_zs && template_uses_zs) ||
+   if ((eff & R3V_DYN_DSA_BITS) || (!has_zs && template_uses_zs) ||
        (!has_stencil && template_uses_stencil)) {
       struct pipe_depth_stencil_alpha_state dsa = pl->dsa_template;
-      if (eff & R300VK_DYN_DEPTH_TEST)
+      if (eff & R3V_DYN_DEPTH_TEST)
          dsa.depth_enabled = ov->depth_test;
-      if (eff & R300VK_DYN_DEPTH_WRITE)
+      if (eff & R3V_DYN_DEPTH_WRITE)
          dsa.depth_writemask = ov->depth_write;
-      if (eff & R300VK_DYN_DEPTH_OP)
-         dsa.depth_func = r300vk_compare_op_to_pipe(ov->depth_op);
+      if (eff & R3V_DYN_DEPTH_OP)
+         dsa.depth_func = r3v_compare_op_to_pipe(ov->depth_op);
       for (unsigned i = 0; i < 2; i++) {
          struct pipe_stencil_state *st = &dsa.stencil[i];
-         const struct r300vk_dyn_face *fc = &ov->face[i];
-         if (eff & R300VK_DYN_STENCIL_TEST)
+         const struct r3v_dyn_face *fc = &ov->face[i];
+         if (eff & R3V_DYN_STENCIL_TEST)
             st->enabled = ov->stencil_test;
-         if ((eff & R300VK_DYN_STENCIL_OP) &&
-             (fc->set & R300VK_DYN_STENCIL_OP)) {
-            st->func     = r300vk_compare_op_to_pipe(fc->scompare);
-            st->fail_op  = r300vk_stencil_op_to_pipe(fc->sfail);
-            st->zpass_op = r300vk_stencil_op_to_pipe(fc->spass);
-            st->zfail_op = r300vk_stencil_op_to_pipe(fc->sdepth_fail);
+         if ((eff & R3V_DYN_STENCIL_OP) &&
+             (fc->set & R3V_DYN_STENCIL_OP)) {
+            st->func     = r3v_compare_op_to_pipe(fc->scompare);
+            st->fail_op  = r3v_stencil_op_to_pipe(fc->sfail);
+            st->zpass_op = r3v_stencil_op_to_pipe(fc->spass);
+            st->zfail_op = r3v_stencil_op_to_pipe(fc->sdepth_fail);
          }
-         if ((eff & R300VK_DYN_STENCIL_CMP_MASK) &&
-             (fc->set & R300VK_DYN_STENCIL_CMP_MASK))
+         if ((eff & R3V_DYN_STENCIL_CMP_MASK) &&
+             (fc->set & R3V_DYN_STENCIL_CMP_MASK))
             st->valuemask = (uint8_t)fc->cmp_mask;
-         if ((eff & R300VK_DYN_STENCIL_WR_MASK) &&
-             (fc->set & R300VK_DYN_STENCIL_WR_MASK))
+         if ((eff & R3V_DYN_STENCIL_WR_MASK) &&
+             (fc->set & R3V_DYN_STENCIL_WR_MASK))
             st->writemask = (uint8_t)fc->wr_mask;
       }
       if (!has_zs) {
@@ -2205,17 +2205,17 @@ r300vk_dyn_overlay_apply(struct r300vk_device *device,
    ov->dsa_cso = new_dsa_cso;
 
    struct pipe_stencil_ref sref;
-   const bool dyn_ref = (eff & R300VK_DYN_STENCIL_REF) != 0;
-   sref.ref_value[0] = (dyn_ref && (ov->face[0].set & R300VK_DYN_STENCIL_REF))
+   const bool dyn_ref = (eff & R3V_DYN_STENCIL_REF) != 0;
+   sref.ref_value[0] = (dyn_ref && (ov->face[0].set & R3V_DYN_STENCIL_REF))
                        ? (uint8_t)ov->face[0].ref
                        : (uint8_t)pl->static_stencil_ref_front;
-   sref.ref_value[1] = (dyn_ref && (ov->face[1].set & R300VK_DYN_STENCIL_REF))
+   sref.ref_value[1] = (dyn_ref && (ov->face[1].set & R3V_DYN_STENCIL_REF))
                        ? (uint8_t)ov->face[1].ref
                        : (uint8_t)pl->static_stencil_ref_back;
    pipe->set_stencil_ref(pipe, sref);
 
    struct pipe_blend_color bc;
-   memcpy(bc.color, (eff & R300VK_DYN_BLEND_CONST) ? ov->blend_const
+   memcpy(bc.color, (eff & R3V_DYN_BLEND_CONST) ? ov->blend_const
                                                    : pl->static_blend_const,
           sizeof(bc.color));
    pipe->set_blend_color(pipe, &bc);
@@ -2227,8 +2227,8 @@ r300vk_dyn_overlay_apply(struct r300vk_device *device,
  * delete_rs/dsa_state unbind-if-bound, so deleting a still-bound transient
  * is safe; the next pipeline bind supplies fresh state. */
 static void
-r300vk_dyn_overlay_cleanup(struct r300vk_device *device,
-                           struct r300vk_dyn_overlay *ov)
+r3v_dyn_overlay_cleanup(struct r3v_device *device,
+                           struct r3v_dyn_overlay *ov)
 {
    struct pipe_context *pipe = device->pipe;
    if (ov->rs_cso) {
@@ -2246,10 +2246,10 @@ r300vk_dyn_overlay_cleanup(struct r300vk_device *device,
 }
 
 static void
-r300vk_replay_draw(struct r300vk_device *device,
-                    const struct r300vk_cmd_entry *e,
-                    const struct r300vk_pipeline *bound_pipeline,
-                    const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets,
+r3v_replay_draw(struct r3v_device *device,
+                    const struct r3v_cmd_entry *e,
+                    const struct r3v_pipeline *bound_pipeline,
+                    const struct r3v_cmd_bind_descriptor_sets *last_bind_dsets,
                     const uint8_t *push_const,
                     struct pipe_vertex_buffer *vb_cache,
                     VkDeviceSize *vb_sizes,
@@ -2260,7 +2260,7 @@ r300vk_replay_draw(struct r300vk_device *device,
                     uint32_t tile_width,
                     uint32_t tile_height,
                     struct util_dynarray *transient_vbs,
-                    struct r300vk_dyn_overlay *dyn,
+                    struct r3v_dyn_overlay *dyn,
                     bool render_pass_has_zs,
                     bool render_pass_has_stencil,
                     bool input_self_dep,
@@ -2273,7 +2273,7 @@ r300vk_replay_draw(struct r300vk_device *device,
     * synthetic VS streams, viewport/scissor, and robustness clamp below apply
     * to both.  An indexed draw's "first/count" are the first index and index
     * count; the index buffer itself is set on pipe_draw_info further down. */
-   const bool indexed = (e->type == R300VK_CMD_DRAW_INDEXED);
+   const bool indexed = (e->type == R3V_CMD_DRAW_INDEXED);
    const uint32_t draw_first      = indexed ? e->draw_indexed.first_index
                                             : e->draw.first;
    const uint32_t draw_count      = indexed ? e->draw_indexed.index_count
@@ -2287,7 +2287,7 @@ r300vk_replay_draw(struct r300vk_device *device,
     * declared topology dynamic. */
    const bool dyn_topology =
       bound_pipeline && dyn && !device->dbg_no_topo_override &&
-      (dyn->flags & bound_pipeline->dyn_mask & R300VK_DYN_TOPOLOGY);
+      (dyn->flags & bound_pipeline->dyn_mask & R3V_DYN_TOPOLOGY);
    const VkPrimitiveTopology draw_topology =
       dyn_topology ? dyn->topology
                    : (indexed ? e->draw_indexed.topology : e->draw.topology);
@@ -2295,7 +2295,7 @@ r300vk_replay_draw(struct r300vk_device *device,
    /* A graphics pipeline with no fragment stage (rasterizer discard or
     * depth-only) leaves fs_cso NULL -- a failed fragment compile would instead
     * have failed pipeline creation, so NULL here means no fragment stage.  Such
-    * a draw produces no color in r300vk's color-attachment model.  It must be
+    * a draw produces no color in r3v's color-attachment model.  It must be
     * skipped rather than entered: on the RS482 SW-TCL path r300_update_derived_state
     * compiles the hardware vertex shader only when caps.has_tcl is set (it is
     * not), yet r300_update_rs_block unconditionally dereferences r300_vs()->shader
@@ -2307,7 +2307,7 @@ r300vk_replay_draw(struct r300vk_device *device,
    /* Overlay the merged vkCmdSet* shadow onto this pipeline's rs/dsa state
     * before any draw-time binds. */
    if (dyn)
-      r300vk_dyn_overlay_apply(device, bound_pipeline, dyn,
+      r3v_dyn_overlay_apply(device, bound_pipeline, dyn,
                                render_pass_has_zs, render_pass_has_stencil);
 
    /* Dynamic vertex strides: when a vkCmdBindVertexBuffers2 stride differs
@@ -2319,7 +2319,7 @@ r300vk_replay_draw(struct r300vk_device *device,
       bool patch = false;
       for (uint32_t i = 0; i < bound_pipeline->velems_count; i++) {
          const uint8_t b = bound_pipeline->velems_template[i].vertex_buffer_index;
-         if (b < R300VK_MAX_VERTEX_BINDINGS &&
+         if (b < R3V_MAX_VERTEX_BINDINGS &&
              (vb_strides_mask & BITFIELD_BIT(b)) &&
              bound_pipeline->velems_template[i].src_stride !=
              (uint16_t)vb_strides[b]) {
@@ -2333,7 +2333,7 @@ r300vk_replay_draw(struct r300vk_device *device,
                 sizeof(ve[0]) * bound_pipeline->velems_count);
          for (uint32_t i = 0; i < bound_pipeline->velems_count; i++) {
             const uint8_t b = ve[i].vertex_buffer_index;
-            if (b < R300VK_MAX_VERTEX_BINDINGS &&
+            if (b < R3V_MAX_VERTEX_BINDINGS &&
                 (vb_strides_mask & BITFIELD_BIT(b)))
                ve[i].src_stride = (uint16_t)vb_strides[b];
          }
@@ -2365,18 +2365,18 @@ r300vk_replay_draw(struct r300vk_device *device,
    }
    if (bound_pipeline && bound_pipeline->has_static_scissor) {
       struct pipe_scissor_state sc;
-      r300vk_scissor_vk_to_tile(&bound_pipeline->static_scissor,
+      r3v_scissor_vk_to_tile(&bound_pipeline->static_scissor,
                                 tile_origin_x, tile_origin_y,
                                 tile_width, tile_height, &sc);
       pipe->set_scissor_states(pipe, 0, 1, &sc);
    }
 
    const uint32_t robust_instances =
-      r300vk_robust_instance_count(bound_pipeline, vb_cache, vb_sizes,
+      r3v_robust_instance_count(bound_pipeline, vb_cache, vb_sizes,
                                    vb_strides, vb_strides_mask,
                                    draw_first_inst, draw_instances);
 
-   struct pipe_vertex_buffer draw_vb_cache[R300VK_MAX_VERTEX_BINDINGS];
+   struct pipe_vertex_buffer draw_vb_cache[R3V_MAX_VERTEX_BINDINGS];
    memcpy(draw_vb_cache, vb_cache, sizeof(draw_vb_cache));
    uint32_t draw_vb_max_used = vb_max_used;
    bool draw_vb_dirty = *vb_dirty;
@@ -2385,7 +2385,7 @@ r300vk_replay_draw(struct r300vk_device *device,
    /* Supply the synthetic VS-system-value stream(s) for this draw. */
    if (!indexed && bound_pipeline && bound_pipeline->needs_vertex_id_stream) {
       synthetic_streams_ready =
-         r300vk_bind_synthetic_index_stream(
+         r3v_bind_synthetic_index_stream(
             device, pipe, draw_vb_cache,
             bound_pipeline->vertex_id_vb_binding, draw_first,
             draw_count, transient_vbs);
@@ -2398,7 +2398,7 @@ r300vk_replay_draw(struct r300vk_device *device,
    if (synthetic_streams_ready && bound_pipeline &&
        bound_pipeline->needs_instance_id_stream) {
       synthetic_streams_ready =
-         r300vk_bind_synthetic_index_stream(
+         r3v_bind_synthetic_index_stream(
             device, pipe, draw_vb_cache,
             bound_pipeline->instance_id_vb_binding,
             draw_first_inst, robust_instances, transient_vbs);
@@ -2418,7 +2418,7 @@ r300vk_replay_draw(struct r300vk_device *device,
    struct pipe_draw_start_count_bias draw = { .index_bias = 0 };
 
    if (indexed) {
-      const struct r300vk_cmd_draw_indexed *di = &e->draw_indexed;
+      const struct r3v_cmd_draw_indexed *di = &e->draw_indexed;
       if (!di->index_buffer || !di->index_buffer->resource ||
           di->index_size == 0)
          return;
@@ -2429,7 +2429,7 @@ r300vk_replay_draw(struct r300vk_device *device,
        * vkCmdBindIndexBuffer byte offset is guaranteed a multiple of the index
        * size, so fold it into start.  index_bias is the vertexOffset added to
        * every fetched index.  Clamp the count to the bound range -- the indexed
-       * analog of r300vk_robust_vertex_count -- so the index fetch cannot read
+       * analog of r3v_robust_vertex_count -- so the index fetch cannot read
        * past the buffer end (the kernel CS validator rejects the same overrun). */
       const uint64_t start_elem =
          (uint64_t)di->first_index + di->index_offset / di->index_size;
@@ -2444,13 +2444,13 @@ r300vk_replay_draw(struct r300vk_device *device,
                                                : (unsigned)usable)
                    : 0;
       draw.index_bias = di->vertex_offset;
-      draw.count = r300vk_robust_indexed_vertex_count(
+      draw.count = r3v_robust_indexed_vertex_count(
          pipe, bound_pipeline, vb_cache, vb_sizes, vb_strides, vb_strides_mask,
          di, draw.start, draw.count);
       if (synthetic_streams_ready && bound_pipeline &&
           bound_pipeline->needs_vertex_id_stream) {
          synthetic_streams_ready =
-            r300vk_bind_synthetic_indexed_vertex_index_stream(
+            r3v_bind_synthetic_indexed_vertex_index_stream(
                device, pipe, draw_vb_cache,
                bound_pipeline->vertex_id_vb_binding, di, draw.start,
                draw.count, transient_vbs);
@@ -2466,7 +2466,7 @@ r300vk_replay_draw(struct r300vk_device *device,
       info.index_size = 0;
       draw.start      = draw_first;
       draw.count      = synthetic_streams_ready ?
-         r300vk_robust_vertex_count(bound_pipeline, vb_cache,
+         r3v_robust_vertex_count(bound_pipeline, vb_cache,
                                      vb_sizes, vb_strides, vb_strides_mask,
                                      draw_first, draw_count) : 0;
    }
@@ -2484,13 +2484,13 @@ r300vk_replay_draw(struct r300vk_device *device,
        * the shader-chosen (set, binding) rather than the first UBO in layout. */
       /* pc_scratch holds the int->float-converted push window; it must outlive
        * the draw_vbo below (set_constant_buffer reads user_buffer directly). */
-      uint8_t pc_scratch[R300VK_MAX_PUSH_CONSTANTS_SIZE];
+      uint8_t pc_scratch[R3V_MAX_PUSH_CONSTANTS_SIZE];
       if (bound_pipeline && bound_pipeline->uses_push_constants)
-         r300vk_bind_push_constants(device, push_const,
+         r3v_bind_push_constants(device, push_const,
                                     bound_pipeline->push_const_int_word_mask,
                                     pc_scratch);
       else
-         r300vk_bind_descriptor_ubo(device, bound_pipeline, last_bind_dsets);
+         r3v_bind_descriptor_ubo(device, bound_pipeline, last_bind_dsets);
 
       /* Bind fragment textures for this draw, then release them after: the
        * sampler views are transient (created over the descriptor's image at
@@ -2498,27 +2498,27 @@ r300vk_replay_draw(struct r300vk_device *device,
        * stitch_geom holds the per-image tile geometry a stitched sampler binds to
        * FS CONST[0]; it lives in this frame, valid through the draw_vbo below (the
        * same user_buffer lifetime contract as ia_inv_extent). */
-      struct r300vk_bound_textures bound_tex;
+      struct r3v_bound_textures bound_tex;
       float stitch_geom[8] = {0};
-      r300vk_bind_descriptor_textures(device, bound_pipeline, last_bind_dsets,
+      r3v_bind_descriptor_textures(device, bound_pipeline, last_bind_dsets,
                                       &bound_tex, stitch_geom);
 
       /* Input attachment: override FS CONST[0] with inv_extent and bind the
-       * subpass color image.  Done after r300vk_bind_descriptor_textures so
+       * subpass color image.  Done after r3v_bind_descriptor_textures so
        * it can append to bound_tex without that function resetting bound->count.
        * ia_inv_extent lives in this frame, valid through draw_vbo below -- the
-       * same lifetime contract as r300vk_multitap_gather_dispatch_replay. */
+       * same lifetime contract as r3v_multitap_gather_dispatch_replay. */
       float ia_inv_extent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
       bool ia_bind_ok = true;
       if (bound_pipeline && bound_pipeline->fs_has_input_attachment)
-         ia_bind_ok = r300vk_bind_input_attachment(device, bound_pipeline,
+         ia_bind_ok = r3v_bind_input_attachment(device, bound_pipeline,
                                       last_bind_dsets, &bound_tex,
                                       tile_origin_x, tile_origin_y,
                                       input_self_dep, ia_inv_extent);
 
       if (device->dbg_log_draws) {
          fprintf(stderr,
-                 "r300vk draw: mode=%u count=%u start=%u inst=%u topo=%d "
+                 "r3v draw: mode=%u count=%u start=%u inst=%u topo=%d "
                  "dyn_topo=%d dyn_mask=0x%x dyn_flags=0x%x zs=%d\n",
                  (unsigned)info.mode, draw.count, draw.start, draw_instances,
                  (int)draw_topology, dyn_topology ? 1 : 0,
@@ -2533,7 +2533,7 @@ r300vk_replay_draw(struct r300vk_device *device,
             const struct pipe_vertex_element *ve =
                &bound_pipeline->velems_template[i];
             const uint8_t b = ve->vertex_buffer_index;
-            if (b >= R300VK_MAX_VERTEX_BINDINGS ||
+            if (b >= R3V_MAX_VERTEX_BINDINGS ||
                 !draw_vb_cache[b].buffer.resource)
                continue;
             const uint32_t eff_stride =
@@ -2543,7 +2543,7 @@ r300vk_replay_draw(struct r300vk_device *device,
                (uint64_t)draw_vb_cache[b].buffer_offset + ve->src_offset +
                (uint64_t)(indexed ? 0 : draw.start) * eff_stride;
             fprintf(stderr,
-                    "r300vk ve[%u]: bind=%u fmt=%u src_off=%u tmpl_stride=%u "
+                    "r3v ve[%u]: bind=%u fmt=%u src_off=%u tmpl_stride=%u "
                     "eff_stride=%u vb_off=%u vb_size=%llu fetch_off=%llu res=%p",
                     i, b, (unsigned)ve->src_format, ve->src_offset,
                     ve->src_stride, eff_stride,
@@ -2573,13 +2573,13 @@ r300vk_replay_draw(struct r300vk_device *device,
        * true under valid usage, so a conformant draw is never skipped. */
       if (ia_bind_ok)
          pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
-      r300vk_unbind_descriptor_textures(device, &bound_tex);
+      r3v_unbind_descriptor_textures(device, &bound_tex);
    }
 }
 
 static void
-r300vk_replay_bind_vertex_buffers(struct r300vk_device *device,
-                                   const struct r300vk_cmd_entry *e,
+r3v_replay_bind_vertex_buffers(struct r3v_device *device,
+                                   const struct r3v_cmd_entry *e,
                                    struct pipe_vertex_buffer *vb_cache,
                                    VkDeviceSize *vb_sizes,
                                    VkDeviceSize *vb_strides,
@@ -2611,8 +2611,8 @@ r300vk_replay_bind_vertex_buffers(struct r300vk_device *device,
 }
 
 static void
-r300vk_replay_set_viewport(struct r300vk_device *device,
-                            const struct r300vk_cmd_entry *e,
+r3v_replay_set_viewport(struct r3v_device *device,
+                            const struct r3v_cmd_entry *e,
                             uint32_t tile_origin_x,
                             uint32_t tile_origin_y)
 {
@@ -2624,8 +2624,8 @@ r300vk_replay_set_viewport(struct r300vk_device *device,
 }
 
 static void
-r300vk_replay_set_scissor(struct r300vk_device *device,
-                           const struct r300vk_cmd_entry *e,
+r3v_replay_set_scissor(struct r3v_device *device,
+                           const struct r3v_cmd_entry *e,
                            uint32_t tile_origin_x,
                            uint32_t tile_origin_y,
                            uint32_t tile_width,
@@ -2633,20 +2633,20 @@ r300vk_replay_set_scissor(struct r300vk_device *device,
 {
    struct pipe_context *pipe = device->pipe;
    struct pipe_scissor_state sc;
-   r300vk_scissor_vk_to_tile(&e->set_sc.scissor, tile_origin_x,
+   r3v_scissor_vk_to_tile(&e->set_sc.scissor, tile_origin_x,
                              tile_origin_y, tile_width, tile_height,
                              &sc);
    pipe->set_scissor_states(pipe, 0, 1, &sc);
 }
 
 static void
-r300vk_replay_bind_pipeline(struct r300vk_device *device,
-                             const struct r300vk_cmd_entry *e,
-                             const struct r300vk_pipeline **bound_pipeline,
+r3v_replay_bind_pipeline(struct r3v_device *device,
+                             const struct r3v_cmd_entry *e,
+                             const struct r3v_pipeline **bound_pipeline,
                              bool *vb_dirty)
 {
    struct pipe_context *pipe = device->pipe;
-   const struct r300vk_pipeline *pl = e->bind_pipeline.pipeline;
+   const struct r3v_pipeline *pl = e->bind_pipeline.pipeline;
    *bound_pipeline = pl;
    /* The spec requires a non-null pipeline handle
     * (VUID-vkCmdBindPipeline-pipeline-parameter), but an application that
@@ -2672,7 +2672,7 @@ r300vk_replay_bind_pipeline(struct r300vk_device *device,
 }
 
 static bool
-r300vk_begin_rp_clip_render_area(const struct r300vk_cmd_begin_render_pass *brp,
+r3v_begin_rp_clip_render_area(const struct r3v_cmd_begin_render_pass *brp,
                                  uint32_t tile_origin_x,
                                  uint32_t tile_origin_y,
                                  uint32_t tile_width,
@@ -2706,9 +2706,9 @@ r300vk_begin_rp_clip_render_area(const struct r300vk_cmd_begin_render_pass *brp,
  * full-cell case keeps the combined colour+ds clear so its CMASK fast-fill path
  * is unchanged. */
 static void
-r300vk_replay_begin_clears(struct pipe_context *pipe,
+r3v_replay_begin_clears(struct pipe_context *pipe,
                            struct pipe_framebuffer_state *fb,
-                           const struct r300vk_cmd_begin_render_pass *brp,
+                           const struct r3v_cmd_begin_render_pass *brp,
                            uint32_t tile_origin_x,
                            uint32_t tile_origin_y,
                            uint32_t tile_width,
@@ -2718,7 +2718,7 @@ r300vk_replay_begin_clears(struct pipe_context *pipe,
    int64_t clip_min_y = 0;
    int64_t clip_max_x = 0;
    int64_t clip_max_y = 0;
-   if (!r300vk_begin_rp_clip_render_area(brp, tile_origin_x, tile_origin_y,
+   if (!r3v_begin_rp_clip_render_area(brp, tile_origin_x, tile_origin_y,
                                          tile_width, tile_height,
                                          &clip_min_x, &clip_min_y,
                                          &clip_max_x, &clip_max_y))
@@ -2749,7 +2749,7 @@ r300vk_replay_begin_clears(struct pipe_context *pipe,
    }
 
    for (uint32_t slot = 0; slot < brp->color_count; slot++) {
-      const struct r300vk_image *img = brp->color_image[slot];
+      const struct r3v_image *img = brp->color_image[slot];
       if (!img || !fb->cbufs[slot].texture ||
           brp->load_op[slot] != VK_ATTACHMENT_LOAD_OP_CLEAR)
          continue;
@@ -2759,7 +2759,7 @@ r300vk_replay_begin_clears(struct pipe_context *pipe,
       uint32_t attachment_remaining_width = 0;
       uint32_t attachment_remaining_height = 0;
       struct pipe_resource *tile_resource =
-         r300vk_image_tile_resource_for_origin(img, tile_origin_x,
+         r3v_image_tile_resource_for_origin(img, tile_origin_x,
                                                tile_origin_y,
                                                &attachment_tile_origin_x,
                                                &attachment_tile_origin_y,
@@ -2787,7 +2787,7 @@ r300vk_replay_begin_clears(struct pipe_context *pipe,
       uint32_t ds_remaining_width = 0;
       uint32_t ds_remaining_height = 0;
       struct pipe_resource *ds_resource =
-         r300vk_image_tile_resource_for_origin(brp->ds_image, tile_origin_x,
+         r3v_image_tile_resource_for_origin(brp->ds_image, tile_origin_x,
                                                tile_origin_y,
                                                &ds_tile_origin_x,
                                                &ds_tile_origin_y,
@@ -2808,8 +2808,8 @@ r300vk_replay_begin_clears(struct pipe_context *pipe,
 }
 
 static void
-r300vk_replay_begin_render_pass(struct r300vk_device *device,
-                                 const struct r300vk_cmd_entry *e,
+r3v_replay_begin_render_pass(struct r3v_device *device,
+                                 const struct r3v_cmd_entry *e,
                                  unsigned tile_pass,
                                  uint32_t *tile_origin_x,
                                  uint32_t *tile_origin_y,
@@ -2823,15 +2823,15 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
    memset(&fb, 0, sizeof(fb));
    *skip_render_pass = false;
 
-   if (!r300vk_begin_rp_tile_geometry(&e->begin_rp, tile_pass,
+   if (!r3v_begin_rp_tile_geometry(&e->begin_rp, tile_pass,
                                       tile_origin_x, tile_origin_y,
                                       tile_width, tile_height)) {
       *skip_render_pass = true;
       return;
    }
 
-   if (*tile_width > R300VK_R3XX_MAX_RENDER_DIMENSION ||
-       *tile_height > R300VK_R3XX_MAX_RENDER_DIMENSION) {
+   if (*tile_width > R3V_R3XX_MAX_RENDER_DIMENSION ||
+       *tile_height > R3V_R3XX_MAX_RENDER_DIMENSION) {
       *skip_render_pass = true;
       return;
    }
@@ -2839,7 +2839,7 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
    fb.height = *tile_height;
 
    for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++) {
-      const struct r300vk_image *img = e->begin_rp.color_image[slot];
+      const struct r3v_image *img = e->begin_rp.color_image[slot];
       if (!img)
          continue;
 
@@ -2848,7 +2848,7 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
       uint32_t attachment_tile_origin_y = 0;
       uint32_t attachment_remaining_width = 0;
       uint32_t attachment_remaining_height = 0;
-      if (!r300vk_image_tile_for_origin(img, *tile_origin_x, *tile_origin_y,
+      if (!r3v_image_tile_for_origin(img, *tile_origin_x, *tile_origin_y,
                                         &attachment_tile_index,
                                         &attachment_tile_origin_x,
                                         &attachment_tile_origin_y,
@@ -2875,7 +2875,7 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
       uint32_t ds_tile_origin_y = 0;
       uint32_t ds_remaining_width = 0;
       uint32_t ds_remaining_height = 0;
-      if (!r300vk_image_tile_for_origin(e->begin_rp.ds_image,
+      if (!r3v_image_tile_for_origin(e->begin_rp.ds_image,
                                         *tile_origin_x, *tile_origin_y,
                                         &ds_tile_index, &ds_tile_origin_x,
                                         &ds_tile_origin_y,
@@ -2917,7 +2917,7 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
    }
 
    for (uint32_t slot = 0; slot < fb.nr_cbufs; slot++) {
-      const struct r300vk_image *img = e->begin_rp.color_image[slot];
+      const struct r3v_image *img = e->begin_rp.color_image[slot];
       if (!img) {
          struct pipe_resource tmpl = {
             .target     = PIPE_TEXTURE_2D,
@@ -2948,7 +2948,7 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
       uint32_t attachment_remaining_width = 0;
       uint32_t attachment_remaining_height = 0;
       fb.cbufs[slot].texture =
-         r300vk_image_tile_resource_for_origin(img, *tile_origin_x,
+         r3v_image_tile_resource_for_origin(img, *tile_origin_x,
                                                *tile_origin_y,
                                                &attachment_tile_origin_x,
                                                &attachment_tile_origin_y,
@@ -2971,13 +2971,13 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
 
    /* Bind the depth/stencil attachment as the zsbuf at the same pass origin. */
    if (e->begin_rp.ds_image) {
-      const struct r300vk_image *ds = e->begin_rp.ds_image;
+      const struct r3v_image *ds = e->begin_rp.ds_image;
       uint32_t ds_tile_origin_x = 0;
       uint32_t ds_tile_origin_y = 0;
       uint32_t ds_remaining_width = 0;
       uint32_t ds_remaining_height = 0;
       fb.zsbuf.texture =
-         r300vk_image_tile_resource_for_origin(ds, *tile_origin_x,
+         r3v_image_tile_resource_for_origin(ds, *tile_origin_x,
                                                *tile_origin_y,
                                                &ds_tile_origin_x,
                                                &ds_tile_origin_y,
@@ -2996,7 +2996,7 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
       }
    }
    pipe->set_framebuffer_state(pipe, &fb);
-   r300vk_replay_begin_clears(pipe, &fb, &e->begin_rp,
+   r3v_replay_begin_clears(pipe, &fb, &e->begin_rp,
                               *tile_origin_x, *tile_origin_y,
                               *tile_width, *tile_height);
 
@@ -3006,23 +3006,23 @@ out_release_dummy_cbufs:
 }
 
 static void
-r300vk_replay_clear_attachments(struct r300vk_device *device,
-                                const struct r300vk_cmd_entry *render_pass,
-                                const struct r300vk_cmd_clear_attachments *clear,
+r3v_replay_clear_attachments(struct r3v_device *device,
+                                const struct r3v_cmd_entry *render_pass,
+                                const struct r3v_cmd_clear_attachments *clear,
                                 uint32_t tile_origin_x,
                                 uint32_t tile_origin_y,
                                 uint32_t tile_width,
                                 uint32_t tile_height)
 {
    if (!render_pass ||
-       (!r300vk_begin_rp_ref_image(&render_pass->begin_rp) &&
+       (!r3v_begin_rp_ref_image(&render_pass->begin_rp) &&
         !render_pass->begin_rp.ds_image))
       return;
 
    /* A colour clear names its target subpass slot; select that attachment.
     * Depth/stencil clears ignore the slot. */
    const uint32_t color_slot = clear->color_attachment;
-   const struct r300vk_image *img =
+   const struct r3v_image *img =
       color_slot < render_pass->begin_rp.color_count
          ? render_pass->begin_rp.color_image[color_slot]
          : NULL;
@@ -3048,7 +3048,7 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
       uint32_t attachment_remaining_width = 0;
       uint32_t attachment_remaining_height = 0;
       struct pipe_resource *tile_resource =
-         r300vk_image_tile_resource_for_origin(img, tile_origin_x,
+         r3v_image_tile_resource_for_origin(img, tile_origin_x,
                                                tile_origin_y,
                                                &attachment_tile_origin_x,
                                                &attachment_tile_origin_y,
@@ -3083,7 +3083,7 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
     * defers GL clears and applies them as vkCmdClearAttachments once draws
     * arrive, so a missing depth clear leaves the fresh tile at ~0.0 and a
     * LESS test kills every fragment. */
-   const struct r300vk_image *ds = render_pass->begin_rp.ds_image;
+   const struct r3v_image *ds = render_pass->begin_rp.ds_image;
    if ((clear->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT |
                          VK_IMAGE_ASPECT_STENCIL_BIT)) && ds) {
       uint32_t ds_tile_origin_x = 0;
@@ -3091,7 +3091,7 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
       uint32_t ds_remaining_width = 0;
       uint32_t ds_remaining_height = 0;
       struct pipe_resource *ds_resource =
-         r300vk_image_tile_resource_for_origin(ds, tile_origin_x,
+         r3v_image_tile_resource_for_origin(ds, tile_origin_x,
                                                tile_origin_y,
                                                &ds_tile_origin_x,
                                                &ds_tile_origin_y,
@@ -3129,8 +3129,8 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
  * inline update, image copy/clear, host event signal).  The replay walker calls
  * this only outside render-pass segments and drains pending GPU work first, so
  * host-visible writes stay ordered ahead of later GPU reads. */
-static void r300vk_replay_host_entry(struct r300vk_device *device,
-                                     const struct r300vk_cmd_entry *e);
+static void r3v_replay_host_entry(struct r3v_device *device,
+                                     const struct r3v_cmd_entry *e);
 
 /* Drains GPU work flushed since the last drain so a following host transfer
  * observes finished output (a host READ) or is correctly ordered ahead of a
@@ -3139,7 +3139,7 @@ static void r300vk_replay_host_entry(struct r300vk_device *device,
  * drain.  No-op when nothing is pending, so a transfer-only run pays one fence
  * at most per host op that actually follows un-fenced GPU work. */
 static void
-r300vk_drain_gpu(struct r300vk_device *device, bool *gpu_pending)
+r3v_drain_gpu(struct r3v_device *device, bool *gpu_pending)
 {
    if (!*gpu_pending)
       return;
@@ -3154,29 +3154,29 @@ r300vk_drain_gpu(struct r300vk_device *device, bool *gpu_pending)
    *gpu_pending = false;
 }
 
-struct r300vk_replay_state {
-   struct pipe_vertex_buffer vb_cache[R300VK_MAX_VERTEX_BINDINGS];
-   VkDeviceSize vb_sizes[R300VK_MAX_VERTEX_BINDINGS];
-   VkDeviceSize vb_strides[R300VK_MAX_VERTEX_BINDINGS];
+struct r3v_replay_state {
+   struct pipe_vertex_buffer vb_cache[R3V_MAX_VERTEX_BINDINGS];
+   VkDeviceSize vb_sizes[R3V_MAX_VERTEX_BINDINGS];
+   VkDeviceSize vb_strides[R3V_MAX_VERTEX_BINDINGS];
    uint32_t vb_strides_mask;
    uint32_t vb_max_used;
    bool vb_dirty;
    uint8_t replay_pc[128];
-   const struct r300vk_pipeline *bound_pipeline;
-   struct r300vk_dyn_overlay dyn_ov;
-   const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets;
+   const struct r3v_pipeline *bound_pipeline;
+   struct r3v_dyn_overlay dyn_ov;
+   const struct r3v_cmd_bind_descriptor_sets *last_bind_dsets;
    /* Per-set accumulation of the descriptor sets bound so far, so a draw sees
     * every set even when separate vkCmdBindDescriptorSets calls bind different
     * sets.  last_bind_dsets points here once any set is bound. */
-   struct r300vk_cmd_bind_descriptor_sets accum_dsets;
-   const struct r300vk_cmd_entry *last_viewport;
-   const struct r300vk_cmd_entry *last_scissor;
+   struct r3v_cmd_bind_descriptor_sets accum_dsets;
+   const struct r3v_cmd_entry *last_viewport;
+   const struct r3v_cmd_entry *last_scissor;
    struct pipe_query *active_oq;
 };
 
 static void
-r300vk_replay_state_cleanup(struct r300vk_device *device,
-                            struct r300vk_replay_state *state)
+r3v_replay_state_cleanup(struct r3v_device *device,
+                            struct r3v_replay_state *state)
 {
    struct pipe_context *pipe = device->pipe;
 
@@ -3187,12 +3187,12 @@ r300vk_replay_state_cleanup(struct r300vk_device *device,
       pipe->destroy_query(pipe, state->active_oq);
       state->active_oq = NULL;
    }
-   r300vk_dyn_overlay_cleanup(device, &state->dyn_ov);
+   r3v_dyn_overlay_cleanup(device, &state->dyn_ov);
 }
 
 static void
-r300vk_replay_state_rebind(struct r300vk_device *device,
-                           struct r300vk_replay_state *state)
+r3v_replay_state_rebind(struct r3v_device *device,
+                           struct r3v_replay_state *state)
 {
    /* last_bind_dsets references this state's own accum_dsets.  A per-tile replay
     * copies the whole state by value, which leaves the pointer aimed at the
@@ -3205,7 +3205,7 @@ r300vk_replay_state_rebind(struct r300vk_device *device,
       return;
 
    struct pipe_context *pipe = device->pipe;
-   const struct r300vk_pipeline *pl = state->bound_pipeline;
+   const struct r3v_pipeline *pl = state->bound_pipeline;
    pipe->bind_blend_state(pipe, pl->blend_cso);
    pipe->bind_rasterizer_state(pipe, pl->rasterizer_cso);
    pipe->bind_depth_stencil_alpha_state(pipe, pl->dsa_cso);
@@ -3221,8 +3221,8 @@ r300vk_replay_state_rebind(struct r300vk_device *device,
  * "geometry never landed" (uniform clear colour) from "present path loses
  * content" (varied pixels here, black on screen). */
 static void
-r300vk_dbg_log_attachment_pixels(struct r300vk_device *device,
-                                 const struct r300vk_cmd_entry *rp,
+r3v_dbg_log_attachment_pixels(struct r3v_device *device,
+                                 const struct r3v_cmd_entry *rp,
                                  unsigned tile_pass,
                                  uint32_t tile_origin_x,
                                  uint32_t tile_origin_y,
@@ -3230,7 +3230,7 @@ r300vk_dbg_log_attachment_pixels(struct r300vk_device *device,
                                  uint32_t tile_height)
 {
    struct pipe_context *pipe = device->pipe;
-   const struct r300vk_image *img = r300vk_begin_rp_ref_image(&rp->begin_rp);
+   const struct r3v_image *img = r3v_begin_rp_ref_image(&rp->begin_rp);
    if (!img)
       return;
 
@@ -3239,7 +3239,7 @@ r300vk_dbg_log_attachment_pixels(struct r300vk_device *device,
    uint32_t attachment_remaining_width = 0;
    uint32_t attachment_remaining_height = 0;
    struct pipe_resource *tex =
-      r300vk_image_tile_resource_for_origin(img, tile_origin_x, tile_origin_y,
+      r3v_image_tile_resource_for_origin(img, tile_origin_x, tile_origin_y,
                                             &attachment_tile_origin_x,
                                             &attachment_tile_origin_y,
                                             &attachment_remaining_width,
@@ -3273,57 +3273,57 @@ r300vk_dbg_log_attachment_pixels(struct r300vk_device *device,
    }
    pipe->texture_unmap(pipe, xfer);
 
-   fprintf(stderr, "r300vk pixels: tile=%u %ux%u corner=%08x diff=%u "
+   fprintf(stderr, "r3v pixels: tile=%u %ux%u corner=%08x diff=%u "
            "s=[%08x %08x %08x %08x ...]\n",
            tile_pass, tile_width, tile_height, corner, diff,
            samples[0], samples[5], samples[10], samples[15]);
 }
 
 static bool
-r300vk_entry_begins_render_pass(const struct r300vk_cmd_entry *entry)
+r3v_entry_begins_render_pass(const struct r3v_cmd_entry *entry)
 {
-   return entry->type == R300VK_CMD_BEGIN_RENDER_PASS;
+   return entry->type == R3V_CMD_BEGIN_RENDER_PASS;
 }
 
 static uint32_t
-r300vk_render_pass_segment_end(const struct r300vk_cmd_buffer *cmd,
+r3v_render_pass_segment_end(const struct r3v_cmd_buffer *cmd,
                                uint32_t begin_entry)
 {
    for (uint32_t i = begin_entry; i < cmd->entry_count; i++)
-      if (cmd->entries[i].type == R300VK_CMD_END_RENDER_PASS)
+      if (cmd->entries[i].type == R3V_CMD_END_RENDER_PASS)
          return i + 1;
 
    return cmd->entry_count;
 }
 
 static uint32_t
-r300vk_render_pass_segment_tile_pass_count(const struct r300vk_cmd_buffer *cmd,
+r3v_render_pass_segment_tile_pass_count(const struct r3v_cmd_buffer *cmd,
                                            uint32_t begin_entry,
                                            uint32_t end_entry)
 {
    uint32_t pass_count = 1;
 
    for (uint32_t i = begin_entry; i < end_entry; i++) {
-      const struct r300vk_cmd_entry *entry = &cmd->entries[i];
-      if (entry->type != R300VK_CMD_BEGIN_RENDER_PASS &&
-          entry->type != R300VK_CMD_NEXT_SUBPASS)
+      const struct r3v_cmd_entry *entry = &cmd->entries[i];
+      if (entry->type != R3V_CMD_BEGIN_RENDER_PASS &&
+          entry->type != R3V_CMD_NEXT_SUBPASS)
          continue;
 
       pass_count = MAX2(pass_count,
-                        r300vk_begin_rp_tile_pass_count(&entry->begin_rp));
+                        r3v_begin_rp_tile_pass_count(&entry->begin_rp));
    }
 
    return pass_count;
 }
 
 static VkResult
-r300vk_replay_gpu_range(struct r300vk_device *device,
-                        const struct r300vk_cmd_buffer *cmd,
+r3v_replay_gpu_range(struct r3v_device *device,
+                        const struct r3v_cmd_buffer *cmd,
                         uint32_t first_entry,
                         uint32_t end_entry,
                         uint32_t tile_pass,
                         uint32_t cmd_tile_pass_count,
-                        struct r300vk_replay_state *state,
+                        struct r3v_replay_state *state,
                         struct util_dynarray *transient_vbs,
                         bool *gpu_pending)
 {
@@ -3333,14 +3333,14 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
    uint32_t tile_width = 0;
    uint32_t tile_height = 0;
    bool skip_render_pass = false;
-   const struct r300vk_cmd_entry *current_render_pass = NULL;
+   const struct r3v_cmd_entry *current_render_pass = NULL;
 
    for (uint32_t i = first_entry; i < end_entry; i++) {
-      const struct r300vk_cmd_entry *e = &cmd->entries[i];
+      const struct r3v_cmd_entry *e = &cmd->entries[i];
 
       switch (e->type) {
-      case R300VK_CMD_BEGIN_RENDER_PASS:
-         r300vk_replay_begin_render_pass(device, e, tile_pass,
+      case R3V_CMD_BEGIN_RENDER_PASS:
+         r3v_replay_begin_render_pass(device, e, tile_pass,
                                          &tile_origin_x, &tile_origin_y,
                                          &tile_width, &tile_height,
                                          &skip_render_pass);
@@ -3355,10 +3355,10 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
           * translation ran against zero tile dimensions (empty scissor). */
          if (!skip_render_pass) {
             if (state->last_viewport)
-               r300vk_replay_set_viewport(device, state->last_viewport,
+               r3v_replay_set_viewport(device, state->last_viewport,
                                           tile_origin_x, tile_origin_y);
             if (state->last_scissor)
-               r300vk_replay_set_scissor(device, state->last_scissor,
+               r3v_replay_set_scissor(device, state->last_scissor,
                                          tile_origin_x, tile_origin_y,
                                          tile_width, tile_height);
          }
@@ -3374,7 +3374,7 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
             }
          break;
 
-      case R300VK_CMD_NEXT_SUBPASS:
+      case R3V_CMD_NEXT_SUBPASS:
          /* Render-to-texture barrier so this subpass samples the prior
           * subpass's output coherently as an input attachment.
           * PIPE_TEXTURE_BARRIER_SAMPLER marks r300's gpu_flush and
@@ -3389,7 +3389,7 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
           * viewport/scissor, mirroring the begin path. */
          device->pipe->texture_barrier(device->pipe,
                                        PIPE_TEXTURE_BARRIER_SAMPLER);
-         r300vk_replay_begin_render_pass(device, e, tile_pass,
+         r3v_replay_begin_render_pass(device, e, tile_pass,
                                          &tile_origin_x, &tile_origin_y,
                                          &tile_width, &tile_height,
                                          &skip_render_pass);
@@ -3398,10 +3398,10 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          state->dyn_ov.dirty = true;
          if (!skip_render_pass) {
             if (state->last_viewport)
-               r300vk_replay_set_viewport(device, state->last_viewport,
+               r3v_replay_set_viewport(device, state->last_viewport,
                                           tile_origin_x, tile_origin_y);
             if (state->last_scissor)
-               r300vk_replay_set_scissor(device, state->last_scissor,
+               r3v_replay_set_scissor(device, state->last_scissor,
                                          tile_origin_x, tile_origin_y,
                                          tile_width, tile_height);
          }
@@ -3412,9 +3412,9 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
             }
          break;
 
-      case R300VK_CMD_BIND_PIPELINE:
+      case R3V_CMD_BIND_PIPELINE:
          if (skip_render_pass) break;
-         r300vk_replay_bind_pipeline(device, e, &state->bound_pipeline,
+         r3v_replay_bind_pipeline(device, e, &state->bound_pipeline,
                                      &state->vb_dirty);
          /* The bind installed the pipeline's fixed CSOs; re-overlay the
           * merged shadow (and the static stencil ref / blend color) at
@@ -3422,38 +3422,38 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          state->dyn_ov.dirty = true;
          break;
 
-      case R300VK_CMD_SET_DYNAMIC_STATE:
+      case R3V_CMD_SET_DYNAMIC_STATE:
          /* Pure state, not gated by skip_render_pass: the shadow must be
           * current when a later tile pass or render pass draws. */
-         r300vk_dyn_overlay_merge(&state->dyn_ov, &e->set_dyn);
+         r3v_dyn_overlay_merge(&state->dyn_ov, &e->set_dyn);
          break;
 
-      case R300VK_CMD_SET_VIEWPORT:
+      case R3V_CMD_SET_VIEWPORT:
          state->last_viewport = e;
          if (skip_render_pass) break;
-         r300vk_replay_set_viewport(device, e, tile_origin_x, tile_origin_y);
+         r3v_replay_set_viewport(device, e, tile_origin_x, tile_origin_y);
          break;
 
-      case R300VK_CMD_SET_SCISSOR:
+      case R3V_CMD_SET_SCISSOR:
          state->last_scissor = e;
          if (skip_render_pass) break;
-         r300vk_replay_set_scissor(device, e, tile_origin_x, tile_origin_y,
+         r3v_replay_set_scissor(device, e, tile_origin_x, tile_origin_y,
                                    tile_width, tile_height);
          break;
 
-      case R300VK_CMD_BIND_VERTEX_BUFFERS:
+      case R3V_CMD_BIND_VERTEX_BUFFERS:
          if (skip_render_pass) break;
-         r300vk_replay_bind_vertex_buffers(device, e, state->vb_cache,
+         r3v_replay_bind_vertex_buffers(device, e, state->vb_cache,
                                            state->vb_sizes, state->vb_strides,
                                            &state->vb_strides_mask,
                                            &state->vb_max_used,
                                            &state->vb_dirty);
          break;
 
-      case R300VK_CMD_DRAW:
-      case R300VK_CMD_DRAW_INDEXED:
+      case R3V_CMD_DRAW:
+      case R3V_CMD_DRAW_INDEXED:
          if (skip_render_pass) break;
-         r300vk_replay_draw(device, e, state->bound_pipeline,
+         r3v_replay_draw(device, e, state->bound_pipeline,
                             state->last_bind_dsets, state->replay_pc,
                             state->vb_cache, state->vb_sizes,
                             state->vb_max_used, &state->vb_dirty,
@@ -3471,21 +3471,21 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          *gpu_pending = true;
          break;
 
-      case R300VK_CMD_PUSH_CONSTANTS: {
+      case R3V_CMD_PUSH_CONSTANTS: {
          /* Apply the window update unconditionally (pure state, not gated by
           * skip_render_pass) so a later tile pass or draw sees it. */
-         const struct r300vk_cmd_push_constants *pc = &e->push_constants;
+         const struct r3v_cmd_push_constants *pc = &e->push_constants;
          if ((uint64_t)pc->offset + pc->size <= sizeof(state->replay_pc))
             memcpy(state->replay_pc + pc->offset, pc->data, pc->size);
          break;
       }
 
-      case R300VK_CMD_DRAW_INDIRECT: {
+      case R3V_CMD_DRAW_INDIRECT: {
          if (skip_render_pass) break;
-         const struct r300vk_cmd_draw_indirect *di = &e->draw_indirect;
+         const struct r3v_cmd_draw_indirect *di = &e->draw_indirect;
          if (!di->buffer || !di->buffer->resource || di->draw_count == 0)
             break;
-         /* CPU-read the VkDrawIndirectCommand array (r300vk buffers are
+         /* CPU-read the VkDrawIndirectCommand array (r3v buffers are
           * host-visible) and run the normal draw path per command. */
          const unsigned stride =
             di->stride ? di->stride : (unsigned)sizeof(VkDrawIndirectCommand);
@@ -3511,14 +3511,14 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          for (uint32_t d = 0; d < di->draw_count; d++) {
             const VkDrawIndirectCommand *args =
                (const VkDrawIndirectCommand *)(imap + (size_t)d * stride);
-            struct r300vk_cmd_entry synth;
-            synth.type                = R300VK_CMD_DRAW;
+            struct r3v_cmd_entry synth;
+            synth.type                = R3V_CMD_DRAW;
             synth.draw.count          = args->vertexCount;
             synth.draw.instances      = args->instanceCount;
             synth.draw.first          = args->firstVertex;
             synth.draw.first_instance = args->firstInstance;
             synth.draw.topology       = di->topology;
-            r300vk_replay_draw(device, &synth, state->bound_pipeline,
+            r3v_replay_draw(device, &synth, state->bound_pipeline,
                                state->last_bind_dsets, state->replay_pc,
                                state->vb_cache, state->vb_sizes,
                                state->vb_max_used, &state->vb_dirty,
@@ -3539,15 +3539,15 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          break;
       }
 
-      case R300VK_CMD_DRAW_INDEXED_INDIRECT: {
+      case R3V_CMD_DRAW_INDEXED_INDIRECT: {
          if (skip_render_pass) break;
-         const struct r300vk_cmd_draw_indexed_indirect *di =
+         const struct r3v_cmd_draw_indexed_indirect *di =
             &e->draw_indexed_indirect;
          if (!di->buffer || !di->buffer->resource || di->draw_count == 0)
             break;
-         /* CPU-read the VkDrawIndexedIndirectCommand array (r300vk buffers are
+         /* CPU-read the VkDrawIndexedIndirectCommand array (r3v buffers are
           * host-visible) and run the indexed draw path per command, exactly as
-          * R300VK_CMD_DRAW_INDIRECT does for the non-indexed form. */
+          * R3V_CMD_DRAW_INDIRECT does for the non-indexed form. */
          const unsigned stride =
             di->stride ? di->stride
                        : (unsigned)sizeof(VkDrawIndexedIndirectCommand);
@@ -3573,8 +3573,8 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
             const VkDrawIndexedIndirectCommand *args =
                (const VkDrawIndexedIndirectCommand *)(imap +
                                                       (size_t)d * stride);
-            struct r300vk_cmd_entry synth;
-            synth.type                        = R300VK_CMD_DRAW_INDEXED;
+            struct r3v_cmd_entry synth;
+            synth.type                        = R3V_CMD_DRAW_INDEXED;
             synth.draw_indexed.index_buffer   = di->index_buffer;
             synth.draw_indexed.index_offset   = di->index_offset;
             synth.draw_indexed.index_range    = di->index_range;
@@ -3585,7 +3585,7 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
             synth.draw_indexed.instances      = args->instanceCount;
             synth.draw_indexed.first_instance = args->firstInstance;
             synth.draw_indexed.topology       = di->topology;
-            r300vk_replay_draw(device, &synth, state->bound_pipeline,
+            r3v_replay_draw(device, &synth, state->bound_pipeline,
                                state->last_bind_dsets, state->replay_pc,
                                state->vb_cache, state->vb_sizes,
                                state->vb_max_used, &state->vb_dirty,
@@ -3606,50 +3606,50 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          break;
       }
 
-      case R300VK_CMD_END_RENDER_PASS:
+      case R3V_CMD_END_RENDER_PASS:
          if (device->dbg_log_pixels && !skip_render_pass &&
              current_render_pass &&
-             r300vk_begin_rp_ref_image(&current_render_pass->begin_rp))
-            r300vk_dbg_log_attachment_pixels(device,
+             r3v_begin_rp_ref_image(&current_render_pass->begin_rp))
+            r3v_dbg_log_attachment_pixels(device,
                                              current_render_pass,
                                              tile_pass,
                                              tile_origin_x,
                                              tile_origin_y,
                                              tile_width, tile_height);
-         r300vk_replay_end_render_pass(device, &skip_render_pass,
+         r3v_replay_end_render_pass(device, &skip_render_pass,
                                        &tile_origin_x, &tile_origin_y,
                                        &tile_width, &tile_height);
          current_render_pass = NULL;
          break;
 
-      case R300VK_CMD_CLEAR_ATTACHMENTS:
+      case R3V_CMD_CLEAR_ATTACHMENTS:
          if (skip_render_pass) break;
-         r300vk_replay_clear_attachments(device, current_render_pass,
+         r3v_replay_clear_attachments(device, current_render_pass,
                                          &e->clear_attachments,
                                          tile_origin_x, tile_origin_y,
                                          tile_width, tile_height);
          *gpu_pending = true;
          break;
 
-      case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
-      case R300VK_CMD_COPY_BUFFER_TO_IMAGE:
-      case R300VK_CMD_COPY_IMAGE:
-      case R300VK_CMD_CLEAR_COLOR_IMAGE:
-      case R300VK_CMD_CLEAR_DEPTH_STENCIL_IMAGE:
-      case R300VK_CMD_FILL_BUFFER:
-      case R300VK_CMD_COPY_BUFFER:
-      case R300VK_CMD_UPDATE_BUFFER:
-      case R300VK_CMD_COPY_QUERY_POOL_RESULTS:
-      case R300VK_CMD_SET_EVENT:
-      case R300VK_CMD_RESET_EVENT:
+      case R3V_CMD_COPY_IMAGE_TO_BUFFER:
+      case R3V_CMD_COPY_BUFFER_TO_IMAGE:
+      case R3V_CMD_COPY_IMAGE:
+      case R3V_CMD_CLEAR_COLOR_IMAGE:
+      case R3V_CMD_CLEAR_DEPTH_STENCIL_IMAGE:
+      case R3V_CMD_FILL_BUFFER:
+      case R3V_CMD_COPY_BUFFER:
+      case R3V_CMD_UPDATE_BUFFER:
+      case R3V_CMD_COPY_QUERY_POOL_RESULTS:
+      case R3V_CMD_SET_EVENT:
+      case R3V_CMD_RESET_EVENT:
          if (current_render_pass)
             break;
-         r300vk_drain_gpu(device, gpu_pending);
-         r300vk_replay_host_entry(device, e);
+         r3v_drain_gpu(device, gpu_pending);
+         r3v_replay_host_entry(device, e);
          break;
 
-      case R300VK_CMD_PIPELINE_BARRIER:
-         r300vk_replay_pipeline_barrier(device, e, skip_render_pass);
+      case R3V_CMD_PIPELINE_BARRIER:
+         r3v_replay_pipeline_barrier(device, e, skip_render_pass);
          /* An in-pass barrier is the self-dependency visibility point: the
           * next self-dependent input bind re-copies its snapshot so the read
           * sees the writes this barrier makes visible. */
@@ -3657,16 +3657,16 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
             device->ia_snapshot_stale = true;
          break;
 
-      case R300VK_CMD_BIND_DESCRIPTOR_SETS:
-         r300vk_replay_bind_descriptor_sets(&state->accum_dsets, e);
+      case R3V_CMD_BIND_DESCRIPTOR_SETS:
+         r3v_replay_bind_descriptor_sets(&state->accum_dsets, e);
          state->last_bind_dsets = &state->accum_dsets;
          break;
 
-      case R300VK_CMD_DISPATCH: {
+      case R3V_CMD_DISPATCH: {
          if (current_render_pass)
             break;
          VkResult result =
-            r300vk_replay_dispatch(device, e, state->last_bind_dsets,
+            r3v_replay_dispatch(device, e, state->last_bind_dsets,
                                    state->replay_pc);
          if (result != VK_SUCCESS)
             return result;
@@ -3675,15 +3675,15 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          break;
       }
 
-      case R300VK_CMD_BLIT_IMAGE:
+      case R3V_CMD_BLIT_IMAGE:
          if (current_render_pass)
             break;
-         r300vk_replay_blit(device, e);
+         r3v_replay_blit(device, e);
          pipe->flush(pipe, NULL, 0);
          *gpu_pending = true;
          break;
 
-      case R300VK_CMD_BEGIN_QUERY:
+      case R3V_CMD_BEGIN_QUERY:
          /* Occlusion only, single-tile command buffers only: a multi-tile render
           * pass would re-walk the query entries, but r300 allows one query at a
           * time.  Map the Vulkan occlusion type to the r300 ZPASS counter and
@@ -3697,7 +3697,7 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
             pipe->begin_query(pipe, state->active_oq);
          break;
 
-      case R300VK_CMD_END_QUERY: {
+      case R3V_CMD_END_QUERY: {
          if (!state->active_oq)
             break;
          pipe->end_query(pipe, state->active_oq);
@@ -3707,7 +3707,7 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          memset(&qres, 0, sizeof(qres));
          if (pipe->get_query_result(pipe, state->active_oq, true, &qres) &&
              e->query.query < e->query.pool->vk.query_count) {
-            struct r300vk_query *slot =
+            struct r3v_query *slot =
                &e->query.pool->queries[e->query.query];
             slot->result    = qres.u64;
             slot->available = true;
@@ -3717,12 +3717,12 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          break;
       }
 
-      case R300VK_CMD_RESET_QUERY_POOL: {
+      case R3V_CMD_RESET_QUERY_POOL: {
          /* Host bookkeeping, applied once per submit (tile-independent):
           * clear availability and result over the reset range. */
          if (current_render_pass)
             break;
-         struct r300vk_query_pool *qp = e->reset_query_pool.pool;
+         struct r3v_query_pool *qp = e->reset_query_pool.pool;
          const uint32_t first = e->reset_query_pool.first_query;
          uint32_t n = e->reset_query_pool.query_count;
          if (first < qp->vk.query_count) {
@@ -3749,27 +3749,27 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
  * gpu_pending is threaded across the whole submit so a host transfer in a later
  * command buffer drains GPU work emitted by an earlier one. */
 static VkResult
-r300vk_replay_gpu(struct r300vk_device *device,
-                  const struct r300vk_cmd_buffer *cmd,
+r3v_replay_gpu(struct r3v_device *device,
+                  const struct r3v_cmd_buffer *cmd,
                   struct util_dynarray *transient_vbs,
                   bool *gpu_pending)
 {
    VkResult result = VK_SUCCESS;
-   const uint32_t cmd_tile_pass_count = r300vk_cmd_tile_pass_count(cmd);
-   struct r300vk_replay_state state;
+   const uint32_t cmd_tile_pass_count = r3v_cmd_tile_pass_count(cmd);
+   struct r3v_replay_state state;
    memset(&state, 0, sizeof(state));
 
    for (uint32_t i = 0; i < cmd->entry_count;) {
       const uint32_t outside_begin = i;
       while (i < cmd->entry_count &&
-             !r300vk_entry_begins_render_pass(&cmd->entries[i]))
+             !r3v_entry_begins_render_pass(&cmd->entries[i]))
          i++;
 
       if (outside_begin < i) {
-         result = r300vk_replay_gpu_range(device, cmd, outside_begin, i, 0,
+         result = r3v_replay_gpu_range(device, cmd, outside_begin, i, 0,
                                           cmd_tile_pass_count, &state,
                                           transient_vbs, gpu_pending);
-         r300vk_dyn_overlay_cleanup(device, &state.dyn_ov);
+         r3v_dyn_overlay_cleanup(device, &state.dyn_ov);
          if (result != VK_SUCCESS)
             break;
       }
@@ -3779,30 +3779,30 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
       const uint32_t segment_begin = i;
       const uint32_t segment_end =
-         r300vk_render_pass_segment_end(cmd, segment_begin);
+         r3v_render_pass_segment_end(cmd, segment_begin);
       const uint32_t segment_tile_pass_count =
-         r300vk_render_pass_segment_tile_pass_count(cmd, segment_begin,
+         r3v_render_pass_segment_tile_pass_count(cmd, segment_begin,
                                                     segment_end);
 
       if (segment_tile_pass_count == 1) {
-         r300vk_replay_state_rebind(device, &state);
-         result = r300vk_replay_gpu_range(device, cmd, segment_begin,
+         r3v_replay_state_rebind(device, &state);
+         result = r3v_replay_gpu_range(device, cmd, segment_begin,
                                           segment_end, 0, cmd_tile_pass_count,
                                           &state,
                                           transient_vbs, gpu_pending);
-         r300vk_dyn_overlay_cleanup(device, &state.dyn_ov);
+         r3v_dyn_overlay_cleanup(device, &state.dyn_ov);
          if (result != VK_SUCCESS)
             break;
       } else {
          for (uint32_t tile_pass = 0; tile_pass < segment_tile_pass_count;
               tile_pass++) {
-            struct r300vk_replay_state tile_state = state;
-            r300vk_replay_state_rebind(device, &tile_state);
-            result = r300vk_replay_gpu_range(device, cmd, segment_begin,
+            struct r3v_replay_state tile_state = state;
+            r3v_replay_state_rebind(device, &tile_state);
+            result = r3v_replay_gpu_range(device, cmd, segment_begin,
                                              segment_end, tile_pass,
                                              cmd_tile_pass_count, &tile_state,
                                              transient_vbs, gpu_pending);
-            r300vk_dyn_overlay_cleanup(device, &tile_state.dyn_ov);
+            r3v_dyn_overlay_cleanup(device, &tile_state.dyn_ov);
             if (result != VK_SUCCESS)
                break;
             if (tile_pass + 1 == segment_tile_pass_count)
@@ -3814,12 +3814,12 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
       i = segment_end;
    }
-   r300vk_replay_state_cleanup(device, &state);
+   r3v_replay_state_cleanup(device, &state);
    return result;
 }
 
 static bool
-r300vk_linear_region_span(const VkExtent3D *extent,
+r3v_linear_region_span(const VkExtent3D *extent,
                           VkDeviceSize buffer_offset,
                           uint32_t buffer_row_length,
                           unsigned bpp,
@@ -3863,47 +3863,47 @@ r300vk_linear_region_span(const VkExtent3D *extent,
  * for the copied aspect -- and the repack kind.  Z16_UNORM and the depth-low
  * Z24_UNORM_S8 twin need no repack (PLAIN); colour formats are always PLAIN with
  * buf_bpp == img_bpp, so the existing memcpy path is unchanged. */
-enum r300vk_zs_copy_kind {
-   R300VK_ZS_PLAIN = 0,
-   R300VK_ZS_DEPTH,
-   R300VK_ZS_STENCIL,
+enum r3v_zs_copy_kind {
+   R3V_ZS_PLAIN = 0,
+   R3V_ZS_DEPTH,
+   R3V_ZS_STENCIL,
 };
-struct r300vk_zs_copy {
+struct r3v_zs_copy {
    unsigned img_bpp;
    unsigned buf_bpp;
-   enum r300vk_zs_copy_kind kind;
+   enum r3v_zs_copy_kind kind;
 };
 
-static struct r300vk_zs_copy
-r300vk_zs_copy_for(enum pipe_format img_fmt, VkImageAspectFlags aspect)
+static struct r3v_zs_copy
+r3v_zs_copy_for(enum pipe_format img_fmt, VkImageAspectFlags aspect)
 {
    const unsigned blk = util_format_get_blocksize(img_fmt);
-   struct r300vk_zs_copy z = { .img_bpp = blk, .buf_bpp = blk,
-                               .kind = R300VK_ZS_PLAIN };
+   struct r3v_zs_copy z = { .img_bpp = blk, .buf_bpp = blk,
+                               .kind = R3V_ZS_PLAIN };
    if (img_fmt == PIPE_FORMAT_S8_UINT_Z24_UNORM) {
       if (aspect & VK_IMAGE_ASPECT_STENCIL_BIT) {
          z.buf_bpp = 1;            /* Vulkan stencil aspect is one byte */
-         z.kind = R300VK_ZS_STENCIL;
+         z.kind = R3V_ZS_STENCIL;
       } else {
-         z.kind = R300VK_ZS_DEPTH; /* depth aspect is 32-bit, buf_bpp == 4 */
+         z.kind = R3V_ZS_DEPTH; /* depth aspect is 32-bit, buf_bpp == 4 */
       }
    } else if (img_fmt == PIPE_FORMAT_X8Z24_UNORM) {
-      z.kind = R300VK_ZS_DEPTH;    /* depth-only twin, no stencil aspect */
+      z.kind = R3V_ZS_DEPTH;    /* depth-only twin, no stencil aspect */
    }
    return z;
 }
 
 /* image word -> Vulkan buffer element (readback). */
 static inline void
-r300vk_zs_unpack_texel(enum r300vk_zs_copy_kind kind,
+r3v_zs_unpack_texel(enum r3v_zs_copy_kind kind,
                        const uint8_t *img, uint8_t *buf)
 {
    uint32_t w;
    memcpy(&w, img, sizeof(w));
-   if (kind == R300VK_ZS_DEPTH) {
+   if (kind == R3V_ZS_DEPTH) {
       const uint32_t depth = (w >> 8) & 0x00FFFFFFu;
       memcpy(buf, &depth, sizeof(depth));
-   } else { /* R300VK_ZS_STENCIL */
+   } else { /* R3V_ZS_STENCIL */
       buf[0] = (uint8_t)(w & 0xFFu);
    }
 }
@@ -3911,24 +3911,24 @@ r300vk_zs_unpack_texel(enum r300vk_zs_copy_kind kind,
 /* Vulkan buffer element -> image word (upload), read-modify-write so the aspect
  * not being copied keeps its bits. */
 static inline void
-r300vk_zs_pack_texel(enum r300vk_zs_copy_kind kind,
+r3v_zs_pack_texel(enum r3v_zs_copy_kind kind,
                      const uint8_t *buf, uint8_t *img)
 {
    uint32_t w;
    memcpy(&w, img, sizeof(w));
-   if (kind == R300VK_ZS_DEPTH) {
+   if (kind == R3V_ZS_DEPTH) {
       uint32_t depth;
       memcpy(&depth, buf, sizeof(depth));
       w = (w & 0x000000FFu) | ((depth & 0x00FFFFFFu) << 8);
-   } else { /* R300VK_ZS_STENCIL */
+   } else { /* R3V_ZS_STENCIL */
       w = (w & 0xFFFFFF00u) | buf[0];
    }
    memcpy(img, &w, sizeof(w));
 }
 
 static bool
-r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
-                                   const struct r300vk_image *src_img,
+r3v_copy_image_region_to_buffer(struct r3v_device *device,
+                                   const struct r3v_image *src_img,
                                    struct pipe_resource *dst,
                                    const VkBufferImageCopy2 *region)
 {
@@ -3941,15 +3941,15 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
    /* For a depth/stencil aspect the Vulkan buffer element (buf_bpp) differs from
     * the r300 image word (img_bpp) and the texels need repacking; for colour
     * formats this is a plain copy with buf_bpp == img_bpp. */
-   const struct r300vk_zs_copy zs =
-      r300vk_zs_copy_for(src_img->resource->format,
+   const struct r3v_zs_copy zs =
+      r3v_zs_copy_for(src_img->resource->format,
                          region->imageSubresource.aspectMask);
    const unsigned bpp = zs.buf_bpp;
    const unsigned bw = util_format_get_blockwidth(src_img->resource->format);
    const unsigned bh = util_format_get_blockheight(src_img->resource->format);
    unsigned row_pitch = 0;
    unsigned dst_size = 0;
-   if (!r300vk_linear_region_span(&region->imageExtent,
+   if (!r3v_linear_region_span(&region->imageExtent,
                                   region->bufferOffset,
                                   region->bufferRowLength,
                                   bpp, bw, bh, &row_pitch, &dst_size) ||
@@ -3981,7 +3981,7 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
 
    for (uint32_t tile_row = 0; tile_row < src_img->tile_rows; tile_row++) {
       const uint32_t tile_origin_y =
-         r300vk_image_tile_origin_y(src_img, tile_row);
+         r3v_image_tile_origin_y(src_img, tile_row);
       const uint32_t tile_h_eff =
          MAX2(src_img->tile_height[tile_row] >> src_mip, 1u);
       const int64_t tile_min_y = tile_origin_y / bh;
@@ -3994,7 +3994,7 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
 
       for (uint32_t tile_col = 0; tile_col < src_img->tile_cols; tile_col++) {
          const uint32_t tile_origin_x =
-            r300vk_image_tile_origin_x(src_img, tile_col);
+            r3v_image_tile_origin_x(src_img, tile_col);
          const uint32_t tile_w_eff =
             MAX2(src_img->tile_width[tile_col] >> src_mip, 1u);
          const int64_t tile_min_x = tile_origin_x / bw;
@@ -4040,11 +4040,11 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
          for (unsigned row = 0; row < copy_height; row++) {
             uint8_t *drow = tile_dst + row * row_pitch;
             const uint8_t *srow = src_map + row * src_xfer->stride;
-            if (zs.kind == R300VK_ZS_PLAIN) {
+            if (zs.kind == R3V_ZS_PLAIN) {
                memcpy(drow, srow, copy_width_bytes);
             } else {
                for (unsigned c = 0; c < copy_width_texels; c++)
-                  r300vk_zs_unpack_texel(zs.kind, srow + c * zs.img_bpp,
+                  r3v_zs_unpack_texel(zs.kind, srow + c * zs.img_bpp,
                                          drow + c * zs.buf_bpp);
             }
          }
@@ -4057,34 +4057,34 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
    return true;
 }
 
-/* The inverse of r300vk_copy_image_region_to_buffer: a tile-iterated CPU upload.
+/* The inverse of r3v_copy_image_region_to_buffer: a tile-iterated CPU upload.
  * Map the source buffer once, then for every destination image tile touched by
  * the region, map that tile PIPE_MAP_WRITE and copy the matching linear rows.
  * Iterating tiles keeps split images correct instead of writing only tile zero. */
 static bool
-r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
+r3v_copy_buffer_region_to_image(struct r3v_device *device,
                                    struct pipe_resource *src,
-                                   const struct r300vk_image *dst_img,
+                                   const struct r3v_image *dst_img,
                                    const VkBufferImageCopy2 *region)
 {
    struct pipe_context *pipe = device->pipe;
-   r300vk_image_mark_written(dst_img);
+   r3v_image_mark_written(dst_img);
 
-   /* Depth/stencil aspect uploads repack per texel (see r300vk_zs_copy_for) and
+   /* Depth/stencil aspect uploads repack per texel (see r3v_zs_copy_for) and
     * are read-modify-write so the aspect not being copied keeps its bits; the
     * tile must therefore be mapped readable.  Colour formats stay a plain,
     * write-only copy with buf_bpp == img_bpp. */
-   const struct r300vk_zs_copy zs =
-      r300vk_zs_copy_for(dst_img->resource->format,
+   const struct r3v_zs_copy zs =
+      r3v_zs_copy_for(dst_img->resource->format,
                          region->imageSubresource.aspectMask);
    const unsigned bpp = zs.buf_bpp;
    const unsigned bw = util_format_get_blockwidth(dst_img->resource->format);
    const unsigned bh = util_format_get_blockheight(dst_img->resource->format);
    const unsigned dst_map_flags =
-      zs.kind == R300VK_ZS_PLAIN ? PIPE_MAP_WRITE : PIPE_MAP_READ_WRITE;
+      zs.kind == R3V_ZS_PLAIN ? PIPE_MAP_WRITE : PIPE_MAP_READ_WRITE;
    unsigned row_pitch = 0;
    unsigned src_size = 0;
-   if (!r300vk_linear_region_span(&region->imageExtent,
+   if (!r3v_linear_region_span(&region->imageExtent,
                                   region->bufferOffset,
                                   region->bufferRowLength,
                                   bpp, bw, bh, &row_pitch, &src_size) ||
@@ -4112,7 +4112,7 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
 
    for (uint32_t tile_row = 0; tile_row < dst_img->tile_rows; tile_row++) {
       const uint32_t tile_origin_y =
-         r300vk_image_tile_origin_y(dst_img, tile_row);
+         r3v_image_tile_origin_y(dst_img, tile_row);
       const uint32_t tile_h_eff =
          MAX2(dst_img->tile_height[tile_row] >> dst_mip, 1u);
       const int64_t tile_min_y = tile_origin_y / bh;
@@ -4125,7 +4125,7 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
 
       for (uint32_t tile_col = 0; tile_col < dst_img->tile_cols; tile_col++) {
          const uint32_t tile_origin_x =
-            r300vk_image_tile_origin_x(dst_img, tile_col);
+            r3v_image_tile_origin_x(dst_img, tile_col);
          const uint32_t tile_w_eff =
             MAX2(dst_img->tile_width[tile_col] >> dst_mip, 1u);
          const int64_t tile_min_x = tile_origin_x / bw;
@@ -4169,11 +4169,11 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
          for (unsigned row = 0; row < copy_height; row++) {
             const uint8_t *srow = tile_src + row * row_pitch;
             uint8_t *drow = dst_map + row * dst_xfer->stride;
-            if (zs.kind == R300VK_ZS_PLAIN) {
+            if (zs.kind == R3V_ZS_PLAIN) {
                memcpy(drow, srow, copy_width_bytes);
             } else {
                for (unsigned c = 0; c < copy_width_texels; c++)
-                  r300vk_zs_pack_texel(zs.kind, srow + c * zs.buf_bpp,
+                  r3v_zs_pack_texel(zs.kind, srow + c * zs.buf_bpp,
                                        drow + c * zs.img_bpp);
             }
          }
@@ -4190,9 +4190,9 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
  * buffer lets the existing source and destination tile walks run independently,
  * avoiding a fragile source-tile x destination-tile cross product. */
 static bool
-r300vk_copy_image_region_to_image(struct r300vk_device *device,
-                                  const struct r300vk_image *src_img,
-                                  const struct r300vk_image *dst_img,
+r3v_copy_image_region_to_image(struct r3v_device *device,
+                                  const struct r3v_image *src_img,
+                                  const struct r3v_image *dst_img,
                                   const VkImageCopy2 *region)
 {
    struct pipe_context *pipe = device->pipe;
@@ -4202,7 +4202,7 @@ r300vk_copy_image_region_to_image(struct r300vk_device *device,
     * per the spec; skip the copy rather than dereferencing the null image. */
    if (!src_img || !dst_img || !src_img->resource || !dst_img->resource)
       return false;
-   r300vk_image_mark_written(dst_img);
+   r3v_image_mark_written(dst_img);
    const unsigned src_bpp = util_format_get_blocksize(src_img->resource->format);
    const unsigned dst_bpp = util_format_get_blocksize(dst_img->resource->format);
    const unsigned src_bw = util_format_get_blockwidth(src_img->resource->format);
@@ -4218,7 +4218,7 @@ r300vk_copy_image_region_to_image(struct r300vk_device *device,
 
    unsigned row_pitch = 0;
    unsigned staging_size = 0;
-   if (!r300vk_linear_region_span(&region->extent, 0, 0, src_bpp,
+   if (!r3v_linear_region_span(&region->extent, 0, 0, src_bpp,
                                   src_bw, src_bh,
                                   &row_pitch, &staging_size) ||
        row_pitch == 0)
@@ -4269,8 +4269,8 @@ r300vk_copy_image_region_to_image(struct r300vk_device *device,
    };
 
    const bool ok =
-      r300vk_copy_image_region_to_buffer(device, src_img, staging, &download) &&
-      r300vk_copy_buffer_region_to_image(device, staging, dst_img, &upload);
+      r3v_copy_image_region_to_buffer(device, src_img, staging, &download) &&
+      r3v_copy_buffer_region_to_image(device, staging, dst_img, &upload);
 
    pipe_resource_reference(&staging, NULL);
    return ok;
@@ -4279,13 +4279,13 @@ r300vk_copy_image_region_to_image(struct r300vk_device *device,
 /* vkCmdClearColorImage as a tile-iterated CPU fill.  Pack the clear value to the
  * image format once, then write that texel to every position of each tile. */
 static bool
-r300vk_clear_color_image(struct r300vk_device *device,
-                         const struct r300vk_image *img,
+r3v_clear_color_image(struct r3v_device *device,
+                         const struct r3v_image *img,
                          const VkClearColorValue *color,
                          const VkImageSubresourceRange *range)
 {
    struct pipe_context *pipe = device->pipe;
-   r300vk_image_mark_written(img);
+   r3v_image_mark_written(img);
    const enum pipe_format fmt = img->resource->format;
    const unsigned bpp = util_format_get_blocksize(fmt);
 
@@ -4340,14 +4340,14 @@ r300vk_clear_color_image(struct r300vk_device *device,
  * those need a read-modify-write (mapped READ_WRITE); clearing the whole word is
  * a plain fill. */
 static bool
-r300vk_clear_depth_stencil_image(struct r300vk_device *device,
-                                 const struct r300vk_image *img,
+r3v_clear_depth_stencil_image(struct r3v_device *device,
+                                 const struct r3v_image *img,
                                  const VkClearDepthStencilValue *ds,
                                  VkImageAspectFlags aspect,
                                  const VkImageSubresourceRange *range)
 {
    struct pipe_context *pipe = device->pipe;
-   r300vk_image_mark_written(img);
+   r3v_image_mark_written(img);
    const enum pipe_format fmt = img->resource->format;
    const unsigned bpp = util_format_get_blocksize(fmt);
    if (bpp == 0 || bpp > 4)
@@ -4425,8 +4425,8 @@ r300vk_clear_depth_stencil_image(struct r300vk_device *device,
  * [offset, offset+size) of the buffer, resolving VK_WHOLE_SIZE to the tail and
  * rounding the byte count down to a 32-bit multiple per the spec. */
 static void
-r300vk_fill_buffer(struct r300vk_device *device,
-                   const struct r300vk_cmd_fill_buffer *fb)
+r3v_fill_buffer(struct r3v_device *device,
+                   const struct r3v_cmd_fill_buffer *fb)
 {
    struct pipe_context  *pipe = device->pipe;
    struct pipe_resource *buf  = fb->buffer ? fb->buffer->resource : NULL;
@@ -4462,8 +4462,8 @@ r300vk_fill_buffer(struct r300vk_device *device,
  * dst WRITE and memcpy; an aliasing src==dst copy maps the union of both ranges
  * once and memmoves so overlap is well defined. */
 static void
-r300vk_copy_buffer_region(struct r300vk_device *device,
-                          const struct r300vk_cmd_copy_buffer *cb)
+r3v_copy_buffer_region(struct r3v_device *device,
+                          const struct r3v_cmd_copy_buffer *cb)
 {
    struct pipe_context  *pipe = device->pipe;
    struct pipe_resource *src  = cb->src ? cb->src->resource : NULL;
@@ -4509,8 +4509,8 @@ r300vk_copy_buffer_region(struct r300vk_device *device,
 
 /* vkCmdUpdateBuffer as a CPU memcpy of the recorded inline data into the buffer. */
 static void
-r300vk_update_buffer(struct r300vk_device *device,
-                     const struct r300vk_cmd_update_buffer *ub)
+r3v_update_buffer(struct r3v_device *device,
+                     const struct r3v_cmd_update_buffer *ub)
 {
    struct pipe_context  *pipe = device->pipe;
    struct pipe_resource *buf  = ub->buffer ? ub->buffer->resource : NULL;
@@ -4533,7 +4533,7 @@ r300vk_update_buffer(struct r300vk_device *device,
 }
 
 static void
-r300vk_write_query_result_field(struct pipe_context *pipe,
+r3v_write_query_result_field(struct pipe_context *pipe,
                                 struct pipe_resource *buf,
                                 unsigned offset,
                                 unsigned size,
@@ -4557,8 +4557,8 @@ r300vk_write_query_result_field(struct pipe_context *pipe,
 }
 
 static bool
-r300vk_query_result_layout_in_bounds(
-   const struct r300vk_cmd_copy_query_pool_results *cq,
+r3v_query_result_layout_in_bounds(
+   const struct r3v_cmd_copy_query_pool_results *cq,
    uint32_t query_index, unsigned result_size, unsigned per_query,
    bool write_availability, uint64_t total, uint64_t *byte_offset)
 {
@@ -4583,17 +4583,17 @@ r300vk_query_result_layout_in_bounds(
 }
 
 static void
-r300vk_write_query_result_word(struct pipe_context *pipe,
+r3v_write_query_result_word(struct pipe_context *pipe,
                                struct pipe_resource *buf,
                                uint64_t byte_offset,
                                unsigned result_size,
                                bool write_result,
-                               const struct r300vk_query *query)
+                               const struct r3v_query *query)
 {
    if (!write_result)
       return;
 
-   r300vk_write_query_result_field(pipe, buf, (unsigned)byte_offset,
+   r3v_write_query_result_field(pipe, buf, (unsigned)byte_offset,
                                    result_size,
                                    query->available ? query->result : 0);
 }
@@ -4601,17 +4601,17 @@ r300vk_write_query_result_word(struct pipe_context *pipe,
 /* vkCmdCopyQueryPoolResults on the host: write each query's result word (and an
  * availability word when VK_QUERY_RESULT_WITH_AVAILABILITY_BIT is set) into the
  * destination buffer at dst_offset + i*stride, mirroring
- * r300vk_GetQueryPoolResults.  The serialized CPU replay has stored the
+ * r3v_GetQueryPoolResults.  The serialized CPU replay has stored the
  * end-query results into the pool slots before this host entry runs, so
  * VK_QUERY_RESULT_WAIT never blocks; an unavailable slot is one reset but never
  * ended.  Each written field maps only its own destination word, so the stride
  * gap between entries and any unavailable result word are left unmodified. */
 static void
-r300vk_copy_query_pool_results(struct r300vk_device *device,
-                               const struct r300vk_cmd_copy_query_pool_results *cq)
+r3v_copy_query_pool_results(struct r3v_device *device,
+                               const struct r3v_cmd_copy_query_pool_results *cq)
 {
    struct pipe_context      *pipe = device->pipe;
-   struct r300vk_query_pool *pool = cq->pool;
+   struct r3v_query_pool *pool = cq->pool;
    struct pipe_resource     *buf  = cq->dst ? cq->dst->resource : NULL;
    if (!pool || !buf)
       return;
@@ -4628,22 +4628,22 @@ r300vk_copy_query_pool_results(struct r300vk_device *device,
       if (cq->first_query + i >= pool->vk.query_count)
          break;
 
-      const struct r300vk_query *q = &pool->queries[cq->first_query + i];
+      const struct r3v_query *q = &pool->queries[cq->first_query + i];
       const bool available = q->available;
       const bool write_result = available || force_result;
       if (!write_result && !want_avail)
          continue;
 
       uint64_t byte_off;
-      if (!r300vk_query_result_layout_in_bounds(cq, i, rsize, per_query,
+      if (!r3v_query_result_layout_in_bounds(cq, i, rsize, per_query,
                                                 want_avail, total, &byte_off))
          break;
 
-      r300vk_write_query_result_word(pipe, buf, byte_off, rsize, write_result,
+      r3v_write_query_result_word(pipe, buf, byte_off, rsize, write_result,
                                      q);
       if (want_avail) {
          const uint64_t avail_off = byte_off + rsize;
-         r300vk_write_query_result_field(pipe, buf, (unsigned)avail_off, rsize,
+         r3v_write_query_result_field(pipe, buf, (unsigned)avail_off, rsize,
                                          available ? 1 : 0);
       }
    }
@@ -4653,57 +4653,57 @@ r300vk_copy_query_pool_results(struct r300vk_device *device,
  * responsible for fencing prior GPU work before a transfer that reads GPU
  * output. */
 static void
-r300vk_replay_host_entry(struct r300vk_device *device,
-                         const struct r300vk_cmd_entry *e)
+r3v_replay_host_entry(struct r3v_device *device,
+                         const struct r3v_cmd_entry *e)
 {
-   if (e->type == R300VK_CMD_COPY_IMAGE_TO_BUFFER) {
+   if (e->type == R3V_CMD_COPY_IMAGE_TO_BUFFER) {
       const VkBufferImageCopy2 *region = &e->copy_img_buf.region;
       struct pipe_resource     *dst    = e->copy_img_buf.dst->resource;
-      r300vk_copy_image_region_to_buffer(device, e->copy_img_buf.src,
+      r3v_copy_image_region_to_buffer(device, e->copy_img_buf.src,
                                          dst, region);
-   } else if (e->type == R300VK_CMD_COPY_BUFFER_TO_IMAGE) {
+   } else if (e->type == R3V_CMD_COPY_BUFFER_TO_IMAGE) {
       const VkBufferImageCopy2 *region = &e->copy_buf_img.region;
       struct pipe_resource     *src    = e->copy_buf_img.src->resource;
-      r300vk_copy_buffer_region_to_image(device, src,
+      r3v_copy_buffer_region_to_image(device, src,
                                          e->copy_buf_img.dst, region);
-   } else if (e->type == R300VK_CMD_COPY_IMAGE) {
+   } else if (e->type == R3V_CMD_COPY_IMAGE) {
       const VkImageCopy2 *region = &e->copy_image.region;
-      r300vk_copy_image_region_to_image(device, e->copy_image.src,
+      r3v_copy_image_region_to_image(device, e->copy_image.src,
                                         e->copy_image.dst, region);
-   } else if (e->type == R300VK_CMD_CLEAR_COLOR_IMAGE) {
-      r300vk_clear_color_image(device, e->clear_color_image.image,
+   } else if (e->type == R3V_CMD_CLEAR_COLOR_IMAGE) {
+      r3v_clear_color_image(device, e->clear_color_image.image,
                                &e->clear_color_image.color,
                                &e->clear_color_image.range);
-   } else if (e->type == R300VK_CMD_CLEAR_DEPTH_STENCIL_IMAGE) {
-      r300vk_clear_depth_stencil_image(
+   } else if (e->type == R3V_CMD_CLEAR_DEPTH_STENCIL_IMAGE) {
+      r3v_clear_depth_stencil_image(
          device, e->clear_depth_stencil_image.image,
          &e->clear_depth_stencil_image.value,
          e->clear_depth_stencil_image.range.aspectMask,
          &e->clear_depth_stencil_image.range);
-   } else if (e->type == R300VK_CMD_FILL_BUFFER) {
-      r300vk_fill_buffer(device, &e->fill_buffer);
-   } else if (e->type == R300VK_CMD_COPY_BUFFER) {
-      r300vk_copy_buffer_region(device, &e->copy_buffer);
-   } else if (e->type == R300VK_CMD_UPDATE_BUFFER) {
-      r300vk_update_buffer(device, &e->update_buffer);
-   } else if (e->type == R300VK_CMD_COPY_QUERY_POOL_RESULTS) {
-      r300vk_copy_query_pool_results(device, &e->copy_query_pool_results);
-   } else if (e->type == R300VK_CMD_SET_EVENT) {
+   } else if (e->type == R3V_CMD_FILL_BUFFER) {
+      r3v_fill_buffer(device, &e->fill_buffer);
+   } else if (e->type == R3V_CMD_COPY_BUFFER) {
+      r3v_copy_buffer_region(device, &e->copy_buffer);
+   } else if (e->type == R3V_CMD_UPDATE_BUFFER) {
+      r3v_update_buffer(device, &e->update_buffer);
+   } else if (e->type == R3V_CMD_COPY_QUERY_POOL_RESULTS) {
+      r3v_copy_query_pool_results(device, &e->copy_query_pool_results);
+   } else if (e->type == R3V_CMD_SET_EVENT) {
       if (e->event.event)
          e->event.event->status = VK_EVENT_SET;
-   } else if (e->type == R300VK_CMD_RESET_EVENT) {
+   } else if (e->type == R3V_CMD_RESET_EVENT) {
       if (e->event.event)
          e->event.event->status = VK_EVENT_RESET;
    }
 }
 
 VkResult
-r300vk_queue_driver_submit(struct vk_queue *vkq,
+r3v_queue_driver_submit(struct vk_queue *vkq,
                             struct vk_queue_submit *submit)
 {
-   struct r300vk_queue  *queue  = container_of(vkq, struct r300vk_queue, vk);
-   struct r300vk_device *device = container_of(queue->vk.base.device,
-                                               struct r300vk_device, vk);
+   struct r3v_queue  *queue  = container_of(vkq, struct r3v_queue, vk);
+   struct r3v_device *device = container_of(queue->vk.base.device,
+                                               struct r3v_device, vk);
    struct pipe_context  *pipe   = device->pipe;
    VkResult result =
       vk_sync_wait_many(&device->vk, submit->wait_count, submit->waits,
@@ -4716,7 +4716,7 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
     * HOST_COHERENT memory promises visibility without an explicit flush, and
     * on this device all GPU access happens inside this synchronous submit, so
     * the submit boundary is exactly where that promise is kept. */
-   r300vk_device_memory_sync_bound(device, true /* host -> buffer */);
+   r3v_device_memory_sync_bound(device, true /* host -> buffer */);
 
    /* Synthetic VS-system-value vertex buffers allocated during replay; held
     * until after the submit fence, then released. */
@@ -4728,9 +4728,9 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
    bool gpu_pending = false;
 
    for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
-      struct r300vk_cmd_buffer *cmd =
+      struct r3v_cmd_buffer *cmd =
          container_of(submit->command_buffers[ci],
-                      struct r300vk_cmd_buffer, base);
+                      struct r3v_cmd_buffer, base);
 
       /* Submit backend selection.  device->use_cs_backend selects the cs-direct
        * path (native PM4 via radeon_winsys) when the hazard gate is accepted.
@@ -4743,10 +4743,10 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
        * 3D-engine config registers).  Honor the flag by reporting the gap
        * once, then run the pipe_context replay path. */
       if (device->use_cs_backend)
-         mesa_logw_once("r300vk: cs-direct-emit backend requested via "
-                        "R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED but not "
+         mesa_logw_once("r3v: cs-direct-emit backend requested via "
+                        "R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED but not "
                         "implemented; using pipe_context replay backend");
-      result = r300vk_replay_gpu(device, cmd, &transient_vbs, &gpu_pending);
+      result = r3v_replay_gpu(device, cmd, &transient_vbs, &gpu_pending);
       if (result != VK_SUCCESS)
          break;
    }
@@ -4773,7 +4773,7 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
     * pull every bound resource back into its owns_buffer host map -- a
     * coherent-memory reader polls the map after the fence without calling
     * vkInvalidateMappedMemoryRanges. */
-   r300vk_device_memory_sync_bound(device, false /* buffer -> host */);
+   r3v_device_memory_sync_bound(device, false /* buffer -> host */);
 
    /* In IMMEDIATE submit mode (VK_DEVICE_TIMELINE_MODE_NONE), the vk_queue
     * runtime calls vk_sync_signal_unwrap before driver_submit, which strips

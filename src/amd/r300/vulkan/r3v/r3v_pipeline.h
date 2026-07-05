@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef R300VK_PIPELINE_H
-#define R300VK_PIPELINE_H
+#ifndef R3V_PIPELINE_H
+#define R3V_PIPELINE_H
 
 #include "r3v_private.h"
 
@@ -21,10 +21,10 @@ extern "C" {
 #endif
 
 enum {
-   R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT = 0,
+   R3V_INPUT_ATTACHMENT_SAMPLER_UNIT = 0,
 };
 
-/* r300vk_pipeline stores Gallium CSO handles compiled from SPIR-V through
+/* r3v_pipeline stores Gallium CSO handles compiled from SPIR-V through
  * vk_spirv_to_nir() -> r300g's internal nir_to_rc path.
  * The ICD does NOT call nir_to_tgsi; r300g handles the NIR lowering
  * internally when create_vs_state / create_fs_state receive
@@ -37,7 +37,7 @@ enum {
  * vs_hw_valid / fs_hw_valid: false if extraction failed (SW-TCL VS, dummy
  * shader, or empty cb_code); a cs-direct emitter must not submit when either
  * flag is false. */
-struct r300vk_pipeline {
+struct r3v_pipeline {
    struct vk_object_base   base;
 
    struct r300_vs_hw_code  vs_hw;
@@ -52,7 +52,7 @@ struct r300vk_pipeline {
     * buffer when a set declares several UBOs and the shader reads a later one.
     * Tracking it per stage lets the vertex and fragment shader read different
     * bindings -- including two bindings of one buffer, as
-    * dEQP-VK.ubo.link_by_binding does.  r300vk_compile_shader records the slot
+    * dEQP-VK.ubo.link_by_binding does.  r3v_compile_shader records the slot
     * for the stage it compiles. */
    bool                    vs_has_ubo;
    uint32_t                vs_ubo_set;
@@ -65,7 +65,7 @@ struct r300vk_pipeline {
     * to a normalized texture() at gl_FragCoord*inv_extent.  The replay binds the
     * input image from this descriptor (set, binding); r300's Gallium callbacks
     * require sampler updates to start at unit zero, so the lowered texture uses
-    * R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT.  The inv_extent vec2 is bound at
+    * R3V_INPUT_ATTACHMENT_SAMPLER_UNIT.  The inv_extent vec2 is bound at
     * fragment CONST[0]. */
    bool                    fs_has_input_attachment;
    uint32_t                fs_input_attachment_set;
@@ -78,14 +78,14 @@ struct r300vk_pipeline {
     * set 0 at the same binding would alias.  Units are assigned in (set, binding)
     * order across the whole layout, so samplers in any descriptor set -- not just
     * set 0 -- resolve to a distinct unit on both the compile and replay sides.
-    * r300vk_compile_shader rewrites each FS sampler's binding to fs_sampler_map[].unit
-    * before nir_lower_samplers; r300vk_bind_descriptor_textures looks up the same
+    * r3v_compile_shader rewrites each FS sampler's binding to fs_sampler_map[].unit
+    * before nir_lower_samplers; r3v_bind_descriptor_textures looks up the same
     * unit per (set, binding). */
    struct {
       uint16_t             set;
       uint16_t             binding;
       uint16_t             unit;
-   }                       fs_sampler_map[R300VK_MAX_FS_SAMPLER_UNITS];
+   }                       fs_sampler_map[R3V_MAX_FS_SAMPLER_UNITS];
    uint16_t                fs_sampler_map_count;
 
    /* Set when the experimental NEAREST tile-stitch gate is on and the fragment
@@ -105,7 +105,7 @@ struct r300vk_pipeline {
     * dispatch replay lowers the kernel onto the compute-as-raster substrate as
     * a fullscreen-quad fragment draw that samples in_tex (NEAREST) and writes
     * via RB3D color export, then copies the RT to the output ssbo via the
-    * existing R300VK_CMD_COPY_IMAGE_TO_BUFFER path.  The bindings are the ssbo
+    * existing R3V_CMD_COPY_IMAGE_TO_BUFFER path.  The bindings are the ssbo
     * indices the kernel reads/writes; the dispatch resolves them through the
     * bound descriptor sets. */
    struct r300_compute_identity_pattern identity_map;
@@ -118,7 +118,7 @@ struct r300vk_pipeline {
 
    /* Single-input affine unary-map kernel detected at pipeline-create time:
     * out[gid] = in[gid]*c0 + c1.  Reuses the identity_map 1-in/1-out dispatch
-    * replay -- r300vk_unary_map_synthesize_shaders mirrors this pattern's
+    * replay -- r3v_unary_map_synthesize_shaders mirrors this pattern's
     * input/output bindings + value format into identity_map and binds a MAD
     * fragment program (tex*c0 + c1) as pl->fs_cso instead of the copy FS. */
    struct r300_compute_unary_map_pattern unary_map;
@@ -171,7 +171,7 @@ struct r300vk_pipeline {
 
    /* Quaternion Hamilton-product (QMUL) kernel detected at pipeline-create time:
     * out[gid] = q1[gid] * q2[gid], the Cayley-Dickson dim-4 multiply.  Lowered to
-    * a fullscreen draw whose synthesized FS (r300vk_build_qmul_fs_nir) emits the
+    * a fullscreen draw whose synthesized FS (r3v_build_qmul_fs_nir) emits the
     * product as four sign-permuted DP4s to an FP16 render target, unpacked into
     * the kernel's vec4 FP32 output buffer. */
    struct r300_compute_qmul_pattern qmul;
@@ -179,7 +179,7 @@ struct r300vk_pipeline {
    /* Quaternion division (QDIV) kernel detected at pipeline-create time:
     * out[gid] = a[gid] / b[gid] = a * inv(b), inv(b) = conj(b)*rcp(dot(b,b)).  The
     * dim-4 sibling of ODIV, but one pass: the synthesized FS
-    * (r300vk_build_qdiv_fs_nir) emits a single Hamilton product over the scaled
+    * (r3v_build_qdiv_fs_nir) emits a single Hamilton product over the scaled
     * conjugate (four DP4s plus the US RCP) to an FP16 render target, unpacked into
     * the kernel's vec4 FP32 output buffer.  Same two-in/one-out dispatch as QMUL. */
    struct r300_compute_qdiv_pattern qdiv;
@@ -203,25 +203,25 @@ struct r300vk_pipeline {
    /* Quaternion rotation (QROTATE) kernel detected at pipeline-create time:
     * out[gid] = q[gid] * embed(v[gid]) * conj(q[gid]), the sandwich = two Hamilton
     * products = eight DP4s.  Lowered to a fullscreen draw whose synthesized FS
-    * (r300vk_build_qrotate_fs_nir) emits the sandwich to an FP16 render target,
+    * (r3v_build_qrotate_fs_nir) emits the sandwich to an FP16 render target,
     * unpacked into the kernel's vec4 FP32 output buffer. */
    struct r300_compute_qrotate_pattern qrotate;
 
    /* Quaternion conjugate (QCONJ) kernel detected at pipeline-create time:
     * out[gid] = (a.x, -a.y, -a.z, -a.w).  Lowered to a fullscreen draw whose
-    * synthesized FS (r300vk_build_qconj_fs_nir) sign-flips the sampled quaternion
+    * synthesized FS (r3v_build_qconj_fs_nir) sign-flips the sampled quaternion
     * to an FP16 render target, unpacked into the kernel's vec4 FP32 output. */
    struct r300_compute_qconj_pattern qconj;
 
    /* Quaternion squared-norm (QNORM) kernel detected at pipeline-create time:
     * out[gid] = vec4(dot(a[gid], a[gid])).  Lowered to a fullscreen draw whose
-    * synthesized FS (r300vk_build_qnorm_fs_nir) writes the broadcast self-dot to
+    * synthesized FS (r3v_build_qnorm_fs_nir) writes the broadcast self-dot to
     * an FP16 render target, unpacked into the kernel's vec4 FP32 output. */
    struct r300_compute_qnorm_pattern qnorm;
 
    /* Quaternion normalize (QNORMALIZE) kernel: out[gid] = a * rsqrt(dot(a,a)).
     * Same one-in/one-out skeleton as QNORM; the synthesized FS
-    * (r300vk_build_qnormalize_fs_nir) scales the quaternion by the US RSQ of its
+    * (r3v_build_qnormalize_fs_nir) scales the quaternion by the US RSQ of its
     * squared norm. */
    struct r300_compute_qnormalize_pattern qnormalize;
 
@@ -401,7 +401,7 @@ struct r300vk_pipeline {
 
    /* The pipe-state templates the fixed CSOs above were created from, kept so
     * the replay can rebuild a transient CSO with dynamic fields overlaid.
-    * dyn_mask names the R300VK_DYN_* states the pipeline declared dynamic:
+    * dyn_mask names the R3V_DYN_* states the pipeline declared dynamic:
     * a vkCmdSet* value applies to a draw only when the bound pipeline made
     * that state dynamic (Vulkan's static-else-dynamic rule), so the replay
     * masks its merged shadow with this before overlaying. */
@@ -411,8 +411,8 @@ struct r300vk_pipeline {
    float                   static_blend_const[4];
    uint32_t                static_stencil_ref_front;
    uint32_t                static_stencil_ref_back;
-   uint32_t                vertex_stride[R300VK_MAX_VERTEX_BINDINGS];
-   uint32_t                vertex_binding_extent[R300VK_MAX_VERTEX_BINDINGS];
+   uint32_t                vertex_stride[R3V_MAX_VERTEX_BINDINGS];
+   uint32_t                vertex_binding_extent[R3V_MAX_VERTEX_BINDINGS];
    uint32_t                vertex_binding_mask;
    /* Subset of vertex_binding_mask whose Vulkan binding inputRate advances per
     * instance; replay bounds these against firstInstance/instanceCount. */
@@ -431,7 +431,7 @@ struct r300vk_pipeline {
    bool                    has_static_scissor;
 
    /* Synthetic VS-system-value stream.  The RC vertex path has no
-    * system-value input slot, so R300VK supplies VertexIndex / InstanceIndex
+    * system-value input slot, so R3V supplies VertexIndex / InstanceIndex
     * as driver-generated vertex attributes at reserved driver_location and
     * vertex-buffer binding pairs. */
    bool                    needs_vertex_id_stream;
@@ -455,14 +455,14 @@ struct r300vk_pipeline {
 
 /* True when one of the compute-as-raster verb detectors fired, i.e. a dispatch
  * of this pipeline reaches a real replay path instead of the unknown-shape
- * no-op.  This OR MUST list exactly the verbs r300vk_replay_dispatch routes;
+ * no-op.  This OR MUST list exactly the verbs r3v_replay_dispatch routes;
  * adding a verb means updating both.  index_consumption is deliberately absent
  * -- it is a classify-time guard signal, not a dispatch verb, so a kernel that
  * only sets it still no-ops.  Used at pipeline-create to warn for an
  * admitted-but-unmatched kernel (the UNKNOWN_SHAPE reject that the classifier's
  * reject-reason path cannot see, because the kernel passed admission). */
 static inline bool
-r300vk_pipeline_matched_raster_verb(const struct r300vk_pipeline *pl)
+r3v_pipeline_matched_raster_verb(const struct r3v_pipeline *pl)
 {
    return pl->identity_map.is_identity_map ||
           pl->const_fill.is_const_fill ||
@@ -502,31 +502,31 @@ r300vk_pipeline_matched_raster_verb(const struct r300vk_pipeline *pl)
           pl->ieee16_mul.is_ieee16_mul;
 }
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_pipeline, base, VkPipeline,
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_pipeline, base, VkPipeline,
                                 VK_OBJECT_TYPE_PIPELINE)
 
 /* Vulkan-to-gallium fixed-function enum converters, shared by the pipeline's
  * static CSO translation and the replay's dynamic-state overlay so both build
  * identical pipe state from the same Vulkan values. */
-unsigned r300vk_cull_mode_to_pipe(VkCullModeFlags cull);
-unsigned r300vk_compare_op_to_pipe(VkCompareOp op);
-unsigned r300vk_stencil_op_to_pipe(VkStencilOp op);
+unsigned r3v_cull_mode_to_pipe(VkCullModeFlags cull);
+unsigned r3v_compare_op_to_pipe(VkCompareOp op);
+unsigned r3v_stencil_op_to_pipe(VkStencilOp op);
 
-VkResult r300vk_CreateGraphicsPipelines(VkDevice device,
+VkResult r3v_CreateGraphicsPipelines(VkDevice device,
                                          VkPipelineCache pipelineCache,
                                          uint32_t createInfoCount,
                                          const VkGraphicsPipelineCreateInfo *pCreateInfos,
                                          const VkAllocationCallbacks *pAllocator,
                                          VkPipeline *pPipelines);
 
-VkResult r300vk_CreateComputePipelines(VkDevice device,
+VkResult r3v_CreateComputePipelines(VkDevice device,
                                         VkPipelineCache pipelineCache,
                                         uint32_t createInfoCount,
                                         const VkComputePipelineCreateInfo *pCreateInfos,
                                         const VkAllocationCallbacks *pAllocator,
                                         VkPipeline *pPipelines);
 
-void r300vk_DestroyPipeline(VkDevice device,
+void r3v_DestroyPipeline(VkDevice device,
                              VkPipeline pipeline,
                              const VkAllocationCallbacks *pAllocator);
 
@@ -534,4 +534,4 @@ void r300vk_DestroyPipeline(VkDevice device,
 }
 #endif
 
-#endif /* R300VK_PIPELINE_H */
+#endif /* R3V_PIPELINE_H */

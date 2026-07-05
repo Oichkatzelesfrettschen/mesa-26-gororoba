@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef R300VK_DESCRIPTOR_H
-#define R300VK_DESCRIPTOR_H
+#ifndef R3V_DESCRIPTOR_H
+#define R3V_DESCRIPTOR_H
 
 #include "r3v_private.h"
 
@@ -20,7 +20,7 @@ extern "C" {
  * samplers owned by the layout allocation, and the linear offset where this
  * binding's descriptors start within the set's descriptors[] array.  Sorted by
  * descriptorBinding index. */
-struct r300vk_dsl_binding {
+struct r3v_dsl_binding {
    uint32_t           binding;
    VkDescriptorType   type;
    uint32_t           count;
@@ -32,16 +32,16 @@ struct r300vk_dsl_binding {
 /* The driver's descriptor-set layout extends the runtime's vk_descriptor_set_layout
  * base (ref-counted, freed by vk_common_DestroyDescriptorSetLayout via
  * vk_descriptor_set_layout_unref). */
-struct r300vk_descriptor_set_layout {
+struct r3v_descriptor_set_layout {
    struct vk_descriptor_set_layout base;
    uint32_t                        binding_count;
    uint32_t                        total_descriptors;
-   struct r300vk_dsl_binding       bindings[];
+   struct r3v_dsl_binding       bindings[];
 };
 
 /* One bound resource slot in a descriptor set.  The union mirrors the
  * VkDescriptorType space; the type field records which arm is live. */
-struct r300vk_descriptor {
+struct r3v_descriptor {
    VkDescriptorType type;
    union {
       struct {
@@ -59,14 +59,14 @@ struct r300vk_descriptor {
 
 /* A descriptor set: layout reference + the flat descriptors[] array sized by
  * the layout's total_descriptors. */
-struct r300vk_descriptor_set {
+struct r3v_descriptor_set {
    struct vk_object_base                base;
-   struct r300vk_descriptor_set_layout *layout;
-   struct r300vk_descriptor            *descriptors;
+   struct r3v_descriptor_set_layout *layout;
+   struct r3v_descriptor            *descriptors;
    bool                                 allocated;
 };
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_descriptor_set, base, VkDescriptorSet,
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_descriptor_set, base, VkDescriptorSet,
                                VK_OBJECT_TYPE_DESCRIPTOR_SET)
 
 /* A descriptor pool: pre-allocates max_sets slots and lends them out via
@@ -74,17 +74,17 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_descriptor_set, base, VkDescriptorSet,
  * accounting is not tracked because the simple bump-allocator does not need
  * it; the spec's "ran out of descriptors of type X" failure mode is reported
  * as OUT_OF_POOL_MEMORY when max_sets is exhausted. */
-struct r300vk_descriptor_pool {
+struct r3v_descriptor_pool {
    struct vk_object_base         base;
    uint32_t                      max_sets;
    uint32_t                      allocated_sets;
-   struct r300vk_descriptor_set *sets;
+   struct r3v_descriptor_set *sets;
 };
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_descriptor_pool, base, VkDescriptorPool,
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_descriptor_pool, base, VkDescriptorPool,
                                VK_OBJECT_TYPE_DESCRIPTOR_POOL)
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_descriptor_set_layout, base.base,
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_descriptor_set_layout, base.base,
                                VkDescriptorSetLayout,
                                VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
 
@@ -92,4 +92,4 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_descriptor_set_layout, base.base,
 }
 #endif
 
-#endif /* R300VK_DESCRIPTOR_H */
+#endif /* R3V_DESCRIPTOR_H */

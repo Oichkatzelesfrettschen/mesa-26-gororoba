@@ -29,7 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Diagnostic logging gate.  Active when the R300VK_DEBUG env variable
+/* Diagnostic logging gate.  Active when the R3V_DEBUG env variable
  * contains the substring "identity_map" (matches the existing
  * debug-options convention parsed in r3v_instance.c).  Cached in a
  * file-scope static so the per-dispatch hot path does only one getenv on
@@ -39,7 +39,7 @@ identity_map_debug_enabled(void)
 {
    static int cached = -1;
    if (cached < 0) {
-      const char *flags = getenv("R300VK_DEBUG");
+      const char *flags = getenv("R3V_DEBUG");
       cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
    }
    return cached != 0;
@@ -52,14 +52,14 @@ identity_map_debug_enabled(void)
    } while (0)
 
 static bool
-r300vk_idm_exact_opt_in_enabled(const char *env_name, const char *expected)
+r3v_idm_exact_opt_in_enabled(const char *env_name, const char *expected)
 {
    const char *gate = getenv(env_name);
    return gate && strcmp(gate, expected) == 0;
 }
 
 static bool
-r300vk_idm_format_supported(struct pipe_screen *screen, enum pipe_format fmt)
+r3v_idm_format_supported(struct pipe_screen *screen, enum pipe_format fmt)
 {
    return screen &&
           screen->is_format_supported(screen, fmt, PIPE_TEXTURE_2D, 0, 0,
@@ -69,8 +69,8 @@ r300vk_idm_format_supported(struct pipe_screen *screen, enum pipe_format fmt)
 }
 
 static enum pipe_format
-r300vk_identity_map_replay_format(struct r300vk_device *device,
-                                  const struct r300vk_pipeline *pl)
+r3v_identity_map_replay_format(struct r3v_device *device,
+                                  const struct r3v_pipeline *pl)
 {
    /* The identity-map theorem only proves bit-exact transport for UNORM8/16
     * and FP16 through the TEX -> fragment-temp -> RT path.  Keep FP32x4 behind
@@ -83,11 +83,11 @@ r300vk_identity_map_replay_format(struct r300vk_device *device,
     * keys on a 4x32 transport shape only; using it for non-float payloads is a
     * user hazard accepted explicitly through the opt-in. */
    if (device && pl &&
-       r300vk_idm_exact_opt_in_enabled(R300VK_IDENTITY_MAP_FP32X4_ENV,
-                                       R300VK_IDENTITY_MAP_FP32X4_ENV_VALUE) &&
+       r3v_idm_exact_opt_in_enabled(R3V_IDENTITY_MAP_FP32X4_ENV,
+                                       R3V_IDENTITY_MAP_FP32X4_ENV_VALUE) &&
        pl->identity_map.value_components == 4 &&
        pl->identity_map.value_bit_size == 32 &&
-       r300vk_idm_format_supported(device->screen,
+       r3v_idm_format_supported(device->screen,
                                    PIPE_FORMAT_R32G32B32A32_FLOAT)) {
       IDM_LOG("using experimental fp32x4 identity carrier");
       return PIPE_FORMAT_R32G32B32A32_FLOAT;
@@ -97,7 +97,7 @@ r300vk_identity_map_replay_format(struct r300vk_device *device,
 }
 
 static void
-r300vk_identity_map_copy_rows(void *dst_map, unsigned dst_stride,
+r3v_identity_map_copy_rows(void *dst_map, unsigned dst_stride,
                               const void *src_map, unsigned src_stride,
                               unsigned width, unsigned height,
                               unsigned bpp, uint64_t total_elements)
@@ -127,14 +127,14 @@ r300vk_identity_map_copy_rows(void *dst_map, unsigned dst_stride,
  *                         R32G32B32A32 output (buf_bs == 16).
  * Returns false only when the scalar staging allocation fails. */
 static bool
-r300vk_idm_copy_rt_rows_to_buffer(void *out_bytes, const uint8_t *rt_map,
+r3v_idm_copy_rt_rows_to_buffer(void *out_bytes, const uint8_t *rt_map,
                                   unsigned rt_stride, unsigned width,
                                   unsigned height, uint64_t total_invocations,
                                   enum pipe_format fmt, enum pipe_format buf_fmt,
                                   unsigned buf_bs)
 {
    if (buf_fmt == fmt) {
-      r300vk_identity_map_copy_rows(out_bytes, width * buf_bs, rt_map, rt_stride,
+      r3v_identity_map_copy_rows(out_bytes, width * buf_bs, rt_map, rt_stride,
                                     width, height, buf_bs, total_invocations);
       return true;
    }
@@ -172,16 +172,16 @@ r300vk_idm_copy_rt_rows_to_buffer(void *out_bytes, const uint8_t *rt_map,
 
 
 /* Forward declaration used by buffer-resolution helpers. */
-static const struct r300vk_descriptor *
-find_descriptor_by_binding(const struct r300vk_descriptor_set *set,
+static const struct r3v_descriptor *
+find_descriptor_by_binding(const struct r3v_descriptor_set *set,
                            uint32_t binding_index);
 
 static bool
-r300vk_idm_resolve_buffers(const struct r300vk_descriptor_set *set,
+r3v_idm_resolve_buffers(const struct r3v_descriptor_set *set,
                            uint32_t count,
                            const uint32_t *bindings,
-                           const struct r300vk_descriptor **descs,
-                           struct r300vk_buffer **bufs)
+                           const struct r3v_descriptor **descs,
+                           struct r3v_buffer **bufs)
 {
    for (uint32_t i = 0; i < count; i++) {
       descs[i] = find_descriptor_by_binding(set, bindings[i]);
@@ -189,7 +189,7 @@ r300vk_idm_resolve_buffers(const struct r300vk_descriptor_set *set,
          IDM_LOG("early-return descriptor-walk-miss (binding=%u)", bindings[i]);
          return false;
       }
-      VK_FROM_HANDLE(r300vk_buffer, buf, descs[i]->buf.buffer);
+      VK_FROM_HANDLE(r3v_buffer, buf, descs[i]->buf.buffer);
       if (!buf || !buf->resource) {
          IDM_LOG("early-return null-pipe-resource (binding=%u)", bindings[i]);
          return false;
@@ -211,8 +211,8 @@ r300vk_idm_resolve_buffers(const struct r300vk_descriptor_set *set,
  * treat it as 1 so a degenerate pipeline maps to its group count rather than
  * collapsing the whole grid to zero invocations. */
 static uint64_t
-r300vk_idm_total_invocations(const struct r300vk_cmd_dispatch *dispatch,
-                             const struct r300vk_pipeline *pl)
+r3v_idm_total_invocations(const struct r3v_cmd_dispatch *dispatch,
+                             const struct r3v_pipeline *pl)
 {
    const uint64_t lsx = pl->local_size_x ? pl->local_size_x : 1u;
    const uint64_t lsy = pl->local_size_y ? pl->local_size_y : 1u;
@@ -234,7 +234,7 @@ r300vk_idm_total_invocations(const struct r300vk_cmd_dispatch *dispatch,
 }
 
 static bool
-r300vk_idm_element_byte_count(uint64_t total_elements, unsigned blocksize,
+r3v_idm_element_byte_count(uint64_t total_elements, unsigned blocksize,
                               uint64_t *out_bytes)
 {
    if (blocksize != 0 && total_elements > UINT64_MAX / blocksize)
@@ -247,7 +247,7 @@ r300vk_idm_element_byte_count(uint64_t total_elements, unsigned blocksize,
 }
 
 static unsigned
-r300vk_idm_buffer_write_flags(unsigned byte_offset, uint64_t total_bytes,
+r3v_idm_buffer_write_flags(unsigned byte_offset, uint64_t total_bytes,
                               const struct pipe_resource *buffer)
 {
    if (byte_offset == 0 && total_bytes >= buffer->width0)
@@ -256,15 +256,15 @@ r300vk_idm_buffer_write_flags(unsigned byte_offset, uint64_t total_bytes,
 }
 
 static void
-r300vk_set_index_reject(const char **out_reason, const char *reason)
+r3v_set_index_reject(const char **out_reason, const char *reason)
 {
    if (out_reason)
       *out_reason = reason;
 }
 
 static bool
-r300vk_affine_iota_dispatch_shape_exact(const struct r300vk_pipeline *pl,
-                                        const struct r300vk_cmd_dispatch *dispatch,
+r3v_affine_iota_dispatch_shape_exact(const struct r3v_pipeline *pl,
+                                        const struct r3v_cmd_dispatch *dispatch,
                                         const char **out_reason)
 {
    if (!pl->affine_iota.is_affine_iota)
@@ -277,7 +277,7 @@ r300vk_affine_iota_dispatch_shape_exact(const struct r300vk_pipeline *pl,
    const uint64_t tz = (uint64_t)dispatch->group_count_z *
                        (pl->local_size_z ? pl->local_size_z : 1u);
    if (!tx || !ty || !tz) {
-      r300vk_set_index_reject(out_reason, "empty-grid");
+      r3v_set_index_reject(out_reason, "empty-grid");
       return false;
    }
 
@@ -286,7 +286,7 @@ r300vk_affine_iota_dispatch_shape_exact(const struct r300vk_pipeline *pl,
                       pl->affine_iota.stride_z;
    if (pl->affine_iota.output_offset_stride != 4 ||
        pl->affine_iota.output_offset_offset != 0) {
-      r300vk_set_index_reject(out_reason,
+      r3v_set_index_reject(out_reason,
                               "affine-iota output offset is not out[gid]");
       return false;
    }
@@ -297,7 +297,7 @@ r300vk_affine_iota_dispatch_shape_exact(const struct r300vk_pipeline *pl,
           (uint64_t)pl->affine_iota.output_offset_stride_y != 4ull * tx ||
           (uint64_t)pl->affine_iota.output_offset_stride_z !=
              4ull * tx * ty) {
-         r300vk_set_index_reject(out_reason,
+         r3v_set_index_reject(out_reason,
                                  "affine-iota non-canonical 3D flatten");
          return false;
       }
@@ -305,7 +305,7 @@ r300vk_affine_iota_dispatch_shape_exact(const struct r300vk_pipeline *pl,
       if (tx > UINT32_MAX || ty > UINT32_MAX || tz > UINT32_MAX ||
           !r300_grid_fold_3d((uint32_t)tx, (uint32_t)ty, (uint32_t)tz,
                              &fold)) {
-         r300vk_set_index_reject(out_reason,
+         r3v_set_index_reject(out_reason,
                                  "raster-fold (affine-iota 3D grid)");
          return false;
       }
@@ -314,18 +314,18 @@ r300vk_affine_iota_dispatch_shape_exact(const struct r300vk_pipeline *pl,
 
    if (pl->affine_iota.output_offset_stride_y ||
        pl->affine_iota.output_offset_stride_z) {
-      r300vk_set_index_reject(out_reason,
+      r3v_set_index_reject(out_reason,
                               "affine-iota 1D output offset has y/z stride");
       return false;
    }
    if (ty > 1 || tz > 1) {
-      r300vk_set_index_reject(out_reason,
+      r3v_set_index_reject(out_reason,
                               "affine-iota non-1D dispatch");
       return false;
    }
    struct r300_grid_fold fold;
    if (tx > UINT32_MAX || !r300_grid_fold_1d(tx, &fold)) {
-      r300vk_set_index_reject(out_reason,
+      r3v_set_index_reject(out_reason,
                               "raster-fold (affine-iota 1D grid)");
       return false;
    }
@@ -333,14 +333,14 @@ r300vk_affine_iota_dispatch_shape_exact(const struct r300vk_pipeline *pl,
 }
 
 static bool
-r300vk_const_fill_output_offset_exact(const struct r300vk_pipeline *pl,
-                                      const struct r300vk_cmd_dispatch *dispatch,
+r3v_const_fill_output_offset_exact(const struct r3v_pipeline *pl,
+                                      const struct r3v_cmd_dispatch *dispatch,
                                       const char **out_reason)
 {
    const struct r300_compute_index_pattern *ip = &pl->index_consumption;
    if (!ip->store_offset_valid || !ip->store_offset_global_invocation_only ||
        ip->store_offset_stride != 4 || ip->store_offset_offset != 0) {
-      r300vk_set_index_reject(out_reason,
+      r3v_set_index_reject(out_reason,
                               "const-fill output offset is not out[gid]");
       return false;
    }
@@ -355,13 +355,13 @@ r300vk_const_fill_output_offset_exact(const struct r300vk_pipeline *pl,
    const uint64_t tz = (uint64_t)dispatch->group_count_z *
                        (pl->local_size_z ? pl->local_size_z : 1u);
    if (!tx || !ty || !tz) {
-      r300vk_set_index_reject(out_reason, "empty-grid");
+      r3v_set_index_reject(out_reason, "empty-grid");
       return false;
    }
 
    if (tx > UINT64_MAX / 4ull || tx > UINT64_MAX / ty ||
        tx * ty > UINT64_MAX / 4ull) {
-      r300vk_set_index_reject(out_reason,
+      r3v_set_index_reject(out_reason,
                               "const-fill output offset overflows");
       return false;
    }
@@ -374,7 +374,7 @@ r300vk_const_fill_output_offset_exact(const struct r300vk_pipeline *pl,
         (uint64_t)ip->store_offset_stride_z != expected_z) ||
        (ty > 1 && (uint64_t)ip->store_offset_stride_y != expected_y) ||
        (tz > 1 && (uint64_t)ip->store_offset_stride_z != expected_z)) {
-      r300vk_set_index_reject(out_reason,
+      r3v_set_index_reject(out_reason,
                               "const-fill non-canonical output flatten");
       return false;
    }
@@ -383,20 +383,20 @@ r300vk_const_fill_output_offset_exact(const struct r300vk_pipeline *pl,
 }
 
 bool
-r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
-                            const struct r300vk_cmd_dispatch *dispatch,
+r3v_dispatch_index_exact(const struct r3v_pipeline *pl,
+                            const struct r3v_cmd_dispatch *dispatch,
                             const char **out_reason)
 {
-   r300vk_set_index_reject(out_reason, NULL);
+   r3v_set_index_reject(out_reason, NULL);
    if (!pl || !dispatch) {
-      r300vk_set_index_reject(out_reason, "null dispatch state");
+      r3v_set_index_reject(out_reason, "null dispatch state");
       return false;
    }
    const struct r300_compute_index_pattern *ip = &pl->index_consumption;
    if (pl->const_fill.is_const_fill)
-      return r300vk_const_fill_output_offset_exact(pl, dispatch, out_reason);
+      return r3v_const_fill_output_offset_exact(pl, dispatch, out_reason);
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    enum r300_grid_index_class cls;
    uint32_t stride = 1, offset = 0;
 
@@ -426,7 +426,7 @@ r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
       const uint64_t tz = (uint64_t)dispatch->group_count_z *
                           (pl->local_size_z ? pl->local_size_z : 1u);
       if (!tx || !ty || !tz) {
-         r300vk_set_index_reject(out_reason, "empty-grid");
+         r3v_set_index_reject(out_reason, "empty-grid");
          return false;
       }
       const uint64_t max_value = (uint64_t)ip->stride * (tx - 1) +
@@ -434,11 +434,11 @@ r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
                                  (uint64_t)ip->stride_z * (tz - 1) +
                                  ip->offset;
       if (max_value > R300_FP24_EXACT_INT_CEILING) {
-         r300vk_set_index_reject(out_reason,
+         r3v_set_index_reject(out_reason,
             "index-ceiling (materialized 3D index exceeds FP24 2^17)");
          return false;
       }
-      return r300vk_affine_iota_dispatch_shape_exact(pl, dispatch,
+      return r3v_affine_iota_dispatch_shape_exact(pl, dispatch,
                                                      out_reason);
    }
    case R300_COMPUTE_INDEX_VALUE_GENERAL:
@@ -446,31 +446,31 @@ r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
       /* The index reaches a stored value through a non-affine chain: no
        * exactness bound is derivable, so no honest fold exists at any
        * invocation count. */
-      r300vk_set_index_reject(out_reason,
+      r3v_set_index_reject(out_reason,
                               "index-value-general (no derivable FP24 bound)");
       return false;
    }
 
    if (!r300_grid_index_exact(cls, total, stride, offset)) {
-      r300vk_set_index_reject(out_reason,
+      r3v_set_index_reject(out_reason,
          (cls == R300_GRID_INDEX_LINEAR ||
           cls == R300_GRID_INDEX_STRIDED)
             ? "index-ceiling (materialized index exceeds FP24 2^17)"
             : "raster-fold (invocations exceed 2048x2048)");
       return false;
    }
-   return r300vk_affine_iota_dispatch_shape_exact(pl, dispatch, out_reason);
+   return r3v_affine_iota_dispatch_shape_exact(pl, dispatch, out_reason);
 }
 
 static bool
-r300vk_idm_compute_raster_grid(const struct r300vk_cmd_dispatch *dispatch,
-                               const struct r300vk_pipeline *pl,
+r3v_idm_compute_raster_grid(const struct r3v_cmd_dispatch *dispatch,
+                               const struct r3v_pipeline *pl,
                                uint64_t *out_invocations,
                                unsigned *out_width,
                                unsigned *out_height)
 {
    const uint64_t total_invocations =
-      r300vk_idm_total_invocations(dispatch, pl);
+      r3v_idm_total_invocations(dispatch, pl);
    struct r300_grid_fold fold;
    if (!r300_grid_fold_1d(total_invocations, &fold)) {
       IDM_LOG("early-return total_invocations=%llu out-of-bounds",
@@ -484,7 +484,7 @@ r300vk_idm_compute_raster_grid(const struct r300vk_cmd_dispatch *dispatch,
 }
 
 static bool
-r300vk_idm_create_blend_acc_vbo(struct pipe_context *pipe,
+r3v_idm_create_blend_acc_vbo(struct pipe_context *pipe,
                                 struct pipe_resource *in_buf,
                                 unsigned in_offset,
                                 uint32_t N, uint32_t M,
@@ -570,7 +570,7 @@ r300vk_idm_create_blend_acc_vbo(struct pipe_context *pipe,
 }
 
 static bool
-r300vk_idm_create_zpass_vbo(struct pipe_context *pipe,
+r3v_idm_create_zpass_vbo(struct pipe_context *pipe,
                             struct pipe_resource *in_buf,
                             unsigned in_offset,
                             uint32_t N,
@@ -655,7 +655,7 @@ r300vk_idm_create_zpass_vbo(struct pipe_context *pipe,
 
 
 static bool
-r300vk_idm_create_fullscreen_vbo(struct pipe_context *pipe,
+r3v_idm_create_fullscreen_vbo(struct pipe_context *pipe,
                                  struct pipe_resource **out_vb,
                                  void **out_velems_cso)
 {
@@ -708,7 +708,7 @@ r300vk_idm_create_fullscreen_vbo(struct pipe_context *pipe,
  * row folds masked it until the log4 verb's 16-row output measured row 0
  * exact and rows 1+ untouched on silicon. */
 static bool
-r300vk_identity_map_readback_rt(struct pipe_context *pipe,
+r3v_identity_map_readback_rt(struct pipe_context *pipe,
                                 struct pipe_resource *rt,
                                 struct pipe_resource *out_buf,
                                 unsigned out_offset,
@@ -731,7 +731,7 @@ r300vk_identity_map_readback_rt(struct pipe_context *pipe,
       struct pipe_box out_box;
       memset(&out_box, 0, sizeof(out_box));
       uint64_t total_bytes = 0;
-      if (!r300vk_idm_element_byte_count(total_elements,
+      if (!r3v_idm_element_byte_count(total_elements,
                                          util_format_get_blocksize(fmt),
                                          &total_bytes)) {
          pipe->texture_unmap(pipe, rt_xfer);
@@ -741,12 +741,12 @@ r300vk_identity_map_readback_rt(struct pipe_context *pipe,
       out_box.width  = (int)total_bytes;
       out_box.height = 1; out_box.depth = 1;
       unsigned map_flags =
-         r300vk_idm_buffer_write_flags(out_offset, total_bytes, out_buf);
+         r3v_idm_buffer_write_flags(out_offset, total_bytes, out_buf);
       void *out_bytes = pipe->buffer_map(pipe, out_buf, 0,
                                          map_flags,
                                          &out_box, &out_xfer);
       if (out_bytes) {
-         r300vk_identity_map_copy_rows(out_bytes, copy_bytes_per_row,
+         r3v_identity_map_copy_rows(out_bytes, copy_bytes_per_row,
                                        rt_map, rt_xfer->stride,
                                        width, height,
                                        util_format_get_blocksize(fmt),
@@ -760,11 +760,11 @@ r300vk_identity_map_readback_rt(struct pipe_context *pipe,
 }
 
 static bool
-r300vk_idm_validate_prologue(struct r300vk_device *device,
-                             const struct r300vk_pipeline *pl,
-                             const struct r300vk_cmd_dispatch *dispatch,
-                             const struct r300vk_cmd_bind_descriptor_sets *binds,
-                             const struct r300vk_descriptor_set **out_set)
+r3v_idm_validate_prologue(struct r3v_device *device,
+                             const struct r3v_pipeline *pl,
+                             const struct r3v_cmd_dispatch *dispatch,
+                             const struct r3v_cmd_bind_descriptor_sets *binds,
+                             const struct r3v_descriptor_set **out_set)
 {
    if (!device || !device->pipe || !device->screen || !pl || !dispatch || !binds || binds->set_count == 0)
       return false;
@@ -779,7 +779,7 @@ r300vk_idm_validate_prologue(struct r300vk_device *device,
 }
 
 static bool
-r300vk_idm_seed_texture_from_buffer(struct pipe_context *pipe,
+r3v_idm_seed_texture_from_buffer(struct pipe_context *pipe,
                                     struct pipe_resource *in_buf,
                                     unsigned in_offset,
                                     unsigned width, unsigned height,
@@ -807,7 +807,7 @@ r300vk_idm_seed_texture_from_buffer(struct pipe_context *pipe,
    struct pipe_box in_box;
    memset(&in_box, 0, sizeof(in_box));
    uint64_t total_bytes = 0;
-   if (!r300vk_idm_element_byte_count(total_elements,
+   if (!r3v_idm_element_byte_count(total_elements,
                                       util_format_get_blocksize(fmt),
                                       &total_bytes)) {
       pipe_resource_reference(&tex, NULL);
@@ -839,7 +839,7 @@ r300vk_idm_seed_texture_from_buffer(struct pipe_context *pipe,
       return false;
    }
 
-   r300vk_identity_map_copy_rows(tex_map, tex_xfer->stride,
+   r3v_identity_map_copy_rows(tex_map, tex_xfer->stride,
                                  in_map, width * util_format_get_blocksize(fmt),
                                  width, height,
                                  util_format_get_blocksize(fmt),
@@ -865,7 +865,7 @@ r300vk_idm_seed_texture_from_buffer(struct pipe_context *pipe,
 }
 
 static void
-r300vk_identity_map_setup_draw_state(struct pipe_context *pipe,
+r3v_identity_map_setup_draw_state(struct pipe_context *pipe,
                                       unsigned width, unsigned height,
                                       struct pipe_surface *rt_surf,
                                       void *blend_cso, void *rs_cso,
@@ -904,7 +904,7 @@ r300vk_identity_map_setup_draw_state(struct pipe_context *pipe,
 }
 
 struct pipe_sampler_view *
-r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
+r3v_identity_map_wrap_input_as_sampler_view(struct r3v_device *device,
                                                struct pipe_resource *src_buf,
                                                unsigned byte_offset,
                                                unsigned width,
@@ -953,7 +953,7 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
     * buffer range. */
    const unsigned bpp = util_format_get_blocksize(format);
    uint64_t total_bytes = 0;
-   if (!r300vk_idm_element_byte_count(total_elements, bpp, &total_bytes)) {
+   if (!r3v_idm_element_byte_count(total_elements, bpp, &total_bytes)) {
       pipe_resource_reference(&tex, NULL);
       return NULL;
    }
@@ -981,7 +981,7 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
       pipe_resource_reference(&tex, NULL);
       return NULL;
    }
-   r300vk_identity_map_copy_rows(dst_map, dst_xfer->stride,
+   r3v_identity_map_copy_rows(dst_map, dst_xfer->stride,
                                  src_map, width * bpp,
                                  width, height, bpp,
                                  total_elements);
@@ -1014,8 +1014,8 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
  * given Vulkan binding index.  Returns NULL on miss (the layout never
  * declared that binding) or zero count (the binding was declared with
  * descriptorCount = 0). */
-static const struct r300vk_descriptor *
-find_descriptor_by_binding(const struct r300vk_descriptor_set *set,
+static const struct r3v_descriptor *
+find_descriptor_by_binding(const struct r3v_descriptor_set *set,
                            uint32_t binding_index)
 {
    for (uint32_t i = 0; i < set->layout->binding_count; i++) {
@@ -1027,7 +1027,7 @@ find_descriptor_by_binding(const struct r300vk_descriptor_set *set,
 }
 
 static bool
-storage_buffer_binding_is_compute_usable(const struct r300vk_dsl_binding *binding)
+storage_buffer_binding_is_compute_usable(const struct r3v_dsl_binding *binding)
 {
    return binding->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
           binding->count > 0 &&
@@ -1039,11 +1039,11 @@ storage_buffer_binding_is_compute_usable(const struct r300vk_dsl_binding *bindin
  * kernel's input + output ssbo bindings when the NIR detector cannot recover
  * them as constants (the post-explicit_io binding source is a Vulkan
  * descriptor handle, not a nir_load_const).  The bindings array is sorted by
- * binding index per r300vk_CreateDescriptorSetLayout, so the Nth usable
+ * binding index per r3v_CreateDescriptorSetLayout, so the Nth usable
  * STORAGE_BUFFER seen during a forward walk is the Nth declared for compute
  * replay in the layout. */
 static bool
-nth_storage_buffer_binding(const struct r300vk_descriptor_set *set,
+nth_storage_buffer_binding(const struct r3v_descriptor_set *set,
                            unsigned which,
                            uint32_t *out_binding)
 {
@@ -1065,7 +1065,7 @@ nth_storage_buffer_binding(const struct r300vk_descriptor_set *set,
  * layout must contain exactly one compute-visible STORAGE_BUFFER or the
  * destination is not recoverable without risking writes to an unrelated buffer. */
 static bool
-single_storage_buffer_binding(const struct r300vk_descriptor_set *set,
+single_storage_buffer_binding(const struct r3v_descriptor_set *set,
                               uint32_t *out_binding)
 {
    bool found = false;
@@ -1081,13 +1081,13 @@ single_storage_buffer_binding(const struct r300vk_descriptor_set *set,
 }
 
 static bool
-single_storage_buffer_binding_excluding(const struct r300vk_descriptor_set *set,
+single_storage_buffer_binding_excluding(const struct r3v_descriptor_set *set,
                                         uint32_t excluded_binding,
                                         uint32_t *out_binding)
 {
    bool found = false;
    for (uint32_t i = 0; i < set->layout->binding_count; i++) {
-      const struct r300vk_dsl_binding *binding = &set->layout->bindings[i];
+      const struct r3v_dsl_binding *binding = &set->layout->bindings[i];
       if (!storage_buffer_binding_is_compute_usable(binding) ||
           binding->binding == excluded_binding)
          continue;
@@ -1110,7 +1110,7 @@ single_storage_buffer_binding_excluding(const struct r300vk_descriptor_set *set,
  * compute-visible output storage buffer, so the first usable STORAGE_BUFFER is
  * the input and the second is the output. */
 static bool
-idm_recover_in_out_bindings(const struct r300vk_descriptor_set *set,
+idm_recover_in_out_bindings(const struct r3v_descriptor_set *set,
                             uint32_t *in_binding, uint32_t *out_binding)
 {
    if (*in_binding == *out_binding && *in_binding == 0) {
@@ -1144,10 +1144,10 @@ derive_raster_extent(uint32_t total_invocations,
 
 
 bool
-r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
-                                    const struct r300vk_pipeline *pl,
-                                    const struct r300vk_cmd_dispatch *dispatch,
-                                    const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_identity_map_dispatch_replay(struct r3v_device *device,
+                                    const struct r3v_pipeline *pl,
+                                    const struct r3v_cmd_dispatch *dispatch,
+                                    const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -1182,7 +1182,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
               binds->first_set);
       return false;
    }
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    IDM_LOG("set=%p layout=%p in_binding=%u out_binding=%u",
            (const void *)set,
            set ? (const void *)set->layout : NULL,
@@ -1214,9 +1214,9 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
               in_binding, out_binding);
    }
 
-   const struct r300vk_descriptor *in_desc =
+   const struct r3v_descriptor *in_desc =
       find_descriptor_by_binding(set, in_binding);
-   const struct r300vk_descriptor *out_desc =
+   const struct r3v_descriptor *out_desc =
       find_descriptor_by_binding(set, out_binding);
    IDM_LOG("descriptor walk in_binding=%u out_binding=%u in_desc=%p out_desc=%p",
            in_binding, out_binding,
@@ -1233,8 +1233,8 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   VK_FROM_HANDLE(r300vk_buffer, in_buf,  in_desc->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, in_buf,  in_desc->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, out_buf, out_desc->buf.buffer);
    IDM_LOG("in_buf=%p resource=%p out_buf=%p resource=%p",
            (const void *)in_buf,
            in_buf ? (const void *)in_buf->resource : NULL,
@@ -1250,7 +1250,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * returns zero on overflow so wrapped products cannot smuggle a small
     * non-zero total past the admission gate. */
    const uint64_t total_invocations =
-      r300vk_idm_total_invocations(dispatch, pl);
+      r3v_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -1272,7 +1272,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * bit-exact round-trip there.  A float4x32 kernel may opt into the
     * experimental FP32x4 transport lane explicitly; that mode is capability-
     * checked and treated as exploratory transport, not as an exactness proof. */
-   const enum pipe_format fmt = r300vk_identity_map_replay_format(device, pl);
+   const enum pipe_format fmt = r3v_identity_map_replay_format(device, pl);
 
    /* derive_raster_extent maps one invocation to one texel of
     * util_format_get_blocksize(fmt) bytes, so the carrier's element size must
@@ -1293,7 +1293,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * texture's only strong reference; drop the view at the end and the
     * texture is freed. */
    struct pipe_sampler_view *in_sv =
-      r300vk_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
+      r3v_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
                                                      (unsigned)in_desc->buf.offset,
                                                      width, height,
                                                      total_invocations, fmt);
@@ -1339,13 +1339,13 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * the FS samples the input texture across its full extent. */
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
       pipe_sampler_view_reference(&in_sv, NULL);
       return false;
    }
 
-   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                         device->identity_map_cso.blend,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -1408,19 +1408,19 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
          const unsigned blocksize = util_format_get_blocksize(fmt);
          uint64_t out_byte_count = 0;
          out_box.x      = (unsigned)out_desc->buf.offset;
-         if (r300vk_idm_element_byte_count(total_invocations, blocksize,
+         if (r3v_idm_element_byte_count(total_invocations, blocksize,
                                            &out_byte_count)) {
             out_box.width  = (int)out_byte_count;
             out_box.height = 1;
             out_box.depth  = 1;
             void *out_bytes = pipe->buffer_map(
                pipe, out_buf->resource, 0,
-               r300vk_idm_buffer_write_flags((unsigned)out_desc->buf.offset,
+               r3v_idm_buffer_write_flags((unsigned)out_desc->buf.offset,
                                              out_byte_count,
                                              out_buf->resource),
                &out_box, &out_xfer);
             if (out_bytes) {
-               r300vk_identity_map_copy_rows(out_bytes, width * blocksize,
+               r3v_identity_map_copy_rows(out_bytes, width * blocksize,
                                              rt_map, rt_xfer->stride,
                                              width, height, blocksize,
                                              total_invocations);
@@ -1454,10 +1454,10 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
 }
 
 static bool
-r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
-                                      const struct r300vk_pipeline *pl,
-                                      const struct r300vk_cmd_dispatch *dispatch,
-                                      const struct r300vk_cmd_bind_descriptor_sets *binds,
+r3v_one_in_one_out_dispatch_replay(struct r3v_device *device,
+                                      const struct r3v_pipeline *pl,
+                                      const struct r3v_cmd_dispatch *dispatch,
+                                      const struct r3v_cmd_bind_descriptor_sets *binds,
                                       uint32_t cap_in, uint32_t cap_out,
                                       bool detector_captured,
                                       enum pipe_format input_fmt,
@@ -1470,10 +1470,10 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
  * component counts or bit widths need their own carrier and reject here
  * rather than sampling bytes as UNORM colors. */
 bool
-r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
-                                 const struct r300vk_pipeline *pl,
-                                 const struct r300vk_cmd_dispatch *dispatch,
-                                 const struct r300vk_cmd_bind_descriptor_sets *binds,
+r3v_unary_map_dispatch_replay(struct r3v_device *device,
+                                 const struct r3v_pipeline *pl,
+                                 const struct r3v_cmd_dispatch *dispatch,
+                                 const struct r3v_cmd_bind_descriptor_sets *binds,
                                  const uint8_t *push_data)
 {
    const bool uses_push = pl->unary_map.mul_const_from_push ||
@@ -1508,7 +1508,7 @@ r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
           device->screen->is_format_supported(device->screen,
              PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
              PIPE_BIND_RENDER_TARGET)) {
-         ok = r300vk_one_in_one_out_dispatch_replay(
+         ok = r3v_one_in_one_out_dispatch_replay(
             device, pl, dispatch, binds,
             pl->unary_map.input_ssbo_binding,
             pl->unary_map.output_ssbo_binding,
@@ -1531,7 +1531,7 @@ r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
           device->screen->is_format_supported(device->screen,
              PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
              PIPE_BIND_RENDER_TARGET)) {
-         ok = r300vk_one_in_one_out_dispatch_replay(
+         ok = r3v_one_in_one_out_dispatch_replay(
             device, pl, dispatch, binds,
             pl->unary_map.input_ssbo_binding,
             pl->unary_map.output_ssbo_binding,
@@ -1556,11 +1556,11 @@ r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
  * PRECISION: the FP16 render-target carrier bounds the result to ~10-bit
  * mantissa, looser than the fp24 ALU; the readback is approximate, not exact. */
 bool
-r300vk_unary_transcendental_dispatch_replay(
-   struct r300vk_device *device,
-   const struct r300vk_pipeline *pl,
-   const struct r300vk_cmd_dispatch *dispatch,
-   const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_unary_transcendental_dispatch_replay(
+   struct r3v_device *device,
+   const struct r3v_pipeline *pl,
+   const struct r3v_cmd_dispatch *dispatch,
+   const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (pl->unary_transcendental.value_bit_size != 32 ||
        pl->unary_transcendental.value_components != 1)
@@ -1572,7 +1572,7 @@ r300vk_unary_transcendental_dispatch_replay(
           PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
-   return r300vk_one_in_one_out_dispatch_replay(
+   return r3v_one_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->unary_transcendental.input_ssbo_binding,
       pl->unary_transcendental.output_ssbo_binding,
@@ -1588,11 +1588,11 @@ r300vk_unary_transcendental_dispatch_replay(
  * RT, and the raw RT bytes (output_buffer_fmt = NONE) copy straight back to the
  * uint32 output, the same exact UNORM8 round-trip the identity-map verb uses. */
 bool
-r300vk_shift_logical_dispatch_replay(
-   struct r300vk_device *device,
-   const struct r300vk_pipeline *pl,
-   const struct r300vk_cmd_dispatch *dispatch,
-   const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_shift_logical_dispatch_replay(
+   struct r3v_device *device,
+   const struct r3v_pipeline *pl,
+   const struct r3v_cmd_dispatch *dispatch,
+   const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device || !device->screen)
       return false;
@@ -1608,7 +1608,7 @@ r300vk_shift_logical_dispatch_replay(
       return false;
    const bool captured = (pl->shift_logical.input_ssbo_binding != 0 ||
                           pl->shift_logical.output_ssbo_binding != 0);
-   return r300vk_one_in_one_out_dispatch_replay(
+   return r3v_one_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->shift_logical.input_ssbo_binding,
       pl->shift_logical.output_ssbo_binding,
@@ -1625,10 +1625,10 @@ r300vk_shift_logical_dispatch_replay(
  * dp4 are thin wrappers that differ only in which captured bindings they pass
  * and which FS pl->fs_cso already holds. */
 static bool
-r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
-                                      const struct r300vk_pipeline *pl,
-                                      const struct r300vk_cmd_dispatch *dispatch,
-                                      const struct r300vk_cmd_bind_descriptor_sets *binds,
+r3v_two_in_one_out_dispatch_replay(struct r3v_device *device,
+                                      const struct r3v_pipeline *pl,
+                                      const struct r3v_cmd_dispatch *dispatch,
+                                      const struct r3v_cmd_bind_descriptor_sets *binds,
                                       uint32_t cap_in_a, uint32_t cap_in_b,
                                       uint32_t cap_out,
                                       enum pipe_format input_fmt,
@@ -1657,7 +1657,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
               binds->first_set);
       return false;
    }
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout) {
       IDM_LOG("2in1out early-return no-set-or-layout");
       return false;
@@ -1691,11 +1691,11 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
            in_a_binding, in_b_binding, out_binding,
            detector_captured ? "detector" : "positional");
 
-   const struct r300vk_descriptor *desc_in_a =
+   const struct r3v_descriptor *desc_in_a =
       find_descriptor_by_binding(set, in_a_binding);
-   const struct r300vk_descriptor *desc_in_b =
+   const struct r3v_descriptor *desc_in_b =
       find_descriptor_by_binding(set, in_b_binding);
-   const struct r300vk_descriptor *desc_out =
+   const struct r3v_descriptor *desc_out =
       find_descriptor_by_binding(set, out_binding);
    if (!desc_in_a || !desc_in_b || !desc_out) {
       IDM_LOG("2in1out early-return descriptor-walk-miss");
@@ -1706,9 +1706,9 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("2in1out early-return null-vkbuffer-handle");
       return false;
    }
-   VK_FROM_HANDLE(r300vk_buffer, buf_in_a, desc_in_a->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, buf_in_b, desc_in_b->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, buf_out,  desc_out->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, buf_in_a, desc_in_a->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, buf_in_b, desc_in_b->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, buf_out,  desc_out->buf.buffer);
    if (!buf_in_a || !buf_in_b || !buf_out ||
        !buf_in_a->resource || !buf_in_b->resource || !buf_out->resource) {
       IDM_LOG("2in1out early-return null-pipe-resource");
@@ -1716,7 +1716,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    }
 
    const uint64_t total_invocations =
-      r300vk_idm_total_invocations(dispatch, pl);
+      r3v_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("2in1out early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -1735,7 +1735,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
     * the RT bytes directly. */
    const enum pipe_format fmt = output_fmt;
    struct pipe_sampler_view *sv_a =
-      r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_a->resource,
+      r3v_identity_map_wrap_input_as_sampler_view(device, buf_in_a->resource,
                                                      (unsigned)desc_in_a->buf.offset,
                                                      width, height,
                                                      total_invocations, input_fmt);
@@ -1744,7 +1744,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
       return false;
    }
    struct pipe_sampler_view *sv_b =
-      r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_b->resource,
+      r3v_identity_map_wrap_input_as_sampler_view(device, buf_in_b->resource,
                                                      (unsigned)desc_in_b->buf.offset,
                                                      width, height,
                                                      total_invocations, input_fmt);
@@ -1782,14 +1782,14 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    /* Fullscreen quad VBO + velems: identical to identity-map. */
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
       pipe_sampler_view_reference(&sv_a, NULL);
       pipe_sampler_view_reference(&sv_b, NULL);
       return false;
    }
 
-   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                         device->identity_map_cso.blend,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -1841,19 +1841,19 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
             output_buffer_fmt == PIPE_FORMAT_NONE ? fmt : output_buffer_fmt;
          const unsigned buf_bs = util_format_get_blocksize(buf_fmt);
          uint64_t out_byte_count = 0;
-         if (r300vk_idm_element_byte_count(total_invocations, buf_bs,
+         if (r3v_idm_element_byte_count(total_invocations, buf_bs,
                                            &out_byte_count)) {
             out_box.width  = (int)out_byte_count;
             out_box.height = 1;
             out_box.depth  = 1;
             void *out_bytes = pipe->buffer_map(
                pipe, buf_out->resource, 0,
-               r300vk_idm_buffer_write_flags((unsigned)desc_out->buf.offset,
+               r3v_idm_buffer_write_flags((unsigned)desc_out->buf.offset,
                                              out_byte_count,
                                              buf_out->resource),
                &out_box, &out_xfer);
             if (out_bytes) {
-               copy_ok = r300vk_idm_copy_rt_rows_to_buffer(
+               copy_ok = r3v_idm_copy_rt_rows_to_buffer(
                   out_bytes, rt_map, rt_xfer->stride, width, height,
                   total_invocations, fmt, buf_fmt, buf_bs);
                pipe->buffer_unmap(pipe, out_xfer);
@@ -1888,10 +1888,10 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
  * sampled texels with the detected ALU op; dp4's FS dots them (pl->fs_cso
  * already holds the right synthesized FS). */
 bool
-r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
-                                  const struct r300vk_pipeline *pl,
-                                  const struct r300vk_cmd_dispatch *dispatch,
-                                  const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_binary_map_dispatch_replay(struct r3v_device *device,
+                                  const struct r3v_pipeline *pl,
+                                  const struct r3v_cmd_dispatch *dispatch,
+                                  const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    /* A 32-bit float componentwise op -- the quaternion QADD/QSUB tier -- cannot
     * use the UNORM8 byte path: sampling FP32 SSBO bytes as UNORM8 misreads them,
@@ -1909,7 +1909,7 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
              PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
              PIPE_BIND_RENDER_TARGET))
          return false;
-      return r300vk_two_in_one_out_dispatch_replay(
+      return r3v_two_in_one_out_dispatch_replay(
          device, pl, dispatch, binds,
          pl->binary_map.input_a_ssbo_binding,
          pl->binary_map.input_b_ssbo_binding,
@@ -1917,7 +1917,7 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
          PIPE_FORMAT_R32G32B32A32_FLOAT);
    }
-   return r300vk_two_in_one_out_dispatch_replay(
+   return r3v_two_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->binary_map.input_a_ssbo_binding,
       pl->binary_map.input_b_ssbo_binding,
@@ -1932,11 +1932,11 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
  * R32G32B32A32 -> FP16 RT -> RGBA32 unpack path the binary_map float path uses.
  * pl->fs_cso holds the matching componentwise transcendental FS. */
 bool
-r300vk_binary_transcendental_dispatch_replay(
-   struct r300vk_device *device,
-   const struct r300vk_pipeline *pl,
-   const struct r300vk_cmd_dispatch *dispatch,
-   const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_binary_transcendental_dispatch_replay(
+   struct r3v_device *device,
+   const struct r3v_pipeline *pl,
+   const struct r3v_cmd_dispatch *dispatch,
+   const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device || !device->screen)
       return false;
@@ -1952,7 +1952,7 @@ r300vk_binary_transcendental_dispatch_replay(
           PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW))
       return false;
 
-   return r300vk_two_in_one_out_dispatch_replay(
+   return r3v_two_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->binary_transcendental.input_a_ssbo_binding,
       pl->binary_transcendental.input_b_ssbo_binding,
@@ -1982,11 +1982,11 @@ bitwise_pipe_logicop(uint16_t alu_op)
  * substrate's blend state).  pl->vs_cso / pl->fs_cso are the identity-map
  * passthrough VS + copy FS (both draws just sample and export). */
 bool
-r300vk_bitwise_logicop_dispatch_replay(
-   struct r300vk_device *device,
-   const struct r300vk_pipeline *pl,
-   const struct r300vk_cmd_dispatch *dispatch,
-   const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_bitwise_logicop_dispatch_replay(
+   struct r3v_device *device,
+   const struct r3v_pipeline *pl,
+   const struct r3v_cmd_dispatch *dispatch,
+   const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device ? device->pipe : NULL;
    struct pipe_screen  *screen = device ? device->screen : NULL;
@@ -1996,7 +1996,7 @@ r300vk_bitwise_logicop_dispatch_replay(
       return false;
    if (binds->first_set != 0)
       return false;
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout)
       return false;
 
@@ -2010,24 +2010,24 @@ r300vk_bitwise_logicop_dispatch_replay(
          return false;
    }
 
-   const struct r300vk_descriptor *desc_in_a =
+   const struct r3v_descriptor *desc_in_a =
       find_descriptor_by_binding(set, in_a_binding);
-   const struct r300vk_descriptor *desc_in_b =
+   const struct r3v_descriptor *desc_in_b =
       find_descriptor_by_binding(set, in_b_binding);
-   const struct r300vk_descriptor *desc_out =
+   const struct r3v_descriptor *desc_out =
       find_descriptor_by_binding(set, out_binding);
    if (!desc_in_a || !desc_in_b || !desc_out)
       return false;
    if (!desc_in_a->buf.buffer || !desc_in_b->buf.buffer || !desc_out->buf.buffer)
       return false;
-   VK_FROM_HANDLE(r300vk_buffer, buf_in_a, desc_in_a->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, buf_in_b, desc_in_b->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, buf_out,  desc_out->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, buf_in_a, desc_in_a->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, buf_in_b, desc_in_b->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, buf_out,  desc_out->buf.buffer);
    if (!buf_in_a || !buf_in_b || !buf_out ||
        !buf_in_a->resource || !buf_in_b->resource || !buf_out->resource)
       return false;
 
-   const uint64_t total_invocations = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total_invocations = r3v_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u)
       return false;
    unsigned width = 0, height = 0;
@@ -2038,14 +2038,14 @@ r300vk_bitwise_logicop_dispatch_replay(
    /* RGBA8 carrier: one uint32 per texel, the logic op works per bit. */
    const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
    struct pipe_sampler_view *sv_a =
-      r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_a->resource,
+      r3v_identity_map_wrap_input_as_sampler_view(device, buf_in_a->resource,
                                                      (unsigned)desc_in_a->buf.offset,
                                                      width, height,
                                                      total_invocations, fmt);
    if (!sv_a)
       return false;
    struct pipe_sampler_view *sv_b =
-      r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_b->resource,
+      r3v_identity_map_wrap_input_as_sampler_view(device, buf_in_b->resource,
                                                      (unsigned)desc_in_b->buf.offset,
                                                      width, height,
                                                      total_invocations, fmt);
@@ -2077,7 +2077,7 @@ r300vk_bitwise_logicop_dispatch_replay(
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
       pipe_sampler_view_reference(&sv_b, NULL);
       pipe_sampler_view_reference(&sv_a, NULL);
@@ -2114,7 +2114,7 @@ r300vk_bitwise_logicop_dispatch_replay(
    struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
 
    /* Draw 1: RT = b, plain copy (default blend, sampler stage 0 = b). */
-   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                         device->identity_map_cso.blend,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -2148,18 +2148,18 @@ r300vk_bitwise_logicop_dispatch_replay(
          out_box.x = (unsigned)desc_out->buf.offset;
          const unsigned buf_bs = util_format_get_blocksize(fmt);
          uint64_t out_byte_count = 0;
-         if (r300vk_idm_element_byte_count(total_invocations, buf_bs,
+         if (r3v_idm_element_byte_count(total_invocations, buf_bs,
                                            &out_byte_count)) {
             out_box.width  = (int)out_byte_count;
             out_box.height = 1;
             out_box.depth  = 1;
             void *out_bytes = pipe->buffer_map(
                pipe, buf_out->resource, 0,
-               r300vk_idm_buffer_write_flags((unsigned)desc_out->buf.offset,
+               r3v_idm_buffer_write_flags((unsigned)desc_out->buf.offset,
                                              out_byte_count, buf_out->resource),
                &out_box, &out_xfer);
             if (out_bytes) {
-               copy_ok = r300vk_idm_copy_rt_rows_to_buffer(
+               copy_ok = r3v_idm_copy_rt_rows_to_buffer(
                   out_bytes, rt_map, rt_xfer->stride, width, height,
                   total_invocations, fmt, fmt, buf_bs);
                pipe->buffer_unmap(pipe, out_xfer);
@@ -2186,10 +2186,10 @@ r300vk_bitwise_logicop_dispatch_replay(
 }
 
 bool
-r300vk_dp4_dispatch_replay(struct r300vk_device *device,
-                           const struct r300vk_pipeline *pl,
-                           const struct r300vk_cmd_dispatch *dispatch,
-                           const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_dp4_dispatch_replay(struct r3v_device *device,
+                           const struct r3v_pipeline *pl,
+                           const struct r3v_cmd_dispatch *dispatch,
+                           const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    /* The dot inputs are copied from the SSBO with the same per-invocation
     * stride the compute load uses.  R32G32_FLOAT preserves fdot2's 8-byte
@@ -2206,7 +2206,7 @@ r300vk_dp4_dispatch_replay(struct r300vk_device *device,
           input_fmt, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_SAMPLER_VIEW))
       return false;
-   return r300vk_two_in_one_out_dispatch_replay(
+   return r3v_two_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->dp4.input_a_ssbo_binding,
       pl->dp4.input_b_ssbo_binding,
@@ -2218,17 +2218,17 @@ r300vk_dp4_dispatch_replay(struct r300vk_device *device,
 /* QMUL dispatch replay: the quaternion Hamilton product on the compute-as-raster
  * substrate.  Same two-in/one-out skeleton as DP4, but the inputs are the two
  * quaternions sampled as R32G32B32A32_FLOAT and the synthesized Hamilton FS
- * (r300vk_build_qmul_fs_nir) writes the four-lane product to an FP16
+ * (r3v_build_qmul_fs_nir) writes the four-lane product to an FP16
  * (R16G16B16A16_FLOAT) render target -- R300 samples FP32 but has no FP32 RT,
  * and the substrate's quaternion result is FP16-precise.  The copy-back unpacks
  * the FP16 target into the kernel's vec4 FP32 output buffer.  Bail unless both
  * the FP32 sampler view and the FP16 render target are supported rather than
  * mis-format the pass. */
 bool
-r300vk_qmul_dispatch_replay(struct r300vk_device *device,
-                            const struct r300vk_pipeline *pl,
-                            const struct r300vk_cmd_dispatch *dispatch,
-                            const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_qmul_dispatch_replay(struct r3v_device *device,
+                            const struct r3v_pipeline *pl,
+                            const struct r3v_cmd_dispatch *dispatch,
+                            const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device->screen->is_format_supported(device->screen,
           PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
@@ -2238,7 +2238,7 @@ r300vk_qmul_dispatch_replay(struct r300vk_device *device,
           PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
-   return r300vk_two_in_one_out_dispatch_replay(
+   return r3v_two_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->qmul.input_a_ssbo_binding,
       pl->qmul.input_b_ssbo_binding,
@@ -2249,15 +2249,15 @@ r300vk_qmul_dispatch_replay(struct r300vk_device *device,
 
 /* QDIV dispatch replay: the quaternion quotient a/b on the substrate.  Identical
  * two-in/one-out skeleton to QMUL -- the dividend a and divisor b sampled as
- * R32G32B32A32_FLOAT, the synthesized division FS (r300vk_build_qdiv_fs_nir) writes
+ * R32G32B32A32_FLOAT, the synthesized division FS (r3v_build_qdiv_fs_nir) writes
  * a*inv(b) to an FP16 render target, and the copy-back unpacks it into the kernel's
  * vec4 FP32 output.  Bail unless both the FP32 sampler view and the FP16 render
  * target are supported. */
 bool
-r300vk_qdiv_dispatch_replay(struct r300vk_device *device,
-                            const struct r300vk_pipeline *pl,
-                            const struct r300vk_cmd_dispatch *dispatch,
-                            const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_qdiv_dispatch_replay(struct r3v_device *device,
+                            const struct r3v_pipeline *pl,
+                            const struct r3v_cmd_dispatch *dispatch,
+                            const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device->screen->is_format_supported(device->screen,
           PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
@@ -2267,7 +2267,7 @@ r300vk_qdiv_dispatch_replay(struct r300vk_device *device,
           PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
-   return r300vk_two_in_one_out_dispatch_replay(
+   return r3v_two_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->qdiv.input_a_ssbo_binding,
       pl->qdiv.input_b_ssbo_binding,
@@ -2278,14 +2278,14 @@ r300vk_qdiv_dispatch_replay(struct r300vk_device *device,
 
 /* QROTATE dispatch replay: rotate v by q on the substrate.  Same two-in/one-out
  * skeleton as QMUL -- inputs are the unit quaternion q and the vector v sampled
- * as R32G32B32A32_FLOAT, the synthesized sandwich FS (r300vk_build_qrotate_fs_nir)
+ * as R32G32B32A32_FLOAT, the synthesized sandwich FS (r3v_build_qrotate_fs_nir)
  * writes q*embed(v)*conj(q) to an FP16 render target, and the copy-back unpacks
  * it into the kernel's vec4 FP32 output. */
 bool
-r300vk_qrotate_dispatch_replay(struct r300vk_device *device,
-                               const struct r300vk_pipeline *pl,
-                               const struct r300vk_cmd_dispatch *dispatch,
-                               const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_qrotate_dispatch_replay(struct r3v_device *device,
+                               const struct r3v_pipeline *pl,
+                               const struct r3v_cmd_dispatch *dispatch,
+                               const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device->screen->is_format_supported(device->screen,
           PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
@@ -2295,7 +2295,7 @@ r300vk_qrotate_dispatch_replay(struct r300vk_device *device,
           PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
-   return r300vk_two_in_one_out_dispatch_replay(
+   return r3v_two_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->qrotate.input_q_ssbo_binding,
       pl->qrotate.input_v_ssbo_binding,
@@ -2305,7 +2305,7 @@ r300vk_qrotate_dispatch_replay(struct r300vk_device *device,
 }
 
 /* Shared 1-in / 1-out compute-as-raster replay core.  Same skeleton as
- * r300vk_two_in_one_out_dispatch_replay but a single input sampler stage and a
+ * r3v_two_in_one_out_dispatch_replay but a single input sampler stage and a
  * two-buffer positional fallback (input = first compute-visible
  * STORAGE_BUFFER, output = second).  The single-lane quaternion ops -- QCONJ
  * (sign flip) and QNORM (self
@@ -2315,10 +2315,10 @@ r300vk_qrotate_dispatch_replay(struct r300vk_device *device,
  * bindings its detector captured (0,0 triggers the positional fallback) and the
  * three formats. */
 static bool
-r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
-                                      const struct r300vk_pipeline *pl,
-                                      const struct r300vk_cmd_dispatch *dispatch,
-                                      const struct r300vk_cmd_bind_descriptor_sets *binds,
+r3v_one_in_one_out_dispatch_replay(struct r3v_device *device,
+                                      const struct r3v_pipeline *pl,
+                                      const struct r3v_cmd_dispatch *dispatch,
+                                      const struct r3v_cmd_bind_descriptor_sets *binds,
                                       uint32_t cap_in, uint32_t cap_out,
                                       bool detector_captured,
                                       enum pipe_format input_fmt,
@@ -2345,7 +2345,7 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("1in1out early-return first_set=%u (only slot 0)", binds->first_set);
       return false;
    }
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout) {
       IDM_LOG("1in1out early-return no-set-or-layout");
       return false;
@@ -2374,9 +2374,9 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
    IDM_LOG("1in1out bindings: in=%u out=%u source=%s",
            in_binding, out_binding, detector_captured ? "detector" : "positional");
 
-   const struct r300vk_descriptor *desc_in =
+   const struct r3v_descriptor *desc_in =
       find_descriptor_by_binding(set, in_binding);
-   const struct r300vk_descriptor *desc_out =
+   const struct r3v_descriptor *desc_out =
       find_descriptor_by_binding(set, out_binding);
    if (!desc_in || !desc_out) {
       IDM_LOG("1in1out early-return descriptor-walk-miss");
@@ -2386,15 +2386,15 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("1in1out early-return null-vkbuffer-handle");
       return false;
    }
-   VK_FROM_HANDLE(r300vk_buffer, buf_in,  desc_in->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, buf_out, desc_out->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, buf_in,  desc_in->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, buf_out, desc_out->buf.buffer);
    if (!buf_in || !buf_out || !buf_in->resource || !buf_out->resource) {
       IDM_LOG("1in1out early-return null-pipe-resource");
       return false;
    }
 
    const uint64_t total_invocations =
-      r300vk_idm_total_invocations(dispatch, pl);
+      r3v_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("1in1out early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -2409,7 +2409,7 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
 
    const enum pipe_format fmt = output_fmt;
    struct pipe_sampler_view *sv =
-      r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in->resource,
+      r3v_identity_map_wrap_input_as_sampler_view(device, buf_in->resource,
                                                      (unsigned)desc_in->buf.offset,
                                                      width, height,
                                                      total_invocations, input_fmt);
@@ -2442,13 +2442,13 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
       pipe_sampler_view_reference(&sv, NULL);
       return false;
    }
 
-   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                         device->identity_map_cso.blend,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -2495,19 +2495,19 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
             output_buffer_fmt == PIPE_FORMAT_NONE ? fmt : output_buffer_fmt;
          const unsigned buf_bs = util_format_get_blocksize(buf_fmt);
          uint64_t out_byte_count = 0;
-         if (r300vk_idm_element_byte_count(total_invocations, buf_bs,
+         if (r3v_idm_element_byte_count(total_invocations, buf_bs,
                                            &out_byte_count)) {
             out_box.width  = (int)out_byte_count;
             out_box.height = 1;
             out_box.depth  = 1;
             void *out_bytes = pipe->buffer_map(
                pipe, buf_out->resource, 0,
-               r300vk_idm_buffer_write_flags((unsigned)desc_out->buf.offset,
+               r3v_idm_buffer_write_flags((unsigned)desc_out->buf.offset,
                                              out_byte_count,
                                              buf_out->resource),
                &out_box, &out_xfer);
             if (out_bytes) {
-               copy_ok = r300vk_idm_copy_rt_rows_to_buffer(
+               copy_ok = r3v_idm_copy_rt_rows_to_buffer(
                   out_bytes, rt_map, rt_xfer->stride, width, height,
                   total_invocations, fmt, buf_fmt, buf_bs);
                pipe->buffer_unmap(pipe, out_xfer);
@@ -2537,13 +2537,13 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
 
 /* QCONJ dispatch replay: the quaternion conjugate on the substrate.  One input
  * quaternion sampled R32G32B32A32_FLOAT, the synthesized sign-flip FS
- * (r300vk_build_qconj_fs_nir) writes (a.x,-a.y,-a.z,-a.w) to an FP16 render
+ * (r3v_build_qconj_fs_nir) writes (a.x,-a.y,-a.z,-a.w) to an FP16 render
  * target, and the copy-back unpacks it into the kernel's vec4 FP32 output. */
 bool
-r300vk_qconj_dispatch_replay(struct r300vk_device *device,
-                             const struct r300vk_pipeline *pl,
-                             const struct r300vk_cmd_dispatch *dispatch,
-                             const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_qconj_dispatch_replay(struct r3v_device *device,
+                             const struct r3v_pipeline *pl,
+                             const struct r3v_cmd_dispatch *dispatch,
+                             const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device->screen->is_format_supported(device->screen,
           PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
@@ -2553,7 +2553,7 @@ r300vk_qconj_dispatch_replay(struct r300vk_device *device,
           PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
-   return r300vk_one_in_one_out_dispatch_replay(
+   return r3v_one_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->qconj.input_ssbo_binding, pl->qconj.output_ssbo_binding,
       pl->qconj.input_ssbo_binding != 0 || pl->qconj.output_ssbo_binding != 0,
@@ -2563,13 +2563,13 @@ r300vk_qconj_dispatch_replay(struct r300vk_device *device,
 
 /* QNORM dispatch replay: the quaternion squared norm on the substrate.  Same
  * one-in/one-out skeleton as QCONJ; the synthesized self-dot FS
- * (r300vk_build_qnorm_fs_nir) writes vec4(dot(a,a)) to the FP16 target, unpacked
+ * (r3v_build_qnorm_fs_nir) writes vec4(dot(a,a)) to the FP16 target, unpacked
  * into the kernel's vec4 FP32 output (the kernel reads lane 0). */
 bool
-r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
-                             const struct r300vk_pipeline *pl,
-                             const struct r300vk_cmd_dispatch *dispatch,
-                             const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_qnorm_dispatch_replay(struct r3v_device *device,
+                             const struct r3v_pipeline *pl,
+                             const struct r3v_cmd_dispatch *dispatch,
+                             const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device->screen->is_format_supported(device->screen,
           PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
@@ -2579,7 +2579,7 @@ r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
           PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
-   return r300vk_one_in_one_out_dispatch_replay(
+   return r3v_one_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->qnorm.input_ssbo_binding, pl->qnorm.output_ssbo_binding,
       pl->qnorm.input_ssbo_binding != 0 || pl->qnorm.output_ssbo_binding != 0,
@@ -2588,14 +2588,14 @@ r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
 }
 
 /* QNORMALIZE dispatch: the same one-in/one-out skeleton as QNORM; the synthesized
- * normalize FS (r300vk_build_qnormalize_fs_nir) scales the sampled quaternion by
+ * normalize FS (r3v_build_qnormalize_fs_nir) scales the sampled quaternion by
  * the US RSQ of its squared norm, written to the FP16 target and unpacked into the
  * kernel's vec4 FP32 output. */
 bool
-r300vk_qnormalize_dispatch_replay(struct r300vk_device *device,
-                                  const struct r300vk_pipeline *pl,
-                                  const struct r300vk_cmd_dispatch *dispatch,
-                                  const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_qnormalize_dispatch_replay(struct r3v_device *device,
+                                  const struct r3v_pipeline *pl,
+                                  const struct r3v_cmd_dispatch *dispatch,
+                                  const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device->screen->is_format_supported(device->screen,
           PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
@@ -2605,7 +2605,7 @@ r300vk_qnormalize_dispatch_replay(struct r300vk_device *device,
           PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
-   return r300vk_one_in_one_out_dispatch_replay(
+   return r3v_one_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->qnormalize.input_ssbo_binding, pl->qnormalize.output_ssbo_binding,
       pl->qnormalize.input_ssbo_binding != 0 ||
@@ -2615,10 +2615,10 @@ r300vk_qnormalize_dispatch_replay(struct r300vk_device *device,
 }
 
 bool
-r300vk_ieee16_classify_dispatch_replay(struct r300vk_device *device,
-                                       const struct r300vk_pipeline *pl,
-                                       const struct r300vk_cmd_dispatch *dispatch,
-                                       const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_ieee16_classify_dispatch_replay(struct r3v_device *device,
+                                       const struct r3v_pipeline *pl,
+                                       const struct r3v_cmd_dispatch *dispatch,
+                                       const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device->screen->is_format_supported(device->screen,
           PIPE_FORMAT_R32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
@@ -2628,7 +2628,7 @@ r300vk_ieee16_classify_dispatch_replay(struct r300vk_device *device,
           PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
-   return r300vk_one_in_one_out_dispatch_replay(
+   return r3v_one_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->ieee16_classify.input_ssbo_binding, pl->ieee16_classify.output_ssbo_binding,
       pl->ieee16_classify.input_ssbo_binding != 0 ||
@@ -2638,10 +2638,10 @@ r300vk_ieee16_classify_dispatch_replay(struct r300vk_device *device,
 }
 
 bool
-r300vk_ieee16_mul_dispatch_replay(struct r300vk_device *device,
-                                  const struct r300vk_pipeline *pl,
-                                  const struct r300vk_cmd_dispatch *dispatch,
-                                  const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_ieee16_mul_dispatch_replay(struct r3v_device *device,
+                                  const struct r3v_pipeline *pl,
+                                  const struct r3v_cmd_dispatch *dispatch,
+                                  const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device->screen->is_format_supported(device->screen,
           PIPE_FORMAT_R32G32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
@@ -2651,7 +2651,7 @@ r300vk_ieee16_mul_dispatch_replay(struct r300vk_device *device,
           PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
-   return r300vk_one_in_one_out_dispatch_replay(
+   return r3v_one_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->ieee16_mul.input_ssbo_binding, pl->ieee16_mul.output_ssbo_binding,
       pl->ieee16_mul.input_ssbo_binding != 0 ||
@@ -2685,13 +2685,13 @@ omul_copy_fp16_rt_to_buffer(struct pipe_context *pipe, struct pipe_resource *rt,
          util_format_get_blocksize(PIPE_FORMAT_R32G32B32A32_FLOAT);
       uint64_t out_byte_count = 0;
       out_box.x      = out_offset;
-      if (r300vk_idm_element_byte_count(total, buf_bs, &out_byte_count)) {
+      if (r3v_idm_element_byte_count(total, buf_bs, &out_byte_count)) {
          out_box.width  = (int)out_byte_count;
          out_box.height = 1;
          out_box.depth  = 1;
          void *out_bytes = pipe->buffer_map(
             pipe, out_res, 0,
-            r300vk_idm_buffer_write_flags(out_offset, out_byte_count, out_res),
+            r3v_idm_buffer_write_flags(out_offset, out_byte_count, out_res),
             &out_box, &out_xfer);
          if (out_bytes) {
             uint8_t *dst = out_bytes;
@@ -2722,7 +2722,7 @@ omul_copy_fp16_rt_to_buffer(struct pipe_context *pipe, struct pipe_resource *rt,
  * The vb/velems fullscreen quad is shared across the two passes. */
 static bool
 omul_run_pass_cb(struct pipe_context *pipe, struct pipe_screen *screen,
-                 struct r300vk_device *device,
+                 struct r3v_device *device,
                  struct pipe_sampler_view *views[4], void *pass_fs, void *vs_cso,
                  struct pipe_resource *vb, void *velems_cso,
                  struct pipe_resource *out_res, unsigned out_offset,
@@ -2749,7 +2749,7 @@ omul_run_pass_cb(struct pipe_context *pipe, struct pipe_screen *screen,
    surf_templ.format  = rtfmt;
    surf_templ.texture = rt;
 
-   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                         device->identity_map_cso.blend,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -2807,7 +2807,7 @@ omul_run_pass_cb(struct pipe_context *pipe, struct pipe_screen *screen,
  * to omul_run_pass_cb with no fragment constant buffer. */
 static bool
 omul_run_pass(struct pipe_context *pipe, struct pipe_screen *screen,
-              struct r300vk_device *device,
+              struct r3v_device *device,
               struct pipe_sampler_view *views[4], void *pass_fs, void *vs_cso,
               struct pipe_resource *vb, void *velems_cso,
               struct pipe_resource *out_res, unsigned out_offset,
@@ -2827,7 +2827,7 @@ omul_run_pass(struct pipe_context *pipe, struct pipe_screen *screen,
  * the framebuffer + viewport + scissor + state binds are inlined here. */
 static bool
 omul_run_mrt_pass(struct pipe_context *pipe, struct pipe_screen *screen,
-                  struct r300vk_device *device,
+                  struct r3v_device *device,
                   struct pipe_sampler_view **views, unsigned nviews,
                   void *mrt_fs, void *vs_cso,
                   struct pipe_resource *vb, void *velems_cso,
@@ -2934,10 +2934,10 @@ omul_run_mrt_pass(struct pipe_context *pipe, struct pipe_screen *screen,
  * routes are capability-gated, not parallel: R300 is a single graphics pipe, so
  * running both would serialize and waste work -- B is just the cheaper path. */
 bool
-r300vk_omul_dispatch_replay(struct r300vk_device *device,
-                            const struct r300vk_pipeline *pl,
-                            const struct r300vk_cmd_dispatch *dispatch,
-                            const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_omul_dispatch_replay(struct r3v_device *device,
+                            const struct r3v_pipeline *pl,
+                            const struct r3v_cmd_dispatch *dispatch,
+                            const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -2954,7 +2954,7 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
                                     PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
       return false;
 
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout)
       return false;
 
@@ -2974,18 +2974,18 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
             return false;
    }
 
-   const struct r300vk_descriptor *desc[6];
-   struct r300vk_buffer *buf[6];
+   const struct r3v_descriptor *desc[6];
+   struct r3v_buffer *buf[6];
    for (unsigned i = 0; i < 6; i++) {
       desc[i] = find_descriptor_by_binding(set, bind[i]);
       if (!desc[i] || !desc[i]->buf.buffer)
          return false;
-      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      buf[i] = r3v_buffer_from_handle(desc[i]->buf.buffer);
       if (!buf[i] || !buf[i]->resource)
          return false;
    }
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    if (total == 0 || total > 2048u * 2048u)
       return false;
    unsigned width = 0, height = 0;
@@ -2995,7 +2995,7 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
    for (unsigned i = 0; i < 4; i++) {
-      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+      views[i] = r3v_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
          width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!views[i]) {
@@ -3007,16 +3007,16 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       for (unsigned i = 0; i < 4; i++)
          pipe_sampler_view_reference(&views[i], NULL);
       return false;
    }
 
-   /* Route B (MRT) is preferred when its FS was synthesized; R300VK_OMUL_FORCE_2PASS
+   /* Route B (MRT) is preferred when its FS was synthesized; R3V_OMUL_FORCE_2PASS
     * forces the route-A fallback on the same hardware to exercise both paths. */
    bool ok;
-   if (pl->fs_cso_mrt && !getenv("R300VK_OMUL_FORCE_2PASS")) {
+   if (pl->fs_cso_mrt && !getenv("R3V_OMUL_FORCE_2PASS")) {
       /* Route B: both halves in one MRT pass (synthesized only when the screen
        * supports two simultaneous FP16 render targets, so its presence is the
        * capability gate). */
@@ -3059,10 +3059,10 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
  * Dropping the matrix texture removes four TEX and their four coordinate-staging
  * MOVs, leaving 1 TEX + 4 DP4. */
 bool
-r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
-                               const struct r300vk_pipeline *pl,
-                               const struct r300vk_cmd_dispatch *dispatch,
-                               const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_mat4vec_dispatch_replay(struct r3v_device *device,
+                               const struct r3v_pipeline *pl,
+                               const struct r3v_cmd_dispatch *dispatch,
+                               const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -3079,7 +3079,7 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
                                     PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
       return false;
 
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout)
       return false;
 
@@ -3089,8 +3089,8 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
    uint32_t bind[3] = { pl->mat4vec.matrix_ssbo_binding,
                         pl->mat4vec.vertex_ssbo_binding,
                         pl->mat4vec.output_ssbo_binding };
-   const struct r300vk_descriptor *desc[3];
-   struct r300vk_buffer *buf[3];
+   const struct r3v_descriptor *desc[3];
+   struct r3v_buffer *buf[3];
    for (unsigned i = 0; i < 3; i++) {
       desc[i] = find_descriptor_by_binding(set, bind[i]);
       if (!desc[i] || !desc[i]->buf.buffer) {
@@ -3100,12 +3100,12 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
          if (!desc[i] || !desc[i]->buf.buffer)
             return false;
       }
-      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      buf[i] = r3v_buffer_from_handle(desc[i]->buf.buffer);
       if (!buf[i] || !buf[i]->resource)
          return false;
    }
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    if (total == 0 || total > 2048u * 2048u)
       return false;
    unsigned width = 0, height = 0;
@@ -3137,7 +3137,7 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
    /* views[0] = the per-element vertices at the dispatch extent. */
-   views[0] = r300vk_identity_map_wrap_input_as_sampler_view(
+   views[0] = r3v_identity_map_wrap_input_as_sampler_view(
       device, buf[1]->resource, (unsigned)desc[1]->buf.offset,
       width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
    if (!views[0])
@@ -3145,7 +3145,7 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_sampler_view_reference(&views[0], NULL);
       return false;
    }
@@ -3169,10 +3169,10 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
  * otherwise the roles are recovered from the first three compute-visible
  * STORAGE_BUFFER declarations in semantic order. */
 bool
-r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
-                             const struct r300vk_pipeline *pl,
-                             const struct r300vk_cmd_dispatch *dispatch,
-                             const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_qfmul_dispatch_replay(struct r3v_device *device,
+                             const struct r3v_pipeline *pl,
+                             const struct r3v_cmd_dispatch *dispatch,
+                             const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -3189,7 +3189,7 @@ r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
                                     PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
       return false;
 
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout)
       return false;
 
@@ -3207,18 +3207,18 @@ r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
       }
    }
 
-   const struct r300vk_descriptor *desc[3];
-   struct r300vk_buffer *buf[3];
+   const struct r3v_descriptor *desc[3];
+   struct r3v_buffer *buf[3];
    for (unsigned i = 0; i < 3; i++) {
       desc[i] = find_descriptor_by_binding(set, bind[i]);
       if (!desc[i] || !desc[i]->buf.buffer)
          return false;
-      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      buf[i] = r3v_buffer_from_handle(desc[i]->buf.buffer);
       if (!buf[i] || !buf[i]->resource)
          return false;
    }
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    if (total == 0 || total > 2048u * 2048u)
       return false;
    unsigned width = 0, height = 0;
@@ -3246,7 +3246,7 @@ r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
    }
 
    struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
-   views[0] = r300vk_identity_map_wrap_input_as_sampler_view(
+   views[0] = r3v_identity_map_wrap_input_as_sampler_view(
       device, buf[1]->resource, (unsigned)desc[1]->buf.offset,
       width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
    if (!views[0])
@@ -3254,7 +3254,7 @@ r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_sampler_view_reference(&views[0], NULL);
       return false;
    }
@@ -3275,9 +3275,9 @@ r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
  * to the first n compute-visible STORAGE_BUFFERs in declaration order (the
  * inputs precede the outputs in every octonion kernel). */
 static bool
-octonion_resolve_buffers(const struct r300vk_descriptor_set *set, uint32_t *bind,
-                         unsigned n, const struct r300vk_descriptor **desc,
-                         struct r300vk_buffer **buf)
+octonion_resolve_buffers(const struct r3v_descriptor_set *set, uint32_t *bind,
+                         unsigned n, const struct r3v_descriptor **desc,
+                         struct r3v_buffer **buf)
 {
    bool any = false;
    for (unsigned i = 0; i < n; i++)
@@ -3292,7 +3292,7 @@ octonion_resolve_buffers(const struct r300vk_descriptor_set *set, uint32_t *bind
       desc[i] = find_descriptor_by_binding(set, bind[i]);
       if (!desc[i] || !desc[i]->buf.buffer)
          return false;
-      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      buf[i] = r3v_buffer_from_handle(desc[i]->buf.buffer);
       if (!buf[i] || !buf[i]->resource)
          return false;
    }
@@ -3302,10 +3302,10 @@ octonion_resolve_buffers(const struct r300vk_descriptor_set *set, uint32_t *bind
 /* ONORM dispatch: |(a,b)|^2 = dot(a,a)+dot(b,b).  Two inputs, one output -- the
  * 2-in/1-out core with the synthesized self-dot-sum FS in pl->fs_cso. */
 bool
-r300vk_onorm_dispatch_replay(struct r300vk_device *device,
-                             const struct r300vk_pipeline *pl,
-                             const struct r300vk_cmd_dispatch *dispatch,
-                             const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_onorm_dispatch_replay(struct r3v_device *device,
+                             const struct r3v_pipeline *pl,
+                             const struct r3v_cmd_dispatch *dispatch,
+                             const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    if (!device->screen->is_format_supported(device->screen,
           PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
@@ -3315,7 +3315,7 @@ r300vk_onorm_dispatch_replay(struct r300vk_device *device,
           PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET))
       return false;
-   return r300vk_two_in_one_out_dispatch_replay(
+   return r3v_two_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->onorm.input_a_ssbo_binding, pl->onorm.input_b_ssbo_binding,
       pl->onorm.output_ssbo_binding,
@@ -3327,10 +3327,10 @@ r300vk_onorm_dispatch_replay(struct r300vk_device *device,
  * sampled at stages 0,1; the MRT FS (pl->fs_cso_mrt) writes conj(a) to o_lo and
  * -b to o_hi. */
 bool
-r300vk_oconj_dispatch_replay(struct r300vk_device *device,
-                             const struct r300vk_pipeline *pl,
-                             const struct r300vk_cmd_dispatch *dispatch,
-                             const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_oconj_dispatch_replay(struct r3v_device *device,
+                             const struct r3v_pipeline *pl,
+                             const struct r3v_cmd_dispatch *dispatch,
+                             const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -3343,7 +3343,7 @@ r300vk_oconj_dispatch_replay(struct r300vk_device *device,
        !screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
                                     PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
       return false;
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout)
       return false;
 
@@ -3351,12 +3351,12 @@ r300vk_oconj_dispatch_replay(struct r300vk_device *device,
                         pl->oconj.input_b_ssbo_binding,
                         pl->oconj.output_lo_ssbo_binding,
                         pl->oconj.output_hi_ssbo_binding };
-   const struct r300vk_descriptor *desc[4];
-   struct r300vk_buffer *buf[4];
+   const struct r3v_descriptor *desc[4];
+   struct r3v_buffer *buf[4];
    if (!octonion_resolve_buffers(set, bind, 4, desc, buf))
       return false;
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    if (total == 0 || total > 2048u * 2048u)
       return false;
    unsigned width = 0, height = 0;
@@ -3366,7 +3366,7 @@ r300vk_oconj_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_sampler_view *views[2] = { NULL, NULL };
    for (unsigned i = 0; i < 2; i++) {
-      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+      views[i] = r3v_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
          width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!views[i]) {
@@ -3377,7 +3377,7 @@ r300vk_oconj_dispatch_replay(struct r300vk_device *device,
    }
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       for (unsigned i = 0; i < 2; i++)
          pipe_sampler_view_reference(&views[i], NULL);
       return false;
@@ -3401,10 +3401,10 @@ r300vk_oconj_dispatch_replay(struct r300vk_device *device,
  * contiguous pair per half (o_lo = stage0 op stage1 = a op c, o_hi = stage2 op
  * stage3 = b op d). */
 bool
-r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
-                               const struct r300vk_pipeline *pl,
-                               const struct r300vk_cmd_dispatch *dispatch,
-                               const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_oaddsub_dispatch_replay(struct r3v_device *device,
+                               const struct r3v_pipeline *pl,
+                               const struct r3v_cmd_dispatch *dispatch,
+                               const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -3417,7 +3417,7 @@ r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
        !screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
                                     PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
       return false;
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout)
       return false;
 
@@ -3427,12 +3427,12 @@ r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
                         pl->oaddsub.input_d_ssbo_binding,
                         pl->oaddsub.output_lo_ssbo_binding,
                         pl->oaddsub.output_hi_ssbo_binding };
-   const struct r300vk_descriptor *desc[6];
-   struct r300vk_buffer *buf[6];
+   const struct r3v_descriptor *desc[6];
+   struct r3v_buffer *buf[6];
    if (!octonion_resolve_buffers(set, bind, 6, desc, buf))
       return false;
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    if (total == 0 || total > 2048u * 2048u)
       return false;
    unsigned width = 0, height = 0;
@@ -3445,7 +3445,7 @@ r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
    const unsigned src[4] = { 0, 2, 1, 3 };
    struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
    for (unsigned i = 0; i < 4; i++) {
-      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+      views[i] = r3v_identity_map_wrap_input_as_sampler_view(
          device, buf[src[i]]->resource, (unsigned)desc[src[i]]->buf.offset,
          width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!views[i]) {
@@ -3456,7 +3456,7 @@ r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
    }
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       for (unsigned i = 0; i < 4; i++)
          pipe_sampler_view_reference(&views[i], NULL);
       return false;
@@ -3481,10 +3481,10 @@ r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
  * to o_lo, pl->fs_cso2 the upper half to o_hi.  Division splits into two passes
  * because the combined MRT form is 73 ALU ops, over the 64-ALU R300 limit. */
 bool
-r300vk_odiv_dispatch_replay(struct r300vk_device *device,
-                            const struct r300vk_pipeline *pl,
-                            const struct r300vk_cmd_dispatch *dispatch,
-                            const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_odiv_dispatch_replay(struct r3v_device *device,
+                            const struct r3v_pipeline *pl,
+                            const struct r3v_cmd_dispatch *dispatch,
+                            const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -3497,7 +3497,7 @@ r300vk_odiv_dispatch_replay(struct r300vk_device *device,
        !screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
                                     PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
       return false;
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout)
       return false;
 
@@ -3507,12 +3507,12 @@ r300vk_odiv_dispatch_replay(struct r300vk_device *device,
                         pl->odiv.input_yhi_ssbo_binding,
                         pl->odiv.output_lo_ssbo_binding,
                         pl->odiv.output_hi_ssbo_binding };
-   const struct r300vk_descriptor *desc[6];
-   struct r300vk_buffer *buf[6];
+   const struct r3v_descriptor *desc[6];
+   struct r3v_buffer *buf[6];
    if (!octonion_resolve_buffers(set, bind, 6, desc, buf))
       return false;
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    if (total == 0 || total > 2048u * 2048u)
       return false;
    unsigned width = 0, height = 0;
@@ -3522,7 +3522,7 @@ r300vk_odiv_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
    for (unsigned i = 0; i < 4; i++) {
-      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+      views[i] = r3v_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
          width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!views[i]) {
@@ -3533,7 +3533,7 @@ r300vk_odiv_dispatch_replay(struct r300vk_device *device,
    }
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       for (unsigned i = 0; i < 4; i++)
          pipe_sampler_view_reference(&views[i], NULL);
       return false;
@@ -3584,10 +3584,10 @@ otrans_create_scratch(struct pipe_screen *screen, uint64_t total)
  * x at stages 2,3 and forming conj(x) inline.  Four single-output passes: the
  * combined sandwich is 32 DP4s, far past the 64-ALU R300 fragment limit. */
 bool
-r300vk_otrans_dispatch_replay(struct r300vk_device *device,
-                              const struct r300vk_pipeline *pl,
-                              const struct r300vk_cmd_dispatch *dispatch,
-                              const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_otrans_dispatch_replay(struct r3v_device *device,
+                              const struct r3v_pipeline *pl,
+                              const struct r3v_cmd_dispatch *dispatch,
+                              const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -3601,7 +3601,7 @@ r300vk_otrans_dispatch_replay(struct r300vk_device *device,
        !screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
                                     PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
       return false;
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout)
       return false;
 
@@ -3611,12 +3611,12 @@ r300vk_otrans_dispatch_replay(struct r300vk_device *device,
                         pl->otrans.input_vhi_ssbo_binding,
                         pl->otrans.output_lo_ssbo_binding,
                         pl->otrans.output_hi_ssbo_binding };
-   const struct r300vk_descriptor *desc[6];
-   struct r300vk_buffer *buf[6];
+   const struct r3v_descriptor *desc[6];
+   struct r3v_buffer *buf[6];
    if (!octonion_resolve_buffers(set, bind, 6, desc, buf))
       return false;
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    if (total == 0 || total > 2048u * 2048u)
       return false;
    unsigned width = 0, height = 0;
@@ -3627,7 +3627,7 @@ r300vk_otrans_dispatch_replay(struct r300vk_device *device,
    /* x and v inputs as FP32 sampler views for pass 1 (OMUL(x,v)). */
    struct pipe_sampler_view *xv[4] = { NULL, NULL, NULL, NULL };
    for (unsigned i = 0; i < 4; i++) {
-      xv[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+      xv[i] = r3v_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
          width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!xv[i]) {
@@ -3642,7 +3642,7 @@ r300vk_otrans_dispatch_replay(struct r300vk_device *device,
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
    bool ok = t_lo && t_hi &&
-             r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso);
+             r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso);
 
    /* Pass 1: t = x*v to the scratch halves. */
    if (ok)
@@ -3654,16 +3654,16 @@ r300vk_otrans_dispatch_replay(struct r300vk_device *device,
    /* Pass 2: out = t*conj(x), sampling t at 0,1 and x at 2,3. */
    if (ok) {
       struct pipe_sampler_view *tx[4] = { NULL, NULL, NULL, NULL };
-      tx[0] = r300vk_identity_map_wrap_input_as_sampler_view(
+      tx[0] = r3v_identity_map_wrap_input_as_sampler_view(
          device, t_lo, 0, width, height, total,
          PIPE_FORMAT_R32G32B32A32_FLOAT);
-      tx[1] = r300vk_identity_map_wrap_input_as_sampler_view(
+      tx[1] = r3v_identity_map_wrap_input_as_sampler_view(
          device, t_hi, 0, width, height, total,
          PIPE_FORMAT_R32G32B32A32_FLOAT);
-      tx[2] = r300vk_identity_map_wrap_input_as_sampler_view(
+      tx[2] = r3v_identity_map_wrap_input_as_sampler_view(
          device, buf[0]->resource, (unsigned)desc[0]->buf.offset, width, height,
          total, PIPE_FORMAT_R32G32B32A32_FLOAT);
-      tx[3] = r300vk_identity_map_wrap_input_as_sampler_view(
+      tx[3] = r3v_identity_map_wrap_input_as_sampler_view(
          device, buf[1]->resource, (unsigned)desc[1]->buf.offset, width, height,
          total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       ok = tx[0] && tx[1] && tx[2] && tx[3] &&
@@ -3693,9 +3693,9 @@ r300vk_otrans_dispatch_replay(struct r300vk_device *device,
  * kernel's vec4 FP32 output.  QFMADD (a*b+c) and QFMMUL (a*b*c) differ only in the
  * FS, both one pass under the 64-ALU fragment limit. */
 static bool
-r300vk_qfm3_run(struct r300vk_device *device, const struct r300vk_pipeline *pl,
-                const struct r300vk_cmd_dispatch *dispatch,
-                const struct r300vk_cmd_bind_descriptor_sets *binds,
+r3v_qfm3_run(struct r3v_device *device, const struct r3v_pipeline *pl,
+                const struct r3v_cmd_dispatch *dispatch,
+                const struct r3v_cmd_bind_descriptor_sets *binds,
                 uint32_t a_bind, uint32_t b_bind, uint32_t c_bind,
                 uint32_t out_bind, void *fs_cso)
 {
@@ -3710,17 +3710,17 @@ r300vk_qfm3_run(struct r300vk_device *device, const struct r300vk_pipeline *pl,
        !screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
                                     PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
       return false;
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout)
       return false;
 
    uint32_t bind[4] = { a_bind, b_bind, c_bind, out_bind };
-   const struct r300vk_descriptor *desc[4];
-   struct r300vk_buffer *buf[4];
+   const struct r3v_descriptor *desc[4];
+   struct r3v_buffer *buf[4];
    if (!octonion_resolve_buffers(set, bind, 4, desc, buf))
       return false;
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    if (total == 0 || total > 2048u * 2048u)
       return false;
    unsigned width = 0, height = 0;
@@ -3730,7 +3730,7 @@ r300vk_qfm3_run(struct r300vk_device *device, const struct r300vk_pipeline *pl,
 
    struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
    for (unsigned i = 0; i < 3; i++) {
-      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+      views[i] = r3v_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
          width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!views[i]) {
@@ -3743,7 +3743,7 @@ r300vk_qfm3_run(struct r300vk_device *device, const struct r300vk_pipeline *pl,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   bool ok = r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso);
+   bool ok = r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso);
    if (ok)
       ok = omul_run_pass(pipe, screen, device, views, fs_cso, pl->vs_cso, vb,
                          velems_cso, buf[3]->resource,
@@ -3759,12 +3759,12 @@ r300vk_qfm3_run(struct r300vk_device *device, const struct r300vk_pipeline *pl,
 
 /* QFMADD dispatch: out = a*b + c in one pass (pl->fs_cso is the QFMADD FS). */
 bool
-r300vk_qfmadd_dispatch_replay(struct r300vk_device *device,
-                              const struct r300vk_pipeline *pl,
-                              const struct r300vk_cmd_dispatch *dispatch,
-                              const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_qfmadd_dispatch_replay(struct r3v_device *device,
+                              const struct r3v_pipeline *pl,
+                              const struct r3v_cmd_dispatch *dispatch,
+                              const struct r3v_cmd_bind_descriptor_sets *binds)
 {
-   return r300vk_qfm3_run(device, pl, dispatch, binds,
+   return r3v_qfm3_run(device, pl, dispatch, binds,
                           pl->qfmadd.input_a_ssbo_binding,
                           pl->qfmadd.input_b_ssbo_binding,
                           pl->qfmadd.input_c_ssbo_binding,
@@ -3773,12 +3773,12 @@ r300vk_qfmadd_dispatch_replay(struct r300vk_device *device,
 
 /* QFMMUL dispatch: out = a*b*c = (a*b)*c in one pass (pl->fs_cso is the QFMMUL FS). */
 bool
-r300vk_qfmmul_dispatch_replay(struct r300vk_device *device,
-                              const struct r300vk_pipeline *pl,
-                              const struct r300vk_cmd_dispatch *dispatch,
-                              const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_qfmmul_dispatch_replay(struct r3v_device *device,
+                              const struct r3v_pipeline *pl,
+                              const struct r3v_cmd_dispatch *dispatch,
+                              const struct r3v_cmd_bind_descriptor_sets *binds)
 {
-   return r300vk_qfm3_run(device, pl, dispatch, binds,
+   return r3v_qfm3_run(device, pl, dispatch, binds,
                           pl->qfmmul.input_a_ssbo_binding,
                           pl->qfmmul.input_b_ssbo_binding,
                           pl->qfmmul.input_c_ssbo_binding,
@@ -3788,14 +3788,14 @@ r300vk_qfmmul_dispatch_replay(struct r300vk_device *device,
 /* Multi-tap gather orchestrator: identity-map skeleton (one input sampler
  * view, two storage buffers) plus a per-dispatch fragment constant carrying
  * the neighbor texel displacement.  The synthesized FS
- * (r300vk_synthesize_multitap_gather_fs) samples the input at three
+ * (r3v_synthesize_multitap_gather_fs) samples the input at three
  * neighborhood offsets and sums them; everything else (RT, VBO, framebuffer,
  * viewport, scissor, draw, copy-back) is the identity-map path. */
 bool
-r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
-                                       const struct r300vk_pipeline *pl,
-                                       const struct r300vk_cmd_dispatch *dispatch,
-                                       const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_multitap_gather_dispatch_replay(struct r3v_device *device,
+                                       const struct r3v_pipeline *pl,
+                                       const struct r3v_cmd_dispatch *dispatch,
+                                       const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -3821,7 +3821,7 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
               binds->first_set);
       return false;
    }
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout) {
       IDM_LOG("gather early-return no-set-or-layout");
       return false;
@@ -3833,17 +3833,17 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
       return false;
    }
    uint32_t bindings[2] = { in_binding, out_binding };
-   const struct r300vk_descriptor *descs[2] = {0};
-   struct r300vk_buffer *bufs[2] = {0};
-   if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
+   const struct r3v_descriptor *descs[2] = {0};
+   struct r3v_buffer *bufs[2] = {0};
+   if (!r3v_idm_resolve_buffers(set, 2, bindings, descs, bufs))
       return false;
-   const struct r300vk_descriptor *in_desc = descs[0];
-   const struct r300vk_descriptor *out_desc = descs[1];
-   struct r300vk_buffer *in_buf = bufs[0];
-   struct r300vk_buffer *out_buf = bufs[1];
+   const struct r3v_descriptor *in_desc = descs[0];
+   const struct r3v_descriptor *out_desc = descs[1];
+   struct r3v_buffer *in_buf = bufs[0];
+   struct r3v_buffer *out_buf = bufs[1];
 
    const uint64_t total_invocations =
-      r300vk_idm_total_invocations(dispatch, pl);
+      r3v_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u) {
       IDM_LOG("gather early-return total_invocations=%llu out-of-bounds (1D box-3 limit)",
               (unsigned long long)total_invocations);
@@ -3858,7 +3858,7 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
 
    const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
    struct pipe_sampler_view *in_sv =
-      r300vk_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
+      r3v_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
                                                      (unsigned)in_desc->buf.offset,
                                                      width, height,
                                                      total_invocations, fmt);
@@ -3929,7 +3929,7 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                         device->identity_map_cso.blend,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -3985,19 +3985,19 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
          const unsigned blocksize = util_format_get_blocksize(fmt);
          uint64_t out_byte_count = 0;
          out_box.x      = (unsigned)out_desc->buf.offset;
-         if (r300vk_idm_element_byte_count(total_invocations, blocksize,
+         if (r3v_idm_element_byte_count(total_invocations, blocksize,
                                            &out_byte_count)) {
             out_box.width  = (int)out_byte_count;
             out_box.height = 1;
             out_box.depth  = 1;
             void *out_bytes = pipe->buffer_map(
                pipe, out_buf->resource, 0,
-               r300vk_idm_buffer_write_flags((unsigned)out_desc->buf.offset,
+               r3v_idm_buffer_write_flags((unsigned)out_desc->buf.offset,
                                              out_byte_count,
                                              out_buf->resource),
                &out_box, &out_xfer);
             if (out_bytes) {
-               r300vk_identity_map_copy_rows(out_bytes, width * blocksize,
+               r3v_identity_map_copy_rows(out_bytes, width * blocksize,
                                              rt_map, rt_xfer->stride,
                                              width, height, blocksize,
                                              total_invocations);
@@ -4030,10 +4030,10 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
 }
 
 bool
-r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
-                                        const struct r300vk_pipeline *pl,
-                                        const struct r300vk_cmd_dispatch *dispatch,
-                                        const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_predicated_store_dispatch_replay(struct r3v_device *device,
+                                        const struct r3v_pipeline *pl,
+                                        const struct r3v_cmd_dispatch *dispatch,
+                                        const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -4058,7 +4058,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
               binds->first_set);
       return false;
    }
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout) {
       IDM_LOG("predstore early-return no-set-or-layout");
       return false;
@@ -4076,11 +4076,11 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
    }
    IDM_LOG("predstore bindings: pred=%u val=%u out=%u",
            pred_binding, val_binding, out_binding);
-   const struct r300vk_descriptor *pred_desc =
+   const struct r3v_descriptor *pred_desc =
       find_descriptor_by_binding(set, pred_binding);
-   const struct r300vk_descriptor *val_desc =
+   const struct r3v_descriptor *val_desc =
       find_descriptor_by_binding(set, val_binding);
-   const struct r300vk_descriptor *out_desc =
+   const struct r3v_descriptor *out_desc =
       find_descriptor_by_binding(set, out_binding);
    if (!pred_desc || !val_desc || !out_desc ||
        !pred_desc->buf.buffer || !val_desc->buf.buffer ||
@@ -4088,9 +4088,9 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("predstore early-return descriptor-walk-miss");
       return false;
    }
-   VK_FROM_HANDLE(r300vk_buffer, pred_buf, pred_desc->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, val_buf,  val_desc->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, out_buf,  out_desc->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, pred_buf, pred_desc->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, val_buf,  val_desc->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, out_buf,  out_desc->buf.buffer);
    if (!pred_buf || !val_buf || !out_buf ||
        !pred_buf->resource || !val_buf->resource || !out_buf->resource) {
       IDM_LOG("predstore early-return null-pipe-resource");
@@ -4098,7 +4098,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
    }
 
    const uint64_t total_invocations =
-      r300vk_idm_total_invocations(dispatch, pl);
+      r3v_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("predstore early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -4118,7 +4118,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
     * PIPE_TEXTURE_2D + NEAREST sampler views, the same input wrap M-E / M-F
     * use. */
    struct pipe_sampler_view *sv_pred =
-      r300vk_identity_map_wrap_input_as_sampler_view(device, pred_buf->resource,
+      r3v_identity_map_wrap_input_as_sampler_view(device, pred_buf->resource,
                                                      (unsigned)pred_desc->buf.offset,
                                                      width, height,
                                                      total_invocations, fmt);
@@ -4127,7 +4127,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
       return false;
    }
    struct pipe_sampler_view *sv_val =
-      r300vk_identity_map_wrap_input_as_sampler_view(device, val_buf->resource,
+      r3v_identity_map_wrap_input_as_sampler_view(device, val_buf->resource,
                                                      (unsigned)val_desc->buf.offset,
                                                      width, height,
                                                      total_invocations, fmt);
@@ -4167,7 +4167,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
       struct pipe_box out_box;
       memset(&out_box, 0, sizeof(out_box));
       uint64_t out_byte_count = 0;
-      if (!r300vk_idm_element_byte_count(total_invocations, bpp,
+      if (!r3v_idm_element_byte_count(total_invocations, bpp,
                                          &out_byte_count)) {
          pipe_resource_reference(&rt, NULL);
          pipe_sampler_view_reference(&sv_val, NULL);
@@ -4203,7 +4203,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
          IDM_LOG("predstore early-return rt-seed-map-failed");
          return false;
       }
-      r300vk_identity_map_copy_rows(rt_seed, rt_xfer->stride,
+      r3v_identity_map_copy_rows(rt_seed, rt_xfer->stride,
                                     out_map, width * bpp,
                                     width, height, bpp,
                                     total_invocations);
@@ -4260,7 +4260,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                         device->identity_map_cso.blend,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -4301,18 +4301,18 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
          memset(&out_box, 0, sizeof(out_box));
          uint64_t out_byte_count = 0;
          out_box.x      = (unsigned)out_desc->buf.offset;
-         if (r300vk_idm_element_byte_count(total_invocations, bpp,
+         if (r3v_idm_element_byte_count(total_invocations, bpp,
                                            &out_byte_count)) {
             out_box.width  = (int)out_byte_count;
             out_box.height = 1; out_box.depth = 1;
             void *out_bytes = pipe->buffer_map(
                pipe, out_buf->resource, 0,
-               r300vk_idm_buffer_write_flags((unsigned)out_desc->buf.offset,
+               r3v_idm_buffer_write_flags((unsigned)out_desc->buf.offset,
                                              out_byte_count,
                                              out_buf->resource),
                &out_box, &out_xfer);
             if (out_bytes) {
-               r300vk_identity_map_copy_rows(out_bytes, width * bpp,
+               r3v_identity_map_copy_rows(out_bytes, width * bpp,
                                              rt_map, rt_xfer->stride,
                                              width, height, bpp,
                                              total_invocations);
@@ -4363,10 +4363,10 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
  * + scissor setup, copy-back path) reuse the identity-map orchestrator's
  * shape verbatim. */
 bool
-r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
-                                           const struct r300vk_pipeline *pl,
-                                           const struct r300vk_cmd_dispatch *dispatch,
-                                           const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_blend_acc_reduction_dispatch_replay(struct r3v_device *device,
+                                           const struct r3v_pipeline *pl,
+                                           const struct r3v_cmd_dispatch *dispatch,
+                                           const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -4390,14 +4390,14 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
               binds->first_set);
       return false;
    }
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout) {
       IDM_LOG("blend_acc early-return no-set-or-layout");
       return false;
    }
 
    /* Detector binding-index priority with a positional fallback (same policy
-    * as r300vk_binary_map_dispatch_replay): value = first compute-visible
+    * as r3v_binary_map_dispatch_replay): value = first compute-visible
     * STORAGE_BUFFER, output = second, when the detector could not record
     * constant indices. */
    uint32_t value_binding  = pl->blend_acc_reduction.value_ssbo_binding;
@@ -4407,14 +4407,14 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
       return false;
    }
    uint32_t bindings[2] = { value_binding, output_binding };
-   const struct r300vk_descriptor *descs[2] = {0};
-   struct r300vk_buffer *bufs[2] = {0};
-   if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
+   const struct r3v_descriptor *descs[2] = {0};
+   struct r3v_buffer *bufs[2] = {0};
+   if (!r3v_idm_resolve_buffers(set, 2, bindings, descs, bufs))
       return false;
-   const struct r300vk_descriptor *in_desc = descs[0];
-   const struct r300vk_descriptor *out_desc = descs[1];
-   struct r300vk_buffer *in_buf = bufs[0];
-   struct r300vk_buffer *out_buf = bufs[1];
+   const struct r3v_descriptor *in_desc = descs[0];
+   const struct r3v_descriptor *out_desc = descs[1];
+   struct r3v_buffer *in_buf = bufs[0];
+   struct r3v_buffer *out_buf = bufs[1];
 
    /* Difference 1: output RT extent is 1 x M.  M = histogram bin count,
     * derived from the output buffer size (each bin holds one uint32). */
@@ -4432,7 +4432,7 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    /* Total invocations from the dispatch grid (64-bit product guard +
     * 2048 x 2048 axis cap). */
    const uint64_t total_invocations =
-      r300vk_idm_total_invocations(dispatch, pl);
+      r3v_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("blend_acc early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -4461,7 +4461,7 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    }
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_blend_acc_vbo(pipe, in_buf->resource, (unsigned)in_desc->buf.offset, N, M, &vb, &velems_cso)) {
+   if (!r3v_idm_create_blend_acc_vbo(pipe, in_buf->resource, (unsigned)in_desc->buf.offset, N, M, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
       IDM_LOG("blend_acc early-return vbo-create-failed");
       return false;
@@ -4472,7 +4472,7 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    surf_templ.format  = fmt;
    surf_templ.texture = rt;
 
-   r300vk_identity_map_setup_draw_state(pipe, M, 1, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, M, 1, &surf_templ,
                                         device->blend_acc_reduction_blend_cso,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -4522,7 +4522,7 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
                                             PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                             &out_box, &out_xfer);
          if (out_bytes) {
-            r300vk_identity_map_copy_rows(out_bytes, (unsigned)out_byte_size,
+            r3v_identity_map_copy_rows(out_bytes, (unsigned)out_byte_size,
                                           rt_map, rt_xfer->stride,
                                           M, 1, 4, M);
             pipe->buffer_unmap(pipe, out_xfer);
@@ -4571,10 +4571,10 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
  * contents never read).  Other surfaces reuse the identity-map
  * orchestrator's shape verbatim. */
 bool
-r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
-                                       const struct r300vk_pipeline *pl,
-                                       const struct r300vk_cmd_dispatch *dispatch,
-                                       const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_zpass_reduction_dispatch_replay(struct r3v_device *device,
+                                       const struct r3v_pipeline *pl,
+                                       const struct r3v_cmd_dispatch *dispatch,
+                                       const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -4603,7 +4603,7 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
               binds->first_set);
       return false;
    }
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout) {
       IDM_LOG("zpass early-return no-set-or-layout");
       return false;
@@ -4615,14 +4615,14 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
       return false;
    }
    uint32_t bindings[2] = { value_binding, output_binding };
-   const struct r300vk_descriptor *descs[2] = {0};
-   struct r300vk_buffer *bufs[2] = {0};
-   if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
+   const struct r3v_descriptor *descs[2] = {0};
+   struct r3v_buffer *bufs[2] = {0};
+   if (!r3v_idm_resolve_buffers(set, 2, bindings, descs, bufs))
       return false;
-   const struct r300vk_descriptor *in_desc = descs[0];
-   const struct r300vk_descriptor *out_desc = descs[1];
-   struct r300vk_buffer *in_buf = bufs[0];
-   struct r300vk_buffer *out_buf = bufs[1];
+   const struct r3v_descriptor *in_desc = descs[0];
+   const struct r3v_descriptor *out_desc = descs[1];
+   struct r3v_buffer *in_buf = bufs[0];
+   struct r3v_buffer *out_buf = bufs[1];
 
    /* Output buffer must hold at least one uint32.  Excess capacity is
     * fine -- the orchestrator only writes the first 4 bytes (the
@@ -4635,7 +4635,7 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    }
    uint64_t total_invocations = 0;
    unsigned width = 0, height = 0;
-   if (!r300vk_idm_compute_raster_grid(dispatch, pl, &total_invocations,
+   if (!r3v_idm_compute_raster_grid(dispatch, pl, &total_invocations,
                                        &width, &height))
       return false;
    if (total_invocations > 2048u) {
@@ -4669,7 +4669,7 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    }
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_zpass_vbo(pipe, in_buf->resource, (unsigned)in_desc->buf.offset, N, &vb, &velems_cso)) {
+   if (!r3v_idm_create_zpass_vbo(pipe, in_buf->resource, (unsigned)in_desc->buf.offset, N, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
       IDM_LOG("zpass early-return vbo-create-failed");
       return false;
@@ -4680,7 +4680,7 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    surf_templ.format  = fmt;
    surf_templ.texture = rt;
 
-   r300vk_identity_map_setup_draw_state(pipe, N, 1, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, N, 1, &surf_templ,
                                         device->identity_map_cso.blend,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -4797,8 +4797,8 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
  *   1. pass_count is read from a third storage buffer (binding 2) at
  *      replay time -- the runtime value the kernel's loop bound carries,
  *      which is also what the multipass-scan detector keyed on.  No
- *      push-constant plumbing exists (r300vk advertises maxPushConstantsSize
- *      but has no R300VK_CMD_PUSH_CONSTANTS recording path), so the count
+ *      push-constant plumbing exists (r3v advertises maxPushConstantsSize
+ *      but has no R3V_CMD_PUSH_CONSTANTS recording path), so the count
  *      rides the existing descriptor machinery.
  *   2. Two textures alternate src/dst across pass_count draws; the prior
  *      pass's RT becomes the next pass's sampler input.
@@ -4809,10 +4809,10 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
  * rejects rather than silently clamp (the read-back oracle would otherwise
  * see saturated bytes). */
 bool
-r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
-                                      const struct r300vk_pipeline *pl,
-                                      const struct r300vk_cmd_dispatch *dispatch,
-                                      const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_multipass_scan_dispatch_replay(struct r3v_device *device,
+                                      const struct r3v_pipeline *pl,
+                                      const struct r3v_cmd_dispatch *dispatch,
+                                      const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -4836,7 +4836,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
               binds->first_set);
       return false;
    }
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout) {
       IDM_LOG("multipass early-return no-set-or-layout");
       return false;
@@ -4853,11 +4853,11 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("multipass early-return layout-has-fewer-than-three-storage-buffers");
       return false;
    }
-   const struct r300vk_descriptor *in_desc =
+   const struct r3v_descriptor *in_desc =
       find_descriptor_by_binding(set, in_binding);
-   const struct r300vk_descriptor *out_desc =
+   const struct r3v_descriptor *out_desc =
       find_descriptor_by_binding(set, out_binding);
-   const struct r300vk_descriptor *params_desc =
+   const struct r3v_descriptor *params_desc =
       find_descriptor_by_binding(set, params_binding);
    if (!in_desc || !out_desc || !params_desc ||
        !in_desc->buf.buffer || !out_desc->buf.buffer ||
@@ -4865,9 +4865,9 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("multipass early-return descriptor-walk-miss");
       return false;
    }
-   VK_FROM_HANDLE(r300vk_buffer, in_buf,     in_desc->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, out_buf,    out_desc->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, params_buf, params_desc->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, in_buf,     in_desc->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, out_buf,    out_desc->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, params_buf, params_desc->buf.buffer);
    if (!in_buf || !out_buf || !params_buf ||
        !in_buf->resource || !out_buf->resource || !params_buf->resource) {
       IDM_LOG("multipass early-return null-pipe-resource");
@@ -4899,7 +4899,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    IDM_LOG("multipass pass_count=%u", pass_count);
 
    const uint64_t total_invocations =
-      r300vk_idm_total_invocations(dispatch, pl);
+      r3v_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("multipass early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -4948,7 +4948,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
       struct pipe_box in_box;
       memset(&in_box, 0, sizeof(in_box));
       uint64_t in_byte_count = 0;
-      if (!r300vk_idm_element_byte_count(total_invocations, bpp,
+      if (!r3v_idm_element_byte_count(total_invocations, bpp,
                                          &in_byte_count)) {
          pipe_resource_reference(&tex[0], NULL);
          pipe_resource_reference(&tex[1], NULL);
@@ -4980,7 +4980,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
          IDM_LOG("multipass early-return seed-tex-map-failed");
          return false;
       }
-      r300vk_identity_map_copy_rows(t_map, t_xfer->stride,
+      r3v_identity_map_copy_rows(t_map, t_xfer->stride,
                                     in_map, width * bpp,
                                     width, height, bpp,
                                     total_invocations);
@@ -4992,7 +4992,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
     * identity-map orchestrator's quad. */
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_resource_reference(&tex[0], NULL);
       pipe_resource_reference(&tex[1], NULL);
       return false;
@@ -5083,7 +5083,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Copy the final texture (tex[src_idx]) back to the output buffer. */
-   bool copy_ok = r300vk_identity_map_readback_rt(pipe, tex[src_idx], out_buf->resource,
+   bool copy_ok = r3v_identity_map_readback_rt(pipe, tex[src_idx], out_buf->resource,
                                                   (unsigned)out_desc->buf.offset,
                                                   width, height, fmt,
                                                   width * util_format_get_blocksize(fmt),
@@ -5105,10 +5105,10 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
 }
 
 bool
-r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
-                                   const struct r300vk_pipeline *pl,
-                                   const struct r300vk_cmd_dispatch *dispatch,
-                                   const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_const_fill_dispatch_replay(struct r3v_device *device,
+                                   const struct r3v_pipeline *pl,
+                                   const struct r3v_cmd_dispatch *dispatch,
+                                   const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe = device->pipe;
    IDM_LOG("constfill entry pl=%p is_const_fill=%d gx=%u gy=%u gz=%u",
@@ -5136,7 +5136,7 @@ r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   const struct r300vk_descriptor_set *set = binds->sets[0];
+   const struct r3v_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout) {
       IDM_LOG("constfill early-return no-set-or-layout");
       return false;
@@ -5151,20 +5151,20 @@ r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("constfill recovered binding from layout: out=%u", out_binding);
    }
 
-   const struct r300vk_descriptor *out_desc = find_descriptor_by_binding(set, out_binding);
+   const struct r3v_descriptor *out_desc = find_descriptor_by_binding(set, out_binding);
    IDM_LOG("constfill out_binding=%u out_desc=%p", out_binding, (const void *)out_desc);
    if (!out_desc || !out_desc->buf.buffer) {
       IDM_LOG("constfill early-return descriptor-walk-miss");
       return false;
    }
 
-   VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
+   VK_FROM_HANDLE(r3v_buffer, out_buf, out_desc->buf.buffer);
    if (!out_buf || !out_buf->resource) {
       IDM_LOG("constfill early-return null-pipe-resource");
       return false;
    }
 
-   const uint64_t total_invocations = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total_invocations = r3v_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0) {
       IDM_LOG("constfill early-return total_invocations=%llu",
               (unsigned long long)total_invocations);
@@ -5228,7 +5228,7 @@ r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
  * (-1,3) in clip space, texel values 2W and 2H) stay inside the FP24
  * exact-integer window and inside the guard band. */
 static bool
-r300vk_idm_create_texel_index_vbo(struct pipe_context *pipe,
+r3v_idm_create_texel_index_vbo(struct pipe_context *pipe,
                                   unsigned width, unsigned height,
                                   struct pipe_resource **out_vb,
                                   void **out_velems_cso)
@@ -5274,15 +5274,15 @@ r300vk_idm_create_texel_index_vbo(struct pipe_context *pipe,
 }
 
 bool
-r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
-                                   const struct r300vk_pipeline *pl,
-                                   const struct r300vk_cmd_dispatch *dispatch,
-                                   const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_affine_iota_dispatch_replay(struct r3v_device *device,
+                                   const struct r3v_pipeline *pl,
+                                   const struct r3v_cmd_dispatch *dispatch,
+                                   const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device ? device->pipe : NULL;
    struct pipe_screen  *screen = device ? device->screen : NULL;
-   const struct r300vk_descriptor_set *set = NULL;
-   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+   const struct r3v_descriptor_set *set = NULL;
+   if (!r3v_idm_validate_prologue(device, pl, dispatch, binds, &set))
       return false;
    if (!screen->is_format_supported(screen, PIPE_FORMAT_R8G8B8A8_UNORM,
                                     PIPE_TEXTURE_2D, 0, 0,
@@ -5299,14 +5299,14 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
          return false;
       }
    }
-   const struct r300vk_descriptor *out_desc =
+   const struct r3v_descriptor *out_desc =
       find_descriptor_by_binding(set, out_binding);
    if (!out_desc || !out_desc->buf.buffer) {
       IDM_LOG("iota early-return descriptor-walk-miss");
       return false;
    }
-   struct r300vk_buffer *out_buf =
-      r300vk_buffer_from_handle(out_desc->buf.buffer);
+   struct r3v_buffer *out_buf =
+      r3v_buffer_from_handle(out_desc->buf.buffer);
    if (!out_buf || !out_buf->resource) {
       IDM_LOG("iota early-return null-pipe-resource");
       return false;
@@ -5403,7 +5403,7 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_texel_index_vbo(pipe, width, height, &vb,
+   if (!r3v_idm_create_texel_index_vbo(pipe, width, height, &vb,
                                           &velems_cso))
       return false;
 
@@ -5429,7 +5429,7 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
    memset(&surf_templ, 0, sizeof(surf_templ));
    surf_templ.format  = rtfmt;
    surf_templ.texture = rt;
-   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                         device->identity_map_cso.blend,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -5480,7 +5480,7 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
                                          PIPE_MAP_DISCARD_RANGE,
                                          &out_box, &out_xfer);
       if (out_bytes) {
-         r300vk_identity_map_copy_rows(out_bytes, width * 4u, rt_map,
+         r3v_identity_map_copy_rows(out_bytes, width * 4u, rt_map,
                                        rt_xfer->stride, width, height, 4u,
                                        total);
          pipe->buffer_unmap(pipe, out_xfer);
@@ -5513,8 +5513,8 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
  * a_res/c_res/out_res are the resolved gallium resources at their byte offsets;
  * the caller owns descriptor resolution and any transient c buffer. */
 static bool
-r300vk_multilimb_convolve(struct r300vk_device *device,
-                          const struct r300vk_pipeline *pl,
+r3v_multilimb_convolve(struct r3v_device *device,
+                          const struct r3v_pipeline *pl,
                           struct pipe_resource *a_res, unsigned a_off,
                           struct pipe_resource *c_res, unsigned c_off,
                           struct pipe_resource *out_res, unsigned out_off,
@@ -5542,7 +5542,7 @@ r300vk_multilimb_convolve(struct r300vk_device *device,
    unsigned src_off[2] = { a_off, c_off };
    struct pipe_sampler_view *views[2] = { NULL, NULL };
    for (unsigned i = 0; i < 2; i++) {
-      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+      views[i] = r3v_identity_map_wrap_input_as_sampler_view(
          device, src_res[i], src_off[i],
          width, height, total, PIPE_FORMAT_R8G8B8A8_UNORM);
       if (!views[i]) {
@@ -5553,7 +5553,7 @@ r300vk_multilimb_convolve(struct r300vk_device *device,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_sampler_view_reference(&views[0], NULL);
       pipe_sampler_view_reference(&views[1], NULL);
       return false;
@@ -5589,7 +5589,7 @@ r300vk_multilimb_convolve(struct r300vk_device *device,
       memset(&surf_templ, 0, sizeof(surf_templ));
       surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
       surf_templ.texture = rt;
-      r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+      r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                            device->identity_map_cso.blend,
                                            device->identity_map_cso.rasterizer,
                                            device->identity_map_cso.dsa,
@@ -5674,13 +5674,13 @@ r300vk_multilimb_convolve(struct r300vk_device *device,
 }
 
 bool
-r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
-                                     const struct r300vk_pipeline *pl,
-                                     const struct r300vk_cmd_dispatch *dispatch,
-                                     const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_multilimb_mul_dispatch_replay(struct r3v_device *device,
+                                     const struct r3v_pipeline *pl,
+                                     const struct r3v_cmd_dispatch *dispatch,
+                                     const struct r3v_cmd_bind_descriptor_sets *binds)
 {
-   const struct r300vk_descriptor_set *set = NULL;
-   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+   const struct r3v_descriptor_set *set = NULL;
+   if (!r3v_idm_validate_prologue(device, pl, dispatch, binds, &set))
       return false;
 
    /* Three bindings: a, b, out.  Captured constants win when all three were
@@ -5694,19 +5694,19 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
          if (!nth_storage_buffer_binding(set, i, &bind[i]))
             return false;
    }
-   const struct r300vk_descriptor *desc[3];
-   struct r300vk_buffer *buf[3];
+   const struct r3v_descriptor *desc[3];
+   struct r3v_buffer *buf[3];
    for (unsigned i = 0; i < 3; i++) {
       desc[i] = find_descriptor_by_binding(set, bind[i]);
       if (!desc[i] || !desc[i]->buf.buffer)
          return false;
-      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      buf[i] = r3v_buffer_from_handle(desc[i]->buf.buffer);
       if (!buf[i] || !buf[i]->resource)
          return false;
    }
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
-   const bool ok = r300vk_multilimb_convolve(device, pl,
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
+   const bool ok = r3v_multilimb_convolve(device, pl,
       buf[0]->resource, (unsigned)desc[0]->buf.offset,
       buf[1]->resource, (unsigned)desc[1]->buf.offset,
       buf[2]->resource, (unsigned)desc[2]->buf.offset,
@@ -5722,8 +5722,8 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
  * of 2^M; the RT is then copied into the transient c buffer the convolution
  * multiplies by.  One draw, no host arithmetic on the amount. */
 static bool
-r300vk_shift_variable_gather(struct r300vk_device *device,
-                             const struct r300vk_pipeline *pl,
+r3v_shift_variable_gather(struct r3v_device *device,
+                             const struct r3v_pipeline *pl,
                              struct pipe_resource *b_res, unsigned b_off,
                              struct pipe_resource *c_res, uint64_t total)
 {
@@ -5743,7 +5743,7 @@ r300vk_shift_variable_gather(struct r300vk_device *device,
    const unsigned width = fold.width, height = fold.height;
 
    struct pipe_sampler_view *b_view =
-      r300vk_identity_map_wrap_input_as_sampler_view(
+      r3v_identity_map_wrap_input_as_sampler_view(
          device, b_res, b_off, width, height, total,
          PIPE_FORMAT_R8G8B8A8_UNORM);
    if (!b_view)
@@ -5751,7 +5751,7 @@ r300vk_shift_variable_gather(struct r300vk_device *device,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_sampler_view_reference(&b_view, NULL);
       return false;
    }
@@ -5773,7 +5773,7 @@ r300vk_shift_variable_gather(struct r300vk_device *device,
       memset(&surf_templ, 0, sizeof(surf_templ));
       surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
       surf_templ.texture = rt;
-      r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+      r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                            device->identity_map_cso.blend,
                                            device->identity_map_cso.rasterizer,
                                            device->identity_map_cso.dsa,
@@ -5800,7 +5800,7 @@ r300vk_shift_variable_gather(struct r300vk_device *device,
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
       pipe->flush(pipe, NULL, 0);
 
-      ok = r300vk_identity_map_readback_rt(pipe, rt, c_res, 0, width, height,
+      ok = r3v_identity_map_readback_rt(pipe, rt, c_res, 0, width, height,
                                            PIPE_FORMAT_R8G8B8A8_UNORM,
                                            width * 4u, total);
       pipe_resource_reference(&rt, NULL);
@@ -5821,8 +5821,8 @@ r300vk_shift_variable_gather(struct r300vk_device *device,
  * index (sampler 2), and the device fill lookup (sampler 3), then reads the RT
  * back into the output buffer.  The signfill FS does the disjoint per-byte add. */
 static bool
-r300vk_shift_variable_signfill(struct r300vk_device *device,
-                               const struct r300vk_pipeline *pl,
+r3v_shift_variable_signfill(struct r3v_device *device,
+                               const struct r3v_pipeline *pl,
                                struct pipe_resource *ushr_res,
                                struct pipe_resource *a_res, unsigned a_off,
                                struct pipe_resource *b_res, unsigned b_off,
@@ -5846,7 +5846,7 @@ r300vk_shift_variable_signfill(struct r300vk_device *device,
    struct pipe_sampler_view *views[4] = { NULL, NULL, NULL,
                                           device->shift_variable_fill_lut_view };
    for (unsigned i = 0; i < 3; i++) {
-      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+      views[i] = r3v_identity_map_wrap_input_as_sampler_view(
          device, in_res[i], in_off[i], width, height, total,
          PIPE_FORMAT_R8G8B8A8_UNORM);
       if (!views[i]) {
@@ -5858,7 +5858,7 @@ r300vk_shift_variable_signfill(struct r300vk_device *device,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       for (unsigned i = 0; i < 3; i++)
          pipe_sampler_view_reference(&views[i], NULL);
       return false;
@@ -5881,7 +5881,7 @@ r300vk_shift_variable_signfill(struct r300vk_device *device,
       memset(&surf_templ, 0, sizeof(surf_templ));
       surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
       surf_templ.texture = rt;
-      r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+      r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                            device->identity_map_cso.blend,
                                            device->identity_map_cso.rasterizer,
                                            device->identity_map_cso.dsa,
@@ -5908,7 +5908,7 @@ r300vk_shift_variable_signfill(struct r300vk_device *device,
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
       pipe->flush(pipe, NULL, 0);
 
-      ok = r300vk_identity_map_readback_rt(pipe, rt, out_res, out_off,
+      ok = r3v_identity_map_readback_rt(pipe, rt, out_res, out_off,
                                            width, height,
                                            PIPE_FORMAT_R8G8B8A8_UNORM,
                                            width * 4u, total);
@@ -5927,14 +5927,14 @@ r300vk_shift_variable_signfill(struct r300vk_device *device,
 }
 
 bool
-r300vk_shift_variable_dispatch_replay(struct r300vk_device *device,
-                                      const struct r300vk_pipeline *pl,
-                                      const struct r300vk_cmd_dispatch *dispatch,
-                                      const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_shift_variable_dispatch_replay(struct r3v_device *device,
+                                      const struct r3v_pipeline *pl,
+                                      const struct r3v_cmd_dispatch *dispatch,
+                                      const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_screen *screen = device ? device->screen : NULL;
-   const struct r300vk_descriptor_set *set = NULL;
-   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+   const struct r3v_descriptor_set *set = NULL;
+   if (!r3v_idm_validate_prologue(device, pl, dispatch, binds, &set))
       return false;
    if (!screen)
       return false;
@@ -5950,18 +5950,18 @@ r300vk_shift_variable_dispatch_replay(struct r300vk_device *device,
          if (!nth_storage_buffer_binding(set, i, &bind[i]))
             return false;
    }
-   const struct r300vk_descriptor *desc[3];
-   struct r300vk_buffer *buf[3];
+   const struct r3v_descriptor *desc[3];
+   struct r3v_buffer *buf[3];
    for (unsigned i = 0; i < 3; i++) {
       desc[i] = find_descriptor_by_binding(set, bind[i]);
       if (!desc[i] || !desc[i]->buf.buffer)
          return false;
-      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      buf[i] = r3v_buffer_from_handle(desc[i]->buf.buffer);
       if (!buf[i] || !buf[i]->resource)
          return false;
    }
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    if (total == 0)
       return true;
    /* Both passes fold total into a 2D raster extent; rejecting an unfoldable
@@ -6002,15 +6002,15 @@ r300vk_shift_variable_dispatch_replay(struct r300vk_device *device,
       conv_off = 0;
    }
 
-   bool ok = r300vk_shift_variable_gather(device, pl, buf[1]->resource,
+   bool ok = r3v_shift_variable_gather(device, pl, buf[1]->resource,
                                           (unsigned)desc[1]->buf.offset,
                                           c_res, total);
    if (ok)
-      ok = r300vk_multilimb_convolve(device, pl,
+      ok = r3v_multilimb_convolve(device, pl,
               buf[0]->resource, (unsigned)desc[0]->buf.offset,
               c_res, 0, conv_dst, conv_off, total, out_shift);
    if (ok && pl->shift_variable.is_arithmetic)
-      ok = r300vk_shift_variable_signfill(device, pl,
+      ok = r3v_shift_variable_signfill(device, pl,
               ushr_res,
               buf[0]->resource, (unsigned)desc[0]->buf.offset,
               buf[1]->resource, (unsigned)desc[1]->buf.offset,
@@ -6025,15 +6025,15 @@ r300vk_shift_variable_dispatch_replay(struct r300vk_device *device,
 }
 
 bool
-r300vk_cas_dispatch_replay(struct r300vk_device *device,
-                           const struct r300vk_pipeline *pl,
-                           const struct r300vk_cmd_dispatch *dispatch,
-                           const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_cas_dispatch_replay(struct r3v_device *device,
+                           const struct r3v_pipeline *pl,
+                           const struct r3v_cmd_dispatch *dispatch,
+                           const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device ? device->pipe : NULL;
    struct pipe_screen  *screen = device ? device->screen : NULL;
-   const struct r300vk_descriptor_set *set = NULL;
-   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+   const struct r3v_descriptor_set *set = NULL;
+   if (!r3v_idm_validate_prologue(device, pl, dispatch, binds, &set))
       return false;
    if (!screen->is_format_supported(screen, PIPE_FORMAT_R8G8B8A8_UNORM,
                                     PIPE_TEXTURE_2D, 0, 0,
@@ -6050,18 +6050,18 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
          if (!nth_storage_buffer_binding(set, i, &bind[i]))
             return false;
    }
-   const struct r300vk_descriptor *desc[2];
-   struct r300vk_buffer *buf[2];
+   const struct r3v_descriptor *desc[2];
+   struct r3v_buffer *buf[2];
    for (unsigned i = 0; i < 2; i++) {
       desc[i] = find_descriptor_by_binding(set, bind[i]);
       if (!desc[i] || !desc[i]->buf.buffer)
          return false;
-      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      buf[i] = r3v_buffer_from_handle(desc[i]->buf.buffer);
       if (!buf[i] || !buf[i]->resource)
          return false;
    }
 
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint64_t total = r3v_idm_total_invocations(dispatch, pl);
    struct r300_grid_fold fold;
    if (!r300_grid_fold_1d(total, &fold))
       return false;
@@ -6096,7 +6096,7 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
    }
 
    struct pipe_sampler_view *view =
-      r300vk_identity_map_wrap_input_as_sampler_view(
+      r3v_identity_map_wrap_input_as_sampler_view(
          device, buf[0]->resource, (unsigned)desc[0]->buf.offset,
          width, height, total, PIPE_FORMAT_R8G8B8A8_UNORM);
    if (!view)
@@ -6104,7 +6104,7 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_sampler_view_reference(&view, NULL);
       return false;
    }
@@ -6131,7 +6131,7 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
    memset(&surf_templ, 0, sizeof(surf_templ));
    surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
    surf_templ.texture = rt;
-   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+   r3v_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
                                         device->identity_map_cso.blend,
                                         device->identity_map_cso.rasterizer,
                                         device->identity_map_cso.dsa,
@@ -6173,7 +6173,7 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
                                             PIPE_MAP_WRITE, &out_box,
                                             &out_xfer);
          if (out_bytes) {
-            r300vk_identity_map_copy_rows(out_bytes, width * 4u, rt_map,
+            r3v_identity_map_copy_rows(out_bytes, width * 4u, rt_map,
                                           rt_xfer->stride, width, height, 4u,
                                           total);
             pipe->buffer_unmap(pipe, out_xfer);
@@ -6198,15 +6198,15 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
 }
 
 bool
-r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
-                                 const struct r300vk_pipeline *pl,
-                                 const struct r300vk_cmd_dispatch *dispatch,
-                                 const struct r300vk_cmd_bind_descriptor_sets *binds)
+r3v_log4_pool_dispatch_replay(struct r3v_device *device,
+                                 const struct r3v_pipeline *pl,
+                                 const struct r3v_cmd_dispatch *dispatch,
+                                 const struct r3v_cmd_bind_descriptor_sets *binds)
 {
    struct pipe_context *pipe   = device ? device->pipe : NULL;
    struct pipe_screen  *screen = device ? device->screen : NULL;
-   const struct r300vk_descriptor_set *set = NULL;
-   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+   const struct r3v_descriptor_set *set = NULL;
+   if (!r3v_idm_validate_prologue(device, pl, dispatch, binds, &set))
       return false;
    if (!screen->is_format_supported(screen, PIPE_FORMAT_R8G8B8A8_UNORM,
                                     PIPE_TEXTURE_2D, 0, 0,
@@ -6251,13 +6251,13 @@ r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
    }
    if (bind[0] == bind[1])
       return false;
-   const struct r300vk_descriptor *desc[2];
-   struct r300vk_buffer *buf[2];
+   const struct r3v_descriptor *desc[2];
+   struct r3v_buffer *buf[2];
    for (unsigned i = 0; i < 2; i++) {
       desc[i] = find_descriptor_by_binding(set, bind[i]);
       if (!desc[i] || !desc[i]->buf.buffer)
          return false;
-      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      buf[i] = r3v_buffer_from_handle(desc[i]->buf.buffer);
       if (!buf[i] || !buf[i]->resource)
          return false;
    }
@@ -6295,7 +6295,7 @@ r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
    }
 
    struct pipe_sampler_view *view =
-      r300vk_identity_map_wrap_input_as_sampler_view(
+      r3v_identity_map_wrap_input_as_sampler_view(
          device, buf[0]->resource, (unsigned)desc[0]->buf.offset,
          in_w, in_h, in_total, PIPE_FORMAT_R8G8B8A8_UNORM);
    if (!view)
@@ -6303,7 +6303,7 @@ r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
-   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+   if (!r3v_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_sampler_view_reference(&view, NULL);
       return false;
    }
@@ -6343,7 +6343,7 @@ r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
       memset(&surf_templ, 0, sizeof(surf_templ));
       surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
       surf_templ.texture = rt;
-      r300vk_identity_map_setup_draw_state(pipe, out_w, out_h, &surf_templ,
+      r3v_identity_map_setup_draw_state(pipe, out_w, out_h, &surf_templ,
                                            device->identity_map_cso.blend,
                                            device->identity_map_cso.rasterizer,
                                            device->identity_map_cso.dsa,
@@ -6376,7 +6376,7 @@ r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
       pipe->flush(pipe, NULL, 0);
       pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, NULL);
 
-      copy_ok = r300vk_identity_map_readback_rt(pipe, rt, buf[1]->resource,
+      copy_ok = r3v_identity_map_readback_rt(pipe, rt, buf[1]->resource,
                                                 (unsigned)desc[1]->buf.offset,
                                                 out_w, out_h,
                                                 PIPE_FORMAT_R8G8B8A8_UNORM,

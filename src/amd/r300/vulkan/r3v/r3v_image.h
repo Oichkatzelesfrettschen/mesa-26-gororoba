@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef R300VK_IMAGE_H
-#define R300VK_IMAGE_H
+#ifndef R3V_IMAGE_H
+#define R3V_IMAGE_H
 
 #include "r3v_private.h"
 #include "r3v_resource_state.h"
@@ -17,12 +17,12 @@
 extern "C" {
 #endif
 
-/* r300vk_image wraps vk_image with a Gallium pipe_resource.
+/* r3v_image wraps vk_image with a Gallium pipe_resource.
  * The resource is created at CreateImage time with PIPE_TEXTURE_2D,
  * PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW, and PIPE_USAGE_DEFAULT
  * so r300g routes it to VRAM.  PIPE_USAGE_STAGING is reserved for
  * the separate readback buffer in the triangle probe path. */
-struct r300vk_image {
+struct r3v_image {
    struct vk_image               vk;  /* must be first; contains vk_object_base */
 
    /* dma-buf export (the wsi-drm substrate): created with
@@ -40,7 +40,7 @@ struct r300vk_image {
    /* Row stride r300g chose for a VK_IMAGE_TILING_LINEAR image's single tile,
     * reported verbatim by GetImageSubresourceLayout.  Zero for optimal tiling. */
    uint32_t                      linear_row_pitch;
-   struct r300vk_resource_state  resource_state;
+   struct r3v_resource_state  resource_state;
 
    /* Tier-2 LINEAR tile-stitch: a lazy sampler-only atlas of up to four
     * OVERLAPPING charts, each <= the 2048 sampler cap, with seam texels
@@ -60,47 +60,47 @@ struct r300vk_image {
    }                             sampler_atlas;
 };
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_image, vk.base, VkImage,
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_image, vk.base, VkImage,
                                 VK_OBJECT_TYPE_IMAGE)
 
-struct r300vk_device;
-bool r300vk_image_ensure_sampler_atlas(struct r300vk_device *device,
-                                       struct r300vk_image *img);
+struct r3v_device;
+bool r3v_image_ensure_sampler_atlas(struct r3v_device *device,
+                                       struct r3v_image *img);
 
 /* Mark an image's content changed so a stale sampler atlas is rebuilt before the
  * next stitched sample.  content_serial is CPU-side invalidation bookkeeping, not
  * image content, so the const image the write replays carry can advance it. */
 static inline void
-r300vk_image_mark_written(const struct r300vk_image *img)
+r3v_image_mark_written(const struct r3v_image *img)
 {
-   ((struct r300vk_image *)img)->content_serial++;
+   ((struct r3v_image *)img)->content_serial++;
 }
 
-struct r300vk_image_view {
+struct r3v_image_view {
    struct vk_image_view  vk;  /* must be first */
 };
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_image_view, vk.base, VkImageView,
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_image_view, vk.base, VkImageView,
                                 VK_OBJECT_TYPE_IMAGE_VIEW)
 
-VkResult r300vk_CreateImage(VkDevice device,
+VkResult r3v_CreateImage(VkDevice device,
                              const VkImageCreateInfo *pCreateInfo,
                              const VkAllocationCallbacks *pAllocator,
                              VkImage *pImage);
 
-void r300vk_DestroyImage(VkDevice device,
+void r3v_DestroyImage(VkDevice device,
                           VkImage image,
                           const VkAllocationCallbacks *pAllocator);
 
-/* Byte size r300vk advertises for an image in GetImageMemoryRequirements2;
+/* Byte size r3v advertises for an image in GetImageMemoryRequirements2;
  * BindImageMemory2 bounds-checks against the same value. */
-VkDeviceSize r300vk_image_memory_size(const struct r300vk_image *img);
+VkDeviceSize r3v_image_memory_size(const struct r3v_image *img);
 
-void r300vk_GetImageMemoryRequirements2(VkDevice device,
+void r3v_GetImageMemoryRequirements2(VkDevice device,
                                          const VkImageMemoryRequirementsInfo2 *pInfo,
                                          VkMemoryRequirements2 *pMemoryRequirements);
 
-void r300vk_GetImageSparseMemoryRequirements2(VkDevice device,
+void r3v_GetImageSparseMemoryRequirements2(VkDevice device,
    const VkImageSparseMemoryRequirementsInfo2 *pInfo,
    uint32_t *pSparseMemoryRequirementCount,
    VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements);
@@ -112,7 +112,7 @@ void r300vk_GetImageSparseMemoryRequirements2(VkDevice device,
  * share one device dispatch slot, so the driver defines only the core form and
  * the generated entrypoint table dispatches all three names to it. */
 VKAPI_ATTR void VKAPI_CALL
-r300vk_GetImageSubresourceLayout2(VkDevice device, VkImage image,
+r3v_GetImageSubresourceLayout2(VkDevice device, VkImage image,
                                   const VkImageSubresource2 *pSubresource,
                                   VkSubresourceLayout2 *pLayout);
 
@@ -120,16 +120,16 @@ r300vk_GetImageSubresourceLayout2(VkDevice device, VkImage image,
  * VkImageCreateInfo that has not been created.  Like GetImageSubresourceLayout2,
  * only the core form is defined; the ...KHR alias shares its dispatch slot. */
 VKAPI_ATTR void VKAPI_CALL
-r300vk_GetDeviceImageSubresourceLayout(VkDevice device,
+r3v_GetDeviceImageSubresourceLayout(VkDevice device,
                                        const VkDeviceImageSubresourceInfo *pInfo,
                                        VkSubresourceLayout2 *pLayout);
 
-VkResult r300vk_CreateImageView(VkDevice device,
+VkResult r3v_CreateImageView(VkDevice device,
                                  const VkImageViewCreateInfo *pCreateInfo,
                                  const VkAllocationCallbacks *pAllocator,
                                  VkImageView *pView);
 
-void r300vk_DestroyImageView(VkDevice device,
+void r3v_DestroyImageView(VkDevice device,
                               VkImageView imageView,
                               const VkAllocationCallbacks *pAllocator);
 
@@ -137,4 +137,4 @@ void r300vk_DestroyImageView(VkDevice device,
 }
 #endif
 
-#endif /* R300VK_IMAGE_H */
+#endif /* R3V_IMAGE_H */

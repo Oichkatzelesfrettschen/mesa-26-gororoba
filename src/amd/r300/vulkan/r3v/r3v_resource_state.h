@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef R300VK_RESOURCE_STATE_H
-#define R300VK_RESOURCE_STATE_H
+#ifndef R3V_RESOURCE_STATE_H
+#define R3V_RESOURCE_STATE_H
 
 #include <vulkan/vulkan_core.h>
 
@@ -19,13 +19,13 @@ extern "C" {
  * transitions on this target therefore have no aux-surface decompression step;
  * they reduce to a pipe_context CS flush at the barrier boundary plus this
  * bookkeeping update.  The flush is documented in r3v_queue.c where
- * R300VK_CMD_PIPELINE_BARRIER is replayed.
+ * R3V_CMD_PIPELINE_BARRIER is replayed.
  *
  * The field is updated at replay time (not at record time) so the ledger
  * reflects the layout visible to subsequent commands in the same submit.
  * Future users: image state validation, compute-layout emit paths, and
  * multi-submit ordering checks that need more than a submit-boundary flush. */
-struct r300vk_resource_state {
+struct r3v_resource_state {
    VkImageLayout layout;
 };
 
@@ -33,4 +33,4 @@ struct r300vk_resource_state {
 }
 #endif
 
-#endif /* R300VK_RESOURCE_STATE_H */
+#endif /* R3V_RESOURCE_STATE_H */

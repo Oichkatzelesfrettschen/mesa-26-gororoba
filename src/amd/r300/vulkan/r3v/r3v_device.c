@@ -28,7 +28,7 @@
 #include "r300/r300_public.h"
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-r300vk_GetDeviceProcAddr(VkDevice _device, const char *pName)
+r3v_GetDeviceProcAddr(VkDevice _device, const char *pName)
 {
    if (_device == VK_NULL_HANDLE || pName == NULL)
       return NULL;
@@ -36,25 +36,25 @@ r300vk_GetDeviceProcAddr(VkDevice _device, const char *pName)
    VK_FROM_HANDLE(vk_device, device, _device);
 
    /* vkResetQueryPool is core 1.2; VK_EXT_host_query_reset exposes the same
-    * command through the EXT alias.  r300vk exposes Vulkan 1.0, so Mesa's
+    * command through the EXT alias.  r3v exposes Vulkan 1.0, so Mesa's
     * common device-proc gate rejects the promoted core spelling by API version
     * even when the extension is enabled.  Return the same host-side reset
     * implementation for the promoted spelling when the extension is enabled. */
    if (device->enabled_extensions.EXT_host_query_reset &&
        strcmp(pName, "vkResetQueryPool") == 0)
-      return (PFN_vkVoidFunction)r300vk_ResetQueryPool;
+      return (PFN_vkVoidFunction)r3v_ResetQueryPool;
 
    return vk_device_get_proc_addr(device, pName);
 }
 
 VkResult
-r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
+r3v_CreateDevice(VkPhysicalDevice physicalDevice,
                     const VkDeviceCreateInfo *pCreateInfo,
                     const VkAllocationCallbacks *pAllocator,
                     VkDevice *pDevice)
 {
-   VK_FROM_HANDLE(r300vk_physical_device, pdevice, physicalDevice);
-   struct r300vk_device *device;
+   VK_FROM_HANDLE(r3v_physical_device, pdevice, physicalDevice);
+   struct r3v_device *device;
    VkResult result;
 
    device = vk_zalloc2(&pdevice->vk.instance->alloc, pAllocator,
@@ -68,9 +68,9 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
    simple_mtx_init(&device->identity_map_cso_lock, mtx_plain);
 
    /* Four-table dispatch, highest precedence first.  Secondary command buffer
-    * support is implemented by recording into r300vk_cmd_buffer (vk_cmd_enqueue
+    * support is implemented by recording into r3v_cmd_buffer (vk_cmd_enqueue
     * path), then replaying recorded entries against the pipe_context at submit
-    * time.  r300vk_device_entrypoints carries the driver's own implementations;
+    * time.  r3v_device_entrypoints carries the driver's own implementations;
     * wsi fills present-related entrypoints; vk_common_device_entrypoints is last
     * so the runtime's generic state-tracking implementations fill every device
     * entrypoint the driver does not override -- including the descriptor-set and
@@ -84,7 +84,7 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
    vk_device_dispatch_table_from_entrypoints(
       &dispatch_table, &vk_cmd_enqueue_unless_primary_device_entrypoints, true);
    vk_device_dispatch_table_from_entrypoints(
-      &dispatch_table, &r300vk_device_entrypoints, false);
+      &dispatch_table, &r3v_device_entrypoints, false);
    vk_device_dispatch_table_from_entrypoints(
       &dispatch_table, &wsi_device_entrypoints, false);
    vk_device_dispatch_table_from_entrypoints(
@@ -99,11 +99,11 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
 
    /* Command dispatch table for secondary command buffer replay. */
    vk_device_dispatch_table_from_entrypoints(&device->command_dispatch_table,
-                                             &r300vk_device_entrypoints, true);
+                                             &r3v_device_entrypoints, true);
    vk_device_dispatch_table_from_entrypoints(&device->command_dispatch_table,
                                              &vk_common_device_entrypoints, false);
    device->vk.command_dispatch_table = &device->command_dispatch_table;
-   device->vk.command_buffer_ops = &r300vk_cmd_buffer_ops;
+   device->vk.command_buffer_ops = &r3v_cmd_buffer_ops;
 
    /* Initialize the Gallium-mediated r300g backend.
     * radeon_drm_winsys_create() opens a new fd reference to the render node
@@ -117,7 +117,7 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
                                            r300_screen_create);
    if (!device->rws) {
       result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                         "r300vk: radeon_drm_winsys_create failed on fd %d",
+                         "r3v: radeon_drm_winsys_create failed on fd %d",
                          pdevice->render_node_fd);
       goto fail_device;
    }
@@ -128,7 +128,7 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
                                      PIPE_CONTEXT_ROBUST_BUFFER_ACCESS);
    if (!device->pipe) {
       result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                         "r300vk: pipe_screen->context_create failed");
+                         "r3v: pipe_screen->context_create failed");
       goto fail_screen;
    }
 
@@ -137,7 +137,7 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
     * No compute queue is exposed. */
    if (pCreateInfo->queueCreateInfoCount == 0) {
       result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                         "r300vk: queueCreateInfoCount must be at least 1");
+                         "r3v: queueCreateInfoCount must be at least 1");
       goto fail_pipe;
    }
    result = vk_queue_init(&device->queue.vk, &device->vk,
@@ -145,14 +145,14 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
    if (result != VK_SUCCESS)
       goto fail_pipe;
 
-   device->queue.vk.driver_submit = r300vk_queue_driver_submit;
+   device->queue.vk.driver_submit = r3v_queue_driver_submit;
 
    /* Backend dispatch: check for explicit cs-direct-emit opt-in.
     * The env var must be exactly "1"; unset, empty, or any other value
     * leaves the default pipe_context-mediated Backend A path active.
     * Checked once at device creation and stored as a device flag so the
     * submit hot path avoids repeated getenv() calls. */
-   const char *cs_gate = getenv("R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED");
+   const char *cs_gate = getenv("R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED");
    device->use_cs_backend = cs_gate && strcmp(cs_gate, "1") == 0;
 
    /* Inherit the hybrid-compute gate the physical device cached at creation
@@ -161,18 +161,18 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
     * mid-process.  The physical-device value is the single source of truth. */
    device->hybrid_compute_enabled = pdevice->hybrid_compute_enabled;
 
-   /* R300VK_DEBUG: comma-separated draw-path isolation switches, parsed once
+   /* R3V_DEBUG: comma-separated draw-path isolation switches, parsed once
     * so the replay hot path reads device flags only.  no_overlay binds only
     * the pipeline's static CSOs (dynamic-state shadow ignored); no_topo
     * replays the recorded per-draw topology without the dynamic override;
     * log_draws emits one stderr line per replayed draw. */
-   const char *dbg = getenv("R300VK_DEBUG");
+   const char *dbg = getenv("R3V_DEBUG");
    device->dbg_no_dyn_overlay   = dbg && strstr(dbg, "no_overlay");
    device->dbg_no_topo_override = dbg && strstr(dbg, "no_topo");
    device->dbg_log_draws        = dbg && strstr(dbg, "log_draws");
    device->dbg_log_pixels       = dbg && strstr(dbg, "log_pixels");
 
-   *pDevice = r300vk_device_to_handle(device);
+   *pDevice = r3v_device_to_handle(device);
    return VK_SUCCESS;
 
 fail_pipe:
@@ -186,9 +186,9 @@ fail_device:
 }
 
 void
-r300vk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
+r3v_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    if (!device)
       return;
 

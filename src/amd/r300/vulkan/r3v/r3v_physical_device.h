@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef R300VK_PHYSICAL_DEVICE_H
-#define R300VK_PHYSICAL_DEVICE_H
+#ifndef R3V_PHYSICAL_DEVICE_H
+#define R3V_PHYSICAL_DEVICE_H
 
 #include "vk_physical_device.h"
 #include "vk_sync.h"
@@ -19,14 +19,14 @@ extern "C" {
 
 struct _drmDevice;
 struct pipe_screen;
-struct r300vk_instance;
+struct r3v_instance;
 struct radeon_winsys;
 
-struct r300vk_physical_device {
+struct r3v_physical_device {
    struct vk_physical_device vk;
 
-   /* Identity from the DRM probe.  pci_device_id is R300VK_PCI_DEVICE_ID_RS482
-    * or R300VK_PCI_DEVICE_ID_RS485. */
+   /* Identity from the DRM probe.  pci_device_id is R3V_PCI_DEVICE_ID_RS482
+    * or R3V_PCI_DEVICE_ID_RS485. */
    uint32_t pci_device_id;
    uint32_t pci_vendor_id;
 
@@ -50,7 +50,7 @@ struct r300vk_physical_device {
     * mid-process. */
    bool hybrid_compute_enabled;
 
-#ifdef R300VK_GALLIUM_BACKEND
+#ifdef R3V_GALLIUM_BACKEND
    /* Gallium r300g oracle used for physical-device format queries.
     * The screen owns its radeon_winsys reference and is destroyed before
     * the render-node fd is closed. */
@@ -65,7 +65,7 @@ struct r300vk_physical_device {
    struct vk_sync_timeline_type timeline_sync_type;
 
    /* NULL-terminated sync type table assigned to vk.supported_sync_types.
-    * r300vk uses a CPU-side binary sync; the radeon DRM driver does not
+    * r3v uses a CPU-side binary sync; the radeon DRM driver does not
     * support DRM_CAP_SYNCOBJ (confirmed on kernel 6.18 radeon driver).  Slot 0
     * is the binary sync, slot 1 the timeline emulation above. */
    const struct vk_sync_type *sync_types[3];
@@ -73,21 +73,21 @@ struct r300vk_physical_device {
    /* Mesa common WSI in software mode (the lavapipe pattern): swapchain
     * images are CPU-reachable and presentation runs the xcb-shm path, so no
     * dma-buf, DRM modifier, or external-memory support is required of the
-    * radeon winsys.  vk.wsi_device points here after r300vk_init_wsi. */
+    * radeon winsys.  vk.wsi_device points here after r3v_init_wsi. */
    struct wsi_device wsi_device;
 };
 
-VK_DEFINE_HANDLE_CASTS(r300vk_physical_device, vk.base, VkPhysicalDevice,
+VK_DEFINE_HANDLE_CASTS(r3v_physical_device, vk.base, VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
 
-VkResult r300vk_physical_device_try_create_for_drm(struct vk_instance *instance,
+VkResult r3v_physical_device_try_create_for_drm(struct vk_instance *instance,
                                                    struct _drmDevice *device,
                                                    struct vk_physical_device **out);
 
-void r300vk_physical_device_destroy(struct vk_physical_device *device);
+void r3v_physical_device_destroy(struct vk_physical_device *device);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* R300VK_PHYSICAL_DEVICE_H */
+#endif /* R3V_PHYSICAL_DEVICE_H */

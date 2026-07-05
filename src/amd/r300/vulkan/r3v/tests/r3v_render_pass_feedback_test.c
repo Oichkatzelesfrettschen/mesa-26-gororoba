@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
- * Build-time guard for r300vk render-pass self-feedback validation.
+ * Build-time guard for r3v render-pass self-feedback validation.
  */
 
 #include <stdio.h>
@@ -24,12 +24,12 @@ static unsigned g_failures;
 
 /* Build a one-input subpass where attachment 0 is both the input attachment and
  * the depth/stencil reference so each case isolates the layout/aspect gate. */
-static struct r300vk_subpass
+static struct r3v_subpass
 depth_input_subpass(VkImageLayout depth_layout,
                     VkImageLayout stencil_layout,
                     VkImageAspectFlags input_aspects)
 {
-   struct r300vk_subpass sp = {
+   struct r3v_subpass sp = {
       .input_attachment_refs = {0},
       .input_attachment_aspects = {input_aspects},
       .input_attachment_count = 1,
@@ -45,7 +45,7 @@ depth_input_subpass(VkImageLayout depth_layout,
 static void
 check_input_aspect_override(void)
 {
-   struct r300vk_render_pass rp = {
+   struct r3v_render_pass rp = {
       .attachment_count = 1,
       .attachments = {
          [0] = {
@@ -67,10 +67,10 @@ check_input_aspect_override(void)
       .pAspectReferences = refs,
    };
 
-   CHECK(r300vk_render_pass_input_attachment_aspects(
+   CHECK(r3v_render_pass_input_attachment_aspects(
             &rp, &aspect_info, 2, 1, 0) == VK_IMAGE_ASPECT_DEPTH_BIT,
          "maintenance2 input aspect override is preserved");
-   CHECK(r300vk_render_pass_input_attachment_aspects(
+   CHECK(r3v_render_pass_input_attachment_aspects(
             &rp, &aspect_info, 2, 0, 0) ==
          (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT),
          "unmatched input aspect override falls back to attachment format");
@@ -80,27 +80,27 @@ static void
 check_subpass_storage_size(void)
 {
    size_t storage_size = 1;
-   CHECK(r300vk_render_pass_subpass_storage_size(0, &storage_size) &&
+   CHECK(r3v_render_pass_subpass_storage_size(0, &storage_size) &&
          storage_size == 0,
          "zero subpasses require no storage");
 
-   CHECK(r300vk_render_pass_subpass_storage_size(3, &storage_size) &&
-         storage_size == 3 * sizeof(struct r300vk_subpass),
+   CHECK(r3v_render_pass_subpass_storage_size(3, &storage_size) &&
+         storage_size == 3 * sizeof(struct r3v_subpass),
          "subpass storage size uses checked size_t multiplication");
 
-   const size_t max_count = SIZE_MAX / sizeof(struct r300vk_subpass);
+   const size_t max_count = SIZE_MAX / sizeof(struct r3v_subpass);
    if (max_count < UINT32_MAX) {
-      CHECK(r300vk_render_pass_subpass_storage_size((uint32_t)max_count,
+      CHECK(r3v_render_pass_subpass_storage_size((uint32_t)max_count,
                                                     &storage_size) &&
-            storage_size == max_count * sizeof(struct r300vk_subpass),
+            storage_size == max_count * sizeof(struct r3v_subpass),
             "maximum non-overflowing subpass count is accepted");
-      CHECK(!r300vk_render_pass_subpass_storage_size((uint32_t)max_count + 1,
+      CHECK(!r3v_render_pass_subpass_storage_size((uint32_t)max_count + 1,
                                                      &storage_size),
             "overflowing subpass storage size is rejected");
    } else {
-      CHECK(r300vk_render_pass_subpass_storage_size(UINT32_MAX,
+      CHECK(r3v_render_pass_subpass_storage_size(UINT32_MAX,
                                                     &storage_size) &&
-            storage_size == (size_t)UINT32_MAX * sizeof(struct r300vk_subpass),
+            storage_size == (size_t)UINT32_MAX * sizeof(struct r3v_subpass),
             "uint32 subpass count fits in wide size_t storage");
    }
 }
@@ -110,7 +110,7 @@ check_subpass_storage_size(void)
 int
 main(void)
 {
-   struct r300vk_subpass sp = {
+   struct r3v_subpass sp = {
       .color_attachment_refs = {0},
       .color_attachment_count = 1,
       .input_attachment_refs = {0},
@@ -118,38 +118,38 @@ main(void)
       .input_attachment_count = 1,
       .depth_stencil_attachment_ref = VK_ATTACHMENT_UNUSED,
    };
-   CHECK(r300vk_subpass_self_dependency(&sp) == 0,
+   CHECK(r3v_subpass_self_dependency(&sp) == 0,
          "color attachment self-input is rejected");
 
    sp = depth_input_subpass(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                             VK_IMAGE_ASPECT_DEPTH_BIT);
-   CHECK(r300vk_subpass_self_dependency(&sp) == 0,
+   CHECK(r3v_subpass_self_dependency(&sp) == 0,
          "writable depth attachment self-input is rejected");
 
    sp = depth_input_subpass(VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                             VK_IMAGE_ASPECT_DEPTH_BIT |
                             VK_IMAGE_ASPECT_STENCIL_BIT);
-   CHECK(r300vk_subpass_self_dependency(&sp) == VK_ATTACHMENT_UNUSED,
+   CHECK(r3v_subpass_self_dependency(&sp) == VK_ATTACHMENT_UNUSED,
          "fully read-only depth/stencil self-input is accepted");
 
    sp = depth_input_subpass(VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
                             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
                             VK_IMAGE_ASPECT_DEPTH_BIT);
-   CHECK(r300vk_subpass_self_dependency(&sp) == VK_ATTACHMENT_UNUSED,
+   CHECK(r3v_subpass_self_dependency(&sp) == VK_ATTACHMENT_UNUSED,
          "depth-read-only/stencil-writable layout accepts depth input");
 
    sp = depth_input_subpass(VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
                             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
                             VK_IMAGE_ASPECT_STENCIL_BIT);
-   CHECK(r300vk_subpass_self_dependency(&sp) == 0,
+   CHECK(r3v_subpass_self_dependency(&sp) == 0,
          "depth-read-only/stencil-writable layout rejects stencil input");
 
    sp = depth_input_subpass(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL,
                             VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL,
                             VK_IMAGE_ASPECT_STENCIL_BIT);
-   CHECK(r300vk_subpass_self_dependency(&sp) == VK_ATTACHMENT_UNUSED,
+   CHECK(r3v_subpass_self_dependency(&sp) == VK_ATTACHMENT_UNUSED,
          "depth-writable/stencil-read-only layout accepts stencil input");
 
    sp = depth_input_subpass(
@@ -158,20 +158,20 @@ main(void)
       vk_image_layout_stencil_only(
          VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL),
       VK_IMAGE_ASPECT_STENCIL_BIT);
-   CHECK(r300vk_subpass_self_dependency(&sp) == VK_ATTACHMENT_UNUSED,
+   CHECK(r3v_subpass_self_dependency(&sp) == VK_ATTACHMENT_UNUSED,
          "split depth-writable/stencil-read-only layout accepts stencil input");
 
    sp = depth_input_subpass(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL,
                             VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL,
                             VK_IMAGE_ASPECT_DEPTH_BIT);
-   CHECK(r300vk_subpass_self_dependency(&sp) == 0,
+   CHECK(r3v_subpass_self_dependency(&sp) == 0,
          "depth-writable/stencil-read-only layout rejects depth input");
 
    sp = depth_input_subpass(VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                             VK_IMAGE_ASPECT_DEPTH_BIT |
                             VK_IMAGE_ASPECT_COLOR_BIT);
-   CHECK(r300vk_subpass_self_dependency(&sp) == 0,
+   CHECK(r3v_subpass_self_dependency(&sp) == 0,
          "mixed depth and non-depth/stencil aspect mask is rejected");
 
    check_input_aspect_override();

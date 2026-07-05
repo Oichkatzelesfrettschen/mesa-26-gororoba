@@ -301,7 +301,7 @@ case_system_value_lowered_to_input(void)
 /* Calibration for the real R300VK SPIR-V path.  Detection and lowering must
  * handle the load_deref(nir_var_system_value) form, not just the intrinsic the
  * nir_builder cases emit.  vk_spirv_to_nir leaves the deref form and never
- * gathers system_values_read, so r300vk_pipeline.c detects the read by scanning
+ * gathers system_values_read, so r3v_pipeline.c detects the read by scanning
  * the NIR via r300_nir_vs_reads_system_values; this pins that detection and the
  * lowering on the exact form that reaches nir_to_rc unlowered when missed. */
 static void

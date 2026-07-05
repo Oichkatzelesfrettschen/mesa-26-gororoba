@@ -11,11 +11,11 @@
 #include <stdint.h>
 
 static VkResult
-r300vk_cpu_sync_init(UNUSED struct vk_device *device,
+r3v_cpu_sync_init(UNUSED struct vk_device *device,
                      struct vk_sync *vk_sync,
                      uint64_t initial_value)
 {
-   struct r300vk_cpu_sync *sync = r300vk_cpu_sync_from_vk(vk_sync);
+   struct r3v_cpu_sync *sync = r3v_cpu_sync_from_vk(vk_sync);
 
    if (mtx_init(&sync->lock, mtx_plain) != thrd_success)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -30,21 +30,21 @@ r300vk_cpu_sync_init(UNUSED struct vk_device *device,
 }
 
 static void
-r300vk_cpu_sync_finish(UNUSED struct vk_device *device,
+r3v_cpu_sync_finish(UNUSED struct vk_device *device,
                        struct vk_sync *vk_sync)
 {
-   struct r300vk_cpu_sync *sync = r300vk_cpu_sync_from_vk(vk_sync);
+   struct r3v_cpu_sync *sync = r3v_cpu_sync_from_vk(vk_sync);
 
    u_cnd_monotonic_destroy(&sync->changed);
    mtx_destroy(&sync->lock);
 }
 
 static VkResult
-r300vk_cpu_sync_signal(UNUSED struct vk_device *device,
+r3v_cpu_sync_signal(UNUSED struct vk_device *device,
                        struct vk_sync *vk_sync,
                        UNUSED uint64_t value)
 {
-   struct r300vk_cpu_sync *sync = r300vk_cpu_sync_from_vk(vk_sync);
+   struct r3v_cpu_sync *sync = r3v_cpu_sync_from_vk(vk_sync);
 
    mtx_lock(&sync->lock);
    sync->signaled = true;
@@ -55,10 +55,10 @@ r300vk_cpu_sync_signal(UNUSED struct vk_device *device,
 }
 
 static VkResult
-r300vk_cpu_sync_reset(UNUSED struct vk_device *device,
+r3v_cpu_sync_reset(UNUSED struct vk_device *device,
                       struct vk_sync *vk_sync)
 {
-   struct r300vk_cpu_sync *sync = r300vk_cpu_sync_from_vk(vk_sync);
+   struct r3v_cpu_sync *sync = r3v_cpu_sync_from_vk(vk_sync);
 
    mtx_lock(&sync->lock);
    sync->signaled = false;
@@ -69,13 +69,13 @@ r300vk_cpu_sync_reset(UNUSED struct vk_device *device,
 }
 
 static VkResult
-r300vk_cpu_sync_wait(struct vk_device *device,
+r3v_cpu_sync_wait(struct vk_device *device,
                      struct vk_sync *vk_sync,
                      UNUSED uint64_t wait_value,
                      enum vk_sync_wait_flags wait_flags,
                      uint64_t abs_timeout_ns)
 {
-   struct r300vk_cpu_sync *sync = r300vk_cpu_sync_from_vk(vk_sync);
+   struct r3v_cpu_sync *sync = r3v_cpu_sync_from_vk(vk_sync);
 
    mtx_lock(&sync->lock);
 
@@ -83,7 +83,7 @@ r300vk_cpu_sync_wait(struct vk_device *device,
    while (!sync->signaled) {
       if (wait_flags & VK_SYNC_WAIT_PENDING) {
          /* PENDING is satisfied by an unsignaled-but-submitted fence.
-          * r300vk has no deferred submission, so pending == signaled. */
+          * r3v has no deferred submission, so pending == signaled. */
          break;
       }
 
@@ -117,8 +117,8 @@ r300vk_cpu_sync_wait(struct vk_device *device,
    return VK_SUCCESS;
 }
 
-const struct vk_sync_type r300vk_cpu_sync_type = {
-   .size     = sizeof(struct r300vk_cpu_sync),
+const struct vk_sync_type r3v_cpu_sync_type = {
+   .size     = sizeof(struct r3v_cpu_sync),
    /* GPU_WAIT lets this CPU-backed sync stand in for a binary semaphore:
     * get_semaphore_sync_type (vk_semaphore.c) requires GPU_WAIT | BINARY, and
     * vk_common_CreateSemaphore asserts a match.  On the single-queue serialized
@@ -137,9 +137,9 @@ const struct vk_sync_type r300vk_cpu_sync_type = {
                VK_SYNC_FEATURE_CPU_SIGNAL     |
                VK_SYNC_FEATURE_WAIT_ANY       |
                VK_SYNC_FEATURE_WAIT_PENDING,
-   .init     = r300vk_cpu_sync_init,
-   .finish   = r300vk_cpu_sync_finish,
-   .signal   = r300vk_cpu_sync_signal,
-   .reset    = r300vk_cpu_sync_reset,
-   .wait     = r300vk_cpu_sync_wait,
+   .init     = r3v_cpu_sync_init,
+   .finish   = r3v_cpu_sync_finish,
+   .signal   = r3v_cpu_sync_signal,
+   .reset    = r3v_cpu_sync_reset,
+   .wait     = r3v_cpu_sync_wait,
 };

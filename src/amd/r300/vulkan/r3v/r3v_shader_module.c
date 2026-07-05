@@ -13,13 +13,13 @@
 #include <string.h>
 
 VkResult
-r300vk_CreateShaderModule(VkDevice _device,
+r3v_CreateShaderModule(VkDevice _device,
                            const VkShaderModuleCreateInfo *pCreateInfo,
                            const VkAllocationCallbacks *pAllocator,
                            VkShaderModule *pShaderModule)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   struct r300vk_shader_module *mod;
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   struct r3v_shader_module *mod;
 
    mod = vk_alloc2(&device->vk.alloc, pAllocator,
                    sizeof(*mod) + pCreateInfo->codeSize, 8,
@@ -32,17 +32,17 @@ r300vk_CreateShaderModule(VkDevice _device,
    mod->code_size = pCreateInfo->codeSize;
    memcpy(mod->code, pCreateInfo->pCode, pCreateInfo->codeSize);
 
-   *pShaderModule = r300vk_shader_module_to_handle(mod);
+   *pShaderModule = r3v_shader_module_to_handle(mod);
    return VK_SUCCESS;
 }
 
 void
-r300vk_DestroyShaderModule(VkDevice _device,
+r3v_DestroyShaderModule(VkDevice _device,
                             VkShaderModule _module,
                             const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_shader_module, mod, _module);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_shader_module, mod, _module);
    if (!mod)
       return;
 

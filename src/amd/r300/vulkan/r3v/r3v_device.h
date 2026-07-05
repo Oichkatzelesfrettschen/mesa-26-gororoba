@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef R300VK_DEVICE_H
-#define R300VK_DEVICE_H
+#ifndef R3V_DEVICE_H
+#define R3V_DEVICE_H
 
 #include "r3v_private.h"
 
@@ -21,26 +21,26 @@
 extern "C" {
 #endif
 
-/* r300vk_queue wraps vk_queue.  vk_queue must be the first member so
- * VK_DEFINE_HANDLE_CASTS can recover the r300vk_queue from any VkQueue
+/* r3v_queue wraps vk_queue.  vk_queue must be the first member so
+ * VK_DEFINE_HANDLE_CASTS can recover the r3v_queue from any VkQueue
  * handle.  One graphics-plus-transfer queue per logical device; the
  * RS482/RS485 vertex stage runs through Gallium Draw (software TCL) so
  * there is no separate compute queue. */
-struct r300vk_queue {
+struct r3v_queue {
    struct vk_queue vk; /* must be first */
 };
 
-VK_DEFINE_HANDLE_CASTS(r300vk_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
+VK_DEFINE_HANDLE_CASTS(r3v_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 
-/* r300vk_device wraps vk_device plus the Gallium-mediated backend state.
+/* r3v_device wraps vk_device plus the Gallium-mediated backend state.
  * radeon_drm_winsys_create() initializes rws and sets rws->screen to the
  * r300 pipe_screen.  pipe is the per-device pipe_context; r300g routes
  * NIR shaders through nir_to_rc internally -- the ICD never calls nir_to_tgsi.
  *
- * use_cs_backend: true when R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1 is
+ * use_cs_backend: true when R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1 is
  * set in the environment at CreateDevice time.  When true, the submit path
  * would dispatch a cs-direct emitter (native PM4 via radeon_winsys)
- * rather than the pipe_context-mediated r300vk_replay_gpu() path.  That
+ * rather than the pipe_context-mediated r3v_replay_gpu() path.  That
  * backend is not implemented: r300g's emit functions are coupled to the
  * private struct r300_context and its dirty-atom state machine, and the
  * curated RS482/RS485 safe-register set exposes no 3D-engine config
@@ -53,23 +53,23 @@ VK_DEFINE_HANDLE_CASTS(r300vk_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
  * compute experiment.  The queue is still non-conformant until compute
  * pipeline, descriptor, dispatch, and memory semantics are implemented and
  * validated against CTS plus retained dmesg evidence. */
-struct r300vk_device {
+struct r3v_device {
    struct vk_device vk; /* must be first */
    struct vk_device_dispatch_table command_dispatch_table;
    struct radeon_winsys *rws;
    struct pipe_screen    *screen;
    struct pipe_context   *pipe;
-   struct r300vk_queue    queue;
+   struct r3v_queue    queue;
    bool                   use_cs_backend;
    bool                   hybrid_compute_enabled;
-   /* R300VK_DEBUG comma-list, parsed once at device create: draw-path
+   /* R3V_DEBUG comma-list, parsed once at device create: draw-path
     * isolation switches for live triage on target hardware. */
    bool                   dbg_no_dyn_overlay;   /* "no_overlay": static CSOs only */
    bool                   dbg_no_topo_override; /* "no_topo": recorded topology only */
    bool                   dbg_log_draws;        /* "log_draws": per-draw state line */
    bool                   dbg_log_pixels;       /* "log_pixels": attachment sample at end-pass */
 
-   /* Every live VkDeviceMemory, linked through r300vk_device_memory::
+   /* Every live VkDeviceMemory, linked through r3v_device_memory::
     * device_link.  The submit path walks it to give HOST_COHERENT semantics
     * to owns_buffer maps: device access happens only inside the synchronous
     * vkQueueSubmit, so syncing host -> bound resource at submit entry and
@@ -88,8 +88,8 @@ struct r300vk_device {
    /* Cached gallium state CSOs every identity-map compute dispatch reuses
     * (blend = passthrough, rasterizer = no-cull / fill-solid, dsa = depth+
     * stencil off, sampler = NEAREST + CLAMP_TO_EDGE).  Lazily created on the
-    * first identity-map pipeline-create, freed in r300vk_DestroyDevice.  NULL
-    * means uninitialized; r300vk_device_init_identity_map_state populates
+    * first identity-map pipeline-create, freed in r3v_DestroyDevice.  NULL
+    * means uninitialized; r3v_device_init_identity_map_state populates
     * them on demand under identity_map_cso_lock. */
    struct {
       void *blend;
@@ -102,7 +102,7 @@ struct r300vk_device {
     * from the identity-map state set: blend enabled, ADD function,
     * blend_func (ONE, ONE) accumulates per-fragment value into bin cells.
     * Created on demand at the first blend-acc-reduction pipeline-create,
-    * freed in r300vk_DestroyDevice alongside the identity-map CSOs. */
+    * freed in r3v_DestroyDevice alongside the identity-map CSOs. */
    void                  *blend_acc_reduction_blend_cso;
 
    /* Variable-shift power-of-two lookup: a 32x1 RGBA8 texture whose texel j
@@ -111,7 +111,7 @@ struct r300vk_device {
     * index b, right at index 31-b -- to turn a per-element shift amount into the
     * 2^M multiplier the convolution then multiplies by.  Created once on the
     * first variable-shift pipeline-create under identity_map_cso_lock, freed in
-    * r300vk_DestroyDevice. */
+    * r3v_DestroyDevice. */
    struct pipe_resource      *shift_variable_lut;
    struct pipe_sampler_view  *shift_variable_lut_view;
 
@@ -119,7 +119,7 @@ struct r300vk_device {
     * a 32x1 RGBA8 texture whose texel b holds the four little-endian bytes of
     * 0xFFFFFFFF << (32-b) (the top b bits; b=0 -> 0).  ishr = ushr + sign(a) *
     * fill[b], the two operands bit-disjoint so the per-byte add is exact.
-    * Created beside the 2^j lookup, freed in r300vk_DestroyDevice. */
+    * Created beside the 2^j lookup, freed in r3v_DestroyDevice. */
    struct pipe_resource      *shift_variable_fill_lut;
    struct pipe_sampler_view  *shift_variable_fill_lut_view;
 
@@ -129,30 +129,30 @@ struct r300vk_device {
     * ia_snapshot_stale is raised at render pass begin, next-subpass, and each
     * in-pass pipeline barrier, and the next self-dependent draw re-copies --
     * so input reads observe exactly the writes made visible by the last
-    * barrier.  Freed in r300vk_DestroyDevice. */
+    * barrier.  Freed in r3v_DestroyDevice. */
    struct pipe_resource      *ia_snapshot;
    struct pipe_resource      *ia_snapshot_src;
    bool                       ia_snapshot_stale;
 };
 
-VK_DEFINE_HANDLE_CASTS(r300vk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
+VK_DEFINE_HANDLE_CASTS(r3v_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
 
-VkResult r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
+VkResult r3v_CreateDevice(VkPhysicalDevice physicalDevice,
                               const VkDeviceCreateInfo *pCreateInfo,
                               const VkAllocationCallbacks *pAllocator,
                               VkDevice *pDevice);
 
-void r300vk_DestroyDevice(VkDevice device,
+void r3v_DestroyDevice(VkDevice device,
                            const VkAllocationCallbacks *pAllocator);
 
 /* Queue submit callback wired into vk_queue.driver_submit.  Replays
- * r300vk_cmd_entry arrays against the pipe_context, flushes, fence-waits,
+ * r3v_cmd_entry arrays against the pipe_context, flushes, fence-waits,
  * then executes CPU-side readback copies (COPY_IMAGE_TO_BUFFER). */
-VkResult r300vk_queue_driver_submit(struct vk_queue *queue,
+VkResult r3v_queue_driver_submit(struct vk_queue *queue,
                                     struct vk_queue_submit *submit);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* R300VK_DEVICE_H */
+#endif /* R3V_DEVICE_H */

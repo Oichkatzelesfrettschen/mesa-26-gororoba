@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
-r300vk_entrypoints = custom_target(
-  'r300vk_entrypoints',
+r3v_entrypoints = custom_target(
+  'r3v_entrypoints',
   input : [vk_entrypoints_gen, vk_api_xml],
   output : ['r3v_entrypoints.h', 'r3v_entrypoints.c'],
   command : [
@@ -10,32 +10,32 @@ r300vk_entrypoints = custom_target(
     '--proto', '--weak',
     '--out-h', '@OUTPUT0@',
     '--out-c', '@OUTPUT1@',
-    '--prefix', 'r300vk',
+    '--prefix', 'r3v',
     '--beta', with_vulkan_beta.to_string(),
   ],
   depend_files : vk_entrypoints_gen_depend_files,
 )
 
-libr300vk_files = files(
+libr3v_files = files(
   'r3v_instance.c',
   'r3v_physical_device.c',
   'r3v_cpu_sync.c',
 )
 
-libr300vk_deps = [
+libr3v_deps = [
   dep_libdrm,
   idep_mesautil,
   idep_vulkan_runtime,
   idep_vulkan_util,
 ]
 
-libr300vk_inc = [
+libr3v_inc = [
   inc_include,
   inc_src,
 ]
 
-libr300vk_link_with = []
-libr300vk_c_args = [no_override_init_args]
+libr3v_link_with = []
+libr3v_c_args = [no_override_init_args]
 
 # Gallium-backed device and submit path.  Gated behind r300vk-gallium-backend
 # so the loader-only R0 build (no Gallium dependency) continues to work.
@@ -49,7 +49,7 @@ if get_option('r300vk-gallium-backend') and not with_gallium_r300
         'add r300 to -Dgallium-drivers or disable -Dr300vk-gallium-backend')
 endif
 if get_option('r300vk-gallium-backend') and with_gallium_r300
-  libr300vk_files += files(
+  libr3v_files += files(
     'r3v_device.c',
     'r3v_queue.c',
     'r3v_memory.c',
@@ -65,12 +65,12 @@ if get_option('r300vk-gallium-backend') and with_gallium_r300
     'r3v_pipeline.c',
     'r3v_object.c',
   )
-  libr300vk_deps += [
+  libr3v_deps += [
     idep_nir,
     idep_vulkan_wsi,
     driver_r300,
   ]
-  libr300vk_inc += [
+  libr3v_inc += [
     inc_gallium,
     inc_gallium_aux,
     include_directories('../../../../gallium/drivers'),
@@ -86,18 +86,18 @@ if get_option('r300vk-gallium-backend') and with_gallium_r300
   # context now reference (vl_create_mpeg12_decoder via r300_video.c,
   # vl_video_buffer_is_format_supported via r300_screen.c); --gc-sections drops
   # the decode kernels when the codec is disabled.
-  libr300vk_link_with += [libgallium, libgalliumvl]
-  libr300vk_c_args += ['-DR300VK_GALLIUM_BACKEND']
+  libr3v_link_with += [libgallium, libgalliumvl]
+  libr3v_c_args += ['-DR3V_GALLIUM_BACKEND']
 endif
 
 libvulkan_r300 = shared_library(
   'vulkan_r300',
-  [libr300vk_files, r300vk_entrypoints],
+  [libr3v_files, r3v_entrypoints],
   vs_module_defs : vulkan_api_def,
-  include_directories : libr300vk_inc,
-  dependencies : libr300vk_deps,
-  link_with : libr300vk_link_with,
-  c_args : libr300vk_c_args,
+  include_directories : libr3v_inc,
+  dependencies : libr3v_deps,
+  link_with : libr3v_link_with,
+  c_args : libr3v_c_args,
   link_args : [
     ld_args_build_id,
     ld_args_bsymbolic,
@@ -116,41 +116,41 @@ libvulkan_r300 = shared_library(
 # NIR alone, no pipe_context.
 if with_tests and get_option('r300vk-gallium-backend') and with_gallium_r300
   test(
-    'r300vk-dp4-fs-nir',
+    'r3v-dp4-fs-nir',
     executable(
-      'r300vk_dp4_fs_nir_test',
+      'r3v_dp4_fs_nir_test',
       files('r3v_dp4_fs_nir.c', 'tests/r3v_dp4_fs_nir_test.c'),
       include_directories : [inc_include, inc_src, include_directories('.')],
       dependencies : [idep_nir, idep_mesautil],
       gnu_symbol_visibility : 'hidden',
     ),
-    suite : ['r300vk'],
+    suite : ['r3v'],
   )
   test(
-    'r300vk-render-pass-feedback',
+    'r3v-render-pass-feedback',
     executable(
-      'r300vk_render_pass_feedback_test',
+      'r3v_render_pass_feedback_test',
       files('tests/r3v_render_pass_feedback_test.c'),
-      include_directories : [libr300vk_inc, include_directories('.')],
-      dependencies : libr300vk_deps,
-      link_with : libr300vk_link_with,
-      c_args : libr300vk_c_args,
+      include_directories : [libr3v_inc, include_directories('.')],
+      dependencies : libr3v_deps,
+      link_with : libr3v_link_with,
+      c_args : libr3v_c_args,
       gnu_symbol_visibility : 'hidden',
     ),
-    suite : ['r300vk'],
+    suite : ['r3v'],
   )
   test(
-    'r300vk-static-offset',
+    'r3v-static-offset',
     executable(
-      'r300vk_static_offset_test',
+      'r3v_static_offset_test',
       files('r3v_dp4_fs_nir.c', 'tests/r3v_static_offset_test.c'),
-      include_directories : [libr300vk_inc, include_directories('.')],
-      dependencies : libr300vk_deps,
-      link_with : libr300vk_link_with,
-      c_args : libr300vk_c_args,
+      include_directories : [libr3v_inc, include_directories('.')],
+      dependencies : libr3v_deps,
+      link_with : libr3v_link_with,
+      c_args : libr3v_c_args,
       gnu_symbol_visibility : 'hidden',
     ),
-    suite : ['r300vk'],
+    suite : ['r3v'],
   )
 endif
 

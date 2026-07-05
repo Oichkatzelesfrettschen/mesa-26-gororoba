@@ -15,13 +15,13 @@
 #include <string.h>
 
 VkResult
-r300vk_CreateFramebuffer(VkDevice _device,
+r3v_CreateFramebuffer(VkDevice _device,
                           const VkFramebufferCreateInfo *pCreateInfo,
                           const VkAllocationCallbacks *pAllocator,
                           VkFramebuffer *pFramebuffer)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   struct r300vk_framebuffer *fb;
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   struct r3v_framebuffer *fb;
 
    fb = vk_zalloc2(&device->vk.alloc, pAllocator,
                    sizeof(*fb), 8,
@@ -35,7 +35,7 @@ r300vk_CreateFramebuffer(VkDevice _device,
       vk_object_base_finish(&fb->base);
       vk_free2(&device->vk.alloc, pAllocator, fb);
       return vk_errorf(device, VK_ERROR_UNKNOWN,
-                       "r300vk: framebuffer attachmentCount %u exceeds r300 fixed storage %u",
+                       "r3v: framebuffer attachmentCount %u exceeds r300 fixed storage %u",
                        pCreateInfo->attachmentCount, PIPE_MAX_COLOR_BUFS + 1);
    }
 
@@ -52,17 +52,17 @@ r300vk_CreateFramebuffer(VkDevice _device,
       memcpy(fb->attachments, pCreateInfo->pAttachments,
              pCreateInfo->attachmentCount * sizeof(VkImageView));
 
-   *pFramebuffer = r300vk_framebuffer_to_handle(fb);
+   *pFramebuffer = r3v_framebuffer_to_handle(fb);
    return VK_SUCCESS;
 }
 
 void
-r300vk_DestroyFramebuffer(VkDevice _device,
+r3v_DestroyFramebuffer(VkDevice _device,
                            VkFramebuffer _fb,
                            const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_framebuffer, fb, _fb);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_framebuffer, fb, _fb);
    if (!fb)
       return;
 

@@ -10,7 +10,7 @@
  * their interaction:
  *
  *   1. r300_nir_lower_bitwise_to_arith runs before nir_lower_int_to_float,
- *      matching the fragment path.  Without it a nir_op_ushr from r300vk's
+ *      matching the fragment path.  Without it a nir_op_ushr from r3v's
  *      Vulkan SPIR-V reaches nir_lower_int_to_float's default arm, which
  *      asserts its operand is not integer-typed and aborts the process.
  *

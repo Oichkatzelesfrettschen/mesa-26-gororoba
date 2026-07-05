@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef R300VK_BUFFER_H
-#define R300VK_BUFFER_H
+#ifndef R3V_BUFFER_H
+#define R3V_BUFFER_H
 
 #include "r3v_private.h"
 
@@ -16,30 +16,30 @@
 extern "C" {
 #endif
 
-/* r300vk_buffer wraps a Gallium PIPE_BUFFER resource created at
+/* r3v_buffer wraps a Gallium PIPE_BUFFER resource created at
  * CreateBuffer time with PIPE_BIND_VERTEX_BUFFER and PIPE_USAGE_DYNAMIC.
  * Memory binding (BindBufferMemory2) copies the resource reference into
- * the companion r300vk_device_memory for MapMemory access. */
-struct r300vk_buffer {
+ * the companion r3v_device_memory for MapMemory access. */
+struct r3v_buffer {
    struct vk_object_base  base;
    VkDeviceSize           size;
    VkBufferUsageFlags     usage;
    struct pipe_resource  *resource;  /* created immediately at CreateBuffer */
 };
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_buffer, base, VkBuffer,
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_buffer, base, VkBuffer,
                                 VK_OBJECT_TYPE_BUFFER)
 
-VkResult r300vk_CreateBuffer(VkDevice device,
+VkResult r3v_CreateBuffer(VkDevice device,
                               const VkBufferCreateInfo *pCreateInfo,
                               const VkAllocationCallbacks *pAllocator,
                               VkBuffer *pBuffer);
 
-void r300vk_DestroyBuffer(VkDevice device,
+void r3v_DestroyBuffer(VkDevice device,
                            VkBuffer buffer,
                            const VkAllocationCallbacks *pAllocator);
 
-void r300vk_GetBufferMemoryRequirements2(VkDevice device,
+void r3v_GetBufferMemoryRequirements2(VkDevice device,
                                           const VkBufferMemoryRequirementsInfo2 *pInfo,
                                           VkMemoryRequirements2 *pMemoryRequirements);
 
@@ -47,4 +47,4 @@ void r300vk_GetBufferMemoryRequirements2(VkDevice device,
 }
 #endif
 
-#endif /* R300VK_BUFFER_H */
+#endif /* R3V_BUFFER_H */

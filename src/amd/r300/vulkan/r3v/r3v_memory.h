@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef R300VK_MEMORY_H
-#define R300VK_MEMORY_H
+#ifndef R3V_MEMORY_H
+#define R3V_MEMORY_H
 
 #include "r3v_private.h"
 
@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-/* r300vk_device_memory: resource-backed model with lazy map-before-bind storage.
+/* r3v_device_memory: resource-backed model with lazy map-before-bind storage.
  *
  * RS482/RS485 is UMA; VRAM and GTT share the same physical memory.
  * AllocateMemory allocates the object and defers pipe_resource creation.  The
@@ -53,7 +53,7 @@ extern "C" {
  * tracking only the most recent bind would orphan every earlier buffer's
  * resource from the sync (its vertex data would read back as zeros after the
  * next buffer binds). */
-struct r300vk_bound_buffer_slice {
+struct r3v_bound_buffer_slice {
    struct pipe_resource *resource;  /* the bound VkBuffer's resource (referenced) */
    VkDeviceSize          offset;    /* VkBindBufferMemoryInfo::memoryOffset */
 };
@@ -71,13 +71,13 @@ struct r300vk_bound_buffer_slice {
  * allocation the resource IS the whole VkDeviceMemory; the sync copies the
  * buffer's slice at its bind offset, so consumers read each bound buffer's
  * resource from byte 0. */
-struct r300vk_device_memory {
+struct r3v_device_memory {
    struct vk_object_base  base;
    VkDeviceSize           size;
    VkDeviceSize           memory_offset;  /* most recent bind's memoryOffset: the borrow-map
                                            * base for buffers, the slice base for images */
    struct pipe_resource  *resource;  /* NULL until first map or BindBufferMemory2/BindImageMemory2 */
-   struct util_dynarray   bound_buffers;  /* owns_buffer: r300vk_bound_buffer_slice per bound
+   struct util_dynarray   bound_buffers;  /* owns_buffer: r3v_bound_buffer_slice per bound
                                            * VkBuffer, each synced with the host map at
                                            * Flush/Invalidate and the submit boundary */
    struct pipe_resource  *bound_image_tile; /* owns_buffer + linear image: the bound image's single
@@ -97,23 +97,23 @@ struct r300vk_device_memory {
                                          * memory's own host pipe_buffer for the
                                          * map-before-bind case (vs borrowing a
                                          * bound buffer/image resource) */
-   struct r300vk_image   *dedicated_image; /* VkMemoryDedicatedAllocateInfo image:
+   struct r3v_image   *dedicated_image; /* VkMemoryDedicatedAllocateInfo image:
                                             * the BO vkGetMemoryFdKHR exports */
-   struct list_head       device_link;  /* in r300vk_device::memory_list, for the
+   struct list_head       device_link;  /* in r3v_device::memory_list, for the
                                          * submit-boundary coherence sync */
 };
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_device_memory, base,
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_device_memory, base,
                                 VkDeviceMemory, VK_OBJECT_TYPE_DEVICE_MEMORY)
 
-struct r300vk_device;
+struct r3v_device;
 
 /* Sync every owns_buffer allocation's live host map with its bound resource:
  * host_to_buffer pushes app writes into the bound VkBuffer's GPU resource
  * (submit entry), !host_to_buffer pulls GPU results back into the map (submit
  * exit, after the fence retires) -- the submit-boundary realization of
  * HOST_COHERENT memory on this synchronous-submit device. */
-void r300vk_device_memory_sync_bound(struct r300vk_device *device,
+void r3v_device_memory_sync_bound(struct r3v_device *device,
                                      bool host_to_buffer);
 
 /* Drop every bound_buffers slice whose resource is the given one, across all
@@ -121,50 +121,50 @@ void r300vk_device_memory_sync_bound(struct r300vk_device *device,
  * recycles (destroys and re-creates) buffers within a live allocation, and a
  * dead buffer's slice left in the array would keep copying its stale resource
  * back over the host map at the next buffer -> host sync. */
-void r300vk_device_memory_drop_buffer_slices(struct r300vk_device *device,
+void r3v_device_memory_drop_buffer_slices(struct r3v_device *device,
                                              struct pipe_resource *resource);
 
-VkResult r300vk_AllocateMemory(VkDevice device,
+VkResult r3v_AllocateMemory(VkDevice device,
                                 const VkMemoryAllocateInfo *pAllocateInfo,
                                 const VkAllocationCallbacks *pAllocator,
                                 VkDeviceMemory *pMemory);
 
-void r300vk_FreeMemory(VkDevice device,
+void r3v_FreeMemory(VkDevice device,
                        VkDeviceMemory memory,
                        const VkAllocationCallbacks *pAllocator);
 
-VkResult r300vk_MapMemory(VkDevice device,
+VkResult r3v_MapMemory(VkDevice device,
                           VkDeviceMemory memory,
                           VkDeviceSize offset,
                           VkDeviceSize size,
                           VkMemoryMapFlags flags,
                           void **ppData);
 
-void r300vk_UnmapMemory(VkDevice device,
+void r3v_UnmapMemory(VkDevice device,
                         VkDeviceMemory memory);
 
-VkResult r300vk_FlushMappedMemoryRanges(VkDevice device,
+VkResult r3v_FlushMappedMemoryRanges(VkDevice device,
                                          uint32_t memoryRangeCount,
                                          const VkMappedMemoryRange *pMemoryRanges);
 
-VkResult r300vk_InvalidateMappedMemoryRanges(VkDevice device,
+VkResult r3v_InvalidateMappedMemoryRanges(VkDevice device,
                                               uint32_t memoryRangeCount,
                                               const VkMappedMemoryRange *pMemoryRanges);
 
-VkResult r300vk_BindBufferMemory2(VkDevice device,
+VkResult r3v_BindBufferMemory2(VkDevice device,
                                    uint32_t bindInfoCount,
                                    const VkBindBufferMemoryInfo *pBindInfos);
 
-VkResult r300vk_GetMemoryFdKHR(VkDevice device,
+VkResult r3v_GetMemoryFdKHR(VkDevice device,
                                const VkMemoryGetFdInfoKHR *pGetFdInfo,
                                int *pFd);
 
-VkResult r300vk_GetMemoryFdPropertiesKHR(VkDevice device,
+VkResult r3v_GetMemoryFdPropertiesKHR(VkDevice device,
                                          VkExternalMemoryHandleTypeFlagBits handleType,
                                          int fd,
                                          VkMemoryFdPropertiesKHR *pMemoryFdProperties);
 
-VkResult r300vk_BindImageMemory2(VkDevice device,
+VkResult r3v_BindImageMemory2(VkDevice device,
                                   uint32_t bindInfoCount,
                                   const VkBindImageMemoryInfo *pBindInfos);
 
@@ -172,4 +172,4 @@ VkResult r300vk_BindImageMemory2(VkDevice device,
 }
 #endif
 
-#endif /* R300VK_MEMORY_H */
+#endif /* R3V_MEMORY_H */

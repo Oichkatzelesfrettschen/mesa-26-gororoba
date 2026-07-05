@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef R300VK_CMD_BUFFER_H
-#define R300VK_CMD_BUFFER_H
+#ifndef R3V_CMD_BUFFER_H
+#define R3V_CMD_BUFFER_H
 
 #include "r3v_private.h"
 
@@ -17,55 +17,55 @@
 extern "C" {
 #endif
 
-/* Forward references for r300vk_cmd_entry payload types. */
-struct r300vk_pipeline;
-struct r300vk_image;
-struct r300vk_buffer;
-struct r300vk_event;
-struct r300vk_descriptor_set;
-struct r300vk_cmd_bind_descriptor_sets;
+/* Forward references for r3v_cmd_entry payload types. */
+struct r3v_pipeline;
+struct r3v_image;
+struct r3v_buffer;
+struct r3v_event;
+struct r3v_descriptor_set;
+struct r3v_cmd_bind_descriptor_sets;
 
-#define R300VK_MAX_BOUND_DESCRIPTOR_SETS  8u
-#define R300VK_MAX_DYNAMIC_OFFSETS        16u
+#define R3V_MAX_BOUND_DESCRIPTOR_SETS  8u
+#define R3V_MAX_DYNAMIC_OFFSETS        16u
 
-enum r300vk_cmd_type {
-   R300VK_CMD_BEGIN_RENDER_PASS,
-   R300VK_CMD_NEXT_SUBPASS,
-   R300VK_CMD_BIND_PIPELINE,
-   R300VK_CMD_SET_VIEWPORT,
-   R300VK_CMD_SET_SCISSOR,
-   R300VK_CMD_BIND_VERTEX_BUFFERS,
-   R300VK_CMD_DRAW,
-   R300VK_CMD_DRAW_INDIRECT,
-   R300VK_CMD_DRAW_INDEXED,
-   R300VK_CMD_DRAW_INDEXED_INDIRECT,
-   R300VK_CMD_PUSH_CONSTANTS,
-   R300VK_CMD_END_RENDER_PASS,
-   R300VK_CMD_COPY_IMAGE_TO_BUFFER,
-   R300VK_CMD_COPY_BUFFER_TO_IMAGE,
-   R300VK_CMD_COPY_IMAGE,
-   R300VK_CMD_BLIT_IMAGE,
-   R300VK_CMD_CLEAR_COLOR_IMAGE,
-   R300VK_CMD_CLEAR_DEPTH_STENCIL_IMAGE,
-   R300VK_CMD_CLEAR_ATTACHMENTS,
-   R300VK_CMD_FILL_BUFFER,
-   R300VK_CMD_COPY_BUFFER,
-   R300VK_CMD_UPDATE_BUFFER,
-   R300VK_CMD_SET_EVENT,
-   R300VK_CMD_RESET_EVENT,
-   R300VK_CMD_PIPELINE_BARRIER,
-   R300VK_CMD_DISPATCH,
-   R300VK_CMD_BIND_DESCRIPTOR_SETS,
-   R300VK_CMD_BEGIN_QUERY,
-   R300VK_CMD_END_QUERY,
-   R300VK_CMD_RESET_QUERY_POOL,
-   R300VK_CMD_COPY_QUERY_POOL_RESULTS,
-   R300VK_CMD_SET_DYNAMIC_STATE,
+enum r3v_cmd_type {
+   R3V_CMD_BEGIN_RENDER_PASS,
+   R3V_CMD_NEXT_SUBPASS,
+   R3V_CMD_BIND_PIPELINE,
+   R3V_CMD_SET_VIEWPORT,
+   R3V_CMD_SET_SCISSOR,
+   R3V_CMD_BIND_VERTEX_BUFFERS,
+   R3V_CMD_DRAW,
+   R3V_CMD_DRAW_INDIRECT,
+   R3V_CMD_DRAW_INDEXED,
+   R3V_CMD_DRAW_INDEXED_INDIRECT,
+   R3V_CMD_PUSH_CONSTANTS,
+   R3V_CMD_END_RENDER_PASS,
+   R3V_CMD_COPY_IMAGE_TO_BUFFER,
+   R3V_CMD_COPY_BUFFER_TO_IMAGE,
+   R3V_CMD_COPY_IMAGE,
+   R3V_CMD_BLIT_IMAGE,
+   R3V_CMD_CLEAR_COLOR_IMAGE,
+   R3V_CMD_CLEAR_DEPTH_STENCIL_IMAGE,
+   R3V_CMD_CLEAR_ATTACHMENTS,
+   R3V_CMD_FILL_BUFFER,
+   R3V_CMD_COPY_BUFFER,
+   R3V_CMD_UPDATE_BUFFER,
+   R3V_CMD_SET_EVENT,
+   R3V_CMD_RESET_EVENT,
+   R3V_CMD_PIPELINE_BARRIER,
+   R3V_CMD_DISPATCH,
+   R3V_CMD_BIND_DESCRIPTOR_SETS,
+   R3V_CMD_BEGIN_QUERY,
+   R3V_CMD_END_QUERY,
+   R3V_CMD_RESET_QUERY_POOL,
+   R3V_CMD_COPY_QUERY_POOL_RESULTS,
+   R3V_CMD_SET_DYNAMIC_STATE,
 };
 
-struct r300vk_query_pool;
+struct r3v_query_pool;
 
-struct r300vk_cmd_begin_render_pass {
+struct r3v_cmd_begin_render_pass {
    /* Up to PIPE_MAX_COLOR_BUFS color attachments, indexed by attachment slot
     * so a fragment-shader output at location i targets color_image[i] (the
     * R300 ROP binds COLOROFFSET0+4*i and US_OUT_FMT_i in the same slot order).
@@ -74,7 +74,7 @@ struct r300vk_cmd_begin_render_pass {
     * MRT holes.  Replay selects each attachment tile from the pass origin, so
     * different full image extents can have different final-tile sizes. */
    uint32_t              color_count;
-   struct r300vk_image  *color_image[PIPE_MAX_COLOR_BUFS];
+   struct r3v_image  *color_image[PIPE_MAX_COLOR_BUFS];
    VkAttachmentLoadOp    load_op[PIPE_MAX_COLOR_BUFS];
    VkClearColorValue     clear_color[PIPE_MAX_COLOR_BUFS];
    enum pipe_format      color_format[PIPE_MAX_COLOR_BUFS];
@@ -86,7 +86,7 @@ struct r300vk_cmd_begin_render_pass {
     * every draw in the pass runs with depth and stencil tests disabled (the
     * Vulkan no-attachment semantics, and the only defined r300g behaviour
     * since no zsbuf is bound). */
-   struct r300vk_image  *ds_image;
+   struct r3v_image  *ds_image;
    enum pipe_format      ds_format;
    VkAttachmentLoadOp    ds_load_op;
    float                 clear_depth;
@@ -97,32 +97,32 @@ struct r300vk_cmd_begin_render_pass {
    bool                  input_self_dep;
 };
 
-struct r300vk_cmd_bind_pipeline {
-   struct r300vk_pipeline *pipeline;
+struct r3v_cmd_bind_pipeline {
+   struct r3v_pipeline *pipeline;
 };
 
-struct r300vk_cmd_set_viewport {
+struct r3v_cmd_set_viewport {
    VkViewport vp;
 };
 
-struct r300vk_cmd_set_scissor {
+struct r3v_cmd_set_scissor {
    VkRect2D scissor;
 };
 
-struct r300vk_cmd_bind_vertex_buffers {
+struct r3v_cmd_bind_vertex_buffers {
    uint32_t              first_binding;
    uint32_t              binding_count;
-   struct r300vk_buffer *buffers[R300VK_MAX_VERTEX_BINDINGS];
-   VkDeviceSize          offsets[R300VK_MAX_VERTEX_BINDINGS];
+   struct r3v_buffer *buffers[R3V_MAX_VERTEX_BINDINGS];
+   VkDeviceSize          offsets[R3V_MAX_VERTEX_BINDINGS];
    /* vkCmdBindVertexBuffers2 payload: with the dynamic-stride state the
     * bind-time strides are authoritative over the pipeline's vertex-input
     * description, and sizes bound the robustness clamp below whole-buffer. */
-   VkDeviceSize          strides[R300VK_MAX_VERTEX_BINDINGS];
-   VkDeviceSize          sizes[R300VK_MAX_VERTEX_BINDINGS];
+   VkDeviceSize          strides[R3V_MAX_VERTEX_BINDINGS];
+   VkDeviceSize          sizes[R3V_MAX_VERTEX_BINDINGS];
    bool                  has_strides;
 };
 
-struct r300vk_cmd_draw {
+struct r3v_cmd_draw {
    uint32_t            count;
    uint32_t            first;
    uint32_t            instances;
@@ -131,11 +131,11 @@ struct r300vk_cmd_draw {
 };
 
 /* One vkCmdDrawIndirect.  The draw parameters live in a buffer read at execution
- * time, so replay CPU-maps it (r300vk buffers are host-visible), reads each
+ * time, so replay CPU-maps it (r3v buffers are host-visible), reads each
  * VkDrawIndirectCommand at offset + i*stride, and runs the normal draw path per
  * command.  topology is snapshotted from the bound pipeline like the direct draw. */
-struct r300vk_cmd_draw_indirect {
-   struct r300vk_buffer *buffer;
+struct r3v_cmd_draw_indirect {
+   struct r3v_buffer *buffer;
    VkDeviceSize          offset;
    uint32_t              draw_count;
    uint32_t              stride;
@@ -148,8 +148,8 @@ struct r300vk_cmd_draw_indirect {
  * bound range and index_range its byte length; replay folds the offset into the
  * gallium element start (pipe_draw_start_count_bias.start is in index elements)
  * and clamps index_count against index_range for robustBufferAccess. */
-struct r300vk_cmd_draw_indexed {
-   struct r300vk_buffer *index_buffer;
+struct r3v_cmd_draw_indexed {
+   struct r3v_buffer *index_buffer;
    VkDeviceSize          index_offset;
    VkDeviceSize          index_range;
    uint32_t              index_size;   /* 1, 2, or 4 bytes per index */
@@ -162,16 +162,16 @@ struct r300vk_cmd_draw_indexed {
 };
 
 /* One vkCmdDrawIndexedIndirect.  Combines the indirect-args buffer of
- * r300vk_cmd_draw_indirect with the bound index state of r300vk_cmd_draw_indexed:
+ * r3v_cmd_draw_indirect with the bound index state of r3v_cmd_draw_indexed:
  * replay CPU-reads a VkDrawIndexedIndirectCommand at offset + i*stride and
- * synthesizes one R300VK_CMD_DRAW_INDEXED per command against the snapshotted
+ * synthesizes one R3V_CMD_DRAW_INDEXED per command against the snapshotted
  * index buffer. */
-struct r300vk_cmd_draw_indexed_indirect {
-   struct r300vk_buffer *buffer;       /* indirect-args buffer */
+struct r3v_cmd_draw_indexed_indirect {
+   struct r3v_buffer *buffer;       /* indirect-args buffer */
    VkDeviceSize          offset;
    uint32_t              draw_count;
    uint32_t              stride;
-   struct r300vk_buffer *index_buffer; /* bound index buffer, snapshotted */
+   struct r3v_buffer *index_buffer; /* bound index buffer, snapshotted */
    VkDeviceSize          index_offset;
    VkDeviceSize          index_range;
    uint32_t              index_size;   /* 1, 2, or 4 bytes per index */
@@ -182,25 +182,25 @@ struct r300vk_cmd_draw_indexed_indirect {
  * window updates in order before each draw; the replay loop keeps a running
  * maxPushConstantsSize buffer that a push-constants-only pipeline binds at
  * CONST[0].  data carries the size bytes written at offset. */
-struct r300vk_cmd_push_constants {
+struct r3v_cmd_push_constants {
    uint32_t              offset;
    uint32_t              size;
-   uint8_t               data[R300VK_MAX_PUSH_CONSTANTS_SIZE];
+   uint8_t               data[R3V_MAX_PUSH_CONSTANTS_SIZE];
 };
 
-struct r300vk_cmd_copy_image_to_buf {
-   struct r300vk_image  *src;
-   struct r300vk_buffer *dst;
+struct r3v_cmd_copy_image_to_buf {
+   struct r3v_image  *src;
+   struct r3v_buffer *dst;
    VkBufferImageCopy2    region;
 };
 
 /* One region of a vkCmdCopyBufferToImage2.  Replayed as a tile-iterated CPU
  * upload: map the source buffer once, then map each touched destination image
- * tile for write.  This mirrors r300vk_copy_image_region_to_buffer, so
+ * tile for write.  This mirrors r3v_copy_image_region_to_buffer, so
  * multi-tile images are handled by the same tile walk in the opposite direction. */
-struct r300vk_cmd_copy_buf_to_image {
-   struct r300vk_buffer *src;
-   struct r300vk_image  *dst;
+struct r3v_cmd_copy_buf_to_image {
+   struct r3v_buffer *src;
+   struct r3v_image  *dst;
    VkBufferImageCopy2    region;
 };
 
@@ -208,9 +208,9 @@ struct r300vk_cmd_copy_buf_to_image {
  * -> image, reusing the two tile-iterated transfer paths.  The full region is
  * staged before any destination write, so same-image copies never overwrite
  * source texels before they are read. */
-struct r300vk_cmd_copy_image {
-   struct r300vk_image *src;
-   struct r300vk_image *dst;
+struct r3v_cmd_copy_image {
+   struct r3v_image *src;
+   struct r3v_image *dst;
    VkImageCopy2         region;
 };
 
@@ -218,37 +218,37 @@ struct r300vk_cmd_copy_image {
  * and filter, so it is replayed on the GPU through pipe->blit (r300_blit ->
  * util_blitter), which carries the scale, filter, and format cast the CPU tile
  * walk does not.  r300 samples the blit source as a texture and takes TX_WIDTH
- * from the source resource, so r300vk tiles every optimal image at the sampler
- * cap and r300vk_replay_blit walks the source and destination tile grids,
+ * from the source resource, so r3v tiles every optimal image at the sampler
+ * cap and r3v_replay_blit walks the source and destination tile grids,
  * issuing one pipe->blit per tile pair so a source larger than the cap is still
  * sampled one in-cap tile at a time. */
-struct r300vk_cmd_blit_image {
-   struct r300vk_image *src;
-   struct r300vk_image *dst;
+struct r3v_cmd_blit_image {
+   struct r3v_image *src;
+   struct r3v_image *dst;
    VkImageBlit2         region;
    VkFilter             filter;
 };
 
 /* One vkCmdClearColorImage subresource range.  Replayed as a tile-iterated CPU
  * fill: pack the clear value to the image format once, then write it to every
- * texel of each tile.  r300vk images are single mip and single layer, so the
+ * texel of each tile.  r3v images are single mip and single layer, so the
  * range covers the whole image. */
-struct r300vk_cmd_clear_color_image {
-   struct r300vk_image    *image;
+struct r3v_cmd_clear_color_image {
+   struct r3v_image    *image;
    VkClearColorValue       color;
    VkImageSubresourceRange range;
 };
 
-struct r300vk_cmd_clear_depth_stencil_image {
-   struct r300vk_image       *image;
+struct r3v_cmd_clear_depth_stencil_image {
+   struct r3v_image       *image;
    VkClearDepthStencilValue   value;
    VkImageSubresourceRange    range;   /* range.aspectMask selects depth/stencil */
 };
 
 /* One clear rect from vkCmdClearAttachments.  Replayed in the active render
- * pass with the rect clipped to each r300vk render-area tile; color uses the
+ * pass with the rect clipped to each r3v render-area tile; color uses the
  * named subpass slot, while depth/stencil clears the bound zsbuf tile. */
-struct r300vk_cmd_clear_attachments {
+struct r3v_cmd_clear_attachments {
    VkImageAspectFlags aspect;
    /* For a colour clear, the subpass colour-attachment slot to clear (the
     * VkClearAttachment::colorAttachment index); selects color_image[slot] in
@@ -263,8 +263,8 @@ struct r300vk_cmd_clear_attachments {
 /* One vkCmdFillBuffer: fill [offset, offset+size) of a buffer with a repeated
  * 32-bit value.  Replayed as a CPU map-and-fill in the post-fence pass; size
  * may be VK_WHOLE_SIZE, resolved to the buffer tail at replay. */
-struct r300vk_cmd_fill_buffer {
-   struct r300vk_buffer *buffer;
+struct r3v_cmd_fill_buffer {
+   struct r3v_buffer *buffer;
    VkDeviceSize          offset;
    VkDeviceSize          size;
    uint32_t              data;
@@ -273,9 +273,9 @@ struct r300vk_cmd_fill_buffer {
 /* One region of a vkCmdCopyBuffer2.  Replayed as a CPU memcpy in the post-fence
  * pass; an aliasing src==dst copy maps the union of both ranges once and uses
  * memmove so overlap is well defined. */
-struct r300vk_cmd_copy_buffer {
-   struct r300vk_buffer *src;
-   struct r300vk_buffer *dst;
+struct r3v_cmd_copy_buffer {
+   struct r3v_buffer *src;
+   struct r3v_buffer *dst;
    VkDeviceSize          src_offset;
    VkDeviceSize          dst_offset;
    VkDeviceSize          size;
@@ -285,8 +285,8 @@ struct r300vk_cmd_copy_buffer {
  * call, so the recorder copies them into command-pool storage (data); the cmd
  * buffer frees it at reset and destroy because the buffer may be submitted
  * repeatedly. */
-struct r300vk_cmd_update_buffer {
-   struct r300vk_buffer *buffer;
+struct r3v_cmd_update_buffer {
+   struct r3v_buffer *buffer;
    VkDeviceSize          offset;
    VkDeviceSize          size;
    void                 *data;
@@ -296,8 +296,8 @@ struct r300vk_cmd_update_buffer {
  * a host status write to the event, so a GetEventStatus after submit observes
  * it.  The event object outlives the command buffer's use (spec rule), so the
  * recorder keeps a plain pointer. */
-struct r300vk_cmd_event {
-   struct r300vk_event *event;
+struct r3v_cmd_event {
+   struct r3v_event *event;
 };
 
 /* One image layout transition from a vkCmdPipelineBarrier2 call, so the
@@ -305,8 +305,8 @@ struct r300vk_cmd_event {
  * records one entry per VkImageMemoryBarrier2 in the dependency, so every
  * image's layout reaches the ledger; image is NULL for a barrier with no
  * image memory barriers (the entry then only marks a replay flush boundary). */
-struct r300vk_cmd_pipeline_barrier {
-   struct r300vk_image *image;
+struct r3v_cmd_pipeline_barrier {
+   struct r3v_image *image;
    VkImageLayout        new_layout;
 };
 
@@ -316,56 +316,56 @@ struct r300vk_cmd_pipeline_barrier {
  * so the replay can decide whether to drive the identity-map orchestrator
  * (and reach the kernel's vs_cso / fs_cso / identity_map slots) or fall
  * through to the no-op compute-lifecycle path. */
-struct r300vk_cmd_dispatch {
+struct r3v_cmd_dispatch {
    uint32_t                       group_count_x;
    uint32_t                       group_count_y;
    uint32_t                       group_count_z;
-   const struct r300vk_pipeline  *pipeline;
+   const struct r3v_pipeline  *pipeline;
 };
 
 /* One vkCmdBindDescriptorSets2KHR.  The runtime's legacy vk_common shim
  * (vk_command_buffer.c) forwards both the 1.0/1.1 entrypoint and the
  * VkBindDescriptorSetsInfoKHR form through CmdBindDescriptorSets2KHR on the
- * device dispatch table, so r300vk only implements the 2KHR variant.  The
+ * device dispatch table, so r3v only implements the 2KHR variant.  The
  * set handles stay valid for the cmd-buffer's lifetime of use (spec rule);
  * dynamic offsets are caller-owned for the call so the values are copied
  * inline.  The replay stage maps the bound sets to pipe_context
  * sampler_views / shader_buffers / shader_images / constant_buffers. */
-struct r300vk_cmd_bind_descriptor_sets {
+struct r3v_cmd_bind_descriptor_sets {
    VkPipelineBindPoint           bind_point;
    VkPipelineLayout              pipeline_layout;
    uint32_t                      first_set;
    uint32_t                      set_count;
-   struct r300vk_descriptor_set *sets[R300VK_MAX_BOUND_DESCRIPTOR_SETS];
+   struct r3v_descriptor_set *sets[R3V_MAX_BOUND_DESCRIPTOR_SETS];
    uint32_t                      dynamic_offset_count;
-   uint32_t                      dynamic_offsets[R300VK_MAX_DYNAMIC_OFFSETS];
+   uint32_t                      dynamic_offsets[R3V_MAX_DYNAMIC_OFFSETS];
 };
 
 /* One vkCmdBeginQuery / vkCmdEndQuery.  r300 supports only occlusion queries;
  * the replay brackets the spanned draws of a single-tile submit with one r300
  * occlusion query and stores the count into pool->queries[query] at end-query.
  * The pool outlives the command buffer's use (spec rule), so a plain pointer. */
-struct r300vk_cmd_query {
-   struct r300vk_query_pool *pool;
+struct r3v_cmd_query {
+   struct r3v_query_pool *pool;
    uint32_t                  query;
 };
 
 /* One vkCmdResetQueryPool range.  Replayed as a host clear of the slots'
  * availability and result (tile-independent, applied once per submit). */
-struct r300vk_cmd_reset_query_pool {
-   struct r300vk_query_pool *pool;
+struct r3v_cmd_reset_query_pool {
+   struct r3v_query_pool *pool;
    uint32_t                  first_query;
    uint32_t                  query_count;
 };
 
-/* One vkCmdCopyQueryPoolResults.  r300vk assigns no buffer device address, so
+/* One vkCmdCopyQueryPoolResults.  r3v assigns no buffer device address, so
  * the vk_common implementation (which resolves the buffer through
  * vk_buffer_address and asserts on a zero device address) cannot run; copy on
  * the host from the same per-slot storage GetQueryPoolResults reads, into the
  * destination buffer's mapped resource at replay. */
-struct r300vk_cmd_copy_query_pool_results {
-   struct r300vk_query_pool *pool;
-   struct r300vk_buffer     *dst;
+struct r3v_cmd_copy_query_pool_results {
+   struct r3v_query_pool *pool;
+   struct r3v_buffer     *dst;
    uint32_t                  first_query;
    uint32_t                  query_count;
    VkDeviceSize              dst_offset;
@@ -378,25 +378,25 @@ struct r300vk_cmd_copy_query_pool_results {
  * entry carries; the replay walker merges entries into its shadow and applies
  * the result at draw time (transient rasterizer/DSA CSOs, stencil ref, blend
  * colour, topology override). */
-#define R300VK_DYN_CULL          (1u << 0)
-#define R300VK_DYN_FRONT_FACE    (1u << 1)
-#define R300VK_DYN_TOPOLOGY      (1u << 2)
-#define R300VK_DYN_DEPTH_TEST    (1u << 3)
-#define R300VK_DYN_DEPTH_WRITE   (1u << 4)
-#define R300VK_DYN_DEPTH_OP      (1u << 5)
-#define R300VK_DYN_DEPTH_BOUNDS  (1u << 6)
-#define R300VK_DYN_STENCIL_TEST  (1u << 7)
-#define R300VK_DYN_STENCIL_OP    (1u << 8)
-#define R300VK_DYN_STENCIL_CMP_MASK (1u << 9)
-#define R300VK_DYN_STENCIL_WR_MASK  (1u << 10)
-#define R300VK_DYN_STENCIL_REF   (1u << 11)
-#define R300VK_DYN_DEPTH_BIAS    (1u << 12)
-#define R300VK_DYN_BLEND_CONST   (1u << 13)
-#define R300VK_DYN_LINE_WIDTH    (1u << 14)
-#define R300VK_DYN_DEPTH_BIAS_EN (1u << 15)
-#define R300VK_DYN_LINE_STIPPLE  (1u << 16)
+#define R3V_DYN_CULL          (1u << 0)
+#define R3V_DYN_FRONT_FACE    (1u << 1)
+#define R3V_DYN_TOPOLOGY      (1u << 2)
+#define R3V_DYN_DEPTH_TEST    (1u << 3)
+#define R3V_DYN_DEPTH_WRITE   (1u << 4)
+#define R3V_DYN_DEPTH_OP      (1u << 5)
+#define R3V_DYN_DEPTH_BOUNDS  (1u << 6)
+#define R3V_DYN_STENCIL_TEST  (1u << 7)
+#define R3V_DYN_STENCIL_OP    (1u << 8)
+#define R3V_DYN_STENCIL_CMP_MASK (1u << 9)
+#define R3V_DYN_STENCIL_WR_MASK  (1u << 10)
+#define R3V_DYN_STENCIL_REF   (1u << 11)
+#define R3V_DYN_DEPTH_BIAS    (1u << 12)
+#define R3V_DYN_BLEND_CONST   (1u << 13)
+#define R3V_DYN_LINE_WIDTH    (1u << 14)
+#define R3V_DYN_DEPTH_BIAS_EN (1u << 15)
+#define R3V_DYN_LINE_STIPPLE  (1u << 16)
 
-struct r300vk_cmd_set_dynamic {
+struct r3v_cmd_set_dynamic {
    uint32_t            flags;
    VkCullModeFlags     cull;
    VkFrontFace         front;
@@ -418,64 +418,64 @@ struct r300vk_cmd_set_dynamic {
    uint16_t            stipple_pattern;
 };
 
-struct r300vk_cmd_entry {
-   enum r300vk_cmd_type type;
+struct r3v_cmd_entry {
+   enum r3v_cmd_type type;
    union {
-      struct r300vk_cmd_set_dynamic            set_dyn;
-      struct r300vk_cmd_begin_render_pass    begin_rp;
-      struct r300vk_cmd_bind_pipeline        bind_pipeline;
-      struct r300vk_cmd_set_viewport         set_vp;
-      struct r300vk_cmd_set_scissor          set_sc;
-      struct r300vk_cmd_bind_vertex_buffers  bind_vbufs;
-      struct r300vk_cmd_draw                 draw;
-      struct r300vk_cmd_draw_indirect        draw_indirect;
-      struct r300vk_cmd_draw_indexed         draw_indexed;
-      struct r300vk_cmd_draw_indexed_indirect draw_indexed_indirect;
-      struct r300vk_cmd_push_constants       push_constants;
-      struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
-      struct r300vk_cmd_copy_buf_to_image    copy_buf_img;
-      struct r300vk_cmd_copy_image           copy_image;
-      struct r300vk_cmd_blit_image           blit_image;
-      struct r300vk_cmd_clear_color_image    clear_color_image;
-      struct r300vk_cmd_clear_depth_stencil_image clear_depth_stencil_image;
-      struct r300vk_cmd_clear_attachments    clear_attachments;
-      struct r300vk_cmd_fill_buffer          fill_buffer;
-      struct r300vk_cmd_copy_buffer          copy_buffer;
-      struct r300vk_cmd_update_buffer        update_buffer;
-      struct r300vk_cmd_event                event;
-      struct r300vk_cmd_pipeline_barrier     barrier;
-      struct r300vk_cmd_dispatch             dispatch;
-      struct r300vk_cmd_bind_descriptor_sets bind_dsets;
-      struct r300vk_cmd_query                query;
-      struct r300vk_cmd_reset_query_pool     reset_query_pool;
-      struct r300vk_cmd_copy_query_pool_results copy_query_pool_results;
+      struct r3v_cmd_set_dynamic            set_dyn;
+      struct r3v_cmd_begin_render_pass    begin_rp;
+      struct r3v_cmd_bind_pipeline        bind_pipeline;
+      struct r3v_cmd_set_viewport         set_vp;
+      struct r3v_cmd_set_scissor          set_sc;
+      struct r3v_cmd_bind_vertex_buffers  bind_vbufs;
+      struct r3v_cmd_draw                 draw;
+      struct r3v_cmd_draw_indirect        draw_indirect;
+      struct r3v_cmd_draw_indexed         draw_indexed;
+      struct r3v_cmd_draw_indexed_indirect draw_indexed_indirect;
+      struct r3v_cmd_push_constants       push_constants;
+      struct r3v_cmd_copy_image_to_buf    copy_img_buf;
+      struct r3v_cmd_copy_buf_to_image    copy_buf_img;
+      struct r3v_cmd_copy_image           copy_image;
+      struct r3v_cmd_blit_image           blit_image;
+      struct r3v_cmd_clear_color_image    clear_color_image;
+      struct r3v_cmd_clear_depth_stencil_image clear_depth_stencil_image;
+      struct r3v_cmd_clear_attachments    clear_attachments;
+      struct r3v_cmd_fill_buffer          fill_buffer;
+      struct r3v_cmd_copy_buffer          copy_buffer;
+      struct r3v_cmd_update_buffer        update_buffer;
+      struct r3v_cmd_event                event;
+      struct r3v_cmd_pipeline_barrier     barrier;
+      struct r3v_cmd_dispatch             dispatch;
+      struct r3v_cmd_bind_descriptor_sets bind_dsets;
+      struct r3v_cmd_query                query;
+      struct r3v_cmd_reset_query_pool     reset_query_pool;
+      struct r3v_cmd_copy_query_pool_results copy_query_pool_results;
    };
 };
 
-struct r300vk_render_pass;
+struct r3v_render_pass;
 
 /* One render-pass attachment resolved to its backing image at CmdBeginRenderPass:
  * each subpass binds its targets by indexing this by attachment number, so a
  * subpass transition needs no second framebuffer walk (and imageless views,
  * supplied only at begin time, are captured here). */
-struct r300vk_resolved_attachment {
-   struct r300vk_image *image;
+struct r3v_resolved_attachment {
+   struct r3v_image *image;
    enum pipe_format     format;
    VkAttachmentLoadOp   load_op;
    VkClearValue         clear;
 };
 
-struct r300vk_cmd_buffer {
+struct r3v_cmd_buffer {
    struct vk_command_buffer  base;  /* must be first; dispatchable */
-   struct r300vk_cmd_entry  *entries;
+   struct r3v_cmd_entry  *entries;
    uint32_t                  entry_count;
    uint32_t                  entry_cap;
-   struct r300vk_pipeline   *bound_pipeline;
-   struct r300vk_pipeline   *bound_compute_pipeline;
-   struct r300vk_image      *current_color_image;
+   struct r3v_pipeline   *bound_pipeline;
+   struct r3v_pipeline   *bound_compute_pipeline;
+   struct r3v_image      *current_color_image;
    /* Index buffer bound by vkCmdBindIndexBuffer[2], snapshotted into each
-    * R300VK_CMD_DRAW_INDEXED entry at record time. */
-   struct r300vk_buffer     *bound_index_buffer;
+    * R3V_CMD_DRAW_INDEXED entry at record time. */
+   struct r3v_buffer     *bound_index_buffer;
    VkDeviceSize              bound_index_offset;
    VkDeviceSize              bound_index_range;
    uint32_t                  bound_index_size;
@@ -483,22 +483,22 @@ struct r300vk_cmd_buffer {
    /* Active classic render pass (NULL outside one / in dynamic rendering).  Set
     * at CmdBeginRenderPass, advanced by CmdNextSubpass, cleared at
     * CmdEndRenderPass; drives binding each subpass's own framebuffer. */
-   const struct r300vk_render_pass  *current_render_pass;
+   const struct r3v_render_pass  *current_render_pass;
    uint32_t                          current_subpass;
    int32_t                           current_rp_offset_x;
    int32_t                           current_rp_offset_y;
    uint32_t                          current_rp_width;
    uint32_t                          current_rp_height;
-   struct r300vk_resolved_attachment current_attachments[PIPE_MAX_COLOR_BUFS + 1];
+   struct r3v_resolved_attachment current_attachments[PIPE_MAX_COLOR_BUFS + 1];
 };
 
-VK_DEFINE_HANDLE_CASTS(r300vk_cmd_buffer, base.base, VkCommandBuffer,
+VK_DEFINE_HANDLE_CASTS(r3v_cmd_buffer, base.base, VkCommandBuffer,
                         VK_OBJECT_TYPE_COMMAND_BUFFER)
 
-extern const struct vk_command_buffer_ops r300vk_cmd_buffer_ops;
+extern const struct vk_command_buffer_ops r3v_cmd_buffer_ops;
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* R300VK_CMD_BUFFER_H */
+#endif /* R3V_CMD_BUFFER_H */

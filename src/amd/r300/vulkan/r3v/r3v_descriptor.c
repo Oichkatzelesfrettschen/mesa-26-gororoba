@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * r300vk descriptor-set machinery -- object lifecycle for VkDescriptorSetLayout,
+ * r3v descriptor-set machinery -- object lifecycle for VkDescriptorSetLayout,
  * VkDescriptorPool, VkDescriptorSet.  vk_common provides CreatePipelineLayout
  * but not the descriptor-set entrypoints (a descriptor set maps to
  * driver-specific resource state, so each Mesa driver implements its own).
@@ -29,8 +29,8 @@
 
 static int compare_binding_index(const void *a, const void *b)
 {
-   uint32_t ba = ((const struct r300vk_dsl_binding *)a)->binding;
-   uint32_t bb = ((const struct r300vk_dsl_binding *)b)->binding;
+   uint32_t ba = ((const struct r3v_dsl_binding *)a)->binding;
+   uint32_t bb = ((const struct r3v_dsl_binding *)b)->binding;
    return (ba < bb) ? -1 : (ba > bb) ? 1 : 0;
 }
 
@@ -42,12 +42,12 @@ descriptor_type_is_dynamic(VkDescriptorType t)
 }
 
 VkResult
-r300vk_CreateDescriptorSetLayout(VkDevice _device,
+r3v_CreateDescriptorSetLayout(VkDevice _device,
                                  const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
                                  const VkAllocationCallbacks *pAllocator,
                                  VkDescriptorSetLayout *pSetLayout)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    const uint32_t n = pCreateInfo->bindingCount;
    uint32_t immutable_sampler_count = 0;
 
@@ -57,11 +57,11 @@ r300vk_CreateDescriptorSetLayout(VkDevice _device,
          immutable_sampler_count += src->descriptorCount;
    }
 
-   const size_t size = sizeof(struct r300vk_descriptor_set_layout) +
-                       n * sizeof(struct r300vk_dsl_binding) +
+   const size_t size = sizeof(struct r3v_descriptor_set_layout) +
+                       n * sizeof(struct r3v_dsl_binding) +
                        immutable_sampler_count * sizeof(VkSampler);
 
-   struct r300vk_descriptor_set_layout *layout =
+   struct r3v_descriptor_set_layout *layout =
       vk_descriptor_set_layout_zalloc(&device->vk, size, pCreateInfo);
    if (!layout)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -71,7 +71,7 @@ r300vk_CreateDescriptorSetLayout(VkDevice _device,
    VkSampler *immutable_samplers = (VkSampler *)&layout->bindings[n];
    for (uint32_t i = 0; i < n; i++) {
       const VkDescriptorSetLayoutBinding *src = &pCreateInfo->pBindings[i];
-      layout->bindings[i] = (struct r300vk_dsl_binding){
+      layout->bindings[i] = (struct r3v_dsl_binding){
          .binding      = src->binding,
          .type         = src->descriptorType,
          .count        = src->descriptorCount,
@@ -105,19 +105,19 @@ r300vk_CreateDescriptorSetLayout(VkDevice _device,
     * data. */
    layout->base.dynamic_descriptor_count = dynamic_count;
 
-   *pSetLayout = r300vk_descriptor_set_layout_to_handle(layout);
+   *pSetLayout = r3v_descriptor_set_layout_to_handle(layout);
    return VK_SUCCESS;
 }
 
 VkResult
-r300vk_CreateDescriptorPool(VkDevice _device,
+r3v_CreateDescriptorPool(VkDevice _device,
                             const VkDescriptorPoolCreateInfo *pCreateInfo,
                             const VkAllocationCallbacks *pAllocator,
                             VkDescriptorPool *pDescriptorPool)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
 
-   struct r300vk_descriptor_pool *pool =
+   struct r3v_descriptor_pool *pool =
       vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pool), 8,
                  VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!pool)
@@ -134,7 +134,7 @@ r300vk_CreateDescriptorPool(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   *pDescriptorPool = r300vk_descriptor_pool_to_handle(pool);
+   *pDescriptorPool = r3v_descriptor_pool_to_handle(pool);
    return VK_SUCCESS;
 }
 
@@ -144,7 +144,7 @@ r300vk_CreateDescriptorPool(VkDevice _device,
  * (no pAllocator), so the free call matches that side; any caller-supplied
  * pAllocator only owns the pool struct itself. */
 static void
-release_set_slot(struct r300vk_device *device, struct r300vk_descriptor_set *set)
+release_set_slot(struct r3v_device *device, struct r3v_descriptor_set *set)
 {
    if (!set->allocated)
       return;
@@ -158,11 +158,11 @@ release_set_slot(struct r300vk_device *device, struct r300vk_descriptor_set *set
 }
 
 void
-r300vk_DestroyDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
+r3v_DestroyDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
                              const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_descriptor_pool, pool, _pool);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_descriptor_pool, pool, _pool);
    if (!pool)
       return;
    for (uint32_t i = 0; i < pool->max_sets; i++)
@@ -173,11 +173,11 @@ r300vk_DestroyDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
 }
 
 VkResult
-r300vk_ResetDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
+r3v_ResetDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
                            VkDescriptorPoolResetFlags flags)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_descriptor_pool, pool, _pool);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_descriptor_pool, pool, _pool);
    (void)flags;
    for (uint32_t i = 0; i < pool->max_sets; i++)
       release_set_slot(device, &pool->sets[i]);
@@ -186,21 +186,21 @@ r300vk_ResetDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
 }
 
 VkResult
-r300vk_AllocateDescriptorSets(VkDevice _device,
+r3v_AllocateDescriptorSets(VkDevice _device,
                               const VkDescriptorSetAllocateInfo *pAllocateInfo,
                               VkDescriptorSet *pDescriptorSets)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_descriptor_pool, pool, pAllocateInfo->descriptorPool);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_descriptor_pool, pool, pAllocateInfo->descriptorPool);
    const uint32_t n = pAllocateInfo->descriptorSetCount;
 
    for (uint32_t i = 0; i < n; i++) {
-      VK_FROM_HANDLE(r300vk_descriptor_set_layout, layout,
+      VK_FROM_HANDLE(r3v_descriptor_set_layout, layout,
                      pAllocateInfo->pSetLayouts[i]);
 
       /* Find a free slot in the pool's set array.  A linear scan is fine for
        * the typical max_sets <= 1024 a compute kernel needs. */
-      struct r300vk_descriptor_set *set = NULL;
+      struct r3v_descriptor_set *set = NULL;
       for (uint32_t j = 0; j < pool->max_sets; j++) {
          if (!pool->sets[j].allocated) {
             set = &pool->sets[j];
@@ -238,7 +238,7 @@ r300vk_AllocateDescriptorSets(VkDevice _device,
           * a subsequent allocate before a reset must see the real free
           * count. */
          for (uint32_t j = 0; j < i; j++) {
-            VK_FROM_HANDLE(r300vk_descriptor_set, prev, pDescriptorSets[j]);
+            VK_FROM_HANDLE(r3v_descriptor_set, prev, pDescriptorSets[j]);
             if (prev) {
                release_set_slot(device, prev);
                if (pool->allocated_sets > 0)
@@ -250,20 +250,20 @@ r300vk_AllocateDescriptorSets(VkDevice _device,
          return vk_error(device, fail_result);
       }
       pool->allocated_sets++;
-      pDescriptorSets[i] = r300vk_descriptor_set_to_handle(set);
+      pDescriptorSets[i] = r3v_descriptor_set_to_handle(set);
    }
    return VK_SUCCESS;
 }
 
 VkResult
-r300vk_FreeDescriptorSets(VkDevice _device, VkDescriptorPool _pool,
+r3v_FreeDescriptorSets(VkDevice _device, VkDescriptorPool _pool,
                           uint32_t descriptorSetCount,
                           const VkDescriptorSet *pDescriptorSets)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_descriptor_pool, pool, _pool);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_descriptor_pool, pool, _pool);
    for (uint32_t i = 0; i < descriptorSetCount; i++) {
-      VK_FROM_HANDLE(r300vk_descriptor_set, set, pDescriptorSets[i]);
+      VK_FROM_HANDLE(r3v_descriptor_set, set, pDescriptorSets[i]);
       if (!set || !set->allocated)
          continue;
       release_set_slot(device, set);
@@ -276,8 +276,8 @@ r300vk_FreeDescriptorSets(VkDevice _device, VkDescriptorPool _pool,
 /* Find the layout binding for dst_binding (in-order scan; bindings are sorted
  * but binding-index gaps are allowed by the spec, so binary-search would buy
  * little and linear is correct). */
-static const struct r300vk_dsl_binding *
-find_binding(const struct r300vk_descriptor_set_layout *layout, uint32_t dst_binding)
+static const struct r3v_dsl_binding *
+find_binding(const struct r3v_descriptor_set_layout *layout, uint32_t dst_binding)
 {
    for (uint32_t i = 0; i < layout->binding_count; i++)
       if (layout->bindings[i].binding == dst_binding)
@@ -285,12 +285,12 @@ find_binding(const struct r300vk_descriptor_set_layout *layout, uint32_t dst_bin
    return NULL;
 }
 
-static const struct r300vk_dsl_binding *
-find_binding_for_slot(const struct r300vk_descriptor_set_layout *layout,
+static const struct r3v_dsl_binding *
+find_binding_for_slot(const struct r3v_descriptor_set_layout *layout,
                       uint32_t slot, uint32_t *array_index)
 {
    for (uint32_t i = 0; i < layout->binding_count; i++) {
-      const struct r300vk_dsl_binding *b = &layout->bindings[i];
+      const struct r3v_dsl_binding *b = &layout->bindings[i];
       if (slot >= b->offset && slot < b->offset + b->count) {
          *array_index = slot - b->offset;
          return b;
@@ -300,8 +300,8 @@ find_binding_for_slot(const struct r300vk_descriptor_set_layout *layout,
 }
 
 static uint32_t
-descriptor_update_span(const struct r300vk_descriptor_set_layout *layout,
-                       const struct r300vk_dsl_binding *binding,
+descriptor_update_span(const struct r3v_descriptor_set_layout *layout,
+                       const struct r3v_dsl_binding *binding,
                        uint32_t array_element,
                        VkDescriptorType descriptor_type,
                        uint32_t descriptor_count)
@@ -325,7 +325,7 @@ descriptor_update_span(const struct r300vk_descriptor_set_layout *layout,
          break;
       next_binding_number++;
 
-      const struct r300vk_dsl_binding *next = &layout->bindings[i];
+      const struct r3v_dsl_binding *next = &layout->bindings[i];
       if (next->binding != next_binding_number ||
           next->type != descriptor_type)
          break;
@@ -339,11 +339,11 @@ descriptor_update_span(const struct r300vk_descriptor_set_layout *layout,
 }
 
 static VkSampler
-descriptor_slot_sampler(const struct r300vk_descriptor_set_layout *layout,
+descriptor_slot_sampler(const struct r3v_descriptor_set_layout *layout,
                         uint32_t slot, VkSampler written_sampler)
 {
    uint32_t array_index = 0;
-   const struct r300vk_dsl_binding *b =
+   const struct r3v_dsl_binding *b =
       find_binding_for_slot(layout, slot, &array_index);
 
    if (b && b->immutable_samplers && array_index < b->count)
@@ -354,12 +354,12 @@ descriptor_slot_sampler(const struct r300vk_descriptor_set_layout *layout,
 
 static void
 copy_descriptors_preserving_immutable_samplers(
-   struct r300vk_descriptor_set *dst_set, uint32_t dst_base,
-   const struct r300vk_descriptor_set *src_set, uint32_t src_base,
+   struct r3v_descriptor_set *dst_set, uint32_t dst_base,
+   const struct r3v_descriptor_set *src_set, uint32_t src_base,
    uint32_t count)
 {
    for (uint32_t d = 0; d < count; d++) {
-      struct r300vk_descriptor *dst = &dst_set->descriptors[dst_base + d];
+      struct r3v_descriptor *dst = &dst_set->descriptors[dst_base + d];
       *dst = src_set->descriptors[src_base + d];
       if (dst->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
           dst->type == VK_DESCRIPTOR_TYPE_SAMPLER) {
@@ -371,19 +371,19 @@ copy_descriptors_preserving_immutable_samplers(
 }
 
 void
-r300vk_UpdateDescriptorSets(VkDevice _device,
+r3v_UpdateDescriptorSets(VkDevice _device,
                             uint32_t descriptorWriteCount,
                             const VkWriteDescriptorSet *pDescriptorWrites,
                             uint32_t descriptorCopyCount,
                             const VkCopyDescriptorSet *pDescriptorCopies)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    (void)device;
 
    for (uint32_t w = 0; w < descriptorWriteCount; w++) {
       const VkWriteDescriptorSet *write = &pDescriptorWrites[w];
-      VK_FROM_HANDLE(r300vk_descriptor_set, set, write->dstSet);
-      const struct r300vk_dsl_binding *b = find_binding(set->layout,
+      VK_FROM_HANDLE(r3v_descriptor_set, set, write->dstSet);
+      const struct r3v_dsl_binding *b = find_binding(set->layout,
                                                         write->dstBinding);
       if (!b)
          continue;
@@ -399,7 +399,7 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
       if (span == 0)
          continue;
       for (uint32_t d = 0; d < span; d++) {
-         struct r300vk_descriptor *slot = &set->descriptors[base + d];
+         struct r3v_descriptor *slot = &set->descriptors[base + d];
          /* Defer the slot->type stamp until the per-type case body has
           * accepted the write.  Earlier shape wrote slot->type at the top of
           * the loop and rolled it back to 0 on the out-of-bounds path; that
@@ -433,7 +433,7 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
              * accept it.  An out-of-bounds binding is silently
              * skipped (the previous slot's value, NULL after
              * AllocateDescriptorSets's zalloc, persists). */
-            VK_FROM_HANDLE(r300vk_buffer, buf, bi->buffer);
+            VK_FROM_HANDLE(r3v_buffer, buf, bi->buffer);
             bool in_bounds = (buf == NULL); /* NULL-buffer = unbind, fine */
             if (buf) {
                in_bounds = (bi->offset <= buf->size) &&
@@ -492,11 +492,11 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
 
    for (uint32_t c = 0; c < descriptorCopyCount; c++) {
       const VkCopyDescriptorSet *cp = &pDescriptorCopies[c];
-      VK_FROM_HANDLE(r300vk_descriptor_set, src_set, cp->srcSet);
-      VK_FROM_HANDLE(r300vk_descriptor_set, dst_set, cp->dstSet);
-      const struct r300vk_dsl_binding *src_b =
+      VK_FROM_HANDLE(r3v_descriptor_set, src_set, cp->srcSet);
+      VK_FROM_HANDLE(r3v_descriptor_set, dst_set, cp->dstSet);
+      const struct r3v_dsl_binding *src_b =
          find_binding(src_set->layout, cp->srcBinding);
-      const struct r300vk_dsl_binding *dst_b =
+      const struct r3v_dsl_binding *dst_b =
          find_binding(dst_set->layout, cp->dstBinding);
       if (!src_b || !dst_b)
          continue;
@@ -527,12 +527,12 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
  * pData -- but the update writes driver descriptor state, so the runtime leaves
  * it to the driver.  Each entry names array_count descriptors laid out in pData
  * at offset + j*stride; applying each as a single-descriptor
- * VkWriteDescriptorSet through r300vk_UpdateDescriptorSets reuses that path's
+ * VkWriteDescriptorSet through r3v_UpdateDescriptorSets reuses that path's
  * binding lookup, linear-span capping, and per-type bounds checks.  Reading
  * each descriptor at its own pData address makes this correct for an arbitrary
  * stride, which a tightly packed pImageInfo/pBufferInfo array could not honour. */
 void
-r300vk_UpdateDescriptorSetWithTemplate(VkDevice _device,
+r3v_UpdateDescriptorSetWithTemplate(VkDevice _device,
                                        VkDescriptorSet descriptorSet,
                                        VkDescriptorUpdateTemplate descriptorUpdateTemplate,
                                        const void *pData)
@@ -575,12 +575,12 @@ r300vk_UpdateDescriptorSetWithTemplate(VkDevice _device,
             break;
          default:
             /* An unsupported descriptor type (e.g. inline uniform block) records
-             * slot->type and reads no data in r300vk_UpdateDescriptorSets'
+             * slot->type and reads no data in r3v_UpdateDescriptorSets'
              * default case, so leave the info pointers NULL. */
             break;
          }
 
-         r300vk_UpdateDescriptorSets(_device, 1, &write, 0, NULL);
+         r3v_UpdateDescriptorSets(_device, 1, &write, 0, NULL);
       }
    }
 }

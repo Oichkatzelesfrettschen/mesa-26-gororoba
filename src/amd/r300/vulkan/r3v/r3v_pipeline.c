@@ -38,7 +38,7 @@
 #include <string.h>
 
 static const VkVertexInputBindingDescription *
-r300vk_find_vertex_binding_desc(const VkPipelineVertexInputStateCreateInfo *vi,
+r3v_find_vertex_binding_desc(const VkPipelineVertexInputStateCreateInfo *vi,
                                 uint32_t binding)
 {
    if (!vi)
@@ -55,7 +55,7 @@ r300vk_find_vertex_binding_desc(const VkPipelineVertexInputStateCreateInfo *vi,
 }
 
 static uint32_t
-r300vk_vertex_attr_data_size(enum pipe_format format)
+r3v_vertex_attr_data_size(enum pipe_format format)
 {
    /* The robust vertex count counts vertices whose ATTRIBUTE DATA lies inside
     * the bound buffer range -- that span, not a dword-rounded fetch width, is
@@ -78,7 +78,7 @@ r300vk_vertex_attr_data_size(enum pipe_format format)
 }
 
 static VkResult
-r300vk_validate_vertex_input(struct r300vk_device *device,
+r3v_validate_vertex_input(struct r3v_device *device,
                               const VkPipelineVertexInputStateCreateInfo *vi,
                               uint32_t *used_binding_mask,
                               uint32_t *next_input_slot)
@@ -94,37 +94,37 @@ r300vk_validate_vertex_input(struct r300vk_device *device,
 
    if (vi->vertexAttributeDescriptionCount > PIPE_MAX_ATTRIBS)
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: vertex attribute count %u exceeds %u",
+                       "r3v: vertex attribute count %u exceeds %u",
                        vi->vertexAttributeDescriptionCount,
                        PIPE_MAX_ATTRIBS);
 
    for (uint32_t i = 0; i < vi->vertexBindingDescriptionCount; i++) {
       const VkVertexInputBindingDescription *desc =
          &vi->pVertexBindingDescriptions[i];
-      if (desc->binding >= R300VK_MAX_VERTEX_BINDINGS)
+      if (desc->binding >= R3V_MAX_VERTEX_BINDINGS)
          return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                          "r300vk: vertex binding %u exceeds %u",
-                          desc->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
+                          "r3v: vertex binding %u exceeds %u",
+                          desc->binding, R3V_MAX_VERTEX_BINDINGS - 1);
    }
 
    for (uint32_t i = 0; i < vi->vertexAttributeDescriptionCount; i++) {
       const VkVertexInputAttributeDescription *attr =
          &vi->pVertexAttributeDescriptions[i];
-      if (attr->location >= R300VK_MAX_VERTEX_BINDINGS)
+      if (attr->location >= R3V_MAX_VERTEX_BINDINGS)
          return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                          "r300vk: vertex attribute location %u exceeds %u",
-                          attr->location, R300VK_MAX_VERTEX_BINDINGS - 1);
+                          "r3v: vertex attribute location %u exceeds %u",
+                          attr->location, R3V_MAX_VERTEX_BINDINGS - 1);
       if (location_mask & BITFIELD_BIT(attr->location))
          return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                          "r300vk: duplicate vertex attribute location %u",
+                          "r3v: duplicate vertex attribute location %u",
                           attr->location);
-      if (attr->binding >= R300VK_MAX_VERTEX_BINDINGS)
+      if (attr->binding >= R3V_MAX_VERTEX_BINDINGS)
          return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                          "r300vk: vertex attribute binding %u exceeds %u",
-                          attr->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
-      if (!r300vk_find_vertex_binding_desc(vi, attr->binding))
+                          "r3v: vertex attribute binding %u exceeds %u",
+                          attr->binding, R3V_MAX_VERTEX_BINDINGS - 1);
+      if (!r3v_find_vertex_binding_desc(vi, attr->binding))
          return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                          "r300vk: vertex attribute binding %u has no "
+                          "r3v: vertex attribute binding %u has no "
                           "matching binding description", attr->binding);
       location_mask |= BITFIELD_BIT(attr->location);
       input_slot = MAX2(input_slot, attr->location + 1);
@@ -133,7 +133,7 @@ r300vk_validate_vertex_input(struct r300vk_device *device,
 
    if (input_slot > 0 && location_mask != BITFIELD_MASK(input_slot))
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: sparse vertex attribute locations are not "
+                       "r3v: sparse vertex attribute locations are not "
                        "representable by r300g vertex elements");
 
    *next_input_slot = input_slot;
@@ -141,9 +141,9 @@ r300vk_validate_vertex_input(struct r300vk_device *device,
 }
 
 static VkResult
-r300vk_reserve_vs_system_value_streams(
-   struct r300vk_device *device,
-   struct r300vk_pipeline *pl,
+r3v_reserve_vs_system_value_streams(
+   struct r3v_device *device,
+   struct r3v_pipeline *pl,
    const VkPipelineVertexInputStateCreateInfo *vi,
    bool needs_vertex_id,
    bool needs_instance_id,
@@ -162,20 +162,20 @@ r300vk_reserve_vs_system_value_streams(
    uint32_t used_binding_mask = 0;
 
    VkResult val_res =
-      r300vk_validate_vertex_input(device, vi, &used_binding_mask,
+      r3v_validate_vertex_input(device, vi, &used_binding_mask,
                                    &next_input_slot);
    if (val_res != VK_SUCCESS)
       return val_res;
 
    if (next_input_slot > PIPE_MAX_ATTRIBS - synth_count ||
-       next_input_slot > R300VK_MAX_VERTEX_BINDINGS - synth_count)
+       next_input_slot > R3V_MAX_VERTEX_BINDINGS - synth_count)
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: no vertex input slot available for "
+                       "r3v: no vertex input slot available for "
                        "the synthetic VS system-value stream");
 
    uint8_t synth_bindings[2];
    uint32_t reserved_count = 0;
-   for (uint32_t b = 0; b < R300VK_MAX_VERTEX_BINDINGS; b++) {
+   for (uint32_t b = 0; b < R3V_MAX_VERTEX_BINDINGS; b++) {
       if (used_binding_mask & BITFIELD_BIT(b))
          continue;
       synth_bindings[reserved_count++] = (uint8_t)b;
@@ -185,7 +185,7 @@ r300vk_reserve_vs_system_value_streams(
 
    if (reserved_count < synth_count)
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: no vertex buffer binding available for "
+                       "r3v: no vertex buffer binding available for "
                        "the synthetic VS system-value stream");
 
    uint32_t current_slot = next_input_slot;
@@ -215,7 +215,7 @@ r300vk_reserve_vs_system_value_streams(
    return VK_SUCCESS;
 }
 
-static const struct spirv_to_nir_options r300vk_spirv_opts = {
+static const struct spirv_to_nir_options r3v_spirv_opts = {
    .environment            = NIR_SPIRV_VULKAN,
    .ubo_addr_format        = nir_address_format_32bit_index_offset,
    .ssbo_addr_format       = nir_address_format_32bit_index_offset,
@@ -224,9 +224,9 @@ static const struct spirv_to_nir_options r300vk_spirv_opts = {
 };
 
 /* r300 has one constant file (RC_FILE_CONSTANT), and ntr_emit_load_ubo asserts
- * the UBO block index is 0.  r300vk_nir_lower_vulkan_resource_index_single has
+ * the UBO block index is 0.  r3v_nir_lower_vulkan_resource_index_single has
  * already rejected any shader that needs more than the single uniform buffer
- * r300vk_bind_descriptor_ubo binds at CONST[0], and lowered the surviving
+ * r3v_bind_descriptor_ubo binds at CONST[0], and lowered the surviving
  * descriptor chain to a constant block-0 address.  nir_lower_explicit_io then
  * rebuilds that block index as a vec construct + component extract (block =
  * vec2(addr.x, ...).x), i.e. a mov of a vec, not a load_const, and no pass folds
@@ -234,7 +234,7 @@ static const struct spirv_to_nir_options r300vk_spirv_opts = {
  * load_ubo[_vec4] block index to a literal 0 so the index-0 assert holds; the
  * single bound buffer lives at CONST[0]. */
 static void
-r300vk_nir_remap_single_ubo_to_index0(nir_shader *nir)
+r3v_nir_remap_single_ubo_to_index0(nir_shader *nir)
 {
    nir_foreach_function_impl(impl, nir) {
       bool progress = false;
@@ -256,13 +256,13 @@ r300vk_nir_remap_single_ubo_to_index0(nir_shader *nir)
    }
 }
 
-/* r300 exposes a single constant file per stage, and r300vk_bind_descriptor_ubo
+/* r300 exposes a single constant file per stage, and r3v_bind_descriptor_ubo
  * binds the one bound uniform buffer at CONST[0].  vk_spirv_to_nir emits each
  * UBO access as a vulkan_resource_index -> load_vulkan_descriptor -> deref ->
  * load chain, carrying the resource address in 32bit_index_offset form, where
  * component .x is the constant-file block index and .y the base offset.
  * nir_lower_explicit_io derives load_ubo's block index from that chain, which is
- * a non-constant SSA value, so r300vk_nir_remap_single_ubo_to_index0 cannot fold
+ * a non-constant SSA value, so r3v_nir_remap_single_ubo_to_index0 cannot fold
  * it to index 0 and the pipeline is rejected.  Lower the chain here, before
  * explicit I/O, so the single supported UBO resolves to a literal block 0:
  *   vulkan_resource_index(set, binding) -> imm ivec2(0, 0)
@@ -280,7 +280,7 @@ r300vk_nir_remap_single_ubo_to_index0(nir_shader *nir)
  *   - more than one distinct (set, binding) uniform buffer.
  */
 static bool
-r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir,
+r3v_nir_lower_vulkan_resource_index_single(nir_shader *nir,
                                               bool *out_has_ubo,
                                               uint32_t *out_set,
                                               uint32_t *out_binding)
@@ -391,11 +391,11 @@ r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir,
  * nir_lower_samplers (in nir_to_rc) assigns the Gallium unit from the synthetic
  * sampler variable's data.binding.  The descriptor identity stays separate:
  * replay matches the original (set, binding), while the texture fetch uses
- * R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT because r300g sampler updates must start
+ * R3V_INPUT_ATTACHMENT_SAMPLER_UNIT because r300g sampler updates must start
  * at unit zero.  A multisample subpass input (GLSL_SAMPLER_DIM_SUBPASS_MS) does
  * not match the GLSL_SAMPLER_DIM_SUBPASS filter below and is left unlowered, but
  * it sets no reject flag -- it is unreachable because r300 is single-sample and
- * r300vk_CreateImage rejects samples != 1, so no multisample image (hence no
+ * r3v_CreateImage rejects samples != 1, so no multisample image (hence no
  * GLSL_SAMPLER_DIM_SUBPASS_MS input) can ever exist to drive this pass.
  *
  * The replay binds one input attachment per pipeline (the single descriptor
@@ -405,7 +405,7 @@ r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir,
  * (isubpassInput/usubpassInput) result type sets out_has_integer and the load
  * is left unlowered for the same reject path. */
 static bool
-r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
+r3v_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
                                uint32_t *out_set,
                                uint32_t *out_binding,
                                bool *out_multiple_bindings,
@@ -477,8 +477,8 @@ r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
                sampler_var = nir_variable_create(
                   nir, nir_var_uniform,
                   glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, rbt),
-                  "r300vk_subpass_input");
-               sampler_var->data.binding = R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT;
+                  "r3v_subpass_input");
+               sampler_var->data.binding = R3V_INPUT_ATTACHMENT_SAMPLER_UNIT;
                sampler_var->data.descriptor_set = descriptor_set;
             }
             nir_deref_instr *tex_deref = nir_build_deref_var(&b, sampler_var);
@@ -510,13 +510,13 @@ r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
 
 /* True if the shader reads push constants.  vk_spirv_to_nir (with
  * push_const_addr_format set) leaves the access as a load_deref of a
- * nir_var_mem_push_const variable; r300vk's nir_lower_explicit_io call lowers
+ * nir_var_mem_push_const variable; r3v's nir_lower_explicit_io call lowers
  * only UBO/SSBO, so that deref would reach nir_to_rc, which has no push-constant
  * handler and would treat it as an unknown load_deref.  Check the variable mode
  * and the lowered load_push_constant intrinsic so the test holds wherever it
  * runs in the pipeline. */
 static bool
-r300vk_nir_uses_push_constants(nir_shader *nir)
+r3v_nir_uses_push_constants(nir_shader *nir)
 {
    nir_foreach_variable_with_modes(var, nir, nir_var_mem_push_const)
       return true;
@@ -536,11 +536,11 @@ r300vk_nir_uses_push_constants(nir_shader *nir)
 }
 
 /* True if the shader reads a uniform buffer.  Called before
- * r300vk_nir_lower_vulkan_resource_index_single rewrites the chain away, to
+ * r3v_nir_lower_vulkan_resource_index_single rewrites the chain away, to
  * detect a push-constant + UBO collision: both resolve to CONST[0] and r300's
  * single constant file cannot hold both. */
 static bool
-r300vk_nir_uses_ubo(nir_shader *nir)
+r3v_nir_uses_ubo(nir_shader *nir)
 {
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
@@ -560,12 +560,12 @@ r300vk_nir_uses_ubo(nir_shader *nir)
 
 /* True if the shader samples a texture (any tex instruction).  RS480-family has
  * no hardware vertex texture units; the vertex shader runs in software through
- * the Gallium draw module, and r300vk binds no sampler views/states to that
+ * the Gallium draw module, and r3v binds no sampler views/states to that
  * draw module, so a tex executed by the SW-TCL vertex shader dereferences a NULL
- * sampler in tgsi_exec fetch_texel and segfaults at draw.  r300vk_compile_shader
+ * sampler in tgsi_exec fetch_texel and segfaults at draw.  r3v_compile_shader
  * uses this to reject a vertex shader that samples rather than crash. */
 static bool
-r300vk_nir_uses_texture(nir_shader *nir)
+r3v_nir_uses_texture(nir_shader *nir)
 {
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
@@ -582,10 +582,10 @@ r300vk_nir_uses_texture(nir_shader *nir)
  * texel buffer reaches NIR as a GLSL_SAMPLER_DIM_BUF sampler, texture, or image
  * variable.  r300 has no buffer-resource unit and no storage path, so the fragment
  * translator lowers such a shader to a dummy and the SW-TCL vertex shader reaches
- * nir_to_tgsi's unassigned-source assert at draw.  r300vk_compile_shader rejects the
+ * nir_to_tgsi's unassigned-source assert at draw.  r3v_compile_shader rejects the
  * pipeline at compile so neither shader runs. */
 static bool
-r300vk_nir_uses_buffer_resource(nir_shader *nir)
+r3v_nir_uses_buffer_resource(nir_shader *nir)
 {
    nir_foreach_variable_in_shader(var, nir) {
       const struct glsl_type *type = glsl_without_array(var->type);
@@ -600,15 +600,15 @@ r300vk_nir_uses_buffer_resource(nir_shader *nir)
 /* Match r300_create_vs_state's NIR optimization point before deciding whether
  * a vertex texture instruction can reach the SW-TCL draw module. */
 static bool
-r300vk_nir_uses_live_texture_after_r300_opt(struct pipe_screen *pscreen,
+r3v_nir_uses_live_texture_after_r300_opt(struct pipe_screen *pscreen,
                                             nir_shader *nir)
 {
-   if (!r300vk_nir_uses_texture(nir))
+   if (!r3v_nir_uses_texture(nir))
       return false;
 
    nir_shader *check = nir_shader_clone(NULL, nir);
    r300_optimize_nir(check, r300_screen(pscreen));
-   bool uses_texture = r300vk_nir_uses_texture(check);
+   bool uses_texture = r3v_nir_uses_texture(check);
    ralloc_free(check);
    return uses_texture;
 }
@@ -620,7 +620,7 @@ r300vk_nir_uses_live_texture_after_r300_opt(struct pipe_screen *pscreen,
  * lands on the same unit the replay binds it to.  A sampler the map does not cover
  * (none should remain for a combined-image-sampler layout) keeps its binding. */
 static void
-r300vk_nir_remap_sampler_units(nir_shader *nir, const struct r300vk_pipeline *pl)
+r3v_nir_remap_sampler_units(nir_shader *nir, const struct r3v_pipeline *pl)
 {
    nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
       if (!glsl_type_is_sampler(glsl_without_array(var->type)))
@@ -645,14 +645,14 @@ r300vk_nir_remap_sampler_units(nir_shader *nir, const struct r300vk_pipeline *pl
  * sampler dimension and result type.  The tile sampler variables are created
  * once per function and cached in tile_var. */
 static nir_def *
-r300vk_stitch_tile_sample(nir_builder *b, nir_shader *nir,
+r3v_stitch_tile_sample(nir_builder *b, nir_shader *nir,
                           nir_variable **tile_var, uint32_t base_unit,
                           unsigned tile_index, const nir_tex_instr *src,
                           nir_def *coord)
 {
-   static const char *const tile_names[R300VK_NEAREST_STITCH_TILE_UNITS] = {
-      "r300vk_stitch_t00", "r300vk_stitch_t10",
-      "r300vk_stitch_t01", "r300vk_stitch_t11",
+   static const char *const tile_names[R3V_NEAREST_STITCH_TILE_UNITS] = {
+      "r3v_stitch_t00", "r3v_stitch_t10",
+      "r3v_stitch_t01", "r3v_stitch_t11",
    };
    if (!tile_var[tile_index]) {
       nir_variable *v = nir_variable_create(
@@ -691,12 +691,12 @@ r300vk_stitch_tile_sample(nir_builder *b, nir_shader *nir,
  * the expansion collapses to tile 0.  Phase 1 stitches one sampler at base_unit
  * with its geometry at const_byte_offset. */
 static bool
-r300vk_nir_stitch_samplers(nir_shader *nir, uint32_t base_unit,
+r3v_nir_stitch_samplers(nir_shader *nir, uint32_t base_unit,
                            unsigned const_byte_offset)
 {
    bool progress = false;
    nir_foreach_function_impl(impl, nir) {
-      nir_variable *tile_var[R300VK_NEAREST_STITCH_TILE_UNITS] = {0};
+      nir_variable *tile_var[R3V_NEAREST_STITCH_TILE_UNITS] = {0};
       nir_builder b = nir_builder_create(impl);
       nir_foreach_block_safe(block, impl) {
          nir_foreach_instr_safe(instr, block) {
@@ -733,11 +733,11 @@ r300vk_nir_stitch_samplers(nir_shader *nir, uint32_t base_unit,
                nir_fadd(&b, nir_fmul(&b, v, nir_channel(&b, cv, 1)),
                         nir_channel(&b, cv, 2)),
             };
-            nir_def *s[R300VK_NEAREST_STITCH_TILE_UNITS];
+            nir_def *s[R3V_NEAREST_STITCH_TILE_UNITS];
             for (unsigned row = 0; row < 2; row++)
                for (unsigned col = 0; col < 2; col++) {
                   nir_def *tc = nir_vec2(&b, uc[col], vc[row]);
-                  s[row * 2 + col] = r300vk_stitch_tile_sample(
+                  s[row * 2 + col] = r3v_stitch_tile_sample(
                      &b, nir, tile_var, base_unit, row * 2 + col, tex, tc);
                }
             nir_def *right  = nir_fge(&b, u, nir_channel(&b, cu, 3));
@@ -756,13 +756,13 @@ r300vk_nir_stitch_samplers(nir_shader *nir, uint32_t base_unit,
 }
 
 static const struct glsl_type *
-r300vk_block0_ubo_type(unsigned size_bytes)
+r3v_block0_ubo_type(unsigned size_bytes)
 {
    return glsl_array_type(glsl_vec4_type(), DIV_ROUND_UP(size_bytes, 16), 16);
 }
 
 static const struct glsl_type *
-r300vk_block0_ubo_interface_type(const struct glsl_type *ubo_type)
+r3v_block0_ubo_interface_type(const struct glsl_type *ubo_type)
 {
    struct glsl_struct_field field = {
       .type = ubo_type,
@@ -770,18 +770,18 @@ r300vk_block0_ubo_interface_type(const struct glsl_type *ubo_type)
       .location = -1,
    };
    return glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430, false,
-                              "__r300vk_block0_ubo");
+                              "__r3v_block0_ubo");
 }
 
 static unsigned
-r300vk_ubo_interface_size(const nir_variable *ubo)
+r3v_ubo_interface_size(const nir_variable *ubo)
 {
    return ubo->interface_type
           ? glsl_get_explicit_size(ubo->interface_type, false) : 0;
 }
 
 static nir_variable *
-r300vk_find_block0_ubo(nir_shader *nir)
+r3v_find_block0_ubo(nir_shader *nir)
 {
    nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
       if (var->data.driver_location == 0)
@@ -792,15 +792,15 @@ r300vk_find_block0_ubo(nir_shader *nir)
 }
 
 static void
-r300vk_shape_block0_ubo(nir_variable *ubo, unsigned size_bytes)
+r3v_shape_block0_ubo(nir_variable *ubo, unsigned size_bytes)
 {
-   const struct glsl_type *ubo_type = r300vk_block0_ubo_type(size_bytes);
+   const struct glsl_type *ubo_type = r3v_block0_ubo_type(size_bytes);
 
    ubo->type = ubo_type;
    ubo->data.driver_location = 0;
    ubo->data.binding = 0;
    ubo->data.explicit_binding = 1;
-   ubo->interface_type = r300vk_block0_ubo_interface_type(ubo_type);
+   ubo->interface_type = r3v_block0_ubo_interface_type(ubo_type);
 }
 
 /* Ensure block 0 has a sized UBO declaration before r300g constant-file setup.
@@ -810,16 +810,16 @@ r300vk_shape_block0_ubo(nir_variable *ubo, unsigned size_bytes)
  * colliding with a second synthetic UBO0 variable of a different interface
  * size. */
 static void
-r300vk_declare_block0_ubo(nir_shader *nir, unsigned size_bytes)
+r3v_declare_block0_ubo(nir_shader *nir, unsigned size_bytes)
 {
-   nir_variable *ubo = r300vk_find_block0_ubo(nir);
+   nir_variable *ubo = r3v_find_block0_ubo(nir);
    if (!ubo) {
       ubo = nir_variable_create(nir, nir_var_mem_ubo,
-                                r300vk_block0_ubo_type(size_bytes),
-                                "r300vk_block0_ubo");
+                                r3v_block0_ubo_type(size_bytes),
+                                "r3v_block0_ubo");
    }
-   if (r300vk_ubo_interface_size(ubo) < size_bytes)
-      r300vk_shape_block0_ubo(ubo, size_bytes);
+   if (r3v_ubo_interface_size(ubo) < size_bytes)
+      r3v_shape_block0_ubo(ubo, size_bytes);
 
    nir->info.num_ubos = MAX2(nir->info.num_ubos, 1);
    nir->info.first_ubo_is_default_ubo = true;
@@ -829,10 +829,10 @@ r300vk_declare_block0_ubo(nir_shader *nir, unsigned size_bytes)
  * with push_const has turned each access into load_push_constant(offset) with a
  * BASE/RANGE; rewrite it to load_ubo(block 0, BASE + offset) so it flows through
  * the same nir_lower_ubo_vec4 + index-0 path as the descriptor UBO.  Replay binds
- * the running push-constant window at CONST[0] (r300vk_bind_push_constants), and a
+ * the running push-constant window at CONST[0] (r3v_bind_push_constants), and a
  * push-constant + UBO collision is already rejected, so block 0 is unambiguous. */
 static void
-r300vk_nir_lower_push_constant_to_ubo0(nir_shader *nir)
+r3v_nir_lower_push_constant_to_ubo0(nir_shader *nir)
 {
    nir_foreach_function_impl(impl, nir) {
       bool progress = false;
@@ -869,8 +869,8 @@ r300vk_nir_lower_push_constant_to_ubo0(nir_shader *nir)
     * empty constant file from the (absent) UBO variable and the gallivm draw
     * backend (draw-use-llvm) would assert on the CONST[0] read in
     * lp_build_emit_fetch_src (Register.Index <= file_max).  See
-    * r300vk_declare_block0_ubo for the externals_count mechanism. */
-   r300vk_declare_block0_ubo(nir, 128);
+    * r3v_declare_block0_ubo for the externals_count mechanism. */
+   r3v_declare_block0_ubo(nir, 128);
 }
 
 /* R300's constant file (RC_FILE_CONSTANT) is float-typed and the ISA has no native
@@ -888,17 +888,17 @@ r300vk_nir_lower_push_constant_to_ubo0(nir_shader *nir)
  * is declared but never read is converted harmlessly; words past the 128-byte
  * (32-word) window are ignored (a larger push range is rejected elsewhere). */
 static void
-r300vk_mark_push_const_int_words(const struct glsl_type *type,
+r3v_mark_push_const_int_words(const struct glsl_type *type,
                                  unsigned base_off, uint32_t *mask)
 {
    if (glsl_type_is_array(type)) {
       const struct glsl_type *elem = glsl_get_array_element(type);
       unsigned stride = glsl_get_explicit_stride(type);
       for (unsigned i = 0; i < glsl_get_length(type); i++)
-         r300vk_mark_push_const_int_words(elem, base_off + i * stride, mask);
+         r3v_mark_push_const_int_words(elem, base_off + i * stride, mask);
    } else if (glsl_type_is_struct(type) || glsl_type_is_interface(type)) {
       for (unsigned i = 0; i < glsl_get_length(type); i++)
-         r300vk_mark_push_const_int_words(
+         r3v_mark_push_const_int_words(
             glsl_get_struct_field(type, i),
             base_off + glsl_get_struct_field_offset(type, i), mask);
    } else {
@@ -924,11 +924,11 @@ r300vk_mark_push_const_int_words(const struct glsl_type *type,
 /* Integer-word mask for the shader's push-constant block, or 0 if it has none.
  * Run before nir_lower_explicit_io removes the block variable. */
 static uint32_t
-r300vk_classify_push_const_ints(nir_shader *nir)
+r3v_classify_push_const_ints(nir_shader *nir)
 {
    uint32_t mask = 0;
    nir_foreach_variable_with_modes(var, nir, nir_var_mem_push_const)
-      r300vk_mark_push_const_int_words(var->type, 0, &mask);
+      r3v_mark_push_const_int_words(var->type, 0, &mask);
    return mask;
 }
 
@@ -954,11 +954,11 @@ r300vk_classify_push_const_ints(nir_shader *nir)
  *
  * Shared by the push-constant gate (load_push_constant, src[0], slot-straddle
  * checked) and the UBO-offset gate (load_ubo_vec4, src[1]); together with the
- * dynamic-UBO-index reject in r300vk_nir_lower_vulkan_resource_index_single (the
+ * dynamic-UBO-index reject in r3v_nir_lower_vulkan_resource_index_single (the
  * index selects which UBO, the offset selects where within it) they form the
  * complete "r300 constant-file representability" gate. */
 static bool
-r300vk_nir_static_offset_ok(nir_intrinsic_instr *intr, unsigned off_src,
+r3v_nir_static_offset_ok(nir_intrinsic_instr *intr, unsigned off_src,
                             bool straddle, bool *maybe_dynamic)
 {
    if (!nir_src_is_const(intr->src[off_src])) {
@@ -975,7 +975,7 @@ r300vk_nir_static_offset_ok(nir_intrinsic_instr *intr, unsigned off_src,
 }
 
 static bool
-r300vk_nir_scan_static_offsets(nir_shader *nir, nir_intrinsic_op op,
+r3v_nir_scan_static_offsets(nir_shader *nir, nir_intrinsic_op op,
                                unsigned off_src, bool straddle,
                                bool *maybe_dynamic)
 {
@@ -989,7 +989,7 @@ r300vk_nir_scan_static_offsets(nir_shader *nir, nir_intrinsic_op op,
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
             if (intr->intrinsic != op)
                continue;
-            if (!r300vk_nir_static_offset_ok(intr, off_src, straddle,
+            if (!r3v_nir_static_offset_ok(intr, off_src, straddle,
                                              maybe_dynamic))
                return false;
             if (*maybe_dynamic)
@@ -1002,11 +1002,11 @@ r300vk_nir_scan_static_offsets(nir_shader *nir, nir_intrinsic_op op,
 }
 
 static bool
-r300vk_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
+r3v_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
                           nir_intrinsic_op op, unsigned off_src, bool straddle)
 {
    bool maybe_dynamic = false;
-   if (!r300vk_nir_scan_static_offsets(nir, op, off_src, straddle,
+   if (!r3v_nir_scan_static_offsets(nir, op, off_src, straddle,
                                        &maybe_dynamic))
       return false;
    if (!maybe_dynamic)
@@ -1015,7 +1015,7 @@ r300vk_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
    nir_shader *check = nir_shader_clone(NULL, nir);
    r300_optimize_nir(check, r300_screen(pscreen));
 
-   bool ok = r300vk_nir_scan_static_offsets(check, op, off_src, straddle,
+   bool ok = r3v_nir_scan_static_offsets(check, op, off_src, straddle,
                                             &maybe_dynamic);
    ralloc_free(check);
    return ok && !maybe_dynamic;
@@ -1024,21 +1024,21 @@ r300vk_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
 /* BASE is 0 for push constants (after nir_lower_explicit_io), so src[0] is the
  * full byte offset; slot-straddle matters. */
 static bool
-r300vk_nir_push_const_shape_ok(struct pipe_screen *pscreen, nir_shader *nir)
+r3v_nir_push_const_shape_ok(struct pipe_screen *pscreen, nir_shader *nir)
 {
-   return r300vk_nir_offsets_static(pscreen, nir,
+   return r3v_nir_offsets_static(pscreen, nir,
                                     nir_intrinsic_load_push_constant, 0, true);
 }
 
 /* Defined below; the input-attachment path needs the identity NEAREST sampler
  * CSO that this lazily creates, so the FS compile ensures it exists. */
 static bool
-r300vk_device_init_identity_map_state(struct r300vk_device *device);
+r3v_device_init_identity_map_state(struct r3v_device *device);
 
 /* True if the shader reads gl_ViewIndex (multiview), in either the deref form
  * vk_spirv_to_nir emits or the lowered load_view_index intrinsic. */
 static bool
-r300vk_nir_uses_view_index(nir_shader *nir)
+r3v_nir_uses_view_index(nir_shader *nir)
 {
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
@@ -1062,9 +1062,9 @@ r300vk_nir_uses_view_index(nir_shader *nir)
 }
 
 static VkResult
-r300vk_compile_shader(struct r300vk_device *device,
+r3v_compile_shader(struct r3v_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
-                       struct r300vk_pipeline *pl,
+                       struct r3v_pipeline *pl,
                        const VkPipelineVertexInputStateCreateInfo *vi)
 {
    /* r300g exposes VS and FS only; geometry, tessellation, and compute are
@@ -1072,10 +1072,10 @@ r300vk_compile_shader(struct r300vk_device *device,
    if (stage_info->stage != VK_SHADER_STAGE_VERTEX_BIT &&
        stage_info->stage != VK_SHADER_STAGE_FRAGMENT_BIT)
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: unsupported shader stage 0x%x",
+                       "r3v: unsupported shader stage 0x%x",
                        stage_info->stage);
 
-   VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
+   VK_FROM_HANDLE(r3v_shader_module, mod, stage_info->module);
    mesa_shader_stage stage = vk_to_mesa_shader_stage(stage_info->stage);
 
    const struct nir_shader_compiler_options *nir_opts =
@@ -1085,11 +1085,11 @@ r300vk_compile_shader(struct r300vk_device *device,
                                       mod->code, mod->code_size,
                                       stage, stage_info->pName,
                                       stage_info->pSpecializationInfo,
-                                      &r300vk_spirv_opts, nir_opts,
+                                      &r3v_spirv_opts, nir_opts,
                                       false, NULL);
    if (!nir)
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r300vk: vk_spirv_to_nir failed for %s shader",
+                       "r3v: vk_spirv_to_nir failed for %s shader",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
 
@@ -1125,10 +1125,10 @@ r300vk_compile_shader(struct r300vk_device *device,
     * uniform or storage texel buffer lowers to a dummy in the fragment translator and
     * asserts in the SW-TCL draw module's nir_to_tgsi for the vertex stage, so reject
     * the pipeline at compile. */
-   if (r300vk_nir_uses_buffer_resource(nir)) {
+   if (r3v_nir_uses_buffer_resource(nir)) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: %s shader uses a uniform or storage texel buffer; "
+                       "r3v: %s shader uses a uniform or storage texel buffer; "
                        "r300 has no buffer-resource unit",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
@@ -1142,14 +1142,14 @@ r300vk_compile_shader(struct r300vk_device *device,
     * the same vec4-slot path as the keystone UBO. */
    const bool stage_had_texture =
       stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
-      r300vk_nir_uses_texture(nir);
+      r3v_nir_uses_texture(nir);
    /* Flatten fragment sampler descriptors from every set into r300's one texture-
     * unit space using the map create_one_pipeline built from the pipeline layout,
     * so nir_lower_samplers and the replay agree on the unit for a sampler in any
-    * descriptor set.  The map is bounded by R300VK_MAX_FS_SAMPLER_UNITS at create
+    * descriptor set.  The map is bounded by R3V_MAX_FS_SAMPLER_UNITS at create
     * time, so a layout that overflows the units is already rejected there. */
    if (stage_had_texture)
-      r300vk_nir_remap_sampler_units(nir, pl);
+      r3v_nir_remap_sampler_units(nir, pl);
 
    /* Experimental NEAREST tile-stitch: expand each fragment texture() into the
     * tiled-sampler form so a >2048 (multi-tile) sampled image samples the correct
@@ -1157,9 +1157,9 @@ r300vk_compile_shader(struct r300vk_device *device,
     * with its per-image affine/split geometry in the first two block-0 CONST vec4s
     * (declared here so externals_count covers them); the replay binds the four
     * tile views and uploads the geometry.  Off unless the gate is set. */
-   if (stage_had_texture && r300vk_experimental_nearest_stitch_enabled()) {
-      if (r300vk_nir_stitch_samplers(nir, 0, 0))
-         r300vk_declare_block0_ubo(nir, R300VK_NEAREST_STITCH_CONST_VEC4S * 16);
+   if (stage_had_texture && r3v_experimental_nearest_stitch_enabled()) {
+      if (r3v_nir_stitch_samplers(nir, 0, 0))
+         r3v_declare_block0_ubo(nir, R3V_NEAREST_STITCH_CONST_VEC4S * 16);
    }
 
    bool stage_has_input = false;
@@ -1168,7 +1168,7 @@ r300vk_compile_shader(struct r300vk_device *device,
    bool stage_input_multiple = false;
    bool stage_input_integer = false;
    if (stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT)
-      r300vk_nir_lower_subpass_input(nir, &stage_has_input, &stage_input_set,
+      r3v_nir_lower_subpass_input(nir, &stage_has_input, &stage_input_set,
                                      &stage_input_binding, &stage_input_multiple,
                                      &stage_input_integer);
 
@@ -1177,7 +1177,7 @@ r300vk_compile_shader(struct r300vk_device *device,
    if (stage_has_input && stage_input_integer) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: fragment shader reads an integer (SINT/UINT) "
+                       "r3v: fragment shader reads an integer (SINT/UINT) "
                        "subpass input; r300's FP24 fragment ALU has no integer "
                        "texture path");
    }
@@ -1189,7 +1189,7 @@ r300vk_compile_shader(struct r300vk_device *device,
    if (stage_has_input && stage_input_multiple) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: fragment shader reads more than one distinct "
+                       "r3v: fragment shader reads more than one distinct "
                        "input attachment; the replay binds a single input "
                        "attachment per pipeline");
    }
@@ -1202,19 +1202,19 @@ r300vk_compile_shader(struct r300vk_device *device,
    if (stage_has_input && stage_had_texture) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: fragment shader combines a subpass input with "
-                       "a sampled image; r300vk reserves sampler unit zero for "
+                       "r3v: fragment shader combines a subpass input with "
+                       "a sampled image; r3v reserves sampler unit zero for "
                        "the lowered input attachment");
    }
 
    /* Push constants and a UBO both resolve to CONST[0]; r300's single constant
     * file cannot host both, so reject the pair before the lowering below rewrites
     * the UBO chain away.  A shader using only one of them is supported. */
-   const bool uses_push_const = r300vk_nir_uses_push_constants(nir);
-   if (uses_push_const && r300vk_nir_uses_ubo(nir)) {
+   const bool uses_push_const = r3v_nir_uses_push_constants(nir);
+   if (uses_push_const && r3v_nir_uses_ubo(nir)) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: %s shader uses both push constants and a uniform "
+                       "r3v: %s shader uses both push constants and a uniform "
                        "buffer; r300's single constant file holds only one at "
                        "CONST[0]",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
@@ -1224,10 +1224,10 @@ r300vk_compile_shader(struct r300vk_device *device,
    /* A lowered subpassLoad reads inv_extent from CONST[0]; an input-attachment
     * fragment shader that also reads an app UBO or push constants would need two
     * CONST[0] contents.  Reject rather than render wrong pixels. */
-   if (stage_has_input && (uses_push_const || r300vk_nir_uses_ubo(nir))) {
+   if (stage_has_input && (uses_push_const || r3v_nir_uses_ubo(nir))) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: fragment shader combines a subpass input with a "
+                       "r3v: fragment shader combines a subpass input with a "
                        "uniform buffer or push constants; r300's single CONST[0] "
                        "holds only the input's inv_extent");
    }
@@ -1242,17 +1242,17 @@ r300vk_compile_shader(struct r300vk_device *device,
        * (which would corrupt the window-space coordinate the sample uses).
        * A subpass input combined with an app UBO or push constants was rejected
        * above, so this is the only block-0 UBO. */
-      r300vk_declare_block0_ubo(nir, 16);
-      /* r300vk_bind_input_attachment binds device->identity_map_cso.sampler
+      r3v_declare_block0_ubo(nir, 16);
+      /* r3v_bind_input_attachment binds device->identity_map_cso.sampler
        * (NEAREST, CLAMP_TO_EDGE) as the input-attachment sampler at draw time.
        * That CSO is created lazily and otherwise only by the compute identity-map
        * paths, so a graphics-only input-attachment pipeline would bind a NULL
        * sampler and the fragment texture fetch would read undefined data.  Create
        * it now so the draw has a valid sampler. */
-      if (!r300vk_device_init_identity_map_state(device)) {
+      if (!r3v_device_init_identity_map_state(device)) {
          ralloc_free(nir);
          return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY,
-                          "r300vk: failed to create the input-attachment sampler "
+                          "r3v: failed to create the input-attachment sampler "
                           "state");
       }
    }
@@ -1260,15 +1260,15 @@ r300vk_compile_shader(struct r300vk_device *device,
    /* Resolve the descriptor resource chain (vulkan_resource_index ->
     * load_vulkan_descriptor) to a constant block-0 address, or reject the
     * pipeline when the shader needs a resource r300's single read-only constant
-    * file cannot represent.  See r300vk_nir_lower_vulkan_resource_index_single. */
+    * file cannot represent.  See r3v_nir_lower_vulkan_resource_index_single. */
    bool stage_has_ubo = false;
    uint32_t stage_ubo_set = 0, stage_ubo_binding = 0;
-   if (!r300vk_nir_lower_vulkan_resource_index_single(nir, &stage_has_ubo,
+   if (!r3v_nir_lower_vulkan_resource_index_single(nir, &stage_has_ubo,
                                                       &stage_ubo_set,
                                                       &stage_ubo_binding)) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: %s shader uses a descriptor resource r300's "
+                       "r3v: %s shader uses a descriptor resource r300's "
                        "single read-only constant file cannot represent "
                        "(only one static UBO descriptor is supported; storage "
                        "buffers, sampled resources, multiple UBOs, and dynamic "
@@ -1299,26 +1299,26 @@ r300vk_compile_shader(struct r300vk_device *device,
     * the push_const derefs to load_push_constant, then onto load_ubo(block 0) so
     * the UBO path below (nir_lower_ubo_vec4 + the index-0 pin) carries them.
     * Replay binds the running push-constant window at CONST[0]
-    * (r300vk_bind_push_constants).  A push-constant + UBO collision was rejected
+    * (r3v_bind_push_constants).  A push-constant + UBO collision was rejected
     * above, so block 0 is unambiguous.  r300's constant file is float-only, so an
     * integer push-constant word is uploaded as the float value its lowered ops
     * expect: classify the integer words here (before nir_lower_explicit_io drops
     * the block variable) and the replay converts them.  A dynamic/slot-straddling
     * offset still cannot be represented and is rejected below. */
    if (uses_push_const) {
-      pl->push_const_int_word_mask |= r300vk_classify_push_const_ints(nir);
+      pl->push_const_int_word_mask |= r3v_classify_push_const_ints(nir);
       NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
                nir_address_format_32bit_offset);
-      if (!r300vk_nir_push_const_shape_ok(device->screen, nir)) {
+      if (!r3v_nir_push_const_shape_ok(device->screen, nir)) {
          ralloc_free(nir);
          return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                          "r300vk: %s shader uses a dynamic or slot-straddling "
+                          "r3v: %s shader uses a dynamic or slot-straddling "
                           "push-constant offset; r300 constant-file addressing is "
                           "static and 16-byte-slot granular",
                           stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                           ? "vertex" : "fragment");
       }
-      r300vk_nir_lower_push_constant_to_ubo0(nir);
+      r3v_nir_lower_push_constant_to_ubo0(nir);
       pl->uses_push_constants = true;
    }
 
@@ -1339,7 +1339,7 @@ r300vk_compile_shader(struct r300vk_device *device,
 
    /* The single supported UBO is bound at CONST[0]; pin every load_ubo[_vec4]
     * block index to a literal 0 for ntr_emit_load_ubo's index-0 assert. */
-   r300vk_nir_remap_single_ubo_to_index0(nir);
+   r3v_nir_remap_single_ubo_to_index0(nir);
 
    /* Reject a dynamic UBO offset for the FRAGMENT stage only.  The PFS constant
     * file is addressed by a static vec4 slot with no relative addressing, so a
@@ -1348,25 +1348,25 @@ r300vk_compile_shader(struct r300vk_device *device,
     * advertises as integer- and indirect-const-capable, so a runtime UBO offset
     * (ubuf.arr[gl_VertexIndex]) is representable for the vertex stage. */
    if (stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
-       !r300vk_nir_offsets_static(device->screen, nir,
+       !r3v_nir_offsets_static(device->screen, nir,
                                   nir_intrinsic_load_ubo_vec4, 1, false)) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: %s shader uses a dynamic uniform-buffer offset; "
+                       "r3v: %s shader uses a dynamic uniform-buffer offset; "
                        "r300's constant file is addressed by a static vec4 slot",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
    }
 
-   /* r300vk is apiVersion 1.0 with no VK_KHR_multiview: it reserves no per-view
+   /* r3v is apiVersion 1.0 with no VK_KHR_multiview: it reserves no per-view
     * VS system-value stream and the SW-TCL nir_to_tgsi path has no mapping for the
     * view-index builtin, so a shader reading gl_ViewIndex reaches ureg_swizzle as a
     * null TGSI source and aborts (tgsi_ureg.h reg.File != TGSI_FILE_NULL).  Reject
     * the multiview shader rather than crash. */
-   if (r300vk_nir_uses_view_index(nir)) {
+   if (r3v_nir_uses_view_index(nir)) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: %s shader reads gl_ViewIndex; multiview is not "
+                       "r3v: %s shader reads gl_ViewIndex; multiview is not "
                        "supported on the RS480 SW-TCL path",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
@@ -1378,17 +1378,17 @@ r300vk_compile_shader(struct r300vk_device *device,
     * all inputs would collapse to IN[0] without this assignment. */
    if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT) {
       /* RS480-family has no hardware vertex texture units, and the SW-TCL draw
-       * module that runs the vertex shader has no sampler views bound by r300vk,
+       * module that runs the vertex shader has no sampler views bound by r3v,
        * so a vertex texture fetch reaches tgsi_exec fetch_texel with a NULL
        * sampler (vs_exec_run_linear -> r300_swtcl_draw_vbo) and segfaults at
        * draw.  Reject a vertex shader that samples rather than crash.  A
        * conformant vertex-texturing path must bind the draw module's
        * PIPE_SHADER_VERTEX sampler views and sampler state before this gate can
        * be removed. */
-      if (r300vk_nir_uses_live_texture_after_r300_opt(device->screen, nir)) {
+      if (r3v_nir_uses_live_texture_after_r300_opt(device->screen, nir)) {
          ralloc_free(nir);
          return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                          "r300vk: vertex shader samples a texture; the RS480 "
+                          "r3v: vertex shader samples a texture; the RS480 "
                           "SW-TCL vertex path binds no sampler and cannot fetch "
                           "from a vertex stage");
       }
@@ -1421,13 +1421,13 @@ r300vk_compile_shader(struct r300vk_device *device,
       if (needs_vid || needs_iid) {
          int vid_slot = -1;
          int iid_slot = -1;
-         VkResult r = r300vk_reserve_vs_system_value_streams(
+         VkResult r = r3v_reserve_vs_system_value_streams(
             device, pl, vi, needs_vid, needs_iid, &vid_slot, &iid_slot);
          if (r == VK_ERROR_FEATURE_NOT_PRESENT) {
             if (!r300_nir_lower_vs_system_values_to_intrinsics(nir)) {
                ralloc_free(nir);
                return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                                "r300vk: failed to lower VS system values to "
+                                "r3v: failed to lower VS system values to "
                                 "native intrinsics");
             }
             needs_vid = needs_iid = false;
@@ -1439,7 +1439,7 @@ r300vk_compile_shader(struct r300vk_device *device,
                                                            iid_slot)) {
                ralloc_free(nir);
                return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                                "r300vk: failed to lower VS system values");
+                                "r3v: failed to lower VS system values");
             }
             needs_vid = needs_iid = false;
          }
@@ -1451,7 +1451,7 @@ r300vk_compile_shader(struct r300vk_device *device,
          if (still_needs_vid || still_needs_iid) {
             ralloc_free(nir);
             return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                             "r300vk: VS system-value lowering left an "
+                             "r3v: VS system-value lowering left an "
                              "unsupported read");
          }
       }
@@ -1489,9 +1489,9 @@ r300vk_compile_shader(struct r300vk_device *device,
 }
 
 /* Build and create the vertex elements CSO.  Extracted to keep
- * r300vk_create_one_pipeline within the CCN budget. */
+ * r3v_create_one_pipeline within the CCN budget. */
 static VkResult
-r300vk_vertex_element_count(struct r300vk_device *device,
+r3v_vertex_element_count(struct r3v_device *device,
                             const VkPipelineVertexInputStateCreateInfo *vi,
                             uint32_t *element_count_out)
 {
@@ -1506,13 +1506,13 @@ r300vk_vertex_element_count(struct r300vk_device *device,
    for (uint32_t i = 0; i < vi->vertexAttributeDescriptionCount; i++) {
       const VkVertexInputAttributeDescription *attr =
          &vi->pVertexAttributeDescriptions[i];
-      if (attr->location >= R300VK_MAX_VERTEX_BINDINGS)
+      if (attr->location >= R3V_MAX_VERTEX_BINDINGS)
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                          "r300vk: vertex attribute location %u exceeds %u",
-                          attr->location, R300VK_MAX_VERTEX_BINDINGS - 1);
+                          "r3v: vertex attribute location %u exceeds %u",
+                          attr->location, R3V_MAX_VERTEX_BINDINGS - 1);
       if (location_mask & BITFIELD_BIT(attr->location))
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                          "r300vk: duplicate vertex attribute location %u",
+                          "r3v: duplicate vertex attribute location %u",
                           attr->location);
 
       location_mask |= BITFIELD_BIT(attr->location);
@@ -1521,7 +1521,7 @@ r300vk_vertex_element_count(struct r300vk_device *device,
 
    if (element_count > 0 && location_mask != BITFIELD_MASK(element_count))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r300vk: sparse vertex attribute locations are not "
+                       "r3v: sparse vertex attribute locations are not "
                        "representable by r300g vertex elements");
 
    *element_count_out = element_count;
@@ -1529,28 +1529,28 @@ r300vk_vertex_element_count(struct r300vk_device *device,
 }
 
 static VkResult
-r300vk_populate_vertex_element(struct r300vk_device *device,
-                                struct r300vk_pipeline *pl,
+r3v_populate_vertex_element(struct r3v_device *device,
+                                struct r3v_pipeline *pl,
                                 const VkPipelineVertexInputStateCreateInfo *vi,
                                 uint32_t attr_index,
                                 struct pipe_vertex_element ve[PIPE_MAX_ATTRIBS])
 {
    const VkVertexInputAttributeDescription *attr =
       &vi->pVertexAttributeDescriptions[attr_index];
-   if (attr->binding >= R300VK_MAX_VERTEX_BINDINGS)
+   if (attr->binding >= R3V_MAX_VERTEX_BINDINGS)
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r300vk: vertex attribute binding %u exceeds %u",
-                       attr->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
+                       "r3v: vertex attribute binding %u exceeds %u",
+                       attr->binding, R3V_MAX_VERTEX_BINDINGS - 1);
 
-   enum pipe_format elem_fmt = r300vk_vk_format_to_pipe_format(attr->format);
+   enum pipe_format elem_fmt = r3v_vk_format_to_pipe_format(attr->format);
    if (elem_fmt == PIPE_FORMAT_NONE)
       return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
-                       "r300vk: unsupported vertex attribute format %d "
+                       "r3v: unsupported vertex attribute format %d "
                        "at location %u", attr->format, attr->location);
-   const uint32_t attr_size = r300vk_vertex_attr_data_size(elem_fmt);
+   const uint32_t attr_size = r3v_vertex_attr_data_size(elem_fmt);
    if (attr->offset > UINT32_MAX - attr_size)
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r300vk: vertex attribute offset %u exceeds "
+                       "r3v: vertex attribute offset %u exceeds "
                        "representable binding extent", attr->offset);
 
    struct pipe_vertex_element *elem = &ve[attr->location];
@@ -1558,10 +1558,10 @@ r300vk_populate_vertex_element(struct r300vk_device *device,
    elem->vertex_buffer_index = (uint8_t)attr->binding;
    elem->src_format          = (uint8_t)elem_fmt;
    const VkVertexInputBindingDescription *binding_desc =
-      r300vk_find_vertex_binding_desc(vi, attr->binding);
+      r3v_find_vertex_binding_desc(vi, attr->binding);
    if (!binding_desc)
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: vertex attribute binding %u has no "
+                       "r3v: vertex attribute binding %u has no "
                        "matching binding description", attr->binding);
 
    elem->src_stride = binding_desc->stride;
@@ -1579,13 +1579,13 @@ r300vk_populate_vertex_element(struct r300vk_device *device,
 }
 
 static VkResult
-r300vk_build_velems_cso(struct r300vk_device *device,
-                         struct r300vk_pipeline *pl,
+r3v_build_velems_cso(struct r3v_device *device,
+                         struct r3v_pipeline *pl,
                          const VkPipelineVertexInputStateCreateInfo *vi)
 {
    struct pipe_vertex_element ve[PIPE_MAX_ATTRIBS];
    uint32_t n = 0;
-   VkResult result = r300vk_vertex_element_count(device, vi, &n);
+   VkResult result = r3v_vertex_element_count(device, vi, &n);
    if (result != VK_SUCCESS)
       return result;
 
@@ -1593,22 +1593,22 @@ r300vk_build_velems_cso(struct r300vk_device *device,
       for (uint32_t b = 0; b < vi->vertexBindingDescriptionCount; b++) {
          const VkVertexInputBindingDescription *desc =
             &vi->pVertexBindingDescriptions[b];
-         if (desc->binding >= R300VK_MAX_VERTEX_BINDINGS)
+         if (desc->binding >= R3V_MAX_VERTEX_BINDINGS)
             return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                             "r300vk: vertex binding %u exceeds %u",
-                             desc->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
+                             "r3v: vertex binding %u exceeds %u",
+                             desc->binding, R3V_MAX_VERTEX_BINDINGS - 1);
       }
    }
 
    memset(ve, 0, sizeof(ve));
    for (uint32_t i = 0; vi && i < vi->vertexAttributeDescriptionCount; i++) {
-      VkResult res = r300vk_populate_vertex_element(device, pl, vi, i, ve);
+      VkResult res = r3v_populate_vertex_element(device, pl, vi, i, ve);
       if (res != VK_SUCCESS)
          return res;
    }
 
    /* Append synthetic VS-system-value elements (R32_SINT, one int per element)
-    * the VS reads via the lowering in r300vk_compile_shader.  instance_divisor
+    * the VS reads via the lowering in r3v_compile_shader.  instance_divisor
     * 0 steps the vertex-id element per vertex; 1 steps the instance-id element
     * per instance. */
    uint32_t velem_count = n;
@@ -1642,7 +1642,7 @@ r300vk_build_velems_cso(struct r300vk_device *device,
  * the inverted factors into a high band), so the map is explicit.  Dual-source
  * SRC1 factors are unreachable: the dualSrcBlend feature stays false. */
 static unsigned
-r300vk_blend_factor_to_pipe(VkBlendFactor f)
+r3v_blend_factor_to_pipe(VkBlendFactor f)
 {
    switch (f) {
    case VK_BLEND_FACTOR_ONE:                 return PIPE_BLENDFACTOR_ONE;
@@ -1669,7 +1669,7 @@ r300vk_blend_factor_to_pipe(VkBlendFactor f)
 /* VkBlendOp and PIPE_BLEND_* share value order (ADD=0 .. MAX=4); proven
  * statically like the compare-op map. */
 static unsigned
-r300vk_blend_op_to_pipe(VkBlendOp op)
+r3v_blend_op_to_pipe(VkBlendOp op)
 {
    STATIC_ASSERT((unsigned)VK_BLEND_OP_ADD == PIPE_BLEND_ADD &&
                  (unsigned)VK_BLEND_OP_SUBTRACT == PIPE_BLEND_SUBTRACT &&
@@ -1680,7 +1680,7 @@ r300vk_blend_op_to_pipe(VkBlendOp op)
 }
 
 unsigned
-r300vk_cull_mode_to_pipe(VkCullModeFlags cull)
+r3v_cull_mode_to_pipe(VkCullModeFlags cull)
 {
    switch (cull) {
    case VK_CULL_MODE_FRONT_BIT:          return PIPE_FACE_FRONT;
@@ -1694,7 +1694,7 @@ r300vk_cull_mode_to_pipe(VkCullModeFlags cull)
  * the static proof rather than an identity cast so an enum change breaks the
  * build, not rendering. */
 unsigned
-r300vk_compare_op_to_pipe(VkCompareOp op)
+r3v_compare_op_to_pipe(VkCompareOp op)
 {
    STATIC_ASSERT((unsigned)VK_COMPARE_OP_NEVER == PIPE_FUNC_NEVER &&
                  (unsigned)VK_COMPARE_OP_LESS == PIPE_FUNC_LESS &&
@@ -1710,7 +1710,7 @@ r300vk_compare_op_to_pipe(VkCompareOp op)
 /* VkStencilOp and PIPE_STENCIL_OP_* do NOT share order (Vulkan places the
  * wrap variants after INVERT, gallium before), so this map is explicit. */
 unsigned
-r300vk_stencil_op_to_pipe(VkStencilOp op)
+r3v_stencil_op_to_pipe(VkStencilOp op)
 {
    switch (op) {
    case VK_STENCIL_OP_ZERO:                return PIPE_STENCIL_OP_ZERO;
@@ -1726,22 +1726,22 @@ r300vk_stencil_op_to_pipe(VkStencilOp op)
 }
 
 static void
-r300vk_stencil_face_to_pipe(const VkStencilOpState *vk_face,
+r3v_stencil_face_to_pipe(const VkStencilOpState *vk_face,
                             bool enabled,
                             struct pipe_stencil_state *out)
 {
    out->enabled   = enabled;
-   out->func      = r300vk_compare_op_to_pipe(vk_face->compareOp);
-   out->fail_op   = r300vk_stencil_op_to_pipe(vk_face->failOp);
-   out->zpass_op  = r300vk_stencil_op_to_pipe(vk_face->passOp);
-   out->zfail_op  = r300vk_stencil_op_to_pipe(vk_face->depthFailOp);
+   out->func      = r3v_compare_op_to_pipe(vk_face->compareOp);
+   out->fail_op   = r3v_stencil_op_to_pipe(vk_face->failOp);
+   out->zpass_op  = r3v_stencil_op_to_pipe(vk_face->passOp);
+   out->zfail_op  = r3v_stencil_op_to_pipe(vk_face->depthFailOp);
    out->valuemask = (uint8_t)vk_face->compareMask;
    out->writemask = (uint8_t)vk_face->writeMask;
 }
 
 static VkResult
-r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
-                                        struct r300vk_pipeline *pl,
+r3v_init_graphics_pipeline_cso_state(struct r3v_device *device,
+                                        struct r3v_pipeline *pl,
                                         const VkGraphicsPipelineCreateInfo *info)
 {
    /* Translate the pipeline-static colour-blend state.  r300 shares one blend
@@ -1770,12 +1770,12 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
       const VkPipelineColorBlendAttachmentState *att =
          &vk_cb_state->pAttachments[0];
       bs.rt[0].blend_enable     = att->blendEnable;
-      bs.rt[0].rgb_func         = r300vk_blend_op_to_pipe(att->colorBlendOp);
-      bs.rt[0].rgb_src_factor   = r300vk_blend_factor_to_pipe(att->srcColorBlendFactor);
-      bs.rt[0].rgb_dst_factor   = r300vk_blend_factor_to_pipe(att->dstColorBlendFactor);
-      bs.rt[0].alpha_func       = r300vk_blend_op_to_pipe(att->alphaBlendOp);
-      bs.rt[0].alpha_src_factor = r300vk_blend_factor_to_pipe(att->srcAlphaBlendFactor);
-      bs.rt[0].alpha_dst_factor = r300vk_blend_factor_to_pipe(att->dstAlphaBlendFactor);
+      bs.rt[0].rgb_func         = r3v_blend_op_to_pipe(att->colorBlendOp);
+      bs.rt[0].rgb_src_factor   = r3v_blend_factor_to_pipe(att->srcColorBlendFactor);
+      bs.rt[0].rgb_dst_factor   = r3v_blend_factor_to_pipe(att->dstColorBlendFactor);
+      bs.rt[0].alpha_func       = r3v_blend_op_to_pipe(att->alphaBlendOp);
+      bs.rt[0].alpha_src_factor = r3v_blend_factor_to_pipe(att->srcAlphaBlendFactor);
+      bs.rt[0].alpha_dst_factor = r3v_blend_factor_to_pipe(att->dstAlphaBlendFactor);
       bs.rt[0].colormask        = att->colorWriteMask & PIPE_MASK_RGBA;
    }
    /* VkLogicOp and PIPE_LOGICOP_* do NOT share value order (gallium follows
@@ -1810,7 +1810,7 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
 
    /* Translate the pipeline-static rasterization state.  Fields covered by
     * dynamic state still get their static value here: the replay
-    * overlays only the R300VK_DYN_* bits the pipeline declared dynamic AND
+    * overlays only the R3V_DYN_* bits the pipeline declared dynamic AND
     * the command buffer actually set. */
    const VkPipelineRasterizationStateCreateInfo *vk_rs =
       info ? info->pRasterizationState : NULL;
@@ -1836,7 +1836,7 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
    rs.point_size  = 1.0f;
    if (vk_rs) {
       /* VK_EXT_depth_clip_enable: explicit clip control overrides the
-       * default-on near/far clip (r300vk does not expose depthClampEnable,
+       * default-on near/far clip (r3v does not expose depthClampEnable,
        * so the implicit inverse-of-clamp rule never fires). */
       const VkPipelineRasterizationDepthClipStateCreateInfoEXT *clip_info =
          vk_find_struct_const(vk_rs->pNext,
@@ -1857,7 +1857,7 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
                                    ? line_info->lineStippleFactor - 1 : 0;
          rs.line_stipple_pattern = line_info->lineStipplePattern;
       }
-      rs.cull_face = r300vk_cull_mode_to_pipe(vk_rs->cullMode);
+      rs.cull_face = r3v_cull_mode_to_pipe(vk_rs->cullMode);
       rs.front_ccw = vk_rs->frontFace == VK_FRONT_FACE_COUNTER_CLOCKWISE;
       rs.line_width = vk_rs->lineWidth != 0.0f ? vk_rs->lineWidth : 1.0f;
       if (vk_rs->depthBiasEnable) {
@@ -1884,10 +1884,10 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
    if (vk_ds) {
       dsa.depth_enabled   = vk_ds->depthTestEnable;
       dsa.depth_writemask = vk_ds->depthWriteEnable;
-      dsa.depth_func      = r300vk_compare_op_to_pipe(vk_ds->depthCompareOp);
-      r300vk_stencil_face_to_pipe(&vk_ds->front, vk_ds->stencilTestEnable,
+      dsa.depth_func      = r3v_compare_op_to_pipe(vk_ds->depthCompareOp);
+      r3v_stencil_face_to_pipe(&vk_ds->front, vk_ds->stencilTestEnable,
                                   &dsa.stencil[0]);
-      r300vk_stencil_face_to_pipe(&vk_ds->back, vk_ds->stencilTestEnable,
+      r3v_stencil_face_to_pipe(&vk_ds->back, vk_ds->stencilTestEnable,
                                   &dsa.stencil[1]);
       pl->static_stencil_ref_front = vk_ds->front.reference;
       pl->static_stencil_ref_back  = vk_ds->back.reference;
@@ -1907,7 +1907,7 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
 }
 
 static void
-r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
+r3v_capture_dynamic_state(struct r3v_pipeline *pl,
                              const VkGraphicsPipelineCreateInfo *info)
 {
    bool dynamic_viewport = false;
@@ -1927,60 +1927,60 @@ r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
          case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE:
             dynamic_raster_discard = true;
             break;
-         /* The R300VK_DYN_* family: a vkCmdSet* value applies to a draw only
+         /* The R3V_DYN_* family: a vkCmdSet* value applies to a draw only
           * when the bound pipeline declared that state dynamic, so the replay
           * masks its merged Set* shadow with dyn_mask before overlaying the
           * pipeline's rs/dsa templates. */
          case VK_DYNAMIC_STATE_CULL_MODE:
-            pl->dyn_mask |= R300VK_DYN_CULL;
+            pl->dyn_mask |= R3V_DYN_CULL;
             break;
          case VK_DYNAMIC_STATE_FRONT_FACE:
-            pl->dyn_mask |= R300VK_DYN_FRONT_FACE;
+            pl->dyn_mask |= R3V_DYN_FRONT_FACE;
             break;
          case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY:
-            pl->dyn_mask |= R300VK_DYN_TOPOLOGY;
+            pl->dyn_mask |= R3V_DYN_TOPOLOGY;
             break;
          case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE:
-            pl->dyn_mask |= R300VK_DYN_DEPTH_TEST;
+            pl->dyn_mask |= R3V_DYN_DEPTH_TEST;
             break;
          case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE:
-            pl->dyn_mask |= R300VK_DYN_DEPTH_WRITE;
+            pl->dyn_mask |= R3V_DYN_DEPTH_WRITE;
             break;
          case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP:
-            pl->dyn_mask |= R300VK_DYN_DEPTH_OP;
+            pl->dyn_mask |= R3V_DYN_DEPTH_OP;
             break;
          case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE:
-            pl->dyn_mask |= R300VK_DYN_DEPTH_BOUNDS;
+            pl->dyn_mask |= R3V_DYN_DEPTH_BOUNDS;
             break;
          case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE:
-            pl->dyn_mask |= R300VK_DYN_STENCIL_TEST;
+            pl->dyn_mask |= R3V_DYN_STENCIL_TEST;
             break;
          case VK_DYNAMIC_STATE_STENCIL_OP:
-            pl->dyn_mask |= R300VK_DYN_STENCIL_OP;
+            pl->dyn_mask |= R3V_DYN_STENCIL_OP;
             break;
          case VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK:
-            pl->dyn_mask |= R300VK_DYN_STENCIL_CMP_MASK;
+            pl->dyn_mask |= R3V_DYN_STENCIL_CMP_MASK;
             break;
          case VK_DYNAMIC_STATE_STENCIL_WRITE_MASK:
-            pl->dyn_mask |= R300VK_DYN_STENCIL_WR_MASK;
+            pl->dyn_mask |= R3V_DYN_STENCIL_WR_MASK;
             break;
          case VK_DYNAMIC_STATE_STENCIL_REFERENCE:
-            pl->dyn_mask |= R300VK_DYN_STENCIL_REF;
+            pl->dyn_mask |= R3V_DYN_STENCIL_REF;
             break;
          case VK_DYNAMIC_STATE_DEPTH_BIAS:
-            pl->dyn_mask |= R300VK_DYN_DEPTH_BIAS;
+            pl->dyn_mask |= R3V_DYN_DEPTH_BIAS;
             break;
          case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE:
-            pl->dyn_mask |= R300VK_DYN_DEPTH_BIAS_EN;
+            pl->dyn_mask |= R3V_DYN_DEPTH_BIAS_EN;
             break;
          case VK_DYNAMIC_STATE_BLEND_CONSTANTS:
-            pl->dyn_mask |= R300VK_DYN_BLEND_CONST;
+            pl->dyn_mask |= R3V_DYN_BLEND_CONST;
             break;
          case VK_DYNAMIC_STATE_LINE_WIDTH:
-            pl->dyn_mask |= R300VK_DYN_LINE_WIDTH;
+            pl->dyn_mask |= R3V_DYN_LINE_WIDTH;
             break;
          case VK_DYNAMIC_STATE_LINE_STIPPLE_EXT:
-            pl->dyn_mask |= R300VK_DYN_LINE_STIPPLE;
+            pl->dyn_mask |= R3V_DYN_LINE_STIPPLE;
             break;
          default:
             break;
@@ -2012,7 +2012,7 @@ r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
 }
 
 static VkResult
-r300vk_graphics_pipeline_create_result(VkResult result)
+r3v_graphics_pipeline_create_result(VkResult result)
 {
    switch (result) {
    case VK_SUCCESS:
@@ -2033,18 +2033,18 @@ r300vk_graphics_pipeline_create_result(VkResult result)
  * no colour), but the draw still rasterizes: the depth and stencil tests are ROP
  * functions that run without a fragment program.  r300_update_rs_block, however,
  * dereferences r300_fs()->shader unconditionally, so the SW-TCL draw needs a
- * bound fragment program -- and r300vk_replay_draw skips any draw whose fs_cso is
+ * bound fragment program -- and r3v_replay_draw skips any draw whose fs_cso is
  * NULL, which silently drops the depth/stencil work (the
  * dEQP-VK.pipeline.monolithic.stencil.nocolor.* cluster renders nothing).  Binding
  * this no-op fragment program lets the rasterizer execute the depth/stencil ops;
  * with no colour attachment the colour write is masked. */
 static void *
-r300vk_synthesize_noop_fs(struct pipe_context *pipe)
+r3v_synthesize_noop_fs(struct pipe_context *pipe)
 {
    const nir_shader_compiler_options *opts =
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_noop_fs");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_noop_fs");
 
    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                            glsl_vec4_type(), "color");
@@ -2067,12 +2067,12 @@ r300vk_synthesize_noop_fs(struct pipe_context *pipe)
 }
 
 static VkResult
-r300vk_create_one_pipeline(struct r300vk_device *device,
+r3v_create_one_pipeline(struct r3v_device *device,
                              const VkGraphicsPipelineCreateInfo *info,
                              const VkAllocationCallbacks *pAllocator,
                              VkPipeline *pPipeline)
 {
-   struct r300vk_pipeline *pl;
+   struct r3v_pipeline *pl;
 
    pl = vk_zalloc2(&device->vk.alloc, pAllocator,
                    sizeof(*pl), 8,
@@ -2084,9 +2084,9 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
 
 #define FAIL_PIPELINE(r) \
    do { \
-      VkResult fail_result = r300vk_graphics_pipeline_create_result(r); \
-      r300vk_DestroyPipeline(r300vk_device_to_handle(device), \
-                             r300vk_pipeline_to_handle(pl), pAllocator); \
+      VkResult fail_result = r3v_graphics_pipeline_create_result(r); \
+      r3v_DestroyPipeline(r3v_device_to_handle(device), \
+                             r3v_pipeline_to_handle(pl), pAllocator); \
       return fail_result; \
    } while (0)
 
@@ -2098,40 +2098,40 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
    VK_FROM_HANDLE(vk_pipeline_layout, pc_layout, info->layout);
    if (pc_layout && pc_layout->push_range_count > 1)
       FAIL_PIPELINE(vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                              "r300vk: %u push-constant ranges; r300's single "
+                              "r3v: %u push-constant ranges; r300's single "
                               "constant slot supports at most one",
                               pc_layout->push_range_count));
 
    /* Assign every combined-image-sampler in the pipeline layout a flat fragment
     * texture unit, in (set, binding) order across all sets, so a sampler in any
-    * descriptor set gets a unit the shader rewrite (r300vk_nir_remap_sampler_units)
-    * and the replay (r300vk_bind_descriptor_textures) both honour.  A layout that
+    * descriptor set gets a unit the shader rewrite (r3v_nir_remap_sampler_units)
+    * and the replay (r3v_bind_descriptor_textures) both honour.  A layout that
     * needs more units than r300 has is rejected here rather than aliasing them. */
    pl->fs_sampler_map_count = 0;
-   const bool nearest_stitch = r300vk_experimental_nearest_stitch_enabled();
+   const bool nearest_stitch = r3v_experimental_nearest_stitch_enabled();
    if (pc_layout) {
       uint32_t next_unit = 0;
       for (uint32_t set = 0; set < pc_layout->set_count; set++) {
          struct vk_descriptor_set_layout *vk_dsl = pc_layout->set_layouts[set];
          if (!vk_dsl)
             continue;
-         const struct r300vk_descriptor_set_layout *dsl =
-            container_of(vk_dsl, struct r300vk_descriptor_set_layout, base);
+         const struct r3v_descriptor_set_layout *dsl =
+            container_of(vk_dsl, struct r3v_descriptor_set_layout, base);
          for (uint32_t b = 0; b < dsl->binding_count; b++) {
-            const struct r300vk_dsl_binding *bnd = &dsl->bindings[b];
+            const struct r3v_dsl_binding *bnd = &dsl->bindings[b];
             if (bnd->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                continue;
             /* Under the stitch gate each sampler reserves a 2x2 tile-unit grid so
              * its four per-tile fetches land on distinct units. */
             const uint32_t span = nearest_stitch
-               ? MAX2(bnd->count, R300VK_NEAREST_STITCH_TILE_UNITS)
+               ? MAX2(bnd->count, R3V_NEAREST_STITCH_TILE_UNITS)
                : bnd->count;
-            if (pl->fs_sampler_map_count >= R300VK_MAX_FS_SAMPLER_UNITS ||
-                next_unit + span > R300VK_MAX_FS_SAMPLER_UNITS)
+            if (pl->fs_sampler_map_count >= R3V_MAX_FS_SAMPLER_UNITS ||
+                next_unit + span > R3V_MAX_FS_SAMPLER_UNITS)
                FAIL_PIPELINE(vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                             "r300vk: pipeline layout declares more combined image "
+                             "r3v: pipeline layout declares more combined image "
                              "samplers than r300's %u fragment texture units",
-                             R300VK_MAX_FS_SAMPLER_UNITS));
+                             R3V_MAX_FS_SAMPLER_UNITS));
             pl->fs_sampler_map[pl->fs_sampler_map_count].set = set;
             pl->fs_sampler_map[pl->fs_sampler_map_count].binding = bnd->binding;
             pl->fs_sampler_map[pl->fs_sampler_map_count].unit = next_unit;
@@ -2144,14 +2144,14 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
    }
 
    for (uint32_t i = 0; i < info->stageCount; i++) {
-      VkResult r = r300vk_compile_shader(device, &info->pStages[i], pl,
+      VkResult r = r3v_compile_shader(device, &info->pStages[i], pl,
                                          info->pVertexInputState);
       if (r != VK_SUCCESS)
          FAIL_PIPELINE(r);
    }
 
    /* A pipeline with no fragment stage still rasterizes depth/stencil, but
-    * r300vk_replay_draw skips a draw whose fs_cso is NULL (r300_update_rs_block
+    * r3v_replay_draw skips a draw whose fs_cso is NULL (r300_update_rs_block
     * would otherwise NULL-deref r300_fs()->shader).  Supply a no-op fragment
     * program so the depth/stencil ops run.  A pipeline that statically discards
     * rasterization produces nothing, so leave its fs_cso NULL and let the replay
@@ -2160,7 +2160,7 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
       const VkPipelineRasterizationStateCreateInfo *rs =
          info->pRasterizationState;
       if (!(rs && rs->rasterizerDiscardEnable)) {
-         pl->fs_cso = r300vk_synthesize_noop_fs(device->pipe);
+         pl->fs_cso = r3v_synthesize_noop_fs(device->pipe);
          if (!pl->fs_cso)
             FAIL_PIPELINE(vk_error(device, VK_ERROR_INITIALIZATION_FAILED));
          pl->fs_hw_valid = r300_fs_get_hw_code(pl->fs_cso, &pl->fs_hw);
@@ -2169,16 +2169,16 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
 
    /* r300 has separate vertex and fragment constant files, so a single shader
     * using both push constants and a UBO is the only true CONST[0] collision,
-    * and r300vk_compile_shader already rejects that per stage.  A pipeline that
+    * and r3v_compile_shader already rejects that per stage.  A pipeline that
     * splits them across stages (push constants in one, a UBO in the other) is
     * representable in hardware, but the replay is not split: it binds the
-    * push-constant window to BOTH stages' CONST[0] (r300vk_bind_push_constants)
+    * push-constant window to BOTH stages' CONST[0] (r3v_bind_push_constants)
     * whenever any stage uses push constants, which then cannot also bind the
     * other stage's UBO.  Reject the cross-stage mix rather than silently
     * overwrite the UBO stage's CONST[0] with the push-constant window. */
    if (pl->uses_push_constants && (pl->vs_has_ubo || pl->fs_has_ubo))
       FAIL_PIPELINE(vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                              "r300vk: pipeline uses push constants in one stage "
+                              "r3v: pipeline uses push constants in one stage "
                               "and a uniform buffer in another; the replay binds "
                               "the push-constant window to both stages' CONST[0] "
                               "and cannot also bind a per-stage UBO"));
@@ -2189,18 +2189,18 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
    if (pl->fs_nearest_stitch &&
        (pl->fs_has_ubo || pl->uses_push_constants || pl->fs_has_input_attachment))
       FAIL_PIPELINE(vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                              "r300vk: experimental NEAREST tile-stitch needs "
+                              "r3v: experimental NEAREST tile-stitch needs "
                               "fragment CONST[0] for the per-image tile geometry, "
                               "so a fragment UBO, push constants, or a subpass "
                               "input cannot be combined with it"));
 
-   VkResult cso_res = r300vk_init_graphics_pipeline_cso_state(device, pl, info);
+   VkResult cso_res = r3v_init_graphics_pipeline_cso_state(device, pl, info);
    if (cso_res != VK_SUCCESS)
       FAIL_PIPELINE(cso_res);
 
    if (info->pVertexInputState || pl->needs_vertex_id_stream ||
        pl->needs_instance_id_stream) {
-      VkResult r = r300vk_build_velems_cso(device, pl, info->pVertexInputState);
+      VkResult r = r3v_build_velems_cso(device, pl, info->pVertexInputState);
       if (r != VK_SUCCESS)
          FAIL_PIPELINE(r);
    }
@@ -2211,25 +2211,25 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
                   ? info->pInputAssemblyState->topology
                   : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-   r300vk_capture_dynamic_state(pl, info);
+   r3v_capture_dynamic_state(pl, info);
 
-   *pPipeline = r300vk_pipeline_to_handle(pl);
+   *pPipeline = r3v_pipeline_to_handle(pl);
    return VK_SUCCESS;
 }
 
 VkResult
-r300vk_CreateGraphicsPipelines(VkDevice _device,
+r3v_CreateGraphicsPipelines(VkDevice _device,
                                  VkPipelineCache pipelineCache,
                                  uint32_t createInfoCount,
                                  const VkGraphicsPipelineCreateInfo *pCreateInfos,
                                  const VkAllocationCallbacks *pAllocator,
                                  VkPipeline *pPipelines)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    VkResult result = VK_SUCCESS;
 
    for (uint32_t i = 0; i < createInfoCount; i++) {
-      VkResult r = r300vk_create_one_pipeline(device, &pCreateInfos[i],
+      VkResult r = r3v_create_one_pipeline(device, &pCreateInfos[i],
                                                pAllocator, &pPipelines[i]);
       if (r != VK_SUCCESS) {
          pPipelines[i] = VK_NULL_HANDLE;
@@ -2250,7 +2250,7 @@ r300vk_CreateGraphicsPipelines(VkDevice _device,
  * the RC backend.  r300_nir_classify_compute reads the shader and mutates
  * nothing.  Returns false only when SPIR-V translation itself failed. */
 static bool
-r300vk_classify_compute_kernel(struct r300vk_device *device,
+r3v_classify_compute_kernel(struct r3v_device *device,
                                const VkPipelineShaderStageCreateInfo *stage_info,
                                struct r300_compute_admission *adm,
                                struct r300_compute_identity_pattern *ident,
@@ -2293,14 +2293,14 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_log4_pool_pattern *log4_pool,
                                uint32_t local_size[3])
 {
-   VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
+   VK_FROM_HANDLE(r3v_shader_module, mod, stage_info->module);
    if (!mod)
       return false;
 
    nir_shader *nir = vk_spirv_to_nir(&device->vk, mod->code, mod->code_size,
                                      MESA_SHADER_COMPUTE, stage_info->pName,
                                      stage_info->pSpecializationInfo,
-                                     &r300vk_spirv_opts,
+                                     &r3v_spirv_opts,
                                      device->screen->nir_options[MESA_SHADER_FRAGMENT],
                                      false, NULL);
    if (!nir)
@@ -2353,12 +2353,12 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
       NIR_PASS(progress, nir, nir_opt_constant_folding);
    } while (progress);
 
-   /* Detector-eye view of the kernel: R300VK_DEBUG=classify_nir dumps the
+   /* Detector-eye view of the kernel: R3V_DEBUG=classify_nir dumps the
     * exact NIR the classify + pattern detectors walk, the first thing to
     * read when a kernel that should match a raster verb dispatches as an
     * unknown-shape no-op. */
    {
-      const char *dbg = getenv("R300VK_DEBUG");
+      const char *dbg = getenv("R3V_DEBUG");
       if (dbg && strstr(dbg, "classify_nir"))
          nir_print_shader(nir, stderr);
    }
@@ -2415,10 +2415,10 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
  * bit-exact readback requires).
  *
  * Idempotent: subsequent identity-map pipelines find the CSOs populated and
- * skip recreation.  The matching delete_*_state runs in r300vk_DestroyDevice
+ * skip recreation.  The matching delete_*_state runs in r3v_DestroyDevice
  * before the pipe_context itself is destroyed. */
 static bool
-r300vk_device_init_identity_map_state_locked(struct r300vk_device *device)
+r3v_device_init_identity_map_state_locked(struct r3v_device *device)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
@@ -2480,10 +2480,10 @@ r300vk_device_init_identity_map_state_locked(struct r300vk_device *device)
 }
 
 static bool
-r300vk_device_init_identity_map_state(struct r300vk_device *device)
+r3v_device_init_identity_map_state(struct r3v_device *device)
 {
    simple_mtx_lock(&device->identity_map_cso_lock);
-   bool ok = r300vk_device_init_identity_map_state_locked(device);
+   bool ok = r3v_device_init_identity_map_state_locked(device);
    simple_mtx_unlock(&device->identity_map_cso_lock);
    return ok;
 }
@@ -2494,7 +2494,7 @@ r300vk_device_init_identity_map_state(struct r300vk_device *device)
  * mask).  Returns the resource + a NEAREST-swizzle sampler view through out
  * params; the caller holds identity_map_cso_lock. */
 static bool
-r300vk_create_shift_lut_locked(struct pipe_context *pipe,
+r3v_create_shift_lut_locked(struct pipe_context *pipe,
                                struct pipe_screen *screen,
                                const uint32_t values[32],
                                struct pipe_resource **out_res,
@@ -2554,9 +2554,9 @@ r300vk_create_shift_lut_locked(struct pipe_context *pipe,
  * The 2^j lookup (texel j = 2^j) feeds the multiply; the fill lookup (texel b =
  * 0xFFFFFFFF << (32-b), the top b bits, b=0 -> 0) supplies the ishr sign
  * extension.  Device-global and read-only, created once; the caller holds
- * identity_map_cso_lock.  Freed in r300vk_DestroyDevice. */
+ * identity_map_cso_lock.  Freed in r3v_DestroyDevice. */
 static bool
-r300vk_device_ensure_shift_variable_lut_locked(struct r300vk_device *device)
+r3v_device_ensure_shift_variable_lut_locked(struct r3v_device *device)
 {
    if (device->shift_variable_lut_view && device->shift_variable_fill_lut_view)
       return true;
@@ -2572,12 +2572,12 @@ r300vk_device_ensure_shift_variable_lut_locked(struct r300vk_device *device)
    }
 
    if (!device->shift_variable_lut_view &&
-       !r300vk_create_shift_lut_locked(pipe, screen, pow2,
+       !r3v_create_shift_lut_locked(pipe, screen, pow2,
                                        &device->shift_variable_lut,
                                        &device->shift_variable_lut_view))
       return false;
    if (!device->shift_variable_fill_lut_view &&
-       !r300vk_create_shift_lut_locked(pipe, screen, fill,
+       !r3v_create_shift_lut_locked(pipe, screen, fill,
                                        &device->shift_variable_fill_lut,
                                        &device->shift_variable_fill_lut_view))
       return false;
@@ -2625,7 +2625,7 @@ emit_binary_op(struct ureg_program *ureg, uint16_t nir_op,
  * Costs: 2 TEX + 2 ALU = 4/96 of the R300 PFS budget
  * (R300_PFS_MAX_ALU_INST=64 / R300_PFS_MAX_TEX_INST=32). */
 static void *
-r300vk_synthesize_binary_map_fs(struct pipe_context *pipe, uint16_t alu_op)
+r3v_synthesize_binary_map_fs(struct pipe_context *pipe, uint16_t alu_op)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -2675,7 +2675,7 @@ r300vk_synthesize_binary_map_fs(struct pipe_context *pipe, uint16_t alu_op)
  * this passthrough shape.  Cached on the pipeline object; the existing
  * destroy path frees it. */
 static void *
-r300vk_synthesize_passthrough_vs(struct pipe_context *pipe)
+r3v_synthesize_passthrough_vs(struct pipe_context *pipe)
 {
    const enum tgsi_semantic names[]   = { TGSI_SEMANTIC_POSITION,
                                           TGSI_SEMANTIC_GENERIC };
@@ -2684,20 +2684,20 @@ r300vk_synthesize_passthrough_vs(struct pipe_context *pipe)
 }
 
 static bool
-r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
-                                      struct r300vk_pipeline *pl)
+r3v_binary_map_synthesize_shaders(struct r3v_device *device,
+                                      struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_binary_map_fs(pipe, pl->binary_map.alu_op);
+   pl->fs_cso = r3v_synthesize_binary_map_fs(pipe, pl->binary_map.alu_op);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -2719,7 +2719,7 @@ r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
  * component (N%16)/4.  MUL + ADD (not a single MAD) stays within the opcode
  * set the binary-map FS already uses.  Cost: 1 TEX + 2 ALU. */
 static struct ureg_src
-r300vk_unary_map_const_src(struct ureg_program *ureg, bool from_push,
+r3v_unary_map_const_src(struct ureg_program *ureg, bool from_push,
                            uint16_t push_offset, float literal)
 {
    if (!from_push)
@@ -2729,7 +2729,7 @@ r300vk_unary_map_const_src(struct ureg_program *ureg, bool from_push,
 }
 
 static void *
-r300vk_synthesize_unary_map_fs(struct pipe_context *pipe,
+r3v_synthesize_unary_map_fs(struct pipe_context *pipe,
                                const struct r300_compute_unary_map_pattern *um)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
@@ -2745,9 +2745,9 @@ r300vk_synthesize_unary_map_fs(struct pipe_context *pipe,
                                             TGSI_INTERPOLATE_PERSPECTIVE);
    struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
    struct ureg_dst tmp = ureg_DECL_temporary(ureg);
-   struct ureg_src c0s = r300vk_unary_map_const_src(
+   struct ureg_src c0s = r3v_unary_map_const_src(
       ureg, um->mul_const_from_push, um->mul_const_push_offset, um->mul_const);
-   struct ureg_src c1s = r300vk_unary_map_const_src(
+   struct ureg_src c1s = r3v_unary_map_const_src(
       ureg, um->add_const_from_push, um->add_const_push_offset, um->add_const);
 
    ureg_TEX(ureg, ureg_writemask(tmp, TGSI_WRITEMASK_XYZW),
@@ -2763,20 +2763,20 @@ r300vk_synthesize_unary_map_fs(struct pipe_context *pipe,
  * metadata directly and binds the affine fragment program, so the same
  * fullscreen draw computes out = tex*c0 + c1 instead of a copy. */
 static bool
-r300vk_unary_map_synthesize_shaders(struct r300vk_device *device,
-                                    struct r300vk_pipeline *pl)
+r3v_unary_map_synthesize_shaders(struct r3v_device *device,
+                                    struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_unary_map_fs(pipe, &pl->unary_map);
+   pl->fs_cso = r3v_synthesize_unary_map_fs(pipe, &pl->unary_map);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -2787,14 +2787,14 @@ r300vk_unary_map_synthesize_shaders(struct r300vk_device *device,
 }
 
 /* Synthesize the DP4 fragment-program CSO.  The NIR itself is built by
- * r300vk_build_dp4_fs_nir (r3v_dp4_fs_nir.c) so a build-time test can
+ * r3v_build_dp4_fs_nir (r3v_dp4_fs_nir.c) so a build-time test can
  * validate the shader shape -- notably the 2-component 2D-sampler coordinate --
  * without a pipe_context; here we only finalize for the screen and create the
  * gallium state. */
 static void *
-r300vk_synthesize_dp4_fs(struct pipe_context *pipe, uint8_t components)
+r3v_synthesize_dp4_fs(struct pipe_context *pipe, uint8_t components)
 {
-   nir_shader *fs_nir = r300vk_build_dp4_fs_nir(
+   nir_shader *fs_nir = r3v_build_dp4_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT], components);
    if (!fs_nir)
       return NULL;
@@ -2812,20 +2812,20 @@ r300vk_synthesize_dp4_fs(struct pipe_context *pipe, uint8_t components)
 /* DP4 VS+FS synthesis: the passthrough VS shared with binary-map plus the
  * pure-NIR DP4 FS.  Reuses the device-cached identity-map state CSOs. */
 static bool
-r300vk_dp4_synthesize_shaders(struct r300vk_device *device,
-                              struct r300vk_pipeline *pl)
+r3v_dp4_synthesize_shaders(struct r3v_device *device,
+                              struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_dp4_fs(pipe, pl->dp4.components);
+   pl->fs_cso = r3v_synthesize_dp4_fs(pipe, pl->dp4.components);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -2843,7 +2843,7 @@ r300vk_dp4_synthesize_shaders(struct r300vk_device *device,
  * per-fragment.  fsqrt composes as RCP(RSQ(x)) (the US ALU has no SQRT).
  * Returns NULL for an op outside the admitted set. */
 static void *
-r300vk_synthesize_unary_transcendental_fs(struct pipe_context *pipe,
+r3v_synthesize_unary_transcendental_fs(struct pipe_context *pipe,
                                           uint16_t alu_op)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
@@ -2890,20 +2890,20 @@ r300vk_synthesize_unary_transcendental_fs(struct pipe_context *pipe,
  * transcendental FS.  Reuses the device-cached identity-map state CSOs and the
  * scalar 1-in/1-out replay core. */
 static bool
-r300vk_unary_transcendental_synthesize_shaders(struct r300vk_device *device,
-                                               struct r300vk_pipeline *pl)
+r3v_unary_transcendental_synthesize_shaders(struct r3v_device *device,
+                                               struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_unary_transcendental_fs(
+   pl->fs_cso = r3v_synthesize_unary_transcendental_fs(
       pipe, pl->unary_transcendental.alu_op);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
@@ -2921,7 +2921,7 @@ r300vk_unary_transcendental_synthesize_shaders(struct r300vk_device *device,
  * carrier's X-lane gather reads channel 0.  Returns NULL for an op outside
  * {fpow, fdiv}. */
 static void *
-r300vk_synthesize_binary_transcendental_fs(struct pipe_context *pipe,
+r3v_synthesize_binary_transcendental_fs(struct pipe_context *pipe,
                                            uint16_t alu_op, unsigned components)
 {
    const bool is_pow = (nir_op)alu_op == nir_op_fpow;
@@ -2983,20 +2983,20 @@ r300vk_synthesize_binary_transcendental_fs(struct pipe_context *pipe,
  * transcendental FS.  Reuses the device-cached identity-map state CSOs and the
  * two-in/one-out replay core the binary_map float path uses. */
 static bool
-r300vk_binary_transcendental_synthesize_shaders(struct r300vk_device *device,
-                                                struct r300vk_pipeline *pl)
+r3v_binary_transcendental_synthesize_shaders(struct r3v_device *device,
+                                                struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_binary_transcendental_fs(
+   pl->fs_cso = r3v_synthesize_binary_transcendental_fs(
       pipe, pl->binary_transcendental.alu_op,
       pl->binary_transcendental.value_components);
    if (!pl->fs_cso) {
@@ -3038,7 +3038,7 @@ shift_emit_gather(struct ureg_program *ureg, struct ureg_dst dst,
  * byte times a power of two below 2^17, an exact FP24 integer, so the result is
  * bit-exact.  The carry term vanishes for r = 0 (pure byte shift). */
 static void *
-r300vk_synthesize_shift_logical_fs(struct pipe_context *pipe, bool is_left,
+r3v_synthesize_shift_logical_fs(struct pipe_context *pipe, bool is_left,
                                    bool is_arithmetic, unsigned shift_amount)
 {
    /* The detector admits only k in [1,31]; the power-of-two and sign-fill
@@ -3135,20 +3135,20 @@ r300vk_synthesize_shift_logical_fs(struct pipe_context *pipe, bool is_left,
  * FS.  Reuses the device-cached identity-map state CSOs and the scalar 1-in/1-out
  * replay core (UNORM8 in/out). */
 static bool
-r300vk_shift_logical_synthesize_shaders(struct r300vk_device *device,
-                                        struct r300vk_pipeline *pl)
+r3v_shift_logical_synthesize_shaders(struct r3v_device *device,
+                                        struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_shift_logical_fs(
+   pl->fs_cso = r3v_synthesize_shift_logical_fs(
       pipe, pl->shift_logical.is_left, pl->shift_logical.is_arithmetic,
       pl->shift_logical.shift_amount);
    if (!pl->fs_cso) {
@@ -3159,14 +3159,14 @@ r300vk_shift_logical_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
-/* QMUL FS: the Hamilton-product fragment program built by r300vk_build_qmul_fs_nir
+/* QMUL FS: the Hamilton-product fragment program built by r3v_build_qmul_fs_nir
  * (r3v_dp4_fs_nir.c) -- four sign-permuted DP4s writing the four-lane product
  * to the FP16 color export.  Finalize for the screen and create the gallium
  * state, as the DP4 FS does. */
 static void *
-r300vk_synthesize_qmul_fs(struct pipe_context *pipe)
+r3v_synthesize_qmul_fs(struct pipe_context *pipe)
 {
-   nir_shader *s = r300vk_build_qmul_fs_nir(
+   nir_shader *s = r3v_build_qmul_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, s, true);
@@ -3179,20 +3179,20 @@ r300vk_synthesize_qmul_fs(struct pipe_context *pipe)
 /* QMUL VS+FS synthesis: the passthrough VS shared with DP4 plus the Hamilton FS.
  * Reuses the device-cached identity-map state CSOs. */
 static bool
-r300vk_qmul_synthesize_shaders(struct r300vk_device *device,
-                               struct r300vk_pipeline *pl)
+r3v_qmul_synthesize_shaders(struct r3v_device *device,
+                               struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_qmul_fs(pipe);
+   pl->fs_cso = r3v_synthesize_qmul_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -3201,13 +3201,13 @@ r300vk_qmul_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
-/* QDIV FS: the quaternion-division fragment program built by r300vk_build_qdiv_fs_nir
+/* QDIV FS: the quaternion-division fragment program built by r3v_build_qdiv_fs_nir
  * -- one Hamilton product over the scaled conjugate of the divisor, four DP4s plus
  * the US RCP, to the FP16 color export.  Same finalize+CSO as QMUL. */
 static void *
-r300vk_synthesize_qdiv_fs(struct pipe_context *pipe)
+r3v_synthesize_qdiv_fs(struct pipe_context *pipe)
 {
-   nir_shader *s = r300vk_build_qdiv_fs_nir(
+   nir_shader *s = r3v_build_qdiv_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, s, true);
@@ -3220,20 +3220,20 @@ r300vk_synthesize_qdiv_fs(struct pipe_context *pipe)
 /* QDIV VS+FS synthesis: the passthrough VS shared with DP4 plus the division FS.
  * Two inputs, one output -- the same dispatch shape as QMUL. */
 static bool
-r300vk_qdiv_synthesize_shaders(struct r300vk_device *device,
-                               struct r300vk_pipeline *pl)
+r3v_qdiv_synthesize_shaders(struct r3v_device *device,
+                               struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_qdiv_fs(pipe);
+   pl->fs_cso = r3v_synthesize_qdiv_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -3321,7 +3321,7 @@ multilimb_limb(struct ureg_src limbs01, struct ureg_src limbs234, unsigned i)
 }
 
 static void *
-r300vk_synthesize_multilimb_fs(struct pipe_context *pipe, unsigned column)
+r3v_synthesize_multilimb_fs(struct pipe_context *pipe, unsigned column)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -3409,21 +3409,21 @@ r300vk_synthesize_multilimb_fs(struct pipe_context *pipe, unsigned column)
  * program per convolution column.  Any column failing to compile clears the
  * pattern so the kernel falls to the binary-map or no-op lifecycle. */
 static bool
-r300vk_multilimb_synthesize_shaders(struct r300vk_device *device,
-                                    struct r300vk_pipeline *pl)
+r3v_multilimb_synthesize_shaders(struct r3v_device *device,
+                                    struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
    for (unsigned k = 0; k < 9; k++) {
-      pl->multilimb_fs[k] = r300vk_synthesize_multilimb_fs(pipe, k);
+      pl->multilimb_fs[k] = r3v_synthesize_multilimb_fs(pipe, k);
       if (!pl->multilimb_fs[k]) {
          for (unsigned j = 0; j < k; j++) {
             pipe->delete_fs_state(pipe, pl->multilimb_fs[j]);
@@ -3448,7 +3448,7 @@ r300vk_multilimb_synthesize_shaders(struct r300vk_device *device,
  * (index + 0.5)/32.  The sampled texel IS 2^M as RGBA8, copied to the color
  * export; the transient it renders becomes the convolution's second operand. */
 static void *
-r300vk_synthesize_shift_variable_gather_fs(struct pipe_context *pipe,
+r3v_synthesize_shift_variable_gather_fs(struct pipe_context *pipe,
                                            bool is_left)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
@@ -3502,7 +3502,7 @@ r300vk_synthesize_shift_variable_gather_fs(struct pipe_context *pipe,
  * sign * fill_byte; ushr occupies bits [0,31-b] and the fill bits [32-b,31], so
  * the per-byte sum is disjoint, never carries, and never exceeds 255. */
 static void *
-r300vk_synthesize_shift_variable_signfill_fs(struct pipe_context *pipe)
+r3v_synthesize_shift_variable_signfill_fs(struct pipe_context *pipe)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -3569,26 +3569,26 @@ r300vk_synthesize_shift_variable_signfill_fs(struct pipe_context *pipe)
 }
 
 static bool
-r300vk_shift_variable_synthesize_shaders(struct r300vk_device *device,
-                                         struct r300vk_pipeline *pl)
+r3v_shift_variable_synthesize_shaders(struct r3v_device *device,
+                                         struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
    simple_mtx_lock(&device->identity_map_cso_lock);
-   bool lut_ok = r300vk_device_ensure_shift_variable_lut_locked(device);
+   bool lut_ok = r3v_device_ensure_shift_variable_lut_locked(device);
    simple_mtx_unlock(&device->identity_map_cso_lock);
    if (!lut_ok)
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->shift_variable_gather_fs = r300vk_synthesize_shift_variable_gather_fs(
+   pl->shift_variable_gather_fs = r3v_synthesize_shift_variable_gather_fs(
       pipe, pl->shift_variable.is_left);
    if (!pl->shift_variable_gather_fs) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
@@ -3597,7 +3597,7 @@ r300vk_shift_variable_synthesize_shaders(struct r300vk_device *device,
    }
 
    for (unsigned k = 0; k < 9; k++) {
-      pl->multilimb_fs[k] = r300vk_synthesize_multilimb_fs(pipe, k);
+      pl->multilimb_fs[k] = r3v_synthesize_multilimb_fs(pipe, k);
       if (!pl->multilimb_fs[k]) {
          for (unsigned j = 0; j < k; j++) {
             pipe->delete_fs_state(pipe, pl->multilimb_fs[j]);
@@ -3615,7 +3615,7 @@ r300vk_shift_variable_synthesize_shaders(struct r300vk_device *device,
     * ushr result; ishl/ushr leave it NULL. */
    if (pl->shift_variable.is_arithmetic) {
       pl->shift_variable_signfill_fs =
-         r300vk_synthesize_shift_variable_signfill_fs(pipe);
+         r3v_synthesize_shift_variable_signfill_fs(pipe);
       if (!pl->shift_variable_signfill_fs) {
          for (unsigned k = 0; k < 9; k++) {
             pipe->delete_fs_state(pipe, pl->multilimb_fs[k]);
@@ -3645,7 +3645,7 @@ r300vk_shift_variable_synthesize_shaders(struct r300vk_device *device,
  * channel carries payload; G/B/A are forced to zero so the raw RGBA8 row
  * copy yields the bare u32 result. */
 static void *
-r300vk_synthesize_log4_fs(struct pipe_context *pipe)
+r3v_synthesize_log4_fs(struct pipe_context *pipe)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -3679,18 +3679,18 @@ r300vk_synthesize_log4_fs(struct pipe_context *pipe)
 }
 
 static bool
-r300vk_log4_synthesize_shaders(struct r300vk_device *device,
-                               struct r300vk_pipeline *pl)
+r3v_log4_synthesize_shaders(struct r3v_device *device,
+                               struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
-   pl->fs_cso = r300vk_synthesize_log4_fs(pipe);
+   pl->fs_cso = r3v_synthesize_log4_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -3707,7 +3707,7 @@ r300vk_log4_synthesize_shaders(struct r300vk_device *device,
  * select per channel with out = guard + t * (new - guard).  Every operand
  * is a byte (<= 255) or a 0/1 predicate; all arithmetic exact in FP24. */
 static void *
-r300vk_synthesize_cas_fs(struct pipe_context *pipe, uint32_t expect,
+r3v_synthesize_cas_fs(struct pipe_context *pipe, uint32_t expect,
                          uint32_t value_new)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
@@ -3759,18 +3759,18 @@ r300vk_synthesize_cas_fs(struct pipe_context *pipe, uint32_t expect,
 }
 
 static bool
-r300vk_cas_synthesize_shaders(struct r300vk_device *device,
-                              struct r300vk_pipeline *pl)
+r3v_cas_synthesize_shaders(struct r3v_device *device,
+                              struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
-   pl->fs_cso = r300vk_synthesize_cas_fs(pipe, pl->cas.expect,
+   pl->fs_cso = r3v_synthesize_cas_fs(pipe, pl->cas.expect,
                                          pl->cas.value_new);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
@@ -3793,7 +3793,7 @@ r300vk_cas_synthesize_shaders(struct r300vk_device *device,
  * byte b = floor(v/65536) <= 2 needs no mod.  Divisions are by powers of
  * two -- exponent shifts, exact -- and floor is the FLR opcode. */
 static void *
-r300vk_synthesize_affine_iota_fs(struct pipe_context *pipe)
+r3v_synthesize_affine_iota_fs(struct pipe_context *pipe)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -3866,20 +3866,20 @@ r300vk_synthesize_affine_iota_fs(struct pipe_context *pipe)
  * The dispatch uploads (width, stride, offset) to CONST[0] and draws with a
  * texel-unit varying quad instead of the 0..1 fullscreen texcoord. */
 static bool
-r300vk_affine_iota_synthesize_shaders(struct r300vk_device *device,
-                                      struct r300vk_pipeline *pl)
+r3v_affine_iota_synthesize_shaders(struct r3v_device *device,
+                                      struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_affine_iota_fs(pipe);
+   pl->fs_cso = r3v_synthesize_affine_iota_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -3891,7 +3891,7 @@ r300vk_affine_iota_synthesize_shaders(struct r300vk_device *device,
 /* MAT4VEC FS: the general 4x4 vertex transform -- four DP4s of the per-element
  * vertex against the broadcast matrix rows, to the FP16 color export. */
 static void *
-r300vk_synthesize_mat4vec_fs(struct pipe_context *pipe)
+r3v_synthesize_mat4vec_fs(struct pipe_context *pipe)
 {
    /* The 4x4 is uniform across every element, so it lives in the constant file
     * (CONST[0..3] = the four rows) rather than a texture: the dispatch uploads
@@ -3931,20 +3931,20 @@ r300vk_synthesize_mat4vec_fs(struct pipe_context *pipe)
 /* MAT4VEC VS+FS synthesis: the passthrough VS shared with DP4 plus the transform
  * FS.  The dispatch wraps the matrix as a 4x1 view + vertices per-element. */
 static bool
-r300vk_mat4vec_synthesize_shaders(struct r300vk_device *device,
-                                  struct r300vk_pipeline *pl)
+r3v_mat4vec_synthesize_shaders(struct r3v_device *device,
+                                  struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_mat4vec_fs(pipe);
+   pl->fs_cso = r3v_synthesize_mat4vec_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -3958,7 +3958,7 @@ r300vk_mat4vec_synthesize_shaders(struct r300vk_device *device,
  * way MAT4VEC reads its broadcast matrix from the const file.  One TEX + one MUL;
  * the scalar costs no per-element fetch. */
 static void *
-r300vk_synthesize_qfmul_fs(struct pipe_context *pipe)
+r3v_synthesize_qfmul_fs(struct pipe_context *pipe)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -3986,20 +3986,20 @@ r300vk_synthesize_qfmul_fs(struct pipe_context *pipe)
  * dispatch uploads the broadcast scalar to CONST[0] and wraps the quaternions
  * per-element. */
 static bool
-r300vk_qfmul_synthesize_shaders(struct r300vk_device *device,
-                                struct r300vk_pipeline *pl)
+r3v_qfmul_synthesize_shaders(struct r3v_device *device,
+                                struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_qfmul_fs(pipe);
+   pl->fs_cso = r3v_synthesize_qfmul_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4008,12 +4008,12 @@ r300vk_qfmul_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
-/* QROTATE FS: the sandwich q*embed(v)*conj(q) built by r300vk_build_qrotate_fs_nir
+/* QROTATE FS: the sandwich q*embed(v)*conj(q) built by r3v_build_qrotate_fs_nir
  * -- two Hamilton products, eight DP4s, to the FP16 color export. */
 static void *
-r300vk_synthesize_qrotate_fs(struct pipe_context *pipe)
+r3v_synthesize_qrotate_fs(struct pipe_context *pipe)
 {
-   nir_shader *s = r300vk_build_qrotate_fs_nir(
+   nir_shader *s = r3v_build_qrotate_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, s, true);
@@ -4025,20 +4025,20 @@ r300vk_synthesize_qrotate_fs(struct pipe_context *pipe)
 
 /* QROTATE VS+FS synthesis: the passthrough VS plus the sandwich FS. */
 static bool
-r300vk_qrotate_synthesize_shaders(struct r300vk_device *device,
-                                  struct r300vk_pipeline *pl)
+r3v_qrotate_synthesize_shaders(struct r3v_device *device,
+                                  struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_qrotate_fs(pipe);
+   pl->fs_cso = r3v_synthesize_qrotate_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4047,12 +4047,12 @@ r300vk_qrotate_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
-/* QCONJ FS: the sign-flip conjugate built by r300vk_build_qconj_fs_nir -- one
+/* QCONJ FS: the sign-flip conjugate built by r3v_build_qconj_fs_nir -- one
  * sampled quaternion written as (a.x,-a.y,-a.z,-a.w) to the FP16 color export. */
 static void *
-r300vk_synthesize_qconj_fs(struct pipe_context *pipe)
+r3v_synthesize_qconj_fs(struct pipe_context *pipe)
 {
-   nir_shader *s = r300vk_build_qconj_fs_nir(
+   nir_shader *s = r3v_build_qconj_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, s, true);
@@ -4064,20 +4064,20 @@ r300vk_synthesize_qconj_fs(struct pipe_context *pipe)
 
 /* QCONJ VS+FS synthesis: the passthrough VS plus the conjugate FS. */
 static bool
-r300vk_qconj_synthesize_shaders(struct r300vk_device *device,
-                                struct r300vk_pipeline *pl)
+r3v_qconj_synthesize_shaders(struct r3v_device *device,
+                                struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_qconj_fs(pipe);
+   pl->fs_cso = r3v_synthesize_qconj_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4086,12 +4086,12 @@ r300vk_qconj_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
-/* QNORM FS: the squared-norm splat built by r300vk_build_qnorm_fs_nir -- one
+/* QNORM FS: the squared-norm splat built by r3v_build_qnorm_fs_nir -- one
  * sampled quaternion written as vec4(dot(a,a)) to the FP16 color export. */
 static void *
-r300vk_synthesize_qnorm_fs(struct pipe_context *pipe)
+r3v_synthesize_qnorm_fs(struct pipe_context *pipe)
 {
-   nir_shader *s = r300vk_build_qnorm_fs_nir(
+   nir_shader *s = r3v_build_qnorm_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, s, true);
@@ -4103,20 +4103,20 @@ r300vk_synthesize_qnorm_fs(struct pipe_context *pipe)
 
 /* QNORM VS+FS synthesis: the passthrough VS plus the self-dot FS. */
 static bool
-r300vk_qnorm_synthesize_shaders(struct r300vk_device *device,
-                                struct r300vk_pipeline *pl)
+r3v_qnorm_synthesize_shaders(struct r3v_device *device,
+                                struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_qnorm_fs(pipe);
+   pl->fs_cso = r3v_synthesize_qnorm_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4126,11 +4126,11 @@ r300vk_qnorm_synthesize_shaders(struct r300vk_device *device,
 }
 
 /* QNORMALIZE FS: a * rsqrt(dot(a,a)), the unit quaternion built by
- * r300vk_build_qnormalize_fs_nir -- one DP4, the US RSQ, one vec4 scale. */
+ * r3v_build_qnormalize_fs_nir -- one DP4, the US RSQ, one vec4 scale. */
 static void *
-r300vk_synthesize_qnormalize_fs(struct pipe_context *pipe)
+r3v_synthesize_qnormalize_fs(struct pipe_context *pipe)
 {
-   nir_shader *s = r300vk_build_qnormalize_fs_nir(
+   nir_shader *s = r3v_build_qnormalize_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, s, true);
@@ -4142,20 +4142,20 @@ r300vk_synthesize_qnormalize_fs(struct pipe_context *pipe)
 
 /* QNORMALIZE VS+FS synthesis: the passthrough VS plus the normalize FS. */
 static bool
-r300vk_qnormalize_synthesize_shaders(struct r300vk_device *device,
-                                     struct r300vk_pipeline *pl)
+r3v_qnormalize_synthesize_shaders(struct r3v_device *device,
+                                     struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_qnormalize_fs(pipe);
+   pl->fs_cso = r3v_synthesize_qnormalize_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4172,20 +4172,20 @@ r300vk_qnormalize_synthesize_shaders(struct r300vk_device *device,
  * gate the dispatch uses to prefer route B (both halves in one draw).  A failed
  * MRT-FS create is non-fatal: route A still works, so fs_cso_mrt stays NULL. */
 static bool
-r300vk_omul_synthesize_shaders(struct r300vk_device *device,
-                               struct r300vk_pipeline *pl)
+r3v_omul_synthesize_shaders(struct r3v_device *device,
+                               struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   nir_shader *lo = r300vk_build_omul_lo_fs_nir(
+   nir_shader *lo = r3v_build_omul_lo_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, lo, true);
@@ -4197,7 +4197,7 @@ r300vk_omul_synthesize_shaders(struct r300vk_device *device,
       return false;
    }
 
-   nir_shader *hi = r300vk_build_omul_hi_fs_nir(
+   nir_shader *hi = r3v_build_omul_hi_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, hi, true);
@@ -4218,7 +4218,7 @@ r300vk_omul_synthesize_shaders(struct r300vk_device *device,
        pipe->screen->is_format_supported(pipe->screen,
           PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_RENDER_TARGET)) {
-      nir_shader *mrt = r300vk_build_omul_mrt_fs_nir(
+      nir_shader *mrt = r3v_build_omul_mrt_fs_nir(
          pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
       if (pipe->screen->finalize_nir)
          pipe->screen->finalize_nir(pipe->screen, mrt, true);
@@ -4231,7 +4231,7 @@ r300vk_omul_synthesize_shaders(struct r300vk_device *device,
 
 /* Finalize a synthesized fragment NIR for the screen and create its CSO. */
 static void *
-r300vk_make_fs_cso(struct pipe_context *pipe, nir_shader *s)
+r3v_make_fs_cso(struct pipe_context *pipe, nir_shader *s)
 {
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, s, true);
@@ -4242,7 +4242,7 @@ r300vk_make_fs_cso(struct pipe_context *pipe, nir_shader *s)
 /* True when the screen can bind two simultaneous FP16 render targets -- the gate
  * for the single-pass MRT octonion ops. */
 static bool
-r300vk_screen_supports_mrt_fp16(struct pipe_screen *screen)
+r3v_screen_supports_mrt_fp16(struct pipe_screen *screen)
 {
    return screen->caps.max_render_targets >= 2 &&
           screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
@@ -4251,16 +4251,16 @@ r300vk_screen_supports_mrt_fp16(struct pipe_screen *screen)
 
 /* ONORM: passthrough VS + the self-dot-sum FS in fs_cso (the 2-in/1-out core). */
 static bool
-r300vk_onorm_synthesize_shaders(struct r300vk_device *device,
-                                struct r300vk_pipeline *pl)
+r3v_onorm_synthesize_shaders(struct r3v_device *device,
+                                struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
-   if (!pipe || !r300vk_device_init_identity_map_state(device))
+   if (!pipe || !r3v_device_init_identity_map_state(device))
       return false;
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
-   pl->fs_cso = r300vk_make_fs_cso(pipe, r300vk_build_onorm_fs_nir(
+   pl->fs_cso = r3v_make_fs_cso(pipe, r3v_build_onorm_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]));
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
@@ -4274,17 +4274,17 @@ r300vk_onorm_synthesize_shaders(struct r300vk_device *device,
  * render targets; without them fs_cso_mrt stays NULL and the dispatch reports
  * the kernel inadmissible at replay (RS480 always has the targets). */
 static bool
-r300vk_oconj_synthesize_shaders(struct r300vk_device *device,
-                                struct r300vk_pipeline *pl)
+r3v_oconj_synthesize_shaders(struct r3v_device *device,
+                                struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
-   if (!pipe || !r300vk_device_init_identity_map_state(device))
+   if (!pipe || !r3v_device_init_identity_map_state(device))
       return false;
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
-   if (r300vk_screen_supports_mrt_fp16(pipe->screen))
-      pl->fs_cso_mrt = r300vk_make_fs_cso(pipe, r300vk_build_oconj_mrt_fs_nir(
+   if (r3v_screen_supports_mrt_fp16(pipe->screen))
+      pl->fs_cso_mrt = r3v_make_fs_cso(pipe, r3v_build_oconj_mrt_fs_nir(
          pipe->screen->nir_options[MESA_SHADER_FRAGMENT]));
    return true;
 }
@@ -4292,17 +4292,17 @@ r300vk_oconj_synthesize_shaders(struct r300vk_device *device,
 /* OADD/OSUB: passthrough VS + the MRT add/sub FS in fs_cso_mrt (is_sub from the
  * detected pattern).  Same FP16-MRT gate as OCONJ. */
 static bool
-r300vk_oaddsub_synthesize_shaders(struct r300vk_device *device,
-                                  struct r300vk_pipeline *pl)
+r3v_oaddsub_synthesize_shaders(struct r3v_device *device,
+                                  struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
-   if (!pipe || !r300vk_device_init_identity_map_state(device))
+   if (!pipe || !r3v_device_init_identity_map_state(device))
       return false;
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
-   if (r300vk_screen_supports_mrt_fp16(pipe->screen))
-      pl->fs_cso_mrt = r300vk_make_fs_cso(pipe, r300vk_build_oaddsub_mrt_fs_nir(
+   if (r3v_screen_supports_mrt_fp16(pipe->screen))
+      pl->fs_cso_mrt = r3v_make_fs_cso(pipe, r3v_build_oaddsub_mrt_fs_nir(
          pipe->screen->nir_options[MESA_SHADER_FRAGMENT], pl->oaddsub.is_sub));
    return true;
 }
@@ -4314,23 +4314,23 @@ r300vk_oaddsub_synthesize_shaders(struct r300vk_device *device,
  * detected handedness picks the half-shaders -- left division inv(y)*x swaps the
  * OMUL operands versus right division x*inv(y); the dispatch stays the same. */
 static bool
-r300vk_odiv_synthesize_shaders(struct r300vk_device *device,
-                               struct r300vk_pipeline *pl)
+r3v_odiv_synthesize_shaders(struct r3v_device *device,
+                               struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
-   if (!pipe || !r300vk_device_init_identity_map_state(device))
+   if (!pipe || !r3v_device_init_identity_map_state(device))
       return false;
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
    const struct nir_shader_compiler_options *opts =
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
    if (pl->odiv.is_left) {
-      pl->fs_cso  = r300vk_make_fs_cso(pipe, r300vk_build_odiv_l_lo_fs_nir(opts));
-      pl->fs_cso2 = r300vk_make_fs_cso(pipe, r300vk_build_odiv_l_hi_fs_nir(opts));
+      pl->fs_cso  = r3v_make_fs_cso(pipe, r3v_build_odiv_l_lo_fs_nir(opts));
+      pl->fs_cso2 = r3v_make_fs_cso(pipe, r3v_build_odiv_l_hi_fs_nir(opts));
    } else {
-      pl->fs_cso  = r300vk_make_fs_cso(pipe, r300vk_build_odiv_lo_fs_nir(opts));
-      pl->fs_cso2 = r300vk_make_fs_cso(pipe, r300vk_build_odiv_hi_fs_nir(opts));
+      pl->fs_cso  = r3v_make_fs_cso(pipe, r3v_build_odiv_lo_fs_nir(opts));
+      pl->fs_cso2 = r3v_make_fs_cso(pipe, r3v_build_odiv_hi_fs_nir(opts));
    }
    return pl->fs_cso != NULL && pl->fs_cso2 != NULL;
 }
@@ -4342,52 +4342,52 @@ r300vk_odiv_synthesize_shaders(struct r300vk_device *device,
  * far past the single-pass fragment limit, so it runs as four single-output
  * passes (each one OMUL half, well under the 64-ALU R300 budget). */
 static bool
-r300vk_otrans_synthesize_shaders(struct r300vk_device *device,
-                                 struct r300vk_pipeline *pl)
+r3v_otrans_synthesize_shaders(struct r3v_device *device,
+                                 struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
-   if (!pipe || !r300vk_device_init_identity_map_state(device))
+   if (!pipe || !r3v_device_init_identity_map_state(device))
       return false;
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
    const struct nir_shader_compiler_options *opts =
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
-   pl->fs_cso  = r300vk_make_fs_cso(pipe, r300vk_build_omul_lo_fs_nir(opts));
-   pl->fs_cso2 = r300vk_make_fs_cso(pipe, r300vk_build_omul_hi_fs_nir(opts));
-   pl->fs_cso3 = r300vk_make_fs_cso(pipe, r300vk_build_otrans_p2_lo_fs_nir(opts));
-   pl->fs_cso4 = r300vk_make_fs_cso(pipe, r300vk_build_otrans_p2_hi_fs_nir(opts));
+   pl->fs_cso  = r3v_make_fs_cso(pipe, r3v_build_omul_lo_fs_nir(opts));
+   pl->fs_cso2 = r3v_make_fs_cso(pipe, r3v_build_omul_hi_fs_nir(opts));
+   pl->fs_cso3 = r3v_make_fs_cso(pipe, r3v_build_otrans_p2_lo_fs_nir(opts));
+   pl->fs_cso4 = r3v_make_fs_cso(pipe, r3v_build_otrans_p2_hi_fs_nir(opts));
    return pl->fs_cso != NULL && pl->fs_cso2 != NULL &&
           pl->fs_cso3 != NULL && pl->fs_cso4 != NULL;
 }
 
 /* QFMADD / QFMMUL synthesis: passthrough VS + the single fused FS into fs_cso. */
 static bool
-r300vk_qfmadd_synthesize_shaders(struct r300vk_device *device,
-                                 struct r300vk_pipeline *pl)
+r3v_qfmadd_synthesize_shaders(struct r3v_device *device,
+                                 struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
-   if (!pipe || !r300vk_device_init_identity_map_state(device))
+   if (!pipe || !r3v_device_init_identity_map_state(device))
       return false;
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
-   pl->fs_cso = r300vk_make_fs_cso(pipe, r300vk_build_qfmadd_fs_nir(
+   pl->fs_cso = r3v_make_fs_cso(pipe, r3v_build_qfmadd_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]));
    return pl->fs_cso != NULL;
 }
 
 static bool
-r300vk_qfmmul_synthesize_shaders(struct r300vk_device *device,
-                                 struct r300vk_pipeline *pl)
+r3v_qfmmul_synthesize_shaders(struct r3v_device *device,
+                                 struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
-   if (!pipe || !r300vk_device_init_identity_map_state(device))
+   if (!pipe || !r3v_device_init_identity_map_state(device))
       return false;
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
-   pl->fs_cso = r300vk_make_fs_cso(pipe, r300vk_build_qfmmul_fs_nir(
+   pl->fs_cso = r3v_make_fs_cso(pipe, r3v_build_qfmmul_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]));
    return pl->fs_cso != NULL;
 }
@@ -4404,28 +4404,28 @@ r300vk_qfmmul_synthesize_shaders(struct r300vk_device *device,
  * sampler FS.  Synthesis failure is an allocation failure: return the VkResult
  * from pipeline creation instead of hiding it behind a no-op dispatch path. */
 static VkResult
-r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
-                                        struct r300vk_pipeline *pl)
+r3v_identity_map_synthesize_shaders(struct r3v_device *device,
+                                        struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r300vk: identity-map shader synthesis has no "
+                       "r3v: identity-map shader synthesis has no "
                        "pipe_context");
 
    simple_mtx_lock(&device->identity_map_cso_lock);
 
-   if (!r300vk_device_init_identity_map_state_locked(device)) {
+   if (!r3v_device_init_identity_map_state_locked(device)) {
       simple_mtx_unlock(&device->identity_map_cso_lock);
       return vk_errorf(device, VK_ERROR_OUT_OF_HOST_MEMORY,
-                       "r300vk: failed to create identity-map Gallium state");
+                       "r3v: failed to create identity-map Gallium state");
    }
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso) {
       simple_mtx_unlock(&device->identity_map_cso_lock);
       return vk_errorf(device, VK_ERROR_OUT_OF_HOST_MEMORY,
-                       "r300vk: failed to synthesize identity-map VS");
+                       "r3v: failed to synthesize identity-map VS");
    }
 
    pl->fs_cso = util_make_fragment_tex_shader(
@@ -4438,14 +4438,14 @@ r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
       pl->vs_cso = NULL;
       simple_mtx_unlock(&device->identity_map_cso_lock);
       return vk_errorf(device, VK_ERROR_OUT_OF_HOST_MEMORY,
-                       "r300vk: failed to synthesize identity-map FS");
+                       "r3v: failed to synthesize identity-map FS");
    }
    simple_mtx_unlock(&device->identity_map_cso_lock);
    return VK_SUCCESS;
 }
 
 /* Synthesise the VS + FS pair for the blend-add reduction lowering.  The
- * shaders are structurally identical to r300vk_identity_map_synthesize_shaders
+ * shaders are structurally identical to r3v_identity_map_synthesize_shaders
  * -- a vertex_passthrough VS feeding a single-sampler FS that samples the
  * bound 2D texture and writes the texel to OUT[0] COLOR.  The semantic
  * difference between identity-map and blend-acc reduction lives ENTIRELY in
@@ -4471,18 +4471,18 @@ r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
  * Configures the RB3D blend hardware path the compute-as-raster substrate
  * confirmed: COMB_FCN_ADD with blend_func = (ONE, ONE) accumulates dest+src
  * into the RT cell.  The other CSOs (rasterizer / dsa / sampler) come from
- * r300vk_device_init_identity_map_state -- the blend-acc orchestrator binds
+ * r3v_device_init_identity_map_state -- the blend-acc orchestrator binds
  * those unchanged from the identity-map set. */
 bool
-r300vk_device_init_blend_acc_reduction_state(struct r300vk_device *device);
+r3v_device_init_blend_acc_reduction_state(struct r3v_device *device);
 
 bool
-r300vk_device_init_blend_acc_reduction_state(struct r300vk_device *device)
+r3v_device_init_blend_acc_reduction_state(struct r3v_device *device)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
    if (device->blend_acc_reduction_blend_cso)
       return true;
@@ -4512,7 +4512,7 @@ r300vk_device_init_blend_acc_reduction_state(struct r300vk_device *device)
  * because the value rides on the per-vertex attribute through the
  * rasterizer interpolator. */
 static void *
-r300vk_synthesize_blend_acc_reduction_fs(struct pipe_context *pipe)
+r3v_synthesize_blend_acc_reduction_fs(struct pipe_context *pipe)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -4527,15 +4527,15 @@ r300vk_synthesize_blend_acc_reduction_fs(struct pipe_context *pipe)
 }
 
 static bool
-r300vk_blend_acc_reduction_synthesize_shaders(struct r300vk_device *device,
-                                              struct r300vk_pipeline *pl)
+r3v_blend_acc_reduction_synthesize_shaders(struct r3v_device *device,
+                                              struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
-   if (!r300vk_device_init_blend_acc_reduction_state(device))
+   if (!r3v_device_init_blend_acc_reduction_state(device))
       return false;
 
    /* The VS is the same vertex-passthrough shape as the identity-map and
@@ -4543,11 +4543,11 @@ r300vk_blend_acc_reduction_synthesize_shaders(struct r300vk_device *device,
     * rasterizer.  The GENERIC attribute carries the per-vertex color the
     * orchestrator stages into the VBO (a packed RGBA8 of the kernel's per-gid
     * input value). */
-    pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+    pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
     if (!pl->vs_cso)
       return false;
 
-    pl->fs_cso = r300vk_synthesize_blend_acc_reduction_fs(pipe);
+    pl->fs_cso = r3v_synthesize_blend_acc_reduction_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4575,7 +4575,7 @@ r300vk_blend_acc_reduction_synthesize_shaders(struct r300vk_device *device,
  * gives the right shape: discard when predicate < 0.5 (i.e. 0.0 baked
  * value), pass when predicate >= 0.5 (i.e. 1.0). */
 static void *
-r300vk_synthesize_zpass_reduction_fs(struct pipe_context *pipe)
+r3v_synthesize_zpass_reduction_fs(struct pipe_context *pipe)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -4610,22 +4610,22 @@ r300vk_synthesize_zpass_reduction_fs(struct pipe_context *pipe)
 }
 
 static bool
-r300vk_zpass_reduction_synthesize_shaders(struct r300vk_device *device,
-                                          struct r300vk_pipeline *pl)
+r3v_zpass_reduction_synthesize_shaders(struct r3v_device *device,
+                                          struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
    /* Same vertex-passthrough as the other compute-as-raster lowerings:
     * 2 attributes (POSITION + GENERIC predicate-value). */
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_zpass_reduction_fs(pipe);
+   pl->fs_cso = r3v_synthesize_zpass_reduction_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4646,7 +4646,7 @@ r300vk_zpass_reduction_synthesize_shaders(struct r300vk_device *device,
  * shape keyed by step_op; the doubling-only synthesis mirrors the iadd-first
  * scoping of the blend-acc reduction. */
 static void *
-r300vk_synthesize_multipass_scan_fs(struct pipe_context *pipe)
+r3v_synthesize_multipass_scan_fs(struct pipe_context *pipe)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -4680,20 +4680,20 @@ r300vk_synthesize_multipass_scan_fs(struct pipe_context *pipe)
  * is the doubling sampler program the orchestrator rebinds for each ping-pong
  * pass. */
 static bool
-r300vk_multipass_scan_synthesize_shaders(struct r300vk_device *device,
-                                         struct r300vk_pipeline *pl)
+r3v_multipass_scan_synthesize_shaders(struct r3v_device *device,
+                                         struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_multipass_scan_fs(pipe);
+   pl->fs_cso = r3v_synthesize_multipass_scan_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4722,7 +4722,7 @@ r300vk_multipass_scan_synthesize_shaders(struct r300vk_device *device,
  *
  * Cost: 2 TEX + 1 ADD + 1 KILL_IF + 1 MOV. */
 static void *
-r300vk_synthesize_predicated_store_fs(struct pipe_context *pipe)
+r3v_synthesize_predicated_store_fs(struct pipe_context *pipe)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -4763,20 +4763,20 @@ r300vk_synthesize_predicated_store_fs(struct pipe_context *pipe)
  * vertex passthrough and device-cached state CSOs as the identity / binary
  * lowerings; only the KILL_IF FS differs. */
 static bool
-r300vk_predicated_store_synthesize_shaders(struct r300vk_device *device,
-                                           struct r300vk_pipeline *pl)
+r3v_predicated_store_synthesize_shaders(struct r3v_device *device,
+                                           struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_predicated_store_fs(pipe);
+   pl->fs_cso = r3v_synthesize_predicated_store_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4820,7 +4820,7 @@ r300vk_predicated_store_synthesize_shaders(struct r300vk_device *device,
  *
  * Cost: 3 TEX + ~26 ALU = ~30/96 of the R300 PFS budget. */
 static void *
-r300vk_synthesize_multitap_gather_fs(struct pipe_context *pipe)
+r3v_synthesize_multitap_gather_fs(struct pipe_context *pipe)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -4915,20 +4915,20 @@ r300vk_synthesize_multitap_gather_fs(struct pipe_context *pipe)
  * CONST[0] (the neighbor texel delta) which the orchestrator uploads per
  * dispatch. */
 static bool
-r300vk_multitap_gather_synthesize_shaders(struct r300vk_device *device,
-                                          struct r300vk_pipeline *pl)
+r3v_multitap_gather_synthesize_shaders(struct r3v_device *device,
+                                          struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_multitap_gather_fs(pipe);
+   pl->fs_cso = r3v_synthesize_multitap_gather_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4938,9 +4938,9 @@ r300vk_multitap_gather_synthesize_shaders(struct r300vk_device *device,
 }
 
 static void *
-r300vk_synthesize_ieee16_classify_fs(struct pipe_context *pipe)
+r3v_synthesize_ieee16_classify_fs(struct pipe_context *pipe)
 {
-   nir_shader *s = r300vk_build_ieee16_classify_fs_nir(
+   nir_shader *s = r3v_build_ieee16_classify_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, s, true);
@@ -4951,20 +4951,20 @@ r300vk_synthesize_ieee16_classify_fs(struct pipe_context *pipe)
 }
 
 static bool
-r300vk_ieee16_classify_synthesize_shaders(struct r300vk_device *device,
-                                          struct r300vk_pipeline *pl)
+r3v_ieee16_classify_synthesize_shaders(struct r3v_device *device,
+                                          struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_ieee16_classify_fs(pipe);
+   pl->fs_cso = r3v_synthesize_ieee16_classify_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4974,9 +4974,9 @@ r300vk_ieee16_classify_synthesize_shaders(struct r300vk_device *device,
 }
 
 static void *
-r300vk_synthesize_ieee16_mul_fs(struct pipe_context *pipe)
+r3v_synthesize_ieee16_mul_fs(struct pipe_context *pipe)
 {
-   nir_shader *s = r300vk_build_ieee16_mul_fs_nir(
+   nir_shader *s = r3v_build_ieee16_mul_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, s, true);
@@ -4987,20 +4987,20 @@ r300vk_synthesize_ieee16_mul_fs(struct pipe_context *pipe)
 }
 
 static bool
-r300vk_ieee16_mul_synthesize_shaders(struct r300vk_device *device,
-                                     struct r300vk_pipeline *pl)
+r3v_ieee16_mul_synthesize_shaders(struct r3v_device *device,
+                                     struct r3v_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-   if (!r300vk_device_init_identity_map_state(device))
+   if (!r3v_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   pl->vs_cso = r3v_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_ieee16_mul_fs(pipe);
+   pl->fs_cso = r3v_synthesize_ieee16_mul_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -5012,8 +5012,8 @@ r300vk_ieee16_mul_synthesize_shaders(struct r300vk_device *device,
 
 
 static VkResult
-r300vk_synthesize_compute_shaders(struct r300vk_device *device,
-                                  struct r300vk_pipeline *pl)
+r3v_synthesize_compute_shaders(struct r3v_device *device,
+                                  struct r3v_pipeline *pl)
 {
    if (!pl->admission.admissible)
       return VK_SUCCESS;
@@ -5023,43 +5023,43 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
    if (pl->const_fill.is_const_fill)
       return VK_SUCCESS;
    if (pl->identity_map.is_identity_map) {
-      VkResult result = r300vk_identity_map_synthesize_shaders(device, pl);
+      VkResult result = r3v_identity_map_synthesize_shaders(device, pl);
       if (result != VK_SUCCESS)
          return result;
       return VK_SUCCESS;
    }
    if (pl->multilimb_mul.is_multilimb_mul) {
-      if (!r300vk_multilimb_synthesize_shaders(device, pl))
+      if (!r3v_multilimb_synthesize_shaders(device, pl))
          pl->multilimb_mul.is_multilimb_mul = false;
       return VK_SUCCESS;
    }
    if (pl->cas.is_cas) {
-      if (!r300vk_cas_synthesize_shaders(device, pl))
+      if (!r3v_cas_synthesize_shaders(device, pl))
          pl->cas.is_cas = false;
       return VK_SUCCESS;
    }
    if (pl->log4_pool.is_log4_pool) {
-      if (!r300vk_log4_synthesize_shaders(device, pl))
+      if (!r3v_log4_synthesize_shaders(device, pl))
          pl->log4_pool.is_log4_pool = false;
       return VK_SUCCESS;
    }
    if (pl->binary_map.is_binary_map) {
-      if (!r300vk_binary_map_synthesize_shaders(device, pl))
+      if (!r3v_binary_map_synthesize_shaders(device, pl))
          pl->binary_map.is_binary_map = false;
       return VK_SUCCESS;
    }
    if (pl->unary_map.is_unary_map) {
-      if (!r300vk_unary_map_synthesize_shaders(device, pl))
+      if (!r3v_unary_map_synthesize_shaders(device, pl))
          pl->unary_map.is_unary_map = false;
       return VK_SUCCESS;
    }
    if (pl->unary_transcendental.is_unary_transcendental) {
-      if (!r300vk_unary_transcendental_synthesize_shaders(device, pl))
+      if (!r3v_unary_transcendental_synthesize_shaders(device, pl))
          pl->unary_transcendental.is_unary_transcendental = false;
       return VK_SUCCESS;
    }
    if (pl->binary_transcendental.is_binary_transcendental) {
-      if (!r300vk_binary_transcendental_synthesize_shaders(device, pl))
+      if (!r3v_binary_transcendental_synthesize_shaders(device, pl))
          pl->binary_transcendental.is_binary_transcendental = false;
       return VK_SUCCESS;
    }
@@ -5067,142 +5067,142 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
       /* Both draws of the bitwise carrier are plain texel copies -- the ROP
        * logic op does the bitwise combine -- so the passthrough VS + copy FS the
        * identity map synthesizes serve unchanged. */
-      if (r300vk_identity_map_synthesize_shaders(device, pl) != VK_SUCCESS)
+      if (r3v_identity_map_synthesize_shaders(device, pl) != VK_SUCCESS)
          pl->bitwise_logicop.is_bitwise_logicop = false;
       return VK_SUCCESS;
    }
    if (pl->shift_logical.is_shift_logical) {
-      if (!r300vk_shift_logical_synthesize_shaders(device, pl))
+      if (!r3v_shift_logical_synthesize_shaders(device, pl))
          pl->shift_logical.is_shift_logical = false;
       return VK_SUCCESS;
    }
    if (pl->shift_variable.is_shift_variable) {
-      if (!r300vk_shift_variable_synthesize_shaders(device, pl))
+      if (!r3v_shift_variable_synthesize_shaders(device, pl))
          pl->shift_variable.is_shift_variable = false;
       return VK_SUCCESS;
    }
    if (pl->affine_iota.is_affine_iota) {
-      if (!r300vk_affine_iota_synthesize_shaders(device, pl))
+      if (!r3v_affine_iota_synthesize_shaders(device, pl))
          pl->affine_iota.is_affine_iota = false;
       return VK_SUCCESS;
    }
    if (pl->dp4.is_dp4) {
-      if (!r300vk_dp4_synthesize_shaders(device, pl))
+      if (!r3v_dp4_synthesize_shaders(device, pl))
          pl->dp4.is_dp4 = false;
       return VK_SUCCESS;
    }
    if (pl->qmul.is_qmul) {
-      if (!r300vk_qmul_synthesize_shaders(device, pl))
+      if (!r3v_qmul_synthesize_shaders(device, pl))
          pl->qmul.is_qmul = false;
       return VK_SUCCESS;
    }
    if (pl->qdiv.is_qdiv) {
-      if (!r300vk_qdiv_synthesize_shaders(device, pl))
+      if (!r3v_qdiv_synthesize_shaders(device, pl))
          pl->qdiv.is_qdiv = false;
       return VK_SUCCESS;
    }
    if (pl->mat4vec.is_mat4vec) {
-      if (!r300vk_mat4vec_synthesize_shaders(device, pl))
+      if (!r3v_mat4vec_synthesize_shaders(device, pl))
          pl->mat4vec.is_mat4vec = false;
       return VK_SUCCESS;
    }
    if (pl->qfmul.is_qfmul) {
-      if (!r300vk_qfmul_synthesize_shaders(device, pl))
+      if (!r3v_qfmul_synthesize_shaders(device, pl))
          pl->qfmul.is_qfmul = false;
       return VK_SUCCESS;
    }
    if (pl->qrotate.is_qrotate) {
-      if (!r300vk_qrotate_synthesize_shaders(device, pl))
+      if (!r3v_qrotate_synthesize_shaders(device, pl))
          pl->qrotate.is_qrotate = false;
       return VK_SUCCESS;
    }
    if (pl->qconj.is_qconj) {
-      if (!r300vk_qconj_synthesize_shaders(device, pl))
+      if (!r3v_qconj_synthesize_shaders(device, pl))
          pl->qconj.is_qconj = false;
       return VK_SUCCESS;
    }
    if (pl->qnorm.is_qnorm) {
-      if (!r300vk_qnorm_synthesize_shaders(device, pl))
+      if (!r3v_qnorm_synthesize_shaders(device, pl))
          pl->qnorm.is_qnorm = false;
       return VK_SUCCESS;
    }
    if (pl->qnormalize.is_qnormalize) {
-      if (!r300vk_qnormalize_synthesize_shaders(device, pl))
+      if (!r3v_qnormalize_synthesize_shaders(device, pl))
          pl->qnormalize.is_qnormalize = false;
       return VK_SUCCESS;
    }
    if (pl->omul.is_omul) {
-      if (!r300vk_omul_synthesize_shaders(device, pl))
+      if (!r3v_omul_synthesize_shaders(device, pl))
          pl->omul.is_omul = false;
       return VK_SUCCESS;
    }
    if (pl->oaddsub.is_oaddsub) {
-      if (!r300vk_oaddsub_synthesize_shaders(device, pl))
+      if (!r3v_oaddsub_synthesize_shaders(device, pl))
          pl->oaddsub.is_oaddsub = false;
       return VK_SUCCESS;
    }
    if (pl->oconj.is_oconj) {
-      if (!r300vk_oconj_synthesize_shaders(device, pl))
+      if (!r3v_oconj_synthesize_shaders(device, pl))
          pl->oconj.is_oconj = false;
       return VK_SUCCESS;
    }
    if (pl->onorm.is_onorm) {
-      if (!r300vk_onorm_synthesize_shaders(device, pl))
+      if (!r3v_onorm_synthesize_shaders(device, pl))
          pl->onorm.is_onorm = false;
       return VK_SUCCESS;
    }
    if (pl->odiv.is_odiv) {
-      if (!r300vk_odiv_synthesize_shaders(device, pl))
+      if (!r3v_odiv_synthesize_shaders(device, pl))
          pl->odiv.is_odiv = false;
       return VK_SUCCESS;
    }
    if (pl->otrans.is_otrans) {
-      if (!r300vk_otrans_synthesize_shaders(device, pl))
+      if (!r3v_otrans_synthesize_shaders(device, pl))
          pl->otrans.is_otrans = false;
       return VK_SUCCESS;
    }
    if (pl->qfmadd.is_qfmadd) {
-      if (!r300vk_qfmadd_synthesize_shaders(device, pl))
+      if (!r3v_qfmadd_synthesize_shaders(device, pl))
          pl->qfmadd.is_qfmadd = false;
       return VK_SUCCESS;
    }
    if (pl->qfmmul.is_qfmmul) {
-      if (!r300vk_qfmmul_synthesize_shaders(device, pl))
+      if (!r3v_qfmmul_synthesize_shaders(device, pl))
          pl->qfmmul.is_qfmmul = false;
       return VK_SUCCESS;
    }
    if (pl->blend_acc_reduction.is_blend_acc_reduction) {
-      if (!r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
+      if (!r3v_blend_acc_reduction_synthesize_shaders(device, pl))
          pl->blend_acc_reduction.is_blend_acc_reduction = false;
       return VK_SUCCESS;
    }
    if (pl->zpass_reduction.is_zpass_reduction) {
-      if (!r300vk_zpass_reduction_synthesize_shaders(device, pl))
+      if (!r3v_zpass_reduction_synthesize_shaders(device, pl))
          pl->zpass_reduction.is_zpass_reduction = false;
       return VK_SUCCESS;
    }
    if (pl->multipass_scan.is_multipass_scan) {
-      if (!r300vk_multipass_scan_synthesize_shaders(device, pl))
+      if (!r3v_multipass_scan_synthesize_shaders(device, pl))
          pl->multipass_scan.is_multipass_scan = false;
       return VK_SUCCESS;
    }
    if (pl->predicated_store.is_predicated_store) {
-      if (!r300vk_predicated_store_synthesize_shaders(device, pl))
+      if (!r3v_predicated_store_synthesize_shaders(device, pl))
          pl->predicated_store.is_predicated_store = false;
       return VK_SUCCESS;
    }
    if (pl->multitap_gather.is_multitap_gather) {
-      if (!r300vk_multitap_gather_synthesize_shaders(device, pl))
+      if (!r3v_multitap_gather_synthesize_shaders(device, pl))
          pl->multitap_gather.is_multitap_gather = false;
       return VK_SUCCESS;
    }
    if (pl->ieee16_classify.is_ieee16_classify) {
-      if (!r300vk_ieee16_classify_synthesize_shaders(device, pl))
+      if (!r3v_ieee16_classify_synthesize_shaders(device, pl))
          pl->ieee16_classify.is_ieee16_classify = false;
       return VK_SUCCESS;
    }
    if (pl->ieee16_mul.is_ieee16_mul) {
-      if (!r300vk_ieee16_mul_synthesize_shaders(device, pl))
+      if (!r3v_ieee16_mul_synthesize_shaders(device, pl))
          pl->ieee16_mul.is_ieee16_mul = false;
       return VK_SUCCESS;
    }
@@ -5211,10 +5211,10 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
 }
 
 static VkResult
-r300vk_create_one_compute_pipeline(struct r300vk_device *device,
+r3v_create_one_compute_pipeline(struct r3v_device *device,
                                     const VkComputePipelineCreateInfo *pCreateInfo,
                                     const VkAllocationCallbacks *pAllocator,
-                                    struct r300vk_pipeline **out_pipeline,
+                                    struct r3v_pipeline **out_pipeline,
                                     uint32_t i)
 {
    struct r300_compute_admission adm;
@@ -5258,7 +5258,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_log4_pool_pattern log4_pat = {0};
    uint32_t local_size[3];
 
-   if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
+   if (!r3v_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &unary_pat,
                                        &transc_pat, &btransc_pat, &bitwise_pat,
                                        &shift_pat, &shiftvar_pat,
@@ -5277,7 +5277,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
                                        &cas_pat, &log4_pat,
                                        local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r300vk: SPIR-V to NIR failed for compute kernel %u",
+                       "r3v: SPIR-V to NIR failed for compute kernel %u",
                        i);
 
    /* Kernels the RS482 substrate classifier cannot map to a raster pattern are
@@ -5290,12 +5290,12 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
     * grepping driver logs. */
    if (!adm.admissible) {
       vk_logw(VK_LOG_OBJS(&device->vk.base),
-              "r300vk: compute kernel %u is not lowerable to the RS482 raster "
+              "r3v: compute kernel %u is not lowerable to the RS482 raster "
               "substrate: %s (%s); dispatches will no-op",
               i, r300_compute_reject_name(adm.reason),
               adm.detail ? adm.detail : "no detail");
    }
-   struct r300vk_pipeline *pl =
+   struct r3v_pipeline *pl =
       vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pl), 8,
                  VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!pl)
@@ -5352,22 +5352,22 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->local_size_z = local_size[2];
 
    /* An admitted kernel that matched no raster verb dispatches as a silent
-    * no-op (R300_COMPUTE_REJECT_UNKNOWN_SHAPE in r300vk_replay_dispatch).  The
+    * no-op (R300_COMPUTE_REJECT_UNKNOWN_SHAPE in r3v_replay_dispatch).  The
     * reject-reason warning above only fires for kernels the classifier
     * rejected; this one passed admission yet no detector recognized its shape,
     * so surface it here too -- an app (or probe harness) then learns the
     * dispatch will not write its output at create time instead of discovering
     * a silently-unwritten buffer after submit. */
-   if (adm.admissible && !r300vk_pipeline_matched_raster_verb(pl)) {
+   if (adm.admissible && !r3v_pipeline_matched_raster_verb(pl)) {
       vk_logw(VK_LOG_OBJS(&device->vk.base),
-              "r300vk: compute kernel %u passed admission but matches no raster "
+              "r3v: compute kernel %u passed admission but matches no raster "
               "verb; dispatches will no-op (UNKNOWN_SHAPE)", i);
    }
 
-   VkResult synth_result = r300vk_synthesize_compute_shaders(device, pl);
+   VkResult synth_result = r3v_synthesize_compute_shaders(device, pl);
    if (synth_result != VK_SUCCESS) {
-      r300vk_DestroyPipeline(r300vk_device_to_handle(device),
-                             r300vk_pipeline_to_handle(pl), pAllocator);
+      r3v_DestroyPipeline(r3v_device_to_handle(device),
+                             r3v_pipeline_to_handle(pl), pAllocator);
       return synth_result;
    }
 
@@ -5377,14 +5377,14 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
 
 
 VkResult
-r300vk_CreateComputePipelines(VkDevice _device,
+r3v_CreateComputePipelines(VkDevice _device,
                               VkPipelineCache pipelineCache,
                               uint32_t createInfoCount,
                               const VkComputePipelineCreateInfo *pCreateInfos,
                               const VkAllocationCallbacks *pAllocator,
                               VkPipeline *pPipelines)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    (void)pipelineCache;
 
    if (createInfoCount == 0)
@@ -5395,29 +5395,29 @@ r300vk_CreateComputePipelines(VkDevice _device,
 
    if (!device->hybrid_compute_enabled)
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: compute is not exposed (set "
-                       R300VK_HYBRID_COMPUTE_ENV "=1 for the experimental "
+                       "r3v: compute is not exposed (set "
+                       R3V_HYBRID_COMPUTE_ENV "=1 for the experimental "
                        "hybrid-compute path)");
 
    for (uint32_t i = 0; i < createInfoCount; i++) {
-      struct r300vk_pipeline *pl = NULL;
-      VkResult result = r300vk_create_one_compute_pipeline(device, &pCreateInfos[i],
+      struct r3v_pipeline *pl = NULL;
+      VkResult result = r3v_create_one_compute_pipeline(device, &pCreateInfos[i],
                                                             pAllocator, &pl, i);
       if (result != VK_SUCCESS)
          return result;
-      pPipelines[i] = r300vk_pipeline_to_handle(pl);
+      pPipelines[i] = r3v_pipeline_to_handle(pl);
    }
 
    return VK_SUCCESS;
 }
 
 void
-r300vk_DestroyPipeline(VkDevice _device,
+r3v_DestroyPipeline(VkDevice _device,
                         VkPipeline _pipeline,
                         const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_pipeline, pl, _pipeline);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_pipeline, pl, _pipeline);
    if (!pl)
       return;
 

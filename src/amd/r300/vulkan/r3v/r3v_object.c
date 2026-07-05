@@ -4,7 +4,7 @@
  *
  * Sampler, buffer-view, query-pool, and event object lifecycle.
  *
- * r300vk did not implement Create/Destroy for these four object types, so the
+ * r3v did not implement Create/Destroy for these four object types, so the
  * loader's dispatch table left the slots NULL (vk_cmd_enqueue fills only command
  * entrypoints; vk_common_device_entrypoints does not carry these object
  * Create/Destroy entrypoints for this device config).  A bare vkDestroySampler/
@@ -17,8 +17,8 @@
  * vk_query_pool), whose create/destroy helpers own the vk_object_base lifecycle
  * and parse the create info.  Buffer view and event are plain vk_object_base:
  * the runtime vk_buffer_view base validates the range against a vk_buffer, but
- * r300vk_buffer is a raw vk_object_base (not the vk_buffer base), so the view
- * resolves the range against r300vk_buffer->size itself.  Event has no runtime
+ * r3v_buffer is a raw vk_object_base (not the vk_buffer base), so the view
+ * resolves the range against r3v_buffer->size itself.  Event has no runtime
  * base and carries the host signal state; on the single-queue serialized
  * CPU-replay model the host Set/Reset/GetStatus pair is the observable event
  * contract.  The descriptor and query paths read this state when they are wired.
@@ -43,15 +43,15 @@
 #include "pipe/p_state.h"
 #include "pipe/p_defines.h"
 
-struct r300vk_buffer_view {
+struct r3v_buffer_view {
    struct vk_object_base base;
-   struct r300vk_buffer *buffer;   /* the texel buffer this view selects */
+   struct r3v_buffer *buffer;   /* the texel buffer this view selects */
    VkFormat              format;
    VkDeviceSize          offset;
    VkDeviceSize          range;    /* VK_WHOLE_SIZE resolved to the buffer tail */
 };
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_buffer_view, base, VkBufferView,
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_buffer_view, base, VkBufferView,
                                VK_OBJECT_TYPE_BUFFER_VIEW)
 
 /* VkSamplerAddressMode -> PIPE_TEX_WRAP_x.  r300 honors every Vulkan 1.0 wrap
@@ -95,7 +95,7 @@ vk_compare_op_to_pipe(VkCompareOp op)
  * mipmap, and compare fields, so the mapping is done here at create time while
  * pCreateInfo is in hand, and the resulting CSO is cached on the sampler. */
 static void
-r300vk_sampler_state_from_vk(const VkSamplerCreateInfo *ci,
+r3v_sampler_state_from_vk(const VkSamplerCreateInfo *ci,
                              struct pipe_sampler_state *ss)
 {
    memset(ss, 0, sizeof(*ss));
@@ -127,30 +127,30 @@ r300vk_sampler_state_from_vk(const VkSamplerCreateInfo *ci,
    ss->border_color_is_integer = vk_border_color_is_int(ci->borderColor);
    ss->border_color_format = border_format == VK_FORMAT_UNDEFINED
                               ? PIPE_FORMAT_NONE
-                              : r300vk_vk_format_to_pipe_format(border_format);
+                              : r3v_vk_format_to_pipe_format(border_format);
 }
 
 VkResult
-r300vk_CreateSampler(VkDevice _device,
+r3v_CreateSampler(VkDevice _device,
                      const VkSamplerCreateInfo *pCreateInfo,
                      const VkAllocationCallbacks *pAllocator,
                      VkSampler *pSampler)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
 
    struct vk_sampler *vks =
       vk_sampler_create(&device->vk, pCreateInfo, pAllocator,
-                        sizeof(struct r300vk_sampler));
+                        sizeof(struct r3v_sampler));
    if (!vks)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    /* Build the Gallium sampler CSO now so the draw replay can bind it directly.
-    * device->pipe is the same context r300vk_CreateGraphicsPipelines uses to
+    * device->pipe is the same context r3v_CreateGraphicsPipelines uses to
     * create its blend/raster/dsa/vs/fs CSOs from an API thread, so a sampler CSO
     * built here follows the existing serialized-pipe-access model. */
-   struct r300vk_sampler *sampler = r300vk_sampler_from_vk(vks);
+   struct r3v_sampler *sampler = r3v_sampler_from_vk(vks);
    struct pipe_sampler_state ss;
-   r300vk_sampler_state_from_vk(pCreateInfo, &ss);
+   r3v_sampler_state_from_vk(pCreateInfo, &ss);
    sampler->pipe_cso = device->pipe->create_sampler_state(device->pipe, &ss);
    if (!sampler->pipe_cso) {
       vk_sampler_destroy(&device->vk, pAllocator, vks);
@@ -192,16 +192,16 @@ r300vk_CreateSampler(VkDevice _device,
 }
 
 void
-r300vk_DestroySampler(VkDevice _device,
+r3v_DestroySampler(VkDevice _device,
                       VkSampler _sampler,
                       const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    VK_FROM_HANDLE(vk_sampler, vks, _sampler);
    if (!vks)
       return;
 
-   struct r300vk_sampler *sampler = r300vk_sampler_from_vk(vks);
+   struct r3v_sampler *sampler = r3v_sampler_from_vk(vks);
    if (sampler->pipe_cso)
       device->pipe->delete_sampler_state(device->pipe, sampler->pipe_cso);
 
@@ -209,15 +209,15 @@ r300vk_DestroySampler(VkDevice _device,
 }
 
 VkResult
-r300vk_CreateBufferView(VkDevice _device,
+r3v_CreateBufferView(VkDevice _device,
                         const VkBufferViewCreateInfo *pCreateInfo,
                         const VkAllocationCallbacks *pAllocator,
                         VkBufferView *pView)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_buffer, buffer, pCreateInfo->buffer);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_buffer, buffer, pCreateInfo->buffer);
 
-   struct r300vk_buffer_view *view =
+   struct r3v_buffer_view *view =
       vk_object_zalloc(&device->vk, pAllocator, sizeof(*view),
                        VK_OBJECT_TYPE_BUFFER_VIEW);
    if (!view)
@@ -236,17 +236,17 @@ r300vk_CreateBufferView(VkDevice _device,
       view->range = pCreateInfo->range;
    }
 
-   *pView = r300vk_buffer_view_to_handle(view);
+   *pView = r3v_buffer_view_to_handle(view);
    return VK_SUCCESS;
 }
 
 void
-r300vk_DestroyBufferView(VkDevice _device,
+r3v_DestroyBufferView(VkDevice _device,
                          VkBufferView _view,
                          const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_buffer_view, view, _view);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_buffer_view, view, _view);
    if (!view)
       return;
 
@@ -254,18 +254,18 @@ r300vk_DestroyBufferView(VkDevice _device,
 }
 
 VkResult
-r300vk_CreateQueryPool(VkDevice _device,
+r3v_CreateQueryPool(VkDevice _device,
                        const VkQueryPoolCreateInfo *pCreateInfo,
                        const VkAllocationCallbacks *pAllocator,
                        VkQueryPool *pQueryPool)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
 
-   /* Allocate the vk_query_pool base plus one r300vk_query per query, so the
+   /* Allocate the vk_query_pool base plus one r3v_query per query, so the
     * replay and GetQueryPoolResults have per-slot result + availability storage.
     * vk_query_pool_create zero-initializes the allocation. */
-   const size_t pool_size = sizeof(struct r300vk_query_pool);
-   const size_t query_size = sizeof(struct r300vk_query);
+   const size_t pool_size = sizeof(struct r3v_query_pool);
+   const size_t query_size = sizeof(struct r3v_query);
    if (pCreateInfo->queryCount > (SIZE_MAX - pool_size) / query_size)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -280,11 +280,11 @@ r300vk_CreateQueryPool(VkDevice _device,
 }
 
 void
-r300vk_DestroyQueryPool(VkDevice _device,
+r3v_DestroyQueryPool(VkDevice _device,
                         VkQueryPool _pool,
                         const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    VK_FROM_HANDLE(vk_query_pool, pool, _pool);
    if (!pool)
       return;
@@ -293,7 +293,7 @@ r300vk_DestroyQueryPool(VkDevice _device,
 }
 
 static bool
-r300vk_query_result_host_slot_in_bounds(uint32_t query_index,
+r3v_query_result_host_slot_in_bounds(uint32_t query_index,
                                         VkDeviceSize stride,
                                         unsigned result_size,
                                         unsigned per_query,
@@ -316,7 +316,7 @@ r300vk_query_result_host_slot_in_bounds(uint32_t query_index,
 }
 
 static void
-r300vk_store_query_result_word(uint8_t *dst, unsigned result_size,
+r3v_store_query_result_word(uint8_t *dst, unsigned result_size,
                                uint64_t value)
 {
    if (result_size == sizeof(uint64_t)) {
@@ -329,11 +329,11 @@ r300vk_store_query_result_word(uint8_t *dst, unsigned result_size,
 }
 
 static bool
-r300vk_get_query_pool_result_one(uint8_t *data,
+r3v_get_query_pool_result_one(uint8_t *data,
                                  size_t data_size,
                                  VkDeviceSize stride,
                                  uint32_t dst_index,
-                                 const struct r300vk_query *query,
+                                 const struct r3v_query *query,
                                  unsigned result_size,
                                  unsigned per_query,
                                  bool write_availability,
@@ -350,7 +350,7 @@ r300vk_get_query_pool_result_one(uint8_t *data,
 
    size_t byte_off;
    if (!data ||
-       !r300vk_query_result_host_slot_in_bounds(dst_index, stride,
+       !r3v_query_result_host_slot_in_bounds(dst_index, stride,
                                                 result_size, per_query,
                                                 write_availability,
                                                 data_size, &byte_off)) {
@@ -360,10 +360,10 @@ r300vk_get_query_pool_result_one(uint8_t *data,
 
    uint8_t *slot = data + byte_off;
    if (write_result)
-      r300vk_store_query_result_word(slot, result_size,
+      r3v_store_query_result_word(slot, result_size,
                                      available ? query->result : 0);
    if (write_availability)
-      r300vk_store_query_result_word(slot + result_size, result_size,
+      r3v_store_query_result_word(slot + result_size, result_size,
                                      available ? 1 : 0);
 
    return true;
@@ -378,7 +378,7 @@ r300vk_get_query_pool_result_one(uint8_t *data,
  * VK_QUERY_RESULT_WAIT never blocks; an unavailable slot is one reset but never
  * ended. */
 VkResult
-r300vk_GetQueryPoolResults(VkDevice _device,
+r3v_GetQueryPoolResults(VkDevice _device,
                            VkQueryPool _pool,
                            uint32_t firstQuery,
                            uint32_t queryCount,
@@ -387,9 +387,9 @@ r300vk_GetQueryPoolResults(VkDevice _device,
                            VkDeviceSize stride,
                            VkQueryResultFlags flags)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    VK_FROM_HANDLE(vk_query_pool, vk_pool, _pool);
-   struct r300vk_query_pool *pool = r300vk_query_pool(vk_pool);
+   struct r3v_query_pool *pool = r3v_query_pool(vk_pool);
    const bool b64        = (flags & VK_QUERY_RESULT_64_BIT) != 0;
    const bool want_avail = (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != 0;
    const bool force_result = (flags & (VK_QUERY_RESULT_PARTIAL_BIT |
@@ -406,9 +406,9 @@ r300vk_GetQueryPoolResults(VkDevice _device,
       queryCount = vk_pool->query_count - firstQuery;
 
    for (uint32_t i = 0; i < queryCount; i++) {
-      const struct r300vk_query *q = &pool->queries[firstQuery + i];
+      const struct r3v_query *q = &pool->queries[firstQuery + i];
       VkResult slot_result = VK_SUCCESS;
-      if (!r300vk_get_query_pool_result_one(pData, dataSize, stride, i, q,
+      if (!r3v_get_query_pool_result_one(pData, dataSize, stride, i, q,
                                             rsize, per_query, want_avail,
                                             force_result, wait,
                                             &slot_result)) {
@@ -426,17 +426,17 @@ r300vk_GetQueryPoolResults(VkDevice _device,
  * when the application calls this the recorded results are already retired and
  * no GPU-side write races the clear.  Clear the per-slot result and availability
  * over [firstQuery, firstQuery+queryCount) exactly as the
- * R300VK_CMD_RESET_QUERY_POOL replay does, so a subsequent vkGetQueryPoolResults
+ * R3V_CMD_RESET_QUERY_POOL replay does, so a subsequent vkGetQueryPoolResults
  * sees the slots unavailable.  The range is bounds-clamped against the pool to
  * match the command-buffer reset's defensive clamp. */
 void
-r300vk_ResetQueryPool(VkDevice _device,
+r3v_ResetQueryPool(VkDevice _device,
                       VkQueryPool _pool,
                       uint32_t firstQuery,
                       uint32_t queryCount)
 {
    VK_FROM_HANDLE(vk_query_pool, vk_pool, _pool);
-   struct r300vk_query_pool *pool = r300vk_query_pool(vk_pool);
+   struct r3v_query_pool *pool = r3v_query_pool(vk_pool);
    (void)_device;
 
    if (firstQuery >= vk_pool->query_count)
@@ -451,31 +451,31 @@ r300vk_ResetQueryPool(VkDevice _device,
 }
 
 VkResult
-r300vk_CreateEvent(VkDevice _device,
+r3v_CreateEvent(VkDevice _device,
                    const VkEventCreateInfo *pCreateInfo,
                    const VkAllocationCallbacks *pAllocator,
                    VkEvent *pEvent)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
 
-   struct r300vk_event *event =
+   struct r3v_event *event =
       vk_object_zalloc(&device->vk, pAllocator, sizeof(*event),
                        VK_OBJECT_TYPE_EVENT);
    if (!event)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    event->status = VK_EVENT_RESET;
-   *pEvent = r300vk_event_to_handle(event);
+   *pEvent = r3v_event_to_handle(event);
    return VK_SUCCESS;
 }
 
 void
-r300vk_DestroyEvent(VkDevice _device,
+r3v_DestroyEvent(VkDevice _device,
                     VkEvent _event,
                     const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_event, event, _event);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_event, event, _event);
    if (!event)
       return;
 
@@ -488,24 +488,24 @@ r300vk_DestroyEvent(VkDevice _device,
  * buffer (dEQP-VK.api.command_buffers state-transition cases set and poll an
  * event from the host). */
 VkResult
-r300vk_GetEventStatus(VkDevice _device, VkEvent _event)
+r3v_GetEventStatus(VkDevice _device, VkEvent _event)
 {
-   VK_FROM_HANDLE(r300vk_event, event, _event);
+   VK_FROM_HANDLE(r3v_event, event, _event);
    return event->status;
 }
 
 VkResult
-r300vk_SetEvent(VkDevice _device, VkEvent _event)
+r3v_SetEvent(VkDevice _device, VkEvent _event)
 {
-   VK_FROM_HANDLE(r300vk_event, event, _event);
+   VK_FROM_HANDLE(r3v_event, event, _event);
    event->status = VK_EVENT_SET;
    return VK_SUCCESS;
 }
 
 VkResult
-r300vk_ResetEvent(VkDevice _device, VkEvent _event)
+r3v_ResetEvent(VkDevice _device, VkEvent _event)
 {
-   VK_FROM_HANDLE(r300vk_event, event, _event);
+   VK_FROM_HANDLE(r3v_event, event, _event);
    event->status = VK_EVENT_RESET;
    return VK_SUCCESS;
 }

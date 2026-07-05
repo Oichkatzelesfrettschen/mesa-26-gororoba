@@ -24,26 +24,26 @@
 #include <limits.h>
 #include <string.h>
 
-static VkResult r300vk_sync_owns_buffer(struct r300vk_device *device,
-                                        struct r300vk_device_memory *mem,
+static VkResult r3v_sync_owns_buffer(struct r3v_device *device,
+                                        struct r3v_device_memory *mem,
                                         bool host_to_buffer,
                                         VkDeviceSize range_offset,
                                         VkDeviceSize range_size);
 
 static VkDeviceSize
-r300vk_min_memory_offset(VkDeviceSize a, VkDeviceSize b)
+r3v_min_memory_offset(VkDeviceSize a, VkDeviceSize b)
 {
    return a < b ? a : b;
 }
 
 static VkDeviceSize
-r300vk_max_memory_offset(VkDeviceSize a, VkDeviceSize b)
+r3v_max_memory_offset(VkDeviceSize a, VkDeviceSize b)
 {
    return a > b ? a : b;
 }
 
 static VkDeviceSize
-r300vk_memory_range_end(const struct r300vk_device_memory *mem,
+r3v_memory_range_end(const struct r3v_device_memory *mem,
                         VkDeviceSize range_offset,
                         VkDeviceSize range_size)
 {
@@ -55,7 +55,7 @@ r300vk_memory_range_end(const struct r300vk_device_memory *mem,
 }
 
 static void
-r300vk_clear_bound_image(struct r300vk_device_memory *mem)
+r3v_clear_bound_image(struct r3v_device_memory *mem)
 {
    pipe_resource_reference(&mem->bound_image_tile, NULL);
    mem->bound_image_offset = 0;
@@ -64,13 +64,13 @@ r300vk_clear_bound_image(struct r300vk_device_memory *mem)
 }
 
 VkResult
-r300vk_AllocateMemory(VkDevice _device,
+r3v_AllocateMemory(VkDevice _device,
                       const VkMemoryAllocateInfo *pAllocateInfo,
                       const VkAllocationCallbacks *pAllocator,
                       VkDeviceMemory *pMemory)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   struct r300vk_device_memory *mem;
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   struct r3v_device_memory *mem;
 
    mem = vk_zalloc2(&device->vk.alloc, pAllocator,
                     sizeof(*mem), 8,
@@ -90,7 +90,7 @@ r300vk_AllocateMemory(VkDevice _device,
    const VkMemoryDedicatedAllocateInfo *dedicated =
       vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
    if (dedicated && dedicated->image != VK_NULL_HANDLE) {
-      VK_FROM_HANDLE(r300vk_image, dimg, dedicated->image);
+      VK_FROM_HANDLE(r3v_image, dimg, dedicated->image);
       mem->dedicated_image = dimg;
    }
 
@@ -98,17 +98,17 @@ r300vk_AllocateMemory(VkDevice _device,
    list_addtail(&mem->device_link, &device->memory_list);
    simple_mtx_unlock(&device->memory_list_lock);
 
-   *pMemory = r300vk_device_memory_to_handle(mem);
+   *pMemory = r3v_device_memory_to_handle(mem);
    return VK_SUCCESS;
 }
 
 void
-r300vk_FreeMemory(VkDevice _device,
+r3v_FreeMemory(VkDevice _device,
                   VkDeviceMemory _memory,
                   const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_device_memory, mem, _memory);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_device_memory, mem, _memory);
    if (!mem)
       return;
 
@@ -118,7 +118,7 @@ r300vk_FreeMemory(VkDevice _device,
 
    if (mem->transfer) {
       /* Free a still-mapped allocation: unmap against the transfer's own
-       * resource, not mem->resource (see r300vk_UnmapMemory) -- a rebind can
+       * resource, not mem->resource (see r3v_UnmapMemory) -- a rebind can
        * leave mem->resource a texture while the live transfer is a buffer. */
       if (mem->transfer->resource->target == PIPE_BUFFER)
          device->pipe->buffer_unmap(device->pipe, mem->transfer);
@@ -129,7 +129,7 @@ r300vk_FreeMemory(VkDevice _device,
    pipe_resource_reference(&mem->mapped_resource, NULL);
    pipe_resource_reference(&mem->resource, NULL);
    util_dynarray_foreach(&mem->bound_buffers,
-                         struct r300vk_bound_buffer_slice, slice)
+                         struct r3v_bound_buffer_slice, slice)
       pipe_resource_reference(&slice->resource, NULL);
    util_dynarray_fini(&mem->bound_buffers);
    pipe_resource_reference(&mem->bound_image_tile, NULL);
@@ -139,35 +139,35 @@ r300vk_FreeMemory(VkDevice _device,
 }
 
 void
-r300vk_device_memory_drop_buffer_slices(struct r300vk_device *device,
+r3v_device_memory_drop_buffer_slices(struct r3v_device *device,
                                         struct pipe_resource *resource)
 {
    if (!resource)
       return;
    simple_mtx_lock(&device->memory_list_lock);
-   list_for_each_entry(struct r300vk_device_memory, mem,
+   list_for_each_entry(struct r3v_device_memory, mem,
                        &device->memory_list, device_link) {
       unsigned kept = 0;
       util_dynarray_foreach(&mem->bound_buffers,
-                            struct r300vk_bound_buffer_slice, slice) {
+                            struct r3v_bound_buffer_slice, slice) {
          if (slice->resource == resource) {
             pipe_resource_reference(&slice->resource, NULL);
          } else {
             *util_dynarray_element(&mem->bound_buffers,
-                                   struct r300vk_bound_buffer_slice, kept) =
+                                   struct r3v_bound_buffer_slice, kept) =
                *slice;
             kept++;
          }
       }
       mem->bound_buffers.size =
-         kept * sizeof(struct r300vk_bound_buffer_slice);
+         kept * sizeof(struct r3v_bound_buffer_slice);
    }
    simple_mtx_unlock(&device->memory_list_lock);
 }
 
 static VkResult
-r300vk_memory_get_map_range_size(struct r300vk_device *device,
-                                 struct r300vk_device_memory *mem,
+r3v_memory_get_map_range_size(struct r3v_device *device,
+                                 struct r3v_device_memory *mem,
                                  VkDeviceSize offset,
                                  VkDeviceSize size,
                                  VkDeviceSize *map_range_size)
@@ -185,8 +185,8 @@ r300vk_memory_get_map_range_size(struct r300vk_device *device,
 }
 
 static VkResult
-r300vk_memory_create_owned_map_buffer(struct r300vk_device *device,
-                                      struct r300vk_device_memory *mem)
+r3v_memory_create_owned_map_buffer(struct r3v_device *device,
+                                      struct r3v_device_memory *mem)
 {
    if (mem->resource)
       return VK_SUCCESS;
@@ -217,8 +217,8 @@ r300vk_memory_create_owned_map_buffer(struct r300vk_device *device,
 }
 
 static VkResult
-r300vk_memory_promote_borrowed_buffer(struct r300vk_device *device,
-                                      struct r300vk_device_memory *mem,
+r3v_memory_promote_borrowed_buffer(struct r3v_device *device,
+                                      struct r3v_device_memory *mem,
                                       VkDeviceSize offset,
                                       VkDeviceSize map_range_size,
                                       bool *promoted)
@@ -255,14 +255,14 @@ r300vk_memory_promote_borrowed_buffer(struct r300vk_device *device,
    if (!owned)
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 
-   struct r300vk_bound_buffer_slice slice = {
+   struct r3v_bound_buffer_slice slice = {
       .resource = NULL,
       .offset = mem->memory_offset,
    };
    pipe_resource_reference(&slice.resource, mem->resource);
    simple_mtx_lock(&device->memory_list_lock);
    util_dynarray_append_typed(&mem->bound_buffers,
-                              struct r300vk_bound_buffer_slice, slice);
+                              struct r3v_bound_buffer_slice, slice);
    simple_mtx_unlock(&device->memory_list_lock);
 
    pipe_resource_reference(&mem->resource, NULL);
@@ -273,8 +273,8 @@ r300vk_memory_promote_borrowed_buffer(struct r300vk_device *device,
 }
 
 static void
-r300vk_memory_unmap_live_transfer(struct r300vk_device *device,
-                                  struct r300vk_device_memory *mem)
+r3v_memory_unmap_live_transfer(struct r3v_device *device,
+                                  struct r3v_device_memory *mem)
 {
    if (!mem->transfer)
       return;
@@ -295,8 +295,8 @@ r300vk_memory_unmap_live_transfer(struct r300vk_device *device,
 }
 
 static VkResult
-r300vk_memory_map_buffer_resource(struct r300vk_device *device,
-                                  struct r300vk_device_memory *mem,
+r3v_memory_map_buffer_resource(struct r3v_device *device,
+                                  struct r3v_device_memory *mem,
                                   VkDeviceSize offset,
                                   VkDeviceSize map_range_size,
                                   void **ptr)
@@ -329,8 +329,8 @@ r300vk_memory_map_buffer_resource(struct r300vk_device *device,
 }
 
 static VkResult
-r300vk_memory_map_texture_resource(struct r300vk_device *device,
-                                   struct r300vk_device_memory *mem,
+r3v_memory_map_texture_resource(struct r3v_device *device,
+                                   struct r3v_device_memory *mem,
                                    VkDeviceSize offset,
                                    VkDeviceSize map_range_size,
                                    void **ptr)
@@ -365,43 +365,43 @@ r300vk_memory_map_texture_resource(struct r300vk_device *device,
 }
 
 static VkResult
-r300vk_memory_map_resource(struct r300vk_device *device,
-                           struct r300vk_device_memory *mem,
+r3v_memory_map_resource(struct r3v_device *device,
+                           struct r3v_device_memory *mem,
                            VkDeviceSize offset,
                            VkDeviceSize map_range_size,
                            void **ptr)
 {
    if (mem->resource->target == PIPE_BUFFER)
-      return r300vk_memory_map_buffer_resource(device, mem, offset,
+      return r3v_memory_map_buffer_resource(device, mem, offset,
                                                map_range_size, ptr);
 
-   return r300vk_memory_map_texture_resource(device, mem, offset,
+   return r3v_memory_map_texture_resource(device, mem, offset,
                                              map_range_size, ptr);
 }
 
 VkResult
-r300vk_MapMemory(VkDevice _device,
+r3v_MapMemory(VkDevice _device,
                  VkDeviceMemory _memory,
                  VkDeviceSize offset,
                  VkDeviceSize size,
                  VkMemoryMapFlags flags,
                  void **ppData)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_device_memory, mem, _memory);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_device_memory, mem, _memory);
 
    VkDeviceSize map_range_size;
-   VkResult result = r300vk_memory_get_map_range_size(device, mem, offset,
+   VkResult result = r3v_memory_get_map_range_size(device, mem, offset,
                                                       size, &map_range_size);
    if (result != VK_SUCCESS)
       return result;
 
-   result = r300vk_memory_create_owned_map_buffer(device, mem);
+   result = r3v_memory_create_owned_map_buffer(device, mem);
    if (result != VK_SUCCESS)
       return result;
 
    bool promoted = false;
-   result = r300vk_memory_promote_borrowed_buffer(device, mem, offset,
+   result = r3v_memory_promote_borrowed_buffer(device, mem, offset,
                                                   map_range_size, &promoted);
    if (result != VK_SUCCESS)
       return result;
@@ -409,10 +409,10 @@ r300vk_MapMemory(VkDevice _device,
    /* Unmap any stale mapping from a previous vkMapMemory call.  Vulkan
     * spec forbids double-mapping without an intervening vkUnmapMemory,
     * but guard here to avoid leaking the old pipe_transfer. */
-   r300vk_memory_unmap_live_transfer(device, mem);
+   r3v_memory_unmap_live_transfer(device, mem);
 
    void *ptr;
-   result = r300vk_memory_map_resource(device, mem, offset, map_range_size, &ptr);
+   result = r3v_memory_map_resource(device, mem, offset, map_range_size, &ptr);
    if (result != VK_SUCCESS)
       return result;
 
@@ -428,20 +428,20 @@ r300vk_MapMemory(VkDevice _device,
     * current bytes into it so the map shows what the buffer already holds
     * (a bind-time seed in the opposite direction). */
    if (promoted) {
-      VkResult seed = r300vk_sync_owns_buffer(device, mem, false /* buffer -> host */,
+      VkResult seed = r3v_sync_owns_buffer(device, mem, false /* buffer -> host */,
                                               0, VK_WHOLE_SIZE);
       if (seed != VK_SUCCESS)
          return seed;
    }
 
    if (device->dbg_log_draws)
-      fprintf(stderr, "r300vk map: mem=%p off=%llu size=%llu owns=%d prom=%d "
+      fprintf(stderr, "r3v map: mem=%p off=%llu size=%llu owns=%d prom=%d "
               "res=%p slices=%u moff=%llu\n",
               (void *)mem, (unsigned long long)mem->map_offset,
               (unsigned long long)mem->map_size, mem->owns_buffer, promoted,
               (void *)mem->resource,
               (unsigned)util_dynarray_num_elements(
-                 &mem->bound_buffers, struct r300vk_bound_buffer_slice),
+                 &mem->bound_buffers, struct r3v_bound_buffer_slice),
               (unsigned long long)mem->memory_offset);
 
    *ppData = ptr;
@@ -449,17 +449,17 @@ r300vk_MapMemory(VkDevice _device,
 }
 
 void
-r300vk_UnmapMemory(VkDevice _device,
+r3v_UnmapMemory(VkDevice _device,
                    VkDeviceMemory _memory)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_device_memory, mem, _memory);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_device_memory, mem, _memory);
 
    if (device->dbg_log_draws)
-      fprintf(stderr, "r300vk unmap: mem=%p owns=%d res=%p slices=%u\n",
+      fprintf(stderr, "r3v unmap: mem=%p owns=%d res=%p slices=%u\n",
               (void *)mem, mem->owns_buffer, (void *)mem->resource,
               (unsigned)util_dynarray_num_elements(
-                 &mem->bound_buffers, struct r300vk_bound_buffer_slice));
+                 &mem->bound_buffers, struct r3v_bound_buffer_slice));
 
    /* Flush the host map into every bound buffer before tearing the map down.  An
     * owns_buffer (map-before-bind, or a memory promoted on aliasing) holds the
@@ -468,7 +468,7 @@ r300vk_UnmapMemory(VkDevice _device,
     * unmaps before queue submit would never propagate those writes to the bound
     * VkBuffers and the deferred draw would read the stale per-buffer BO. */
    if (mem->owns_buffer && mem->map_ptr)
-      r300vk_sync_owns_buffer(device, mem, true /* host -> buffer */, 0,
+      r3v_sync_owns_buffer(device, mem, true /* host -> buffer */, 0,
                               VK_WHOLE_SIZE);
 
    if (!mem->transfer)
@@ -506,9 +506,9 @@ r300vk_UnmapMemory(VkDevice _device,
  * addressed relative to the vkMapMemory offset instead of the allocation base.
  * An empty intersection copies nothing and succeeds. */
 static VkResult
-r300vk_sync_one_buffer_slice(struct r300vk_device *device,
-                             struct r300vk_device_memory *mem,
-                             const struct r300vk_bound_buffer_slice *slice,
+r3v_sync_one_buffer_slice(struct r3v_device *device,
+                             struct r3v_device_memory *mem,
+                             const struct r3v_bound_buffer_slice *slice,
                              bool host_to_buffer,
                              VkDeviceSize range_offset,
                              VkDeviceSize range_size)
@@ -522,16 +522,16 @@ r300vk_sync_one_buffer_slice(struct r300vk_device *device,
        (VkDeviceSize)slice->resource->width0 > mem->size - slice->offset)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
-   VkDeviceSize range_end = r300vk_memory_range_end(mem, range_offset, range_size);
+   VkDeviceSize range_end = r3v_memory_range_end(mem, range_offset, range_size);
    VkDeviceSize slice_begin = slice->offset;
    VkDeviceSize slice_end = slice_begin + (VkDeviceSize)slice->resource->width0;
    VkDeviceSize map_begin = mem->map_offset;
    VkDeviceSize map_end = mem->map_offset + mem->map_size;
    VkDeviceSize intersect_begin =
-      r300vk_max_memory_offset(r300vk_max_memory_offset(range_offset, slice_begin),
+      r3v_max_memory_offset(r3v_max_memory_offset(range_offset, slice_begin),
                                map_begin);
    VkDeviceSize intersect_end =
-      r300vk_min_memory_offset(r300vk_min_memory_offset(range_end, slice_end),
+      r3v_min_memory_offset(r3v_min_memory_offset(range_end, slice_end),
                                map_end);
    if (intersect_begin >= intersect_end)
       return VK_SUCCESS;
@@ -564,8 +564,8 @@ r300vk_sync_one_buffer_slice(struct r300vk_device *device,
  * aliases overlapping buffer binds gets whichever slice syncs last, matching
  * the no-stronger guarantee aliased memory has under Vulkan without barriers. */
 static VkResult
-r300vk_sync_owns_buffer(struct r300vk_device *device,
-                        struct r300vk_device_memory *mem,
+r3v_sync_owns_buffer(struct r3v_device *device,
+                        struct r3v_device_memory *mem,
                         bool host_to_buffer,
                         VkDeviceSize range_offset,
                         VkDeviceSize range_size)
@@ -574,8 +574,8 @@ r300vk_sync_owns_buffer(struct r300vk_device *device,
       return VK_SUCCESS;
 
    util_dynarray_foreach(&mem->bound_buffers,
-                         struct r300vk_bound_buffer_slice, slice) {
-      VkResult result = r300vk_sync_one_buffer_slice(device, mem, slice,
+                         struct r3v_bound_buffer_slice, slice) {
+      VkResult result = r3v_sync_one_buffer_slice(device, mem, slice,
                                                      host_to_buffer,
                                                      range_offset, range_size);
       if (result != VK_SUCCESS)
@@ -585,7 +585,7 @@ r300vk_sync_owns_buffer(struct r300vk_device *device,
 }
 
 /* Pull a map-before-bind linear image's tile into the live host map.  The
- * companion to r300vk_sync_owns_buffer for the image case: an owns_buffer
+ * companion to r3v_sync_owns_buffer for the image case: an owns_buffer
  * allocation later bound to a linear image keeps its host map on the lazy
  * buffer, while the image's pixels live in a separate row-major r300g tile that
  * a GPU copy fills.  Copy only the intersection of the requested memory range,
@@ -594,8 +594,8 @@ r300vk_sync_owns_buffer(struct r300vk_device *device,
  * VkDeviceMemory byte zero.  Only image -> host sync is implemented; a host ->
  * image upload path is intentionally absent until a caller exercises it. */
 static VkResult
-r300vk_sync_owns_image(struct r300vk_device *device,
-                       struct r300vk_device_memory *mem,
+r3v_sync_owns_image(struct r3v_device *device,
+                       struct r3v_device_memory *mem,
                        VkDeviceSize range_offset,
                        VkDeviceSize range_size)
 {
@@ -620,12 +620,12 @@ r300vk_sync_owns_image(struct r300vk_device *device,
    const VkDeviceSize map_begin = mem->map_offset;
    const VkDeviceSize map_end = mem->map_offset + mem->map_size;
    const VkDeviceSize range_end =
-      r300vk_memory_range_end(mem, range_offset, range_size);
+      r3v_memory_range_end(mem, range_offset, range_size);
    const VkDeviceSize copy_begin =
-      r300vk_max_memory_offset(r300vk_max_memory_offset(range_offset, image_begin),
+      r3v_max_memory_offset(r3v_max_memory_offset(range_offset, image_begin),
                                map_begin);
    const VkDeviceSize copy_end =
-      r300vk_min_memory_offset(r300vk_min_memory_offset(range_end, image_end),
+      r3v_min_memory_offset(r3v_min_memory_offset(range_end, image_end),
                                map_end);
 
    if (copy_begin >= copy_end)
@@ -647,9 +647,9 @@ r300vk_sync_owns_image(struct r300vk_device *device,
       const VkDeviceSize row_begin = image_begin + (VkDeviceSize)row * pitch;
       const VkDeviceSize row_end = row_begin + row_bytes;
       const VkDeviceSize row_copy_begin =
-         r300vk_max_memory_offset(copy_begin, row_begin);
+         r3v_max_memory_offset(copy_begin, row_begin);
       const VkDeviceSize row_copy_end =
-         r300vk_min_memory_offset(copy_end, row_end);
+         r3v_min_memory_offset(copy_end, row_end);
 
       if (row_copy_begin >= row_copy_end)
          continue;
@@ -668,45 +668,45 @@ r300vk_sync_owns_image(struct r300vk_device *device,
 }
 
 void
-r300vk_device_memory_sync_bound(struct r300vk_device *device,
+r3v_device_memory_sync_bound(struct r3v_device *device,
                                 bool host_to_buffer)
 {
    simple_mtx_lock(&device->memory_list_lock);
-   list_for_each_entry(struct r300vk_device_memory, mem,
+   list_for_each_entry(struct r3v_device_memory, mem,
                        &device->memory_list, device_link) {
       if (!mem->owns_buffer || !mem->map_ptr)
          continue;
       if (device->dbg_log_draws) {
          util_dynarray_foreach(&mem->bound_buffers,
-                               struct r300vk_bound_buffer_slice, slice)
-            fprintf(stderr, "r300vk sync: mem=%p dir=%s bound=%p moff=%llu "
+                               struct r3v_bound_buffer_slice, slice)
+            fprintf(stderr, "r3v sync: mem=%p dir=%s bound=%p moff=%llu "
                     "w0=%u\n",
                     (void *)mem, host_to_buffer ? "h2b" : "b2h",
                     (void *)slice->resource,
                     (unsigned long long)slice->offset,
                     slice->resource ? slice->resource->width0 : 0);
       }
-      r300vk_sync_owns_buffer(device, mem, host_to_buffer, 0, VK_WHOLE_SIZE);
+      r3v_sync_owns_buffer(device, mem, host_to_buffer, 0, VK_WHOLE_SIZE);
       /* Image tiles have only the image -> host direction (the host -> image
        * upload path is intentionally absent until exercised); pull them on the
        * submit-exit sync so a rendered linear image reaches the live map. */
       if (!host_to_buffer && mem->bound_image_tile)
-         r300vk_sync_owns_image(device, mem, 0, VK_WHOLE_SIZE);
+         r3v_sync_owns_image(device, mem, 0, VK_WHOLE_SIZE);
    }
    simple_mtx_unlock(&device->memory_list_lock);
 }
 
 VkResult
-r300vk_FlushMappedMemoryRanges(VkDevice _device,
+r3v_FlushMappedMemoryRanges(VkDevice _device,
                                 uint32_t memoryRangeCount,
                                 const VkMappedMemoryRange *pMemoryRanges)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    /* Push post-bind host writes (e.g. the deqp vertex memcpy) across to the
     * bound VkBuffer's GPU resource. */
    for (uint32_t i = 0; i < memoryRangeCount; i++) {
-      VK_FROM_HANDLE(r300vk_device_memory, mem, pMemoryRanges[i].memory);
-      VkResult result = r300vk_sync_owns_buffer(device, mem, true /* host -> buffer */,
+      VK_FROM_HANDLE(r3v_device_memory, mem, pMemoryRanges[i].memory);
+      VkResult result = r3v_sync_owns_buffer(device, mem, true /* host -> buffer */,
                                                 pMemoryRanges[i].offset,
                                                 pMemoryRanges[i].size);
       if (result != VK_SUCCESS)
@@ -716,23 +716,23 @@ r300vk_FlushMappedMemoryRanges(VkDevice _device,
 }
 
 VkResult
-r300vk_InvalidateMappedMemoryRanges(VkDevice _device,
+r3v_InvalidateMappedMemoryRanges(VkDevice _device,
                                      uint32_t memoryRangeCount,
                                      const VkMappedMemoryRange *pMemoryRanges)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    /* Pull GPU writes (e.g. copyImageToBuffer into a readback buffer) back into
     * the live host map before the app reads through the host ptr. */
    for (uint32_t i = 0; i < memoryRangeCount; i++) {
-      VK_FROM_HANDLE(r300vk_device_memory, mem, pMemoryRanges[i].memory);
-      VkResult result = r300vk_sync_owns_buffer(device, mem, false /* buffer -> host */,
+      VK_FROM_HANDLE(r3v_device_memory, mem, pMemoryRanges[i].memory);
+      VkResult result = r3v_sync_owns_buffer(device, mem, false /* buffer -> host */,
                                                 pMemoryRanges[i].offset,
                                                 pMemoryRanges[i].size);
       if (result != VK_SUCCESS)
          return result;
       /* A linear image bound to an owns_buffer allocation needs the image -> host
        * pull instead; one of the two syncs is a no-op for any given binding. */
-      result = r300vk_sync_owns_image(device, mem,
+      result = r3v_sync_owns_image(device, mem,
                                       pMemoryRanges[i].offset,
                                       pMemoryRanges[i].size);
       if (result != VK_SUCCESS)
@@ -742,17 +742,17 @@ r300vk_InvalidateMappedMemoryRanges(VkDevice _device,
 }
 
 VkResult
-r300vk_BindBufferMemory2(VkDevice _device,
+r3v_BindBufferMemory2(VkDevice _device,
                           uint32_t bindInfoCount,
                           const VkBindBufferMemoryInfo *pBindInfos)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
-      VK_FROM_HANDLE(r300vk_buffer, buf, pBindInfos[i].buffer);
-      VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
+      VK_FROM_HANDLE(r3v_buffer, buf, pBindInfos[i].buffer);
+      VK_FROM_HANDLE(r3v_device_memory, mem, pBindInfos[i].memory);
 
       /* Memory aliasing: a second DISTINCT VkBuffer binding a memory already bound
-       * to another buffer.  r300vk backs every VkBuffer with its own BO, so the
+       * to another buffer.  r3v backs every VkBuffer with its own BO, so the
        * host map -- which follows mem->resource -- would populate only the
        * last-bound buffer and leave earlier-bound aliased buffers reading
        * uninitialised BOs (the dEQP host_write_index_buffer wrong-pixels case: the
@@ -781,14 +781,14 @@ r300vk_BindBufferMemory2(VkDevice _device,
          if (!owned)
             return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
-         struct r300vk_bound_buffer_slice evicted = {
+         struct r3v_bound_buffer_slice evicted = {
             .resource = NULL,
             .offset = mem->memory_offset,
          };
          pipe_resource_reference(&evicted.resource, mem->resource);
          simple_mtx_lock(&device->memory_list_lock);
          util_dynarray_append_typed(&mem->bound_buffers,
-                                    struct r300vk_bound_buffer_slice, evicted);
+                                    struct r3v_bound_buffer_slice, evicted);
          simple_mtx_unlock(&device->memory_list_lock);
 
          pipe_resource_reference(&mem->resource, NULL);
@@ -808,16 +808,16 @@ r300vk_BindBufferMemory2(VkDevice _device,
             return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
          if (device->dbg_log_draws)
-            fprintf(stderr, "r300vk bind-buf: mem=%p buf=%p res=%p moff=%llu "
+            fprintf(stderr, "r3v bind-buf: mem=%p buf=%p res=%p moff=%llu "
                     "bufsize=%llu OWNS slices=%u\n",
                     (void *)mem, (void *)buf, (void *)buf->resource,
                     (unsigned long long)pBindInfos[i].memoryOffset,
                     (unsigned long long)buf->size,
                     (unsigned)util_dynarray_num_elements(
                        &mem->bound_buffers,
-                       struct r300vk_bound_buffer_slice));
+                       struct r3v_bound_buffer_slice));
          mem->memory_offset = pBindInfos[i].memoryOffset;
-         struct r300vk_bound_buffer_slice slice = {
+         struct r3v_bound_buffer_slice slice = {
             .resource = NULL,
             .offset = pBindInfos[i].memoryOffset,
          };
@@ -826,11 +826,11 @@ r300vk_BindBufferMemory2(VkDevice _device,
           * helper and the submit-boundary sync walk the array under it. */
          simple_mtx_lock(&device->memory_list_lock);
          util_dynarray_append_typed(&mem->bound_buffers,
-                                    struct r300vk_bound_buffer_slice, slice);
+                                    struct r3v_bound_buffer_slice, slice);
          simple_mtx_unlock(&device->memory_list_lock);
          /* Seed from the local slice value: an append from another bind can
           * grow-realloc the array, so a pointer into it would dangle. */
-         VkResult result = r300vk_sync_one_buffer_slice(
+         VkResult result = r3v_sync_one_buffer_slice(
             device, mem, &slice,
             true /* host -> buffer (seed) */, 0, VK_WHOLE_SIZE);
          if (result != VK_SUCCESS)
@@ -844,7 +844,7 @@ r300vk_BindBufferMemory2(VkDevice _device,
           * UnmapMemory (preventing use-after-free when mem->resource is
           * overwritten below). */
          if (device->dbg_log_draws)
-            fprintf(stderr, "r300vk bind-buf: mem=%p buf=%p res=%p moff=%llu "
+            fprintf(stderr, "r3v bind-buf: mem=%p buf=%p res=%p moff=%llu "
                     "bufsize=%llu BORROW prev_res=%p prev_moff=%llu\n",
                     (void *)mem, (void *)buf, (void *)buf->resource,
                     (unsigned long long)pBindInfos[i].memoryOffset,
@@ -858,15 +858,15 @@ r300vk_BindBufferMemory2(VkDevice _device,
 }
 
 VkResult
-r300vk_BindImageMemory2(VkDevice _device,
+r3v_BindImageMemory2(VkDevice _device,
                          uint32_t bindInfoCount,
                          const VkBindImageMemoryInfo *pBindInfos)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r3v_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
-      VK_FROM_HANDLE(r300vk_image, img, pBindInfos[i].image);
-      VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
-      const VkDeviceSize image_size = r300vk_image_memory_size(img);
+      VK_FROM_HANDLE(r3v_image, img, pBindInfos[i].image);
+      VK_FROM_HANDLE(r3v_device_memory, mem, pBindInfos[i].memory);
+      const VkDeviceSize image_size = r3v_image_memory_size(img);
 
       if (pBindInfos[i].memoryOffset > mem->size ||
           image_size > mem->size - pBindInfos[i].memoryOffset)
@@ -904,14 +904,14 @@ r300vk_BindImageMemory2(VkDevice _device,
          if (!owned)
             return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
-         struct r300vk_bound_buffer_slice evicted = {
+         struct r3v_bound_buffer_slice evicted = {
             .resource = NULL,
             .offset = mem->memory_offset,
          };
          pipe_resource_reference(&evicted.resource, mem->resource);
          simple_mtx_lock(&device->memory_list_lock);
          util_dynarray_append_typed(&mem->bound_buffers,
-                                    struct r300vk_bound_buffer_slice, evicted);
+                                    struct r3v_bound_buffer_slice, evicted);
          simple_mtx_unlock(&device->memory_list_lock);
 
          pipe_resource_reference(&mem->resource, NULL);
@@ -920,7 +920,7 @@ r300vk_BindImageMemory2(VkDevice _device,
       }
 
       mem->memory_offset = pBindInfos[i].memoryOffset;
-      r300vk_clear_bound_image(mem);
+      r3v_clear_bound_image(mem);
       mem->bound_image_offset = pBindInfos[i].memoryOffset;
       mem->bound_image_size = image_size;
 
@@ -950,12 +950,12 @@ r300vk_BindImageMemory2(VkDevice _device,
 }
 
 VkResult
-r300vk_GetMemoryFdKHR(VkDevice _device,
+r3v_GetMemoryFdKHR(VkDevice _device,
                       const VkMemoryGetFdInfoKHR *pGetFdInfo,
                       int *pFd)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_device_memory, mem, pGetFdInfo->memory);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_device_memory, mem, pGetFdInfo->memory);
 
    if (pGetFdInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
        pGetFdInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
@@ -983,7 +983,7 @@ r300vk_GetMemoryFdKHR(VkDevice _device,
 }
 
 VkResult
-r300vk_GetMemoryFdPropertiesKHR(VkDevice _device,
+r3v_GetMemoryFdPropertiesKHR(VkDevice _device,
                                 VkExternalMemoryHandleTypeFlagBits handleType,
                                 int fd,
                                 VkMemoryFdPropertiesKHR *pMemoryFdProperties)

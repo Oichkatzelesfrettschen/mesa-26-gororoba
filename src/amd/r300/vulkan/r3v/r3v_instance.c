@@ -18,7 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* R300VK_DEBUG carries two kinds of token.  The flags below parse through
+/* R3V_DEBUG carries two kinds of token.  The flags below parse through
  * parse_debug_string into instance->debug_flags.  Several call sites also take
  * the raw string and test it with strstr, so those tokens are matched as
  * substrings independently of this table:
@@ -33,8 +33,8 @@
  *   no_topo       r3v_device.c (dbg_no_topo_override) -- use the recorded
  *                 topology only, no override.
  * A substring token composes freely with the flags (e.g. "startup,classify_nir"). */
-static const struct debug_control r300vk_debug_options[] = {
-   {"startup", R300VK_DEBUG_STARTUP},
+static const struct debug_control r3v_debug_options[] = {
+   {"startup", R3V_DEBUG_STARTUP},
    {NULL, 0},
 };
 
@@ -55,32 +55,32 @@ static const struct debug_control r300vk_debug_options[] = {
  * Vulkan 1.4 spec ch. 36 "Extensions" and produces
  * VK_ERROR_FEATURE_NOT_PRESENT crashes in application code paths that
  * take the advertised feature flag as a green light. */
-static const struct vk_instance_extension_table r300vk_instance_extensions_supported = {
+static const struct vk_instance_extension_table r3v_instance_extensions_supported = {
    .KHR_get_physical_device_properties2 = true,
    /* The VK_KHR_surface family backs presentation through Mesa's common WSI
     * in software mode (wsi_device_init with sw_device on the physical
     * device): the vkCreate*SurfaceKHR entrypoints and surface queries come
     * from wsi_instance_entrypoints, layered into the instance dispatch in
-    * r300vk_instance_init.  X11 surfaces only; presentation runs the xcb-shm
+    * r3v_instance_init.  X11 surfaces only; presentation runs the xcb-shm
     * CPU path, no DRM modifiers or dma-buf involved. */
    .KHR_surface = true,
    .KHR_xcb_surface = true,
    .KHR_xlib_surface = true,
    /* Required by the device-level external-memory family; the physical-device
     * query entry points come from the generated dispatch and
-    * r300vk_GetPhysicalDeviceImageFormatProperties2's external handling. */
+    * r3v_GetPhysicalDeviceImageFormatProperties2's external handling. */
    .KHR_external_memory_capabilities = true,
 };
 
 VKAPI_ATTR VkResult VKAPI_CALL
-r300vk_EnumerateInstanceExtensionProperties(const char *pLayerName,
+r3v_EnumerateInstanceExtensionProperties(const char *pLayerName,
                                             uint32_t *pPropertyCount,
                                             VkExtensionProperties *pProperties)
 {
    if (pLayerName != NULL)
       return vk_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
 
-   return vk_enumerate_instance_extension_properties(&r300vk_instance_extensions_supported,
+   return vk_enumerate_instance_extension_properties(&r3v_instance_extensions_supported,
                                                      pPropertyCount, pProperties);
 }
 
@@ -91,7 +91,7 @@ r300vk_EnumerateInstanceExtensionProperties(const char *pLayerName,
  * reserved for vkCreateInstance receiving a ppEnabledLayerNames entry
  * the implementation cannot satisfy. */
 VKAPI_ATTR VkResult VKAPI_CALL
-r300vk_EnumerateInstanceLayerProperties(uint32_t *pPropertyCount,
+r3v_EnumerateInstanceLayerProperties(uint32_t *pPropertyCount,
                                         VkLayerProperties *pProperties)
 {
    (void)pProperties;
@@ -100,84 +100,84 @@ r300vk_EnumerateInstanceLayerProperties(uint32_t *pPropertyCount,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-r300vk_EnumerateInstanceVersion(uint32_t *pApiVersion)
+r3v_EnumerateInstanceVersion(uint32_t *pApiVersion)
 {
-   *pApiVersion = R300VK_API_VERSION;
+   *pApiVersion = R3V_API_VERSION;
    return VK_SUCCESS;
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-r300vk_GetInstanceProcAddr(VkInstance instanceHandle, const char *pName)
+r3v_GetInstanceProcAddr(VkInstance instanceHandle, const char *pName)
 {
    const struct vk_instance *const instance = vk_instance_from_handle(instanceHandle);
-   return vk_instance_get_proc_addr(instance, &r300vk_instance_entrypoints, pName);
+   return vk_instance_get_proc_addr(instance, &r3v_instance_entrypoints, pName);
 }
 
 VkResult
-r300vk_instance_init(struct r300vk_instance *const instance,
+r3v_instance_init(struct r3v_instance *const instance,
                      const VkInstanceCreateInfo *const create_info,
                      const VkAllocationCallbacks *const allocator)
 {
    struct vk_instance_dispatch_table dispatch_table;
    vk_instance_dispatch_table_from_entrypoints(&dispatch_table,
-                                               &r300vk_instance_entrypoints, true);
+                                               &r3v_instance_entrypoints, true);
    /* The common WSI's vkCreate*SurfaceKHR / vkGetPhysicalDeviceSurface* fill
     * every slot the driver leaves empty; without this overlay a GLX/EGL client
     * calls a NULL instance entrypoint at surface creation. */
    vk_instance_dispatch_table_from_entrypoints(&dispatch_table,
                                                &wsi_instance_entrypoints, false);
 
-   VkResult result = vk_instance_init(&instance->vk, &r300vk_instance_extensions_supported,
+   VkResult result = vk_instance_init(&instance->vk, &r3v_instance_extensions_supported,
                                       &dispatch_table, create_info, allocator);
    if (result != VK_SUCCESS)
       return vk_error(NULL, result);
 
-   instance->vk.physical_devices.try_create_for_drm = r300vk_physical_device_try_create_for_drm;
-   instance->vk.physical_devices.destroy = r300vk_physical_device_destroy;
+   instance->vk.physical_devices.try_create_for_drm = r3v_physical_device_try_create_for_drm;
+   instance->vk.physical_devices.destroy = r3v_physical_device_destroy;
 
-   instance->debug_flags = parse_debug_string(getenv("R300VK_DEBUG"), r300vk_debug_options);
+   instance->debug_flags = parse_debug_string(getenv("R3V_DEBUG"), r3v_debug_options);
 
-   if (instance->debug_flags & R300VK_DEBUG_STARTUP)
-      fputs("r300vk: info: Created an instance.\n", stderr);
+   if (instance->debug_flags & R3V_DEBUG_STARTUP)
+      fputs("r3v: info: Created an instance.\n", stderr);
 
    return VK_SUCCESS;
 }
 
 void
-r300vk_instance_finish(struct r300vk_instance *const instance)
+r3v_instance_finish(struct r3v_instance *const instance)
 {
    vk_instance_finish(&instance->vk);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-r300vk_CreateInstance(const VkInstanceCreateInfo *const pCreateInfo,
+r3v_CreateInstance(const VkInstanceCreateInfo *const pCreateInfo,
                       const VkAllocationCallbacks *pAllocator,
                       VkInstance *const pInstance)
 {
    if (pAllocator == NULL)
       pAllocator = vk_default_allocator();
 
-   struct r300vk_instance *const instance =
-      vk_alloc(pAllocator, sizeof(*instance), alignof(struct r300vk_instance),
+   struct r3v_instance *const instance =
+      vk_alloc(pAllocator, sizeof(*instance), alignof(struct r3v_instance),
                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
    if (instance == NULL)
       return vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   VkResult result = r300vk_instance_init(instance, pCreateInfo, pAllocator);
+   VkResult result = r3v_instance_init(instance, pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {
       vk_free(pAllocator, instance);
       return result;
    }
 
-   *pInstance = r300vk_instance_to_handle(instance);
+   *pInstance = r3v_instance_to_handle(instance);
    return VK_SUCCESS;
 }
 
 VKAPI_ATTR void VKAPI_CALL
-r300vk_DestroyInstance(VkInstance instanceHandle,
+r3v_DestroyInstance(VkInstance instanceHandle,
                        const VkAllocationCallbacks *pAllocator)
 {
-   struct r300vk_instance *const instance = r300vk_instance_from_handle(instanceHandle);
+   struct r3v_instance *const instance = r3v_instance_from_handle(instanceHandle);
    if (instance == NULL)
       return;
 
@@ -188,7 +188,7 @@ r300vk_DestroyInstance(VkInstance instanceHandle,
     * terakan_DestroyInstance. */
    (void)pAllocator;
    VkAllocationCallbacks alloc = instance->vk.alloc;
-   r300vk_instance_finish(instance);
+   r3v_instance_finish(instance);
    vk_free(&alloc, instance);
 }
 
@@ -202,5 +202,5 @@ r300vk_DestroyInstance(VkInstance instanceHandle,
 PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 vk_icdGetInstanceProcAddr(VkInstance instanceHandle, const char *pName)
 {
-   return r300vk_GetInstanceProcAddr(instanceHandle, pName);
+   return r3v_GetInstanceProcAddr(instanceHandle, pName);
 }

@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
- * Build-time guard for r300vk constant-file offset representability.
+ * Build-time guard for r3v constant-file offset representability.
  */
 
 #include <stdio.h>
@@ -37,7 +37,7 @@ push_const_load_shader(unsigned offset, unsigned components)
    static const nir_shader_compiler_options options = {0};
    nir_builder b =
       nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &options,
-                                     "r300vk static push offset");
+                                     "r3v static push offset");
 
    nir_load_push_constant(&b, components, 32, nir_imm_int(&b, offset),
                           .base = 0, .range = 128, .align_mul = 4,
@@ -51,7 +51,7 @@ check_push_const(unsigned offset, unsigned components, bool expected,
                  const char *name)
 {
    nir_shader *shader = push_const_load_shader(offset, components);
-   bool ok = r300vk_nir_push_const_shape_ok(NULL, shader);
+   bool ok = r3v_nir_push_const_shape_ok(NULL, shader);
    CHECK(ok == expected, name);
    ralloc_free(shader);
 }
@@ -60,7 +60,7 @@ static void
 check_straddle_flag_is_explicit(void)
 {
    nir_shader *shader = push_const_load_shader(12, 2);
-   bool ok = r300vk_nir_offsets_static(NULL, shader,
+   bool ok = r3v_nir_offsets_static(NULL, shader,
                                        nir_intrinsic_load_push_constant, 0,
                                        false);
    CHECK(ok, "straddle=false accepts a constant offset crossing a slot");
@@ -70,12 +70,12 @@ check_straddle_flag_is_explicit(void)
 static nir_variable *
 add_block0_ubo(nir_shader *shader, unsigned size_bytes, const char *name)
 {
-   const struct glsl_type *ubo_type = r300vk_block0_ubo_type(size_bytes);
+   const struct glsl_type *ubo_type = r3v_block0_ubo_type(size_bytes);
    nir_variable *ubo =
       nir_variable_create(shader, nir_var_mem_ubo, ubo_type, name);
 
    ubo->data.driver_location = 0;
-   ubo->interface_type = r300vk_block0_ubo_interface_type(ubo_type);
+   ubo->interface_type = r3v_block0_ubo_interface_type(ubo_type);
    return ubo;
 }
 
@@ -95,16 +95,16 @@ block0_ubo_count(nir_shader *shader)
 static unsigned
 block0_ubo_interface_size(nir_shader *shader)
 {
-   nir_variable *ubo = r300vk_find_block0_ubo(shader);
+   nir_variable *ubo = r3v_find_block0_ubo(shader);
 
-   return ubo ? r300vk_ubo_interface_size(ubo) : 0;
+   return ubo ? r3v_ubo_interface_size(ubo) : 0;
 }
 
 static void
 check_block0_ubo_declaration(void)
 {
    nir_shader *shader = push_const_load_shader(0, 4);
-   r300vk_declare_block0_ubo(shader, 128);
+   r3v_declare_block0_ubo(shader, 128);
    CHECK(block0_ubo_count(shader) == 1,
          "block-0 UBO declaration creates one compiler-visible block");
    CHECK(block0_ubo_interface_size(shader) >= 128,
@@ -113,7 +113,7 @@ check_block0_ubo_declaration(void)
 
    shader = push_const_load_shader(0, 4);
    add_block0_ubo(shader, 16, "app_ubo0");
-   r300vk_declare_block0_ubo(shader, 128);
+   r3v_declare_block0_ubo(shader, 128);
    CHECK(block0_ubo_count(shader) == 1,
          "block-0 UBO declaration reuses a prior app block");
    CHECK(block0_ubo_interface_size(shader) >= 128,
@@ -127,7 +127,7 @@ vertex_texture_shader(bool live_texture)
    static const nir_shader_compiler_options options = {0};
    nir_builder b =
       nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &options,
-                                     "r300vk vertex texture gate");
+                                     "r3v vertex texture gate");
 
    nir_variable *sampler = nir_variable_create(
       b.shader, nir_var_uniform,
@@ -159,12 +159,12 @@ check_vertex_texture_gate(void)
    struct pipe_screen *pscreen = fake_r300_screen(&screen);
 
    nir_shader *dead_tex = vertex_texture_shader(false);
-   CHECK(!r300vk_nir_uses_live_texture_after_r300_opt(pscreen, dead_tex),
+   CHECK(!r3v_nir_uses_live_texture_after_r300_opt(pscreen, dead_tex),
          "dead vertex texture is accepted after r300 NIR DCE");
    ralloc_free(dead_tex);
 
    nir_shader *live_tex = vertex_texture_shader(true);
-   CHECK(r300vk_nir_uses_live_texture_after_r300_opt(pscreen, live_tex),
+   CHECK(r3v_nir_uses_live_texture_after_r300_opt(pscreen, live_tex),
          "live vertex texture remains rejected after r300 NIR DCE");
    ralloc_free(live_tex);
 }

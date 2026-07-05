@@ -4,12 +4,12 @@
  *
  * Build-time guard for the DP4 compute-as-raster fragment shader shape.
  *
- * r300vk_synthesize_dp4_fs fed the vec4 texcoord varying straight into nir_tex
+ * r3v_synthesize_dp4_fs fed the vec4 texcoord varying straight into nir_tex
  * for a GLSL_SAMPLER_DIM_2D sampler.  nir_build_tex_struct asserts that a tex
  * instruction's coord_components equals the sampler dimension's coordinate
  * count (2 for 2D), so an asserts-enabled build aborted at every DP4 compute
  * pipeline create.  This test builds the same FS NIR via the extracted
- * r300vk_build_dp4_fs_nir for each dot width and pins the coordinate shape two
+ * r3v_build_dp4_fs_nir for each dot width and pins the coordinate shape two
  * ways: the explicit per-op check below counts every 2D texture coordinate that
  * is not 2-component, and under an asserts-enabled build nir_build_tex_struct
  * aborts inside the builder the moment a vec4 coordinate reaches the 2D sampler.
@@ -149,14 +149,14 @@ check_dp4_widths(const nir_shader_compiler_options *options)
    const unsigned widths[] = { 0, 2, 3, 4 };
    for (unsigned i = 0; i < ARRAY_SIZE(widths); i++) {
       char name[80];
-      nir_shader *s = r300vk_build_dp4_fs_nir(options, widths[i]);
+      nir_shader *s = r3v_build_dp4_fs_nir(options, widths[i]);
 
       snprintf(name, sizeof(name), "components=%u builds a shader", widths[i]);
       CHECK(s != NULL, name);
       if (!s)
          continue;
 
-      nir_validate_shader(s, "r300vk dp4 fs"); /* general well-formedness, not the coord-shape check */
+      nir_validate_shader(s, "r3v dp4 fs"); /* general well-formedness, not the coord-shape check */
 
       snprintf(name, sizeof(name),
                "components=%u", widths[i]);
@@ -193,7 +193,7 @@ check_hamilton_fs(const nir_shader_compiler_options *options,
    if (!s)
       return;
 
-   snprintf(name, sizeof(name), "r300vk %s fs", label);
+   snprintf(name, sizeof(name), "r3v %s fs", label);
    nir_validate_shader(s, name);
    check_texcoord_shape(s, label, expected_tex);
 
@@ -206,12 +206,12 @@ check_hamilton_fs(const nir_shader_compiler_options *options,
 static void
 check_omul_mrt_fs(const nir_shader_compiler_options *options)
 {
-   nir_shader *s = r300vk_build_omul_mrt_fs_nir(options);
+   nir_shader *s = r3v_build_omul_mrt_fs_nir(options);
    CHECK(s != NULL, "omul_mrt builds a shader");
    if (!s)
       return;
 
-   nir_validate_shader(s, "r300vk omul_mrt fs");
+   nir_validate_shader(s, "r3v omul_mrt fs");
    check_texcoord_shape(s, "omul_mrt", 4);
    CHECK(count_alu_op(s, nir_op_fdot4) == 16,
          "omul_mrt: exactly sixteen DP4s");
@@ -233,10 +233,10 @@ main(void)
    static const nir_shader_compiler_options options = { 0 };
 
    check_dp4_widths(&options);
-   check_hamilton_fs(&options, "qmul", r300vk_build_qmul_fs_nir, 2, 4);
-   check_hamilton_fs(&options, "qrotate", r300vk_build_qrotate_fs_nir, 2, 8);
-   check_hamilton_fs(&options, "omul_lo", r300vk_build_omul_lo_fs_nir, 4, 8);
-   check_hamilton_fs(&options, "omul_hi", r300vk_build_omul_hi_fs_nir, 4, 8);
+   check_hamilton_fs(&options, "qmul", r3v_build_qmul_fs_nir, 2, 4);
+   check_hamilton_fs(&options, "qrotate", r3v_build_qrotate_fs_nir, 2, 8);
+   check_hamilton_fs(&options, "omul_lo", r3v_build_omul_lo_fs_nir, 4, 8);
+   check_hamilton_fs(&options, "omul_hi", r3v_build_omul_hi_fs_nir, 4, 8);
    check_omul_mrt_fs(&options);
 
    glsl_type_singleton_decref();

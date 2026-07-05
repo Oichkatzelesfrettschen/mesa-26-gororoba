@@ -19,7 +19,7 @@
 #include "vk_log.h"
 #include "vk_util.h"
 
-#ifdef R300VK_GALLIUM_BACKEND
+#ifdef R3V_GALLIUM_BACKEND
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "r300/r300_context.h"
@@ -40,19 +40,19 @@
 #include <xf86drm.h>
 
 static bool
-r300vk_hybrid_compute_enabled(void)
+r3v_hybrid_compute_enabled(void)
 {
-   const char *gate = getenv(R300VK_HYBRID_COMPUTE_ENV);
-   return gate && strcmp(gate, R300VK_HYBRID_COMPUTE_ENV_VALUE) == 0;
+   const char *gate = getenv(R3V_HYBRID_COMPUTE_ENV);
+   return gate && strcmp(gate, R3V_HYBRID_COMPUTE_ENV_VALUE) == 0;
 }
 
 static const char *
-r300vk_chip_name_from_pci_device_id(uint32_t pci_device_id)
+r3v_chip_name_from_pci_device_id(uint32_t pci_device_id)
 {
    switch (pci_device_id) {
-   case R300VK_PCI_DEVICE_ID_RS482:
+   case R3V_PCI_DEVICE_ID_RS482:
       return "ATI RS480 (RS482)";
-   case R300VK_PCI_DEVICE_ID_RS485:
+   case R3V_PCI_DEVICE_ID_RS485:
       return "ATI RS480 (RS485)";
    default:
       return "ATI RS480";
@@ -70,20 +70,20 @@ r300vk_chip_name_from_pci_device_id(uint32_t pci_device_id)
  *   "Vulkan spec <ref>" Vulkan 1.4 specification section reference
  *
     * Where the RS482 path has no single native 4096-wide render surface,
-    * r300vk presents the Vulkan floor through a 2560 hardware-backed span plus
+    * r3v presents the Vulkan floor through a 2560 hardware-backed span plus
     * a residual span.  Native r300g resources remain the fast path for images
     * that fit in one span. */
 static void
-r300vk_physical_device_init_limits(struct vk_properties *const props,
+r3v_physical_device_init_limits(struct vk_properties *const props,
                                    uint64_t const gart_size_kb)
 {
    /* Texture and image dimensions.  The RS482 render path accepts a 2560-wide
-    * hardware span; r300vk composes the Vulkan 4096 floor from that fast path
+    * hardware span; r3v composes the Vulkan 4096 floor from that fast path
     * plus a residual span when an image exceeds the single-span limit. */
-   props->maxImageDimension1D = R300VK_VK10_MIN_IMAGE_DIMENSION_1D;
-   props->maxImageDimension2D = R300VK_VK10_MIN_IMAGE_DIMENSION_2D;
+   props->maxImageDimension1D = R3V_VK10_MIN_IMAGE_DIMENSION_1D;
+   props->maxImageDimension2D = R3V_VK10_MIN_IMAGE_DIMENSION_2D;
    props->maxImageDimension3D = 256;
-   props->maxImageDimensionCube = R300VK_VK10_MIN_IMAGE_DIMENSION_CUBE;
+   props->maxImageDimensionCube = R3V_VK10_MIN_IMAGE_DIMENSION_CUBE;
    props->maxImageArrayLayers = 256;
 
    /* Texel buffer size: R3xx has no native texel buffer object.  The
@@ -94,7 +94,7 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
     * 512 bytes.  The Vulkan minimum maxUniformBufferRange is 16 KiB,
     * so we round up to that bound; the descriptor binding still maps
     * down to the hardware 32 slots. */
-   props->maxUniformBufferRange = R300VK_VK10_MIN_UNIFORM_BUFFER_RANGE;
+   props->maxUniformBufferRange = R3V_VK10_MIN_UNIFORM_BUFFER_RANGE;
 
    /* SSBO size advertise.  R3xx has no native SSBO; the compute-as-raster
     * substrate maps stores to RB3D color export backed by the radeon GART.
@@ -105,23 +105,23 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
    if (gart_size_kb >= 1024u * 1024u)
       props->maxStorageBufferRange = 512u * 1024u * 1024u; /* 512 MB */
    else
-      props->maxStorageBufferRange = R300VK_VK10_MIN_STORAGE_BUFFER_RANGE;
+      props->maxStorageBufferRange = R3V_VK10_MIN_STORAGE_BUFFER_RANGE;
    /* TODO: elevate VkPhysicalDeviceVulkan13Properties.maxBufferSize and
     *       VkPhysicalDeviceMaintenance4Properties.maxBufferSize in
     *       lock-step with maxStorageBufferRange.  Vulkan spec 47.78
     *       requires maxBufferSize >= maxStorageBufferRange whenever the
     *       Vulkan 1.3 properties chain or VK_KHR_maintenance4 is
     *       advertised.
-    *       reason -- r300vk currently advertises API version 1.0
-    *       (R300VK_API_VERSION = VK_MAKE_API_VERSION(0, 1, 0, ...) in
+    *       reason -- r3v currently advertises API version 1.0
+    *       (R3V_API_VERSION = VK_MAKE_API_VERSION(0, 1, 0, ...) in
     *       r3v_private.h) and does not yet expose maintenance4; the
     *       maxBufferSize field lives in a properties chain the loader
     *       does not query at the 1.0 advertise level, so populating it
     *       would write a value the application cannot reach.
     *       tracking -- VkPhysicalDeviceMaintenance4Properties .maxBufferSize
     *       (header vulkan_core.h field, lock-step elevation lands with the
-    *       r300vk maintenance4 advertise). */
-   props->maxPushConstantsSize = R300VK_MAX_PUSH_CONSTANTS_SIZE;
+    *       r3v maintenance4 advertise). */
+   props->maxPushConstantsSize = R3V_MAX_PUSH_CONSTANTS_SIZE;
 
    props->maxMemoryAllocationCount = 4096;
    props->maxSamplerAllocationCount = 4000;
@@ -178,7 +178,7 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
    props->maxGeometryOutputVertices = 0;
    props->maxGeometryTotalOutputComponents = 0;
 
-   /* Fragment shader budget for the RS482/RS485 R300VK target.
+   /* Fragment shader budget for the RS482/RS485 R3V target.
     * R300-class RS482 fragment programs are constrained by the
     * current Mesa r300 operational budget of 64 ALU instructions
     * (R300_PFS_INSTR_*), 32 TEX instructions, and 32 vec4 PFS_PARAM
@@ -193,15 +193,15 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
    props->maxFragmentCombinedOutputResources = 4;
 
    props->maxComputeSharedMemorySize =
-      R300VK_VK10_MIN_COMPUTE_SHARED_MEMORY_SIZE;
+      R3V_VK10_MIN_COMPUTE_SHARED_MEMORY_SIZE;
    props->maxComputeWorkGroupCount[0] = 65535;
    props->maxComputeWorkGroupCount[1] = 65535;
    props->maxComputeWorkGroupCount[2] = 65535;
    props->maxComputeWorkGroupInvocations =
-      R300VK_VK10_MIN_COMPUTE_WORKGROUP_INVOCATIONS;
-   props->maxComputeWorkGroupSize[0] = R300VK_VK10_MIN_COMPUTE_WORKGROUP_SIZE_X;
-   props->maxComputeWorkGroupSize[1] = R300VK_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Y;
-   props->maxComputeWorkGroupSize[2] = R300VK_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Z;
+      R3V_VK10_MIN_COMPUTE_WORKGROUP_INVOCATIONS;
+   props->maxComputeWorkGroupSize[0] = R3V_VK10_MIN_COMPUTE_WORKGROUP_SIZE_X;
+   props->maxComputeWorkGroupSize[1] = R3V_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Y;
+   props->maxComputeWorkGroupSize[2] = R3V_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Z;
 
    /* R3xx subpixel precision is 4 fractional bits in the rasterizer
     * (R3xx-RRG ch. "Geometry Setup", GA_LINE_CNTL and the rasterizer
@@ -218,8 +218,8 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
 
    /* Single viewport for R3xx graphics path. */
    props->maxViewports = 1;
-   props->maxViewportDimensions[0] = R300VK_VK10_MIN_VIEWPORT_DIMENSION;
-   props->maxViewportDimensions[1] = R300VK_VK10_MIN_VIEWPORT_DIMENSION;
+   props->maxViewportDimensions[0] = R3V_VK10_MIN_VIEWPORT_DIMENSION;
+   props->maxViewportDimensions[1] = R3V_VK10_MIN_VIEWPORT_DIMENSION;
    props->viewportBoundsRange[0] = -8192.0f;
    props->viewportBoundsRange[1] = 8191.0f;
    props->viewportSubPixelBits = 0;
@@ -245,15 +245,15 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
     * silicon cap instead -- the stale-zsbuf clear crash is prevented by the
     * clamp, and an oversize bind degrades to the r300g refusal warning
     * rather than corrupting state. */
-   props->maxFramebufferWidth = R300VK_VK10_MIN_FRAMEBUFFER_DIMENSION;
-   props->maxFramebufferHeight = R300VK_VK10_MIN_FRAMEBUFFER_DIMENSION;
+   props->maxFramebufferWidth = R3V_VK10_MIN_FRAMEBUFFER_DIMENSION;
+   props->maxFramebufferHeight = R3V_VK10_MIN_FRAMEBUFFER_DIMENSION;
    props->maxFramebufferLayers = 1;
 
-   props->framebufferColorSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
-   props->framebufferDepthSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
-   props->framebufferStencilSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->framebufferColorSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->framebufferDepthSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->framebufferStencilSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
    props->framebufferNoAttachmentsSampleCounts =
-      R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
+      R3V_VK10_REQUIRED_SAMPLE_COUNTS;
 
    /* R300 binds up to four simultaneous colour buffers (COLOROFFSET0..3 /
     * US_OUT_FMT_0..3), and the replay now binds every subpass colour attachment
@@ -263,11 +263,11 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
     * then requires every attachment's blend state to be identical, which makes
     * binding pAttachments[0] for all of them spec-correct. */
    props->maxColorAttachments = 4;
-   props->sampledImageColorSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->sampledImageColorSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
    props->sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   props->sampledImageDepthSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
-   props->sampledImageStencilSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
-   props->storageImageSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->sampledImageDepthSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->sampledImageStencilSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->storageImageSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
    props->maxSampleMaskWords = 1;
 
    props->timestampComputeAndGraphics = VK_FALSE;
@@ -295,16 +295,16 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
 }
 
 static void
-r300vk_physical_device_init_properties(struct vk_properties *const props,
+r3v_physical_device_init_properties(struct vk_properties *const props,
                                        uint32_t const pci_vendor_id,
                                        uint32_t const pci_device_id,
                                        uint64_t const gart_size_kb)
 {
    memset(props, 0, sizeof(*props));
 
-   r300vk_physical_device_init_limits(props, gart_size_kb);
+   r3v_physical_device_init_limits(props, gart_size_kb);
 
-   props->apiVersion = R300VK_API_VERSION;
+   props->apiVersion = R3V_API_VERSION;
 
    /* R3xx generation does not carry a driver version distinct from
     * Mesa's r300g.  Report the Mesa fork's primary version number.
@@ -320,18 +320,18 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
     * VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU. */
    props->deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 
-   const char *const chip_name = r300vk_chip_name_from_pci_device_id(pci_device_id);
+   const char *const chip_name = r3v_chip_name_from_pci_device_id(pci_device_id);
    snprintf(props->deviceName, sizeof(props->deviceName), "%s", chip_name);
 
    /* Pipeline-cache UUID: BLAKE3 of the driver build identity plus the PCI
     * device ID, so a driver rebuild or a chip switch invalidates stale
     * disk_cache and vk_pipeline_cache entries.  disk_cache_get_function_identifier
-    * derives the build id from the r300vk .so via dladdr.  Mirrors the
+    * derives the build id from the r3v .so via dladdr.  Mirrors the
     * construction in terakan_physical_device.c. */
    {
       struct mesa_blake3 uuid_ctx;
       _mesa_blake3_init(&uuid_ctx);
-      disk_cache_get_function_identifier(r300vk_physical_device_init_properties,
+      disk_cache_get_function_identifier(r3v_physical_device_init_properties,
                                          &uuid_ctx);
       _mesa_blake3_update(&uuid_ctx, &pci_device_id, sizeof(pci_device_id));
       uint8_t uuid_hash[BLAKE3_OUT_LEN];
@@ -347,19 +347,19 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
     * driverID is deliberately (VkDriverId)0.  The VkDriverId enum
     * (VkPhysicalDeviceDriverProperties, Vulkan 1.2 ch. 4.1.3) is a
     * Khronos-allocated registry; every value names a specific shipping
-    * driver and the enum has no value 0.  r300vk is a downstream
+    * driver and the enum has no value 0.  r3v is a downstream
     * driver that is not submitted upstream, so no VkDriverId will be
     * allocated for it.  Reusing an existing ID such as
     * VK_DRIVER_ID_MESA_RADV is rejected: an application keying off
-    * driverID would apply RADV-specific workarounds to r300vk and
+    * driverID would apply RADV-specific workarounds to r3v and
     * misbehave.  0 (out-of-enum) is the least-harmful honest value;
-    * driverName ("r300vk") and driverInfo carry the real attribution.
+    * driverName ("r3v") and driverInfo carry the real attribution.
     * dEQP-VK.api.driver_properties may flag a 0 driverID, which is
-    * accepted: r300vk is not run for conformance submission.
+    * accepted: r3v is not run for conformance submission.
     */
    props->driverID = (VkDriverId)0;
-   snprintf(props->driverName, sizeof(props->driverName), "%s", "r300vk");
-   snprintf(props->driverInfo, sizeof(props->driverInfo), "%s", "Mesa r300vk");
+   snprintf(props->driverName, sizeof(props->driverName), "%s", "r3v");
+   snprintf(props->driverInfo, sizeof(props->driverInfo), "%s", "Mesa r3v");
    props->conformanceVersion = (VkConformanceVersion){0, 0, 0, 0};
    /* VK_EXT_custom_border_color: the border colour lives in the sampler CSO,
     * so the count is bounded only by sampler objects; report the 1.0-era
@@ -380,11 +380,11 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
    props->independentResolve     = true;
 }
 
-static const struct vk_device_extension_table r300vk_device_extensions_supported = {
+static const struct vk_device_extension_table r3v_device_extensions_supported = {
    /* Host-side query reset is a CPU clear of the per-slot query storage
-    * (r300vk_ResetQueryPool); it needs no GPU-side encoding, so the
+    * (r3v_ResetQueryPool); it needs no GPU-side encoding, so the
     * always-available host queue model supports it directly.
-    * r300vk_GetDeviceProcAddr maps the promoted core spelling to the same
+    * r3v_GetDeviceProcAddr maps the promoted core spelling to the same
     * implementation when the extension is enabled on this Vulkan 1.0 device.
     * WSI (VK_KHR_swapchain) and the external-memory family stay withheld until
     * the device layer brings them up. */
@@ -392,7 +392,7 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
    /* VK_EXT_physical_device_drm: exposes the render/primary node major/minor in
     * VkPhysicalDeviceDrmPropertiesEXT.  Zink's display-device selection matches
     * the EGL DRM fd against these to pick this pdev, so without it
-    * zink-on-r300vk fails at "choose pdev" before any feature check. */
+    * zink-on-r3v fails at "choose pdev" before any feature check. */
    .EXT_physical_device_drm = true,
    /* VK_EXT_pci_bus_info: the common WSI's same-GPU check
     * (wsi_device_matches_drm_fd) compares VkPhysicalDevicePCIBusInfoPropertiesEXT
@@ -401,7 +401,7 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * then reports a cross-GPU configuration, and every swapchain is routed
     * through the prime-blit buffer path instead of native dma-buf images. */
    .EXT_pci_bus_info = true,
-   /* VK_KHR_maintenance2: capability bundle with no new entry points r300vk
+   /* VK_KHR_maintenance2: capability bundle with no new entry points r3v
     * must implement (vk_common provides the input-attachment-aspect and
     * tessellation-domain plumbing; point clipping behaviour is reported in
     * the properties below).  zink lists it in the GL3-era dependency closure
@@ -409,7 +409,7 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
    .KHR_maintenance2 = true,
    /* VK_KHR_image_format_list: validation-time metadata only -- the
     * VkImageFormatListCreateInfo chained on VkImageCreateInfo narrows the
-    * MUTABLE view-format set.  r300vk creates single-format images and
+    * MUTABLE view-format set.  r3v creates single-format images and
     * ignores the list, which is a conforming implementation (the list is a
     * promise from the app, not an obligation on the driver). */
    .KHR_image_format_list = true,
@@ -418,19 +418,19 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * (reported in the properties); requires create_renderpass2, already
     * advertised. */
    .KHR_depth_stencil_resolve = true,
-   /* VK_KHR_dynamic_rendering: r300vk_CmdBeginRendering / r300vk_CmdEndRendering
+   /* VK_KHR_dynamic_rendering: r3v_CmdBeginRendering / r3v_CmdEndRendering
     * translate VkRenderingInfo into the same colour-attachment framebuffer the
     * render-pass replay drives, so a render target needs no VkRenderPass or
     * VkFramebuffer object. */
    .KHR_dynamic_rendering = true,
-   /* VK_KHR_create_renderpass2: r300vk_CreateRenderPass2 and the
-    * r300vk_CmdBeginRenderPass2 / r300vk_CmdEndRenderPass2 entry points mirror
-    * the 1.0 render-pass path onto r300vk's own render-pass object, so the 2.0
+   /* VK_KHR_create_renderpass2: r3v_CreateRenderPass2 and the
+    * r3v_CmdBeginRenderPass2 / r3v_CmdEndRenderPass2 entry points mirror
+    * the 1.0 render-pass path onto r3v's own render-pass object, so the 2.0
     * surface needs no common-runtime emulation. */
    .KHR_create_renderpass2 = true,
    /* VK_KHR_descriptor_update_template: vk_common builds the template object;
-    * r300vk_UpdateDescriptorSetWithTemplate applies each entry through
-    * r300vk_UpdateDescriptorSets, reusing the descriptor-write bounds checks. */
+    * r3v_UpdateDescriptorSetWithTemplate applies each entry through
+    * r3v_UpdateDescriptorSets, reusing the descriptor-write bounds checks. */
    .KHR_descriptor_update_template = true,
    /* VK_KHR_maintenance1: a capabilities extension with no feature struct and a
     * single new entry point, vkTrimCommandPool, which vk_common provides.  Its
@@ -438,14 +438,14 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * height (the y-flip): viewport_vk_to_gallium already derives scale[1] and
     * translate[1] from the signed VkViewport::height, so a flipped viewport
     * lands correctly.  The 2D-array-from-3D and 2D/3D copy capabilities are
-    * vacuous here because r300vk does not expose 3D images. */
+    * vacuous here because r3v does not expose 3D images. */
    .KHR_maintenance1 = true,
-   /* VK_KHR_imageless_framebuffer: r300vk_CreateFramebuffer accepts the
-    * IMAGELESS flag and stores no views, and r300vk_record_begin_render_pass
+   /* VK_KHR_imageless_framebuffer: r3v_CreateFramebuffer accepts the
+    * IMAGELESS flag and stores no views, and r3v_record_begin_render_pass
     * sources the colour view from the VkRenderPassAttachmentBeginInfo at begin
     * time.  Gated by the imagelessFramebuffer feature below. */
    .KHR_imageless_framebuffer = true,
-   /* VK_KHR_maintenance5: r300vk implements CmdBindIndexBuffer2,
+   /* VK_KHR_maintenance5: r3v implements CmdBindIndexBuffer2,
     * GetImageSubresourceLayout2, and GetDeviceImageSubresourceLayout, and
     * vk_common provides GetRenderingAreaGranularity.  The maintenance5 property
     * query reports the conservative (all-false) rasterization capabilities. */
@@ -460,14 +460,14 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * and robustImageAccess2 stay false. */
    .EXT_robustness2 = true,
    /* VK_KHR_swapchain through Mesa's common WSI in software mode
-    * (r300vk_init_wsi): swapchain entry points come from
+    * (r3v_init_wsi): swapchain entry points come from
     * wsi_device_entrypoints, already layered into the device dispatch.
     * Presentation copies the CPU-reachable swapchain image out via xcb-shm. */
    .KHR_swapchain = true,
    /* VK_EXT_extended_dynamic_state: zink's draw path loads
     * vkCmdBindVertexBuffers2 unconditionally and, with the extension present,
     * drives cull/front-face/topology/depth/stencil through vkCmdSet*; all of
-    * those record R300VK_CMD_SET_DYNAMIC_STATE entries the replay merges. */
+    * those record R3V_CMD_SET_DYNAMIC_STATE entries the replay merges. */
    .EXT_extended_dynamic_state = true,
    /* VK_EXT_scalar_block_layout: the descriptor-UBO and push-constant paths
     * load CONST[0] by byte offset through the keystone lowering, so packing
@@ -494,26 +494,26 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
    .KHR_external_memory = true,
    .KHR_external_memory_fd = true,
    .EXT_external_memory_dma_buf = true,
-   /* VK_KHR_bind_memory2: r300vk_BindBufferMemory2 / r300vk_BindImageMemory2
+   /* VK_KHR_bind_memory2: r3v_BindBufferMemory2 / r3v_BindImageMemory2
     * already back the batched bind as the same per-resource pipe_resource bind
     * the 1.0 single-bind entry points perform, in a loop. */
    .KHR_bind_memory2 = true,
-   /* VK_KHR_get_memory_requirements2: r300vk_GetBufferMemoryRequirements2 and
-    * r300vk_GetImageMemoryRequirements2 return the size/alignment the 1.0
-    * getters compute, and r300vk_GetImageSparseMemoryRequirements2 reports a
+   /* VK_KHR_get_memory_requirements2: r3v_GetBufferMemoryRequirements2 and
+    * r3v_GetImageMemoryRequirements2 return the size/alignment the 1.0
+    * getters compute, and r3v_GetImageSparseMemoryRequirements2 reports a
     * zero count because the device exposes no sparse residency. */
    .KHR_get_memory_requirements2 = true,
    /* VK_KHR_dedicated_allocation: VkMemoryDedicatedAllocateInfo is already
-    * honoured at allocation time (r300vk_AllocateMemory records dedicated_image
+    * honoured at allocation time (r3v_AllocateMemory records dedicated_image
     * for the PRIME export path); the requirements getters now report dedication
     * as required only for an external image whose single SHARED|SCANOUT BO is
     * exported, and never for a suballocatable resource. */
    .KHR_dedicated_allocation = true,
    /* VK_KHR_driver_properties: VkPhysicalDeviceDriverProperties (driverName
-    * "r300vk", driverInfo, conformanceVersion) is already populated in
-    * r300vk_physical_device_init_properties, so the query reaches real data. */
+    * "r3v", driverInfo, conformanceVersion) is already populated in
+    * r3v_physical_device_init_properties, so the query reaches real data. */
    .KHR_driver_properties = true,
-   /* VK_KHR_format_feature_flags2: r300vk_GetPhysicalDeviceFormatProperties2
+   /* VK_KHR_format_feature_flags2: r3v_GetPhysicalDeviceFormatProperties2
     * already fills the chained VkFormatProperties3, the 64-bit-flag form of the
     * same capabilities, so the extension exposes data the driver computes. */
    .KHR_format_feature_flags2 = true,
@@ -537,7 +537,7 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
 };
 
 static void
-r300vk_physical_device_init_features(struct vk_features *features)
+r3v_physical_device_init_features(struct vk_features *features)
 {
    memset(features, 0, sizeof(*features));
    features->robustBufferAccess = true;
@@ -561,11 +561,11 @@ r300vk_physical_device_init_features(struct vk_features *features)
     * replay queue retires all prior work before the host call returns, so the
     * clear never races a GPU-side query write. */
    features->hostQueryReset = true;
-   /* The dynamic-rendering command path (r300vk_CmdBeginRendering) records the
+   /* The dynamic-rendering command path (r3v_CmdBeginRendering) records the
     * colour-attachment framebuffer from VkRenderingInfo, so advertise the
     * feature bit that gates VK_KHR_dynamic_rendering. */
    features->dynamicRendering = true;
-   /* Imageless framebuffers carry no views; r300vk_CreateFramebuffer records the
+   /* Imageless framebuffers carry no views; r3v_CreateFramebuffer records the
     * IMAGELESS flag and the begin path reads the views from the
     * VkRenderPassAttachmentBeginInfo, so advertise the gating feature. */
    features->imagelessFramebuffer = true;
@@ -591,7 +591,7 @@ r300vk_physical_device_init_features(struct vk_features *features)
    features->independentBlend = false;
    /* Gates VK_EXT_extended_dynamic_state: zink selects its dynamic-state draw
     * template only when the feature reports true, and the vkCmdSet* family
-    * records R300VK_CMD_SET_DYNAMIC_STATE replay entries. */
+    * records R3V_CMD_SET_DYNAMIC_STATE replay entries. */
    features->extendedDynamicState = true;
    /* VK_KHR_uniform_buffer_standard_layout: a UBO laid out std430-style is a
     * subset of what the already-true scalarBlockLayout accepts. */
@@ -602,9 +602,9 @@ r300vk_physical_device_init_features(struct vk_features *features)
 }
 
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-r300vk_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
+r3v_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
 {
-   VK_FROM_HANDLE(r300vk_physical_device, pdevice, physicalDevice);
+   VK_FROM_HANDLE(r3v_physical_device, pdevice, physicalDevice);
    return vk_instance_get_proc_addr_unchecked(pdevice->vk.instance, pName);
 }
 
@@ -612,21 +612,21 @@ r300vk_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
  * swapchain allocate CPU-reachable images and present through the xcb-shm
  * path, so the radeon winsys needs no dma-buf, modifier, or external-memory
  * support.  wants_linear keeps the swapchain images row-major, the layout the
- * present copy reads and the one r300vk's single-tile linear images provide. */
+ * present copy reads and the one r3v's single-tile linear images provide. */
 static VkResult
-r300vk_init_wsi(struct r300vk_physical_device *device)
+r3v_init_wsi(struct r3v_physical_device *device)
 {
    /* GPU-resident present by default: the render-node fd lets the common WSI
     * take the DRM/DRI3 path, presenting the dma-buf-exported scanout images
     * the export substrate provides -- the contract the GL oracle measured.
-    * R300VK_WSI_SW=1 falls back to the xcb-shm CPU copy, the proven
+    * R3V_WSI_SW=1 falls back to the xcb-shm CPU copy, the proven
     * bring-up baseline. */
-   const char *wsi_sw_env = getenv("R300VK_WSI_SW");
+   const char *wsi_sw_env = getenv("R3V_WSI_SW");
    const bool wsi_sw = wsi_sw_env && wsi_sw_env[0] == '1';
    VkResult result =
       wsi_device_init(&device->wsi_device,
-                      r300vk_physical_device_to_handle(device),
-                      r300vk_wsi_proc_addr,
+                      r3v_physical_device_to_handle(device),
+                      r3v_wsi_proc_addr,
                       &device->vk.instance->alloc,
                       wsi_sw ? -1 : device->render_node_fd, NULL,
                       &(struct wsi_device_options){.sw_device = wsi_sw});
@@ -639,7 +639,7 @@ r300vk_init_wsi(struct r300vk_physical_device *device)
 }
 
 static void
-r300vk_finish_wsi(struct r300vk_physical_device *device)
+r3v_finish_wsi(struct r3v_physical_device *device)
 {
    if (device->vk.wsi_device == NULL)
       return;
@@ -648,14 +648,14 @@ r300vk_finish_wsi(struct r300vk_physical_device *device)
 }
 
 void
-r300vk_physical_device_destroy(struct vk_physical_device *const device_base)
+r3v_physical_device_destroy(struct vk_physical_device *const device_base)
 {
-   struct r300vk_physical_device *const device =
-      container_of(device_base, struct r300vk_physical_device, vk);
+   struct r3v_physical_device *const device =
+      container_of(device_base, struct r3v_physical_device, vk);
 
-   r300vk_finish_wsi(device);
+   r3v_finish_wsi(device);
 
-#ifdef R300VK_GALLIUM_BACKEND
+#ifdef R3V_GALLIUM_BACKEND
    if (device->screen)
       device->screen->destroy(device->screen);
 #endif
@@ -671,13 +671,13 @@ r300vk_physical_device_destroy(struct vk_physical_device *const device_base)
  * type, PCI vendor/device IDs, and capability query, each with an exit path. */
 
 static int
-r300vk_open_radeon_render_node(struct vk_instance *instance,
+r3v_open_radeon_render_node(struct vk_instance *instance,
                                struct _drmDevice *const drm_device)
 {
    if (!(drm_device->available_nodes & (1 << DRM_NODE_RENDER)) ||
        drm_device->bustype != DRM_BUS_PCI ||
-       drm_device->deviceinfo.pci->vendor_id != R300VK_VENDOR_ID_ATI ||
-       !r300vk_pci_device_id_is_supported(drm_device->deviceinfo.pci->device_id)) {
+       drm_device->deviceinfo.pci->vendor_id != R3V_VENDOR_ID_ATI ||
+       !r3v_pci_device_id_is_supported(drm_device->deviceinfo.pci->device_id)) {
       return -1;
    }
 
@@ -702,18 +702,18 @@ r300vk_open_radeon_render_node(struct vk_instance *instance,
 }
 
 VkResult
-r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
+r3v_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
                                           struct _drmDevice *const drm_device,
                                           struct vk_physical_device **const device_out)
-{   int render_node_fd = r300vk_open_radeon_render_node(instance_base, drm_device);
+{   int render_node_fd = r3v_open_radeon_render_node(instance_base, drm_device);
    if (render_node_fd < 0)
       return VK_ERROR_INCOMPATIBLE_DRIVER;
 
-   struct r300vk_instance *const instance =
-      container_of(instance_base, struct r300vk_instance, vk);
+   struct r3v_instance *const instance =
+      container_of(instance_base, struct r3v_instance, vk);
 
-   struct r300vk_physical_device *const device =
-      vk_alloc(&instance->vk.alloc, sizeof(*device), alignof(struct r300vk_physical_device),
+   struct r3v_physical_device *const device =
+      vk_alloc(&instance->vk.alloc, sizeof(*device), alignof(struct r3v_physical_device),
                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
    if (device == NULL) {
       close(render_node_fd);
@@ -746,7 +746,7 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
       }
    }
 
-#ifdef R300VK_GALLIUM_BACKEND
+#ifdef R3V_GALLIUM_BACKEND
    struct pipe_screen_config screen_config = {0};
    device->rws = radeon_drm_winsys_create(render_node_fd, &screen_config,
                                           r300_screen_create);
@@ -756,7 +756,7 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
       close(render_node_fd);
       vk_free(&instance->vk.alloc, device);
       return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
-                       "r300vk: failed to create r300g pipe_screen for '%s'",
+                       "r3v: failed to create r300g pipe_screen for '%s'",
                        drm_device->nodes[DRM_NODE_RENDER]);
    }
    device->screen = device->rws->screen;
@@ -777,13 +777,13 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
     * already rides), not an explicit exported semaphore.
     * vk_sync_timeline_get_type returns the wrapper type by value, so it is
     * stored on the physical device and the table points at its embedded sync. */
-   device->timeline_sync_type = vk_sync_timeline_get_type(&r300vk_cpu_sync_type);
-   device->sync_types[0] = &r300vk_cpu_sync_type;
+   device->timeline_sync_type = vk_sync_timeline_get_type(&r3v_cpu_sync_type);
+   device->sync_types[0] = &r3v_cpu_sync_type;
    device->sync_types[1] = &device->timeline_sync_type.sync;
    device->sync_types[2] = NULL;
 
    struct vk_features features;
-   r300vk_physical_device_init_features(&features);
+   r3v_physical_device_init_features(&features);
 
    /* vk_physical_device_init copies *properties into pdevice->properties
     * by value (src/vulkan/runtime/vk_physical_device.c:48-49), so the
@@ -797,12 +797,12 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
     * absent; pass 0 so init_limits falls back to the default 128 MB
     * advertise. */
    uint64_t gart_size_kb = 0;
-#ifdef R300VK_GALLIUM_BACKEND
+#ifdef R3V_GALLIUM_BACKEND
    if (device->screen)
       gart_size_kb = r300_screen(device->screen)->info.gart_size_kb;
 #endif
    struct vk_properties properties;
-   r300vk_physical_device_init_properties(&properties, device->pci_vendor_id,
+   r3v_physical_device_init_properties(&properties, device->pci_vendor_id,
                                           device->pci_device_id,
                                           gart_size_kb);
 
@@ -819,7 +819,7 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
     * common WSI matches these against the DRI3 fd's PCI address to decide
     * same-GPU presentation (native dma-buf images) versus the cross-GPU
     * prime-blit buffer path.  bustype DRM_BUS_PCI is guaranteed by
-    * r300vk_open_radeon_render_node, so businfo.pci is always populated. */
+    * r3v_open_radeon_render_node, so businfo.pci is always populated. */
    properties.pciDomain   = drm_device->businfo.pci->domain;
    properties.pciBus      = drm_device->businfo.pci->bus;
    properties.pciDevice   = drm_device->businfo.pci->dev;
@@ -834,18 +834,18 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
     * src/vulkan/runtime/vk_physical_device.c:53-55. */
    struct vk_physical_device_dispatch_table dispatch_table;
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
-                                                      &r300vk_physical_device_entrypoints, true);
+                                                      &r3v_physical_device_entrypoints, true);
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &wsi_physical_device_entrypoints, false);
 
    VkResult result = vk_physical_device_init(&device->vk, &instance->vk,
-                                             &r300vk_device_extensions_supported,
+                                             &r3v_device_extensions_supported,
                                              &features, &properties, &dispatch_table);
    if (result != VK_SUCCESS) {
       /* terakan_physical_device_init does not call vk_physical_device_finish
        * on init failure (terakan_physical_device.c fail_isa label); the
        * runtime helper only requires finish after a successful init. */
-#ifdef R300VK_GALLIUM_BACKEND
+#ifdef R3V_GALLIUM_BACKEND
       if (device->screen)
          device->screen->destroy(device->screen);
 #endif
@@ -855,12 +855,12 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    }
 
    device->vk.supported_sync_types = device->sync_types;
-   device->hybrid_compute_enabled = r300vk_hybrid_compute_enabled();
+   device->hybrid_compute_enabled = r3v_hybrid_compute_enabled();
 
-   result = r300vk_init_wsi(device);
+   result = r3v_init_wsi(device);
    if (result != VK_SUCCESS) {
       vk_physical_device_finish(&device->vk);
-#ifdef R300VK_GALLIUM_BACKEND
+#ifdef R3V_GALLIUM_BACKEND
       if (device->screen)
          device->screen->destroy(device->screen);
 #endif
@@ -869,9 +869,9 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
       return result;
    }
 
-   if (instance->debug_flags & R300VK_DEBUG_STARTUP) {
+   if (instance->debug_flags & R3V_DEBUG_STARTUP) {
       fprintf(stderr,
-              "r300vk: info: Found compatible DRM device '%s' (%04x:%04x).\n",
+              "r3v: info: Found compatible DRM device '%s' (%04x:%04x).\n",
               drm_device->nodes[DRM_NODE_RENDER], device->pci_vendor_id,
               device->pci_device_id);
    }
@@ -885,11 +885,11 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
  * surface, so VK_QUEUE_COMPUTE_BIT is absent unless the hybrid compute
  * experiment is explicitly enabled for CTS/RCA work. */
 VKAPI_ATTR void VKAPI_CALL
-r300vk_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
+r3v_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
                                                uint32_t *pCount,
                                                VkQueueFamilyProperties2 *pProperties)
 {
-   VK_FROM_HANDLE(r300vk_physical_device, pdev, physicalDevice);
+   VK_FROM_HANDLE(r3v_physical_device, pdev, physicalDevice);
    VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties2, out, pProperties, pCount);
    VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT;
 
@@ -907,12 +907,12 @@ r300vk_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
 }
 
 static bool
-r300vk_screen_supports_format(const struct r300vk_physical_device *const device,
+r3v_screen_supports_format(const struct r3v_physical_device *const device,
                               enum pipe_format format,
                               enum pipe_texture_target target,
                               unsigned bindings)
 {
-#ifdef R300VK_GALLIUM_BACKEND
+#ifdef R3V_GALLIUM_BACKEND
    return device->screen &&
           device->screen->is_format_supported(device->screen, format, target,
                                               0, 0, bindings);
@@ -925,9 +925,9 @@ r300vk_screen_supports_format(const struct r300vk_physical_device *const device,
  * screen, so capabilities that depend on the r300g screen and its SW-TCL draw
  * module must gate on this rather than advertising support no backend provides. */
 static bool
-r300vk_has_gallium_screen(const struct r300vk_physical_device *const device)
+r3v_has_gallium_screen(const struct r3v_physical_device *const device)
 {
-#ifdef R300VK_GALLIUM_BACKEND
+#ifdef R3V_GALLIUM_BACKEND
    return device->screen != NULL;
 #else
    (void)device;
@@ -939,9 +939,9 @@ r300vk_has_gallium_screen(const struct r300vk_physical_device *const device)
  * the format's resource layout.  Wraps the r300g predicate so the loader-only
  * build, which has no Gallium blitter, advertises no BLIT feature. */
 static bool
-r300vk_format_blit_supported(enum pipe_format pipe_format)
+r3v_format_blit_supported(enum pipe_format pipe_format)
 {
-#ifdef R300VK_GALLIUM_BACKEND
+#ifdef R3V_GALLIUM_BACKEND
    return r300_is_blit_supported(pipe_format);
 #else
    (void)pipe_format;
@@ -950,27 +950,27 @@ r300vk_format_blit_supported(enum pipe_format pipe_format)
 }
 
 static void
-r300vk_get_format_properties(const struct r300vk_physical_device *const device,
+r3v_get_format_properties(const struct r3v_physical_device *const device,
                              VkFormat vk_format,
                              VkFormatProperties3 *const properties)
 {
    memset(properties, 0, sizeof(*properties));
    properties->sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
 
-   const enum pipe_format pipe_format = r300vk_vk_format_to_pipe_format(vk_format);
+   const enum pipe_format pipe_format = r3v_vk_format_to_pipe_format(vk_format);
    if (pipe_format == PIPE_FORMAT_NONE)
       return;
 
    VkFormatFeatureFlags2 image_features = 0;
    VkFormatFeatureFlags2 buffer_features = 0;
    const bool supports_depth_stencil =
-      r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+      r3v_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
                                     PIPE_BIND_DEPTH_STENCIL);
    const bool supports_sampler_view =
-      r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+      r3v_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
                                     PIPE_BIND_SAMPLER_VIEW);
    const bool supports_render_target =
-      r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+      r3v_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
                                     PIPE_BIND_RENDER_TARGET);
 
    if (supports_depth_stencil) {
@@ -1002,7 +1002,7 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
          image_features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT;
    }
 
-   /* r300vk implements image transfer in both directions on the same r300g tile
+   /* r3v implements image transfer in both directions on the same r300g tile
     * transfer-map path: CmdCopyImageToBuffer2 for CPU readback and
     * CmdCopyBufferToImage2 / clear commands for CPU-written destinations.  Submit
     * flushes and waits for the GPU, then the CPU transfer pass maps each tile
@@ -1014,11 +1014,11 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
    if (supports_depth_stencil || supports_sampler_view || supports_render_target) {
       image_features |= VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT;
 
-      if (r300vk_format_supports_transfer_dst(pipe_format))
+      if (r3v_format_supports_transfer_dst(pipe_format))
          image_features |= VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
    }
 
-   /* BLIT_SRC/DST advertise the GPU blit (r300vk_replay_blit -> pipe->blit ->
+   /* BLIT_SRC/DST advertise the GPU blit (r3v_replay_blit -> pipe->blit ->
     * util_blitter), which scales, filters, and format-casts a region.
     * r300_is_blit_supported gates the resource layouts r300's blitter accepts
     * (plain, S3TC, RGTC).  A blit source is sampled, so BLIT_SRC needs
@@ -1027,13 +1027,13 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * requires that usage on the destination image.  Pairing each bit with the
     * usage path keeps sample-only or CPU-transfer-limited formats out of
     * unreachable BLIT_DST advertisements.  The replay samples the source as a
-    * texture, and r300vk tiles every optimal image at the sampler cap, so
-    * r300vk_replay_blit blits a source past the cap one in-cap tile at a time
+    * texture, and r3v tiles every optimal image at the sampler cap, so
+    * r3v_replay_blit blits a source past the cap one in-cap tile at a time
     * and honors the advertised maxImageDimension2D up to the 4096 floor. */
-   if (supports_sampler_view && r300vk_format_blit_supported(pipe_format))
+   if (supports_sampler_view && r3v_format_blit_supported(pipe_format))
       image_features |= VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
-   if (supports_render_target && r300vk_format_blit_supported(pipe_format) &&
-       r300vk_format_supports_transfer_dst(pipe_format))
+   if (supports_render_target && r3v_format_blit_supported(pipe_format) &&
+       r3v_format_supports_transfer_dst(pipe_format))
       image_features |= VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
 
    /* Depth/stencil formats carry no buffer features: a VkBuffer cannot hold a
@@ -1054,9 +1054,9 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * R32G32B32A32_*, so a component wider than 32 bits (R64_*) has no fetch path
     * and must not be advertised. */
    const bool vertex_fetchable =
-      r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
+      r3v_screen_supports_format(device, pipe_format, PIPE_BUFFER,
                                     PIPE_BIND_VERTEX_BUFFER) ||
-      (r300vk_has_gallium_screen(device) &&
+      (r3v_has_gallium_screen(device) &&
        util_format_is_pure_integer(pipe_format) &&
        util_format_get_component_bits(pipe_format,
                                       UTIL_FORMAT_COLORSPACE_RGB, 0) <= 32);
@@ -1071,7 +1071,7 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * advertised set matches the formats r300g can actually fetch as texel data
     * rather than every format a constant buffer would nominally accept. */
    if (!is_depth_or_stencil &&
-       r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
+       r3v_screen_supports_format(device, pipe_format, PIPE_BUFFER,
                                      PIPE_BIND_SAMPLER_VIEW)) {
       buffer_features |= VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
    }
@@ -1079,13 +1079,13 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
    /* VK_IMAGE_TILING_LINEAR is backed by a single PIPE_BIND_LINEAR row-major
     * r300g tile, but only as transfer staging: deqp's draw readback copies an
     * optimal render target into a linear TRANSFER_DST image and maps it.
-    * Advertise linear transfer features exactly where r300vk_CreateImage's
+    * Advertise linear transfer features exactly where r3v_CreateImage's
     * linear accept gate allows the image -- a real image format with a lossless
     * transfer-destination byte layout.  Sampled, color, and depth/stencil
     * features stay optimal-only because the linear tile carries no swizzle. */
    VkFormatFeatureFlags2 linear_features = 0;
    if ((supports_sampler_view || supports_render_target) &&
-       r300vk_format_supports_transfer_dst(pipe_format)) {
+       r3v_format_supports_transfer_dst(pipe_format)) {
       linear_features = VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
                         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
    }
@@ -1096,14 +1096,14 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-r300vk_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
+r3v_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
                                           VkFormat format,
                                           VkFormatProperties2 *pFormatProperties)
 {
-   VK_FROM_HANDLE(r300vk_physical_device, device, physicalDevice);
+   VK_FROM_HANDLE(r3v_physical_device, device, physicalDevice);
 
    VkFormatProperties3 properties3;
-   r300vk_get_format_properties(device, format, &properties3);
+   r3v_get_format_properties(device, format, &properties3);
 
    pFormatProperties->formatProperties = (VkFormatProperties){
       .linearTilingFeatures =
@@ -1125,7 +1125,7 @@ r300vk_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
 
 
 static bool
-r300vk_image_usage_supported(VkImageUsageFlags usage,
+r3v_image_usage_supported(VkImageUsageFlags usage,
                              VkFormatFeatureFlags2 features)
 {
    if ((usage & VK_IMAGE_USAGE_SAMPLED_BIT) &&
@@ -1162,13 +1162,13 @@ r300vk_image_usage_supported(VkImageUsageFlags usage,
 }
 
 static VkResult
-r300vk_get_image_format_properties(
-   const struct r300vk_physical_device *const device,
+r3v_get_image_format_properties(
+   const struct r3v_physical_device *const device,
    const VkPhysicalDeviceImageFormatInfo2 *const info,
    VkImageFormatProperties *const image_properties)
 {
    VkFormatProperties3 format_properties;
-   r300vk_get_format_properties(device, info->format, &format_properties);
+   r3v_get_format_properties(device, info->format, &format_properties);
 
    VkFormatFeatureFlags2 image_features = 0;
    switch (info->tiling) {
@@ -1185,7 +1185,7 @@ r300vk_get_image_format_properties(
    if (image_features == 0)
       goto unsupported;
 
-   if (!r300vk_image_usage_supported(info->usage, image_features))
+   if (!r3v_image_usage_supported(info->usage, image_features))
       goto unsupported;
 
    VkExtent3D max_extent;
@@ -1214,18 +1214,18 @@ r300vk_get_image_format_properties(
          device->vk.properties.maxImageDimension2D,
          1,
       };
-      max_mip_levels = util_logbase2(R300VK_R3XX_MAX_TEXTURE_DIMENSION) + 1;
+      max_mip_levels = util_logbase2(R3V_R3XX_MAX_TEXTURE_DIMENSION) + 1;
       max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_3D:
-      /* r300vk backs every image with a single PIPE_TEXTURE_2D resource of
-       * depth0 == 1 (r300vk_image_create_tile_resources), so a 3D image's
+      /* r3v backs every image with a single PIPE_TEXTURE_2D resource of
+       * depth0 == 1 (r3v_image_create_tile_resources), so a 3D image's
        * depth slices have no storage and any depth > 1 access reads or writes
        * the wrong slice.  Report VK_IMAGE_TYPE_3D unsupported so this query,
        * vkCreateImage, and the transfer/blit replay agree, and a 3D image test
        * is NotSupported rather than silently incorrect.  This is a deliberate,
        * deferred conformance gap: VK 1.0 requires maxImageDimension3D >= 256,
-       * which r300vk reports as a device limit but cannot honor per format
+       * which r3v reports as a device limit but cannot honor per format
        * until a real 3D resource path exists. */
       goto unsupported;
    default:
@@ -1237,12 +1237,12 @@ r300vk_get_image_format_properties(
     * Report the same bound here so the two stay one contract. */
    if (info->tiling == VK_IMAGE_TILING_LINEAR) {
       max_extent.width = MIN2(max_extent.width,
-                              R300VK_R3XX_MAX_RENDER_DIMENSION);
+                              R3V_R3XX_MAX_RENDER_DIMENSION);
       max_extent.height = MIN2(max_extent.height,
-                               R300VK_R3XX_MAX_RENDER_DIMENSION);
+                               R3V_R3XX_MAX_RENDER_DIMENSION);
    }
 
-   /* r300vk has no multisample path: the image model is single-sample r300g
+   /* r3v has no multisample path: the image model is single-sample r300g
     * tiles with a CPU transfer/clear replay and no MSAA resolve, so every image
     * format supports exactly one sample.  Reporting more lets a test build a
     * multisample image and then resolve it (CmdResolveImage), which the runtime
@@ -1265,7 +1265,7 @@ unsupported:
 }
 
 VKAPI_ATTR void VKAPI_CALL
-r300vk_GetPhysicalDeviceExternalBufferProperties(
+r3v_GetPhysicalDeviceExternalBufferProperties(
    VkPhysicalDevice physicalDevice,
    const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
    VkExternalBufferProperties *pExternalBufferProperties)
@@ -1278,12 +1278,12 @@ r300vk_GetPhysicalDeviceExternalBufferProperties(
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-r300vk_GetPhysicalDeviceImageFormatProperties2(
+r3v_GetPhysicalDeviceImageFormatProperties2(
    VkPhysicalDevice physicalDevice,
    const VkPhysicalDeviceImageFormatInfo2 *pImageFormatInfo,
    VkImageFormatProperties2 *pImageFormatProperties)
 {
-   VK_FROM_HANDLE(r300vk_physical_device, device, physicalDevice);
+   VK_FROM_HANDLE(r3v_physical_device, device, physicalDevice);
 
    /* dma-buf (and the opaque-fd alias of the same PRIME fd) is exportable for
     * 2D images; every other handle type stays rejected.  Import is accepted
@@ -1300,7 +1300,7 @@ r300vk_GetPhysicalDeviceImageFormatProperties2(
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
    VkResult result =
-      r300vk_get_image_format_properties(device, pImageFormatInfo,
+      r3v_get_image_format_properties(device, pImageFormatInfo,
                                          &pImageFormatProperties->imageFormatProperties);
    if (result != VK_SUCCESS)
       return result;
@@ -1324,7 +1324,7 @@ r300vk_GetPhysicalDeviceImageFormatProperties2(
 }
 
 VKAPI_ATTR void VKAPI_CALL
-r300vk_GetPhysicalDeviceSparseImageFormatProperties2(
+r3v_GetPhysicalDeviceSparseImageFormatProperties2(
    VkPhysicalDevice physicalDevice,
    const VkPhysicalDeviceSparseImageFormatInfo2 *pFormatInfo,
    uint32_t *pPropertyCount,
@@ -1335,17 +1335,17 @@ r300vk_GetPhysicalDeviceSparseImageFormatProperties2(
 
 /* Fallback heap sizes for the loader-only build (no Gallium oracle) or when the
  * winsys query reports zero.  The Gallium-backed build reports the real sizes
- * from the radeon winsys instead (see r300vk_GetPhysicalDeviceMemoryProperties2),
+ * from the radeon winsys instead (see r3v_GetPhysicalDeviceMemoryProperties2),
  * which the winsys read via DRM_RADEON_GEM_INFO at creation -- radeon_drm_winsys.c
  * populates info.gart_size_kb / vram_size_kb.  RS482/RS485 is UMA: the GART
  * aperture and the BIOS-carved shared-VRAM partition overlap in physical memory,
  * so a probe needing the exact physical split must treat the two heaps as one
  * shared pool. */
-#define R300VK_PLACEHOLDER_GTT_HEAP_SIZE     (128ULL * 1024 * 1024)
-#define R300VK_PLACEHOLDER_VRAM_HEAP_SIZE    ( 64ULL * 1024 * 1024)
+#define R3V_PLACEHOLDER_GTT_HEAP_SIZE     (128ULL * 1024 * 1024)
+#define R3V_PLACEHOLDER_VRAM_HEAP_SIZE    ( 64ULL * 1024 * 1024)
 
 VKAPI_ATTR void VKAPI_CALL
-r300vk_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
+r3v_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
                                           VkPhysicalDeviceMemoryProperties2 *pMemoryProperties)
 {
    VkPhysicalDeviceMemoryProperties *const m = &pMemoryProperties->memoryProperties;
@@ -1354,10 +1354,10 @@ r300vk_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
     * attached.  query_info hands back the radeon_info the winsys cached from
     * DRM_RADEON_GEM_INFO at creation; gart_size_kb / vram_size_kb are the total
     * aperture sizes.  The loader-only build (no rws) keeps the nominal fallbacks. */
-   uint64_t gtt_bytes  = R300VK_PLACEHOLDER_GTT_HEAP_SIZE;
-   uint64_t vram_bytes = R300VK_PLACEHOLDER_VRAM_HEAP_SIZE;
-#ifdef R300VK_GALLIUM_BACKEND
-   VK_FROM_HANDLE(r300vk_physical_device, pdev, physicalDevice);
+   uint64_t gtt_bytes  = R3V_PLACEHOLDER_GTT_HEAP_SIZE;
+   uint64_t vram_bytes = R3V_PLACEHOLDER_VRAM_HEAP_SIZE;
+#ifdef R3V_GALLIUM_BACKEND
+   VK_FROM_HANDLE(r3v_physical_device, pdev, physicalDevice);
    if (pdev->rws && pdev->rws->query_info) {
       struct radeon_info rinfo;
       pdev->rws->query_info(pdev->rws, &rinfo);
@@ -1387,7 +1387,7 @@ r300vk_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
     * HyperTransport commands.  HOST_COHERENT is honest only because the
     * driver never allows concurrent CPU and GPU access to the same memory:
     * all GPU work for a submit runs inside one synchronous
-    * r300vk_queue_driver_submit, which copies each host map into its bound
+    * r3v_queue_driver_submit, which copies each host map into its bound
     * resource at the submit entry and back at the fence.  The coherency
     * promise is kept by serialization and explicit copy, not by snoop. */
    m->memoryTypes[0] = (VkMemoryType){

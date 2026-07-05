@@ -18,13 +18,13 @@
 #include "util/u_inlines.h"
 
 VkResult
-r300vk_CreateBuffer(VkDevice _device,
+r3v_CreateBuffer(VkDevice _device,
                     const VkBufferCreateInfo *pCreateInfo,
                     const VkAllocationCallbacks *pAllocator,
                     VkBuffer *pBuffer)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   struct r300vk_buffer *buf;
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   struct r3v_buffer *buf;
 
    buf = vk_zalloc2(&device->vk.alloc, pAllocator,
                     sizeof(*buf), 8,
@@ -54,17 +54,17 @@ r300vk_CreateBuffer(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
 
-   *pBuffer = r300vk_buffer_to_handle(buf);
+   *pBuffer = r3v_buffer_to_handle(buf);
    return VK_SUCCESS;
 }
 
 void
-r300vk_DestroyBuffer(VkDevice _device,
+r3v_DestroyBuffer(VkDevice _device,
                      VkBuffer _buffer,
                      const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(r300vk_buffer, buf, _buffer);
+   VK_FROM_HANDLE(r3v_device, device, _device);
+   VK_FROM_HANDLE(r3v_buffer, buf, _buffer);
    if (!buf)
       return;
 
@@ -72,25 +72,25 @@ r300vk_DestroyBuffer(VkDevice _device,
     * memory's per-buffer sync slice must die with the buffer, or the next
     * buffer -> host sync copies the dead resource's stale bytes back over
     * the live host map. */
-   r300vk_device_memory_drop_buffer_slices(device, buf->resource);
+   r3v_device_memory_drop_buffer_slices(device, buf->resource);
    pipe_resource_reference(&buf->resource, NULL);
    vk_object_base_finish(&buf->base);
    vk_free2(&device->vk.alloc, pAllocator, buf);
 }
 
 void
-r300vk_GetBufferMemoryRequirements2(VkDevice _device,
+r3v_GetBufferMemoryRequirements2(VkDevice _device,
                                      const VkBufferMemoryRequirementsInfo2 *pInfo,
                                      VkMemoryRequirements2 *pMemoryRequirements)
 {
-   VK_FROM_HANDLE(r300vk_buffer, buf, pInfo->buffer);
+   VK_FROM_HANDLE(r3v_buffer, buf, pInfo->buffer);
 
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
       .size           = buf->size,
       .alignment      = 4,
       /* Both advertised memory types back a buffer validly.  RS482 is UMA --
        * the GART aperture and the BIOS-carved shared-VRAM partition are one
-       * physical pool -- and r300vk_AllocateMemory records only the size; the
+       * physical pool -- and r3v_AllocateMemory records only the size; the
        * storage belongs to the buffer's own pipe resource, bound identically
        * for either type.  Reporting only the host-visible type starved
        * device-local-heap clients: zink allocates vertex/index buffers from
