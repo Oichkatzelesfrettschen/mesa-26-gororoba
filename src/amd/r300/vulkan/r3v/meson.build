@@ -27,15 +27,19 @@ libr3v_deps = [
   idep_mesautil,
   idep_vulkan_runtime,
   idep_vulkan_util,
-  # r3v_physical_device.h includes wsi_common.h in every lane, so the
-  # loader-only build needs the WSI headers too; the full idep_vulkan_wsi
-  # joins below with the Gallium-backed path.
-  idep_vulkan_wsi_headers,
+  # Both lanes call wsi_device_init/finish and register the WSI
+  # entrypoint tables, so the full WSI dependency belongs to the base
+  # library, not the Gallium arm.
+  idep_vulkan_wsi,
 ]
 
 libr3v_inc = [
   inc_include,
   inc_src,
+  # Header-only: pipe/p_defines.h enums (PIPE_TEXTURE_*, PIPE_BIND_*) appear
+  # in format-query signatures the loader-only lane compiles too; the
+  # Gallium LIBRARY dependency stays gated below.
+  inc_gallium,
 ]
 
 libr3v_link_with = []
@@ -71,11 +75,9 @@ if get_option('r3v-gallium-backend') and with_gallium_r300
   )
   libr3v_deps += [
     idep_nir,
-    idep_vulkan_wsi,
     driver_r300,
   ]
   libr3v_inc += [
-    inc_gallium,
     inc_gallium_aux,
     include_directories('../../../../gallium/drivers'),
     # r300/compiler/r300_nir.h (r300_optimize_nir) includes "r300_screen.h"
