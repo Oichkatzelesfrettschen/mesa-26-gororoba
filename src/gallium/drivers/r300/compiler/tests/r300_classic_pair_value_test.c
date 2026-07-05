@@ -39,11 +39,14 @@
  * expected result isolate one scheduler mechanism at a time (merge over
  * independent temporary writes, merge over disjoint output-channel writes, a
  * merge that legally refuses across mixed temp/output shapes, DP4's
- * raw-fourth-term read, and the critical-path reorder tie-break); a
- * real-front-end corpus shader chains the pair evaluator to the existing
- * nir_to_rc reference oracle, the same two-front-end comparison
- * r300_classic_parity_test.c runs at the normal-IR level, one stage later in
- * the pipeline. */
+ * raw-fourth-term read, DP3's three-term dot merged with an independent alpha
+ * writer, the full RGB.DP3 + Alpha.DP3 pair whose Alpha lane broadcasts the
+ * RGB pipe's dot, and the critical-path reorder tie-break); real-front-end
+ * corpus shaders chain the pair evaluator to the existing nir_to_rc reference
+ * oracle, the same two-front-end comparison r300_classic_parity_test.c runs at
+ * the normal-IR level one stage later in the pipeline, covering the original
+ * fract/scale merge and the RGB dot-product plus independent alpha writer
+ * merge. */
 
 static int failures;
 
@@ -295,10 +298,16 @@ eval_pair_program(struct pair_eval *e, struct radeon_compiler *c)
       }
       struct rc_pair_instruction *p = &i->U.P;
 
+      /* The Alpha lane in DP mode broadcasts the RGB pipe's dot rather than
+       * computing its own (R300_ALU_OUTA_DP4), so the RGB lane's pre-saturate
+       * channel-0 result is the value the Alpha DP lane reads that same cycle. */
+      float rgb_dot = 0.0f;
+
       if (p->RGB.Opcode != RC_OPCODE_NOP) {
          float result[3];
          if (!eval_rgb_op(e, p, &p->RGB, result))
             return false;
+         rgb_dot = result[0];
          if (p->RGB.Saturate)
             for (unsigned ch = 0; ch < 3; ch++)
                result[ch] = clamp01(result[ch]);
@@ -311,8 +320,11 @@ eval_pair_program(struct pair_eval *e, struct radeon_compiler *c)
       }
       if (p->Alpha.Opcode != RC_OPCODE_NOP) {
          float result;
-         if (!eval_alpha_op(e, p, &p->Alpha, &result))
+         if (p->Alpha.Opcode == RC_OPCODE_DP3 || p->Alpha.Opcode == RC_OPCODE_DP4) {
+            result = rgb_dot;
+         } else if (!eval_alpha_op(e, p, &p->Alpha, &result)) {
             return false;
+         }
          if (p->Alpha.Saturate)
             result = clamp01(result);
          if (p->Alpha.WriteMask)
@@ -538,6 +550,88 @@ test_merge_combines_disjoint_output_writers(void)
         "merge_output: merged RGB lane still computes the DP4-only pair's own value");
    CHECK(nearly_equal(e.outputs[0][3], 0.3f),
         "merge_output: merged Alpha lane still computes the MIN-only pair's own value");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
+/* The DP3 sibling of test_merge_combines_disjoint_output_writers: an RGB-only
+ * DP3 (Target 0, xyz) and an Alpha-only MIN (Target 0, w).  RC_OPCODE_DP3
+ * takes eval_rgb_op's three-term dot path, distinct from the four-term DP4
+ * case its sibling drives; classify_instruction leaves needalpha clear for a
+ * DP3 that writes only xyz (radeon_pair_translate.c), so a dot3-to-color pass
+ * translates to exactly this RGB-only DP3 and merges with an independent
+ * alpha writer.  The merged pair's Alpha lane is MIN, not a dot, so
+ * check_alpha_reads_rgb_dot stays inert here -- the full RGB.DP3 + Alpha.DP3
+ * broadcast pairing is exercised by test_dp3_full_pair_broadcast. */
+static void
+test_merge_combines_dp3_output_writers(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   const unsigned c0 = add_const(&fc, 1.0f, 2.0f, 3.0f, 4.0f);
+   const unsigned c1 = add_const(&fc, 0.0f, 0.0f, 0.0f, 0.9f);
+
+   struct rc_pair_instruction rgb_only;
+   memset(&rgb_only, 0, sizeof(rgb_only));
+   rgb_only.RGB.Opcode = RC_OPCODE_DP3;
+   rgb_only.RGB.Target = 0;
+   rgb_only.RGB.OutputWriteMask = RC_MASK_XYZ;
+   rgb_only.RGB.Src[0] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_CONSTANT, .Index = c0};
+   rgb_only.RGB.Src[1] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   rgb_only.RGB.Arg[0] = (struct rc_pair_instruction_arg){.Source = 0, .Swizzle = RC_SWIZZLE_XYZW};
+   rgb_only.RGB.Arg[1] = (struct rc_pair_instruction_arg){.Source = 1, .Swizzle = RC_SWIZZLE_XYZW};
+   rgb_only.Alpha.Opcode = RC_OPCODE_NOP;
+
+   struct rc_pair_instruction alpha_only;
+   memset(&alpha_only, 0, sizeof(alpha_only));
+   alpha_only.RGB.Opcode = RC_OPCODE_NOP;
+   alpha_only.Alpha.Opcode = RC_OPCODE_MIN;
+   alpha_only.Alpha.Target = 0;
+   alpha_only.Alpha.OutputWriteMask = 1;
+   alpha_only.Alpha.Src[0] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_INPUT, .Index = 1};
+   alpha_only.Alpha.Src[1] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_CONSTANT, .Index = c1};
+   alpha_only.Alpha.Arg[0] = (struct rc_pair_instruction_arg){.Source = 0, .Swizzle = RC_SWIZZLE_WWWW};
+   alpha_only.Alpha.Arg[1] = (struct rc_pair_instruction_arg){.Source = 1, .Swizzle = RC_SWIZZLE_WWWW};
+
+   struct rc_instruction *tail =
+      append_pair(&fc.Base, &fc.Base.Program.Instructions, &rgb_only);
+   append_pair(&fc.Base, tail, &alpha_only);
+
+   int opt = 0;
+   r300_classic_schedule(&fc.Base, &opt);
+
+   CHECK(!fc.Base.Error, "merge_dp3: schedule raises no error");
+   CHECK(count_pairs(&fc.Base) == 1,
+        "merge_dp3: the RGB-only DP3 and the independent Alpha-only MIN merge into one pair");
+
+   const char *reject = NULL;
+   CHECK(r300_classic_validate_schedule(&fc.Base, &reject), "merge_dp3: merged pair passes the legality oracle");
+   if (reject)
+      fprintf(stderr, "  legality: %s\n", reject);
+
+   struct pair_eval e;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.inputs[0][0] = 1.0f;
+   e.inputs[0][1] = 1.0f;
+   e.inputs[0][2] = 1.0f;
+   e.inputs[0][3] = 1.0f;
+   e.inputs[1][3] = 0.3f;
+
+   CHECK(eval_pair_program(&e, &fc.Base), "merge_dp3: merged pair evaluates");
+   if (e.error)
+      fprintf(stderr, "  eval: %s\n", e.error);
+
+   /* Expected: OUTPUT[0].xyz = dp3(c0.xyz, in0.xyz) replicated = 1+2+3 = 6;
+    * OUTPUT[0].w = min(in1.w, c1.w) = min(0.3, 0.9). */
+   CHECK(nearly_equal(e.outputs[0][0], 6.0f) && nearly_equal(e.outputs[0][1], 6.0f) &&
+        nearly_equal(e.outputs[0][2], 6.0f),
+        "merge_dp3: merged RGB lane still computes the DP3-only pair's three-term dot");
+   CHECK(nearly_equal(e.outputs[0][3], 0.3f),
+        "merge_dp3: merged Alpha lane still computes the MIN-only pair's own value");
 
    rc_destroy(&fc.Base);
    rc_destroy_regalloc_state(&rs);
@@ -924,6 +1018,17 @@ eval_normal_program(struct normal_eval *e, struct radeon_compiler *c)
       case RC_OPCODE_MAD:
          for (unsigned ch = 0; ch < 4; ch++) r[ch] = s[0][ch] * s[1][ch] + s[2][ch];
          break;
+      case RC_OPCODE_DP3: {
+         const float d = s[0][0] * s[1][0] + s[0][1] * s[1][1] + s[0][2] * s[1][2];
+         for (unsigned ch = 0; ch < 4; ch++) r[ch] = d;
+         break;
+      }
+      case RC_OPCODE_DP4: {
+         const float d =
+            s[0][0] * s[1][0] + s[0][1] * s[1][1] + s[0][2] * s[1][2] + s[0][3] * s[1][3];
+         for (unsigned ch = 0; ch < 4; ch++) r[ch] = d;
+         break;
+      }
       case RC_OPCODE_FRC:
          for (unsigned ch = 0; ch < 4; ch++) r[ch] = s[0][ch] - floorf(s[0][ch]);
          break;
@@ -1081,6 +1186,190 @@ test_real_corpus_merge_matches_nir_to_rc(void)
    ralloc_free(ctx);
 }
 
+/* rgb = dot3(in0.xyz, const.xyz) broadcast; a = in0.w * 0.5.  The dot3 writes
+ * only xyz, so classify_instruction leaves needalpha clear (radeon_pair_translate.c)
+ * and pair translate emits an RGB-only DP3; the alpha store becomes an
+ * independent Alpha-only pair, and r300_classic_schedule merges the two.  This
+ * is the real-front-end occurrence of the RGB dot-product + independent alpha
+ * writer merge, chained to the nir_to_rc reference the same way
+ * test_real_corpus_merge_matches_nir_to_rc chains its fract/scale shader. */
+static nir_shader *
+build_rgb_dot3_alpha_independent(void)
+{
+   nir_builder b = fs_builder("pairvalue_dp3_indep");
+   nir_variable *in = add_varying(&b);
+   nir_variable *out = add_color_output(&b);
+   nir_def *v = nir_load_var(&b, in);
+   nir_def *c = nir_imm_vec4(&b, 0.5f, 0.25f, 0.75f, 0.0f);
+   nir_def *d = nir_fdot(&b, nir_trim_vector(&b, v, 3), nir_trim_vector(&b, c, 3));
+   nir_def *a = nir_fmul_imm(&b, nir_channel(&b, v, 3), 0.5f);
+   nir_def *unused = nir_imm_float(&b, 0.0f);
+
+   nir_store_var(&b, out, nir_vec4(&b, d, d, d, unused), 0x7);
+   nir_store_var(&b, out, nir_vec4(&b, unused, unused, unused, a), 0x8);
+   return b.shader;
+}
+
+static void
+test_real_corpus_dp3_merge_matches_nir_to_rc(void)
+{
+   void *ctx = ralloc_context(NULL);
+   nir_shader *for_ref = build_rgb_dot3_alpha_independent();
+   nir_shader *for_classic = build_rgb_dot3_alpha_independent();
+
+   struct r300_fragment_program_compiler ref_fc, cls_fc;
+   struct rc_regalloc_state ref_rs, cls_rs;
+   struct r300_fragment_shader_code ref_code;
+   memset(&ref_code, 0, sizeof(ref_code));
+
+   const bool ref_ok = compile_reference(for_ref, &ref_fc, &ref_rs, &ref_code);
+   CHECK(ref_ok, "dp3_corpus: reference front end compiles");
+
+   const char *why = NULL;
+   const bool cls_ok = compile_classic(ctx, for_classic, &cls_fc, &cls_rs, &why);
+   CHECK(cls_ok, "dp3_corpus: classic front end compiles");
+   if (!cls_ok && why)
+      fprintf(stderr, "  classic: %s\n", why);
+
+   if (ref_ok && cls_ok) {
+      struct normal_eval ref_eval;
+      memset(&ref_eval, 0, sizeof(ref_eval));
+      ref_eval.consts = &ref_fc.Base.Program.Constants;
+      for (unsigned ch = 0; ch < 4; ch++)
+         ref_eval.inputs[0][ch] = 0.6f + (float)ch * 0.1f;
+      CHECK(eval_normal_program(&ref_eval, &ref_fc.Base), "dp3_corpus: reference program evaluates");
+      if (ref_eval.error)
+         fprintf(stderr, "  reference eval: %s\n", ref_eval.error);
+
+      int opt = 0;
+      rc_pair_translate(&cls_fc.Base, &opt);
+      const unsigned pre_schedule_count = count_pairs(&cls_fc.Base);
+
+      r300_classic_schedule(&cls_fc.Base, &opt);
+      const unsigned post_schedule_count = count_pairs(&cls_fc.Base);
+
+      CHECK(!cls_fc.Base.Error, "dp3_corpus: schedule raises no error");
+      CHECK(post_schedule_count < pre_schedule_count,
+           "dp3_corpus: the RGB-only DP3 and the independent alpha store merge into fewer pairs");
+
+      const char *reject = NULL;
+      CHECK(r300_classic_validate_schedule(&cls_fc.Base, &reject),
+           "dp3_corpus: merged classic schedule passes the legality oracle");
+      if (reject)
+         fprintf(stderr, "  legality: %s\n", reject);
+
+      struct pair_eval cls_eval;
+      memset(&cls_eval, 0, sizeof(cls_eval));
+      cls_eval.consts = &cls_fc.Base.Program.Constants;
+      for (unsigned ch = 0; ch < 4; ch++)
+         cls_eval.inputs[0][ch] = 0.6f + (float)ch * 0.1f;
+      CHECK(eval_pair_program(&cls_eval, &cls_fc.Base), "dp3_corpus: merged classic schedule evaluates");
+      if (cls_eval.error)
+         fprintf(stderr, "  classic eval: %s\n", cls_eval.error);
+
+      for (unsigned ch = 0; ch < 4; ch++) {
+         const float d = fabsf(ref_eval.outputs[cls_fc.OutputColor[0] & 7][ch] -
+                               cls_eval.outputs[0][ch]);
+         CHECK(d <= 1e-4f, "dp3_corpus: merged-and-scheduled classic output matches the nir_to_rc reference");
+         if (d > 1e-4f)
+            fprintf(stderr, "  channel %u: reference %g classic %g\n", ch,
+                   ref_eval.outputs[cls_fc.OutputColor[0] & 7][ch], cls_eval.outputs[0][ch]);
+      }
+   }
+
+   if (ref_ok) {
+      rc_destroy(&ref_fc.Base);
+      rc_destroy_regalloc_state(&ref_rs);
+   }
+   if (cls_ok) {
+      rc_destroy(&cls_fc.Base);
+      rc_destroy_regalloc_state(&cls_rs);
+   }
+   ralloc_free(ctx);
+}
+
+/* A full RGB.DP3 + Alpha.DP3 pair reading the same two source registers, the
+ * shape radeon_pair_translate.c emits for a dot3 that also writes W: the Alpha
+ * lane runs in R300_ALU_OUTA_DP4 DP mode, broadcasting the RGB pipe's
+ * three-term dot rather than computing an independent one.  The classic front
+ * end materializes a dot3-to-vec4 as a single-channel DP3 into a temp followed
+ * by a MAX replicate instead of this fused pairing, so the fused shape is
+ * hand-built, the same reason r300_classic_validate_schedule_test.c's
+ * fill_alpha_dp_valid hand-builds it.  This drives the DP3 arm of
+ * check_alpha_reads_rgb_dot (matching opcodes and shared operands accepted)
+ * and eval_pair_program's Alpha-lane dot broadcast, both untouched by the
+ * DP4-only coverage. */
+static void
+test_dp3_full_pair_broadcast(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   const unsigned c0 = add_const(&fc, 2.0f, 3.0f, 4.0f, 0.0f);
+
+   struct rc_pair_instruction dp3;
+   memset(&dp3, 0, sizeof(dp3));
+   dp3.RGB.Opcode = RC_OPCODE_DP3;
+   dp3.RGB.WriteMask = RC_MASK_XYZ;
+   dp3.RGB.DestIndex = 7;
+   dp3.RGB.Src[0] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_CONSTANT, .Index = c0};
+   dp3.RGB.Src[1] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   dp3.RGB.Arg[0] = (struct rc_pair_instruction_arg){.Source = 0, .Swizzle = RC_SWIZZLE_XYZW};
+   dp3.RGB.Arg[1] = (struct rc_pair_instruction_arg){.Source = 1, .Swizzle = RC_SWIZZLE_XYZW};
+   dp3.Alpha.Opcode = RC_OPCODE_DP3;
+   dp3.Alpha.WriteMask = RC_MASK_W;
+   dp3.Alpha.DestIndex = 7;
+   dp3.Alpha.Src[0] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_CONSTANT, .Index = c0};
+   dp3.Alpha.Src[1] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   dp3.Alpha.Arg[0] = (struct rc_pair_instruction_arg){.Source = 0, .Swizzle = RC_SWIZZLE_WWWW};
+   dp3.Alpha.Arg[1] = (struct rc_pair_instruction_arg){.Source = 1, .Swizzle = RC_SWIZZLE_WWWW};
+
+   append_pair(&fc.Base, &fc.Base.Program.Instructions, &dp3);
+
+   int opt = 0;
+   r300_classic_schedule(&fc.Base, &opt);
+
+   CHECK(!fc.Base.Error, "dp3_bcast: schedule raises no error");
+   CHECK(count_pairs(&fc.Base) == 1,
+        "dp3_bcast: the full DP3 pair stays a single pair (no half-full lane to merge)");
+
+   bool has_alpha_dp3 = false;
+   for (const struct rc_instruction *i = fc.Base.Program.Instructions.Next;
+        i != &fc.Base.Program.Instructions; i = i->Next)
+      if (i->Type == RC_INSTRUCTION_PAIR && i->U.P.Alpha.Opcode == RC_OPCODE_DP3)
+         has_alpha_dp3 = true;
+   CHECK(has_alpha_dp3, "dp3_bcast: the scheduled pair still carries Alpha.DP3");
+
+   const char *reject = NULL;
+   CHECK(r300_classic_validate_schedule(&fc.Base, &reject),
+        "dp3_bcast: check_alpha_reads_rgb_dot accepts the matching RGB.DP3/Alpha.DP3 pair");
+   if (reject)
+      fprintf(stderr, "  legality: %s\n", reject);
+
+   struct pair_eval e;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.inputs[0][0] = 1.0f;
+   e.inputs[0][1] = 1.0f;
+   e.inputs[0][2] = 1.0f;
+
+   CHECK(eval_pair_program(&e, &fc.Base), "dp3_bcast: DP3 broadcast pair evaluates");
+   if (e.error)
+      fprintf(stderr, "  eval: %s\n", e.error);
+
+   /* dp3(c0.xyz, in0.xyz) = 2+3+4 = 9; RGB writes it to xyz, Alpha.DP3
+    * broadcasts the same dot to w. */
+   CHECK(nearly_equal(e.temps[7][0], 9.0f) && nearly_equal(e.temps[7][1], 9.0f) &&
+        nearly_equal(e.temps[7][2], 9.0f),
+        "dp3_bcast: RGB lane writes the three-term dot to xyz");
+   CHECK(nearly_equal(e.temps[7][3], 9.0f),
+        "dp3_bcast: Alpha lane broadcasts the RGB dot to w rather than computing its own");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
 int
 main(void)
 {
@@ -1088,10 +1377,13 @@ main(void)
 
    test_merge_combines_independent_temp_writes();
    test_merge_combines_disjoint_output_writers();
+   test_merge_combines_dp3_output_writers();
    test_merge_refuses_mixed_output_and_temp();
    test_compaction_merges_within_budget();
    test_reorder_prioritizes_critical_path();
    test_real_corpus_merge_matches_nir_to_rc();
+   test_real_corpus_dp3_merge_matches_nir_to_rc();
+   test_dp3_full_pair_broadcast();
 
    glsl_type_singleton_decref();
    if (failures) {
