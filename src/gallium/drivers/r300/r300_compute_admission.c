@@ -28,6 +28,7 @@
  * exists only to keep the walk total on adversarial or malformed NIR. */
 #define R300_COMPUTE_DETECT_MAX_DEPTH 8u
 #define R300_COMPUTE_STORE_ADDR_MAX_DEPTH 8u
+#define R300_COMPUTE_OFFSET_EQ_MAX_DEPTH 8u
 
 static bool
 identity_map_debug_enabled(void)
@@ -156,6 +157,100 @@ store_ssbo_address_is_supported(const nir_intrinsic_instr *intr,
    return true;
 }
 
+/* Structural (not SSA-identity) equality of two scalar offset expressions.
+ * Gates the identity-map and binary-map detectors on genuine pointwise index
+ * equivalence between a store's offset and a load's offset.
+ *
+ * nir_lower_explicit_io with nir_address_format_32bit_index_offset emits an
+ * independent address-computation chain per load_ssbo/store_ssbo intrinsic,
+ * so even out[gid] = in[gid] leaves the load offset def and the store offset
+ * def as distinct nir_def objects that nir_opt_cse does not fold across (see
+ * the callers below for the full rationale).  A raw `==` on the two defs --
+ * the old offset_eq -- is therefore false for every real kernel and cannot be
+ * gated on.
+ *
+ * This instead walks both chains in lockstep, resolving through mov/vecN
+ * wrappers first (nir_scalar_chase_movs), then requiring each node's shape to
+ * match on both sides: the same ALU op with pairwise-equal operands, the same
+ * leaf invocation-id-family intrinsic at the same vector component, or equal
+ * compile-time constants.  Two chains that are opcode-for-opcode identical
+ * down to a shared root are declared equal despite being different SSA defs,
+ * because gl_GlobalInvocationID (and its sibling system values below) reads
+ * the same value at every use within one invocation, however many times the
+ * lowering separately materialized the load.
+ *
+ * Any divergence -- a stride mismatch, an extra permutation node, a
+ * transposed .x/.y component pick, or a node this walker does not
+ * recognize -- makes some level fail to match and the walk returns false.
+ * That is the conservative, sound direction: "not proven equal" is always
+ * treated as "reject," never as "equal," so a scatter/gather kernel this
+ * walker cannot fully reason about falls through to the safe no-op compute
+ * lifecycle instead of being silently mis-lowered. */
+static bool
+offset_scalar_semantically_equal(nir_scalar a, nir_scalar b, unsigned depth)
+{
+   if (depth > R300_COMPUTE_OFFSET_EQ_MAX_DEPTH)
+      return false;
+
+   a = nir_scalar_chase_movs(a);
+   b = nir_scalar_chase_movs(b);
+
+   if (nir_scalar_is_const(a) || nir_scalar_is_const(b)) {
+      return nir_scalar_is_const(a) && nir_scalar_is_const(b) &&
+             nir_scalar_as_uint(a) == nir_scalar_as_uint(b);
+   }
+
+   const nir_instr *ia = nir_def_instr(a.def);
+   const nir_instr *ib = nir_def_instr(b.def);
+   if (ia->type != ib->type)
+      return false;
+
+   if (ia->type == nir_instr_type_intrinsic) {
+      if (nir_scalar_intrinsic_op(a) != nir_scalar_intrinsic_op(b))
+         return false;
+      switch (nir_scalar_intrinsic_op(a)) {
+      case nir_intrinsic_load_global_invocation_id:
+      case nir_intrinsic_load_global_invocation_index:
+      case nir_intrinsic_load_base_global_invocation_id:
+         /* Root reached.  These intrinsics take no SSA inputs and read a
+          * value that is fixed for the lifetime of one invocation, so any
+          * two instances of the same one -- however many times the lowering
+          * duplicated it -- agree at every point in that invocation's
+          * execution.  The component must still match: .x on one side and
+          * .y on the other is a genuine transpose and must not compare
+          * equal. */
+         return a.comp == b.comp;
+      default:
+         /* Any other intrinsic reads state this walker cannot prove
+          * pointwise-invariant across the two chains (a buffer load, a
+          * differently-indexed push constant, etc.); reject rather than
+          * risk a false match. */
+         return false;
+      }
+   }
+
+   if (ia->type != nir_instr_type_alu)
+      return false;
+
+   const nir_alu_instr *alu_a = nir_scalar_as_alu(a);
+   const nir_alu_instr *alu_b = nir_scalar_as_alu(b);
+   if (alu_a->op != alu_b->op)
+      return false;
+
+   /* Positional (not commutativity-aware) operand comparison: sound for
+    * every op including non-commutative ones (isub, ishl), and adequate in
+    * practice since both chains come from the same lowering pass applying
+    * the same formula to load and store alike. */
+   const unsigned num_inputs = nir_op_infos[alu_a->op].num_inputs;
+   for (unsigned i = 0; i < num_inputs; i++) {
+      nir_scalar src_a = nir_scalar_chase_alu_src(a, i);
+      nir_scalar src_b = nir_scalar_chase_alu_src(b, i);
+      if (!offset_scalar_semantically_equal(src_a, src_b, depth + 1))
+         return false;
+   }
+   return true;
+}
+
 /* Walk the kernel and detect the identity-map structural pattern:
  * exactly one store_ssbo whose value source is the SSA def of exactly one
  * load_ssbo.  The load and store binding sources are recorded when they are
@@ -163,9 +258,11 @@ store_ssbo_address_is_supported(const nir_intrinsic_instr *intr,
  * handles that the dispatch resolves through the descriptor-set layout.
  *
  * The index-equivalence between the load and the store (both indexed by
- * gl_GlobalInvocationID.xy) is not asserted here; the readback oracle catches
- * a non-identity index relationship.  Detection only gates the LOWERING
- * branch -- a mis-detected kernel falls back to the no-op pipeline path. */
+ * gl_GlobalInvocationID.xy) is asserted via offset_scalar_semantically_equal,
+ * a structural walk that is sound against separately-lowered but
+ * pointwise-equal address chains (see that function for why raw SSA
+ * identity cannot be used here).  Detection only gates the LOWERING branch --
+ * a mis-detected kernel falls back to the no-op pipeline path. */
 void
 r300_nir_detect_identity_map(const nir_shader *s,
                              struct r300_compute_identity_pattern *out)
@@ -216,30 +313,16 @@ r300_nir_detect_identity_map(const nir_shader *s,
    /* store_ssbo src layout: [0]=value, [1]=binding, [2]=offset.
     * load_ssbo  src layout: [0]=binding, [1]=offset.
     *
-    * offset_eq below compares the store offset def with the load offset def,
-    * but the detector does NOT gate on it.  nir_lower_explicit_io with
-    * nir_address_format_32bit_index_offset emits an independent address-
-    * computation chain for each load_ssbo and each store_ssbo intrinsic, so
-    * the load offset def and the store offset def stay distinct even for
-    * out[gid] = in[gid] -- and stay distinct through nir_opt_dce + nir_opt_cse
-    * (both offsets derive from the same gl_GlobalInvocationID, but CSE does
-    * not fold the separately lowered chains).  Gating on offset_eq therefore
-    * rejects the legitimate identity-map kernel.
-    *
-    * Cost of not gating: a scatter kernel out[g(i)] = in[i] is admitted and
-    * the fullscreen-FS lowering computes out[i] = in[i] (the pass cannot honor
-    * a scatter index g).  That is a bounded value miscompute, not a memory
-    * hazard -- the fullscreen draw's framebuffer extent equals the output
-    * buffer extent, so no out-of-bounds write occurs.
-    *
-    * TODO: gate the identity shape on semantic offset equivalence by walking
-    *       the store and load offset defs to their root gl_GlobalInvocationID
-    *       extract and comparing those, replacing the SSA-def-identity
-    *       offset_eq.  Reason: SSA-def identity under-approximates
-    *       post-explicit_io offset equality, leaving scatter and gather shapes
-    *       equivalent to this detector.  Tracking:
-    *       r300_nir_detect_identity_map offset gate. */
-   const bool offset_eq = (store->src[2].ssa == load->src[1].ssa);
+    * offset_eq gates the identity shape on genuine pointwise index
+    * equivalence rather than raw SSA-def identity (see
+    * offset_scalar_semantically_equal for why the latter always reads false
+    * post-nir_lower_explicit_io).  Without this gate a scatter kernel
+    * out[g(i)] = in[i] would be admitted and the fullscreen-FS lowering
+    * would compute out[i] = in[i] (the pass cannot honor a scatter index g)
+    * -- a silent value miscompute. */
+   const bool offset_eq =
+      offset_scalar_semantically_equal(nir_get_scalar(store->src[2].ssa, 0),
+                                       nir_get_scalar(load->src[1].ssa, 0), 0);
    if (identity_map_debug_enabled())
       fprintf(stderr,
               "ident_map: detect inner store_val_ssa=%p load_def=%p "
@@ -251,6 +334,11 @@ r300_nir_detect_identity_map(const nir_shader *s,
               (int)nir_src_is_const(store->src[1]));
    if (!value_eq_load)
       return;
+   if (!offset_eq) {
+      if (identity_map_debug_enabled())
+         fprintf(stderr, "ident_map: detect-skip offset mismatch\n");
+      return;
+   }
 
    /* The store's write mask must cover every component.  The downstream
     * carriers copy whole elements sized from util_format_get_blocksize (the
@@ -385,23 +473,20 @@ r300_nir_detect_binary_map(const nir_shader *s,
    if (nir_intrinsic_has_write_mask(store) &&
        nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
       return;
-   /* Like the identity-map detector, this detector does NOT gate on offset
-    * equality.  nir_lower_explicit_io with nir_address_format_32bit_index_offset
-    * emits independent address-computation chains per intrinsic, so the load_a,
-    * load_b, and store offset defs all stay distinct even when the source GLSL
-    * uses the same gl_GlobalInvocationID.x in all three, and nir_opt_dce +
-    * nir_opt_cse before the detector does not fold them.  Accept the same
-    * bounded scatter miscompute as the identity path: the fullscreen-FS
-    * lowering computes out[i] = f(a[i], b[i]) regardless of any scatter index
-    * g, a value miscompute bounded by the framebuffer extent (which equals the
-    * buffer extent), not a memory hazard.
-    *
-    * TODO: gate on semantic offset equivalence by walking the store and load
-    *       offset defs to their root gl_GlobalInvocationID extract, replacing
-    *       SSA-def identity.  Reason: SSA-def identity under-approximates
-    *       post-explicit_io offset equality, leaving scatter and gather shapes
-    *       equivalent to this detector.  Tracking:
-    *       r300_nir_detect_binary_map offset gate. */
+   /* Like the identity-map detector, this detector gates on genuine
+    * pointwise index equivalence rather than raw SSA-def identity: the
+    * store's offset must match BOTH load offsets structurally (see
+    * offset_scalar_semantically_equal).  Without this gate a scatter kernel
+    * out[g(i)] = f(a[i], b[i]) would be admitted and the fullscreen-FS
+    * lowering would compute out[i] = f(a[i], b[i]) regardless of any
+    * scatter index g -- a silent value miscompute. */
+   if (!offset_scalar_semantically_equal(nir_get_scalar(store->src[2].ssa, 0),
+                                         nir_get_scalar(load_a->src[1].ssa, 0),
+                                         0) ||
+       !offset_scalar_semantically_equal(nir_get_scalar(store->src[2].ssa, 0),
+                                         nir_get_scalar(load_b->src[1].ssa, 0),
+                                         0))
+      return;
 
    out->is_binary_map = true;
    out->alu_op = (uint16_t)alu->op;

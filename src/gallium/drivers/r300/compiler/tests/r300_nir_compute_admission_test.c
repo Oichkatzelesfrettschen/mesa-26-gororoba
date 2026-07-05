@@ -227,6 +227,115 @@ build_binary_map_isub_ba(void)
    return b.shader;
 }
 
+/* out[gid] = in[gid], but the load offset and the store offset are built by
+ * two SEPARATE calls to nir_load_global_invocation_index / nir_imul, so they
+ * are structurally identical but distinct SSA defs -- the same shape
+ * nir_lower_explicit_io leaves behind on real kernels (see
+ * offset_scalar_semantically_equal).  Detected directly, without running
+ * nir_opt_cse first, so the test exercises the walker's own structural
+ * matching rather than relying on CSE to have merged the chains first. */
+static nir_shader *
+build_identity_map_gid_separate_offset_chains(void)
+{
+   nir_builder b = cs_builder("cs_identity_gid_separate_chains");
+   nir_def *load_off = nir_imul(&b, nir_load_global_invocation_index(&b, 32),
+                                nir_imm_int(&b, 4));
+   nir_def *in = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), load_off,
+                               .align_mul = 4, .align_offset = 0);
+   nir_def *store_off = nir_imul(&b, nir_load_global_invocation_index(&b, 32),
+                                 nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, in, nir_imm_int(&b, 1), store_off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[N-1-gid] = in[gid]: a genuine index-reversal scatter.  Value equality
+ * holds (the stored value is exactly the loaded def) but the store address
+ * is a different function of gid than the load address, so the offset gate
+ * must reject this -- admitting it would have the fullscreen-FS replay
+ * silently compute out[gid] = in[gid] instead of the kernel's actual
+ * reversal. */
+static nir_shader *
+build_identity_map_scatter_reversed(void)
+{
+   nir_builder b = cs_builder("cs_identity_scatter_reversed");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *load_off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_def *in = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), load_off,
+                               .align_mul = 4, .align_offset = 0);
+   nir_def *reversed = nir_isub(&b, nir_imm_int(&b, 1023), gid);
+   nir_def *store_off = nir_imul(&b, reversed, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, in, nir_imm_int(&b, 1), store_off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[id.y] = in[id.x]: a transposed-component scatter.  Same op shape
+ * (channel(id, k) * 4) on both sides, differing only in which vector
+ * component k is selected -- the offset gate's component check
+ * (a.comp == b.comp on the invocation-id leaf) must catch this even though
+ * every ALU node above it matches. */
+static nir_shader *
+build_identity_map_scatter_transposed_component(void)
+{
+   nir_builder b = cs_builder("cs_identity_scatter_transposed_component");
+   nir_def *id = nir_load_global_invocation_id(&b, 32);
+   nir_def *load_off = nir_imul(&b, nir_channel(&b, id, 0), nir_imm_int(&b, 4));
+   nir_def *in = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), load_off,
+                               .align_mul = 4, .align_offset = 0);
+   nir_def *store_off = nir_imul(&b, nir_channel(&b, id, 1), nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, in, nir_imm_int(&b, 1), store_off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[gid] = a[gid] + b[gid], with all three offsets built by separate
+ * nir_load_global_invocation_index / nir_imul call pairs (structurally
+ * identical, SSA-distinct) -- the binary-map analog of
+ * build_identity_map_gid_separate_offset_chains. */
+static nir_shader *
+build_binary_map_gid_separate_offset_chains(void)
+{
+   nir_builder b = cs_builder("cs_binary_gid_separate_chains");
+   nir_def *a_off = nir_imul(&b, nir_load_global_invocation_index(&b, 32),
+                             nir_imm_int(&b, 4));
+   nir_def *a = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), a_off,
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *b_off = nir_imul(&b, nir_load_global_invocation_index(&b, 32),
+                             nir_imm_int(&b, 4));
+   nir_def *c = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 1), b_off,
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *sum = nir_iadd(&b, a, c);
+   nir_def *store_off = nir_imul(&b, nir_load_global_invocation_index(&b, 32),
+                                 nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, sum, nir_imm_int(&b, 2), store_off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[N-1-gid] = a[gid] + b[gid]: the binary-map analog of
+ * build_identity_map_scatter_reversed.  The store address is a different
+ * function of gid than either load address, so the offset gate must reject
+ * it on both the store-vs-a and store-vs-b comparisons. */
+static nir_shader *
+build_binary_map_scatter_reversed(void)
+{
+   nir_builder b = cs_builder("cs_binary_scatter_reversed");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *a_off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_def *a = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), a_off,
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *b_off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_def *c = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 1), b_off,
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *sum = nir_iadd(&b, a, c);
+   nir_def *reversed = nir_isub(&b, nir_imm_int(&b, 1023), gid);
+   nir_def *store_off = nir_imul(&b, reversed, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, sum, nir_imm_int(&b, 2), store_off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 /* Two-input transcendental map: out[gid] = f(a[gid], b[gid]) for one of the
  * non-commutative binaries (fpow / fdiv).  a is binding 0 (the op's first
  * source), b binding 1 (second), output binding 2 -- the swap flag reverses the
@@ -991,6 +1100,60 @@ case_binary_map_isub_ba_operand_order(void)
    CHECK(binmap.input_b_ssbo_binding == 0,
          "isub ba: input_b captures right-operand binding (0)");
    ralloc_free(nir);
+}
+
+/* Coverage for the offset_scalar_semantically_equal gate in
+ * r300_nir_detect_identity_map / r300_nir_detect_binary_map: separately-
+ * lowered-but-pointwise-equal address chains must still admit, and a genuine
+ * scatter (index reversal or transposed vector component) must reject.  None
+ * of these call prepare_detect_shader first -- the point is to exercise the
+ * walker's own structural matching directly, not rely on nir_opt_cse having
+ * already merged the two chains into one shared def. */
+static void
+case_identity_binary_map_offset_gate(void)
+{
+   printf("identity/binary-map offset-equivalence gate\n");
+
+   {
+      nir_shader *nir = build_identity_map_gid_separate_offset_chains();
+      struct r300_compute_identity_pattern ident = {0};
+      r300_nir_detect_identity_map(nir, &ident);
+      CHECK(ident.is_identity_map,
+            "identity-map: separately-lowered matching gid*4 offsets admit");
+      ralloc_free(nir);
+   }
+   {
+      nir_shader *nir = build_identity_map_scatter_reversed();
+      struct r300_compute_identity_pattern ident = {0};
+      r300_nir_detect_identity_map(nir, &ident);
+      CHECK(!ident.is_identity_map,
+            "identity-map: reversed-index scatter rejects");
+      ralloc_free(nir);
+   }
+   {
+      nir_shader *nir = build_identity_map_scatter_transposed_component();
+      struct r300_compute_identity_pattern ident = {0};
+      r300_nir_detect_identity_map(nir, &ident);
+      CHECK(!ident.is_identity_map,
+            "identity-map: transposed .x/.y component scatter rejects");
+      ralloc_free(nir);
+   }
+   {
+      nir_shader *nir = build_binary_map_gid_separate_offset_chains();
+      struct r300_compute_binary_map_pattern binmap = {0};
+      r300_nir_detect_binary_map(nir, &binmap);
+      CHECK(binmap.is_binary_map,
+            "binary-map: separately-lowered matching gid*4 offsets admit");
+      ralloc_free(nir);
+   }
+   {
+      nir_shader *nir = build_binary_map_scatter_reversed();
+      struct r300_compute_binary_map_pattern binmap = {0};
+      r300_nir_detect_binary_map(nir, &binmap);
+      CHECK(!binmap.is_binary_map,
+            "binary-map: reversed-index scatter rejects");
+      ralloc_free(nir);
+   }
 }
 
 static void
@@ -3197,6 +3360,7 @@ main(void)
    case_identity_metadata();
    case_binary_metadata();
    case_binary_map_isub_ba_operand_order();
+   case_identity_binary_map_offset_gate();
    case_qfmul_metadata();
    case_unary_metadata();
    case_unary_push_metadata();
