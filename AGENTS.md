@@ -32,6 +32,7 @@ These rules are enforceable. Later sections explain mechanism or rationale and n
 - A code claim carries its symbol-discovery method with the location: `(clangd: textDocument/references on FUNC)`, `(global -r SYMBOL)`, `(ast-grep --pattern PATTERN)`, `(rg --fixed-strings SYMBOL src/)`.
 - A hardware-RCA or conformance fix records the observation, source or spec constraint, implementation hypothesis, falsifier, validation command or retained bundle path, and expected CTS/Piglit/deqp movement before the change.
 - GPU-behavior analysis starts from a `dmesg` check for DRM CS validation errors.
+- The RS482 / K8 / SB600 Vostro 1000 target needs out-of-tree kernel modules (radeon GPU-reset + hazard mitigation, SB600 watchdog, EC thermal); `docs/hardware/vostro1000-kernel-modules.md` is the registry of what each does and why the hardware needs it.
 - Crash symbolization starts from module reachability via `/proc/PID/maps` or `gdb info sharedlibrary`.
 - Build, runtime, conformance, and silicon stay separate evidence classes.
 - A CTS/Piglit/deqp fix claim rests on test evidence; build-only evidence proves a build.
