@@ -65,14 +65,14 @@ cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relr
 # below for headless deqp/piglit and renderD128-only Vulkan).  XCB is Mesa's
 # internal transport for the x11 platform and is not a separate option.
 platforms = ['x11', 'wayland']
-# r300 plus zink: zink rides the amd_r300 (r300vk) Vulkan ICD to expose GL atop
+# r300 plus zink: zink rides the ati_r300 (r3v) Vulkan ICD to expose GL atop
 # Vulkan on RS482, the GL-on-Vulkan lane this debug build is the install target
 # for.  No llvmpipe -- building it would force draw-use-llvm=true and route
 # r300's SW-TCL through the gallivm JIT instead of the C draw interpreter this
 # profile instruments; zink itself needs no llvm.
 gallium-drivers = ['r300', 'zink']
-vulkan-drivers = ['amd_r300']
-r300vk-gallium-backend = true
+vulkan-drivers = ['ati_r300']
+r3v-gallium-backend = true
 
 # Maximal OpenGL/GLES surface (desktop GL, GLES1, GLES2).
 opengl = true
@@ -127,7 +127,7 @@ tools = ['nir', 'glsl', 'dlclose-skip']
 # live driver.
 build-tests = true
 
-# r300vk debug layers: overlay (the on-screen HUD) and device-select.  These are
+# r3v debug layers: overlay (the on-screen HUD) and device-select.  These are
 # the mesa-shipped layers; Khronos validation is a separate package.
 vulkan-layers = ['overlay', 'device-select']
 

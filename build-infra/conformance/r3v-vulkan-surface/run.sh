@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# r300vk Vulkan extension-surface conformance regression harness (deqp-vk).
+# r3v Vulkan extension-surface conformance regression harness (deqp-vk).
 #
-# WHY: r300vk advertises a set of promoted KHR extensions additively at
+# WHY: r3v advertises a set of promoted KHR extensions additively at
 # apiVersion 1.0 (VK_KHR_bind_memory2, get_memory_requirements2,
 # dedicated_allocation, driver_properties, format_feature_flags2,
 # uniform_buffer_standard_layout, relaxed_block_layout,
@@ -33,7 +33,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DEQP_VK="${DEQP_VK:-/home/eirikr/workspaces/mesa/deqp-vk/build-vostro-r300vk-headless/external/vulkancts/modules/vulkan/deqp-vk}"
-OUT="${OUT:-/var/tmp/r300vk_vk_conformance_run}"
+OUT="${OUT:-/var/tmp/r3v_vk_conformance_run}"
 CASELIST="${CASELIST:-$HERE/caselist.txt}"
 BASELINE="${BASELINE:-$HERE/baseline.tsv}"
 MODE="${1:---check}"
@@ -47,7 +47,7 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 RESULTS="$OUT/results.tsv"
 : > "$RESULTS"
 
-echo "=== r300vk Vulkan surface conformance run  $(date -u +%FT%TZ) ==="
+echo "=== r3v Vulkan surface conformance run  $(date -u +%FT%TZ) ==="
 echo "ICD: ${VK_ICD_FILENAMES:-<system>}"
 
 # --- check 1: extension presence (vulkaninfo) ---------------------------------
@@ -139,5 +139,5 @@ awk -F'\t' '
   }
 ' "$OUT/joined.tsv"
 verdict=$?
-echo "=== DONE_SENTINEL r300vk_vk_conformance rc=$verdict ==="
+echo "=== DONE_SENTINEL r3v_vk_conformance rc=$verdict ==="
 exit "$verdict"

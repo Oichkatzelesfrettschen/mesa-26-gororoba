@@ -1,6 +1,6 @@
-# r300vk Vulkan extension-surface conformance harness
+# r3v Vulkan extension-surface conformance harness
 
-Regression gate for the promoted KHR extensions r300vk advertises additively at
+Regression gate for the promoted KHR extensions r3v advertises additively at
 apiVersion 1.0, and for the direct-VK draw-replay robustness fixes.
 
 ## Why
@@ -37,7 +37,7 @@ DEQP_VK=/path/to/deqp-vk run.sh --record
 DEQP_VK=/path/to/deqp-vk run.sh --check
 
 # test a scoped build instead of the system driver
-VK_ICD_FILENAMES=/tmp/r300vk_test/r300_test_icd.json run.sh --check
+VK_ICD_FILENAMES=/tmp/r3v_test/r300_test_icd.json run.sh --check
 ```
 
 `DEQP_VK` defaults to the vostro headless build
@@ -48,9 +48,9 @@ is recorded `NotSupported`.
 
 ## Baseline provenance
 
-`baseline.tsv` was recorded on the RS482 (ATI RS480/RS482) against the r300vk
+`baseline.tsv` was recorded on the RS482 (ATI RS480/RS482) against the r3v
 build carrying the nine extensions and the null-pipeline replay guard. The
 pre-existing deqp-vk Fails it pins (e.g. `format_properties.r8g8b8a8_unorm`,
-`get_physical_device_properties2` limit-validation cases) are r300vk format and
+`get_physical_device_properties2` limit-validation cases) are r3v format and
 1.x-limit gaps unrelated to the extension surface; they are recorded so the gate
 fires only on a true `Pass -> Fail`.

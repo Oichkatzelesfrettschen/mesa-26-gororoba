@@ -37,8 +37,8 @@ The following configs were deleted as part of this consolidation:
 ## r300 lane history
 
 The r300 lane was consolidated to the two `[12]_r300_full_*` profiles (maximal
-r300 GL/GLES + amd_r300 ICD).  All prior r300/vostro configs removed:
+r300 GL/GLES + ati_r300 ICD).  All prior r300/vostro configs removed:
 `r300-canonical-vostro-k8`, `r300-egl-gbm-trace-vostro-k8`, `r300-trace-vostro-k8`,
-`r300-vostro-k8-{debug,release}`, `r300vk-vostro-k8-{debug,release}`,
-`r300vk-vostro-x86-64-v1-clang22-{debug,release}`, and the orphaned
+`r300-vostro-k8-{debug,release}`, `r3v-vostro-k8-{debug,release}`,
+`r3v-vostro-x86-64-v1-clang22-{debug,release}`, and the orphaned
 `vostro1000-k8-*` envs.

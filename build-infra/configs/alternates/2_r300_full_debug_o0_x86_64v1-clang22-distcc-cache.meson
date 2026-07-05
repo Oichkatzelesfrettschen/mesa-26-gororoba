@@ -4,7 +4,7 @@
 # unoptimized: buildtype='debug' (-O0 -g, assertions live, frame pointers).  This
 # is the deepest-stepping non-sanitizer debug build -- every source line keeps its
 # own machine code, no inlining or optimizer folding, so a gdb step through
-# r300_emit, the blitter, the draw module, or the r300vk queue visits the source
+# r300_emit, the blitter, the draw module, or the r3v queue visits the source
 # exactly as written.  It trades runtime speed for that fidelity, so it is NOT the
 # default install; it is the /opt-scoped alternate reached through its run-wrapper
 # when an -O2 backtrace folds the frame you need and you do not want ASan overhead.
@@ -44,13 +44,13 @@ cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relr
 [project options]
 # Window-system platforms only (matches profiles 1_/2_).
 platforms = ['x11', 'wayland']
-# r300 plus zink: zink rides the amd_r300 (r300vk) Vulkan ICD to expose GL atop
+# r300 plus zink: zink rides the ati_r300 (r3v) Vulkan ICD to expose GL atop
 # Vulkan on RS482.  No llvmpipe -- building it would force draw-use-llvm=true and
 # route r300's SW-TCL through the gallivm JIT instead of the C draw interpreter
 # this profile keeps steppable; zink itself needs no llvm.
 gallium-drivers = ['r300', 'zink']
-vulkan-drivers = ['amd_r300']
-r300vk-gallium-backend = true
+vulkan-drivers = ['ati_r300']
+r3v-gallium-backend = true
 
 # Maximal OpenGL/GLES surface (desktop GL, GLES1, GLES2).
 opengl = true
@@ -97,7 +97,7 @@ tools = ['nir', 'glsl', 'dlclose-skip']
 # deterministically, not only through the live driver.
 build-tests = true
 
-# r300vk debug layers: overlay (on-screen HUD) and device-select.
+# r3v debug layers: overlay (on-screen HUD) and device-select.
 vulkan-layers = ['overlay', 'device-select']
 
 # The full restored r300 feature surface: gallium-va MPEG-2 decode (pure-NIR

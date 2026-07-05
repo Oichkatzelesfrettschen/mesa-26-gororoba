@@ -13,8 +13,8 @@
 #   make list                                # show available PROFILEs
 #
 # Canonical profiles:
-#   4_r300_full_release_x86_64v1-clang22-distcc-cache  r300 + amd_r300 release (vostro)
-#   3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache    r300 + amd_r300 debug (vostro)
+#   4_r300_full_release_x86_64v1-clang22-distcc-cache  r300 + ati_r300 release (vostro)
+#   3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache    r300 + ati_r300 debug (vostro)
 #   3_terakan_full_release_x86_64v1-clang22-distcc-cache  r600 + terascale release + Rusticl (x130e)
 #   4_terakan_full_debug_x86_64v1-clang22-distcc-cache    r600 + terascale debug + Rusticl (x130e)
 #   5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache  r600 + terascale release, no Rusticl
@@ -163,7 +163,7 @@ list:
 vostro-prefix-check:
 	@case "$(PROFILE):$(PREFIX)" in \
 		[12]_r300_*:/usr/local/mesa-26-gororoba*|r300*-vostro-*:/usr/local/mesa-26-gororoba*) \
-			echo "Vostro r300/r300vk profiles install under /opt/local/mesa-26-gororoba*; refusing PREFIX=$(PREFIX)" >&2; \
+			echo "Vostro r300/r3v profiles install under /opt/local/mesa-26-gororoba*; refusing PREFIX=$(PREFIX)" >&2; \
 			exit 2 ;; \
 	esac
 
@@ -546,7 +546,7 @@ define INSTALL_PAIR
 endef
 
 # Canonical full-feature r300 RELEASE build: maximal GL/GLES surface plus the
-# amd_r300 ICD in one artifact (profile 4_).  Installs to the release prefix.
+# ati_r300 ICD in one artifact (profile 4_).  Installs to the release prefix.
 rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache:
 	$(MAKE) -j1 clean PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 	$(MAKE) -j1 configure PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
@@ -650,7 +650,7 @@ rebuild-all-tiers: \
 	@echo "package: for p in mesa-gororoba-debug-asan mesa-gororoba-debug-o0 mesa-gororoba-debug-optimized mesa-gororoba umr-gororoba mesa-gororoba-debug-tools; do (cd packaging/\$$p && makepkg -f --noconfirm); done"
 
 # mesa-gororoba CachyOS-style /usr drop-in package (r300 GL + llvmpipe +
-# amd_r300/r300vk Vulkan ICD), built -march=x86-64 so it runs on the K8 Vostro.
+# ati_r300/r3v Vulkan ICD), built -march=x86-64 so it runs on the K8 Vostro.
 # pkg-mesa-gororoba runs makepkg and repo-adds the artifact to a local
 # [gororoba] repo; deploy-mesa-gororoba ships it to TARGET_HOST and installs it
 # (atomic swap over stock mesa; --overwrite forces any file collision).  Build

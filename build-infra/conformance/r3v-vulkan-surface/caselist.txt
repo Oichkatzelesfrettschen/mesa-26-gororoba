@@ -1,10 +1,10 @@
-# deqp-vk case domain for the r300vk Vulkan extension surface.
+# deqp-vk case domain for the r3v Vulkan extension surface.
 #
 # Bounded, stable subset that exercises extension / feature / property
 # enumeration (where the nine additively-advertised promoted extensions
 # surface) plus a sample of format-feature reporting (VkFormatProperties3, the
 # 64-bit-flag form behind VK_KHR_format_feature_flags2).  Pre-existing Fails on
-# r300vk (a 1.0 software-replay driver) are pinned in baseline.tsv; the harness
+# r3v (a 1.0 software-replay driver) are pinned in baseline.tsv; the harness
 # gates only on Pass->Fail, so a recorded Fail staying Fail is not a regression.
 #
 # One glob per line; '#' comments and blank lines are ignored.

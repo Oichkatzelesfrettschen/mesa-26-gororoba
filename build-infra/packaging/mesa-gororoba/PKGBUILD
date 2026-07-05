@@ -2,10 +2,10 @@
 # mesa-gororoba: a system Mesa replacement build from the mesa-26-gororoba fork.
 # It installs the r300 Gallium GL driver, the zink GL-on-Vulkan Gallium
 # driver, the XA/Xv 2D-acceleration state tracker (libxatracker), and the
-# amd_r300 (r300vk) Vulkan ICD into the normal Mesa loader paths so RS482
+# ati_r300 (r3v) Vulkan ICD into the normal Mesa loader paths so RS482
 # daily-driver testing uses the fork by default.
 #
-# Scope is deliberately RS482-focused: r300 hardware GL + the r300vk Vulkan
+# Scope is deliberately RS482-focused: r300 hardware GL + the r3v Vulkan
 # ICD + zink riding that ICD for the GL-atop-Vulkan lane + XA/Xv and
 # gallium-va MPEG-2 decode on the 3D pipe.  No llvmpipe and no LLVM: the
 # vertex stage runs the C draw path so the in-development hybrid TCL is the
@@ -47,7 +47,7 @@ epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
 # replace #branch=main with #commit=<sha>.
-pkgdesc='Mesa system replacement (TRUE RELEASE, reserved): r300 GL + zink + XA/Xv + VA MPEG-2 + amd_r300/r300vk Vulkan ICD + overlay/device-select Vulkan layers, no LLVM, buildtype=release + no asserts + -O2, x86-64 baseline'
+pkgdesc='Mesa system replacement (TRUE RELEASE, reserved): r300 GL + zink + XA/Xv + VA MPEG-2 + ati_r300/r3v Vulkan ICD + overlay/device-select Vulkan layers, no LLVM, buildtype=release + no asserts + -O2, x86-64 baseline'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -142,9 +142,9 @@ build() {
     -D b_lto=false \
     -D platforms=x11,wayland \
     -D gallium-drivers=r300,zink \
-    -D vulkan-drivers=amd_r300 \
+    -D vulkan-drivers=ati_r300 \
     -D vulkan-layers=overlay,device-select \
-    -D r300vk-gallium-backend=true \
+    -D r3v-gallium-backend=true \
     -D gallium-rusticl=false \
     -D llvm=disabled \
     -D draw-use-llvm=false \

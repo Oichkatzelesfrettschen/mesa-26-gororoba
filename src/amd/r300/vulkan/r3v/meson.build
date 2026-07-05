@@ -27,6 +27,10 @@ libr3v_deps = [
   idep_mesautil,
   idep_vulkan_runtime,
   idep_vulkan_util,
+  # r3v_physical_device.h includes wsi_common.h in every lane, so the
+  # loader-only build needs the WSI headers too; the full idep_vulkan_wsi
+  # joins below with the Gallium-backed path.
+  idep_vulkan_wsi_headers,
 ]
 
 libr3v_inc = [
@@ -37,18 +41,18 @@ libr3v_inc = [
 libr3v_link_with = []
 libr3v_c_args = [no_override_init_args]
 
-# Gallium-backed device and submit path.  Gated behind r300vk-gallium-backend
+# Gallium-backed device and submit path.  Gated behind r3v-gallium-backend
 # so the loader-only R0 build (no Gallium dependency) continues to work.
 # with_gallium_r300 is set by the parent meson.build when gallium-drivers
 # includes r300; guard both options so the build fails clearly if only one
 # is set.
 # Processed from src/meson.build AFTER subdir('gallium') so that driver_r300
 # and libgallium are in scope.
-if get_option('r300vk-gallium-backend') and not with_gallium_r300
-  error('r300vk-gallium-backend requires gallium-drivers to include r300; ' +
-        'add r300 to -Dgallium-drivers or disable -Dr300vk-gallium-backend')
+if get_option('r3v-gallium-backend') and not with_gallium_r300
+  error('r3v-gallium-backend requires gallium-drivers to include r300; ' +
+        'add r300 to -Dgallium-drivers or disable -Dr3v-gallium-backend')
 endif
-if get_option('r300vk-gallium-backend') and with_gallium_r300
+if get_option('r3v-gallium-backend') and with_gallium_r300
   libr3v_files += files(
     'r3v_device.c',
     'r3v_queue.c',
@@ -114,7 +118,7 @@ libvulkan_r300 = shared_library(
 # trips nir_build_tex_struct's assert and aborted every DP4 compute pipeline
 # create on an asserts-enabled build).  Compiles the extracted builder against
 # NIR alone, no pipe_context.
-if with_tests and get_option('r300vk-gallium-backend') and with_gallium_r300
+if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
   test(
     'r3v-dp4-fs-nir',
     executable(
