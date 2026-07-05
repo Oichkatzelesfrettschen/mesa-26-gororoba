@@ -42,7 +42,6 @@
 
 #include "pipe/p_context.h"
 
-#include "tgsi/tgsi_ureg.h"
 #include "vl_nir.h"
 
 #include "util/u_draw.h"
@@ -74,164 +73,93 @@ static void *
 create_copy_frag_shader(struct vl_deint_filter *filter, unsigned field,
                         struct vertex2f *sizes)
 {
-   struct ureg_program *shader;
-   struct ureg_src i_vtex;
-   struct ureg_src sampler;
-   struct ureg_dst o_fragment;
-   struct ureg_dst t_tex;
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, filter->pipe, 1, "vl:deint_copy");
+   nir_builder *b = &fs.b;
+   vl_nir_sampler_array(&fs, 2, GLSL_SAMPLER_DIM_2D, true);
 
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader) {
-      return NULL;
-   }
-   t_tex = ureg_DECL_temporary(shader);
-
-   i_vtex = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX, TGSI_INTERPOLATE_LINEAR);
-   sampler = ureg_DECL_sampler(shader, 2);
-   o_fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
-
-   ureg_MOV(shader, t_tex, i_vtex);
-   if (field) {
-      if (filter->interleaved)
-         ureg_ADD(shader, t_tex, ureg_src(t_tex),
-                  ureg_imm4f(shader, 0, sizes->y * 0.5f, 0, 0));
-      ureg_MOV(shader, ureg_writemask(t_tex, TGSI_WRITEMASK_ZW),
-               ureg_imm4f(shader, 0, 0, 1.0f, 0));
-   } else {
-      if (filter->interleaved)
-         ureg_ADD(shader, t_tex, ureg_src(t_tex),
-                  ureg_imm4f(shader, 0, sizes->y * -0.5f, 0, 0));
-      ureg_MOV(shader, ureg_writemask(t_tex, TGSI_WRITEMASK_ZW),
-               ureg_imm1f(shader, 0));
-   }
-
-   ureg_TEX(shader, o_fragment, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_tex), sampler);
-
-   ureg_release_temporary(shader, t_tex);
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, filter->pipe);
+   /* Fetch the requested field's layer at the (interleave-shifted)
+    * output row. */
+   nir_def *tc = fs.texcoord[0];
+   nir_def *y = nir_channel(b, tc, 1);
+   if (filter->interleaved)
+      y = nir_fadd_imm(b, y, (field ? 0.5 : -0.5) * sizes->y);
+   nir_def *coord = nir_vec3(b, nir_channel(b, tc, 0), y,
+                             nir_imm_float(b, field ? 1.0 : 0.0));
+   return vl_nir_fs_finish(&fs, filter->pipe, vl_nir_tex(&fs, 2, coord));
 }
 
 static void *
 create_deint_frag_shader(struct vl_deint_filter *filter, unsigned field,
                          struct vertex2f *sizes, bool spatial_filter)
 {
-   struct ureg_program *shader;
-   struct ureg_src i_vtex;
-   struct ureg_src sampler_cur;
-   struct ureg_src sampler_prevprev;
-   struct ureg_src sampler_prev;
-   struct ureg_src sampler_next;
-   struct ureg_dst o_fragment;
-   struct ureg_dst t_tex;
-   struct ureg_dst t_comp_top, t_comp_bot;
-   struct ureg_dst t_diff;
-   struct ureg_dst t_a, t_b;
-   struct ureg_dst t_weave, t_linear;
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, filter->pipe, 1, "vl:deint_motion");
+   nir_builder *b = &fs.b;
+   /* Slot layout matches the draw-time binding: 0 = prevprev, 1 = prev,
+    * 2 = cur, 3 = next. */
+   for (unsigned s = 0; s < 4; s++)
+      vl_nir_sampler_array(&fs, s, GLSL_SAMPLER_DIM_2D, true);
 
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader) {
-      return NULL;
-   }
+   nir_def *tc = fs.texcoord[0];
+   nir_def *x = nir_channel(b, tc, 0);
+   nir_def *y = nir_channel(b, tc, 1);
 
-   t_tex = ureg_DECL_temporary(shader);
-   t_comp_top = ureg_DECL_temporary(shader);
-   t_comp_bot = ureg_DECL_temporary(shader);
-   t_diff = ureg_DECL_temporary(shader);
-   t_a = ureg_DECL_temporary(shader);
-   t_b = ureg_DECL_temporary(shader);
-   t_weave = ureg_DECL_temporary(shader);
-   t_linear = ureg_DECL_temporary(shader);
+   /* Sample between texels for a cheap lowpass; the two probe points sit
+    * a half texel off in opposite corners, top probe on layer 0 and
+    * bottom probe on layer 1. */
+   nir_def *comp_top = nir_vec3(
+      b, nir_fadd_imm(b, x, sizes->x * 0.5),
+      nir_fadd_imm(b, y, sizes->y * -0.5), nir_imm_float(b, 0.0));
+   nir_def *comp_bot = nir_vec3(
+      b, nir_fadd_imm(b, x, sizes->x * -0.5),
+      nir_fadd_imm(b, y, sizes->y * 0.5), nir_imm_float(b, 1.0));
 
-   i_vtex = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX, TGSI_INTERPOLATE_LINEAR);
-   sampler_prevprev = ureg_DECL_sampler(shader, 0);
-   sampler_prev = ureg_DECL_sampler(shader, 1);
-   sampler_cur = ureg_DECL_sampler(shader, 2);
-   sampler_next = ureg_DECL_sampler(shader, 3);
-   o_fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
+   /* Temporal differences: cur vs prevprev on the current field's parity,
+    * prev vs next on the opposite parity. */
+   nir_def *probe_cur = field == 0 ? comp_bot : comp_top;
+   nir_def *probe_opp = field == 0 ? comp_top : comp_bot;
+   nir_def *diff_x = nir_fsub(b,
+      nir_channel(b, vl_nir_tex(&fs, 2, probe_cur), 0),
+      nir_channel(b, vl_nir_tex(&fs, 0, probe_cur), 0));
+   nir_def *diff_y = nir_fsub(b,
+      nir_channel(b, vl_nir_tex(&fs, 1, probe_opp), 0),
+      nir_channel(b, vl_nir_tex(&fs, 3, probe_opp), 0));
+   nir_def *diff =
+      nir_fmax(b, nir_fabs(b, diff_x), nir_fabs(b, diff_y));
 
-   // we don't care about ZW interpolation (allows better optimization)
-   ureg_MOV(shader, t_tex, i_vtex);
-   ureg_MOV(shader, ureg_writemask(t_tex, TGSI_WRITEMASK_ZW),
-            ureg_imm1f(shader, 0));
-
-   // sample between texels for cheap lowpass
-   ureg_ADD(shader, t_comp_top, ureg_src(t_tex),
-            ureg_imm4f(shader, sizes->x * 0.5f, sizes->y * -0.5f, 0, 0));
-   ureg_ADD(shader, t_comp_bot, ureg_src(t_tex),
-            ureg_imm4f(shader, sizes->x * -0.5f, sizes->y * 0.5f, 1.0f, 0));
-
+   /* Weave candidate: the previous frame's opposite field at the output
+    * row; linear candidate: the current frame's own field one row over. */
+   nir_def *weave_y = y, *linear_y;
+   float layer_w, layer_l;
    if (field == 0) {
-      /* interpolating top field -> current field is a bottom field */
-      // cur vs prev2
-      ureg_TEX(shader, t_a, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_bot), sampler_cur);
-      ureg_TEX(shader, t_b, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_bot), sampler_prevprev);
-      ureg_ADD(shader, ureg_writemask(t_diff, TGSI_WRITEMASK_X), ureg_src(t_a), ureg_negate(ureg_src(t_b)));
-      // prev vs next
-      ureg_TEX(shader, t_a, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_top), sampler_prev);
-      ureg_TEX(shader, t_b, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_top), sampler_next);
-      ureg_ADD(shader, ureg_writemask(t_diff, TGSI_WRITEMASK_Y), ureg_src(t_a), ureg_negate(ureg_src(t_b)));
-   } else {
-      /* interpolating bottom field -> current field is a top field */
-      // cur vs prev2
-      ureg_TEX(shader, t_a, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_top), sampler_cur);
-      ureg_TEX(shader, t_b, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_top), sampler_prevprev);
-      ureg_ADD(shader, ureg_writemask(t_diff, TGSI_WRITEMASK_X), ureg_src(t_a), ureg_negate(ureg_src(t_b)));
-      // prev vs next
-      ureg_TEX(shader, t_a, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_bot), sampler_prev);
-      ureg_TEX(shader, t_b, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_bot), sampler_next);
-      ureg_ADD(shader, ureg_writemask(t_diff, TGSI_WRITEMASK_Y), ureg_src(t_a), ureg_negate(ureg_src(t_b)));
-   }
-
-   // absolute maximum of differences
-   ureg_MAX(shader, ureg_writemask(t_diff, TGSI_WRITEMASK_X), ureg_abs(ureg_src(t_diff)),
-            ureg_scalar(ureg_abs(ureg_src(t_diff)), TGSI_SWIZZLE_Y));
-
-   if (field == 0) {
-      /* weave with prev top field */
       if (filter->interleaved)
-         ureg_ADD(shader, t_tex, ureg_src(t_tex),
-                  ureg_imm4f(shader, 0, sizes->y * -0.5f, 0, 0));
-      ureg_TEX(shader, t_weave, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_tex), sampler_prev);
-      /* get linear interpolation from current bottom field */
-      ureg_ADD(shader, t_comp_top, ureg_src(t_tex),
-               ureg_imm4f(shader, 0, sizes->y * (filter->interleaved ? 1.0f : -1.0f), 1.0f, 0));
-      ureg_TEX(shader, t_linear, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_top), sampler_cur);
+         weave_y = nir_fadd_imm(b, weave_y, sizes->y * -0.5);
+      layer_w = 0.0;
+      linear_y = nir_fadd_imm(
+         b, weave_y, sizes->y * (filter->interleaved ? 1.0 : -1.0));
+      layer_l = 1.0;
    } else {
-      /* weave with prev bottom field */
       if (filter->interleaved)
-         ureg_ADD(shader, t_tex, ureg_src(t_tex),
-                  ureg_imm4f(shader, 0, sizes->y * 0.5f, 0, 0));
-      ureg_ADD(shader, t_comp_bot, ureg_src(t_tex), ureg_imm4f(shader, 0, 0, 1.0f, 0));
-      ureg_TEX(shader, t_weave, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_bot), sampler_prev);
-      /* get linear interpolation from current top field */
-      ureg_ADD(shader, t_comp_bot, ureg_src(t_tex),
-               ureg_imm4f(shader, 0, sizes->y * (filter->interleaved ? -1.0f : 1.0f), 0, 0));
-      ureg_TEX(shader, t_linear, TGSI_TEXTURE_2D_ARRAY, ureg_src(t_comp_bot), sampler_cur);
+         weave_y = nir_fadd_imm(b, weave_y, sizes->y * 0.5);
+      layer_w = 1.0;
+      linear_y = nir_fadd_imm(
+         b, weave_y, sizes->y * (filter->interleaved ? -1.0 : 1.0));
+      layer_l = 0.0;
    }
+   nir_def *weave = vl_nir_tex(
+      &fs, 1, nir_vec3(b, x, weave_y, nir_imm_float(b, layer_w)));
+   nir_def *linear = vl_nir_tex(
+      &fs, 2, nir_vec3(b, x, linear_y, nir_imm_float(b, layer_l)));
 
-   // mix between weave and linear
-   // fully weave if diff < 6 (0.02353), fully interpolate if diff > 14 (0.05490)
-   ureg_ADD(shader, ureg_writemask(t_diff, TGSI_WRITEMASK_X), ureg_src(t_diff),
-            ureg_imm4f(shader, -0.02353f, 0, 0, 0));
-   ureg_MUL(shader, ureg_saturate(ureg_writemask(t_diff, TGSI_WRITEMASK_X)),
-            ureg_src(t_diff), ureg_imm4f(shader, 31.8750f, 0, 0, 0));
-   ureg_LRP(shader, ureg_writemask(t_tex, TGSI_WRITEMASK_X), ureg_src(t_diff),
-            ureg_src(t_linear), ureg_src(t_weave));
-   ureg_MOV(shader, o_fragment, ureg_scalar(ureg_src(t_tex), TGSI_SWIZZLE_X));
-
-   ureg_release_temporary(shader, t_tex);
-   ureg_release_temporary(shader, t_comp_top);
-   ureg_release_temporary(shader, t_comp_bot);
-   ureg_release_temporary(shader, t_diff);
-   ureg_release_temporary(shader, t_a);
-   ureg_release_temporary(shader, t_b);
-   ureg_release_temporary(shader, t_weave);
-   ureg_release_temporary(shader, t_linear);
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, filter->pipe);
+   /* Mix: fully weave when diff < 6/255 (0.02353), fully interpolate
+    * when diff > 14/255 (0.05490); 31.8750 = 255/8 spans the band. */
+   nir_def *t = nir_fsat(
+      b, nir_fmul_imm(b, nir_fadd_imm(b, diff, -0.02353), 31.8750));
+   nir_def *mixed = nir_flrp(b, nir_channel(b, weave, 0),
+                             nir_channel(b, linear, 0), t);
+   return vl_nir_fs_finish(&fs, filter->pipe,
+                           nir_swizzle(b, mixed, (unsigned[]){0, 0, 0, 0}, 4));
 }
 
 bool
