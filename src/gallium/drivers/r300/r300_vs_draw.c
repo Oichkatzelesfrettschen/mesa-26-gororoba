@@ -469,10 +469,23 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
      * interpreted shader to the float domain -- the same
      * nir_lower_int_to_float + nir_lower_bool_to_float prep the HW-TCL
      * vertex path runs in nir_to_rc -- so consumption matches storage.
-     * GLSL 1.20 and ES 1.00 have no bitwise operators, so nothing this
-     * path receives needs the bitwise-to-arith guard.  This runs after
-     * the indirect-deref lowerings because those build integer
-     * comparison ladders of their own. */
+     * This runs after the indirect-deref lowerings because those build
+     * integer comparison ladders of their own. */
+
+    /* GL SW-TCL (GLSL 1.20 / ES 1.00) has no bitwise operators, but this
+     * same draw path also lowers r300vk's Vulkan SPIR-V, which does.  An
+     * unsigned shift or bitwise op then reaches nir_lower_int_to_float,
+     * whose default arm asserts its operand is not integer-typed and
+     * aborts the process (nir_lower_int_to_float.c lower_alu_instr, a
+     * nir_op_ushr abort on the native VertexIndex/InstanceIndex path).
+     * Run the fragment path's r300_nir_lower_bitwise_to_arith first: it
+     * rewrites the FP24-exact idioms (constant unsigned shift, low-bit
+     * mask) to udiv/umod and drops the rest to operand 0, so no integer
+     * bit op survives into int_to_float.  The draw path has no rc_error
+     * hook, so a non-exact op degrades to its operand rather than being
+     * rejected -- the same graceful drop the fragment translator flags. */
+    bool vs_bitwise_unsupported = false;
+    NIR_PASS(_, nir, r300_nir_lower_bitwise_to_arith, &vs_bitwise_unsupported);
     NIR_PASS(_, nir, nir_lower_int_to_float);
     NIR_PASS(_, nir, r300_nir_float_encode_int_sysvals);
     NIR_PASS(_, nir, r300_nir_float_encode_synthetic_sysval_index_uses);
