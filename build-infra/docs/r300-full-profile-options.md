@@ -21,7 +21,11 @@ frontends:
 
 - `llvm = 'disabled'`
 - `draw-use-llvm = false`
-- no `swrast`, `llvmpipe`, `softpipe`, zink, r600, radeonsi, or terakan
+- no `swrast`, `llvmpipe`, `softpipe`, r600, radeonsi, or terakan
+- zink is a DEBUG-PROFILE-ONLY inclusion: the debug config carries
+  `gallium-drivers = ['r300', 'zink']` so zink can ride the ati_r300 ICD
+  as the zink-upon-r3v GL-on-Vulkan experiment lane; the release profile
+  stays `['r300']` with no zink
 - no Rusticl, D3D10 UMD, MediaFoundation, or unrelated video codecs
 
 The release profile uses `buildtype = 'release'`, `b_ndebug = 'true'`, and
@@ -51,13 +55,13 @@ choices, keeping only the values EGL_DEFAULT_DISPLAY can actually honor.
 
 ## The two profiles are the whole r300 lane
 
-`1_`/`2_` are the only r300 build profiles.  Every prior r300/vostro variant is
+The debug profile `3_r300_full_debug_optimized_*` (configs/) and the release profile `4_r300_full_release_*` (configs/alternates/) are the canonical r300 pair; alternates also carry the asan `1_` and -O0 `2_` debug variants.  Every prior r300/vostro variant is
 removed and subsumed: the GL-only `r300-canonical-vostro-*`, the Vulkan-ICD-only
 `r3v-vostro-*` (`opengl=false`), the `*-vostro-k8-*` Turion-native pair, and
 the `r300-{trace,egl-gbm-trace}-vostro-k8` capture variants.  One artifact now
 carries the full GL/GLES surface and the ati_r300 ICD, so r300 conformance,
 desktop, r3v RCA, and silicon evidence all build from the same standardized
-pair: release `1_`, assertions-live debug `2_`.  The x86-64-v1 psABI baseline is
+pair: release `4_`, assertions-live debug `3_`.  The x86-64-v1 psABI baseline is
 a safe subset of the Turion 64 X2, so the removed k8-native lane added no reach
 the generic baseline lacks on this hardware.
 
