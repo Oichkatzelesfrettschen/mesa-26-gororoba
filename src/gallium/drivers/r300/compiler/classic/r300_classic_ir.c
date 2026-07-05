@@ -114,9 +114,13 @@ static bool
 fail(char *err, size_t err_size, const struct r300_classic_instr *i,
      const char *msg)
 {
+   /* r300_classic_program_validate reports an out-of-range opcode by calling
+    * here with i->op >= R300C_OP_COUNT, so op_info[i->op] would read past the
+    * table.  Name the opcode only when it indexes a real entry. */
+   const char *op_name =
+      i->op < R300C_OP_COUNT ? op_info[i->op].name : "?";
    if (err && err_size)
-      snprintf(err, err_size, "t%u (%s): %s", i->ssa_id,
-               op_info[i->op].name, msg);
+      snprintf(err, err_size, "t%u (%s): %s", i->ssa_id, op_name, msg);
    return false;
 }
 
