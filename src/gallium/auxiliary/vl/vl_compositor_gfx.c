@@ -36,6 +36,7 @@
 #include "util/u_upload_mgr.h"
 
 #include "tgsi/tgsi_ureg.h"
+#include "vl_nir.h"
 
 #include "vl_csc.h"
 #include "vl_types.h"
@@ -54,73 +55,66 @@ enum VS_OUTPUT
 void *
 create_vert_shader(struct vl_compositor *c)
 {
-   struct ureg_program *shader;
-   struct ureg_src vpos, vtex, color;
-   struct ureg_dst tmp;
-   struct ureg_dst o_vpos, o_vtex, o_color;
-   struct ureg_dst o_vtop, o_vbottom;
+   const nir_shader_compiler_options *options =
+      c->pipe->screen->nir_options[MESA_SHADER_VERTEX];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, options,
+                                                  "vl:compositor_vs");
 
-   shader = ureg_create(MESA_SHADER_VERTEX);
-   if (!shader)
-      return NULL;
+   nir_variable *in_vpos = nir_variable_create(b.shader, nir_var_shader_in,
+                                               glsl_vec4_type(), "vpos");
+   in_vpos->data.location = VERT_ATTRIB_GENERIC0;
+   nir_variable *in_vtex = nir_variable_create(b.shader, nir_var_shader_in,
+                                               glsl_vec4_type(), "vtex");
+   in_vtex->data.location = VERT_ATTRIB_GENERIC0 + 1;
+   nir_variable *in_color = nir_variable_create(b.shader, nir_var_shader_in,
+                                                glsl_vec4_type(), "color");
+   in_color->data.location = VERT_ATTRIB_GENERIC0 + 2;
 
-   vpos = ureg_DECL_vs_input(shader, 0);
-   vtex = ureg_DECL_vs_input(shader, 1);
-   color = ureg_DECL_vs_input(shader, 2);
-   tmp = ureg_DECL_temporary(shader);
-   o_vpos = ureg_DECL_output(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS);
-   o_color = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, VS_O_COLOR);
-   o_vtex = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX);
-   o_vtop = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTOP);
-   o_vbottom = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_VBOTTOM);
+   nir_def *vpos = nir_load_var(&b, in_vpos);
+   nir_def *vtex = nir_load_var(&b, in_vtex);
+   nir_def *color = nir_load_var(&b, in_color);
 
-   /*
-    * o_vpos = vpos
-    * o_vtex = vtex
-    * o_color = color
-    */
-   ureg_MOV(shader, o_vpos, vpos);
-   ureg_MOV(shader, o_vtex, vtex);
-   ureg_MOV(shader, o_color, color);
+   struct {
+      const char *name;
+      gl_varying_slot slot;
+      nir_def *value;
+   } outs[5];
+   outs[0].name = "o_vpos";   outs[0].slot = VARYING_SLOT_POS;
+   outs[1].name = "o_color";  outs[1].slot = VARYING_SLOT_COL0;
+   outs[2].name = "o_vtex";   outs[2].slot = VARYING_SLOT_VAR0 + VS_O_VTEX;
+   outs[3].name = "o_vtop";   outs[3].slot = VARYING_SLOT_VAR0 + VS_O_VTOP;
+   outs[4].name = "o_vbottom"; outs[4].slot = VARYING_SLOT_VAR0 + VS_O_VBOTTOM;
 
-   /*
-    * tmp.x = vtex.w / 2
-    * tmp.y = vtex.w / 4
-    *
-    * o_vtop.x = vtex.x
-    * o_vtop.y = vtex.y * tmp.x + 0.25f
-    * o_vtop.z = vtex.y * tmp.y + 0.25f
-    * o_vtop.w = 1 / tmp.x
-    *
-    * o_vbottom.x = vtex.x
-    * o_vbottom.y = vtex.y * tmp.x - 0.25f
-    * o_vbottom.z = vtex.y * tmp.y - 0.25f
-    * o_vbottom.w = 1 / tmp.y
-    */
-   ureg_MUL(shader, ureg_writemask(tmp, TGSI_WRITEMASK_X),
-            ureg_scalar(vtex, TGSI_SWIZZLE_W), ureg_imm1f(shader, 0.5f));
-   ureg_MUL(shader, ureg_writemask(tmp, TGSI_WRITEMASK_Y),
-            ureg_scalar(vtex, TGSI_SWIZZLE_W), ureg_imm1f(shader, 0.25f));
+   /* tmp.x = vtex.w / 2; tmp.y = vtex.w / 4.
+    * o_vtop    = (vtex.x, vtex.y * tmp.x + 0.25, vtex.y * tmp.y + 0.25, 1/tmp.x)
+    * o_vbottom = (vtex.x, vtex.y * tmp.x - 0.25, vtex.y * tmp.y - 0.25, 1/tmp.y) */
+   nir_def *vtex_x = nir_channel(&b, vtex, 0);
+   nir_def *vtex_y = nir_channel(&b, vtex, 1);
+   nir_def *half_w = nir_fmul_imm(&b, nir_channel(&b, vtex, 3), 0.5);
+   nir_def *quarter_w = nir_fmul_imm(&b, nir_channel(&b, vtex, 3), 0.25);
 
-   ureg_MOV(shader, ureg_writemask(o_vtop, TGSI_WRITEMASK_X), vtex);
-   ureg_MAD(shader, ureg_writemask(o_vtop, TGSI_WRITEMASK_Y), ureg_scalar(vtex, TGSI_SWIZZLE_Y),
-            ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_X), ureg_imm1f(shader, 0.25f));
-   ureg_MAD(shader, ureg_writemask(o_vtop, TGSI_WRITEMASK_Z), ureg_scalar(vtex, TGSI_SWIZZLE_Y),
-            ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_Y), ureg_imm1f(shader, 0.25f));
-   ureg_RCP(shader, ureg_writemask(o_vtop, TGSI_WRITEMASK_W),
-            ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_X));
+   outs[0].value = vpos;
+   outs[1].value = color;
+   outs[2].value = vtex;
+   outs[3].value = nir_vec4(
+      &b, vtex_x,
+      nir_fadd_imm(&b, nir_fmul(&b, vtex_y, half_w), 0.25),
+      nir_fadd_imm(&b, nir_fmul(&b, vtex_y, quarter_w), 0.25),
+      nir_frcp(&b, half_w));
+   outs[4].value = nir_vec4(
+      &b, vtex_x,
+      nir_fadd_imm(&b, nir_fmul(&b, vtex_y, half_w), -0.25),
+      nir_fadd_imm(&b, nir_fmul(&b, vtex_y, quarter_w), -0.25),
+      nir_frcp(&b, quarter_w));
 
-   ureg_MOV(shader, ureg_writemask(o_vbottom, TGSI_WRITEMASK_X), vtex);
-   ureg_MAD(shader, ureg_writemask(o_vbottom, TGSI_WRITEMASK_Y), ureg_scalar(vtex, TGSI_SWIZZLE_Y),
-            ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_X), ureg_imm1f(shader, -0.25f));
-   ureg_MAD(shader, ureg_writemask(o_vbottom, TGSI_WRITEMASK_Z), ureg_scalar(vtex, TGSI_SWIZZLE_Y),
-            ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_Y), ureg_imm1f(shader, -0.25f));
-   ureg_RCP(shader, ureg_writemask(o_vbottom, TGSI_WRITEMASK_W),
-            ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_Y));
+   for (unsigned i = 0; i < 5; i++) {
+      nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                              glsl_vec4_type(), outs[i].name);
+      out->data.location = outs[i].slot;
+      nir_store_var(&b, out, outs[i].value, 0xf);
+   }
 
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, c->pipe);
+   return vl_nir_vs_finish(&b, c->pipe);
 }
 
 static void

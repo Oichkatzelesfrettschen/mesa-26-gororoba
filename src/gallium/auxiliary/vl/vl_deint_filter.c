@@ -43,6 +43,7 @@
 #include "pipe/p_context.h"
 
 #include "tgsi/tgsi_ureg.h"
+#include "vl_nir.h"
 
 #include "util/u_draw.h"
 #include "util/u_memory.h"
@@ -64,24 +65,9 @@ enum VS_OUTPUT
 static void *
 create_vert_shader(struct vl_deint_filter *filter)
 {
-   struct ureg_program *shader;
-   struct ureg_src i_vpos;
-   struct ureg_dst o_vpos, o_vtex;
-
-   shader = ureg_create(MESA_SHADER_VERTEX);
-   if (!shader)
-      return NULL;
-
-   i_vpos = ureg_DECL_vs_input(shader, 0);
-   o_vpos = ureg_DECL_output(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS);
-   o_vtex = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX);
-
-   ureg_MOV(shader, o_vpos, i_vpos);
-   ureg_MOV(shader, o_vtex, i_vpos);
-
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, filter->pipe);
+   /* Position passes through to POSITION and to the single texcoord
+    * varying -- exactly the shared vl passthrough shape. */
+   return vl_nir_vs_passthrough(filter->pipe, 1, "vl:deint_vs");
 }
 
 static void *
