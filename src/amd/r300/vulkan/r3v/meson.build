@@ -3,7 +3,7 @@
 r300vk_entrypoints = custom_target(
   'r300vk_entrypoints',
   input : [vk_entrypoints_gen, vk_api_xml],
-  output : ['r300vk_entrypoints.h', 'r300vk_entrypoints.c'],
+  output : ['r3v_entrypoints.h', 'r3v_entrypoints.c'],
   command : [
     prog_python, '@INPUT0@',
     '--xml', '@INPUT1@',
@@ -17,9 +17,9 @@ r300vk_entrypoints = custom_target(
 )
 
 libr300vk_files = files(
-  'r300vk_instance.c',
-  'r300vk_physical_device.c',
-  'r300vk_cpu_sync.c',
+  'r3v_instance.c',
+  'r3v_physical_device.c',
+  'r3v_cpu_sync.c',
 )
 
 libr300vk_deps = [
@@ -50,20 +50,20 @@ if get_option('r300vk-gallium-backend') and not with_gallium_r300
 endif
 if get_option('r300vk-gallium-backend') and with_gallium_r300
   libr300vk_files += files(
-    'r300vk_device.c',
-    'r300vk_queue.c',
-    'r300vk_memory.c',
-    'r300vk_buffer.c',
-    'r300vk_image.c',
-    'r300vk_shader_module.c',
-    'r300vk_render_pass.c',
-    'r300vk_framebuffer.c',
-    'r300vk_cmd_buffer.c',
-    'r300vk_descriptor.c',
-    'r300vk_identity_map.c',
-    'r300vk_dp4_fs_nir.c',
-    'r300vk_pipeline.c',
-    'r300vk_object.c',
+    'r3v_device.c',
+    'r3v_queue.c',
+    'r3v_memory.c',
+    'r3v_buffer.c',
+    'r3v_image.c',
+    'r3v_shader_module.c',
+    'r3v_render_pass.c',
+    'r3v_framebuffer.c',
+    'r3v_cmd_buffer.c',
+    'r3v_descriptor.c',
+    'r3v_identity_map.c',
+    'r3v_dp4_fs_nir.c',
+    'r3v_pipeline.c',
+    'r3v_object.c',
   )
   libr300vk_deps += [
     idep_nir,
@@ -119,7 +119,7 @@ if with_tests and get_option('r300vk-gallium-backend') and with_gallium_r300
     'r300vk-dp4-fs-nir',
     executable(
       'r300vk_dp4_fs_nir_test',
-      files('r300vk_dp4_fs_nir.c', 'tests/r300vk_dp4_fs_nir_test.c'),
+      files('r3v_dp4_fs_nir.c', 'tests/r3v_dp4_fs_nir_test.c'),
       include_directories : [inc_include, inc_src, include_directories('.')],
       dependencies : [idep_nir, idep_mesautil],
       gnu_symbol_visibility : 'hidden',
@@ -130,7 +130,7 @@ if with_tests and get_option('r300vk-gallium-backend') and with_gallium_r300
     'r300vk-render-pass-feedback',
     executable(
       'r300vk_render_pass_feedback_test',
-      files('tests/r300vk_render_pass_feedback_test.c'),
+      files('tests/r3v_render_pass_feedback_test.c'),
       include_directories : [libr300vk_inc, include_directories('.')],
       dependencies : libr300vk_deps,
       link_with : libr300vk_link_with,
@@ -143,7 +143,7 @@ if with_tests and get_option('r300vk-gallium-backend') and with_gallium_r300
     'r300vk-static-offset',
     executable(
       'r300vk_static_offset_test',
-      files('r300vk_dp4_fs_nir.c', 'tests/r300vk_static_offset_test.c'),
+      files('r3v_dp4_fs_nir.c', 'tests/r3v_static_offset_test.c'),
       include_directories : [libr300vk_inc, include_directories('.')],
       dependencies : libr300vk_deps,
       link_with : libr300vk_link_with,
@@ -157,7 +157,7 @@ endif
 # ICD JSON manifest.  The loader discovers ICDs by scanning
 # /usr/share/vulkan/icd.d/ for *.json files and following the
 # library_path entry.  vk_icd_gen emits the canonical form so the
-# version negotiation matches what r300vk_instance.c implements.
+# version negotiation matches what r3v_instance.c implements.
 icd_lib_path = join_paths(get_option('prefix'), get_option('libdir'))
 icd_file_name = 'libvulkan_r300.so'
 

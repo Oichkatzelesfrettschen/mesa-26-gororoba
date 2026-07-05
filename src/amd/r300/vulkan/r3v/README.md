@@ -20,7 +20,7 @@ The driver consciously violates the Vulkan conformance contract
 because R3xx silicon has no native compute dispatch surface.  The
 classification reported to external tooling is therefore
 `experimental_nonconformant_graphics_without_compute` -- see
-`r300vk_private.h` for the canonical macro `R300VK_CONFORMANCE_STATUS`.
+`r3v_private.h` for the canonical macro `R300VK_CONFORMANCE_STATUS`.
 
 ## Hardware target
 
@@ -52,24 +52,24 @@ RS/TX/US/CB/ZB blocks remain hardware-backed.
 
 ```
 src/amd/r300/vulkan/r300vk/
-  r300vk_private.h            PCI IDs, API version, conformance macro
-  r300vk_instance.h           struct r300vk_instance
-  r300vk_instance.c           vkCreateInstance / vk_icdGetInstanceProcAddr
-  r300vk_physical_device.h    struct r300vk_physical_device
-  r300vk_physical_device.c    DRM probe + properties + queues + memory
-  r300vk_device.h             struct r300vk_device / r300vk_queue
-  r300vk_device.c             CreateDevice / DestroyDevice / gate check
-  r300vk_queue.c              submit replay -- Backend A (pipe_context)
-  r300vk_memory.h/.c          VkDeviceMemory resource-backed model
-  r300vk_buffer.h/.c          VkBuffer backed by PIPE_BUFFER pipe_resource
-  r300vk_image.h/.c           VkImage backed by PIPE_TEXTURE_2D pipe_resource
-  r300vk_resource_state.h     per-image layout-tracking struct
-  r300vk_cmd_buffer.h/.c      command recording into r300vk_cmd_entry stream
-  r300vk_pipeline.h/.c        CreateGraphicsPipelines -- SPIR-V -> NIR -> r300g CSOs
-  r300vk_render_pass.h/.c     VkRenderPass local object
-  r300vk_framebuffer.h/.c     VkFramebuffer local object
-  r300vk_shader_module.h/.c   VkShaderModule SPIR-V storage
-  r300vk_cpu_sync.h/.c        vkCreateFence / vkWaitForFences (CPU timeline)
+  r3v_private.h            PCI IDs, API version, conformance macro
+  r3v_instance.h           struct r300vk_instance
+  r3v_instance.c           vkCreateInstance / vk_icdGetInstanceProcAddr
+  r3v_physical_device.h    struct r300vk_physical_device
+  r3v_physical_device.c    DRM probe + properties + queues + memory
+  r3v_device.h             struct r300vk_device / r300vk_queue
+  r3v_device.c             CreateDevice / DestroyDevice / gate check
+  r3v_queue.c              submit replay -- Backend A (pipe_context)
+  r3v_memory.h/.c          VkDeviceMemory resource-backed model
+  r3v_buffer.h/.c          VkBuffer backed by PIPE_BUFFER pipe_resource
+  r3v_image.h/.c           VkImage backed by PIPE_TEXTURE_2D pipe_resource
+  r3v_resource_state.h     per-image layout-tracking struct
+  r3v_cmd_buffer.h/.c      command recording into r300vk_cmd_entry stream
+  r3v_pipeline.h/.c        CreateGraphicsPipelines -- SPIR-V -> NIR -> r300g CSOs
+  r3v_render_pass.h/.c     VkRenderPass local object
+  r3v_framebuffer.h/.c     VkFramebuffer local object
+  r3v_shader_module.h/.c   VkShaderModule SPIR-V storage
+  r3v_cpu_sync.h/.c        vkCreateFence / vkWaitForFences (CPU timeline)
   meson.build                 libvulkan_r300 + ICD JSON
   README.md                   this file
 ```
@@ -83,7 +83,7 @@ chip) and uses the Mesa Vulkan runtime base structures
 ## Submit architecture: semantic IR and backend dispatch
 
 The Vulkan command stream is lowered to a device-independent
-`r300vk_cmd_entry` array (see `r300vk_cmd_buffer.h`) at record time.
+`r300vk_cmd_entry` array (see `r3v_cmd_buffer.h`) at record time.
 At submit time, `r300vk_queue_driver_submit` replays this array through
 a backend selected at `CreateDevice` time.
 
@@ -100,7 +100,7 @@ vkCmd* recording
         -> NOT YET IMPLEMENTED (see below)
 ```
 
-**Backend A** (current, working): `r300vk_replay_gpu()` in `r300vk_queue.c`
+**Backend A** (current, working): `r300vk_replay_gpu()` in `r3v_queue.c`
 lowers the cmd_entry stream through Gallium's `pipe_context` call layer.
 Gallium's atom-dirty machinery emits all required register state
 (viewport, blend, DSA, rasterizer, vertex elements, PVS flush, guardband,
@@ -132,7 +132,7 @@ in place; the Backend B function body is the PR 3 deliverable.
 
 ## Resource-state ledger
 
-`r300vk_resource_state` (in `r300vk_resource_state.h`) tracks the current
+`r300vk_resource_state` (in `r3v_resource_state.h`) tracks the current
 `VkImageLayout` per image.  On RS482/RS485 (UMA, no aux compression
 surfaces) layout transitions have no aux decompression step; they reduce
 to a `pipe->flush()` at the barrier boundary plus a bookkeeping update to
@@ -146,7 +146,7 @@ for this RS482/RS485 R300VK target.  The r300vk skeleton MUST NOT be
 advertised as conformant Vulkan for any version.  The contract is
 enforced by:
 
-1. The `R300VK_CONFORMANCE_STATUS` macro in `r300vk_private.h`.
+1. The `R300VK_CONFORMANCE_STATUS` macro in `r3v_private.h`.
 2. The empty `vk_features` table in `r300vk_physical_device_init_features`.
 3. The queue family declaration in
    `r300vk_GetPhysicalDeviceQueueFamilyProperties2`: one queue family,
