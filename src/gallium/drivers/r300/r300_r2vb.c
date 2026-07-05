@@ -747,7 +747,11 @@ static void r2vb_cd_mul(const float *a, const float *b, float *o, int n)
     if (n == 1) { o[0] = a[0] * b[0]; return; }
     int h = n / 2;
     const float *A = a, *B = a + h, *C = b, *D = b + h;
-    float ac[16], db[16], da[16], bc[16], cj[16];
+    /* cj is filled cj[0..h-1] before each use and the recursive call reads only
+     * that range, but the read bound is opaque to GCC's value analysis, so it
+     * warns cj may be used uninitialized.  Define the whole array to make the
+     * unread tail cj[h..15] a stated zero rather than a maybe-uninitialized. */
+    float ac[16], db[16], da[16], bc[16], cj[16] = {0};
     r2vb_cd_mul(A, C, ac, h);
     for (int i = 0; i < h; i++) cj[i] = (i == 0) ? D[i] : -D[i]; /* conj(D) */
     r2vb_cd_mul(cj, B, db, h);
