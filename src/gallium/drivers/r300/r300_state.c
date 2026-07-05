@@ -1383,9 +1383,12 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
     fs->draw_fs = r300->draw ? draw_create_fragment_shader(r300->draw, shader)
                              : NULL;
 
-    /* Always convert TGSI input to NIR up front, the same as
-     * r300_create_vs_state.  Driver-synthesized TGSI fragment programs
-     * (u_blitter, the compute-as-raster KILL_IF shaders) must then run the same
+    /* Internal-only TGSI bridge, the same as r300_create_vs_state: the GL
+     * state tracker hands r300 NIR, so TGSI tokens reach here only from
+     * driver-synthesized shaders (u_blitter's u_simple_shaders
+     * constructors, the compute-as-raster KILL_IF programs); the bridge
+     * retires when those constructors emit NIR for NIR-preferring
+     * screens.  Converted programs must then run the same
      * r300_optimize_nir as GLSL/SPIR-V NIR input -- in particular
      * nir_lower_alu_to_scalar, which r300_alu_to_scalar_filter_cb selects for
      * the bany/ball vector-comparison reductions a vec4 KILL_IF lowers to.
@@ -2507,7 +2510,13 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
     /* Copy state directly into shader. */
     vs->state = *shader;
 
-    /* Always convert TGSI input to NIR up front */
+    /* Internal-only TGSI bridge: the GL state tracker hands r300 NIR, so
+     * TGSI tokens reach here only from the shared shader constructors --
+     * u_blitter's u_simple_shaders vertex passthroughs and the
+     * vl_compositor/vl_deint_filter ureg vertex shaders.  The bridge
+     * retires when those constructors emit NIR for NIR-preferring
+     * screens; until then convert up front so one compile path serves
+     * both sources. */
     if (vs->state.type == PIPE_SHADER_IR_TGSI) {
        vs->state.ir.nir = tgsi_to_nir(vs->state.tokens, pipe->screen, false);
        vs->state.type = PIPE_SHADER_IR_NIR;
