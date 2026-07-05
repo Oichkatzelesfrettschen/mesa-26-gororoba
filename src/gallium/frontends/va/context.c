@@ -148,7 +148,15 @@ VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
       break;
    }
 #else
+   /* libva 1.23 marks VA_DISPLAY_ANDROID (va_backend.h) va_deprecated_enum, but
+    * the case must stay: it returns UNIMPLEMENTED, distinct from the default's
+    * INVALID_DISPLAY, so an Android VADisplay is reported as recognised-but-
+    * unsupported rather than an invalid type.  Suppress the deprecation for the
+    * label only. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
    case VA_DISPLAY_ANDROID:
+#pragma GCC diagnostic pop
       FREE(drv);
       return VA_STATUS_ERROR_UNIMPLEMENTED;
    case VA_DISPLAY_GLX:
