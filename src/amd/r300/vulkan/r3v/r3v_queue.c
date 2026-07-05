@@ -20,7 +20,7 @@ identity_map_debug_enabled(void)
 {
    static int cached = -1;
    if (cached < 0) {
-      const char *flags = getenv("R3V_DEBUG");
+      const char *flags = r3v_getenv_compat("R3V_DEBUG", "R300VK_DEBUG");
       cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
    }
    return cached != 0;

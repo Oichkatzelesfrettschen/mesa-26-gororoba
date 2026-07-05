@@ -152,7 +152,7 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
     * leaves the default pipe_context-mediated Backend A path active.
     * Checked once at device creation and stored as a device flag so the
     * submit hot path avoids repeated getenv() calls. */
-   const char *cs_gate = getenv("R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED");
+   const char *cs_gate = r3v_getenv_compat("R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED", "R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED");
    device->use_cs_backend = cs_gate && strcmp(cs_gate, "1") == 0;
 
    /* Inherit the hybrid-compute gate the physical device cached at creation
@@ -166,7 +166,7 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
     * the pipeline's static CSOs (dynamic-state shadow ignored); no_topo
     * replays the recorded per-draw topology without the dynamic override;
     * log_draws emits one stderr line per replayed draw. */
-   const char *dbg = getenv("R3V_DEBUG");
+   const char *dbg = r3v_getenv_compat("R3V_DEBUG", "R300VK_DEBUG");
    device->dbg_no_dyn_overlay   = dbg && strstr(dbg, "no_overlay");
    device->dbg_no_topo_override = dbg && strstr(dbg, "no_topo");
    device->dbg_log_draws        = dbg && strstr(dbg, "log_draws");

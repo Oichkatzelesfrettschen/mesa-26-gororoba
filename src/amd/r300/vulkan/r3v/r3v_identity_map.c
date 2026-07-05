@@ -39,7 +39,7 @@ identity_map_debug_enabled(void)
 {
    static int cached = -1;
    if (cached < 0) {
-      const char *flags = getenv("R3V_DEBUG");
+      const char *flags = r3v_getenv_compat("R3V_DEBUG", "R300VK_DEBUG");
       cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
    }
    return cached != 0;
@@ -3016,7 +3016,7 @@ r3v_omul_dispatch_replay(struct r3v_device *device,
    /* Route B (MRT) is preferred when its FS was synthesized; R3V_OMUL_FORCE_2PASS
     * forces the route-A fallback on the same hardware to exercise both paths. */
    bool ok;
-   if (pl->fs_cso_mrt && !getenv("R3V_OMUL_FORCE_2PASS")) {
+   if (pl->fs_cso_mrt && !r3v_getenv_compat("R3V_OMUL_FORCE_2PASS", "R300VK_OMUL_FORCE_2PASS")) {
       /* Route B: both halves in one MRT pass (synthesized only when the screen
        * supports two simultaneous FP16 render targets, so its presence is the
        * capability gate). */

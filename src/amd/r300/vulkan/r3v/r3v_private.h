@@ -104,10 +104,22 @@ extern "C" {
 #define R3V_NEAREST_STITCH_TILE_UNITS  4u  /* up to a 2x2 tile grid */
 #define R3V_NEAREST_STITCH_CONST_VEC4S 2u  /* per-tile affine + split thresholds */
 
+/* Environment gates read the canonical R3V_ name first and fall back to
+ * the pre-rename R300VK_ spelling so retained runbooks and probe scripts
+ * keep working; the legacy arm retires with the r300vk compatibility
+ * surface. */
+static inline const char *
+r3v_getenv_compat(const char *r3v_name, const char *legacy_name)
+{
+   const char *v = getenv(r3v_name);
+   return v ? v : getenv(legacy_name);
+}
+
 static inline bool
 r3v_experimental_nearest_stitch_enabled(void)
 {
-   const char *e = getenv("R3V_EXPERIMENTAL_NEAREST_STITCH");
+   const char *e = r3v_getenv_compat("R3V_EXPERIMENTAL_NEAREST_STITCH",
+                                     "R300VK_EXPERIMENTAL_NEAREST_STITCH");
    return e && e[0] == '1' && e[1] == '\0';
 }
 

@@ -2358,7 +2358,7 @@ r3v_classify_compute_kernel(struct r3v_device *device,
     * read when a kernel that should match a raster verb dispatches as an
     * unknown-shape no-op. */
    {
-      const char *dbg = getenv("R3V_DEBUG");
+      const char *dbg = r3v_getenv_compat("R3V_DEBUG", "R300VK_DEBUG");
       if (dbg && strstr(dbg, "classify_nir"))
          nir_print_shader(nir, stderr);
    }
