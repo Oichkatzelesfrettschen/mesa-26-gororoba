@@ -3,7 +3,7 @@
 # install target: debugoptimized -O2 -g3, assertions live, full debug info, frame
 # pointers, and the complete r300 feature surface (desktop GL 2.1 + GLES1/2,
 # GLVND, EGL/GBM, GLX-DRI, gallium-va MPEG-2 decode, gallium-xa XA tracker /
-# libxatracker.so, amd_r300/r300vk Vulkan ICD, overlay + device-select Vulkan
+# libxatracker.so, ati_r300/r3v Vulkan ICD, overlay + device-select Vulkan
 # layers, nir/glsl offline compiler tools, valgrind annotations, libunwind
 # backtraces, perfetto CPU timeline, no LLVM).
 #
@@ -26,7 +26,7 @@
 #   make rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
 # (or `make build ... PREFIX=/opt/mesa-gororoba-debug-optimized`), then this PKGBUILD
 # packages that exact builddir.  It deliberately does NOT clone+build from a
-# pinned git commit: the in-development r300vk compute kernels live only in the
+# pinned git commit: the in-development r3v compute kernels live only in the
 # working tree the builddir was compiled from, so a hermetic git build would
 # ship a different binary than the one under test.  _builddir/_srcroot select the
 # canonical Vostro builddir + source root and are overridable from the make env.
@@ -47,7 +47,7 @@ pkgname=mesa-gororoba-debug-optimized
 pkgver=26.2.0
 pkgrel=12
 epoch=2
-pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, amd_r300/r300vk ICD + overlay/device-select Vulkan layers, files under /opt'
+pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, ati_r300/r3v ICD + overlay/device-select Vulkan layers, files under /opt'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')

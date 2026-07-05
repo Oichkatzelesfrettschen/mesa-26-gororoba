@@ -901,11 +901,10 @@ option(
 )
 
 option(
-  'r300vk-gallium-backend',
+  'r3v-gallium-backend',
   type : 'boolean',
   value : false,
-  description : 'Enable Gallium-backed r300g device/submit path in r300vk. ' +
-                'Requires R300VK_GALLIUM_SUBMIT_ACCEPTED=1 for hardware CS submit runs.',
+  description : 'Enable the Gallium-backed r300g device/submit path in r3v.',
 )
 
 option(

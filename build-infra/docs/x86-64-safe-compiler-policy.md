@@ -6,7 +6,7 @@ contract, not the build host.
 
 ## Default
 
-Use this baseline for portable Mesa and r300vk artifacts:
+Use this baseline for portable Mesa and r3v artifacts:
 
 ```sh
 CPPFLAGS="-D_FORTIFY_SOURCE=2"

@@ -8,7 +8,7 @@ The active full r300 profiles are:
 Both profiles build the same API surface:
 
 - Gallium driver: `r300`
-- Vulkan driver: `amd_r300`
+- Vulkan driver: `ati_r300`
 - OpenGL: desktop GL, GLES1, GLES2
 - Window systems and loader surfaces: GLVND, GLX DRI, EGL, GBM
 - Platforms: X11, Wayland, surfaceless, DRM, XCB
@@ -53,10 +53,10 @@ choices, keeping only the values EGL_DEFAULT_DISPLAY can actually honor.
 
 `1_`/`2_` are the only r300 build profiles.  Every prior r300/vostro variant is
 removed and subsumed: the GL-only `r300-canonical-vostro-*`, the Vulkan-ICD-only
-`r300vk-vostro-*` (`opengl=false`), the `*-vostro-k8-*` Turion-native pair, and
+`r3v-vostro-*` (`opengl=false`), the `*-vostro-k8-*` Turion-native pair, and
 the `r300-{trace,egl-gbm-trace}-vostro-k8` capture variants.  One artifact now
-carries the full GL/GLES surface and the amd_r300 ICD, so r300 conformance,
-desktop, r300vk RCA, and silicon evidence all build from the same standardized
+carries the full GL/GLES surface and the ati_r300 ICD, so r300 conformance,
+desktop, r3v RCA, and silicon evidence all build from the same standardized
 pair: release `1_`, assertions-live debug `2_`.  The x86-64-v1 psABI baseline is
 a safe subset of the Turion 64 X2, so the removed k8-native lane added no reach
 the generic baseline lacks on this hardware.
