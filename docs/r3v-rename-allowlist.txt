@@ -1,0 +1,20 @@
+# r3v rename allowlist -- deliberate survivals of the r300vk -> r3v rename.
+# The Stage B acceptance grep
+#   rg -n "r300vk|R300VK|r300_devenv_icd|r300_icd|libvulkan_r300|amd_r300" \
+#     meson.build meson.options src build-infra docs
+# diffs its hits against this file; every line here names a survival and
+# its reason.  Format: <path-or-pattern><TAB><reason>
+#
+# historical-annotate: evidence records keep the old name.
+build-infra/docs/last-100-pr-review-comment-audit.md	review-audit evidence corpus; 133 historical r300vk mentions record what reviewers saw
+docs/r3v-rename-allowlist.txt	this file names the tokens it allowlists
+#
+# transitional-alias: removed by their own dedicated branches, not the
+# rename branch.
+meson.options:amd_r300	accepted alias until r3v/remove-amd-r300-selector-alias lands (ati_r300 is canonical)
+src/gallium/drivers/r300/compiler/r300_nir.c:r300vk_	dual-prefix gate arm until generated helpers migrate (legacy arm removed by its own branch)
+src/re-scripts:run_r300vk_probe_smoke.sh	steinmarder-r300 exec-wrapper until runbooks reference run_r3v_*
+#
+# hardware-family names that are NOT the driver name and never rename:
+# r300 (Gallium driver), R300/RS482/RS485 (silicon), libvulkan_r300.so and
+# r300_icd.*.json survive only until r3v/install-artifact-rename lands.
