@@ -175,6 +175,26 @@ struct r300_compute_unary_map_pattern {
 void r300_nir_detect_unary_map(const struct nir_shader *s,
                                struct r300_compute_unary_map_pattern *out);
 
+/* Admissible storage-image RT-export pattern.  Per the
+ * rs482-storage-image-rt-export-admission-subset finding, exactly one class of
+ * image_deref_store has fragment-shader-writes-a-color-target semantics and can
+ * lower to the RB3D color export: one image_deref_store into a single 2D,
+ * non-array, non-multisample R8G8B8A8_UNORM storage image, at a coordinate
+ * derived only from gl_GlobalInvocationID (through the same walker the
+ * store_ssbo coordinate uses), with no image load, no image atomic, and no
+ * competing store.  is_rt_exportable is false for every shape outside that
+ * subset, which stays rejected under R300_COMPUTE_REJECT_IMAGE_STORE.  This is
+ * a pure read-only NIR analysis; it gates the lowering, never mutates. */
+struct r300_image_store_rt_export_pattern {
+   bool       is_rt_exportable;
+   uint32_t   image_binding;         /* storage-image descriptor binding */
+   bool       image_binding_valid;   /* binding read off a constant deref index */
+};
+
+void r300_nir_detect_image_store_rt_export(
+   const struct nir_shader *s,
+   struct r300_image_store_rt_export_pattern *out);
+
 /* Single-input transcendental map: out[gid] = f(in[gid]) where f is one native
  * r300 US scalar transcendental -- the store value is a single-source ALU op of
  * exactly one load_ssbo def, and the op is one nir_to_rc.c lowers to an r300 ALU

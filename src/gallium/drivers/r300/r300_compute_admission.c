@@ -18,6 +18,7 @@
 #include "r300_compute_admission_match.h"
 
 #include "compiler/nir/nir.h"
+#include "util/format/u_formats.h"
 #include "util/macros.h"
 
 /* Recursion bound for the def-graph walkers below.  A balanced integer
@@ -696,6 +697,100 @@ r300_nir_detect_unary_map(const nir_shader *s,
    out->mul_const_push_offset = c0.from_push ? (uint16_t)c0.push_offset : 0;
    out->add_const_push_offset = c1.from_push ? (uint16_t)c1.push_offset : 0;
    out->is_unary_map = true;
+}
+
+/* Any of the three image-store intrinsic forms. */
+static bool
+image_store_op(nir_intrinsic_op op)
+{
+   return op == nir_intrinsic_image_deref_store ||
+          op == nir_intrinsic_image_store ||
+          op == nir_intrinsic_bindless_image_store;
+}
+
+/* Admissible storage-image RT-export detector (see the header).  Recognizes the
+ * one image_deref_store class whose semantics equal a fragment shader writing a
+ * color target: a single 2D non-array R8G8B8A8_UNORM image store at a
+ * global-invocation-id-derived coordinate, with no image load, no image atomic,
+ * and no competing scatter/atomic/barrier/shared write.  Every other shape
+ * leaves is_rt_exportable false and stays rejected.  Read-only NIR walk. */
+void
+r300_nir_detect_image_store_rt_export(
+   const nir_shader *s, struct r300_image_store_rt_export_pattern *out)
+{
+   out->is_rt_exportable   = false;
+   out->image_binding      = 0;
+   out->image_binding_valid = false;
+
+   const nir_intrinsic_instr *store = NULL;
+   unsigned store_count = 0;
+   bool disqualified = false;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            const nir_intrinsic_op op = intr->intrinsic;
+            if (image_store_op(op)) {
+               store = intr;
+               store_count++;
+               continue;
+            }
+            /* Any image load/atomic (RMW or read-back the substrate cannot do),
+             * or any competing scatter/atomic/barrier write, disqualifies the
+             * pure color-export shape. */
+            const char *name = nir_intrinsic_infos[op].name;
+            if ((strstr(name, "image") &&
+                 (strstr(name, "load") || strstr(name, "atomic"))) ||
+                strstr(name, "barrier") != NULL ||
+                op == nir_intrinsic_store_ssbo ||
+                op == nir_intrinsic_store_global ||
+                op == nir_intrinsic_store_global_2x32 ||
+                op == nir_intrinsic_ssbo_atomic ||
+                op == nir_intrinsic_ssbo_atomic_swap) {
+               disqualified = true;
+            }
+         }
+      }
+   }
+
+   if (s->info.shared_size > 0)
+      disqualified = true;
+   if (disqualified || store_count != 1 || store == NULL)
+      return;
+
+   /* Metadata is read off the deref form; the raw image_store / bindless forms
+    * carry an opaque handle the RT-export lowering cannot resolve here. */
+   if (store->intrinsic != nir_intrinsic_image_deref_store)
+      return;
+
+   nir_deref_instr *deref = nir_src_as_deref(store->src[0]);
+   if (deref == NULL)
+      return;
+   const nir_variable *var = nir_deref_instr_get_variable(deref);
+   if (var == NULL)
+      return;
+
+   /* 2D, non-array, non-multisample. */
+   const struct glsl_type *itype = glsl_without_array(var->type);
+   if (!glsl_type_is_image(itype) ||
+       glsl_get_sampler_dim(itype) != GLSL_SAMPLER_DIM_2D ||
+       glsl_sampler_type_is_array(itype))
+      return;
+
+   /* R8G8B8A8_UNORM only: the direct colorbuffer export the identity carrier
+    * already proves.  nir_intrinsic_format carries the image format qualifier. */
+   if (nir_intrinsic_format(store) != PIPE_FORMAT_R8G8B8A8_UNORM)
+      return;
+
+   /* Coordinate (src[1]) derived only from the global invocation id, through
+    * the same walker the store_ssbo offset uses. */
+   if (!store_ssbo_addr_src_is_supported(store->src[1], 0))
+      return;
+
+   out->is_rt_exportable = true;
 }
 
 /* The single-input transcendentals the unary-transcendental verb admits.  Each
