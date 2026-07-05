@@ -2597,12 +2597,30 @@ r3v_device_ensure_shift_variable_lut_locked(struct r3v_device *device)
  * during varying-slot fixup, so TEX0 is the slot that pairs across the
  * synthesized pipeline (the same law r3v_dp4_fs_nir.c records). */
 static nir_def *
-r3v_synth_load_texcoord(nir_builder *b)
+r3v_synth_load_varying(nir_builder *b)
 {
    nir_variable *in_tc = nir_variable_create(b->shader, nir_var_shader_in,
                                              glsl_vec4_type(), "tc");
    in_tc->data.location = VARYING_SLOT_TEX0;
-   return nir_trim_vector(b, nir_load_var(b, in_tc), 2);
+   return nir_load_var(b, in_tc);
+}
+
+static nir_def *
+r3v_synth_load_texcoord(nir_builder *b)
+{
+   return nir_trim_vector(b, r3v_synth_load_varying(b), 2);
+}
+
+/* Push-window constant read: the dispatch replay binds the 128-byte push
+ * window at FS CONST[0]; a load at byte offset N in UBO 0 is the NIR
+ * spelling of CONST[N/16] channel (N%16)/4. */
+static nir_def *
+r3v_synth_push_load(nir_builder *b, unsigned num_components,
+                    unsigned byte_offset)
+{
+   return nir_load_ubo(b, num_components, 32, nir_imm_int(b, 0),
+                       nir_imm_int(b, byte_offset),
+                       .align_mul = 4, .range_base = 0, .range = 128);
 }
 
 static nir_def *
@@ -3477,48 +3495,27 @@ static void *
 r3v_synthesize_shift_variable_gather_fs(struct pipe_context *pipe,
                                            bool is_left)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_shift_var_gather");
+   nir_def *tc = r3v_synth_load_texcoord(&b);
 
-   struct ureg_src samp_b = ureg_DECL_sampler(ureg, 0);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT);
-   struct ureg_src samp_lut = ureg_DECL_sampler(ureg, 1);
-   ureg_DECL_sampler_view(ureg, 1, TGSI_TEXTURE_2D, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT);
-   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                           TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out   = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst b     = ureg_DECL_temporary(ureg);
-   struct ureg_dst idx   = ureg_DECL_temporary(ureg);
-   struct ureg_dst coord = ureg_DECL_temporary(ureg);
-   struct ureg_dst c     = ureg_DECL_temporary(ureg);
-
-   /* idx.x = round(b.x * 255): the exact integer amount in byte 0. */
-   ureg_TEX(ureg, b, TGSI_TEXTURE_2D, tc, samp_b);
-   ureg_MUL(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(b), TGSI_SWIZZLE_X),
-            ureg_imm1f(ureg, 255.0f));
-   ureg_ADD(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X), ureg_src(idx),
-            ureg_imm1f(ureg, 0.5f));
-   ureg_FLR(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X), ureg_src(idx));
+   /* idx = round(b.x * 255): the exact integer amount in byte 0. */
+   nir_def *byte0 = nir_channel(&b, r3v_synth_sample2d(&b, 0, tc), 0);
+   nir_def *idx = nir_ffloor(
+      &b, nir_fadd_imm(&b, nir_fmul_imm(&b, byte0, 255.0), 0.5));
    if (!is_left)
-      ureg_ADD(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X),
-               ureg_imm1f(ureg, 31.0f), ureg_negate(ureg_src(idx)));
+      idx = nir_fadd(&b, nir_imm_float(&b, 31.0), nir_fneg(&b, idx));
 
-   /* coord.x = (idx + 0.5)/32 lands NEAREST on texel idx; coord.y = 0.5 picks
-    * the single row of the 32x1 lookup. */
-   ureg_MAD(ureg, ureg_writemask(coord, TGSI_WRITEMASK_X), ureg_src(idx),
-            ureg_imm1f(ureg, 1.0f / 32.0f), ureg_imm1f(ureg, 0.5f / 32.0f));
-   ureg_MOV(ureg, ureg_writemask(coord, TGSI_WRITEMASK_Y),
-            ureg_imm1f(ureg, 0.5f));
-   ureg_TEX(ureg, c, TGSI_TEXTURE_2D, ureg_src(coord), samp_lut);
-   ureg_MOV(ureg, out, ureg_src(c));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   /* coord.x = (idx + 0.5)/32 lands NEAREST on texel idx; coord.y = 0.5
+    * picks the single row of the 32x1 lookup. */
+   nir_def *coord = nir_vec2(
+      &b,
+      nir_fadd_imm(&b, nir_fmul_imm(&b, idx, 1.0 / 32.0), 0.5 / 32.0),
+      nir_imm_float(&b, 0.5));
+   r3v_synth_store_color(&b, r3v_synth_sample2d(&b, 1, coord));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* Variable-shift sign-extension fill FS for ishr.  After the gather + convolution
@@ -3530,68 +3527,34 @@ r3v_synthesize_shift_variable_gather_fs(struct pipe_context *pipe,
 static void *
 r3v_synthesize_shift_variable_signfill_fs(struct pipe_context *pipe)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_shift_var_signfill");
+   nir_def *tc = r3v_synth_load_texcoord(&b);
 
-   struct ureg_src samp[4];
-   for (unsigned s = 0; s < 4; s++) {
-      samp[s] = ureg_DECL_sampler(ureg, s);
-      ureg_DECL_sampler_view(ureg, s, TGSI_TEXTURE_2D, TGSI_RETURN_TYPE_FLOAT,
-                             TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                             TGSI_RETURN_TYPE_FLOAT);
-   }
-   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                           TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out   = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst ushr  = ureg_DECL_temporary(ureg);
-   struct ureg_dst aval  = ureg_DECL_temporary(ureg);
-   struct ureg_dst sign  = ureg_DECL_temporary(ureg);
-   struct ureg_dst idx   = ureg_DECL_temporary(ureg);
-   struct ureg_dst coord = ureg_DECL_temporary(ureg);
-   struct ureg_dst fill  = ureg_DECL_temporary(ureg);
-
-   /* ushr bytes and the fill bytes, recovered exactly from UNORM8. */
-   ureg_TEX(ureg, ushr, TGSI_TEXTURE_2D, tc, samp[0]);
-   ureg_MUL(ureg, ushr, ureg_src(ushr), ureg_imm1f(ureg, 255.0f));
-   ureg_ADD(ureg, ushr, ureg_src(ushr), ureg_imm1f(ureg, 0.5f));
-   ureg_FLR(ureg, ushr, ureg_src(ushr));
-
-   /* sign = bit 31 of a = floor(round(a.w * 255) / 128). */
-   ureg_TEX(ureg, aval, TGSI_TEXTURE_2D, tc, samp[1]);
-   ureg_MUL(ureg, ureg_writemask(sign, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(aval), TGSI_SWIZZLE_W),
-            ureg_imm1f(ureg, 255.0f));
-   ureg_ADD(ureg, ureg_writemask(sign, TGSI_WRITEMASK_X), ureg_src(sign),
-            ureg_imm1f(ureg, 0.5f));
-   ureg_FLR(ureg, ureg_writemask(sign, TGSI_WRITEMASK_X), ureg_src(sign));
-   ureg_MUL(ureg, ureg_writemask(sign, TGSI_WRITEMASK_X), ureg_src(sign),
-            ureg_imm1f(ureg, 1.0f / 128.0f));
-   ureg_FLR(ureg, ureg_writemask(sign, TGSI_WRITEMASK_X), ureg_src(sign));
-
-   /* fill[b]: idx = round(b.x * 255), NEAREST dependent read at (idx+0.5)/32. */
-   ureg_TEX(ureg, idx, TGSI_TEXTURE_2D, tc, samp[2]);
-   ureg_MUL(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(idx), TGSI_SWIZZLE_X),
-            ureg_imm1f(ureg, 255.0f));
-   ureg_ADD(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X), ureg_src(idx),
-            ureg_imm1f(ureg, 0.5f));
-   ureg_FLR(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X), ureg_src(idx));
-   ureg_MAD(ureg, ureg_writemask(coord, TGSI_WRITEMASK_X), ureg_src(idx),
-            ureg_imm1f(ureg, 1.0f / 32.0f), ureg_imm1f(ureg, 0.5f / 32.0f));
-   ureg_MOV(ureg, ureg_writemask(coord, TGSI_WRITEMASK_Y),
-            ureg_imm1f(ureg, 0.5f));
-   ureg_TEX(ureg, fill, TGSI_TEXTURE_2D, ureg_src(coord), samp[3]);
-   ureg_MUL(ureg, fill, ureg_src(fill), ureg_imm1f(ureg, 255.0f));
-   ureg_ADD(ureg, fill, ureg_src(fill), ureg_imm1f(ureg, 0.5f));
-   ureg_FLR(ureg, fill, ureg_src(fill));
-
-   /* out_byte = ushr_byte + sign * fill_byte (disjoint -> exact), packed /255. */
-   ureg_MAD(ureg, ushr, ureg_scalar(ureg_src(sign), TGSI_SWIZZLE_X),
-            ureg_src(fill), ureg_src(ushr));
-   ureg_MUL(ureg, out, ureg_src(ushr), ureg_imm1f(ureg, 1.0f / 255.0f));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   /* Byte-snap helper shape: round(v * 255) as floor(v*255 + 0.5). */
+   #define SNAP(v) nir_ffloor(&b, nir_fadd_imm(&b, nir_fmul_imm(&b, (v), 255.0), 0.5))
+   nir_def *ushr = SNAP(r3v_synth_sample2d(&b, 0, tc));
+   nir_def *aval = r3v_synth_sample2d(&b, 1, tc);
+   /* sign = floor(round(a.w * 255) / 128): 1 for a negative operand. */
+   nir_def *sign = nir_ffloor(
+      &b, nir_fmul_imm(&b, SNAP(nir_channel(&b, aval, 3)), 1.0 / 128.0));
+   nir_def *idx = SNAP(nir_channel(&b, r3v_synth_sample2d(&b, 2, tc), 0));
+   /* LUT coord: NEAREST texel idx of the 32x1 fill table. */
+   nir_def *coord = nir_vec2(
+      &b,
+      nir_fadd_imm(&b, nir_fmul_imm(&b, idx, 1.0 / 32.0), 0.5 / 32.0),
+      nir_imm_float(&b, 0.5));
+   nir_def *fill = SNAP(r3v_synth_sample2d(&b, 3, coord));
+   #undef SNAP
+   /* ushr + sign * fill, back to UNORM8. */
+   nir_def *merged = nir_fadd(
+      &b, nir_fmul(&b, nir_swizzle(&b, sign, (unsigned[]){0, 0, 0, 0}, 4),
+                   fill),
+      ushr);
+   r3v_synth_store_color(&b, nir_fmul_imm(&b, merged, 1.0 / 255.0));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 static bool
@@ -3673,35 +3636,26 @@ r3v_shift_variable_synthesize_shaders(struct r3v_device *device,
 static void *
 r3v_synthesize_log4_fs(struct pipe_context *pipe)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
-   struct ureg_src cst = ureg_DECL_constant(ureg, 0);
-   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                           TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst t = ureg_DECL_temporary(ureg);
-   struct ureg_dst c = ureg_DECL_temporary(ureg);
-   /* t.xy = floor(tc.xy * (W2, H2)): the snapped integer output cell. */
-   ureg_MUL(ureg, ureg_writemask(t, TGSI_WRITEMASK_XY), tc, cst);
-   ureg_FLR(ureg, ureg_writemask(t, TGSI_WRITEMASK_XY), ureg_src(t));
-   /* c.xy = (2 * cell + 1) * (1/W, 1/H): the exact 2x2 corner. */
-   ureg_MAD(ureg, ureg_writemask(c, TGSI_WRITEMASK_XY), ureg_src(t),
-            ureg_imm1f(ureg, 2.0f), ureg_imm1f(ureg, 1.0f));
-   ureg_MUL(ureg, ureg_writemask(c, TGSI_WRITEMASK_XY), ureg_src(c),
-            ureg_swizzle(cst, TGSI_SWIZZLE_Z, TGSI_SWIZZLE_W,
-                         TGSI_SWIZZLE_Z, TGSI_SWIZZLE_W));
-   ureg_TEX(ureg, t, TGSI_TEXTURE_2D, ureg_src(c), samp);
-   ureg_MOV(ureg, ureg_writemask(out, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X));
-   ureg_MOV(ureg, ureg_writemask(out, TGSI_WRITEMASK_YZW),
-            ureg_imm1f(ureg, 0.0f));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_log4");
+   nir_def *tc = r3v_synth_load_texcoord(&b);
+   /* CONST[0] = (W/2, H/2, 1/W, 1/H) in the push window. */
+   nir_def *cst = r3v_synth_push_load(&b, 4, 0);
+
+   /* cell = floor(tc.xy * (W2, H2)): the snapped integer output cell;
+    * coord = (2*cell + 1) * (1/W, 1/H): the exact 2x2 corner. */
+   nir_def *cell = nir_ffloor(
+      &b, nir_fmul(&b, tc, nir_trim_vector(&b, cst, 2)));
+   nir_def *coord = nir_fmul(
+      &b, nir_fadd_imm(&b, nir_fmul_imm(&b, cell, 2.0), 1.0),
+      nir_channels(&b, cst, 0x3 << 2));
+   nir_def *t = r3v_synth_sample2d(&b, 0, coord);
+   r3v_synth_store_color(
+      &b, nir_vec4(&b, nir_channel(&b, t, 0), nir_imm_float(&b, 0.0),
+                   nir_imm_float(&b, 0.0), nir_imm_float(&b, 0.0)));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 static bool
@@ -3736,52 +3690,40 @@ static void *
 r3v_synthesize_cas_fs(struct pipe_context *pipe, uint32_t expect,
                          uint32_t value_new)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_cas");
+   nir_def *tc = r3v_synth_load_texcoord(&b);
 
-   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                           TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-
-   struct ureg_src expb = ureg_imm4f(ureg,
-      (float)(expect & 0xFF), (float)((expect >> 8) & 0xFF),
+   nir_def *expb = nir_imm_vec4(
+      &b, (float)(expect & 0xFF), (float)((expect >> 8) & 0xFF),
       (float)((expect >> 16) & 0xFF), (float)((expect >> 24) & 0xFF));
-   struct ureg_src newb = ureg_imm4f(ureg,
-      (float)(value_new & 0xFF), (float)((value_new >> 8) & 0xFF),
+   nir_def *newb = nir_imm_vec4(
+      &b, (float)(value_new & 0xFF), (float)((value_new >> 8) & 0xFF),
       (float)((value_new >> 16) & 0xFF), (float)((value_new >> 24) & 0xFF));
 
-   struct ureg_dst g = ureg_DECL_temporary(ureg);
-   struct ureg_dst eq = ureg_DECL_temporary(ureg);
-   struct ureg_dst t = ureg_DECL_temporary(ureg);
-   struct ureg_dst d = ureg_DECL_temporary(ureg);
+   nir_def *g = nir_ffloor(
+      &b, nir_fadd_imm(
+             &b, nir_fmul_imm(&b, r3v_synth_sample2d(&b, 0, tc), 255.0),
+             0.5));
 
-   ureg_TEX(ureg, g, TGSI_TEXTURE_2D, tc, samp);
-   ureg_MAD(ureg, g, ureg_src(g), ureg_imm1f(ureg, 255.0f),
-            ureg_imm1f(ureg, 0.5f));
-   ureg_FLR(ureg, g, ureg_src(g));
+   /* SEQ per byte, then AND the four lanes as a float product: t is 1.0
+    * only when all four decoded bytes equal the expected word. */
+   nir_def *eq = nir_b2f32(&b, nir_feq(&b, g, expb));
+   nir_def *t = nir_fmul(
+      &b, nir_fmul(&b, nir_channel(&b, eq, 0), nir_channel(&b, eq, 1)),
+      nir_fmul(&b, nir_channel(&b, eq, 2), nir_channel(&b, eq, 3)));
 
-   ureg_SEQ(ureg, eq, ureg_src(g), expb);
-   ureg_MUL(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(eq), TGSI_SWIZZLE_X),
-            ureg_scalar(ureg_src(eq), TGSI_SWIZZLE_Y));
-   ureg_MUL(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X),
-            ureg_scalar(ureg_src(eq), TGSI_SWIZZLE_Z));
-   ureg_MUL(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X),
-            ureg_scalar(ureg_src(eq), TGSI_SWIZZLE_W));
-
-   ureg_ADD(ureg, d, newb, ureg_negate(ureg_src(g)));
-   ureg_MAD(ureg, d, ureg_src(d), ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X),
-            ureg_src(g));
-   ureg_MUL(ureg, out, ureg_src(d), ureg_imm1f(ureg, 1.0f / 255.0f));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   /* d = g + t*(new - g): the compare-and-swap select, kept as the
+    * MUL-into-MAD shape the FP24 envelope was validated against. */
+   nir_def *d = nir_fadd(
+      &b,
+      nir_fmul(&b, nir_fadd(&b, newb, nir_fneg(&b, g)),
+               nir_swizzle(&b, t, (unsigned[]){0, 0, 0, 0}, 4)),
+      g);
+   r3v_synth_store_color(&b, nir_fmul_imm(&b, d, 1.0 / 255.0));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 static bool
@@ -3821,24 +3763,15 @@ r3v_cas_synthesize_shaders(struct r3v_device *device,
 static void *
 r3v_synthesize_affine_iota_fs(struct pipe_context *pipe)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_affine_iota");
+   nir_def *tc = r3v_synth_load_texcoord(&b);
+   /* CONST[0] = (width, stride, offset, unused) in the push window. */
+   nir_def *cst = r3v_synth_push_load(&b, 3, 0);
 
-   struct ureg_src cst = ureg_DECL_constant(ureg, 0);
-   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                           TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst t = ureg_DECL_temporary(ureg);
-   struct ureg_dst v = ureg_DECL_temporary(ureg);
-   struct ureg_dst e = ureg_DECL_temporary(ureg);
-
-   /* imm = (unused, 1/256, 1/65536, 1/255); imm2 = (-256, 0, -, -) */
-   struct ureg_src imm = ureg_imm4f(ureg, 0.0f, 1.0f / 256.0f,
-                                    1.0f / 65536.0f, 1.0f / 255.0f);
-   struct ureg_src imm2 = ureg_imm4f(ureg, -256.0f, 0.0f, 0.0f, 0.0f);
-
-   /* t.xy = floor(tc.xy): SNAP the interpolated texel-center varying back to
+   /* floor(tc.xy): SNAP the interpolated texel-center varying back to
     * the integer coordinate.  The rasterizer interpolant carries x + 0.5
     * plus a sub-texel plane-equation error (the RS482 probe measured cliff
     * flips at byte boundaries when the raw value fed the decompose), and
@@ -3846,46 +3779,27 @@ r3v_synthesize_affine_iota_fs(struct pipe_context *pipe)
     * operand is an exact FP24 integer.  Snapping per axis matters: the
     * combined linear index exceeds 2^16 where a +0.5 round-bias would no
     * longer be representable, but per-axis coordinates stay <= 2048. */
-   ureg_FLR(ureg, ureg_writemask(t, TGSI_WRITEMASK_XY), tc);
-   /* t.x = t.y * width + t.x: the linear gid. */
-   ureg_MAD(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_Y),
-            ureg_scalar(cst, TGSI_SWIZZLE_X),
-            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X));
-   /* v.x = gid * stride + offset. */
-   ureg_MAD(ureg, ureg_writemask(v, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X),
-            ureg_scalar(cst, TGSI_SWIZZLE_Y),
-            ureg_scalar(cst, TGSI_SWIZZLE_Z));
-   /* v.y = floor(v.x / 256); v.z = floor(v.x / 65536). */
-   ureg_MUL(ureg, ureg_writemask(e, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_X),
-            ureg_scalar(imm, TGSI_SWIZZLE_Y));
-   ureg_FLR(ureg, ureg_writemask(v, TGSI_WRITEMASK_Y),
-            ureg_scalar(ureg_src(e), TGSI_SWIZZLE_X));
-   ureg_MUL(ureg, ureg_writemask(e, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_X),
-            ureg_scalar(imm, TGSI_SWIZZLE_Z));
-   ureg_FLR(ureg, ureg_writemask(v, TGSI_WRITEMASK_Z),
-            ureg_scalar(ureg_src(e), TGSI_SWIZZLE_X));
-   /* e.x = v.x - 256 * v.y; e.y = v.y - 256 * v.z; e.z = v.z. */
-   ureg_MAD(ureg, ureg_writemask(e, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Y),
-            ureg_scalar(imm2, TGSI_SWIZZLE_X),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_X));
-   ureg_MAD(ureg, ureg_writemask(e, TGSI_WRITEMASK_Y),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Z),
-            ureg_scalar(imm2, TGSI_SWIZZLE_X),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Y));
-   ureg_MOV(ureg, ureg_writemask(e, TGSI_WRITEMASK_Z),
-            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Z));
-   /* out = (e.xyz, 0) / 255 -- the UNORM8 export round-trips each byte. */
-   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_XYZ), ureg_src(e),
-            ureg_scalar(imm, TGSI_SWIZZLE_W));
-   ureg_MOV(ureg, ureg_writemask(out, TGSI_WRITEMASK_W),
-            ureg_scalar(imm2, TGSI_SWIZZLE_Y));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   nir_def *cell = nir_ffloor(&b, tc);
+   /* gid = cell.y * width + cell.x; v = gid * stride + offset. */
+   nir_def *gid = nir_fadd(
+      &b, nir_fmul(&b, nir_channel(&b, cell, 1), nir_channel(&b, cst, 0)),
+      nir_channel(&b, cell, 0));
+   nir_def *v = nir_fadd(
+      &b, nir_fmul(&b, gid, nir_channel(&b, cst, 1)),
+      nir_channel(&b, cst, 2));
+   /* Byte decomposition: vy = floor(v/256), vz = floor(v/65536);
+    * e = (v - 256*vy, vy - 256*vz, vz). */
+   nir_def *vy = nir_ffloor(&b, nir_fmul_imm(&b, v, 1.0 / 256.0));
+   nir_def *vz = nir_ffloor(&b, nir_fmul_imm(&b, v, 1.0 / 65536.0));
+   nir_def *e0 = nir_fadd(&b, nir_fmul_imm(&b, vy, -256.0), v);
+   nir_def *e1 = nir_fadd(&b, nir_fmul_imm(&b, vz, -256.0), vy);
+   /* out = (e / 255, 0) -- the UNORM8 export round-trips each byte. */
+   r3v_synth_store_color(
+      &b, nir_vec4(&b, nir_fmul_imm(&b, e0, 1.0 / 255.0),
+                   nir_fmul_imm(&b, e1, 1.0 / 255.0),
+                   nir_fmul_imm(&b, vz, 1.0 / 255.0),
+                   nir_imm_float(&b, 0.0)));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* AFFINE_IOTA VS+FS synthesis: shared passthrough VS + the index-affine FS.
@@ -3927,31 +3841,21 @@ r3v_synthesize_mat4vec_fs(struct pipe_context *pipe)
     * sample them at the fixed texel centres -- eight instructions and four
     * texture-cache fetches a const-file read does not cost.  The vertex is the
     * only sampler (stage 0), fetched at the interpolated fullscreen coord. */
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_mat4vec");
+   nir_def *coord = r3v_synth_load_texcoord(&b);
+   nir_def *vtx = r3v_synth_sample2d(&b, 0, coord);
 
-   struct ureg_src row[4];
-   for (unsigned i = 0; i < 4; i++)
-      row[i] = ureg_DECL_constant(ureg, i);
+   nir_def *lane[4];
+   for (unsigned i = 0; i < 4; i++) {
+      nir_def *row = r3v_synth_push_load(&b, 4, i * 16);
+      lane[i] = nir_fdot4(&b, row, vtx);
+   }
 
-   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                           TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst vtx = ureg_DECL_temporary(ureg);
-
-   ureg_TEX(ureg, ureg_writemask(vtx, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tc, samp);
-   ureg_DP4(ureg, ureg_writemask(out, TGSI_WRITEMASK_X), row[0], ureg_src(vtx));
-   ureg_DP4(ureg, ureg_writemask(out, TGSI_WRITEMASK_Y), row[1], ureg_src(vtx));
-   ureg_DP4(ureg, ureg_writemask(out, TGSI_WRITEMASK_Z), row[2], ureg_src(vtx));
-   ureg_DP4(ureg, ureg_writemask(out, TGSI_WRITEMASK_W), row[3], ureg_src(vtx));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   r3v_synth_store_color(&b, nir_vec4(&b, lane[0], lane[1], lane[2], lane[3]));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* MAT4VEC VS+FS synthesis: the passthrough VS shared with DP4 plus the transform
@@ -3986,26 +3890,17 @@ r3v_mat4vec_synthesize_shaders(struct r3v_device *device,
 static void *
 r3v_synthesize_qfmul_fs(struct pipe_context *pipe)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
-
-   struct ureg_src scal = ureg_DECL_constant(ureg, 0);   /* s in CONST[0].x */
-   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                           TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out  = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst quat = ureg_DECL_temporary(ureg);
-
-   ureg_TEX(ureg, ureg_writemask(quat, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tc, samp);
-   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_XYZW),
-            ureg_src(quat), ureg_scalar(scal, TGSI_SWIZZLE_X));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_qfmul");
+   nir_def *coord = r3v_synth_load_texcoord(&b);
+   nir_def *quat = r3v_synth_sample2d(&b, 0, coord);
+   /* s in CONST[0].x = push byte 0, broadcast across the quaternion. */
+   nir_def *s = r3v_synth_push_load(&b, 1, 0);
+   r3v_synth_store_color(
+      &b, nir_fmul(&b, quat, nir_swizzle(&b, s, (unsigned[]){0, 0, 0, 0}, 4)));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* QFMUL VS+FS synthesis: shared passthrough VS + the scalar-product FS.  The
@@ -4550,16 +4445,14 @@ r3v_device_init_blend_acc_reduction_state(struct r3v_device *device)
 static void *
 r3v_synthesize_blend_acc_reduction_fs(struct pipe_context *pipe)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
-   struct ureg_src in_color = ureg_DECL_fs_input(
-      ureg, TGSI_SEMANTIC_GENERIC, 0, TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out_color = ureg_DECL_output(
-      ureg, TGSI_SEMANTIC_COLOR, 0);
-   ureg_MOV(ureg, out_color, in_color);
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_blend_acc");
+   /* The varying carries the per-vertex reduction value; pass it to the
+    * color export and let the bound ADD blend accumulate. */
+   r3v_synth_store_color(&b, r3v_synth_load_varying(&b));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 static bool
@@ -4613,36 +4506,23 @@ r3v_blend_acc_reduction_synthesize_shaders(struct r3v_device *device,
 static void *
 r3v_synthesize_zpass_reduction_fs(struct pipe_context *pipe)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
-   struct ureg_src in_pred = ureg_DECL_fs_input(
-      ureg, TGSI_SEMANTIC_GENERIC, 0, TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst tmp = ureg_DECL_temporary(ureg);
-   struct ureg_dst out_color = ureg_DECL_output(
-      ureg, TGSI_SEMANTIC_COLOR, 0);
-   /* TGSI KILL_IF discards when ANY of src.x/y/z/w is negative.  The
-    * baked predicate only lives in the GENERIC varying's x channel;
-    * the y/z/w channels follow the GL/D3D convention (0, 0, 1) for an
-    * unwritten varying.  A naive `tmp = in_pred - 0.5; KILL_IF tmp`
-    * would compute tmp.y = -0.5 and kill EVERY fragment regardless of
-    * predicate, returning ZPASS counter = 0.  Broadcasting the predicate
-    * to all four channels before the subtract gives KILL_IF
-    * (predicate-0.5, predicate-0.5, predicate-0.5, predicate-0.5):
-    * discard when predicate < 0.5 (the 0.0-baked discard case), pass when
-    * predicate >= 0.5. */
-   struct ureg_src half = ureg_imm1f(ureg, 0.5f);
-   struct ureg_src pred_xxxx =
-      ureg_scalar(in_pred, TGSI_SWIZZLE_X);
-   ureg_ADD(ureg, tmp, pred_xxxx, ureg_negate(half));
-   ureg_KILL_IF(ureg, ureg_src(tmp));
-   /* Surviving fragments write white -- color content doesn't matter for
-    * the ZPASS count, just that A fragment lands and the depth/stencil
-    * unit increments the counter.  Reusing the predicate varying (which
-    * is 1.0 for survivors anyway) keeps the program minimal. */
-   ureg_MOV(ureg, out_color, pred_xxxx);
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_zpass_reduction");
+   /* The baked predicate lives in the varying's x channel (the unwritten
+    * y/z/w follow the GL/D3D (0, 0, 1) convention and must not join the
+    * kill test): discard when predicate < 0.5 (the 0.0-baked discard
+    * case), pass when predicate >= 0.5. */
+   nir_def *pred = nir_channel(&b, r3v_synth_load_varying(&b), 0);
+   nir_discard_if(&b, nir_flt_imm(&b, pred, 0.5));
+   /* Surviving fragments' color content doesn't matter for the ZPASS
+    * count, just that A fragment lands and the depth/stencil unit
+    * increments the counter.  Reusing the predicate (1.0 for survivors)
+    * keeps the program minimal. */
+   r3v_synth_store_color(&b,
+                         nir_swizzle(&b, pred, (unsigned[]){0, 0, 0, 0}, 4));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 static bool
@@ -4684,31 +4564,19 @@ r3v_zpass_reduction_synthesize_shaders(struct r3v_device *device,
 static void *
 r3v_synthesize_multipass_scan_fs(struct pipe_context *pipe)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
-
-   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-
-   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                            TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst tmp = ureg_DECL_temporary(ureg);
-
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_multipass_scan");
+   nir_def *coord = r3v_synth_load_texcoord(&b);
    /* Sample the prior pass's RT, then double every channel.  The per-byte
     * UNORM8 doubling matches the kernel's uint *2 only while each byte stays
     * below 256 / 2^pass_count (the probe seeds inputs within that bound); a
     * channel that would exceed 1.0 clamps, which the readback oracle catches
     * as a mismatch rather than silently passing. */
-   ureg_TEX(ureg, ureg_writemask(tmp, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tex, samp);
-   struct ureg_src two = ureg_imm4f(ureg, 2.0f, 2.0f, 2.0f, 2.0f);
-   ureg_MUL(ureg, out, ureg_src(tmp), two);
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   nir_def *prior = r3v_synth_sample2d(&b, 0, coord);
+   r3v_synth_store_color(&b, nir_fmul_imm(&b, prior, 2.0));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* Synthesise the multipass-scan VS + per-pass FS.  Same vertex-passthrough as
@@ -4760,39 +4628,19 @@ r3v_multipass_scan_synthesize_shaders(struct r3v_device *device,
 static void *
 r3v_synthesize_predicated_store_fs(struct pipe_context *pipe)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
-
-   struct ureg_src samp_pred = ureg_DECL_sampler(ureg, 0);
-   struct ureg_src samp_val  = ureg_DECL_sampler(ureg, 1);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-   ureg_DECL_sampler_view(ureg, 1, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-
-   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                            TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out      = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst tmp_pred = ureg_DECL_temporary(ureg);
-   struct ureg_dst tmp_val  = ureg_DECL_temporary(ureg);
-   struct ureg_dst kill     = ureg_DECL_temporary(ureg);
-
-   ureg_TEX(ureg, ureg_writemask(tmp_pred, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tex, samp_pred);
-   struct ureg_src thresh = ureg_imm1f(ureg, 1.0f / 512.0f);
-   struct ureg_src pred_xxxx =
-      ureg_scalar(ureg_src(tmp_pred), TGSI_SWIZZLE_X);
-   ureg_ADD(ureg, kill, pred_xxxx, ureg_negate(thresh));
-   ureg_KILL_IF(ureg, ureg_src(kill));
-
-   ureg_TEX(ureg, ureg_writemask(tmp_val, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tex, samp_val);
-   ureg_MOV(ureg, out, ureg_src(tmp_val));
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_predicated_store");
+   nir_def *coord = r3v_synth_load_texcoord(&b);
+   nir_def *pred = r3v_synth_sample2d(&b, 0, coord);
+   /* Discard when predicate.x < 1/512 (a UNORM8 zero byte); TGSI KILL_IF
+    * kills on any negative channel, so the NIR spelling is the direct
+    * comparison against the threshold. */
+   nir_discard_if(&b, nir_flt_imm(&b, nir_channel(&b, pred, 0),
+                                  1.0 / 512.0));
+   r3v_synth_store_color(&b, r3v_synth_sample2d(&b, 1, coord));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* Synthesise the predicated masked-store VS + FS pair.  Same fullscreen-quad
@@ -4858,91 +4706,37 @@ r3v_predicated_store_synthesize_shaders(struct r3v_device *device,
 static void *
 r3v_synthesize_multitap_gather_fs(struct pipe_context *pipe)
 {
-   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!ureg)
-      return NULL;
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r3v_multitap_gather");
+   nir_def *tc = r3v_synth_load_texcoord(&b);
+   /* CONST[0].xy = the neighbour texel displacement in the push window. */
+   nir_def *delta = r3v_synth_push_load(&b, 2, 0);
 
-   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
-   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   nir_def *t_c = nir_fmul_imm(&b, r3v_synth_sample2d(&b, 0, tc), 255.0);
+   nir_def *t_l = nir_fmul_imm(
+      &b, r3v_synth_sample2d(&b, 0, nir_fsub(&b, tc, delta)), 255.0);
+   nir_def *t_r = nir_fmul_imm(
+      &b, r3v_synth_sample2d(&b, 0, nir_fadd(&b, tc, delta)), 255.0);
+   nir_def *sum = nir_fadd(&b, nir_fadd(&b, t_c, t_l), t_r);
 
-   struct ureg_src delta = ureg_DECL_constant(ureg, 0);
-   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
-                                            TGSI_INTERPOLATE_PERSPECTIVE);
-   struct ureg_dst out     = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
-   struct ureg_dst coord_l = ureg_DECL_temporary(ureg);
-   struct ureg_dst coord_r = ureg_DECL_temporary(ureg);
-   struct ureg_dst t_c     = ureg_DECL_temporary(ureg);
-   struct ureg_dst t_l     = ureg_DECL_temporary(ureg);
-   struct ureg_dst t_r     = ureg_DECL_temporary(ureg);
-   struct ureg_dst s0      = ureg_DECL_temporary(ureg);
-   struct ureg_dst s1      = ureg_DECL_temporary(ureg);
-   struct ureg_dst s2      = ureg_DECL_temporary(ureg);
-   struct ureg_dst carry   = ureg_DECL_temporary(ureg);
-
-   ureg_ADD(ureg, coord_l, tex, ureg_negate(delta));
-   ureg_ADD(ureg, coord_r, tex, delta);
-
-   ureg_TEX(ureg, ureg_writemask(t_c, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, tex, samp);
-   ureg_TEX(ureg, ureg_writemask(t_l, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, ureg_src(coord_l), samp);
-   ureg_TEX(ureg, ureg_writemask(t_r, TGSI_WRITEMASK_XYZW),
-            TGSI_TEXTURE_2D, ureg_src(coord_r), samp);
-
-   /* Scale 0.0-1.0 UNORM8 to 0-255. */
-   struct ureg_src scale255 = ureg_imm1f(ureg, 255.0f);
-   ureg_MUL(ureg, t_c, ureg_src(t_c), scale255);
-   ureg_MUL(ureg, t_l, ureg_src(t_l), scale255);
-   ureg_MUL(ureg, t_r, ureg_src(t_r), scale255);
-
-   /* s0 = t_c + t_l + t_r */
-   ureg_ADD(ureg, s0, ureg_src(t_c), ureg_src(t_l));
-   ureg_ADD(ureg, s0, ureg_src(s0), ureg_src(t_r));
-
-   struct ureg_src inv256 = ureg_imm1f(ureg, 1.0f / 256.0f);
-   struct ureg_src scale_out = ureg_imm1f(ureg, 256.0f / 255.0f);
-
-   /* Carry chain: X -> Y -> Z -> W. */
-   /* X channel: remainder s0.x % 256, carry s0.x / 256. */
-   ureg_MUL(ureg, ureg_writemask(s1, TGSI_WRITEMASK_X),
-            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_X), inv256);
-   ureg_TRUNC(ureg, ureg_writemask(carry, TGSI_WRITEMASK_X), ureg_src(s1));
-   ureg_FRC(ureg, ureg_writemask(s2, TGSI_WRITEMASK_X), ureg_src(s1));
-   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_X), ureg_src(s2), scale_out);
-
-   /* Y channel: s0.y + carry.x */
-   ureg_ADD(ureg, ureg_writemask(s0, TGSI_WRITEMASK_Y),
-            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_Y),
-            ureg_scalar(ureg_src(carry), TGSI_SWIZZLE_X));
-   ureg_MUL(ureg, ureg_writemask(s1, TGSI_WRITEMASK_Y),
-            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_Y), inv256);
-   ureg_TRUNC(ureg, ureg_writemask(carry, TGSI_WRITEMASK_Y), ureg_src(s1));
-   ureg_FRC(ureg, ureg_writemask(s2, TGSI_WRITEMASK_Y), ureg_src(s1));
-   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_Y), ureg_src(s2), scale_out);
-
-   /* Z channel: s0.z + carry.y */
-   ureg_ADD(ureg, ureg_writemask(s0, TGSI_WRITEMASK_Z),
-            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_Z),
-            ureg_scalar(ureg_src(carry), TGSI_SWIZZLE_Y));
-   ureg_MUL(ureg, ureg_writemask(s1, TGSI_WRITEMASK_Z),
-            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_Z), inv256);
-   ureg_TRUNC(ureg, ureg_writemask(carry, TGSI_WRITEMASK_Z), ureg_src(s1));
-   ureg_FRC(ureg, ureg_writemask(s2, TGSI_WRITEMASK_Z), ureg_src(s1));
-   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_Z), ureg_src(s2), scale_out);
-
-   /* W channel: s0.w + carry.z (no carry-out needed). */
-   ureg_ADD(ureg, ureg_writemask(s0, TGSI_WRITEMASK_W),
-            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_W),
-            ureg_scalar(ureg_src(carry), TGSI_SWIZZLE_Z));
-   ureg_MUL(ureg, ureg_writemask(s1, TGSI_WRITEMASK_W),
-            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_W), inv256);
-   ureg_FRC(ureg, ureg_writemask(s2, TGSI_WRITEMASK_W), ureg_src(s1));
-   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_W), ureg_src(s2), scale_out);
-
-   ureg_END(ureg);
-   return ureg_create_shader_and_destroy(ureg, pipe);
+   /* Lane-serial byte-carry chain x -> y -> z -> w: each lane adds the
+    * previous lane's carry, splits into carry = trunc(s/256) and byte =
+    * fract(s/256), and rescales the byte to UNORM8.  The lanes carry
+    * DIFFERENT expressions, so they stay explicit rather than vectorized. */
+   nir_def *lane[4], *carry = NULL;
+   for (unsigned c = 0; c < 4; c++) {
+      nir_def *s0 = nir_channel(&b, sum, c);
+      if (carry)
+         s0 = nir_fadd(&b, s0, carry);
+      nir_def *s1 = nir_fmul_imm(&b, s0, 1.0 / 256.0);
+      if (c < 3)
+         carry = nir_ftrunc(&b, s1);
+      lane[c] = nir_fmul_imm(&b, nir_ffract(&b, s1), 256.0 / 255.0);
+   }
+   r3v_synth_store_color(&b, nir_vec4(&b, lane[0], lane[1], lane[2], lane[3]));
+   return r3v_synth_fs_cso(pipe, &b);
 }
 
 /* Synthesise the multi-tap gather VS + FS pair.  Same fullscreen-quad vertex
