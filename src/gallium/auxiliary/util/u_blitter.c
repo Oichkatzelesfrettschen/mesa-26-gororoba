@@ -221,8 +221,12 @@ struct blitter_context *util_blitter_create(struct pipe_context *pipe)
    ctx->has_stream_out = pipe->screen->caps.max_stream_output_buffers != 0;
 
    ctx->has_stencil_export = pipe->screen->caps.shader_stencil_export;
-   ctx->use_nir = pipe->screen->shader_caps[MESA_SHADER_FRAGMENT].supported_irs &
-                  (1 << PIPE_SHADER_IR_NIR);
+   /* U_BLITTER_FORCE_TGSI selects the TGSI constructors on a NIR-capable
+    * screen: a bring-up bisection lever that isolates the blitter's NIR
+    * shaders from every other suspect when a target regresses. */
+   ctx->use_nir = (pipe->screen->shader_caps[MESA_SHADER_FRAGMENT].supported_irs &
+                   (1 << PIPE_SHADER_IR_NIR)) &&
+                  !debug_get_bool_option("U_BLITTER_FORCE_TGSI", false);
 
    ctx->has_texture_multisample =
       pipe->screen->caps.texture_multisample;
