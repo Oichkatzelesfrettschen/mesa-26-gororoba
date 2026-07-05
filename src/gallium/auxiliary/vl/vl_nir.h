@@ -63,6 +63,11 @@ void vl_nir_fs_begin_opts(struct vl_nir_fs *fs,
 void vl_nir_sampler(struct vl_nir_fs *fs, unsigned s,
                     enum glsl_sampler_dim dim);
 
+/* Same as vl_nir_sampler for array textures: the coord gains a layer
+ * component (vec3 for a 2D array). */
+void vl_nir_sampler_array(struct vl_nir_fs *fs, unsigned s,
+                          enum glsl_sampler_dim dim, bool is_array);
+
 /* Sample sampler s at coord; coord component count must match the sampler dim
  * (vec2 for 2D, vec3 for 3D). */
 nir_def *vl_nir_tex(struct vl_nir_fs *fs, unsigned s, nir_def *coord);

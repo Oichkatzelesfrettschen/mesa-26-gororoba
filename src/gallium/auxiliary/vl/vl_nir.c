@@ -96,8 +96,15 @@ vl_nir_fs_begin(struct vl_nir_fs *fs, struct pipe_context *pipe,
 void
 vl_nir_sampler(struct vl_nir_fs *fs, unsigned s, enum glsl_sampler_dim dim)
 {
+   vl_nir_sampler_array(fs, s, dim, false);
+}
+
+void
+vl_nir_sampler_array(struct vl_nir_fs *fs, unsigned s,
+                     enum glsl_sampler_dim dim, bool is_array)
+{
    const struct glsl_type *sampler_type =
-      glsl_sampler_type(dim, false, false, GLSL_TYPE_FLOAT);
+      glsl_sampler_type(dim, false, is_array, GLSL_TYPE_FLOAT);
    nir_variable *samp = nir_variable_create(fs->b.shader, nir_var_uniform,
                                            sampler_type, "samp");
    samp->data.binding = s;

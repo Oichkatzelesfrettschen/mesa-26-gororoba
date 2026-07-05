@@ -35,7 +35,6 @@
 #include "util/u_surface.h"
 #include "util/u_upload_mgr.h"
 
-#include "tgsi/tgsi_ureg.h"
 #include "vl_nir.h"
 
 #include "vl_csc.h"
@@ -117,364 +116,238 @@ create_vert_shader(struct vl_compositor *c)
    return vl_nir_vs_finish(&b, c->pipe);
 }
 
-static void
-create_frag_shader_weave(struct ureg_program *shader, struct ureg_dst fragment,
-                         unsigned tex_target)
+/* CONST[i] of the fs constant buffer as a vec4: the gfx kernels read the
+ * CSC matrix rows and the lumakey bounds the compositor uploads to fs
+ * constant slot 0, the same window the compute path reads. */
+static nir_def *
+frag_shader_const(nir_builder *b, unsigned index)
 {
-   struct ureg_src i_tc[2];
-   struct ureg_src sampler[3];
-   struct ureg_dst t_tc[2];
-   struct ureg_dst t_texel[2];
-   unsigned i, j;
+   return nir_load_ubo(b, 4, 32, nir_imm_int(b, 0),
+                       nir_imm_int(b, index * 16),
+                       .align_mul = 4, .range = ~0);
+}
 
-   i_tc[0] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTOP, TGSI_INTERPOLATE_LINEAR);
-   i_tc[1] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VBOTTOM, TGSI_INTERPOLATE_LINEAR);
+/* Sample plane s at (x, sel) with the field layer for array targets.
+ * The weave coordinate vector carries x, the per-plane y in y/z, and the
+ * field layer in w. */
+static nir_def *
+frag_shader_plane_tex(struct vl_nir_fs *fs, unsigned s, nir_def *coord,
+                      unsigned sel_chan, bool use_array)
+{
+   nir_builder *b = &fs->b;
+   nir_def *x = nir_channel(b, coord, 0);
+   nir_def *sel = nir_channel(b, coord, sel_chan);
+   nir_def *c = use_array
+      ? nir_vec3(b, x, sel, nir_channel(b, coord, 3))
+      : nir_vec2(b, x, sel);
+   return vl_nir_tex(fs, s, c);
+}
 
-   for (i = 0; i < 3; ++i) {
-      sampler[i] = ureg_DECL_sampler(shader, i);
-      ureg_DECL_sampler_view(shader, i, tex_target,
-                             TGSI_RETURN_TYPE_FLOAT,
-                             TGSI_RETURN_TYPE_FLOAT,
-                             TGSI_RETURN_TYPE_FLOAT,
-                             TGSI_RETURN_TYPE_FLOAT);
+/* Weave the top and bottom field planes back into one frame: snap each
+ * field's y to its texel row, fetch the three planes per field, and
+ * linearly blend the two fields by the fractional distance of the output
+ * row from the field rows. */
+static nir_def *
+frag_shader_weave(struct vl_nir_fs *fs, bool use_array)
+{
+   nir_builder *b = &fs->b;
+   /* i_tc[0] = VTOP (texcoord[1]), i_tc[1] = VBOTTOM (texcoord[2]). */
+   nir_def *i_tc[2] = { fs->texcoord[1], fs->texcoord[2] };
+   nir_def *t_tc[2], *t_texel[2];
+
+   /* t_tc.x = i_tc.x; t_tc.yz = (round(i_tc.yz - 0.5) + 0.5) scaled by the
+    * per-plane inverse heights in VTOP.w / VBOTTOM.w; t_tc.w = the field
+    * layer. */
+   for (unsigned i = 0; i < 2; i++) {
+      nir_def *yz = nir_fround_even(
+         b, nir_fadd_imm(b, nir_trim_vector(b, i_tc[i], 3), -0.5));
+      nir_def *y = nir_fmul(b, nir_fadd_imm(b, nir_channel(b, yz, 1), 0.5),
+                            nir_channel(b, i_tc[0], 3));
+      nir_def *z = nir_fmul(b, nir_fadd_imm(b, nir_channel(b, yz, 2), 0.5),
+                            nir_channel(b, i_tc[1], 3));
+      t_tc[i] = nir_vec4(b, nir_channel(b, i_tc[i], 0), y, z,
+                         nir_imm_float(b, i ? 1.0 : 0.0));
    }
 
-   for (i = 0; i < 2; ++i) {
-      t_tc[i] = ureg_DECL_temporary(shader);
-      t_texel[i] = ureg_DECL_temporary(shader);
-   }
-
-   /* calculate the texture offsets
-    * t_tc.x = i_tc.x
-    * t_tc.y = (round(i_tc.y - 0.5) + 0.5) / height * 2
-    */
-   for (i = 0; i < 2; ++i) {
-      ureg_MOV(shader, ureg_writemask(t_tc[i], TGSI_WRITEMASK_X), i_tc[i]);
-      ureg_ADD(shader, ureg_writemask(t_tc[i], TGSI_WRITEMASK_YZ),
-               i_tc[i], ureg_imm1f(shader, -0.5f));
-      ureg_ROUND(shader, ureg_writemask(t_tc[i], TGSI_WRITEMASK_YZ), ureg_src(t_tc[i]));
-      ureg_MOV(shader, ureg_writemask(t_tc[i], TGSI_WRITEMASK_W),
-               ureg_imm1f(shader, i ? 1.0f : 0.0f));
-      ureg_ADD(shader, ureg_writemask(t_tc[i], TGSI_WRITEMASK_YZ),
-               ureg_src(t_tc[i]), ureg_imm1f(shader, 0.5f));
-      ureg_MUL(shader, ureg_writemask(t_tc[i], TGSI_WRITEMASK_Y),
-               ureg_src(t_tc[i]), ureg_scalar(i_tc[0], TGSI_SWIZZLE_W));
-      ureg_MUL(shader, ureg_writemask(t_tc[i], TGSI_WRITEMASK_Z),
-               ureg_src(t_tc[i]), ureg_scalar(i_tc[1], TGSI_SWIZZLE_W));
-   }
-
-   /* fetch the texels
-    * texel[0..1].x = tex(t_tc[0..1][0])
-    * texel[0..1].y = tex(t_tc[0..1][1])
-    * texel[0..1].z = tex(t_tc[0..1][2])
-    */
-   for (i = 0; i < 2; ++i)
-      for (j = 0; j < 3; ++j) {
-         struct ureg_src src = ureg_swizzle(ureg_src(t_tc[i]),
-            TGSI_SWIZZLE_X, j ? TGSI_SWIZZLE_Z : TGSI_SWIZZLE_Y, TGSI_SWIZZLE_W, TGSI_SWIZZLE_W);
-
-         ureg_TEX(shader, ureg_writemask(t_texel[i], TGSI_WRITEMASK_X << j),
-                  tex_target, src, sampler[j]);
+   /* texel[i] channel j comes from plane j fetched at that field's
+    * coordinate (luma from y, chroma from z). */
+   for (unsigned i = 0; i < 2; i++) {
+      nir_def *chan[4];
+      for (unsigned j = 0; j < 3; j++) {
+         nir_def *t = frag_shader_plane_tex(fs, j, t_tc[i], j ? 2 : 1,
+                                            use_array);
+         chan[j] = nir_channel(b, t, j);
       }
-
-   /* calculate linear interpolation factor
-    * factor = |round(i_tc.y) - i_tc.y| * 2
-    */
-   ureg_ROUND(shader, ureg_writemask(t_tc[0], TGSI_WRITEMASK_YZ), i_tc[0]);
-   ureg_ADD(shader, ureg_writemask(t_tc[0], TGSI_WRITEMASK_YZ),
-            ureg_src(t_tc[0]), ureg_negate(i_tc[0]));
-   ureg_MUL(shader, ureg_writemask(t_tc[0], TGSI_WRITEMASK_YZ),
-            ureg_abs(ureg_src(t_tc[0])), ureg_imm1f(shader, 2.0f));
-   ureg_LRP(shader, fragment, ureg_swizzle(ureg_src(t_tc[0]),
-            TGSI_SWIZZLE_Y, TGSI_SWIZZLE_Z, TGSI_SWIZZLE_Z, TGSI_SWIZZLE_Z),
-            ureg_src(t_texel[0]), ureg_src(t_texel[1]));
-
-   for (i = 0; i < 2; ++i) {
-      ureg_release_temporary(shader, t_texel[i]);
-      ureg_release_temporary(shader, t_tc[i]);
-   }
-}
-
-static void
-create_frag_shader_csc(struct ureg_program *shader, struct ureg_dst texel,
-		       struct ureg_dst fragment)
-{
-   struct ureg_src csc[3];
-   struct ureg_src lumakey;
-   struct ureg_dst temp[2];
-   unsigned i;
-
-   for (i = 0; i < 3; ++i)
-      csc[i] = ureg_DECL_constant(shader, i);
-
-   lumakey = ureg_DECL_constant(shader, 3);
-
-   for (i = 0; i < 2; ++i)
-      temp[i] = ureg_DECL_temporary(shader);
-
-   ureg_MOV(shader, ureg_writemask(texel, TGSI_WRITEMASK_W),
-	    ureg_imm1f(shader, 1.0f));
-
-   for (i = 0; i < 3; ++i)
-      ureg_DP4(shader, ureg_writemask(fragment, TGSI_WRITEMASK_X << i), csc[i],
-	       ureg_src(texel));
-
-   ureg_MOV(shader, ureg_writemask(temp[0], TGSI_WRITEMASK_W),
-            ureg_scalar(ureg_src(texel), TGSI_SWIZZLE_Z));
-   ureg_SLE(shader, ureg_writemask(temp[1], TGSI_WRITEMASK_W),
-            ureg_src(temp[0]), ureg_scalar(lumakey, TGSI_SWIZZLE_X));
-   ureg_SGT(shader, ureg_writemask(temp[0], TGSI_WRITEMASK_W),
-            ureg_src(temp[0]), ureg_scalar(lumakey, TGSI_SWIZZLE_Y));
-   ureg_MAX(shader, ureg_writemask(fragment, TGSI_WRITEMASK_W),
-            ureg_src(temp[0]), ureg_src(temp[1]));
-
-   for (i = 0; i < 2; ++i)
-       ureg_release_temporary(shader, temp[i]);
-}
-
-static void
-create_frag_shader_yuv(struct ureg_program *shader, struct ureg_dst texel,
-                       unsigned tex_target)
-{
-   struct ureg_src tc;
-   struct ureg_src sampler[3];
-   unsigned i;
-
-   tc = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX, TGSI_INTERPOLATE_LINEAR);
-   for (i = 0; i < 3; ++i) {
-      sampler[i] = ureg_DECL_sampler(shader, i);
-      ureg_DECL_sampler_view(shader, i, tex_target,
-                             TGSI_RETURN_TYPE_FLOAT,
-                             TGSI_RETURN_TYPE_FLOAT,
-                             TGSI_RETURN_TYPE_FLOAT,
-                             TGSI_RETURN_TYPE_FLOAT);
+      chan[3] = nir_imm_float(b, 0.0);
+      t_texel[i] = nir_vec4(b, chan[0], chan[1], chan[2], chan[3]);
    }
 
-   /*
-    * texel.xyz = tex(tc, sampler[i])
-    */
-   for (i = 0; i < 3; ++i)
-      ureg_TEX(shader, ureg_writemask(texel, TGSI_WRITEMASK_X << i), tex_target, tc, sampler[i]);
+   /* factor = |round(i_tc.y) - i_tc.y| * 2 per plane, broadcast (y,z,z,z). */
+   nir_def *r = nir_fround_even(b, i_tc[0]);
+   nir_def *f = nir_fmul_imm(
+      b, nir_fabs(b, nir_fadd(b, r, nir_fneg(b, i_tc[0]))), 2.0);
+   nir_def *factor = nir_swizzle(b, f, (unsigned[]){1, 2, 2, 2}, 4);
+
+   /* TGSI LRP(s, a, b) = s*a + (1-s)*b. */
+   return nir_flrp(b, t_texel[1], t_texel[0], factor);
 }
 
-/* Hardware without array textures (max_texture_array_layers < 2, e.g. r300)
- * cannot compile a TGSI_TEXTURE_2D_ARRAY sampler.  Progressive video buffers
- * are single-layer PIPE_TEXTURE_2D, so plain 2D samples are exact there; the
- * array layer the weave path encodes in coord.w is only meaningful for
- * interlaced two-layer buffers, which such hardware cannot sample regardless. */
-static unsigned
-compositor_sampler_target(struct vl_compositor *c)
+/* Color-space conversion: force texel.w to 1, apply the three CSC rows,
+ * and derive alpha from the lumakey band: opaque when the pre-CSC third
+ * channel falls outside (lumakey.x, lumakey.y]. */
+static nir_def *
+frag_shader_csc(struct vl_nir_fs *fs, nir_def *texel)
 {
-   return c->pipe->screen->caps.max_texture_array_layers > 1 ?
-             TGSI_TEXTURE_2D_ARRAY : TGSI_TEXTURE_2D;
+   nir_builder *b = &fs->b;
+   nir_def *csc[3];
+   for (unsigned i = 0; i < 3; i++)
+      csc[i] = frag_shader_const(b, i);
+   nir_def *lumakey = frag_shader_const(b, 3);
+
+   nir_def *t = nir_vector_insert_imm(b, texel, nir_imm_float(b, 1.0), 3);
+   nir_def *key = nir_channel(b, texel, 2);
+   nir_def *alpha = nir_fmax(
+      b,
+      nir_b2f32(b, nir_flt(b, nir_channel(b, lumakey, 1), key)),
+      nir_b2f32(b, nir_fge(b, nir_channel(b, lumakey, 0), key)));
+   return nir_vec4(b, nir_fdot4(b, csc[0], t), nir_fdot4(b, csc[1], t),
+                   nir_fdot4(b, csc[2], t), alpha);
 }
+
+/* Progressive fetch: one texel per plane at the shared VTEX coordinate,
+ * luma/chroma landing in x/y/z. */
+static nir_def *
+frag_shader_yuv(struct vl_nir_fs *fs, bool use_array)
+{
+   nir_builder *b = &fs->b;
+   nir_def *tc = fs->texcoord[0];
+   nir_def *chan[4];
+   for (unsigned j = 0; j < 3; j++) {
+      nir_def *c = use_array ? nir_trim_vector(b, tc, 3)
+                             : nir_trim_vector(b, tc, 2);
+      chan[j] = nir_channel(b, vl_nir_tex(fs, j, c), j);
+   }
+   chan[3] = nir_imm_float(b, 0.0);
+   return nir_vec4(b, chan[0], chan[1], chan[2], chan[3]);
+}
+
+static bool
+compositor_sampler_is_array(struct vl_compositor *c)
+{
+   return c->pipe->screen->caps.max_texture_array_layers > 1;
+}
+
+
+
+
 
 void *
 create_frag_shader_video_buffer(struct vl_compositor *c)
 {
-   struct ureg_program *shader;
-   struct ureg_dst texel;
-   struct ureg_dst fragment;
-   unsigned tex_target = compositor_sampler_target(c);
-
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
-
-   texel = ureg_DECL_temporary(shader);
-   fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
-
-   create_frag_shader_yuv(shader, texel, tex_target);
-   create_frag_shader_csc(shader, texel, fragment);
-
-   ureg_release_temporary(shader, texel);
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, c->pipe);
+   const bool use_array = compositor_sampler_is_array(c);
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, c->pipe, 1, "vl:compositor_video_buffer");
+   for (unsigned i = 0; i < 3; i++)
+      vl_nir_sampler_array(&fs, i, GLSL_SAMPLER_DIM_2D, use_array);
+   nir_def *texel = frag_shader_yuv(&fs, use_array);
+   return vl_nir_fs_finish(&fs, c->pipe, frag_shader_csc(&fs, texel));
 }
 
 void *
 create_frag_shader_weave_rgb(struct vl_compositor *c)
 {
-   struct ureg_program *shader;
-   struct ureg_dst texel, fragment;
-
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
-
-   texel = ureg_DECL_temporary(shader);
-   fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
-
-   create_frag_shader_weave(shader, texel, compositor_sampler_target(c));
-   create_frag_shader_csc(shader, texel, fragment);
-
-   ureg_release_temporary(shader, texel);
-
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, c->pipe);
+   const bool use_array = compositor_sampler_is_array(c);
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, c->pipe, 3, "vl:compositor_weave_rgb");
+   for (unsigned i = 0; i < 3; i++)
+      vl_nir_sampler_array(&fs, i, GLSL_SAMPLER_DIM_2D, use_array);
+   nir_def *texel = frag_shader_weave(&fs, use_array);
+   return vl_nir_fs_finish(&fs, c->pipe, frag_shader_csc(&fs, texel));
 }
 
 void *
 create_frag_shader_deint_yuv(struct vl_compositor *c, bool y, bool w)
 {
-   struct ureg_program *shader;
-   struct ureg_dst texel, fragment;
-   unsigned tex_target = compositor_sampler_target(c);
-
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
-
-   texel = ureg_DECL_temporary(shader);
-   fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
-
-   if (w)
-      create_frag_shader_weave(shader, texel, tex_target);
-   else
-      create_frag_shader_yuv(shader, texel, tex_target);
-
-   if (y)
-      ureg_MOV(shader, ureg_writemask(fragment, TGSI_WRITEMASK_X), ureg_src(texel));
-   else
-      ureg_MOV(shader, ureg_writemask(fragment, TGSI_WRITEMASK_XY),
-                       ureg_swizzle(ureg_src(texel), TGSI_SWIZZLE_Y,
-                               TGSI_SWIZZLE_Z, TGSI_SWIZZLE_W, TGSI_SWIZZLE_W));
-
-   ureg_release_temporary(shader, texel);
-
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, c->pipe);
+   const bool use_array = compositor_sampler_is_array(c);
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, c->pipe, w ? 3 : 1, "vl:compositor_deint_yuv");
+   for (unsigned i = 0; i < 3; i++)
+      vl_nir_sampler_array(&fs, i, GLSL_SAMPLER_DIM_2D, use_array);
+   nir_def *texel = w ? frag_shader_weave(&fs, use_array)
+                      : frag_shader_yuv(&fs, use_array);
+   nir_builder *b = &fs.b;
+   nir_def *color = y
+      ? texel
+      : nir_swizzle(b, texel, (unsigned[]){1, 2, 3, 3}, 4);
+   return vl_nir_fs_finish(&fs, c->pipe, color);
 }
 
 void *
 create_frag_shader_palette(struct vl_compositor *c, bool include_cc)
 {
-   struct ureg_program *shader;
-   struct ureg_src csc[3];
-   struct ureg_src tc;
-   struct ureg_src sampler;
-   struct ureg_src palette;
-   struct ureg_dst texel;
-   struct ureg_dst fragment;
-   unsigned i;
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, c->pipe, 1, "vl:compositor_palette");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   vl_nir_sampler(&fs, 1, GLSL_SAMPLER_DIM_1D);
+   nir_builder *b = &fs.b;
 
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
-
-   for (i = 0; include_cc && i < 3; ++i)
-      csc[i] = ureg_DECL_constant(shader, i);
-
-   tc = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX, TGSI_INTERPOLATE_LINEAR);
-   sampler = ureg_DECL_sampler(shader, 0);
-   ureg_DECL_sampler_view(shader, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT);
-   palette = ureg_DECL_sampler(shader, 1);
-   ureg_DECL_sampler_view(shader, 1, TGSI_TEXTURE_1D,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT);
-
-   texel = ureg_DECL_temporary(shader);
-   fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
-
-   /*
-    * texel = tex(tc, sampler)
-    * fragment.xyz = tex(texel, palette) * csc
-    * fragment.a = texel.a
-    */
-   ureg_TEX(shader, texel, TGSI_TEXTURE_2D, tc, sampler);
-   ureg_MOV(shader, ureg_writemask(fragment, TGSI_WRITEMASK_W), ureg_src(texel));
-
+   /* texel = tex(tc, indices); fragment.rgb = tex(texel.x, palette),
+    * through the CSC rows when the palette holds YUV; fragment.a =
+    * texel.a. */
+   nir_def *texel =
+      vl_nir_tex(&fs, 0, nir_trim_vector(b, fs.texcoord[0], 2));
+   nir_def *pal = vl_nir_tex(&fs, 1, nir_channel(b, texel, 0));
+   nir_def *rgb[3];
    if (include_cc) {
-      ureg_TEX(shader, texel, TGSI_TEXTURE_1D, ureg_src(texel), palette);
-      for (i = 0; i < 3; ++i)
-         ureg_DP4(shader, ureg_writemask(fragment, TGSI_WRITEMASK_X << i), csc[i], ureg_src(texel));
+      for (unsigned i = 0; i < 3; i++)
+         rgb[i] = nir_fdot4(b, frag_shader_const(b, i), pal);
    } else {
-      ureg_TEX(shader, ureg_writemask(fragment, TGSI_WRITEMASK_XYZ),
-               TGSI_TEXTURE_1D, ureg_src(texel), palette);
+      for (unsigned i = 0; i < 3; i++)
+         rgb[i] = nir_channel(b, pal, i);
    }
-
-   ureg_release_temporary(shader, texel);
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, c->pipe);
+   nir_def *color =
+      nir_vec4(b, rgb[0], rgb[1], rgb[2], nir_channel(b, texel, 3));
+   return vl_nir_fs_finish(&fs, c->pipe, color);
 }
 
 void *
 create_frag_shader_rgba(struct vl_compositor *c)
 {
-   struct ureg_program *shader;
-   struct ureg_src tc, color, sampler;
-   struct ureg_dst texel, fragment;
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, c->pipe, 1, "vl:compositor_rgba");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   nir_builder *b = &fs.b;
 
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
+   nir_variable *in_color = nir_variable_create(
+      b->shader, nir_var_shader_in, glsl_vec4_type(), "v_color");
+   in_color->data.location = VARYING_SLOT_COL0;
+   nir_def *color = nir_load_var(b, in_color);
 
-   tc = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX, TGSI_INTERPOLATE_LINEAR);
-   color = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_COLOR, VS_O_COLOR, TGSI_INTERPOLATE_LINEAR);
-   sampler = ureg_DECL_sampler(shader, 0);
-   ureg_DECL_sampler_view(shader, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT);
-   texel = ureg_DECL_temporary(shader);
-   fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
-
-   /*
-    * fragment = tex(tc, sampler)
-    */
-   ureg_TEX(shader, texel, TGSI_TEXTURE_2D, tc, sampler);
-   ureg_MUL(shader, fragment, ureg_src(texel), color);
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, c->pipe);
+   nir_def *texel =
+      vl_nir_tex(&fs, 0, nir_trim_vector(b, fs.texcoord[0], 2));
+   return vl_nir_fs_finish(&fs, c->pipe, nir_fmul(b, texel, color));
 }
 
 void *
 create_frag_shader_rgb_yuv(struct vl_compositor *c, bool y)
 {
-   struct ureg_program *shader;
-   struct ureg_src tc, sampler;
-   struct ureg_dst texel, fragment;
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, c->pipe, 1, "vl:compositor_rgb_yuv");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   nir_builder *b = &fs.b;
 
-   struct ureg_src csc[3];
-   unsigned i;
-
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
-
-   for (i = 0; i < 3; ++i)
-      csc[i] = ureg_DECL_constant(shader, i);
-
-   sampler = ureg_DECL_sampler(shader, 0);
-   tc = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX, TGSI_INTERPOLATE_LINEAR);
-   texel = ureg_DECL_temporary(shader);
-   fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
-
-   ureg_TEX(shader, texel, TGSI_TEXTURE_2D, tc, sampler);
-
+   nir_def *texel =
+      vl_nir_tex(&fs, 0, nir_trim_vector(b, fs.texcoord[0], 2));
+   nir_def *color;
    if (y) {
-      ureg_DP4(shader, ureg_writemask(fragment, TGSI_WRITEMASK_X), csc[0], ureg_src(texel));
+      nir_def *l = nir_fdot4(b, frag_shader_const(b, 0), texel);
+      color = nir_swizzle(b, l, (unsigned[]){0, 0, 0, 0}, 4);
    } else {
-      for (i = 0; i < 2; ++i)
-         ureg_DP4(shader, ureg_writemask(fragment, TGSI_WRITEMASK_X << i), csc[i + 1], ureg_src(texel));
+      nir_def *u = nir_fdot4(b, frag_shader_const(b, 1), texel);
+      nir_def *v = nir_fdot4(b, frag_shader_const(b, 2), texel);
+      color = nir_vec4(b, u, v, v, v);
    }
-
-   ureg_release_temporary(shader, texel);
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, c->pipe);
+   return vl_nir_fs_finish(&fs, c->pipe, color);
 }
 
 static void
