@@ -1271,6 +1271,11 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
             if (rs->ip[i] || rs->inst[i])
                 fprintf(stderr, "  rs[%u] ip=0x%08x inst=0x%08x\n", i, rs->ip[i], rs->inst[i]);
     }
+
+    /* Emit the normalized VAP/RS tuple + contract verdict in the same field
+     * vocabulary the SW-TCL rebuild path uses, so the direct-VB route and the
+     * ordinary GL SW-TCL route are diffable field-by-field. */
+    r300_dump_vap_rs_tuple(r300, "r2vb_inspect");
 }
 
 bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,

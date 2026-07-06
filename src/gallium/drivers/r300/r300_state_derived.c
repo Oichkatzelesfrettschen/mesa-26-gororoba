@@ -737,6 +737,165 @@ static void r300_update_rs_block(struct r300_context *r300)
     }
 }
 
+/* Decoded VAP/RS producer-consumer tuple: the semantic register fields that
+ * decide whether the RS482 vertex frontend drains or wedges.  Buffer addresses,
+ * relocations, draw-packet counts, and viewport constants are excluded -- they
+ * are not part of the producer-consumer contract r300_update_rs_block documents,
+ * so two draws with identical tuples share the same frontend fate regardless of
+ * geometry. */
+struct r300_vap_rs_tuple {
+    uint32_t vap_out_vtx_fmt0, vap_out_vtx_fmt1, vap_vsm_vtx_assm;
+    uint32_t rs_count, rs_inst_count, gb_enable, vap_vtx_size;
+    unsigned num_vap_colors;    /* COLOR_n_PRESENT bits set in VAP_OUTPUT_VTX_FMT_0 */
+    unsigned num_vap_texcoords; /* nonzero comp-count fields in VAP_OUTPUT_VTX_FMT_1 */
+    unsigned sum_vap_tex_comp;  /* summed comp counts across those fields */
+    unsigned rs_colors;         /* RS_COUNT IC_COUNT: color vectors the RS rasterizes */
+    unsigned rs_tex_comp;       /* RS_COUNT IT_COUNT: texcoord components the RS routes */
+    bool pos_present, ptsize_present, hires, point_stuff, last_vec_ok;
+};
+
+/* Contract violations, most-load-bearing first.  The color-count check is the
+ * RS482 GL SW-TCL wedge discriminator: r300_update_rs_block rasterizes one dummy
+ * color (SWIZ_0001) when a draw declares no color and no texcoord, so the RS
+ * rasterizes a color vector VAP never produces -- exactly the "more outputs
+ * rasterized than set in VAP/GA -> locks up" rule at the head of this file. */
+enum r300_vap_rs_violation {
+    R300_VAPRS_COLOR_COUNT   = 1 << 0, /* RS color vectors != VAP-declared colors */
+    R300_VAPRS_TEXCOMP_COUNT = 1 << 1, /* RS tex components != VAP-declared (no stuffing) */
+    R300_VAPRS_LAST_VEC      = 1 << 2, /* last PSC stream element missing LAST_VEC */
+};
+
+/* Pure function of the decoded tuple so the verdict is testable without the GPU:
+ * feed it the finding's GL column (rs_colors=1, num_vap_colors=0) and it returns
+ * R300_VAPRS_COLOR_COUNT; feed it the r3v column (both 0, tex components 4==4)
+ * and it returns 0.  On R500 the FACE path rasterizes a color without a matching
+ * VAP_OUTPUT_VTX_FMT_0 bit, so the color check is meaningful only on the R300/RS4xx
+ * class this contract targets; the caller prints is_r500 for interpretation.
+ * GB point-stuffing is deliberately NOT a verdict input: r300_blitter_draw_rectangle
+ * (r300_render.c) and the R2VB path write R300_GB_ENABLE directly at emit time, so
+ * the RS-block gb_enable this reads is not always the draw-time-latched value. */
+static uint32_t
+r300_vap_rs_contract_check(const struct r300_vap_rs_tuple *t)
+{
+    uint32_t v = 0;
+    if (t->rs_colors != t->num_vap_colors)
+        v |= R300_VAPRS_COLOR_COUNT;
+    if (!t->point_stuff && t->rs_tex_comp != t->sum_vap_tex_comp)
+        v |= R300_VAPRS_TEXCOMP_COUNT;
+    if (!t->last_vec_ok)
+        v |= R300_VAPRS_LAST_VEC;
+    return v;
+}
+
+/* No-submit dump of the VAP/RS producer-consumer tuple for the ordinary GL
+ * SW-TCL path and the R2VB/r3v path in one field vocabulary.  Runs after the
+ * three atomic layers derive (r300_update_rs_block fills the RS block,
+ * r300_draw_emit_all_attribs fills vertex_info, r300_swtcl_vertex_psc fills the
+ * PSC stream) so every field is fresh.  Reads state and writes stderr only --
+ * no CS emit, no GPU work, safe on any boot. */
+void r300_dump_vap_rs_tuple(struct r300_context *r300, const char *origin)
+{
+    const struct r300_rs_block *rs = r300->rs_block_state.state;
+    const struct r300_vertex_stream_state *vs = r300->vertex_stream_state.state;
+    const struct vertex_info *vinfo = &r300->vertex_info;
+    const bool is_r500 = r300->screen->caps.is_r500;
+
+    /* Stop condition: without the RS block or the PSC stream two of the three
+     * atomic layers are invisible, so report the gap rather than invent a tuple. */
+    if (!rs || !vs) {
+        fprintf(stderr, "VAP_RS_TUPLE origin=%s UNAVAILABLE rs=%p vs=%p\n",
+                origin, (void *)rs, (void *)vs);
+        fflush(stderr);
+        return;
+    }
+
+    struct r300_vap_rs_tuple t = {0};
+    t.vap_out_vtx_fmt0 = rs->vap_out_vtx_fmt[0];
+    t.vap_out_vtx_fmt1 = rs->vap_out_vtx_fmt[1];
+    t.vap_vsm_vtx_assm = rs->vap_vsm_vtx_assm;
+    t.rs_count = rs->count;
+    t.rs_inst_count = rs->inst_count;
+    t.gb_enable = rs->gb_enable;
+    t.vap_vtx_size = vinfo->size; /* the value r300_emit_vertex_format_state emits */
+
+    t.pos_present = t.vap_out_vtx_fmt0 & R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT;
+    t.ptsize_present = t.vap_out_vtx_fmt0 & R300_VAP_OUTPUT_VTX_FMT_0__PT_SIZE_PRESENT;
+    for (unsigned i = 0; i < 4; i++)
+        if (t.vap_out_vtx_fmt0 & (R300_VAP_OUTPUT_VTX_FMT_0__COLOR_0_PRESENT << i))
+            t.num_vap_colors++;
+    for (unsigned s = 0; s < 8; s++) {
+        unsigned comp = (t.vap_out_vtx_fmt1 >> (3 * s)) & 0x7;
+        if (comp) {
+            t.num_vap_texcoords++;
+            t.sum_vap_tex_comp += comp;
+        }
+    }
+    t.rs_colors = (t.rs_count & R300_IC_COUNT_MASK) >> R300_IC_COUNT_SHIFT;
+    t.rs_tex_comp = t.rs_count & 0x7f; /* IT_COUNT: tex_ptr components, MIN2(tex_ptr,32) */
+    t.hires = (t.rs_count & R300_HIRES_EN) != 0;
+    t.point_stuff = (t.gb_enable & R300_GB_POINT_STUFF_ENABLE) != 0;
+
+    /* r300_swtcl_vertex_psc marks the highest-index stream element LAST_VEC; the
+     * authoritative element count is vertex_info.num_attribs. */
+    unsigned n = vinfo->num_attribs;
+    t.last_vec_ok = true;
+    if (n > 0) {
+        unsigned li = n - 1;
+        uint32_t e = vs->vap_prog_stream_cntl[li >> 1] >> ((li & 1) ? 16 : 0);
+        t.last_vec_ok = (e & R300_LAST_VEC) != 0;
+    }
+
+    uint32_t viol = r300_vap_rs_contract_check(&t);
+
+    fprintf(stderr,
+            "VAP_RS_TUPLE origin=%s is_r500=%u is_point=%u num_attribs=%u\n",
+            origin, is_r500, r300->is_point, n);
+    fprintf(stderr,
+            "VAP_RS   VAP_OUTPUT_VTX_FMT_0=0x%08x pos=%u ptsize=%u colors=%u\n",
+            t.vap_out_vtx_fmt0, t.pos_present, t.ptsize_present, t.num_vap_colors);
+    fprintf(stderr,
+            "VAP_RS   VAP_OUTPUT_VTX_FMT_1=0x%08x texcoords=%u tex_comp_sum=%u\n",
+            t.vap_out_vtx_fmt1, t.num_vap_texcoords, t.sum_vap_tex_comp);
+    fprintf(stderr, "VAP_RS   VAP_VSM_VTX_ASSM=0x%08x VAP_VTX_SIZE=%u\n",
+            t.vap_vsm_vtx_assm, t.vap_vtx_size);
+    fprintf(stderr,
+            "VAP_RS   RS_COUNT=0x%08x ic_count=%u it_count=%u hires=%u "
+            "RS_INST_COUNT=0x%08x\n",
+            t.rs_count, t.rs_colors, t.rs_tex_comp, t.hires, t.rs_inst_count);
+    for (unsigned i = 0; i < vs->count && i < 8; i++) {
+        uint32_t c = vs->vap_prog_stream_cntl[i];
+        uint32_t x = vs->vap_prog_stream_cntl_ext[i];
+        for (unsigned e = 0; e < 2; e++) {
+            uint32_t f = c >> (e * 16);
+            fprintf(stderr,
+                    "VAP_RS   VAP_PROG_STREAM_CNTL[%u].e%u data_type=0x%02x "
+                    "dst_vec_loc=%u last=%u  EXT swizzle=0x%04x\n",
+                    i, e, f & 0xff, (f >> R300_DST_VEC_LOC_SHIFT) & 0x1f,
+                    (f & R300_LAST_VEC) != 0, (x >> (e * 16)) & 0xffff);
+        }
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        if (!rs->ip[i] && !rs->inst[i])
+            continue;
+        fprintf(stderr,
+                "VAP_RS   RS_IP[%u]=0x%08x RS_INST[%u]=0x%08x tex_write=%u col_write=%u\n",
+                i, rs->ip[i], i, rs->inst[i],
+                (rs->inst[i] & R300_RS_INST_TEX_CN_WRITE) != 0,
+                (rs->inst[i] & R300_RS_INST_COL_CN_WRITE) != 0);
+    }
+    /* RS-block atom value; the blitter draw_rectangle and R2VB paths write
+     * R300_GB_ENABLE directly, so the draw-time-latched value can differ. */
+    fprintf(stderr, "VAP_RS   GB_ENABLE(rs_atom)=0x%08x point_stuff=%u\n",
+            t.gb_enable, t.point_stuff);
+    fprintf(stderr,
+            "VAP_RS_CONTRACT origin=%s verdict=%s colors(rs=%u vap=%u) "
+            "texcomp(rs=%u vap=%u stuff=%u) last_vec=%u violations=0x%x\n",
+            origin, viol ? "FAIL" : "PASS", t.rs_colors, t.num_vap_colors,
+            t.rs_tex_comp, t.sum_vap_tex_comp, t.point_stuff, t.last_vec_ok,
+            viol);
+    fflush(stderr);
+}
+
 static void rgba_to_bgra(float color[4])
 {
     float x = color[0];
@@ -1265,6 +1424,12 @@ void r300_swtcl_rebuild_vertex_layout(struct r300_context *r300)
         draw_compute_vertex_size(&r300->vertex_info);
         r300_swtcl_vertex_psc(r300);
     }
+
+    /* No-submit VAP/RS tuple capture: all three atomic layers are now fresh.
+     * The GL SW-TCL path and the r3v path (pipe->draw_vbo -> this derivation)
+     * both reach here, so the dump reports both in one field vocabulary. */
+    if (getenv("R300_VAP_RS_INSPECT"))
+        r300_dump_vap_rs_tuple(r300, "swtcl_rebuild");
 }
 
 void r300_update_derived_state(struct r300_context* r300)

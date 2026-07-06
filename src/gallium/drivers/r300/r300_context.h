@@ -936,6 +936,7 @@ r300_framebuffer_init(struct pipe_context *pctx, const struct pipe_framebuffer_s
 /* r300_state_derived.c */
 void r300_update_derived_state(struct r300_context* r300);
 void r300_swtcl_rebuild_vertex_layout(struct r300_context* r300);
+void r300_dump_vap_rs_tuple(struct r300_context* r300, const char* origin);
 
 /* r300_debug.c */
 void r500_dump_rs_block(struct r300_rs_block *rs);
