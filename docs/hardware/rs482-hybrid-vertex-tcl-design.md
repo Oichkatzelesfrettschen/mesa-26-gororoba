@@ -152,6 +152,34 @@ where it is safe and hand the frontend only vertices it can pass straight
 through. Converging the blitter clear quad onto the bypass shape is the first
 instance; the hybrid makes it the rule.
 
+## Scoped implementation plan
+
+What already exists on this substrate is more than a sketch: `r300_r2vb.c` is a
+3289-line fragment-ALU render-to-vertex-buffer engine with a route classifier
+(`R2VB_ROUTE_PASSTHROUGH` / `_CANDIDATE` / `REJECT_HW_TCL` / `_INDEXED` /
+`_INSTANCED`), a transform fragment shader, self-test buffers, and a no-submit
+`R300_R2VB_VS_DUMP` oracle; `r300_hb_tcl.c` carries the static `0x0014025a`
+bypass word; `r300_hb_r400_us.h` gates an R400 unified-shader path that lifts
+the ALU/TEX slot count from 64 to 512. The plan generalizes this into the
+standing vertex route.
+
+| Task | Work | Depends on |
+| --- | --- | --- |
+| HBTCL-01 | No-submit PM4 decode (the proven `R300_TRACE` capture + 325-row atom decoder, box-safe) of the clear-quad IB vs a working r3v triangle IB; name the single diverging VAP frontend register (`VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE`) | -- |
+| HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the proven-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
+| HBTCL-03 | Audit the 3289-line `r300_r2vb.c` engine against this design: routes, proven topologies, the transform FS, the open points smear; produce the gap list | -- |
+| HBTCL-04 | Implement the Glaeser linear-collineation split in the R2VB transform FS (fragment-ALU `M*v`, SW scalar divide, SW clip in the linear domain); use the R400_US ceiling lift where a VS exceeds 64 ALU | HBTCL-03 |
+| HBTCL-05 | Fold the concrete VAP register table (offsets, wedge window, the 16-bit `VF_CNTL` underflow lever + its mesa fix, the vertex system-value registry, the R2VB CS-write surface) into this doc | -- |
+| HBTCL-06 | Assess the hardware sin/cos (not GL-reachable) plus the fragment-ALU transcendentals for the lighting stage of a full TCL | -- |
+| HBTCL-07 | Root-cause the R2VB points-topology smear (GA point-setup registers) via the HBTCL-01 decode method | HBTCL-03 |
+| HBTCL-08 | Promote the generalized R2VB collineation engine to the standing r300 SW-TCL vertex route (gated first); validate on RS482 across topologies + a piglit GL2.1 subset under the poller with no VAP/GA stall | HBTCL-02, HBTCL-04, HBTCL-07 |
+
+HBTCL-01 and HBTCL-02 are the immediate `fbo-clearmipmap` fix; HBTCL-03/04/07/08
+build the fix out into the standing hybrid; HBTCL-05/06 are the register-table
+and lighting extensions. All hardware steps run on the parked, hang-for-
+inspection box under the wedge-forensics poller; the decode steps submit
+nothing.
+
 ## Open items
 
 - The exact diverging value in the clear-quad IB (VTE_CNTL vs scissor vs VF
