@@ -21,6 +21,9 @@
 /* r300_state_derived: Various bits of state which are dependent upon
  * currently bound CSO data. */
 
+/* Position-only SWTCL safe-dummy-texcoord contract, exact opt-in. */
+DEBUG_GET_ONCE_BOOL_OPTION(swtcl_dummy_texcoord, "R300_SWTCL_DUMMY_TEXCOORD", false)
+
 enum r300_rs_swizzle {
     SWIZ_XYZW = 0,
     SWIZ_X001,
@@ -148,6 +151,17 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
         DBG(r300, DBG_SWTCL, "draw_emit_attrib: WPOS, slot: %u\n",
             wpos_slot);
         r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_GENERIC, wpos_slot);
+    }
+
+    /* Dummy-texcoord payload vector: r300_update_rs_block declared a TEX0
+     * output for the position-only fallback, so the vertex payload must carry
+     * a real 4-float vector at that stream slot.  Position is re-emitted as
+     * the source -- the FS never reads the vector, only its existence in the
+     * VAP stream matters, and reusing an output that always exists avoids a
+     * dangling draw-output lookup.  Emitted last so vertex_info stays
+     * index-aligned with stream_loc_notcl, whose dummy entry is also last. */
+    if (r300->swtcl_dummy_texcoord) {
+        r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_POSITION, 0);
     }
 }
 
@@ -700,6 +714,39 @@ static void r300_update_rs_block(struct r300_context *r300)
                     "not enough hardware slots. (it's not a bug, do not "
                     "report it)\n");
         }
+    }
+
+    /* Position-only dummy-texcoord experiment (exact opt-in): declare and
+     * route one real TEX0 vector instead of the dummy color below.  The dummy
+     * color rasterizes a color vector the VAP never produces (RS_COUNT counts
+     * one color, VAP_OUTPUT_VTX_FMT_0 declares none), the over-rasterization
+     * shape the comment at the head of this function names as a lockup.
+     * Silicon-tested on RS482: this declared POS+TEX0 shape still wedges the
+     * vertex frontend (RBBM latches CP+VAP+GA busy, backend idle) on the
+     * first position-only SWTCL draw, so the VAP/RS declaration mismatch is
+     * not the wedge cause by itself; the lever is retained for register-
+     * contract experiments (the remaining delta against the completing r3v
+     * shape is the RS_INST CN_WRITE consumption and state outside VAP/GA).
+     * The texcoord must be a real VAP-declared stream output, so
+     * r300_draw_emit_all_attribs emits a matching payload vector when
+     * swtcl_dummy_texcoord is set; SWTCL-only, since a HWTCL vertex shader
+     * would not write the declared vector. */
+    r300->swtcl_dummy_texcoord = false;
+    if (col_count == 0 && tex_count == 0 &&
+        !r300->screen->caps.has_tcl && r300->draw &&
+        debug_get_option_swtcl_dummy_texcoord()) {
+        rs.vap_vsm_vtx_assm |= (R300_INPUT_CNTL_TC0 << tex_count);
+        rs.vap_out_vtx_fmt[1] |= (4 << (3 * tex_count));
+        stream_loc_notcl[loc++] = 6 + tex_count;
+
+        /* Rasterize it, unused by the FS (no CN_WRITE), like any rasterized-
+         * but-unused output. */
+        rX00_rs_tex(&rs, tex_count, tex_ptr, SWIZ_XYZW);
+        tex_count++;
+        tex_ptr += 4;
+        r300->swtcl_dummy_texcoord = true;
+
+        DBG(r300, DBG_RS, "r300: Rasterized dummy texcoord to prevent lockups.\n");
     }
 
     /* Invalidate the rest of the no-TCL (GA) stream locations. */
