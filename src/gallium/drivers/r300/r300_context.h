@@ -634,6 +634,13 @@ struct r300_context {
      * one varying and the RS routes the two gradient vectors as vertex texcoords
      * into the rewritten FS inputs. Set per draw at draw entry. */
     bool derivative_via_draw;
+    /* Position-only SWTCL dummy-texcoord contract (R300_SWTCL_DUMMY_TEXCOORD):
+     * when a draw declares no color and no texcoord, the RS block declares and
+     * routes one real TEX0 vector instead of rasterizing a dummy color the VAP
+     * never produces. Set by r300_update_rs_block, consumed by
+     * r300_draw_emit_all_attribs, which emits the matching payload vector so
+     * VAP declaration, vertex payload, and PSC stream stay index-aligned. */
+    bool swtcl_dummy_texcoord;
 
     /* >64-ALU FS multipass (R300_FS_MULTIPASS): in_multipass guards the two inner
      * draws the 2-pass orchestration issues against re-entering the wrapper.
