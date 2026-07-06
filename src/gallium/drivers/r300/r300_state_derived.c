@@ -716,14 +716,18 @@ static void r300_update_rs_block(struct r300_context *r300)
         }
     }
 
-    /* Position-only safe-dummy-texcoord contract (exact opt-in): declare and
+    /* Position-only dummy-texcoord experiment (exact opt-in): declare and
      * route one real TEX0 vector instead of the dummy color below.  The dummy
      * color rasterizes a color vector the VAP never produces (RS_COUNT counts
-     * one color, VAP_OUTPUT_VTX_FMT_0 declares none), the exact over-
-     * rasterization shape the comment at the head of this function names as a
-     * lockup; the RS482 vertex frontend wedges on it (VAP+GA busy, backend
-     * idle) while the same draw class completes with a declared POS+TEX0
-     * output.  The texcoord must be a real VAP-declared stream output, so
+     * one color, VAP_OUTPUT_VTX_FMT_0 declares none), the over-rasterization
+     * shape the comment at the head of this function names as a lockup.
+     * Silicon-tested on RS482: this declared POS+TEX0 shape still wedges the
+     * vertex frontend (RBBM latches CP+VAP+GA busy, backend idle) on the
+     * first position-only SWTCL draw, so the VAP/RS declaration mismatch is
+     * not the wedge cause by itself; the lever is retained for register-
+     * contract experiments (the remaining delta against the completing r3v
+     * shape is the RS_INST CN_WRITE consumption and state outside VAP/GA).
+     * The texcoord must be a real VAP-declared stream output, so
      * r300_draw_emit_all_attribs emits a matching payload vector when
      * swtcl_dummy_texcoord is set; SWTCL-only, since a HWTCL vertex shader
      * would not write the declared vector. */
