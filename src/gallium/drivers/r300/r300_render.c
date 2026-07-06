@@ -2083,9 +2083,23 @@ void r300_blitter_draw_rectangle(struct blitter_context *blitter,
                       (type == UTIL_BLITTER_ATTRIB_TEXCOORD_XY ? 7 : 0);
     CS_LOCALS(r300);
 
-    /* XXX workaround for a lockup in MSAA resolve on SWTCL chipsets, this
-     * function most probably doesn't handle type=NONE correctly */
-    if ((!r300->screen->caps.has_tcl && type == UTIL_BLITTER_ATTRIB_NONE) ||
+    /* This function renders the rectangle as a single hardware point that the
+     * GA expands to GA_POINT_SIZE (the "rectangular point sprite" above), and
+     * for TEXCOORD_XY it additionally turns on GB_POINT_STUFF_ENABLE so the GA
+     * stuffs texcoords across the expanded point.  That point-sprite vertex
+     * frontend path locks up SWTCL parts: the ATTRIB_NONE case has fallen back
+     * to the plain-quad util_blitter path since 2013 (7969b567bd43, "fix a
+     * lockup in MSAA resolve"), but the TEXCOORD_XY case was left on the
+     * point-sprite path.  On RS480-class SWTCL (has_tcl=false) a TEXCOORD_XY
+     * blit -- e.g. a format-converting texture copy driving a texture upload or
+     * readback -- wedges the vertex frontend (RBBM latches CP+VAP+GA busy,
+     * backend idle) before any application draw.  Route TEXCOORD_XY through the
+     * plain-quad path too on SWTCL, which draws a real two-triangle quad with
+     * per-vertex texcoords and completes.  Also fall back for TEXCOORD_XYZW and
+     * instanced draws this function does not handle. */
+    if ((!r300->screen->caps.has_tcl &&
+         (type == UTIL_BLITTER_ATTRIB_NONE ||
+          type == UTIL_BLITTER_ATTRIB_TEXCOORD_XY)) ||
         type == UTIL_BLITTER_ATTRIB_TEXCOORD_XYZW ||
         num_instances > 1) {
         util_blitter_draw_rectangle(blitter, vertex_elements_cso, get_vs,
