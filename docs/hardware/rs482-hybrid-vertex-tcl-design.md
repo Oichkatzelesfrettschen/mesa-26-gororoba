@@ -9,6 +9,17 @@ the vertex pipeline so the transform runs where it is safe -- SW plus the one
 programmable ALU the chip does have -- and the hardware vertex frontend only
 ever receives vertices it can pass straight through.
 
+## Evidence tiers (morphemic convention)
+
+This document reserves **proven** for claims formally verified in Rocq in the
+`open_gororoba` repository (`proofs/theories/*.v`, checked, zero admits) -- the
+mathematics: Cayley-Dickson algebra, quaternion and octonion norms, and the
+FP24 DP4 exact-integer bound. Everything about the RS482 silicon -- that a draw
+executes, that the wedge is in the VAP/GA, that a register shape submits
+hang-free, that MRT export is byte-exact, that the transform runs at a measured
+rate -- is **demonstrated on silicon** or **measured**, never "proven." A
+finite hardware run demonstrates; it does not prove.
+
 ## What actually wedges (RS482 vertex frontend)
 
 A `glClear` of a color framebuffer (piglit `fbo-clearmipmap`) hangs the GPU.
@@ -40,7 +51,7 @@ different code path and not a hardware-TCL engagement. The VAP is stuck
 assembling or passing a vertex stream whose descriptor does not match what the
 frontend expects, so it waits forever (`VAP_BUSY = 100%`).
 
-## The proven-safe bypass shape
+## The demonstrated-safe bypass shape
 
 One bypass draw is known pixel-exact and hang-free on this silicon: the R2VB
 direct-VAP handoff. Its register shape is the convergence target for any draw
@@ -128,7 +139,7 @@ each vertex is transformed by the composed 4x4.
 
 ## The hybrid HBTCL
 
-The design generalizes the proven R2VB direct-VAP handoff into the standing
+The design generalizes the silicon-demonstrated R2VB direct-VAP handoff into the standing
 vertex path:
 
 - **Transform** runs in SW (Gallium Draw / gallivm) or, where the vertex shader
@@ -157,18 +168,18 @@ instance; the hybrid makes it the rule.
 The endpoint pushes as much of the vertex layer as possible onto the GPU's own
 blocks (RBBM_STATUS names them), leaving the CPU only the small branchy stage
 Artwick (1984) measured as cheap to keep and Owens (2005) confirmed is the hard
-one to put in fixed hardware. Each role below is either already proven on
-silicon or a bounded next increment from two proven pieces.
+one to put in fixed hardware. Each role below is either already demonstrated on
+silicon or a bounded next increment from two demonstrated pieces.
 
 | Block | Role | Evidence |
 | --- | --- | --- |
-| Fragment ALU (US, pixel path) | The transform: `M*v` as 4 `DP4`, and non-linear per-vertex math -- quaternion rotation as 4 `DP4` (HW-confirmed, 3/3 within 0.05), octonion 16 `DP4`, Walsh-Hadamard multiply-free and bit-exact in the FP24 window | proven; 64-ALU ceiling, R400_US lifts to 512 |
-| TAM/TDM/TIM (texture) | Fetch the MVP matrix and vertex attributes as textures -- **in the R2VB producer fragment shader**, which can sample; the VAP-side vertex-texture-fetch is architecturally gated off (`GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS = 0`), so this must live in the producer, not the vertex stage | gate proven; producer wiring to build |
-| RB3D (3D backend) | One-pass multi-attribute export: four `R8G8B8A8` MRT targets route per-output-location, byte-exact, zero deqp regressions -- position, normal, texcoord each to its own target in a single transform pass | MRT proven; combine with R2VB (HBTCL-09) |
+| Fragment ALU (US, pixel path) | The transform: `M*v` as 4 `DP4`, and non-linear per-vertex math -- quaternion rotation as 4 `DP4` (HW-confirmed, 3/3 within 0.05), octonion 16 `DP4`, Walsh-Hadamard multiply-free and bit-exact in the FP24 window (the exact-integer bound is *proven* in Rocq -- open_gororoba `proofs/theories/IDCT8DP4ExactBound.v`: `8*1448^2 < 2^24` and `2^17 < 2^24`, zero admits) | demonstrated on silicon; 64-ALU ceiling, R400_US lifts to 512 |
+| TAM/TDM/TIM (texture) | Fetch the MVP matrix and vertex attributes as textures -- **in the R2VB producer fragment shader**, which can sample; the VAP-side vertex-texture-fetch is architecturally gated off (`GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS = 0`), so this must live in the producer, not the vertex stage | gate measured; producer wiring to build |
+| RB3D (3D backend) | One-pass multi-attribute export: four `R8G8B8A8` MRT targets route per-output-location, byte-exact, zero deqp regressions -- position, normal, texcoord each to its own target in a single transform pass | MRT demonstrated byte-exact; combine with R2VB (HBTCL-09) |
 | E2/RB2D/CBA2D (2D blit) | Move transformed vertices GART->VAP-input, or scatter/gather vertex streams, instead of a CPU copy + `cb_flush` | unexplored: the 2D engine appears once in the corpus (H.264 block-copy), never probed for vertices (HBTCL-10) |
-| VAP (frontend, bypass) | Assemble and output-format-map pre-transformed vertices; idle `VAP_PROG_STREAM_CNTL_1..7` (`0x2154-0x216c`) give headroom for more synthesized attribute channels | proven; never engages the absent PVS |
-| GA / RE / SC | Primitive assembly, setup, rasterization, and a rectangular screen-space reject via `SC_SCISSORS`/`SC_CLIPRECT` (already in the proven-safe bypass shape, outside the wedge window) | proven |
-| CPU (minimal) | Only the branchy clip (linear domain, per Glaeser) and the scalar perspective divide. The transform + barrier + re-ingest already run in one IB for the passthrough class -- no mid-draw CPU round-trip -- at about 0.023 us/vertex versus 0.83 us/vertex for gallivm (~36x), and the re-ingest raster is bit-identical to gallivm | proven |
+| VAP (frontend, bypass) | Assemble and output-format-map pre-transformed vertices; idle `VAP_PROG_STREAM_CNTL_1..7` (`0x2154-0x216c`) give headroom for more synthesized attribute channels | demonstrated; never engages the absent PVS |
+| GA / RE / SC | Primitive assembly, setup, rasterization, and a rectangular screen-space reject via `SC_SCISSORS`/`SC_CLIPRECT` (already in the demonstrated-safe bypass shape, outside the wedge window) | demonstrated |
+| CPU (minimal) | Only the branchy clip (linear domain, per Glaeser) and the scalar perspective divide. The transform + barrier + re-ingest already run in one IB for the passthrough class -- no mid-draw CPU round-trip -- at about 0.023 us/vertex versus 0.83 us/vertex for gallivm (~36x), and the re-ingest raster is bit-identical to gallivm | demonstrated (measured) |
 
 ### Do not re-derive (measured dead ends)
 
@@ -184,7 +195,7 @@ silicon or a bounded next increment from two proven pieces.
 - **r300vk instancing** is broken; do not route per-instance retransform through
   native instancing yet.
 - **Self-feeding / GPU-computed-address indirect draws** do not exist in the
-  corpus; the closest proven amortization is batching one `WAIT_UNTIL` barrier
+  corpus; the closest demonstrated amortization is batching one `WAIT_UNTIL` barrier
   across N draws. Mind the CS triple-buffer pipelining race (fixed `9019491c1fd`)
   for any multi-IB scheme.
 
@@ -201,9 +212,9 @@ standing vertex route.
 
 | Task | Work | Depends on |
 | --- | --- | --- |
-| HBTCL-01 | No-submit PM4 decode (the proven `R300_TRACE` capture + 325-row atom decoder, box-safe) of the clear-quad IB vs a working r3v triangle IB; name the single diverging VAP frontend register (`VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE`) | -- |
-| HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the proven-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
-| HBTCL-03 | Audit the 3289-line `r300_r2vb.c` engine against this design: routes, proven topologies, the transform FS, the open points smear; produce the gap list | -- |
+| HBTCL-01 | No-submit PM4 decode (the silicon-demonstrated `R300_TRACE` capture + 325-row atom decoder, box-safe) of the clear-quad IB vs a working r3v triangle IB; name the single diverging VAP frontend register (`VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE`) | -- |
+| HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the demonstrated-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
+| HBTCL-03 | Audit the 3289-line `r300_r2vb.c` engine against this design: routes, demonstrated topologies, the transform FS, the open points smear; produce the gap list | -- |
 | HBTCL-04 | Implement the Glaeser linear-collineation split in the R2VB transform FS (fragment-ALU `M*v`, SW scalar divide, SW clip in the linear domain); use the R400_US ceiling lift where a VS exceeds 64 ALU | HBTCL-03 |
 | HBTCL-05 | Fold the concrete VAP register table (offsets, wedge window, the 16-bit `VF_CNTL` underflow lever + its mesa fix, the vertex system-value registry, the R2VB CS-write surface) into this doc | -- |
 | HBTCL-06 | Assess the hardware sin/cos (not GL-reachable) plus the fragment-ALU transcendentals for the lighting stage of a full TCL | -- |
