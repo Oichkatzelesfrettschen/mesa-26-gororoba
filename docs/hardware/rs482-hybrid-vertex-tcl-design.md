@@ -32,32 +32,35 @@ concrete path already scaffolded in `open_gororoba`:
    multiplicativity, quaternion rotation as conjugation, Cayley-Dickson
    doubling) against the existing theories (`Quaternion.v`, `OctonionNorm.v`,
    `HurwitzTheorem.v`, `SchaferDivAlg16.v`), machine-checked with zero admits.
-2. **Extract natively, then translate to C.** The toolchain is Rocq Prover
-   9.1.1 with `rocq-elpi` and `rocq-equations`; there is no CertiCoq or
-   verified-extraction backend installed, so there is no machine-verified
-   Rocq-to-C path. `ExtractQuaternion.v` extracts the `QuatOps` functor via
-   native Rocq extraction to OCaml (a Rust spike exists in
-   `RustExtractSpike.v`). The C kernel for the r300 producer is a hand
-   translation of that verified extraction, validated by differential testing
-   against the extracted OCaml over a sampled input set -- not a machine-checked
-   translation.
-3. **Two named trust boundaries.** (a) The `FLOAT_OPS`-to-concrete-float mapping:
-   for vertex math held in the FP24 exact-integer window -- Qm.f with
-   `m + f <= 17` -- it reduces to integer arithmetic whose exactness is *proven*
-   (`IDCT8DP4ExactBound.v`: `8*1448^2 < 2^24`, `2^17 < 2^24`), closing this
-   boundary in that window; outside it, it is a bounded worst-case-ulp boundary.
-   (b) The extraction-to-C hand translation, closed only by differential test,
-   not by the kernel.
+2. **Compile through verified extraction lanes.** The main proof switch remains
+   the working Rocq 9.1.1 / OCaml 5.4 environment, but the verified compiler
+   lanes live in dedicated switches so they do not perturb that baseline:
+   `rocq-verified-extraction` supplies verified MetaRocq erasure to OCaml in an
+   OCaml 5.3 switch, and `rocq-certirocq` (CertiRocq 0.9.1+9.1) supplies the
+   Rocq-9.1 Gallina-to-CompCert-Clight/C lane in an OCaml 4.14 switch. The
+   OCaml-4 switch is required because the CertiRocq opam package depends on
+   CompCert (`coq-compcert` 3.17), and CompCert remains an OCaml-4.x package.
+   The result is not future-blocked: verified Rocq-to-C/Clight is available on
+   the current Rocq line, just not inside the OCaml-5.4 proof switch.
+3. **Two named boundaries remain explicit.** (a) The
+   `FLOAT_OPS`-to-concrete-float mapping: for vertex math held in the FP24
+   exact-integer window -- Qm.f with `m + f <= 17` -- it reduces to integer
+   arithmetic whose exactness is *proven* (`IDCT8DP4ExactBound.v`:
+   `8*1448^2 < 2^24`, `2^17 < 2^24`), closing this boundary in that window;
+   outside it, it is a bounded worst-case-ulp boundary. (b) The generated-code
+   boundary is collapsed only for kernels actually accepted by CertiRocq and
+   recorded with their generated C/Clight artifact, runtime/ABI assumptions, and
+   extraction command. Until a kernel takes that lane, a hand C translation
+   remains only demonstrated by differential test.
 
-So the honest standing per kernel: the *algebra* is proven (Rocq, machine
-checked); the *extraction to OCaml/Rust* is native Rocq extraction; the *C
-translation* is demonstrated faithful by differential test; and the *silicon
-execution* is demonstrated. A C transform kernel records this chain -- the Rocq
-theorem it descends from, whether it runs in the proven exact-integer window,
-and the two trust boundaries -- so "proven" names only the algebra, never the C
-or the hardware run. Installing CertiCoq or `rocq-verified-extraction` would
-collapse boundary (b) into a machine-verified Rocq-to-C step; that is a future
-toolchain option, not the current state.
+So the honest standing per kernel is tiered. The *algebra* is proven in Rocq;
+verified OCaml erasure is available through `rocq-verified-extraction`; verified
+C/Clight generation is available through CertiRocq in the dedicated OCaml-4.14
+switch; and *silicon execution* remains demonstrated. For a transform kernel
+kept in the FP24 exact-integer window and emitted by CertiRocq, the algebra
+proof plus the FP24 exactness proof plus the verified extraction/compilation
+path compose into a proven generated C/Clight kernel. The driver integration,
+runtime ABI, and RS482 execution stay separately demonstrated or measured.
 
 ## What actually wedges (RS482 vertex frontend)
 
@@ -259,12 +262,17 @@ standing vertex route.
 | HBTCL-06 | Assess the hardware sin/cos (not GL-reachable) plus the fragment-ALU transcendentals for the lighting stage of a full TCL | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear (GA point-setup registers) via the HBTCL-01 decode method | HBTCL-03 |
 | HBTCL-08 | Promote the generalized R2VB collineation engine to the standing r300 SW-TCL vertex route (gated first); validate on RS482 across topologies + a piglit GL2.1 subset under the poller with no VAP/GA stall | HBTCL-02, HBTCL-04, HBTCL-07 |
+| ALG-01 | Prove the transform kernels in `open_gororoba` over `FLOAT_OPS`: quaternion-derived MVP composition, octonion/Cayley-Dickson kernels where useful, and the FP24 exact-window obligations for any integer-coded path | -- |
+| ALG-02 | Keep the `rocq-verified-extraction` lane as the verified OCaml erasure oracle; differential-test OCaml results against any C/fragment-ALU implementation and record the exact theorem/extraction provenance per kernel | ALG-01 |
+| ALG-03 | Route accepted kernels through `rocq-certirocq` in the dedicated OCaml-4.14 / Rocq-9.1 switch; check the generated C/Clight artifact, record ABI/runtime assumptions, and replace hand C for kernels that pass | ALG-01 |
 
 HBTCL-01 and HBTCL-02 are the immediate `fbo-clearmipmap` fix; HBTCL-03/04/07/08
 build the fix out into the standing hybrid; HBTCL-05/06 are the register-table
-and lighting extensions. All hardware steps run on the parked, hang-for-
-inspection box under the wedge-forensics poller; the decode steps submit
-nothing.
+and lighting extensions. ALG-01/02/03 are the proof-carrying kernel lane: they do
+not block the immediate wedge fix, but they upgrade accepted transform kernels
+from demonstrated C translations to generated C/Clight with a verified Rocq
+lineage. All hardware steps run on the parked, hang-for-inspection box under the
+wedge-forensics poller; the decode steps submit nothing.
 
 ## Open items
 
@@ -276,6 +284,10 @@ nothing.
   (`r300_buffer_create` allocates a CPU shadow unless `PIPE_BIND_CUSTOM`), so
   the producer's internal BO carries the transformed result; the app buffer is
   never mutated (matching Mayer's invariant-data principle).
+- The CertiRocq lane still needs a smoke-test extraction in the dedicated
+  OCaml-4.14 switch before any driver C is claimed to have generated-code
+  provenance. Availability of the package does not by itself certify an r300
+  kernel.
 
 ## Sources
 
@@ -283,8 +295,10 @@ r300 driver: `r300_chipset.c`, `r300_state.c` (`r300_create_rs_state`),
 `r300_emit.c`, `r300_reg.h`, `r300_hb_tcl.{c,h}`, `r300_r2vb.c`. RE corpus
 (steinmarder-r300 findings): the has_tcl/hardware-unit map, the vertex-engine
 write-only/read-wedge asymmetry, the R2VB direct-VAP validator-accepted
-hang-free submit, and the platform reset/wedge taxonomy. Archive: Glaeser
-(1994) linear-collineation split, Hoppe (1999) FIFO post-transform cache, Mayer
-(1970) invariant-data axis transform, Artwick (1984) measured clip-versus-matrix
-cost split and per-vertex quaternion cost, Owens et al. (2005) vertex stage as
-the fragile MIMD/scatter stage, Coxeter (1946) rotation as two reflections.
+hang-free submit, and the platform reset/wedge taxonomy. Proof toolchain:
+`open_gororoba` Rocq theories, `rocq-verified-extraction`, and CertiRocq /
+`rocq-certirocq` 0.9.1+9.1. Archive: Glaeser (1994) linear-collineation split,
+Hoppe (1999) FIFO post-transform cache, Mayer (1970) invariant-data axis
+transform, Artwick (1984) measured clip-versus-matrix cost split and per-vertex
+quaternion cost, Owens et al. (2005) vertex stage as the fragile MIMD/scatter
+stage, Coxeter (1946) rotation as two reflections.
