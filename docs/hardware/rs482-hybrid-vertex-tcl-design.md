@@ -152,6 +152,42 @@ where it is safe and hand the frontend only vertices it can pass straight
 through. Converging the blitter clear quad onto the bypass shape is the first
 instance; the hybrid makes it the rule.
 
+## All-on-pipeline: one role per block, minimal CPU
+
+The endpoint pushes as much of the vertex layer as possible onto the GPU's own
+blocks (RBBM_STATUS names them), leaving the CPU only the small branchy stage
+Artwick (1984) measured as cheap to keep and Owens (2005) confirmed is the hard
+one to put in fixed hardware. Each role below is either already proven on
+silicon or a bounded next increment from two proven pieces.
+
+| Block | Role | Evidence |
+| --- | --- | --- |
+| Fragment ALU (US, pixel path) | The transform: `M*v` as 4 `DP4`, and non-linear per-vertex math -- quaternion rotation as 4 `DP4` (HW-confirmed, 3/3 within 0.05), octonion 16 `DP4`, Walsh-Hadamard multiply-free and bit-exact in the FP24 window | proven; 64-ALU ceiling, R400_US lifts to 512 |
+| TAM/TDM/TIM (texture) | Fetch the MVP matrix and vertex attributes as textures -- **in the R2VB producer fragment shader**, which can sample; the VAP-side vertex-texture-fetch is architecturally gated off (`GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS = 0`), so this must live in the producer, not the vertex stage | gate proven; producer wiring to build |
+| RB3D (3D backend) | One-pass multi-attribute export: four `R8G8B8A8` MRT targets route per-output-location, byte-exact, zero deqp regressions -- position, normal, texcoord each to its own target in a single transform pass | MRT proven; combine with R2VB (HBTCL-09) |
+| E2/RB2D/CBA2D (2D blit) | Move transformed vertices GART->VAP-input, or scatter/gather vertex streams, instead of a CPU copy + `cb_flush` | unexplored: the 2D engine appears once in the corpus (H.264 block-copy), never probed for vertices (HBTCL-10) |
+| VAP (frontend, bypass) | Assemble and output-format-map pre-transformed vertices; idle `VAP_PROG_STREAM_CNTL_1..7` (`0x2154-0x216c`) give headroom for more synthesized attribute channels | proven; never engages the absent PVS |
+| GA / RE / SC | Primitive assembly, setup, rasterization, and a rectangular screen-space reject via `SC_SCISSORS`/`SC_CLIPRECT` (already in the proven-safe bypass shape, outside the wedge window) | proven |
+| CPU (minimal) | Only the branchy clip (linear domain, per Glaeser) and the scalar perspective divide. The transform + barrier + re-ingest already run in one IB for the passthrough class -- no mid-draw CPU round-trip -- at about 0.023 us/vertex versus 0.83 us/vertex for gallivm (~36x), and the re-ingest raster is bit-identical to gallivm | proven |
+
+### Do not re-derive (measured dead ends)
+
+- **PVS sin/cos** (`ME_SIN`/`ME_COS` as a hardware vertex transcendental) is
+  superseded: the PVS path is closed, and the most aggressive recovery lever
+  (clearing `D18F3x44 SyncOnWdogEn` before a `0x221c` read) froze both cores.
+  Lighting transcendentals stay on the fragment ALU (`EX2`/`LG2`/`RCP`/`RSQ`).
+- **Sedenion Cariow reduced-multiply** is refuted as an ALU win on R300: uniform
+  ALU cost makes the Hadamard-butterfly additions a net loss (171-246 versus the
+  164 per-quarter baseline). Fewer multiplies does not mean fewer R300 slots.
+- **Clip-enable** invokes the wedge-prone VAP clip; only the `CLIP_DISABLE`
+  *write* is safe. Clip stays in software.
+- **r300vk instancing** is broken; do not route per-instance retransform through
+  native instancing yet.
+- **Self-feeding / GPU-computed-address indirect draws** do not exist in the
+  corpus; the closest proven amortization is batching one `WAIT_UNTIL` barrier
+  across N draws. Mind the CS triple-buffer pipelining race (fixed `9019491c1fd`)
+  for any multi-IB scheme.
+
 ## Scoped implementation plan
 
 What already exists on this substrate is more than a sketch: `r300_r2vb.c` is a
