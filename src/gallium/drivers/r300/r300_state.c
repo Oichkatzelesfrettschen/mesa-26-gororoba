@@ -2296,6 +2296,12 @@ static void r300_set_viewport_states(struct pipe_context* pipe,
     if (r300->draw) {
         draw_set_viewport_states(r300->draw, start_slot, num_viewports, state);
         viewport->vte_control = R300_VTX_XY_FMT | R300_VTX_Z_FMT;
+        /* The viewport atom carries VAP_VTE_CNTL, which the VAP reads per draw to
+         * pick window-space vs clip-space vertex fetch. The SWTCL value is
+         * constant, but the atom must still be re-emitted: a util_blitter clear
+         * quad sets this viewport and draws immediately, so without a dirty mark
+         * the draw inherits a stale coord-space and the vertex frontend stalls. */
+        r300_mark_atom_dirty(r300, &r300->viewport_state);
         return;
     }
 
