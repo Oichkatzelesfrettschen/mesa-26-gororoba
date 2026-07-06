@@ -20,6 +20,45 @@ hang-free, that MRT export is byte-exact, that the transform runs at a measured
 rate -- is **demonstrated on silicon** or **measured**, never "proven." A
 finite hardware run demonstrates; it does not prove.
 
+## Proof-carrying algebra kernels
+
+The exceptional-algebra transforms this design runs on the fragment ALU
+(quaternion rotation, the octonion and Cayley-Dickson kernels, the MVP as
+DP4s) become *proven* -- not merely demonstrated -- by construction, along a
+concrete path already scaffolded in `open_gororoba`:
+
+1. **Derive from first principles in Rocq.** State the kernel over an abstract
+   `FLOAT_OPS` signature and prove its algebraic laws (Hurwitz norm
+   multiplicativity, quaternion rotation as conjugation, Cayley-Dickson
+   doubling) against the existing theories (`Quaternion.v`, `OctonionNorm.v`,
+   `HurwitzTheorem.v`, `SchaferDivAlg16.v`), machine-checked with zero admits.
+2. **Extract natively, then translate to C.** The toolchain is Rocq Prover
+   9.1.1 with `rocq-elpi` and `rocq-equations`; there is no CertiCoq or
+   verified-extraction backend installed, so there is no machine-verified
+   Rocq-to-C path. `ExtractQuaternion.v` extracts the `QuatOps` functor via
+   native Rocq extraction to OCaml (a Rust spike exists in
+   `RustExtractSpike.v`). The C kernel for the r300 producer is a hand
+   translation of that verified extraction, validated by differential testing
+   against the extracted OCaml over a sampled input set -- not a machine-checked
+   translation.
+3. **Two named trust boundaries.** (a) The `FLOAT_OPS`-to-concrete-float mapping:
+   for vertex math held in the FP24 exact-integer window -- Qm.f with
+   `m + f <= 17` -- it reduces to integer arithmetic whose exactness is *proven*
+   (`IDCT8DP4ExactBound.v`: `8*1448^2 < 2^24`, `2^17 < 2^24`), closing this
+   boundary in that window; outside it, it is a bounded worst-case-ulp boundary.
+   (b) The extraction-to-C hand translation, closed only by differential test,
+   not by the kernel.
+
+So the honest standing per kernel: the *algebra* is proven (Rocq, machine
+checked); the *extraction to OCaml/Rust* is native Rocq extraction; the *C
+translation* is demonstrated faithful by differential test; and the *silicon
+execution* is demonstrated. A C transform kernel records this chain -- the Rocq
+theorem it descends from, whether it runs in the proven exact-integer window,
+and the two trust boundaries -- so "proven" names only the algebra, never the C
+or the hardware run. Installing CertiCoq or `rocq-verified-extraction` would
+collapse boundary (b) into a machine-verified Rocq-to-C step; that is a future
+toolchain option, not the current state.
+
 ## What actually wedges (RS482 vertex frontend)
 
 A `glClear` of a color framebuffer (piglit `fbo-clearmipmap`) hangs the GPU.
