@@ -754,32 +754,41 @@ struct r300_vap_rs_tuple {
     bool pos_present, ptsize_present, hires, point_stuff, last_vec_ok;
 };
 
-/* Contract violations, most-load-bearing first.  The color-count check is the
- * RS482 GL SW-TCL wedge discriminator: r300_update_rs_block rasterizes one dummy
- * color (SWIZ_0001) when a draw declares no color and no texcoord, so the RS
- * rasterizes a color vector VAP never produces -- exactly the "more outputs
+/* Contract violations, most-load-bearing first.  The dummy-color signature is
+ * the RS482 GL SW-TCL wedge discriminator: r300_update_rs_block rasterizes one
+ * dummy color (SWIZ_0001) only when a draw declares no color and no texcoord, so
+ * the RS rasterizes a color vector VAP never produces -- the "more outputs
  * rasterized than set in VAP/GA -> locks up" rule at the head of this file. */
 enum r300_vap_rs_violation {
-    R300_VAPRS_COLOR_COUNT   = 1 << 0, /* RS color vectors != VAP-declared colors */
+    R300_VAPRS_DUMMY_COLOR   = 1 << 0, /* dummy color with no VAP color and no VAP texcoord */
     R300_VAPRS_TEXCOMP_COUNT = 1 << 1, /* RS tex components != VAP-declared (no stuffing) */
     R300_VAPRS_LAST_VEC      = 1 << 2, /* last PSC stream element missing LAST_VEC */
 };
 
 /* Pure function of the decoded tuple so the verdict is testable without the GPU:
- * feed it the finding's GL column (rs_colors=1, num_vap_colors=0) and it returns
- * R300_VAPRS_COLOR_COUNT; feed it the r3v column (both 0, tex components 4==4)
- * and it returns 0.  On R500 the FACE path rasterizes a color without a matching
- * VAP_OUTPUT_VTX_FMT_0 bit, so the color check is meaningful only on the R300/RS4xx
- * class this contract targets; the caller prints is_r500 for interpretation.
+ * feed it the finding's GL column (rs_colors=1, no VAP color, no VAP texcoord)
+ * and it returns R300_VAPRS_DUMMY_COLOR; feed it the r3v column (rs_colors=0, tex
+ * components 4==4) and it returns 0.
+ *
+ * The verdict keys on the exact dummy-color signature, not on a plain color-count
+ * inequality, because both directions of rs_colors != num_vap_colors have
+ * documented safe cases: two-sided color sets the back-color VAP_OUTPUT_VTX_FMT_0
+ * bits without a matching RS color unit (r300_update_rs_block, the two_sided_color
+ * branch), and the R500 FACE path rasterizes a color with no VAP_OUTPUT_VTX_FMT_0
+ * bit.  The inequality is still printed as an informational over/under-rasterization
+ * signal; only the dummy-color signature is a hard FAIL.
+ *
  * GB point-stuffing is deliberately NOT a verdict input: r300_blitter_draw_rectangle
  * (r300_render.c) and the R2VB path write R300_GB_ENABLE directly at emit time, so
- * the RS-block gb_enable this reads is not always the draw-time-latched value. */
+ * the RS-block gb_enable this reads is not always the draw-time-latched value.
+ * VAP_VTX_SIZE is reported but not checked: draw_compute_vertex_size derives
+ * vertex_info.size from the same attrib list, so it is self-consistent here. */
 static uint32_t
 r300_vap_rs_contract_check(const struct r300_vap_rs_tuple *t)
 {
     uint32_t v = 0;
-    if (t->rs_colors != t->num_vap_colors)
-        v |= R300_VAPRS_COLOR_COUNT;
+    if (t->rs_colors >= 1 && t->num_vap_colors == 0 && t->num_vap_texcoords == 0)
+        v |= R300_VAPRS_DUMMY_COLOR;
     if (!t->point_stuff && t->rs_tex_comp != t->sum_vap_tex_comp)
         v |= R300_VAPRS_TEXCOMP_COUNT;
     if (!t->last_vec_ok)
@@ -887,12 +896,15 @@ void r300_dump_vap_rs_tuple(struct r300_context *r300, const char *origin)
      * R300_GB_ENABLE directly, so the draw-time-latched value can differ. */
     fprintf(stderr, "VAP_RS   GB_ENABLE(rs_atom)=0x%08x point_stuff=%u\n",
             t.gb_enable, t.point_stuff);
+    /* Informational: the raw color-count inequality is the line-330 over/under-
+     * rasterization signal, but two-sided color and R500 FACE make it safe on
+     * their own, so it is reported, not folded into the verdict. */
     fprintf(stderr,
-            "VAP_RS_CONTRACT origin=%s verdict=%s colors(rs=%u vap=%u) "
+            "VAP_RS_CONTRACT origin=%s verdict=%s colors(rs=%u vap=%u mismatch=%u) "
             "texcomp(rs=%u vap=%u stuff=%u) last_vec=%u violations=0x%x\n",
             origin, viol ? "FAIL" : "PASS", t.rs_colors, t.num_vap_colors,
-            t.rs_tex_comp, t.sum_vap_tex_comp, t.point_stuff, t.last_vec_ok,
-            viol);
+            t.rs_colors != t.num_vap_colors, t.rs_tex_comp, t.sum_vap_tex_comp,
+            t.point_stuff, t.last_vec_ok, viol);
     fflush(stderr);
 }
 
