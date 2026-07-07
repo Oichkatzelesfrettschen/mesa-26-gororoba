@@ -8,8 +8,7 @@ feature surfaces.  The audit parses the meson-format config, compares the
 selected components against the row, and exits nonzero on any component
 outside the allowlist or any config file without a row.  Policy lives in
 the rows: the r300 release row omits zink, the terakan rows carry the
-software rasterizers their x130e reference runs compare against.  The
-deprecated amd_r300 selector alias warns until its removal branch lands.
+software rasterizers their x130e reference runs compare against.
 """
 
 from __future__ import annotations
@@ -54,7 +53,6 @@ def audit(repo_root: str) -> int:
         + glob.glob(os.path.join(repo_root, "build-infra/configs/alternates/*.meson")))
 
     failures: list[str] = []
-    warnings: list[str] = []
     for path in config_paths:
         base = os.path.splitext(os.path.basename(path))[0]
         row = profiles.get(base)
@@ -65,18 +63,11 @@ def audit(repo_root: str) -> int:
         for key in ("gallium-drivers", "vulkan-drivers"):
             allowed = set(row.get(key, []))
             for component in selected.get(key, []):
-                if component == "amd_r300":
-                    warnings.append(
-                        f"{base}: deprecated selector alias amd_r300 "
-                        "(canonical: ati_r300)")
-                    continue
                 if component not in allowed:
                     failures.append(
                         f"{base}: {key} selects '{component}' "
                         f"outside allowlist {sorted(allowed)}")
 
-    for message in warnings:
-        print(f"profile-audit: warn: {message}")
     for message in failures:
         print(f"profile-audit: FAIL: {message}")
     if failures:

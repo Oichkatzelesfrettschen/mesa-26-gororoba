@@ -206,7 +206,7 @@ option(
   'vulkan-drivers',
   type : 'array',
   value : ['auto'],
-  choices : ['auto', 'amd', 'ati_r300', 'amd_r300', 'amd_terascale', 'broadcom', 'freedreno', 'intel',
+  choices : ['auto', 'amd', 'ati_r300', 'amd_terascale', 'broadcom', 'freedreno', 'intel',
              'intel_hasvk', 'panfrost', 'swrast', 'virtio', 'imagination',
              'microsoft-experimental', 'nouveau', 'asahi', 'gfxstream',
              'kosmickrisp', 'all'],

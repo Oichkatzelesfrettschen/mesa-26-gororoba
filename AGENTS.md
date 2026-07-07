@@ -420,8 +420,8 @@ profiles live in `build-infra/configs/alternates/`.  The Makefile resolves a
 bare `PROFILE=` name against both directories, so `make` invocations name a
 profile by basename regardless of which directory holds it.
 
-- `2_r300_full_debug_x86_64v1-clang22-distcc-cache.meson` (DEFAULT, in `configs/`): maximal r300 plus `amd_r300` ICD; debug; vostro.
-- `1_r300_full_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): maximal r300 plus `amd_r300` ICD; release; vostro. The conformance-baseline profile: GL/GLES/Piglit and silicon-evidence runs use this, because an asserts-live debug build can abort a case release would pass.
+- `2_r300_full_debug_x86_64v1-clang22-distcc-cache.meson` (DEFAULT, in `configs/`): maximal r300 plus `ati_r300` ICD; debug; vostro.
+- `1_r300_full_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): maximal r300 plus `ati_r300` ICD; release; vostro. The conformance-baseline profile: GL/GLES/Piglit and silicon-evidence runs use this, because an asserts-live debug build can abort a case release would pass.
 - `3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): r600, zink, softpipe, LLVM, `amd_terascale`, and Rusticl; release; x130e.
 - `4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): r600, zink, softpipe, LLVM, `amd_terascale`, and Rusticl; debug; x130e.
 - `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): same as profile 3 without Rusticl; release; x130e fallback.
