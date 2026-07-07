@@ -11,7 +11,6 @@ docs/r3v-rename-allowlist.txt	this file names the tokens it allowlists
 #
 # transitional-alias: removed by their own dedicated branches, not the
 # rename branch.
-src/gallium/drivers/r300/compiler/r300_nir.c:r300vk_	dual-prefix gate arm until generated helpers migrate (legacy arm removed by its own branch)
 src/re-scripts:run_r300vk_probe_smoke.sh	steinmarder-r300 exec-wrapper until runbooks reference run_r3v_*
 #
 # hardware-family names that are NOT the driver name and never rename:
