@@ -41,7 +41,7 @@ if with_amd_terascale_vk
   subdir('terascale/vulkan')
 endif
 
-if with_amd_r300_vk
+if with_ati_r300_vk
   # When the Gallium backend is enabled, defer r3v to src/meson.build
   # (after subdir('gallium')) so driver_r300 is in scope.  The
   # loader-only build (no Gallium) is processed here as before.

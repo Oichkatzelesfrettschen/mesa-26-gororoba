@@ -165,7 +165,7 @@ The classification holds until either:
 
 ```sh
 meson setup builddir-r300vk \
-    -Dvulkan-drivers=amd_r300 \
+    -Dvulkan-drivers=ati_r300 \
     -Dgallium-drivers= \
     -Dopengl=false -Dgles1=false -Dgles2=false \
     -Dglx=disabled -Degl=disabled \

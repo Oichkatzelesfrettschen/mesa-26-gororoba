@@ -83,7 +83,7 @@ endif
 if with_vdrm
   subdir('virtio/vdrm')
 endif
-if (with_gallium_radeonsi or with_amd_vk or with_amd_r300_vk or with_amd_terascale_vk or
+if (with_gallium_radeonsi or with_amd_vk or with_ati_r300_vk or with_amd_terascale_vk or
     with_gallium_r300 or with_gallium_r600)
   subdir('amd')
 endif
@@ -137,7 +137,7 @@ endif
 # scope when r3v/meson.build processes the shared_library() call.
 # The loader-only r3v build (no Gallium dep) is handled earlier from
 # src/amd/meson.build.
-if with_amd_r300_vk and get_option('r3v-gallium-backend') and with_gallium_r300
+if with_ati_r300_vk and get_option('r3v-gallium-backend') and with_gallium_r300
   subdir('amd/r300/vulkan/r3v')
 endif
 # These require libgallium (shared_glapi_lib)
