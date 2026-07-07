@@ -2097,9 +2097,28 @@ void r300_blitter_draw_rectangle(struct blitter_context *blitter,
      * plain-quad path too on SWTCL, which draws a real two-triangle quad with
      * per-vertex texcoords and completes.  Also fall back for TEXCOORD_XYZW and
      * instanced draws this function does not handle. */
+
+    /* R300_SWTCL_WEDGE_TEXCOORD_BLIT re-emits the pre-#996 hazardous path: it
+     * keeps a SWTCL TEXCOORD_XY rectangle on the point-sprite frontend so it
+     * recreates the exact non-draining VAP/GA wedge (RBBM CP+VAP+GA busy,
+     * backend idle) that #996 fixed.  This is the fault source for the RS480
+     * wedged-3D reset rung (WD3B); the plain-quad fallback stays the default and
+     * every other caller is unaffected.  It prints the blit tuple before submit
+     * so the run proves it exercised the hazardous path. */
+    bool swtcl_wedge_texcoord =
+        !r300->screen->caps.has_tcl &&
+        type == UTIL_BLITTER_ATTRIB_TEXCOORD_XY &&
+        debug_get_bool_option("R300_SWTCL_WEDGE_TEXCOORD_BLIT", false);
+    if (swtcl_wedge_texcoord)
+        fprintf(stderr,
+                "[R300_SWTCL_WEDGE] pre-#996 TEXCOORD_XY point-sprite blit: "
+                "has_tcl=0 type=TEXCOORD_XY rect=(%d,%d)-(%d,%d) -> native "
+                "point-sprite frontend (expected VAP/GA wedge)\n",
+                x1, y1, x2, y2);
+
     if ((!r300->screen->caps.has_tcl &&
          (type == UTIL_BLITTER_ATTRIB_NONE ||
-          type == UTIL_BLITTER_ATTRIB_TEXCOORD_XY)) ||
+          (type == UTIL_BLITTER_ATTRIB_TEXCOORD_XY && !swtcl_wedge_texcoord))) ||
         type == UTIL_BLITTER_ATTRIB_TEXCOORD_XYZW ||
         num_instances > 1) {
         util_blitter_draw_rectangle(blitter, vertex_elements_cso, get_vs,
