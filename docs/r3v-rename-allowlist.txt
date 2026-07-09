@@ -30,3 +30,9 @@ src/amd/r300/vulkan/r3v/r3v_pipeline.c	R300VK_DEBUG env fallback string
 src/amd/r300/vulkan/r3v/r3v_private.h	R300VK_EXPERIMENTAL_NEAREST_STITCH env fallback string
 src/amd/r300/vulkan/r3v/r3v_queue.c	R300VK_DEBUG env fallback string
 src/gallium/drivers/r300/r300_compute_admission.c	R300VK_DEBUG env fallback read; canonical R3V_ debug flag path
+#
+# external-artifact: an on-box deqp-vk build directory named before the rename;
+# renaming the doc reference without renaming the actual build tree would break
+# the path.  Not a mesa symbol.
+build-infra/conformance/r3v-vulkan-surface/README.md	external deqp-vk build dir name build-vostro-r300vk-headless
+build-infra/conformance/r3v-vulkan-surface/run.sh	external deqp-vk build dir name build-vostro-r300vk-headless (DEQP_VK default path)
