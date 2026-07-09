@@ -13,7 +13,7 @@ Use the repository's `build-infra` entrypoint for day-to-day work.
 | Run Meson/Ninja test target for current builddir | `make -C build-infra test PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` |
 | Run full Meson tests directly | `meson test -C <builddir> --print-errorlogs` |
 | Run a single Meson test | `meson test -C <builddir> --list` then `meson test -C <builddir> <test_name> --print-errorlogs` |
-| Run one r300vk validation probe | `VK_ICD_FILENAMES=/opt/local/mesa-26-gororoba/share/vulkan/icd.d/r300_icd.x86_64.json src/amd/r300/vulkan/r300vk/tests/run_r300vk_4096_validation.sh /tmp/r300vk-4096-validation` |
+| Run one r3v validation probe | `VK_ICD_FILENAMES=/opt/local/mesa-26-gororoba/share/vulkan/icd.d/r300_icd.x86_64.json src/amd/r300/vulkan/r3v/tests/run_r3v_4096_validation.sh /tmp/r3v-4096-validation` |
 | Shell script lint pass used in CI | `./.gitlab-ci/run-shellcheck.sh` |
 | CI Python checks (`pytest` + `flake8`) | `./.gitlab-ci/run-pytest.sh` |
 | CI config lint checks | `python3 bin/toml_lint.py && ./.gitlab-ci/run-yamllint.sh` |
@@ -35,7 +35,7 @@ This repository is a Mesa 26.x fork with custom driver and build lanes layered o
 | `src/amd/terascale/vulkan/` | Terakan Vulkan driver lane for TeraScale-era hardware work. |
 | `src/gallium/drivers/r300/` and `src/gallium/drivers/r600/` | Gallium driver backends touched by fork-specific bring-up and conformance work. |
 | `src/gallium/auxiliary/vl/` | Shared video/decode infrastructure used by r300/r600 video paths (including g3dvl-related work). |
-| `src/amd/r300/vulkan/r300vk/` | R300 Vulkan research lane and probe tooling (`tests/` wrappers). |
+| `src/amd/r300/vulkan/r3v/` | R300 Vulkan research lane and probe tooling (`tests/` wrappers). |
 | `build-infra/` | Canonical orchestration layer (Makefile + Meson native profiles + host env overlays). Meson owns configure/build internals; Make owns profile/host selection and orchestration targets. |
 | `docs/submittingpatches.rst` | Upstream Mesa patch/testing expectations used as review baseline (component prefixes, tested commits, clean history). |
 

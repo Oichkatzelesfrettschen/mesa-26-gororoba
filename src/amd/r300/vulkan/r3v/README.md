@@ -3,11 +3,11 @@ Copyright (c) 2026 Terascale Functionalists
 SPDX-License-Identifier: MIT
 -->
 
-# r300vk -- experimental Vulkan ICD for RS482/RS485
+# r3v -- experimental Vulkan ICD for RS482/RS485
 
 ## Overview
 
-`r300vk` is a Vulkan installable client driver (ICD) targeting the
+`r3v` is a Vulkan installable client driver (ICD) targeting the
 AMD RS480-family integrated graphics processor: Radeon Xpress 200M
 (RS482, PCI `1002:5974`) and Radeon Xpress 1100/1150 mobile
 (RS485, PCI `1002:5975`).  It exposes the chip as a Vulkan
@@ -20,7 +20,7 @@ The driver consciously violates the Vulkan conformance contract
 because R3xx silicon has no native compute dispatch surface.  The
 classification reported to external tooling is therefore
 `experimental_nonconformant_graphics_without_compute` -- see
-`r3v_private.h` for the canonical macro `R300VK_CONFORMANCE_STATUS`.
+`r3v_private.h` for the canonical macro `R3V_CONFORMANCE_STATUS`.
 
 ## Hardware target
 
@@ -51,20 +51,20 @@ RS/TX/US/CB/ZB blocks remain hardware-backed.
 ## Repository layout
 
 ```
-src/amd/r300/vulkan/r300vk/
+src/amd/r300/vulkan/r3v/
   r3v_private.h            PCI IDs, API version, conformance macro
-  r3v_instance.h           struct r300vk_instance
+  r3v_instance.h           struct r3v_instance
   r3v_instance.c           vkCreateInstance / vk_icdGetInstanceProcAddr
-  r3v_physical_device.h    struct r300vk_physical_device
+  r3v_physical_device.h    struct r3v_physical_device
   r3v_physical_device.c    DRM probe + properties + queues + memory
-  r3v_device.h             struct r300vk_device / r300vk_queue
+  r3v_device.h             struct r3v_device / r3v_queue
   r3v_device.c             CreateDevice / DestroyDevice / gate check
   r3v_queue.c              submit replay -- Backend A (pipe_context)
   r3v_memory.h/.c          VkDeviceMemory resource-backed model
   r3v_buffer.h/.c          VkBuffer backed by PIPE_BUFFER pipe_resource
   r3v_image.h/.c           VkImage backed by PIPE_TEXTURE_2D pipe_resource
   r3v_resource_state.h     per-image layout-tracking struct
-  r3v_cmd_buffer.h/.c      command recording into r300vk_cmd_entry stream
+  r3v_cmd_buffer.h/.c      command recording into r3v_cmd_entry stream
   r3v_pipeline.h/.c        CreateGraphicsPipelines -- SPIR-V -> NIR -> r300g CSOs
   r3v_render_pass.h/.c     VkRenderPass local object
   r3v_framebuffer.h/.c     VkFramebuffer local object
@@ -83,24 +83,24 @@ chip) and uses the Mesa Vulkan runtime base structures
 ## Submit architecture: semantic IR and backend dispatch
 
 The Vulkan command stream is lowered to a device-independent
-`r300vk_cmd_entry` array (see `r3v_cmd_buffer.h`) at record time.
-At submit time, `r300vk_queue_driver_submit` replays this array through
+`r3v_cmd_entry` array (see `r3v_cmd_buffer.h`) at record time.
+At submit time, `r3v_queue_driver_submit` replays this array through
 a backend selected at `CreateDevice` time.
 
 ```
 vkCmd* recording
-  -> r300vk_cmd_entry stream  (semantic IR, device-independent)
-     -> Backend A (default): r300vk_replay_gpu()
+  -> r3v_cmd_entry stream  (semantic IR, device-independent)
+     -> Backend A (default): r3v_replay_gpu()
         -> Gallium pipe_context calls
         -> r300g atom-dirty machinery
         -> radeon_winsys DRM_RADEON_CS submit
-     -> Backend B (planned): r300vk_replay_backend_b()
+     -> Backend B (planned): r3v_replay_backend_b()
         -> radeon_winsys cs_emit directly
         -> bypasses Gallium pipe_context
         -> NOT YET IMPLEMENTED (see below)
 ```
 
-**Backend A** (current, working): `r300vk_replay_gpu()` in `r3v_queue.c`
+**Backend A** (current, working): `r3v_replay_gpu()` in `r3v_queue.c`
 lowers the cmd_entry stream through Gallium's `pipe_context` call layer.
 Gallium's atom-dirty machinery emits all required register state
 (viewport, blend, DSA, rasterizer, vertex elements, PVS flush, guardband,
@@ -112,12 +112,12 @@ the next `draw_vbo`, so state remains coherent across the flush boundary.
 bypassing `pipe_context`.  Two prerequisites must be resolved first:
 
 1. **Shader code access (FATAL)**: `vs_cso` and `fs_cso` in
-   `r300vk_pipeline` are `void *` (opaque Gallium CSO handles).  Backend B
+   `r3v_pipeline` are `void *` (opaque Gallium CSO handles).  Backend B
    cannot cast them to `r300_vertex_shader` / `r300_fragment_shader`
    without a dedicated extraction API (e.g. `r300_vs_get_hw_code()`).
    That function does not yet exist in r300g's public headers.
 
-2. **IR completeness (SERIOUS)**: the `r300vk_cmd_entry` stream carries
+2. **IR completeness (SERIOUS)**: the `r3v_cmd_entry` stream carries
    Vulkan-semantic operations (bind pipeline as CSO handle, set viewport
    as `VkViewport`).  It does not carry the 15+ r300g register atoms
    (guardband, VAP invariant state, blend equation bytes, DSA bits, etc.)
@@ -126,37 +126,37 @@ bypassing `pipe_context`.  Two prerequisites must be resolved first:
    to-PM4 translation path.
 
 The `use_cs_backend` device flag (set by
-`R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1` at `CreateDevice` time) is
-the dispatch gate.  The dispatch hook in `r300vk_queue_driver_submit` is
+`R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1` at `CreateDevice` time) is
+the dispatch gate.  The dispatch hook in `r3v_queue_driver_submit` is
 in place; the Backend B function body is the PR 3 deliverable.
 
 ## Resource-state ledger
 
-`r300vk_resource_state` (in `r3v_resource_state.h`) tracks the current
+`r3v_resource_state` (in `r3v_resource_state.h`) tracks the current
 `VkImageLayout` per image.  On RS482/RS485 (UMA, no aux compression
 surfaces) layout transitions have no aux decompression step; they reduce
 to a `pipe->flush()` at the barrier boundary plus a bookkeeping update to
 `image->resource_state.layout`.  The field is updated at replay time in
-the `R300VK_CMD_PIPELINE_BARRIER` case of `r300vk_replay_gpu()`.
+the `R3V_CMD_PIPELINE_BARRIER` case of `r3v_replay_gpu()`.
 
 ## Conformance contract
 
 No documented or silicon-proven native compute dispatch surface exists
-for this RS482/RS485 R300VK target.  The r300vk skeleton MUST NOT be
+for this RS482/RS485 R3V target.  The r3v skeleton MUST NOT be
 advertised as conformant Vulkan for any version.  The contract is
 enforced by:
 
-1. The `R300VK_CONFORMANCE_STATUS` macro in `r3v_private.h`.
-2. The empty `vk_features` table in `r300vk_physical_device_init_features`.
+1. The `R3V_CONFORMANCE_STATUS` macro in `r3v_private.h`.
+2. The empty `vk_features` table in `r3v_physical_device_init_features`.
 3. The queue family declaration in
-   `r300vk_GetPhysicalDeviceQueueFamilyProperties2`: one queue family,
+   `r3v_GetPhysicalDeviceQueueFamilyProperties2`: one queue family,
    `VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT`, no compute.
 4. Probes that observe physical-device properties must record the
    conformance classification before any benchmark or workload claim.
 
 The classification holds until either:
 
-- AMD or a Khronos-allocated `VkDriverId` is assigned for r300vk and
+- AMD or a Khronos-allocated `VkDriverId` is assigned for r3v and
   the driver passes the relevant CTS suites; or
 - the project explicitly decides to keep the skeleton experimental
   and documents that decision in `docs/`.
@@ -164,21 +164,21 @@ The classification holds until either:
 ## Build
 
 ```sh
-meson setup builddir-r300vk \
+meson setup builddir-r3v \
     -Dvulkan-drivers=ati_r300 \
     -Dgallium-drivers= \
     -Dopengl=false -Dgles1=false -Dgles2=false \
     -Dglx=disabled -Degl=disabled \
     -Dplatforms=x11 -Dllvm=disabled -Dlibunwind=disabled \
     -Dbuildtype=debug
-ninja -C builddir-r300vk src/amd/r300/vulkan/r300vk/libvulkan_r300.so
+ninja -C builddir-r3v src/amd/r300/vulkan/r3v/libvulkan_r300.so
 ```
 
 To exercise the ICD in-tree without installing:
 
 ```sh
-export VK_ICD_FILENAMES=$PWD/builddir-r300vk/src/amd/r300/vulkan/r300vk/r300_devenv_icd.x86_64.json
-export R300VK_DEBUG=startup
+export VK_ICD_FILENAMES=$PWD/builddir-r3v/src/amd/r300/vulkan/r3v/r300_devenv_icd.x86_64.json
+export R3V_DEBUG=startup
 vulkaninfo --summary
 ```
 
@@ -190,11 +190,11 @@ result bundle under `src/re/r300/results/`.
 
 | Step | Mechanism | Success criterion |
 |---|---|---|
-| Loader visibility | `vkCreateInstance` + `vkEnumeratePhysicalDevices` | `r300vk_loader_r300_device_found`, `physical_device_count >= 1` |
+| Loader visibility | `vkCreateInstance` + `vkEnumeratePhysicalDevices` | `r3v_loader_r300_device_found`, `physical_device_count >= 1` |
 | Identity | `vkGetPhysicalDeviceProperties` | `vendorID=0x1002`, `deviceID` in `{0x5974, 0x5975}`, deviceName matches RS480 chip family |
 | Queue families | `vkGetPhysicalDeviceQueueFamilyProperties2` | exactly one family, GRAPHICS+TRANSFER, no COMPUTE |
 | Memory model | `vkGetPhysicalDeviceMemoryProperties2` | two heaps, two types, `memory_properties_placeholder=true` until DRM_RADEON_GEM_INFO query lands |
-| Limits envelope | `vkGetPhysicalDeviceProperties` `limits` | R3xx-grounded values match `r300vk_physical_device_init_limits` |
+| Limits envelope | `vkGetPhysicalDeviceProperties` `limits` | R3xx-grounded values match `r3v_physical_device_init_limits` |
 
 Higher-tier milestones (device creation, command buffer recording,
 shader compilation, framebuffer attach, draw submission) remain
@@ -207,14 +207,14 @@ The skeleton would be falsified by any of:
 - `vkCreateInstance` returning `VK_ERROR_INITIALIZATION_FAILED` on a
   host with the RS482/RS485 chip and a working radeon DRM driver.
 - `vkEnumeratePhysicalDevices` returning zero devices when the
-  loader has the r300vk ICD JSON registered and the host carries an
+  loader has the r3v ICD JSON registered and the host carries an
   RS482/RS485 chip.
 - `vkGetPhysicalDeviceProperties` reporting a vendor or device ID
-  outside the supported set for an enumerated r300vk physical device.
+  outside the supported set for an enumerated r3v physical device.
 - A `VK_QUEUE_COMPUTE_BIT` appearing in any queue family the driver
   reports.
 - A hazard match in the radeon kernel log (gpu lockup, ring stall,
-  cs reject, drm reset) produced by an r300vk probe that does not
+  cs reject, drm reset) produced by an r3v probe that does not
   submit any IB.
 
 ## Primary-source citations
@@ -254,5 +254,5 @@ Per `AGENTS.md` "Canonical Mesa workspace boundary":
 
 Cross-repo references in this README cite paths under
 `src/re/r300/...` in the steinmarder tree.  See
-`steinmarder/src/re/r300/docs/R300VK_ICD_GL_BACKED_SKELETON_DESIGN.md`
+`steinmarder/src/re/r300/docs/R3V_ICD_GL_BACKED_SKELETON_DESIGN.md`
 for the longer-form architecture scope.

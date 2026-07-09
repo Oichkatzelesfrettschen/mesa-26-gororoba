@@ -16,3 +16,17 @@ src/re-scripts:run_r300vk_probe_smoke.sh	steinmarder-r300 exec-wrapper until run
 # hardware-family names that are NOT the driver name and never rename:
 # r300 (Gallium driver), R300/RS482/RS485 (silicon), libvulkan_r300.so and
 # r300_icd.*.json survive only until r3v/install-artifact-rename lands.
+#
+# env-compat: the r3v driver reads the canonical R3V_ env-var name first and
+# falls back to the pre-rename R300VK_ spelling via r3v_getenv_compat(); the
+# legacy arm retires with the r300vk compatibility surface (see the
+# getenv-compat comment in r3v_private.h).  These R300VK_ strings are the
+# deliberate fallback names, not un-renamed symbols.
+src/amd/r300/vulkan/r3v/r3v_device.c	R300VK_DEBUG / R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED env fallback strings
+src/amd/r300/vulkan/r3v/r3v_identity_map.c	R300VK_DEBUG env fallback string
+src/amd/r300/vulkan/r3v/r3v_instance.c	R300VK_DEBUG env fallback string
+src/amd/r300/vulkan/r3v/r3v_physical_device.c	R300VK_HYBRID_COMPUTE_EXPERIMENTAL / R300VK_WSI_SW env fallback strings
+src/amd/r300/vulkan/r3v/r3v_pipeline.c	R300VK_DEBUG env fallback string
+src/amd/r300/vulkan/r3v/r3v_private.h	R300VK_EXPERIMENTAL_NEAREST_STITCH env fallback string
+src/amd/r300/vulkan/r3v/r3v_queue.c	R300VK_DEBUG env fallback string
+src/gallium/drivers/r300/r300_compute_admission.c	R300VK_DEBUG env fallback read; canonical R3V_ debug flag path
