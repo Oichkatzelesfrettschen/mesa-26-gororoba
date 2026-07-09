@@ -281,7 +281,7 @@ silicon or a bounded next increment from two demonstrated pieces.
   164 per-quarter baseline). Fewer multiplies does not mean fewer R300 slots.
 - **Clip-enable** invokes the wedge-prone VAP clip; only the `CLIP_DISABLE`
   *write* is safe. Clip stays in software.
-- **r300vk instancing** is broken; do not route per-instance retransform through
+- **r3v instancing** is broken; do not route per-instance retransform through
   native instancing yet.
 - **Self-feeding / GPU-computed-address indirect draws** do not exist in the
   corpus; the closest demonstrated amortization is batching one `WAIT_UNTIL` barrier
