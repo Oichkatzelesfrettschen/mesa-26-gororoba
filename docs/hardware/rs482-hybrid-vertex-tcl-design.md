@@ -133,6 +133,89 @@ after the non-r500 `+1440` scissor offset (`r300_emit.c`), `VAP_VF_CNTL`
 the retained 672-dword IB (via the no-submit PM4 decode workflow, not another
 live wedge) names the exact one.
 
+## VAP register table
+
+The concrete registers the bypass shape programs, from `r300_reg.h`. The r3xx
+family register file governs the RS482 VAP; the `R500_*` rows exist in the same
+header but are gated off on this silicon (`is_r500 = false`) and are listed so
+the missing-fallback hazards are explicit. Offsets are byte addresses; a `*`
+in the R2VB column marks a register the direct-VAP route (`r300_r2vb.c`) emits.
+
+| Register | Offset | Load-bearing field(s) | Role in the TCL_BYPASS / R2VB route | R2VB |
+| --- | --- | --- | --- | --- |
+| `VAP_PORT_IDX0` | `0x2040` | immediate vertex dword | Immediate-mode vertex data port; the bypass fetches from a VBO instead, but the port is the alternative inline write surface | |
+| `VAP_CNTL` | `0x2080` | `PVS_NUM_SLOTS`/`CNTLRS`/`FPUS`, `VF_MAX_VTX_NUM` | Static `0x0014025a`; `VF_MAX_VTX_NUM=5` is the bypass fingerprint (HW-TCL writes `12`) | |
+| `VAP_VF_CNTL` | `0x2084` | `PRIM_TYPE[3:0]`, `PRIM_WALK[5:4]`, `NUM_VERTICES[31:16]` | Kicks the draw; `NUM_VERTICES` is a 16-bit field (the underflow lever, below) | * |
+| `R500_VAP_ALT_NUM_VERTICES` | `0x2088` | 32-bit count | r5xx-only wide count; **absent on RS482**, so the byte-budget clamp is the sole guard | |
+| `R500_VAP_INDEX_OFFSET` | `0x208c` | signed index bias | r5xx-only; RS482 applies index bias on the CPU side | |
+| `VAP_OUTPUT_VTX_FMT_0` | `0x2090` | `POS_PRESENT` b0, `COLOR_[0..3]_PRESENT` b1-4, `PT_SIZE_PRESENT` b16 | Declares which post-transform attributes the VAP emits to setup | * |
+| `VAP_OUTPUT_VTX_FMT_1` | `0x2094` | `TEX_[0..7]_COMP_CNT` (3 bits each) | Per-texcoord component count of the emitted vertex | * |
+| `VAP_VTE_CNTL` | `0x20b0` | `VPORT_[XYZ]_SCALE`/`OFFSET_ENA` b0-5, `VTX_XY_FMT` b8, `VTX_Z_FMT` b9, `VTX_W0_FMT` | Selects pre-divided window-space vs full clip-space fetch -- the bit the producer (window) and re-ingest (clip) stages flip | * |
+| `VAP_VTX_SIZE` | `0x20b4` | per-vertex dword stride | Fetch stride; part of the `PSC`/stride tuple a diverging clear-quad can miss | * |
+| `VAP_VF_MAX_VTX_INDX` | `0x2134` | max index | Upper index clamp for the fetch window | * |
+| `VAP_VF_MIN_VTX_INDX` | `0x2138` | min index | Lower index clamp | |
+| `VAP_CNTL_STATUS` | `0x2140` | `TCL_BYPASS` b8, `PVS_BUSY` b11, `VS_BUSY` b24, swap `[1:0]` | Sets bypass (VAP forwards pre-transformed vertices, T&L idle); busy bits read only via `RBBM_STATUS` aggregate under a wedge | * |
+| `VAP_PROG_STREAM_CNTL_0..7` | `0x2150-0x216c` | per-stream data-type + `DST_VEC_LOC` | Attribute stream layout; writable and reusable, never read back; idle `_1..7` are headroom for synthesized channels | * |
+| `VAP_VTX_STATE_CNTL` | `0x2180` | vertex state select | Vertex state routing for the bypass fetch | * |
+| `VAP_PVS_VECTOR_INDX_REG` | `0x2200` | PVS upload index | PVS program-upload window; **write-only, dead on RS48x** (no PVS) | |
+| `VAP_PSC_SGN_NORM_CNTL` | `0x21dc` | per-component sign/normalize | Fetch sign-extend / normalize control | |
+| `VAP_PROG_STREAM_CNTL_EXT_0..7` | `0x21e0-0x21fc` | swizzle + write-mask | Extended per-stream layout (swizzle, write-enable) | * |
+| `VAP_CLIP_CNTL` | `0x221c` | `CLIP_DISABLE` b16, `UCP_ENABLE_[0..5]` b0-5, `PS_UCP_MODE` b14-15 | Bypass sets `CLIP_DISABLE`; clip is owned by the CPU/Draw side | * |
+| `VAP_GB_VERT_CLIP_ADJ` | `0x2220` | vertical clip guard-band | Guard-band the setup clip widens to; the CPU-side clip must agree with these when `CLIP_DISABLE` is not set | |
+| `VAP_GB_VERT_DISC_ADJ` | `0x2224` | vertical discard guard-band | Guard-band beyond which setup discards; paired with the vertical clip adjust | |
+| `VAP_GB_HORZ_CLIP_ADJ` | `0x2228` | horizontal clip guard-band | Horizontal companion to `GB_VERT_CLIP_ADJ` | |
+| `VAP_GB_HORZ_DISC_ADJ` | `0x222c` | horizontal discard guard-band | Horizontal companion to `GB_VERT_DISC_ADJ` | |
+| `VAP_PVS_CODE_CNTL_0` | `0x22d0` | PVS code entry/size | PVS instruction-store control; **write-only, dead on RS48x** | |
+| `VAP_PVS_STATE_FLUSH_REG` | `0x2284` | write-triggered flush | PVS state-flush handshake; a write is a no-op sync on RS48x (no PVS to flush) | * |
+
+### The 16-bit VF_CNTL underflow lever (and its fix)
+
+`VAP_VF_CNTL.NUM_VERTICES` is 16 bits (`__SHIFT 16`, mask `0xffff`). A
+non-indexed SW-TCL draw of exactly 65536 vertices truncates the field to 0:
+r300g sizes a non-indexed batch by `R300_MAX_DRAW_VBO_SIZE / vertex_size`, and
+the smallest SW-TCL vertex is the mandatory 4-float clip position (16 bytes), so
+the 1 MiB budget yields exactly 65536. On RS482 (`is_r500 = false`) there is no
+`R500_VAP_ALT_NUM_VERTICES` (`0x2088`) / `USE_ALT_NUM_VERTS` (bit 14) fallback,
+so `65536 << 16` writes 0; the kernel `r100_cs_track_check` (prim_walk 2)
+computes `esize*(nverts-1)*4` with `nverts=0`, underflows to `0xFFFFFFFC`, and
+rejects the IB with `-EINVAL` after the half-emitted stream has corrupted the
+heap. Fix `git-150a16dc47` (on main) caps the r3xx/r4xx byte budget below the
+wrap and adds the r5xx alt-count path; validated on RS482 (the 65536-point draw
+renders). The R2VB `TCL_BYPASS` leg emits exactly these large-count draws, so it
+inherits the clamp -- do not re-introduce an unclamped `NUM_VERTICES` emit.
+
+### Vertex system-value registry (there is no VAP register for it)
+
+`gl_VertexID` / `gl_InstanceID` are **not** VAP state on this path.
+`r300_nir_lower_vs_system_values.c` lowers each supported VS system value to a
+synthetic vertex **input** attribute: the caller reserves a velem slot, the pass
+rewrites the system-value intrinsic into a read of that attribute, and the VAP
+fetches it as ordinary vertex data through `VAP_PROG_STREAM_CNTL`. So the
+"registry" is a slot-reservation contract in the fetch layout, not a register
+block -- consistent with the raw-output oracle, which drives these system values
+through the draw module, not through PVS.
+
+### Wedge window (VAP is write-only in practice)
+
+Every register in this table is write-only in practice on RS48x. The
+read-reachability inventory
+(`steinmarder-r300 src/re/r300/docs/rs482-register-read-reachability-and-reader-inventory.md`)
+excludes the whole VAP/PVS domain (`0x2080`, `0x2140`, `0x221c`, ...) as the
+reader group `radeon_rs480_candidate_vap_regs`: the domain clock-gates at rest,
+so a plain `RREG32` stalls the reset-less northbridge even when no draw is in
+flight -- proven by the `0x221c` read that needed a cold power cycle to clear.
+So the bypass programs VAP state blind and never reads it back, and
+`VAP_PROG_STREAM_CNTL` being "writable and reusable, never read back" is a
+property of the whole block, not just that register.
+
+The only safe observation of VAP progress is the `RBBM_STATUS` aggregate
+(`VAP_BUSY`, `GA_BUSY`), which lives in a readable domain. The classified wedge
+signature is `RBBM_STATUS` latched at `0x8411c100` with `VAP_BUSY = GA_BUSY =
+100%` and the backend idle -- a vertex-frontend stall, the shape the bypass
+converges away from. Under an active 3D wedge the `0x4000+` space compounds this
+into a non-posted-HT-read black hole; the VAP domain is unreadable in both the
+rest and wedged states, only for different reasons.
+
 ## Mathematical decomposition of the transform
 
 The vertex TCL pipeline factors into stages, each tagged by where it is safe to
@@ -306,7 +389,7 @@ plan generalizes this into the standing vertex route.
 | HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the demonstrated-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
 | HBTCL-03 | Audit complete: R2VB has three producer paths including straight-line VS restage, but lacks perspective divide, geometric clipping, R400_US routing, and default SW-TCL integration | -- |
 | HBTCL-04 | Implement the real collineation gaps: SW perspective divide for non-trivial `w_clip`, SW geometric clipping in the Glaeser linear domain, and R400_US routing for kernels above the 64-slot R300 fragment-ALU ceiling. Do not rework general transform restaging unless the existing restage classifier rejects a target kernel for a concrete reason | HBTCL-03 |
-| HBTCL-05 | Fold the concrete VAP register table (offsets, wedge window, the 16-bit `VF_CNTL` underflow lever + its mesa fix, the vertex system-value registry, the R2VB CS-write surface) into this doc | -- |
+| HBTCL-05 | DONE: the "VAP register table" section above folds in the offsets, the write-only/read-excluded wedge window, the 16-bit `VF_CNTL` underflow lever + its `git-150a16dc47` fix, the system-value slot-reservation registry, and the R2VB CS-write surface | -- |
 | HBTCL-06 | Assess the hardware sin/cos (not GL-reachable) plus the fragment-ALU transcendentals for the lighting stage of a full TCL | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear (GA point-setup registers) via the HBTCL-01 decode method | HBTCL-03 |
 | HBTCL-08 | Promote the generalized R2VB collineation engine to the standing r300 SW-TCL vertex route (gated first); validate on RS482 across topologies + a piglit GL2.1 subset under the poller with no VAP/GA stall | HBTCL-02, HBTCL-04, HBTCL-07 |
@@ -338,10 +421,20 @@ poller; the decode steps submit nothing.
 ## Sources
 
 r300 driver: `r300_chipset.c`, `r300_state.c` (`r300_create_rs_state`),
-`r300_emit.c`, `r300_reg.h`, `r300_hb_tcl.{c,h}`, `r300_r2vb.c`. RE corpus
-(steinmarder-r300 findings): the has_tcl/hardware-unit map, the vertex-engine
-write-only/read-wedge asymmetry, the R2VB direct-VAP validator-accepted
-hang-free submit, and the platform reset/wedge taxonomy. Archive: Glaeser
+`r300_emit.c`, `r300_reg.h` (VAP register offsets and bitfields in the table),
+`r300_hb_tcl.{c,h}`, `r300_r2vb.c` (the R2VB CS-write surface),
+`r300_nir_lower_vs_system_values.c` (the system-value slot-reservation
+registry). RE corpus (steinmarder-r300): the register-opcode-atom inventory
+(`src/re/r300/docs/isa_references/rs4xx_r300_register_opcode_atom_inventory.tsv`)
+for the VAP offset set including the `GB_*_ADJ` guard-band block; the
+read-reachability inventory
+(`src/re/r300/docs/rs482-register-read-reachability-and-reader-inventory.md`)
+for the `radeon_rs480_candidate_vap_regs` read-exclusion; the 16-bit `VF_CNTL`
+underflow finding and its `git-150a16dc47` fix
+(`findings/active/2026-05-29-rs482-swtcl-vap-16bit-vertex-count-underflow.md`);
+the has_tcl/hardware-unit map, the vertex-engine write-only/read-wedge
+asymmetry, the R2VB direct-VAP validator-accepted hang-free submit, and the
+platform reset/wedge taxonomy. Archive: Glaeser
 (1994) linear-collineation split, Hoppe (1999) FIFO post-transform cache, Mayer
 (1970) invariant-data axis transform, Artwick (1984) measured clip-versus-matrix
 cost split and per-vertex quaternion cost, Owens et al. (2005) vertex stage as
