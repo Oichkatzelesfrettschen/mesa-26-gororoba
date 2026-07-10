@@ -23,6 +23,7 @@
 #include <stdio.h>
 
 #include "util/u_math.h"
+#include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/macros.h"
 #include "util/bitscan.h"
@@ -68,6 +69,9 @@ struct interp {
    int base_vertex;
    int vertex_id_nobase;
    unsigned exec_mode;
+   /* The block executed immediately before the current one along the taken
+    * path, so a phi at a block entry can select the source for that edge. */
+   nir_block *prev_block;
 };
 
 /* nir loops run until a break; blocks propagate a jump to the enclosing walk. */
@@ -214,11 +218,35 @@ interp_intrinsic(struct interp *st, nir_intrinsic_instr *intr)
    }
 }
 
+/* A phi at a block entry copies the source for the edge the walk arrived on.
+ * Structured NIR keeps phis first in the block, so every phi is resolved before
+ * any real instruction runs; each phi source names its predecessor block and
+ * prev_block holds the one just executed.  Sources read predecessor-block defs,
+ * never a sibling phi in this block, so a single top-to-bottom pass preserves
+ * the parallel-copy semantics for the loops GLSL produces. */
+static void
+interp_phi(struct interp *st, nir_phi_instr *phi)
+{
+   nir_const_value *dst = def_vals(st, &phi->def);
+   nir_foreach_phi_src(src, phi) {
+      if (src->pred == st->prev_block) {
+         nir_const_value *s = src_vals(st, src->src);
+         for (unsigned c = 0; c < phi->def.num_components; c++)
+            dst[c] = s[c];
+         return;
+      }
+   }
+   UNREACHABLE("draw_vs_nir: phi has no source for the taken predecessor");
+}
+
 static enum interp_flow
 interp_block(struct interp *st, nir_block *block)
 {
    nir_foreach_instr(instr, block) {
       switch (instr->type) {
+      case nir_instr_type_phi:
+         interp_phi(st, nir_instr_as_phi(instr));
+         break;
       case nir_instr_type_load_const:
          interp_load_const(st, nir_instr_as_load_const(instr));
          break;
@@ -232,6 +260,7 @@ interp_block(struct interp *st, nir_block *block)
          interp_intrinsic(st, nir_instr_as_intrinsic(instr));
          break;
       case nir_instr_type_jump: {
+         st->prev_block = block;
          switch (nir_instr_as_jump(instr)->type) {
          case nir_jump_break:    return FLOW_BREAK;
          case nir_jump_continue: return FLOW_CONTINUE;
@@ -243,6 +272,7 @@ interp_block(struct interp *st, nir_block *block)
          UNREACHABLE("draw_vs_nir: unhandled instr type");
       }
    }
+   st->prev_block = block;
    return FLOW_NEXT;
 }
 
@@ -330,6 +360,7 @@ vs_nir_run_linear(struct draw_vertex_shader *shader,
                                        : (int)i;
       st.input = input;
       st.output = output;
+      st.prev_block = NULL;
 
       interp_cf_list(&st, &nvs->impl->body);
 
@@ -364,6 +395,59 @@ static int
 draw_vs_nir_io_slots(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
+}
+
+/* Opt-in calibration report: which opcodes, intrinsics, and control-flow nodes
+ * a shader actually reaches after lowering, so the corpus can prove it widened
+ * coverage (in particular that nir_if / nir_loop survive to the interpreter and
+ * are not flattened away before draw). */
+DEBUG_GET_ONCE_BOOL_OPTION(draw_nir_exec_stats, "DRAW_NIR_EXEC_STATS", false)
+
+static void
+draw_vs_nir_count_cf(struct exec_list *list, unsigned *n_if, unsigned *n_loop)
+{
+   foreach_list_typed(nir_cf_node, node, node, list) {
+      if (node->type == nir_cf_node_if) {
+         nir_if *nif = nir_cf_node_as_if(node);
+         (*n_if)++;
+         draw_vs_nir_count_cf(&nif->then_list, n_if, n_loop);
+         draw_vs_nir_count_cf(&nif->else_list, n_if, n_loop);
+      } else if (node->type == nir_cf_node_loop) {
+         (*n_loop)++;
+         draw_vs_nir_count_cf(&nir_cf_node_as_loop(node)->body, n_if, n_loop);
+      }
+   }
+}
+
+static void
+draw_vs_nir_dump_stats(nir_function_impl *impl, const char *name)
+{
+   bool op_seen[nir_num_opcodes] = {0};
+   bool intr_seen[nir_num_intrinsics] = {0};
+   unsigned n_instr = 0, n_if = 0, n_loop = 0;
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         n_instr++;
+         if (instr->type == nir_instr_type_alu)
+            op_seen[nir_instr_as_alu(instr)->op] = true;
+         else if (instr->type == nir_instr_type_intrinsic)
+            intr_seen[nir_instr_as_intrinsic(instr)->intrinsic] = true;
+      }
+   }
+   draw_vs_nir_count_cf(&impl->body, &n_if, &n_loop);
+
+   fprintf(stderr, "DRAW_NIR_EXEC_STATS shader='%s' instr=%u if=%u loop=%u\n",
+           name ? name : "?", n_instr, n_if, n_loop);
+   fprintf(stderr, "  ops:");
+   for (unsigned i = 0; i < nir_num_opcodes; i++)
+      if (op_seen[i])
+         fprintf(stderr, " %s", nir_op_infos[i].name);
+   fprintf(stderr, "\n  intr:");
+   for (unsigned i = 0; i < nir_num_intrinsics; i++)
+      if (intr_seen[i])
+         fprintf(stderr, " %s", nir_intrinsic_infos[i].name);
+   fprintf(stderr, "\n");
 }
 
 struct draw_vertex_shader *
@@ -414,6 +498,9 @@ draw_create_vs_nir(struct draw_context *draw,
    vs->base.run_linear = vs_nir_run_linear;
    vs->base.delete = vs_nir_delete;
    vs->base.create_variant = draw_vs_create_variant_generic;
+
+   if (debug_get_option_draw_nir_exec_stats())
+      draw_vs_nir_dump_stats(vs->impl, nir->info.name);
 
    return &vs->base;
 }
