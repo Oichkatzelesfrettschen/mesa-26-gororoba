@@ -293,6 +293,18 @@ static void *r300_r2vb_get_producer_vs(struct r300_context *r300, unsigned num_i
  * garbage (externals_count=0, so set_constant_buffer is ignored), so the matrix
  * must travel in the program; the FS is therefore matrix-specific and rebuilt
  * per draw (the caller deletes it).  Returns a pipe FS CSO or NULL. */
+/* HBTCL-04b gate: the producer performs the perspective divide in the transform
+ * FS when R300_R2VB_DIVIDE is set.  Off by default so the clip-space MVP
+ * self-test (which reads the un-divided 4-DP4 result back) stays the oracle;
+ * the divided output is validated against the SW-TCL reference before any flip. */
+static bool r300_r2vb_divide_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+        cached = getenv("R300_R2VB_DIVIDE") != NULL;
+    return cached;
+}
+
 static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const float rows[16])
 {
     const nir_shader_compiler_options *options =
@@ -311,7 +323,37 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const
                                     rows[r * 4 + 2], rows[r * 4 + 3]);
         comp[r] = nir_fdot(&b, row, v);
     }
-    nir_def *o = nir_vec4(&b, comp[0], comp[1], comp[2], comp[3]);
+    /* HBTCL-04b perspective divide then viewport: window.xyz =
+     * (clip.xyz / w_clip) * viewport_scale + viewport_bias.  comp[3] is w_clip
+     * (the fourth transform row).  The re-ingest emits VAP_VTE_CNTL with
+     * VTX_*_FMT set and VPORT_*_ENA cleared (r300_r2vb_emit_producer), so the VAP
+     * applies no viewport transform and the producer must emit full window space,
+     * not NDC.  On the fragment ALU the reciprocal is a native alpha-pipe RCP
+     * (nir_frcp) that co-issues in the same instruction slot as the transform
+     * DP4s, and the three viewport MADs are one vector op, so the divide and
+     * viewport add no slot pair over the bare transform.  Geometric clip (04c)
+     * runs ahead of this in the collineation domain, so a vertex reaching here has
+     * w_clip > 0; the min-magnitude guard is defensive, bounding the FP24
+     * reciprocal to a finite value instead of emitting an infinity.  Viewport
+     * scale/bias are baked from the current pipe_viewport_state, matching this
+     * FS's already-baked transform rows.  The output carries w = 1 so the
+     * window-space re-ingest performs no second divide. */
+    nir_def *o;
+    if (r300_r2vb_divide_enabled()) {
+        const struct pipe_viewport_state *vp = &r300->viewport;
+        nir_def *w = comp[3];
+        nir_def *guard = nir_imm_float(&b, 1.0f / 32768.0f);
+        nir_def *rcp_w = nir_bcsel(&b, nir_flt(&b, nir_fabs(&b, w), guard),
+                                   nir_imm_float(&b, 0.0f), nir_frcp(&b, w));
+        nir_def *win[3];
+        for (unsigned i = 0; i < 3; i++)
+            win[i] = nir_ffma(&b, nir_fmul(&b, comp[i], rcp_w),
+                              nir_imm_float(&b, vp->scale[i]),
+                              nir_imm_float(&b, vp->translate[i]));
+        o = nir_vec4(&b, win[0], win[1], win[2], nir_imm_float(&b, 1.0f));
+    } else {
+        o = nir_vec4(&b, comp[0], comp[1], comp[2], comp[3]);
+    }
     nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                             glsl_vec4_type(), "out_color");
     out->data.location = FRAG_RESULT_COLOR;
