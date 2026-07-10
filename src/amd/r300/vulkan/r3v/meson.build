@@ -96,8 +96,8 @@ if get_option('r3v-gallium-backend') and with_gallium_r300
   libr3v_c_args += ['-DR3V_GALLIUM_BACKEND']
 endif
 
-libvulkan_r300 = shared_library(
-  'vulkan_r300',
+libvulkan_r3v = shared_library(
+  'vulkan_r3v',
   [libr3v_files, r3v_entrypoints],
   vs_module_defs : vulkan_api_def,
   include_directories : libr3v_inc,
@@ -165,12 +165,12 @@ endif
 # library_path entry.  vk_icd_gen emits the canonical form so the
 # version negotiation matches what r3v_instance.c implements.
 icd_lib_path = join_paths(get_option('prefix'), get_option('libdir'))
-icd_file_name = 'libvulkan_r300.so'
+icd_file_name = 'libvulkan_r3v.so'
 
-r300_icd = custom_target(
-  'r300_icd',
+r3v_icd = custom_target(
+  'r3v_icd',
   input : [vk_icd_gen, vk_api_xml],
-  output : 'r300_icd.@0@.json'.format(host_machine.cpu()),
+  output : 'r3v_icd.@0@.json'.format(host_machine.cpu()),
   command : [
     prog_python, '@INPUT0@',
     '--api-version', '1.0',
@@ -185,11 +185,11 @@ r300_icd = custom_target(
 )
 
 # Devenv ICD: when running meson devenv, point the loader at the build
-# directory copy of the library so `VK_ICD_FILENAMES=<build>/r300_icd*.json`
+# directory copy of the library so `VK_ICD_FILENAMES=<build>/r3v_icd*.json`
 # picks up the in-tree build.
-_dev_icdname = 'r300_devenv_icd.@0@.json'.format(host_machine.cpu())
+_dev_icdname = 'r3v_devenv_icd.@0@.json'.format(host_machine.cpu())
 _dev_icd = custom_target(
-  'r300_devenv_icd',
+  'r3v_devenv_icd',
   input : [vk_icd_gen, vk_api_xml],
   output : _dev_icdname,
   command : [

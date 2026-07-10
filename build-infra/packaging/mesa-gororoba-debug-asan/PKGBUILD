@@ -91,7 +91,7 @@ PYGATE
 
   # Sanity: confirm the instrumented driver objects actually staged (the wrapper
   # is useless without them), but do NOT do any /usr activation.
-  if [ ! -e "${pkgdir}${_prefix}/lib/libvulkan_r300.so" ] && \
+  if [ ! -e "${pkgdir}${_prefix}/lib/libvulkan_r3v.so" ] && \
      [ ! -e "${pkgdir}${_prefix}/lib/libgallium"*.so ] 2>/dev/null; then
     echo "ERROR: no staged driver .so under ${_prefix}/lib; the prime builddir did not install." >&2
     return 1

@@ -13,9 +13,13 @@ docs/r3v-rename-allowlist.txt	this file names the tokens it allowlists
 # rename branch.
 src/re-scripts:run_r300vk_probe_smoke.sh	steinmarder-r300 exec-wrapper until runbooks reference run_r3v_*
 #
-# hardware-family names that are NOT the driver name and never rename:
-# r300 (Gallium driver), R300/RS482/RS485 (silicon), libvulkan_r300.so and
-# r300_icd.*.json survive only until r3v/install-artifact-rename lands.
+# hardware-family / gallium-driver names that are NOT the r3v Vulkan driver and
+# never rename: r300 (the Gallium GL driver), r300_dri.so, R300/RS482/RS485
+# (silicon).  The r3v install artifacts (libvulkan_r3v.so, r3v_icd.*.json,
+# r3v_devenv_icd.*.json) landed under the r3v name; only the Gallium GL source
+# r300_icd.c keeps the r300_icd token, and it is not the Vulkan ICD manifest.
+src/gallium/drivers/r300/r300_icd.c	Gallium GL "ICD direct-emit extraction API" source; r300 GL driver, not the r3v Vulkan ICD manifest
+src/gallium/drivers/r300/meson.build	lists the Gallium GL source r300_icd.c (not the Vulkan ICD manifest)
 #
 # env-compat: the r3v driver reads the canonical R3V_ env-var name first and
 # falls back to the pre-rename R300VK_ spelling via r3v_getenv_compat(); the

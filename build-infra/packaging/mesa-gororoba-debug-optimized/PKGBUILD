@@ -177,7 +177,7 @@ PYGATE
   # System-driver activation: mirror the loadable artifacts from the /opt tree
   # into the stock /usr loader paths as symlinks.  These links are what make the
   # debug build the system Mesa and what conflicts with stock mesa's real files.
-  _link_into_usr lib                          # libGL/EGL/GLX/GBM/gallium/libvulkan_r300/libxatracker
+  _link_into_usr lib                          # libGL/EGL/GLX/GBM/gallium/libvulkan_r3v/libxatracker
 
   # Indirect GLX vendor link (mesa-git package() convention): glvnd resolves
   # libGLX_indirect.so.0 for indirect rendering to the mesa GLX vendor.  The
