@@ -1,86 +1,84 @@
 # Vostro 1000 (RS482 / K8 / SB600) out-of-tree kernel modules
 
-The Dell Vostro 1000 target that validates the r300 gallium and r3v Vulkan
-drivers needs several out-of-tree kernel modules that no in-tree driver
-supplies. This document is the registry: what each module does, why the
-hardware needs it, where its source lives, and how it relates to the
-userspace driver work. It is referenced from the sibling repositories so
-the requirement is discoverable from any entry point (see Cross-references).
+This is the cross-repository registry for kernel-side dependencies used while
+validating the r300 Gallium driver and the experimental r3v Vulkan ICD on the
+Dell Vostro 1000. It identifies ownership and current verdicts; it is not the
+build source for the modules it lists.
 
-The modules divide by ownership: **radeon DRM** work (GPU reset / register
-hazard mitigation) tracks the userspace driver and consolidates into
-`~/workspaces/radeon-custom`; **platform** work (southbridge watchdog, EC
-thermal) is Vostro-hardware-specific and lives in `vostro1000-re`.
+The claim-routing rules are defined in
+[`rs482-source-authority.md`](rs482-source-authority.md). In particular:
 
-## Why this hardware needs out-of-tree modules
+- `radeon-custom` owns the executable Radeon patch/package mechanism;
+- `steinmarder-r300` owns retained RS482 hardware evidence and verdicts;
+- `mesa-26-gororoba` owns userspace driver behavior and this integration index;
+- `vostro1000-re` owns non-Radeon board support.
 
-The RS482 IGP shares the K8 northbridge. A GPU command-stream fault hangs
-the ring, and with `radeon.lockup_timeout=0` the kernel waits on the fence
-forever rather than resetting the GPU -- an unrecoverable soft hang (proven:
-a `u_blitter` clear stalls in `radeon_fence_default_wait`, TGSI or NIR
-shaders alike). The SB600 TCO watchdog is the only reset independent of the
-CPU cores, so it is the backstop for the both-core northbridge freeze that
-no software detector can catch. Neither reset path nor the EC thermal
-sensors are exposed by any in-tree driver on this platform.
+## Radeon DRM package
 
-## Radeon DRM modules (GPU reset + hazard mitigation)
-
-These patch the in-tree `radeon` driver to add a working RS480-class GPU
-reset and to guard the register read/write hazards that stall the K8
-northbridge. They are the kernel-side complement to the r300/r3v userspace
-drivers and the direct fix for the unrecoverable fence-hang class.
-
-| Package | Module | Purpose | Source (current) |
+| Active package | Module | Purpose | Source of record |
 | --- | --- | --- | --- |
-| `radeon-unified-dkms` v0.3 (pkgrel 83) | `radeon` | RS480/R600 hazard mitigation plus RS480 `gpu_reset` recovery: the 0043 force-clock reset ladder, the 0046-0062 parked-GPU containment gates, and the 0063-0068 parameterized 0x0000F0 soft-reset mask candidates (allow-listed to the 3D bits, default BASELINE = existing 0043 behavior); Arch + Debian packaging adapters. `packaging/arch/radeon-unified-dkms/dkms.conf` is the live patch list | `~/workspaces/radeon-custom` |
-| `radeon-rs480-safe-regs` v0.2 | `radeon` | `rs480_safe_regs` debugfs reader (gated-readback safe register set) | `steinmarder-r300/src/re/r300/PKGBUILDs/radeon-rs480-safe-regs-dkms/` |
-| `radeon-palm-gate` v1.0 | `radeon` | Palm/Warrior gate: `mc_wait_for_idle` timeout, `pci_config_reset_safe` gate, SMX_DC_CTL0 validator; ships pre-patched source | `steinmarder/mesa-rekit/staged/radeon-palm-gate-dkms/` |
+| `radeon-unified-dkms` 0.3-83 (snapshot on 2026-07-10) | `radeon` | Unified RS480 reset instrumentation, safe-register readers, hazard gates, failed-reset parking/host-containment, experimental reset-mask candidates, Palm safety gates, and Arch/Debian DKMS adapters | `radeon-custom:packaging/arch/radeon-unified-dkms/`; the ordered patch manifest is `dkms.conf` |
 
-Key recovery patches in `radeon-custom/patches/rs480/`:
-`0003-rs480-crash-shim-recovery.patch` (gpu_reset shim),
-`0043-...-force-clock-production-path.patch` (the force-clock reset ladder),
-`0046-0062` (parked-GPU containment: the no-hardware-access gates that keep the
-host alive after a failed reset), and `0063-0068` (the parameterized 0x0000F0
-soft-reset mask candidates, default BASELINE). Upstream reference tree:
-`steinmarder-r600-terakan/docs/external_sources/linux_6_18_32_radeon_drm/`.
+The package version above is a dated observation, not a second package manifest.
+Future patch membership and package metadata must be read from `radeon-custom`.
 
-**Consolidation (done): `~/workspaces/radeon-custom`.** The scattered radeon
-DKMS work collapsed into this one dedicated repo -- a patch series over the
-vendored upstream radeon subtree with DKMS + PKGBUILD -- and it is now the
-build source of record, not a future step. Building and installing it (with a
-non-zero `lockup_timeout`) is what turns the infinite fence hang into a
-recoverable GPU reset.
+The earlier package names `radeon-rs480-safe-regs-dkms` and
+`radeon-palm-gate-dkms` are not independent active sources. Their mechanisms
+were folded into `radeon-unified-dkms`; the unified PKGBUILD provides/replaces
+those package identities and conflicts with the old DKMS packages. The original
+Steinmarder locations remain provenance/evidence, not build inputs.
 
-## Platform modules (Vostro 1000 southbridge + EC)
+## Reset and containment verdict
 
-Hardware-specific to this board; they stay in `vostro1000-re` where they
-are developed, packaged, and installed.
+Installed code must not be described as recovered hardware. The current retained
+RS482 verdict is:
+
+| Acceptance property | Verdict | Owning evidence |
+| --- | --- | --- |
+| Reset ladder executes | hardware-run, partial | 0043 clears VAP but GA remains busy |
+| Host survives failed reset, parking, and client thaw/close | hardware-pass | Fire 28 / RAD-05i containment |
+| GPU resumes accelerated work | not achieved | GA-rooted wedge remains; GPU stays parked |
+| Display scanout recovers in place | not achieved | display remains black/parked; reboot required |
+| 0060 SIGBUS isolation gate demonstrably fires | unverified | gate installed/armed, but no retained firing line |
+| 0063-0068 non-baseline reset masks | installed, not fired | package 0.3-83 loads BASELINE; experimental candidates remain unrun |
+
+Therefore `radeon.lockup_timeout=0` remains the safe default. Do not enable
+automatic reset merely because the DKMS package builds, installs, or contains a
+reset implementation. The authoritative per-patch table is
+`steinmarder-r300:src/re/r300/findings/rs480-reset-recovery-patch-status-table.md`.
+
+## SB600 watchdog boundary
+
+The `sp5100-tco-ioapic` module remains useful board substrate and carries the
+warm-boot fired-latch handling needed by the lab stack. It is **not** a proven
+deferrable dead-man fuse for RAD-05 reset fires. Retained calibration shows that
+`WDIOC_SETTIMEOUT`, `WDIOC_KEEPALIVE`, and magic close do not postpone the real
+reset event; active feeding is retired and the watchdog is not opened/armed as a
+fire-timing safety claim.
+
+The `rs480-reset-hazard-stack` package may still require the watchdog substrate
+so the machine is configured consistently and the fired latch is handled, while
+its runtime preflight, boot-persistent netconsole, and manual recovery remain the
+actual campaign controls. Package presence alone never proves a run safe.
+
+## Board-specific platform modules
+
+These stay in `vostro1000-re`; they are not copied into Mesa or `radeon-custom`.
 
 | Package | Module | Purpose | Source |
 | --- | --- | --- | --- |
-| `sp5100-tco-ioapic` | `sp5100_tco` | Bind the SB600 TCO watchdog at its documented base `0xFEC000F0` inside the IOAPIC page (`devm_ioremap` fallback, not exclusive `request_mem_region`); the CPU-independent reset backstop | `vostro1000-re/.../southbridge-sb600/sp5100-tco-ioapic-dkms/` |
-| `vostro1000-ec-fan` | `vostro1000_ec_fan` | Read-only hwmon exposing the PC87591x EC fan tachometer and thermal sensor via `ec_read()`; `dell_smm_hwmon` is dead on this board | `vostro1000-re/.../drivers/vostro1000-ec-fan-dkms/` |
-| `sb600-wdt-relocate` | `sb600_wdt_relocate` | SUPERSEDED: watchdog base relocation attempt; the relocation target is write-unsafe (lands on the display-adjacent FCH decoder). Retained for the record; replaced by `sp5100-tco-ioapic` | `vostro1000-re/.../southbridge-sb600/sb600-wdt-relocate-dkms/` |
+| `sp5100-tco-ioapic` | `sp5100_tco` | Bind the SB600 TCO watchdog at its documented IOAPIC-page base and clear the fired latch; diagnostic/platform substrate, not a deferrable RAD-05 fuse | `vostro1000-re:systems/dell-vostro-1000/.../sp5100-tco-ioapic-dkms/` |
+| `vostro1000-ec-fan` | `vostro1000_ec_fan` | Read-only hwmon for the PC87591x EC fan tachometer and thermal sensor | `vostro1000-re:systems/dell-vostro-1000/.../vostro1000-ec-fan-dkms/` |
+| `sb600-wdt-relocate` | `sb600_wdt_relocate` | Superseded relocation experiment; retained as evidence only | `vostro1000-re:systems/dell-vostro-1000/.../sb600-wdt-relocate-dkms/` |
 
-## Userspace recovery posture (not a kernel module)
+## Userspace recovery posture
 
-| Package | Purpose | Source |
-| --- | --- | --- |
-| `vostro1000-wedge-recovery` | Layered panic-reboot sysctls (`hardlockup_panic`, `hung_task_panic`, `softlockup_panic`) plus `sb600-guard` (run one hazardous op under the hardware watchdog); depends on `sp5100-tco-ioapic` | `vostro1000-re/.../recovery/vostro1000-wedge-recovery/` |
+`vostro1000-wedge-recovery` supplies panic/reboot policy and run wrappers for
+wedge classes the host can still detect. Direct K8 northbridge stalls caused by
+a non-posted MMIO read can stop both cores before software recovery executes;
+netconsole and retained manifests are therefore evidence channels, not recovery
+mechanisms.
 
-The posture reboots on the wedge classes it can detect. It is the safety net
-that keeps hardware bring-up iterable, but it is not the fix: the radeon
-`gpu_reset` work above is what makes the GPU itself recoverable. Note that a
-`radeon_fence_default_wait` hang is an interruptible sleep, so it does not
-trip `hung_task_panic`; test via `PIGLIT_PLATFORM=gbm` surfaceless (which
-keeps the box alive and the hang inspectable) rather than an X session
-(which hard-locks the scanout path and reboots).
-
-## Cross-references
-
-This file is the canonical registry. It is referenced from `radeon-custom`
-(`README.md`, `MIGRATION.md`) as the source of record for `radeon-unified-dkms`,
-and from the `steinmarder-r300` RS480 reset-recovery findings
-(`src/re/r300/findings/rs480-reset-recovery-patch-status-table.md`). The
-platform modules are developed and cross-referenced under
-`vostro1000-re/systems/dell-vostro-1000/`.
+For ordinary graphics diagnosis, prefer surfaceless GBM runs so a failed command
+stream does not also own the display session. Destructive reset campaigns require
+the dedicated hazard policy and preflight in the owning repositories.
