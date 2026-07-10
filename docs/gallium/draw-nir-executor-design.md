@@ -133,6 +133,34 @@ debug env (DEBUG_GET_ONCE_BOOL_OPTION style) selects the retained
 nir_to_tgsi + tgsi_exec branch so any field regression is
 work-aroundable while the divergence is root-caused.
 
+## Calibration results
+
+Built and run on ATI RS480 (RS482 IGP) through a surfaceless-EGL FBO harness
+(steinmarder-r300 probes/draw-nir-executor-surfaceless-egl): a 24-shader corpus
+covering arithmetic and mul-add, dot2/dot3, cross/reflect/normalize/length,
+min/max/clamp/mix/step/smoothstep, floor/fract/mod, abs/sign, mat2 and mat3
+transforms, the transcendentals sin/cos/exp2/log2/pow/sqrt/rsqrt, float-domain
+compare and select (sge/slt/fcsel_gt from GLSL comparisons and ?:), and control
+flow.  Each shader renders one triangle; the raw RGBA8 readback is diffed
+between the bridge (DRAW_NIR_EXEC unset) and the interpreter (set).  All 24 are
+byte-for-byte identical -- transcendentals included, since the 8-bit readback
+absorbs the tgsi_exec-approximation vs nir_eval_const_opcode-libm difference
+well within one LSB, so the precision-parity epsilon never had to be spent.
+
+Control flow reaches the interpreter on this path: DRAW_NIR_EXEC_STATS reports a
+live nir_loop (the uniform-bounded loop, which loop unrolling cannot resolve to
+a static trip count) and surviving nir_if nodes (a loop with a data-dependent
+break).  Interpreting either requires phi evaluation: nir_lower_io/DCE leave
+loop-carried and if-merge values as phi nodes, so interp_block resolves each phi
+by selecting the source whose predecessor block is the one the walk arrived on
+(interp maintains prev_block).  Shaders whose branches nir_opt_peephole_select
+flattened to fcsel_gt reach the interpreter as straight-line SSA and exercise
+the select opcode instead.
+
+DRAW_NIR_EXEC_STATS (opt-in) dumps the post-lowering opcode/intrinsic set and
+if/loop counts per shader so the corpus proves which coverage it reached rather
+than asserting it.
+
 ## Test obligations
 
 r300 SW-TCL config against the corpus plus the piglit/deqp subsets that
