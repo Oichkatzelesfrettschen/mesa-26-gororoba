@@ -1,0 +1,419 @@
+/*
+ * Copyright (c) 2026 Terascale Functionalists
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * Direct-NIR software vertex-shader executor for the draw module.
+ *
+ * A driver that hands draw a PIPE_SHADER_IR_NIR shader (r300 SW-TCL,
+ * r300_vs_draw.c) otherwise round-trips through nir_to_tgsi to reach the only
+ * CPU interpreter in the tree (tgsi_exec_machine).  This executor interprets
+ * the nir_shader directly: it keeps an SSA-def-indexed value table and
+ * delegates every ALU opcode to nir_eval_const_opcode (the same pure
+ * per-opcode evaluator constant folding uses), hand-writing only the vertex IO
+ * intrinsics, the system-value loads, and nir_if / nir_loop control flow.
+ *
+ * See docs/gallium/draw-nir-executor-design.md.  The executor is opt-in behind
+ * DRAW_NIR_EXEC while the calibration corpus is built; with the flag unset
+ * draw_create_vs_exec keeps its nir_to_tgsi bridge, so the r300 SW-TCL default
+ * path is byte-for-byte unchanged.
+ */
+
+#include <stdio.h>
+
+#include "util/u_math.h"
+#include "util/u_memory.h"
+#include "util/macros.h"
+#include "util/bitscan.h"
+#include "util/ralloc.h"
+#include "pipe/p_shader_tokens.h"
+#include "pipe/p_context.h"
+
+#include "nir.h"
+#include "nir_constant_expressions.h"
+#include "nir/nir_to_tgsi_info.h"
+
+#include "draw_private.h"
+#include "draw_context.h"
+#include "draw_vs.h"
+
+struct nir_vertex_shader {
+   struct draw_vertex_shader base;
+   nir_shader *nir;
+   nir_function_impl *impl;
+   /* One nir_const_value vector per SSA def, sized by impl->ssa_alloc and
+    * reused across vertices; run() overwrites every def it reads before use. */
+   nir_const_value (*ssa)[NIR_MAX_VEC_COMPONENTS];
+   unsigned ssa_alloc;
+};
+
+static inline struct nir_vertex_shader *
+nir_vertex_shader(struct draw_vertex_shader *vs)
+{
+   return (struct nir_vertex_shader *)vs;
+}
+
+/* Per-run interpreter state: the value table plus the one vertex's worth of
+ * IO the caller marshalled into AOS rows, plus the seeded system values. */
+struct interp {
+   struct nir_vertex_shader *nvs;
+   nir_const_value (*ssa)[NIR_MAX_VEC_COMPONENTS];
+   const struct draw_buffer_info *constants;
+   const float (*input)[4];        /* [slot][xyzw] for this vertex */
+   float (*output)[4];             /* [slot][xyzw] for this vertex */
+   int instance_id;
+   int base_instance;
+   int vertex_id;
+   int base_vertex;
+   int vertex_id_nobase;
+   unsigned exec_mode;
+};
+
+/* nir loops run until a break; blocks propagate a jump to the enclosing walk. */
+enum interp_flow {
+   FLOW_NEXT = 0,
+   FLOW_BREAK,
+   FLOW_CONTINUE,
+   FLOW_RETURN,
+};
+
+static enum interp_flow
+interp_cf_list(struct interp *st, struct exec_list *list);
+
+static inline nir_const_value *
+def_vals(struct interp *st, nir_def *def)
+{
+   assert(def->index < st->nvs->ssa_alloc);
+   return st->ssa[def->index];
+}
+
+static inline nir_const_value *
+src_vals(struct interp *st, nir_src src)
+{
+   return st->ssa[src.ssa->index];
+}
+
+static void
+interp_load_const(struct interp *st, nir_load_const_instr *lc)
+{
+   nir_const_value *dst = def_vals(st, &lc->def);
+   for (unsigned c = 0; c < lc->def.num_components; c++)
+      dst[c] = lc->value[c];
+}
+
+static void
+interp_undef(struct interp *st, nir_undef_instr *undef)
+{
+   nir_const_value *dst = def_vals(st, &undef->def);
+   memset(dst, 0, sizeof(nir_const_value) * undef->def.num_components);
+}
+
+/* Mirror nir_try_constant_fold_alu's src gathering: swizzle each operand into a
+ * dense per-component array, then let nir_eval_const_opcode implement the op. */
+static void
+interp_alu(struct interp *st, nir_alu_instr *alu)
+{
+   nir_const_value src[NIR_ALU_MAX_INPUTS][NIR_MAX_VEC_COMPONENTS];
+   nir_const_value *srcs[NIR_ALU_MAX_INPUTS];
+
+   unsigned bit_size = 0;
+   if (!nir_alu_type_get_type_size(nir_op_infos[alu->op].output_type))
+      bit_size = alu->def.bit_size;
+
+   for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+      if (bit_size == 0 &&
+          !nir_alu_type_get_type_size(nir_op_infos[alu->op].input_types[i]))
+         bit_size = alu->src[i].src.ssa->bit_size;
+
+      nir_const_value *s = src_vals(st, alu->src[i].src);
+      for (unsigned j = 0; j < nir_ssa_alu_instr_src_components(alu, i); j++)
+         src[i][j] = s[alu->src[i].swizzle[j]];
+      srcs[i] = src[i];
+   }
+   if (bit_size == 0)
+      bit_size = 32;
+
+   nir_eval_const_opcode(alu->op, def_vals(st, &alu->def), NULL,
+                         alu->def.num_components, bit_size, srcs,
+                         st->exec_mode);
+}
+
+static void
+interp_intrinsic(struct interp *st, nir_intrinsic_instr *intr)
+{
+   nir_const_value *dst =
+      nir_intrinsic_infos[intr->intrinsic].has_dest ? def_vals(st, &intr->def)
+                                                     : NULL;
+
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_ubo: {
+      /* nir_lower_uniforms_to_ubo turned every uniform read into this: the
+       * block index and the byte offset are both scalar srcs. */
+      unsigned block = src_vals(st, intr->src[0])[0].u32;
+      unsigned offset = src_vals(st, intr->src[1])[0].u32;
+      const uint32_t *base =
+         (const uint32_t *)((const char *)st->constants[block].ptr + offset);
+      for (unsigned c = 0; c < intr->def.num_components; c++)
+         dst[c].u32 = base[c];
+      break;
+   }
+   case nir_intrinsic_load_ubo_vec4: {
+      /* The vec4-indexed UBO load r300's draw path emits: src[0] is the block,
+       * the vec4 register index is nir_intrinsic_base + src[1] (both in vec4
+       * units), and component is the first channel -- the same addressing
+       * nir_to_tgsi resolves against the const file. */
+      unsigned block = src_vals(st, intr->src[0])[0].u32;
+      unsigned vec4 = nir_intrinsic_base(intr) + src_vals(st, intr->src[1])[0].u32;
+      unsigned comp = nir_intrinsic_component(intr);
+      const uint32_t *base = (const uint32_t *)st->constants[block].ptr;
+      for (unsigned c = 0; c < intr->def.num_components; c++)
+         dst[c].u32 = base[vec4 * 4 + comp + c];
+      break;
+   }
+   case nir_intrinsic_load_input: {
+      /* AOS vertex attribute row: base is the driver_location slot draw
+       * marshalled, component the starting channel. */
+      unsigned slot = nir_intrinsic_base(intr) + src_vals(st, intr->src[0])[0].u32;
+      unsigned comp = nir_intrinsic_component(intr);
+      for (unsigned c = 0; c < intr->def.num_components; c++)
+         dst[c].f32 = st->input[slot][comp + c];
+      break;
+   }
+   case nir_intrinsic_store_output: {
+      unsigned slot = nir_intrinsic_base(intr) + src_vals(st, intr->src[1])[0].u32;
+      unsigned comp = nir_intrinsic_component(intr);
+      unsigned wrmask = nir_intrinsic_write_mask(intr);
+      nir_const_value *s = src_vals(st, intr->src[0]);
+      u_foreach_bit(c, wrmask)
+         st->output[slot][comp + c] = s[c].f32;
+      break;
+   }
+   case nir_intrinsic_load_instance_id:
+      dst[0].i32 = st->instance_id;
+      break;
+   case nir_intrinsic_load_base_instance:
+      dst[0].i32 = st->base_instance;
+      break;
+   case nir_intrinsic_load_vertex_id:
+      dst[0].i32 = st->vertex_id;
+      break;
+   case nir_intrinsic_load_vertex_id_zero_base:
+      dst[0].i32 = st->vertex_id_nobase;
+      break;
+   case nir_intrinsic_load_base_vertex:
+   case nir_intrinsic_load_first_vertex:
+      dst[0].i32 = st->base_vertex;
+      break;
+   default:
+      /* Loudly surface an unhandled intrinsic during calibration rather than
+       * silently transforming vertices with garbage. */
+      fprintf(stderr, "draw_vs_nir: unhandled intrinsic '%s'\n",
+              nir_intrinsic_infos[intr->intrinsic].name);
+      UNREACHABLE("draw_vs_nir: unhandled intrinsic");
+   }
+}
+
+static enum interp_flow
+interp_block(struct interp *st, nir_block *block)
+{
+   nir_foreach_instr(instr, block) {
+      switch (instr->type) {
+      case nir_instr_type_load_const:
+         interp_load_const(st, nir_instr_as_load_const(instr));
+         break;
+      case nir_instr_type_undef:
+         interp_undef(st, nir_instr_as_undef(instr));
+         break;
+      case nir_instr_type_alu:
+         interp_alu(st, nir_instr_as_alu(instr));
+         break;
+      case nir_instr_type_intrinsic:
+         interp_intrinsic(st, nir_instr_as_intrinsic(instr));
+         break;
+      case nir_instr_type_jump: {
+         switch (nir_instr_as_jump(instr)->type) {
+         case nir_jump_break:    return FLOW_BREAK;
+         case nir_jump_continue: return FLOW_CONTINUE;
+         case nir_jump_return:   return FLOW_RETURN;
+         default:                UNREACHABLE("draw_vs_nir: unhandled jump");
+         }
+      }
+      default:
+         UNREACHABLE("draw_vs_nir: unhandled instr type");
+      }
+   }
+   return FLOW_NEXT;
+}
+
+static enum interp_flow
+interp_cf_list(struct interp *st, struct exec_list *list)
+{
+   foreach_list_typed(nir_cf_node, node, node, list) {
+      switch (node->type) {
+      case nir_cf_node_block: {
+         enum interp_flow f = interp_block(st, nir_cf_node_as_block(node));
+         if (f != FLOW_NEXT)
+            return f;
+         break;
+      }
+      case nir_cf_node_if: {
+         nir_if *nif = nir_cf_node_as_if(node);
+         bool cond = src_vals(st, nif->condition)[0].u32 != 0;
+         enum interp_flow f =
+            interp_cf_list(st, cond ? &nif->then_list : &nif->else_list);
+         if (f != FLOW_NEXT)
+            return f;
+         break;
+      }
+      case nir_cf_node_loop: {
+         nir_loop *loop = nir_cf_node_as_loop(node);
+         assert(!nir_loop_has_continue_construct(loop));
+         for (;;) {
+            enum interp_flow f = interp_cf_list(st, &loop->body);
+            if (f == FLOW_BREAK)
+               break;
+            if (f == FLOW_RETURN)
+               return FLOW_RETURN;
+            /* FLOW_NEXT and FLOW_CONTINUE both re-enter the body: a nir loop
+             * runs until an explicit break. */
+         }
+         break;
+      }
+      default:
+         UNREACHABLE("draw_vs_nir: unhandled cf node");
+      }
+   }
+   return FLOW_NEXT;
+}
+
+static void
+vs_nir_prepare(struct draw_vertex_shader *shader, struct draw_context *draw)
+{
+   /* Each nir_vertex_shader owns its nir and value table, so unlike the shared
+    * tgsi_exec_machine there is no cross-shader rebind hazard. */
+   assert(!draw->llvm);
+}
+
+static void
+vs_nir_run_linear(struct draw_vertex_shader *shader,
+                  const float (*input)[4],
+                  float (*output)[4],
+                  const struct draw_buffer_info *constants,
+                  unsigned count,
+                  unsigned input_stride,
+                  unsigned output_stride,
+                  const unsigned *fetch_elts)
+{
+   struct nir_vertex_shader *nvs = nir_vertex_shader(shader);
+   struct draw_context *draw = shader->draw;
+   const bool clamp_vertex_color = draw->rasterizer->clamp_vertex_color;
+   struct interp st = {
+      .nvs = nvs,
+      .ssa = nvs->ssa,
+      .constants = constants,
+      .instance_id = draw->instance_id,
+      .base_instance = draw->start_instance,
+      .exec_mode = nvs->nir->info.float_controls_execution_mode,
+   };
+
+   assert(!draw->llvm);
+
+   for (unsigned i = 0; i < count; i++) {
+      /* Same vertex-id arithmetic the tgsi_exec path uses so numeric results
+       * match: basevertex is eltBias for indexed draws, start_index otherwise. */
+      int basevertex = draw->pt.user.eltSize ? draw->pt.user.eltBias
+                                             : draw->start_index;
+      st.base_vertex = basevertex;
+      st.vertex_id = fetch_elts ? fetch_elts[i] : (int)(i + basevertex);
+      st.vertex_id_nobase = fetch_elts ? (int)(fetch_elts[i] - basevertex)
+                                       : (int)i;
+      st.input = input;
+      st.output = output;
+
+      interp_cf_list(&st, &nvs->impl->body);
+
+      /* clamp_vertex_color mirrors the tgsi_exec unswizzle: SATURATE the
+       * COLOR/BCOLOR outputs only, keyed on the scanned output semantic. */
+      if (clamp_vertex_color) {
+         for (unsigned slot = 0; slot < shader->info.num_outputs; slot++) {
+            enum tgsi_semantic name = shader->info.output_semantic_name[slot];
+            if (name == TGSI_SEMANTIC_COLOR || name == TGSI_SEMANTIC_BCOLOR) {
+               for (unsigned c = 0; c < 4; c++)
+                  output[slot][c] = SATURATE(output[slot][c]);
+            }
+         }
+      }
+
+      input = (const float (*)[4])((const char *)input + input_stride);
+      output = (float (*)[4])((char *)output + output_stride);
+   }
+}
+
+static void
+vs_nir_delete(struct draw_vertex_shader *dvs)
+{
+   struct nir_vertex_shader *nvs = nir_vertex_shader(dvs);
+   ralloc_free(nvs->nir);
+   FREE(nvs);
+}
+
+/* One draw AOS row (input[slot][4] / output[slot][4]) per vec4 location, so a
+ * lowered load_input/store_output base is the driver_location slot directly. */
+static int
+draw_vs_nir_io_slots(const struct glsl_type *type, bool bindless)
+{
+   return glsl_count_attribute_slots(type, false);
+}
+
+struct draw_vertex_shader *
+draw_create_vs_nir(struct draw_context *draw,
+                   const struct pipe_shader_state *state)
+{
+   struct nir_vertex_shader *vs = CALLOC_STRUCT(nir_vertex_shader);
+   if (!vs)
+      return NULL;
+
+   assert(state->type == PIPE_SHADER_IR_NIR);
+   nir_shader *nir = state->ir.nir;
+
+   /* Mirror the LLVM factory: fold uniforms to load_ubo so every constant read
+    * is one intrinsic, then scan with need_texcoord so draw_find_shader_output
+    * sees the identical POSITION/PCOORD/FACE/GENERIC vocabulary the r300
+    * consumers key on. */
+   if (!nir->options->lower_uniforms_to_ubo)
+      NIR_PASS(_, nir, nir_lower_uniforms_to_ubo, false, false);
+   nir_tgsi_scan_shader(nir, &vs->base.info, true);
+
+   /* The shader still carries variable-based I/O (load_deref/store_deref over
+    * nir_deref chains); nir_to_tgsi lowers that itself, but this interpreter
+    * reads load_input/store_output intrinsics keyed by driver_location.  Run
+    * nir_lower_io after the scan (which reads the variables) so the deref I/O
+    * becomes those intrinsics with the vec4-slot base r300_draw_fill_vs_outputs
+    * and the vertex fetch already agree on. */
+   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+            draw_vs_nir_io_slots, 0);
+   /* nir_lower_io rewrites the deref loads/stores but leaves the now-dead
+    * nir_deref_instr chain in the block; the interpreter walks every
+    * instruction, so drop the dead derefs before it can trip on one. */
+   NIR_PASS(_, nir, nir_opt_dce);
+
+   vs->nir = nir;
+   vs->impl = nir_shader_get_entrypoint(nir);
+   nir_index_ssa_defs(vs->impl);
+   vs->ssa_alloc = vs->impl->ssa_alloc;
+   vs->ssa = ralloc_size(nir,
+                         sizeof(nir_const_value[NIR_MAX_VEC_COMPONENTS]) *
+                         vs->ssa_alloc);
+
+   vs->base.state.type = PIPE_SHADER_IR_NIR;
+   vs->base.state.ir.nir = nir;
+   vs->base.state.stream_output = state->stream_output;
+   vs->base.draw = draw;
+   vs->base.prepare = vs_nir_prepare;
+   vs->base.run_linear = vs_nir_run_linear;
+   vs->base.delete = vs_nir_delete;
+   vs->base.create_variant = draw_vs_create_variant_generic;
+
+   return &vs->base;
+}
