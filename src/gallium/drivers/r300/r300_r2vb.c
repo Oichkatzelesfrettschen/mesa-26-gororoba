@@ -740,6 +740,57 @@ static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_re
     free(exp);
 }
 
+/* Known-answer self-test for the HBTCL-04b divide + viewport, anchored on a case
+ * whose window result is fixed by the arithmetic, not by agreeing with the shader,
+ * so a shared sign or scale bug cannot pass green.  clip = (4, -2, 1, 2) under a
+ * unit viewport must divide to (2, -1, 0.5) and carry w = 1.  A sub-threshold
+ * w_clip must collapse the reciprocal to 0 (the FP24 infinity guard), so the tiny
+ * case must yield rcp = 0.  Returns true iff both hold; mirrors the divide the FS
+ * emits in r300_r2vb_build_baked_transform_fs. */
+static bool r2vb_divide_oracle_selftest(void)
+{
+    const float clip[4] = { 4.0f, -2.0f, 1.0f, 2.0f };
+    float rcp = (fabsf(clip[3]) < 1.0f / 32768.0f) ? 0.0f : 1.0f / clip[3];
+    float win[3];
+    for (int i = 0; i < 3; i++)
+        win[i] = clip[i] * rcp; /* unit viewport: scale = 1, bias = 0 */
+    const float wtiny = 1e-6f;
+    float rcp_tiny = (fabsf(wtiny) < 1.0f / 32768.0f) ? 0.0f : 1.0f / wtiny;
+    bool ok = fabsf(win[0] - 2.0f) < 1e-5f && fabsf(win[1] + 1.0f) < 1e-5f &&
+              fabsf(win[2] - 0.5f) < 1e-5f && rcp_tiny == 0.0f;
+    fprintf(stderr,
+            "r2vb_divide_oracle_selftest=%s (4,-2,1,2)/w->win(%.3f,%.3f,%.3f) tiny-w-guard=%s\n",
+            ok ? "PASS" : "FAIL", win[0], win[1], win[2], rcp_tiny == 0.0f ? "0" : "BAD");
+    return ok;
+}
+
+/* Verify the producer BO against the CPU divide + viewport reference: clip =
+ * M(cols) * model_vert, then window.xyz = (clip.xyz / w_clip) * viewport_scale +
+ * viewport_bias with w = 1, reproducing the FS's own guard and w output rather than
+ * a naive draw-style w = 1/w_clip.  Reads r300->viewport for the same scale/bias
+ * the FS bakes.  FP24 fragment ALU plus a divide and three MADs, so the same loose
+ * 0.05 tolerance as the bare transform. */
+static void r2vb_verify_window_readback(struct r300_context *r300, struct pipe_resource *res,
+                                        const float (*model)[4], uint32_t count, const float *cols)
+{
+    const struct pipe_viewport_state *vp = &r300->viewport;
+    float (*exp)[4] = malloc((size_t)count * sizeof(*exp));
+    if (!exp)
+        return;
+    for (uint32_t s = 0; s < count; s++) {
+        float clip[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < 4; j++)
+                clip[i] += cols[j * 4 + i] * model[s][j];
+        float rcp = (fabsf(clip[3]) < 1.0f / 32768.0f) ? 0.0f : 1.0f / clip[3];
+        for (int i = 0; i < 3; i++)
+            exp[s][i] = clip[i] * rcp * vp->scale[i] + vp->translate[i];
+        exp[s][3] = 1.0f;
+    }
+    r2vb_verify_bo_readback(r300, res, exp, count, 0.05f, "divide");
+    free(exp);
+}
+
 /* Rotate a 3-vector by a UNIT quaternion q = (x, y, z, w), the Cayley-Dickson
  * product v' = q v q* expanded to its rotation-matrix form.  The doubling product
  * (a,b)(c,d) = (ac - d*b, da + bc*) with gamma = -1 gives the Hamilton quaternion
@@ -2958,6 +3009,17 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     }
     if (getenv("R300_R2VB_XFORM_VERIFY") && num_in == 1)
         r2vb_verify_xform_readback(r300, clip, model, count, cols);
+
+    /* HBTCL-04g differential oracle: when the divide gate is on, diff the producer
+     * BO against the CPU divide + viewport reference.  Runs only for the single-
+     * input baked-transform path (the one the FS actually divides) and only after
+     * the pure-CPU self-test confirms the reference math, so a broken oracle cannot
+     * green a broken shader.  Reads the same GART clip BO the xform verify maps --
+     * one fragment-ALU producer submit, no VAP/HW-TCL re-ingest. */
+    if (getenv("R300_R2VB_DIVIDE_VERIFY") && num_in == 1 && r300_r2vb_divide_enabled()) {
+        if (r2vb_divide_oracle_selftest())
+            r2vb_verify_window_readback(r300, clip, model, count, cols);
+    }
 
     /* Multi-input position oracle (R300_R2VB_POS_WEIGHTS="w0,w1,...").  The producer
      * feeds input a at VAR0+a, so for a VS whose position is M * sum_a(w_a * input_a)
