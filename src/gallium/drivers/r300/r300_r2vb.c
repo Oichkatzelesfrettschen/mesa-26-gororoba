@@ -1799,10 +1799,13 @@ static bool r300_vs_is_passthrough(struct r300_context *r300)
 
 /* No-submit shape probe for the de-TGSI vertex transform: dump the bound VS's
  * NIR instruction profile so the MVP-shape matcher (r300_vs_is_mvp) is written
- * against the real nir_to_tgsi output rather than an assumed shape (falsifier
- * F2 in the MVP-transform finding).  Reports a histogram of ALU ops and
- * intrinsics plus the total instruction count, then the full nir_print_shader.
- * Fires once, gated by R300_R2VB_VS_DUMP; pure CPU, no CS emit. */
+ * against the real bound-VS NIR the driver compiles rather than an assumed
+ * shape (falsifier F2 in the MVP-transform finding).  r300_vs_is_mvp keys on
+ * that same nir_shader -- its variables and instruction shape, not a
+ * nir_to_tgsi round-trip -- so the probe and the matcher read one source.
+ * Reports a histogram of ALU ops and intrinsics plus the total instruction
+ * count, then the full nir_print_shader.  Fires once, gated by
+ * R300_R2VB_VS_DUMP; pure CPU, no CS emit. */
 static void r300_vs_dump_nir_shape(struct r300_context *r300)
 {
     struct r300_vertex_shader *vs = r300_vs(r300);
@@ -2254,7 +2257,8 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
     }
 
     /* R300_R2VB_VS_DUMP: one-shot NIR-shape dump of the bound VS so the MVP
-     * matcher is pinned to the real nir_to_tgsi output (finding F2).  No submit. */
+     * matcher is pinned to the real bound-VS NIR the driver compiles, not a
+     * nir_to_tgsi round-trip (finding F2).  No submit. */
     static int vsdump = -1;
     if (vsdump < 0) {
         const char *e = getenv("R300_R2VB_VS_DUMP");
