@@ -70,7 +70,7 @@ src/amd/r300/vulkan/r3v/
   r3v_framebuffer.h/.c     VkFramebuffer local object
   r3v_shader_module.h/.c   VkShaderModule SPIR-V storage
   r3v_cpu_sync.h/.c        vkCreateFence / vkWaitForFences (CPU timeline)
-  meson.build                 libvulkan_r300 + ICD JSON
+  meson.build                 libvulkan_r3v + ICD JSON
   README.md                   this file
 ```
 
@@ -171,13 +171,13 @@ meson setup builddir-r3v \
     -Dglx=disabled -Degl=disabled \
     -Dplatforms=x11 -Dllvm=disabled -Dlibunwind=disabled \
     -Dbuildtype=debug
-ninja -C builddir-r3v src/amd/r300/vulkan/r3v/libvulkan_r300.so
+ninja -C builddir-r3v src/amd/r300/vulkan/r3v/libvulkan_r3v.so
 ```
 
 To exercise the ICD in-tree without installing:
 
 ```sh
-export VK_ICD_FILENAMES=$PWD/builddir-r3v/src/amd/r300/vulkan/r3v/r300_devenv_icd.x86_64.json
+export VK_ICD_FILENAMES=$PWD/builddir-r3v/src/amd/r300/vulkan/r3v/r3v_devenv_icd.x86_64.json
 export R3V_DEBUG=startup
 vulkaninfo --summary
 ```

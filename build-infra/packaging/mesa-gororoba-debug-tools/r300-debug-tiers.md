@@ -19,7 +19,7 @@ Only **debug-optimized (3_)** and **release (4_)** may own the `/usr` Mesa paths
 (provides/conflicts/replaces, /usr symlinks).  The **prime (1_)** and **debug-O0
 (2_)** tiers stage ONLY to `/opt/mesa-gororoba-debug-asan` and
 `/opt/mesa-gororoba-debug-o0` and are reached only through their run-wrappers.
-An ASan `libGL`/`libvulkan_r300` as the default Mesa aborts every GL/VK client with
+An ASan `libGL`/`libvulkan_r3v` as the default Mesa aborts every GL/VK client with
 "ASan runtime does not come first in initial library list" and can black-screen the
 login session -- on the Vostro that needs physical recovery (no remote reboot).  The
 invariant is enforced mechanically: `make audit-werror` fails if a scoped PKGBUILD

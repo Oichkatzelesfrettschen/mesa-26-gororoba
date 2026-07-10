@@ -509,10 +509,10 @@ install: vostro-prefix-check
 artifact-check: vostro-prefix-check
 	@test -d $(PREFIX) || { echo "prefix missing: $(PREFIX)"; exit 1; }
 	find $(PREFIX) -maxdepth 5 -type f \
-		\( -name "libvulkan_terascale.so" -o -name "libvulkan_r300.so" -o \
+		\( -name "libvulkan_terascale.so" -o -name "libvulkan_r3v.so" -o \
 		   -name "r600_dri.so" -o -name "r300_dri.so" -o \
 		   -name "libdril_dri.so" -o -name "libgallium-*.so" -o \
-		   -name "terascale_icd*.json" -o -name "r300_icd*.json" \) \
+		   -name "terascale_icd*.json" -o -name "r3v_icd*.json" \) \
 		-printf "%p %TY-%Tm-%Td %TH:%TM:%TS %s bytes\n" | sort
 
 test:

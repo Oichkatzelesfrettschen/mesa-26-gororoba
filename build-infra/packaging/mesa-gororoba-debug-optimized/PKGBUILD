@@ -45,7 +45,7 @@
 # probe without changing the system default.
 pkgname=mesa-gororoba-debug-optimized
 pkgver=26.2.0
-pkgrel=12
+pkgrel=14
 epoch=2
 pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, ati_r300/r3v ICD + overlay/device-select Vulkan layers, files under /opt'
 arch=('x86_64')
@@ -177,7 +177,7 @@ PYGATE
   # System-driver activation: mirror the loadable artifacts from the /opt tree
   # into the stock /usr loader paths as symlinks.  These links are what make the
   # debug build the system Mesa and what conflicts with stock mesa's real files.
-  _link_into_usr lib                          # libGL/EGL/GLX/GBM/gallium/libvulkan_r300/libxatracker
+  _link_into_usr lib                          # libGL/EGL/GLX/GBM/gallium/libvulkan_r3v/libxatracker
 
   # Indirect GLX vendor link (mesa-git package() convention): glvnd resolves
   # libGLX_indirect.so.0 for indirect rendering to the mesa GLX vendor.  The
