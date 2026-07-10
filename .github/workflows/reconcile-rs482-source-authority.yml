@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - reconcile/rs482-source-authority-20260710
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
