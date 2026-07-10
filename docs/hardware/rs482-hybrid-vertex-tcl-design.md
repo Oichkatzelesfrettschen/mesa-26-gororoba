@@ -271,6 +271,41 @@ only in the once-per-frame matrix-derivation step, never in the per-vertex hot
 loop -- the `M` in `v_clip = M * v_object` may be *built* with quaternions, but
 each vertex is transformed by the composed 4x4.
 
+### The coordinate contract (HBTCL-04a)
+
+The four stages move a vertex through five concrete representations. Naming them
+and their producer/consumer fixes what each later HBTCL-04 step operates on and,
+critically, where the perspective divide must sit. All values are FP24 (the
+fragment ALU domain); the exact-integer window (`m + f <= 17`) binds only where
+a value must round-trip as an integer index, never the transformed coordinates.
+
+| Space | Representation | Produced by | Consumed by | VAP / VTE binding |
+| --- | --- | --- | --- | --- |
+| object | `(x,y,z,1)` FP24, app layout | app VBO in GART | the MVP multiply | fetched via `3D_LOAD_VBPNTR`; `VAP_PROG_STREAM_CNTL` layout |
+| clip | `v_clip = M * v_object`, 4D, `w_clip` free | fragment-ALU MVP (04, linear) | SW clip / collineation | never handed raw to the bypass VAP (see below) |
+| collineation (`*`) | Glaeser `(lambda*x, lambda*y, k*lambda*z)`, lines stay lines | the linear companion map | SW clip classify + edge gen (04c/04d) | pure SW; frontend never sees it |
+| NDC | `v_ndc = v_clip.xyz / w_clip`, `[-1,1]` | SW perspective divide (04b) | viewport scale/bias | the divide the VAP cannot do |
+| window | `NDC * viewport_scale + bias`, screen coords | producer, or the VAP viewport | the GA setup FIFO | `VTE_CNTL.VTX_*_FMT=1` (pre-divided), `VPORT_*_ENA` off |
+
+The load-bearing constraint: **the VAP has no PVS, so it cannot perform the
+perspective divide.** `VAP_VTE_CNTL` is a *viewport* transform engine -- it
+applies the linear `scale + bias`, not the non-linear `1/w_clip`. So any buffer
+handed to the bypass VAP must already be divided. Two shapes satisfy that, and
+they are the `VTE_CNTL` flip named in the bypass section:
+
+- **Window-space buffer** (`VTX_XY_FMT = VTX_Z_FMT = 1`, `VPORT_*_ENA` off): the
+  producer did both the divide (04b) and the viewport, and the VAP passes the
+  vertex straight through. This is the demonstrated-hang-free shape.
+- **NDC buffer** (`VTX_*_FMT = 0`, `VPORT_*_ENA` on): the producer did the
+  divide but left the viewport to the VAP. Still requires 04b upstream; only the
+  affine viewport is delegated.
+
+Clip (04c) and edge generation (04d) therefore run in the collineation domain
+*before* 04b, exactly as Glaeser prescribes, and their output is re-projected
+and divided before it can reach any VAP shape. There is no coordinate path in
+which the frontend divides, so 04b is not optional on RS482 -- it is the stage
+that makes every other stage's output VAP-legal.
+
 ## The hybrid HBTCL
 
 The design generalizes the silicon-demonstrated R2VB direct-VAP handoff into the
