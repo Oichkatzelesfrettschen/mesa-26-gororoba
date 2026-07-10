@@ -175,6 +175,7 @@ if with_gfx_compute
     'draw/draw_vertex_header.h',
     'draw/draw_vs.c',
     'draw/draw_vs_exec.c',
+    'draw/draw_vs_nir.c',
     'draw/draw_vs.h',
     'draw/draw_vs_variant.c',
     'driver_ddebug/dd_context.c',
