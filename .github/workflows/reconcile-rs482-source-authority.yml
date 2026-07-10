@@ -1,0 +1,91 @@
+name: Apply RS482 source-authority reconciliation
+
+on:
+  push:
+    branches:
+      - reconcile/rs482-source-authority-20260710
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: reconcile/rs482-source-authority-20260710
+          fetch-depth: 0
+
+      - name: Apply exact source reconciliations
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one replacement anchor, found {count}")
+              target.write_text(text.replace(old, new), encoding="utf-8")
+
+          replace_once(
+              "src/amd/r300/vulkan/r3v/r3v_pipeline.h",
+              """   /* A compute pipeline created under the experimental hybrid-compute gate.\n    * The no-op kernel carries no graphics CSOs; lowering the kernel onto the\n    * compute-as-raster substrate is a later stage. */\n   bool                    is_compute;\n""",
+              """   /* A compute pipeline created under the exact hybrid-compute opt-in.\n    * Classifier-approved kernels carry synthesized graphics CSOs and replay\n    * metadata for one bounded compute-as-raster route; rejected or unknown\n    * shapes remain defined no-op dispatches.  This is not a native compute\n    * engine or a general Vulkan compute implementation. */\n   bool                    is_compute;\n""",
+          )
+
+          replace_once(
+              "src/amd/r300/vulkan/r3v/r3v_pipeline.h",
+              """           pl->bitwise_logicop.is_bitwise_logicop ||\n           pl->shift_logical.is_shift_logical ||\n           pl->dp4.is_dp4 ||\n""",
+              """           pl->bitwise_logicop.is_bitwise_logicop ||\n           pl->shift_logical.is_shift_logical ||\n           pl->shift_variable.is_shift_variable ||\n           pl->dp4.is_dp4 ||\n""",
+          )
+
+          replace_once(
+              "src/amd/r300/vulkan/r3v/r3v_private.h",
+              """/* Conformance classification reported to probes and external tooling.\n *\n * No documented or silicon-proven native compute dispatch surface\n * exists for this RS482/RS485 R3V target: no COMPUTE queue, no\n * workgroup shared memory, no shader atomics, no SPIR-V compute\n * capabilities, no SSBO storage semantics in the current Mesa r300\n * implementation oracle or the AMD R3xx-RRG documentation.  The\n * VkQueueFlagBits reference (Vulkan spec ch. 5 \"Devices and Queues\",\n * VkQueueFamilyProperties::queueFlags) requires that a conformant\n * implementation report VK_QUEUE_COMPUTE_BIT for any queue family that\n * supports VK_QUEUE_GRAPHICS_BIT.  The r3v skeleton intentionally\n * violates that rule by omitting compute, so it must NOT claim Vulkan\n * conformance for any version.  Probes and CTS runners must observe\n * this classification before treating the implementation as a graphics\n * device. */\n""",
+              """/* Conformance classification reported to probes and external tooling.\n *\n * RS482/RS485 exposes no native or separate compute engine.  Default mode\n * omits VK_QUEUE_COMPUTE_BIT and is intentionally nonconformant because a\n * conformant graphics queue must also support compute.  The exact hybrid\n * opt-in adds COMPUTE to that same queue and lowers only classifier-approved,\n * bounded NIR shapes onto graphics-era units.  It still lacks general Vulkan\n * compute semantics and CTS qualification, so it remains nonconformant.\n * Probes must distinguish the two modes and must not infer native compute from\n * the experimental queue bit. */\n""",
+          )
+
+          replace_once(
+              "src/amd/r300/vulkan/r3v/r3v_device.h",
+              """/* r3v_queue wraps vk_queue.  vk_queue must be the first member so\n * VK_DEFINE_HANDLE_CASTS can recover the r3v_queue from any VkQueue\n * handle.  One graphics-plus-transfer queue per logical device; the\n * RS482/RS485 vertex stage runs through Gallium Draw (software TCL) so\n * there is no separate compute queue. */\n""",
+              """/* r3v_queue wraps vk_queue.  vk_queue must be the first member so\n * VK_DEFINE_HANDLE_CASTS can recover the r3v_queue from any VkQueue handle.\n * There is one queue per logical device: graphics plus transfer by default,\n * with COMPUTE added to that same queue only under the exact hybrid opt-in.\n * RS482/RS485 has neither a native compute engine nor a separate compute queue;\n * admitted compute work is replayed through the graphics substrate. */\n""",
+          )
+
+          replace_once(
+              "src/amd/r300/vulkan/r3v/r3v_device.h",
+              """ * hybrid_compute_enabled: exact opt-in for exposing the scalar hybrid\n * compute experiment.  The queue is still non-conformant until compute\n * pipeline, descriptor, dispatch, and memory semantics are implemented and\n * validated against CTS plus retained dmesg evidence. */\n""",
+              """ * hybrid_compute_enabled: exact opt-in for the restricted compute-as-raster\n * experiment.  Classifier-approved pipelines, descriptors, and dispatch replay\n * are implemented for bounded routes, but arbitrary Vulkan compute semantics,\n * shared memory, atomics, control flow, and CTS coverage are not.  The queue\n * therefore remains explicitly nonconformant. */\n""",
+          )
+
+          replace_once(
+              "src/amd/r300/vulkan/r3v/meson.build",
+              """  )\nendif\n\n# ICD JSON manifest.\n""",
+              """  )\n  test(\n    'r3v-compute-verb-reachability',\n    prog_python,\n    args : [\n      join_paths(meson.current_source_dir(),\n                 'tests/r3v_compute_verb_reachability_test.py'),\n      meson.current_source_dir(),\n    ],\n    suite : ['r3v'],\n  )\nendif\n\n# ICD JSON manifest.\n""",
+          )
+          PY
+
+          python3 -m py_compile \
+            src/amd/r300/vulkan/r3v/tests/r3v_compute_verb_reachability_test.py
+          python3 src/amd/r300/vulkan/r3v/tests/r3v_compute_verb_reachability_test.py \
+            src/amd/r300/vulkan/r3v
+          rm .github/workflows/reconcile-rs482-source-authority.yml
+
+      - name: Commit reconciled sources
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            src/amd/r300/vulkan/r3v/r3v_pipeline.h \
+            src/amd/r300/vulkan/r3v/r3v_private.h \
+            src/amd/r300/vulkan/r3v/r3v_device.h \
+            src/amd/r300/vulkan/r3v/meson.build \
+            .github/workflows/reconcile-rs482-source-authority.yml
+          git diff --cached --check
+          git commit -m "r300: align compute route reachability and status"
+          git push origin HEAD:reconcile/rs482-source-authority-20260710
