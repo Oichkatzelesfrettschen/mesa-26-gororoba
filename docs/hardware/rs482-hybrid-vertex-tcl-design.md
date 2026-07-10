@@ -371,6 +371,49 @@ silicon or a bounded next increment from two demonstrated pieces.
   across N draws. Mind the CS triple-buffer pipelining race (fixed `9019491c1fd`)
   for any multi-IB scheme.
 
+## Lighting on the fragment ALU (HBTCL-06 policy)
+
+A full TCL needs a lighting stage, and on RS48x the only live transcendental
+unit is the fragment ALU -- the PVS macro-engine sin/cos (`ME_SIN`/`ME_COS`) is
+dead with the closed vertex path. The fragment ALU is where R2VB already runs
+its vertex math, so lighting is not a new engine, just more fragment slots.
+
+Native fragment transcendentals (`r300_compute_admission.c` macro-op set):
+`RCP`, `RSQ`, `EX2`, `LG2`, plus `FRC`/`ROUND`, and dot products. R500 adds
+native `SIN`/`COS` in the alpha op (`r500_fragprog_emit.c`); on the R300-class
+RS482 fragment ALU those are not native. What the r300 screen lowers before
+emit (`r300_screen.c`): `lower_sincos` (sin/cos to a range-reduce + polynomial),
+`lower_fpow` ("POW is only in the VS", so on the fragment ALU it becomes
+`EX2(y * LG2(x))`), `lower_fsqrt` (to an `RSQ`/`RCP` form).
+
+The standard lighting kernel maps to this set with no missing primitive:
+
+| Lighting term | Fragment mapping | Native? |
+| --- | --- | --- |
+| `normalize(N)`, `normalize(L)` | `v * RSQ(dot(v,v))` | native `RSQ` + dot |
+| diffuse `N.L`, half-vector `N.H` | `DP3`/`DP4` | native |
+| specular `pow(N.H, s)` | `EX2(s * LG2(N.H))` | lowered `POW` |
+| distance attenuation `1/d^2` | `RCP(dot(d,d))`, or `1/d = RSQ(dot(d,d))` | native `RCP`/`RSQ` |
+| spotlight cone / anisotropic sin/cos | range-reduce + polynomial | lowered `SIN`/`COS` |
+
+Two constraints bound the policy:
+
+- **FP24 is adequate for color, not for reuse.** The fragment ALU is FP24;
+  lighting outputs are `[0,1]` colors where the 16-bit mantissa is ample. The
+  exact-integer-to-`2^17` window that governs the transform and index reuse does
+  not bind lighting -- lighting values never need to be exact integers.
+- **Lighting shares the 64-ALU fragment ceiling with the transform.** The
+  authoritative `>64`-slot gate lives in `r300_fragprog_emit.c`. A single
+  directional light (normalize, two dots, one lowered `POW`, one `RSQ`) is a
+  handful of slots, but multi-light or spotlight lighting on top of the R2VB
+  transform can exceed 64. That pushes the combined kernel onto the same
+  multi-pass or R400_US route the transform uses for `w_clip` divide and
+  clipping (HBTCL-04f), rather than onto a separate lighting engine.
+
+So lighting introduces no new hardware dependency and no new dead end: it is a
+fragment-ALU budget question, folded into the same 64-slot / R400_US accounting
+as the transform, using only ops the compiler already emits or lowers.
+
 ## Scoped implementation plan
 
 What already exists on this substrate is more than a sketch: `r300_r2vb.c` is a
@@ -390,7 +433,7 @@ plan generalizes this into the standing vertex route.
 | HBTCL-03 | Audit complete: R2VB has three producer paths including straight-line VS restage, but lacks perspective divide, geometric clipping, R400_US routing, and default SW-TCL integration | -- |
 | HBTCL-04 | Implement the real collineation gaps: SW perspective divide for non-trivial `w_clip`, SW geometric clipping in the Glaeser linear domain, and R400_US routing for kernels above the 64-slot R300 fragment-ALU ceiling. Do not rework general transform restaging unless the existing restage classifier rejects a target kernel for a concrete reason | HBTCL-03 |
 | HBTCL-05 | DONE: the "VAP register table" section above folds in the offsets, the write-only/read-excluded wedge window, the 16-bit `VF_CNTL` underflow lever + its `git-150a16dc47` fix, the system-value slot-reservation registry, and the R2VB CS-write surface | -- |
-| HBTCL-06 | Assess the hardware sin/cos (not GL-reachable) plus the fragment-ALU transcendentals for the lighting stage of a full TCL | -- |
+| HBTCL-06 | DONE: the "Lighting on the fragment ALU" section above -- native RCP/RSQ/EX2/LG2, lowered POW/SQRT/SINCOS, the lighting-term mapping table, and the shared 64-ALU/R400_US budget with the transform | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear (GA point-setup registers) via the HBTCL-01 decode method | HBTCL-03 |
 | HBTCL-08 | Promote the generalized R2VB collineation engine to the standing r300 SW-TCL vertex route (gated first); validate on RS482 across topologies + a piglit GL2.1 subset under the poller with no VAP/GA stall | HBTCL-02, HBTCL-04, HBTCL-07 |
 | HBTCL-09 | Combine demonstrated MRT multi-attribute export with R2VB so position, normal, and texcoord can leave the producer in one transform pass | HBTCL-03 |
