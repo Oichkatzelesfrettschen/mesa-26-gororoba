@@ -1074,13 +1074,27 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
      * triangle-vs-two-float4-points geometry delta, plus num_vertices * vtx_dwords
      * embedded vertex dwords and the per-viewport-constant wpos override.  The
      * barrier is 8 (not 6) dwords because it includes the VAP_PVS_STATE_FLUSH sync. */
-    BEGIN_CS(55 + r2vb_vp_override_dwords + (int)num_vertices * (int)vtx_dwords - 16);
+    BEGIN_CS(61 + r2vb_vp_override_dwords + (int)num_vertices * (int)vtx_dwords - 16);
 
     OUT_CS_REG(R300_ZB_CNTL, 0);
     OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
     OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
     OUT_CS(((num_vertices + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
            ((1 + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
+    /* Flush the OUTGOING color buffer before retargeting RB3D_COLOROFFSET0.
+     * Every framebuffer change in the driver pairs with the gpu_flush atom's
+     * cb_flush_clean (r300_mark_fb_state_dirty marks gpu_flush dirty), which
+     * pushes dirty RB3D destination-cache tiles to memory while the old
+     * COLOROFFSET is still programmed.  A raw retarget without that barrier
+     * drops the application surface's cached pixels -- observed as a prior
+     * blitter clear-quad losing every pixel the later draw does not rewrite. */
+    OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT,
+               R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                   R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+    OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT,
+               R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+    OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
     OUT_CS_REG(R300_RB3D_COLOROFFSET0, output_gart_bo_offset);
     OUT_CS_RELOC(output_gart_bo);
     OUT_CS_REG(R300_RB3D_COLORPITCH0, output_pitch | R300_COLOR_FORMAT_ARGB32323232);
