@@ -245,7 +245,8 @@ struct draw_vertex_shader *
 draw_create_vs_exec(struct draw_context *draw,
                     const struct pipe_shader_state *state)
 {
-   if (state->type == PIPE_SHADER_IR_NIR && debug_get_option_draw_nir_exec())
+   if (state->type == PIPE_SHADER_IR_NIR && debug_get_option_draw_nir_exec() &&
+       draw_vs_nir_supported(state))
       return draw_create_vs_nir(draw, state);
 
    struct exec_vertex_shader *vs = CALLOC_STRUCT(exec_vertex_shader);
