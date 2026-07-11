@@ -18,6 +18,7 @@
 #include "util/u_transfer.h"
 
 #include "r300_defines.h"
+#include "r300_r2vb_clip.h"
 #include "r300_screen.h"
 #include "compiler/radeon_regalloc.h"
 #include "compiler/radeon_code.h"
@@ -728,7 +729,9 @@ struct r300_context {
      * gl_Position = mat4 * in_attr on the fragment ALU (the matrix in FS const
      * file 0), and a data-independent slot-pixel position buffer reused across
      * draws.  Built lazily, owned by the context. */
-    void *r2vb_transform_fs;
+    /* Cached MVP transform FS per producer position space
+     * (r300_r2vb_position_space: raw clip vs divided window). */
+    void *r2vb_transform_fs[2];
     struct pipe_resource *r2vb_slot_pos_bo;
     unsigned r2vb_slot_pos_count;
 
@@ -761,6 +764,10 @@ struct r300_context {
      * (VTX_XY_FMT | VTX_Z_FMT | VTX_W0_FMT), or the viewport is applied
      * twice and the geometry lands off-target. */
     bool r2vb_source_window;
+
+    /* Position space the most recent R2VB producer pass emitted; the
+     * re-ingest derives r2vb_source_window from it. */
+    enum r300_r2vb_position_space r2vb_produced_space;
 
     /* Vertex array state info */
     bool vertex_arrays_dirty;
