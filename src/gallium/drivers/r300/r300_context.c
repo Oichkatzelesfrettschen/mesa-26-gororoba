@@ -90,6 +90,8 @@ static void r300_destroy_context(struct pipe_context* context)
     if (r300->r2vb_producer_vs)
         r300->context.delete_vs_state(&r300->context, r300->r2vb_producer_vs);
     pipe_resource_reference(&r300->r2vb_slot_pos_bo, NULL);
+    pipe_resource_reference(&r300->r2vb_split_keepalive[0], NULL);
+    pipe_resource_reference(&r300->r2vb_split_keepalive[1], NULL);
 
     for (unsigned i = 0; i < r300->nr_vertex_buffers; i++)
        pipe_vertex_buffer_unreference(&r300->vertex_buffer[i]);

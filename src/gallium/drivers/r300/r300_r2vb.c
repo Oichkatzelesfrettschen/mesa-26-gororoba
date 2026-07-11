@@ -3719,7 +3719,30 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
     free(bmodel);
     r300->context.delete_fs_state(&r300->context, pa_fs);
     r300->context.delete_fs_state(&r300->context, pb_fs);
-    pipe_resource_reference(&carry_bo, NULL);
+    /* Carry-BO disposal is the first one-variable cell of the delivery-wedge
+     * ladder.  Default: release now, before the delivery draw is even built --
+     * the winsys may then recycle the BO's slab while the split composition's
+     * work is in flight.  R300_R2VB_SPLIT_KEEPALIVE=1 instead parks the
+     * reference in a two-slot ring on the context so the backing store
+     * outlives the delivered draw; the ring rotates on the next split and is
+     * released at context destroy. */
+    {
+        static int keepalive_env = -1;
+        if (keepalive_env < 0) {
+            const char *e = getenv("R300_R2VB_SPLIT_KEEPALIVE");
+            keepalive_env = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        }
+        if (keepalive_env) {
+            pipe_resource_reference(&r300->r2vb_split_keepalive[1], NULL);
+            r300->r2vb_split_keepalive[1] = r300->r2vb_split_keepalive[0];
+            r300->r2vb_split_keepalive[0] = carry_bo; /* reference moves to the ring */
+            carry_bo = NULL;
+            fprintf(stderr, "r2vb_split_producer carry_keepalive=parked bo=%p\n",
+                    (void *)r300->r2vb_split_keepalive[0]);
+        } else {
+            pipe_resource_reference(&carry_bo, NULL);
+        }
+    }
     /* Label the clip BO the delivery re-ingests as split-producer output so the
      * delivery capture can distinguish it from the single-pass producer, and
      * publish the clip BO itself for the capture's position-identity clause. */
