@@ -326,7 +326,8 @@ vs_nir_prepare(struct draw_vertex_shader *shader, struct draw_context *draw)
 }
 
 static void
-vs_nir_run_linear(struct draw_vertex_shader *shader,
+vs_nir_run_linear(struct draw_context *draw,
+                  struct draw_vertex_shader *shader,
                   const float (*input)[4],
                   float (*output)[4],
                   const struct draw_buffer_info *constants,
@@ -336,7 +337,6 @@ vs_nir_run_linear(struct draw_vertex_shader *shader,
                   const unsigned *fetch_elts)
 {
    struct nir_vertex_shader *nvs = nir_vertex_shader(shader);
-   struct draw_context *draw = shader->draw;
    const bool clamp_vertex_color = draw->rasterizer->clamp_vertex_color;
    struct interp st = {
       .nvs = nvs,
@@ -382,7 +382,7 @@ vs_nir_run_linear(struct draw_vertex_shader *shader,
 }
 
 static void
-vs_nir_delete(struct draw_vertex_shader *dvs)
+vs_nir_delete(UNUSED struct draw_context *draw, struct draw_vertex_shader *dvs)
 {
    struct nir_vertex_shader *nvs = nir_vertex_shader(dvs);
    ralloc_free(nvs->nir);
@@ -493,7 +493,6 @@ draw_create_vs_nir(struct draw_context *draw,
    vs->base.state.type = PIPE_SHADER_IR_NIR;
    vs->base.state.ir.nir = nir;
    vs->base.state.stream_output = state->stream_output;
-   vs->base.draw = draw;
    vs->base.prepare = vs_nir_prepare;
    vs->base.run_linear = vs_nir_run_linear;
    vs->base.delete = vs_nir_delete;
