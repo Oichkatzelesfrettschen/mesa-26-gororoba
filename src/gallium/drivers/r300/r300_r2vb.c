@@ -172,10 +172,13 @@ static nir_def *r2vb_build_producer_output(nir_builder *b, nir_def *comp[4],
     nir_def *rcp_w = nir_bcsel(b, nir_flt(b, nir_fabs(b, w), guard),
                                nir_imm_float(b, 0.0f), nir_frcp(b, w));
     nir_def *win[3];
-    for (unsigned i = 0; i < 3; i++)
-        win[i] = nir_ffma(b, nir_fmul(b, comp[i], rcp_w),
-                          nir_imm_float(b, vp->scale[i]),
+    for (unsigned i = 0; i < 3; i++) {
+        /* NDC * scale + bias as separate fmul + fadd; nir_to_rc has no ffma
+         * opcode and fuses the multiply-add into the native MAD itself. */
+        nir_def *ndc = nir_fmul(b, comp[i], rcp_w);
+        win[i] = nir_fadd(b, nir_fmul(b, ndc, nir_imm_float(b, vp->scale[i])),
                           nir_imm_float(b, vp->translate[i]));
+    }
     return nir_vec4(b, win[0], win[1], win[2], nir_imm_float(b, 1.0f));
 }
 
