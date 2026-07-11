@@ -64,6 +64,34 @@ unsigned
 r300_mp_find_cuts(nir_shader *nir, struct r300_mp_partition *cands,
                   unsigned max_cands);
 
+/* R2VB producer budget-escape (carry-BO split): the fragment-ALU vertex
+ * producer transports the cut-crossing values through one FP32x4 carry BO
+ * instead of the FS multipass RGBA8 hi/lo scratch, so the carry is exact and
+ * fits four scalar components.
+ *
+ * r300_mp_find_vec4_cut ranks the single-block cuts (r300_mp_find_cuts, which
+ * orders smallest carry first) and returns the first whose crossing set fits
+ * one vec4 -- total_comps <= 4.  r300_mp_build_carry_pass_a clones the
+ * position-pass producer FS, keeps the computation up to the cut, and replaces
+ * the position store with one vec4 that packs the carried bases (i2f32 for INT,
+ * b2f32 for BOOL1, unused lanes 0.0) into FRAG_RESULT_DATA0.
+ * r300_mp_build_pos_pass_b clones the same FS, adds a flat shader input at
+ * VARYING_SLOT_VAR0 + num_in fed from the carry BO, reconstitutes each base
+ * from its carry components (float direct, INT through f2i32, BOOL1 through
+ * fneu 0.0), and rewrites the base's uses so the pre-cut half dead-codes away
+ * while the position output survives.  Both halves are pure NIR; the caller
+ * measures each against the emitted-slot admission oracle and adopts the split
+ * only when both fit. */
+bool
+r300_mp_find_vec4_cut(nir_shader *nir, struct r300_mp_partition *out);
+
+nir_shader *
+r300_mp_build_carry_pass_a(nir_shader *src, const struct r300_mp_partition *part);
+
+nir_shader *
+r300_mp_build_pos_pass_b(nir_shader *src, const struct r300_mp_partition *part,
+                         unsigned num_in);
+
 #ifdef __cplusplus
 }
 #endif
