@@ -3378,8 +3378,10 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
  * Strip triangle t is (t, t+1, t+2) on an even t and (t+1, t, t+2) on an odd
  * one (preserves the alternating winding); fan triangle t is (0, t+1, t+2).
  * info->primitive_restart splits the source-index sequence at every
- * occurrence of info->restart_index (post index_bias) into independent
- * segments, each walked from its own local t=0, so a restart never stitches
+ * occurrence of info->restart_index, compared against the RAW index-buffer
+ * value before index_bias (the same pre-bias comparison
+ * util_prim_restart_convert_to_direct performs; the bias joins at emission),
+ * into independent segments, each walked from its own local t=0, so a restart never stitches
  * a triangle across the split; a segment shorter than one full primitive (3
  * indices for TRIANGLES, or the STRIP/FAN minimum) contributes nothing.  A
  * TRIANGLES segment whose length is not a multiple of 3 drops its trailing
@@ -3431,9 +3433,11 @@ r2vb_topology_gather_indices(struct r300_context *r300,
                 free(src);
                 return false;
             }
-            src[i] = (uint32_t)((int64_t)raw + draw->index_bias);
+            src[i] = raw;
         }
     }
+    /* Bias joins the emitted rows, never the restart comparison above. */
+    const int64_t bias = info->index_size != 0 ? draw->index_bias : 0;
 
     const uint32_t cap = 4096;
     uint32_t *gidx = malloc((size_t)cap * sizeof(*gidx));
@@ -3479,9 +3483,9 @@ r2vb_topology_gather_indices(struct r300_context *r300,
                 overflow = true;
                 break;
             }
-            gidx[n_out++] = src[i0];
-            gidx[n_out++] = src[i1];
-            gidx[n_out++] = src[i2];
+            gidx[n_out++] = (uint32_t)((int64_t)src[i0] + bias);
+            gidx[n_out++] = (uint32_t)((int64_t)src[i1] + bias);
+            gidx[n_out++] = (uint32_t)((int64_t)src[i2] + bias);
         }
         if (overflow)
             break;
