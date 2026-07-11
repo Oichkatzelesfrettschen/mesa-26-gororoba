@@ -2783,6 +2783,11 @@ static void r300_r2vb_carry_types_str(const struct r300_mp_partition *p,
 static bool r300_r2vb_split_admitted(struct r300_context *r300,
                                      nir_shader *vs_nir, unsigned num_in)
 {
+    /* The pass-B producer draw feeds num_in model attributes plus the carry,
+     * so the split is deliverable only within the producer's input ceiling. */
+    if (num_in + 1 > R300_R2VB_MAX_PRODUCER_INPUTS)
+        return false;
+
     nir_shader *pos = r300_r2vb_build_restaged_fs_nir(r300, vs_nir,
                                                       VARYING_SLOT_POS,
                                                       r2vb_env_space());
@@ -3516,23 +3521,63 @@ static bool r2vb_single_cs_enabled(void)
  * ordering is then carried by re-asserting the cb_flush_clean +
  * VAP_PVS_STATE_FLUSH barrier adjacent to the re-ingest draw
  * (r2vb_reingest_barrier in r300_r2vb_exec_passthrough_draw). */
-/* Run the pass-A carry producer of an admitted budget-escape split: derive the
- * optimized position producer FS, cut it at the single-vec4 frontier, build the
- * two halves, and render pass A's carry vec4 into an FP32x4 carry BO through the
- * same producer point path the position pass uses (the const0 transaction binds
- * the producer matrix and restores the application binding before the
- * post-producer derived-state update).  The pass-B streamed position re-ingest
- * -- the carry BO fed as the num_in+1'th vertex element into VARYING_SLOT_VAR0 +
- * num_in -- is the next increment; the carry production and the both-halves
- * oracle admission stand as the split proof, mirroring the computed-varying
- * pass that produces and verifies before its own re-ingest wiring. */
+/* One producer emit under the const0 transaction: bind the pass FS and the
+ * producer VS, bind the producer matrix, emit the point draw into the target
+ * BO, then restore the application shaders and const binding before the
+ * post-producer derived-state update (the R2VB-STATE-01 discipline every
+ * producer pass follows). */
+static bool r300_r2vb_emit_split_pass(struct r300_context *r300, void *pass_fs,
+                                      struct pipe_resource *target,
+                                      uint32_t count, const float (*attrs)[4],
+                                      unsigned num_attrs, const float *cols)
+{
+    void *saved_fs = r300->fs.state;
+    void *saved_vs = r300->vs_state.state;
+    void *pvs = r300_r2vb_get_producer_vs(r300, num_attrs);
+    r300->context.bind_fs_state(&r300->context, pass_fs);
+    if (pvs)
+        r300->context.bind_vs_state(&r300->context, pvs);
+    r300_r2vb_set_transform_consts_raw(r300, cols);
+    r300_update_derived_state(r300);
+    bool emitted = false;
+    if (r300_r2vb_prepare_states(r300,
+                                 64 + (int)count * 4 * (1 + (int)num_attrs) + 64)) {
+        r300_r2vb_emit_producer(r300, r300_resource(target), 0, count, attrs,
+                                num_attrs, true);
+        emitted = true;
+    }
+    r300->context.bind_fs_state(&r300->context, saved_fs);
+    if (pvs)
+        r300->context.bind_vs_state(&r300->context, saved_vs);
+    r300_r2vb_restore_app_fs_consts(r300);
+    r300_update_derived_state(r300);
+    return emitted;
+}
+
+/* Deliver an admitted budget-escape split: two producer passes whose composition
+ * writes the same clip BO the single-pass producer would have.  Pass A renders
+ * the cut-crossing carry (one FP32 vec4 per vertex) into a carry BO; the carry
+ * then rides a CPU round-trip -- flush, map, read -- and feeds pass B as the
+ * num_in+1'th embedded model attribute, which the producer VS routes to the
+ * flat input at VARYING_SLOT_VAR0 + num_in that r300_mp_build_pos_pass_b reads
+ * (r300_r2vb_emit_producer feeds embedded attribute a to VAR0+a, the same rank
+ * scheme the restaged FS inputs use).  Pass B renders the position result into
+ * the clip BO.  The CPU round-trip is the deliberate first carry transport: the
+ * carry is exact FP32 through the map, and both passes reuse the proven
+ * embedded-vertex producer; a streamed vertex-element fetch of the carry BO by
+ * the pass-B draw is the follow-on transport that removes the round-trip.  Any
+ * failure returns false with the clip BO unwritten so the draw falls back to
+ * gallivm; true means pass B rendered into clip. */
 static bool r300_r2vb_run_split_producer(struct r300_context *r300,
                                          struct pipe_resource *clip,
                                          uint32_t count, const float (*model)[4],
                                          unsigned num_in, const float *cols,
                                          enum r300_r2vb_position_space space)
 {
-    (void)clip;
+    /* Pass B carries num_in model attributes plus the carry attribute. */
+    if (num_in + 1 > R300_R2VB_MAX_PRODUCER_INPUTS)
+        return false;
+
     nir_shader *pos = r300_r2vb_build_restaged_fs_nir(r300,
                                                       r300_vs(r300)->state.ir.nir,
                                                       VARYING_SLOT_POS, space);
@@ -3554,50 +3599,102 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
             ralloc_free(pass_b);
         return false;
     }
-    /* pass_b feeds the not-yet-wired streamed re-ingest; free it here. */
-    ralloc_free(pass_b);
 
-    if (getenv("R300_R2VB_EXEC_DEBUG"))
+    if (getenv("R300_R2VB_EXEC_DEBUG")) {
+        /* The admission probe clones internally, so measuring here does not
+         * consume the halves. */
+        unsigned la = 0, lb = 0;
+        r300_fs_measure_nir_admission(r300, pass_a, &la);
+        r300_fs_measure_nir_admission(r300, pass_b, &lb);
         fprintf(stderr,
                 "r2vb_split_producer cut=%u carry_bases=%u carry_comps=%u "
-                "num_in=%u count=%u\n",
-                part.cut_index, part.num_bases, part.total_comps, num_in, count);
+                "passA_alu=%u passB_alu=%u num_in=%u pass_b_attrs=%u count=%u\n",
+                part.cut_index, part.num_bases, part.total_comps, la, lb,
+                num_in, num_in + 1, count);
+    }
 
     struct pipe_resource *carry_bo =
         r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
-    struct pipe_shader_state st = {0};
-    st.type = PIPE_SHADER_IR_NIR;
-    st.ir.nir = pass_a; /* create_fs_state takes ownership and precompiles */
-    void *pa_fs = r300->context.create_fs_state(&r300->context, &st);
-    if (!carry_bo || !pa_fs) {
-        if (pa_fs)
-            r300->context.delete_fs_state(&r300->context, pa_fs);
-        pipe_resource_reference(&carry_bo, NULL);
-        return false;
+    struct pipe_shader_state st_a = {0};
+    st_a.type = PIPE_SHADER_IR_NIR;
+    st_a.ir.nir = pass_a; /* create_fs_state takes ownership and precompiles */
+    void *pa_fs = r300->context.create_fs_state(&r300->context, &st_a);
+    struct pipe_shader_state st_b = {0};
+    st_b.type = PIPE_SHADER_IR_NIR;
+    st_b.ir.nir = pass_b;
+    void *pb_fs = r300->context.create_fs_state(&r300->context, &st_b);
+    float (*bmodel)[4] = malloc((size_t)count * (num_in + 1) * sizeof(*bmodel));
+    if (!carry_bo || !pa_fs || !pb_fs || !bmodel)
+        goto fail;
+
+    /* Pass A: the carry producer, into the carry BO. */
+    if (!r300_r2vb_emit_split_pass(r300, pa_fs, carry_bo, count, model, num_in,
+                                   cols))
+        goto fail;
+
+    /* Carry round-trip: the flush + read map waits for the producer submit and
+     * makes the GTT write coherent, the same ordering the BO oracles rely on. */
+    r300->context.flush(&r300->context, NULL, 0);
+    {
+        struct pipe_transfer *xfer = NULL;
+        struct pipe_box box = { .width = (int)count * 16, .height = 1, .depth = 1 };
+        const float *carry = r300->context.buffer_map(&r300->context, carry_bo, 0,
+                                                      PIPE_MAP_READ, &box, &xfer);
+        if (!carry)
+            goto fail;
+        /* Extend the model layout (num_in attributes per vertex, in emit order)
+         * to num_in+1: the carry lands after the model attributes, so the
+         * producer feeds it to VAR0 + num_in, the pass-B carry input. */
+        for (uint32_t pv = 0; pv < count; pv++) {
+            for (unsigned a = 0; a < num_in; a++)
+                memcpy(bmodel[pv * (num_in + 1) + a], model[pv * num_in + a],
+                       sizeof(*bmodel));
+            memcpy(bmodel[pv * (num_in + 1) + num_in], &carry[pv * 4],
+                   sizeof(*bmodel));
+        }
+        if (getenv("R300_R2VB_EXEC_DEBUG"))
+            fprintf(stderr,
+                    "r2vb_split_producer carry[0]=%g,%g,%g,%g\n",
+                    carry[0], carry[1], carry[2], carry[3]);
+        r300->context.buffer_unmap(&r300->context, xfer);
     }
 
-    void *saved_fs = r300->fs.state;
-    void *saved_vs = r300->vs_state.state;
-    void *pvs = r300_r2vb_get_producer_vs(r300, num_in);
-    r300->context.bind_fs_state(&r300->context, pa_fs);
-    if (pvs)
-        r300->context.bind_vs_state(&r300->context, pvs);
-    r300_r2vb_set_transform_consts_raw(r300, cols);
-    r300_update_derived_state(r300);
-    if (r300_r2vb_prepare_states(r300, 64 + (int)count * 4 * (1 + (int)num_in) + 64))
-        r300_r2vb_emit_producer(r300, r300_resource(carry_bo), 0, count, model,
-                                num_in, true);
-    r300->context.bind_fs_state(&r300->context, saved_fs);
-    if (pvs)
-        r300->context.bind_vs_state(&r300->context, saved_vs);
-    r300_r2vb_restore_app_fs_consts(r300);
-    r300_update_derived_state(r300);
-    if (!r2vb_single_cs_enabled())
-        r300->context.flush(&r300->context, NULL, 0);
+    /* Pass B: the position remainder, into the clip BO the delivery re-ingests. */
+    if (!r300_r2vb_emit_split_pass(r300, pb_fs, clip, count,
+                                   (const float (*)[4])bmodel, num_in + 1, cols))
+        goto fail;
 
+    /* Order the clip write against the re-ingest, matching the single-pass
+     * producer tail: the flush + read map waits for the submit so the VAP does
+     * not fetch a recycled GART page's stale content. */
+    if (!r2vb_single_cs_enabled()) {
+        r300->context.flush(&r300->context, NULL, 0);
+        struct pipe_transfer *sxfer = NULL;
+        struct pipe_box sbox = { .width = (int)count * 16, .height = 1, .depth = 1 };
+        void *sm = r300->context.buffer_map(&r300->context, clip, 0, PIPE_MAP_READ,
+                                            &sbox, &sxfer);
+        if (sm)
+            r300->context.buffer_unmap(&r300->context, sxfer);
+    }
+
+    free(bmodel);
     r300->context.delete_fs_state(&r300->context, pa_fs);
+    r300->context.delete_fs_state(&r300->context, pb_fs);
     pipe_resource_reference(&carry_bo, NULL);
     return true;
+
+fail:
+    free(bmodel);
+    if (pa_fs)
+        r300->context.delete_fs_state(&r300->context, pa_fs);
+    else
+        ralloc_free(pass_a);
+    if (pb_fs)
+        r300->context.delete_fs_state(&r300->context, pb_fs);
+    else
+        ralloc_free(pass_b);
+    pipe_resource_reference(&carry_bo, NULL);
+    return false;
 }
 
 static bool r2vb_run_transform_producer(struct r300_context *r300,

@@ -252,6 +252,23 @@ case_over_budget_chain_splits(void)
       return;
    }
 
+   /* Pass-B carry-input rank contract: the producer draw feeds embedded
+    * attribute a to VAR0+a, model attributes first, carry last -- so a
+    * num_in=1 pass B must read the carry as a flat input at VAR0+1 while the
+    * model input stays at VAR0. */
+   bool carry_in_ok = false, model_in_ok = false;
+   nir_foreach_variable_with_modes(var, pass_b, nir_var_shader_in) {
+      if (var->data.location == VARYING_SLOT_VAR0 + 1 &&
+          var->data.interpolation == INTERP_MODE_FLAT)
+         carry_in_ok = true;
+      if (var->data.location == VARYING_SLOT_VAR0)
+         model_in_ok = true;
+   }
+   CHECK(carry_in_ok, "pass B reads the carry as a flat input at VAR0 + num_in");
+   CHECK(model_in_ok, "pass B keeps the model input at VAR0");
+   CHECK(pass_b->info.inputs_read & BITFIELD64_BIT(VARYING_SLOT_VAR0 + 1),
+         "pass B inputs_read covers the carry slot");
+
    /* oracle_fits runs nir_to_rc, which takes ownership of the shader; do not
     * free pass_a/pass_b afterward. */
    CHECK(oracle_fits(pass_a), "carry pass A compiles under the 64-slot ceiling");
