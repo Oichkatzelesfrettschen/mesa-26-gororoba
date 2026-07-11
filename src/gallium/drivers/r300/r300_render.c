@@ -1889,6 +1889,29 @@ static void r300_render_set_primitive(struct vbuf_render* render,
     r300render->hwprim = r300_translate_primitive(prim);
 }
 
+static void r300_render_draw_elements(struct vbuf_render* render,
+                                      const uint16_t* indices,
+                                      uint count);
+
+/* Stale-VAP-fetch containment experiment gate (R300_SWTCL_INDEXED_CONTROL):
+ * re-emit the SWTCL vertex-list draw as an indexed draw over the trivial
+ * identity index list.  1 = PRIM_WALK_INDICES with vertex reuse enabled;
+ * 2 = PRIM_WALK_INDICES with VTX_REUSE_DIS (the bit is legal only under
+ * indexed walking).  Discriminates whether the VAP vertex reuse store
+ * carries a predecessor client's geometry into a byte-identical vertex-list
+ * draw.  0 (default) leaves the vertex-list path untouched. */
+static int r300_swtcl_indexed_control(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_SWTCL_INDEXED_CONTROL");
+        cached = e ? atoi(e) : 0;
+        if (cached < 0 || cached > 2)
+            cached = 0;
+    }
+    return cached;
+}
+
 static void r300_render_draw_arrays(struct vbuf_render* render,
                                     unsigned start,
                                     unsigned count)
@@ -1903,6 +1926,20 @@ static void r300_render_draw_arrays(struct vbuf_render* render,
      * stays bounded. */
     if (r300render->gtt_budget_exceeded)
         return;
+
+    /* Containment-experiment rewrite: the identity index list makes the draw
+     * geometrically identical to the vertex-list form while switching the VAP
+     * to indexed primitive walking (and, at gate 2, disabling vertex reuse). */
+    if (r300_swtcl_indexed_control() && start == 0 && count <= 65535) {
+        uint16_t *idx = malloc(count * sizeof(uint16_t));
+        if (idx) {
+            for (unsigned k = 0; k < count; k++)
+                idx[k] = (uint16_t)k;
+            r300_render_draw_elements(render, idx, count);
+            free(idx);
+            return;
+        }
+    }
     /* VAP_VF_CNTL packs the vertex count in a 16-bit field; only r5xx widens it
      * via R500_VAP_ALT_NUM_VERTICES.  The HWTCL emitter (r300_emit_draw_arrays)
      * already takes the alt path for count > 65535; mirror it so the SWTCL
@@ -1988,7 +2025,9 @@ static void r300_render_draw_elements(struct vbuf_render* render,
 
     OUT_CS_PKT3(R300_PACKET3_3D_DRAW_INDX_2, 0);
     OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_INDICES | (count << 16) |
-           r300render->hwprim);
+           r300render->hwprim |
+           (r300_swtcl_indexed_control() == 2 ? R300_VAP_VF_CNTL__VTX_REUSE_DIS
+                                              : 0));
 
     OUT_CS_PKT3(R300_PACKET3_INDX_BUFFER, 2);
     OUT_CS(R300_INDX_BUFFER_ONE_REG_WR | (R300_VAP_PORT_IDX0 >> 2));
