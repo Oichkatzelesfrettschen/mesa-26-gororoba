@@ -452,6 +452,21 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
      * Computed-varying pass: target = that varying's slot, and the now-unstored
      * position transform drops in DCE below, leaving just the varying arithmetic. */
     nir_function_impl *impl = nir_shader_get_entrypoint(fs);
+
+    /* The cloned VS carries multiply-add as ffma/ffma_weak (the gallivm VS
+     * compiler options keep them fused-weak), but nir_to_rc translates only
+     * nir_op_fmad to the native MAD and errors on ffma variants.  Rewrite in
+     * place -- same three float sources, same result shape. */
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_alu)
+                continue;
+            nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op == nir_op_ffma || alu->op == nir_op_ffma_weak)
+                alu->op = nir_op_fmad;
+        }
+    }
+
     nir_foreach_block(block, impl) {
         nir_foreach_instr_safe(instr, block) {
             if (instr->type != nir_instr_type_intrinsic)
