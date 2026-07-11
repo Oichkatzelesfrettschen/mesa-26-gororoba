@@ -778,6 +778,14 @@ struct r300_context {
      * leak into a later pure-passthrough delivery. */
     enum r300_r2vb_producer_kind r2vb_producer_kind;
 
+    /* Weak pointer to the clip BO the producer wrote, published alongside
+     * r2vb_producer_kind and valid only within the same draw (the producer's
+     * caller holds the reference until the delivery returns).  The delivery
+     * capture checks the position element fetches exactly this resource; it is
+     * NOT r2vb_slot_pos_bo, which is the producer's slot-pixel input stream,
+     * not its output.  Cleared with the kind on draw entry and on consumption. */
+    struct pipe_resource *r2vb_capture_clip;
+
     /* Clip-edge replacement data for passthrough re-ingest streams, indexed
      * by stream position (the ascending-slot order both the route gate and
      * r300_r2vb_reingest_outputs enumerate).  When the clip-edge rebuild

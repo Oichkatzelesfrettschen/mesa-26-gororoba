@@ -3718,8 +3718,10 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
     r300->context.delete_fs_state(&r300->context, pb_fs);
     pipe_resource_reference(&carry_bo, NULL);
     /* Label the clip BO the delivery re-ingests as split-producer output so the
-     * delivery capture can distinguish it from the single-pass producer. */
+     * delivery capture can distinguish it from the single-pass producer, and
+     * publish the clip BO itself for the capture's position-identity clause. */
     r300->r2vb_producer_kind = R300_R2VB_PRODUCER_SPLIT;
+    r300->r2vb_capture_clip = clip;
     return true;
 
 fail:
@@ -3808,8 +3810,10 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
             r300->context.buffer_unmap(&r300->context, sxfer);
     }
     /* Single over-budget-free producer FS filled the clip BO; label it so the
-     * delivery capture distinguishes it from the two-pass split producer. */
+     * delivery capture distinguishes it from the two-pass split producer, and
+     * publish the clip BO itself for the capture's position-identity clause. */
     r300->r2vb_producer_kind = R300_R2VB_PRODUCER_SINGLE;
+    r300->r2vb_capture_clip = clip;
     return true;
 }
 
