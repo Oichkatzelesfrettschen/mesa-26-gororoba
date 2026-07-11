@@ -781,6 +781,30 @@ struct r300_context {
     float (*r2vb_edge_stream_attr[PIPE_MAX_ATTRIBS])[4];
     bool r2vb_edge_streams_active;
 
+    /* Application FS constant-buffer-0 mirror.  r300_set_constant_buffer keeps
+     * only the mapped pointer in fs_constants, so an R2VB producer pass that
+     * loads the transform matrix into FS const file 0 would otherwise leave no
+     * way to rebind what the application had.  The mirror records the full
+     * slot-0 binding on every application set_constant_buffer call (buffer
+     * referenced while held); producer binds set r2vb_fs_const0_producer_bind
+     * so they bypass the mirror, and the producer transaction restores from it
+     * before the post-producer derived-state update. */
+    struct {
+        struct pipe_resource *buffer;
+        const void *user_buffer;
+        unsigned buffer_offset;
+        unsigned buffer_size;
+        bool valid;
+    } fs_const0_app;
+    bool r2vb_fs_const0_producer_bind;
+
+    /* Producer transform-matrix storage.  set_constant_buffer keeps the caller
+     * pointer, not a copy, so the DP4-row transpose and the raw column copy
+     * need storage that outlives the producer pass; context-local so
+     * concurrent contexts cannot overwrite each other's matrix. */
+    float r2vb_mvp_rows[16];
+    float r2vb_mvp_cols[16];
+
     /* Vertex array state info */
     bool vertex_arrays_dirty;
     bool vertex_arrays_indexed;

@@ -2695,6 +2695,25 @@ static void r300_set_constant_buffer(struct pipe_context *pipe,
     struct r300_constant_buffer *cbuf;
     uint32_t *mapped;
 
+    /* Mirror the application's fragment const0 binding so an R2VB producer
+     * pass can rebind it after loading the transform matrix into the same
+     * slot.  Producer binds set r2vb_fs_const0_producer_bind and bypass the
+     * mirror; an unbind invalidates it. */
+    if (shader == MESA_SHADER_FRAGMENT && index == 0 &&
+        !r300->r2vb_fs_const0_producer_bind) {
+        if (cb && (cb->buffer || cb->user_buffer)) {
+            pipe_resource_reference(&r300->fs_const0_app.buffer, cb->buffer);
+            r300->fs_const0_app.user_buffer = cb->user_buffer;
+            r300->fs_const0_app.buffer_offset = cb->buffer_offset;
+            r300->fs_const0_app.buffer_size = cb->buffer_size;
+            r300->fs_const0_app.valid = true;
+        } else {
+            pipe_resource_reference(&r300->fs_const0_app.buffer, NULL);
+            r300->fs_const0_app.user_buffer = NULL;
+            r300->fs_const0_app.valid = false;
+        }
+    }
+
     if (!cb || (!cb->buffer && !cb->user_buffer))
         return;
 

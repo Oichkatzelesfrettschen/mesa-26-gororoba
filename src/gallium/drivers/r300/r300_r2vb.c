@@ -765,26 +765,48 @@ static void r300_r2vb_mvp_init_selftest(struct r300_context *r300, unsigned coun
 static const float r2vb_test_mvp_cols[16] = {
     2, 0, 0, 0,  0, 2, 0, 0,  0, 0, 2, 0,  5, 5, 0, 1,
 };
-/* set_constant_buffer keeps the pointer, not a copy, so the transposed rows need
- * process-lifetime storage. */
-static float r2vb_mvp_rows[16];
+/* Bind a producer matrix into FS const file 0 without disturbing the
+ * application const0 mirror; the producer transaction restores the
+ * application binding through r300_r2vb_restore_app_fs_consts. */
+static void r2vb_bind_producer_fs_consts(struct r300_context *r300,
+                                         const void *values, unsigned size)
+{
+    struct pipe_constant_buffer cb = {0};
+    cb.buffer_size = size;
+    cb.user_buffer = values;
+    r300->r2vb_fs_const0_producer_bind = true;
+    r300->context.set_constant_buffer(&r300->context, MESA_SHADER_FRAGMENT, 0, &cb);
+    r300->r2vb_fs_const0_producer_bind = false;
+}
+
+/* Rebind the application's fragment const0 after a producer pass overwrote
+ * the slot with the transform matrix.  Must run before the post-producer
+ * r300_update_derived_state, or the application FS variant / constant remap /
+ * inline-uniform specialization is selected while the matrix is still the
+ * live constant source. */
+static void r300_r2vb_restore_app_fs_consts(struct r300_context *r300)
+{
+    if (!r300->fs_const0_app.valid)
+        return;
+    struct pipe_constant_buffer cb = {0};
+    cb.buffer = r300->fs_const0_app.buffer;
+    cb.user_buffer = r300->fs_const0_app.user_buffer;
+    cb.buffer_offset = r300->fs_const0_app.buffer_offset;
+    cb.buffer_size = r300->fs_const0_app.buffer_size;
+    r300->context.set_constant_buffer(&r300->context, MESA_SHADER_FRAGMENT, 0, &cb);
+}
 
 /* Load FS const file 0 with the transpose of a column-major MVP so each DP4 row
- * is a matrix row: DP4(row_i, v) = (M*v)_i, row_i = (col0[i],col1[i],col2[i],col3[i]). */
+ * is a matrix row: DP4(row_i, v) = (M*v)_i, row_i = (col0[i],col1[i],col2[i],col3[i]).
+ * set_constant_buffer keeps the pointer, not a copy, so the rows live on the
+ * context for the duration of the producer pass. */
 static void r300_r2vb_set_transform_consts(struct r300_context *r300, const float *cols)
 {
     for (unsigned i = 0; i < 4; i++)
         for (unsigned j = 0; j < 4; j++)
-            r2vb_mvp_rows[i * 4 + j] = cols[j * 4 + i];
-    struct pipe_constant_buffer cb = {0};
-    cb.buffer_size = 64;
-    cb.user_buffer = r2vb_mvp_rows;
-    r300->context.set_constant_buffer(&r300->context, MESA_SHADER_FRAGMENT, 0, &cb);
+            r300->r2vb_mvp_rows[i * 4 + j] = cols[j * 4 + i];
+    r2vb_bind_producer_fs_consts(r300, r300->r2vb_mvp_rows, 64);
 }
-
-/* Process-lifetime copy for the re-staged producer: set_constant_buffer keeps the
- * pointer, not a copy. */
-static float r2vb_mvp_cols[16];
 
 /* Load FS const file 0 with the matrix in the layout the re-staged VS expects --
  * the column-major columns verbatim, not the DP4 transpose -- because the
@@ -792,11 +814,8 @@ static float r2vb_mvp_cols[16];
  * col0*x + col1*y + col2*z + col3*w. */
 static void r300_r2vb_set_transform_consts_raw(struct r300_context *r300, const float *cols)
 {
-    memcpy(r2vb_mvp_cols, cols, sizeof(r2vb_mvp_cols));
-    struct pipe_constant_buffer cb = {0};
-    cb.buffer_size = 64;
-    cb.user_buffer = r2vb_mvp_cols;
-    r300->context.set_constant_buffer(&r300->context, MESA_SHADER_FRAGMENT, 0, &cb);
+    memcpy(r300->r2vb_mvp_cols, cols, sizeof(r300->r2vb_mvp_cols));
+    r2vb_bind_producer_fs_consts(r300, r300->r2vb_mvp_cols, 64);
 }
 
 /* No-submit decode of the producer's VAP-stream routing against the bound FS's
@@ -2229,9 +2248,11 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
         }
     }
 
-    /* Restore the application fragment shader the transform producer displaced. */
+    /* Restore the application fragment shader and its const0 binding the
+     * transform producer displaced. */
     if (cfg.xform && saved_fs) {
         r300->context.bind_fs_state(&r300->context, saved_fs);
+        r300_r2vb_restore_app_fs_consts(r300);
         r300_update_derived_state(r300);
     }
 
@@ -3351,6 +3372,8 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     r300->context.bind_fs_state(&r300->context, saved_fs);
     if (pvs)
         r300->context.bind_vs_state(&r300->context, saved_vs);
+    if (restage || externals)
+        r300_r2vb_restore_app_fs_consts(r300);
     r300_update_derived_state(r300);
     if (!xfs_cached)
         r300->context.delete_fs_state(&r300->context, xfs);
@@ -3669,14 +3692,10 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * (which transposes the column-major cols into DP4 rows).  Externals drops the
      * per-draw recompile and is the const-file form a general VS needs; it stays
      * opt-in behind the proven baked path until the framebuffer oracle confirms
-     * it byte-exact.
-     *
-     * TODO: r300_r2vb_set_transform_consts overwrites FS constant buffer 0, which
-     *       the multi-stream re-ingest's application FS also reads.  Restore the
-     *       application's bound FS constant buffer before the re-ingest when the
-     *       app FS reads uniforms (the validation FS fs_solid reads none, so the
-     *       overwrite is invisible to the oracle).  Grounded in
-     *       r300_set_constant_buffer and r300->fs_constants. */
+     * it byte-exact.  Producer const binds bypass the fs_const0_app mirror
+     * and the transaction rebinds the application's FS constant buffer 0
+     * before the post-producer derived-state update, so the re-ingest's
+     * application FS reads its own constants, not the matrix. */
     static int externals = -1, restage = -1;
     if (externals < 0) {
         const char *e = getenv("R300_R2VB_MVP_EXTERNALS");
@@ -4130,12 +4149,18 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             r300->context.bind_fs_state(&r300->context, vfs);
             if (pvs)
                 r300->context.bind_vs_state(&r300->context, pvs);
+            /* The re-staged varying FS reads any matrix through FS const
+             * file 0, and the position pass restored the application
+             * binding on its way out -- bind the producer matrix for this
+             * pass explicitly rather than inheriting whatever is live. */
+            r300_r2vb_set_transform_consts_raw(r300, cols);
             r300_update_derived_state(r300);
             if (r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64))
                 r300_r2vb_emit_producer(r300, r300_resource(vbo), 0, count, model, 1, true);
             r300->context.bind_fs_state(&r300->context, saved);
             if (pvs)
                 r300->context.bind_vs_state(&r300->context, saved_vs);
+            r300_r2vb_restore_app_fs_consts(r300);
             r300_update_derived_state(r300);
             r300->context.flush(&r300->context, NULL, 0);
             const char *vv = getenv("R300_R2VB_VARYING_VERIFY");
