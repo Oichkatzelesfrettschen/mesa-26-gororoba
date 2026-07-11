@@ -113,6 +113,20 @@ struct r300_fragment_shader {
     unsigned pstipple_sampler_unit;
 };
 
+/* Verdict of a throwaway compile measuring a fragment program against the
+ * real backend budgets (emit_alu's max_alu_insts ceiling, the temp file, the
+ * const file), separating the one failure the multipass/spill escapes can
+ * recover -- the ALU emit ceiling -- from every other reject. */
+enum r300_fs_admission {
+    R300_FS_ADMIT_FITS = 0,
+    R300_FS_ADMIT_OVER_ALU_BUDGET,
+    R300_FS_ADMIT_REJECT,
+};
+
+enum r300_fs_admission
+r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_nir,
+                              unsigned *out_alu_len);
+
 /* Return TRUE if the shader was switched and should be re-emitted. */
 bool r300_pick_fragment_shader(struct r300_context *r300,
                                struct r300_fragment_shader* fs,

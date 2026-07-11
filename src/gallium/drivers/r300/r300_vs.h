@@ -53,6 +53,14 @@ struct r300_vertex_shader {
 
     /* SWTCL-specific. */
     void *draw_vs;
+
+    /* R2VB producer admission memo, indexed by allow_computed_varying.
+     * r300_r2vb_producer_fits_budget compiles the producer FS derived from
+     * this VS into a throwaway code object and admits on the emitted ALU
+     * slot count; the verdict is a pure function of the immutable NIR, the
+     * screen caps, and process-constant env gates, so it is measured once
+     * per VS.  0 = unmeasured, 1 = fits, 2 = rejected. */
+    uint8_t r2vb_admission[2];
 };
 
 void r300_translate_vertex_shader(struct r300_context *r300,
