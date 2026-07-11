@@ -211,6 +211,23 @@ static bool r300_r2vb_clip_classify_enabled(void)
     return cached;
 }
 
+/* Conservative clip-route action gate (R300_R2VB_CLIP_ROUTE): classify the
+ * FP24 clip BO per triangle and act on the whole draw -- every triangle
+ * trivially accepted runs the window-space producer and the verbatim-fetch
+ * delivery; every triangle trivially rejected consumes the draw with no
+ * delivery submit; anything else (partial, mixed, unsafe w, unsupported
+ * draw state) falls the whole draw back to gallivm.  No per-triangle
+ * splitting -- geometric clipping is edge generation's job. */
+static bool r300_r2vb_clip_route_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_R2VB_CLIP_ROUTE");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 /* The process-global divide gate maps onto the explicit producer contract:
  * R300_R2VB_DIVIDE selects the window-space producer, default is raw clip. */
 static enum r300_r2vb_position_space r2vb_env_space(void)
@@ -805,10 +822,24 @@ static uint32_t r2vb_verify_bo_readback(struct r300_context *r300, struct pipe_r
  * the route's authoritative input.  Guard-band k = 0.5 matches the r300/Draw
  * XY guard-band configuration; the near plane follows the context's
  * clip_halfz.  Triangle records are emitted for TRIANGLES topology; every
- * other topology gets per-vertex records only. */
-static void r2vb_clip_classify_readback(struct r300_context *r300,
-                                        struct pipe_resource *res,
-                                        uint32_t count, enum mesa_prim mode)
+ * other topology gets per-vertex records only.
+ *
+ * The return value is the whole-draw verdict for the conservative route
+ * action: ACCEPT only when every classified triangle is trivially accepted,
+ * REJECT only when every one is trivially rejected, FALLBACK for everything
+ * else -- partial, mixed accept/reject, unsafe w, a non-TRIANGLES topology
+ * (no triangle records), or an unmappable BO.  FALLBACK is the safe default:
+ * it hands the whole draw to gallivm unchanged. */
+enum r2vb_clip_route_verdict {
+    R2VB_CLIP_ROUTE_ACCEPT,
+    R2VB_CLIP_ROUTE_REJECT,
+    R2VB_CLIP_ROUTE_FALLBACK,
+};
+
+static enum r2vb_clip_route_verdict
+r2vb_clip_classify_readback(struct r300_context *r300,
+                            struct pipe_resource *res,
+                            uint32_t count, enum mesa_prim mode)
 {
     struct pipe_transfer *xfer = NULL;
     struct pipe_box box = { .width = count * 16, .height = 1, .depth = 1 };
@@ -816,7 +847,7 @@ static void r2vb_clip_classify_readback(struct r300_context *r300,
         r300->context.buffer_map(&r300->context, res, 0, PIPE_MAP_READ, &box, &xfer);
     if (!got) {
         fprintf(stderr, "r2vb_clip map failed\n");
-        return;
+        return R2VB_CLIP_ROUTE_FALLBACK;
     }
     const bool half_z = r300->clip_halfz;
     const float k = R300_R2VB_CLIP_GUARD_K;
@@ -854,6 +885,11 @@ static void r2vb_clip_classify_readback(struct r300_context *r300,
             (unsigned)mode, half_z, k, n_accept, n_reject, n_partial,
             n_fallback);
     r300->context.buffer_unmap(&r300->context, xfer);
+
+    if (n_fallback || n_partial || (n_accept && n_reject) ||
+        (n_accept == 0 && n_reject == 0))
+        return R2VB_CLIP_ROUTE_FALLBACK;
+    return n_reject ? R2VB_CLIP_ROUTE_REJECT : R2VB_CLIP_ROUTE_ACCEPT;
 }
 
 /* Verify the producer transform BO against the CPU column-major M*model_vert.
@@ -2975,6 +3011,95 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
     return ok;
 }
 
+static bool r2vb_single_cs_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_R2VB_MVP_SINGLECS");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return cached;
+}
+
+/* One position-producer pass: build the transform FS for the requested
+ * position space (restage / externals / baked, in that precedence), bind it
+ * with the minimal producer VS, emit the producer under the normal draw flow,
+ * restore the application shaders, and order the BO write against the next
+ * consumer.  The producer VS pins VAP_OUT_VTX_FMT / PSC / RS to the embedded
+ * vertex so the VAP does not fetch past it for an application VS with extra
+ * varyings.
+ *
+ * Ordering: the default two-submit form (proven byte-exact) flushes the CS and
+ * maps the BO for read; the map waits for the submit and makes the BO
+ * coherent.  The radeon winsys pools BOs, so the BO can be recycled from a
+ * prior VBO; without the wait the VAP fetch reads stale (untransformed)
+ * content even though LOAD_VBPNTR points at it.  R300_R2VB_MVP_SINGLECS keeps
+ * producer and re-ingest in one command stream with no flush and no map; the
+ * ordering is then carried by re-asserting the cb_flush_clean +
+ * VAP_PVS_STATE_FLUSH barrier adjacent to the re-ingest draw
+ * (r2vb_reingest_barrier in r300_r2vb_exec_passthrough_draw). */
+static bool r2vb_run_transform_producer(struct r300_context *r300,
+                                        struct pipe_resource *clip,
+                                        uint32_t count, const float (*model)[4],
+                                        unsigned num_in, const float *cols,
+                                        enum r300_r2vb_position_space space,
+                                        bool restage, bool externals)
+{
+    void *xfs;
+    bool xfs_cached = false;
+
+    if (restage) {
+        /* Derive the producer from the bound VS itself -- the general fragment-ALU
+         * vertex route.  Re-stage its NIR as the FS (position only) and load the
+         * matrix it reads from UBO[0] into FS const file 0 untransposed (the VS
+         * body is column-MAD).  Built per draw and deleted after, like the baked
+         * path, since the FS tracks whatever VS is bound. */
+        xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
+                                         VARYING_SLOT_POS, space);
+        if (xfs)
+            r300_r2vb_set_transform_consts_raw(r300, cols);
+    } else if (externals) {
+        xfs = r300_r2vb_get_transform_fs(r300, space);
+        if (xfs)
+            r300_r2vb_set_transform_consts(r300, cols);
+        xfs_cached = true;
+    } else {
+        float rows[16];
+        for (unsigned i = 0; i < 4; i++)
+            for (unsigned j = 0; j < 4; j++)
+                rows[i * 4 + j] = cols[j * 4 + i];
+        xfs = r300_r2vb_build_baked_transform_fs(r300, rows, space);
+    }
+    if (!xfs)
+        return false;
+
+    void *saved_fs = r300->fs.state;
+    void *saved_vs = r300->vs_state.state;
+    void *pvs = r300_r2vb_get_producer_vs(r300, num_in);
+    r300->context.bind_fs_state(&r300->context, xfs);
+    if (pvs)
+        r300->context.bind_vs_state(&r300->context, pvs);
+    r300_update_derived_state(r300);
+    if (r300_r2vb_prepare_states(r300, 64 + (int)count * 4 * (1 + (int)num_in) + 64))
+        r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, num_in, true);
+    r300->context.bind_fs_state(&r300->context, saved_fs);
+    if (pvs)
+        r300->context.bind_vs_state(&r300->context, saved_vs);
+    r300_update_derived_state(r300);
+    if (!xfs_cached)
+        r300->context.delete_fs_state(&r300->context, xfs);
+
+    if (!r2vb_single_cs_enabled()) {
+        r300->context.flush(&r300->context, NULL, 0);
+        struct pipe_transfer *sxfer = NULL;
+        struct pipe_box sbox = { .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
+        void *sm = r300->context.buffer_map(&r300->context, clip, 0, PIPE_MAP_READ, &sbox, &sxfer);
+        if (sm)
+            r300->context.buffer_unmap(&r300->context, sxfer);
+    }
+    return true;
+}
+
 /* Route-exec MVP path: run gl_Position = M * in_pos on the fragment ALU.  The
  * producer transforms the application's model-space positions into a clip-space
  * BO through the 4-DP4 transform-FS, emitted under the normal draw flow (where
@@ -3115,93 +3240,22 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_RESTAGE");
         restage = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    void *xfs;
-    bool xfs_cached = false;
-    /* The classification oracle needs the raw homogeneous result: force the
-     * clip-space producer regardless of the divide gate. */
-    const enum r300_r2vb_position_space produced_space =
-        r300_r2vb_clip_classify_enabled() ? R300_R2VB_POSITION_CLIP
-                                          : r2vb_env_space();
+    /* The classification oracle and the clip-route action both need the raw
+     * homogeneous result: force the clip-space producer regardless of the
+     * divide gate.  The route's accept action re-runs the producer in window
+     * space afterwards, so produced_space is reassigned then. */
+    enum r300_r2vb_position_space produced_space =
+        (r300_r2vb_clip_classify_enabled() || r300_r2vb_clip_route_enabled())
+            ? R300_R2VB_POSITION_CLIP
+            : r2vb_env_space();
     r300->r2vb_produced_space = produced_space;
-    if (restage) {
-        /* Derive the producer from the bound VS itself -- the general fragment-ALU
-         * vertex route.  Re-stage its NIR as the FS (position only) and load the
-         * matrix it reads from UBO[0] into FS const file 0 untransposed (the VS
-         * body is column-MAD).  Built per draw and deleted after, like the baked
-         * path, since the FS tracks whatever VS is bound. */
-        xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
-                                         VARYING_SLOT_POS, produced_space);
-        if (xfs)
-            r300_r2vb_set_transform_consts_raw(r300, cols);
-    } else if (externals) {
-        xfs = r300_r2vb_get_transform_fs(r300, produced_space);
-        if (xfs)
-            r300_r2vb_set_transform_consts(r300, cols);
-        xfs_cached = true;
-    } else {
-        float rows[16];
-        for (unsigned i = 0; i < 4; i++)
-            for (unsigned j = 0; j < 4; j++)
-                rows[i * 4 + j] = cols[j * 4 + i];
-        xfs = r300_r2vb_build_baked_transform_fs(r300, rows, produced_space);
-    }
-    if (!xfs) {
+    if (!r2vb_run_transform_producer(r300, clip, count, model, num_in, cols,
+                                     produced_space, restage, externals)) {
         pipe_resource_reference(&clip, NULL);
         free(model);
         return false;
     }
 
-    /* Bind the transform-FS and the minimal producer VS, recompute derived (RS)
-     * state for the producer's two-vec4 vertex (not the application VS's varying
-     * count), then emit that state and the producer under the normal draw flow.
-     * The producer VS pins VAP_OUT_VTX_FMT / PSC / RS to the embedded vertex so
-     * the VAP does not fetch past it for an application VS with extra varyings. */
-    void *saved_fs = r300->fs.state;
-    void *saved_vs = r300->vs_state.state;
-    void *pvs = r300_r2vb_get_producer_vs(r300, num_in);
-    r300->context.bind_fs_state(&r300->context, xfs);
-    if (pvs)
-        r300->context.bind_vs_state(&r300->context, pvs);
-    r300_update_derived_state(r300);
-    if (r300_r2vb_prepare_states(r300, 64 + (int)count * 4 * (1 + (int)num_in) + 64))
-        r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, num_in, true);
-    r300->context.bind_fs_state(&r300->context, saved_fs);
-    if (pvs)
-        r300->context.bind_vs_state(&r300->context, saved_vs);
-    r300_update_derived_state(r300);
-    if (!xfs_cached)
-        r300->context.delete_fs_state(&r300->context, xfs);
-
-    /* Order the producer's transform write before the re-ingest vertex fetch.
-     * Default (two-submit, proven byte-exact): submit the producer, then a
-     * map-for-read waits for that submit and makes clip coherent.  The radeon
-     * winsys pools BOs, so clip can be recycled from a prior VBO; without the
-     * wait the VAP fetch reads stale (untransformed) content even though
-     * LOAD_VBPNTR points at clip (R300_R2VB_VA_DUMP shows identical array wiring,
-     * wrong vs right pixels).  The map is a per-draw CPU stall.
-     *
-     * R300_R2VB_MVP_SINGLECS runs the producer and re-ingest in one command
-     * stream with no flush and no map.  radeon_drm_cs_add_buffer deduplicates:
-     * the producer's RADEON_USAGE_READWRITE|COLOR_BUFFER add and the re-ingest's
-     * vertex add for clip merge into one relocation, so there is no usage
-     * conflict.  The ordering is carried instead by re-asserting the
-     * cb_flush_clean + VAP_PVS_STATE_FLUSH barrier adjacent to the re-ingest
-     * draw (r2vb_reingest_barrier, emitted in r300_r2vb_exec_passthrough_draw):
-     * emit_producer's own barrier precedes prepare_for_rendering's dirty-state
-     * re-emit, so it is no longer adjacent to the fetch in the shared stream. */
-    static int single_cs = -1;
-    if (single_cs < 0) {
-        const char *e = getenv("R300_R2VB_MVP_SINGLECS");
-        single_cs = (e && strcmp(e, "1") == 0) ? 1 : 0;
-    }
-    if (!single_cs) {
-        r300->context.flush(&r300->context, NULL, 0);
-        struct pipe_transfer *sxfer = NULL;
-        struct pipe_box sbox = { .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
-        void *sm = r300->context.buffer_map(&r300->context, clip, 0, PIPE_MAP_READ, &sbox, &sxfer);
-        if (sm)
-            r300->context.buffer_unmap(&r300->context, sxfer);
-    }
     if (getenv("R300_R2VB_XFORM_VERIFY") && num_in == 1)
         r2vb_verify_xform_readback(r300, clip, model, count, cols);
 
@@ -3229,6 +3283,66 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         pipe_resource_reference(&clip, NULL);
         free(model);
         return false;
+    }
+
+    /* Conservative clip-route action (R300_R2VB_CLIP_ROUTE): whole-draw
+     * trivial accept re-runs the producer in window space and delivers
+     * through the verbatim-fetch re-ingest; whole-draw trivial reject
+     * consumes the draw with no delivery submit; anything else falls the
+     * whole draw back to gallivm.  The action is scoped to the exactly
+     * provable class: a non-indexed TRIANGLES list with a whole number of
+     * triangles, single-input position, no user clip planes, and an
+     * application FS that reads no external constants (the producer pass
+     * overwrites FS constant file 0).  Indexed and instanced draws are
+     * already rejected by r300_r2vb_classify_draw before this path. */
+    if (r300_r2vb_clip_route_enabled()) {
+        const struct r300_rs_state *rs =
+            (const struct r300_rs_state *)r300->rs_state.state;
+        const struct r300_fragment_shader *afs = r300_fs(r300);
+        bool fs_reads_externals = false;
+        if (afs && afs->shader) {
+            const struct rc_constant_list *cl = &afs->shader->code.constants;
+            for (unsigned i = 0; i < cl->Count; i++)
+                if (cl->Constants[i].Type == RC_CONSTANT_EXTERNAL)
+                    fs_reads_externals = true;
+        }
+        const bool supported = info->mode == MESA_PRIM_TRIANGLES &&
+                               count % 3 == 0 && num_in == 1 &&
+                               rs && rs->rs.clip_plane_enable == 0 &&
+                               !fs_reads_externals;
+        enum r2vb_clip_route_verdict verdict = R2VB_CLIP_ROUTE_FALLBACK;
+        if (supported)
+            verdict = r2vb_clip_classify_readback(r300, clip, count, info->mode);
+        static const char *const aname[] = { "deliver", "consume", "gallivm" };
+        fprintf(stderr, "r2vb_clip_route supported=%d action=%s\n",
+                supported, aname[verdict]);
+        if (!supported || verdict == R2VB_CLIP_ROUTE_FALLBACK) {
+            pipe_resource_reference(&clip, NULL);
+            free(model);
+            return false;
+        }
+        if (verdict == R2VB_CLIP_ROUTE_REJECT) {
+            /* Every triangle is trivially outside one clip plane, so the
+             * draw's correct image contribution is nothing.  Consuming it
+             * with no delivery submit IS the rendering. */
+            pipe_resource_reference(&clip, NULL);
+            free(model);
+            return true;
+        }
+        /* Trivial accept: every FP24 position is inside the guard band, so
+         * the window-space producer's divide is safe and the verbatim fetch
+         * is exact.  Classify from a clip-space pass and deliver from a
+         * window-space re-run -- the dual producer is the proof-stage form;
+         * a single pass exporting both spaces is a later optimization. */
+        produced_space = R300_R2VB_POSITION_WINDOW;
+        r300->r2vb_produced_space = produced_space;
+        if (!r2vb_run_transform_producer(r300, clip, count, model, num_in,
+                                         cols, produced_space, restage,
+                                         externals)) {
+            pipe_resource_reference(&clip, NULL);
+            free(model);
+            return false;
+        }
     }
 
     /* Multi-input position oracle (R300_R2VB_POS_WEIGHTS="w0,w1,...").  The producer
@@ -3593,7 +3707,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         fprintf(stderr, "r2vb_mvp_reingest clip=%p buf=%p clip_slot=%u velem0_vbi=%u nvb=%u\n",
                 (void *)clip, (void *)r300_resource(clip)->buf, clip_slot,
                 r300->velems->velem[0].vertex_buffer_index, r300->nr_vertex_buffers);
-    r300->r2vb_reingest_barrier = single_cs;
+    r300->r2vb_reingest_barrier = r2vb_single_cs_enabled();
     r300->r2vb_source_window =
         r300->r2vb_produced_space == R300_R2VB_POSITION_WINDOW;
     bool ok2 = r300_r2vb_exec_passthrough_draw(r300, info, draw);
