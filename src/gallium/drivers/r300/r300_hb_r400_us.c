@@ -45,7 +45,9 @@ r300_hb_r400_us_init(struct r300_screen *screen)
     * "3": lift only the ALU/TEX slot count to 512 and the code-bank emission,
     * keeping the temp file at the proven R300 size of 32 -- a >64-instruction
     * shader within 32 temps exercises code banks without the unproven upper
-    * temp file, the safer first silicon rung between "1" and "2". */
+    * temp file, the safer first silicon rung between "1" and "2".  All modes
+    * are diagnostic on RS48x: a live temporary does not survive the 64-slot
+    * bank boundary, so dependent chains past 64 slots still fail. */
    if (strcmp(hb_us, "1") == 0) {
       screen->caps.hb_r400_us = true;
    } else if (strcmp(hb_us, "2") == 0) {
