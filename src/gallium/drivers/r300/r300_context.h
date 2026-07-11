@@ -753,6 +753,15 @@ struct r300_context {
      * two-submit default leaves this false and orders the passes with a flush. */
     bool r2vb_reingest_barrier;
 
+    /* Coordinate space of the direct-VB position stream the R2VB re-ingest
+     * feeds r300_r2vb_exec_passthrough_draw.  false: clip space -- the VAP
+     * runs the hardware viewport transform (VTX_W0_FMT + VPORT_*_ENA).
+     * true: window space with w=1 (the producer already applied divide +
+     * viewport under R300_R2VB_DIVIDE) -- the VAP must fetch verbatim
+     * (VTX_XY_FMT | VTX_Z_FMT | VTX_W0_FMT), or the viewport is applied
+     * twice and the geometry lands off-target. */
+    bool r2vb_source_window;
+
     /* Vertex array state info */
     bool vertex_arrays_dirty;
     bool vertex_arrays_indexed;

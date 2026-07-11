@@ -2815,7 +2815,12 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
         /* Two-submit path (the producer flushed before the BO oracle), so no
          * adjacent single-CS barrier is needed for ordering. */
         r300->r2vb_reingest_barrier = false;
+        /* The producer emits window space under the divide gate; tell the
+         * delivery draw so it fetches verbatim instead of re-running the
+         * hardware viewport on already-transformed positions. */
+        r300->r2vb_source_window = r300_r2vb_divide_enabled();
         ok = r300_r2vb_exec_passthrough_draw(r300, info, draw);
+        r300->r2vb_source_window = false;
         /* CS-decode correlation: after the emit the producer/app buffers are in the
          * command stream, so print their relocation indices.  The captured IB's
          * LOAD_VBPNTR array i must reference the matching buffer -- the r300-native
@@ -3463,7 +3468,9 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                 (void *)clip, (void *)r300_resource(clip)->buf, clip_slot,
                 r300->velems->velem[0].vertex_buffer_index, r300->nr_vertex_buffers);
     r300->r2vb_reingest_barrier = single_cs;
+    r300->r2vb_source_window = r300_r2vb_divide_enabled();
     bool ok2 = r300_r2vb_exec_passthrough_draw(r300, info, draw);
+    r300->r2vb_source_window = false;
     r300->r2vb_reingest_barrier = false;
 
     r300->velems->velem[0] = saved_pe;
