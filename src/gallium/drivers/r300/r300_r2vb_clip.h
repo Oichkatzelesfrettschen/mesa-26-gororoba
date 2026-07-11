@@ -118,4 +118,95 @@ r300_r2vb_classify_triangle(const float v0[4], const float v1[4],
    return R300_R2VB_TRI_PARTIAL;
 }
 
+/* Edge generation runs Sutherland-Hodgman in the clip-space (collineation)
+ * domain: every plane functional is linear there, so the intersection of an
+ * edge with a plane is the single blend t = d_out / (d_out - d_in) applied
+ * uniformly to the clip position AND every carried attribute.  A triangle
+ * clipped against six planes gains at most one vertex per plane. */
+#define R300_R2VB_CLIP_MAX_POLY  9
+#define R300_R2VB_CLIP_MAX_ATTRS 8
+
+struct r300_r2vb_clip_vertex {
+   float clip[4];
+   float attr[R300_R2VB_CLIP_MAX_ATTRS][4];
+};
+
+/* Signed distance to one hardwired plane, positive inside, in the exact
+ * functional form the clip-code bits negate.  The bit index selects the
+ * plane, so a classification or-mask drives which planes get a clip pass. */
+static inline float
+r300_r2vb_plane_dist(const float v[4], unsigned plane_bit, float k,
+                     bool half_z)
+{
+   switch (plane_bit) {
+   case 0: return v[3] - k * v[0]; /* RIGHT */
+   case 1: return v[3] + k * v[0]; /* LEFT */
+   case 2: return v[3] - k * v[1]; /* TOP */
+   case 3: return v[3] + k * v[1]; /* BOTTOM */
+   case 4: return half_z ? v[2] : v[2] + v[3]; /* NEAR */
+   default: return v[3] - v[2]; /* FAR */
+   }
+}
+
+static inline void
+r300_r2vb_clip_lerp(const struct r300_r2vb_clip_vertex *a,
+                    const struct r300_r2vb_clip_vertex *b, float t,
+                    unsigned num_attrs, struct r300_r2vb_clip_vertex *out)
+{
+   for (int c = 0; c < 4; c++)
+      out->clip[c] = a->clip[c] + t * (b->clip[c] - a->clip[c]);
+   for (unsigned n = 0; n < num_attrs; n++)
+      for (int c = 0; c < 4; c++)
+         out->attr[n][c] = a->attr[n][c] + t * (b->attr[n][c] - a->attr[n][c]);
+}
+
+/* Clip one triangle against the planes named in plane_mask, carrying
+ * num_attrs vec4 attributes through every intersection blend.  Returns the
+ * clipped polygon's vertex count (0 when nothing survives); the polygon
+ * preserves the input winding, so a fan retriangulation keeps orientation.
+ * Vertices exactly on a plane (dist == 0) count as inside, matching the
+ * !(dist >= 0) outside rule of the clip codes. */
+static inline unsigned
+r300_r2vb_clip_triangle(const struct r300_r2vb_clip_vertex in[3],
+                        unsigned num_attrs, uint8_t plane_mask, float k,
+                        bool half_z,
+                        struct r300_r2vb_clip_vertex out[R300_R2VB_CLIP_MAX_POLY])
+{
+   struct r300_r2vb_clip_vertex buf[R300_R2VB_CLIP_MAX_POLY];
+   struct r300_r2vb_clip_vertex *cur = out, *next = buf;
+   unsigned n = 3;
+
+   out[0] = in[0];
+   out[1] = in[1];
+   out[2] = in[2];
+
+   for (unsigned plane = 0; plane < 6 && n >= 3; plane++) {
+      if (!(plane_mask & (1u << plane)))
+         continue;
+      unsigned m = 0;
+      for (unsigned i = 0; i < n; i++) {
+         const struct r300_r2vb_clip_vertex *a = &cur[i];
+         const struct r300_r2vb_clip_vertex *b = &cur[(i + 1) % n];
+         const float da = r300_r2vb_plane_dist(a->clip, plane, k, half_z);
+         const float db = r300_r2vb_plane_dist(b->clip, plane, k, half_z);
+         const bool ina = da >= 0.0f;
+         const bool inb = db >= 0.0f;
+         if (ina)
+            next[m++] = *a;
+         if (ina != inb)
+            r300_r2vb_clip_lerp(a, b, da / (da - db), num_attrs, &next[m++]);
+      }
+      struct r300_r2vb_clip_vertex *tmp = cur;
+      cur = next;
+      next = tmp;
+      n = m;
+   }
+   if (n < 3)
+      return 0;
+   if (cur != out)
+      for (unsigned i = 0; i < n; i++)
+         out[i] = cur[i];
+   return n;
+}
+
 #endif /* R300_R2VB_CLIP_H */
