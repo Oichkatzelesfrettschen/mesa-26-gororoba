@@ -195,6 +195,22 @@ static nir_def *r2vb_build_producer_output(nir_builder *b, nir_def *comp[4],
                                 r300, space);
 }
 
+/* Clip-classification oracle gate (R300_R2VB_CLIP_CLASSIFY): run the
+ * position producer in POSITION_CLIP mode, classify the actual FP24 clip-BO
+ * contents against the Draw-parity clip codes, print machine-readable
+ * records, and fall back to gallivm without delivering.  Diagnostic only --
+ * no route behavior changes under the gate beyond the forced clip-space
+ * producer and the fallback. */
+static bool r300_r2vb_clip_classify_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_R2VB_CLIP_CLASSIFY");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 /* The process-global divide gate maps onto the explicit producer contract:
  * R300_R2VB_DIVIDE selects the window-space producer, default is raw clip. */
 static enum r300_r2vb_position_space r2vb_env_space(void)
@@ -780,6 +796,64 @@ static uint32_t r2vb_verify_bo_readback(struct r300_context *r300, struct pipe_r
     fprintf(stderr, "r2vb_%s_verify pass=%u/%u tol=%g\n", tag, pass, count, tol);
     r300->context.buffer_unmap(&r300->context, xfer);
     return pass;
+}
+
+/* HBTCL clip-classification oracle body: map the producer BO and classify the
+ * ACTUAL FP24 clip-space results the fragment ALU wrote.  A CPU FP32 recompute
+ * is deliberately not used as the classification input: near a plane, FP24 and
+ * host FP32 can round to opposite sides, and the hardware-produced value is
+ * the route's authoritative input.  Guard-band k = 0.5 matches the r300/Draw
+ * XY guard-band configuration; the near plane follows the context's
+ * clip_halfz.  Triangle records are emitted for TRIANGLES topology; every
+ * other topology gets per-vertex records only. */
+static void r2vb_clip_classify_readback(struct r300_context *r300,
+                                        struct pipe_resource *res,
+                                        uint32_t count, enum mesa_prim mode)
+{
+    struct pipe_transfer *xfer = NULL;
+    struct pipe_box box = { .width = count * 16, .height = 1, .depth = 1 };
+    const float *got =
+        r300->context.buffer_map(&r300->context, res, 0, PIPE_MAP_READ, &box, &xfer);
+    if (!got) {
+        fprintf(stderr, "r2vb_clip map failed\n");
+        return;
+    }
+    const bool half_z = r300->clip_halfz;
+    const float k = R300_R2VB_CLIP_GUARD_K;
+
+    for (uint32_t v = 0; v < count; v++) {
+        const float *g = &got[v * 4];
+        fprintf(stderr,
+                "r2vb_clip vertex=%u pos=%.6f,%.6f,%.6f,%.6f mask=0x%02x%s\n",
+                v, g[0], g[1], g[2], g[3], r300_r2vb_clipcode(g, k, half_z),
+                r300_r2vb_w_unsafe(g[3]) ? " unsafe_w" : "");
+    }
+
+    uint32_t n_accept = 0, n_reject = 0, n_partial = 0, n_fallback = 0;
+    if (mode == MESA_PRIM_TRIANGLES) {
+        for (uint32_t t = 0; t * 3 + 2 < count; t++) {
+            uint8_t om = 0, am = 0;
+            enum r300_r2vb_tri_class c = r300_r2vb_classify_triangle(
+                &got[(t * 3 + 0) * 4], &got[(t * 3 + 1) * 4],
+                &got[(t * 3 + 2) * 4], k, half_z, &om, &am);
+            static const char *cname[] = { "accept", "reject", "partial",
+                                           "fallback_w" };
+            fprintf(stderr, "r2vb_clip prim=%u or=0x%02x and=0x%02x class=%s\n",
+                    t, om, am, cname[c]);
+            switch (c) {
+            case R300_R2VB_TRI_ACCEPT: n_accept++; break;
+            case R300_R2VB_TRI_REJECT: n_reject++; break;
+            case R300_R2VB_TRI_PARTIAL: n_partial++; break;
+            case R300_R2VB_TRI_FALLBACK: n_fallback++; break;
+            }
+        }
+    }
+    fprintf(stderr,
+            "r2vb_clip summary mode=%u half_z=%d k=%.2f accept=%u reject=%u "
+            "partial=%u fallback=%u\n",
+            (unsigned)mode, half_z, k, n_accept, n_reject, n_partial,
+            n_fallback);
+    r300->context.buffer_unmap(&r300->context, xfer);
 }
 
 /* Verify the producer transform BO against the CPU column-major M*model_vert.
@@ -3029,7 +3103,11 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     }
     void *xfs;
     bool xfs_cached = false;
-    const enum r300_r2vb_position_space produced_space = r2vb_env_space();
+    /* The classification oracle needs the raw homogeneous result: force the
+     * clip-space producer regardless of the divide gate. */
+    const enum r300_r2vb_position_space produced_space =
+        r300_r2vb_clip_classify_enabled() ? R300_R2VB_POSITION_CLIP
+                                          : r2vb_env_space();
     r300->r2vb_produced_space = produced_space;
     if (restage) {
         /* Derive the producer from the bound VS itself -- the general fragment-ALU
@@ -3126,6 +3204,17 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         r300_r2vb_divide_enabled()) {
         if (r2vb_divide_oracle_selftest())
             r2vb_verify_window_readback(r300, clip, model, count, cols);
+    }
+
+    /* Clip-classification oracle: classify the FP24 clip BO this producer
+     * pass just wrote, then fall back to gallivm without delivering -- the
+     * oracle changes no rendering.  The two-submit flush + map above already
+     * ordered the producer against this CPU read. */
+    if (r300_r2vb_clip_classify_enabled()) {
+        r2vb_clip_classify_readback(r300, clip, count, info->mode);
+        pipe_resource_reference(&clip, NULL);
+        free(model);
+        return false;
     }
 
     /* Multi-input position oracle (R300_R2VB_POS_WEIGHTS="w0,w1,...").  The producer
