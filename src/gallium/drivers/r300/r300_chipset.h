@@ -73,7 +73,11 @@ struct r300_capabilities {
      * r390_mode code-bank emission, while the temp file stays at the proven
      * R300 size of 32.  A >64-instruction shader that stays within 32 temps
      * then exercises code banks without touching the unproven upper temp file
-     * (regs 32..63), which is the safer first silicon rung. */
+     * (regs 32..63), which is the safer first silicon rung.  Diagnostic only
+     * on RS48x: bank instructions execute, but a live temporary written in
+     * bank 0 is not usable in bank 1 (constants survive the boundary), so the
+     * envelope raise is a compile-envelope probe, not a dependent-chain
+     * escape past 64 slots. */
     bool hb_r400_us_alu_only;
     /* Whether or not this is an RV515 or newer; R500s have many differences
      * that require extra consideration, compared to their rv350 cousins:
