@@ -769,6 +769,15 @@ struct r300_context {
      * re-ingest derives r2vb_source_window from it. */
     enum r300_r2vb_position_space r2vb_produced_space;
 
+    /* Which producer filled the clip BO the current delivery re-ingests, or
+     * NONE for a pure-passthrough delivery.  A producer pass sets SINGLE or
+     * SPLIT before it calls r300_r2vb_exec_passthrough_draw; the delivery
+     * capture reads it to label the record and to confine the capture and its
+     * position-only invariant to the producer-fed caller.  Snapshotted then reset
+     * to NONE on entry to r300_r2vb_exec_passthrough_draw so a stale SPLIT cannot
+     * leak into a later pure-passthrough delivery. */
+    enum r300_r2vb_producer_kind r2vb_producer_kind;
+
     /* Clip-edge replacement data for passthrough re-ingest streams, indexed
      * by stream position (the ascending-slot order both the route gate and
      * r300_r2vb_reingest_outputs enumerate).  When the clip-edge rebuild

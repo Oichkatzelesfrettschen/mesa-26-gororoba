@@ -21,6 +21,19 @@ enum r300_r2vb_position_space {
    R300_R2VB_POSITION_WINDOW = 1,
 };
 
+/* Which producer, if any, filled the clip BO the current delivery re-ingests.
+ * NONE marks a pure-passthrough delivery: the application vertex buffers reach
+ * TCL_BYPASS directly with no producer pass and no clip BO, so the producer-fed
+ * delivery capture and its position-only invariant do not apply.  SINGLE is one
+ * over-budget-free producer FS; SPLIT is the two-pass carry-BO composition that
+ * escapes the 64-slot budget.  The delivery capture reads this to label the
+ * record and to skip the pure-passthrough caller. */
+enum r300_r2vb_producer_kind {
+   R300_R2VB_PRODUCER_NONE = 0,
+   R300_R2VB_PRODUCER_SINGLE = 1,
+   R300_R2VB_PRODUCER_SPLIT = 2,
+};
+
 /* Clip-code bit order matches the gallium draw module's software clipper
  * (draw_cliptest_tmp.h), so R2VB classification can be differentially tested
  * against draw instead of inventing a second convention.  Bits 6 and up are
