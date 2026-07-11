@@ -461,6 +461,100 @@ draw_vs_nir_dump_stats(nir_function_impl *impl, const char *name)
    fprintf(stderr, "\n");
 }
 
+/* Per-shader admission gate for draw_create_vs_exec: decides whether the
+ * interpreter above can run this NIR vertex shader at all, or whether the
+ * caller must keep the nir_to_tgsi bridge.  interp_intrinsic and interp_block
+ * hit UNREACHABLE on any intrinsic, instruction type, or jump kind they do
+ * not implement, so this predicate must classify a shader as unsupported
+ * before draw_create_vs_nir ever builds it -- not after the executor has
+ * already aborted mid-draw.
+ *
+ * draw_create_vs_nir lowers the incoming nir_shader in place
+ * (nir_lower_continue_constructs, nir_lower_uniforms_to_ubo, nir_lower_io,
+ * nir_opt_dce) before the interpreter ever sees it, so scanning the
+ * pre-lowering shader would have to reimplement an allowlist of the deref
+ * and uniform forms that those passes turn into supported intrinsics.
+ * Instead this predicate clones the shader, runs the identical lowering
+ * pipeline on the clone, and scans the clone's entry impl: what it inspects
+ * is bit-for-bit what the interpreter would receive, so it cannot admit a
+ * shape draw_create_vs_nir's UNREACHABLE paths would reject.  The clone is
+ * discarded; state->ir.nir is never touched, so the nir_to_tgsi bridge path
+ * still sees the untouched deref-based shader on fallback. */
+bool
+draw_vs_nir_supported(const struct pipe_shader_state *state)
+{
+   assert(state->type == PIPE_SHADER_IR_NIR);
+   nir_shader *nir = nir_shader_clone(NULL, state->ir.nir);
+
+   NIR_PASS(_, nir, nir_lower_continue_constructs);
+   if (!nir->options->lower_uniforms_to_ubo)
+      NIR_PASS(_, nir, nir_lower_uniforms_to_ubo, false, false);
+   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+            draw_vs_nir_io_slots, 0);
+   NIR_PASS(_, nir, nir_opt_dce);
+
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   bool supported = true;
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         switch (instr->type) {
+         case nir_instr_type_phi:
+         case nir_instr_type_load_const:
+         case nir_instr_type_undef:
+            break;
+         case nir_instr_type_alu:
+            /* interp_alu dispatches every opcode through
+             * nir_eval_const_opcode, the same per-opcode evaluator constant
+             * folding uses; it covers the full nir_op set by construction,
+             * so ALU carries no per-opcode allowlist here. */
+            break;
+         case nir_instr_type_intrinsic:
+            switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+            case nir_intrinsic_load_ubo:
+            case nir_intrinsic_load_ubo_vec4:
+            case nir_intrinsic_load_input:
+            case nir_intrinsic_store_output:
+            case nir_intrinsic_load_instance_id:
+            case nir_intrinsic_load_base_instance:
+            case nir_intrinsic_load_vertex_id:
+            case nir_intrinsic_load_vertex_id_zero_base:
+            case nir_intrinsic_load_base_vertex:
+            case nir_intrinsic_load_first_vertex:
+               break;
+            default:
+               /* interp_intrinsic's default case, mirrored here. */
+               supported = false;
+               break;
+            }
+            break;
+         case nir_instr_type_jump:
+            switch (nir_instr_as_jump(instr)->type) {
+            case nir_jump_break:
+            case nir_jump_continue:
+            case nir_jump_return:
+               break;
+            default:
+               supported = false;
+               break;
+            }
+            break;
+         default:
+            /* nir_instr_type_tex, nir_instr_type_call, and any other type
+             * interp_block does not list fall to its UNREACHABLE default. */
+            supported = false;
+            break;
+         }
+         if (!supported)
+            goto done;
+      }
+   }
+
+done:
+   ralloc_free(nir);
+   return supported;
+}
+
 struct draw_vertex_shader *
 draw_create_vs_nir(struct draw_context *draw,
                    const struct pipe_shader_state *state)

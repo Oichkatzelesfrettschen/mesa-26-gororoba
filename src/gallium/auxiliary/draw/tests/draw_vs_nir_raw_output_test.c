@@ -50,6 +50,7 @@
 #include "nir_builder.h"
 
 #include "util/u_memory.h"
+#include "util/ralloc.h"
 
 #include "draw/draw_context.h"
 #include "draw/draw_private.h"
@@ -379,6 +380,50 @@ build_vector_construct_extract(const nir_shader_compiler_options *opts)
    return b.shader;
 }
 
+/* An intrinsic interp_intrinsic does not implement (nir_intrinsic_discard is
+ * a fragment-shader-only op with no vertex-executor case), so
+ * draw_vs_nir_supported must reject it rather than let the interpreter hit
+ * UNREACHABLE. */
+static nir_shader *
+build_unsupported_intrinsic(const nir_shader_compiler_options *opts)
+{
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, opts, "unsup");
+   nir_variable *out = add_output(&b, 0, VARYING_SLOT_POS);
+   nir_discard(&b);
+   nir_store_var(&b, out, nir_imm_vec4(&b, 0.0f, 0.0f, 0.0f, 0.0f), 0xf);
+   return b.shader;
+}
+
+/* A tex instruction (nir_instr_type_tex) has no case in interp_block's
+ * instruction-type switch at all, so it must be caught independently of the
+ * intrinsic allowlist above. */
+static nir_shader *
+build_unsupported_tex(const nir_shader_compiler_options *opts)
+{
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, opts, "unsuptex");
+   nir_variable *out = add_output(&b, 0, VARYING_SLOT_POS);
+   nir_def *coord = nir_imm_vec2(&b, 0.0f, 0.0f);
+   nir_def *color = nir_tex(&b, coord, .dim = GLSL_SAMPLER_DIM_2D,
+                            .dest_type = nir_type_float32);
+   nir_store_var(&b, out, color, 0xf);
+   return b.shader;
+}
+
+static void
+check_unsupported(struct pipe_context *pipe, const char *name, build_fn build)
+{
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_VERTEX];
+   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR };
+   state.ir.nir = build(opts);
+
+   char msg[128];
+   snprintf(msg, sizeof(msg), "%s: draw_vs_nir_supported rejects it", name);
+   CHECK(!draw_vs_nir_supported(&state), msg);
+
+   ralloc_free(state.ir.nir);
+}
+
 /* ---- the dual-factory driver ---- */
 
 struct raw_case {
@@ -626,6 +671,12 @@ main(void)
       build_vector_construct_extract, 2, 1, 1, vce_in, NULL, 0, 0, 0, 0, 0,
       vce_exp };
    run_case(draw, &vce);
+
+   /* Admission predicate: shapes the interpreter cannot execute must be
+    * rejected before draw_create_vs_exec ever dispatches to
+    * draw_create_vs_nir. */
+   check_unsupported(pipe, "unsupported_intrinsic", build_unsupported_intrinsic);
+   check_unsupported(pipe, "unsupported_tex", build_unsupported_tex);
 
    draw_destroy(draw);
    pipe->destroy(pipe);
