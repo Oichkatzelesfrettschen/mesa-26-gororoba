@@ -769,6 +769,18 @@ struct r300_context {
      * re-ingest derives r2vb_source_window from it. */
     enum r300_r2vb_position_space r2vb_produced_space;
 
+    /* Clip-edge replacement data for passthrough re-ingest streams, indexed
+     * by stream position (the ascending-slot order both the route gate and
+     * r300_r2vb_reingest_outputs enumerate).  When the clip-edge rebuild
+     * replaces the vertex list, a passthrough stream can no longer fetch the
+     * application buffer by original vertex index; the route interpolates the
+     * attribute through every intersection blend and the re-ingest fetches
+     * the stream from this CPU array (uploaded as a user buffer) instead.
+     * NULL entries fetch their application source unchanged.  Owned by the
+     * clip route, valid for one delivery. */
+    float (*r2vb_edge_stream_attr[PIPE_MAX_ATTRIBS])[4];
+    bool r2vb_edge_streams_active;
+
     /* Vertex array state info */
     bool vertex_arrays_dirty;
     bool vertex_arrays_indexed;

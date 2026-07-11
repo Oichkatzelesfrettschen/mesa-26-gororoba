@@ -250,6 +250,19 @@ static bool r300_r2vb_clip_edge_enabled(void)
     return cached;
 }
 
+/* Drop the clip-edge replacement streams after the delivery they were built
+ * for (or on any abort past the rebuild).  Idempotent. */
+static void r2vb_edge_streams_release(struct r300_context *r300)
+{
+    if (!r300->r2vb_edge_streams_active)
+        return;
+    for (unsigned i = 0; i < PIPE_MAX_ATTRIBS; i++) {
+        free(r300->r2vb_edge_stream_attr[i]);
+        r300->r2vb_edge_stream_attr[i] = NULL;
+    }
+    r300->r2vb_edge_streams_active = false;
+}
+
 /* The process-global divide gate maps onto the explicit producer contract:
  * R300_R2VB_DIVIDE selects the window-space producer, default is raw clip. */
 static enum r300_r2vb_position_space r2vb_env_space(void)
@@ -929,8 +942,12 @@ r2vb_clip_classify_readback(struct r300_context *r300,
 static int32_t
 r2vb_clip_build_clipped_list(struct r300_context *r300,
                              struct pipe_resource *res, uint32_t count,
-                             const float (*model)[4], float (**out_model)[4])
+                             const float (*model)[4], unsigned n_extra,
+                             float (*const *extras)[4],
+                             float (**out_model)[4], float (**out_extras)[4])
 {
+    if (1 + n_extra > R300_R2VB_CLIP_MAX_ATTRS)
+        return -1;
     struct pipe_transfer *xfer = NULL;
     struct pipe_box box = { .width = count * 16, .height = 1, .depth = 1 };
     const float *got =
@@ -939,12 +956,19 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
         return -1;
     const bool half_z = r300->clip_halfz;
     const float k = R300_R2VB_CLIP_GUARD_K;
+    const unsigned num_attrs = 1 + n_extra;
 
     /* One triangle clipped against six planes fans into at most
      * R300_R2VB_CLIP_MAX_POLY - 2 triangles. */
     const uint32_t max_out = (count / 3) * (R300_R2VB_CLIP_MAX_POLY - 2) * 3;
-    float (*nm)[4] = malloc((size_t)max_out * sizeof(*nm));
-    if (!nm) {
+    float (*na[R300_R2VB_CLIP_MAX_ATTRS])[4] = { NULL };
+    bool oom = false;
+    for (unsigned a = 0; a < num_attrs; a++)
+        if (!(na[a] = malloc((size_t)max_out * sizeof(*na[a]))))
+            oom = true;
+    if (oom) {
+        for (unsigned a = 0; a < num_attrs; a++)
+            free(na[a]);
         r300->context.buffer_unmap(&r300->context, xfer);
         return -1;
     }
@@ -952,10 +976,11 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
     uint32_t n_out = 0;
     bool bail = false;
     for (uint32_t t = 0; t * 3 + 2 < count && !bail; t++) {
-        const uint32_t v0 = t * 3, v1 = t * 3 + 1, v2 = t * 3 + 2;
+        const uint32_t vi[3] = { t * 3, t * 3 + 1, t * 3 + 2 };
         uint8_t om = 0, am = 0;
         enum r300_r2vb_tri_class c = r300_r2vb_classify_triangle(
-            &got[v0 * 4], &got[v1 * 4], &got[v2 * 4], k, half_z, &om, &am);
+            &got[vi[0] * 4], &got[vi[1] * 4], &got[vi[2] * 4], k, half_z,
+            &om, &am);
         switch (c) {
         case R300_R2VB_TRI_FALLBACK:
             bail = true;
@@ -963,26 +988,33 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
         case R300_R2VB_TRI_REJECT:
             break;
         case R300_R2VB_TRI_ACCEPT:
-            memcpy(nm[n_out + 0], model[v0], sizeof(nm[0]));
-            memcpy(nm[n_out + 1], model[v1], sizeof(nm[0]));
-            memcpy(nm[n_out + 2], model[v2], sizeof(nm[0]));
+            for (int i = 0; i < 3; i++) {
+                memcpy(na[0][n_out + i], model[vi[i]], sizeof(na[0][0]));
+                for (unsigned j = 0; j < n_extra; j++)
+                    memcpy(na[1 + j][n_out + i], extras[j][vi[i]],
+                           sizeof(na[0][0]));
+            }
             n_out += 3;
             break;
         case R300_R2VB_TRI_PARTIAL: {
             struct r300_r2vb_clip_vertex in[3], poly[R300_R2VB_CLIP_MAX_POLY];
-            const uint32_t vi[3] = { v0, v1, v2 };
             for (int i = 0; i < 3; i++) {
                 memcpy(in[i].clip, &got[vi[i] * 4], sizeof(in[i].clip));
                 memcpy(in[i].attr[0], model[vi[i]], sizeof(in[i].attr[0]));
+                for (unsigned j = 0; j < n_extra; j++)
+                    memcpy(in[i].attr[1 + j], extras[j][vi[i]],
+                           sizeof(in[i].attr[0]));
             }
             unsigned np =
-                r300_r2vb_clip_triangle(in, 1, om, k, half_z, poly);
+                r300_r2vb_clip_triangle(in, num_attrs, om, k, half_z, poly);
             fprintf(stderr, "r2vb_clip_edge prim=%u or=0x%02x poly=%u\n",
                     t, om, np);
             for (unsigned i = 1; i + 1 < np; i++) {
-                memcpy(nm[n_out + 0], poly[0].attr[0], sizeof(nm[0]));
-                memcpy(nm[n_out + 1], poly[i].attr[0], sizeof(nm[0]));
-                memcpy(nm[n_out + 2], poly[i + 1].attr[0], sizeof(nm[0]));
+                const unsigned pv[3] = { 0, i, i + 1 };
+                for (int q = 0; q < 3; q++)
+                    for (unsigned a = 0; a < num_attrs; a++)
+                        memcpy(na[a][n_out + q], poly[pv[q]].attr[a],
+                               sizeof(na[0][0]));
                 n_out += 3;
             }
             break;
@@ -991,17 +1023,63 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
     }
     r300->context.buffer_unmap(&r300->context, xfer);
 
-    if (bail || n_out > 4096) {
-        free(nm);
+    if (bail || n_out > 4096 || n_out == 0) {
+        for (unsigned a = 0; a < num_attrs; a++)
+            free(na[a]);
+        if (!bail && n_out == 0) {
+            *out_model = NULL;
+            return 0;
+        }
         return -1;
     }
-    if (n_out == 0) {
-        free(nm);
-        *out_model = NULL;
-        return 0;
-    }
-    *out_model = nm;
+    *out_model = na[0];
+    for (unsigned j = 0; j < n_extra; j++)
+        out_extras[j] = na[1 + j];
     return (int32_t)n_out;
+}
+
+/* Read one application vertex element as CPU vec4 floats (missing components
+ * default to the (0,0,0,1) vertex identity), the same read the model loop
+ * performs for the position input.  Only float32 source formats are read --
+ * the clip-edge interpolation blends in the float domain, and delivering a
+ * blended value in a narrower application format would quantize it twice. */
+static float (*
+r2vb_read_velem_floats(struct r300_context *r300, unsigned e, unsigned start,
+                       uint32_t count))[4]
+{
+    if (e >= r300->velems->count)
+        return NULL;
+    struct pipe_vertex_element *pe = &r300->velems->velem[e];
+    switch (pe->src_format) {
+    case PIPE_FORMAT_R32_FLOAT:
+    case PIPE_FORMAT_R32G32_FLOAT:
+    case PIPE_FORMAT_R32G32B32_FLOAT:
+    case PIPE_FORMAT_R32G32B32A32_FLOAT:
+        break;
+    default:
+        return NULL;
+    }
+    struct pipe_vertex_buffer *vb = &r300->vertex_buffer[pe->vertex_buffer_index];
+    const uint8_t *base = NULL;
+    if (vb->is_user_buffer)
+        base = vb->buffer.user;
+    else if (vb->buffer.resource)
+        base = r300_resource(vb->buffer.resource)->malloced_buffer;
+    if (!base || !pe->src_stride)
+        return NULL;
+    base += vb->buffer_offset + pe->src_offset;
+    unsigned comps = util_format_get_nr_components(pe->src_format);
+    float (*out)[4] = malloc((size_t)count * sizeof(*out));
+    if (!out)
+        return NULL;
+    for (uint32_t i = 0; i < count; i++) {
+        const float *v = (const float *)(base + (size_t)(start + i) * pe->src_stride);
+        out[i][0] = v[0];
+        out[i][1] = comps > 1 ? v[1] : 0.0f;
+        out[i][2] = comps > 2 ? v[2] : 0.0f;
+        out[i][3] = comps > 3 ? v[3] : 1.0f;
+    }
+    return out;
 }
 
 /* Verify the producer transform BO against the CPU column-major M*model_vert.
@@ -2947,7 +3025,16 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
 
     unsigned clip_slot = r300->nr_vertex_buffers;
     unsigned vbo_slot = clip_slot + 1;
-    if (vbo_slot >= PIPE_MAX_ATTRIBS || n_stream < 1 ||
+    /* Clip-edge replacement streams: each passthrough stream carrying an
+     * interpolated CPU array gets its own fresh user-buffer slot after the
+     * two producer slots. */
+    unsigned n_edge = 0;
+    if (r300->r2vb_edge_streams_active)
+        for (int i = 0; i < n_stream; i++)
+            if (streams[i].kind == R2VB_STREAM_PASSTHROUGH &&
+                r300->r2vb_edge_stream_attr[i])
+                n_edge++;
+    if (vbo_slot + n_edge >= PIPE_MAX_ATTRIBS || n_stream < 1 ||
         (unsigned)n_stream != n_out || n_out > PIPE_MAX_ATTRIBS) {
         fprintf(stderr,
                 "r2vb_reingest invariant=FAIL (stream_layout=%d vs num_attribs=%u; unmapped or count mismatch)\n",
@@ -2971,8 +3058,10 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
         saved_velem[i] = ve->velem[i];
         saved_fmtsz[i] = ve->format_size[i];
     }
-    struct pipe_vertex_buffer saved_vb[2] = { r300->vertex_buffer[clip_slot],
-                                              r300->vertex_buffer[vbo_slot] };
+    unsigned n_fresh = 2 + n_edge;
+    struct pipe_vertex_buffer saved_vb[PIPE_MAX_ATTRIBS];
+    for (unsigned i = 0; i < n_fresh; i++)
+        saved_vb[i] = r300->vertex_buffer[clip_slot + i];
 
     /* Capture each stream's expected source resource BEFORE the rebuild: position
      * -> clip, computed -> vbo, passthrough -> the app buffer its source velem
@@ -2992,14 +3081,23 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
         }
 
     struct pipe_resource *expect[PIPE_MAX_ATTRIBS];
+    bool edge_stream[PIPE_MAX_ATTRIBS] = {0};
     for (int i = 0; i < n_stream; i++) {
-        if (streams[i].kind == R2VB_STREAM_POS)
+        if (streams[i].kind == R2VB_STREAM_POS) {
             expect[i] = clip;
-        else if (streams[i].kind == R2VB_STREAM_COMPUTED)
+        } else if (streams[i].kind == R2VB_STREAM_COMPUTED) {
             expect[i] = vbo;
-        else
+        } else if (r300->r2vb_edge_streams_active &&
+                   r300->r2vb_edge_stream_attr[i]) {
+            /* Interpolated replacement: a user buffer carries no resource;
+             * the invariant for this stream is the user-pointer identity,
+             * checked in the rebuild loop below. */
+            expect[i] = NULL;
+            edge_stream[i] = true;
+        } else {
             expect[i] = r300->vertex_buffer[saved_velem[streams[i].src_velem].vertex_buffer_index]
                             .buffer.resource;
+        }
     }
 
     /* Reconstruct one velem per VS output, in output-vector order.  Position and
@@ -3007,11 +3105,13 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
      * passthrough reuses its application velem verbatim so it fetches the original
      * attribute from the application buffer the source input was bound to. */
     ve->count = n_out;
-    memset(&r300->vertex_buffer[clip_slot], 0, sizeof(struct pipe_vertex_buffer));
-    memset(&r300->vertex_buffer[vbo_slot], 0, sizeof(struct pipe_vertex_buffer));
+    for (unsigned i = 0; i < n_fresh; i++)
+        memset(&r300->vertex_buffer[clip_slot + i], 0,
+               sizeof(struct pipe_vertex_buffer));
     r300->vertex_buffer[clip_slot].buffer.resource = clip;
     r300->vertex_buffer[vbo_slot].buffer.resource = vbo;
-    r300->nr_vertex_buffers = vbo_slot + 1;
+    r300->nr_vertex_buffers = clip_slot + n_fresh;
+    unsigned next_edge_slot = vbo_slot + 1;
     for (int i = 0; i < n_stream; i++) {
         if (streams[i].kind == R2VB_STREAM_POS) {
             ve->velem[i] = (struct pipe_vertex_element){ .vertex_buffer_index = clip_slot,
@@ -3019,6 +3119,17 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
             ve->format_size[i] = 16;
         } else if (streams[i].kind == R2VB_STREAM_COMPUTED) {
             ve->velem[i] = (struct pipe_vertex_element){ .vertex_buffer_index = vbo_slot,
+                .src_offset = 0, .src_stride = 16, .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT };
+            ve->format_size[i] = 16;
+        } else if (edge_stream[i]) {
+            /* Interpolated passthrough replacement: a fresh user-buffer slot
+             * over the clip-edge CPU array.  The passthrough emit uploads a
+             * velem-referenced user buffer to a BO before the draw. */
+            unsigned esl = next_edge_slot++;
+            r300->vertex_buffer[esl].is_user_buffer = true;
+            r300->vertex_buffer[esl].buffer.user =
+                r300->r2vb_edge_stream_attr[i];
+            ve->velem[i] = (struct pipe_vertex_element){ .vertex_buffer_index = esl,
                 .src_offset = 0, .src_stride = 16, .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT };
             ve->format_size[i] = 16;
         } else {
@@ -3044,14 +3155,31 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
      * (no producer BO supplies it). */
     bool invariant = (ve->count == n_out);
     for (int i = 0; i < n_stream; i++) {
-        struct pipe_resource *res =
-            r300->vertex_buffer[ve->velem[i].vertex_buffer_index].buffer.resource;
+        struct pipe_vertex_buffer *svb =
+            &r300->vertex_buffer[ve->velem[i].vertex_buffer_index];
         const char *tag = streams[i].kind == R2VB_STREAM_POS ? "pos" :
-                          streams[i].kind == R2VB_STREAM_COMPUTED ? "computed" : "passthrough";
-        fprintf(stderr, "r2vb_reingest post stream%d slot=%u kind=%s vbi=%u res=%p expect=%p%s\n",
-                i, streams[i].slot, tag, ve->velem[i].vertex_buffer_index,
-                (void *)res, (void *)expect[i], res == expect[i] ? "" : " MISMATCH");
-        if (res != expect[i])
+                          streams[i].kind == R2VB_STREAM_COMPUTED ? "computed" :
+                          edge_stream[i] ? "edge" : "passthrough";
+        bool hold;
+        if (edge_stream[i]) {
+            /* User-pointer identity: the stream fetches exactly the
+             * interpolated array the clip route built. */
+            hold = svb->is_user_buffer &&
+                   svb->buffer.user == r300->r2vb_edge_stream_attr[i];
+            fprintf(stderr,
+                    "r2vb_reingest post stream%d slot=%u kind=%s vbi=%u user=%p expect=%p%s\n",
+                    i, streams[i].slot, tag, ve->velem[i].vertex_buffer_index,
+                    svb->buffer.user, (void *)r300->r2vb_edge_stream_attr[i],
+                    hold ? "" : " MISMATCH");
+        } else {
+            struct pipe_resource *res = svb->buffer.resource;
+            hold = res == expect[i];
+            fprintf(stderr,
+                    "r2vb_reingest post stream%d slot=%u kind=%s vbi=%u res=%p expect=%p%s\n",
+                    i, streams[i].slot, tag, ve->velem[i].vertex_buffer_index,
+                    (void *)res, (void *)expect[i], hold ? "" : " MISMATCH");
+        }
+        if (!hold)
             invariant = false;
     }
     r300_r2vb_dump_xform_routing(r300);
@@ -3117,8 +3245,8 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
         ve->format_size[i] = saved_fmtsz[i];
     }
     ve->vertex_size_dwords = saved_vsd;
-    r300->vertex_buffer[clip_slot] = saved_vb[0];
-    r300->vertex_buffer[vbo_slot] = saved_vb[1];
+    for (unsigned i = 0; i < n_fresh; i++)
+        r300->vertex_buffer[clip_slot + i] = saved_vb[i];
     r300->nr_vertex_buffers = saved_nvb;
     return ok;
 }
@@ -3454,17 +3582,43 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             struct r2vb_reingest_stream st[PIPE_MAX_ATTRIBS];
             int ns = r300_r2vb_reingest_stream_layout(
                 r300_vs(r300)->state.ir.nir, vslot_probe, st, PIPE_MAX_ATTRIBS);
+            /* Every passthrough stream's application attribute is read to the
+             * CPU so the rebuild can interpolate it; a source the CPU cannot
+             * read in the float domain declines the action. */
+            unsigned n_extra = 0;
+            int extra_stream[R300_R2VB_CLIP_MAX_ATTRS - 1];
+            float (*extras[R300_R2VB_CLIP_MAX_ATTRS - 1])[4] = { NULL };
             bool shape_ok = ns >= 1 &&
                             (vslot_probe >= 0 || r300->velems->count == 1);
-            for (int i = 0; shape_ok && i < ns; i++)
-                if (st[i].kind == R2VB_STREAM_PASSTHROUGH)
+            for (int i = 0; shape_ok && i < ns; i++) {
+                if (st[i].kind != R2VB_STREAM_PASSTHROUGH)
+                    continue;
+                if (n_extra >= R300_R2VB_CLIP_MAX_ATTRS - 1 ||
+                    st[i].src_velem < 0) {
                     shape_ok = false;
+                    break;
+                }
+                extras[n_extra] = r2vb_read_velem_floats(
+                    r300, (unsigned)st[i].src_velem, draw->start, count);
+                if (!extras[n_extra]) {
+                    shape_ok = false;
+                    break;
+                }
+                extra_stream[n_extra++] = i;
+            }
+            /* Interpolated replacements deliver only through the per-output
+             * reconstruction; the single-velem tail cannot carry them. */
+            if (n_extra > 0 && vslot_probe < 0)
+                shape_ok = false;
             if (shape_ok) {
                 float (*cmodel)[4] = NULL;
+                float (*cextras[R300_R2VB_CLIP_MAX_ATTRS - 1])[4] = { NULL };
                 int32_t n2 = r2vb_clip_build_clipped_list(
-                    r300, clip, count, (const float (*)[4])model, &cmodel);
-                fprintf(stderr, "r2vb_clip_edge rebuild count=%u -> %d\n",
-                        count, n2);
+                    r300, clip, count, (const float (*)[4])model, n_extra,
+                    (float (*const *)[4])extras, &cmodel, cextras);
+                fprintf(stderr,
+                        "r2vb_clip_edge rebuild count=%u extras=%u -> %d\n",
+                        count, n_extra, n2);
                 if (n2 == 0) {
                     verdict = R2VB_CLIP_ROUTE_REJECT;
                     action = "consume";
@@ -3482,8 +3636,18 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                         ddraw = &rdraw;
                         verdict = R2VB_CLIP_ROUTE_ACCEPT;
                         action = "clip";
+                        /* Hand each interpolated passthrough attribute to the
+                         * re-ingest, keyed by stream position. */
+                        memset(r300->r2vb_edge_stream_attr, 0,
+                               sizeof(r300->r2vb_edge_stream_attr));
+                        for (unsigned j = 0; j < n_extra; j++)
+                            r300->r2vb_edge_stream_attr[extra_stream[j]] =
+                                cextras[j];
+                        r300->r2vb_edge_streams_active = n_extra > 0;
                     } else {
                         free(cmodel);
+                        for (unsigned j = 0; j < n_extra; j++)
+                            free(cextras[j]);
                     }
                 }
             } else {
@@ -3491,6 +3655,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                         "r2vb_clip_edge decline (stream shape: ns=%d vslot=%d velems=%u)\n",
                         ns, vslot_probe, r300->velems->count);
             }
+            for (unsigned j = 0; j < n_extra; j++)
+                free(extras[j]);
         }
         fprintf(stderr, "r2vb_clip_route supported=%d action=%s\n",
                 supported, action);
@@ -3517,6 +3683,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         if (!r2vb_run_transform_producer(r300, clip, count, model, num_in,
                                          cols, produced_space, restage,
                                          externals)) {
+            r2vb_edge_streams_release(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
             return false;
@@ -3800,6 +3967,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         }
         if (vfs)
             r300->context.delete_fs_state(&r300->context, vfs);
+        r2vb_edge_streams_release(r300);
         pipe_resource_reference(&vbo, NULL);
         pipe_resource_reference(&clip, NULL);
         free(model);
@@ -3852,6 +4020,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * real winsys BO, used as-is.  Restored after. */
     unsigned clip_slot = r300->nr_vertex_buffers;
     if (clip_slot >= PIPE_MAX_ATTRIBS) {
+        r2vb_edge_streams_release(r300);
         pipe_resource_reference(&clip, NULL);
         free(model);
         return false;
@@ -3897,6 +4066,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     r300->vertex_buffer[clip_slot] = saved_vb;
     r300->nr_vertex_buffers = saved_nvb;
 
+    r2vb_edge_streams_release(r300);
     pipe_resource_reference(&clip, NULL);
     free(model);
     return ok2;
