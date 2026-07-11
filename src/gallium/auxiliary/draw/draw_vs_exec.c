@@ -139,7 +139,7 @@ vs_exec_run_linear(struct draw_context *draw,
       unsigned i = machine->SysSemanticToIndex[TGSI_SEMANTIC_BASEINSTANCE];
       assert(i < ARRAY_SIZE(machine->SystemValue));
       for (j = 0; j < TGSI_QUAD_SIZE; j++)
-         machine->SystemValue[i].xyzw[0].i[j] = shader->draw->start_instance;
+         machine->SystemValue[i].xyzw[0].i[j] = draw->start_instance;
    }
 
    for (i = 0; i < count; i += MAX_TGSI_VERTICES) {
