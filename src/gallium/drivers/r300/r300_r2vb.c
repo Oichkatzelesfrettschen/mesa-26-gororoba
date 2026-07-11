@@ -60,16 +60,19 @@ void r300_r2vb_report_bo_identity(struct r300_context *r300, const char *tag,
         return;
     }
     int reloc = rws->cs_lookup_buffer(&r300->cs, buf);
+    /* The radeon DRM winsys leaves buffer_get_flags unset (the vtable slot
+     * exists for amdgpu); calling through the NULL pointer faults, so report
+     * the flags only when the op is wired and print -1 otherwise. */
+    int flags = rws->buffer_get_flags ? (int)rws->buffer_get_flags(buf) : -1;
     fprintf(stderr,
             "%s res=%p buf=%p size=%" PRIu64 " suballoc=%d parent_offset=%u "
-            "va=0x%" PRIx64 " domain=0x%x flags=0x%x reloc_index=%d "
+            "va=0x%" PRIx64 " domain=0x%x flags=%d reloc_index=%d "
             "parent_bo=not_reachable\n",
             tag, (void *)pr, (void *)buf, (uint64_t)buf->size,
             rws->buffer_is_suballocated(buf),
             rws->buffer_get_reloc_offset(buf),
             rws->buffer_get_virtual_address(buf),
-            rws->buffer_get_initial_domain(buf),
-            rws->buffer_get_flags(buf), reloc);
+            rws->buffer_get_initial_domain(buf), flags, reloc);
 }
 
 static struct pipe_resource *r2vb_create_selftest_bo(struct r300_context *r300,
