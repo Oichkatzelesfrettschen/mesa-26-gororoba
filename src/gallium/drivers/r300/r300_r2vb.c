@@ -228,6 +228,28 @@ static bool r300_r2vb_clip_route_enabled(void)
     return cached;
 }
 
+/* Edge-generation gate (R300_R2VB_CLIP_EDGE, requires R300_R2VB_CLIP_ROUTE):
+ * a PARTIAL or mixed accept/reject draw is rebuilt on the CPU instead of
+ * falling back -- accepted triangles pass through verbatim, rejected ones are
+ * dropped, and each straddling triangle is Sutherland-Hodgman clipped in
+ * clip space against its failing planes with the position INPUT interpolated
+ * at each intersection (t = d_out / (d_out - d_in)), then fanned back into a
+ * TRIANGLES list.  The producers re-run over the clipped inputs, so every
+ * carried output (position, computed varyings) is regenerated on the
+ * fragment ALU from the interpolated inputs -- exact for the affine producer
+ * class the route gate admits, where output(lerp(in)) == lerp(output(in)).
+ * The delivery must contain no passthrough streams: those fetch application
+ * buffers by original vertex index, which the rebuilt list invalidates. */
+static bool r300_r2vb_clip_edge_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_R2VB_CLIP_EDGE");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 /* The process-global divide gate maps onto the explicit producer contract:
  * R300_R2VB_DIVIDE selects the window-space producer, default is raw clip. */
 static enum r300_r2vb_position_space r2vb_env_space(void)
@@ -890,6 +912,96 @@ r2vb_clip_classify_readback(struct r300_context *r300,
         (n_accept == 0 && n_reject == 0))
         return R2VB_CLIP_ROUTE_FALLBACK;
     return n_reject ? R2VB_CLIP_ROUTE_REJECT : R2VB_CLIP_ROUTE_ACCEPT;
+}
+
+/* Edge generation: rebuild a TRIANGLES vertex list from the FP24 clip BO and
+ * the single position-input model array.  Accepted triangles copy their three
+ * model inputs verbatim, rejected triangles are dropped, and each PARTIAL
+ * triangle is clipped in clip space against its failing planes with the model
+ * input carried through every intersection blend, then fanned.  Positions come
+ * from the hardware-produced BO (the route's authoritative classification
+ * input); the interpolated payload is the model INPUT, valid because the
+ * admitted producer class is affine: M * lerp(in) == lerp(M * in), so the
+ * window-space producer re-run over the clipped inputs lands each new vertex
+ * exactly on the clipped edge.  Returns the new vertex count, 0 when nothing
+ * survives (the draw is consumed), or -1 when a triangle is undividable or
+ * the rebuilt list would exceed the producer's vertex ceiling (fall back). */
+static int32_t
+r2vb_clip_build_clipped_list(struct r300_context *r300,
+                             struct pipe_resource *res, uint32_t count,
+                             const float (*model)[4], float (**out_model)[4])
+{
+    struct pipe_transfer *xfer = NULL;
+    struct pipe_box box = { .width = count * 16, .height = 1, .depth = 1 };
+    const float *got =
+        r300->context.buffer_map(&r300->context, res, 0, PIPE_MAP_READ, &box, &xfer);
+    if (!got)
+        return -1;
+    const bool half_z = r300->clip_halfz;
+    const float k = R300_R2VB_CLIP_GUARD_K;
+
+    /* One triangle clipped against six planes fans into at most
+     * R300_R2VB_CLIP_MAX_POLY - 2 triangles. */
+    const uint32_t max_out = (count / 3) * (R300_R2VB_CLIP_MAX_POLY - 2) * 3;
+    float (*nm)[4] = malloc((size_t)max_out * sizeof(*nm));
+    if (!nm) {
+        r300->context.buffer_unmap(&r300->context, xfer);
+        return -1;
+    }
+
+    uint32_t n_out = 0;
+    bool bail = false;
+    for (uint32_t t = 0; t * 3 + 2 < count && !bail; t++) {
+        const uint32_t v0 = t * 3, v1 = t * 3 + 1, v2 = t * 3 + 2;
+        uint8_t om = 0, am = 0;
+        enum r300_r2vb_tri_class c = r300_r2vb_classify_triangle(
+            &got[v0 * 4], &got[v1 * 4], &got[v2 * 4], k, half_z, &om, &am);
+        switch (c) {
+        case R300_R2VB_TRI_FALLBACK:
+            bail = true;
+            break;
+        case R300_R2VB_TRI_REJECT:
+            break;
+        case R300_R2VB_TRI_ACCEPT:
+            memcpy(nm[n_out + 0], model[v0], sizeof(nm[0]));
+            memcpy(nm[n_out + 1], model[v1], sizeof(nm[0]));
+            memcpy(nm[n_out + 2], model[v2], sizeof(nm[0]));
+            n_out += 3;
+            break;
+        case R300_R2VB_TRI_PARTIAL: {
+            struct r300_r2vb_clip_vertex in[3], poly[R300_R2VB_CLIP_MAX_POLY];
+            const uint32_t vi[3] = { v0, v1, v2 };
+            for (int i = 0; i < 3; i++) {
+                memcpy(in[i].clip, &got[vi[i] * 4], sizeof(in[i].clip));
+                memcpy(in[i].attr[0], model[vi[i]], sizeof(in[i].attr[0]));
+            }
+            unsigned np =
+                r300_r2vb_clip_triangle(in, 1, om, k, half_z, poly);
+            fprintf(stderr, "r2vb_clip_edge prim=%u or=0x%02x poly=%u\n",
+                    t, om, np);
+            for (unsigned i = 1; i + 1 < np; i++) {
+                memcpy(nm[n_out + 0], poly[0].attr[0], sizeof(nm[0]));
+                memcpy(nm[n_out + 1], poly[i].attr[0], sizeof(nm[0]));
+                memcpy(nm[n_out + 2], poly[i + 1].attr[0], sizeof(nm[0]));
+                n_out += 3;
+            }
+            break;
+        }
+        }
+    }
+    r300->context.buffer_unmap(&r300->context, xfer);
+
+    if (bail || n_out > 4096) {
+        free(nm);
+        return -1;
+    }
+    if (n_out == 0) {
+        free(nm);
+        *out_model = NULL;
+        return 0;
+    }
+    *out_model = nm;
+    return (int32_t)n_out;
 }
 
 /* Verify the producer transform BO against the CPU column-major M*model_vert.
@@ -3295,6 +3407,12 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * application FS that reads no external constants (the producer pass
      * overwrites FS constant file 0).  Indexed and instanced draws are
      * already rejected by r300_r2vb_classify_draw before this path. */
+    /* Delivery draw parameters.  The clip-edge rebuild replaces the vertex
+     * list, so its delivery draws vertices 0..count-1 of the producer BOs
+     * instead of the application's start/count window. */
+    struct pipe_draw_start_count_bias rdraw = *draw;
+    const struct pipe_draw_start_count_bias *ddraw = draw;
+
     if (r300_r2vb_clip_route_enabled()) {
         const struct r300_rs_state *rs =
             (const struct r300_rs_state *)r300->rs_state.state;
@@ -3313,9 +3431,69 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         enum r2vb_clip_route_verdict verdict = R2VB_CLIP_ROUTE_FALLBACK;
         if (supported)
             verdict = r2vb_clip_classify_readback(r300, clip, count, info->mode);
-        static const char *const aname[] = { "deliver", "consume", "gallivm" };
+        const char *action = !supported ? "gallivm"
+                           : verdict == R2VB_CLIP_ROUTE_ACCEPT ? "deliver"
+                           : verdict == R2VB_CLIP_ROUTE_REJECT ? "consume"
+                           : "gallivm";
+
+        /* Edge generation (R300_R2VB_CLIP_EDGE): a non-trivial verdict is
+         * rebuilt into a clipped TRIANGLES list instead of falling back.  Two
+         * delivery shapes carry a rebuilt list safely: the per-output
+         * reconstruction (computed varying present, every stream position or
+         * computed) or the single-velem multi-stream tail.  A passthrough
+         * stream fetches the application buffer by original vertex index,
+         * which the rebuilt list invalidates, so its presence declines the
+         * clip action. */
+        if (supported && verdict == R2VB_CLIP_ROUTE_FALLBACK &&
+            r300_r2vb_clip_edge_enabled()) {
+            int vslot_probe = -1;
+            const char *ve = getenv("R300_R2VB_VARYING");
+            if (ve && strcmp(ve, "1") == 0)
+                vslot_probe = r300_r2vb_first_computed_varying(
+                    r300_vs(r300)->state.ir.nir);
+            struct r2vb_reingest_stream st[PIPE_MAX_ATTRIBS];
+            int ns = r300_r2vb_reingest_stream_layout(
+                r300_vs(r300)->state.ir.nir, vslot_probe, st, PIPE_MAX_ATTRIBS);
+            bool shape_ok = ns >= 1 &&
+                            (vslot_probe >= 0 || r300->velems->count == 1);
+            for (int i = 0; shape_ok && i < ns; i++)
+                if (st[i].kind == R2VB_STREAM_PASSTHROUGH)
+                    shape_ok = false;
+            if (shape_ok) {
+                float (*cmodel)[4] = NULL;
+                int32_t n2 = r2vb_clip_build_clipped_list(
+                    r300, clip, count, (const float (*)[4])model, &cmodel);
+                fprintf(stderr, "r2vb_clip_edge rebuild count=%u -> %d\n",
+                        count, n2);
+                if (n2 == 0) {
+                    verdict = R2VB_CLIP_ROUTE_REJECT;
+                    action = "consume";
+                } else if (n2 > 0) {
+                    struct pipe_resource *cbo = r2vb_create_selftest_bo(
+                        r300, align((uint32_t)n2, 2) * 16, 0);
+                    if (cbo) {
+                        free(model);
+                        model = cmodel;
+                        count = (uint32_t)n2;
+                        pipe_resource_reference(&clip, NULL);
+                        clip = cbo;
+                        rdraw.start = 0;
+                        rdraw.count = count;
+                        ddraw = &rdraw;
+                        verdict = R2VB_CLIP_ROUTE_ACCEPT;
+                        action = "clip";
+                    } else {
+                        free(cmodel);
+                    }
+                }
+            } else {
+                fprintf(stderr,
+                        "r2vb_clip_edge decline (stream shape: ns=%d vslot=%d velems=%u)\n",
+                        ns, vslot_probe, r300->velems->count);
+            }
+        }
         fprintf(stderr, "r2vb_clip_route supported=%d action=%s\n",
-                supported, aname[verdict]);
+                supported, action);
         if (!supported || verdict == R2VB_CLIP_ROUTE_FALLBACK) {
             pipe_resource_reference(&clip, NULL);
             free(model);
@@ -3616,7 +3794,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
              * re-ingest is a separate, explicitly-gated caller below. */
             if (reingest &&
                 r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir) == 1)
-                r300_r2vb_reingest_outputs(r300, info, draw, clip, vbo, vslot);
+                r300_r2vb_reingest_outputs(r300, info, ddraw, clip, vbo, vslot);
             else if (reingest)
                 fprintf(stderr, "r2vb_reingest skip (computed-varying path is single-input position only)\n");
         }
@@ -3710,7 +3888,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     r300->r2vb_reingest_barrier = r2vb_single_cs_enabled();
     r300->r2vb_source_window =
         r300->r2vb_produced_space == R300_R2VB_POSITION_WINDOW;
-    bool ok2 = r300_r2vb_exec_passthrough_draw(r300, info, draw);
+    bool ok2 = r300_r2vb_exec_passthrough_draw(r300, info, ddraw);
     r300->r2vb_source_window = false;
     r300->r2vb_reingest_barrier = false;
 

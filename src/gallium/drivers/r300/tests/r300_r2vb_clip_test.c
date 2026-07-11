@@ -187,6 +187,105 @@ test_triangles(void)
        true);
 }
 
+static bool
+close4(const float a[4], float x, float y, float z, float w, float tol)
+{
+   return fabsf(a[0] - x) <= tol && fabsf(a[1] - y) <= tol &&
+          fabsf(a[2] - z) <= tol && fabsf(a[3] - w) <= tol;
+}
+
+static void
+mkvert(struct r300_r2vb_clip_vertex *v, float x, float y, float z, float w)
+{
+   v->clip[0] = x;
+   v->clip[1] = y;
+   v->clip[2] = z;
+   v->clip[3] = w;
+   /* Carried attribute = the clip position itself, so the lerp of the
+    * payload must land exactly where the lerp of the position does. */
+   memcpy(v->attr[0], v->clip, sizeof(v->clip));
+}
+
+static void
+test_edge_generation(void)
+{
+   const float K = R300_R2VB_CLIP_CANONICAL_K;
+   const float tol = 1e-6f;
+   struct r300_r2vb_clip_vertex in[3], out[R300_R2VB_CLIP_MAX_POLY];
+
+   /* Fully inside: the polygon is the input triangle unchanged. */
+   mkvert(&in[0], 0, 0, 0, 1);
+   mkvert(&in[1], 0.5f, 0, 0, 1);
+   mkvert(&in[2], 0, 0.5f, 0, 1);
+   CHECK(r300_r2vb_clip_triangle(in, 1, 0x3f, K, false, out) == 3,
+         "inside tri untouched");
+   CHECK(close4(out[1].clip, 0.5f, 0, 0, 1, tol), "inside v1 verbatim");
+
+   /* One vertex beyond the right plane (x = 3, w = 1): the quad's two new
+    * vertices sit exactly on x = w.  Edge (0,0)->(3,0): t = (1-0)/((1-0)-(1-3))
+    * = 1/3 -> (1,0).  Edge (3,0)->(0,0.5): d=(−2)->(1), t=2/3 -> (1, 1/3). */
+   mkvert(&in[0], 0, 0, 0, 1);
+   mkvert(&in[1], 3.0f, 0, 0, 1);
+   mkvert(&in[2], 0, 0.5f, 0, 1);
+   unsigned n = r300_r2vb_clip_triangle(in, 1, R300_R2VB_CLIP_RIGHT, K, false,
+                                        out);
+   CHECK(n == 4, "one-out right clip yields quad");
+   CHECK(close4(out[1].clip, 1.0f, 0.0f, 0, 1, tol), "right entry point");
+   CHECK(close4(out[2].clip, 1.0f, 1.0f / 3.0f, 0, 1, tol),
+         "right exit point");
+   /* The carried attribute took the identical blend. */
+   CHECK(close4(out[2].attr[0], 1.0f, 1.0f / 3.0f, 0, 1, tol),
+         "attr lerped with position");
+
+   /* Two vertices out: a smaller triangle survives. */
+   mkvert(&in[0], 0, 0, 0, 1);
+   mkvert(&in[1], 3.0f, 0.25f, 0, 1);
+   mkvert(&in[2], 3.0f, -0.25f, 0, 1);
+   CHECK(r300_r2vb_clip_triangle(in, 1, R300_R2VB_CLIP_RIGHT, K, false, out)
+            == 3, "two-out right clip yields tri");
+
+   /* Fully outside the clipped plane: nothing survives. */
+   mkvert(&in[0], 3, 0, 0, 1);
+   mkvert(&in[1], 4, 0, 0, 1);
+   mkvert(&in[2], 3, 1, 0, 1);
+   CHECK(r300_r2vb_clip_triangle(in, 1, R300_R2VB_CLIP_RIGHT, K, false, out)
+            == 0, "all-out right clip empty");
+
+   /* Half-Z near clip at z = 0: one vertex behind (z = -1) generates the
+    * intersection at z = 0 with t = d0/(d0-d1) on z alone. */
+   mkvert(&in[0], 0, 0, 0.5f, 1);
+   mkvert(&in[1], 0.5f, 0, 0.5f, 1);
+   mkvert(&in[2], 0, 0.5f, -1.0f, 1);
+   n = r300_r2vb_clip_triangle(in, 1, R300_R2VB_CLIP_NEAR, K, true, out);
+   CHECK(n == 4, "half-Z near clip yields quad");
+   for (unsigned i = 0; i < n; i++)
+      CHECK(out[i].clip[2] >= -tol, "half-Z near output z >= 0");
+
+   /* Corner straddling two planes (right + top): both get clipped when both
+    * bits are in the mask, and every output is inside both. */
+   mkvert(&in[0], 0, 0, 0, 1);
+   mkvert(&in[1], 3.0f, 0, 0, 1);
+   mkvert(&in[2], 0, 3.0f, 0, 1);
+   n = r300_r2vb_clip_triangle(in, 1,
+                               R300_R2VB_CLIP_RIGHT | R300_R2VB_CLIP_TOP, K,
+                               false, out);
+   CHECK(n >= 3 && n <= R300_R2VB_CLIP_MAX_POLY, "two-plane clip poly size");
+   for (unsigned i = 0; i < n; i++) {
+      CHECK(out[i].clip[0] <= 1.0f + tol, "two-plane output inside right");
+      CHECK(out[i].clip[1] <= 1.0f + tol, "two-plane output inside top");
+   }
+
+   /* Degenerate: a triangle sliced to nothing by successive planes (entirely
+    * in the right/top corner outside both) returns 0, not a sliver. */
+   mkvert(&in[0], 2.0f, 2.0f, 0, 1);
+   mkvert(&in[1], 3.0f, 2.0f, 0, 1);
+   mkvert(&in[2], 2.0f, 3.0f, 0, 1);
+   CHECK(r300_r2vb_clip_triangle(in, 1,
+                                 R300_R2VB_CLIP_RIGHT | R300_R2VB_CLIP_TOP, K,
+                                 false, out) == 0,
+         "corner-outside tri fully clipped");
+}
+
 int
 main(void)
 {
@@ -197,6 +296,7 @@ main(void)
    test_negative_and_zero_w();
    test_nan_inf();
    test_triangles();
+   test_edge_generation();
 
    if (failures) {
       fprintf(stderr, "r300_r2vb_clip_test: %d failure(s)\n", failures);
