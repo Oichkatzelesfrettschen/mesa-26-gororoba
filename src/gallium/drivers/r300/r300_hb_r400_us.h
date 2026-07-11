@@ -29,7 +29,9 @@ struct r300_screen;
  * R300_HB_R400_US=3 (ALU code banks): lift the ALU/TEX slot count to 512 and
  * the r390_mode code-bank emission while the temp file stays at 32, so a
  * >64-instruction shader within 32 temps engages code banks without the
- * unproven upper temp file.  R300_HB_R400_US=2 (full): additionally raise the
+ * unproven upper temp file.  On RS48x the banks are diagnostic only: bank
+ * instructions execute but a live temporary does not survive the 64-slot
+ * bank boundary, so the raised envelope does not run dependent chains.  R300_HB_R400_US=2 (full): additionally raise the
  * temp file to the full R400 64.  caps.is_r400 itself is left false in all
  * three: texture-format admission (dxtc_swizzle, ATI2N) and the vertex-shader
  * compiler keep their proven R300-class configuration, so the route exposes
