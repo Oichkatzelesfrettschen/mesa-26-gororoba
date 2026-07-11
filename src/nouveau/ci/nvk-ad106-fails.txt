@@ -22,7 +22,6 @@ dEQP-VK.spirv_assembly.instruction.compute.opfma.fp32.vec4.rte.denorm_none.direc
 dEQP-VK.spirv_assembly.instruction.compute.opfma.fp32.vec4.rte.denorm_none.float_controls,Fail
 
 # VKCTS 1.4.4.2 -> 1.4.5.3 uprev
-dEQP-VK.api.copy_and_blit.copy_memory_indirect.size_4.offset_0.count_2.long_stride.graphics,Fail
 dEQP-VK.image.swapchain_mutable.direct.2d_array.b8g8r8a8_srgb_b8g8r8a8_unorm_clear_copy_format_list,Fail
 dEQP-VK.image.swapchain_mutable.direct.2d_array.b8g8r8a8_srgb_b8g8r8a8_unorm_copy_copy_format_list,Fail
 dEQP-VK.image.swapchain_mutable.direct.2d_array.b8g8r8a8_srgb_b8g8r8a8_unorm_draw_copy_format_list,Fail

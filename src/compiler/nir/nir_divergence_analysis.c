@@ -207,8 +207,8 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_load_sm_id_nv:
    case nir_intrinsic_load_warp_id_nv:
    case nir_intrinsic_load_warp_id_arm:
-   case nir_intrinsic_load_ttmp_register_amd:
-   case nir_intrinsic_load_scalar_arg_amd:
+   case nir_intrinsic_load_ttmp_register_wg_div_amd:
+   case nir_intrinsic_load_scalar_arg_wg_div_amd:
       /* VS/TES/GS invocations of the same primitive can be in different
        * subgroups, so subgroup ops are always divergent between vertices of
        * the same primitive.
@@ -395,6 +395,8 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_load_frag_shading_rate_intel:
    case nir_intrinsic_load_msaa_rate_intel:
    case nir_intrinsic_test_fs_config_intel:
+   case nir_intrinsic_load_ttmp_register_amd:
+   case nir_intrinsic_load_scalar_arg_amd:
       is_divergent = false;
       break;
 
@@ -554,6 +556,12 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_load_instance_id:
       is_divergent = !(state->options & nir_divergence_vertex);
       break;
+   case nir_intrinsic_load_invocation_id:
+      if (stage == MESA_SHADER_TESS_CTRL)
+         is_divergent = !(options & nir_divergence_tcs_invocation_id_uniform);
+      else
+         is_divergent = true;
+      break;
    case nir_intrinsic_load_primitive_id:
       if (stage == MESA_SHADER_FRAGMENT)
          is_divergent = !(options & nir_divergence_single_prim_per_subgroup);
@@ -659,7 +667,7 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_load_global:
    case nir_intrinsic_load_global_intel:
    case nir_intrinsic_load_global_2x32:
-   case nir_intrinsic_load_global_ir3:
+   case nir_intrinsic_load_global_offset:
    case nir_intrinsic_load_global_nv:
    case nir_intrinsic_load_deref: {
       if (load_may_tear(state, instr)) {
@@ -924,7 +932,6 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_load_vertex_id_zero_base:
    case nir_intrinsic_load_vertex_id:
    case nir_intrinsic_load_raw_vertex_id_pan:
-   case nir_intrinsic_load_invocation_id:
    case nir_intrinsic_load_local_invocation_id:
    case nir_intrinsic_load_local_invocation_index:
    case nir_intrinsic_load_global_invocation_id:
@@ -1213,6 +1220,18 @@ nir_variable_is_uniform(nir_shader *shader, nir_variable *var,
       memset(&fake_instr, 0, sizeof(fake_instr));
       fake_instr.intrinsic =
          nir_intrinsic_from_system_value(var->data.location);
+
+      /* There is not trivially an intrinsic for INSTANCE_INDEX. It might
+       * become nir_intrinsic_load_instance_id, or it it might become
+       * nir_intrinsic_load_instance_id + nir_intrinsic_load_base_instance. As
+       * a result, we'll treat this as nir_intrinsic_load_instance_id.
+       */
+      if (var->data.location == SYSTEM_VALUE_INSTANCE_INDEX) {
+         assert(fake_instr.intrinsic == nir_num_intrinsics);
+         fake_instr.intrinsic = nir_intrinsic_load_instance_id;
+      }
+
+      assert(fake_instr.intrinsic != nir_num_intrinsics);
 
       visit_intrinsic(&fake_instr, state);
       return !fake_instr.def.divergent;

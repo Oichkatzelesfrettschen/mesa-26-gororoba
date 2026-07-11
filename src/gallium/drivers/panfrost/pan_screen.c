@@ -1048,9 +1048,7 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
       return NULL;
    }
 
-   unsigned core_id_range;
-   unsigned core_count =
-      pan_query_core_count(&dev->kmod.dev->props, &core_id_range);
+   unsigned core_count = pan_query_core_count(&dev->kmod.dev->props);
 
    snprintf(screen->renderer_string, sizeof(screen->renderer_string),
             "%s MC%u (Panfrost)", dev->model->name, core_count);
@@ -1143,7 +1141,7 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
 
    for (unsigned i = 0; i <= MESA_SHADER_COMPUTE; i++)
       screen->base.nir_options[i] =
-         pan_get_nir_shader_compiler_options(dev->arch, false);
+         pan_get_nir_shader_compiler_options(dev->arch, i, false);
 
    switch (dev->arch) {
    case 4:

@@ -19,34 +19,11 @@
 #include "compiler.h"
 #include "../kraid/kraid.h"
 
-#ifdef WITH_PANFROST_RUST
-#define USE_KRAID_INTERNAL (1ull << 31)
-
-static const struct debug_named_value pan_use_kraid_flags[] = {
-   { "cs", 1 << MESA_SHADER_COMPUTE, "Use Kraid for compute shaders" },
-   { "fs", 1 << MESA_SHADER_FRAGMENT, "Use Kraid for fragment shaders" },
-   { "vs", 1 << MESA_SHADER_VERTEX, "Use Kraid for vertex shaders" },
-   { "internal", USE_KRAID_INTERNAL, "Use Kraid for internal shaders" },
-   { "all", ~0, "Use Kraid for all shader stages" },
-   DEBUG_NAMED_VALUE_END,
-};
-
-DEBUG_GET_ONCE_FLAGS_OPTION(kraid_stages, "PAN_USE_KRAID",
-                            pan_use_kraid_flags, 0)
-#endif
-
 static bool
-bi_use_kraid(nir_shader *nir)
+bi_use_kraid(nir_shader *nir, uint64_t gpu_id)
 {
-#ifdef WITH_PANFROST_RUST
-   uint64_t use_kraid = debug_get_option_kraid_stages();
-   if (nir->info.internal && !(use_kraid & USE_KRAID_INTERNAL))
-      return false;
-
-   return use_kraid & (1 << nir->info.stage);
-#else
-   return false;
-#endif
+   return pan_use_kraid(pan_arch(gpu_id), nir->info.stage,
+                        nir->info.internal);
 }
 
 /*
@@ -103,11 +80,14 @@ bi_lower_bit_size(const nir_instr *instr, void *data)
    case nir_instr_type_intrinsic: {
       nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
 
-      /* We only support ballot on 32-bit types. */
       switch (intr->intrinsic) {
       case nir_intrinsic_ballot:
       case nir_intrinsic_ballot_relaxed:
+         /* We only support ballot on 32-bit types. */
          return (nir_src_bit_size(intr->src[0]) == 32) ? 0 : 32;
+      case nir_intrinsic_read_invocation:
+         /* CLPER only supports 32-bit types. */
+         return (intr->def.bit_size < 32) ? 32 : 0;
       default:
          return 0;
       }
@@ -369,7 +349,7 @@ bi_optimize_late(nir_shader *nir, uint64_t gpu_id,
    while (late_algebraic_progress) {
       late_algebraic_progress = false;
       NIR_PASS(late_algebraic_progress, nir, bifrost_nir_lower_algebraic_late,
-               pan_arch(gpu_id));
+               pan_arch(gpu_id), bi_use_kraid(nir, gpu_id));
       late_algebraic |= late_algebraic_progress;
    }
 
@@ -1034,6 +1014,9 @@ bifrost_postprocess_nir(nir_shader *nir,
    };
    NIR_PASS(_, nir, nir_lower_mem_access_bit_sizes, &mem_size_options);
 
+   if (bi_use_kraid(nir, gpu_id))
+      NIR_PASS(_, nir, pan_nir_lower_mem_to_global);
+
    nir_lower_ssbo_options ssbo_opts = {
       .native_loads = gpu_arch >= 9,
       .native_offset = gpu_arch >= 9,
@@ -1304,7 +1287,7 @@ bifrost_compile_shader_nir(nir_shader *nir,
    info->tls_size = nir->scratch_size;
    info->stage = nir->info.stage;
 
-   if (bi_use_kraid(nir)) {
+   if (bi_use_kraid(nir, gpu_id)) {
 #ifdef WITH_PANFROST_RUST
       kraid_compile_nir(nir, inputs, binary, info);
 #endif

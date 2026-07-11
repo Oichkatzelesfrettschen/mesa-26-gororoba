@@ -19,9 +19,12 @@ struct pan_shader_info;
 
 bool pan_will_dump_shaders(unsigned arch);
 bool pan_want_debug_info(unsigned arch);
+bool pan_use_kraid(unsigned arch, mesa_shader_stage stage, bool internal);
 
 const nir_shader_compiler_options *
-pan_get_nir_shader_compiler_options(unsigned arch, bool merge_wg);
+pan_get_nir_shader_compiler_options(unsigned arch,
+                                    mesa_shader_stage stage,
+                                    bool merge_wg);
 
 /* Inputs to the backend compiler */
 struct pan_compile_inputs {

@@ -370,11 +370,10 @@ nouveau_copy_rect(struct nvk_cmd_buffer *cmd,
    }
 }
 
-VKAPI_ATTR void VKAPI_CALL
-nvk_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
-                   const VkCopyBufferInfo2 *pCopyBufferInfo)
+void
+nvk_cmd_copy_buffer_ce(struct nvk_cmd_buffer *cmd,
+                       const VkCopyBufferInfo2 *pCopyBufferInfo)
 {
-   VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(nvk_buffer, src, pCopyBufferInfo->srcBuffer);
    VK_FROM_HANDLE(nvk_buffer, dst, pCopyBufferInfo->dstBuffer);
 
@@ -472,11 +471,10 @@ nvk_remap_insert_aspect(struct nouveau_copy *copy,
    }
 }
 
-VKAPI_ATTR void VKAPI_CALL
-nvk_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
-                          const VkCopyBufferToImageInfo2 *pCopyBufferToImageInfo)
+void
+nvk_cmd_copy_buffer_to_image_ce(struct nvk_cmd_buffer *cmd,
+                                const VkCopyBufferToImageInfo2 *pCopyBufferToImageInfo)
 {
-   VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(nvk_buffer, src, pCopyBufferToImageInfo->srcBuffer);
    VK_FROM_HANDLE(nvk_image, dst, pCopyBufferToImageInfo->dstImage);
 
@@ -599,11 +597,10 @@ nvk_remap_extract_aspect(struct nouveau_copy *copy,
    }
 }
 
-VKAPI_ATTR void VKAPI_CALL
-nvk_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
-                          const VkCopyImageToBufferInfo2 *pCopyImageToBufferInfo)
+void
+nvk_cmd_copy_image_to_buffer_ce(struct nvk_cmd_buffer *cmd,
+                                const VkCopyImageToBufferInfo2 *pCopyImageToBufferInfo)
 {
-   VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(nvk_image, src, pCopyImageToBufferInfo->srcImage);
    VK_FROM_HANDLE(nvk_buffer, dst, pCopyImageToBufferInfo->dstBuffer);
 
@@ -894,9 +891,9 @@ nvk_cmd_copy_image_ce(struct nvk_cmd_buffer *cmd,
 }
 
 void
-nvk_cmd_fill_memory(struct nvk_cmd_buffer *cmd,
-                    uint64_t dst_addr, uint64_t size,
-                    uint32_t data)
+nvk_cmd_fill_memory_ce(struct nvk_cmd_buffer *cmd,
+                       uint64_t dst_addr, uint64_t size,
+                       uint32_t data)
 {
    uint32_t max_dim = 1 << 15;
 
@@ -954,22 +951,6 @@ nvk_cmd_fill_memory(struct nvk_cmd_buffer *cmd,
       dst_addr += dma_size;
       size -= dma_size;
    }
-}
-
-VKAPI_ATTR void VKAPI_CALL
-nvk_CmdFillBuffer(VkCommandBuffer commandBuffer,
-                  VkBuffer dstBuffer,
-                  VkDeviceSize dstOffset,
-                  VkDeviceSize size,
-                  uint32_t data)
-{
-   VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
-   VK_FROM_HANDLE(nvk_buffer, dst_buffer, dstBuffer);
-
-   uint64_t dst_addr = vk_buffer_address(&dst_buffer->vk, dstOffset);
-   size = vk_buffer_range(&dst_buffer->vk, dstOffset, size);
-
-   nvk_cmd_fill_memory(cmd, dst_addr, size, data);
 }
 
 VKAPI_ATTR void VKAPI_CALL

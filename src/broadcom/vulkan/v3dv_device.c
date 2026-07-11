@@ -163,6 +163,11 @@ static void
 get_device_extensions(const struct v3dv_physical_device *device,
                       struct vk_device_extension_table *ext)
 {
+#ifdef V3DV_USE_WSI_PLATFORM
+   const struct v3dv_instance *v3dv_instance =
+      container_of(device->vk.instance, struct v3dv_instance, vk);
+#endif
+
    *ext = (struct vk_device_extension_table) {
       .KHR_8bit_storage                     = true,
       .KHR_16bit_storage                    = true,
@@ -203,9 +208,12 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .KHR_shader_expect_assume             = true,
       .KHR_shader_float16_int8              = device->devinfo.ver >= 71,
       .KHR_shader_float_controls            = true,
+      .KHR_shader_maximal_reconvergence     = true,
       .KHR_shader_non_semantic_info         = true,
+      .KHR_shader_quad_control              = device->devinfo.ver >= 71,
       .KHR_shader_relaxed_extended_instruction = true,
       .KHR_shader_subgroup_extended_types   = true,
+      .KHR_shader_subgroup_rotate           = device->devinfo.ver >= 71,
       .KHR_sampler_mirror_clamp_to_edge     = true,
       .KHR_sampler_ycbcr_conversion         = true,
       .KHR_spirv_1_4                        = true,
@@ -275,7 +283,7 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .EXT_tooling_info                     = true,
       .EXT_vertex_attribute_divisor         = true,
 #ifdef V3DV_USE_WSI_PLATFORM
-      .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(device->vk.instance),
+      .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(device->vk.instance, &v3dv_instance->drirc.options),
 #endif
    };
 #if DETECT_OS_ANDROID
@@ -588,6 +596,16 @@ get_features(const struct v3dv_physical_device *physical_device,
       /* VK_KHR_present_wait2 */
       .presentWait2 = true,
 #endif
+
+      /* VK_KHR_shader_maximal_reconvergence */
+      .shaderMaximalReconvergence = true,
+
+      /* VK_KHR_shader_quad_control */
+      .shaderQuadControl = physical_device->devinfo.ver >= 71,
+
+      /* VK_KHR_shader_subgroup_rotate */
+      .shaderSubgroupRotate = physical_device->devinfo.ver >= 71,
+      .shaderSubgroupRotateClustered = physical_device->devinfo.ver >= 71,
 
       /* VK_KHR_shader_relaxed_extended_instruction */
       .shaderRelaxedExtendedInstruction = true,
@@ -991,7 +1009,10 @@ get_device_properties(const struct v3dv_physical_device *device,
                       VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT |
                       VK_SUBGROUP_FEATURE_VOTE_BIT |
                       VK_SUBGROUP_FEATURE_QUAD_BIT |
-                      VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+                      VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
+                      VK_SUBGROUP_FEATURE_CLUSTERED_BIT |
+                      VK_SUBGROUP_FEATURE_ROTATE_BIT |
+                      VK_SUBGROUP_FEATURE_ROTATE_CLUSTERED_BIT;
    }
 
    /* FIXME: this will probably require an in-depth review */
@@ -1087,7 +1108,8 @@ get_device_properties(const struct v3dv_physical_device *device,
       .mipmapPrecisionBits                      = 8,
       .maxDrawIndexedIndexValue                 = device->devinfo.ver >= 71 ?
                                                   0xffffffff : 0x00ffffff,
-      .maxDrawIndirectCount                     = 0x7fffffff,
+      .maxDrawIndirectCount                     = device->vk.supported_features.multiDrawIndirect ?
+                                                  0x7fffffff : 1,
       .maxSamplerLodBias                        = 14.0f,
       .maxSamplerAnisotropy                     = 16.0f,
       .maxViewports                             = MAX_VIEWPORTS,
@@ -1220,7 +1242,7 @@ get_device_properties(const struct v3dv_physical_device *device,
       .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = MAX_DYNAMIC_UNIFORM_BUFFERS,
       .maxDescriptorSetUpdateAfterBindStorageBuffers =
           V3DV_SUPPORTED_SHADER_STAGES * MAX_STORAGE_BUFFERS,
-      .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = MAX_DYNAMIC_UNIFORM_BUFFERS,
+      .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = MAX_DYNAMIC_STORAGE_BUFFERS,
       .maxDescriptorSetUpdateAfterBindSampledImages =
           V3DV_SUPPORTED_SHADER_STAGES * MAX_SAMPLED_IMAGES,
       .maxDescriptorSetUpdateAfterBindStorageImages =
@@ -1358,7 +1380,8 @@ get_device_properties(const struct v3dv_physical_device *device,
 
    /* VkPhysicalDeviceProperties */
    snprintf(properties->deviceName, sizeof(properties->deviceName),
-            "%s", device->name);
+            "%s", (strlen(instance->drirc.debug.force_vk_devicename) > 0) ?
+                  instance->drirc.debug.force_vk_devicename : device->name);
    memcpy(properties->pipelineCacheUUID,
             device->pipeline_cache_uuid, VK_UUID_SIZE);
 
@@ -2902,7 +2925,7 @@ v3dv_CreateBuffer(VkDevice  _device,
    struct v3dv_buffer *buffer;
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
-   assert(pCreateInfo->usage != 0);
+   assert(vk_buffer_usage_flags(pCreateInfo) != 0);
 
    /* We don't support any flags for now */
    assert(pCreateInfo->flags == 0);

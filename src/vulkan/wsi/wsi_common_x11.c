@@ -812,21 +812,30 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
       caps->surfaceCapabilities.minImageCount = x11_get_min_image_count(wsi_device, wsi_conn->is_xwayland);
    }
 
+   VkImageUsageFlags image_usage = wsi_caps_get_image_usage();
+
    /* There is no real maximum */
    caps->surfaceCapabilities.maxImageCount = 0;
 
    caps->surfaceCapabilities.supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    caps->surfaceCapabilities.currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    caps->surfaceCapabilities.maxImageArrayLayers = 1;
-   caps->surfaceCapabilities.supportedUsageFlags = wsi_caps_get_image_usage();
 
    VK_FROM_HANDLE(vk_physical_device, pdevice, wsi_device->pdevice);
    if (pdevice->supported_extensions.EXT_attachment_feedback_loop_layout)
-      caps->surfaceCapabilities.supportedUsageFlags |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+      image_usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
 
    VkSwapchainFlagsSurfaceCapabilitiesEXT *surface_caps = vk_find_struct(caps, SWAPCHAIN_FLAGS_SURFACE_CAPABILITIES_EXT);
    if (surface_caps && pdevice->supported_extensions.EXT_multisampled_render_to_swapchain)
       surface_caps->swapchainSupportedFlags |= VK_SWAPCHAIN_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT;
+
+   VkImageUsageFlags2CreateInfoKHR *usage2 =
+      vk_find_struct(caps->pNext, IMAGE_USAGE_FLAGS_2_CREATE_INFO_KHR);
+   if (usage2) {
+      usage2->usage = image_usage;
+   } else {
+      caps->surfaceCapabilities.supportedUsageFlags = image_usage;
+   }
 
    return VK_SUCCESS;
 }
@@ -1385,14 +1394,13 @@ static void x11_present_update_refresh_cycle_estimate(struct x11_swapchain *swap
 
             /* Our refresh rates are only estimates, so expect some deviation (+/- 1us). */
             wsi_swapchain_present_timing_update_refresh_rate(&swapchain->base, refresh_ns, refresh_ns, 1000);
-         } else if (!flip) {
+         } else if (!flip || !swapchain->base.wsi->enable_adaptive_sync) {
             /* If we're not flipping, we're not getting VRR. If MSC estimate is unstable for whatever reason, fallback to randr query. */
             wsi_swapchain_present_timing_update_refresh_rate(&swapchain->base, randr_refresh_ns, randr_refresh_ns, 0);
          } else {
             /* If we have enabled adaptive sync, and we're seeing highly irregular MSC values, we assume
              * we're driving the display VRR. */
-            uint64_t refresh_interval = swapchain->base.wsi->enable_adaptive_sync ? UINT64_MAX : 0;
-            wsi_swapchain_present_timing_update_refresh_rate(&swapchain->base, randr_refresh_ns, refresh_interval, 0);
+            wsi_swapchain_present_timing_update_refresh_rate(&swapchain->base, randr_refresh_ns, UINT64_MAX, 0);
          }
       }
    }
@@ -1986,13 +1994,6 @@ static VkResult x11_swapchain_read_status_atomic(struct x11_swapchain *chain)
  * Decides if an early wait on buffer fences before buffer submission is required.
  * That is for mailbox mode, as otherwise the latest image in the queue might not be fully rendered at
  * present time, which could lead to missing a frame. This is an Xorg issue.
- *
- * On Wayland compositors, this used to be a problem as well, but not anymore,
- * and this check assumes that Mesa is running on a reasonable compositor.
- * The wait behavior can be forced by setting the 'vk_xwayland_wait_ready' DRIConf option to true.
- * Some drivers, like e.g. Venus may still want to require wait_ready by default,
- * so the option is kept around for now.
- *
  * On Wayland, we don't know at this point if tearing protocol is/can be used by Xwl,
  * so we have to make the MAILBOX assumption.
  */
@@ -2001,7 +2002,7 @@ x11_needs_wait_for_fences(const struct wsi_device *wsi_device,
                           struct wsi_x11_connection *wsi_conn,
                           VkPresentModeKHR present_mode)
 {
-   if (wsi_conn->is_xwayland && !wsi_device->x11.xwaylandWaitReady) {
+   if (wsi_conn->is_xwayland) {
       return false;
    }
 
@@ -2447,8 +2448,9 @@ x11_present_compute_target_msc(struct x11_swapchain *chain,
        * Effectively, we will need to adjust the report UST up if we somehow end up seeing a timestamp too early.
        * The relative refresh will feed off this adjustment in a tight loop, so this should be pretty solid
        * for both VRR and FRR. Present timing can only be used with FIFO modes, i.e. we will not overwrite this
-       * until the present is actually complete. */
-      chain->next_present_ust_lower_bound = target_ns / 1000;
+       * until the present is actually complete.  Skip the assignment if we are definitely FRR on a vblank-less setup. */
+      if (chain->base.wsi->enable_adaptive_sync || !chain->has_reliable_msc)
+         chain->next_present_ust_lower_bound = target_ns / 1000;
 
       /* We also need to pull back the sleep a bit to account for X.org roundtrip delays.
        * If we sleep until targetTime we will most certainly introduce a lot of jitter.
@@ -3502,12 +3504,6 @@ wsi_x11_init_wsi(struct wsi_device *wsi_device,
          wsi_device->x11.ensure_minImageCount =
             driQueryOptionb(dri_options, "vk_x11_ensure_min_image_count");
       }
-      wsi_device->x11.xwaylandWaitReady = true;
-      if (driCheckOption(dri_options, "vk_xwayland_wait_ready", DRI_BOOL)) {
-         wsi_device->x11.xwaylandWaitReady =
-            driQueryOptionb(dri_options, "vk_xwayland_wait_ready");
-      }
-
       if (driCheckOption(dri_options, "vk_x11_ignore_suboptimal", DRI_BOOL)) {
          wsi_device->x11.ignore_suboptimal =
             driQueryOptionb(dri_options, "vk_x11_ignore_suboptimal");

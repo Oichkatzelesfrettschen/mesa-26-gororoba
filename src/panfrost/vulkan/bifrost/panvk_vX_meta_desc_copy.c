@@ -12,6 +12,7 @@
 #include "nir_builder.h"
 
 #include "pan_encoder.h"
+#include "pan_nir.h"
 #include "pan_shader.h"
 
 #include "panvk_cmd_alloc.h"
@@ -332,7 +333,8 @@ panvk_meta_desc_copy_rsd(struct panvk_device *dev)
    nir_builder b = nir_builder_init_simple_shader(
       MESA_SHADER_COMPUTE,
       pan_get_nir_shader_compiler_options(
-         pan_arch(phys_dev->kmod.dev->props.gpu_id), false),
+         pan_arch(phys_dev->kmod.dev->props.gpu_id),
+         MESA_SHADER_COMPUTE, false),
       "%s", "desc_copy");
 
    /* We actually customize that at execution time to issue the
@@ -344,6 +346,7 @@ panvk_meta_desc_copy_rsd(struct panvk_device *dev)
    nir_def *desc_copy_id =
       nir_channel(&b, nir_load_global_invocation_id(&b, 32), 0);
    single_desc_copy(&b, desc_copy_id);
+   PAN_NIR_SET_BLAKE3_INTERNAL(b.shader, &key);
 
    struct pan_compile_inputs inputs = {
       .gpu_id = phys_dev->kmod.dev->props.gpu_id,

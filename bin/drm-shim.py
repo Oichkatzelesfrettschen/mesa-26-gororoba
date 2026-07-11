@@ -44,11 +44,28 @@ TARGETS = {
 
     "m1": ["asahi", None],
 
+    "a200": ["freedreno", "200"],
+    "a201": ["freedreno", "201"],
+    "a220": ["freedreno", "220"],
+    "a305": ["freedreno", "305"],
+    "a320": ["freedreno", "320"],
+    "a330": ["freedreno", "330"],
     "a306": ["freedreno", "307"],
+    "a420": ["freedreno", "420"],
+    "a430": ["freedreno", "430"],
+    "a510": ["freedreno", "510"],
     "a530": ["freedreno", "530"],
+    "a540": ["freedreno", "540"],
+    "a610": ["freedreno", "610"],
     "a618": ["freedreno", "618"],
+    "a630": ["freedreno", "630"],
     "a660": ["freedreno", "660"],
+    "a702": ["freedreno", "702"],
+    "a730": ["freedreno", "730"],
+    "a740": ["freedreno", "740"],
     "a750": ["freedreno", "750"],
+    "a810": ["freedreno", "810"],
+    "a830": ["freedreno", "830"],
 
     "skl": ["intel", "skl"],
     "apl": ["intel", "apl"],
@@ -65,11 +82,19 @@ TARGETS = {
 
     "turing": ["nouveau", "160"],
 
+    "t720": ["panfrost", "720"],
     "t860": ["panfrost", "860"],
     "g52": ["panfrost", "7212"],
     "g57": ["panfrost", "9093"],
     "g72": ["panfrost", "6221"],
     "g610": ["panfrost", "a867"],
+    "g310v1": ["panfrost", "ac04:0"],
+    "g310v2": ["panfrost", "ac04:1"],
+    "g310v3": ["panfrost", "ac04:2"],
+    "g310v4": ["panfrost", "ac04:3"],
+    "g310v5": ["panfrost", "ac04:4"],
+    "g720": ["panfrost", "c800:4"],
+    "g725": ["panfrost", "d800:4"],
     "g925": ["panfrost", "d830:4"],
 
     "rpi4": ["v3d", "42"],
@@ -168,4 +193,4 @@ if __name__ == "__main__":
         for (key, val) in DISASM[driver]:
             env[key] = val
 
-    subprocess.call(command, env=env, shell=True)
+    sys.exit(subprocess.call(command, env=env, shell=True))

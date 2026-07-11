@@ -297,7 +297,7 @@ radv_get_build_config(VkDevice _device, struct vk_acceleration_structure_build_s
 
    if (state->build_info->type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR) {
       state->config.internal_type = VK_INTERNAL_BUILD_TYPE_HPLOC;
-      state->config.u64_keys = pdev->info.gfx_level < GFX12;
+      state->config.u64_keys = true;
    }
 
    state->config.build_flags = radv_default_build_flags(pdev);
@@ -1258,6 +1258,7 @@ radv_device_init_accel_struct_build_state(struct radv_device *device)
    build_args->root_flags_offset = offsetof(struct radv_accel_struct_header, root_flags);
    build_args->propagate_cull_flags = pdev->info.gfx_level >= GFX11;
    build_args->emit_markers = device->sqtt.bo || device->utrace.context;
+   build_args->has_update = true;
    build_args->radix_sort_64 = device->meta_state.accel_struct_build.radix_sort_64;
    build_args->radix_sort_96 = device->meta_state.accel_struct_build.radix_sort_96;
 

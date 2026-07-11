@@ -75,6 +75,23 @@ fn iter_ssa_bytes(vec: &SSARef, bytes: Range<u16>) -> SSABytesIter<'_> {
     }
 }
 
+fn swizzle_byte_range(bytes: Range<u16>, swizzle: Swizzle) -> Range<u16> {
+    let swz_bytes = match swizzle {
+        Swizzle::B0000 => 0..1,
+        Swizzle::B1111 => 1..2,
+        Swizzle::B2222 => 2..3,
+        Swizzle::B3333 => 3..4,
+        Swizzle::H00 => 0..2,
+        Swizzle::H11 => 2..4,
+        Swizzle::NONE => return bytes,
+        _ => panic!("Not a byte range select swizzle"),
+    };
+    let start = bytes.start + swz_bytes.start;
+    let end = bytes.start + swz_bytes.end;
+    debug_assert!(end <= bytes.end);
+    start..end
+}
+
 fn widen_lanes(lanes: DstLanes) -> DstLanes {
     use DstLanes::*;
     match lanes {
@@ -352,6 +369,7 @@ impl LocalRegAlloc<'_> {
         // First, loop through unused registers in the hopes that one of them
         // ends up having cost 0
         let (align_mul, align_offset) = constraint.align();
+        let max = usize::from(self.bytes_avail) - usize::from(constraint.bytes);
         let mut start = 0;
         loop {
             let b = self.find_aligned_unused_unpinned_range(
@@ -360,7 +378,7 @@ impl LocalRegAlloc<'_> {
                 usize::from(align_mul),
                 usize::from(align_offset),
             );
-            if b >= usize::from(self.bytes_avail) {
+            if b > max {
                 break;
             }
             start = b + usize::from(align_mul);
@@ -388,7 +406,7 @@ impl LocalRegAlloc<'_> {
                 usize::from(align_mul),
                 usize::from(align_offset),
             );
-            if b >= usize::from(self.bytes_avail) {
+            if b > max {
                 break;
             }
             start = b + usize::from(align_mul);
@@ -429,12 +447,46 @@ impl LocalRegAlloc<'_> {
         let src_type = op.src_type(src);
         let bytes = vec.bytes();
 
-        let (align_mul, align_offsets) = if src_type.bits() == 64 {
-            // TODO: Allow W1
-            debug_assert!(bytes <= 8);
-            (8, 1)
+        if src_type == DataType::SR {
+            assert!(src.swizzle.is_none());
+            assert!(bytes % 4 == 0);
+        }
+
+        let (align_mul, align_offsets) = if bytes > 4 {
+            // Valhall requires that 64-bit sources and staging registers
+            // reading more than a single register use an even register.
+            (8, 1 << 0)
+        } else if src_type == DataType::SR {
+            debug_assert!(bytes == 4);
+            (4, 1 << 0)
         } else {
-            (bytes.next_power_of_two(), 1 << 0)
+            let swizzles: &[(u8, Swizzle)] = match bytes {
+                1 => &[
+                    (0, Swizzle::B0000),
+                    (1, Swizzle::B1111),
+                    (2, Swizzle::B2222),
+                    (3, Swizzle::B3333),
+                ],
+                2 => &[(0, Swizzle::H00), (2, Swizzle::H11)],
+                4 => {
+                    &[(0, Swizzle::NONE), (0, Swizzle::W00), (4, Swizzle::W11)]
+                }
+                _ => panic!("Invalid SSA value size"),
+            };
+            let mut offsets = 0;
+            for (b, s) in swizzles {
+                if let Some(s) = (*s).swizzle(src.swizzle) {
+                    if self.model.op_src_supports_swizzle(op, src, s) {
+                        offsets |= 1 << *b;
+                    }
+                }
+            }
+            assert!(offsets != 0, "Cannot find a valid swizzle");
+            if self.model.op_src_is_64bit(op, src) {
+                (8, offsets)
+            } else {
+                (4, offsets)
+            }
         };
 
         let c = RegAllocConstraint {
@@ -465,11 +517,13 @@ impl LocalRegAlloc<'_> {
         while !supported_lanes.contains(alloc_lanes) {
             alloc_lanes = widen_lanes(alloc_lanes);
         }
-
         let alloc_bytes = alloc_lanes.bytes(bytes);
+
         let (align_mul, align_offsets) = if bytes > 4 {
+            // Valhall requires that 64-bit destinations and staging registers
+            // writing more than a single register use an even register.
             debug_assert_eq!(alloc_lanes, DstLanes::All);
-            (bytes.next_power_of_two(), 1 << 0)
+            (8, 1 << 0)
         } else if self.model.op_dst_is_staging_reg(op) {
             // Staging register writes respect lanes in the sense that
             // that's where they put the data but they may not do
@@ -592,6 +646,7 @@ impl LocalRegAlloc<'_> {
             let idx = usize::from(src_dst.idx);
             if src_dst.is_src {
                 let src = &instr.srcs()[idx];
+                let src_type = instr.src_type(&src);
                 let vec = src.src_ref.as_ssa().unwrap();
 
                 let bytes = if src_dst.duplicate {
@@ -625,10 +680,22 @@ impl LocalRegAlloc<'_> {
                 };
 
                 // Assign the source to the byte range
+                let mut reg = self.reg_for_bytes(bytes);
+                let mut swz = Swizzle::from(reg.range);
+                if src_type.bits() == 64 {
+                    let word = reg.idx & 1;
+                    if reg.range == RegRange::Regs(1) {
+                        reg.idx &= !1;
+                        swz = Swizzle::replicate_word(word);
+                        if word == 1 {
+                            reg.range = RegRange::Regs(2);
+                        }
+                    } else {
+                        debug_assert!(word == 0);
+                    }
+                }
                 let src = &mut instr.srcs_mut()[idx];
-                let reg = self.reg_for_bytes(bytes);
                 src.src_ref = reg.into();
-                let swz = Swizzle::from(reg.range);
                 src.swizzle = swz
                     .swizzle(src.swizzle)
                     .expect("16-bit and smaller sources have to swizzle");
@@ -771,10 +838,10 @@ impl GlobalRegAlloc<'_> {
         cfg: &CFG<BasicBlock>,
         bi: usize,
         reg_outs: Vec<Box<OpRegOut>>,
-    ) -> ParallelCopy {
+    ) -> ParallelCopy<'_> {
         debug_assert!(cfg.succ_indices(bi).is_empty());
 
-        let mut pcopy = ParallelCopy::new();
+        let mut pcopy = ParallelCopy::new(self.local.model);
         for op in reg_outs {
             if let RegRange::Regs(words) = op.reg.range {
                 for i in 0..words {
@@ -868,7 +935,7 @@ impl GlobalRegAlloc<'_> {
         mut phi_srcs: Vec<Box<OpPhiSrc>>,
         mut branch: Option<&mut Box<OpBranch>>,
         phi_map: &PhiMap,
-    ) -> ParallelCopy {
+    ) -> ParallelCopy<'_> {
         debug_assert!(self.local.pinned.is_empty());
 
         let succ = cfg.succ_indices(bi);
@@ -927,7 +994,7 @@ impl GlobalRegAlloc<'_> {
         if let Some(live_out) = live_out {
             // In this case, someone already set up our live-out.  We just have
             // to emit copies to shuffle everything into place.
-            let mut pcopy = ParallelCopy::new();
+            let mut pcopy = ParallelCopy::new(self.local.model);
             for idx in bl.live_out_set().iter() {
                 let idx = u32::try_from(idx).unwrap();
                 let src_bytes = self.local.idx_bytes(idx);
@@ -945,7 +1012,10 @@ impl GlobalRegAlloc<'_> {
                     for (dst_ssa, src_ssa) in dst_vec.iter().zip(src_vec.iter())
                     {
                         let dst_bytes = live_out.get(&dst_ssa.idx()).unwrap();
-                        let src_bytes = self.local.idx_bytes(src_ssa.idx());
+                        let src_bytes = swizzle_byte_range(
+                            self.local.idx_bytes(src_ssa.idx()),
+                            op.src.swizzle,
+                        );
                         pcopy.add_copy(
                             self.local.reg_for_bytes(dst_bytes.clone()),
                             self.local.reg_for_bytes(src_bytes).into(),
@@ -988,7 +1058,7 @@ impl GlobalRegAlloc<'_> {
 
         // Now, place everything.  Go largest to smallest to reduce so that
         // we can guarantee everything fits.
-        let mut pcopy = ParallelCopy::new();
+        let mut pcopy = ParallelCopy::new(self.local.model);
         let mut live_out_set = bl.live_out_set().clone();
         let mut live_out: FxHashMap<u32, Range<u16>> = Default::default();
         for chunk_bytes in [8, 4, 2, 1] {
@@ -1065,8 +1135,9 @@ impl GlobalRegAlloc<'_> {
                 let dst_vec = phi_map.get_dst_ssa(&op.phi);
 
                 let src_vec = op.src.src_ref.as_ssa();
-                let src_bytes =
-                    src_vec.and_then(|vec| self.local.ssa_ref_bytes(vec));
+                let src_bytes = src_vec
+                    .and_then(|vec| self.local.ssa_ref_bytes(vec))
+                    .map(|bytes| swizzle_byte_range(bytes, op.src.swizzle));
                 let dst_bytes = self.choose_live_out_bytes(
                     chunk_bytes,
                     src_bytes,
@@ -1080,7 +1151,10 @@ impl GlobalRegAlloc<'_> {
                 {
                     if let Some(src_vec) = src_vec {
                         debug_assert_eq!(src_vec.len(), dst_vec.len());
-                        let src_bytes = self.local.idx_bytes(src_vec[i].idx());
+                        let src_bytes = swizzle_byte_range(
+                            self.local.idx_bytes(src_vec[i].idx()),
+                            op.src.swizzle,
+                        );
                         pcopy.add_copy(
                             self.local.reg_for_bytes(dst_bytes.clone()),
                             self.local.reg_for_bytes(src_bytes).into(),
@@ -1150,7 +1224,7 @@ impl GlobalRegAlloc<'_> {
                 }
                 Op::RegOut(op) => reg_outs.push(op),
                 _ => {
-                    let mut pcopy = ParallelCopy::new();
+                    let mut pcopy = ParallelCopy::new(self.local.model);
                     self.local.alloc_regs_instr(ip, &mut instr, &mut pcopy, bl);
                     instrs.extend(pcopy.into_instrs());
                     instrs.push(instr);

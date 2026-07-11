@@ -1,4 +1,5 @@
-#define FUNC_VARS struct draw_geometry_shader *gs,             \
+#define FUNC_VARS struct draw_context *draw,                  \
+                  const struct draw_geometry_shader *gs,       \
                   const struct draw_prim_info *input_prims,    \
                   const struct draw_vertex_info *input_verts,  \
                   struct draw_prim_info *output_prims,         \
@@ -10,7 +11,7 @@
    const unsigned prim_flags = input_prims->flags;                \
    const unsigned count = input_prims->count;                     \
    const bool quads_flatshade_last = false;                    \
-   const bool last_vertex_last = !gs->draw->rasterizer->flatshade_first;  \
+   const bool last_vertex_last = !draw->rasterizer->flatshade_first;  \
    do {                                                           \
       switch (prim) {                                             \
       case MESA_PRIM_QUADS:                                       \
@@ -23,22 +24,22 @@
       }                                                           \
    } while (0)
 
-#define POINT(i0)                             gs_point(gs,i0)
+#define POINT(i0)                             gs_point(draw,gs,i0)
 #define LINE(flags,i0,i1) do { \
    (void)(flags); \
-   gs_line(gs,i0,i1); \
+   gs_line(draw,gs,i0,i1); \
 } while (0)
 #define TRIANGLE(flags,i0,i1,i2) do { \
    (void)(flags); \
-   gs_tri(gs,i0,i1,i2); \
+   gs_tri(draw,gs,i0,i1,i2); \
 } while (0)
 #define LINE_ADJ(flags,i0,i1,i2,i3) do { \
    (void)(flags); \
-   gs_line_adj(gs,i0,i1,i2,i3); \
+   gs_line_adj(draw,gs,i0,i1,i2,i3); \
 } while (0)
 #define TRIANGLE_ADJ(flags,i0,i1,i2,i3,i4,i5) do { \
    (void)(flags); \
-   gs_tri_adj(gs,i0,i1,i2,i3,i4,i5); \
+   gs_tri_adj(draw,gs,i0,i1,i2,i3,i4,i5); \
 } while (0)
 #define QUAD(flags,i0,i1,i2,i3) do { \
    (void)(flags); \

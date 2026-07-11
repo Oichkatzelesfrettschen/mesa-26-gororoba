@@ -314,20 +314,25 @@ nvk_CmdDispatchBase(VkCommandBuffer commandBuffer,
       return;
    }
 
-   const uint32_t local_size = nvk_compute_local_size(cmd);
-   const uint64_t cs_invocations =
-      (uint64_t)local_size * (uint64_t)groupCountX *
-      (uint64_t)groupCountY * (uint64_t)groupCountZ;
+   /* Only emit this if we have a compute shader invocations query */
+   if (cmd->state.cs.active_compute_invocations_query ||
+       cmd->state.inherited_pipeline_statistics &
+          VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT) {
+      const uint32_t local_size = nvk_compute_local_size(cmd);
+      const uint64_t cs_invocations =
+         (uint64_t)local_size * (uint64_t)groupCountX *
+         (uint64_t)groupCountY * (uint64_t)groupCountZ;
 
-   struct nv_push *p = nvk_cmd_buffer_push(cmd, 7);
+      struct nv_push *p = nvk_cmd_buffer_push(cmd, 3);
+      if (nvk_cmd_buffer_compute_cls(cmd) >= AMPERE_COMPUTE_B)
+         P_1INC(p, NVC7C0, CALL_MME_MACRO(NVK_MME_ADD_CS_INVOCATIONS));
+      else
+         P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_ADD_CS_INVOCATIONS));
+      P_INLINE_DATA(p, cs_invocations >> 32);
+      P_INLINE_DATA(p, cs_invocations);
+   }
 
-   if (nvk_cmd_buffer_compute_cls(cmd) >= AMPERE_COMPUTE_B)
-      P_1INC(p, NVC7C0, CALL_MME_MACRO(NVK_MME_ADD_CS_INVOCATIONS));
-   else
-      P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_ADD_CS_INVOCATIONS));
-   P_INLINE_DATA(p, cs_invocations >> 32);
-   P_INLINE_DATA(p, cs_invocations);
-
+   struct nv_push *p = nvk_cmd_buffer_push(cmd, 4);
    P_MTHD(p, NVA0C0, SEND_PCAS_A);
    P_NVA0C0_SEND_PCAS_A(p, qmd_addr >> 8);
 
@@ -565,16 +570,14 @@ nvk_mme_dispatch_indirect(struct mme_builder *b)
 }
 
 VKAPI_ATTR void VKAPI_CALL
-nvk_CmdDispatchIndirect(VkCommandBuffer commandBuffer,
-                        VkBuffer _buffer,
-                        VkDeviceSize offset)
+nvk_CmdDispatchIndirect2KHR(VkCommandBuffer commandBuffer,
+                            const VkDispatchIndirect2InfoKHR* pInfo)
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
-   VK_FROM_HANDLE(nvk_buffer, buffer, _buffer);
    struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
    const struct nvk_physical_device *pdev = nvk_device_physical(dev);
 
-   uint64_t dispatch_addr = vk_buffer_address(&buffer->vk, offset);
+   uint64_t dispatch_addr = pInfo->addressRange.address;
 
    /* We set these through the MME */
    uint32_t base_workgroup[3] = { 0, 0, 0 };

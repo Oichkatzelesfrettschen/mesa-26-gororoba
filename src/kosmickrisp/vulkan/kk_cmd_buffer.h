@@ -93,9 +93,9 @@ struct kk_attachment {
    VkResolveModeFlagBits resolve_mode;
    struct kk_image_view *resolve_iview;
 
-   /* Needed to track the value of storeOp in case we need to copy images for
-    * the DRM_FORMAT_MOD_LINEAR case */
+   VkAttachmentLoadOp load_op;
    VkAttachmentStoreOp store_op;
+   VkClearValue clear_value;
 };
 
 struct kk_rendering_state {
@@ -108,6 +108,7 @@ struct kk_rendering_state {
 
    uint32_t color_att_count;
    struct kk_attachment color_att[KK_MAX_RTS];
+   uint8_t color_map[KK_MAX_RTS];
    struct kk_attachment depth_att;
    struct kk_attachment stencil_att;
    struct kk_attachment fsr_att;
@@ -196,22 +197,22 @@ struct kk_uploader {
    uint32_t offset;
 };
 
-struct kk_cs {
-   mtl_command_allocator *allocator_pre_gfx;
-   mtl_command_buffer *cmd_buf_pre_gfx;
-   mtl_compute_encoder *pre_gfx;
-   mtl_command_allocator *allocator_gfx;
-   mtl_command_buffer *cmd_buf_gfx;
-   mtl_render_encoder *gfx;
-   mtl_command_allocator *allocator_post_gfx;
-   mtl_command_buffer *cmd_buf_post_gfx;
-   mtl_compute_encoder *post_gfx;
+struct kk_encoder_state {
+   /* either a mtl_compute_encoder or a mtl_render_encoder */
+   mtl_command_encoder *encoder;
+   mtl_command_allocator *allocator;
+   mtl_command_buffer *cmd_buf;
 };
 
 struct kk_cmd_buffer {
    struct vk_command_buffer vk;
 
-   struct kk_cs cs;
+   struct kk_encoder_state gfx;
+   /* pre and post gfx encoder states swap after every gfx encoder is committed */
+   struct kk_encoder_state cmp[2];
+   struct kk_encoder_state *pre_gfx;
+   struct kk_encoder_state *post_gfx;
+
    void *drawable;
    mtl_argument_table *argument_table;
 
@@ -236,6 +237,12 @@ struct kk_cmd_buffer {
 
    /* Does the command buffer use the geometry heap? */
    bool uses_heap;
+   /* Set at vkBeginCommandBuffer. One-time-submit buffers skip command
+    * enqueueing in the trampolines since they can never be replayed. */
+   bool one_time_submit;
+   /* Metal command buffers are single-shot: a resubmission must re-record
+    * by replaying the enqueued commands (see rerecord_cmd_buffer). */
+   bool submitted;
 };
 
 VK_DEFINE_HANDLE_CASTS(kk_cmd_buffer, vk.base, VkCommandBuffer,

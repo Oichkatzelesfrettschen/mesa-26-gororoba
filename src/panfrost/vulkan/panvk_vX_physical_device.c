@@ -152,6 +152,7 @@ panvk_per_arch(get_physical_device_extensions)(
       .EXT_depth_clamp_zero_one = true,
       .EXT_depth_clip_enable = true,
       .EXT_depth_clip_control = true,
+      .EXT_device_address_binding_report = true,
       .EXT_device_memory_report = true,
 #ifdef VK_USE_PLATFORM_DISPLAY_KHR
       .EXT_display_control = true,
@@ -230,7 +231,7 @@ panvk_per_arch(get_physical_device_extensions)(
       .ANDROID_native_buffer = has_gralloc,
       .GOOGLE_decorate_string = true,
 #ifdef PANVK_USE_WSI_PLATFORM
-      .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(&instance->vk),
+      .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(&instance->vk, &instance->drirc.options),
 #endif
       .GOOGLE_hlsl_functionality1 = true,
       .GOOGLE_user_type = true,
@@ -722,6 +723,9 @@ panvk_per_arch(get_physical_device_features)(
       /* VK_KHR_present_wait2 */
       .presentWait2 = true,
 #endif
+
+      /* VK_EXT_device_address_binding_report */
+      .reportAddressBinding = true,
 
       /* VK_EXT_device_memory_report */
       .deviceMemoryReport = true,
@@ -1286,7 +1290,8 @@ panvk_per_arch(get_physical_device_properties)(
    };
 
    snprintf(properties->deviceName, sizeof(properties->deviceName), "%s",
-            device->name);
+            (strlen(instance->drirc.debug.force_vk_devicename) > 0) ?
+            instance->drirc.debug.force_vk_devicename : device->name);
 
    memcpy(properties->pipelineCacheUUID, device->cache_uuid, VK_UUID_SIZE);
    memcpy(properties->shaderBinaryUUID, device->cache_uuid, VK_UUID_SIZE);

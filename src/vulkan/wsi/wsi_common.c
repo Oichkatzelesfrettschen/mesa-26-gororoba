@@ -31,6 +31,7 @@
 #include "vk_device.h"
 #include "vk_fence.h"
 #include "vk_format.h"
+#include "vk_image.h"
 #include "vk_instance.h"
 #include "vk_physical_device.h"
 #include "vk_queue.h"
@@ -731,6 +732,8 @@ wsi_configure_image(const struct wsi_swapchain *chain,
       (pCreateInfo->flags & VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR) ?
       VK_IMAGE_CREATE_PROTECTED_BIT : 0;
 
+   const VkImageUsageFlags2KHR image_usage = vk_swapchain_usage_flags(pCreateInfo);
+
    info->create = (VkImageCreateInfo) {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
       .flags = VK_IMAGE_CREATE_ALIAS_BIT | protected_flag,
@@ -745,7 +748,7 @@ wsi_configure_image(const struct wsi_swapchain *chain,
       .arrayLayers = 1,
       .samples = VK_SAMPLE_COUNT_1_BIT,
       .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = pCreateInfo->imageUsage,
+      .usage = image_usage,
       .sharingMode = pCreateInfo->imageSharingMode,
       .queueFamilyIndexCount = queue_family_count,
       .pQueueFamilyIndices = queue_family_indices,
@@ -830,6 +833,13 @@ wsi_configure_image(const struct wsi_swapchain *chain,
       };
       __vk_append_struct(&info->create, &info->format_list);
    }
+
+   info->usage2 = (VkImageUsageFlags2CreateInfoKHR) {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_USAGE_FLAGS_2_CREATE_INFO_KHR,
+      .usage = image_usage,
+   };
+
+   __vk_append_struct(&info->create, &info->usage2);
 
    return VK_SUCCESS;
 
@@ -1502,12 +1512,14 @@ wsi_CreateSwapchainKHR(VkDevice _device,
       swapchain->present_timing.active = true;
       mtx_init(&swapchain->present_timing.lock, 0);
 
-      for (uint32_t i = 0; i < swapchain->image_count; i++) {
-         struct wsi_image *image = swapchain->get_wsi_image(swapchain, i);
-         result = wsi_image_init_timestamp(swapchain, image);
-         if (result != VK_SUCCESS) {
-            swapchain->destroy(swapchain, alloc);
-            return result;
+      if (swapchain->present_timing.supported_query_stages & VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT) {
+         for (uint32_t i = 0; i < swapchain->image_count; i++) {
+            struct wsi_image *image = swapchain->get_wsi_image(swapchain, i);
+            result = wsi_image_init_timestamp(swapchain, image);
+            if (result != VK_SUCCESS) {
+               swapchain->destroy(swapchain, alloc);
+               return result;
+            }
          }
       }
 
@@ -1755,7 +1767,7 @@ static VkResult wsi_common_allocate_timing_request(
 
    /* Allows timestamp queries to fail if GPU is not done with current submission.
     * Resetting on queue will not work. */
-   if (swapchain->wsi->has_host_query_reset)
+   if (swapchain->wsi->has_host_query_reset && image->query_pool)
       swapchain->wsi->ResetQueryPoolEXT(swapchain->device, image->query_pool, 0, 1);
 
    /* Ignore the time domain since we have a static domain. */
@@ -2962,6 +2974,7 @@ wsi_common_create_swapchain_image(const struct wsi_device *wsi,
    VK_FROM_HANDLE(wsi_swapchain, chain, swapchain_info->swapchain);
 
 #ifndef NDEBUG
+   const VkImageUsageFlags2KHR image_usage = vk_image_usage_flags(pCreateInfo);
    const VkImageCreateInfo *swcInfo = &chain->image_info.create;
    assert(pCreateInfo->flags == 0);
    assert(pCreateInfo->imageType == swcInfo->imageType);
@@ -2973,7 +2986,7 @@ wsi_common_create_swapchain_image(const struct wsi_device *wsi,
    assert(pCreateInfo->arrayLayers == swcInfo->arrayLayers);
    assert(pCreateInfo->samples == swcInfo->samples);
    assert(pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL);
-   assert(!(pCreateInfo->usage & ~swcInfo->usage));
+   assert(!(image_usage & ~chain->image_info.usage2.usage));
 
    vk_foreach_struct_const(ext, pCreateInfo->pNext) {
       switch (ext->sType) {
@@ -3679,19 +3692,51 @@ wsi_device_supports_explicit_sync(struct wsi_device *device)
 }
 
 /**
- * Returns true if an enabled WSI surface extension supports
+ * Returns true if at least one enabled WSI surface extension supports
  * VK_GOOGLE_display_timing, and none of the enabled surfaces *don't* support it
- * (since the device extension lacks per-surface feature flags)
+ * (since the device extension lacks per-surface feature flags).
+ * Also returns true for mixed supported + (maybe) unsupported cases if user
+ * opts in via dri config option vk_google_display_timing = true
  */
 bool
-wsi_instance_supports_google_display_timing(const struct vk_instance *instance)
+wsi_instance_supports_google_display_timing(const struct vk_instance *instance,
+                                            const struct driOptionCache *dri_options)
 {
-   return instance->enabled_extensions.KHR_display &&
-          !(instance->enabled_extensions.EXT_headless_surface ||
-            instance->enabled_extensions.KHR_android_surface ||
-            instance->enabled_extensions.KHR_wayland_surface ||
-            instance->enabled_extensions.KHR_xcb_surface ||
-            instance->enabled_extensions.KHR_xlib_surface);
+   /* Surfaces requested where extension is definitely supported in a compliant way? */
+   bool req_supported = instance->enabled_extensions.KHR_display;
+
+   /* Surfaces requested where extension is definitely not supported? */
+   bool req_unsupported = instance->enabled_extensions.EXT_headless_surface ||
+                           instance->enabled_extensions.KHR_win32_surface ||
+                           instance->enabled_extensions.EXT_metal_surface ||
+                           instance->enabled_extensions.KHR_android_surface;
+
+   /* Surfaces requested where extension is maybe supported, but we can't be certain at this point? */
+   bool req_maybe = instance->enabled_extensions.KHR_wayland_surface ||
+                     instance->enabled_extensions.KHR_xcb_surface ||
+                     instance->enabled_extensions.KHR_xlib_surface;
+
+   /* Only fully supported ones requested, a clear yes. */
+   if (req_supported && !req_unsupported && !req_maybe)
+      return true;
+
+   /* Only definitely unsupported ones requested, a clear no. */
+   if (req_unsupported && !req_supported && !req_maybe)
+      return false;
+
+   /* Completely unknown surface extension requested, or none requested at all, a clear no. */
+   if (!req_unsupported && !req_supported && !req_maybe)
+      return false;
+
+   /* Unclear mixed situation. Enabling the extension may or may not work well,
+    * depending on the applications use and specific platform support, which we can't
+    * determine at this point. Let user decide to opt-in via dri config option.
+    */
+   if (dri_options && driCheckOption(dri_options, "vk_google_display_timing", DRI_BOOL) &&
+       driQueryOptionb(dri_options, "vk_google_display_timing"))
+      return true;
+
+   return false;
 }
 
 VKAPI_ATTR void VKAPI_CALL

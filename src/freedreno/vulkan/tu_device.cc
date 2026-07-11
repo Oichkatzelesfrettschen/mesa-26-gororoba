@@ -397,7 +397,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .ARM_rasterization_order_attachment_access = true,
       .GOOGLE_decorate_string = true,
 #ifdef TU_USE_WSI_PLATFORM
-      .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(&device->instance->vk),
+      .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(&device->instance->vk, &device->instance->drirc.options),
 #endif
       .GOOGLE_hlsl_functionality1 = true,
       .GOOGLE_user_type = true,
@@ -1305,7 +1305,9 @@ tu_get_properties(struct tu_physical_device *pdevice,
    props->sparseResidencyAlignedMipSize = false;
    props->sparseResidencyNonResidentStrict = true;
 
-   strcpy(props->deviceName, pdevice->name);
+   snprintf(props->deviceName, sizeof(props->deviceName), "%s",
+            (strlen(pdevice->instance->drirc.debug.force_vk_devicename) > 0) ?
+            pdevice->instance->drirc.debug.force_vk_devicename : pdevice->name);
    memcpy(props->pipelineCacheUUID, pdevice->cache_uuid, VK_UUID_SIZE);
 
    tu_get_physical_device_properties_1_1(pdevice, props);
@@ -1447,7 +1449,7 @@ tu_get_properties(struct tu_physical_device *pdevice,
    props->bufferCaptureReplayDescriptorDataSize = sizeof(uint64_t);
    props->imageCaptureReplayDescriptorDataSize = sizeof(uint64_t);
    props->imageViewCaptureReplayDescriptorDataSize = 0;
-   props->samplerCaptureReplayDescriptorDataSize = 0;
+   props->samplerCaptureReplayDescriptorDataSize = sizeof(uint32_t);
    props->accelerationStructureCaptureReplayDescriptorDataSize = 0;
    /* Note: these sizes must match descriptor_size() */
    props->EDBsamplerDescriptorSize = FDL6_TEX_CONST_DWORDS * 4;
@@ -2662,7 +2664,9 @@ static VkResult
 tu_init_cmdbuf_start_a725_quirk(struct tu_device *device)
 {
    struct tu_cs shader_cs;
-   tu_cs_begin_sub_stream(&device->sub_cs, 10, &shader_cs);
+   VkResult result = tu_cs_begin_sub_stream(&device->sub_cs, 10, &shader_cs);
+   if (result != VK_SUCCESS)
+      return result;
 
    uint32_t raw_shader[] = {
       0x00040000, 0x40600000, // mul.f hr0.x, hr0.x, hr1.x
@@ -2674,10 +2678,14 @@ tu_init_cmdbuf_start_a725_quirk(struct tu_device *device)
 
    tu_cs_emit_array(&shader_cs, raw_shader, ARRAY_SIZE(raw_shader));
    struct tu_cs_entry shader_entry = tu_cs_end_sub_stream(&device->sub_cs, &shader_cs);
+   if (!shader_entry.bo)
+      return tu_cs_get_status(&device->sub_cs);
    uint64_t shader_iova = shader_entry.bo->iova + shader_entry.offset;
 
    struct tu_cs sub_cs;
-   tu_cs_begin_sub_stream(&device->sub_cs, 47, &sub_cs);
+   result = tu_cs_begin_sub_stream(&device->sub_cs, 47, &sub_cs);
+   if (result != VK_SUCCESS)
+      return result;
 
    tu_cs_emit_regs(&sub_cs, SP_UPDATE_CNTL(A7XX,
             .vs_state = true, .hs_state = true, .ds_state = true,

@@ -4853,6 +4853,18 @@ nir_const_value *nir_src_as_const_value(nir_src src);
 
 const char *nir_src_as_string(nir_src src);
 
+#define NIR_SRC_AS_SRC_(name)                                                  \
+   static inline nir_##name##_src *                                            \
+   nir_src_as_##name##_src(nir_src *src)                                       \
+   {                                                                           \
+      assert(src && nir_src_use_instr(src)->type == nir_instr_type_##name);    \
+      return container_of(src, nir_##name##_src, src);                         \
+   }
+
+NIR_SRC_AS_SRC_(alu);
+NIR_SRC_AS_SRC_(phi);
+NIR_SRC_AS_SRC_(tex);
+
 bool nir_src_is_always_uniform(nir_src src);
 bool nir_srcs_equal(nir_src src1, nir_src src2);
 bool nir_instrs_equal(const nir_instr *instr1, const nir_instr *instr2);
@@ -5480,6 +5492,7 @@ bool nir_inline_functions(nir_shader *shader);
 void nir_cleanup_functions(nir_shader *shader);
 bool nir_link_shader_functions(nir_shader *shader,
                                const nir_shader *link_shader);
+bool nir_shader_fully_linked(const nir_shader *shader);
 bool nir_lower_calls_to_builtins(nir_shader *s);
 
 void nir_find_inlinable_uniforms(nir_shader *shader);
@@ -5595,6 +5608,7 @@ nir_opt_varyings_bulk(nir_shader **shaders, uint32_t num_shaders, bool spirv,
                       void (*optimize)(nir_shader *, void *),
                       void *optimize_data);
 
+unsigned nir_slot_num_components(gl_varying_slot slot, mesa_shader_stage stage);
 bool nir_slot_is_sysval_output(gl_varying_slot slot,
                                mesa_shader_stage next_shader);
 bool nir_slot_is_varying(gl_varying_slot slot, mesa_shader_stage next_shader);
@@ -5604,7 +5618,7 @@ bool nir_remove_varying(nir_intrinsic_instr *intr, mesa_shader_stage next_shader
 bool nir_remove_sysval_output(nir_intrinsic_instr *intr, mesa_shader_stage next_shader);
 
 bool nir_lower_amul(nir_shader *shader,
-                    int (*type_size)(const struct glsl_type *, bool));
+                    unsigned (*type_size)(const struct glsl_type *, bool));
 
 bool nir_lower_ubo_vec4(nir_shader *shader);
 
@@ -5685,7 +5699,7 @@ typedef enum {
 } nir_lower_io_options;
 bool nir_lower_io(nir_shader *shader,
                   nir_variable_mode modes,
-                  int (*type_size)(const struct glsl_type *, bool),
+                  unsigned (*type_size)(const struct glsl_type *, bool),
                   nir_lower_io_options);
 
 void nir_lower_io_passes(nir_shader *nir, bool renumber_vs_inputs);
@@ -5756,6 +5770,12 @@ void nir_lower_explicit_io_instr(nir_builder *b,
 bool nir_lower_explicit_io(nir_shader *shader,
                            nir_variable_mode modes,
                            nir_address_format);
+
+bool nir_convert_address_format(nir_shader *shader, nir_variable_mode modes,
+                                nir_address_format from, nir_address_format to);
+nir_def *nir_build_convert_address_format(nir_builder *b, nir_def *addr,
+                                          nir_address_format from,
+                                          nir_address_format to);
 
 typedef enum {
    /* Use open-coded funnel shifts for each component. */
@@ -6677,6 +6697,7 @@ bool nir_lower_memory_model(nir_shader *shader);
 bool nir_lower_disordered_control_barriers(nir_shader *shader);
 
 bool nir_lower_goto_ifs(nir_shader *shader);
+void nir_simplify_loop(nir_loop *loop, nir_jump_type type);
 bool nir_lower_continue_constructs(nir_shader *shader);
 
 typedef struct nir_lower_multiview_options {
@@ -7018,6 +7039,10 @@ bool nir_opt_uniform_atomics(nir_shader *shader, bool fs_atomics_predicated);
 
 bool nir_opt_uniform_subgroup(nir_shader *shader,
                               const nir_lower_subgroups_options *);
+
+bool nir_opt_shared_vars_to_subgroup(nir_shader *shader,
+                                     unsigned ballot_num_components,
+                                     unsigned ballot_size);
 
 bool nir_opt_vectorize(nir_shader *shader, nir_vectorize_cb filter,
                        void *data);

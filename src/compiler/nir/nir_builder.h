@@ -83,6 +83,8 @@ typedef bool (*nir_tex_pass_cb)(struct nir_builder *,
                                 nir_tex_instr *, void *);
 typedef bool (*nir_phi_pass_cb)(struct nir_builder *,
                                 nir_phi_instr *, void *);
+typedef bool (*nir_deref_pass_cb)(struct nir_builder *,
+                                  nir_deref_instr *, void *);
 
 /**
  * Iterates over all the instructions in a NIR function and calls the given pass
@@ -264,6 +266,32 @@ nir_shader_phi_pass(nir_shader *shader,
       nir_foreach_block_safe(block, impl) {
          nir_foreach_phi_safe(phi, block) {
             func_progress |= pass(&b, phi, cb_data);
+         }
+      }
+
+      progress |= nir_progress(func_progress, impl, preserved);
+   }
+
+   return progress;
+}
+
+/* As above, but for derefs */
+static inline bool
+nir_shader_deref_pass(nir_shader *shader, nir_deref_pass_cb pass,
+                      nir_metadata preserved, void *cb_data)
+{
+   bool progress = false;
+
+   nir_foreach_function_impl(impl, shader) {
+      bool func_progress = false;
+      nir_builder b = nir_builder_create(impl);
+
+      nir_foreach_block_safe(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type == nir_instr_type_deref) {
+               nir_deref_instr *deref = nir_instr_as_deref(instr);
+               func_progress |= pass(&b, deref, cb_data);
+            }
          }
       }
 
@@ -743,7 +771,7 @@ nir_mov_alu(nir_builder *build, nir_alu_src src, unsigned num_components)
  * but if it has to insert one to handle non-alu, it's return instead of NULL.
  */
 nir_def *
-nir_def_rewrite_uses_with_alu_src(nir_builder *build, nir_def *def, nir_alu_src src, unsigned num_components);
+nir_def_rewrite_uses_with_alu_src(nir_builder *build, nir_def *def, nir_alu_src src);
 
 /**
  * Construct a mov that reswizzles the source's components.

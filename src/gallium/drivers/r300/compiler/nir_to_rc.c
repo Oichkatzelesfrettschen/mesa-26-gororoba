@@ -1769,7 +1769,7 @@ ntr_emit_impl(struct ntr_compile *c, nir_function_impl *impl)
 
 }
 
-static int
+static unsigned
 type_size(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
@@ -2364,6 +2364,12 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
 
    NIR_PASS(_, s, nir_convert_from_ssa, true, false);
    NIR_PASS(_, s, nir_lower_vec_to_regs, NULL, NULL);
+   /* This cleans up duplicated scalar expressions exposed by lowering
+    * vectors to registers. It does not help on R500.
+    */
+   if (!is_r500) {
+      NIR_PASS(_, s, nir_opt_cse);
+   }
 
    /* locals_to_reg_intrinsics will leave dead derefs that are good to clean up.
     */

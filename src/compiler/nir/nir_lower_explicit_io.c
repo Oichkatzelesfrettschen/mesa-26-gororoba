@@ -133,6 +133,11 @@ build_addr_ushr_imm(nir_builder *b, nir_def *addr,
       return nir_vector_insert_imm(
          b, addr, nir_ushr_imm(b, nir_channel(b, addr, 1), shift), 1);
 
+   case nir_address_format_64bit_global_32bit_offset:
+      assert(addr->num_components == 4);
+      return nir_vector_insert_imm(
+         b, addr, nir_ushr_imm(b, nir_channel(b, addr, 3), shift), 3);
+
    default:
       UNREACHABLE("Unsupported address format");
    }
@@ -148,13 +153,18 @@ build_addr_for_var(nir_builder *b, nir_variable *var,
                             nir_var_shader_temp | nir_var_function_temp |
                             nir_var_mem_push_const | nir_var_mem_constant));
 
-   const unsigned num_comps = nir_address_format_num_components(addr_format);
-   const unsigned bit_size = nir_address_format_bit_size(addr_format);
+   const nir_address_format base_addr_format =
+      addr_format == nir_address_format_64bit_global_32bit_offset
+         ? nir_address_format_64bit_global
+         : addr_format;
+   const unsigned num_comps = nir_address_format_num_components(base_addr_format);
+   const unsigned bit_size = nir_address_format_bit_size(base_addr_format);
 
    switch (addr_format) {
    case nir_address_format_2x32bit_global:
    case nir_address_format_32bit_global:
-   case nir_address_format_64bit_global: {
+   case nir_address_format_64bit_global:
+   case nir_address_format_64bit_global_32bit_offset: {
       nir_def *base_addr;
       switch (var->data.mode) {
       case nir_var_shader_temp:
@@ -179,6 +189,11 @@ build_addr_for_var(nir_builder *b, nir_variable *var,
 
       default:
          UNREACHABLE("Unsupported variable mode");
+      }
+
+      if (base_addr_format != addr_format) {
+         base_addr = nir_build_convert_address_format(
+            b, base_addr, base_addr_format, addr_format);
       }
 
       return nir_build_addr_iadd_imm(b, base_addr, addr_format, var->data.mode,
@@ -662,8 +677,10 @@ build_explicit_io_load(nir_builder *b, nir_intrinsic_instr *intrin,
       case nir_var_mem_global:
          assert(addr_format_is_global(addr_format, mode));
 
-         if (nir_intrinsic_has_access(intrin) &&
-             (nir_intrinsic_access(intrin) & ACCESS_CAN_REORDER))
+         if (b->shader->options->has_global_offset)
+            op = nir_intrinsic_load_global_offset;
+         else if (nir_intrinsic_has_access(intrin) &&
+                  (nir_intrinsic_access(intrin) & ACCESS_CAN_REORDER))
             op = get_load_global_constant_op_from_addr_format(addr_format);
          else
             op = get_load_global_op_from_addr_format(addr_format);
@@ -699,7 +716,10 @@ build_explicit_io_load(nir_builder *b, nir_intrinsic_instr *intrin,
             op = nir_intrinsic_load_constant;
          } else {
             assert(addr_format_is_global(addr_format, mode));
-            op = get_load_global_constant_op_from_addr_format(addr_format);
+            if (b->shader->options->has_global_offset)
+               op = nir_intrinsic_load_global_offset;
+            else
+               op = get_load_global_constant_op_from_addr_format(addr_format);
          }
          break;
       default:
@@ -739,7 +759,8 @@ build_explicit_io_load(nir_builder *b, nir_intrinsic_instr *intrin,
 
    nir_intrinsic_instr *load = nir_intrinsic_instr_create(b->shader, op);
 
-   if (op == nir_intrinsic_load_global_constant_offset) {
+   if (op == nir_intrinsic_load_global_constant_offset ||
+       op == nir_intrinsic_load_global_offset) {
       assert(addr_format == nir_address_format_64bit_global_32bit_offset);
       load->src[0] = nir_src_for_ssa(
          nir_pack_64_2x32(b, nir_trim_vector(b, addr, 2)));
@@ -912,7 +933,10 @@ build_explicit_io_store(nir_builder *b, nir_intrinsic_instr *intrin,
          break;
       case nir_var_mem_global:
          assert(addr_format_is_global(addr_format, mode));
-         op = get_store_global_op_from_addr_format(addr_format);
+         if (b->shader->options->has_global_offset)
+            op = nir_intrinsic_store_global_offset;
+         else
+            op = get_store_global_op_from_addr_format(addr_format);
          break;
       case nir_var_mem_shared:
          assert(addr_format_is_offset(addr_format, mode));
@@ -979,7 +1003,12 @@ build_explicit_io_store(nir_builder *b, nir_intrinsic_instr *intrin,
    }
 
    store->src[0] = nir_src_for_ssa(value);
-   if (addr_format_is_global(addr_format, mode)) {
+   if (op == nir_intrinsic_store_global_offset) {
+      assert(addr_format == nir_address_format_64bit_global_32bit_offset);
+      store->src[1] = nir_src_for_ssa(
+         nir_pack_64_2x32(b, nir_trim_vector(b, addr, 2)));
+      store->src[2] = nir_src_for_ssa(nir_channel(b, addr, 3));
+   } else if (addr_format_is_global(addr_format, mode)) {
       store->src[1] = nir_src_for_ssa(addr_to_global(b, addr, addr_format));
    } else if (addr_format_is_offset(addr_format, mode)) {
       assert(addr->num_components == 1);
@@ -1164,26 +1193,33 @@ explicit_io_offset_from_deref(nir_builder *b, nir_deref_instr *deref,
 
       if (stride_shift < shift) {
          /* The stride isn't aligned enough to fully shift right. Try to apply
-          * the leftover shift to the index. We can only do this (without
-          * losing precision) if the index is constant.
+          * the leftover shift to the index.
           */
-         assert(nir_src_is_const(deref->arr.index));
-
          unsigned index_shift = shift - stride_shift;
-         int64_t const_index = nir_src_as_int(deref->arr.index);
 
-         if (!util_is_aligned(const_index, (uintmax_t)1 << index_shift)) {
-            assert(leftover);
+         if (nir_src_is_const(deref->arr.index)) {
+            int64_t const_index = nir_src_as_int(deref->arr.index);
 
-            /* The index isn't aligned enough either. Just put the full offset
-             * in `leftover` and return zero.
+            if (!util_is_aligned(const_index, (uintmax_t)1 << index_shift)) {
+               assert(leftover);
+
+               /* The index isn't aligned enough either. Just put the full
+                * offset in `leftover` and return zero.
+                */
+               *leftover = stride * const_index;
+               return nir_imm_intN_t(b, 0, deref->arr.index.ssa->bit_size);
+            }
+
+            index = nir_imm_intN_t(b, const_index >> index_shift,
+                                   deref->arr.index.ssa->bit_size);
+         } else {
+            /* If the index isn't constant, the only thing we can do is simply
+             * right-shift it. Fortunately, this should be rare, and mostly
+             * happens when, for example, a u8 array deref is casted to
+             * something with a larger alignment.
              */
-            *leftover = stride * const_index;
-            return nir_imm_intN_t(b, 0, deref->arr.index.ssa->bit_size);
+            index = nir_ushr_imm(b, index, index_shift);
          }
-
-         index = nir_imm_intN_t(b, const_index >> index_shift,
-                                deref->arr.index.ssa->bit_size);
       }
 
       stride >>= stride_shift;

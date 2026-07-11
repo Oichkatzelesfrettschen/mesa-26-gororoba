@@ -214,6 +214,7 @@ radv_optimize_nir(struct nir_shader *shader, bool optimize_conservatively)
       NIR_LOOP_PASS(progress, skip, shader, nir_opt_intrinsics);
       NIR_LOOP_PASS_NOT_IDEMPOTENT(progress, skip, shader, nir_opt_algebraic);
       NIR_LOOP_PASS(progress, skip, shader, nir_opt_phi_to_bool);
+      NIR_LOOP_PASS(progress, skip, shader, nir_opt_phi_precision);
 
       NIR_LOOP_PASS(progress, skip, shader, nir_opt_undef);
 
@@ -522,6 +523,7 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct 
                .force_tex_non_uniform = compiler_info->key.tex_non_uniform,
                .force_ssbo_non_uniform = compiler_info->key.ssbo_non_uniform,
                .lower_terminate_to_discard = compiler_info->key.lower_terminate_to_discard,
+               .force_nan_preserve_min_max = compiler_info->key.force_nan_preserve_min_max,
             },
          .emit_debug_break = compiler_info->debug.trap_enabled,
          .debug_info = compiler_info->key.nir_debug_info,
@@ -626,7 +628,7 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct 
 
       NIR_PASS(_, nir, nir_lower_vars_to_ssa);
 
-      NIR_PASS(_, nir, nir_propagate_invariant, compiler_info->key.invariant_geom);
+      NIR_PASS(_, nir, nir_propagate_invariant, true);
 
       nir_gather_clip_cull_distance_sizes_from_vars(nir);
       NIR_PASS(_, nir, nir_merge_clip_cull_distance_vars);
@@ -639,9 +641,6 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct 
 
       NIR_PASS(_, nir, nir_normalize_sin_cos);
    }
-
-   if (nir->info.uses_printf)
-      NIR_PASS(_, nir, radv_nir_lower_printf, compiler_info->debug.debug_nir);
 
    if (nir->info.uses_abort) {
       nir_lower_abort_options abort_options = {
@@ -824,6 +823,8 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct 
 
       if (nir->info.stage == MESA_SHADER_TASK || nir->info.stage == MESA_SHADER_MESH)
          var_modes |= nir_var_mem_task_payload;
+
+      NIR_PASS(_, nir, nir_opt_shared_vars_to_subgroup, 1, nir->info.max_subgroup_size);
 
       NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, var_modes, shared_var_info);
       NIR_PASS(_, nir, nir_lower_explicit_io, var_modes, nir_address_format_32bit_offset);

@@ -305,11 +305,6 @@ anv_image_choose_isl_surf_usage(struct anv_physical_device *device,
    switch (aspect) {
    case VK_IMAGE_ASPECT_DEPTH_BIT:
       isl_usage |= ISL_SURF_USAGE_DEPTH_BIT;
-      if (device->instance->drirc.debug.disable_hiz) {
-         anv_perf_warn(VK_LOG_OBJS(&device->vk.base),
-                       "Disabling aux: HiZ disabled via drirc");
-         isl_usage |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
-      }
       break;
    case VK_IMAGE_ASPECT_STENCIL_BIT:
       isl_usage |= ISL_SURF_USAGE_STENCIL_BIT;
@@ -751,14 +746,19 @@ add_aux_surface_if_supported(struct anv_device *device,
 
       ok = isl_surf_get_hiz_surf(&device->isl_dev, main_surf,
                                  &image->planes[plane].aux_surface.isl);
-      if (!ok) {
+
+      if (!ok && !isl_surf_supports_ccs(&device->isl_dev, main_surf)) {
          anv_perf_warn(VK_LOG_OBJS(&device->vk.base),
                        "Skipping aux surface creation: "
-                       "isl_surf_get_hiz_surf failed");
+                       "isl_surf_get_hiz_surf failed and CCS unsupported");
          return VK_SUCCESS;
-      }
-
-      if (!isl_surf_supports_ccs(&device->isl_dev, main_surf)) {
+      } else if (!ok) {
+         assert(device->info->verx10 >= 125);
+         anv_perf_warn(VK_LOG_OBJS(&device->vk.base),
+                       "Depth surface does not support HiZ, "
+                       "falling back to compression without HiZ");
+         image->planes[plane].aux_usage = ISL_AUX_USAGE_ZCS;
+      } else if (!isl_surf_supports_ccs(&device->isl_dev, main_surf)) {
          if (device->info->ver >= 12) {
             anv_perf_warn(VK_LOG_OBJS(&device->vk.base),
                           "Depth surface does not support CCS, "
@@ -773,10 +773,13 @@ add_aux_surface_if_supported(struct anv_device *device,
          image->planes[plane].aux_usage = ISL_AUX_USAGE_HIZ_CCS;
       }
 
-      result = add_surface(device, image, &image->planes[plane].aux_surface,
-                           binding, ANV_OFFSET_IMPLICIT);
-      if (result != VK_SUCCESS)
-         return result;
+      if (ok) {
+         result = add_surface(device, image,
+                              &image->planes[plane].aux_surface, binding,
+                              ANV_OFFSET_IMPLICIT);
+         if (result != VK_SUCCESS)
+            return result;
+      }
 
       if (anv_image_plane_uses_aux_map(device, image, plane)) {
          result = add_compression_control_buffer(device, image, plane,
@@ -3294,6 +3297,7 @@ anv_bind_image_memory(struct anv_device *device,
       } else {
          assert(image->planes[p].aux_usage == ISL_AUX_USAGE_CCS_E ||
                 image->planes[p].aux_usage == ISL_AUX_USAGE_FCV_CCS_E ||
+                image->planes[p].aux_usage == ISL_AUX_USAGE_ZCS ||
                 image->planes[p].aux_usage == ISL_AUX_USAGE_STC_CCS);
          image->planes[p].aux_usage = ISL_AUX_USAGE_NONE;
       }
@@ -3492,13 +3496,15 @@ anv_get_image_subresource_layout(struct anv_device *device,
    if (comp_props && device->physical->expose_compression_control) {
       comp_props->imageCompressionFixedRateFlags =
          VK_IMAGE_COMPRESSION_FIXED_RATE_NONE_EXT;
-      comp_props->imageCompressionFlags = VK_IMAGE_COMPRESSION_DISABLED_EXT;
-      for (uint32_t p = 0; p < image->n_planes; p++) {
-         if (image->planes[p].aux_usage != ISL_AUX_USAGE_NONE) {
-            comp_props->imageCompressionFlags = VK_IMAGE_COMPRESSION_DEFAULT_EXT;
-            break;
-         }
-      }
+      /* Even if decided to disable compression without
+       * VK_IMAGE_COMPRESSION_DISABLED_EXT, it's an internal decision and we
+       * assume this is the default. So for the query we only return what was
+       * specified by the application.
+       */
+      comp_props->imageCompressionFlags =
+         (image->vk.compr_flags & VK_IMAGE_COMPRESSION_DISABLED_EXT) ?
+         VK_IMAGE_COMPRESSION_DISABLED_EXT :
+         VK_IMAGE_COMPRESSION_DEFAULT_EXT;
    }
 }
 
@@ -3749,6 +3755,7 @@ anv_layout_to_aux_state(const struct intel_device_info * const devinfo,
 
       case ISL_AUX_USAGE_CCS_E:
       case ISL_AUX_USAGE_FCV_CCS_E:
+      case ISL_AUX_USAGE_ZCS:
       case ISL_AUX_USAGE_STC_CCS:
          break;
 
@@ -3796,6 +3803,7 @@ anv_layout_to_aux_state(const struct intel_device_info * const devinfo,
          return ISL_AUX_STATE_COMPRESSED_NO_CLEAR;
       }
 
+   case ISL_AUX_USAGE_ZCS:
    case ISL_AUX_USAGE_STC_CCS:
       assert(aux_supported);
       assert(!clear_supported);
@@ -4092,7 +4100,7 @@ anv_can_fast_clear_color(const struct anv_cmd_buffer *cmd_buffer,
       if (image->planes[plane].aux_usage != ISL_AUX_USAGE_NONE) {
          anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
                        "%s does not support fast clear on %dx%d %s "
-                       "isl_tiling_%s image with usage 0x%x. Slow clearing.",
+                       "isl_tiling_%s image with usage 0x%"PRIx64". Slow clearing.",
                        vk_ImageLayout_to_str(layout),
                        image->vk.extent.width, image->vk.extent.height,
                        vk_format_description(image->vk.format)->short_name,

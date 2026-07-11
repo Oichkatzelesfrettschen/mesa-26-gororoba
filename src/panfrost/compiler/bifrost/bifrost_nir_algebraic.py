@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import argparse
+import itertools
 import sys
 import math
 
@@ -79,6 +80,14 @@ algebraic_late = [
     (('f2i32', 'a@16'), ('f2i32', ('f2f32', a)), 'gpu_arch >= 11'),
     (('f2u32', 'a@16'), ('f2u32', ('f2f32', a)), 'gpu_arch >= 11'),
 
+    # TODO: these could be handled in the backend for lighter register pressure
+    (('f2u16', a), ('u2u16', ('f2u32', a)), 'is_kraid'),
+    (('f2i16', a), ('i2i16', ('f2i32', a)), 'is_kraid'),
+
+    # Copy-prop will clean these up
+    (('pack_uvec2_to_uint', a), ('pack_32_2x16', ('u2u16', a))),
+    (('pack_uvec4_to_uint', a), ('pack_32_4x8', ('u2u8', a))),
+
     # On v11+, because FROUND.v2f16 is gone we end up with precision issues.
     # We lower ffract here instead to ensure lower_bit_size has been performed.
     (('ffract', a), ('fadd', a, ('fneg', ('ffloor', a))), 'gpu_arch >= 11'),
@@ -120,6 +129,64 @@ for fsz in [16, 32]:
         ((f'b2f{fsz}', a), ('bcsel_pan', a_fsz, 1.0, 0.0)),
     ]
 
+for isz in [8, 16, 32]:
+    a_isz = (f'i2i{isz}', a)
+
+    algebraic_late += [
+        ((f'b2i{isz}', ('inot', f'a@{isz}')), ('bcsel_pan', a, 0, 1), 'is_kraid'),
+        ((f'b2i{isz}', ('inot', a)), ('bcsel_pan', a_isz, 0, 1), 'is_kraid'),
+        ((f'b2i{isz}', f'a@{isz}'), ('bcsel_pan', a, 1, 0), 'is_kraid'),
+        ((f'b2i{isz}', a), ('bcsel_pan', a_isz, 1, 0), 'is_kraid'),
+    ]
+
+LOPS = ['and', 'or', 'xor']
+SHIFTS = [
+    ('ishl', 'lshift'),
+    ('ushr', 'rshift'),
+    ('ishr', 'arshift'),
+]
+
+for (ns, ps), lop in itertools.product(SHIFTS, LOPS):
+    nl = f'i{lop}'
+    psl = f'{ps}_{lop}_pan'
+    algebraic_late += [
+        # Logic ops distribute across shifts so:
+        #
+        #   shift(a LOP b, c) LOP d = (shift(a, c) LOP shift(b, c)) LOP d
+        #
+        # and logic ops are associative so
+        #
+        #                           = shift(a, c) LOP (shift(b, c) LOP d)
+        #
+        ((nl, (f'{ns}(is_used_once)', (nl, a, '#b'), '#c'), '#d'),
+         (psl, a, ('u2u8', c), (nl, (ns, b, c), d)), 'is_kraid'),
+        ((nl, (f'{ns}(is_used_once)', a, b), c),
+         (psl, a, ('u2u8', b), c), 'is_kraid'),
+        ((ns, (nl, a, '#b'), '#c'),
+         (psl, a, ('u2u8', c), (ns, b, c)), 'is_kraid'),
+    ]
+
+# If we have any regular shifts or logic ops left, lower them
+algebraic_late += [
+    (('iand', a, b), ('lshift_and_pan', a, 0, b), 'is_kraid'),
+    (('ior', a, b), ('lshift_or_pan', a, 0, b), 'is_kraid'),
+    (('ixor', a, b), ('lshift_xor_pan', a, 0, b), 'is_kraid'),
+    (('inot', a), ('lshift_xor_pan', a, 0, -1), 'is_kraid'),
+    (('ishl', a, b), ('lshift_or_pan', a, ('u2u8', b), 0), 'is_kraid'),
+    (('ushr', a, b), ('rshift_or_pan', a, ('u2u8', b), 0), 'is_kraid'),
+    (('ishr', a, b), ('arshift_or_pan', a, ('u2u8', b), 0), 'is_kraid'),
+    (('urol', a, b), ('lrot_or_pan', a, ('u2u8', b), 0), 'is_kraid'),
+    (('uror', a, b), ('rrot_or_pan', a, ('u2u8', b), 0), 'is_kraid'),
+]
+
+# Kraid doesn't have [iu]mul_high but it does have [iu]mul_2x32_64
+algebraic_late += [
+    (('imul_high', 'a@32', 'b@32'),
+     ('unpack_64_2x32_split_y', ('imul_2x32_64', a, b)), 'is_kraid'),
+    (('umul_high', 'a@32', 'b@32'),
+     ('unpack_64_2x32_split_y', ('umul_2x32_64', a, b)), 'is_kraid'),
+]
+
 # Bifrost LDEXP.v2f16 takes i16 exponent, while nir_op_ldexp takes i32. Lower
 # to nir_op_ldexp16_pan.
 #
@@ -158,7 +225,8 @@ def run():
     print(nir_algebraic.AlgebraicPass("bifrost_nir_lower_algebraic_late",
                                       algebraic_late,
                                       [
-                                          ("unsigned ", "gpu_arch")
+                                          ("unsigned ", "gpu_arch"),
+                                          ("bool ",     "is_kraid"),
                                       ]).render())
 
 if __name__ == '__main__':

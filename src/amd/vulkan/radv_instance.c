@@ -139,6 +139,7 @@ static const struct debug_control radv_experimental_options[] = {
    {"hic", RADV_EXPERIMENTAL_HIC},
    {"sparse", RADV_EXPERIMENTAL_SPARSE},
    {"bfloat16", RADV_EXPERIMENTAL_BFLOAT16},
+   {"msrtss", RADV_EXPERIMENTAL_MSRTSS},
    {NULL, 0},
 };
 
@@ -175,7 +176,7 @@ radv_get_perftest_option_name(int id)
 static const struct debug_control trace_options[] = {
    {"rgp", RADV_TRACE_MODE_RGP},
    {"rra", RADV_TRACE_MODE_RRA},
-   {"rti", RADV_TRACE_MODE_RTI},
+   {"gamma", RADV_TRACE_MODE_GAMMA},
    {"ctxroll", RADV_TRACE_MODE_CTX_ROLLS},
    {"ranges", RADV_TRACE_MODE_RANGES},
    {NULL, 0},

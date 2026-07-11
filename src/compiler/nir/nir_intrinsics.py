@@ -1360,6 +1360,9 @@ load("global_bounded", [1, 1, 1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET],
      [CAN_ELIMINATE])
 # src[] = { address }.
 load("global_2x32", [2], [ACCESS, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
+# src[] = { base_address, offset }.
+load("global_offset", [1, 1], [BASE, ACCESS, ALIGN_MUL, ALIGN_OFFSET, OFFSET_SHIFT, RANGE],
+     [CAN_ELIMINATE])
 # src[] = { address }.
 load("global_constant", [1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET],
      [CAN_ELIMINATE, CAN_REORDER])
@@ -1407,6 +1410,8 @@ store("task_payload", [1], [BASE, ACCESS, WRITE_MASK, ALIGN_MUL, ALIGN_OFFSET])
 store("global", [1], [WRITE_MASK, ACCESS, ALIGN_MUL, ALIGN_OFFSET])
 # src[] = { value, address }.
 store("global_2x32", [2], [WRITE_MASK, ACCESS, ALIGN_MUL, ALIGN_OFFSET])
+# src[] = { base_address, offset }.
+store("global_offset", [1, 1], [BASE, WRITE_MASK, ACCESS, ALIGN_MUL, ALIGN_OFFSET, OFFSET_SHIFT])
 # src[] = { value, offset }.
 store("scratch", [1], [ALIGN_MUL, ALIGN_OFFSET, WRITE_MASK])
 
@@ -1630,24 +1635,6 @@ intrinsic("load_gmem_frag_offset_ir3", src_comp=[1], dest_comp=2, indices=[RANGE
 store("shared_ir3", [1], [BASE, ALIGN_MUL, ALIGN_OFFSET])
 # src[] = { offset }.
 load("shared_ir3", [1], [BASE, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
-
-# IR3-specific load/store global intrinsics. They take a 64-bit base address
-# and a 32-bit offset.  The hardware will add the base and the offset, which
-# saves us from doing 64-bit math on the base address.
-
-# src[] = { value, address(vec2 of hi+lo uint32_t), offset }.
-# const_index[] = { write_mask, align_mul, align_offset }
-# Final address is calculated as `address + ((offset + BASE) << OFFSET_SHIFT)
-# `offset` is sign-extended to 64-bits first so the offset calculation does not
-# cause 32-bit overflows.
-# a6xx has another shift field which only applies to `offset`; this is not
-# represented here.
-store("global_ir3", [1, 1], indices=[ACCESS, ALIGN_MUL, ALIGN_OFFSET, OFFSET_SHIFT, BASE])
-# src[] = { address(vec2 of hi+lo uint32_t), offset }.
-# const_index[] = { access, align_mul, align_offset }
-# the alignment applies to the base address
-# Final address is calculated as for @store_global_ir3
-load("global_ir3", [1, 1], indices=[ACCESS, ALIGN_MUL, ALIGN_OFFSET, RANGE_BASE, RANGE, OFFSET_SHIFT, BASE], flags=[CAN_ELIMINATE])
 
 # Etnaviv-specific load/glboal intrinsics. They take a 32-bit base address and
 # a 32-bit offset, which doesn't need to be an immediate.
@@ -2249,10 +2236,24 @@ intrinsic("load_ray_payload_ptr_amd", dest_comp=1, indices=[BASE])
 # Load forced VRS rates.
 intrinsic("load_force_vrs_rates_amd", dest_comp=1, bit_sizes=[32], flags=[CAN_ELIMINATE, CAN_REORDER])
 
+# Loads a TTMP SGPR that is guaranteed to be workgroup uniform
+# but may differ accross workgroups of the same dispatch.
 intrinsic("load_ttmp_register_amd", dest_comp=1, bit_sizes=[32],
           indices=[BASE, ARG_UPPER_BOUND_U32_AMD],
           flags=[CAN_ELIMINATE, CAN_REORDER])
+# Loads a TTMP SGPR that is guaranteed to be subgroup uniform but
+# not workgroup uniform
+intrinsic("load_ttmp_register_wg_div_amd", dest_comp=1, bit_sizes=[32],
+          indices=[BASE, ARG_UPPER_BOUND_U32_AMD],
+          flags=[CAN_ELIMINATE, CAN_REORDER])
+# Loads a SGPR arg that is guaranteed to be workgroup uniform
+# but may differ accross workgroups of the same dispatch.
 intrinsic("load_scalar_arg_amd", dest_comp=0, bit_sizes=[32],
+          indices=[BASE, ARG_UPPER_BOUND_U32_AMD],
+          flags=[CAN_ELIMINATE, CAN_REORDER])
+# Loads a SGPR arg that is guaranteed to be subgroup uniform but
+# not workgroup uniform
+intrinsic("load_scalar_arg_wg_div_amd", dest_comp=0, bit_sizes=[32],
           indices=[BASE, ARG_UPPER_BOUND_U32_AMD],
           flags=[CAN_ELIMINATE, CAN_REORDER])
 intrinsic("load_vector_arg_amd", dest_comp=0, bit_sizes=[32],
@@ -3144,21 +3145,21 @@ index("uint16_t", "smp_flags_pco")
 # smp_pco(data, tex_state, smp_state)
 # Performs a standard sampling operation with the given data and state words.
 # Outputs between 1-4 comps.
-intrinsic("smp_pco", src_comp=[16, 4, 4], dest_comp=0, indices=[SMP_FLAGS_PCO, RANGE], bit_sizes=[32])
+intrinsic("smp_pco", src_comp=[16, 4, 4], dest_comp=0, indices=[SMP_FLAGS_PCO, RANGE, ACCESS], bit_sizes=[32])
 
 # smp_coeffs_pco(data, tex_state, smp_state)
 # Returns the calculated sampling coefficients for the given data and state words.
 # Actually outputs 7/14 components, but NIR doesn't support those for num_components, so fake it as 16 for now.
-intrinsic("smp_coeffs_pco", src_comp=[16, 4, 4], dest_comp=16, indices=[SMP_FLAGS_PCO, RANGE], bit_sizes=[32])
+intrinsic("smp_coeffs_pco", src_comp=[16, 4, 4], dest_comp=16, indices=[SMP_FLAGS_PCO, RANGE, ACCESS], bit_sizes=[32])
 
 # smp_raw_pco(data, tex_state, smp_state)
 # Returns the raw sampling data for the given data and state words.
 # Actually outputs 4/8/12/16 components, but NIR doesn't support num_components == 12, so fake it as 8 for now.
-intrinsic("smp_raw_pco", src_comp=[16, 4, 4], dest_comp=16, indices=[SMP_FLAGS_PCO, RANGE, ENABLED_CHANNELS], bit_sizes=[32])
+intrinsic("smp_raw_pco", src_comp=[16, 4, 4], dest_comp=16, indices=[SMP_FLAGS_PCO, RANGE, ENABLED_CHANNELS, ACCESS], bit_sizes=[32])
 
 # smp_write_pco(data, tex_state, smp_state)
 # Performs a sample write for the given data and state words.
-intrinsic("smp_write_pco", src_comp=[16, 4, 4], indices=[SMP_FLAGS_PCO, RANGE], bit_sizes=[32])
+intrinsic("smp_write_pco", src_comp=[16, 4, 4], indices=[SMP_FLAGS_PCO, RANGE, ACCESS], bit_sizes=[32])
 
 # alphatst_pco(data, comparator, comparison op)
 # Performs an alpha test on the given parameters, returning float 0/1 depending on the comparison result.
