@@ -802,7 +802,7 @@ select_tex(struct sel_ctx *ctx, nir_tex_instr *tex)
    return true;
 }
 
-static int
+static unsigned
 io_type_size(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);

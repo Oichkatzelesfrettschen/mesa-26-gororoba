@@ -391,7 +391,7 @@ vs_nir_delete(UNUSED struct draw_context *draw, struct draw_vertex_shader *dvs)
 
 /* One draw AOS row (input[slot][4] / output[slot][4]) per vec4 location, so a
  * lowered load_input/store_output base is the driver_location slot directly. */
-static int
+static unsigned
 draw_vs_nir_io_slots(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
