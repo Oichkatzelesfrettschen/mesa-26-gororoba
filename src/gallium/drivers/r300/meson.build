@@ -535,4 +535,21 @@ if with_tests
     ),
     suite : ['r300'],
   )
+  # Host corpus for the R2VB Draw-parity clip classifier (r300_r2vb_clip.h):
+  # pins the draw_cliptest_tmp.h bit order, the NaN-outside rule, the half-Z
+  # near plane, the 0.5 guard-band coefficient, and FALLBACK-dominates for
+  # undividable w, ahead of the FP24 clip-BO oracle and the route action.
+  test(
+    'r300-r2vb-clip',
+    executable(
+      'r300_r2vb_clip_test',
+      files('tests/r300_r2vb_clip_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('.'),
+      ],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
 endif

@@ -83,8 +83,10 @@ static void r300_destroy_context(struct pipe_context* context)
                                            r300->pstipple_sampler);
 
     /* R2VB MVP transform cache (lazily built by the experiment route). */
-    if (r300->r2vb_transform_fs)
-        r300->context.delete_fs_state(&r300->context, r300->r2vb_transform_fs);
+    for (unsigned i = 0; i < 2; i++)
+        if (r300->r2vb_transform_fs[i])
+            r300->context.delete_fs_state(&r300->context,
+                                          r300->r2vb_transform_fs[i]);
     if (r300->r2vb_producer_vs)
         r300->context.delete_vs_state(&r300->context, r300->r2vb_producer_vs);
     pipe_resource_reference(&r300->r2vb_slot_pos_bo, NULL);

@@ -319,15 +319,32 @@ standing vertex path:
   demonstrated through this route. The fragment ALU (FP24 VLIW vec4,
   `MAD/DP3/DP4/MIN/MAX/CMP`, alpha `RCP/RSQ/EX2/LG2`, hard 64-ALU ceiling) is
   the only programmable ALU on the part and is the vertex engine here.
-- **Clip and perspective divide** run in SW per the decomposition above. This is
-  the largest missing HBTCL implementation piece: current R2VB producers write
-  `w = 1`, perform no reciprocal-and-multiply on a non-trivial `w_clip`, and do
-  not implement clipping. Existing "clip" names in `r300_r2vb.c` refer to
-  buffers or bounds, not a clipping algorithm.
+- **Perspective divide + viewport** run on the fragment ALU inside every
+  producer variant (`r2vb_divide_position`: alpha-pipe `RCP` with a `1/32768`
+  FP24 floor, then three viewport MADs), selected by the explicit
+  `r300_r2vb_position_space` contract -- `POSITION_CLIP` emits the raw `M*v`
+  homogeneous result, `POSITION_WINDOW` emits divided window space with
+  `w = 1`. Verified on RS482 against the CPU window-space oracle
+  (`r2vb_divide_verify` 3/3, tol 0.05).
+- **Clipping** classifies in the raw clip-space domain before the divide.
+  The classifier (`r300_r2vb_clip.h`) mirrors the gallium draw software
+  clipper bit-for-bit (six hardwired planes, `!(dist >= 0)` NaN-outside form,
+  0.5 XY guard-band coefficient, half-Z switch) and carries divide safety
+  (`w` below the FP24 reciprocal floor) as a separate FALLBACK class rather
+  than a seventh plane bit. Edge generation and attribute interpolation for
+  PARTIAL primitives remain the 04d gap.
 - **Delivery**: a `cb_flush_clean` cache barrier, then `3D_LOAD_VBPNTR`
-  re-ingest of the transformed buffer, then a `TCL_BYPASS` draw with the shape
-  in the previous section. No register in `0x2200-0x2504` is ever written by an
-  emit path and none is ever read.
+  re-ingest of the transformed buffer, then a `TCL_BYPASS` draw whose
+  `VAP_VTE_CNTL` derives from the producer contract: a window-space source
+  fetches verbatim (`VTX_XY_FMT | VTX_Z_FMT | VTX_W0_FMT`), a clip-space
+  source runs the hardware viewport transform. Feeding window-space output
+  through the clip-mode VTE applies the viewport twice and lands the geometry
+  off-target -- the defect class an aggregate register diff cannot see,
+  because a post-draw restore write masks it; only the draw-adjacent packet
+  chronology exposes it. The route posts writes into the PVS-port window
+  (`VAP_PVS_STATE_FLUSH_REG` barriers); the forbidden operation on the
+  `0x2200-0x22dc` window is the *read*, which is the physical-power-cycle
+  wedge.
 - **Never**: reach `r300_emit_vs_state`, set `has_tcl = true`, clear
   `TCL_BYPASS`, or read anywhere in the vertex-engine window. Each of those
   re-enters the unrecoverable wedge class.
@@ -352,12 +369,10 @@ What is already more built than the design assumed:
 
 What remains less built than the design assumed:
 
-- No perspective divide exists in the R2VB producer or re-ingest path. Current
-  producers write `w = 1` rather than a non-trivial `w_clip`, so no stage performs
-  the reciprocal-and-multiply required by the collineation split.
-- No clipping algorithm exists. The file's "clip" uses describe buffers or
-  bounds, not geometric clip classification or edge generation. This is the
-  largest HBTCL-04 implementation gap.
+- Geometric clipping is classification-only: trivial accept/reject and the
+  divide-safety FALLBACK exist (`r300_r2vb_clip.h`), but edge generation,
+  attribute interpolation at intersections, and topology reconstruction for
+  PARTIAL primitives do not (HBTCL-04d/04e).
 - The R400_US ceiling lift is not wired into `r300_r2vb.c`. `R300_R2VB_ALU_CEILING`
   is a classifier knob only; kernels between 64 and 512 real ALU slots have no
   route through `hb_r400_us` today.
@@ -365,10 +380,11 @@ What remains less built than the design assumed:
   environment variables and has no default-on integration into
   `r300_swtcl_draw_vbo`; that promotion remains HBTCL-08.
 
-The HBTCL-04 scope is therefore sharper: implement SW clipping and SW
-perspective divide for the Glaeser split, and wire the R400_US ceiling-lift path.
-Do not spend HBTCL-04 rediscovering general transform restaging; the straight-
-line restage path already provides it for the kernels that matter.
+The remaining HBTCL-04 scope is therefore sharper: finish geometric clipping
+(edge generation and topology reconstruction on top of the landed
+classification), and wire the R400_US ceiling-lift path.  The divide, the
+window-space delivery, and general transform restaging are done; do not
+rediscover them.
 
 ## All-on-pipeline: one role per block, minimal CPU
 
@@ -466,7 +482,12 @@ plan generalizes this into the standing vertex route.
 | HBTCL-01 | No-submit PM4 decode (the silicon-demonstrated `R300_TRACE` capture + 325-row atom decoder, box-safe) of the clear-quad IB vs a working r3v triangle IB; name the single diverging VAP frontend register (`VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE`) | -- |
 | HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the demonstrated-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
 | HBTCL-03 | Audit complete: R2VB has three producer paths including straight-line VS restage, but lacks perspective divide, geometric clipping, R400_US routing, and default SW-TCL integration | -- |
-| HBTCL-04 | Implement the real collineation gaps: SW perspective divide for non-trivial `w_clip`, SW geometric clipping in the Glaeser linear domain, and R400_US routing for kernels above the 64-slot R300 fragment-ALU ceiling. Do not rework general transform restaging unless the existing restage classifier rejects a target kernel for a concrete reason | HBTCL-03 |
+| HBTCL-04a | DONE: the coordinate contract section above (object/clip/NDC/window representations, divide placement, re-ingest VTE shapes) | HBTCL-03 |
+| HBTCL-04b | DONE: perspective divide + viewport on the fragment ALU in every producer variant, selected by the explicit `r300_r2vb_position_space` contract; window-space delivery fetches verbatim via the source-space VTE. `r2vb_divide_verify` 3/3 on RS482 with delivery coverage matching the gallivm reference exactly | HBTCL-04a |
+| HBTCL-04c | ACTIVE: clip classification in the raw clip-space domain -- Draw-parity clip codes and trivial accept/reject/partial/fallback triangle classes (`r300_r2vb_clip.h`, host corpus), then the FP24 clip-BO oracle and a conservative gated route action (accept delivers, reject consumes, anything else falls back whole-draw) | HBTCL-04b |
+| HBTCL-04d | Edge generation: intersect PARTIAL primitives against the failing planes in clip space (`t = d_out / (d_out - d_in)` linear blends), interpolate carried attributes, retriangulate | HBTCL-04c |
+| HBTCL-04e | Topology reconstruction: points, lines, strips, fans, indexed, primitive restart through the classify/clip/deliver pipeline | HBTCL-04d |
+| HBTCL-04f | R400_US routing for kernels above the 64-slot R300 fragment-ALU ceiling | HBTCL-03 |
 | HBTCL-05 | DONE: the "VAP register table" section above folds in the offsets, the write-only/read-excluded wedge window, the 16-bit `VF_CNTL` underflow lever + its `git-150a16dc47` fix, the system-value slot-reservation registry, and the R2VB CS-write surface | -- |
 | HBTCL-06 | DONE: the "Lighting on the fragment ALU" section above -- native RCP/RSQ/EX2/LG2, lowered POW/SQRT/SINCOS, the lighting-term mapping table, and the shared 64-ALU/R400_US budget with the transform | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear (GA point-setup registers) via the HBTCL-01 decode method | HBTCL-03 |
@@ -475,7 +496,8 @@ plan generalizes this into the standing vertex route.
 | HBTCL-10 | Probe E2/RB2D/CBA2D vertex-buffer movement as a possible GART-to-VAP-input mover, using the same hazard-governed no-submit/attended style as the rest of RS482 work | HBTCL-03 |
 
 HBTCL-01 and HBTCL-02 are the immediate `fbo-clearmipmap` fix; HBTCL-03 is the
-engine audit; HBTCL-04 implements the missing SW clip/divide and R400_US route;
+engine audit; HBTCL-04a/04b are the landed contract and divide, 04c-04f the
+remaining clip and ceiling-lift ladder;
 HBTCL-07/08 build the fix out into the standing hybrid; HBTCL-05/06/09/10 are
 the register-table, lighting, MRT-export, and movement extensions. All hardware
 steps run on the parked, hang-for-inspection box under the wedge-forensics

@@ -35,6 +35,7 @@
 #include "compiler/nir/nir_builder.h"
 
 #include "r300_context.h"
+#include "r300_r2vb_clip.h"
 #include "r300_cs.h"
 #include "r300_emit.h"
 #include "r300_fs.h"
@@ -162,9 +163,10 @@ static bool r300_r2vb_divide_enabled(void)
  * so w_clip > 0 in normal use; the 1/32768 guard bounds the FP24 reciprocal
  * defensively.  Reads r300->viewport for the same scale/bias the CPU oracle uses. */
 static nir_def *r2vb_divide_position(nir_builder *b, nir_def *pos,
-                                     struct r300_context *r300)
+                                     struct r300_context *r300,
+                                     enum r300_r2vb_position_space space)
 {
-    if (!r300_r2vb_divide_enabled())
+    if (space != R300_R2VB_POSITION_WINDOW)
         return pos;
     const struct pipe_viewport_state *vp = &r300->viewport;
     nir_def *comp[4];
@@ -186,10 +188,19 @@ static nir_def *r2vb_divide_position(nir_builder *b, nir_def *pos,
 }
 
 static nir_def *r2vb_build_producer_output(nir_builder *b, nir_def *comp[4],
-                                           struct r300_context *r300)
+                                           struct r300_context *r300,
+                                           enum r300_r2vb_position_space space)
 {
     return r2vb_divide_position(b, nir_vec4(b, comp[0], comp[1], comp[2], comp[3]),
-                                r300);
+                                r300, space);
+}
+
+/* The process-global divide gate maps onto the explicit producer contract:
+ * R300_R2VB_DIVIDE selects the window-space producer, default is raw clip. */
+static enum r300_r2vb_position_space r2vb_env_space(void)
+{
+    return r300_r2vb_divide_enabled() ? R300_R2VB_POSITION_WINDOW
+                                      : R300_R2VB_POSITION_CLIP;
 }
 
 /* Build (once) the 4-DP4 transform fragment program: gl_FragColor = M * in_attr,
@@ -200,10 +211,11 @@ static nir_def *r2vb_build_producer_output(nir_builder *b, nir_def *comp[4],
  * so each fdot4(row, in) compiles to one DP4 reading the const file.  Cached on
  * the context; create_fs_state takes ownership of the NIR and precompiles, so
  * RADEON_DEBUG=fp prints the four-DP4 r300 program at creation -- no submit. */
-static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
+static void *r300_r2vb_get_transform_fs(struct r300_context *r300,
+                                         enum r300_r2vb_position_space space)
 {
-    if (r300->r2vb_transform_fs)
-        return r300->r2vb_transform_fs;
+    if (r300->r2vb_transform_fs[space])
+        return r300->r2vb_transform_fs[space];
 
     const nir_shader_compiler_options *options =
         r300->screen->screen.nir_options[MESA_SHADER_FRAGMENT];
@@ -224,7 +236,7 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
                                     .align_mul = 16, .range = 64);
         comp[r] = nir_fdot(&b, row, v);
     }
-    nir_def *o = r2vb_build_producer_output(&b, comp, r300);
+    nir_def *o = r2vb_build_producer_output(&b, comp, r300, space);
 
     nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                             glsl_vec4_type(), "out_color");
@@ -261,8 +273,9 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
     struct pipe_shader_state st = {0};
     st.type = PIPE_SHADER_IR_NIR;
     st.ir.nir = b.shader; /* create_fs_state takes ownership and precompiles */
-    r300->r2vb_transform_fs = r300->context.create_fs_state(&r300->context, &st);
-    return r300->r2vb_transform_fs;
+    r300->r2vb_transform_fs[space] =
+        r300->context.create_fs_state(&r300->context, &st);
+    return r300->r2vb_transform_fs[space];
 }
 
 /* Minimal pass-through VS bound for a producer pass: one position input and one
@@ -348,7 +361,9 @@ static void *r300_r2vb_get_producer_vs(struct r300_context *r300, unsigned num_i
  * garbage (externals_count=0, so set_constant_buffer is ignored), so the matrix
  * must travel in the program; the FS is therefore matrix-specific and rebuilt
  * per draw (the caller deletes it).  Returns a pipe FS CSO or NULL. */
-static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const float rows[16])
+static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300,
+                                                const float rows[16],
+                                                enum r300_r2vb_position_space space)
 {
     const nir_shader_compiler_options *options =
         r300->screen->screen.nir_options[MESA_SHADER_FRAGMENT];
@@ -368,7 +383,7 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const
     }
     /* HBTCL-04b divide + viewport (or raw clip-space when the gate is off), shared
      * with r300_r2vb_get_transform_fs through r2vb_build_producer_output. */
-    nir_def *o = r2vb_build_producer_output(&b, comp, r300);
+    nir_def *o = r2vb_build_producer_output(&b, comp, r300, space);
     nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                             glsl_vec4_type(), "out_color");
     out->data.location = FRAG_RESULT_COLOR;
@@ -399,7 +414,8 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const
  * come from the VS, and nir_to_rc's stage-aware compile (it lowers I/O and emits
  * both VS and FS varyings) does the rest.  Returns a pipe FS CSO or NULL. */
 static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *vs_nir,
-                                        gl_varying_slot target)
+                                        gl_varying_slot target,
+                                        enum r300_r2vb_position_space space)
 {
     nir_shader *fs = nir_shader_clone(NULL, vs_nir);
     if (!fs)
@@ -487,7 +503,8 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
                  * result so every producer variant emits window space under the
                  * divide gate. */
                 nir_builder wb = nir_builder_at(nir_before_instr(instr));
-                nir_def *win = r2vb_divide_position(&wb, intr->src[1].ssa, r300);
+                nir_def *win = r2vb_divide_position(&wb, intr->src[1].ssa, r300,
+                                                    space);
                 if (win != intr->src[1].ssa)
                     nir_src_rewrite(&intr->src[1], win);
             }
@@ -640,7 +657,7 @@ static struct pipe_resource *r300_r2vb_get_slot_pos_bo(struct r300_context *r300
  * sequence.  Pure CPU setup; no draw, no GPU work. */
 static void r300_r2vb_mvp_init_selftest(struct r300_context *r300, unsigned count)
 {
-    void *fs = r300_r2vb_get_transform_fs(r300);
+    void *fs = r300_r2vb_get_transform_fs(r300, r2vb_env_space());
     struct pipe_resource *bo = r300_r2vb_get_slot_pos_bo(r300, count);
     fprintf(stderr, "r2vb_mvp_init transform_fs=%p slot_pos_bo=%p req_count=%u cap=%u\n",
             fs, (void *)bo, count, r300->r2vb_slot_pos_count);
@@ -1764,7 +1781,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
      * after. */
     void *saved_fs = NULL;
     if (cfg.xform) {
-        void *xfs = r300_r2vb_get_transform_fs(r300);
+        void *xfs = r300_r2vb_get_transform_fs(r300, r2vb_env_space());
         if (xfs) {
             saved_fs = r300->fs.state;
             r300->context.bind_fs_state(&r300->context, xfs);
@@ -2815,10 +2832,11 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
         /* Two-submit path (the producer flushed before the BO oracle), so no
          * adjacent single-CS barrier is needed for ordering. */
         r300->r2vb_reingest_barrier = false;
-        /* The producer emits window space under the divide gate; tell the
-         * delivery draw so it fetches verbatim instead of re-running the
-         * hardware viewport on already-transformed positions. */
-        r300->r2vb_source_window = r300_r2vb_divide_enabled();
+        /* The delivery coordinate mode derives from the producer's actual
+         * output contract: a window-space producer BO fetches verbatim, a
+         * clip-space one runs the hardware viewport transform. */
+        r300->r2vb_source_window =
+            r300->r2vb_produced_space == R300_R2VB_POSITION_WINDOW;
         ok = r300_r2vb_exec_passthrough_draw(r300, info, draw);
         r300->r2vb_source_window = false;
         /* CS-decode correlation: after the emit the producer/app buffers are in the
@@ -2946,7 +2964,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         int dv = r300_r2vb_first_computed_varying(r300_vs(r300)->state.ir.nir);
         fprintf(stderr, "r2vb_diag first_computed_varying=%d\n", dv);
         void *pf = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
-                                              VARYING_SLOT_POS);
+                                              VARYING_SLOT_POS, r2vb_env_space());
         if (pf) {
             /* Capture the derived VAP/RS state the producer would inherit for this
              * bound VS, up to (not including) emit_producer -- no CS submit.  Bind
@@ -2969,7 +2987,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         }
         if (dv >= 0) {
             void *vf = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
-                                                  (gl_varying_slot)dv);
+                                                  (gl_varying_slot)dv,
+                                                  r2vb_env_space());
             if (vf)
                 r300->context.delete_fs_state(&r300->context, vf);
         }
@@ -3010,17 +3029,20 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     }
     void *xfs;
     bool xfs_cached = false;
+    const enum r300_r2vb_position_space produced_space = r2vb_env_space();
+    r300->r2vb_produced_space = produced_space;
     if (restage) {
         /* Derive the producer from the bound VS itself -- the general fragment-ALU
          * vertex route.  Re-stage its NIR as the FS (position only) and load the
          * matrix it reads from UBO[0] into FS const file 0 untransposed (the VS
          * body is column-MAD).  Built per draw and deleted after, like the baked
          * path, since the FS tracks whatever VS is bound. */
-        xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir, VARYING_SLOT_POS);
+        xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
+                                         VARYING_SLOT_POS, produced_space);
         if (xfs)
             r300_r2vb_set_transform_consts_raw(r300, cols);
     } else if (externals) {
-        xfs = r300_r2vb_get_transform_fs(r300);
+        xfs = r300_r2vb_get_transform_fs(r300, produced_space);
         if (xfs)
             r300_r2vb_set_transform_consts(r300, cols);
         xfs_cached = true;
@@ -3029,7 +3051,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         for (unsigned i = 0; i < 4; i++)
             for (unsigned j = 0; j < 4; j++)
                 rows[i * 4 + j] = cols[j * 4 + i];
-        xfs = r300_r2vb_build_baked_transform_fs(r300, rows);
+        xfs = r300_r2vb_build_baked_transform_fs(r300, rows, produced_space);
     }
     if (!xfs) {
         pipe_resource_reference(&clip, NULL);
@@ -3297,7 +3319,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     int vslot = varying ? r300_r2vb_first_computed_varying(r300_vs(r300)->state.ir.nir) : -1;
     if (vslot >= 0) {
         void *vfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
-                                               (gl_varying_slot)vslot);
+                                               (gl_varying_slot)vslot,
+                                               produced_space);
         struct pipe_resource *vbo = r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
         if (vfs && vbo) {
             void *saved = r300->fs.state;
@@ -3468,7 +3491,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                 (void *)clip, (void *)r300_resource(clip)->buf, clip_slot,
                 r300->velems->velem[0].vertex_buffer_index, r300->nr_vertex_buffers);
     r300->r2vb_reingest_barrier = single_cs;
-    r300->r2vb_source_window = r300_r2vb_divide_enabled();
+    r300->r2vb_source_window =
+        r300->r2vb_produced_space == R300_R2VB_POSITION_WINDOW;
     bool ok2 = r300_r2vb_exec_passthrough_draw(r300, info, draw);
     r300->r2vb_source_window = false;
     r300->r2vb_reingest_barrier = false;
