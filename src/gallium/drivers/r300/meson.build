@@ -22,6 +22,8 @@ files_r300 = files(
   'r300_flush.c',
   'r300_fs.c',
   'r300_fs.h',
+  'r300_nir_ssa_cut.c',
+  'r300_nir_ssa_cut.h',
   'r300_hyperz.c',
   'r300_public.h',
   'r300_icd.c',
