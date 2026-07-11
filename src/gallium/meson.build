@@ -347,6 +347,25 @@ if with_tests and with_gallium_softpipe
     ),
     suite: 'gallium',
   )
+
+  # Dual-factory parity oracle for the direct-NIR draw vertex executor
+  # (draw/draw_vs_nir.c): builds each test shader with nir_builder, runs it
+  # through both draw_create_vs_exec (nir_to_tgsi + tgsi_exec) and
+  # draw_create_vs_nir (the interpreter) on a headless softpipe screen, and
+  # memcmp's the raw AOS output.  Calling the two factories directly avoids the
+  # once-only DRAW_NIR_EXEC env gate.
+  test('draw-vs-nir-raw-output',
+    executable(
+      'draw_vs_nir_raw_output_test',
+      'auxiliary/draw/tests/draw_vs_nir_raw_output_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('winsys'),
+                             include_directories('drivers')],
+      link_with : [libgallium, libws_null],
+      dependencies : [driver_softpipe, idep_nir, idep_mesautil, dep_thread],
+    ),
+    suite: 'gallium',
+  )
 endif
 
 if with_gallium_asahi
