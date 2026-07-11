@@ -137,6 +137,48 @@ static void r2vb_report_bo_a_diagnostic(struct r300_context *r300, struct pipe_r
     r300->context.buffer_unmap(&r300->context, a_xfer);
 }
 
+/* HBTCL-04b gate: the producer performs the perspective divide + viewport in the
+ * transform FS when R300_R2VB_DIVIDE is set.  Off by default so the clip-space MVP
+ * self-test (which reads the un-divided 4-DP4 result back) stays the oracle; the
+ * divided output is validated against the CPU reference (HBTCL-04g) before any
+ * flip. */
+static bool r300_r2vb_divide_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+        cached = getenv("R300_R2VB_DIVIDE") != NULL;
+    return cached;
+}
+
+/* Build the producer FS output vec4 from the four transform DP4 results, shared by
+ * every transform-FS builder so the divide is a property of the producer output
+ * contract, not of one FS-construction variant.  Divide gate off: the raw
+ * clip-space vec4 (the demonstrated MVP path).  Divide gate on: perspective divide
+ * then viewport, window.xyz = (clip.xyz / w_clip) * viewport_scale + viewport_bias
+ * with w = 1, reproducing the contract r2vb_verify_window_readback checks.  The
+ * reciprocal is a native alpha-pipe RCP co-issued with the transform DP4s and the
+ * three viewport terms are native MADs, so the divide adds no slot pair over the
+ * bare transform.  Geometric clip (04c) precedes this in the collineation domain,
+ * so w_clip > 0 in normal use; the 1/32768 guard bounds the FP24 reciprocal
+ * defensively.  Reads r300->viewport for the same scale/bias the CPU oracle uses. */
+static nir_def *r2vb_build_producer_output(nir_builder *b, nir_def *comp[4],
+                                           struct r300_context *r300)
+{
+    if (!r300_r2vb_divide_enabled())
+        return nir_vec4(b, comp[0], comp[1], comp[2], comp[3]);
+    const struct pipe_viewport_state *vp = &r300->viewport;
+    nir_def *w = comp[3];
+    nir_def *guard = nir_imm_float(b, 1.0f / 32768.0f);
+    nir_def *rcp_w = nir_bcsel(b, nir_flt(b, nir_fabs(b, w), guard),
+                               nir_imm_float(b, 0.0f), nir_frcp(b, w));
+    nir_def *win[3];
+    for (unsigned i = 0; i < 3; i++)
+        win[i] = nir_ffma(b, nir_fmul(b, comp[i], rcp_w),
+                          nir_imm_float(b, vp->scale[i]),
+                          nir_imm_float(b, vp->translate[i]));
+    return nir_vec4(b, win[0], win[1], win[2], nir_imm_float(b, 1.0f));
+}
+
 /* Build (once) the 4-DP4 transform fragment program: gl_FragColor = M * in_attr,
  * where in_attr is the per-slot input vertex delivered as a flat GENERIC input
  * and M's four rows live in FS const file 0 (the route sets them per draw from
@@ -169,7 +211,7 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
                                     .align_mul = 16, .range = 64);
         comp[r] = nir_fdot(&b, row, v);
     }
-    nir_def *o = nir_vec4(&b, comp[0], comp[1], comp[2], comp[3]);
+    nir_def *o = r2vb_build_producer_output(&b, comp, r300);
 
     nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                             glsl_vec4_type(), "out_color");
@@ -293,18 +335,6 @@ static void *r300_r2vb_get_producer_vs(struct r300_context *r300, unsigned num_i
  * garbage (externals_count=0, so set_constant_buffer is ignored), so the matrix
  * must travel in the program; the FS is therefore matrix-specific and rebuilt
  * per draw (the caller deletes it).  Returns a pipe FS CSO or NULL. */
-/* HBTCL-04b gate: the producer performs the perspective divide in the transform
- * FS when R300_R2VB_DIVIDE is set.  Off by default so the clip-space MVP
- * self-test (which reads the un-divided 4-DP4 result back) stays the oracle;
- * the divided output is validated against the SW-TCL reference before any flip. */
-static bool r300_r2vb_divide_enabled(void)
-{
-    static int cached = -1;
-    if (cached < 0)
-        cached = getenv("R300_R2VB_DIVIDE") != NULL;
-    return cached;
-}
-
 static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const float rows[16])
 {
     const nir_shader_compiler_options *options =
@@ -323,37 +353,9 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const
                                     rows[r * 4 + 2], rows[r * 4 + 3]);
         comp[r] = nir_fdot(&b, row, v);
     }
-    /* HBTCL-04b perspective divide then viewport: window.xyz =
-     * (clip.xyz / w_clip) * viewport_scale + viewport_bias.  comp[3] is w_clip
-     * (the fourth transform row).  The re-ingest emits VAP_VTE_CNTL with
-     * VTX_*_FMT set and VPORT_*_ENA cleared (r300_r2vb_emit_producer), so the VAP
-     * applies no viewport transform and the producer must emit full window space,
-     * not NDC.  On the fragment ALU the reciprocal is a native alpha-pipe RCP
-     * (nir_frcp) that co-issues in the same instruction slot as the transform
-     * DP4s, and the three viewport MADs are one vector op, so the divide and
-     * viewport add no slot pair over the bare transform.  Geometric clip (04c)
-     * runs ahead of this in the collineation domain, so a vertex reaching here has
-     * w_clip > 0; the min-magnitude guard is defensive, bounding the FP24
-     * reciprocal to a finite value instead of emitting an infinity.  Viewport
-     * scale/bias are baked from the current pipe_viewport_state, matching this
-     * FS's already-baked transform rows.  The output carries w = 1 so the
-     * window-space re-ingest performs no second divide. */
-    nir_def *o;
-    if (r300_r2vb_divide_enabled()) {
-        const struct pipe_viewport_state *vp = &r300->viewport;
-        nir_def *w = comp[3];
-        nir_def *guard = nir_imm_float(&b, 1.0f / 32768.0f);
-        nir_def *rcp_w = nir_bcsel(&b, nir_flt(&b, nir_fabs(&b, w), guard),
-                                   nir_imm_float(&b, 0.0f), nir_frcp(&b, w));
-        nir_def *win[3];
-        for (unsigned i = 0; i < 3; i++)
-            win[i] = nir_ffma(&b, nir_fmul(&b, comp[i], rcp_w),
-                              nir_imm_float(&b, vp->scale[i]),
-                              nir_imm_float(&b, vp->translate[i]));
-        o = nir_vec4(&b, win[0], win[1], win[2], nir_imm_float(&b, 1.0f));
-    } else {
-        o = nir_vec4(&b, comp[0], comp[1], comp[2], comp[3]);
-    }
+    /* HBTCL-04b divide + viewport (or raw clip-space when the gate is off), shared
+     * with r300_r2vb_get_transform_fs through r2vb_build_producer_output. */
+    nir_def *o = r2vb_build_producer_output(&b, comp, r300);
     nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                             glsl_vec4_type(), "out_color");
     out->data.location = FRAG_RESULT_COLOR;
@@ -1820,8 +1822,18 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
      * res keeps the stage-1 data when stage 3 rendered into the separate observe
      * BO; without observe, stage 3 has overwritten res, so the comparison is only
      * meaningful with R300_R2VB_STAGE3_OBSERVE=1. */
-    if (cfg.xform && cfg.do_submit)
-        r2vb_verify_xform_readback(r300, res, attrs, cfg.num_vertices, r2vb_test_mvp_cols);
+    if (cfg.xform && cfg.do_submit) {
+        if (r300_r2vb_divide_enabled()) {
+            /* The transform FS divides, so verify against the window-space
+             * reference (HBTCL-04g), gated on the pure-CPU divide self-test. */
+            if (r2vb_divide_oracle_selftest())
+                r2vb_verify_window_readback(r300, res, attrs, cfg.num_vertices,
+                                            r2vb_test_mvp_cols);
+        } else {
+            r2vb_verify_xform_readback(r300, res, attrs, cfg.num_vertices,
+                                       r2vb_test_mvp_cols);
+        }
+    }
 
     /* Restore the application fragment shader the transform producer displaced. */
     if (cfg.xform && saved_fs) {
@@ -3011,12 +3023,16 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         r2vb_verify_xform_readback(r300, clip, model, count, cols);
 
     /* HBTCL-04g differential oracle: when the divide gate is on, diff the producer
-     * BO against the CPU divide + viewport reference.  Runs only for the single-
-     * input baked-transform path (the one the FS actually divides) and only after
-     * the pure-CPU self-test confirms the reference math, so a broken oracle cannot
-     * green a broken shader.  Reads the same GART clip BO the xform verify maps --
-     * one fragment-ALU producer submit, no VAP/HW-TCL re-ingest. */
-    if (getenv("R300_R2VB_DIVIDE_VERIFY") && num_in == 1 && r300_r2vb_divide_enabled()) {
+     * BO against the CPU divide + viewport reference.  Runs only when the bound
+     * transform FS actually carries the divide -- the baked and externals builders
+     * go through r2vb_build_producer_output, but the restage builder clones the VS
+     * NIR and does not yet apply the divide, so !restage guards against diffing a
+     * divided reference against un-divided output.  Single-input path only, and
+     * only after the pure-CPU self-test confirms the reference math, so a broken
+     * oracle cannot green a broken shader.  Reads the same GART clip BO the xform
+     * verify maps -- one fragment-ALU producer submit, no VAP/HW-TCL re-ingest. */
+    if (getenv("R300_R2VB_DIVIDE_VERIFY") && num_in == 1 && !restage &&
+        r300_r2vb_divide_enabled()) {
         if (r2vb_divide_oracle_selftest())
             r2vb_verify_window_readback(r300, clip, model, count, cols);
     }
