@@ -289,7 +289,15 @@ interp_cf_list(struct interp *st, struct exec_list *list)
       }
       case nir_cf_node_if: {
          nir_if *nif = nir_cf_node_as_if(node);
-         bool cond = src_vals(st, nif->condition)[0].u32 != 0;
+         /* nif->condition is always a 1-bit nir_bool, and nir_const_value's
+          * .b (a C _Bool) is one byte; nir_eval_const_opcode's compare/logic
+          * evaluators write only that byte (nir_constant_expressions.c,
+          * evaluate_ige/evaluate_ine/... bit_size == 1 case), leaving the
+          * other three bytes of the union whatever the ssa slot last held.
+          * Reading .u32 here picked up that stale upper-byte garbage and
+          * could take the wrong branch whenever the slot's previous 32-bit
+          * write left nonzero high bytes. */
+         bool cond = src_vals(st, nif->condition)[0].b;
          enum interp_flow f =
             interp_cf_list(st, cond ? &nif->then_list : &nif->else_list);
          if (f != FLOW_NEXT)
@@ -298,6 +306,9 @@ interp_cf_list(struct interp *st, struct exec_list *list)
       }
       case nir_cf_node_loop: {
          nir_loop *loop = nir_cf_node_as_loop(node);
+         /* draw_create_vs_nir runs nir_lower_continue_constructs before this
+          * interpreter ever sees the shader, folding glsl_to_nir's for-loop
+          * continue construct into the ordinary body/backedge shape below. */
          assert(!nir_loop_has_continue_construct(loop));
          for (;;) {
             enum interp_flow f = interp_cf_list(st, &loop->body);
@@ -460,6 +471,14 @@ draw_create_vs_nir(struct draw_context *draw,
 
    assert(state->type == PIPE_SHADER_IR_NIR);
    nir_shader *nir = state->ir.nir;
+
+   /* glsl_to_nir lowers every GLSL `for` loop to a loop body plus a separate
+    * continue construct (nir_loop_continue_list) holding the increment;
+    * nir_opt_dce and several other general-purpose passes this factory or its
+    * callers may run assert no continue construct survives past this point
+    * (dce_cf_list, nir_opt_dce.c), so fold it into the ordinary body/backedge
+    * shape before any of them see the shader. */
+   NIR_PASS(_, nir, nir_lower_continue_constructs);
 
    /* Mirror the LLVM factory: fold uniforms to load_ubo so every constant read
     * is one intrinsic, then scan with need_texcoord so draw_find_shader_output
