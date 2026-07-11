@@ -369,22 +369,25 @@ What is already more built than the design assumed:
 
 What remains less built than the design assumed:
 
-- Geometric clipping is classification-only: trivial accept/reject and the
-  divide-safety FALLBACK exist (`r300_r2vb_clip.h`), but edge generation,
-  attribute interpolation at intersections, and topology reconstruction for
-  PARTIAL primitives do not (HBTCL-04d/04e).
-- The R400_US ceiling lift is not wired into `r300_r2vb.c`. `R300_R2VB_ALU_CEILING`
-  is a classifier knob only; kernels between 64 and 512 real ALU slots have no
-  route through `hb_r400_us` today.
+- Kernels above 64 emitted ALU slots have no route. `R300_R2VB_ALU_CEILING`
+  is a classifier knob only, and the R400 code-bank mechanism is not the
+  escape: on RS482 the alpha-sentinel and dependent-chain probes show bank
+  instructions execute but a live temporary written in bank 0 is not usable
+  in bank 1 (a 63-slot dependent chain works, the 65-plus variant fails;
+  constants survive the boundary). The general escape is explicit state
+  transport -- algebraic compaction of the producer, or a producer split
+  whose carry crosses through a render target or R2VB buffer -- with Gallivm
+  as the fallback (HBTCL-04f).
 - R2VB is not the standing route. The engine remains gated by explicit opt-in
   environment variables and has no default-on integration into
   `r300_swtcl_draw_vbo`; that promotion remains HBTCL-08.
 
-The remaining HBTCL-04 scope is therefore sharper: finish geometric clipping
-(edge generation and topology reconstruction on top of the landed
-classification), and wire the R400_US ceiling-lift path.  The divide, the
-window-space delivery, and general transform restaging are done; do not
-rediscover them.
+Geometric clipping is complete: classification (`r300_r2vb_clip.h`), edge
+generation with attribute interpolation, and strip/fan/indexed/restart
+topology gather are landed and byte-identical to the gallivm reference on
+RS482. The divide, the window-space delivery, and general transform restaging
+are done; do not rediscover them. The remaining HBTCL-04 scope is the
+over-budget producer escape (HBTCL-04f as state transport).
 
 ## All-on-pipeline: one role per block, minimal CPU
 
@@ -396,7 +399,7 @@ silicon or a bounded next increment from two demonstrated pieces.
 
 | Block | Role | Evidence |
 | --- | --- | --- |
-| Fragment ALU (US, pixel path) | The transform: `M*v` as 4 `DP4`, and non-linear per-vertex math -- quaternion rotation as 4 `DP4` (HW-confirmed, 3/3 within 0.05), octonion 16 `DP4`, Walsh-Hadamard multiply-free and bit-exact in the FP24 window (the exact-integer bound is *proven* in Rocq -- open_gororoba `proofs/theories/IDCT8DP4ExactBound.v`: `8*1448^2 < 2^24` and `2^17 < 2^24`, zero admits) | demonstrated on silicon; 64-ALU ceiling, R400_US lifts to 512 only after HBTCL-04 wires the path |
+| Fragment ALU (US, pixel path) | The transform: `M*v` as 4 `DP4`, and non-linear per-vertex math -- quaternion rotation as 4 `DP4` (HW-confirmed, 3/3 within 0.05), octonion 16 `DP4`, Walsh-Hadamard multiply-free and bit-exact in the FP24 window (the exact-integer bound is *proven* in Rocq -- open_gororoba `proofs/theories/IDCT8DP4ExactBound.v`: `8*1448^2 < 2^24` and `2^17 < 2^24`, zero admits) | demonstrated on silicon; the 64-ALU ceiling is hard for dependent chains (R400 code banks execute but live temporaries do not cross the bank boundary), so over-budget kernels split with explicit state transport (HBTCL-04f) |
 | TAM/TDM/TIM (texture) | Fetch the MVP matrix and vertex attributes as textures -- **in the R2VB producer fragment shader**, which can sample; the VAP-side vertex-texture-fetch is architecturally gated off (`GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS = 0`), so this must live in the producer, not the vertex stage | gate measured; producer wiring to build |
 | RB3D (3D backend) | One-pass multi-attribute export: four `R8G8B8A8` MRT targets route per-output-location, byte-exact, zero deqp regressions -- position, normal, texcoord each to its own target in a single transform pass | MRT demonstrated byte-exact; combine with R2VB (HBTCL-09) |
 | E2/RB2D/CBA2D (2D blit) | Move transformed vertices GART->VAP-input, or scatter/gather vertex streams, instead of a CPU copy + `cb_flush` | unexplored: the 2D engine appears once in the corpus (H.264 block-copy), never probed for vertices (HBTCL-10) |
@@ -458,12 +461,12 @@ Two constraints bound the policy:
   directional light (normalize, two dots, one lowered `POW`, one `RSQ`) is a
   handful of slots, but multi-light or spotlight lighting on top of the R2VB
   transform can exceed 64. That pushes the combined kernel onto the same
-  multi-pass or R400_US route the transform uses for `w_clip` divide and
-  clipping (HBTCL-04f), rather than onto a separate lighting engine.
+  multi-pass state-transport route as any over-budget producer (HBTCL-04f),
+  rather than onto a separate lighting engine.
 
 So lighting introduces no new hardware dependency and no new dead end: it is a
-fragment-ALU budget question, folded into the same 64-slot / R400_US accounting
-as the transform, using only ops the compiler already emits or lowers.
+fragment-ALU budget question, folded into the same 64-slot accounting as the
+transform, using only ops the compiler already emits or lowers.
 
 ## Scoped implementation plan
 
@@ -473,31 +476,33 @@ What already exists on this substrate is more than a sketch: `r300_r2vb.c` is a
 `_INSTANCED`), three producer paths including the restage path for arbitrary
 straight-line non-texturing application VS NIR, self-test buffers, and a
 no-submit `R300_R2VB_VS_DUMP` oracle; `r300_hb_tcl.c` carries the static
-`0x0014025a` bypass word; `r300_hb_r400_us.h` gates an R400 unified-shader path
-that can lift the ALU/TEX slot count from 64 to 512 once wired into R2VB. The
-plan generalizes this into the standing vertex route.
+`0x0014025a` bypass word; `r300_hb_r400_us.h` gates an R400 unified-shader
+emission path that is diagnostic-only on RS482 -- the silicon executes bank
+instructions but a live temporary does not survive the 64-slot bank boundary,
+so banking is not a dependent-chain escape. The plan generalizes the engine
+into the standing vertex route.
 
 | Task | Work | Depends on |
 | --- | --- | --- |
 | HBTCL-01 | No-submit PM4 decode (the silicon-demonstrated `R300_TRACE` capture + 325-row atom decoder, box-safe) of the clear-quad IB vs a working r3v triangle IB; name the single diverging VAP frontend register (`VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE`) | -- |
 | HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the demonstrated-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
-| HBTCL-03 | Audit complete: R2VB has three producer paths including straight-line VS restage, but lacks perspective divide, geometric clipping, R400_US routing, and default SW-TCL integration | -- |
+| HBTCL-03 | Audit complete: R2VB has three producer paths including straight-line VS restage, but lacks perspective divide, geometric clipping, an over-budget producer escape, and default SW-TCL integration | -- |
 | HBTCL-04a | DONE: the coordinate contract section above (object/clip/NDC/window representations, divide placement, re-ingest VTE shapes) | HBTCL-03 |
 | HBTCL-04b | DONE: perspective divide + viewport on the fragment ALU in every producer variant, selected by the explicit `r300_r2vb_position_space` contract; window-space delivery fetches verbatim via the source-space VTE. `r2vb_divide_verify` 3/3 on RS482 with delivery coverage matching the gallivm reference exactly | HBTCL-04a |
-| HBTCL-04c | ACTIVE: clip classification in the raw clip-space domain -- Draw-parity clip codes and trivial accept/reject/partial/fallback triangle classes (`r300_r2vb_clip.h`, host corpus), then the FP24 clip-BO oracle and a conservative gated route action (accept delivers, reject consumes, anything else falls back whole-draw) | HBTCL-04b |
-| HBTCL-04d | Edge generation: intersect PARTIAL primitives against the failing planes in clip space (`t = d_out / (d_out - d_in)` linear blends), interpolate carried attributes, retriangulate | HBTCL-04c |
-| HBTCL-04e | Topology reconstruction: points, lines, strips, fans, indexed, primitive restart through the classify/clip/deliver pipeline | HBTCL-04d |
-| HBTCL-04f | R400_US routing for kernels above the 64-slot R300 fragment-ALU ceiling | HBTCL-03 |
+| HBTCL-04c | DONE: clip classification in the raw clip-space domain -- Draw-parity clip codes, accept/reject/partial/fallback classes (`r300_r2vb_clip.h`), FP24 clip-BO oracle, conservative gated route action; 9/9 corpus classes byte-identical on RS482 | HBTCL-04b |
+| HBTCL-04d | DONE: edge generation -- Sutherland-Hodgman intersection of PARTIAL triangles in clip space (`t = d_out / (d_out - d_in)` blends), attribute interpolation, fan retriangulation; 10/10 corpus cases byte-identical on RS482 | HBTCL-04c |
+| HBTCL-04e | DONE: topology gather -- strips, fans, indexed draws, primitive restart resolved to a triangle-index list before classification; 14/14 corpus cases byte-identical on RS482; points and lines stay excluded (points gate on HBTCL-07, lines need a 2-vertex clip variant) | HBTCL-04d |
+| HBTCL-04f | Producer budget escape above the 64-slot fragment-ALU ceiling: admission on actual emitted RC slots, semantics-preserving algebraic compaction, then a producer split carrying one FP32 `vec4` through an R2VB buffer; Gallivm fallback for every unsupported shape. R400 code banks are diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-03 |
 | HBTCL-05 | DONE: the "VAP register table" section above folds in the offsets, the write-only/read-excluded wedge window, the 16-bit `VF_CNTL` underflow lever + its `git-150a16dc47` fix, the system-value slot-reservation registry, and the R2VB CS-write surface | -- |
-| HBTCL-06 | DONE: the "Lighting on the fragment ALU" section above -- native RCP/RSQ/EX2/LG2, lowered POW/SQRT/SINCOS, the lighting-term mapping table, and the shared 64-ALU/R400_US budget with the transform | -- |
+| HBTCL-06 | DONE: the "Lighting on the fragment ALU" section above -- native RCP/RSQ/EX2/LG2, lowered POW/SQRT/SINCOS, the lighting-term mapping table, and the shared 64-ALU budget with the transform | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear (GA point-setup registers) via the HBTCL-01 decode method | HBTCL-03 |
 | HBTCL-08 | Promote the generalized R2VB collineation engine to the standing r300 SW-TCL vertex route (gated first); validate on RS482 across topologies + a piglit GL2.1 subset under the poller with no VAP/GA stall | HBTCL-02, HBTCL-04, HBTCL-07 |
 | HBTCL-09 | Combine demonstrated MRT multi-attribute export with R2VB so position, normal, and texcoord can leave the producer in one transform pass | HBTCL-03 |
 | HBTCL-10 | Probe E2/RB2D/CBA2D vertex-buffer movement as a possible GART-to-VAP-input mover, using the same hazard-governed no-submit/attended style as the rest of RS482 work | HBTCL-03 |
 
 HBTCL-01 and HBTCL-02 are the immediate `fbo-clearmipmap` fix; HBTCL-03 is the
-engine audit; HBTCL-04a/04b are the landed contract and divide, 04c-04f the
-remaining clip and ceiling-lift ladder;
+engine audit; HBTCL-04a-04e are the landed contract, divide, and clip ladder,
+04f the remaining over-budget producer escape;
 HBTCL-07/08 build the fix out into the standing hybrid; HBTCL-05/06/09/10 are
 the register-table, lighting, MRT-export, and movement extensions. All hardware
 steps run on the parked, hang-for-inspection box under the wedge-forensics
