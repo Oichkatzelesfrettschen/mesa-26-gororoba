@@ -369,8 +369,11 @@ What is already more built than the design assumed:
 
 What remains less built than the design assumed:
 
-- Kernels above 64 emitted ALU slots have no route. `R300_R2VB_ALU_CEILING`
-  is a classifier knob only, and the R400 code-bank mechanism is not the
+- Kernels above 64 emitted ALU slots have no route. Admission measures the
+  derived producer FS against the real emit ceiling (a throwaway backend
+  compile reading the emitted `alu.length`, memoized per VS), so a dense
+  kernel the vectorizing backend packs under 64 slots is admitted even when
+  its scalar NIR count exceeds 64; the R400 code-bank mechanism is not the
   escape: on RS482 the alpha-sentinel and dependent-chain probes show bank
   instructions execute but a live temporary written in bank 0 is not usable
   in bank 1 (a 63-slot dependent chain works, the 65-plus variant fails;
