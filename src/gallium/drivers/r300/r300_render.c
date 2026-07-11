@@ -1280,18 +1280,23 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
 }
 
 /* Position-only delivery invariant for the producer-fed capture: the delivery
- * fetches exactly the producer outputs, no more.  Enforced clauses (a failure
- * refuses the delivery and the capture): the velem count equals the VAP output
- * count r300->vertex_info declares; VAP_VTX_SIZE equals sum(format_size/4) over
- * the bound elements; and the position element's bound resource is the clip BO
- * the producer wrote (r2vb_slot_pos_bo, when the producer published one).
+ * fetches the producer outputs and nothing extra.  Enforced clauses (a failure
+ * refuses the delivery and the capture): the velem count does not exceed the
+ * VAP output count r300->vertex_info declares (the proven multi-stream delivery
+ * binds FEWER arrays than outputs when one application buffer sources several
+ * passthrough varyings -- the RS duplicates the vector, so equality is not the
+ * invariant); VAP_VTX_SIZE equals sum(format_size/4) over the bound elements;
+ * and the position element's bound resource is the clip BO the producer
+ * published (r2vb_capture_clip, set alongside r2vb_producer_kind -- not
+ * r2vb_slot_pos_bo, which is the producer's slot-pixel input stream).
  * Recorded-but-not-enforced clauses (logged for the offline decode, too fragile
  * to hard-gate on a partial PSC parse): the VAP declares POS_PRESENT, and every
  * RS source vector has a producing PSC stream element.  Returns true when the
  * enforced clauses hold. */
 static bool r300_r2vb_capture_preflight(struct r300_context *r300,
                                         unsigned vap_vtx_size,
-                                        enum r300_r2vb_producer_kind kind)
+                                        enum r300_r2vb_producer_kind kind,
+                                        struct pipe_resource *capture_clip)
 {
     struct r300_vertex_element_state *ve = r300->velems;
     struct r300_rs_block *rs = (struct r300_rs_block *)r300->rs_block_state.state;
@@ -1301,41 +1306,40 @@ static bool r300_r2vb_capture_preflight(struct r300_context *r300,
     for (unsigned i = 0; ve && i < ve->count; i++)
         sz_sum += align(util_format_get_blocksize(ve->velem[i].src_format), 4) / 4;
 
-    bool count_match = ve && ve->count == num_attribs;
+    bool count_bounded = ve && ve->count > 0 && ve->count <= num_attribs;
     bool vtxsize_match = sz_sum == vap_vtx_size;
 
     /* The VAP packs VARYING_SLOT_POS first, so velem[0] is the position element;
-     * its bound vertex buffer must be the producer's clip BO.  Only enforced when
-     * the producer published a clip BO (r2vb_slot_pos_bo); a pure single-element
-     * producer that reused an existing slot leaves it NULL. */
+     * its bound vertex buffer must be the clip BO the producer published.  A
+     * producer-fed delivery always has one (both producers set it with the
+     * kind), so a NULL here is itself a refusal. */
     struct pipe_resource *pos_res = NULL;
     if (ve && ve->count > 0) {
         unsigned vbi = ve->velem[0].vertex_buffer_index;
         pos_res = r300->vertex_buffer[vbi].buffer.resource;
     }
-    bool pos_to_clip = r300->r2vb_slot_pos_bo == NULL ||
-                       pos_res == r300->r2vb_slot_pos_bo;
+    bool pos_to_clip = capture_clip != NULL && pos_res == capture_clip;
 
     bool pos_present = rs && (rs->vap_out_vtx_fmt[0] &
                               R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
 
-    bool ok = count_match && vtxsize_match && pos_to_clip;
+    bool ok = count_bounded && vtxsize_match && pos_to_clip;
 
     fprintf(stderr,
             "r2vb_delivery_capture invariant=%s producer=%s velems_count=%u "
             "num_attribs=%u vap_vtx_size=%u format_size_sum=%u pos_res=%p "
-            "clip_bo=%p enforce_count=%d enforce_vtxsize=%d enforce_pos_to_clip=%d "
-            "record_pos_present=%d\n",
+            "clip_bo=%p enforce_count_bounded=%d enforce_vtxsize=%d "
+            "enforce_pos_to_clip=%d record_pos_present=%d\n",
             ok ? "HOLD" : "FAIL",
             kind == R300_R2VB_PRODUCER_SPLIT ? "split" : "single",
             ve ? ve->count : 0, num_attribs, vap_vtx_size, sz_sum,
-            (void *)pos_res, (void *)r300->r2vb_slot_pos_bo,
-            count_match, vtxsize_match, pos_to_clip, pos_present);
+            (void *)pos_res, (void *)capture_clip,
+            count_bounded, vtxsize_match, pos_to_clip, pos_present);
 
     if (!ok)
         fprintf(stderr,
                 "r2vb_delivery_capture refuse clause=%s (falling back to gallivm)\n",
-                !count_match ? "count==num_attribs" :
+                !count_bounded ? "0<count<=num_attribs" :
                 !vtxsize_match ? "vap_vtx_size==sum(format_size/4)" :
                 "position->clip_bo");
     return ok;
@@ -1354,6 +1358,7 @@ static void r300_r2vb_capture_record(struct r300_context *r300,
                                      const struct pipe_draw_info *info,
                                      const struct pipe_draw_start_count_bias *draw,
                                      enum r300_r2vb_producer_kind kind,
+                                     struct pipe_resource *capture_clip,
                                      unsigned vap_vtx_size,
                                      unsigned draw_pkt_off)
 {
@@ -1408,7 +1413,7 @@ static void r300_r2vb_capture_record(struct r300_context *r300,
      * as the winsys exposes.  These lines carry the fields the RELOC grammar omits;
      * the RELOC / roles lines below carry the analyzer's join keys. */
     r300_r2vb_report_bo_identity(r300, "r2vb_delivery_capture clip_bo_identity",
-                                 r300->r2vb_slot_pos_bo);
+                                 capture_clip);
     for (unsigned i = 0; ve && i < ve->count; i++) {
         unsigned vbi = ve->velem[i].vertex_buffer_index;
         char tag[64];
@@ -1434,7 +1439,7 @@ static void r300_r2vb_capture_record(struct r300_context *r300,
             continue;
         roles[n_roles].pr = pr;
         roles[n_roles].role =
-            pr == r300->r2vb_slot_pos_bo ? "clip_bo" : "app_upload";
+            pr == capture_clip ? "clip_bo" : "app_upload";
         n_roles++;
     }
     {
@@ -1536,7 +1541,9 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
         delivery_capture_env = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
     enum r300_r2vb_producer_kind producer_kind = r300->r2vb_producer_kind;
+    struct pipe_resource *capture_clip = r300->r2vb_capture_clip;
     r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+    r300->r2vb_capture_clip = NULL;
     bool capture = delivery_capture_env &&
                    producer_kind != R300_R2VB_PRODUCER_NONE;
 
@@ -1674,7 +1681,8 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
         /* Producer-fed delivery capture preflight: the position-only invariant
          * runs before any emission, so a violation refuses the delivery and the
          * capture and falls back to gallivm exactly as the guards above do. */
-        if (capture && !r300_r2vb_capture_preflight(r300, vap_vtx_size, producer_kind))
+        if (capture && !r300_r2vb_capture_preflight(r300, vap_vtx_size, producer_kind,
+                                                     capture_clip))
             ok = false;
 
         if (ok) {
@@ -1750,7 +1758,7 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
              * results.  The route returns handled so gallivm issues no second draw. */
             if (capture) {
                 r300_r2vb_capture_record(r300, info, draw, producer_kind,
-                                         vap_vtx_size, draw_pkt_off);
+                                         capture_clip, vap_vtx_size, draw_pkt_off);
                 r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
             }
         }
@@ -1939,6 +1947,7 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
      * producer that ran for an earlier draw but whose re-ingest refused delivery
      * cannot mislabel this one's delivery capture. */
     r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+    r300->r2vb_capture_clip = NULL;
 
     /* Passthrough direct-VB route: re-ingest the app vertex arrays at TCL_BYPASS,
      * skipping the gallivm draw module.  Falls back to gallivm if the route
