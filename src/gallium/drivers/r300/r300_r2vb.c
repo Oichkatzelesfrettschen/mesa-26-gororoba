@@ -2110,7 +2110,7 @@ static bool r300_nir_op_is_fragment_aluable(nir_op op)
     case nir_op_mov:
     case nir_op_vec2: case nir_op_vec3: case nir_op_vec4:
     case nir_op_fadd: case nir_op_fsub: case nir_op_fmul:
-    case nir_op_fmad: case nir_op_ffma:
+    case nir_op_fmad: case nir_op_ffma: case nir_op_ffma_weak:
     case nir_op_fdot2: case nir_op_fdot3: case nir_op_fdot4:
     case nir_op_fdot2_replicated: case nir_op_fdot3_replicated:
     case nir_op_fdot4_replicated:
@@ -2146,13 +2146,9 @@ static bool r300_nir_op_is_fragment_aluable(nir_op op)
  * store, so the scan fails.  A second computed attribute or a non-leading
  * position attribute still needs the multi-input producer and is rejected here
  * (the draw falls back to gallivm). */
-static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
-                                        bool allow_computed_varying)
+static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
+                                            bool allow_computed_varying)
 {
-    struct r300_vertex_shader *vs = r300_vs(r300);
-    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
-        return false;
-    nir_shader *nir = vs->state.ir.nir;
     nir_function_impl *impl = nir_shader_get_entrypoint(nir);
     if (!impl)
         return false;
@@ -2302,6 +2298,33 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
     if (r300_r2vb_count_position_inputs(nir) > R300_R2VB_MAX_PRODUCER_INPUTS)
         return false;
     return true;
+}
+
+/* Classify the bound VS on a constant-folded clone.  A SPIR-V VS reaches the
+ * driver with its UBO address arithmetic still literal (iadd/imul/ushr of
+ * load_const values) and with ffma kept weak by the gallivm compiler options;
+ * both fold or map to fragment-aluable form in the FS compile the restage
+ * producer runs, so the scan must see the folded shader, not the raw one.
+ * Real (non-constant) integer arithmetic survives the folding and still
+ * rejects. */
+static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
+                                        bool allow_computed_varying)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
+        return false;
+    nir_shader *clone = nir_shader_clone(NULL, vs->state.ir.nir);
+    if (!clone)
+        return false;
+    bool progress;
+    do {
+        progress = false;
+        progress |= nir_opt_constant_folding(clone);
+        progress |= nir_opt_dce(clone);
+    } while (progress);
+    bool ok = r300_vs_nir_is_fragment_aluable(clone, allow_computed_varying);
+    ralloc_free(clone);
+    return ok;
 }
 
 enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
