@@ -250,6 +250,23 @@ static bool r300_r2vb_clip_edge_enabled(void)
     return cached;
 }
 
+/* Topology-gather gate (R300_R2VB_TOPOLOGY): a CPU pre-pass resolves
+ * TRIANGLE_STRIP, TRIANGLE_FAN, and indexed triangle-family draws (including
+ * primitive restart) into a plain triangle-index list before classification,
+ * so the clip-route's per-triangle classify and Sutherland-Hodgman rebuild
+ * run unchanged over that list.  A gathered list without the clip route to
+ * classify and act on it renders nothing useful, so this gate is ANDed with
+ * R300_R2VB_CLIP_ROUTE rather than acting alone. */
+static bool r300_r2vb_topology_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_R2VB_TOPOLOGY");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return cached && r300_r2vb_clip_route_enabled();
+}
+
 /* Drop the clip-edge replacement streams after the delivery they were built
  * for (or on any abort past the rebuild).  Idempotent. */
 static void r2vb_edge_streams_release(struct r300_context *r300)
@@ -1042,10 +1059,15 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
  * default to the (0,0,0,1) vertex identity), the same read the model loop
  * performs for the position input.  Only float32 source formats are read --
  * the clip-edge interpolation blends in the float domain, and delivering a
- * blended value in a narrower application format would quantize it twice. */
+ * blended value in a narrower application format would quantize it twice.
+ * indices[i] names the source vertex row for output slot i -- the shared
+ * index-resolution table r2vb_topology_gather_indices builds for a
+ * topology-gathered draw, or the identity draw->start+i sequence for a plain
+ * one -- so this reader always walks the same vertices the position
+ * model-gather used. */
 static float (*
-r2vb_read_velem_floats(struct r300_context *r300, unsigned e, unsigned start,
-                       uint32_t count))[4]
+r2vb_read_velem_floats(struct r300_context *r300, unsigned e,
+                       const uint32_t *indices, uint32_t count))[4]
 {
     if (e >= r300->velems->count)
         return NULL;
@@ -1073,7 +1095,7 @@ r2vb_read_velem_floats(struct r300_context *r300, unsigned e, unsigned start,
     if (!out)
         return NULL;
     for (uint32_t i = 0; i < count; i++) {
-        const float *v = (const float *)(base + (size_t)(start + i) * pe->src_stride);
+        const float *v = (const float *)(base + (size_t)indices[i] * pe->src_stride);
         out[i][0] = v[0];
         out[i][1] = comps > 1 ? v[1] : 0.0f;
         out[i][2] = comps > 2 ? v[2] : 0.0f;
@@ -2682,8 +2704,12 @@ enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
     if (r300->screen->caps.has_tcl || r300->screen->caps.num_vert_fpus != 0)
         return R2VB_REJECT_HW_TCL;
     /* The producer rasterizes one point per output slot and the re-ingest draws a
-     * linear vertex list; an index buffer would need an index-aware producer. */
-    if (info->index_size != 0)
+     * linear vertex list; an index buffer would need an index-aware producer.
+     * The gated topology gather (R300_R2VB_TOPOLOGY, requires
+     * R300_R2VB_CLIP_ROUTE) resolves an indexed triangle-family draw to a
+     * plain triangle list ahead of the clip route, so it alone admits an
+     * indexed draw past this reject -- every other route stays index-blind. */
+    if (info->index_size != 0 && !r300_r2vb_topology_enabled())
         return R2VB_REJECT_INDEXED;
     if (info->instance_count != 1)
         return R2VB_REJECT_INSTANCED;
@@ -3340,6 +3366,138 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     return true;
 }
 
+/* Resolve a TRIANGLES / TRIANGLE_STRIP / TRIANGLE_FAN draw, indexed or not,
+ * into a plain triangle-index list: gidx holds *out_count source-vertex rows
+ * (3 per output triangle, winding preserved), each row in the same domain the
+ * non-indexed model-gather loop already reads -- a raw offset into the bound
+ * vertex buffers, i.e. draw->start+i for a non-indexed draw or the index
+ * buffer's value plus draw->index_bias for an indexed one.  Both the
+ * position model-gather and r2vb_read_velem_floats walk this same table when
+ * gathered, so position and passthrough attributes cannot diverge.
+ *
+ * Strip triangle t is (t, t+1, t+2) on an even t and (t+1, t, t+2) on an odd
+ * one (preserves the alternating winding); fan triangle t is (0, t+1, t+2).
+ * info->primitive_restart splits the source-index sequence at every
+ * occurrence of info->restart_index (post index_bias) into independent
+ * segments, each walked from its own local t=0, so a restart never stitches
+ * a triangle across the split; a segment shorter than one full primitive (3
+ * indices for TRIANGLES, or the STRIP/FAN minimum) contributes nothing.  A
+ * TRIANGLES segment whose length is not a multiple of 3 drops its trailing
+ * partial triangle, matching draw_vbo's own primitive-count truncation.
+ *
+ * Returns false when the topology is not a triangle family, an index or
+ * user-buffer source cannot be read, the gathered count would exceed the
+ * producer's 4096-vertex ceiling, or the gathered count is 0; *out_idx is
+ * caller-owned (free()) and valid only on true. */
+static bool
+r2vb_topology_gather_indices(struct r300_context *r300,
+                             const struct pipe_draw_info *info,
+                             const struct pipe_draw_start_count_bias *draw,
+                             uint32_t **out_idx, uint32_t *out_count)
+{
+    if (info->mode != MESA_PRIM_TRIANGLES &&
+        info->mode != MESA_PRIM_TRIANGLE_STRIP &&
+        info->mode != MESA_PRIM_TRIANGLE_FAN)
+        return false;
+
+    const uint32_t n_verts = draw->count;
+    if (n_verts == 0)
+        return false;
+
+    uint32_t *src = malloc((size_t)n_verts * sizeof(*src));
+    if (!src)
+        return false;
+    if (info->index_size == 0) {
+        for (uint32_t i = 0; i < n_verts; i++)
+            src[i] = draw->start + i;
+    } else {
+        const uint8_t *ibase = NULL;
+        if (info->has_user_indices)
+            ibase = (const uint8_t *)info->index.user;
+        else if (info->index.resource)
+            ibase = r300_resource(info->index.resource)->malloced_buffer;
+        if (!ibase) {
+            free(src);
+            return false;
+        }
+        ibase += (size_t)draw->start * info->index_size;
+        for (uint32_t i = 0; i < n_verts; i++) {
+            uint32_t raw;
+            switch (info->index_size) {
+            case 1: raw = ibase[i]; break;
+            case 2: raw = ((const uint16_t *)ibase)[i]; break;
+            case 4: raw = ((const uint32_t *)ibase)[i]; break;
+            default:
+                free(src);
+                return false;
+            }
+            src[i] = (uint32_t)((int64_t)raw + draw->index_bias);
+        }
+    }
+
+    const uint32_t cap = 4096;
+    uint32_t *gidx = malloc((size_t)cap * sizeof(*gidx));
+    if (!gidx) {
+        free(src);
+        return false;
+    }
+    uint32_t n_out = 0;
+    bool overflow = false;
+    uint32_t seg_start = 0;
+
+    for (uint32_t i = 0; i <= n_verts; i++) {
+        bool is_restart = info->primitive_restart && info->index_size != 0 &&
+                          i < n_verts && src[i] == info->restart_index;
+        if (!is_restart && i < n_verts)
+            continue;
+        uint32_t seg_len = i - seg_start;
+        uint32_t n_tri = seg_len >= 3
+                             ? (info->mode == MESA_PRIM_TRIANGLES ? seg_len / 3
+                                                                  : seg_len - 2)
+                             : 0;
+        for (uint32_t t = 0; t < n_tri; t++) {
+            uint32_t i0, i1, i2;
+            if (info->mode == MESA_PRIM_TRIANGLES) {
+                i0 = seg_start + t * 3 + 0;
+                i1 = seg_start + t * 3 + 1;
+                i2 = seg_start + t * 3 + 2;
+            } else if (info->mode == MESA_PRIM_TRIANGLE_STRIP) {
+                if ((t & 1) == 0) {
+                    i0 = seg_start + t + 0;
+                    i1 = seg_start + t + 1;
+                } else {
+                    i0 = seg_start + t + 1;
+                    i1 = seg_start + t + 0;
+                }
+                i2 = seg_start + t + 2;
+            } else { /* MESA_PRIM_TRIANGLE_FAN */
+                i0 = seg_start;
+                i1 = seg_start + t + 1;
+                i2 = seg_start + t + 2;
+            }
+            if (n_out + 3 > cap) {
+                overflow = true;
+                break;
+            }
+            gidx[n_out++] = src[i0];
+            gidx[n_out++] = src[i1];
+            gidx[n_out++] = src[i2];
+        }
+        if (overflow)
+            break;
+        seg_start = i + 1; /* skip the restart index itself */
+    }
+    free(src);
+
+    if (overflow || n_out == 0) {
+        free(gidx);
+        return false;
+    }
+    *out_idx = gidx;
+    *out_count = n_out;
+    return true;
+}
+
 /* Route-exec MVP path: run gl_Position = M * in_pos on the fragment ALU.  The
  * producer transforms the application's model-space positions into a clip-space
  * BO through the 4-DP4 transform-FS, emitted under the normal draw flow (where
@@ -3361,8 +3519,6 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     if (!r300->velems || r300->velems->count == 0)
         return false;
     unsigned count = draw->count;
-    if (count == 0 || count > 4096)
-        return false;
     const float *cols = (const float *)r300->swtcl_vs_const0_ptr;
 
     /* Read the model-space inputs feeding gl_Position.  num_in is the count of VS
@@ -3378,9 +3534,51 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     if (num_in > r300->velems->count)
         num_in = r300->velems->count;
 
-    float (*model)[4] = malloc((size_t)count * num_in * sizeof(*model));
-    if (!model)
+    /* Topology gather (R300_R2VB_TOPOLOGY, requires R300_R2VB_CLIP_ROUTE):
+     * an indexed draw or a TRIANGLE_STRIP/TRIANGLE_FAN topology is resolved
+     * to a plain triangle-index list ahead of the model read below, so every
+     * consumer further down this function -- the clip-route classify and
+     * rebuild, and the eventual re-ingest -- sees a non-indexed TRIANGLES
+     * list.  einfo mirrors that decomposition (mode forced to TRIANGLES,
+     * index_size to 0) for the delivery calls that still read info->mode.
+     * Declines (returns false) for a shape the gather cannot express: a
+     * multi-input position (num_in != 1 -- the gather only rebuilds a single
+     * position stream), an unreadable index source, or a gathered count past
+     * the 4096-vertex producer ceiling.  Byte-identical to the ungathered
+     * path when the gate is off: r300_r2vb_topology_enabled() is false, so
+     * topo_shape is always false and the original count/index arithmetic
+     * below runs unchanged. */
+    bool topo_shape = r300_r2vb_topology_enabled() &&
+                      (info->index_size != 0 ||
+                       info->mode == MESA_PRIM_TRIANGLE_STRIP ||
+                       info->mode == MESA_PRIM_TRIANGLE_FAN);
+    struct pipe_draw_info topo_info_storage;
+    const struct pipe_draw_info *einfo = info;
+    uint32_t *topo_idx = NULL;
+    bool topo_gathered = false;
+    if (topo_shape) {
+        if (num_in != 1)
+            return false;
+        uint32_t gcount = 0;
+        if (!r2vb_topology_gather_indices(r300, info, draw, &topo_idx, &gcount))
+            return false;
+        count = gcount;
+        topo_gathered = true;
+        topo_info_storage = *info;
+        topo_info_storage.mode = MESA_PRIM_TRIANGLES;
+        topo_info_storage.index_size = 0;
+        topo_info_storage.has_user_indices = false;
+        topo_info_storage.primitive_restart = false;
+        einfo = &topo_info_storage;
+    } else if (count == 0 || count > 4096) {
         return false;
+    }
+
+    float (*model)[4] = malloc((size_t)count * num_in * sizeof(*model));
+    if (!model) {
+        free(topo_idx);
+        return false;
+    }
     for (unsigned a = 0; a < num_in; a++) {
         struct pipe_vertex_element *pe = &r300->velems->velem[a];
         struct pipe_vertex_buffer *vb = &r300->vertex_buffer[pe->vertex_buffer_index];
@@ -3391,19 +3589,23 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             base = r300_resource(vb->buffer.resource)->malloced_buffer;
         if (!base || !pe->src_stride) {
             free(model);
+            free(topo_idx);
             return false;
         }
         base += vb->buffer_offset + pe->src_offset;
         unsigned comps = util_format_get_nr_components(pe->src_format);
         for (unsigned i = 0; i < count; i++) {
-            const float *v =
-                (const float *)(base + (size_t)(draw->start + i) * pe->src_stride);
+            const float *v = (const float *)(base +
+                (size_t)(topo_gathered ? topo_idx[i] : draw->start + i) *
+                pe->src_stride);
             model[i * num_in + a][0] = v[0];
             model[i * num_in + a][1] = comps > 1 ? v[1] : 0.0f;
             model[i * num_in + a][2] = comps > 2 ? v[2] : 0.0f;
             model[i * num_in + a][3] = comps > 3 ? v[3] : 1.0f;
         }
     }
+    free(topo_idx);
+    topo_idx = NULL;
 
     /* No-submit diagnostic (R300_R2VB_DIAG): dump the matrix this draw reads as
      * cols[] and re-stage both producer targets on the CPU (R300_R2VB_VS_DUMP
@@ -3519,7 +3721,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * oracle changes no rendering.  The two-submit flush + map above already
      * ordered the producer against this CPU read. */
     if (r300_r2vb_clip_classify_enabled()) {
-        r2vb_clip_classify_readback(r300, clip, count, info->mode);
+        r2vb_clip_classify_readback(r300, clip, count, einfo->mode);
         pipe_resource_reference(&clip, NULL);
         free(model);
         return false;
@@ -3535,11 +3737,17 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * application FS that reads no external constants (the producer pass
      * overwrites FS constant file 0).  Indexed and instanced draws are
      * already rejected by r300_r2vb_classify_draw before this path. */
-    /* Delivery draw parameters.  The clip-edge rebuild replaces the vertex
-     * list, so its delivery draws vertices 0..count-1 of the producer BOs
-     * instead of the application's start/count window. */
+    /* Delivery draw parameters.  The clip-edge rebuild and the topology
+     * gather both replace the vertex list, so their delivery draws vertices
+     * 0..count-1 of the producer BOs instead of the application's
+     * start/count window. */
     struct pipe_draw_start_count_bias rdraw = *draw;
     const struct pipe_draw_start_count_bias *ddraw = draw;
+    if (topo_gathered) {
+        rdraw.start = 0;
+        rdraw.count = count;
+        ddraw = &rdraw;
+    }
 
     if (r300_r2vb_clip_route_enabled()) {
         const struct r300_rs_state *rs =
@@ -3552,13 +3760,13 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                 if (cl->Constants[i].Type == RC_CONSTANT_EXTERNAL)
                     fs_reads_externals = true;
         }
-        const bool supported = info->mode == MESA_PRIM_TRIANGLES &&
+        const bool supported = einfo->mode == MESA_PRIM_TRIANGLES &&
                                count % 3 == 0 && num_in == 1 &&
                                rs && rs->rs.clip_plane_enable == 0 &&
                                !fs_reads_externals;
         enum r2vb_clip_route_verdict verdict = R2VB_CLIP_ROUTE_FALLBACK;
         if (supported)
-            verdict = r2vb_clip_classify_readback(r300, clip, count, info->mode);
+            verdict = r2vb_clip_classify_readback(r300, clip, count, einfo->mode);
         const char *action = !supported ? "gallivm"
                            : verdict == R2VB_CLIP_ROUTE_ACCEPT ? "deliver"
                            : verdict == R2VB_CLIP_ROUTE_REJECT ? "consume"
@@ -3590,6 +3798,28 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             float (*extras[R300_R2VB_CLIP_MAX_ATTRS - 1])[4] = { NULL };
             bool shape_ok = ns >= 1 &&
                             (vslot_probe >= 0 || r300->velems->count == 1);
+            /* Passthrough attributes are read through the same index table the
+             * position model-gather used -- the gathered triangle-index list
+             * for a topology-gathered draw, or the identity draw->start+i
+             * sequence otherwise -- so a rebuilt vertex's interpolated inputs
+             * can never diverge from the position that drove the classify. */
+            uint32_t *ridx = NULL;
+            if (shape_ok) {
+                if (topo_gathered) {
+                    uint32_t rcount = 0;
+                    if (!r2vb_topology_gather_indices(r300, info, draw, &ridx,
+                                                       &rcount) ||
+                        rcount != count)
+                        shape_ok = false;
+                } else {
+                    ridx = malloc((size_t)count * sizeof(*ridx));
+                    if (!ridx)
+                        shape_ok = false;
+                    else
+                        for (uint32_t i = 0; i < count; i++)
+                            ridx[i] = draw->start + i;
+                }
+            }
             for (int i = 0; shape_ok && i < ns; i++) {
                 if (st[i].kind != R2VB_STREAM_PASSTHROUGH)
                     continue;
@@ -3599,13 +3829,14 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                     break;
                 }
                 extras[n_extra] = r2vb_read_velem_floats(
-                    r300, (unsigned)st[i].src_velem, draw->start, count);
+                    r300, (unsigned)st[i].src_velem, ridx, count);
                 if (!extras[n_extra]) {
                     shape_ok = false;
                     break;
                 }
                 extra_stream[n_extra++] = i;
             }
+            free(ridx);
             /* Interpolated replacements deliver only through the per-output
              * reconstruction; the single-velem tail cannot carry them. */
             if (n_extra > 0 && vslot_probe < 0)
@@ -3961,7 +4192,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
              * re-ingest is a separate, explicitly-gated caller below. */
             if (reingest &&
                 r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir) == 1)
-                r300_r2vb_reingest_outputs(r300, info, ddraw, clip, vbo, vslot);
+                r300_r2vb_reingest_outputs(r300, einfo, ddraw, clip, vbo, vslot);
             else if (reingest)
                 fprintf(stderr, "r2vb_reingest skip (computed-varying path is single-input position only)\n");
         }
@@ -4003,7 +4234,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
          * which kept the extra input velems as phantom streams, submitted a
          * velem > output mismatch and wedged the ring.  R300_R2VB_INSPECT dumps the
          * wiring and skips the draw; without it one gated submit runs. */
-        bool ok = r300_r2vb_reingest_outputs(r300, info, draw, clip, NULL, -1);
+        bool ok = r300_r2vb_reingest_outputs(r300, einfo, draw, clip, NULL, -1);
         pipe_resource_reference(&clip, NULL);
         free(model);
         return ok;
@@ -4057,7 +4288,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     r300->r2vb_reingest_barrier = r2vb_single_cs_enabled();
     r300->r2vb_source_window =
         r300->r2vb_produced_space == R300_R2VB_POSITION_WINDOW;
-    bool ok2 = r300_r2vb_exec_passthrough_draw(r300, info, ddraw);
+    bool ok2 = r300_r2vb_exec_passthrough_draw(r300, einfo, ddraw);
     r300->r2vb_source_window = false;
     r300->r2vb_reingest_barrier = false;
 
