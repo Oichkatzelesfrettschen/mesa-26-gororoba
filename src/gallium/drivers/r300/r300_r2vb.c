@@ -137,6 +137,61 @@ static void r2vb_report_bo_a_diagnostic(struct r300_context *r300, struct pipe_r
     r300->context.buffer_unmap(&r300->context, a_xfer);
 }
 
+/* HBTCL-04b gate: the producer performs the perspective divide + viewport in the
+ * transform FS when R300_R2VB_DIVIDE is set.  Off by default so the clip-space MVP
+ * self-test (which reads the un-divided 4-DP4 result back) stays the oracle; the
+ * divided output is validated against the CPU reference (HBTCL-04g) before any
+ * flip. */
+static bool r300_r2vb_divide_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+        cached = getenv("R300_R2VB_DIVIDE") != NULL;
+    return cached;
+}
+
+/* Build the producer FS output vec4 from the four transform DP4 results, shared by
+ * every transform-FS builder so the divide is a property of the producer output
+ * contract, not of one FS-construction variant.  Divide gate off: the raw
+ * clip-space vec4 (the demonstrated MVP path).  Divide gate on: perspective divide
+ * then viewport, window.xyz = (clip.xyz / w_clip) * viewport_scale + viewport_bias
+ * with w = 1, reproducing the contract r2vb_verify_window_readback checks.  The
+ * reciprocal is a native alpha-pipe RCP co-issued with the transform DP4s and the
+ * three viewport terms are native MADs, so the divide adds no slot pair over the
+ * bare transform.  Geometric clip (04c) precedes this in the collineation domain,
+ * so w_clip > 0 in normal use; the 1/32768 guard bounds the FP24 reciprocal
+ * defensively.  Reads r300->viewport for the same scale/bias the CPU oracle uses. */
+static nir_def *r2vb_divide_position(nir_builder *b, nir_def *pos,
+                                     struct r300_context *r300)
+{
+    if (!r300_r2vb_divide_enabled())
+        return pos;
+    const struct pipe_viewport_state *vp = &r300->viewport;
+    nir_def *comp[4];
+    for (unsigned i = 0; i < 4; i++)
+        comp[i] = nir_channel(b, pos, i);
+    nir_def *w = comp[3];
+    nir_def *guard = nir_imm_float(b, 1.0f / 32768.0f);
+    nir_def *rcp_w = nir_bcsel(b, nir_flt(b, nir_fabs(b, w), guard),
+                               nir_imm_float(b, 0.0f), nir_frcp(b, w));
+    nir_def *win[3];
+    for (unsigned i = 0; i < 3; i++) {
+        /* NDC * scale + bias as separate fmul + fadd; nir_to_rc has no ffma
+         * opcode and fuses the multiply-add into the native MAD itself. */
+        nir_def *ndc = nir_fmul(b, comp[i], rcp_w);
+        win[i] = nir_fadd(b, nir_fmul(b, ndc, nir_imm_float(b, vp->scale[i])),
+                          nir_imm_float(b, vp->translate[i]));
+    }
+    return nir_vec4(b, win[0], win[1], win[2], nir_imm_float(b, 1.0f));
+}
+
+static nir_def *r2vb_build_producer_output(nir_builder *b, nir_def *comp[4],
+                                           struct r300_context *r300)
+{
+    return r2vb_divide_position(b, nir_vec4(b, comp[0], comp[1], comp[2], comp[3]),
+                                r300);
+}
+
 /* Build (once) the 4-DP4 transform fragment program: gl_FragColor = M * in_attr,
  * where in_attr is the per-slot input vertex delivered as a flat GENERIC input
  * and M's four rows live in FS const file 0 (the route sets them per draw from
@@ -169,7 +224,7 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
                                     .align_mul = 16, .range = 64);
         comp[r] = nir_fdot(&b, row, v);
     }
-    nir_def *o = nir_vec4(&b, comp[0], comp[1], comp[2], comp[3]);
+    nir_def *o = r2vb_build_producer_output(&b, comp, r300);
 
     nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                             glsl_vec4_type(), "out_color");
@@ -311,7 +366,9 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const
                                     rows[r * 4 + 2], rows[r * 4 + 3]);
         comp[r] = nir_fdot(&b, row, v);
     }
-    nir_def *o = nir_vec4(&b, comp[0], comp[1], comp[2], comp[3]);
+    /* HBTCL-04b divide + viewport (or raw clip-space when the gate is off), shared
+     * with r300_r2vb_get_transform_fs through r2vb_build_producer_output. */
+    nir_def *o = r2vb_build_producer_output(&b, comp, r300);
     nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                             glsl_vec4_type(), "out_color");
     out->data.location = FRAG_RESULT_COLOR;
@@ -395,6 +452,21 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
      * Computed-varying pass: target = that varying's slot, and the now-unstored
      * position transform drops in DCE below, leaving just the varying arithmetic. */
     nir_function_impl *impl = nir_shader_get_entrypoint(fs);
+
+    /* The cloned VS carries multiply-add as ffma/ffma_weak (the gallivm VS
+     * compiler options keep them fused-weak), but nir_to_rc translates only
+     * nir_op_fmad to the native MAD and errors on ffma variants.  Rewrite in
+     * place -- same three float sources, same result shape. */
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_alu)
+                continue;
+            nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op == nir_op_ffma || alu->op == nir_op_ffma_weak)
+                alu->op = nir_op_fmad;
+        }
+    }
+
     nir_foreach_block(block, impl) {
         nir_foreach_instr_safe(instr, block) {
             if (instr->type != nir_instr_type_intrinsic)
@@ -404,8 +476,21 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
                 continue;
             nir_variable *out = nir_intrinsic_get_var(intr, 0);
             if (out && (out->data.mode & nir_var_shader_out) &&
-                out->data.location != target)
+                out->data.location != target) {
                 nir_instr_remove(instr);
+            } else if (out && (out->data.mode & nir_var_shader_out) &&
+                       out->data.location == target &&
+                       target == VARYING_SLOT_POS &&
+                       intr->src[1].ssa->num_components == 4) {
+                /* Position pass output contract: same divide + viewport as the
+                 * built transform-FS producers, applied to the cloned VS's clip
+                 * result so every producer variant emits window space under the
+                 * divide gate. */
+                nir_builder wb = nir_builder_at(nir_before_instr(instr));
+                nir_def *win = r2vb_divide_position(&wb, intr->src[1].ssa, r300);
+                if (win != intr->src[1].ssa)
+                    nir_src_rewrite(&intr->src[1], win);
+            }
         }
     }
 
@@ -695,6 +780,57 @@ static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_re
                 exp[s][i] += cols[j * 4 + i] * model[s][j];
         }
     r2vb_verify_bo_readback(r300, res, exp, count, 0.05f, "xform");
+    free(exp);
+}
+
+/* Known-answer self-test for the HBTCL-04b divide + viewport, anchored on a case
+ * whose window result is fixed by the arithmetic, not by agreeing with the shader,
+ * so a shared sign or scale bug cannot pass green.  clip = (4, -2, 1, 2) under a
+ * unit viewport must divide to (2, -1, 0.5) and carry w = 1.  A sub-threshold
+ * w_clip must collapse the reciprocal to 0 (the FP24 infinity guard), so the tiny
+ * case must yield rcp = 0.  Returns true iff both hold; mirrors the divide the FS
+ * emits in r300_r2vb_build_baked_transform_fs. */
+static bool r2vb_divide_oracle_selftest(void)
+{
+    const float clip[4] = { 4.0f, -2.0f, 1.0f, 2.0f };
+    float rcp = (fabsf(clip[3]) < 1.0f / 32768.0f) ? 0.0f : 1.0f / clip[3];
+    float win[3];
+    for (int i = 0; i < 3; i++)
+        win[i] = clip[i] * rcp; /* unit viewport: scale = 1, bias = 0 */
+    const float wtiny = 1e-6f;
+    float rcp_tiny = (fabsf(wtiny) < 1.0f / 32768.0f) ? 0.0f : 1.0f / wtiny;
+    bool ok = fabsf(win[0] - 2.0f) < 1e-5f && fabsf(win[1] + 1.0f) < 1e-5f &&
+              fabsf(win[2] - 0.5f) < 1e-5f && rcp_tiny == 0.0f;
+    fprintf(stderr,
+            "r2vb_divide_oracle_selftest=%s (4,-2,1,2)/w->win(%.3f,%.3f,%.3f) tiny-w-guard=%s\n",
+            ok ? "PASS" : "FAIL", win[0], win[1], win[2], rcp_tiny == 0.0f ? "0" : "BAD");
+    return ok;
+}
+
+/* Verify the producer BO against the CPU divide + viewport reference: clip =
+ * M(cols) * model_vert, then window.xyz = (clip.xyz / w_clip) * viewport_scale +
+ * viewport_bias with w = 1, reproducing the FS's own guard and w output rather than
+ * a naive draw-style w = 1/w_clip.  Reads r300->viewport for the same scale/bias
+ * the FS bakes.  FP24 fragment ALU plus a divide and three MADs, so the same loose
+ * 0.05 tolerance as the bare transform. */
+static void r2vb_verify_window_readback(struct r300_context *r300, struct pipe_resource *res,
+                                        const float (*model)[4], uint32_t count, const float *cols)
+{
+    const struct pipe_viewport_state *vp = &r300->viewport;
+    float (*exp)[4] = malloc((size_t)count * sizeof(*exp));
+    if (!exp)
+        return;
+    for (uint32_t s = 0; s < count; s++) {
+        float clip[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < 4; j++)
+                clip[i] += cols[j * 4 + i] * model[s][j];
+        float rcp = (fabsf(clip[3]) < 1.0f / 32768.0f) ? 0.0f : 1.0f / clip[3];
+        for (int i = 0; i < 3; i++)
+            exp[s][i] = clip[i] * rcp * vp->scale[i] + vp->translate[i];
+        exp[s][3] = 1.0f;
+    }
+    r2vb_verify_bo_readback(r300, res, exp, count, 0.05f, "divide");
     free(exp);
 }
 
@@ -1727,8 +1863,18 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
      * res keeps the stage-1 data when stage 3 rendered into the separate observe
      * BO; without observe, stage 3 has overwritten res, so the comparison is only
      * meaningful with R300_R2VB_STAGE3_OBSERVE=1. */
-    if (cfg.xform && cfg.do_submit)
-        r2vb_verify_xform_readback(r300, res, attrs, cfg.num_vertices, r2vb_test_mvp_cols);
+    if (cfg.xform && cfg.do_submit) {
+        if (r300_r2vb_divide_enabled()) {
+            /* The transform FS divides, so verify against the window-space
+             * reference (HBTCL-04g), gated on the pure-CPU divide self-test. */
+            if (r2vb_divide_oracle_selftest())
+                r2vb_verify_window_readback(r300, res, attrs, cfg.num_vertices,
+                                            r2vb_test_mvp_cols);
+        } else {
+            r2vb_verify_xform_readback(r300, res, attrs, cfg.num_vertices,
+                                       r2vb_test_mvp_cols);
+        }
+    }
 
     /* Restore the application fragment shader the transform producer displaced. */
     if (cfg.xform && saved_fs) {
@@ -1979,7 +2125,7 @@ static bool r300_nir_op_is_fragment_aluable(nir_op op)
     case nir_op_mov:
     case nir_op_vec2: case nir_op_vec3: case nir_op_vec4:
     case nir_op_fadd: case nir_op_fsub: case nir_op_fmul:
-    case nir_op_fmad: case nir_op_ffma:
+    case nir_op_fmad: case nir_op_ffma: case nir_op_ffma_weak:
     case nir_op_fdot2: case nir_op_fdot3: case nir_op_fdot4:
     case nir_op_fdot2_replicated: case nir_op_fdot3_replicated:
     case nir_op_fdot4_replicated:
@@ -2015,13 +2161,9 @@ static bool r300_nir_op_is_fragment_aluable(nir_op op)
  * store, so the scan fails.  A second computed attribute or a non-leading
  * position attribute still needs the multi-input producer and is rejected here
  * (the draw falls back to gallivm). */
-static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
-                                        bool allow_computed_varying)
+static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
+                                            bool allow_computed_varying)
 {
-    struct r300_vertex_shader *vs = r300_vs(r300);
-    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
-        return false;
-    nir_shader *nir = vs->state.ir.nir;
     nir_function_impl *impl = nir_shader_get_entrypoint(nir);
     if (!impl)
         return false;
@@ -2171,6 +2313,33 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
     if (r300_r2vb_count_position_inputs(nir) > R300_R2VB_MAX_PRODUCER_INPUTS)
         return false;
     return true;
+}
+
+/* Classify the bound VS on a constant-folded clone.  A SPIR-V VS reaches the
+ * driver with its UBO address arithmetic still literal (iadd/imul/ushr of
+ * load_const values) and with ffma kept weak by the gallivm compiler options;
+ * both fold or map to fragment-aluable form in the FS compile the restage
+ * producer runs, so the scan must see the folded shader, not the raw one.
+ * Real (non-constant) integer arithmetic survives the folding and still
+ * rejects. */
+static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
+                                        bool allow_computed_varying)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
+        return false;
+    nir_shader *clone = nir_shader_clone(NULL, vs->state.ir.nir);
+    if (!clone)
+        return false;
+    bool progress;
+    do {
+        progress = false;
+        progress |= nir_opt_constant_folding(clone);
+        progress |= nir_opt_dce(clone);
+    } while (progress);
+    bool ok = r300_vs_nir_is_fragment_aluable(clone, allow_computed_varying);
+    ralloc_free(clone);
+    return ok;
 }
 
 enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
@@ -2916,6 +3085,21 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     }
     if (getenv("R300_R2VB_XFORM_VERIFY") && num_in == 1)
         r2vb_verify_xform_readback(r300, clip, model, count, cols);
+
+    /* Differential oracle: when the divide gate is on, diff the producer BO
+     * against the CPU divide + viewport reference.  Every producer variant
+     * carries the divide -- the baked and externals builders through
+     * r2vb_build_producer_output, the restage builder by wrapping the cloned
+     * VS's position store with r2vb_divide_position.  Single-input path only,
+     * and only after the pure-CPU self-test confirms the reference math, so a
+     * broken oracle cannot green a broken shader.  Reads the same GART clip BO
+     * the xform verify maps -- one fragment-ALU producer submit, no VAP/HW-TCL
+     * re-ingest. */
+    if (getenv("R300_R2VB_DIVIDE_VERIFY") && num_in == 1 &&
+        r300_r2vb_divide_enabled()) {
+        if (r2vb_divide_oracle_selftest())
+            r2vb_verify_window_readback(r300, clip, model, count, cols);
+    }
 
     /* Multi-input position oracle (R300_R2VB_POS_WEIGHTS="w0,w1,...").  The producer
      * feeds input a at VAR0+a, so for a VS whose position is M * sum_a(w_a * input_a)
