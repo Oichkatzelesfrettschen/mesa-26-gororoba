@@ -1445,10 +1445,17 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
             OUT_CS_REG(R300_VAP_VTX_SIZE, vap_vtx_size);
             OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6);
             OUT_CS_TABLE(vport6, 6);
+            /* Coordinate-space contract: a window-space source (the producer
+             * already applied divide + viewport) fetches verbatim -- XY/Z format
+             * bits bypass the viewport transform and W0 bypasses the divide.
+             * A clip-space source runs the full hardware transform. */
             OUT_CS_REG(R300_VAP_VTE_CNTL,
-                       R300_VTX_W0_FMT | R300_VPORT_X_SCALE_ENA | R300_VPORT_X_OFFSET_ENA |
-                           R300_VPORT_Y_SCALE_ENA | R300_VPORT_Y_OFFSET_ENA |
-                           R300_VPORT_Z_SCALE_ENA | R300_VPORT_Z_OFFSET_ENA);
+                       r300->r2vb_source_window
+                           ? (R300_VTX_XY_FMT | R300_VTX_Z_FMT | R300_VTX_W0_FMT)
+                           : (R300_VTX_W0_FMT | R300_VPORT_X_SCALE_ENA |
+                              R300_VPORT_X_OFFSET_ENA | R300_VPORT_Y_SCALE_ENA |
+                              R300_VPORT_Y_OFFSET_ENA | R300_VPORT_Z_SCALE_ENA |
+                              R300_VPORT_Z_OFFSET_ENA));
             END_CS;
             /* Single-CS R2VB MVP re-ingest: the producer wrote the transformed
              * positions into this vertex buffer through the RB3D colour cache
