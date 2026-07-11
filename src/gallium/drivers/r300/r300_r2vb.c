@@ -161,12 +161,15 @@ static bool r300_r2vb_divide_enabled(void)
  * bare transform.  Geometric clip (04c) precedes this in the collineation domain,
  * so w_clip > 0 in normal use; the 1/32768 guard bounds the FP24 reciprocal
  * defensively.  Reads r300->viewport for the same scale/bias the CPU oracle uses. */
-static nir_def *r2vb_build_producer_output(nir_builder *b, nir_def *comp[4],
-                                           struct r300_context *r300)
+static nir_def *r2vb_divide_position(nir_builder *b, nir_def *pos,
+                                     struct r300_context *r300)
 {
     if (!r300_r2vb_divide_enabled())
-        return nir_vec4(b, comp[0], comp[1], comp[2], comp[3]);
+        return pos;
     const struct pipe_viewport_state *vp = &r300->viewport;
+    nir_def *comp[4];
+    for (unsigned i = 0; i < 4; i++)
+        comp[i] = nir_channel(b, pos, i);
     nir_def *w = comp[3];
     nir_def *guard = nir_imm_float(b, 1.0f / 32768.0f);
     nir_def *rcp_w = nir_bcsel(b, nir_flt(b, nir_fabs(b, w), guard),
@@ -180,6 +183,13 @@ static nir_def *r2vb_build_producer_output(nir_builder *b, nir_def *comp[4],
                           nir_imm_float(b, vp->translate[i]));
     }
     return nir_vec4(b, win[0], win[1], win[2], nir_imm_float(b, 1.0f));
+}
+
+static nir_def *r2vb_build_producer_output(nir_builder *b, nir_def *comp[4],
+                                           struct r300_context *r300)
+{
+    return r2vb_divide_position(b, nir_vec4(b, comp[0], comp[1], comp[2], comp[3]),
+                                r300);
 }
 
 /* Build (once) the 4-DP4 transform fragment program: gl_FragColor = M * in_attr,
@@ -451,8 +461,21 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
                 continue;
             nir_variable *out = nir_intrinsic_get_var(intr, 0);
             if (out && (out->data.mode & nir_var_shader_out) &&
-                out->data.location != target)
+                out->data.location != target) {
                 nir_instr_remove(instr);
+            } else if (out && (out->data.mode & nir_var_shader_out) &&
+                       out->data.location == target &&
+                       target == VARYING_SLOT_POS &&
+                       intr->src[1].ssa->num_components == 4) {
+                /* Position pass output contract: same divide + viewport as the
+                 * built transform-FS producers, applied to the cloned VS's clip
+                 * result so every producer variant emits window space under the
+                 * divide gate. */
+                nir_builder wb = nir_builder_at(nir_before_instr(instr));
+                nir_def *win = r2vb_divide_position(&wb, intr->src[1].ssa, r300);
+                if (win != intr->src[1].ssa)
+                    nir_src_rewrite(&intr->src[1], win);
+            }
         }
     }
 
@@ -3025,16 +3048,16 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     if (getenv("R300_R2VB_XFORM_VERIFY") && num_in == 1)
         r2vb_verify_xform_readback(r300, clip, model, count, cols);
 
-    /* HBTCL-04g differential oracle: when the divide gate is on, diff the producer
-     * BO against the CPU divide + viewport reference.  Runs only when the bound
-     * transform FS actually carries the divide -- the baked and externals builders
-     * go through r2vb_build_producer_output, but the restage builder clones the VS
-     * NIR and does not yet apply the divide, so !restage guards against diffing a
-     * divided reference against un-divided output.  Single-input path only, and
-     * only after the pure-CPU self-test confirms the reference math, so a broken
-     * oracle cannot green a broken shader.  Reads the same GART clip BO the xform
-     * verify maps -- one fragment-ALU producer submit, no VAP/HW-TCL re-ingest. */
-    if (getenv("R300_R2VB_DIVIDE_VERIFY") && num_in == 1 && !restage &&
+    /* Differential oracle: when the divide gate is on, diff the producer BO
+     * against the CPU divide + viewport reference.  Every producer variant
+     * carries the divide -- the baked and externals builders through
+     * r2vb_build_producer_output, the restage builder by wrapping the cloned
+     * VS's position store with r2vb_divide_position.  Single-input path only,
+     * and only after the pure-CPU self-test confirms the reference math, so a
+     * broken oracle cannot green a broken shader.  Reads the same GART clip BO
+     * the xform verify maps -- one fragment-ALU producer submit, no VAP/HW-TCL
+     * re-ingest. */
+    if (getenv("R300_R2VB_DIVIDE_VERIFY") && num_in == 1 &&
         r300_r2vb_divide_enabled()) {
         if (r2vb_divide_oracle_selftest())
             r2vb_verify_window_readback(r300, clip, model, count, cols);
