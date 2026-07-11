@@ -79,6 +79,14 @@ algebraic_late = [
     (('f2i32', 'a@16'), ('f2i32', ('f2f32', a)), 'gpu_arch >= 11'),
     (('f2u32', 'a@16'), ('f2u32', ('f2f32', a)), 'gpu_arch >= 11'),
 
+    # TODO: these could be handled in the backend for lighter register pressure
+    (('f2u16', a), ('u2u16', ('f2u32', a)), 'is_kraid'),
+    (('f2i16', a), ('i2i16', ('f2i32', a)), 'is_kraid'),
+
+    # Copy-prop will clean these up
+    (('pack_uvec2_to_uint', a), ('pack_32_2x16', ('u2u16', a))),
+    (('pack_uvec4_to_uint', a), ('pack_32_4x8', ('u2u8', a))),
+
     # On v11+, because FROUND.v2f16 is gone we end up with precision issues.
     # We lower ffract here instead to ensure lower_bit_size has been performed.
     (('ffract', a), ('fadd', a, ('fneg', ('ffloor', a))), 'gpu_arch >= 11'),
@@ -120,6 +128,16 @@ for fsz in [16, 32]:
         ((f'b2f{fsz}', a), ('bcsel_pan', a_fsz, 1.0, 0.0)),
     ]
 
+for isz in [8, 16, 32]:
+    a_isz = (f'i2i{isz}', a)
+
+    algebraic_late += [
+        ((f'b2i{isz}', ('inot', f'a@{isz}')), ('bcsel_pan', a, 0, 1), 'is_kraid'),
+        ((f'b2i{isz}', ('inot', a)), ('bcsel_pan', a_isz, 0, 1), 'is_kraid'),
+        ((f'b2i{isz}', f'a@{isz}'), ('bcsel_pan', a, 1, 0), 'is_kraid'),
+        ((f'b2i{isz}', a), ('bcsel_pan', a_isz, 1, 0), 'is_kraid'),
+    ]
+
 # Bifrost LDEXP.v2f16 takes i16 exponent, while nir_op_ldexp takes i32. Lower
 # to nir_op_ldexp16_pan.
 #
@@ -158,7 +176,8 @@ def run():
     print(nir_algebraic.AlgebraicPass("bifrost_nir_lower_algebraic_late",
                                       algebraic_late,
                                       [
-                                          ("unsigned ", "gpu_arch")
+                                          ("unsigned ", "gpu_arch"),
+                                          ("bool ",     "is_kraid"),
                                       ]).render())
 
 if __name__ == '__main__':

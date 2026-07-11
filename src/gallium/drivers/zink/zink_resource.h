@@ -226,6 +226,22 @@ zink_resource_reference(struct zink_resource **d, struct zink_resource *s)
 void
 zink_destroy_resource_surface_cache(struct zink_screen *screen, struct set *ht, bool is_buffer);
 
+static ALWAYS_INLINE void
+zink_resource_disable_unordered_write(struct zink_resource *res)
+{
+   res->obj->unordered_write = false;
+   res->obj->ordered_access_is_copied = false;
+}
+
+static ALWAYS_INLINE void
+zink_resource_disable_unordered(struct zink_resource *res, bool disable_write)
+{
+   res->obj->unordered_read = false;
+   res->obj->ordered_access_is_copied = false;
+   if (disable_write)
+      zink_resource_disable_unordered_write(res);
+}
+
 #ifdef __cplusplus
 }
 #endif

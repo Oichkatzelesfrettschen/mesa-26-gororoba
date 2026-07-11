@@ -1414,16 +1414,26 @@ struct anv_memory_type {
    bool                    compressed;
 };
 
+/* Heaps tracking structure shared across multiple VkInstance */
+struct anv_memory_budget {
+   uint32_t ref_count;
+
+   struct list_head link;
+
+   int64_t local_major;
+   int64_t local_minor;
+
+   /** Driver-internal book-keeping, indexed by heap.
+    *
+    * Align it to 64 bits to make atomic operations faster on 32 bit platforms.
+    */
+   alignas(8) VkDeviceSize used[VK_MAX_MEMORY_HEAPS];
+};
+
 struct anv_memory_heap {
    /* Standard bits passed on to the client */
    VkDeviceSize      size;
    VkMemoryHeapFlags flags;
-
-   /** Driver-internal book-keeping.
-    *
-    * Align it to 64 bits to make atomic operations faster on 32 bit platforms.
-    */
-   alignas(8) VkDeviceSize used;
 
    bool              is_local_mem;
 };
@@ -1574,6 +1584,7 @@ struct anv_physical_device {
       struct anv_memory_type                    types[VK_MAX_MEMORY_TYPES];
       uint32_t                                  heap_count;
       struct anv_memory_heap                    heaps[VK_MAX_MEMORY_HEAPS];
+      struct anv_memory_budget                 *heaps_budget;
 #ifdef SUPPORT_INTEL_INTEGRATED_GPUS
       bool                                      need_flush;
 #endif
@@ -1822,6 +1833,7 @@ enum anv_debug {
    ANV_DEBUG_EXPERIMENTAL               = BITFIELD_BIT(12),
    ANV_DEBUG_DGC_DUMP                   = BITFIELD_BIT(13),
    ANV_DEBUG_NO_ALLOC_OVER_SUBSCRIPTION = BITFIELD_BIT(14),
+   ANV_DEBUG_SKIP_DISK_CACHE            = BITFIELD_BIT(15),
 };
 
 extern enum anv_debug anv_debug;
@@ -4578,12 +4590,6 @@ struct anv_cmd_pipeline_state {
    uint8_t push_descriptor_index;
 };
 
-enum anv_depth_reg_mode {
-   ANV_DEPTH_REG_MODE_UNKNOWN = 0,
-   ANV_DEPTH_REG_MODE_HW_DEFAULT,
-   ANV_DEPTH_REG_MODE_D16_1X_MSAA,
-};
-
 /** State tracking for graphics pipeline
  *
  * This has anv_cmd_pipeline_state as a base struct to track things which get
@@ -4676,19 +4682,13 @@ struct anv_cmd_graphics_state {
    bool                                         pma_fix_enabled;
 
    /**
-    * Whether or not we know for certain that HiZ is enabled for the current
-    * subpass.  If, for whatever reason, we are unsure as to whether HiZ is
-    * enabled or not, this will be false.
+    * The HiZ usage for the current subpass.  If, for whatever reason, we are
+    * unsure as to whether HiZ is enabled or not, this will be NONE.
     */
-   bool                                         hiz_enabled;
+   enum isl_aux_usage                           hiz_usage;
 
-   /**
-    * We ensure the registers for the gfx12 D16 fix are initialized at the
-    * first non-NULL depth stencil packet emission of every command buffer.
-    * For secondary command buffer execution, we transfer the state from the
-    * last command buffer to the primary (if known).
-    */
-   enum anv_depth_reg_mode                      depth_reg_mode;
+   /* Track COMMON_SLICE_CHICKEN1::HIZPlaneOptimizationdisablebit */
+   enum u_tristate                              hiz_planes_disabled;
 
    struct anv_gfx_dynamic_state dyn_state;
 

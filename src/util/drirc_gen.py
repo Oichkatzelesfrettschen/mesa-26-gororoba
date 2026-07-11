@@ -331,6 +331,7 @@ def add_common_vk_options(debug_options, features_options, misc_options, valid_o
     B = DrircBool
     I = DrircInt
     F = DrircFloat
+    S = DrircString
 
     if defaults is None:
         defaults = {}
@@ -339,6 +340,9 @@ def add_common_vk_options(debug_options, features_options, misc_options, valid_o
         I("force_vk_vendor", defaults.get("force_vk_vendor", 0), -1, 2147483647,
           "Override GPU vendor id",
           c_name="force_vk_vendor"),
+        S("force_vk_devicename", defaults.get("force_vk_devicename", None),
+          "Override Vulkan deviceName.",
+          c_name="force_vk_devicename"),
         B("vk_lower_terminate_to_discard", defaults.get("vk_lower_terminate_to_discard", False),
           "Lower terminate to discard (which is implicitly demote)",
           c_name="lower_terminate_to_discard"),
@@ -378,8 +382,8 @@ def add_common_vk_wsi_options(debug_options, performance_options, defaults=None)
           "Force the X11 WSI to create exactly the number of image specified by the application in VkSwapchainCreateInfoKHR::minImageCount"),
         B("vk_x11_ensure_min_image_count", defaults.get("vk_x11_ensure_min_image_count", False),
           "Force the X11 WSI to create at least the number of image specified by the driver in VkSurfaceCapabilitiesKHR::minImageCount"),
-        B("vk_xwayland_wait_ready", defaults.get("vk_xwayland_wait_ready", False),
-          "Wait for fences before submitting buffers to Xwayland"),
+        B("vk_google_display_timing", defaults.get("vk_google_display_timing", False),
+          "Expose VK_GOOGLE_display_timing even if fully conformant support can't be guaranteed on all enabled surface types, e.g., (X)Wayland"),
     ])
 
     debug_options.extend([

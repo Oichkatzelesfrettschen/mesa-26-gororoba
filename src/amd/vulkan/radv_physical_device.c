@@ -686,6 +686,14 @@ radv_get_binning_settings(const struct radv_physical_device *pdev, struct radv_b
    settings->fpovs_per_batch = 63;
 }
 
+static bool
+radv_msrtss_enabled(const struct radv_physical_device *pdev)
+{
+   const struct radv_instance *instance = radv_physical_device_instance(pdev);
+
+   return DETECT_OS_ANDROID || (instance->experimental_flags & RADV_EXPERIMENTAL_MSRTSS);
+}
+
 static void
 radv_physical_device_get_supported_extensions(const struct radv_physical_device *pdev,
                                               struct vk_device_extension_table *out_ext)
@@ -715,6 +723,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_driver_properties = true,
       .KHR_dynamic_rendering = true,
       .KHR_dynamic_rendering_local_read = true,
+      .KHR_extended_flags = true,
       .KHR_external_fence = true,
       .KHR_external_fence_fd = true,
       .KHR_external_memory = true,
@@ -890,6 +899,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_memory_priority = true,
       .EXT_mesh_shader = radv_taskmesh_enabled(pdev),
       .EXT_multi_draw = true,
+      .EXT_multisampled_render_to_single_sampled = radv_msrtss_enabled(pdev),
       .EXT_mutable_descriptor_type = true, /* Trivial promotion from VALVE. */
       .EXT_nested_command_buffer = true,
       .EXT_non_seamless_cube_map = true,
@@ -968,7 +978,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
 #endif
       .GOOGLE_decorate_string = true,
 #ifdef RADV_USE_WSI_PLATFORM
-      .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(pdev->vk.instance),
+      .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(pdev->vk.instance, &instance->drirc.options),
 #endif
       .GOOGLE_hlsl_functionality1 = true,
       .GOOGLE_user_type = true,
@@ -1613,6 +1623,9 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
       /* VK_EXT_custom_resolve */
       .customResolve = true,
 
+      /* VK_EXT_multisampled_render_to_single_sampled */
+      .multisampledRenderToSingleSampled = radv_msrtss_enabled(pdev),
+
 #ifdef RADV_USE_WSI_PLATFORM
       /* VK_EXT_present_timing */
       /* The actual query is deferred to surface time. */
@@ -1666,6 +1679,9 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
 
       /* VK_EXT_shader_split_barrier */
       .shaderSplitBarrier = radv_split_barrier_enabled(pdev),
+
+      /* VK_KHR_extended_flags */
+      .extendedFlags = true,
    };
 }
 
@@ -1756,6 +1772,7 @@ radv_init_image_properties(struct radv_physical_device *pdev)
 static void
 radv_get_physical_device_properties(struct radv_physical_device *pdev)
 {
+   const struct radv_instance *instance = radv_physical_device_instance(pdev);
    VkSampleCountFlags sample_counts = 0xf;
 
    size_t max_descriptor_set_size = radv_max_descriptor_set_size();
@@ -1927,7 +1944,7 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
                                      VK_SUBGROUP_FEATURE_ROTATE_BIT | VK_SUBGROUP_FEATURE_ROTATE_CLUSTERED_BIT,
       .subgroupQuadOperationsInAllStages = true,
       .pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES,
-      .maxMultiviewViewCount = MAX_VIEWS,
+      .maxMultiviewViewCount = AC_MULTIVIEW_MAX_VIEWS,
       .maxMultiviewInstanceIndex = INT_MAX,
       .protectedNoFault = false,
       .maxPerSetDescriptors = RADV_MAX_PER_SET_DESCRIPTORS,
@@ -2233,7 +2250,7 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
       .maxMeshOutputVertices = 256,
       .maxMeshOutputPrimitives = 256,
       .maxMeshOutputLayers = 8,
-      .maxMeshMultiviewViewCount = MAX_VIEWS,
+      .maxMeshMultiviewViewCount = AC_MULTIVIEW_MAX_VIEWS,
       .meshOutputPerVertexGranularity = 1,
       .meshOutputPerPrimitiveGranularity = 1,
 
@@ -2393,7 +2410,11 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
 
    struct vk_properties *p = &pdev->vk.properties;
 
-   strcpy(p->deviceName, pdev->marketing_name);
+   if (strlen(instance->drirc.debug.force_vk_devicename) > 0) {
+      snprintf(p->deviceName, sizeof(p->deviceName), "%s", instance->drirc.debug.force_vk_devicename);
+   } else {
+      strcpy(p->deviceName, pdev->marketing_name);
+   }
    memcpy(p->pipelineCacheUUID, pdev->cache_uuid, VK_UUID_SIZE);
 
    memcpy(p->deviceUUID, pdev->device_uuid, VK_UUID_SIZE);
@@ -3672,7 +3693,6 @@ radv_GetPhysicalDeviceDescriptorSizeEXT(VkPhysicalDevice physicalDevice, VkDescr
    case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
       return pdev->vk.properties.bufferDescriptorSize;
    default:
-      UNREACHABLE("Invalid descriptor type in GetPhysicalDeviceDescriptorSizeEXT");
       return 0;
    }
 }

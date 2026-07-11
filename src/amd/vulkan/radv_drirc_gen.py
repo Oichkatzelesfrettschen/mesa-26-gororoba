@@ -6,6 +6,7 @@ import argparse
 import sys
 
 VALID_COMMON_VK_OPTIONS = {
+    "force_vk_devicename",
     "vk_lower_terminate_to_discard",
     "vk_zero_vram",
     "vk_require_etc2",
@@ -53,9 +54,6 @@ def declare_options():
         B("radv_flush_before_timestamp_write", False,
           "Wait for previous commands to finish before writing timestamps",
           c_name="flush_before_timestamp_write"),
-        B("radv_invariant_geom", False,
-          "Mark geometry-affecting outputs as invariant",
-          c_name="invariant_geom"),
         B("radv_no_dynamic_bounds", False,
           "Disabling bounds checking for dynamic buffer descriptors",
           c_name="no_dynamic_bounds"),
@@ -89,6 +87,9 @@ def declare_options():
         B("radv_force_64_byte_sampled_image", False,
           "Force sampled images size to 64 bytes.",
           c_name="force_64_byte_sampled_image"),
+        B("radv_force_nan_preserve_min_max", False,
+          "Treat FMax/FMin/FClamp like NMax/NMin/NClamp.",
+          c_name="force_nan_preserve_min_max"),
     ]
 
     performance_options = [

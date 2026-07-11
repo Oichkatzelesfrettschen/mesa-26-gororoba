@@ -359,8 +359,7 @@ panvk_get_gpu_system_timestamp_period(const struct panvk_physical_device *device
        !device->kmod.dev->props.timestamp_frequency)
       return 0;
 
-   const float ns_per_s = 1000000000.0;
-   return ns_per_s / (float)device->kmod.dev->props.timestamp_frequency;
+   return device->kmod.dev->props.timestamp_cycles_to_ns_factor;
 }
 
 void
@@ -430,9 +429,8 @@ panvk_physical_device_init(struct panvk_physical_device *device,
    device->formats.all = pan_format_table(arch);
    device->formats.blendable = pan_blendable_format_table(arch);
 
-   unsigned core_id_range;
    unsigned core_count =
-      pan_query_core_count(&device->kmod.dev->props, &core_id_range);
+      pan_query_core_count(&device->kmod.dev->props);
 
    memset(device->name, 0, sizeof(device->name));
    sprintf(device->name, "%s MC%u", device->model->name, core_count);

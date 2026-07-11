@@ -31,6 +31,10 @@ pub trait Builder {
     fn copy_i32_to(&mut self, dst: Dst, src: Src) {
         self.copy_to(dst, DataType::I32, src);
     }
+
+    fn copy_i64_to(&mut self, dst: Dst, src: Src) {
+        self.copy_to(dst, DataType::I64, src);
+    }
 }
 
 pub trait SSABuilder: Builder + AllocSSA {
@@ -49,6 +53,12 @@ pub trait SSABuilder: Builder + AllocSSA {
     fn copy_i32(&mut self, src: Src) -> SSAValue {
         let def = self.alloc_ssa(32);
         self.copy_i32_to(def.into(), src);
+        def
+    }
+
+    fn copy_ssa(&mut self, src: SSAValue) -> SSAValue {
+        let def = self.alloc_ssa(src.bits());
+        self.copy_to(def.into(), DataType::i(src.bits()), src.into());
         def
     }
 

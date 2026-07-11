@@ -103,11 +103,14 @@ bi_lower_bit_size(const nir_instr *instr, void *data)
    case nir_instr_type_intrinsic: {
       nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
 
-      /* We only support ballot on 32-bit types. */
       switch (intr->intrinsic) {
       case nir_intrinsic_ballot:
       case nir_intrinsic_ballot_relaxed:
+         /* We only support ballot on 32-bit types. */
          return (nir_src_bit_size(intr->src[0]) == 32) ? 0 : 32;
+      case nir_intrinsic_read_invocation:
+         /* CLPER only supports 32-bit types. */
+         return (intr->def.bit_size < 32) ? 32 : 0;
       default:
          return 0;
       }
@@ -369,7 +372,7 @@ bi_optimize_late(nir_shader *nir, uint64_t gpu_id,
    while (late_algebraic_progress) {
       late_algebraic_progress = false;
       NIR_PASS(late_algebraic_progress, nir, bifrost_nir_lower_algebraic_late,
-               pan_arch(gpu_id));
+               pan_arch(gpu_id), bi_use_kraid(nir));
       late_algebraic |= late_algebraic_progress;
    }
 
@@ -1033,6 +1036,9 @@ bifrost_postprocess_nir(nir_shader *nir,
       .cb_data = (void *) &gpu_id,
    };
    NIR_PASS(_, nir, nir_lower_mem_access_bit_sizes, &mem_size_options);
+
+   if (bi_use_kraid(nir))
+      NIR_PASS(_, nir, pan_nir_lower_mem_to_global);
 
    nir_lower_ssbo_options ssbo_opts = {
       .native_loads = gpu_arch >= 9,

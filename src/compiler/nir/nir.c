@@ -571,23 +571,14 @@ nir_find_sampler_variable_with_tex_index(nir_shader *shader,
    return NULL;
 }
 
-/* Annoyingly, qsort_r is not in the C standard library and, in particular, we
- * can't count on it on MSV and Android.  So we stuff the CMP function into
- * each array element.  It's a bit messy and burns more memory but the list of
- * variables should hever be all that long.
- */
-struct var_cmp {
-   nir_variable *var;
-   int (*cmp)(const nir_variable *, const nir_variable *);
-};
-
 static int
 var_sort_cmp(const void *_a, const void *_b, void *_cmp)
 {
-   const struct var_cmp *a = _a;
-   const struct var_cmp *b = _b;
-   assert(a->cmp == b->cmp);
-   return a->cmp(a->var, b->var);
+   const nir_variable *const *a = _a;
+   const nir_variable *const *b = _b;
+   int (*cmp)(const nir_variable *, const nir_variable *) = _cmp;
+
+   return cmp(*a, *b);
 }
 
 void
@@ -600,21 +591,18 @@ nir_sort_variables_with_modes(nir_shader *shader,
    nir_foreach_variable_with_modes(var, shader, modes) {
       ++num_vars;
    }
-   struct var_cmp *vars = ralloc_array(shader, struct var_cmp, num_vars);
+   nir_variable **vars = ralloc_array(shader, nir_variable *, num_vars);
    unsigned i = 0;
    nir_foreach_variable_with_modes_safe(var, shader, modes) {
       exec_node_remove(&var->node);
-      vars[i++] = (struct var_cmp){
-         .var = var,
-         .cmp = cmp,
-      };
+      vars[i++] = var;
    }
    assert(i == num_vars);
 
    util_qsort_r(vars, num_vars, sizeof(*vars), var_sort_cmp, cmp);
 
    for (i = 0; i < num_vars; i++)
-      exec_list_push_tail(&shader->variables, &vars[i].var->node);
+      exec_list_push_tail(&shader->variables, &vars[i]->node);
 
    ralloc_free(vars);
 }
@@ -3759,6 +3747,81 @@ nir_instr_xfb_write_mask(nir_intrinsic_instr *instr)
    }
 
    return mask;
+}
+
+/**
+ * Returns 0 for varying slots that don't have a statically-known component
+ * count.
+ */
+unsigned
+nir_slot_num_components(gl_varying_slot slot, mesa_shader_stage stage) {
+   switch (slot) {
+   case VARYING_SLOT_POS:
+   case VARYING_SLOT_COL0:
+   case VARYING_SLOT_COL1:
+   case VARYING_SLOT_TEX0:
+   case VARYING_SLOT_TEX1:
+   case VARYING_SLOT_TEX2:
+   case VARYING_SLOT_TEX3:
+   case VARYING_SLOT_TEX4:
+   case VARYING_SLOT_TEX5:
+   case VARYING_SLOT_TEX6:
+   case VARYING_SLOT_TEX7:
+   case VARYING_SLOT_BFC0:
+   case VARYING_SLOT_BFC1:
+   case VARYING_SLOT_CLIP_VERTEX:
+   case VARYING_SLOT_CULL_DIST0:
+   case VARYING_SLOT_CULL_DIST1:
+   case VARYING_SLOT_CLIP_DIST0:
+   case VARYING_SLOT_CLIP_DIST1:
+      return 4;
+   case VARYING_SLOT_PSIZ:
+   case VARYING_SLOT_FOGC:
+   case VARYING_SLOT_EDGE:
+   case VARYING_SLOT_PRIMITIVE_ID:
+   case VARYING_SLOT_LAYER:
+   case VARYING_SLOT_VIEWPORT:
+   case VARYING_SLOT_VIEWPORT_MASK:
+   case VARYING_SLOT_FACE: /* or VARYING_SLOT_PRIMITIVE_SHADING_RATE */
+   case VARYING_SLOT_VIEW_INDEX:
+      return 1;
+   case VARYING_SLOT_TESS_LEVEL_OUTER:
+      if (stage == MESA_SHADER_MESH)
+         return 1; /* VARYING_SLOT_PRIMITIVE_COUNT */
+      assert(stage == MESA_SHADER_TESS_CTRL);
+      return 4;
+   case VARYING_SLOT_TESS_LEVEL_INNER:
+      if (stage == MESA_SHADER_MESH)
+         /* This is VARYING_SLOT_PRIMITIVE_INDICES, whose component count
+          * is different between NV_mesh_shader (where it is always 1) and
+          * EXT_mesh_shader (where it depends on the primitive topology). */
+         return 0;
+      assert(stage == MESA_SHADER_TESS_CTRL);
+      return 2;
+   case VARYING_SLOT_BOUNDING_BOX0:
+      if (stage == MESA_SHADER_TASK)
+         return 1; /* VARYING_SLOT_TASK_COUNT */
+      else if (stage == MESA_SHADER_VERTEX || stage == MESA_SHADER_TESS_EVAL ||
+               stage == MESA_SHADER_GEOMETRY)
+         return 1; /* VARYING_SLOT_GS_HEADER_IR3 */
+      else if (stage == MESA_SHADER_FRAGMENT)
+         return 2; /* VARYING_SLOT_PARAM_GEN_AMD */
+      assert(stage == MESA_SHADER_TESS_CTRL);
+      return 4;
+   case VARYING_SLOT_BOUNDING_BOX1:
+      if (stage == MESA_SHADER_MESH)
+         return 1; /* VARYING_SLOT_CULL_PRIMITIVE */
+      else if (stage == MESA_SHADER_GEOMETRY)
+         return 1; /* VARYING_SLOT_GS_VERTEX_FLAGS_IR3 */
+      assert(stage == MESA_SHADER_TESS_CTRL);
+      return 4;
+   case VARYING_SLOT_PNTC:
+      return 2;
+   default:
+      /* All builtin varying slots should have been covered */
+      assert(slot >= VARYING_SLOT_VAR0);
+      return 0;
+   }
 }
 
 /**

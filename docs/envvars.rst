@@ -1650,6 +1650,9 @@ RADV driver environment variables
       rt extensions with older hardware.
    ``hic``
       enable experimental implementation of VK_EXT_host_image_copy on GFX10
+   ``msrtss``
+      enable experimental implementation of
+      VK_EXT_multisampled_render_to_single_sampled
    ``sparse``
       enable experimental sparse binding and sparse residency on GPUs where we don't support it by default (pre Polaris)
    ``transfer_queue``
@@ -1976,24 +1979,6 @@ r600 driver environment variables
 
    ``nocpdma``
       Disable CP DMA
-   ``nosb``
-      Disable sb backend for graphics shaders
-   ``sbcl``
-      Enable sb backend for compute shaders
-   ``sbdry``
-      Don't use optimized bytecode (just print the dumps)
-   ``sbstat``
-      Print optimization statistics for shaders
-   ``sbdump``
-      Print IR dumps after some optimization passes
-   ``sbnofallback``
-      Abort on errors instead of fallback
-   ``sbdisasm``
-      Use sb disassembler for shader dumps
-   ``sbsafemath``
-      Disable unsafe math optimizations
-   ``nirsb``
-      Enable NIR with SB optimizer
    ``tex``
       Print texture info
    ``nir``
@@ -2058,8 +2043,6 @@ r600 driver environment variables
       Disable GTT write combining
    ``check_vm``
       Check VM faults and dump debug info.
-   ``unsafemath``
-      Enable unsafe math shader optimizations
 
 .. envvar:: R600_DEBUG_COMPUTE
 
@@ -2074,6 +2057,11 @@ r600 driver environment variables
 .. envvar:: R600_HYPERZ
 
    If set to ``false``, disables HyperZ optimizations. Defaults to ``true``.
+
+.. envvar:: R600_TRACE
+
+   If set to a file, print a trace of the commmand stream.
+   For debugging only. The file will quickly become huge.
 
 .. envvar:: R600_NIR_DEBUG
 
@@ -2105,6 +2093,12 @@ r600 driver environment variables
       Log texture ops
    ``trans``
       Log generic translation messages
+
+.. envvar:: RADEON_VA
+
+   If set to ``true``, enables virtual memory.
+   Only supprted on Cayman and Aruba.
+   May reduce CPU overhead but have known issues.
 
 r300 driver environment variables
 ---------------------------------

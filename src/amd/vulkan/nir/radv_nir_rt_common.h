@@ -9,7 +9,7 @@
 
 #include "nir/nir_defines.h"
 
-#include "tools/radv_rti.h"
+#include "tools/radv_gamma.h"
 
 struct radv_compiler_info;
 
@@ -128,6 +128,8 @@ struct radv_ray_traversal_args {
    nir_def *cull_mask;
    nir_def *origin;
    nir_def *tmin;
+   /* The original tMax value traversal was started with. */
+   nir_def *tmax;
    nir_def *dir;
 
    struct radv_ray_traversal_vars vars;

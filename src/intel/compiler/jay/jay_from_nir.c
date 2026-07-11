@@ -55,6 +55,11 @@ typedef struct jay_vs_payload {
    jay_def attributes[30 * 4];
 } jay_vs_payload;
 
+typedef struct jay_tcs_payload {
+   jay_def primitive_id;
+   jay_def icp_handles;
+} jay_tcs_payload;
+
 typedef struct jay_tes_payload {
    jay_def tess_coord;
    jay_def patch_inputs[32 * 4];
@@ -112,6 +117,7 @@ struct nir_to_jay_state {
 
       union {
          jay_vs_payload vs;
+         jay_tcs_payload tcs;
          jay_tes_payload tes;
          jay_cs_payload cs;
          jay_fs_payload fs;
@@ -1189,23 +1195,40 @@ jay_emit_mem_access(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
     * residencyNonResidentStrict guarantees. Due to the above, we need to make
     * these operations uncached.
     */
+
+   /* Skip L1 for coherent/volatile and URB access. */
+   bool bypass_l1 = volatile_access || coherent_access || urb;
+
+   /* Xe2 has a better L3 that can deal with null tiles. On older platforms,
+    * all caches have to be bypassed for volatile.
+    */
+   bool bypass_l3 = volatile_access && (devinfo->ver < 20);
+
+   /* Skip L3 for URB */
+   bypass_l3 |= urb;
+
+   /* Disable LSC data port L1 cache scheme for the TGM load/store for RT
+    * shaders (see HSD 18038444588).
+    */
+   bypass_l1 |= devinfo->ver >= 20 && sfid == GEN_SFID_TGM &&
+                mesa_shader_stage_is_rt(b->shader->stage);
+
+   unsigned atomic_cache_mode = LSC_CACHE(devinfo, STORE, L1UC_L3WB);
+   unsigned store_cache_mode = LSC_CACHE(devinfo, STORE, L1STATE_L3MOCS);
+   unsigned load_cache_mode = LSC_CACHE(devinfo, LOAD, L1STATE_L3MOCS);
+
+   if (bypass_l3) {
+      store_cache_mode = LSC_CACHE(devinfo, STORE, L1UC_L3UC);
+      load_cache_mode = LSC_CACHE(devinfo, LOAD, L1UC_L3UC);
+   } else if (bypass_l1) {
+      store_cache_mode = LSC_CACHE(devinfo, STORE, L1UC_L3WB);
+      load_cache_mode = LSC_CACHE(devinfo, LOAD, L1UC_L3C);
+   }
+
    unsigned cache =
-      urb ? LSC_CACHE(devinfo, STORE, L1UC_L3UC) :
-      lsc_opcode_is_atomic(op) ?
-            LSC_CACHE(devinfo, STORE, L1UC_L3WB) :
-      volatile_access ?
-            (devinfo->ver >= 20 ?
-                /* Xe2 has a better L3 that can deal with null tiles.*/
-                (!has_dest ? LSC_CACHE(devinfo, STORE, L1UC_L3WB) :
-                             LSC_CACHE(devinfo, LOAD, L1UC_L3C)) :
-                /* On older platforms, all caches have to be bypassed. */
-                (!has_dest ? LSC_CACHE(devinfo, STORE, L1UC_L3UC) :
-                             LSC_CACHE(devinfo, LOAD, L1UC_L3UC))) :
-            /* Skip L1 for coherent accesses */
-         coherent_access ? (!has_dest ? LSC_CACHE(devinfo, STORE, L1UC_L3WB) :
-                                        LSC_CACHE(devinfo, LOAD, L1UC_L3C)) :
-      !has_dest          ? LSC_CACHE(devinfo, STORE, L1STATE_L3MOCS) :
-                           LSC_CACHE(devinfo, LOAD, L1STATE_L3MOCS);
+      lsc_opcode_is_atomic(op) ? atomic_cache_mode :
+      lsc_opcode_is_store(op) ? store_cache_mode :
+      load_cache_mode;
 
    ASSERTED const unsigned max_imm_bits =
       brw_max_immediate_offset_bits(surf_type);
@@ -1368,19 +1391,13 @@ build_rt_header_and_srcs(struct nir_to_jay_state *nj, nir_intrinsic_instr *instr
     */
    jay_emit_rt_lsc_fence(nj, LSC_FENCE_LOCAL, LSC_FLUSH_TYPE_NONE);
 
-   /* Only dword 0-1 and 4 matter for the header. The rest of the GRF is
-    * defined as "reserved - must be zero". In practice, it doesn't matter and
-    * we pass garbage to avoid moves. In strict mode, we do the
-    * obvious/inefficient thing to comply with the bspec.
+   /*
+    * TODO: Look into efficient RA implications for moving all zeros
     */
-   bool strict = (jay_debug & JAY_DBG_STRICT);
-   jay_def reserved = strict ? jay_MOV_u32(b, 0) : jay_null();
-   unsigned length =
-      (strict || instr->intrinsic != nir_intrinsic_trace_ray_intel) ?
-      jay_ugpr_per_grf(nj->s) : 6;
+   unsigned length = jay_ugpr_per_grf(nj->s);
    jay_def ugprs[JAY_MAX_DEF_LENGTH] = {};
    for (unsigned i = 0; i < length; ++i) {
-      ugprs[i] = reserved;
+      ugprs[i] = jay_MOV_u32(b, 0);
    }
 
    if (instr->intrinsic == nir_intrinsic_trace_ray_intel ||
@@ -1405,7 +1422,20 @@ build_rt_header_and_srcs(struct nir_to_jay_state *nj, nir_intrinsic_instr *instr
    srcs[len++] = jay_collect_vectors(b, ugprs, length);
 
    if (instr->intrinsic == nir_intrinsic_trace_ray_intel) {
-      srcs[len++] = jay_as_gpr(b, nj_src(instr->src[1]));
+      jay_def payload = jay_as_gpr(b, nj_src(instr->src[1]));
+
+      if (!synchronous) {
+         jay_def packed_stack_ids = jay_extract_range(nj->payload.u1, 0,
+                                                      s->dispatch_width / 2);
+         jay_def stack_id = jay_alloc_def(b, GPR, 1);
+         jay_CVT(b, JAY_TYPE_U32, stack_id, packed_stack_ids,
+                 JAY_TYPE_U16, JAY_ROUND, 0);
+
+         payload = jay_BFI2_u32(b, s->devinfo->ver >= 20 ? 0x0fff0000 : 0x07ff0000,
+                                stack_id, payload);
+      }
+
+      srcs[len++] = payload;
    } else if (instr->intrinsic == nir_intrinsic_btd_retire_intel ||
               instr->intrinsic == nir_intrinsic_btd_spawn_intel) {
       /* Bitgroup 1 - stackIDs, for SIMD16, we need 8 Dwords, each will contain
@@ -1668,6 +1698,8 @@ jay_emit_intrinsic(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
       mesa_shader_stage_is_compute(s->stage) ? &nj->payload.cs : NULL;
    jay_fs_payload *fs =
       s->stage == MESA_SHADER_FRAGMENT ? &nj->payload.fs : NULL;
+   jay_tcs_payload *tcs =
+      s->stage == MESA_SHADER_TESS_CTRL ? &nj->payload.tcs : NULL;
    jay_tes_payload *tes =
       s->stage == MESA_SHADER_TESS_EVAL ? &nj->payload.tes : NULL;
 
@@ -1744,9 +1776,9 @@ jay_emit_intrinsic(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
          jay_emit_memory_barrier(nj, intr);
       }
 
-      if ((cs && nir_intrinsic_execution_scope(intr) == SCOPE_WORKGROUP) &&
-          !jay_workgroup_is_one_subgroup(b, nj->nir)) {
-
+      if (nir_intrinsic_execution_scope(intr) == SCOPE_WORKGROUP &&
+          ((cs && !jay_workgroup_is_one_subgroup(b, nj->nir)) ||
+           (tcs && s->prog_data->tcs.instances != 1))) {
          jay_emit_signal_barrier(b, nj);
          s->prog_data->cs.uses_barrier = true;
       }
@@ -1947,9 +1979,32 @@ jay_emit_intrinsic(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
       break;
 
    case nir_intrinsic_load_primitive_id:
-      assert(tes);
-      assert(nj->s->prog_data->tes.include_primitive_id);
-      jay_copy(b, dst, jay_extract(nj->payload.u0, 1));
+      if (tcs) {
+         assert(nj->s->prog_data->tcs.include_primitive_id);
+         jay_copy(b, dst, tcs->primitive_id);
+      } else {
+         assert(tes);
+         assert(nj->s->prog_data->tes.include_primitive_id);
+         jay_copy(b, dst, jay_extract(nj->payload.u0, 1));
+      }
+      break;
+
+   case nir_intrinsic_load_invocation_id:
+      assert(tcs);
+      /* "Instance ID" from the thread payload */
+      jay_CVT(b, JAY_TYPE_U32, dst, jay_extract(nj->payload.u0, 2), JAY_TYPE_U8,
+              JAY_ROUND, 0);
+      break;
+
+   case nir_intrinsic_load_urb_input_handle_indexed_intel:
+      assert(tcs);
+      if (nir_src_is_const(intr->src[0])) {
+         jay_copy(b, dst,
+                  jay_extract(tcs->icp_handles, nir_src_as_uint(intr->src[0])));
+      } else {
+         jay_VECTOR_EXTRACT(b, JAY_TYPE_U32, dst, tcs->icp_handles,
+                            jay_SHL_u32(b, nj_src(intr->src[0]), 6));
+      }
       break;
 
    case nir_intrinsic_load_urb_input_handle_intel:
@@ -2143,6 +2198,14 @@ jay_emit_intrinsic(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
       jay_CVT(b, JAY_TYPE_U32, dst, packed_stack_ids, JAY_TYPE_U16, JAY_ROUND, 0);
       break;
    }
+
+   case nir_intrinsic_load_btd_global_arg_addr_intel:
+      jay_MOV(b, dst, jay_collect_vectors(b, &nj->payload.inline_data[0], 2));
+      break;
+
+   case nir_intrinsic_load_btd_local_arg_addr_intel:
+      jay_MOV(b, dst, jay_collect_vectors(b, &nj->payload.inline_data[2], 2));
+      break;
 
    case nir_intrinsic_dpas_intel:
       jay_emit_dpas(nj, intr);
@@ -2856,7 +2919,7 @@ jay_emit_loop(struct nir_to_jay_state *nj, nir_loop *nloop)
 
    /* Emit the backedge */
    jay_inst *jump = jay_block_ending_jump(nj->current_block);
-   if (jump && jump->op == JAY_OPCODE_BREAK) {
+   if (jump && (jump->op == JAY_OPCODE_BREAK || jump->op == JAY_OPCODE_HALT)) {
       jump->op = JAY_OPCODE_LOOP_ONCE;
    } else {
       jay_block_add_successor(nj->current_block, loop_header, GPR);
@@ -2986,7 +3049,8 @@ jay_emit_eot(struct nir_to_jay_state *nj)
       }
    }
 
-   if (mesa_shader_stage_is_compute(nj->nir->info.stage)) {
+   if (mesa_shader_stage_is_compute(nj->nir->info.stage) ||
+       mesa_shader_stage_is_rt(nj->nir->info.stage)) {
       jay_def u0 = nj->payload.u0;
 
       /* Vectorized copy into the EOT register. Not necessary for correctness
@@ -3000,20 +3064,46 @@ jay_emit_eot(struct nir_to_jay_state *nj)
       jay_SEND(b, .sfid = GEN_SFID_MESSAGE_GATEWAY, .eot = true, .msg_desc = 0,
                .srcs = &u0, .nr_srcs = 1, .type = JAY_TYPE_U32,
                .uniform = true);
-   } else if (nj->nir->info.stage == MESA_SHADER_VERTEX ||
-              nj->nir->info.stage == MESA_SHADER_TESS_EVAL) {
+   } else if (nj->nir->info.stage >= MESA_SHADER_VERTEX &&
+              nj->nir->info.stage <= MESA_SHADER_GEOMETRY) {
       jay_block *block = jay_last_source_block(nj->f);
       jay_inst *I = jay_last_inst(block);
 
-      assert(!nj->needs_final_halt && "halt not supported with URB");
+      if ((I && I->op == JAY_OPCODE_SEND) &&
+          jay_send_sfid(I) == GEN_SFID_URB &&
+          !nj->needs_final_halt) {
+         /* Pluck out the existing final SEND and put it in the exit block */
+         jay_set_send_eot(I, true);
+         jay_remove_instruction(I);
+         jay_builder_insert(b, I);
+      } else {
+         /* There's no SEND to reuse, make a noop write for EOT */
+         const gen_lsc_ex_desc gen_ex_desc = {
+            .addr_type = LSC_ADDR_SURFTYPE_FLAT,
+         };
+         uint64_t ex_desc =
+            gen_lsc_ex_desc_encode(nj->devinfo, &gen_ex_desc, NULL);
 
-      /* TODO: What if this isn't the case? Do we need a no-op store...? */
-      assert(I && I->op == JAY_OPCODE_SEND && jay_send_sfid(I) == GEN_SFID_URB);
+         uint64_t desc =
+            (ex_desc << 32) |
+            lsc_msg_desc(nj->devinfo, LSC_OP_STORE, LSC_ADDR_SURFTYPE_FLAT,
+                         LSC_ADDR_SIZE_A32, LSC_DATA_SIZE_D32, 1, false,
+                         LSC_CACHE(nj->devinfo, STORE, L1UC_L3UC));
 
-      /* Pluck out the final SEND and put it in the exit block */
-      jay_set_send_eot(I, true);
-      jay_remove_instruction(I);
-      jay_builder_insert(b, I);
+         jay_def never = jay_alloc_def(b, FLAG, 1);
+         jay_MOV(b, never, jay_imm(0));
+
+         jay_def srcs[2];
+         for (unsigned i = 0; i < 2; i++) {
+            srcs[i] = jay_alloc_def(b, UGPR, 1);
+            jay_UNDEF(b, srcs[i]);
+         }
+
+         I = jay_SEND(b, .sfid = GEN_SFID_URB, .msg_desc = desc, .srcs = srcs,
+                      .nr_srcs = 2, .type = JAY_TYPE_U32, .uniform = true,
+                      .eot = true);
+         I = jay_add_predicate(b, I, never);
+      }
    }
 }
 
@@ -3100,6 +3190,23 @@ setup_vertex_payload(struct nir_to_jay_state *nj, struct payload_builder *p)
 }
 
 static void
+setup_tess_ctrl_payload(struct nir_to_jay_state *nj, struct payload_builder *p)
+{
+   nj->payload.urb_handle = read_payload(p, GPR);
+
+   if (nj->s->prog_data->tcs.include_primitive_id)
+      nj->payload.tcs.primitive_id = read_payload(p, GPR);
+
+   nj->payload.tcs.icp_handles =
+      read_vector_payload(p, GPR,
+                          nj->s->prog_data->tcs.input_vertices ?:
+                             BRW_MAX_TCS_INPUT_VERTICES);
+
+   setup_payload_dispatch_start(nj, p);
+   setup_payload_push(nj, p);
+}
+
+static void
 setup_tess_eval_payload(struct nir_to_jay_state *nj, struct payload_builder *p)
 {
    nj->payload.tes.tess_coord = read_vector_payload(p, GPR, 3);
@@ -3127,6 +3234,26 @@ setup_compute_payload(struct nir_to_jay_state *nj, struct payload_builder *p)
    for (unsigned i = 0; i < jay_ugpr_per_grf(nj->s); ++i) {
       nj->payload.inline_data[i] = read_payload(p, UGPR);
    };
+
+   setup_payload_dispatch_start(nj, p);
+}
+
+static void
+setup_bindless_payload(struct nir_to_jay_state *nj, struct payload_builder *p)
+{
+   /* Bspec 56937: BTD R1 has stack IDs each 16-bit wide, so each Dword has 2
+    * stack ids.
+    */
+   nj->payload.u1 = read_vector_payload(p, UGPR, jay_ugpr_per_grf(nj->s));
+
+   /* Bspec 56938: BTD R2:
+    *
+    *    channel 0-2 (2 Dwords) - Global argument pointer
+    *    channel 2-3 (2 Dwords) - Local argument pointer
+    */
+   for (unsigned i = 0; i < jay_ugpr_per_grf(nj->s); ++i) {
+      nj->payload.inline_data[i] = read_payload(p, UGPR);
+   }
 
    setup_payload_dispatch_start(nj, p);
 }
@@ -3388,6 +3515,9 @@ jay_setup_payload(struct nir_to_jay_state *nj)
    case MESA_SHADER_VERTEX:
       setup_vertex_payload(nj, &p);
       break;
+   case MESA_SHADER_TESS_CTRL:
+      setup_tess_ctrl_payload(nj, &p);
+      break;
    case MESA_SHADER_TESS_EVAL:
       setup_tess_eval_payload(nj, &p);
       break;
@@ -3397,6 +3527,14 @@ jay_setup_payload(struct nir_to_jay_state *nj)
    case MESA_SHADER_COMPUTE:
    case MESA_SHADER_KERNEL:
       setup_compute_payload(nj, &p);
+      break;
+   case MESA_SHADER_RAYGEN:
+   case MESA_SHADER_ANY_HIT:
+   case MESA_SHADER_CLOSEST_HIT:
+   case MESA_SHADER_MISS:
+   case MESA_SHADER_INTERSECTION:
+   case MESA_SHADER_CALLABLE:
+      setup_bindless_payload(nj, &p);
       break;
    default:
       UNREACHABLE("unimplemented shader stages");
@@ -3496,11 +3634,10 @@ jay_gather_stats(const jay_shader *s, struct genisa_stats *stats)
 
       stats->loops += I->op == JAY_OPCODE_WHILE;
       stats->sends += I->op == JAY_OPCODE_SEND;
-
-      /* XXX: Write a real cycle model */
-      stats->cycles++;
    }
 
+   /* It's unclear how to report cycle counts with multiple functions... */
+   stats->cycles = jay_estimate_cycles(jay_shader_get_entrypoint((void *) s));
    stats->spills = s->spills;
    stats->fills = s->fills;
    stats->sends -= (s->spills + s->fills);
@@ -3584,6 +3721,12 @@ jay_compile(const struct intel_device_info *devinfo,
 
    JAY_PASS(s, jay_lower_pre_ra);
    JAY_PASS(s, jay_partition_grf);
+
+   if (debug) {
+      fprintf(stdout, "Jay shader:\n\n");
+      jay_print(stdout, s);
+   }
+
    JAY_PASS(s, jay_register_allocate);
    JAY_PASS(s, jay_lower_post_ra);
    JAY_PASS(s, jay_lower_post_sched, nir->info.float_controls_execution_mode,
@@ -3660,6 +3803,8 @@ jay_compile(const struct intel_device_info *devinfo,
       prog_data->cs.prog_offset[i] = 0;
       prog_data->cs.prog_mask = BITFIELD_BIT(i);
       prog_data->cs.prog_spilled = s->scratch_size > 0; /* XXX */
+   } else if (brw_shader_stage_is_bindless(s->stage)) {
+      prog_data->bs.simd_size = simd_width;
    }
 
    prog_data->base.program_size = bin->size;

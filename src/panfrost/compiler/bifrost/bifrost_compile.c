@@ -3986,6 +3986,52 @@ bi_gather_stats(bi_context *ctx, unsigned size, struct bifrost_stats *out)
    out->cycles = MAX2(out->arith, MAX3(out->t, out->v, out->ldst));
 }
 
+static float
+va_compute_alu_bound(unsigned arch, float fma, float cvt, float sfu)
+{
+   switch (arch) {
+   case 9:
+      return MAX3(fma, cvt, sfu);
+   case 10:
+      /* Each fetch unit has local arithmetic pipelines for FMA and CVT, and a
+       * shared 1/4 width SFU.  It can only issue a single instruction at a time.
+       */
+      return MAX2(fma + cvt + (sfu / 4.0f), sfu);
+   case 11:
+   case 12: {
+      /* Each fetch unit can issue two operations, one to each issue port, per
+       * clock.
+       * Port 0 can handle any instruction type.
+       * Port 1 can handle only FMA instructions.
+       */
+      fma *= 2.0f;
+      float port0_base = cvt + (sfu / 4.0f);
+      float port0_fma = MAX2(0.0f, fma - port0_base);
+      float port_cost = port0_base + port0_fma;
+      return MAX2(port_cost, fma);
+   }
+   case 13: {
+      /* Arithmetic units each fetch unit can issue two operations, one to each
+       * issue port, per clock.
+       * Port 0 can handle FMA+CVT+SFU instruction types.
+       * Port 1 can handle FMA+CVT instruction types.
+       */
+      fma *= 2.0f;
+      cvt *= 2.0f;
+      float port0_base = sfu / 4.0f;
+      float port0_other = MAX2(0.0f, fma + cvt - port0_base) / 2.0f;
+      float port_cost = port0_base + port0_other;
+      return MAX2(port_cost, sfu);
+   }
+   case 14:
+   case 15:
+      return fma + cvt + sfu;
+   default:
+      assert(!"Unsupported architecture");
+      return fma + cvt + sfu;
+   }
+}
+
 static void
 va_count_stats(bi_context *ctx, unsigned nr_ins, unsigned size,
                const struct va_stats *counts,
@@ -3999,8 +4045,9 @@ va_count_stats(bi_context *ctx, unsigned nr_ins, unsigned size,
       model = pan_get_model(((uint64_t)0x9001) << 16, 0);
       assert(model);
    }
+   unsigned arch = pan_arch(ctx->inputs->gpu_id);
 
-   struct valhall_stats stats_abs = {
+   struct valhall_stats stats = {
       .instrs = nr_ins,
       .code_size = size,
       .fma = ((float)counts->fma),
@@ -4017,20 +4064,27 @@ va_count_stats(bi_context *ctx, unsigned nr_ins, unsigned size,
       .registers_used = util_bitcount64(counts->reg_mask),
       .uniforms_used = counts->nr_fau_uniforms,
    };
-   struct valhall_stats stats = stats_abs;
-   stats.fma /= model->rates.fma;
-   stats.cvt /= model->rates.fma;
-   stats.sfu /= (model->rates.fma / 4.0);
-   stats.v /= 16.0;
-   stats.t /= model->rates.texel;
-   stats.ls /= 1.0;
 
-   const bool output_normalized = !(bifrost_debug & BIFROST_DBG_STATSABS);
-   *out = output_normalized ? stats : stats_abs;
+   /* v14 doesn't have rates anymore */
+   const bool output_normalized =
+      !(arch >= 14 || !!(bifrost_debug & BIFROST_DBG_STATSABS));
 
-   /* Calculate the bound */
-   out->cycles = MAX2(MAX3(stats.fma, stats.cvt, stats.sfu),
-                      MAX3(stats.v, stats.t, stats.ls));
+   if (output_normalized) {
+      assert(model->rates.fma != 0 && model->rates.cvt != 0 &&
+             model->rates.sfu != 0 && model->rates.varying != 0 &&
+             model->rates.texel != 0);
+      stats.fma /= model->rates.fma;
+      stats.cvt /= model->rates.cvt;
+      stats.sfu /= model->rates.sfu;
+      stats.v /= model->rates.varying;
+      stats.t /= model->rates.texel;
+      stats.ls /= 1.0;
+   }
+
+   stats.alu = va_compute_alu_bound(arch, stats.fma, stats.cvt, stats.sfu);
+   stats.cycles = MAX4(out->alu, stats.v, stats.t, stats.ls);
+
+   *out = stats;
 }
 
 static unsigned
@@ -4220,6 +4274,72 @@ compare_u32(const void* a, const void* b, void* _)
    const uint32_t va = (uintptr_t)a;
    const uint32_t vb = (uintptr_t)b;
    return va - vb;
+}
+
+static const char *
+idvs_variant_suffix(enum bi_idvs_mode idvs)
+{
+   switch (idvs) {
+   case BI_IDVS_VARYING:
+      return "_var";
+   case BI_IDVS_POSITION:
+      return "_pos";
+   case BI_IDVS_ALL:
+      return "_all";
+   case BI_IDVS_NONE:
+      return "";
+   default:
+      return "invalid";
+   }
+}
+
+static void
+bi_dump_shader(bi_context *ctx, struct util_dynarray *binary,
+               enum bi_idvs_mode idvs, uint32_t offset, uint32_t size)
+{
+   const char *dump_dir = os_get_option_secure("BIFROST_MESA_DUMP_DIR");
+   if (dump_dir == NULL)
+      return;
+
+   bool has_src_blake3 = false;
+   for (uint32_t i = 0; i < BLAKE3_OUT_LEN && !has_src_blake3; ++i)
+      has_src_blake3 |= ctx->nir->info.source_blake3[i] != 0;
+
+   /* Only shaders with a unique source identifier can be dumped. */
+   if (!has_src_blake3) {
+      fprintf(
+         stderr,
+         "Warning: Skip dump of shader %s (stage=%s) without source hash\n",
+         ctx->nir->info.name ?: "<unnamed>",
+         _mesa_shader_stage_to_abbrev(ctx->stage));
+      return;
+   }
+
+   const char *id = NULL;
+   char blake3_str[BLAKE3_HEX_LEN] = {0};
+   _mesa_blake3_format(blake3_str, ctx->nir->info.source_blake3);
+   id = &blake3_str[0];
+
+   char path[PATH_MAX + 1] = {0};
+   snprintf(path, sizeof(path), "%s/%s.%s%s.bin", dump_dir, id,
+            _mesa_shader_stage_to_file_ext(ctx->stage),
+            idvs_variant_suffix(idvs));
+
+   FILE *dump_stream = fopen(path, "w");
+
+   unsigned written = 0;
+   if (dump_stream)
+      written = fwrite(binary->data, sizeof(char), size, dump_stream);
+
+   if (written == size) {
+      fprintf(stderr, "PAN: Dumped shader %s to %s\n",
+              ctx->nir->info.name ?: "<unnamed>", path);
+   } else {
+      fprintf(stderr, "PAN: Failed to dump %s to %s\n",
+              ctx->nir->info.name ?: "<unnamed>", path);
+   }
+
+   fclose(dump_stream);
 }
 
 static bi_context *
@@ -4492,6 +4612,8 @@ bi_compile_variant_nir(nir_shader *nir,
       bi_pack_valhall(ctx, binary);
    }
 
+   bi_dump_shader(ctx, binary, idvs, offset, binary->size - offset);
+
    if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal) {
       if (ctx->arch <= 8) {
          disassemble_bifrost(stderr, binary->data + offset,
@@ -4633,11 +4755,14 @@ bi_compile_variant(nir_shader *nir,
    ralloc_free(ctx);
 }
 
+/* Find all predecessors of b that are dominated by b. */
 static void
-find_all_predecessors(const bi_context *ctx, bi_block *b, BITSET_WORD *out)
+find_all_dominated_predecessors(const bi_context *ctx, bi_block *b,
+                                BITSET_WORD *out, BITSET_WORD *dominators)
 {
    assert(out);
    assert(b);
+   assert(dominators);
 
    BITSET_CLEAR_COUNT(out, 0, ctx->num_blocks);
 
@@ -4647,7 +4772,8 @@ find_all_predecessors(const bi_context *ctx, bi_block *b, BITSET_WORD *out)
    for (uint32_t iter = 0; iter < ctx->num_blocks - 1; ++iter) {
       bi_foreach_block(ctx, block) {
          bi_foreach_successor(block, succ) {
-            if (succ == b || BITSET_TEST(out, succ->index)) {
+            if ((succ == b || BITSET_TEST(out, succ->index)) &&
+                BITSET_TEST(dominators, block->index)) {
                BITSET_SET(out, block->index);
                break;
             }
@@ -4659,8 +4785,6 @@ find_all_predecessors(const bi_context *ctx, bi_block *b, BITSET_WORD *out)
 void
 bi_find_loop_blocks(const bi_context *ctx, bi_block *header, BITSET_WORD *out)
 {
-   find_all_predecessors(ctx, header, out);
-
    BITSET_WORD *dominators = BITSET_RZALLOC(NULL, ctx->num_blocks);
    bi_foreach_block(ctx, b) {
       if (bi_block_dominates(header, b)) {
@@ -4668,10 +4792,7 @@ bi_find_loop_blocks(const bi_context *ctx, bi_block *header, BITSET_WORD *out)
       }
    }
 
-   /* If the header dominates b and is also the successor of b, then b
-    * is in the loop of that header.
-    */
-   __bitset_and(out, out, dominators, BITSET_WORDS(ctx->num_blocks));
+   find_all_dominated_predecessors(ctx, header, out, dominators);
 
    /* The header is not a predecessor of itself, so add it separately. */
    BITSET_SET(out, header->index);
@@ -4789,21 +4910,18 @@ valhall_stats_verbose(FILE *f, bi_context *ctx, const struct valhall_stats *stat
    va_gather_stats(ctx, stats->code_size, &max_stats, GATHER_STATS_MAX);
 
    /* now print instruction statistics */
-   float arith = MAX3(stats->fma, stats->sfu, stats->cvt);
-   float min_arith = MAX3(min_stats.fma, min_stats.sfu, min_stats.cvt);
-   float max_arith = MAX3(max_stats.fma, max_stats.sfu, max_stats.cvt);
    static const char *statname[] = {
       "A", "FMA", "CVT", "SFU", "LS", "V", "T"
    };
    float statval[] = {
-      arith, stats->fma, stats->cvt, stats->sfu, stats->ls, stats->v, stats->t,
+      stats->alu, stats->fma, stats->cvt, stats->sfu, stats->ls, stats->v, stats->t,
    };
    float min_statval[] = {
-      min_arith, min_stats.fma, min_stats.cvt, min_stats.sfu,
+      min_stats.alu, min_stats.fma, min_stats.cvt, min_stats.sfu,
       min_stats.ls, min_stats.v, min_stats.t,
    };
    float max_statval[] = {
-      max_arith, max_stats.fma, max_stats.cvt, max_stats.sfu,
+      max_stats.alu, max_stats.fma, max_stats.cvt, max_stats.sfu,
       max_stats.ls, max_stats.v, max_stats.t,
    };
    unsigned n = ARRAY_SIZE(statval);

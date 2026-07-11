@@ -266,6 +266,9 @@ radv_postprocess_nir(const struct radv_compiler_info *compiler_info, const struc
    const bool use_llvm = compiler_info->key.use_llvm;
    bool progress;
 
+   if (stage->nir->info.uses_printf)
+      NIR_PASS(_, stage->nir, radv_nir_lower_printf, compiler_info->debug.debug_nir);
+
    /* Wave and workgroup size should already be filled. */
    assert(stage->info.wave_size && stage->info.workgroup_size);
 
@@ -543,7 +546,7 @@ radv_postprocess_nir(const struct radv_compiler_info *compiler_info, const struc
    }
 
    NIR_PASS(_, stage->nir, ac_nir_lower_mem_access_bit_sizes, gfx_level, use_llvm);
-   NIR_PASS(_, stage->nir, ac_nir_lower_global_access);
+   NIR_PASS(_, stage->nir, ac_nir_lower_global_access, gfx_level);
    NIR_PASS(_, stage->nir, nir_lower_int64);
 
    if (compiler_info->key.mitigate_smem_with_null_prt)

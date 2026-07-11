@@ -180,7 +180,7 @@ ac_nir_sleep(nir_builder *b, unsigned num_cycles)
 /* Load argument with index start from arg plus relative_index. */
 nir_def *
 ac_nir_load_arg_at_offset(nir_builder *b, const struct ac_shader_args *ac_args,
-                          struct ac_arg arg, unsigned relative_index)
+                          struct ac_arg arg, unsigned relative_index, bool scalar_wg_div)
 {
    assert(arg.used);
 
@@ -190,23 +190,28 @@ ac_nir_load_arg_at_offset(nir_builder *b, const struct ac_shader_args *ac_args,
    if (ac_args->args[arg_index].skip)
       return nir_undef(b, num_components, 32);
 
-   if (ac_args->args[arg_index].file == AC_ARG_SGPR)
-      return nir_load_scalar_arg_amd(b, num_components, .base = arg_index);
-   else
+   if (ac_args->args[arg_index].file == AC_ARG_SGPR) {
+      if (scalar_wg_div)
+         return nir_load_scalar_arg_wg_div_amd(b, num_components, .base = arg_index);
+      else
+         return nir_load_scalar_arg_amd(b, num_components, .base = arg_index);
+   } else {
+      assert(!scalar_wg_div);
       return nir_load_vector_arg_amd(b, num_components, .base = arg_index);
+   }
 }
 
 nir_def *
 ac_nir_load_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg)
 {
-   return ac_nir_load_arg_at_offset(b, ac_args, arg, 0);
+   return ac_nir_load_arg_at_offset(b, ac_args, arg, 0, false);
 }
 
 nir_def *
 ac_nir_load_arg_upper_bound(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg,
                             unsigned upper_bound)
 {
-   nir_def *value = ac_nir_load_arg_at_offset(b, ac_args, arg, 0);
+   nir_def *value = ac_nir_load_arg_at_offset(b, ac_args, arg, 0, false);
    nir_intrinsic_set_arg_upper_bound_u32_amd(nir_def_as_intrinsic(value),
                                              upper_bound);
    return value;
@@ -242,6 +247,14 @@ ac_nir_unpack_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct a
                   unsigned rshift, unsigned bitwidth)
 {
    nir_def *value = ac_nir_load_arg(b, ac_args, arg);
+   return ac_nir_unpack_value(b, value, rshift, bitwidth);
+}
+
+nir_def *
+ac_nir_unpack_arg_wg_div(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg,
+                         unsigned rshift, unsigned bitwidth)
+{
+   nir_def *value = ac_nir_load_arg_at_offset(b, ac_args, arg, 0, true);
    return ac_nir_unpack_value(b, value, rshift, bitwidth);
 }
 
@@ -1060,6 +1073,15 @@ max_alu_src_identity_swizzle(const nir_alu_instr *alu, const nir_alu_src *src)
 uint8_t
 ac_nir_opt_vectorize_cb(const nir_instr *instr, const void *data)
 {
+   if (instr->type == nir_instr_type_phi) {
+      nir_phi_instr *phi = nir_instr_as_phi(instr);
+
+      if (phi->def.bit_size != 1 && phi->def.bit_size < 32)
+         return 32 / phi->def.bit_size;
+
+      return 1;
+   }
+
    if (instr->type != nir_instr_type_alu)
       return 0;
 

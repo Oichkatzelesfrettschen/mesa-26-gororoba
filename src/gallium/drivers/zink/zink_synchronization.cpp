@@ -370,8 +370,7 @@ struct update_unordered_access_and_get_cmdbuf<false> {
            */
           (!res->obj->unordered_read || !res->obj->unordered_write)) {
          cmdbuf = ctx->bs->cmdbuf;
-         res->obj->unordered_write = false;
-         res->obj->unordered_read = false;
+         zink_resource_disable_unordered(res, true);
          /* it's impossible to detect this from the caller
        * there should be no valid case where this barrier can occur inside a renderpass
        */
@@ -380,8 +379,7 @@ struct update_unordered_access_and_get_cmdbuf<false> {
          cmdbuf = is_write ? zink_get_cmdbuf(ctx, NULL, res) : zink_get_cmdbuf(ctx, res, NULL);
          /* force subsequent barriers to be ordered to avoid layout desync */
          if (cmdbuf != ctx->bs->reordered_cmdbuf) {
-            res->obj->unordered_write = false;
-            res->obj->unordered_read = false;
+            zink_resource_disable_unordered(res, true);
          }
       }
       return cmdbuf;
@@ -396,9 +394,6 @@ apply_new_access(struct zink_context *ctx, struct zink_resource *res, VkAccessFl
       if (is_write) {
          res->obj->unordered_access = flags;
          res->obj->unordered_access_stage = pipeline;
-         /* these should get automatically emitted during submission */
-         ctx->bs->unordered_write_access |= flags;
-         ctx->bs->unordered_write_stages |= pipeline;
       } else {
          if (zink_resource_access_is_write(res->obj->unordered_access)) {
             res->obj->unordered_access = 0;
@@ -525,8 +520,6 @@ zink_resource_image_transfer_dst_barrier(struct zink_context *ctx, struct zink_r
       res->obj->last_write = VK_ACCESS_TRANSFER_WRITE_BIT;
       res->obj->unordered_access_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 
-      ctx->bs->unordered_write_access |= VK_ACCESS_TRANSFER_WRITE_BIT;
-      ctx->bs->unordered_write_stages |= VK_PIPELINE_STAGE_TRANSFER_BIT;
       if (!zink_resource_usage_matches(res, ctx->bs)) {
          res->obj->access = VK_ACCESS_TRANSFER_WRITE_BIT;
          res->obj->access_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -556,8 +549,6 @@ zink_resource_buffer_transfer_dst_barrier(struct zink_context *ctx, struct zink_
       res->obj->last_write = VK_ACCESS_TRANSFER_WRITE_BIT;
       res->obj->unordered_access_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 
-      ctx->bs->unordered_write_access |= VK_ACCESS_TRANSFER_WRITE_BIT;
-      ctx->bs->unordered_write_stages |= VK_PIPELINE_STAGE_TRANSFER_BIT;
       if (!zink_resource_usage_matches(res, ctx->bs)) {
          res->obj->access = VK_ACCESS_TRANSFER_WRITE_BIT;
          res->obj->access_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -667,9 +658,10 @@ zink_resource_memory_barrier(struct zink_context *ctx, struct zink_resource *res
    bool can_skip_unordered = !unordered || UNSYNCHRONIZED ? false : !needs_access;
    /* ordered barriers can be skipped if both:
     * - there is no current access
-    * - there is no current-batch unordered access
+    * - current access is copied from unordered (this is synchronized automatically during submit)
+    * - there is also no current-batch unordered access
     */
-   bool can_skip_ordered = unordered || UNSYNCHRONIZED ? false : (!res->obj->access && !unordered_usage_matches);
+   bool can_skip_ordered = unordered || UNSYNCHRONIZED ? false : unordered_usage_matches ? res->obj->ordered_access_is_copied : !res->obj->access;
    if (ctx->no_reorder)
       can_skip_unordered = can_skip_ordered = false;
 

@@ -117,8 +117,8 @@ create_vert_shader(struct vl_compositor *c)
 }
 
 /* CONST[i] of the fs constant buffer as a vec4: the gfx kernels read the
- * CSC matrix rows and the lumakey bounds the compositor uploads to fs
- * constant slot 0, the same window the compute path reads. */
+ * CSC matrix rows the compositor uploads to fs constant slot 0, the same
+ * window the compute path reads. */
 static nir_def *
 frag_shader_const(nir_builder *b, unsigned index)
 {
@@ -192,9 +192,8 @@ frag_shader_weave(struct vl_nir_fs *fs, bool use_array)
    return nir_flrp(b, t_texel[1], t_texel[0], factor);
 }
 
-/* Color-space conversion: force texel.w to 1, apply the three CSC rows,
- * and derive alpha from the lumakey band: opaque when the pre-CSC third
- * channel falls outside (lumakey.x, lumakey.y]. */
+/* Color-space conversion: force texel.w to 1 for the three CSC rows and
+ * carry the incoming texel.w through as the fragment alpha. */
 static nir_def *
 frag_shader_csc(struct vl_nir_fs *fs, nir_def *texel)
 {
@@ -202,20 +201,15 @@ frag_shader_csc(struct vl_nir_fs *fs, nir_def *texel)
    nir_def *csc[3];
    for (unsigned i = 0; i < 3; i++)
       csc[i] = frag_shader_const(b, i);
-   nir_def *lumakey = frag_shader_const(b, 3);
 
+   nir_def *alpha = nir_channel(b, texel, 3);
    nir_def *t = nir_vector_insert_imm(b, texel, nir_imm_float(b, 1.0), 3);
-   nir_def *key = nir_channel(b, texel, 2);
-   nir_def *alpha = nir_fmax(
-      b,
-      nir_b2f32(b, nir_flt(b, nir_channel(b, lumakey, 1), key)),
-      nir_b2f32(b, nir_fge(b, nir_channel(b, lumakey, 0), key)));
    return nir_vec4(b, nir_fdot4(b, csc[0], t), nir_fdot4(b, csc[1], t),
                    nir_fdot4(b, csc[2], t), alpha);
 }
 
 /* Progressive fetch: one texel per plane at the shared VTEX coordinate,
- * luma/chroma landing in x/y/z. */
+ * luma/chroma landing in x/y/z and alpha from plane 0's w channel. */
 static nir_def *
 frag_shader_yuv(struct vl_nir_fs *fs, bool use_array)
 {
@@ -227,7 +221,9 @@ frag_shader_yuv(struct vl_nir_fs *fs, bool use_array)
                              : nir_trim_vector(b, tc, 2);
       chan[j] = nir_channel(b, vl_nir_tex(fs, j, c), j);
    }
-   chan[3] = nir_imm_float(b, 0.0);
+   nir_def *c0 = use_array ? nir_trim_vector(b, tc, 3)
+                           : nir_trim_vector(b, tc, 2);
+   chan[3] = nir_channel(b, vl_nir_tex(fs, 0, c0), 3);
    return nir_vec4(b, chan[0], chan[1], chan[2], chan[3]);
 }
 
@@ -562,7 +558,7 @@ draw_layers(struct vl_compositor *c, struct vl_compositor_state *s, struct u_rec
          struct vl_compositor_layer *layer = &s->layers[i];
          struct pipe_sampler_view **samplers = &layer->sampler_views[0];
          unsigned num_sampler_views = !samplers[1] ? 1 : !samplers[2] ? 2 : 3;
-         void *blend = layer->blend ? layer->blend : i ? c->blend_add : c->blend_clear;
+         void *blend = layer->blend_enabled ? c->blend_add : c->blend_clear;
 
          c->pipe->bind_blend_state(c->pipe, blend);
          c->pipe->set_viewport_states(c->pipe, 0, 1, &layer->viewport);

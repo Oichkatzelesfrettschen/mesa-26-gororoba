@@ -80,7 +80,11 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info, bool *
       zink_resource_image_transfer_dst_barrier(ctx, dst, info->dst.level, &info->dst.box, false);
       screen->image_barrier(ctx, use_src,
                               VK_IMAGE_LAYOUT_GENERAL,
-                              VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                              VK_ACCESS_TRANSFER_READ_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT);
+      screen->image_barrier(ctx, use_src,
+                              VK_IMAGE_LAYOUT_GENERAL,
+                              VK_ACCESS_TRANSFER_WRITE_BIT,
                               VK_PIPELINE_STAGE_TRANSFER_BIT);
    } else {
       zink_resource_setup_transfer_layouts(ctx, use_src, dst);
@@ -150,9 +154,13 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info, bool *
                      1, &region);
    zink_cmd_debug_marker_end(ctx, cmdbuf, marker);
 
-   if (cmdbuf == ctx->bs->cmdbuf && ctx->track_renderpasses) {
-      ctx->needs_transfer_sync = true;
-      dst->obj->transfer_rp = ctx->rp_counter;
+   if (cmdbuf == ctx->bs->cmdbuf) {
+      zink_resource_disable_unordered(dst, true);
+      zink_resource_disable_unordered(src, false);
+      if (ctx->track_renderpasses) {
+         ctx->needs_transfer_sync = true;
+         dst->obj->transfer_rp = ctx->rp_counter;
+      }
    }
 
    return true;
@@ -309,7 +317,11 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info, bool *n
       zink_resource_image_transfer_dst_barrier(ctx, dst, info->dst.level, &info->dst.box, false);
       screen->image_barrier(ctx, use_src,
                               VK_IMAGE_LAYOUT_GENERAL,
-                              VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                              VK_ACCESS_TRANSFER_READ_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT);
+      screen->image_barrier(ctx, use_src,
+                              VK_IMAGE_LAYOUT_GENERAL,
+                              VK_ACCESS_TRANSFER_WRITE_BIT,
                               VK_PIPELINE_STAGE_TRANSFER_BIT);
    } else {
       zink_resource_setup_transfer_layouts(ctx, use_src, dst);
@@ -333,9 +345,13 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info, bool *n
 
    zink_cmd_debug_marker_end(ctx, cmdbuf, marker);
 
-   if (cmdbuf == ctx->bs->cmdbuf && ctx->track_renderpasses) {
-      ctx->needs_transfer_sync = true;
-      dst->obj->transfer_rp = ctx->rp_counter;
+   if (cmdbuf == ctx->bs->cmdbuf) {
+      zink_resource_disable_unordered(dst, true);
+      zink_resource_disable_unordered(src, false);
+      if (ctx->track_renderpasses) {
+         ctx->needs_transfer_sync = true;
+         dst->obj->transfer_rp = ctx->rp_counter;
+      }
    }
 
    return true;
@@ -593,8 +609,8 @@ zink_blit(struct pipe_context *pctx,
    ctx->unordered_blitting = false;
 end:
    if (needs_present_readback) {
-      src->obj->unordered_read = false;
-      dst->obj->unordered_write = false;
+      zink_resource_disable_unordered(src, false);
+      zink_resource_disable_unordered(dst, true);
       zink_kopper_present_readback(ctx, src);
    }
 }
@@ -678,7 +694,8 @@ zink_blit_barriers(struct zink_context *ctx, struct zink_resource *src, struct z
                              VK_IMAGE_LAYOUT_GENERAL;
       /* apply read barrier first to avoid "sticky" read+write access flags in resource_needs_barrier() */
       screen->image_barrier(ctx, src, layout, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-      screen->image_barrier(ctx, src, layout, flags, pipeline);
+      u_foreach_bit(f, flags)
+         screen->image_barrier(ctx, src, layout, BITFIELD_BIT(f), pipeline);
    } else {
       if (src) {
          VkImageLayout layout = screen->driver_workarounds.general_layout ? VK_IMAGE_LAYOUT_GENERAL :
@@ -688,16 +705,17 @@ zink_blit_barriers(struct zink_context *ctx, struct zink_resource *src, struct z
          screen->image_barrier(ctx, src, layout,
                               VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
          if (!ctx->unordered_blitting)
-            src->obj->unordered_read = false;
+            zink_resource_disable_unordered(src, false);
       }
       VkImageLayout layout = screen->driver_workarounds.general_layout ? VK_IMAGE_LAYOUT_GENERAL :
                              util_format_is_depth_or_stencil(dst->base.b.format) ?
                              VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL :
                              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-      screen->image_barrier(ctx, dst, layout, flags, pipeline);
+      u_foreach_bit(f, flags)
+         screen->image_barrier(ctx, dst, layout, BITFIELD_BIT(f), pipeline);
    }
    if (!ctx->unordered_blitting)
-      dst->obj->unordered_read = dst->obj->unordered_write = false;
+      zink_resource_disable_unordered(dst, true);
 }
 
 bool

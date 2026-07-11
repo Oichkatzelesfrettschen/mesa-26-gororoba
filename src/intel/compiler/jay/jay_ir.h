@@ -79,7 +79,7 @@ static_assert(JAY_FILE_LAST <= 0b1111, "must fit in 4 bits (see jay_def)");
 #define JAY_MAX_OPERANDS             (JAY_MAX_SRCS + JAY_MAX_DESTS)
 #define JAY_MAX_FLAGS                (8)
 #define JAY_MAX_SAMPLER_MESSAGE_SIZE (11)
-#define JAY_NUM_LAST_USE_BITS        (32)
+#define JAY_NUM_LAST_USE_BITS        (64)
 #define JAY_NUM_PHYS_GRF             (128)
 #define JAY_NUM_UGPR                 (1024)
 #define JAY_REG_BITS                 (17)
@@ -566,7 +566,7 @@ typedef struct jay_inst {
     */
    bool replicate_dep:1;
    bool decrement_dep:1;
-   unsigned padding  :12;
+   uint8_t padding   :4;
 
    enum jay_predication predication;
    gen_condition conditional_mod;
@@ -876,6 +876,12 @@ jay_is_send_like(const jay_inst *I)
       return I->op == JAY_OPCODE_SEND;
 }
 
+static inline bool
+jay_inst_is_unordered(const jay_inst *I)
+{
+   return I->op == JAY_OPCODE_SEND || I->op == JAY_OPCODE_DPAS;
+}
+
 /*
  * Returns whether an instruction contains cross-lane access.
  */
@@ -891,7 +897,8 @@ jay_is_shuffle_like(const jay_inst *I)
 static inline bool
 jay_clobbers_address_reg(const jay_inst *I)
 {
-   return I->op == JAY_OPCODE_SHUFFLE || I->op == JAY_OPCODE_VECTOR_EXTRACT;
+   return (I->op == JAY_OPCODE_SHUFFLE || I->op == JAY_OPCODE_VECTOR_EXTRACT) &&
+          I->src[1].file == GPR;
 }
 
 /*

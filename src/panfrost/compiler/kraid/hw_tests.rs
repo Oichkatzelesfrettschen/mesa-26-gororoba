@@ -103,8 +103,7 @@ impl<'a> TestShaderBuilder<'a> {
         let data_stride = FAURef::user_i32(2);
 
         let invoc_id: SSAValue = b.alloc_ssa(32);
-        let global_id_reg =
-            RegRef::from_preload_reg(model, PreloadReg::GlobalId0);
+        let global_id_reg = model.preload_reg(PreloadReg::GlobalId0).unwrap();
         info.register_preload |= 1 << global_id_reg.idx;
         b.push_op(OpRegIn {
             dst: invoc_id.into(),
@@ -198,34 +197,20 @@ impl<'a> TestShaderBuilder<'a> {
             model,
             ssa_alloc,
             phi_alloc: Default::default(),
-            blocks: cfg.as_cfg(),
+            blocks: cfg.as_cfg(false),
             info,
         };
-        //eprintln!("\nRIGHT AFTER CONSTR: {}", &s);
         s.validate();
 
-        s.widen_alu_ops();
-        s.validate();
+        pass!(s.widen_alu_ops());
+        pass!(s.legalize_src_swizzles());
+        pass!(s.lower_mkvec_swz());
+        pass!(s.opt_dce());
+        pass!(s.lower_small_constants());
+        pass!(s.assign_registers());
+        pass!(s.lower_copy());
+        pass!(s.assign_message_slots());
 
-        s.legalize_src_swizzles();
-        s.validate();
-
-        s.lower_mkvec_swz();
-        s.validate();
-
-        s.lower_small_constants();
-        s.validate();
-
-        s.assign_registers();
-        s.validate();
-
-        s.lower_copy();
-        s.validate();
-
-        s.assign_message_slots();
-        s.validate();
-
-        //eprintln!("\nBEFORE ENCODE: {}", &s);
         let bin = model.encode_shader(&s);
 
         CompiledTestCase {
@@ -516,6 +501,16 @@ pub fn test_foldable_op(op: impl Foldable + Clone + Into<Op> + fmt::Display) {
 }
 
 #[test]
+fn test_op_bitrev() {
+    let op = OpBitRev {
+        dst: DstRef::None.into(),
+        src: 0.into(),
+    };
+
+    test_foldable_op(op);
+}
+
+#[test]
 fn test_op_clz() {
     const DATA_TYPES: &'static [DataType] =
         &[DataType::U32, DataType::V2U16, DataType::V4U8];
@@ -648,6 +643,33 @@ fn test_op_fcmp() {
 }
 
 #[test]
+fn test_op_iabs() {
+    const DATA_TYPES: &'static [DataType] = &[DataType::V2S16, DataType::S32];
+
+    const WIDENS: &'static [AsmSwizzleWiden] = &[
+        AsmSwizzleWiden::None,
+        AsmSwizzleWiden::H0,
+        AsmSwizzleWiden::B0,
+        AsmSwizzleWiden::B2,
+    ];
+
+    for &dst_type in DATA_TYPES {
+        for widen in WIDENS {
+            let Some(src0_swizzle) = widen.to_swizzle(dst_type) else {
+                continue;
+            };
+
+            let op = OpIAbs {
+                dst: DstRef::None.into(),
+                src: Src::from(0).swizzle(src0_swizzle),
+                dst_type,
+            };
+            test_foldable_op(op);
+        }
+    }
+}
+
+#[test]
 fn test_op_iadd() {
     const DATA_TYPES: &'static [DataType] = &[
         DataType::V2S16,
@@ -739,6 +761,46 @@ fn test_op_icmp() {
                         _ => a.get_u32(),
                     });
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_op_idpadd() {
+    let model = RunSingleton::get().model.as_ref();
+
+    const SRC_TYPES: &'static [DataType] = &[DataType::V4S8, DataType::V4U8];
+
+    for saturate in [false, true] {
+        let op = OpIDpAdd {
+            dst: DstRef::None.into(),
+            dst_type: DataType::U32,
+            saturate,
+            src_types: [DataType::V4U8; 2],
+            srcs: [0.into(), 0.into()],
+            accum: 0.into(),
+        };
+        test_foldable_op(op);
+    }
+
+    for &src0_type in SRC_TYPES {
+        for &src1_type in SRC_TYPES {
+            let src_types = [src0_type, src1_type];
+            if model.arch() < 14 && src_types != [DataType::V4S8; 2] {
+                continue;
+            }
+
+            for saturate in [false, true] {
+                let op = OpIDpAdd {
+                    dst: DstRef::None.into(),
+                    dst_type: DataType::S32,
+                    saturate,
+                    src_types,
+                    srcs: [0.into(), 0.into()],
+                    accum: 0.into(),
+                };
+                test_foldable_op(op);
             }
         }
     }
@@ -854,6 +916,16 @@ fn test_op_mux() {
             test_foldable_op(op);
         }
     }
+}
+
+#[test]
+fn test_op_popcount() {
+    let op = OpPopCount {
+        dst: DstRef::None.into(),
+        src: 0.into(),
+    };
+
+    test_foldable_op(op);
 }
 
 #[test]

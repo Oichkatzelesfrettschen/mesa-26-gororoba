@@ -5595,6 +5595,7 @@ nir_opt_varyings_bulk(nir_shader **shaders, uint32_t num_shaders, bool spirv,
                       void (*optimize)(nir_shader *, void *),
                       void *optimize_data);
 
+unsigned nir_slot_num_components(gl_varying_slot slot, mesa_shader_stage stage);
 bool nir_slot_is_sysval_output(gl_varying_slot slot,
                                mesa_shader_stage next_shader);
 bool nir_slot_is_varying(gl_varying_slot slot, mesa_shader_stage next_shader);
@@ -5604,7 +5605,7 @@ bool nir_remove_varying(nir_intrinsic_instr *intr, mesa_shader_stage next_shader
 bool nir_remove_sysval_output(nir_intrinsic_instr *intr, mesa_shader_stage next_shader);
 
 bool nir_lower_amul(nir_shader *shader,
-                    int (*type_size)(const struct glsl_type *, bool));
+                    unsigned (*type_size)(const struct glsl_type *, bool));
 
 bool nir_lower_ubo_vec4(nir_shader *shader);
 
@@ -5685,7 +5686,7 @@ typedef enum {
 } nir_lower_io_options;
 bool nir_lower_io(nir_shader *shader,
                   nir_variable_mode modes,
-                  int (*type_size)(const struct glsl_type *, bool),
+                  unsigned (*type_size)(const struct glsl_type *, bool),
                   nir_lower_io_options);
 
 void nir_lower_io_passes(nir_shader *nir, bool renumber_vs_inputs);
@@ -6677,6 +6678,7 @@ bool nir_lower_memory_model(nir_shader *shader);
 bool nir_lower_disordered_control_barriers(nir_shader *shader);
 
 bool nir_lower_goto_ifs(nir_shader *shader);
+void nir_simplify_loop(nir_loop *loop, nir_jump_type type);
 bool nir_lower_continue_constructs(nir_shader *shader);
 
 typedef struct nir_lower_multiview_options {
@@ -7018,6 +7020,10 @@ bool nir_opt_uniform_atomics(nir_shader *shader, bool fs_atomics_predicated);
 
 bool nir_opt_uniform_subgroup(nir_shader *shader,
                               const nir_lower_subgroups_options *);
+
+bool nir_opt_shared_vars_to_subgroup(nir_shader *shader,
+                                     unsigned ballot_num_components,
+                                     unsigned ballot_size);
 
 bool nir_opt_vectorize(nir_shader *shader, nir_vectorize_cb filter,
                        void *data);
