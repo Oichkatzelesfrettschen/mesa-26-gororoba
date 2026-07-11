@@ -34,6 +34,7 @@
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
 
+#include "compiler/r300_nir.h"
 #include "r300_context.h"
 #include "r300_r2vb_clip.h"
 #include "r300_cs.h"
@@ -497,10 +498,14 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300,
  * This derives the producer from the real shader instead of hand-building the
  * 4-DP4 transform: the arithmetic, the constant reads, and the output count all
  * come from the VS, and nir_to_rc's stage-aware compile (it lowers I/O and emits
- * both VS and FS varyings) does the rest.  Returns a pipe FS CSO or NULL. */
-static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *vs_nir,
-                                        gl_varying_slot target,
-                                        enum r300_r2vb_position_space space)
+ * both VS and FS varyings) does the rest.  Returns the derived FS NIR (caller
+ * owns) or NULL; r300_r2vb_restage_vs_as_fs wraps it into a pipe FS CSO, and
+ * the admission oracle compiles the same NIR throwaway to measure emitted
+ * slots, so the program the oracle admits is the program the producer runs. */
+static nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
+                                                   nir_shader *vs_nir,
+                                                   gl_varying_slot target,
+                                                   enum r300_r2vb_position_space space)
 {
     nir_shader *fs = nir_shader_clone(NULL, vs_nir);
     if (!fs)
@@ -620,6 +625,16 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
     if (getenv("R300_R2VB_VS_DUMP"))
         nir_print_shader(fs, stderr);
 
+    return fs;
+}
+
+static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *vs_nir,
+                                        gl_varying_slot target,
+                                        enum r300_r2vb_position_space space)
+{
+    nir_shader *fs = r300_r2vb_build_restaged_fs_nir(r300, vs_nir, target, space);
+    if (!fs)
+        return NULL;
     struct pipe_shader_state st = {0};
     st.type = PIPE_SHADER_IR_NIR;
     st.ir.nir = fs; /* create_fs_state takes ownership and precompiles */
@@ -2558,25 +2573,12 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
     if (!has_uniform || !has_pos_out)
         return false;
 
-    /* Scalar-NIR ALU ceiling, a conservative proxy for the r300 64-slot vec4 ALU
-     * limit (one vec4 op counts as up to 4 scalar NIR ALU here, so the proxy
-     * over-rejects dense kernels).  R300_R2VB_ALU_CEILING raises the proxy to admit
-     * a kernel whose scalar count exceeds 64 but whose real program fits after
-     * vectorisation: the CD-4 sedenion product quarter has scalar NIR > 64 yet
-     * compiles to 41 r300 ALU (RADEON_DEBUG=fp alu_end), inside the budget, and
-     * runs correctly.  The FS compile link-fails cleanly if a kernel genuinely
-     * overflows, so the probe is safe.  Default 64. */
-    unsigned alu_ceiling = 64;
-    {
-        const char *e = getenv("R300_R2VB_ALU_CEILING");
-        if (e) {
-            long v = strtol(e, NULL, 0);
-            if (v >= 64 && v <= 100000)
-                alu_ceiling = (unsigned)v;
-        }
-    }
-
-    unsigned alu_count = 0;
+    /* Structural admissibility only: op set, intrinsic set, output shape.  The
+     * ALU budget is NOT judged here -- scalar-NIR instruction counts over-reject
+     * dense kernels the vectorizing backend packs far smaller (the CD-4 sedenion
+     * product quarter has scalar NIR > 64 yet compiles to 41 r300 ALU slots).
+     * r300_r2vb_producer_fits_budget measures the derived producer FS against
+     * the real emit ceiling instead. */
     nir_foreach_block(block, impl) {
         nir_foreach_instr(instr, block) {
             switch (instr->type) {
@@ -2585,8 +2587,6 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
                 break;
             case nir_instr_type_alu:
                 if (!r300_nir_op_is_fragment_aluable(nir_instr_as_alu(instr)->op))
-                    return false;
-                if (++alu_count > alu_ceiling)
                     return false;
                 break;
             case nir_instr_type_intrinsic:
@@ -2689,6 +2689,63 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
     return true;
 }
 
+/* The 04f admission oracle: derive the producer FS the restage route would
+ * run for the bound VS and compile it into a throwaway code object, admitting
+ * on the ACTUAL emitted ALU slot count against the backend's emit ceiling
+ * (r300_fs_measure_nir_admission).  This replaces the scalar-NIR count proxy,
+ * which over-rejected dense kernels the vectorizing backend packs far
+ * smaller.  Both producer passes must fit: the position pass, and -- when a
+ * computed varying is admitted -- that varying's pass.  The measured NIR is
+ * built by the same r300_r2vb_build_restaged_fs_nir the delivery path uses
+ * and preprocessed with the same r300_optimize_nir create_fs_state runs, so
+ * the measured program is the program the producer compiles at delivery.
+ * The verdict is memoized on the VS (immutable NIR, process-constant env
+ * gates), so the throwaway compile runs once per VS, not per draw. */
+static bool r300_r2vb_measure_pass_fits(struct r300_context *r300,
+                                        nir_shader *vs_nir,
+                                        gl_varying_slot target,
+                                        const char *pass_name)
+{
+    nir_shader *fs = r300_r2vb_build_restaged_fs_nir(r300, vs_nir, target,
+                                                     r2vb_env_space());
+    if (!fs)
+        return false;
+    r300_optimize_nir(fs, r300->screen);
+    unsigned alu_len = 0;
+    enum r300_fs_admission adm =
+        r300_fs_measure_nir_admission(r300, fs, &alu_len);
+    ralloc_free(fs);
+    if (getenv("R300_R2VB_EXEC_DEBUG"))
+        fprintf(stderr,
+                "r2vb_admission pass=%s verdict=%s emitted_alu=%u\n",
+                pass_name,
+                adm == R300_FS_ADMIT_FITS ? "fits" :
+                adm == R300_FS_ADMIT_OVER_ALU_BUDGET ? "over_alu_budget"
+                                                     : "reject",
+                alu_len);
+    return adm == R300_FS_ADMIT_FITS;
+}
+
+static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
+                                           bool allow_computed_varying)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    uint8_t *memo = &vs->r2vb_admission[allow_computed_varying ? 1 : 0];
+    if (*memo)
+        return *memo == 1;
+
+    bool fits = r300_r2vb_measure_pass_fits(r300, vs->state.ir.nir,
+                                            VARYING_SLOT_POS, "position");
+    if (fits && allow_computed_varying) {
+        int dv = r300_r2vb_first_computed_varying(vs->state.ir.nir);
+        if (dv >= 0)
+            fits = r300_r2vb_measure_pass_fits(r300, vs->state.ir.nir,
+                                               (gl_varying_slot)dv, "varying");
+    }
+    *memo = fits ? 1 : 2;
+    return fits;
+}
+
 /* Classify the bound VS on a constant-folded clone.  A SPIR-V VS reaches the
  * driver with its UBO address arithmetic still literal (iadd/imul/ushr of
  * load_const values) and with ffma kept weak by the gallivm compiler options;
@@ -2713,6 +2770,10 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
     } while (progress);
     bool ok = r300_vs_nir_is_fragment_aluable(clone, allow_computed_varying);
     ralloc_free(clone);
+    /* Structure admitted; the budget verdict comes from the emitted-slot
+     * oracle on the derived producer FS, memoized per VS. */
+    if (ok)
+        ok = r300_r2vb_producer_fits_budget(r300, allow_computed_varying);
     return ok;
 }
 

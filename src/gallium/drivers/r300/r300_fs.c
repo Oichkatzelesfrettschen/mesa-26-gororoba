@@ -1727,6 +1727,46 @@ r300_fs_code_reset(struct r300_fragment_shader_code *shader)
     shader->dummy = false;
 }
 
+/* Measure a fragment program against the real backend budgets by compiling it
+ * into a throwaway code object and discarding the result.  The emitted
+ * alu.length (emit_alu in r300_fragprog_emit.c) is the only authority on
+ * whether a program fits the 64-slot envelope: scalar-NIR instruction counts
+ * over-reject dense kernels the vectorizing backend packs far smaller.  The
+ * "Too many ALU instructions" error string keys the one failure a multipass
+ * or spill escape can recover; any other failure (temp file, const file,
+ * unsupported shape) is a plain reject.  The probe compiles a clone (the body
+ * clones internally) and never binds, so the caller's context state is
+ * untouched and nothing reaches the CS. */
+enum r300_fs_admission
+r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_nir,
+                              unsigned *out_alu_len)
+{
+    struct r300_fragment_shader_code *probe =
+        CALLOC_STRUCT(r300_fragment_shader_code);
+    if (!probe)
+        return R300_FS_ADMIT_REJECT;
+
+    struct pipe_shader_state st = {
+        .type = PIPE_SHADER_IR_NIR, .ir.nir = fs_nir };
+    r300_translate_fragment_shader_body(r300, probe, st);
+
+    enum r300_fs_admission verdict;
+    if (!probe->dummy && !probe->error) {
+        if (out_alu_len)
+            *out_alu_len = probe->code.code.r300.alu.length;
+        verdict = R300_FS_ADMIT_FITS;
+    } else if (probe->error &&
+               strstr(probe->error, "Too many ALU instructions")) {
+        verdict = R300_FS_ADMIT_OVER_ALU_BUDGET;
+    } else {
+        verdict = R300_FS_ADMIT_REJECT;
+    }
+
+    r300_fs_code_reset(probe);
+    FREE(probe);
+    return verdict;
+}
+
 /* Translate a fragment shader, with the >64-ALU multipass partition as the
  * failure retry (R300_FS_MULTIPASS=1, default off).  The unsplit program
  * compiles first through the ordinary path -- both front ends, the classic
