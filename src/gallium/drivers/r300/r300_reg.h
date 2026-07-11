@@ -85,6 +85,9 @@
 #	define	R300_VAP_VF_CNTL__PRIM_WALK_INDICES             (1<<4)
 #	define	R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST         (2<<4)
 #	define	R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED     (3<<4)
+	/* R3xx_3D_Registers VAP_VF_CNTL.VTX_REUSE_DIS: disable the vertex
+	 * reuse store; legal only with PRIM_WALK_INDICES. */
+#	define	R300_VAP_VF_CNTL__VTX_REUSE_DIS                 (1<<12)
 
 	/* I don't think I saw these three used.. */
 #	define	R300_VAP_VF_CNTL__COLOR_ORDER__SHIFT            6
