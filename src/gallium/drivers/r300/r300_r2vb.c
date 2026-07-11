@@ -23,6 +23,7 @@
  */
 
 #include <assert.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,32 @@
 #include "r300_r2vb.h"
 #include "r300_reg.h"
 #include "r300_vs.h"
+
+void r300_r2vb_report_bo_identity(struct r300_context *r300, const char *tag,
+                                  struct pipe_resource *pr)
+{
+    struct radeon_winsys *rws = r300->rws;
+    struct r300_resource *rr = pr ? r300_resource(pr) : NULL;
+    struct pb_buffer_lean *buf = rr ? rr->buf : NULL;
+    if (!buf) {
+        /* A CPU-shadow or user vertex buffer has no winsys BO until the delivery
+         * path uploads it; report the resource pointer and that the BO is not
+         * yet materialized so the reader distinguishes it from a missing slot. */
+        fprintf(stderr, "%s res=%p buf=none\n", tag, (void *)pr);
+        return;
+    }
+    int reloc = rws->cs_lookup_buffer(&r300->cs, buf);
+    fprintf(stderr,
+            "%s res=%p buf=%p size=%" PRIu64 " suballoc=%d parent_offset=%u "
+            "va=0x%" PRIx64 " domain=0x%x flags=0x%x reloc_index=%d "
+            "parent_bo=not_reachable\n",
+            tag, (void *)pr, (void *)buf, (uint64_t)buf->size,
+            rws->buffer_is_suballocated(buf),
+            rws->buffer_get_reloc_offset(buf),
+            rws->buffer_get_virtual_address(buf),
+            rws->buffer_get_initial_domain(buf),
+            rws->buffer_get_flags(buf), reloc);
+}
 
 static struct pipe_resource *r2vb_create_selftest_bo(struct r300_context *r300,
                                                      uint32_t width_bytes, uint32_t fill_val)
@@ -3677,10 +3704,22 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
             r300->context.buffer_unmap(&r300->context, sxfer);
     }
 
+    /* Trace the BO identities the split composition wrote through before the
+     * carry BO is dropped: the carry BO pass A rendered and pass B re-read, and
+     * the clip BO pass B rendered into (the resource the delivery re-ingests).
+     * Capture-side only; the clip write and re-ingest ordering are unchanged. */
+    if (getenv("R300_R2VB_EXEC_DEBUG")) {
+        r300_r2vb_report_bo_identity(r300, "r2vb_split_producer carry_bo", carry_bo);
+        r300_r2vb_report_bo_identity(r300, "r2vb_split_producer clip_bo", clip);
+    }
+
     free(bmodel);
     r300->context.delete_fs_state(&r300->context, pa_fs);
     r300->context.delete_fs_state(&r300->context, pb_fs);
     pipe_resource_reference(&carry_bo, NULL);
+    /* Label the clip BO the delivery re-ingests as split-producer output so the
+     * delivery capture can distinguish it from the single-pass producer. */
+    r300->r2vb_producer_kind = R300_R2VB_PRODUCER_SPLIT;
     return true;
 
 fail:
@@ -3768,6 +3807,9 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
         if (sm)
             r300->context.buffer_unmap(&r300->context, sxfer);
     }
+    /* Single over-budget-free producer FS filled the clip BO; label it so the
+     * delivery capture distinguishes it from the two-pass split producer. */
+    r300->r2vb_producer_kind = R300_R2VB_PRODUCER_SINGLE;
     return true;
 }
 

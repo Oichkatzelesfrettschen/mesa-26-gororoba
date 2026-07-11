@@ -30,6 +30,7 @@
 #include "r300_reg.h"
 #include "r300_vs.h"
 
+#include <inttypes.h>
 #include <limits.h>
 
 #define IMMD_DWORDS 32
@@ -1278,6 +1279,237 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
     r300_dump_vap_rs_tuple(r300, "r2vb_inspect");
 }
 
+/* Position-only delivery invariant for the producer-fed capture: the delivery
+ * fetches exactly the producer outputs, no more.  Enforced clauses (a failure
+ * refuses the delivery and the capture): the velem count equals the VAP output
+ * count r300->vertex_info declares; VAP_VTX_SIZE equals sum(format_size/4) over
+ * the bound elements; and the position element's bound resource is the clip BO
+ * the producer wrote (r2vb_slot_pos_bo, when the producer published one).
+ * Recorded-but-not-enforced clauses (logged for the offline decode, too fragile
+ * to hard-gate on a partial PSC parse): the VAP declares POS_PRESENT, and every
+ * RS source vector has a producing PSC stream element.  Returns true when the
+ * enforced clauses hold. */
+static bool r300_r2vb_capture_preflight(struct r300_context *r300,
+                                        unsigned vap_vtx_size,
+                                        enum r300_r2vb_producer_kind kind)
+{
+    struct r300_vertex_element_state *ve = r300->velems;
+    struct r300_rs_block *rs = (struct r300_rs_block *)r300->rs_block_state.state;
+    unsigned num_attribs = r300->vertex_info.num_attribs;
+
+    unsigned sz_sum = 0;
+    for (unsigned i = 0; ve && i < ve->count; i++)
+        sz_sum += align(util_format_get_blocksize(ve->velem[i].src_format), 4) / 4;
+
+    bool count_match = ve && ve->count == num_attribs;
+    bool vtxsize_match = sz_sum == vap_vtx_size;
+
+    /* The VAP packs VARYING_SLOT_POS first, so velem[0] is the position element;
+     * its bound vertex buffer must be the producer's clip BO.  Only enforced when
+     * the producer published a clip BO (r2vb_slot_pos_bo); a pure single-element
+     * producer that reused an existing slot leaves it NULL. */
+    struct pipe_resource *pos_res = NULL;
+    if (ve && ve->count > 0) {
+        unsigned vbi = ve->velem[0].vertex_buffer_index;
+        pos_res = r300->vertex_buffer[vbi].buffer.resource;
+    }
+    bool pos_to_clip = r300->r2vb_slot_pos_bo == NULL ||
+                       pos_res == r300->r2vb_slot_pos_bo;
+
+    bool pos_present = rs && (rs->vap_out_vtx_fmt[0] &
+                              R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
+
+    bool ok = count_match && vtxsize_match && pos_to_clip;
+
+    fprintf(stderr,
+            "r2vb_delivery_capture invariant=%s producer=%s velems_count=%u "
+            "num_attribs=%u vap_vtx_size=%u format_size_sum=%u pos_res=%p "
+            "clip_bo=%p enforce_count=%d enforce_vtxsize=%d enforce_pos_to_clip=%d "
+            "record_pos_present=%d\n",
+            ok ? "HOLD" : "FAIL",
+            kind == R300_R2VB_PRODUCER_SPLIT ? "split" : "single",
+            ve ? ve->count : 0, num_attribs, vap_vtx_size, sz_sum,
+            (void *)pos_res, (void *)r300->r2vb_slot_pos_bo,
+            count_match, vtxsize_match, pos_to_clip, pos_present);
+
+    if (!ok)
+        fprintf(stderr,
+                "r2vb_delivery_capture refuse clause=%s (falling back to gallivm)\n",
+                !count_match ? "count==num_attribs" :
+                !vtxsize_match ? "vap_vtx_size==sum(format_size/4)" :
+                "position->clip_bo");
+    return ok;
+}
+
+/* Sidecar record for the producer-fed delivery capture, emitted after the full
+ * delivery IB is built and before the RADEON_FLUSH_NOOP discard: the reloc
+ * indices and draw-packet dword offset are only valid while the CS still holds
+ * the packets.  One machine-greppable key=value block prefixed
+ * r2vb_delivery_capture.  Setting R300_TRACE additionally captures the raw
+ * unpatched IB + relocation table through the winsys no-submit trace branch the
+ * NOOP flush reaches (radeon_drm_cs_emit_ioctl_oneshot is skipped; the else
+ * branch writes the trace); when R300_R2VB_DELIVERY_CAPTURE_DIR is unset the raw
+ * dwords are hexdumped to stderr here instead. */
+static void r300_r2vb_capture_record(struct r300_context *r300,
+                                     const struct pipe_draw_info *info,
+                                     const struct pipe_draw_start_count_bias *draw,
+                                     enum r300_r2vb_producer_kind kind,
+                                     unsigned vap_vtx_size,
+                                     unsigned draw_pkt_off)
+{
+    struct r300_vertex_element_state *ve = r300->velems;
+    struct r300_vertex_stream_state *vs =
+        (struct r300_vertex_stream_state *)r300->vertex_stream_state.state;
+    struct r300_rs_block *rs = (struct r300_rs_block *)r300->rs_block_state.state;
+
+    fprintf(stderr,
+            "r2vb_delivery_capture header producer=%s cs_cdw=%u draw_pkt_dword_off=%u "
+            "num_attribs=%u velems_count=%u nr_vertex_buffers=%u vap_vtx_size=%u "
+            "count=%u prim=%u\n",
+            kind == R300_R2VB_PRODUCER_SPLIT ? "split" : "single",
+            r300->cs.current.cdw, draw_pkt_off, r300->vertex_info.num_attribs,
+            ve ? ve->count : 0, r300->nr_vertex_buffers, vap_vtx_size,
+            draw->count, info->mode);
+
+    /* Per-velem format size and the VAP_VTX_SIZE sum. */
+    for (unsigned i = 0; ve && i < ve->count; i++)
+        fprintf(stderr,
+                "r2vb_delivery_capture velem[%u] vbi=%u format_size=%u "
+                "expect_role=LOAD_VBPNTR_array%u\n",
+                i, ve->velem[i].vertex_buffer_index,
+                align(util_format_get_blocksize(ve->velem[i].src_format), 4), i);
+
+    /* PSC (VAP_PROG_STREAM_CNTL / _EXT) words + count. */
+    if (vs) {
+        fprintf(stderr, "r2vb_delivery_capture psc_count=%u\n", vs->count);
+        for (unsigned i = 0; i < vs->count && i < 8; i++)
+            fprintf(stderr,
+                    "r2vb_delivery_capture psc[%u] cntl=0x%08x cntl_ext=0x%08x\n",
+                    i, vs->vap_prog_stream_cntl[i], vs->vap_prog_stream_cntl_ext[i]);
+    }
+
+    /* VAP output-format words and the RS routing count / instructions. */
+    if (rs) {
+        fprintf(stderr,
+                "r2vb_delivery_capture vap_out_vtx_fmt0=0x%08x vap_out_vtx_fmt1=0x%08x "
+                "pos_present=%u rs_count=0x%08x rs_inst_count=0x%08x\n",
+                rs->vap_out_vtx_fmt[0], rs->vap_out_vtx_fmt[1],
+                rs->vap_out_vtx_fmt[0] & R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT ? 1u : 0u,
+                rs->count, rs->inst_count);
+        for (unsigned i = 0; i < 8; i++)
+            if (rs->ip[i] || rs->inst[i])
+                fprintf(stderr,
+                        "r2vb_delivery_capture rs[%u] ip=0x%08x inst=0x%08x\n",
+                        i, rs->ip[i], rs->inst[i]);
+    }
+
+    /* Detailed BO identity (slab, parent offset, va, domain, size) for the clip BO
+     * the position element fetches and every bound vertex-buffer resource, as far
+     * as the winsys exposes.  These lines carry the fields the RELOC grammar omits;
+     * the RELOC / roles lines below carry the analyzer's join keys. */
+    r300_r2vb_report_bo_identity(r300, "r2vb_delivery_capture clip_bo_identity",
+                                 r300->r2vb_slot_pos_bo);
+    for (unsigned i = 0; ve && i < ve->count; i++) {
+        unsigned vbi = ve->velem[i].vertex_buffer_index;
+        char tag[64];
+        snprintf(tag, sizeof(tag), "r2vb_delivery_capture vbuf_identity[%u]", i);
+        r300_r2vb_report_bo_identity(r300, tag,
+                                     r300->vertex_buffer[vbi].buffer.resource);
+    }
+
+    /* Semantic role sidecar (roles.log grammar): one BO -> role pair per token.
+     * The position element's bound resource is the clip BO the producer wrote;
+     * every other bound element is an application passthrough upload; the
+     * framebuffer colour surface is the delivery render target.  RELOC lines
+     * (below) share the same bo=<handle> token so the analyzer joins slot -> role;
+     * the handle is the winsys BO pointer, a stable per-run key with no side
+     * effects (buffer_get_handle would export a GEM name). */
+    struct role_bo { struct pipe_resource *pr; const char *role; };
+    struct role_bo roles[PIPE_MAX_ATTRIBS + 2];
+    unsigned n_roles = 0;
+    for (unsigned i = 0; ve && i < ve->count && n_roles < PIPE_MAX_ATTRIBS; i++) {
+        struct pipe_resource *pr =
+            r300->vertex_buffer[ve->velem[i].vertex_buffer_index].buffer.resource;
+        if (!pr)
+            continue;
+        roles[n_roles].pr = pr;
+        roles[n_roles].role =
+            pr == r300->r2vb_slot_pos_bo ? "clip_bo" : "app_upload";
+        n_roles++;
+    }
+    {
+        struct pipe_framebuffer_state *fb =
+            (struct pipe_framebuffer_state *)r300->fb_state.state;
+        struct pipe_resource *fbres =
+            (fb && fb->nr_cbufs && fb->cbufs[0].texture) ? fb->cbufs[0].texture : NULL;
+        if (fbres && n_roles < PIPE_MAX_ATTRIBS + 2) {
+            roles[n_roles].pr = fbres;
+            roles[n_roles].role = "app_framebuffer";
+            n_roles++;
+        }
+    }
+
+    fprintf(stderr, "r2vb_delivery_capture");
+    for (unsigned i = 0; i < n_roles; i++) {
+        struct r300_resource *rr = r300_resource(roles[i].pr);
+        fprintf(stderr, " bo_%u=0x%" PRIxPTR " role_%u=%s",
+                i, (uintptr_t)(rr ? rr->buf : NULL), i, roles[i].role);
+    }
+    fprintf(stderr, "\n");
+
+    /* RELOC grammar: slot -> BO for every role BO currently in the command stream.
+     * The slot is the winsys reloc-table index (cs_lookup_buffer), the same value
+     * the DW reloc annotation carries; a resource not yet in the CS reports slot
+     * -1. */
+    for (unsigned i = 0; i < n_roles; i++) {
+        struct r300_resource *rr = r300_resource(roles[i].pr);
+        if (!rr || !rr->buf)
+            continue;
+        int slot = r300->rws->cs_lookup_buffer(&r300->cs, rr->buf);
+        enum radeon_bo_domain dom = r300->rws->buffer_get_initial_domain(rr->buf);
+        fprintf(stderr,
+                "RELOC %d bo=0x%" PRIxPTR " domain=%s offset=0x%x role=%s\n",
+                slot, (uintptr_t)rr->buf,
+                dom == RADEON_DOMAIN_VRAM ? "vram" :
+                dom == RADEON_DOMAIN_GTT ? "gtt" :
+                dom == RADEON_DOMAIN_VRAM_GTT ? "vram_gtt" : "other",
+                r300->rws->buffer_get_reloc_offset(rr->buf), roles[i].role);
+    }
+
+    /* The delivery path rebinds the application FS and marks the framebuffer /
+     * rasteriser atoms dirty before it runs, so the producer FS microcode and the
+     * producer's hand-rolled framebuffer registers are re-emitted with application
+     * values and do not appear in this delivery IB.  The RAW_IB decode below is the
+     * byte-level check. */
+    fprintf(stderr,
+            "r2vb_delivery_capture producer_fs_in_final_ib=0 producer_fb_in_final_ib=0 "
+            "basis=app_state_rebound_before_delivery\n");
+
+    /* RAW_IB grammar: the unpatched command stream, one DW line per dword.  A
+     * dword immediately following a 0xc0001000 PKT3_NOP is an r300 relocation slot
+     * (OUT_CS_RELOC writes the marker then cs_lookup_buffer(buf)*4), so its slot is
+     * value/4 -- the winsys reloc-table index, not a physical address, which does
+     * not exist until DRM_RADEON_CS patches the IB.  The NOOP flush never submits,
+     * so this IB is the raw artifact.  R300_TRACE additionally writes the winsys
+     * binary trace during the same flush. */
+    {
+        unsigned cdw = r300->cs.current.cdw;
+        const uint32_t *buf = r300->cs.current.buf;
+        unsigned nrelocs = 0;
+        for (unsigned j = 1; j < cdw; j++)
+            if (buf[j - 1] == 0xc0001000)
+                nrelocs++;
+        fprintf(stderr, "RAW_IB cdw=%u relocs=%u\n", cdw, nrelocs);
+        for (unsigned j = 0; j < cdw; j++) {
+            bool is_reloc = j > 0 && buf[j - 1] == 0xc0001000;
+            if (is_reloc)
+                fprintf(stderr, "DW %u 0x%08x reloc=%u\n", j, buf[j], buf[j] / 4);
+            else
+                fprintf(stderr, "DW %u 0x%08x\n", j, buf[j]);
+        }
+    }
+}
+
 bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                                             const struct pipe_draw_info *info,
                                             const struct pipe_draw_start_count_bias *draw)
@@ -1288,6 +1520,25 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
         r300_r2vb_inspect_passthrough(r300);
         return false;
     }
+
+    /* Producer-fed delivery capture (R300_R2VB_DELIVERY_CAPTURE=1): build the full
+     * final delivery command stream, record its structure and BO identities, then
+     * discard it with a RADEON_FLUSH_NOOP flush so no IB reaches DRM_RADEON_CS.
+     * Confined to a producer-fed delivery (r2vb_producer_kind != NONE): the
+     * position-only invariant's clip-BO clause has no meaning for a pure-passthrough
+     * app-buffer draw, which has no producer pass and no clip BO.  Gate unset ->
+     * the whole block is inert and the route stays byte-identical.  The producer
+     * kind is consumed here (reset to NONE) so a stale SPLIT cannot label a later
+     * pure-passthrough delivery. */
+    static int delivery_capture_env = -1;
+    if (delivery_capture_env < 0) {
+        const char *e = getenv("R300_R2VB_DELIVERY_CAPTURE");
+        delivery_capture_env = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    enum r300_r2vb_producer_kind producer_kind = r300->r2vb_producer_kind;
+    r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+    bool capture = delivery_capture_env &&
+                   producer_kind != R300_R2VB_PRODUCER_NONE;
 
 #define R2VB_BAIL(reason) do { if (getenv("R300_R2VB_ROUTE_DEBUG")) \
     fprintf(stderr, "r2vb_passthrough_fallback reason=%s nvb=%u\n", (reason), \
@@ -1420,6 +1671,13 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
             r300->velems->vertex_size_dwords += fs / 4;
             vap_vtx_size += fs / 4;
         }
+        /* Producer-fed delivery capture preflight: the position-only invariant
+         * runs before any emission, so a violation refuses the delivery and the
+         * capture and falls back to gallivm exactly as the guards above do. */
+        if (capture && !r300_r2vb_capture_preflight(r300, vap_vtx_size, producer_kind))
+            ok = false;
+
+        if (ok) {
         /* Viewport transform.  gallivm's draw module applies the viewport on the
          * CPU and emits window-space vertices, so the SWTCL path sets VAP_VTE_CNTL
          * to VTX_XY_FMT|VTX_Z_FMT (pre-divided, no HW transform) and returns
@@ -1477,10 +1735,24 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                 OUT_CS_REG(R300_VAP_PVS_STATE_FLUSH_REG, 0x0);
                 END_CS;
             }
+            /* Dword offset of the 3D_DRAW_VBUF_2 packet for the capture record,
+             * read before the draw emit appends it. */
+            unsigned draw_pkt_off = r300->cs.current.cdw;
             r300_emit_draw_arrays(r300, info->mode, draw->count);
             BEGIN_CS(2);
             OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
             END_CS;
+            /* Producer-fed delivery capture: the full delivery IB is now built.
+             * Record its structure and BO identities while the CS still holds the
+             * packets (the reloc indices go stale on flush), then discard the IB
+             * with RADEON_FLUSH_NOOP -- a no-submit flush that never reaches
+             * DRM_RADEON_CS (radeon_drm_cs_flush no-submit branch), so no GPU work
+             * results.  The route returns handled so gallivm issues no second draw. */
+            if (capture) {
+                r300_r2vb_capture_record(r300, info, draw, producer_kind,
+                                         vap_vtx_size, draw_pkt_off);
+                r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
+            }
         }
         if (getenv("R300_R2VB_ROUTE_DEBUG")) {
             static bool once = false;
@@ -1490,6 +1762,7 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                                 "gallivm skipped)\n", draw->count, any_swap);
             }
         }
+        } /* if (ok): producer-fed capture preflight passed or gate unset */
     }
 
     /* Restore the original (user) buffers and release the uploads.  Mark the
@@ -1661,6 +1934,12 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
      * to gallivm with zero behaviour change.  This is the single choke point for
      * both GL and r3v-Vulkan draws -- r3v replays through this same gallium
      * draw_vbo, so no separate Vulkan-side wiring is needed. */
+    /* Clear the producer-fed discriminator for this draw before routing: only a
+     * producer pass that runs during this draw's route sets SINGLE or SPLIT, so a
+     * producer that ran for an earlier draw but whose re-ingest refused delivery
+     * cannot mislabel this one's delivery capture. */
+    r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+
     /* Passthrough direct-VB route: re-ingest the app vertex arrays at TCL_BYPASS,
      * skipping the gallivm draw module.  Falls back to gallivm if the route
      * declines or cannot execute the draw. */

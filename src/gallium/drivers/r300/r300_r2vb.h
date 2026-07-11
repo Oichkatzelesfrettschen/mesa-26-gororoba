@@ -117,6 +117,16 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
  * transform-FS + its const file in the IB. */
 bool r300_r2vb_prepare_states(struct r300_context *r300, unsigned cs_dwords);
 
+/* Emit one machine-greppable key=value line describing a pipe_resource's
+ * underlying winsys BO identity: the buffer pointer, byte size, slab
+ * suballocation, the reloc offset within its parent slab, virtual address,
+ * initial domain, allocation flags, and the current command stream's relocation
+ * index.  The radeon winsys does not expose the parent radeon_bo pointer to the
+ * driver, so the parent is named only by its reloc offset.  The delivery capture
+ * and the split-producer trace share this so their BO-identity lines match. */
+void r300_r2vb_report_bo_identity(struct r300_context *r300, const char *tag,
+                                  struct pipe_resource *pr);
+
 /* Gated self-test for the RS482 HB_TCL umbrella, fired once from r300_flush with
  * from_flush=true so the loop appends to a CS a real draw has populated.
  * R300_HB_TCL=1 enables the umbrella; R300_R2VB_TIMING=capture|submit selects
