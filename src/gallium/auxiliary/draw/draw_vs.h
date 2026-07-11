@@ -162,6 +162,14 @@ struct draw_vertex_shader *
 draw_create_vs_nir(struct draw_context *draw,
                    const struct pipe_shader_state *state);
 
+/* Per-shader admission predicate for the draw_create_vs_nir interpreter; see
+ * draw_vs_nir.c for the soundness argument.  draw_create_vs_exec calls this
+ * before dispatching to draw_create_vs_nir so a shader shape the interpreter
+ * cannot execute falls through to the nir_to_tgsi bridge instead of hitting
+ * UNREACHABLE mid-draw. */
+bool
+draw_vs_nir_supported(const struct pipe_shader_state *state);
+
 #if DRAW_LLVM_AVAILABLE
 struct draw_vertex_shader *
 draw_create_vs_llvm(struct draw_context *draw,
