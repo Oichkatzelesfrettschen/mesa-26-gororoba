@@ -766,7 +766,7 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     return true;
 }
 
-/* ---- >64-ALU FS multipass phase 2: the NIR DAG partition ----
+/* ---- >64-ALU FS multipass: NIR DAG partition and RGBA8 carry ----
  *
  * A fragment program that the RC backend rejects at the R300_PFS_MAX_ALU_INST
  * ceiling splits into two passes at a cut through its single-block SSA DAG.
@@ -776,9 +776,12 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
  * carried scalar component travels as a hi/lo byte pair in two RGBA8 channels:
  * v = (x + BIAS) * SCALE spans [0, 2^16) for x in (-64, 64) at 1/512
  * resolution, and every packing intermediate stays inside the FP24
- * integer-exact window (|v| < 2^17), so the pair is exact through an 8-bit
- * unorm channel.  Two components per scratch target across the four-MRT
- * ceiling bounds the carry at eight components.
+ * integer-exact window (|v| < 2^17), so the pair is exact through the
+ * PIPE_FORMAT_R8G8B8A8_UNORM scratch format chosen for the carry path (wider
+ * colorbuffers exist on R500; this packing is for the multipass scratch
+ * contract, not a claim that the chip has only 8-bit RTs).  Two components
+ * per scratch target across the four-MRT ceiling bounds the carry at eight
+ * components.
  *
  * Admission authority is the compile itself: the split is attempted only
  * after the unsplit program failed at the emit ceiling, and it is adopted

@@ -3883,8 +3883,11 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
         struct pipe_box sbox = { .width = (int)count * 16, .height = 1, .depth = 1 };
         void *sm = r300->context.buffer_map(&r300->context, clip, 0, PIPE_MAP_READ,
                                             &sbox, &sxfer);
-        if (sm)
-            r300->context.buffer_unmap(&r300->context, sxfer);
+        /* The map waits for the producer write.  A failed map means the
+         * re-ingest can still fetch a recycled BO's stale contents. */
+        if (!sm)
+            goto fail;
+        r300->context.buffer_unmap(&r300->context, sxfer);
     }
 
     /* Trace the BO identities the split composition wrote through before the

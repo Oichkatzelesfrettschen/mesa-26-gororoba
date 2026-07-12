@@ -59,8 +59,8 @@ struct r300_classic_target {
 
    /* FP24 numerics: the fragment ALU carries a 16-bit mantissa plus hidden
     * bit, so consecutive integers are exact through 2^exact_int_bits and the
-    * ALU has no integer or dest-relative addressing path.  RS482-measured
-    * (steinmarder r300-fp-format-lut-and-fp24-exact-window). */
+    * ALU has no integer or dest-relative addressing path.  exact_int_bits is
+    * 16 for R300/R400 PFS (FP24); R500 uses FP32 and a larger window. */
    unsigned exact_int_bits;
 };
 

@@ -4,14 +4,15 @@
  */
 
 /*
- * RS48x delivers an interpolated varying roughly 2^-17 of the plane's
- * magnitude off its analytic value.  FP24 holds an integer exactly only up
- * to 2^17, and the plane-equation delivery error documented against attribute
- * interpolation sits at that same order.  A GLSL int() truncation fed from
- * such a varying can arrive
- * a few ULPs to the wrong side of an intended integer boundary and
- * truncate one integer low: an attribute carrying -32.0 across a triangle
- * interpolates to -31.9995, and ftrunc(-31.9995) is -31, not -32.
+ * RS48x (RS480/RS482/RS485, CHIP_RS480 family) delivers an interpolated
+ * varying roughly 2^-17 of the plane's magnitude off its analytic value.
+ * Empirical: measured on the SWTCL raster path against host FP32 plane
+ * evaluation of the same attributes.  FP24 holds an integer exactly only
+ * up to 2^17, and that plane-equation delivery error sits at the same
+ * order.  A GLSL int() truncation fed from such a varying can arrive a few
+ * ULPs to the wrong side of an intended integer boundary and truncate one
+ * integer low: an attribute carrying -32.0 across a triangle interpolates
+ * to -31.9995, and ftrunc(-31.9995) is -31, not -32.
  *
  * FP24 cannot deliver the boundary any more precisely, so nudging the
  * operand toward its own sign before the truncate trades an unrepresentable

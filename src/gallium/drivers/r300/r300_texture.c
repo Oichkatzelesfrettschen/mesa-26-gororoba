@@ -1250,6 +1250,12 @@ bool r300_can_create_resource(struct pipe_screen *screen,
     if (base->target == PIPE_BUFFER)
         return base->width0 < (uint64_t)rscreen->info.gart_size_kb * 1024 / 2;
 
+    /* Proxy TexImage can still call this after st_TestProxyTexImage builds
+     * last_level = log2(max_dim) for an oversize request.  r300_setup_miptree
+     * indexes fixed R300_MAX_TEXTURE_LEVELS arrays; refuse before the dry-run. */
+    if (base->last_level >= R300_MAX_TEXTURE_LEVELS)
+        return false;
+
     memset(&tex, 0, sizeof(tex));
     tex.b.usage = base->usage;
     tex.b.bind = base->bind;

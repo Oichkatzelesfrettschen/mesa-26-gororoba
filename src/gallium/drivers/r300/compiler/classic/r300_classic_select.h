@@ -13,7 +13,7 @@
 /* NIR instruction selection for the classic-R300 IR.  The selector owns a
  * narrow entry contract -- a fragment shader, one function, one block (the
  * non-R500 US has no flow control), IO still on variables -- and either
- * covers the whole shader with the phase-1 opcode subset or rejects it with
+ * covers the whole shader with the admitted opcode subset or rejects it with
  * a named reason.  Rejection is the supported result for everything outside
  * the subset; the selector never silently drops an instruction. */
 
