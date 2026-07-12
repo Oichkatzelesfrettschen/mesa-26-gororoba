@@ -1,24 +1,26 @@
 # r3v rename allowlist -- deliberate survivals of the r300vk -> r3v rename.
-# The Stage B acceptance grep
+# Stage B acceptance grep:
 #   rg -n "r300vk|R300VK|r300_devenv_icd|r300_icd|libvulkan_r300" \
 #     meson.build meson.options src build-infra docs
-# diffs its hits against this file; every line here names a survival and
-# its reason.  Format: <path-or-pattern><TAB><reason>
+# Every hit under those roots must match a row below or be a false positive
+# already fixed.  Format: <path-or-pattern><TAB><reason>
 #
 # historical-annotate: evidence records keep the old name.
-build-infra/docs/last-100-pr-review-comment-audit.md	review-audit evidence corpus; 133 historical r300vk mentions record what reviewers saw
+build-infra/docs/last-100-pr-review-comment-audit.md	review-audit evidence corpus; historical r300vk mentions record what reviewers saw
 docs/r3v-rename-allowlist.txt	this file names the tokens it allowlists
 #
-# transitional-alias: removed by their own dedicated branches, not the
-# rename branch.
-src/re-scripts:run_r300vk_probe_smoke.sh	steinmarder-r300 exec-wrapper until runbooks reference run_r3v_*
+# meson selector: ati_r300 is the canonical Vulkan-driver option value
+# (meson.options vulkan-drivers choices; meson.build with_ati_r300_vk).
+# There is no amd_r300 selector in the active tree.
+meson.options	ati_r300 appears in vulkan-drivers choices as the r3v ICD selector
+meson.build	with_ati_r300_vk / ati_r300 driver enablement for r3v
 #
 # hardware-family / gallium-driver names that are NOT the r3v Vulkan driver and
 # never rename: r300 (the Gallium GL driver), r300_dri.so, R300/RS482/RS485
 # (silicon).  The r3v install artifacts (libvulkan_r3v.so, r3v_icd.*.json,
-# r3v_devenv_icd.*.json) landed under the r3v name; only the Gallium GL source
+# r3v_devenv_icd.*.json) land under the r3v name; only the Gallium GL source
 # r300_icd.c keeps the r300_icd token, and it is not the Vulkan ICD manifest.
-src/gallium/drivers/r300/r300_icd.c	Gallium GL "ICD direct-emit extraction API" source; r300 GL driver, not the r3v Vulkan ICD manifest
+src/gallium/drivers/r300/r300_icd.c	Gallium GL ICD direct-emit extraction API source; r300 GL driver, not the r3v Vulkan ICD manifest
 src/gallium/drivers/r300/meson.build	lists the Gallium GL source r300_icd.c (not the Vulkan ICD manifest)
 #
 # env-compat: the r3v driver reads the canonical R3V_ env-var name first and
@@ -27,11 +29,11 @@ src/gallium/drivers/r300/meson.build	lists the Gallium GL source r300_icd.c (not
 # getenv-compat comment in r3v_private.h).  These R300VK_ strings are the
 # deliberate fallback names, not un-renamed symbols.
 src/amd/r300/vulkan/r3v/r3v_device.c	R300VK_DEBUG / R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED env fallback strings
-src/amd/r300/vulkan/r3v/r3v_identity_map.c	R300VK_DEBUG env fallback string
+src/amd/r300/vulkan/r3v/r3v_identity_map.c	R300VK_DEBUG / R300VK_IDENTITY_MAP_FP32X4_EXPERIMENTAL env fallback strings
 src/amd/r300/vulkan/r3v/r3v_instance.c	R300VK_DEBUG env fallback string
 src/amd/r300/vulkan/r3v/r3v_physical_device.c	R300VK_HYBRID_COMPUTE_EXPERIMENTAL / R300VK_WSI_SW env fallback strings
 src/amd/r300/vulkan/r3v/r3v_pipeline.c	R300VK_DEBUG env fallback string
-src/amd/r300/vulkan/r3v/r3v_private.h	R300VK_EXPERIMENTAL_NEAREST_STITCH env fallback string
+src/amd/r300/vulkan/r3v/r3v_private.h	R300VK_EXPERIMENTAL_NEAREST_STITCH and FP32x4 identity env fallback strings
 src/amd/r300/vulkan/r3v/r3v_queue.c	R300VK_DEBUG env fallback string
 src/gallium/drivers/r300/r300_compute_admission.c	R300VK_DEBUG env fallback read; canonical R3V_ debug flag path
 #
@@ -40,3 +42,7 @@ src/gallium/drivers/r300/r300_compute_admission.c	R300VK_DEBUG env fallback read
 # the path.  Not a mesa symbol.
 build-infra/conformance/r3v-vulkan-surface/README.md	external deqp-vk build dir name build-vostro-r300vk-headless
 build-infra/conformance/r3v-vulkan-surface/run.sh	external deqp-vk build dir name build-vostro-r300vk-headless (DEQP_VK default path)
+#
+# Sibling reverse-engineering trees (steinmarder-r300) may still carry
+# run_r300vk_* wrapper names; those paths are outside this repository and
+# outside the Stage B grep roots.  Do not list them here.

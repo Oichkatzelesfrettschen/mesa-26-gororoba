@@ -8,7 +8,10 @@
 #include "compiler/nir/nir_builder.h"
 #include "r300_screen.h"
 #include "util/log.h"
+#include "util/macros.h"
 #include "util/u_endian.h"
+
+#include <string.h>
 
 static bool
 r300_nir_stub_deriv_instr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
@@ -337,19 +340,27 @@ r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen)
    /* These passes lower the r3v virtual IEEE-FP16 machine, which overloads
     * real NIR opcodes (fldexp/fpow/fsin) as 4-component placeholders for the
     * classify and significand-multiply steps.  They must run ONLY on the
-    * shaders that build those placeholders -- the r3v compute-as-raster
-    * helpers, which name themselves "r3v_*" (r3v_dp4, r3v_qmul, ...) via
-    * nir_builder_init_simple_shader.  A real GL shader's vectorized
-    * sin()/pow()/ldexp() also emits a 4-component fldexp/fpow/fsin, so running
-    * these on the GL path would hijack the real transcendental -- wrong
-    * results, and a crash when the lowering reads channels 2/3 of a source that
-    * is not the packed placeholder.  The r3v virtual-FP shaders reach here as
-    * NIR (PIPE_SHADER_IR_NIR), so the builder name survives; real GL shaders
-    * never carry the prefix. */
-   if (s->info.name && strncmp(s->info.name, "r3v_", 4) == 0) {
-      NIR_PASS(_, s, r300_nir_lower_ieee16_classify);
-      NIR_PASS(_, s, r300_nir_lower_ieee16_mul);
-      NIR_PASS(_, s, r300_nir_lower_ieee16_mul_normal_rne);
+    * driver-built helpers that create those placeholders (exact names such as
+    * r3v_dp4, r3v_qmul).  A short "r3v_" prefix alone is not enough: a Vulkan
+    * application entry point named r3v_main would also match.  Real GL shaders
+    * never use these helper names. */
+   if (s->info.name) {
+      static const char *const r3v_virt_fp_helpers[] = {
+         "r3v_dp4", "r3v_qmul", "r3v_qrotate", "r3v_qconj", "r3v_qnorm",
+         "r3v_qnormalize", "r3v_noop_fs",
+      };
+      bool virt_fp = false;
+      for (unsigned i = 0; i < ARRAY_SIZE(r3v_virt_fp_helpers); i++) {
+         if (strcmp(s->info.name, r3v_virt_fp_helpers[i]) == 0) {
+            virt_fp = true;
+            break;
+         }
+      }
+      if (virt_fp) {
+         NIR_PASS(_, s, r300_nir_lower_ieee16_classify);
+         NIR_PASS(_, s, r300_nir_lower_ieee16_mul);
+         NIR_PASS(_, s, r300_nir_lower_ieee16_mul_normal_rne);
+      }
    }
 
    /* FIXME: this could be probably moved earlier... */

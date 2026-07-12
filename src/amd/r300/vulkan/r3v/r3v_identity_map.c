@@ -52,9 +52,11 @@ identity_map_debug_enabled(void)
    } while (0)
 
 static bool
-r3v_idm_exact_opt_in_enabled(const char *env_name, const char *expected)
+r3v_idm_exact_opt_in_enabled(const char *env_name, const char *legacy_name,
+                             const char *expected)
 {
-   const char *gate = getenv(env_name);
+   /* Canonical R3V_ name first, then pre-rename R300VK_ for retained runbooks. */
+   const char *gate = r3v_getenv_compat(env_name, legacy_name);
    return gate && strcmp(gate, expected) == 0;
 }
 
@@ -84,6 +86,7 @@ r3v_identity_map_replay_format(struct r3v_device *device,
     * user hazard accepted explicitly through the opt-in. */
    if (device && pl &&
        r3v_idm_exact_opt_in_enabled(R3V_IDENTITY_MAP_FP32X4_ENV,
+                                       "R300VK_IDENTITY_MAP_FP32X4_EXPERIMENTAL",
                                        R3V_IDENTITY_MAP_FP32X4_ENV_VALUE) &&
        pl->identity_map.value_components == 4 &&
        pl->identity_map.value_bit_size == 32 &&
