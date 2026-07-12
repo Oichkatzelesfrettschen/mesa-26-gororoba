@@ -174,11 +174,26 @@ static void r2vb_report_bo_a_diagnostic(struct r300_context *r300, struct pipe_r
  * coordinates when R300_R2VB_DIVIDE is set. The clip-space MVP self-test
  * remains the default oracle. The divided result is compared with the CPU
  * reference before delivery. */
+
+static bool r2vb_exec_debug_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_R2VB_EXEC_DEBUG");
+        if (!e)
+            e = getenv("R300_R2VB_ROUTE_DEBUG");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 static bool r300_r2vb_divide_enabled(void)
 {
     static int cached = -1;
-    if (cached < 0)
-        cached = getenv("R300_R2VB_DIVIDE") != NULL;
+    if (cached < 0) {
+        const char *e = getenv("R300_R2VB_DIVIDE");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
     return cached;
 }
 
@@ -990,7 +1005,9 @@ r2vb_clip_classify_readback(struct r300_context *r300,
                             uint32_t count, enum mesa_prim mode)
 {
     struct pipe_transfer *xfer = NULL;
-    struct pipe_box box = { .width = count * 16, .height = 1, .depth = 1 };
+    struct pipe_box box = {
+        .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
+    r2vb_wait_bo(r300, res);
     const float *got =
         r300->context.buffer_map(&r300->context, res, 0, PIPE_MAP_READ, &box, &xfer);
     if (!got) {
@@ -999,13 +1016,19 @@ r2vb_clip_classify_readback(struct r300_context *r300,
     }
     const bool half_z = r300->clip_halfz;
     const float k = R300_R2VB_CLIP_GUARD_K;
+    static int clip_log = -1;
+    if (clip_log < 0) {
+        const char *e = getenv("R300_R2VB_CLIP_LOG");
+        clip_log = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
 
     for (uint32_t v = 0; v < count; v++) {
         const float *g = &got[v * 4];
-        fprintf(stderr,
-                "r2vb_clip vertex=%u pos=%.6f,%.6f,%.6f,%.6f mask=0x%02x%s\n",
-                v, g[0], g[1], g[2], g[3], r300_r2vb_clipcode(g, k, half_z),
-                r300_r2vb_w_unsafe(g[3]) ? " unsafe_w" : "");
+        if (clip_log)
+            fprintf(stderr,
+                    "r2vb_clip vertex=%u pos=%.6f,%.6f,%.6f,%.6f mask=0x%02x%s\n",
+                    v, g[0], g[1], g[2], g[3], r300_r2vb_clipcode(g, k, half_z),
+                    r300_r2vb_w_unsafe(g[3]) ? " unsafe_w" : "");
     }
 
     uint32_t n_accept = 0, n_reject = 0, n_partial = 0, n_fallback = 0;
@@ -1017,8 +1040,9 @@ r2vb_clip_classify_readback(struct r300_context *r300,
                 &got[(t * 3 + 2) * 4], k, half_z, &om, &am);
             static const char *cname[] = { "accept", "reject", "partial",
                                            "fallback_w" };
-            fprintf(stderr, "r2vb_clip prim=%u or=0x%02x and=0x%02x class=%s\n",
-                    t, om, am, cname[c]);
+            if (clip_log)
+                fprintf(stderr, "r2vb_clip prim=%u or=0x%02x and=0x%02x class=%s\n",
+                        t, om, am, cname[c]);
             switch (c) {
             case R300_R2VB_TRI_ACCEPT: n_accept++; break;
             case R300_R2VB_TRI_REJECT: n_reject++; break;
@@ -1059,10 +1083,16 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
                              float (*const *extras)[4],
                              float (**out_model)[4], float (**out_extras)[4])
 {
+    if (out_model)
+        *out_model = NULL;
+    if (out_extras)
+        *out_extras = NULL;
     if (1 + n_extra > R300_R2VB_CLIP_MAX_ATTRS)
         return -1;
     struct pipe_transfer *xfer = NULL;
-    struct pipe_box box = { .width = count * 16, .height = 1, .depth = 1 };
+    struct pipe_box box = {
+        .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
+    r2vb_wait_bo(r300, res);
     const float *got =
         r300->context.buffer_map(&r300->context, res, 0, PIPE_MAP_READ, &box, &xfer);
     if (!got)
@@ -3304,6 +3334,31 @@ int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
  * input velems as phantom streams (velems > outputs), the malformed fetch that
  * wedged the ring.  The caller decides which classes may submit; this routine only
  * builds the wiring and gates on the invariant. */
+
+/* Re-emit application raster state after a producer hand-wrote registers
+ * outside the atom system.  Every delivery decline that follows a successful
+ * producer must call this before falling back to gallivm. */
+static void
+r2vb_redirty_app_raster_state(struct r300_context *r300)
+{
+    r300_mark_atom_dirty(r300, &r300->fb_state);
+    r300_mark_atom_dirty(r300, &r300->scissor_state);
+    r300_mark_atom_dirty(r300, &r300->viewport_state);
+    r300_mark_atom_dirty(r300, &r300->dsa_state);
+    r300_mark_atom_dirty(r300, &r300->rs_state);
+}
+
+/* Wait for GPU writes on a BO before a CPU read map.  r300_buffer_transfer_map
+ * forces PIPE_MAP_UNSYNCHRONIZED on read maps, so flush alone does not order. */
+static void
+r2vb_wait_bo(struct r300_context *r300, struct pipe_resource *res)
+{
+    struct r300_resource *rbuf = r300_resource(res);
+    if (rbuf && rbuf->buf)
+        r300->rws->buffer_wait(r300->rws, rbuf->buf, OS_TIMEOUT_INFINITE,
+                               RADEON_USAGE_WRITE);
+}
+
 static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
                                        const struct pipe_draw_info *info,
                                        const struct pipe_draw_start_count_bias *draw,
@@ -3311,18 +3366,21 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
                                        struct pipe_resource *vbo, int vslot)
 {
     struct r300_vertex_element_state *ve = r300->velems;
-    if (!ve || !r300_resource(clip)->buf || (vslot >= 0 && (!vbo || !r300_resource(vbo)->buf)))
+    if (!ve || !r300_resource(clip)->buf || (vslot >= 0 && (!vbo || !r300_resource(vbo)->buf))) {
+        r2vb_redirty_app_raster_state(r300);
         return false;
+    }
 
     unsigned n_out = r300->vertex_info.num_attribs;
 
     /* r300 has no per-BO GPU virtual address -- the command stream binds buffers by
      * relocation index -- so BO identity here is the resource pointer, and in the
      * emitted IB the relocation index, not a VA. */
-    fprintf(stderr,
-            "r2vb_reingest pre vinfo_num_attribs=%u app_velems_count=%u nvb=%u vslot=%d "
-            "clip=%p vbo=%p\n",
-            n_out, ve->count, r300->nr_vertex_buffers, vslot, (void *)clip, (void *)vbo);
+    if (r2vb_exec_debug_enabled())
+        fprintf(stderr,
+                "r2vb_reingest pre vinfo_num_attribs=%u app_velems_count=%u nvb=%u vslot=%d "
+                "clip=%p vbo=%p\n",
+                n_out, ve->count, r300->nr_vertex_buffers, vslot, (void *)clip, (void *)vbo);
 
     struct r300_r2vb_reingest_stream streams[PIPE_MAX_ATTRIBS];
     int n_stream = r300_r2vb_reingest_stream_layout(r300_vs(r300)->state.ir.nir, vslot,
@@ -3344,6 +3402,7 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
         fprintf(stderr,
                 "r2vb_reingest invariant=FAIL (stream_layout=%d vs num_attribs=%u; unmapped or count mismatch)\n",
                 n_stream, n_out);
+        r2vb_redirty_app_raster_state(r300);
         return false;
     }
 
@@ -3382,6 +3441,7 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
             fprintf(stderr,
                     "r2vb_reingest invariant=FAIL (passthrough stream%d src_velem=%d out of bounds, app_velems=%u)\n",
                     i, streams[i].src_velem, saved_count);
+            r2vb_redirty_app_raster_state(r300);
             return false;
         }
 
@@ -3400,8 +3460,18 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
             expect[i] = NULL;
             edge_stream[i] = true;
         } else {
-            expect[i] = r300->vertex_buffer[saved_velem[streams[i].src_velem].vertex_buffer_index]
-                            .buffer.resource;
+            struct pipe_vertex_buffer *src_vb =
+                &r300->vertex_buffer[saved_velem[streams[i].src_velem].vertex_buffer_index];
+            /* User buffers are not pipe_resources; refuse rather than treat
+             * a CPU pointer as a BO (the passthrough emit uploads them). */
+            if (src_vb->is_user_buffer) {
+                fprintf(stderr,
+                        "r2vb_reingest decline: passthrough stream%d is a user "
+                        "vertex buffer; upload path required\n", i);
+                r2vb_redirty_app_raster_state(r300);
+                return false;
+            }
+            expect[i] = src_vb->buffer.resource;
         }
     }
 
@@ -3447,11 +3517,7 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
      * outside the atom system; mark the owners dirty so the re-ingest prepare
      * re-emits the application values (else the producer's CLIP_DISABLE
      * over-rasterizes). */
-    r300_mark_atom_dirty(r300, &r300->fb_state);
-    r300_mark_atom_dirty(r300, &r300->scissor_state);
-    r300_mark_atom_dirty(r300, &r300->viewport_state);
-    r300_mark_atom_dirty(r300, &r300->dsa_state);
-    r300_mark_atom_dirty(r300, &r300->rs_state);
+    r2vb_redirty_app_raster_state(r300);
 
     /* Post-reconstruction routing dump + the resource-pointer invariant: every
      * stream's rebuilt velem must point at its expected source.  position -> clip
@@ -3498,9 +3564,9 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
     } else if (getenv("R300_R2VB_INSPECT")) {
         fprintf(stderr, "r2vb_reingest no-submit (R300_R2VB_INSPECT): wiring proven, skipping draw\n");
     } else {
-        /* Two-submit path (the producer flushed before the BO oracle), so no
-         * adjacent single-CS barrier is needed for ordering. */
-        r300->r2vb_reingest_barrier = false;
+        /* Two-submit path needs no adjacent barrier; single-CS mode must keep
+         * the re-ingest barrier so the color/VAP flush orders the producer BO. */
+        r300->r2vb_reingest_barrier = r2vb_single_cs_enabled();
         /* The delivery coordinate mode derives from the producer's actual
          * output contract: a window-space producer BO fetches verbatim, a
          * clip-space one runs the hardware viewport transform. */
@@ -3844,7 +3910,7 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     if (pvs)
         r300->context.bind_vs_state(&r300->context, pvs);
     r300_update_derived_state(r300);
-    if (r300_r2vb_prepare_states(r300, 64 + (int)count * 4 * (1 + (int)num_in) + 64))
+    if (r300_r2vb_prepare_states(r300, 64u + count * 4u * (1u + num_in) + 64u))
         r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, num_in, true);
     r300->context.bind_fs_state(&r300->context, saved_fs);
     if (pvs)
@@ -3857,11 +3923,16 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
 
     if (!r2vb_single_cs_enabled()) {
         r300->context.flush(&r300->context, NULL, 0);
+        r2vb_wait_bo(r300, clip);
         struct pipe_transfer *sxfer = NULL;
         struct pipe_box sbox = { .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
         void *sm = r300->context.buffer_map(&r300->context, clip, 0, PIPE_MAP_READ, &sbox, &sxfer);
-        if (sm)
-            r300->context.buffer_unmap(&r300->context, sxfer);
+        if (!sm) {
+            r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+            r300->r2vb_capture_clip = NULL;
+            return false;
+        }
+        r300->context.buffer_unmap(&r300->context, sxfer);
     }
     /* Single over-budget-free producer FS filled the clip BO; label it so the
      * delivery capture distinguishes it from the two-pass split producer, and
@@ -4215,10 +4286,20 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * broken oracle cannot green a broken shader.  Reads the same GART clip BO
      * the xform verify maps -- one fragment-ALU producer submit, no VAP/HW-TCL
      * re-ingest. */
-    if (getenv("R300_R2VB_DIVIDE_VERIFY") && num_in == 1 &&
-        r300_r2vb_divide_enabled()) {
-        if (r2vb_divide_oracle_selftest())
-            r2vb_verify_window_readback(r300, clip, model, count, cols);
+    {
+        static int divide_verify = -1;
+        if (divide_verify < 0) {
+            const char *e = getenv("R300_R2VB_DIVIDE_VERIFY");
+            divide_verify = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        }
+        /* Window-space producer + MVP-shaped matrix oracle only; clip-space
+         * classify mode and non-MVP restage kernels use a different reference. */
+        if (divide_verify && num_in == 1 && r300_r2vb_divide_enabled() &&
+            r300->r2vb_produced_space == R300_R2VB_POSITION_WINDOW &&
+            r300_vs_is_mvp(r300) && !r300_r2vb_clip_classify_enabled()) {
+            if (r2vb_divide_oracle_selftest())
+                r2vb_verify_window_readback(r300, clip, model, count, cols);
+        }
     }
 
     /* Clip-classification oracle: classify the FP24 clip BO this producer
@@ -4227,6 +4308,9 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * ordered the producer against this CPU read. */
     if (r300_r2vb_clip_classify_enabled()) {
         r2vb_clip_classify_readback(r300, clip, count, einfo->mode);
+        r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+        r300->r2vb_capture_clip = NULL;
+        r2vb_redirty_app_raster_state(r300);
         pipe_resource_reference(&clip, NULL);
         free(model);
         return false;
@@ -4419,6 +4503,9 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         if (!r2vb_run_transform_producer(r300, clip, count, model, num_in,
                                          cols, produced_space, restage,
                                          externals)) {
+            r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+            r300->r2vb_capture_clip = NULL;
+            r2vb_redirty_app_raster_state(r300);
             r2vb_edge_streams_release(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
@@ -4436,6 +4523,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                     "r2vb_split_delivery_bypass producers=complete action=gallivm\n");
             r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
             r300->r2vb_capture_clip = NULL;
+            r2vb_redirty_app_raster_state(r300);
             r2vb_edge_streams_release(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
@@ -4454,6 +4542,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             struct pipe_resource *fresh =
                 r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
             bool copied = false;
+            r2vb_wait_bo(r300, clip);
             if (fresh) {
                 struct pipe_transfer *sx = NULL, *dx = NULL;
                 struct pipe_box cbox = { .width = (int)count * 16, .height = 1,
@@ -4845,12 +4934,18 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                                         r300->velems->velem[ostreams[i].src_velem]
                                             .src_format), 4) / 4
                             : 4;
-    fprintf(stderr,
-            "r2vb_output_reingest mode=per_output outputs=%u app_velems=%u "
-            "stream_layout=%d fetch_dwords=%u\n",
-            r300->vertex_info.num_attribs, r300->velems->count, n_ostream,
-            fetch_dwords);
+    if (r2vb_exec_debug_enabled())
+        fprintf(stderr,
+                "r2vb_output_reingest mode=per_output outputs=%u app_velems=%u "
+                "stream_layout=%d fetch_dwords=%u\n",
+                r300->vertex_info.num_attribs, r300->velems->count, n_ostream,
+                fetch_dwords);
     bool ok = r300_r2vb_reingest_outputs(r300, einfo, ddraw, clip, NULL, -1);
+    if (!ok) {
+        r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+        r300->r2vb_capture_clip = NULL;
+        r2vb_redirty_app_raster_state(r300);
+    }
     r2vb_edge_streams_release(r300);
     pipe_resource_reference(&clip, NULL);
     free(model);
