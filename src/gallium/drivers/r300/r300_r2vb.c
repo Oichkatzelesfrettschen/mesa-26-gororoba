@@ -307,6 +307,24 @@ static bool r300_r2vb_split_delivery_bypass_enabled(void)
     return cached;
 }
 
+/* Fresh clip-copy gate (R300_R2VB_FRESH_CLIP_COPY): after the split producers
+ * complete, CPU-copy the verified window-space clip output into a newly
+ * allocated buffer that was never a producer render target, and deliver from
+ * the fresh buffer.  The copy is two CPU maps and a memcpy -- no extra GPU
+ * submission.  The split-produced clip BO carries a render-target reservation
+ * history and a color-target-to-vertex-source role transition that the fresh
+ * buffer does not; a retiring delivery from the fresh buffer convicts that
+ * history, a hanging one convicts the direct-VB delivery draw itself. */
+static bool r300_r2vb_fresh_clip_copy_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_R2VB_FRESH_CLIP_COPY");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 /* Topology-gather gate (R300_R2VB_TOPOLOGY): a CPU pre-pass resolves
  * TRIANGLE_STRIP, TRIANGLE_FAN, and indexed triangle-family draws (including
  * primitive restart) into a plain triangle-index list before classification,
@@ -4437,6 +4455,58 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             pipe_resource_reference(&clip, NULL);
             free(model);
             return false;
+        }
+        /* Fresh clip-copy: replace the split-produced clip BO with a
+         * CPU-written copy in a buffer that was never a render target, then
+         * deliver normally.  The run_split_producer tail's flush + read map
+         * already ordered the pass-B write, so the read map here returns the
+         * final window-space data; the fresh buffer is written before any
+         * delivery state is touched and carries no GPU history.  A copy
+         * failure falls the draw back to gallivm rather than delivering from
+         * the suspect BO with the gate nominally on. */
+        if (r300_r2vb_fresh_clip_copy_enabled() &&
+            r300->r2vb_producer_kind == R300_R2VB_PRODUCER_SPLIT) {
+            struct pipe_resource *fresh =
+                r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
+            bool copied = false;
+            if (fresh) {
+                struct pipe_transfer *sx = NULL, *dx = NULL;
+                struct pipe_box cbox = { .width = (int)count * 16, .height = 1,
+                                         .depth = 1 };
+                const void *src = r300->context.buffer_map(&r300->context, clip,
+                                                           0, PIPE_MAP_READ,
+                                                           &cbox, &sx);
+                void *dst = src ? r300->context.buffer_map(&r300->context,
+                                                           fresh, 0,
+                                                           PIPE_MAP_WRITE,
+                                                           &cbox, &dx)
+                                : NULL;
+                if (src && dst) {
+                    memcpy(dst, src, (size_t)count * 16);
+                    copied = true;
+                }
+                if (dst)
+                    r300->context.buffer_unmap(&r300->context, dx);
+                if (src)
+                    r300->context.buffer_unmap(&r300->context, sx);
+            }
+            if (!copied) {
+                fprintf(stderr,
+                        "r2vb_fresh_clip_copy copy_failed action=gallivm\n");
+                pipe_resource_reference(&fresh, NULL);
+                r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+                r300->r2vb_capture_clip = NULL;
+                r2vb_edge_streams_release(r300);
+                pipe_resource_reference(&clip, NULL);
+                free(model);
+                return false;
+            }
+            fprintf(stderr,
+                    "r2vb_fresh_clip_copy bytes=%u src=%p dst=%p action=deliver\n",
+                    count * 16, (void *)clip, (void *)fresh);
+            pipe_resource_reference(&clip, NULL);
+            clip = fresh;
+            r300->r2vb_capture_clip = clip;
         }
     }
 
