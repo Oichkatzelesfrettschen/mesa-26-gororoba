@@ -64,7 +64,8 @@ and the release profile
 (`build-infra/configs/alternates/`)
 are the canonical r300 pair.
 `build-infra/configs/alternates/` also carries the asan `1_` and -O0 `2_`
-debug variants.
+debug *variants* of the same r300 surface; they are not the primary pair.
+The primary pair remains release `4_` and assertions-live debug `3_`.
 
 Every prior r300/vostro variant is removed and subsumed: the GL-only
 `r300-canonical-vostro-*`, the Vulkan-ICD-only `r3v-vostro-*` (`opengl=false`),
