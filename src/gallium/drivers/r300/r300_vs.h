@@ -54,13 +54,12 @@ struct r300_vertex_shader {
     /* SWTCL-specific. */
     void *draw_vs;
 
-    /* R2VB producer admission memo, indexed by allow_computed_varying.
-     * r300_r2vb_producer_fits_budget compiles the producer FS derived from
-     * this VS into a throwaway code object and admits on the emitted ALU
-     * slot count; the verdict is a pure function of the immutable NIR, the
-     * screen caps, and process-constant env gates, so it is measured once
-     * per VS.  0 = unmeasured, 1 = fits, 2 = rejected. */
-    uint8_t r2vb_admission[2];
+    /* R2VB producer admission memo, indexed by
+     * [allow_computed_varying][position_space].  CLIP and WINDOW producers
+     * differ by the divide sequence, so a split/fits verdict for one space
+     * does not transfer to the other.  0 = unmeasured, 1 = fits, 2 = reject,
+     * 3 = split admitted. */
+    uint8_t r2vb_admission[2][2];
 };
 
 void r300_translate_vertex_shader(struct r300_context *r300,
