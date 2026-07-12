@@ -86,6 +86,11 @@ struct radeon_drm_cs {
    /* Per-context fences: wait on [next_fill] not the global fence. */
    struct util_queue_fence flush_completed[3];
    struct pipe_fence_handle *next_fence;
+
+   /* RADEON_FENCE_TRACE=1 flush ordinal: counts every cs_flush on this
+    * cmdbuf so the trace lines order deterministically across the
+    * triple-buffer rotation. */
+   uint32_t fence_trace_ordinal;
 };
 
 int radeon_lookup_buffer(struct radeon_winsys *rws, struct radeon_cs_context *csc,
