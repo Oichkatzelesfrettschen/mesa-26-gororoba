@@ -663,6 +663,10 @@ struct r300_context {
      * view, or -1.  The slot keeps the reference while the merged texture
      * state can name it (emit-time relocation validation re-reads it). */
     int pstipple_bound_unit;
+    /* Application view displaced when the stipple view is spliced into its
+     * slot; restored when the splice is cleared so a prior CSO's sampler
+     * binding is not permanently erased. */
+    struct pipe_sampler_view *pstipple_displaced_view;
 
     /* Differentiated varying's generic index last applied to the draw module's
      * derivative injection (0 = injection off; real indices are >= 9). Tracks
