@@ -706,7 +706,7 @@ static nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
         }
     }
 
-    /* Target output -> colour0 (the producer BO this pass writes). */
+    /* Target output -> color0 (the producer BO this pass writes). */
     nir_foreach_variable_with_modes(var, fs, nir_var_shader_out) {
         if (var->data.location == target) {
             var->data.location = FRAG_RESULT_DATA0;
@@ -1421,13 +1421,14 @@ static bool r2vb_quat_oracle_selftest(void)
  * at n=16 for the sedenion (CD-4) product oracle.  conj negates all but [0]. */
 static void r2vb_cd_mul(const float *a, const float *b, float *o, int n)
 {
+    /* Temporaries are fixed at 16 components (sedenion).  n must be a power
+     * of two in [1, 16] or the half-size recursion overruns the stack arrays. */
+    assert(n >= 1 && n <= 16 && (n & (n - 1)) == 0);
     if (n == 1) { o[0] = a[0] * b[0]; return; }
     int h = n / 2;
     const float *A = a, *B = a + h, *C = b, *D = b + h;
-    /* cj is filled cj[0..h-1] before each use and the recursive call reads only
-     * that range, but the read bound is opaque to GCC's value analysis, so it
-     * warns cj may be used uninitialized.  Define the whole array to make the
-     * unread tail cj[h..15] a stated zero rather than a maybe-uninitialized. */
+    /* cj is filled cj[0..h-1] before each use.  The whole array is zeroed so
+     * the unread tail cj[h..15] is a stated zero rather than maybe-uninitialized. */
     float ac[16], db[16], da[16], bc[16], cj[16] = {0};
     r2vb_cd_mul(A, C, ac, h);
     for (int i = 0; i < h; i++) cj[i] = (i == 0) ? D[i] : -D[i]; /* conj(D) */
@@ -1581,21 +1582,20 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
     OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
     /* GA point size is in sixths of a pixel (the blitter encodes dimension*6 into
      * R300_GA_POINT_SIZE, see r300_render.c), so 6 == 1 px.  R300_R2VB_POINT_SIZE
-     * overrides the rasterized size in whole pixels to probe whether the GA point
-     * block honors a larger per-draw point size on silicon; GA_POINT_MINMAX_MAX is
-     * raised to the same value so the GA does not clamp the requested size back to
-     * the 1 px default.  Unset (default 1) reproduces the original 6/6 emit. */
+     * overrides the rasterized size only for single-vertex producer probes: a
+     * multi-vertex producer packs attributes as a point stream, and a wide
+     * GA_POINT_SIZE would rasterize each vertex as a large splat instead of
+     * a 1-px sample.  Unset (default 1) emits 6/6. */
     {
         static int r2vb_point_px = -1;
         if (r2vb_point_px < 0) {
             const char *e = getenv("R300_R2VB_POINT_SIZE");
             long px = e ? strtol(e, NULL, 0) : 1;
-            /* ps6 = px*6 is packed into a 16-bit GA_POINT_SIZE field per axis, so
-             * cap px at 65535/6 to keep the encoding from wrapping; this mirrors
-             * the bounded strtol the other R300_R2VB_* env parses use. */
+            /* ps6 = px*6 is packed into a 16-bit GA_POINT_SIZE field per axis. */
             r2vb_point_px = (px > 0 && px <= 65535 / 6) ? (int)px : 1;
         }
-        uint32_t ps6 = (uint32_t)r2vb_point_px * 6;
+        int px = (num_vertices == 1) ? r2vb_point_px : 1;
+        uint32_t ps6 = (uint32_t)px * 6;
         OUT_CS_REG(R300_GA_POINT_SIZE, (ps6 << R300_POINTSIZE_Y_SHIFT) |
                                            (ps6 << R300_POINTSIZE_X_SHIFT));
         OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
@@ -3307,10 +3307,18 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_VARYING");
         varying = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
+    /* Multi-input position needs the restaged producer (one feed slot per
+     * input).  The hand-built MVP FS only reads velem[0]; without RESTAGE a
+     * multi-input match would under-feed the transform. */
+    unsigned npos = r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir);
+    if (npos > 1 && !restage)
+        return false;
     bool al = restage ? r300_vs_is_fragment_aluable(r300, varying) : r300_vs_is_mvp(r300);
     if (getenv("R300_R2VB_EXEC_DEBUG"))
-        fprintf(stderr, "r2vb_route_mvp gate=%d restage=%d varying=%d aluable=%d count=%u\n",
-                gate, restage, varying, al, draw->count);
+        fprintf(stderr,
+                "r2vb_route_mvp gate=%d restage=%d varying=%d aluable=%d "
+                "npos=%u count=%u\n",
+                gate, restage, varying, al, npos, draw->count);
     return al;
 }
 
@@ -4919,15 +4927,22 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * zero-divisor pair as a vertex makes that quarter read exact zero on silicon. */
     const char *sed = getenv("R300_R2VB_SED");
     if (sed && num_in == 8) {
+        /* Exact q0..q3 only; any other value declines rather than defaulting. */
+        if (!(sed[0] == 'q' && sed[1] >= '0' && sed[1] <= '3' && sed[2] == '\0')) {
+            fprintf(stderr,
+                    "r2vb_sed_verify ABORT (R300_R2VB_SED=%s; use exact q0|q1|q2|q3)\n",
+                    sed);
+            pipe_resource_reference(&clip, NULL);
+            free(model);
+            return false;
+        }
         if (!r2vb_sed_oracle_selftest()) {
             fprintf(stderr, "r2vb_sed_verify ABORT (sedenion oracle self-test failed)\n");
             pipe_resource_reference(&clip, NULL);
             free(model);
             return false;
         }
-        int quarter = 0;
-        if (sed[0] == 'q' && sed[1] >= '0' && sed[1] <= '3')
-            quarter = sed[1] - '0';
+        int quarter = sed[1] - '0';
         const char *tag = quarter == 0 ? "sed_q0" : quarter == 1 ? "sed_q1"
                         : quarter == 2 ? "sed_q2" : "sed_q3";
         float (*sexp)[4] = malloc((size_t)count * sizeof(*sexp));
