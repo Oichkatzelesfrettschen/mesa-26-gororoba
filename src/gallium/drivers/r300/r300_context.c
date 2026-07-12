@@ -92,6 +92,7 @@ static void r300_destroy_context(struct pipe_context* context)
     /* Polygon-stipple texture, view, and sampler (lazily built by
      * r300_set_polygon_stipple). */
     pipe_sampler_view_reference(&r300->pstipple_sampler_view, NULL);
+    pipe_sampler_view_reference(&r300->pstipple_displaced_view, NULL);
     pipe_resource_reference(&r300->pstipple_tex, NULL);
     if (r300->pstipple_sampler)
         r300->context.delete_sampler_state(&r300->context,

@@ -133,12 +133,18 @@ nir_lower_pstipple_fs(struct nir_shader *shader,
       return false;
    }
 
+   /* First free binding past every sampler, including sampler arrays
+    * (each array element occupies a consecutive binding). */
    int binding = 0;
    nir_foreach_uniform_variable(var, shader) {
-      if (glsl_type_is_sampler(var->type)) {
-         if (var->data.binding >= binding)
-            binding = var->data.binding + 1;
-      }
+      const struct glsl_type *base = glsl_without_array(var->type);
+      if (!glsl_type_is_sampler(base))
+         continue;
+      unsigned slots = glsl_type_is_array(var->type)
+                         ? glsl_get_length(var->type) : 1u;
+      int end = (int)var->data.binding + (int)slots;
+      if (end > binding)
+         binding = end;
    }
    const struct glsl_type *sampler2D =
       glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
