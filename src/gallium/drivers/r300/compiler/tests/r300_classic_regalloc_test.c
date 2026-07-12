@@ -10,7 +10,7 @@
 #include "classic/r300_classic_regalloc.h"
 #include "radeon_program_constants.h"
 
-/* Phase-3 exit criterion: allocation never exceeds the target's temp file
+/* Register-file ceiling criterion: allocation never exceeds the target's temp file
  * for a fitting program, recycles slots at last use, and cleanly rejects an
  * over-budget one.  A dependency chain of any length fits in two slots; a
  * fan whose values all stay live must reject exactly past

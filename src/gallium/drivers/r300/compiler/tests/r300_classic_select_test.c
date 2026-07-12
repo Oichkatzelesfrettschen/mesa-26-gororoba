@@ -16,11 +16,11 @@
 #include "r300_shader_semantics.h"
 #include "radeon_program_constants.h"
 
-/* Phase-2 exit criterion: selection covers the phase-1 opcode subset for
- * every corpus shader or cleanly rejects with a named reason.  The corpus
- * shaders run through r300_optimize_nir first, the same production lowering
- * nir_to_rc receives its input from, so selection sees real post-lowering
- * shapes (flrp arrives as a fmad chain, not as flrp). */
+/* Selection corpus criterion: every corpus shader covers the admitted
+ * opcode subset or cleanly rejects with a named reason.  Shaders run through
+ * r300_optimize_nir first, the same production lowering nir_to_rc receives,
+ * so selection sees real post-lowering shapes (flrp arrives as a fmad chain,
+ * not as flrp). */
 
 static int failures;
 

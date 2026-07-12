@@ -480,12 +480,18 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
      * nir_op_ushr abort on the native VertexIndex/InstanceIndex path).
      * Run the fragment path's r300_nir_lower_bitwise_to_arith first: it
      * rewrites the FP24-exact idioms (constant unsigned shift, low-bit
-     * mask) to udiv/umod and drops the rest to operand 0, so no integer
-     * bit op survives into int_to_float.  The draw path has no rc_error
-     * hook, so a non-exact op degrades to its operand rather than being
-     * rejected -- the same graceful drop the fragment translator flags. */
+     * mask) to udiv/umod.  Ops outside that set set out_unsupported; the
+     * draw path rejects the shader rather than silently dropping them. */
     bool vs_bitwise_unsupported = false;
     NIR_PASS(_, nir, r300_nir_lower_bitwise_to_arith, &vs_bitwise_unsupported);
+    if (vs_bitwise_unsupported) {
+        fprintf(stderr,
+                "r300: SW-TCL VS uses bitwise ops outside the FP24-exact "
+                "rewrite set; rejecting shader\n");
+        ralloc_free(nir);
+        vs->draw_vs = NULL;
+        return;
+    }
     NIR_PASS(_, nir, nir_lower_int_to_float);
     NIR_PASS(_, nir, r300_nir_float_encode_int_sysvals);
     NIR_PASS(_, nir, r300_nir_float_encode_synthetic_sysval_index_uses);

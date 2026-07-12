@@ -19,7 +19,7 @@
  * constants, and immediates map to file references with a composed swizzle,
  * ALU and TEX results map to the defining classic instruction, and fneg/fabs
  * fold into the descriptor's modifier bits instead of emitting anything.
- * Everything outside the phase-1 subset lands in reject() with a named
+ * Everything outside the admitted ALU subset lands in reject() with a named
  * reason -- rejection is a supported result, silent dropping is not. */
 
 struct sel_ctx {
@@ -461,7 +461,7 @@ select_intrinsic(struct sel_ctx *ctx, nir_intrinsic_instr *intr)
    }
 }
 
-/* One row per phase-1 ALU op; fneg/fabs and identity vecN fold into source
+/* One row per admitted ALU op; fneg/fabs and identity vecN fold into source
  * descriptors instead. */
 static bool
 alu_op_map(nir_op op, enum r300_classic_op *out)
