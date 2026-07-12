@@ -1234,6 +1234,29 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
  * topology-gathered draw, or the identity draw->start+i sequence for a plain
  * one -- so this reader always walks the same vertices the position
  * model-gather used. */
+/* True when base + index * stride + format_size fits the bound resource.
+ * User vertex buffers have no size in the pipe ABI; they cannot be extent-
+ * checked here and remain the caller's contract. */
+static bool
+r2vb_velem_index_in_bounds(struct r300_context *r300, unsigned e, uint32_t index)
+{
+    if (e >= r300->velems->count || !r300->velems->velem[e].src_stride)
+        return false;
+    struct pipe_vertex_element *pe = &r300->velems->velem[e];
+    if (pe->vertex_buffer_index >= r300->nr_vertex_buffers)
+        return false;
+    struct pipe_vertex_buffer *vb =
+        &r300->vertex_buffer[pe->vertex_buffer_index];
+    if (vb->is_user_buffer)
+        return true;
+    if (!vb->buffer.resource)
+        return false;
+    const size_t need = (size_t)vb->buffer_offset + pe->src_offset +
+                        (size_t)index * pe->src_stride +
+                        util_format_get_blocksize(pe->src_format);
+    return need <= (size_t)vb->buffer.resource->width0;
+}
+
 static float (*
 r2vb_read_velem_floats(struct r300_context *r300, unsigned e,
                        const uint32_t *indices, uint32_t count))[4]
@@ -1264,6 +1287,10 @@ r2vb_read_velem_floats(struct r300_context *r300, unsigned e,
     if (!out)
         return NULL;
     for (uint32_t i = 0; i < count; i++) {
+        if (!r2vb_velem_index_in_bounds(r300, e, indices[i])) {
+            free(out);
+            return NULL;
+        }
         const float *v = (const float *)(base + (size_t)indices[i] * pe->src_stride);
         out[i][0] = v[0];
         out[i][1] = comps > 1 ? v[1] : 0.0f;
@@ -2858,13 +2885,14 @@ static bool r300_r2vb_budget_escape_enabled(void)
 static enum r300_fs_admission
 r300_r2vb_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
                        gl_varying_slot target, const char *pass_name,
+                       enum r300_r2vb_position_space space,
                        unsigned *out_alu)
 {
-    /* r2vb_env_space() is WINDOW when R300_R2VB_DIVIDE=1, so the throwaway
-     * compile includes the frcp + viewport MADs and the emit ceiling already
-     * charges the divide sequence against the restage budget. */
+    /* WINDOW includes frcp + viewport MADs; CLIP does not.  Admission is
+     * keyed by space so a CLIP-route classify pass cannot inherit a WINDOW
+     * force-split memo (or the reverse). */
     nir_shader *fs = r300_r2vb_build_restaged_fs_nir(r300, vs_nir, target,
-                                                     r2vb_env_space());
+                                                     space);
     if (fs == NULL)
         return R300_FS_ADMIT_REJECT;
     r300_optimize_nir(fs, r300->screen);
@@ -2876,8 +2904,9 @@ r300_r2vb_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
         *out_alu = alu_len;
     if (getenv("R300_R2VB_EXEC_DEBUG"))
         fprintf(stderr,
-                "r2vb_admission pass=%s verdict=%s emitted_alu=%u\n",
+                "r2vb_admission pass=%s space=%s verdict=%s emitted_alu=%u\n",
                 pass_name,
+                space == R300_R2VB_POSITION_WINDOW ? "window" : "clip",
                 adm == R300_FS_ADMIT_FITS ? "fits" :
                 adm == R300_FS_ADMIT_OVER_ALU_BUDGET ? "over_alu_budget"
                                                      : "reject",
@@ -2888,10 +2917,11 @@ r300_r2vb_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
 static bool r300_r2vb_measure_pass_fits(struct r300_context *r300,
                                         nir_shader *vs_nir,
                                         gl_varying_slot target,
-                                        const char *pass_name)
+                                        const char *pass_name,
+                                        enum r300_r2vb_position_space space)
 {
-    return r300_r2vb_measure_pass(r300, vs_nir, target, pass_name, NULL) ==
-           R300_FS_ADMIT_FITS;
+    return r300_r2vb_measure_pass(r300, vs_nir, target, pass_name, space,
+                                  NULL) == R300_FS_ADMIT_FITS;
 }
 
 /* Compact carry-composition string for the EXEC_DEBUG trace: one letter per
@@ -2913,7 +2943,8 @@ static void r300_r2vb_carry_types_str(const struct r300_mp_partition *p,
  * budget or rejected, a construction failure) declines and the caller falls
  * back to a plain reject exactly as the pre-split route does. */
 static bool r300_r2vb_split_admitted(struct r300_context *r300,
-                                     nir_shader *vs_nir, unsigned num_in)
+                                     nir_shader *vs_nir, unsigned num_in,
+                                     enum r300_r2vb_position_space space)
 {
     /* The pass-B producer draw feeds num_in model attributes plus the carry,
      * so the split is deliverable only within the producer's input ceiling. */
@@ -2921,8 +2952,7 @@ static bool r300_r2vb_split_admitted(struct r300_context *r300,
         return false;
 
     nir_shader *pos = r300_r2vb_build_restaged_fs_nir(r300, vs_nir,
-                                                      VARYING_SLOT_POS,
-                                                      r2vb_env_space());
+                                                      VARYING_SLOT_POS, space);
     if (pos == NULL)
         return false;
     r300_optimize_nir(pos, r300->screen);
@@ -2964,36 +2994,38 @@ static bool r300_r2vb_split_admitted(struct r300_context *r300,
     return admitted;
 }
 
-/* Producer admission memo (vs->r2vb_admission): 0 unmeasured, 1 single-pass
- * fits, 2 reject, 3 split producer admitted. The split verdict covers budget
- * escape and forced-split delivery, and its throwaway compiles run once per VS. */
+/* Producer admission memo: 0 unmeasured, 1 single-pass fits, 2 reject,
+ * 3 split admitted.  Keyed by (allow_computed_varying, position_space). */
 #define R300_R2VB_ADMIT_UNMEASURED 0
 #define R300_R2VB_ADMIT_FITS       1
 #define R300_R2VB_ADMIT_REJECT     2
 #define R300_R2VB_ADMIT_SPLIT      3
 
 static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
-                                           bool allow_computed_varying)
+                                           bool allow_computed_varying,
+                                           enum r300_r2vb_position_space space)
 {
     struct r300_vertex_shader *vs = r300_vs(r300);
-    uint8_t *memo = &vs->r2vb_admission[allow_computed_varying ? 1 : 0];
+    unsigned space_i = space == R300_R2VB_POSITION_WINDOW ? 1u : 0u;
+    uint8_t *memo = &vs->r2vb_admission[allow_computed_varying ? 1 : 0][space_i];
     if (*memo)
         return *memo != R300_R2VB_ADMIT_REJECT;
 
     unsigned alu = 0;
     enum r300_fs_admission adm =
         r300_r2vb_measure_pass(r300, vs->state.ir.nir, VARYING_SLOT_POS,
-                               "position", &alu);
+                               "position", space, &alu);
     bool fits = adm == R300_FS_ADMIT_FITS;
     if (fits && allow_computed_varying) {
         int dv = r300_r2vb_first_computed_varying(vs->state.ir.nir);
         if (dv >= 0)
             fits = r300_r2vb_measure_pass_fits(r300, vs->state.ir.nir,
-                                               (gl_varying_slot)dv, "varying");
+                                               (gl_varying_slot)dv, "varying",
+                                               space);
     }
     /* R300_R2VB_FORCE_SPLIT requests the split producer for a fitting position
      * pass when the spill1 gate is enabled. A declined split keeps the normal
-     * single-pass admission. */
+     * single-pass admission.  Probe the same `space` the producer will emit. */
     if (fits) {
         static int force_split = -1;
         if (force_split < 0) {
@@ -3003,15 +3035,18 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
         if (force_split && !allow_computed_varying &&
             r300_r2vb_budget_escape_enabled()) {
             unsigned num_in = r300_r2vb_count_position_inputs(vs->state.ir.nir);
-            if (r300_r2vb_split_admitted(r300, vs->state.ir.nir, num_in)) {
+            if (r300_r2vb_split_admitted(r300, vs->state.ir.nir, num_in,
+                                         space)) {
                 fprintf(stderr,
-                        "r2vb_force_split under_budget=1 admitted=1\n");
+                        "r2vb_force_split under_budget=1 space=%s admitted=1\n",
+                        space_i ? "window" : "clip");
                 *memo = R300_R2VB_ADMIT_SPLIT;
                 return true;
             }
             fprintf(stderr,
-                    "r2vb_force_split under_budget=1 admitted=0 "
-                    "(split declined; single-pass kept)\n");
+                    "r2vb_force_split under_budget=1 space=%s admitted=0 "
+                    "(split declined; single-pass kept)\n",
+                    space_i ? "window" : "clip");
         }
         *memo = R300_R2VB_ADMIT_FITS;
         return true;
@@ -3025,7 +3060,7 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
     if (adm == R300_FS_ADMIT_OVER_ALU_BUDGET && !allow_computed_varying &&
         r300_r2vb_budget_escape_enabled()) {
         unsigned num_in = r300_r2vb_count_position_inputs(vs->state.ir.nir);
-        if (r300_r2vb_split_admitted(r300, vs->state.ir.nir, num_in)) {
+        if (r300_r2vb_split_admitted(r300, vs->state.ir.nir, num_in, space)) {
             *memo = R300_R2VB_ADMIT_SPLIT;
             return true;
         }
@@ -3059,9 +3094,10 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
     bool ok = r300_vs_nir_is_fragment_aluable(clone, allow_computed_varying);
     ralloc_free(clone);
     /* Structure admitted; the budget verdict comes from the emitted-slot
-     * oracle on the derived producer FS, memoized per VS. */
+     * oracle on the derived producer FS, memoized per VS and position space. */
     if (ok)
-        ok = r300_r2vb_producer_fits_budget(r300, allow_computed_varying);
+        ok = r300_r2vb_producer_fits_budget(r300, allow_computed_varying,
+                                            r2vb_env_space());
     return ok;
 }
 
@@ -3077,8 +3113,9 @@ enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
      * linear vertex list; an index buffer would need an index-aware producer.
      * The gated topology gather (R300_R2VB_TOPOLOGY, requires
      * R300_R2VB_CLIP_ROUTE) resolves an indexed triangle-family draw to a
-     * plain triangle list ahead of the clip route, so it alone admits an
-     * indexed draw past this reject -- every other route stays index-blind. */
+     * plain triangle list on the MVP/clip route only.  The pure passthrough
+     * path still emits draw_arrays without resolving indices, so indexed
+     * identity-VS draws are rejected below even when topology is enabled. */
     if (info->index_size != 0 && !r300_r2vb_topology_enabled())
         return R2VB_REJECT_INDEXED;
     if (info->instance_count != 1)
@@ -3106,10 +3143,19 @@ enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
      * the draw fall back to gallivm. */
     if (r300_fs(r300)->shader->inputs.face != ATTR_UNUSED)
         return R2VB_REJECT_FRONTFACE;
-    /* Structurally eligible.  An identity VS needs no transform -- the app vertex
-     * buffer can re-ingest directly (PASSTHROUGH); anything else needs the
-     * fragment-ALU transform producer first (CANDIDATE). */
-    return r300_vs_is_passthrough(r300) ? R2VB_ROUTE_PASSTHROUGH : R2VB_ROUTE_CANDIDATE;
+    /* Identity VS: re-ingest the app buffers at TCL_BYPASS only for non-indexed
+     * lists/points/lines.  Indexed and strip/fan shapes need topology expand,
+     * which lives on the MVP producer path -- reject them from pure
+     * passthrough so R300_R2VB_EXEC cannot emit draw_arrays over raw indices. */
+    if (r300_vs_is_passthrough(r300)) {
+        if (info->index_size != 0)
+            return R2VB_REJECT_INDEXED;
+        if (info->mode == MESA_PRIM_TRIANGLE_STRIP ||
+            info->mode == MESA_PRIM_TRIANGLE_FAN)
+            return R2VB_REJECT_PRIM;
+        return R2VB_ROUTE_PASSTHROUGH;
+    }
+    return R2VB_ROUTE_CANDIDATE;
 }
 
 bool r300_r2vb_route_draw(struct r300_context *r300,
@@ -3958,8 +4004,10 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
          * producer instead of a single over-budget FS.  Guarded by the spill1
          * gate and the per-VS memo, so gated off the branch is never taken. */
         if (r300_r2vb_budget_escape_enabled() &&
-            r300_r2vb_producer_fits_budget(r300, false) &&
-            r300_vs(r300)->r2vb_admission[0] == R300_R2VB_ADMIT_SPLIT)
+            r300_r2vb_producer_fits_budget(r300, false, space) &&
+            r300_vs(r300)->r2vb_admission[0]
+                          [space == R300_R2VB_POSITION_WINDOW ? 1 : 0] ==
+                R300_R2VB_ADMIT_SPLIT)
             return r300_r2vb_run_split_producer(r300, clip, count, model, num_in,
                                                 cols, space);
     }
@@ -4073,16 +4121,18 @@ r2vb_topology_gather_indices(struct r300_context *r300,
     const uint32_t n_verts = draw->count;
     if (n_verts == 0)
         return false;
-    /* Cap source allocation: output cannot exceed 4096 vertices (at most
-     * floor((n-2)*3) for strip/fan, or n for triangle lists).  A multi-million
-     * draw->count would only fail later; refuse oversized sources early. */
+    /* Cap source allocation before malloc: gathered output is at most 4096
+     * vertices.  TRIANGLES emit one output vertex per source; strip/fan emit
+     * at most 3*(n-2), so n > 4096/3+2 cannot fit. */
     const uint32_t cap = 4096;
-    if (n_verts > cap * 2u && info->mode == MESA_PRIM_TRIANGLES)
-        return false;
-    if (n_verts > cap + 2u &&
-        (info->mode == MESA_PRIM_TRIANGLE_STRIP ||
-         info->mode == MESA_PRIM_TRIANGLE_FAN))
-        return false;
+    if (info->mode == MESA_PRIM_TRIANGLES) {
+        if (n_verts > cap)
+            return false;
+    } else {
+        /* strip / fan */
+        if (n_verts > (cap / 3u) + 2u)
+            return false;
+    }
 
     uint32_t *src = malloc((size_t)n_verts * sizeof(*src));
     if (!src)
@@ -4099,6 +4149,15 @@ r2vb_topology_gather_indices(struct r300_context *r300,
         if (!ibase) {
             free(src);
             return false;
+        }
+        /* Extent-check the index fetch window for BO-backed index buffers. */
+        if (!info->has_user_indices && info->index.resource) {
+            const size_t need =
+                ((size_t)draw->start + n_verts) * info->index_size;
+            if (need > (size_t)info->index.resource->width0) {
+                free(src);
+                return false;
+            }
         }
         ibase += (size_t)draw->start * info->index_size;
         for (uint32_t i = 0; i < n_verts; i++) {
@@ -4143,15 +4202,15 @@ r2vb_topology_gather_indices(struct r300_context *r300,
                 i1 = seg_start + t * 3 + 1;
                 i2 = seg_start + t * 3 + 2;
             } else if (info->mode == MESA_PRIM_TRIANGLE_STRIP) {
-                /* Gathered output is MESA_PRIM_TRIANGLES (first-vertex PV).
-                 * Default last-vertex PV rotates odd strips (t+1,t,t+2); for
-                 * flatshade_first keep (t,t+1,t+2) so vertex t remains first. */
+                /* Gathered output is MESA_PRIM_TRIANGLES with first-vertex
+                 * provoking.  Last-vertex PV rotates odd strips to (t+1,t,t+2)
+                 * so the third source remains last; flatshade_first keeps
+                 * (t,t+1,t+2) so source t is first in every triangle. */
                 const struct r300_rs_state *rs =
                     r300->rs_state.state
                         ? (const struct r300_rs_state *)r300->rs_state.state
                         : NULL;
-                const bool first_pv =
-                    rs && rs->rs.flatshade && rs->rs.flatshade_first;
+                const bool first_pv = rs && rs->rs.flatshade_first;
                 if ((t & 1) == 0 || first_pv) {
                     i0 = seg_start + t + 0;
                     i1 = seg_start + t + 1;
@@ -4285,13 +4344,62 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         base += vb->buffer_offset + pe->src_offset;
         unsigned comps = util_format_get_nr_components(pe->src_format);
         for (unsigned i = 0; i < count; i++) {
-            const float *v = (const float *)(base +
-                (size_t)(topo_gathered ? topo_idx[i] : draw->start + i) *
-                pe->src_stride);
+            const uint32_t vidx =
+                topo_gathered ? topo_idx[i] : draw->start + i;
+            if (!r2vb_velem_index_in_bounds(r300, a, vidx)) {
+                free(model);
+                free(topo_idx);
+                return false;
+            }
+            const float *v =
+                (const float *)(base + (size_t)vidx * pe->src_stride);
             model[i * num_in + a][0] = v[0];
             model[i * num_in + a][1] = comps > 1 ? v[1] : 0.0f;
             model[i * num_in + a][2] = comps > 2 ? v[2] : 0.0f;
             model[i * num_in + a][3] = comps > 3 ? v[3] : 1.0f;
+        }
+    }
+
+    /* Topology gather reorders delivery vertices.  Position comes from the
+     * producer BO in that order; passthrough streams still bound to app
+     * buffers would fetch the wrong rows.  Gather each passthrough attribute
+     * into r2vb_edge_stream_attr (same user-buffer re-ingest path the clip-
+     * edge rebuild uses), or decline when a stream cannot be read. */
+    if (topo_gathered) {
+        struct r300_r2vb_reingest_stream st[PIPE_MAX_ATTRIBS];
+        int ns = r300_r2vb_reingest_stream_layout(
+            r300_vs(r300)->state.ir.nir, -1, st, PIPE_MAX_ATTRIBS);
+        bool has_pt = false;
+        for (int i = 0; i < ns; i++)
+            if (st[i].kind == R2VB_STREAM_PASSTHROUGH)
+                has_pt = true;
+        if (has_pt) {
+            r2vb_edge_streams_release(r300);
+            memset(r300->r2vb_edge_stream_attr, 0,
+                   sizeof(r300->r2vb_edge_stream_attr));
+            bool ok_pt = ns > 0;
+            for (int i = 0; ok_pt && i < ns; i++) {
+                if (st[i].kind != R2VB_STREAM_PASSTHROUGH)
+                    continue;
+                if (st[i].src_velem < 0) {
+                    ok_pt = false;
+                    break;
+                }
+                float (*rows)[4] = r2vb_read_velem_floats(
+                    r300, (unsigned)st[i].src_velem, topo_idx, count);
+                if (!rows) {
+                    ok_pt = false;
+                    break;
+                }
+                r300->r2vb_edge_stream_attr[i] = rows;
+                r300->r2vb_edge_streams_active = true;
+            }
+            if (!ok_pt) {
+                r2vb_edge_streams_release(r300);
+                free(model);
+                free(topo_idx);
+                return false;
+            }
         }
     }
     free(topo_idx);
