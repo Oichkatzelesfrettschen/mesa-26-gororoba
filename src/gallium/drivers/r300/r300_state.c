@@ -23,6 +23,7 @@
 #include "r300_cb.h"
 #include "r300_context.h"
 #include "r300_emit.h"
+#include "r300_r2vb_clip.h"
 #include "r300_reg.h"
 #include "r300_screen.h"
 #include "r300_screen_buffer.h"
@@ -2282,6 +2283,24 @@ static void r300_set_viewport_states(struct pipe_context* pipe,
         (struct r300_viewport_state*)r300->viewport_state.state;
 
     r300->viewport = *state;
+
+    /* WINDOW-space R2VB transform FS bakes scale/bias as immediates. */
+    if (r300->r2vb_transform_fs_vp_valid) {
+        bool same = true;
+        for (unsigned i = 0; i < 3 && same; i++)
+            same = r300->r2vb_transform_fs_vp_scale[i] == state->scale[i] &&
+                   r300->r2vb_transform_fs_vp_translate[i] == state->translate[i];
+        if (!same) {
+            /* Only WINDOW-space FS bakes scale/bias; CLIP cache stays. */
+            if (r300->r2vb_transform_fs[R300_R2VB_POSITION_WINDOW]) {
+                r300->context.delete_fs_state(
+                    &r300->context,
+                    r300->r2vb_transform_fs[R300_R2VB_POSITION_WINDOW]);
+                r300->r2vb_transform_fs[R300_R2VB_POSITION_WINDOW] = NULL;
+            }
+            r300->r2vb_transform_fs_vp_valid = false;
+        }
+    }
 
     struct pipe_scissor_state vp_scissor;
     r300_get_scissor_from_viewport(state, &vp_scissor);

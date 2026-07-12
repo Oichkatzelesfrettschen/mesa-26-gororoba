@@ -55,33 +55,54 @@ enum r300_r2vb_producer_kind {
  * 1/32768 guard in r2vb_divide_position). */
 #define R300_R2VB_W_SAFE_MIN (1.0f / 32768.0f)
 
+/* True when any clip-space component is non-finite.  Intersection weight
+ * t = da/(da-db) and the FP24 divide both poison on NaN/Inf, so classification
+ * and edge rebuild treat such a vertex as undividable (FALLBACK). */
+static inline bool
+r300_r2vb_clip_nonfinite(const float v[4])
+{
+   return !isfinite(v[0]) || !isfinite(v[1]) || !isfinite(v[2]) ||
+          !isfinite(v[3]);
+}
+
 /* Per-vertex clip code over the six hardwired planes.  Every comparison is
  * written as !(distance >= 0) so a NaN distance classifies OUTSIDE, matching
- * draw's "comparisons must be true for them" rule. */
+ * draw's "comparisons must be true for them" rule.  plane_enable is a bit
+ * mask of R300_R2VB_CLIP_*; clear NEAR/FAR when the rasterizer disables
+ * depth clipping so the oracle matches draw_update_clip_flags. */
 static inline uint8_t
-r300_r2vb_clipcode(const float v[4], float k, bool half_z)
+r300_r2vb_clipcode_planes(const float v[4], float k, bool half_z,
+                          uint8_t plane_enable)
 {
    const float x = v[0], y = v[1], z = v[2], w = v[3];
    uint8_t mask = 0;
 
-   if (!(w - k * x >= 0.0f))
+   if ((plane_enable & R300_R2VB_CLIP_RIGHT) && !(w - k * x >= 0.0f))
       mask |= R300_R2VB_CLIP_RIGHT;
-   if (!(w + k * x >= 0.0f))
+   if ((plane_enable & R300_R2VB_CLIP_LEFT) && !(w + k * x >= 0.0f))
       mask |= R300_R2VB_CLIP_LEFT;
-   if (!(w - k * y >= 0.0f))
+   if ((plane_enable & R300_R2VB_CLIP_TOP) && !(w - k * y >= 0.0f))
       mask |= R300_R2VB_CLIP_TOP;
-   if (!(w + k * y >= 0.0f))
+   if ((plane_enable & R300_R2VB_CLIP_BOTTOM) && !(w + k * y >= 0.0f))
       mask |= R300_R2VB_CLIP_BOTTOM;
-   if (half_z) {
-      if (!(z >= 0.0f))
-         mask |= R300_R2VB_CLIP_NEAR;
-   } else {
-      if (!(z + w >= 0.0f))
-         mask |= R300_R2VB_CLIP_NEAR;
+   if (plane_enable & R300_R2VB_CLIP_NEAR) {
+      if (half_z) {
+         if (!(z >= 0.0f))
+            mask |= R300_R2VB_CLIP_NEAR;
+      } else {
+         if (!(z + w >= 0.0f))
+            mask |= R300_R2VB_CLIP_NEAR;
+      }
    }
-   if (!(w - z >= 0.0f))
+   if ((plane_enable & R300_R2VB_CLIP_FAR) && !(w - z >= 0.0f))
       mask |= R300_R2VB_CLIP_FAR;
    return mask;
+}
+
+static inline uint8_t
+r300_r2vb_clipcode(const float v[4], float k, bool half_z)
+{
+   return r300_r2vb_clipcode_planes(v, k, half_z, 0x3fu);
 }
 
 /* Divide safety is carried separately from the clip mask: w below the FP24
@@ -104,15 +125,27 @@ enum r300_r2vb_tri_class {
 /* Trivial accept / trivial reject over three clip-space vertices.  PARTIAL is
  * the exact handoff to edge generation; FALLBACK dominates every other class
  * because an undividable vertex poisons both the accept (divide) and the
- * clip (intersection weight) paths. */
+ * clip (intersection weight) paths.  plane_enable selects which hardwired
+ * planes participate (clear NEAR/FAR when depth clip is off). */
 static inline enum r300_r2vb_tri_class
-r300_r2vb_classify_triangle(const float v0[4], const float v1[4],
-                            const float v2[4], float k, bool half_z,
-                            uint8_t *or_mask_out, uint8_t *and_mask_out)
+r300_r2vb_classify_triangle_planes(const float v0[4], const float v1[4],
+                                   const float v2[4], float k, bool half_z,
+                                   uint8_t plane_enable,
+                                   uint8_t *or_mask_out, uint8_t *and_mask_out)
 {
-   const uint8_t m0 = r300_r2vb_clipcode(v0, k, half_z);
-   const uint8_t m1 = r300_r2vb_clipcode(v1, k, half_z);
-   const uint8_t m2 = r300_r2vb_clipcode(v2, k, half_z);
+   if (r300_r2vb_clip_nonfinite(v0) || r300_r2vb_clip_nonfinite(v1) ||
+       r300_r2vb_clip_nonfinite(v2) || r300_r2vb_w_unsafe(v0[3]) ||
+       r300_r2vb_w_unsafe(v1[3]) || r300_r2vb_w_unsafe(v2[3])) {
+      if (or_mask_out)
+         *or_mask_out = 0xffu;
+      if (and_mask_out)
+         *and_mask_out = 0;
+      return R300_R2VB_TRI_FALLBACK;
+   }
+
+   const uint8_t m0 = r300_r2vb_clipcode_planes(v0, k, half_z, plane_enable);
+   const uint8_t m1 = r300_r2vb_clipcode_planes(v1, k, half_z, plane_enable);
+   const uint8_t m2 = r300_r2vb_clipcode_planes(v2, k, half_z, plane_enable);
    const uint8_t or_mask = m0 | m1 | m2;
    const uint8_t and_mask = m0 & m1 & m2;
 
@@ -121,14 +154,20 @@ r300_r2vb_classify_triangle(const float v0[4], const float v1[4],
    if (and_mask_out)
       *and_mask_out = and_mask;
 
-   if (r300_r2vb_w_unsafe(v0[3]) || r300_r2vb_w_unsafe(v1[3]) ||
-       r300_r2vb_w_unsafe(v2[3]))
-      return R300_R2VB_TRI_FALLBACK;
    if (or_mask == 0)
       return R300_R2VB_TRI_ACCEPT;
    if (and_mask != 0)
       return R300_R2VB_TRI_REJECT;
    return R300_R2VB_TRI_PARTIAL;
+}
+
+static inline enum r300_r2vb_tri_class
+r300_r2vb_classify_triangle(const float v0[4], const float v1[4],
+                            const float v2[4], float k, bool half_z,
+                            uint8_t *or_mask_out, uint8_t *and_mask_out)
+{
+   return r300_r2vb_classify_triangle_planes(v0, v1, v2, k, half_z, 0x3fu,
+                                             or_mask_out, and_mask_out);
 }
 
 /* Edge generation runs Sutherland-Hodgman in the clip-space (collineation)
@@ -204,12 +243,19 @@ r300_r2vb_clip_triangle(const struct r300_r2vb_clip_vertex in[3],
          const struct r300_r2vb_clip_vertex *b = &cur[(i + 1) % n];
          const float da = r300_r2vb_plane_dist(a->clip, plane, k, half_z);
          const float db = r300_r2vb_plane_dist(b->clip, plane, k, half_z);
+         /* Non-finite distances yield NaN blend weights; refuse the polygon. */
+         if (!isfinite(da) || !isfinite(db))
+            return 0;
          const bool ina = da >= 0.0f;
          const bool inb = db >= 0.0f;
          if (ina)
             next[m++] = *a;
-         if (ina != inb)
-            r300_r2vb_clip_lerp(a, b, da / (da - db), num_attrs, &next[m++]);
+         if (ina != inb) {
+            const float denom = da - db;
+            if (!isfinite(denom) || denom == 0.0f)
+               return 0;
+            r300_r2vb_clip_lerp(a, b, da / denom, num_attrs, &next[m++]);
+         }
       }
       struct r300_r2vb_clip_vertex *tmp = cur;
       cur = next;

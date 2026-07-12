@@ -16,9 +16,10 @@
  * vertex dwords that never arrive.  This unit pins the output-driven
  * enumeration: two outputs sourced from one input produce two streams carrying
  * the same src_velem; distinct sources keep distinct src_velem ranks; the
- * computed varying maps by slot; streams sort into ascending-slot (VAP output
- * vector) order regardless of store order; and a varying that is neither the
- * computed slot nor a direct input load is refused, not guessed.
+ * computed varying maps by slot; streams sort into r300 PSC/VAP output-vector
+ * order (POS, PSIZ, COL*, GENERIC*, FOG) regardless of store order; and a
+ * varying that is neither the computed slot nor a direct input load is
+ * refused, not guessed.
  */
 
 #include <stdio.h>
@@ -165,8 +166,8 @@ test_computed_varying_mapping(void)
    ralloc_free(b.shader);
 }
 
-/* Stores encountered in non-slot order sort into ascending-slot order: stream
- * i must drive VAP output vector i whatever order the VS wrote them in. */
+/* Stores encountered in non-PSC order sort into PSC/VAP output-vector order:
+ * stream i must drive VAP output vector i whatever order the VS wrote them. */
 static void
 test_store_order_independence(void)
 {
