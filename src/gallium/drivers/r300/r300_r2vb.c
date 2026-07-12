@@ -561,7 +561,7 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300,
  * fragment input at VARYING_SLOT_VAR0+i (the producer feeds one attribute per
  * output slot, flat); gl_Position (VARYING_SLOT_POS) becomes FRAG_RESULT_DATA0
  * (the clip BO).  Stores to any other (varying) output are dropped -- an
- * MVP-class VS passes its varyings through unchanged, so the multi-stream
+ * MVP-class VS passes its varyings through unchanged, so the per-output
  * re-ingest reads them from the application buffers -- and the inputs that fed
  * only those stores die in DCE.  The VS reads its matrix from UBO[0]; nir_to_rc
  * sizes the const file from that block-0 interface (the same externals path
@@ -3553,8 +3553,8 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
                  * BO and fetches from that, so a lookup of the ORIGINAL resource is
                  * expected to miss (orig_reloc=-1) -- the routing to the app source
                  * is proven by the INSPECT invariant, and the upload is the same
-                 * proven path the MVP multi-stream re-ingest already uses for its
-                 * passthrough varyings.  A real-BO app buffer would instead be
+                 * proven path r300_r2vb_exec_passthrough_draw uses for every
+                 * passthrough vertex array.  A real-BO app buffer would instead be
                  * referenced directly and lookup would find it. */
                 struct pipe_resource *pr = expect[i];
                 int orig_reloc = pr && r300_resource(pr)->buf
@@ -3589,15 +3589,19 @@ static bool r2vb_single_cs_enabled(void)
     return cached;
 }
 
-/* R300_R2VB_OUTPUT_REINGEST=1 routes the single-input no-computed-varying
- * delivery through the per-output reconstruction instead of the velem[0]-redirect
- * multi-stream tail.  Default off; gate-off keeps the tail byte-identical. */
+/* The per-output reconstruction is the sole producer-fed delivery.  The retired
+ * velem[0]-redirect multi-stream tail kept the application input-element set, so
+ * whenever VS outputs outnumbered distinct sources the fetch under-fed the
+ * VAP_OUTPUT_VTX_FMT contract (VAP_VTX_SIZE 8 against a 12-dword tuple on RS482)
+ * and the GA latched waiting for the missing dwords.  R300_R2VB_OUTPUT_REINGEST=0
+ * is a one-cycle escape hatch that declines delivery to the gallivm fallback;
+ * the variable disappears once the promotion corpus retires it. */
 static bool r300_r2vb_output_reingest_enabled(void)
 {
     static int cached = -1;
     if (cached < 0) {
         const char *e = getenv("R300_R2VB_OUTPUT_REINGEST");
-        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        cached = (e && strcmp(e, "0") == 0) ? 0 : 1;
     }
     return cached;
 }
@@ -4318,13 +4322,13 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                            : "gallivm";
 
         /* Edge generation (R300_R2VB_CLIP_EDGE): a non-trivial verdict is
-         * rebuilt into a clipped TRIANGLES list instead of falling back.  Two
-         * delivery shapes carry a rebuilt list safely: the per-output
-         * reconstruction (computed varying present, every stream position or
-         * computed) or the single-velem multi-stream tail.  A passthrough
-         * stream fetches the application buffer by original vertex index,
-         * which the rebuilt list invalidates, so its presence declines the
-         * clip action. */
+         * rebuilt into a clipped TRIANGLES list instead of falling back.  A
+         * rebuilt list is safe only when every delivered stream is position or
+         * computed (producer-regenerated for the rebuilt vertices).  A
+         * passthrough stream fetches the application buffer by original vertex
+         * index, which the rebuilt list invalidates, so its presence declines
+         * the clip action unless a CPU-interpolated replacement stream stands
+         * in for it. */
         if (supported && verdict == R2VB_CLIP_ROUTE_FALLBACK &&
             r300_r2vb_clip_edge_enabled()) {
             int vslot_probe = -1;
@@ -4860,9 +4864,26 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         return ok;
     }
 
-    /* Per-output re-ingest for the single-input no-computed-varying delivery
-     * (R300_R2VB_OUTPUT_REINGEST).  The multi-stream tail below redirects only
-     * velem[0] to the clip BO and keeps the application input-element set, so a
+    /* Escape hatch (R300_R2VB_OUTPUT_REINGEST=0): decline delivery so the
+     * caller falls back to the gallivm draw.  The producer hand-rolled
+     * rasterizer/framebuffer/scissor/viewport/ZB registers outside the atom
+     * system, so mark the owning atoms dirty before handing the draw back --
+     * otherwise the producer's CLIP_DISABLE and one-row scissor leak into the
+     * fallback emit. */
+    if (!r300_r2vb_output_reingest_enabled()) {
+        r300_mark_atom_dirty(r300, &r300->fb_state);
+        r300_mark_atom_dirty(r300, &r300->scissor_state);
+        r300_mark_atom_dirty(r300, &r300->viewport_state);
+        r300_mark_atom_dirty(r300, &r300->dsa_state);
+        r300_mark_atom_dirty(r300, &r300->rs_state);
+        r2vb_edge_streams_release(r300);
+        pipe_resource_reference(&clip, NULL);
+        free(model);
+        return false;
+    }
+
+    /* Per-output re-ingest for the single-input no-computed-varying delivery.
+     * A velem[0]-only redirect keeps the application input-element set, so a
      * VS whose outputs outnumber its distinct sources -- two passthrough
      * varyings fed by one application vector -- fetches fewer dwords than
      * VAP_OUTPUT_VTX_FMT advertises: VAP_VTX_SIZE under-feeds the output tuple
@@ -4870,94 +4891,30 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * vertex element per VS output lets two outputs copy the same source velem
      * (same buffer, same offset), so the fetch dword sum equals the output
      * tuple and the proven RS program is untouched. */
-    if (r300_r2vb_output_reingest_enabled()) {
-        struct r2vb_reingest_stream ostreams[PIPE_MAX_ATTRIBS];
-        int n_ostream = r300_r2vb_reingest_stream_layout(
-            r300_vs(r300)->state.ir.nir, -1, ostreams, PIPE_MAX_ATTRIBS);
-        /* Fetch dwords derive from each element's src_format, the same
-         * align(blocksize, 4) the delivery emit computes for LOAD_VBPNTR SIZE
-         * and VAP_VTX_SIZE.  velems->format_size[] is has_tcl-only CSO state
-         * and stays zero on SWTCL until that emit fills it. */
-        unsigned fetch_dwords = 0;
-        for (int i = 0; i < n_ostream; i++)
-            fetch_dwords += (ostreams[i].kind == R2VB_STREAM_PASSTHROUGH &&
-                             ostreams[i].src_velem >= 0 &&
-                             (unsigned)ostreams[i].src_velem < r300->velems->count)
-                                ? align(util_format_get_blocksize(
-                                            r300->velems->velem[ostreams[i].src_velem]
-                                                .src_format), 4) / 4
-                                : 4;
-        fprintf(stderr,
-                "r2vb_output_reingest mode=per_output outputs=%u app_velems=%u "
-                "stream_layout=%d fetch_dwords=%u\n",
-                r300->vertex_info.num_attribs, r300->velems->count, n_ostream,
-                fetch_dwords);
-        bool ok = r300_r2vb_reingest_outputs(r300, einfo, ddraw, clip, NULL, -1);
-        r2vb_edge_streams_release(r300);
-        pipe_resource_reference(&clip, NULL);
-        free(model);
-        return ok;
-    }
-
-    /* Multi-stream re-ingest.  Draw the transformed positions (from clip) plus the
-     * model's pass-through attributes (from the application buffers, unchanged by
-     * an MVP VS) with the application fragment shader.  Redirect ONLY the position
-     * element (velem[0] for an MVP VS) to a fresh clip vertex-buffer slot and
-     * reuse the proven passthrough re-ingest: it uploads the other attributes,
-     * emits the multi-array LOAD_VBPNTR (velem i -> PSC stream i -> its VS-output
-     * vector, so position lands on vec0 and each varying on its own vec), applies
-     * the hardware viewport transform, and resets the rasterizer state.  clip is a
-     * real winsys BO, used as-is.  Restored after. */
-    unsigned clip_slot = r300->nr_vertex_buffers;
-    if (clip_slot >= PIPE_MAX_ATTRIBS) {
-        r2vb_edge_streams_release(r300);
-        pipe_resource_reference(&clip, NULL);
-        free(model);
-        return false;
-    }
-    struct pipe_vertex_element saved_pe = r300->velems->velem[0];
-    unsigned saved_fmtsz = r300->velems->format_size[0];
-    struct pipe_vertex_buffer saved_vb = r300->vertex_buffer[clip_slot];
-    unsigned saved_nvb = r300->nr_vertex_buffers;
-
-    r300->velems->velem[0].vertex_buffer_index = clip_slot;
-    r300->velems->velem[0].src_offset = 0;
-    r300->velems->velem[0].src_stride = 16;
-    r300->velems->velem[0].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
-    memset(&r300->vertex_buffer[clip_slot], 0, sizeof(struct pipe_vertex_buffer));
-    r300->vertex_buffer[clip_slot].buffer.resource = clip;
-    r300->nr_vertex_buffers = clip_slot + 1;
-
-    /* The producer hand-rolled rasterizer/framebuffer/scissor/viewport/ZB
-     * registers (CLIP_DISABLE, no-cull, the clip color target, a one-row scissor)
-     * outside the atom system, and those persist in GPU registers across the
-     * flush.  Mark the owning atoms dirty so the re-ingest's prepare re-emits the
-     * application values; otherwise the producer's CLIP_DISABLE rasterizes the
-     * triangle far too large (covered ~834 vs 128). */
-    r300_mark_atom_dirty(r300, &r300->fb_state);
-    r300_mark_atom_dirty(r300, &r300->scissor_state);
-    r300_mark_atom_dirty(r300, &r300->viewport_state);
-    r300_mark_atom_dirty(r300, &r300->dsa_state);
-    r300_mark_atom_dirty(r300, &r300->rs_state);
-
-    if (getenv("R300_R2VB_VA_DUMP"))
-        fprintf(stderr, "r2vb_mvp_reingest clip=%p buf=%p clip_slot=%u velem0_vbi=%u nvb=%u\n",
-                (void *)clip, (void *)r300_resource(clip)->buf, clip_slot,
-                r300->velems->velem[0].vertex_buffer_index, r300->nr_vertex_buffers);
-    r300->r2vb_reingest_barrier = r2vb_single_cs_enabled();
-    r300->r2vb_source_window =
-        r300->r2vb_produced_space == R300_R2VB_POSITION_WINDOW;
-    bool ok2 = r300_r2vb_exec_passthrough_draw(r300, einfo, ddraw);
-    r300->r2vb_source_window = false;
-    r300->r2vb_reingest_barrier = false;
-
-    r300->velems->velem[0] = saved_pe;
-    r300->velems->format_size[0] = saved_fmtsz;
-    r300->vertex_buffer[clip_slot] = saved_vb;
-    r300->nr_vertex_buffers = saved_nvb;
-
+    struct r2vb_reingest_stream ostreams[PIPE_MAX_ATTRIBS];
+    int n_ostream = r300_r2vb_reingest_stream_layout(
+        r300_vs(r300)->state.ir.nir, -1, ostreams, PIPE_MAX_ATTRIBS);
+    /* Fetch dwords derive from each element's src_format, the same
+     * align(blocksize, 4) the delivery emit computes for LOAD_VBPNTR SIZE
+     * and VAP_VTX_SIZE.  velems->format_size[] is has_tcl-only CSO state
+     * and stays zero on SWTCL until that emit fills it. */
+    unsigned fetch_dwords = 0;
+    for (int i = 0; i < n_ostream; i++)
+        fetch_dwords += (ostreams[i].kind == R2VB_STREAM_PASSTHROUGH &&
+                         ostreams[i].src_velem >= 0 &&
+                         (unsigned)ostreams[i].src_velem < r300->velems->count)
+                            ? align(util_format_get_blocksize(
+                                        r300->velems->velem[ostreams[i].src_velem]
+                                            .src_format), 4) / 4
+                            : 4;
+    fprintf(stderr,
+            "r2vb_output_reingest mode=per_output outputs=%u app_velems=%u "
+            "stream_layout=%d fetch_dwords=%u\n",
+            r300->vertex_info.num_attribs, r300->velems->count, n_ostream,
+            fetch_dwords);
+    bool ok = r300_r2vb_reingest_outputs(r300, einfo, ddraw, clip, NULL, -1);
     r2vb_edge_streams_release(r300);
     pipe_resource_reference(&clip, NULL);
     free(model);
-    return ok2;
+    return ok;
 }
