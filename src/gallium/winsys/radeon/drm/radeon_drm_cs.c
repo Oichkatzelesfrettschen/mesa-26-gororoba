@@ -118,6 +118,20 @@ r300_trace_bool_option(const char *name, bool default_value)
    return debug_get_bool_option(name, default_value);
 }
 
+/* RADEON_FENCE_TRACE=1: one stderr line per cs_flush (ordinal, cdw, flags,
+ * fence request and identity, reloc and slab counts, triple-buffer indices,
+ * sync path), one per worker ioctl (result), and one pair per fence wait
+ * (entry, outcome).  Read-only observation of the submission/fence-rotation
+ * sequence; no behavioral change when unset. */
+static bool
+radeon_fence_trace_enabled(void)
+{
+   static int cached = -1;
+   if (cached < 0)
+      cached = debug_get_bool_option("RADEON_FENCE_TRACE", false) ? 1 : 0;
+   return cached;
+}
+
 static bool
 r300_trace_mask_has(const char *name)
 {
@@ -1225,6 +1239,12 @@ void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
 
    r300_trace_finish_trace(cs, csc, &trace, r);
 
+   if (radeon_fence_trace_enabled())
+      fprintf(stderr,
+              "radeon_fence_trace ioctl cs=%p csc=%p cdw=%u relocs=%u ret=%d\n",
+              (void *)cs, (void *)csc, csc->chunks[0].length_dw,
+              csc->num_relocs, r);
+
    /* Post-reloc IB dump: after the kernel patches relocations,
     * csc->buf contains the actual GPU-visible register values.
     * Enable with RADEON_DUMP_PATCHED_IB=1 */
@@ -1365,15 +1385,22 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
       fprintf(stderr, "radeon: command stream overflowed\n");
    }
 
+   const bool ftrace = radeon_fence_trace_enabled();
+   void *trace_fence = NULL;
+   bool trace_next_used = false;
+   unsigned trace_slabs = cs->csc_cur->num_slab_buffers;
+
    if (pfence || cs->csc_cur->num_slab_buffers) {
       struct pipe_fence_handle *fence;
 
       if (cs->next_fence) {
          fence = cs->next_fence;
          cs->next_fence = NULL;
+         trace_next_used = true;
       } else {
          fence = radeon_cs_create_fence(rcs);
       }
+      trace_fence = fence;
 
       if (fence) {
          if (pfence)
@@ -1410,6 +1437,22 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
       cs->cst = &cs->csc[submit_idx];
       cs->csc_fill_idx = next_fill;
       cs->csc_cur = &cs->csc[next_fill];
+   }
+
+   if (ftrace) {
+      bool will_submit = rcs->current.cdw &&
+                         rcs->current.cdw <= rcs->current.max_dw &&
+                         !cs->ws->noop_cs && !(flags & RADEON_FLUSH_NOOP);
+      fprintf(stderr,
+              "radeon_fence_trace flush cs=%p ord=%u cdw=%u flags=0x%x "
+              "pfence=%d next_fence_used=%d fence=%p relocs=%u slabs=%u "
+              "submit_idx=%u next_fill=%u path=%s%s\n",
+              (void *)cs, cs->fence_trace_ordinal++, rcs->current.cdw, flags,
+              pfence != NULL, trace_next_used, trace_fence,
+              cs->cst->num_relocs, trace_slabs, submit_idx,
+              cs->csc_fill_idx,
+              will_submit ? "submit" : "nosubmit",
+              will_submit && !(flags & PIPE_FLUSH_ASYNC) ? "+sync" : "");
    }
 
    /* If the CS is not empty or overflowed, emit it in a separate thread. */
@@ -1587,6 +1630,15 @@ static bool radeon_fence_wait(struct radeon_winsys *ws,
                               struct pipe_fence_handle *fence,
                               uint64_t timeout)
 {
+   if (radeon_fence_trace_enabled()) {
+      fprintf(stderr, "radeon_fence_trace wait fence=%p timeout=%" PRIu64 "\n",
+              (void *)fence, timeout);
+      bool signalled = ws->buffer_wait(ws, (struct pb_buffer_lean*)fence,
+                                       timeout, RADEON_USAGE_READWRITE);
+      fprintf(stderr, "radeon_fence_trace wait_done fence=%p signalled=%d\n",
+              (void *)fence, signalled);
+      return signalled;
+   }
    return ws->buffer_wait(ws, (struct pb_buffer_lean*)fence, timeout,
                           RADEON_USAGE_READWRITE);
 }
@@ -1605,6 +1657,10 @@ static struct pipe_fence_handle *radeon_drm_cs_get_next_fence(struct radeon_cmdb
 
    if (cs->next_fence) {
       radeon_fence_reference(&cs->ws->base, &fence, cs->next_fence);
+      if (radeon_fence_trace_enabled())
+         fprintf(stderr,
+                 "radeon_fence_trace next_fence cs=%p fence=%p reused=1\n",
+                 (void *)cs, (void *)fence);
       return fence;
    }
 
@@ -1613,6 +1669,9 @@ static struct pipe_fence_handle *radeon_drm_cs_get_next_fence(struct radeon_cmdb
       return NULL;
 
    radeon_fence_reference(&cs->ws->base, &cs->next_fence, fence);
+   if (radeon_fence_trace_enabled())
+      fprintf(stderr, "radeon_fence_trace next_fence cs=%p fence=%p reused=0\n",
+              (void *)cs, (void *)fence);
    return fence;
 }
 
