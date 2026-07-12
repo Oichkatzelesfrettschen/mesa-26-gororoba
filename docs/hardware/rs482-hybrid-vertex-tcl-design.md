@@ -151,7 +151,7 @@ in the R2VB column marks a register the direct-VAP route (`r300_r2vb.c`) emits.
 | `VAP_OUTPUT_VTX_FMT_0` | `0x2090` | `POS_PRESENT` b0, `COLOR_[0..3]_PRESENT` b1-4, `PT_SIZE_PRESENT` b16 | Declares which post-transform attributes the VAP emits to setup | * |
 | `VAP_OUTPUT_VTX_FMT_1` | `0x2094` | `TEX_[0..7]_COMP_CNT` (3 bits each) | Per-texcoord component count of the emitted vertex | * |
 | `VAP_VTE_CNTL` | `0x20b0` | `VPORT_[XYZ]_SCALE`/`OFFSET_ENA` b0-5, `VTX_XY_FMT` b8, `VTX_Z_FMT` b9, `VTX_W0_FMT` | Selects pre-divided window-space vs full clip-space fetch -- the bit the producer (window) and re-ingest (clip) stages flip. `VAP_VTE_CNTL` is the *enable/format* control only; the six registers below hold the transform its enable bits gate | * |
-| `SE_VPORT_[XYZ]_SCALE`/`_OFFSET` | `0x1d98-0x1dac` | six FP32 scale + bias | The affine `NDC * scale + bias -> window` transform itself (stage 4 of the decomposition, the coordinate-contract "window" row). `r300_emit_viewport_state` emits all six every draw (`OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6)`); the NDC-buffer bypass shape (`VPORT_*_ENA` on) reads exactly these | * |
+| `SE_VPORT_[XYZ]_SCALE`/`_OFFSET` | `0x1d98-0x1dac` | six FP32 scale + bias | The affine `NDC * scale + bias -> window` transform itself (stage 4 of the decomposition, the coordinate-contract "window" row). `r300_emit_viewport_state` emits all six when the viewport atom is dirty (`OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6)`); consecutive draws with an unchanged viewport do not re-emit; the NDC-buffer bypass shape (`VPORT_*_ENA` on) reads exactly these | * |
 | `VAP_VPORT_[XYZ]_SCALE`/`_OFFSET` | `0x2098-0x20ac` | same six scale/offset | VAP-window alias of the viewport block; the driver writes the `SE_` (`0x1d98`) alias instead, so this alias stays idle. Named so the dual mapping is explicit | |
 | `VAP_VTX_SIZE` | `0x20b4` | per-vertex dword stride | Fetch stride; part of the `PSC`/stride tuple a diverging clear-quad can miss | * |
 | `VAP_VF_MAX_VTX_INDX` | `0x2134` | max index | Upper index clamp for the fetch window | * |
@@ -308,30 +308,35 @@ a value must round-trip as an integer index, never the transformed coordinates.
 
 | Space | Representation | Produced by | Consumed by | VAP / VTE binding |
 | --- | --- | --- | --- | --- |
-| object | `(x,y,z,1)` FP24, app layout | app VBO in GART | the MVP multiply | fetched via `3D_LOAD_VBPNTR`; `VAP_PROG_STREAM_CNTL` layout |
-| clip | `v_clip = M * v_object`, 4D, `w_clip` free | fragment-ALU MVP (04, linear) | SW clip / collineation | never handed raw to the bypass VAP (see below) |
+| object | `(x,y,z,w)` FP24: app `w` when the position attribute has four components, else `w=1` | app VBO / producer `DRAW_IMMD` payload | the MVP multiply in the producer | object attributes enter the **producer** as embedded IMMD (or later TAM); they are not the re-ingest `3D_LOAD_VBPNTR` stream |
+| clip | `v_clip = M * v_object`, 4D, `w_clip` free | fragment-ALU MVP (04, linear) | SW clip / collineation, or clip-space VAP re-ingest | may be handed to the bypass VAP when `VTX_W0_FMT` enables the VTE reciprocal (see below) |
 | collineation (`*`) | Glaeser `(lambda*x, lambda*y, k*lambda*z)`, lines stay lines | the linear companion map | SW clip classify + edge gen (04c/04d) | pure SW; frontend never sees it |
-| NDC | `v_ndc = v_clip.xyz / w_clip`, `[-1,1]` | SW perspective divide (04b) | viewport scale/bias | the divide the VAP cannot do |
-| window | `NDC * viewport_scale + bias`, screen coords | producer, or the VAP viewport | the GA setup FIFO | `VAP_VTE_CNTL.VTX_*_FMT=1` (pre-divided), `VPORT_*_ENA` off |
+| NDC | `v_ndc = v_clip.xyz / w_clip`, `[-1,1]` | SW perspective divide (04b) or VTE `1/w` | viewport scale/bias | divide is either software or VTE-owned |
+| window | `NDC * viewport_scale + bias`, screen coords | producer, or the VAP viewport | the GA setup FIFO | `VTX_XY_FMT`/`VTX_Z_FMT` (pre-divided) with `VPORT_*_ENA` off, or NDC + `VPORT_*_ENA` |
 
-The load-bearing constraint: **the VAP has no PVS, so it cannot perform the
-perspective divide.** `VAP_VTE_CNTL` is a *viewport* transform engine -- it
-applies the linear `scale + bias`, not the non-linear `1/w_clip`. So any buffer
-handed to the bypass VAP must already be divided. Two shapes satisfy that, and
-they are the `VAP_VTE_CNTL` flip named in the bypass section:
+`VAP_VTE_CNTL` selects **coordinate interpretation**, not the VBO fetch path.
+Three legal re-ingest shapes:
 
-- **Window-space buffer** (`VTX_XY_FMT = VTX_Z_FMT = 1`, `VPORT_*_ENA` off): the
-  producer did both the divide (04b) and the viewport, and the VAP passes the
-  vertex straight through. This is the demonstrated-hang-free shape.
-- **NDC buffer** (`VTX_*_FMT = 0`, `VPORT_*_ENA` on): the producer did the
-  divide but left the viewport to the VAP. Still requires 04b upstream; only the
-  affine viewport is delegated.
+- **Window-space buffer** (`VTX_XY_FMT = VTX_Z_FMT = 1`, `VPORT_*_ENA` off):
+  the producer already divided and applied the viewport; the VAP passes
+  vertices through. Demonstrated hang-free on the SWTCL clear path.
+- **NDC buffer** (`VTX_*_FMT` clear, `VPORT_*_ENA` on): the producer divided;
+  the VTE applies only the affine viewport (`SE_VPORT_*` scale/bias).
+- **Clip-space buffer** (`VTX_W0_FMT` set, `VTX_XY_FMT`/`VTX_Z_FMT` clear,
+  `VPORT_*_ENA` as programmed): the VTE performs the homogeneous reciprocal
+  (`1/w`) and optional viewport. This is the same shape HWTCL and the RS482
+  direct-VB path program in `r300_set_viewport_states` / render. Software
+  04b is therefore **not** mandatory when re-ingest intentionally uses this
+  VTE path; double-dividing (SW 04b then `VTX_W0_FMT`) is a contract bug.
 
-Clip (04c) and edge generation (04d) therefore run in the collineation domain
-*before* 04b, exactly as Glaeser prescribes, and their output is re-projected
-and divided before it can reach any VAP shape. There is no coordinate path in
-which the frontend divides, so 04b is not optional on RS482 -- it is the stage
-that makes every other stage's output VAP-legal.
+Object-space attributes for the fragment-ALU MVP producer arrive as the
+producer's input payload (`DRAW_IMMD` today; texture/TAM later).
+`3D_LOAD_VBPNTR` is only the **re-ingest** mechanism that feeds the bypass
+VAP after the producer publishes the clip/NDC/window BO.
+
+Clip (04c) and edge generation (04d) that run in software still prefer the
+collineation domain before any divide they own. Paths that hand raw clip
+to the VTE skip SW 04b and rely on `VTX_W0_FMT` instead.
 
 ## The hybrid HBTCL
 
@@ -562,7 +567,7 @@ into the standing vertex route.
 | --- | --- | --- |
 The `HBTCL-NN` tokens are secondary registry labels for this tracker; the load-bearing identity of each row is the mechanism in the description column (durable mechanism names for branches, commits, and findings).
 
-| HBTCL-01 | No-submit PM4 decode (the silicon-demonstrated `R300_TRACE` capture + 325-row atom decoder, box-safe) of the clear-quad IB vs a working r3v (Gallium r300 Vulkan ICD) triangle IB; name the single diverging VAP frontend register (`VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE`) | -- |
+| HBTCL-01 | No-submit PM4 decode of the clear-quad IB vs a working r3v triangle IB: capture with in-tree `R300_TRACE` / `RADEON_DUMP_PATCHED_IB` (and, when present, the external `steinmarder` r300 retained-IB decode tools), then compare the VAP frontend words; name the single diverging register among `VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE` | -- |
 | HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the demonstrated-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
 | HBTCL-03 | Audit complete: R2VB has three producer paths including straight-line VS restage, but lacks perspective divide, geometric clipping, an over-budget producer escape, and default SW-TCL integration | -- |
 | HBTCL-04a | DONE: the coordinate contract section above (object/clip/NDC/window representations, divide placement, re-ingest VTE shapes) | HBTCL-03 |

@@ -3219,7 +3219,7 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
  * from vbo) and the BO oracle (vbo holds the right values) prove different halves;
  * together they establish the re-ingest fetches correct computed-varying data
  * without depending on the raster. */
-/* r2vb_reingest_kind / r2vb_reingest_stream live in r300_r2vb.h so the host
+/* r300_r2vb_reingest_kind / r300_r2vb_reingest_stream live in r300_r2vb.h so the host
  * layout unit can enumerate against the same types. */
 
 /* The app velem index feeding input var IN: its rank among the VS inputs in
@@ -3237,7 +3237,7 @@ static int r300_r2vb_input_velem_index(nir_shader *vs, const nir_variable *in)
 
 /* Contract comment at the declaration in r300_r2vb.h. */
 int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
-                                     struct r2vb_reingest_stream *out, unsigned max)
+                                     struct r300_r2vb_reingest_stream *out, unsigned max)
 {
     nir_function_impl *impl = nir_shader_get_entrypoint(vs);
     if (!impl)
@@ -3255,7 +3255,7 @@ int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
                 continue;
             if (n >= max)
                 return -1;
-            struct r2vb_reingest_stream *s = &out[n++];
+            struct r300_r2vb_reingest_stream *s = &out[n++];
             s->slot = (gl_varying_slot)o->data.location;
             s->src_velem = -1;
             if (o->data.location == VARYING_SLOT_POS) {
@@ -3275,7 +3275,7 @@ int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
     }
     /* Sort ascending by slot (position first); insertion sort, n is tiny. */
     for (unsigned i = 1; i < n; i++) {
-        struct r2vb_reingest_stream key = out[i];
+        struct r300_r2vb_reingest_stream key = out[i];
         int j = (int)i - 1;
         while (j >= 0 && out[j].slot > key.slot) { out[j + 1] = out[j]; j--; }
         out[j + 1] = key;
@@ -3324,7 +3324,7 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
             "clip=%p vbo=%p\n",
             n_out, ve->count, r300->nr_vertex_buffers, vslot, (void *)clip, (void *)vbo);
 
-    struct r2vb_reingest_stream streams[PIPE_MAX_ATTRIBS];
+    struct r300_r2vb_reingest_stream streams[PIPE_MAX_ATTRIBS];
     int n_stream = r300_r2vb_reingest_stream_layout(r300_vs(r300)->state.ir.nir, vslot,
                                                     streams, PIPE_MAX_ATTRIBS);
 
@@ -4292,7 +4292,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             if (ve && strcmp(ve, "1") == 0)
                 vslot_probe = r300_r2vb_first_computed_varying(
                     r300_vs(r300)->state.ir.nir);
-            struct r2vb_reingest_stream st[PIPE_MAX_ATTRIBS];
+            struct r300_r2vb_reingest_stream st[PIPE_MAX_ATTRIBS];
             int ns = r300_r2vb_reingest_stream_layout(
                 r300_vs(r300)->state.ir.nir, vslot_probe, st, PIPE_MAX_ATTRIBS);
             /* Every passthrough stream's application attribute is read to the
@@ -4829,7 +4829,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * vertex element per VS output lets two outputs copy the same source velem
      * (same buffer, same offset), so the fetch dword sum equals the output
      * tuple and the proven RS program is untouched. */
-    struct r2vb_reingest_stream ostreams[PIPE_MAX_ATTRIBS];
+    struct r300_r2vb_reingest_stream ostreams[PIPE_MAX_ATTRIBS];
     int n_ostream = r300_r2vb_reingest_stream_layout(
         r300_vs(r300)->state.ir.nir, -1, ostreams, PIPE_MAX_ATTRIBS);
     /* Fetch dwords are derived from each element's src_format, the same

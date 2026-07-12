@@ -920,7 +920,7 @@ option(
   'r3v-gallium-backend',
   type : 'boolean',
   value : true,
-  description : 'Enable the Gallium-backed r300g device/submit path in r3v. Default on: the functional driver is the point of this tree. Set false only for the loader-only skeleton that compiles without a Gallium backend (build-testing); that skeleton has no working vkCreateDevice and wedges no hardware because it reaches none.',
+  description : 'Enable the Gallium-backed r300 device/submit path in r3v (requires -Dgallium-drivers to include r300). Default true. Set false only for a loader-only skeleton that builds without a Gallium backend; that skeleton does not implement a working vkCreateDevice.',
 )
 
 option(

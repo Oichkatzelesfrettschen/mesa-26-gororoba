@@ -97,7 +97,7 @@ test_duplicate_source_outputs(void)
    nir_store_var(&b, io.out_var0, a, 0xf);
    nir_store_var(&b, io.out_var1, a, 0xf);
 
-   struct r2vb_reingest_stream s[8];
+   struct r300_r2vb_reingest_stream s[8];
    int n = r300_r2vb_reingest_stream_layout(b.shader, -1, s, 8);
    CHECK(n == 3, "dup-source stream count is the output count");
    if (n == 3) {
@@ -127,7 +127,7 @@ test_distinct_source_outputs(void)
    nir_store_var(&b, io.out_var0, nir_load_var(&b, io.in_attr0), 0xf);
    nir_store_var(&b, io.out_var1, nir_load_var(&b, io.in_attr1), 0xf);
 
-   struct r2vb_reingest_stream s[8];
+   struct r300_r2vb_reingest_stream s[8];
    int n = r300_r2vb_reingest_stream_layout(b.shader, -1, s, 8);
    CHECK(n == 3, "distinct-source stream count");
    if (n == 3) {
@@ -152,7 +152,7 @@ test_computed_varying_mapping(void)
    nir_store_var(&b, io.out_var0, nir_fmul_imm(&b, p, 2.0), 0xf);
    nir_store_var(&b, io.out_var1, nir_load_var(&b, io.in_attr0), 0xf);
 
-   struct r2vb_reingest_stream s[8];
+   struct r300_r2vb_reingest_stream s[8];
    int n = r300_r2vb_reingest_stream_layout(b.shader, VARYING_SLOT_VAR0, s, 8);
    CHECK(n == 3, "computed-varying stream count");
    if (n == 3) {
@@ -178,7 +178,7 @@ test_store_order_independence(void)
    nir_def *p = nir_load_var(&b, io.in_pos);
    nir_store_var(&b, io.out_pos, nir_fadd(&b, p, p), 0xf);
 
-   struct r2vb_reingest_stream s[8];
+   struct r300_r2vb_reingest_stream s[8];
    int n = r300_r2vb_reingest_stream_layout(b.shader, -1, s, 8);
    CHECK(n == 3, "store-order stream count");
    if (n == 3) {
@@ -202,7 +202,7 @@ test_unmappable_varying_refused(void)
    nir_store_var(&b, io.out_var0, nir_fmul_imm(&b, p, 2.0), 0xf);
    nir_store_var(&b, io.out_var1, nir_load_var(&b, io.in_attr0), 0xf);
 
-   struct r2vb_reingest_stream s[8];
+   struct r300_r2vb_reingest_stream s[8];
    /* No computed slot declared: the arithmetic VAR0 store is unmappable. */
    int n = r300_r2vb_reingest_stream_layout(b.shader, -1, s, 8);
    CHECK(n == -1, "arithmetic varying without a computed slot is refused");
