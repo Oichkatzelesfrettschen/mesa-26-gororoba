@@ -251,14 +251,88 @@ build_loop_break_continue(const nir_shader_compiler_options *opts)
                          nir_imm_float(&b, 0.0f), nir_imm_float(&b, 0.0f));
    nir_store_var(&b, out, v, 0xf);
 
-   /* A full st/glsl_to_nir compile runs nir_lower_continue_constructs (part of
-    * the standard nir_optimize loop) long before a shader reaches either
-    * factory; this direct nir_builder harness skips that pipeline, so fold
-    * the continue construct away here to hand both factories the same
-    * canonical shape a real compile would produce. */
+   /* Dual-factory corpus: pre-lower so the nir_to_tgsi bridge and the
+    * interpreter see the same canonical shape.  Factory-side continue
+    * lowering is covered by test_factory_continue_lowering below, which
+    * feeds an unlowered clone to draw_create_vs_nir alone. */
    NIR_PASS(_, b.shader, nir_lower_vars_to_ssa);
    NIR_PASS(_, b.shader, nir_lower_continue_constructs);
    return b.shader;
+}
+
+/* Same shape as build_loop_break_continue but leaves the continue construct
+ * intact so draw_create_vs_nir must fold it before nir_opt_dce.  Sum of even
+ * i in [0,6) is 0+2+4 = 6. */
+static nir_shader *
+build_continue_construct_raw(const nir_shader_compiler_options *opts)
+{
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, opts,
+                                                   "cont_raw");
+   nir_variable *out = add_output(&b, 0, VARYING_SLOT_POS);
+   nir_variable *accum =
+      nir_local_variable_create(b.impl, glsl_int_type(), "accum");
+   nir_variable *i = nir_local_variable_create(b.impl, glsl_int_type(), "i");
+   nir_store_var(&b, accum, nir_imm_int(&b, 0), 0x1);
+   nir_store_var(&b, i, nir_imm_int(&b, 0), 0x1);
+
+   nir_loop *loop = nir_push_loop(&b);
+   nir_loop_add_continue_construct(loop);
+   {
+      nir_def *iv = nir_load_var(&b, i);
+      nir_break_if(&b, nir_ige_imm(&b, iv, 6));
+
+      nir_def *is_odd = nir_ine_imm(&b, nir_iand_imm(&b, iv, 1), 0);
+      nir_if *nif = nir_push_if(&b, is_odd);
+      {
+         nir_jump(&b, nir_jump_continue);
+      }
+      nir_pop_if(&b, nif);
+
+      nir_def *a = nir_load_var(&b, accum);
+      nir_store_var(&b, accum, nir_iadd(&b, a, iv), 0x1);
+   }
+   nir_push_continue(&b, loop);
+   {
+      nir_def *iv = nir_load_var(&b, i);
+      nir_store_var(&b, i, nir_iadd_imm(&b, iv, 1), 0x1);
+   }
+   nir_pop_loop(&b, loop);
+
+   nir_def *result = nir_i2f32(&b, nir_load_var(&b, accum));
+   nir_def *v = nir_vec4(&b, result, nir_imm_float(&b, 0.0f),
+                         nir_imm_float(&b, 0.0f), nir_imm_float(&b, 0.0f));
+   nir_store_var(&b, out, v, 0xf);
+   NIR_PASS(_, b.shader, nir_lower_vars_to_ssa);
+   return b.shader;
+}
+
+/* Factory-only: unlowered continue construct must survive draw_create_vs_nir
+ * (nir_lower_continue_constructs before nir_opt_dce) and produce 0+2+4=6. */
+static void
+test_factory_continue_lowering(struct draw_context *draw)
+{
+   printf("case: factory_continue_lowering\n");
+   const nir_shader_compiler_options *opts =
+      draw->pipe->screen->nir_options[MESA_SHADER_VERTEX];
+   struct pipe_shader_state sb = { .type = PIPE_SHADER_IR_NIR };
+   sb.ir.nir = build_continue_construct_raw(opts);
+   struct draw_vertex_shader *interp = draw_create_vs_nir(draw, &sb);
+   if (!interp) {
+      CHECK(false,
+            "factory_continue_lowering: draw_create_vs_nir accepts raw continue");
+      return;
+   }
+   interp->prepare(interp, draw);
+   float out[4] = {0};
+   struct draw_buffer_info constants[PIPE_MAX_CONSTANT_BUFFERS] = {0};
+   interp->run_linear(draw, interp, NULL, (float (*)[4])out, constants, 1, 0,
+                      sizeof(out), NULL);
+   float exp[4] = {6.0f, 0.0f, 0.0f, 0.0f};
+   CHECK(memcmp(out, exp, sizeof(exp)) == 0,
+         "factory_continue_lowering: even sum 0..5 is 6");
+   if (memcmp(out, exp, sizeof(exp)) != 0)
+      printf("    got %.9g want 6\n", out[0]);
+   interp->delete(draw, interp);
 }
 
 /* out = vec4(iadd, ishl, ushr, imin(a,b)) where a, b come from f2i32 on the
@@ -691,6 +765,10 @@ main(void)
       build_vector_construct_extract, 2, 1, 1, vce_in, NULL, 0, 0, 0, 0, 0,
       vce_exp };
    run_case(draw, &vce);
+
+   /* Factory must lower continue constructs itself; dual-factory cases above
+    * pre-lower so the bridge path can run. */
+   test_factory_continue_lowering(draw);
 
    /* Admission predicate: shapes the interpreter cannot execute must be
     * rejected before draw_create_vs_exec ever dispatches to
