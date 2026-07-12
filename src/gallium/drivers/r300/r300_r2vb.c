@@ -170,11 +170,10 @@ static void r2vb_report_bo_a_diagnostic(struct r300_context *r300, struct pipe_r
     r300->context.buffer_unmap(&r300->context, a_xfer);
 }
 
-/* HBTCL-04b gate: the producer performs the perspective divide + viewport in the
- * transform FS when R300_R2VB_DIVIDE is set.  Off by default so the clip-space MVP
- * self-test (which reads the un-divided 4-DP4 result back) stays the oracle; the
- * divided output is validated against the CPU reference (HBTCL-04g) before any
- * flip. */
+/* Perspective-divide gate: the transform fragment shader emits window
+ * coordinates when R300_R2VB_DIVIDE is set. The clip-space MVP self-test
+ * remains the default oracle. The divided result is compared with the CPU
+ * reference before delivery. */
 static bool r300_r2vb_divide_enabled(void)
 {
     static int cached = -1;
@@ -282,21 +281,10 @@ static bool r300_r2vb_clip_edge_enabled(void)
     return cached;
 }
 
-/* Split-delivery bypass gate (R300_R2VB_SPLIT_DELIVERY_BYPASS): run the full
- * split-producer sequence -- clip-space pass A, carry map, clip-space pass B,
- * clip classification, window-space pass A, carry map, window-space pass B,
- * final clip-BO ordering map -- then release the R2VB resources and decline
- * the delivery so the ordinary gallivm path renders the application draw.
- * Every suspect mechanism of the fence-wedge RCA still executes: both
- * temporary pass FS objects are created, bound, restored, and deleted; both
- * carry BOs are created, written, mapped, and released; all four producer
- * submissions and their flush/map boundaries occur; the same clip BO is
- * written twice; the application state transaction runs.  Only the final
- * consumer changes: gallivm replaces the direct-VB re-ingest draw.  A
- * completing gallivm frame localizes the non-retiring fence to the direct-VB
- * delivery or the split-produced clip BO as a vertex source; a hanging one
- * exonerates the delivery draw and points at the producer/flush/fence
- * sequence itself. */
+/* Split-delivery bypass (R300_R2VB_SPLIT_DELIVERY_BYPASS) declines direct
+ * re-ingest after a window-space split producer finishes. The route releases
+ * its temporary resources and returns false, so the caller renders the
+ * original draw through gallivm. */
 static bool r300_r2vb_split_delivery_bypass_enabled(void)
 {
     static int cached = -1;
@@ -541,8 +529,8 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300,
                                     rows[r * 4 + 2], rows[r * 4 + 3]);
         comp[r] = nir_fdot(&b, row, v);
     }
-    /* HBTCL-04b divide + viewport (or raw clip-space when the gate is off), shared
-     * with r300_r2vb_get_transform_fs through r2vb_build_producer_output. */
+    /* Build raw clip-space or divided window-space output shared with
+     * r300_r2vb_get_transform_fs through r2vb_build_producer_output. */
     nir_def *o = r2vb_build_producer_output(&b, comp, r300, space);
     nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                             glsl_vec4_type(), "out_color");
@@ -975,7 +963,7 @@ static uint32_t r2vb_verify_bo_readback(struct r300_context *r300, struct pipe_r
     return pass;
 }
 
-/* HBTCL clip-classification oracle body: map the producer BO and classify the
+/* Clip-classification oracle: map the producer BO and classify the
  * ACTUAL FP24 clip-space results the fragment ALU wrote.  A CPU FP32 recompute
  * is deliberately not used as the classification input: near a plane, FP24 and
  * host FP32 can round to opposite sides, and the hardware-produced value is
@@ -1230,13 +1218,12 @@ static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_re
     free(exp);
 }
 
-/* Known-answer self-test for the HBTCL-04b divide + viewport, anchored on a case
- * whose window result is fixed by the arithmetic, not by agreeing with the shader,
- * so a shared sign or scale bug cannot pass green.  clip = (4, -2, 1, 2) under a
- * unit viewport must divide to (2, -1, 0.5) and carry w = 1.  A sub-threshold
- * w_clip must collapse the reciprocal to 0 (the FP24 infinity guard), so the tiny
- * case must yield rcp = 0.  Returns true iff both hold; mirrors the divide the FS
- * emits in r300_r2vb_build_baked_transform_fs. */
+/* Known-answer self-test for perspective divide and viewport mapping. The window
+ * result is fixed by the arithmetic, rather than by agreement with the shader,
+ * so a shared sign or scale bug cannot pass. clip = (4, -2, 1, 2) under a unit
+ * viewport divides to (2, -1, 0.5) and carries w = 1. A sub-threshold w_clip
+ * collapses the reciprocal to 0 through the FP24 infinity guard. The test mirrors
+ * the divide emitted by r300_r2vb_build_baked_transform_fs. */
 static bool r2vb_divide_oracle_selftest(void)
 {
     const float clip[4] = { 4.0f, -2.0f, 1.0f, 2.0f };
@@ -2326,8 +2313,8 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
      * meaningful with R300_R2VB_STAGE3_OBSERVE=1. */
     if (cfg.xform && cfg.do_submit) {
         if (r300_r2vb_divide_enabled()) {
-            /* The transform FS divides, so verify against the window-space
-             * reference (HBTCL-04g), gated on the pure-CPU divide self-test. */
+            /* The transform fragment shader divides, so verify against the
+             * window-space reference after the pure-CPU divide self-test. */
             if (r2vb_divide_oracle_selftest())
                 r2vb_verify_window_readback(r300, res, attrs, cfg.num_vertices,
                                             r2vb_test_mvp_cols);
@@ -2406,15 +2393,11 @@ static bool r300_vs_is_passthrough(struct r300_context *r300)
     return true;
 }
 
-/* No-submit shape probe for the de-TGSI vertex transform: dump the bound VS's
- * NIR instruction profile so the MVP-shape matcher (r300_vs_is_mvp) is written
- * against the real bound-VS NIR the driver compiles rather than an assumed
- * shape (falsifier F2 in the MVP-transform finding).  r300_vs_is_mvp keys on
- * that same nir_shader -- its variables and instruction shape, not a
- * nir_to_tgsi round-trip -- so the probe and the matcher read one source.
- * Reports a histogram of ALU ops and intrinsics plus the total instruction
- * count, then the full nir_print_shader.  Fires once, gated by
- * R300_R2VB_VS_DUMP; pure CPU, no CS emit. */
+/* No-submit NIR-shape probe for the vertex transform. It reports the bound VS
+ * instruction profile so r300_vs_is_mvp matches the NIR state compiled by r300.
+ * The matcher keys on that same nir_shader rather than a nir_to_tgsi round trip.
+ * The probe reports an ALU and intrinsic histogram, the instruction count, and
+ * the full nir_print_shader once when R300_R2VB_VS_DUMP is set. */
 static void r300_vs_dump_nir_shape(struct r300_context *r300)
 {
     struct r300_vertex_shader *vs = r300_vs(r300);
@@ -2906,8 +2889,8 @@ static bool r300_r2vb_split_admitted(struct r300_context *r300,
 }
 
 /* Producer admission memo (vs->r2vb_admission): 0 unmeasured, 1 single-pass
- * fits, 2 reject, 3 over-budget split admitted (spill1).  The split verdict is
- * memoized like the single-pass one so its throwaway compiles run once per VS. */
+ * fits, 2 reject, 3 split producer admitted. The split verdict covers budget
+ * escape and forced-split delivery, and its throwaway compiles run once per VS. */
 #define R300_R2VB_ADMIT_UNMEASURED 0
 #define R300_R2VB_ADMIT_FITS       1
 #define R300_R2VB_ADMIT_REJECT     2
@@ -2932,15 +2915,9 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
             fits = r300_r2vb_measure_pass_fits(r300, vs->state.ir.nir,
                                                (gl_varying_slot)dv, "varying");
     }
-    /* Forced-split skeleton (R300_R2VB_FORCE_SPLIT, requires the spill1
-     * gate): an under-budget position pass is pushed through the same
-     * single-vec4 cut, carry transport, and two-pass producer machinery the
-     * over-budget escape uses.  Both arms of the matched-shader fence-wedge
-     * cell then differ ONLY in pass cardinality -- one shader, one routing
-     * lane, single-pass versus forced four-pass -- separating the split
-     * machinery from the heavy recurrence's instruction shape.  A shader
-     * with no admissible cut keeps its FITS verdict, so the gate cannot
-     * regress an ordinary draw. */
+    /* R300_R2VB_FORCE_SPLIT requests the split producer for a fitting position
+     * pass when the spill1 gate is enabled. A declined split keeps the normal
+     * single-pass admission. */
     if (fits) {
         static int force_split = -1;
         if (force_split < 0) {
@@ -2957,8 +2934,8 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
                 return true;
             }
             fprintf(stderr,
-                    "r2vb_force_split under_budget=1 admitted=0 (no cut; "
-                    "single-pass kept)\n");
+                    "r2vb_force_split under_budget=1 admitted=0 "
+                    "(split declined; single-pass kept)\n");
         }
         *memo = R300_R2VB_ADMIT_FITS;
         return true;
@@ -3099,9 +3076,9 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
                 total, vname[v], r300_vs_is_mvp(r300), vsname, draw->count, info->mode);
     }
 
-    /* R300_R2VB_VS_DUMP: one-shot NIR-shape dump of the bound VS so the MVP
-     * matcher is pinned to the real bound-VS NIR the driver compiles, not a
-     * nir_to_tgsi round-trip (finding F2).  No submit. */
+    /* R300_R2VB_VS_DUMP emits one NIR-shape dump of the bound VS. The MVP
+     * matcher reads that bound NIR state rather than a nir_to_tgsi round trip.
+     * No submit. */
     static int vsdump = -1;
     if (vsdump < 0) {
         const char *e = getenv("R300_R2VB_VS_DUMP");
@@ -3791,13 +3768,9 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
     free(bmodel);
     r300->context.delete_fs_state(&r300->context, pa_fs);
     r300->context.delete_fs_state(&r300->context, pb_fs);
-    /* Carry-BO disposal is the first one-variable cell of the delivery-wedge
-     * ladder.  Default: release now, before the delivery draw is even built --
-     * the winsys may then recycle the BO's slab while the split composition's
-     * work is in flight.  R300_R2VB_SPLIT_KEEPALIVE=1 instead parks the
-     * reference in a two-slot ring on the context so the backing store
-     * outlives the delivered draw; the ring rotates on the next split and is
-     * released at context destroy. */
+    /* R300_R2VB_SPLIT_KEEPALIVE=1 retains the carry BO through the delivered
+     * split draw. The two-slot context ring rotates on the next split and
+     * context destruction releases its references. */
     {
         static int keepalive_env = -1;
         if (keepalive_env < 0) {
@@ -4894,7 +4867,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     struct r2vb_reingest_stream ostreams[PIPE_MAX_ATTRIBS];
     int n_ostream = r300_r2vb_reingest_stream_layout(
         r300_vs(r300)->state.ir.nir, -1, ostreams, PIPE_MAX_ATTRIBS);
-    /* Fetch dwords derive from each element's src_format, the same
+    /* Fetch dwords are derived from each element's src_format, the same
      * align(blocksize, 4) the delivery emit computes for LOAD_VBPNTR SIZE
      * and VAP_VTX_SIZE.  velems->format_size[] is has_tcl-only CSO state
      * and stays zero on SWTCL until that emit fills it. */

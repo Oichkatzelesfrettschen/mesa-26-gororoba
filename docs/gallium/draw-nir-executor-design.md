@@ -128,16 +128,15 @@ nir_if/loop. Run old bridge and new interpreter on identical input,
 diff outputs within an epsilon accounting for SIMD-4 vs scalar FP
 ordering. Known-bad probes: all uses_* sysval flags at once; CLIPDIST
 at multiple indices; missing CLIPVERTEX (exercising the
-position_output fallback). Fallback flag: DRAW_NIR_EXEC_FORCE_TGSI_BRIDGE
-debug env (DEBUG_GET_ONCE_BOOL_OPTION style) selects the retained
-nir_to_tgsi + tgsi_exec branch so any field regression is
-work-aroundable while the divergence is root-caused.
+position_output fallback). Leave `DRAW_NIR_EXEC` unset to retain the
+`nir_to_tgsi` plus `tgsi_exec` branch. Set `DRAW_NIR_EXEC=1` only when
+calibrating the direct executor.
 
 ## Calibration results
 
-Built and run on ATI RS480 (RS482 IGP) through a surfaceless-EGL FBO harness
-(steinmarder-r300 probes/draw-nir-executor-surfaceless-egl): a 24-shader corpus
-covering arithmetic and mul-add, dot2/dot3, cross/reflect/normalize/length,
+Built and run on ATI RS480 (RS482 IGP) through a surfaceless-EGL FBO harness: a
+24-shader corpus covering arithmetic and mul-add, dot2/dot3,
+cross/reflect/normalize/length,
 min/max/clamp/mix/step/smoothstep, floor/fract/mod, abs/sign, mat2 and mat3
 transforms, the transcendentals sin/cos/exp2/log2/pow/sqrt/rsqrt, float-domain
 compare and select (sge/slt/fcsel_gt from GLSL comparisons and ?:), and control

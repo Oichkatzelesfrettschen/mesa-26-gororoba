@@ -380,10 +380,9 @@ build_vector_construct_extract(const nir_shader_compiler_options *opts)
    return b.shader;
 }
 
-/* An intrinsic interp_intrinsic does not implement (nir_intrinsic_discard is
- * a fragment-shader-only op with no vertex-executor case), so
- * draw_vs_nir_supported must reject it rather than let the interpreter hit
- * UNREACHABLE. */
+/* A termination intrinsic that interp_intrinsic does not implement has no
+ * vertex-executor case, so draw_vs_nir_supported rejects it before the
+ * interpreter reaches UNREACHABLE. */
 static nir_shader *
 build_unsupported_intrinsic(const nir_shader_compiler_options *opts)
 {

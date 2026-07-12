@@ -369,7 +369,7 @@ What is already more built than the design assumed:
 
 What remains less built than the design assumed:
 
-- Kernels above 64 emitted ALU slots have no route. Admission measures the
+- Kernels that emit more than 64 ALU slots have no route. Admission measures the
   derived producer FS against the real emit ceiling (a throwaway backend
   compile reading the emitted `alu.length`, memoized per VS), so a dense
   kernel the vectorizing backend packs under 64 slots is admitted even when
@@ -379,7 +379,7 @@ What remains less built than the design assumed:
   in bank 1 (a 63-slot dependent chain works, the 65-plus variant fails;
   constants survive the boundary). The general escape is explicit state
   transport -- algebraic compaction of the producer, or a producer split
-  whose carry crosses through a render target or R2VB buffer -- with Gallivm
+  whose carry crosses through a render target or R2VB buffer -- with gallivm
   as the fallback (HBTCL-04f).
 - R2VB is not the standing route. The engine remains gated by explicit opt-in
   environment variables and has no default-on integration into
@@ -495,7 +495,7 @@ into the standing vertex route.
 | HBTCL-04c | DONE: clip classification in the raw clip-space domain -- Draw-parity clip codes, accept/reject/partial/fallback classes (`r300_r2vb_clip.h`), FP24 clip-BO oracle, conservative gated route action; 9/9 corpus classes byte-identical on RS482 | HBTCL-04b |
 | HBTCL-04d | DONE: edge generation -- Sutherland-Hodgman intersection of PARTIAL triangles in clip space (`t = d_out / (d_out - d_in)` blends), attribute interpolation, fan retriangulation; 10/10 corpus cases byte-identical on RS482 | HBTCL-04c |
 | HBTCL-04e | DONE: topology gather -- strips, fans, indexed draws, primitive restart resolved to a triangle-index list before classification; 14/14 corpus cases byte-identical on RS482; points and lines stay excluded (points gate on HBTCL-07, lines need a 2-vertex clip variant) | HBTCL-04d |
-| HBTCL-04f | Producer budget escape above the 64-slot fragment-ALU ceiling: admission on actual emitted RC slots, semantics-preserving algebraic compaction, then a producer split carrying one FP32 `vec4` through an R2VB buffer; Gallivm fallback for every unsupported shape. R400 code banks are diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-03 |
+| HBTCL-04f | Producer budget escape above the 64-slot fragment-ALU ceiling: admission on actual emitted RC slots, semantics-preserving algebraic compaction, then a producer split carrying one FP32 `vec4` through an R2VB buffer; gallivm fallback for every unsupported shape. R400 code banks are diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-03 |
 | HBTCL-05 | DONE: the "VAP register table" section above folds in the offsets, the write-only/read-excluded wedge window, the 16-bit `VF_CNTL` underflow lever + its `git-150a16dc47` fix, the system-value slot-reservation registry, and the R2VB CS-write surface | -- |
 | HBTCL-06 | DONE: the "Lighting on the fragment ALU" section above -- native RCP/RSQ/EX2/LG2, lowered POW/SQRT/SINCOS, the lighting-term mapping table, and the shared 64-ALU budget with the transform | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear (GA point-setup registers) via the HBTCL-01 decode method | HBTCL-03 |

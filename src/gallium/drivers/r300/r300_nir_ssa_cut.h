@@ -66,8 +66,9 @@ r300_mp_find_cuts(nir_shader *nir, struct r300_mp_partition *cands,
 
 /* R2VB producer budget-escape (carry-BO split): the fragment-ALU vertex
  * producer transports the cut-crossing values through one FP32x4 carry BO
- * instead of the FS multipass RGBA8 hi/lo scratch, so the carry is exact and
- * fits four scalar components.
+ * instead of the FS multipass RGBA8 hi/lo scratch. Float and BOOL1 carries
+ * retain their values; INT carries retain values representable by the
+ * i2f32/f2i32 round trip. The carry fits four scalar components.
  *
  * r300_mp_find_vec4_cut ranks the single-block cuts (r300_mp_find_cuts, which
  * orders smallest carry first) and returns the first whose crossing set fits

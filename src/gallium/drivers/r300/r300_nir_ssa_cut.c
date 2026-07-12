@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2026 Terascale Functionalists
+ * Copyright 2008 Corbin Simpson <MostAwesomeDude@gmail.com>
+ *                Joakim Sindholt <opensource@zhasha.com>
+ * Copyright 2009 Marek Olšák <maraeo@gmail.com>
  * SPDX-License-Identifier: MIT
  */
 
