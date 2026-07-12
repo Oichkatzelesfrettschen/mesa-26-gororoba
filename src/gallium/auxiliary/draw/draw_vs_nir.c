@@ -277,7 +277,8 @@ interp_phis_parallel(struct interp *st, nir_block *block)
 
    nir_const_value (*staged)[NIR_MAX_VEC_COMPONENTS] =
       malloc(sizeof(*staged) * nphi);
-   assert(staged);
+   if (!staged)
+      UNREACHABLE("draw_vs_nir: phi stage allocation failed");
 
    unsigned i = 0;
    nir_foreach_instr(instr, block) {
@@ -412,8 +413,10 @@ vs_nir_run_linear(struct draw_context *draw,
 {
    struct nir_vertex_shader *nvs = nir_vertex_shader(shader);
    const bool clamp_vertex_color = draw->rasterizer->clamp_vertex_color;
-   /* Sysval-only shaders may pass a NULL input pointer; avoid null arithmetic. */
-   static const float dummy_input_row[1][4];
+   /* Sysval-only shaders may pass a NULL input pointer; size the dummy to
+    * PIPE_MAX_ATTRIBS so a NULL-input run never reads past the array even
+    * when asserts are compiled out. */
+   static const float dummy_input_rows[PIPE_MAX_ATTRIBS][4];
 
    struct interp st = {
       .nvs = nvs,
@@ -438,7 +441,7 @@ vs_nir_run_linear(struct draw_context *draw,
       st.vertex_id = fetch_elts ? fetch_elts[i] : (int)(i + basevertex);
       st.vertex_id_nobase = fetch_elts ? (int)(fetch_elts[i] - basevertex)
                                        : (int)i;
-      st.input = input ? input : dummy_input_row;
+      st.input = input ? input : dummy_input_rows;
       st.output = output;
       st.prev_block = NULL;
 
@@ -645,25 +648,25 @@ draw_create_vs_nir(struct draw_context *draw,
    NIR_PASS(_, nir, nir_lower_continue_constructs);
 
    /* Mirror the LLVM factory: fold uniforms to load_ubo so every constant read
-    * is one intrinsic, then scan with need_texcoord so draw_find_shader_output
-    * sees the identical POSITION/PCOORD/FACE/GENERIC vocabulary the r300
-    * consumers key on. */
+    * is one intrinsic.  Keep each output's existing driver_location (r300
+    * assigns PSIZ before COL0 in r300_draw_fill_vs_outputs); nir_lower_io
+    * writes store_output bases from those locations and must not renumber. */
    if (!nir->options->lower_uniforms_to_ubo)
       NIR_PASS(_, nir, nir_lower_uniforms_to_ubo, false, false);
-   nir_tgsi_scan_shader(nir, &vs->base.info, true);
 
    /* The shader still carries variable-based I/O (load_deref/store_deref over
     * nir_deref chains); nir_to_tgsi lowers that itself, but this interpreter
-    * reads load_input/store_output intrinsics keyed by driver_location.  Run
-    * nir_lower_io after the scan (which reads the variables) so the deref I/O
-    * becomes those intrinsics with the vec4-slot base r300_draw_fill_vs_outputs
-    * and the vertex fetch already agree on. */
+    * reads load_input/store_output intrinsics keyed by driver_location.  Lower
+    * with the driver-assigned locations, then scan so output_semantic[] slots
+    * match the bases lower_io just wrote.  Scanning before lower_io desyncs
+    * when a later renumber would have changed bases relative to the scan. */
    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
             draw_vs_nir_io_slots, 0);
    /* nir_lower_io rewrites the deref loads/stores but leaves the now-dead
     * nir_deref_instr chain in the block; the interpreter walks every
     * instruction, so drop the dead derefs before it can trip on one. */
    NIR_PASS(_, nir, nir_opt_dce);
+   nir_tgsi_scan_shader(nir, &vs->base.info, true);
 
    vs->nir = nir;
    vs->impl = nir_shader_get_entrypoint(nir);

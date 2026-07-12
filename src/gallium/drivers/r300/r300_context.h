@@ -730,8 +730,13 @@ struct r300_context {
      * file 0), and a data-independent slot-pixel position buffer reused across
      * draws.  Built lazily, owned by the context. */
     /* Cached MVP transform FS per producer position space
-     * (r300_r2vb_position_space: raw clip vs divided window). */
+     * (r300_r2vb_position_space: raw clip vs divided window).  WINDOW-space
+     * builders bake viewport scale/bias as immediates; the key below invalidates
+     * that cache when the application viewport changes. */
     void *r2vb_transform_fs[2];
+    float r2vb_transform_fs_vp_scale[3];
+    float r2vb_transform_fs_vp_translate[3];
+    bool r2vb_transform_fs_vp_valid;
     struct pipe_resource *r2vb_slot_pos_bo;
     unsigned r2vb_slot_pos_count;
 

@@ -46,6 +46,27 @@
 #include "r300_reg.h"
 #include "r300_vs.h"
 
+/* Forward: CPU classify/edge maps and re-ingest run before these helpers. */
+static void r2vb_wait_bo(struct r300_context *r300, struct pipe_resource *res);
+static bool r2vb_single_cs_enabled(void);
+
+/* Active hardwired clip planes for the oracle: XY always; NEAR/FAR only when
+ * the rasterizer keeps depth clipping (draw_update_clip_flags parity). */
+static uint8_t
+r2vb_active_clip_planes(const struct r300_context *r300)
+{
+    const struct r300_rs_state *rs =
+        r300->rs_state.state ? (const struct r300_rs_state *)r300->rs_state.state
+                           : NULL;
+    uint8_t m = R300_R2VB_CLIP_RIGHT | R300_R2VB_CLIP_LEFT | R300_R2VB_CLIP_TOP |
+                R300_R2VB_CLIP_BOTTOM;
+    if (!rs || rs->rs.depth_clip_near)
+        m |= R300_R2VB_CLIP_NEAR;
+    if (!rs || rs->rs.depth_clip_far)
+        m |= R300_R2VB_CLIP_FAR;
+    return m;
+}
+
 void r300_r2vb_report_bo_identity(struct r300_context *r300, const char *tag,
                                   struct pipe_resource *pr)
 {
@@ -438,6 +459,13 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300,
     st.ir.nir = b.shader; /* create_fs_state takes ownership and precompiles */
     r300->r2vb_transform_fs[space] =
         r300->context.create_fs_state(&r300->context, &st);
+    if (space == R300_R2VB_POSITION_WINDOW) {
+        for (unsigned i = 0; i < 3; i++) {
+            r300->r2vb_transform_fs_vp_scale[i] = r300->viewport.scale[i];
+            r300->r2vb_transform_fs_vp_translate[i] = r300->viewport.translate[i];
+        }
+        r300->r2vb_transform_fs_vp_valid = true;
+    }
     return r300->r2vb_transform_fs[space];
 }
 
@@ -1007,6 +1035,9 @@ r2vb_clip_classify_readback(struct r300_context *r300,
     struct pipe_transfer *xfer = NULL;
     struct pipe_box box = {
         .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
+    /* Flush first: single-CS producer may leave the write still in the active
+     * cmdbuf, so wait alone would observe an un-submitted BO. */
+    r300->context.flush(&r300->context, NULL, 0);
     r2vb_wait_bo(r300, res);
     const float *got =
         r300->context.buffer_map(&r300->context, res, 0, PIPE_MAP_READ, &box, &xfer);
@@ -1016,6 +1047,7 @@ r2vb_clip_classify_readback(struct r300_context *r300,
     }
     const bool half_z = r300->clip_halfz;
     const float k = R300_R2VB_CLIP_GUARD_K;
+    const uint8_t planes = r2vb_active_clip_planes(r300);
     static int clip_log = -1;
     if (clip_log < 0) {
         const char *e = getenv("R300_R2VB_CLIP_LOG");
@@ -1027,17 +1059,19 @@ r2vb_clip_classify_readback(struct r300_context *r300,
         if (clip_log)
             fprintf(stderr,
                     "r2vb_clip vertex=%u pos=%.6f,%.6f,%.6f,%.6f mask=0x%02x%s\n",
-                    v, g[0], g[1], g[2], g[3], r300_r2vb_clipcode(g, k, half_z),
-                    r300_r2vb_w_unsafe(g[3]) ? " unsafe_w" : "");
+                    v, g[0], g[1], g[2], g[3],
+                    r300_r2vb_clipcode_planes(g, k, half_z, planes),
+                    (r300_r2vb_clip_nonfinite(g) || r300_r2vb_w_unsafe(g[3]))
+                        ? " unsafe" : "");
     }
 
     uint32_t n_accept = 0, n_reject = 0, n_partial = 0, n_fallback = 0;
     if (mode == MESA_PRIM_TRIANGLES) {
         for (uint32_t t = 0; t * 3 + 2 < count; t++) {
             uint8_t om = 0, am = 0;
-            enum r300_r2vb_tri_class c = r300_r2vb_classify_triangle(
+            enum r300_r2vb_tri_class c = r300_r2vb_classify_triangle_planes(
                 &got[(t * 3 + 0) * 4], &got[(t * 3 + 1) * 4],
-                &got[(t * 3 + 2) * 4], k, half_z, &om, &am);
+                &got[(t * 3 + 2) * 4], k, half_z, planes, &om, &am);
             static const char *cname[] = { "accept", "reject", "partial",
                                            "fallback_w" };
             if (clip_log)
@@ -1092,6 +1126,9 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
     struct pipe_transfer *xfer = NULL;
     struct pipe_box box = {
         .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
+    /* Flush first: single-CS producer may leave the write still in the active
+     * cmdbuf, so wait alone would observe an un-submitted BO. */
+    r300->context.flush(&r300->context, NULL, 0);
     r2vb_wait_bo(r300, res);
     const float *got =
         r300->context.buffer_map(&r300->context, res, 0, PIPE_MAP_READ, &box, &xfer);
@@ -1099,6 +1136,7 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
         return -1;
     const bool half_z = r300->clip_halfz;
     const float k = R300_R2VB_CLIP_GUARD_K;
+    const uint8_t planes = r2vb_active_clip_planes(r300);
     const unsigned num_attrs = 1 + n_extra;
 
     /* One triangle clipped against six planes fans into at most
@@ -1121,9 +1159,9 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
     for (uint32_t t = 0; t * 3 + 2 < count && !bail; t++) {
         const uint32_t vi[3] = { t * 3, t * 3 + 1, t * 3 + 2 };
         uint8_t om = 0, am = 0;
-        enum r300_r2vb_tri_class c = r300_r2vb_classify_triangle(
+        enum r300_r2vb_tri_class c = r300_r2vb_classify_triangle_planes(
             &got[vi[0] * 4], &got[vi[1] * 4], &got[vi[2] * 4], k, half_z,
-            &om, &am);
+            planes, &om, &am);
         switch (c) {
         case R300_R2VB_TRI_FALLBACK:
             bail = true;
@@ -1149,9 +1187,14 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
                            sizeof(in[i].attr[0]));
             }
             unsigned np =
-                r300_r2vb_clip_triangle(in, num_attrs, om, k, half_z, poly);
+                r300_r2vb_clip_triangle(in, num_attrs, om & planes, k, half_z,
+                                        poly);
             fprintf(stderr, "r2vb_clip_edge prim=%u or=0x%02x poly=%u\n",
                     t, om, np);
+            if (np == 0) {
+                bail = true;
+                break;
+            }
             for (unsigned i = 1; i + 1 < np; i++) {
                 const unsigned pv[3] = { 0, i, i + 1 };
                 for (int q = 0; q < 3; q++)
@@ -2817,6 +2860,9 @@ r300_r2vb_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
                        gl_varying_slot target, const char *pass_name,
                        unsigned *out_alu)
 {
+    /* r2vb_env_space() is WINDOW when R300_R2VB_DIVIDE=1, so the throwaway
+     * compile includes the frcp + viewport MADs and the emit ceiling already
+     * charges the divide sequence against the restage budget. */
     nir_shader *fs = r300_r2vb_build_restaged_fs_nir(r300, vs_nir, target,
                                                      r2vb_env_space());
     if (fs == NULL)
@@ -3265,6 +3311,37 @@ static int r300_r2vb_input_velem_index(nir_shader *vs, const nir_variable *in)
     return rank;
 }
 
+/* PSC/VAP output-vector rank for a gl_varying_slot: mirrors
+ * r300_draw_emit_all_attribs / r300_draw_fill_vs_outputs (POS, PSIZ, COL*,
+ * BFC*, GENERIC*, FOG).  Numeric gl_varying_slot order places PSIZ after
+ * colors and FOGC before PSIZ, so an ascending-slot sort miswires streams. */
+static int
+r300_r2vb_psc_output_rank(gl_varying_slot slot)
+{
+    if (slot == VARYING_SLOT_POS)
+        return 0;
+    if (slot == VARYING_SLOT_PSIZ)
+        return 1;
+    if (slot == VARYING_SLOT_COL0)
+        return 2;
+    if (slot == VARYING_SLOT_COL1)
+        return 3;
+    if (slot == VARYING_SLOT_BFC0)
+        return 4;
+    if (slot == VARYING_SLOT_BFC1)
+        return 5;
+    if (slot >= VARYING_SLOT_VAR0 && slot < VARYING_SLOT_VAR0 + 32)
+        return 6 + (int)(slot - VARYING_SLOT_VAR0);
+    if (slot == VARYING_SLOT_FOGC)
+        return 6 + 32;
+    if (slot == VARYING_SLOT_EDGE)
+        return 6 + 33;
+    if (slot == VARYING_SLOT_CLIP_VERTEX)
+        return 6 + 34;
+    /* Unknown fixed-function slots stay after the PSC core, still stable. */
+    return 100 + (int)slot;
+}
+
 /* Contract comment at the declaration in r300_r2vb.h. */
 int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
                                      struct r300_r2vb_reingest_stream *out, unsigned max)
@@ -3303,11 +3380,16 @@ int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
             }
         }
     }
-    /* Sort ascending by slot (position first); insertion sort, n is tiny. */
+    /* Sort into PSC/VAP output-vector order; insertion sort, n is tiny. */
     for (unsigned i = 1; i < n; i++) {
         struct r300_r2vb_reingest_stream key = out[i];
         int j = (int)i - 1;
-        while (j >= 0 && out[j].slot > key.slot) { out[j + 1] = out[j]; j--; }
+        while (j >= 0 &&
+               r300_r2vb_psc_output_rank(out[j].slot) >
+                   r300_r2vb_psc_output_rank(key.slot)) {
+            out[j + 1] = out[j];
+            j--;
+        }
         out[j + 1] = key;
     }
     return (int)n;
@@ -3910,7 +3992,9 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     if (pvs)
         r300->context.bind_vs_state(&r300->context, pvs);
     r300_update_derived_state(r300);
-    if (r300_r2vb_prepare_states(r300, 64u + count * 4u * (1u + num_in) + 64u))
+    bool prepared =
+        r300_r2vb_prepare_states(r300, 64u + count * 4u * (1u + num_in) + 64u);
+    if (prepared)
         r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, num_in, true);
     r300->context.bind_fs_state(&r300->context, saved_fs);
     if (pvs)
@@ -3920,6 +4004,11 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     r300_update_derived_state(r300);
     if (!xfs_cached)
         r300->context.delete_fs_state(&r300->context, xfs);
+    if (!prepared) {
+        r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+        r300->r2vb_capture_clip = NULL;
+        return false;
+    }
 
     if (!r2vb_single_cs_enabled()) {
         r300->context.flush(&r300->context, NULL, 0);
@@ -3981,6 +4070,16 @@ r2vb_topology_gather_indices(struct r300_context *r300,
     const uint32_t n_verts = draw->count;
     if (n_verts == 0)
         return false;
+    /* Cap source allocation: output cannot exceed 4096 vertices (at most
+     * floor((n-2)*3) for strip/fan, or n for triangle lists).  A multi-million
+     * draw->count would only fail later; refuse oversized sources early. */
+    const uint32_t cap = 4096;
+    if (n_verts > cap * 2u && info->mode == MESA_PRIM_TRIANGLES)
+        return false;
+    if (n_verts > cap + 2u &&
+        (info->mode == MESA_PRIM_TRIANGLE_STRIP ||
+         info->mode == MESA_PRIM_TRIANGLE_FAN))
+        return false;
 
     uint32_t *src = malloc((size_t)n_verts * sizeof(*src));
     if (!src)
@@ -4015,7 +4114,6 @@ r2vb_topology_gather_indices(struct r300_context *r300,
     /* Bias joins the emitted rows, never the restart comparison above. */
     const int64_t bias = info->index_size != 0 ? draw->index_bias : 0;
 
-    const uint32_t cap = 4096;
     uint32_t *gidx = malloc((size_t)cap * sizeof(*gidx));
     if (!gidx) {
         free(src);
@@ -4042,7 +4140,16 @@ r2vb_topology_gather_indices(struct r300_context *r300,
                 i1 = seg_start + t * 3 + 1;
                 i2 = seg_start + t * 3 + 2;
             } else if (info->mode == MESA_PRIM_TRIANGLE_STRIP) {
-                if ((t & 1) == 0) {
+                /* Gathered output is MESA_PRIM_TRIANGLES (first-vertex PV).
+                 * Default last-vertex PV rotates odd strips (t+1,t,t+2); for
+                 * flatshade_first keep (t,t+1,t+2) so vertex t remains first. */
+                const struct r300_rs_state *rs =
+                    r300->rs_state.state
+                        ? (const struct r300_rs_state *)r300->rs_state.state
+                        : NULL;
+                const bool first_pv =
+                    rs && rs->rs.flatshade && rs->rs.flatshade_first;
+                if ((t & 1) == 0 || first_pv) {
                     i0 = seg_start + t + 0;
                     i1 = seg_start + t + 1;
                 } else {
@@ -4371,6 +4478,14 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
          * in for it. */
         if (supported && verdict == R2VB_CLIP_ROUTE_FALLBACK &&
             r300_r2vb_clip_edge_enabled()) {
+            /* Edge rebuild interpolates model inputs and re-runs the producer.
+             * That is exact only for affine/MVP position transforms
+             * (M*lerp(in) == lerp(M*in)); a non-affine restage op would place
+             * generated vertices off the clip plane. */
+            if (!r300_vs_is_mvp(r300)) {
+                fprintf(stderr,
+                        "r2vb_clip_edge decline (non-affine producer)\n");
+            } else {
             int vslot_probe = -1;
             const char *ve = getenv("R300_R2VB_VARYING");
             if (ve && strcmp(ve, "1") == 0)
@@ -4387,6 +4502,13 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             float (*extras[R300_R2VB_CLIP_MAX_ATTRS - 1])[4] = { NULL };
             bool shape_ok = ns >= 1 &&
                             (vslot_probe >= 0 || r300->velems->count == 1);
+            /* Fan retriangulation breaks default last-vertex flat PV: the first
+             * fan triangle can provoke from an intersection.  Decline when the
+             * rasterizer flat-shades and the draw carries any non-position
+             * stream (passthrough or computed). */
+            if (shape_ok && rs && rs->rs.flatshade &&
+                (vslot_probe >= 0 || ns > 1))
+                shape_ok = false;
             /* Passthrough attributes are read through the same index table the
              * position model-gather used -- the gathered triangle-index list
              * for a topology-gathered draw, or the identity draw->start+i
@@ -4477,6 +4599,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             }
             for (unsigned j = 0; j < n_extra; j++)
                 free(extras[j]);
+            } /* affine/MVP edge rebuild */
         }
         fprintf(stderr, "r2vb_clip_route supported=%d action=%s\n",
                 supported, action);
@@ -4795,13 +4918,27 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
              * pass explicitly rather than inheriting whatever is live. */
             r300_r2vb_set_transform_consts_raw(r300, cols);
             r300_update_derived_state(r300);
-            if (r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64))
+            bool vprepared =
+                r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64);
+            if (vprepared)
                 r300_r2vb_emit_producer(r300, r300_resource(vbo), 0, count, model, 1, true);
             r300->context.bind_fs_state(&r300->context, saved);
             if (pvs)
                 r300->context.bind_vs_state(&r300->context, saved_vs);
             r300_r2vb_restore_app_fs_consts(r300);
             r300_update_derived_state(r300);
+            if (!vprepared) {
+                if (vfs)
+                    r300->context.delete_fs_state(&r300->context, vfs);
+                r2vb_edge_streams_release(r300);
+                pipe_resource_reference(&vbo, NULL);
+                pipe_resource_reference(&clip, NULL);
+                free(model);
+                r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+                r300->r2vb_capture_clip = NULL;
+                r2vb_redirty_app_raster_state(r300);
+                return false;
+            }
             r300->context.flush(&r300->context, NULL, 0);
             const char *vv = getenv("R300_R2VB_VARYING_VERIFY");
             const char *vmat = getenv("R300_R2VB_VARYING_MAT");
