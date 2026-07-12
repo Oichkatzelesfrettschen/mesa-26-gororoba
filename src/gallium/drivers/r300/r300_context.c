@@ -92,6 +92,7 @@ static void r300_destroy_context(struct pipe_context* context)
     pipe_resource_reference(&r300->r2vb_slot_pos_bo, NULL);
     pipe_resource_reference(&r300->r2vb_split_keepalive[0], NULL);
     pipe_resource_reference(&r300->r2vb_split_keepalive[1], NULL);
+    pipe_resource_reference(&r300->fs_const0_app.buffer, NULL);
 
     for (unsigned i = 0; i < r300->nr_vertex_buffers; i++)
        pipe_vertex_buffer_unreference(&r300->vertex_buffer[i]);

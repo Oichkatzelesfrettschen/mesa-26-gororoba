@@ -459,6 +459,10 @@ run_case(struct draw_context *draw, const struct raw_case *tc)
    struct draw_vertex_shader *interp = draw_create_vs_nir(draw, &sb);
    if (!bridge || !interp) {
       CHECK(false, "both factories returned a shader");
+      if (bridge)
+         bridge->delete(draw, bridge);
+      if (interp)
+         interp->delete(draw, interp);
       return;
    }
    bridge->prepare(bridge, draw);
@@ -522,9 +526,26 @@ main(void)
    unsetenv("DRAW_NIR_EXEC");
 
    struct sw_winsys *winsys = null_sw_create();
+   if (!winsys)
+      return 77;
    struct pipe_screen *screen = softpipe_create_screen(winsys);
+   if (!screen) {
+      winsys->destroy(winsys);
+      return 77;
+   }
    struct pipe_context *pipe = screen->context_create(screen, NULL, 0);
+   if (!pipe) {
+      screen->destroy(screen);
+      winsys->destroy(winsys);
+      return 77;
+   }
    struct draw_context *draw = draw_create(pipe);
+   if (!draw) {
+      pipe->destroy(pipe);
+      screen->destroy(screen);
+      winsys->destroy(winsys);
+      return 77;
+   }
 
    static const struct pipe_rasterizer_state rast = { .clamp_vertex_color = 0 };
    draw_set_rasterizer_state(draw, &rast, NULL);
@@ -680,6 +701,7 @@ main(void)
    draw_destroy(draw);
    pipe->destroy(pipe);
    screen->destroy(screen);
+   winsys->destroy(winsys);
 
    printf("\n%s: %u failures\n", g_fail ? "FAILURE" : "SUCCESS", g_fail);
    return g_fail ? 1 : 0;
