@@ -23,10 +23,10 @@ struct nir_shader;
  * Streams are ordered position first then varyings by ascending gl_varying_slot --
  * VARYING_SLOT_POS is 0, so an ascending-slot sort is exactly the output-vector
  * order the VAP packs -- so stream i drives velem i / PSC stream i / output vec i. */
-enum r2vb_reingest_kind { R2VB_STREAM_POS, R2VB_STREAM_COMPUTED, R2VB_STREAM_PASSTHROUGH };
-struct r2vb_reingest_stream {
+enum r300_r2vb_reingest_kind { R2VB_STREAM_POS, R2VB_STREAM_COMPUTED, R2VB_STREAM_PASSTHROUGH };
+struct r300_r2vb_reingest_stream {
     gl_varying_slot slot;
-    enum r2vb_reingest_kind kind;
+    enum r300_r2vb_reingest_kind kind;
     int src_velem;   /* passthrough: app velem index of the source input; else -1 */
 };
 
@@ -40,7 +40,7 @@ struct r2vb_reingest_stream {
  * submit rather than draw a mismatched layout.  Exported for the host layout
  * unit (r300_r2vb_reingest_layout_test). */
 int r300_r2vb_reingest_stream_layout(struct nir_shader *vs, int computed_slot,
-                                     struct r2vb_reingest_stream *out, unsigned max);
+                                     struct r300_r2vb_reingest_stream *out, unsigned max);
 
 /* Verdict from the simple-draw-class classifier: whether a draw is a candidate
  * for the fragment-ALU R2VB vertex route, or the reason it is not. */

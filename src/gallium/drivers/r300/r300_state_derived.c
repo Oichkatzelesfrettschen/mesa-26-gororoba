@@ -943,9 +943,11 @@ void r300_dump_vap_rs_tuple(struct r300_context *r300, const char *origin)
      * R300_GB_ENABLE directly, so the draw-time-latched value can differ. */
     fprintf(stderr, "VAP_RS   GB_ENABLE(rs_atom)=0x%08x point_stuff=%u\n",
             t.gb_enable, t.point_stuff);
-    /* Informational: the raw color-count inequality is the line-330 over/under-
-     * rasterization signal, but two-sided color and R500 FACE make it safe on
-     * their own, so it is reported, not folded into the verdict. */
+    /* Informational: the raw color-count inequality is the over/under-
+     * rasterization signal described at the head of r300_update_rs_block
+     * ("more outputs rasterized than is set in VAP/GA"), but two-sided color
+     * and R500 FACE make it safe on their own, so it is reported, not folded
+     * into the verdict. */
     fprintf(stderr,
             "VAP_RS_CONTRACT origin=%s verdict=%s colors(rs=%u vap=%u mismatch=%u) "
             "texcomp(rs=%u vap=%u stuff=%u) last_vec=%u violations=0x%x\n",
