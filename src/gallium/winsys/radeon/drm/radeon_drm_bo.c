@@ -1076,10 +1076,15 @@ radeon_winsys_bo_create(struct radeon_winsys *rws,
     * process, so they keep their contents. */
    if (domain & RADEON_DOMAIN_VRAM && !ws->info.has_dedicated_vram) {
       void *ptr = radeon_bo_do_map(bo);
-      if (ptr) {
-         memset(ptr, 0, size);
-         radeon_bo_unmap(&ws->base, &bo->base);
+      if (!ptr) {
+         /* memset is the UMA security barrier against prior-process VRAM
+          * contents.  An unmapped BO would return uncleared memory; fail
+          * closed and destroy rather than hand it to the caller. */
+         radeon_bo_destroy(NULL, &bo->base);
+         return NULL;
       }
+      memset(ptr, 0, size);
+      radeon_bo_unmap(&ws->base, &bo->base);
    }
 
    mtx_lock(&ws->bo_handles_mutex);

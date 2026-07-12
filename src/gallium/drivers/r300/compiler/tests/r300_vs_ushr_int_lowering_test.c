@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Regression guard for the r300 SW-TCL vertex integer lowering that closes the
- * native VertexIndex/InstanceIndex firstInstance path (mesa #178).
+ * native VertexIndex/InstanceIndex firstInstance path.
  *
  * r300_draw_init_vertex_shader (r300_vs_draw.c) lowers integer vertex shaders
  * to the float domain.  Two passes cooperate, and this test pins both plus
@@ -17,7 +17,7 @@
  *   2. r300_nir_float_encode_synthetic_sysval_index_uses runs after
  *      nir_lower_int_to_float and redirects the synthetic sysval's numeric-index
  *      consumers to an i2f32 clone, leaving the raw-bit equality operands
- *      untouched (the mesa #942 raw-bit contract).
+ *      untouched (the raw-bit sysval compare contract).
  *
  * The firstInstance shape needs both: the shift compiles (1) and the
  * gl_InstanceIndex dynamic-index compare reads a numeric value (2).
