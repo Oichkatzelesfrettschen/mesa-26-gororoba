@@ -32,6 +32,7 @@
 #include "r300_texture.h"
 #include "r300_vs.h"
 #include "compiler/r300_nir.h"
+#include "compiler/glsl_types.h"
 
 /* r300_state: Functions used to initialize state context by translating
  * Gallium state objects into semi-native r300 state objects. */
@@ -1405,14 +1406,19 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
         memcpy(fs->st_inlinable_offsets, pre_info->inlinable_uniform_dw_offsets,
                fs->st_num_inlinable * sizeof(uint16_t));
 
-        /* First unit past the program's own sampler bindings, with the same
-         * walk nir_lower_pstipple_fs uses, so a polygon-stipple variant and
-         * the merged texture state agree on where the stipple texture sits
-         * before any variant compiles. */
+        /* First unit past the program's own sampler bindings, matching
+         * nir_lower_pstipple_fs (sampler arrays occupy consecutive
+         * bindings). The merge path and the stipple variant both use this
+         * unit, so create-time and lower-time must agree. */
         nir_foreach_uniform_variable(var, (nir_shader *)fs->state.ir.nir) {
-            if (glsl_type_is_sampler(var->type) &&
-                var->data.binding >= fs->pstipple_sampler_unit)
-                fs->pstipple_sampler_unit = var->data.binding + 1;
+            const struct glsl_type *base = glsl_without_array(var->type);
+            if (!glsl_type_is_sampler(base))
+                continue;
+            unsigned slots = glsl_type_is_array(var->type)
+                                 ? glsl_get_length(var->type) : 1u;
+            unsigned end = var->data.binding + slots;
+            if (end > fs->pstipple_sampler_unit)
+                fs->pstipple_sampler_unit = end;
         }
     }
 
@@ -1545,6 +1551,10 @@ static void r300_bind_fs_state(struct pipe_context* pipe, void* shader)
         draw_bind_fragment_shader(r300->draw, fs->draw_fs);
 
     r300_mark_atom_dirty(r300, &r300->rs_block_state); /* Will be updated before the emission. */
+    /* Stipple unit is per-FS; a new program moves the splice slot even when
+     * polygon stipple stays enabled across the bind. */
+    if (r300->pstipple_draw)
+        r300_mark_atom_dirty(r300, &r300->textures_state);
 }
 
 /* Delete fragment shader state. */
@@ -1613,12 +1623,32 @@ static void r300_set_polygon_stipple(struct pipe_context* pipe,
             util_pstipple_create_stipple_texture(pipe, state->stipple);
         if (!r300->pstipple_tex)
             return;
-        r300->pstipple_sampler_view =
-            util_pstipple_create_sampler_view(pipe, r300->pstipple_tex);
-        r300->pstipple_sampler = util_pstipple_create_sampler(pipe);
     } else {
         util_pstipple_update_stipple_texture(pipe, r300->pstipple_tex,
                                              state->stipple);
+        /* Pattern texels changed in place: invalidate the TX cache so the
+         * next stippled draw does not sample stale alpha from the prior
+         * pattern. */
+        r300_mark_atom_dirty(r300, &r300->texture_cache_inval);
+    }
+
+    /* Create or retry the view and sampler independently so a partial
+     * failure on the first set_polygon_stipple can recover on a later call. */
+    if (!r300->pstipple_sampler_view && r300->pstipple_tex) {
+        r300->pstipple_sampler_view =
+            util_pstipple_create_sampler_view(pipe, r300->pstipple_tex);
+        if (!r300->pstipple_sampler_view) {
+            pipe_resource_reference(&r300->pstipple_tex, NULL);
+            return;
+        }
+    }
+    if (!r300->pstipple_sampler) {
+        r300->pstipple_sampler = util_pstipple_create_sampler(pipe);
+        if (!r300->pstipple_sampler) {
+            pipe_sampler_view_reference(&r300->pstipple_sampler_view, NULL);
+            pipe_resource_reference(&r300->pstipple_tex, NULL);
+            return;
+        }
     }
 
     if (r300->pstipple_draw)

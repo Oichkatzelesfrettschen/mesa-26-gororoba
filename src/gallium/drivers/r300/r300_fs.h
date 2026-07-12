@@ -75,6 +75,10 @@ struct r300_fragment_shader_code {
     int deriv_ddx_generic;
     int deriv_ddy_generic;
 
+    /* Sampler unit nir_lower_pstipple_fs chose for this stipple variant
+     * (UINT_MAX when the variant is not a stipple key). */
+    unsigned pstipple_lowered_unit;
+
     /* Error message in case compilation failed. */
     char *error;
 };

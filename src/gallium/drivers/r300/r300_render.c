@@ -1070,30 +1070,51 @@ static bool r300_poly_stipple_masks_draw(struct r300_context *r300,
 {
     struct r300_rs_state *rs = (struct r300_rs_state*)r300->rs_state.state;
 
+    /* Any face that fills still needs the all-zero short-circuit; mixed
+     * LINE/FILL modes leave the filled face subject to the pattern. */
     return rs && rs->rs.poly_stipple_enable &&
-           rs->rs.fill_front == PIPE_POLYGON_MODE_FILL &&
-           rs->rs.fill_back == PIPE_POLYGON_MODE_FILL &&
+           (rs->rs.fill_front == PIPE_POLYGON_MODE_FILL ||
+            rs->rs.fill_back == PIPE_POLYGON_MODE_FILL) &&
            reduced_prim == MESA_PRIM_TRIANGLES &&
            r300->poly_stipple_set && r300->poly_stipple_all_zero;
 }
 
-/* Polygon stipple applies to filled triangle draws only; derive the per-draw
- * flag the fragment-shader variant key and the merged texture state read.
- * A transition re-merges the texture state (the stipple texture splices in
- * at the unit past the program's own bindings) and revalidates the FS. */
+/* True when the bound FS leaves a free sampler unit for the stipple
+ * texture.  Without a free unit the merge path cannot splice the view, so
+ * the draw stays on the non-stipple FS key rather than sampling unbound. */
+static bool r300_pstipple_unit_free(struct r300_context *r300)
+{
+    if (!r300->fs.state)
+        return true;
+    return r300_fs(r300)->pstipple_sampler_unit <
+           r300->screen->caps.num_tex_units;
+}
+
+/* Polygon stipple applies to triangle draws that fill at least one face.
+ * Derive the per-draw flag the FS variant key and the merged texture state
+ * read.  Fail closed without a free sampler unit, without a complete
+ * driver-owned stipple sampler setup, or when the pattern is all-ones
+ * (identity: no fragment is discarded).  A transition re-merges textures
+ * (stipple splices in at the unit past the program's bindings), revalidates
+ * the FS, and dirties the RS block so SWTCL rebuilds WPOS for the
+ * window-position sample the lowering injects. */
 static void r300_update_pstipple_draw(struct r300_context *r300,
                                       enum mesa_prim mode)
 {
     struct r300_rs_state *rs = (struct r300_rs_state*)r300->rs_state.state;
-    bool pstipple = rs && rs->rs.poly_stipple_enable &&
-                    rs->rs.fill_front == PIPE_POLYGON_MODE_FILL &&
-                    rs->rs.fill_back == PIPE_POLYGON_MODE_FILL &&
-                    r300->pstipple_sampler_view &&
+    bool fill_face = rs &&
+                     (rs->rs.fill_front == PIPE_POLYGON_MODE_FILL ||
+                      rs->rs.fill_back == PIPE_POLYGON_MODE_FILL);
+    bool pstipple = rs && rs->rs.poly_stipple_enable && fill_face &&
+                    r300->pstipple_sampler_view && r300->pstipple_sampler &&
+                    r300->poly_stipple_set && !r300->poly_stipple_all_one &&
+                    r300_pstipple_unit_free(r300) &&
                     u_reduced_prim(mode) == MESA_PRIM_TRIANGLES;
 
     if (pstipple != r300->pstipple_draw) {
         r300->pstipple_draw = pstipple;
         r300_mark_atom_dirty(r300, &r300->textures_state);
+        r300_mark_atom_dirty(r300, &r300->rs_block_state);
         if (r300->fs_status == FRAGMENT_SHADER_VALID)
             r300->fs_status = FRAGMENT_SHADER_MAYBE_DIRTY;
     }
