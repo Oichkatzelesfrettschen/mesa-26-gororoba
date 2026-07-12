@@ -1455,7 +1455,7 @@ static void r300_r2vb_capture_record(struct r300_context *r300,
     /* Semantic role sidecar (roles.log grammar): one BO -> role pair per token.
      * The position element's bound resource is the clip BO the producer wrote;
      * every other bound element is an application passthrough upload; the
-     * framebuffer colour surface is the delivery render target.  RELOC lines
+     * framebuffer color surface is the delivery render target.  RELOC lines
      * (below) share the same bo=<handle> token so the analyzer joins slot -> role;
      * the handle is the winsys BO pointer, a stable per-run key with no side
      * effects (buffer_get_handle would export a GEM name). */
@@ -1775,11 +1775,11 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                               R300_VPORT_Z_OFFSET_ENA));
             END_CS;
             /* Single-CS R2VB MVP re-ingest: the producer wrote the transformed
-             * positions into this vertex buffer through the RB3D colour cache
+             * positions into this vertex buffer through the RB3D color cache
              * earlier in the same command stream, and prepare_for_rendering's
              * dirty-state re-emit (above) sits between emit_producer's barrier
              * and this draw.  Re-assert that barrier here, adjacent to the fetch:
-             * flush the colour cache to memory, drain the 3D pipe, and sync the
+             * flush the color cache to memory, drain the 3D pipe, and sync the
              * VAP vertex-fetch engine so it reads the transform instead of stale
              * vertex-cache content.  Mirrors the sequence in r300_r2vb_emit_producer. */
             if (r300->r2vb_reingest_barrier) {
