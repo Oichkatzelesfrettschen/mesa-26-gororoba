@@ -126,9 +126,7 @@ bypassing `pipe_context`.  Two prerequisites must be resolved first:
    to-PM4 translation path.
 
 The `use_cs_backend` device flag (set by
-`R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1` at `CreateDevice` time) is
-the dispatch gate.  The dispatch hook in `r3v_queue_driver_submit` is
-in place; the Backend B function body is the PR 3 deliverable.
+`R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1` at `CreateDevice` time) records hazard acceptance for a future cs-direct path.  the cs-direct backend body is not implemented: the gate only records hazard acceptance and the submit path still falls through to `r3v_replay_gpu`.
 
 ## Resource-state ledger
 
@@ -163,10 +161,15 @@ The classification holds until either:
 
 ## Build
 
+Default `-Dr3v-gallium-backend=true` requires Gallium `r300` in the same
+build.  Loader-only skeleton builds set `-Dr3v-gallium-backend=false`
+instead of omitting r300 while leaving the default backend on.
+
 ```sh
+# Normal r3v ICD with Gallium backend (default r3v-gallium-backend=true)
 meson setup builddir-r3v \
     -Dvulkan-drivers=ati_r300 \
-    -Dgallium-drivers= \
+    -Dgallium-drivers=r300 \
     -Dopengl=false -Dgles1=false -Dgles2=false \
     -Dglx=disabled -Degl=disabled \
     -Dplatforms=x11 -Dllvm=disabled -Dlibunwind=disabled \

@@ -835,11 +835,15 @@ void *r600_compute_global_transfer_map(struct pipe_context *ctx,
 
 	if (is_item_in_pool(item)) {
 		/* Rusticl calls memory_barrier(PIPE_BARRIER_SHADER_BUFFER) before
-		 * invoking transfer_map for read (rusticl/core/kernel.rs). That barrier
-		 * emits CS_PARTIAL_FLUSH (drains in-flight compute exports) then
-		 * CB_FLUSH_AND_INV, flushes the CS, and fence_waits for GPU completion.
-		 * By the time we reach here, the GPU is done and pool_bo contains the
-		 * correct compute output. */
+		 * transfer_map for read
+		 * (src/gallium/frontends/rusticl/core/kernel.rs).
+		 * r600_memory_barrier maps that flag to
+		 * R600_CONTEXT_INV_VERTEX_CACHE, R600_CONTEXT_INV_TEX_CACHE,
+		 * and R600_CONTEXT_WAIT_3D_IDLE; CS_PARTIAL_FLUSH /
+		 * FLUSH_AND_INV is the separate compute_to_L2 path in
+		 * r600_pipe.c, not this barrier.  pool_bo holds the compute
+		 * output once those dirty flags have been emitted and
+		 * retired. */
 		compute_memory_demote_item(pool, item, ctx);
 	}
 	else {
