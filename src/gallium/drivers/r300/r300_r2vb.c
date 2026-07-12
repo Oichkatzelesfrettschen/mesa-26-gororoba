@@ -3566,23 +3566,6 @@ static bool r2vb_single_cs_enabled(void)
     return cached;
 }
 
-/* The per-output reconstruction is the sole producer-fed delivery.  The retired
- * velem[0]-redirect multi-stream tail kept the application input-element set, so
- * whenever VS outputs outnumbered distinct sources the fetch under-fed the
- * VAP_OUTPUT_VTX_FMT contract (VAP_VTX_SIZE 8 against a 12-dword tuple on RS482)
- * and the GA latched waiting for the missing dwords.  R300_R2VB_OUTPUT_REINGEST=0
- * is a one-cycle escape hatch that declines delivery to the gallivm fallback;
- * the variable disappears once the promotion corpus retires it. */
-static bool r300_r2vb_output_reingest_enabled(void)
-{
-    static int cached = -1;
-    if (cached < 0) {
-        const char *e = getenv("R300_R2VB_OUTPUT_REINGEST");
-        cached = (e && strcmp(e, "0") == 0) ? 0 : 1;
-    }
-    return cached;
-}
-
 /* One position-producer pass: build the transform FS for the requested
  * position space (restage / externals / baked, in that precedence), bind it
  * with the minimal producer VS, emit the producer under the normal draw flow,
@@ -4835,24 +4818,6 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         pipe_resource_reference(&clip, NULL);
         free(model);
         return ok;
-    }
-
-    /* Escape hatch (R300_R2VB_OUTPUT_REINGEST=0): decline delivery so the
-     * caller falls back to the gallivm draw.  The producer hand-rolled
-     * rasterizer/framebuffer/scissor/viewport/ZB registers outside the atom
-     * system, so mark the owning atoms dirty before handing the draw back --
-     * otherwise the producer's CLIP_DISABLE and one-row scissor leak into the
-     * fallback emit. */
-    if (!r300_r2vb_output_reingest_enabled()) {
-        r300_mark_atom_dirty(r300, &r300->fb_state);
-        r300_mark_atom_dirty(r300, &r300->scissor_state);
-        r300_mark_atom_dirty(r300, &r300->viewport_state);
-        r300_mark_atom_dirty(r300, &r300->dsa_state);
-        r300_mark_atom_dirty(r300, &r300->rs_state);
-        r2vb_edge_streams_release(r300);
-        pipe_resource_reference(&clip, NULL);
-        free(model);
-        return false;
     }
 
     /* Per-output re-ingest for the single-input no-computed-varying delivery.

@@ -1281,14 +1281,15 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
 
 /* Position-only delivery invariant for the producer-fed capture: the delivery
  * fetches the producer outputs and nothing extra.  Enforced clauses (a failure
- * refuses the delivery and the capture): the velem count does not exceed the
- * VAP output count r300->vertex_info declares (the measured multi-stream delivery
- * binds FEWER arrays than outputs when one application buffer sources several
- * passthrough varyings -- the RS duplicates the vector, so equality is not the
- * invariant); VAP_VTX_SIZE equals sum(format_size/4) over the bound elements;
- * and the position element's bound resource is the clip BO the producer
- * published (r2vb_capture_clip, set alongside r2vb_producer_kind -- not
- * r2vb_slot_pos_bo, which is the producer's slot-pixel input stream).
+ * refuses the delivery and the capture): the velem count equals the VAP output
+ * count r300->vertex_info declares -- the per-output reconstruction builds one
+ * vertex element per VS output, so any shortfall is exactly the under-fed
+ * fetch class where VAP_VTX_SIZE trails the VAP_OUTPUT_VTX_FMT tuple and the
+ * GA latches waiting for the missing dwords; VAP_VTX_SIZE equals
+ * sum(format_size/4) over the bound elements; and the position element's
+ * bound resource is the clip BO the producer published (r2vb_capture_clip,
+ * set alongside r2vb_producer_kind -- not r2vb_slot_pos_bo, which is the
+ * producer's slot-pixel input stream).
  * Recorded-but-not-enforced clauses (logged for the offline decode, too fragile
  * to hard-gate on a partial PSC parse): the VAP declares POS_PRESENT, and every
  * RS source vector has a producing PSC stream element.  Returns true when the
@@ -1306,7 +1307,7 @@ static bool r300_r2vb_capture_preflight(struct r300_context *r300,
     for (unsigned i = 0; ve && i < ve->count; i++)
         sz_sum += align(util_format_get_blocksize(ve->velem[i].src_format), 4) / 4;
 
-    bool count_bounded = ve && ve->count > 0 && ve->count <= num_attribs;
+    bool count_match = ve && ve->count == num_attribs;
     bool vtxsize_match = sz_sum == vap_vtx_size;
 
     /* The VAP packs VARYING_SLOT_POS first, so velem[0] is the position element;
@@ -1323,23 +1324,23 @@ static bool r300_r2vb_capture_preflight(struct r300_context *r300,
     bool pos_present = rs && (rs->vap_out_vtx_fmt[0] &
                               R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
 
-    bool ok = count_bounded && vtxsize_match && pos_to_clip;
+    bool ok = count_match && vtxsize_match && pos_to_clip;
 
     fprintf(stderr,
             "r2vb_delivery_capture invariant=%s producer=%s velems_count=%u "
             "num_attribs=%u vap_vtx_size=%u format_size_sum=%u pos_res=%p "
-            "clip_bo=%p enforce_count_bounded=%d enforce_vtxsize=%d "
+            "clip_bo=%p enforce_count=%d enforce_vtxsize=%d "
             "enforce_pos_to_clip=%d record_pos_present=%d\n",
             ok ? "HOLD" : "FAIL",
             kind == R300_R2VB_PRODUCER_SPLIT ? "split" : "single",
             ve ? ve->count : 0, num_attribs, vap_vtx_size, sz_sum,
             (void *)pos_res, (void *)capture_clip,
-            count_bounded, vtxsize_match, pos_to_clip, pos_present);
+            count_match, vtxsize_match, pos_to_clip, pos_present);
 
     if (!ok)
         fprintf(stderr,
                 "r2vb_delivery_capture refuse clause=%s (falling back to gallivm)\n",
-                !count_bounded ? "0<count<=num_attribs" :
+                !count_match ? "count==num_attribs" :
                 !vtxsize_match ? "vap_vtx_size==sum(format_size/4)" :
                 "position->clip_bo");
     return ok;
@@ -1676,6 +1677,25 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
             r300->velems->format_size[i] = fs;
             r300->velems->vertex_size_dwords += fs / 4;
             vap_vtx_size += fs / 4;
+        }
+        /* Dword-consistency gate on the emitted vertex size: the VAP_VTX_SIZE
+         * register write below and the LOAD_VBPNTR SIZE fields
+         * r300_emit_vertex_arrays derives from format_size[] must describe the
+         * same per-vertex fetch, or the GA waits forever for dwords the arrays
+         * never deliver.  The sum runs over the actual per-element fetch
+         * sizes: a narrow source format fetches fewer than four dwords and the
+         * PSC swizzle expands it, so a four-dwords-per-output shortcut
+         * over-counts.  A mismatch refuses the delivery to the gallivm
+         * fallback. */
+        unsigned fetch_dword_sum = 0;
+        for (unsigned i = 0; i < r300->velems->count; i++)
+            fetch_dword_sum += r300->velems->format_size[i] / 4;
+        if (fetch_dword_sum != vap_vtx_size) {
+            fprintf(stderr,
+                    "r2vb_delivery refuse vap_vtx_size=%u fetch_dword_sum=%u "
+                    "velems_count=%u (register and array fetch disagree)\n",
+                    vap_vtx_size, fetch_dword_sum, r300->velems->count);
+            ok = false;
         }
         /* Producer-fed delivery capture preflight: the position-only invariant
          * runs before any emission, so a violation refuses the delivery and the
