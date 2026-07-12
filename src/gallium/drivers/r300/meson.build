@@ -574,4 +574,24 @@ if with_tests
     ),
     suite : ['r300'],
   )
+
+  # Host corpus for the R2VB per-output re-ingest stream layout
+  # (r300_r2vb_reingest_stream_layout): one vertex element per VS output, so
+  # two outputs sourced from one input still fetch two elements and the
+  # delivery's VAP_VTX_SIZE matches the VAP_OUTPUT_VTX_FMT tuple.
+  test(
+    'r300-r2vb-reingest-layout',
+    executable(
+      'r300_r2vb_reingest_layout_test',
+      files('tests/r300_r2vb_reingest_layout_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('.'),
+      ],
+      link_with : [libr300, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
 endif
