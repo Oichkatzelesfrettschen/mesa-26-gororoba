@@ -185,6 +185,8 @@ r300_r2vb_clip_triangle(const struct r300_r2vb_clip_vertex in[3],
                         bool half_z,
                         struct r300_r2vb_clip_vertex out[R300_R2VB_CLIP_MAX_POLY])
 {
+   if (num_attrs > R300_R2VB_CLIP_MAX_ATTRS)
+      return 0;
    struct r300_r2vb_clip_vertex buf[R300_R2VB_CLIP_MAX_POLY];
    struct r300_r2vb_clip_vertex *cur = out, *next = buf;
    unsigned n = 3;
