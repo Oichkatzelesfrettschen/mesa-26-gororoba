@@ -282,6 +282,31 @@ static bool r300_r2vb_clip_edge_enabled(void)
     return cached;
 }
 
+/* Split-delivery bypass gate (R300_R2VB_SPLIT_DELIVERY_BYPASS): run the full
+ * split-producer sequence -- clip-space pass A, carry map, clip-space pass B,
+ * clip classification, window-space pass A, carry map, window-space pass B,
+ * final clip-BO ordering map -- then release the R2VB resources and decline
+ * the delivery so the ordinary gallivm path renders the application draw.
+ * Every suspect mechanism of the fence-wedge RCA still executes: both
+ * temporary pass FS objects are created, bound, restored, and deleted; both
+ * carry BOs are created, written, mapped, and released; all four producer
+ * submissions and their flush/map boundaries occur; the same clip BO is
+ * written twice; the application state transaction runs.  Only the final
+ * consumer changes: gallivm replaces the direct-VB re-ingest draw.  A
+ * completing gallivm frame localizes the non-retiring fence to the direct-VB
+ * delivery or the split-produced clip BO as a vertex source; a hanging one
+ * exonerates the delivery draw and points at the producer/flush/fence
+ * sequence itself. */
+static bool r300_r2vb_split_delivery_bypass_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_R2VB_SPLIT_DELIVERY_BYPASS");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 /* Topology-gather gate (R300_R2VB_TOPOLOGY): a CPU pre-pass resolves
  * TRIANGLE_STRIP, TRIANGLE_FAN, and indexed triangle-family draws (including
  * primitive restart) into a plain triangle-index list before classification,
@@ -4391,6 +4416,23 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         if (!r2vb_run_transform_producer(r300, clip, count, model, num_in,
                                          cols, produced_space, restage,
                                          externals)) {
+            r2vb_edge_streams_release(r300);
+            pipe_resource_reference(&clip, NULL);
+            free(model);
+            return false;
+        }
+        /* Both producer runs are complete here; the split kind on the context
+         * proves the window-space run took the two-pass carry-BO producer, not
+         * the single-pass restage.  Bypass before any re-ingest vertex-element
+         * mutation: drop the R2VB resources, clear the producer bookkeeping so
+         * the stale clip pointer cannot leak into a later capture, and decline
+         * so gallivm renders the draw. */
+        if (r300_r2vb_split_delivery_bypass_enabled() &&
+            r300->r2vb_producer_kind == R300_R2VB_PRODUCER_SPLIT) {
+            fprintf(stderr,
+                    "r2vb_split_delivery_bypass producers=complete action=gallivm\n");
+            r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+            r300->r2vb_capture_clip = NULL;
             r2vb_edge_streams_release(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
