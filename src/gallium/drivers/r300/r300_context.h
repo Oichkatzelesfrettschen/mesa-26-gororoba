@@ -756,7 +756,7 @@ struct r300_context {
      * r300_r2vb_exec_passthrough_draw re-asserts the producer cache barrier
      * (RB3D/ZB flush + WAIT_3D_IDLECLEAN + VAP_PVS_STATE_FLUSH) immediately
      * before the re-ingest draw.  The producer writes the transformed positions
-     * through the RB3D colour cache earlier in the same stream; without the
+     * through the RB3D color cache earlier in the same stream; without the
      * barrier adjacent to the vertex fetch the VAP returns stale data.  The
      * two-submit default leaves this false and orders the passes with a flush. */
     bool r2vb_reingest_barrier;

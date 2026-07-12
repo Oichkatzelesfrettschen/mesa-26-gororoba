@@ -71,6 +71,21 @@ static void r300_destroy_context(struct pipe_context* context)
 
     if (r300->blitter)
         util_blitter_destroy(r300->blitter);
+
+    /* R2VB caches before draw_destroy: the producer VS is a draw-module
+     * shader, so delete_vs_state must run while r300->draw is still live. */
+    for (unsigned i = 0; i < 2; i++)
+        if (r300->r2vb_transform_fs[i])
+            r300->context.delete_fs_state(&r300->context,
+                                          r300->r2vb_transform_fs[i]);
+    if (r300->r2vb_producer_vs) {
+        r300->context.delete_vs_state(&r300->context, r300->r2vb_producer_vs);
+        r300->r2vb_producer_vs = NULL;
+    }
+    pipe_resource_reference(&r300->r2vb_slot_pos_bo, NULL);
+    pipe_resource_reference(&r300->r2vb_split_keepalive[0], NULL);
+    pipe_resource_reference(&r300->r2vb_split_keepalive[1], NULL);
+
     if (r300->draw)
         draw_destroy(r300->draw);
 
@@ -82,16 +97,6 @@ static void r300_destroy_context(struct pipe_context* context)
         r300->context.delete_sampler_state(&r300->context,
                                            r300->pstipple_sampler);
 
-    /* R2VB MVP transform cache (lazily built by the experiment route). */
-    for (unsigned i = 0; i < 2; i++)
-        if (r300->r2vb_transform_fs[i])
-            r300->context.delete_fs_state(&r300->context,
-                                          r300->r2vb_transform_fs[i]);
-    if (r300->r2vb_producer_vs)
-        r300->context.delete_vs_state(&r300->context, r300->r2vb_producer_vs);
-    pipe_resource_reference(&r300->r2vb_slot_pos_bo, NULL);
-    pipe_resource_reference(&r300->r2vb_split_keepalive[0], NULL);
-    pipe_resource_reference(&r300->r2vb_split_keepalive[1], NULL);
     pipe_resource_reference(&r300->fs_const0_app.buffer, NULL);
 
     for (unsigned i = 0; i < r300->nr_vertex_buffers; i++)
