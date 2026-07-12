@@ -1741,6 +1741,11 @@ enum r300_fs_admission
 r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_nir,
                               unsigned *out_alu_len)
 {
+    if (out_alu_len)
+        *out_alu_len = 0;
+    if (!fs_nir)
+        return R300_FS_ADMIT_REJECT;
+
     struct r300_fragment_shader_code *probe =
         CALLOC_STRUCT(r300_fragment_shader_code);
     if (!probe)

@@ -8,6 +8,9 @@
 
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/u_debug.h"
+#include "util/os_misc.h"
+#include <string.h>
 #include "util/u_pack_color.h"
 
 #include "r300_context.h"
@@ -21,8 +24,7 @@
 /* r300_state_derived: Various bits of state which are dependent upon
  * currently bound CSO data. */
 
-/* Position-only SWTCL safe-dummy-texcoord contract, exact opt-in. */
-DEBUG_GET_ONCE_BOOL_OPTION(swtcl_dummy_texcoord, "R300_SWTCL_DUMMY_TEXCOORD", false)
+/* Position-only SWTCL safe-dummy-texcoord: exact R300_SWTCL_DUMMY_TEXCOORD=1. */
 
 enum r300_rs_swizzle {
     SWIZ_XYZW = 0,
@@ -732,9 +734,15 @@ static void r300_update_rs_block(struct r300_context *r300)
      * swtcl_dummy_texcoord is set; SWTCL-only, since a HWTCL vertex shader
      * would not write the declared vector. */
     r300->swtcl_dummy_texcoord = false;
+    {
+    static int dummy_texcoord_gate = -1;
+    if (dummy_texcoord_gate < 0) {
+        const char *e = os_get_option("R300_SWTCL_DUMMY_TEXCOORD");
+        dummy_texcoord_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
     if (col_count == 0 && tex_count == 0 &&
         !r300->screen->caps.has_tcl && r300->draw &&
-        debug_get_option_swtcl_dummy_texcoord()) {
+        dummy_texcoord_gate == 1) {
         rs.vap_vsm_vtx_assm |= (R300_INPUT_CNTL_TC0 << tex_count);
         rs.vap_out_vtx_fmt[1] |= (4 << (3 * tex_count));
         stream_loc_notcl[loc++] = 6 + tex_count;
@@ -747,6 +755,7 @@ static void r300_update_rs_block(struct r300_context *r300)
         r300->swtcl_dummy_texcoord = true;
 
         DBG(r300, DBG_RS, "r300: Rasterized dummy texcoord to prevent lockups.\n");
+    }
     }
 
     /* Invalidate the rest of the no-TCL (GA) stream locations. */
@@ -798,7 +807,7 @@ struct r300_vap_rs_tuple {
     unsigned sum_vap_tex_comp;  /* summed comp counts across those fields */
     unsigned rs_colors;         /* RS_COUNT IC_COUNT: color vectors the RS rasterizes */
     unsigned rs_tex_comp;       /* RS_COUNT IT_COUNT: texcoord components the RS routes */
-    bool pos_present, ptsize_present, hires, point_stuff, last_vec_ok;
+    bool pos_present, ptsize_present, hires, point_stuff, last_vec_ok, r500_face;
 };
 
 /* Contract violations, most-load-bearing first.  The dummy-color signature is
@@ -834,7 +843,8 @@ static uint32_t
 r300_vap_rs_contract_check(const struct r300_vap_rs_tuple *t)
 {
     uint32_t v = 0;
-    if (t->rs_colors >= 1 && t->num_vap_colors == 0 && t->num_vap_texcoords == 0)
+    if (t->rs_colors >= 1 && t->num_vap_colors == 0 && t->num_vap_texcoords == 0 &&
+        !t->r500_face)
         v |= R300_VAPRS_DUMMY_COLOR;
     if (!t->point_stuff && t->rs_tex_comp != t->sum_vap_tex_comp)
         v |= R300_VAPRS_TEXCOMP_COUNT;
@@ -876,7 +886,9 @@ void r300_dump_vap_rs_tuple(struct r300_context *r300, const char *origin)
 
     t.pos_present = t.vap_out_vtx_fmt0 & R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT;
     t.ptsize_present = t.vap_out_vtx_fmt0 & R300_VAP_OUTPUT_VTX_FMT_0__PT_SIZE_PRESENT;
-    for (unsigned i = 0; i < 4; i++)
+    /* Front-face COLOR_0/1 only: COLOR_2/3 are two-sided back colors and do not
+     * need matching RS interpolators. */
+    for (unsigned i = 0; i < 2; i++)
         if (t.vap_out_vtx_fmt0 & (R300_VAP_OUTPUT_VTX_FMT_0__COLOR_0_PRESENT << i))
             t.num_vap_colors++;
     for (unsigned s = 0; s < 8; s++) {
@@ -887,9 +899,17 @@ void r300_dump_vap_rs_tuple(struct r300_context *r300, const char *origin)
         }
     }
     t.rs_colors = (t.rs_count & R300_IC_COUNT_MASK) >> R300_IC_COUNT_SHIFT;
-    t.rs_tex_comp = t.rs_count & 0x7f; /* IT_COUNT: tex_ptr components, MIN2(tex_ptr,32) */
+    t.rs_tex_comp = t.rs_count & R300_IT_COUNT_MASK; /* IT_COUNT */
     t.hires = (t.rs_count & R300_HIRES_EN) != 0;
     t.point_stuff = (t.gb_enable & R300_GB_POINT_STUFF_ENABLE) != 0;
+    t.r500_face = false;
+    if (is_r500) {
+        for (unsigned i = 0; i < 8; i++) {
+            uint32_t cn = rs->inst[i] & (3u << 16); /* R500 COL_CN field */
+            if (cn == R500_RS_INST_COL_CN_WRITE_BACKFACE)
+                t.r500_face = true;
+        }
+    }
 
     /* r300_swtcl_vertex_psc marks the highest-index stream element LAST_VEC; the
      * authoritative element count is vertex_info.num_attribs. */
@@ -897,8 +917,13 @@ void r300_dump_vap_rs_tuple(struct r300_context *r300, const char *origin)
     t.last_vec_ok = true;
     if (n > 0) {
         unsigned li = n - 1;
-        uint32_t e = vs->vap_prog_stream_cntl[li >> 1] >> ((li & 1) ? 16 : 0);
-        t.last_vec_ok = (e & R300_LAST_VEC) != 0;
+        /* vs->vap_prog_stream_cntl has vs->count dwords (2 elements each). */
+        if ((li >> 1) >= vs->count) {
+            t.last_vec_ok = false;
+        } else {
+            uint32_t e = vs->vap_prog_stream_cntl[li >> 1] >> ((li & 1) ? 16 : 0);
+            t.last_vec_ok = (e & R300_LAST_VEC) != 0;
+        }
     }
 
     uint32_t viol = r300_vap_rs_contract_check(&t);
@@ -949,7 +974,7 @@ void r300_dump_vap_rs_tuple(struct r300_context *r300, const char *origin)
      * and R500 FACE make it safe on their own, so it is reported, not folded
      * into the verdict. */
     fprintf(stderr,
-            "VAP_RS_CONTRACT origin=%s verdict=%s colors(rs=%u vap=%u mismatch=%u) "
+            "VAP_RS_CONTRACT origin=%s verdict=%s colors(rs=%u vap=%u mismatch=%d) "
             "texcomp(rs=%u vap=%u stuff=%u) last_vec=%u violations=0x%x\n",
             origin, viol ? "FAIL" : "PASS", t.rs_colors, t.num_vap_colors,
             t.rs_colors != t.num_vap_colors, t.rs_tex_comp, t.sum_vap_tex_comp,
