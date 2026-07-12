@@ -2458,16 +2458,14 @@ void r300_blitter_draw_rectangle(struct blitter_context *blitter,
      * R300_SWTCL_WEDGE_TEXCOORD_BLIT=1 is an exact hazard opt-in that
      * keeps a SWTCL TEXCOORD_XY rectangle on the point-sprite frontend so
      * reset validation can reproduce the non-draining VAP/GA wedge.  The
-     * plain-quad path stays the default for every other caller. */
-    static int swtcl_wedge_blit_gate = -1;
-    if (swtcl_wedge_blit_gate < 0) {
-        const char *e = os_get_option("R300_SWTCL_WEDGE_TEXCOORD_BLIT");
-        swtcl_wedge_blit_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
-    }
+     * plain-quad path stays the default for every other caller.  Read the
+     * env each call (fail-closed on exact "1"): a cached static would race
+     * if multiple contexts hit this debug path concurrently. */
+    const char *wedge_e = os_get_option("R300_SWTCL_WEDGE_TEXCOORD_BLIT");
     bool swtcl_wedge_texcoord =
         !r300->screen->caps.has_tcl &&
         type == UTIL_BLITTER_ATTRIB_TEXCOORD_XY &&
-        swtcl_wedge_blit_gate == 1;
+        wedge_e && strcmp(wedge_e, "1") == 0;
     if (swtcl_wedge_texcoord)
         fprintf(stderr,
                 "[R300_SWTCL_WEDGE] TEXCOORD_XY point-sprite blit "

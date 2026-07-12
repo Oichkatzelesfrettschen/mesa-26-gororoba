@@ -612,14 +612,17 @@ r300 driver: `r300_chipset.c`, `r300_state.c` (`r300_create_rs_state`),
 `r300_emit.c`, `r300_reg.h` (VAP register offsets and bitfields in the table),
 `r300_hb_tcl.{c,h}`, `r300_r2vb.c` (the R2VB CS-write surface),
 `r300_nir_lower_vs_system_values.c` (the system-value slot-reservation
-registry). RE corpus (external sibling repository `steinmarder` (r300 reverse-engineering lane; not in this Mesa tree)): the register-opcode-atom inventory
+registry). RE corpus (external sibling repository `steinmarder`, the r300
+reverse-engineering lane, not in this Mesa tree): the register-opcode-atom
+inventory
 (`src/re/r300/docs/isa_references/rs4xx_r300_register_opcode_atom_inventory.tsv`)
 for the VAP offset set including the `GB_*_ADJ` guard-band block; the
 read-reachability inventory
 (`src/re/r300/docs/rs482-register-read-reachability-and-reader-inventory.md`)
 for the `radeon_rs480_candidate_vap_regs` read-exclusion; the 16-bit `VF_CNTL`
-underflow finding and its `commit 9899a4d8dd3 (`r300: clamp SWTCL vertex batches to the 16-bit VAP count limit`)` fix
-(`findings/active/2026-05-29-rs482-swtcl-vap-16bit-vertex-count-underflow.md`);
+underflow finding and its fix in commit `9899a4d8dd3`
+(`r300: clamp SWTCL vertex batches to the 16-bit VAP count limit`;
+`findings/active/2026-05-29-rs482-swtcl-vap-16bit-vertex-count-underflow.md`);
 the has_tcl/hardware-unit map, the vertex-engine write-only/read-wedge
 asymmetry, the R2VB direct-VAP validator-accepted hang-free submit, and the
 platform reset/wedge taxonomy. Archive: Glaeser

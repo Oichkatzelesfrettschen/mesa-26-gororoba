@@ -85,11 +85,23 @@ def collect(builddir: str, repo_root: str) -> set[str]:
               "configure parents may be under-kept", file=sys.stderr)
 
     # Install-only inputs (public headers and data files with no compile edge).
+    # meson introspect --installed is a dict of src->dest on older Meson and a
+    # list of objects with source/destination keys on typical current versions.
     try:
         installed = introspect("--installed")
         if isinstance(installed, dict):
             for src in installed.keys():
                 add(src)
+        elif isinstance(installed, list):
+            for entry in installed:
+                if not isinstance(entry, dict):
+                    continue
+                src = entry.get("source") or entry.get("file")
+                if src:
+                    add(src)
+        else:
+            print("allowlist: WARN: unexpected --installed format",
+                  file=sys.stderr)
     except (subprocess.CalledProcessError, json.JSONDecodeError):
         print("allowlist: WARN: --installed unavailable; "
               "install-only files may be under-kept", file=sys.stderr)
