@@ -126,7 +126,10 @@ bypassing `pipe_context`.  Two prerequisites must be resolved first:
    to-PM4 translation path.
 
 The `use_cs_backend` device flag (set by
-`R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1` at `CreateDevice` time) records hazard acceptance for a future cs-direct path.  the cs-direct backend body is not implemented: the gate only records hazard acceptance and the submit path still falls through to `r3v_replay_gpu`.
+`R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1` at `CreateDevice` time) records
+hazard acceptance for a future cs-direct path.  The cs-direct backend body
+is not implemented: the gate only records hazard acceptance and the submit
+path still falls through to `r3v_replay_gpu`.
 
 ## Resource-state ledger
 
