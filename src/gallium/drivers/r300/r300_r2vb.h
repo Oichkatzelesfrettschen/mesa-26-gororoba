@@ -20,9 +20,11 @@ struct pipe_resource;
 struct nir_shader;
 
 /* One re-ingest vertex stream: a VS output and where TCL_BYPASS fetches its data.
- * Streams are ordered position first then varyings by ascending gl_varying_slot --
- * VARYING_SLOT_POS is 0, so an ascending-slot sort is exactly the output-vector
- * order the VAP packs -- so stream i drives velem i / PSC stream i / output vec i. */
+ * Streams follow r300 PSC/VAP output-vector order (POS, PSIZ, COL*, BFC*,
+ * GENERIC*, FOG) -- the same order r300_draw_emit_all_attribs and
+ * r300_draw_fill_vs_outputs assign -- so stream i drives velem i / PSC stream i
+ * / output vec i.  Numeric gl_varying_slot order places PSIZ after colors and
+ * is not used. */
 enum r300_r2vb_reingest_kind { R2VB_STREAM_POS, R2VB_STREAM_COMPUTED, R2VB_STREAM_PASSTHROUGH };
 struct r300_r2vb_reingest_stream {
     gl_varying_slot slot;
