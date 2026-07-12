@@ -2385,12 +2385,13 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
    }
 
    c->s = s;
-   /* Emit the main function for a shader that compiled cleanly.  When an earlier pass
-    * set compiler->Error -- r300_nir_lower_bitwise_to_arith flags an integer bit op
-    * with no FP24-exact form -- the r300 fragment translator substitutes a dummy
-    * shader, and skipping the emit keeps the unrepresentable NIR out of the RC
-    * emission path, which would otherwise translate operations the flagged
-    * shader cannot express. */
+   /* Emit the main function only when earlier passes left compiler->Error
+    * clear.  Both VS and FS use this gate: a prior pass may have replaced
+    * unsupported ops with placeholder zeros (for example
+    * r300_nir_lower_bitwise_to_arith on integer bit ops with no FP24-exact
+    * form).  Emitting that placeholder-lowered NIR would look like a real
+    * shader at the RC backend; the stage's dummy-shader path substitutes
+    * instead when Error is set. */
    if (!compiler->Error) {
       nir_function_impl *impl = nir_shader_get_entrypoint(c->s);
       ntr_emit_impl(c, impl);

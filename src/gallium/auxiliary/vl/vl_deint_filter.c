@@ -105,15 +105,21 @@ create_deint_frag_shader(struct vl_deint_filter *filter, unsigned field,
    nir_def *x = nir_channel(b, tc, 0);
    nir_def *y = nir_channel(b, tc, 1);
 
-   /* Sample between texels for a cheap lowpass; the two probe points sit
-    * a half texel off in opposite corners, top probe on layer 0 and
-    * bottom probe on layer 1. */
-   nir_def *comp_top = nir_vec3(
-      b, nir_fadd_imm(b, x, sizes->x * 0.5),
-      nir_fadd_imm(b, y, sizes->y * -0.5), nir_imm_float(b, 0.0));
-   nir_def *comp_bot = nir_vec3(
-      b, nir_fadd_imm(b, x, sizes->x * -0.5),
-      nir_fadd_imm(b, y, sizes->y * 0.5), nir_imm_float(b, 1.0));
+   /* Temporal-diff sample points.  With spatial_filter the probes sit a
+    * half texel off in opposite corners (cheap lowpass).  Without it the
+    * probes sit on the output texel so the motion measure is pure temporal. */
+   nir_def *comp_top, *comp_bot;
+   if (spatial_filter) {
+      comp_top = nir_vec3(
+         b, nir_fadd_imm(b, x, sizes->x * 0.5),
+         nir_fadd_imm(b, y, sizes->y * -0.5), nir_imm_float(b, 0.0));
+      comp_bot = nir_vec3(
+         b, nir_fadd_imm(b, x, sizes->x * -0.5),
+         nir_fadd_imm(b, y, sizes->y * 0.5), nir_imm_float(b, 1.0));
+   } else {
+      comp_top = nir_vec3(b, x, y, nir_imm_float(b, 0.0));
+      comp_bot = nir_vec3(b, x, y, nir_imm_float(b, 1.0));
+   }
 
    /* Temporal differences: cur vs prevprev on the current field's parity,
     * prev vs next on the opposite parity. */

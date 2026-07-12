@@ -32,6 +32,7 @@
 
 #include "util/compiler.h"
 #include "pipe/p_shader_tokens.h"
+#include "compiler/glsl_types.h"
 
 
 enum pipe_format;
@@ -190,8 +191,6 @@ util_make_empty_fragment_shader_nir(struct pipe_context *pipe);
 void *
 util_make_fs_clear_color_nir(struct pipe_context *pipe, bool write_all_cbufs,
                              bool use_const_buf);
-
-enum glsl_sampler_dim;
 
 void *
 util_make_fragment_tex_shader_nir(struct pipe_context *pipe,

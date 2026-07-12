@@ -53,7 +53,7 @@ concrete path already scaffolded in `open_gororoba`:
    the current Rocq line, just not inside the OCaml-5.4 proof switch.
 3. **Two named boundaries remain explicit.** (a) The
    `FLOAT_OPS`-to-concrete-float mapping: for vertex math held in the FP24
-   exact-integer window -- Qm.f with `m + f <= 17` -- it reduces to integer
+   exact-integer window -- Qm.f (fixed-point with m integer bits and f fractional bits) with `m + f <= 17` -- it reduces to integer
    arithmetic whose exactness is *proven* (`IDCT8DP4ExactBound.v`:
    `8*1448^2 < 2^24`, `2^17 < 2^24`), closing this boundary in that window;
    outside it, it is a bounded worst-case-ulp boundary. (b) The generated-code
@@ -150,13 +150,13 @@ in the R2VB column marks a register the direct-VAP route (`r300_r2vb.c`) emits.
 | `R500_VAP_INDEX_OFFSET` | `0x208c` | signed index bias | r5xx-only; RS482 applies index bias on the CPU side | |
 | `VAP_OUTPUT_VTX_FMT_0` | `0x2090` | `POS_PRESENT` b0, `COLOR_[0..3]_PRESENT` b1-4, `PT_SIZE_PRESENT` b16 | Declares which post-transform attributes the VAP emits to setup | * |
 | `VAP_OUTPUT_VTX_FMT_1` | `0x2094` | `TEX_[0..7]_COMP_CNT` (3 bits each) | Per-texcoord component count of the emitted vertex | * |
-| `VAP_VTE_CNTL` | `0x20b0` | `VPORT_[XYZ]_SCALE`/`OFFSET_ENA` b0-5, `VTX_XY_FMT` b8, `VTX_Z_FMT` b9, `VTX_W0_FMT` | Selects pre-divided window-space vs full clip-space fetch -- the bit the producer (window) and re-ingest (clip) stages flip. `VTE_CNTL` is the *enable/format* control only; the six registers below hold the transform its enable bits gate | * |
+| `VAP_VTE_CNTL` | `0x20b0` | `VPORT_[XYZ]_SCALE`/`OFFSET_ENA` b0-5, `VTX_XY_FMT` b8, `VTX_Z_FMT` b9, `VTX_W0_FMT` | Selects pre-divided window-space vs full clip-space fetch -- the bit the producer (window) and re-ingest (clip) stages flip. `VAP_VTE_CNTL` is the *enable/format* control only; the six registers below hold the transform its enable bits gate | * |
 | `SE_VPORT_[XYZ]_SCALE`/`_OFFSET` | `0x1d98-0x1dac` | six FP32 scale + bias | The affine `NDC * scale + bias -> window` transform itself (stage 4 of the decomposition, the coordinate-contract "window" row). `r300_emit_viewport_state` emits all six every draw (`OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6)`); the NDC-buffer bypass shape (`VPORT_*_ENA` on) reads exactly these | * |
 | `VAP_VPORT_[XYZ]_SCALE`/`_OFFSET` | `0x2098-0x20ac` | same six scale/offset | VAP-window alias of the viewport block; the driver writes the `SE_` (`0x1d98`) alias instead, so this alias stays idle. Named so the dual mapping is explicit | |
 | `VAP_VTX_SIZE` | `0x20b4` | per-vertex dword stride | Fetch stride; part of the `PSC`/stride tuple a diverging clear-quad can miss | * |
 | `VAP_VF_MAX_VTX_INDX` | `0x2134` | max index | Upper index clamp for the fetch window | * |
 | `VAP_VF_MIN_VTX_INDX` | `0x2138` | min index | Lower index clamp | |
-| `VAP_CNTL_STATUS` | `0x2140` | `TCL_BYPASS` b8, `PVS_BUSY` b11, `VS_BUSY` b24, swap `[1:0]` | Sets bypass (VAP forwards pre-transformed vertices, T&L idle). Directly readable (observed responding, `= 0x00000100` with bit 8 set) -- one of the two front-end status surfaces the wedge window below excludes only the PVS ports from | * |
+| `VAP_CNTL_STATUS` | `0x2140` | `TCL_BYPASS` b8, `PVS_BUSY` b11, `VS_BUSY` b24, swap `[1:0]` | Sets bypass (VAP forwards pre-transformed vertices, T&L idle). Directly readable (observed responding, `= 0x00000100` with bit 8 set). Programmed by the RS/state path (`r300_create_rs_state` / flush), not by `r300_r2vb.c` itself | |
 | `VAP_PROG_STREAM_CNTL_0..7` | `0x2150-0x216c` | per-stream data-type + `DST_VEC_LOC` | Attribute stream layout; writable and reusable, never read back; idle `_1..7` are headroom for synthesized channels | * |
 | `VAP_VTX_STATE_CNTL` | `0x2180` | vertex state select | Vertex state routing for the bypass fetch | * |
 | `VAP_VSM_VTX_ASSM` | `0x2184` | vertex input-assembly select | Input-assembly latch feeding the VAP; `always_emitted` by `r300_emit_rs_block_state`, the sibling of `VTX_STATE_CNTL` | * |
@@ -183,10 +183,12 @@ the 1 MiB budget yields exactly 65536. On RS482 (`is_r500 = false`) there is no
 so `65536 << 16` writes 0; the kernel `r100_cs_track_check` (prim_walk 2)
 computes `esize*(nverts-1)*4` with `nverts=0`, underflows to `0xFFFFFFFC`, and
 rejects the IB with `-EINVAL` after the half-emitted stream has corrupted the
-heap. Fix `git-150a16dc47` (on main) caps the r3xx/r4xx byte budget below the
-wrap and adds the r5xx alt-count path; validated on RS482 (the 65536-point draw
-renders). The R2VB `TCL_BYPASS` leg emits exactly these large-count draws, so it
-inherits the clamp -- do not re-introduce an unclamped `NUM_VERTICES` emit.
+heap. Fix commit `9899a4d8dd3` ("r300: clamp SWTCL vertex batches to the 16-bit VAP
+count limit") caps the r3xx/r4xx byte budget below the wrap and adds the r5xx
+alt-count path; validated on RS482 (the 65536-point draw renders).  The SWTCL
+path that coexists with R2VB re-ingest emits large-count draws under that
+clamp; the R2VB emitter declines draws with `count >= 65536` separately.  Do
+not re-introduce an unclamped `NUM_VERTICES` emit.
 
 ### Vertex system-value registry (there is no VAP register for it)
 
@@ -213,7 +215,7 @@ classes:
   reads at or above `0x2200`. So VAP progress has a direct status surface, not
   only the `RBBM_STATUS` aggregate.
 - **The PVS/SE_TCL port window `0x2200-0x22dc` read-wedges.** A read of
-  `VAP_CLIP_CNTL` (`0x221c`), `VAP_PVS_STATE_FLUSH` (`0x2284`), or
+  `VAP_CLIP_CNTL` (`0x221c`), `VAP_PVS_STATE_FLUSH_REG` (`0x2284`), or
   `VAP_PVS_CODE_CNTL_0` (`0x22d0`) waits forever for a completion and stalls the
   reset-less K8 northbridge below the core level -- no NMI is delivered, every
   such read costs a physical power cycle (hardware-confirmed, stein finding
@@ -227,7 +229,7 @@ classes:
   even though it is never read.
 
 The earlier read-reachability inventory
-(`steinmarder-r300 src/re/r300/docs/rs482-register-read-reachability-and-reader-inventory.md`)
+(`external sibling repository `steinmarder` (r300 reverse-engineering lane; not in this Mesa tree) src/re/r300/docs/rs482-register-read-reachability-and-reader-inventory.md`)
 extrapolated the single `0x221c` proof to lump `0x2080`/`0x2140` into one excluded
 `radeon_rs480_candidate_vap_regs` group; the later hardware-confirmed asymmetry
 finding narrows it to the port window above, and this design follows the narrowed
@@ -253,7 +255,7 @@ run on RS482:
    before any divide (see below).
 3. **Perspective divide** `x_ndc = x_clip / w_clip` (and y, z). A per-vertex
    scalar reciprocal -- **SW-safe**; feeding pre-divided window-space vertices
-   is exactly the `VTE_CNTL` bypass mode.
+   is exactly the `VAP_VTE_CNTL` bypass mode.
 4. **Viewport / assembly** window-space scale and bias, primitive assembly.
    **HW-safe** in the VAP/GA frontend, which is what the bypass draw uses.
 
@@ -285,7 +287,7 @@ Microcomputer Graphics" (1984), profiles the pipeline and measures the
 matrix-vector multiply at about 5% of frame time and clipping at about 23%: the
 linear transform is cheap, the branchy data-dependent clip is the real cost.
 Owens et al., "A Survey of General-Purpose Computation on Graphics Hardware"
-(2005), independently identifies the vertex processor as the only MIMD,
+(2005), independently identify the vertex processor as the only MIMD,
 scatter-capable -- and therefore the most fragile and costly -- pipeline stage.
 Together they argue the same split this design takes: put the simple fixed
 linear matrix multiply on a hardware block, keep the branchy clip-and-classify
@@ -300,8 +302,8 @@ each vertex is transformed by the composed 4x4.
 
 The four stages move a vertex through five concrete representations. Naming them
 and their producer/consumer fixes what each later HBTCL-04 step operates on and,
-critically, where the perspective divide must sit. All values are FP24 (the
-fragment ALU domain); the exact-integer window (`m + f <= 17`) binds only where
+critically, where the perspective divide must sit. Coordinate values in this
+contract are FP24 (the fragment ALU domain); the exact-integer window (`m + f <= 17`) binds only where
 a value must round-trip as an integer index, never the transformed coordinates.
 
 | Space | Representation | Produced by | Consumed by | VAP / VTE binding |
@@ -310,13 +312,13 @@ a value must round-trip as an integer index, never the transformed coordinates.
 | clip | `v_clip = M * v_object`, 4D, `w_clip` free | fragment-ALU MVP (04, linear) | SW clip / collineation | never handed raw to the bypass VAP (see below) |
 | collineation (`*`) | Glaeser `(lambda*x, lambda*y, k*lambda*z)`, lines stay lines | the linear companion map | SW clip classify + edge gen (04c/04d) | pure SW; frontend never sees it |
 | NDC | `v_ndc = v_clip.xyz / w_clip`, `[-1,1]` | SW perspective divide (04b) | viewport scale/bias | the divide the VAP cannot do |
-| window | `NDC * viewport_scale + bias`, screen coords | producer, or the VAP viewport | the GA setup FIFO | `VTE_CNTL.VTX_*_FMT=1` (pre-divided), `VPORT_*_ENA` off |
+| window | `NDC * viewport_scale + bias`, screen coords | producer, or the VAP viewport | the GA setup FIFO | `VAP_VTE_CNTL.VTX_*_FMT=1` (pre-divided), `VPORT_*_ENA` off |
 
 The load-bearing constraint: **the VAP has no PVS, so it cannot perform the
 perspective divide.** `VAP_VTE_CNTL` is a *viewport* transform engine -- it
 applies the linear `scale + bias`, not the non-linear `1/w_clip`. So any buffer
 handed to the bypass VAP must already be divided. Two shapes satisfy that, and
-they are the `VTE_CNTL` flip named in the bypass section:
+they are the `VAP_VTE_CNTL` flip named in the bypass section:
 
 - **Window-space buffer** (`VTX_XY_FMT = VTX_Z_FMT = 1`, `VPORT_*_ENA` off): the
   producer did both the divide (04b) and the viewport, and the VAP passes the
@@ -430,7 +432,7 @@ silicon or a bounded next increment from two demonstrated pieces.
 | --- | --- | --- |
 | Fragment ALU (US, pixel path) | The transform: `M*v` as 4 `DP4`, and non-linear per-vertex math -- quaternion rotation as 4 `DP4` (HW-confirmed, 3/3 within 0.05), octonion 16 `DP4`, Walsh-Hadamard multiply-free and bit-exact in the FP24 window (the exact-integer bound is *proven* in Rocq -- open_gororoba `proofs/theories/IDCT8DP4ExactBound.v`: `8*1448^2 < 2^24` and `2^17 < 2^24`, zero admits) | demonstrated on silicon; the 64-ALU ceiling is hard for dependent chains (R400 code banks execute but live temporaries do not cross the bank boundary), so over-budget kernels split with explicit state transport (HBTCL-04f) |
 | TAM/TDM/TIM (texture) | Fetch the MVP matrix and vertex attributes as textures -- **in the R2VB producer fragment shader**, which can sample; the VAP-side vertex-texture-fetch is architecturally gated off (`GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS = 0`), so this must live in the producer, not the vertex stage | gate measured; producer wiring to build |
-| RB3D (3D backend) | One-pass multi-attribute export: four `R8G8B8A8` MRT targets route per-output-location, byte-exact, zero deqp regressions -- position, normal, texcoord each to its own target in a single transform pass | MRT demonstrated byte-exact; combine with R2VB (HBTCL-09) |
+| RB3D (3D backend) | One-pass multi-attribute export: four `C4_32_FP` / `R300_COLOR_FORMAT_ARGB32323232` MRT targets route per-output-location as the FP32 vertex carrier (byte-exact RGBA8 remains a separate numeric-domain proof, not the vertex export format) -- position, normal, texcoord each to its own target in a single transform pass | MRT demonstrated byte-exact; combine with R2VB (HBTCL-09) |
 | E2/RB2D/CBA2D (2D blit) | Move transformed vertices GART->VAP-input, or scatter/gather vertex streams, instead of a CPU copy + `cb_flush` | unexplored: the 2D engine appears once in the corpus (H.264 block-copy), never probed for vertices (HBTCL-10) |
 | VAP (frontend, bypass) | Assemble and output-format-map pre-transformed vertices; idle `VAP_PROG_STREAM_CNTL_1..7` (`0x2154-0x216c`) give headroom for more synthesized attribute channels | demonstrated; never engages the absent PVS |
 | GA / RE / SC | Primitive assembly, setup, rasterization, and a rectangular screen-space reject via `SC_SCISSORS`/`SC_CLIPRECT` (already in the demonstrated-safe bypass shape, outside the wedge window) | demonstrated |
@@ -447,7 +449,7 @@ silicon or a bounded next increment from two demonstrated pieces.
   164 per-quarter baseline). Fewer multiplies does not mean fewer R300 slots.
 - **Clip-enable** invokes the wedge-prone VAP clip; only the `CLIP_DISABLE`
   *write* is safe. Clip stays in software.
-- **r3v instancing** is broken; do not route per-instance retransform through
+- **R2VB/SW-TCL instancing** is broken; do not route per-instance retransform through
   native instancing yet.
 - **Self-feeding / GPU-computed-address indirect draws** do not exist in the
   corpus; the closest demonstrated amortization is batching one `WAIT_UNTIL` barrier
@@ -476,14 +478,21 @@ before emit (`r300_screen.c`): `lower_sincos` (sin/cos to a range-reduce +
 polynomial), `lower_fpow` ("POW is only in the VS", so on the fragment ALU it
 becomes `EX2(y * LG2(x))`), `lower_fsqrt` (to an `RSQ`/`RCP` form), `lower_fdph`.
 
-The standard lighting kernel maps to this set with no missing primitive:
+The R2VB restage path (`r300_r2vb_restage_vs_as_fs`) only flips the NIR stage
+and does not re-run the screen-level POW lower, so a restaged or
+driver-synthesized lighting kernel that still contains `nir_op_fpow` must
+lower to `EX2`/`LG2` itself before fragment emit (the R300 fragment emitter
+has no POW case).
+
+The standard GL lighting kernel maps to this set when the GL clamps and
+attenuation coefficients are explicit (Mesa `emit_lit`, GL 2.1 formula 2.4):
 
 | Lighting term | Fragment mapping | Native? |
 | --- | --- | --- |
-| `normalize(N)`, `normalize(L)` | `v * RSQ(dot(v,v))` | native `RSQ` + dot |
-| diffuse `N.L`, half-vector `N.H` | `DP3`/`DP4` | native |
-| specular `pow(N.H, s)` | `EX2(s * LG2(N.H))` | lowered `POW` |
-| distance attenuation `1/d^2` | `RCP(dot(d,d))`, or `1/d = RSQ(dot(d,d))` | native `RCP`/`RSQ` |
+| `normalize(N)`, `normalize(L)` | `v * RSQ(dot(v,v))` | native `RSQ` + dot; dependent scalar cannot co-issue with its own vector producer |
+| diffuse `max(N.L, 0)`, half-vector | `MAX` then `DP3`/`DP4` | native; GL clamps diffuse/specular when `N.L <= 0` |
+| specular `pow(max(N.H, 0), s)` when `N.L > 0` | `EX2(s * LG2(...))` after clamps | must be lowered `POW` (screen lower or restage-local EX2/LG2) |
+| distance attenuation `1 / (k0 + k1*d + k2*d*d)` | `RCP(DP3((1,d,d*d), (k0,k1,k2)))` | native `RCP`/`DP3`; inverse-square alone is only the default k0=1,k1=0,k2=1 case |
 | spotlight cone / anisotropic sin/cos | range-reduce + polynomial | lowered `SIN`/`COS` |
 
 Two constraints bound the policy:
@@ -542,7 +551,7 @@ What already exists on this substrate is more than a sketch: `r300_r2vb.c` is a
 (`R2VB_ROUTE_PASSTHROUGH` / `_CANDIDATE` / `REJECT_HW_TCL` / `_INDEXED` /
 `_INSTANCED`), three producer paths including the restage path for arbitrary
 straight-line non-texturing application VS NIR, self-test buffers, and a
-no-submit `R300_R2VB_VS_DUMP` oracle; `r300_hb_tcl.c` carries the static
+no-submit `R300_R2VB_TIMING=capture / R300_R2VB_INSPECT` oracle; `r300_hb_tcl.c` carries the static
 `0x0014025a` bypass word; `r300_hb_r400_us.h` gates an R400 unified-shader
 emission path that is diagnostic-only on RS482 -- the silicon executes bank
 instructions but a live temporary does not survive the 64-slot bank boundary,
@@ -551,7 +560,9 @@ into the standing vertex route.
 
 | Task | Work | Depends on |
 | --- | --- | --- |
-| HBTCL-01 | No-submit PM4 decode (the silicon-demonstrated `R300_TRACE` capture + 325-row atom decoder, box-safe) of the clear-quad IB vs a working r3v triangle IB; name the single diverging VAP frontend register (`VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE`) | -- |
+The `HBTCL-NN` tokens are secondary registry labels for this tracker; the load-bearing identity of each row is the mechanism in the description column (durable mechanism names for branches, commits, and findings).
+
+| HBTCL-01 | No-submit PM4 decode (the silicon-demonstrated `R300_TRACE` capture + 325-row atom decoder, box-safe) of the clear-quad IB vs a working r3v (Gallium r300 Vulkan ICD) triangle IB; name the single diverging VAP frontend register (`VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE`) | -- |
 | HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the demonstrated-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
 | HBTCL-03 | Audit complete: R2VB has three producer paths including straight-line VS restage, but lacks perspective divide, geometric clipping, an over-budget producer escape, and default SW-TCL integration | -- |
 | HBTCL-04a | DONE: the coordinate contract section above (object/clip/NDC/window representations, divide placement, re-ingest VTE shapes) | HBTCL-03 |
@@ -560,9 +571,9 @@ into the standing vertex route.
 | HBTCL-04d | DONE: edge generation -- Sutherland-Hodgman intersection of PARTIAL triangles in clip space (`t = d_out / (d_out - d_in)` blends), attribute interpolation, fan retriangulation; 10/10 corpus cases byte-identical on RS482 | HBTCL-04c |
 | HBTCL-04e | DONE: topology gather -- strips, fans, indexed draws, primitive restart resolved to a triangle-index list before classification; 14/14 corpus cases byte-identical on RS482; points and lines stay excluded (points gate on HBTCL-07, lines need a 2-vertex clip variant) | HBTCL-04d |
 | HBTCL-04f | Producer budget escape above the 64-slot fragment-ALU ceiling: admission on actual emitted RC slots, semantics-preserving algebraic compaction, then a producer split carrying one FP32 `vec4` through an R2VB buffer; gallivm fallback for every unsupported shape. R400 code banks are diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-03 |
-| HBTCL-05 | DONE (corpus-verified): the "VAP register table" section above, with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200+` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + `git-150a16dc47`; the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
+| HBTCL-05 | DONE (corpus-verified): the "VAP register table" section above, with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200+` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + commit `9899a4d8dd3` (SWTCL 16-bit VAP count clamp); the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
 | HBTCL-06 | DONE (compiler-verified): the "Lighting on the fragment ALU" section above -- native op set from the `r300_fragprog_emit.c` co-issue switches (`ROUND` corrected to lowered), the 64-slot ceiling as co-issued vector+scalar pairs (up to 128 ops, alpha-pipe transcendentals co-issue free), the lighting-term mapping table, the shared R400_US->512 budget, and the butterfly/Cayley-Dickson non-result (dense `4x4` is already at its `DP4` floor; CD stays in the matrix-build step) | -- |
-| HBTCL-07 | Root-cause the R2VB points-topology smear (GA point-setup registers) via the HBTCL-01 decode method | HBTCL-03 |
+| HBTCL-07 | Root-cause the R2VB points-topology smear; GA point-setup registers (`GA_POINT_SIZE`, `GA_POINT_MINMAX`) and `VAP_VTX_SIZE` remain open hypotheses after near-zero effect measurements -- keep the RCA root-cause-neutral until the no-submit decode names the carrier | HBTCL-03 |
 | HBTCL-08 | Promote the generalized R2VB collineation engine to the standing r300 SW-TCL vertex route (gated first); validate on RS482 across topologies + a piglit GL2.1 subset under the poller with no VAP/GA stall | HBTCL-02, HBTCL-04, HBTCL-07 |
 | HBTCL-09 | Combine demonstrated MRT multi-attribute export with R2VB so position, normal, and texcoord can leave the producer in one transform pass | HBTCL-03 |
 | HBTCL-10 | Probe E2/RB2D/CBA2D vertex-buffer movement as a possible GART-to-VAP-input mover, using the same hazard-governed no-submit/attended style as the rest of RS482 work | HBTCL-03 |
@@ -577,7 +588,7 @@ poller; the decode steps submit nothing.
 
 ## Open items
 
-- The exact diverging value in the clear-quad IB (VTE_CNTL vs scissor vs VF
+- The exact diverging value in the clear-quad IB (VAP_VTE_CNTL vs scissor vs VF
   NUM_VERTICES): pending the no-submit PM4 IB decode.
 - R2VB `points` re-ingest still smears (register cause open;
   `GA_POINT_SIZE` / `GA_POINT_MINMAX` / `VAP_VTX_SIZE` each falsified).
@@ -596,13 +607,13 @@ r300 driver: `r300_chipset.c`, `r300_state.c` (`r300_create_rs_state`),
 `r300_emit.c`, `r300_reg.h` (VAP register offsets and bitfields in the table),
 `r300_hb_tcl.{c,h}`, `r300_r2vb.c` (the R2VB CS-write surface),
 `r300_nir_lower_vs_system_values.c` (the system-value slot-reservation
-registry). RE corpus (steinmarder-r300): the register-opcode-atom inventory
+registry). RE corpus (external sibling repository `steinmarder` (r300 reverse-engineering lane; not in this Mesa tree)): the register-opcode-atom inventory
 (`src/re/r300/docs/isa_references/rs4xx_r300_register_opcode_atom_inventory.tsv`)
 for the VAP offset set including the `GB_*_ADJ` guard-band block; the
 read-reachability inventory
 (`src/re/r300/docs/rs482-register-read-reachability-and-reader-inventory.md`)
 for the `radeon_rs480_candidate_vap_regs` read-exclusion; the 16-bit `VF_CNTL`
-underflow finding and its `git-150a16dc47` fix
+underflow finding and its `commit 9899a4d8dd3 (`r300: clamp SWTCL vertex batches to the 16-bit VAP count limit`)` fix
 (`findings/active/2026-05-29-rs482-swtcl-vap-16bit-vertex-count-underflow.md`);
 the has_tcl/hardware-unit map, the vertex-engine write-only/read-wedge
 asymmetry, the R2VB direct-VAP validator-accepted hang-free submit, and the
@@ -611,6 +622,6 @@ platform reset/wedge taxonomy. Archive: Glaeser
 (1970) invariant-data axis transform, Artwick (1984) measured clip-versus-matrix
 cost split and per-vertex quaternion cost, Owens et al. (2005) vertex stage as
 the fragile MIMD/scatter stage, Coxeter (1946) rotation as two reflections.
-Rocq proofs: `open_gororoba/proofs/theories/IDCT8DP4ExactBound.v`,
+Rocq proofs: external `open_gororoba` proof tree (`proofs/theories/IDCT8DP4ExactBound.v`),
 `proofs/theories/QuatRotationLaws.v`, `verified/C876_QuaternionRotation.v`, and
 the corresponding C911 norm-preservation ledger theorem.

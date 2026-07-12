@@ -19,9 +19,10 @@
 #include "vk_log.h"
 #include "vk_util.h"
 
-/* Header-only pipe enums (PIPE_TEXTURE_*, PIPE_BIND_*, PIPE_FORMAT_*)
- * appear in the format-query signatures both lanes compile; only the
- * Gallium screen machinery below stays gated. */
+/* Header-only pipe enums (PIPE_TEXTURE_*, PIPE_BIND_*) live in
+ * pipe/p_defines.h.  PIPE_FORMAT_* values come from pipe/p_format.h
+ * (already reached via util/format includes).  Only the Gallium screen
+ * machinery below stays gated. */
 #include "pipe/p_defines.h"
 
 #ifdef R3V_GALLIUM_BACKEND
