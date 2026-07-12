@@ -1189,12 +1189,19 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
             unsigned np =
                 r300_r2vb_clip_triangle(in, num_attrs, om & planes, k, half_z,
                                         poly);
-            fprintf(stderr, "r2vb_clip_edge prim=%u or=0x%02x poly=%u\n",
-                    t, om, np);
-            if (np == 0) {
-                bail = true;
-                break;
+            static int edge_log = -1;
+            if (edge_log < 0) {
+                const char *e = getenv("R300_R2VB_CLIP_LOG");
+                edge_log = (e && strcmp(e, "1") == 0) ? 1 : 0;
             }
+            if (edge_log)
+                fprintf(stderr, "r2vb_clip_edge prim=%u or=0x%02x poly=%u\n",
+                        t, om, np);
+            /* Empty polygon after multi-plane clip: drop the triangle only.
+             * Whole-draw fallback would force gallivm when CLIP_EDGE should
+             * keep the surviving accepted triangles. */
+            if (np == 0)
+                break;
             for (unsigned i = 1; i + 1 < np; i++) {
                 const unsigned pv[3] = { 0, i, i + 1 };
                 for (int q = 0; q < 3; q++)
@@ -4712,8 +4719,16 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                 free(extras[j]);
             } /* affine/MVP edge rebuild */
         }
-        fprintf(stderr, "r2vb_clip_route supported=%d action=%s\n",
-                supported, action);
+        {
+            static int route_log = -1;
+            if (route_log < 0) {
+                const char *e = getenv("R300_R2VB_CLIP_LOG");
+                route_log = (e && strcmp(e, "1") == 0) ? 1 : 0;
+            }
+            if (route_log)
+                fprintf(stderr, "r2vb_clip_route supported=%d action=%s\n",
+                        supported, action);
+        }
         if (!supported || verdict == R2VB_CLIP_ROUTE_FALLBACK) {
             pipe_resource_reference(&clip, NULL);
             free(model);
