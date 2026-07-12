@@ -100,16 +100,20 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
      * colors and r300_update_rs_block routes the FACE texcoord in the same slot,
      * so emit it here -- after the (b)colors, before the generics -- to keep
      * vertex_info index-aligned with the RS stream. */
-    if (r300->frontface_via_draw &&
-        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0) {
+    bool face_via_draw =
+        r300->frontface_via_draw &&
+        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0;
+    if (face_via_draw)
         r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_FACE, 0);
-    }
 
     /* Texture coordinates. */
     /* Only 8 generic vertex attributes can be used. If there are more,
-     * they won't be rasterized. */
+     * they won't be rasterized.  On R300-class, draw-injected FACE routes
+     * through one texcoord unit in r300_update_rs_block, so the generic
+     * ceiling shrinks by one when FACE is present. */
     gen_count = 0;
-    for (i = 0; i < ATTR_GENERIC_COUNT && gen_count < 8; i++) {
+    const int gen_limit = face_via_draw ? 7 : 8;
+    for (i = 0; i < ATTR_GENERIC_COUNT && gen_count < gen_limit; i++) {
         if (vs_outputs->generic[i] != ATTR_UNUSED &&
             (!(r300->sprite_coord_enable & (1U << i)) || !r300->is_point)) {
             r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_GENERIC, i);
@@ -134,13 +138,14 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
     }
 
     /* Fog coordinates. */
-    if (gen_count < 8 && vs_outputs->fog != ATTR_UNUSED) {
+    if (gen_count < gen_limit && vs_outputs->fog != ATTR_UNUSED) {
         r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_FOG, 0);
         gen_count++;
     }
 
     /* WPOS. */
-    if (r300_fs(r300)->shader->inputs.wpos != ATTR_UNUSED && gen_count < 8) {
+    if (r300_fs(r300)->shader->inputs.wpos != ATTR_UNUSED &&
+        gen_count < gen_limit) {
         unsigned wpos_slot = 0;
 
         for (i = 0; i < ATTR_GENERIC_COUNT; i++) {
