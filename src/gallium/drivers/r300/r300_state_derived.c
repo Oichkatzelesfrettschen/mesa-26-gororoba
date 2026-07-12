@@ -740,9 +740,19 @@ static void r300_update_rs_block(struct r300_context *r300)
         const char *e = os_get_option("R300_SWTCL_DUMMY_TEXCOORD");
         dummy_texcoord_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
+    /* Dummy TEX0 is for the ordinary SW-TCL draw path only.  R2VB passthrough
+     * re-ingest builds velems from app inputs / producer BOs and does not
+     * emit the extra draw-module payload, so enabling both would desync
+     * RS/PSC from LOAD_VBPNTR. */
+    {
+        const char *r2vb = getenv("R300_R2VB_ROUTE");
+        const char *r2vb_exec = getenv("R300_R2VB_EXEC");
+        const bool r2vb_on =
+            (r2vb && strcmp(r2vb, "1") == 0) ||
+            (r2vb_exec && strcmp(r2vb_exec, "1") == 0);
     if (col_count == 0 && tex_count == 0 &&
         !r300->screen->caps.has_tcl && r300->draw &&
-        dummy_texcoord_gate == 1) {
+        dummy_texcoord_gate == 1 && !r2vb_on) {
         rs.vap_vsm_vtx_assm |= (R300_INPUT_CNTL_TC0 << tex_count);
         rs.vap_out_vtx_fmt[1] |= (4 << (3 * tex_count));
         stream_loc_notcl[loc++] = 6 + tex_count;
@@ -755,6 +765,7 @@ static void r300_update_rs_block(struct r300_context *r300)
         r300->swtcl_dummy_texcoord = true;
 
         DBG(r300, DBG_RS, "r300: Rasterized dummy texcoord to prevent lockups.\n");
+    }
     }
     }
 
