@@ -68,8 +68,8 @@ void vl_nir_sampler(struct vl_nir_fs *fs, unsigned s,
 void vl_nir_sampler_array(struct vl_nir_fs *fs, unsigned s,
                           enum glsl_sampler_dim dim, bool is_array);
 
-/* Sample sampler s at coord; coord component count must match the sampler dim
- * (vec2 for 2D, vec3 for 3D). */
+/* Sample sampler s at coord. The coordinate component count matches the sampler
+ * type: vec2 for 2D, and vec3 for 2D array or 3D. */
 nir_def *vl_nir_tex(struct vl_nir_fs *fs, unsigned s, nir_def *coord);
 
 /* Store color to the output, finalize the NIR, and create_fs_state.  Returns

@@ -570,6 +570,7 @@ if with_tests
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('.'),
       ],
+      dependencies : [dep_m, dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r300'],

@@ -786,14 +786,9 @@ struct r300_context {
      * not its output.  Cleared with the kind on draw entry and on consumption. */
     struct pipe_resource *r2vb_capture_clip;
 
-    /* Carry-BO keepalive ring (R300_R2VB_SPLIT_KEEPALIVE=1): the split producer
-     * parks its carry BO here instead of releasing it before the delivery draw,
-     * so the winsys cannot recycle the BO's backing store while the delivered
-     * split draw is in flight -- the first one-variable cell of the
-     * below-command-stream wedge ladder (the capture discriminator proved the
-     * delivery IB itself EQUIVALENT to the single-pass producer's).  Two slots
-     * so back-to-back splits keep the previous carry alive one extra draw.
-     * Released on rotation and at context destroy. */
+    /* Carry-BO keepalive ring (R300_R2VB_SPLIT_KEEPALIVE=1). Two slots retain
+     * carry BO references through the delivered split draw; rotation and
+     * context destruction release the older references. */
     struct pipe_resource *r2vb_split_keepalive[2];
 
     /* Clip-edge replacement data for passthrough re-ingest streams, indexed

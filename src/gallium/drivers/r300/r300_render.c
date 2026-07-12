@@ -1282,7 +1282,7 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
 /* Position-only delivery invariant for the producer-fed capture: the delivery
  * fetches the producer outputs and nothing extra.  Enforced clauses (a failure
  * refuses the delivery and the capture): the velem count does not exceed the
- * VAP output count r300->vertex_info declares (the proven multi-stream delivery
+ * VAP output count r300->vertex_info declares (the measured multi-stream delivery
  * binds FEWER arrays than outputs when one application buffer sources several
  * passthrough varyings -- the RS duplicates the vector, so equality is not the
  * invariant); VAP_VTX_SIZE equals sum(format_size/4) over the bound elements;
@@ -1352,8 +1352,7 @@ static bool r300_r2vb_capture_preflight(struct r300_context *r300,
  * r2vb_delivery_capture.  Setting R300_TRACE additionally captures the raw
  * unpatched IB + relocation table through the winsys no-submit trace branch the
  * NOOP flush reaches (radeon_drm_cs_emit_ioctl_oneshot is skipped; the else
- * branch writes the trace); when R300_R2VB_DELIVERY_CAPTURE_DIR is unset the raw
- * dwords are hexdumped to stderr here instead. */
+ * branch writes the trace); raw dwords are also hexdumped to stderr here. */
 static void r300_r2vb_capture_record(struct r300_context *r300,
                                      const struct pipe_draw_info *info,
                                      const struct pipe_draw_start_count_bias *draw,

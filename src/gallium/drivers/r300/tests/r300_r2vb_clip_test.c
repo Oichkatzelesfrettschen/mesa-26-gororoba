@@ -223,7 +223,7 @@ test_edge_generation(void)
 
    /* One vertex beyond the right plane (x = 3, w = 1): the quad's two new
     * vertices sit exactly on x = w.  Edge (0,0)->(3,0): t = (1-0)/((1-0)-(1-3))
-    * = 1/3 -> (1,0).  Edge (3,0)->(0,0.5): d=(−2)->(1), t=2/3 -> (1, 1/3). */
+    * = 1/3 -> (1,0). Edge (3,0)->(0,0.5): d=(-2)->(1), t=2/3 -> (1, 1/3). */
    mkvert(&in[0], 0, 0, 0, 1);
    mkvert(&in[1], 3.0f, 0, 0, 1);
    mkvert(&in[2], 0, 0.5f, 0, 1);

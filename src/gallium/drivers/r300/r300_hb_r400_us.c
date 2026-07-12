@@ -43,11 +43,11 @@ r300_hb_r400_us_init(struct r300_screen *screen)
     * registers' effect on this silicon.  "2": also lift the fragment compiler
     * to the FULL R400 envelope (64 temps, 512 ALU/TEX, r390_mode code banks).
     * "3": lift only the ALU/TEX slot count to 512 and the code-bank emission,
-    * keeping the temp file at the proven R300 size of 32 -- a >64-instruction
-    * shader within 32 temps exercises code banks without the unproven upper
-    * temp file, the safer first silicon rung between "1" and "2".  All modes
-    * are diagnostic on RS48x: a live temporary does not survive the 64-slot
-    * bank boundary, so dependent chains past 64 slots still fail. */
+    * keeping the temp file at the baseline R300 size of 32 -- a >64-instruction
+    * shader within 32 temps exercises code banks without the unvalidated upper
+    * temp file, the safer first silicon rung between "1" and "2". Code-bank
+    * behavior is diagnostic only on RS48x: mode "1" isolates register emission,
+    * and live temporaries do not survive the 64-slot bank boundary. */
    if (strcmp(hb_us, "1") == 0) {
       screen->caps.hb_r400_us = true;
    } else if (strcmp(hb_us, "2") == 0) {
