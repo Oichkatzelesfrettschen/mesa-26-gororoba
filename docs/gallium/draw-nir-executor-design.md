@@ -20,7 +20,7 @@ struct draw_vertex_shader stay unchanged.
 - Clip/edgeflag/viewport/clipdistance semantics preserved.
   draw_create_vertex_shader scans vs->info.output_semantic_name/index[]
   to populate position_output, edgeflag_output, clipvertex_output,
-  viewport_index_output, and ccdistance_output[]; the new executor must
+  viewport_index_output, and clipdistance_output[]; the new executor must
   populate vs->base.info in the same shape before that scan runs.
 - TGSI-input drivers byte-for-byte unregressed. draw_create_vs_exec is
   one factory for both input kinds; the tgsi_dup_tokens branch stays
@@ -99,11 +99,13 @@ interpreter state } with its own vtable:
 - run_linear (same signature): bind the draw_buffer_info constants
   array as the load_ubo backing store; seed the sysval intrinsic
   bindings from the identical draw fields and arithmetic the TGSI path
-  reads (including the basevertex derivation), so numeric results match
-  bit-for-bit; bind AOS input rows per info.num_inputs slot; walk the
-  function body per vertex; write outputs per info.num_outputs slot
-  with the identical clamp_vertex_color SATURATE gate keyed on
-  output_semantic_name (info-driven logic that ports verbatim).
+  reads (including the basevertex derivation), so integer and system-
+  value channels match exactly and floating-point channels match within
+  the calibration epsilon (scalar vs SIMD FP ordering); bind AOS input
+  rows per info.num_inputs slot; walk the function body per vertex;
+  write outputs per info.num_outputs slot with the identical
+  clamp_vertex_color SATURATE gate keyed on output_semantic_name
+  (info-driven logic that ports verbatim).
 - delete: ralloc_free the nir_shader and scratch; no token FREE.
 
 ### Info population and output-vocabulary continuity

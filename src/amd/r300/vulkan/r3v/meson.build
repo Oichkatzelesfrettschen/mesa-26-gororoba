@@ -185,8 +185,9 @@ r3v_icd = custom_target(
 )
 
 # Devenv ICD: when running meson devenv, point the loader at the build
-# directory copy of the library so `VK_ICD_FILENAMES=<build>/r3v_icd*.json`
-# picks up the in-tree build.
+# directory copy of the library so
+# `VK_ICD_FILENAMES=<build>/r3v_devenv_icd.<cpu>.json` picks up the
+# in-tree build (see `_dev_icdname`).
 _dev_icdname = 'r3v_devenv_icd.@0@.json'.format(host_machine.cpu())
 _dev_icd = custom_target(
   'r3v_devenv_icd',

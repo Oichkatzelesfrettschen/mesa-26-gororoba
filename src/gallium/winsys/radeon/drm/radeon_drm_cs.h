@@ -87,9 +87,10 @@ struct radeon_drm_cs {
    struct util_queue_fence flush_completed[3];
    struct pipe_fence_handle *next_fence;
 
-   /* RADEON_FENCE_TRACE=1 flush ordinal: counts every cs_flush on this
-    * cmdbuf so the trace lines order deterministically across the
-    * triple-buffer rotation. */
+   /* RADEON_FENCE_TRACE=1 flush ordinal: advanced only while the trace
+    * path is enabled, once per traced cs_flush on this cmdbuf, so the
+    * trace lines order deterministically across the triple-buffer
+    * rotation.  Idle (trace-off) flushes leave the field unchanged. */
    uint32_t fence_trace_ordinal;
 };
 

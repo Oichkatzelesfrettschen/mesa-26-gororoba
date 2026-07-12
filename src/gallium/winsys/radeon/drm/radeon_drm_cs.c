@@ -126,10 +126,18 @@ r300_trace_bool_option(const char *name, bool default_value)
 static bool
 radeon_fence_trace_enabled(void)
 {
-   static int cached = -1;
-   if (cached < 0)
-      cached = debug_get_bool_option("RADEON_FENCE_TRACE", false) ? 1 : 0;
-   return cached;
+   static int32_t cached = -1;
+   int32_t value = p_atomic_read(&cached);
+
+   if (value < 0) {
+      int32_t want = debug_get_bool_option("RADEON_FENCE_TRACE", false) ? 1 : 0;
+      /* First writer installs; concurrent first readers share that value. */
+      if (p_atomic_cmpxchg(&cached, -1, want) == -1)
+         value = want;
+      else
+         value = p_atomic_read(&cached);
+   }
+   return value != 0;
 }
 
 static bool

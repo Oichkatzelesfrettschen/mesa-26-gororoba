@@ -5,7 +5,7 @@ The active full r300 profiles are:
 - `4_r300_full_release_x86_64v1-clang22-distcc-cache`
 - `3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache`
 
-Both profiles build the same API surface:
+Both profiles build the same core API surface:
 
 - Gallium driver: `r300`
 - Vulkan driver: `ati_r300`
@@ -16,17 +16,18 @@ Both profiles build the same API surface:
   Gallium-XA 2D/Xv frontend
 - Tooling: r300 tools, shader cache, Gallium HUD/lm-sensors
 
-Both profiles deliberately exclude software rasterizers and unrelated driver
-frontends:
+Both profiles keep software rasterizers and non-r300 hardware drivers out:
 
 - `llvm = 'disabled'`
 - `draw-use-llvm = false`
 - no `swrast`, `llvmpipe`, `softpipe`, r600, radeonsi, or terakan
-- zink is a DEBUG-PROFILE-ONLY inclusion: the debug config carries
-  `gallium-drivers = ['r300', 'zink']` so zink can ride the ati_r300 ICD
-  as the zink-upon-r3v GL-on-Vulkan experiment lane; the release profile
-  stays `['r300']` with no zink
 - no Rusticl, D3D10 UMD, MediaFoundation, or unrelated video codecs
+
+Zink is a deliberate debug-profile exception, not a shared exclusion:
+
+- debug config: `gallium-drivers = ['r300', 'zink']` so zink can ride the
+  `ati_r300` ICD as the zink-upon-r3v GL-on-Vulkan experiment lane
+- release config: `gallium-drivers = ['r300']` with no zink
 
 The release profile uses `buildtype = 'release'`, `b_ndebug = 'true'`, and
 `-O2` for the Vostro runtime lane.  The debug profile uses
@@ -47,7 +48,7 @@ release profile because draw LLVM changes the SW-TCL execution substrate being
 measured.
 
 `egl-native-platform = 'surfaceless'` makes `EGL_DEFAULT_DISPLAY` use the
-surfaceless platform, the renderD128 headless path the Piglit/deqp lane runs
+surfaceless platform, the renderD128 headless path the Piglit/dEQP lane runs
 on; X11 and Wayland callers select their platform explicitly. Upstream Mesa
 commit b0050c4e754 ("meson: drop misleading `-D egl-native-platform` values")
 removed `'drm'`, `'wayland'`, `'windows'`, and `'macos'` from this option's
@@ -55,10 +56,20 @@ choices, keeping only the values EGL_DEFAULT_DISPLAY can actually honor.
 
 ## The two profiles are the whole r300 lane
 
-The debug profile `3_r300_full_debug_optimized_*` (configs/) and the release profile `4_r300_full_release_*` (configs/alternates/) are the canonical r300 pair; alternates also carry the asan `1_` and -O0 `2_` debug variants.  Every prior r300/vostro variant is
-removed and subsumed: the GL-only `r300-canonical-vostro-*`, the Vulkan-ICD-only
-`r3v-vostro-*` (`opengl=false`), the `*-vostro-k8-*` Turion-native pair, and
-the `r300-{trace,egl-gbm-trace}-vostro-k8` capture variants.  One artifact now
+The debug profile
+`3_r300_full_debug_optimized_*`
+(`build-infra/configs/`)
+and the release profile
+`4_r300_full_release_*`
+(`build-infra/configs/alternates/`)
+are the canonical r300 pair.
+`build-infra/configs/alternates/` also carries the asan `1_` and -O0 `2_`
+debug variants.
+
+Every prior r300/vostro variant is removed and subsumed: the GL-only
+`r300-canonical-vostro-*`, the Vulkan-ICD-only `r3v-vostro-*` (`opengl=false`),
+the `*-vostro-k8-*` Turion-native pair, and the
+`r300-{trace,egl-gbm-trace}-vostro-k8` capture variants.  One artifact now
 carries the full GL/GLES surface and the ati_r300 ICD, so r300 conformance,
 desktop, r3v RCA, and silicon evidence all build from the same standardized
 pair: release `4_`, assertions-live debug `3_`.  The x86-64-v1 psABI baseline is
@@ -68,10 +79,10 @@ the generic baseline lacks on this hardware.
 ## Build placement and artifact hygiene
 
 Builds land out-of-tree.  The `build-infra/Makefile` resolves
-`BUILDDIR ?= $(CURDIR)/../../build/mesa-<profile>`, i.e.
-`~/workspaces/mesa/build/mesa-<profile>/` -- outside the repository working
-tree -- so a build can never appear in `git status`.  Each profile maps to one
-install prefix: release builds to `/opt/local/mesa-26-gororoba`, debug builds to
+`BUILDDIR ?= $(CURDIR)/../../build/mesa-<profile>`, i.e. a sibling
+`build/mesa-<profile>/` directory outside the repository working tree, so a
+build never appears in `git status`.  Each profile maps to one install
+prefix: release builds to `/opt/local/mesa-26-gororoba`, debug builds to
 `/opt/local/mesa-gororoba-debug-optimized`; neither prefix is inside the repo and
 system Mesa at `/usr/lib` is left untouched by these `/opt/local` profiles.
 

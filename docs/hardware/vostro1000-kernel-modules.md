@@ -9,7 +9,7 @@ the requirement is discoverable from any entry point (see Cross-references).
 
 The modules divide by ownership: **radeon DRM** work (GPU reset / register
 hazard mitigation) tracks the userspace driver and consolidates into
-`~/workspaces/radeon-custom`; **platform** work (southbridge watchdog, EC
+`external repository `radeon-custom` (sibling checkout of the out-of-tree modules)`; **platform** work (southbridge watchdog, EC
 thermal) is Vostro-hardware-specific and lives in `vostro1000-re`.
 
 ## Why this hardware needs out-of-tree modules
@@ -19,7 +19,7 @@ the ring, and with `radeon.lockup_timeout=0` the kernel waits on the fence
 forever rather than resetting the GPU -- an unrecoverable soft hang (proven:
 a `u_blitter` clear stalls in `radeon_fence_default_wait`, TGSI or NIR
 shaders alike). The SB600 TCO watchdog is the only reset independent of the
-CPU cores, so it is the backstop for the both-core northbridge freeze that
+CPU cores, so it is the backstop for the both CPU cores northbridge freeze that
 no software detector can catch. Neither reset path nor the EC thermal
 sensors are exposed by any in-tree driver on this platform.
 
@@ -32,7 +32,7 @@ drivers and the direct fix for the unrecoverable fence-hang class.
 
 | Package | Module | Purpose | Source (current) |
 | --- | --- | --- | --- |
-| `radeon-unified-dkms` v0.3 (pkgrel 83) | `radeon` | RS480/R600 hazard mitigation plus RS480 `gpu_reset` recovery: the 0043 force-clock reset ladder, the 0046-0062 parked-GPU containment gates, and the 0063-0068 parameterized 0x0000F0 soft-reset mask candidates (allow-listed to the 3D bits, default BASELINE = existing 0043 behavior); Arch + Debian packaging adapters. `packaging/arch/radeon-unified-dkms/dkms.conf` is the live patch list | `~/workspaces/radeon-custom` |
+| `radeon-unified-dkms` v0.3 (pkgrel 83) | `radeon` | RS480/R600 hazard mitigation plus RS480 `gpu_reset` recovery: the 0043 force-clock reset ladder, the 0046-0062 parked-GPU containment gates, and the 0063-0068 parameterized 0x0000F0 soft-reset mask candidates (allow-listed to the 3D bits, default BASELINE = existing 0043 behavior); Arch + Debian packaging adapters. `packaging/arch/radeon-unified-dkms/dkms.conf` is the live patch list | `external repository `radeon-custom` (sibling checkout of the out-of-tree modules)` |
 | `radeon-rs480-safe-regs` v0.2 | `radeon` | `rs480_safe_regs` debugfs reader (gated-readback safe register set) | `steinmarder-r300/src/re/r300/PKGBUILDs/radeon-rs480-safe-regs-dkms/` |
 | `radeon-palm-gate` v1.0 | `radeon` | Palm/Warrior gate: `mc_wait_for_idle` timeout, `pci_config_reset_safe` gate, SMX_DC_CTL0 validator; ships pre-patched source | `steinmarder/mesa-rekit/staged/radeon-palm-gate-dkms/` |
 
@@ -44,7 +44,7 @@ host alive after a failed reset), and `0063-0068` (the parameterized 0x0000F0
 soft-reset mask candidates, default BASELINE). Upstream reference tree:
 `steinmarder-r600-terakan/docs/external_sources/linux_6_18_32_radeon_drm/`.
 
-**Consolidation (done): `~/workspaces/radeon-custom`.** The scattered radeon
+**Consolidation (done): `external repository `radeon-custom` (sibling checkout of the out-of-tree modules)`.** The scattered radeon
 DKMS work collapsed into this one dedicated repo -- a patch series over the
 vendored upstream radeon subtree with DKMS + PKGBUILD -- and it is now the
 build source of record, not a future step. Building and installing it (with a

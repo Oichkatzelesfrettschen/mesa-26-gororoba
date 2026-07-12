@@ -1,6 +1,6 @@
 # r3v rename allowlist -- deliberate survivals of the r300vk -> r3v rename.
 # The Stage B acceptance grep
-#   rg -n "r300vk|R300VK|r300_devenv_icd|r300_icd|libvulkan_r300|amd_r300" \
+#   rg -n "r300vk|R300VK|r300_devenv_icd|r300_icd|libvulkan_r300" \
 #     meson.build meson.options src build-infra docs
 # diffs its hits against this file; every line here names a survival and
 # its reason.  Format: <path-or-pattern><TAB><reason>
