@@ -1392,6 +1392,7 @@ retry:
     shader->deriv_src_generic = -1;
     shader->deriv_ddx_generic = -1;
     shader->deriv_ddy_generic = -1;
+    shader->pstipple_lowered_unit = ~0u;
 
     /* gl_FragColor (vs. gl_FragData[0]) makes the FS write the same value
      * to all bound color buffers. */
@@ -1451,6 +1452,11 @@ retry:
         unsigned stipple_unit = 0;
         NIR_PASS(_, clone, nir_lower_pstipple_fs, &stipple_unit, 0, true,
                  nir_type_bool1);
+        /* The create-time walk on the CSO and this lower pass share one
+         * free-unit rule (including sampler arrays). Persist the lowered
+         * binding so merge and compile agree; mismatch means the walks
+         * diverged and the create-time unit needs a fix. */
+        shader->pstipple_lowered_unit = stipple_unit;
         nir_shader_gather_info(clone, nir_shader_get_entrypoint(clone));
     }
 

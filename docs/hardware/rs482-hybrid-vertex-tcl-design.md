@@ -210,10 +210,9 @@ classes:
 - **Front-end control/status is read-safe.** `VAP_CNTL` (`0x2080`) and
   `VAP_CNTL_STATUS` (`0x2140`) are observed *responding*: a genuine read returns
   `0x2080 = 0x0014025a` (the bypass control word) and `0x2140 = 0x00000100`
-  (`TCL_BYPASS` set). The `curated_write_test_manifest` marks the front-end block
-  `safe_clocked`; the front-end-shadow probe reads exactly these two and refuses
-  reads at or above `0x2200`. So VAP progress has a direct status surface, not
-  only the `RBBM_STATUS` aggregate.
+  (`TCL_BYPASS` set). Safe front-end probes therefore read only these two words
+  and refuse reads at or above `0x2200`. VAP progress has a direct status
+  surface, not only the `RBBM_STATUS` aggregate.
 - **The PVS/SE_TCL port window `0x2200-0x22dc` read-wedges.** A read of
   `VAP_CLIP_CNTL` (`0x221c`), `VAP_PVS_STATE_FLUSH_REG` (`0x2284`), or
   `VAP_PVS_CODE_CNTL_0` (`0x22d0`) waits forever for a completion and stalls the
@@ -512,9 +511,12 @@ Two constraints bound the policy:
   slots holds a *co-issued* vector (`OUTC`) + scalar (`OUTA`) op (`radeon_code.h`
   `inst[].rgb_inst` + `alpha_inst`), so the real budget is up to 128 ALU ops (64
   vector + 64 scalar). Because the transcendentals are alpha-pipe-exclusive, a
-  scalar `RSQ`/`RCP` co-issues **free** alongside a vector `DP3`/`DP4` in the same
-  slot -- that is why a lighting term is "a handful of slots" rather than a
-  handful of serial ops. Presubtract (`RC_PRESUB_ADD/SUB/BIAS/INV`) is a source
+  scalar `RSQ`/`RCP` can co-issue alongside a vector `DP3`/`DP4` in the same slot
+  only when the pair scheduler has already cleared the scalar's read-after-write
+  dependencies (`NumDependencies` / ready lists in the r300 compiler). A
+  `normalize` chain that feeds `RSQ` from a just-written DP still serializes;
+  independent lighting terms are "a handful of slots", dependent chains are not
+  free. Presubtract (`RC_PRESUB_ADD/SUB/BIAS/INV`) is a source
   modifier, not a slot, and output modifiers (`MOD_MUL2/4/8`, `MOD_DIV`, `CLAMP`)
   fold more work per slot. TEX is a separate 32-slot budget (4 indirection
   phases). Multi-light or spotlight lighting on top of the R2VB transform can
@@ -528,20 +530,21 @@ transform, using only ops the compiler already emits or lowers.
 
 **Butterfly / Cayley-Dickson does not lower the per-vertex budget.** A recurring
 proposal is to factor the `4x4` MVP (or lighting dots) through a Walsh-Hadamard /
-Cariow butterfly to cut the op-count. It does not help on this silicon, for a
+butterfly (Walsh-Hadamard style factorizations sometimes called Cariow in VLSI notes) to cut the op-count. It does not help on this silicon, for a
 structural reason: the butterfly trades multiplies for add/sub, which wins only
 where multipliers are the scarce resource (VLSI / fixed-point). The r300 fragment
 ALU is the opposite regime -- a `DP4` is a 4-wide multiply-accumulate in one slot,
-so a dense `4x4` transform is already at its **4-`DP4` floor** (3 `DP4` + a move
-for an affine/projection matrix, via ordinary constant-row folding). A butterfly
+so a dense `4x4` transform is already at its **4-`DP4` floor**. Collapsing to
+3 `DP4` + a move is valid only for *affine* MVPs (constant `w_clip`); a
+perspective row still needs the fourth DP4 because `w_clip` is not free. A butterfly
 fragments that into standalone cross-lane signed adds a `DP4` cannot absorb: the
 best case (pure Hadamard `H4`) is 8 ops against the dense 4, and a general `4x4`
-is worse. The `open_gororoba` WHT/Cariow kernels confirm the crossover is at
+is worse. The open_gororoba WHT butterfly kernels confirm the crossover is at
 `d >= 64/128`, not the `d = 4` vertex transform. This is the op-count ground on
-which the Cayley-Dickson IDCT transfer was already refuted (memory
-`g3dvl-exact-integer-idct-cayley-dickson-transfer`: "r300 is a DP4 dot-machine;
-dense form is already cheap"); the float MVP is strictly weaker for the butterfly
-than that exact-integer case, so the refutation transfers a fortiori. Cayley-
+which the Cayley-Dickson IDCT transfer was already refuted for r300
+(`g3dvl` exact-integer IDCT work: r300 is a DP4 dot-machine, so the dense form
+is already cheap). The float MVP is strictly weaker for the butterfly than that
+exact-integer case, so the refutation transfers a fortiori. Cayley-
 Dickson rotation keeps its legitimate home in the once-per-frame *matrix-build*
 step (above, Artwick + Coxeter), never the per-vertex hot loop. The glamor
 gradient-budget corpus is the on-part precedent for beating the 64-slot ceiling,
@@ -577,7 +580,7 @@ The `HBTCL-NN` tokens are secondary registry labels for this tracker; the load-b
 | HBTCL-04e | DONE: topology gather -- strips, fans, indexed draws, primitive restart resolved to a triangle-index list before classification; 14/14 corpus cases byte-identical on RS482; points and lines stay excluded (points gate on HBTCL-07, lines need a 2-vertex clip variant) | HBTCL-04d |
 | HBTCL-04f | Producer budget escape above the 64-slot fragment-ALU ceiling: admission on actual emitted RC slots, semantics-preserving algebraic compaction, then a producer split carrying one FP32 `vec4` through an R2VB buffer; gallivm fallback for every unsupported shape. R400 code banks are diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-03 |
 | HBTCL-05 | DONE (corpus-verified): the "VAP register table" section above, with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200+` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + commit `9899a4d8dd3` (SWTCL 16-bit VAP count clamp); the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
-| HBTCL-06 | DONE (compiler-verified): the "Lighting on the fragment ALU" section above -- native op set from the `r300_fragprog_emit.c` co-issue switches (`ROUND` corrected to lowered), the 64-slot ceiling as co-issued vector+scalar pairs (up to 128 ops, alpha-pipe transcendentals co-issue free), the lighting-term mapping table, the shared R400_US->512 budget, and the butterfly/Cayley-Dickson non-result (dense `4x4` is already at its `DP4` floor; CD stays in the matrix-build step) | -- |
+| HBTCL-06 | DONE (compiler-verified, R400_US excluded from the standing budget): the "Lighting on the fragment ALU" section above -- native op set from the `r300_fragprog_emit.c` co-issue switches (`ROUND` corrected to lowered), the 64-slot ceiling as co-issued vector+scalar pairs (up to 128 ops when independent; dependent alpha-pipe transcendentals still serialize), the lighting-term mapping table, and the butterfly/Cayley-Dickson non-result (dense `4x4` is already at its `DP4` floor; CD stays in the matrix-build step). The 512-slot R400_US path remains probe-gated (`R300_HB_R400_US`) and is not a standing budget for HBTCL lighting | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear; GA point-setup registers (`GA_POINT_SIZE`, `GA_POINT_MINMAX`) and `VAP_VTX_SIZE` remain open hypotheses after near-zero effect measurements -- keep the RCA root-cause-neutral until the no-submit decode names the carrier | HBTCL-03 |
 | HBTCL-08 | Promote the generalized R2VB collineation engine to the standing r300 SW-TCL vertex route (gated first); validate on RS482 across topologies + a piglit GL2.1 subset under the poller with no VAP/GA stall | HBTCL-02, HBTCL-04, HBTCL-07 |
 | HBTCL-09 | Combine demonstrated MRT multi-attribute export with R2VB so position, normal, and texcoord can leave the producer in one transform pass | HBTCL-03 |

@@ -1181,20 +1181,32 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
      * sampler below relies on.  The sampler CSO is merge-local. */
     int pstip_want = -1;
     if (r300->pstipple_draw && r300->fs.state && r300->pstipple_sampler_view &&
-        r300->pstipple_sampler &&
-        r300_fs(r300)->pstipple_sampler_unit < r300->screen->caps.num_tex_units)
-        pstip_want = r300_fs(r300)->pstipple_sampler_unit;
+        r300->pstipple_sampler) {
+        struct r300_fragment_shader *fs = r300_fs(r300);
+        unsigned unit = fs->pstipple_sampler_unit;
+        /* Prefer the unit the compiled stipple variant actually lowered to. */
+        if (fs->shader && fs->shader->compare_state.pstipple &&
+            fs->shader->pstipple_lowered_unit != ~0u)
+            unit = fs->shader->pstipple_lowered_unit;
+        if (unit < r300->screen->caps.num_tex_units)
+            pstip_want = (int)unit;
+    }
 
     if (r300->pstipple_bound_unit >= 0) {
         unsigned bound = r300->pstipple_bound_unit;
         if (state->sampler_views[bound] !=
             (struct r300_sampler_view*)r300->pstipple_sampler_view) {
-            /* The app bound its own view over the slot; nothing to clear. */
+            /* The app bound its own view over the slot; drop the splice
+             * tracking and any saved displaced view. */
+            pipe_sampler_view_reference(&r300->pstipple_displaced_view, NULL);
             r300->pstipple_bound_unit = -1;
         } else if (pstip_want != (int)bound) {
+            /* Restore the application view that the splice displaced, or
+             * clear the slot when nothing was there. */
             pipe_sampler_view_reference(
                 (struct pipe_sampler_view**)&state->sampler_views[bound],
-                NULL);
+                r300->pstipple_displaced_view);
+            pipe_sampler_view_reference(&r300->pstipple_displaced_view, NULL);
             r300->pstipple_bound_unit = -1;
         }
     }
@@ -1205,6 +1217,11 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
     if (pstip_want >= 0) {
         pstip_unit = pstip_want;
         if (r300->pstipple_bound_unit < 0) {
+            struct pipe_sampler_view *prior =
+                (struct pipe_sampler_view *)state->sampler_views[pstip_unit];
+            if (prior && prior != r300->pstipple_sampler_view)
+                pipe_sampler_view_reference(&r300->pstipple_displaced_view,
+                                            prior);
             pipe_sampler_view_reference(
                 (struct pipe_sampler_view**)&state->sampler_views[pstip_unit],
                 r300->pstipple_sampler_view);
