@@ -1278,8 +1278,15 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
 
     /* Emit the normalized VAP/RS tuple + contract verdict in the same field
      * vocabulary the SW-TCL rebuild path uses, so the direct-VB route and the
-     * ordinary GL SW-TCL route are diffable field-by-field. */
-    r300_dump_vap_rs_tuple(r300, "r2vb_inspect");
+     * ordinary GL SW-TCL route are diffable field-by-field.  Report the
+     * direct-VB VAP_VTX_SIZE (from velem formats) rather than the gallivm
+     * vertex_info.size that the ordinary SW-TCL path emits. */
+    {
+        unsigned saved_size = r300->vertex_info.size;
+        r300->vertex_info.size = vap_vtx_size;
+        r300_dump_vap_rs_tuple(r300, "r2vb_inspect");
+        r300->vertex_info.size = saved_size;
+    }
 }
 
 /* Position-only delivery invariant for the producer-fed capture: the delivery
