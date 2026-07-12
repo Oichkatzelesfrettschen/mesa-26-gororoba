@@ -99,9 +99,13 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
      * allocate_hardware_inputs places the FS face register right after the
      * colors and r300_update_rs_block routes the FACE texcoord in the same slot,
      * so emit it here -- after the (b)colors, before the generics -- to keep
-     * vertex_info index-aligned with the RS stream. */
+     * vertex_info index-aligned with the RS stream.  Require the current FS to
+     * read the face input: after a prior FrontFacing draw the draw module may
+     * still own a FACE output while this draw's FS does not, and emitting it
+     * would consume a texcoord unit and desync GA streams that do not route it. */
     bool face_via_draw =
         r300->frontface_via_draw &&
+        fscode && fscode->inputs.face != ATTR_UNUSED &&
         draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0;
     if (face_via_draw)
         r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_FACE, 0);
