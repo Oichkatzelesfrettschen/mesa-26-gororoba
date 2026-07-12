@@ -1365,6 +1365,7 @@ util_make_fs_clear_color(struct pipe_context *pipe,
  * hardware off those paths, and drivers that do reach them accept TGSI
  * through their own converters. */
 
+#include "nir.h"
 #include "nir/nir_builder.h"
 #include "pipe/p_screen.h"
 #include "util/macros.h"
@@ -1372,11 +1373,14 @@ util_make_fs_clear_color(struct pipe_context *pipe,
 static void *
 util_nir_vs_cso(struct pipe_context *pipe, nir_builder *b)
 {
+   /* Lower combined sampler/texture derefs before gather_info so
+    * textures_used/samplers_used match binding-based backends. */
+   NIR_PASS(_, b->shader, nir_lower_samplers);
    nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
    nir_assign_io_var_locations(b->shader, nir_var_shader_in);
    nir_assign_io_var_locations(b->shader, nir_var_shader_out);
    if (pipe->screen->finalize_nir)
-      pipe->screen->finalize_nir(pipe->screen, b->shader, false);
+      pipe->screen->finalize_nir(pipe->screen, b->shader, true);
    struct pipe_shader_state state = { .type   = PIPE_SHADER_IR_NIR,
                                       .ir.nir = b->shader };
    void *cso = pipe->create_vs_state(pipe, &state);
@@ -1388,11 +1392,12 @@ util_nir_vs_cso(struct pipe_context *pipe, nir_builder *b)
 static void *
 util_nir_fs_cso(struct pipe_context *pipe, nir_builder *b)
 {
+   NIR_PASS(_, b->shader, nir_lower_samplers);
    nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
    nir_assign_io_var_locations(b->shader, nir_var_shader_in);
    nir_assign_io_var_locations(b->shader, nir_var_shader_out);
    if (pipe->screen->finalize_nir)
-      pipe->screen->finalize_nir(pipe->screen, b->shader, false);
+      pipe->screen->finalize_nir(pipe->screen, b->shader, true);
    struct pipe_shader_state state = { .type   = PIPE_SHADER_IR_NIR,
                                       .ir.nir = b->shader };
    void *cso = pipe->create_fs_state(pipe, &state);
@@ -1509,6 +1514,8 @@ util_nir_sample(nir_builder *b, enum glsl_sampler_dim dim, bool is_array,
       b->shader, nir_var_uniform,
       glsl_sampler_type(dim, false, is_array, GLSL_TYPE_FLOAT), "samp");
    samp->data.binding = 0;
+   BITSET_SET(b->shader->info.textures_used, 0);
+   BITSET_SET(b->shader->info.samplers_used, 0);
    nir_deref_instr *deref = nir_build_deref_var(b, samp);
    nir_def *coord = nir_trim_vector(
       b, coord_vec4, util_nir_tex_coord_components(dim, is_array));

@@ -8,6 +8,7 @@
 
 #include "util/u_hash_table.h"
 #include "util/u_memory.h"
+#include "util/u_debug.h"
 #include "util/u_thread.h"
 #include "util/os_mman.h"
 #include "util/os_time.h"
@@ -87,7 +88,8 @@ static void radeon_real_bo_wait_idle(struct radeon_bo *bo)
    if (debug_get_bool_option("R300_TRACE_WAIT_IDLE", false)) {
       fprintf(stderr,
               "R300_WAIT_IDLE handle=%u size=%"PRIu64" initial_domain=%u va=0x%"PRIx64"\n",
-              bo->handle, (uint64_t)bo->base.size, bo->initial_domain, bo->va);
+              bo->handle, (uint64_t)bo->base.size, (unsigned)bo->initial_domain,
+              bo->va);
       fflush(stderr);
    }
 

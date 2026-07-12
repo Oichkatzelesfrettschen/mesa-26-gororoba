@@ -2710,8 +2710,34 @@ static void r300_set_constant_buffer(struct pipe_context *pipe,
         }
     }
 
-    if (!cb || (!cb->buffer && !cb->user_buffer))
+    if (!cb || (!cb->buffer && !cb->user_buffer)) {
+        /* Explicit unbind: clear the bound constants so a later draw cannot
+         * keep reading a prior R2VB producer matrix or app buffer. */
+        switch (shader) {
+        case MESA_SHADER_VERTEX:
+            if (r300->screen->caps.has_tcl) {
+                cbuf = (struct r300_constant_buffer *)r300->vs_constants.state;
+                cbuf->ptr = NULL;
+                r300_mark_atom_dirty(r300, &r300->vs_constants);
+            } else if (r300->draw) {
+                draw_set_mapped_constant_buffer(r300->draw, MESA_SHADER_VERTEX,
+                                                0, NULL, 0);
+                if (index == 0) {
+                    r300->swtcl_vs_const0_ptr = NULL;
+                    r300->swtcl_vs_const0_size = 0;
+                }
+            }
+            break;
+        case MESA_SHADER_FRAGMENT:
+            cbuf = (struct r300_constant_buffer *)r300->fs_constants.state;
+            cbuf->ptr = NULL;
+            r300_mark_atom_dirty(r300, &r300->fs_constants);
+            break;
+        default:
+            break;
+        }
         return;
+    }
 
     switch (shader) {
         case MESA_SHADER_VERTEX:

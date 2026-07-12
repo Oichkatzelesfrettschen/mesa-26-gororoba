@@ -21,6 +21,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "util/u_math.h"
 #include "util/u_debug.h"
@@ -68,6 +69,9 @@ struct interp {
    int vertex_id;
    int base_vertex;
    int vertex_id_nobase;
+   int draw_id;
+   unsigned num_inputs;
+   unsigned num_outputs;
    unsigned exec_mode;
    /* The block executed immediately before the current one along the taken
     * path, so a phi at a block entry can select the source for that edge. */
@@ -95,6 +99,7 @@ def_vals(struct interp *st, nir_def *def)
 static inline nir_const_value *
 src_vals(struct interp *st, nir_src src)
 {
+   assert(src.ssa->index < st->nvs->ssa_alloc);
    return st->ssa[src.ssa->index];
 }
 
@@ -153,13 +158,19 @@ interp_intrinsic(struct interp *st, nir_intrinsic_instr *intr)
    switch (intr->intrinsic) {
    case nir_intrinsic_load_ubo: {
       /* nir_lower_uniforms_to_ubo turned every uniform read into this: the
-       * block index and the byte offset are both scalar srcs. */
+       * block index and the byte offset are both scalar srcs.  Match TGSI:
+       * out-of-range or unbound buffers read as zero. */
       unsigned block = src_vals(st, intr->src[0])[0].u32;
       unsigned offset = src_vals(st, intr->src[1])[0].u32;
-      const uint32_t *base =
-         (const uint32_t *)((const char *)st->constants[block].ptr + offset);
-      for (unsigned c = 0; c < intr->def.num_components; c++)
-         dst[c].u32 = base[c];
+      const struct draw_buffer_info *cb =
+         (block < PIPE_MAX_CONSTANT_BUFFERS) ? &st->constants[block] : NULL;
+      for (unsigned c = 0; c < intr->def.num_components; c++) {
+         unsigned byte = offset + c * 4;
+         if (!cb || !cb->ptr || byte + 4 > cb->size)
+            dst[c].u32 = 0;
+         else
+            dst[c].u32 = *(const uint32_t *)((const char *)cb->ptr + byte);
+      }
       break;
    }
    case nir_intrinsic_load_ubo_vec4: {
@@ -170,9 +181,15 @@ interp_intrinsic(struct interp *st, nir_intrinsic_instr *intr)
       unsigned block = src_vals(st, intr->src[0])[0].u32;
       unsigned vec4 = nir_intrinsic_base(intr) + src_vals(st, intr->src[1])[0].u32;
       unsigned comp = nir_intrinsic_component(intr);
-      const uint32_t *base = (const uint32_t *)st->constants[block].ptr;
-      for (unsigned c = 0; c < intr->def.num_components; c++)
-         dst[c].u32 = base[vec4 * 4 + comp + c];
+      const struct draw_buffer_info *cb =
+         (block < PIPE_MAX_CONSTANT_BUFFERS) ? &st->constants[block] : NULL;
+      for (unsigned c = 0; c < intr->def.num_components; c++) {
+         unsigned word = vec4 * 4 + comp + c;
+         if (!cb || !cb->ptr || (word + 1) * 4 > cb->size)
+            dst[c].u32 = 0;
+         else
+            dst[c].u32 = ((const uint32_t *)cb->ptr)[word];
+      }
       break;
    }
    case nir_intrinsic_load_input: {
@@ -180,6 +197,8 @@ interp_intrinsic(struct interp *st, nir_intrinsic_instr *intr)
        * marshalled, component the starting channel. */
       unsigned slot = nir_intrinsic_base(intr) + src_vals(st, intr->src[0])[0].u32;
       unsigned comp = nir_intrinsic_component(intr);
+      assert(slot < st->num_inputs);
+      assert(comp + intr->def.num_components <= 4);
       for (unsigned c = 0; c < intr->def.num_components; c++)
          dst[c].f32 = st->input[slot][comp + c];
       break;
@@ -189,8 +208,12 @@ interp_intrinsic(struct interp *st, nir_intrinsic_instr *intr)
       unsigned comp = nir_intrinsic_component(intr);
       unsigned wrmask = nir_intrinsic_write_mask(intr);
       nir_const_value *s = src_vals(st, intr->src[0]);
-      u_foreach_bit(c, wrmask)
+      assert(slot < st->num_outputs);
+      assert(comp < 4);
+      u_foreach_bit(c, wrmask) {
+         assert(comp + c < 4);
          st->output[slot][comp + c] = s[c].f32;
+      }
       break;
    }
    case nir_intrinsic_load_instance_id:
@@ -209,6 +232,9 @@ interp_intrinsic(struct interp *st, nir_intrinsic_instr *intr)
    case nir_intrinsic_load_first_vertex:
       dst[0].i32 = st->base_vertex;
       break;
+   case nir_intrinsic_load_draw_id:
+      dst[0].u32 = (uint32_t)st->draw_id;
+      break;
    default:
       /* Loudly surface an unhandled intrinsic during calibration rather than
        * silently transforming vertices with garbage. */
@@ -218,34 +244,71 @@ interp_intrinsic(struct interp *st, nir_intrinsic_instr *intr)
    }
 }
 
-/* A phi at a block entry copies the source for the edge the walk arrived on.
- * Structured NIR keeps phis first in the block, so every phi is resolved before
- * any real instruction runs; each phi source names its predecessor block and
- * prev_block holds the one just executed.  Sources read predecessor-block defs,
- * never a sibling phi in this block, so a single top-to-bottom pass preserves
- * the parallel-copy semantics for the loops GLSL produces. */
+/* Resolve one phi's selected predecessor source into a temporary vector. */
 static void
-interp_phi(struct interp *st, nir_phi_instr *phi)
+interp_phi_src_to_tmp(struct interp *st, nir_phi_instr *phi,
+                      nir_const_value *tmp)
 {
-   nir_const_value *dst = def_vals(st, &phi->def);
    nir_foreach_phi_src(src, phi) {
       if (src->pred == st->prev_block) {
          nir_const_value *s = src_vals(st, src->src);
          for (unsigned c = 0; c < phi->def.num_components; c++)
-            dst[c] = s[c];
+            tmp[c] = s[c];
          return;
       }
    }
    UNREACHABLE("draw_vs_nir: phi has no source for the taken predecessor");
 }
 
+/* Phis in a block are parallel copies: a loop header may read a sibling phi
+ * that lives in the same block when the taken edge is a backedge.  Stage every
+ * selected source first, then write destinations, so swaps stay correct. */
+static void
+interp_phis_parallel(struct interp *st, nir_block *block)
+{
+   unsigned nphi = 0;
+   nir_foreach_instr(instr, block) {
+      if (instr->type != nir_instr_type_phi)
+         break;
+      nphi++;
+   }
+   if (!nphi)
+      return;
+
+   nir_const_value (*staged)[NIR_MAX_VEC_COMPONENTS] =
+      malloc(sizeof(*staged) * nphi);
+   assert(staged);
+
+   unsigned i = 0;
+   nir_foreach_instr(instr, block) {
+      if (instr->type != nir_instr_type_phi)
+         break;
+      interp_phi_src_to_tmp(st, nir_instr_as_phi(instr), staged[i]);
+      i++;
+   }
+
+   i = 0;
+   nir_foreach_instr(instr, block) {
+      if (instr->type != nir_instr_type_phi)
+         break;
+      nir_phi_instr *phi = nir_instr_as_phi(instr);
+      nir_const_value *dst = def_vals(st, &phi->def);
+      for (unsigned c = 0; c < phi->def.num_components; c++)
+         dst[c] = staged[i][c];
+      i++;
+   }
+   free(staged);
+}
+
 static enum interp_flow
 interp_block(struct interp *st, nir_block *block)
 {
+   interp_phis_parallel(st, block);
+
    nir_foreach_instr(instr, block) {
       switch (instr->type) {
       case nir_instr_type_phi:
-         interp_phi(st, nir_instr_as_phi(instr));
+         /* Resolved in the parallel stage above. */
          break;
       case nir_instr_type_load_const:
          interp_load_const(st, nir_instr_as_load_const(instr));
@@ -349,12 +412,18 @@ vs_nir_run_linear(struct draw_context *draw,
 {
    struct nir_vertex_shader *nvs = nir_vertex_shader(shader);
    const bool clamp_vertex_color = draw->rasterizer->clamp_vertex_color;
+   /* Sysval-only shaders may pass a NULL input pointer; avoid null arithmetic. */
+   static const float dummy_input_row[1][4];
+
    struct interp st = {
       .nvs = nvs,
       .ssa = nvs->ssa,
       .constants = constants,
       .instance_id = draw->instance_id,
       .base_instance = draw->start_instance,
+      .draw_id = (int)draw->pt.user.drawid,
+      .num_inputs = shader->info.num_inputs,
+      .num_outputs = shader->info.num_outputs,
       .exec_mode = nvs->nir->info.float_controls_execution_mode,
    };
 
@@ -369,7 +438,7 @@ vs_nir_run_linear(struct draw_context *draw,
       st.vertex_id = fetch_elts ? fetch_elts[i] : (int)(i + basevertex);
       st.vertex_id_nobase = fetch_elts ? (int)(fetch_elts[i] - basevertex)
                                        : (int)i;
-      st.input = input;
+      st.input = input ? input : dummy_input_row;
       st.output = output;
       st.prev_block = NULL;
 
@@ -387,7 +456,8 @@ vs_nir_run_linear(struct draw_context *draw,
          }
       }
 
-      input = (const float (*)[4])((const char *)input + input_stride);
+      if (input)
+         input = (const float (*)[4])((const char *)input + input_stride);
       output = (float (*)[4])((char *)output + output_stride);
    }
 }

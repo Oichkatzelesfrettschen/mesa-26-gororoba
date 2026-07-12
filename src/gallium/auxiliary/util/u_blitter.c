@@ -224,9 +224,16 @@ struct blitter_context *util_blitter_create(struct pipe_context *pipe)
    /* U_BLITTER_FORCE_TGSI selects the TGSI constructors on a NIR-capable
     * screen: a bring-up bisection lever that isolates the blitter's NIR
     * shaders from every other suspect when a target regresses. */
-   ctx->use_nir = (pipe->screen->shader_caps[MESA_SHADER_FRAGMENT].supported_irs &
-                   (1 << PIPE_SHADER_IR_NIR)) &&
-                  !debug_get_bool_option("U_BLITTER_FORCE_TGSI", false);
+   /* NIR path builds both a NIR FS and a NIR VS, so both stages must expose
+    * NIR (and nir_options) before we leave the TGSI constructors. */
+   ctx->use_nir =
+      (pipe->screen->shader_caps[MESA_SHADER_FRAGMENT].supported_irs &
+       (1 << PIPE_SHADER_IR_NIR)) &&
+      (pipe->screen->shader_caps[MESA_SHADER_VERTEX].supported_irs &
+       (1 << PIPE_SHADER_IR_NIR)) &&
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT] &&
+      pipe->screen->nir_options[MESA_SHADER_VERTEX] &&
+      !debug_get_bool_option("U_BLITTER_FORCE_TGSI", false);
 
    ctx->has_texture_multisample =
       pipe->screen->caps.texture_multisample;
@@ -1110,6 +1117,7 @@ static void *blitter_get_fs_texfetch_col(struct blitter_context_priv *ctx,
       if (!*shader) {
          assert(!ctx->cached_all_shaders);
          if (ctx->use_nir && !use_txf &&
+             target != PIPE_BUFFER &&
              stype == TGSI_RETURN_TYPE_FLOAT &&
              dtype == TGSI_RETURN_TYPE_FLOAT) {
             *shader = util_make_fragment_tex_shader_nir(
@@ -1205,7 +1213,7 @@ void *blitter_get_fs_texfetch_depth(struct blitter_context_priv *ctx,
          enum tgsi_texture_type tgsi_tex;
          assert(!ctx->cached_all_shaders);
          tgsi_tex = util_pipe_tex_to_tgsi_tex(target, 0);
-         if (ctx->use_nir && !use_txf) {
+         if (ctx->use_nir && !use_txf && target != PIPE_BUFFER) {
             *shader = util_make_fs_blit_z_nir(
                pipe, util_pipe_tex_to_glsl_dim(target),
                util_texture_is_array(target), ctx->use_persp);
