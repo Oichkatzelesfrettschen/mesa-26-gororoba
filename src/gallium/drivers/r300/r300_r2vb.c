@@ -4874,12 +4874,18 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         struct r2vb_reingest_stream ostreams[PIPE_MAX_ATTRIBS];
         int n_ostream = r300_r2vb_reingest_stream_layout(
             r300_vs(r300)->state.ir.nir, -1, ostreams, PIPE_MAX_ATTRIBS);
+        /* Fetch dwords derive from each element's src_format, the same
+         * align(blocksize, 4) the delivery emit computes for LOAD_VBPNTR SIZE
+         * and VAP_VTX_SIZE.  velems->format_size[] is has_tcl-only CSO state
+         * and stays zero on SWTCL until that emit fills it. */
         unsigned fetch_dwords = 0;
         for (int i = 0; i < n_ostream; i++)
             fetch_dwords += (ostreams[i].kind == R2VB_STREAM_PASSTHROUGH &&
                              ostreams[i].src_velem >= 0 &&
                              (unsigned)ostreams[i].src_velem < r300->velems->count)
-                                ? r300->velems->format_size[ostreams[i].src_velem] / 4
+                                ? align(util_format_get_blocksize(
+                                            r300->velems->velem[ostreams[i].src_velem]
+                                                .src_format), 4) / 4
                                 : 4;
         fprintf(stderr,
                 "r2vb_output_reingest mode=per_output outputs=%u app_velems=%u "
