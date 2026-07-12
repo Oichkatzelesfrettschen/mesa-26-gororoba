@@ -11,9 +11,12 @@
 /* Two walks over the straight-line program.  The first records each SSA
  * value's last use position.  The second allocates: at every instruction,
  * slots whose values die here return to the pool first, then the def takes
- * the lowest free slot -- an ALU may read and write the same temp because
- * the US reads all operands before the write lands, so a dying operand's
- * slot is immediately reusable by the def. */
+ * the lowest free slot.  A co-issued R300/R400/R500 fragment ALU (US)
+ * samples every source operand before writing the destination (see the
+ * OUTC/OUTA pair in r300_fragprog_emit.c and the R300 PFS instruction
+ * word layout in r300_reg.h); a dying operand's temp is therefore free for
+ * the def on the same instruction.  VEC expands to a MOV sequence and is
+ * excluded below because sequential MOVs can overwrite a still-needed src. */
 
 bool
 r300_classic_regalloc(void *mem_ctx, const struct r300_classic_program *p,

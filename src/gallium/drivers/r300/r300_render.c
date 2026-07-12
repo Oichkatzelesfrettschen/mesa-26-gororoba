@@ -993,11 +993,13 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
     if (mp_snap)
         r300_mp_snapshot(r300, "post-A");
 
-    /* Pass A's colour writes sit in the CB cache; pass B's texture fetches
-     * do not snoop it.  A read map of each scratch texture forces
-     * r300_texture_transfer_map's detile+blit+flush+BO-wait sequence, which
-     * ensures pass B reads the correct scratch data.  Map one texel and
-     * discard it to force this sequence. */
+    /* Pass A's color writes sit in the CB cache; pass B's texture fetches
+     * do not snoop it.  On RS48x (RS480/RS482/RS485, CHIP_RS480 family) the
+     * measured path that makes the carry visible is a one-texel read map of
+     * each scratch: r300_texture_transfer_map runs detile+blit+flush+BO-wait.
+     * Pixel-exact multipass validation relies on that sequence; it is an
+     * empirical coherency workaround for the IGP CB, not a universal API
+     * guarantee.  Map one texel and discard it to force the sequence. */
     pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
 
     for (unsigned k = 0; k < nrt; k++) {
@@ -1037,6 +1039,12 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
     if (mp_snap)
         r300_mp_snapshot(r300, "post-B");
     r300->multipass_override_fs = NULL;
+    /* r300_pick_fragment_shader assigned pass B into fs->shader for the
+     * override draw.  Restore pass A and dirty the FS atom so a later pick
+     * with matching compare state re-enters the multipass wrapper instead of
+     * drawing pass B alone without scratch. */
+    r300_fs(r300)->shader = pass_a;
+    r300_mark_atom_dirty(r300, &r300->fs);
 
     void *null_cso[4] = { NULL };
     pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, nrt, null_cso);
