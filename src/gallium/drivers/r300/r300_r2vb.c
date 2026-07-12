@@ -1241,9 +1241,29 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
  * topology-gathered draw, or the identity draw->start+i sequence for a plain
  * one -- so this reader always walks the same vertices the position
  * model-gather used. */
+/* Checked size_t add/mul: false when the result would wrap. */
+static bool
+r2vb_size_add(size_t a, size_t b, size_t *out)
+{
+    if (a > SIZE_MAX - b)
+        return false;
+    *out = a + b;
+    return true;
+}
+
+static bool
+r2vb_size_mul(size_t a, size_t b, size_t *out)
+{
+    if (b != 0 && a > SIZE_MAX / b)
+        return false;
+    *out = a * b;
+    return true;
+}
+
 /* True when base + index * stride + format_size fits the bound resource.
  * User vertex buffers have no size in the pipe ABI; they cannot be extent-
- * checked here and remain the caller's contract. */
+ * checked here and remain the caller's contract.  Each term is accumulated
+ * with wrap-checked arithmetic so a large index or offset fails closed. */
 static bool
 r2vb_velem_index_in_bounds(struct r300_context *r300, unsigned e, uint32_t index)
 {
@@ -1258,9 +1278,15 @@ r2vb_velem_index_in_bounds(struct r300_context *r300, unsigned e, uint32_t index
         return true;
     if (!vb->buffer.resource)
         return false;
-    const size_t need = (size_t)vb->buffer_offset + pe->src_offset +
-                        (size_t)index * pe->src_stride +
-                        util_format_get_blocksize(pe->src_format);
+    size_t row, base, need;
+    if (!r2vb_size_mul((size_t)index, pe->src_stride, &row))
+        return false;
+    if (!r2vb_size_add((size_t)vb->buffer_offset, pe->src_offset, &base))
+        return false;
+    if (!r2vb_size_add(base, row, &need))
+        return false;
+    if (!r2vb_size_add(need, util_format_get_blocksize(pe->src_format), &need))
+        return false;
     return need <= (size_t)vb->buffer.resource->width0;
 }
 
@@ -1427,8 +1453,8 @@ static void r2vb_cd_mul(const float *a, const float *b, float *o, int n)
     if (n == 1) { o[0] = a[0] * b[0]; return; }
     int h = n / 2;
     const float *A = a, *B = a + h, *C = b, *D = b + h;
-    /* cj is filled cj[0..h-1] before each use.  The whole array is zeroed so
-     * the unread tail cj[h..15] is a stated zero rather than maybe-uninitialized. */
+    /* cj[0..h-1] is written before each use.  Zero-initialize the full array so
+     * the unread tail cj[h..15] stays a defined zero for static analysis. */
     float ac[16], db[16], da[16], bc[16], cj[16] = {0};
     r2vb_cd_mul(A, C, ac, h);
     for (int i = 0; i < h; i++) cj[i] = (i == 0) ? D[i] : -D[i]; /* conj(D) */
@@ -3309,8 +3335,13 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
     }
     /* Multi-input position needs the restaged producer (one feed slot per
      * input).  The hand-built MVP FS only reads velem[0]; without RESTAGE a
-     * multi-input match would under-feed the transform. */
-    unsigned npos = r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir);
+     * multi-input match would under-feed the transform.  classify_draw can
+     * return CANDIDATE for a non-NIR VS (passthrough is false), so require
+     * NIR before counting position inputs. */
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
+        return false;
+    unsigned npos = r300_r2vb_count_position_inputs(vs->state.ir.nir);
     if (npos > 1 && !restage)
         return false;
     bool al = restage ? r300_vs_is_fragment_aluable(r300, varying) : r300_vs_is_mvp(r300);
@@ -4153,6 +4184,11 @@ r2vb_topology_gather_indices(struct r300_context *r300,
     if (!src)
         return false;
     if (info->index_size == 0) {
+        /* Non-indexed: start + (n_verts-1) must fit uint32_t. */
+        if (n_verts > 0 && draw->start > UINT32_MAX - (n_verts - 1u)) {
+            free(src);
+            return false;
+        }
         for (uint32_t i = 0; i < n_verts; i++)
             src[i] = draw->start + i;
     } else {
@@ -4165,16 +4201,25 @@ r2vb_topology_gather_indices(struct r300_context *r300,
             free(src);
             return false;
         }
-        /* Extent-check the index fetch window for BO-backed index buffers. */
+        /* Extent-check the index fetch window for BO-backed index buffers.
+         * start + n_verts and the byte span use wrap-checked arithmetic. */
+        size_t end_idx, byte_off, need;
+        if (!r2vb_size_add((size_t)draw->start, n_verts, &end_idx)) {
+            free(src);
+            return false;
+        }
+        if (!r2vb_size_mul((size_t)draw->start, info->index_size, &byte_off)) {
+            free(src);
+            return false;
+        }
         if (!info->has_user_indices && info->index.resource) {
-            const size_t need =
-                ((size_t)draw->start + n_verts) * info->index_size;
-            if (need > (size_t)info->index.resource->width0) {
+            if (!r2vb_size_mul(end_idx, info->index_size, &need) ||
+                need > (size_t)info->index.resource->width0) {
                 free(src);
                 return false;
             }
         }
-        ibase += (size_t)draw->start * info->index_size;
+        ibase += byte_off;
         for (uint32_t i = 0; i < n_verts; i++) {
             uint32_t raw;
             switch (info->index_size) {
@@ -4218,22 +4263,29 @@ r2vb_topology_gather_indices(struct r300_context *r300,
                 i2 = seg_start + t * 3 + 2;
             } else if (info->mode == MESA_PRIM_TRIANGLE_STRIP) {
                 /* Gathered output is MESA_PRIM_TRIANGLES with first-vertex
-                 * provoking.  Last-vertex PV rotates odd strips to (t+1,t,t+2)
-                 * so the third source remains last; flatshade_first keeps
-                 * (t,t+1,t+2) so source t is first in every triangle. */
+                 * provoking.  Even triangles stay (t,t+1,t+2).  Odd triangles
+                 * under last-vertex PV rotate to (t+1,t,t+2) so winding of the
+                 * strip is preserved and source t+2 remains last.  flatshade_first
+                 * keeps source t first while preserving that odd-triangle
+                 * winding by rotating (t+1,t,t+2) to (t,t+2,t+1). */
                 const struct r300_rs_state *rs =
                     r300->rs_state.state
                         ? (const struct r300_rs_state *)r300->rs_state.state
                         : NULL;
                 const bool first_pv = rs && rs->rs.flatshade_first;
-                if ((t & 1) == 0 || first_pv) {
+                if ((t & 1) == 0) {
                     i0 = seg_start + t + 0;
                     i1 = seg_start + t + 1;
+                    i2 = seg_start + t + 2;
+                } else if (first_pv) {
+                    i0 = seg_start + t + 0;
+                    i1 = seg_start + t + 2;
+                    i2 = seg_start + t + 1;
                 } else {
                     i0 = seg_start + t + 1;
                     i1 = seg_start + t + 0;
+                    i2 = seg_start + t + 2;
                 }
-                i2 = seg_start + t + 2;
             } else { /* MESA_PRIM_TRIANGLE_FAN */
                 i0 = seg_start;
                 i1 = seg_start + t + 1;
