@@ -212,13 +212,13 @@ offset_scalar_semantically_equal(nir_scalar a, nir_scalar b, unsigned depth)
       case nir_intrinsic_load_global_invocation_id:
       case nir_intrinsic_load_global_invocation_index:
       case nir_intrinsic_load_base_global_invocation_id:
-         /* Root reached.  These intrinsics take no SSA inputs and read a
-          * value that is fixed for the lifetime of one invocation, so any
-          * two instances of the same one -- however many times the lowering
-          * duplicated it -- agree at every point in that invocation's
-          * execution.  The component must still match: .x on one side and
-          * .y on the other is a genuine transpose and must not compare
-          * equal. */
+      case nir_intrinsic_load_workgroup_id:
+      case nir_intrinsic_load_local_invocation_id:
+      case nir_intrinsic_load_local_invocation_index:
+      case nir_intrinsic_load_num_workgroups:
+         /* Root reached.  Includes pre-lower global-id forms and the
+          * workgroup/local-id roots nir_lower_compute_system_values emits
+          * when has_cs_global_id is false.  Component must still match. */
          return a.comp == b.comp;
       default:
          /* Any other intrinsic reads state this walker cannot prove
@@ -243,6 +243,14 @@ offset_scalar_semantically_equal(nir_scalar a, nir_scalar b, unsigned depth)
     * the same formula to load and store alike. */
    const unsigned num_inputs = nir_op_infos[alu_a->op].num_inputs;
    for (unsigned i = 0; i < num_inputs; i++) {
+      /* nir_scalar_chase_alu_src requires sized ALU inputs of size 1;
+       * vector/horizontal ops (fdot, fdph, ...) are not scalar-safe. */
+      if (nir_op_infos[alu_a->op].input_sizes[i] != 0 &&
+          nir_op_infos[alu_a->op].input_sizes[i] != 1)
+         return false;
+      if (nir_ssa_alu_instr_src_components(alu_a, i) != 1 ||
+          nir_ssa_alu_instr_src_components(alu_b, i) != 1)
+         return false;
       nir_scalar src_a = nir_scalar_chase_alu_src(a, i);
       nir_scalar src_b = nir_scalar_chase_alu_src(b, i);
       if (!offset_scalar_semantically_equal(src_a, src_b, depth + 1))
@@ -322,7 +330,8 @@ r300_nir_detect_identity_map(const nir_shader *s,
     * -- a silent value miscompute. */
    const bool offset_eq =
       offset_scalar_semantically_equal(nir_get_scalar(store->src[2].ssa, 0),
-                                       nir_get_scalar(load->src[1].ssa, 0), 0);
+                                       nir_get_scalar(load->src[1].ssa, 0), 0) &&
+      nir_intrinsic_offset_shift(store) == nir_intrinsic_offset_shift(load);
    if (identity_map_debug_enabled())
       fprintf(stderr,
               "ident_map: detect inner store_val_ssa=%p load_def=%p "

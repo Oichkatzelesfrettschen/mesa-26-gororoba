@@ -180,6 +180,12 @@ unsigned
 r300_mp_find_cuts(nir_shader *nir, struct r300_mp_partition *cands,
                   unsigned max_cands)
 {
+    /* costs[] is fixed at R300_MP_MAX_CANDIDATES entries. */
+    if (max_cands > R300_MP_MAX_CANDIDATES)
+        max_cands = R300_MP_MAX_CANDIDATES;
+    if (!max_cands)
+        return 0;
+
     nir_function_impl *impl = nir_shader_get_entrypoint(nir);
     if (!exec_list_is_singular(&impl->body))
         return 0;

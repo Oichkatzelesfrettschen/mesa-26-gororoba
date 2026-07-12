@@ -2241,12 +2241,12 @@ static void r300_render_draw_arrays(struct vbuf_render* render,
      * geometrically identical to the vertex-list form while switching the VAP
      * to indexed primitive walking (and, at gate 2, disabling vertex reuse). */
     if (r300_swtcl_indexed_control() && start == 0 && count <= 65535) {
-        uint16_t *idx = malloc(count * sizeof(uint16_t));
+        uint16_t *idx = MALLOC(count * sizeof(uint16_t));
         if (idx) {
             for (unsigned k = 0; k < count; k++)
                 idx[k] = (uint16_t)k;
             r300_render_draw_elements(render, idx, count);
-            free(idx);
+            FREE(idx);
             return;
         }
     }
