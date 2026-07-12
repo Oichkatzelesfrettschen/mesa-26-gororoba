@@ -2932,7 +2932,34 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
             fits = r300_r2vb_measure_pass_fits(r300, vs->state.ir.nir,
                                                (gl_varying_slot)dv, "varying");
     }
+    /* Forced-split skeleton (R300_R2VB_FORCE_SPLIT, requires the spill1
+     * gate): an under-budget position pass is pushed through the same
+     * single-vec4 cut, carry transport, and two-pass producer machinery the
+     * over-budget escape uses.  Both arms of the matched-shader fence-wedge
+     * cell then differ ONLY in pass cardinality -- one shader, one routing
+     * lane, single-pass versus forced four-pass -- separating the split
+     * machinery from the heavy recurrence's instruction shape.  A shader
+     * with no admissible cut keeps its FITS verdict, so the gate cannot
+     * regress an ordinary draw. */
     if (fits) {
+        static int force_split = -1;
+        if (force_split < 0) {
+            const char *e = getenv("R300_R2VB_FORCE_SPLIT");
+            force_split = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        }
+        if (force_split && !allow_computed_varying &&
+            r300_r2vb_budget_escape_enabled()) {
+            unsigned num_in = r300_r2vb_count_position_inputs(vs->state.ir.nir);
+            if (r300_r2vb_split_admitted(r300, vs->state.ir.nir, num_in)) {
+                fprintf(stderr,
+                        "r2vb_force_split under_budget=1 admitted=1\n");
+                *memo = R300_R2VB_ADMIT_SPLIT;
+                return true;
+            }
+            fprintf(stderr,
+                    "r2vb_force_split under_budget=1 admitted=0 (no cut; "
+                    "single-pass kept)\n");
+        }
         *memo = R300_R2VB_ADMIT_FITS;
         return true;
     }
