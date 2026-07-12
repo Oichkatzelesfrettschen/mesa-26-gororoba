@@ -490,6 +490,14 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
                 "rewrite set; rejecting shader\n");
         ralloc_free(nir);
         vs->draw_vs = NULL;
+        /* Draw skips when shader->dummy is set; leave a compile-failure
+         * sentinel so a NULL draw_vs cannot be bound silently. */
+        if (vs->shader) {
+            vs->shader->dummy = true;
+            free(vs->shader->error);
+            vs->shader->error = strdup(
+                "SW-TCL VS uses bitwise ops outside the FP24-exact rewrite set");
+        }
         return;
     }
     NIR_PASS(_, nir, nir_lower_int_to_float);

@@ -1303,11 +1303,14 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
  * count r300->vertex_info declares -- the per-output reconstruction builds one
  * vertex element per VS output, so any shortfall is exactly the under-fed
  * fetch class where VAP_VTX_SIZE trails the VAP_OUTPUT_VTX_FMT tuple and the
- * GA latches waiting for the missing dwords; VAP_VTX_SIZE equals
- * sum(format_size/4) over the bound elements; and the position element's
- * bound resource is the clip BO the producer published (r2vb_capture_clip,
- * set alongside r2vb_producer_kind -- not r2vb_slot_pos_bo, which is the
- * producer's slot-pixel input stream).
+ * GA latches waiting for the missing dwords; VAP_VTX_SIZE equals the
+ * per-element aligned-blocksize dword sum
+ * (align(util_format_get_blocksize(src_format), 4) / 4) over the bound
+ * elements and, for the R2VB delivery that emits FP32x4 outputs, also equals
+ * 4 * vertex_info.num_attribs (the VAP output-tuple dword count); and the
+ * position element's bound resource is the clip BO the producer published
+ * (r2vb_capture_clip, set alongside r2vb_producer_kind -- not
+ * r2vb_slot_pos_bo, which is the producer's slot-pixel input stream).
  * Recorded-but-not-enforced clauses (logged for the offline decode, too fragile
  * to hard-gate on a partial PSC parse): the VAP declares POS_PRESENT, and every
  * RS source vector has a producing PSC stream element.  Returns true when the
@@ -1321,12 +1324,19 @@ static bool r300_r2vb_capture_preflight(struct r300_context *r300,
     struct r300_rs_block *rs = (struct r300_rs_block *)r300->rs_block_state.state;
     unsigned num_attribs = r300->vertex_info.num_attribs;
 
-    unsigned sz_sum = 0;
+    unsigned fetch_sum = 0;
     for (unsigned i = 0; ve && i < ve->count; i++)
-        sz_sum += align(util_format_get_blocksize(ve->velem[i].src_format), 4) / 4;
+        fetch_sum +=
+            align(util_format_get_blocksize(ve->velem[i].src_format), 4) / 4;
+
+    /* Independent of the fetch loop: VAP output tuple is one FP32x4 per
+     * declared attrib.  The RS482 hang was VAP_VTX_SIZE=8 under a 12-dword
+     * OUTPUT_VTX_FMT contract (two passthroughs collapsed to one stream). */
+    unsigned tuple_dwords = num_attribs * 4u;
 
     bool count_match = ve && ve->count == num_attribs;
-    bool vtxsize_match = sz_sum == vap_vtx_size;
+    bool fetch_match = fetch_sum == vap_vtx_size;
+    bool tuple_match = vap_vtx_size == tuple_dwords;
 
     /* The VAP packs VARYING_SLOT_POS first, so velem[0] is the position element;
      * its bound vertex buffer must be the clip BO the producer published.  A
@@ -1342,24 +1352,26 @@ static bool r300_r2vb_capture_preflight(struct r300_context *r300,
     bool pos_present = rs && (rs->vap_out_vtx_fmt[0] &
                               R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
 
-    bool ok = count_match && vtxsize_match && pos_to_clip;
+    bool ok = count_match && fetch_match && tuple_match && pos_to_clip;
 
     fprintf(stderr,
             "r2vb_delivery_capture invariant=%s producer=%s velems_count=%u "
-            "num_attribs=%u vap_vtx_size=%u format_size_sum=%u pos_res=%p "
-            "clip_bo=%p enforce_count=%d enforce_vtxsize=%d "
-            "enforce_pos_to_clip=%d record_pos_present=%d\n",
+            "num_attribs=%u vap_vtx_size=%u fetch_dword_sum=%u "
+            "tuple_dwords=%u pos_res=%p clip_bo=%p enforce_count=%d "
+            "enforce_fetch=%d enforce_tuple=%d enforce_pos_to_clip=%d "
+            "record_pos_present=%d\n",
             ok ? "HOLD" : "FAIL",
             kind == R300_R2VB_PRODUCER_SPLIT ? "split" : "single",
-            ve ? ve->count : 0, num_attribs, vap_vtx_size, sz_sum,
-            (void *)pos_res, (void *)capture_clip,
-            count_match, vtxsize_match, pos_to_clip, pos_present);
+            ve ? ve->count : 0, num_attribs, vap_vtx_size, fetch_sum,
+            tuple_dwords, (void *)pos_res, (void *)capture_clip,
+            count_match, fetch_match, tuple_match, pos_to_clip, pos_present);
 
     if (!ok)
         fprintf(stderr,
                 "r2vb_delivery_capture refuse clause=%s (falling back to gallivm)\n",
                 !count_match ? "count==num_attribs" :
-                !vtxsize_match ? "vap_vtx_size==sum(format_size/4)" :
+                !fetch_match ? "vap_vtx_size==align(blocksize,4)/4 sum" :
+                !tuple_match ? "vap_vtx_size==4*num_attribs" :
                 "position->clip_bo");
     return ok;
 }
@@ -1696,23 +1708,25 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
             r300->velems->vertex_size_dwords += fs / 4;
             vap_vtx_size += fs / 4;
         }
-        /* Dword-consistency gate on the emitted vertex size: the VAP_VTX_SIZE
-         * register write below and the LOAD_VBPNTR SIZE fields
-         * r300_emit_vertex_arrays derives from format_size[] must describe the
-         * same per-vertex fetch, or the GA waits forever for dwords the arrays
-         * never deliver.  The sum runs over the actual per-element fetch
-         * sizes: a narrow source format fetches fewer than four dwords and the
-         * PSC swizzle expands it, so a four-dwords-per-output shortcut
-         * over-counts.  A mismatch refuses the delivery to the gallivm
-         * fallback. */
+        /* Dword-consistency gate: VAP_VTX_SIZE must match both the LOAD_VBPNTR
+         * fetch sum (align(blocksize,4)/4 per element) and the VAP output
+         * tuple (4 dwords per vertex_info attrib for the FP32x4 delivery
+         * reconstruction).  Comparing fetch_sum to vap_vtx_size alone is
+         * tautological when both are filled from the same loop; the tuple
+         * clause is the independent check that caught the RS482 GA hang
+         * (8-dword stream under a 12-dword OUTPUT_VTX_FMT contract). */
         unsigned fetch_dword_sum = 0;
         for (unsigned i = 0; i < r300->velems->count; i++)
             fetch_dword_sum += r300->velems->format_size[i] / 4;
-        if (fetch_dword_sum != vap_vtx_size) {
+        unsigned tuple_dwords = r300->vertex_info.num_attribs * 4u;
+        if (fetch_dword_sum != vap_vtx_size ||
+            vap_vtx_size != tuple_dwords) {
             fprintf(stderr,
                     "r2vb_delivery refuse vap_vtx_size=%u fetch_dword_sum=%u "
-                    "velems_count=%u (register and array fetch disagree)\n",
-                    vap_vtx_size, fetch_dword_sum, r300->velems->count);
+                    "tuple_dwords=%u velems_count=%u num_attribs=%u "
+                    "(fetch or OUTPUT_VTX_FMT tuple disagree)\n",
+                    vap_vtx_size, fetch_dword_sum, tuple_dwords,
+                    r300->velems->count, r300->vertex_info.num_attribs);
             ok = false;
         }
         /* Producer-fed delivery capture preflight: the position-only invariant
