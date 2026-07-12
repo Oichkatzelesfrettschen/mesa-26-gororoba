@@ -2612,11 +2612,14 @@ r3v_synth_load_texcoord(nir_builder *b)
 
 /* Push-window constant read: the dispatch replay binds the 128-byte push
  * window at FS CONST[0]; a load at byte offset N in UBO 0 is the NIR
- * spelling of CONST[N/16] channel (N%16)/4. */
+ * spelling of CONST[N/16] channel (N%16)/4.  Declare the sized block-0
+ * UBO so ntr_setup_uniforms sizes the constant file from the interface
+ * type; load_ubo alone does not carry that size. */
 static nir_def *
 r3v_synth_push_load(nir_builder *b, unsigned num_components,
                     unsigned byte_offset)
 {
+   r3v_declare_block0_ubo(b->shader, 128);
    return nir_load_ubo(b, num_components, 32, nir_imm_int(b, 0),
                        nir_imm_int(b, byte_offset),
                        .align_mul = 4, .range_base = 0, .range = 128);
@@ -2625,12 +2628,12 @@ r3v_synth_push_load(nir_builder *b, unsigned num_components,
 static nir_def *
 r3v_synth_sample2d(nir_builder *b, unsigned binding, nir_def *coord)
 {
-   char name[8];
-   snprintf(name, sizeof(name), "samp%u", binding);
+   /* Fixed sampler name: binding is recorded on the variable; unique
+    * string names are not required for single-sampler synth shaders. */
    nir_variable *samp = nir_variable_create(
       b->shader, nir_var_uniform,
       glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
-      name);
+      "samp");
    samp->data.binding = binding;
    nir_deref_instr *d = nir_build_deref_var(b, samp);
    return nir_tex(b, coord, .texture_deref = d, .sampler_deref = d);
@@ -3055,7 +3058,7 @@ r3v_binary_transcendental_synthesize_shaders(struct r3v_device *device,
  * four bytes are recovered exactly with round(c*255) (the UNORM8 value), each
  * output lane is gathered from its source byte(s) with the byte distance q as a
  * channel permutation, and the within-byte bit move r combines the low 8-r bits
- * of one byte with the high r bits of its neighbour.  Every intermediate is a
+ * of one byte with the high r bits of its neighbor.  Every intermediate is a
  * byte times a power of two below 2^17, an exact FP24 integer, so the result is
  * bit-exact.  The carry term vanishes for r = 0 (pure byte shift). */
 static void *
@@ -3077,9 +3080,13 @@ r3v_synthesize_shift_logical_fs(struct pipe_context *pipe, bool is_left,
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
                                                   "r3v_shift_logical");
    nir_def *tc = r3v_synth_load_texcoord(&b);
-   /* B = round(tex * 255): the four byte values, 0..255. */
-   nir_def *B = nir_fround_even(
-      &b, nir_fmul_imm(&b, r3v_synth_sample2d(&b, 0, tc), 255.0));
+   /* B = floor(tex * 255 + 0.5): the four byte values, 0..255.  Match the
+    * UNORM snap used by the other replay shaders so plane-equation
+    * rounding just below an integer still lands on the intended byte. */
+   nir_def *B = nir_ffloor(
+      &b, nir_fadd_imm(&b,
+                       nir_fmul_imm(&b, r3v_synth_sample2d(&b, 0, tc), 255.0),
+                       0.5));
 
    /* Per output lane, the main source byte is q away (toward the LSB for a
     * left shift, toward the MSB for a right shift) and the carry byte is one
@@ -3651,7 +3658,7 @@ r3v_synthesize_affine_iota_fs(struct pipe_context *pipe)
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
                                                   "r3v_affine_iota");
    nir_def *tc = r3v_synth_load_texcoord(&b);
-   /* CONST[0] = (width, stride, offset, unused) in the push window. */
+   /* CONST[0] = (width, stride, offset) in the push window (3 components). */
    nir_def *cst = r3v_synth_push_load(&b, 3, 0);
 
    /* floor(tc.xy): SNAP the interpolated texel-center varying back to
@@ -4587,7 +4594,7 @@ r3v_synthesize_multitap_gather_fs(struct pipe_context *pipe)
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
                                                   "r3v_multitap_gather");
    nir_def *tc = r3v_synth_load_texcoord(&b);
-   /* CONST[0].xy = the neighbour texel displacement in the push window. */
+   /* CONST[0].xy = the neighbor texel displacement in the push window. */
    nir_def *delta = r3v_synth_push_load(&b, 2, 0);
 
    nir_def *t_c = nir_fmul_imm(&b, r3v_synth_sample2d(&b, 0, tc), 255.0);

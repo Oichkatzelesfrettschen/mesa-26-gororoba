@@ -147,9 +147,10 @@ help:
 	@echo "  clean             rm -rf \$$(BUILDDIR) (active profile only)"
 	@echo "  clean-all         rm -rf the whole repo-local build/ tree (all profiles)"
 	@echo "  distclean         clean + archive \$$(PREFIX) aside"
-	@echo "  audit             verify host tools, env policy, and profile requirements"
+	@echo "  audit             verify host tools, env policy, profile-audit, and profile requirements"
+	@echo "  profile-audit     fail when a profile selects drivers outside its allowlist row"
 	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
-	@echo "  artifact-check    list installed Terakan/r600 artifacts under \$$(PREFIX)"
+	@echo "  artifact-check    list installed Terakan/r600/r3v artifacts under \$$(PREFIX); warn on stale r300 ICDs"
 	@echo "  test              ninja -C \$$(BUILDDIR) test"
 	@echo "  rebuild-<profile> clean + configure + build for that profile"
 	@echo "  list              show available PROFILEs and HOSTENVs"
@@ -193,7 +194,7 @@ audit-werror:
 	if [ $$rc -eq 0 ]; then echo "OK    audit-werror: all profiles werror=true; prime/-o0 tiers carry no /usr activation"; fi; \
 	exit $$rc
 
-audit: vostro-prefix-check audit-werror
+audit: vostro-prefix-check audit-werror profile-audit
 	@failures=0; warnings=0; \
 	fail() { echo "FAIL  $$*" >&2; failures=$$((failures + 1)); }; \
 	warn() { echo "WARN  $$*" >&2; warnings=$$((warnings + 1)); }; \
@@ -514,6 +515,14 @@ artifact-check: vostro-prefix-check
 		   -name "libdril_dri.so" -o -name "libgallium-*.so" -o \
 		   -name "terascale_icd*.json" -o -name "r3v_icd*.json" \) \
 		-printf "%p %TY-%Tm-%Td %TH:%TM:%TS %s bytes\n" | sort
+	@stale=$$(find $(PREFIX) -maxdepth 6 -type f \
+		\( -name "libvulkan_r300.so" -o -name "r300_icd*.json" -o \
+		   -name "r300_devenv_icd*.json" \) 2>/dev/null | sort); \
+	if [ -n "$$stale" ]; then \
+		echo "WARN  stale pre-rename r300 Vulkan ICD artifacts still under $(PREFIX):" >&2; \
+		echo "$$stale" | sed 's/^/WARN    /' >&2; \
+		echo "WARN  Meson install does not remove absent files; the Vulkan loader still scans icd.d/*.json" >&2; \
+	fi
 
 test:
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \

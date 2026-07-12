@@ -18,6 +18,8 @@
 #include "util/format/u_format.h"
 #include "util/u_draw.h"
 #include "util/u_memory.h"
+#include "util/u_debug.h"
+#include "util/os_misc.h"
 #include "util/u_upload_mgr.h"
 #include "util/u_prim.h"
 
@@ -32,6 +34,7 @@
 
 #include <inttypes.h>
 #include <limits.h>
+#include <string.h>
 
 #define IMMD_DWORDS 32
 
@@ -2436,35 +2439,32 @@ void r300_blitter_draw_rectangle(struct blitter_context *blitter,
                       (type == UTIL_BLITTER_ATTRIB_TEXCOORD_XY ? 7 : 0);
     CS_LOCALS(r300);
 
-    /* This function renders the rectangle as a single hardware point that the
-     * GA expands to GA_POINT_SIZE (the "rectangular point sprite" above), and
-     * for TEXCOORD_XY it additionally turns on GB_POINT_STUFF_ENABLE so the GA
-     * stuffs texcoords across the expanded point.  That point-sprite vertex
-     * frontend path locks up SWTCL parts: the ATTRIB_NONE case has fallen back
-     * to the plain-quad util_blitter path since 2013 (7969b567bd43, "fix a
-     * lockup in MSAA resolve"), but the TEXCOORD_XY case was left on the
-     * point-sprite path.  On RS480-class SWTCL (has_tcl=false) a TEXCOORD_XY
-     * blit -- e.g. a format-converting texture copy driving a texture upload or
-     * readback -- wedges the vertex frontend (RBBM latches CP+VAP+GA busy,
-     * backend idle) before any application draw.  Route TEXCOORD_XY through the
-     * plain-quad path too on SWTCL, which draws a real two-triangle quad with
-     * per-vertex texcoords and completes.  Also fall back for TEXCOORD_XYZW and
-     * instanced draws this function does not handle. */
-
-    /* R300_SWTCL_WEDGE_TEXCOORD_BLIT re-emits the pre-#996 hazardous path: it
-     * keeps a SWTCL TEXCOORD_XY rectangle on the point-sprite frontend so it
-     * recreates the exact non-draining VAP/GA wedge (RBBM CP+VAP+GA busy,
-     * backend idle) that #996 fixed.  This is the fault source for the RS480
-     * wedged-3D reset rung (WD3B); the plain-quad fallback stays the default and
-     * every other caller is unaffected.  It prints the blit tuple before submit
-     * so the run proves it exercised the hazardous path. */
+    /* Point-sprite path: one hardware point expanded by GA_POINT_SIZE, with
+     * GB_POINT_STUFF_ENABLE stuffing texcoords for TEXCOORD_XY.  On
+     * RS480-class SWTCL (has_tcl=false) that frontend wedges (RBBM latches
+     * CP+VAP+GA busy, backend idle) for TEXCOORD_XY format-converting
+     * blits.  Route ATTRIB_NONE and TEXCOORD_XY through util_blitter's
+     * plain two-triangle quad on SWTCL.  TEXCOORD_XYZW and instanced
+     * draws also use the quad path because this emitter does not handle
+     * them.
+     *
+     * R300_SWTCL_WEDGE_TEXCOORD_BLIT=1 is an exact hazard opt-in that
+     * keeps a SWTCL TEXCOORD_XY rectangle on the point-sprite frontend so
+     * reset validation can reproduce the non-draining VAP/GA wedge.  The
+     * plain-quad path stays the default for every other caller. */
+    static int swtcl_wedge_blit_gate = -1;
+    if (swtcl_wedge_blit_gate < 0) {
+        const char *e = os_get_option("R300_SWTCL_WEDGE_TEXCOORD_BLIT");
+        swtcl_wedge_blit_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
     bool swtcl_wedge_texcoord =
         !r300->screen->caps.has_tcl &&
         type == UTIL_BLITTER_ATTRIB_TEXCOORD_XY &&
-        debug_get_bool_option("R300_SWTCL_WEDGE_TEXCOORD_BLIT", false);
+        swtcl_wedge_blit_gate == 1;
     if (swtcl_wedge_texcoord)
         fprintf(stderr,
-                "[R300_SWTCL_WEDGE] pre-#996 TEXCOORD_XY point-sprite blit: "
+                "[R300_SWTCL_WEDGE] TEXCOORD_XY point-sprite blit "
+                "(R300_SWTCL_WEDGE_TEXCOORD_BLIT=1): "
                 "has_tcl=0 type=TEXCOORD_XY rect=(%d,%d)-(%d,%d) -> native "
                 "point-sprite frontend (expected VAP/GA wedge)\n",
                 x1, y1, x2, y2);

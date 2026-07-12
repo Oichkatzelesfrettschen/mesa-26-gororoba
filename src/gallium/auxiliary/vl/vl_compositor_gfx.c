@@ -29,6 +29,7 @@
 
 #include "util/compiler.h"
 #include "pipe/p_context.h"
+#include "pipe/p_screen.h"
 
 #include "util/u_memory.h"
 #include "util/u_draw.h"
