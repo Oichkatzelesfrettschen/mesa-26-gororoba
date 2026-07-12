@@ -3242,16 +3242,8 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
  * from vbo) and the BO oracle (vbo holds the right values) prove different halves;
  * together they establish the re-ingest fetches correct computed-varying data
  * without depending on the raster. */
-/* One re-ingest vertex stream: a VS output and where TCL_BYPASS fetches its data.
- * Streams are ordered position first then varyings by ascending gl_varying_slot --
- * VARYING_SLOT_POS is 0, so an ascending-slot sort is exactly the output-vector
- * order the VAP packs -- so stream i drives velem i / PSC stream i / output vec i. */
-enum r2vb_reingest_kind { R2VB_STREAM_POS, R2VB_STREAM_COMPUTED, R2VB_STREAM_PASSTHROUGH };
-struct r2vb_reingest_stream {
-    gl_varying_slot slot;
-    enum r2vb_reingest_kind kind;
-    int src_velem;   /* passthrough: app velem index of the source input; else -1 */
-};
+/* r2vb_reingest_kind / r2vb_reingest_stream live in r300_r2vb.h so the host
+ * layout unit can enumerate against the same types. */
 
 /* The app velem index feeding input var IN: its rank among the VS inputs in
  * ascending location order, because r300 binds velem[k] to the k-th input in that
@@ -3266,16 +3258,9 @@ static int r300_r2vb_input_velem_index(nir_shader *vs, const nir_variable *in)
     return rank;
 }
 
-/* Enumerate the bound VS's outputs into output-vector order and classify each:
- * position, the one computed varying (slot == computed_slot, fetched from the
- * producer BO), or a passthrough (the store value is a straight load of an input
- * var, fetched from that input's application buffer).  A passthrough records the
- * app velem its source maps to.  Returns the stream count, or -1 if a varying is
- * neither the computed one nor a mappable passthrough -- the caller then refuses
- * the submit, the hard gate that declines an unhandled shape rather than draw a
- * mismatched layout. */
-static int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
-                                            struct r2vb_reingest_stream *out, unsigned max)
+/* Contract comment at the declaration in r300_r2vb.h. */
+int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
+                                     struct r2vb_reingest_stream *out, unsigned max)
 {
     nir_function_impl *impl = nir_shader_get_entrypoint(vs);
     if (!impl)
@@ -3599,6 +3584,19 @@ static bool r2vb_single_cs_enabled(void)
     static int cached = -1;
     if (cached < 0) {
         const char *e = getenv("R300_R2VB_MVP_SINGLECS");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return cached;
+}
+
+/* R300_R2VB_OUTPUT_REINGEST=1 routes the single-input no-computed-varying
+ * delivery through the per-output reconstruction instead of the velem[0]-redirect
+ * multi-stream tail.  Default off; gate-off keeps the tail byte-identical. */
+static bool r300_r2vb_output_reingest_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_R2VB_OUTPUT_REINGEST");
         cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
     return cached;
@@ -4857,6 +4855,39 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
          * velem > output mismatch and wedged the ring.  R300_R2VB_INSPECT dumps the
          * wiring and skips the draw; without it one gated submit runs. */
         bool ok = r300_r2vb_reingest_outputs(r300, einfo, draw, clip, NULL, -1);
+        pipe_resource_reference(&clip, NULL);
+        free(model);
+        return ok;
+    }
+
+    /* Per-output re-ingest for the single-input no-computed-varying delivery
+     * (R300_R2VB_OUTPUT_REINGEST).  The multi-stream tail below redirects only
+     * velem[0] to the clip BO and keeps the application input-element set, so a
+     * VS whose outputs outnumber its distinct sources -- two passthrough
+     * varyings fed by one application vector -- fetches fewer dwords than
+     * VAP_OUTPUT_VTX_FMT advertises: VAP_VTX_SIZE under-feeds the output tuple
+     * and the GA waits forever for the missing vertex dwords.  Rebuilding one
+     * vertex element per VS output lets two outputs copy the same source velem
+     * (same buffer, same offset), so the fetch dword sum equals the output
+     * tuple and the proven RS program is untouched. */
+    if (r300_r2vb_output_reingest_enabled()) {
+        struct r2vb_reingest_stream ostreams[PIPE_MAX_ATTRIBS];
+        int n_ostream = r300_r2vb_reingest_stream_layout(
+            r300_vs(r300)->state.ir.nir, -1, ostreams, PIPE_MAX_ATTRIBS);
+        unsigned fetch_dwords = 0;
+        for (int i = 0; i < n_ostream; i++)
+            fetch_dwords += (ostreams[i].kind == R2VB_STREAM_PASSTHROUGH &&
+                             ostreams[i].src_velem >= 0 &&
+                             (unsigned)ostreams[i].src_velem < r300->velems->count)
+                                ? r300->velems->format_size[ostreams[i].src_velem] / 4
+                                : 4;
+        fprintf(stderr,
+                "r2vb_output_reingest mode=per_output outputs=%u app_velems=%u "
+                "stream_layout=%d fetch_dwords=%u\n",
+                r300->vertex_info.num_attribs, r300->velems->count, n_ostream,
+                fetch_dwords);
+        bool ok = r300_r2vb_reingest_outputs(r300, einfo, ddraw, clip, NULL, -1);
+        r2vb_edge_streams_release(r300);
         pipe_resource_reference(&clip, NULL);
         free(model);
         return ok;

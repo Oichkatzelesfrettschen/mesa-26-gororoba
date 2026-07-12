@@ -9,11 +9,38 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "compiler/shader_enums.h"
+
 struct r300_context;
 struct r300_resource;
 struct pipe_fence_handle;
 struct pipe_draw_info;
 struct pipe_draw_start_count_bias;
+struct pipe_resource;
+struct nir_shader;
+
+/* One re-ingest vertex stream: a VS output and where TCL_BYPASS fetches its data.
+ * Streams are ordered position first then varyings by ascending gl_varying_slot --
+ * VARYING_SLOT_POS is 0, so an ascending-slot sort is exactly the output-vector
+ * order the VAP packs -- so stream i drives velem i / PSC stream i / output vec i. */
+enum r2vb_reingest_kind { R2VB_STREAM_POS, R2VB_STREAM_COMPUTED, R2VB_STREAM_PASSTHROUGH };
+struct r2vb_reingest_stream {
+    gl_varying_slot slot;
+    enum r2vb_reingest_kind kind;
+    int src_velem;   /* passthrough: app velem index of the source input; else -1 */
+};
+
+/* Enumerate the bound VS's outputs into output-vector order and classify each:
+ * position, the one computed varying (slot == computed_slot, fetched from the
+ * producer BO), or a passthrough (the store value is a straight load of an input
+ * var, fetched from that input's application buffer).  Two outputs may record the
+ * same source velem -- each still gets its own stream, because each populates its
+ * own VAP output vector.  Returns the stream count, or -1 if a varying is neither
+ * the computed one nor a mappable passthrough -- the caller then refuses the
+ * submit rather than draw a mismatched layout.  Exported for the host layout
+ * unit (r300_r2vb_reingest_layout_test). */
+int r300_r2vb_reingest_stream_layout(struct nir_shader *vs, int computed_slot,
+                                     struct r2vb_reingest_stream *out, unsigned max);
 
 /* Verdict from the simple-draw-class classifier: whether a draw is a candidate
  * for the fragment-ALU R2VB vertex route, or the reason it is not. */
