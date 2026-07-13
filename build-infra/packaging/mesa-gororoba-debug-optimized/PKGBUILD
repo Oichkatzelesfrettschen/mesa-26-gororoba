@@ -3,8 +3,9 @@
 # install target: debugoptimized -O2 -g3, assertions live, full debug info, frame
 # pointers, and the complete r300 feature surface (desktop GL 2.1 + GLES1/2,
 # GLVND, EGL/GBM, GLX-DRI, gallium-va MPEG-2 decode, gallium-xa XA tracker /
-# libxatracker.so, ati_r300/r3v Vulkan ICD, overlay + device-select Vulkan
-# layers, nir/glsl offline compiler tools, valgrind annotations, libunwind
+# libxatracker.so, ati_r300/r3v Vulkan ICD, anti-lag + device-select implicit
+# Vulkan layers, an /opt-scoped overlay, nir/glsl offline compiler tools,
+# valgrind annotations, libunwind
 # backtraces, perfetto CPU timeline, no LLVM).
 #
 # Tier map (all build the same full r300 surface; this package is the default):
@@ -45,9 +46,9 @@
 # probe without changing the system default.
 pkgname=mesa-gororoba-debug-optimized
 pkgver=26.2.0
-pkgrel=14
+pkgrel=15
 epoch=2
-pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, ati_r300/r3v ICD + overlay/device-select Vulkan layers, files under /opt'
+pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, ati_r300/r3v ICD + anti-lag/device-select implicit Vulkan layers, files under /opt'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -65,24 +66,18 @@ makedepends=(meson ninja)
 # co-installation (the /usr symlinks would clash with stock mesa's real files);
 # replaces makes `pacman -U` migrate cleanly off whichever Mesa is present.
 #
-# Vulkan layers: the 2_ profile builds the generic mesa overlay + device-select
-# layers (VkLayer_MESA_overlay, VkLayer_MESA_device_select).  The device-select
-# layer is the implicit layer that vulkan-mesa-implicit-layers ships, and
-# lib32-vulkan-mesa-implicit-layers depends on that package by name.  Own the
-# layer /usr paths and provide vulkan-mesa-implicit-layers so pacman -U takes the
-# implicit-layer slot over cleanly while the by-name lib32 dependency stays
-# satisfied by this package.  Provide the implicit-layers virtual specifically
-# (not the broader vulkan-mesa-layers / vulkan-mesa-device-select names): the
-# implicit-layers package is the only one with a by-name dependent, so dropping
-# its provide while replacing it is what breaks lib32-vulkan-mesa-implicit-layers
-# ("failed to prepare transaction").  The explicit overlay layer has no such
-# dependent; its files are simply owned here without a provide.
+# The profile builds Arch's complete implicit-layer pair, anti-lag plus
+# device-select, and also builds overlay for /opt-scoped debugging.  Only the
+# implicit pair is activated under /usr.  The legacy vulkan-mesa-device-select
+# provide preserves old lib32 dependencies during the package rename; the
+# explicit vulkan-mesa-layers package keeps sole ownership of /usr overlay files.
 provides=(
   "mesa=${epoch}:${pkgver}-${pkgrel}"
   "mesa-gororoba-debug=${epoch}:${pkgver}-${pkgrel}"
   "libva-mesa-driver=${epoch}:${pkgver}-${pkgrel}"
   "mesa-libgl=${epoch}:${pkgver}-${pkgrel}"
   "vulkan-mesa-implicit-layers=${epoch}:${pkgver}-${pkgrel}"
+  "vulkan-mesa-device-select=${epoch}:${pkgver}-${pkgrel}"
   libva-driver
   opengl-driver
   vulkan-driver
@@ -90,8 +85,8 @@ provides=(
 )
 # This package stages only x86_64 artifacts. A matching lib32 package is
 # required before claiming ownership of lib32-vulkan-radeon.
-conflicts=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
-replaces=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+conflicts=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-mesa-device-select vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+replaces=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-mesa-device-select vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
 # Keep debug symbols; no strip, no LTO.  !buildflags: this package compiles
 # nothing (repack only), so makepkg's CFLAGS/LDFLAGS injection is irrelevant.
 # The .a archives the builddir produced land in /opt for gdb work but are NOT
@@ -131,6 +126,10 @@ _link_into_usr() {
       continue
     fi
     base="$(basename "${entry}")"
+    # vulkan-mesa-layers owns the explicit overlay under /usr.
+    case "${rel}/${base}" in
+      lib/libVkLayer_MESA_overlay.so) continue ;;
+    esac
     case "${base}" in
       *.a) continue ;;
     esac
@@ -233,8 +232,7 @@ PYGATE
   # symlinks (the GL/EGL include directories stay libglvnd's).
   _link_into_usr lib/pkgconfig                 # gbm.pc, dri.pc
   _link_into_usr share/vulkan/icd.d            # r300 Vulkan ICD manifest
-  _link_into_usr share/vulkan/implicit_layer.d # VkLayer_MESA_device_select (lib32-vulkan-mesa-implicit-layers dep)
-  _link_into_usr share/vulkan/explicit_layer.d # VkLayer_MESA_overlay
+  _link_into_usr share/vulkan/implicit_layer.d # anti-lag + device-select
   _link_into_usr share/glvnd/egl_vendor.d      # glvnd EGL vendor selection
   _link_into_usr share/drirc.d                 # driver config quirks
 

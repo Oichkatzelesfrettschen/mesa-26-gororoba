@@ -42,12 +42,12 @@
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=16
+pkgrel=17
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
 # replace #branch=main with #commit=<sha>.
-pkgdesc='Mesa system replacement (TRUE RELEASE, reserved): r300 GL + zink + XA/Xv + VA MPEG-2 + ati_r300/r3v Vulkan ICD + overlay/device-select Vulkan layers, no LLVM, buildtype=release + no asserts + -O2, x86-64 baseline'
+pkgdesc='Mesa system replacement (TRUE RELEASE, reserved): r300 GL + zink + XA/Xv + VA MPEG-2 + ati_r300/r3v Vulkan ICD + anti-lag/device-select implicit Vulkan layers, no LLVM, buildtype=release + no asserts + -O2, x86-64 baseline'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -61,20 +61,16 @@ makedepends=(
   clang llvm meson ninja glslang python-mako python-ply wayland-protocols
   libxrandr xorgproto libxml2 lld git
 )
-# vulkan-mesa-implicit-layers: this release build ships the mesa overlay +
-# device-select layers (vulkan-layers below), so it owns and provides the
-# implicit-layer slot exactly like the debug sibling.  device-select is the
-# implicit layer that vulkan-mesa-implicit-layers ships and that
-# lib32-vulkan-mesa-implicit-layers depends on by name; provide it specifically
-# (not the broader vulkan-mesa-layers / vulkan-mesa-device-select virtuals) so a
-# pacman -U takes the implicit-layer slot over cleanly while the by-name lib32
-# dependent stays satisfied.  The explicit overlay layer has no by-name dependent;
-# its files are simply owned without a provide.
+# This package owns the complete Arch implicit-layer slot: anti-lag plus
+# device-select.  The legacy vulkan-mesa-device-select provide preserves old
+# lib32 dependencies during the package rename.  Explicit layers remain owned
+# by vulkan-mesa-layers and are excluded from this system package.
 provides=(
   "mesa=${epoch}:${pkgver}-${pkgrel}"
   "libva-mesa-driver=${epoch}:${pkgver}-${pkgrel}"
   "mesa-libgl=${epoch}:${pkgver}-${pkgrel}"
   "vulkan-mesa-implicit-layers=${epoch}:${pkgver}-${pkgrel}"
+  "vulkan-mesa-device-select=${epoch}:${pkgver}-${pkgrel}"
   libva-driver
   opengl-driver
   vulkan-driver
@@ -82,8 +78,8 @@ provides=(
 )
 # This package stages only x86_64 artifacts. A matching lib32 package is
 # required before claiming ownership of lib32-vulkan-radeon.
-conflicts=(mesa vulkan-mesa-implicit-layers vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
-replaces=(mesa vulkan-mesa-implicit-layers vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+conflicts=(mesa vulkan-mesa-implicit-layers vulkan-mesa-device-select vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+replaces=(mesa vulkan-mesa-implicit-layers vulkan-mesa-device-select vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
 options=('!lto' '!strip')
 install="${pkgname}.install"
 source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#branch=main"
@@ -149,7 +145,7 @@ build() {
     -D platforms=x11,wayland \
     -D gallium-drivers=r300,zink \
     -D vulkan-drivers=ati_r300 \
-    -D vulkan-layers=overlay,device-select \
+    -D vulkan-layers=anti-lag,device-select \
     -D r3v-gallium-backend=true \
     -D gallium-rusticl=false \
     -D llvm=disabled \
