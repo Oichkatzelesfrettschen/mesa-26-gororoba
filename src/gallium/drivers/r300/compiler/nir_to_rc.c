@@ -2311,9 +2311,13 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
     * dummy shader rather than letting int_to_float assert on them. */
    bool int_bitwise_unsupported = false;
    NIR_PASS(_, s, r300_nir_lower_bitwise_to_arith, &int_bitwise_unsupported);
-   if (int_bitwise_unsupported)
+   if (int_bitwise_unsupported) {
       rc_error(c->compiler, "r300: integer bitwise/shift op with no FP24-exact "
                             "lowering; substituting a dummy shader\n");
+      ralloc_free(c);
+      ralloc_free(s);
+      return;
+   }
 
    /* Nudge the fragment stage's float-to-int conversions across the FP24
     * interpolation-delivery error before nir_lower_int_to_float lowers them
