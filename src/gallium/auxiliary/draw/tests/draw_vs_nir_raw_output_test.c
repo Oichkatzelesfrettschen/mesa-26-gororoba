@@ -544,7 +544,6 @@ run_case(struct draw_context *draw, const struct raw_case *tc)
       draw_create_vs_exec(draw, &bridge_state);
    struct draw_vertex_shader *interp =
       draw_create_vs_exec(draw, &interp_state);
-   ralloc_free(bridge_nir);
    FREE((void *)bridge_tokens);
    if (!bridge || !interp) {
       CHECK(false, "both factories returned a shader");
