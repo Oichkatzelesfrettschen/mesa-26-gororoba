@@ -236,11 +236,19 @@ boundary. The practical rule is unchanged for correctness -- program VAP state,
 read only `0x2080`/`0x2140` for progress, never read `0x2200+` -- but the reason is
 transaction type (non-posted read completion), not a blanket domain-wide gate.
 
-The classified wedge signature remains `RBBM_STATUS` latched at `0x8411c100` with
-`VAP_BUSY = GA_BUSY = 100%` and the backend idle -- a vertex-frontend stall, the
-shape the bypass converges away from. Under an active 3D wedge the `0x4000+` space
-compounds into a non-posted-HT-read black hole independent of this VAP read
-asymmetry.
+Three RS482 vertex-path failures carry three distinct signatures, and conflating
+them mis-diagnoses the frontend. They stay separate:
+
+| Failure | Signature |
+| --- | --- |
+| Front-end fetch / VAP progression stall -- the `fbo-clearmipmap` clear-quad wedge (HBTCL-01/02): the VAP is stuck assembling a vertex stream whose descriptor does not match the frontend | `RBBM_STATUS` latched `0x8411c100`, `VAP_BUSY = GA_BUSY = 100%`, backend (`RB3D`/`RE`/`TAM`/`PB`/`E2`) idle |
+| Under-fed output tuple -- the SOLVED R2VB re-ingest defect: `VAP_VTX_SIZE` trailed the wider `VAP_OUTPUT_VTX_FMT` tuple (8 vs 12 dwords), so the GA latched waiting for the missing dwords per vertex. Fixed by per-output reconstruction (`VAP_VTX_SIZE 0x08 -> 0x0c`, mesa PR#1040/#1041) | `GA_BUSY = 100%`, `VAP_BUSY = 0`, `CP`/`RE`/`RB3D` idle |
+| PVS-port MMIO read wedge: a read into `0x2200-0x22dc` waits forever for a non-posted completion and stalls the reset-less K8 northbridge below core level | host/NB completion failure, no NMI, no ordinary GFX-pipeline `RBBM_STATUS` shape; costs a physical power cycle |
+
+The bypass shape converges away from the first. The second is closed. The third
+is a probe hazard, never a draw outcome. Under a compounding active-3D wedge the
+`0x4000+` space becomes a non-posted-HT-read black hole, independent of the VAP
+read asymmetry above.
 
 ## Mathematical decomposition of the transform
 
@@ -349,8 +357,11 @@ standing vertex path:
   only producer class. Quaternion (4 `DP4`) and octonion (16 `DP4`) kernels are
   demonstrated through this route. The fragment ALU (FP24 VLIW vec4,
   `MAD/DP3/DP4/MIN/MAX/CND/CMP/FRC`, alpha `RCP/RSQ/EX2/LG2`, 64 co-issued
-  vector+scalar slots, R400_US lifts to 512) is the only programmable ALU on the
-  part and is the vertex engine here.
+  vector+scalar slots) is the only programmable ALU on the part and is the
+  vertex engine here. R400_US code banking exposes a larger diagnostic
+  instruction address space but does not lift the 64-slot dependent-program
+  ceiling on RS482: a live temporary written in one bank is not usable in the
+  next, so banking is not a dependent-chain escape.
 - **Perspective divide + viewport** run on the fragment ALU inside every
   producer variant (`r2vb_divide_position`: alpha-pipe `RCP` with a `1/32768`
   FP24 floor, then three viewport MADs), selected by the explicit
@@ -363,8 +374,10 @@ standing vertex path:
   clipper bit-for-bit (six hardwired planes, `!(dist >= 0)` NaN-outside form,
   0.5 XY guard-band coefficient, half-Z switch) and carries divide safety
   (`w` below the FP24 reciprocal floor) as a separate FALLBACK class rather
-  than a seventh plane bit. Edge generation and attribute interpolation for
-  PARTIAL primitives remain the 04d gap.
+  than a seventh plane bit. PARTIAL triangles are clipped in the raw clip-space
+  domain by the Sutherland-Hodgman edge path (`t = d_out / (d_out - d_in)`);
+  carried attributes interpolate at the intersection vertices and the polygon
+  retriangulates, byte-identical to the gallivm reference on RS482 (04d).
 - **Delivery**: a `cb_flush_clean` cache barrier, then `3D_LOAD_VBPNTR`
   re-ingest of the transformed buffer, then a `TCL_BYPASS` draw whose
   `VAP_VTE_CNTL` derives from the producer contract: a window-space source
@@ -378,8 +391,11 @@ standing vertex path:
   `0x2200-0x22dc` window is the *read*, which is the physical-power-cycle
   wedge.
 - **Never**: reach `r300_emit_vs_state`, set `has_tcl = true`, clear
-  `TCL_BYPASS`, or read anywhere in the vertex-engine window. Each of those
-  re-enters the unrecoverable wedge class.
+  `TCL_BYPASS`, or read the `0x2200-0x22dc` PVS/SE_TCL port window. Progress
+  reads stay on the demonstrated-safe front-end status words `VAP_CNTL`
+  (`0x2080`) and `VAP_CNTL_STATUS` (`0x2140`); a read at or above `0x2200` is
+  the non-posted-completion wedge (posted writes into that window stay safe).
+  Each forbidden action re-enters the unrecoverable wedge class.
 
 The fix and the redesign are the same insight at two scales: the RS482 vertex
 frontend wedges when it is asked to do transform work, so we do the transform
@@ -440,7 +456,7 @@ silicon or a bounded next increment from two demonstrated pieces.
 | E2/RB2D/CBA2D (2D blit) | Move transformed vertices GART->VAP-input, or scatter/gather vertex streams, instead of a CPU copy + `cb_flush` | unexplored: the 2D engine appears once in the corpus (H.264 block-copy), never probed for vertices (HBTCL-10) |
 | VAP (frontend, bypass) | Assemble and output-format-map pre-transformed vertices; idle `VAP_PROG_STREAM_CNTL_1..7` (`0x2154-0x216c`) give headroom for more synthesized attribute channels | demonstrated; never engages the absent PVS |
 | GA / RE / SC | Primitive assembly, setup, rasterization, and a rectangular screen-space reject via `SC_SCISSORS`/`SC_CLIPRECT` (already in the demonstrated-safe bypass shape, outside the wedge window) | demonstrated |
-| CPU (minimal) | Only the branchy clip (linear domain, per Glaeser) and the scalar perspective divide. The transform + barrier + re-ingest already run in one IB for the passthrough class -- no mid-draw CPU round-trip -- at about 0.023 us/vertex versus 0.83 us/vertex for gallivm (~36x), and the re-ingest raster is bit-identical to gallivm | demonstrated (measured) |
+| CPU (minimal) | The branchy stages only: clip classification in the linear domain (per Glaeser), edge generation and attribute interpolation, topology decomposition/gather, and the admission/fallback decision. The perspective divide runs on the fragment ALU (`r2vb_divide_position`) or the VTE, not the CPU. The transform + barrier + re-ingest already run in one IB for the passthrough class -- no mid-draw CPU round-trip -- at about 0.023 us/vertex versus 0.83 us/vertex for gallivm (~36x), and the re-ingest raster is bit-identical to gallivm | demonstrated (measured) |
 
 ### Do not re-derive (measured dead ends)
 
@@ -573,13 +589,17 @@ The `HBTCL-NN` tokens are secondary registry labels for this tracker; the load-b
 
 | HBTCL-01 | No-submit PM4 decode of the clear-quad IB vs a working r3v triangle IB: capture with in-tree `R300_TRACE` / `RADEON_DUMP_PATCHED_IB` (and, when present, the external `steinmarder` r300 retained-IB decode tools), then compare the VAP frontend words; name the single diverging register among `VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE` | -- |
 | HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the demonstrated-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
-| HBTCL-03 | Audit complete: R2VB has three producer paths including straight-line VS restage, but lacks perspective divide, geometric clipping, an over-budget producer escape, and default SW-TCL integration | -- |
+| HBTCL-03 | DONE: audited the three producer families (fixed-MVP, restage, passthrough), the explicit clip/window coordinate contract, the geometric clipping and topology pipeline, emitted-slot admission, and the one-float-`vec4` budget escape. Perspective divide (04b) and geometric clipping (04c-04e) are landed and byte-identical on RS482; the residual is the over-budget producer escape (04f.3-04f.5) and standing-route promotion (HBTCL-08) | -- |
 | HBTCL-04a | DONE: the coordinate contract section above (object/clip/NDC/window representations, divide placement, re-ingest VTE shapes) | HBTCL-03 |
 | HBTCL-04b | DONE: perspective divide + viewport on the fragment ALU in every producer variant, selected by the explicit `r300_r2vb_position_space` contract; window-space delivery fetches verbatim via the source-space VTE. `r2vb_divide_verify` 3/3 on RS482 with delivery coverage matching the gallivm reference exactly | HBTCL-04a |
 | HBTCL-04c | DONE: clip classification in the raw clip-space domain -- Draw-parity clip codes, accept/reject/partial/fallback classes (`r300_r2vb_clip.h`), FP24 clip-BO oracle, conservative gated route action; 9/9 corpus classes byte-identical on RS482 | HBTCL-04b |
 | HBTCL-04d | DONE: edge generation -- Sutherland-Hodgman intersection of PARTIAL triangles in clip space (`t = d_out / (d_out - d_in)` blends), attribute interpolation, fan retriangulation; 10/10 corpus cases byte-identical on RS482 | HBTCL-04c |
 | HBTCL-04e | DONE: topology gather -- strips, fans, indexed draws, primitive restart resolved to a triangle-index list before classification; 14/14 corpus cases byte-identical on RS482; points and lines stay excluded (points gate on HBTCL-07, lines need a 2-vertex clip variant) | HBTCL-04d |
-| HBTCL-04f | Producer budget escape above the 64-slot fragment-ALU ceiling: admission on actual emitted RC slots, semantics-preserving algebraic compaction, then a producer split carrying one FP32 `vec4` through an R2VB buffer; gallivm fallback for every unsupported shape. R400 code banks are diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-03 |
+| HBTCL-04f.1 | DONE: admission on actual emitted RC slots (a throwaway backend compile reads the emitted `alu.length`, memoized per VS), so a dense kernel the backend packs under 64 slots is admitted even when its scalar NIR count exceeds 64 | HBTCL-03 |
+| HBTCL-04f.2 | DONE: producer split carrying one FP32 `vec4` float-carry through an R2VB buffer; VAP_VTX_SIZE under-feed root-caused and fixed by per-output reconstruction, corpus green on RS482 (mesa PR#1040-#1044) | HBTCL-04f.1 |
+| HBTCL-04f.3 | OPEN: typed and range-proven carries beyond one FP32 `vec4` | HBTCL-04f.2 |
+| HBTCL-04f.4 | OPEN: semantics-preserving algebraic compaction of the over-budget producer | HBTCL-04f.2 |
+| HBTCL-04f.5 | OPEN: multi-carry / MRT transport for producers whose escape needs more than one carry stream; gallivm fallback for every unsupported shape. R400 code banks stay diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-04f.2 |
 | HBTCL-05 | DONE (corpus-verified): the "VAP register table" section above, with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200+` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + commit `9899a4d8dd3` (SWTCL 16-bit VAP count clamp); the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
 | HBTCL-06 | DONE (compiler-verified, R400_US excluded from the standing budget): the "Lighting on the fragment ALU" section above -- native op set from the `r300_fragprog_emit.c` co-issue switches (`ROUND` corrected to lowered), the 64-slot ceiling as co-issued vector+scalar pairs (up to 128 ops when independent; dependent alpha-pipe transcendentals still serialize), the lighting-term mapping table, and the butterfly/Cayley-Dickson non-result (dense `4x4` is already at its `DP4` floor; CD stays in the matrix-build step). The 512-slot R400_US path remains probe-gated (`R300_HB_R400_US`) and is not a standing budget for HBTCL lighting | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear; GA point-setup registers (`GA_POINT_SIZE`, `GA_POINT_MINMAX`) and `VAP_VTX_SIZE` remain open hypotheses after near-zero effect measurements -- keep the RCA root-cause-neutral until the no-submit decode names the carrier | HBTCL-03 |
@@ -589,7 +609,8 @@ The `HBTCL-NN` tokens are secondary registry labels for this tracker; the load-b
 
 HBTCL-01 and HBTCL-02 are the immediate `fbo-clearmipmap` fix; HBTCL-03 is the
 engine audit; HBTCL-04a-04e are the landed contract, divide, and clip ladder,
-04f the remaining over-budget producer escape;
+04f.1-04f.2 the landed emitted-slot admission and float-carry split, 04f.3-04f.5
+the remaining over-budget producer escape;
 HBTCL-07/08 build the fix out into the standing hybrid; HBTCL-05/06/09/10 are
 the register-table, lighting, MRT-export, and movement extensions. All hardware
 steps run on the parked, hang-for-inspection box under the wedge-forensics
@@ -597,8 +618,10 @@ poller; the decode steps submit nothing.
 
 ## Open items
 
-- The exact diverging value in the clear-quad IB (VAP_VTE_CNTL vs scissor vs VF
-  NUM_VERTICES): pending the no-submit PM4 IB decode.
+- The `fbo-clearmipmap` clear-quad wedge: the no-submit PM4 IB decode ran
+  (HBTCL-01), and the SWTCL TEXCOORD_XY blit now falls back to a plain quad,
+  completing the 2013 MSAA-resolve fix. Reconciling the reproducer ledger
+  against the live-trace RCA is the residual (HBTCL-02C).
 - R2VB `points` re-ingest still smears (register cause open;
   `GA_POINT_SIZE` / `GA_POINT_MINMAX` / `VAP_VTX_SIZE` each falsified).
 - Application vertex buffers cannot become directly relocated BOs
