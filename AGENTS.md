@@ -411,11 +411,18 @@ LD_LIBRARY_PATH="$mesa_prefix/$mesa_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   ./probe_binary
 ```
 
-For Vulkan probes, point `VK_ICD_FILENAMES` at the exact r3v ICD JSON under
-the selected prefix:
+For Vulkan probes, point `VK_ICD_FILENAMES` at the ICD JSON this prefix
+installed for the configured `vulkan-drivers` Meson option. `ati_r300`
+installs `r3v_icd.<cpu>.json`; `amd_terascale` installs
+`terascale_icd.<cpu>.json`. Prefer the matching leaf under the prefix rather
+than hard-coding one driver:
 
 ```bash
-mesa_icd="$mesa_prefix/share/vulkan/icd.d/r3v_icd.x86_64.json"
+mesa_icd_dir="$mesa_prefix/share/vulkan/icd.d"
+# Prefer the ICD for the drivers this prefix was configured with.
+mesa_icd=$(ls "$mesa_icd_dir"/r3v_icd.*.json \
+               "$mesa_icd_dir"/terascale_icd.*.json 2>/dev/null | head -1)
+test -n "$mesa_icd" && test -f "$mesa_icd"
 ```
 
 A release evidence run defines `LIBGL_DRIVERS_PATH` as

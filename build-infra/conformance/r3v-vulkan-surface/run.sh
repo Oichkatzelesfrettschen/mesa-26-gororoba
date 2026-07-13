@@ -46,6 +46,10 @@ case "$VK_ICD_FILENAMES" in
 esac
 [ -f "$VK_ICD_FILENAMES" ] ||
   fatal "VK_ICD_FILENAMES does not name a regular file: $VK_ICD_FILENAMES"
+# Absolute path: dEQP later cds into DEQP_DIR; a relative ICD would re-resolve
+# against that directory and fail closed or load the wrong JSON.
+VK_ICD_FILENAMES="$(cd -- "$(dirname -- "$VK_ICD_FILENAMES")" && pwd -P)/$(basename -- "$VK_ICD_FILENAMES")" ||
+  fatal "cannot canonicalize VK_ICD_FILENAMES"
 unset VK_DRIVER_FILES
 export VK_ICD_FILENAMES
 
@@ -91,7 +95,12 @@ if command -v vkcube >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1 &&
   if timeout 15 vkcube --c 3 > "$OUT/vkcube.txt" 2>&1; then
     vkcube_status=Pass
   else
-    vkcube_status=Fail
+    # Display-connection failures are environment, not driver regressions.
+    if grep -Eiq 'cannot open display|No protocol specified|Authorization required|Connection refused|X11 connection|unable to open display'          "$OUT/vkcube.txt" 2>/dev/null; then
+      vkcube_status=NotSupported
+    else
+      vkcube_status=Fail
+    fi
   fi
 fi
 printf '%s\tsmoke.vkcube.no_crash\n' "$vkcube_status" >> "$RESULTS"
@@ -150,7 +159,7 @@ while IFS= read -r case_glob; do
   fi
   parse "$group_log" > "$group_results" ||
     fatal "dEQP group $case_glob emitted an unknown or no recognized verdict"
-  group_count="$(wc -l < "$group_results")"
+  group_count="$(awk 'END { print NR + 0 }' "$group_results")"
   [ "$group_count" -gt 0 ] ||
     fatal "dEQP group $case_glob produced no parsed verdicts"
   cat "$group_results" >> "$RESULTS"
@@ -196,7 +205,7 @@ if ! sort -u "$RESULTS" | awk -F'\t' '
   fatal "result stream contains an invalid status"
 fi
 
-total="$(wc -l < "$OUT/status.tsv")"
+total="$(awk 'END { print NR + 0 }' "$OUT/status.tsv")"
 npass="$(awk -F'\t' '$1 == "Pass" { count++ } END { print count + 0 }' "$OUT/status.tsv")"
 echo "=== executed $total cases, $npass Pass ==="
 
