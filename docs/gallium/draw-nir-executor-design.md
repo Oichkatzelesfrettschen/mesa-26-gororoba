@@ -126,13 +126,13 @@ corpus tests it directly.
 
 Known-good: pass-through position+color VS; a PCOORD/point-sprite VS;
 a wide-point derivative-injection VS; at least one VS with a live
-nir_if/loop. Run old bridge and new interpreter on identical input,
-diff outputs within an epsilon accounting for SIMD-4 vs scalar FP
+nir_if/loop. Run the TGSI reference and direct-NIR interpreter on identical
+input, then diff outputs within an epsilon accounting for SIMD-4 vs scalar FP
 ordering. Known-bad probes: all uses_* sysval flags at once; CLIPDIST
 at multiple indices; missing CLIPVERTEX (exercising the
-position_output fallback). Leave `DRAW_NIR_EXEC` unset to retain the
-`nir_to_tgsi` plus `tgsi_exec` branch. Set `DRAW_NIR_EXEC=1` only when
-calibrating the direct executor.
+position_output fallback). The raw-output oracle builds the TGSI reference
+explicitly and verifies that `draw_create_vs_exec` selects the direct executor
+for supported NIR.
 
 ## Calibration results
 
@@ -143,7 +143,7 @@ min/max/clamp/mix/step/smoothstep, floor/fract/mod, abs/sign, mat2 and mat3
 transforms, the transcendentals sin/cos/exp2/log2/pow/sqrt/rsqrt, float-domain
 compare and select (sge/slt/fcsel_gt from GLSL comparisons and ?:), and control
 flow.  Each shader renders one triangle; the raw RGBA8 readback is diffed
-between the bridge (DRAW_NIR_EXEC unset) and the interpreter (set).  All 24 are
+between the TGSI reference and the direct-NIR interpreter.  All 24 are
 byte-for-byte identical -- transcendentals included, since the 8-bit readback
 absorbs the tgsi_exec-approximation vs nir_eval_const_opcode-libm difference
 well within one LSB, so the precision-parity epsilon never had to be spent.

@@ -8,11 +8,10 @@
  * sub-LSB float differences, and GLSL ES 1.00 / 1.20 cannot express
  * gl_VertexID / gl_InstanceID at all.  This harness drives the draw module
  * directly on a headless softpipe screen: it builds a vertex shader with
- * nir_builder, runs the SAME shader through both draw_create_vs_exec (the
- * nir_to_tgsi + tgsi_exec bridge) and draw_create_vs_nir (the interpreter) with
- * identical input and draw state, and compares the raw AOS output[slot][4]
- * float arrays.  Calling the two factories directly avoids the once-only
- * DRAW_NIR_EXEC env gate.
+ * nir_builder, converts one copy explicitly to the TGSI reference path, and
+ * sends the other through draw_create_vs_exec's default direct-NIR route with
+ * identical input and draw state.  It compares the raw AOS output[slot][4]
+ * float arrays.
  *
  * The system-value cases (VertexID/InstanceID/BaseVertex/BaseInstance, indexed
  * and non-indexed) are the coverage the GL corpus cannot reach; they assert
@@ -48,6 +47,7 @@
 #include "compiler/glsl_types.h"
 #include "nir.h"
 #include "nir_builder.h"
+#include "nir/nir_to_tgsi.h"
 
 #include "util/u_memory.h"
 #include "util/ralloc.h"
@@ -68,9 +68,7 @@ static unsigned g_fail;
       }                                                                        \
    } while (0)
 
-/* ---- shader builders (a fresh nir_shader each call; nir_to_tgsi consumes the
- * one handed to the bridge, and draw_create_vs_nir owns the one handed to the
- * interpreter, so the two factories must never share a shader) ---- */
+/* ---- shader builders (each execution path owns a fresh nir_shader) ---- */
 
 static nir_variable *
 add_input(nir_builder *b, unsigned slot)
@@ -79,6 +77,8 @@ add_input(nir_builder *b, unsigned slot)
                                          glsl_vec4_type(), "in");
    v->data.location = VERT_ATTRIB_GENERIC0 + slot;
    v->data.driver_location = slot;
+   if (b->shader->num_inputs <= slot)
+      b->shader->num_inputs = slot + 1;
    return v;
 }
 
@@ -89,6 +89,8 @@ add_output(nir_builder *b, unsigned slot, gl_varying_slot loc)
                                          glsl_vec4_type(), "out");
    v->data.location = loc;
    v->data.driver_location = slot;
+   if (b->shader->num_outputs <= slot)
+      b->shader->num_outputs = slot + 1;
    return v;
 }
 
@@ -524,13 +526,25 @@ run_case(struct draw_context *draw, const struct raw_case *tc)
    const nir_shader_compiler_options *opts =
       draw->pipe->screen->nir_options[MESA_SHADER_VERTEX];
 
-   struct pipe_shader_state sa = { .type = PIPE_SHADER_IR_NIR };
-   sa.ir.nir = tc->build(opts);
-   struct pipe_shader_state sb = { .type = PIPE_SHADER_IR_NIR };
-   sb.ir.nir = tc->build(opts);
+   nir_shader *bridge_nir = tc->build(opts);
+   const void *bridge_tokens = nir_to_tgsi(bridge_nir, draw->pipe->screen);
+   if (!bridge_tokens) {
+      CHECK(false, "TGSI reference compilation returned tokens");
+      ralloc_free(bridge_nir);
+      return;
+   }
+   struct pipe_shader_state bridge_state = {
+      .type = PIPE_SHADER_IR_TGSI,
+      .tokens = bridge_tokens,
+   };
+   struct pipe_shader_state interp_state = { .type = PIPE_SHADER_IR_NIR };
+   interp_state.ir.nir = tc->build(opts);
 
-   struct draw_vertex_shader *bridge = draw_create_vs_exec(draw, &sa);
-   struct draw_vertex_shader *interp = draw_create_vs_nir(draw, &sb);
+   struct draw_vertex_shader *bridge =
+      draw_create_vs_exec(draw, &bridge_state);
+   struct draw_vertex_shader *interp =
+      draw_create_vs_exec(draw, &interp_state);
+   FREE((void *)bridge_tokens);
    if (!bridge || !interp) {
       CHECK(false, "both factories returned a shader");
       if (bridge)
@@ -539,6 +553,8 @@ run_case(struct draw_context *draw, const struct raw_case *tc)
          interp->delete(draw, interp);
       return;
    }
+   CHECK(interp->state.type == PIPE_SHADER_IR_NIR,
+         "factory selects the direct-NIR executor");
    bridge->prepare(bridge, draw);
    interp->prepare(interp, draw);
 
@@ -593,11 +609,9 @@ run_case(struct draw_context *draw, const struct raw_case *tc)
 int
 main(void)
 {
-   /* Force the C exec path (no LLVM draw middle end) so both run_linear paths
-    * take their scalar route, and make sure a stray DRAW_NIR_EXEC from the
-    * environment does not send the bridge factory through the interpreter. */
+   /* Force the C exec path so both run_linear implementations take their
+    * scalar route. */
    setenv("DRAW_USE_LLVM", "0", 1);
-   unsetenv("DRAW_NIR_EXEC");
 
    struct sw_winsys *winsys = null_sw_create();
    if (!winsys)

@@ -15,7 +15,6 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_sampler.h"
-#include "util/u_simple_shaders.h"
 
 #include "vl_nir.h"
 #include "vl_h264_idct.h"
@@ -191,12 +190,7 @@ vl_h264_emit_create(struct pipe_context *pipe)
       return NULL;
    }
 
-   static const enum tgsi_semantic vs_sem[] = {
-      TGSI_SEMANTIC_POSITION, TGSI_SEMANTIC_GENERIC, TGSI_SEMANTIC_GENERIC,
-   };
-   static const unsigned vs_idx[] = {0, 0, 1};
-   emit->vs = util_make_vertex_passthrough_shader(pipe, 3, vs_sem, vs_idx,
-                                                  false);
+   emit->vs = vl_nir_vs_passthrough(pipe, 2, "vl:h264_passthrough_vs");
 
    emit->fs_copy = create_copy_fs(pipe);
    emit->fs_mc_h = vl_h264_mc_create_halfpel_h_fs(pipe);
@@ -248,9 +242,10 @@ vl_h264_emit_destroy(struct vl_h264_emit *emit)
       return;
    struct pipe_context *pipe = emit->pipe;
 
-   /* cso unbinds the bound shaders and sampler before any delete_*_state. */
-   if (emit->cso)
+   if (emit->cso) {
+      cso_unbind_context(emit->cso);
       cso_destroy_context(emit->cso);
+   }
    if (emit->sampler)
       pipe->delete_sampler_state(pipe, emit->sampler);
    if (emit->fs_chroma_strong_h)
