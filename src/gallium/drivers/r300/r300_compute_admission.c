@@ -815,33 +815,20 @@ image_store_op(nir_intrinsic_op op)
           op == nir_intrinsic_image_heap_store;
 }
 
-/* Image-coordinate walker for RT-export: the coordinate must depend on
- * gl_GlobalInvocationID (or index) and may only combine that id with
- * constants and simple ALU (add/sub/mul-by-const/shift/casts/vecs).
- * Pure constants, descriptor loads, and unknown sources fail closed. */
-static bool image_coord_def_is_gid_derived(const nir_def *def, unsigned depth,
-                                           bool *saw_gid);
-
+/* Image-coordinate walker for RT-export: each coordinate lane must depend on
+ * gl_GlobalInvocationID (or index) and may only combine that id with constants
+ * and simple ALU.  Scalar tracing preserves vec/mov swizzles so GID in Z/W
+ * cannot satisfy the X/Y dependency requirement. */
 static bool
-image_coord_src_is_gid_derived(nir_src src, unsigned depth, bool *saw_gid)
+image_coord_scalar_is_gid_derived(nir_scalar scalar, unsigned depth,
+                                  bool *saw_gid)
 {
-   if (!src.ssa)
+   if (!scalar.def || depth > R300_COMPUTE_STORE_ADDR_MAX_DEPTH)
       return false;
-   if (nir_src_is_const(src))
-      return true;
-   return image_coord_def_is_gid_derived(src.ssa, depth + 1, saw_gid);
-}
-
-static bool
-image_coord_def_is_gid_derived(const nir_def *def, unsigned depth,
-                               bool *saw_gid)
-{
-   if (!def || depth > R300_COMPUTE_STORE_ADDR_MAX_DEPTH)
-      return false;
-   if (nir_def_is_const(def))
+   if (nir_scalar_is_const(scalar))
       return true;
 
-   const nir_instr *instr = nir_def_instr(def);
+   const nir_instr *instr = nir_def_instr(scalar.def);
    if (instr->type == nir_instr_type_intrinsic) {
       const nir_intrinsic_instr *intr =
          nir_instr_as_intrinsic((nir_instr *)instr);
@@ -863,14 +850,18 @@ image_coord_def_is_gid_derived(const nir_def *def, unsigned depth,
    const nir_alu_instr *alu = nir_instr_as_alu((nir_instr *)instr);
    const unsigned num_inputs = nir_op_infos[alu->op].num_inputs;
 
-   if (nir_op_is_vec_or_mov(alu->op)) {
-      for (unsigned i = 0; i < num_inputs; i++) {
-         if (!image_coord_src_is_gid_derived(alu->src[i].src, depth + 1,
-                                             saw_gid))
-            return false;
-      }
-      return true;
+   if (nir_op_is_vec(alu->op)) {
+      if (scalar.comp >= num_inputs || !alu->src[scalar.comp].src.ssa)
+         return false;
+      nir_scalar source = {
+         .def = alu->src[scalar.comp].src.ssa,
+         .comp = alu->src[scalar.comp].swizzle[0],
+      };
+      return image_coord_scalar_is_gid_derived(source, depth + 1, saw_gid);
    }
+   if (alu->op == nir_op_mov)
+      return image_coord_scalar_is_gid_derived(
+         nir_scalar_chase_alu_src(scalar, 0), depth + 1, saw_gid);
 
    switch (alu->op) {
    case nir_op_iadd:
@@ -880,22 +871,25 @@ image_coord_def_is_gid_derived(const nir_def *def, unsigned depth,
    case nir_op_i2i32:
    case nir_op_i2i64:
       for (unsigned i = 0; i < num_inputs; i++) {
-         if (!image_coord_src_is_gid_derived(alu->src[i].src, depth + 1,
-                                             saw_gid))
+         if (!image_coord_scalar_is_gid_derived(
+                nir_scalar_chase_alu_src(scalar, i), depth + 1, saw_gid))
             return false;
       }
       return true;
-   case nir_op_imul:
-      return (store_ssbo_addr_alu_input_is_const(alu, 0) &&
-              image_coord_src_is_gid_derived(alu->src[1].src, depth + 1,
-                                             saw_gid)) ||
-             (store_ssbo_addr_alu_input_is_const(alu, 1) &&
-              image_coord_src_is_gid_derived(alu->src[0].src, depth + 1,
-                                             saw_gid));
-   case nir_op_ishl:
-      return image_coord_src_is_gid_derived(alu->src[0].src, depth + 1,
-                                            saw_gid) &&
-             store_ssbo_addr_alu_input_is_const(alu, 1);
+   case nir_op_imul: {
+      nir_scalar lhs = nir_scalar_chase_alu_src(scalar, 0);
+      nir_scalar rhs = nir_scalar_chase_alu_src(scalar, 1);
+      return (nir_scalar_is_const(lhs) &&
+              image_coord_scalar_is_gid_derived(rhs, depth + 1, saw_gid)) ||
+             (nir_scalar_is_const(rhs) &&
+              image_coord_scalar_is_gid_derived(lhs, depth + 1, saw_gid));
+   }
+   case nir_op_ishl: {
+      nir_scalar value = nir_scalar_chase_alu_src(scalar, 0);
+      nir_scalar shift = nir_scalar_chase_alu_src(scalar, 1);
+      return nir_scalar_is_const(shift) &&
+             image_coord_scalar_is_gid_derived(value, depth + 1, saw_gid);
+   }
    default:
       return false;
    }
@@ -904,32 +898,17 @@ image_coord_def_is_gid_derived(const nir_def *def, unsigned depth,
 static bool
 image_coord_is_gid_derived(nir_src coord)
 {
-   if (!coord.ssa)
+   if (!coord.ssa || coord.ssa->num_components < 2)
       return false;
 
-   /* Common image-store shape is a vec2/vec4 construction.  Require gid
-    * participation in the first two components (X and Y); a coordinate that
-    * only folds gid into Z/W is not a 2D RT-export address. */
-   const nir_instr *instr = nir_def_instr(coord.ssa);
-   if (instr->type == nir_instr_type_alu) {
-      const nir_alu_instr *alu = nir_instr_as_alu((nir_instr *)instr);
-      if (nir_op_is_vec_or_mov(alu->op) &&
-          coord.ssa->num_components >= 2 &&
-          nir_op_infos[alu->op].num_inputs >= 2) {
-         for (unsigned c = 0; c < 2; c++) {
-            bool saw_gid = false;
-            if (!image_coord_src_is_gid_derived(alu->src[c].src, 0, &saw_gid) ||
-                !saw_gid)
-               return false;
-         }
-         return true;
-      }
+   for (unsigned component = 0; component < 2; component++) {
+      bool saw_gid = false;
+      if (!image_coord_scalar_is_gid_derived(
+             nir_get_scalar(coord.ssa, component), 0, &saw_gid) ||
+          !saw_gid)
+         return false;
    }
-
-   bool saw_gid = false;
-   if (!image_coord_src_is_gid_derived(coord, 0, &saw_gid))
-      return false;
-   return saw_gid;
+   return true;
 }
 
 /* Format for image stores: prefer the intrinsic qualifier, then the
