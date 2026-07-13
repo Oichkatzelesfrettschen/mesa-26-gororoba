@@ -328,10 +328,11 @@ if with_tests
     suite : ['r300'],
   )
 
-  # R2VB carry-BO producer split decision: an over-budget position-pass FS
-  # cut at a single-vec4 SSA frontier into two FP32 halves that both compile
-  # under the 64-slot ceiling, and a program whose every cut carries more than
-  # one vec4 declined.  Pure NIR + the production nir_to_rc oracle, no winsys.
+  # R2VB carry-BO producer split decision: an over-budget position-pass FS cut
+  # at a single-vec4 SSA frontier into two FP32 halves that both compile under
+  # the 64-slot ceiling; wide and unproven integer carries decline, while
+  # range-proven signed and unsigned carries use matching typed conversions.
+  # Pure NIR + the production nir_to_rc oracle, no winsys.
   test(
     'r300-r2vb-producer-split',
     executable(
