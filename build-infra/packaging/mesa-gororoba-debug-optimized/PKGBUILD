@@ -86,6 +86,7 @@ provides=(
   libva-driver
   opengl-driver
   vulkan-driver
+  "vulkan-radeon=${epoch}:${pkgver}-${pkgrel}"
 )
 # This package stages only x86_64 artifacts. A matching lib32 package is
 # required before claiming ownership of lib32-vulkan-radeon.
