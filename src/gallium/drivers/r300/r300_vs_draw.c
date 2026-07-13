@@ -236,15 +236,17 @@ r300_nir_float_encode_int_sysvals(nir_shader *nir)
  * R32_FLOAT synthetic stream (r3v_build_velems_cso +
  * r3v_bind_synthetic_identity_stream) read as a float shader_in
  * (make_sysval_input).  The load_deref already carries a genuine float
- * encoding of the index, so ordering and equality compares need no further
- * rewrite.
+ * encoding of the index (2 written as 2.0f), so ordering compares against
+ * numeric thresholds work without a use-site rewrite.
  *
- * Older paths delivered R32_SINT and an int shader_in: nir_lower_int_to_float
- * left that load_deref as raw integer bits (intrinsic results are untouched),
- * while literal thresholds became numeric floats, so ordering compares always
- * took the first branch.  The use-site i2f32 rewrite below still handles that
- * int-typed shape when a non-r3v caller still presents it; float-typed sysval
- * inputs skip the rewrite so a genuine 2.0f is never re-encoded as i2f32. */
+ * Equality with an integer-typed vertex attribute still needs both sides in
+ * the same domain after nir_lower_int_to_float.  Production r3v equality cases
+ * that compared raw int bit patterns (#942-era) relied on R32_SINT delivery;
+ * with R32_FLOAT that contract is intentionally numeric-float equality
+ * (attribute side must also be float-encoded or compared as float).  The
+ * use-site i2f32 rewrite below remains for int-typed synthetic inputs (unit
+ * tests and any non-r3v caller still presenting the legacy shape); float-typed
+ * inputs skip it so a genuine 2.0f is never re-encoded as i2f32. */
 bool
 r300_nir_float_encode_synthetic_sysval_index_uses(nir_shader *nir)
 {

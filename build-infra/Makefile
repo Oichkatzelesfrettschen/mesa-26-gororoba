@@ -199,7 +199,7 @@ audit-werror:
 	@rc=0; \
 	for f in configs/*.meson configs/alternates/*.meson; do \
 		grep -q '^werror = true' "$$f" || { echo "FAIL  $$f lacks 'werror = true'" >&2; rc=1; }; \
-		if grep -qE '^werror\s*=\s*false' "$$f"; then echo "FAIL  $$f sets werror=false" >&2; rc=1; fi; \
+		if grep -qE '^werror[[:space:]]*=[[:space:]]*false' "$$f"; then echo "FAIL  $$f sets werror=false" >&2; rc=1; fi; \
 	done; \
 	for pb in packaging/*/PKGBUILD; do \
 		[ -f "$$pb" ] || continue; \

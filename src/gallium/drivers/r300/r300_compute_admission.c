@@ -895,6 +895,28 @@ image_coord_def_is_gid_derived(const nir_def *def, unsigned depth,
 static bool
 image_coord_is_gid_derived(nir_src coord)
 {
+   if (!coord.ssa)
+      return false;
+
+   /* Common image-store shape is a vec2/vec4 construction.  Require gid
+    * participation in the first two components (X and Y); a coordinate that
+    * only folds gid into Z/W is not a 2D RT-export address. */
+   const nir_instr *instr = nir_def_instr(coord.ssa);
+   if (instr->type == nir_instr_type_alu) {
+      const nir_alu_instr *alu = nir_instr_as_alu((nir_instr *)instr);
+      if (nir_op_is_vec_or_mov(alu->op) &&
+          coord.ssa->num_components >= 2 &&
+          nir_op_infos[alu->op].num_inputs >= 2) {
+         for (unsigned c = 0; c < 2; c++) {
+            bool saw_gid = false;
+            if (!image_coord_src_is_gid_derived(alu->src[c].src, 0, &saw_gid) ||
+                !saw_gid)
+               return false;
+         }
+         return true;
+      }
+   }
+
    bool saw_gid = false;
    if (!image_coord_src_is_gid_derived(coord, 0, &saw_gid))
       return false;
