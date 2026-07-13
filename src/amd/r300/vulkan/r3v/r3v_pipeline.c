@@ -613,11 +613,11 @@ r3v_nir_uses_live_texture_after_r300_opt(struct pipe_screen *pscreen,
 }
 
 /* Rewrite each fragment sampler variable's binding to the flat Gallium unit the
- * pipeline assigned its (descriptor set, binding) in fs_sampler_map, and clear the
- * descriptor set.  nir_lower_samplers (run later in nir_to_rc) keys the texture
- * unit on data.binding, so after this rewrite a sampler in any descriptor set
- * lands on the same unit the replay binds it to.  A sampler the map does not cover
- * (none should remain for a combined-image-sampler layout) keeps its binding. */
+ * pipeline assigned its (descriptor set, binding) in fs_sampler_map.
+ * nir_lower_samplers (run later in nir_to_rc) keys the texture unit on
+ * data.binding, so after this rewrite a sampler in any descriptor set lands on
+ * the same unit the replay binds it to. The descriptor set remains intact so a
+ * sampler does not alias a UBO variable at the same binding. */
 static void
 r3v_nir_remap_sampler_units(nir_shader *nir, const struct r3v_pipeline *pl)
 {
