@@ -2313,8 +2313,8 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
    bool int_bitwise_unsupported = false;
    NIR_PASS(_, s, r300_nir_lower_bitwise_to_arith, &int_bitwise_unsupported);
    if (int_bitwise_unsupported) {
-      rc_error(c->compiler, "r300: integer ALU input or result with no "
-                            "FP24-exact lowering; substituting a dummy shader\n");
+      rc_error(c->compiler, "r300: integer ALU input or result is unsupported "
+                            "by the FP24 RC path; substituting a dummy shader\n");
       ralloc_free(c);
       ralloc_free(s);
       return;
