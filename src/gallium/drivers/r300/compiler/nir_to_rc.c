@@ -2307,13 +2307,14 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
 
    /* R300 has no integer ALU.  Convert the bitwise/shift idioms that have an
     * exact FP24 arithmetic form (constant low-bit iand, constant unsigned shift)
-    * to umod/udiv, which nir_lower_int_to_float lowers; reject the rest to a
-    * dummy shader rather than letting int_to_float assert on them. */
+    * to umod/udiv, which nir_lower_int_to_float lowers.  Reject unsupported
+    * bitwise operations and non-boolean integer widths other than 32 bits to a
+    * dummy shader before int_to_float can assert on them. */
    bool int_bitwise_unsupported = false;
    NIR_PASS(_, s, r300_nir_lower_bitwise_to_arith, &int_bitwise_unsupported);
    if (int_bitwise_unsupported) {
-      rc_error(c->compiler, "r300: integer bitwise/shift op with no FP24-exact "
-                            "lowering; substituting a dummy shader\n");
+      rc_error(c->compiler, "r300: integer ALU input or result with no "
+                            "FP24-exact lowering; substituting a dummy shader\n");
       ralloc_free(c);
       ralloc_free(s);
       return;

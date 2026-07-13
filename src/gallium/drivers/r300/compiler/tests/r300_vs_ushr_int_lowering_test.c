@@ -205,9 +205,10 @@ check_scalar_iand_mask(unsigned bit_size, uint32_t mask,
 
    char check_name[96];
    snprintf(check_name, sizeof(check_name),
-            "%u-bit mask 0x%x is %s", bit_size, mask,
+            "%u-bit mask 0x%x is %s", bit_size, (unsigned)mask,
             expect_supported ? "admitted" : "rejected");
-   CHECK(progress && unsupported != expect_supported, check_name);
+   CHECK(unsupported != expect_supported && (!expect_supported || progress),
+         check_name);
    CHECK(umod_count == (expect_umod ? 1u : 0u),
          expect_umod ? "admitted mask emits one modulo"
                      : "identity or rejected mask emits no modulo");
@@ -419,8 +420,10 @@ main(void)
    check_vector_bitwise_lowering("out-of-window value lane", nir_op_iand,
                                  vector_masks, out_of_range_bounds, false,
                                  false, nir_op_umod, vector_moduli);
-   check_scalar_iand_mask(8, UINT8_MAX, true, false);
-   check_scalar_iand_mask(16, UINT16_MAX, true, false);
+   check_scalar_iand_mask(8, 0, false, false);
+   check_scalar_iand_mask(16, 0, false, false);
+   check_scalar_iand_mask(8, UINT8_MAX, false, false);
+   check_scalar_iand_mask(16, UINT16_MAX, false, false);
    check_scalar_iand_mask(8, 3, false, false);
    check_scalar_iand_mask(16, 3, false, false);
 

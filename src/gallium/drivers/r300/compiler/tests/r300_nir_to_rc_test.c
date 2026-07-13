@@ -15,6 +15,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -154,7 +155,7 @@ build_vs_with_unsupported_intrinsic(void)
 }
 
 static nir_shader *
-build_vs_with_narrow_iand(void)
+build_vs_with_narrow_iand(unsigned bit_size, unsigned mask)
 {
    nir_builder b = vs_builder("vs_narrow_iand");
    nir_variable *in =
@@ -163,8 +164,10 @@ build_vs_with_narrow_iand(void)
    in->data.location = VERT_ATTRIB_GENERIC0;
 
    nir_def *loaded = nir_load_var(&b, in);
-   nir_def *narrow = nir_u2u8(&b, nir_f2u32(&b, nir_channel(&b, loaded, 0)));
-   nir_def *masked = nir_iand_imm(&b, narrow, 3);
+   nir_def *integer = nir_f2u32(&b, nir_channel(&b, loaded, 0));
+   nir_def *narrow = bit_size == 8 ? nir_u2u8(&b, integer)
+                                    : nir_u2u16(&b, integer);
+   nir_def *masked = nir_iand_imm(&b, narrow, mask);
    nir_def *x = nir_u2f32(&b, masked);
    nir_store_var(&b, pos,
                  nir_vec4(&b, x, nir_imm_float(&b, 0.0f),
@@ -268,21 +271,25 @@ case_fsub_emits_add_with_negated_rhs(void)
 }
 
 static void
-case_narrow_iand_stops_before_int_to_float(void)
+check_narrow_iand_stops_before_int_to_float(unsigned bit_size, unsigned mask)
 {
    struct nir_to_rc_vs_test_compiler tc = {0};
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
-   nir_to_rc(build_vs_with_narrow_iand(), &tc.screen.screen,
+   nir_to_rc(build_vs_with_narrow_iand(bit_size, mask), &tc.screen.screen,
              (struct r300_fragment_program_external_state){0}, rc,
              &tc.compiler.Base);
 
-   CHECK(tc.compiler.Base.Error,
-         "narrow iand rejects through compiler.Base.Error");
+   char check_name[96];
+   snprintf(check_name, sizeof(check_name),
+            "%u-bit iand mask 0x%x rejects through compiler.Base.Error",
+            bit_size, mask);
+   CHECK(tc.compiler.Base.Error, check_name);
    CHECK(tc.compiler.Base.ErrorMsg &&
-            strstr(tc.compiler.Base.ErrorMsg, "integer bitwise/shift op") != NULL,
-         "narrow iand stops at the bitwise admission boundary");
+            strstr(tc.compiler.Base.ErrorMsg,
+                   "integer ALU input or result") != NULL,
+         "narrow integer ALU stops at the RC admission boundary");
 
    nir_to_rc_vs_test_destroy(&tc);
 }
@@ -342,7 +349,12 @@ main(void)
 {
    printf("r300 nir_to_rc regression harness\n");
    case_unsupported_intrinsic_sets_error();
-   case_narrow_iand_stops_before_int_to_float();
+   check_narrow_iand_stops_before_int_to_float(8, 0);
+   check_narrow_iand_stops_before_int_to_float(16, 0);
+   check_narrow_iand_stops_before_int_to_float(8, UINT8_MAX);
+   check_narrow_iand_stops_before_int_to_float(16, UINT16_MAX);
+   check_narrow_iand_stops_before_int_to_float(8, 3);
+   check_narrow_iand_stops_before_int_to_float(16, 3);
    case_fsub_emits_add_with_negated_rhs();
    case_fcsel_gt_emits_cmp_with_negated_condition();
    case_continue_construct_is_lowered_before_emit();
