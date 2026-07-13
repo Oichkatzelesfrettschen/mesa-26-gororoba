@@ -91,7 +91,7 @@ r3v_bind_synthetic_identity_stream(struct r3v_device *device,
    if (binding >= R3V_MAX_VERTEX_BINDINGS)
       return false;
 
-   if (total_count > UINT32_MAX / sizeof(int32_t)) {
+   if (total_count > UINT32_MAX / sizeof(float)) {
       r3v_clear_synthetic_stream(vb_cache, binding);
       return false;
    }
@@ -101,7 +101,7 @@ r3v_bind_synthetic_identity_stream(struct r3v_device *device,
       .format     = PIPE_FORMAT_R8_UNORM,
       .bind       = PIPE_BIND_VERTEX_BUFFER,
       .usage      = PIPE_USAGE_STREAM,
-      .width0     = (uint64_t)total_count * sizeof(int32_t),
+      .width0     = (uint64_t)total_count * sizeof(float),
       .height0    = 1,
       .depth0     = 1,
       .array_size = 1,
@@ -113,10 +113,20 @@ r3v_bind_synthetic_identity_stream(struct r3v_device *device,
       return false;
    }
 
+   /* r300_nir_lower_vs_system_values_to_inputs reads this stream through the
+    * float-domain VS the SW-TCL draw path compiles (r300_vs_draw.c runs
+    * nir_lower_int_to_float over the whole shader).  A PIPE_FORMAT_R32_SINT
+    * payload hits pure_integer handling in lp_build_fetch_rgba_aos_array:
+    * the LLVM vertex-fetch JIT always requests a float dst_type, so the fetch
+    * bitcasts the raw int32 element index into a float register instead of
+    * converting it, and a small index like 2 arrives as the subnormal float
+    * 2.8e-45 rather than 2.0f.  Store the identity value as a real float and
+    * fetch through PIPE_FORMAT_R32_FLOAT (r3v_build_velems_cso) so the fetch
+    * takes the floating-point conversion path with no pure_integer bitcast. */
    struct pipe_transfer *xfer = NULL;
-   int32_t *map = pipe_buffer_map(pipe, res,
-                                  PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                  &xfer);
+   float *map = pipe_buffer_map(pipe, res,
+                                PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                &xfer);
    if (!map) {
       r3v_clear_synthetic_stream(vb_cache, binding);
       pipe_resource_reference(&res, NULL);
@@ -124,7 +134,7 @@ r3v_bind_synthetic_identity_stream(struct r3v_device *device,
    }
 
    for (uint32_t i = 0; i < total_count; i++)
-      map[i] = (int32_t)i;
+      map[i] = (float)i;
    pipe_buffer_unmap(pipe, xfer);
 
    vb_cache[binding].is_user_buffer  = false;
@@ -245,7 +255,7 @@ r3v_indexed_vertex_index_stream_count(
                                  draw->index_size);
       const int64_t vertex_index = (int64_t)index + draw->vertex_offset;
       if (vertex_index < 0 ||
-          vertex_index > (int64_t)(UINT32_MAX / sizeof(int32_t)) - 1) {
+          vertex_index > (int64_t)(UINT32_MAX / sizeof(float)) - 1) {
          pipe_buffer_unmap(pipe, index_xfer);
          return false;
       }
