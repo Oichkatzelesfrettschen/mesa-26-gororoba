@@ -206,16 +206,15 @@ package() {
   printf '%s\n' '/usr/lib' \
     > "${pkgdir}/etc/ld.so.conf.d/00-mesa-gororoba-deps.conf"
 
-  # Boot-safety guard.  The release variant installs the gbm/glvnd runtime as
-  # real /usr/lib files, but nothing fails the build if a meson option ever
-  # drops gbm -- the package would still install and black-screen the console on
-  # the next reboot (X modesetting dlopens libgbm.so.1 by SONAME; glvnd resolves
-  # libGLX_mesa.so.0 / libEGL_mesa.so.0).  Refuse to ship a system Mesa missing
-  # any of them.
+  # Boot-safety guard. The release variant installs the gbm/glvnd runtime as
+  # real /usr/lib files. The loader also needs GBM's dri_gbm.so fallback
+  # backend, so reject a staged system Mesa missing any required runtime object.
   local _need _missing=""
   for _need in libgbm.so.1 libGLX_mesa.so.0 libEGL_mesa.so.0; do
     [ -e "${pkgdir}/usr/lib/${_need}" ] || _missing="${_missing} /usr/lib/${_need}"
   done
+  [ -e "${pkgdir}/usr/lib/gbm/dri_gbm.so" ] \
+    || _missing="${_missing} /usr/lib/gbm/dri_gbm.so"
   if [ -n "${_missing}" ]; then
     echo "ERROR: boot-critical loader objects missing from the staged package:${_missing}" >&2
     echo "       the gbm/glvnd runtime did not build or stage; refusing to ship a system" >&2
