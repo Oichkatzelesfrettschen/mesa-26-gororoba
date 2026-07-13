@@ -131,14 +131,14 @@ test_domain_catalog(void)
          "catalog: quadratic discriminant has no Mesa hook (glamor-emitted, not a Mesa pass)");
    CHECK(q16_add != NULL && q16_add->status == R300_VOP_CARRIER_PENDING,
          "catalog: Q16.16 ADD remains carrier-pending after shape detection");
-   CHECK(q16_add != NULL && q16_add->mesa_hook != NULL,
-         "catalog: Q16.16 ADD records its classifier");
+   CHECK(q16_add != NULL && q16_add->mesa_hook == NULL,
+         "catalog: Q16.16 ADD detector is test-only, no production hook");
    CHECK(q16_mul != NULL && q16_mul->status == R300_VOP_CARRIER_PENDING,
          "catalog: Q16.16 MUL remains carrier-pending");
    CHECK(q16_mul != NULL && q16_mul->mesa_hook == NULL,
          "catalog: Q16.16 MUL has no detector");
-   CHECK(q16_mac != NULL && q16_mac->status == R300_VOP_CARRIER_PENDING,
-         "catalog: Q16.16 MAC remains production-carrier-pending");
+   CHECK(q16_mac != NULL && q16_mac->status == R300_VOP_HW_CONFIRMED_CARRIER_PENDING,
+         "catalog: Q16.16 MAC is HW-confirmed with the production carrier pending");
    CHECK(q16_mac != NULL && q16_mac->mesa_hook == NULL,
          "catalog: Q16.16 MAC has no production detector");
 }
