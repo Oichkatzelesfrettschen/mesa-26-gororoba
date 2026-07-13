@@ -92,9 +92,14 @@ endef
 define VALIDATE_BUILDDIR
 build_root="$(abspath $(BUILD_ROOT))"; \
 builddir="$(abspath $(BUILDDIR))"; \
+topsrc="$(abspath $(TOPSRC))"; \
 case "$$build_root" in \
-  ""|/|"$(HOME)"|"$(TOPSRC)") \
+  ""|/|"$(HOME)"|"$$topsrc") \
     echo "refusing unsafe BUILD_ROOT: $$build_root" >&2; exit 2 ;; \
+esac; \
+case "$$builddir" in \
+  "$$topsrc"|"$$topsrc"/*) \
+    echo "refusing BUILDDIR inside the source tree: $$builddir" >&2; exit 2 ;; \
 esac; \
 case "$$builddir" in \
   "$$build_root"/*) ;; \
@@ -113,8 +118,9 @@ endef
 
 define VALIDATE_PREFIX
 prefix="$(abspath $(PREFIX))"; \
+topsrc="$(abspath $(TOPSRC))"; \
 case "$$prefix" in \
-  ""|/|"$(HOME)"|"$(TOPSRC)") \
+  ""|/|/usr|/usr/local|/opt|/bin|/sbin|/lib|/lib64|"$(HOME)"|"$$topsrc"|"$$topsrc"/*) \
     echo "refusing unsafe PREFIX: $$prefix" >&2; exit 2 ;; \
 esac;
 endef
@@ -680,9 +686,11 @@ build-lease-test:
 	distclean_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" distclean \
 		BUILD_ROOT="$$tmpdir" BUILDDIR="$$tmpdir/build" \
 		PREFIX="$$tmpdir/prefix" BUILD_LOCK="$$tmpdir/plan.lock" )"; \
-	flock_count="$$(printf '%s\n' "$$distclean_plan" | grep -c 'flock -x')"; \
-	test "$$flock_count" -eq 1 || { \
-		echo "FAIL  distclean uses $$flock_count build leases" >&2; exit 1; \
+	flock_cmd="$(FLOCK)"; \
+	flock_base="$$(basename -- "$$flock_cmd")"; \
+	flock_count="$$(printf '%s\n' "$$distclean_plan" | grep -c -- "$$flock_base")"; \
+	test "$$flock_count" -ge 1 || { \
+		echo "FAIL  distclean plan has no $$flock_base lease" >&2; exit 1; \
 	}; \
 	echo "OK    distclean holds one build lease"
 

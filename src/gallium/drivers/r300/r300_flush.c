@@ -79,7 +79,8 @@ void r300_flush(struct pipe_context *pipe,
     /* RS482 Wiring-A (R2VB direct-VAP) hardware-handoff probe.  Fires once per
      * process under the exact R300_HB_TCL=1 and R300_R2VB_TIMING transport
      * gates, after a real draw has left its framebuffer and fragment program in
-     * this CS.  Returns true when it has consumed the CS. */
+     * this CS.  When the helper returns true it has consumed the CS, so flush
+     * returns without the normal dirty path. */
     if (r300_emit_rs482_r2vb_capture_selftest(r300, true, flags, fence))
         return;
 

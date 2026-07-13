@@ -98,6 +98,7 @@ def reroot_text(text, build_directory):
             if part.startswith(flag) and len(part) > len(flag):
                 path_part = part[len(flag):]
                 if path_part.startswith(build_prefix):
+                    out.append(part)
                     break
                 if path_part.startswith(source_prefix):
                     out.append(flag + worktree_prefix + path_part[len(source_prefix):])
@@ -105,11 +106,6 @@ def reroot_text(text, build_directory):
                     break
         else:
             out.append(part)
-            continue
-        # if for-flag broke without append (build_prefix case), already handled
-        if out and out[-1] is not part and not any(
-                out[-1].startswith(f) for f in ("-I", "-isystem")):
-            pass
     return " ".join(out), changed
 
 def reroot_path_token(token, build_directory):
@@ -164,9 +160,8 @@ for index, entry in enumerate(entries):
             if token.startswith("-I") or token.startswith("-isystem"):
                 flag = "-I" if token.startswith("-I") else "-isystem"
                 path_part = token[len(flag):]
-                # GNU accepts -I path and -Ipath
-                if path_part == "" and False:
-                    pass
+                # GNU accepts -Ipath; empty path_part means a split -I <path> form
+                # handled as a bare token on a later iteration.
                 if path_part:
                     new_path, n = reroot_path_token(path_part, build_directory)
                     new_args.append(flag + new_path if n else token)

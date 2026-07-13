@@ -10,15 +10,15 @@
 #include <string.h>
 
 enum r300_r2vb_selftest_action {
-    R300_R2VB_SELFTEST_DECLINE = 0,
-    R300_R2VB_SELFTEST_CAPTURE,
-    R300_R2VB_SELFTEST_SUBMIT,
+   R300_R2VB_SELFTEST_DECLINE = 0,
+   R300_R2VB_SELFTEST_CAPTURE,
+   R300_R2VB_SELFTEST_SUBMIT,
 };
 
 static inline bool
 r300_r2vb_option_is(const char *value, const char *expected)
 {
-    return value && strcmp(value, expected) == 0;
+   return value && strcmp(value, expected) == 0;
 }
 
 /* Select the transport before allocation, command emission, or query
@@ -33,18 +33,18 @@ r300_r2vb_select_selftest_action(const char *hb_tcl, const char *timing,
                                  bool from_flush, bool already_fired,
                                  bool query_active)
 {
-    if (!from_flush || already_fired || !r300_r2vb_option_is(hb_tcl, "1"))
-        return R300_R2VB_SELFTEST_DECLINE;
+   if (!from_flush || already_fired || !r300_r2vb_option_is(hb_tcl, "1"))
+      return R300_R2VB_SELFTEST_DECLINE;
 
-    if (r300_r2vb_option_is(timing, "capture"))
-        return query_active ? R300_R2VB_SELFTEST_DECLINE
-                            : R300_R2VB_SELFTEST_CAPTURE;
+   if (r300_r2vb_option_is(timing, "capture"))
+      return query_active ? R300_R2VB_SELFTEST_DECLINE
+                     : R300_R2VB_SELFTEST_CAPTURE;
 
-    if (r300_r2vb_option_is(timing, "submit") &&
-        r300_r2vb_option_is(raw_submit_accepted, "1"))
-        return R300_R2VB_SELFTEST_SUBMIT;
+   if (r300_r2vb_option_is(timing, "submit") &&
+      r300_r2vb_option_is(raw_submit_accepted, "1"))
+      return R300_R2VB_SELFTEST_SUBMIT;
 
-    return R300_R2VB_SELFTEST_DECLINE;
+   return R300_R2VB_SELFTEST_DECLINE;
 }
 
 #endif /* R300_R2VB_CAPTURE_GATE_H */
