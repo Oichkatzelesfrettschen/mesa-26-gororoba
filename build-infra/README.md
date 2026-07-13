@@ -79,6 +79,33 @@ collide.  (`git clean -xdf` also removes them since they are ignored; prefer
   or clean/build orchestration.  Make-invoked implementation bodies under
   `scripts/` (profile audit, profile `-D` extraction) stay allowed.
 
+## Build lease
+
+`make -C build-infra` acquires one exclusive `flock` lease before every
+operation that changes a build directory: configure, build, test, clean,
+clean-all, distclean, and install.  The default lease is shared across this
+user's Mesa worktrees at `~/.cache/mesa-26-gororoba/mesa-build.lock`; set
+`BUILD_LOCK=` only when an intentionally separate build domain needs its own
+lease.  `LOCK_WAIT` defaults to 7200 seconds and accepts `0` for a fail-fast
+caller.
+
+Use Make for all configured builds.  A direct `meson setup`, `ninja -C`, or
+`meson test -C` invocation bypasses the lease because Meson and Ninja do not
+provide a repository-level build-domain lock.  For a focused target, retain
+the lease through Make:
+
+```bash
+make -C build-infra build \
+  PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache \
+  NINJA_TARGETS=src/amd/r300/vulkan/r3v/r3v_descriptor_test
+make -C build-infra test \
+  PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache \
+  MESON_TEST_ARGS='--print-errorlogs r3v-descriptor'
+```
+
+Run `make -C build-infra build-lease-test` to prove that a held lease rejects
+configure, build, test, clean, and clean-all before they touch a build tree.
+
 ## Common flows
 
 Before a long build, run the host audit:

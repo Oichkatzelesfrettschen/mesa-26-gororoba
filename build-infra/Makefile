@@ -38,7 +38,8 @@ PROFILE  ?= 3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
 # lanes live under configs/alternates/ and inherit this clang22 ccache/distcc
 # host env unless the caller passes a different HOSTENV explicitly.
 HOSTENV  ?= vostro1000-x86-64-v1-clang22-ccache-distcc
-BUILDDIR ?= $(abspath $(CURDIR)/../build/mesa-$(PROFILE))
+BUILD_ROOT ?= $(abspath $(CURDIR)/../build)
+BUILDDIR ?= $(BUILD_ROOT)/mesa-$(PROFILE)
 INSTALL_NAMESPACE ?= mesa
 # Keep profile lanes isolated by default because meson install does not remove
 # artifacts that are absent from the current profile.  Override PREFIX=... on
@@ -67,10 +68,26 @@ JOBS     ?= 36
 else
 JOBS     ?= $(shell nproc)
 endif
-# Build serialization lock: held during ninja and meson install to prevent
-# concurrent builds from different agents stomping each other.  Any process
-# that respects this lock will serialize automatically.
+# Build serialization lease: held across every Make-managed build-directory
+# mutation so concurrent agents cannot configure, build, test, or clean the
+# same build domain at once.  Direct Meson and Ninja commands bypass it.
 BUILD_LOCK ?= $(HOME)/.cache/mesa-26-gororoba/mesa-build.lock
+LOCK_WAIT ?= 7200
+MESON ?= meson
+NINJA ?= ninja
+SUDO ?= sudo
+FLOCK ?= flock
+NINJA_TARGETS ?=
+MESON_TEST_ARGS ?=
+
+define ACQUIRE_BUILD_LOCK
+mkdir -p "$(dir $(BUILD_LOCK))"; \
+exec 9>"$(BUILD_LOCK)"; \
+$(FLOCK) -x -w "$(LOCK_WAIT)" 9 || { \
+  echo "build lease unavailable: $(BUILD_LOCK)" >&2; \
+  exit 1; \
+};
+endef
 
 # --- internal paths ---------------------------------------------------------
 TOPSRC   := $(abspath $(CURDIR)/..)
@@ -141,6 +158,7 @@ LOCKED_TOOL_ENV := \
         rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
         install-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
         rebuild-all-tiers audit-werror \
+        build-lease-test \
         pkg-mesa-gororoba deploy-mesa-gororoba \
         help
 
@@ -155,7 +173,7 @@ help:
 	@echo ""
 	@echo "targets:"
 	@echo "  configure         meson setup the builddir from configs/[alternates/]\$$(PROFILE).meson"
-	@echo "  build             ninja -C \$$(BUILDDIR)"
+	@echo "  build             locked ninja -C \$$(BUILDDIR); set NINJA_TARGETS for one target"
 	@echo "  clean             rm -rf \$$(BUILDDIR) (active profile only)"
 	@echo "  clean-all         rm -rf the whole repo-local build/ tree (all profiles)"
 	@echo "  distclean         clean + archive \$$(PREFIX) aside"
@@ -163,7 +181,8 @@ help:
 	@echo "  profile-audit     fail when a profile selects drivers outside its allowlist row"
 	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
 	@echo "  artifact-check    list installed Terakan/r600/r3v artifacts under \$$(PREFIX); warn on stale r300 ICDs"
-	@echo "  test              ninja -C \$$(BUILDDIR) test"
+	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
+	@echo "  build-lease-test  verify configure, build, test, and clean reject a held lease"
 	@echo "  rebuild-<profile> clean + configure + build for that profile"
 	@echo "  list              show available PROFILEs and HOSTENVs"
 	@echo ""
@@ -368,8 +387,9 @@ audit: vostro-prefix-check audit-werror profile-audit
 	echo; echo "Terakan host audit passed with $$warnings warning(s)."
 
 configure: vostro-prefix-check
-	@mkdir -p $(dir $(BUILDDIR))
-	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	@$(ACQUIRE_BUILD_LOCK) \
+	mkdir -p "$(dir $(BUILDDIR))"; \
+	test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	version_major() { \
 		case "$$1" in \
 			clang|clang++) "$$1" --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p;q' ;; \
@@ -481,36 +501,39 @@ configure: vostro-prefix-check
 		[ -z "$$llvm_strip_cmd" ] || printf "strip = '%s'\n" "$$llvm_strip_cmd"; \
 		[ -z "$$llvm_objcopy_cmd" ] || printf "objcopy = '%s'\n" "$$llvm_objcopy_cmd"; \
 	} > "$(TOOLCHAIN_NATIVE)"; \
-	echo "wrote Meson toolchain overlay: $(TOOLCHAIN_NATIVE) (LLVM $$llvm_version, $(COMPILER_CHAIN))"
-	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	echo "wrote Meson toolchain overlay: $(TOOLCHAIN_NATIVE) (LLVM $$llvm_version, $(COMPILER_CHAIN))"; \
+	test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
 	profile_dflags=$$(python3 $(PROFILE_DFLAGS_SCRIPT) $(CONFIG)) || { \
 		echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	echo "profile -D flags: $$profile_dflags"; \
-	meson setup $(SETUP_ARGS) $$profile_dflags --prefix=$(PREFIX) --sysconfdir=$(SYSCONFDIR) $(BUILDDIR) $(TOPSRC)
+	$(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix=$(PREFIX) --sysconfdir=$(SYSCONFDIR) $(BUILDDIR) $(TOPSRC)
 
 build:
-	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
-	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	mkdir -p "$(dir $(BUILD_LOCK))"; \
+	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }; \
+	test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	$(ACQUIRE_BUILD_LOCK) \
 	env $(LOCKED_TOOL_ENV) \
-	    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$${GOROROBA_DISTCC_JOBS:-$(JOBS)}
+	    $(NINJA) -C $(BUILDDIR) -j$${GOROROBA_DISTCC_JOBS:-$(JOBS)} $(NINJA_TARGETS)
 
 clean:
-	rm -rf $(BUILDDIR)
-	@echo "cleaned: $(BUILDDIR)"
+	@$(ACQUIRE_BUILD_LOCK) \
+	rm -rf "$(BUILDDIR)"; \
+	echo "cleaned: $(BUILDDIR)"
 
 # Remove the entire repo-local build/ tree (every profile's builddir), not just
 # the active PROFILE's.  The tree is gitignored (/build), so this only drops
 # regenerable artifacts and never touches the source or an installed PREFIX.
 clean-all:
-	rm -rf $(abspath $(CURDIR)/../build)
-	@echo "cleaned: $(abspath $(CURDIR)/../build) (all profile builddirs)"
+	@$(ACQUIRE_BUILD_LOCK) \
+	rm -rf "$(BUILD_ROOT)"; \
+	echo "cleaned: $(BUILD_ROOT) (all profile builddirs)"
 
 distclean: clean
-	@if [ -e "$(PREFIX)" ]; then \
+	@$(ACQUIRE_BUILD_LOCK) \
+	if [ -e "$(PREFIX)" ]; then \
 		archive="$(PREFIX).disabled.$$(date -u +%Y%m%dT%H%M%SZ)"; \
-		sudo mv "$(PREFIX)" "$$archive"; \
+		$(SUDO) mv "$(PREFIX)" "$$archive"; \
 		echo "archived prefix: $(PREFIX) -> $$archive"; \
 	else \
 		echo "prefix already absent: $(PREFIX)"; \
@@ -521,18 +544,18 @@ install: vostro-prefix-check
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	env $(LOCKED_TOOL_ENV) \
-	    flock -x -w 7200 $(BUILD_LOCK) bash -c 'set -euo pipefail; \
+	    $(FLOCK) -x -w $(LOCK_WAIT) "$(BUILD_LOCK)" bash -c 'set -euo pipefail; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
 	    profile_dflags=$$(python3 $(PROFILE_DFLAGS_SCRIPT) $(CONFIG)) || { \
 	      echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
-	    meson setup $(SETUP_ARGS) $$profile_dflags --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
+	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
 	    echo "[install] running meson install --no-rebuild --only-changed -C $(BUILDDIR)"; \
-	    sudo meson install --no-rebuild --only-changed -C $(BUILDDIR); \
+	    $(SUDO) $(MESON) install --no-rebuild --only-changed -C $(BUILDDIR); \
 	    : "sudo meson install writes meson-logs/install-log.txt as root; restore"; \
 	    : "ownership so a later non-sudo makepkg of the same builddir can rewrite"; \
 	    : "it instead of failing package() with a PermissionError under fakeroot"; \
-	    sudo chown -R "$$(id -un):$$(id -gn)" $(BUILDDIR)/meson-logs; \
+	    $(SUDO) chown -R "$$(id -un):$$(id -gn)" $(BUILDDIR)/meson-logs; \
 	    echo "[install] complete; releasing flock"'
 
 artifact-check: vostro-prefix-check
@@ -553,10 +576,51 @@ artifact-check: vostro-prefix-check
 	fi
 
 test:
-	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	mkdir -p "$(dir $(BUILD_LOCK))"; \
+	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }; \
+	test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	$(ACQUIRE_BUILD_LOCK) \
 	env $(LOCKED_TOOL_ENV) \
-	    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) test
+	    $(MESON) test -C $(BUILDDIR) $(MESON_TEST_ARGS)
+
+build-lease-test:
+	@tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	lock="$$tmpdir/mesa-build.lock"; \
+	mkdir -p "$$tmpdir/build"; \
+	assert_locked() { \
+		label="$$1"; shift; \
+		$(FLOCK) -x "$$lock" sleep 30 & holder="$$!"; \
+		attempt=0; \
+		while [ "$$attempt" -lt 100 ]; do \
+			if ! $(FLOCK) -n "$$lock" true; then break; fi; \
+			sleep 0.01; \
+			attempt=$$((attempt + 1)); \
+		done; \
+		if $(FLOCK) -n "$$lock" true; then \
+			echo "FAIL  $$label lock holder did not acquire $$lock" >&2; \
+			kill "$$holder" 2>/dev/null || true; \
+			wait "$$holder" 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+		if "$$@" >/dev/null 2>&1; then status=0; else status="$$?"; fi; \
+		kill "$$holder" 2>/dev/null || true; \
+		wait "$$holder" 2>/dev/null || true; \
+		if [ "$$status" -eq 0 ]; then \
+			echo "FAIL  $$label bypassed the held build lease" >&2; \
+			exit 1; \
+		fi; \
+		echo "OK    $$label rejects a held build lease"; \
+	}; \
+	assert_locked configure $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		BUILDDIR="$$tmpdir/configure" BUILD_LOCK="$$lock" LOCK_WAIT=0 MESON=true; \
+	assert_locked build $(MAKE) --no-print-directory -C "$(CURDIR)" build \
+		BUILDDIR="$$tmpdir/build" BUILD_LOCK="$$lock" LOCK_WAIT=0 NINJA=true; \
+	assert_locked test $(MAKE) --no-print-directory -C "$(CURDIR)" test \
+		BUILDDIR="$$tmpdir/build" BUILD_LOCK="$$lock" LOCK_WAIT=0 MESON=true; \
+	assert_locked clean $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+		BUILDDIR="$$tmpdir/build" BUILD_LOCK="$$lock" LOCK_WAIT=0; \
+	assert_locked clean-all $(MAKE) --no-print-directory -C "$(CURDIR)" clean-all \
+		BUILD_ROOT="$$tmpdir/build-root" BUILD_LOCK="$$lock" LOCK_WAIT=0
 
 define CLEAN_CONFIGURE_BUILD_PAIR
 	$(MAKE) clean \
