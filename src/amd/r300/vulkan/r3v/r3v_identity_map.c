@@ -21,34 +21,19 @@
 #include "pipe/p_screen.h"
 #include "compiler/nir/nir_opcodes.h"
 #include "util/format/u_format.h"
+#include "util/log.h"
 #include "util/u_inlines.h"
 #include "util/u_surface.h"
 
+#include <inttypes.h>
 #include <limits.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Diagnostic logging gate.  Active when the R3V_DEBUG env variable
- * contains the substring "identity_map" (matches the existing
- * debug-options convention parsed in r3v_instance.c).  Cached in a
- * file-scope static so the per-dispatch hot path does only one getenv on
- * the first call; subsequent calls hit the cached integer. */
-static bool
-identity_map_debug_enabled(void)
-{
-   static int cached = -1;
-   if (cached < 0) {
-      const char *flags = r3v_getenv_compat("R3V_DEBUG", "R300VK_DEBUG");
-      cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
-   }
-   return cached != 0;
-}
-
 #define IDM_LOG(fmt, ...) \
    do { \
-      if (identity_map_debug_enabled()) \
-         fprintf(stderr, "ident_map: " fmt "\n", ##__VA_ARGS__); \
+      if (device && device->dbg_identity_map) \
+         mesa_logi("r3v: ident_map: " fmt, ##__VA_ARGS__); \
    } while (0)
 
 static bool
@@ -180,7 +165,8 @@ find_descriptor_by_binding(const struct r3v_descriptor_set *set,
                            uint32_t binding_index);
 
 static bool
-r3v_idm_resolve_buffers(const struct r3v_descriptor_set *set,
+r3v_idm_resolve_buffers(struct r3v_device *device,
+                           const struct r3v_descriptor_set *set,
                            uint32_t count,
                            const uint32_t *bindings,
                            const struct r3v_descriptor **descs,
@@ -466,7 +452,8 @@ r3v_dispatch_index_exact(const struct r3v_pipeline *pl,
 }
 
 static bool
-r3v_idm_compute_raster_grid(const struct r3v_cmd_dispatch *dispatch,
+r3v_idm_compute_raster_grid(struct r3v_device *device,
+                               const struct r3v_cmd_dispatch *dispatch,
                                const struct r3v_pipeline *pl,
                                uint64_t *out_invocations,
                                unsigned *out_width,
@@ -921,9 +908,9 @@ r3v_identity_map_wrap_input_as_sampler_view(struct r3v_device *device,
        total_elements == 0)
       return NULL;
 
-   /* Allocate a transient linear-tiled 2D texture matching the dispatch
-    * shape.  PIPE_USAGE_DEFAULT so the GPU can read it through a sampler view
-    * at draw time.  The texture is freed automatically when the returned
+   /* Allocate a transient 2D texture matching the dispatch shape.
+    * PIPE_USAGE_DEFAULT allows the GPU to read it through a sampler view at
+    * draw time. The texture is freed automatically when the returned
     * sampler view's last reference is dropped. */
    struct pipe_resource templ;
    memset(&templ, 0, sizeof(templ));
@@ -942,21 +929,19 @@ r3v_identity_map_wrap_input_as_sampler_view(struct r3v_device *device,
    if (!tex)
       return NULL;
 
-   /* Copy the buffer bytes into the 2D texture.  Neither
-    * pipe->resource_copy_region (r300g blitter -> TXF -> R300 has no
-    * texelFetch -> assertion) NOR util_resource_copy_region (asserts
-    * src->target == dst->target at u_surface.c:225) handles the
-    * PIPE_BUFFER -> PIPE_TEXTURE_2D direction directly.  Do the map
-    * + memcpy ourselves: read the buffer as a flat byte stream, write
-    * each texel-row of the texture from the matching byte range.
-    * Linear-tiled texture so the dst pitch is W * blocksize plus any
-    * driver-imposed alignment, captured by the transfer's stride.  The raster
-    * extent may include padding texels, but the source map is bounded by the
-    * real invocation count so folded grids never read past the valid Vulkan
-    * buffer range. */
+   /* Copy the buffer bytes into the 2D texture. The r300 blitter copy path
+    * uses unsupported TXF instructions, and util_resource_copy_region accepts
+    * matching resource targets only. Map the buffer as a flat byte stream and
+    * write each texture row from the matching byte range. The transfer stride
+    * supplies the destination row pitch. */
    const unsigned bpp = util_format_get_blocksize(format);
    uint64_t total_bytes = 0;
    if (!r3v_idm_element_byte_count(total_elements, bpp, &total_bytes)) {
+      pipe_resource_reference(&tex, NULL);
+      return NULL;
+   }
+   if (bpp == 0 || byte_offset > src_buf->width0 ||
+       total_bytes > src_buf->width0 - byte_offset) {
       pipe_resource_reference(&tex, NULL);
       return NULL;
    }
@@ -1152,6 +1137,9 @@ r3v_identity_map_dispatch_replay(struct r3v_device *device,
                                     const struct r3v_cmd_dispatch *dispatch,
                                     const struct r3v_cmd_bind_descriptor_sets *binds)
 {
+   if (!device)
+      return false;
+
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
    IDM_LOG("entry pl=%p is_identity_map=%d set_count=%u gx=%u gy=%u gz=%u",
@@ -1228,9 +1216,8 @@ r3v_identity_map_dispatch_replay(struct r3v_device *device,
       IDM_LOG("early-return descriptor-walk-miss");
       return false;
    }
-   IDM_LOG("in_desc->buf.buffer=%p out_desc->buf.buffer=%p",
-           (const void *)(uintptr_t)in_desc->buf.buffer,
-           (const void *)(uintptr_t)out_desc->buf.buffer);
+   IDM_LOG("in_desc->buf.buffer=%" PRIu64 " out_desc->buf.buffer=%" PRIu64,
+           (uint64_t)in_desc->buf.buffer, (uint64_t)out_desc->buf.buffer);
    if (!in_desc->buf.buffer || !out_desc->buf.buffer) {
       IDM_LOG("early-return null-vkbuffer-handle");
       return false;
@@ -1384,9 +1371,8 @@ r3v_identity_map_dispatch_replay(struct r3v_device *device,
    pipe->flush(pipe, NULL, 0);
    IDM_LOG("post-flush, beginning rt->buffer copy");
 
-   /* Copy the RT back to the output ssbo.  Same util_resource_copy_region
-    * fallback path as the input wrap, but in the texture->buffer
-    * direction. */
+   /* Copy the RT back to the output SSBO with the same explicit map/copy path
+    * used for the input wrap. */
    struct pipe_box copy_box;
    memset(&copy_box, 0, sizeof(copy_box));
    copy_box.x      = 0;
@@ -1395,10 +1381,8 @@ r3v_identity_map_dispatch_replay(struct r3v_device *device,
    copy_box.width  = width;
    copy_box.height = height;
    copy_box.depth  = 1;
-   /* Same TXF-avoidance + cross-target-assertion reasons as the input
-    * wrap: pipe->resource_copy_region's blitter emits TXF on the
-    * texture-to-buffer direction too, and util_resource_copy_region
-    * asserts on cross-target.  Map + memcpy ourselves. */
+   /* The r300 blitter copy path uses unsupported TXF instructions and
+    * util_resource_copy_region accepts matching resource targets only. */
    bool copy_ok = false;
    {
       struct pipe_transfer *rt_xfer = NULL;
@@ -3838,7 +3822,7 @@ r3v_multitap_gather_dispatch_replay(struct r3v_device *device,
    uint32_t bindings[2] = { in_binding, out_binding };
    const struct r3v_descriptor *descs[2] = {0};
    struct r3v_buffer *bufs[2] = {0};
-   if (!r3v_idm_resolve_buffers(set, 2, bindings, descs, bufs))
+   if (!r3v_idm_resolve_buffers(device, set, 2, bindings, descs, bufs))
       return false;
    const struct r3v_descriptor *in_desc = descs[0];
    const struct r3v_descriptor *out_desc = descs[1];
@@ -4067,9 +4051,9 @@ r3v_predicated_store_dispatch_replay(struct r3v_device *device,
       return false;
    }
 
-   /* Positional binding resolution (binding 0 = predicate, 1 = value,
-    * 2 = output) -- the same convention as M-F.3 / M-G.3 / Entry 6; the
-    * detector's binding fields stay 0 post-explicit_io. */
+   /* Positional binding resolution uses binding 0 for the predicate, 1 for
+    * the value, and 2 for output when explicit-IO binding sources are not
+    * constants. */
    uint32_t pred_binding = 0, val_binding = 0, out_binding = 0;
    if (!nth_storage_buffer_binding(set, 0, &pred_binding) ||
        !nth_storage_buffer_binding(set, 1, &val_binding) ||
@@ -4117,9 +4101,7 @@ r3v_predicated_store_dispatch_replay(struct r3v_device *device,
    const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
    const unsigned bpp = util_format_get_blocksize(fmt);
 
-   /* Wrap the predicate (sampler 0) and value (sampler 1) buffers as
-    * PIPE_TEXTURE_2D + NEAREST sampler views, the same input wrap M-E / M-F
-    * use. */
+   /* Wrap the predicate and value buffers as PIPE_TEXTURE_2D sampler views. */
    struct pipe_sampler_view *sv_pred =
       r3v_identity_map_wrap_input_as_sampler_view(device, pred_buf->resource,
                                                      (unsigned)pred_desc->buf.offset,
@@ -4412,7 +4394,7 @@ r3v_blend_acc_reduction_dispatch_replay(struct r3v_device *device,
    uint32_t bindings[2] = { value_binding, output_binding };
    const struct r3v_descriptor *descs[2] = {0};
    struct r3v_buffer *bufs[2] = {0};
-   if (!r3v_idm_resolve_buffers(set, 2, bindings, descs, bufs))
+   if (!r3v_idm_resolve_buffers(device, set, 2, bindings, descs, bufs))
       return false;
    const struct r3v_descriptor *in_desc = descs[0];
    const struct r3v_descriptor *out_desc = descs[1];
@@ -4620,7 +4602,7 @@ r3v_zpass_reduction_dispatch_replay(struct r3v_device *device,
    uint32_t bindings[2] = { value_binding, output_binding };
    const struct r3v_descriptor *descs[2] = {0};
    struct r3v_buffer *bufs[2] = {0};
-   if (!r3v_idm_resolve_buffers(set, 2, bindings, descs, bufs))
+   if (!r3v_idm_resolve_buffers(device, set, 2, bindings, descs, bufs))
       return false;
    const struct r3v_descriptor *in_desc = descs[0];
    const struct r3v_descriptor *out_desc = descs[1];
@@ -4638,7 +4620,7 @@ r3v_zpass_reduction_dispatch_replay(struct r3v_device *device,
    }
    uint64_t total_invocations = 0;
    unsigned width = 0, height = 0;
-   if (!r3v_idm_compute_raster_grid(dispatch, pl, &total_invocations,
+   if (!r3v_idm_compute_raster_grid(device, dispatch, pl, &total_invocations,
                                        &width, &height))
       return false;
    if (total_invocations > 2048u) {

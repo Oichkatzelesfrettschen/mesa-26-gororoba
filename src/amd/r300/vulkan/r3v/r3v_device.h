@@ -62,8 +62,10 @@ struct r3v_device {
    struct r3v_queue    queue;
    bool                   use_cs_backend;
    bool                   hybrid_compute_enabled;
-   /* R3V_DEBUG comma-list, parsed once at device create: draw-path
-    * isolation switches for live triage on target hardware. */
+   /* R3V_DEBUG comma-list, parsed once at device create. */
+   bool                   dbg_identity_map;    /* "identity_map": replay diagnostics */
+   bool                   dbg_classify_nir;    /* "classify_nir": lowered compute NIR */
+   /* Draw-path isolation switches for live target-hardware triage. */
    bool                   dbg_no_dyn_overlay;   /* "no_overlay": static CSOs only */
    bool                   dbg_no_topo_override; /* "no_topo": recorded topology only */
    bool                   dbg_log_draws;        /* "log_draws": per-draw state line */
@@ -98,7 +100,7 @@ struct r3v_device {
       void *sampler;
    } identity_map_cso;
 
-   /* M-G blend-acc-reduction blend state CSO -- the one CSO that differs
+   /* Blend-accumulation reduction state CSO -- the one CSO that differs
     * from the identity-map state set: blend enabled, ADD function,
     * blend_func (ONE, ONE) accumulates per-fragment value into bin cells.
     * Created on demand at the first blend-acc-reduction pipeline-create,

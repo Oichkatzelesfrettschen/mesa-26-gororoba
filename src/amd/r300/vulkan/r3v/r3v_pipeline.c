@@ -31,6 +31,7 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 #include "util/format/u_format.h"
+#include "util/log.h"
 #include "util/macros.h"
 
 #include <string.h>
@@ -2369,11 +2370,8 @@ r3v_classify_compute_kernel(struct r3v_device *device,
     * exact NIR the classify + pattern detectors walk, the first thing to
     * read when a kernel that should match a raster verb dispatches as an
     * unknown-shape no-op. */
-   {
-      const char *dbg = r3v_getenv_compat("R3V_DEBUG", "R300VK_DEBUG");
-      if (dbg && strstr(dbg, "classify_nir"))
-         nir_print_shader(nir, stderr);
-   }
+   if (device->dbg_classify_nir)
+      nir_print_shader(nir, mesa_log_get_file());
 
    r300_nir_classify_compute(nir, adm);
    r300_nir_detect_identity_map(nir, ident);
