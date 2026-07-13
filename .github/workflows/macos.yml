@@ -50,7 +50,8 @@ jobs:
         moltenvk_dir=$(brew --prefix molten-vk)
         meson setup build --native-file=native_config \
           "-Dmoltenvk-dir=$moltenvk_dir" -Dbuild-tests=true \
-          -Dgallium-drivers=swrast,zink -Dglx=${{ matrix.glx_option }}
+          -Dgallium-drivers=llvmpipe,softpipe,zink \
+          -Dglx=${{ matrix.glx_option }}
     - name: Build
       run: meson compile -C build
     - name: Test
