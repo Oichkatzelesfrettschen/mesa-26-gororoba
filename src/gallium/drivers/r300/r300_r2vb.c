@@ -2630,12 +2630,8 @@ static void r300_vs_dump_nir_shape(struct r300_context *r300)
  * (vectorized column-MAD), NOT fdot4.  So key the in/out/uniform existence on
  * variable MODES (present in both deref and lowered form) and the transform on
  * the ALU histogram; reject any op or intrinsic outside the transform set. */
-static bool r300_vs_is_mvp(struct r300_context *r300)
+static bool r300_r2vb_nir_is_mvp_folded(nir_shader *nir)
 {
-    struct r300_vertex_shader *vs = r300_vs(r300);
-    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
-        return false;
-    nir_shader *nir = vs->state.ir.nir;
     nir_function_impl *impl = nir_shader_get_entrypoint(nir);
     if (!impl)
         return false;
@@ -2717,12 +2713,12 @@ static bool r300_vs_is_mvp(struct r300_context *r300)
                     break;
                 case nir_intrinsic_load_ubo:
                 case nir_intrinsic_load_ubo_vec4:
-                    /* src[0] is the UBO block index; src[1] is the byte/offset.
-                     * MVP matrix rows live in UBO 0 with constant offsets. */
+                    /* The MVP executor reads only the VS UBO[0] shadow.  Both
+                     * the block and byte/vec4 offset must be constant after
+                     * folding, and the block must select that shadow. */
                     if (!nir_src_is_const(intr->src[0]) ||
-                        nir_src_as_uint(intr->src[0]) != 0)
-                        return false;
-                    if (!nir_src_is_const(intr->src[1]))
+                        nir_src_as_uint(intr->src[0]) != 0 ||
+                        !nir_src_is_const(intr->src[1]))
                         return false;
                     break;
                 case nir_intrinsic_load_push_constant:
@@ -2745,6 +2741,36 @@ static bool r300_vs_is_mvp(struct r300_context *r300)
      * same column-MAD shape). */
     bool has_transform = (n_fmul >= 4 && n_fadd >= 3) || (n_dot4 >= 4) || (n_ffma >= 3);
     return has_transform;
+}
+
+bool r300_r2vb_nir_is_mvp(nir_shader *nir)
+{
+    if (!nir)
+        return false;
+
+    nir_shader *clone = nir_shader_clone(NULL, nir);
+    if (!clone)
+        return false;
+
+    bool progress;
+    do {
+        progress = false;
+        progress |= nir_opt_constant_folding(clone);
+        progress |= nir_opt_dce(clone);
+    } while (progress);
+
+    bool is_mvp = r300_r2vb_nir_is_mvp_folded(clone);
+    ralloc_free(clone);
+    return is_mvp;
+}
+
+static bool r300_vs_is_mvp(struct r300_context *r300)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
+        return false;
+
+    return r300_r2vb_nir_is_mvp(vs->state.ir.nir);
 }
 
 /* The float-ALU op set nir_to_rc emits after r300 lowering (compiler_isa.tsv

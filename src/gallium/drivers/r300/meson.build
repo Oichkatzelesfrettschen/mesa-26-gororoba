@@ -331,6 +331,24 @@ if with_tests
     suite : ['r300'],
   )
 
+  # MVP route classifier: UBO block zero is the only matrix source mirrored by
+  # the executor, and literal offset chains are folded on a throwaway clone.
+  test(
+    'r300-r2vb-mvp-match',
+    executable(
+      'r300_r2vb_mvp_match_test',
+      files('compiler/tests/r300_r2vb_mvp_match_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   test(
     'r300-nir-to-rc',
     executable(

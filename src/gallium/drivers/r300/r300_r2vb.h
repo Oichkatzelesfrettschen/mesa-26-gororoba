@@ -68,6 +68,10 @@ enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
                                                const struct pipe_draw_info *info,
                                                const struct pipe_draw_start_count_bias *draw);
 
+/* Match the MVP route against a constant-folded clone of the supplied VS NIR.
+ * The source shader remains unchanged. */
+bool r300_r2vb_nir_is_mvp(struct nir_shader *nir);
+
 /* Gated routing decision for r300_swtcl_draw_vbo.  Returns true only if the draw
  * should be executed via the R2VB route instead of the gallivm draw module.
  * Enabled by R300_R2VB_ROUTE=1; classifies + tallies each draw and logs the
