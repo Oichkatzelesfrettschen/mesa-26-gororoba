@@ -1791,7 +1791,10 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * keeps the path byte-identical. */
     static int r2vb_vte_w0_fmt = -1;
     if (r2vb_vte_w0_fmt < 0) {
+        /* R300_PTSIZE_C1B is the retired name for the same gate. */
         const char *e = getenv("R300_R2VB_VTE_W0_FMT");
+        if (!e)
+            e = getenv("R300_PTSIZE_C1B");
         r2vb_vte_w0_fmt = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
@@ -5093,10 +5096,10 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * That re-ingest is the unmodified passthrough path: it feeds varyings from
      * the application buffers, which cannot carry a computed varying, and a VS
      * with a computed-varying output mismatches its PSC/VAP setup and hangs the
-     * draw (the timeout-kill then poisons the ring).  Skipping it isolates the
-     * production plus oracle is isolated until the explicit
-     * R300_R2VB_REINGEST delivery branch below wires the producer BO into the
-     * re-ingest path. */
+     * draw (the timeout-kill then poisons the ring).  Skipping that re-ingest
+     * isolates production-plus-oracle from the unmodified passthrough path
+     * until the explicit R300_R2VB_REINGEST delivery branch below wires the
+     * producer BO into the re-ingest path. */
     static int varying = -1;
     if (varying < 0) {
         const char *e = getenv("R300_R2VB_VARYING");

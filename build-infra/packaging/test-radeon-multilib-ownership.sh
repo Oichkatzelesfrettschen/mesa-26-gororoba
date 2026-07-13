@@ -20,7 +20,7 @@ assert_metadata() {
     if ! printf '%s\n' "$metadata" | awk -F ' = ' -v field="$field" \
          '{ name = $1; sub(/^\t/, "", name) }
           name == field { print $2 }' | grep -Fx 'vulkan-radeon' >/dev/null; then
-      echo "x86_64 package no longer replaces vulkan-radeon: $package_dir" >&2
+      echo "x86_64 package no longer lists vulkan-radeon in ${field}: $package_dir" >&2
       exit 1
     fi
   done

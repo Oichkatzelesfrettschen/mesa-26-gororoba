@@ -78,6 +78,7 @@ provides=(
   libva-driver
   opengl-driver
   vulkan-driver
+  "vulkan-radeon=${epoch}:${pkgver}-${pkgrel}"
 )
 # This package stages only x86_64 artifacts. A matching lib32 package is
 # required before claiming ownership of lib32-vulkan-radeon.
@@ -90,12 +91,14 @@ source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-goror
         'mesa-gororoba-run'
         'mesa-gororoba-profile.sh'
         '90-mesa-gororoba-r300.conf'
+        'radeon_icd.i686.json'
         '20-rs482-modesetting-glamor.conf')
 sha256sums=('SKIP'
             'a83e217b881bbcc7d0462100cb5934c39f07bddbf499d3039537b18bbe8423a8'
             '1aba100cad006b67b31be2c5c31814e25a58d74c320d556678136bef726138c9'
             '54b80ef22798f325b76c7926569e987c50aa57c4458ca02737c821439bed02e2'
-            'fa1bd257c509e1be57a4b2ba1cd384d0615bad6bbd0dce72e1ff832562a9bc33'
+            '1d13d57d3acf8e7a7ef05dba363d3415a648a971c36447e5dcec259337668fd9'
+            '203177d5f87878083b142e8c2c6fc413edb19cb42ae38e61018bbf443aebafbe'
             'db99ee65f746c9f122477d2cb4e47a184a0153012c992b74e1f1cf0e65187ebd')
 
 _prefix=/usr
@@ -183,6 +186,10 @@ package() {
     "${pkgdir}/etc/profile.d/mesa-gororoba.sh"
   install -Dm644 90-mesa-gororoba-r300.conf \
     "${pkgdir}/usr/lib/environment.d/90-mesa-gororoba-r300.conf"
+  # Manifest for a retained stock lib32 RADV ICD after this package
+  # replaces 64-bit vulkan-radeon (lib32-vulkan-radeon ships only the .so).
+  install -Dm644 radeon_icd.i686.json \
+    "${pkgdir}/usr/share/vulkan/icd.d/radeon_icd.i686.json"
   install -Dm644 20-rs482-modesetting-glamor.conf \
     "${pkgdir}/usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf"
 
