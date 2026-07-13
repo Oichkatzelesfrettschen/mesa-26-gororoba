@@ -383,8 +383,9 @@ ninja -C builddir install
 ```
 
 Build-infra accepts `/opt/local/mesa-gororoba-debug-optimized` as the
-compatibility alias for this canonical debugoptimized prefix. The shared-prefix
-list below names both paths.
+compatibility alias for the canonical debugoptimized prefix
+`/opt/mesa-gororoba-debug-optimized`. The shared-prefix list below names both
+paths.
 
 Adapt options to the checkout and current Meson option set. Use `meson configure` and repo-local options rather than guessing. Commands and scripts carry repository-relative paths, PATH-resolved tools, or explicit user roots. Discover the repository root in scripts:
 
