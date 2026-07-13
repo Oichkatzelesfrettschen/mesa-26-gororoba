@@ -241,12 +241,13 @@ r300_nir_float_encode_int_sysvals(nir_shader *nir)
  *
  * Equality with an integer-typed vertex attribute still needs both sides in
  * the same domain after nir_lower_int_to_float.  Production r3v equality cases
- * that compared raw int bit patterns (#942-era) relied on R32_SINT delivery;
- * with R32_FLOAT that contract is intentionally numeric-float equality
- * (attribute side must also be float-encoded or compared as float).  The
- * use-site i2f32 rewrite below remains for int-typed synthetic inputs (unit
- * tests and any non-r3v caller still presenting the legacy shape); float-typed
- * inputs skip it so a genuine 2.0f is never re-encoded as i2f32. */
+ * that compared raw int bit patterns under the legacy R32_SINT synthetic
+ * delivery relied on bit-identity of the index; with R32_FLOAT that contract
+ * is intentionally numeric-float equality (attribute side must also be
+ * float-encoded or compared as float).  The use-site i2f32 rewrite below
+ * remains for int-typed synthetic inputs (unit tests and any non-r3v caller
+ * still presenting the legacy shape); float-typed inputs skip it so a genuine
+ * 2.0f is never re-encoded as i2f32. */
 bool
 r300_nir_float_encode_synthetic_sysval_index_uses(nir_shader *nir)
 {
