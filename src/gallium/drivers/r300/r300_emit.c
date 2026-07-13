@@ -18,6 +18,19 @@
 #include "r300_screen_buffer.h"
 #include "r300_vs.h"
 
+#include <stdlib.h>
+
+static bool
+r300_r2vb_va_dump_enabled(void)
+{
+    static int cached = -1;
+
+    if (cached < 0)
+        cached = getenv("R300_R2VB_VA_DUMP") ? 1 : 0;
+
+    return cached != 0;
+}
+
 void r300_emit_blend_state(struct r300_context* r300,
                            unsigned size, void* state)
 {
@@ -1087,7 +1100,7 @@ void r300_emit_vertex_arrays(struct r300_context* r300, int offset,
             buf = r300_resource(vbuf[velem[i].vertex_buffer_index].buffer.resource);
             OUT_CS_RELOC(buf);
         }
-        if (getenv("R300_R2VB_VA_DUMP"))
+        if (r300_r2vb_va_dump_enabled())
             for (i = 0; i < vertex_array_count; i++) {
                 struct pipe_vertex_buffer *vbx = &vbuf[velem[i].vertex_buffer_index];
                 struct r300_resource *rr =
