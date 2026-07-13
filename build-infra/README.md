@@ -62,9 +62,18 @@ collide.  (`git clean -xdf` also removes them since they are ignored; prefer
 - Make is the only build orchestration layer above Meson.
 - Host-specific LLVM command names are generated into
   `$BUILDDIR/gororoba-toolchain.meson` during `make configure`.
+- `make configure` and `make install` re-assert every `[project options]`
+  entry from the profile as `-D` flags (via
+  `scripts/meson_profile_dflags.py`).  Native-file values are defaults only;
+  after Meson drops a retired choice (for example the old `amd_r300`
+  vulkan-drivers token), coredata resets to the option default
+  (`vulkan-drivers=auto`) and the native file alone does not re-apply.  On
+  x86_64, `auto` pulls lavapipe while r300 profiles keep `llvm=disabled`, so
+  configure aborts.  The CLI `-D` pass heals that drift without a wipe.
 - New build-system behavior belongs in `build-infra/Makefile` or Meson files.
   Do not add standalone helper scripts for compiler selection, audit policy,
-  or clean/build orchestration.
+  or clean/build orchestration.  Make-invoked implementation bodies under
+  `scripts/` (profile audit, profile `-D` extraction) stay allowed.
 
 ## Common flows
 
