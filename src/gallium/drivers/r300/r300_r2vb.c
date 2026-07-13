@@ -2717,7 +2717,11 @@ static bool r300_vs_is_mvp(struct r300_context *r300)
                     break;
                 case nir_intrinsic_load_ubo:
                 case nir_intrinsic_load_ubo_vec4:
-                    /* load_ubo / load_ubo_vec4: src[1] is the byte/offset index. */
+                    /* src[0] is the UBO block index; src[1] is the byte/offset.
+                     * MVP matrix rows live in UBO 0 with constant offsets. */
+                    if (!nir_src_is_const(intr->src[0]) ||
+                        nir_src_as_uint(intr->src[0]) != 0)
+                        return false;
                     if (!nir_src_is_const(intr->src[1]))
                         return false;
                     break;
