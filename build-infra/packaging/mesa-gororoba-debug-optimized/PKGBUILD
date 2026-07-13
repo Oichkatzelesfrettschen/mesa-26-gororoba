@@ -87,8 +87,10 @@ provides=(
   opengl-driver
   vulkan-driver
 )
-conflicts=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
-replaces=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+# This package stages only x86_64 artifacts. A matching lib32 package is
+# required before claiming ownership of lib32-vulkan-radeon.
+conflicts=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+replaces=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
 # Keep debug symbols; no strip, no LTO.  !buildflags: this package compiles
 # nothing (repack only), so makepkg's CFLAGS/LDFLAGS injection is irrelevant.
 # The .a archives the builddir produced land in /opt for gdb work but are NOT
