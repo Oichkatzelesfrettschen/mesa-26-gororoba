@@ -78,7 +78,11 @@ assert entries[1]["directory"] == str(source_root / "builddir")
 assert entries[1]["file"] == str(worktree_root / "src" / "absolute.c")
 assert entries[2]["directory"] == str(source_root / "builddir")
 assert entries[2]["file"] == "generated/config.h"
+# Generated -I under the build dir stays borrowed.
 assert str(source_root / "builddir" / "generated") in entries[0]["command"]
+# Absolute source path in the command is re-rooted to the worktree.
+assert str(worktree_root / "src" / "absolute.c") in entries[1]["command"]
+assert str(source_root / "src" / "absolute.c") not in entries[1]["command"]
 PYTHON
 
 echo "refresh-clangd-db fixtures: PASS"
