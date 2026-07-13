@@ -559,7 +559,8 @@ What already exists on this substrate is more than a sketch: `r300_r2vb.c` is a
 (`R2VB_ROUTE_PASSTHROUGH` / `_CANDIDATE` / `REJECT_HW_TCL` / `_INDEXED` /
 `_INSTANCED`), three producer paths including the restage path for arbitrary
 straight-line non-texturing application VS NIR, self-test buffers, and a
-no-submit `R300_R2VB_TIMING=capture / R300_R2VB_INSPECT` oracle; `r300_hb_tcl.c` carries the static
+no-submit `R300_HB_TCL=1 R300_R2VB_TIMING=capture` and
+`R300_R2VB_INSPECT` oracles; `r300_hb_tcl.c` carries the static
 `0x0014025a` bypass word; `r300_hb_r400_us.h` gates an R400 unified-shader
 emission path that is diagnostic-only on RS482 -- the silicon executes bank
 instructions but a live temporary does not survive the 64-slot bank boundary,

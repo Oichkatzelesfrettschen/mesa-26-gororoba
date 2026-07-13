@@ -43,6 +43,7 @@
 #include "r300_fs.h"
 #include "r300_nir_ssa_cut.h"
 #include "r300_r2vb.h"
+#include "r300_r2vb_capture_gate.h"
 #include "r300_reg.h"
 #include "r300_vs.h"
 
@@ -2046,7 +2047,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
 }
 
 /* Gated self-test for the RS482 HB_TCL umbrella.  R300_HB_TCL=1 names the
- * hybrid-TCL experiment surface; R300_R2VB_TIMING picks the transport mode:
+ * hybrid-TCL experiment surface; an exact R300_R2VB_TIMING value picks the
+ * transport mode.  Both variables are required:
  *   capture -- emit the loop and flush with RADEON_FLUSH_NOOP, so the IB is
  *              captured by R300_TRACE and never reaches DRM_RADEON_CS.  The
  *              packets can be decoded and verified with zero hardware risk.
@@ -2193,7 +2195,7 @@ static bool r2vb_build_shape(const char *prim_name, uint32_t pts_count, struct r
 }
 
 struct r2vb_selftest_config {
-    bool enabled;
+    enum r300_r2vb_selftest_action action;
     bool do_submit;
     bool nowait;
     bool observe;
@@ -2203,15 +2205,30 @@ struct r2vb_selftest_config {
     const char *prim_name;
 };
 
-static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
+static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg,
+                                     bool from_flush, bool already_fired,
+                                     bool query_active)
 {
     const char *hb_tcl = getenv("R300_HB_TCL");
     const char *mode = getenv("R300_R2VB_TIMING");
-    cfg->enabled = (hb_tcl && strcmp(hb_tcl, "1") == 0) || (mode != NULL);
-    if (!cfg->enabled)
-        return;
+    const char *raw_submit_accepted = getenv("R300_RAW_SUBMIT_ACCEPTED");
 
-    cfg->do_submit = (mode && strcmp(mode, "submit") == 0);
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->action = r300_r2vb_select_selftest_action(
+        hb_tcl, mode, raw_submit_accepted, from_flush, already_fired,
+        query_active);
+    if (cfg->action == R300_R2VB_SELFTEST_DECLINE) {
+        if (from_flush && !already_fired &&
+            r300_r2vb_option_is(hb_tcl, "1") &&
+            r300_r2vb_option_is(mode, "submit") &&
+            !r300_r2vb_option_is(raw_submit_accepted, "1"))
+            fprintf(stderr,
+                    "r2vb selftest: submit mode needs "
+                    "R300_RAW_SUBMIT_ACCEPTED=1\n");
+        return;
+    }
+
+    cfg->do_submit = cfg->action == R300_R2VB_SELFTEST_SUBMIT;
     /* NOWAIT: submit and hand the fence back to the caller (r300_flush's out
      * param -> r3v's Vulkan fence) instead of waiting via the raw winsys
      * BO-wait poll, so the GPU completion is timed through the fast fence path. */
@@ -2260,18 +2277,11 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
 {
     static bool fired = false;
     struct r2vb_selftest_config cfg;
-    r2vb_get_selftest_config(&cfg);
+    r2vb_get_selftest_config(&cfg, from_flush, fired,
+                             r300->query_current != NULL);
 
-    if (!cfg.enabled || !from_flush || fired)
+    if (cfg.action == R300_R2VB_SELFTEST_DECLINE)
         return false;
-
-    if (cfg.do_submit) {
-        const char *gate = getenv("R300_RAW_SUBMIT_ACCEPTED");
-        if (!gate || strcmp(gate, "1") != 0) {
-            fprintf(stderr, "r2vb selftest: submit mode needs R300_RAW_SUBMIT_ACCEPTED=1\n");
-            return false;
-        }
-    }
 
     /* Select the producer vertices and re-ingest topology.  prim=throughput is a
      * timing path: it generates num_vertices clustered vertices on the heap (tiny
@@ -2365,7 +2375,8 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
                                       cfg.s3dim, cfg.s3dim, cfg.xform);
 
     r300_emit_hyperz_end(r300);
-    r300_emit_query_end(r300);
+    if (cfg.do_submit)
+        r300_emit_query_end(r300);
     {
         CS_LOCALS(r300);
         BEGIN_CS(3);
