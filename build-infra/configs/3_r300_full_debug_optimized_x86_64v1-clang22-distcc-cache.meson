@@ -5,7 +5,8 @@
 # debug-only instrumentation: debugoptimized buildtype with live assertions, frame
 # pointers, -g3, valgrind + libunwind annotations, the perfetto track-event
 # timeline, the standalone nir/glsl compiler tools plus dlclose-skip, the in-tree
-# unit tests, the overlay and device-select vulkan layers, and the full platform
+# unit tests, the anti-lag/device-select implicit layers, an /opt overlay, and
+# the full platform
 # set.  It carries the whole restored r300 surface -- the r300 gallium driver and
 # ati_r300 Vulkan ICD, the gallium-va MPEG-2 decode, and the gallium-xa 2D/Xv
 # frontend -- with assertions live.  It deliberately keeps r300's SW-TCL on the C
@@ -113,9 +114,9 @@ tools = ['nir', 'glsl', 'dlclose-skip']
 # live driver.
 build-tests = true
 
-# r3v debug layers: overlay (the on-screen HUD) and device-select.  These are
-# the mesa-shipped layers; Khronos validation is a separate package.
-vulkan-layers = ['overlay', 'device-select']
+# The package activates anti-lag and device-select as Arch's complete implicit
+# layer pair.  Overlay remains available only through the /opt debug prefix.
+vulkan-layers = ['anti-lag', 'device-select', 'overlay']
 
 # The restored r300 feature surface this debug lane must instrument: gallium-va
 # MPEG-2 decode (the pure-NIR g3dvl kernels), the H.264 decode back half on the
