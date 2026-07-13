@@ -79,8 +79,10 @@ provides=(
   opengl-driver
   vulkan-driver
 )
-conflicts=(mesa vulkan-mesa-implicit-layers vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
-replaces=(mesa vulkan-mesa-implicit-layers vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+# This package stages only x86_64 artifacts. A matching lib32 package is
+# required before claiming ownership of lib32-vulkan-radeon.
+conflicts=(mesa vulkan-mesa-implicit-layers vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+replaces=(mesa vulkan-mesa-implicit-layers vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
 options=('!lto' '!strip')
 install="${pkgname}.install"
 source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#branch=main"
