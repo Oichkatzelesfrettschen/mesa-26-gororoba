@@ -17,7 +17,7 @@ the validated state and fails any `Pass -> Fail`.
 ## What it checks
 
 1. `smoke.device_extension.<name>` -- each of the nine extensions is present in
-   `vulkaninfo`'s device extension list.
+   the selected r3v device's `vulkaninfo` extension list.
 2. `smoke.vkcube.no_crash` -- `vkcube` (a direct-VK xcb app) runs without
    SIGSEGV/abort (the null-bound-pipeline replay guard). Recorded
    `NotSupported` when no display or `vkcube` is available.
@@ -30,21 +30,35 @@ like the deqp-GLES2 `r300-point-line-sprite` harness.
 ## How
 
 ```sh
-# record the baseline (after a validated driver change)
-DEQP_VK=/path/to/deqp-vk run.sh --record
+# record the baseline after a validated driver change
+VK_ICD_FILENAMES=/path/to/r3v_icd.json \
+DEQP_VK=/path/to/deqp-vk OUT=/var/tmp/r3v-vulkan-surface \
+run.sh --record
 
 # gate a build (exit 1 on any Pass->Fail regression)
-DEQP_VK=/path/to/deqp-vk run.sh --check
+VK_ICD_FILENAMES=/path/to/r3v_icd.json \
+DEQP_VK=/path/to/deqp-vk OUT=/var/tmp/r3v-vulkan-surface \
+run.sh --check
 
-# test a scoped build instead of the system driver
-VK_ICD_FILENAMES=/tmp/r3v_test/r300_test_icd.json run.sh --check
+# deqp-vk can come from PATH when DEQP_VK is unset
+VK_ICD_FILENAMES=/path/to/r3v_icd.json OUT=/var/tmp/r3v-vulkan-surface \
+run.sh --check
 ```
 
-`DEQP_VK` defaults to the vostro headless build
-(`deqp-vk/build-vostro-r300vk-headless/.../deqp-vk`). The driver under test is
-whatever the Vulkan loader resolves; export `VK_ICD_FILENAMES` for a scoped
-build. `vkcube` needs `DISPLAY` + `XAUTHORITY` (xcb); without them that one check
-is recorded `NotSupported`.
+The harness requires one `VK_ICD_FILENAMES` JSON file and rejects a list. It
+clears `VK_DRIVER_FILES`, requires `vulkaninfo` to report `driverName = r3v`,
+and runs all tools through that loader selection. `DEQP_VK` selects an executable
+directly; otherwise `deqp-vk` must be on `PATH`.
+
+`OUT` is an output parent. Each invocation creates and retains one fresh child
+directory, so previous artifacts and sentinels remain intact. It rejects shared
+temporary roots and the source directory. `vkcube` needs `DISPLAY` and an
+executable `vkcube`; `--record` also requires its successful completion because
+the committed baseline records that smoke case as `Pass`.
+
+Run `bash test-run.sh` for the hermetic fake-tool integrity fixtures. They cover
+missing dEQP during recording, selected-driver verification, vkcube failures,
+unknown dEQP verdicts, failed baseline copies, and retained output sentinels.
 
 ## Baseline provenance
 
