@@ -331,8 +331,9 @@ if with_tests
     suite : ['r300'],
   )
 
-  # MVP route classifier: UBO block zero is the only matrix source mirrored by
-  # the executor, and literal offset chains are folded on a throwaway clone.
+  # MVP route classifier: UBO block or deref binding zero is the only matrix
+  # source mirrored by the executor, and literal offset chains are folded on a
+  # throwaway clone.
   test(
     'r300-r2vb-mvp-match',
     executable(

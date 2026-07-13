@@ -29,7 +29,8 @@ enum ubo_block_kind {
 };
 
 static nir_shader *
-build_mvp_shader(enum ubo_block_kind block_kind, bool constant_offset_chain)
+build_mvp_shader(enum ubo_block_kind block_kind, bool constant_offset_chain,
+                 bool deref_matrix, unsigned deref_binding)
 {
    static const nir_shader_compiler_options options;
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &options,
@@ -48,7 +49,7 @@ build_mvp_shader(enum ubo_block_kind block_kind, bool constant_offset_chain)
    nir_variable *matrix = nir_variable_create(
       b.shader, nir_var_mem_ubo,
       glsl_array_type(glsl_vec4_type(), 4, 0), "matrix");
-   matrix->data.binding = 0;
+   matrix->data.binding = deref_binding;
 
    nir_def *block;
    if (block_kind == UBO_BLOCK_DYNAMIC) {
@@ -74,11 +75,20 @@ build_mvp_shader(enum ubo_block_kind block_kind, bool constant_offset_chain)
    }
 
    nir_def *position = nir_load_var(&b, position_in);
+   nir_def *deref_matrix_value = NULL;
+   if (deref_matrix) {
+      nir_deref_instr *matrix_deref = nir_build_deref_var(&b, matrix);
+      matrix_deref = nir_build_deref_array_imm(&b, matrix_deref, 0);
+      deref_matrix_value = nir_load_deref(&b, matrix_deref);
+   }
    nir_def *products[4];
    for (unsigned component = 0; component < 4; component++) {
-      nir_def *matrix_value = nir_load_ubo(
-         &b, 1, 32, block, offset, .align_mul = 4, .align_offset = 0,
-         .range = 4);
+      nir_def *matrix_value = deref_matrix
+                                 ? nir_channel(&b, deref_matrix_value, component)
+                                 : nir_load_ubo(
+                                      &b, 1, 32, block, offset,
+                                      .align_mul = 4, .align_offset = 0,
+                                      .range = 4);
       products[component] = nir_fmul(
          &b, nir_channel(&b, position, component), matrix_value);
    }
@@ -113,19 +123,20 @@ main(void)
    glsl_type_singleton_init_or_ref();
    printf("r300 R2VB MVP UBO matcher\n");
 
-   nir_shader *block_zero = build_mvp_shader(UBO_BLOCK_ZERO, false);
+   nir_shader *block_zero = build_mvp_shader(UBO_BLOCK_ZERO, false, false, 0);
    CHECK(r300_r2vb_nir_is_mvp(block_zero), "constant UBO block zero admits");
    ralloc_free(block_zero);
 
-   nir_shader *block_one = build_mvp_shader(UBO_BLOCK_ONE, false);
+   nir_shader *block_one = build_mvp_shader(UBO_BLOCK_ONE, false, false, 0);
    CHECK(!r300_r2vb_nir_is_mvp(block_one), "constant UBO block one rejects");
    ralloc_free(block_one);
 
-   nir_shader *dynamic_block = build_mvp_shader(UBO_BLOCK_DYNAMIC, false);
+   nir_shader *dynamic_block =
+      build_mvp_shader(UBO_BLOCK_DYNAMIC, false, false, 0);
    CHECK(!r300_r2vb_nir_is_mvp(dynamic_block), "dynamic UBO block rejects");
    ralloc_free(dynamic_block);
 
-   nir_shader *constant_chain = build_mvp_shader(UBO_BLOCK_ZERO, true);
+   nir_shader *constant_chain = build_mvp_shader(UBO_BLOCK_ZERO, true, false, 0);
    CHECK(count_alu_op(constant_chain, nir_op_iadd) == 1 &&
             count_alu_op(constant_chain, nir_op_imul) == 1,
          "constant offset chain exists before classification");
@@ -135,6 +146,18 @@ main(void)
             count_alu_op(constant_chain, nir_op_imul) == 1,
          "classification leaves source NIR unchanged");
    ralloc_free(constant_chain);
+
+   nir_shader *deref_binding_zero =
+      build_mvp_shader(UBO_BLOCK_ZERO, false, true, 0);
+   CHECK(r300_r2vb_nir_is_mvp(deref_binding_zero),
+         "dereferenced UBO binding zero admits");
+   ralloc_free(deref_binding_zero);
+
+   nir_shader *deref_binding_one =
+      build_mvp_shader(UBO_BLOCK_ZERO, false, true, 1);
+   CHECK(!r300_r2vb_nir_is_mvp(deref_binding_one),
+         "dereferenced UBO binding one rejects");
+   ralloc_free(deref_binding_one);
 
    glsl_type_singleton_decref();
    printf("%s\n", failures ? "FAILED" : "PASSED");
