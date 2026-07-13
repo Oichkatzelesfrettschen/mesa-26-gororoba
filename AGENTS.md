@@ -373,7 +373,7 @@ Baseline standalone build:
 
 ```bash
 meson setup builddir \
-  --prefix="/opt/local/mesa-26-gororoba-debug" \
+  --prefix="/opt/mesa-gororoba-debug-optimized" \
   -Dbuildtype=debugoptimized \
   -Dgallium-drivers=r300,r600,softpipe \
   -Dvulkan-drivers=amd_terascale \
@@ -470,7 +470,7 @@ artifacts separate for review, bisect, and evidence work.
 The shared active prefixes are only for intentional operator-selected installs:
 
 - release active tree: `/opt/local/mesa-26-gororoba`;
-- debug active tree: `/opt/local/mesa-26-gororoba-debug`.
+- debugoptimized active tree: `/opt/mesa-gororoba-debug-optimized`.
 
 Use the `install-<profile>` targets, or pass `PREFIX=` explicitly, only when the
 goal is to replace one of those active trees. Evidence collection keeps each
