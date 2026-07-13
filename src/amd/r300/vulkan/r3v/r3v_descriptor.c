@@ -400,15 +400,7 @@ r3v_UpdateDescriptorSets(VkDevice _device,
          continue;
       for (uint32_t d = 0; d < span; d++) {
          struct r3v_descriptor *slot = &set->descriptors[base + d];
-         /* Defer the slot->type stamp until the per-type case body has
-          * accepted the write.  Earlier shape wrote slot->type at the top of
-          * the loop and rolled it back to 0 on the out-of-bounds path; that
-          * exposed a momentary window where slot->type was live without any
-          * backing binding (the kind of read-modify-write hazard Vulkan
-          * spec 14.2.3 "Descriptor Set Updates" requires to be atomic from
-          * the consumer's perspective).  Stamping after validation gives
-          * the all-or-nothing visibility the compute-as-raster dispatch-replay
-          * walker relies on. */
+         /* Stamp the descriptor type after the matching payload is accepted. */
          switch (write->descriptorType) {
          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
@@ -441,10 +433,7 @@ r3v_UpdateDescriptorSets(VkDevice _device,
                             (bi->range <= buf->size - bi->offset));
             }
             if (!in_bounds) {
-               /* Leave slot->type = 0 (the AllocateDescriptorSets zalloc
-                * value, or the previous accepted write's type if the slot
-                * was reused); the dispatch-replay walker reads
-                * slot->type == 0 as "no descriptor here" and skips. */
+               /* Preserve the previous accepted descriptor. */
                break;
             }
             slot->buf.buffer = bi->buffer;
