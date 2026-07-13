@@ -1024,14 +1024,6 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
        r3v_format_supports_transfer_dst(pipe_format))
       image_features |= VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
 
-   /* Depth/stencil formats carry no buffer features: a VkBuffer cannot hold a
-    * depth/stencil format and the spec requires bufferFeatures == 0 for them
-    * (dEQP-VK.api.buffer.invalid_buffer_features asserts exactly this).  r300's
-    * is_format_supported can accept a depth format's underlying bits as a
-    * vertex/texel fetch (e.g. Z16_UNORM read as a 16-bit unorm), so gate the
-    * buffer bits on the format not being depth/stencil. */
-   const bool is_depth_or_stencil = util_format_is_depth_or_stencil(pipe_format);
-
    /* RS482 routes all vertex fetch through the SW-TCL Gallium draw module, which
     * fetches in software and handles pure-integer vertex formats too.  r300g's
     * is_format_supported gates pure-integer out of its SW-TCL vertex branch (the
@@ -1048,21 +1040,10 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
        util_format_is_pure_integer(pipe_format) &&
        util_format_get_component_bits(pipe_format,
                                       UTIL_FORMAT_COLORSPACE_RGB, 0) <= 32);
-   if (!is_depth_or_stencil && !util_format_is_srgb(pipe_format) &&
-       vertex_fetchable) {
-      buffer_features |= VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
-   }
-
-   /* A Vulkan uniform texel buffer is a typed buffer fetched through a
-    * sampler-view-class binding, not an untyped Gallium constant buffer.  Gate
-    * UNIFORM_TEXEL_BUFFER on PIPE_BIND_SAMPLER_VIEW for PIPE_BUFFER so the
-    * advertised set matches the formats r300g can actually fetch as texel data
-    * rather than every format a constant buffer would nominally accept. */
-   if (!is_depth_or_stencil &&
-       r3v_screen_supports_format(device, pipe_format, PIPE_BUFFER,
-                                     PIPE_BIND_SAMPLER_VIEW)) {
-      buffer_features |= VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
-   }
+   /* Depth/stencil and sRGB formats carry no buffer features even if r300g can
+    * fetch their underlying bits.  The shared helper also keeps texel-buffer
+    * features absent until descriptor storage and replay implement them. */
+   buffer_features = r3v_format_buffer_features(pipe_format, vertex_fetchable);
 
    /* VK_IMAGE_TILING_LINEAR is backed by a single PIPE_BIND_LINEAR row-major
     * r300g tile, but only as transfer staging: deqp's draw readback copies an

@@ -79,6 +79,21 @@ r3v_format_supports_transfer_dst(enum pipe_format pipe_format)
    return desc && desc->nr_channels > 0;
 }
 
+/* r3v exposes only the vertex-fetch use of a formatted buffer.  Uniform texel
+ * buffers reach NIR as GLSL_SAMPLER_DIM_BUF and are rejected before pipeline
+ * creation because descriptor updates and queue replay carry no buffer-view
+ * payload.  Storage texel buffers have the same descriptor gap plus no r300g
+ * storage path. */
+static inline VkFormatFeatureFlags2
+r3v_format_buffer_features(enum pipe_format pipe_format, bool vertex_fetchable)
+{
+   if (util_format_is_depth_or_stencil(pipe_format) ||
+       util_format_is_srgb(pipe_format) || !vertex_fetchable)
+      return 0;
+
+   return VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
+}
+
 #ifdef __cplusplus
 }
 #endif
