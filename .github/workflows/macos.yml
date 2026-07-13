@@ -6,6 +6,7 @@ permissions:
 
 jobs:
   macOS-CI:
+    if: vars.MACOS_CI_AVAILABLE == 'true'
     strategy:
       matrix:
         glx_option: ['dri', 'xlib']
