@@ -18,6 +18,7 @@
 
 #include "nir.h"
 #include "nir_builder.h"
+#include "compiler/glsl_types.h"
 
 #include "r300_compute_admission.h"
 #include "r300_grid_fold.h"
@@ -3324,6 +3325,215 @@ case_cas(void)
    ralloc_free(gen);
 }
 
+/* ---- storage-image RT-export detector ---- */
+
+/* Single 2D image, or an array-of-images variable (descriptor array).  The
+ * array form is a glsl_array_type of a non-array 2D image -- not a 2D-array
+ * image dimension -- so the RT-export detector rejects on the array type and
+ * the array deref index. */
+static nir_variable *
+cs_image2d_var(nir_builder *b, const char *name, unsigned binding,
+               enum pipe_format format, bool array_of_images)
+{
+   const struct glsl_type *img =
+      glsl_image_type(GLSL_SAMPLER_DIM_2D, false, GLSL_TYPE_FLOAT);
+   if (array_of_images)
+      img = glsl_array_type(img, 2, 0);
+   nir_variable *var =
+      nir_variable_create(b->shader, nir_var_image, img, name);
+   var->data.binding = binding;
+   var->data.explicit_binding = true;
+   var->data.image.format = format;
+   var->data.access = ACCESS_NON_READABLE;
+   return var;
+}
+
+/* Positive: one image_deref_store of RGBA8 at gid.xy. */
+static nir_shader *
+build_rt_export_ok(void)
+{
+   nir_builder b = cs_builder("cs_rt_export_ok");
+   nir_variable *img =
+      cs_image2d_var(&b, "out_img", 0, PIPE_FORMAT_R8G8B8A8_UNORM, false);
+   nir_def *gid = nir_load_global_invocation_id(&b, 32);
+   nir_def *coord2 = nir_trim_vector(&b, gid, 2);
+   /* image_*_store coordinate is always 4 components in NIR. */
+   nir_def *coord = nir_pad_vector_imm_int(&b, coord2, 0, 4);
+   nir_def *val = nir_imm_vec4(&b, 1.0f, 0.0f, 0.0f, 1.0f);
+   nir_def *zero = nir_imm_int(&b, 0);
+   nir_image_deref_store(&b, &nir_build_deref_var(&b, img)->def, coord, zero,
+                         val, zero, .image_dim = GLSL_SAMPLER_DIM_2D,
+                         .image_array = false,
+                         .format = PIPE_FORMAT_R8G8B8A8_UNORM,
+                         .src_type = nir_type_float32);
+   return b.shader;
+}
+
+/* Negative: constant coordinate (no gid). */
+static nir_shader *
+build_rt_export_const_coord(void)
+{
+   nir_builder b = cs_builder("cs_rt_export_const_coord");
+   nir_variable *img =
+      cs_image2d_var(&b, "out_img", 0, PIPE_FORMAT_R8G8B8A8_UNORM, false);
+   nir_def *coord = nir_pad_vector_imm_int(&b, nir_imm_ivec2(&b, 0, 0), 0, 4);
+   nir_def *val = nir_imm_vec4(&b, 1.0f, 0.0f, 0.0f, 1.0f);
+   nir_def *zero = nir_imm_int(&b, 0);
+   nir_image_deref_store(&b, &nir_build_deref_var(&b, img)->def, coord, zero,
+                         val, zero, .image_dim = GLSL_SAMPLER_DIM_2D,
+                         .image_array = false,
+                         .format = PIPE_FORMAT_R8G8B8A8_UNORM,
+                         .src_type = nir_type_float32);
+   return b.shader;
+}
+
+/* Negative: array of images. */
+static nir_shader *
+build_rt_export_array_image(void)
+{
+   nir_builder b = cs_builder("cs_rt_export_array");
+   nir_variable *img =
+      cs_image2d_var(&b, "out_imgs", 0, PIPE_FORMAT_R8G8B8A8_UNORM, true);
+   nir_def *gid = nir_load_global_invocation_id(&b, 32);
+   nir_def *coord2 = nir_trim_vector(&b, gid, 2);
+   nir_def *coord = nir_pad_vector_imm_int(&b, coord2, 0, 4);
+   nir_def *val = nir_imm_vec4(&b, 1.0f, 0.0f, 0.0f, 1.0f);
+   nir_def *zero = nir_imm_int(&b, 0);
+   nir_deref_instr *base = nir_build_deref_var(&b, img);
+   nir_deref_instr *elem =
+      nir_build_deref_array(&b, base, nir_imm_int(&b, 0));
+   nir_image_deref_store(&b, &elem->def, coord, zero, val, zero,
+                         .image_dim = GLSL_SAMPLER_DIM_2D, .image_array = false,
+                         .format = PIPE_FORMAT_R8G8B8A8_UNORM,
+                         .src_type = nir_type_float32);
+   return b.shader;
+}
+
+/* Negative: wrong format. */
+static nir_shader *
+build_rt_export_wrong_format(void)
+{
+   nir_builder b = cs_builder("cs_rt_export_fmt");
+   nir_variable *img =
+      cs_image2d_var(&b, "out_img", 0, PIPE_FORMAT_R32G32B32A32_FLOAT, false);
+   nir_def *gid = nir_load_global_invocation_id(&b, 32);
+   nir_def *coord2 = nir_trim_vector(&b, gid, 2);
+   /* image_*_store coordinate is always 4 components in NIR. */
+   nir_def *coord = nir_pad_vector_imm_int(&b, coord2, 0, 4);
+   nir_def *val = nir_imm_vec4(&b, 1.0f, 0.0f, 0.0f, 1.0f);
+   nir_def *zero = nir_imm_int(&b, 0);
+   nir_image_deref_store(&b, &nir_build_deref_var(&b, img)->def, coord, zero,
+                         val, zero, .image_dim = GLSL_SAMPLER_DIM_2D,
+                         .image_array = false,
+                         .format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+                         .src_type = nir_type_float32);
+   return b.shader;
+}
+
+/* Negative: nonzero LOD. */
+static nir_shader *
+build_rt_export_nonzero_lod(void)
+{
+   nir_builder b = cs_builder("cs_rt_export_lod");
+   nir_variable *img =
+      cs_image2d_var(&b, "out_img", 0, PIPE_FORMAT_R8G8B8A8_UNORM, false);
+   nir_def *gid = nir_load_global_invocation_id(&b, 32);
+   nir_def *coord2 = nir_trim_vector(&b, gid, 2);
+   nir_def *coord = nir_pad_vector_imm_int(&b, coord2, 0, 4);
+   nir_def *val = nir_imm_vec4(&b, 1.0f, 0.0f, 0.0f, 1.0f);
+   nir_def *zero = nir_imm_int(&b, 0);
+   nir_def *lod = nir_imm_int(&b, 1);
+   nir_image_deref_store(&b, &nir_build_deref_var(&b, img)->def, coord, zero,
+                         val, lod, .image_dim = GLSL_SAMPLER_DIM_2D,
+                         .image_array = false,
+                         .format = PIPE_FORMAT_R8G8B8A8_UNORM,
+                         .src_type = nir_type_float32);
+   return b.shader;
+}
+
+/* Negative: second competing store_ssbo. */
+static nir_shader *
+build_rt_export_competing_ssbo(void)
+{
+   nir_builder b = cs_builder("cs_rt_export_ssbo");
+   nir_variable *img =
+      cs_image2d_var(&b, "out_img", 0, PIPE_FORMAT_R8G8B8A8_UNORM, false);
+   nir_def *gid = nir_load_global_invocation_id(&b, 32);
+   nir_def *coord2 = nir_trim_vector(&b, gid, 2);
+   /* image_*_store coordinate is always 4 components in NIR. */
+   nir_def *coord = nir_pad_vector_imm_int(&b, coord2, 0, 4);
+   nir_def *val = nir_imm_vec4(&b, 1.0f, 0.0f, 0.0f, 1.0f);
+   nir_def *zero = nir_imm_int(&b, 0);
+   nir_image_deref_store(&b, &nir_build_deref_var(&b, img)->def, coord, zero,
+                         val, zero, .image_dim = GLSL_SAMPLER_DIM_2D,
+                         .image_array = false,
+                         .format = PIPE_FORMAT_R8G8B8A8_UNORM,
+                         .src_type = nir_type_float32);
+   nir_store_ssbo(&b, nir_imm_int(&b, 1), nir_imm_int(&b, 1), zero,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_rt_export_metadata(void)
+{
+   printf("rt-export detector\n");
+   /* glsl_array_type for the array-of-images negative needs the type
+    * singleton live for the duration of the builders. */
+   glsl_type_singleton_init_or_ref();
+   {
+      nir_shader *s = build_rt_export_ok();
+      prepare_detect_shader(s);
+      struct r300_image_store_rt_export_pattern p;
+      r300_nir_detect_image_store_rt_export(s, &p);
+      CHECK(p.is_rt_exportable, "gid.xy RGBA8 image store admits");
+      CHECK(p.image_binding_valid && p.image_binding == 0,
+            "binding 0 populated");
+      ralloc_free(s);
+   }
+   {
+      nir_shader *s = build_rt_export_const_coord();
+      prepare_detect_shader(s);
+      struct r300_image_store_rt_export_pattern p;
+      r300_nir_detect_image_store_rt_export(s, &p);
+      CHECK(!p.is_rt_exportable, "const coord rejects");
+      ralloc_free(s);
+   }
+   {
+      nir_shader *s = build_rt_export_array_image();
+      prepare_detect_shader(s);
+      struct r300_image_store_rt_export_pattern p;
+      r300_nir_detect_image_store_rt_export(s, &p);
+      CHECK(!p.is_rt_exportable, "array-of-images rejects");
+      ralloc_free(s);
+   }
+   {
+      nir_shader *s = build_rt_export_wrong_format();
+      prepare_detect_shader(s);
+      struct r300_image_store_rt_export_pattern p;
+      r300_nir_detect_image_store_rt_export(s, &p);
+      CHECK(!p.is_rt_exportable, "non-RGBA8 format rejects");
+      ralloc_free(s);
+   }
+   {
+      nir_shader *s = build_rt_export_nonzero_lod();
+      prepare_detect_shader(s);
+      struct r300_image_store_rt_export_pattern p;
+      r300_nir_detect_image_store_rt_export(s, &p);
+      CHECK(!p.is_rt_exportable, "nonzero LOD rejects");
+      ralloc_free(s);
+   }
+   {
+      nir_shader *s = build_rt_export_competing_ssbo();
+      prepare_detect_shader(s);
+      struct r300_image_store_rt_export_pattern p;
+      r300_nir_detect_image_store_rt_export(s, &p);
+      CHECK(!p.is_rt_exportable, "competing store_ssbo rejects");
+      ralloc_free(s);
+   }
+   glsl_type_singleton_decref();
+}
+
 int
 main(void)
 {
@@ -3390,6 +3600,7 @@ main(void)
    case_multilimb_mul();
    case_log4_pool();
    case_cas();
+   case_rt_export_metadata();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
