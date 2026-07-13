@@ -29,6 +29,7 @@ struct r300_context;
 struct r300_fragment_shader;
 struct r300_vertex_shader;
 struct r300_stencilref_context;
+struct vbuf_render;
 
 enum colormask_swizzle {
     COLORMASK_BGRA,
@@ -466,6 +467,8 @@ struct r300_context {
 
     /* Draw module. Used mostly for SW TCL. */
     struct draw_context* draw;
+    /* r300 vbuf backend owned by the Draw stage. */
+    struct vbuf_render *swtcl_render;
     /* Vertex buffer for SW TCL. */
     struct pb_buffer_lean *vbo;
     /* Offset and size into the SW TCL VBO. */

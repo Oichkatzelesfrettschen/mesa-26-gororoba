@@ -42,6 +42,7 @@ files_r300 = files(
   'r300_state.c',
   'r300_state_derived.c',
   'r300_state_inlines.h',
+  'r300_swtcl_gtt.h',
   'r300_texture.c',
   'r300_texture_desc.c',
   'r300_texture_desc.h',
@@ -285,6 +286,22 @@ if with_tests
       ],
       link_with : [libr300, libgallium],
       dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # Pure state-machine guard for the SW-TCL GTT drain budget. The streak
+  # survives allocations until usage falls, the hard cap rejects unbounded
+  # growth, and the API draw boundary clears only per-draw state.
+  test(
+    'r300-swtcl-gtt-backpressure',
+    executable(
+      'r300_swtcl_gtt_backpressure_test',
+      files('compiler/tests/r300_swtcl_gtt_backpressure_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+      ],
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r300'],
