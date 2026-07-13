@@ -2645,8 +2645,12 @@ static bool r300_vs_is_mvp(struct r300_context *r300)
         return false;
 
     /* Allowed ALU: the column-MAD transform (fmul/fadd), the dot/fma variants in
-     * case a later nir pass vectorizes differently, and pure data movement.  Any
-     * other arithmetic (trig, div, comparisons, ...) is outside an MVP. */
+     * case a later nir pass vectorizes differently, pure data movement, and
+     * integer address math that NIR emits when indexing load_ubo_vec4 for the
+     * matrix rows (iadd/imul/ushr chains).  Affine edge rebuild needs the
+     * position transform to stay M*lerp(in)==lerp(M*in); UBO index arithmetic
+     * does not break that.  Float ops outside the transform set (trig, div,
+     * comparisons, ...) stay outside an MVP. */
     unsigned n_dot4 = 0, n_ffma = 0, n_fmul = 0, n_fadd = 0;
     nir_foreach_block(block, impl) {
         nir_foreach_instr(instr, block) {
@@ -2657,13 +2661,27 @@ static bool r300_vs_is_mvp(struct r300_context *r300)
             case nir_instr_type_alu:
                 switch (nir_instr_as_alu(instr)->op) {
                 case nir_op_fdot4: n_dot4++; break;
-                case nir_op_ffma: n_ffma++; break;
+                case nir_op_ffma:
+                case nir_op_ffma_weak: n_ffma++; break;
                 case nir_op_fmul: n_fmul++; break;
                 case nir_op_fadd: n_fadd++; break;
                 case nir_op_mov:
                 case nir_op_vec4:
                 case nir_op_vec3:
-                case nir_op_vec2: break; /* pure data movement, allowed */
+                case nir_op_vec2:
+                    break; /* pure data movement, allowed */
+                case nir_op_iadd:
+                case nir_op_isub:
+                case nir_op_imul:
+                case nir_op_ushr:
+                case nir_op_ishr:
+                case nir_op_ishl:
+                case nir_op_iand:
+                case nir_op_ior:
+                case nir_op_ixor:
+                case nir_op_inot:
+                case nir_op_ineg:
+                    break; /* UBO/push index arithmetic, not the transform */
                 default:
                     return false; /* arithmetic outside an MVP transform */
                 }
