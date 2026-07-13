@@ -3387,6 +3387,28 @@ build_rt_export_const_coord(void)
    return b.shader;
 }
 
+/* Negative: X/Y constant; only Z/W carry gid. The RT-export predicate requires
+ * gid participation in X and Y of the store coordinate. */
+static nir_shader *
+build_rt_export_gid_zw_only(void)
+{
+   nir_builder b = cs_builder("cs_rt_export_gid_zw");
+   nir_variable *img =
+      cs_image2d_var(&b, "out_img", 0, PIPE_FORMAT_R8G8B8A8_UNORM, false);
+   nir_def *gid = nir_load_global_invocation_id(&b, 32);
+   nir_def *gx = nir_channel(&b, gid, 0);
+   nir_def *gy = nir_channel(&b, gid, 1);
+   nir_def *coord = nir_vec4(&b, nir_imm_int(&b, 0), nir_imm_int(&b, 0), gx, gy);
+   nir_def *val = nir_imm_vec4(&b, 1.0f, 0.0f, 0.0f, 1.0f);
+   nir_def *zero = nir_imm_int(&b, 0);
+   nir_image_deref_store(&b, &nir_build_deref_var(&b, img)->def, coord, zero,
+                         val, zero, .image_dim = GLSL_SAMPLER_DIM_2D,
+                         .image_array = false,
+                         .format = PIPE_FORMAT_R8G8B8A8_UNORM,
+                         .src_type = nir_type_float32);
+   return b.shader;
+}
+
 /* Negative: array of images. */
 static nir_shader *
 build_rt_export_array_image(void)
@@ -3497,6 +3519,14 @@ case_rt_export_metadata(void)
       struct r300_image_store_rt_export_pattern p;
       r300_nir_detect_image_store_rt_export(s, &p);
       CHECK(!p.is_rt_exportable, "const coord rejects");
+      ralloc_free(s);
+   }
+   {
+      nir_shader *s = build_rt_export_gid_zw_only();
+      prepare_detect_shader(s);
+      struct r300_image_store_rt_export_pattern p;
+      r300_nir_detect_image_store_rt_export(s, &p);
+      CHECK(!p.is_rt_exportable, "gid only in Z/W rejects");
       ralloc_free(s);
    }
    {
