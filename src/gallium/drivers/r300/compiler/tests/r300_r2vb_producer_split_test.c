@@ -155,6 +155,8 @@ enum integer_carry_case {
    INTEGER_CARRY_UNSIGNED_EXACT,
    INTEGER_CARRY_UNSIGNED_OUTSIDE,
    INTEGER_CARRY_UNSIGNED_UNBOUNDED,
+   INTEGER_CARRY_SIGNED_TO_UNSIGNED,
+   INTEGER_CARRY_UNSIGNED_TO_SIGNED,
 };
 
 /* Keep one integer value live across the balance region of a long FP32 chain.
@@ -183,10 +185,11 @@ build_integer_carry_fs(enum integer_carry_case carry_case)
    nir_def *input = nir_load_var(&b, in0);
    nir_def *source = nir_channel(&b, input, 2);
    nir_def *integer;
-   bool signed_carry = carry_case == INTEGER_CARRY_SIGNED_EXACT ||
-                       carry_case == INTEGER_CARRY_SIGNED_POSITIVE_OUTSIDE ||
-                       carry_case == INTEGER_CARRY_SIGNED_NEGATIVE_OUTSIDE;
-   if (signed_carry) {
+   bool signed_producer = carry_case == INTEGER_CARRY_SIGNED_EXACT ||
+                          carry_case == INTEGER_CARRY_SIGNED_POSITIVE_OUTSIDE ||
+                          carry_case == INTEGER_CARRY_SIGNED_NEGATIVE_OUTSIDE ||
+                          carry_case == INTEGER_CARRY_SIGNED_TO_UNSIGNED;
+   if (signed_producer) {
       integer = nir_f2i32(&b, source);
       int32_t lower = carry_case == INTEGER_CARRY_SIGNED_NEGATIVE_OUTSIDE
                          ? -131073
@@ -211,8 +214,11 @@ build_integer_carry_fs(enum integer_carry_case carry_case)
    for (unsigned step = 0; step < 90; step++)
       value = nir_fmad(&b, value, factor, nir_imm_float(&b, 0.5f));
 
-   nir_def *integer_float = signed_carry ? nir_i2f32(&b, integer)
-                                         : nir_u2f32(&b, integer);
+   bool signed_consumer =
+      (signed_producer && carry_case != INTEGER_CARRY_SIGNED_TO_UNSIGNED) ||
+      carry_case == INTEGER_CARRY_UNSIGNED_TO_SIGNED;
+   nir_def *integer_float = signed_consumer ? nir_i2f32(&b, integer)
+                                            : nir_u2f32(&b, integer);
    value = nir_fadd(&b, value, integer_float);
    nir_store_var(&b, out, nir_vec4(&b, value, value, value, value), 0xf);
    return b.shader;
@@ -443,14 +449,17 @@ case_typed_integer_carries_require_exact_ranges(void)
       for (unsigned base = 0; base < signed_part.num_bases; base++)
          signed_transport |=
             signed_part.r2vb_transport[base] == R300_MP_R2VB_SINT;
-      CHECK(signed_transport, "signed carry selects i2f32/f2i32 transport");
+      CHECK(signed_transport, "signed carry selects exact signed transport");
       nir_shader *pass_a = r300_mp_build_carry_pass_a(signed_pos, &signed_part);
       nir_shader *pass_b = r300_mp_build_pos_pass_b(signed_pos, &signed_part, 1);
       CHECK(pass_a && shader_has_alu_op(pass_a, nir_op_i2f32),
             "signed pass A contains i2f32 transport");
       CHECK(pass_b && shader_has_input_conversion(
+                         pass_b, nir_op_ftrunc, VARYING_SLOT_VAR0 + 1),
+            "signed pass B reconstructs the flat carry with ftrunc");
+      CHECK(pass_b && !shader_has_input_conversion(
                          pass_b, nir_op_f2i32, VARYING_SLOT_VAR0 + 1),
-            "signed pass B converts the carry input with f2i32");
+            "signed flat carry bypasses f2i epsilon lowering");
       CHECK(pass_a && oracle_fits(pass_a),
             "signed carry pass A compiles under the 64-slot ceiling");
       CHECK(pass_b && oracle_fits(pass_b),
@@ -487,7 +496,7 @@ case_typed_integer_carries_require_exact_ranges(void)
       for (unsigned base = 0; base < unsigned_part.num_bases; base++)
          unsigned_transport |=
             unsigned_part.r2vb_transport[base] == R300_MP_R2VB_UINT;
-      CHECK(unsigned_transport, "unsigned carry selects u2f32/f2u32 transport");
+      CHECK(unsigned_transport, "unsigned carry selects exact unsigned transport");
       nir_shader *pass_a =
          r300_mp_build_carry_pass_a(unsigned_pos, &unsigned_part);
       nir_shader *pass_b =
@@ -495,8 +504,11 @@ case_typed_integer_carries_require_exact_ranges(void)
       CHECK(pass_a && shader_has_alu_op(pass_a, nir_op_u2f32),
             "unsigned pass A contains u2f32 transport");
       CHECK(pass_b && shader_has_input_conversion(
+                         pass_b, nir_op_ffloor, VARYING_SLOT_VAR0 + 1),
+            "unsigned pass B reconstructs the flat carry with ffloor");
+      CHECK(pass_b && !shader_has_input_conversion(
                          pass_b, nir_op_f2u32, VARYING_SLOT_VAR0 + 1),
-            "unsigned pass B converts the carry input with f2u32");
+            "unsigned flat carry bypasses f2u epsilon lowering");
       CHECK(pass_a && oracle_fits(pass_a),
             "unsigned carry pass A compiles under the 64-slot ceiling");
       CHECK(pass_b && oracle_fits(pass_b),
@@ -519,6 +531,24 @@ case_typed_integer_carries_require_exact_ranges(void)
    CHECK(!r300_mp_find_vec4_cut(unbounded_pos, &unbounded_part),
          "unproven uint32 carry declines the FP32 transport");
    ralloc_free(unbounded_pos);
+
+   nir_shader *signed_to_unsigned =
+      build_integer_carry_fs(INTEGER_CARRY_SIGNED_TO_UNSIGNED);
+   r300_optimize_nir(signed_to_unsigned, r300_screen(ps));
+   struct r300_mp_partition signed_to_unsigned_part;
+   CHECK(!r300_mp_find_vec4_cut(signed_to_unsigned,
+                                &signed_to_unsigned_part),
+         "signed producer with unsigned post-cut consumer declines");
+   ralloc_free(signed_to_unsigned);
+
+   nir_shader *unsigned_to_signed =
+      build_integer_carry_fs(INTEGER_CARRY_UNSIGNED_TO_SIGNED);
+   r300_optimize_nir(unsigned_to_signed, r300_screen(ps));
+   struct r300_mp_partition unsigned_to_signed_part;
+   CHECK(!r300_mp_find_vec4_cut(unsigned_to_signed,
+                                &unsigned_to_signed_part),
+         "unsigned producer with signed post-cut consumer declines");
+   ralloc_free(unsigned_to_signed);
 }
 
 int

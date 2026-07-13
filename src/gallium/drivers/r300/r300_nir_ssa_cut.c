@@ -334,40 +334,64 @@ r300_mp_signed_range(nir_shader *shader, struct hash_table *range_ht,
     }
 }
 
-/* Resolve integer signedness without changing the producer-neutral carry
- * class used by FS multipass. A typed producer controls. Typeless defs use a
- * unanimous consumer vote; mixed signed, unsigned, and boolean consumers do
- * not establish one conversion contract. */
-static nir_alu_type
-r300_mp_integer_semantic_type(nir_def *def)
+/* Accumulate the semantic classes that consume a carried value after the cut.
+ * Typeless ALU links such as mov and vecN forward the vote to their uses. */
+static void
+r300_mp_integer_consumer_classes(nir_def *def, unsigned cut_index,
+                                 bool *as_sint, bool *as_uint, bool *as_bool,
+                                 unsigned depth)
 {
-    nir_alu_type producer = r300_mp_producer_type(def, 0);
-    if (producer == nir_type_int || producer == nir_type_uint ||
-        producer == nir_type_bool)
-        return producer;
+    if (depth > 16) {
+        *as_sint = true;
+        *as_uint = true;
+        return;
+    }
 
-    bool as_sint = false, as_uint = false, as_bool = false;
     nir_foreach_use(use, def) {
         if (nir_src_is_if(use)) {
-            as_bool = true;
+            *as_bool = true;
             continue;
         }
+
         nir_instr *use_instr = nir_src_use_instr(use);
         if (use_instr->type != nir_instr_type_alu)
             continue;
+
         nir_alu_instr *alu = nir_instr_as_alu(use_instr);
+        nir_alu_type input_type = nir_type_invalid;
         for (unsigned source = 0;
              source < nir_op_infos[alu->op].num_inputs; source++) {
-            if (&alu->src[source].src != use)
-                continue;
-            nir_alu_type input_type = nir_alu_type_get_base_type(
-                nir_op_infos[alu->op].input_types[source]);
-            as_sint |= input_type == nir_type_int;
-            as_uint |= input_type == nir_type_uint;
-            as_bool |= input_type == nir_type_bool;
-            break;
+            if (&alu->src[source].src == use) {
+                input_type = nir_alu_type_get_base_type(
+                    nir_op_infos[alu->op].input_types[source]);
+                break;
+            }
         }
+
+        if (use_instr->index > cut_index) {
+            *as_sint |= input_type == nir_type_int;
+            *as_uint |= input_type == nir_type_uint;
+            *as_bool |= input_type == nir_type_bool;
+        }
+
+        if (input_type == nir_type_invalid)
+            r300_mp_integer_consumer_classes(&alu->def, cut_index, as_sint,
+                                             as_uint, as_bool, depth + 1);
     }
+}
+
+/* Resolve one integer transport contract from the producer and every post-cut
+ * consumer. A typed producer contributes one vote; conflicting signed,
+ * unsigned, or boolean consumers make the partition inadmissible. */
+static nir_alu_type
+r300_mp_integer_semantic_type(nir_def *def, unsigned cut_index)
+{
+    nir_alu_type producer = r300_mp_producer_type(def, 0);
+    bool as_sint = producer == nir_type_int;
+    bool as_uint = producer == nir_type_uint;
+    bool as_bool = producer == nir_type_bool;
+    r300_mp_integer_consumer_classes(def, cut_index, &as_sint, &as_uint,
+                                     &as_bool, 0);
 
     unsigned classes = as_sint + as_uint + as_bool;
     if (classes != 1)
@@ -392,7 +416,8 @@ r300_mp_select_r2vb_transport(nir_shader *shader,
             continue;
         }
 
-        nir_alu_type semantic_type = r300_mp_integer_semantic_type(base);
+        nir_alu_type semantic_type =
+            r300_mp_integer_semantic_type(base, part->cut_index);
         if (semantic_type == nir_type_bool) {
             part->r2vb_transport[base_index] = R300_MP_R2VB_BOOL32;
             continue;
@@ -608,11 +633,15 @@ r300_mp_build_pos_pass_b(nir_shader *src, const struct r300_mp_partition *part,
             chans[c] = nir_channel(&b, carry, comp + c);
         comp += base->num_components;
         nir_def *value = nir_vec(&b, chans, base->num_components);
+        /* nir_lower_int_to_float represents integer SSA as numeric floats and
+         * rewrites f2i32/f2u32 to ftrunc/ffloor. Build that final form here so
+         * the interpolation-only f2i epsilon pass does not alter this flat,
+         * FP24-exact carry input. */
         if (p.r2vb_transport[i] == R300_MP_R2VB_SINT ||
             p.r2vb_transport[i] == R300_MP_R2VB_BOOL32)
-            value = nir_f2i32(&b, value);
+            value = nir_ftrunc(&b, value);
         else if (p.r2vb_transport[i] == R300_MP_R2VB_UINT)
-            value = nir_f2u32(&b, value);
+            value = nir_ffloor(&b, value);
         else if (p.r2vb_transport[i] == R300_MP_R2VB_BOOL1)
             value = nir_fneu(&b, value, nir_imm_float(&b, 0.0f));
         nir_def_rewrite_uses(base, value);

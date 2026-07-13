@@ -30,7 +30,7 @@ extern "C" {
 
 enum r300_mp_carry_type {
     R300_MP_CARRY_FLOAT,
-    /* Integer and bool32 values carry through an i2f32/f2i32 round trip:
+    /* Integer and bool32 values carry through numeric-float transport:
      * small integers are exact in the fixed-point window and bool32's
      * 0/0xffffffff is exactly the signed pair 0/-1. */
     R300_MP_CARRY_INT,
@@ -41,7 +41,8 @@ enum r300_mp_carry_type {
 
 /* Logical value transport selected for the R2VB FP32 carry. Integer
  * transports are admitted only when range analysis proves that every carried
- * component survives the R300 FP24 conversion and FP32 storage round trip. */
+ * component survives the R300 FP24 conversion and FP32 storage round trip.
+ * The producer and all post-cut consumers must agree on the logical type. */
 enum r300_mp_r2vb_transport {
     R300_MP_R2VB_INVALID,
     R300_MP_R2VB_FLOAT,
@@ -81,10 +82,11 @@ r300_mp_find_cuts(nir_shader *nir, struct r300_mp_partition *cands,
  * producer transports the cut-crossing values through one FP32x4 carry BO
  * instead of the FS multipass RGBA8 hi/lo scratch. Float and boolean carries
  * retain their values. Signed and unsigned integer carries are admitted only
- * when every component is proven inside the exact R300 FP24 integer domain,
- * then
- * use matching i2f32/f2i32 or u2f32/f2u32 conversions. The carry fits four
- * scalar components.
+ * when every component is proven inside the exact R300 FP24 integer domain
+ * and every post-cut consumer agrees with the producer's logical type. Pass A
+ * uses i2f32/u2f32; pass B directly uses the ftrunc/ffloor form produced by
+ * r300's integer lowering so its flat carry input bypasses interpolation-only
+ * epsilon adjustment. The carry fits four scalar components.
  *
  * r300_mp_find_vec4_cut ranks the single-block cuts (r300_mp_find_cuts, which
  * orders smallest carry first) and returns the first whose crossing set fits
@@ -94,7 +96,7 @@ r300_mp_find_cuts(nir_shader *nir, struct r300_mp_partition *cands,
  * typed conversion, with unused lanes set to 0.0, into FRAG_RESULT_DATA0.
  * r300_mp_build_pos_pass_b clones the same FS, adds a flat shader input at
  * VARYING_SLOT_VAR0 + num_in fed from the carry BO, reconstitutes each base
- * from its carry components through the matching inverse conversion and
+ * from its carry components through the matching exact numeric form and
  * rewrites the base's uses so the pre-cut half dead-codes away
  * while the position output survives.  Both halves are pure NIR; the caller
  * measures each against the emitted-slot admission oracle and adopts the split
