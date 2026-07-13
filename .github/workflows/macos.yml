@@ -26,6 +26,7 @@ jobs:
         brew "libxcb"
         brew "libxdamage"
         brew "libxext"
+        brew "libxrandr"
         brew "llvm"
         brew "molten-vk"
         brew "ninja"
