@@ -136,6 +136,13 @@ vs_exec_run_linear(struct draw_context *draw,
          machine->SystemValue[i].xyzw[0].i[j] = draw->start_instance;
    }
 
+   if (shader->info.uses_drawid) {
+      unsigned i = machine->SysSemanticToIndex[TGSI_SEMANTIC_DRAWID];
+      assert(i < ARRAY_SIZE(machine->SystemValue));
+      for (j = 0; j < TGSI_QUAD_SIZE; j++)
+         machine->SystemValue[i].xyzw[0].i[j] = draw->pt.user.drawid;
+   }
+
    for (i = 0; i < count; i += MAX_TGSI_VERTICES) {
       unsigned int max_vertices = MIN2(MAX_TGSI_VERTICES, count - i);
 

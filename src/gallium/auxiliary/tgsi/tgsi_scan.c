@@ -454,6 +454,9 @@ scan_declaration(struct tgsi_shader_info *info,
          case TGSI_SEMANTIC_BASEINSTANCE:
             info->uses_baseinstance = true;
             break;
+         case TGSI_SEMANTIC_DRAWID:
+            info->uses_drawid = true;
+            break;
          case TGSI_SEMANTIC_PRIMID:
             info->uses_primid = true;
             break;
@@ -670,4 +673,3 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
 
    tgsi_parse_free(&parse);
 }
-

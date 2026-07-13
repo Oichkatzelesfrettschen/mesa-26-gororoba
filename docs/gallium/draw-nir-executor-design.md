@@ -169,16 +169,14 @@ exercise the draw_find_shader_output call sites (point sprites,
 two-sided color, wide-point derivatives); one TGSI-input driver's suite
 unmodified to confirm the untouched branch.
 
-## Open questions
+## Remaining work
 
-- Do any r300 SW-TCL vertex shaders reach texture sampling through
-  draw?  tgsi_exec wires sampler/image/buffer on every bind; the
-  interpreter needs equivalents only if a real shader uses them.
+- r300 SW-TCL advertises zero vertex samplers and rejects a normalized shader
+  outside `draw_vs_nir_supported`, so texture instructions do not enter its
+  direct executor. Other Draw drivers retain the generic compatibility bridge.
 - Per-vertex vs 4-chunk batching: performance only, deferred.
 - Precision parity epsilon for transcendental/fused ops between
   tgsi_exec and nir_eval_const_opcode, decided before treating diffs as
   regressions.
-- Whether the SSA value table persists on the shader (reset per run) or
-  allocates per run_linear call.
 - Sharing the nir_lower_uniforms_to_ubo idempotency check between the
   LLVM and exec factories to avoid drift.

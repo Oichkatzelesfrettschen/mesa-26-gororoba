@@ -16,8 +16,6 @@
 #include "util/u_blend.h"
 #include "util/u_pstipple.h"
 
-#include "nir/tgsi_to_nir.h"
-
 #include "util/detect.h"
 
 #include "r300_cb.h"
@@ -1368,7 +1366,12 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
     struct r300_context* r300 = r300_context(pipe);
     struct r300_fragment_shader* fs = NULL;
 
+    if (shader->type != PIPE_SHADER_IR_NIR || !shader->ir.nir)
+        return NULL;
+
     fs = (struct r300_fragment_shader*)CALLOC_STRUCT(r300_fragment_shader);
+    if (!fs)
+        return NULL;
 
     /* Copy state directly into shader. */
     fs->state = *shader;
@@ -1384,19 +1387,6 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
      * run the draw module. */
     fs->draw_fs = r300->draw ? draw_create_fragment_shader(r300->draw, shader)
                              : NULL;
-
-    /* Compatibility ingress for callers that submit TGSI fragment state. The GL
-     * state tracker supplies NIR, while residual helpers can still supply TGSI.
-     * Converted programs run the same r300_optimize_nir path as GLSL and SPIR-V
-     * NIR input -- in particular
-     * nir_lower_alu_to_scalar, which r300_alu_to_scalar_filter_cb selects for
-     * the bany/ball vector-comparison reductions a vec4 KILL_IF lowers to.
-     * Without it those reductions reach nir_to_rc's nir_lower_bool_to_float
-     * un-lowered and trip its "vector comparisons should be lowered" assert. */
-    if (fs->state.type == PIPE_SHADER_IR_TGSI) {
-       fs->state.ir.nir = tgsi_to_nir(fs->state.tokens, pipe->screen, false);
-       fs->state.type = PIPE_SHADER_IR_NIR;
-    }
 
     if (fs->state.ir.nir) {
         const struct shader_info *pre_info =
@@ -2559,19 +2549,16 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
                                   const struct pipe_shader_state* shader)
 {
     struct r300_context* r300 = r300_context(pipe);
+
+    if (shader->type != PIPE_SHADER_IR_NIR || !shader->ir.nir)
+        return NULL;
+
     struct r300_vertex_shader* vs = CALLOC_STRUCT(r300_vertex_shader);
+    if (!vs)
+        return NULL;
 
     /* Copy state directly into shader. */
     vs->state = *shader;
-
-    /* Compatibility ingress for callers that submit TGSI vertex state. The GL
-     * state tracker supplies NIR, while residual helpers, including
-     * vl_h264_emit, still supply TGSI. Convert before the common NIR compile
-     * path. */
-    if (vs->state.type == PIPE_SHADER_IR_TGSI) {
-       vs->state.ir.nir = tgsi_to_nir(vs->state.tokens, pipe->screen, false);
-       vs->state.type = PIPE_SHADER_IR_NIR;
-    }
 
     /* Hardware points are clamped by GA_POINT_MINMAX, but the draw wide-point
      * stage expands points to quads before the GA sees PSIZE
@@ -2597,13 +2584,9 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
         }
     }
 
-    /* Keep vs->state.ir.nir live across both routes.  r300_draw_init_vertex_shader
-     * (SW-TCL) clones it and assigns the rasterizer output driver_locations
-     * through r300_draw_fill_vs_outputs, and the draw module runs its own
-     * nir_to_tgsi; r300_translate_vertex_shader (HW-TCL) consumes it directly.
-     * Converting to TGSI and ralloc_free()ing the NIR here would leave the
-     * SW-TCL clone in r300_draw_init_vertex_shader reading freed memory, and
-     * r300_delete_vs_state would then free vs->state.ir.nir a second time. */
+    /* Keep vs->state.ir.nir live across both routes.  SW-TCL clones and
+     * normalizes it for the direct Draw NIR executor; HW-TCL consumes it in
+     * r300_translate_vertex_shader.  r300_delete_vs_state owns the original. */
 
     vs->first = vs->shader = CALLOC_STRUCT(r300_vertex_shader_code);
     if (r300->screen->caps.has_tcl) {

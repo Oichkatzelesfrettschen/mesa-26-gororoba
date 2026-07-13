@@ -21,6 +21,23 @@
 #include "compiler/r300_nir.h"
 
 #include "draw/draw_context.h"
+#include "draw/draw_vs.h"
+
+static void
+r300_draw_reject_vertex_shader(nir_shader *nir,
+                               struct r300_vertex_shader *vs,
+                               const char *reason)
+{
+    fprintf(stderr, "r300: %s; rejecting SW-TCL vertex shader\n", reason);
+    ralloc_free(nir);
+    vs->draw_vs = NULL;
+
+    if (vs->shader) {
+        vs->shader->dummy = true;
+        free(vs->shader->error);
+        vs->shader->error = strdup(reason);
+    }
+}
 
 static nir_variable *
 r300_draw_find_shader_out(nir_shader *nir, unsigned location)
@@ -191,7 +208,7 @@ r300_draw_scalarize_bool_cmp_cb(const nir_instr *instr, const void *data)
  * leaves intrinsics alone, so an integer system value (gl_InstanceID
  * as load_instance_id) enters the float-domain shader as raw integer
  * bits.  Every converted consumer -- float ALU, and the load_ubo
- * offset rebuild that applies f2i32 at the nir_to_tgsi boundary --
+ * offset rebuild that applies f2i32 before direct Draw execution --
  * then misreads those bits as a float: f2i32 of the denormal bit
  * pattern of integer 1 yields 0, so Pos[gl_InstanceID] collapses to
  * Pos[0] for every instance (piglit arb_draw_instanced-drawarrays
@@ -324,9 +341,8 @@ r300_nir_float_encode_synthetic_sysval_index_uses(nir_shader *nir)
  * nir_gather_types walk includes intrinsic sources, so a load_ubo_vec4
  * slot offset 1 becomes the bits of 1.0f), and consumers in that world
  * decode them heuristically -- nir_to_rc's ntr_src_as_uint treats any
- * value >= fui(1.0) as an encoded float.  nir_to_tgsi inside draw does
- * no such decode, so re-encode the offsets as integers at the boundary
- * or every uniform read past slot 0 indexes garbage. */
+ * value >= fui(1.0) as an encoded float.  The direct Draw executor uses
+ * integer byte and vec4 offsets, so re-encode the offsets before handoff. */
 static bool
 r300_nir_decode_float_ubo_offsets(nir_shader *nir)
 {
@@ -344,12 +360,9 @@ r300_nir_decode_float_ubo_offsets(nir_shader *nir)
                 continue;
             for (unsigned si = 0; si < 2; si++) {
                 if (!nir_src_is_const(intr->src[si])) {
-                    /* A dynamic offset chain lives in the float domain
-                     * after the lowering (an integer index uniform is
-                     * stored as float and read through an identity mov),
-                     * but nir_to_tgsi emits UARL, which consumes integer
-                     * bits: 1.0f addresses constant slot 1065353216.
-                     * Rebuild the integer at the boundary. */
+                    /* A dynamic offset chain lives in the float domain after
+                     * lowering.  The direct executor consumes integer offset
+                     * bits, so 1.0f would address slot 1065353216. */
                     b.cursor = nir_before_instr(instr);
                     nir_src_rewrite(&intr->src[si],
                                     nir_f2i32(&b, intr->src[si].ssa));
@@ -373,8 +386,7 @@ r300_nir_decode_float_ubo_offsets(nir_shader *nir)
 /* Rebuild boolean branch conditions after bool-to-float lowering: the
  * lowering rewrites bool defs to 0.0/1.0 floats without touching nir_if
  * sources, so a float-typed condition reaches structured control flow and
- * later select flattening (nir_opt_peephole_select inside nir_to_tgsi)
- * builds a bcsel whose condition width fails nir_validate. */
+ * the direct executor requires a one-bit structured condition. */
 static bool
 r300_nir_fixup_float_if_conditions(nir_shader *nir)
 {
@@ -408,26 +420,15 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
     nir_variable *wpos_var = NULL;
     NIR_PASS(_, nir, r300_nir_add_wpos, &wpos_var);
 
-    /* RS480 has no hardware TCL, so the vertex shader runs in the gallium draw
-     * module's TGSI interpreter.  A dynamic index into a temporary array makes
-     * the interpreter walk a per-element index path that does not finish in
-     * bounded time (dEQP-GLES2.functional.shaders.indexing.tmp_array.*_dyn hangs
-     * the SW vertex shader in tgsi_exec).  Lower indirect temp derefs to
-     * if-ladders so the interpreted VS only ever sees static register indices --
-     * the fragment path already does this in nir_to_rc. */
+    /* RS480 has no hardware TCL, so the vertex shader runs in the direct Draw
+     * NIR executor.  Lower indirect temporary derefs to if-ladders because the
+     * executor admits SSA, ALU, control flow, and its explicit I/O intrinsics. */
     NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
              nir_var_function_temp, UINT32_MAX);
 
-    /* A dynamically indexed vertex-input array (dEQP vertex_input.max_attributes
-     * reads in_attr[i] across a loop) reaches the interpreted VS as an indirect
-     * shader_in deref.  nir_to_tgsi only lowers indirect shader_in derefs for the
-     * fragment stage; for every other stage its nir_lower_io converts the deref
-     * to an indirect load_input that the later nir_lower_indirect_derefs cannot
-     * touch, so the indirect input survives to emit and ntt leaves the selected
-     * value in TGSI_FILE_NULL and aborts.  Lower it to the same if/else selection
-     * trees here, before draw hands the shader to nir_to_tgsi, so the interpreter
-     * only ever sees constant input indices.  The native GL path is unaffected:
-     * st/mesa already lowers shader_in indirects up front, leaving nothing to do. */
+    /* Normalize dynamically indexed vertex-input arrays to the same if-ladder
+     * form used for temporary arrays before the direct-executor admission gate.
+     * The GL state tracker normally performs this lowering first. */
     NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
              nir_var_shader_in, UINT32_MAX);
 
@@ -435,14 +436,9 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
      * bool function_temp variable (loop_break/loop_continue) live across
      * blocks instead of an SSA phi.  nir_lower_bool_to_float rewrites the
      * false/true constants stored through that deref to 32-bit floats but
-     * leaves the variable's glsl_type at bool (1-bit); the vars-to-ssa pass
-     * draw's nir_to_tgsi runs at emit time then builds the phi for that
-     * variable at its declared 1-bit width and asserts when it meets the
-     * 32-bit float store (nir_phi_builder_value_set_block_def,
-     * def->bit_size != val->bit_size).  Converting every eligible variable
-     * to SSA here, before the bool/int-to-float rewrites run, removes the
-     * deref indirection those rewrites do not track -- nir_to_tgsi's own
-     * nir_lower_vars_to_ssa call later is then a no-op for this shader. */
+     * leaves the variable's glsl_type at bool (1-bit).  Converting eligible
+     * variables to SSA before the bool/int-to-float rewrites preserves phi
+     * bit sizes and removes derefs the direct executor does not admit. */
     NIR_PASS(_, nir, nir_lower_vars_to_ssa);
 
     /* Mesa stores GL integer uniforms converted to float
@@ -473,19 +469,9 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
     bool vs_bitwise_unsupported = false;
     NIR_PASS(_, nir, r300_nir_lower_bitwise_to_arith, &vs_bitwise_unsupported);
     if (vs_bitwise_unsupported) {
-        fprintf(stderr,
-                "r300: SW-TCL VS uses bitwise ops outside the FP24-exact "
-                "rewrite set; rejecting shader\n");
-        ralloc_free(nir);
-        vs->draw_vs = NULL;
-        /* Draw skips when shader->dummy is set; leave a compile-failure
-         * sentinel so a NULL draw_vs cannot be bound silently. */
-        if (vs->shader) {
-            vs->shader->dummy = true;
-            free(vs->shader->error);
-            vs->shader->error = strdup(
-                "SW-TCL VS uses bitwise ops outside the FP24-exact rewrite set");
-        }
+        r300_draw_reject_vertex_shader(
+            nir, vs,
+            "SW-TCL VS uses bitwise ops outside the FP24-exact rewrite set");
         return;
     }
     NIR_PASS(_, nir, nir_lower_int_to_float);
@@ -513,5 +499,10 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
         .type = PIPE_SHADER_IR_NIR,
         .ir.nir = nir,
     };
+    if (!draw_vs_nir_supported(&new_vs)) {
+        r300_draw_reject_vertex_shader(
+            nir, vs, "SW-TCL VS exceeds direct Draw NIR executor coverage");
+        return;
+    }
     vs->draw_vs = draw_create_vertex_shader(r300->draw, &new_vs);
 }

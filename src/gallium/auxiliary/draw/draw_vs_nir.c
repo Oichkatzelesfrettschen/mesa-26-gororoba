@@ -602,6 +602,7 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
             case nir_intrinsic_load_vertex_id_zero_base:
             case nir_intrinsic_load_base_vertex:
             case nir_intrinsic_load_first_vertex:
+            case nir_intrinsic_load_draw_id:
                break;
             default:
                /* interp_intrinsic's default case, mirrored here. */
