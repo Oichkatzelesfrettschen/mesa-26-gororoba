@@ -572,7 +572,11 @@ build:
 	$(ACQUIRE_BUILD_LOCK) \
 	build_jobs="$(JOBS)"; \
 	case "$(COMPILER_CHAIN):$${CCACHE_PREFIX:-}" in \
-		distcc:*|ccache:distcc) build_jobs="$${GOROROBA_DISTCC_JOBS:-$(DISTCC_JOBS)}" ;; \
+		distcc:*|ccache:distcc|ccache:*/distcc) \
+			build_jobs="$${GOROROBA_DISTCC_JOBS:-$(DISTCC_JOBS)}" ;; \
+		ccache:*) \
+			[ -z "$${GOROROBA_DISTCC_JOBS:-}" ] || \
+				build_jobs="$$GOROROBA_DISTCC_JOBS" ;; \
 	esac; \
 	case "$$build_jobs" in \
 		''|*[!0-9]*|0) echo "invalid Ninja job count: $$build_jobs" >&2; exit 2 ;; \
@@ -794,7 +798,7 @@ build-job-policy-test:
 		printf '%s\n' "$$distcc_output" >&2; exit 1; \
 	}; \
 	echo "OK    distcc build uses $(DISTCC_JOBS) jobs"; \
-	ccache_distcc_output="$$( CCACHE_PREFIX=distcc \
+	ccache_distcc_output="$$( CCACHE_PREFIX=/usr/bin/distcc \
 		$(MAKE) --no-print-directory -s -C "$(CURDIR)" build \
 		HOSTENV=job-policy-local COMPILER_CHAIN=ccache \
 		BUILDDIR="$$tmpdir/build" BUILD_LOCK="$$tmpdir/ccache-distcc.lock" \
