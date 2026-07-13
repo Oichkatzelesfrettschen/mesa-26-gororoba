@@ -751,6 +751,10 @@ r3v_GetImageSparseMemoryRequirements2(VkDevice _device,
    uint32_t *pSparseMemoryRequirementCount,
    VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
 {
+   (void)_device;
+   (void)pInfo;
+   (void)pSparseMemoryRequirements;
+
    *pSparseMemoryRequirementCount = 0;
 }
 

@@ -29,8 +29,6 @@ dEQP-GLES2.functional.fragment_ops.random.66,Fail
 dEQP-GLES2.functional.fragment_ops.random.81,Fail
 dEQP-GLES2.functional.fragment_ops.random.77,Fail
 
-dEQP-GLES2.functional.rasterization.primitives.line_loop_wide,Fail
-dEQP-GLES2.functional.rasterization.primitives.line_strip_wide,Fail
 dEQP-GLES2.functional.shaders.builtin_variable.frontfacing,Fail
 dEQP-GLES2.functional.shaders.conversions.vector_combine.vec2_bool_to_ivec3_fragment,Fail
 dEQP-GLES2.functional.shaders.conversions.vector_combine.vec2_bvec2_to_ivec4_fragment,Fail
