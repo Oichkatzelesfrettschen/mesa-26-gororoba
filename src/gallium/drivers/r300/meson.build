@@ -595,4 +595,18 @@ if with_tests
     ),
     suite : ['r300'],
   )
+
+  # Pure host contract for the R2VB diagnostic transport gate.  Pins exact
+  # capture and submit values, raw-submit consent, one-shot flush admission,
+  # and active-query isolation before the diagnostic can touch a command stream.
+  test(
+    'r300-r2vb-capture-gate',
+    executable(
+      'r300_r2vb_capture_gate_test',
+      files('tests/r300_r2vb_capture_gate_test.c'),
+      include_directories : include_directories('.'),
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
 endif
