@@ -143,8 +143,6 @@ libterakan_files = files(
   'terakan_palm_sync.h',
   'terakan_carrier_queue.c',
   'terakan_carrier_queue.h',
-  'terakan_external_sync.c',
-  'terakan_external_sync.h',
   'terakan_vertex_input.c',
   'terakan_vertex_input.h',
   'terakan_wsi.c',
@@ -186,6 +184,8 @@ if with_platform_windows
   ]
 elif system_has_kms_drm
   libterakan_files += files(
+    'terakan_external_sync.c',
+    'terakan_external_sync.h',
     'winsys/drm_radeon/terakan_bo_drm_radeon.c',
     'winsys/drm_radeon/terakan_bo_drm_radeon.h',
     'winsys/drm_radeon/terakan_device_drm_radeon.c',
