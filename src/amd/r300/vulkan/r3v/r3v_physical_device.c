@@ -111,10 +111,13 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
       props->maxStorageBufferRange = 512u * 1024u * 1024u; /* 512 MB */
    else
       props->maxStorageBufferRange = R3V_VK10_MIN_STORAGE_BUFFER_RANGE;
-   /* TODO: When Vulkan 1.3 properties or VK_KHR_maintenance4 are advertised,
-    * set both maxBufferSize values to at least maxStorageBufferRange. Vulkan
-    * 1.3 section 47.78 requires that relationship. The API-1.0 and
-    * maintenance4 property paths are not advertised. */
+   /* maxBufferSize is the VkPhysicalDeviceMaintenance4Properties /
+    * Vulkan 1.3 field filled by the properties2 path. Keep it at least
+    * maxStorageBufferRange so a future maintenance4/1.3 advertisement
+    * does not violate the maxBufferSize >= maxStorageBufferRange rule.
+    * r3v still targets apiVersion 1.0 and does not advertise
+    * VK_KHR_maintenance4 yet; the field is still set in vk_properties. */
+   props->maxBufferSize = props->maxStorageBufferRange;
    props->maxPushConstantsSize = R3V_MAX_PUSH_CONSTANTS_SIZE;
 
    props->maxMemoryAllocationCount = 4096;

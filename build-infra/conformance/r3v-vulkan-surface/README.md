@@ -20,7 +20,9 @@ the validated state and fails any `Pass -> Fail`.
    the selected r3v device's `vulkaninfo` extension list.
 2. `smoke.vkcube.no_crash` -- `vkcube` (a direct-VK xcb app) runs without
    SIGSEGV/abort (the null-bound-pipeline replay guard). Recorded
-   `NotSupported` when no display or `vkcube` is available.
+   `NotSupported` when `DISPLAY`, `vkcube`, or `timeout` is missing, or when
+   the display cannot be opened (stale Xauthority / SSH without X). Other
+   nonzero exits remain `Fail`.
 3. `dEQP-VK.api.info.*` (see `caselist.txt`) -- per-case status from the
    `deqp-vk` headless build, diffed for `Pass -> Fail` regressions.
 
@@ -50,9 +52,11 @@ clears `VK_DRIVER_FILES`, requires `vulkaninfo` to report `driverName = r3v`,
 and runs all tools through that loader selection. `DEQP_VK` selects an executable
 directly; otherwise `deqp-vk` must be on `PATH`.
 
-`OUT` is an output parent. Each invocation creates and retains one fresh child
-directory, so previous artifacts and sentinels remain intact. It rejects shared
-temporary roots and the source directory. `vkcube` needs `DISPLAY` and an
+`OUT` is a disposable **run parent** (not a shared root such as `/var/tmp`).
+Each invocation creates and retains one fresh child under that parent, so prior
+artifacts stay intact. The harness rejects shared temporary roots and the
+source directory; pass a dedicated directory such as
+`/var/tmp/r3v-vulkan-surface`. `vkcube` needs `DISPLAY`, `timeout`, and an
 executable `vkcube`; `--record` also requires its successful completion because
 the committed baseline records that smoke case as `Pass`.
 

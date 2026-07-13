@@ -1,13 +1,13 @@
-/* SPDX-License-Identifier: MIT */
-
 /*
- * External-sync bridge for terakan: ties Vulkan's
- * VK_KHR_external_semaphore_fd (#80, core 1.1) and
- * VK_KHR_external_fence_fd (#116, core 1.1) to the radeon kernel's
- * `DRM_IOCTL_SYNCOBJ_*` uAPI.  The runtime helper `vk_drm_syncobj`
- * already implements the FD <-> kernel-handle conversions; this
- * file provides the queue-submit-side glue that the runtime cannot
- * supply because radeon's CS submit ioctl carries no syncobj chunk.
+ * Copyright (c) 2024 Vitaliy "Triang3l" Kuzmin
+ * Copyright (c) 2026 Terascale Functionalists
+ * SPDX-License-Identifier: MIT
+ *
+ * External-sync helpers for terakan: signal DRM syncobj handles that
+ * back VK_KHR_external_semaphore_fd / VK_KHR_external_fence_fd payloads.
+ * The runtime helper vk_drm_syncobj owns FD and handle conversion; this
+ * file issues SYNCOBJ_SIGNAL / SYNCOBJ_TIMELINE_SIGNAL after the driver
+ * decides a submission has completed.
  */
 
 #include "terakan_external_sync.h"
@@ -23,80 +23,74 @@
 #include <string.h>
 #include <sys/ioctl.h>
 
-bool
-terakan_sync_is_external_drm_syncobj(struct vk_sync const * const sync,
-                                     uint32_t * const kernel_handle_out)
+/* Retry transient DRM ioctl failures. EINTR and EAGAIN are not device loss. */
+static int
+terakan_drm_ioctl(int const drm_fd, unsigned long const request, void *const arg)
 {
-   if (sync == NULL) {
-      return false;
-   }
+   int ret;
+   do {
+      ret = ioctl(drm_fd, request, arg);
+   } while (ret == -1 && (errno == EINTR || errno == EAGAIN));
+   return ret;
+}
 
-   /* `vk_sync_as_drm_syncobj` returns non-NULL only when the sync's
-    * `type->finish == vk_drm_syncobj_finish`.  Both the per-device
-    * registered `sync_type_drm_syncobj` and any future timeline-
-    * syncobj subtype share this finish callback, so the test covers
-    * both binary and timeline external payloads. */
-   struct vk_drm_syncobj const * const drm =
-      vk_sync_as_drm_syncobj((struct vk_sync *)sync);
-   if (drm == NULL) {
+bool
+terakan_sync_is_external_drm_syncobj(struct vk_sync const *const sync,
+                                     uint32_t *const kernel_handle_out)
+{
+   if (sync == NULL || sync->type == NULL)
       return false;
-   }
 
-   if (kernel_handle_out != NULL) {
+   /* Type-check first so the cast does not strip const through the
+    * non-const vk_sync_as_drm_syncobj helper. base is the first field. */
+   if (!vk_sync_type_is_drm_syncobj(sync->type))
+      return false;
+
+   struct vk_drm_syncobj const *const drm =
+      (struct vk_drm_syncobj const *)(void const *)sync;
+
+   if (kernel_handle_out != NULL)
       *kernel_handle_out = drm->syncobj;
-   }
    return true;
 }
 
 VkResult
 terakan_external_syncobj_signal(int const drm_fd,
-                                struct terakan_external_signal const * const sig)
+                                struct terakan_external_signal const *const sig)
 {
    if (sig->is_timeline) {
-      /* DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL accepts an array of
-       * (handle, point) pairs.  Issue one at a time here; the
-       * batched variant lives in `_signal_many`. */
       struct drm_syncobj_timeline_array args = {
          .handles = (uintptr_t)&sig->kernel_handle,
          .points = (uintptr_t)&sig->point,
          .count_handles = 1,
          .flags = 0,
       };
-      if (ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &args) != 0) {
+      if (terakan_drm_ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &args) != 0)
          return VK_ERROR_DEVICE_LOST;
-      }
    } else {
       struct drm_syncobj_array args = {
          .handles = (uintptr_t)&sig->kernel_handle,
          .count_handles = 1,
          .pad = 0,
       };
-      if (ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_SIGNAL, &args) != 0) {
+      if (terakan_drm_ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_SIGNAL, &args) != 0)
          return VK_ERROR_DEVICE_LOST;
-      }
    }
    return VK_SUCCESS;
 }
 
 VkResult
-terakan_external_syncobj_signal_many(int const drm_fd,
-                                     uint32_t const count,
-                                     struct terakan_external_signal const * const sigs)
+terakan_external_syncobj_signal_many(int const drm_fd, uint32_t const count,
+                                     struct terakan_external_signal const *const sigs)
 {
-   /* Partition into binary-signal and timeline-signal buckets so each
-    * ioctl is invoked at most twice regardless of `count`.  Stack-
-    * bounded arrays: external-signal counts per submit are limited
-    * by Vulkan's `VkSubmitInfo::signalSemaphoreCount` which apps
-    * typically keep small (<= 8). */
+   /* Partition into binary and timeline buckets so each ioctl runs at most
+    * twice for typical submit signal counts. */
    enum { TERAKAN_EXTERNAL_SIGNAL_STACK_MAX = 32 };
    if (count > TERAKAN_EXTERNAL_SIGNAL_STACK_MAX) {
-      /* Pathological: fall back to single-signal iteration so we do
-       * not VLA-overflow the stack on adversarial input. */
       for (uint32_t i = 0; i < count; ++i) {
          VkResult const r = terakan_external_syncobj_signal(drm_fd, &sigs[i]);
-         if (r != VK_SUCCESS) {
+         if (r != VK_SUCCESS)
             return r;
-         }
       }
       return VK_SUCCESS;
    }
@@ -123,9 +117,8 @@ terakan_external_syncobj_signal_many(int const drm_fd,
          .count_handles = binary_count,
          .pad = 0,
       };
-      if (ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_SIGNAL, &args) != 0) {
+      if (terakan_drm_ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_SIGNAL, &args) != 0)
          return VK_ERROR_DEVICE_LOST;
-      }
    }
 
    if (timeline_count != 0) {
@@ -135,9 +128,8 @@ terakan_external_syncobj_signal_many(int const drm_fd,
          .count_handles = timeline_count,
          .flags = 0,
       };
-      if (ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &args) != 0) {
+      if (terakan_drm_ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &args) != 0)
          return VK_ERROR_DEVICE_LOST;
-      }
    }
 
    return VK_SUCCESS;
