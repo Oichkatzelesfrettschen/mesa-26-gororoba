@@ -2678,34 +2678,56 @@ static bool r300_vs_is_mvp(struct r300_context *r300)
                 case nir_op_ior:
                 case nir_op_ixor:
                 case nir_op_inot:
-                case nir_op_ineg:
-                    break; /* UBO/push index arithmetic, not the transform */
+                case nir_op_ineg: {
+                    /* Address math for matrix UBO rows must be constant-folded
+                     * SSA (load_const only). Per-vertex matrix selection would
+                     * still be affine per vertex but breaks the edge rebuild
+                     * M*lerp(in)==lerp(M*in) assumption across vertices. */
+                    nir_alu_instr *alu = nir_instr_as_alu(instr);
+                    unsigned n_src = nir_op_infos[alu->op].num_inputs;
+                    for (unsigned s = 0; s < n_src; s++) {
+                        if (!nir_src_is_const(alu->src[s].src))
+                            return false;
+                    }
+                    break;
+                }
                 default:
                     return false; /* arithmetic outside an MVP transform */
                 }
                 break;
-            case nir_instr_type_intrinsic:
-                switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+            case nir_instr_type_intrinsic: {
+                nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+                switch (intr->intrinsic) {
                 case nir_intrinsic_load_deref:
                 case nir_intrinsic_store_deref:
                 case nir_intrinsic_load_input:
                 case nir_intrinsic_store_output:
-                case nir_intrinsic_load_ubo:
-                case nir_intrinsic_load_ubo_vec4: /* the matrix: one per row */
-                case nir_intrinsic_load_push_constant:
                 case nir_intrinsic_load_constant:
+                    break;
+                case nir_intrinsic_load_ubo:
+                case nir_intrinsic_load_ubo_vec4:
+                    /* load_ubo / load_ubo_vec4: src[1] is the byte/offset index. */
+                    if (!nir_src_is_const(intr->src[1]))
+                        return false;
+                    break;
+                case nir_intrinsic_load_push_constant:
+                    if (!nir_src_is_const(intr->src[0]))
+                        return false;
                     break;
                 default:
                     return false; /* texturing, atomics, ... not an MVP */
                 }
                 break;
+            }
             default:
                 return false;
             }
         }
     }
     /* mat4 * vec4 == c0*x + c1*y + c2*z + c3*w: 4 fmul + 3 fadd in the observed
-     * column-MAD form; accept the fdot4 or ffma-chain forms too. */
+     * column-MAD form; accept the fdot4 or ffma/ffma_weak chain forms too.
+     * n_ffma counts both ffma and ffma_weak (NIR may emit either for the
+     * same column-MAD shape). */
     bool has_transform = (n_fmul >= 4 && n_fadd >= 3) || (n_dot4 >= 4) || (n_ffma >= 3);
     return has_transform;
 }
