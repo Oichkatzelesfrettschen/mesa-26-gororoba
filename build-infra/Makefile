@@ -99,7 +99,10 @@ endif
 # profiles keep llvm=disabled, so configure aborts.  CLI -D flags override
 # that reset and keep the profile's declared surface.
 PROFILE_DFLAGS_SCRIPT := $(CURDIR)/scripts/meson_profile_dflags.py
-SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) --reconfigure
+# -Dwerror=true is always on the CLI so a profile that drops the option, or a
+# coredata reset of werror, cannot re-open a warnings-are-nonfatal configure.
+# Profile dflags still re-assert every other project option (and werror again).
+SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) --reconfigure -Dwerror=true
 # MODE=stable pins the same safe -O2 release level through a command-line
 # override without enabling LTO.  Default (unset / clean / rebuild) keeps the
 # config level.
@@ -184,15 +187,26 @@ vostro-prefix-check:
 	esac
 
 # Mechanical invariant gate (a prerequisite of audit, so `make audit` enforces it):
-# every build profile must set warnings-as-errors, and the /opt-scoped sanitizer
-# and -O0 tiers must never carry system-Mesa activation (no /usr loader symlinks via
-# _link_into_usr, no ld.so.conf.d drop-in).  These are the two things that would let
+# every build profile must set warnings-as-errors; packaging PKGBUILDs that
+# run meson setup with gallium-drivers/vulkan-drivers (this Mesa tree) must
+# pass -Dwerror=true (sibling packages such as libva keep their own policy);
+# and the /opt-scoped sanitizer and -O0 tiers must never carry system-Mesa
+# activation (no /usr loader symlinks via _link_into_usr, no ld.so.conf.d
+# drop-in).  These are the things that would let warnings pass silently or let
 # an ASan driver become the /usr default and black-screen the login.  Cultural
 # convention rots; this fails the build instead.
 audit-werror:
 	@rc=0; \
 	for f in configs/*.meson configs/alternates/*.meson; do \
 		grep -q '^werror = true' "$$f" || { echo "FAIL  $$f lacks 'werror = true'" >&2; rc=1; }; \
+		if grep -qE '^werror\s*=\s*false' "$$f"; then echo "FAIL  $$f sets werror=false" >&2; rc=1; fi; \
+	done; \
+	for pb in packaging/*/PKGBUILD; do \
+		[ -f "$$pb" ] || continue; \
+		if grep -q 'meson setup' "$$pb" && grep -qE -- '-D[[:space:]]*(gallium-drivers|vulkan-drivers)=' "$$pb"; then \
+			grep -qE -- '-D[[:space:]]*werror=true' "$$pb" \
+				|| { echo "FAIL  $$pb runs mesa meson setup without -Dwerror=true" >&2; rc=1; }; \
+		fi; \
 	done; \
 	for p in mesa-gororoba-debug-asan mesa-gororoba-debug-o0; do \
 		pb="packaging/$$p/PKGBUILD"; \
@@ -200,7 +214,7 @@ audit-werror:
 		if grep -q '_link_into_usr' "$$pb"; then echo "FAIL  $$pb (scoped tier) must not _link_into_usr" >&2; rc=1; fi; \
 		if grep -qE 'ld\.so\.conf\.d/[^"]*\.conf' "$$pb"; then echo "FAIL  $$pb (scoped tier) must not drop an ld.so.conf.d activation" >&2; rc=1; fi; \
 	done; \
-	if [ $$rc -eq 0 ]; then echo "OK    audit-werror: all profiles werror=true; prime/-o0 tiers carry no /usr activation"; fi; \
+	if [ $$rc -eq 0 ]; then echo "OK    audit-werror: profiles werror=true; packaging meson -Dwerror=true; prime/-o0 no /usr activation"; fi; \
 	exit $$rc
 
 audit: vostro-prefix-check audit-werror profile-audit

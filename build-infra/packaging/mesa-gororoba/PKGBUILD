@@ -140,6 +140,7 @@ build() {
     -D optimization=2 \
     -D b_ndebug=true \
     -D b_lto=false \
+    -D werror=true \
     -D platforms=x11,wayland \
     -D gallium-drivers=r300,zink \
     -D vulkan-drivers=ati_r300 \
