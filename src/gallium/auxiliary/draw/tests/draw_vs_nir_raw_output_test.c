@@ -337,6 +337,56 @@ test_factory_continue_lowering(struct draw_context *draw)
    interp->delete(draw, interp);
 }
 
+/* The executable I/O bases define the Draw AOS rows even when producer
+ * metadata has not published num_inputs. */
+static nir_shader *
+build_unpublished_input_span(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, opts,
+                                     "unpublished input span");
+   nir_def *input0 = nir_load_var(&b, add_input(&b, 0));
+   nir_def *input1 = nir_load_var(&b, add_input(&b, 1));
+   nir_store_var(&b, add_output(&b, 0, VARYING_SLOT_POS),
+                 nir_fadd(&b, input0, input1), 0xf);
+   b.shader->num_inputs = 0;
+   return b.shader;
+}
+
+static void
+test_factory_input_span(struct draw_context *draw)
+{
+   printf("case: factory_input_span\n");
+   const nir_shader_compiler_options *opts =
+      draw->pipe->screen->nir_options[MESA_SHADER_VERTEX];
+   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR };
+   state.ir.nir = build_unpublished_input_span(opts);
+
+   CHECK(draw_vs_nir_supported(&state),
+         "factory_input_span: lowered constant input rows are admitted");
+   struct draw_vertex_shader *interp = draw_create_vs_nir(draw, &state);
+   if (!interp) {
+      CHECK(false, "factory_input_span: factory accepts executable input rows");
+      return;
+   }
+
+   CHECK(interp->info.num_inputs == 2,
+         "factory_input_span: intrinsic bases publish two AOS rows");
+   interp->prepare(interp, draw);
+   const float input[2][4] = {
+      {1.0f, 2.0f, 3.0f, 4.0f},
+      {5.0f, 6.0f, 7.0f, 8.0f},
+   };
+   const float expected[4] = {6.0f, 8.0f, 10.0f, 12.0f};
+   float output[4] = {0};
+   struct draw_buffer_info constants[PIPE_MAX_CONSTANT_BUFFERS] = {0};
+   interp->run_linear(draw, interp, input, (float (*)[4])output, constants, 1,
+                      sizeof(input), sizeof(output), NULL);
+   CHECK(memcmp(output, expected, sizeof(expected)) == 0,
+         "factory_input_span: both input rows execute");
+   interp->delete(draw, interp);
+}
+
 /* out = vec4(iadd, ishl, ushr, imin(a,b)) where a, b come from f2i32 on the
  * loaded inputs, results converted back with i2f32: the f2i32/i2f32 round trip
  * plus ishl/ushr shift-amount handling is the r300 SW-TCL integer path
@@ -481,6 +531,26 @@ build_unsupported_tex(const nir_shader_compiler_options *opts)
    nir_def *color = nir_tex(&b, coord, .dim = GLSL_SAMPLER_DIM_2D,
                             .dest_type = nir_type_float32);
    nir_store_var(&b, out, color, 0xf);
+   return b.shader;
+}
+
+static nir_shader *
+build_dynamic_input_row(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, opts,
+                                     "dynamic input row");
+   nir_def *offset = nir_load_vertex_id_zero_base(&b);
+   nir_io_semantics semantics = {
+      .location = VERT_ATTRIB_GENERIC0,
+      .num_slots = 2,
+   };
+   nir_def *value = nir_load_input(&b, 4, 32, offset,
+                                   .base = 0,
+                                   .component = 0,
+                                   .io_semantics = semantics);
+   nir_store_var(&b, add_output(&b, 0, VARYING_SLOT_POS), value, 0xf);
+   b.shader->num_inputs = 2;
    return b.shader;
 }
 
@@ -785,12 +855,14 @@ main(void)
    /* Factory must lower continue constructs itself; dual-factory cases above
     * pre-lower so the bridge path can run. */
    test_factory_continue_lowering(draw);
+   test_factory_input_span(draw);
 
    /* Admission predicate: shapes the interpreter cannot execute must be
     * rejected before draw_create_vs_exec ever dispatches to
     * draw_create_vs_nir. */
    check_unsupported(pipe, "unsupported_intrinsic", build_unsupported_intrinsic);
    check_unsupported(pipe, "unsupported_tex", build_unsupported_tex);
+   check_unsupported(pipe, "dynamic_input_row", build_dynamic_input_row);
 
    draw_destroy(draw);
    pipe->destroy(pipe);

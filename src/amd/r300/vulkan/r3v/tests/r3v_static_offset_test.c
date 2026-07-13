@@ -169,6 +169,42 @@ check_vertex_texture_gate(void)
    ralloc_free(live_tex);
 }
 
+static void
+check_vs_input_span(void)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &options,
+                                     "r3v VS input span");
+   nir_variable *input1 =
+      nir_variable_create(b.shader, nir_var_shader_in, glsl_vec4_type(),
+                          "input1");
+   nir_variable *input0 =
+      nir_variable_create(b.shader, nir_var_shader_in, glsl_vec4_type(),
+                          "input0");
+   input1->data.location = VERT_ATTRIB_GENERIC1;
+   input0->data.location = VERT_ATTRIB_GENERIC0;
+
+   CHECK(r3v_assign_vs_input_locations(b.shader),
+         "VS input locations fit the Gallium attribute span");
+   CHECK(input0->data.driver_location == 0 &&
+         input1->data.driver_location == 1,
+         "VS input locations map to their AOS rows");
+   CHECK(b.shader->num_inputs == 2,
+         "VS metadata publishes the two-row input span");
+   ralloc_free(b.shader);
+
+   b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &options,
+                                      "r3v invalid VS input span");
+   nir_variable *invalid =
+      nir_variable_create(b.shader, nir_var_shader_in, glsl_vec4_type(),
+                          "invalid");
+   invalid->data.location = VERT_ATTRIB_GENERIC0 + PIPE_MAX_ATTRIBS;
+   CHECK(!r3v_assign_vs_input_locations(b.shader),
+         "VS input locations outside the Gallium span are rejected");
+   ralloc_free(b.shader);
+}
+
 int
 main(void)
 {
@@ -187,6 +223,7 @@ main(void)
    check_straddle_flag_is_explicit();
    check_block0_ubo_declaration();
    check_vertex_texture_gate();
+   check_vs_input_span();
 
    glsl_type_singleton_decref();
    return failures ? 1 : 0;

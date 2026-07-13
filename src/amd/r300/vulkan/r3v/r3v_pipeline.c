@@ -1061,6 +1061,34 @@ r3v_nir_uses_view_index(nir_shader *nir)
    return false;
 }
 
+/* Gallium's vertex rows use driver_location as a dense AOS index.  Vulkan
+ * vertex locations are already validated as a contiguous prefix, so preserve
+ * that location mapping and publish the resulting row span in num_inputs. */
+static bool
+r3v_assign_vs_input_locations(nir_shader *nir)
+{
+   unsigned input_span = 0;
+
+   nir_foreach_shader_in_variable(var, nir) {
+      if (var->data.location < VERT_ATTRIB_GENERIC0)
+         return false;
+
+      const unsigned driver_location =
+         var->data.location - VERT_ATTRIB_GENERIC0;
+      const unsigned slots =
+         glsl_count_attribute_slots(var->type, false);
+      if (driver_location >= PIPE_MAX_ATTRIBS ||
+          slots > PIPE_MAX_ATTRIBS - driver_location)
+         return false;
+
+      var->data.driver_location = driver_location;
+      input_span = MAX2(input_span, driver_location + slots);
+   }
+
+   nir->num_inputs = input_span;
+   return true;
+}
+
 static VkResult
 r3v_compile_shader(struct r3v_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
@@ -1456,9 +1484,11 @@ r3v_compile_shader(struct r3v_device *device,
          }
       }
 
-      nir_foreach_shader_in_variable(var, nir) {
-         assert(var->data.location >= VERT_ATTRIB_GENERIC0);
-         var->data.driver_location = var->data.location - VERT_ATTRIB_GENERIC0;
+      if (!r3v_assign_vs_input_locations(nir)) {
+         ralloc_free(nir);
+         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                          "r3v: vertex shader input locations exceed the "
+                          "r300 Gallium attribute span");
       }
       nir_assign_io_var_locations(nir, nir_var_shader_out);
    } else {
