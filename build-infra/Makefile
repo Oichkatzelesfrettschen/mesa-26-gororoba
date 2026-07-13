@@ -122,7 +122,7 @@ define VALIDATE_PREFIX
 prefix="$(abspath $(PREFIX))"; \
 topsrc="$(abspath $(TOPSRC))"; \
 case "$$prefix" in \
-  ""|/|/usr|/usr/local|/opt|/bin|/sbin|/lib|/lib64|"$(HOME)"|"$$topsrc"|"$$topsrc"/*) \
+  ""|/|/usr|/usr/*|/opt|/opt/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|"$(HOME)"|"$$topsrc"|"$$topsrc"/*) \
     echo "refusing unsafe PREFIX: $$prefix" >&2; exit 2 ;; \
 esac;
 endef
@@ -695,6 +695,17 @@ build-lease-test:
 		echo "FAIL  clean accepted a noncanonical source-tree build root" >&2; exit 1; \
 	fi; \
 	echo "OK    clean rejects noncanonical source-tree build roots"; \
+	unsafe_prefix="/usr/local/.mesa-build-prefix-guard-$$$$"; \
+	test ! -e "$$unsafe_prefix" || { \
+		echo "FAIL  system-prefix test path already exists: $$unsafe_prefix" >&2; exit 1; \
+	}; \
+	if $(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
+		BUILD_ROOT="$$tmpdir" BUILDDIR="$$tmpdir/build" \
+		PREFIX="$$unsafe_prefix" BUILD_LOCK="$$tmpdir/prefix.lock" \
+		LOCK_WAIT=0 SUDO=false >/dev/null 2>&1; then \
+		echo "FAIL  distclean accepted a system-prefix descendant" >&2; exit 1; \
+	fi; \
+	echo "OK    distclean rejects system-prefix descendants"; \
 	install_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" install \
 		BUILDDIR="$$tmpdir/build" PREFIX="$$tmpdir/prefix" \
 		SYSCONFDIR="$$tmpdir/etc" 2>/dev/null )"; \
