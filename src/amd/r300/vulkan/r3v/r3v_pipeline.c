@@ -4185,7 +4185,7 @@ r3v_otrans_synthesize_shaders(struct r3v_device *device,
           pl->fs_cso3 != NULL && pl->fs_cso4 != NULL;
 }
 
-/* QFMADD / QFMMUL synthesis: passthrough VS + the single fused FS into fs_cso. */
+/* QFMADD, QFMSUB, and QFMMUL synthesis: passthrough VS plus one fused FS. */
 static bool
 r3v_qfmadd_synthesize_shaders(struct r3v_device *device,
                                  struct r3v_pipeline *pl)
@@ -4197,7 +4197,7 @@ r3v_qfmadd_synthesize_shaders(struct r3v_device *device,
    if (!pl->vs_cso)
       return false;
    pl->fs_cso = r3v_make_fs_cso(pipe, r3v_build_qfmadd_fs_nir(
-      pipe->screen->nir_options[MESA_SHADER_FRAGMENT]));
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT], pl->qfmadd.is_sub));
    return pl->fs_cso != NULL;
 }
 

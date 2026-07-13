@@ -328,21 +328,25 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       .op_name         = "Q16_16_ADD",
       .domain          = R300_NUM_DOMAIN_Q16_16,
-      .status          = R300_VOP_NUMERIC_DERIVED,
-      .theorem         = "(2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17; limb carry exact",
+      .status          = R300_VOP_CARRIER_PENDING,
+      .theorem         = "(2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17; limb carry exact.  "
+                         "The NIR detector classifies the shape; no production carrier "
+                         "or dispatch path consumes it",
       .mesa_hook       = "r300_nir_detect_q16_16_add_pattern",
    },
    {
       .op_name         = "Q16_16_MUL",
       .domain          = R300_NUM_DOMAIN_Q16_16,
-      .status          = R300_VOP_NUMERIC_DERIVED,
-      .theorem         = "(2^6-1)^2 = 3969 per limb; 4-column sum <= 15876 < 2^17 per column",
+      .status          = R300_VOP_CARRIER_PENDING,
+      .theorem         = "(2^6-1)^2 = 3969 per limb; 4-column sum <= 15876 < 2^17 "
+                         "per column.  The production detector, carrier, and dispatch "
+                         "path are absent",
       .mesa_hook       = NULL,  /* no detector yet; requires 4x6-bit limb-multiply NIR pattern */
    },
    {
       .op_name         = "Q16_16_MAC",
       .domain          = R300_NUM_DOMAIN_Q16_16,
-      .status          = R300_VOP_HW_CONFIRMED,
+      .status          = R300_VOP_CARRIER_PENDING,
       .theorem         = "out = a*b + c in Q16.16, carried multi-limb at base 2^4 / 8 limbs.  "
                          "Base 2^4 (not the Q16_16_MUL entry's base 2^6) makes the Q16.16 "
                          "recovery from the Q32.32 product a >>16 = drop-exactly-4-limbs "
@@ -361,7 +365,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "matches signed in its low 48 bits, but >>16 pulls in bits 32-47 "
                          "differing by (a*sb + b*sa)*2^32 -- subtract the other operand's low "
                          "limbs when negative).  Host oracle r300_q16_16_mac_multilimb_oracle.c "
-                         "bit-exact (tol 0) over 2,000,000 random triples",
+                         "bit-exact (tol 0) over 2,000,000 random triples.  Production "
+                         "NIR admission, carrier, and dispatch remain absent",
       .mesa_hook       = NULL,  /* R300_R2VB_QMAC dump gate; detector (limb MAC NIR pattern) pending */
    },
    {
@@ -821,16 +826,14 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .mesa_hook       = "r300_nir_detect_cas_pattern",
    },
    {
-      /* QFM derived fused ops: compositions of the built primitives. */
+      /* QFM subtract shares the admitted Hamilton-product shape with QFMADD. */
       .op_name         = "QFMSUB",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_NUMERIC_DERIVED,
-      .theorem         = "fused multiply-sub a*b - c (QMUL then vec4 SUB, four DP4s) and the "
-                         "remaining QFM ops -- QFMDIV = (a*b)/c (QMUL then QDIV, nine DP4s), "
-                         "QFMTRANS = affine(q*v*conj(q)) (QROTATE then MAD, eight DP4s) -- "
-                         "compose the HW-confirmed QMUL/QDIV/QROTATE primitives; QFMSUB is "
-                         "the QFMADD detector with fsub, the others are multi-pass chains",
-      .mesa_hook       = "r300_nir_detect_qfmadd_pattern",  /* is_sub=true branch; multi-pass ops (QFMDIV, QFMTRANS) remain NULL */
+      .theorem         = "fused multiply-sub a*b - c uses four Hamilton-product DP4s and "
+                         "one vec4 SUB.  The QFMADD detector records the non-commutative "
+                         "fsub form and pipeline synthesis preserves it in the fragment NIR",
+      .mesa_hook       = "r300_nir_detect_qfmadd_pattern",  /* is_sub selects the subtracting fragment shader */
    },
    {
       /* COMB_FCN_MIN: result = min(src_factor * src, dst_factor * dst).

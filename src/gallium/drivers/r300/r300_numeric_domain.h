@@ -97,9 +97,9 @@ enum r300_numeric_domain {
     * (2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17, numeric-derived exact.
     * Four-limb multiply (B=2^6, eager carry): each 6-bit limb product
     * (2^6-1)^2 = 3969 and column sums <= 4*3969 = 15876 < 2^17,
-    * numeric-derived exact per column.  Neither is yet silicon-confirmed by
-    * a standalone RS482 probe; the DP4 path confirms the FP24 exact integer
-    * window but not the limb carry discipline independently. */
+    * numeric-derived exact per column.  The base-16 Q16.16 MAC path is
+    * silicon-confirmed through the R300_R2VB_QMAC diagnostic.  ADD and MUL
+    * remain without a production carrier and dispatch path. */
    R300_NUM_DOMAIN_Q16_16,
 
    /* Unsigned 7-bit dot product: 0 <= a_i, b_i <= 127.
