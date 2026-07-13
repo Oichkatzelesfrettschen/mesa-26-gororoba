@@ -480,6 +480,21 @@ draw_vs_nir_io_slots(const struct glsl_type *type, bool bindless)
    return glsl_count_attribute_slots(type, false);
 }
 
+static void
+draw_vs_nir_lower(nir_shader *nir)
+{
+   NIR_PASS(_, nir, nir_lower_continue_constructs);
+   if (!nir->options->lower_uniforms_to_ubo)
+      NIR_PASS(_, nir, nir_lower_uniforms_to_ubo, false, false);
+   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+            draw_vs_nir_io_slots, 0);
+   NIR_PASS(_, nir, nir_opt_dce);
+
+   /* nir_lower_io changes the executable I/O shape.  Refresh inputs_read and
+    * outputs_written before nir_tgsi_scan_shader derives the AOS row counts. */
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+}
+
 /* Opt-in calibration report: which opcodes, intrinsics, and control-flow nodes
  * a shader actually reaches after lowering, so the corpus can prove it widened
  * coverage (in particular that nir_if / nir_loop survive to the interpreter and
@@ -557,12 +572,7 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
    assert(state->type == PIPE_SHADER_IR_NIR);
    nir_shader *nir = nir_shader_clone(NULL, state->ir.nir);
 
-   NIR_PASS(_, nir, nir_lower_continue_constructs);
-   if (!nir->options->lower_uniforms_to_ubo)
-      NIR_PASS(_, nir, nir_lower_uniforms_to_ubo, false, false);
-   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
-            draw_vs_nir_io_slots, 0);
-   NIR_PASS(_, nir, nir_opt_dce);
+   draw_vs_nir_lower(nir);
 
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
    bool supported = true;
@@ -643,27 +653,8 @@ draw_create_vs_nir(struct draw_context *draw,
     * callers may run assert no continue construct survives past this point
     * (dce_cf_list, nir_opt_dce.c), so fold it into the ordinary body/backedge
     * shape before any of them see the shader. */
-   NIR_PASS(_, nir, nir_lower_continue_constructs);
-
-   /* Mirror the LLVM factory: fold uniforms to load_ubo so every constant read
-    * is one intrinsic.  Keep each output's existing driver_location (r300
-    * assigns PSIZ before COL0 in r300_draw_fill_vs_outputs); nir_lower_io
-    * writes store_output bases from those locations and must not renumber. */
-   if (!nir->options->lower_uniforms_to_ubo)
-      NIR_PASS(_, nir, nir_lower_uniforms_to_ubo, false, false);
-
-   /* The shader still carries variable-based I/O (load_deref/store_deref over
-    * nir_deref chains); nir_to_tgsi lowers that itself, but this interpreter
-    * reads load_input/store_output intrinsics keyed by driver_location.  Lower
-    * with the driver-assigned locations, then scan so output_semantic[] slots
-    * match the bases lower_io just wrote.  Scanning before lower_io desyncs
-    * when a later renumber would have changed bases relative to the scan. */
-   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
-            draw_vs_nir_io_slots, 0);
-   /* nir_lower_io rewrites the deref loads/stores but leaves the now-dead
-    * nir_deref_instr chain in the block; the interpreter walks every
-    * instruction, so drop the dead derefs before it can trip on one. */
-   NIR_PASS(_, nir, nir_opt_dce);
+   /* Keep the admission clone and executable shader on one lowering path. */
+   draw_vs_nir_lower(nir);
    nir_tgsi_scan_shader(nir, &vs->base.info, true);
 
    vs->nir = nir;

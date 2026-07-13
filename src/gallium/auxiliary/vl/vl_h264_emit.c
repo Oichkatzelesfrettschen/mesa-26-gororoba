@@ -242,9 +242,10 @@ vl_h264_emit_destroy(struct vl_h264_emit *emit)
       return;
    struct pipe_context *pipe = emit->pipe;
 
-   /* cso unbinds the bound shaders and sampler before any delete_*_state. */
-   if (emit->cso)
+   if (emit->cso) {
+      cso_unbind_context(emit->cso);
       cso_destroy_context(emit->cso);
+   }
    if (emit->sampler)
       pipe->delete_sampler_state(pipe, emit->sampler);
    if (emit->fs_chroma_strong_h)
