@@ -1605,24 +1605,38 @@ r3v_build_velems_cso(struct r3v_device *device,
          return res;
    }
 
-   /* Append synthetic VS-system-value elements (R32_SINT, one int per element)
-    * the VS reads via the lowering in r3v_compile_shader.  instance_divisor
-    * 0 steps the vertex-id element per vertex; 1 steps the instance-id element
-    * per instance. */
+   /* Append synthetic VS-system-value elements the VS reads via the lowering
+    * in r3v_compile_shader.  instance_divisor 0 steps the vertex-id element
+    * per vertex; 1 steps the instance-id element per instance.
+    *
+    * The element format is R32_FLOAT, not R32_SINT: r300_vs_draw.c runs
+    * nir_lower_int_to_float over the whole SW-TCL vertex shader, and every
+    * ALU op downstream expects its integer-valued operands already encoded
+    * as a genuine float (2 stored as the bits of 2.0f).  An R32_SINT element
+    * hits the pure_integer path in lp_build_fetch_rgba_aos_array
+    * (lp_bld_format_aos_array.c), which bitcasts the raw int32 element index
+    * into the float-typed vertex-fetch register instead of converting it --
+    * the LLVM draw-JIT backend always fetches vertex elements at a float
+    * dst_type, so index 2 arrives as the subnormal 2.8e-45, not 2.0f, and a
+    * float-domain selection ladder keyed on the synthetic instance index
+    * always takes its first branch.  R32_FLOAT skips the pure_integer branch
+    * entirely: r3v_bind_synthetic_identity_stream writes the identity value
+    * as a real float, so the fetch's ordinary floating-point conversion path
+    * delivers it unchanged. */
    uint32_t velem_count = n;
    if (pl->needs_vertex_id_stream && velem_count < PIPE_MAX_ATTRIBS) {
       ve[velem_count].src_offset          = 0;
       ve[velem_count].vertex_buffer_index = pl->vertex_id_vb_binding;
-      ve[velem_count].src_format          = (uint8_t)PIPE_FORMAT_R32_SINT;
-      ve[velem_count].src_stride          = sizeof(int32_t);
+      ve[velem_count].src_format          = (uint8_t)PIPE_FORMAT_R32_FLOAT;
+      ve[velem_count].src_stride          = sizeof(float);
       ve[velem_count].instance_divisor    = 0;
       velem_count++;
    }
    if (pl->needs_instance_id_stream && velem_count < PIPE_MAX_ATTRIBS) {
       ve[velem_count].src_offset          = 0;
       ve[velem_count].vertex_buffer_index = pl->instance_id_vb_binding;
-      ve[velem_count].src_format          = (uint8_t)PIPE_FORMAT_R32_SINT;
-      ve[velem_count].src_stride          = sizeof(int32_t);
+      ve[velem_count].src_format          = (uint8_t)PIPE_FORMAT_R32_FLOAT;
+      ve[velem_count].src_stride          = sizeof(float);
       ve[velem_count].instance_divisor    = 1;
       velem_count++;
    }
