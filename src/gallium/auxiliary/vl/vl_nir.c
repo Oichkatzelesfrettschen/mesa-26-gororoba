@@ -55,10 +55,13 @@ vl_nir_vs_passthrough(struct pipe_context *pipe, unsigned num_tc,
    nir_store_var(&b, out_pos, pos, 0xf);
 
    for (unsigned i = 0; i < num_tc; i++) {
+      nir_variable *in_tc = nir_variable_create(b.shader, nir_var_shader_in,
+                                                glsl_vec4_type(), "tc_in");
+      in_tc->data.location = VERT_ATTRIB_GENERIC0 + i + 1;
       nir_variable *out_tc = nir_variable_create(b.shader, nir_var_shader_out,
                                                 glsl_vec4_type(), "tc_out");
       out_tc->data.location = VARYING_SLOT_VAR0 + i;
-      nir_store_var(&b, out_tc, pos, 0xf);
+      nir_store_var(&b, out_tc, nir_load_var(&b, in_tc), 0xf);
    }
 
    return vl_nir_vs_finish(&b, pipe);

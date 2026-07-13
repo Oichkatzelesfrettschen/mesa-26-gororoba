@@ -33,9 +33,8 @@ struct vl_nir_fs {
    nir_deref_instr  *samp[VL_NIR_MAX_SAMP];
 };
 
-/* Vertex passthrough: input attribute 0 (position) is copied to the clip-space
- * POSITION output and to num_tc GENERIC texcoord outputs.  The vl quad carries
- * texcoord == position, so a single MOV feeds both. */
+/* Vertex passthrough: input attribute 0 supplies the clip-space POSITION
+ * output.  Attributes 1 through num_tc supply the matching GENERIC outputs. */
 void *vl_nir_vs_passthrough(struct pipe_context *pipe, unsigned num_tc,
                             const char *name);
 

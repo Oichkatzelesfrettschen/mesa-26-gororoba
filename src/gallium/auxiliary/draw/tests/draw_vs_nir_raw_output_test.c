@@ -77,6 +77,8 @@ add_input(nir_builder *b, unsigned slot)
                                          glsl_vec4_type(), "in");
    v->data.location = VERT_ATTRIB_GENERIC0 + slot;
    v->data.driver_location = slot;
+   if (b->shader->num_inputs <= slot)
+      b->shader->num_inputs = slot + 1;
    return v;
 }
 
@@ -87,6 +89,8 @@ add_output(nir_builder *b, unsigned slot, gl_varying_slot loc)
                                          glsl_vec4_type(), "out");
    v->data.location = loc;
    v->data.driver_location = slot;
+   if (b->shader->num_outputs <= slot)
+      b->shader->num_outputs = slot + 1;
    return v;
 }
 
