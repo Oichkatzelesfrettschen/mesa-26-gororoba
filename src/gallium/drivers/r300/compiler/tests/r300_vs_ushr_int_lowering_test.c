@@ -143,9 +143,17 @@ check_vector_bitwise_lowering(const char *name, nir_op source_op,
          "source bitwise operation is removed");
 
    if (expect_supported) {
-      CHECK(count_alu_op(s, lowered_op) == 4,
-            "one arithmetic operation is emitted per vector lane");
+      unsigned expected_arithmetic_count = 0;
       for (unsigned component = 0; component < 4; component++) {
+         if (expected_divisors[component] != 0)
+            expected_arithmetic_count++;
+      }
+      CHECK(count_alu_op(s, lowered_op) == expected_arithmetic_count,
+            "arithmetic is emitted only for nonzero-mask lanes");
+      for (unsigned component = 0; component < 4; component++) {
+         if (expected_divisors[component] == 0)
+            continue;
+
          unsigned expected_count = 0;
          for (unsigned other = 0; other < 4; other++) {
             if (expected_divisors[other] == expected_divisors[component])
@@ -327,6 +335,13 @@ main(void)
    static const uint32_t splat_moduli[4] = { 4, 4, 4, 4 };
    static const uint32_t vector_masks[4] = { 1, 3, 7, 15 };
    static const uint32_t vector_moduli[4] = { 2, 4, 8, 16 };
+   static const uint32_t zero_masks[4] = { 0, 0, 0, 0 };
+   static const uint32_t zero_moduli[4] = { 0, 0, 0, 0 };
+   static const uint32_t mixed_masks[4] = { 0, 3, 0, 15 };
+   static const uint32_t mixed_bounds[4] = {
+      UINT32_MAX, 100, UINT32_MAX, 1024
+   };
+   static const uint32_t mixed_moduli[4] = { 0, 4, 0, 16 };
    static const uint32_t vector_shifts[4] = { 0, 1, 2, 17 };
    static const uint32_t vector_divisors[4] = { 1, 2, 4, 131072 };
    static const uint32_t invalid_masks[4] = { 1, 3, 5, 7 };
@@ -340,6 +355,12 @@ main(void)
    check_vector_bitwise_lowering("distinct low-bit masks with constant first",
                                  nir_op_iand, vector_masks, exact_bounds, true,
                                  true, nir_op_umod, vector_moduli);
+   check_vector_bitwise_lowering("all-zero masks with unbounded values",
+                                 nir_op_iand, zero_masks, mixed_bounds, false,
+                                 true, nir_op_umod, zero_moduli);
+   check_vector_bitwise_lowering("mixed zero and low-bit masks",
+                                 nir_op_iand, mixed_masks, mixed_bounds, false,
+                                 true, nir_op_umod, mixed_moduli);
    check_vector_bitwise_lowering("distinct constant shifts", nir_op_ushr,
                                  vector_shifts, exact_bounds, false, true,
                                  nir_op_udiv, vector_divisors);

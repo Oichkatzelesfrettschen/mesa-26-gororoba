@@ -55,16 +55,22 @@ alu_src_const_u32_components(nir_alu_instr *alu, unsigned src,
    return true;
 }
 
-/* The value operand must itself stay inside the FP24 exact-integer window;
- * otherwise the umod/udiv that int_to_float emits rounds and silently corrupts
- * the result.  iand(uint32 txf, ...) is exactly the case this rejects. */
+/* Each value component consumed by umod or udiv must stay inside the FP24
+ * exact-integer window; int_to_float otherwise rounds and silently corrupts the
+ * result.  An iand lane with mask zero emits no arithmetic and needs no bound. */
+static bool
+scalar_is_exact_integer(struct bitwise_state *st, nir_shader *s,
+                        nir_scalar scalar)
+{
+   return nir_unsigned_upper_bound(s, st->range_ht, scalar) <=
+          R300_FP24_EXACT_INT;
+}
+
 static bool
 value_is_exact_integer(struct bitwise_state *st, nir_shader *s, nir_def *x)
 {
    for (unsigned component = 0; component < x->num_components; component++) {
-      if (nir_unsigned_upper_bound(s, st->range_ht,
-                                   nir_get_scalar(x, component)) >
-          R300_FP24_EXACT_INT)
+      if (!scalar_is_exact_integer(st, s, nir_get_scalar(x, component)))
          return false;
    }
 
@@ -122,11 +128,8 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
       else
          break; /* dynamic mask: no compile-time proof of a low-bit mask */
 
-      bool all_zero_mask = true;
       for (unsigned component = 0; component < alu->def.num_components;
            component++) {
-         if (masks[component] != 0)
-            all_zero_mask = false;
          moduli[component] = masks[component] + 1;
          /* mask 0 is exact (x & 0 == 0); non-zero masks must be 2^n-1 with a
           * modulus inside the FP24 exact-integer window. */
@@ -138,26 +141,29 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
             goto unsupported;
       }
 
-      if (all_zero_mask) {
-         nir_def_replace(&alu->def,
-                         nir_imm_zero(b, alu->def.num_components,
-                                      alu->def.bit_size));
-         return true;
-      }
-
       nir_def *x = nir_ssa_for_alu_src(b, alu, value_src);
-      if (!value_is_exact_integer(st, b->shader, x))
-         break;
-
-      /* Mixed zero and non-zero lanes need a uniform umod form; reject for now. */
       for (unsigned component = 0; component < alu->def.num_components;
            component++) {
-         if (masks[component] == 0)
+         if (masks[component] != 0 &&
+             !scalar_is_exact_integer(st, b->shader,
+                                      nir_get_scalar(x, component)))
             goto unsupported;
       }
 
-      nir_def_replace(&alu->def,
-                      lower_component_division(b, x, moduli, true));
+      nir_def *components[NIR_MAX_VEC_COMPONENTS];
+      for (unsigned component = 0; component < alu->def.num_components;
+           component++) {
+         components[component] = masks[component] == 0
+                                    ? nir_imm_zero(b, 1, alu->def.bit_size)
+                                    : nir_umod(
+                                         b, nir_channel(b, x, component),
+                                         nir_imm_int(b, moduli[component]));
+      }
+
+      nir_def_replace(&alu->def, alu->def.num_components == 1
+                                    ? components[0]
+                                    : nir_vec(b, components,
+                                              alu->def.num_components));
       return true;
    }
    case nir_op_ushr: {
