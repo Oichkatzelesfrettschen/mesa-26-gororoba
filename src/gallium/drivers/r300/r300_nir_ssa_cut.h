@@ -30,7 +30,7 @@ extern "C" {
 
 enum r300_mp_carry_type {
     R300_MP_CARRY_FLOAT,
-    /* Integer and bool32 values carry through an i2f32/f2i32 round trip:
+    /* Integer and bool32 values carry through numeric-float transport:
      * small integers are exact in the fixed-point window and bool32's
      * 0/0xffffffff is exactly the signed pair 0/-1. */
     R300_MP_CARRY_INT,
@@ -39,11 +39,25 @@ enum r300_mp_carry_type {
     R300_MP_CARRY_BOOL1,
 };
 
+/* Logical value transport selected for the R2VB FP32 carry. Integer
+ * transports are admitted only when range analysis proves that every carried
+ * component survives the R300 FP24 conversion and FP32 storage round trip.
+ * The producer and all post-cut consumers must agree on the logical type. */
+enum r300_mp_r2vb_transport {
+    R300_MP_R2VB_INVALID,
+    R300_MP_R2VB_FLOAT,
+    R300_MP_R2VB_SINT,
+    R300_MP_R2VB_UINT,
+    R300_MP_R2VB_BOOL1,
+    R300_MP_R2VB_BOOL32,
+};
+
 struct r300_mp_partition {
     unsigned cut_index;
     unsigned num_bases;
     nir_def *bases[R300_MP_MAX_CARRY_COMPS];
     enum r300_mp_carry_type base_type[R300_MP_MAX_CARRY_COMPS];
+    enum r300_mp_r2vb_transport r2vb_transport[R300_MP_MAX_CARRY_COMPS];
     unsigned total_comps;
 };
 
@@ -66,20 +80,24 @@ r300_mp_find_cuts(nir_shader *nir, struct r300_mp_partition *cands,
 
 /* R2VB producer budget-escape (carry-BO split): the fragment-ALU vertex
  * producer transports the cut-crossing values through one FP32x4 carry BO
- * instead of the FS multipass RGBA8 hi/lo scratch. Float and BOOL1 carries
- * retain their values; INT carries retain values representable by the
- * i2f32/f2i32 round trip. The carry fits four scalar components.
+ * instead of the FS multipass RGBA8 hi/lo scratch. Float and boolean carries
+ * retain their values. Signed and unsigned integer carries are admitted only
+ * when every component is proven inside the exact R300 FP24 integer domain
+ * and every post-cut consumer agrees with the producer's logical type. Pass A
+ * uses i2f32/u2f32; pass B directly uses the ftrunc/ffloor form produced by
+ * r300's integer lowering so its flat carry input bypasses interpolation-only
+ * epsilon adjustment. The carry fits four scalar components.
  *
  * r300_mp_find_vec4_cut ranks the single-block cuts (r300_mp_find_cuts, which
  * orders smallest carry first) and returns the first whose crossing set fits
  * one vec4 -- total_comps <= 4.  r300_mp_build_carry_pass_a clones the
  * position-pass producer FS, keeps the computation up to the cut, and replaces
- * the position store with one vec4 that packs the carried bases (i2f32 for INT,
- * b2f32 for BOOL1, unused lanes 0.0) into FRAG_RESULT_DATA0.
+ * the position store with one vec4 that packs each carried base through its
+ * typed conversion, with unused lanes set to 0.0, into FRAG_RESULT_DATA0.
  * r300_mp_build_pos_pass_b clones the same FS, adds a flat shader input at
  * VARYING_SLOT_VAR0 + num_in fed from the carry BO, reconstitutes each base
- * from its carry components (float direct, INT through f2i32, BOOL1 through
- * fneu 0.0), and rewrites the base's uses so the pre-cut half dead-codes away
+ * from its carry components through the matching exact numeric form and
+ * rewrites the base's uses so the pre-cut half dead-codes away
  * while the position output survives.  Both halves are pure NIR; the caller
  * measures each against the emitted-slot admission oracle and adopts the split
  * only when both fit. */

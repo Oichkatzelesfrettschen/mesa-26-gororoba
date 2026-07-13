@@ -8,7 +8,15 @@
 #include "r300_nir_ssa_cut.h"
 
 #include "nir_builder.h"
+#include "util/hash_table.h"
 #include "util/macros.h"
+
+#include <limits.h>
+
+/* The carry BO stores FP32, but R300 executes these conversions through its
+ * FP24 RTZ fragment ALU. r300_numeric_domain.c records 2^17 as that ALU's
+ * exact integer bound. */
+#define R300_MP_FP24_EXACT_INT 131072u
 
 /* fneg/fabs fold into RC source modifiers and mov copy-propagates, so a
  * modifier tail over a carried value is free in pass B; carrying the base
@@ -162,6 +170,7 @@ r300_mp_collect(nir_block *block, unsigned cut_index,
             return false;
         p->bases[p->num_bases] = base;
         p->base_type[p->num_bases] = ct;
+        p->r2vb_transport[p->num_bases] = R300_MP_R2VB_INVALID;
         p->num_bases++;
         p->total_comps += base->num_components;
     }
@@ -238,18 +247,225 @@ r300_mp_find_cuts(nir_shader *nir, struct r300_mp_partition *cands,
     return num;
 }
 
+/* Conservative signed range analysis for the integer shapes that NIR range
+ * analysis can bound without changing the shader. The unsigned upper bound
+ * supplies the non-negative fallback; signed clamp, absolute-value, and
+ * negation chains preserve their signed interval explicitly. */
+static void
+r300_mp_signed_range(nir_shader *shader, struct hash_table *range_ht,
+                     nir_scalar scalar, int32_t *lo, int32_t *hi,
+                     unsigned depth)
+{
+    if (depth > 16) {
+        *lo = INT32_MIN;
+        *hi = INT32_MAX;
+        return;
+    }
+
+    if (nir_scalar_is_const(scalar)) {
+        *lo = nir_scalar_as_int(scalar);
+        *hi = *lo;
+        return;
+    }
+
+    if (nir_scalar_is_alu(scalar)) {
+        switch (nir_scalar_alu_op(scalar)) {
+        case nir_op_iabs:
+            r300_mp_signed_range(shader, range_ht,
+                                 nir_scalar_chase_alu_src(scalar, 0), lo, hi,
+                                 depth + 1);
+            if (*lo == INT32_MIN) {
+                *lo = INT32_MIN;
+                *hi = INT32_MAX;
+            } else {
+                int32_t abs_lo = *lo < 0 ? -*lo : *lo;
+                int32_t abs_hi = *hi < 0 ? -*hi : *hi;
+                *lo = MIN2(abs_lo, abs_hi);
+                *hi = MAX2(abs_lo, abs_hi);
+            }
+            return;
+
+        case nir_op_ineg:
+            r300_mp_signed_range(shader, range_ht,
+                                 nir_scalar_chase_alu_src(scalar, 0), lo, hi,
+                                 depth + 1);
+            if (*lo == INT32_MIN) {
+                *lo = INT32_MIN;
+                *hi = INT32_MAX;
+            } else {
+                int32_t neg_lo = -*lo;
+                int32_t neg_hi = -*hi;
+                *lo = MIN2(neg_lo, neg_hi);
+                *hi = MAX2(neg_lo, neg_hi);
+            }
+            return;
+
+        case nir_op_imax:
+        case nir_op_imin: {
+            int32_t src0_lo, src0_hi, src1_lo, src1_hi;
+            r300_mp_signed_range(shader, range_ht,
+                                 nir_scalar_chase_alu_src(scalar, 0),
+                                 &src0_lo, &src0_hi, depth + 1);
+            r300_mp_signed_range(shader, range_ht,
+                                 nir_scalar_chase_alu_src(scalar, 1),
+                                 &src1_lo, &src1_hi, depth + 1);
+            if (nir_scalar_alu_op(scalar) == nir_op_imax) {
+                *lo = MAX2(src0_lo, src1_lo);
+                *hi = MAX2(src0_hi, src1_hi);
+            } else {
+                *lo = MIN2(src0_lo, src1_lo);
+                *hi = MIN2(src0_hi, src1_hi);
+            }
+            return;
+        }
+
+        default:
+            break;
+        }
+    }
+
+    uint32_t bound = nir_unsigned_upper_bound(shader, range_ht, scalar);
+    if (bound > INT32_MAX) {
+        *lo = INT32_MIN;
+        *hi = INT32_MAX;
+    } else {
+        *lo = 0;
+        *hi = bound;
+    }
+}
+
+/* Accumulate the semantic classes that consume a carried value after the cut.
+ * Typeless ALU links such as mov and vecN forward the vote to their uses. */
+static void
+r300_mp_integer_consumer_classes(nir_def *def, unsigned cut_index,
+                                 bool *as_sint, bool *as_uint, bool *as_bool,
+                                 unsigned depth)
+{
+    if (depth > 16) {
+        *as_sint = true;
+        *as_uint = true;
+        return;
+    }
+
+    nir_foreach_use(use, def) {
+        if (nir_src_is_if(use)) {
+            *as_bool = true;
+            continue;
+        }
+
+        nir_instr *use_instr = nir_src_use_instr(use);
+        if (use_instr->type != nir_instr_type_alu)
+            continue;
+
+        nir_alu_instr *alu = nir_instr_as_alu(use_instr);
+        nir_alu_type input_type = nir_type_invalid;
+        for (unsigned source = 0;
+             source < nir_op_infos[alu->op].num_inputs; source++) {
+            if (&alu->src[source].src == use) {
+                input_type = nir_alu_type_get_base_type(
+                    nir_op_infos[alu->op].input_types[source]);
+                break;
+            }
+        }
+
+        if (use_instr->index > cut_index) {
+            *as_sint |= input_type == nir_type_int;
+            *as_uint |= input_type == nir_type_uint;
+            *as_bool |= input_type == nir_type_bool;
+        }
+
+        if (input_type == nir_type_invalid)
+            r300_mp_integer_consumer_classes(&alu->def, cut_index, as_sint,
+                                             as_uint, as_bool, depth + 1);
+    }
+}
+
+/* Resolve one integer transport contract from the producer and every post-cut
+ * consumer. A typed producer contributes one vote; conflicting signed,
+ * unsigned, or boolean consumers make the partition inadmissible. */
+static nir_alu_type
+r300_mp_integer_semantic_type(nir_def *def, unsigned cut_index)
+{
+    nir_alu_type producer = r300_mp_producer_type(def, 0);
+    bool as_sint = producer == nir_type_int;
+    bool as_uint = producer == nir_type_uint;
+    bool as_bool = producer == nir_type_bool;
+    r300_mp_integer_consumer_classes(def, cut_index, &as_sint, &as_uint,
+                                     &as_bool, 0);
+
+    unsigned classes = as_sint + as_uint + as_bool;
+    if (classes != 1)
+        return nir_type_invalid;
+    return as_sint ? nir_type_int : as_uint ? nir_type_uint : nir_type_bool;
+}
+
+static bool
+r300_mp_select_r2vb_transport(nir_shader *shader,
+                              struct r300_mp_partition *part,
+                              struct hash_table *range_ht)
+{
+    for (unsigned base_index = 0; base_index < part->num_bases; base_index++) {
+        nir_def *base = part->bases[base_index];
+
+        if (part->base_type[base_index] == R300_MP_CARRY_FLOAT) {
+            part->r2vb_transport[base_index] = R300_MP_R2VB_FLOAT;
+            continue;
+        }
+        if (part->base_type[base_index] == R300_MP_CARRY_BOOL1) {
+            part->r2vb_transport[base_index] = R300_MP_R2VB_BOOL1;
+            continue;
+        }
+
+        nir_alu_type semantic_type =
+            r300_mp_integer_semantic_type(base, part->cut_index);
+        if (semantic_type == nir_type_bool) {
+            part->r2vb_transport[base_index] = R300_MP_R2VB_BOOL32;
+            continue;
+        }
+        if (semantic_type != nir_type_int && semantic_type != nir_type_uint)
+            return false;
+
+        for (unsigned component = 0; component < base->num_components;
+             component++) {
+            nir_scalar scalar = nir_get_scalar(base, component);
+            if (semantic_type == nir_type_uint) {
+                if (nir_unsigned_upper_bound(shader, range_ht, scalar) >
+                    R300_MP_FP24_EXACT_INT)
+                    return false;
+            } else {
+                int32_t lo, hi;
+                r300_mp_signed_range(shader, range_ht, scalar, &lo, &hi, 0);
+                if (lo < -(int32_t)R300_MP_FP24_EXACT_INT ||
+                    hi > (int32_t)R300_MP_FP24_EXACT_INT)
+                    return false;
+            }
+        }
+
+        part->r2vb_transport[base_index] =
+            semantic_type == nir_type_uint ? R300_MP_R2VB_UINT
+                                           : R300_MP_R2VB_SINT;
+    }
+    return true;
+}
+
 bool
 r300_mp_find_vec4_cut(nir_shader *nir, struct r300_mp_partition *out)
 {
     struct r300_mp_partition cands[R300_MP_MAX_CANDIDATES];
     unsigned n = r300_mp_find_cuts(nir, cands, R300_MP_MAX_CANDIDATES);
+    struct hash_table *range_ht = _mesa_pointer_hash_table_create(NULL);
     /* find_cuts ranks smallest carry first, so the first candidate that fits one
-     * FP32 vec4 is the narrowest carry available. */
-    for (unsigned i = 0; i < n; i++)
-        if (cands[i].total_comps <= 4) {
+     * FP32 vec4 and has an exact typed transport is the narrowest admissible
+     * carry available. */
+    for (unsigned i = 0; i < n; i++) {
+        if (cands[i].total_comps <= 4 &&
+            r300_mp_select_r2vb_transport(nir, &cands[i], range_ht)) {
             *out = cands[i];
+            _mesa_hash_table_destroy(range_ht, NULL);
             return true;
         }
+    }
+    _mesa_hash_table_destroy(range_ht, NULL);
     return false;
 }
 
@@ -270,8 +486,15 @@ mp_recollect(nir_shader *sh, const struct r300_mp_partition *want,
         instr->index = idx++;
     if (!r300_mp_collect(block, want->cut_index, got))
         return false;
-    return got->num_bases == want->num_bases &&
-           got->total_comps == want->total_comps;
+    if (got->num_bases != want->num_bases ||
+        got->total_comps != want->total_comps)
+        return false;
+    for (unsigned i = 0; i < got->num_bases; i++) {
+        if (got->base_type[i] != want->base_type[i])
+            return false;
+        got->r2vb_transport[i] = want->r2vb_transport[i];
+    }
+    return true;
 }
 
 nir_shader *
@@ -341,9 +564,12 @@ r300_mp_build_carry_pass_a(nir_shader *src, const struct r300_mp_partition *part
     unsigned n = 0;
     for (unsigned i = 0; i < p.num_bases && n < 4; i++) {
         nir_def *v = p.bases[i];
-        if (p.base_type[i] == R300_MP_CARRY_INT)
+        if (p.r2vb_transport[i] == R300_MP_R2VB_SINT ||
+            p.r2vb_transport[i] == R300_MP_R2VB_BOOL32)
             v = nir_i2f32(&b, v);
-        else if (p.base_type[i] == R300_MP_CARRY_BOOL1)
+        else if (p.r2vb_transport[i] == R300_MP_R2VB_UINT)
+            v = nir_u2f32(&b, v);
+        else if (p.r2vb_transport[i] == R300_MP_R2VB_BOOL1)
             v = nir_b2f32(&b, v);
         for (unsigned c = 0; c < p.bases[i]->num_components && n < 4; c++)
             scalars[n++] = nir_channel(&b, v, c);
@@ -407,9 +633,16 @@ r300_mp_build_pos_pass_b(nir_shader *src, const struct r300_mp_partition *part,
             chans[c] = nir_channel(&b, carry, comp + c);
         comp += base->num_components;
         nir_def *value = nir_vec(&b, chans, base->num_components);
-        if (p.base_type[i] == R300_MP_CARRY_INT)
-            value = nir_f2i32(&b, value);
-        else if (p.base_type[i] == R300_MP_CARRY_BOOL1)
+        /* nir_lower_int_to_float represents integer SSA as numeric floats and
+         * rewrites f2i32/f2u32 to ftrunc/ffloor. Build that final form here so
+         * the interpolation-only f2i epsilon pass does not alter this flat,
+         * FP24-exact carry input. */
+        if (p.r2vb_transport[i] == R300_MP_R2VB_SINT ||
+            p.r2vb_transport[i] == R300_MP_R2VB_BOOL32)
+            value = nir_ftrunc(&b, value);
+        else if (p.r2vb_transport[i] == R300_MP_R2VB_UINT)
+            value = nir_ffloor(&b, value);
+        else if (p.r2vb_transport[i] == R300_MP_R2VB_BOOL1)
             value = nir_fneu(&b, value, nir_imm_float(&b, 0.0f));
         nir_def_rewrite_uses(base, value);
     }

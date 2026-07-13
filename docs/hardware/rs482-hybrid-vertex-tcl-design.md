@@ -589,7 +589,7 @@ The `HBTCL-NN` tokens are secondary registry labels for this tracker; the load-b
 
 | HBTCL-01 | No-submit PM4 decode of the clear-quad IB vs a working r3v triangle IB: capture with in-tree `R300_TRACE` / `RADEON_DUMP_PATCHED_IB` (and, when present, the external `steinmarder` r300 retained-IB decode tools), then compare the VAP frontend words; name the single diverging register among `VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE` | -- |
 | HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the demonstrated-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
-| HBTCL-03 | DONE: audited the three producer families (fixed-MVP, restage, passthrough), the explicit clip/window coordinate contract, the geometric clipping and topology pipeline, emitted-slot admission, and the one-float-`vec4` budget escape. Perspective divide (04b) and geometric clipping (04c-04e) are landed and byte-identical on RS482; the residual is the over-budget producer escape (04f.3-04f.5) and standing-route promotion (HBTCL-08) | -- |
+| HBTCL-03 | DONE: audited the three producer families (fixed-MVP, restage, passthrough), the explicit clip/window coordinate contract, the geometric clipping and topology pipeline, emitted-slot admission, and the typed one-`vec4` budget escape. Perspective divide (04b) and geometric clipping (04c-04e) are landed and byte-identical on RS482; the residual is algebraic compaction and multi-carry transport (04f.4-04f.5) plus standing-route promotion (HBTCL-08) | -- |
 | HBTCL-04a | DONE: the coordinate contract section above (object/clip/NDC/window representations, divide placement, re-ingest VTE shapes) | HBTCL-03 |
 | HBTCL-04b | DONE: perspective divide + viewport on the fragment ALU in every producer variant, selected by the explicit `r300_r2vb_position_space` contract; window-space delivery fetches verbatim via the source-space VTE. `r2vb_divide_verify` 3/3 on RS482 with delivery coverage matching the gallivm reference exactly | HBTCL-04a |
 | HBTCL-04c | DONE: clip classification in the raw clip-space domain -- Draw-parity clip codes, accept/reject/partial/fallback classes (`r300_r2vb_clip.h`), FP24 clip-BO oracle, conservative gated route action; 9/9 corpus classes byte-identical on RS482 | HBTCL-04b |
@@ -597,7 +597,7 @@ The `HBTCL-NN` tokens are secondary registry labels for this tracker; the load-b
 | HBTCL-04e | DONE: topology gather -- strips, fans, indexed draws, primitive restart resolved to a triangle-index list before classification; 14/14 corpus cases byte-identical on RS482; points and lines stay excluded (points gate on HBTCL-07, lines need a 2-vertex clip variant) | HBTCL-04d |
 | HBTCL-04f.1 | DONE: admission on actual emitted RC slots (a throwaway backend compile reads the emitted `alu.length`, memoized per VS), so a dense kernel the backend packs under 64 slots is admitted even when its scalar NIR count exceeds 64 | HBTCL-03 |
 | HBTCL-04f.2 | DONE: producer split carrying one FP32 `vec4` float-carry through an R2VB buffer; VAP_VTX_SIZE under-feed root-caused and fixed by per-output reconstruction, corpus green on RS482 (mesa PR#1040-#1044) | HBTCL-04f.1 |
-| HBTCL-04f.3 | OPEN: typed and range-proven carries beyond one FP32 `vec4` | HBTCL-04f.2 |
+| HBTCL-04f.3 | DONE: the one-FP32-`vec4` split distinguishes float, signed integer, unsigned integer, and boolean carries; integer components enter only when NIR range analysis proves an exact R300 FP24 conversion plus FP32 storage round trip (`abs(sint) <= 2^17`, `uint <= 2^17`) and every post-cut consumer agrees with the producer's logical type. Pass B reconstructs signed and unsigned flat carries directly as `ftrunc` and `ffloor`, outside the interpolation-only float-to-integer epsilon adjustment. Every other integer frontier declines. Transport wider than one `vec4` remains HBTCL-04f.5 | HBTCL-04f.2 |
 | HBTCL-04f.4 | OPEN: semantics-preserving algebraic compaction of the over-budget producer | HBTCL-04f.2 |
 | HBTCL-04f.5 | OPEN: multi-carry / MRT transport for producers whose escape needs more than one carry stream; gallivm fallback for every unsupported shape. R400 code banks stay diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-04f.2 |
 | HBTCL-05 | DONE (corpus-verified): the "VAP register table" section above, with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200+` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + commit `9899a4d8dd3` (SWTCL 16-bit VAP count clamp); the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
@@ -609,8 +609,8 @@ The `HBTCL-NN` tokens are secondary registry labels for this tracker; the load-b
 
 HBTCL-01 and HBTCL-02 are the immediate `fbo-clearmipmap` fix; HBTCL-03 is the
 engine audit; HBTCL-04a-04e are the landed contract, divide, and clip ladder,
-04f.1-04f.2 the landed emitted-slot admission and float-carry split, 04f.3-04f.5
-the remaining over-budget producer escape;
+04f.1-04f.3 the landed emitted-slot admission and typed exact one-`vec4` split,
+04f.4-04f.5 the remaining over-budget producer escape;
 HBTCL-07/08 build the fix out into the standing hybrid; HBTCL-05/06/09/10 are
 the register-table, lighting, MRT-export, and movement extensions. All hardware
 steps run on the parked, hang-for-inspection box under the wedge-forensics

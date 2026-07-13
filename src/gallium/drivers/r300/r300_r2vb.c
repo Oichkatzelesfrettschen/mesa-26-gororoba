@@ -3047,14 +3047,28 @@ static bool r300_r2vb_measure_pass_fits(struct r300_context *r300,
 }
 
 /* Compact carry-composition string for the EXEC_DEBUG trace: one letter per
- * base (f float, i int, b bool1). */
+ * typed FP32 transport (f float, i signed, u unsigned, b boolean). */
 static void r300_r2vb_carry_types_str(const struct r300_mp_partition *p,
                                       char *buf, size_t len)
 {
     unsigned n = 0;
-    for (unsigned i = 0; i < p->num_bases && n + 1 < len; i++)
-        buf[n++] = p->base_type[i] == R300_MP_CARRY_INT ? 'i' :
-                   p->base_type[i] == R300_MP_CARRY_BOOL1 ? 'b' : 'f';
+    for (unsigned i = 0; i < p->num_bases && n + 1 < len; i++) {
+        switch (p->r2vb_transport[i]) {
+        case R300_MP_R2VB_SINT:
+            buf[n++] = 'i';
+            break;
+        case R300_MP_R2VB_UINT:
+            buf[n++] = 'u';
+            break;
+        case R300_MP_R2VB_BOOL1:
+        case R300_MP_R2VB_BOOL32:
+            buf[n++] = 'b';
+            break;
+        default:
+            buf[n++] = 'f';
+            break;
+        }
+    }
     buf[n] = '\0';
 }
 
@@ -3109,8 +3123,8 @@ static bool r300_r2vb_split_admitted(struct r300_context *r300,
             ralloc_free(pass_b);
     } else if (getenv("R300_R2VB_EXEC_DEBUG")) {
         fprintf(stderr,
-                "r2vb_split declined: no single-vec4 cut (carry exceeds 4 "
-                "components at every admissible cut)\n");
+                "r2vb_split declined: no exact single-vec4 cut (width, "
+                "logical type, or integer range)\n");
     }
     ralloc_free(pos);
     return admitted;
