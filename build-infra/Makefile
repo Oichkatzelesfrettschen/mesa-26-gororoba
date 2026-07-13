@@ -363,6 +363,7 @@ audit: vostro-prefix-check audit-werror profile-audit
 			done; \
 		fi; \
 		if [ -n "$$selected" ]; then \
+			audit_clang_tool="$$(find_audit_compiler_tool clang "$$selected")"; \
 			if [ "$$need_config" -eq 1 ]; then ok "LLVM family $$selected with $$compiler_requirement/llvm-config"; else ok "LLVM compiler family $$selected with $$compiler_requirement"; fi; \
 		else fail "missing coherent LLVM compiler family"; fi; \
 	}; \
@@ -418,6 +419,36 @@ audit: vostro-prefix-check audit-werror profile-audit
 			ok "distcc host allocation totals $(DISTCC_JOBS) slots"; \
 		else \
 			fail "distcc host allocation totals $$distcc_slots slots; expected $(DISTCC_JOBS)"; \
+		fi; \
+		remote_distcc_spec=""; \
+		for distcc_spec in $${DISTCC_HOSTS:-}; do \
+			case "$$distcc_spec" in --*|localhost|localhost/*|localhost,*) continue ;; esac; \
+			remote_distcc_spec="$$distcc_spec"; \
+			break; \
+		done; \
+		if [ -z "$$remote_distcc_spec" ]; then \
+			fail "distcc host allocation has no remote compiler"; \
+		else \
+			remote_distcc_host="$${remote_distcc_spec%%/*}"; \
+			remote_distcc_host="$${remote_distcc_host%%,*}"; \
+			if getent ahostsv4 "$$remote_distcc_host" >/dev/null 2>&1; then \
+				ok "distcc remote hostname resolves: $$remote_distcc_host"; \
+			else \
+				fail "distcc remote hostname does not resolve: $$remote_distcc_host"; \
+			fi; \
+			probe_dir="$$(mktemp -d)"; \
+			printf '%s\n' 'int gororoba_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; \
+			if [ -n "$${audit_clang_tool:-}" ] && \
+			   DISTCC_HOSTS="$$remote_distcc_spec" DISTCC_FALLBACK=0 \
+			   distcc "$$audit_clang_tool" -Wall -Wextra -Werror \
+			      -c "$$probe_dir/probe.c" -o "$$probe_dir/probe.o" \
+			      >/dev/null 2>"$$probe_dir/probe.err"; then \
+				ok "distcc remote Clang dispatch: $$remote_distcc_host ($$audit_clang_tool)"; \
+			else \
+				fail "distcc remote Clang dispatch failed: $$remote_distcc_host ($${audit_clang_tool:-unresolved})"; \
+				sed -n '1,12p' "$$probe_dir/probe.err" >&2; \
+			fi; \
+			rm -rf "$$probe_dir"; \
 		fi; \
 	else ok "distcc not in active compiler chain; skipping host policy check"; fi; \
 		if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then \
