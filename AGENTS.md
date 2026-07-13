@@ -382,6 +382,10 @@ ninja -C builddir
 ninja -C builddir install
 ```
 
+Build-infra accepts `/opt/local/mesa-gororoba-debug-optimized` as the
+compatibility alias for this canonical debugoptimized prefix. The shared-prefix
+list below names both paths.
+
 Adapt options to the checkout and current Meson option set. Use `meson configure` and repo-local options rather than guessing. Commands and scripts carry repository-relative paths, PATH-resolved tools, or explicit user roots. Discover the repository root in scripts:
 
 ```bash
@@ -470,7 +474,8 @@ artifacts separate for review, bisect, and evidence work.
 The shared active prefixes are only for intentional operator-selected installs:
 
 - release active tree: `/opt/local/mesa-26-gororoba`;
-- debugoptimized active tree: `/opt/mesa-gororoba-debug-optimized`.
+- debugoptimized active tree: `/opt/mesa-gororoba-debug-optimized`, with
+  `/opt/local/mesa-gororoba-debug-optimized` as its compatibility alias.
 
 Use the `install-<profile>` targets, or pass `PREFIX=` explicitly, only when the
 goal is to replace one of those active trees. Evidence collection keeps each
