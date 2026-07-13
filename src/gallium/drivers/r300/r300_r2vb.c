@@ -2705,7 +2705,15 @@ static bool r300_r2vb_nir_is_mvp_folded(nir_shader *nir)
             case nir_instr_type_intrinsic: {
                 nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
                 switch (intr->intrinsic) {
-                case nir_intrinsic_load_deref:
+                case nir_intrinsic_load_deref: {
+                    nir_variable *var = nir_intrinsic_get_var(intr, 0);
+                    /* Deref-form UBO loads carry the selected block in the
+                     * variable binding.  The executor mirrors only UBO[0]. */
+                    if (var && (var->data.mode & nir_var_mem_ubo) &&
+                        var->data.binding != 0)
+                        return false;
+                    break;
+                }
                 case nir_intrinsic_store_deref:
                 case nir_intrinsic_load_input:
                 case nir_intrinsic_store_output:
