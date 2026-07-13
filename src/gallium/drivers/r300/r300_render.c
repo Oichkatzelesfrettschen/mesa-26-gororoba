@@ -27,6 +27,7 @@
 #include "r300_context.h"
 #include "r300_r2vb.h"
 #include "r300_screen_buffer.h"
+#include "r300_swtcl_gtt.h"
 #include "r300_emit.h"
 #include "r300_fs.h"
 #include "r300_reg.h"
@@ -37,6 +38,8 @@
 #include <string.h>
 
 #define IMMD_DWORDS 32
+
+static void r300_render_begin_draw(struct r300_context *r300);
 
 static uint32_t r300_translate_primitive(unsigned prim)
 {
@@ -1873,6 +1876,8 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
     struct r300_context* r300 = r300_context(pipe);
     struct pipe_draw_start_count_bias draw = draws[0];
 
+    r300_render_begin_draw(r300);
+
     if (r300->skip_rendering) {
         return;
     }
@@ -2056,17 +2061,12 @@ struct r300_render {
     size_t vbo_max_used;
     uint8_t *vbo_ptr;
 
-    /* SW-TCL GART backpressure.  gtt_drain_mark is the RADEON_GTT_USAGE level after
-     * the last drain; a drain fires when usage grows a budget past it, which measures
-     * a draw's own GTT churn and ignores the app's resident GTT.  gtt_drain_streak
-     * counts consecutive drains that did not bound the working set, tripping a hard
-     * cap so an unbounded SW-TCL draw fails cleanly instead of OOM-ing the host. */
-    uint64_t gtt_drain_mark;
-    unsigned gtt_drain_streak;
-    /* Drops the draw's CS submission in r300_render_draw_{arrays,elements} once
-     * gtt_drain_streak reaches the cap.  The vbuf stage maps the vertex buffer after
-     * every allocate_vertices, so the draw is dropped at submission.  Reset per draw. */
-    bool gtt_budget_exceeded;
+    /* A drain fires when this draw grows GTT usage a budget past the retained
+     * baseline. Consecutive drains that do not lower usage trip the hard cap. */
+    struct r300_swtcl_gtt_backpressure gtt_backpressure;
+    /* The hard cap drops the draw's CS submission in
+     * r300_render_draw_{arrays,elements}. The vbuf stage maps the vertex buffer
+     * after every allocation, so the draw is dropped at submission. */
 };
 
 static inline struct r300_render*
@@ -2075,17 +2075,21 @@ r300_render(struct vbuf_render* render)
     return (struct r300_render*)render;
 }
 
+static void
+r300_render_begin_draw(struct r300_context *r300)
+{
+    if (!r300->swtcl_render)
+        return;
+
+    struct r300_render *r300render = r300_render(r300->swtcl_render);
+    r300_swtcl_gtt_begin_draw(&r300render->gtt_backpressure);
+}
+
 static const struct vertex_info*
 r300_render_get_vertex_info(struct vbuf_render* render)
 {
     struct r300_render* r300render = r300_render(render);
     struct r300_context* r300 = r300render->r300;
-
-    /* The draw module calls this once per draw before the vbuf stage allocates: reset
-     * the per-draw GART backpressure budget here.  The drain streak and drop flag are
-     * per-draw; gtt_drain_mark persists as the running GTT level across draws. */
-    r300render->gtt_drain_streak = 0;
-    r300render->gtt_budget_exceeded = false;
 
     /* The wide-point stage allocates the gl_PointCoord (PCOORD) sprite vertex
      * output during the pipeline run, after r300_update_derived_state already
@@ -2154,36 +2158,29 @@ static bool r300_render_allocate_vertices(struct vbuf_render* render,
          * GPU keeps pace with pays nothing.  Hardware-TCL parts run a different draw
          * path and reach this code only through software fallback. */
         uint64_t gtt_now = rws->query_value(rws, RADEON_GTT_USAGE);
-        if (r300render->gtt_drain_mark == 0) {
-            /* First realloc of this render object: record the app's resident GTT as
-             * the baseline, so the budget measures this draw's own growth. */
-            r300render->gtt_drain_mark = gtt_now;
-        } else if (gtt_now > r300render->gtt_drain_mark + R300_SWTCL_GTT_DRAIN_BUDGET) {
+        if (r300_swtcl_gtt_needs_drain(&r300render->gtt_backpressure,
+                                        gtt_now,
+                                        R300_SWTCL_GTT_DRAIN_BUDGET)) {
             struct pipe_fence_handle *fence = NULL;
             r300_flush(&r300->context, PIPE_FLUSH_ASYNC, &fence);
             if (fence) {
                 rws->fence_wait(rws, fence, OS_TIMEOUT_INFINITE);
                 rws->fence_reference(rws, &fence, NULL);
             }
-            r300render->gtt_drain_mark = rws->query_value(rws, RADEON_GTT_USAGE);
-            r300render->gtt_drain_streak++;
-        } else {
-            if (gtt_now < r300render->gtt_drain_mark)
-                r300render->gtt_drain_mark = gtt_now;
-            r300render->gtt_drain_streak = 0;
+            r300_swtcl_gtt_record_drain(
+                &r300render->gtt_backpressure,
+                rws->query_value(rws, RADEON_GTT_USAGE),
+                R300_SWTCL_GTT_DRAIN_STREAK_CAP);
         }
 
         /* Hard cap for a draw whose GART working set keeps growing across drains: the
          * GPU holds the retired buffers past the point a fence wait reclaims them.
-         * gtt_budget_exceeded drops the remaining submissions in
+         * The backpressure state drops the remaining submissions in
          * r300_render_draw_{arrays,elements}; those vertex buffers stay off the GPU, so
          * the winsys recycles them and GART growth stops.  The vbuf stage maps the
          * vertex buffer after every allocate_vertices, so the drop lands at submission.
          * A 2^19-point SW-TCL draw on a UMA part exceeds device memory; the dropped
          * draw keeps the session alive (correct-or-reject). */
-        if (r300render->gtt_drain_streak >= R300_SWTCL_GTT_DRAIN_STREAK_CAP)
-            r300render->gtt_budget_exceeded = true;
-
 	radeon_bo_reference(r300->rws, &r300->vbo, NULL);
         r300->vbo = NULL;
         r300render->vbo_ptr = NULL;
@@ -2284,7 +2281,7 @@ static void r300_render_draw_arrays(struct vbuf_render* render,
     /* The GART backpressure hard cap tripped this draw: drop the submission.  The
      * vertices occupy a recycled vertex buffer that stays off the GPU, so pinned GART
      * stays bounded. */
-    if (r300render->gtt_budget_exceeded)
+    if (r300render->gtt_backpressure.budget_exceeded)
         return;
 
     /* Containment-experiment rewrite: the identity index list makes the draw
@@ -2353,7 +2350,7 @@ static void r300_render_draw_elements(struct vbuf_render* render,
     /* The GART backpressure hard cap tripped this draw: drop the submission.  The
      * vertices occupy a recycled vertex buffer that stays off the GPU, so pinned GART
      * stays bounded. */
-    if (r300render->gtt_budget_exceeded)
+    if (r300render->gtt_backpressure.budget_exceeded)
         return;
 
     unsigned max_index = (r300->vbo->size - r300->draw_vbo_offset) /
@@ -2401,14 +2398,20 @@ static void r300_render_draw_elements(struct vbuf_render* render,
 
 static void r300_render_destroy(struct vbuf_render* render)
 {
+    struct r300_render *r300render = r300_render(render);
+    if (r300render->r300->swtcl_render == render)
+        r300render->r300->swtcl_render = NULL;
     FREE(render);
 }
 
 static struct vbuf_render* r300_render_create(struct r300_context* r300)
 {
     struct r300_render* r300render = CALLOC_STRUCT(r300_render);
+    if (!r300render)
+        return NULL;
 
     r300render->r300 = r300;
+    r300->swtcl_render = &r300render->base;
 
     /* The draw module derives the per-batch vertex count from this byte budget
      * (max_vertex_buffer_bytes / vertex_size).  The smallest SWTCL vertex is the
