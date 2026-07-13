@@ -93,11 +93,13 @@ define VALIDATE_BUILDDIR
 build_root="$(abspath $(BUILD_ROOT))"; \
 builddir="$(abspath $(BUILDDIR))"; \
 topsrc="$(abspath $(TOPSRC))"; \
+repo_build_root="$$topsrc/build"; \
 case "$$build_root" in \
   ""|/|"$(HOME)"|"$$topsrc") \
     echo "refusing unsafe BUILD_ROOT: $$build_root" >&2; exit 2 ;; \
 esac; \
 case "$$builddir" in \
+  "$$repo_build_root"/*) ;; \
   "$$topsrc"|"$$topsrc"/*) \
     echo "refusing BUILDDIR inside the source tree: $$builddir" >&2; exit 2 ;; \
 esac; \
@@ -626,7 +628,8 @@ test:
 
 build-lease-test:
 	@tmpdir="$$(mktemp -d)"; \
-	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	canonical_builddir="$(TOPSRC)/build/.build-lease-test-$$$$"; \
+	trap 'rm -rf "$$tmpdir" "$$canonical_builddir"' EXIT HUP INT TERM; \
 	lock="$$tmpdir/mesa-build.lock"; \
 	mkdir -p "$$tmpdir/build"; \
 	assert_locked() { \
@@ -676,6 +679,22 @@ build-lease-test:
 		echo "FAIL  clean-all safety check removed the sentinel" >&2; exit 1; \
 	}; \
 	echo "OK    clean-all rejects BUILD_ROOT=/"; \
+	mkdir -p "$$canonical_builddir"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+		BUILD_ROOT="$(TOPSRC)/build" BUILDDIR="$$canonical_builddir" \
+		BUILD_LOCK="$$tmpdir/canonical.lock" LOCK_WAIT=0 >/dev/null; \
+	test ! -e "$$canonical_builddir" || { \
+		echo "FAIL  clean rejected the canonical repository build root" >&2; exit 1; \
+	}; \
+	echo "OK    clean accepts the canonical repository build root"; \
+	if $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+		BUILD_ROOT="$(TOPSRC)/.build-lease-source-root-$$$$" \
+		BUILDDIR="$(TOPSRC)/.build-lease-source-root-$$$$/probe" \
+		BUILD_LOCK="$$tmpdir/source-tree.lock" LOCK_WAIT=0 \
+		>/dev/null 2>&1; then \
+		echo "FAIL  clean accepted a noncanonical source-tree build root" >&2; exit 1; \
+	fi; \
+	echo "OK    clean rejects noncanonical source-tree build roots"; \
 	install_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" install \
 		BUILDDIR="$$tmpdir/build" PREFIX="$$tmpdir/prefix" \
 		SYSCONFDIR="$$tmpdir/etc" 2>/dev/null )"; \
@@ -689,8 +708,8 @@ build-lease-test:
 	flock_cmd="$(FLOCK)"; \
 	flock_base="$$(basename -- "$$flock_cmd")"; \
 	flock_count="$$(printf '%s\n' "$$distclean_plan" | grep -c -- "$$flock_base")"; \
-	test "$$flock_count" -ge 1 || { \
-		echo "FAIL  distclean plan has no $$flock_base lease" >&2; exit 1; \
+	test "$$flock_count" -eq 1 || { \
+		echo "FAIL  distclean plan uses $$flock_count $$flock_base leases" >&2; exit 1; \
 	}; \
 	echo "OK    distclean holds one build lease"
 
