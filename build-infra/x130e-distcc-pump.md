@@ -205,7 +205,7 @@ meson setup \
   --prefix="$PREFIX" \
   "$BUILDDIR" "$PWD"
 
-ninja -C "$BUILDDIR" -j36
+ninja -C "$BUILDDIR" -j6
 ```
 
 Install must avoid root-side rebuilds. If `ninja install` dirties build targets

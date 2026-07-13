@@ -63,11 +63,8 @@ PAIR_BUILDDIR  = $(word 3,$1)
 PAIR_PREFIX    = $(word 4,$1)
 PAIR_NAMESPACE = $(word 5,$1)
 
-ifneq (,$(filter $(HOSTENV),vostro1000-x86-64-v1-clang22-ccache-distcc))
-JOBS     ?= 36
-else
 JOBS     ?= $(shell nproc)
-endif
+DISTCC_JOBS ?= 6
 # Build serialization lease: held across every Make-managed build-directory
 # mutation so concurrent agents cannot configure, build, test, or clean the
 # same build domain at once.  Direct Meson and Ninja commands bypass it.
@@ -206,7 +203,7 @@ LOCKED_TOOL_ENV := \
         rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
         install-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
         rebuild-all-tiers audit-werror \
-        build-lease-test \
+        build-lease-test build-job-policy-test \
         pkg-mesa-gororoba deploy-mesa-gororoba \
         help
 
@@ -231,6 +228,7 @@ help:
 	@echo "  artifact-check    list installed Terakan/r600/r3v artifacts under \$$(PREFIX); warn on stale r300 ICDs"
 	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
 	@echo "  build-lease-test  verify mutation leases and path-safety guards"
+	@echo "  build-job-policy-test verify nproc local jobs and the six-job distcc ceiling"
 	@echo "  rebuild-<profile> clean + configure + build for that profile"
 	@echo "  list              show available PROFILEs and HOSTENVs"
 	@echo ""
@@ -410,6 +408,17 @@ audit: vostro-prefix-check audit-werror profile-audit
 			if grep -Eq '(^|[[:space:]])[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+([/:[:space:]]|$$)' "$$HOME/.distcc/hosts"; then fail "raw IPv4 address found in ~/.distcc/hosts; use mDNS hostnames"; \
 			else ok "distcc hosts use hostname policy"; fi; \
 		else warn "~/.distcc/hosts is missing; distcc builds may run locally only"; fi; \
+		if [ "$${GOROROBA_DISTCC_JOBS:-}" = "$(DISTCC_JOBS)" ]; then \
+			ok "distcc aggregate build ceiling is $(DISTCC_JOBS) jobs"; \
+		else \
+			fail "distcc aggregate build ceiling is $${GOROROBA_DISTCC_JOBS:-unset}; expected $(DISTCC_JOBS)"; \
+		fi; \
+		distcc_slots="$$(printf '%s\n' "$${DISTCC_HOSTS:-}" | grep -oE '/[0-9]+' | tr -d / | awk '{sum += $$1} END {print sum + 0}')"; \
+		if [ "$$distcc_slots" = "$(DISTCC_JOBS)" ]; then \
+			ok "distcc host allocation totals $(DISTCC_JOBS) slots"; \
+		else \
+			fail "distcc host allocation totals $$distcc_slots slots; expected $(DISTCC_JOBS)"; \
+		fi; \
 	else ok "distcc not in active compiler chain; skipping host policy check"; fi; \
 		if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then \
 			ok "active lane defaults CCACHE_PREFIX to distcc"; \
@@ -561,8 +570,16 @@ build:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }; \
 	test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	$(ACQUIRE_BUILD_LOCK) \
+	build_jobs="$(JOBS)"; \
+	case "$(COMPILER_CHAIN):$${CCACHE_PREFIX:-}" in \
+		distcc:*|ccache:distcc) build_jobs="$${GOROROBA_DISTCC_JOBS:-$(DISTCC_JOBS)}" ;; \
+	esac; \
+	case "$$build_jobs" in \
+		''|*[!0-9]*|0) echo "invalid Ninja job count: $$build_jobs" >&2; exit 2 ;; \
+	esac; \
+	echo "ninja jobs: $$build_jobs ($(COMPILER_CHAIN))"; \
 	env $(LOCKED_TOOL_ENV) \
-	    $(NINJA) -C $(BUILDDIR) -j$${GOROROBA_DISTCC_JOBS:-$(JOBS)} $(NINJA_TARGETS)
+	    $(NINJA) -C $(BUILDDIR) -j"$$build_jobs" $(NINJA_TARGETS)
 
 clean:
 	@$(ACQUIRE_BUILD_LOCK) \
@@ -754,6 +771,40 @@ build-lease-test:
 	}; \
 	echo "OK    distclean holds one build lease"
 
+build-job-policy-test:
+	@tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	mkdir -p "$$tmpdir/build"; \
+	local_jobs="$$(nproc)"; \
+	local_output="$$( $(MAKE) --no-print-directory -s -C "$(CURDIR)" build \
+		HOSTENV=job-policy-local COMPILER_CHAIN=direct \
+		BUILDDIR="$$tmpdir/build" BUILD_LOCK="$$tmpdir/local.lock" \
+		NINJA=echo )"; \
+	printf '%s\n' "$$local_output" | grep -F -- "-j$$local_jobs" >/dev/null || { \
+		echo "FAIL  local build did not use nproc=$$local_jobs" >&2; \
+		printf '%s\n' "$$local_output" >&2; exit 1; \
+	}; \
+	echo "OK    local build uses nproc=$$local_jobs"; \
+	distcc_output="$$( $(MAKE) --no-print-directory -s -C "$(CURDIR)" build \
+		HOSTENV=job-policy-local COMPILER_CHAIN=distcc \
+		BUILDDIR="$$tmpdir/build" BUILD_LOCK="$$tmpdir/distcc.lock" \
+		NINJA=echo )"; \
+	printf '%s\n' "$$distcc_output" | grep -F -- "-j$(DISTCC_JOBS)" >/dev/null || { \
+		echo "FAIL  distcc build did not use $(DISTCC_JOBS) jobs" >&2; \
+		printf '%s\n' "$$distcc_output" >&2; exit 1; \
+	}; \
+	echo "OK    distcc build uses $(DISTCC_JOBS) jobs"; \
+	ccache_distcc_output="$$( CCACHE_PREFIX=distcc \
+		$(MAKE) --no-print-directory -s -C "$(CURDIR)" build \
+		HOSTENV=job-policy-local COMPILER_CHAIN=ccache \
+		BUILDDIR="$$tmpdir/build" BUILD_LOCK="$$tmpdir/ccache-distcc.lock" \
+		NINJA=echo )"; \
+	printf '%s\n' "$$ccache_distcc_output" | grep -F -- "-j$(DISTCC_JOBS)" >/dev/null || { \
+		echo "FAIL  ccache plus distcc build did not use $(DISTCC_JOBS) jobs" >&2; \
+		printf '%s\n' "$$ccache_distcc_output" >&2; exit 1; \
+	}; \
+	echo "OK    ccache plus distcc build uses $(DISTCC_JOBS) jobs"
+
 define CLEAN_CONFIGURE_BUILD_PAIR
 	$(MAKE) clean \
 	    PROFILE=$(call PAIR_PROFILE,$1) \
@@ -787,8 +838,8 @@ endef
 # Canonical full-feature r300 RELEASE build: maximal GL/GLES surface plus the
 # ati_r300 ICD in one artifact (profile 4_).  Installs to the release prefix.
 rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache:
-	$(MAKE) -j1 clean PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-	$(MAKE) -j1 configure PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) clean PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) configure PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 	$(MAKE) build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
 install-4_r300_full_release_x86_64v1-clang22-distcc-cache:
@@ -797,8 +848,8 @@ install-4_r300_full_release_x86_64v1-clang22-distcc-cache:
 # Canonical full-feature r300 DEBUG build: same surface, assertions live (-O2 -g),
 # installs to the -debug prefix (profile 3_).
 rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache:
-	$(MAKE) -j1 clean PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
-	$(MAKE) -j1 configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) clean PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
 	$(MAKE) build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
 
 install-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache:
@@ -808,8 +859,8 @@ install-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache:
 # softpipe, llvmpipe, amd_terascale) plus Rusticl in one artifact (profile 3_).
 # Installs to the release prefix.
 rebuild-3_terakan_full_release_x86_64v1-clang22-distcc-cache:
-	$(MAKE) -j1 clean PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-	$(MAKE) -j1 configure PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) clean PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) configure PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 	$(MAKE) build PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
 install-3_terakan_full_release_x86_64v1-clang22-distcc-cache:
@@ -818,8 +869,8 @@ install-3_terakan_full_release_x86_64v1-clang22-distcc-cache:
 # Canonical r600/terakan DEBUG build: same surface, assertions live (-O2 -g),
 # Rusticl live, installs to the -debug prefix (profile 4_).
 rebuild-4_terakan_full_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) -j1 clean PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
-	$(MAKE) -j1 configure PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) clean PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) configure PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
 	$(MAKE) build PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
 
 install-4_terakan_full_debug_x86_64v1-clang22-distcc-cache:
@@ -828,8 +879,8 @@ install-4_terakan_full_debug_x86_64v1-clang22-distcc-cache:
 # r600/terakan RELEASE build without Rusticl: use when bindgen drift makes
 # Rusticl unbuildable (profile 5_).  Installs to the release prefix.
 rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache:
-	$(MAKE) -j1 clean PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-	$(MAKE) -j1 configure PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) clean PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) configure PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 	$(MAKE) build PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
 install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache:
@@ -838,8 +889,8 @@ install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache:
 # r600/terakan DEBUG build without Rusticl: use when bindgen drift makes
 # Rusticl unbuildable (profile 6_).  Installs to the -debug prefix.
 rebuild-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) -j1 clean PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
-	$(MAKE) -j1 configure PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) clean PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) configure PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
 	$(MAKE) build PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
 
 install-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
@@ -852,8 +903,8 @@ install-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
 # PKGBUILD _prefix so the repack stages to the right tree; it is reached only
 # through mesa-gororoba-debug-asan-run.
 rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache:
-	$(MAKE) -j1 clean PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-asan
-	$(MAKE) -j1 configure PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-asan
+	$(MAKE) clean PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-asan
+	$(MAKE) configure PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-asan
 	$(MAKE) build PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-asan
 
 install-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache:
@@ -864,8 +915,8 @@ install-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache:
 # mesa-gororoba-debug-o0-run.  The prefix must equal the mesa-gororoba-debug-o0
 # PKGBUILD _prefix.
 rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache:
-	$(MAKE) -j1 clean PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-o0
-	$(MAKE) -j1 configure PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-o0
+	$(MAKE) clean PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-o0
+	$(MAKE) configure PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-o0
 	$(MAKE) build PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-o0
 
 install-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache:

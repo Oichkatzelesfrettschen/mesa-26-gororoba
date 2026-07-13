@@ -171,7 +171,7 @@ build() {
 
   # Fan out across the distcc workers: meson compile defaults ninja to
   # local-cores+2 (4 on the K8), which starves the remote slots.
-  # GOROROBA_DISTCC_JOBS is the slot-sum exported by the host env.
+  # GOROROBA_DISTCC_JOBS is the six-job ceiling exported by distcc host envs.
   meson compile -C build -j "${GOROROBA_DISTCC_JOBS:-$(nproc)}"
 }
 

@@ -18,11 +18,11 @@ combine this incremental lane with distcc-pump.
 The canonical incremental release and debug paths are:
 
 ```sh
-make -C build-infra -j1 configure PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+make -C build-infra configure PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 make -C build-infra build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 make -C build-infra install PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
-make -C build-infra -j1 configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-gororoba-debug-optimized
+make -C build-infra configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-gororoba-debug-optimized
 make -C build-infra build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-gororoba-debug-optimized
 make -C build-infra install PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-gororoba-debug-optimized
 ```
@@ -46,11 +46,12 @@ CachyOS and Debian hosts.  `env/vostro1000-x86-64-v1-clang22-ccache-distcc.env` 
 sets `CCACHE_PREFIX=distcc`, flattens `~/.distcc/hosts` into `DISTCC_HOSTS`,
 strips the pump-only `,cpp` flag, normalizes local fallback entries to distcc's
 `localhost[/LIMIT]` grammar, and appends `localhost/2` when the host file does
-not already name a local fallback.  The Makefile sets `JOBS=36` for this host
-environment so Ninja has enough work to keep the reachable distcc volunteers
-busy.  The environment owns `DISTCC_HOSTS` at source time so
-login-shell defaults cannot silently route this lane to stale workers.  The
-environment pins `PATH` and `CCACHE_PATH` to `/usr/bin` first so ccache resolves
+not already name a local fallback.  Direct local builds use `nproc`; the
+distcc and ccache-plus-distcc lanes cap Ninja at six aggregate jobs across the
+Vostro and its volunteers.  The environment owns `DISTCC_HOSTS` at source
+time, so login-shell defaults cannot silently route this lane to stale
+workers.  The environment pins `PATH` and `CCACHE_PATH` to `/usr/bin` first so
+ccache resolves
 the packaged Clang 22 tools on the Vostro.  The generated Meson toolchain
 overlay keeps compiler entries as versioned command names for the ccache and
 distcc lanes.  In the direct distcc lane, volunteers search their own PATH for
