@@ -13,7 +13,7 @@ Use the repository's `build-infra` entrypoint for day-to-day work.
 | Run Meson/Ninja test target for current builddir | `make -C build-infra test PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` |
 | Run full Meson tests directly | `meson test -C <builddir> --print-errorlogs` |
 | Run a single Meson test | `meson test -C <builddir> --list` then `meson test -C <builddir> <test_name> --print-errorlogs` |
-| Run one r3v validation probe | `VK_ICD_FILENAMES=/opt/local/mesa-26-gororoba/share/vulkan/icd.d/r3v_icd.x86_64.json build-infra/conformance/r3v-vulkan-surface/run.sh /tmp/r3v-4096-validation` |
+| Run one r3v validation probe | `VK_ICD_FILENAMES=<r3v_icd.json> DEQP_VK=<deqp-vk> OUT=<output-parent> bash build-infra/conformance/r3v-vulkan-surface/run.sh --check` |
 | Shell script lint pass used in CI | `./.gitlab-ci/run-shellcheck.sh` |
 | CI Python checks (`pytest` + `flake8`) | `./.gitlab-ci/run-pytest.sh` |
 | CI config lint checks | `python3 bin/toml_lint.py && ./.gitlab-ci/run-yamllint.sh` |

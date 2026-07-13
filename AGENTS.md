@@ -411,9 +411,18 @@ LD_LIBRARY_PATH="$mesa_prefix/$mesa_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   ./probe_binary
 ```
 
-For Vulkan probes, point `VK_ICD_FILENAMES` at the exact ICD JSON under the selected prefix.
+For Vulkan probes, point `VK_ICD_FILENAMES` at the exact r3v ICD JSON under
+the selected prefix:
 
-A release evidence run defines `LIBGL_DRIVERS_PATH`, `LD_LIBRARY_PATH`, and `VK_ICD_FILENAMES` itself, each set to the selected prefix or explicitly unset. A debug DRI driver or stale Vulkan ICD loaded into a release probe invalidates silicon evidence.
+```bash
+mesa_icd="$mesa_prefix/share/vulkan/icd.d/r3v_icd.x86_64.json"
+```
+
+A release evidence run defines `LIBGL_DRIVERS_PATH` as
+`$mesa_prefix/$mesa_libdir/dri`, `LD_LIBRARY_PATH` as
+`$mesa_prefix/$mesa_libdir`, and `VK_ICD_FILENAMES` as `$mesa_icd`, or unsets
+each variable. A debug DRI driver or stale Vulkan ICD loaded into a release
+probe invalidates silicon evidence.
 
 ### Build profiles and host envs
 
@@ -871,9 +880,9 @@ This repo holds driver code, build infrastructure, and committed
 tests; a probe that must persist goes to `steinmarder/src/re/r300` with its evidence
 bundle.
 
-Local invocation notes (cachyos/Arch): `spatch` is `/usr/bin/spatch` (coccinelle-bin);
-BCC ships as the wrapped tools `/usr/bin/opensnoop` and `/usr/bin/execsnoop`; `ast-grep`,
-`lizard`, and `weggli` are under `~/.local/bin`. MSAN is not usable for Mesa: MemorySanitizer
+Local invocation notes (CachyOS/Arch): `spatch` comes from coccinelle-bin;
+BCC ships the `opensnoop` and `execsnoop` tools; run `ast-grep`, `lizard`, and
+`weggli` through `PATH`. MSAN is not usable for Mesa: MemorySanitizer
 needs the entire dependency closure (libc++, LLVM, libdrm) instrumented or it reports
 false uninitialized reads on every uninstrumented frame, so use ASan+UBSan for memory
 errors and Valgrind/memcheck or DRD for uninitialized-read and race detection instead.

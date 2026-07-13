@@ -67,19 +67,51 @@ package() {
   # driconf, so refuse any builddir whose configured prefix or sysconfdir
   # disagrees with this package.
   python3 - "${_builddir}" "${_prefix}" <<'PYGATE'
-import json, sys
-opts = {o["name"]: o["value"]
-        for o in json.load(open(sys.argv[1] + "/meson-info/intro-buildoptions.json"))}
+import json
+import sys
+from pathlib import Path
+
+builddir = Path(sys.argv[1])
+expected_prefix = sys.argv[2]
+metadata = builddir / "meson-info" / "intro-buildoptions.json"
+
+def reconfigure(detail):
+    sys.exit("builddir configure metadata %s: %s -- reconfigure via the"
+             " build-infra Makefile (make configure PROFILE=... PREFIX=%s;"
+             " it passes --sysconfdir=/etc) before packaging"
+             % (detail, metadata, expected_prefix))
+
+try:
+    with metadata.open(encoding="utf-8") as source:
+        options = json.load(source)
+except (OSError, json.JSONDecodeError) as error:
+    reconfigure("is unreadable or malformed (%s)" % error)
+
+if not isinstance(options, list):
+    reconfigure("has an invalid top-level shape (expected a list)")
+
+opts = {}
+for index, option in enumerate(options):
+    if not isinstance(option, dict):
+        reconfigure("has a non-object option at index %d" % index)
+    name = option.get("name")
+    if not isinstance(name, str) or "value" not in option:
+        reconfigure("has an option without string name and value at index %d" % index)
+    opts[name] = option["value"]
+
+if "prefix" not in opts or "sysconfdir" not in opts:
+    reconfigure("lacks required prefix or sysconfdir options")
+
 bad = []
-if opts.get("prefix") != sys.argv[2]:
-    bad.append("prefix=%r (need %r)" % (opts.get("prefix"), sys.argv[2]))
+if opts.get("prefix") != expected_prefix:
+    bad.append("prefix=%r (need %r)" % (opts.get("prefix"), expected_prefix))
 if opts.get("sysconfdir") != "/etc":
     bad.append("sysconfdir=%r (need '/etc')" % (opts.get("sysconfdir"),))
 if bad:
     sys.exit("builddir configure mismatch: %s -- reconfigure via the"
              " build-infra Makefile (make configure PROFILE=... PREFIX=%s;"
              " it passes --sysconfdir=/etc) before packaging"
-             % ("; ".join(bad), sys.argv[2]))
+             % ("; ".join(bad), expected_prefix))
 PYGATE
 
   meson install -C "${_builddir}" --no-rebuild --destdir "${pkgdir}"

@@ -1,11 +1,4 @@
 /* SPDX-License-Identifier: MIT */
-/*
- * Resolves vk_sync.h, vk_drm_syncobj, VkResult, and
- * DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL via the meson terakan target's runtime +
- * libdrm include paths. Standalone clang lint outside the meson build will
- * report missing symbols and is not a defect.
- */
-
 #ifndef TERAKAN_EXTERNAL_SYNC_H
 #define TERAKAN_EXTERNAL_SYNC_H
 
