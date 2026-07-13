@@ -123,8 +123,10 @@ nir_shader *r3v_build_otrans_p2_lo_fs_nir(const nir_shader_compiler_options *opt
 nir_shader *r3v_build_otrans_p2_hi_fs_nir(const nir_shader_compiler_options *opts);
 
 /* QFM fused fragment programs (three inputs sampled at stages 0,1,2):
- * QFMADD out = a*b + c (one pass); QFMMUL out = a*b*c = (a*b)*c (one pass). */
-nir_shader *r3v_build_qfmadd_fs_nir(const nir_shader_compiler_options *opts);
+ * QFMADD out = a*b + c and QFMSUB out = a*b - c share one builder;
+ * QFMMUL out = a*b*c = (a*b)*c (one pass). */
+nir_shader *r3v_build_qfmadd_fs_nir(const nir_shader_compiler_options *opts,
+                                    bool is_sub);
 nir_shader *r3v_build_qfmmul_fs_nir(const nir_shader_compiler_options *opts);
 nir_shader *r3v_build_ieee16_classify_fs_nir(const nir_shader_compiler_options *opts);
 nir_shader *r3v_build_ieee16_mul_fs_nir(const nir_shader_compiler_options *opts);

@@ -642,20 +642,22 @@ r3v_build_otrans_p2_hi_fs_nir(const nir_shader_compiler_options *opts)
    return fs_finalize(&b);
 }
 
-/* QFMADD: out = a*b + c, the Hamilton product of a and b plus the quaternion c.
- * Four DP4s plus a vec4 add, one pass.  Samples a,b,c at sampler stages 0,1,2.
- * (The ADD of c could ride the RB3D COMB_FCN_ADD blend over a c-preloaded target,
- * a substrate-native FMA; here it is a straightforward ALU add.) */
+/* QFMADD and QFMSUB combine the Hamilton product of a and b with quaternion c.
+ * Four DP4s plus one vec4 add or subtract execute in one pass.  The final NIR
+ * opcode preserves the non-commutative left operand admitted for QFMSUB. */
 nir_shader *
-r3v_build_qfmadd_fs_nir(const nir_shader_compiler_options *opts)
+r3v_build_qfmadd_fs_nir(const nir_shader_compiler_options *opts, bool is_sub)
 {
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r3v_qfmadd");
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                     is_sub ? "r3v_qfmsub" : "r3v_qfmadd");
    nir_def *coord = make_fs_coord(&b);
    nir_def *a = sample_stage(&b, coord, 0);
    nir_def *bb = sample_stage(&b, coord, 1);
    nir_def *c = sample_stage(&b, coord, 2);
-   nir_def *out = nir_fadd(&b, hamilton_product(&b, a, bb), c);
+   nir_def *product = hamilton_product(&b, a, bb);
+   nir_def *out = is_sub ? nir_fsub(&b, product, c)
+                         : nir_fadd(&b, product, c);
    store_color_at(&b, out, FRAG_RESULT_COLOR, "color");
    return fs_finalize(&b);
 }

@@ -223,6 +223,33 @@ check_omul_mrt_fs(const nir_shader_compiler_options *options)
    ralloc_free(s);
 }
 
+static void
+check_qfmaddsub_fs(const nir_shader_compiler_options *options, bool is_sub)
+{
+   const char *label = is_sub ? "qfmsub" : "qfmadd";
+   nir_shader *s = r3v_build_qfmadd_fs_nir(options, is_sub);
+   char name[96];
+
+   snprintf(name, sizeof(name), "%s builds a shader", label);
+   CHECK(s != NULL, name);
+   if (!s)
+      return;
+
+   snprintf(name, sizeof(name), "r3v %s fs", label);
+   nir_validate_shader(s, name);
+   check_texcoord_shape(s, label, 3);
+
+   snprintf(name, sizeof(name), "%s: exactly four DP4s", label);
+   CHECK(count_alu_op(s, nir_op_fdot4) == 4, name);
+   snprintf(name, sizeof(name), "%s: final combine uses %s", label,
+            is_sub ? "fsub" : "fadd");
+   CHECK(count_alu_op(s, is_sub ? nir_op_fsub : nir_op_fadd) == 1, name);
+   snprintf(name, sizeof(name), "%s: opposite combine opcode is absent", label);
+   CHECK(count_alu_op(s, is_sub ? nir_op_fadd : nir_op_fsub) == 0, name);
+
+   ralloc_free(s);
+}
+
 int
 main(void)
 {
@@ -238,6 +265,8 @@ main(void)
    check_hamilton_fs(&options, "omul_lo", r3v_build_omul_lo_fs_nir, 4, 8);
    check_hamilton_fs(&options, "omul_hi", r3v_build_omul_hi_fs_nir, 4, 8);
    check_omul_mrt_fs(&options);
+   check_qfmaddsub_fs(&options, false);
+   check_qfmaddsub_fs(&options, true);
 
    glsl_type_singleton_decref();
 

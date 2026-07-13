@@ -92,6 +92,9 @@ test_domain_catalog(void)
    const struct r300_virtual_op_info *multilimb = NULL;
    const struct r300_virtual_op_info *signed_dp4 = NULL;
    const struct r300_virtual_op_info *quad_disc = NULL;
+   const struct r300_virtual_op_info *q16_add = NULL;
+   const struct r300_virtual_op_info *q16_mul = NULL;
+   const struct r300_virtual_op_info *q16_mac = NULL;
    for (unsigned op_index = 0; r300_virtual_op_catalog[op_index].op_name; op_index++) {
       const struct r300_virtual_op_info *op = &r300_virtual_op_catalog[op_index];
       if (strcmp(op->op_name, "MULTILIMB7_U32_MUL") == 0)
@@ -100,6 +103,12 @@ test_domain_catalog(void)
          signed_dp4 = op;
       if (strcmp(op->op_name, "QUADRATIC_DISCRIMINANT_OFFGRID") == 0)
          quad_disc = op;
+      if (strcmp(op->op_name, "Q16_16_ADD") == 0)
+         q16_add = op;
+      if (strcmp(op->op_name, "Q16_16_MUL") == 0)
+         q16_mul = op;
+      if (strcmp(op->op_name, "Q16_16_MAC") == 0)
+         q16_mac = op;
    }
 
    CHECK(multilimb != NULL,
@@ -120,6 +129,18 @@ test_domain_catalog(void)
          "catalog: quadratic discriminant lives in the FP24 RTZ root domain");
    CHECK(quad_disc != NULL && quad_disc->mesa_hook == NULL,
          "catalog: quadratic discriminant has no Mesa hook (glamor-emitted, not a Mesa pass)");
+   CHECK(q16_add != NULL && q16_add->status == R300_VOP_CARRIER_PENDING,
+         "catalog: Q16.16 ADD remains carrier-pending after shape detection");
+   CHECK(q16_add != NULL && q16_add->mesa_hook != NULL,
+         "catalog: Q16.16 ADD records its classifier");
+   CHECK(q16_mul != NULL && q16_mul->status == R300_VOP_CARRIER_PENDING,
+         "catalog: Q16.16 MUL remains carrier-pending");
+   CHECK(q16_mul != NULL && q16_mul->mesa_hook == NULL,
+         "catalog: Q16.16 MUL has no detector");
+   CHECK(q16_mac != NULL && q16_mac->status == R300_VOP_CARRIER_PENDING,
+         "catalog: Q16.16 MAC remains production-carrier-pending");
+   CHECK(q16_mac != NULL && q16_mac->mesa_hook == NULL,
+         "catalog: Q16.16 MAC has no production detector");
 }
 
 /* -------------------------------------------------------------------------
