@@ -3396,11 +3396,12 @@ build_rt_export_gid_zw_only(void)
    nir_variable *img =
       cs_image2d_var(&b, "out_img", 0, PIPE_FORMAT_R8G8B8A8_UNORM, false);
    nir_def *gid = nir_load_global_invocation_id(&b, 32);
-   /* X/Y are constant zeros; only Z/W carry gid channels (negative case). */
-   nir_def *gx = nir_channel(&b, gid, 0);
-   nir_def *gy = nir_channel(&b, gid, 1);
-   nir_def *coord =
-      nir_vec4(&b, nir_imm_int(&b, 0), nir_imm_int(&b, 0), gx, gy);
+   nir_def *gid_xy = nir_trim_vector(&b, gid, 2);
+   /* image_*_store coordinates have four components in NIR.  Move the padded
+    * zero lanes into X/Y so only Z/W retain gid participation. */
+   nir_def *padded_gid = nir_pad_vector_imm_int(&b, gid_xy, 0, 4);
+   const unsigned zw_only[4] = { 2, 3, 0, 1 };
+   nir_def *coord = nir_swizzle(&b, padded_gid, zw_only, 4);
    nir_def *val = nir_imm_vec4(&b, 1.0f, 0.0f, 0.0f, 1.0f);
    nir_def *zero = nir_imm_int(&b, 0);
    nir_image_deref_store(&b, &nir_build_deref_var(&b, img)->def, coord, zero,
