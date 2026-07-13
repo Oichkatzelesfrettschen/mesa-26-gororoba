@@ -42,7 +42,7 @@
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=15
+pkgrel=16
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
