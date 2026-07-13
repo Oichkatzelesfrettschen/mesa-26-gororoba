@@ -64,8 +64,8 @@ vs_sysval_of_intrinsic(const nir_intrinsic_instr *intr)
        * number plus firstInstance), not SYSTEM_VALUE_INSTANCE_ID.  The synthetic
        * attribute carries that full value, so normalize it to the instance
        * synthetic.  Matching only INSTANCE_ID misses every Vulkan VS that reads
-       * gl_InstanceIndex and lets the load_deref reach nir_to_tgsi, where the
-       * unhandled intrinsic leaves a TGSI_FILE_NULL source and asserts. */
+       * gl_InstanceIndex and leaves a system-value deref outside the direct
+       * Draw executor's admitted intrinsic set. */
       if (sysval == SYSTEM_VALUE_INSTANCE_INDEX ||
           sysval == SYSTEM_VALUE_INSTANCE_ID)
          return SYSTEM_VALUE_INSTANCE_ID;
@@ -187,12 +187,10 @@ r300_nir_lower_vs_system_values_to_inputs(nir_shader *s, int vertex_id_slot,
 }
 
 /* Rewrite the spirv_to_nir system-value deref into the native intrinsic the SW
- * draw module already supplies.  draw_vs_exec fills TGSI_SEMANTIC_VERTEXID from
+ * Draw executor supplies.  It fills the vertex ID from
  * the vsplit frontend's fetch_elts (an indexed draw's raw index plus eltBias,
  * draw_pt_vsplit.c's vsplit_add_cache_uint32) or i + start_index for a
- * non-indexed draw, and the r300 VERTEX stage carries integers = true, so
- * nir_to_tgsi keeps load_vertex_id / load_instance_id as native int system
- * values rather than rejecting them.  Emitting the intrinsic instead of a
+ * non-indexed draw. Emitting the intrinsic instead of a
  * synthetic vertex input consumes no vertex element, so a shader reading
  * VertexID alongside the full maxVertexInputAttributes set still fits the
  * 16-element PSC budget.

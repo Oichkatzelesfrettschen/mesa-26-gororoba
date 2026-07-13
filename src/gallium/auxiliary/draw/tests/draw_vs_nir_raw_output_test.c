@@ -152,7 +152,7 @@ build_sysval(const nir_shader_compiler_options *opts)
    return b.shader;
 }
 
-/* out = vec4(VertexID, VertexIDZeroBase, BaseVertex, 0) as floats. */
+/* out = vec4(VertexID, VertexIDZeroBase, BaseVertex, DrawID) as floats. */
 static nir_shader *
 build_sysval_indexed(const nir_shader_compiler_options *opts)
 {
@@ -161,7 +161,7 @@ build_sysval_indexed(const nir_shader_compiler_options *opts)
                          nir_i2f32(&b, nir_load_vertex_id(&b)),
                          nir_i2f32(&b, nir_load_vertex_id_zero_base(&b)),
                          nir_i2f32(&b, nir_load_base_vertex(&b)),
-                         nir_imm_float(&b, 0.0f));
+                         nir_i2f32(&b, nir_load_draw_id(&b)));
    nir_store_var(&b, add_output(&b, 0, VARYING_SLOT_POS), v, 0xf);
    return b.shader;
 }
@@ -690,11 +690,13 @@ main(void)
       svi_exp[i * 4 + 0] = (float)elts[i];              /* VertexID          */
       svi_exp[i * 4 + 1] = (float)((int)elts[i] - BIAS);/* VertexIDZeroBase  */
       svi_exp[i * 4 + 2] = (float)BIAS;                 /* BaseVertex        */
-      svi_exp[i * 4 + 3] = 0.0f;
+      svi_exp[i * 4 + 3] = 9.0f;
    }
+   draw->pt.user.drawid = 9;
    struct raw_case svi = { "sysval_indexed", build_sysval_indexed, 0, 1, 4, NULL,
       elts, 0, 0, 0, 4 /*eltSize*/, BIAS, svi_exp };
    run_case(draw, &svi);
+   draw->pt.user.drawid = 0;
 
    /* Control flow: single vertex, no vertex input needed (the shaders compute
     * a constant from loop-carried int state). */

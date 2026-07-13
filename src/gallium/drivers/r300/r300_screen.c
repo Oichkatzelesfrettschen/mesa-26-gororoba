@@ -468,17 +468,16 @@ static void r300_init_shader_caps(struct r300_screen* r300screen)
       caps->subroutines = false;
       caps->max_shader_buffers = 0;
       caps->max_shader_images = 0;
-      /* SW-TCL runs the vertex shader on the draw module's tgsi_exec, a CPU
-       * interpreter that executes native integer ops and relative constant
+      /* SW-TCL runs the vertex shader on Draw's direct NIR CPU executor, which
+       * executes native integer ops and relative constant
        * addressing.  Expose both for the vertex stage so a shader that indexes a
        * UBO by a runtime value (e.g. ubuf.arr[gl_VertexIndex]) compiles instead
        * of tripping nir_lower_int_to_float on the integer address math.  The
        * fragment stage keeps integers off -- the PFS is float-only. */
       caps->integers = true;
       caps->indirect_const_addr = true;
-      /* Even if gallivm NIR can do this, right now it calls nir_to_tgsi
-       * manually and TGSI can't.
-       */
+      /* The r300 SW-TCL lowering and direct executor do not carry a validated
+       * 16-bit contract. */
       caps->int16 = false;
       caps->fp16 = false;
       caps->fp16_derivatives = false;
@@ -490,7 +489,7 @@ static void r300_init_shader_caps(struct r300_screen* r300screen)
        */
       caps->indirect_temp_addr = false;
    }
-   caps->supported_irs = (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_TGSI);
+   caps->supported_irs = 1 << PIPE_SHADER_IR_NIR;
 
    caps = (struct pipe_shader_caps *)&r300screen->screen.shader_caps[MESA_SHADER_FRAGMENT];
 
@@ -513,7 +512,7 @@ static void r300_init_shader_caps(struct r300_screen* r300screen)
    caps->max_temps = is_r500 ? 128 : is_r400 ? 64 : 32;
    caps->max_texture_samplers =
    caps->max_sampler_views = r300screen->caps.num_tex_units;
-   caps->supported_irs = (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_TGSI);
+   caps->supported_irs = 1 << PIPE_SHADER_IR_NIR;
 }
 
 static void r300_init_screen_caps(struct r300_screen* r300screen)
@@ -743,13 +742,10 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
         return NULL;
     }
 
-    /* The GL state tracker refs the glsl type singleton, but the video path
-     * creates this screen through pipe_create_multimedia_context with no state
-     * tracker.  tgsi_to_nir -- reached when util_blitter builds its clear/copy
-     * shaders -- then allocates from a NULL glsl type linear context and faults.
-     * Ref it here so every r300 screen has the type system regardless of the
-     * frontend; r300_destroy_screen drops the ref.  Matches lp_screen.c and
-     * si_gfx_screen.c. */
+    /* The GL state tracker refs the GLSL type singleton, but the video path
+     * creates this screen through pipe_create_multimedia_context without a
+     * state tracker.  NIR helper construction still allocates GLSL types, so
+     * every r300 screen owns a reference.  r300_destroy_screen drops it. */
     glsl_type_singleton_init_or_ref();
 
     rws->query_info(rws, &r300screen->info);

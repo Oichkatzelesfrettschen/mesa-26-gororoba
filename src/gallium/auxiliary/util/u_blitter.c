@@ -221,19 +221,24 @@ struct blitter_context *util_blitter_create(struct pipe_context *pipe)
    ctx->has_stream_out = pipe->screen->caps.max_stream_output_buffers != 0;
 
    ctx->has_stencil_export = pipe->screen->caps.shader_stencil_export;
-   /* U_BLITTER_FORCE_TGSI selects the TGSI constructors on a NIR-capable
-    * screen: a bring-up bisection lever that isolates the blitter's NIR
-    * shaders from every other suspect when a target regresses. */
-   /* NIR path builds both a NIR FS and a NIR VS, so both stages must expose
-    * NIR (and nir_options) before we leave the TGSI constructors. */
-   ctx->use_nir =
-      (pipe->screen->shader_caps[MESA_SHADER_FRAGMENT].supported_irs &
-       (1 << PIPE_SHADER_IR_NIR)) &&
-      (pipe->screen->shader_caps[MESA_SHADER_VERTEX].supported_irs &
-       (1 << PIPE_SHADER_IR_NIR)) &&
+   const unsigned fragment_irs =
+      pipe->screen->shader_caps[MESA_SHADER_FRAGMENT].supported_irs;
+   const unsigned vertex_irs =
+      pipe->screen->shader_caps[MESA_SHADER_VERTEX].supported_irs;
+   const bool nir_supported =
+      (fragment_irs & (1 << PIPE_SHADER_IR_NIR)) &&
+      (vertex_irs & (1 << PIPE_SHADER_IR_NIR));
+   const bool tgsi_supported =
+      (fragment_irs & (1 << PIPE_SHADER_IR_TGSI)) &&
+      (vertex_irs & (1 << PIPE_SHADER_IR_TGSI));
+
+   /* The force selector is a bisection control for drivers that advertise
+    * both IRs.  A NIR-only driver keeps the advertised shader-state contract. */
+   ctx->use_nir = nir_supported &&
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT] &&
       pipe->screen->nir_options[MESA_SHADER_VERTEX] &&
-      !debug_get_bool_option("U_BLITTER_FORCE_TGSI", false);
+      !(tgsi_supported &&
+        debug_get_bool_option("U_BLITTER_FORCE_TGSI", false));
 
    ctx->has_texture_multisample =
       pipe->screen->caps.texture_multisample;
