@@ -480,6 +480,64 @@ draw_vs_nir_io_slots(const struct glsl_type *type, bool bindless)
    return glsl_count_attribute_slots(type, false);
 }
 
+/* The interpreter indexes AOS rows with each lowered intrinsic's base plus
+ * constant offset.  NIR semantic masks describe API locations and num_inputs
+ * is producer metadata, so neither value alone defines this executable span. */
+static bool
+draw_vs_nir_io_spans(nir_shader *nir,
+                     unsigned *input_span,
+                     unsigned *output_span)
+{
+   *input_span = 0;
+   *output_span = 0;
+
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         unsigned base;
+         unsigned offset;
+
+         switch (intr->intrinsic) {
+         case nir_intrinsic_load_input:
+            if (!nir_src_is_const(intr->src[0]) ||
+                nir_intrinsic_component(intr) + intr->def.num_components > 4)
+               return false;
+            base = nir_intrinsic_base(intr);
+            offset = nir_src_as_uint(intr->src[0]);
+            if (base >= PIPE_MAX_ATTRIBS ||
+                offset >= PIPE_MAX_ATTRIBS - base)
+               return false;
+            *input_span = MAX2(*input_span, base + offset + 1);
+            break;
+
+         case nir_intrinsic_store_output: {
+            const unsigned component = nir_intrinsic_component(intr);
+            const unsigned write_mask = nir_intrinsic_write_mask(intr);
+            if (!nir_src_is_const(intr->src[1]) || component >= 4 ||
+                (write_mask >> (4 - component)))
+               return false;
+            base = nir_intrinsic_base(intr);
+            offset = nir_src_as_uint(intr->src[1]);
+            if (base >= PIPE_MAX_SHADER_OUTPUTS ||
+                offset >= PIPE_MAX_SHADER_OUTPUTS - base)
+               return false;
+            *output_span = MAX2(*output_span, base + offset + 1);
+            break;
+         }
+
+         default:
+            break;
+         }
+      }
+   }
+
+   return true;
+}
+
 static void
 draw_vs_nir_lower(nir_shader *nir)
 {
@@ -575,7 +633,13 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
    draw_vs_nir_lower(nir);
 
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
-   bool supported = true;
+   unsigned input_span;
+   unsigned output_span;
+   bool supported =
+      draw_vs_nir_io_spans(nir, &input_span, &output_span);
+
+   if (!supported)
+      goto done;
 
    nir_foreach_block(block, impl) {
       nir_foreach_instr(instr, block) {
@@ -656,7 +720,16 @@ draw_create_vs_nir(struct draw_context *draw,
     * shape before any of them see the shader. */
    /* Keep the admission clone and executable shader on one lowering path. */
    draw_vs_nir_lower(nir);
+   unsigned input_span;
+   unsigned output_span;
+   if (!draw_vs_nir_io_spans(nir, &input_span, &output_span)) {
+      ralloc_free(nir);
+      FREE(vs);
+      return NULL;
+   }
    nir_tgsi_scan_shader(nir, &vs->base.info, true);
+   vs->base.info.num_inputs = input_span;
+   vs->base.info.num_outputs = output_span;
 
    vs->nir = nir;
    vs->impl = nir_shader_get_entrypoint(nir);
