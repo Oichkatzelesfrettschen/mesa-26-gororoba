@@ -70,6 +70,10 @@ collide.  (`git clean -xdf` also removes them since they are ignored; prefer
   (`vulkan-drivers=auto`) and the native file alone does not re-apply.  On
   x86_64, `auto` pulls lavapipe while r300 profiles keep `llvm=disabled`, so
   configure aborts.  The CLI `-D` pass heals that drift without a wipe.
+- Warnings are errors in every configure path: profiles set `werror = true`,
+  Make always passes `-Dwerror=true`, packaging PKGBUILDs that meson-setup
+  this tree pass `-Dwerror=true`, and `make audit-werror` fails closed if any
+  of those gates are missing.
 - New build-system behavior belongs in `build-infra/Makefile` or Meson files.
   Do not add standalone helper scripts for compiler selection, audit policy,
   or clean/build orchestration.  Make-invoked implementation bodies under
