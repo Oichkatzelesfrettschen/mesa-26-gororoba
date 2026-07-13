@@ -13,19 +13,6 @@
 #include "r3v_memory.h"
 #include "r3v_identity_map.h"
 
-#include <stdlib.h>
-
-static bool
-identity_map_debug_enabled(void)
-{
-   static int cached = -1;
-   if (cached < 0) {
-      const char *flags = r3v_getenv_compat("R3V_DEBUG", "R300VK_DEBUG");
-      cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
-   }
-   return cached != 0;
-}
-
 #include "vk_queue.h"
 #include "vk_sync.h"
 
@@ -1288,11 +1275,9 @@ r3v_replay_pipeline_barrier(struct r3v_device *device,
    if (skip_render_pass)
       return;
    pipe->flush(pipe, NULL, 0);
-   if (identity_map_debug_enabled()) {
-      fprintf(stderr,
-              "ident_map: pipeline_barrier flush honored "
-              "(dispatch-barrier-dispatch visibility)\n");
-   }
+   if (device->dbg_identity_map)
+      mesa_logi("r3v: ident_map: pipeline_barrier flush honored "
+                "(dispatch-barrier-dispatch visibility)");
    if (e->barrier.image)
       e->barrier.image->resource_state.layout = e->barrier.new_layout;
 }

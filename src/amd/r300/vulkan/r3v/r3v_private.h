@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "util/u_debug.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -113,6 +115,12 @@ r3v_getenv_compat(const char *r3v_name, const char *legacy_name)
 {
    const char *v = getenv(r3v_name);
    return v ? v : getenv(legacy_name);
+}
+
+static inline bool
+r3v_debug_option_enabled(const char *options, const char *option)
+{
+   return options && comma_separated_list_contains(options, option);
 }
 
 static inline bool

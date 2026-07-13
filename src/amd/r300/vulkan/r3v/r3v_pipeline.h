@@ -336,7 +336,7 @@ struct r3v_pipeline {
     * in the admitted NIR shader. */
    struct r300_compute_multipass_scan_pattern multipass_scan;
 
-   /* M-H per-pixel predicate + masked store detected at pipeline-create time.
+   /* Predicated masked-store pattern detected at pipeline-create time.
     * Recognized shape:
     *   if (in_pred[gid] != 0u) out_data[gid] = in_val[gid];
     * a conditional store_ssbo inside a nir_if with two load_ssbo (predicate +
