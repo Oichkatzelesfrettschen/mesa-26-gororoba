@@ -90,6 +90,15 @@ endif
 # `meson setup --native-file` loads option defaults from CONFIG.  The
 # generated toolchain overlay keeps compiler package suffixes host-local
 # instead of committing one LLVM major into every native file.
+#
+# PROFILE_DFLAGS re-asserts every [project options] entry as a -D flag on
+# every setup/reconfigure.  Native-file values are defaults only: after a
+# Meson option choice is removed (for example the retired amd_r300 selector),
+# coredata resets the option to its default (vulkan-drivers=auto) and the
+# native file does not re-apply.  auto on x86_64 pulls lavapipe while r300
+# profiles keep llvm=disabled, so configure aborts.  CLI -D flags override
+# that reset and keep the profile's declared surface.
+PROFILE_DFLAGS_SCRIPT := $(CURDIR)/scripts/meson_profile_dflags.py
 SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) --reconfigure
 # MODE=stable pins the same safe -O2 release level through a command-line
 # override without enabling LTO.  Default (unset / clean / rebuild) keeps the
@@ -461,7 +470,10 @@ configure: vostro-prefix-check
 	echo "wrote Meson toolchain overlay: $(TOOLCHAIN_NATIVE) (LLVM $$llvm_version, $(COMPILER_CHAIN))"
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-	meson setup $(SETUP_ARGS) --prefix=$(PREFIX) --sysconfdir=$(SYSCONFDIR) $(BUILDDIR) $(TOPSRC)
+	profile_dflags=$$(python3 $(PROFILE_DFLAGS_SCRIPT) $(CONFIG)) || { \
+		echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
+	echo "profile -D flags: $$profile_dflags"; \
+	meson setup $(SETUP_ARGS) $$profile_dflags --prefix=$(PREFIX) --sysconfdir=$(SYSCONFDIR) $(BUILDDIR) $(TOPSRC)
 
 build:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
@@ -498,7 +510,9 @@ install: vostro-prefix-check
 	    flock -x -w 7200 $(BUILD_LOCK) bash -c 'set -euo pipefail; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-	    meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
+	    profile_dflags=$$(python3 $(PROFILE_DFLAGS_SCRIPT) $(CONFIG)) || { \
+	      echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
+	    meson setup $(SETUP_ARGS) $$profile_dflags --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
 	    echo "[install] running meson install --no-rebuild --only-changed -C $(BUILDDIR)"; \
 	    sudo meson install --no-rebuild --only-changed -C $(BUILDDIR); \
 	    : "sudo meson install writes meson-logs/install-log.txt as root; restore"; \
