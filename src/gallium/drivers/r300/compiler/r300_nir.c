@@ -345,9 +345,33 @@ r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen)
     * application entry point named r3v_main would also match.  Real GL shaders
     * never use these helper names. */
    if (s->info.name) {
+      /* Exact names from r3v_dp4_fs_nir.c / r3v_pipeline.c builders that
+       * emit the virtual IEEE-FP16 placeholders.  Keep this list in lockstep
+       * with those nir_builder_init_simple_shader call sites. */
       static const char *const r3v_virt_fp_helpers[] = {
-         "r3v_dp4", "r3v_qmul", "r3v_qrotate", "r3v_qconj", "r3v_qnorm",
-         "r3v_qnormalize", "r3v_noop_fs",
+         "r3v_dp4",
+         "r3v_ieee16_classify",
+         "r3v_ieee16_mul",
+         "r3v_noop_fs",
+         "r3v_oconj_mrt",
+         "r3v_odiv_hi",
+         "r3v_odiv_l_hi",
+         "r3v_odiv_l_lo",
+         "r3v_odiv_lo",
+         "r3v_omul_hi",
+         "r3v_omul_lo",
+         "r3v_omul_mrt",
+         "r3v_onorm",
+         "r3v_otrans_p2_hi",
+         "r3v_otrans_p2_lo",
+         "r3v_qconj",
+         "r3v_qdiv",
+         "r3v_qfmadd",
+         "r3v_qfmmul",
+         "r3v_qmul",
+         "r3v_qnorm",
+         "r3v_qnormalize",
+         "r3v_qrotate",
       };
       bool virt_fp = false;
       for (unsigned i = 0; i < ARRAY_SIZE(r3v_virt_fp_helpers); i++) {
