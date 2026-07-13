@@ -815,10 +815,10 @@ image_store_op(nir_intrinsic_op op)
           op == nir_intrinsic_image_heap_store;
 }
 
-/* Image-coordinate walker for RT-export: each coordinate lane must depend on
- * gl_GlobalInvocationID (or index) and may only combine that id with constants
- * and simple ALU.  Scalar tracing preserves vec/mov swizzles so GID in Z/W
- * cannot satisfy the X/Y dependency requirement. */
+/* Image-coordinate walker for RT-export: the X and Y coordinate lanes must
+ * depend on gl_GlobalInvocationID (or index) and may only combine that id with
+ * constants and simple ALU.  Scalar tracing preserves vec/mov swizzles so GID
+ * in Z/W cannot satisfy the X/Y dependency requirement. */
 static bool
 image_coord_scalar_is_gid_derived(nir_scalar scalar, unsigned depth,
                                   bool *saw_gid)
