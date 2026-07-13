@@ -11,6 +11,14 @@ namespace {
 class nir_opt_varyings_test_dead_output : public nir_opt_varyings_test
 {};
 
+static bool
+no_varying_expected(gl_varying_slot slot)
+{
+   return slot != VARYING_SLOT_POS &&
+          slot != VARYING_SLOT_PSIZ &&
+          slot != VARYING_SLOT_CLIP_VERTEX;
+}
+
 #define TEST_DEAD_OUTPUT_REMOVED(producer_stage, consumer_stage, slot, bitsize) \
 TEST_F(nir_opt_varyings_test_dead_output, \
        store_##producer_stage##_##consumer_stage##_##slot##_##bitsize) \
@@ -40,9 +48,7 @@ TEST_F(nir_opt_varyings_test_dead_output, \
    ASSERT_EQ(b1->shader->info.outputs_written, VARYING_BIT_##slot); \
    ASSERT_TRUE(shader_contains_instr(b1, &intr->instr)); \
    ASSERT_EQ(nir_intrinsic_io_semantics(intr).no_varying, \
-               (VARYING_SLOT_##slot != VARYING_SLOT_POS && \
-                VARYING_SLOT_##slot != VARYING_SLOT_PSIZ && \
-                VARYING_SLOT_##slot != VARYING_SLOT_CLIP_VERTEX)); \
+             no_varying_expected(VARYING_SLOT_##slot)); \
 }
 
 #define TEST_DEAD_OUTPUT_KEPT_XFB(producer_stage, consumer_stage, slot, bitsize) \
@@ -65,7 +71,7 @@ TEST_F(nir_opt_varyings_test_dead_output, \
       index--; \
    \
    /* Compaction moves all these to VAR0. */ \
-   /* It's correct for TEX0 because it's not used by FS. */ \
+   /* TEX0 compacts because the fragment shader does not consume it. */ \
    if (index == VARYING_SLOT_FOGC || index == VARYING_SLOT_PRIMITIVE_ID || \
        index == VARYING_SLOT_TEX0 || index == VARYING_SLOT_VAR0_16BIT) \
       index = VARYING_SLOT_VAR0; \
@@ -84,9 +90,7 @@ TEST_F(nir_opt_varyings_test_dead_output, \
    } \
    ASSERT_TRUE(shader_contains_instr(b1, &intr->instr)); \
    ASSERT_EQ(nir_intrinsic_io_semantics(intr).no_varying, \
-               (VARYING_SLOT_##slot != VARYING_SLOT_POS && \
-                VARYING_SLOT_##slot != VARYING_SLOT_PSIZ && \
-                VARYING_SLOT_##slot != VARYING_SLOT_CLIP_VERTEX)); \
+             no_varying_expected(VARYING_SLOT_##slot)); \
    ASSERT_EQ(nir_intrinsic_io_xfb(intr).out[0].num_components, 1); \
 }
 
