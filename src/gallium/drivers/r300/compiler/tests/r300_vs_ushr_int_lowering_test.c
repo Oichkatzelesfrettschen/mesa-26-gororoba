@@ -24,6 +24,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -45,6 +46,124 @@ static unsigned g_failures;
    } while (0)
 
 enum shift_kind { SHIFT_CONST, SHIFT_VARIABLE };
+
+static nir_def *
+imm_uvec4(nir_builder *b, const uint32_t values[4])
+{
+   nir_const_value constants[4];
+   for (unsigned component = 0; component < 4; component++)
+      constants[component] = nir_const_value_for_uint(values[component], 32);
+   return nir_build_imm(b, 4, 32, constants);
+}
+
+static nir_shader *
+build_vs_vector_bitwise(nir_op op, const uint32_t constants[4],
+                        const uint32_t bounds[4], bool constant_first)
+{
+   static const nir_shader_compiler_options options;
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &options,
+                                                  "r300_vs_vector_bitwise");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+
+   nir_variable *in0 =
+      nir_variable_create(b.shader, nir_var_shader_in, vec4, "in0");
+   in0->data.location = VERT_ATTRIB_GENERIC0;
+   in0->data.driver_location = 0;
+
+   nir_variable *pos =
+      nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_Position");
+   pos->data.location = VARYING_SLOT_POS;
+   pos->data.driver_location = 0;
+
+   nir_def *input = nir_f2u32(&b, nir_load_var(&b, in0));
+   nir_def *bounded = nir_umin(&b, input, imm_uvec4(&b, bounds));
+   nir_def *constant = imm_uvec4(&b, constants);
+   nir_def *result = constant_first
+                        ? nir_build_alu2(&b, op, constant, bounded)
+                        : nir_build_alu2(&b, op, bounded, constant);
+   nir_store_var(&b, pos, nir_u2f32(&b, result), 0xf);
+   return b.shader;
+}
+
+static unsigned
+count_alu_op(nir_shader *s, nir_op op)
+{
+   unsigned count = 0;
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type == nir_instr_type_alu &&
+                nir_instr_as_alu(instr)->op == op)
+               count++;
+         }
+      }
+   }
+   return count;
+}
+
+static unsigned
+count_alu_const_divisor(nir_shader *s, nir_op op, uint32_t divisor)
+{
+   unsigned count = 0;
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+
+            nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op == op && nir_src_is_const(alu->src[1].src) &&
+                nir_src_comp_as_uint(alu->src[1].src,
+                                     alu->src[1].swizzle[0]) == divisor)
+               count++;
+         }
+      }
+   }
+   return count;
+}
+
+static void
+check_vector_bitwise_lowering(const char *name, nir_op source_op,
+                              const uint32_t constants[4],
+                              const uint32_t bounds[4], bool constant_first,
+                              bool expect_supported, nir_op lowered_op,
+                              const uint32_t expected_divisors[4])
+{
+   nir_shader *s = build_vs_vector_bitwise(source_op, constants, bounds,
+                                           constant_first);
+   bool unsupported = false;
+   bool progress = r300_nir_lower_bitwise_to_arith(s, &unsupported);
+
+   printf("  case - %s\n", name);
+   CHECK(progress, "bitwise pass makes progress");
+   CHECK(unsupported != expect_supported,
+         expect_supported ? "vector operation remains supported"
+                          : "invalid vector lane rejects the operation");
+   CHECK(count_alu_op(s, source_op) == 0,
+         "source bitwise operation is removed");
+
+   if (expect_supported) {
+      CHECK(count_alu_op(s, lowered_op) == 4,
+            "one arithmetic operation is emitted per vector lane");
+      for (unsigned component = 0; component < 4; component++) {
+         unsigned expected_count = 0;
+         for (unsigned other = 0; other < 4; other++) {
+            if (expected_divisors[other] == expected_divisors[component])
+               expected_count++;
+         }
+         CHECK(count_alu_const_divisor(s, lowered_op,
+                                      expected_divisors[component]) ==
+                  expected_count,
+               "arithmetic divisor matches the constant lane");
+      }
+   } else {
+      CHECK(count_alu_op(s, lowered_op) == 0,
+            "rejected operation emits no arithmetic approximation");
+   }
+
+   nir_validate_shader(s, "after r300 vector bitwise lowering test");
+   ralloc_free(s);
+}
 
 /* gl_Position = vec4(float(ushr(f2u32(in0.x), amt))).  The shift operand is an
  * f2u32 of an input -- an exact integer for in-range values -- so the exact
@@ -201,6 +320,41 @@ main(void)
     *    lowers without aborting and is float-encoded. */
    CHECK(sysval_encode_result(true, true) == 1,
          "firstInstance shape (numeric sysval + ushr) compiles and encodes");
+
+   /* 4. Constant masks and shifts are proven and lowered per result lane. */
+   static const uint32_t exact_bounds[4] = { 17, 100, 1024, 131072 };
+   static const uint32_t splat_masks[4] = { 3, 3, 3, 3 };
+   static const uint32_t splat_moduli[4] = { 4, 4, 4, 4 };
+   static const uint32_t vector_masks[4] = { 1, 3, 7, 15 };
+   static const uint32_t vector_moduli[4] = { 2, 4, 8, 16 };
+   static const uint32_t vector_shifts[4] = { 0, 1, 2, 17 };
+   static const uint32_t vector_divisors[4] = { 1, 2, 4, 131072 };
+   static const uint32_t invalid_masks[4] = { 1, 3, 5, 7 };
+   static const uint32_t overflow_masks[4] = { 1, 3, UINT32_MAX, 7 };
+   static const uint32_t invalid_shifts[4] = { 0, 1, 18, 3 };
+   static const uint32_t out_of_range_bounds[4] = { 17, 100, 131073, 1024 };
+
+   check_vector_bitwise_lowering("splat low-bit mask", nir_op_iand,
+                                 splat_masks, exact_bounds, false, true,
+                                 nir_op_umod, splat_moduli);
+   check_vector_bitwise_lowering("distinct low-bit masks with constant first",
+                                 nir_op_iand, vector_masks, exact_bounds, true,
+                                 true, nir_op_umod, vector_moduli);
+   check_vector_bitwise_lowering("distinct constant shifts", nir_op_ushr,
+                                 vector_shifts, exact_bounds, false, true,
+                                 nir_op_udiv, vector_divisors);
+   check_vector_bitwise_lowering("non-low-bit mask lane", nir_op_iand,
+                                 invalid_masks, exact_bounds, false, false,
+                                 nir_op_umod, vector_moduli);
+   check_vector_bitwise_lowering("overflowing mask lane", nir_op_iand,
+                                 overflow_masks, exact_bounds, false, false,
+                                 nir_op_umod, vector_moduli);
+   check_vector_bitwise_lowering("out-of-window shift lane", nir_op_ushr,
+                                 invalid_shifts, exact_bounds, false, false,
+                                 nir_op_udiv, vector_divisors);
+   check_vector_bitwise_lowering("out-of-window value lane", nir_op_iand,
+                                 vector_masks, out_of_range_bounds, false,
+                                 false, nir_op_umod, vector_moduli);
 
    glsl_type_singleton_decref();
    printf("%s\n", g_failures ? "FAILED" : "PASSED");
