@@ -280,13 +280,12 @@ int main(int argc, char **argv)
          do {
             progress = false;
 
-            #define OPT(pass, ...) ({                                  \
+            #define OPT(pass, ...) do {                                \
                bool this_progress = false;                             \
                NIR_PASS(this_progress, nir, pass, ##__VA_ARGS__);      \
                if (this_progress)                                      \
                   progress = true;                                     \
-               this_progress;                                          \
-            })
+            } while (0)
 
             OPT(nir_opt_dce);
             OPT(nir_opt_cse);
