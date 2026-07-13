@@ -257,6 +257,7 @@ main(void)
    printf("Test(vl-h264-reconstruct: clip sweep) = %s (%d/%d)\n",
           pass ? "pass" : "fail", ok, sweep);
 
+   cso_unbind_context(cso);
    cso_destroy_context(cso);
    ctx->delete_sampler_state(ctx, sampler);
    ctx->delete_fs_state(ctx, fs);

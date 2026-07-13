@@ -424,6 +424,7 @@ main(void)
    pass = run_size(&p, screen, 4, 4) && pass;
    pass = run_size(&p, screen, 2, 2) && pass;
 
+   cso_unbind_context(cso);
    cso_destroy_context(cso);
    ctx->delete_sampler_state(ctx, p.sampler);
    ctx->delete_fs_state(ctx, p.fs_row);

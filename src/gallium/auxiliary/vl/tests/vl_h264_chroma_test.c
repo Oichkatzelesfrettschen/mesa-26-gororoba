@@ -333,6 +333,7 @@ main(void)
    printf("Test(vl-h264-chroma: random sweep) = %s (%d/%d)\n",
           sweep_ok == sweep ? "pass" : "fail", sweep_ok, sweep);
 
+   cso_unbind_context(cso);
    cso_destroy_context(cso);
    ctx->delete_sampler_state(ctx, p.sampler);
    ctx->delete_fs_state(ctx, p.fs);
