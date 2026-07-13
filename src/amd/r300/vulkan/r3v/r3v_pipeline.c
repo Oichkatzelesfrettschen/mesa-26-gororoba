@@ -617,7 +617,8 @@ r3v_nir_uses_live_texture_after_r300_opt(struct pipe_screen *pscreen,
  * nir_lower_samplers (run later in nir_to_rc) keys the texture unit on
  * data.binding, so after this rewrite a sampler in any descriptor set lands on
  * the same unit the replay binds it to. The descriptor set remains intact so a
- * sampler does not alias a UBO variable at the same binding. */
+ * sampler from a nonzero set cannot collapse into the set-0 namespace and
+ * alias a UBO after its binding is rewritten. */
 static void
 r3v_nir_remap_sampler_units(nir_shader *nir, const struct r3v_pipeline *pl)
 {
