@@ -55,11 +55,11 @@ def _normalize_value(raw: str) -> str:
     if not text:
         return ""
 
-    # Array: ['a', 'b'] or ["a", "b"] -> a,b
+    # Array: ['a', 'b'] or ["a", "b"] -> a,b ; explicit [] stays [] for Meson.
     if text.startswith("[") and text.endswith("]"):
         inner = text[1:-1].strip()
         if not inner:
-            return ""
+            return "[]"
         parts = re.findall(r"'([^']*)'|\"([^\"]*)\"|([^,\s\]]+)", inner)
         items = [a or b or c for a, b, c in parts if (a or b or c)]
         return ",".join(items)
@@ -100,11 +100,9 @@ def profile_dflags(path: str, include_builtin: bool) -> list[str]:
             # options.  Built-in c_args live under [built-in options].
             value = _normalize_value(raw)
             # Meson CLI rejects empty -Dkey= for some types; skip empties.
-            if value == "" and raw.strip() not in ("''", '""', "[]"):
-                # Truly empty after normalize with non-empty raw means parse
-                # failure; still emit empty for explicit [] empty arrays.
-                if raw.strip() != "[]":
-                    continue
+            # Explicit [] normalizes to "[]" and is emitted as -Dkey=[].
+            if value == "":
+                continue
             flags.append(f"-D{key}={value}")
     return flags
 
@@ -120,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         flags = profile_dflags(args.profile, include_builtin=args.builtin)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, configparser.Error) as exc:
         print(f"meson_profile_dflags: {exc}", file=sys.stderr)
         return 2
     # Space-separated on one line for easy Make $(shell) capture.
