@@ -41,17 +41,17 @@ struct bitwise_state {
 };
 
 static bool
-alu_src_const_u32(nir_alu_instr *alu, unsigned src, uint32_t *out)
+alu_src_const_u32_components(nir_alu_instr *alu, unsigned src,
+                             uint32_t values[NIR_MAX_VEC_COMPONENTS])
 {
-   /* This lowering reads a scalar mask or shift constant.  A vector iand whose mask is
-    * a constant vector reaches here before scalarization with a multi-component
-    * constant operand, so the check requires a single component as well as a constant
-    * value; a multi-component constant returns false and the op flows to the
-    * unsupported reject path. */
-   if (!nir_src_is_const(alu->src[src].src) ||
-       nir_src_num_components(alu->src[src].src) != 1)
+   if (!nir_src_is_const(alu->src[src].src))
       return false;
-   *out = nir_src_as_uint(alu->src[src].src);
+
+   for (unsigned component = 0; component < alu->def.num_components; component++) {
+      values[component] = nir_src_comp_as_uint(
+         alu->src[src].src, alu->src[src].swizzle[component]);
+   }
+
    return true;
 }
 
@@ -61,8 +61,33 @@ alu_src_const_u32(nir_alu_instr *alu, unsigned src, uint32_t *out)
 static bool
 value_is_exact_integer(struct bitwise_state *st, nir_shader *s, nir_def *x)
 {
-   return nir_unsigned_upper_bound(s, st->range_ht, nir_get_scalar(x, 0)) <=
-          R300_FP24_EXACT_INT;
+   for (unsigned component = 0; component < x->num_components; component++) {
+      if (nir_unsigned_upper_bound(s, st->range_ht,
+                                   nir_get_scalar(x, component)) >
+          R300_FP24_EXACT_INT)
+         return false;
+   }
+
+   return true;
+}
+
+static nir_def *
+lower_component_division(nir_builder *b, nir_def *value,
+                         const uint32_t divisors[NIR_MAX_VEC_COMPONENTS],
+                         bool use_modulus)
+{
+   nir_def *components[NIR_MAX_VEC_COMPONENTS];
+
+   for (unsigned component = 0; component < value->num_components; component++) {
+      nir_def *dividend = nir_channel(b, value, component);
+      nir_def *divisor = nir_imm_int(b, divisors[component]);
+      components[component] = use_modulus ? nir_umod(b, dividend, divisor)
+                                          : nir_udiv(b, dividend, divisor);
+   }
+
+   return value->num_components == 1
+             ? components[0]
+             : nir_vec(b, components, value->num_components);
 }
 
 static bool
@@ -87,37 +112,52 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
 
    switch (alu->op) {
    case nir_op_iand: {
-      uint32_t mask;
+      uint32_t masks[NIR_MAX_VEC_COMPONENTS];
+      uint32_t moduli[NIR_MAX_VEC_COMPONENTS];
       unsigned value_src;
-      if (alu_src_const_u32(alu, 1, &mask))
+      if (alu_src_const_u32_components(alu, 1, masks))
          value_src = 0;
-      else if (alu_src_const_u32(alu, 0, &mask))
+      else if (alu_src_const_u32_components(alu, 0, masks))
          value_src = 1;
       else
          break; /* dynamic mask: no compile-time proof of a low-bit mask */
 
-      uint32_t modulus = mask + 1;
-      if (mask == 0 || (modulus & (modulus - 1)) != 0 ||
-          modulus > R300_FP24_EXACT_INT)
-         break; /* not a 2^n-1 mask inside the exact window */
+      for (unsigned component = 0; component < alu->def.num_components;
+           component++) {
+         moduli[component] = masks[component] + 1;
+         if (masks[component] == 0 || moduli[component] == 0 ||
+             (moduli[component] & (moduli[component] - 1)) != 0 ||
+             moduli[component] > R300_FP24_EXACT_INT)
+            goto unsupported;
+      }
 
       nir_def *x = nir_ssa_for_alu_src(b, alu, value_src);
       if (!value_is_exact_integer(st, b->shader, x))
          break;
 
-      nir_def_replace(&alu->def, nir_umod(b, x, nir_imm_int(b, modulus)));
+      nir_def_replace(&alu->def,
+                      lower_component_division(b, x, moduli, true));
       return true;
    }
    case nir_op_ushr: {
-      uint32_t shift;
-      if (!alu_src_const_u32(alu, 1, &shift) || shift > 17)
+      uint32_t shifts[NIR_MAX_VEC_COMPONENTS];
+      uint32_t divisors[NIR_MAX_VEC_COMPONENTS];
+      if (!alu_src_const_u32_components(alu, 1, shifts))
          break; /* variable or out-of-window shift */
+
+      for (unsigned component = 0; component < alu->def.num_components;
+           component++) {
+         if (shifts[component] > 17)
+            goto unsupported;
+         divisors[component] = 1u << shifts[component];
+      }
 
       nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
       if (!value_is_exact_integer(st, b->shader, x))
          break;
 
-      nir_def_replace(&alu->def, nir_udiv(b, x, nir_imm_int(b, 1u << shift)));
+      nir_def_replace(&alu->def,
+                      lower_component_division(b, x, divisors, false));
       return true;
    }
    case nir_op_ior:
@@ -130,6 +170,7 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
       return false; /* not an admitted integer bit op; leave for int_to_float */
    }
 
+unsupported:
    /* An integer bitwise/shift op with no exact FP24 rewrite reached here.  Drop
     * it to operand 0 so int_to_float does not assert, and flag the shader; the
     * caller raises rc_error and the r300 fragment translator emits a dummy
