@@ -795,27 +795,149 @@ r300_nir_detect_unary_map(const nir_shader *s,
    out->is_unary_map = true;
 }
 
-/* Any of the three image-store intrinsic forms. */
+/* Image-store forms that count as color-export candidates or competing
+ * stores.  image_heap_store is a peer of image_store and must count. */
 static bool
 image_store_op(nir_intrinsic_op op)
 {
    return op == nir_intrinsic_image_deref_store ||
           op == nir_intrinsic_image_store ||
-          op == nir_intrinsic_bindless_image_store;
+          op == nir_intrinsic_bindless_image_store ||
+          op == nir_intrinsic_image_heap_store;
 }
 
-/* Admissible storage-image RT-export detector (see the header).  Recognizes the
- * one image_deref_store class whose semantics equal a fragment shader writing a
- * color target: a single 2D non-array R8G8B8A8_UNORM image store at a
- * global-invocation-id-derived coordinate, with no image load, no image atomic,
- * and no competing scatter/atomic/barrier/shared write.  Every other shape
- * leaves is_rt_exportable false and stays rejected.  Read-only NIR walk. */
+/* Image-coordinate walker for RT-export: the coordinate must depend on
+ * gl_GlobalInvocationID (or index) and may only combine that id with
+ * constants and simple ALU (add/sub/mul-by-const/shift/casts/vecs).
+ * Pure constants, descriptor loads, and unknown sources fail closed. */
+static bool image_coord_def_is_gid_derived(const nir_def *def, unsigned depth,
+                                           bool *saw_gid);
+
+static bool
+image_coord_src_is_gid_derived(nir_src src, unsigned depth, bool *saw_gid)
+{
+   if (!src.ssa)
+      return false;
+   if (nir_src_is_const(src))
+      return true;
+   return image_coord_def_is_gid_derived(src.ssa, depth + 1, saw_gid);
+}
+
+static bool
+image_coord_def_is_gid_derived(const nir_def *def, unsigned depth,
+                               bool *saw_gid)
+{
+   if (!def || depth > R300_COMPUTE_STORE_ADDR_MAX_DEPTH)
+      return false;
+   if (nir_def_is_const(def))
+      return true;
+
+   const nir_instr *instr = nir_def_instr(def);
+   if (instr->type == nir_instr_type_intrinsic) {
+      const nir_intrinsic_instr *intr =
+         nir_instr_as_intrinsic((nir_instr *)instr);
+      switch (intr->intrinsic) {
+      case nir_intrinsic_load_global_invocation_id:
+      case nir_intrinsic_load_global_invocation_index:
+      case nir_intrinsic_load_base_global_invocation_id:
+         *saw_gid = true;
+         return true;
+      default:
+         /* Descriptor loads and other system values are not coordinates. */
+         return false;
+      }
+   }
+
+   if (instr->type != nir_instr_type_alu)
+      return false;
+
+   const nir_alu_instr *alu = nir_instr_as_alu((nir_instr *)instr);
+   const unsigned num_inputs = nir_op_infos[alu->op].num_inputs;
+
+   if (nir_op_is_vec_or_mov(alu->op)) {
+      for (unsigned i = 0; i < num_inputs; i++) {
+         if (!image_coord_src_is_gid_derived(alu->src[i].src, depth + 1,
+                                             saw_gid))
+            return false;
+      }
+      return true;
+   }
+
+   switch (alu->op) {
+   case nir_op_iadd:
+   case nir_op_isub:
+   case nir_op_u2u32:
+   case nir_op_u2u64:
+   case nir_op_i2i32:
+   case nir_op_i2i64:
+      for (unsigned i = 0; i < num_inputs; i++) {
+         if (!image_coord_src_is_gid_derived(alu->src[i].src, depth + 1,
+                                             saw_gid))
+            return false;
+      }
+      return true;
+   case nir_op_imul:
+      return (store_ssbo_addr_alu_input_is_const(alu, 0) &&
+              image_coord_src_is_gid_derived(alu->src[1].src, depth + 1,
+                                             saw_gid)) ||
+             (store_ssbo_addr_alu_input_is_const(alu, 1) &&
+              image_coord_src_is_gid_derived(alu->src[0].src, depth + 1,
+                                             saw_gid));
+   case nir_op_ishl:
+      return image_coord_src_is_gid_derived(alu->src[0].src, depth + 1,
+                                            saw_gid) &&
+             store_ssbo_addr_alu_input_is_const(alu, 1);
+   default:
+      return false;
+   }
+}
+
+static bool
+image_coord_is_gid_derived(nir_src coord)
+{
+   bool saw_gid = false;
+   if (!image_coord_src_is_gid_derived(coord, 0, &saw_gid))
+      return false;
+   return saw_gid;
+}
+
+/* Format for image stores: prefer the intrinsic qualifier, then the
+ * variable's image format when the intrinsic carries PIPE_FORMAT_NONE. */
+static enum pipe_format
+image_store_effective_format(const nir_intrinsic_instr *store,
+                             const nir_variable *var)
+{
+   enum pipe_format fmt = nir_intrinsic_format(store);
+   if (fmt != PIPE_FORMAT_NONE)
+      return fmt;
+   if (var && var->data.image.format != PIPE_FORMAT_NONE)
+      return (enum pipe_format)var->data.image.format;
+   return PIPE_FORMAT_NONE;
+}
+
+/* True when the deref chain indexes an array or struct element of the
+ * image variable (dynamic descriptor-array or multi-image binding). */
+static bool
+image_deref_has_array_or_struct_index(const nir_deref_instr *deref)
+{
+   for (const nir_deref_instr *d = deref; d;
+        d = nir_deref_instr_parent(d)) {
+      if (d->deref_type == nir_deref_type_array ||
+          d->deref_type == nir_deref_type_array_wildcard ||
+          d->deref_type == nir_deref_type_ptr_as_array ||
+          d->deref_type == nir_deref_type_struct)
+         return true;
+   }
+   return false;
+}
+
+/* Admissible storage-image RT-export detector (see the header).  Read-only. */
 void
 r300_nir_detect_image_store_rt_export(
    const nir_shader *s, struct r300_image_store_rt_export_pattern *out)
 {
-   out->is_rt_exportable   = false;
-   out->image_binding      = 0;
+   out->is_rt_exportable = false;
+   out->image_binding = 0;
    out->image_binding_valid = false;
 
    const nir_intrinsic_instr *store = NULL;
@@ -834,9 +956,8 @@ r300_nir_detect_image_store_rt_export(
                store_count++;
                continue;
             }
-            /* Any image load/atomic (RMW or read-back the substrate cannot do),
-             * or any competing scatter/atomic/barrier write, disqualifies the
-             * pure color-export shape. */
+            /* Image load/atomic (RMW or read-back the substrate cannot do),
+             * or any competing scatter/atomic/barrier write, disqualifies. */
             const char *name = nir_intrinsic_infos[op].name;
             if ((strstr(name, "image") &&
                  (strstr(name, "load") || strstr(name, "atomic"))) ||
@@ -845,8 +966,23 @@ r300_nir_detect_image_store_rt_export(
                 op == nir_intrinsic_store_global ||
                 op == nir_intrinsic_store_global_2x32 ||
                 op == nir_intrinsic_ssbo_atomic ||
-                op == nir_intrinsic_ssbo_atomic_swap) {
+                op == nir_intrinsic_ssbo_atomic_swap ||
+                op == nir_intrinsic_global_atomic ||
+                op == nir_intrinsic_global_atomic_swap ||
+                op == nir_intrinsic_global_atomic_2x32 ||
+                op == nir_intrinsic_shared_atomic ||
+                op == nir_intrinsic_shared_atomic_swap ||
+                op == nir_intrinsic_deref_atomic ||
+                op == nir_intrinsic_deref_atomic_swap) {
                disqualified = true;
+               continue;
+            }
+            /* store_deref into global/shared is a competing side effect. */
+            if (op == nir_intrinsic_store_deref) {
+               nir_deref_instr *d = nir_src_as_deref(intr->src[0]);
+               if (d && (d->modes & (nir_var_mem_global | nir_var_mem_shared |
+                                     nir_var_mem_ssbo)))
+                  disqualified = true;
             }
          }
       }
@@ -857,8 +993,7 @@ r300_nir_detect_image_store_rt_export(
    if (disqualified || store_count != 1 || store == NULL)
       return;
 
-   /* Metadata is read off the deref form; the raw image_store / bindless forms
-    * carry an opaque handle the RT-export lowering cannot resolve here. */
+   /* Metadata is read off the deref form; raw/bindless handles stay opaque. */
    if (store->intrinsic != nir_intrinsic_image_deref_store)
       return;
 
@@ -869,23 +1004,49 @@ r300_nir_detect_image_store_rt_export(
    if (var == NULL)
       return;
 
-   /* 2D, non-array, non-multisample. */
-   const struct glsl_type *itype = glsl_without_array(var->type);
+   /* Variable type must be a plain image (not an array-of-images). */
+   if (glsl_type_is_array(var->type) || glsl_type_is_cmat(var->type))
+      return;
+   /* Dynamic array/struct indexing of the image binding is rejected. */
+   if (image_deref_has_array_or_struct_index(deref))
+      return;
+
+   const struct glsl_type *itype = var->type;
    if (!glsl_type_is_image(itype) ||
        glsl_get_sampler_dim(itype) != GLSL_SAMPLER_DIM_2D ||
        glsl_sampler_type_is_array(itype))
       return;
 
-   /* R8G8B8A8_UNORM only: the direct colorbuffer export the identity carrier
-    * already proves.  nir_intrinsic_format carries the image format qualifier. */
-   if (nir_intrinsic_format(store) != PIPE_FORMAT_R8G8B8A8_UNORM)
+   /* R8G8B8A8_UNORM only: direct colorbuffer export the identity carrier
+    * already proves.  Prefer intrinsic format, else variable image format. */
+   if (image_store_effective_format(store, var) != PIPE_FORMAT_R8G8B8A8_UNORM)
       return;
 
-   /* Coordinate (src[1]) derived only from the global invocation id, through
-    * the same walker the store_ssbo offset uses. */
-   if (!store_ssbo_addr_src_is_supported(store->src[1], 0))
+   /* Value is four 32-bit components with a full write mask (RGBA8 export). */
+   if (store->num_components != 4 ||
+       !store->src[3].ssa ||
+       store->src[3].ssa->bit_size != 32)
+      return;
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != 0xf)
       return;
 
+   /* Coordinate is 2D and gid-derived. */
+   if (!store->src[1].ssa || store->src[1].ssa->num_components < 2)
+      return;
+   if (!image_coord_is_gid_derived(store->src[1]))
+      return;
+
+   /* LOD (src[4]) must be constant zero when present. */
+   if (store->src[4].ssa) {
+      if (!nir_src_is_const(store->src[4]))
+         return;
+      if (nir_src_as_uint(store->src[4]) != 0)
+         return;
+   }
+
+   out->image_binding = var->data.binding;
+   out->image_binding_valid = true;
    out->is_rt_exportable = true;
 }
 
