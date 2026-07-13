@@ -162,7 +162,8 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
     'r3v-descriptor',
     executable(
       'r3v_descriptor_test',
-      [r3v_entrypoints[0], files('tests/r3v_descriptor_test.c')],
+      [r3v_entrypoints[0], files('r3v_descriptor.c',
+                                'tests/r3v_descriptor_test.c')],
       include_directories : [libr3v_inc, include_directories('.')],
       dependencies : libr3v_deps,
       link_with : libr3v_link_with,

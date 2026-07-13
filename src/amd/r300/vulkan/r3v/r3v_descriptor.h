@@ -88,6 +88,17 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_descriptor_set_layout, base.base,
                                VkDescriptorSetLayout,
                                VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
 
+bool r3v_descriptor_type_supports_immutable_samplers(VkDescriptorType type);
+VkSampler r3v_descriptor_slot_sampler(
+   const struct r3v_descriptor_set_layout *layout, uint32_t slot,
+   VkSampler written_sampler);
+void r3v_initialize_immutable_sampler_descriptors(
+   struct r3v_descriptor_set *set);
+void r3v_copy_descriptors_preserving_immutable_samplers(
+   struct r3v_descriptor_set *destination_set, uint32_t destination_base,
+   const struct r3v_descriptor_set *source_set, uint32_t source_base,
+   uint32_t count);
+
 #ifdef __cplusplus
 }
 #endif
