@@ -145,6 +145,8 @@ check_vector_bitwise_lowering(const char *name, nir_op source_op,
    if (expect_supported) {
       unsigned expected_arithmetic_count = 0;
       for (unsigned component = 0; component < 4; component++) {
+         /* A zero divisor marks a zero-mask lane that lowers directly to a
+          * constant zero and emits no arithmetic instruction. */
          if (expected_divisors[component] != 0)
             expected_arithmetic_count++;
       }
@@ -171,6 +173,42 @@ check_vector_bitwise_lowering(const char *name, nir_op source_op,
 
    nir_validate_shader(s, "after r300 vector bitwise lowering test");
    ralloc_free(s);
+}
+
+static void
+check_scalar_iand_bit_size(unsigned bit_size)
+{
+   static const nir_shader_compiler_options options;
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &options,
+                                                  "r300_iand_bit_size");
+   bool fold_alu = b.constant_fold_alu;
+   b.constant_fold_alu = false;
+   nir_iand(&b, nir_imm_intN_t(&b, 7, bit_size),
+            nir_imm_intN_t(&b, 3, bit_size));
+   b.constant_fold_alu = fold_alu;
+
+   bool unsupported = false;
+   bool progress = r300_nir_lower_bitwise_to_arith(b.shader, &unsupported);
+   bool matching_umod = false;
+   nir_foreach_function_impl (impl, b.shader) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op == nir_op_umod && alu->def.bit_size == bit_size &&
+                alu->src[1].src.ssa->bit_size == bit_size)
+               matching_umod = true;
+         }
+      }
+   }
+
+   char check_name[64];
+   snprintf(check_name, sizeof(check_name),
+            "%u-bit mask keeps the modulus bit size", bit_size);
+   CHECK(progress && !unsupported && matching_umod, check_name);
+   nir_validate_shader(b.shader, "after r300 iand bit-size lowering test");
+   ralloc_free(b.shader);
 }
 
 /* gl_Position = vec4(float(ushr(f2u32(in0.x), amt))).  The shift operand is an
@@ -376,6 +414,8 @@ main(void)
    check_vector_bitwise_lowering("out-of-window value lane", nir_op_iand,
                                  vector_masks, out_of_range_bounds, false,
                                  false, nir_op_umod, vector_moduli);
+   check_scalar_iand_bit_size(8);
+   check_scalar_iand_bit_size(16);
 
    glsl_type_singleton_decref();
    printf("%s\n", g_failures ? "FAILED" : "PASSED");
