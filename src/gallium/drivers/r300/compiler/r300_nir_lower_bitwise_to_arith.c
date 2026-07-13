@@ -122,18 +122,39 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
       else
          break; /* dynamic mask: no compile-time proof of a low-bit mask */
 
+      bool all_zero_mask = true;
       for (unsigned component = 0; component < alu->def.num_components;
            component++) {
+         if (masks[component] != 0)
+            all_zero_mask = false;
          moduli[component] = masks[component] + 1;
-         if (masks[component] == 0 || moduli[component] == 0 ||
+         /* mask 0 is exact (x & 0 == 0); non-zero masks must be 2^n-1 with a
+          * modulus inside the FP24 exact-integer window. */
+         if (masks[component] == 0)
+            continue;
+         if (moduli[component] == 0 ||
              (moduli[component] & (moduli[component] - 1)) != 0 ||
              moduli[component] > R300_FP24_EXACT_INT)
             goto unsupported;
       }
 
+      if (all_zero_mask) {
+         nir_def_replace(&alu->def,
+                         nir_imm_zero(b, alu->def.num_components,
+                                      alu->def.bit_size));
+         return true;
+      }
+
       nir_def *x = nir_ssa_for_alu_src(b, alu, value_src);
       if (!value_is_exact_integer(st, b->shader, x))
          break;
+
+      /* Mixed zero and non-zero lanes need a uniform umod form; reject for now. */
+      for (unsigned component = 0; component < alu->def.num_components;
+           component++) {
+         if (masks[component] == 0)
+            goto unsupported;
+      }
 
       nir_def_replace(&alu->def,
                       lower_component_division(b, x, moduli, true));

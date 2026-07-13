@@ -395,12 +395,15 @@ copy_descriptors_preserving_immutable_samplers(
    for (uint32_t d = 0; d < count; d++) {
       struct r3v_descriptor *dst = &dst_set->descriptors[dst_base + d];
       *dst = src_set->descriptors[src_base + d];
+      /* Only sampler-typed slots can carry immutable samplers; skip the
+       * layout walk for other descriptor types. */
+      if (!descriptor_type_supports_immutable_samplers(dst->type))
+         continue;
       uint32_t array_index = 0;
       const struct r3v_dsl_binding *binding =
          find_binding_for_slot(dst_set->layout, dst_base + d, &array_index);
-      if (binding &&
-          descriptor_type_supports_immutable_samplers(binding->type) &&
-          binding->immutable_samplers && array_index < binding->count) {
+      if (binding && binding->immutable_samplers &&
+          array_index < binding->count) {
          dst->type = binding->type;
          dst->img.sampler = binding->immutable_samplers[array_index];
       }
