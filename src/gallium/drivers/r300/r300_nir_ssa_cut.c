@@ -13,7 +13,10 @@
 
 #include <limits.h>
 
-#define R300_MP_FP32_EXACT_INT 16777216u
+/* The carry BO stores FP32, but R300 executes these conversions through its
+ * FP24 RTZ fragment ALU. r300_numeric_domain.c records 2^17 as that ALU's
+ * exact integer bound. */
+#define R300_MP_FP24_EXACT_INT 131072u
 
 /* fneg/fabs fold into RC source modifiers and mov copy-propagates, so a
  * modifier tail over a carried value is free in pass B; carrying the base
@@ -402,13 +405,13 @@ r300_mp_select_r2vb_transport(nir_shader *shader,
             nir_scalar scalar = nir_get_scalar(base, component);
             if (semantic_type == nir_type_uint) {
                 if (nir_unsigned_upper_bound(shader, range_ht, scalar) >
-                    R300_MP_FP32_EXACT_INT)
+                    R300_MP_FP24_EXACT_INT)
                     return false;
             } else {
                 int32_t lo, hi;
                 r300_mp_signed_range(shader, range_ht, scalar, &lo, &hi, 0);
-                if (lo < -(int32_t)R300_MP_FP32_EXACT_INT ||
-                    hi > (int32_t)R300_MP_FP32_EXACT_INT)
+                if (lo < -(int32_t)R300_MP_FP24_EXACT_INT ||
+                    hi > (int32_t)R300_MP_FP24_EXACT_INT)
                     return false;
             }
         }

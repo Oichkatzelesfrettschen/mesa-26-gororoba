@@ -41,7 +41,7 @@ enum r300_mp_carry_type {
 
 /* Logical value transport selected for the R2VB FP32 carry. Integer
  * transports are admitted only when range analysis proves that every carried
- * component survives the corresponding integer-to-FP32 round trip exactly. */
+ * component survives the R300 FP24 conversion and FP32 storage round trip. */
 enum r300_mp_r2vb_transport {
     R300_MP_R2VB_INVALID,
     R300_MP_R2VB_FLOAT,
@@ -81,7 +81,8 @@ r300_mp_find_cuts(nir_shader *nir, struct r300_mp_partition *cands,
  * producer transports the cut-crossing values through one FP32x4 carry BO
  * instead of the FS multipass RGBA8 hi/lo scratch. Float and boolean carries
  * retain their values. Signed and unsigned integer carries are admitted only
- * when every component is proven inside the exact FP32 integer domain, then
+ * when every component is proven inside the exact R300 FP24 integer domain,
+ * then
  * use matching i2f32/f2i32 or u2f32/f2u32 conversions. The carry fits four
  * scalar components.
  *

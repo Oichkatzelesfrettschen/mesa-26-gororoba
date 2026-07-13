@@ -149,14 +149,18 @@ build_parallel_chains_fs(unsigned nchains, unsigned rounds)
 }
 
 enum integer_carry_case {
-   INTEGER_CARRY_SIGNED_BOUNDED,
-   INTEGER_CARRY_UNSIGNED_BOUNDED,
+   INTEGER_CARRY_SIGNED_EXACT,
+   INTEGER_CARRY_SIGNED_POSITIVE_OUTSIDE,
+   INTEGER_CARRY_SIGNED_NEGATIVE_OUTSIDE,
+   INTEGER_CARRY_UNSIGNED_EXACT,
+   INTEGER_CARRY_UNSIGNED_OUTSIDE,
    INTEGER_CARRY_UNSIGNED_UNBOUNDED,
 };
 
 /* Keep one integer value live across the balance region of a long FP32 chain.
- * The bounded variants establish an exact [-1024, 1024] or [0, 1024] domain;
- * the unbounded variant retains the full f2u32 result range. */
+ * The exact variants stop at the R300 FP24 ALU's 2^17 exact-integer boundary.
+ * The outside variants extend one integer beyond either signed edge or the
+ * unsigned upper edge; the unbounded variant retains the full f2u32 range. */
 static nir_shader *
 build_integer_carry_fs(enum integer_carry_case carry_case)
 {
@@ -179,14 +183,27 @@ build_integer_carry_fs(enum integer_carry_case carry_case)
    nir_def *input = nir_load_var(&b, in0);
    nir_def *source = nir_channel(&b, input, 2);
    nir_def *integer;
-   if (carry_case == INTEGER_CARRY_SIGNED_BOUNDED) {
+   bool signed_carry = carry_case == INTEGER_CARRY_SIGNED_EXACT ||
+                       carry_case == INTEGER_CARRY_SIGNED_POSITIVE_OUTSIDE ||
+                       carry_case == INTEGER_CARRY_SIGNED_NEGATIVE_OUTSIDE;
+   if (signed_carry) {
       integer = nir_f2i32(&b, source);
-      integer = nir_imax(&b, integer, nir_imm_int(&b, -1024));
-      integer = nir_imin(&b, integer, nir_imm_int(&b, 1024));
+      int32_t lower = carry_case == INTEGER_CARRY_SIGNED_NEGATIVE_OUTSIDE
+                         ? -131073
+                         : -131072;
+      int32_t upper = carry_case == INTEGER_CARRY_SIGNED_POSITIVE_OUTSIDE
+                         ? 131073
+                         : 131072;
+      integer = nir_imax(&b, integer, nir_imm_int(&b, lower));
+      integer = nir_imin(&b, integer, nir_imm_int(&b, upper));
    } else {
       integer = nir_f2u32(&b, source);
-      if (carry_case == INTEGER_CARRY_UNSIGNED_BOUNDED)
-         integer = nir_umin(&b, integer, nir_imm_int(&b, 1024));
+      if (carry_case != INTEGER_CARRY_UNSIGNED_UNBOUNDED) {
+         int32_t upper = carry_case == INTEGER_CARRY_UNSIGNED_OUTSIDE
+                            ? 131073
+                            : 131072;
+         integer = nir_umin(&b, integer, nir_imm_int(&b, upper));
+      }
    }
 
    nir_def *factor = nir_channel(&b, input, 1);
@@ -194,10 +211,8 @@ build_integer_carry_fs(enum integer_carry_case carry_case)
    for (unsigned step = 0; step < 90; step++)
       value = nir_fmad(&b, value, factor, nir_imm_float(&b, 0.5f));
 
-   nir_def *integer_float =
-      carry_case == INTEGER_CARRY_SIGNED_BOUNDED
-         ? nir_i2f32(&b, integer)
-         : nir_u2f32(&b, integer);
+   nir_def *integer_float = signed_carry ? nir_i2f32(&b, integer)
+                                         : nir_u2f32(&b, integer);
    value = nir_fadd(&b, value, integer_float);
    nir_store_var(&b, out, nir_vec4(&b, value, value, value, value), 0xf);
    return b.shader;
@@ -211,6 +226,52 @@ shader_has_alu_op(nir_shader *shader, nir_op op)
          nir_foreach_instr (instr, block) {
             if (instr->type == nir_instr_type_alu &&
                 nir_instr_as_alu(instr)->op == op)
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
+static bool
+def_depends_on_input(nir_def *def, gl_varying_slot location, unsigned depth)
+{
+   if (depth > 16)
+      return false;
+
+   nir_instr *instr = nir_def_instr(def);
+   if (instr->type == nir_instr_type_intrinsic) {
+      nir_intrinsic_instr *intrinsic = nir_instr_as_intrinsic(instr);
+      if (intrinsic->intrinsic != nir_intrinsic_load_deref)
+         return false;
+      nir_deref_instr *deref = nir_src_as_deref(intrinsic->src[0]);
+      nir_variable *variable = nir_deref_instr_get_variable(deref);
+      return variable && variable->data.mode == nir_var_shader_in &&
+             variable->data.location == location;
+   }
+
+   if (instr->type != nir_instr_type_alu)
+      return false;
+   nir_alu_instr *alu = nir_instr_as_alu(instr);
+   for (unsigned source = 0; source < nir_op_infos[alu->op].num_inputs;
+        source++)
+      if (def_depends_on_input(alu->src[source].src.ssa, location, depth + 1))
+         return true;
+   return false;
+}
+
+static bool
+shader_has_input_conversion(nir_shader *shader, nir_op op,
+                            gl_varying_slot location)
+{
+   nir_foreach_function_impl (impl, shader) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op == op &&
+                def_depends_on_input(alu->src[0].src.ssa, location, 0))
                return true;
          }
       }
@@ -372,7 +433,7 @@ case_typed_integer_carries_require_exact_ranges(void)
    struct r300_screen screen = {0};
    struct pipe_screen *ps = fake_r300_screen(&screen);
 
-   nir_shader *signed_pos = build_integer_carry_fs(INTEGER_CARRY_SIGNED_BOUNDED);
+   nir_shader *signed_pos = build_integer_carry_fs(INTEGER_CARRY_SIGNED_EXACT);
    r300_optimize_nir(signed_pos, r300_screen(ps));
    struct r300_mp_partition signed_part;
    bool signed_cut = r300_mp_find_vec4_cut(signed_pos, &signed_part);
@@ -387,17 +448,36 @@ case_typed_integer_carries_require_exact_ranges(void)
       nir_shader *pass_b = r300_mp_build_pos_pass_b(signed_pos, &signed_part, 1);
       CHECK(pass_a && shader_has_alu_op(pass_a, nir_op_i2f32),
             "signed pass A contains i2f32 transport");
-      CHECK(pass_b && shader_has_alu_op(pass_b, nir_op_f2i32),
-            "signed pass B contains f2i32 transport");
-      if (pass_a)
-         ralloc_free(pass_a);
-      if (pass_b)
-         ralloc_free(pass_b);
+      CHECK(pass_b && shader_has_input_conversion(
+                         pass_b, nir_op_f2i32, VARYING_SLOT_VAR0 + 1),
+            "signed pass B converts the carry input with f2i32");
+      CHECK(pass_a && oracle_fits(pass_a),
+            "signed carry pass A compiles under the 64-slot ceiling");
+      CHECK(pass_b && oracle_fits(pass_b),
+            "signed carry pass B compiles under the 64-slot ceiling");
    }
    ralloc_free(signed_pos);
 
+   nir_shader *signed_positive_outside =
+      build_integer_carry_fs(INTEGER_CARRY_SIGNED_POSITIVE_OUTSIDE);
+   r300_optimize_nir(signed_positive_outside, r300_screen(ps));
+   struct r300_mp_partition signed_positive_part;
+   CHECK(!r300_mp_find_vec4_cut(signed_positive_outside,
+                                &signed_positive_part),
+         "signed carry above positive 2^17 boundary declines");
+   ralloc_free(signed_positive_outside);
+
+   nir_shader *signed_negative_outside =
+      build_integer_carry_fs(INTEGER_CARRY_SIGNED_NEGATIVE_OUTSIDE);
+   r300_optimize_nir(signed_negative_outside, r300_screen(ps));
+   struct r300_mp_partition signed_negative_part;
+   CHECK(!r300_mp_find_vec4_cut(signed_negative_outside,
+                                &signed_negative_part),
+         "signed carry below negative 2^17 boundary declines");
+   ralloc_free(signed_negative_outside);
+
    nir_shader *unsigned_pos =
-      build_integer_carry_fs(INTEGER_CARRY_UNSIGNED_BOUNDED);
+      build_integer_carry_fs(INTEGER_CARRY_UNSIGNED_EXACT);
    r300_optimize_nir(unsigned_pos, r300_screen(ps));
    struct r300_mp_partition unsigned_part;
    bool unsigned_cut = r300_mp_find_vec4_cut(unsigned_pos, &unsigned_part);
@@ -414,14 +494,23 @@ case_typed_integer_carries_require_exact_ranges(void)
          r300_mp_build_pos_pass_b(unsigned_pos, &unsigned_part, 1);
       CHECK(pass_a && shader_has_alu_op(pass_a, nir_op_u2f32),
             "unsigned pass A contains u2f32 transport");
-      CHECK(pass_b && shader_has_alu_op(pass_b, nir_op_f2u32),
-            "unsigned pass B contains f2u32 transport");
-      if (pass_a)
-         ralloc_free(pass_a);
-      if (pass_b)
-         ralloc_free(pass_b);
+      CHECK(pass_b && shader_has_input_conversion(
+                         pass_b, nir_op_f2u32, VARYING_SLOT_VAR0 + 1),
+            "unsigned pass B converts the carry input with f2u32");
+      CHECK(pass_a && oracle_fits(pass_a),
+            "unsigned carry pass A compiles under the 64-slot ceiling");
+      CHECK(pass_b && oracle_fits(pass_b),
+            "unsigned carry pass B compiles under the 64-slot ceiling");
    }
    ralloc_free(unsigned_pos);
+
+   nir_shader *unsigned_outside =
+      build_integer_carry_fs(INTEGER_CARRY_UNSIGNED_OUTSIDE);
+   r300_optimize_nir(unsigned_outside, r300_screen(ps));
+   struct r300_mp_partition unsigned_outside_part;
+   CHECK(!r300_mp_find_vec4_cut(unsigned_outside, &unsigned_outside_part),
+         "unsigned carry above 2^17 boundary declines");
+   ralloc_free(unsigned_outside);
 
    nir_shader *unbounded_pos =
       build_integer_carry_fs(INTEGER_CARRY_UNSIGNED_UNBOUNDED);
