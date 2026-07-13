@@ -1640,20 +1640,14 @@ r3v_stitch_bind_one(struct r3v_device *device,
    }
 }
 
-/* Bind every fragment combined-image-sampler in descriptor set 0 to its Gallium
- * texture unit, so an app fragment shader's texture()/texelFetch reads the
- * descriptor's image instead of the unbound-sampler default.  nir_lower_samplers
- * (run inside r300g's nir_to_rc) assigns each sampler the Gallium unit
- * deref->var->data.binding plus a constant array index, so the unit is
- * descriptor binding + array element.  r300g's sampler callbacks require
- * updates to start at unit zero, so this replay gathers all touched units and
- * commits one contiguous [0, max_unit] sampler array.
- *
- * Descriptor sets above zero are skipped until r3v lowers sampler variables
- * onto a flattened set+binding namespace.  Binding them by binding number alone
- * would alias set 1 binding 0 over set 0 binding 0 and render the wrong image.
- * Only the fragment stage is bound: the RS480 SW-TCL vertex path has no sampler
- * and a vertex texture fetch is rejected at pipeline compile.
+/* Bind every fragment combined-image-sampler from the bound descriptor sets to
+ * its pipeline-assigned Gallium unit. The flat sampler map gives each
+ * (descriptor set, binding) a disjoint base unit, and array elements occupy the
+ * following units. r300g's sampler callbacks require updates to start at unit
+ * zero, so replay gathers all touched units and commits one contiguous
+ * [0, max_unit] sampler array. Only the fragment stage is bound: the RS480
+ * SW-TCL vertex path has no sampler and pipeline compilation rejects a live
+ * vertex texture fetch.
  *
  * Single-tile images only.  An image wider than the 2048 sampler cap is split
  * into tiles[] (the oversize-blit partition), and a sampler view over either the
