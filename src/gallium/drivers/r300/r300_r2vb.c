@@ -1765,8 +1765,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * transient GPU state, not a register a normal render can write.  This
      * write is therefore hygiene -- it makes the re-ingest's viewport state
      * explicit rather than inherited -- not a proven smear fix.
-     * Mirrors the proven precedent at r300_render.c:1190-1196 (the
-     * existing R2VB MVP re-ingest path's identity-viewport setup).
+     * The direct-VB R2VB re-ingest path writes the same identity viewport
+     * state before its VTE setup.
      * Gate-off keeps the path byte-identical. */
     static int ptsize_c1a = -1;
     if (ptsize_c1a < 0) {
@@ -1774,11 +1774,10 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         ptsize_c1a = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
-    /* C1b cell gate (R300_PTSIZE_C1B=1): write VAP_VTE_CNTL explicitly on the
+    /* R300_R2VB_VTE_W0_FMT=1 writes VAP_VTE_CNTL explicitly on the
      * re-ingest with R300_VTX_W0_FMT (bit 10) set, in addition to the
-     * R300_VTX_XY_FMT and R300_VTX_Z_FMT bits the producer already sets
-     * (r300_r2vb.c r300_r2vb_emit_producer's "R300_VTX_XY_FMT | R300_VTX_Z_FMT"
-     * write).  The producer's value (0x300) tells the VAP that X, Y, and Z
+     * R300_VTX_XY_FMT and R300_VTX_Z_FMT bits the producer writes. The
+     * producer value (0x300) tells the VAP that X, Y, and Z
      * arrive in window-coordinate space and bypass the viewport transform; W
      * still flows through perspective divide.  The re-ingest reads vertices
      * the producer wrote in window space with W = 1.0, so the divide-by-W path
@@ -1787,14 +1786,13 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * a Y-channel collapse that matches the asymmetric crushing signature
      * (X centroid 28.3 ~ predicted 32; Y centroid 6.2 << predicted 32).
      * Setting R300_VTX_W0_FMT (giving VAP_VTE_CNTL = 0x700) tells the VAP that
-     * W is also in window space and bypasses the divide entirely; the existing
-     * R2VB MVP re-ingest path at r300_render.c:1196-1199 already uses this bit
-     * for its own re-ingest draws and is the proven precedent.  Gate-off keeps
-     * the path byte-identical. */
-    static int ptsize_c1b = -1;
-    if (ptsize_c1b < 0) {
-        const char *e = getenv("R300_PTSIZE_C1B");
-        ptsize_c1b = (e && strcmp(e, "1") == 0) ? 1 : 0;
+     * W is also in window space and bypasses the divide entirely. The
+     * direct-VB R2VB re-ingest path uses the same VTE W0 format. Gate-off
+     * keeps the path byte-identical. */
+    static int r2vb_vte_w0_fmt = -1;
+    if (r2vb_vte_w0_fmt < 0) {
+        const char *e = getenv("R300_R2VB_VTE_W0_FMT");
+        r2vb_vte_w0_fmt = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
     /* C1c cell gate (R300_PTSIZE_C1C=1): re-emit the VAP_VTX_STATE_CNTL +
@@ -1815,11 +1813,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         ptsize_c1c = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
-    /* C2/C3/C4 cells from the SUPER GIGA never-written register survey
-     * (steinmarder finding 2026-06-19-rs482-super-giga-never-written-
-     * register-survey.md).  Each is independently gated; each writes a
-     * known-good identity / zero to a register class that the canonical
-     * Vulkan trigger's IB leaves unwritten.
+    /* C2/C3/C4 independently gate register classes the trigger IB leaves
+     * unwritten. Each writes a known-good identity or zero value.
      *   C2: SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET (0x42A4..0x42B0) = 0
      *       (clear inherited polygon-offset that shifts Z and indirectly XY)
      *   C3: VAP_PROG_STREAM_CNTL_1..7 (0x2154..0x216C) = 0
@@ -1876,7 +1871,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     BEGIN_CS((stage3_color_bo ? 26 : 17)
              + (ptsize_c0  ? 3 : 0)
              + (ptsize_c1a ? 7 : 0)
-             + (ptsize_c1b ? 2 : 0)
+             + (r2vb_vte_w0_fmt ? 2 : 0)
              + (ptsize_c1c ? 3 : 0)
              + (ptsize_c2  ? 5 : 0)
              + (ptsize_c3  ? 8 : 0)
@@ -1912,9 +1907,9 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     }
 
     if (ptsize_c1a) {
-        /* Identity viewport: scale = 1.0, offset = 0.0 on X, Y, Z.  Mirrors
-         * the existing R2VB MVP re-ingest path at r300_render.c:1194 which
-         * uses the SE_VPORT_XSCALE..ZOFFSET register set (0x1d98..0x1dac). */
+        /* The direct-VB R2VB re-ingest path programs an identity viewport:
+         * scale = 1.0 and offset = 0.0 on X, Y, and Z through
+         * SE_VPORT_XSCALE..SE_VPORT_ZOFFSET (0x1d98..0x1dac). */
         OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6);
         OUT_CS_32F(1.0f);
         OUT_CS_32F(0.0f);
@@ -1924,7 +1919,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS_32F(0.0f);
     }
 
-    if (ptsize_c1b) {
+    if (r2vb_vte_w0_fmt) {
         /* Re-write VAP_VTE_CNTL with W0_FMT in addition to XY_FMT and Z_FMT
          * so the VAP treats W as already in window space and does NOT apply a
          * perspective divide on the re-ingest path. */
@@ -5099,8 +5094,9 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * the application buffers, which cannot carry a computed varying, and a VS
      * with a computed-varying output mismatches its PSC/VAP setup and hangs the
      * draw (the timeout-kill then poisons the ring).  Skipping it isolates the
-     * production + oracle, exactly the #1a scope; wiring the producer BO into the
-     * re-ingest is the next increment. */
+     * production plus oracle is isolated until the explicit
+     * R300_R2VB_REINGEST delivery branch below wires the producer BO into the
+     * re-ingest path. */
     static int varying = -1;
     if (varying < 0) {
         const char *e = getenv("R300_R2VB_VARYING");
