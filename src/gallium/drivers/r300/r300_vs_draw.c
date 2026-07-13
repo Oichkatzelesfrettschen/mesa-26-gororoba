@@ -13,6 +13,10 @@
  *    by the hardware fragment shader.
  */
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "r300_vs.h"
 
 #include "nir/nir.h"

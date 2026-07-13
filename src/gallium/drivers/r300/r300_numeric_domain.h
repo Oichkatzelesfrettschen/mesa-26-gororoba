@@ -59,6 +59,8 @@ enum r300_evidence_tier {
 enum r300_vop_status {
    R300_VOP_NUMERIC_DERIVED,  /* theorem proven; silicon not yet measured */
    R300_VOP_HW_CONFIRMED,     /* silicon measurement matches theorem */
+   /* silicon measurement matches theorem; production carrier absent */
+   R300_VOP_HW_CONFIRMED_CARRIER_PENDING,
    R300_VOP_BOUNDARY,         /* confirmed with documented precision limit */
    R300_VOP_CARRIER_PENDING,  /* arithmetic known; Mesa carrier contract absent */
    R300_VOP_REJECTED,         /* falsified by silicon measurement */
@@ -98,8 +100,8 @@ enum r300_numeric_domain {
     * Four-limb multiply (B=2^6, eager carry): each 6-bit limb product
     * (2^6-1)^2 = 3969 and column sums <= 4*3969 = 15876 < 2^17,
     * numeric-derived exact per column.  The base-16 Q16.16 MAC path is
-    * silicon-confirmed through the R300_R2VB_QMAC diagnostic.  ADD and MUL
-    * remain without a production carrier and dispatch path. */
+    * silicon-confirmed through the R300_R2VB_QMAC diagnostic.  ADD, MUL, and
+    * MAC remain without a production carrier and dispatch path. */
    R300_NUM_DOMAIN_Q16_16,
 
    /* Unsigned 7-bit dot product: 0 <= a_i, b_i <= 127.
