@@ -46,12 +46,6 @@
 #include "tgsi/tgsi_scan.h"
 #include "tgsi/tgsi_exec.h"
 
-/* Opt-in gate for the direct-NIR executor (draw_vs_nir.c).  Unset, NIR input
- * keeps the nir_to_tgsi bridge below, so the r300 SW-TCL default is unchanged
- * while the interpreter's calibration corpus is built. */
-DEBUG_GET_ONCE_BOOL_OPTION(draw_nir_exec, "DRAW_NIR_EXEC", false)
-
-
 struct exec_vertex_shader {
    struct draw_vertex_shader base;
    struct tgsi_exec_machine *machine;
@@ -245,9 +239,10 @@ struct draw_vertex_shader *
 draw_create_vs_exec(struct draw_context *draw,
                     const struct pipe_shader_state *state)
 {
-   if (state->type == PIPE_SHADER_IR_NIR && debug_get_option_draw_nir_exec() &&
-       draw_vs_nir_supported(state))
-      return draw_create_vs_nir(draw, state);
+   if (state->type == PIPE_SHADER_IR_NIR) {
+      if (draw_vs_nir_supported(state))
+         return draw_create_vs_nir(draw, state);
+   }
 
    struct exec_vertex_shader *vs = CALLOC_STRUCT(exec_vertex_shader);
 

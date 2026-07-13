@@ -7,17 +7,16 @@
  * Direct-NIR software vertex-shader executor for the draw module.
  *
  * A driver that hands draw a PIPE_SHADER_IR_NIR shader (r300 SW-TCL,
- * r300_vs_draw.c) otherwise round-trips through nir_to_tgsi to reach the only
- * CPU interpreter in the tree (tgsi_exec_machine).  This executor interprets
- * the nir_shader directly: it keeps an SSA-def-indexed value table and
+ * r300_vs_draw.c) runs it through this CPU interpreter when its instruction
+ * shape passes draw_vs_nir_supported.  The executor keeps an SSA-def-indexed
+ * value table and
  * delegates every ALU opcode to nir_eval_const_opcode (the same pure
  * per-opcode evaluator constant folding uses), hand-writing only the vertex IO
  * intrinsics, the system-value loads, and nir_if / nir_loop control flow.
  *
- * See docs/gallium/draw-nir-executor-design.md.  The executor is opt-in behind
- * DRAW_NIR_EXEC while the calibration corpus is built; with the flag unset
- * draw_create_vs_exec keeps its nir_to_tgsi bridge, so the r300 SW-TCL default
- * path is byte-for-byte unchanged.
+ * See docs/gallium/draw-nir-executor-design.md.  draw_create_vs_exec selects
+ * this executor for supported NIR and retains the TGSI machine for TGSI input
+ * and unsupported NIR shapes.
  */
 
 #include <stdio.h>
@@ -551,8 +550,7 @@ draw_vs_nir_dump_stats(nir_function_impl *impl, const char *name)
  * pipeline on the clone, and scans the clone's entry impl: what it inspects
  * is bit-for-bit what the interpreter would receive, so it cannot admit a
  * shape draw_create_vs_nir's UNREACHABLE paths would reject.  The clone is
- * discarded; state->ir.nir is never touched, so the nir_to_tgsi bridge path
- * still sees the untouched deref-based shader on fallback. */
+ * discarded; state->ir.nir stays untouched for the unsupported-shape bridge. */
 bool
 draw_vs_nir_supported(const struct pipe_shader_state *state)
 {
