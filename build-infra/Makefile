@@ -118,13 +118,23 @@ if [ "$$build_root" != "$$repo_build_root" ]; then \
 fi;
 endef
 
-define VALIDATE_PREFIX
-prefix="$(abspath $(PREFIX))"; \
+define VALIDATE_PREFIX_PATH
+prefix="$(abspath $1)"; \
 topsrc="$(abspath $(TOPSRC))"; \
 case "$$prefix" in \
+  /opt/local/mesa-$(PROFILE)| \
+  /opt/local/mesa-26-gororoba| \
+  /opt/local/mesa-gororoba-debug-optimized| \
+  /opt/mesa-gororoba-debug-optimized| \
+  /opt/mesa-gororoba-debug-asan| \
+  /opt/mesa-gororoba-debug-o0) ;; \
   ""|/|/usr|/usr/*|/opt|/opt/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|"$(HOME)"|"$$topsrc"|"$$topsrc"/*) \
     echo "refusing unsafe PREFIX: $$prefix" >&2; exit 2 ;; \
 esac;
+endef
+
+define VALIDATE_PREFIX
+$(call VALIDATE_PREFIX_PATH,$(PREFIX))
 endef
 
 # --- internal paths ---------------------------------------------------------
@@ -220,7 +230,7 @@ help:
 	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
 	@echo "  artifact-check    list installed Terakan/r600/r3v artifacts under \$$(PREFIX); warn on stale r300 ICDs"
 	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
-	@echo "  build-lease-test  verify configure, build, test, and clean reject a held lease"
+	@echo "  build-lease-test  verify mutation leases and path-safety guards"
 	@echo "  rebuild-<profile> clean + configure + build for that profile"
 	@echo "  list              show available PROFILEs and HOSTENVs"
 	@echo ""
@@ -585,6 +595,7 @@ distclean:
 
 install: vostro-prefix-check
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
+	@$(VALIDATE_PREFIX)
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	env $(LOCKED_TOOL_ENV) \
@@ -699,13 +710,32 @@ build-lease-test:
 	test ! -e "$$unsafe_prefix" || { \
 		echo "FAIL  system-prefix test path already exists: $$unsafe_prefix" >&2; exit 1; \
 	}; \
-	if $(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
+	if prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
 		BUILD_ROOT="$$tmpdir" BUILDDIR="$$tmpdir/build" \
 		PREFIX="$$unsafe_prefix" BUILD_LOCK="$$tmpdir/prefix.lock" \
-		LOCK_WAIT=0 SUDO=false >/dev/null 2>&1; then \
-		echo "FAIL  distclean accepted a system-prefix descendant" >&2; exit 1; \
+		LOCK_WAIT=0 SUDO=false 2>&1 )"; then prefix_status=0; \
+	else prefix_status="$$?"; fi; \
+	if [ "$$prefix_status" -ne 2 ] || \
+	   ! printf '%s\n' "$$prefix_output" | \
+	      grep -F "refusing unsafe PREFIX: $$unsafe_prefix" >/dev/null; then \
+		echo "FAIL  distclean prefix guard returned $$prefix_status" >&2; \
+		printf '%s\n' "$$prefix_output" >&2; exit 1; \
 	fi; \
 	echo "OK    distclean rejects system-prefix descendants"; \
+	if install_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" install \
+		BUILDDIR="$$tmpdir/build" PREFIX="$$unsafe_prefix" \
+		BUILD_LOCK="$$tmpdir/install-prefix.lock" LOCK_WAIT=0 \
+		SUDO=false 2>&1 )"; then install_status=0; \
+	else install_status="$$?"; fi; \
+	if [ "$$install_status" -ne 2 ] || \
+	   ! printf '%s\n' "$$install_output" | \
+	      grep -F "refusing unsafe PREFIX: $$unsafe_prefix" >/dev/null; then \
+		echo "FAIL  install prefix guard returned $$install_status" >&2; \
+		printf '%s\n' "$$install_output" >&2; exit 1; \
+	fi; \
+	echo "OK    install rejects system-prefix descendants"; \
+	$(call VALIDATE_PREFIX_PATH,/opt/local/mesa-$(PROFILE)) \
+	echo "OK    prefix guard accepts the canonical profile prefix"; \
 	install_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" install \
 		BUILDDIR="$$tmpdir/build" PREFIX="$$tmpdir/prefix" \
 		SYSCONFDIR="$$tmpdir/etc" 2>/dev/null )"; \
