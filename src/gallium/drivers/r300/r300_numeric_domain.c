@@ -332,7 +332,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "(2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17; limb carry exact.  "
                          "The NIR detector classifies the shape; no production carrier "
                          "or dispatch path consumes it",
-      .mesa_hook       = "r300_nir_detect_q16_16_add_pattern",
+      /* The detector is test-only; production classification does not invoke it. */
+      .mesa_hook       = NULL,
    },
    {
       .op_name         = "Q16_16_MUL",
@@ -346,7 +347,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       .op_name         = "Q16_16_MAC",
       .domain          = R300_NUM_DOMAIN_Q16_16,
-      .status          = R300_VOP_CARRIER_PENDING,
+      .status          = R300_VOP_HW_CONFIRMED_CARRIER_PENDING,
       .theorem         = "out = a*b + c in Q16.16, carried multi-limb at base 2^4 / 8 limbs.  "
                          "Base 2^4 (not the Q16_16_MUL entry's base 2^6) makes the Q16.16 "
                          "recovery from the Q32.32 product a >>16 = drop-exactly-4-limbs "
@@ -839,7 +840,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       /* COMB_FCN_MIN: result = min(src_factor * src, dst_factor * dst).
        * With factors ONE/ONE this is per-element min over UNORM8 carriers.
        * Vulkan spec: blend factors are ignored for VK_BLEND_OP_MIN/MAX.
-       * R300_COMB_FCN_MIN = (4 << 12); wired at r300_state_inlines.h:31.
+       * R300_COMB_FCN_MIN = (4 << 12); r300_translate_blend_function selects it
+       * (rg --fixed-strings R300_COMB_FCN_MIN src/).
        * RS482 probe (r300_substrate_probe.sh): 6/6 byte-exact
        * (min(96,160)=96, min(192,64)=64 for both RGBA channels). */
       .op_name         = "REDUCE_MIN",
@@ -852,7 +854,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    },
    {
       /* COMB_FCN_MAX: result = max(src_factor * src, dst_factor * dst).
-       * R300_COMB_FCN_MAX = (5 << 12); wired at r300_state_inlines.h:33.
+       * R300_COMB_FCN_MAX = (5 << 12); r300_translate_blend_function selects it
+       * (rg --fixed-strings R300_COMB_FCN_MAX src/).
        * RS482 probe: 6/6 byte-exact (max(96,160)=160, max(192,64)=192). */
       .op_name         = "REDUCE_MAX",
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
@@ -865,7 +868,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       /* COMB_FCN_SUB_CLAMP: result = clamp(src - dst, 0, 1) over UNORM8.
        * VK_BLEND_OP_SUBTRACT with UNORM8 render target clamps to [0,1].
-       * R300_COMB_FCN_SUB_CLAMP = (2 << 12); wired at r300_state_inlines.h:38.
+       * R300_COMB_FCN_SUB_CLAMP = (2 << 12); r300_translate_blend_function
+       * selects it (rg --fixed-strings R300_COMB_FCN_SUB_CLAMP src/).
        * Equivalent to saturating subtract sat_sub(a, b) = max(a - b, 0).
        * RS482 probe: 6/6 byte-exact (sat(96-160)=0, 192-64=128). */
       .op_name         = "SATURATING_DIFF",
@@ -879,7 +883,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       /* Four independent RGBA8_UNORM render targets written in parallel by
        * a single fragment shader with layout(location=0..3) outputs.
-       * r3v exposes maxColorAttachments=4 (r3v_physical_device.c:265).
+       * r3v exposes maxColorAttachments=4 in r3v_GetPhysicalDeviceProperties
+       * (rg --fixed-strings maxColorAttachments src/amd/r300/vulkan/r3v/).
        * independentBlend=false: all 4 attachments share RB3D_CBLEND state,
        * but distinct FS output locations route to distinct color buffers.
        * RS482 probe: 4-attachment framebuffer, FS writes 0x01020304 /
@@ -895,8 +900,9 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    },
    {
       /* VK_STENCIL_OP_INVERT flips all 8 bits of the stencil plane per
-       * fragment.  PIPE_STENCIL_OP_INVERT maps to R300_ZS_INVERT in
-       * r300_state_inlines.h; wired at r3v_pipeline.c:1605.
+       * fragment.  r300_translate_stencil_op maps PIPE_STENCIL_OP_INVERT to
+       * R300_ZS_INVERT, and r3v_translate_stencil_op maps the Vulkan operation
+       * to the Gallium operation (rg --fixed-strings PIPE_STENCIL_OP_INVERT src/).
        * Bitwise contract: INVERT(x) = ~x for all x in [0, 255].
        * RS482 probe: fill 0xA5, INVERT once, readback 0x5A -- exact.
        * Enables bitwise NOT on U8 stencil payloads without the ALU. */

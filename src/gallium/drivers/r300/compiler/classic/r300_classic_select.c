@@ -905,7 +905,7 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
       return true;
    }
    /* Nudge float-to-int conversions across the FP24 interpolation-delivery
-    * error before int_to_float lowers them (f2i32 to ftrunc, f2u32 to
+    * error before nir_lower_int_to_float lowers them (f2i32 to ftrunc, f2u32 to
     * ffloor); the classic path compiles fragment programs only, so no stage
     * check is needed. */
    NIR_PASS(_, nir, r300_nir_lower_f2i_epsilon);

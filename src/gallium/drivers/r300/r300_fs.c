@@ -616,7 +616,7 @@ r300_deriv_build_shifted(nir_builder *b, nir_def *def,
  * (draw_enable_derivative_injection -> inject_screen_gradient_info). Records the
  * differentiated varying's generic index and the two gradient generic indices
  * on the shader (post-fixup numbering, since ntr_fixup_varying_slots and the
- * Draw NIR info scan apply the same VARn += 9 shift). Returns true when a
+ * Draw NIR info scan applies the same VARn += 9 shift). Returns true when a
  * single differentiated varying was lowered; leaves multi-varying or non-VARn
  * cases to the stub. */
 static bool
@@ -637,7 +637,7 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     /* Three source classes are analytically differentiable here. VARn user
      * varyings and TEXn fixed-function texcoords both map onto generic slots
      * the draw module fills with the per-triangle gradient
-     * (ntr_fixup_varying_slots and the Draw NIR info scan agree on
+     * (ntr_fixup_varying_slots and the Draw NIR info scan agrees on
      * the numbering: VARn -> n + 9, TEXn -> n). gl_FragCoord
      * (VARYING_SLOT_POS) needs no injection: its window-space xy gradient
      * is the compile-time constant dFdx=(1,0), dFdy=(0,1). The face range

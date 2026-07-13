@@ -86,7 +86,7 @@ fake_r300_screen(struct r300_screen *s)
 }
 
 /* Assign the fragment inputs nir_to_rc recorded to sequential hardware
- * registers, the same order r300_fs.c's allocate_hardware_inputs uses. */
+ * registers in color, face, generic, fog, and window-position order. */
 static void
 gate_allocate_inputs(struct r300_fragment_program_compiler *c,
                      void (*allocate)(void *data, unsigned input,
@@ -114,8 +114,8 @@ gate_allocate_inputs(struct r300_fragment_program_compiler *c,
  * -- the full r3xx_compile_fragment_program against max_alu.  c->Base.Error
  * after the full compile is the decisive fit verdict.  raw_alu/raw_tex report
  * the pre-scheduling instruction count (an upper bound) for context.  The
- * kernels use no wpos or face input, so the wpos/face transforms r300_fs.c runs
- * between nir_to_rc and the compile are skipped. */
+ * kernels use no wpos or face input, so the wpos/face transforms in
+ * r300_translate_fragment_shader are skipped. */
 static void
 run_fs(struct r300_fragment_program_compiler *c, struct rc_regalloc_state *rs,
        nir_shader *nir, unsigned max_alu, unsigned *raw_alu, unsigned *raw_tex,
@@ -222,9 +222,9 @@ int
 main(void)
 {
    printf("r300-h264-fs-budget\n");
-   /* Each kernel must translate through nir_to_rc and schedule within the
-    * proven non-HB R300 fragment envelope (64 ALU / 32 TEX); the full RC
-    * backend, not the raw nir_to_rc count, is the decisive fit verdict. */
+   /* Each kernel translates through nir_to_rc and schedules within this
+    * gate's R300 limits (64 ALU / 32 TEX).  RC backend scheduling supplies
+    * the ALU-fit verdict; raw nir_to_rc counts provide context. */
    gate_one("h264_idct_row", vl_h264_idct_row_nir);
    gate_one("h264_idct_col", vl_h264_idct_col_nir);
    gate_one("h264_idct_plane_row", vl_h264_idct_plane_row_nir);
