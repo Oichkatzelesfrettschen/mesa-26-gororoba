@@ -40,8 +40,6 @@ dEQP-GLES2.functional.fragment_ops.random.63,Fail
 dEQP-GLES2.functional.fragment_ops.random.66,Fail
 dEQP-GLES2.functional.fragment_ops.random.81,Fail
 
-dEQP-GLES2.functional.rasterization.primitives.line_loop_wide,Fail
-dEQP-GLES2.functional.rasterization.primitives.line_strip_wide,Fail
 dEQP-GLES2.functional.rasterization.primitives.points,Fail
 dEQP-GLES2.functional.shaders.builtin_variable.frontfacing,Fail
 dEQP-GLES2.functional.shaders.builtin_variable.pointcoord,Fail
@@ -1152,4 +1150,3 @@ spec@egl_mesa_configless_context@basic,Fail
 
 # Nightly run expectations update
 dEQP-GLES2.functional.fragment_ops.interaction.basic_shader.86,Fail
-
