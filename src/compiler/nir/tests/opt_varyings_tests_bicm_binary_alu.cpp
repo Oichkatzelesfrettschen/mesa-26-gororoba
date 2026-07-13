@@ -13,6 +13,12 @@ namespace {
 class nir_opt_varyings_test_bicm_binary_alu : public nir_opt_varyings_test
 {};
 
+static bool
+interpolation_modes_match(unsigned first, unsigned second)
+{
+   return first == second;
+}
+
 #define TEST_ALU_BINARY(producer_stage, consumer_stage, type, bitsize, slot1, slot2, interp1, interp2, alu) \
 TEST_F(nir_opt_varyings_test_bicm_binary_alu, \
        alu##_##type##bitsize##_##producer_stage##_##consumer_stage##_##slot1##_##slot2##_##interp1##_##interp2) \
@@ -20,6 +26,10 @@ TEST_F(nir_opt_varyings_test_bicm_binary_alu, \
    unsigned pslot[2] = {VARYING_SLOT_##slot1, VARYING_SLOT_##slot2}; \
    unsigned cslot[2] = {VARYING_SLOT_##slot1, VARYING_SLOT_##slot2}; \
    unsigned interp[3] = {INTERP_##interp1, INTERP_##interp2}; \
+   const nir_op alu_op = nir_op_##alu; \
+   const bool matching_interp = \
+      interpolation_modes_match(INTERP_##interp1, INTERP_##interp2); \
+   const mesa_shader_stage consumer = MESA_SHADER_##consumer_stage; \
    bool divergent[3] = {interp[0] != INTERP_CONVERGENT, interp[1] != INTERP_CONVERGENT}; \
    \
    /* Choose a random TES interpolation mode, but it must be the same for both inputs. */ \
@@ -36,7 +46,7 @@ TEST_F(nir_opt_varyings_test_bicm_binary_alu, \
       interp[1] = INTERP_LINEAR_CENTROID; \
    \
    options.varying_expression_max_cost = NULL; /* don't propagate uniforms */ \
-   create_shaders(MESA_SHADER_##producer_stage, MESA_SHADER_##consumer_stage); \
+   create_shaders(MESA_SHADER_##producer_stage, consumer); \
    \
    nir_intrinsic_instr *store[2] = {NULL}; \
    for (unsigned s = 0; s < 2; s++) { \
@@ -62,22 +72,22 @@ TEST_F(nir_opt_varyings_test_bicm_binary_alu, \
    divergent[0] &= !is_patch((gl_varying_slot)pslot[0]); \
    divergent[1] &= !is_patch((gl_varying_slot)pslot[1]); \
    \
-   if ((INTERP_##interp1 == INTERP_##interp2 || !divergent[0] || !divergent[1]) &&\
-       movable_across_interp(b2, nir_op_##alu, interp, divergent, bitsize)) { \
+   if ((matching_interp || !divergent[0] || !divergent[1]) &&\
+       movable_across_interp(b2, alu_op, interp, divergent, bitsize)) { \
       ASSERT_EQ(opt_varyings(), (nir_progress_producer | nir_progress_consumer)); \
       /* An opcode with a convergent non-float result isn't moved into */ \
       /* the previous shader because a non-float result can't be interpolated. */ \
       if (!divergent[0] && !divergent[1] && interp[0] != INTERP_FLAT && interp[1] != INTERP_FLAT && \
-          !(nir_op_infos[nir_op_##alu].output_type & nir_type_float)) { \
-         ASSERT_TRUE(!shader_contains_alu_op(b1, nir_op_##alu, bitsize)); \
-         ASSERT_TRUE(shader_contains_alu_op(b2, nir_op_##alu, bitsize)); \
+          !(nir_op_infos[alu_op].output_type & nir_type_float)) { \
+         ASSERT_TRUE(!shader_contains_alu_op(b1, alu_op, bitsize)); \
+         ASSERT_TRUE(shader_contains_alu_op(b2, alu_op, bitsize)); \
       } else { \
-         ASSERT_TRUE(shader_contains_alu_op(b1, nir_op_##alu, bitsize)); \
+         ASSERT_TRUE(shader_contains_alu_op(b1, alu_op, bitsize)); \
          /* TES uses fadd and fmul for interpolation, so it's always present. */ \
-         if (MESA_SHADER_##consumer_stage != MESA_SHADER_TESS_EVAL || \
-             (nir_op_##alu != nir_op_fadd && nir_op_##alu != nir_op_fmul && \
-              nir_op_##alu != nir_op_fmad && nir_op_##alu != nir_op_ffma)) { \
-            ASSERT_TRUE(!shader_contains_alu_op(b2, nir_op_##alu, bitsize)); \
+         if (consumer != MESA_SHADER_TESS_EVAL || \
+             (alu_op != nir_op_fadd && alu_op != nir_op_fmul && \
+              alu_op != nir_op_fmad && alu_op != nir_op_ffma)) { \
+            ASSERT_TRUE(!shader_contains_alu_op(b2, alu_op, bitsize)); \
          } \
       } \
       ASSERT_TRUE(shader_contains_instr(b1, &store[0]->instr)); \
@@ -86,8 +96,8 @@ TEST_F(nir_opt_varyings_test_bicm_binary_alu, \
       ASSERT_TRUE(!shader_contains_def(b2, load[1])); \
    } else { \
       ASSERT_EQ(opt_varyings() & nir_progress_consumer, 0); \
-      ASSERT_TRUE(!shader_contains_alu_op(b1, nir_op_##alu, bitsize)); \
-      ASSERT_TRUE(shader_contains_alu_op(b2, nir_op_##alu, bitsize)); \
+      ASSERT_TRUE(!shader_contains_alu_op(b1, alu_op, bitsize)); \
+      ASSERT_TRUE(shader_contains_alu_op(b2, alu_op, bitsize)); \
       ASSERT_TRUE(shader_contains_instr(b1, &store[0]->instr)); \
       ASSERT_TRUE(shader_contains_instr(b1, &store[1]->instr)); \
       ASSERT_TRUE(shader_contains_def(b2, load[0])); \
@@ -149,7 +159,5 @@ TEST_ALU_BINARY_OPS(TESS_CTRL, TESS_EVAL, PATCH0, PATCH1)
 
 TEST_ALU_BINARY_OPS_FS_INTERP(VERTEX, FRAGMENT, VAR0, VAR1)
 TEST_ALU_BINARY_OPS_FS_INTERP(TESS_EVAL, FRAGMENT, VAR0, VAR1)
-
-// TODO: unary/ternary, uniform/UBO load/constant
 
 }

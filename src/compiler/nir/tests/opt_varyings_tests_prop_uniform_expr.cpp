@@ -12,22 +12,24 @@ class nir_opt_varyings_test_prop_uniform_expr : public nir_opt_varyings_test
 {};
 
 #define SHADER_UNI_EXPR_OUTPUT(producer_stage, consumer_stage, slot, comp, type, bitsize, index0, index1) \
-   create_shaders(MESA_SHADER_##producer_stage, MESA_SHADER_##consumer_stage); \
+   const mesa_shader_stage producer = MESA_SHADER_##producer_stage; \
+   const mesa_shader_stage consumer = MESA_SHADER_##consumer_stage; \
+   const gl_varying_slot output_slot = VARYING_SLOT_##slot; \
+   create_shaders(producer, consumer); \
    UNUSED nir_intrinsic_instr *store, *store2 = NULL, *store3 = NULL; \
    store = \
-      store_output(b1, VARYING_SLOT_##slot, comp, nir_type_float##bitsize, \
+      store_output(b1, output_slot, comp, nir_type_float##bitsize, \
                    build_uniform_expr(b1, bitsize, index0), 0, false); \
-   if (is_per_vertex(b1, VARYING_SLOT_##slot, false) || \
-       MESA_SHADER_##producer_stage == MESA_SHADER_GEOMETRY) { \
-      store2 = store_output(b1, VARYING_SLOT_##slot, comp, nir_type_float##bitsize, \
+   if (is_per_vertex(b1, output_slot, false) || producer == MESA_SHADER_GEOMETRY) { \
+      store2 = store_output(b1, output_slot, comp, nir_type_float##bitsize, \
                             build_uniform_expr(b1, bitsize, index1), 1, false); \
-      store3 = store_output(b1, VARYING_SLOT_##slot, comp, nir_type_float##bitsize, \
+      store3 = store_output(b1, output_slot, comp, nir_type_float##bitsize, \
                             build_uniform_expr(b1, bitsize, index1), 2, false); \
    } \
    \
-   UNUSED unsigned pindex = VARYING_SLOT_##slot; \
-   unsigned cindex = VARYING_SLOT_##slot; \
-   if (MESA_SHADER_##consumer_stage == MESA_SHADER_FRAGMENT && \
+   UNUSED unsigned pindex = output_slot; \
+   unsigned cindex = output_slot; \
+   if (consumer == MESA_SHADER_FRAGMENT && \
        (cindex == VARYING_SLOT_BFC0 || cindex == VARYING_SLOT_BFC1)) \
       cindex -= VARYING_SLOT_BFC0 - VARYING_SLOT_COL0; \
    \
@@ -36,7 +38,7 @@ class nir_opt_varyings_test_prop_uniform_expr : public nir_opt_varyings_test
    nir_def *input2 = load_input(b2, (gl_varying_slot)cindex, comp, nir_type_##type##bitsize, 1, 0); \
    store_output(b2, VARYING_SLOT_VAR1, 0, nir_type_float##bitsize, input2, 0, false); \
    \
-   if (MESA_SHADER_##consumer_stage == MESA_SHADER_FRAGMENT) { \
+   if (consumer == MESA_SHADER_FRAGMENT) { \
       /* Compaction moves COL1 to COL0. */ \
       if (cindex == VARYING_SLOT_COL1) { \
          pindex--; \
@@ -61,7 +63,7 @@ TEST_F(nir_opt_varyings_test_prop_uniform_expr, \
    SHADER_UNI_EXPR_OUTPUT(producer_stage, consumer_stage, slot, comp, type, bitsize, 1, 1) \
    \
    ASSERT_EQ(opt_varyings(), (nir_progress_producer | nir_progress_consumer)); \
-   if (nir_slot_is_sysval_output((gl_varying_slot)pindex, MESA_SHADER_##consumer_stage)) { \
+   if (nir_slot_is_sysval_output((gl_varying_slot)pindex, consumer)) { \
       ASSERT_EQ(b1->shader->info.outputs_written, BITFIELD64_BIT(pindex)); \
       ASSERT_TRUE(nir_intrinsic_io_semantics(store).no_varying); \
    } else { \
@@ -86,8 +88,7 @@ TEST_F(nir_opt_varyings_test_prop_uniform_expr, \
    SHADER_UNI_EXPR_OUTPUT(producer_stage, consumer_stage, slot, comp, type, bitsize, 1, 1) \
    \
    /* XFB-only outputs are moved to VARn. */ \
-   if (MESA_SHADER_##consumer_stage == MESA_SHADER_FRAGMENT &&\
-       VARYING_SLOT_##slot == VARYING_SLOT_TEX0) \
+   if (consumer == MESA_SHADER_FRAGMENT && output_slot == VARYING_SLOT_TEX0) \
       pindex = VARYING_SLOT_VAR0; \
    \
    nir_io_xfb xfb; \

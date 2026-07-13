@@ -18,15 +18,16 @@ TEST_F(nir_opt_varyings_test_dedup, \
    unsigned pslot[2] = {VARYING_SLOT_##slot1, VARYING_SLOT_##slot2}; \
    unsigned cslot[2] = {VARYING_SLOT_##slot1, VARYING_SLOT_##slot2}; \
    unsigned interp[2] = {INTERP_##interp1, INTERP_##interp2}; \
+   const mesa_shader_stage consumer = MESA_SHADER_##consumer_stage; \
    \
    /* BFCn becomes COLn in FS. */ \
    for (unsigned s = 0; s < 2; s++) { \
-      if (MESA_SHADER_##consumer_stage == MESA_SHADER_FRAGMENT && \
+      if (consumer == MESA_SHADER_FRAGMENT && \
           (pslot[s] == VARYING_SLOT_BFC0 || pslot[s] == VARYING_SLOT_BFC1)) \
          pslot[s] -= VARYING_SLOT_BFC0 - VARYING_SLOT_COL0; \
    } \
    \
-   create_shaders(MESA_SHADER_##producer_stage, MESA_SHADER_##consumer_stage); \
+   create_shaders(MESA_SHADER_##producer_stage, consumer); \
    nir_intrinsic_instr *store[2][3] = {{NULL}}; \
    for (unsigned s = 0; s < 2; s++) { \
       nir_def *input = load_input(b1, (gl_varying_slot)0, 0, nir_type_float##bitsize, 0, 0); \
@@ -48,11 +49,11 @@ TEST_F(nir_opt_varyings_test_dedup, \
    if (is_patch((gl_varying_slot)pslot[0]) == is_patch((gl_varying_slot)pslot[1]) && \
        is_color(b2, (gl_varying_slot)cslot[0]) == is_color(b2, (gl_varying_slot)cslot[1]) && \
        !is_texcoord(b2, (gl_varying_slot)cslot[0]) && !is_texcoord(b2, (gl_varying_slot)cslot[1]) && \
-       INTERP_##interp1 == INTERP_##interp2 && !is_interp_at_offset(INTERP_##interp1)) { \
+       interp[0] == interp[1] && !is_interp_at_offset(interp[0])) { \
       ASSERT_EQ(opt_varyings(), (nir_progress_producer | nir_progress_consumer)); \
       for (unsigned v = 0; v < (is_per_vertex(b1, (gl_varying_slot)pslot[1], false) ? 3 : 1); v++) { \
          ASSERT_TRUE(shader_contains_instr(b1, &store[0][v]->instr)); \
-         if (nir_slot_is_sysval_output((gl_varying_slot)pslot[1], MESA_SHADER_##consumer_stage)) { \
+         if (nir_slot_is_sysval_output((gl_varying_slot)pslot[1], consumer)) { \
             ASSERT_TRUE(shader_contains_instr(b1, &store[1][v]->instr)); \
             ASSERT_TRUE(nir_intrinsic_io_semantics(store[1][v]).no_varying); \
          } else { \
