@@ -140,8 +140,17 @@ make_sysval_input(nir_shader *s, int slot, const char *name)
 {
    if (slot < 0)
       return NULL;
+   /* The r3v vertex-buffer binding for this stream carries
+    * PIPE_FORMAT_R32_FLOAT (r3v_build_velems_cso), with the identity value
+    * written as a genuine float (r3v_bind_synthetic_identity_stream) so it
+    * survives the LLVM draw-JIT's float-typed vertex-fetch register without
+    * the pure_integer bitcast in lp_build_fetch_rgba_aos_array reinterpreting
+    * a small index as a subnormal.  Declare the input variable float here to
+    * match: the SW-TCL vertex shader already runs in nir_lower_int_to_float's
+    * float-domain model (r300_vs_draw.c), so a genuinely float-typed input
+    * needs no further int-to-float encoding at its use sites. */
    nir_variable *var =
-      nir_variable_create(s, nir_var_shader_in, glsl_int_type(), name);
+      nir_variable_create(s, nir_var_shader_in, glsl_float_type(), name);
    var->data.location = VERT_ATTRIB_GENERIC0 + slot;
    var->data.driver_location = slot;
    return var;
