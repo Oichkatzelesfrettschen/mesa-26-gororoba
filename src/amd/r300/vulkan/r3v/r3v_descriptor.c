@@ -41,6 +41,16 @@ descriptor_type_is_dynamic(VkDescriptorType t)
           t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 }
 
+static bool
+descriptor_type_supports_immutable_samplers(VkDescriptorType t)
+{
+   return t == VK_DESCRIPTOR_TYPE_SAMPLER ||
+          t == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+}
+
+static void
+initialize_immutable_sampler_descriptors(struct r3v_descriptor_set *set);
+
 VkResult
 r3v_CreateDescriptorSetLayout(VkDevice _device,
                                  const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
@@ -53,7 +63,8 @@ r3v_CreateDescriptorSetLayout(VkDevice _device,
 
    for (uint32_t i = 0; i < n; i++) {
       const VkDescriptorSetLayoutBinding *src = &pCreateInfo->pBindings[i];
-      if (src->pImmutableSamplers)
+      if (descriptor_type_supports_immutable_samplers(src->descriptorType) &&
+          src->pImmutableSamplers)
          immutable_sampler_count += src->descriptorCount;
    }
 
@@ -77,7 +88,8 @@ r3v_CreateDescriptorSetLayout(VkDevice _device,
          .count        = src->descriptorCount,
          .stage_flags  = src->stageFlags,
       };
-      if (src->pImmutableSamplers) {
+      if (descriptor_type_supports_immutable_samplers(src->descriptorType) &&
+          src->pImmutableSamplers) {
          layout->bindings[i].immutable_samplers = immutable_samplers;
          memcpy(immutable_samplers, src->pImmutableSamplers,
                 src->descriptorCount * sizeof(*immutable_samplers));
@@ -227,6 +239,8 @@ r3v_AllocateDescriptorSets(VkDevice _device,
                set->allocated = false;
                set->layout = NULL;
                fail_result = VK_ERROR_OUT_OF_HOST_MEMORY;
+            } else {
+               initialize_immutable_sampler_descriptors(set);
             }
          }
       }
@@ -353,6 +367,26 @@ descriptor_slot_sampler(const struct r3v_descriptor_set_layout *layout,
 }
 
 static void
+initialize_immutable_sampler_descriptors(struct r3v_descriptor_set *set)
+{
+   const struct r3v_descriptor_set_layout *layout = set->layout;
+
+   for (uint32_t b = 0; b < layout->binding_count; b++) {
+      const struct r3v_dsl_binding *binding = &layout->bindings[b];
+      if (!descriptor_type_supports_immutable_samplers(binding->type) ||
+          !binding->immutable_samplers)
+         continue;
+
+      for (uint32_t d = 0; d < binding->count; d++) {
+         struct r3v_descriptor *slot =
+            &set->descriptors[binding->offset + d];
+         slot->type = binding->type;
+         slot->img.sampler = binding->immutable_samplers[d];
+      }
+   }
+}
+
+static void
 copy_descriptors_preserving_immutable_samplers(
    struct r3v_descriptor_set *dst_set, uint32_t dst_base,
    const struct r3v_descriptor_set *src_set, uint32_t src_base,
@@ -361,11 +395,14 @@ copy_descriptors_preserving_immutable_samplers(
    for (uint32_t d = 0; d < count; d++) {
       struct r3v_descriptor *dst = &dst_set->descriptors[dst_base + d];
       *dst = src_set->descriptors[src_base + d];
-      if (dst->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
-          dst->type == VK_DESCRIPTOR_TYPE_SAMPLER) {
-         dst->img.sampler =
-            descriptor_slot_sampler(dst_set->layout, dst_base + d,
-                                    dst->img.sampler);
+      uint32_t array_index = 0;
+      const struct r3v_dsl_binding *binding =
+         find_binding_for_slot(dst_set->layout, dst_base + d, &array_index);
+      if (binding &&
+          descriptor_type_supports_immutable_samplers(binding->type) &&
+          binding->immutable_samplers && array_index < binding->count) {
+         dst->type = binding->type;
+         dst->img.sampler = binding->immutable_samplers[array_index];
       }
    }
 }
