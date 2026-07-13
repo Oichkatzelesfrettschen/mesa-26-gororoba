@@ -175,20 +175,21 @@ struct r300_compute_unary_map_pattern {
 void r300_nir_detect_unary_map(const struct nir_shader *s,
                                struct r300_compute_unary_map_pattern *out);
 
-/* Admissible storage-image RT-export pattern.  Per the
- * rs482-storage-image-rt-export-admission-subset finding, exactly one class of
+/* Admissible storage-image RT-export pattern.  Exactly one class of
  * image_deref_store has fragment-shader-writes-a-color-target semantics and can
  * lower to the RB3D color export: one image_deref_store into a single 2D,
- * non-array, non-multisample R8G8B8A8_UNORM storage image, at a coordinate
- * derived only from gl_GlobalInvocationID (through the same walker the
- * store_ssbo coordinate uses), with no image load, no image atomic, and no
- * competing store.  is_rt_exportable is false for every shape outside that
- * subset, which stays rejected under R300_COMPUTE_REJECT_IMAGE_STORE.  This is
- * a pure read-only NIR analysis; it gates the lowering, never mutates. */
+ * non-array, non-multisample R8G8B8A8_UNORM storage image (four 32-bit
+ * components, full write mask, LOD 0), at a 2-component coordinate that
+ * depends on gl_GlobalInvocationID (and only constants plus that id -- no
+ * descriptor loads), with no image load, no atomic, and no competing storage
+ * write.  is_rt_exportable is false for every shape outside that subset, which
+ * stays rejected under R300_COMPUTE_REJECT_IMAGE_STORE.  image_binding holds
+ * the image variable's descriptor binding when is_rt_exportable is true.
+ * Pure read-only NIR analysis; gates the lowering, never mutates. */
 struct r300_image_store_rt_export_pattern {
    bool       is_rt_exportable;
    uint32_t   image_binding;         /* storage-image descriptor binding */
-   bool       image_binding_valid;   /* binding read off a constant deref index */
+   bool       image_binding_valid;   /* true when is_rt_exportable */
 };
 
 void r300_nir_detect_image_store_rt_export(
