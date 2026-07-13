@@ -52,19 +52,19 @@ r3v_dispatch_index_exact(const struct r3v_pipeline *pl,
                             const char **out_reason);
 
 /* Wrap the contents of a PIPE_BUFFER pipe_resource as a transient
- * PIPE_TEXTURE_2D + a pipe_sampler_view configured for NEAREST sampling.
- * The texture is allocated linear-tiled, populated by a bounded CPU map/copy
- * from the buffer, and referenced by the returned sampler view.  The caller
- * releases the view with pipe_sampler_view_reference(&view, NULL); dropping
- * the view's last reference also drops the texture's last reference, so the
- * transient resource is freed automatically.
+ * PIPE_TEXTURE_2D sampler view. The caller selects sampler state; resource
+ * creation selects the texture layout. The helper populates the texture with a
+ * bounded CPU map/copy from the buffer, and the returned sampler view retains
+ * it. The caller releases the view with pipe_sampler_view_reference(&view,
+ * NULL); dropping the view's last reference also drops the texture's last
+ * reference, so the transient resource is freed automatically.
  *
  * total_elements * util_format_get_blocksize(format) MUST equal the byte
  * count the caller intends to read out of src_buf.  width * height is the
  * raster extent and may include padding texels introduced by grid folding.
- * The helper does not verify the buffer's actual size.
  *
- * Returns NULL on resource_create / create_sampler_view failure. */
+ * Returns NULL when the requested source span is invalid or resource creation
+ * fails. */
 struct pipe_sampler_view *
 r3v_identity_map_wrap_input_as_sampler_view(struct r3v_device *device,
                                                struct pipe_resource *src_buf,
@@ -379,7 +379,7 @@ r3v_zpass_reduction_dispatch_replay(struct r3v_device *device,
                                        const struct r3v_cmd_dispatch *dispatch,
                                        const struct r3v_cmd_bind_descriptor_sets *binds);
 
-/* M-H predicated masked-store orchestrator: resolves the (predicate, value,
+/* Predicated masked-store orchestrator: resolves the (predicate, value,
  * output) buffer triple, seeds a render target from the output buffer's
  * pre-existing contents, draws a fullscreen quad whose fragment program
  * KILL_IFs the masked (predicate-false) fragments and writes the sampled value

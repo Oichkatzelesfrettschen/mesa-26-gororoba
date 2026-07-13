@@ -460,8 +460,7 @@ void r300_nir_detect_multipass_scan_pattern(const struct nir_shader *s,
  * quad whose fragment program KILL_IFs the masked fragments and writes the
  * sampled value for the covered ones, then copies the RT back to out_data --
  * killed fragments perform no ROP write, so the masked cells keep the seeded
- * baseline.  The per-pixel-predicate verb is the M-H realization (stream-
- * compaction precursor).
+ * baseline. The per-pixel-predicate verb realizes the masked store.
  *
  * Discriminator from every prior admitted shape: a store that is CONDITIONAL
  * (inside a nir_if) with load_count == 2.  Identity-map needs load_count == 1;

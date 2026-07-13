@@ -12,12 +12,15 @@
  */
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "r300_compute_admission.h"
 #include "r300_compute_admission_match.h"
 
 #include "compiler/nir/nir.h"
+#include "util/u_call_once.h"
+#include "util/u_debug.h"
 #include "util/format/u_formats.h"
 #include "util/macros.h"
 
@@ -30,17 +33,23 @@
 #define R300_COMPUTE_STORE_ADDR_MAX_DEPTH 8u
 #define R300_COMPUTE_OFFSET_EQ_MAX_DEPTH 8u
 
+static util_once_flag identity_map_debug_once = UTIL_ONCE_FLAG_INIT;
+static bool identity_map_debug;
+
+static void
+r300_compute_init_identity_map_debug(void)
+{
+   const char *flags = getenv("R3V_DEBUG");
+   if (!flags)
+      flags = getenv("R300VK_DEBUG");
+   identity_map_debug = flags && comma_separated_list_contains(flags, "identity_map");
+}
+
 static bool
 identity_map_debug_enabled(void)
 {
-   static int cached = -1;
-   if (cached < 0) {
-      const char *flags = getenv("R3V_DEBUG");
-      if (!flags)
-         flags = getenv("R300VK_DEBUG");
-      cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
-   }
-   return cached != 0;
+   util_call_once(&identity_map_debug_once, r300_compute_init_identity_map_debug);
+   return identity_map_debug;
 }
 
 static void
@@ -2006,7 +2015,7 @@ r300_nir_detect_multipass_scan_pattern(const nir_shader *s,
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
 }
 
-/* M-H predicated masked-store detector.  Recognises
+/* Predicated masked-store detector. Recognises
  * `if (in_pred[gid] != 0u) out_data[gid] = in_val[gid]`: a single store_ssbo
  * sitting inside a nir_if, two load_ssbo (predicate + value), no atomic, no
  * loop, with the stored value coming directly from a load_ssbo.  The
@@ -2154,7 +2163,7 @@ multitap_add_tree_taps(const nir_def *def,
    return l + r;
 }
 
-/* M-I multi-tap gather detector.  Recognises an unweighted N-tap neighbourhood
+/* Multi-tap gather detector. Recognises an unweighted N-tap neighbourhood
  * convolution `out[gid] = in[gid+o0] + ... + in[gid+o_{N-1}]` (N >= 3): one
  * store_ssbo whose value is an integer add-reduction tree of >= 3 load_ssbo
  * leaves, no atomic, no loop.  The >= 3 add-leaf count is the discriminator

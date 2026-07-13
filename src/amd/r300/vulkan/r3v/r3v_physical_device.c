@@ -111,21 +111,10 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
       props->maxStorageBufferRange = 512u * 1024u * 1024u; /* 512 MB */
    else
       props->maxStorageBufferRange = R3V_VK10_MIN_STORAGE_BUFFER_RANGE;
-   /* TODO: elevate VkPhysicalDeviceVulkan13Properties.maxBufferSize and
-    *       VkPhysicalDeviceMaintenance4Properties.maxBufferSize in
-    *       lock-step with maxStorageBufferRange.  Vulkan spec 47.78
-    *       requires maxBufferSize >= maxStorageBufferRange whenever the
-    *       Vulkan 1.3 properties chain or VK_KHR_maintenance4 is
-    *       advertised.
-    *       reason -- r3v currently advertises API version 1.0
-    *       (R3V_API_VERSION = VK_MAKE_API_VERSION(0, 1, 0, ...) in
-    *       r3v_private.h) and does not yet expose maintenance4; the
-    *       maxBufferSize field lives in a properties chain the loader
-    *       does not query at the 1.0 advertise level, so populating it
-    *       would write a value the application cannot reach.
-    *       tracking -- VkPhysicalDeviceMaintenance4Properties .maxBufferSize
-    *       (header vulkan_core.h field, lock-step elevation lands with the
-    *       r3v maintenance4 advertise). */
+   /* TODO: When Vulkan 1.3 properties or VK_KHR_maintenance4 are advertised,
+    * set both maxBufferSize values to at least maxStorageBufferRange. Vulkan
+    * 1.3 section 47.78 requires that relationship. The API-1.0 and
+    * maintenance4 property paths are not advertised. */
    props->maxPushConstantsSize = R3V_MAX_PUSH_CONSTANTS_SIZE;
 
    props->maxMemoryAllocationCount = 4096;
@@ -790,12 +779,8 @@ r3v_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
    struct vk_features features;
    r3v_physical_device_init_features(&features);
 
-   /* vk_physical_device_init copies *properties into pdevice->properties
-    * by value (src/vulkan/runtime/vk_physical_device.c:48-49), so the
-    * struct must be fully populated before the call.  Mirror the order
-    * used by terakan_physical_device_init at
-    * src/amd/terascale/vulkan/terakan_physical_device.c around line 1640.
-    */
+   /* vk_physical_device_init copies the completed properties struct by value,
+    * so the fields are populated before initialization. */
    /* Source gart_size_kb from the r300 screen's radeon_info so the
     * advertised SSBO ceiling tracks the kernel's actual GART provisioning.
     * Without the gallium backend (loader-only R0 build) the screen is
@@ -830,13 +815,8 @@ r3v_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
    properties.pciDevice   = drm_device->businfo.pci->dev;
    properties.pciFunction = drm_device->businfo.pci->func;
 
-   /* Driver entrypoints first, then the WSI surface queries
-    * (vkGetPhysicalDeviceSurfaceSupportKHR and friends live at
-    * physical-device level in wsi_physical_device_entrypoints; without this
-    * overlay zink's kopper_CreateSurface calls a NULL pointer right after
-    * surface creation).  vk_physical_device_init merges
-    * vk_common_physical_device_entrypoints itself at
-    * src/vulkan/runtime/vk_physical_device.c:53-55. */
+   /* Driver entrypoints precede WSI surface queries. The common physical-device
+    * runtime fills the remaining entrypoints during initialization. */
    struct vk_physical_device_dispatch_table dispatch_table;
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &r3v_physical_device_entrypoints, true);
