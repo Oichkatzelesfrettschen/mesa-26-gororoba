@@ -77,6 +77,15 @@ value_is_exact_integer(struct bitwise_state *st, nir_shader *s, nir_def *x)
    return true;
 }
 
+static bool
+mask_covers_value_bit_size(uint32_t mask, unsigned bit_size)
+{
+   if (bit_size > 32)
+      return false;
+
+   return mask == (bit_size == 32 ? UINT32_MAX : (1u << bit_size) - 1);
+}
+
 static nir_def *
 lower_component_division(nir_builder *b, nir_def *value,
                          const uint32_t divisors[NIR_MAX_VEC_COMPONENTS],
@@ -122,6 +131,7 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
       uint32_t moduli[NIR_MAX_VEC_COMPONENTS];
       unsigned value_src;
       bool all_zero_mask = true;
+      bool all_identity_mask = true;
       if (alu_src_const_u32_components(alu, 1, masks))
          value_src = 0;
       else if (alu_src_const_u32_components(alu, 0, masks))
@@ -131,17 +141,35 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
 
       for (unsigned component = 0; component < alu->def.num_components;
            component++) {
-         moduli[component] = masks[component] + 1;
          /* mask 0 is exact (x & 0 == 0); non-zero masks must be 2^n-1 with a
           * modulus inside the FP24 exact-integer window. */
-         if (masks[component] == 0)
+         if (masks[component] == 0) {
+            all_identity_mask = false;
             continue;
+         }
          all_zero_mask = false;
+         if (mask_covers_value_bit_size(masks[component], alu->def.bit_size))
+            continue;
+
+         all_identity_mask = false;
+         moduli[component] = masks[component] + 1;
          if (moduli[component] == 0 ||
              (moduli[component] & (moduli[component] - 1)) != 0 ||
              moduli[component] > R300_FP24_EXACT_INT)
             goto unsupported;
       }
+
+      nir_def *x = nir_ssa_for_alu_src(b, alu, value_src);
+      if (all_identity_mask) {
+         nir_def_replace(&alu->def, x);
+         return true;
+      }
+
+      /* The RC backend accepts 32-bit constants and ALU values.  A narrow
+       * modulo would either make nir_lower_int_to_float construct an invalid
+       * 8-bit float or leave a 16-bit float that RC cannot select. */
+      if (alu->def.bit_size != 32)
+         goto unsupported;
 
       if (all_zero_mask) {
          nir_def_replace(&alu->def,
@@ -150,10 +178,10 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
          return true;
       }
 
-      nir_def *x = nir_ssa_for_alu_src(b, alu, value_src);
       for (unsigned component = 0; component < alu->def.num_components;
            component++) {
          if (masks[component] != 0 &&
+             !mask_covers_value_bit_size(masks[component], alu->def.bit_size) &&
              !scalar_is_exact_integer(st, b->shader,
                                       nir_get_scalar(x, component)))
             goto unsupported;
@@ -164,6 +192,9 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
            component++) {
          components[component] = masks[component] == 0
                                     ? nir_imm_zero(b, 1, alu->def.bit_size)
+                                 : mask_covers_value_bit_size(
+                                      masks[component], alu->def.bit_size)
+                                    ? nir_channel(b, x, component)
                                     : nir_umod(
                                          b, nir_channel(b, x, component),
                                          nir_imm_intN_t(b, moduli[component],
@@ -181,6 +212,9 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
       uint32_t divisors[NIR_MAX_VEC_COMPONENTS];
       if (!alu_src_const_u32_components(alu, 1, shifts))
          break; /* variable or out-of-window shift */
+
+      if (alu->def.bit_size != 32)
+         goto unsupported;
 
       for (unsigned component = 0; component < alu->def.num_components;
            component++) {

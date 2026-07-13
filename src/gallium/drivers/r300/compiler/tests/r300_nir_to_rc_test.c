@@ -154,6 +154,27 @@ build_vs_with_unsupported_intrinsic(void)
 }
 
 static nir_shader *
+build_vs_with_narrow_iand(void)
+{
+   nir_builder b = vs_builder("vs_narrow_iand");
+   nir_variable *in =
+      nir_variable_create(b.shader, nir_var_shader_in, glsl_vec4_type(), "in0");
+   nir_variable *pos = vs_position_output(&b);
+   in->data.location = VERT_ATTRIB_GENERIC0;
+
+   nir_def *loaded = nir_load_var(&b, in);
+   nir_def *narrow = nir_u2u8(&b, nir_f2u32(&b, nir_channel(&b, loaded, 0)));
+   nir_def *masked = nir_iand_imm(&b, narrow, 3);
+   nir_def *x = nir_u2f32(&b, masked);
+   nir_store_var(&b, pos,
+                 nir_vec4(&b, x, nir_imm_float(&b, 0.0f),
+                          nir_imm_float(&b, 0.0f), nir_imm_float(&b, 1.0f)),
+                 0xf);
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   return b.shader;
+}
+
+static nir_shader *
 build_vs_with_continue_construct(void)
 {
    nir_builder b = vs_builder("vs_continue_construct");
@@ -247,6 +268,26 @@ case_fsub_emits_add_with_negated_rhs(void)
 }
 
 static void
+case_narrow_iand_stops_before_int_to_float(void)
+{
+   struct nir_to_rc_vs_test_compiler tc = {0};
+   nir_to_rc_vs_test_init(&tc);
+   union r300_shader_code rc = {.v = &tc.code};
+
+   nir_to_rc(build_vs_with_narrow_iand(), &tc.screen.screen,
+             (struct r300_fragment_program_external_state){0}, rc,
+             &tc.compiler.Base);
+
+   CHECK(tc.compiler.Base.Error,
+         "narrow iand rejects through compiler.Base.Error");
+   CHECK(tc.compiler.Base.ErrorMsg &&
+            strstr(tc.compiler.Base.ErrorMsg, "integer bitwise/shift op") != NULL,
+         "narrow iand stops at the bitwise admission boundary");
+
+   nir_to_rc_vs_test_destroy(&tc);
+}
+
+static void
 case_fcsel_gt_emits_cmp_with_negated_condition(void)
 {
    struct nir_to_rc_vs_test_compiler tc = {0};
@@ -301,6 +342,7 @@ main(void)
 {
    printf("r300 nir_to_rc regression harness\n");
    case_unsupported_intrinsic_sets_error();
+   case_narrow_iand_stops_before_int_to_float();
    case_fsub_emits_add_with_negated_rhs();
    case_fcsel_gt_emits_cmp_with_negated_condition();
    case_continue_construct_is_lowered_before_emit();

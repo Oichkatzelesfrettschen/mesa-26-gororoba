@@ -176,7 +176,8 @@ check_vector_bitwise_lowering(const char *name, nir_op source_op,
 }
 
 static void
-check_scalar_iand_bit_size(unsigned bit_size)
+check_scalar_iand_mask(unsigned bit_size, uint32_t mask,
+                       bool expect_supported, bool expect_umod)
 {
    static const nir_shader_compiler_options options;
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &options,
@@ -184,29 +185,32 @@ check_scalar_iand_bit_size(unsigned bit_size)
    bool fold_alu = b.constant_fold_alu;
    b.constant_fold_alu = false;
    nir_iand(&b, nir_imm_intN_t(&b, 7, bit_size),
-            nir_imm_intN_t(&b, 3, bit_size));
+            nir_imm_intN_t(&b, mask, bit_size));
    b.constant_fold_alu = fold_alu;
 
    bool unsupported = false;
    bool progress = r300_nir_lower_bitwise_to_arith(b.shader, &unsupported);
-   bool matching_umod = false;
+   unsigned umod_count = 0;
    nir_foreach_function_impl (impl, b.shader) {
       nir_foreach_block (block, impl) {
          nir_foreach_instr (instr, block) {
             if (instr->type != nir_instr_type_alu)
                continue;
             nir_alu_instr *alu = nir_instr_as_alu(instr);
-            if (alu->op == nir_op_umod && alu->def.bit_size == bit_size &&
-                alu->src[1].src.ssa->bit_size == bit_size)
-               matching_umod = true;
+            if (alu->op == nir_op_umod)
+               umod_count++;
          }
       }
    }
 
-   char check_name[64];
+   char check_name[96];
    snprintf(check_name, sizeof(check_name),
-            "%u-bit mask keeps the modulus bit size", bit_size);
-   CHECK(progress && !unsupported && matching_umod, check_name);
+            "%u-bit mask 0x%x is %s", bit_size, mask,
+            expect_supported ? "admitted" : "rejected");
+   CHECK(progress && unsupported != expect_supported, check_name);
+   CHECK(umod_count == (expect_umod ? 1u : 0u),
+         expect_umod ? "admitted mask emits one modulo"
+                     : "identity or rejected mask emits no modulo");
    nir_validate_shader(b.shader, "after r300 iand bit-size lowering test");
    ralloc_free(b.shader);
 }
@@ -383,7 +387,8 @@ main(void)
    static const uint32_t vector_shifts[4] = { 0, 1, 2, 17 };
    static const uint32_t vector_divisors[4] = { 1, 2, 4, 131072 };
    static const uint32_t invalid_masks[4] = { 1, 3, 5, 7 };
-   static const uint32_t overflow_masks[4] = { 1, 3, UINT32_MAX, 7 };
+   static const uint32_t identity_lane_masks[4] = {1, 3, UINT32_MAX, 7};
+   static const uint32_t identity_lane_moduli[4] = {2, 4, 0, 8};
    static const uint32_t invalid_shifts[4] = { 0, 1, 18, 3 };
    static const uint32_t out_of_range_bounds[4] = { 17, 100, 131073, 1024 };
 
@@ -405,17 +410,19 @@ main(void)
    check_vector_bitwise_lowering("non-low-bit mask lane", nir_op_iand,
                                  invalid_masks, exact_bounds, false, false,
                                  nir_op_umod, vector_moduli);
-   check_vector_bitwise_lowering("overflowing mask lane", nir_op_iand,
-                                 overflow_masks, exact_bounds, false, false,
-                                 nir_op_umod, vector_moduli);
+   check_vector_bitwise_lowering("full-width identity mask lane", nir_op_iand,
+                                 identity_lane_masks, exact_bounds, false, true,
+                                 nir_op_umod, identity_lane_moduli);
    check_vector_bitwise_lowering("out-of-window shift lane", nir_op_ushr,
                                  invalid_shifts, exact_bounds, false, false,
                                  nir_op_udiv, vector_divisors);
    check_vector_bitwise_lowering("out-of-window value lane", nir_op_iand,
                                  vector_masks, out_of_range_bounds, false,
                                  false, nir_op_umod, vector_moduli);
-   check_scalar_iand_bit_size(8);
-   check_scalar_iand_bit_size(16);
+   check_scalar_iand_mask(8, UINT8_MAX, true, false);
+   check_scalar_iand_mask(16, UINT16_MAX, true, false);
+   check_scalar_iand_mask(8, 3, false, false);
+   check_scalar_iand_mask(16, 3, false, false);
 
    glsl_type_singleton_decref();
    printf("%s\n", g_failures ? "FAILED" : "PASSED");
