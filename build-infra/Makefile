@@ -89,6 +89,36 @@ $(FLOCK) -x -w "$(LOCK_WAIT)" 9 || { \
 };
 endef
 
+define VALIDATE_BUILDDIR
+build_root="$(abspath $(BUILD_ROOT))"; \
+builddir="$(abspath $(BUILDDIR))"; \
+case "$$build_root" in \
+  ""|/|"$(HOME)"|"$(TOPSRC)") \
+    echo "refusing unsafe BUILD_ROOT: $$build_root" >&2; exit 2 ;; \
+esac; \
+case "$$builddir" in \
+  "$$build_root"/*) ;; \
+  *) echo "refusing BUILDDIR outside BUILD_ROOT: $$builddir" >&2; exit 2 ;; \
+esac;
+endef
+
+define VALIDATE_REPO_BUILD_ROOT
+build_root="$(abspath $(BUILD_ROOT))"; \
+repo_build_root="$(TOPSRC)/build"; \
+if [ "$$build_root" != "$$repo_build_root" ]; then \
+  echo "clean-all only removes the repository build root: $$repo_build_root" >&2; \
+  exit 2; \
+fi;
+endef
+
+define VALIDATE_PREFIX
+prefix="$(abspath $(PREFIX))"; \
+case "$$prefix" in \
+  ""|/|"$(HOME)"|"$(TOPSRC)") \
+    echo "refusing unsafe PREFIX: $$prefix" >&2; exit 2 ;; \
+esac;
+endef
+
 # --- internal paths ---------------------------------------------------------
 TOPSRC   := $(abspath $(CURDIR)/..)
 # The default profile sits at the top of configs/; every other profile (the
@@ -175,8 +205,8 @@ help:
 	@echo "  configure         meson setup the builddir from configs/[alternates/]\$$(PROFILE).meson"
 	@echo "  build             locked ninja -C \$$(BUILDDIR); set NINJA_TARGETS for one target"
 	@echo "  clean             rm -rf \$$(BUILDDIR) (active profile only)"
-	@echo "  clean-all         rm -rf the whole repo-local build/ tree (all profiles)"
-	@echo "  distclean         clean + archive \$$(PREFIX) aside"
+	@echo "  clean-all         remove the fixed repo-local build/ tree (all profiles)"
+	@echo "  distclean         atomically clean + archive \$$(PREFIX) under one lease"
 	@echo "  audit             verify host tools, env policy, profile-audit, and profile requirements"
 	@echo "  profile-audit     fail when a profile selects drivers outside its allowlist row"
 	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
@@ -518,6 +548,7 @@ build:
 
 clean:
 	@$(ACQUIRE_BUILD_LOCK) \
+	$(VALIDATE_BUILDDIR) \
 	rm -rf "$(BUILDDIR)"; \
 	echo "cleaned: $(BUILDDIR)"
 
@@ -526,11 +557,16 @@ clean:
 # regenerable artifacts and never touches the source or an installed PREFIX.
 clean-all:
 	@$(ACQUIRE_BUILD_LOCK) \
+	$(VALIDATE_REPO_BUILD_ROOT) \
 	rm -rf "$(BUILD_ROOT)"; \
 	echo "cleaned: $(BUILD_ROOT) (all profile builddirs)"
 
-distclean: clean
+distclean:
 	@$(ACQUIRE_BUILD_LOCK) \
+	$(VALIDATE_BUILDDIR) \
+	$(VALIDATE_PREFIX) \
+	rm -rf "$(BUILDDIR)"; \
+	echo "cleaned: $(BUILDDIR)"; \
 	if [ -e "$(PREFIX)" ]; then \
 		archive="$(PREFIX).disabled.$$(date -u +%Y%m%dT%H%M%SZ)"; \
 		$(SUDO) mv "$(PREFIX)" "$$archive"; \
@@ -549,7 +585,7 @@ install: vostro-prefix-check
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
 	    profile_dflags=$$(python3 $(PROFILE_DFLAGS_SCRIPT) $(CONFIG)) || { \
 	      echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
-	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
+	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix=$(PREFIX) --sysconfdir=$(SYSCONFDIR) $(BUILDDIR) $(TOPSRC); \
 	    echo "[install] running meson install --no-rebuild --only-changed -C $(BUILDDIR)"; \
 	    $(SUDO) $(MESON) install --no-rebuild --only-changed -C $(BUILDDIR); \
 	    : "sudo meson install writes meson-logs/install-log.txt as root; restore"; \
@@ -620,7 +656,35 @@ build-lease-test:
 	assert_locked clean $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
 		BUILDDIR="$$tmpdir/build" BUILD_LOCK="$$lock" LOCK_WAIT=0; \
 	assert_locked clean-all $(MAKE) --no-print-directory -C "$(CURDIR)" clean-all \
-		BUILD_ROOT="$$tmpdir/build-root" BUILD_LOCK="$$lock" LOCK_WAIT=0
+		BUILD_ROOT="$$tmpdir/build-root" BUILD_LOCK="$$lock" LOCK_WAIT=0; \
+	assert_locked distclean $(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
+		BUILD_ROOT="$$tmpdir" BUILDDIR="$$tmpdir/build" PREFIX="$$tmpdir/prefix" \
+		BUILD_LOCK="$$lock" LOCK_WAIT=0; \
+	mkdir -p "$$tmpdir/unsafe-sentinel"; \
+	if $(MAKE) --no-print-directory -C "$(CURDIR)" clean-all \
+		BUILD_ROOT=/ BUILD_LOCK="$$tmpdir/unsafe.lock" LOCK_WAIT=0 \
+		>/dev/null 2>&1; then \
+		echo "FAIL  clean-all accepted BUILD_ROOT=/" >&2; exit 1; \
+	fi; \
+	test -d "$$tmpdir/unsafe-sentinel" || { \
+		echo "FAIL  clean-all safety check removed the sentinel" >&2; exit 1; \
+	}; \
+	echo "OK    clean-all rejects BUILD_ROOT=/"; \
+	install_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" install \
+		BUILDDIR="$$tmpdir/build" PREFIX="$$tmpdir/prefix" \
+		SYSCONFDIR="$$tmpdir/etc" 2>/dev/null )"; \
+	printf '%s\n' "$$install_plan" | grep -F -- "--sysconfdir=$$tmpdir/etc" >/dev/null || { \
+		echo "FAIL  install reconfigure omitted SYSCONFDIR" >&2; exit 1; \
+	}; \
+	echo "OK    install reconfigure preserves SYSCONFDIR"; \
+	distclean_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" distclean \
+		BUILD_ROOT="$$tmpdir" BUILDDIR="$$tmpdir/build" \
+		PREFIX="$$tmpdir/prefix" BUILD_LOCK="$$tmpdir/plan.lock" )"; \
+	flock_count="$$(printf '%s\n' "$$distclean_plan" | grep -c 'flock -x')"; \
+	test "$$flock_count" -eq 1 || { \
+		echo "FAIL  distclean uses $$flock_count build leases" >&2; exit 1; \
+	}; \
+	echo "OK    distclean holds one build lease"
 
 define CLEAN_CONFIGURE_BUILD_PAIR
 	$(MAKE) clean \
