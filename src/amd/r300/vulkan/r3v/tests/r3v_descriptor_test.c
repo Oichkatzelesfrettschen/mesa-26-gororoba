@@ -7,8 +7,10 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include "../r3v_descriptor.c"
+#include "r3v_descriptor.h"
 
 static unsigned failures;
 
@@ -50,16 +52,16 @@ allocate_layout(uint32_t binding_count, uint32_t descriptor_count)
 static void
 check_immutable_sampler_types(void)
 {
-   CHECK(descriptor_type_supports_immutable_samplers(
+   CHECK(r3v_descriptor_type_supports_immutable_samplers(
             VK_DESCRIPTOR_TYPE_SAMPLER),
          "sampler bindings accept immutable samplers");
-   CHECK(descriptor_type_supports_immutable_samplers(
+   CHECK(r3v_descriptor_type_supports_immutable_samplers(
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
          "combined-image sampler bindings accept immutable samplers");
-   CHECK(!descriptor_type_supports_immutable_samplers(
+   CHECK(!r3v_descriptor_type_supports_immutable_samplers(
              VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),
          "uniform-buffer bindings ignore immutable sampler pointers");
-   CHECK(!descriptor_type_supports_immutable_samplers(
+   CHECK(!r3v_descriptor_type_supports_immutable_samplers(
              VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT),
          "input-attachment bindings ignore immutable sampler pointers");
 }
@@ -104,7 +106,7 @@ check_allocation_initializes_immutable_samplers(void)
       .layout = layout,
       .descriptors = descriptors,
    };
-   initialize_immutable_sampler_descriptors(&set);
+   r3v_initialize_immutable_sampler_descriptors(&set);
 
    CHECK(descriptors[0].type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
          descriptors[0].img.sampler == immutable_samplers[0],
@@ -164,13 +166,13 @@ check_immutable_samplers_survive_updates_and_copies(void)
 
    destination_descriptors[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
    destination_descriptors[0].img.sampler =
-      descriptor_slot_sampler(immutable_layout, 0, written_sampler);
+      r3v_descriptor_slot_sampler(immutable_layout, 0, written_sampler);
    CHECK(destination_descriptors[0].img.sampler == immutable_sampler,
          "combined-image write retains the immutable sampler");
 
    source_descriptors[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
    source_descriptors[0].img.sampler = written_sampler;
-   copy_descriptors_preserving_immutable_samplers(
+   r3v_copy_descriptors_preserving_immutable_samplers(
       &destination_set, 0, &source_set, 0, 1);
    CHECK(destination_descriptors[0].type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
          destination_descriptors[0].img.sampler == immutable_sampler,
