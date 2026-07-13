@@ -86,6 +86,27 @@ mask_covers_value_bit_size(uint32_t mask, unsigned bit_size)
    return mask == (bit_size == 32 ? UINT32_MAX : (1u << bit_size) - 1);
 }
 
+static bool
+alu_uses_unsupported_integer_width(const nir_alu_instr *alu)
+{
+   const nir_op_info *info = &nir_op_infos[alu->op];
+   nir_alu_type base_type = nir_alu_type_get_base_type(info->output_type);
+
+   if ((base_type == nir_type_int || base_type == nir_type_uint) &&
+       alu->def.bit_size != 1 && alu->def.bit_size != 32)
+      return true;
+
+   for (unsigned src = 0; src < info->num_inputs; src++) {
+      base_type = nir_alu_type_get_base_type(info->input_types[src]);
+      if ((base_type == nir_type_int || base_type == nir_type_uint) &&
+          alu->src[src].src.ssa->bit_size != 1 &&
+          alu->src[src].src.ssa->bit_size != 32)
+         return true;
+   }
+
+   return false;
+}
+
 static nir_def *
 lower_component_division(nir_builder *b, nir_def *value,
                          const uint32_t divisors[NIR_MAX_VEC_COMPONENTS],
@@ -114,6 +135,15 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
    struct bitwise_state *st = data;
    nir_alu_instr *alu = nir_instr_as_alu(instr);
    b->cursor = nir_before_instr(instr);
+
+   /* nir_lower_int_to_float and the RC backend accept 32-bit integer ALU
+    * values. Identity and zero folds can remove a narrow iand while leaving a
+    * narrow producer or constant as an integer input, so reject every
+    * non-boolean integer ALU width at this admission boundary. */
+   if (alu_uses_unsupported_integer_width(alu)) {
+      st->unsupported = true;
+      return false;
+   }
 
    /* Boolean iand/ior/ixor/inot are logical connectives over comparison results
     * (nir_flt and friends), carried as 1-bit ops until nir_lower_bool_to_float
@@ -164,12 +194,6 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
          nir_def_replace(&alu->def, x);
          return true;
       }
-
-      /* The RC backend accepts 32-bit constants and ALU values.  A narrow
-       * modulo would either make nir_lower_int_to_float construct an invalid
-       * 8-bit float or leave a 16-bit float that RC cannot select. */
-      if (alu->def.bit_size != 32)
-         goto unsupported;
 
       if (all_zero_mask) {
          nir_def_replace(&alu->def,
