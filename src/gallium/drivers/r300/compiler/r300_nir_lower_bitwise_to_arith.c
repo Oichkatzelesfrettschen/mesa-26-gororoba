@@ -121,6 +121,7 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
       uint32_t masks[NIR_MAX_VEC_COMPONENTS];
       uint32_t moduli[NIR_MAX_VEC_COMPONENTS];
       unsigned value_src;
+      bool all_zero_mask = true;
       if (alu_src_const_u32_components(alu, 1, masks))
          value_src = 0;
       else if (alu_src_const_u32_components(alu, 0, masks))
@@ -135,10 +136,18 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
           * modulus inside the FP24 exact-integer window. */
          if (masks[component] == 0)
             continue;
+         all_zero_mask = false;
          if (moduli[component] == 0 ||
              (moduli[component] & (moduli[component] - 1)) != 0 ||
              moduli[component] > R300_FP24_EXACT_INT)
             goto unsupported;
+      }
+
+      if (all_zero_mask) {
+         nir_def_replace(&alu->def,
+                         nir_imm_zero(b, alu->def.num_components,
+                                      alu->def.bit_size));
+         return true;
       }
 
       nir_def *x = nir_ssa_for_alu_src(b, alu, value_src);
@@ -157,7 +166,8 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
                                     ? nir_imm_zero(b, 1, alu->def.bit_size)
                                     : nir_umod(
                                          b, nir_channel(b, x, component),
-                                         nir_imm_int(b, moduli[component]));
+                                         nir_imm_intN_t(b, moduli[component],
+                                                        alu->def.bit_size));
       }
 
       nir_def_replace(&alu->def, alu->def.num_components == 1
