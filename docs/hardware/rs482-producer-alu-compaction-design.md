@@ -73,11 +73,17 @@ compute side. This is the driver's own numeric-domain model
 (`r300_numeric_domain.c`, `R300_NUM_DOMAIN_FP24_RTZ`: `exact_int_bound = 131072`,
 `significand_bits = 17`, theorem "|n| <= 2^17 exactly representable in FP24").
 
-An eight-term dot with operands bounded by B satisfies `|acc| <= 8*B^2`, and it
-is integer-exact in RS482 FP24 iff every partial accumulation stays inside the
-`2^17` window: `8*B^2 < 2^17`, so **`B <= 127`** (the UINT7 lane; `8*127^2 =
-129032 < 131072`). The driver catalog's DP4 rows confirm this scale --
-`4*127^2 = 64516 < 2^17`, `5*127^2 = 80645 < 2^17`.
+An eight-term dot with operands bounded by B satisfies `|acc| <= 8*B^2`. The
+mathematical worst-case exactness guarantee is `8*B^2 <= 2^17`, hence
+**`B <= 128`**: at `B = 128` the worst case is `8*128^2 = 131072 = 2^17`, which is
+itself exactly representable, and `8*129^2 = 133128` leaves the window. The
+initial driver policy retains the strict interior `8*B^2 < 2^17`, hence
+**`B <= 127`** (`8*127^2 = 129032 < 131072`), a conservative admission rule that
+declines the exact-but-boundary `B = 128` rather than asserting it inexact. Those
+are two distinct facts -- the inclusive exactness threshold and the strict policy
+-- and stay named separately, matching the inclusive typed-carry value gate
+(`|n| <= 2^17`) the classifier ships. The driver catalog's DP4 rows confirm the
+scale -- `4*127^2 = 64516 < 2^17`, `5*127^2 = 80645 < 2^17`.
 
 Correction: an earlier draft cited `8*B^2 < 2^24` giving `B <= 1448`, imported
 from `IDCT8DP4ExactBound.v`. That bound is FP32's 24-bit-mantissa envelope and
