@@ -111,7 +111,7 @@ compile_classic(void *ctx, nir_shader *s,
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result sel;
-   if (!r300_classic_select(ctx, s, t, NULL, 0, NULL, &sel) || !sel.program) {
+   if (!r300_classic_select(ctx, s, t, NULL, 0, R300_FS_INPUT_INTERPOLATED, NULL, &sel) || !sel.program) {
       *why = sel.reject_reason ? sel.reject_reason : "selection failed";
       return false;
    }

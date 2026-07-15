@@ -13,6 +13,7 @@
 #include "pipe/p_screen.h"
 #include "r300_carrier_policy.h"
 #include "r300_screen.h"
+#include "radeon_code.h"
 
 static inline bool
 is_ubo_or_input(UNUSED const nir_search_state *state, const nir_alu_instr *instr, unsigned src,
@@ -178,6 +179,14 @@ extern bool r300_nir_lower_bitwise_to_arith(struct nir_shader *shader,
 extern bool r300_nir_float_encode_synthetic_sysval_index_uses(struct nir_shader *nir);
 
 extern bool r300_nir_lower_f2i_epsilon(struct nir_shader *shader);
+
+/* Apply the fragment stage's float-to-int conversion contract selected by the
+ * input-delivery mode: an interpolated fragment shader gets the smooth-varying
+ * epsilon correction; a flat R2VB producer omits it.  Both r300 fragment
+ * frontends route their f2i/f2u handling through this one helper so the classic
+ * selector and nir_to_rc apply the same contract. */
+extern bool r300_nir_apply_fs_input_semantics(struct nir_shader *shader,
+                                              enum r300_fs_input_semantics semantics);
 
 extern bool r300_nir_lower_fcsel_r500(nir_shader *shader);
 

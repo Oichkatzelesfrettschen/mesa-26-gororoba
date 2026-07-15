@@ -191,11 +191,13 @@ void r300_fragment_program_get_external_state(
 static void r300_translate_fragment_shader_body(
     struct r300_context* r300,
     struct r300_fragment_shader_code* shader,
-    struct pipe_shader_state state);
+    struct pipe_shader_state state,
+    enum r300_fs_input_semantics input_semantics);
 
 static void r300_dummy_fragment_shader(
     struct r300_context* r300,
-    struct r300_fragment_shader_code* shader)
+    struct r300_fragment_shader_code* shader,
+    enum r300_fs_input_semantics input_semantics)
 {
     struct pipe_shader_state state = {};
     const nir_shader_compiler_options *options =
@@ -215,7 +217,7 @@ static void r300_dummy_fragment_shader(
     /* The body, not the wrapper: the failed program's "Too many ALU" error
      * string survives on the shader object, and the wrapper would read it as
      * an invitation to partition the dummy. */
-    r300_translate_fragment_shader_body(r300, shader, state);
+    r300_translate_fragment_shader_body(r300, shader, state, input_semantics);
     ralloc_free(state.ir.nir);
 }
 
@@ -1372,7 +1374,8 @@ r300_decode_inlinable_values(nir_shader *nir, unsigned n,
 static void r300_translate_fragment_shader_body(
     struct r300_context* r300,
     struct r300_fragment_shader_code* shader,
-    struct pipe_shader_state state)
+    struct pipe_shader_state state,
+    enum r300_fs_input_semantics input_semantics)
 {
     struct r300_fragment_program_compiler compiler;
     int face;
@@ -1407,6 +1410,9 @@ retry:
     /* Setup the compiler. */
     memset(&compiler, 0, sizeof(compiler));
     rc_init(&compiler.Base, &r300->fs_regalloc_state);
+    /* Flat R2VB producer inputs skip the f2i/f2u interpolation epsilon; every
+     * ordinary fragment shader keeps the interpolated default. */
+    compiler.Base.input_semantics = input_semantics;
     DBG_ON(r300, DBG_FP) ? compiler.Base.Debug |= RC_DBG_LOG : 0;
 
     compiler.code = &shader->code;
@@ -1504,7 +1510,7 @@ retry:
             char *msg = r300_check_control_flow(clone);
             if (msg) {
                 ralloc_free(clone);
-                r300_dummy_fragment_shader(r300, shader);
+                r300_dummy_fragment_shader(r300, shader, input_semantics);
                 shader->error = strdup(msg);
                 return;
             }
@@ -1572,7 +1578,7 @@ retry:
             const char *why = NULL;
             if (!r300_classic_select(cctx, cclone, ct,
                                      &shader->compare_state, 0,
-                                     &classic_inputs, &sel) ||
+                                     input_semantics, &classic_inputs, &sel) ||
                 !sel.program) {
                 why = sel.reject_reason ? sel.reject_reason : "selection";
             } else if (!r300_classic_regalloc(cctx, sel.program, &ra) ||
@@ -1624,7 +1630,7 @@ retry:
         shader->error = strdup(compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg
                                                       : "Cannot translate shader from NIR.");
         rc_destroy(&compiler.Base);
-        r300_dummy_fragment_shader(r300, shader);
+        r300_dummy_fragment_shader(r300, shader, input_semantics);
         return;
     }
 
@@ -1664,7 +1670,7 @@ retry:
         free(compiler.code->constants.Constants);
         free(compiler.code->constants_remap_table);
         rc_destroy(&compiler.Base);
-        r300_dummy_fragment_shader(r300, shader);
+        r300_dummy_fragment_shader(r300, shader, input_semantics);
         return;
     }
 
@@ -1676,7 +1682,7 @@ retry:
             allow_classic = false;
             goto retry;
         }
-        r300_dummy_fragment_shader(r300, shader);
+        r300_dummy_fragment_shader(r300, shader, input_semantics);
         return;
     }
 
@@ -1748,7 +1754,8 @@ r300_fs_code_reset(struct r300_fragment_shader_code *shader)
  * untouched and nothing reaches the CS. */
 enum r300_fs_admission
 r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_nir,
-                              unsigned *out_alu_len)
+                              unsigned *out_alu_len,
+                              enum r300_fs_input_semantics input_semantics)
 {
     if (out_alu_len)
         *out_alu_len = 0;
@@ -1762,7 +1769,7 @@ r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_n
 
     struct pipe_shader_state st = {
         .type = PIPE_SHADER_IR_NIR, .ir.nir = fs_nir };
-    r300_translate_fragment_shader_body(r300, probe, st);
+    r300_translate_fragment_shader_body(r300, probe, st, input_semantics);
 
     enum r300_fs_admission verdict;
     if (!probe->dummy && !probe->error) {
@@ -1794,9 +1801,10 @@ r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_n
 static void r300_translate_fragment_shader(
     struct r300_context* r300,
     struct r300_fragment_shader_code* shader,
-    struct pipe_shader_state state)
+    struct pipe_shader_state state,
+    enum r300_fs_input_semantics input_semantics)
 {
-    r300_translate_fragment_shader_body(r300, shader, state);
+    r300_translate_fragment_shader_body(r300, shader, state, input_semantics);
 
     static int mp_gate = -1;
     if (mp_gate < 0) {
@@ -1862,7 +1870,7 @@ static void r300_translate_fragment_shader(
 
         struct pipe_shader_state pb_state = {
             .type = PIPE_SHADER_IR_NIR, .ir.nir = pass_b };
-        r300_translate_fragment_shader_body(r300, pb, pb_state);
+        r300_translate_fragment_shader_body(r300, pb, pb_state, input_semantics);
         ralloc_free(pass_b);
         if (pb->dummy || pb->error) {
             fprintf(stderr, "r300 FS multipass: cut %u pass B rejected "
@@ -1878,7 +1886,7 @@ static void r300_translate_fragment_shader(
         r300_fs_code_reset(shader);
         struct pipe_shader_state pa_state = {
             .type = PIPE_SHADER_IR_NIR, .ir.nir = pass_a };
-        r300_translate_fragment_shader_body(r300, shader, pa_state);
+        r300_translate_fragment_shader_body(r300, shader, pa_state, input_semantics);
         ralloc_free(pass_a);
         if (shader->dummy || shader->error) {
             fprintf(stderr, "r300 FS multipass: cut %u pass A rejected "
@@ -1967,7 +1975,8 @@ bool r300_pick_fragment_shader(struct r300_context *r300,
         fs->first = fs->shader = CALLOC_STRUCT(r300_fragment_shader_code);
 
         r300_fs_variant_set_key(fs->shader, state, r300, fs);
-        r300_translate_fragment_shader(r300, fs->shader, fs->state);
+        r300_translate_fragment_shader(r300, fs->shader, fs->state,
+                                       fs->input_semantics);
         return true;
 
     } else {
@@ -1994,7 +2003,8 @@ bool r300_pick_fragment_shader(struct r300_context *r300,
             fs->first = fs->shader = ptr;
 
             r300_fs_variant_set_key(ptr, state, r300, fs);
-            r300_translate_fragment_shader(r300, ptr, fs->state);
+            r300_translate_fragment_shader(r300, ptr, fs->state,
+                                           fs->input_semantics);
             return true;
         }
     }

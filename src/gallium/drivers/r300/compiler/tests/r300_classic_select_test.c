@@ -93,7 +93,7 @@ select_shader(void *ctx, nir_shader *s,
    r300_optimize_nir(s, r300_screen(ps));
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
-   CHECK(r300_classic_select(ctx, s, t, NULL, 4, NULL, result), "selection ran");
+   CHECK(r300_classic_select(ctx, s, t, NULL, 4, R300_FS_INPUT_INTERPOLATED, NULL, result), "selection ran");
    if (result->program) {
       char err[128] = {0};
       CHECK(r300_classic_program_validate(result->program, err, sizeof(err)),
@@ -318,7 +318,7 @@ case_wpos_face_semantics(void)
       const struct r300_classic_target *t =
          r300_classic_target_get(false, false);
       struct r300_classic_select_result r;
-      CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, &sem, &r),
+      CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, R300_FS_INPUT_INTERPOLATED, &sem, &r),
             "selection ran");
       CHECK(r.program != NULL, rows[n].what);
       if (r.reject_reason)
@@ -366,7 +366,7 @@ case_control_flow_rejects(void)
     * control-flow reject. */
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result r;
-   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, NULL, &r), "selection ran");
+   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, R300_FS_INPUT_INTERPOLATED, NULL, &r), "selection ran");
    CHECK(r.program == NULL, "control flow rejected");
    CHECK(r.reject_reason && strstr(r.reject_reason, "control flow") != NULL,
          "control-flow reject named");
@@ -388,7 +388,7 @@ case_integer_op_rejects(void)
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result r;
-   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, NULL, &r), "selection ran");
+   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, R300_FS_INPUT_INTERPOLATED, NULL, &r), "selection ran");
    CHECK(r.program == NULL, "integer op rejected");
    /* The entry lowering carries most integer math to float; a bitwise op
     * with no FP24-exact lowering is the named remainder. */
@@ -420,7 +420,7 @@ case_varying_semantics_match_fixup(void)
    r300_shader_semantics_reset(&sem);
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result r;
-   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, &sem, &r), "selection ran");
+   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, R300_FS_INPUT_INTERPOLATED, &sem, &r), "selection ran");
    CHECK(r.program != NULL, "varying shader selects");
    if (r.reject_reason)
       fprintf(stderr, "  rejected: %s\n", r.reject_reason);
@@ -455,7 +455,7 @@ case_wpos_reconstruction(void)
    r300_shader_semantics_reset(&sem);
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result r;
-   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, &sem, &r), "selection ran");
+   CHECK(r300_classic_select(ctx, b.shader, t, NULL, 0, R300_FS_INPUT_INTERPOLATED, &sem, &r), "selection ran");
    CHECK(r.program != NULL, "wpos shader selects");
    if (r.reject_reason)
       fprintf(stderr, "  rejected: %s\n", r.reject_reason);
