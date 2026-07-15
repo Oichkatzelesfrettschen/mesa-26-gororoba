@@ -448,6 +448,20 @@ Exact integer rules compare against arbitrary-precision integer or rational
 evaluation; floating rules compare against a software model of RS482 `s1e7m16`
 RTZ / FTZ / saturation, which is currently missing and is a prerequisite.
 
+Route-chain host oracle (04f.3R): a host test that begins at vertex-stage NIR and
+runs the full admission chain -- structural shape scan, VS-to-FS restage,
+producer preparation, emitted-slot measurement, split selection, and pass-A/pass-B
+compile -- returns the plan action and reason without a draw submit. It runs the
+T0-T9 typed corpus in clip and window modes with the required rows `T0 SPLIT
+{f,b}`, `T1/T2 SPLIT {f,i}`, `T3 SPLIT {f,u}`, `T4/T5 REJECT SIGNED_RANGE`, `T6/T7
+REJECT UNSIGNED_RANGE`, `T8/T9 REJECT MIXED_SIGNEDNESS`, plus an under-budget
+typed producer that returns `TYPED_SINGLE_PASS_UNPROVEN`, a fractional `f2i` case
+just below and above an integer boundary, an unsupported integer op, an unbounded
+typed chain, and the existing float `recur90` and wide-frontier controls. This is
+the route-chain calibration the pre-draw host classifier (F3-CLASSIFIER-01) only
+predicts and the frozen-build silicon run (F3-R0) could not reach, so it precedes
+the attended silicon transport rows.
+
 Silicon validation per rule (attended, under the standing safety protocol: 60s
 idle, `timeout 120`, kmsg guard, no PVS-port reads): the rule id and proof
 manifest, pre- and post-rewrite emitted slots, clip-space and window-space
