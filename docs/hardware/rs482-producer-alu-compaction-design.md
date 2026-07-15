@@ -319,13 +319,28 @@ original.
 ```text
 r300_r2vb_producer_plan {
     action : SINGLE | COMPACTED | SPLIT | REJECT
+    reason : OK | CONTROL_FLOW | IO_SHAPE | INTRINSIC | TYPED_SOURCE_SHAPE
+           | TYPED_SINGLE_PASS_UNPROVEN | CARRY_WIDTH | SIGNED_RANGE
+           | UNSIGNED_RANGE | MIXED_SIGNEDNESS | PASS_A | PASS_B | BACKEND
     space  : clip | window
     rule   : compaction rule id
     before : r300_compaction_cost
     after  : r300_compaction_cost
+    carry  : selected transport type per cut component (f / i / u / b)
     candidate : owned canonical NIR from which one pass or the split halves build
 }
 ```
+
+The `reason` field names which condition fired, so a declined draw records its
+cause rather than an unattributed fallback: a structural reject (`CONTROL_FLOW`,
+`IO_SHAPE`, `INTRINSIC`), a typed-source shape the narrow contract excludes
+(`TYPED_SOURCE_SHAPE`), an under-budget typed producer held back until its
+single-pass domain is proven (`TYPED_SINGLE_PASS_UNPROVEN`), a range or
+signedness decline from `r300_mp_select_r2vb_transport` (`CARRY_WIDTH`,
+`SIGNED_RANGE`, `UNSIGNED_RANGE`, `MIXED_SIGNEDNESS`), a pass-half build failure
+(`PASS_A`, `PASS_B`), or an authoritative backend `REJECT`. This makes the
+production planner the authority for the typed-frontier classification the host
+mirror (F3-CLASSIFIER-01) predicts.
 
 The plan is cached per vertex shader, computed-varying mode, clip/window
 position space, and the viewport-dependent window key where it applies. The
@@ -353,6 +368,44 @@ one FP32 `vec4` typed carry across a single-block cut of the compacted candidate
 (04f.2 / 04f.3); otherwise the MRT carry transports several (04f.5); otherwise
 gallivm runs the software reference. Compaction is tried first because a producer
 that fits delivers in one pass with the application vertex data unmutated.
+
+### Admission runs on the restaged FS, not the pre-lowering VS
+
+The plan consumes the restaged position-pass FS NIR
+(`r300_r2vb_build_restaged_fs_nir`), and the production route admission gate runs
+there too. The live route reaches the plan through `r300_r2vb_route_mvp ->
+r300_vs_is_fragment_aluable -> r300_vs_nir_is_fragment_aluable`, which scans the
+original application VS (constant-folded and DCE'd) against the float-only
+`r300_nir_op_is_fragment_aluable` whitelist. That whitelist holds float
+arithmetic, transcendentals, float-domain compare/select, and moves; it excludes
+the integer and Boolean source ops (`f2i32`/`f2u32`, `i2f32`/`u2f32`,
+`imin`/`imax`/`umin`, `flt`, `b2f32`) a typed carry uses, so a typed producer
+declines the route before restaging. The typed T0-T9 corpus rendered through
+gallivm with `aluable=0` and no split token on silicon (F3-R0, stein PR#110),
+confirming the typed split primitive is unreachable this way.
+
+The fragment backend lowers those ops before RC emission
+(`r300_nir_lower_bitwise_to_arith`, `nir_lower_int_to_float`, bool-to-float,
+compare lowering), which is why the host pass-A/pass-B builders compile. So the
+admission split follows the plan's own consumer boundary: a pre-lowering scan
+keeps only the structural facts that survive lowering -- single-block control
+flow, plain I/O and uniform/UBO intrinsics, a `gl_Position` output, leading-input
+feed -- and ALU-lowering capability becomes the backend verdict on the restaged
+FS (`BACKEND` reject for unsupported, `OVER_ALU_BUDGET` for split-eligible). A
+whitelist expansion alone is the wrong fix: it would mark an under-budget typed
+producer `SINGLE` and run it without passing `r300_mp_select_r2vb_transport`, so
+an unbounded, mixed-signedness, or out-of-range carry admits whenever the program
+fits below 64 slots. The plan declines under-budget typed producers
+(`TYPED_SINGLE_PASS_UNPROVEN`) until that single-pass domain is proven.
+
+The restaged FS also fixes the conversion semantics. The fragment compile applies
+`r300_nir_lower_f2i_epsilon` (`x * (1 + 2^-15)`) before `f2i32`/`f2u32` to
+compensate interpolated-varying error; an R2VB producer's generated point
+attributes are flat, so the nudge can cross a truncation boundary relative to
+gallivm and the direct Draw VS path, which lowers integers without it. An
+`r300_fs_input_semantics` distinction (`INTERPOLATED` vs `R2VB_FLAT_VERTEX`) skips
+the epsilon for flat R2VB producer conversions (04f.3c), so a routed typed carry
+matches the software reference exactly.
 
 ## Prerequisites before implementation
 
