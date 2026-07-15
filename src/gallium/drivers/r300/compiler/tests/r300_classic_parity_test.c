@@ -300,7 +300,8 @@ static bool
 compile_reference(nir_shader *s, struct r300_fragment_program_compiler *fc,
                   struct rc_regalloc_state *rs,
                   struct r300_fragment_shader_code *fs_code,
-                  const struct r300_fragment_program_external_state *ext_in)
+                  const struct r300_fragment_program_external_state *ext_in,
+                  enum r300_fs_input_semantics mode)
 {
    static struct r300_screen screen;
    struct pipe_screen *ps = fake_r300_screen(&screen);
@@ -310,6 +311,7 @@ compile_reference(nir_shader *s, struct r300_fragment_program_compiler *fc,
    union r300_shader_code code = {.f = fs_code};
 
    fs_compiler_init(fc, rs);
+   fc->Base.input_semantics = mode;
    r300_optimize_nir(s, r300_screen(ps));
    nir_to_rc(s, ps, ext, code, &fc->Base);
    return !fc->Base.Error;
@@ -323,7 +325,8 @@ static bool
 compile_classic(void *ctx, nir_shader *s,
                 struct r300_fragment_program_compiler *fc,
                 struct rc_regalloc_state *rs, const char **why,
-                const struct r300_fragment_program_external_state *ext_in)
+                const struct r300_fragment_program_external_state *ext_in,
+                enum r300_fs_input_semantics mode)
 {
    static struct r300_screen screen;
    struct pipe_screen *ps = fake_r300_screen(&screen);
@@ -331,7 +334,7 @@ compile_classic(void *ctx, nir_shader *s,
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result sel;
-   if (!r300_classic_select(ctx, s, t, ext_in, 0, R300_FS_INPUT_INTERPOLATED, NULL, &sel) || !sel.program) {
+   if (!r300_classic_select(ctx, s, t, ext_in, 0, mode, NULL, &sel) || !sel.program) {
       *why = sel.reject_reason ? sel.reject_reason : "selection failed";
       return false;
    }
@@ -383,9 +386,9 @@ run_eval(struct r300_fragment_program_compiler *fc, unsigned input_set,
  * needs a non-NULL ext.  Returns true if any input set showed a per-channel
  * mismatch. */
 static bool
-parity_probe(const char *name, nir_shader *(*build)(void),
+parity_probe_mode(const char *name, nir_shader *(*build)(void),
             const struct r300_fragment_program_external_state *ext,
-            bool count_diverge_as_failure)
+            bool count_diverge_as_failure, enum r300_fs_input_semantics mode)
 {
    void *ctx = ralloc_context(NULL);
    nir_shader *for_ref = build();
@@ -400,13 +403,13 @@ parity_probe(const char *name, nir_shader *(*build)(void),
    char what[256];
    snprintf(what, sizeof(what), "%s: reference front end compiles", name);
    const bool ref_ok =
-      compile_reference(for_ref, &ref_fc, &ref_rs, &ref_code, ext);
+      compile_reference(for_ref, &ref_fc, &ref_rs, &ref_code, ext, mode);
    CHECK(ref_ok, what);
 
    const char *why = NULL;
    snprintf(what, sizeof(what), "%s: classic front end compiles", name);
    const bool cls_ok = compile_classic(ctx, for_classic, &cls_fc, &cls_rs,
-                                       &why, ext);
+                                       &why, ext, mode);
    CHECK(cls_ok, what);
    if (!cls_ok && why)
       fprintf(stderr, "  classic: %s\n", why);
@@ -458,11 +461,217 @@ parity_probe(const char *name, nir_shader *(*build)(void),
    return diverged;
 }
 
+/* Both front ends compile the corpus under the interpolated fragment input
+ * contract; the flat R2VB-producer contract is exercised by mode_epsilon. */
+static bool
+parity_probe(const char *name, nir_shader *(*build)(void),
+            const struct r300_fragment_program_external_state *ext,
+            bool count_diverge_as_failure)
+{
+   return parity_probe_mode(name, build, ext, count_diverge_as_failure,
+                            R300_FS_INPUT_INTERPOLATED);
+}
+
 /* The regression-gate entry: a channel mismatch fails the suite. */
 static void
 parity(const char *name, nir_shader *(*build)(void))
 {
    parity_probe(name, build, NULL, true);
+}
+
+/* Does the compiled RC program carry the f2i/f2u epsilon multiplier -- an
+ * immediate constant one of whose components is exactly 1 + 2^-15?  The
+ * interpolated contract inserts it on every float-to-int source; the flat
+ * contract omits it.  Detecting the constant is a direct structural read of
+ * which contract the front end applied, independent of whether an evaluation
+ * input happens to land on a truncation boundary. */
+static bool
+program_has_epsilon_const(struct r300_fragment_program_compiler *fc)
+{
+   const struct rc_constant_list *consts = &fc->Base.Program.Constants;
+   for (unsigned i = 0; i < consts->Count; i++) {
+      const struct rc_constant *c = &consts->Constants[i];
+      if (c->Type != RC_CONSTANT_IMMEDIATE)
+         continue;
+      for (unsigned ch = 0; ch < 4; ch++)
+         if (c->u.Immediate[ch] == 1.0f + (1.0f / 32768.0f))
+            return true;
+   }
+   return false;
+}
+
+/* Structural equality of two compiled RC programs: same opcode sequence, same
+ * destination and source registers, same saturate, same immediate constants.
+ * Not a memcmp -- the compiler structs carry pointers and allocation state --
+ * but every field the hardware sees. */
+static bool
+rc_programs_identical(struct radeon_compiler *a, struct radeon_compiler *b)
+{
+   struct rc_instruction *ia = a->Program.Instructions.Next;
+   struct rc_instruction *ib = b->Program.Instructions.Next;
+   for (; ia != &a->Program.Instructions && ib != &b->Program.Instructions;
+        ia = ia->Next, ib = ib->Next) {
+      if (ia->U.I.Opcode != ib->U.I.Opcode ||
+          ia->U.I.SaturateMode != ib->U.I.SaturateMode)
+         return false;
+      const struct rc_opcode_info *info = rc_get_opcode_info(ia->U.I.Opcode);
+      if (info->HasDstReg &&
+          (ia->U.I.DstReg.File != ib->U.I.DstReg.File ||
+           ia->U.I.DstReg.Index != ib->U.I.DstReg.Index ||
+           ia->U.I.DstReg.WriteMask != ib->U.I.DstReg.WriteMask))
+         return false;
+      for (unsigned s = 0; s < info->NumSrcRegs; s++) {
+         if (ia->U.I.SrcReg[s].File != ib->U.I.SrcReg[s].File ||
+             ia->U.I.SrcReg[s].Index != ib->U.I.SrcReg[s].Index ||
+             ia->U.I.SrcReg[s].Swizzle != ib->U.I.SrcReg[s].Swizzle ||
+             ia->U.I.SrcReg[s].Negate != ib->U.I.SrcReg[s].Negate ||
+             ia->U.I.SrcReg[s].Abs != ib->U.I.SrcReg[s].Abs)
+            return false;
+      }
+   }
+   if (ia != &a->Program.Instructions || ib != &b->Program.Instructions)
+      return false;
+
+   const struct rc_constant_list *ca = &a->Program.Constants;
+   const struct rc_constant_list *cb = &b->Program.Constants;
+   if (ca->Count != cb->Count)
+      return false;
+   for (unsigned i = 0; i < ca->Count; i++) {
+      if (ca->Constants[i].Type != cb->Constants[i].Type)
+         return false;
+      if (ca->Constants[i].Type == RC_CONSTANT_IMMEDIATE &&
+          memcmp(ca->Constants[i].u.Immediate, cb->Constants[i].u.Immediate,
+                 sizeof(ca->Constants[i].u.Immediate)) != 0)
+         return false;
+   }
+   return true;
+}
+
+/* A float-only shader carries no f2i/f2u source, so the input-semantics helper
+ * is a strict no-op and both modes must compile to byte-identical RC in the
+ * same front end.  This is the regression proof that PR A cannot perturb the
+ * already-green float R2VB route: if the two modes ever diverge here, the mode
+ * leaked into a path it should not touch.  Compared per front end because the
+ * two front ends legitimately number and order instructions differently. */
+static void
+mode_identity(const char *name, nir_shader *(*build)(void))
+{
+   char what[256];
+
+   struct r300_fragment_program_compiler ref_i, ref_f;
+   struct rc_regalloc_state rs_i, rs_f;
+   struct r300_fragment_shader_code code_i, code_f;
+   memset(&code_i, 0, sizeof(code_i));
+   memset(&code_f, 0, sizeof(code_f));
+   const bool ri = compile_reference(build(), &ref_i, &rs_i, &code_i, NULL,
+                                     R300_FS_INPUT_INTERPOLATED);
+   const bool rf = compile_reference(build(), &ref_f, &rs_f, &code_f, NULL,
+                                     R300_FS_INPUT_R2VB_FLAT_VERTEX);
+   snprintf(what, sizeof(what), "%s: reference compiles under both modes", name);
+   CHECK(ri && rf, what);
+   if (ri && rf) {
+      snprintf(what, sizeof(what),
+               "%s: reference RC identical under both modes", name);
+      CHECK(rc_programs_identical(&ref_i.Base, &ref_f.Base), what);
+   }
+   if (ri) {
+      rc_destroy(&ref_i.Base);
+      rc_destroy_regalloc_state(&rs_i);
+   }
+   if (rf) {
+      rc_destroy(&ref_f.Base);
+      rc_destroy_regalloc_state(&rs_f);
+   }
+
+   void *ctx = ralloc_context(NULL);
+   struct r300_fragment_program_compiler cls_i, cls_f;
+   struct rc_regalloc_state cs_i, cs_f;
+   const char *why_i = NULL, *why_f = NULL;
+   const bool ci =
+      compile_classic(ctx, build(), &cls_i, &cs_i, &why_i, NULL,
+                      R300_FS_INPUT_INTERPOLATED);
+   const bool cf =
+      compile_classic(ctx, build(), &cls_f, &cs_f, &why_f, NULL,
+                      R300_FS_INPUT_R2VB_FLAT_VERTEX);
+   snprintf(what, sizeof(what), "%s: classic compiles under both modes", name);
+   CHECK(ci && cf, what);
+   if (ci && cf) {
+      snprintf(what, sizeof(what), "%s: classic RC identical under both modes",
+               name);
+      CHECK(rc_programs_identical(&cls_i.Base, &cls_f.Base), what);
+   }
+   if (ci) {
+      rc_destroy(&cls_i.Base);
+      rc_destroy_regalloc_state(&cs_i);
+   }
+   if (cf) {
+      rc_destroy(&cls_f.Base);
+      rc_destroy_regalloc_state(&cs_f);
+   }
+   ralloc_free(ctx);
+}
+
+/* Front-end-independence of the input-semantics contract: a typed (f2i)
+ * fragment shader compiled under R300_FS_INPUT_INTERPOLATED carries the
+ * epsilon multiplier in BOTH front ends, and under R300_FS_INPUT_R2VB_FLAT_VERTEX
+ * carries it in NEITHER.  This is the regression gate for the defect where one
+ * front end honors the mode and the other applies the epsilon unconditionally:
+ * a flat producer taking the classic ladder would otherwise receive the
+ * interpolated correction the shared helper now suppresses.  It also runs the
+ * evaluator parity so the two front ends stay semantically equal within each
+ * mode. */
+static void
+mode_epsilon(const char *name, nir_shader *(*build)(void))
+{
+   const enum r300_fs_input_semantics modes[] = {
+      R300_FS_INPUT_INTERPOLATED, R300_FS_INPUT_R2VB_FLAT_VERTEX};
+   const bool expect_eps[] = {true, false};
+
+   for (unsigned m = 0; m < 2; m++) {
+      void *ctx = ralloc_context(NULL);
+      struct r300_fragment_program_compiler ref_fc, cls_fc;
+      struct rc_regalloc_state ref_rs, cls_rs;
+      struct r300_fragment_shader_code ref_code;
+      memset(&ref_code, 0, sizeof(ref_code));
+      char what[256];
+
+      const bool ref_ok = compile_reference(build(), &ref_fc, &ref_rs,
+                                            &ref_code, NULL, modes[m]);
+      const char *why = NULL;
+      const bool cls_ok =
+         compile_classic(ctx, build(), &cls_fc, &cls_rs, &why, NULL, modes[m]);
+      snprintf(what, sizeof(what), "%s: both front ends compile, mode %u", name,
+               m);
+      CHECK(ref_ok && cls_ok, what);
+      if (!cls_ok && why)
+         fprintf(stderr, "  classic: %s\n", why);
+
+      if (ref_ok) {
+         snprintf(what, sizeof(what),
+                  "%s: reference epsilon %s under mode %u", name,
+                  expect_eps[m] ? "present" : "absent", m);
+         CHECK(program_has_epsilon_const(&ref_fc) == expect_eps[m], what);
+      }
+      if (cls_ok) {
+         snprintf(what, sizeof(what), "%s: classic epsilon %s under mode %u",
+                  name, expect_eps[m] ? "present" : "absent", m);
+         CHECK(program_has_epsilon_const(&cls_fc) == expect_eps[m], what);
+      }
+
+      if (ref_ok) {
+         rc_destroy(&ref_fc.Base);
+         rc_destroy_regalloc_state(&ref_rs);
+      }
+      if (cls_ok) {
+         rc_destroy(&cls_fc.Base);
+         rc_destroy_regalloc_state(&cls_rs);
+      }
+      ralloc_free(ctx);
+   }
+
+   /* Within each mode the two front ends stay semantically equal. */
+   parity_probe_mode(name, build, NULL, true, R300_FS_INPUT_INTERPOLATED);
+   parity_probe_mode(name, build, NULL, true, R300_FS_INPUT_R2VB_FLAT_VERTEX);
 }
 
 /* ---------- corpus ---------- */
@@ -1048,6 +1257,18 @@ main(void)
          build_masked_output_store_single_channel);
    parity("masked_output_store_with_depth",
          build_masked_output_store_with_depth);
+
+   /* Front-end-independent fragment input semantics: the f2i epsilon
+    * multiplier is present in both front ends under the interpolated contract
+    * and absent in both under the flat R2VB-producer contract. */
+   mode_epsilon("mode_epsilon_int_ladder", build_int_index_ladder);
+
+   /* Float-only route regression: with no f2i/f2u source the helper is a
+    * strict no-op, so both modes must compile to identical RC per front end. */
+   mode_identity("mode_identity_passthrough", build_passthrough);
+   mode_identity("mode_identity_fmad", build_fmad);
+   mode_identity("mode_identity_dots", build_dots_replicated);
+   mode_identity("mode_identity_transcendentals", build_transcendentals);
 
    glsl_type_singleton_decref();
    if (failures) {

@@ -368,6 +368,26 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Fragment input-semantics helper: the interpolated contract nudges every
+  # f2i/f2u source by 1 + 2^-15 and the flat R2VB-producer contract omits it,
+  # with an observable one-integer boundary difference.  Pure NIR helper +
+  # nir_lower_int_to_float fold, no winsys.
+  test(
+    'r300-fs-input-semantics',
+    executable(
+      'r300_fs_input_semantics_test',
+      files('compiler/tests/r300_fs_input_semantics_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   test(
     'r300-nir-to-rc',
     executable(

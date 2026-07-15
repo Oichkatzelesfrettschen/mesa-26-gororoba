@@ -73,9 +73,15 @@ r300_nir_apply_fs_input_semantics(nir_shader *s,
       return false;
 
    /* Flat R2VB producer inputs do not use the empirical smooth-varying
-    * interpolation correction; every other fragment shader does. */
-   if (semantics == R300_FS_INPUT_INTERPOLATED)
+    * interpolation correction; every other fragment shader does.  The switch
+    * is exhaustive so a future semantics value fails closed here rather than
+    * silently taking the less-conservative flat path. */
+   switch (semantics) {
+   case R300_FS_INPUT_INTERPOLATED:
       return r300_nir_lower_f2i_epsilon(s);
+   case R300_FS_INPUT_R2VB_FLAT_VERTEX:
+      return false;
+   }
 
-   return false;
+   UNREACHABLE("invalid r300 fragment input semantics");
 }
