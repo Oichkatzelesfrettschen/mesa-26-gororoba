@@ -319,26 +319,57 @@ original.
 ```text
 r300_r2vb_producer_plan {
     action : SINGLE | COMPACTED | SPLIT | REJECT
-    reason : OK | CONTROL_FLOW | IO_SHAPE | INTRINSIC | TYPED_SOURCE_SHAPE
-           | TYPED_SINGLE_PASS_UNPROVEN | CARRY_WIDTH | SIGNED_RANGE
-           | UNSIGNED_RANGE | MIXED_SIGNEDNESS | PASS_A | PASS_B | BACKEND
+    primary_reason : the deterministic decline or accept class (r300_r2vb_plan_reason)
+    observed_reason_mask : every failure class seen across ranked candidates
     space  : clip | window
     rule   : compaction rule id
     before : r300_compaction_cost
     after  : r300_compaction_cost
     carry  : selected transport type per cut component (f / i / u / b)
+    has_typed_source : the producer contains f2i/f2u/integer/Boolean semantics
+    typed_source_class : the recognized typed-source shape (bool / sint / uint / none)
+    typed_source : witness binding each typed op to the recognized chain
+    input_semantics : R300_FS_INPUT_R2VB_FLAT_VERTEX for every producer compile
     candidate : owned canonical NIR from which one pass or the split halves build
+}
+
+r300_r2vb_plan_reason {
+    OK
+    CONTROL_FLOW | IO_SHAPE | INTRINSIC              -- structural reject
+    TYPED_SOURCE_SHAPE | TYPED_SOURCE_NOT_CARRIED    -- typed-source shape reject
+    TYPED_SOURCE_DOMAIN_UNPROVEN                     -- production source-conversion gate
+    TYPED_SINGLE_PASS_UNPROVEN                       -- under-budget typed, held back
+    TYPED_GATE_DISABLED                              -- R300_R2VB_TYPED_SPLIT off (policy)
+    CARRY_WIDTH | SIGNED_RANGE | UNSIGNED_RANGE | MIXED_SIGNEDNESS
+    NO_EXACT_CUT | OVER_ALU_NO_SPLIT
+    PASS_A | PASS_B | BACKEND                        -- half build or compile failure
+    OUT_OF_MEMORY | INTERNAL_INCONSISTENCY           -- infrastructure, not workload
 }
 ```
 
-The `reason` field names which condition fired, so a declined draw records its
-cause rather than an unattributed fallback: a structural reject (`CONTROL_FLOW`,
-`IO_SHAPE`, `INTRINSIC`), a typed-source shape the narrow contract excludes
-(`TYPED_SOURCE_SHAPE`), an under-budget typed producer held back until its
-single-pass domain is proven (`TYPED_SINGLE_PASS_UNPROVEN`), a range or
-signedness decline from `r300_mp_select_r2vb_transport` (`CARRY_WIDTH`,
-`SIGNED_RANGE`, `UNSIGNED_RANGE`, `MIXED_SIGNEDNESS`), a pass-half build failure
-(`PASS_A`, `PASS_B`), or an authoritative backend `REJECT`. This makes the
+Cut selection is multi-candidate: `r300_mp_find_vec4_cut` returns the first
+candidate whose transport contract fits, and `r300_r2vb_split_admitted` then
+compiles only that one. The production planner instead walks every ranked
+candidate within a bounded limit -- carry width, typed source and carry
+semantics, signed/unsigned range, pass-A and pass-B build, both compiles -- and
+selects the best success. When none succeed it retains every observed failure in
+`observed_reason_mask` and picks a deterministic `primary_reason` by precedence:
+`OUT_OF_MEMORY`/`INTERNAL_INCONSISTENCY`, then structural reject, then
+`TYPED_SOURCE_DOMAIN_UNPROVEN`, then `MIXED_SIGNEDNESS`, then range, then
+`CARRY_WIDTH`, then `PASS_A`/`PASS_B`/`BACKEND`, then `NO_EXACT_CUT`. This avoids
+reporting `CARRY_WIDTH` merely because the first candidate was wide when a later
+candidate failed for the actual typed-domain reason.
+
+Typed-source detection is independent of carry type. A shader can compute a typed
+value entirely in pass A, convert it back to float before the cut, and carry only
+a float: the carry type reads `f` while the source program still holds
+`f2i`/`f2u`/integer/Boolean semantics. So `has_typed_source` scans the whole
+program, not the selected cut, and the diagnostic route requires every typed op
+to belong to the recognized chain (`typed_source`) and the chain's typed value to
+be the value crossing the cut, declining `TYPED_SOURCE_SHAPE` or
+`TYPED_SOURCE_NOT_CARRIED` otherwise. A policy gate being off (`TYPED_GATE_DISABLED`)
+and an allocation failure (`OUT_OF_MEMORY`) are distinct from a semantic reject,
+so telemetry does not count them as workload rejections. This makes the
 production planner the authority for the typed-frontier classification the host
 mirror (F3-CLASSIFIER-01) predicts.
 
@@ -389,23 +420,50 @@ The fragment backend lowers those ops before RC emission
 compare lowering), which is why the host pass-A/pass-B builders compile. So the
 admission split follows the plan's own consumer boundary: a pre-lowering scan
 keeps only the structural facts that survive lowering -- single-block control
-flow, plain I/O and uniform/UBO intrinsics, a `gl_Position` output, leading-input
-feed -- and ALU-lowering capability becomes the backend verdict on the restaged
-FS (`BACKEND` reject for unsupported, `OVER_ALU_BUDGET` for split-eligible). A
-whitelist expansion alone is the wrong fix: it would mark an under-budget typed
-producer `SINGLE` and run it without passing `r300_mp_select_r2vb_transport`, so
-an unbounded, mixed-signedness, or out-of-range carry admits whenever the program
-fits below 64 slots. The plan declines under-budget typed producers
-(`TYPED_SINGLE_PASS_UNPROVEN`) until that single-pass domain is proven.
+flow, plain I/O and uniform/UBO intrinsics, a `gl_Position` output, and a bounded
+set of position-feeding inputs (up to `R300_R2VB_MAX_PRODUCER_INPUTS`) mapped in
+the producer's `VARYING_SLOT_VAR0 + location-rank` order, each representable by
+the producer input contract. The T0-T9 corpus folds its typed carry into the
+position computation alongside `inPos`, so a leading-input-only rule would reject
+it again; the multi-input position path already feeds those inputs in
+location-rank order. ALU-lowering capability becomes the backend verdict on the
+restaged FS (`BACKEND` reject for unsupported, `OVER_ALU_BUDGET` for
+split-eligible). A whitelist expansion alone is the wrong fix: it would mark an
+under-budget typed producer `SINGLE` and run it without passing
+`r300_mp_select_r2vb_transport`, so an unbounded, mixed-signedness, or
+out-of-range carry admits whenever the program fits below 64 slots. The plan
+declines under-budget typed producers (`TYPED_SINGLE_PASS_UNPROVEN`) until that
+single-pass domain is proven.
 
-The restaged FS also fixes the conversion semantics. The fragment compile applies
+The restaged FS also carries the input-conversion semantics, but skipping the
+interpolation epsilon fixes one discrepancy and does not by itself establish
+Draw-equivalent conversion. The fragment compile applies
 `r300_nir_lower_f2i_epsilon` (`x * (1 + 2^-15)`) before `f2i32`/`f2u32` to
 compensate interpolated-varying error; an R2VB producer's generated point
 attributes are flat, so the nudge can cross a truncation boundary relative to
 gallivm and the direct Draw VS path, which lowers integers without it. An
 `r300_fs_input_semantics` distinction (`INTERPOLATED` vs `R2VB_FLAT_VERTEX`) skips
-the epsilon for flat R2VB producer conversions (04f.3c), so a routed typed carry
-matches the software reference exactly.
+the epsilon for flat R2VB producer conversions (04f.3c). That removes the
+interpolation nudge, but the FP24 producer still quantizes a runtime float before
+`f2i32`/`f2u32` differently from the software VS, so a value near an integer
+boundary can convert to a different integer even with the epsilon disabled. The
+exact-carry proof shows the resulting integer within `+-2^17` transports exactly;
+it does not show the conversion produced the same integer as the reference.
+Production admission therefore needs a source-conversion-equivalence predicate
+(04f.3e), and until one exists `R300_R2VB_TYPED_SPLIT` is a diagnostic contract
+for a controlled corpus, not a production-safe route.
+
+The `r300_fs_input_semantics` value is not local to the throwaway admission
+compile: the same value reaches the emitted-slot measurement, the pass-A and
+pass-B compiles, the actual producer FS CSO creation, and every producer variant
+or cache key, so the oracle never measures a no-epsilon program the CSO then
+compiles with the interpolated-fragment epsilon. The distinction stays private to
+the driver -- internal `r300_create_fs_state_internal` and
+`r300_fs_measure_nir_admission_internal` helpers take the semantics enum and the
+public `pipe_shader_state` callback wraps `INTERPOLATED` -- rather than extending
+Gallium public shader state. The canonical plan NIR stays immutable; every compile
+or state creation clones it, so ownership does not depend on whether a backend
+helper mutates or consumes its input.
 
 ## Prerequisites before implementation
 
@@ -448,19 +506,25 @@ Exact integer rules compare against arbitrary-precision integer or rational
 evaluation; floating rules compare against a software model of RS482 `s1e7m16`
 RTZ / FTZ / saturation, which is currently missing and is a prerequisite.
 
-Route-chain host oracle (04f.3R): a host test that begins at vertex-stage NIR and
-runs the full admission chain -- structural shape scan, VS-to-FS restage,
-producer preparation, emitted-slot measurement, split selection, and pass-A/pass-B
-compile -- returns the plan action and reason without a draw submit. It runs the
-T0-T9 typed corpus in clip and window modes with the required rows `T0 SPLIT
-{f,b}`, `T1/T2 SPLIT {f,i}`, `T3 SPLIT {f,u}`, `T4/T5 REJECT SIGNED_RANGE`, `T6/T7
-REJECT UNSIGNED_RANGE`, `T8/T9 REJECT MIXED_SIGNEDNESS`, plus an under-budget
-typed producer that returns `TYPED_SINGLE_PASS_UNPROVEN`, a fractional `f2i` case
-just below and above an integer boundary, an unsupported integer op, an unbounded
-typed chain, and the existing float `recur90` and wide-frontier controls. This is
-the route-chain calibration the pre-draw host classifier (F3-CLASSIFIER-01) only
-predicts and the frozen-build silicon run (F3-R0) could not reach, so it precedes
-the attended silicon transport rows.
+Route-chain host oracle (04f.3R): F3-R0 was itself a representation-boundary
+failure -- the downstream producer tests were green while the application VS route
+was unreachable -- so the oracle runs two tiers. Tier A is a direct-NIR unit:
+hand-built application VS NIR through shape validation, restage, plan, and pass
+compile, giving small sharply diagnosed cases. Tier B is a frontend integration:
+the actual T0-T9 SPIR-V through the r3v SPIR-V/NIR preparation to the bound
+application VS NIR, then the same production planner, so it exercises the exact
+representation the route consumes. Tier B is the authoritative pre-silicon
+classifier calibration; Tier A localizes a failure once Tier B flags it. Both run
+clip and window plans, returning the plan action and reason without a draw submit.
+The required rows are `T0 SPLIT {f,b}`, `T1/T2 SPLIT {f,i}`, `T3 SPLIT {f,u}`,
+`T4/T5 REJECT SIGNED_RANGE`, `T6/T7 REJECT UNSIGNED_RANGE`, `T8/T9 REJECT
+MIXED_SIGNEDNESS`, plus an under-budget typed producer returning
+`TYPED_SINGLE_PASS_UNPROVEN`, a fractional `f2i` case just below and above an
+integer boundary, an unsupported integer op, an unbounded typed chain, and the
+existing float `recur90` and wide-frontier controls. This is the route-chain
+calibration the pre-draw host classifier (F3-CLASSIFIER-01) only predicts and the
+frozen-build silicon run (F3-R0) could not reach, so it precedes the attended
+silicon transport rows.
 
 Silicon validation per rule (attended, under the standing safety protocol: 60s
 idle, `timeout 120`, kmsg guard, no PVS-port reads): the rule id and proof
@@ -471,6 +535,41 @@ any timeout. Both clip and window producer variants are required: a rule that
 fits in clip space but pushes the window variant over budget is not a complete
 route win. A rewrite that reduces slots but cannot prove semantic equality, or
 whose frame diverges on silicon, is a rule defect and is withdrawn.
+
+## Staged implementation of the typed route
+
+The typed route lands in four separable stages, each buildable and testable
+before the next, so a source-only change never turns typed shaders production-safe
+ahead of its equivalence proof.
+
+- PR A, flat-producer semantics plumbing, changes no route admission: the
+  `r300_fs_input_semantics` enum, the private FS state-creation and measurement
+  helpers, the epsilon present for `INTERPOLATED` and absent for
+  `R2VB_FLAT_VERTEX`, and identical semantics in measurement and CSO
+  construction. Host tests inspect the transformed NIR for epsilon
+  presence/absence, compile both variants, cover values just below and above
+  positive and negative integer boundaries, and prove the current float-only R2VB
+  producers stay byte-identical at the compiled-program level. It adds neither
+  `R300_R2VB_TYPED_SPLIT` nor typed routing.
+- PR B, the shadow producer planner, changes no rendering behavior: the
+  `r300_r2vb_producer_plan`, the primary reason and reason mask, canonical
+  restaged-NIR ownership, the multi-candidate split search, the full cost and
+  result records, typed-source detection distinct from carry type, and plan
+  caching by VS, computed-varying mode, clip/window space, and window key. It runs
+  in shadow beside the existing float route and asserts every Family-2 float cell
+  receives the same effective decision, and it adds the Tier-A and Tier-B
+  route-chain host oracles.
+- PR C, diagnostic typed split reachability, adds the exact-value
+  `R300_R2VB_TYPED_SPLIT=1` gate and permits only an over-ALU-budget, single-block,
+  known T0-T3 typed source shape whose typed value crosses a one-`vec4` cut with an
+  exact carry range, matching producer/consumer logical type, both halves compiling
+  under budget, and flat-input semantics selected. Under-budget typed producers and
+  any typed source outside the narrow diagnostic contract decline. The T0-T9 corpus
+  is corrected first (safe nonzero-`w` fold, `PT_ATTR`).
+- PR D, production source-domain admission, is separate from route reachability:
+  typed split becomes eligible for automatic HBTCL-08 selection only after a
+  statically defensible source-domain predicate (04f.3e) exists. Until then the
+  diagnostic gate proves the mechanism without constituting production closure.
 
 ## Sources
 
