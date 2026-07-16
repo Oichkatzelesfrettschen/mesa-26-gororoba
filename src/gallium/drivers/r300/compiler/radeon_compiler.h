@@ -34,6 +34,11 @@ struct radeon_compiler {
    unsigned Error : 1;
    char *ErrorMsg;
 
+   /* Fragment-input delivery contract, default interpolated.  An R2VB flat
+    * producer sets R300_FS_INPUT_R2VB_FLAT_VERTEX to skip the f2i/f2u
+    * interpolation epsilon; every other caller leaves the zero default. */
+   enum r300_fs_input_semantics input_semantics;
+
    /* Hardware specification. */
    unsigned is_r400 : 1;
    unsigned is_r500 : 1;

@@ -2320,13 +2320,13 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
       return;
    }
 
-   /* Nudge the fragment stage's float-to-int conversions across the FP24
-    * interpolation-delivery error before nir_lower_int_to_float lowers them
-    * (f2i32 to ftrunc, f2u32 to ffloor); the vertex stage keeps native
-    * integers (r300_vs_draw.c) and does not carry the same
-    * interpolated-varying delivery error. */
-   if (s->info.stage == MESA_SHADER_FRAGMENT)
-      NIR_PASS(_, s, r300_nir_lower_f2i_epsilon);
+   /* Apply the fragment stage's float-to-int conversion contract before
+    * nir_lower_int_to_float lowers f2i32/f2u32 (to ftrunc/ffloor); the vertex
+    * stage keeps native integers (r300_vs_draw.c).  An interpolated fragment
+    * shader gets the smooth-varying epsilon correction; a flat R2VB producer
+    * (R300_FS_INPUT_R2VB_FLAT_VERTEX) omits it, like the Draw vertex path.  The
+    * classic selector routes its f2i/f2u handling through the same helper. */
+   NIR_PASS(_, s, r300_nir_apply_fs_input_semantics, compiler->input_semantics);
    NIR_PASS(_, s, nir_lower_int_to_float);
    NIR_PASS(_, s, nir_opt_copy_prop);
    NIR_PASS(_, s, r300_nir_post_integer_lowering);

@@ -813,6 +813,7 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
                     const struct r300_classic_target *target,
                     const struct r300_fragment_program_external_state *ext,
                     unsigned num_driver_consts,
+                    enum r300_fs_input_semantics input_semantics,
                     struct r300_shader_semantics *semantics,
                     struct r300_classic_select_result *result)
 {
@@ -904,11 +905,12 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
          mem_ctx, "integer bitwise op without an FP24-exact lowering");
       return true;
    }
-   /* Nudge float-to-int conversions across the FP24 interpolation-delivery
-    * error before nir_lower_int_to_float lowers them (f2i32 to ftrunc, f2u32 to
-    * ffloor); the classic path compiles fragment programs only, so no stage
-    * check is needed. */
-   NIR_PASS(_, nir, r300_nir_lower_f2i_epsilon);
+   /* Apply the fragment stage's float-to-int conversion contract before
+    * nir_lower_int_to_float lowers f2i32/f2u32 (to ftrunc/ffloor): an
+    * interpolated fragment shader gets the smooth-varying epsilon correction, a
+    * flat R2VB producer omits it.  This is the same helper nir_to_rc uses, so
+    * both r300 fragment frontends honor one input-semantics contract. */
+   NIR_PASS(_, nir, r300_nir_apply_fs_input_semantics, input_semantics);
    NIR_PASS(_, nir, nir_lower_int_to_float);
    NIR_PASS(_, nir, nir_opt_copy_prop);
    NIR_PASS(_, nir, r300_nir_post_integer_lowering);

@@ -8,6 +8,19 @@
 
 #include <stdint.h>
 
+/* How a fragment program's inputs deliver their values, selecting the
+ * float-to-int conversion contract.  An ordinary fragment shader reads
+ * smoothly interpolated varyings, whose FP24 plane-interpolation delivery error
+ * the f2i/f2u epsilon nudge compensates.  An R2VB re-staged vertex producer
+ * reads flat generated point attributes and does not use that empirical
+ * smooth-varying interpolation correction, converting like the Draw vertex
+ * path.  This selects the interpolation contract only; broader source-domain
+ * FP24-vs-software equivalence is a separate property. */
+enum r300_fs_input_semantics {
+   R300_FS_INPUT_INTERPOLATED = 0,
+   R300_FS_INPUT_R2VB_FLAT_VERTEX,
+};
+
 #define R300_PFS_MAX_ALU_INST     64
 #define R300_PFS_MAX_TEX_INST     32
 #define R300_PFS_MAX_TEX_INDIRECT 4

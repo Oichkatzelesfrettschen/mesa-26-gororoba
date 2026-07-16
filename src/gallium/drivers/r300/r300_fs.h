@@ -115,6 +115,12 @@ struct r300_fragment_shader {
      * nir_lower_pstipple_fs uses, so the texture bind and the variant
      * compile agree without the variant existing yet. */
     unsigned pstipple_sampler_unit;
+
+    /* Fragment-input delivery contract, set at create time.  An R2VB re-staged
+     * vertex producer records R300_FS_INPUT_R2VB_FLAT_VERTEX so every variant
+     * translate skips the f2i/f2u interpolation epsilon; an ordinary fragment
+     * shader keeps the interpolated default. */
+    enum r300_fs_input_semantics input_semantics;
 };
 
 /* Verdict of a throwaway compile measuring a fragment program against the
@@ -129,7 +135,17 @@ enum r300_fs_admission {
 
 enum r300_fs_admission
 r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_nir,
-                              unsigned *out_alu_len);
+                              unsigned *out_alu_len,
+                              enum r300_fs_input_semantics input_semantics);
+
+/* Create a fragment-shader CSO with an explicit input-delivery contract.  The
+ * public create_fs_state pipe callback wraps this with
+ * R300_FS_INPUT_INTERPOLATED; an R2VB re-staged producer passes
+ * R300_FS_INPUT_R2VB_FLAT_VERTEX so its flat generated inputs skip the f2i/f2u
+ * interpolation epsilon. */
+void *r300_create_fs_state_internal(struct pipe_context *pipe,
+                                    const struct pipe_shader_state *shader,
+                                    enum r300_fs_input_semantics input_semantics);
 
 /* Return TRUE if the shader was switched and should be re-emitted. */
 bool r300_pick_fragment_shader(struct r300_context *r300,

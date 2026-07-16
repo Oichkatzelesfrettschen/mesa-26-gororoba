@@ -7,6 +7,7 @@
 #define R300_CLASSIC_SELECT_H
 
 #include "nir.h"
+#include "../radeon_code.h"
 
 #include "r300_classic_ir.h"
 
@@ -65,6 +66,7 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
                     const struct r300_classic_target *target,
                     const struct r300_fragment_program_external_state *ext,
                     unsigned num_driver_consts,
+                    enum r300_fs_input_semantics input_semantics,
                     struct r300_shader_semantics *semantics,
                     struct r300_classic_select_result *result);
 

@@ -1360,8 +1360,19 @@ r300_set_framebuffer_state(struct pipe_context* pipe,
 }
 
 /* Create fragment shader state. */
+/* The public pipe callback: an application fragment shader reads interpolated
+ * varyings.  R2VB re-staged producers use r300_create_fs_state_internal with
+ * R300_FS_INPUT_R2VB_FLAT_VERTEX instead. */
 static void* r300_create_fs_state(struct pipe_context* pipe,
                                   const struct pipe_shader_state* shader)
+{
+    return r300_create_fs_state_internal(pipe, shader,
+                                         R300_FS_INPUT_INTERPOLATED);
+}
+
+void *r300_create_fs_state_internal(struct pipe_context *pipe,
+                                    const struct pipe_shader_state *shader,
+                                    enum r300_fs_input_semantics input_semantics)
 {
     struct r300_context* r300 = r300_context(pipe);
     struct r300_fragment_shader* fs = NULL;
@@ -1375,6 +1386,10 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
 
     /* Copy state directly into shader. */
     fs->state = *shader;
+
+    /* Every variant translate reads this to select the f2i/f2u conversion
+     * contract; a flat R2VB producer skips the interpolation epsilon. */
+    fs->input_semantics = input_semantics;
 
     /* SWTCL chips run the gallium draw module; give it the same fragment shader
      * so the wide-point stage can find the gl_PointCoord (PCOORD) input and

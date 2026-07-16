@@ -459,7 +459,8 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300,
     st.type = PIPE_SHADER_IR_NIR;
     st.ir.nir = b.shader; /* create_fs_state takes ownership and precompiles */
     r300->r2vb_transform_fs[space] =
-        r300->context.create_fs_state(&r300->context, &st);
+        r300_create_fs_state_internal(&r300->context, &st,
+                                      R300_FS_INPUT_R2VB_FLAT_VERTEX);
     if (space == R300_R2VB_POSITION_WINDOW) {
         for (unsigned i = 0; i < 3; i++) {
             r300->r2vb_transform_fs_vp_scale[i] = r300->viewport.scale[i];
@@ -584,7 +585,8 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300,
     struct pipe_shader_state st = {0};
     st.type = PIPE_SHADER_IR_NIR;
     st.ir.nir = b.shader;
-    return r300->context.create_fs_state(&r300->context, &st);
+    return r300_create_fs_state_internal(&r300->context, &st,
+                                         R300_FS_INPUT_R2VB_FLAT_VERTEX);
 }
 
 /* Re-stage the bound vertex shader as the producer fragment shader (position
@@ -744,7 +746,8 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
     struct pipe_shader_state st = {0};
     st.type = PIPE_SHADER_IR_NIR;
     st.ir.nir = fs; /* create_fs_state takes ownership and precompiles */
-    return r300->context.create_fs_state(&r300->context, &st);
+    return r300_create_fs_state_internal(&r300->context, &st,
+                                         R300_FS_INPUT_R2VB_FLAT_VERTEX);
 }
 
 /* Find the bound VS's first computed-varying output: a non-position output whose
@@ -3020,7 +3023,8 @@ r300_r2vb_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
     r300_optimize_nir(fs, r300->screen);
     unsigned alu_len = 0;
     enum r300_fs_admission adm =
-        r300_fs_measure_nir_admission(r300, fs, &alu_len);
+        r300_fs_measure_nir_admission(r300, fs, &alu_len,
+                                      R300_FS_INPUT_R2VB_FLAT_VERTEX);
     ralloc_free(fs);
     if (out_alu)
         *out_alu = alu_len;
@@ -3103,9 +3107,11 @@ static bool r300_r2vb_split_admitted(struct r300_context *r300,
             r300_optimize_nir(pass_b, r300->screen);
             unsigned la = 0, lb = 0;
             enum r300_fs_admission aa =
-                r300_fs_measure_nir_admission(r300, pass_a, &la);
+                r300_fs_measure_nir_admission(r300, pass_a, &la,
+                                              R300_FS_INPUT_R2VB_FLAT_VERTEX);
             enum r300_fs_admission ab =
-                r300_fs_measure_nir_admission(r300, pass_b, &lb);
+                r300_fs_measure_nir_admission(r300, pass_b, &lb,
+                                              R300_FS_INPUT_R2VB_FLAT_VERTEX);
             admitted = aa == R300_FS_ADMIT_FITS && ab == R300_FS_ADMIT_FITS;
             if (getenv("R300_R2VB_EXEC_DEBUG")) {
                 char types[R300_MP_MAX_CARRY_COMPS + 1];
@@ -4009,8 +4015,10 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
         /* The admission probe clones internally, so measuring here does not
          * consume the halves. */
         unsigned la = 0, lb = 0;
-        r300_fs_measure_nir_admission(r300, pass_a, &la);
-        r300_fs_measure_nir_admission(r300, pass_b, &lb);
+        r300_fs_measure_nir_admission(r300, pass_a, &la,
+                                      R300_FS_INPUT_R2VB_FLAT_VERTEX);
+        r300_fs_measure_nir_admission(r300, pass_b, &lb,
+                                      R300_FS_INPUT_R2VB_FLAT_VERTEX);
         fprintf(stderr,
                 "r2vb_split_producer cut=%u carry_bases=%u carry_comps=%u "
                 "passA_alu=%u passB_alu=%u num_in=%u pass_b_attrs=%u count=%u\n",
@@ -4023,11 +4031,13 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
     struct pipe_shader_state st_a = {0};
     st_a.type = PIPE_SHADER_IR_NIR;
     st_a.ir.nir = pass_a; /* create_fs_state takes ownership and precompiles */
-    void *pa_fs = r300->context.create_fs_state(&r300->context, &st_a);
+    void *pa_fs = r300_create_fs_state_internal(&r300->context, &st_a,
+                                                R300_FS_INPUT_R2VB_FLAT_VERTEX);
     struct pipe_shader_state st_b = {0};
     st_b.type = PIPE_SHADER_IR_NIR;
     st_b.ir.nir = pass_b;
-    void *pb_fs = r300->context.create_fs_state(&r300->context, &st_b);
+    void *pb_fs = r300_create_fs_state_internal(&r300->context, &st_b,
+                                                R300_FS_INPUT_R2VB_FLAT_VERTEX);
     float (*bmodel)[4] = malloc((size_t)count * (num_in + 1) * sizeof(*bmodel));
     if (!carry_bo || !pa_fs || !pb_fs || !bmodel)
         goto fail;
