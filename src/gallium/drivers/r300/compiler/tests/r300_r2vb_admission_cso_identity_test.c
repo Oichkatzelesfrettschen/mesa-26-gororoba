@@ -14,11 +14,20 @@
  * so a semantics or pass divergence between them would let the plan admit a
  * program the producer CSO then compiles differently.  Both paths run here
  * under the same R300_FS_INPUT_R2VB_FLAT_VERTEX contract on the plan's own
- * canonical NIR, and the emitted backend resource vector {alu.length,
- * pixsize, constants.Count} must agree with the plan's recorded cost on
- * every leg: the fitting producer's baseline, and both rebuilt halves
- * (r300_mp_build_carry_pass_a / r300_mp_build_pos_pass_b on the retained
- * partition) of the over-budget producer's split.
+ * canonical NIR, and identity is proven at the emitted-program level, not
+ * the resource-vector level: two different programs can share {alu.length,
+ * pixsize, constants.Count}, so agreement is required on (1) the plan's
+ * recorded cost, (2) the complete r300_fragment_program_code -- every ALU
+ * instruction word, the tex program, config, code_offset/addr, pixsize --
+ * byte-compared as a struct, which is sound because the struct is a flat
+ * pure function of the input program with no pointer or address fields, and
+ * (3) the constant list value-wise (type, use mask, and the active union
+ * arm per constant; the emission appends constants in traversal order, so
+ * index-by-index comparison is exact).  Byte-equal emission also proves the
+ * CSO path's second r300_optimize_nir run is idempotent on the plan's
+ * canonical NIR.  Every leg runs: the fitting producer's baseline, and both
+ * rebuilt halves (r300_mp_build_carry_pass_a / r300_mp_build_pos_pass_b on
+ * the retained partition) of the over-budget producer's split.
  */
 
 #include <stdbool.h>
@@ -151,23 +160,55 @@ costs_equal(const struct r300_fs_admission_cost *a,
    return a->alu == b->alu && a->temps == b->temps && a->consts == b->consts;
 }
 
+/* Value-wise constant comparison: type, use mask, and the active union arm.
+ * The inactive union bytes stay out of the comparison because the list
+ * storage is not zero-initialized past the active arm. */
+static bool
+constants_identical(const struct rc_constant *a, const struct rc_constant *b,
+                    unsigned count)
+{
+   for (unsigned i = 0; i < count; i++) {
+      if (a[i].Type != b[i].Type || a[i].UseMask != b[i].UseMask)
+         return false;
+      switch (a[i].Type) {
+      case RC_CONSTANT_EXTERNAL:
+         if (a[i].u.External != b[i].u.External)
+            return false;
+         break;
+      case RC_CONSTANT_IMMEDIATE:
+         /* memcmp gives the bit-exact float comparison identity needs. */
+         if (memcmp(a[i].u.Immediate, b[i].u.Immediate,
+                    sizeof(a[i].u.Immediate)))
+            return false;
+         break;
+      case RC_CONSTANT_STATE:
+         if (memcmp(a[i].u.State, b[i].u.State, sizeof(a[i].u.State)))
+            return false;
+         break;
+      }
+   }
+   return true;
+}
+
 /* One identity leg: the given program, measured and CSO-compiled under the
- * FLAT contract, must reproduce the plan-recorded cost on both paths. */
+ * FLAT contract, must reproduce the plan-recorded cost on both paths and
+ * emit the identical normalized program. */
 static void
 check_identity(const char *label, const nir_shader *program,
                const struct r300_fs_admission_cost *expected)
 {
    char name[128];
 
-   /* Measurement leg. */
+   /* Measurement leg, with the emitted-program snapshot. */
    nir_shader *measured = nir_shader_clone(NULL, program);
    struct r300_fs_admission_cost cost;
-   enum r300_fs_admission verdict = r300_fs_measure_nir_admission(
-      &g_context, measured, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, &cost);
+   struct r300_fs_admission_program prog;
+   enum r300_fs_admission verdict = r300_fs_measure_nir_admission_program(
+      &g_context, measured, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, &cost,
+      &prog);
    snprintf(name, sizeof(name), "%s measurement fits at %u/%u/%u", label,
             expected->alu, expected->temps, expected->consts);
    CHECK(verdict == R300_FS_ADMIT_FITS && costs_equal(&cost, expected), name);
-   ralloc_free(measured);
 
    /* CSO leg: create_fs_state_internal takes ownership of the clone and
     * precompiles through the variant machinery. */
@@ -179,18 +220,35 @@ check_identity(const char *label, const nir_shader *program,
       &g_context.context, &st, R300_FS_INPUT_R2VB_FLAT_VERTEX);
    snprintf(name, sizeof(name), "%s CSO compiles", label);
    CHECK(fs && fs->shader && !fs->shader->error && !fs->shader->dummy, name);
-   if (fs && fs->shader && !fs->shader->error && !fs->shader->dummy) {
+   if (fs && fs->shader && !fs->shader->error && !fs->shader->dummy &&
+       verdict == R300_FS_ADMIT_FITS) {
       struct r300_fs_admission_cost cso_cost = {
          .alu = fs->shader->code.code.r300.alu.length,
          .temps = fs->shader->code.code.r300.pixsize,
          .consts = fs->shader->code.constants.Count,
       };
-      snprintf(name, sizeof(name), "%s CSO output matches the measurement",
+      snprintf(name, sizeof(name), "%s CSO cost matches the measurement",
                label);
       CHECK(costs_equal(&cso_cost, expected), name);
+
+      /* Program identity: the whole emitted code block byte-compares (the
+       * struct is pointer-free and both legs CALLOC the backing store, so
+       * the zeroed instruction tails compare equal too), and the constant
+       * lists match value-wise. */
+      snprintf(name, sizeof(name), "%s emitted program words identical",
+               label);
+      CHECK(memcmp(&prog.code, &fs->shader->code.code.r300,
+                   sizeof(prog.code)) == 0, name);
+      snprintf(name, sizeof(name), "%s constant lists identical", label);
+      CHECK(prog.num_constants == fs->shader->code.constants.Count &&
+            constants_identical(prog.constants,
+                                fs->shader->code.constants.Constants,
+                                prog.num_constants), name);
    }
    if (fs)
       g_context.context.delete_fs_state(&g_context.context, fs);
+   r300_fs_admission_program_release(&prog);
+   ralloc_free(measured);
 }
 
 static void
