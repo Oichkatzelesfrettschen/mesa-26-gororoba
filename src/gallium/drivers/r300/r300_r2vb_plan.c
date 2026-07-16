@@ -85,8 +85,8 @@ plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
 
 /* Pre-lowering shape validation: only the structural facts that survive the
  * fragment backend's lowering -- single-block control flow, plain I/O and
- * uniform/UBO intrinsics, a gl_Position output behind a uniform interface,
- * passthrough discipline on non-position outputs, and a bounded set of
+ * uniform/UBO intrinsics, a gl_Position output, passthrough discipline on
+ * non-position outputs, and a bounded set of
  * position-feeding inputs.  ALU-lowering capability is the backend's verdict
  * on the restaged FS (a float-only op whitelist here is exactly the reject
  * that made the typed split unreachable through the production route). */
@@ -104,16 +104,17 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
         return false;
     }
 
-    bool has_uniform = false, has_pos_out = false;
+    /* A uniform interface is optional: production admission delivers
+     * uniform-free producers (a passthrough VS transforms inputs alone), and
+     * requiring one here diverged the shadow plan from the memo on exactly
+     * those shaders on RS482. */
+    bool has_pos_out = false;
     nir_foreach_variable_in_shader(var, nir) {
-        if (var->data.mode &
-            (nir_var_mem_ubo | nir_var_mem_push_const | nir_var_uniform))
-            has_uniform = true;
         if ((var->data.mode & nir_var_shader_out) &&
             var->data.location == VARYING_SLOT_POS)
             has_pos_out = true;
     }
-    if (!has_uniform || !has_pos_out) {
+    if (!has_pos_out) {
         plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
         return false;
     }
