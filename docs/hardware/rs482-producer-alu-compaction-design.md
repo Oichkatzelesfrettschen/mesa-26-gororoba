@@ -465,6 +465,56 @@ Gallium public shader state. The canonical plan NIR stays immutable; every compi
 or state creation clones it, so ownership does not depend on whether a backend
 helper mutates or consumes its input.
 
+### The source-domain predicate composes the two NIR range engines (04f.3e)
+
+The predicate runs where the transport selection already runs:
+`r300_mp_select_r2vb_transport` on the restaged position NIR, per carried
+scalar. That NIR is still integer-typed at this point -- `r300_optimize_nir`
+runs `r300_nir_lower_bool_to_float` and leaves integer ALU for the backend's
+own lowering -- so integer conversions (`i2f32`, `u2f32`) and integer bound
+chains are intact for analysis, and pass B constructs the lowered float form
+itself when it builds the carry re-entry.
+
+Admission proves two obligations jointly on each carried integer or boolean
+scalar, and any scalar that fails either one declines the whole partition
+(the existing decline returns already give the gate this fail-closed shape):
+
+1. Exactly integral: `nir_analyze_fp_class` returns a class mask with
+   `FP_CLASS_NON_INTEGRAL`, `FP_CLASS_NAN`, and the infinity bits clear.
+   `i2f`/`u2f` results, `b2f` results (exactly {0, 1}), integral constants,
+   and the rounding ops (`ffloor`, `fceil`, `ftrunc`, `fround_even`) prove
+   this; a `b2i` bit-reinterpret keeps `NON_INTEGRAL` set and declines.
+   An exactly integral value has no fractional part for FP24 to quantize,
+   so the FP24 producer and the software vertex path hold the identical
+   integer and the quantization-before-truncation divergence vanishes.
+2. Within the exact window: `nir_unsigned_upper_bound` (unsigned) or the
+   signed interval in `r300_mp_signed_range` (signed), applied to the
+   pre-conversion integer operand, bounds the magnitude at or under `2^17`.
+
+Both engines are conservative and total -- an unmodeled producer returns
+`FP_CLASS_UNKNOWN` or an unbounded interval, and the gate reads either as a
+decline -- so soundness holds by construction and the predicate can only
+under-admit. The truncation semantics agree across the two references: the
+NIR `f2i32`/`f2u32` definition and gallivm's conversion both round toward
+zero, and inside the `2^17` window neither saturates, so the saturating
+versus non-saturating split between gallivm's NIR and TGSI paths carries no
+weight.
+
+Source classes the engines prove today: boolean compares (the
+bool-to-float lowering emits `b2f32`, provable and inside {0, 1} for free)
+and float-encoded integer system values (the Draw-path encoding emits
+`nir_i2f32` at the definition). Generic integer vertex attributes and
+integer uniform, UBO, or push-constant loads reach the analysis as unknown
+values and decline: `load_input` and `load_ubo` carry no class or bound
+facts, and the only range-contract intrinsic in the tree
+(`nir_intrinsic_arg_upper_bound_u32_amd`) is AMD-compute-specific. Lifting
+those classes requires a driver-side contract that seeds the range table --
+the vertex-element format (`pure_integer` plus component width) for
+attributes, and a declared range for uniforms -- which is a design decision
+for the implementation, not existing infrastructure. Until such a seed
+exists the predicate admits the boolean and encoded-sysval classes only,
+which is the correct fail-closed floor for leaving diagnostic-only status.
+
 ## Prerequisites before implementation
 
 Compaction implementation is gated on correcting the proof contract and mining a
