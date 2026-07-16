@@ -544,6 +544,51 @@ interval or `FP_CLASS_UNKNOWN` fails its witness, and the existing decline
 returns give the gate its fail-closed shape, so the predicate can only
 under-admit.
 
+The implementation carries the witnesses as a per-SSA-value record, one
+enumerator per rule with `NONE` as the zero-valued fail-closed default:
+
+```c
+enum r300_r2vb_source_witness {
+   R300_R2VB_WITNESS_NONE = 0,      /* unmodeled; declines */
+   R300_R2VB_WITNESS_EXACT_CONST,   /* rule 1 */
+   R300_R2VB_WITNESS_INT_CHAIN,     /* rule 2 */
+   R300_R2VB_WITNESS_DISCONTINUOUS, /* rule 3 */
+   R300_R2VB_WITNESS_COMPARE,       /* rule 4 */
+};
+```
+
+Each witness retains the facts its rule consumed, so a decline names the
+failed obligation and a review can re-derive the admission:
+
+- `EXACT_CONST`: the constant bits and the `s1e7m16` representability
+  verdict (mantissa fits 17 bits after normalization, exponent in range;
+  signed zero is representable and keeps its sign bit, so bit identity
+  holds for it).
+- `INT_CHAIN`: the per-intermediate interval -- `nir_unsigned_upper_bound`
+  result or the `r300_mp_signed_range` interval -- for every step of the
+  chain, plus the seeding origin (integer constant, bounded system value,
+  or contract-seeded attribute).
+- `DISCONTINUOUS`: the operand's witness reference; the op itself adds no
+  fact beyond membership in the whitelist below.
+- `COMPARE`: both operand witness references plus the
+  `nir_analyze_fp_class` verdict on each -- `FP_CLASS_NAN` and both
+  infinity bits clear.  Path identity is bit-level, so IEEE `-0.0 == +0.0`
+  cannot split the branch between paths (bit-equal operands decide
+  identically before value semantics enter); the NaN and infinity
+  exclusions guard the operands' own witnesses, where an unordered compare
+  or an overflowed chain would otherwise slip through a value-equality
+  argument.
+
+The op whitelist is exact and closed; an opcode outside it yields
+`WITNESS_NONE` regardless of its operands.  Integer chain steps (rule 2):
+`iadd`, `isub`, `imul`, `ineg`, `iabs`, `imin`, `imax`, `umin`, `umax`,
+plus the exits `i2f32` and `u2f32`.  Discontinuous consumers (rule 3):
+`ffloor`, `fceil`, `ftrunc`, `fround_even`, `f2i32`, `f2u32`.
+Comparisons (rule 4): `flt`, `fge`, `feq`, `fneu`, `ilt`, `ige`, `ieq`,
+`ine`, `ult`, `uge`, and their `b2f32`/`b2i32` consumers.  Widening the
+whitelist is a per-opcode proof obligation -- the shift and bit ops stay
+out until an exact-FP24 image argument exists for each.
+
 Source classes provable today: float-encoded integer system values (the
 Draw-path encoding emits `nir_i2f32` at the definition -- witness 2) and
 boolean compares whose operands are integer-origin or exact constants
