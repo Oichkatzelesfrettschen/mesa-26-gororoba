@@ -10,7 +10,6 @@
 #include "nir.h"
 
 #include "r300_context.h"
-#include "r300_fs.h"
 #include "compiler/r300_nir.h"
 #include "r300_screen.h"
 #include "r300_vs.h"
@@ -19,7 +18,7 @@ static void
 plan_observe(struct r300_r2vb_producer_plan *plan,
              enum r300_r2vb_plan_reason reason)
 {
-    plan->observed_reason_mask |= 1u << reason;
+    plan->observed_reason_mask |= 1ull << reason;
 }
 
 /* The primary reason is the lowest-numbered observed class; the enum declares
@@ -27,10 +26,10 @@ plan_observe(struct r300_r2vb_producer_plan *plan,
  * a later half-compile failure reports the range decline, never CARRY_WIDTH
  * merely because the first-ranked candidate happened to be wide. */
 static enum r300_r2vb_plan_reason
-plan_primary_reason(uint32_t mask)
+plan_primary_reason(uint64_t mask)
 {
     for (unsigned r = 1; r < R300_R2VB_PLAN_REASON_COUNT; r++)
-        if (mask & (1u << r))
+        if (mask & (1ull << r))
             return (enum r300_r2vb_plan_reason)r;
     return R300_R2VB_PLAN_OK;
 }
@@ -196,7 +195,8 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
 static enum r300_fs_admission
 plan_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
                   gl_varying_slot target,
-                  enum r300_r2vb_position_space space, unsigned *out_alu,
+                  enum r300_r2vb_position_space space,
+                  struct r300_fs_admission_cost *out_cost,
                   nir_shader **keep_nir)
 {
     nir_shader *fs =
@@ -205,7 +205,7 @@ plan_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
         return R300_FS_ADMIT_REJECT;
     r300_optimize_nir(fs, r300->screen);
     enum r300_fs_admission adm = r300_fs_measure_nir_admission(
-        r300, fs, out_alu, R300_FS_INPUT_R2VB_FLAT_VERTEX);
+        r300, fs, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, out_cost);
     if (keep_nir)
         *keep_nir = fs;
     else
@@ -213,10 +213,46 @@ plan_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
     return adm;
 }
 
-/* Walk every ranked cut candidate of the optimized position producer and
- * select the first full success (find_cuts ranks smallest carry first, so the
- * first success is the narrowest admissible carry).  Every failure class seen
- * along the walk lands in the reason mask. */
+/* One evaluated split candidate: the partition plus both admitted halves'
+ * resource vectors. */
+struct plan_split_result {
+    struct r300_mp_partition part;
+    struct r300_fs_admission_cost a;
+    struct r300_fs_admission_cost b;
+};
+
+/* Deterministic success ordering: fewer carry components, then the lower
+ * bottleneck half (max of the two ALU counts), then total ALU, then the
+ * temporary high-water, then constant pressure, then the earlier cut index.
+ * Every criterion is a measured or structural fact, so the selection is
+ * stable across runs. */
+static bool
+plan_split_better(const struct plan_split_result *n,
+                  const struct plan_split_result *best)
+{
+    if (n->part.total_comps != best->part.total_comps)
+        return n->part.total_comps < best->part.total_comps;
+    unsigned n_max = MAX2(n->a.alu, n->b.alu);
+    unsigned b_max = MAX2(best->a.alu, best->b.alu);
+    if (n_max != b_max)
+        return n_max < b_max;
+    if (n->a.alu + n->b.alu != best->a.alu + best->b.alu)
+        return n->a.alu + n->b.alu < best->a.alu + best->b.alu;
+    unsigned n_tmp = MAX2(n->a.temps, n->b.temps);
+    unsigned b_tmp = MAX2(best->a.temps, best->b.temps);
+    if (n_tmp != b_tmp)
+        return n_tmp < b_tmp;
+    unsigned n_cst = MAX2(n->a.consts, n->b.consts);
+    unsigned b_cst = MAX2(best->a.consts, best->b.consts);
+    if (n_cst != b_cst)
+        return n_cst < b_cst;
+    return n->part.cut_index < best->part.cut_index;
+}
+
+/* Walk every ranked cut candidate of the optimized position producer,
+ * evaluate each fully, and select the best success by the deterministic
+ * ordering above.  Every failure class seen along the walk lands in the
+ * reason mask. */
 static bool
 plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
                            struct r300_r2vb_producer_plan *plan)
@@ -229,8 +265,9 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
     }
 
     struct hash_table *range_ht = _mesa_pointer_hash_table_create(NULL);
-    bool admitted = false;
-    for (unsigned i = 0; i < n && !admitted; i++) {
+    struct plan_split_result best;
+    bool have_best = false;
+    for (unsigned i = 0; i < n; i++) {
         if (cands[i].total_comps > 4) {
             plan_observe(plan, R300_R2VB_PLAN_CARRY_WIDTH);
             continue;
@@ -270,20 +307,16 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
         }
         r300_optimize_nir(pass_a, r300->screen);
         r300_optimize_nir(pass_b, r300->screen);
-        unsigned la = 0, lb = 0;
+        struct plan_split_result res = { .part = cands[i] };
         enum r300_fs_admission aa = r300_fs_measure_nir_admission(
-            r300, pass_a, &la, R300_FS_INPUT_R2VB_FLAT_VERTEX);
+            r300, pass_a, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, &res.a);
         enum r300_fs_admission ab = r300_fs_measure_nir_admission(
-            r300, pass_b, &lb, R300_FS_INPUT_R2VB_FLAT_VERTEX);
+            r300, pass_b, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, &res.b);
         if (aa == R300_FS_ADMIT_FITS && ab == R300_FS_ADMIT_FITS) {
-            plan->cut_index = cands[i].cut_index;
-            plan->num_carry_bases = cands[i].num_bases;
-            plan->carry_total_comps = cands[i].total_comps;
-            for (unsigned c = 0; c < cands[i].num_bases; c++)
-                plan->carry_transport[c] = (uint8_t)cands[i].r2vb_transport[c];
-            plan->pass_a_alu = la;
-            plan->pass_b_alu = lb;
-            admitted = true;
+            if (!have_best || plan_split_better(&res, &best)) {
+                best = res;
+                have_best = true;
+            }
         } else {
             if (aa != R300_FS_ADMIT_FITS)
                 plan_observe(plan, R300_R2VB_PLAN_PASS_A);
@@ -294,7 +327,13 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
         ralloc_free(pass_b);
     }
     _mesa_hash_table_destroy(range_ht, NULL);
-    return admitted;
+
+    if (have_best) {
+        plan->partition = best.part;
+        plan->pass_a_cost = best.a;
+        plan->pass_b_cost = best.b;
+    }
+    return have_best;
 }
 
 bool
@@ -304,10 +343,11 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
                         struct r300_r2vb_producer_plan *plan)
 {
     memset(plan, 0, sizeof(*plan));
-    plan->space = space;
-    plan->allow_computed_varying = allow_computed_varying;
-    plan->input_semantics = R300_FS_INPUT_R2VB_FLAT_VERTEX;
+    plan->key.allow_computed_varying = allow_computed_varying;
+    plan->key.space = space;
+    plan->key.input_semantics = R300_FS_INPUT_R2VB_FLAT_VERTEX;
     plan->action = R300_R2VB_PLAN_REJECT;
+    plan->status = R300_R2VB_PLAN_SEMANTIC_REJECT;
 
     /* Structural and typed-source scans run on a constant-folded clone: a
      * SPIR-V VS reaches the driver with its UBO address arithmetic still
@@ -316,6 +356,7 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
     if (!folded) {
         plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
         plan->primary_reason = R300_R2VB_PLAN_OUT_OF_MEMORY;
+        plan->status = R300_R2VB_PLAN_TRANSIENT_FAILURE;
         return false;
     }
     bool progress;
@@ -337,18 +378,17 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
     /* Position-pass verdict from the emitted-slot admission oracle, on the
      * same restaged and preprocessed program the delivery path compiles. */
     nir_shader *pos = NULL;
-    unsigned pos_alu = 0;
     enum r300_fs_admission adm = plan_measure_pass(
-        r300, vs_nir, VARYING_SLOT_POS, space, &pos_alu, &pos);
+        r300, vs_nir, VARYING_SLOT_POS, space, &plan->baseline, &pos);
     if (!pos) {
         plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
         plan->primary_reason = R300_R2VB_PLAN_OUT_OF_MEMORY;
+        plan->status = R300_R2VB_PLAN_TRANSIENT_FAILURE;
         return false;
     }
 
     switch (adm) {
     case R300_FS_ADMIT_FITS:
-        plan->pos_alu = pos_alu;
         if (allow_computed_varying) {
             int dv = r300_r2vb_first_computed_varying(vs_nir);
             if (dv >= 0) {
@@ -403,6 +443,7 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
     } else {
         plan->candidate = pos;
         plan->primary_reason = R300_R2VB_PLAN_OK;
+        plan->status = R300_R2VB_PLAN_READY;
     }
     return true;
 }
@@ -415,27 +456,25 @@ r300_r2vb_plan_release(struct r300_r2vb_producer_plan *plan)
     memset(plan, 0, sizeof(*plan));
 }
 
-/* The window-space producer bakes the bound viewport's scale/translate as
- * immediates (r2vb_divide_position), so a window plan is valid only for the
- * viewport it was computed under; the key hashes those six floats.  Clip
- * plans read no viewport state and key to a constant. */
-static uint32_t
-plan_window_key(struct r300_context *r300,
-                enum r300_r2vb_position_space space)
+/* Build the key for the bound state.  The struct is zeroed first so the
+ * padding bytes compare equal under memcmp. */
+static void
+plan_build_key(struct r300_context *r300, bool allow_computed_varying,
+               enum r300_r2vb_position_space space,
+               struct r300_r2vb_plan_key *key)
 {
-    if (space != R300_R2VB_POSITION_WINDOW)
-        return 0;
-    const struct pipe_viewport_state *vp = &r300->viewport;
-    uint32_t key = 2166136261u;
-    const float vals[6] = { vp->scale[0], vp->scale[1], vp->scale[2],
-                            vp->translate[0], vp->translate[1],
-                            vp->translate[2] };
-    for (unsigned i = 0; i < 6; i++) {
-        uint32_t bits;
-        memcpy(&bits, &vals[i], sizeof(bits));
-        key = (key ^ bits) * 16777619u;
+    memset(key, 0, sizeof(*key));
+    key->allow_computed_varying = allow_computed_varying;
+    key->space = space;
+    key->input_semantics = R300_FS_INPUT_R2VB_FLAT_VERTEX;
+    if (space == R300_R2VB_POSITION_WINDOW) {
+        const struct pipe_viewport_state *vp = &r300->viewport;
+        for (unsigned i = 0; i < 3; i++) {
+            memcpy(&key->viewport_scale[i], &vp->scale[i], sizeof(uint32_t));
+            memcpy(&key->viewport_translate[i], &vp->translate[i],
+                   sizeof(uint32_t));
+        }
     }
-    return key;
 }
 
 const struct r300_r2vb_producer_plan *
@@ -449,10 +488,11 @@ r300_r2vb_producer_plan_get(struct r300_context *r300,
 
     unsigned cv = allow_computed_varying ? 1 : 0;
     unsigned sp = space == R300_R2VB_POSITION_WINDOW ? 1 : 0;
-    uint32_t key = plan_window_key(r300, space);
+    struct r300_r2vb_plan_key key;
+    plan_build_key(r300, allow_computed_varying, space, &key);
 
     struct r300_r2vb_producer_plan *slot = vs->r2vb_plan[cv][sp];
-    if (slot && vs->r2vb_plan_window_key[cv][sp] == key)
+    if (slot && memcmp(&slot->key, &key, sizeof(key)) == 0)
         return slot;
     if (slot) {
         r300_r2vb_plan_release(slot);
@@ -465,14 +505,14 @@ r300_r2vb_producer_plan_get(struct r300_context *r300,
         return NULL;
     if (!r300_r2vb_plan_producer(r300, vs->state.ir.nir,
                                  allow_computed_varying, space, plan)) {
-        /* Infrastructure failure: release without caching so a later call
-         * replans instead of pinning a transient verdict. */
+        /* TRANSIENT_FAILURE: release without caching so a later call replans
+         * instead of pinning a transient verdict as a permanent fallback. */
         r300_r2vb_plan_release(plan);
         FREE(plan);
         return NULL;
     }
+    plan->key = key;
     vs->r2vb_plan[cv][sp] = plan;
-    vs->r2vb_plan_window_key[cv][sp] = key;
     return plan;
 }
 
@@ -490,13 +530,28 @@ r300_r2vb_plan_cache_release(struct r300_vertex_shader *vs)
     }
 }
 
+static uint32_t plan_shadow_divergences;
+
+void
+r300_r2vb_plan_note_shadow_divergence(void)
+{
+    plan_shadow_divergences++;
+}
+
+uint32_t
+r300_r2vb_plan_shadow_divergences(void)
+{
+    return plan_shadow_divergences;
+}
+
 const char *
 r300_r2vb_plan_action_str(enum r300_r2vb_plan_action action)
 {
     switch (action) {
-    case R300_R2VB_PLAN_REJECT: return "reject";
-    case R300_R2VB_PLAN_SINGLE: return "single";
-    case R300_R2VB_PLAN_SPLIT:  return "split";
+    case R300_R2VB_PLAN_REJECT:    return "reject";
+    case R300_R2VB_PLAN_SINGLE:    return "single";
+    case R300_R2VB_PLAN_COMPACTED: return "compacted";
+    case R300_R2VB_PLAN_SPLIT:     return "split";
     }
     return "invalid";
 }

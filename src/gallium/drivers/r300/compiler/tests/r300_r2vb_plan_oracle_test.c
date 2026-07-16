@@ -28,6 +28,7 @@
  */
 
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -37,6 +38,7 @@
 #include "r300_context.h"
 #include "r300_r2vb_plan.h"
 #include "r300_screen.h"
+#include "r300_vs.h"
 #include "radeon_regalloc.h"
 
 static unsigned g_failures;
@@ -242,6 +244,47 @@ build_typed_under_budget(void)
    return end_vs(&v, nir_replicate(&v.b, sum, 4));
 }
 
+/* The typed value converts back to float before the heavy chain, so only a
+ * float crosses any cut while the whole-program scan still marks the typed
+ * source: the carry type and the source class are independent facts. */
+static nir_shader *
+build_typed_float_before_cut(void)
+{
+   struct vs_build v = begin_vs("plan_typed_float_cut", true);
+   nir_def *s = nir_f2i32(&v.b, nir_channel(&v.b, v.pos, 1));
+   nir_def *typed = nir_imin(&v.b, nir_imax(&v.b, s, nir_imm_int(&v.b, -100)),
+                             nir_imm_int(&v.b, 100));
+   nir_def *back = nir_i2f32(&v.b, typed);
+   nir_def *c = fmad_chain(&v.b, nir_fadd(&v.b, nir_channel(&v.b, v.pos, 0),
+                                          back),
+                           90);
+   nir_def *sum = nir_fadd(&v.b, c, back);
+   return end_vs(&v, nir_replicate(&v.b, sum, 4));
+}
+
+/* A vertex-stage system value outside the plain-I/O intrinsic set. */
+static nir_shader *
+build_unsupported_intrinsic(void)
+{
+   struct vs_build v = begin_vs("plan_unsupported_intrinsic", true);
+   nir_def *vid = nir_u2f32(&v.b, nir_load_vertex_id(&v.b));
+   nir_def *sum = nir_fadd(&v.b, nir_channel(&v.b, v.pos, 0), vid);
+   return end_vs(&v, nir_replicate(&v.b, sum, 4));
+}
+
+/* A single dependent chain long enough that no balanced cut leaves both
+ * halves (plus their pack/unpack overhead) under the 64-slot ceiling: the
+ * ranked candidates fail alternately on the carry half and the position
+ * half, so the walk retains two distinct failure classes.  This is the
+ * shape of the silicon-validated over-budget decline witness. */
+static nir_shader *
+build_unsplittable_long_chain(void)
+{
+   struct vs_build v = begin_vs("plan_unsplittable_chain", true);
+   nir_def *c = fmad_chain(&v.b, nir_channel(&v.b, v.pos, 0), 140);
+   return end_vs(&v, nir_replicate(&v.b, c, 4));
+}
+
 static nir_shader *
 build_control_flow(void)
 {
@@ -296,8 +339,8 @@ static void
 carry_sig(const struct r300_r2vb_producer_plan *plan, char *buf, size_t len)
 {
    unsigned n = 0;
-   for (unsigned i = 0; i < plan->num_carry_bases && n + 1 < len; i++) {
-      switch ((enum r300_mp_r2vb_transport)plan->carry_transport[i]) {
+   for (unsigned i = 0; i < plan->partition.num_bases && n + 1 < len; i++) {
+      switch (plan->partition.r2vb_transport[i]) {
       case R300_MP_R2VB_SINT:   buf[n++] = 'i'; break;
       case R300_MP_R2VB_UINT:   buf[n++] = 'u'; break;
       case R300_MP_R2VB_BOOL1:
@@ -328,12 +371,12 @@ plan_row(struct r300_context *r300, nir_shader *vs,
          struct r300_r2vb_producer_plan *plan)
 {
    bool ok = r300_r2vb_plan_producer(r300, vs, false, space, plan);
-   printf("    plan action=%s primary=%s mask=0x%x typed=%d class=%d "
+   printf("    plan action=%s primary=%s mask=0x%" PRIx64 " typed=%d class=%d "
           "carry_bases=%u pos_alu=%u\n",
           r300_r2vb_plan_action_str(plan->action),
           r300_r2vb_plan_reason_str(plan->primary_reason),
           plan->observed_reason_mask, plan->has_typed_source,
-          plan->typed_source_class, plan->num_carry_bases, plan->pos_alu);
+          plan->typed_source_class, plan->partition.num_bases, plan->baseline.alu);
    return ok;
 }
 
@@ -346,11 +389,12 @@ case_float_single(struct r300_context *r300)
    CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan),
          "planner runs");
    CHECK(plan.action == R300_R2VB_PLAN_SINGLE, "action single");
+   CHECK(plan.status == R300_R2VB_PLAN_READY, "status ready");
    CHECK(plan.primary_reason == R300_R2VB_PLAN_OK, "reason ok");
    CHECK(!plan.has_typed_source, "float-only source");
-   CHECK(plan.pos_alu > 0 && plan.pos_alu <= 64, "measured cost in budget");
+   CHECK(plan.baseline.alu > 0 && plan.baseline.alu <= 64, "measured cost in budget");
    CHECK(plan.candidate != NULL, "canonical candidate retained");
-   CHECK(plan.input_semantics == R300_FS_INPUT_R2VB_FLAT_VERTEX,
+   CHECK(plan.key.input_semantics == R300_FS_INPUT_R2VB_FLAT_VERTEX,
          "flat producer semantics");
    r300_r2vb_plan_release(&plan);
    ralloc_free(vs);
@@ -375,8 +419,8 @@ case_float_split(struct r300_context *r300)
          CHECK(strchr(sig, 'f') != NULL && strchr(sig, 'i') == NULL &&
                   strchr(sig, 'b') == NULL,
                "float-only carry");
-         CHECK(plan.pass_a_alu > 0 && plan.pass_a_alu <= 64 &&
-                  plan.pass_b_alu > 0 && plan.pass_b_alu <= 64,
+         CHECK(plan.pass_a_cost.alu > 0 && plan.pass_a_cost.alu <= 64 &&
+                  plan.pass_b_cost.alu > 0 && plan.pass_b_cost.alu <= 64,
                "both halves measured in budget");
       }
       r300_r2vb_plan_release(&plan);
@@ -520,6 +564,122 @@ case_wide_frontier(struct r300_context *r300)
 }
 
 static void
+case_typed_float_before_cut(struct r300_context *r300)
+{
+   printf("typed source folded to float before the cut splits with a float carry\n");
+   nir_shader *vs = build_typed_float_before_cut();
+   struct r300_r2vb_producer_plan plan;
+   CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan), "row runs");
+   CHECK(plan.action == R300_R2VB_PLAN_SPLIT, "splits");
+   CHECK(plan.has_typed_source &&
+            plan.typed_source_class == R300_R2VB_TYPED_SOURCE_SINT,
+         "typed source recorded independently of the carry");
+   if (plan.action == R300_R2VB_PLAN_SPLIT) {
+      bool all_float = true;
+      for (unsigned i = 0; i < plan.partition.num_bases; i++)
+         if (plan.partition.r2vb_transport[i] != R300_MP_R2VB_FLOAT)
+            all_float = false;
+      CHECK(all_float, "carry is float-only");
+   }
+   r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
+}
+
+static void
+case_unsupported_intrinsic(struct r300_context *r300)
+{
+   printf("system-value intrinsic rejects INTRINSIC\n");
+   nir_shader *vs = build_unsupported_intrinsic();
+   struct r300_r2vb_producer_plan plan;
+   CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan), "row runs");
+   CHECK(plan.action == R300_R2VB_PLAN_REJECT &&
+            plan.primary_reason == R300_R2VB_PLAN_INTRINSIC &&
+            plan.status == R300_R2VB_PLAN_SEMANTIC_REJECT,
+         "load_vertex_id rejects INTRINSIC");
+   r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
+}
+
+static void
+case_multi_candidate_failures(struct r300_context *r300)
+{
+   printf("candidate walk retains every failure class\n");
+   nir_shader *vs = build_unsplittable_long_chain();
+   struct r300_r2vb_producer_plan plan;
+   CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan), "row runs");
+   CHECK(plan.action == R300_R2VB_PLAN_REJECT, "rejects");
+   unsigned classes = 0;
+   for (unsigned r = 1; r < R300_R2VB_PLAN_REASON_COUNT; r++)
+      if (plan.observed_reason_mask & (1ull << r))
+         classes++;
+   CHECK(classes >= 2, "mask retains at least two distinct classes");
+   CHECK((plan.observed_reason_mask & (1ull << R300_R2VB_PLAN_PASS_A)) &&
+            (plan.observed_reason_mask & (1ull << R300_R2VB_PLAN_PASS_B)),
+         "both half-compile classes observed across the walk");
+   CHECK(plan.primary_reason == R300_R2VB_PLAN_PASS_A,
+         "precedence reports the earlier class, not the walk order");
+   r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
+}
+
+/* Cache lifetime through the real getter: the fake context binds a fake VS
+ * so r300_r2vb_producer_plan_get exercises key compare, replacement, and
+ * release exactly as the driver does. */
+static void
+case_cache_lifetime(struct r300_context *r300)
+{
+   printf("plan cache: retention, viewport keying, release\n");
+   static struct r300_vertex_shader fake_vs;
+   memset(&fake_vs, 0, sizeof(fake_vs));
+   nir_shader *vs = build_float_fits();
+   fake_vs.state.type = PIPE_SHADER_IR_NIR;
+   fake_vs.state.ir.nir = vs;
+   r300->vs_state.state = &fake_vs;
+
+   const struct r300_r2vb_producer_plan *clip1 =
+      r300_r2vb_producer_plan_get(r300, false, R300_R2VB_POSITION_CLIP);
+   const struct r300_r2vb_producer_plan *clip2 =
+      r300_r2vb_producer_plan_get(r300, false, R300_R2VB_POSITION_CLIP);
+   CHECK(clip1 && clip1 == clip2, "same key returns the retained plan");
+   CHECK(clip1 && clip1->status == R300_R2VB_PLAN_READY &&
+            clip1->action == R300_R2VB_PLAN_SINGLE,
+         "cached plan is READY/SINGLE");
+
+   const struct r300_r2vb_producer_plan *win1 =
+      r300_r2vb_producer_plan_get(r300, false, R300_R2VB_POSITION_WINDOW);
+   CHECK(win1 && win1 != clip1, "clip and window hold separate plans");
+
+   /* The replacement plan may reuse the freed allocation, so the witness is
+    * the stored key, never pointer identity. */
+   uint32_t bits_before = win1->key.viewport_scale[0];
+   r300->viewport.scale[0] = 640.0f;
+   uint32_t bits_after;
+   memcpy(&bits_after, &r300->viewport.scale[0], sizeof(bits_after));
+   const struct r300_r2vb_producer_plan *win2 =
+      r300_r2vb_producer_plan_get(r300, false, R300_R2VB_POSITION_WINDOW);
+   const struct r300_r2vb_producer_plan *clip3 =
+      r300_r2vb_producer_plan_get(r300, false, R300_R2VB_POSITION_CLIP);
+   CHECK(win2 && win2->key.viewport_scale[0] == bits_after &&
+            win2->key.viewport_scale[0] != bits_before,
+         "viewport bit change re-plans window space");
+   CHECK(clip3 == clip1, "clip plan survives the viewport change");
+   r300->viewport.scale[0] = 320.0f;
+
+   r300_r2vb_plan_cache_release(&fake_vs);
+   bool all_null = true;
+   for (unsigned cv = 0; cv < 2; cv++)
+      for (unsigned sp = 0; sp < 2; sp++)
+         if (fake_vs.r2vb_plan[cv][sp])
+            all_null = false;
+   CHECK(all_null, "release clears every slot");
+   CHECK(r300_r2vb_plan_shadow_divergences() == 0,
+         "no shadow divergence recorded");
+
+   r300->vs_state.state = NULL;
+   ralloc_free(vs);
+}
+
+static void
 case_deterministic(struct r300_context *r300)
 {
    printf("repeated planning is deterministic\n");
@@ -531,9 +691,10 @@ case_deterministic(struct r300_context *r300)
          "both runs plan");
    CHECK(p1.action == p2.action && p1.primary_reason == p2.primary_reason &&
             p1.observed_reason_mask == p2.observed_reason_mask &&
-            p1.cut_index == p2.cut_index &&
-            p1.num_carry_bases == p2.num_carry_bases &&
-            p1.pass_a_alu == p2.pass_a_alu && p1.pass_b_alu == p2.pass_b_alu,
+            p1.partition.cut_index == p2.partition.cut_index &&
+            p1.partition.num_bases == p2.partition.num_bases &&
+            p1.pass_a_cost.alu == p2.pass_a_cost.alu &&
+            p1.pass_b_cost.alu == p2.pass_b_cost.alu,
          "identical verdict, mask, cut, and costs");
    r300_r2vb_plan_release(&p1);
    r300_r2vb_plan_release(&p2);
@@ -552,7 +713,11 @@ main(void)
    case_typed_split_rows(r300);
    case_typed_reject_rows(r300);
    case_structural_rejects(r300);
+   case_typed_float_before_cut(r300);
+   case_unsupported_intrinsic(r300);
+   case_multi_candidate_failures(r300);
    case_wide_frontier(r300);
+   case_cache_lifetime(r300);
    case_deterministic(r300);
 
    rc_destroy_regalloc_state(&g_context.fs_regalloc_state);

@@ -133,10 +133,20 @@ enum r300_fs_admission {
     R300_FS_ADMIT_REJECT,
 };
 
+/* Backend resource vector of one admission measurement: emitted ALU slots,
+ * the US_PIXSIZE temporary high-water mark, and the constant-file vec4
+ * count.  Zero when the compile died before emission. */
+struct r300_fs_admission_cost {
+   unsigned alu;
+   unsigned temps;
+   unsigned consts;
+};
+
 enum r300_fs_admission
 r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_nir,
                               unsigned *out_alu_len,
-                              enum r300_fs_input_semantics input_semantics);
+                              enum r300_fs_input_semantics input_semantics,
+                              struct r300_fs_admission_cost *out_cost);
 
 /* Create a fragment-shader CSO with an explicit input-delivery contract.  The
  * public create_fs_state pipe callback wraps this with
