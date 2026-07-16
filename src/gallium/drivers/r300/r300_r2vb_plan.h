@@ -78,9 +78,13 @@ enum r300_r2vb_plan_reason {
     R300_R2VB_PLAN_INTRINSIC,              /* intrinsic outside plain I/O and
                                             * uniform/UBO loads, or texturing */
     R300_R2VB_PLAN_IO_SHAPE,               /* missing gl_Position output,
-                                            * varying passthrough violation,
-                                            * or position inputs beyond the
-                                            * producer ceiling */
+                                            * position inputs beyond the
+                                            * producer ceiling, or -- on the
+                                            * cv=1 varying plan -- a varying
+                                            * discipline violation (a
+                                            * non-input-fed passthrough, or a
+                                            * computing non-first input
+                                            * alongside a computed varying) */
     R300_R2VB_PLAN_TYPED_SINGLE_PASS_UNPROVEN, /* under-budget typed producer:
                                             * a single pass would bypass the
                                             * carry range/signedness checks,

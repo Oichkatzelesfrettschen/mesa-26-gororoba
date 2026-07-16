@@ -307,6 +307,57 @@ build_no_uniform_interface(void)
    return end_vs(&v, v.pos);
 }
 
+/* The RS482 spill1 reference producer shape (r2vb_varying.vert): a computed
+ * flat varying from the first input plus a passthrough varying of a second
+ * input.  The position-pass admission the route consults at cv=0 measures
+ * the restaged position producer alone, so this shader memos FITS there;
+ * the varying delivery is the route's separate concern (passthrough
+ * re-ingest, or the cv=1 varying producer). */
+static nir_shader *
+build_computed_and_passthrough_varyings(void)
+{
+   struct vs_build v = begin_vs("plan_computed_varying", true);
+   nir_variable *in_attr = nir_variable_create(
+      v.b.shader, nir_var_shader_in, glsl_vec4_type(), "in_attr");
+   in_attr->data.location = VERT_ATTRIB_GENERIC1;
+   in_attr->data.driver_location = 1;
+   nir_variable *out_color = nir_variable_create(
+      v.b.shader, nir_var_shader_out, glsl_vec4_type(), "vColor");
+   out_color->data.location = VARYING_SLOT_VAR0;
+   out_color->data.driver_location = 1;
+   nir_variable *out_attr = nir_variable_create(
+      v.b.shader, nir_var_shader_out, glsl_vec4_type(), "vAttr");
+   out_attr->data.location = VARYING_SLOT_VAR1;
+   out_attr->data.driver_location = 2;
+
+   nir_store_var(&v.b, out_color,
+                 nir_fmul_imm(&v.b, v.pos, 2.0), 0xf);
+   nir_store_var(&v.b, out_attr, nir_load_var(&v.b, in_attr), 0xf);
+   return end_vs(&v, v.pos);
+}
+
+/* A computed varying plus a second input feeding the position computation:
+ * the production arity rule (r300_vs_nir_is_fragment_aluable) rejects this
+ * at cv=1, because with a computed varying present every non-first input
+ * must appear solely as a passthrough varying source. */
+static nir_shader *
+build_computed_varying_second_input_computes(void)
+{
+   struct vs_build v = begin_vs("plan_cv_second_input", true);
+   nir_variable *in_attr = nir_variable_create(
+      v.b.shader, nir_var_shader_in, glsl_vec4_type(), "in_attr");
+   in_attr->data.location = VERT_ATTRIB_GENERIC1;
+   in_attr->data.driver_location = 1;
+   nir_variable *out_color = nir_variable_create(
+      v.b.shader, nir_var_shader_out, glsl_vec4_type(), "vColor");
+   out_color->data.location = VARYING_SLOT_VAR0;
+   out_color->data.driver_location = 1;
+
+   nir_store_var(&v.b, out_color,
+                 nir_fmul_imm(&v.b, v.pos, 2.0), 0xf);
+   return end_vs(&v, nir_fadd(&v.b, v.pos, nir_load_var(&v.b, in_attr)));
+}
+
 /* Eight interleaved over-budget chains summed at the end: stepping every
  * chain at each round keeps all eight running scalars live at every interior
  * cut, so no crossing set fits one vec4, while the length keeps even the
@@ -425,6 +476,56 @@ case_uniform_free_single(struct r300_context *r300)
       r300_r2vb_plan_release(&plan);
       ralloc_free(vs);
    }
+}
+
+/* The cv=0 plan cell predicts the position-pass admission memo, which the
+ * clip route consults for its position leg while varyings ride the
+ * passthrough re-ingest or the cv=1 varying producer.  A computed varying
+ * therefore stays outside the cv=0 cell instead of rejecting it: the RS482
+ * shadow-parity corpus caught the plan diverging (reject/io_shape vs memo
+ * FITS) on exactly the spill1 reference producer in both spaces. */
+static void
+case_computed_varying_position_cell(struct r300_context *r300)
+{
+   printf("computed-varying producer plans SINGLE on the cv=0 position cell\n");
+   for (unsigned sp = 0; sp < 2; sp++) {
+      nir_shader *vs = build_computed_and_passthrough_varyings();
+      struct r300_r2vb_producer_plan plan;
+      enum r300_r2vb_position_space space =
+         sp ? R300_R2VB_POSITION_WINDOW : R300_R2VB_POSITION_CLIP;
+      CHECK(plan_row(r300, vs, space, &plan), "planner runs");
+      CHECK(plan.action == R300_R2VB_PLAN_SINGLE,
+            sp ? "action single (window)" : "action single (clip)");
+      CHECK(plan.status == R300_R2VB_PLAN_READY, "status ready");
+      CHECK(plan.baseline.alu > 0 && plan.baseline.alu <= 64,
+            "position pass measured in budget");
+      r300_r2vb_plan_release(&plan);
+      ralloc_free(vs);
+   }
+}
+
+/* cv=1 keeps the production arity rule: a computed varying pins every
+ * non-first input to passthrough-varying use only, so a second input feeding
+ * the position computation rejects with IO_SHAPE, matching
+ * r300_vs_nir_is_fragment_aluable. */
+static void
+case_computed_varying_arity_reject(struct r300_context *r300)
+{
+   printf("computed varying with a computing second input rejects at cv=1\n");
+   nir_shader *vs = build_computed_varying_second_input_computes();
+   struct r300_r2vb_producer_plan plan;
+   bool ran = r300_r2vb_plan_producer(r300, vs, true,
+                                      R300_R2VB_POSITION_CLIP, &plan);
+   printf("    plan action=%s primary=%s mask=0x%" PRIx64 "\n",
+          r300_r2vb_plan_action_str(plan.action),
+          r300_r2vb_plan_reason_str(plan.primary_reason),
+          plan.observed_reason_mask);
+   CHECK(ran, "planner runs");
+   CHECK(plan.action == R300_R2VB_PLAN_REJECT, "action reject");
+   CHECK(plan.primary_reason == R300_R2VB_PLAN_IO_SHAPE, "reason io_shape");
+   if (ran)
+      r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
 }
 
 static void
@@ -740,6 +841,8 @@ main(void)
 
    case_float_single(r300);
    case_uniform_free_single(r300);
+   case_computed_varying_position_cell(r300);
+   case_computed_varying_arity_reject(r300);
    case_float_split(r300);
    case_typed_split_rows(r300);
    case_typed_reject_rows(r300);
