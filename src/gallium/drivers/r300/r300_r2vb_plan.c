@@ -34,10 +34,14 @@ plan_primary_reason(uint64_t mask)
     return R300_R2VB_PLAN_OK;
 }
 
-/* Whole-program typed-source scan.  Signed markers dominate unsigned, and
- * either dominates boolean, so the class reads the strictest admission
- * constraint present.  Equality compares and boolean logic mark the bool
- * class; their integer operands mark their own class at the producing op. */
+/* Typed-source scan over the restaged position candidate: the cell's typed
+ * class describes the producer the cell plans, so a typed computation that
+ * feeds only a non-position output (absent from the candidate after the
+ * restage's dead-code elimination) leaves the position cell untouched.
+ * Signed markers dominate unsigned, and either dominates boolean, so the
+ * class reads the strictest admission constraint present.  Equality
+ * compares and boolean logic mark the bool class; their integer operands
+ * mark their own class at the producing op. */
 static void
 plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
 {
@@ -85,11 +89,13 @@ plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
 
 /* Pre-lowering shape validation: only the structural facts that survive the
  * fragment backend's lowering -- single-block control flow, plain I/O and
- * uniform/UBO intrinsics, a gl_Position output behind a uniform interface,
- * passthrough discipline on non-position outputs, and a bounded set of
- * position-feeding inputs.  ALU-lowering capability is the backend's verdict
- * on the restaged FS (a float-only op whitelist here is exactly the reject
- * that made the typed split unreachable through the production route). */
+ * uniform/UBO intrinsics, a gl_Position output, and a bounded set of
+ * position-feeding inputs.  Varying discipline (input-fed passthroughs, the
+ * computed-varying arity rule) belongs to the cv=1 plan alone; the cv=0
+ * cell predicts the position-pass admission memo.  ALU-lowering capability
+ * is the backend's verdict on the restaged FS (a float-only op whitelist
+ * here is exactly the reject that made the typed split unreachable through
+ * the production route). */
 static bool
 plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
                     struct r300_r2vb_producer_plan *plan)
@@ -104,16 +110,17 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
         return false;
     }
 
-    bool has_uniform = false, has_pos_out = false;
+    /* A uniform interface is optional: production admission delivers
+     * uniform-free producers (a passthrough VS transforms inputs alone), and
+     * requiring one here diverged the shadow plan from the memo on exactly
+     * those shaders on RS482. */
+    bool has_pos_out = false;
     nir_foreach_variable_in_shader(var, nir) {
-        if (var->data.mode &
-            (nir_var_mem_ubo | nir_var_mem_push_const | nir_var_uniform))
-            has_uniform = true;
         if ((var->data.mode & nir_var_shader_out) &&
             var->data.location == VARYING_SLOT_POS)
             has_pos_out = true;
     }
-    if (!has_uniform || !has_pos_out) {
+    if (!has_pos_out) {
         plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
         return false;
     }
@@ -151,31 +158,82 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
         }
     }
 
-    /* Every non-position output is a straight passthrough of a vertex input,
-     * or -- under allow_computed_varying -- a value the multi-pass producer
-     * renders on the fragment ALU into its own BO. */
-    nir_foreach_block(block, impl) {
-        nir_foreach_instr(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-                continue;
-            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_store_deref)
-                continue;
-            nir_variable *out = nir_intrinsic_get_var(intr, 0);
-            if (!out || !(out->data.mode & nir_var_shader_out) ||
-                out->data.location == VARYING_SLOT_POS)
-                continue;
-            nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
-            if (!val || val->intrinsic != nir_intrinsic_load_deref) {
-                if (allow_computed_varying)
+    /* Non-position outputs are the cv=1 plan's surface.  The cv=0 cell
+     * predicts the position-pass admission memo, which the clip route
+     * consults directly for its position leg (r300_r2vb_producer_fits_budget
+     * measures the restaged position producer alone); varyings ride the
+     * passthrough re-ingest or the cv=1 varying producer, so a computed
+     * varying leaves the cv=0 cell untouched.  The RS482 shadow-parity
+     * corpus caught the cv=0 cell rejecting io_shape on the spill1 reference
+     * producer's computed varying while the memo recorded the position pass
+     * FITS. */
+    if (allow_computed_varying) {
+        nir_foreach_block(block, impl) {
+            nir_foreach_instr(instr, block) {
+                if (instr->type != nir_instr_type_intrinsic)
                     continue;
-                plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
-                return false;
+                nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+                if (intr->intrinsic != nir_intrinsic_store_deref)
+                    continue;
+                nir_variable *out = nir_intrinsic_get_var(intr, 0);
+                if (!out || !(out->data.mode & nir_var_shader_out) ||
+                    out->data.location == VARYING_SLOT_POS)
+                    continue;
+                nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
+                if (!val || val->intrinsic != nir_intrinsic_load_deref)
+                    continue; /* computed: the varying producer renders it */
+                nir_variable *src = nir_intrinsic_get_var(val, 0);
+                if (!src || !(src->data.mode & nir_var_shader_in)) {
+                    plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
+                    return false;
+                }
             }
-            nir_variable *src = nir_intrinsic_get_var(val, 0);
-            if (!src || !(src->data.mode & nir_var_shader_in)) {
-                plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
-                return false;
+        }
+
+        /* The production arity rule (r300_vs_nir_is_fragment_aluable): with
+         * a computed varying present, the varying producer feeds a single
+         * attribute, so every non-first input appears solely as a
+         * passthrough varying source. */
+        if (r300_r2vb_first_computed_varying(nir) >= 0) {
+            nir_variable *first_in = NULL;
+            nir_foreach_variable_with_modes(v, nir, nir_var_shader_in) {
+                first_in = v;
+                break;
+            }
+            nir_foreach_block(block, impl) {
+                nir_foreach_instr(instr, block) {
+                    if (instr->type != nir_instr_type_intrinsic)
+                        continue;
+                    nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+                    if (intr->intrinsic != nir_intrinsic_load_deref)
+                        continue;
+                    nir_variable *in = nir_intrinsic_get_var(intr, 0);
+                    if (!in || !(in->data.mode & nir_var_shader_in) ||
+                        in == first_in)
+                        continue;
+                    nir_foreach_use(use, &intr->def) {
+                        if (nir_src_is_if(use)) {
+                            plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
+                            return false;
+                        }
+                        nir_instr *cons = nir_src_use_instr(use);
+                        if (cons->type != nir_instr_type_intrinsic) {
+                            plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
+                            return false;
+                        }
+                        nir_intrinsic_instr *ci = nir_instr_as_intrinsic(cons);
+                        if (ci->intrinsic != nir_intrinsic_store_deref) {
+                            plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
+                            return false;
+                        }
+                        nir_variable *o = nir_intrinsic_get_var(ci, 0);
+                        if (!o || !(o->data.mode & nir_var_shader_out) ||
+                            o->data.location == VARYING_SLOT_POS) {
+                            plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
+                            return false;
+                        }
+                    }
+                }
             }
         }
     }
@@ -349,9 +407,11 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
     plan->action = R300_R2VB_PLAN_REJECT;
     plan->status = R300_R2VB_PLAN_SEMANTIC_REJECT;
 
-    /* Structural and typed-source scans run on a constant-folded clone: a
-     * SPIR-V VS reaches the driver with its UBO address arithmetic still
-     * literal, and folded literals are structure, not typed computation. */
+    /* The structural preflight runs on a constant-folded clone of the
+     * application VS: a SPIR-V VS reaches the driver with its UBO address
+     * arithmetic still literal, and folded literals are structure, not
+     * computation.  The typed-source scan runs later, on the restaged
+     * position candidate, so it describes the cell's own producer. */
     nir_shader *folded = nir_shader_clone(NULL, vs_nir);
     if (!folded) {
         plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
@@ -367,8 +427,6 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
     } while (progress);
 
     bool shape_ok = plan_scan_structure(folded, allow_computed_varying, plan);
-    if (shape_ok)
-        plan_scan_typed_source(folded, plan);
     ralloc_free(folded);
     if (!shape_ok) {
         plan->primary_reason = plan_primary_reason(plan->observed_reason_mask);
@@ -386,6 +444,7 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
         plan->status = R300_R2VB_PLAN_TRANSIENT_FAILURE;
         return false;
     }
+    plan_scan_typed_source(pos, plan);
 
     switch (adm) {
     case R300_FS_ADMIT_FITS:

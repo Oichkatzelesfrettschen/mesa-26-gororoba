@@ -15,6 +15,7 @@
 #include "r300_cb.h"
 #include "r300_context.h"
 #include "r300_emit.h"
+#include "r300_r2vb_telemetry.h"
 #include "r300_screen.h"
 #include "r300_screen_buffer.h"
 #include "r300_texture.h"
@@ -61,6 +62,10 @@ static void r300_release_referenced_objects(struct r300_context *r300)
 static void r300_destroy_context(struct pipe_context* context)
 {
     struct r300_context* r300 = r300_context(context);
+
+    /* Gated on R300_R2VB_TELEMETRY=1; the last live context's teardown
+     * prints the run's cumulative classification totals. */
+    r300_r2vb_telemetry_context_destroyed();
 
     if (r300->cs.priv && r300->hyperz_enabled) {
         r300->rws->cs_request_feature(&r300->cs, RADEON_FID_R300_HYPERZ_ACCESS, false);
@@ -419,6 +424,10 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
 
     if (!r300)
         return NULL;
+
+    /* Every exit runs r300_destroy_context (the fail label included), so the
+     * telemetry context epoch balances on both outcomes. */
+    r300_r2vb_telemetry_context_created();
 
     r300->rws = rws;
     r300->screen = r300screen;

@@ -1614,9 +1614,15 @@ retry:
         }
     }
 
+    /* nir_to_rc consumes the clone; a classic-front-end compile leaves it,
+     * and its last read (info.fs.uses_discard) happens inside the classic
+     * block, so the clone releases here on that path.  A backend retry
+     * re-enters through the retry label and builds a fresh clone. */
     if (!classic_done)
         nir_to_rc(clone, (struct pipe_screen *)r300->screen,
                   shader->compare_state, code, &compiler.Base);
+    else
+        ralloc_free(clone);
 
     if (compiler.Base.Error) {
         if (classic_done) {
