@@ -400,6 +400,33 @@ case_float_single(struct r300_context *r300)
    ralloc_free(vs);
 }
 
+/* A producer with no uniform-class variable is admissible: the production
+ * route delivers passthrough and transform-only producers, and the RS482
+ * shadow-parity corpus caught the plan diverging from the memo (io_shape
+ * reject vs memo FITS) on exactly these shaders when the shape scan demanded
+ * a uniform interface. */
+static void
+case_uniform_free_single(struct r300_context *r300)
+{
+   printf("uniform-free producer under budget plans SINGLE\n");
+   for (unsigned sp = 0; sp < 2; sp++) {
+      struct vs_build v = begin_vs("plan_uniform_free_fits", false);
+      nir_def *c = fmad_chain(&v.b, nir_channel(&v.b, v.pos, 0), 8);
+      nir_shader *vs = end_vs(&v, nir_replicate(&v.b, c, 4));
+      struct r300_r2vb_producer_plan plan;
+      enum r300_r2vb_position_space space =
+         sp ? R300_R2VB_POSITION_WINDOW : R300_R2VB_POSITION_CLIP;
+      CHECK(plan_row(r300, vs, space, &plan), "planner runs");
+      CHECK(plan.action == R300_R2VB_PLAN_SINGLE,
+            sp ? "action single (window)" : "action single (clip)");
+      CHECK(plan.status == R300_R2VB_PLAN_READY, "status ready");
+      CHECK(plan.baseline.alu > 0 && plan.baseline.alu <= 64,
+            "measured cost in budget");
+      r300_r2vb_plan_release(&plan);
+      ralloc_free(vs);
+   }
+}
+
 static void
 case_float_split(struct r300_context *r300)
 {
@@ -536,12 +563,15 @@ case_structural_rejects(struct r300_context *r300)
    r300_r2vb_plan_release(&plan);
    ralloc_free(vs);
 
+   /* Uniform-free producers are admissible (the RS482 shadow-parity corpus
+    * delivers them byte-identically); the shape gate keys on gl_Position,
+    * not on a uniform interface. */
    vs = build_no_uniform_interface();
    CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan),
          "no-uniform row runs");
-   CHECK(plan.action == R300_R2VB_PLAN_REJECT &&
-            plan.primary_reason == R300_R2VB_PLAN_IO_SHAPE,
-         "missing uniform interface rejects IO_SHAPE");
+   CHECK(plan.action == R300_R2VB_PLAN_SINGLE &&
+            plan.primary_reason == R300_R2VB_PLAN_OK,
+         "uniform-free producer plans SINGLE");
    r300_r2vb_plan_release(&plan);
    ralloc_free(vs);
 }
@@ -709,6 +739,7 @@ main(void)
    struct r300_context *r300 = fake_r300_context();
 
    case_float_single(r300);
+   case_uniform_free_single(r300);
    case_float_split(r300);
    case_typed_split_rows(r300);
    case_typed_reject_rows(r300);
