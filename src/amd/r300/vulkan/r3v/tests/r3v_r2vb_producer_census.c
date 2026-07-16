@@ -17,7 +17,19 @@
  * reaches emit, so the census registers a capture callback on the fake
  * context and the production compile code stays untouched.  A compile that
  * dies at the emit ceiling produces no statistics line; its census datum is
- * the plan's over-budget classification itself.
+ * the plan's over-budget classification itself, and on a SPLIT row the
+ * per-instruction statistics therefore describe the admitted halves, never
+ * the original over-budget producer.
+ *
+ * Statistics records carry a phase label.  phase=walk is the planner's own
+ * candidate-walk compile sequence, diagnostic because a walk position does
+ * not identify which candidate or half produced it.  The programs the plan
+ * actually selected -- the SINGLE baseline, or both halves rebuilt from the
+ * retained partition -- are then recompiled explicitly under
+ * phase=selected-baseline / selected-pass-a / selected-pass-b, and those
+ * named records are the mining surface.  Capture is fail-closed: a dropped
+ * record (capacity) or a truncated line fails the row, and the determinism
+ * check covers the full statistics transcript, not only the summary row.
  *
  * Census rows feed the compaction rule selection in
  * docs/hardware/rs482-producer-alu-compaction-design.md: which shapes occur,
@@ -46,6 +58,7 @@
 #include "vulkan/runtime/vk_physical_device.h"
 
 #include "r300_context.h"
+#include "r300_fs.h"
 #include "r300_r2vb_plan.h"
 #include "r300_screen.h"
 #include "radeon_regalloc.h"
@@ -73,10 +86,14 @@ static struct r3v_device g_r3v_device;
 /* Statistics lines captured from one planner invocation.  rc_run_compiler
  * emits one SHADER_INFO line per compile that survives to emit, in compile
  * order: the baseline position producer first, then each candidate's carry
- * and position halves. */
+ * and position halves.  Capture is fail-closed: a record past the capacity
+ * or a line the buffer clips sets a flag the row check fails on, so the
+ * census never silently under-reports. */
 #define CENSUS_MAX_STATS 32
 static char g_stats[CENSUS_MAX_STATS][224];
 static unsigned g_stats_count;
+static bool g_stats_overflow;
+static bool g_stats_truncated;
 
 static void
 capture_debug_message(void *data, unsigned *id, enum util_debug_type type,
@@ -84,11 +101,49 @@ capture_debug_message(void *data, unsigned *id, enum util_debug_type type,
 {
    (void)data;
    (void)id;
-   if (type != UTIL_DEBUG_TYPE_SHADER_INFO ||
-       g_stats_count >= CENSUS_MAX_STATS)
+   if (type != UTIL_DEBUG_TYPE_SHADER_INFO)
       return;
-   vsnprintf(g_stats[g_stats_count], sizeof(g_stats[0]), fmt, args);
+   if (g_stats_count >= CENSUS_MAX_STATS) {
+      g_stats_overflow = true;
+      return;
+   }
+   int written = vsnprintf(g_stats[g_stats_count], sizeof(g_stats[0]), fmt,
+                           args);
+   if (written < 0 || (size_t)written >= sizeof(g_stats[0]))
+      g_stats_truncated = true;
    g_stats_count++;
+}
+
+static void
+stats_reset(void)
+{
+   g_stats_count = 0;
+   g_stats_overflow = false;
+   g_stats_truncated = false;
+}
+
+/* Per-attempt transcript of every captured statistics line with its phase
+ * label; the determinism check compares the two attempts' transcripts whole,
+ * so the RC statistics are covered, not only the summary row. */
+static char g_transcript[2][32768];
+
+static void
+transcript_append_stats(char *transcript, size_t len, const char *phase)
+{
+   size_t off = strlen(transcript);
+   for (unsigned i = 0; i < g_stats_count; i++) {
+      if (off >= len - 1) {
+         g_stats_truncated = true;
+         break;
+      }
+      int written = snprintf(transcript + off, len - off,
+                             "phase=%s seq=%u %s\n", phase, i, g_stats[i]);
+      if (written < 0 || (size_t)written >= len - off) {
+         g_stats_truncated = true;
+         break;
+      }
+      off += (size_t)written;
+   }
 }
 
 static void
@@ -265,6 +320,32 @@ static const struct census_row rows[] = {
      NULL, R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_MIXED_SIGNEDNESS },
 };
 
+/* Stable names for the machine-readable row: enum renumbering must never
+ * silently reinterpret archived census output. */
+static const char *
+plan_status_str(enum r300_r2vb_plan_status status)
+{
+   switch (status) {
+   case R300_R2VB_PLAN_READY:             return "ready";
+   case R300_R2VB_PLAN_SEMANTIC_REJECT:   return "semantic_reject";
+   case R300_R2VB_PLAN_POLICY_REJECT:     return "policy_reject";
+   case R300_R2VB_PLAN_TRANSIENT_FAILURE: return "transient_failure";
+   }
+   return "unknown";
+}
+
+static const char *
+typed_class_str(enum r300_r2vb_typed_source_class source_class)
+{
+   switch (source_class) {
+   case R300_R2VB_TYPED_SOURCE_NONE: return "none";
+   case R300_R2VB_TYPED_SOURCE_BOOL: return "bool";
+   case R300_R2VB_TYPED_SOURCE_SINT: return "sint";
+   case R300_R2VB_TYPED_SOURCE_UINT: return "uint";
+   }
+   return "unknown";
+}
+
 static void
 carry_sig(const struct r300_r2vb_producer_plan *plan, char *buf, size_t len)
 {
@@ -298,19 +379,49 @@ format_row(const struct census_row *row, const char *space_name,
    if (plan->action == R300_R2VB_PLAN_SPLIT)
       carry_sig(plan, sig, sizeof(sig));
    snprintf(buf, len,
-            "census specimen=%s space=%s status=%d action=%s primary=%s "
-            "mask=0x%" PRIx64 " inputs=%u typed=%d class=%d carries=%s "
+            "census specimen=%s space=%s status=%s action=%s primary=%s "
+            "mask=0x%" PRIx64 " inputs=%u typed=%d class=%s carries=%s "
             "baseline=%u/%u/%u passA=%u/%u/%u passB=%u/%u/%u",
-            row->name, space_name, plan->status,
+            row->name, space_name, plan_status_str(plan->status),
             r300_r2vb_plan_action_str(plan->action),
             r300_r2vb_plan_reason_str(plan->primary_reason),
             plan->observed_reason_mask, plan->num_position_inputs,
-            plan->has_typed_source, plan->typed_source_class, sig,
+            plan->has_typed_source, typed_class_str(plan->typed_source_class),
+            sig,
             plan->baseline.alu, plan->baseline.temps, plan->baseline.consts,
             plan->pass_a_cost.alu, plan->pass_a_cost.temps,
             plan->pass_a_cost.consts,
             plan->pass_b_cost.alu, plan->pass_b_cost.temps,
             plan->pass_b_cost.consts);
+}
+
+/* Recompile one plan-selected program under a named phase, printing and
+ * transcripting its statistics.  Returns the number of statistics records
+ * the compile produced; accumulates capture cleanliness into *clean. */
+static unsigned
+census_selected_phase(const struct census_row *row, const char *space_name,
+                      const char *phase, const nir_shader *program,
+                      bool print, char *transcript, size_t transcript_len,
+                      bool *clean)
+{
+   nir_shader *clone = nir_shader_clone(NULL, program);
+   if (!clone) {
+      *clean = false;
+      return 0;
+   }
+   stats_reset();
+   struct r300_fs_admission_cost cost;
+   r300_fs_measure_nir_admission(&g_context, clone, NULL,
+                                 R300_FS_INPUT_R2VB_FLAT_VERTEX, &cost);
+   if (print) {
+      for (unsigned i = 0; i < g_stats_count; i++)
+         printf("census-stats specimen=%s space=%s phase=%s seq=%u %s\n",
+                row->name, space_name, phase, i, g_stats[i]);
+   }
+   transcript_append_stats(transcript, transcript_len, phase);
+   *clean = *clean && !g_stats_overflow && !g_stats_truncated;
+   ralloc_free(clone);
+   return g_stats_count;
 }
 
 static void
@@ -321,7 +432,12 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
    char label[96];
    char line_first[512], line_second[512];
 
+   g_transcript[0][0] = '\0';
+   g_transcript[1][0] = '\0';
+
    for (unsigned attempt = 0; attempt < 2; attempt++) {
+      char *transcript = g_transcript[attempt];
+      const size_t transcript_len = sizeof(g_transcript[0]);
       nir_shader *vs = row->build
                           ? row->build()
                           : prepare_module(row->spirv, row->spirv_size);
@@ -332,7 +448,7 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
       if (!vs)
          return;
 
-      g_stats_count = 0;
+      stats_reset();
       struct r300_r2vb_producer_plan plan;
       bool ran = r300_r2vb_plan_producer(&g_context, vs, false, space, &plan);
       snprintf(label, sizeof(label), "%s/%s planner runs", row->name,
@@ -348,12 +464,47 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
                  attempt == 0 ? line_first : line_second,
                  sizeof(line_first));
 
+      bool clean = !g_stats_overflow && !g_stats_truncated;
+      unsigned walk_stats = g_stats_count;
       if (attempt == 0) {
          printf("%s\n", line_first);
          for (unsigned i = 0; i < g_stats_count; i++)
-            printf("census-stats specimen=%s space=%s seq=%u %s\n",
+            printf("census-stats specimen=%s space=%s phase=walk seq=%u %s\n",
                    row->name, space_name, i, g_stats[i]);
+      }
+      transcript_append_stats(transcript, transcript_len, "walk");
 
+      /* The plan-selected programs, recompiled under named phases: the
+       * miner reads these records, and the walk sequence stays diagnostic. */
+      unsigned selected_stats = 0;
+      if (plan.action == R300_R2VB_PLAN_SINGLE && plan.candidate) {
+         selected_stats += census_selected_phase(
+            row, space_name, "selected-baseline", plan.candidate,
+            attempt == 0, transcript, transcript_len, &clean);
+      } else if (plan.action == R300_R2VB_PLAN_SPLIT && plan.candidate) {
+         nir_shader *pass_a =
+            r300_mp_build_carry_pass_a(plan.candidate, &plan.partition);
+         nir_shader *pass_b = r300_mp_build_pos_pass_b(
+            plan.candidate, &plan.partition, plan.num_position_inputs);
+         if (pass_a) {
+            selected_stats += census_selected_phase(
+               row, space_name, "selected-pass-a", pass_a, attempt == 0,
+               transcript, transcript_len, &clean);
+            ralloc_free(pass_a);
+         } else {
+            clean = false;
+         }
+         if (pass_b) {
+            selected_stats += census_selected_phase(
+               row, space_name, "selected-pass-b", pass_b, attempt == 0,
+               transcript, transcript_len, &clean);
+            ralloc_free(pass_b);
+         } else {
+            clean = false;
+         }
+      }
+
+      if (attempt == 0) {
          snprintf(label, sizeof(label), "%s/%s action %s", row->name,
                   space_name, r300_r2vb_plan_action_str(row->action));
          CHECK(plan.action == row->action, label);
@@ -363,10 +514,17 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
          CHECK(plan.primary_reason == row->primary_reason, label);
          if (plan.action == R300_R2VB_PLAN_SINGLE ||
              plan.action == R300_R2VB_PLAN_SPLIT) {
-            snprintf(label, sizeof(label), "%s/%s statistics captured",
+            snprintf(label, sizeof(label), "%s/%s walk statistics captured",
                      row->name, space_name);
-            CHECK(g_stats_count > 0, label);
+            CHECK(walk_stats > 0, label);
+            snprintf(label, sizeof(label),
+                     "%s/%s selected-phase statistics captured", row->name,
+                     space_name);
+            CHECK(selected_stats > 0, label);
          }
+         snprintf(label, sizeof(label), "%s/%s statistics capture clean",
+                  row->name, space_name);
+         CHECK(clean, label);
       }
 
       r300_r2vb_plan_release(&plan);
@@ -376,6 +534,9 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
    snprintf(label, sizeof(label), "%s/%s row deterministic", row->name,
             space_name);
    CHECK(strcmp(line_first, line_second) == 0, label);
+   snprintf(label, sizeof(label), "%s/%s statistics deterministic",
+            row->name, space_name);
+   CHECK(strcmp(g_transcript[0], g_transcript[1]) == 0, label);
 }
 
 int
