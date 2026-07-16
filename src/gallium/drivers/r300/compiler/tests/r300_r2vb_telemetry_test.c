@@ -162,6 +162,39 @@ count_dir_files(const char *dir)
    return n;
 }
 
+/* Return the single retained file's path, or false when the directory does
+ * not hold exactly one entry. */
+static bool
+single_dir_file(const char *dir, char *path, size_t path_size,
+                size_t *name_len)
+{
+   DIR *d = opendir(dir);
+   if (!d)
+      return false;
+   unsigned n = 0;
+   struct dirent *e;
+   char name[256] = { 0 };
+   while ((e = readdir(d))) {
+      if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+         continue;
+      n++;
+      snprintf(name, sizeof(name), "%s", e->d_name);
+   }
+   closedir(d);
+   if (n != 1)
+      return false;
+   *name_len = strlen(name);
+   snprintf(path, path_size, "%s/%s", dir, name);
+   return true;
+}
+
+static long
+file_size(const char *path)
+{
+   struct stat st;
+   return stat(path, &st) == 0 ? (long)st.st_size : -1;
+}
+
 /* Plan one specimen, assert the expected action (calibrating the specimen
  * itself against the planner), record it in telemetry, release it. */
 static void
@@ -225,6 +258,31 @@ main(void)
             count_dir_files(retain_dir) == 1,
          "recurring shape deduplicates on the content hash");
 
+   /* The filename carries the full BLAKE3 hex digest:
+    * "r2vb-vs-" + 64 hex + ".nir". */
+   char retained_path[512];
+   size_t retained_name_len = 0;
+   bool have_file = single_dir_file(retain_dir, retained_path,
+                                    sizeof(retained_path),
+                                    &retained_name_len);
+   CHECK(have_file && retained_name_len == strlen("r2vb-vs-") + 64 +
+                                              strlen(".nir"),
+         "retained filename carries the full content hash");
+
+   /* Known-bad file at the final name: dedup verifies bytes, so a damaged
+    * entry is republished with the correct content. */
+   long good_size = have_file ? file_size(retained_path) : -1;
+   if (have_file) {
+      FILE *f = fopen(retained_path, "wb");
+      CHECK(f && fputs("damaged", f) >= 0 && fclose(f) == 0,
+            "damaged the retained file in place");
+   }
+   plan_and_note("over/republish", over, R300_R2VB_PLAN_SPLIT);
+   CHECK(c->retained == base.retained + 2 &&
+            count_dir_files(retain_dir) == 1 &&
+            have_file && file_size(retained_path) == good_size,
+         "mismatching existing file republishes atomically");
+
    /* Structural reject: control flow carries no budget signal. */
    plan_and_note("control-flow", cflow, R300_R2VB_PLAN_REJECT);
    CHECK(c->by_reason[R300_R2VB_PLAN_CONTROL_FLOW] ==
@@ -237,6 +295,14 @@ main(void)
 
    /* Summary is print-gated; ungated it must be silent and safe. */
    r300_r2vb_telemetry_print_summary();
+
+   /* Context-epoch accounting: with two live contexts the first destruction
+    * stays quiet and the last one prints the cumulative summary (silent here
+    * with the gate closed; the walk itself must be safe). */
+   r300_r2vb_telemetry_context_created();
+   r300_r2vb_telemetry_context_created();
+   r300_r2vb_telemetry_context_destroyed();
+   r300_r2vb_telemetry_context_destroyed();
 
    ralloc_free(fits);
    ralloc_free(over);

@@ -5,6 +5,8 @@
 
 #include "r300_r2vb_telemetry.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +23,11 @@
 #include "r300_vs.h"
 
 static struct r300_r2vb_telemetry_counters counters;
+
+/* Contexts sharing the process share the counters; the summary prints when
+ * the last live context goes away, so a multi-context run reports one
+ * cumulative total per context epoch. */
+static uint32_t live_contexts;
 
 /* The per-event print gate takes the exact value 1; unset, empty, and every
  * other value keep it closed. */
@@ -69,10 +76,72 @@ telemetry_retain_eligible(const struct r300_r2vb_producer_plan *plan)
     }
 }
 
-/* Serialize the application VS into <dir>/r2vb-vs-<blake3-prefix>.nir.  The
- * filename is the content hash, so a shape that recurs across draws,
- * contexts, and processes lands once and an existing file is the
- * deduplication check. */
+/* Compare a published file byte-for-byte against the serialized blob. */
+static bool
+file_matches_blob(const char *path, const uint8_t *data, size_t size)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    uint8_t buf[4096];
+    size_t off = 0;
+    size_t got;
+    bool match = true;
+    while (match && (got = fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (got > size - off || memcmp(buf, data + off, got) != 0)
+            match = false;
+        else
+            off += got;
+    }
+    if (match)
+        match = (off == size) && !ferror(f);
+    fclose(f);
+    return match;
+}
+
+/* Publish the blob at path through a same-directory temporary file and
+ * rename, so the final pathname only ever names a complete blob.  The
+ * temporary name carries the pid and opens with O_EXCL, and every failure
+ * unlinks it. */
+static bool
+telemetry_publish(const char *path, const uint8_t *data, size_t size)
+{
+    char tmp[1088];
+    int need = snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid());
+    if (need < 0 || (size_t)need >= sizeof(tmp))
+        return false;
+
+    int fd = open(tmp, O_CREAT | O_EXCL | O_WRONLY, 0644);
+    if (fd < 0)
+        return false;
+
+    size_t off = 0;
+    bool ok = true;
+    while (off < size) {
+        ssize_t w = write(fd, data + off, size - off);
+        if (w < 0 && errno == EINTR)
+            continue;
+        if (w <= 0) {
+            ok = false;
+            break;
+        }
+        off += (size_t)w;
+    }
+    if (close(fd) != 0)
+        ok = false;
+    if (ok && rename(tmp, path) != 0)
+        ok = false;
+    if (!ok)
+        unlink(tmp);
+    return ok;
+}
+
+/* Serialize the application VS into <dir>/r2vb-vs-<blake3>.nir.  The
+ * filename carries the full content hash, so a shape that recurs across
+ * draws, contexts, and processes lands once.  Atomic publication makes an
+ * existing final name a complete blob; its bytes still verify against the
+ * fresh serialization, and a mismatching file (foreign or damaged) is
+ * republished in place. */
 static void
 telemetry_retain(const char *dir, const struct nir_shader *vs_nir)
 {
@@ -91,7 +160,7 @@ telemetry_retain(const char *dir, const struct nir_shader *vs_nir)
     _mesa_blake3_format(hex, hash);
 
     char path[1024];
-    int need = snprintf(path, sizeof(path), "%s/r2vb-vs-%.16s.nir", dir, hex);
+    int need = snprintf(path, sizeof(path), "%s/r2vb-vs-%s.nir", dir, hex);
     if (need < 0 || (size_t)need >= sizeof(path)) {
         blob_finish(&blob);
         p_atomic_inc(&counters.retain_failures);
@@ -99,15 +168,13 @@ telemetry_retain(const char *dir, const struct nir_shader *vs_nir)
         return;
     }
 
-    if (access(path, F_OK) == 0) {
+    if (access(path, F_OK) == 0 &&
+        file_matches_blob(path, blob.data, blob.size)) {
         blob_finish(&blob);
         return;
     }
 
-    FILE *f = fopen(path, "wb");
-    bool ok = f && fwrite(blob.data, 1, blob.size, f) == blob.size;
-    if (f)
-        ok = (fclose(f) == 0) && ok;
+    bool ok = telemetry_publish(path, blob.data, blob.size);
     blob_finish(&blob);
 
     if (ok) {
@@ -166,37 +233,67 @@ r300_r2vb_telemetry_get(void)
 }
 
 void
+r300_r2vb_telemetry_context_created(void)
+{
+    p_atomic_inc(&live_contexts);
+}
+
+void
+r300_r2vb_telemetry_context_destroyed(void)
+{
+    if (p_atomic_dec_return(&live_contexts) == 0)
+        r300_r2vb_telemetry_print_summary();
+}
+
+void
 r300_r2vb_telemetry_print_summary(void)
 {
     if (!telemetry_print_enabled())
         return;
+
+    /* Snapshot with acquire loads: another context can still classify while
+     * this one tears down, and each printed count is then a value the
+     * counter actually held. */
+    uint32_t by_action[ARRAY_SIZE(counters.by_action)];
+    uint32_t by_reason[R300_R2VB_PLAN_REASON_COUNT];
+    uint32_t typed[ARRAY_SIZE(counters.typed)];
+    for (unsigned i = 0; i < ARRAY_SIZE(by_action); i++)
+        by_action[i] = p_atomic_read(&counters.by_action[i]);
+    for (unsigned i = 0; i < ARRAY_SIZE(by_reason); i++)
+        by_reason[i] = p_atomic_read(&counters.by_reason[i]);
+    for (unsigned i = 0; i < ARRAY_SIZE(typed); i++)
+        typed[i] = p_atomic_read(&counters.typed[i]);
+    uint32_t retained = p_atomic_read(&counters.retained);
+    uint32_t retain_failures = p_atomic_read(&counters.retain_failures);
+
     uint32_t total = 0;
-    for (unsigned i = 0; i < ARRAY_SIZE(counters.by_action); i++)
-        total += counters.by_action[i];
+    for (unsigned i = 0; i < ARRAY_SIZE(by_action); i++)
+        total += by_action[i];
     if (!total)
         return;
     fprintf(stderr, "r2vb_telemetry summary cells=%u", total);
-    for (unsigned i = 0; i < ARRAY_SIZE(counters.by_action); i++) {
-        if (counters.by_action[i])
+    for (unsigned i = 0; i < ARRAY_SIZE(by_action); i++) {
+        if (by_action[i])
             fprintf(stderr, " %s=%u",
                     r300_r2vb_plan_action_str((enum r300_r2vb_plan_action)i),
-                    counters.by_action[i]);
+                    by_action[i]);
     }
-    for (unsigned i = 0; i < R300_R2VB_PLAN_REASON_COUNT; i++) {
-        if (counters.by_reason[i])
+    for (unsigned i = 0; i < ARRAY_SIZE(by_reason); i++) {
+        if (by_reason[i])
             fprintf(stderr, " reason:%s=%u",
                     r300_r2vb_plan_reason_str((enum r300_r2vb_plan_reason)i),
-                    counters.by_reason[i]);
+                    by_reason[i]);
     }
-    static const char *const typed_names[4] = { "none", "bool", "sint",
-                                                "uint" };
-    for (unsigned i = 0; i < ARRAY_SIZE(counters.typed); i++) {
-        if (counters.typed[i])
-            fprintf(stderr, " typed:%s=%u", typed_names[i],
-                    counters.typed[i]);
+    static const char *const typed_names[] = { "none", "bool", "sint",
+                                               "uint" };
+    static_assert(ARRAY_SIZE(typed_names) == R300_R2VB_TYPED_SOURCE_UINT + 1,
+                  "typed_names covers enum r300_r2vb_typed_source_class");
+    for (unsigned i = 0; i < ARRAY_SIZE(typed); i++) {
+        if (typed[i])
+            fprintf(stderr, " typed:%s=%u", typed_names[i], typed[i]);
     }
-    if (counters.retained || counters.retain_failures)
-        fprintf(stderr, " retained=%u retain_failures=%u",
-                counters.retained, counters.retain_failures);
+    if (retained || retain_failures)
+        fprintf(stderr, " retained=%u retain_failures=%u", retained,
+                retain_failures);
     fprintf(stderr, "\n");
 }

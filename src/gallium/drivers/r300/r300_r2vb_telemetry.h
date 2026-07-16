@@ -26,8 +26,11 @@ struct r300_context;
  * retention writes the application VS NIR of each plan whose split, range,
  * or budget machinery engaged into the directory named by
  * R300_R2VB_TELEMETRY_RETAIN, one nir_serialize blob per content hash
- * (r2vb-vs-<blake3-prefix>.nir), deduplicated by filename, so recurring
- * over-budget shapes accumulate once and feed the compaction-rule mining in
+ * (r2vb-vs-<full-blake3>.nir).  Publication is atomic -- a same-directory
+ * temp file renamed into place -- so the final name only ever holds a
+ * complete blob, and an existing file verifies byte-for-byte against the
+ * fresh serialization before it deduplicates.  Recurring over-budget shapes
+ * therefore accumulate once and feed the compaction-rule mining in
  * docs/hardware/rs482-producer-alu-compaction-design.md. */
 struct r300_r2vb_telemetry_counters {
     uint32_t by_action[4];  /* indexed by enum r300_r2vb_plan_action */
@@ -38,16 +41,34 @@ struct r300_r2vb_telemetry_counters {
     uint32_t retain_failures;
 };
 
+/* The fixed array lengths track their indexing enums. */
+static_assert(sizeof(((struct r300_r2vb_telemetry_counters *)0)->by_action) /
+                  sizeof(uint32_t) ==
+              R300_R2VB_PLAN_SPLIT + 1,
+              "by_action covers enum r300_r2vb_plan_action");
+static_assert(sizeof(((struct r300_r2vb_telemetry_counters *)0)->typed) /
+                  sizeof(uint32_t) ==
+              R300_R2VB_TYPED_SOURCE_UINT + 1,
+              "typed covers enum r300_r2vb_typed_source_class");
+
 /* Record one plan classification.  Called at the admission-memo decision
  * point, once per cell; counts always, prints and retains under the gates
  * above. */
 void r300_r2vb_telemetry_note(struct r300_context *r300,
                               const struct r300_r2vb_producer_plan *plan);
 
+/* Counter snapshot for the calibration test; single-threaded reads only.
+ * Concurrent readers snapshot through r300_r2vb_telemetry_print_summary,
+ * which loads each counter atomically. */
 const struct r300_r2vb_telemetry_counters *r300_r2vb_telemetry_get(void);
 
-/* Print the process-wide totals to stderr under R300_R2VB_TELEMETRY=1;
- * context destruction calls this so a run's summary lands at teardown. */
+/* Context-epoch accounting: create registers, destroy prints the cumulative
+ * summary when the last live context goes away, so a multi-context run
+ * reports one total instead of one partial summary per context. */
+void r300_r2vb_telemetry_context_created(void);
+void r300_r2vb_telemetry_context_destroyed(void);
+
+/* Print the process-wide totals to stderr under R300_R2VB_TELEMETRY=1. */
 void r300_r2vb_telemetry_print_summary(void);
 
 #ifdef __cplusplus
