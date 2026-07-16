@@ -34,10 +34,14 @@ plan_primary_reason(uint64_t mask)
     return R300_R2VB_PLAN_OK;
 }
 
-/* Whole-program typed-source scan.  Signed markers dominate unsigned, and
- * either dominates boolean, so the class reads the strictest admission
- * constraint present.  Equality compares and boolean logic mark the bool
- * class; their integer operands mark their own class at the producing op. */
+/* Typed-source scan over the restaged position candidate: the cell's typed
+ * class describes the producer the cell plans, so a typed computation that
+ * feeds only a non-position output (absent from the candidate after the
+ * restage's dead-code elimination) leaves the position cell untouched.
+ * Signed markers dominate unsigned, and either dominates boolean, so the
+ * class reads the strictest admission constraint present.  Equality
+ * compares and boolean logic mark the bool class; their integer operands
+ * mark their own class at the producing op. */
 static void
 plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
 {
@@ -403,9 +407,11 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
     plan->action = R300_R2VB_PLAN_REJECT;
     plan->status = R300_R2VB_PLAN_SEMANTIC_REJECT;
 
-    /* Structural and typed-source scans run on a constant-folded clone: a
-     * SPIR-V VS reaches the driver with its UBO address arithmetic still
-     * literal, and folded literals are structure, not typed computation. */
+    /* The structural preflight runs on a constant-folded clone of the
+     * application VS: a SPIR-V VS reaches the driver with its UBO address
+     * arithmetic still literal, and folded literals are structure, not
+     * computation.  The typed-source scan runs later, on the restaged
+     * position candidate, so it describes the cell's own producer. */
     nir_shader *folded = nir_shader_clone(NULL, vs_nir);
     if (!folded) {
         plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
@@ -421,8 +427,6 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
     } while (progress);
 
     bool shape_ok = plan_scan_structure(folded, allow_computed_varying, plan);
-    if (shape_ok)
-        plan_scan_typed_source(folded, plan);
     ralloc_free(folded);
     if (!shape_ok) {
         plan->primary_reason = plan_primary_reason(plan->observed_reason_mask);
@@ -440,6 +444,7 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
         plan->status = R300_R2VB_PLAN_TRANSIENT_FAILURE;
         return false;
     }
+    plan_scan_typed_source(pos, plan);
 
     switch (adm) {
     case R300_FS_ADMIT_FITS:

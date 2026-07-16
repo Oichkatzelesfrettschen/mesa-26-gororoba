@@ -336,6 +336,34 @@ build_computed_and_passthrough_varyings(void)
    return end_vs(&v, v.pos);
 }
 
+/* Float-only position plus a typed computation that feeds only a varying:
+ * the typed ops vanish from the restaged position candidate, so the cv=0
+ * cell plans SINGLE with no typed source.  The typed-under-budget row is
+ * this row's attribution partner: typed ops feeding position keep the
+ * TYPED_SINGLE_PASS_UNPROVEN decline. */
+static nir_shader *
+build_typed_varying_float_position(void)
+{
+   struct vs_build v = begin_vs("plan_typed_varying_only", true);
+   nir_variable *in_attr = nir_variable_create(
+      v.b.shader, nir_var_shader_in, glsl_vec4_type(), "in_attr");
+   in_attr->data.location = VERT_ATTRIB_GENERIC1;
+   in_attr->data.driver_location = 1;
+   nir_variable *out_color = nir_variable_create(
+      v.b.shader, nir_var_shader_out, glsl_vec4_type(), "vColor");
+   out_color->data.location = VARYING_SLOT_VAR0;
+   out_color->data.driver_location = 1;
+
+   nir_def *s = nir_f2i32(&v.b, nir_channel(&v.b, nir_load_var(&v.b, in_attr), 0));
+   nir_def *typed = nir_imin(&v.b, nir_imax(&v.b, s, nir_imm_int(&v.b, -16)),
+                             nir_imm_int(&v.b, 16));
+   nir_store_var(&v.b, out_color,
+                 nir_replicate(&v.b, nir_i2f32(&v.b, typed), 4), 0xf);
+
+   nir_def *c = fmad_chain(&v.b, nir_channel(&v.b, v.pos, 0), 8);
+   return end_vs(&v, nir_replicate(&v.b, c, 4));
+}
+
 /* A computed varying plus a second input feeding the position computation:
  * the production arity rule (r300_vs_nir_is_fragment_aluable) rejects this
  * at cv=1, because with a computed varying present every non-first input
@@ -499,6 +527,32 @@ case_computed_varying_position_cell(struct r300_context *r300)
       CHECK(plan.status == R300_R2VB_PLAN_READY, "status ready");
       CHECK(plan.baseline.alu > 0 && plan.baseline.alu <= 64,
             "position pass measured in budget");
+      r300_r2vb_plan_release(&plan);
+      ralloc_free(vs);
+   }
+}
+
+/* The cell's typed class comes from its own producer: a typed computation
+ * feeding only a varying leaves the cv=0 position cell SINGLE and untyped.
+ * This calibrates the plan contract itself -- today's production memo never
+ * reaches this shape (the classify gate's whole-program float whitelist
+ * rejects it before any memo write, and the clip route's direct memo write
+ * runs only after classify admits), so the row guards the plan as the
+ * future admission authority rather than shadow parity. */
+static void
+case_typed_varying_position_cell(struct r300_context *r300)
+{
+   printf("typed varying-only producer plans SINGLE and untyped at cv=0\n");
+   for (unsigned sp = 0; sp < 2; sp++) {
+      nir_shader *vs = build_typed_varying_float_position();
+      struct r300_r2vb_producer_plan plan;
+      enum r300_r2vb_position_space space =
+         sp ? R300_R2VB_POSITION_WINDOW : R300_R2VB_POSITION_CLIP;
+      CHECK(plan_row(r300, vs, space, &plan), "planner runs");
+      CHECK(plan.action == R300_R2VB_PLAN_SINGLE,
+            sp ? "action single (window)" : "action single (clip)");
+      CHECK(!plan.has_typed_source,
+            "typed source stays outside the position cell");
       r300_r2vb_plan_release(&plan);
       ralloc_free(vs);
    }
@@ -842,6 +896,7 @@ main(void)
    case_float_single(r300);
    case_uniform_free_single(r300);
    case_computed_varying_position_cell(r300);
+   case_typed_varying_position_cell(r300);
    case_computed_varying_arity_reject(r300);
    case_float_split(r300);
    case_typed_split_rows(r300);
