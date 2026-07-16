@@ -3151,8 +3151,10 @@ static bool r300_r2vb_split_admitted(struct r300_context *r300,
  * and its effective decision under the live gates must match.  A plan SPLIT is
  * effective only when the spill1 budget-escape gate is armed; ungated it
  * collapses to the same reject the memo records.  The plan is cached on the
- * VS, so the extra measurement compiles run once per cell.  A mismatch is an
- * internal-inconsistency finding, reported always and fatal under assertions. */
+ * VS, so the extra measurement compiles run once per cell.  A mismatch counts
+ * on the process-wide divergence counter and prints under
+ * R300_R2VB_PLAN_DEBUG=1; the memo stays authoritative and rendering
+ * proceeds unchanged. */
 static void r300_r2vb_plan_shadow_check(struct r300_context *r300,
                                         bool allow_computed_varying,
                                         enum r300_r2vb_position_space space,
