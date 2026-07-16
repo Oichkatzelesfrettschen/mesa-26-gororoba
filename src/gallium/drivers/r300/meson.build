@@ -31,6 +31,8 @@ files_r300 = files(
   'r300_r2vb.c',
   'r300_r2vb_plan.c',
   'r300_r2vb_plan.h',
+  'r300_r2vb_telemetry.c',
+  'r300_r2vb_telemetry.h',
   'r300_reg.h',
   'r300_render.c',
   'r300_render_stencilref.c',
@@ -387,6 +389,28 @@ if with_tests
       ],
       # The real state vtable reaches r300_video.c, whose codec constructors
       # resolve from the video auxiliary library.
+      link_with : [libr300, libgallium, libgalliumvl],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # Standing-route telemetry calibration: counters count per plan class, the
+  # retention gate fails closed, an over-budget producer retains exactly one
+  # content-hash file, a recurring shape deduplicates, and a structural
+  # reject never retains.
+  test(
+    'r300-r2vb-telemetry',
+    executable(
+      'r300_r2vb_telemetry_test',
+      files('compiler/tests/r300_r2vb_telemetry_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      # The context object carries the teardown summary hook, and its video
+      # codec constructors resolve from the video auxiliary library.
       link_with : [libr300, libgallium, libgalliumvl],
       dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
       gnu_symbol_visibility : 'hidden',
