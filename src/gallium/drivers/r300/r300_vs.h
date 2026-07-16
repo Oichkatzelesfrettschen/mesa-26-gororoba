@@ -60,6 +60,13 @@ struct r300_vertex_shader {
      * does not transfer to the other.  0 = unmeasured, 1 = fits, 2 = reject,
      * 3 = split admitted. */
     uint8_t r2vb_admission[2][2];
+
+    /* R2VB producer plan cache, same [allow_computed_varying][position_space]
+     * key as the memo plus a per-slot viewport window key (the window
+     * producer bakes viewport scale/translate as immediates).  Owned here;
+     * released by r300_r2vb_plan_cache_release on delete. */
+    struct r300_r2vb_producer_plan *r2vb_plan[2][2];
+    uint32_t r2vb_plan_window_key[2][2];
 };
 
 void r300_translate_vertex_shader(struct r300_context *r300,

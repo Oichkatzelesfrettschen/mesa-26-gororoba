@@ -27,6 +27,7 @@
 #include "r300_screen_buffer.h"
 #include "r300_state_inlines.h"
 #include "r300_fs.h"
+#include "r300_r2vb_plan.h"
 #include "r300_texture.h"
 #include "r300_vs.h"
 #include "compiler/r300_nir.h"
@@ -2706,6 +2707,7 @@ static void r300_delete_vs_state(struct pipe_context* pipe, void* shader)
         FREE(vs->first);
     }
 
+    r300_r2vb_plan_cache_release(vs);
     ralloc_free(vs->state.ir.nir);
     FREE(shader);
 }
