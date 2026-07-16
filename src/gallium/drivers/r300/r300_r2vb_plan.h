@@ -77,10 +77,14 @@ enum r300_r2vb_plan_reason {
                                             * straight-line on R300 */
     R300_R2VB_PLAN_INTRINSIC,              /* intrinsic outside plain I/O and
                                             * uniform/UBO loads, or texturing */
-    R300_R2VB_PLAN_IO_SHAPE,               /* missing uniform interface or
-                                            * gl_Position, varying passthrough
-                                            * violation, or position inputs
-                                            * beyond the producer ceiling */
+    R300_R2VB_PLAN_IO_SHAPE,               /* missing gl_Position output,
+                                            * position inputs beyond the
+                                            * producer ceiling, or -- on the
+                                            * cv=1 varying plan -- a varying
+                                            * discipline violation (a
+                                            * non-input-fed passthrough, or a
+                                            * computing non-first input
+                                            * alongside a computed varying) */
     R300_R2VB_PLAN_TYPED_SINGLE_PASS_UNPROVEN, /* under-budget typed producer:
                                             * a single pass would bypass the
                                             * carry range/signedness checks,
@@ -108,11 +112,13 @@ enum r300_r2vb_plan_reason {
 static_assert(R300_R2VB_PLAN_REASON_COUNT <= 64,
               "r300_r2vb_plan_reason must index a 64-bit mask");
 
-/* Whole-program typed-source shape of the producer, independent of the carry:
- * a shader can compute a typed value entirely before the cut and carry only a
- * float, so this scans every op, not the selected crossing set.  When both
- * signed and unsigned markers appear the class reads SINT, the stricter
- * admission constraint. */
+/* Typed-source shape of the cell's restaged position producer, independent
+ * of the carry: a producer can compute a typed value entirely before the cut
+ * and carry only a float, so this scans every op of the position candidate,
+ * not the selected crossing set.  A typed computation feeding only a
+ * non-position output stays outside the cell (the restage's dead-code
+ * elimination removes it from the candidate).  When both signed and unsigned
+ * markers appear the class reads SINT, the stricter admission constraint. */
 enum r300_r2vb_typed_source_class {
     R300_R2VB_TYPED_SOURCE_NONE = 0,
     R300_R2VB_TYPED_SOURCE_BOOL,

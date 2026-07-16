@@ -45,6 +45,7 @@
 #include "r300_r2vb.h"
 #include "r300_r2vb_capture_gate.h"
 #include "r300_r2vb_plan.h"
+#include "r300_r2vb_telemetry.h"
 #include "r300_reg.h"
 #include "r300_vs.h"
 
@@ -3164,6 +3165,9 @@ static void r300_r2vb_plan_shadow_check(struct r300_context *r300,
         r300_r2vb_producer_plan_get(r300, allow_computed_varying, space);
     if (!plan)
         return; /* infrastructure failure; a later call replans */
+    /* The memo decision point classifies each cell exactly once, so the
+     * standing-route telemetry records here. */
+    r300_r2vb_telemetry_note(r300, plan);
     uint8_t effective;
     switch (plan->action) {
     case R300_R2VB_PLAN_SINGLE:
