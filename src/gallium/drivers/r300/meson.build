@@ -351,6 +351,27 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Route-chain oracle for the R2VB producer plan, unit tier: hand-built
+  # application-VS NIR through the production shape validation, restage,
+  # plan, cut walk, and admission compile.  Typed over-budget producers plan
+  # SPLIT with {f,b}/{f,i}/{f,u} carries; range, signedness, structural, and
+  # under-budget-typed rows reject with their class as the primary reason.
+  test(
+    'r300-r2vb-plan-oracle',
+    executable(
+      'r300_r2vb_plan_oracle_test',
+      files('compiler/tests/r300_r2vb_plan_oracle_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # MVP route classifier: UBO block or deref binding zero is the only matrix
   # source mirrored by the executor, and literal offset chains are folded on a
   # throwaway clone.
