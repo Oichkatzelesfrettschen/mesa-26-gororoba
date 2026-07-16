@@ -6,6 +6,7 @@
 #include "memory_pool.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,7 +63,10 @@ memory_pool_malloc(struct memory_pool *pool, unsigned int bytes)
    if (bytes < POOL_LARGE_ALLOC) {
       void *ptr;
 
-      if (pool->head + bytes > pool->end)
+      /* A fresh pool has head == end == NULL, and forming head + bytes on a
+       * null pointer is undefined, so test the remaining span only once a
+       * block exists. */
+      if (!pool->head || pool->end - pool->head < (ptrdiff_t)bytes)
          refill_pool(pool);
 
       assert(pool->head + bytes <= pool->end);

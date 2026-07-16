@@ -53,7 +53,10 @@ void *memory_pool_malloc(struct memory_pool *pool, unsigned int bytes);
          if (newreserve < _num)                                            \
             newreserve = 4 * _num; /* arbitrary heuristic */               \
          newarray = memory_pool_malloc((pool), newreserve * sizeof(type)); \
-         memcpy(newarray, (array), (size) * sizeof(type));                 \
+         /* A fresh array is NULL, and memcpy requires non-null pointers   \
+          * even for a zero-byte copy. */                                  \
+         if ((size))                                                       \
+            memcpy(newarray, (array), (size) * sizeof(type));              \
          (array) = newarray;                                               \
          (reserved) = newreserve;                                          \
       }                                                                    \

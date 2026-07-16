@@ -50,7 +50,10 @@ rc_constants_add(struct rc_constant_list *c, struct rc_constant *constant)
          c->_Reserved = 16;
 
       newlist = malloc(sizeof(struct rc_constant) * c->_Reserved);
-      memcpy(newlist, c->Constants, sizeof(struct rc_constant) * c->Count);
+      /* A fresh list has Constants == NULL until the first add, and memcpy
+       * requires non-null pointers even for a zero-byte copy. */
+      if (c->Count)
+         memcpy(newlist, c->Constants, sizeof(struct rc_constant) * c->Count);
 
       free(c->Constants);
       c->Constants = newlist;
