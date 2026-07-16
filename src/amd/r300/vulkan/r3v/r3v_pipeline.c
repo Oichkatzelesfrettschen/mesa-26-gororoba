@@ -1089,12 +1089,24 @@ r3v_assign_vs_input_locations(nir_shader *nir)
    return true;
 }
 
-static VkResult
-r3v_compile_shader(struct r3v_device *device,
+/* SPIR-V module to the NIR that create_vs_state / create_fs_state receives:
+ * vk_spirv_to_nir with r3v's options plus the full r3v lowering chain.  This
+ * is the one preparation the pipeline compiles through, exported so the R2VB
+ * route-chain host oracle plans the exact representation the route consumes.
+ * pl and vi may be NULL for a vertex-stage host harness whose shader reads no
+ * VertexIndex/InstanceIndex system value (their reservation needs the
+ * pipeline's vertex-input state); the descriptor and push-constant
+ * bookkeeping those parameters would receive is then discarded.  The
+ * fragment stage requires pl (sampler-unit remapping reads the pipeline
+ * layout map). */
+VkResult
+r3v_prepare_shader_nir(struct r3v_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
                        struct r3v_pipeline *pl,
-                       const VkPipelineVertexInputStateCreateInfo *vi)
+                       const VkPipelineVertexInputStateCreateInfo *vi,
+                       nir_shader **out_nir)
 {
+   *out_nir = NULL;
    /* r300g exposes VS and FS only; geometry, tessellation, and compute are
     * unsupported on R300-class hardware. */
    if (stage_info->stage != VK_SHADER_STAGE_VERTEX_BIT &&
@@ -1102,6 +1114,7 @@ r3v_compile_shader(struct r3v_device *device,
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                        "r3v: unsupported shader stage 0x%x",
                        stage_info->stage);
+   assert(stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT || pl);
 
    VK_FROM_HANDLE(r3v_shader_module, mod, stage_info->module);
    mesa_shader_stage stage = vk_to_mesa_shader_stage(stage_info->stage);
@@ -1311,7 +1324,7 @@ r3v_compile_shader(struct r3v_device *device,
     * (and dEQP-VK.ubo.link_by_binding reads two bindings of one buffer across
     * the stages); each is bound independently rather than forcing one buffer
     * onto both. */
-   if (stage_has_ubo) {
+   if (stage_has_ubo && pl) {
       if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT) {
          pl->vs_has_ubo = true;
          pl->vs_ubo_set = stage_ubo_set;
@@ -1334,7 +1347,8 @@ r3v_compile_shader(struct r3v_device *device,
     * the block variable) and the replay converts them.  A dynamic/slot-straddling
     * offset still cannot be represented and is rejected below. */
    if (uses_push_const) {
-      pl->push_const_int_word_mask |= r3v_classify_push_const_ints(nir);
+      if (pl)
+         pl->push_const_int_word_mask |= r3v_classify_push_const_ints(nir);
       NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
                nir_address_format_32bit_offset);
       if (!r3v_nir_push_const_shape_ok(device->screen, nir)) {
@@ -1347,7 +1361,8 @@ r3v_compile_shader(struct r3v_device *device,
                           ? "vertex" : "fragment");
       }
       r3v_nir_lower_push_constant_to_ubo0(nir);
-      pl->uses_push_constants = true;
+      if (pl)
+         pl->uses_push_constants = true;
    }
 
    /* With the descriptor chain resolved to constant block 0, lower the UBO
@@ -1447,6 +1462,14 @@ r3v_compile_shader(struct r3v_device *device,
        * and every ordinary shader keeps the synthetic path's exact prior
        * behavior. */
       if (needs_vid || needs_iid) {
+         if (!pl) {
+            /* The stream reservation reads the pipeline's vertex-input
+             * state, which a host harness does not carry. */
+            ralloc_free(nir);
+            return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                             "r3v: VS system values need the pipeline "
+                             "vertex-input state");
+         }
          int vid_slot = -1;
          int iid_slot = -1;
          VkResult r = r3v_reserve_vs_system_value_streams(
@@ -1494,6 +1517,21 @@ r3v_compile_shader(struct r3v_device *device,
    } else {
       nir_assign_io_var_locations(nir, nir_var_shader_in);
    }
+
+   *out_nir = nir;
+   return VK_SUCCESS;
+}
+
+static VkResult
+r3v_compile_shader(struct r3v_device *device,
+                       const VkPipelineShaderStageCreateInfo *stage_info,
+                       struct r3v_pipeline *pl,
+                       const VkPipelineVertexInputStateCreateInfo *vi)
+{
+   nir_shader *nir;
+   VkResult result = r3v_prepare_shader_nir(device, stage_info, pl, vi, &nir);
+   if (result != VK_SUCCESS)
+      return result;
 
    struct pipe_shader_state ss = {
       .type   = PIPE_SHADER_IR_NIR,
