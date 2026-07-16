@@ -219,6 +219,34 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
   )
 endif
 
+# Producer resource census: every corpus specimen (typed-carry SPIR-V plus
+# synthetic fitting and over-budget anchors) through the production plan
+# chain, emitting one machine-readable row per specimen with the plan cost
+# vectors and the RC statistics of every successful compile.  Verdict
+# expectations reproduce the route-chain oracle, so a drifting census fails
+# instead of mining wrong data.
+if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
+  test(
+    'r3v-r2vb-producer-census',
+    executable(
+      'r3v_r2vb_producer_census',
+      [r3v_entrypoints[0], files('r3v_pipeline.c', 'r3v_dp4_fs_nir.c',
+                                 'tests/r3v_r2vb_producer_census.c')],
+      include_directories : [
+        libr3v_inc, include_directories('.'),
+        inc_gallium_aux, inc_gallium_drivers,
+        include_directories('../../../../gallium/drivers/r300'),
+        include_directories('../../../../gallium/drivers/r300/compiler'),
+      ],
+      dependencies : libr3v_deps + [idep_nir],
+      link_with : libr3v_link_with + [libr300],
+      c_args : libr3v_c_args,
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+endif
+
 icd_file_name = 'libvulkan_r3v.so'
 
 r3v_icd = custom_target(
