@@ -534,4 +534,15 @@ void r3v_DestroyPipeline(VkDevice device,
 }
 #endif
 
+/* SPIR-V-to-NIR preparation the pipeline compiles through, exported for the
+ * R2VB route-chain host oracle.  pl/vi may be NULL for a vertex-stage host
+ * harness; see the definition for the contract. */
+struct r3v_device;
+struct r3v_pipeline;
+VkResult r3v_prepare_shader_nir(struct r3v_device *device,
+                                const VkPipelineShaderStageCreateInfo *stage_info,
+                                struct r3v_pipeline *pl,
+                                const VkPipelineVertexInputStateCreateInfo *vi,
+                                struct nir_shader **out_nir);
+
 #endif /* R3V_PIPELINE_H */

@@ -29,6 +29,8 @@ files_r300 = files(
   'r300_icd.c',
   'r300_query.c',
   'r300_r2vb.c',
+  'r300_r2vb_plan.c',
+  'r300_r2vb_plan.h',
   'r300_reg.h',
   'r300_render.c',
   'r300_render_stencilref.c',
@@ -338,6 +340,27 @@ if with_tests
     executable(
       'r300_r2vb_producer_split_test',
       files('compiler/tests/r300_r2vb_producer_split_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # Route-chain oracle for the R2VB producer plan, unit tier: hand-built
+  # application-VS NIR through the production shape validation, restage,
+  # plan, cut walk, and admission compile.  Typed over-budget producers plan
+  # SPLIT with {f,b}/{f,i}/{f,u} carries; range, signedness, structural, and
+  # under-budget-typed rows reject with their class as the primary reason.
+  test(
+    'r300-r2vb-plan-oracle',
+    executable(
+      'r300_r2vb_plan_oracle_test',
+      files('compiler/tests/r300_r2vb_plan_oracle_test.c'),
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),

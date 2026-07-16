@@ -44,6 +44,7 @@
 #include "r300_nir_ssa_cut.h"
 #include "r300_r2vb.h"
 #include "r300_r2vb_capture_gate.h"
+#include "r300_r2vb_plan.h"
 #include "r300_reg.h"
 #include "r300_vs.h"
 
@@ -610,8 +611,8 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300,
  * owns) or NULL; r300_r2vb_restage_vs_as_fs wraps it into a pipe FS CSO, and
  * the admission oracle compiles the same NIR throwaway to measure emitted
  * slots, so the program the oracle admits is the program the producer runs. */
-static nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
-                                                   nir_shader *vs_nir,
+nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
+                                            nir_shader *vs_nir,
                                                    gl_varying_slot target,
                                                    enum r300_r2vb_position_space space)
 {
@@ -754,7 +755,7 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
  * store value is not a straight load of a vertex input.  The multi-pass producer
  * renders such a varying on the fragment ALU.  Returns its gl_varying_slot, or -1
  * when every non-position output is a plain passthrough (nothing to produce). */
-static int r300_r2vb_first_computed_varying(nir_shader *vs_nir)
+int r300_r2vb_first_computed_varying(nir_shader *vs_nir)
 {
     nir_function_impl *impl = nir_shader_get_entrypoint(vs_nir);
     if (!impl)
@@ -788,7 +789,7 @@ static int r300_r2vb_first_computed_varying(nir_shader *vs_nir)
  * throwaway clone and count what survives, so the count matches the inputs the
  * re-staged position FS actually reads at VAR0+i.  An MVP or single-input-position
  * VS returns 1 even when the application declares extra (varying-only) inputs. */
-static unsigned r300_r2vb_count_position_inputs(nir_shader *vs_nir)
+unsigned r300_r2vb_count_position_inputs(nir_shader *vs_nir)
 {
     nir_shader *tmp = nir_shader_clone(NULL, vs_nir);
     if (!tmp)
@@ -3024,7 +3025,7 @@ r300_r2vb_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
     unsigned alu_len = 0;
     enum r300_fs_admission adm =
         r300_fs_measure_nir_admission(r300, fs, &alu_len,
-                                      R300_FS_INPUT_R2VB_FLAT_VERTEX);
+                                      R300_FS_INPUT_R2VB_FLAT_VERTEX, NULL);
     ralloc_free(fs);
     if (out_alu)
         *out_alu = alu_len;
@@ -3108,10 +3109,12 @@ static bool r300_r2vb_split_admitted(struct r300_context *r300,
             unsigned la = 0, lb = 0;
             enum r300_fs_admission aa =
                 r300_fs_measure_nir_admission(r300, pass_a, &la,
-                                              R300_FS_INPUT_R2VB_FLAT_VERTEX);
+                                              R300_FS_INPUT_R2VB_FLAT_VERTEX,
+                                              NULL);
             enum r300_fs_admission ab =
                 r300_fs_measure_nir_admission(r300, pass_b, &lb,
-                                              R300_FS_INPUT_R2VB_FLAT_VERTEX);
+                                              R300_FS_INPUT_R2VB_FLAT_VERTEX,
+                                              NULL);
             admitted = aa == R300_FS_ADMIT_FITS && ab == R300_FS_ADMIT_FITS;
             if (getenv("R300_R2VB_EXEC_DEBUG")) {
                 char types[R300_MP_MAX_CARRY_COMPS + 1];
@@ -3142,6 +3145,60 @@ static bool r300_r2vb_split_admitted(struct r300_context *r300,
 #define R300_R2VB_ADMIT_FITS       1
 #define R300_R2VB_ADMIT_REJECT     2
 #define R300_R2VB_ADMIT_SPLIT      3
+
+/* Shadow decision parity: the producer plan classifies the same (VS,
+ * computed-varying mode, position space) cell the admission memo just decided,
+ * and its effective decision under the live gates must match.  A plan SPLIT is
+ * effective only when the spill1 budget-escape gate is armed; ungated it
+ * collapses to the same reject the memo records.  The plan is cached on the
+ * VS, so the extra measurement compiles run once per cell.  A mismatch counts
+ * on the process-wide divergence counter and prints under
+ * R300_R2VB_PLAN_DEBUG=1; the memo stays authoritative and rendering
+ * proceeds unchanged. */
+static void r300_r2vb_plan_shadow_check(struct r300_context *r300,
+                                        bool allow_computed_varying,
+                                        enum r300_r2vb_position_space space,
+                                        uint8_t memo)
+{
+    const struct r300_r2vb_producer_plan *plan =
+        r300_r2vb_producer_plan_get(r300, allow_computed_varying, space);
+    if (!plan)
+        return; /* infrastructure failure; a later call replans */
+    uint8_t effective;
+    switch (plan->action) {
+    case R300_R2VB_PLAN_SINGLE:
+        effective = R300_R2VB_ADMIT_FITS;
+        break;
+    case R300_R2VB_PLAN_SPLIT:
+        effective = r300_r2vb_budget_escape_enabled() ? R300_R2VB_ADMIT_SPLIT
+                                                      : R300_R2VB_ADMIT_REJECT;
+        break;
+    default:
+        effective = R300_R2VB_ADMIT_REJECT;
+        break;
+    }
+    if (effective != memo) {
+        /* A divergence is a planner defect finding, never an application
+         * abort: the memo stays authoritative, the counter records the
+         * event for the planner test and telemetry, and the print rides an
+         * exact opt-in gate. */
+        r300_r2vb_plan_note_shadow_divergence();
+        static int dbg = -1;
+        if (dbg < 0) {
+            const char *e = getenv("R300_R2VB_PLAN_DEBUG");
+            dbg = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        }
+        if (dbg)
+            fprintf(stderr,
+                    "r2vb_plan shadow mismatch: memo=%u plan=%s/%s "
+                    "mask=0x%" PRIx64 " space=%s cv=%d\n",
+                    memo, r300_r2vb_plan_action_str(plan->action),
+                    r300_r2vb_plan_reason_str(plan->primary_reason),
+                    plan->observed_reason_mask,
+                    space == R300_R2VB_POSITION_WINDOW ? "window" : "clip",
+                    allow_computed_varying);
+    }
+}
 
 static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
                                            bool allow_computed_varying,
@@ -3191,6 +3248,7 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
                     space_i ? "window" : "clip");
         }
         *memo = R300_R2VB_ADMIT_FITS;
+        r300_r2vb_plan_shadow_check(r300, allow_computed_varying, space, *memo);
         return true;
     }
 
@@ -3204,10 +3262,13 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
         unsigned num_in = r300_r2vb_count_position_inputs(vs->state.ir.nir);
         if (r300_r2vb_split_admitted(r300, vs->state.ir.nir, num_in, space)) {
             *memo = R300_R2VB_ADMIT_SPLIT;
+            r300_r2vb_plan_shadow_check(r300, allow_computed_varying, space,
+                                        *memo);
             return true;
         }
     }
     *memo = R300_R2VB_ADMIT_REJECT;
+    r300_r2vb_plan_shadow_check(r300, allow_computed_varying, space, *memo);
     return false;
 }
 
@@ -4016,9 +4077,9 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
          * consume the halves. */
         unsigned la = 0, lb = 0;
         r300_fs_measure_nir_admission(r300, pass_a, &la,
-                                      R300_FS_INPUT_R2VB_FLAT_VERTEX);
+                                      R300_FS_INPUT_R2VB_FLAT_VERTEX, NULL);
         r300_fs_measure_nir_admission(r300, pass_b, &lb,
-                                      R300_FS_INPUT_R2VB_FLAT_VERTEX);
+                                      R300_FS_INPUT_R2VB_FLAT_VERTEX, NULL);
         fprintf(stderr,
                 "r2vb_split_producer cut=%u carry_bases=%u carry_comps=%u "
                 "passA_alu=%u passB_alu=%u num_in=%u pass_b_attrs=%u count=%u\n",

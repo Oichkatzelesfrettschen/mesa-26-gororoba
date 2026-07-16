@@ -1755,10 +1755,13 @@ r300_fs_code_reset(struct r300_fragment_shader_code *shader)
 enum r300_fs_admission
 r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_nir,
                               unsigned *out_alu_len,
-                              enum r300_fs_input_semantics input_semantics)
+                              enum r300_fs_input_semantics input_semantics,
+                              struct r300_fs_admission_cost *out_cost)
 {
     if (out_alu_len)
         *out_alu_len = 0;
+    if (out_cost)
+        memset(out_cost, 0, sizeof(*out_cost));
     if (!fs_nir)
         return R300_FS_ADMIT_REJECT;
 
@@ -1775,6 +1778,11 @@ r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_n
     if (!probe->dummy && !probe->error) {
         if (out_alu_len)
             *out_alu_len = probe->code.code.r300.alu.length;
+        if (out_cost && !r300->screen->caps.is_r500) {
+            out_cost->alu = probe->code.code.r300.alu.length;
+            out_cost->temps = probe->code.code.r300.pixsize;
+            out_cost->consts = probe->code.constants.Count;
+        }
         verdict = R300_FS_ADMIT_FITS;
     } else if (probe->error &&
                strstr(probe->error, "Too many ALU instructions")) {

@@ -206,6 +206,24 @@ static const nir_shader_compiler_options gallivm_compiler_options = {
    .support_indirect_outputs = (uint8_t)BITFIELD_MASK(MESA_SHADER_STAGES),
 };
 
+/* Select the per-stage NIR options from the chip caps.  Exported so a host
+ * harness that fakes a screen (caps set by hand) carries the same options a
+ * created screen would -- the SW-TCL vertex stage in particular selects the
+ * gallivm table, whose keep_weak_ffma is a representation fact the R2VB
+ * producer route consumes. */
+void
+r300_screen_init_nir_options(struct r300_screen *r300screen)
+{
+    r300screen->screen.nir_options[MESA_SHADER_VERTEX] =
+        !r300screen->caps.has_tcl ? &gallivm_compiler_options :
+        r300screen->caps.is_r500 ? &r500_vs_compiler_options :
+        r300screen->caps.is_r400 ? &r400_vs_compiler_options :
+                                   &r300_vs_compiler_options;
+    r300screen->screen.nir_options[MESA_SHADER_FRAGMENT] =
+        r300screen->caps.is_r500 ? &r500_fs_compiler_options
+                                 : &r300_fs_compiler_options;
+}
+
 
 /**
  * Whether the format matches:
@@ -828,13 +846,7 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
     r300screen->screen.is_video_format_supported =
         vl_video_buffer_is_format_supported;
 
-    r300screen->screen.nir_options[MESA_SHADER_VERTEX] =
-        !r300screen->caps.has_tcl ? &gallivm_compiler_options :
-        r300screen->caps.is_r500 ? &r500_vs_compiler_options :
-        r300screen->caps.is_r400 ? &r400_vs_compiler_options :
-                                   &r300_vs_compiler_options;
-    r300screen->screen.nir_options[MESA_SHADER_FRAGMENT] =
-        r300screen->caps.is_r500 ? &r500_fs_compiler_options : &r300_fs_compiler_options;
+    r300_screen_init_nir_options(r300screen);
 
     r300_init_screen_resource_functions(r300screen);
 

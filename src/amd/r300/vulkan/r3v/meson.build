@@ -192,6 +192,33 @@ endif
 # library_path entry.  vk_icd_gen emits the canonical form so the
 # version negotiation matches what r3v_instance.c implements.
 icd_lib_path = join_paths(get_option('prefix'), get_option('libdir'))
+# Route-chain oracle for the R2VB producer plan, frontend-integration tier:
+# the typed-carry corpus SPIR-V through the production r3v preparation
+# (r3v_prepare_shader_nir) into the r300 producer planner, both position
+# spaces.  Compiles the pipeline translation unit directly so the oracle and
+# the driver share one preparation.
+if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
+  test(
+    'r3v-r2vb-typed-route-oracle',
+    executable(
+      'r3v_r2vb_typed_route_oracle_test',
+      [r3v_entrypoints[0], files('r3v_pipeline.c', 'r3v_dp4_fs_nir.c',
+                                 'tests/r3v_r2vb_typed_route_oracle_test.c')],
+      include_directories : [
+        libr3v_inc, include_directories('.'),
+        inc_gallium_aux, inc_gallium_drivers,
+        include_directories('../../../../gallium/drivers/r300'),
+        include_directories('../../../../gallium/drivers/r300/compiler'),
+      ],
+      dependencies : libr3v_deps + [idep_nir],
+      link_with : libr3v_link_with + [libr300],
+      c_args : libr3v_c_args,
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+endif
+
 icd_file_name = 'libvulkan_r3v.so'
 
 r3v_icd = custom_target(

@@ -101,6 +101,27 @@ r300_mp_find_cuts(nir_shader *nir, struct r300_mp_partition *cands,
  * while the position output survives.  Both halves are pure NIR; the caller
  * measures each against the emitted-slot admission oracle and adopts the split
  * only when both fit. */
+/* Why a transport selection declined a partition.  MIXED_SIGNEDNESS covers a
+ * carried integer whose producer and post-cut consumers disagree on one
+ * signed/unsigned/boolean class; the range declines cover a component whose
+ * proven bounds leave the R300 FP24 exact-integer window. */
+enum r300_mp_transport_decline {
+    R300_MP_TRANSPORT_OK = 0,
+    R300_MP_TRANSPORT_MIXED_SIGNEDNESS,
+    R300_MP_TRANSPORT_SIGNED_RANGE,
+    R300_MP_TRANSPORT_UNSIGNED_RANGE,
+};
+
+/* Resolve the FP32-carry transport for every base of a candidate partition.
+ * Returns true with every r2vb_transport slot filled, or false with *decline
+ * (when non-NULL) naming the first failing class.  range_ht caches NIR range
+ * analysis across candidates of the same shader. */
+bool
+r300_mp_select_r2vb_transport(nir_shader *shader,
+                              struct r300_mp_partition *part,
+                              struct hash_table *range_ht,
+                              enum r300_mp_transport_decline *decline);
+
 bool
 r300_mp_find_vec4_cut(nir_shader *nir, struct r300_mp_partition *out);
 

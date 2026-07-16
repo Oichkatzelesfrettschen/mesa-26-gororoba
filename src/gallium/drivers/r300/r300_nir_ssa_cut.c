@@ -399,11 +399,14 @@ r300_mp_integer_semantic_type(nir_def *def, unsigned cut_index)
     return as_sint ? nir_type_int : as_uint ? nir_type_uint : nir_type_bool;
 }
 
-static bool
+bool
 r300_mp_select_r2vb_transport(nir_shader *shader,
                               struct r300_mp_partition *part,
-                              struct hash_table *range_ht)
+                              struct hash_table *range_ht,
+                              enum r300_mp_transport_decline *decline)
 {
+    if (decline)
+        *decline = R300_MP_TRANSPORT_OK;
     for (unsigned base_index = 0; base_index < part->num_bases; base_index++) {
         nir_def *base = part->bases[base_index];
 
@@ -422,22 +425,31 @@ r300_mp_select_r2vb_transport(nir_shader *shader,
             part->r2vb_transport[base_index] = R300_MP_R2VB_BOOL32;
             continue;
         }
-        if (semantic_type != nir_type_int && semantic_type != nir_type_uint)
+        if (semantic_type != nir_type_int && semantic_type != nir_type_uint) {
+            if (decline)
+                *decline = R300_MP_TRANSPORT_MIXED_SIGNEDNESS;
             return false;
+        }
 
         for (unsigned component = 0; component < base->num_components;
              component++) {
             nir_scalar scalar = nir_get_scalar(base, component);
             if (semantic_type == nir_type_uint) {
                 if (nir_unsigned_upper_bound(shader, range_ht, scalar) >
-                    R300_MP_FP24_EXACT_INT)
+                    R300_MP_FP24_EXACT_INT) {
+                    if (decline)
+                        *decline = R300_MP_TRANSPORT_UNSIGNED_RANGE;
                     return false;
+                }
             } else {
                 int32_t lo, hi;
                 r300_mp_signed_range(shader, range_ht, scalar, &lo, &hi, 0);
                 if (lo < -(int32_t)R300_MP_FP24_EXACT_INT ||
-                    hi > (int32_t)R300_MP_FP24_EXACT_INT)
+                    hi > (int32_t)R300_MP_FP24_EXACT_INT) {
+                    if (decline)
+                        *decline = R300_MP_TRANSPORT_SIGNED_RANGE;
                     return false;
+                }
             }
         }
 
@@ -459,7 +471,7 @@ r300_mp_find_vec4_cut(nir_shader *nir, struct r300_mp_partition *out)
      * carry available. */
     for (unsigned i = 0; i < n; i++) {
         if (cands[i].total_comps <= 4 &&
-            r300_mp_select_r2vb_transport(nir, &cands[i], range_ht)) {
+            r300_mp_select_r2vb_transport(nir, &cands[i], range_ht, NULL)) {
             *out = cands[i];
             _mesa_hash_table_destroy(range_ht, NULL);
             return true;
