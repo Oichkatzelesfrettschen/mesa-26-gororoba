@@ -3459,15 +3459,23 @@ static bool r300_r2vb_typed_split_admit(struct r300_context *r300,
     return *memo != R300_R2VB_ADMIT_REJECT;
 }
 
-/* Classify the bound VS on a constant-folded clone.  A SPIR-V VS reaches the
- * driver with its UBO address arithmetic still literal (iadd/imul/ushr of
- * load_const values) and with ffma kept weak by the gallivm compiler options;
- * both fold or map to fragment-aluable form in the FS compile the restage
- * producer runs, so the scan must see the folded shader, not the raw one.
- * Real (non-constant) integer arithmetic survives the folding and still
- * rejects. */
-static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
-                                        bool allow_computed_varying)
+/* Per-cell producer admission for one position space: the constant-folded
+ * structural scan decides the memo writer (float budget oracle for an
+ * aluable VS, the typed diagnostic contract for a structurally rejected one),
+ * exactly as the classify hook applies it.  A SPIR-V VS reaches the driver
+ * with its UBO address arithmetic still literal (iadd/imul/ushr of
+ * load_const values) and with ffma kept weak by the gallivm compiler
+ * options; both fold or map to fragment-aluable form in the FS compile the
+ * restage producer runs, so the scan must see the folded shader, not the
+ * raw one.  Real (non-constant) integer arithmetic survives the folding and
+ * still rejects.  The space parameter exists because a routed draw admits
+ * per space: the clip-route delivery re-runs the producer in window space,
+ * and the window cell of the same shader can decline where the clip cell
+ * admitted (the window transform's extra ALU, or the typed contract on the
+ * window candidate). */
+static bool r300_vs_admits_producer(struct r300_context *r300,
+                                    bool allow_computed_varying,
+                                    enum r300_r2vb_position_space space)
 {
     struct r300_vertex_shader *vs = r300_vs(r300);
     if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
@@ -3487,14 +3495,21 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
      * oracle on the derived producer FS, memoized per VS and position space. */
     if (ok)
         ok = r300_r2vb_producer_fits_budget(r300, allow_computed_varying,
-                                            r2vb_env_space());
+                                            space);
     /* The float whitelist rejects every typed producer before the budget
      * oracle runs; the diagnostic typed gate re-asks the cached plan, whose
      * split walk carries the typed transport admission (range, signedness,
      * one-vec4 carry).  Gated off, the structural reject stands unchanged. */
     else if (!allow_computed_varying && r300_r2vb_typed_split_enabled())
-        ok = r300_r2vb_typed_split_admit(r300, r2vb_env_space());
+        ok = r300_r2vb_typed_split_admit(r300, space);
     return ok;
+}
+
+static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
+                                        bool allow_computed_varying)
+{
+    return r300_vs_admits_producer(r300, allow_computed_varying,
+                                   r2vb_env_space());
 }
 
 enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
@@ -4443,13 +4458,35 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     bool xfs_cached = false;
 
     if (restage) {
+        /* Producer re-entry admission: the clip-route accept action re-runs
+         * this producer in window space without passing the classify hook,
+         * so the run re-applies the same per-cell admission classify uses --
+         * structural scan, budget oracle, and (typed gate) the cached-plan
+         * contract -- for the exact space it will emit and in the same
+         * computed-varying mode the route classified under.  A declining
+         * cell fails the run and the draw falls back to gallivm; the restage
+         * arm below therefore only ever builds a producer FS its cell
+         * admitted, so an over-budget candidate can no longer dummy-compile
+         * into an empty frame reported as success. */
+        static int varying_mode = -1;
+        if (varying_mode < 0) {
+            const char *e = getenv("R300_R2VB_VARYING");
+            varying_mode = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        }
+        if (!r300_vs_admits_producer(r300, varying_mode == 1, space)) {
+            if (getenv("R300_R2VB_EXEC_DEBUG"))
+                fprintf(stderr,
+                        "r2vb_producer decline=cell_admission space=%s\n",
+                        space == R300_R2VB_POSITION_WINDOW ? "window"
+                                                           : "clip");
+            return false;
+        }
         /* An admitted budget-escape split delivers through the two-pass carry-BO
          * producer instead of a single over-budget FS.  Guarded by the spill1
          * gate (or, for a plan-admitted typed cell, the typed diagnostic gate)
          * and the per-VS memo, so gated off the branch is never taken. */
         if ((r300_r2vb_budget_escape_enabled() ||
              r300_r2vb_typed_split_enabled()) &&
-            r300_r2vb_producer_fits_budget(r300, false, space) &&
             r300_vs(r300)->r2vb_admission[0]
                           [space == R300_R2VB_POSITION_WINDOW ? 1 : 0] ==
                 R300_R2VB_ADMIT_SPLIT) {
