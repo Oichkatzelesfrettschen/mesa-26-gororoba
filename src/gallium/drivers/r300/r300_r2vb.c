@@ -3579,7 +3579,17 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_ROUTE");
         enabled = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    if (!enabled)
+    /* Telemetry-only observation: with the route gate closed and the
+     * telemetry print gate or retain directory armed, the standing workload
+     * still classifies -- the plan cache measures each candidate cell once
+     * and the telemetry note records and retains it -- and every draw then
+     * declines, so gallivm renders exactly as with both gates closed.  The
+     * gates are process-constant, so the observation marker written into the
+     * admission memo below is never consulted by the routing path. */
+    static int observe = -1;
+    if (observe < 0)
+        observe = r300_r2vb_telemetry_observation_enabled() ? 1 : 0;
+    if (!enabled && !observe)
         return false;
 
     static unsigned tally[R2VB_VERDICT_COUNT];
@@ -3587,6 +3597,26 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
     enum r300_r2vb_verdict v = r300_r2vb_classify_draw(r300, info, draw);
     tally[v]++;
     total++;
+
+    if (!enabled) {
+        struct r300_vertex_shader *vs = r300_vs(r300);
+        if (v == R2VB_ROUTE_CANDIDATE && vs &&
+            vs->state.type == PIPE_SHADER_IR_NIR && vs->state.ir.nir) {
+            enum r300_r2vb_position_space space = r2vb_env_space();
+            unsigned space_i =
+                space == R300_R2VB_POSITION_WINDOW ? 1u : 0u;
+            uint8_t *memo = &vs->r2vb_admission[0][space_i];
+            if (*memo == R300_R2VB_ADMIT_UNMEASURED) {
+                const struct r300_r2vb_producer_plan *plan =
+                    r300_r2vb_producer_plan_get(r300, false, space);
+                if (plan) {
+                    r300_r2vb_telemetry_note(r300, plan);
+                    *memo = R300_R2VB_ADMIT_REJECT;
+                }
+            }
+        }
+        return false;
+    }
 
     /* Per-draw trace (R300_R2VB_ROUTE_DEBUG=1): one line per draw with the bound
      * VS name, vertex count, and verdict, so the application's draw is visible

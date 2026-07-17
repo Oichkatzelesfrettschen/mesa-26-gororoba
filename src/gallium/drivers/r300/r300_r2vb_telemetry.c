@@ -226,6 +226,12 @@ r300_r2vb_telemetry_note(struct r300_context *r300,
     }
 }
 
+bool
+r300_r2vb_telemetry_observation_enabled(void)
+{
+    return telemetry_print_enabled() || telemetry_retain_dir() != NULL;
+}
+
 const struct r300_r2vb_telemetry_counters *
 r300_r2vb_telemetry_get(void)
 {
