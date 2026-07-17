@@ -29,6 +29,21 @@ trap 'rm -rf "$tmp"' EXIT
     printf 'static const size_t %s_spirv_size = sizeof(%s_spirv);\n\n' \
       "$name" "$name"
   done
+  # SPIR-V assembly fixtures of record: the assembly pins the exact
+  # representation (select-versus-branch, boolean lifetime), so it
+  # reassembles with spirv-as and validates with spirv-val.
+  for a in t_*.spvasm; do
+    [ -e "$a" ] || continue
+    name=$(basename "$a" .spvasm)
+    spirv-as "$a" -o "$tmp/$name.spv"
+    spirv-val "$tmp/$name.spv"
+    printf 'static const uint32_t %s_spirv[] = {\n' "$name"
+    od -An -tx4 -v "$tmp/$name.spv" | \
+      sed 's/^ */   /; s/\([0-9a-f]\{8\}\)/0x\1,/g'
+    printf '};\n'
+    printf 'static const size_t %s_spirv_size = sizeof(%s_spirv);\n\n' \
+      "$name" "$name"
+  done
   printf '#endif /* R3V_TYPED_CARRY_SPIRV_H */\n'
 } > "$out"
 echo "wrote $out"

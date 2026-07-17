@@ -20,11 +20,28 @@
  * vertex table, whose keep_weak_ffma is the load-bearing representation
  * fact), so the prepared NIR matches what a created screen produces.
  *
- * Rows, in both clip and window space: the bool, bounded-signed, and
- * bounded-unsigned modules plan SPLIT with {f,b}, {f,i}, {f,u} carries; the
+ * Rows, in both clip and window space: the bounded-signed and
+ * bounded-unsigned modules plan SPLIT with {f,i} and {f,u} carries; the
  * out-of-window signed and unsigned modules reject SIGNED_RANGE and
  * UNSIGNED_RANGE; the unbounded unsigned module rejects UNSIGNED_RANGE; and
  * the signedness-conflict modules reject MIXED_SIGNEDNESS.
+ *
+ * The two boolean rows pin the source-to-producer representation boundary.
+ * The t_bool module converts its boolean early (float(k) before the chain),
+ * so the restaged optimized position candidate the typed scan reads carries
+ * no boolean marker: fixture source class boolean, prepared producer class
+ * none, selected transport {f}.  The t_bool_carry module is hand-authored
+ * SPIR-V assembly whose boolean stays live across every admissible cut into
+ * a post-chain OpSelect between structurally unrelated arms, so in clip
+ * space its prepared producer class is boolean and its carry must contain
+ * b -- the row that licenses a BOOL transport claim from a live
+ * carry_types token.  In window space r300_nir_lower_bool_to_float_fs
+ * rewrites every position-feeding bcsel(fcmp) into fcsel_ge float form
+ * (the divide and viewport arithmetic appended after position makes the
+ * select's result an ALU operand, which arms the only-used-as-float rule),
+ * so the window cell of the same module truthfully prepares to class none
+ * with a float-only carry: boolean transport is reachable through the clip
+ * route.
  */
 
 #include <stdbool.h>
@@ -165,54 +182,62 @@ struct corpus_row {
    size_t spirv_size;
    enum r300_r2vb_plan_action action;
    enum r300_r2vb_plan_reason primary_reason;
+   /* Prepared-producer expectation: the typed scan reads the restaged
+    * optimized position candidate, so a fixture whose typed value converts
+    * to float before the chain legitimately prepares to class none. */
+   bool prepared_has_typed;
    enum r300_r2vb_typed_source_class source_class;
    /* SPLIT carry contract: the typed transport that must appear (0 when
     * either exact form is correct), and the letters the carry may consist
-    * of.  The deterministic candidate ordering selects the narrowest
-    * admissible cut, and glslang's select-to-float form converts the bool
-    * module's value with b2f32 before any admissible cut, so its carry may
-    * ride as the exact 0/1 float; the BOOL1 transport mechanism itself is
-    * pinned by the unit-tier oracle and the producer-split test. */
+    * of. */
    char required_carry;
    const char *allowed_carry;
+   /* r300_nir_lower_bool_to_float_fs rewrites position-feeding
+    * bcsel(fcmp) into fcsel_ge float form once the window transform makes
+    * the select an ALU operand, so a boolean-carry module's window cell
+    * prepares to class none with a float-only carry. */
+   bool window_bool_lowered;
 };
 
-/* The silicon gate's required rows: T0 SPLIT {f,b}; T1/T2 SPLIT {f,i};
- * T3 SPLIT {f,u}; T4/T5 REJECT SIGNED_RANGE; T6/T7 REJECT UNSIGNED_RANGE;
- * T8/T9 REJECT MIXED_SIGNEDNESS.  The signedness-conflict modules read
- * SINT as the whole-program source class because their consumer casts mark
- * the signed domain. */
+/* The silicon gate's required rows: T0 SPLIT float-carry (early
+ * conversion), boolean-carry SPLIT with b; T1/T2 SPLIT {f,i}; T3 SPLIT
+ * {f,u}; T4/T5 REJECT SIGNED_RANGE; T6/T7 REJECT UNSIGNED_RANGE; T8/T9
+ * REJECT MIXED_SIGNEDNESS.  The signedness-conflict modules read SINT as
+ * the source class because their consumer casts mark the signed domain. */
 static const struct corpus_row rows[] = {
    { "t_bool", t_bool_spirv, sizeof(t_bool_spirv),
      R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
-     R300_R2VB_TYPED_SOURCE_BOOL, 0, "bf" },
+     false, R300_R2VB_TYPED_SOURCE_NONE, 0, "f" },
+   { "t_bool_carry", t_bool_carry_spirv, sizeof(t_bool_carry_spirv),
+     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
+     true, R300_R2VB_TYPED_SOURCE_BOOL, 'b', "bf", true },
    { "t_sint_exact", t_sint_exact_spirv, sizeof(t_sint_exact_spirv),
      R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
-     R300_R2VB_TYPED_SOURCE_SINT, 'i', "fi" },
+     true, R300_R2VB_TYPED_SOURCE_SINT, 'i', "fi" },
    { "t_uint_exact", t_uint_exact_spirv, sizeof(t_uint_exact_spirv),
      R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
-     R300_R2VB_TYPED_SOURCE_UINT, 'u', "fu" },
+     true, R300_R2VB_TYPED_SOURCE_UINT, 'u', "fu" },
    { "t_sint_pos_outside", t_sint_pos_outside_spirv,
      sizeof(t_sint_pos_outside_spirv),
      R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_SIGNED_RANGE,
-     R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
+     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
    { "t_sint_neg_outside", t_sint_neg_outside_spirv,
      sizeof(t_sint_neg_outside_spirv),
      R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_SIGNED_RANGE,
-     R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
+     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
    { "t_uint_outside", t_uint_outside_spirv, sizeof(t_uint_outside_spirv),
      R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_UNSIGNED_RANGE,
-     R300_R2VB_TYPED_SOURCE_UINT, 0, "" },
+     true, R300_R2VB_TYPED_SOURCE_UINT, 0, "" },
    { "t_uint_unbounded", t_uint_unbounded_spirv,
      sizeof(t_uint_unbounded_spirv),
      R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_UNSIGNED_RANGE,
-     R300_R2VB_TYPED_SOURCE_UINT, 0, "" },
+     true, R300_R2VB_TYPED_SOURCE_UINT, 0, "" },
    { "t_sint_to_uint", t_sint_to_uint_spirv, sizeof(t_sint_to_uint_spirv),
      R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_MIXED_SIGNEDNESS,
-     R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
+     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
    { "t_uint_to_sint", t_uint_to_sint_spirv, sizeof(t_uint_to_sint_spirv),
      R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_MIXED_SIGNEDNESS,
-     R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
+     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
 };
 
 static void
@@ -228,6 +253,19 @@ run_row(const struct corpus_row *row, enum r300_r2vb_position_space space)
    CHECK(vs != NULL, label);
    if (!vs)
       return;
+
+   /* Window-space boolean lowering: the per-space expectation of a
+    * boolean-carry module. */
+   bool prepared_has_typed = row->prepared_has_typed;
+   enum r300_r2vb_typed_source_class source_class = row->source_class;
+   char required_carry = row->required_carry;
+   const char *allowed_carry = row->allowed_carry;
+   if (row->window_bool_lowered && space == R300_R2VB_POSITION_WINDOW) {
+      prepared_has_typed = false;
+      source_class = R300_R2VB_TYPED_SOURCE_NONE;
+      required_carry = 0;
+      allowed_carry = "f";
+   }
 
    struct r300_r2vb_producer_plan plan;
    bool ran = r300_r2vb_plan_producer(&g_context, vs, false, space, &plan);
@@ -249,24 +287,24 @@ run_row(const struct corpus_row *row, enum r300_r2vb_position_space space)
             r300_r2vb_plan_reason_str(row->primary_reason));
    CHECK(plan.primary_reason == row->primary_reason, label);
 
-   snprintf(label, sizeof(label), "%s/%s typed-source class", row->name,
-            space_name);
-   CHECK(plan.has_typed_source &&
-            plan.typed_source_class == row->source_class,
+   snprintf(label, sizeof(label), "%s/%s prepared typed-source class",
+            row->name, space_name);
+   CHECK(plan.has_typed_source == prepared_has_typed &&
+            plan.typed_source_class == source_class,
          label);
 
    if (row->action == R300_R2VB_PLAN_SPLIT &&
        plan.action == R300_R2VB_PLAN_SPLIT) {
       char sig[R300_MP_MAX_CARRY_COMPS + 1];
       carry_sig(&plan, sig, sizeof(sig));
-      bool has_required = row->required_carry == 0 ||
-                          strchr(sig, row->required_carry) != NULL;
+      bool has_required = required_carry == 0 ||
+                          strchr(sig, required_carry) != NULL;
       bool all_allowed = true;
       for (const char *c = sig; *c; c++)
-         if (!strchr(row->allowed_carry, *c))
+         if (!strchr(allowed_carry, *c))
             all_allowed = false;
       snprintf(label, sizeof(label), "%s/%s carry {%s} within {%s}",
-               row->name, space_name, sig, row->allowed_carry);
+               row->name, space_name, sig, allowed_carry);
       CHECK(has_required && all_allowed, label);
    }
 
