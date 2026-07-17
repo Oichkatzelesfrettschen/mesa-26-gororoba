@@ -153,6 +153,43 @@ build_producer(unsigned chain_length, const char *name)
    return end_vs(&v, nir_replicate(&v.b, c, 4));
 }
 
+/* Over-budget producer with a bounded signed integer computed before the
+ * chain and consumed after it, the shape the typed diagnostic route
+ * executes: the clamp proves the carried component inside the R300 FP24
+ * exact-integer window, so the plan admits SINT transport and the typed
+ * half rebuild is the program under identity test. */
+static nir_shader *
+build_sint_carry_producer(const char *name)
+{
+   struct vs_build v = begin_vs(name);
+   nir_def *y = nir_channel(&v.b, v.pos, 1);
+   nir_def *s = nir_f2i32(&v.b, y);
+   nir_def *typed = nir_imin(&v.b, nir_imax(&v.b, s,
+                                            nir_imm_int(&v.b, -1000)),
+                             nir_imm_int(&v.b, 1000));
+   nir_def *c = fmad_chain(&v.b, nir_channel(&v.b, v.pos, 0), 90);
+   nir_def *back = nir_i2f32(&v.b, typed);
+   nir_def *sum = nir_fadd(&v.b, c, back);
+   return end_vs(&v, nir_replicate(&v.b, sum, 4));
+}
+
+static bool
+partition_has_typed_transport(const struct r300_mp_partition *p)
+{
+   for (unsigned i = 0; i < p->num_bases; i++) {
+      switch (p->r2vb_transport[i]) {
+      case R300_MP_R2VB_SINT:
+      case R300_MP_R2VB_UINT:
+      case R300_MP_R2VB_BOOL1:
+      case R300_MP_R2VB_BOOL32:
+         return true;
+      default:
+         break;
+      }
+   }
+   return false;
+}
+
 static bool
 costs_equal(const struct r300_fs_admission_cost *a,
             const struct r300_fs_admission_cost *b)
@@ -301,6 +338,40 @@ run_space(enum r300_r2vb_position_space space)
    if (ran)
       r300_r2vb_plan_release(&plan);
    ralloc_free(over);
+
+   /* Typed over-budget producer: the identity holds on the exact halves
+    * the typed diagnostic route executes -- rebuilt from the plan's owned
+    * candidate and retained partition, with a typed transport in the
+    * selected carry. */
+   nir_shader *typed = build_sint_carry_producer("cso_identity_sint");
+   ran = r300_r2vb_plan_producer(&g_context, typed, false, space, &plan);
+   snprintf(label, sizeof(label), "sint/%s plans SPLIT with typed carry",
+            space_name);
+   CHECK(ran && plan.action == R300_R2VB_PLAN_SPLIT && plan.candidate &&
+            plan.has_typed_source &&
+            partition_has_typed_transport(&plan.partition),
+         label);
+   if (ran && plan.action == R300_R2VB_PLAN_SPLIT && plan.candidate) {
+      nir_shader *pass_a =
+         r300_mp_build_carry_pass_a(plan.candidate, &plan.partition);
+      nir_shader *pass_b = r300_mp_build_pos_pass_b(
+         plan.candidate, &plan.partition, plan.num_position_inputs);
+      snprintf(label, sizeof(label), "sint/%s halves rebuild", space_name);
+      CHECK(pass_a && pass_b, label);
+      if (pass_a) {
+         snprintf(label, sizeof(label), "sint/%s carry pass", space_name);
+         check_identity(label, pass_a, &plan.pass_a_cost);
+         ralloc_free(pass_a);
+      }
+      if (pass_b) {
+         snprintf(label, sizeof(label), "sint/%s position pass", space_name);
+         check_identity(label, pass_b, &plan.pass_b_cost);
+         ralloc_free(pass_b);
+      }
+   }
+   if (ran)
+      r300_r2vb_plan_release(&plan);
+   ralloc_free(typed);
 }
 
 int

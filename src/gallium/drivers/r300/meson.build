@@ -418,6 +418,29 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Diagnostic typed-split route calibration: the exact-value gate parser
+  # admits only "1", and the route contract admits only the position cell of
+  # a READY SPLIT plan with a typed source, flat-vertex semantics, a one-vec4
+  # carry, and an owned candidate; every decline arm calibrates on synthetic
+  # plans plus the two live decline classes.
+  test(
+    'r300-r2vb-typed-route',
+    executable(
+      'r300_r2vb_typed_route_test',
+      files('compiler/tests/r300_r2vb_typed_route_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      # The contract lives in r300_r2vb.c, whose context object reaches the
+      # video codec constructors in the video auxiliary library.
+      link_with : [libr300, libgallium, libgalliumvl],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # MVP route classifier: UBO block or deref binding zero is the only matrix
   # source mirrored by the executor, and literal offset chains are folded on a
   # throwaway clone.

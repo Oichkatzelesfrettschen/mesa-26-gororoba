@@ -213,6 +213,68 @@ struct nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                                                    struct nir_shader *vs_nir,
                                                    gl_varying_slot target,
                                                    enum r300_r2vb_position_space space);
+
+/* Diagnostic typed-split gate value: exactly "1" opens; NULL, empty, and
+ * every other value keep the route closed.  Pure over the string so the
+ * calibration test drives every arm. */
+bool r300_r2vb_typed_split_gate_value(const char *value);
+
+/* Per-VS admission memo byte, keyed by (allow_computed_varying, position
+ * space).  Route reachability reads this byte; the plan cache is the shadow
+ * authority the memo is audited against. */
+enum r300_r2vb_admission_memo {
+    R300_R2VB_ADMIT_UNMEASURED = 0,
+    R300_R2VB_ADMIT_FITS,
+    R300_R2VB_ADMIT_REJECT,
+    R300_R2VB_ADMIT_SPLIT,
+};
+
+/* The meaning of a memo cell depends on the writer that populated it: the
+ * legacy float route records a SPLIT only under the spill1 escape gate, and
+ * the typed diagnostic route records exactly what its contract admits.  The
+ * classify structure fixes the writer per cell -- a VS that passes the
+ * fragment-aluable scan takes the float writer, a structurally rejected VS
+ * reaches the typed writer -- so the effective mapping below is
+ * deterministic per cell, independent of call order and of the other gate. */
+enum r300_r2vb_memo_writer {
+    R300_R2VB_MEMO_WRITER_LEGACY_FLOAT = 0,
+    R300_R2VB_MEMO_WRITER_TYPED_DIAGNOSTIC,
+};
+
+/* Effective admission a plan cell predicts for the memo, per writer policy.
+ * Pure over the explicit gate value so the calibration test drives the full
+ * writer x gate matrix without process-cached environment state. */
+enum r300_r2vb_admission_memo
+r300_r2vb_plan_effective_admission(const struct r300_r2vb_producer_plan *plan,
+                                   enum r300_r2vb_memo_writer writer,
+                                   bool budget_escape_enabled,
+                                   bool allow_computed_varying,
+                                   enum r300_r2vb_position_space space,
+                                   unsigned num_position_inputs);
+
+/* Diagnostic typed-split route contract over a cached plan cell: NULL means
+ * the cell executes through the plan-driven split; otherwise the returned
+ * stable name is the decline reason the diagnostic token line prints.  The
+ * contract admits only the position cell (cv=0) of a READY SPLIT plan whose
+ * key matches the requested cell, with a typed source, at least one typed
+ * transport in the selected carry, flat-vertex input semantics, a one-vec4
+ * carry, the planned model-attribute arity, and an owned candidate; SPLIT
+ * itself certifies both halves compiled under budget. */
+const char *
+r300_r2vb_typed_split_contract(const struct r300_r2vb_producer_plan *plan,
+                               bool allow_computed_varying,
+                               enum r300_r2vb_position_space space,
+                               unsigned num_position_inputs);
+
+/* Format the typed-route diagnostic token line into buf.  Pure over the
+ * inputs; the runtime note prints exactly this string, so the calibration
+ * test pins the token vocabulary (gate, plan status/action, space, typed
+ * source, carry transport letters, cut, pass costs, decision, decline
+ * reason) against the silicon engagement oracle. */
+void
+r300_r2vb_typed_split_note_format(const struct r300_r2vb_producer_plan *plan,
+                                  enum r300_r2vb_position_space space,
+                                  const char *decline, char *buf, size_t len);
 unsigned r300_r2vb_count_position_inputs(struct nir_shader *vs_nir);
 int r300_r2vb_first_computed_varying(struct nir_shader *vs_nir);
 

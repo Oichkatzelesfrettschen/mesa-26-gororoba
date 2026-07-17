@@ -1,0 +1,500 @@
+; Copyright (c) 2026 Terascale Functionalists
+; SPDX-License-Identifier: MIT
+;
+; Boolean-carry fixture, SPIR-V assembly as the fixture of record: the
+; module computes an internal boolean from an early chain intermediate
+; (OpFOrdGreaterThan after five recurrence steps), runs the remaining
+; over-budget position chain, and consumes the boolean only after the chain
+; through a single straight-line OpSelect between structurally unrelated
+; arms, so the boolean SSA value stays live across every admissible
+; producer cut and the R2VB plan must select BOOL transport in the carry.
+; Two properties are load-bearing and assembly-pinned.  The boolean derives
+; from a chain intermediate, so an optimizer cannot rematerialize the
+; comparison past the cut from a model input.  The select arms share no
+; common base-plus-offset shape, so the bcsel survives instead of
+; collapsing into float arithmetic -- the collapse that legitimately turns
+; the input-derived plus-minus select of the t_bool module into a
+; float-only carry in window space.  Reassemble with spirv-as;
+; gen_spirv_fixtures.sh validates with spirv-val and embeds the words.
+; SPIR-V
+; Version: 1.0
+; Generator: Khronos Glslang Reference Front End; 11
+; Bound: 343
+; Schema: 0
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %main "main" %inPos %_ %vColor %inAttr %vAttr
+               OpSource GLSL 450
+               OpName %main "main"
+               OpName %value "value"
+               OpName %inPos "inPos"
+               OpName %k "k"
+               OpName %pos "pos"
+               OpName %PC "PC"
+               OpMemberName %PC 0 "mvp"
+               OpName %pc "pc"
+               OpName %gl_PerVertex "gl_PerVertex"
+               OpMemberName %gl_PerVertex 0 "gl_Position"
+               OpMemberName %gl_PerVertex 1 "gl_PointSize"
+               OpMemberName %gl_PerVertex 2 "gl_ClipDistance"
+               OpMemberName %gl_PerVertex 3 "gl_CullDistance"
+               OpName %_ ""
+               OpName %vColor "vColor"
+               OpName %inAttr "inAttr"
+               OpName %vAttr "vAttr"
+               OpDecorate %inPos Location 0
+               OpDecorate %PC Block
+               OpMemberDecorate %PC 0 ColMajor
+               OpMemberDecorate %PC 0 MatrixStride 16
+               OpMemberDecorate %PC 0 Offset 0
+               OpDecorate %gl_PerVertex Block
+               OpMemberDecorate %gl_PerVertex 0 BuiltIn Position
+               OpMemberDecorate %gl_PerVertex 1 BuiltIn PointSize
+               OpMemberDecorate %gl_PerVertex 2 BuiltIn ClipDistance
+               OpMemberDecorate %gl_PerVertex 3 BuiltIn CullDistance
+               OpDecorate %vColor Flat
+               OpDecorate %vColor Location 0
+               OpDecorate %inAttr Location 1
+               OpDecorate %vAttr Flat
+               OpDecorate %vAttr Location 1
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+%_ptr_Function_float = OpTypePointer Function %float
+    %v4float = OpTypeVector %float 4
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+      %inPos = OpVariable %_ptr_Input_v4float Input
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+%_ptr_Input_float = OpTypePointer Input %float
+  %float_0_5 = OpConstant %float 0.5
+       %bool = OpTypeBool
+%_ptr_Function_bool = OpTypePointer Function %bool
+ %float_0_75 = OpConstant %float 0.75
+%_ptr_Function_v4float = OpTypePointer Function %v4float
+%mat4v4float = OpTypeMatrix %v4float 4
+         %PC = OpTypeStruct %mat4v4float
+%_ptr_PushConstant_PC = OpTypePointer PushConstant %PC
+         %pc = OpVariable %_ptr_PushConstant_PC PushConstant
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_PushConstant_mat4v4float = OpTypePointer PushConstant %mat4v4float
+    %v3float = OpTypeVector %float 3
+     %uint_1 = OpConstant %uint 1
+ %float_1_25 = OpConstant %float 1.25
+%float_0_0625 = OpConstant %float 0.0625
+     %uint_0 = OpConstant %uint 0
+%_arr_float_uint_1 = OpTypeArray %float %uint_1
+%gl_PerVertex = OpTypeStruct %v4float %float %_arr_float_uint_1 %_arr_float_uint_1
+%_ptr_Output_gl_PerVertex = OpTypePointer Output %gl_PerVertex
+          %_ = OpVariable %_ptr_Output_gl_PerVertex Output
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+     %vColor = OpVariable %_ptr_Output_v4float Output
+     %inAttr = OpVariable %_ptr_Input_v4float Input
+      %vAttr = OpVariable %_ptr_Output_v4float Output
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+      %value = OpVariable %_ptr_Function_float Function
+          %k = OpVariable %_ptr_Function_bool Function
+        %pos = OpVariable %_ptr_Function_v4float Function
+         %15 = OpAccessChain %_ptr_Input_float %inPos %uint_3
+         %16 = OpLoad %float %15
+               OpStore %value %16
+         %17 = OpLoad %float %value
+         %19 = OpFMul %float %17 %float_0_5
+         %20 = OpFAdd %float %19 %float_0_5
+               OpStore %value %20
+         %21 = OpLoad %float %value
+         %22 = OpFMul %float %21 %float_0_5
+         %23 = OpFAdd %float %22 %float_0_5
+               OpStore %value %23
+         %24 = OpLoad %float %value
+         %25 = OpFMul %float %24 %float_0_5
+         %26 = OpFAdd %float %25 %float_0_5
+               OpStore %value %26
+         %27 = OpLoad %float %value
+         %28 = OpFMul %float %27 %float_0_5
+         %29 = OpFAdd %float %28 %float_0_5
+               OpStore %value %29
+         %30 = OpLoad %float %value
+         %31 = OpFMul %float %30 %float_0_5
+         %32 = OpFAdd %float %31 %float_0_5
+               OpStore %value %32
+         %36 = OpLoad %float %value
+         %38 = OpFOrdGreaterThan %bool %36 %float_0_75
+               OpStore %k %38
+         %39 = OpLoad %float %value
+         %40 = OpFMul %float %39 %float_0_5
+         %41 = OpFAdd %float %40 %float_0_5
+               OpStore %value %41
+         %42 = OpLoad %float %value
+         %43 = OpFMul %float %42 %float_0_5
+         %44 = OpFAdd %float %43 %float_0_5
+               OpStore %value %44
+         %45 = OpLoad %float %value
+         %46 = OpFMul %float %45 %float_0_5
+         %47 = OpFAdd %float %46 %float_0_5
+               OpStore %value %47
+         %48 = OpLoad %float %value
+         %49 = OpFMul %float %48 %float_0_5
+         %50 = OpFAdd %float %49 %float_0_5
+               OpStore %value %50
+         %51 = OpLoad %float %value
+         %52 = OpFMul %float %51 %float_0_5
+         %53 = OpFAdd %float %52 %float_0_5
+               OpStore %value %53
+         %54 = OpLoad %float %value
+         %55 = OpFMul %float %54 %float_0_5
+         %56 = OpFAdd %float %55 %float_0_5
+               OpStore %value %56
+         %57 = OpLoad %float %value
+         %58 = OpFMul %float %57 %float_0_5
+         %59 = OpFAdd %float %58 %float_0_5
+               OpStore %value %59
+         %60 = OpLoad %float %value
+         %61 = OpFMul %float %60 %float_0_5
+         %62 = OpFAdd %float %61 %float_0_5
+               OpStore %value %62
+         %63 = OpLoad %float %value
+         %64 = OpFMul %float %63 %float_0_5
+         %65 = OpFAdd %float %64 %float_0_5
+               OpStore %value %65
+         %66 = OpLoad %float %value
+         %67 = OpFMul %float %66 %float_0_5
+         %68 = OpFAdd %float %67 %float_0_5
+               OpStore %value %68
+         %69 = OpLoad %float %value
+         %70 = OpFMul %float %69 %float_0_5
+         %71 = OpFAdd %float %70 %float_0_5
+               OpStore %value %71
+         %72 = OpLoad %float %value
+         %73 = OpFMul %float %72 %float_0_5
+         %74 = OpFAdd %float %73 %float_0_5
+               OpStore %value %74
+         %75 = OpLoad %float %value
+         %76 = OpFMul %float %75 %float_0_5
+         %77 = OpFAdd %float %76 %float_0_5
+               OpStore %value %77
+         %78 = OpLoad %float %value
+         %79 = OpFMul %float %78 %float_0_5
+         %80 = OpFAdd %float %79 %float_0_5
+               OpStore %value %80
+         %81 = OpLoad %float %value
+         %82 = OpFMul %float %81 %float_0_5
+         %83 = OpFAdd %float %82 %float_0_5
+               OpStore %value %83
+         %84 = OpLoad %float %value
+         %85 = OpFMul %float %84 %float_0_5
+         %86 = OpFAdd %float %85 %float_0_5
+               OpStore %value %86
+         %87 = OpLoad %float %value
+         %88 = OpFMul %float %87 %float_0_5
+         %89 = OpFAdd %float %88 %float_0_5
+               OpStore %value %89
+         %90 = OpLoad %float %value
+         %91 = OpFMul %float %90 %float_0_5
+         %92 = OpFAdd %float %91 %float_0_5
+               OpStore %value %92
+         %93 = OpLoad %float %value
+         %94 = OpFMul %float %93 %float_0_5
+         %95 = OpFAdd %float %94 %float_0_5
+               OpStore %value %95
+         %96 = OpLoad %float %value
+         %97 = OpFMul %float %96 %float_0_5
+         %98 = OpFAdd %float %97 %float_0_5
+               OpStore %value %98
+         %99 = OpLoad %float %value
+        %100 = OpFMul %float %99 %float_0_5
+        %101 = OpFAdd %float %100 %float_0_5
+               OpStore %value %101
+        %102 = OpLoad %float %value
+        %103 = OpFMul %float %102 %float_0_5
+        %104 = OpFAdd %float %103 %float_0_5
+               OpStore %value %104
+        %105 = OpLoad %float %value
+        %106 = OpFMul %float %105 %float_0_5
+        %107 = OpFAdd %float %106 %float_0_5
+               OpStore %value %107
+        %108 = OpLoad %float %value
+        %109 = OpFMul %float %108 %float_0_5
+        %110 = OpFAdd %float %109 %float_0_5
+               OpStore %value %110
+        %111 = OpLoad %float %value
+        %112 = OpFMul %float %111 %float_0_5
+        %113 = OpFAdd %float %112 %float_0_5
+               OpStore %value %113
+        %114 = OpLoad %float %value
+        %115 = OpFMul %float %114 %float_0_5
+        %116 = OpFAdd %float %115 %float_0_5
+               OpStore %value %116
+        %117 = OpLoad %float %value
+        %118 = OpFMul %float %117 %float_0_5
+        %119 = OpFAdd %float %118 %float_0_5
+               OpStore %value %119
+        %120 = OpLoad %float %value
+        %121 = OpFMul %float %120 %float_0_5
+        %122 = OpFAdd %float %121 %float_0_5
+               OpStore %value %122
+        %123 = OpLoad %float %value
+        %124 = OpFMul %float %123 %float_0_5
+        %125 = OpFAdd %float %124 %float_0_5
+               OpStore %value %125
+        %126 = OpLoad %float %value
+        %127 = OpFMul %float %126 %float_0_5
+        %128 = OpFAdd %float %127 %float_0_5
+               OpStore %value %128
+        %129 = OpLoad %float %value
+        %130 = OpFMul %float %129 %float_0_5
+        %131 = OpFAdd %float %130 %float_0_5
+               OpStore %value %131
+        %132 = OpLoad %float %value
+        %133 = OpFMul %float %132 %float_0_5
+        %134 = OpFAdd %float %133 %float_0_5
+               OpStore %value %134
+        %135 = OpLoad %float %value
+        %136 = OpFMul %float %135 %float_0_5
+        %137 = OpFAdd %float %136 %float_0_5
+               OpStore %value %137
+        %138 = OpLoad %float %value
+        %139 = OpFMul %float %138 %float_0_5
+        %140 = OpFAdd %float %139 %float_0_5
+               OpStore %value %140
+        %141 = OpLoad %float %value
+        %142 = OpFMul %float %141 %float_0_5
+        %143 = OpFAdd %float %142 %float_0_5
+               OpStore %value %143
+        %144 = OpLoad %float %value
+        %145 = OpFMul %float %144 %float_0_5
+        %146 = OpFAdd %float %145 %float_0_5
+               OpStore %value %146
+        %147 = OpLoad %float %value
+        %148 = OpFMul %float %147 %float_0_5
+        %149 = OpFAdd %float %148 %float_0_5
+               OpStore %value %149
+        %150 = OpLoad %float %value
+        %151 = OpFMul %float %150 %float_0_5
+        %152 = OpFAdd %float %151 %float_0_5
+               OpStore %value %152
+        %153 = OpLoad %float %value
+        %154 = OpFMul %float %153 %float_0_5
+        %155 = OpFAdd %float %154 %float_0_5
+               OpStore %value %155
+        %156 = OpLoad %float %value
+        %157 = OpFMul %float %156 %float_0_5
+        %158 = OpFAdd %float %157 %float_0_5
+               OpStore %value %158
+        %159 = OpLoad %float %value
+        %160 = OpFMul %float %159 %float_0_5
+        %161 = OpFAdd %float %160 %float_0_5
+               OpStore %value %161
+        %162 = OpLoad %float %value
+        %163 = OpFMul %float %162 %float_0_5
+        %164 = OpFAdd %float %163 %float_0_5
+               OpStore %value %164
+        %165 = OpLoad %float %value
+        %166 = OpFMul %float %165 %float_0_5
+        %167 = OpFAdd %float %166 %float_0_5
+               OpStore %value %167
+        %168 = OpLoad %float %value
+        %169 = OpFMul %float %168 %float_0_5
+        %170 = OpFAdd %float %169 %float_0_5
+               OpStore %value %170
+        %171 = OpLoad %float %value
+        %172 = OpFMul %float %171 %float_0_5
+        %173 = OpFAdd %float %172 %float_0_5
+               OpStore %value %173
+        %174 = OpLoad %float %value
+        %175 = OpFMul %float %174 %float_0_5
+        %176 = OpFAdd %float %175 %float_0_5
+               OpStore %value %176
+        %177 = OpLoad %float %value
+        %178 = OpFMul %float %177 %float_0_5
+        %179 = OpFAdd %float %178 %float_0_5
+               OpStore %value %179
+        %180 = OpLoad %float %value
+        %181 = OpFMul %float %180 %float_0_5
+        %182 = OpFAdd %float %181 %float_0_5
+               OpStore %value %182
+        %183 = OpLoad %float %value
+        %184 = OpFMul %float %183 %float_0_5
+        %185 = OpFAdd %float %184 %float_0_5
+               OpStore %value %185
+        %186 = OpLoad %float %value
+        %187 = OpFMul %float %186 %float_0_5
+        %188 = OpFAdd %float %187 %float_0_5
+               OpStore %value %188
+        %189 = OpLoad %float %value
+        %190 = OpFMul %float %189 %float_0_5
+        %191 = OpFAdd %float %190 %float_0_5
+               OpStore %value %191
+        %192 = OpLoad %float %value
+        %193 = OpFMul %float %192 %float_0_5
+        %194 = OpFAdd %float %193 %float_0_5
+               OpStore %value %194
+        %195 = OpLoad %float %value
+        %196 = OpFMul %float %195 %float_0_5
+        %197 = OpFAdd %float %196 %float_0_5
+               OpStore %value %197
+        %198 = OpLoad %float %value
+        %199 = OpFMul %float %198 %float_0_5
+        %200 = OpFAdd %float %199 %float_0_5
+               OpStore %value %200
+        %201 = OpLoad %float %value
+        %202 = OpFMul %float %201 %float_0_5
+        %203 = OpFAdd %float %202 %float_0_5
+               OpStore %value %203
+        %204 = OpLoad %float %value
+        %205 = OpFMul %float %204 %float_0_5
+        %206 = OpFAdd %float %205 %float_0_5
+               OpStore %value %206
+        %207 = OpLoad %float %value
+        %208 = OpFMul %float %207 %float_0_5
+        %209 = OpFAdd %float %208 %float_0_5
+               OpStore %value %209
+        %210 = OpLoad %float %value
+        %211 = OpFMul %float %210 %float_0_5
+        %212 = OpFAdd %float %211 %float_0_5
+               OpStore %value %212
+        %213 = OpLoad %float %value
+        %214 = OpFMul %float %213 %float_0_5
+        %215 = OpFAdd %float %214 %float_0_5
+               OpStore %value %215
+        %216 = OpLoad %float %value
+        %217 = OpFMul %float %216 %float_0_5
+        %218 = OpFAdd %float %217 %float_0_5
+               OpStore %value %218
+        %219 = OpLoad %float %value
+        %220 = OpFMul %float %219 %float_0_5
+        %221 = OpFAdd %float %220 %float_0_5
+               OpStore %value %221
+        %222 = OpLoad %float %value
+        %223 = OpFMul %float %222 %float_0_5
+        %224 = OpFAdd %float %223 %float_0_5
+               OpStore %value %224
+        %225 = OpLoad %float %value
+        %226 = OpFMul %float %225 %float_0_5
+        %227 = OpFAdd %float %226 %float_0_5
+               OpStore %value %227
+        %228 = OpLoad %float %value
+        %229 = OpFMul %float %228 %float_0_5
+        %230 = OpFAdd %float %229 %float_0_5
+               OpStore %value %230
+        %231 = OpLoad %float %value
+        %232 = OpFMul %float %231 %float_0_5
+        %233 = OpFAdd %float %232 %float_0_5
+               OpStore %value %233
+        %234 = OpLoad %float %value
+        %235 = OpFMul %float %234 %float_0_5
+        %236 = OpFAdd %float %235 %float_0_5
+               OpStore %value %236
+        %237 = OpLoad %float %value
+        %238 = OpFMul %float %237 %float_0_5
+        %239 = OpFAdd %float %238 %float_0_5
+               OpStore %value %239
+        %240 = OpLoad %float %value
+        %241 = OpFMul %float %240 %float_0_5
+        %242 = OpFAdd %float %241 %float_0_5
+               OpStore %value %242
+        %243 = OpLoad %float %value
+        %244 = OpFMul %float %243 %float_0_5
+        %245 = OpFAdd %float %244 %float_0_5
+               OpStore %value %245
+        %246 = OpLoad %float %value
+        %247 = OpFMul %float %246 %float_0_5
+        %248 = OpFAdd %float %247 %float_0_5
+               OpStore %value %248
+        %249 = OpLoad %float %value
+        %250 = OpFMul %float %249 %float_0_5
+        %251 = OpFAdd %float %250 %float_0_5
+               OpStore %value %251
+        %252 = OpLoad %float %value
+        %253 = OpFMul %float %252 %float_0_5
+        %254 = OpFAdd %float %253 %float_0_5
+               OpStore %value %254
+        %255 = OpLoad %float %value
+        %256 = OpFMul %float %255 %float_0_5
+        %257 = OpFAdd %float %256 %float_0_5
+               OpStore %value %257
+        %258 = OpLoad %float %value
+        %259 = OpFMul %float %258 %float_0_5
+        %260 = OpFAdd %float %259 %float_0_5
+               OpStore %value %260
+        %261 = OpLoad %float %value
+        %262 = OpFMul %float %261 %float_0_5
+        %263 = OpFAdd %float %262 %float_0_5
+               OpStore %value %263
+        %264 = OpLoad %float %value
+        %265 = OpFMul %float %264 %float_0_5
+        %266 = OpFAdd %float %265 %float_0_5
+               OpStore %value %266
+        %267 = OpLoad %float %value
+        %268 = OpFMul %float %267 %float_0_5
+        %269 = OpFAdd %float %268 %float_0_5
+               OpStore %value %269
+        %270 = OpLoad %float %value
+        %271 = OpFMul %float %270 %float_0_5
+        %272 = OpFAdd %float %271 %float_0_5
+               OpStore %value %272
+        %273 = OpLoad %float %value
+        %274 = OpFMul %float %273 %float_0_5
+        %275 = OpFAdd %float %274 %float_0_5
+               OpStore %value %275
+        %276 = OpLoad %float %value
+        %277 = OpFMul %float %276 %float_0_5
+        %278 = OpFAdd %float %277 %float_0_5
+               OpStore %value %278
+        %279 = OpLoad %float %value
+        %280 = OpFMul %float %279 %float_0_5
+        %281 = OpFAdd %float %280 %float_0_5
+               OpStore %value %281
+        %282 = OpLoad %float %value
+        %283 = OpFMul %float %282 %float_0_5
+        %284 = OpFAdd %float %283 %float_0_5
+               OpStore %value %284
+        %285 = OpLoad %float %value
+        %286 = OpFMul %float %285 %float_0_5
+        %287 = OpFAdd %float %286 %float_0_5
+               OpStore %value %287
+        %288 = OpLoad %float %value
+        %289 = OpFMul %float %288 %float_0_5
+        %290 = OpFAdd %float %289 %float_0_5
+               OpStore %value %290
+        %291 = OpLoad %float %value
+        %292 = OpFMul %float %291 %float_0_5
+        %293 = OpFAdd %float %292 %float_0_5
+               OpStore %value %293
+        %303 = OpAccessChain %_ptr_PushConstant_mat4v4float %pc %int_0
+        %304 = OpLoad %mat4v4float %303
+        %306 = OpLoad %v4float %inPos
+        %307 = OpVectorShuffle %v3float %306 %306 0 1 2
+        %308 = OpLoad %float %value
+        %309 = OpCompositeExtract %float %307 0
+        %310 = OpCompositeExtract %float %307 1
+        %311 = OpCompositeExtract %float %307 2
+        %312 = OpCompositeConstruct %v4float %309 %310 %311 %308
+        %313 = OpMatrixTimesVector %v4float %304 %312
+               OpStore %pos %313
+        %315 = OpAccessChain %_ptr_Function_float %pos %uint_1
+        %316 = OpLoad %float %315
+        %318 = OpFMul %float %316 %float_1_25
+        %319 = OpAccessChain %_ptr_Function_float %pos %uint_3
+        %320 = OpLoad %float %319
+        %322 = OpFMul %float %320 %float_0_0625
+        %323 = OpFAdd %float %318 %322
+        %325 = OpAccessChain %_ptr_Function_float %pos %uint_0
+        %326 = OpLoad %float %325
+        %327 = OpFMul %float %326 %float_0_75
+        %328 = OpLoad %bool %k
+        %329 = OpSelect %float %328 %327 %323
+        %330 = OpAccessChain %_ptr_Function_float %pos %uint_0
+               OpStore %330 %329
+        %335 = OpLoad %v4float %pos
+        %337 = OpAccessChain %_ptr_Output_v4float %_ %int_0
+               OpStore %337 %335
+        %340 = OpLoad %v4float %inAttr
+               OpStore %vColor %340
+        %342 = OpLoad %v4float %inAttr
+               OpStore %vAttr %342
+               OpReturn
+               OpFunctionEnd
