@@ -54,6 +54,11 @@ static_assert(sizeof(((struct r300_r2vb_telemetry_counters *)0)->typed) /
 /* Record one plan classification.  Called at the admission-memo decision
  * point, once per cell; counts always, prints and retains under the gates
  * above. */
+/* Observation is armed when the per-event print gate or the retain
+ * directory is set; the route consults this to classify draws for
+ * telemetry when the route gate itself stays closed. */
+bool r300_r2vb_telemetry_observation_enabled(void);
+
 void r300_r2vb_telemetry_note(struct r300_context *r300,
                               const struct r300_r2vb_producer_plan *plan);
 
