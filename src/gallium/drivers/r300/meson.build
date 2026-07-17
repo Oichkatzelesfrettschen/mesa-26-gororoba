@@ -374,6 +374,28 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Admission-versus-CSO identity: the plan's throwaway measurement and the
+  # actual fragment-shader CSO precompile run the same program under the same
+  # flat-producer contract, on the plan's canonical baseline and on both
+  # rebuilt split halves, and the emitted backend resource vector must agree.
+  test(
+    'r300-r2vb-admission-cso-identity',
+    executable(
+      'r300_r2vb_admission_cso_identity_test',
+      files('compiler/tests/r300_r2vb_admission_cso_identity_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      # The real state vtable reaches r300_video.c, whose codec constructors
+      # resolve from the video auxiliary library.
+      link_with : [libr300, libgallium, libgalliumvl],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # Standing-route telemetry calibration: counters count per plan class, the
   # retention gate fails closed, an over-budget producer retains exactly one
   # content-hash file, a recurring shape deduplicates, and a structural

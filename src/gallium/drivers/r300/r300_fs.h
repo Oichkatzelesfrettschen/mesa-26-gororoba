@@ -148,6 +148,35 @@ r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_n
                               enum r300_fs_input_semantics input_semantics,
                               struct r300_fs_admission_cost *out_cost);
 
+/* Emitted-program snapshot of one FITS admission measurement.  The R300
+ * (non-r500) code block is a flat pure function of the input program --
+ * every field derives from the emitted instruction stream and none holds a
+ * pointer or address -- so the struct copy is a complete snapshot and two
+ * snapshots of the same program compare byte-equal.  The constant list is
+ * deep-copied because rc_constant_list owns heap storage the probe reset
+ * frees. */
+struct r300_fs_admission_program {
+   struct r300_fragment_program_code code;
+   struct rc_constant *constants;
+   unsigned num_constants;
+};
+
+/* Measure like r300_fs_measure_nir_admission and additionally snapshot the
+ * emitted program on a FITS verdict, for identity comparison against a CSO
+ * compile of the same NIR.  R300-class (non-r500) screens only.  The caller
+ * releases the snapshot with r300_fs_admission_program_release; a snapshot
+ * allocation failure reports R300_FS_ADMIT_REJECT like every other
+ * infrastructure failure in the measurement. */
+enum r300_fs_admission
+r300_fs_measure_nir_admission_program(struct r300_context *r300,
+                                      struct nir_shader *fs_nir,
+                                      unsigned *out_alu_len,
+                                      enum r300_fs_input_semantics input_semantics,
+                                      struct r300_fs_admission_cost *out_cost,
+                                      struct r300_fs_admission_program *out_program);
+
+void r300_fs_admission_program_release(struct r300_fs_admission_program *program);
+
 /* Create a fragment-shader CSO with an explicit input-delivery contract.  The
  * public create_fs_state pipe callback wraps this with
  * R300_FS_INPUT_INTERPOLATED; an R2VB re-staged producer passes

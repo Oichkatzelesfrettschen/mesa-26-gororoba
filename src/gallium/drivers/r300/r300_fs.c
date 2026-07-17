@@ -1758,16 +1758,20 @@ r300_fs_code_reset(struct r300_fragment_shader_code *shader)
  * unsupported shape) is a plain reject.  The probe compiles a clone (the body
  * clones internally) and never binds, so the caller's context state is
  * untouched and nothing reaches the CS. */
-enum r300_fs_admission
-r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_nir,
-                              unsigned *out_alu_len,
-                              enum r300_fs_input_semantics input_semantics,
-                              struct r300_fs_admission_cost *out_cost)
+static enum r300_fs_admission
+r300_fs_measure_nir_admission_core(struct r300_context *r300,
+                                   struct nir_shader *fs_nir,
+                                   unsigned *out_alu_len,
+                                   enum r300_fs_input_semantics input_semantics,
+                                   struct r300_fs_admission_cost *out_cost,
+                                   struct r300_fs_admission_program *out_program)
 {
     if (out_alu_len)
         *out_alu_len = 0;
     if (out_cost)
         memset(out_cost, 0, sizeof(*out_cost));
+    if (out_program)
+        memset(out_program, 0, sizeof(*out_program));
     if (!fs_nir)
         return R300_FS_ADMIT_REJECT;
 
@@ -1790,6 +1794,24 @@ r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_n
             out_cost->consts = probe->code.constants.Count;
         }
         verdict = R300_FS_ADMIT_FITS;
+        if (out_program && !r300->screen->caps.is_r500) {
+            /* Flat struct copy: r300_fragment_program_code holds no
+             * pointers, so the snapshot survives the probe reset below. */
+            out_program->code = probe->code.code.r300;
+            out_program->num_constants = probe->code.constants.Count;
+            if (out_program->num_constants) {
+                size_t bytes = out_program->num_constants *
+                               sizeof(struct rc_constant);
+                out_program->constants = MALLOC(bytes);
+                if (out_program->constants) {
+                    memcpy(out_program->constants,
+                           probe->code.constants.Constants, bytes);
+                } else {
+                    memset(out_program, 0, sizeof(*out_program));
+                    verdict = R300_FS_ADMIT_REJECT;
+                }
+            }
+        }
     } else if (probe->error &&
                strstr(probe->error, "Too many ALU instructions")) {
         verdict = R300_FS_ADMIT_OVER_ALU_BUDGET;
@@ -1800,6 +1822,36 @@ r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_n
     r300_fs_code_reset(probe);
     FREE(probe);
     return verdict;
+}
+
+enum r300_fs_admission
+r300_fs_measure_nir_admission(struct r300_context *r300, struct nir_shader *fs_nir,
+                              unsigned *out_alu_len,
+                              enum r300_fs_input_semantics input_semantics,
+                              struct r300_fs_admission_cost *out_cost)
+{
+    return r300_fs_measure_nir_admission_core(r300, fs_nir, out_alu_len,
+                                              input_semantics, out_cost, NULL);
+}
+
+enum r300_fs_admission
+r300_fs_measure_nir_admission_program(struct r300_context *r300,
+                                      struct nir_shader *fs_nir,
+                                      unsigned *out_alu_len,
+                                      enum r300_fs_input_semantics input_semantics,
+                                      struct r300_fs_admission_cost *out_cost,
+                                      struct r300_fs_admission_program *out_program)
+{
+    return r300_fs_measure_nir_admission_core(r300, fs_nir, out_alu_len,
+                                              input_semantics, out_cost,
+                                              out_program);
+}
+
+void
+r300_fs_admission_program_release(struct r300_fs_admission_program *program)
+{
+    FREE(program->constants);
+    memset(program, 0, sizeof(*program));
 }
 
 /* Translate a fragment shader, with the >64-ALU multipass partition as the
