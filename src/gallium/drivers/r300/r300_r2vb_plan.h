@@ -213,6 +213,21 @@ struct nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                                                    struct nir_shader *vs_nir,
                                                    gl_varying_slot target,
                                                    enum r300_r2vb_position_space space);
+
+/* Diagnostic typed-split gate value: exactly "1" opens; NULL, empty, and
+ * every other value keep the route closed.  Pure over the string so the
+ * calibration test drives every arm. */
+bool r300_r2vb_typed_split_gate_value(const char *value);
+
+/* Diagnostic typed-split route contract over a cached plan cell: NULL means
+ * the cell executes through the plan-driven split; otherwise the returned
+ * stable name is the decline reason the diagnostic token line prints.  The
+ * contract admits only the position cell (cv=0) of a READY SPLIT plan with a
+ * typed source, flat-vertex input semantics, a one-vec4 carry, and an owned
+ * candidate; SPLIT itself certifies both halves compiled under budget. */
+const char *
+r300_r2vb_typed_split_contract(const struct r300_r2vb_producer_plan *plan,
+                               bool allow_computed_varying);
 unsigned r300_r2vb_count_position_inputs(struct nir_shader *vs_nir);
 int r300_r2vb_first_computed_varying(struct nir_shader *vs_nir);
 

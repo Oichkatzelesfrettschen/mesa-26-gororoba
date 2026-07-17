@@ -3156,6 +3156,91 @@ static bool r300_r2vb_split_admitted(struct r300_context *r300,
  * on the process-wide divergence counter and prints under
  * R300_R2VB_PLAN_DEBUG=1; the memo stays authoritative and rendering
  * proceeds unchanged. */
+bool r300_r2vb_typed_split_gate_value(const char *value)
+{
+    return value && strcmp(value, "1") == 0;
+}
+
+/* Diagnostic typed-split gate (R300_R2VB_TYPED_SPLIT): the exact value 1
+ * opens the plan-driven typed route; unset, empty, and every other value
+ * keep classification and execution byte-identical to the gate-off path. */
+static bool r300_r2vb_typed_split_enabled(void)
+{
+    static int mode = -1;
+    if (mode < 0)
+        mode = r300_r2vb_typed_split_gate_value(
+                   getenv("R300_R2VB_TYPED_SPLIT"))
+                   ? 1
+                   : 0;
+    return mode == 1;
+}
+
+const char *
+r300_r2vb_typed_split_contract(const struct r300_r2vb_producer_plan *plan,
+                               bool allow_computed_varying)
+{
+    if (allow_computed_varying)
+        return "computed_varying_cell";
+    if (!plan)
+        return "plan_transient";
+    if (plan->status != R300_R2VB_PLAN_READY)
+        return "plan_not_ready";
+    if (plan->action != R300_R2VB_PLAN_SPLIT)
+        return "plan_not_split";
+    if (!plan->has_typed_source)
+        return "typed_source_absent";
+    if (plan->key.input_semantics != R300_FS_INPUT_R2VB_FLAT_VERTEX)
+        return "input_semantics";
+    if (plan->partition.total_comps == 0 || plan->partition.total_comps > 4)
+        return "carry_width";
+    if (!plan->candidate)
+        return "candidate_absent";
+    return NULL;
+}
+
+/* One diagnostic token line per gated typed-route decision, so a gallivm
+ * fallback is never mistaken for typed execution.  Prints whenever the typed
+ * gate is open, on the cold once-per-cell classification path. */
+static void
+r300_r2vb_typed_split_note(const struct r300_r2vb_producer_plan *plan,
+                           enum r300_r2vb_position_space space,
+                           const char *decline)
+{
+    static const char *const typed_names[] = { "none", "bool", "sint",
+                                               "uint" };
+    char carry_types[R300_MP_MAX_CARRY_COMPS + 1] = "-";
+    unsigned cut = 0, comps = 0;
+    if (plan && plan->action == R300_R2VB_PLAN_SPLIT) {
+        for (unsigned i = 0; i < plan->partition.num_bases; i++)
+            carry_types[i] =
+                plan->partition.base_type[i] == R300_MP_CARRY_FLOAT ? 'f'
+                : plan->partition.base_type[i] == R300_MP_CARRY_INT ? 'i'
+                                                                    : 'b';
+        carry_types[plan->partition.num_bases] = '\0';
+        cut = plan->partition.cut_index;
+        comps = plan->partition.total_comps;
+    }
+    fprintf(stderr,
+            "r2vb_typed_route gate=1 plan_status=%s plan_action=%s space=%s "
+            "typed_source=%s carry_types=%s carry_components=%u cut=%u "
+            "passA=%u/%u/%u passB=%u/%u/%u decision=%s decline_reason=%s\n",
+            !plan                                               ? "transient"
+            : plan->status == R300_R2VB_PLAN_READY              ? "ready"
+            : plan->status == R300_R2VB_PLAN_SEMANTIC_REJECT    ? "semantic_reject"
+            : plan->status == R300_R2VB_PLAN_POLICY_REJECT      ? "policy_reject"
+                                                                : "transient_failure",
+            plan ? r300_r2vb_plan_action_str(plan->action) : "-",
+            space == R300_R2VB_POSITION_WINDOW ? "window" : "clip",
+            plan ? typed_names[plan->typed_source_class] : "-", carry_types,
+            comps, cut, plan ? plan->pass_a_cost.alu : 0,
+            plan ? plan->pass_a_cost.temps : 0,
+            plan ? plan->pass_a_cost.consts : 0,
+            plan ? plan->pass_b_cost.alu : 0,
+            plan ? plan->pass_b_cost.temps : 0,
+            plan ? plan->pass_b_cost.consts : 0,
+            decline ? "decline" : "execute", decline ? decline : "none");
+}
+
 static void r300_r2vb_plan_shadow_check(struct r300_context *r300,
                                         bool allow_computed_varying,
                                         enum r300_r2vb_position_space space,
@@ -3174,8 +3259,16 @@ static void r300_r2vb_plan_shadow_check(struct r300_context *r300,
         effective = R300_R2VB_ADMIT_FITS;
         break;
     case R300_R2VB_PLAN_SPLIT:
-        effective = r300_r2vb_budget_escape_enabled() ? R300_R2VB_ADMIT_SPLIT
-                                                      : R300_R2VB_ADMIT_REJECT;
+        /* A SPLIT plan executes through the float escape gate or, for a cell
+         * the typed diagnostic contract admits, through the typed gate; the
+         * effective mapping mirrors both so the shadow comparison tracks the
+         * route the memo actually takes. */
+        effective = (r300_r2vb_budget_escape_enabled() ||
+                     (r300_r2vb_typed_split_enabled() &&
+                      !r300_r2vb_typed_split_contract(plan,
+                                                      allow_computed_varying)))
+                        ? R300_R2VB_ADMIT_SPLIT
+                        : R300_R2VB_ADMIT_REJECT;
         break;
     default:
         effective = R300_R2VB_ADMIT_REJECT;
@@ -3276,6 +3369,34 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
     return false;
 }
 
+/* Diagnostic typed-split admission: the cached plan is the sole authority --
+ * its split walk already proved the typed transport (carry range inside the
+ * FP24 window, consistent signedness, one-vec4 crossing set) and compiled
+ * both halves under the emit ceiling.  The verdict lands in the same per-VS
+ * memo byte the float route reads, so execution reaches the split arm
+ * through the established path, and the shadow check keeps auditing the
+ * memo against the plan.  A transient plan (allocation) is never memoized;
+ * the next request replans. */
+static bool r300_r2vb_typed_split_admit(struct r300_context *r300,
+                                        enum r300_r2vb_position_space space)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    unsigned space_i = space == R300_R2VB_POSITION_WINDOW ? 1u : 0u;
+    uint8_t *memo = &vs->r2vb_admission[0][space_i];
+    if (*memo)
+        return *memo != R300_R2VB_ADMIT_REJECT;
+
+    const struct r300_r2vb_producer_plan *plan =
+        r300_r2vb_producer_plan_get(r300, false, space);
+    const char *decline = r300_r2vb_typed_split_contract(plan, false);
+    r300_r2vb_typed_split_note(plan, space, decline);
+    if (!plan)
+        return false;
+    *memo = decline ? R300_R2VB_ADMIT_REJECT : R300_R2VB_ADMIT_SPLIT;
+    r300_r2vb_plan_shadow_check(r300, false, space, *memo);
+    return *memo != R300_R2VB_ADMIT_REJECT;
+}
+
 /* Classify the bound VS on a constant-folded clone.  A SPIR-V VS reaches the
  * driver with its UBO address arithmetic still literal (iadd/imul/ushr of
  * load_const values) and with ffma kept weak by the gallivm compiler options;
@@ -3305,6 +3426,12 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
     if (ok)
         ok = r300_r2vb_producer_fits_budget(r300, allow_computed_varying,
                                             r2vb_env_space());
+    /* The float whitelist rejects every typed producer before the budget
+     * oracle runs; the diagnostic typed gate re-asks the cached plan, whose
+     * split walk carries the typed transport admission (range, signedness,
+     * one-vec4 carry).  Gated off, the structural reject stands unchanged. */
+    else if (!allow_computed_varying && r300_r2vb_typed_split_enabled())
+        ok = r300_r2vb_typed_split_admit(r300, r2vb_env_space());
     return ok;
 }
 
@@ -4048,26 +4175,42 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
                                          struct pipe_resource *clip,
                                          uint32_t count, const float (*model)[4],
                                          unsigned num_in, const float *cols,
-                                         enum r300_r2vb_position_space space)
+                                         enum r300_r2vb_position_space space,
+                                         const struct r300_r2vb_producer_plan *plan)
 {
     /* Pass B carries num_in model attributes plus the carry attribute. */
     if (num_in + 1 > R300_R2VB_MAX_PRODUCER_INPUTS)
         return false;
 
-    nir_shader *pos = r300_r2vb_build_restaged_fs_nir(r300,
-                                                      r300_vs(r300)->state.ir.nir,
-                                                      VARYING_SLOT_POS, space);
-    if (pos == NULL)
-        return false;
-    r300_optimize_nir(pos, r300->screen);
-    struct r300_mp_partition part;
-    if (!r300_mp_find_vec4_cut(pos, &part)) {
+    struct r300_mp_partition local_part;
+    const struct r300_mp_partition *part;
+    nir_shader *pass_a, *pass_b;
+    if (plan) {
+        /* Plan-driven execution (the typed diagnostic route): the cached
+         * cell owns the canonical candidate NIR and the selected partition,
+         * and the pass builders clone their source internally, so the plan
+         * survives execution intact and the program that runs is the program
+         * the plan measured. */
+        part = &plan->partition;
+        pass_a = r300_mp_build_carry_pass_a(plan->candidate, part);
+        pass_b = r300_mp_build_pos_pass_b(plan->candidate, part, num_in);
+    } else {
+        nir_shader *pos =
+            r300_r2vb_build_restaged_fs_nir(r300,
+                                            r300_vs(r300)->state.ir.nir,
+                                            VARYING_SLOT_POS, space);
+        if (pos == NULL)
+            return false;
+        r300_optimize_nir(pos, r300->screen);
+        if (!r300_mp_find_vec4_cut(pos, &local_part)) {
+            ralloc_free(pos);
+            return false;
+        }
+        part = &local_part;
+        pass_a = r300_mp_build_carry_pass_a(pos, part);
+        pass_b = r300_mp_build_pos_pass_b(pos, part, num_in);
         ralloc_free(pos);
-        return false;
     }
-    nir_shader *pass_a = r300_mp_build_carry_pass_a(pos, &part);
-    nir_shader *pass_b = r300_mp_build_pos_pass_b(pos, &part, num_in);
-    ralloc_free(pos);
     if (!pass_a || !pass_b) {
         if (pass_a)
             ralloc_free(pass_a);
@@ -4087,7 +4230,7 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
         fprintf(stderr,
                 "r2vb_split_producer cut=%u carry_bases=%u carry_comps=%u "
                 "passA_alu=%u passB_alu=%u num_in=%u pass_b_attrs=%u count=%u\n",
-                part.cut_index, part.num_bases, part.total_comps, la, lb,
+                part->cut_index, part->num_bases, part->total_comps, la, lb,
                 num_in, num_in + 1, count);
     }
 
@@ -4226,14 +4369,27 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     if (restage) {
         /* An admitted budget-escape split delivers through the two-pass carry-BO
          * producer instead of a single over-budget FS.  Guarded by the spill1
-         * gate and the per-VS memo, so gated off the branch is never taken. */
-        if (r300_r2vb_budget_escape_enabled() &&
+         * gate (or, for a plan-admitted typed cell, the typed diagnostic gate)
+         * and the per-VS memo, so gated off the branch is never taken. */
+        if ((r300_r2vb_budget_escape_enabled() ||
+             r300_r2vb_typed_split_enabled()) &&
             r300_r2vb_producer_fits_budget(r300, false, space) &&
             r300_vs(r300)->r2vb_admission[0]
                           [space == R300_R2VB_POSITION_WINDOW ? 1 : 0] ==
-                R300_R2VB_ADMIT_SPLIT)
+                R300_R2VB_ADMIT_SPLIT) {
+            /* A typed cell executes from the cached plan; a float cell keeps
+             * the legacy rebuild (the contract declines it on
+             * typed_source_absent), so the spill1 path stays byte-identical. */
+            const struct r300_r2vb_producer_plan *plan = NULL;
+            if (r300_r2vb_typed_split_enabled()) {
+                const struct r300_r2vb_producer_plan *cell =
+                    r300_r2vb_producer_plan_get(r300, false, space);
+                if (cell && !r300_r2vb_typed_split_contract(cell, false))
+                    plan = cell;
+            }
             return r300_r2vb_run_split_producer(r300, clip, count, model, num_in,
-                                                cols, space);
+                                                cols, space, plan);
+        }
     }
     if (restage) {
         /* Derive the producer from the bound VS itself -- the general fragment-ALU
