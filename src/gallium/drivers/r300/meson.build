@@ -418,6 +418,33 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Retained-corpus census loader: replans every telemetry-retained producer
+  # blob (r2vb-vs-<blake3>.nir in the directory named by
+  # R300_R2VB_RETAINED_CORPUS) through r300_r2vb_plan_producer under both
+  # computed-varying keys and both position spaces, one census row per
+  # (specimen, cv, space).  Each file hash-verifies against its content-hash
+  # filename and decodes in a forked child, the corpus manifest's producer
+  # SHA must match this build (git_sha1.h), and without a corpus directory
+  # the run exits 77 so meson reports SKIP.
+  test(
+    'r300-r2vb-retained-corpus-census',
+    executable(
+      'r300_r2vb_retained_corpus_census',
+      [files('compiler/tests/r300_r2vb_retained_corpus_census.c'), sha1_h],
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      # r300_screen_init_nir_options pulls r300_screen.c.o, whose screen
+      # vtable reaches the g3dvl constructors, so the video auxiliary
+      # library joins the link exactly as in the telemetry test.
+      link_with : [libr300, libgallium, libgalliumvl],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # Diagnostic typed-split route calibration: the exact-value gate parser
   # admits only "1", and the route contract admits only the position cell of
   # a READY SPLIT plan with a typed source, flat-vertex semantics, a one-vec4
