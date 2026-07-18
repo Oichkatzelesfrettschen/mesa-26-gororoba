@@ -51,9 +51,36 @@ static_assert(sizeof(((struct r300_r2vb_telemetry_counters *)0)->typed) /
               R300_R2VB_TYPED_SOURCE_UINT + 1,
               "typed covers enum r300_r2vb_typed_source_class");
 
+/* Retention scope (R300_R2VB_TELEMETRY_RETAIN_SCOPE, exact values): the
+ * unset, empty, and every unrecognized value keep the established
+ * budget-only policy, so a typo can never widen retention.
+ *   budget      plans whose split, range, or budget machinery engaged
+ *   single      fitting SINGLE plans (the standing-route policy corpus)
+ *   structural  rejects whose cause is structural (control flow,
+ *               intrinsic set, I/O shape, backend)
+ *   all         every plan with an application NIR VS (research reads) */
+enum r300_r2vb_telemetry_retain_scope {
+    R300_R2VB_TELEMETRY_RETAIN_BUDGET = 0,
+    R300_R2VB_TELEMETRY_RETAIN_SINGLE,
+    R300_R2VB_TELEMETRY_RETAIN_STRUCTURAL,
+    R300_R2VB_TELEMETRY_RETAIN_ALL,
+};
+
+/* Pure over the string so the calibration test drives every arm. */
+enum r300_r2vb_telemetry_retain_scope
+r300_r2vb_telemetry_retain_scope_value(const char *value);
+
+/* Pure eligibility of one plan under one scope. */
+bool r300_r2vb_telemetry_retain_eligible_in_scope(
+    const struct r300_r2vb_producer_plan *plan,
+    enum r300_r2vb_telemetry_retain_scope scope);
+
 /* Record one plan classification.  Called at the admission-memo decision
  * point, once per cell; counts always, prints and retains under the gates
- * above. */
+ * above.  The event line carries the application VS content hash
+ * (vs_blake3=<64 hex>), computed once per shader and cached on the VS, so
+ * the census separates observation prevalence from shape diversity even
+ * when the shader is outside the retention scope. */
 /* Observation is armed when the per-event print gate or the retain
  * directory is set; the route consults this to classify draws for
  * telemetry when the route gate itself stays closed. */
@@ -61,6 +88,36 @@ bool r300_r2vb_telemetry_observation_enabled(void);
 
 void r300_r2vb_telemetry_note(struct r300_context *r300,
                               const struct r300_r2vb_producer_plan *plan);
+
+/* Dynamic workload weight, accumulated per candidate draw after the plan is
+ * cached -- no compiles, no serialization past the first hash: draws,
+ * vertices, instances, draw-size extrema, a topology bit mask, and the
+ * indexed-draw count, keyed by the VS content hash.  The teardown summary
+ * prints one workload line per key, turning cell incidence into the
+ * evidence a route-on policy needs (a six-slot producer amortizes its fixed
+ * route cost only above a measured vertex-count crossover). */
+struct r300_r2vb_workload_stats {
+    char action;             /* first letter: r/s/c/p (reject..split) */
+    uint64_t draws;
+    uint64_t vertices;
+    uint64_t instances;
+    uint32_t draw_min;
+    uint32_t draw_max;
+    uint32_t topology_mask;  /* bit per pipe primitive type */
+    uint64_t indexed_draws;
+};
+
+struct pipe_draw_info;
+struct pipe_draw_start_count_bias;
+void r300_r2vb_telemetry_draw(struct r300_context *r300,
+                              const struct r300_r2vb_producer_plan *plan,
+                              const struct pipe_draw_info *info,
+                              const struct pipe_draw_start_count_bias *draw);
+
+/* Stats snapshot by VS content hash for the calibration test;
+ * single-threaded reads only.  Returns false for an unseen hash. */
+bool r300_r2vb_telemetry_workload_stats(const char *hex,
+                                        struct r300_r2vb_workload_stats *out);
 
 /* Counter snapshot for the calibration test; single-threaded reads only.
  * Concurrent readers snapshot through r300_r2vb_telemetry_print_summary,
