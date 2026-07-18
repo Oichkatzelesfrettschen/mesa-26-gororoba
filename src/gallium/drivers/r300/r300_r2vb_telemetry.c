@@ -257,6 +257,14 @@ telemetry_retain(const char *dir, const struct nir_shader *vs_nir)
  * per-draw accounting never re-serializes.  Returns "-" when the shader is
  * unavailable or serialization fails. */
 static const char *
+telemetry_vs_hex(struct r300_context *r300);
+
+const char *r300_r2vb_telemetry_vs_content_hex(struct r300_context *r300)
+{
+    return telemetry_vs_hex(r300);
+}
+
+static const char *
 telemetry_vs_hex(struct r300_context *r300)
 {
     struct r300_vertex_shader *vs = r300_vs(r300);

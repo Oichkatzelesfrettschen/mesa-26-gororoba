@@ -86,6 +86,12 @@ bool r300_r2vb_telemetry_retain_eligible_in_scope(
  * telemetry when the route gate itself stays closed. */
 bool r300_r2vb_telemetry_observation_enabled(void);
 
+/* BLAKE3 content hex of the bound application VS, computed once and cached
+ * on the VS; "-" when the VS carries no serializable NIR.  The AUTO_SINGLE
+ * decision token prints this so a decision joins the retained corpus and the
+ * workload weights by the same key. */
+const char *r300_r2vb_telemetry_vs_content_hex(struct r300_context *r300);
+
 void r300_r2vb_telemetry_note(struct r300_context *r300,
                               const struct r300_r2vb_producer_plan *plan);
 

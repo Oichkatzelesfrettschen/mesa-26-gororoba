@@ -288,6 +288,8 @@ static bool r300_r2vb_clip_classify_enabled(void)
  * delivery submit; anything else (partial, mixed, unsafe w, unsupported
  * draw state) falls the whole draw back to gallivm.  No per-triangle
  * splitting -- geometric clipping is edge generation's job. */
+static bool r300_r2vb_auto_single_armed(uint32_t *floor_out);
+
 static bool r300_r2vb_clip_route_enabled(void)
 {
     static int cached = -1;
@@ -295,7 +297,10 @@ static bool r300_r2vb_clip_route_enabled(void)
         const char *e = getenv("R300_R2VB_CLIP_ROUTE");
         cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    return cached;
+    /* The armed AUTO_SINGLE canary delivers through the clip-route action;
+     * the producer path only runs for draws the canary admitted, so the
+     * implied action never engages outside the admission contract. */
+    return cached || r300_r2vb_auto_single_armed(NULL);
 }
 
 /* Edge-generation gate (R300_R2VB_CLIP_EDGE, requires R300_R2VB_CLIP_ROUTE):
@@ -3154,6 +3159,139 @@ bool r300_r2vb_typed_split_gate_value(const char *value)
     return value && strcmp(value, "1") == 0;
 }
 
+bool r300_r2vb_auto_single_gate_value(const char *value)
+{
+    return value && strcmp(value, "1") == 0;
+}
+
+/* Strict positive decimal uint32: bare digits only.  Sign, whitespace,
+ * trailing characters, overflow, and zero all fail, keeping the canary
+ * closed on any malformed floor. */
+bool r300_r2vb_auto_single_floor_value(const char *value, uint32_t *floor)
+{
+    if (!value || !*value)
+        return false;
+    uint64_t v = 0;
+    for (const char *p = value; *p; p++) {
+        if (*p < '0' || *p > '9')
+            return false;
+        v = v * 10 + (uint64_t)(*p - '0');
+        if (v > UINT32_MAX)
+            return false;
+    }
+    if (v == 0)
+        return false;
+    *floor = (uint32_t)v;
+    return true;
+}
+
+const char *
+r300_r2vb_auto_single_reason_str(enum r300_r2vb_auto_single_reason reason)
+{
+    static const char *names[R300_R2VB_AUTO_SINGLE_REASON_COUNT] = {
+        "ok",
+        "indexed",
+        "instanced",
+        "unsupported_primitive",
+        "count_ceiling",
+        "frontface",
+        "clip_planes",
+        "fs_external_constants",
+        "plan_not_ready",
+        "plan_not_single",
+        "typed_source",
+        "input_shape",
+        "delivery_cell",
+        "below_vertex_floor",
+    };
+    return reason < R300_R2VB_AUTO_SINGLE_REASON_COUNT ? names[reason]
+                                                       : "unknown";
+}
+
+/* One delivery cell of the plain route: READY SINGLE untyped one-input. */
+static bool
+r2vb_auto_single_cell_ok(const struct r300_r2vb_producer_plan *plan,
+                         enum r300_r2vb_auto_single_reason *reason)
+{
+    if (!plan || plan->status != R300_R2VB_PLAN_READY) {
+        *reason = R300_R2VB_AUTO_SINGLE_PLAN_NOT_READY;
+        return false;
+    }
+    if (plan->action != R300_R2VB_PLAN_SINGLE) {
+        *reason = R300_R2VB_AUTO_SINGLE_PLAN_NOT_SINGLE;
+        return false;
+    }
+    if (plan->has_typed_source) {
+        *reason = R300_R2VB_AUTO_SINGLE_TYPED_SOURCE;
+        return false;
+    }
+    if (plan->num_position_inputs != 1) {
+        *reason = R300_R2VB_AUTO_SINGLE_INPUT_SHAPE;
+        return false;
+    }
+    return true;
+}
+
+enum r300_r2vb_auto_single_reason
+r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
+                             const struct r300_r2vb_producer_plan *window_plan,
+                             const struct r300_r2vb_auto_single_draw *d,
+                             uint32_t floor)
+{
+    /* Route-support shape first: the clip-route delivery acts on a plain
+     * whole-triangle list only. */
+    if (d->index_size != 0)
+        return R300_R2VB_AUTO_SINGLE_INDEXED;
+    if (d->instance_count != 1)
+        return R300_R2VB_AUTO_SINGLE_INSTANCED;
+    if (d->mode != MESA_PRIM_TRIANGLES || d->count % 3 != 0)
+        return R300_R2VB_AUTO_SINGLE_UNSUPPORTED_PRIMITIVE;
+    /* VAP_VF_MAX_VTX_INDX is 16-bit, so the re-ingest tops out below 2^16. */
+    if (d->count == 0 || d->count >= 65536)
+        return R300_R2VB_AUTO_SINGLE_COUNT_CEILING;
+    if (d->fs_reads_face)
+        return R300_R2VB_AUTO_SINGLE_FRONTFACE;
+    if (d->clip_planes_enabled)
+        return R300_R2VB_AUTO_SINGLE_CLIP_PLANES;
+    /* The producer pass overwrites FS constant file 0. */
+    if (d->fs_reads_external_constants)
+        return R300_R2VB_AUTO_SINGLE_FS_EXTERNAL_CONSTANTS;
+    /* Delivery cells of the plain route: cv=0 clip classifies, cv=0 window
+     * delivers on accept.  A window-cell failure past a good clip cell is
+     * the delivery-cell decline. */
+    enum r300_r2vb_auto_single_reason reason;
+    if (!r2vb_auto_single_cell_ok(clip_plan, &reason))
+        return reason;
+    if (!r2vb_auto_single_cell_ok(window_plan, &reason))
+        return R300_R2VB_AUTO_SINGLE_DELIVERY_CELL;
+    /* The floor separates the amortizing large-draw class from the tiny-draw
+     * tail that gallivm serves better; instance_count == 1 above, so count
+     * is the submitted vertex total. */
+    if (d->count < floor)
+        return R300_R2VB_AUTO_SINGLE_BELOW_VERTEX_FLOOR;
+    return R300_R2VB_AUTO_SINGLE_OK;
+}
+
+/* Canary arming (both gates cached once): exact "1" plus a valid floor. */
+static bool r300_r2vb_auto_single_armed(uint32_t *floor_out)
+{
+    static int armed = -1;
+    static uint32_t floor;
+    if (armed < 0) {
+        uint32_t f = 0;
+        armed = (r300_r2vb_auto_single_gate_value(
+                     getenv("R300_R2VB_AUTO_SINGLE")) &&
+                 r300_r2vb_auto_single_floor_value(
+                     getenv("R300_R2VB_AUTO_SINGLE_MIN_VERTICES"), &f))
+                    ? 1
+                    : 0;
+        floor = f;
+    }
+    if (floor_out)
+        *floor_out = floor;
+    return armed == 1;
+}
+
 /* Diagnostic typed-split gate (R300_R2VB_TYPED_SPLIT): the exact value 1
  * opens the plan-driven typed route; unset, empty, and every other value
  * keep classification and execution byte-identical to the gate-off path. */
@@ -3727,10 +3865,66 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_MVP_EXEC");
         gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    if (!gate)
+    uint32_t auto_floor = 0;
+    bool auto_armed = r300_r2vb_auto_single_armed(&auto_floor);
+    if (!gate && !auto_armed)
         return false;
     if (r300_r2vb_classify_draw(r300, info, draw) != R2VB_ROUTE_CANDIDATE)
         return false;
+    /* AUTO_SINGLE canary: the pure policy decides, one token per decision,
+     * and the manual gates keep their behavior when the canary declines
+     * (both armed together lets the manual battery drive the canary image). */
+    if (auto_armed) {
+        struct r300_vertex_shader *avs = r300_vs(r300);
+        if (!avs || avs->state.type != PIPE_SHADER_IR_NIR ||
+            !avs->state.ir.nir)
+            return false;
+        const struct r300_rs_state *rs =
+            (const struct r300_rs_state *)r300->rs_state.state;
+        const struct r300_fragment_shader *afs = r300_fs(r300);
+        bool fs_ext = false;
+        if (afs && afs->shader) {
+            const struct rc_constant_list *cl = &afs->shader->code.constants;
+            for (unsigned i = 0; i < cl->Count; i++)
+                if (cl->Constants[i].Type == RC_CONSTANT_EXTERNAL)
+                    fs_ext = true;
+        }
+        struct r300_r2vb_auto_single_draw d = {
+            .mode = info->mode,
+            .count = draw->count,
+            .instance_count = info->instance_count,
+            .index_size = info->index_size,
+            .fs_reads_face = afs && afs->shader &&
+                             afs->shader->inputs.face != ATTR_UNUSED,
+            .clip_planes_enabled = rs && rs->rs.clip_plane_enable != 0,
+            .fs_reads_external_constants = fs_ext,
+        };
+        const struct r300_r2vb_producer_plan *cp =
+            r300_r2vb_producer_plan_get(r300, false, R300_R2VB_POSITION_CLIP);
+        const struct r300_r2vb_producer_plan *wp =
+            r300_r2vb_producer_plan_get(r300, false,
+                                        R300_R2VB_POSITION_WINDOW);
+        enum r300_r2vb_auto_single_reason reason =
+            r300_r2vb_auto_single_policy(cp, wp, &d, auto_floor);
+        fprintf(stderr,
+                "r2vb_auto_single gate=1 hash=%s submitted_vertices=%" PRIu64
+                " threshold=%u topology=%u indexed=%u"
+                " plan_clip=%s/%u/%u/%u plan_window=%s/%u/%u/%u"
+                " decision=%s reason=%s\n",
+                r300_r2vb_telemetry_vs_content_hex(r300),
+                (uint64_t)draw->count * info->instance_count, auto_floor,
+                info->mode, info->index_size ? 1 : 0,
+                cp ? r300_r2vb_plan_action_str(cp->action) : "-",
+                cp ? cp->baseline.alu : 0, cp ? cp->baseline.temps : 0,
+                cp ? cp->baseline.consts : 0,
+                wp ? r300_r2vb_plan_action_str(wp->action) : "-",
+                wp ? wp->baseline.alu : 0, wp ? wp->baseline.temps : 0,
+                wp ? wp->baseline.consts : 0,
+                reason == R300_R2VB_AUTO_SINGLE_OK ? "execute" : "decline",
+                r300_r2vb_auto_single_reason_str(reason));
+        if (!gate)
+            return reason == R300_R2VB_AUTO_SINGLE_OK;
+    }
     /* The re-staging route (R300_R2VB_RESTAGE) derives the producer from the VS,
      * so it runs any fragment-aluable straight-line VS; the hand-built and
      * externals producers only express the exact MVP shape. */
@@ -5036,6 +5230,10 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_RESTAGE");
         restage = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
+    /* The canary admits only VS-derived producers, so it runs the restaged
+     * builder; the hand-built MVP and externals forms stay manual-gate. */
+    if (r300_r2vb_auto_single_armed(NULL))
+        restage = 1;
     /* The classification oracle and the clip-route action both need the raw
      * homogeneous result: force the clip-space producer regardless of the
      * divide gate.  The route's accept action re-runs the producer in window
