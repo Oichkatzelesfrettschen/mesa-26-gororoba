@@ -305,6 +305,32 @@ enum r300_r2vb_auto_single_reason {
     R300_R2VB_AUTO_SINGLE_REASON_COUNT,
 };
 
+/* Producer slot-grid layout: the slot-pixel stream maps slot s to raster
+ * center ((s % width) + 0.5, (s / width) + 0.5) and to linear BO byte
+ * (s * 16).  pitch_pixels == width is the load-bearing invariant: a
+ * pitch-tight row makes the two mappings agree, so the producer rasterizes
+ * in two dimensions while the re-ingest VAP reads the first count FP32x4
+ * records as a flat vertex array with no gather or copy.  Grid disabled or
+ * count <= 4096 keeps the proven one-row layout byte-for-byte; above 4096
+ * the grid uses width = pitch = 2048 (inside the RS482 tiled render-width
+ * ceiling) and height = ceil(count / 2048). */
+struct r300_r2vb_slot_layout {
+    uint32_t count;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch_pixels;
+    uint64_t storage_slots;
+    uint64_t storage_bytes;
+};
+
+/* Pure over (count, grid_enabled); fails on count == 0, count >= 65536
+ * (the 16-bit re-ingest index ceiling), and -- grid off -- count > 4096. */
+bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
+                                struct r300_r2vb_slot_layout *out);
+
+/* Slot-grid gate value (R300_R2VB_SLOT_GRID, exact "1"); pure parser. */
+bool r300_r2vb_slot_grid_gate_value(const char *value);
+
 /* Gate and floor parsers, pure over the string so the calibration test
  * drives every arm without process environment state. */
 bool r300_r2vb_auto_single_gate_value(const char *value);
