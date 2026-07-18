@@ -331,6 +331,41 @@ bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
 /* Slot-grid gate value (R300_R2VB_SLOT_GRID, exact "1"); pure parser. */
 bool r300_r2vb_slot_grid_gate_value(const char *value);
 
+/* BO-fetched producer vertex streams: stream 0 is the slot-position BO
+ * (FP32x4, stride 16, offset 0) and stream 1 is the application model
+ * attribute fetched from its own buffer, so the producer draw carries no
+ * count-scaled immediate payload.  The load-bearing invariant is the VAP
+ * tuple: the summed fetch dwords equal the producer VAP_VTX_SIZE and the
+ * declared PSC input tuple (the GA front-end stalls on a mismatch).  The
+ * first contract is deliberately narrow: one R32G32B32A32_FLOAT model
+ * input with a dword-multiple stride; widening runs one format family at
+ * a time against silicon. */
+struct r300_r2vb_producer_stream {
+    uint32_t offset_bytes;   /* within the stream's BO */
+    uint32_t stride_dwords;
+    uint32_t size_dwords;    /* fetched per vertex */
+};
+
+struct r300_r2vb_producer_streams {
+    unsigned num;
+    struct r300_r2vb_producer_stream stream[2];
+    uint32_t fetch_dwords;   /* == producer VAP_VTX_SIZE */
+};
+
+/* Pure over the model element facts; fails on a format outside the first
+ * contract, a stride that is zero or not a dword multiple, or offset
+ * arithmetic that overflows uint32.  start is the draw's first vertex:
+ * the model stream begins at buffer_offset + src_offset + start * stride
+ * while the slot stream always begins at slot zero. */
+bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
+                                     uint32_t src_offset,
+                                     uint32_t src_stride_bytes,
+                                     enum pipe_format format, uint32_t start,
+                                     struct r300_r2vb_producer_streams *out);
+
+/* Slot-fetch gate value (R300_R2VB_SLOT_FETCH, exact "1"); pure parser. */
+bool r300_r2vb_slot_fetch_gate_value(const char *value);
+
 /* Gate and floor parsers, pure over the string so the calibration test
  * drives every arm without process environment state. */
 bool r300_r2vb_auto_single_gate_value(const char *value);
