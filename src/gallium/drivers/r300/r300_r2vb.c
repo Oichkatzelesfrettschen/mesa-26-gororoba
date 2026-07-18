@@ -3246,8 +3246,14 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
         return R300_R2VB_AUTO_SINGLE_INSTANCED;
     if (d->mode != MESA_PRIM_TRIANGLES || d->count % 3 != 0)
         return R300_R2VB_AUTO_SINGLE_UNSUPPORTED_PRIMITIVE;
-    /* VAP_VF_MAX_VTX_INDX is 16-bit, so the re-ingest tops out below 2^16. */
-    if (d->count == 0 || d->count >= 65536)
+    /* The producer's slot-pixel stream renders one point per output slot on
+     * a single row (r300_r2vb_get_slot_pos_bo), so a deliverable draw tops
+     * out at the producer's 4096-slot ceiling -- far below the 16-bit
+     * re-ingest index limit.  An admitted count past this ceiling would
+     * decline inside the producer and fall back to gallivm after the
+     * decision token already read "execute", so the policy holds the real
+     * ceiling; raising it is the producer's 2D slot-layout reshape. */
+    if (d->count == 0 || d->count > 4096)
         return R300_R2VB_AUTO_SINGLE_COUNT_CEILING;
     if (d->fs_reads_face)
         return R300_R2VB_AUTO_SINGLE_FRONTFACE;

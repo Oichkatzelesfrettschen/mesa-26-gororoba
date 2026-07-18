@@ -149,11 +149,20 @@ check_policy_matrix(void)
    struct r300_r2vb_producer_plan wp = single_cell(R300_R2VB_POSITION_WINDOW);
    struct r300_r2vb_auto_single_draw d = census_draw();
 
-   check_policy(&cp, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_OK,
-                "census draw at floor 16384");
-   check_policy(&cp, &wp, &d, 30000,
+   /* The census-dominant 21,516-vertex draw sits past the producer's
+    * single-row slot ceiling: the policy declines it truthfully instead of
+    * letting the producer fall back after an "execute" token (RS482
+    * observation, glmark2 build scene). */
+   check_policy(&cp, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_COUNT_CEILING,
+                "census draw exceeds the producer slot ceiling");
+
+   struct r300_r2vb_auto_single_draw fits = census_draw();
+   fits.count = 4095;
+   check_policy(&cp, &wp, &fits, 1024, R300_R2VB_AUTO_SINGLE_OK,
+                "ceiling-sized draw above a low floor");
+   check_policy(&cp, &wp, &fits, 8192,
                 R300_R2VB_AUTO_SINGLE_BELOW_VERTEX_FLOOR,
-                "census draw under a higher floor");
+                "ceiling-sized draw under a higher floor");
 
    struct r300_r2vb_auto_single_draw quad = census_draw();
    quad.mode = MESA_PRIM_TRIANGLE_FAN;
@@ -180,49 +189,49 @@ check_policy_matrix(void)
    check_policy(&cp, &wp, &big, 16384, R300_R2VB_AUTO_SINGLE_COUNT_CEILING,
                 "count past the 16-bit re-ingest ceiling");
 
-   struct r300_r2vb_auto_single_draw indexed = census_draw();
+   struct r300_r2vb_auto_single_draw indexed = fits;
    indexed.index_size = 2;
-   check_policy(&cp, &wp, &indexed, 16384, R300_R2VB_AUTO_SINGLE_INDEXED,
+   check_policy(&cp, &wp, &indexed, 1024, R300_R2VB_AUTO_SINGLE_INDEXED,
                 "indexed draw");
 
-   struct r300_r2vb_auto_single_draw instanced = census_draw();
+   struct r300_r2vb_auto_single_draw instanced = fits;
    instanced.instance_count = 2;
-   check_policy(&cp, &wp, &instanced, 16384,
+   check_policy(&cp, &wp, &instanced, 1024,
                 R300_R2VB_AUTO_SINGLE_INSTANCED, "instanced draw");
 
-   struct r300_r2vb_auto_single_draw face = census_draw();
+   struct r300_r2vb_auto_single_draw face = fits;
    face.fs_reads_face = true;
-   check_policy(&cp, &wp, &face, 16384, R300_R2VB_AUTO_SINGLE_FRONTFACE,
+   check_policy(&cp, &wp, &face, 1024, R300_R2VB_AUTO_SINGLE_FRONTFACE,
                 "gl_FrontFacing consumer");
 
-   struct r300_r2vb_auto_single_draw planes = census_draw();
+   struct r300_r2vb_auto_single_draw planes = fits;
    planes.clip_planes_enabled = true;
-   check_policy(&cp, &wp, &planes, 16384, R300_R2VB_AUTO_SINGLE_CLIP_PLANES,
+   check_policy(&cp, &wp, &planes, 1024, R300_R2VB_AUTO_SINGLE_CLIP_PLANES,
                 "user clip planes");
 
-   struct r300_r2vb_auto_single_draw ext = census_draw();
+   struct r300_r2vb_auto_single_draw ext = fits;
    ext.fs_reads_external_constants = true;
-   check_policy(&cp, &wp, &ext, 16384,
+   check_policy(&cp, &wp, &ext, 1024,
                 R300_R2VB_AUTO_SINGLE_FS_EXTERNAL_CONSTANTS,
                 "FS external constants");
 
-   check_policy(NULL, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_PLAN_NOT_READY,
+   check_policy(NULL, &wp, &fits, 1024, R300_R2VB_AUTO_SINGLE_PLAN_NOT_READY,
                 "missing clip plan");
 
    struct r300_r2vb_producer_plan split = cp;
    split.action = R300_R2VB_PLAN_SPLIT;
-   check_policy(&split, &wp, &d, 16384,
+   check_policy(&split, &wp, &fits, 1024,
                 R300_R2VB_AUTO_SINGLE_PLAN_NOT_SINGLE, "SPLIT clip plan");
 
    struct r300_r2vb_producer_plan typed = cp;
    typed.has_typed_source = true;
    typed.typed_source_class = R300_R2VB_TYPED_SOURCE_SINT;
-   check_policy(&typed, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_TYPED_SOURCE,
+   check_policy(&typed, &wp, &fits, 1024, R300_R2VB_AUTO_SINGLE_TYPED_SOURCE,
                 "typed clip plan");
 
    struct r300_r2vb_producer_plan wide = cp;
    wide.num_position_inputs = 2;
-   check_policy(&wide, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_INPUT_SHAPE,
+   check_policy(&wide, &wp, &fits, 1024, R300_R2VB_AUTO_SINGLE_INPUT_SHAPE,
                 "two-input clip plan");
 
    /* Every window-cell failure reads as the delivery-cell decline: the clip
@@ -230,9 +239,9 @@ check_policy_matrix(void)
    struct r300_r2vb_producer_plan wrej = wp;
    wrej.action = R300_R2VB_PLAN_REJECT;
    wrej.status = R300_R2VB_PLAN_SEMANTIC_REJECT;
-   check_policy(&cp, &wrej, &d, 16384, R300_R2VB_AUTO_SINGLE_DELIVERY_CELL,
+   check_policy(&cp, &wrej, &fits, 1024, R300_R2VB_AUTO_SINGLE_DELIVERY_CELL,
                 "rejected window cell");
-   check_policy(&cp, NULL, &d, 16384, R300_R2VB_AUTO_SINGLE_DELIVERY_CELL,
+   check_policy(&cp, NULL, &fits, 1024, R300_R2VB_AUTO_SINGLE_DELIVERY_CELL,
                 "missing window plan");
 }
 
@@ -278,10 +287,11 @@ check_live_plans(void)
          "live: window plan is READY SINGLE");
    if (cok && wok) {
       struct r300_r2vb_auto_single_draw d = census_draw();
-      check_policy(&cp, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_OK,
-                   "live plans execute the census draw");
+      d.count = 4095;
+      check_policy(&cp, &wp, &d, 1024, R300_R2VB_AUTO_SINGLE_OK,
+                   "live plans execute a ceiling-sized draw");
       d.count = 300;
-      check_policy(&cp, &wp, &d, 16384,
+      check_policy(&cp, &wp, &d, 1024,
                    R300_R2VB_AUTO_SINGLE_BELOW_VERTEX_FLOOR,
                    "live plans hold the floor on a small draw");
    }
