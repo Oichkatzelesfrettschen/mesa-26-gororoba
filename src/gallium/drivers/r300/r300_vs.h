@@ -61,6 +61,12 @@ struct r300_vertex_shader {
      * 3 = split admitted. */
     uint8_t r2vb_admission[2][2];
 
+    /* BLAKE3 of the serialized application NIR as lowercase hex, computed
+     * on the first telemetry event for this shader ([0] == 0 until then),
+     * so per-draw workload accounting keys on content without
+     * re-serializing. */
+    char r2vb_content_hex[65];
+
     /* R2VB producer plan cache, same [allow_computed_varying][position_space]
      * key as the memo; each cached plan carries its full r300_r2vb_plan_key
      * (the window producer bakes viewport scale/translate as immediates,

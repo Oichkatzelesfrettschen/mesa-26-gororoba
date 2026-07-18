@@ -16,7 +16,9 @@
 #include "nir.h"
 #include "nir_serialize.h"
 #include "util/blob.h"
+#include "util/hash_table.h"
 #include "util/mesa-blake3.h"
+#include "util/simple_mtx.h"
 #include "util/u_atomic.h"
 
 #include "r300_context.h"
@@ -52,13 +54,69 @@ telemetry_retain_dir(void)
     return (dir && dir[0]) ? dir : NULL;
 }
 
-/* Retention selects the plans whose budget, split, or typed-range machinery
- * engaged -- the shapes the compaction mining needs.  A SINGLE plan fits as
- * is, and a reject whose cause is structural (control flow, intrinsic set,
- * I/O shape, backend, allocation) carries no budget signal. */
-static bool
-telemetry_retain_eligible(const struct r300_r2vb_producer_plan *plan)
+enum r300_r2vb_telemetry_retain_scope
+r300_r2vb_telemetry_retain_scope_value(const char *value)
 {
+    if (!value)
+        return R300_R2VB_TELEMETRY_RETAIN_BUDGET;
+    if (strcmp(value, "single") == 0)
+        return R300_R2VB_TELEMETRY_RETAIN_SINGLE;
+    if (strcmp(value, "structural") == 0)
+        return R300_R2VB_TELEMETRY_RETAIN_STRUCTURAL;
+    if (strcmp(value, "all") == 0)
+        return R300_R2VB_TELEMETRY_RETAIN_ALL;
+    /* budget, unset, empty, and every unrecognized value keep the
+     * established budget-only policy: a typo can never widen retention. */
+    return R300_R2VB_TELEMETRY_RETAIN_BUDGET;
+}
+
+static enum r300_r2vb_telemetry_retain_scope
+telemetry_retain_scope(void)
+{
+    static int scope = -1;
+    if (scope < 0)
+        scope = (int)r300_r2vb_telemetry_retain_scope_value(
+            getenv("R300_R2VB_TELEMETRY_RETAIN_SCOPE"));
+    return (enum r300_r2vb_telemetry_retain_scope)scope;
+}
+
+/* A structural reject's cause is a property of the shader's shape rather
+ * than any budget: control flow, the intrinsic set, I/O shape, or a
+ * non-budget backend rejection. */
+static bool
+telemetry_reject_is_structural(const struct r300_r2vb_producer_plan *plan)
+{
+    switch (plan->primary_reason) {
+    case R300_R2VB_PLAN_CONTROL_FLOW:
+    case R300_R2VB_PLAN_INTRINSIC:
+    case R300_R2VB_PLAN_IO_SHAPE:
+    case R300_R2VB_PLAN_BACKEND:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool
+r300_r2vb_telemetry_retain_eligible_in_scope(
+    const struct r300_r2vb_producer_plan *plan,
+    enum r300_r2vb_telemetry_retain_scope scope)
+{
+    switch (scope) {
+    case R300_R2VB_TELEMETRY_RETAIN_SINGLE:
+        return plan->action == R300_R2VB_PLAN_SINGLE;
+    case R300_R2VB_TELEMETRY_RETAIN_STRUCTURAL:
+        return plan->action == R300_R2VB_PLAN_REJECT &&
+               telemetry_reject_is_structural(plan);
+    case R300_R2VB_TELEMETRY_RETAIN_ALL:
+        return true;
+    case R300_R2VB_TELEMETRY_RETAIN_BUDGET:
+        break;
+    }
+    /* Budget scope: the plans whose split, range, or budget machinery
+     * engaged -- the shapes the compaction mining needs.  A SINGLE plan
+     * fits as is, and a structural or allocation reject carries no budget
+     * signal. */
     if (plan->action == R300_R2VB_PLAN_SPLIT)
         return true;
     if (plan->action != R300_R2VB_PLAN_REJECT)
@@ -74,6 +132,13 @@ telemetry_retain_eligible(const struct r300_r2vb_producer_plan *plan)
     default:
         return true;
     }
+}
+
+static bool
+telemetry_retain_eligible(const struct r300_r2vb_producer_plan *plan)
+{
+    return r300_r2vb_telemetry_retain_eligible_in_scope(
+        plan, telemetry_retain_scope());
 }
 
 /* Compare a published file byte-for-byte against the serialized blob. */
@@ -187,6 +252,47 @@ telemetry_retain(const char *dir, const struct nir_shader *vs_nir)
     }
 }
 
+/* Content hash of the bound application VS as lowercase hex, computed once
+ * per shader (one nir_serialize on the first event) and cached on the VS so
+ * per-draw accounting never re-serializes.  Returns "-" when the shader is
+ * unavailable or serialization fails. */
+static const char *
+telemetry_vs_hex(struct r300_context *r300)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
+        return "-";
+    if (vs->r2vb_content_hex[0])
+        return vs->r2vb_content_hex;
+
+    struct blob blob;
+    blob_init(&blob);
+    nir_serialize(&blob, (nir_shader *)vs->state.ir.nir, false);
+    if (blob.out_of_memory) {
+        blob_finish(&blob);
+        return "-";
+    }
+    blake3_hash hash;
+    _mesa_blake3_compute(blob.data, blob.size, hash);
+    blob_finish(&blob);
+    static_assert(sizeof(vs->r2vb_content_hex) >= BLAKE3_HEX_LEN,
+                  "r2vb_content_hex holds a full BLAKE3 hex string");
+    _mesa_blake3_format(vs->r2vb_content_hex, hash);
+    return vs->r2vb_content_hex;
+}
+
+/* Dynamic workload weight per VS content hash: contexts share the table
+ * (like the counters), a mutex guards it, and the teardown summary flushes
+ * one line per entry.  The table's keys are the entries' own hex copies. */
+struct telemetry_workload_entry {
+    char hex[65];
+    char action;
+    struct r300_r2vb_workload_stats stats;
+};
+
+static simple_mtx_t workload_mtx = SIMPLE_MTX_INITIALIZER;
+static struct hash_table *workload_table;
+
 void
 r300_r2vb_telemetry_note(struct r300_context *r300,
                          const struct r300_r2vb_producer_plan *plan)
@@ -203,7 +309,7 @@ r300_r2vb_telemetry_note(struct r300_context *r300,
         fprintf(stderr,
                 "r2vb_telemetry action=%s primary=%s mask=0x%" PRIx64
                 " typed=%d inputs=%u space=%s cv=%d baseline=%u/%u/%u "
-                "passA=%u/%u/%u passB=%u/%u/%u\n",
+                "passA=%u/%u/%u passB=%u/%u/%u vs_blake3=%s\n",
                 r300_r2vb_plan_action_str(plan->action),
                 r300_r2vb_plan_reason_str(plan->primary_reason),
                 plan->observed_reason_mask, plan->has_typed_source,
@@ -215,7 +321,7 @@ r300_r2vb_telemetry_note(struct r300_context *r300,
                 plan->baseline.consts, plan->pass_a_cost.alu,
                 plan->pass_a_cost.temps, plan->pass_a_cost.consts,
                 plan->pass_b_cost.alu, plan->pass_b_cost.temps,
-                plan->pass_b_cost.consts);
+                plan->pass_b_cost.consts, telemetry_vs_hex(r300));
     }
 
     const char *dir = telemetry_retain_dir();
@@ -224,6 +330,71 @@ r300_r2vb_telemetry_note(struct r300_context *r300,
         if (vs && vs->state.type == PIPE_SHADER_IR_NIR && vs->state.ir.nir)
             telemetry_retain(dir, vs->state.ir.nir);
     }
+}
+
+void
+r300_r2vb_telemetry_draw(struct r300_context *r300,
+                         const struct r300_r2vb_producer_plan *plan,
+                         const struct pipe_draw_info *info,
+                         const struct pipe_draw_start_count_bias *draw)
+{
+    const char *hex = telemetry_vs_hex(r300);
+    if (hex[0] == '-')
+        return;
+
+    simple_mtx_lock(&workload_mtx);
+    if (!workload_table)
+        workload_table = _mesa_hash_table_create(NULL, _mesa_hash_string,
+                                                 _mesa_key_string_equal);
+    struct telemetry_workload_entry *e = NULL;
+    if (workload_table) {
+        struct hash_entry *he =
+            _mesa_hash_table_search(workload_table, hex);
+        if (he) {
+            e = he->data;
+        } else {
+            e = calloc(1, sizeof(*e));
+            if (e) {
+                memcpy(e->hex, hex, sizeof(e->hex));
+                e->action = r300_r2vb_plan_action_str(plan->action)[0];
+                e->stats.action = e->action;
+                e->stats.draw_min = UINT32_MAX;
+                _mesa_hash_table_insert(workload_table, e->hex, e);
+            }
+        }
+    }
+    if (e) {
+        e->stats.draws++;
+        e->stats.vertices += (uint64_t)draw->count * info->instance_count;
+        e->stats.instances += info->instance_count;
+        if (draw->count < e->stats.draw_min)
+            e->stats.draw_min = draw->count;
+        if (draw->count > e->stats.draw_max)
+            e->stats.draw_max = draw->count;
+        if (info->mode < 32)
+            e->stats.topology_mask |= 1u << info->mode;
+        if (info->index_size)
+            e->stats.indexed_draws++;
+    }
+    simple_mtx_unlock(&workload_mtx);
+}
+
+bool
+r300_r2vb_telemetry_workload_stats(const char *hex,
+                                   struct r300_r2vb_workload_stats *out)
+{
+    bool found = false;
+    simple_mtx_lock(&workload_mtx);
+    if (workload_table) {
+        struct hash_entry *he =
+            _mesa_hash_table_search(workload_table, hex);
+        if (he) {
+            *out = ((struct telemetry_workload_entry *)he->data)->stats;
+            found = true;
+        }
+    }
+    simple_mtx_unlock(&workload_mtx);
+    return found;
 }
 
 bool
@@ -302,4 +473,23 @@ r300_r2vb_telemetry_print_summary(void)
         fprintf(stderr, " retained=%u retain_failures=%u", retained,
                 retain_failures);
     fprintf(stderr, "\n");
+
+    /* One workload line per VS content hash: the dynamic weight that turns
+     * cell incidence into route-policy evidence.  The table survives the
+     * flush so a later context epoch keeps accumulating. */
+    simple_mtx_lock(&workload_mtx);
+    if (workload_table) {
+        hash_table_foreach(workload_table, he) {
+            const struct telemetry_workload_entry *e = he->data;
+            fprintf(stderr,
+                    "r2vb_telemetry workload hash=%s action=%c draws=%" PRIu64
+                    " vertices=%" PRIu64 " instances=%" PRIu64
+                    " draw_min=%u draw_max=%u topo_mask=0x%x indexed=%" PRIu64
+                    "\n",
+                    e->hex, e->action, e->stats.draws, e->stats.vertices,
+                    e->stats.instances, e->stats.draw_min, e->stats.draw_max,
+                    e->stats.topology_mask, e->stats.indexed_draws);
+        }
+    }
+    simple_mtx_unlock(&workload_mtx);
 }

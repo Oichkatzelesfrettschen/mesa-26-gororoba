@@ -3598,15 +3598,18 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
     tally[v]++;
     total++;
 
-    if (!enabled) {
+    /* Workload accounting runs on every candidate draw, not only the
+     * once-per-cell classification: the plan lookup is a cache hit after
+     * the first draw, and the accumulator turns cell incidence into the
+     * dynamic weight (draws, vertices, topology) a route-on policy needs. */
+    if (observe && v == R2VB_ROUTE_CANDIDATE) {
         struct r300_vertex_shader *vs = r300_vs(r300);
-        if (v == R2VB_ROUTE_CANDIDATE && vs &&
-            vs->state.type == PIPE_SHADER_IR_NIR && vs->state.ir.nir) {
+        if (vs && vs->state.type == PIPE_SHADER_IR_NIR && vs->state.ir.nir) {
             enum r300_r2vb_position_space space = r2vb_env_space();
             unsigned space_i =
                 space == R300_R2VB_POSITION_WINDOW ? 1u : 0u;
             uint8_t *memo = &vs->r2vb_admission[0][space_i];
-            if (*memo == R300_R2VB_ADMIT_UNMEASURED) {
+            if (!enabled && *memo == R300_R2VB_ADMIT_UNMEASURED) {
                 const struct r300_r2vb_producer_plan *plan =
                     r300_r2vb_producer_plan_get(r300, false, space);
                 if (plan) {
@@ -3614,9 +3617,14 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
                     *memo = R300_R2VB_ADMIT_REJECT;
                 }
             }
+            const struct r300_r2vb_producer_plan *plan =
+                r300_r2vb_producer_plan_get(r300, false, space);
+            if (plan)
+                r300_r2vb_telemetry_draw(r300, plan, info, draw);
         }
-        return false;
     }
+    if (!enabled)
+        return false;
 
     /* Per-draw trace (R300_R2VB_ROUTE_DEBUG=1): one line per draw with the bound
      * VS name, vertex count, and verdict, so the application's draw is visible

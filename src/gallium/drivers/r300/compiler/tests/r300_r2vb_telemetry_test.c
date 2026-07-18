@@ -293,6 +293,121 @@ main(void)
    CHECK(c->retain_failures == base.retain_failures,
          "no retention failures");
 
+   /* Retention-scope parser: unset, empty, budget, and every unrecognized
+    * value keep the established budget-only policy; single, structural,
+    * and all are exact. */
+   CHECK(r300_r2vb_telemetry_retain_scope_value(NULL) ==
+            R300_R2VB_TELEMETRY_RETAIN_BUDGET,
+         "scope: unset keeps budget");
+   CHECK(r300_r2vb_telemetry_retain_scope_value("") ==
+            R300_R2VB_TELEMETRY_RETAIN_BUDGET,
+         "scope: empty keeps budget");
+   CHECK(r300_r2vb_telemetry_retain_scope_value("budget") ==
+            R300_R2VB_TELEMETRY_RETAIN_BUDGET,
+         "scope: budget names budget");
+   CHECK(r300_r2vb_telemetry_retain_scope_value("Single") ==
+            R300_R2VB_TELEMETRY_RETAIN_BUDGET,
+         "scope: near-miss keeps budget");
+   CHECK(r300_r2vb_telemetry_retain_scope_value("single") ==
+            R300_R2VB_TELEMETRY_RETAIN_SINGLE,
+         "scope: single exact");
+   CHECK(r300_r2vb_telemetry_retain_scope_value("structural") ==
+            R300_R2VB_TELEMETRY_RETAIN_STRUCTURAL,
+         "scope: structural exact");
+   CHECK(r300_r2vb_telemetry_retain_scope_value("all") ==
+            R300_R2VB_TELEMETRY_RETAIN_ALL,
+         "scope: all exact");
+
+   /* Eligibility matrix over synthetic plans: each scope admits exactly its
+    * class.  A SPLIT plan is the budget shape; a SINGLE plan is the fitting
+    * shape; a control-flow reject is the structural shape. */
+   {
+      struct r300_r2vb_producer_plan p;
+      memset(&p, 0, sizeof(p));
+      p.action = R300_R2VB_PLAN_SPLIT;
+      CHECK(r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_BUDGET) &&
+            !r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_SINGLE) &&
+            !r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_STRUCTURAL) &&
+            r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_ALL),
+            "eligibility: split -> budget+all only");
+      p.action = R300_R2VB_PLAN_SINGLE;
+      CHECK(!r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_BUDGET) &&
+            r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_SINGLE) &&
+            !r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_STRUCTURAL),
+            "eligibility: single -> single scope only");
+      p.action = R300_R2VB_PLAN_REJECT;
+      p.primary_reason = R300_R2VB_PLAN_CONTROL_FLOW;
+      CHECK(!r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_BUDGET) &&
+            !r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_SINGLE) &&
+            r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_STRUCTURAL),
+            "eligibility: control-flow reject -> structural scope only");
+      p.primary_reason = R300_R2VB_PLAN_SIGNED_RANGE;
+      CHECK(r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_BUDGET) &&
+            !r300_r2vb_telemetry_retain_eligible_in_scope(
+               &p, R300_R2VB_TELEMETRY_RETAIN_STRUCTURAL),
+            "eligibility: range reject stays budget-scoped");
+   }
+
+   /* Content hash and workload weight: the first note cached the bound
+    * shader's full BLAKE3 on the VS, and per-draw accounting keyed on it
+    * sums draws, vertices, and instances, tracks draw-size extrema and the
+    * topology mask, and counts indexed draws. */
+   {
+      bind_vs(fits);
+      struct r300_r2vb_producer_plan plan;
+      bool ran = r300_r2vb_plan_producer(&g_context, fits, false,
+                                         R300_R2VB_POSITION_CLIP, &plan);
+      CHECK(ran, "workload: plan for the fitting specimen");
+      if (ran) {
+         r300_r2vb_telemetry_note(&g_context, &plan);
+         const char *hex = g_vs.r2vb_content_hex;
+
+         struct pipe_draw_info info = { 0 };
+         struct pipe_draw_start_count_bias dr = { 0 };
+         info.mode = MESA_PRIM_TRIANGLES;
+         info.instance_count = 1;
+         dr.count = 3;
+         r300_r2vb_telemetry_draw(&g_context, &plan, &info, &dr);
+         info.mode = MESA_PRIM_TRIANGLE_STRIP;
+         info.instance_count = 2;
+         info.index_size = 2;
+         dr.count = 300;
+         r300_r2vb_telemetry_draw(&g_context, &plan, &info, &dr);
+
+         /* The first draw computed and cached the full BLAKE3 on the VS
+          * (the print-gated note skips the hash when the gate is closed). */
+         CHECK(hex[0] != 0 && strlen(hex) == 64,
+               "workload: full BLAKE3 cached on the VS");
+
+         struct r300_r2vb_workload_stats st;
+         CHECK(r300_r2vb_telemetry_workload_stats(hex, &st),
+               "workload: stats found by hash");
+         CHECK(st.draws == 2 && st.vertices == 3 + 300 * 2 &&
+                  st.instances == 3 && st.draw_min == 3 &&
+                  st.draw_max == 300 && st.indexed_draws == 1 &&
+                  st.topology_mask ==
+                     ((1u << MESA_PRIM_TRIANGLES) |
+                      (1u << MESA_PRIM_TRIANGLE_STRIP)),
+               "workload: draws/vertices/extrema/topology/indexed sum");
+         CHECK(!r300_r2vb_telemetry_workload_stats(
+                  "0000000000000000000000000000000000000000000000000000000000000000",
+                  &st),
+               "workload: unseen hash reports absent");
+         r300_r2vb_plan_release(&plan);
+      }
+   }
+
    /* Summary is print-gated; ungated it must be silent and safe. */
    r300_r2vb_telemetry_print_summary();
 
