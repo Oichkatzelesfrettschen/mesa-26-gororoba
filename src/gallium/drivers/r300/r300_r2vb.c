@@ -3164,6 +3164,40 @@ bool r300_r2vb_auto_single_gate_value(const char *value)
     return value && strcmp(value, "1") == 0;
 }
 
+bool r300_r2vb_slot_grid_gate_value(const char *value)
+{
+    return value && strcmp(value, "1") == 0;
+}
+
+bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
+                                struct r300_r2vb_slot_layout *out)
+{
+    /* The 16-bit VAP_VF_MAX_VTX_INDX bounds every re-ingest regardless of
+     * producer storage. */
+    if (count == 0 || count >= 65536)
+        return false;
+    struct r300_r2vb_slot_layout l = { .count = count };
+    if (count <= 4096) {
+        /* The proven one-row shape, byte-for-byte, whether or not the grid
+         * gate is armed: the first silicon comparison isolates only the new
+         * multirow mechanism. */
+        l.width = count;
+        l.height = 1;
+    } else {
+        if (!grid_enabled)
+            return false;
+        l.width = 2048;
+        l.height = (count + 2047u) / 2048u;
+    }
+    l.pitch_pixels = l.width;
+    l.storage_slots = (uint64_t)l.pitch_pixels * l.height;
+    l.storage_bytes = l.storage_slots * 16u;
+    if (l.storage_slots < count || l.pitch_pixels != l.width)
+        return false;
+    *out = l;
+    return true;
+}
+
 /* Strict positive decimal uint32: bare digits only.  Sign, whitespace,
  * trailing characters, overflow, and zero all fail, keeping the canary
  * closed on any malformed floor. */

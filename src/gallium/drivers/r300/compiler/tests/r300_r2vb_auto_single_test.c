@@ -302,11 +302,73 @@ check_live_plans(void)
    ralloc_free(vs);
 }
 
+/* One accepted layout: check the slot-to-pixel and slot-to-byte mappings
+ * agree on the pitch-tight invariant across every slot (exhaustive; the
+ * accepted counts stay below 2^16). */
+static void
+check_layout_accept(uint32_t count, bool grid, uint32_t width,
+                    uint32_t height, const char *name)
+{
+   struct r300_r2vb_slot_layout l;
+   bool ok = r300_r2vb_slot_layout_init(count, grid, &l);
+   char label[160];
+   snprintf(label, sizeof(label), "layout: %s -> %ux%u", name, width, height);
+   CHECK(ok && l.width == width && l.height == height &&
+            l.pitch_pixels == l.width && l.storage_slots >= count &&
+            l.storage_bytes == l.storage_slots * 16u,
+         label);
+   if (!ok)
+      return;
+   bool map_ok = true;
+   for (uint32_t s = 0; s < count; s++) {
+      uint32_t x = s % l.width, y = s / l.width;
+      if (x >= l.width || y >= l.height ||
+          (uint64_t)y * l.pitch_pixels + x != s)
+         map_ok = false;
+   }
+   snprintf(label, sizeof(label), "layout: %s pitch-tight mapping", name);
+   CHECK(map_ok, label);
+}
+
+static void
+check_layout_reject(uint32_t count, bool grid, const char *name)
+{
+   struct r300_r2vb_slot_layout l;
+   char label[160];
+   snprintf(label, sizeof(label), "layout: %s rejects", name);
+   CHECK(!r300_r2vb_slot_layout_init(count, grid, &l), label);
+}
+
+static void
+check_slot_layout(void)
+{
+   CHECK(!r300_r2vb_slot_grid_gate_value(NULL) &&
+            !r300_r2vb_slot_grid_gate_value("") &&
+            !r300_r2vb_slot_grid_gate_value("0") &&
+            r300_r2vb_slot_grid_gate_value("1"),
+         "layout: grid gate exact-value parser");
+   check_layout_reject(0, true, "count zero");
+   check_layout_accept(1, false, 1, 1, "single slot");
+   check_layout_accept(2048, true, 2048, 1, "one grid row");
+   check_layout_accept(2049, false, 2049, 1, "one-row past grid width");
+   check_layout_accept(4095, false, 4095, 1, "legacy-compatible");
+   check_layout_accept(4096, false, 4096, 1, "legacy boundary");
+   check_layout_reject(4097, false, "first grid count with gate off");
+   check_layout_accept(4097, true, 2048, 3, "first grid count");
+   check_layout_accept(8192, true, 2048, 4, "exact four rows");
+   check_layout_accept(21516, true, 2048, 11, "census-dominant draw");
+   check_layout_accept(65535, true, 2048, 32, "maximum accepted count");
+   check_layout_reject(65536, true, "re-ingest index ceiling");
+   check_layout_reject(UINT32_MAX, true, "uint32 max");
+}
+
 int
 main(void)
 {
    fake_stack_init();
 
+   printf("slot-grid layout:\n");
+   check_slot_layout();
    printf("auto-single gate parser:\n");
    check_gate_parser();
    printf("auto-single floor parser:\n");
