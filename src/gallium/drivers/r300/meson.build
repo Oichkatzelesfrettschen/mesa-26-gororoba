@@ -445,6 +445,30 @@ if with_tests
     suite : ['r300'],
   )
 
+  # AUTO_SINGLE canary calibration: the exact-value gate and strict-decimal
+  # floor parsers fail closed on every malformed input, and the pure
+  # admission policy composes route-support shape, both delivery cells
+  # (READY SINGLE untyped one-input for cv=0 clip and cv=0 window), and the
+  # vertex floor -- synthetic plans drive each decline arm, live planner
+  # output calibrates the execute row.
+  test(
+    'r300-r2vb-auto-single',
+    executable(
+      'r300_r2vb_auto_single_test',
+      files('compiler/tests/r300_r2vb_auto_single_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      # The policy lives in r300_r2vb.c, whose context object reaches the
+      # video codec constructors in the video auxiliary library.
+      link_with : [libr300, libgallium, libgalliumvl],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # Diagnostic typed-split route calibration: the exact-value gate parser
   # admits only "1", and the route contract admits only the position cell of
   # a READY SPLIT plan with a typed source, flat-vertex semantics, a one-vec4

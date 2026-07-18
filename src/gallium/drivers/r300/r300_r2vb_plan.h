@@ -278,6 +278,64 @@ r300_r2vb_typed_split_note_format(const struct r300_r2vb_producer_plan *plan,
 unsigned r300_r2vb_count_position_inputs(struct nir_shader *vs_nir);
 int r300_r2vb_first_computed_varying(struct nir_shader *vs_nir);
 
+/* AUTO_SINGLE canary: automatic route selection for the untyped fitting
+ * producer class under two exact-value research gates.  The route opens only
+ * when R300_R2VB_AUTO_SINGLE is exactly "1" AND
+ * R300_R2VB_AUTO_SINGLE_MIN_VERTICES parses as a strict positive decimal
+ * uint32 (bare digits: sign, whitespace, trailing characters, overflow, and
+ * zero all keep the route closed).  Admission composes route support first,
+ * then the two delivery cells of the chosen path -- the plain route reads
+ * cv=0 clip for classification and cv=0 window for delivery -- then the
+ * vertex floor.  Everything outside the contract declines to gallivm. */
+enum r300_r2vb_auto_single_reason {
+    R300_R2VB_AUTO_SINGLE_OK = 0,
+    R300_R2VB_AUTO_SINGLE_INDEXED,
+    R300_R2VB_AUTO_SINGLE_INSTANCED,
+    R300_R2VB_AUTO_SINGLE_UNSUPPORTED_PRIMITIVE,
+    R300_R2VB_AUTO_SINGLE_COUNT_CEILING,
+    R300_R2VB_AUTO_SINGLE_FRONTFACE,
+    R300_R2VB_AUTO_SINGLE_CLIP_PLANES,
+    R300_R2VB_AUTO_SINGLE_FS_EXTERNAL_CONSTANTS,
+    R300_R2VB_AUTO_SINGLE_PLAN_NOT_READY,
+    R300_R2VB_AUTO_SINGLE_PLAN_NOT_SINGLE,
+    R300_R2VB_AUTO_SINGLE_TYPED_SOURCE,
+    R300_R2VB_AUTO_SINGLE_INPUT_SHAPE,
+    R300_R2VB_AUTO_SINGLE_DELIVERY_CELL,
+    R300_R2VB_AUTO_SINGLE_BELOW_VERTEX_FLOOR,
+    R300_R2VB_AUTO_SINGLE_REASON_COUNT,
+};
+
+/* Gate and floor parsers, pure over the string so the calibration test
+ * drives every arm without process environment state. */
+bool r300_r2vb_auto_single_gate_value(const char *value);
+bool r300_r2vb_auto_single_floor_value(const char *value, uint32_t *floor);
+const char *
+r300_r2vb_auto_single_reason_str(enum r300_r2vb_auto_single_reason reason);
+
+/* Draw-shape facts the policy consumes, gathered by the route at the draw
+ * and constructed directly by the host oracle. */
+struct r300_r2vb_auto_single_draw {
+    unsigned mode;               /* enum mesa_prim */
+    uint32_t count;
+    uint32_t instance_count;
+    uint32_t index_size;
+    bool fs_reads_face;
+    bool clip_planes_enabled;
+    bool fs_reads_external_constants;
+};
+
+/* The pure admission policy: route-support shape first (plain TRIANGLES,
+ * whole triangles, non-indexed, single instance, below the 16-bit re-ingest
+ * ceiling, no face/clip-plane/FS-external dependency -- the clip-route
+ * delivery contract), then both delivery cells (READY SINGLE untyped
+ * one-input plans for cv=0 clip and cv=0 window), then the vertex floor.
+ * Returns OK only when every gate holds. */
+enum r300_r2vb_auto_single_reason
+r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
+                             const struct r300_r2vb_producer_plan *window_plan,
+                             const struct r300_r2vb_auto_single_draw *d,
+                             uint32_t floor);
+
 #ifdef __cplusplus
 }
 #endif
