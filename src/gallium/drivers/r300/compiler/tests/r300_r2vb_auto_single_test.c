@@ -400,6 +400,60 @@ check_producer_streams(void)
          "streams: offset overflow rejects");
 }
 
+static void
+check_producer_fetch(void)
+{
+   struct r300_r2vb_producer_streams s;
+   struct r300_r2vb_producer_fetch f;
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 16,
+                                         PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                         &s),
+         "fetch: base streams build");
+   /* count 4096, tight stride: both BOs sized to the exact last byte. */
+   CHECK(r300_r2vb_producer_fetch_init(&s, 4096, 4096 * 16, 4096 * 16, &f) &&
+            f.vap_vtx_size == 8 && f.vf_min == 0 && f.vf_max == 4095 &&
+            f.slot_required_bytes == 4096 * 16 &&
+            f.model_required_bytes == 4096 * 16,
+         "fetch: exact last-byte fit, VAP tuple and index bounds");
+   CHECK(!r300_r2vb_producer_fetch_init(&s, 4096, 4096 * 16 - 1, 4096 * 16,
+                                        &f),
+         "fetch: one-byte-short slot BO rejects");
+   CHECK(!r300_r2vb_producer_fetch_init(&s, 4096, 4096 * 16, 4096 * 16 - 1,
+                                        &f),
+         "fetch: one-byte-short model BO rejects");
+   CHECK(!r300_r2vb_producer_fetch_init(&s, 0, 16, 16, &f),
+         "fetch: zero count rejects");
+   CHECK(!r300_r2vb_producer_fetch_init(&s, 65536, UINT64_MAX, UINT64_MAX,
+                                        &f),
+         "fetch: index-ceiling count rejects");
+   /* Wide interleave: extent scales with the true stride. */
+   struct r300_r2vb_producer_streams wide;
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 64,
+                                         PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                         &wide) &&
+            r300_r2vb_producer_fetch_init(&wide, 100, 100 * 16,
+                                          99 * 64 + 16, &f) &&
+            f.model_required_bytes == 99 * 64 + 16,
+         "fetch: interleaved stride extent law");
+   CHECK(!r300_r2vb_producer_fetch_init(&wide, 100, 100 * 16, 99 * 64 + 15,
+                                        &f),
+         "fetch: interleaved one-byte-short rejects");
+   /* A sub-record stride would overlap fetches. */
+   struct r300_r2vb_producer_streams narrow;
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 8,
+                                         PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                         &narrow) &&
+            !r300_r2vb_producer_fetch_init(&narrow, 4, 64, 64, &f),
+         "fetch: overlapping sub-record stride rejects");
+   /* The packet stride field is 8 bits of dwords. */
+   struct r300_r2vb_producer_streams huge;
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 1024,
+                                         PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                         &huge) &&
+            !r300_r2vb_producer_fetch_init(&huge, 2, 32, 4096, &f),
+         "fetch: packet stride-field ceiling rejects");
+}
+
 int
 main(void)
 {
@@ -407,6 +461,8 @@ main(void)
 
    printf("producer fetch streams:\n");
    check_producer_streams();
+   printf("producer fetch extent:\n");
+   check_producer_fetch();
    printf("slot-grid layout:\n");
    check_slot_layout();
    printf("auto-single gate parser:\n");

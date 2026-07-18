@@ -366,6 +366,29 @@ bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
 /* Slot-fetch gate value (R300_R2VB_SLOT_FETCH, exact "1"); pure parser. */
 bool r300_r2vb_slot_fetch_gate_value(const char *value);
 
+/* The 3D_LOAD_VBPNTR format word packs the stride into an 8-bit dword
+ * field; a host-accepted stride past it would truncate in the emitter. */
+#define R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX 255u
+
+/* Emission-ready producer fetch: the stream contract plus the properties
+ * only the draw and the bound resources can prove -- the final fetched
+ * byte of every stream lies inside its BO (64-bit arithmetic), offsets
+ * are dword-aligned, the stride covers a full FP32x4 record and fits the
+ * packet field, and the VAP tuple carries through to VAP_VTX_SIZE. */
+struct r300_r2vb_producer_fetch {
+    struct r300_r2vb_producer_streams streams;
+    uint32_t vap_vtx_size;
+    uint32_t vf_min;
+    uint32_t vf_max;
+    uint64_t slot_required_bytes;
+    uint64_t model_required_bytes;
+};
+
+bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
+                                   uint32_t count, uint64_t slot_bo_bytes,
+                                   uint64_t model_bo_bytes,
+                                   struct r300_r2vb_producer_fetch *out);
+
 /* Gate and floor parsers, pure over the string so the calibration test
  * drives every arm without process environment state. */
 bool r300_r2vb_auto_single_gate_value(const char *value);
