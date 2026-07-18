@@ -3174,6 +3174,40 @@ bool r300_r2vb_slot_fetch_gate_value(const char *value)
     return value && strcmp(value, "1") == 0;
 }
 
+bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
+                                   uint32_t count, uint64_t slot_bo_bytes,
+                                   uint64_t model_bo_bytes,
+                                   struct r300_r2vb_producer_fetch *out)
+{
+    if (!s || s->num != 2 || count == 0 || count >= 65536)
+        return false;
+    const struct r300_r2vb_producer_stream *slot = &s->stream[0];
+    const struct r300_r2vb_producer_stream *model = &s->stream[1];
+    if (slot->offset_bytes % 4 != 0 || model->offset_bytes % 4 != 0)
+        return false;
+    /* A stride under one FP32x4 record would overlap fetches; the first
+     * silicon proof keeps the extent and aliasing contract simple. */
+    if (model->stride_dwords < 4 ||
+        model->stride_dwords > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX ||
+        slot->stride_dwords > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX)
+        return false;
+    uint64_t slot_end = (uint64_t)slot->offset_bytes +
+                        (uint64_t)(count - 1) * slot->stride_dwords * 4 +
+                        slot->size_dwords * 4;
+    uint64_t model_end = (uint64_t)model->offset_bytes +
+                         (uint64_t)(count - 1) * model->stride_dwords * 4 +
+                         model->size_dwords * 4;
+    if (slot_end > slot_bo_bytes || model_end > model_bo_bytes)
+        return false;
+    out->streams = *s;
+    out->vap_vtx_size = s->fetch_dwords;
+    out->vf_min = 0;
+    out->vf_max = count - 1;
+    out->slot_required_bytes = slot_end;
+    out->model_required_bytes = model_end;
+    return true;
+}
+
 bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
                                      uint32_t src_offset,
                                      uint32_t src_stride_bytes,
@@ -3829,6 +3863,34 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
                 if (plan) {
                     r300_r2vb_telemetry_note(r300, plan);
                     *memo = R300_R2VB_ADMIT_REJECT;
+                }
+                /* Observation-only input facts, once per cell measure: the
+                 * BO-fetch contract admits by element format, stride, and
+                 * resource extent, none of which the retained NIR carries,
+                 * so the record decides which format family the fetch path
+                 * implements next.  No routing, no GPU change. */
+                if (r300->velems && r300->velems->count > 0) {
+                    const struct pipe_vertex_element *pe =
+                        &r300->velems->velem[0];
+                    const struct pipe_vertex_buffer *vb =
+                        &r300->vertex_buffer[pe->vertex_buffer_index];
+                    struct pipe_resource *res =
+                        vb->is_user_buffer ? NULL : vb->buffer.resource;
+                    fprintf(stderr,
+                            "r2vb_producer_input hash=%s input=0 format=%s"
+                            " format_dwords=%u stride_bytes=%u"
+                            " buffer_offset=%u src_offset=%u draw_start=%u"
+                            " model_offset=%" PRIu64 " resource_width=%u"
+                            " bo_materialized=%d\n",
+                            r300_r2vb_telemetry_vs_content_hex(r300),
+                            util_format_short_name(pe->src_format),
+                            util_format_get_blocksize(pe->src_format) / 4,
+                            pe->src_stride, vb->buffer_offset,
+                            pe->src_offset, draw->start,
+                            (uint64_t)vb->buffer_offset + pe->src_offset +
+                                (uint64_t)draw->start * pe->src_stride,
+                            res ? res->width0 : 0,
+                            res && r300_resource(res)->buf ? 1 : 0);
                 }
             }
             const struct r300_r2vb_producer_plan *plan =
