@@ -3169,6 +3169,42 @@ bool r300_r2vb_slot_grid_gate_value(const char *value)
     return value && strcmp(value, "1") == 0;
 }
 
+bool r300_r2vb_slot_fetch_gate_value(const char *value)
+{
+    return value && strcmp(value, "1") == 0;
+}
+
+bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
+                                     uint32_t src_offset,
+                                     uint32_t src_stride_bytes,
+                                     enum pipe_format format, uint32_t start,
+                                     struct r300_r2vb_producer_streams *out)
+{
+    if (format != PIPE_FORMAT_R32G32B32A32_FLOAT)
+        return false;
+    /* The LOAD_VBPNTR format word carries the stride in dwords. */
+    if (src_stride_bytes == 0 || src_stride_bytes % 4 != 0)
+        return false;
+    uint64_t model_off = (uint64_t)buffer_offset + src_offset +
+                         (uint64_t)start * src_stride_bytes;
+    if (model_off > UINT32_MAX)
+        return false;
+    struct r300_r2vb_producer_streams s = {
+        .num = 2,
+        .stream = {
+            /* Slot positions: FP32x4 from slot zero regardless of the
+             * draw's start -- the producer always writes slots 0..count-1. */
+            { .offset_bytes = 0, .stride_dwords = 4, .size_dwords = 4 },
+            { .offset_bytes = (uint32_t)model_off,
+              .stride_dwords = src_stride_bytes / 4,
+              .size_dwords = 4 },
+        },
+    };
+    s.fetch_dwords = s.stream[0].size_dwords + s.stream[1].size_dwords;
+    *out = s;
+    return true;
+}
+
 bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
                                 struct r300_r2vb_slot_layout *out)
 {

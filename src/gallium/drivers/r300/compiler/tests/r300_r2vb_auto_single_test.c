@@ -362,11 +362,51 @@ check_slot_layout(void)
    check_layout_reject(UINT32_MAX, true, "uint32 max");
 }
 
+static void
+check_producer_streams(void)
+{
+   struct r300_r2vb_producer_streams s;
+   CHECK(!r300_r2vb_slot_fetch_gate_value(NULL) &&
+            !r300_r2vb_slot_fetch_gate_value("0") &&
+            r300_r2vb_slot_fetch_gate_value("1"),
+         "streams: fetch gate exact-value parser");
+   CHECK(r300_r2vb_producer_streams_init(64, 16, 16,
+                                         PIPE_FORMAT_R32G32B32A32_FLOAT, 3,
+                                         &s) &&
+            s.num == 2 && s.fetch_dwords == 8 &&
+            s.stream[0].offset_bytes == 0 && s.stream[0].stride_dwords == 4 &&
+            s.stream[1].offset_bytes == 64 + 16 + 3 * 16 &&
+            s.stream[1].stride_dwords == 4,
+         "streams: two FP32x4 streams, VAP tuple 8, start-offset law");
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 32,
+                                         PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                         &s) &&
+            s.stream[1].stride_dwords == 8 && s.fetch_dwords == 8,
+         "streams: wide interleaved stride fetches four dwords");
+   CHECK(!r300_r2vb_producer_streams_init(0, 0, 16,
+                                          PIPE_FORMAT_R32G32B32_FLOAT, 0, &s),
+         "streams: vec3 format outside the first contract");
+   CHECK(!r300_r2vb_producer_streams_init(0, 0, 0,
+                                          PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                          &s),
+         "streams: zero stride rejects");
+   CHECK(!r300_r2vb_producer_streams_init(0, 0, 18,
+                                          PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                          &s),
+         "streams: non-dword stride rejects");
+   CHECK(!r300_r2vb_producer_streams_init(UINT32_MAX, UINT32_MAX, 16,
+                                          PIPE_FORMAT_R32G32B32A32_FLOAT,
+                                          65535, &s),
+         "streams: offset overflow rejects");
+}
+
 int
 main(void)
 {
    fake_stack_init();
 
+   printf("producer fetch streams:\n");
+   check_producer_streams();
    printf("slot-grid layout:\n");
    check_slot_layout();
    printf("auto-single gate parser:\n");
