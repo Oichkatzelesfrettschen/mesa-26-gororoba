@@ -383,9 +383,27 @@ check_producer_streams(void)
                                          &s) &&
             s.stream[1].stride_dwords == 8 && s.fetch_dwords == 8,
          "streams: wide interleaved stride fetches four dwords");
-   CHECK(!r300_r2vb_producer_streams_init(0, 0, 16,
-                                          PIPE_FORMAT_R32G32B32_FLOAT, 0, &s),
-         "streams: vec3 format outside the first contract");
+   /* The observed dominant workload: packed FLOAT_3 at stride 12, PSC
+    * synthesizes W, physical tuple 4 + 3 = 7 dwords. */
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 12,
+                                         PIPE_FORMAT_R32G32B32_FLOAT, 0,
+                                         &s) &&
+            s.fetch_dwords == 7 && s.stream[1].size_dwords == 3 &&
+            s.stream[1].stride_dwords == 3 &&
+            s.stream[1].logical_components == 4,
+         "streams: packed FLOAT_3 fetches 7 dwords with logical vec4");
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 24,
+                                         PIPE_FORMAT_R32G32B32_FLOAT, 0,
+                                         &s) &&
+            s.fetch_dwords == 7 && s.stream[1].stride_dwords == 6,
+         "streams: interleaved FLOAT_3 keeps the 7-dword tuple");
+   CHECK(!r300_r2vb_producer_streams_init(0, 0, 8,
+                                          PIPE_FORMAT_R32G32B32_FLOAT, 0,
+                                          &s),
+         "streams: FLOAT_3 sub-record stride rejects");
+   CHECK(!r300_r2vb_producer_streams_init(0, 0, 8,
+                                          PIPE_FORMAT_R32G32_FLOAT, 0, &s),
+         "streams: FLOAT_2 outside the observed families");
    CHECK(!r300_r2vb_producer_streams_init(0, 0, 0,
                                           PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
                                           &s),
@@ -438,12 +456,12 @@ check_producer_fetch(void)
    CHECK(!r300_r2vb_producer_fetch_init(&wide, 100, 100 * 16, 99 * 64 + 15,
                                         &f),
          "fetch: interleaved one-byte-short rejects");
-   /* A sub-record stride would overlap fetches. */
-   struct r300_r2vb_producer_streams narrow;
-   CHECK(r300_r2vb_producer_streams_init(0, 0, 8,
-                                         PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
-                                         &narrow) &&
-            !r300_r2vb_producer_fetch_init(&narrow, 4, 64, 64, &f),
+   /* streams_init rejects a sub-record stride at construction; the fetch
+    * builder holds the same guard independently against a hand-built
+    * descriptor, so neither layer trusts the other. */
+   struct r300_r2vb_producer_streams narrow = s;
+   narrow.stream[1].stride_dwords = 2;
+   CHECK(!r300_r2vb_producer_fetch_init(&narrow, 4, 64, 64, &f),
          "fetch: overlapping sub-record stride rejects");
    /* The packet stride field is 8 bits of dwords. */
    struct r300_r2vb_producer_streams huge;
