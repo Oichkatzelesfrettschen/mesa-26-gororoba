@@ -3369,6 +3369,229 @@ bool r300_r2vb_producer_interface_init(
     return true;
 }
 
+bool r300_r2vb_position_source_scan(nir_shader *vs_nir,
+                                    struct r300_r2vb_position_source *out)
+{
+    memset(out, 0, sizeof(*out));
+    nir_shader *tmp = nir_shader_clone(NULL, vs_nir);
+    if (!tmp)
+        return false;
+    /* Strip every non-position store, DCE, and drop dead inputs: the
+     * survivors are exactly the inputs feeding gl_Position (the
+     * count_position_inputs reduction, retained here as an identity). */
+    nir_function_impl *impl = nir_shader_get_entrypoint(tmp);
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_deref)
+                continue;
+            nir_variable *o = nir_intrinsic_get_var(intr, 0);
+            if (o && (o->data.mode & nir_var_shader_out) &&
+                o->data.location != VARYING_SLOT_POS)
+                nir_instr_remove(instr);
+        }
+    }
+    nir_opt_dce(tmp);
+    nir_remove_dead_variables(tmp, nir_var_shader_in, NULL);
+    unsigned n = 0;
+    int surviving_location = -1;
+    unsigned driver_location = 0;
+    nir_foreach_variable_with_modes(var, tmp, nir_var_shader_in) {
+        n++;
+        surviving_location = var->data.location;
+        driver_location = var->data.driver_location;
+    }
+    ralloc_free(tmp);
+    if (n != 1)
+        return false;
+    /* Rank among the ORIGINAL bound VS inputs in ascending location order:
+     * velem[k] feeds the k-th input in that order, so the rank -- not the
+     * driver location alone -- names the element.  The bound VS arrives in
+     * deref/variable form (r300_optimize_nir does not run nir_lower_io),
+     * matching r300_r2vb_input_velem_index. */
+    unsigned rank = 0;
+    nir_foreach_variable_with_modes(var, vs_nir, nir_var_shader_in)
+        if (var->data.location < surviving_location)
+            rank++;
+    if (driver_location > 255 || rank > 255)
+        return false;
+    out->app_driver_location = driver_location;
+    out->location_rank = rank;
+    out->valid = true;
+    return true;
+}
+
+bool r300_r2vb_producer_fs_input_hwreg(
+    const struct r300_shader_semantics *inputs, unsigned *out_hwreg)
+{
+    /* The first producer contract: one generic model input and nothing
+     * else.  A color, FACE, fog, or WPOS input would shift the hardware
+     * allocation and route stale rasterizer state into the producer. */
+    if (inputs->color[0] != ATTR_UNUSED || inputs->color[1] != ATTR_UNUSED ||
+        inputs->face != ATTR_UNUSED || inputs->fog != ATTR_UNUSED ||
+        inputs->wpos != ATTR_UNUSED)
+        return false;
+    if (inputs->generic[0] == ATTR_UNUSED || inputs->num_generic != 1 ||
+        inputs->num_total != 1)
+        return false;
+    for (unsigned i = 1; i < ATTR_GENERIC_COUNT; i++)
+        if (inputs->generic[i] != ATTR_UNUSED)
+            return false;
+    /* Replay allocate_hardware_inputs order (colors, face, generics, fog,
+     * WPOS): with everything before the generics unused, the register
+     * counter reaches the single generic at zero. */
+    *out_hwreg = 0;
+    return true;
+}
+
+/* RS decode helpers shared by the binding constructor and the contract
+ * checker, each proving one layer of the TC0-to-FS routing. */
+static bool r2vb_rs_assembly_ok(const struct r300_rs_block *rs)
+{
+    return rs->vap_vtx_state_cntl == 0x5555 &&
+           rs->vap_vsm_vtx_assm ==
+               (R300_INPUT_CNTL_POS | R300_INPUT_CNTL_TC0);
+}
+
+static bool r2vb_rs_output_fmt_ok(const struct r300_rs_block *rs)
+{
+    /* POS plus one 4-component TEX0 vector; fmt1 packs 3 bits per
+     * texcoord slot. */
+    return rs->vap_out_vtx_fmt[0] == R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT &&
+           rs->vap_out_vtx_fmt[1] == 4;
+}
+
+static bool r2vb_rs_tc0_components_ok(const struct r300_rs_block *rs)
+{
+    /* All four TC0 components interpolate from the VAP vector: S/T/R/Q
+     * select C0..C3, and the IT count covers the four dwords. */
+    uint32_t want = R300_RS_SEL_S(R300_RS_SEL_C0) |
+                    R300_RS_SEL_T(R300_RS_SEL_C1) |
+                    R300_RS_SEL_R(R300_RS_SEL_C2) |
+                    R300_RS_SEL_Q(R300_RS_SEL_C3);
+    uint32_t sel_mask = R300_RS_SEL_S(7) | R300_RS_SEL_T(7) |
+                        R300_RS_SEL_R(7) | R300_RS_SEL_Q(7);
+    return (rs->ip[0] & sel_mask) == want &&
+           (rs->count & R300_IT_COUNT_MASK) >= 4;
+}
+
+static bool r2vb_rs_writes_fs_reg(const struct r300_rs_block *rs,
+                                  unsigned hwreg)
+{
+    return (rs->inst[0] & R300_RS_INST_TEX_CN_WRITE) &&
+           ((rs->inst[0] >> R300_RS_INST_TEX_ADDR_SHIFT) & 0x3f) == hwreg;
+}
+
+bool r300_r2vb_producer_logical_binding_init(
+    const struct r300_r2vb_position_source *source,
+    const struct r300_shader_semantics *fs_inputs,
+    const struct r300_rs_block *rs,
+    unsigned slot_dst_vec_loc, unsigned model_dst_vec_loc,
+    struct r300_r2vb_producer_logical_binding *out)
+{
+    if (!source || !fs_inputs || !rs || !out)
+        return false;
+    /* The measured source identity, under the canary's executable
+     * restriction: location zero, rank zero, so velem[0] is the element. */
+    if (!source->valid || source->app_driver_location != 0 ||
+        source->location_rank != 0)
+        return false;
+    unsigned hwreg;
+    if (!r300_r2vb_producer_fs_input_hwreg(fs_inputs, &hwreg))
+        return false;
+    /* The derived RS block must already route TC0 to that register with
+     * the expected assembly and output tuple; a binding built against a
+     * disagreeing RS would emit a draw whose FS reads a stale input. */
+    if (!r2vb_rs_assembly_ok(rs) || !r2vb_rs_output_fmt_ok(rs) ||
+        !r2vb_rs_tc0_components_ok(rs) || !r2vb_rs_writes_fs_reg(rs, hwreg))
+        return false;
+    if (slot_dst_vec_loc > 31 || model_dst_vec_loc > 31 ||
+        slot_dst_vec_loc == model_dst_vec_loc)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->app_driver_location = source->app_driver_location;
+    out->location_rank = source->location_rank;
+    out->velem_index = 0;
+    out->slot_dst_vec_loc = slot_dst_vec_loc;
+    out->model_dst_vec_loc = model_dst_vec_loc;
+    out->fs_hw_input_reg = hwreg;
+    return true;
+}
+
+/* Decode one packed PSC element pair field-by-field for its MEANING:
+ * data type, destination vector, LAST_VEC, and the semantic swizzle --
+ * FLOAT_4 reads XYZW identity, FLOAT_3 reads X,Y,Z with W from the
+ * constant-one select, both with the full write mask. */
+static bool r2vb_psc_element_ok(uint32_t cntl, uint32_t ext, unsigned elem,
+                                unsigned record_dwords, unsigned dst_vec_loc,
+                                bool want_last)
+{
+    uint32_t c = (cntl >> (elem * 16)) & 0xffff;
+    uint32_t s = (ext >> (elem * 16)) & 0xffff;
+    unsigned want_type = record_dwords == 3 ? R300_DATA_TYPE_FLOAT_3
+                                            : R300_DATA_TYPE_FLOAT_4;
+    if (record_dwords != 3 && record_dwords != 4)
+        return false;
+    if ((c & 0xf) != want_type)
+        return false;
+    if (((c >> R300_DST_VEC_LOC_SHIFT) & 0x1f) != dst_vec_loc)
+        return false;
+    if (((c & R300_LAST_VEC) != 0) != want_last)
+        return false;
+    unsigned want_w = record_dwords == 3 ? R300_SWIZZLE_SELECT_FP_ONE
+                                         : R300_SWIZZLE_SELECT_W;
+    return ((s >> R300_SWIZZLE_SELECT_X_SHIFT) & 7) == R300_SWIZZLE_SELECT_X &&
+           ((s >> R300_SWIZZLE_SELECT_Y_SHIFT) & 7) == R300_SWIZZLE_SELECT_Y &&
+           ((s >> R300_SWIZZLE_SELECT_Z_SHIFT) & 7) == R300_SWIZZLE_SELECT_Z &&
+           ((s >> R300_SWIZZLE_SELECT_W_SHIFT) & 7) == want_w &&
+           ((s >> R300_WRITE_ENA_SHIFT) & 0xf) == 0xf;
+}
+
+unsigned r300_r2vb_producer_binding_check(
+    const struct r300_r2vb_producer_fetch *fetch,
+    const struct r300_r2vb_producer_interface *psc,
+    const struct r300_r2vb_producer_logical_binding *binding,
+    const struct r300_rs_block *rs)
+{
+    unsigned v = 0;
+    const struct r300_r2vb_producer_stream *slot = &fetch->streams.stream[0];
+    const struct r300_r2vb_producer_stream *model = &fetch->streams.stream[1];
+    /* Physical fetch extent: the descriptor record sum is the VAP vertex
+     * size, carried unchanged into the PSC object. */
+    if (fetch->streams.num != 2 ||
+        slot->size_dwords + model->size_dwords != fetch->vap_vtx_size ||
+        psc->vap_vtx_size != fetch->vap_vtx_size)
+        v |= R300_R2VB_BINDING_FETCH_SIZE;
+    /* PSC meaning per element; the swizzle bit reports semantic decode
+     * failures, the LAST_VEC bit reports fetch-termination placement. */
+    if (!r2vb_psc_element_ok(psc->prog_stream_cntl[0],
+                             psc->prog_stream_cntl_ext[0], 0,
+                             slot->size_dwords, binding->slot_dst_vec_loc,
+                             false) ||
+        !r2vb_psc_element_ok(psc->prog_stream_cntl[0],
+                             psc->prog_stream_cntl_ext[0], 1,
+                             model->size_dwords, binding->model_dst_vec_loc,
+                             true))
+        v |= R300_R2VB_BINDING_SWIZZLE;
+    if ((psc->prog_stream_cntl[0] & (R300_LAST_VEC << 16)) == 0 ||
+        (psc->prog_stream_cntl[0] & R300_LAST_VEC) != 0)
+        v |= R300_R2VB_BINDING_LAST_VEC;
+    if (!r2vb_rs_assembly_ok(rs))
+        v |= R300_R2VB_BINDING_VAP_ASSEMBLY;
+    if (!r2vb_rs_output_fmt_ok(rs))
+        v |= R300_R2VB_BINDING_OUTPUT_FMT;
+    if (!r2vb_rs_tc0_components_ok(rs))
+        v |= R300_R2VB_BINDING_RS_COMPONENTS;
+    if (!r2vb_rs_writes_fs_reg(rs, binding->fs_hw_input_reg))
+        v |= R300_R2VB_BINDING_FS_REGISTER;
+    for (unsigned i = 1; i < 8; i++)
+        if (psc->prog_stream_cntl[i] || psc->prog_stream_cntl_ext[i])
+            v |= R300_R2VB_BINDING_TAIL_STATE;
+    return v;
+}
+
 bool
 r300_r2vb_producer_streams_rebind(const struct r300_r2vb_producer_streams *orig,
                                   const struct r300_r2vb_model_fetch *model,

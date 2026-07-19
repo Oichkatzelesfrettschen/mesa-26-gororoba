@@ -141,6 +141,18 @@ struct r300_r2vb_plan_key {
     uint32_t viewport_translate[3];
 };
 
+/* The application source identity of the plan's position input, measured
+ * on the bound VS at plan-build time: the surviving input variable's
+ * driver location and its rank among the VS inputs in ascending location
+ * order (r300 binds velem[k] to the k-th input in that order).  The
+ * mapping contract consumes these measured values; a caller passing
+ * literals asserts an identity the plan never proved. */
+struct r300_r2vb_position_source {
+    uint8_t app_driver_location;
+    uint8_t location_rank;
+    bool valid;
+};
+
 struct r300_r2vb_producer_plan {
     enum r300_r2vb_plan_status status;
     enum r300_r2vb_plan_action action;
@@ -152,6 +164,7 @@ struct r300_r2vb_producer_plan {
     enum r300_r2vb_typed_source_class typed_source_class;
 
     unsigned num_position_inputs;
+    struct r300_r2vb_position_source position_source;
 
     /* Backend resource vectors from the admission oracle: the unsplit
      * position producer when it emitted, and the two admitted halves on
@@ -535,6 +548,66 @@ r300_r2vb_producer_streams_rebind(const struct r300_r2vb_producer_streams *orig,
                                   const struct r300_r2vb_model_fetch *model,
                                   uint64_t slot_bo_bytes, uint32_t count,
                                   struct r300_r2vb_producer_fetch *out);
+
+struct nir_shader;
+bool r300_r2vb_position_source_scan(struct nir_shader *vs_nir,
+                                    struct r300_r2vb_position_source *out);
+
+/* The producer FS input contract: exactly one generic input and nothing
+ * else -- no colors, no FACE, no fog, no WPOS -- verified against the
+ * compiled variant's retained semantics.  The hardware input register
+ * replays the compiler's allocation order (colors, face, generics, fog,
+ * WPOS), so the single generic lands in register 0; the helper returns
+ * that derived register rather than assuming it. */
+struct r300_shader_semantics;
+bool r300_r2vb_producer_fs_input_hwreg(
+    const struct r300_shader_semantics *inputs, unsigned *out_hwreg);
+
+/* One authoritative record binding the three producer index namespaces:
+ * the application input location/rank feeding the position bytes, the
+ * VAP destination vector locations the fetched streams land in, and the
+ * FS hardware input register the rasterizer routes the model vector to.
+ * The constructor fails unless the plan-measured source, the compiled
+ * producer FS semantics, and the derived RS block all describe the same
+ * binding. */
+struct r300_r2vb_producer_logical_binding {
+    uint8_t app_driver_location;
+    uint8_t location_rank;
+    uint8_t velem_index;
+    uint8_t slot_dst_vec_loc;
+    uint8_t model_dst_vec_loc;
+    uint8_t fs_hw_input_reg;
+};
+
+struct r300_rs_block;
+bool r300_r2vb_producer_logical_binding_init(
+    const struct r300_r2vb_position_source *source,
+    const struct r300_shader_semantics *fs_inputs,
+    const struct r300_rs_block *rs,
+    unsigned slot_dst_vec_loc, unsigned model_dst_vec_loc,
+    struct r300_r2vb_producer_logical_binding *out);
+
+/* Complete pre-emission contract check over a prospective transaction:
+ * physical fetch extent, decoded PSC swizzle meaning, LAST_VEC
+ * placement, VAP assembly, output tuple, RS component routing, the FS
+ * input register, and the zeroed stream tail.  Returns a bitmask so a
+ * violating transaction reports every broken layer, not the first. */
+enum r300_r2vb_producer_binding_violation {
+    R300_R2VB_BINDING_FETCH_SIZE = 1u << 0,
+    R300_R2VB_BINDING_SWIZZLE = 1u << 1,
+    R300_R2VB_BINDING_LAST_VEC = 1u << 2,
+    R300_R2VB_BINDING_VAP_ASSEMBLY = 1u << 3,
+    R300_R2VB_BINDING_OUTPUT_FMT = 1u << 4,
+    R300_R2VB_BINDING_RS_COMPONENTS = 1u << 5,
+    R300_R2VB_BINDING_FS_REGISTER = 1u << 6,
+    R300_R2VB_BINDING_TAIL_STATE = 1u << 7,
+};
+
+unsigned r300_r2vb_producer_binding_check(
+    const struct r300_r2vb_producer_fetch *fetch,
+    const struct r300_r2vb_producer_interface *psc,
+    const struct r300_r2vb_producer_logical_binding *binding,
+    const struct r300_rs_block *rs);
 
 struct pipe_vertex_buffer;
 struct pipe_vertex_element;
