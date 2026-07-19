@@ -259,7 +259,9 @@ u_upload_alloc(struct u_upload_mgr *upload,
       if (unlikely(!buffer_size)) {
          *out_offset = ~0;
          *ptr = NULL;
-         *releasebuf = NULL;
+         /* u_upload_alloc_buffer already moved the previous buffer into
+          * *releasebuf; the caller releases it even on failure, so
+          * overwriting it here would leak that buffer. */
          return;
       }
    } else {
