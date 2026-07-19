@@ -882,25 +882,25 @@ check_position_mapping_and_interface(void)
    /* Position-input mapping: one plan input reads location 0 = velem[0];
     * the classifier proves the element, binding, and format identity. */
    CHECK(r300_r2vb_position_input_mapping_ok(
-            1, 2, 0, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
+            1, 0, 0, 2, 0, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
          "mapping: single input on bound float3 element admits");
    CHECK(r300_r2vb_position_input_mapping_ok(
-            1, 1, 0, 1, true, PIPE_FORMAT_R32G32B32A32_FLOAT),
+            1, 0, 0, 1, 0, 1, true, PIPE_FORMAT_R32G32B32A32_FLOAT),
          "mapping: float4 element admits");
    CHECK(!r300_r2vb_position_input_mapping_ok(
-            2, 2, 0, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
+            2, 0, 0, 2, 0, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
          "mapping: multi-input plan declines");
    CHECK(!r300_r2vb_position_input_mapping_ok(
-            1, 0, 0, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
+            1, 0, 0, 0, 0, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
          "mapping: missing element declines");
    CHECK(!r300_r2vb_position_input_mapping_ok(
-            1, 1, 1, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
+            1, 0, 0, 1, 1, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
          "mapping: out-of-range buffer binding declines");
    CHECK(!r300_r2vb_position_input_mapping_ok(
-            1, 1, 0, 1, false, PIPE_FORMAT_R32G32B32_FLOAT),
+            1, 0, 0, 1, 0, 1, false, PIPE_FORMAT_R32G32B32_FLOAT),
          "mapping: unbound buffer declines");
    CHECK(!r300_r2vb_position_input_mapping_ok(
-            1, 1, 0, 1, true, PIPE_FORMAT_R32G32_FLOAT),
+            1, 0, 0, 1, 0, 1, true, PIPE_FORMAT_R32G32_FLOAT),
          "mapping: format outside the admitted families declines");
 
    /* Interface builder: PSC words from the shared translators, both
@@ -928,12 +928,34 @@ check_position_mapping_and_interface(void)
       if (it.prog_stream_cntl[i] || it.prog_stream_cntl_ext[i])
          tail_zero = false;
    CHECK(tail_zero, "interface: stream registers 1..7 are zeroed");
-   /* The FLOAT_3 swizzle sources W from the constant-one select; pin it
-    * against the FLOAT_4 identity swizzle rather than a hand-coded
-    * constant so the shared translator stays the single authority. */
-   CHECK((it.prog_stream_cntl_ext[0] >> 16) !=
-            (it.prog_stream_cntl_ext[0] & 0xffff),
-         "interface: float3 swizzle differs from the float4 identity");
+   /* Semantic swizzle oracle: decode the translator's word rather than
+    * comparing encodings, so the test proves the MEANING -- FLOAT_4 is
+    * the XYZW identity, FLOAT_3 routes W from the constant-one select --
+    * with the full write mask on both. */
+   {
+      uint16_t s4 = it.prog_stream_cntl_ext[0] & 0xffff;
+      uint16_t s3 = it.prog_stream_cntl_ext[0] >> 16;
+      unsigned mask4 = (s4 >> R300_WRITE_ENA_SHIFT) & 0xf;
+      unsigned mask3 = (s3 >> R300_WRITE_ENA_SHIFT) & 0xf;
+      CHECK(((s4 >> R300_SWIZZLE_SELECT_X_SHIFT) & 7) ==
+               R300_SWIZZLE_SELECT_X &&
+            ((s4 >> R300_SWIZZLE_SELECT_Y_SHIFT) & 7) ==
+               R300_SWIZZLE_SELECT_Y &&
+            ((s4 >> R300_SWIZZLE_SELECT_Z_SHIFT) & 7) ==
+               R300_SWIZZLE_SELECT_Z &&
+            ((s4 >> R300_SWIZZLE_SELECT_W_SHIFT) & 7) ==
+               R300_SWIZZLE_SELECT_W && mask4 == 0xf,
+            "interface: float4 swizzle decodes as the XYZW identity");
+      CHECK(((s3 >> R300_SWIZZLE_SELECT_X_SHIFT) & 7) ==
+               R300_SWIZZLE_SELECT_X &&
+            ((s3 >> R300_SWIZZLE_SELECT_Y_SHIFT) & 7) ==
+               R300_SWIZZLE_SELECT_Y &&
+            ((s3 >> R300_SWIZZLE_SELECT_Z_SHIFT) & 7) ==
+               R300_SWIZZLE_SELECT_Z &&
+            ((s3 >> R300_SWIZZLE_SELECT_W_SHIFT) & 7) ==
+               R300_SWIZZLE_SELECT_FP_ONE && mask3 == 0xf,
+            "interface: float3 swizzle decodes as XYZ1");
+   }
    CHECK(!r300_r2vb_producer_interface_init(&ft, 3, 3, &it),
          "interface: aliased destination vectors reject");
    CHECK(!r300_r2vb_producer_interface_init(&ft, 32, 1, &it),

@@ -3298,6 +3298,8 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
 }
 
 bool r300_r2vb_position_input_mapping_ok(unsigned num_position_inputs,
+                                         unsigned app_driver_location,
+                                         unsigned location_rank,
                                          unsigned velem_count,
                                          unsigned vertex_buffer_index,
                                          unsigned nr_vertex_buffers,
@@ -3305,6 +3307,15 @@ bool r300_r2vb_position_input_mapping_ok(unsigned num_position_inputs,
                                          enum pipe_format format)
 {
     if (num_position_inputs != 1 || velem_count < 1)
+        return false;
+    /* The first canary restricts the source identity executably: the one
+     * position input must sit at application driver location zero and
+     * compact to rank zero, so velem[0] is its element by the
+     * element-i-feeds-input-i convention.  A shader whose single position
+     * source lives at a nonzero original location declines here rather
+     * than fetching the wrong element; widening this needs the plan to
+     * carry the source's location and rank as data. */
+    if (app_driver_location != 0 || location_rank != 0)
         return false;
     if (vertex_buffer_index >= nr_vertex_buffers || !buffer_bound)
         return false;
