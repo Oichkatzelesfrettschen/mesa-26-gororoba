@@ -207,6 +207,10 @@ u_upload_alloc_buffer(struct u_upload_mgr *upload, unsigned min_size, struct pip
    if (upload->map == NULL) {
       u_upload_release_buffer(upload);
       pipe_resource_release(upload->pipe, upload->buffer);
+      /* The next allocation reads upload->buffer as the buffer to hand
+       * back through *releasebuf; a dangling pointer here would release
+       * the freed buffer a second time. */
+      upload->buffer = NULL;
       return 0;
    }
 
