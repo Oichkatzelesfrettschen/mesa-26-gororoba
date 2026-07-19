@@ -38,6 +38,7 @@
 #include "compiler/r300_nir.h"
 #include "r300_context.h"
 #include "r300_r2vb_clip.h"
+#include "r300_state_inlines.h"
 #include "r300_cs.h"
 #include "r300_emit.h"
 #include "r300_fs.h"
@@ -3293,6 +3294,67 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
     out->record_dwords = model_stream->size_dwords;
     out->span_bytes = span;
     out->uploaded_bytes = span;
+    return true;
+}
+
+bool r300_r2vb_position_input_mapping_ok(unsigned num_position_inputs,
+                                         unsigned velem_count,
+                                         unsigned vertex_buffer_index,
+                                         unsigned nr_vertex_buffers,
+                                         bool buffer_bound,
+                                         enum pipe_format format)
+{
+    if (num_position_inputs != 1 || velem_count < 1)
+        return false;
+    if (vertex_buffer_index >= nr_vertex_buffers || !buffer_bound)
+        return false;
+    return format == PIPE_FORMAT_R32G32B32_FLOAT ||
+           format == PIPE_FORMAT_R32G32B32A32_FLOAT;
+}
+
+bool r300_r2vb_producer_interface_init(
+    const struct r300_r2vb_producer_fetch *fetch,
+    unsigned slot_dst_vec_loc, unsigned model_dst_vec_loc,
+    struct r300_r2vb_producer_interface *out)
+{
+    if (!fetch || fetch->streams.num != 2)
+        return false;
+    /* DST_VEC_LOC is a 5-bit field; a wider value would silently alias
+     * another input vector. */
+    if (slot_dst_vec_loc > 31 || model_dst_vec_loc > 31 ||
+        slot_dst_vec_loc == model_dst_vec_loc)
+        return false;
+    const struct r300_r2vb_producer_stream *model = &fetch->streams.stream[1];
+    enum pipe_format model_format;
+    switch (model->size_dwords) {
+    case 3:
+        model_format = PIPE_FORMAT_R32G32B32_FLOAT;
+        break;
+    case 4:
+        model_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+        break;
+    default:
+        return false;
+    }
+    uint16_t slot_type = r300_translate_vertex_data_type(
+        PIPE_FORMAT_R32G32B32A32_FLOAT);
+    uint16_t model_type = r300_translate_vertex_data_type(model_format);
+    if (slot_type == R300_INVALID_FORMAT ||
+        model_type == R300_INVALID_FORMAT)
+        return false;
+    memset(out, 0, sizeof(*out));
+    /* Two elements share the first register pair; the model element is
+     * the last fetched vector. */
+    uint32_t e0 = slot_type | (slot_dst_vec_loc << R300_DST_VEC_LOC_SHIFT);
+    uint32_t e1 = model_type |
+                  (model_dst_vec_loc << R300_DST_VEC_LOC_SHIFT) |
+                  R300_LAST_VEC;
+    out->prog_stream_cntl[0] = e0 | (e1 << 16);
+    out->prog_stream_cntl_ext[0] =
+        (uint32_t)r300_translate_vertex_data_swizzle(
+            PIPE_FORMAT_R32G32B32A32_FLOAT) |
+        ((uint32_t)r300_translate_vertex_data_swizzle(model_format) << 16);
+    out->vap_vtx_size = fetch->vap_vtx_size;
     return true;
 }
 
