@@ -3185,9 +3185,10 @@ bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
     const struct r300_r2vb_producer_stream *model = &s->stream[1];
     if (slot->offset_bytes % 4 != 0 || model->offset_bytes % 4 != 0)
         return false;
-    /* A stride under one FP32x4 record would overlap fetches; the first
-     * silicon proof keeps the extent and aliasing contract simple. */
-    if (model->stride_dwords < 4 ||
+    /* A stride under one record would overlap fetches; the anti-overlap
+     * rule follows the stream's own record width, so the packed FLOAT_3
+     * stride of 3 dwords is legal. */
+    if (model->stride_dwords < model->size_dwords ||
         model->stride_dwords > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX ||
         slot->stride_dwords > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX)
         return false;
@@ -3214,10 +3215,24 @@ bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
                                      enum pipe_format format, uint32_t start,
                                      struct r300_r2vb_producer_streams *out)
 {
-    if (format != PIPE_FORMAT_R32G32B32A32_FLOAT)
+    /* The observed dominant workload feeds a tightly packed FLOAT_3
+     * position stream (record 12 bytes); the PSC swizzle synthesizes W
+     * from FP_ONE, reproducing the immediate path's (x,y,z) -> (x,y,z,1)
+     * convention without padded uploads. */
+    uint32_t record_dwords;
+    switch (format) {
+    case PIPE_FORMAT_R32G32B32A32_FLOAT:
+        record_dwords = 4;
+        break;
+    case PIPE_FORMAT_R32G32B32_FLOAT:
+        record_dwords = 3;
+        break;
+    default:
         return false;
-    /* The LOAD_VBPNTR format word carries the stride in dwords. */
-    if (src_stride_bytes == 0 || src_stride_bytes % 4 != 0)
+    }
+    /* The LOAD_VBPNTR format word carries the stride in dwords, and a
+     * stride under one record would overlap fetches. */
+    if (src_stride_bytes % 4 != 0 || src_stride_bytes < record_dwords * 4)
         return false;
     uint64_t model_off = (uint64_t)buffer_offset + src_offset +
                          (uint64_t)start * src_stride_bytes;
@@ -3228,10 +3243,12 @@ bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
         .stream = {
             /* Slot positions: FP32x4 from slot zero regardless of the
              * draw's start -- the producer always writes slots 0..count-1. */
-            { .offset_bytes = 0, .stride_dwords = 4, .size_dwords = 4 },
+            { .offset_bytes = 0, .stride_dwords = 4, .size_dwords = 4,
+              .logical_components = 4 },
             { .offset_bytes = (uint32_t)model_off,
               .stride_dwords = src_stride_bytes / 4,
-              .size_dwords = 4 },
+              .size_dwords = record_dwords,
+              .logical_components = 4 },
         },
     };
     s.fetch_dwords = s.stream[0].size_dwords + s.stream[1].size_dwords;

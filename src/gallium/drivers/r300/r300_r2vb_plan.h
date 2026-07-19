@@ -341,9 +341,17 @@ bool r300_r2vb_slot_grid_gate_value(const char *value);
  * input with a dword-multiple stride; widening runs one format family at
  * a time against silicon. */
 struct r300_r2vb_producer_stream {
-    uint32_t offset_bytes;   /* within the stream's BO */
+    uint32_t offset_bytes;      /* within the stream's BO */
     uint32_t stride_dwords;
-    uint32_t size_dwords;    /* fetched per vertex */
+    uint32_t size_dwords;       /* physical dwords fetched per vertex */
+    uint32_t logical_components; /* post-PSC vector width: a FLOAT_3
+                                  * stream fetches 3 dwords and the PSC
+                                  * swizzle synthesizes W from FP_ONE, so
+                                  * the producer FS still reads a vec4 --
+                                  * the physical-fetch invariant
+                                  * (fetch_dwords == VAP_VTX_SIZE) and
+                                  * the logical interface are separate
+                                  * facts */
 };
 
 struct r300_r2vb_producer_streams {
