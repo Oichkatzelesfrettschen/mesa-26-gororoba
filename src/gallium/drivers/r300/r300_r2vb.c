@@ -3262,10 +3262,15 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
         return false;
     }
 
+    uint64_t span = source_end - source_offset;
     if (kind == R300_R2VB_MODEL_REAL_BO) {
         pipe_resource_reference(&out->resource, res);
         out->kind = kind;
         out->gpu_offset = (uint32_t)source_offset;
+        out->count = count;
+        out->stride_dwords = model_stream->stride_dwords;
+        out->record_dwords = model_stream->size_dwords;
+        out->span_bytes = span;
         return true;
     }
 
@@ -3283,7 +3288,11 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
     out->kind = kind;
     out->resource = uploaded;
     out->gpu_offset = upload_offset;
-    out->uploaded_bytes = source_end - source_offset;
+    out->count = count;
+    out->stride_dwords = model_stream->stride_dwords;
+    out->record_dwords = model_stream->size_dwords;
+    out->span_bytes = span;
+    out->uploaded_bytes = span;
     return true;
 }
 
@@ -3296,10 +3305,23 @@ r300_r2vb_producer_streams_rebind(const struct r300_r2vb_producer_streams *orig,
     if (!orig || !model || model->kind == R300_R2VB_MODEL_UNSUPPORTED ||
         !model->resource)
         return false;
+    /* The transaction was materialized for one exact draw: the count,
+     * record, and stride must match, and the model stream validates
+     * against the bounded end of THIS suballocation, never the backing
+     * BO's full width -- the uploader is a suballocator, and adjacent
+     * capacity belongs to other transactions. */
+    if (count != model->count ||
+        orig->stream[1].stride_dwords != model->stride_dwords ||
+        orig->stream[1].size_dwords != model->record_dwords)
+        return false;
+    uint64_t materialized_end = (uint64_t)model->gpu_offset +
+                                model->span_bytes;
+    if (materialized_end > model->resource->width0)
+        return false;
     struct r300_r2vb_producer_streams bound = *orig;
     bound.stream[1].offset_bytes = model->gpu_offset;
     return r300_r2vb_producer_fetch_init(&bound, count, slot_bo_bytes,
-                                         model->resource->width0, out);
+                                         materialized_end, out);
 }
 
 /* The materialization helper joins the emission arm with the LOAD_VBPNTR

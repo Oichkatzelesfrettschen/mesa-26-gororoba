@@ -400,6 +400,14 @@ struct r300_r2vb_model_fetch {
     enum r300_r2vb_model_source_kind kind;
     struct pipe_resource *resource;
     uint32_t gpu_offset;
+    /* The exact contract this transaction materialized: the uploader is
+     * a suballocator, so only [gpu_offset, gpu_offset + span_bytes)
+     * belongs to this draw -- validating against the backing BO's full
+     * width would let a count drift fetch a neighboring allocation. */
+    uint32_t count;
+    uint32_t stride_dwords;
+    uint32_t record_dwords;
+    uint64_t span_bytes;
     uint64_t uploaded_bytes;
 };
 
