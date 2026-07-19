@@ -239,6 +239,11 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
     }
 
     plan->num_position_inputs = r300_r2vb_count_position_inputs(nir);
+    /* Retain the measured source identity alongside the count, so the
+     * BO-fetch route passes plan data -- never literals -- into the
+     * position-mapping contract.  A failed scan leaves the record
+     * invalid; the mapping then declines rather than assuming zero. */
+    r300_r2vb_position_source_scan(nir, &plan->position_source);
     if (plan->num_position_inputs > R300_R2VB_MAX_PRODUCER_INPUTS) {
         plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
         return false;

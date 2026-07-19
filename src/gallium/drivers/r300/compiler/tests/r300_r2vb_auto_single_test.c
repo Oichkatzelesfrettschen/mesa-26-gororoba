@@ -25,6 +25,7 @@
 #include "r300_reg.h"
 #include "r300_r2vb_plan.h"
 #include "r300_screen.h"
+#include "r300_shader_semantics.h"
 #include "radeon_regalloc.h"
 #include "util/u_upload_mgr.h"
 #include "util/u_inlines.h"
@@ -877,6 +878,152 @@ check_upload_integration(void)
 }
 
 static void
+check_logical_binding(void)
+{
+   /* The three-namespace binding: measured application source identity,
+    * VAP destination vectors, and the FS hardware input register the RS
+    * block routes TC0 to, each derived rather than assumed. */
+   struct r300_shader_semantics fs;
+   r300_shader_semantics_reset(&fs);
+   fs.generic[0] = 0;
+   fs.num_generic = 1;
+   fs.num_total = 1;
+   unsigned hwreg = 99;
+   CHECK(r300_r2vb_producer_fs_input_hwreg(&fs, &hwreg) && hwreg == 0,
+         "binding: single-generic FS derives hardware input register 0");
+   {
+      struct r300_shader_semantics bad = fs;
+      bad.color[0] = 1;
+      bad.num_total = 2;
+      CHECK(!r300_r2vb_producer_fs_input_hwreg(&bad, &hwreg),
+            "binding: a color input breaks the producer FS contract");
+      bad = fs;
+      bad.wpos = 1;
+      bad.num_total = 2;
+      CHECK(!r300_r2vb_producer_fs_input_hwreg(&bad, &hwreg),
+            "binding: a WPOS input breaks the producer FS contract");
+      bad = fs;
+      bad.generic[1] = 1;
+      bad.num_generic = 2;
+      bad.num_total = 2;
+      CHECK(!r300_r2vb_producer_fs_input_hwreg(&bad, &hwreg),
+            "binding: a second generic breaks the producer FS contract");
+   }
+
+   /* Derived RS block for the expected logical tuple: POS + one
+    * 4-component TC0 routed to FS input register 0. */
+   struct r300_rs_block rs;
+   memset(&rs, 0, sizeof(rs));
+   rs.vap_vtx_state_cntl = 0x5555;
+   rs.vap_vsm_vtx_assm = R300_INPUT_CNTL_POS | R300_INPUT_CNTL_TC0;
+   rs.vap_out_vtx_fmt[0] = R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT;
+   rs.vap_out_vtx_fmt[1] = 4;
+   rs.ip[0] = R300_RS_SEL_S(R300_RS_SEL_C0) | R300_RS_SEL_T(R300_RS_SEL_C1) |
+              R300_RS_SEL_R(R300_RS_SEL_C2) | R300_RS_SEL_Q(R300_RS_SEL_C3);
+   rs.count = 4;
+   rs.inst[0] = R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
+                R300_RS_INST_TEX_ADDR(0);
+
+   struct r300_r2vb_position_source src = {
+      .app_driver_location = 0, .location_rank = 0, .valid = true
+   };
+   struct r300_r2vb_producer_logical_binding bind;
+   CHECK(r300_r2vb_producer_logical_binding_init(&src, &fs, &rs, 0, 6, &bind),
+         "binding: all four authorities agree and the binding builds");
+   CHECK(bind.fs_hw_input_reg == 0 && bind.velem_index == 0 &&
+            bind.slot_dst_vec_loc == 0 && bind.model_dst_vec_loc == 6,
+         "binding: record carries the derived namespaces");
+   {
+      struct r300_r2vb_position_source badsrc = src;
+      badsrc.valid = false;
+      CHECK(!r300_r2vb_producer_logical_binding_init(&badsrc, &fs, &rs, 0, 6,
+                                                     &bind),
+            "binding: an unmeasured source identity declines");
+      badsrc = src;
+      badsrc.location_rank = 1;
+      CHECK(!r300_r2vb_producer_logical_binding_init(&badsrc, &fs, &rs, 0, 6,
+                                                     &bind),
+            "binding: a nonzero source rank declines");
+      struct r300_rs_block badrs = rs;
+      badrs.vap_vsm_vtx_assm = R300_INPUT_CNTL_POS;
+      CHECK(!r300_r2vb_producer_logical_binding_init(&src, &fs, &badrs, 0, 6,
+                                                     &bind),
+            "binding: an RS assembly missing TC0 declines");
+      badrs = rs;
+      badrs.inst[0] = R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
+                      R300_RS_INST_TEX_ADDR(1);
+      CHECK(!r300_r2vb_producer_logical_binding_init(&src, &fs, &badrs, 0, 6,
+                                                     &bind),
+            "binding: RS writing another FS register declines");
+   }
+
+   /* Contract checker over a real transaction shape: FLOAT_4 slot +
+    * FLOAT_3 model through the actual interface builder. */
+   CHECK(r300_r2vb_producer_logical_binding_init(&src, &fs, &rs, 0, 6, &bind),
+         "binding: rebuild for the checker rows");
+   struct r300_r2vb_producer_streams st = { 0 };
+   struct r300_r2vb_producer_fetch ft = { 0 };
+   struct r300_r2vb_producer_interface it = { 0 };
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 12,
+                                         PIPE_FORMAT_R32G32B32_FLOAT, 0,
+                                         &st) &&
+            r300_r2vb_producer_fetch_init(&st, 4, 64, 48, &ft) &&
+            r300_r2vb_producer_interface_init(&ft, 0, 6, &it),
+         "binding: checker transaction builds");
+   CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &rs) == 0,
+         "binding: the valid transaction reports zero violations");
+   {
+      struct r300_r2vb_producer_interface bad = it;
+      bad.vap_vtx_size++;
+      CHECK(r300_r2vb_producer_binding_check(&ft, &bad, &bind, &rs) &
+               R300_R2VB_BINDING_FETCH_SIZE,
+            "binding: a fetch-size drift reports FETCH_SIZE");
+      bad = it;
+      /* Flip the model element's W select from FP_ONE to W. */
+      bad.prog_stream_cntl_ext[0] ^=
+         (uint32_t)((R300_SWIZZLE_SELECT_FP_ONE ^ R300_SWIZZLE_SELECT_W)
+                    << R300_SWIZZLE_SELECT_W_SHIFT) << 16;
+      CHECK(r300_r2vb_producer_binding_check(&ft, &bad, &bind, &rs) &
+               R300_R2VB_BINDING_SWIZZLE,
+            "binding: an XYZW model swizzle on FLOAT_3 reports SWIZZLE");
+      bad = it;
+      bad.prog_stream_cntl[0] &= ~((uint32_t)R300_LAST_VEC << 16);
+      CHECK(r300_r2vb_producer_binding_check(&ft, &bad, &bind, &rs) &
+               R300_R2VB_BINDING_LAST_VEC,
+            "binding: a missing model LAST_VEC reports LAST_VEC");
+      bad = it;
+      bad.prog_stream_cntl[3] = 1;
+      CHECK(r300_r2vb_producer_binding_check(&ft, &bad, &bind, &rs) &
+               R300_R2VB_BINDING_TAIL_STATE,
+            "binding: a stale tail register reports TAIL_STATE");
+      struct r300_rs_block badrs = rs;
+      badrs.vap_out_vtx_fmt[1] = 0;
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_OUTPUT_FMT,
+            "binding: a missing TEX0 output tuple reports OUTPUT_FMT");
+      badrs = rs;
+      badrs.ip[0] = R300_RS_SEL_S(R300_RS_SEL_C0) |
+                    R300_RS_SEL_T(R300_RS_SEL_K0) |
+                    R300_RS_SEL_R(R300_RS_SEL_C2) |
+                    R300_RS_SEL_Q(R300_RS_SEL_C3);
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_RS_COMPONENTS,
+            "binding: a constant-fed TC0 component reports RS_COMPONENTS");
+      badrs = rs;
+      badrs.vap_vtx_state_cntl = 0;
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_VAP_ASSEMBLY,
+            "binding: a drifted VTX_STATE_CNTL reports VAP_ASSEMBLY");
+      badrs = rs;
+      badrs.inst[0] = R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
+                      R300_RS_INST_TEX_ADDR(2);
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_FS_REGISTER,
+            "binding: RS writing the wrong FS register reports FS_REGISTER");
+   }
+}
+
+static void
 check_position_mapping_and_interface(void)
 {
    /* Position-input mapping: one plan input reads location 0 = velem[0];
@@ -973,6 +1120,8 @@ main(void)
 
    printf("position mapping + producer interface:\n");
    check_position_mapping_and_interface();
+   printf("producer logical binding:\n");
+   check_logical_binding();
 
    printf("model source classification:\n");
    check_model_source();
