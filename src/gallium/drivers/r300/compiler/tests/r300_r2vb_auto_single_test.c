@@ -463,6 +463,35 @@ check_producer_fetch(void)
    narrow.stream[1].stride_dwords = 2;
    CHECK(!r300_r2vb_producer_fetch_init(&narrow, 4, 64, 64, &f),
          "fetch: overlapping sub-record stride rejects");
+   /* Forged-descriptor matrix: the emission object re-proves the tuple
+    * against records the normal builder would never produce. */
+   struct r300_r2vb_producer_streams forged;
+   forged = s; forged.stream[0].offset_bytes = 16;
+   CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
+         "fetch: nonzero slot offset rejects");
+   forged = s; forged.stream[0].stride_dwords = 3;
+   CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
+         "fetch: slot stride under the slot record rejects");
+   forged = s; forged.stream[0].logical_components = 3;
+   CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
+         "fetch: slot logical width rejects");
+   forged = s; forged.stream[1].logical_components = 3;
+   CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
+         "fetch: model logical width rejects");
+   forged = s; forged.stream[1].size_dwords = 2;
+   CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
+         "fetch: unsupported model record width rejects");
+   forged = s; forged.fetch_dwords = 6;
+   CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
+         "fetch: understated fetch total rejects");
+   struct r300_r2vb_producer_streams f3;
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 12,
+                                         PIPE_FORMAT_R32G32B32_FLOAT, 0,
+                                         &f3),
+         "fetch: float3 streams build for the total check");
+   f3.fetch_dwords = 8;
+   CHECK(!r300_r2vb_producer_fetch_init(&f3, 4, 1 << 20, 1 << 20, &f),
+         "fetch: overstated float3 total rejects");
    /* The packet stride field is 8 bits of dwords. */
    struct r300_r2vb_producer_streams huge;
    CHECK(r300_r2vb_producer_streams_init(0, 0, 1024,
@@ -482,8 +511,10 @@ check_model_source(void)
             R300_R2VB_MODEL_REAL_BO,
          "model: winsys BO fetches in place");
    CHECK(r300_r2vb_model_source_classify(false, true, true) ==
-            R300_R2VB_MODEL_REAL_BO,
-         "model: winsys BO wins over a stale shadow");
+            R300_R2VB_MODEL_UNSUPPORTED,
+         "model: dual backing declines until authority is proven");
+   CHECK(R300_R2VB_MODEL_UNSUPPORTED == 0,
+         "model: a zeroed record is fail-closed by construction");
    CHECK(r300_r2vb_model_source_classify(false, false, true) ==
             R300_R2VB_MODEL_CPU_SHADOW_UPLOAD,
          "model: CPU shadow uploads");

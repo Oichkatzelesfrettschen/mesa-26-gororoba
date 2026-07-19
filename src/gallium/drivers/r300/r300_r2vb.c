@@ -3180,6 +3180,12 @@ r300_r2vb_model_source_classify(bool is_user_buffer, bool has_winsys_bo,
 {
     if (is_user_buffer)
         return R300_R2VB_MODEL_UNSUPPORTED;
+    /* A resource carrying both backings has no authority contract yet:
+     * the generic map path writes the shadow whenever it exists, so the
+     * BO may hold stale data.  Decline until a transition or generation
+     * contract is proven. */
+    if (has_winsys_bo && has_cpu_shadow)
+        return R300_R2VB_MODEL_UNSUPPORTED;
     if (has_winsys_bo)
         return R300_R2VB_MODEL_REAL_BO;
     if (has_cpu_shadow)
@@ -3196,34 +3202,55 @@ r300_r2vb_model_source_classify(bool is_user_buffer, bool has_winsys_bo,
  * carries no write-generation authority that would make reuse safe.
  * Returns false with *out cleared on every decline, so the caller falls
  * back to gallivm with no state to restore. */
+static void
+r300_r2vb_model_fetch_reset(struct r300_r2vb_model_fetch *m)
+{
+    pipe_resource_reference(&m->resource, NULL);
+    memset(m, 0, sizeof(*m));
+    m->kind = R300_R2VB_MODEL_UNSUPPORTED;
+}
+
 static bool
 r300_r2vb_materialize_model_fetch(struct r300_context *r300,
                                   const struct pipe_vertex_buffer *vb,
                                   const struct pipe_vertex_element *ve,
                                   uint32_t start, uint32_t count,
-                                  uint32_t record_bytes,
+                                  const struct r300_r2vb_producer_stream *model_stream,
                                   struct r300_r2vb_model_fetch *out)
 {
     memset(out, 0, sizeof(*out));
+    out->kind = R300_R2VB_MODEL_UNSUPPORTED;
+    /* The validated stream record is the single source of the record and
+     * stride widths, so format validation, span arithmetic, upload size,
+     * and the PM4 descriptor cannot drift into separate truths. */
+    uint32_t record_bytes = model_stream->size_dwords * 4;
+    uint32_t stride_bytes = model_stream->stride_dwords * 4;
+    if (count == 0 || count >= 65536 || record_bytes == 0 ||
+        stride_bytes < record_bytes || ve->src_stride != stride_bytes)
+        return false;
     struct pipe_resource *res =
         vb->is_user_buffer ? NULL : vb->buffer.resource;
     struct r300_resource *rres = res ? r300_resource(res) : NULL;
-    out->kind = r300_r2vb_model_source_classify(
+    enum r300_r2vb_model_source_kind kind = r300_r2vb_model_source_classify(
         vb->is_user_buffer, rres && rres->buf,
         rres && rres->malloced_buffer);
-    if (out->kind == R300_R2VB_MODEL_UNSUPPORTED || count == 0)
+    if (kind == R300_R2VB_MODEL_UNSUPPORTED)
         return false;
 
     uint64_t source_offset = (uint64_t)vb->buffer_offset + ve->src_offset +
-                             (uint64_t)start * ve->src_stride;
+                             (uint64_t)start * stride_bytes;
     uint64_t source_end = source_offset +
-                          (uint64_t)(count - 1) * ve->src_stride +
+                          (uint64_t)(count - 1) * stride_bytes +
                           record_bytes;
-    if (source_end > res->width0 || source_offset > UINT32_MAX)
+    if (source_end > res->width0 || source_offset > UINT32_MAX ||
+        source_end - source_offset > UINT_MAX) {
+        r300_r2vb_model_fetch_reset(out);
         return false;
+    }
 
-    if (out->kind == R300_R2VB_MODEL_REAL_BO) {
+    if (kind == R300_R2VB_MODEL_REAL_BO) {
         pipe_resource_reference(&out->resource, res);
+        out->kind = kind;
         out->gpu_offset = (uint32_t)source_offset;
         return true;
     }
@@ -3234,9 +3261,12 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
                       (unsigned)(source_end - source_offset), 4,
                       rres->malloced_buffer + source_offset, &upload_offset,
                       &uploaded);
-    if (!uploaded)
+    if (!uploaded) {
+        r300_r2vb_model_fetch_reset(out);
         return false;
+    }
     u_upload_unmap(r300->uploader);
+    out->kind = kind;
     out->resource = uploaded;
     out->gpu_offset = upload_offset;
     out->uploaded_bytes = source_end - source_offset;
@@ -3247,15 +3277,14 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
  * producer draw; until that arm lands the reference below keeps the
  * function in the translation unit's live set for the calibration test. */
 bool
-r300_r2vb_materialize_model_fetch_for_test(struct r300_context *r300,
-                                           const struct pipe_vertex_buffer *vb,
-                                           const struct pipe_vertex_element *ve,
-                                           uint32_t start, uint32_t count,
-                                           uint32_t record_bytes,
-                                           struct r300_r2vb_model_fetch *out)
+r300_r2vb_materialize_model_fetch_for_test(
+    struct r300_context *r300, const struct pipe_vertex_buffer *vb,
+    const struct pipe_vertex_element *ve, uint32_t start, uint32_t count,
+    const struct r300_r2vb_producer_stream *model_stream,
+    struct r300_r2vb_model_fetch *out)
 {
     return r300_r2vb_materialize_model_fetch(r300, vb, ve, start, count,
-                                             record_bytes, out);
+                                             model_stream, out);
 }
 
 bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
@@ -3267,7 +3296,22 @@ bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
         return false;
     const struct r300_r2vb_producer_stream *slot = &s->stream[0];
     const struct r300_r2vb_producer_stream *model = &s->stream[1];
-    if (slot->offset_bytes % 4 != 0 || model->offset_bytes % 4 != 0)
+    /* The emission object is self-authenticating: it re-proves the whole
+     * tuple instead of trusting that the normal builder produced it.  The
+     * slot stream is the fixed FP32x4 form at offset zero; the model
+     * stream is one of the two admitted physical families; and the fetch
+     * total derives from the record widths rather than being copied from
+     * a redundant field. */
+    if (slot->offset_bytes != 0 || slot->size_dwords != 4 ||
+        slot->stride_dwords < slot->size_dwords ||
+        slot->logical_components != 4)
+        return false;
+    if ((model->size_dwords != 3 && model->size_dwords != 4) ||
+        model->logical_components != 4)
+        return false;
+    if (model->offset_bytes % 4 != 0)
+        return false;
+    if (s->fetch_dwords != slot->size_dwords + model->size_dwords)
         return false;
     /* A stride under one record would overlap fetches; the anti-overlap
      * rule follows the stream's own record width, so the packed FLOAT_3
@@ -3285,7 +3329,7 @@ bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
     if (slot_end > slot_bo_bytes || model_end > model_bo_bytes)
         return false;
     out->streams = *s;
-    out->vap_vtx_size = s->fetch_dwords;
+    out->vap_vtx_size = slot->size_dwords + model->size_dwords;
     out->vf_min = 0;
     out->vf_max = count - 1;
     out->slot_required_bytes = slot_end;
