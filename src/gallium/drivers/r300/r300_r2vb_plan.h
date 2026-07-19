@@ -374,6 +374,44 @@ bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
 /* Slot-fetch gate value (R300_R2VB_SLOT_FETCH, exact "1"); pure parser. */
 bool r300_r2vb_slot_fetch_gate_value(const char *value);
 
+/* Model-source classification for the BO-fetch producer: a real winsys BO
+ * fetches in place; a CPU-shadow resource (the no-TCL allocation policy
+ * keeps non-custom vertex buffers in malloced_buffer with no winsys BO)
+ * uploads its exact fetched subrange through the context uploader; a user
+ * pointer stays outside the first contract because it carries no
+ * resource-width authority.  Pure over the three source facts so the
+ * calibration drives every arm. */
+enum r300_r2vb_model_source_kind {
+    R300_R2VB_MODEL_REAL_BO = 0,
+    R300_R2VB_MODEL_CPU_SHADOW_UPLOAD,
+    R300_R2VB_MODEL_UNSUPPORTED,
+};
+
+enum r300_r2vb_model_source_kind
+r300_r2vb_model_source_classify(bool is_user_buffer, bool has_winsys_bo,
+                                bool has_cpu_shadow);
+
+/* One materialized model fetch: an owned resource reference (released by
+ * the caller after the CS takes its own) and the descriptor offset --
+ * the upload subrange begins at the first fetched record, so the offset
+ * is the uploader's, not the application's. */
+struct r300_r2vb_model_fetch {
+    enum r300_r2vb_model_source_kind kind;
+    struct pipe_resource *resource;
+    uint32_t gpu_offset;
+    uint64_t uploaded_bytes;
+};
+
+struct pipe_vertex_buffer;
+struct pipe_vertex_element;
+bool
+r300_r2vb_materialize_model_fetch_for_test(struct r300_context *r300,
+                                           const struct pipe_vertex_buffer *vb,
+                                           const struct pipe_vertex_element *ve,
+                                           uint32_t start, uint32_t count,
+                                           uint32_t record_bytes,
+                                           struct r300_r2vb_model_fetch *out);
+
 /* The 3D_LOAD_VBPNTR format word packs the stride into an 8-bit dword
  * field; a host-accepted stride past it would truncate in the emitter. */
 #define R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX 255u

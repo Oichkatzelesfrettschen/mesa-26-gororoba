@@ -3174,6 +3174,90 @@ bool r300_r2vb_slot_fetch_gate_value(const char *value)
     return value && strcmp(value, "1") == 0;
 }
 
+enum r300_r2vb_model_source_kind
+r300_r2vb_model_source_classify(bool is_user_buffer, bool has_winsys_bo,
+                                bool has_cpu_shadow)
+{
+    if (is_user_buffer)
+        return R300_R2VB_MODEL_UNSUPPORTED;
+    if (has_winsys_bo)
+        return R300_R2VB_MODEL_REAL_BO;
+    if (has_cpu_shadow)
+        return R300_R2VB_MODEL_CPU_SHADOW_UPLOAD;
+    return R300_R2VB_MODEL_UNSUPPORTED;
+}
+
+/* Materialize one model stream for the BO-fetch producer.  A real BO takes
+ * a reference at the start-adjusted application offset with no copy.  A
+ * CPU shadow uploads exactly the fetched span -- first record through the
+ * last fetched byte -- so the extent proof and the copy coincide, and the
+ * descriptor offset is the uploader's; u_upload_unmap flushes the write
+ * before the caller emits.  Every routed draw uploads afresh: the shadow
+ * carries no write-generation authority that would make reuse safe.
+ * Returns false with *out cleared on every decline, so the caller falls
+ * back to gallivm with no state to restore. */
+static bool
+r300_r2vb_materialize_model_fetch(struct r300_context *r300,
+                                  const struct pipe_vertex_buffer *vb,
+                                  const struct pipe_vertex_element *ve,
+                                  uint32_t start, uint32_t count,
+                                  uint32_t record_bytes,
+                                  struct r300_r2vb_model_fetch *out)
+{
+    memset(out, 0, sizeof(*out));
+    struct pipe_resource *res =
+        vb->is_user_buffer ? NULL : vb->buffer.resource;
+    struct r300_resource *rres = res ? r300_resource(res) : NULL;
+    out->kind = r300_r2vb_model_source_classify(
+        vb->is_user_buffer, rres && rres->buf,
+        rres && rres->malloced_buffer);
+    if (out->kind == R300_R2VB_MODEL_UNSUPPORTED || count == 0)
+        return false;
+
+    uint64_t source_offset = (uint64_t)vb->buffer_offset + ve->src_offset +
+                             (uint64_t)start * ve->src_stride;
+    uint64_t source_end = source_offset +
+                          (uint64_t)(count - 1) * ve->src_stride +
+                          record_bytes;
+    if (source_end > res->width0 || source_offset > UINT32_MAX)
+        return false;
+
+    if (out->kind == R300_R2VB_MODEL_REAL_BO) {
+        pipe_resource_reference(&out->resource, res);
+        out->gpu_offset = (uint32_t)source_offset;
+        return true;
+    }
+
+    unsigned upload_offset = 0;
+    struct pipe_resource *uploaded = NULL;
+    u_upload_data_ref(r300->uploader, 0,
+                      (unsigned)(source_end - source_offset), 4,
+                      rres->malloced_buffer + source_offset, &upload_offset,
+                      &uploaded);
+    if (!uploaded)
+        return false;
+    u_upload_unmap(r300->uploader);
+    out->resource = uploaded;
+    out->gpu_offset = upload_offset;
+    out->uploaded_bytes = source_end - source_offset;
+    return true;
+}
+
+/* The materialization helper joins the emission arm with the LOAD_VBPNTR
+ * producer draw; until that arm lands the reference below keeps the
+ * function in the translation unit's live set for the calibration test. */
+bool
+r300_r2vb_materialize_model_fetch_for_test(struct r300_context *r300,
+                                           const struct pipe_vertex_buffer *vb,
+                                           const struct pipe_vertex_element *ve,
+                                           uint32_t start, uint32_t count,
+                                           uint32_t record_bytes,
+                                           struct r300_r2vb_model_fetch *out)
+{
+    return r300_r2vb_materialize_model_fetch(r300, vb, ve, start, count,
+                                             record_bytes, out);
+}
+
 bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
                                    uint32_t count, uint64_t slot_bo_bytes,
                                    uint64_t model_bo_bytes,
