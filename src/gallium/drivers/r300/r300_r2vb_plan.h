@@ -492,6 +492,8 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
  * and everything else declines to gallivm as position_input_mapping.
  * Pure over the element facts so the calibration drives every arm. */
 bool r300_r2vb_position_input_mapping_ok(unsigned num_position_inputs,
+                                         unsigned app_driver_location,
+                                         unsigned location_rank,
                                          unsigned velem_count,
                                          unsigned vertex_buffer_index,
                                          unsigned nr_vertex_buffers,
