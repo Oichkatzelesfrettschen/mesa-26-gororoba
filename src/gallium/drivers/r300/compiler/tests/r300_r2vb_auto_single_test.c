@@ -534,10 +534,15 @@ struct fake_buffer {
    uint8_t *data;
 };
 
+static bool g_fail_resource_create;
+static bool g_fail_buffer_map;
+
 static struct pipe_resource *
 fake_resource_create(struct pipe_screen *screen,
                      const struct pipe_resource *templ)
 {
+   if (g_fail_resource_create)
+      return NULL;
    struct fake_buffer *fb = calloc(1, sizeof(*fb));
    fb->b = *templ;
    pipe_reference_init(&fb->b.reference, 1);
@@ -561,6 +566,8 @@ fake_buffer_map(struct pipe_context *ctx, struct pipe_resource *res,
                 unsigned level, unsigned usage, const struct pipe_box *box,
                 struct pipe_transfer **transfer)
 {
+   if (g_fail_buffer_map)
+      return NULL;
    g_fake_transfer.resource = res;
    g_fake_transfer.box = *box;
    *transfer = &g_fake_transfer;
@@ -757,18 +764,15 @@ check_upload_integration(void)
                                             PIPE_FORMAT_R32G32B32_FLOAT, 0,
                                             &st),
             "upload: target-scale stream contract builds");
-      /* Prime a small allocation so the target upload lands at a nonzero
-       * suballocation offset when it fits the same buffer, and the guard
-       * bytes around the span stay provable. */
-      unsigned prime_off = 0;
-      struct pipe_resource *prime = NULL;
-      uint8_t prime_src[64] = { 0x5A };
-      u_upload_data_ref(g_context.uploader, 0, sizeof(prime_src), 4,
-                        prime_src, &prime_off, &prime);
       struct r300_r2vb_model_fetch mt;
       r300_r2vb_model_fetch_init(&mt);
       bool tok = r300_r2vb_materialize_model_fetch_for_test(
          &g_context, &vbt, &vet, 0, TCOUNT, &st.stream[1], &mt);
+      /* Growth row: the 258,192-byte request exceeds the production
+       * uploader's 128 KiB default, so the uploader must rotate to a
+       * larger backing BO; the offset MAY be zero here -- the nonzero-
+       * offset behavior is proven separately below on a pre-sized
+       * uploader. */
       CHECK(tok && mt.uploaded_bytes == TCOUNT * TSTRIDE &&
                mt.span_bytes == TCOUNT * TSTRIDE &&
                (uint64_t)mt.gpu_offset + mt.span_bytes <=
@@ -786,7 +790,84 @@ check_upload_integration(void)
                "upload: target-scale rebound validates inside the span");
       }
       r300_r2vb_model_fetch_fini(&mt);
+
+      /* Nonzero-suballocation row: a 512 KiB uploader holds both the
+       * priming allocation and the target span in one backing BO, so the
+       * target's descriptor offset must be nonzero and aligned, and the
+       * guard bytes on both sides of the span must stay untouched. */
+      struct u_upload_mgr *saved = g_context.uploader;
+      g_context.uploader = u_upload_create(&g_context.context, 512 * 1024,
+                                           PIPE_BIND_CUSTOM,
+                                           PIPE_USAGE_STREAM, 0);
+      unsigned prime_off = 0;
+      struct pipe_resource *prime = NULL;
+      uint8_t prime_src[64] = { 0x5A };
+      u_upload_data_ref(g_context.uploader, 0, sizeof(prime_src), 4,
+                        prime_src, &prime_off, &prime);
+      struct r300_r2vb_model_fetch mo;
+      r300_r2vb_model_fetch_init(&mo);
+      bool ook = r300_r2vb_materialize_model_fetch_for_test(
+         &g_context, &vbt, &vet, 0, TCOUNT, &st.stream[1], &mo);
+      CHECK(ook && mo.gpu_offset > 0 && mo.gpu_offset % 4 == 0 &&
+               mo.resource == prime,
+            "upload: primed uploader yields a nonzero aligned offset");
+      if (ook) {
+         const uint8_t *up = ((struct fake_buffer *)mo.resource)->data;
+         CHECK(memcmp(up + mo.gpu_offset, bigsrc, TCOUNT * TSTRIDE) == 0,
+               "upload: nonzero-offset bytes copied exactly");
+         CHECK(up[prime_off] == 0x5A,
+               "upload: guard bytes before the span stay untouched");
+         struct r300_r2vb_producer_fetch fo;
+         CHECK(r300_r2vb_producer_streams_rebind(&st, &mo,
+                                                 (uint64_t)TCOUNT * 16,
+                                                 TCOUNT, &fo) &&
+                  fo.streams.stream[1].offset_bytes == mo.gpu_offset,
+               "upload: rebound descriptor carries the nonzero offset");
+      }
+      r300_r2vb_model_fetch_fini(&mo);
       pipe_resource_reference(&prime, NULL);
+      u_upload_destroy(g_context.uploader);
+      g_context.uploader = saved;
+
+      /* Failure injection: each fallible operation fails once, the
+       * record stays fail-closed empty, and a later upload succeeds. */
+      struct r300_r2vb_model_fetch mfail;
+      g_fail_resource_create = true;
+      r300_r2vb_model_fetch_init(&mfail);
+      CHECK(!r300_r2vb_materialize_model_fetch_for_test(
+               &g_context, &vbt, &vet, 0, TCOUNT, &st.stream[1], &mfail) &&
+               mfail.kind == R300_R2VB_MODEL_UNSUPPORTED && !mfail.resource,
+            "upload: allocation failure leaves the record fail-closed");
+      g_fail_resource_create = false;
+      g_fail_buffer_map = true;
+      r300_r2vb_model_fetch_init(&mfail);
+      CHECK(!r300_r2vb_materialize_model_fetch_for_test(
+               &g_context, &vbt, &vet, 0, TCOUNT, &st.stream[1], &mfail) &&
+               mfail.kind == R300_R2VB_MODEL_UNSUPPORTED && !mfail.resource,
+            "upload: map failure leaves the record fail-closed");
+      g_fail_buffer_map = false;
+      r300_r2vb_model_fetch_init(&mfail);
+      CHECK(r300_r2vb_materialize_model_fetch_for_test(
+               &g_context, &vbt, &vet, 0, TCOUNT, &st.stream[1], &mfail),
+            "upload: the uploader recovers after injected failures");
+      r300_r2vb_model_fetch_fini(&mfail);
+
+      /* Repeated lifetime: a thousand materialize/rebind/fini cycles
+       * exercise uploader rotation, old-buffer release, and reference
+       * balancing; leaks surface under the ASan gate. */
+      bool loop_ok = true;
+      for (unsigned it = 0; it < 1000 && loop_ok; it++) {
+         struct r300_r2vb_model_fetch ml;
+         r300_r2vb_model_fetch_init(&ml);
+         struct r300_r2vb_producer_fetch fl;
+         loop_ok = r300_r2vb_materialize_model_fetch_for_test(
+                      &g_context, &vbt, &vet, 0, TCOUNT, &st.stream[1],
+                      &ml) &&
+                   r300_r2vb_producer_streams_rebind(
+                      &st, &ml, (uint64_t)TCOUNT * 16, TCOUNT, &fl);
+         r300_r2vb_model_fetch_fini(&ml);
+      }
+      CHECK(loop_ok, "upload: 1000 materialize/rebind/fini cycles hold");
       free(bigsrc);
    }
    free(bytes);
