@@ -382,9 +382,10 @@ bool r300_r2vb_slot_fetch_gate_value(const char *value);
  * resource-width authority.  Pure over the three source facts so the
  * calibration drives every arm. */
 enum r300_r2vb_model_source_kind {
-    R300_R2VB_MODEL_REAL_BO = 0,
+    /* Zero is the invalid state so a cleared record is fail-closed. */
+    R300_R2VB_MODEL_UNSUPPORTED = 0,
+    R300_R2VB_MODEL_REAL_BO,
     R300_R2VB_MODEL_CPU_SHADOW_UPLOAD,
-    R300_R2VB_MODEL_UNSUPPORTED,
 };
 
 enum r300_r2vb_model_source_kind
@@ -405,12 +406,11 @@ struct r300_r2vb_model_fetch {
 struct pipe_vertex_buffer;
 struct pipe_vertex_element;
 bool
-r300_r2vb_materialize_model_fetch_for_test(struct r300_context *r300,
-                                           const struct pipe_vertex_buffer *vb,
-                                           const struct pipe_vertex_element *ve,
-                                           uint32_t start, uint32_t count,
-                                           uint32_t record_bytes,
-                                           struct r300_r2vb_model_fetch *out);
+r300_r2vb_materialize_model_fetch_for_test(
+    struct r300_context *r300, const struct pipe_vertex_buffer *vb,
+    const struct pipe_vertex_element *ve, uint32_t start, uint32_t count,
+    const struct r300_r2vb_producer_stream *model_stream,
+    struct r300_r2vb_model_fetch *out);
 
 /* The 3D_LOAD_VBPNTR format word packs the stride into an 8-bit dword
  * field; a host-accepted stride past it would truncate in the emitter. */
