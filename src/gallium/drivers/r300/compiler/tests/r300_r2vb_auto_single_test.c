@@ -22,6 +22,7 @@
 #include "nir_builder.h"
 
 #include "r300_context.h"
+#include "r300_reg.h"
 #include "r300_r2vb_plan.h"
 #include "r300_screen.h"
 #include "radeon_regalloc.h"
@@ -875,10 +876,81 @@ check_upload_integration(void)
    g_context.uploader = NULL;
 }
 
+static void
+check_position_mapping_and_interface(void)
+{
+   /* Position-input mapping: one plan input reads location 0 = velem[0];
+    * the classifier proves the element, binding, and format identity. */
+   CHECK(r300_r2vb_position_input_mapping_ok(
+            1, 2, 0, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
+         "mapping: single input on bound float3 element admits");
+   CHECK(r300_r2vb_position_input_mapping_ok(
+            1, 1, 0, 1, true, PIPE_FORMAT_R32G32B32A32_FLOAT),
+         "mapping: float4 element admits");
+   CHECK(!r300_r2vb_position_input_mapping_ok(
+            2, 2, 0, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
+         "mapping: multi-input plan declines");
+   CHECK(!r300_r2vb_position_input_mapping_ok(
+            1, 0, 0, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
+         "mapping: missing element declines");
+   CHECK(!r300_r2vb_position_input_mapping_ok(
+            1, 1, 1, 1, true, PIPE_FORMAT_R32G32B32_FLOAT),
+         "mapping: out-of-range buffer binding declines");
+   CHECK(!r300_r2vb_position_input_mapping_ok(
+            1, 1, 0, 1, false, PIPE_FORMAT_R32G32B32_FLOAT),
+         "mapping: unbound buffer declines");
+   CHECK(!r300_r2vb_position_input_mapping_ok(
+            1, 1, 0, 1, true, PIPE_FORMAT_R32G32_FLOAT),
+         "mapping: format outside the admitted families declines");
+
+   /* Interface builder: PSC words from the shared translators, both
+    * elements in the first register pair, LAST_VEC on the model, unused
+    * registers zeroed, VAP_VTX_SIZE carried from the fetch object. */
+   struct r300_r2vb_producer_streams st;
+   struct r300_r2vb_producer_fetch ft;
+   struct r300_r2vb_producer_interface it;
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 12,
+                                         PIPE_FORMAT_R32G32B32_FLOAT, 0,
+                                         &st) &&
+            r300_r2vb_producer_fetch_init(&st, 4, 64, 48, &ft) &&
+            r300_r2vb_producer_interface_init(&ft, 0, 6, &it),
+         "interface: float3 pair builds");
+   CHECK(it.vap_vtx_size == 7, "interface: physical tuple carries 7");
+   CHECK((it.prog_stream_cntl[0] & R300_LAST_VEC) == 0 &&
+            (it.prog_stream_cntl[0] & ((uint32_t)R300_LAST_VEC << 16)) != 0,
+         "interface: LAST_VEC sits on the model element only");
+   CHECK(((it.prog_stream_cntl[0] >> R300_DST_VEC_LOC_SHIFT) & 0x1f) == 0 &&
+            ((it.prog_stream_cntl[0] >>
+              (16 + R300_DST_VEC_LOC_SHIFT)) & 0x1f) == 6,
+         "interface: destination vector locations encode");
+   bool tail_zero = true;
+   for (unsigned i = 1; i < 8; i++)
+      if (it.prog_stream_cntl[i] || it.prog_stream_cntl_ext[i])
+         tail_zero = false;
+   CHECK(tail_zero, "interface: stream registers 1..7 are zeroed");
+   /* The FLOAT_3 swizzle sources W from the constant-one select; pin it
+    * against the FLOAT_4 identity swizzle rather than a hand-coded
+    * constant so the shared translator stays the single authority. */
+   CHECK((it.prog_stream_cntl_ext[0] >> 16) !=
+            (it.prog_stream_cntl_ext[0] & 0xffff),
+         "interface: float3 swizzle differs from the float4 identity");
+   CHECK(!r300_r2vb_producer_interface_init(&ft, 3, 3, &it),
+         "interface: aliased destination vectors reject");
+   CHECK(!r300_r2vb_producer_interface_init(&ft, 32, 1, &it),
+         "interface: destination location past the 5-bit field rejects");
+   struct r300_r2vb_producer_fetch forged = ft;
+   forged.streams.stream[1].size_dwords = 2;
+   CHECK(!r300_r2vb_producer_interface_init(&forged, 0, 6, &it),
+         "interface: unsupported model record rejects");
+}
+
 int
 main(void)
 {
    fake_stack_init();
+
+   printf("position mapping + producer interface:\n");
+   check_position_mapping_and_interface();
 
    printf("model source classification:\n");
    check_model_source();

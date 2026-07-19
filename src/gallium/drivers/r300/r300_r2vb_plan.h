@@ -483,6 +483,44 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
                              uint32_t floor);
 
 
+/* Position-input mapping for the BO-fetch producer: the plan's single
+ * position input reads application input location 0, and the gallium
+ * vertex-element convention feeds VS input i from element i, so the
+ * position source is exactly velem[0].  The classifier proves the rest
+ * of that identity -- the element exists, its buffer binding is in
+ * range and bound, and its format is one of the admitted families --
+ * and everything else declines to gallivm as position_input_mapping.
+ * Pure over the element facts so the calibration drives every arm. */
+bool r300_r2vb_position_input_mapping_ok(unsigned num_position_inputs,
+                                         unsigned velem_count,
+                                         unsigned vertex_buffer_index,
+                                         unsigned nr_vertex_buffers,
+                                         bool buffer_bound,
+                                         enum pipe_format format);
+
+/* The producer's programmable-stream interface, derived mechanically
+ * from the validated stream contract: both elements pack into the first
+ * PROG_STREAM_CNTL/EXT register pair (two 16-bit elements per dword,
+ * the r300_swtcl_vertex_psc packing), the hardware data type and the
+ * non-default swizzle come from the shared pipe_format translators --
+ * FLOAT_3 receives its W from the swizzle's constant-one select -- the
+ * model element carries LAST_VEC, and registers 1..7 are zeroed so no
+ * stale multi-stream state survives into the producer draw.
+ * VAP_VTX_SIZE is the physical record sum; the assembly registers
+ * (VTX_STATE_CNTL, VSM_VTX_ASSM, OUTPUT_VTX_FMT) calibrate against the
+ * working immediate producer's draw-adjacent decode rather than being
+ * derived here. */
+struct r300_r2vb_producer_interface {
+    uint32_t prog_stream_cntl[8];
+    uint32_t prog_stream_cntl_ext[8];
+    uint32_t vap_vtx_size;
+};
+
+bool r300_r2vb_producer_interface_init(
+    const struct r300_r2vb_producer_fetch *fetch,
+    unsigned slot_dst_vec_loc, unsigned model_dst_vec_loc,
+    struct r300_r2vb_producer_interface *out);
+
 /* Rebind the application stream contract onto the materialized GPU
  * objects: the model offset becomes the transaction's gpu_offset (for
  * an upload, the uploader's suballocation, not the application offset),
