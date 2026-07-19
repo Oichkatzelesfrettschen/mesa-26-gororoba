@@ -3202,12 +3202,10 @@ r300_r2vb_model_source_classify(bool is_user_buffer, bool has_winsys_bo,
  * carries no write-generation authority that would make reuse safe.
  * Returns false with *out cleared on every decline, so the caller falls
  * back to gallivm with no state to restore. */
-static void
-r300_r2vb_model_fetch_reset(struct r300_r2vb_model_fetch *m)
+void r300_r2vb_model_fetch_fini(struct r300_r2vb_model_fetch *m)
 {
     pipe_resource_reference(&m->resource, NULL);
-    memset(m, 0, sizeof(*m));
-    m->kind = R300_R2VB_MODEL_UNSUPPORTED;
+    r300_r2vb_model_fetch_init(m);
 }
 
 static bool
@@ -3218,15 +3216,25 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
                                   const struct r300_r2vb_producer_stream *model_stream,
                                   struct r300_r2vb_model_fetch *out)
 {
+    /* The record must arrive initialized and empty: a reused record still
+     * owning a reference would leak it under the entry state below. */
+    assert(out->kind == R300_R2VB_MODEL_UNSUPPORTED && !out->resource);
     memset(out, 0, sizeof(*out));
     out->kind = R300_R2VB_MODEL_UNSUPPORTED;
     /* The validated stream record is the single source of the record and
-     * stride widths, so format validation, span arithmetic, upload size,
-     * and the PM4 descriptor cannot drift into separate truths. */
+     * stride widths -- re-proved here so the materializer trusts neither
+     * its caller nor the builder -- and the bounded stride keeps the
+     * byte multiplications from wrapping. */
+    if (!model_stream ||
+        (model_stream->size_dwords != 3 && model_stream->size_dwords != 4) ||
+        model_stream->logical_components != 4 ||
+        model_stream->stride_dwords < model_stream->size_dwords ||
+        model_stream->stride_dwords > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX ||
+        model_stream->offset_bytes % 4 != 0)
+        return false;
     uint32_t record_bytes = model_stream->size_dwords * 4;
     uint32_t stride_bytes = model_stream->stride_dwords * 4;
-    if (count == 0 || count >= 65536 || record_bytes == 0 ||
-        stride_bytes < record_bytes || ve->src_stride != stride_bytes)
+    if (count == 0 || count >= 65536 || ve->src_stride != stride_bytes)
         return false;
     struct pipe_resource *res =
         vb->is_user_buffer ? NULL : vb->buffer.resource;
@@ -3239,12 +3247,18 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
 
     uint64_t source_offset = (uint64_t)vb->buffer_offset + ve->src_offset +
                              (uint64_t)start * stride_bytes;
+    /* Offset coherence: the stream builder computed the same start-
+     * adjusted offset; a divergence means the two contracts describe
+     * different bytes, and the rebased emission stream would then point
+     * the GPU at the wrong part of the upload. */
+    if (source_offset != model_stream->offset_bytes)
+        return false;
     uint64_t source_end = source_offset +
                           (uint64_t)(count - 1) * stride_bytes +
                           record_bytes;
     if (source_end > res->width0 || source_offset > UINT32_MAX ||
         source_end - source_offset > UINT_MAX) {
-        r300_r2vb_model_fetch_reset(out);
+        r300_r2vb_model_fetch_fini(out);
         return false;
     }
 
@@ -3262,7 +3276,7 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
                       rres->malloced_buffer + source_offset, &upload_offset,
                       &uploaded);
     if (!uploaded) {
-        r300_r2vb_model_fetch_reset(out);
+        r300_r2vb_model_fetch_fini(out);
         return false;
     }
     u_upload_unmap(r300->uploader);

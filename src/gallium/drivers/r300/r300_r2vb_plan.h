@@ -405,6 +405,21 @@ struct r300_r2vb_model_fetch {
 
 struct pipe_vertex_buffer;
 struct pipe_vertex_element;
+
+/* Lifetime: init once, materialize into an empty record, fini on every
+ * exit.  fini releases the owned reference and returns the record to
+ * the fail-closed empty state; init alone never inspects the resource
+ * pointer, so a fresh stack record must pass through init before any
+ * other call. */
+static inline void
+r300_r2vb_model_fetch_init(struct r300_r2vb_model_fetch *m)
+{
+    memset(m, 0, sizeof(*m));
+    m->kind = R300_R2VB_MODEL_UNSUPPORTED;
+}
+
+void r300_r2vb_model_fetch_fini(struct r300_r2vb_model_fetch *m);
+
 bool
 r300_r2vb_materialize_model_fetch_for_test(
     struct r300_context *r300, const struct pipe_vertex_buffer *vb,
