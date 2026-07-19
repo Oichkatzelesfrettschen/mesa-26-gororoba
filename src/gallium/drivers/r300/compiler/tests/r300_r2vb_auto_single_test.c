@@ -637,6 +637,26 @@ check_upload_integration(void)
                f.streams.stream[1].offset_bytes == mf.gpu_offset &&
                f.vap_vtx_size == 7,
             "upload: rebound stream carries the uploader offset");
+      /* Span authority: the uploader is a suballocator, so a count drift
+       * past the materialized transaction must reject even though the
+       * backing BO has capacity. */
+      CHECK(!r300_r2vb_producer_streams_rebind(&s, &mf, 64 * 16, COUNT + 1,
+                                               &f),
+            "upload: rebind past the materialized count rejects");
+      CHECK(!r300_r2vb_producer_streams_rebind(&s, &mf, 64 * 16, COUNT - 1,
+                                               &f),
+            "upload: rebind under the materialized count rejects");
+      struct r300_r2vb_producer_streams forged_stride = s;
+      forged_stride.stream[1].stride_dwords = 6;
+      CHECK(!r300_r2vb_producer_streams_rebind(&forged_stride, &mf, 64 * 16,
+                                               COUNT, &f),
+            "upload: forged rebound stride rejects");
+      struct r300_r2vb_producer_streams forged_rec = s;
+      forged_rec.stream[1].size_dwords = 4;
+      forged_rec.fetch_dwords = 8;
+      CHECK(!r300_r2vb_producer_streams_rebind(&forged_rec, &mf, 64 * 16,
+                                               COUNT, &f),
+            "upload: forged rebound record width rejects");
    }
    r300_r2vb_model_fetch_fini(&mf);
    CHECK(mf.kind == R300_R2VB_MODEL_UNSUPPORTED && !mf.resource,
@@ -711,6 +731,64 @@ check_upload_integration(void)
             ms.kind == R300_R2VB_MODEL_UNSUPPORTED,
          "upload: one-byte-short source declines fail-closed");
 
+   /* Target-scale growth: the dominant draw's 258,192-byte span exceeds
+    * the uploader's 128 KiB default, so this row proves the growth
+    * allocation and the byte copy at production size, after a small
+    * priming upload forces a nonzero suballocation offset for the
+    * follow-on transaction. */
+   {
+      enum { TCOUNT = 21516, TSTRIDE = 12 };
+      struct r300_resource big;
+      memset(&big, 0, sizeof(big));
+      big.b.width0 = TCOUNT * TSTRIDE;
+      pipe_reference_init(&big.b.reference, 1);
+      uint8_t *bigsrc = malloc(big.b.width0);
+      for (unsigned i = 0; i < big.b.width0; i++)
+         bigsrc[i] = (uint8_t)(i * 2654435761u >> 24);
+      big.malloced_buffer = bigsrc;
+      struct pipe_vertex_buffer vbt = { .buffer_offset = 0,
+                                        .buffer.resource = &big.b };
+      struct pipe_vertex_element vet = { .src_offset = 0,
+                                         .src_stride = TSTRIDE,
+                                         .src_format =
+                                            PIPE_FORMAT_R32G32B32_FLOAT };
+      struct r300_r2vb_producer_streams st;
+      CHECK(r300_r2vb_producer_streams_init(0, 0, TSTRIDE,
+                                            PIPE_FORMAT_R32G32B32_FLOAT, 0,
+                                            &st),
+            "upload: target-scale stream contract builds");
+      /* Prime a small allocation so the target upload lands at a nonzero
+       * suballocation offset when it fits the same buffer, and the guard
+       * bytes around the span stay provable. */
+      unsigned prime_off = 0;
+      struct pipe_resource *prime = NULL;
+      uint8_t prime_src[64] = { 0x5A };
+      u_upload_data_ref(g_context.uploader, 0, sizeof(prime_src), 4,
+                        prime_src, &prime_off, &prime);
+      struct r300_r2vb_model_fetch mt;
+      r300_r2vb_model_fetch_init(&mt);
+      bool tok = r300_r2vb_materialize_model_fetch_for_test(
+         &g_context, &vbt, &vet, 0, TCOUNT, &st.stream[1], &mt);
+      CHECK(tok && mt.uploaded_bytes == TCOUNT * TSTRIDE &&
+               mt.span_bytes == TCOUNT * TSTRIDE &&
+               (uint64_t)mt.gpu_offset + mt.span_bytes <=
+                  mt.resource->width0,
+            "upload: 258192-byte span grows past the uploader default");
+      if (tok) {
+         const uint8_t *up = ((struct fake_buffer *)mt.resource)->data;
+         CHECK(memcmp(up + mt.gpu_offset, bigsrc, TCOUNT * TSTRIDE) == 0,
+               "upload: target-scale bytes copied exactly");
+         struct r300_r2vb_producer_fetch ft;
+         CHECK(r300_r2vb_producer_streams_rebind(&st, &mt,
+                                                 (uint64_t)TCOUNT * 16,
+                                                 TCOUNT, &ft) &&
+                  ft.vap_vtx_size == 7,
+               "upload: target-scale rebound validates inside the span");
+      }
+      r300_r2vb_model_fetch_fini(&mt);
+      pipe_resource_reference(&prime, NULL);
+      free(bigsrc);
+   }
    free(bytes);
    u_upload_destroy(g_context.uploader);
    g_context.uploader = NULL;
