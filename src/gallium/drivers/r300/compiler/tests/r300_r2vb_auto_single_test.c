@@ -472,11 +472,33 @@ check_producer_fetch(void)
          "fetch: packet stride-field ceiling rejects");
 }
 
+static void
+check_model_source(void)
+{
+   CHECK(r300_r2vb_model_source_classify(true, true, true) ==
+            R300_R2VB_MODEL_UNSUPPORTED,
+         "model: user buffer declines regardless of backing");
+   CHECK(r300_r2vb_model_source_classify(false, true, false) ==
+            R300_R2VB_MODEL_REAL_BO,
+         "model: winsys BO fetches in place");
+   CHECK(r300_r2vb_model_source_classify(false, true, true) ==
+            R300_R2VB_MODEL_REAL_BO,
+         "model: winsys BO wins over a stale shadow");
+   CHECK(r300_r2vb_model_source_classify(false, false, true) ==
+            R300_R2VB_MODEL_CPU_SHADOW_UPLOAD,
+         "model: CPU shadow uploads");
+   CHECK(r300_r2vb_model_source_classify(false, false, false) ==
+            R300_R2VB_MODEL_UNSUPPORTED,
+         "model: unbacked resource declines");
+}
+
 int
 main(void)
 {
    fake_stack_init();
 
+   printf("model source classification:\n");
+   check_model_source();
    printf("producer fetch streams:\n");
    check_producer_streams();
    printf("producer fetch extent:\n");
