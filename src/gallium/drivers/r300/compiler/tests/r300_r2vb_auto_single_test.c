@@ -25,6 +25,8 @@
 #include "r300_r2vb_plan.h"
 #include "r300_screen.h"
 #include "radeon_regalloc.h"
+#include "util/u_upload_mgr.h"
+#include "util/u_inlines.h"
 
 static unsigned g_failures;
 
@@ -523,6 +525,197 @@ check_model_source(void)
          "model: unbacked resource declines");
 }
 
+/* Faithful uploader backing: a malloc-backed pipe_screen/pipe_context
+ * pair drives the REAL u_upload_mgr suballocation, offset, and owned-
+ * reference machinery -- only the storage allocator is substituted, so
+ * the transaction under test is the production code path. */
+struct fake_buffer {
+   struct pipe_resource b;
+   uint8_t *data;
+};
+
+static struct pipe_resource *
+fake_resource_create(struct pipe_screen *screen,
+                     const struct pipe_resource *templ)
+{
+   struct fake_buffer *fb = calloc(1, sizeof(*fb));
+   fb->b = *templ;
+   pipe_reference_init(&fb->b.reference, 1);
+   fb->b.screen = screen;
+   fb->data = calloc(1, templ->width0);
+   return &fb->b;
+}
+
+static void
+fake_resource_destroy(struct pipe_screen *screen, struct pipe_resource *res)
+{
+   struct fake_buffer *fb = (struct fake_buffer *)res;
+   free(fb->data);
+   free(fb);
+}
+
+static struct pipe_transfer g_fake_transfer;
+
+static void *
+fake_buffer_map(struct pipe_context *ctx, struct pipe_resource *res,
+                unsigned level, unsigned usage, const struct pipe_box *box,
+                struct pipe_transfer **transfer)
+{
+   g_fake_transfer.resource = res;
+   g_fake_transfer.box = *box;
+   *transfer = &g_fake_transfer;
+   return ((struct fake_buffer *)res)->data + box->x;
+}
+
+static void
+fake_buffer_unmap(struct pipe_context *ctx, struct pipe_transfer *transfer)
+{
+}
+
+static void
+fake_transfer_flush_region(struct pipe_context *ctx,
+                           struct pipe_transfer *transfer,
+                           const struct pipe_box *box)
+{
+}
+
+static void
+check_upload_integration(void)
+{
+   g_context.context.screen = &g_screen.screen;
+   g_screen.screen.resource_create = fake_resource_create;
+   g_screen.screen.resource_destroy = fake_resource_destroy;
+   g_context.context.buffer_map = fake_buffer_map;
+   g_context.context.buffer_unmap = fake_buffer_unmap;
+   g_context.context.transfer_flush_region = fake_transfer_flush_region;
+   g_context.context.resource_release = u_default_resource_release;
+   g_context.uploader = u_upload_create(&g_context.context, 128 * 1024,
+                                        PIPE_BIND_CUSTOM, PIPE_USAGE_STREAM,
+                                        0);
+   CHECK(g_context.uploader != NULL, "upload: faithful uploader created");
+
+   /* Packed FLOAT_3 CPU shadow: prefix sentinel, records from a nonzero
+    * start, suffix sentinel; the copied span must be exactly the selected
+    * records. */
+   enum { STRIDE = 12, START = 3, COUNT = 5, PRE = 36 };
+   struct r300_resource shadow;
+   memset(&shadow, 0, sizeof(shadow));
+   shadow.b.width0 = PRE + (START + COUNT) * STRIDE + 24;
+   pipe_reference_init(&shadow.b.reference, 1);
+   uint8_t *bytes = malloc(shadow.b.width0);
+   for (unsigned i = 0; i < shadow.b.width0; i++)
+      bytes[i] = (uint8_t)(0xA0 ^ i);
+   shadow.malloced_buffer = bytes;
+
+   struct pipe_vertex_buffer vb = { .buffer_offset = PRE,
+                                    .buffer.resource = &shadow.b };
+   struct pipe_vertex_element ve = { .src_offset = 0, .src_stride = STRIDE,
+                                     .src_format =
+                                        PIPE_FORMAT_R32G32B32_FLOAT };
+   struct r300_r2vb_producer_streams s;
+   CHECK(r300_r2vb_producer_streams_init(PRE, 0, STRIDE,
+                                         PIPE_FORMAT_R32G32B32_FLOAT, START,
+                                         &s),
+         "upload: packed stream contract builds");
+   struct r300_r2vb_model_fetch mf;
+   r300_r2vb_model_fetch_init(&mf);
+   bool ok = r300_r2vb_materialize_model_fetch_for_test(
+      &g_context, &vb, &ve, START, COUNT, &s.stream[1], &mf);
+   CHECK(ok && mf.kind == R300_R2VB_MODEL_CPU_SHADOW_UPLOAD &&
+            mf.resource && mf.uploaded_bytes == COUNT * STRIDE &&
+            mf.gpu_offset % 4 == 0,
+         "upload: shadow uploads the exact packed span");
+   if (ok) {
+      const uint8_t *up = ((struct fake_buffer *)mf.resource)->data;
+      CHECK(memcmp(up + mf.gpu_offset, bytes + PRE + START * STRIDE,
+                   COUNT * STRIDE) == 0,
+            "upload: copied bytes equal the selected source records");
+      /* Rebind: the emission fetch validates against the ACTUAL uploaded
+       * resource and the uploader's offset, not the application offset. */
+      struct r300_r2vb_producer_fetch f;
+      CHECK(r300_r2vb_producer_streams_rebind(&s, &mf, 64 * 16, COUNT, &f) &&
+               f.streams.stream[1].offset_bytes == mf.gpu_offset &&
+               f.vap_vtx_size == 7,
+            "upload: rebound stream carries the uploader offset");
+   }
+   r300_r2vb_model_fetch_fini(&mf);
+   CHECK(mf.kind == R300_R2VB_MODEL_UNSUPPORTED && !mf.resource,
+         "upload: fini returns the fail-closed empty record");
+
+   /* Interleaved FLOAT_3 at stride 24: the span preserves inter-record
+    * padding because the descriptor keeps stepping by the true stride. */
+   struct r300_r2vb_producer_streams si;
+   CHECK(r300_r2vb_producer_streams_init(PRE, 0, 24,
+                                         PIPE_FORMAT_R32G32B32_FLOAT, 0,
+                                         &si),
+         "upload: interleaved stream contract builds");
+   ve.src_stride = 24;
+   struct r300_r2vb_model_fetch mi;
+   r300_r2vb_model_fetch_init(&mi);
+   ok = r300_r2vb_materialize_model_fetch_for_test(&g_context, &vb, &ve, 0,
+                                                   4, &si.stream[1], &mi);
+   CHECK(ok && mi.uploaded_bytes == 3 * 24 + 12,
+         "upload: interleaved span is (count-1)*stride + record");
+   if (ok) {
+      const uint8_t *up = ((struct fake_buffer *)mi.resource)->data;
+      CHECK(memcmp(up + mi.gpu_offset, bytes + PRE, 3 * 24 + 12) == 0,
+            "upload: interleaved padding survives the copy");
+   }
+   r300_r2vb_model_fetch_fini(&mi);
+
+   /* Direct BO: reference in place at the application offset, refcount
+    * restored by fini. */
+   struct r300_resource realbo;
+   memset(&realbo, 0, sizeof(realbo));
+   realbo.b.width0 = 4096;
+   pipe_reference_init(&realbo.b.reference, 1);
+   realbo.buf = (struct pb_buffer_lean *)&realbo; /* non-NULL marker */
+   struct pipe_vertex_buffer vbr = { .buffer_offset = 16,
+                                     .buffer.resource = &realbo.b };
+   ve.src_stride = STRIDE;
+   struct r300_r2vb_producer_streams sr;
+   CHECK(r300_r2vb_producer_streams_init(16, 0, STRIDE,
+                                         PIPE_FORMAT_R32G32B32_FLOAT, 2,
+                                         &sr),
+         "upload: direct-BO stream contract builds");
+   struct r300_r2vb_model_fetch mr;
+   r300_r2vb_model_fetch_init(&mr);
+   ok = r300_r2vb_materialize_model_fetch_for_test(&g_context, &vbr, &ve, 2,
+                                                   8, &sr.stream[1], &mr);
+   CHECK(ok && mr.kind == R300_R2VB_MODEL_REAL_BO &&
+            mr.resource == &realbo.b && mr.gpu_offset == 16 + 2 * STRIDE &&
+            mr.uploaded_bytes == 0 && realbo.b.reference.count == 2,
+         "upload: direct BO references in place at the adjusted offset");
+   r300_r2vb_model_fetch_fini(&mr);
+   CHECK(realbo.b.reference.count == 1,
+         "upload: fini restores the direct-BO reference count");
+
+   /* Offset-coherence negative: a stream whose offset disagrees with the
+    * recomputed source offset declines before any upload. */
+   struct r300_r2vb_producer_streams sm = s;
+   sm.stream[1].offset_bytes += 4;
+   struct r300_r2vb_model_fetch mm;
+   r300_r2vb_model_fetch_init(&mm);
+   CHECK(!r300_r2vb_materialize_model_fetch_for_test(
+            &g_context, &vb, &ve, START, COUNT, &sm.stream[1], &mm) &&
+            mm.kind == R300_R2VB_MODEL_UNSUPPORTED,
+         "upload: offset-coherence mismatch declines fail-closed");
+
+   /* One-byte-short source: the last record's final byte falls outside
+    * width0. */
+   shadow.b.width0 = PRE + (START + COUNT) * STRIDE - 1;
+   struct r300_r2vb_model_fetch ms;
+   r300_r2vb_model_fetch_init(&ms);
+   CHECK(!r300_r2vb_materialize_model_fetch_for_test(
+            &g_context, &vb, &ve, START, COUNT, &s.stream[1], &ms) &&
+            ms.kind == R300_R2VB_MODEL_UNSUPPORTED,
+         "upload: one-byte-short source declines fail-closed");
+
+   free(bytes);
+   u_upload_destroy(g_context.uploader);
+   g_context.uploader = NULL;
+}
+
 int
 main(void)
 {
@@ -530,6 +723,8 @@ main(void)
 
    printf("model source classification:\n");
    check_model_source();
+   printf("upload integration (faithful allocator, real u_upload_mgr):\n");
+   check_upload_integration();
    printf("producer fetch streams:\n");
    check_producer_streams();
    printf("producer fetch extent:\n");
