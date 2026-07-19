@@ -420,13 +420,6 @@ r300_r2vb_model_fetch_init(struct r300_r2vb_model_fetch *m)
 
 void r300_r2vb_model_fetch_fini(struct r300_r2vb_model_fetch *m);
 
-bool
-r300_r2vb_materialize_model_fetch_for_test(
-    struct r300_context *r300, const struct pipe_vertex_buffer *vb,
-    const struct pipe_vertex_element *ve, uint32_t start, uint32_t count,
-    const struct r300_r2vb_producer_stream *model_stream,
-    struct r300_r2vb_model_fetch *out);
-
 /* The 3D_LOAD_VBPNTR format word packs the stride into an 8-bit dword
  * field; a host-accepted stride past it would truncate in the emitter. */
 #define R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX 255u
@@ -480,6 +473,29 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
                              const struct r300_r2vb_producer_plan *window_plan,
                              const struct r300_r2vb_auto_single_draw *d,
                              uint32_t floor);
+
+
+/* Rebind the application stream contract onto the materialized GPU
+ * objects: the model offset becomes the transaction's gpu_offset (for
+ * an upload, the uploader's suballocation, not the application offset),
+ * and the emission-ready fetch object revalidates against the ACTUAL
+ * resource widths.  This second validation is the object the PM4 arm
+ * consumes; the pre-materialization stream must never reach the
+ * emitter. */
+bool
+r300_r2vb_producer_streams_rebind(const struct r300_r2vb_producer_streams *orig,
+                                  const struct r300_r2vb_model_fetch *model,
+                                  uint64_t slot_bo_bytes, uint32_t count,
+                                  struct r300_r2vb_producer_fetch *out);
+
+struct pipe_vertex_buffer;
+struct pipe_vertex_element;
+bool
+r300_r2vb_materialize_model_fetch_for_test(
+    struct r300_context *r300, const struct pipe_vertex_buffer *vb,
+    const struct pipe_vertex_element *ve, uint32_t start, uint32_t count,
+    const struct r300_r2vb_producer_stream *model_stream,
+    struct r300_r2vb_model_fetch *out);
 
 #ifdef __cplusplus
 }

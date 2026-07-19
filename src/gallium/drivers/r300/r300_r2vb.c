@@ -3287,6 +3287,21 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
     return true;
 }
 
+bool
+r300_r2vb_producer_streams_rebind(const struct r300_r2vb_producer_streams *orig,
+                                  const struct r300_r2vb_model_fetch *model,
+                                  uint64_t slot_bo_bytes, uint32_t count,
+                                  struct r300_r2vb_producer_fetch *out)
+{
+    if (!orig || !model || model->kind == R300_R2VB_MODEL_UNSUPPORTED ||
+        !model->resource)
+        return false;
+    struct r300_r2vb_producer_streams bound = *orig;
+    bound.stream[1].offset_bytes = model->gpu_offset;
+    return r300_r2vb_producer_fetch_init(&bound, count, slot_bo_bytes,
+                                         model->resource->width0, out);
+}
+
 /* The materialization helper joins the emission arm with the LOAD_VBPNTR
  * producer draw; until that arm lands the reference below keeps the
  * function in the translation unit's live set for the calibration test. */
