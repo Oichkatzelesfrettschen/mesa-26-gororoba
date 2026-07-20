@@ -532,7 +532,10 @@ check_model_source(void)
  * reference machinery -- only the storage allocator is substituted, so
  * the transaction under test is the production code path. */
 struct fake_buffer {
-   struct pipe_resource b;
+   /* Full driver-resource shape: the winsys-facing transaction casts a
+    * pipe_resource to r300_resource and reads buf and domain, so the
+    * fake allocates the complete struct with a non-NULL dummy buf. */
+   struct r300_resource r;
    uint8_t *data;
 };
 
@@ -546,11 +549,13 @@ fake_resource_create(struct pipe_screen *screen,
    if (g_fail_resource_create)
       return NULL;
    struct fake_buffer *fb = calloc(1, sizeof(*fb));
-   fb->b = *templ;
-   pipe_reference_init(&fb->b.reference, 1);
-   fb->b.screen = screen;
+   fb->r.b = *templ;
+   pipe_reference_init(&fb->r.b.reference, 1);
+   fb->r.b.screen = screen;
    fb->data = calloc(1, templ->width0);
-   return &fb->b;
+   fb->r.buf = (struct pb_buffer_lean *)fb->data;
+   fb->r.domain = RADEON_DOMAIN_GTT;
+   return &fb->r.b;
 }
 
 static void
@@ -560,6 +565,61 @@ fake_resource_destroy(struct pipe_screen *screen, struct pipe_resource *res)
    free(fb->data);
    free(fb);
 }
+
+/* Fake winsys for the CS-staging and emission rows: a real command
+ * buffer, scripted cs_validate failures, and order-of-first-add
+ * relocation indices.  A validate failure clears the seen set, matching
+ * the real winsys contract that a validation flush drops the buffers
+ * added since the prior validation. */
+static struct {
+   unsigned adds;
+   unsigned validates;
+   unsigned fail_validates; /* decrement-to-zero failure script */
+   struct pb_buffer_lean *seen[8];
+   unsigned num_seen;
+} g_fws;
+
+static unsigned
+fws_add_buffer(struct radeon_cmdbuf *rcs, struct pb_buffer_lean *buf,
+               unsigned usage, enum radeon_bo_domain domain)
+{
+   g_fws.adds++;
+   for (unsigned i = 0; i < g_fws.num_seen; i++)
+      if (g_fws.seen[i] == buf)
+         return i;
+   g_fws.seen[g_fws.num_seen] = buf;
+   return g_fws.num_seen++;
+}
+
+static int
+fws_lookup_buffer(struct radeon_cmdbuf *rcs, struct pb_buffer_lean *buf)
+{
+   for (unsigned i = 0; i < g_fws.num_seen; i++)
+      if (g_fws.seen[i] == buf)
+         return (int)i;
+   return -1;
+}
+
+static bool
+fws_validate(struct radeon_cmdbuf *rcs)
+{
+   g_fws.validates++;
+   if (g_fws.fail_validates) {
+      g_fws.fail_validates--;
+      g_fws.num_seen = 0;
+      memset(g_fws.seen, 0, sizeof(g_fws.seen));
+      return false;
+   }
+   return true;
+}
+
+static bool
+fws_check_space(struct radeon_cmdbuf *rcs, unsigned dw)
+{
+   return true;
+}
+
+static struct radeon_winsys g_fake_winsys;
 
 static struct pipe_transfer g_fake_transfer;
 
@@ -1243,6 +1303,8 @@ check_logical_binding(void)
       pipe_reference_init(&outshadow.b.reference, 1);
       uint8_t *outbytes = calloc(1, (size_t)TCOUNT * 16);
       outshadow.malloced_buffer = outbytes;
+      outshadow.buf = (struct pb_buffer_lean *)outbytes;
+      outshadow.domain = RADEON_DOMAIN_GTT;
       struct pipe_framebuffer_state tfb;
       memset(&tfb, 0, sizeof(tfb));
       tfb.nr_cbufs = 1;
@@ -1254,17 +1316,17 @@ check_logical_binding(void)
        * operation, before the model upload retains anything. */
       unsetenv("R300_R2VB_SLOT_FETCH");
       CHECK(!r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->b,
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
                &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource &&
                txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: gate off declines before any upload");
       setenv("R300_R2VB_SLOT_FETCH", "1", 1);
       CHECK(r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->b,
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
                &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
             "txn: the complete validate phase builds the transaction");
-      CHECK(txn.slot_resource == &slotfb->b &&
+      CHECK(txn.slot_resource == &slotfb->r.b &&
                txn.output_resource == &outshadow.b && txn.model.resource &&
                txn.count == TCOUNT &&
                txn.state == R300_R2VB_BO_DRAW_VALIDATED &&
@@ -1281,7 +1343,7 @@ check_logical_binding(void)
                                              &txn.logical, &rs) == 0,
             "txn: the built transaction passes the full contract check");
       CHECK(!r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->b,
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
                &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
             "txn: validate into an owned transaction declines");
       r300_r2vb_producer_bo_draw_fini(&txn);
@@ -1296,7 +1358,7 @@ check_logical_binding(void)
       badplan.position_source.valid = false;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &badplan, &fs, &rs, &psc, &vb, &ve, 1, 1,
-               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: an unmeasured source declines with nothing retained");
@@ -1304,13 +1366,13 @@ check_logical_binding(void)
       badve.src_format = PIPE_FORMAT_R32G32_FLOAT;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &badve, 1, 1,
-               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn),
             "txn: an inadmissible element format declines");
       struct fake_buffer *tiny = (struct fake_buffer *)fake_resource_create(
          &g_screen.screen, &(struct pipe_resource){ .width0 = 16 });
       CHECK(!r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &tiny->b,
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &tiny->r.b,
                &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: an undersized slot BO declines and releases the model");
@@ -1318,16 +1380,16 @@ check_logical_binding(void)
       badpsc.vap_prog_stream_cntl[0] = 0x25030003;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &badpsc, &vb, &ve, 1, 1,
-               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: a drifted derived binding declines after materialization");
       /* Output-authority negatives: framebuffer identity, extent, and
        * format each decline after materialization with nothing retained. */
-      tfb.cbufs[0].texture = &slotfb->b;
+      tfb.cbufs[0].texture = &slotfb->r.b;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
-               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource && !txn.output_resource,
             "txn: an output that is not the bound color target declines");
@@ -1335,7 +1397,7 @@ check_logical_binding(void)
       outshadow.b.width0 = TCOUNT - 1;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
-               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: a one-texel-short output extent declines");
@@ -1343,15 +1405,115 @@ check_logical_binding(void)
       outshadow.b.format = PIPE_FORMAT_R8G8B8A8_UNORM;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
-               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: an output format outside FP32x4 declines");
       outshadow.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+
+      /* CS staging and mechanical emission through the fake winsys. */
+      printf("producer bo-draw CS staging + emission:\n");
+      static uint32_t csbuf[256];
+      g_fake_winsys.cs_add_buffer = fws_add_buffer;
+      g_fake_winsys.cs_lookup_buffer = fws_lookup_buffer;
+      g_fake_winsys.cs_validate = fws_validate;
+      g_fake_winsys.cs_check_space = fws_check_space;
+      g_context.rws = &g_fake_winsys;
+      g_context.cs.current.buf = csbuf;
+      g_context.cs.current.max_dw = 256;
+      g_context.cs.current.cdw = 0;
+      memset(&g_fws, 0, sizeof(g_fws));
+      r300_r2vb_producer_bo_draw_init(&txn);
+      CHECK(r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
+               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+            "cs: validate builds the transaction for staging");
+      CHECK(!r300_r2vb_producer_bo_draw_emit(&g_context, &txn),
+            "cs: emission before READY declines");
+      unsigned stage_cdw = g_context.cs.current.cdw;
+      CHECK(r300_r2vb_producer_bo_draw_stage_cs(&g_context, &txn, &plan, &fs,
+                                                &rs, &psc),
+            "cs: staging validates the complete buffer list");
+      CHECK(txn.state == R300_R2VB_BO_DRAW_READY &&
+               txn.slot_reloc_index >= 0 && txn.model_reloc_index >= 0 &&
+               txn.output_reloc_index >= 0 && g_fws.validates == 1 &&
+               g_context.cs.current.cdw == stage_cdw,
+            "cs: READY holds validated relocation indices, zero registers");
+      CHECK(!r300_r2vb_producer_bo_draw_stage_cs(&g_context, &txn, &plan, &fs,
+                                                 &rs, &psc),
+            "cs: staging twice declines");
+      unsigned emit_cdw = g_context.cs.current.cdw;
+      CHECK(r300_r2vb_producer_bo_draw_emit(&g_context, &txn),
+            "cs: emission completes mechanically from READY");
+      CHECK(g_context.cs.current.cdw - emit_cdw ==
+               r300_r2vb_producer_bo_draw_cs_dwords() &&
+               txn.state == R300_R2VB_BO_DRAW_EMITTED,
+            "cs: the custom range is exactly the fixed dword count");
+      CHECK(csbuf[emit_cdw + 1] == psc.vap_prog_stream_cntl[0] &&
+               csbuf[emit_cdw + r300_r2vb_producer_bo_draw_cs_dwords() - 1] ==
+                  ((TCOUNT << R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) |
+                   R300_VAP_VF_CNTL__PRIM_POINTS |
+                   R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST),
+            "cs: first stream word and draw word carry the snapshot");
+      CHECK(!r300_r2vb_producer_bo_draw_emit(&g_context, &txn),
+            "cs: emitting twice declines");
+      r300_r2vb_producer_bo_draw_fini(&txn);
+
+      /* A first validation failure retries the complete population; the
+       * retry re-adds both the ordinary state buffers and the three
+       * producer BOs, so the relocation indices come from the final CS. */
+      r300_r2vb_producer_bo_draw_init(&txn);
+      CHECK(r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
+               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+            "cs: validate for the retry row");
+      memset(&g_fws, 0, sizeof(g_fws));
+      g_fws.fail_validates = 1;
+      CHECK(r300_r2vb_producer_bo_draw_stage_cs(&g_context, &txn, &plan, &fs,
+                                                &rs, &psc) &&
+               txn.state == R300_R2VB_BO_DRAW_READY && g_fws.validates == 2 &&
+               txn.slot_reloc_index >= 0,
+            "cs: a validation flush retries the complete population once");
+      r300_r2vb_producer_bo_draw_fini(&txn);
+
+      /* A second validation failure declines cleanly: VALIDATED state
+       * retained, zero registers written. */
+      r300_r2vb_producer_bo_draw_init(&txn);
+      CHECK(r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
+               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+            "cs: validate for the double-failure row");
+      memset(&g_fws, 0, sizeof(g_fws));
+      g_fws.fail_validates = 2;
+      stage_cdw = g_context.cs.current.cdw;
+      CHECK(!r300_r2vb_producer_bo_draw_stage_cs(&g_context, &txn, &plan, &fs,
+                                                 &rs, &psc) &&
+               txn.state == R300_R2VB_BO_DRAW_VALIDATED &&
+               g_context.cs.current.cdw == stage_cdw,
+            "cs: a second validation failure declines with zero registers");
+      /* Mutable contents changed under the same pointer: the by-value
+       * snapshot catches the drift and staging declines. */
+      memset(&g_fws, 0, sizeof(g_fws));
+      rs.ip[3] ^= 0x1;
+      CHECK(!r300_r2vb_producer_bo_draw_stage_cs(&g_context, &txn, &plan, &fs,
+                                                 &rs, &psc),
+            "cs: RS contents drift under the same pointer declines");
+      rs.ip[3] ^= 0x1;
+      psc.vap_prog_stream_cntl[1] ^= 0x1;
+      CHECK(!r300_r2vb_producer_bo_draw_stage_cs(&g_context, &txn, &plan, &fs,
+                                                 &rs, &psc),
+            "cs: PSC contents drift under the same pointer declines");
+      psc.vap_prog_stream_cntl[1] ^= 0x1;
+      r300_r2vb_producer_bo_draw_fini(&txn);
+      g_context.rws = NULL;
+      g_context.cs.current.buf = NULL;
+      g_context.cs.current.max_dw = 0;
+      g_context.cs.current.cdw = 0;
+
       g_context.fb_state.state = NULL;
       unsetenv("R300_R2VB_SLOT_FETCH");
-      pipe_resource_reference(&(struct pipe_resource *){ &tiny->b }, NULL);
-      pipe_resource_reference(&(struct pipe_resource *){ &slotfb->b }, NULL);
+      pipe_resource_reference(&(struct pipe_resource *){ &tiny->r.b }, NULL);
+      pipe_resource_reference(&(struct pipe_resource *){ &slotfb->r.b }, NULL);
       free(outbytes);
       free(bytes);
       /* The upload-integration section creates its own uploader; a

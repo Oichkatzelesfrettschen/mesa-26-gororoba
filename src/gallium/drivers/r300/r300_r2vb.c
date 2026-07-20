@@ -3948,6 +3948,79 @@ retry:
     return true;
 }
 
+bool r300_r2vb_producer_bo_draw_emit(struct r300_context *r300,
+                                     struct r300_r2vb_producer_bo_draw *txn)
+{
+    /* Lifecycle: emission consumes a READY transaction exactly once. */
+    if (txn->state != R300_R2VB_BO_DRAW_READY)
+        return false;
+    /* Dirty state first.  Staging validated the complete buffer list, so
+     * from here every operation completes mechanically; the atoms this
+     * writes are the ones the capacity reservation accounted for. */
+    r300_emit_dirty_state(r300);
+    const struct r300_r2vb_producer_stream *slot =
+        &txn->fetch.streams.stream[0];
+    const struct r300_r2vb_producer_stream *model =
+        &txn->fetch.streams.stream[1];
+    CS_LOCALS(r300);
+    unsigned start_cdw = cs_copy->current.cdw;
+    BEGIN_CS(r300_r2vb_producer_bo_draw_cs_dwords());
+    /* The full stream range, zeroed tail included: a stale
+     * PROG_STREAM_CNTL word from an inherited draw would add a phantom
+     * fetch, so the emitter clears all eight pairs. */
+    OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_0, 8);
+    OUT_CS_TABLE(txn->psc_snapshot.vap_prog_stream_cntl, 8);
+    OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_EXT_0, 8);
+    OUT_CS_TABLE(txn->psc_snapshot.vap_prog_stream_cntl_ext, 8);
+    OUT_CS_REG(R300_VAP_VTX_SIZE, txn->fetch.streams.fetch_dwords);
+    OUT_CS_REG(R300_VAP_VTX_STATE_CNTL, txn->rs_snapshot.vap_vtx_state_cntl);
+    OUT_CS_REG(R300_VAP_VSM_VTX_ASSM, txn->rs_snapshot.vap_vsm_vtx_assm);
+    OUT_CS_REG_SEQ(R300_VAP_OUTPUT_VTX_FMT_0, 2);
+    OUT_CS_TABLE(txn->rs_snapshot.vap_out_vtx_fmt, 2);
+    OUT_CS_REG(R300_GB_ENABLE, txn->rs_snapshot.gb_enable);
+    OUT_CS_REG_SEQ(R300_RS_IP_0, 8);
+    OUT_CS_TABLE(txn->rs_snapshot.ip, 8);
+    OUT_CS_REG_SEQ(R300_RS_COUNT, 2);
+    OUT_CS(txn->rs_snapshot.count);
+    OUT_CS(txn->rs_snapshot.inst_count);
+    OUT_CS_REG_SEQ(R300_RS_INST_0, 8);
+    OUT_CS_TABLE(txn->rs_snapshot.inst, 8);
+    /* VAP_VF_MAX_VTX_INDX clamps every fetched index; a stale lower
+     * bound would fold high indices onto a low vertex.  MAX (0x2134)
+     * and MIN (0x2138) are register-adjacent, MAX first. */
+    OUT_CS_REG_SEQ(R300_VAP_VF_MAX_VTX_INDX, 2);
+    OUT_CS(txn->fetch.vf_max);
+    OUT_CS(txn->fetch.vf_min);
+    /* Two-array LOAD_VBPNTR: slot positions then the model span, both
+     * offsets rebased by the kernel through the NOP-form relocations
+     * whose indices staging captured from the final validated CS.  The
+     * VBPNTR control macros take bytes and store dwords. */
+    OUT_CS_PKT3(R300_PACKET3_3D_LOAD_VBPNTR, 3);
+    OUT_CS(2 | R300_VC_FORCE_PREFETCH);
+    OUT_CS(R300_VBPNTR_SIZE0(slot->size_dwords * 4) |
+           R300_VBPNTR_STRIDE0(slot->stride_dwords * 4) |
+           R300_VBPNTR_SIZE1(model->size_dwords * 4) |
+           R300_VBPNTR_STRIDE1(model->stride_dwords * 4));
+    OUT_CS(slot->offset_bytes);
+    OUT_CS(model->offset_bytes);
+    OUT_CS(0xc0001000); /* PKT3_NOP -- the relocation form LOAD_VBPNTR expects */
+    OUT_CS((unsigned)txn->slot_reloc_index * 4);
+    OUT_CS(0xc0001000);
+    OUT_CS((unsigned)txn->model_reloc_index * 4);
+    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
+    OUT_CS((txn->count << R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) |
+           R300_VAP_VF_CNTL__PRIM_POINTS |
+           R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST);
+    END_CS;
+    /* The fixed command size is a compile-time fact the capture ladder
+     * re-proves by cursor delta; drift here is an emitter defect. */
+    assert(cs_copy->current.cdw - start_cdw ==
+           r300_r2vb_producer_bo_draw_cs_dwords());
+    (void)start_cdw;
+    txn->state = R300_R2VB_BO_DRAW_EMITTED;
+    return true;
+}
+
 void r300_r2vb_producer_bo_draw_init(struct r300_r2vb_producer_bo_draw *txn)
 {
     memset(txn, 0, sizeof(*txn));
