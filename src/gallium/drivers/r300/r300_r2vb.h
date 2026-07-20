@@ -149,6 +149,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
  * (defined in r300_render.c).  Used by the MVP producer to land a freshly bound
  * transform-FS + its const file in the IB. */
 bool r300_r2vb_prepare_states(struct r300_context *r300, unsigned cs_dwords);
+void r300_r2vb_reserve_bo_draw_cs(struct r300_context *r300,
+                                  unsigned cs_dwords);
 
 /* Emit one machine-greppable key=value line describing a pipe_resource's
  * underlying winsys BO identity: the buffer pointer, byte size, slab

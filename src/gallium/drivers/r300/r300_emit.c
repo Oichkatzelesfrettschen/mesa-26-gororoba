@@ -1454,9 +1454,9 @@ void r300_emit_texture_cache_inval(struct r300_context* r300, unsigned size, voi
     END_CS;
 }
 
-bool r300_emit_buffer_validate(struct r300_context *r300,
-                               bool do_validate_vertex_buffers,
-                               struct pipe_resource *index_buffer)
+void r300_add_state_buffers(struct r300_context *r300,
+                            bool do_validate_vertex_buffers,
+                            struct pipe_resource *index_buffer)
 {
     struct pipe_framebuffer_state *fb =
         (struct pipe_framebuffer_state*)r300->fb_state.state;
@@ -1465,9 +1465,7 @@ bool r300_emit_buffer_validate(struct r300_context *r300,
         (struct r300_textures_state*)r300->textures_state.state;
     struct r300_resource *tex;
     unsigned i;
-    bool flushed = false;
 
-validate:
     if (r300->fb_state.dirty) {
         /* Color buffers... */
         for (i = 0; i < fb->nr_cbufs; i++) {
@@ -1553,6 +1551,16 @@ validate:
                                 RADEON_USAGE_READ | RADEON_USAGE_SYNCHRONIZED |
                                 RADEON_PRIO_INDEX_BUFFER,
                                 r300_resource(index_buffer)->domain);
+}
+
+bool r300_emit_buffer_validate(struct r300_context *r300,
+                               bool do_validate_vertex_buffers,
+                               struct pipe_resource *index_buffer)
+{
+    bool flushed = false;
+
+validate:
+    r300_add_state_buffers(r300, do_validate_vertex_buffers, index_buffer);
 
     /* Now do the validation (flush is called inside cs_validate on failure). */
     if (!r300->rws->cs_validate(&r300->cs)) {
