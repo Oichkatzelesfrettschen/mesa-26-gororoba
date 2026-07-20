@@ -3607,6 +3607,43 @@ bool r300_r2vb_producer_logical_binding_init(
     return true;
 }
 
+bool r300_r2vb_producer_logical_binding_from_state(
+    const struct r300_r2vb_producer_plan *plan,
+    const struct r300_shader_semantics *fs_inputs,
+    const struct r300_rs_block *rs,
+    const struct r300_vertex_stream_state *psc,
+    struct r300_r2vb_producer_logical_binding *out)
+{
+    if (!plan || !psc)
+        return false;
+    /* The derived producer stream state carries exactly one register
+     * pair: the slot position vector and the LAST_VEC model vector.
+     * The destination locations come from decoding that live word; the
+     * calibrated constants then gate them, so a derived state naming
+     * other vectors declines instead of silently rebinding. */
+    if (psc->count != 1)
+        return false;
+    uint32_t e0 = psc->vap_prog_stream_cntl[0] & 0xffff;
+    uint32_t e1 = psc->vap_prog_stream_cntl[0] >> 16;
+    if ((e0 & 0xf) != R300_DATA_TYPE_FLOAT_4)
+        return false;
+    if ((e1 & 0xf) != R300_DATA_TYPE_FLOAT_4 &&
+        (e1 & 0xf) != R300_DATA_TYPE_FLOAT_3)
+        return false;
+    if ((e0 & R300_LAST_VEC) || !(e1 & R300_LAST_VEC))
+        return false;
+    for (unsigned i = 1; i < 8; i++)
+        if (psc->vap_prog_stream_cntl[i] || psc->vap_prog_stream_cntl_ext[i])
+            return false;
+    unsigned slot_loc = (e0 >> R300_DST_VEC_LOC_SHIFT) & 0x1f;
+    unsigned model_loc = (e1 >> R300_DST_VEC_LOC_SHIFT) & 0x1f;
+    if (slot_loc != R300_R2VB_CAL_SLOT_DST_VEC_LOC ||
+        model_loc != R300_R2VB_CAL_MODEL_DST_VEC_LOC)
+        return false;
+    return r300_r2vb_producer_logical_binding_init(
+        &plan->position_source, fs_inputs, rs, slot_loc, model_loc, out);
+}
+
 /* Decode one packed PSC element pair field-by-field for its MEANING:
  * data type, destination vector, LAST_VEC, and the semantic swizzle --
  * FLOAT_4 reads XYZW identity, FLOAT_3 reads X,Y,Z with W from the
