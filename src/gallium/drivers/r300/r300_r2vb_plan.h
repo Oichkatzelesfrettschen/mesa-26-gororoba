@@ -553,6 +553,13 @@ struct nir_shader;
 bool r300_r2vb_position_source_scan(struct nir_shader *vs_nir,
                                     struct r300_r2vb_position_source *out);
 
+/* The element mapper the delivery route uses (rank among VS inputs in
+ * ascending location order), exported so the rank oracle proves the
+ * scan and the mapper share one convention. */
+struct nir_variable;
+int r300_r2vb_input_velem_index_for_test(struct nir_shader *vs,
+                                         const struct nir_variable *in);
+
 /* The producer FS input contract: exactly one generic input and nothing
  * else -- no colors, no FACE, no fog, no WPOS -- verified against the
  * compiled variant's retained semantics.  The hardware input register

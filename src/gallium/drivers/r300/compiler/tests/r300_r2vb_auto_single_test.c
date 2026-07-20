@@ -878,6 +878,100 @@ check_upload_integration(void)
 }
 
 static void
+check_position_source_rank(void)
+{
+   /* Table-driven cross-oracle: the scan's location rank and the delivery
+    * route's input-to-velem mapper must be one convention.  Each case
+    * builds a VS with inputs at the named locations, feeds gl_Position
+    * from one of them, and requires scan rank == mapper index for the
+    * position variable, independent of declaration order. */
+   static const struct {
+      unsigned num_inputs;
+      unsigned locations[3];
+      unsigned driver_locations[3];
+      unsigned position_index; /* which declared input feeds position */
+      bool declare_reversed;
+      unsigned want_rank;
+      unsigned want_driver_location;
+      const char *name;
+   } cases[] = {
+      { 1, { 0 }, { 0 }, 0, false, 0, 0, "single input at location 0" },
+      { 2, { 0, 3 }, { 0, 1 }, 1, false, 1, 1, "position at location 3 of {0,3}" },
+      { 3, { 1, 4, 7 }, { 0, 1, 2 }, 1, false, 1, 1, "position at location 4 of {1,4,7}" },
+      { 2, { 0, 3 }, { 0, 1 }, 1, true, 1, 1,
+        "reversed declaration order keeps location rank" },
+      { 3, { 2, 5, 9 }, { 0, 1, 2 }, 2, false, 2, 2,
+        "position at the highest sparse location" },
+   };
+   for (unsigned c = 0; c < ARRAY_SIZE(cases); c++) {
+      nir_builder b = nir_builder_init_simple_shader(
+         MESA_SHADER_VERTEX,
+         g_screen.screen.nir_options[MESA_SHADER_VERTEX], "rank_case");
+      nir_variable *vars[3] = { 0 };
+      for (unsigned di = 0; di < cases[c].num_inputs; di++) {
+         unsigned i = cases[c].declare_reversed
+                         ? cases[c].num_inputs - 1 - di
+                         : di;
+         vars[i] = nir_variable_create(b.shader, nir_var_shader_in,
+                                       glsl_vec4_type(), "in");
+         vars[i]->data.location = VERT_ATTRIB_GENERIC0 + cases[c].locations[i];
+         vars[i]->data.driver_location = cases[c].driver_locations[i];
+      }
+      nir_variable *out_pos = nir_variable_create(
+         b.shader, nir_var_shader_out, glsl_vec4_type(), "gl_Position");
+      out_pos->data.location = VARYING_SLOT_POS;
+      nir_store_var(&b, out_pos,
+                    nir_load_var(&b, vars[cases[c].position_index]), 0xf);
+      /* Every non-position input still feeds a varying so the original
+       * shader keeps its full input list. */
+      for (unsigned i = 0; i < cases[c].num_inputs; i++) {
+         if (i == cases[c].position_index)
+            continue;
+         nir_variable *ov = nir_variable_create(
+            b.shader, nir_var_shader_out, glsl_vec4_type(), "var");
+         ov->data.location = VARYING_SLOT_VAR0 + i;
+         nir_store_var(&b, ov, nir_load_var(&b, vars[i]), 0xf);
+      }
+      nir_validate_shader(b.shader, "rank case");
+      struct r300_r2vb_position_source src;
+      CHECK(r300_r2vb_position_source_scan(b.shader, &src) && src.valid,
+            cases[c].name);
+      CHECK(src.location_rank == cases[c].want_rank &&
+               src.app_driver_location == cases[c].want_driver_location,
+            "rank case: scan records the expected rank and location");
+      CHECK((int)src.location_rank ==
+               r300_r2vb_input_velem_index_for_test(
+                  b.shader, vars[cases[c].position_index]),
+            "rank case: scan rank equals the element-mapper index");
+      ralloc_free(b.shader);
+   }
+   /* Two inputs feeding position leave no single survivor. */
+   {
+      nir_builder b = nir_builder_init_simple_shader(
+         MESA_SHADER_VERTEX,
+         g_screen.screen.nir_options[MESA_SHADER_VERTEX], "rank_two");
+      nir_variable *a = nir_variable_create(b.shader, nir_var_shader_in,
+                                            glsl_vec4_type(), "a");
+      a->data.location = VERT_ATTRIB_GENERIC0;
+      nir_variable *bb = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "b");
+      bb->data.location = VERT_ATTRIB_GENERIC0 + 1;
+      bb->data.driver_location = 1;
+      nir_variable *out_pos = nir_variable_create(
+         b.shader, nir_var_shader_out, glsl_vec4_type(), "gl_Position");
+      out_pos->data.location = VARYING_SLOT_POS;
+      nir_store_var(&b, out_pos,
+                    nir_fadd(&b, nir_load_var(&b, a), nir_load_var(&b, bb)),
+                    0xf);
+      nir_validate_shader(b.shader, "rank two");
+      struct r300_r2vb_position_source src;
+      CHECK(!r300_r2vb_position_source_scan(b.shader, &src) && !src.valid,
+            "rank case: two position-feeding inputs leave the record invalid");
+      ralloc_free(b.shader);
+   }
+}
+
+static void
 check_logical_binding(void)
 {
    /* The three-namespace binding: measured application source identity,
@@ -1122,6 +1216,8 @@ main(void)
    check_position_mapping_and_interface();
    printf("producer logical binding:\n");
    check_logical_binding();
+   printf("position source rank oracle:\n");
+   check_position_source_rank();
 
    printf("model source classification:\n");
    check_model_source();
