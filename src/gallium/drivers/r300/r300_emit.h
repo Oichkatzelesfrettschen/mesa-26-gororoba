@@ -110,6 +110,14 @@ unsigned r300_get_num_cs_end_dwords(struct r300_context *r300);
 /* Emit all dirty state. */
 void r300_emit_dirty_state(struct r300_context* r300);
 
+/* Add the dirty-state resources to the CS buffer list without validating.
+ * A caller that appends extra buffers (the R2VB producer BO draw) runs this
+ * plus its own additions, then cs_validate, and re-runs the complete
+ * population after a validation flush. */
+void r300_add_state_buffers(struct r300_context *r300,
+                            bool do_validate_vertex_buffers,
+                            struct pipe_resource *index_buffer);
+
 bool r300_emit_buffer_validate(struct r300_context *r300,
                                bool do_validate_vertex_buffers,
                                struct pipe_resource *index_buffer);

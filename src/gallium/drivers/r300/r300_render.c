@@ -337,6 +337,18 @@ bool r300_r2vb_prepare_states(struct r300_context *r300, unsigned cs_dwords)
     return r300_prepare_for_rendering(r300, PREP_EMIT_STATES, NULL, cs_dwords, 0, 0, -1);
 }
 
+/* Capacity-only reservation for the R2VB producer BO draw.  The dirty-state
+ * dword accounting from r300_reserve_cs_dwords covers the state atoms the
+ * emitter writes later; a flush here rotates the CS before any buffer is
+ * added, so the transaction's buffer list and relocation indices always bind
+ * to the final command stream.  State emission stays with the emitter, after
+ * the complete buffer list -- ordinary dirty-state resources plus the slot,
+ * model, and output BOs -- passes cs_validate. */
+void r300_r2vb_reserve_bo_draw_cs(struct r300_context *r300, unsigned cs_dwords)
+{
+    r300_reserve_cs_dwords(r300, PREP_EMIT_STATES, cs_dwords);
+}
+
 /*****************************************************************************
  * The HWTCL draw functions.                                                 *
  ****************************************************************************/
