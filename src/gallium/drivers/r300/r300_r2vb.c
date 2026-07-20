@@ -3535,23 +3535,39 @@ static bool r2vb_rs_output_fmt_ok(const struct r300_rs_block *rs)
 
 static bool r2vb_rs_tc0_components_ok(const struct r300_rs_block *rs)
 {
-    /* All four TC0 components interpolate from the VAP vector: S/T/R/Q
-     * select C0..C3, and the IT count covers the four dwords. */
-    uint32_t want = R300_RS_SEL_S(R300_RS_SEL_C0) |
-                    R300_RS_SEL_T(R300_RS_SEL_C1) |
-                    R300_RS_SEL_R(R300_RS_SEL_C2) |
-                    R300_RS_SEL_Q(R300_RS_SEL_C3);
-    uint32_t sel_mask = R300_RS_SEL_S(7) | R300_RS_SEL_T(7) |
-                        R300_RS_SEL_R(7) | R300_RS_SEL_Q(7);
-    return (rs->ip[0] & sel_mask) == want &&
-           (rs->count & R300_IT_COUNT_MASK) >= 4;
+    /* The producer RS program is exactly one 4-component TC0 route: the
+     * whole-word values pin the live immediate producer's decode -- IP
+     * word 0x00d10000 (TEX_PTR 0, S/T/R/Q from C0..C3) and RS_COUNT
+     * 0x00040004 (IT count 4, HIRES enabled).  A spare selector, a
+     * nonzero texture pointer, or an inflated interpolator count all
+     * fail here instead of hiding behind a component-only decode. */
+    uint32_t want_ip = R300_RS_TEX_PTR(0) | R300_RS_SEL_S(R300_RS_SEL_C0) |
+                       R300_RS_SEL_T(R300_RS_SEL_C1) |
+                       R300_RS_SEL_R(R300_RS_SEL_C2) |
+                       R300_RS_SEL_Q(R300_RS_SEL_C3);
+    uint32_t want_count = R300_IT_COUNT(4) | R300_HIRES_EN;
+    return rs->ip[0] == want_ip && rs->count == want_count &&
+           rs->inst_count == 0;
 }
 
 static bool r2vb_rs_writes_fs_reg(const struct r300_rs_block *rs,
                                   unsigned hwreg)
 {
-    return (rs->inst[0] & R300_RS_INST_TEX_CN_WRITE) &&
-           ((rs->inst[0] >> R300_RS_INST_TEX_ADDR_SHIFT) & 0x3f) == hwreg;
+    /* Whole-word instruction: TEX_ID 0, TEX_CN_WRITE, TEX_ADDR at the
+     * derived register, and every modifier bit clear -- an instruction
+     * that writes the right register while referencing another
+     * interpolator or carrying stale mode bits fails the equality. */
+    return rs->inst[0] == (R300_RS_INST_TEX_ID(0) |
+                           R300_RS_INST_TEX_CN_WRITE |
+                           R300_RS_INST_TEX_ADDR(hwreg));
+}
+
+static bool r2vb_rs_tail_zero(const struct r300_rs_block *rs)
+{
+    for (unsigned i = 1; i < 8; i++)
+        if (rs->ip[i] || rs->inst[i])
+            return false;
+    return true;
 }
 
 bool r300_r2vb_producer_logical_binding_init(
@@ -3575,7 +3591,8 @@ bool r300_r2vb_producer_logical_binding_init(
      * the expected assembly and output tuple; a binding built against a
      * disagreeing RS would emit a draw whose FS reads a stale input. */
     if (!r2vb_rs_assembly_ok(rs) || !r2vb_rs_output_fmt_ok(rs) ||
-        !r2vb_rs_tc0_components_ok(rs) || !r2vb_rs_writes_fs_reg(rs, hwreg))
+        !r2vb_rs_tc0_components_ok(rs) || !r2vb_rs_writes_fs_reg(rs, hwreg) ||
+        !r2vb_rs_tail_zero(rs))
         return false;
     if (slot_dst_vec_loc > 31 || model_dst_vec_loc > 31 ||
         slot_dst_vec_loc == model_dst_vec_loc)
@@ -3659,6 +3676,8 @@ unsigned r300_r2vb_producer_binding_check(
     for (unsigned i = 1; i < 8; i++)
         if (psc->prog_stream_cntl[i] || psc->prog_stream_cntl_ext[i])
             v |= R300_R2VB_BINDING_TAIL_STATE;
+    if (!r2vb_rs_tail_zero(rs))
+        v |= R300_R2VB_BINDING_TAIL_STATE;
     return v;
 }
 
