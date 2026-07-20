@@ -1012,9 +1012,12 @@ check_logical_binding(void)
    rs.vap_vsm_vtx_assm = R300_INPUT_CNTL_POS | R300_INPUT_CNTL_TC0;
    rs.vap_out_vtx_fmt[0] = R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT;
    rs.vap_out_vtx_fmt[1] = 4;
-   rs.ip[0] = R300_RS_SEL_S(R300_RS_SEL_C0) | R300_RS_SEL_T(R300_RS_SEL_C1) |
-              R300_RS_SEL_R(R300_RS_SEL_C2) | R300_RS_SEL_Q(R300_RS_SEL_C3);
-   rs.count = 4;
+   /* The exact whole words from the live immediate-producer decode:
+    * ip 0x00d10000, count 0x00040004 (IT 4 + HIRES), inst 0x00000008. */
+   rs.ip[0] = R300_RS_TEX_PTR(0) | R300_RS_SEL_S(R300_RS_SEL_C0) |
+              R300_RS_SEL_T(R300_RS_SEL_C1) | R300_RS_SEL_R(R300_RS_SEL_C2) |
+              R300_RS_SEL_Q(R300_RS_SEL_C3);
+   rs.count = R300_IT_COUNT(4) | R300_HIRES_EN;
    rs.inst[0] = R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
                 R300_RS_INST_TEX_ADDR(0);
 
@@ -1114,6 +1117,38 @@ check_logical_binding(void)
       CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
                R300_R2VB_BINDING_FS_REGISTER,
             "binding: RS writing the wrong FS register reports FS_REGISTER");
+      /* RS-exactness rows pinned to the calibration decode. */
+      badrs = rs;
+      badrs.count = R300_IT_COUNT(5) | R300_HIRES_EN;
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_RS_COMPONENTS,
+            "binding: an inflated interpolator count reports RS_COMPONENTS");
+      badrs = rs;
+      badrs.inst_count = 1;
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_RS_COMPONENTS,
+            "binding: a second RS instruction count reports RS_COMPONENTS");
+      badrs = rs;
+      badrs.ip[0] |= R300_RS_TEX_PTR(4);
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_RS_COMPONENTS,
+            "binding: a nonzero RS texture pointer reports RS_COMPONENTS");
+      badrs = rs;
+      badrs.inst[0] |= R300_RS_INST_TEX_ID(1);
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_FS_REGISTER,
+            "binding: a wrong interpolator TEX_ID reports FS_REGISTER");
+      badrs = rs;
+      badrs.ip[1] = R300_RS_SEL_S(R300_RS_SEL_C1);
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_TAIL_STATE,
+            "binding: a stale extra RS entry reports TAIL_STATE");
+      CHECK(!r300_r2vb_producer_logical_binding_init(&src, &fs, &badrs, 0, 6,
+                                                     &bind),
+            "binding: the constructor declines a stale extra RS entry");
+      CHECK(r300_r2vb_producer_logical_binding_init(&src, &fs, &rs, 0, 6,
+                                                    &bind),
+            "binding: the pristine block rebuilds after the negatives");
    }
 }
 
