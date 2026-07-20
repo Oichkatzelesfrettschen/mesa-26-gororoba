@@ -640,8 +640,78 @@ unsigned r300_r2vb_producer_binding_check(
     const struct r300_r2vb_producer_logical_binding *binding,
     const struct r300_rs_block *rs);
 
+/* The all-fallible-work-before-emission producer transaction: every
+ * operation that can fail -- source identity, element eligibility,
+ * stream construction, model materialization, span rebind, PSC and
+ * logical-binding derivation, the complete violation check, and
+ * command-stream capacity with relocation indices -- completes before
+ * the emitter writes a register.  The validate phase performs the
+ * fallible host work and takes the referenced resources; the CS phase
+ * orders capacity before buffer addition before relocation lookup and
+ * rechecks the snapshot identities; fini releases what validate took. */
+struct r300_r2vb_producer_bo_draw {
+    /* Snapshot identity: the authorities the transaction was built
+     * against, compared by pointer at the CS phase. */
+    const struct r300_r2vb_producer_plan *plan;
+    const struct r300_shader_semantics *fs_inputs;
+    const struct r300_rs_block *rs;
+    const struct r300_vertex_stream_state *psc_state;
+    uint32_t draw_start;
+    uint32_t count;
+    enum r300_r2vb_position_space space;
+
+    /* Validated storage; validate references both resources. */
+    struct r300_r2vb_slot_layout layout;
+    struct pipe_resource *slot_resource;
+    struct r300_r2vb_model_fetch model;
+
+    /* GPU-facing contract. */
+    struct r300_r2vb_producer_fetch fetch;
+    struct r300_r2vb_producer_interface psc;
+    struct r300_r2vb_producer_logical_binding logical;
+
+    /* CS bookkeeping; relocation indices belong to the CS that was
+     * current when the CS phase ran. */
+    unsigned required_cs_dwords;
+    int slot_reloc_index;
+    int model_reloc_index;
+    int output_reloc_index;
+    bool ready;
+    bool emitted;
+};
+
+/* Fixed command size of the BO-fetch producer draw: every register the
+ * emitter writes, the two-array LOAD_VBPNTR with both relocation
+ * records, and the VBUF draw.  Count-independent, so equal packet
+ * length across 3..4096 is a compile-time fact the capture ladder
+ * re-proves by cursor delta. */
+unsigned r300_r2vb_producer_bo_draw_cs_dwords(void);
+
 struct pipe_vertex_buffer;
 struct pipe_vertex_element;
+bool r300_r2vb_producer_bo_draw_validate(
+    struct r300_context *r300,
+    const struct r300_r2vb_producer_plan *plan,
+    const struct r300_shader_semantics *fs_inputs,
+    const struct r300_rs_block *rs,
+    const struct r300_vertex_stream_state *psc_state,
+    const struct pipe_vertex_buffer *vb, const struct pipe_vertex_element *ve,
+    unsigned velem_count, unsigned nr_vertex_buffers,
+    struct pipe_resource *slot_resource, uint32_t start, uint32_t count,
+    enum r300_r2vb_position_space space,
+    struct r300_r2vb_producer_bo_draw *out);
+
+struct r300_resource;
+bool r300_r2vb_producer_bo_draw_stage_cs(
+    struct r300_context *r300, struct r300_r2vb_producer_bo_draw *txn,
+    const struct r300_r2vb_producer_plan *plan,
+    const struct r300_shader_semantics *fs_inputs,
+    const struct r300_rs_block *rs,
+    const struct r300_vertex_stream_state *psc_state,
+    struct r300_resource *output_bo);
+
+void r300_r2vb_producer_bo_draw_fini(struct r300_r2vb_producer_bo_draw *txn);
+
 bool
 r300_r2vb_materialize_model_fetch_for_test(
     struct r300_context *r300, const struct pipe_vertex_buffer *vb,
