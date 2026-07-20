@@ -660,10 +660,21 @@ struct r300_r2vb_producer_bo_draw {
     uint32_t count;
     enum r300_r2vb_position_space space;
 
-    /* Validated storage; validate references both resources. */
+    /* Validated storage; validate references the slot, model, and
+     * output resources and fini releases all three. */
     struct r300_r2vb_slot_layout layout;
     struct pipe_resource *slot_resource;
     struct r300_r2vb_model_fetch model;
+
+    /* Output authority: the producer render target, proven identical to
+     * the bound framebuffer color target.  Its relocation rides the
+     * dirty framebuffer state atom, so the fixed custom command size
+     * carries only the two input-array relocations and the recorded
+     * output relocation index is diagnostic. */
+    struct pipe_resource *output_resource;
+    uint64_t output_required_bytes;
+    uint32_t output_offset;
+    uint32_t output_pitch_pixels;
 
     /* GPU-facing contract. */
     struct r300_r2vb_producer_fetch fetch;
@@ -697,18 +708,17 @@ bool r300_r2vb_producer_bo_draw_validate(
     const struct r300_vertex_stream_state *psc_state,
     const struct pipe_vertex_buffer *vb, const struct pipe_vertex_element *ve,
     unsigned velem_count, unsigned nr_vertex_buffers,
-    struct pipe_resource *slot_resource, uint32_t start, uint32_t count,
+    struct pipe_resource *slot_resource,
+    struct pipe_resource *output_resource, uint32_t start, uint32_t count,
     enum r300_r2vb_position_space space,
     struct r300_r2vb_producer_bo_draw *out);
 
-struct r300_resource;
 bool r300_r2vb_producer_bo_draw_stage_cs(
     struct r300_context *r300, struct r300_r2vb_producer_bo_draw *txn,
     const struct r300_r2vb_producer_plan *plan,
     const struct r300_shader_semantics *fs_inputs,
     const struct r300_rs_block *rs,
-    const struct r300_vertex_stream_state *psc_state,
-    struct r300_resource *output_bo);
+    const struct r300_vertex_stream_state *psc_state);
 
 void r300_r2vb_producer_bo_draw_fini(struct r300_r2vb_producer_bo_draw *txn);
 
