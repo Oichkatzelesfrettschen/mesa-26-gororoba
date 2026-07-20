@@ -4643,6 +4643,14 @@ static int r300_r2vb_input_velem_index(nir_shader *vs, const nir_variable *in)
     return rank;
 }
 
+/* The rank oracle calls the mapper on named variables so the plan's
+ * retained position_source and the element mapper stay one convention. */
+int r300_r2vb_input_velem_index_for_test(nir_shader *vs,
+                                         const nir_variable *in)
+{
+    return r300_r2vb_input_velem_index(vs, in);
+}
+
 /* PSC/VAP output-vector rank for a gl_varying_slot: mirrors
  * r300_draw_emit_all_attribs / r300_draw_fill_vs_outputs (POS, PSIZ, COL*,
  * BFC*, GENERIC*, FOG).  Numeric gl_varying_slot order places PSIZ after
