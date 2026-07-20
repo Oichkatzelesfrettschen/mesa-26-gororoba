@@ -745,6 +745,14 @@ bool r300_r2vb_producer_bo_draw_stage_cs(
     const struct r300_rs_block *rs,
     const struct r300_vertex_stream_state *psc_state);
 
+/* Mechanical emission of the fixed 64-dword producer draw from the
+ * transaction's snapshot words alone.  Requires READY (the complete
+ * buffer list passed cs_validate at staging), emits the dirty state
+ * atoms first, then the calibrated stream/RS/draw range; the cursor
+ * delta of the custom range equals cs_dwords() by construction. */
+bool r300_r2vb_producer_bo_draw_emit(struct r300_context *r300,
+                                     struct r300_r2vb_producer_bo_draw *txn);
+
 void r300_r2vb_producer_bo_draw_fini(struct r300_r2vb_producer_bo_draw *txn);
 
 bool
