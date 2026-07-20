@@ -12,6 +12,7 @@
 
 #include "compiler/shader_enums.h"
 #include "compiler/radeon_code.h"
+#include "r300_context.h"
 #include "r300_fs.h"
 #include "r300_nir_ssa_cut.h"
 #include "r300_r2vb_clip.h"
@@ -649,6 +650,18 @@ unsigned r300_r2vb_producer_binding_check(
  * fallible host work and takes the referenced resources; the CS phase
  * orders capacity before buffer addition before relocation lookup and
  * rechecks the snapshot identities; fini releases what validate took. */
+/* Transaction lifecycle: init yields EMPTY, validate advances EMPTY to
+ * VALIDATED, CS staging advances VALIDATED to READY, emission advances
+ * READY to EMITTED, and fini returns any state to EMPTY.  Each operation
+ * requires its exact predecessor state and declines otherwise, so an
+ * owned transaction is never overwritten and no phase runs twice. */
+enum r300_r2vb_producer_bo_draw_state {
+    R300_R2VB_BO_DRAW_EMPTY = 0,
+    R300_R2VB_BO_DRAW_VALIDATED,
+    R300_R2VB_BO_DRAW_READY,
+    R300_R2VB_BO_DRAW_EMITTED,
+};
+
 struct r300_r2vb_producer_bo_draw {
     /* Snapshot identity: the authorities the transaction was built
      * against, compared by pointer at the CS phase. */
@@ -687,9 +700,21 @@ struct r300_r2vb_producer_bo_draw {
     int slot_reloc_index;
     int model_reloc_index;
     int output_reloc_index;
-    bool ready;
-    bool emitted;
+    enum r300_r2vb_producer_bo_draw_state state;
+
+    /* By-value snapshots of the mutable derived authorities.  The RS
+     * block and PSC words are context-derived state updated in place, so
+     * pointer identity does not freeze them; the emitter consumes these
+     * copies, and CS staging value-compares them against the live state
+     * before and after the final CS validation. */
+    struct r300_vertex_stream_state psc_snapshot;
+    struct r300_rs_block rs_snapshot;
+    struct r300_viewport_state viewport_snapshot;
 };
+
+/* Sets the transaction to EMPTY.  Required before the first validate;
+ * validate declines an owned or uninitialized transaction. */
+void r300_r2vb_producer_bo_draw_init(struct r300_r2vb_producer_bo_draw *txn);
 
 /* Fixed command size of the BO-fetch producer draw: every register the
  * emitter writes, the two-array LOAD_VBPNTR with both relocation
