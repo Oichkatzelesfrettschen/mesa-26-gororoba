@@ -1199,6 +1199,93 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_logical_binding_from_state(&noplan, &fs, &rs,
                                                            &psc, &rb),
             "from_state: an unmeasured plan source declines");
+
+      /* The all-fallible transaction over the same authorities: a
+       * CPU-shadow model source, a slot BO sized for the layout, and
+       * the derived-state binding, through the real validate phase. */
+      printf("producer bo-draw transaction:\n");
+      /* The faithful uploader stack; check_upload_integration wires the
+       * same hooks, and this section may run first. */
+      g_context.context.screen = &g_screen.screen;
+      g_screen.screen.resource_create = fake_resource_create;
+      g_screen.screen.resource_destroy = fake_resource_destroy;
+      g_context.context.buffer_map = fake_buffer_map;
+      g_context.context.buffer_unmap = fake_buffer_unmap;
+      g_context.context.transfer_flush_region = fake_transfer_flush_region;
+      g_context.context.resource_release = u_default_resource_release;
+      if (!g_context.uploader)
+         g_context.uploader = u_upload_create(&g_context.context, 128 * 1024,
+                                              PIPE_BIND_CUSTOM,
+                                              PIPE_USAGE_STREAM, 0);
+      plan.num_position_inputs = 1;
+      enum { TSTRIDE = 12, TCOUNT = 5 };
+      struct r300_resource shadow;
+      memset(&shadow, 0, sizeof(shadow));
+      shadow.b.width0 = TCOUNT * TSTRIDE;
+      pipe_reference_init(&shadow.b.reference, 1);
+      uint8_t *bytes = calloc(1, shadow.b.width0);
+      shadow.malloced_buffer = bytes;
+      struct pipe_vertex_buffer vb = { .buffer_offset = 0,
+                                       .buffer.resource = &shadow.b };
+      struct pipe_vertex_element ve = { .src_offset = 0,
+                                        .src_stride = TSTRIDE,
+                                        .src_format =
+                                           PIPE_FORMAT_R32G32B32_FLOAT };
+      struct fake_buffer *slotfb = (struct fake_buffer *)fake_resource_create(
+         &g_screen.screen, &(struct pipe_resource){ .width0 = 4096 * 16 });
+      struct r300_r2vb_producer_bo_draw txn;
+      CHECK(r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->b,
+               0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+            "txn: the complete validate phase builds the transaction");
+      CHECK(txn.slot_resource == &slotfb->b && txn.model.resource &&
+               txn.count == TCOUNT && !txn.ready && !txn.emitted &&
+               txn.required_cs_dwords ==
+                  r300_r2vb_producer_bo_draw_cs_dwords(),
+            "txn: storage referenced, CS size fixed, ready stays unset");
+      CHECK(r300_r2vb_producer_binding_check(&txn.fetch, &txn.psc,
+                                             &txn.logical, &rs) == 0,
+            "txn: the built transaction passes the full contract check");
+      r300_r2vb_producer_bo_draw_fini(&txn);
+      CHECK(txn.slot_resource == NULL && txn.model.resource == NULL,
+            "txn: fini releases both storage references");
+
+      /* Failure edges: each fallible layer declines and leaves no
+       * retained storage. */
+      struct r300_r2vb_producer_plan badplan = plan;
+      badplan.position_source.valid = false;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &badplan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &slotfb->b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
+               !txn.model.resource,
+            "txn: an unmeasured source declines with nothing retained");
+      struct pipe_vertex_element badve = ve;
+      badve.src_format = PIPE_FORMAT_R32G32_FLOAT;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &badve, 1, 1,
+               &slotfb->b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+            "txn: an inadmissible element format declines");
+      struct fake_buffer *tiny = (struct fake_buffer *)fake_resource_create(
+         &g_screen.screen, &(struct pipe_resource){ .width0 = 16 });
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &tiny->b,
+               0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
+               !txn.model.resource,
+            "txn: an undersized slot BO declines and releases the model");
+      struct r300_vertex_stream_state badpsc = psc;
+      badpsc.vap_prog_stream_cntl[0] = 0x25030003;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &badpsc, &vb, &ve, 1, 1,
+               &slotfb->b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
+               !txn.model.resource,
+            "txn: a drifted derived binding declines after materialization");
+      pipe_resource_reference(&(struct pipe_resource *){ &tiny->b }, NULL);
+      pipe_resource_reference(&(struct pipe_resource *){ &slotfb->b }, NULL);
+      free(bytes);
+      /* The upload-integration section creates its own uploader; a
+       * dangling one here would leak its buffer pool. */
+      u_upload_destroy(g_context.uploader);
+      g_context.uploader = NULL;
    }
 }
 

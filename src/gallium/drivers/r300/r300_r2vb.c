@@ -3746,6 +3746,149 @@ r300_r2vb_producer_streams_rebind(const struct r300_r2vb_producer_streams *orig,
                                          materialized_end, out);
 }
 
+unsigned r300_r2vb_producer_bo_draw_cs_dwords(void)
+{
+    /* Fixed emission shape, count-independent: REG_SEQ costs one header
+     * plus its values.  PROG_STREAM_CNTL 0..7 and EXT 0..7 (9 + 9, the
+     * zeroed tail is EMITTED, clearing stale hardware state), VTX_SIZE
+     * (2), VTX_STATE_CNTL (2), VSM_VTX_ASSM (2), OUTPUT_VTX_FMT pair
+     * (3), GB_ENABLE (2), RS_IP 0..7 (9), RS_COUNT + RS_INST_COUNT (3),
+     * RS_INST 0..7 (9), VF_MAX + VF_MIN pair (3), two-array LOAD_VBPNTR
+     * with both NOP-form relocations (header + numarrays + control +
+     * two offsets + two 2-dword relocations = 9), DRAW_VBUF_2 (2). */
+    return 9 + 9 + 2 + 2 + 2 + 3 + 2 + 9 + 3 + 9 + 3 + 9 + 2;
+}
+
+bool r300_r2vb_producer_bo_draw_validate(
+    struct r300_context *r300,
+    const struct r300_r2vb_producer_plan *plan,
+    const struct r300_shader_semantics *fs_inputs,
+    const struct r300_rs_block *rs,
+    const struct r300_vertex_stream_state *psc_state,
+    const struct pipe_vertex_buffer *vb, const struct pipe_vertex_element *ve,
+    unsigned velem_count, unsigned nr_vertex_buffers,
+    struct pipe_resource *slot_resource, uint32_t start, uint32_t count,
+    enum r300_r2vb_position_space space,
+    struct r300_r2vb_producer_bo_draw *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->slot_reloc_index = -1;
+    out->model_reloc_index = -1;
+    out->output_reloc_index = -1;
+    if (!plan || !vb || !ve || !slot_resource)
+        return false;
+    /* Source identity from the plan's measured record; literals never
+     * reach the mapping contract. */
+    const struct r300_r2vb_position_source *src = &plan->position_source;
+    if (!src->valid)
+        return false;
+    if (!r300_r2vb_position_input_mapping_ok(
+            plan->num_position_inputs, src->app_driver_location,
+            src->location_rank, velem_count, ve->vertex_buffer_index,
+            nr_vertex_buffers, vb->buffer.resource != NULL, ve->src_format))
+        return false;
+    if (!r300_r2vb_slot_layout_init(count, false, &out->layout))
+        return false;
+    struct r300_r2vb_producer_streams streams;
+    if (!r300_r2vb_producer_streams_init(vb->buffer_offset, ve->src_offset,
+                                         ve->src_stride, ve->src_format,
+                                         start, &streams))
+        return false;
+    if (!r300_r2vb_materialize_model_fetch(r300, vb, ve, start, count,
+                                           &streams.stream[1], &out->model))
+        return false;
+    /* From here every failure releases what materialization took. */
+    if (!r300_r2vb_producer_streams_rebind(&streams, &out->model,
+                                           slot_resource->width0, count,
+                                           &out->fetch))
+        goto fail;
+    if (!r300_r2vb_producer_logical_binding_from_state(plan, fs_inputs, rs,
+                                                       psc_state,
+                                                       &out->logical))
+        goto fail;
+    if (!r300_r2vb_producer_interface_init(&out->fetch,
+                                           out->logical.slot_dst_vec_loc,
+                                           out->logical.model_dst_vec_loc,
+                                           &out->psc))
+        goto fail;
+    if (r300_r2vb_producer_binding_check(&out->fetch, &out->psc,
+                                         &out->logical, rs) != 0)
+        goto fail;
+    pipe_resource_reference(&out->slot_resource, slot_resource);
+    out->plan = plan;
+    out->fs_inputs = fs_inputs;
+    out->rs = rs;
+    out->psc_state = psc_state;
+    out->draw_start = start;
+    out->count = count;
+    out->space = space;
+    out->required_cs_dwords = r300_r2vb_producer_bo_draw_cs_dwords();
+    return true;
+
+fail:
+    r300_r2vb_model_fetch_fini(&out->model);
+    return false;
+}
+
+bool r300_r2vb_producer_bo_draw_stage_cs(
+    struct r300_context *r300, struct r300_r2vb_producer_bo_draw *txn,
+    const struct r300_r2vb_producer_plan *plan,
+    const struct r300_shader_semantics *fs_inputs,
+    const struct r300_rs_block *rs,
+    const struct r300_vertex_stream_state *psc_state,
+    struct r300_resource *output_bo)
+{
+    /* Snapshot recheck: the transaction was validated against exactly
+     * these authorities; a rebind between validate and staging makes
+     * the transaction stale, and staleness declines rather than emits. */
+    if (txn->plan != plan || txn->fs_inputs != fs_inputs || txn->rs != rs ||
+        txn->psc_state != psc_state)
+        return false;
+    if (!txn->slot_resource || !txn->model.resource || !output_bo)
+        return false;
+    /* Capacity first: a flush here rotates the CS, so the buffer
+     * additions and relocation lookups below always bind to the final
+     * command stream.  A capacity failure leaves the CS untouched. */
+    if (!r300_r2vb_prepare_states(r300, txn->required_cs_dwords))
+        return false;
+    struct r300_resource *slot = r300_resource(txn->slot_resource);
+    struct r300_resource *model = r300_resource(txn->model.resource);
+    if (!slot->buf || !model->buf)
+        return false;
+    r300->rws->cs_add_buffer(&r300->cs, slot->buf,
+                             RADEON_USAGE_READ | RADEON_USAGE_SYNCHRONIZED,
+                             RADEON_DOMAIN_GTT);
+    r300->rws->cs_add_buffer(&r300->cs, model->buf,
+                             RADEON_USAGE_READ | RADEON_USAGE_SYNCHRONIZED,
+                             RADEON_DOMAIN_GTT);
+    r300->rws->cs_add_buffer(&r300->cs, output_bo->buf,
+                             RADEON_USAGE_READWRITE |
+                                 RADEON_USAGE_SYNCHRONIZED |
+                                 RADEON_PRIO_COLOR_BUFFER,
+                             RADEON_DOMAIN_GTT);
+    /* Relocation indices only after the final CS holds every buffer. */
+    txn->slot_reloc_index = r300->rws->cs_lookup_buffer(&r300->cs, slot->buf);
+    txn->model_reloc_index =
+        r300->rws->cs_lookup_buffer(&r300->cs, model->buf);
+    txn->output_reloc_index =
+        r300->rws->cs_lookup_buffer(&r300->cs, output_bo->buf);
+    if (txn->slot_reloc_index < 0 || txn->model_reloc_index < 0 ||
+        txn->output_reloc_index < 0)
+        return false;
+    txn->ready = true;
+    return true;
+}
+
+void r300_r2vb_producer_bo_draw_fini(struct r300_r2vb_producer_bo_draw *txn)
+{
+    pipe_resource_reference(&txn->slot_resource, NULL);
+    pipe_resource_reference(&txn->model.resource, NULL);
+    memset(txn, 0, sizeof(*txn));
+    txn->slot_reloc_index = -1;
+    txn->model_reloc_index = -1;
+    txn->output_reloc_index = -1;
+}
+
 /* The materialization helper joins the emission arm with the LOAD_VBPNTR
  * producer draw; until that arm lands the reference below keeps the
  * function in the translation unit's live set for the calibration test. */
