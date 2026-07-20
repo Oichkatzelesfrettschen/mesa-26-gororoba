@@ -899,6 +899,19 @@ if with_tests
                        'h264_cb_idr_oracle_mb.bin')],
     suite: 'gallium',
   )
+
+  # Failure-path ownership contract for the shared upload manager: map
+  # failure leaves no dangling current buffer, allocation failure keeps
+  # the rotated-out buffer owned by the caller's release slot.
+  test('u-upload-mgr-failure-ownership',
+    executable(
+      'u_upload_mgr_test',
+      ['util/u_upload_mgr.c', 'util/tests/u_upload_mgr_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium],
+      dependencies : [idep_mesautil],
+    ),
+    suite: 'gallium',
+  )
 endif
 
 _libgalliumvl_stub = static_library(
