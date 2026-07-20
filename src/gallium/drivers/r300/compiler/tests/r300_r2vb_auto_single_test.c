@@ -1233,22 +1233,42 @@ check_logical_binding(void)
                                            PIPE_FORMAT_R32G32B32_FLOAT };
       struct fake_buffer *slotfb = (struct fake_buffer *)fake_resource_create(
          &g_screen.screen, &(struct pipe_resource){ .width0 = 4096 * 16 });
+      /* Output authority fixture: a CPU-shadow color target bound as the
+       * framebuffer's first color buffer, one row of FP32x4 texels. */
+      struct r300_resource outshadow;
+      memset(&outshadow, 0, sizeof(outshadow));
+      outshadow.b.width0 = TCOUNT;
+      outshadow.b.height0 = 1;
+      outshadow.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+      pipe_reference_init(&outshadow.b.reference, 1);
+      uint8_t *outbytes = calloc(1, (size_t)TCOUNT * 16);
+      outshadow.malloced_buffer = outbytes;
+      struct pipe_framebuffer_state tfb;
+      memset(&tfb, 0, sizeof(tfb));
+      tfb.nr_cbufs = 1;
+      tfb.cbufs[0].texture = &outshadow.b;
+      g_context.fb_state.state = &tfb;
       struct r300_r2vb_producer_bo_draw txn;
       CHECK(r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->b,
-               0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
             "txn: the complete validate phase builds the transaction");
-      CHECK(txn.slot_resource == &slotfb->b && txn.model.resource &&
+      CHECK(txn.slot_resource == &slotfb->b &&
+               txn.output_resource == &outshadow.b && txn.model.resource &&
                txn.count == TCOUNT && !txn.ready && !txn.emitted &&
+               txn.output_required_bytes == (uint64_t)TCOUNT * 16 &&
+               txn.output_offset == 0 &&
+               txn.output_pitch_pixels == txn.layout.pitch_pixels &&
                txn.required_cs_dwords ==
                   r300_r2vb_producer_bo_draw_cs_dwords(),
-            "txn: storage referenced, CS size fixed, ready stays unset");
+            "txn: storage referenced, output authority fixed, CS size fixed");
       CHECK(r300_r2vb_producer_binding_check(&txn.fetch, &txn.psc,
                                              &txn.logical, &rs) == 0,
             "txn: the built transaction passes the full contract check");
       r300_r2vb_producer_bo_draw_fini(&txn);
-      CHECK(txn.slot_resource == NULL && txn.model.resource == NULL,
-            "txn: fini releases both storage references");
+      CHECK(txn.slot_resource == NULL && txn.model.resource == NULL &&
+               txn.output_resource == NULL,
+            "txn: fini releases all three storage references");
 
       /* Failure edges: each fallible layer declines and leaves no
        * retained storage. */
@@ -1256,31 +1276,62 @@ check_logical_binding(void)
       badplan.position_source.valid = false;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &badplan, &fs, &rs, &psc, &vb, &ve, 1, 1,
-               &slotfb->b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
+               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: an unmeasured source declines with nothing retained");
       struct pipe_vertex_element badve = ve;
       badve.src_format = PIPE_FORMAT_R32G32_FLOAT;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &badve, 1, 1,
-               &slotfb->b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn),
             "txn: an inadmissible element format declines");
       struct fake_buffer *tiny = (struct fake_buffer *)fake_resource_create(
          &g_screen.screen, &(struct pipe_resource){ .width0 = 16 });
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &tiny->b,
-               0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
+               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: an undersized slot BO declines and releases the model");
       struct r300_vertex_stream_state badpsc = psc;
       badpsc.vap_prog_stream_cntl[0] = 0x25030003;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &badpsc, &vb, &ve, 1, 1,
-               &slotfb->b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
+               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: a drifted derived binding declines after materialization");
+      /* Output-authority negatives: framebuffer identity, extent, and
+       * format each decline after materialization with nothing retained. */
+      tfb.cbufs[0].texture = &slotfb->b;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn) &&
+               !txn.model.resource && !txn.output_resource,
+            "txn: an output that is not the bound color target declines");
+      tfb.cbufs[0].texture = &outshadow.b;
+      outshadow.b.width0 = TCOUNT - 1;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn) &&
+               !txn.model.resource,
+            "txn: a one-texel-short output extent declines");
+      outshadow.b.width0 = TCOUNT;
+      outshadow.b.format = PIPE_FORMAT_R8G8B8A8_UNORM;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &slotfb->b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn) &&
+               !txn.model.resource,
+            "txn: an output format outside FP32x4 declines");
+      outshadow.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+      g_context.fb_state.state = NULL;
       pipe_resource_reference(&(struct pipe_resource *){ &tiny->b }, NULL);
       pipe_resource_reference(&(struct pipe_resource *){ &slotfb->b }, NULL);
+      free(outbytes);
       free(bytes);
       /* The upload-integration section creates its own uploader; a
        * dangling one here would leak its buffer pool. */

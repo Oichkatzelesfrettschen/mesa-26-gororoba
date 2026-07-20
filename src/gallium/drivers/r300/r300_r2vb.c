@@ -3767,7 +3767,8 @@ bool r300_r2vb_producer_bo_draw_validate(
     const struct r300_vertex_stream_state *psc_state,
     const struct pipe_vertex_buffer *vb, const struct pipe_vertex_element *ve,
     unsigned velem_count, unsigned nr_vertex_buffers,
-    struct pipe_resource *slot_resource, uint32_t start, uint32_t count,
+    struct pipe_resource *slot_resource,
+    struct pipe_resource *output_resource, uint32_t start, uint32_t count,
     enum r300_r2vb_position_space space,
     struct r300_r2vb_producer_bo_draw *out)
 {
@@ -3775,7 +3776,7 @@ bool r300_r2vb_producer_bo_draw_validate(
     out->slot_reloc_index = -1;
     out->model_reloc_index = -1;
     out->output_reloc_index = -1;
-    if (!plan || !vb || !ve || !slot_resource)
+    if (!plan || !vb || !ve || !slot_resource || !output_resource)
         return false;
     /* Source identity from the plan's measured record; literals never
      * reach the mapping contract. */
@@ -3814,6 +3815,33 @@ bool r300_r2vb_producer_bo_draw_validate(
     if (r300_r2vb_producer_binding_check(&out->fetch, &out->psc,
                                          &out->logical, rs) != 0)
         goto fail;
+    /* Output authority: the one-row producer writes count FP32x4 texels
+     * from offset zero of the bound framebuffer color target, whose
+     * relocation rides the dirty framebuffer state atom.  Validation
+     * proves that identity, the storage extent, the exact producer
+     * format, and -- when a winsys buffer backs the resource -- the GTT
+     * placement the calibrated delivery observed. */
+    {
+        const struct pipe_framebuffer_state *fb =
+            (const struct pipe_framebuffer_state *)r300->fb_state.state;
+        struct r300_resource *outres = r300_resource(output_resource);
+        if (!fb || fb->nr_cbufs < 1 ||
+            fb->cbufs[0].texture != output_resource)
+            goto fail;
+        if (!outres->buf && !outres->malloced_buffer)
+            goto fail;
+        if (outres->buf && outres->domain != RADEON_DOMAIN_GTT)
+            goto fail;
+        if (output_resource->format != PIPE_FORMAT_R32G32B32A32_FLOAT)
+            goto fail;
+        if (output_resource->width0 < out->layout.width ||
+            output_resource->height0 < out->layout.height)
+            goto fail;
+        out->output_required_bytes = (uint64_t)count * 16;
+        out->output_offset = 0;
+        out->output_pitch_pixels = out->layout.pitch_pixels;
+    }
+    pipe_resource_reference(&out->output_resource, output_resource);
     pipe_resource_reference(&out->slot_resource, slot_resource);
     out->plan = plan;
     out->fs_inputs = fs_inputs;
@@ -3835,8 +3863,7 @@ bool r300_r2vb_producer_bo_draw_stage_cs(
     const struct r300_r2vb_producer_plan *plan,
     const struct r300_shader_semantics *fs_inputs,
     const struct r300_rs_block *rs,
-    const struct r300_vertex_stream_state *psc_state,
-    struct r300_resource *output_bo)
+    const struct r300_vertex_stream_state *psc_state)
 {
     /* Snapshot recheck: the transaction was validated against exactly
      * these authorities; a rebind between validate and staging makes
@@ -3844,10 +3871,11 @@ bool r300_r2vb_producer_bo_draw_stage_cs(
     if (txn->plan != plan || txn->fs_inputs != fs_inputs || txn->rs != rs ||
         txn->psc_state != psc_state)
         return false;
-    if (!txn->slot_resource || !txn->model.resource || !output_bo)
+    if (!txn->slot_resource || !txn->model.resource || !txn->output_resource)
         return false;
     struct r300_resource *slot = r300_resource(txn->slot_resource);
     struct r300_resource *model = r300_resource(txn->model.resource);
+    struct r300_resource *output_bo = r300_resource(txn->output_resource);
     if (!slot->buf || !model->buf || !output_bo->buf)
         return false;
     /* Capacity first, and capacity only: the reservation may flush and
@@ -3864,15 +3892,15 @@ retry:
     r300_add_state_buffers(r300, false, NULL);
     r300->rws->cs_add_buffer(&r300->cs, slot->buf,
                              RADEON_USAGE_READ | RADEON_USAGE_SYNCHRONIZED,
-                             RADEON_DOMAIN_GTT);
+                             slot->domain);
     r300->rws->cs_add_buffer(&r300->cs, model->buf,
                              RADEON_USAGE_READ | RADEON_USAGE_SYNCHRONIZED,
-                             RADEON_DOMAIN_GTT);
+                             model->domain);
     r300->rws->cs_add_buffer(&r300->cs, output_bo->buf,
                              RADEON_USAGE_READWRITE |
                                  RADEON_USAGE_SYNCHRONIZED |
                                  RADEON_PRIO_COLOR_BUFFER,
-                             RADEON_DOMAIN_GTT);
+                             output_bo->domain);
     if (!r300->rws->cs_validate(&r300->cs)) {
         if (retried)
             return false;
@@ -3895,6 +3923,7 @@ retry:
 void r300_r2vb_producer_bo_draw_fini(struct r300_r2vb_producer_bo_draw *txn)
 {
     pipe_resource_reference(&txn->slot_resource, NULL);
+    pipe_resource_reference(&txn->output_resource, NULL);
     pipe_resource_reference(&txn->model.resource, NULL);
     memset(txn, 0, sizeof(*txn));
     txn->slot_reloc_index = -1;
