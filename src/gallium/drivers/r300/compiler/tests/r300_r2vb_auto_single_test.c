@@ -1249,26 +1249,46 @@ check_logical_binding(void)
       tfb.cbufs[0].texture = &outshadow.b;
       g_context.fb_state.state = &tfb;
       struct r300_r2vb_producer_bo_draw txn;
+      r300_r2vb_producer_bo_draw_init(&txn);
+      /* Transaction-owned gate: gate off declines as the first fallible
+       * operation, before the model upload retains anything. */
+      unsetenv("R300_R2VB_SLOT_FETCH");
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->b,
+               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
+               !txn.model.resource &&
+               txn.state == R300_R2VB_BO_DRAW_EMPTY,
+            "txn: gate off declines before any upload");
+      setenv("R300_R2VB_SLOT_FETCH", "1", 1);
       CHECK(r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->b,
                &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
             "txn: the complete validate phase builds the transaction");
       CHECK(txn.slot_resource == &slotfb->b &&
                txn.output_resource == &outshadow.b && txn.model.resource &&
-               txn.count == TCOUNT && !txn.ready && !txn.emitted &&
+               txn.count == TCOUNT &&
+               txn.state == R300_R2VB_BO_DRAW_VALIDATED &&
                txn.output_required_bytes == (uint64_t)TCOUNT * 16 &&
                txn.output_offset == 0 &&
                txn.output_pitch_pixels == txn.layout.pitch_pixels &&
                txn.required_cs_dwords ==
                   r300_r2vb_producer_bo_draw_cs_dwords(),
             "txn: storage referenced, output authority fixed, CS size fixed");
+      CHECK(memcmp(&txn.psc_snapshot, &psc, sizeof(psc)) == 0 &&
+               memcmp(&txn.rs_snapshot, &rs, sizeof(rs)) == 0,
+            "txn: the derived-state words are frozen by value");
       CHECK(r300_r2vb_producer_binding_check(&txn.fetch, &txn.psc,
                                              &txn.logical, &rs) == 0,
             "txn: the built transaction passes the full contract check");
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->b,
+               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+            "txn: validate into an owned transaction declines");
       r300_r2vb_producer_bo_draw_fini(&txn);
       CHECK(txn.slot_resource == NULL && txn.model.resource == NULL &&
-               txn.output_resource == NULL,
-            "txn: fini releases all three storage references");
+               txn.output_resource == NULL &&
+               txn.state == R300_R2VB_BO_DRAW_EMPTY,
+            "txn: fini releases all three references and returns to EMPTY");
 
       /* Failure edges: each fallible layer declines and leaves no
        * retained storage. */
@@ -1329,6 +1349,7 @@ check_logical_binding(void)
             "txn: an output format outside FP32x4 declines");
       outshadow.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
       g_context.fb_state.state = NULL;
+      unsetenv("R300_R2VB_SLOT_FETCH");
       pipe_resource_reference(&(struct pipe_resource *){ &tiny->b }, NULL);
       pipe_resource_reference(&(struct pipe_resource *){ &slotfb->b }, NULL);
       free(outbytes);

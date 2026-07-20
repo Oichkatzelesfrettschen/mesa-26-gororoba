@@ -3772,11 +3772,18 @@ bool r300_r2vb_producer_bo_draw_validate(
     enum r300_r2vb_position_space space,
     struct r300_r2vb_producer_bo_draw *out)
 {
-    memset(out, 0, sizeof(*out));
-    out->slot_reloc_index = -1;
-    out->model_reloc_index = -1;
-    out->output_reloc_index = -1;
-    if (!plan || !vb || !ve || !slot_resource || !output_resource)
+    /* Lifecycle: validate consumes an EMPTY transaction only; an owned
+     * transaction keeps its references until fini, so validating into it
+     * would leak the slot, model, and output storage. */
+    if (out->state != R300_R2VB_BO_DRAW_EMPTY || out->slot_resource ||
+        out->output_resource || out->model.resource)
+        return false;
+    /* Transaction-owned gate: the exact opt-in is the first fallible
+     * operation, so a gate-off call declines before the model upload. */
+    if (!r300_r2vb_slot_fetch_gate_value(getenv("R300_R2VB_SLOT_FETCH")))
+        return false;
+    if (!plan || !vb || !ve || !slot_resource || !output_resource ||
+        !rs || !psc_state)
         return false;
     /* Source identity from the plan's measured record; literals never
      * reach the mapping contract. */
@@ -3851,6 +3858,14 @@ bool r300_r2vb_producer_bo_draw_validate(
     out->count = count;
     out->space = space;
     out->required_cs_dwords = r300_r2vb_producer_bo_draw_cs_dwords();
+    /* Freeze the mutable derived authorities by value; the emitter
+     * consumes these copies rather than re-reading context state. */
+    out->psc_snapshot = *psc_state;
+    out->rs_snapshot = *rs;
+    if (r300->viewport_state.state)
+        out->viewport_snapshot =
+            *(struct r300_viewport_state *)r300->viewport_state.state;
+    out->state = R300_R2VB_BO_DRAW_VALIDATED;
     return true;
 
 fail:
@@ -3865,11 +3880,19 @@ bool r300_r2vb_producer_bo_draw_stage_cs(
     const struct r300_rs_block *rs,
     const struct r300_vertex_stream_state *psc_state)
 {
+    /* Lifecycle: staging consumes a VALIDATED transaction exactly once. */
+    if (txn->state != R300_R2VB_BO_DRAW_VALIDATED)
+        return false;
     /* Snapshot recheck: the transaction was validated against exactly
      * these authorities; a rebind between validate and staging makes
-     * the transaction stale, and staleness declines rather than emits. */
+     * the transaction stale, and staleness declines rather than emits.
+     * The RS block and PSC words are context-derived state updated in
+     * place, so the by-value snapshots recheck their contents too. */
     if (txn->plan != plan || txn->fs_inputs != fs_inputs || txn->rs != rs ||
         txn->psc_state != psc_state)
+        return false;
+    if (memcmp(&txn->psc_snapshot, psc_state, sizeof(*psc_state)) != 0 ||
+        memcmp(&txn->rs_snapshot, rs, sizeof(*rs)) != 0)
         return false;
     if (!txn->slot_resource || !txn->model.resource || !txn->output_resource)
         return false;
@@ -3907,6 +3930,11 @@ retry:
         retried = true;
         goto retry;
     }
+    /* The validation may have flushed; re-prove the derived-state words
+     * against the snapshot before the transaction turns READY. */
+    if (memcmp(&txn->psc_snapshot, psc_state, sizeof(*psc_state)) != 0 ||
+        memcmp(&txn->rs_snapshot, rs, sizeof(*rs)) != 0)
+        return false;
     /* Relocation indices only after the final CS holds every buffer. */
     txn->slot_reloc_index = r300->rws->cs_lookup_buffer(&r300->cs, slot->buf);
     txn->model_reloc_index =
@@ -3916,8 +3944,16 @@ retry:
     if (txn->slot_reloc_index < 0 || txn->model_reloc_index < 0 ||
         txn->output_reloc_index < 0)
         return false;
-    txn->ready = true;
+    txn->state = R300_R2VB_BO_DRAW_READY;
     return true;
+}
+
+void r300_r2vb_producer_bo_draw_init(struct r300_r2vb_producer_bo_draw *txn)
+{
+    memset(txn, 0, sizeof(*txn));
+    txn->slot_reloc_index = -1;
+    txn->model_reloc_index = -1;
+    txn->output_reloc_index = -1;
 }
 
 void r300_r2vb_producer_bo_draw_fini(struct r300_r2vb_producer_bo_draw *txn)
