@@ -586,6 +586,15 @@ struct r300_r2vb_producer_logical_binding {
     uint8_t fs_hw_input_reg;
 };
 
+/* Calibrated producer destination vectors, from the retained
+ * immediate-producer decode: PROG_STREAM_CNTL_0 = 0x26030003 places the
+ * slot position at VAP destination vector 0 and the model attribute at
+ * destination vector 6 with LAST_VEC.  The runtime constructor requires
+ * the live derived stream state to decode to these values; a derived
+ * state naming other vectors is a route regression, not a new binding. */
+#define R300_R2VB_CAL_SLOT_DST_VEC_LOC 0
+#define R300_R2VB_CAL_MODEL_DST_VEC_LOC 6
+
 struct r300_rs_block;
 bool r300_r2vb_producer_logical_binding_init(
     const struct r300_r2vb_position_source *source,
@@ -609,6 +618,21 @@ enum r300_r2vb_producer_binding_violation {
     R300_R2VB_BINDING_FS_REGISTER = 1u << 6,
     R300_R2VB_BINDING_TAIL_STATE = 1u << 7,
 };
+
+/* Runtime binding constructor: derives the destination vectors from
+ * the DERIVED producer stream state (never caller literals), requires
+ * them to match the calibrated locations, and builds the binding
+ * against the plan-measured source, the compiled producer FS
+ * semantics, and the exact RS contract.  This is the only constructor
+ * a runtime path calls; the literal-argument form stays for the
+ * calibration oracle. */
+struct r300_vertex_stream_state;
+bool r300_r2vb_producer_logical_binding_from_state(
+    const struct r300_r2vb_producer_plan *plan,
+    const struct r300_shader_semantics *fs_inputs,
+    const struct r300_rs_block *rs,
+    const struct r300_vertex_stream_state *psc,
+    struct r300_r2vb_producer_logical_binding *out);
 
 unsigned r300_r2vb_producer_binding_check(
     const struct r300_r2vb_producer_fetch *fetch,

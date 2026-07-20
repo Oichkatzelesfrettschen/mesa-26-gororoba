@@ -1150,6 +1150,56 @@ check_logical_binding(void)
                                                     &bind),
             "binding: the pristine block rebuilds after the negatives");
    }
+
+   /* Runtime constructor: destinations decode from the derived stream
+    * state -- the calibrated word 0x26030003 -- never from caller
+    * literals. */
+   {
+      struct r300_r2vb_producer_plan plan;
+      memset(&plan, 0, sizeof(plan));
+      plan.position_source.app_driver_location = 0;
+      plan.position_source.location_rank = 0;
+      plan.position_source.valid = true;
+      struct r300_vertex_stream_state psc;
+      memset(&psc, 0, sizeof(psc));
+      psc.count = 1;
+      psc.vap_prog_stream_cntl[0] = 0x26030003;
+      psc.vap_prog_stream_cntl_ext[0] = 0xf688f688;
+      struct r300_r2vb_producer_logical_binding rb;
+      CHECK(r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
+                                                          &psc, &rb),
+            "from_state: the calibrated derived word builds the binding");
+      CHECK(rb.slot_dst_vec_loc == R300_R2VB_CAL_SLOT_DST_VEC_LOC &&
+               rb.model_dst_vec_loc == R300_R2VB_CAL_MODEL_DST_VEC_LOC &&
+               rb.fs_hw_input_reg == 0,
+            "from_state: destinations decode to the calibrated locations");
+      struct r300_vertex_stream_state bad = psc;
+      bad.count = 2;
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
+                                                           &bad, &rb),
+            "from_state: a second register pair declines");
+      bad = psc;
+      bad.vap_prog_stream_cntl[0] &= ~((uint32_t)R300_LAST_VEC << 16);
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
+                                                           &bad, &rb),
+            "from_state: a model element without LAST_VEC declines");
+      bad = psc;
+      /* Model vector drifted from 6 to 5. */
+      bad.vap_prog_stream_cntl[0] = 0x25030003;
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
+                                                           &bad, &rb),
+            "from_state: a drifted model destination vector declines");
+      bad = psc;
+      bad.vap_prog_stream_cntl[3] = 1;
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
+                                                           &bad, &rb),
+            "from_state: a stale stream tail register declines");
+      struct r300_r2vb_producer_plan noplan = plan;
+      noplan.position_source.valid = false;
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(&noplan, &fs, &rs,
+                                                           &psc, &rb),
+            "from_state: an unmeasured plan source declines");
+   }
 }
 
 static void
