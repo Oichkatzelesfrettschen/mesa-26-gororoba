@@ -1518,6 +1518,73 @@ static bool r2vb_sed_oracle_selftest(void)
  * the route-exec MVP path can run it under the normal draw flow (where
  * prepare_for_rendering has emitted the transform-FS state) and then re-ingest
  * with a different (application) FS, rather than the single-FS combined loop. */
+/* Calibration decode of the immediate producer's draw-adjacent logical
+ * state, gated on R300_R2VB_IMMD_STATE=1.  The IMMD draw interprets its
+ * embedded vertices through the INHERITED programmable-stream and RS
+ * atoms, so the authoritative record is those bound atoms plus the
+ * registers the emit path writes itself.  One key=value line per
+ * register keeps the record machine-reducible into the
+ * producer-immediate-logical-state calibration artifact. */
+static void
+r300_r2vb_dump_immd_state(struct r300_context *r300, uint32_t num_vertices,
+                          unsigned num_attrs, uint32_t vtx_dwords,
+                          uint32_t output_pitch, bool transform_mode)
+{
+    const char *gate = getenv("R300_R2VB_IMMD_STATE");
+    if (!gate || strcmp(gate, "1") != 0)
+        return;
+    struct r300_vertex_stream_state *vs =
+        (struct r300_vertex_stream_state *)r300->vertex_stream_state.state;
+    struct r300_rs_block *rs =
+        (struct r300_rs_block *)r300->rs_block_state.state;
+    struct r300_viewport_state *vp =
+        (struct r300_viewport_state *)r300->viewport_state.state;
+    fprintf(stderr,
+            "r2vb_immd_state begin num_vertices=%u num_attrs=%u "
+            "transform_mode=%u vap_vtx_size=%u vf_max=%u output_pitch=%u\n",
+            num_vertices, num_attrs, transform_mode ? 1 : 0, vtx_dwords,
+            num_vertices - 1, output_pitch);
+    if (vs) {
+        fprintf(stderr, "r2vb_immd_state psc_count=%u\n", vs->count);
+        for (unsigned i = 0; i < 8; i++)
+            fprintf(stderr,
+                    "r2vb_immd_state prog_stream_cntl_%u=0x%08x "
+                    "prog_stream_cntl_ext_%u=0x%08x\n",
+                    i, vs->vap_prog_stream_cntl[i], i,
+                    vs->vap_prog_stream_cntl_ext[i]);
+    }
+    if (rs) {
+        fprintf(stderr,
+                "r2vb_immd_state vtx_state_cntl=0x%08x vsm_vtx_assm=0x%08x "
+                "out_vtx_fmt0=0x%08x out_vtx_fmt1=0x%08x gb_enable=0x%08x "
+                "rs_count=0x%08x rs_inst_count=0x%08x\n",
+                rs->vap_vtx_state_cntl, rs->vap_vsm_vtx_assm,
+                rs->vap_out_vtx_fmt[0], rs->vap_out_vtx_fmt[1], rs->gb_enable,
+                rs->count, rs->inst_count);
+        for (unsigned i = 0; i < 8; i++)
+            fprintf(stderr,
+                    "r2vb_immd_state rs_ip_%u=0x%08x rs_inst_%u=0x%08x\n", i,
+                    rs->ip[i], i, rs->inst[i]);
+    }
+    if (vp)
+        fprintf(stderr,
+                "r2vb_immd_state vport_xscale=%a vport_xoffset=%a "
+                "vport_yscale=%a vport_yoffset=%a vport_zscale=%a "
+                "vport_zoffset=%a inherited_vte_control=0x%08x\n",
+                vp->xscale, vp->xoffset, vp->yscale, vp->yoffset, vp->zscale,
+                vp->zoffset, vp->vte_control);
+    /* Registers this emit path writes directly, restated as data so the
+     * artifact stands without the source open. */
+    fprintf(stderr,
+            "r2vb_immd_state emitted_vte_cntl=0x%08x emitted_clip_cntl=0x%08x "
+            "emitted_us_out_fmt=%s scissor_tl=1440,1440 "
+            "scissor_br=%u,%u end\n",
+            (uint32_t)(R300_VTX_XY_FMT | R300_VTX_Z_FMT),
+            (uint32_t)R300_CLIP_DISABLE,
+            transform_mode ? "c4_32_fp_rgba" : "c4_32_fp_bgra",
+            num_vertices + 1440 - 1, 1 + 1440 - 1);
+}
+
 static void r300_r2vb_emit_producer(struct r300_context *r300,
                                     struct r300_resource *output_gart_bo,
                                     uint32_t output_gart_bo_offset, uint32_t num_vertices,
@@ -1538,6 +1605,9 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
     if (!transform_mode)
         num_attrs = 1;
     uint32_t vtx_dwords = 4 * (1 + num_attrs);
+
+    r300_r2vb_dump_immd_state(r300, num_vertices, num_attrs, vtx_dwords,
+                              output_pitch, transform_mode);
 
     r300->rws->cs_add_buffer(&r300->cs, output_gart_bo->buf,
                              RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
