@@ -4142,6 +4142,24 @@ bool r300_r2vb_bo_draw_capture_selftest(struct r300_context *r300,
     cap_fb.cbufs[0].format = PIPE_FORMAT_R32G32B32A32_FLOAT;
     r300->fb_state.state = &cap_fb;
 
+    /* Neutralize the application's dirty atoms for the length capture:
+     * r300_add_state_buffers reads the parallel r300->fb_cbufs surface
+     * array and the aa/textures atoms, which do not match this synthetic
+     * framebuffer, and r300_emit_dirty_state would emit them.  Clearing
+     * the dirty flags and the dirty-atom span keeps both to the three
+     * producer BOs and the custom command range; the state is restored
+     * after the capture so the enclosing flush is unaffected. */
+    bool saved_fb_dirty = r300->fb_state.dirty;
+    bool saved_aa_dirty = r300->aa_state.dirty;
+    bool saved_tex_dirty = r300->textures_state.dirty;
+    struct r300_atom *saved_first = r300->first_dirty;
+    struct r300_atom *saved_last = r300->last_dirty;
+    r300->fb_state.dirty = false;
+    r300->aa_state.dirty = false;
+    r300->textures_state.dirty = false;
+    r300->first_dirty = NULL;
+    r300->last_dirty = NULL;
+
     struct pipe_vertex_buffer vb;
     memset(&vb, 0, sizeof(vb));
     vb.buffer_offset = 0;
@@ -4175,6 +4193,11 @@ bool r300_r2vb_bo_draw_capture_selftest(struct r300_context *r300,
             break;
     }
 
+    r300->fb_state.dirty = saved_fb_dirty;
+    r300->aa_state.dirty = saved_aa_dirty;
+    r300->textures_state.dirty = saved_tex_dirty;
+    r300->first_dirty = saved_first;
+    r300->last_dirty = saved_last;
     r300->fb_state.state = saved_fb;
     pipe_resource_reference(&slot_res, NULL);
     pipe_resource_reference(&model_res, NULL);
