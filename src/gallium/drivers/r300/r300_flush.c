@@ -84,6 +84,12 @@ void r300_flush(struct pipe_context *pipe,
     if (r300_emit_rs482_r2vb_capture_selftest(r300, true, flags, fence))
         return;
 
+    /* No-submit B0-B4 capture of the shipped producer BO-fetch draw.
+     * RADEON_FLUSH_NOOP internally, so it never advances this flush's
+     * fence; report consumption and fall through to the normal path so
+     * the caller's fence still resolves. */
+    r300_r2vb_bo_draw_capture_selftest(r300, true);
+
     if (r300->dirty_hw) {
         r300_flush_and_cleanup(r300, flags, fence);
     } else {
