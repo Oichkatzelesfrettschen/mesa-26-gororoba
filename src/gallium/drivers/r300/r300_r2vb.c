@@ -3631,6 +3631,18 @@ bool r300_r2vb_producer_logical_binding_init(
     unsigned hwreg;
     if (!r300_r2vb_producer_fs_input_hwreg(fs_inputs, &hwreg)) {
         r2vb_bo_draw_validate_decline("binding_fs_inputs");
+        if (getenv("R300_R2VB_EXEC_DEBUG")) {
+            fprintf(stderr,
+                    "r2vb_bo_draw_fs_inputs num_generic=%d num_total=%d "
+                    "col0=%d col1=%d face=%d fog=%d wpos=%d generic=",
+                    fs_inputs->num_generic, fs_inputs->num_total,
+                    fs_inputs->color[0], fs_inputs->color[1], fs_inputs->face,
+                    fs_inputs->fog, fs_inputs->wpos);
+            for (unsigned i = 0; i < ATTR_GENERIC_COUNT; i++)
+                if (fs_inputs->generic[i] != ATTR_UNUSED)
+                    fprintf(stderr, "%u:%d,", i, fs_inputs->generic[i]);
+            fprintf(stderr, "\n");
+        }
         return false;
     }
     /* The derived RS block must already route TC0 to that register with
