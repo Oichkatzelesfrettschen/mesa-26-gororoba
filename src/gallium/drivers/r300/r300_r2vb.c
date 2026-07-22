@@ -3547,6 +3547,15 @@ bool r300_r2vb_producer_fs_input_hwreg(
     return true;
 }
 
+/* Decline observability for the transaction validator: one greppable line
+ * per decline clause under R300_R2VB_EXEC_DEBUG, so a real-path admission
+ * failure names its clause instead of collapsing into one silent false. */
+static void r2vb_bo_draw_validate_decline(const char *clause)
+{
+    if (getenv("R300_R2VB_EXEC_DEBUG"))
+        fprintf(stderr, "r2vb_bo_draw_validate decline=%s\n", clause);
+}
+
 /* RS decode helpers shared by the binding constructor and the contract
  * checker, each proving one layer of the TC0-to-FS routing. */
 static bool r2vb_rs_assembly_ok(const struct r300_rs_block *rs)
@@ -3608,26 +3617,47 @@ bool r300_r2vb_producer_logical_binding_init(
     unsigned slot_dst_vec_loc, unsigned model_dst_vec_loc,
     struct r300_r2vb_producer_logical_binding *out)
 {
-    if (!source || !fs_inputs || !rs || !out)
+    if (!source || !fs_inputs || !rs || !out) {
+        r2vb_bo_draw_validate_decline("binding_null");
         return false;
+    }
     /* The measured source identity, under the canary's executable
      * restriction: location zero, rank zero, so velem[0] is the element. */
     if (!source->valid || source->app_driver_location != 0 ||
-        source->location_rank != 0)
+        source->location_rank != 0) {
+        r2vb_bo_draw_validate_decline("binding_source_rank");
         return false;
+    }
     unsigned hwreg;
-    if (!r300_r2vb_producer_fs_input_hwreg(fs_inputs, &hwreg))
+    if (!r300_r2vb_producer_fs_input_hwreg(fs_inputs, &hwreg)) {
+        r2vb_bo_draw_validate_decline("binding_fs_inputs");
         return false;
+    }
     /* The derived RS block must already route TC0 to that register with
      * the expected assembly and output tuple; a binding built against a
      * disagreeing RS would emit a draw whose FS reads a stale input. */
     if (!r2vb_rs_assembly_ok(rs) || !r2vb_rs_output_fmt_ok(rs) ||
         !r2vb_rs_tc0_components_ok(rs) || !r2vb_rs_writes_fs_reg(rs, hwreg) ||
-        !r2vb_rs_tail_zero(rs))
+        !r2vb_rs_tail_zero(rs)) {
+        r2vb_bo_draw_validate_decline("binding_rs_calibration");
+        if (getenv("R300_R2VB_EXEC_DEBUG"))
+            fprintf(stderr,
+                    "r2vb_bo_draw_rs asm=%d fmt=%d tc0=%d reg=%d tail=%d "
+                    "vtx_state_cntl=%08x vsm=%08x out0=%08x out1=%08x "
+                    "ip0=%08x count=%08x inst_count=%08x inst0=%08x hwreg=%u\n",
+                    r2vb_rs_assembly_ok(rs), r2vb_rs_output_fmt_ok(rs),
+                    r2vb_rs_tc0_components_ok(rs),
+                    r2vb_rs_writes_fs_reg(rs, hwreg), r2vb_rs_tail_zero(rs),
+                    rs->vap_vtx_state_cntl, rs->vap_vsm_vtx_assm,
+                    rs->vap_out_vtx_fmt[0], rs->vap_out_vtx_fmt[1], rs->ip[0],
+                    rs->count, rs->inst_count, rs->inst[0], hwreg);
         return false;
+    }
     if (slot_dst_vec_loc > 31 || model_dst_vec_loc > 31 ||
-        slot_dst_vec_loc == model_dst_vec_loc)
+        slot_dst_vec_loc == model_dst_vec_loc) {
+        r2vb_bo_draw_validate_decline("binding_vec_loc");
         return false;
+    }
     memset(out, 0, sizeof(*out));
     out->app_driver_location = source->app_driver_location;
     out->location_rank = source->location_rank;
@@ -3645,32 +3675,47 @@ bool r300_r2vb_producer_logical_binding_from_state(
     const struct r300_vertex_stream_state *psc,
     struct r300_r2vb_producer_logical_binding *out)
 {
-    if (!plan || !psc)
+    if (!plan || !psc) {
+        r2vb_bo_draw_validate_decline("psc_null");
         return false;
+    }
     /* The derived producer stream state carries exactly one register
      * pair: the slot position vector and the LAST_VEC model vector.
      * The destination locations come from decoding that live word; the
      * calibrated constants then gate them, so a derived state naming
      * other vectors declines instead of silently rebinding. */
-    if (psc->count != 1)
+    if (psc->count != 1) {
+        r2vb_bo_draw_validate_decline("psc_count");
         return false;
+    }
     uint32_t e0 = psc->vap_prog_stream_cntl[0] & 0xffff;
     uint32_t e1 = psc->vap_prog_stream_cntl[0] >> 16;
-    if ((e0 & 0xf) != R300_DATA_TYPE_FLOAT_4)
+    if ((e0 & 0xf) != R300_DATA_TYPE_FLOAT_4) {
+        r2vb_bo_draw_validate_decline("psc_slot_type");
         return false;
+    }
     if ((e1 & 0xf) != R300_DATA_TYPE_FLOAT_4 &&
-        (e1 & 0xf) != R300_DATA_TYPE_FLOAT_3)
+        (e1 & 0xf) != R300_DATA_TYPE_FLOAT_3) {
+        r2vb_bo_draw_validate_decline("psc_model_type");
         return false;
-    if ((e0 & R300_LAST_VEC) || !(e1 & R300_LAST_VEC))
+    }
+    if ((e0 & R300_LAST_VEC) || !(e1 & R300_LAST_VEC)) {
+        r2vb_bo_draw_validate_decline("psc_last_vec");
         return false;
+    }
     for (unsigned i = 1; i < 8; i++)
-        if (psc->vap_prog_stream_cntl[i] || psc->vap_prog_stream_cntl_ext[i])
+        if (psc->vap_prog_stream_cntl[i] ||
+            psc->vap_prog_stream_cntl_ext[i]) {
+            r2vb_bo_draw_validate_decline("psc_tail");
             return false;
+        }
     unsigned slot_loc = (e0 >> R300_DST_VEC_LOC_SHIFT) & 0x1f;
     unsigned model_loc = (e1 >> R300_DST_VEC_LOC_SHIFT) & 0x1f;
     if (slot_loc != R300_R2VB_CAL_SLOT_DST_VEC_LOC ||
-        model_loc != R300_R2VB_CAL_MODEL_DST_VEC_LOC)
+        model_loc != R300_R2VB_CAL_MODEL_DST_VEC_LOC) {
+        r2vb_bo_draw_validate_decline("psc_vec_loc");
         return false;
+    }
     return r300_r2vb_producer_logical_binding_init(
         &plan->position_source, fs_inputs, rs, slot_loc, model_loc, out);
 }
@@ -3788,15 +3833,6 @@ unsigned r300_r2vb_producer_bo_draw_cs_dwords(void)
      * with both NOP-form relocations (header + numarrays + control +
      * two offsets + two 2-dword relocations = 9), DRAW_VBUF_2 (2). */
     return 9 + 9 + 2 + 2 + 2 + 3 + 2 + 9 + 3 + 9 + 3 + 9 + 2;
-}
-
-/* Decline observability for the transaction validator: one greppable line
- * per decline clause under R300_R2VB_EXEC_DEBUG, so a real-path admission
- * failure names its clause instead of collapsing into one silent false. */
-static void r2vb_bo_draw_validate_decline(const char *clause)
-{
-    if (getenv("R300_R2VB_EXEC_DEBUG"))
-        fprintf(stderr, "r2vb_bo_draw_validate decline=%s\n", clause);
 }
 
 bool r300_r2vb_producer_bo_draw_validate(
