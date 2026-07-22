@@ -3534,12 +3534,21 @@ bool r300_r2vb_producer_fs_input_hwreg(
         inputs->face != ATTR_UNUSED || inputs->fog != ATTR_UNUSED ||
         inputs->wpos != ATTR_UNUSED)
         return false;
-    if (inputs->generic[0] == ATTR_UNUSED || inputs->num_generic != 1 ||
-        inputs->num_total != 1)
+    /* Exactly one populated generic, at any index: nir_to_rc's
+     * ntr_fixup_varying_slots shifts FS VAR0..VAR22 inputs up by nine
+     * (texcoords and pointcoord occupy the low generic indices), so the
+     * restaged producer's single VAR0 input records at generic[9].  The
+     * hardware register replay below is index-independent. */
+    int used = -1;
+    for (unsigned i = 0; i < ATTR_GENERIC_COUNT; i++) {
+        if (inputs->generic[i] != ATTR_UNUSED) {
+            if (used >= 0)
+                return false;
+            used = (int)i;
+        }
+    }
+    if (used < 0 || inputs->num_generic != 1 || inputs->num_total != 1)
         return false;
-    for (unsigned i = 1; i < ATTR_GENERIC_COUNT; i++)
-        if (inputs->generic[i] != ATTR_UNUSED)
-            return false;
     /* Replay allocate_hardware_inputs order (colors, face, generics, fog,
      * WPOS): with everything before the generics unused, the register
      * counter reaches the single generic at zero. */
