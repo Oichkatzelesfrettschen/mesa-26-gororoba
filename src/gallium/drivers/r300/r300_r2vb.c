@@ -1585,34 +1585,20 @@ r300_r2vb_dump_immd_state(struct r300_context *r300, uint32_t num_vertices,
             num_vertices + 1440 - 1, 1 + 1440 - 1);
 }
 
-static void r300_r2vb_emit_producer(struct r300_context *r300,
-                                    struct r300_resource *output_gart_bo,
-                                    uint32_t output_gart_bo_offset, uint32_t num_vertices,
-                                    const float (*vertex_attrs)[4], unsigned num_attrs,
-                                    bool transform_mode)
+/* Producer output-target prologue, shared by the embedded-immediate draw and
+ * the BO-fetch transaction: raw-retarget the color target to the producer BO
+ * behind the cb_flush_clean barrier, then pin the point-raster and VAP mode
+ * registers the producer draw depends on.  Everything from the destination
+ * cache flush through VAP_VTE_CNTL lives here, so the two producer forms
+ * share one output-ordering contract instead of drifting apart. */
+static void r2vb_emit_producer_target_prologue(struct r300_context *r300,
+                                               struct r300_resource *output_gart_bo,
+                                               uint32_t output_gart_bo_offset,
+                                               uint32_t num_vertices,
+                                               bool transform_mode)
 {
     CS_LOCALS(r300);
     uint32_t output_pitch = align(num_vertices, 2);
-
-    /* Embedded vertex = slot position + num_attrs model attributes, each FP32x4, so
-     * VAP_VTX_SIZE and the DRAW_IMMD body are 4*(1+num_attrs) dwords per vertex.
-     * The passthrough producer (transform_mode == false) copies one attribute, so
-     * it always feeds a single attribute. */
-    if (num_attrs < 1)
-        num_attrs = 1;
-    if (num_attrs > R300_R2VB_MAX_PRODUCER_INPUTS)
-        num_attrs = R300_R2VB_MAX_PRODUCER_INPUTS;
-    if (!transform_mode)
-        num_attrs = 1;
-    uint32_t vtx_dwords = 4 * (1 + num_attrs);
-
-    r300_r2vb_dump_immd_state(r300, num_vertices, num_attrs, vtx_dwords,
-                              output_pitch, transform_mode);
-
-    r300->rws->cs_add_buffer(&r300->cs, output_gart_bo->buf,
-                             RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
-                                 RADEON_PRIO_COLOR_BUFFER,
-                             RADEON_DOMAIN_GTT);
 
     struct r300_fragment_shader *r2vb_fs = r300_fs(r300);
     struct rc_constant_list *r2vb_consts =
@@ -1629,11 +1615,9 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
         }
     }
 
-    /* Stage 1 = 47 dwords + stage 2 (barrier) = 8, minus the 16-dword
-     * triangle-vs-two-float4-points geometry delta, plus num_vertices * vtx_dwords
-     * embedded vertex dwords and the per-viewport-constant wpos override.  The
-     * barrier is 8 (not 6) dwords because it includes the VAP_PVS_STATE_FLUSH sync. */
-    BEGIN_CS(61 + r2vb_vp_override_dwords + (int)num_vertices * (int)vtx_dwords - 16);
+    /* ZB_CNTL through VAP_VTE_CNTL: 31 fixed dwords plus the per-matching
+     * viewport-constant wpos override. */
+    BEGIN_CS(31 + (int)r2vb_vp_override_dwords);
 
     OUT_CS_REG(R300_ZB_CNTL, 0);
     OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
@@ -1711,6 +1695,79 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
     }
     OUT_CS_REG(R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
     OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+    END_CS;
+}
+
+/* Producer cache-publication tail, shared by both producer forms: push the
+ * color write out of the ZB/RB3D caches, wait 3D idle-clean, and sync the
+ * VAP so a later vertex fetch of the same BO cannot read stale vertex-cache
+ * content (R300_R2VB_BARRIER neuters parts for timing bisection). */
+static void r2vb_emit_producer_order_tail(struct r300_context *r300)
+{
+    CS_LOCALS(r300);
+    const char *r2vb_bar = getenv("R300_R2VB_BARRIER");
+    uint32_t r2vb_zb = (r2vb_bar && strstr(r2vb_bar, "nozb"))
+                           ? 0
+                           : (R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                              R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+    uint32_t r2vb_rb = (r2vb_bar && strstr(r2vb_bar, "norb"))
+                           ? 0
+                           : (R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                              R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+    uint32_t r2vb_wait = (r2vb_bar && strstr(r2vb_bar, "nowait")) ? 0 : RADEON_WAIT_3D_IDLECLEAN;
+    BEGIN_CS(8);
+    OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT, r2vb_zb);
+    OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT, r2vb_rb);
+    OUT_CS_REG(RADEON_WAIT_UNTIL, r2vb_wait);
+    /* Sync the VAP/vertex-fetch engine.  The cache flushes above push the
+     * producer's color write out of the RB3D/Z caches to memory, but they do
+     * NOT touch the vertex cache: the R2VB re-ingest fetches this same BO as a
+     * vertex stream, and the VAP can return STALE vertices the vertex cache kept
+     * from an earlier fetch of the recycled GART page.  Observed as a
+     * non-deterministic stale read -- the producer's transform is correct in the
+     * BO (XFORM_VERIFY reads it back exact), yet ~50% of re-ingest draws
+     * rasterize the previous draw's vertices.  Writing zero to
+     * VAP_PVS_STATE_FLUSH_REG synchronizes the engine and clears that stale state
+     * before the re-ingest's LOAD_VBPNTR, making the route deterministic. */
+    OUT_CS_REG(R300_VAP_PVS_STATE_FLUSH_REG, 0x0);
+    END_CS;
+}
+
+static void r300_r2vb_emit_producer(struct r300_context *r300,
+                                    struct r300_resource *output_gart_bo,
+                                    uint32_t output_gart_bo_offset, uint32_t num_vertices,
+                                    const float (*vertex_attrs)[4], unsigned num_attrs,
+                                    bool transform_mode)
+{
+    CS_LOCALS(r300);
+    uint32_t output_pitch = align(num_vertices, 2);
+
+    /* Embedded vertex = slot position + num_attrs model attributes, each FP32x4, so
+     * VAP_VTX_SIZE and the DRAW_IMMD body are 4*(1+num_attrs) dwords per vertex.
+     * The passthrough producer (transform_mode == false) copies one attribute, so
+     * it always feeds a single attribute. */
+    if (num_attrs < 1)
+        num_attrs = 1;
+    if (num_attrs > R300_R2VB_MAX_PRODUCER_INPUTS)
+        num_attrs = R300_R2VB_MAX_PRODUCER_INPUTS;
+    if (!transform_mode)
+        num_attrs = 1;
+    uint32_t vtx_dwords = 4 * (1 + num_attrs);
+
+    r300_r2vb_dump_immd_state(r300, num_vertices, num_attrs, vtx_dwords,
+                              output_pitch, transform_mode);
+
+    r300->rws->cs_add_buffer(&r300->cs, output_gart_bo->buf,
+                             RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
+                                 RADEON_PRIO_COLOR_BUFFER,
+                             RADEON_DOMAIN_GTT);
+
+    r2vb_emit_producer_target_prologue(r300, output_gart_bo,
+                                       output_gart_bo_offset, num_vertices,
+                                       transform_mode);
+
+    /* VTX_SIZE + VF_MAX + the DRAW_IMMD header pair, then the embedded body. */
+    BEGIN_CS(6 + (int)num_vertices * (int)vtx_dwords);
     OUT_CS_REG(R300_VAP_VTX_SIZE, vtx_dwords);
     OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
     OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, num_vertices * vtx_dwords);
@@ -1740,35 +1797,9 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
             OUT_CS_32F(vertex_attrs[pv][3]);
         }
     }
-
-    /* Stage 2 -- cb_flush_clean barrier (R300_R2VB_BARRIER neuters parts for
-     * timing bisection). */
-    const char *r2vb_bar = getenv("R300_R2VB_BARRIER");
-    uint32_t r2vb_zb = (r2vb_bar && strstr(r2vb_bar, "nozb"))
-                           ? 0
-                           : (R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
-                              R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
-    uint32_t r2vb_rb = (r2vb_bar && strstr(r2vb_bar, "norb"))
-                           ? 0
-                           : (R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
-                              R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
-    uint32_t r2vb_wait = (r2vb_bar && strstr(r2vb_bar, "nowait")) ? 0 : RADEON_WAIT_3D_IDLECLEAN;
-    OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT, r2vb_zb);
-    OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT, r2vb_rb);
-    OUT_CS_REG(RADEON_WAIT_UNTIL, r2vb_wait);
-    /* Sync the VAP/vertex-fetch engine.  The cache flushes above push the
-     * producer's color write out of the RB3D/Z caches to memory, but they do
-     * NOT touch the vertex cache: the R2VB re-ingest fetches this same BO as a
-     * vertex stream, and the VAP can return STALE vertices the vertex cache kept
-     * from an earlier fetch of the recycled GART page.  Observed as a
-     * non-deterministic stale read -- the producer's transform is correct in the
-     * BO (XFORM_VERIFY reads it back exact), yet ~50% of re-ingest draws
-     * rasterize the previous draw's vertices.  Writing zero to
-     * VAP_PVS_STATE_FLUSH_REG synchronizes the engine and clears that stale state
-     * before the re-ingest's LOAD_VBPNTR, making the route deterministic. */
-    OUT_CS_REG(R300_VAP_PVS_STATE_FLUSH_REG, 0x0);
-
     END_CS;
+
+    r2vb_emit_producer_order_tail(r300);
 }
 
 void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
@@ -5903,10 +5934,261 @@ fail:
     return false;
 }
 
+/* First-cell arm selector for the shipped BO-fetch producer draw.  Exact
+ * values only: producer_capture3 runs the full real-path transaction and
+ * discards the IB with RADEON_FLUSH_NOOP; producer_submit3 submits it and
+ * reads the producer BO back.  Any other value keeps the arm closed. */
+static int r2vb_bo_draw_producer3_mode(void)
+{
+    static int mode = -1;
+    if (mode < 0) {
+        const char *e = getenv("R300_R2VB_BO_DRAW");
+        if (e && strcmp(e, "producer_capture3") == 0)
+            mode = 1;
+        else if (e && strcmp(e, "producer_submit3") == 0)
+            mode = 2;
+        else
+            mode = 0;
+    }
+    return mode;
+}
+
+/* Run the shipped LOAD_VBPNTR producer transaction at the real producer call
+ * site, for the first three-vertex cell.  The caller has the producer FS and
+ * VS bound and the derived state updated; this arm consumes the cached plan,
+ * the live derived RS block, the bound producer FS semantics, and the
+ * application's position vertex element -- the transaction materializes the
+ * model span from that element's real buffer, so the fetch input is the
+ * application's own data, not a synthetic fixture.
+ *
+ * Emission order: the transaction stages the complete buffer list first
+ * (capacity reservation, then dirty-state resources plus the three producer
+ * BOs, then cs_validate); dirty state and the shared output-target prologue
+ * land next, so the raw COLOROFFSET0 retarget and its relocation precede the
+ * custom range exactly as the proven immediate producer orders them; the
+ * 64-dword custom range and the shared cache-publication tail close the
+ * producer.  capture discards the IB with RADEON_FLUSH_NOOP; submit flushes
+ * through the normal path, waits the BO, and prints every output record for
+ * the off-box oracle.  Either way the caller falls back to gallivm for the
+ * visible draw -- the cell tests exactly one new hardware mechanism, the
+ * BO-fetched producer input, and delivers nothing. */
+static void r2vb_run_bo_fetch_producer3(struct r300_context *r300,
+                                        struct pipe_resource *clip,
+                                        uint32_t count, uint32_t start,
+                                        enum r300_r2vb_position_space space,
+                                        bool submit)
+{
+    const char *why = NULL;
+    struct pipe_resource *slot_res = NULL;
+    struct r300_r2vb_producer_bo_draw txn;
+    r300_r2vb_producer_bo_draw_init(&txn);
+
+    const struct r300_r2vb_producer_plan *plan =
+        r300_r2vb_producer_plan_get(r300, false, space);
+    struct r300_fragment_shader *pfs = r300_fs(r300);
+    const struct r300_rs_block *rs =
+        (const struct r300_rs_block *)r300->rs_block_state.state;
+    const struct pipe_vertex_element *ve = NULL;
+    const struct pipe_vertex_buffer *vb = NULL;
+
+    /* The live-submit half additionally rides the workspace raw-submit
+     * consent gate; capture stays reachable without it. */
+    if (submit && !r300_r2vb_option_is(getenv("R300_RAW_SUBMIT_ACCEPTED"), "1"))
+        why = "raw_submit_gate";
+    else if (count != 3)
+        why = "count";
+    else if (!plan || plan->status != R300_R2VB_PLAN_READY ||
+             plan->action != R300_R2VB_PLAN_SINGLE ||
+             !plan->position_source.valid)
+        why = "plan";
+    else if (!pfs || !pfs->shader)
+        why = "producer_fs";
+    else if (!rs)
+        why = "rs_block";
+    else if (!r300->velems ||
+             plan->position_source.location_rank >= r300->velems->count)
+        why = "velems";
+    if (!why) {
+        ve = &r300->velems->velem[plan->position_source.location_rank];
+        if (ve->vertex_buffer_index >= r300->nr_vertex_buffers)
+            why = "vb_index";
+        else {
+            vb = &r300->vertex_buffer[ve->vertex_buffer_index];
+            if (!vb->buffer.resource)
+                why = "user_buffer";
+        }
+    }
+
+    /* The transaction PSC is the BO-fetch interface built from the real
+     * element parameters at the calibrated destination vectors; the
+     * validate-side interface rebuild then re-derives the same words from
+     * the materialized streams, so a divergence declines. */
+    struct r300_r2vb_producer_streams st;
+    struct r300_r2vb_producer_fetch ft;
+    struct r300_r2vb_producer_interface it;
+    struct r300_vertex_stream_state psc;
+    if (!why &&
+        (!r300_r2vb_producer_streams_init(vb->buffer_offset, ve->src_offset,
+                                          ve->src_stride, ve->src_format,
+                                          start, &st) ||
+         !r300_r2vb_producer_fetch_init(&st, count, (uint64_t)count * 16,
+                                        vb->buffer.resource->width0, &ft) ||
+         !r300_r2vb_producer_interface_init(
+             &ft, R300_R2VB_CAL_SLOT_DST_VEC_LOC,
+             R300_R2VB_CAL_MODEL_DST_VEC_LOC, &it)))
+        why = "streams";
+    if (!why) {
+        memset(&psc, 0, sizeof(psc));
+        for (unsigned i = 0; i < 8; i++) {
+            psc.vap_prog_stream_cntl[i] = it.prog_stream_cntl[i];
+            psc.vap_prog_stream_cntl_ext[i] = it.prog_stream_cntl_ext[i];
+        }
+        psc.count = 1;
+    }
+
+    /* Slot positions: the same one-row pixel centers the immediate producer
+     * embeds, written once by the CPU before any GPU use of the BO. */
+    if (!why) {
+        slot_res = r2vb_create_selftest_bo(r300, count * 16, 0);
+        if (!slot_res)
+            why = "slot_bo";
+    }
+    if (!why) {
+        struct pipe_transfer *xfer = NULL;
+        struct pipe_box box = { .width = (int)(count * 16), .height = 1,
+                                .depth = 1 };
+        float *slots = r300->context.buffer_map(&r300->context, slot_res, 0,
+                                                PIPE_MAP_WRITE, &box, &xfer);
+        if (!slots)
+            why = "slot_map";
+        else {
+            for (uint32_t i = 0; i < count; i++) {
+                slots[i * 4 + 0] = (float)i + 0.5f;
+                slots[i * 4 + 1] = 0.5f;
+                slots[i * 4 + 2] = 0.0f;
+                slots[i * 4 + 3] = 1.0f;
+            }
+            r300->context.buffer_unmap(&r300->context, xfer);
+        }
+    }
+
+    /* Sentinel-fill the producer output so the readback separates written
+     * records from untouched storage (the even-pitch padding pixel). */
+    if (!why) {
+        struct pipe_transfer *xfer = NULL;
+        struct pipe_box box = { .width = (int)clip->width0, .height = 1,
+                                .depth = 1 };
+        void *m = r300->context.buffer_map(&r300->context, clip, 0,
+                                           PIPE_MAP_WRITE, &box, &xfer);
+        if (m) {
+            memset(m, 0xcb, clip->width0);
+            r300->context.buffer_unmap(&r300->context, xfer);
+        }
+    }
+
+    bool ok = false;
+    if (!why) {
+        /* Reserve + emit dirty state through the real prepare path: shared
+         * prologue (31 + wpos override) + 64-dword custom range + 8-dword
+         * tail, with margin. */
+        if (!r300_r2vb_prepare_states(r300, 192))
+            why = "prepare";
+    }
+    if (!why) {
+        /* validate() proves output authority against the bound framebuffer
+         * color target; this producer form carries that authority in the
+         * shared prologue's raw COLOROFFSET0 retarget + relocation instead
+         * of an emitted framebuffer atom, so the identity is stated to the
+         * pure-inspection validate through a local framebuffer view and the
+         * application state pointer is restored before any emission. */
+        void *saved_fb = r300->fb_state.state;
+        struct pipe_framebuffer_state pfb;
+        memset(&pfb, 0, sizeof(pfb));
+        pfb.width = (uint16_t)align(count, 2);
+        pfb.height = 1;
+        pfb.nr_cbufs = 1;
+        pfb.cbufs[0].texture = clip;
+        pfb.cbufs[0].format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+        r300->fb_state.state = &pfb;
+        bool validated = r300_r2vb_producer_bo_draw_validate(
+            r300, plan, &pfs->shader->inputs, rs, &psc, vb, ve,
+            r300->velems->count, r300->nr_vertex_buffers, slot_res, clip,
+            start, count, space, &txn);
+        r300->fb_state.state = saved_fb;
+        if (!validated)
+            why = "validate";
+    }
+    if (!why && !r300_r2vb_producer_bo_draw_stage_cs(r300, &txn, plan,
+                                                     &pfs->shader->inputs, rs,
+                                                     &psc))
+        why = "stage_cs";
+    if (!why) {
+        /* Any staging flush re-marked the atoms; land them before the raw
+         * prologue so no dirty emission can follow the retarget. */
+        r300_emit_dirty_state(r300);
+        r2vb_emit_producer_target_prologue(r300, r300_resource(clip), 0,
+                                           count, true);
+        if (!r300_r2vb_producer_bo_draw_emit(r300, &txn)) {
+            why = "emit";
+        } else {
+            r2vb_emit_producer_order_tail(r300);
+            ok = true;
+        }
+    }
+
+    fprintf(stderr,
+            "r2vb_bo_draw_producer3 mode=%s ok=%d why=%s count=%u start=%u "
+            "space=%s slot_reloc=%d model_reloc=%d output_reloc=%d\n",
+            submit ? "submit" : "capture", ok, why ? why : "-", count, start,
+            space == R300_R2VB_POSITION_WINDOW ? "window" : "clip",
+            txn.slot_reloc_index, txn.model_reloc_index,
+            txn.output_reloc_index);
+
+    if (ok && !submit) {
+        /* Discard the producer IB before DRM_RADEON_CS; R300_TRACE has
+         * already retained it for the full-path decode. */
+        r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
+        fprintf(stderr, "r2vb_bo_draw_producer3 decision=capture "
+                        "(no-submit; RADEON_FLUSH_NOOP)\n");
+    } else if (ok && submit) {
+        fprintf(stderr, "r2vb_bo_draw_producer3 decision=submit\n");
+        r300->context.flush(&r300->context, NULL, 0);
+        r2vb_wait_bo(r300, clip);
+        struct pipe_transfer *xfer = NULL;
+        struct pipe_box box = { .width = (int)clip->width0, .height = 1,
+                                .depth = 1 };
+        const uint32_t *rec = r300->context.buffer_map(
+            &r300->context, clip, 0, PIPE_MAP_READ, &box, &xfer);
+        if (rec) {
+            for (uint32_t i = 0; i < clip->width0 / 16; i++) {
+                float f[4];
+                memcpy(f, &rec[i * 4], sizeof(f));
+                fprintf(stderr,
+                        "r2vb_bo_draw_producer3 rec=%u %08x %08x %08x %08x "
+                        "(%g %g %g %g)\n",
+                        i, rec[i * 4 + 0], rec[i * 4 + 1], rec[i * 4 + 2],
+                        rec[i * 4 + 3], f[0], f[1], f[2], f[3]);
+            }
+            r300->context.buffer_unmap(&r300->context, xfer);
+        } else {
+            fprintf(stderr, "r2vb_bo_draw_producer3 readback=map_failed\n");
+        }
+    }
+
+    /* The producer hand-wrote raster registers outside the atom system, and
+     * the capture arm discarded a CS carrying emitted state; re-mark the
+     * application state either way before the gallivm fallback draw. */
+    r2vb_redirty_app_raster_state(r300);
+    r300->vertex_arrays_dirty = true;
+    r300_r2vb_producer_bo_draw_fini(&txn);
+    pipe_resource_reference(&slot_res, NULL);
+}
+
 static bool r2vb_run_transform_producer(struct r300_context *r300,
                                         struct pipe_resource *clip,
                                         uint32_t count, const float (*model)[4],
                                         unsigned num_in, const float *cols,
+                                        uint32_t start,
                                         enum r300_r2vb_position_space space,
                                         bool restage, bool externals)
 {
@@ -6000,10 +6282,29 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     if (pvs)
         r300->context.bind_vs_state(&r300->context, pvs);
     r300_update_derived_state(r300);
-    bool prepared =
-        r300_r2vb_prepare_states(r300, 64u + count * 4u * (1u + num_in) + 64u);
-    if (prepared)
-        r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, num_in, true);
+    /* BO-fetch first-cell arm: with producer_capture3 / producer_submit3
+     * armed, the transaction runs here -- producer FS and VS bound, derived
+     * state current, real output target in hand -- and the immediate
+     * producer is bypassed entirely, so the run carries exactly one
+     * producer form.  prepared stays false, so the caller restores the
+     * application shaders and falls back to gallivm for the visible draw. */
+    int bo3 = r2vb_bo_draw_producer3_mode();
+    bool prepared = false;
+    if (bo3 != 0 && restage && num_in == 1) {
+        r2vb_run_bo_fetch_producer3(r300, clip, count, start, space,
+                                    bo3 == 2);
+    } else if (bo3 != 0) {
+        fprintf(stderr,
+                "r2vb_bo_draw_producer3 mode=%s ok=0 why=%s count=%u\n",
+                bo3 == 2 ? "submit" : "capture",
+                restage ? "num_in" : "restage", count);
+    } else {
+        prepared = r300_r2vb_prepare_states(
+            r300, 64u + count * 4u * (1u + num_in) + 64u);
+        if (prepared)
+            r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count,
+                                    model, num_in, true);
+    }
     r300->context.bind_fs_state(&r300->context, saved_fs);
     if (pvs)
         r300->context.bind_vs_state(&r300->context, saved_vs);
@@ -6468,7 +6769,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             : r2vb_env_space();
     r300->r2vb_produced_space = produced_space;
     if (!r2vb_run_transform_producer(r300, clip, count, model, num_in, cols,
-                                     produced_space, restage, externals)) {
+                                     draw->start, produced_space, restage,
+                                     externals)) {
         pipe_resource_reference(&clip, NULL);
         free(model);
         return false;
@@ -6725,8 +7027,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         produced_space = R300_R2VB_POSITION_WINDOW;
         r300->r2vb_produced_space = produced_space;
         if (!r2vb_run_transform_producer(r300, clip, count, model, num_in,
-                                         cols, produced_space, restage,
-                                         externals)) {
+                                         cols, draw->start, produced_space,
+                                         restage, externals)) {
             r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
             r300->r2vb_capture_clip = NULL;
             r2vb_redirty_app_raster_state(r300);
