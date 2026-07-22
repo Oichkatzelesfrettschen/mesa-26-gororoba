@@ -3790,6 +3790,15 @@ unsigned r300_r2vb_producer_bo_draw_cs_dwords(void)
     return 9 + 9 + 2 + 2 + 2 + 3 + 2 + 9 + 3 + 9 + 3 + 9 + 2;
 }
 
+/* Decline observability for the transaction validator: one greppable line
+ * per decline clause under R300_R2VB_EXEC_DEBUG, so a real-path admission
+ * failure names its clause instead of collapsing into one silent false. */
+static void r2vb_bo_draw_validate_decline(const char *clause)
+{
+    if (getenv("R300_R2VB_EXEC_DEBUG"))
+        fprintf(stderr, "r2vb_bo_draw_validate decline=%s\n", clause);
+}
+
 bool r300_r2vb_producer_bo_draw_validate(
     struct r300_context *r300,
     const struct r300_r2vb_producer_plan *plan,
@@ -3807,52 +3816,76 @@ bool r300_r2vb_producer_bo_draw_validate(
      * transaction keeps its references until fini, so validating into it
      * would leak the slot, model, and output storage. */
     if (out->state != R300_R2VB_BO_DRAW_EMPTY || out->slot_resource ||
-        out->output_resource || out->model.resource)
+        out->output_resource || out->model.resource) {
+        r2vb_bo_draw_validate_decline("lifecycle");
         return false;
+    }
     /* Transaction-owned gate: the exact opt-in is the first fallible
      * operation, so a gate-off call declines before the model upload. */
-    if (!r300_r2vb_slot_fetch_gate_value(getenv("R300_R2VB_SLOT_FETCH")))
+    if (!r300_r2vb_slot_fetch_gate_value(getenv("R300_R2VB_SLOT_FETCH"))) {
+        r2vb_bo_draw_validate_decline("slot_fetch_gate");
         return false;
+    }
     if (!plan || !vb || !ve || !slot_resource || !output_resource ||
-        !rs || !psc_state)
+        !rs || !psc_state) {
+        r2vb_bo_draw_validate_decline("null_input");
         return false;
+    }
     /* Source identity from the plan's measured record; literals never
      * reach the mapping contract. */
     const struct r300_r2vb_position_source *src = &plan->position_source;
-    if (!src->valid)
+    if (!src->valid) {
+        r2vb_bo_draw_validate_decline("position_source");
         return false;
+    }
     if (!r300_r2vb_position_input_mapping_ok(
             plan->num_position_inputs, src->app_driver_location,
             src->location_rank, velem_count, ve->vertex_buffer_index,
-            nr_vertex_buffers, vb->buffer.resource != NULL, ve->src_format))
+            nr_vertex_buffers, vb->buffer.resource != NULL, ve->src_format)) {
+        r2vb_bo_draw_validate_decline("input_mapping");
         return false;
-    if (!r300_r2vb_slot_layout_init(count, false, &out->layout))
+    }
+    if (!r300_r2vb_slot_layout_init(count, false, &out->layout)) {
+        r2vb_bo_draw_validate_decline("slot_layout");
         return false;
+    }
     struct r300_r2vb_producer_streams streams;
     if (!r300_r2vb_producer_streams_init(vb->buffer_offset, ve->src_offset,
                                          ve->src_stride, ve->src_format,
-                                         start, &streams))
+                                         start, &streams)) {
+        r2vb_bo_draw_validate_decline("streams_init");
         return false;
+    }
     if (!r300_r2vb_materialize_model_fetch(r300, vb, ve, start, count,
-                                           &streams.stream[1], &out->model))
+                                           &streams.stream[1], &out->model)) {
+        r2vb_bo_draw_validate_decline("materialize");
         return false;
+    }
     /* From here every failure releases what materialization took. */
     if (!r300_r2vb_producer_streams_rebind(&streams, &out->model,
                                            slot_resource->width0, count,
-                                           &out->fetch))
+                                           &out->fetch)) {
+        r2vb_bo_draw_validate_decline("streams_rebind");
         goto fail;
+    }
     if (!r300_r2vb_producer_logical_binding_from_state(plan, fs_inputs, rs,
                                                        psc_state,
-                                                       &out->logical))
+                                                       &out->logical)) {
+        r2vb_bo_draw_validate_decline("logical_binding");
         goto fail;
+    }
     if (!r300_r2vb_producer_interface_init(&out->fetch,
                                            out->logical.slot_dst_vec_loc,
                                            out->logical.model_dst_vec_loc,
-                                           &out->psc))
+                                           &out->psc)) {
+        r2vb_bo_draw_validate_decline("interface_init");
         goto fail;
+    }
     if (r300_r2vb_producer_binding_check(&out->fetch, &out->psc,
-                                         &out->logical, rs) != 0)
+                                         &out->logical, rs) != 0) {
+        r2vb_bo_draw_validate_decline("binding_check");
         goto fail;
+    }
     /* Output authority: the one-row producer writes count FP32x4 texels
      * from offset zero of the bound framebuffer color target, whose
      * relocation rides the dirty framebuffer state atom.  Validation
@@ -3864,17 +3897,27 @@ bool r300_r2vb_producer_bo_draw_validate(
             (const struct pipe_framebuffer_state *)r300->fb_state.state;
         struct r300_resource *outres = r300_resource(output_resource);
         if (!fb || fb->nr_cbufs < 1 ||
-            fb->cbufs[0].texture != output_resource)
+            fb->cbufs[0].texture != output_resource) {
+            r2vb_bo_draw_validate_decline("output_identity");
             goto fail;
-        if (!outres->buf && !outres->malloced_buffer)
+        }
+        if (!outres->buf && !outres->malloced_buffer) {
+            r2vb_bo_draw_validate_decline("output_backing");
             goto fail;
-        if (outres->buf && outres->domain != RADEON_DOMAIN_GTT)
+        }
+        if (outres->buf && outres->domain != RADEON_DOMAIN_GTT) {
+            r2vb_bo_draw_validate_decline("output_domain");
             goto fail;
-        if (output_resource->format != PIPE_FORMAT_R32G32B32A32_FLOAT)
+        }
+        if (output_resource->format != PIPE_FORMAT_R32G32B32A32_FLOAT) {
+            r2vb_bo_draw_validate_decline("output_format");
             goto fail;
+        }
         if (output_resource->width0 < out->layout.width ||
-            output_resource->height0 < out->layout.height)
+            output_resource->height0 < out->layout.height) {
+            r2vb_bo_draw_validate_decline("output_extent");
             goto fail;
+        }
         out->output_required_bytes = (uint64_t)count * 16;
         out->output_offset = 0;
         out->output_pitch_pixels = out->layout.pitch_pixels;
