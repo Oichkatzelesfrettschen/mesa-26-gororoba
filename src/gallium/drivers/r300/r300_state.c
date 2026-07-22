@@ -1624,6 +1624,18 @@ static void r300_set_polygon_stipple(struct pipe_context* pipe,
     r300->poly_stipple_all_one = (all_bits_and == ~(uint32_t)0);
     r300->poly_stipple_set = true;
 
+    /* The trivial patterns never reach the sampling variant
+     * (r300_update_pstipple_draw requires a non-trivial pattern), so the
+     * stipple texture materializes only for a pattern that samples it.  The
+     * state tracker sets the default all-one pattern on every context's
+     * first draw, and the eager 32x32 upload ran a blitter quad through the
+     * CS before the application's first draw; the deferral keeps a
+     * stipple-free context's command stream empty until the application
+     * submits work.  A later non-trivial pattern takes the create-or-update
+     * path below with its own fresh texels. */
+    if (r300->poly_stipple_all_zero || r300->poly_stipple_all_one)
+        return;
+
     if (!r300->pstipple_tex) {
         r300->pstipple_tex =
             util_pstipple_create_stipple_texture(pipe, state->stipple);
