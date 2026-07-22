@@ -6072,11 +6072,23 @@ static int r2vb_bo_draw_producer3_mode(void)
  * the off-box oracle.  Either way the caller falls back to gallivm for the
  * visible draw -- the cell tests exactly one new hardware mechanism, the
  * BO-fetched producer input, and delivers nothing. */
-static void r2vb_run_bo_fetch_producer3(struct r300_context *r300,
-                                        struct pipe_resource *clip,
-                                        uint32_t count, uint32_t start,
-                                        enum r300_r2vb_position_space space,
-                                        bool submit)
+/* Outcome of the first-cell arm, threaded to the route so the visible draw
+ * is consumed after a live submission: once a producer IB has been emitted
+ * or flushed, a further gallivm submission would ride an unproven GPU state,
+ * so the submit cell ends the process's GPU work.  A decline before any PM4
+ * emission keeps the clean gallivm fallback. */
+enum r300_r2vb_bo3_result {
+    R300_R2VB_BO3_DECLINED = 0,
+    R300_R2VB_BO3_CAPTURED,
+    R300_R2VB_BO3_SUBMITTED_CONSUME,
+};
+
+static enum r300_r2vb_bo3_result
+r2vb_run_bo_fetch_producer3(struct r300_context *r300,
+                            struct pipe_resource *clip,
+                            uint32_t count, uint32_t start,
+                            enum r300_r2vb_position_space space,
+                            bool submit)
 {
     const char *why = NULL;
     struct pipe_resource *slot_res = NULL;
@@ -6188,11 +6200,13 @@ static void r2vb_run_bo_fetch_producer3(struct r300_context *r300,
 
     bool ok = false;
     if (!why) {
-        /* Reserve + emit dirty state through the real prepare path: shared
+        /* Capacity only, before any fallible transaction work: the shared
          * prologue (31 + wpos override) + 64-dword custom range + 8-dword
-         * tail, with margin. */
-        if (!r300_r2vb_prepare_states(r300, 192))
-            why = "prepare";
+         * tail, with margin; PREP_EMIT_STATES adds the live dirty-dword
+         * count on top.  The reservation may flush and rotate the CS but
+         * emits nothing, so every register write stays behind the
+         * transaction's complete-list validation. */
+        r300_r2vb_reserve_bo_draw_cs(r300, 160);
     }
     if (!why) {
         /* validate() proves output authority against the bound framebuffer
@@ -6222,6 +6236,21 @@ static void r2vb_run_bo_fetch_producer3(struct r300_context *r300,
                                                      &pfs->shader->inputs, rs,
                                                      &psc))
         why = "stage_cs";
+    /* One-shot live guard, taken at the PM4 boundary: a CPU-side decline
+     * above leaves the attempt unconsumed, and every qualifying call after
+     * the first declines here instead of emitting a second candidate. */
+    static bool producer_submit3_fired = false;
+    if (!why && submit) {
+        if (producer_submit3_fired)
+            why = "already_fired";
+        else
+            producer_submit3_fired = true;
+    }
+    if (!why)
+        fprintf(stderr, "r2vb_bo_draw_producer3 decision=ready "
+                        "slot_reloc=%d model_reloc=%d output_reloc=%d\n",
+                txn.slot_reloc_index, txn.model_reloc_index,
+                txn.output_reloc_index);
     if (!why) {
         /* Any staging flush re-marked the atoms; land them before the raw
          * prologue so no dirty emission can follow the retarget. */
@@ -6232,6 +6261,7 @@ static void r2vb_run_bo_fetch_producer3(struct r300_context *r300,
             why = "emit";
         } else {
             r2vb_emit_producer_order_tail(r300);
+            fprintf(stderr, "r2vb_bo_draw_producer3 decision=emitted\n");
             ok = true;
         }
     }
@@ -6244,15 +6274,21 @@ static void r2vb_run_bo_fetch_producer3(struct r300_context *r300,
             txn.slot_reloc_index, txn.model_reloc_index,
             txn.output_reloc_index);
 
+    enum r300_r2vb_bo3_result result = R300_R2VB_BO3_DECLINED;
     if (ok && !submit) {
         /* Discard the producer IB before DRM_RADEON_CS; R300_TRACE has
          * already retained it for the full-path decode. */
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
         fprintf(stderr, "r2vb_bo_draw_producer3 decision=capture "
                         "(no-submit; RADEON_FLUSH_NOOP)\n");
+        result = R300_R2VB_BO3_CAPTURED;
     } else if (ok && submit) {
-        fprintf(stderr, "r2vb_bo_draw_producer3 decision=submit\n");
+        /* The producer IB reaches DRM_RADEON_CS here; the emitted state is
+         * committed, so the process's GPU work ends with this candidate
+         * whatever the readback outcome. */
+        result = R300_R2VB_BO3_SUBMITTED_CONSUME;
         r300->context.flush(&r300->context, NULL, 0);
+        fprintf(stderr, "r2vb_bo_draw_producer3 submission=flush_returned\n");
         r2vb_wait_bo(r300, clip);
         struct pipe_transfer *xfer = NULL;
         struct pipe_box box = { .width = (int)clip->width0, .height = 1,
@@ -6260,7 +6296,11 @@ static void r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         const uint32_t *rec = r300->context.buffer_map(
             &r300->context, clip, 0, PIPE_MAP_READ, &box, &xfer);
         if (rec) {
-            for (uint32_t i = 0; i < clip->width0 / 16; i++) {
+            fprintf(stderr,
+                    "r2vb_bo_draw_producer3 retirement=readback_ok\n");
+            uint32_t nrec = clip->width0 / 16;
+            uint32_t sentinel_clean = 0;
+            for (uint32_t i = 0; i < nrec; i++) {
                 float f[4];
                 memcpy(f, &rec[i * 4], sizeof(f));
                 fprintf(stderr,
@@ -6268,7 +6308,16 @@ static void r2vb_run_bo_fetch_producer3(struct r300_context *r300,
                         "(%g %g %g %g)\n",
                         i, rec[i * 4 + 0], rec[i * 4 + 1], rec[i * 4 + 2],
                         rec[i * 4 + 3], f[0], f[1], f[2], f[3]);
+                if (i >= count && rec[i * 4] == 0xcbcbcbcbu &&
+                    rec[i * 4 + 1] == 0xcbcbcbcbu &&
+                    rec[i * 4 + 2] == 0xcbcbcbcbu &&
+                    rec[i * 4 + 3] == 0xcbcbcbcbu)
+                    sentinel_clean++;
             }
+            fprintf(stderr,
+                    "r2vb_bo_draw_producer3 readback_records=%u "
+                    "tail_untouched=%u/%u\n",
+                    count, sentinel_clean, nrec - count);
             r300->context.buffer_unmap(&r300->context, xfer);
         } else {
             fprintf(stderr, "r2vb_bo_draw_producer3 readback=map_failed\n");
@@ -6277,11 +6326,14 @@ static void r2vb_run_bo_fetch_producer3(struct r300_context *r300,
 
     /* The producer hand-wrote raster registers outside the atom system, and
      * the capture arm discarded a CS carrying emitted state; re-mark the
-     * application state either way before the gallivm fallback draw. */
+     * application state either way.  After a live submission the caller
+     * consumes the draw, so the re-marking serves only a later process
+     * teardown path. */
     r2vb_redirty_app_raster_state(r300);
     r300->vertex_arrays_dirty = true;
     r300_r2vb_producer_bo_draw_fini(&txn);
     pipe_resource_reference(&slot_res, NULL);
+    return result;
 }
 
 static bool r2vb_run_transform_producer(struct r300_context *r300,
@@ -6290,7 +6342,8 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
                                         unsigned num_in, const float *cols,
                                         uint32_t start,
                                         enum r300_r2vb_position_space space,
-                                        bool restage, bool externals)
+                                        bool restage, bool externals,
+                                        bool *bo3_consumed)
 {
     void *xfs;
     bool xfs_cached = false;
@@ -6391,8 +6444,10 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     int bo3 = r2vb_bo_draw_producer3_mode();
     bool prepared = false;
     if (bo3 != 0 && restage && num_in == 1) {
-        r2vb_run_bo_fetch_producer3(r300, clip, count, start, space,
-                                    bo3 == 2);
+        if (r2vb_run_bo_fetch_producer3(r300, clip, count, start, space,
+                                        bo3 == 2) ==
+            R300_R2VB_BO3_SUBMITTED_CONSUME)
+            *bo3_consumed = true;
     } else if (bo3 != 0) {
         fprintf(stderr,
                 "r2vb_bo_draw_producer3 mode=%s ok=0 why=%s count=%u\n",
@@ -6868,11 +6923,17 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             ? R300_R2VB_POSITION_CLIP
             : r2vb_env_space();
     r300->r2vb_produced_space = produced_space;
+    bool bo3_consumed = false;
     if (!r2vb_run_transform_producer(r300, clip, count, model, num_in, cols,
                                      draw->start, produced_space, restage,
-                                     externals)) {
+                                     externals, &bo3_consumed)) {
         pipe_resource_reference(&clip, NULL);
         free(model);
+        /* A live BO-fetch candidate ends this process's GPU work: consume
+         * the draw so the route neither delivers nor falls back to a
+         * gallivm submission after the candidate. */
+        if (bo3_consumed)
+            return true;
         return false;
     }
 
@@ -7128,13 +7189,17 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         r300->r2vb_produced_space = produced_space;
         if (!r2vb_run_transform_producer(r300, clip, count, model, num_in,
                                          cols, draw->start, produced_space,
-                                         restage, externals)) {
+                                         restage, externals, &bo3_consumed)) {
             r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
             r300->r2vb_capture_clip = NULL;
             r2vb_redirty_app_raster_state(r300);
             r2vb_edge_streams_release(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
+            /* A live BO-fetch candidate consumed the process's GPU work;
+             * the draw ends here with no delivery and no gallivm. */
+            if (bo3_consumed)
+                return true;
             return false;
         }
         /* Both producer runs are complete here; the split kind on the context
