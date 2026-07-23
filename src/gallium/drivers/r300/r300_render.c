@@ -2281,6 +2281,21 @@ static int r300_swtcl_indexed_control(void)
     return cached;
 }
 
+static void r300_swtcl_fetch_sync(struct r300_context *r300,
+                                  unsigned hwprim, unsigned count)
+{
+    int mode = r300_swtcl_pvs_flush_before_fetch_mode();
+    if (!mode)
+        return;
+    r300_mark_atom_dirty(r300, &r300->pvs_flush);
+    if (getenv("R300_R2VB_EXEC_DEBUG")) {
+        static unsigned draw_epoch;
+        fprintf(stderr, "swtcl_fetch_sync draw_epoch=%u primitive=0x%x "
+                "count=%u pvs_flush_mode=%d load_vbpntr=1\n",
+                draw_epoch++, hwprim, count, mode);
+    }
+}
+
 static void r300_render_draw_arrays(struct vbuf_render* render,
                                     unsigned start,
                                     unsigned count)
@@ -2332,6 +2347,8 @@ static void r300_render_draw_arrays(struct vbuf_render* render,
 
     DBG(r300, DBG_DRAW, "r300: render_draw_arrays (count: %d)\n", count);
 
+    r300_swtcl_fetch_sync(r300, r300render->hwprim, count);
+
     if (!r300_prepare_for_rendering(r300,
                                     PREP_EMIT_STATES | PREP_EMIT_VARRAYS_SWTCL,
                                     NULL, dwords, 0, 0, -1)) {
@@ -2378,6 +2395,8 @@ static void r300_render_draw_elements(struct vbuf_render* render,
     if (!index_buffer) {
         return;
     }
+
+    r300_swtcl_fetch_sync(r300, r300render->hwprim, count);
 
     if (!r300_prepare_for_rendering(r300,
                                     PREP_EMIT_STATES |
