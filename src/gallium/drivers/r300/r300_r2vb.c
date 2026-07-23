@@ -6047,10 +6047,69 @@ static int r2vb_bo_draw_producer3_mode(void)
             mode = 1;
         else if (e && strcmp(e, "producer_submit3") == 0)
             mode = 2;
+        else if (e && strcmp(e, "producer_alu12") == 0)
+            mode = 3;
+        else if (e && strcmp(e, "producer_alu12_submit") == 0)
+            mode = 4;
         else
             mode = 0;
     }
     return mode;
+}
+
+/* Twelve-lane arithmetic discriminator FS for the fragment-ALU sign
+ * characterization: on RS482 the window-space producer reads back every
+ * negative-product viewport-MAD lane one FP24 ULP toward zero while every
+ * positive-product lane is bit-exact.  Each output channel isolates one
+ * operation class over the fetched model vec4 m (XYZ1, so m.w carries the
+ * PSC-synthesized 1.0 into the reciprocal without NIR constant folding):
+ *
+ *   out.x = m.x * 32          multiply alone, no bias
+ *   out.y = m.y * 32 + 32     multiply-add, positive bias (the failing class)
+ *   out.z = m.z * 32 - 32     multiply-add, negative bias (cancellation probe)
+ *   out.w = m.x * frcp(m.w)   perspective-divide leg
+ *
+ * Three data rows spread negative, positive, and fractional operands across
+ * the classes, so twelve lanes separate multiplier sign, adder cancellation,
+ * and the reciprocal in one three-vertex draw.  The emitted RC program is
+ * the experiment: RADEON_DEBUG=fp prints it at creation (rc_debug writes
+ * with vfprintf), and the schedule must show the intended MAD/RCP forms
+ * before a silicon run counts. */
+static void *r2vb_build_alu12_fs(struct r300_context *r300)
+{
+    const nir_shader_compiler_options *options =
+        r300->screen->screen.nir_options[MESA_SHADER_FRAGMENT];
+    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, options,
+                                                   "r300 r2vb alu12 FS");
+
+    nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                           glsl_vec4_type(), "in_vtx");
+    in->data.location = VARYING_SLOT_VAR0;
+    in->data.interpolation = INTERP_MODE_FLAT;
+    nir_def *m = nir_load_var(&b, in);
+
+    nir_def *mx = nir_channel(&b, m, 0);
+    nir_def *my = nir_channel(&b, m, 1);
+    nir_def *mz = nir_channel(&b, m, 2);
+    nir_def *mw = nir_channel(&b, m, 3);
+    nir_def *k32 = nir_imm_float(&b, 32.0f);
+
+    nir_def *ox = nir_fmul(&b, mx, k32);
+    nir_def *oy = nir_fadd(&b, nir_fmul(&b, my, k32), k32);
+    nir_def *oz = nir_fadd(&b, nir_fmul(&b, mz, k32),
+                           nir_imm_float(&b, -32.0f));
+    nir_def *ow = nir_fmul(&b, mx, nir_frcp(&b, mw));
+
+    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                            glsl_vec4_type(), "out_color");
+    out->data.location = FRAG_RESULT_COLOR;
+    nir_store_var(&b, out, nir_vec4(&b, ox, oy, oz, ow), 0xf);
+
+    struct pipe_shader_state st = {0};
+    st.type = PIPE_SHADER_IR_NIR;
+    st.ir.nir = b.shader; /* create_fs_state takes ownership and precompiles */
+    return r300_create_fs_state_internal(&r300->context, &st,
+                                         R300_FS_INPUT_R2VB_FLAT_VERTEX);
 }
 
 /* Run the shipped LOAD_VBPNTR producer transaction at the real producer call
@@ -6408,10 +6467,17 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
          * vertex route.  Re-stage its NIR as the FS (position only) and load the
          * matrix it reads from UBO[0] into FS const file 0 untransposed (the VS
          * body is column-MAD).  Built per draw and deleted after, like the baked
-         * path, since the FS tracks whatever VS is bound. */
-        xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
-                                         VARYING_SLOT_POS, space);
-        if (xfs)
+         * path, since the FS tracks whatever VS is bound.  The alu12
+         * discriminator substitutes its diagnostic FS here -- same input
+         * shape, same transaction, per-lane arithmetic classes instead of
+         * the transform -- so the BO-fetch path stays byte-identical
+         * outside the fragment program. */
+        if (r2vb_bo_draw_producer3_mode() >= 3)
+            xfs = r2vb_build_alu12_fs(r300);
+        else
+            xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
+                                             VARYING_SLOT_POS, space);
+        if (xfs && r2vb_bo_draw_producer3_mode() < 3)
             r300_r2vb_set_transform_consts_raw(r300, cols);
     } else if (externals) {
         xfs = r300_r2vb_get_transform_fs(r300, space);
@@ -6445,13 +6511,13 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     bool prepared = false;
     if (bo3 != 0 && restage && num_in == 1) {
         if (r2vb_run_bo_fetch_producer3(r300, clip, count, start, space,
-                                        bo3 == 2) ==
+                                        bo3 == 2 || bo3 == 4) ==
             R300_R2VB_BO3_SUBMITTED_CONSUME)
             *bo3_consumed = true;
     } else if (bo3 != 0) {
         fprintf(stderr,
                 "r2vb_bo_draw_producer3 mode=%s ok=0 why=%s count=%u\n",
-                bo3 == 2 ? "submit" : "capture",
+                (bo3 == 2 || bo3 == 4) ? "submit" : "capture",
                 restage ? "num_in" : "restage", count);
     } else {
         prepared = r300_r2vb_prepare_states(
