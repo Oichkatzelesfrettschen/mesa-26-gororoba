@@ -2281,6 +2281,40 @@ static int r300_swtcl_indexed_control(void)
     return cached;
 }
 
+/* Stale-VAP-fetch repair gate (R300_SWTCL_PVS_FLUSH_BEFORE_FETCH=1, exact
+ * opt-in): dirty the pvs_flush atom before each SWTCL hardware draw, so the
+ * dirty-state pass writes VAP_PVS_STATE_FLUSH_REG ahead of the fresh
+ * 3D_LOAD_VBPNTR.  The steady-state SWTCL draw re-emits LOAD_VBPNTR every
+ * draw, yet the VAP walks the previous draw-class operation's geometry under
+ * the current draw's color.  The two draw classes that fetch correctly --
+ * a context's first command stream (pvs_flush dirtied at context init) and
+ * the draw after an R2VB producer (explicit flush in the publication tail) --
+ * both carry this register write, so the flush is the candidate missing
+ * state transition between ordinary consecutive draws. */
+static bool r300_swtcl_pvs_flush_before_fetch(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_SWTCL_PVS_FLUSH_BEFORE_FETCH");
+        cached = e && strcmp(e, "1") == 0;
+    }
+    return cached;
+}
+
+static void r300_swtcl_fetch_sync(struct r300_context *r300,
+                                  unsigned hwprim, unsigned count)
+{
+    if (!r300_swtcl_pvs_flush_before_fetch())
+        return;
+    r300_mark_atom_dirty(r300, &r300->pvs_flush);
+    if (getenv("R300_R2VB_EXEC_DEBUG")) {
+        static unsigned draw_epoch;
+        fprintf(stderr, "swtcl_fetch_sync draw_epoch=%u primitive=0x%x "
+                "count=%u pvs_flush=1 load_vbpntr=1\n",
+                draw_epoch++, hwprim, count);
+    }
+}
+
 static void r300_render_draw_arrays(struct vbuf_render* render,
                                     unsigned start,
                                     unsigned count)
@@ -2332,6 +2366,8 @@ static void r300_render_draw_arrays(struct vbuf_render* render,
 
     DBG(r300, DBG_DRAW, "r300: render_draw_arrays (count: %d)\n", count);
 
+    r300_swtcl_fetch_sync(r300, r300render->hwprim, count);
+
     if (!r300_prepare_for_rendering(r300,
                                     PREP_EMIT_STATES | PREP_EMIT_VARRAYS_SWTCL,
                                     NULL, dwords, 0, 0, -1)) {
@@ -2378,6 +2414,8 @@ static void r300_render_draw_elements(struct vbuf_render* render,
     if (!index_buffer) {
         return;
     }
+
+    r300_swtcl_fetch_sync(r300, r300render->hwprim, count);
 
     if (!r300_prepare_for_rendering(r300,
                                     PREP_EMIT_STATES |
