@@ -1225,11 +1225,53 @@ void r300_emit_vertex_stream_state(struct r300_context* r300,
     END_CS;
 }
 
+/* Stale-VAP-fetch repair gate (R300_SWTCL_PVS_FLUSH_BEFORE_FETCH, exact
+ * opt-in values): condition the VAP vertex-fetch engine ahead of each SWTCL
+ * hardware draw's fresh 3D_LOAD_VBPNTR by dirtying the pvs_flush atom, whose
+ * emission the mode selects.  The steady-state SWTCL draw re-emits
+ * LOAD_VBPNTR every draw, yet the VAP walks the previous draw-class
+ * operation's geometry under the current draw's color; the two draw classes
+ * that fetch correctly -- a context's first command stream and the draw
+ * after an R2VB producer publication tail -- both carry conditioning writes.
+ *
+ *   1  bare VAP_PVS_STATE_FLUSH_REG write.  RS482 silicon: a bare flush
+ *      issued mid-pipe INDUCES the stale fetch on an otherwise-clean first
+ *      draw pair (three-pass seeded cell), so this mode stands as the banked
+ *      refuted arm, kept selectable for replication.
+ *   2  RADEON_WAIT_UNTIL(WAIT_3D_IDLECLEAN) then the flush: the drained-pipe
+ *      form both known-good sites use, minus their cache flushes.
+ *   3  ZB_ZCACHE + RB3D_DSTCACHE flush, wait, then the flush: the complete
+ *      R2VB producer publication-tail barrier. */
+int r300_swtcl_pvs_flush_before_fetch_mode(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_SWTCL_PVS_FLUSH_BEFORE_FETCH");
+        cached = (e && e[0] >= '1' && e[0] <= '3' && !e[1]) ? e[0] - '0' : 0;
+    }
+    return cached;
+}
+
 void r300_emit_pvs_flush(struct r300_context* r300, unsigned size, void* state)
 {
+    int mode = r300_swtcl_pvs_flush_before_fetch_mode();
     CS_LOCALS(r300);
 
     BEGIN_CS(size);
+    /* Modes 2 and 3 drain the pipe before the flush; mode 3 additionally
+     * pushes the color/Z caches out first, mirroring the R2VB producer
+     * publication tail.  A bare flush written mid-pipe induces the stale
+     * fetch it is meant to clear (RS482 seeded three-pass cell). */
+    if (mode >= 3) {
+        OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT,
+                   R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                   R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+        OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT,
+                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+    }
+    if (mode >= 2)
+        OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
     OUT_CS_REG(R300_VAP_PVS_STATE_FLUSH_REG, 0x0);
     END_CS;
 }
