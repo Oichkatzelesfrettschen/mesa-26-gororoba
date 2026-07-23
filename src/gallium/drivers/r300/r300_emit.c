@@ -1225,26 +1225,24 @@ void r300_emit_vertex_stream_state(struct r300_context* r300,
     END_CS;
 }
 
-/* Stale-VAP-fetch repair gate (R300_SWTCL_PVS_FLUSH_BEFORE_FETCH, exact
- * opt-in values): condition the VAP vertex-fetch engine ahead of each SWTCL
+/* SWTCL fetch-conditioning diagnostic gate (R300_SWTCL_PVS_FLUSH_BEFORE_FETCH,
+ * exact opt-in values 1-4): emit a conditioning sequence ahead of each SWTCL
  * hardware draw's fresh 3D_LOAD_VBPNTR by dirtying the pvs_flush atom, whose
- * emission the mode selects.  The steady-state SWTCL draw re-emits
- * LOAD_VBPNTR every draw, yet the VAP walks the previous draw-class
- * operation's geometry under the current draw's color; the two draw classes
- * that fetch correctly -- a context's first command stream and the draw
- * after an R2VB producer publication tail -- both carry conditioning writes.
+ * emission the mode selects.  RS482 silicon verdict from the three-pass
+ * color-seeded cell with a CPU raster oracle: every mode leaves the
+ * within-process steady state stale -- the second and third passes truncate
+ * the u_blitter clear fan to the top half of the render target while the
+ * application triangle and the readback blit stay correct -- and the first
+ * pass is governed solely by inter-process idle (clean after roughly a
+ * minute of GPU quiet with Xorg alive, stale seconds after a predecessor
+ * process, gate on or off alike).  The gate stands as the banked refutation
+ * matrix for draw-adjacent CS conditioning of this defect class.
  *
- *   1  bare VAP_PVS_STATE_FLUSH_REG write.  RS482 silicon: a bare flush
- *      issued mid-pipe INDUCES the stale fetch on an otherwise-clean first
- *      draw pair (three-pass seeded cell), so this mode stands as the banked
- *      refuted arm, kept selectable for replication.
- *   2  RADEON_WAIT_UNTIL(WAIT_3D_IDLECLEAN) then the flush: the drained-pipe
- *      form both known-good sites use, minus their cache flushes.
+ *   1  bare VAP_PVS_STATE_FLUSH_REG write.
+ *   2  RADEON_WAIT_UNTIL(WAIT_3D_IDLECLEAN) then the flush.
  *   3  ZB_ZCACHE + RB3D_DSTCACHE flush, wait, then the flush: the complete
  *      R2VB producer publication-tail barrier.
- *   4  RADEON_WAIT_UNTIL(WAIT_3D_IDLECLEAN) alone: isolates the wait from
- *      the flush write, since modes 1-3 all truncate the adjacent fan draw
- *      and share only the flush write as the poison candidate. */
+ *   4  RADEON_WAIT_UNTIL(WAIT_3D_IDLECLEAN) alone. */
 int r300_swtcl_pvs_flush_before_fetch_mode(void)
 {
     static int cached = -1;
@@ -1263,8 +1261,7 @@ void r300_emit_pvs_flush(struct r300_context* r300, unsigned size, void* state)
     BEGIN_CS(size);
     /* Modes 2 and 3 drain the pipe before the flush; mode 3 additionally
      * pushes the color/Z caches out first, mirroring the R2VB producer
-     * publication tail.  A bare flush written mid-pipe induces the stale
-     * fetch it is meant to clear (RS482 seeded three-pass cell). */
+     * publication tail. */
     if (mode >= 3) {
         OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT,
                    R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
