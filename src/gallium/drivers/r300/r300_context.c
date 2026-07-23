@@ -233,7 +233,7 @@ static bool r300_setup_atoms(struct r300_context* r300)
     /* VAP. */
     R300_INIT_ATOM(viewport_state, 9);
     R300_INIT_ATOM(pvs_flush,
-                   r300_swtcl_pvs_flush_before_fetch_mode() >= 3 ? 8 :
+                   r300_swtcl_pvs_flush_before_fetch_mode() == 3 ? 8 :
                    r300_swtcl_pvs_flush_before_fetch_mode() == 2 ? 4 : 2);
     R300_INIT_ATOM(guardband_state, 5);
     R300_INIT_ATOM(vap_invariant_state, is_r500 || !has_tcl ? 11 : 9);

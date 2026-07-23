@@ -1241,13 +1241,16 @@ void r300_emit_vertex_stream_state(struct r300_context* r300,
  *   2  RADEON_WAIT_UNTIL(WAIT_3D_IDLECLEAN) then the flush: the drained-pipe
  *      form both known-good sites use, minus their cache flushes.
  *   3  ZB_ZCACHE + RB3D_DSTCACHE flush, wait, then the flush: the complete
- *      R2VB producer publication-tail barrier. */
+ *      R2VB producer publication-tail barrier.
+ *   4  RADEON_WAIT_UNTIL(WAIT_3D_IDLECLEAN) alone: isolates the wait from
+ *      the flush write, since modes 1-3 all truncate the adjacent fan draw
+ *      and share only the flush write as the poison candidate. */
 int r300_swtcl_pvs_flush_before_fetch_mode(void)
 {
     static int cached = -1;
     if (cached < 0) {
         const char *e = getenv("R300_SWTCL_PVS_FLUSH_BEFORE_FETCH");
-        cached = (e && e[0] >= '1' && e[0] <= '3' && !e[1]) ? e[0] - '0' : 0;
+        cached = (e && e[0] >= '1' && e[0] <= '4' && !e[1]) ? e[0] - '0' : 0;
     }
     return cached;
 }
@@ -1272,7 +1275,8 @@ void r300_emit_pvs_flush(struct r300_context* r300, unsigned size, void* state)
     }
     if (mode >= 2)
         OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
-    OUT_CS_REG(R300_VAP_PVS_STATE_FLUSH_REG, 0x0);
+    if (mode != 4)
+        OUT_CS_REG(R300_VAP_PVS_STATE_FLUSH_REG, 0x0);
     END_CS;
 }
 
