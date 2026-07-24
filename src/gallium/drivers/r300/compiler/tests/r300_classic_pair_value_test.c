@@ -1691,6 +1691,80 @@ test_source_read_model_boundaries(void)
          "model: negative NaN saturates then steps like max finite");
 }
 
+/* Exhaustive sweep of every positive normal FP24 lattice magnitude in its
+ * FP32-expanded encoding: exponent bytes 0x42 (min normal 2^-61) through
+ * 0xC0 (max-finite binade), mantissa steps of 0x80 (127 binades x 65536
+ * significands).  Proves mechanically that storage quantization is
+ * idempotent on the lattice, the predecessor is strictly smaller and
+ * borrows across every power-of-two binade boundary, pred(min normal)
+ * is zero, the source-read model is identity on positive magnitudes and
+ * exactly one predecessor step on negative magnitudes, NEG after the
+ * read recovers the exact negative, and IDENTITY preserves every bit
+ * pattern.  FTZ, saturation, and NaN/Inf handling stay labeled model
+ * choices pinned by the boundary test above. */
+static void
+test_source_read_lattice_exhaustive(void)
+{
+   const enum r300_source_read_model rs =
+      R300_SOURCE_READ_RS48X_NEG_PREDECESSOR;
+   unsigned long checked = 0;
+   uint32_t bad = 0;
+
+   for (uint32_t exponent_byte = 0x42; exponent_byte <= 0xC0 && !bad;
+        exponent_byte++) {
+      for (uint32_t mantissa = 0; mantissa <= 0x7FFF80u; mantissa += 0x80u) {
+         const uint32_t magnitude = (exponent_byte << 23) | mantissa;
+         const uint32_t pred = r300_fp24_pred_magnitude_bits(magnitude);
+
+         /* Quantize idempotence on the lattice value. */
+         if (r300_fp24_quantize_bits(magnitude) != magnitude) {
+            bad = magnitude; break;
+         }
+         /* Predecessor: strictly smaller, on the lattice, with the binade
+          * borrow at mantissa zero and pred(min normal) == 0. */
+         if (magnitude == R300_FP24_MIN_NORMAL_F32_BITS) {
+            if (pred != 0) { bad = magnitude; break; }
+         } else {
+            const uint32_t expect = mantissa == 0
+               ? (((exponent_byte - 1) << 23) | 0x7FFF80u)
+               : magnitude - 0x80u;
+            if (pred != expect || pred >= magnitude ||
+                r300_fp24_quantize_bits(pred) != pred) {
+               bad = magnitude; break;
+            }
+         }
+         /* Source read: +m passes through; -m steps one predecessor with
+          * sign kept (or to +0 from min normal); NEG of the +m read is the
+          * exact negative; IDENTITY is bit-preserving on the negative. */
+         const float pos = r300_bits_to_f32(magnitude);
+         const float neg = r300_bits_to_f32(0x80000000u | magnitude);
+         if (f32_bits_of(r300_us_source_read_f32(pos, rs)) != magnitude) {
+            bad = magnitude; break;
+         }
+         const uint32_t neg_expect = pred ? (0x80000000u | pred) : 0;
+         if (f32_bits_of(r300_us_source_read_f32(neg, rs)) != neg_expect) {
+            bad = magnitude; break;
+         }
+         if (f32_bits_of(-r300_us_source_read_f32(pos, rs)) !=
+             (0x80000000u | magnitude)) {
+            bad = magnitude; break;
+         }
+         if (f32_bits_of(r300_us_source_read_f32(
+                neg, R300_SOURCE_READ_IDENTITY)) !=
+             (0x80000000u | magnitude)) {
+            bad = magnitude; break;
+         }
+         checked++;
+      }
+   }
+   CHECK(bad == 0 && checked == 127ul * 65536ul,
+         "lattice exhaustive: all positive normal FP24 magnitudes hold "
+         "quantize/pred/source-read/NEG/IDENTITY invariants");
+   if (bad)
+      fprintf(stderr, "lattice exhaustive: first failing magnitude "
+                      "0x%08X after %lu checks\n", bad, checked);
+}
+
 int
 main(void)
 {
