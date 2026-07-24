@@ -55,6 +55,11 @@ extern "C" {
 enum r300_source_read_model {
    R300_SOURCE_READ_IDENTITY,
    R300_SOURCE_READ_RS48X_NEG_PREDECESSOR,
+   /* Evaluation-refusing sentinel for source classes silicon has not
+    * measured (constant, texture, presubtract).  A consumer treats a class
+    * marked UNMODELED as indeterminate when it delivers a negative value;
+    * r300_us_source_read_f32() accepts only the two measured models. */
+   R300_SOURCE_READ_UNMODELED,
 };
 
 /* FP32 bit patterns of the FP24 lattice boundaries.  Min normal 2^-61 and

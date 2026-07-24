@@ -23,6 +23,7 @@
 #include "r300_nir.h"
 #include "r300_screen.h"
 #include "r300_us_source_read.h"
+#include "r300_pair_eval.h"
 #include "radeon_code.h"
 #include "radeon_compiler.h"
 #include "radeon_program.h"
@@ -63,300 +64,6 @@ static bool
 nearly_equal(float a, float b)
 {
    return fabsf(a - b) <= 1e-4f;
-}
-
-/* ---------- pair-form CPU evaluator ----------
- *
- * Covers the opcode subset rc_pair_translate's final_rewrite ever leaves in
- * a pair (MAX, MAD, MIN, DP3, DP4 -- MOV/ADD/MUL always rewrite to MAX/MAD
- * before translation, and DP3/DP4 are the only opcodes classify_instruction
- * ever forces needrgb on regardless of write mask). */
-
-struct pair_eval {
-   float temps[64][4];
-   float inputs[8][4];
-   float outputs[4][4];
-   float depth;
-   const struct rc_constant_list *consts;
-   const char *error;
-   /* Execution profile for source-operand reads.  IDENTITY keeps the ideal
-    * FP32 evaluator; RS48X_NEG_PREDECESSOR applies the measured RS482 US
-    * read transform (r300_us_source_read.h) to input and temporary reads,
-    * the two register files the sign-flip discriminator measured.  Constant
-    * reads keep identity under both profiles: the constant-file read class
-    * is unmeasured, and the model fails closed on conjecture. */
-   enum r300_source_read_model src_read;
-};
-
-static bool
-resolve_pair_reg(struct pair_eval *e, rc_register_file file, unsigned index, float *reg)
-{
-   switch (file) {
-   case RC_FILE_TEMPORARY:
-      memcpy(reg, e->temps[index & 63], sizeof(float[4]));
-      return true;
-   case RC_FILE_INPUT:
-      memcpy(reg, e->inputs[index & 7], sizeof(float[4]));
-      return true;
-   case RC_FILE_CONSTANT:
-      if (index >= e->consts->Count) {
-         e->error = "constant index out of range";
-         return false;
-      }
-      if (e->consts->Constants[index].Type != RC_CONSTANT_IMMEDIATE) {
-         e->error = "non-immediate constant";
-         return false;
-      }
-      memcpy(reg, e->consts->Constants[index].u.Immediate, sizeof(float[4]));
-      return true;
-   case RC_FILE_NONE:
-      memset(reg, 0, sizeof(float[4]));
-      return true;
-   default:
-      e->error = "unhandled pair source file";
-      return false;
-   }
-}
-
-static float
-decode_pair_channel(const float *reg, unsigned swz)
-{
-   switch (swz) {
-   case RC_SWIZZLE_X:    return reg[0];
-   case RC_SWIZZLE_Y:    return reg[1];
-   case RC_SWIZZLE_Z:    return reg[2];
-   case RC_SWIZZLE_W:    return reg[3];
-   case RC_SWIZZLE_ZERO: return 0.0f;
-   case RC_SWIZZLE_ONE:  return 1.0f;
-   case RC_SWIZZLE_HALF: return 0.5f;
-   default:              return 0.0f;
-   }
-}
-
-/* Resolve one Arg's source register.  rc_pair_get_src (radeon_program_pair.c)
- * is the canonical resolver: it picks pair->RGB.Src[] or pair->Alpha.Src[]
- * by walking the ARG'S OWN swizzle (rc_source_type_swz), not by which lane
- * owns the Arg -- a single instruction's RGB.Arg and Alpha.Arg can each
- * resolve into either Src[] array depending on whether their swizzle selects
- * an X/Y/Z-range channel or the W channel, since radeon_pair_translate.c's
- * set_pair_instruction shares source-slot allocation across both lanes for a
- * value one lane reads through the other pipe's read port.  A NULL return
- * means the swizzle only ever selects ZERO/ONE/HALF/UNUSED, so there is no
- * register to fetch at all. */
-static bool
-eval_arg_reg(struct pair_eval *e, struct rc_pair_instruction *pair, struct rc_pair_instruction_arg *arg,
-            float reg[4])
-{
-   memset(reg, 0, sizeof(float[4]));
-   struct rc_pair_instruction_source *src = rc_pair_get_src(pair, arg);
-   if (!src || !src->Used)
-      return true;
-   if (!resolve_pair_reg(e, src->File, src->Index, reg))
-      return false;
-   /* The read transform lands between register resolution and the ABS/NEG
-    * modifiers -- the ordering the sign-flip cell proved (NEG on an exact
-    * positive exports exactly; a stored negative is already one ULP low
-    * before its modifier applies).  Transforming the whole fetched register
-    * equals transforming each swizzle-selected channel; ZERO/ONE/HALF
-    * swizzle constants come from the swizzle hardware, not a register read,
-    * and pass through untouched. */
-   if (e->src_read == R300_SOURCE_READ_RS48X_NEG_PREDECESSOR &&
-       (src->File == RC_FILE_INPUT || src->File == RC_FILE_TEMPORARY))
-      for (unsigned ch = 0; ch < 4; ch++)
-         reg[ch] = r300_us_source_read_f32(reg[ch], e->src_read);
-   return true;
-}
-
-/* Resolve one RGB-lane argument's three channels.  DP3/DP4's fourth term
- * (channel 3) reads the resolved source's raw w component directly rather
- * than through Arg.Swizzle: rc_init_swizzle(swizzle, 3) always retires
- * channel 3 to RC_SWIZZLE_UNUSED for the RGB lane (radeon_pair_translate.c's
- * set_pair_instruction), matching r300FPTranslateRGBSwizzle's native-swizzle
- * lookup, which never encodes a channel-3 select for the RGB pipe -- the
- * hardware DP4 opcode dots the two selected registers' natural components,
- * it does not apply a fourth per-channel select. */
-static bool
-eval_rgb_arg(struct pair_eval *e, struct rc_pair_instruction *pair, struct rc_pair_sub_instruction *sub,
-            unsigned arg_index, float out[4])
-{
-   struct rc_pair_instruction_arg *arg = &sub->Arg[arg_index];
-   float reg[4];
-   if (!eval_arg_reg(e, pair, arg, reg))
-      return false;
-   for (unsigned ch = 0; ch < 3; ch++) {
-      float v = decode_pair_channel(reg, GET_SWZ(arg->Swizzle, ch));
-      if (arg->Abs)
-         v = fabsf(v);
-      if (arg->Negate)
-         v = -v;
-      out[ch] = v;
-   }
-   float w = reg[3];
-   if (arg->Abs)
-      w = fabsf(w);
-   if (arg->Negate)
-      w = -w;
-   out[3] = w;
-   return true;
-}
-
-static bool
-eval_alpha_arg(struct pair_eval *e, struct rc_pair_instruction *pair, struct rc_pair_sub_instruction *sub,
-              unsigned arg_index, float *out_scalar)
-{
-   struct rc_pair_instruction_arg *arg = &sub->Arg[arg_index];
-   float reg[4];
-   if (!eval_arg_reg(e, pair, arg, reg))
-      return false;
-   float v = decode_pair_channel(reg, GET_SWZ(arg->Swizzle, 0));
-   if (arg->Abs)
-      v = fabsf(v);
-   if (arg->Negate)
-      v = -v;
-   *out_scalar = v;
-   return true;
-}
-
-static bool
-eval_rgb_op(struct pair_eval *e, struct rc_pair_instruction *pair, struct rc_pair_sub_instruction *sub,
-           float result[3])
-{
-   float s0[4], s1[4], s2[4];
-   switch (sub->Opcode) {
-   case RC_OPCODE_MAX:
-      if (!eval_rgb_arg(e, pair, sub, 0, s0) || !eval_rgb_arg(e, pair, sub, 1, s1))
-         return false;
-      for (unsigned ch = 0; ch < 3; ch++)
-         result[ch] = fmaxf(s0[ch], s1[ch]);
-      return true;
-   case RC_OPCODE_MIN:
-      if (!eval_rgb_arg(e, pair, sub, 0, s0) || !eval_rgb_arg(e, pair, sub, 1, s1))
-         return false;
-      for (unsigned ch = 0; ch < 3; ch++)
-         result[ch] = fminf(s0[ch], s1[ch]);
-      return true;
-   case RC_OPCODE_MAD:
-      if (!eval_rgb_arg(e, pair, sub, 0, s0) || !eval_rgb_arg(e, pair, sub, 1, s1) ||
-          !eval_rgb_arg(e, pair, sub, 2, s2))
-         return false;
-      for (unsigned ch = 0; ch < 3; ch++)
-         result[ch] = s0[ch] * s1[ch] + s2[ch];
-      return true;
-   case RC_OPCODE_DP3: {
-      if (!eval_rgb_arg(e, pair, sub, 0, s0) || !eval_rgb_arg(e, pair, sub, 1, s1))
-         return false;
-      const float d = s0[0] * s1[0] + s0[1] * s1[1] + s0[2] * s1[2];
-      result[0] = result[1] = result[2] = d;
-      return true;
-   }
-   case RC_OPCODE_DP4: {
-      if (!eval_rgb_arg(e, pair, sub, 0, s0) || !eval_rgb_arg(e, pair, sub, 1, s1))
-         return false;
-      const float d =
-         s0[0] * s1[0] + s0[1] * s1[1] + s0[2] * s1[2] + s0[3] * s1[3];
-      result[0] = result[1] = result[2] = d;
-      return true;
-   }
-   case RC_OPCODE_FRC:
-      if (!eval_rgb_arg(e, pair, sub, 0, s0))
-         return false;
-      for (unsigned ch = 0; ch < 3; ch++)
-         result[ch] = s0[ch] - floorf(s0[ch]);
-      return true;
-   default:
-      e->error = "unhandled RGB pair opcode";
-      return false;
-   }
-}
-
-static bool
-eval_alpha_op(struct pair_eval *e, struct rc_pair_instruction *pair, struct rc_pair_sub_instruction *sub,
-             float *result)
-{
-   float s0, s1, s2;
-   switch (sub->Opcode) {
-   case RC_OPCODE_MAX:
-      if (!eval_alpha_arg(e, pair, sub, 0, &s0) || !eval_alpha_arg(e, pair, sub, 1, &s1))
-         return false;
-      *result = fmaxf(s0, s1);
-      return true;
-   case RC_OPCODE_MIN:
-      if (!eval_alpha_arg(e, pair, sub, 0, &s0) || !eval_alpha_arg(e, pair, sub, 1, &s1))
-         return false;
-      *result = fminf(s0, s1);
-      return true;
-   case RC_OPCODE_MAD:
-      if (!eval_alpha_arg(e, pair, sub, 0, &s0) || !eval_alpha_arg(e, pair, sub, 1, &s1) ||
-          !eval_alpha_arg(e, pair, sub, 2, &s2))
-         return false;
-      *result = s0 * s1 + s2;
-      return true;
-   case RC_OPCODE_FRC:
-      if (!eval_alpha_arg(e, pair, sub, 0, &s0))
-         return false;
-      *result = s0 - floorf(s0);
-      return true;
-   default:
-      e->error = "unhandled Alpha pair opcode";
-      return false;
-   }
-}
-
-static float
-clamp01(float v)
-{
-   return fminf(fmaxf(v, 0.0f), 1.0f);
-}
-
-static bool
-eval_pair_program(struct pair_eval *e, struct radeon_compiler *c)
-{
-   for (struct rc_instruction *i = c->Program.Instructions.Next;
-        i != &c->Program.Instructions; i = i->Next) {
-      if (i->Type != RC_INSTRUCTION_PAIR) {
-         e->error = "unhandled non-pair instruction";
-         return false;
-      }
-      struct rc_pair_instruction *p = &i->U.P;
-
-      /* The Alpha lane in DP mode broadcasts the RGB pipe's dot rather than
-       * computing its own (R300_ALU_OUTA_DP4), so the RGB lane's pre-saturate
-       * channel-0 result is the value the Alpha DP lane reads that same cycle. */
-      float rgb_dot = 0.0f;
-
-      if (p->RGB.Opcode != RC_OPCODE_NOP) {
-         float result[3];
-         if (!eval_rgb_op(e, p, &p->RGB, result))
-            return false;
-         rgb_dot = result[0];
-         if (p->RGB.Saturate)
-            for (unsigned ch = 0; ch < 3; ch++)
-               result[ch] = clamp01(result[ch]);
-         for (unsigned ch = 0; ch < 3; ch++) {
-            if (p->RGB.WriteMask & (1u << ch))
-               e->temps[p->RGB.DestIndex & 63][ch] = result[ch];
-            if (p->RGB.OutputWriteMask & (1u << ch))
-               e->outputs[p->RGB.Target & 3][ch] = result[ch];
-         }
-      }
-      if (p->Alpha.Opcode != RC_OPCODE_NOP) {
-         float result;
-         if (p->Alpha.Opcode == RC_OPCODE_DP3 || p->Alpha.Opcode == RC_OPCODE_DP4) {
-            result = rgb_dot;
-         } else if (!eval_alpha_op(e, p, &p->Alpha, &result)) {
-            return false;
-         }
-         if (p->Alpha.Saturate)
-            result = clamp01(result);
-         if (p->Alpha.WriteMask)
-            e->temps[p->Alpha.DestIndex & 63][3] = result;
-         if (p->Alpha.OutputWriteMask)
-            e->outputs[p->Alpha.Target & 3][3] = result;
-         if (p->Alpha.DepthWriteMask)
-            e->depth = result;
-      }
-   }
-   return true;
 }
 
 /* ---------- hand-built pair corpus helpers ----------
@@ -472,7 +179,7 @@ test_merge_combines_independent_temp_writes(void)
    if (reject)
       fprintf(stderr, "  legality: %s\n", reject);
 
-   struct pair_eval e;
+   struct r300_pair_eval e;
    memset(&e, 0, sizeof(e));
    e.consts = &fc.Base.Program.Constants;
    e.inputs[0][0] = 0.5f;
@@ -480,7 +187,7 @@ test_merge_combines_independent_temp_writes(void)
    e.inputs[0][2] = 0.5f;
    e.inputs[1][3] = 0.2f;
 
-   CHECK(eval_pair_program(&e, &fc.Base), "merge_temp: merged pair evaluates");
+   CHECK(r300_pair_eval_program(&e, &fc.Base), "merge_temp: merged pair evaluates");
    if (e.error)
       fprintf(stderr, "  eval: %s\n", e.error);
 
@@ -551,7 +258,7 @@ test_merge_combines_disjoint_output_writers(void)
    if (reject)
       fprintf(stderr, "  legality: %s\n", reject);
 
-   struct pair_eval e;
+   struct r300_pair_eval e;
    memset(&e, 0, sizeof(e));
    e.consts = &fc.Base.Program.Constants;
    e.inputs[0][0] = 1.0f;
@@ -560,7 +267,7 @@ test_merge_combines_disjoint_output_writers(void)
    e.inputs[0][3] = 1.0f;
    e.inputs[1][3] = 0.3f;
 
-   CHECK(eval_pair_program(&e, &fc.Base), "merge_output: merged pair evaluates");
+   CHECK(r300_pair_eval_program(&e, &fc.Base), "merge_output: merged pair evaluates");
    if (e.error)
       fprintf(stderr, "  eval: %s\n", e.error);
 
@@ -633,7 +340,7 @@ test_merge_combines_dp3_output_writers(void)
    if (reject)
       fprintf(stderr, "  legality: %s\n", reject);
 
-   struct pair_eval e;
+   struct r300_pair_eval e;
    memset(&e, 0, sizeof(e));
    e.consts = &fc.Base.Program.Constants;
    e.inputs[0][0] = 1.0f;
@@ -642,7 +349,7 @@ test_merge_combines_dp3_output_writers(void)
    e.inputs[0][3] = 1.0f;
    e.inputs[1][3] = 0.3f;
 
-   CHECK(eval_pair_program(&e, &fc.Base), "merge_dp3: merged pair evaluates");
+   CHECK(r300_pair_eval_program(&e, &fc.Base), "merge_dp3: merged pair evaluates");
    if (e.error)
       fprintf(stderr, "  eval: %s\n", e.error);
 
@@ -875,7 +582,7 @@ test_reorder_prioritizes_critical_path(void)
    if (reject)
       fprintf(stderr, "  legality: %s\n", reject);
 
-   struct pair_eval e;
+   struct r300_pair_eval e;
    memset(&e, 0, sizeof(e));
    e.consts = &fc.Base.Program.Constants;
    e.inputs[2][3] = 0.42f;
@@ -884,7 +591,7 @@ test_reorder_prioritizes_critical_path(void)
    e.inputs[3][2] = 0.25f;
    e.inputs[3][3] = 0.25f;
 
-   CHECK(eval_pair_program(&e, &fc.Base), "reorder: reordered stream evaluates");
+   CHECK(r300_pair_eval_program(&e, &fc.Base), "reorder: reordered stream evaluates");
    if (e.error)
       fprintf(stderr, "  eval: %s\n", e.error);
 
@@ -1005,7 +712,7 @@ eval_normal_src(struct normal_eval *e, const struct rc_src_register *src, float 
       return false;
    }
    for (unsigned ch = 0; ch < 4; ch++) {
-      out[ch] = decode_pair_channel(reg, GET_SWZ(src->Swizzle, ch));
+      out[ch] = r300_pair_decode_channel(reg, GET_SWZ(src->Swizzle, ch));
       if (src->Abs)
          out[ch] = fabsf(out[ch]);
       if (src->Negate & (1u << ch))
@@ -1177,12 +884,12 @@ test_real_corpus_merge_matches_nir_to_rc(void)
       if (reject)
          fprintf(stderr, "  legality: %s\n", reject);
 
-      struct pair_eval cls_eval;
+      struct r300_pair_eval cls_eval;
       memset(&cls_eval, 0, sizeof(cls_eval));
       cls_eval.consts = &cls_fc.Base.Program.Constants;
       for (unsigned ch = 0; ch < 4; ch++)
          cls_eval.inputs[0][ch] = 0.6f + (float)ch * 0.1f;
-      CHECK(eval_pair_program(&cls_eval, &cls_fc.Base), "real_corpus: merged classic schedule evaluates");
+      CHECK(r300_pair_eval_program(&cls_eval, &cls_fc.Base), "real_corpus: merged classic schedule evaluates");
       if (cls_eval.error)
          fprintf(stderr, "  classic eval: %s\n", cls_eval.error);
 
@@ -1279,12 +986,12 @@ test_real_corpus_dp3_merge_matches_nir_to_rc(void)
       if (reject)
          fprintf(stderr, "  legality: %s\n", reject);
 
-      struct pair_eval cls_eval;
+      struct r300_pair_eval cls_eval;
       memset(&cls_eval, 0, sizeof(cls_eval));
       cls_eval.consts = &cls_fc.Base.Program.Constants;
       for (unsigned ch = 0; ch < 4; ch++)
          cls_eval.inputs[0][ch] = 0.6f + (float)ch * 0.1f;
-      CHECK(eval_pair_program(&cls_eval, &cls_fc.Base), "dp3_corpus: merged classic schedule evaluates");
+      CHECK(r300_pair_eval_program(&cls_eval, &cls_fc.Base), "dp3_corpus: merged classic schedule evaluates");
       if (cls_eval.error)
          fprintf(stderr, "  classic eval: %s\n", cls_eval.error);
 
@@ -1368,14 +1075,14 @@ test_dp3_full_pair_broadcast(void)
    if (reject)
       fprintf(stderr, "  legality: %s\n", reject);
 
-   struct pair_eval e;
+   struct r300_pair_eval e;
    memset(&e, 0, sizeof(e));
    e.consts = &fc.Base.Program.Constants;
    e.inputs[0][0] = 1.0f;
    e.inputs[0][1] = 1.0f;
    e.inputs[0][2] = 1.0f;
 
-   CHECK(eval_pair_program(&e, &fc.Base), "dp3_bcast: DP3 broadcast pair evaluates");
+   CHECK(r300_pair_eval_program(&e, &fc.Base), "dp3_bcast: DP3 broadcast pair evaluates");
    if (e.error)
       fprintf(stderr, "  eval: %s\n", e.error);
 
@@ -1445,15 +1152,15 @@ test_source_read_signflip_lanes(void)
 
    const float pred_one = r300_bits_to_f32(0x3F7FFF80u);
 
-   struct pair_eval e;
+   struct r300_pair_eval e;
    memset(&e, 0, sizeof(e));
    e.consts = &fc.Base.Program.Constants;
-   e.src_read = R300_SOURCE_READ_RS48X_NEG_PREDECESSOR;
+   e.profile = r300_pair_eval_profile_rs48x_measured();
    e.inputs[0][0] = -1.0f;
    e.inputs[0][1] = 1.0f;
    e.inputs[0][2] = -0.0f;
 
-   CHECK(eval_pair_program(&e, &fc.Base), "src_read: signflip stream evaluates");
+   CHECK(r300_pair_eval_program(&e, &fc.Base), "src_read: signflip stream evaluates");
    CHECK(f32_bits_of(e.temps[1][0]) == 0xBF7FFF80u,
         "src_read: stored -1 reads as -pred24(1), one FP24 ULP toward zero");
    CHECK(f32_bits_of(e.temps[1][1]) == f32_bits_of(1.0f),
@@ -1465,15 +1172,15 @@ test_source_read_signflip_lanes(void)
    CHECK(f32_bits_of(e.temps[2][1]) == f32_bits_of(-1.0f),
         "src_read: NEG of stored +1 exports -1 exactly, the proven-safe carrier");
 
-   struct pair_eval ident;
+   struct r300_pair_eval ident;
    memset(&ident, 0, sizeof(ident));
    ident.consts = &fc.Base.Program.Constants;
-   ident.src_read = R300_SOURCE_READ_IDENTITY;
+   ident.profile = r300_pair_eval_profile_identity();
    ident.inputs[0][0] = -1.0f;
    ident.inputs[0][1] = 1.0f;
    ident.inputs[0][2] = -0.0f;
 
-   CHECK(eval_pair_program(&ident, &fc.Base), "src_read: identity control evaluates");
+   CHECK(r300_pair_eval_program(&ident, &fc.Base), "src_read: identity control evaluates");
    CHECK(f32_bits_of(ident.temps[1][0]) == f32_bits_of(-1.0f),
         "src_read: identity control keeps stored -1, diverging from the silicon lane");
 
@@ -1527,13 +1234,13 @@ test_source_read_temp_product_lane(void)
       append_pair(&fc.Base, &fc.Base.Program.Instructions, &mad);
    append_pair(&fc.Base, tail, &mov);
 
-   struct pair_eval e;
+   struct r300_pair_eval e;
    memset(&e, 0, sizeof(e));
    e.consts = &fc.Base.Program.Constants;
-   e.src_read = R300_SOURCE_READ_RS48X_NEG_PREDECESSOR;
+   e.profile = r300_pair_eval_profile_rs48x_measured();
    e.inputs[0][0] = 8.0f;
 
-   CHECK(eval_pair_program(&e, &fc.Base), "src_read: product chain evaluates");
+   CHECK(r300_pair_eval_program(&e, &fc.Base), "src_read: product chain evaluates");
    CHECK(f32_bits_of(e.temps[1][0]) == f32_bits_of(-64.0f),
         "src_read: the negative product writes -64 exactly");
    CHECK(f32_bits_of(e.temps[2][0]) == 0xC27FFF80u,
@@ -1593,13 +1300,13 @@ test_source_read_double_truncation_chain(void)
    tail = append_pair(&fc.Base, tail, &scale);
    append_pair(&fc.Base, tail, &add_half);
 
-   struct pair_eval e;
+   struct r300_pair_eval e;
    memset(&e, 0, sizeof(e));
    e.consts = &fc.Base.Program.Constants;
-   e.src_read = R300_SOURCE_READ_RS48X_NEG_PREDECESSOR;
+   e.profile = r300_pair_eval_profile_rs48x_measured();
    e.inputs[0][0] = 0.5f;
 
-   CHECK(eval_pair_program(&e, &fc.Base), "src_read: double-truncation chain evaluates");
+   CHECK(r300_pair_eval_program(&e, &fc.Base), "src_read: double-truncation chain evaluates");
    CHECK(f32_bits_of(e.temps[1][0]) == f32_bits_of(-0.5f),
         "src_read: NEG on the stored +0.5 writes -0.5 exactly");
    CHECK(f32_bits_of(e.temps[2][0]) == 0xBE7FFF80u,
@@ -1607,13 +1314,13 @@ test_source_read_double_truncation_chain(void)
    CHECK(f32_bits_of(e.temps[3][0]) == 0x3E800080u,
         "src_read: second negative read plus 0.5 delivers 0.2500038, the retained chain value");
 
-   struct pair_eval ident;
+   struct r300_pair_eval ident;
    memset(&ident, 0, sizeof(ident));
    ident.consts = &fc.Base.Program.Constants;
-   ident.src_read = R300_SOURCE_READ_IDENTITY;
+   ident.profile = r300_pair_eval_profile_identity();
    ident.inputs[0][0] = 0.5f;
 
-   CHECK(eval_pair_program(&ident, &fc.Base), "src_read: identity chain evaluates");
+   CHECK(r300_pair_eval_program(&ident, &fc.Base), "src_read: identity chain evaluates");
    CHECK(f32_bits_of(ident.temps[3][0]) == f32_bits_of(0.25f),
         "src_read: identity control delivers the ideal 0.25");
 
@@ -1765,6 +1472,80 @@ test_source_read_lattice_exhaustive(void)
                       "0x%08X after %lu checks\n", bad, checked);
 }
 
+/* Calibrate the extracted evaluator surface: the serializer is
+ * deterministic (two serializations hash identically), the constant-list
+ * digest tracks content, and an unmodeled class delivering a negative
+ * value returns the indeterminate verdict instead of evaluating
+ * identity -- while the same program under an all-identity profile
+ * evaluates normally. */
+static void
+test_pair_eval_profile_and_schedule_artifact(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   const unsigned c0 = add_const(&fc, -2.0f, 3.0f, 4.0f, 0.0f);
+
+   struct rc_pair_instruction mad;
+   memset(&mad, 0, sizeof(mad));
+   mad.RGB.Opcode = RC_OPCODE_MAD;
+   mad.RGB.WriteMask = RC_MASK_XYZ;
+   mad.RGB.DestIndex = 1;
+   mad.RGB.Src[0] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_CONSTANT, .Index = c0};
+   mad.RGB.Src[1] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   mad.RGB.Src[2] = (struct rc_pair_instruction_source){.Used = 1, .File = RC_FILE_INPUT, .Index = 1};
+   mad.RGB.Arg[0] = (struct rc_pair_instruction_arg){.Source = 0, .Swizzle = RC_SWIZZLE_XYZW};
+   mad.RGB.Arg[1] = (struct rc_pair_instruction_arg){.Source = 1, .Swizzle = RC_SWIZZLE_XYZW};
+   mad.RGB.Arg[2] = (struct rc_pair_instruction_arg){.Source = 2, .Swizzle = RC_SWIZZLE_XYZW};
+   mad.Alpha.Opcode = RC_OPCODE_NOP;
+   append_pair(&fc.Base, &fc.Base.Program.Instructions, &mad);
+
+   const struct r300_pair_eval_profile ident =
+      r300_pair_eval_profile_identity();
+   const struct r300_pair_eval_profile rs48x =
+      r300_pair_eval_profile_rs48x_measured();
+
+   /* Deterministic serialization: repeated hashes agree, and the profile
+    * is part of the artifact identity. */
+   const uint64_t h1 = r300_pair_schedule_semantic_hash(&fc.Base, &ident);
+   const uint64_t h2 = r300_pair_schedule_semantic_hash(&fc.Base, &ident);
+   const uint64_t h3 = r300_pair_schedule_semantic_hash(&fc.Base, &rs48x);
+   CHECK(h1 != 0 && h1 == h2, "artifact: semantic hash is deterministic");
+   CHECK(h1 != h3, "artifact: the read-model profile changes the identity");
+
+   /* Constant-list digest tracks content. */
+   const uint64_t k1 = r300_pair_constant_list_hash(&fc.Base.Program.Constants);
+   add_const(&fc, 9.0f, 0.0f, 0.0f, 0.0f);
+   const uint64_t k2 = r300_pair_constant_list_hash(&fc.Base.Program.Constants);
+   CHECK(k1 != k2, "artifact: constant-list hash tracks content");
+
+   /* The measured profile refuses the negative constant read; the identity
+    * profile evaluates the same program. */
+   struct r300_pair_eval e;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.inputs[0][0] = 1.0f;
+   e.inputs[1][0] = 0.5f;
+   e.profile = rs48x;
+   CHECK(!r300_pair_eval_program(&e, &fc.Base) && e.error != NULL,
+         "artifact: unmodeled negative constant read is indeterminate");
+
+   struct r300_pair_eval ident_eval;
+   memset(&ident_eval, 0, sizeof(ident_eval));
+   ident_eval.consts = &fc.Base.Program.Constants;
+   ident_eval.inputs[0][0] = 1.0f;
+   ident_eval.inputs[1][0] = 0.5f;
+   ident_eval.profile = ident;
+   CHECK(r300_pair_eval_program(&ident_eval, &fc.Base),
+         "artifact: identity profile evaluates the same program");
+   CHECK(nearly_equal(ident_eval.temps[1][0], -1.5f),
+         "artifact: identity evaluation delivers -2*1+0.5");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
 int
 main(void)
 {
@@ -1783,6 +1564,8 @@ main(void)
    test_source_read_temp_product_lane();
    test_source_read_double_truncation_chain();
    test_source_read_model_boundaries();
+   test_source_read_lattice_exhaustive();
+   test_pair_eval_profile_and_schedule_artifact();
 
    glsl_type_singleton_decref();
    if (failures) {
