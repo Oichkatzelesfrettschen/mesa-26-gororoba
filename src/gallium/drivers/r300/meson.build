@@ -160,6 +160,10 @@ driver_r300 = declare_dependency(
 )
 
 if with_tests
+  # Test translation units carry their own registration duty: a static
+  # test function defined but never wired into main() is a defect, so the
+  # driver-wide -Wno-unused-function relaxation is reversed for tests.
+  r300_test_c_args = ['-Werror=unused-function']
   # Hand-built rc_program correctness corpus.  It links libr300 directly (the
   # static archive resolves the hidden-visibility RC symbols at link time) and
   # needs no winsys, so it stays a pure compiler-pass unit test.
@@ -168,6 +172,7 @@ if with_tests
     executable(
       'r300_compiler_corpus_test',
       files('compiler/tests/rc_compiler_corpus_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -187,6 +192,7 @@ if with_tests
     executable(
       'r300_nir_vs_harness_test',
       files('compiler/tests/r300_nir_vs_harness_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -205,6 +211,7 @@ if with_tests
     executable(
       'r300_vs_ushr_int_lowering_test',
       files('compiler/tests/r300_vs_ushr_int_lowering_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -225,6 +232,7 @@ if with_tests
     executable(
       'r300_dp2_lowering_test',
       files('compiler/tests/r300_dp2_lowering_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -245,6 +253,7 @@ if with_tests
     executable(
       'r300_vertex_dot_lowering_test',
       files('compiler/tests/r300_vertex_dot_lowering_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -265,6 +274,7 @@ if with_tests
     executable(
       'r300_nir_fs_harness_test',
       files('compiler/tests/r300_nir_fs_harness_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -284,6 +294,7 @@ if with_tests
     executable(
       'r300_nir_compute_admission_test',
       files('compiler/tests/r300_nir_compute_admission_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -303,6 +314,7 @@ if with_tests
     executable(
       'r300_swtcl_gtt_backpressure_test',
       files('compiler/tests/r300_swtcl_gtt_backpressure_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
       ],
@@ -321,6 +333,7 @@ if with_tests
     executable(
       'r300_h264_fs_budget_test',
       files('compiler/tests/r300_h264_fs_budget_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -342,6 +355,7 @@ if with_tests
     executable(
       'r300_r2vb_producer_split_test',
       files('compiler/tests/r300_r2vb_producer_split_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -363,6 +377,7 @@ if with_tests
     executable(
       'r300_r2vb_plan_oracle_test',
       files('compiler/tests/r300_r2vb_plan_oracle_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -383,6 +398,7 @@ if with_tests
     executable(
       'r300_r2vb_admission_cso_identity_test',
       files('compiler/tests/r300_r2vb_admission_cso_identity_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -405,6 +421,7 @@ if with_tests
     executable(
       'r300_r2vb_telemetry_test',
       files('compiler/tests/r300_r2vb_telemetry_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -431,6 +448,7 @@ if with_tests
     executable(
       'r300_r2vb_retained_corpus_census',
       [files('compiler/tests/r300_r2vb_retained_corpus_census.c'), sha1_h],
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -456,6 +474,7 @@ if with_tests
     executable(
       'r300_r2vb_auto_single_test',
       files('compiler/tests/r300_r2vb_auto_single_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -479,6 +498,7 @@ if with_tests
     executable(
       'r300_r2vb_typed_route_test',
       files('compiler/tests/r300_r2vb_typed_route_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -500,6 +520,7 @@ if with_tests
     executable(
       'r300_r2vb_mvp_match_test',
       files('compiler/tests/r300_r2vb_mvp_match_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -520,6 +541,7 @@ if with_tests
     executable(
       'r300_fs_input_semantics_test',
       files('compiler/tests/r300_fs_input_semantics_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -536,6 +558,7 @@ if with_tests
     executable(
       'r300_nir_to_rc_test',
       files('compiler/tests/r300_nir_to_rc_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -554,6 +577,7 @@ if with_tests
     executable(
       'r300_classic_target_test',
       files('compiler/tests/r300_classic_target_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -572,6 +596,7 @@ if with_tests
     executable(
       'r300_classic_parity_test',
       files('compiler/tests/r300_classic_parity_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -593,6 +618,7 @@ if with_tests
     executable(
       'r300_classic_validate_schedule_test',
       files('compiler/tests/r300_classic_validate_schedule_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -613,6 +639,7 @@ if with_tests
     executable(
       'r300_classic_byte_exact_selfdiff_test',
       files('compiler/tests/r300_classic_byte_exact_selfdiff_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -633,6 +660,7 @@ if with_tests
     executable(
       'r300_classic_new_sched_test',
       files('compiler/tests/r300_classic_new_sched_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -656,6 +684,7 @@ if with_tests
       'r300_classic_pair_value_test',
       files('compiler/tests/r300_classic_pair_value_test.c',
             'compiler/tests/r300_pair_eval.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -674,6 +703,7 @@ if with_tests
     executable(
       'r300_classic_emit_test',
       files('compiler/tests/r300_classic_emit_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -692,6 +722,7 @@ if with_tests
     executable(
       'r300_classic_regalloc_test',
       files('compiler/tests/r300_classic_regalloc_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -710,6 +741,7 @@ if with_tests
     executable(
       'r300_classic_select_test',
       files('compiler/tests/r300_classic_select_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -728,6 +760,7 @@ if with_tests
     executable(
       'r300_classic_ir_test',
       files('compiler/tests/r300_classic_ir_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -748,6 +781,7 @@ if with_tests
     executable(
       'r300_fp16_limb_oracle',
       files('compiler/tests/r300_fp16_limb_oracle.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
@@ -767,6 +801,7 @@ if with_tests
     executable(
       'r300_r2vb_clip_test',
       files('tests/r300_r2vb_clip_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('.'),
@@ -786,6 +821,7 @@ if with_tests
     executable(
       'r300_r2vb_reingest_layout_test',
       files('tests/r300_r2vb_reingest_layout_test.c'),
+      c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('.'),
@@ -805,6 +841,7 @@ if with_tests
     executable(
       'r300_r2vb_capture_gate_test',
       files('tests/r300_r2vb_capture_gate_test.c'),
+      c_args : r300_test_c_args,
       include_directories : include_directories('.'),
       gnu_symbol_visibility : 'hidden',
     ),

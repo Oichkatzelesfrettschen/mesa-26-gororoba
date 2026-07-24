@@ -293,18 +293,16 @@ fp16_mul_ref(uint16_t a_bits, uint16_t b_bits)
    if ((a_exp == 0 && a_mant == 0) || (b_exp == 0 && b_mant == 0))
       return (uint16_t)(r_sign << 15);
 
-   /* Normalize subnormals for the significand multiply. */
-   int ea = (a_exp == 0) ? 1 : (int)a_exp;
-   int eb = (b_exp == 0) ? 1 : (int)b_exp;
-   uint32_t sa = (a_exp != 0) ? (0x400u | a_mant) : a_mant;
-   uint32_t sb = (b_exp != 0) ? (0x400u | b_mant) : b_mant;
-
-   if (a_exp == 0) {
-      while (!(sa & 0x400)) { sa <<= 1; ea--; }
-   }
-   if (b_exp == 0) {
-      while (!(sb & 0x400)) { sb <<= 1; eb--; }
-   }
+   /* Normalize for the significand multiply; every special case is
+    * handled above, so exactly one decoder accepts each operand. */
+   int ea, eb;
+   uint32_t sa, sb;
+   if (!fp16_normal_decode(a16, &ea, &sa) &&
+       !fp16_subnormal_decode(a16, &ea, &sa))
+      return 0x7e00u;
+   if (!fp16_normal_decode(b16, &eb, &sb) &&
+       !fp16_subnormal_decode(b16, &eb, &sb))
+      return 0x7e00u;
 
    /* Product significand (up to 22 bits, exact in uint32_t). */
    uint32_t prod = sa * sb;  /* max 2047*2047 = 4190209, fits uint32_t */
