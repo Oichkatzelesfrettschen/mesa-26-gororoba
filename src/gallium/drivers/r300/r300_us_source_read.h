@@ -46,8 +46,12 @@ extern "C" {
 #endif
 
 /* Execution-stage model for the US source-operand read.  IDENTITY is the
- * ideal read (the stored value arrives unchanged); RS48X_NEG_PREDECESSOR is
- * the measured RS482 behavior described above. */
+ * ideal read (the stored value arrives unchanged, bit for bit);
+ * RS48X_NEG_PREDECESSOR is the measured RS482 behavior described above.
+ * Storage conversion is a separate stage: producers land values on the
+ * lattice through r300_fp24_store_quantize_f32, and the read model then
+ * operates on stored lattice values.  The pipeline is
+ * store-quantize -> stored FP24 value -> source read -> ABS/NEG -> ALU. */
 enum r300_source_read_model {
    R300_SOURCE_READ_IDENTITY,
    R300_SOURCE_READ_RS48X_NEG_PREDECESSOR,
@@ -102,17 +106,29 @@ r300_fp24_pred_magnitude_bits(uint32_t lattice_magnitude)
    return lattice_magnitude - 0x80u;
 }
 
-/* The modeled US source-operand read: quantize to the lattice, then apply
- * the model.  Under RS48X_NEG_PREDECESSOR a negative nonzero value steps to
- * the preceding lattice magnitude (keeping its sign) and negative zero
- * canonicalizes to positive zero; ABS/NEG source modifiers apply after this
- * transform, on the caller's side. */
+/* Storage-conversion stage: the value a register write lands on the FP24
+ * lattice.  Producers and evaluators call this once at the write, keeping
+ * ingestion quantization separate from the source-read transform so an
+ * off-lattice measurement can attribute a deviation to the right stage. */
+static inline float
+r300_fp24_store_quantize_f32(float value)
+{
+   return r300_bits_to_f32(r300_fp24_quantize_bits(r300_f32_to_bits(value)));
+}
+
+/* The modeled US source-operand read over a stored value.  IDENTITY returns
+ * the stored value unchanged.  RS48X_NEG_PREDECESSOR quantizes to the
+ * lattice (a stored lattice value passes through), steps a negative nonzero
+ * value to the preceding lattice magnitude keeping its sign, and
+ * canonicalizes negative zero to positive zero; ABS/NEG source modifiers
+ * apply after this transform, on the caller's side. */
 static inline float
 r300_us_source_read_f32(float stored, enum r300_source_read_model model)
 {
+   if (model == R300_SOURCE_READ_IDENTITY)
+      return stored;
    uint32_t bits = r300_fp24_quantize_bits(r300_f32_to_bits(stored));
-   if (model == R300_SOURCE_READ_RS48X_NEG_PREDECESSOR &&
-       (bits & 0x80000000u)) {
+   if (bits & 0x80000000u) {
       const uint32_t pred =
          r300_fp24_pred_magnitude_bits(bits & 0x7FFFFFFFu);
       bits = pred ? (0x80000000u | pred) : 0;
