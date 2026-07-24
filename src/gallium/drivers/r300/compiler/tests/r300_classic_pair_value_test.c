@@ -1621,6 +1621,76 @@ test_source_read_double_truncation_chain(void)
    rc_destroy_regalloc_state(&rs);
 }
 
+/* Semantic-model boundary behavior of r300_us_source_read.h, independent of
+ * any pair program: identity passthrough, the predecessor across binade
+ * boundaries, the min-normal flush, zero canonicalization, max finite, and
+ * the off-lattice/NaN/Inf quantization choices.  These pin the software
+ * model; the silicon boundary sweep is a separate discriminator lane. */
+static void
+test_source_read_model_boundaries(void)
+{
+   const enum r300_source_read_model rs = R300_SOURCE_READ_RS48X_NEG_PREDECESSOR;
+   const enum r300_source_read_model id = R300_SOURCE_READ_IDENTITY;
+
+   /* IDENTITY is a bitwise passthrough, including off-lattice and tiny
+    * values the storage stage would quantize. */
+   const uint32_t off_lattice = 0xBF800001u; /* -(1 + 2^-23), low bits set */
+   CHECK(f32_bits_of(r300_us_source_read_f32(r300_bits_to_f32(off_lattice), id)) ==
+            off_lattice,
+         "model: IDENTITY returns an off-lattice stored value unchanged");
+   CHECK(f32_bits_of(r300_us_source_read_f32(-0.0f, id)) == 0x80000000u,
+         "model: IDENTITY returns negative zero unchanged");
+
+   /* Storage conversion is the separate stage that lands on the lattice. */
+   CHECK(f32_bits_of(r300_fp24_store_quantize_f32(r300_bits_to_f32(off_lattice))) ==
+            0xBF800000u,
+         "model: store-quantize truncates the low seven mantissa bits");
+
+   /* Predecessor of 1.0 crosses the binade: all-ones mantissa of 2^-1. */
+   CHECK(f32_bits_of(r300_us_source_read_f32(-1.0f, rs)) == 0xBF7FFF80u,
+         "model: pred(1.0) borrows into the lower binade");
+   /* Chain across several powers of two: pred(2^k) = (2 - 2^-16) * 2^(k-1). */
+   CHECK(f32_bits_of(r300_us_source_read_f32(-2.0f, rs)) == 0xBFFFFF80u,
+         "model: pred(2.0) is the all-ones value below 2");
+   CHECK(f32_bits_of(r300_us_source_read_f32(-64.0f, rs)) == 0xC27FFF80u,
+         "model: pred(64.0) matches the retained temp-product lane");
+
+   /* Min normal steps to zero (FP24 has no subnormals); below min normal
+    * flushes; both stay positive zero on a negative input. */
+   const float min_normal = r300_bits_to_f32(R300_FP24_MIN_NORMAL_F32_BITS);
+   CHECK(f32_bits_of(r300_us_source_read_f32(-min_normal, rs)) == 0,
+         "model: negative min normal reads positive zero");
+   CHECK(f32_bits_of(r300_us_source_read_f32(-min_normal * 0.5f, rs)) == 0,
+         "model: below min normal flushes to positive zero");
+   CHECK(f32_bits_of(r300_us_source_read_f32(-0.0f, rs)) == 0,
+         "model: negative zero canonicalizes to positive zero");
+   CHECK(f32_bits_of(r300_us_source_read_f32(0.0f, rs)) == 0,
+         "model: positive zero is exact");
+
+   /* Max finite: positive passes; negative steps one lattice ULP. */
+   const float max_finite = r300_bits_to_f32(R300_FP24_MAX_FINITE_F32_BITS);
+   CHECK(f32_bits_of(r300_us_source_read_f32(max_finite, rs)) ==
+            R300_FP24_MAX_FINITE_F32_BITS,
+         "model: positive max finite is exact");
+   CHECK(f32_bits_of(r300_us_source_read_f32(-max_finite, rs)) ==
+            (0x80000000u | (R300_FP24_MAX_FINITE_F32_BITS - 0x80u)),
+         "model: negative max finite steps one FP24 ULP toward zero");
+
+   /* Off-lattice negative under RS48x: quantize first (RTZ), then the
+    * predecessor -- one step total, not two. */
+   CHECK(f32_bits_of(r300_us_source_read_f32(r300_bits_to_f32(off_lattice), rs)) ==
+            0xBF7FFF80u,
+         "model: off-lattice negative quantizes then steps once");
+
+   /* NaN/Inf saturate to max finite in the quantizer -- a model choice. */
+   CHECK(f32_bits_of(r300_us_source_read_f32(r300_bits_to_f32(0x7F800000u), rs)) ==
+            R300_FP24_MAX_FINITE_F32_BITS,
+         "model: +Inf saturates to max finite");
+   CHECK(f32_bits_of(r300_us_source_read_f32(r300_bits_to_f32(0xFFC00000u), rs)) ==
+            (0x80000000u | (R300_FP24_MAX_FINITE_F32_BITS - 0x80u)),
+         "model: negative NaN saturates then steps like max finite");
+}
+
 int
 main(void)
 {
@@ -1638,6 +1708,7 @@ main(void)
    test_source_read_signflip_lanes();
    test_source_read_temp_product_lane();
    test_source_read_double_truncation_chain();
+   test_source_read_model_boundaries();
 
    glsl_type_singleton_decref();
    if (failures) {
