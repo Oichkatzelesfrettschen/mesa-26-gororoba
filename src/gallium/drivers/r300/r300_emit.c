@@ -1277,6 +1277,39 @@ void r300_emit_pvs_flush(struct r300_context* r300, unsigned size, void* state)
     END_CS;
 }
 
+/* RS482 silicon law behind R300_SWTCL_US_RESYNC: the first US-dependent
+ * draw of a submitted CS executes the previous epoch's US fragment program
+ * even though the same IB uploads the correct program (US_CONFIG, PIXSIZE,
+ * CODE_OFFSET/ADDR, instruction banks, constants) between the previous draw
+ * and this one; geometry, scissor, the CB target, and the CBZB
+ * ZB_DEPTHCLEARVALUE fill all execute correctly, so a plain clear floods the
+ * frame with the stale program's color while a CBZB clear floods only its CB
+ * half.  The stock stream fences the pipe (gpu_flush WAIT_3D_IDLECLEAN)
+ * before the program upload; the upload-to-draw window has no fence.  The
+ * gate closes that window per state emission, one variable per mode:
+ *
+ *   1  RADEON_WAIT_UNTIL(WAIT_3D_IDLECLEAN) after the dirty atoms.
+ *   2  the wait, then a second emission of fs, fs_rc_constant_state, and
+ *      fs_constants (idle first, then a re-upload the idle US must accept).
+ *   3  the second fs emission alone (double upload, no wait).
+ *
+ * RS482 silicon verdict: every mode leaves the first draw of the CS on the
+ * stale program with engagement proven in the patched IBs (mode 1 doubles
+ * the WAIT_UNTIL count, mode 3 doubles the US_CODE_ADDR uploads).  In-CS
+ * ordering around the upload does not reprogram the US across a CS
+ * boundary, so the defect sits below the command stream -- ring-level or
+ * kernel inter-IB state -- and the gate stands as the banked refutation
+ * matrix for upload-adjacent fencing. */
+int r300_swtcl_us_resync_mode(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("R300_SWTCL_US_RESYNC");
+        cached = (e && e[0] >= '1' && e[0] <= '3' && !e[1]) ? e[0] - '0' : 0;
+    }
+    return cached;
+}
+
 void r300_emit_vap_invariant_state(struct r300_context *r300,
                                    unsigned size, void *state)
 {

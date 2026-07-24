@@ -965,6 +965,7 @@ bool r300_is_blit_supported(enum pipe_format format);
 
 /* r300_emit.c */
 int r300_swtcl_pvs_flush_before_fetch_mode(void);
+int r300_swtcl_us_resync_mode(void);
 
 /* r300_flush.c */
 void r300_flush(struct pipe_context *pipe,
