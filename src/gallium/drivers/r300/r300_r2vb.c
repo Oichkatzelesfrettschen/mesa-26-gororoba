@@ -32,6 +32,7 @@
 
 #include "util/u_inlines.h"
 #include "util/format/u_format.h"
+#include "util/mesa-blake3.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
 
@@ -6051,6 +6052,10 @@ static int r2vb_bo_draw_producer3_mode(void)
             mode = 3;
         else if (e && strcmp(e, "producer_alu12_submit") == 0)
             mode = 4;
+        else if (e && strcmp(e, "producer_width") == 0)
+            mode = 5;
+        else if (e && strcmp(e, "producer_width_submit") == 0)
+            mode = 6;
         else
             mode = 0;
     }
@@ -6104,6 +6109,37 @@ static void *r2vb_build_alu12_fs(struct r300_context *r300)
                                             glsl_vec4_type(), "out_color");
     out->data.location = FRAG_RESULT_COLOR;
     nir_store_var(&b, out, nir_vec4(&b, ox, oy, oz, ow), 0xf);
+
+    struct pipe_shader_state st = {0};
+    st.type = PIPE_SHADER_IR_NIR;
+    st.ir.nir = b.shader; /* create_fs_state takes ownership and precompiles */
+    return r300_create_fs_state_internal(&r300->context, &st,
+                                         R300_FS_INPUT_R2VB_FLAT_VERTEX);
+}
+
+/* Identity FS for the one-row width-frontier cells: exports the fetched
+ * model record verbatim (out = m, XYZ1 through the PSC), so the readback is
+ * a pure fetch-transport oracle -- no divide, no viewport arithmetic, and
+ * the FP24 negative-product ULP law stays out of the loop.  The payload
+ * correctness bound is representation only: every component the width
+ * triggers feed (slot%128, (slot/128)%128, the Walsh lane code, w=1) is a
+ * small integer, exact in FP24 and in the FP32 output target. */
+static void *r2vb_build_width_identity_fs(struct r300_context *r300)
+{
+    const nir_shader_compiler_options *options =
+        r300->screen->screen.nir_options[MESA_SHADER_FRAGMENT];
+    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, options,
+                                                   "r300 r2vb width identity FS");
+
+    nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                           glsl_vec4_type(), "in_vtx");
+    in->data.location = VARYING_SLOT_VAR0;
+    in->data.interpolation = INTERP_MODE_FLAT;
+
+    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                            glsl_vec4_type(), "out_color");
+    out->data.location = FRAG_RESULT_COLOR;
+    nir_store_var(&b, out, nir_load_var(&b, in), 0xf);
 
     struct pipe_shader_state st = {0};
     st.type = PIPE_SHADER_IR_NIR;
@@ -6166,7 +6202,12 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
      * consent gate; capture stays reachable without it. */
     if (submit && !r300_r2vb_option_is(getenv("R300_RAW_SUBMIT_ACCEPTED"), "1"))
         why = "raw_submit_gate";
-    else if (count != 3)
+    /* The width modes admit exactly the two one-row frontier counts: 2048
+     * (the presumed safe row width) and 2049 (its first overflow); every
+     * other mode keeps the proven three-vertex cell. */
+    else if (r2vb_bo_draw_producer3_mode() >= 5
+                 ? (count != 2048 && count != 2049)
+                 : count != 3)
         why = "count";
     else if (!plan || plan->status != R300_R2VB_PLAN_READY ||
              plan->action != R300_R2VB_PLAN_SINGLE ||
@@ -6359,19 +6400,45 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
                     "r2vb_bo_draw_producer3 retirement=readback_ok\n");
             uint32_t nrec = clip->width0 / 16;
             uint32_t sentinel_clean = 0;
+            bool width_mode = r2vb_bo_draw_producer3_mode() >= 5;
+            /* Width cells report by full-span hash plus boundary records --
+             * the row edges (0, 1, count-1), the 128-lane payload wrap
+             * (127, 128), and the 2048 frontier (2046..2048) -- so a
+             * 2049-record readback stays a dozen lines. */
+            static const uint32_t bounds[] = { 0, 1, 127, 128,
+                                               2046, 2047, 2048 };
             for (uint32_t i = 0; i < nrec; i++) {
-                float f[4];
-                memcpy(f, &rec[i * 4], sizeof(f));
-                fprintf(stderr,
-                        "r2vb_bo_draw_producer3 rec=%u %08x %08x %08x %08x "
-                        "(%g %g %g %g)\n",
-                        i, rec[i * 4 + 0], rec[i * 4 + 1], rec[i * 4 + 2],
-                        rec[i * 4 + 3], f[0], f[1], f[2], f[3]);
+                bool print = !width_mode;
+                if (width_mode) {
+                    for (unsigned k = 0; k < ARRAY_SIZE(bounds); k++)
+                        if (i == bounds[k])
+                            print = true;
+                    if (i == count - 1 || i == count)
+                        print = true;
+                }
+                if (print && i < count) {
+                    float f[4];
+                    memcpy(f, &rec[i * 4], sizeof(f));
+                    fprintf(stderr,
+                            "r2vb_bo_draw_producer3 rec=%u %08x %08x %08x %08x "
+                            "(%g %g %g %g)\n",
+                            i, rec[i * 4 + 0], rec[i * 4 + 1], rec[i * 4 + 2],
+                            rec[i * 4 + 3], f[0], f[1], f[2], f[3]);
+                }
                 if (i >= count && rec[i * 4] == 0xcbcbcbcbu &&
                     rec[i * 4 + 1] == 0xcbcbcbcbu &&
                     rec[i * 4 + 2] == 0xcbcbcbcbu &&
                     rec[i * 4 + 3] == 0xcbcbcbcbu)
                     sentinel_clean++;
+            }
+            if (width_mode) {
+                blake3_hash hash;
+                _mesa_blake3_compute(rec, (size_t)count * 16, hash);
+                char hex[BLAKE3_HEX_LEN];
+                _mesa_blake3_format(hex, hash);
+                fprintf(stderr,
+                        "r2vb_bo_draw_producer3 span_blake3=%s bytes=%u\n",
+                        hex, count * 16);
             }
             fprintf(stderr,
                     "r2vb_bo_draw_producer3 readback_records=%u "
@@ -6472,7 +6539,9 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
          * shape, same transaction, per-lane arithmetic classes instead of
          * the transform -- so the BO-fetch path stays byte-identical
          * outside the fragment program. */
-        if (r2vb_bo_draw_producer3_mode() >= 3)
+        if (r2vb_bo_draw_producer3_mode() >= 5)
+            xfs = r2vb_build_width_identity_fs(r300);
+        else if (r2vb_bo_draw_producer3_mode() >= 3)
             xfs = r2vb_build_alu12_fs(r300);
         else
             xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
@@ -6511,7 +6580,7 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     bool prepared = false;
     if (bo3 != 0 && restage && num_in == 1) {
         if (r2vb_run_bo_fetch_producer3(r300, clip, count, start, space,
-                                        bo3 == 2 || bo3 == 4) ==
+                                        bo3 == 2 || bo3 == 4 || bo3 == 6) ==
             R300_R2VB_BO3_SUBMITTED_CONSUME)
             *bo3_consumed = true;
     } else if (bo3 != 0) {
