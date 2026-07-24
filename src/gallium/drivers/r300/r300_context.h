@@ -721,6 +721,10 @@ struct r300_context {
 
     /* Stat counter. */
     uint64_t flush_counter;
+    /* A draw packet has been emitted into the open CS since the last
+     * draw-completion wait; consumed by the wait-before-US-reprogram
+     * diagnostic gate. */
+    bool draw_emitted_this_cs;
 
     /* const tracking for VS */
     int vs_const_base;
@@ -966,6 +970,7 @@ bool r300_is_blit_supported(enum pipe_format format);
 /* r300_emit.c */
 int r300_swtcl_pvs_flush_before_fetch_mode(void);
 int r300_swtcl_us_resync_mode(void);
+int r300_swtcl_wait_before_us_reprogram(void);
 
 /* r300_flush.c */
 void r300_flush(struct pipe_context *pipe,
