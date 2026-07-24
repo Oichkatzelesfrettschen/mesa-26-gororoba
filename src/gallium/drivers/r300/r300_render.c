@@ -197,8 +197,14 @@ static bool r300_reserve_cs_dwords(struct r300_context *r300,
     bool emit_vertex_arrays_swtcl = flags & PREP_EMIT_VARRAYS_SWTCL;
 
     /* Add dirty state, index offset, and AOS. */
-    if (emit_states)
+    if (emit_states) {
         cs_dwords += r300_get_num_dirty_dwords(r300);
+        /* US resync fence budget: the wait plus a second emission of the
+         * three fragment-program atoms (see r300_swtcl_us_resync_mode). */
+        if (r300_swtcl_us_resync_mode())
+            cs_dwords += 2 + r300->fs.size + r300->fs_rc_constant_state.size +
+                         r300->fs_constants.size;
+    }
 
     if (r300->screen->caps.is_r500)
         cs_dwords += 2; /* emit_index_offset */
@@ -254,6 +260,33 @@ static bool r300_emit_states(struct r300_context *r300,
 
     if (emit_states)
         r300_emit_dirty_state(r300);
+
+    /* US resync fence: close the fragment-program upload-to-draw window the
+     * stock stream leaves open (the gpu_flush wait precedes the upload in
+     * atom order).  Emitted after every dirty-state pass so the first draw
+     * of a CS always carries it. */
+    if (emit_states) {
+        int resync = r300_swtcl_us_resync_mode();
+        if (resync) {
+            CS_LOCALS(r300);
+            if (resync <= 2) {
+                BEGIN_CS(2);
+                OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+                END_CS;
+            }
+            if (resync >= 2) {
+                if (r300->fs.size)
+                    r300->fs.emit(r300, r300->fs.size, r300->fs.state);
+                if (r300->fs_rc_constant_state.size)
+                    r300->fs_rc_constant_state.emit(r300,
+                        r300->fs_rc_constant_state.size,
+                        r300->fs_rc_constant_state.state);
+                if (r300->fs_constants.size)
+                    r300->fs_constants.emit(r300, r300->fs_constants.size,
+                                            r300->fs_constants.state);
+            }
+        }
+    }
 
     if (r300->screen->caps.is_r500) {
         if (r300->screen->caps.has_tcl)
