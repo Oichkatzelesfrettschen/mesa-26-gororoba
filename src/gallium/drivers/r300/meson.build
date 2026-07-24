@@ -654,7 +654,8 @@ if with_tests
     'r300-classic-pair-value',
     executable(
       'r300_classic_pair_value_test',
-      files('compiler/tests/r300_classic_pair_value_test.c'),
+      files('compiler/tests/r300_classic_pair_value_test.c',
+            'compiler/tests/r300_pair_eval.c'),
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
