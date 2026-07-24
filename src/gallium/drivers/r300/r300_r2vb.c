@@ -6056,6 +6056,10 @@ static int r2vb_bo_draw_producer3_mode(void)
             mode = 5;
         else if (e && strcmp(e, "producer_width_submit") == 0)
             mode = 6;
+        else if (e && strcmp(e, "producer_signflip") == 0)
+            mode = 7;
+        else if (e && strcmp(e, "producer_signflip_submit") == 0)
+            mode = 8;
         else
             mode = 0;
     }
@@ -6140,6 +6144,54 @@ static void *r2vb_build_width_identity_fs(struct r300_context *r300)
                                             glsl_vec4_type(), "out_color");
     out->data.location = FRAG_RESULT_COLOR;
     nir_store_var(&b, out, nir_load_var(&b, in), 0xf);
+
+    struct pipe_shader_state st = {0};
+    st.type = PIPE_SHADER_IR_NIR;
+    st.ir.nir = b.shader; /* create_fs_state takes ownership and precompiles */
+    return r300_create_fs_state_internal(&r300->context, &st,
+                                         R300_FS_INPUT_R2VB_FLAT_VERTEX);
+}
+
+/* Sign-flip discriminator FS for localizing the negative one-FP24-ULP loss
+ * that the identity-mov width cells observed with zero arithmetic in the
+ * loop.  Four lanes over the fetched record give the complete sign matrix
+ * in one draw:
+ *
+ *   out.x = m.x     positive passthrough control (payload x >= 0)
+ *   out.y = -m.x    negative OUTPUT from a positive input
+ *   out.z = m.z     passthrough of the signed Walsh lane (law control)
+ *   out.w = -m.z    positive OUTPUT from a negative input on z = -1 rows
+ *
+ * If the truncation rides the export/CB write of negative values, out.y
+ * reads one ULP low while out.w on z = -1 rows reads exactly +1.  If it
+ * rides the fetch/interpolator/source read of negative values, out.y is
+ * exact while out.w reads +0.999992.  Both one-ULP-low means two stages
+ * truncate; both exact means the loss binds to the modifier-free mov form
+ * itself.  The negation must survive to the RC program as a NEG source
+ * modifier on a mov -- RADEON_DEBUG=fp prints the schedule at creation,
+ * and the capture arm proves that shape before a silicon run counts. */
+static void *r2vb_build_signflip_fs(struct r300_context *r300)
+{
+    const nir_shader_compiler_options *options =
+        r300->screen->screen.nir_options[MESA_SHADER_FRAGMENT];
+    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, options,
+                                                   "r300 r2vb signflip FS");
+
+    nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                           glsl_vec4_type(), "in_vtx");
+    in->data.location = VARYING_SLOT_VAR0;
+    in->data.interpolation = INTERP_MODE_FLAT;
+    nir_def *m = nir_load_var(&b, in);
+
+    nir_def *mx = nir_channel(&b, m, 0);
+    nir_def *mz = nir_channel(&b, m, 2);
+
+    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                            glsl_vec4_type(), "out_color");
+    out->data.location = FRAG_RESULT_COLOR;
+    nir_store_var(&b, out,
+                  nir_vec4(&b, mx, nir_fneg(&b, mx), mz, nir_fneg(&b, mz)),
+                  0xf);
 
     struct pipe_shader_state st = {0};
     st.type = PIPE_SHADER_IR_NIR;
@@ -6539,7 +6591,9 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
          * shape, same transaction, per-lane arithmetic classes instead of
          * the transform -- so the BO-fetch path stays byte-identical
          * outside the fragment program. */
-        if (r2vb_bo_draw_producer3_mode() >= 5)
+        if (r2vb_bo_draw_producer3_mode() >= 7)
+            xfs = r2vb_build_signflip_fs(r300);
+        else if (r2vb_bo_draw_producer3_mode() >= 5)
             xfs = r2vb_build_width_identity_fs(r300);
         else if (r2vb_bo_draw_producer3_mode() >= 3)
             xfs = r2vb_build_alu12_fs(r300);
@@ -6580,7 +6634,8 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     bool prepared = false;
     if (bo3 != 0 && restage && num_in == 1) {
         if (r2vb_run_bo_fetch_producer3(r300, clip, count, start, space,
-                                        bo3 == 2 || bo3 == 4 || bo3 == 6) ==
+                                        bo3 == 2 || bo3 == 4 || bo3 == 6 ||
+                                        bo3 == 8) ==
             R300_R2VB_BO3_SUBMITTED_CONSUME)
             *bo3_consumed = true;
     } else if (bo3 != 0) {
