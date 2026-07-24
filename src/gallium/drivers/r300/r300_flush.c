@@ -67,6 +67,7 @@ static void r300_flush_and_cleanup(struct r300_context *r300, unsigned flags,
     r300->flush_counter++;
     r300->rws->cs_flush(&r300->cs, flags, fence);
     r300->dirty_hw = 0;
+    r300->draw_emitted_this_cs = false;
     r300_rearm_after_hardware_flush(r300);
 }
 

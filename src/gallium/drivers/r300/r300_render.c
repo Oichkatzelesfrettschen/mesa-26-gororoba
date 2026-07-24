@@ -204,6 +204,9 @@ static bool r300_reserve_cs_dwords(struct r300_context *r300,
         if (r300_swtcl_us_resync_mode())
             cs_dwords += 2 + r300->fs.size + r300->fs_rc_constant_state.size +
                          r300->fs_constants.size;
+        /* Wait-before-US-reprogram budget: one WAIT_UNTIL pair. */
+        if (r300_swtcl_wait_before_us_reprogram())
+            cs_dwords += 2;
     }
 
     if (r300->screen->caps.is_r500)
@@ -256,6 +259,21 @@ static bool r300_emit_states(struct r300_context *r300,
                    "(not enough memory?) Skipping rendering.\n");
            return false;
         }
+    }
+
+    /* Wait-before-US-reprogram: when a draw is already in the open CS and
+     * a US-touching atom is dirty, drain the pipe BEFORE the reprogram so
+     * a still-rasterizing primitive cannot observe the successor draw's
+     * program or constants (see r300_swtcl_wait_before_us_reprogram). */
+    if (emit_states && r300_swtcl_wait_before_us_reprogram() &&
+        r300->draw_emitted_this_cs &&
+        (r300->fs.dirty || r300->fs_rc_constant_state.dirty ||
+         r300->fs_constants.dirty)) {
+        CS_LOCALS(r300);
+        BEGIN_CS(2);
+        OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+        END_CS;
+        r300->draw_emitted_this_cs = false;
     }
 
     if (emit_states)
@@ -450,6 +468,7 @@ static void r300_draw_arrays_immediate(struct r300_context *r300,
         }
     }
     END_CS;
+    r300->draw_emitted_this_cs = true;
 }
 
 static void r300_emit_draw_arrays(struct r300_context *r300,
@@ -476,6 +495,7 @@ static void r300_emit_draw_arrays(struct r300_context *r300,
            r300_translate_primitive(mode) |
            (alt_num_verts ? R500_VAP_VF_CNTL__USE_ALT_NUM_VERTS : 0));
     END_CS;
+    r300->draw_emitted_this_cs = true;
 }
 
 static void r300_emit_draw_elements(struct r300_context *r300,
@@ -514,6 +534,7 @@ static void r300_emit_draw_elements(struct r300_context *r300,
         OUT_CS(imm_indices3[1] << 16 | imm_indices3[0]);
         OUT_CS(imm_indices3[2]);
         END_CS;
+        r300->draw_emitted_this_cs = true;
 
         start += 3;
         count -= 3;
@@ -548,6 +569,7 @@ static void r300_emit_draw_elements(struct r300_context *r300,
     OUT_CS(count_dwords);
     OUT_CS_RELOC(r300_resource(indexBuffer));
     END_CS;
+    r300->draw_emitted_this_cs = true;
 }
 
 static void r300_draw_elements_immediate(struct r300_context *r300,
@@ -669,6 +691,7 @@ static void r300_draw_elements_immediate(struct r300_context *r300,
     }
 #endif
     END_CS;
+    r300->draw_emitted_this_cs = true;
 }
 
 static void r300_draw_elements(struct r300_context *r300,
@@ -2400,6 +2423,7 @@ static void r300_render_draw_arrays(struct vbuf_render* render,
            r300render->hwprim |
            (alt_num_verts ? R500_VAP_VF_CNTL__USE_ALT_NUM_VERTS : 0));
     END_CS;
+    r300->draw_emitted_this_cs = true;
 }
 
 static void r300_render_draw_elements(struct vbuf_render* render,
@@ -2456,6 +2480,7 @@ static void r300_render_draw_elements(struct vbuf_render* render,
     OUT_CS((count + 1) / 2);
     OUT_CS_RELOC(r300_resource(index_buffer));
     END_CS;
+    r300->draw_emitted_this_cs = true;
 
     pipe_resource_reference(&index_buffer, NULL);
 }
@@ -2679,6 +2704,7 @@ void r300_blitter_draw_rectangle(struct blitter_context *blitter,
         OUT_CS_TABLE(zeros, 4);
     }
     END_CS;
+    r300->draw_emitted_this_cs = true;
 
 done:
     /* Restore the state. */
