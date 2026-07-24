@@ -22,6 +22,7 @@
 #include "r300_fs.h"
 #include "r300_nir.h"
 #include "r300_screen.h"
+#include "r300_us_source_read.h"
 #include "radeon_code.h"
 #include "radeon_compiler.h"
 #include "radeon_program.h"
@@ -78,6 +79,13 @@ struct pair_eval {
    float depth;
    const struct rc_constant_list *consts;
    const char *error;
+   /* Execution profile for source-operand reads.  IDENTITY keeps the ideal
+    * FP32 evaluator; RS48X_NEG_PREDECESSOR applies the measured RS482 US
+    * read transform (r300_us_source_read.h) to input and temporary reads,
+    * the two register files the sign-flip discriminator measured.  Constant
+    * reads keep identity under both profiles: the constant-file read class
+    * is unmeasured, and the model fails closed on conjecture. */
+   enum r300_source_read_model src_read;
 };
 
 static bool
@@ -143,7 +151,20 @@ eval_arg_reg(struct pair_eval *e, struct rc_pair_instruction *pair, struct rc_pa
    struct rc_pair_instruction_source *src = rc_pair_get_src(pair, arg);
    if (!src || !src->Used)
       return true;
-   return resolve_pair_reg(e, src->File, src->Index, reg);
+   if (!resolve_pair_reg(e, src->File, src->Index, reg))
+      return false;
+   /* The read transform lands between register resolution and the ABS/NEG
+    * modifiers -- the ordering the sign-flip cell proved (NEG on an exact
+    * positive exports exactly; a stored negative is already one ULP low
+    * before its modifier applies).  Transforming the whole fetched register
+    * equals transforming each swizzle-selected channel; ZERO/ONE/HALF
+    * swizzle constants come from the swizzle hardware, not a register read,
+    * and pass through untouched. */
+   if (e->src_read == R300_SOURCE_READ_RS48X_NEG_PREDECESSOR &&
+       (src->File == RC_FILE_INPUT || src->File == RC_FILE_TEMPORARY))
+      for (unsigned ch = 0; ch < 4; ch++)
+         reg[ch] = r300_us_source_read_f32(reg[ch], e->src_read);
+   return true;
 }
 
 /* Resolve one RGB-lane argument's three channels.  DP3/DP4's fourth term
@@ -1370,6 +1391,236 @@ test_dp3_full_pair_broadcast(void)
    rc_destroy_regalloc_state(&rs);
 }
 
+/* ---------- RS48x source-read profile calibration ----------
+ *
+ * The profile earns trust the standard way: known-good inputs are the
+ * retained RS482 silicon lanes (sign-flip mov discriminator, MAD product
+ * read, double-truncation chain), which the RS48X_NEG_PREDECESSOR profile
+ * must reproduce bit-for-bit; the known-bad control is the IDENTITY
+ * profile, which must diverge on exactly the negative-read lanes and agree
+ * on the exact ones. */
+
+static uint32_t
+f32_bits_of(float v)
+{
+   return r300_f32_to_bits(v);
+}
+
+/* One RGB-only mov (MAX of a source with itself, the final_rewrite form) of
+ * input 0, with optional NEG on the argument. */
+static void
+append_input_mov(struct r300_fragment_program_compiler *fc,
+                 struct rc_instruction **tail, unsigned dest_temp,
+                 unsigned negate)
+{
+   struct rc_pair_instruction mov;
+   memset(&mov, 0, sizeof(mov));
+   mov.RGB.Opcode = RC_OPCODE_MAX;
+   mov.RGB.WriteMask = RC_MASK_XYZ;
+   mov.RGB.DestIndex = dest_temp;
+   mov.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   mov.RGB.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XYZW, .Negate = negate};
+   mov.RGB.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XYZW, .Negate = negate};
+   mov.Alpha.Opcode = RC_OPCODE_NOP;
+   *tail = append_pair(&fc->Base, *tail, &mov);
+}
+
+/* The sign-flip discriminator lanes on the input file.  Stored -1 reads as
+ * -pred24(1) = -0.99999237 (FP32 0xBF7FFF80); NEG of stored +1 exports -1
+ * exactly; NEG of stored -1 gives +pred24(1); stored -0 canonicalizes to
+ * +0.  The identity profile returns the stored values unchanged. */
+static void
+test_source_read_signflip_lanes(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   struct rc_instruction *tail = &fc.Base.Program.Instructions;
+   append_input_mov(&fc, &tail, 1, 0); /* temp1 = in0        */
+   append_input_mov(&fc, &tail, 2, 1); /* temp2 = -in0       */
+
+   const float pred_one = r300_bits_to_f32(0x3F7FFF80u);
+
+   struct pair_eval e;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.src_read = R300_SOURCE_READ_RS48X_NEG_PREDECESSOR;
+   e.inputs[0][0] = -1.0f;
+   e.inputs[0][1] = 1.0f;
+   e.inputs[0][2] = -0.0f;
+
+   CHECK(eval_pair_program(&e, &fc.Base), "src_read: signflip stream evaluates");
+   CHECK(f32_bits_of(e.temps[1][0]) == 0xBF7FFF80u,
+        "src_read: stored -1 reads as -pred24(1), one FP24 ULP toward zero");
+   CHECK(f32_bits_of(e.temps[1][1]) == f32_bits_of(1.0f),
+        "src_read: stored +1 reads exactly");
+   CHECK(f32_bits_of(e.temps[1][2]) == 0,
+        "src_read: stored -0 canonicalizes to +0");
+   CHECK(f32_bits_of(e.temps[2][0]) == f32_bits_of(pred_one),
+        "src_read: NEG of stored -1 gives +pred24(1), truncation precedes the modifier");
+   CHECK(f32_bits_of(e.temps[2][1]) == f32_bits_of(-1.0f),
+        "src_read: NEG of stored +1 exports -1 exactly, the proven-safe carrier");
+
+   struct pair_eval ident;
+   memset(&ident, 0, sizeof(ident));
+   ident.consts = &fc.Base.Program.Constants;
+   ident.src_read = R300_SOURCE_READ_IDENTITY;
+   ident.inputs[0][0] = -1.0f;
+   ident.inputs[0][1] = 1.0f;
+   ident.inputs[0][2] = -0.0f;
+
+   CHECK(eval_pair_program(&ident, &fc.Base), "src_read: identity control evaluates");
+   CHECK(f32_bits_of(ident.temps[1][0]) == f32_bits_of(-1.0f),
+        "src_read: identity control keeps stored -1, diverging from the silicon lane");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
+/* Temporary-file read of a negative product.  The chain writes -64 exactly
+ * (NEG modifier on the stored +8 input times the swizzle-encoded operand
+ * chain), then a mov reads the negative temporary: the retained MAD lane
+ * value is -63.99902 (FP32 0xC27FFF80), one predecessor step on 64. */
+static void
+test_source_read_temp_product_lane(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   /* temp1 = (-in0) * in0 + 0 = -64 for in0 = 8: both reads see the stored
+    * positive 8 (exact), the NEG modifier creates the negative product at
+    * the destination, so the write itself is exact. */
+   struct rc_pair_instruction mad;
+   memset(&mad, 0, sizeof(mad));
+   mad.RGB.Opcode = RC_OPCODE_MAD;
+   mad.RGB.WriteMask = RC_MASK_XYZ;
+   mad.RGB.DestIndex = 1;
+   mad.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   mad.RGB.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XYZW, .Negate = 1};
+   mad.RGB.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XYZW};
+   mad.RGB.Arg[2] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_0000};
+   mad.Alpha.Opcode = RC_OPCODE_NOP;
+
+   struct rc_pair_instruction mov;
+   memset(&mov, 0, sizeof(mov));
+   mov.RGB.Opcode = RC_OPCODE_MAX;
+   mov.RGB.WriteMask = RC_MASK_XYZ;
+   mov.RGB.DestIndex = 2;
+   mov.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_TEMPORARY, .Index = 1};
+   mov.RGB.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XYZW};
+   mov.RGB.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XYZW};
+   mov.Alpha.Opcode = RC_OPCODE_NOP;
+
+   struct rc_instruction *tail =
+      append_pair(&fc.Base, &fc.Base.Program.Instructions, &mad);
+   append_pair(&fc.Base, tail, &mov);
+
+   struct pair_eval e;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.src_read = R300_SOURCE_READ_RS48X_NEG_PREDECESSOR;
+   e.inputs[0][0] = 8.0f;
+
+   CHECK(eval_pair_program(&e, &fc.Base), "src_read: product chain evaluates");
+   CHECK(f32_bits_of(e.temps[1][0]) == f32_bits_of(-64.0f),
+        "src_read: the negative product writes -64 exactly");
+   CHECK(f32_bits_of(e.temps[2][0]) == 0xC27FFF80u,
+        "src_read: the temp read of -64 delivers -63.99902, the retained MAD lane value");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
+/* Two negative reads across two instructions: temp1 = -0.5 (exact write via
+ * NEG on the stored +0.5 input); temp2 = temp1 * 0.5 + 0 reads the negative
+ * temp once (-pred24(0.5) * 0.5 = -0.24999809, written exactly); the final
+ * mad reads the negative temp2 once more and adds 0.5, delivering the
+ * retained double-truncation value 0.2500038 (FP32 0x3E800080).  The HALF
+ * and ZERO operands ride swizzle constants, so exactly two register reads
+ * are negative. */
+static void
+test_source_read_double_truncation_chain(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   struct rc_instruction *tail = &fc.Base.Program.Instructions;
+   append_input_mov(&fc, &tail, 1, 1); /* temp1 = -in0 = -0.5, exact */
+
+   struct rc_pair_instruction scale;
+   memset(&scale, 0, sizeof(scale));
+   scale.RGB.Opcode = RC_OPCODE_MAD;
+   scale.RGB.WriteMask = RC_MASK_XYZ;
+   scale.RGB.DestIndex = 2;
+   scale.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_TEMPORARY, .Index = 1};
+   scale.RGB.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XYZW};
+   scale.RGB.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_HHHH};
+   scale.RGB.Arg[2] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_0000};
+   scale.Alpha.Opcode = RC_OPCODE_NOP;
+
+   struct rc_pair_instruction add_half;
+   memset(&add_half, 0, sizeof(add_half));
+   add_half.RGB.Opcode = RC_OPCODE_MAD;
+   add_half.RGB.WriteMask = RC_MASK_XYZ;
+   add_half.RGB.DestIndex = 3;
+   add_half.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_TEMPORARY, .Index = 2};
+   add_half.RGB.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XYZW};
+   add_half.RGB.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_1111};
+   add_half.RGB.Arg[2] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_HHHH};
+   add_half.Alpha.Opcode = RC_OPCODE_NOP;
+
+   tail = append_pair(&fc.Base, tail, &scale);
+   append_pair(&fc.Base, tail, &add_half);
+
+   struct pair_eval e;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.src_read = R300_SOURCE_READ_RS48X_NEG_PREDECESSOR;
+   e.inputs[0][0] = 0.5f;
+
+   CHECK(eval_pair_program(&e, &fc.Base), "src_read: double-truncation chain evaluates");
+   CHECK(f32_bits_of(e.temps[1][0]) == f32_bits_of(-0.5f),
+        "src_read: NEG on the stored +0.5 writes -0.5 exactly");
+   CHECK(f32_bits_of(e.temps[2][0]) == 0xBE7FFF80u,
+        "src_read: first negative read scales to a stored -0.24999809");
+   CHECK(f32_bits_of(e.temps[3][0]) == 0x3E800080u,
+        "src_read: second negative read plus 0.5 delivers 0.2500038, the retained chain value");
+
+   struct pair_eval ident;
+   memset(&ident, 0, sizeof(ident));
+   ident.consts = &fc.Base.Program.Constants;
+   ident.src_read = R300_SOURCE_READ_IDENTITY;
+   ident.inputs[0][0] = 0.5f;
+
+   CHECK(eval_pair_program(&ident, &fc.Base), "src_read: identity chain evaluates");
+   CHECK(f32_bits_of(ident.temps[3][0]) == f32_bits_of(0.25f),
+        "src_read: identity control delivers the ideal 0.25");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
 int
 main(void)
 {
@@ -1384,6 +1635,9 @@ main(void)
    test_real_corpus_merge_matches_nir_to_rc();
    test_real_corpus_dp3_merge_matches_nir_to_rc();
    test_dp3_full_pair_broadcast();
+   test_source_read_signflip_lanes();
+   test_source_read_temp_product_lane();
+   test_source_read_double_truncation_chain();
 
    glsl_type_singleton_decref();
    if (failures) {

@@ -71,9 +71,23 @@ mixed-radix coordinate isomorphism preserving the flat byte stream.
 
 ## Value-exactness allowance
 
-Every value oracle over producer or sampler readbacks carries the RS482
-negative-component allowance until the stage is localized: a negative
-value read back through the fragment pipeline loses one FP24 ULP toward
-zero even on a zero-arithmetic fetch/mov/export path, while positive
-values are bit-exact (finding
-`r2vb-one-row-width-2049-green-negative-ulp-on-mov`, steinmarder-r300).
+The deviation stage is localized: the RS482 US source-operand read
+delivers a negative nonzero input- or temporary-register value one FP24
+ULP smaller in magnitude, before the ABS/NEG source modifiers apply;
+positive operands, ALU computation, register writes, and exports are
+exact, and negative zero reads back as positive zero (finding
+`rs482-us-source-read-negative-ulp-law`, steinmarder-r300; software
+model `r300_us_source_read.h`).
+
+Value oracles therefore compare against the emitted-program source-read
+model, bit for bit -- expected value = ideal evaluation with the
+predecessor applied at each negative register read in the scheduled
+pair program -- rather than against a generic one-ULP epsilon.  An
+epsilon band would accept single-read deviations on multi-read lanes
+and reject exact lanes recomposed from two reads, so the schedule-model
+identity is both stricter and correct.  Width and layout acceptance
+cells use nonnegative payloads when arithmetic is not the cell's
+subject, keeping the layout verdict independent of the read law.
+Constant-file, texture, and presubtract source classes are unmeasured;
+oracles over schedules that read those files as negative sources record
+the class as unmodeled instead of assuming either behavior.
