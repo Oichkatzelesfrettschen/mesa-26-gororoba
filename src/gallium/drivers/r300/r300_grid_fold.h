@@ -42,7 +42,10 @@
 /* Largest integer N such that every integer in [0, N] is exact in FP24. */
 #define R300_FP24_EXACT_INT_CEILING ((uint32_t)1 << 17)
 
-/* R300 maximum 2D texture / render-target extent per axis. */
+/* Common safe raster axis for a surface that is both rendered and sampled:
+ * the R300 2D texture axis cap (2048), which is the smaller of the sampler
+ * limit and the 2560 color-render limit.  The fold uses it so every grid
+ * surface stays sampleable as well as renderable. */
 #define R300_RASTER_AXIS_CAP 2048u
 
 /* How the admitted kernel consumes the synthetic work-item index.  The
