@@ -4449,25 +4449,28 @@ bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
     return true;
 }
 
-bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
-                                struct r300_r2vb_slot_layout *out)
+bool r300_r2vb_slot_layout_init_policy(uint32_t count,
+                                       enum r300_r2vb_slot_layout_policy policy,
+                                       struct r300_r2vb_slot_layout *out)
 {
     /* The 16-bit VAP_VF_MAX_VTX_INDX bounds every re-ingest regardless of
      * producer storage. */
     if (count == 0 || count >= 65536)
         return false;
     struct r300_r2vb_slot_layout l = { .count = count };
-    if (count <= 4096) {
-        /* The proven one-row shape, byte-for-byte, whether or not the grid
-         * gate is armed: the first silicon comparison isolates only the new
-         * multirow mechanism. */
+    switch (policy) {
+    case R300_R2VB_LAYOUT_LEGACY_ROW:
+        if (count > 4096)
+            return false;
         l.width = count;
         l.height = 1;
-    } else {
-        if (!grid_enabled)
-            return false;
+        break;
+    case R300_R2VB_LAYOUT_GRID_2048:
         l.width = 2048;
         l.height = (count + 2047u) / 2048u;
+        break;
+    default:
+        return false;
     }
     l.pitch_pixels = l.width;
     l.storage_slots = (uint64_t)l.pitch_pixels * l.height;
@@ -4476,6 +4479,21 @@ bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
         return false;
     *out = l;
     return true;
+}
+
+bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
+                                struct r300_r2vb_slot_layout *out)
+{
+    /* The proven one-row shape rides byte-for-byte through 4096 whether or
+     * not the grid gate is armed: the first silicon comparison isolates
+     * only the new multirow mechanism. */
+    if (count != 0 && count <= 4096)
+        return r300_r2vb_slot_layout_init_policy(
+            count, R300_R2VB_LAYOUT_LEGACY_ROW, out);
+    if (!grid_enabled)
+        return false;
+    return r300_r2vb_slot_layout_init_policy(count, R300_R2VB_LAYOUT_GRID_2048,
+                                             out);
 }
 
 /* Strict positive decimal uint32: bare digits only.  Sign, whitespace,

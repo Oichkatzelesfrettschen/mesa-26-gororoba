@@ -364,6 +364,47 @@ check_slot_layout(void)
    check_layout_accept(65535, true, 2048, 32, "maximum accepted count");
    check_layout_reject(65536, true, "re-ingest index ceiling");
    check_layout_reject(UINT32_MAX, true, "uint32 max");
+
+   /* Explicit policy: the two representations of one count are separately
+    * addressable, so the 4096 layout-boundary comparison (one row versus
+    * 2048x2) and the one-row 2559/2560/2561 color-render-axis boundary
+    * cells name their shape instead of deriving it from count. */
+   struct r300_r2vb_slot_layout row, grid;
+   CHECK(r300_r2vb_slot_layout_init_policy(4096, R300_R2VB_LAYOUT_LEGACY_ROW,
+                                           &row) &&
+            row.width == 4096 && row.height == 1,
+         "layout: policy row 4096 -> 4096x1");
+   CHECK(r300_r2vb_slot_layout_init_policy(4096, R300_R2VB_LAYOUT_GRID_2048,
+                                           &grid) &&
+            grid.width == 2048 && grid.height == 2 &&
+            grid.storage_slots == 4096 &&
+            grid.storage_bytes == row.storage_bytes,
+         "layout: policy grid 4096 -> 2048x2, same storage, no tail");
+   CHECK(r300_r2vb_slot_layout_init_policy(4097, R300_R2VB_LAYOUT_GRID_2048,
+                                           &grid) &&
+            grid.width == 2048 && grid.height == 3 &&
+            grid.storage_slots - grid.count == 2047,
+         "layout: policy grid 4097 -> 2048x3, 2047-slot sentinel tail");
+   CHECK(!r300_r2vb_slot_layout_init_policy(4097,
+                                            R300_R2VB_LAYOUT_LEGACY_ROW,
+                                            &row),
+         "layout: policy row rejects 4097");
+   for (uint32_t w = 2559; w <= 2561; w++) {
+      char label[64];
+      snprintf(label, sizeof(label), "layout: policy row %u one-row", w);
+      CHECK(r300_r2vb_slot_layout_init_policy(w, R300_R2VB_LAYOUT_LEGACY_ROW,
+                                              &row) &&
+               row.width == w && row.height == 1 && row.pitch_pixels == w,
+            label);
+   }
+   CHECK(r300_r2vb_slot_layout_init_policy(8192, R300_R2VB_LAYOUT_GRID_2048,
+                                           &grid) &&
+            grid.width == 2048 && grid.height == 4,
+         "layout: policy grid 8192 -> 2048x4");
+   CHECK(r300_r2vb_slot_layout_init_policy(21516, R300_R2VB_LAYOUT_GRID_2048,
+                                           &grid) &&
+            grid.width == 2048 && grid.height == 11,
+         "layout: policy grid 21516 -> 2048x11");
 }
 
 static void

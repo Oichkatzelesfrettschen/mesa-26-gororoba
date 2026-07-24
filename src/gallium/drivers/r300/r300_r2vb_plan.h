@@ -337,8 +337,28 @@ struct r300_r2vb_slot_layout {
     uint64_t storage_bytes;
 };
 
-/* Pure over (count, grid_enabled); fails on count == 0, count >= 65536
- * (the 16-bit re-ingest index ceiling), and -- grid off -- count > 4096. */
+/* Explicit slot-layout representation.  The policy names the shape rather
+ * than deriving it from count alone, so the two representations of one
+ * count (4096 as a legacy row versus 2048x2) stay separately addressable
+ * for the layout-boundary silicon comparison.  LEGACY_ROW is the proven
+ * one-row shape (width == count, height == 1) up to the 4096 storage
+ * ceiling; GRID_2048 always uses width == pitch == 2048 with
+ * height == ceil(count / 2048), the common rendered-and-sampled axis from
+ * the RS482 virtualization matrix (2560 is the color-render axis; the
+ * one-row 2559/2560/2561 boundary cells probe it under LEGACY_ROW). */
+enum r300_r2vb_slot_layout_policy {
+    R300_R2VB_LAYOUT_LEGACY_ROW,
+    R300_R2VB_LAYOUT_GRID_2048,
+};
+
+/* Pure over (count, policy); fails on count == 0, count >= 65536 (the
+ * 16-bit re-ingest index ceiling), and -- LEGACY_ROW -- count > 4096. */
+bool r300_r2vb_slot_layout_init_policy(uint32_t count,
+                                       enum r300_r2vb_slot_layout_policy policy,
+                                       struct r300_r2vb_slot_layout *out);
+
+/* Count-derived wrapper: LEGACY_ROW through 4096, GRID_2048 above it when
+ * grid_enabled, decline otherwise.  Production callers keep this form. */
 bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
                                 struct r300_r2vb_slot_layout *out);
 
