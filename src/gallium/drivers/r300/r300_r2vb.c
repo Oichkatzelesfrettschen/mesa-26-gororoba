@@ -6272,11 +6272,14 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
      * consent gate; capture stays reachable without it. */
     if (submit && !r300_r2vb_option_is(getenv("R300_RAW_SUBMIT_ACCEPTED"), "1"))
         why = "raw_submit_gate";
-    /* The width modes admit exactly the two one-row frontier counts: 2048
-     * (the presumed safe row width) and 2049 (its first overflow); every
-     * other mode keeps the proven three-vertex cell. */
+    /* The width modes admit exactly the one-row boundary counts: 2048 and
+     * 2049 (the first frontier, silicon-green), 2559/2560/2561 (the RS482
+     * color-render-axis boundary), and 4096 (the one-row storage ceiling,
+     * the row half of the layout-boundary comparison against 2048x2);
+     * every other mode keeps the proven three-vertex cell. */
     else if (r2vb_bo_draw_producer3_mode() >= 5
-                 ? (count != 2048 && count != 2049)
+                 ? (count != 2048 && count != 2049 && count != 2559 &&
+                    count != 2560 && count != 2561 && count != 4096)
                  : count != 3)
         why = "count";
     else if (!plan || plan->status != R300_R2VB_PLAN_READY ||
@@ -6473,10 +6476,14 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
             bool width_mode = r2vb_bo_draw_producer3_mode() >= 5;
             /* Width cells report by full-span hash plus boundary records --
              * the row edges (0, 1, count-1), the 128-lane payload wrap
-             * (127, 128), and the 2048 frontier (2046..2048) -- so a
-             * 2049-record readback stays a dozen lines. */
+             * (127, 128), the 2048 frontier (2046..2048), the 2560
+             * color-render-axis boundary (2558..2561), and the 4096
+             * one-row storage ceiling edge -- so even a 4096-record
+             * readback stays a screenful. */
             static const uint32_t bounds[] = { 0, 1, 127, 128,
-                                               2046, 2047, 2048 };
+                                               2046, 2047, 2048,
+                                               2558, 2559, 2560, 2561,
+                                               4094, 4095 };
             for (uint32_t i = 0; i < nrec; i++) {
                 bool print = !width_mode;
                 if (width_mode) {
