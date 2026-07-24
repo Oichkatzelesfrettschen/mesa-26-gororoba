@@ -1291,7 +1291,15 @@ void r300_emit_pvs_flush(struct r300_context* r300, unsigned size, void* state)
  *   1  RADEON_WAIT_UNTIL(WAIT_3D_IDLECLEAN) after the dirty atoms.
  *   2  the wait, then a second emission of fs, fs_rc_constant_state, and
  *      fs_constants (idle first, then a re-upload the idle US must accept).
- *   3  the second fs emission alone (double upload, no wait). */
+ *   3  the second fs emission alone (double upload, no wait).
+ *
+ * RS482 silicon verdict: every mode leaves the first draw of the CS on the
+ * stale program with engagement proven in the patched IBs (mode 1 doubles
+ * the WAIT_UNTIL count, mode 3 doubles the US_CODE_ADDR uploads).  In-CS
+ * ordering around the upload does not reprogram the US across a CS
+ * boundary, so the defect sits below the command stream -- ring-level or
+ * kernel inter-IB state -- and the gate stands as the banked refutation
+ * matrix for upload-adjacent fencing. */
 int r300_swtcl_us_resync_mode(void)
 {
     static int cached = -1;
