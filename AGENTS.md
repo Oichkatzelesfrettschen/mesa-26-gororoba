@@ -488,7 +488,7 @@ pollutes the worktree and requires separate `LIBGL_DRIVERS_PATH` or
 
 ### Clean and reconfigure
 
-Incremental `ninja clean` removes compiled objects and keeps Meson configuration. A Meson option change or a Meson upgrade requires `meson setup --wipe`, which gives a fresh directory setup while preserving download caches. `meson-private/cmd_line.txt` is generated state and changes only through `meson setup` and `meson configure`. After `--wipe`, run the build and install in full before collecting evidence.
+Incremental `ninja -C <builddir> clean` removes compiled objects and keeps Meson configuration. A Meson option change or a Meson upgrade requires `meson setup --wipe <builddir>`, which gives a fresh directory setup while preserving download caches. `meson-private/cmd_line.txt` is generated state and changes only through `meson setup` and `meson configure`. After `--wipe`, run `ninja -C <builddir>` and `ninja -C <builddir> install` in full before collecting evidence.
 
 ## Build-system and cache discipline
 
@@ -1054,9 +1054,12 @@ file is the authoritative checklist; this section is only the pointer to it.
 
 ## Key subsystems
 
-Driver, compiler, and build-entry paths follow the standard Mesa
-layout under `src/` and `build-infra/`; the source tree is the map, and
-`Project scope and priorities` names the Terakan root.
+Driver and compiler paths follow the standard Mesa layout under
+`src/`; the source tree is the map. Terakan Vulkan lives at
+`src/amd/terascale/vulkan/`, the one non-obvious anchor. Build entry
+spans the repository-root `meson.build`, `meson.options`, and
+`meson_options.txt` plus `build-infra/`, native files, and install
+scripts.
 
 `rust-toolchain.toml` is an upstream Mesa file with `channel = "nightly"`. Active builds select Rust through Meson and toolchain policy, not checked-in absolute paths.
 
