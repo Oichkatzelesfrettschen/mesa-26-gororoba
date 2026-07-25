@@ -28,13 +28,13 @@ src/gallium/drivers/r300/meson.build	lists the Gallium GL source r300_icd.c (not
 # legacy arm retires with the r300vk compatibility surface (see the
 # getenv-compat comment in r3v_private.h).  These R300VK_ strings are the
 # deliberate fallback names, not un-renamed symbols.
-src/amd/r300/vulkan/r3v/r3v_device.c	R300VK_DEBUG / R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED env fallback strings
-src/amd/r300/vulkan/r3v/r3v_identity_map.c	R300VK_DEBUG / R300VK_IDENTITY_MAP_FP32X4_EXPERIMENTAL env fallback strings
-src/amd/r300/vulkan/r3v/r3v_instance.c	R300VK_DEBUG env fallback string
-src/amd/r300/vulkan/r3v/r3v_physical_device.c	R300VK_HYBRID_COMPUTE_EXPERIMENTAL / R300VK_WSI_SW env fallback strings
-src/amd/r300/vulkan/r3v/r3v_pipeline.c	R300VK_DEBUG env fallback string
-src/amd/r300/vulkan/r3v/r3v_private.h	R300VK_EXPERIMENTAL_NEAREST_STITCH and FP32x4 identity env fallback strings
-src/amd/r300/vulkan/r3v/r3v_queue.c	R300VK_DEBUG env fallback string
+src/amd/r300/vulkan/r3v_device.c	R300VK_DEBUG / R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED env fallback strings
+src/amd/r300/vulkan/r3v_identity_map.c	R300VK_DEBUG / R300VK_IDENTITY_MAP_FP32X4_EXPERIMENTAL env fallback strings
+src/amd/r300/vulkan/r3v_instance.c	R300VK_DEBUG env fallback string
+src/amd/r300/vulkan/r3v_physical_device.c	R300VK_HYBRID_COMPUTE_EXPERIMENTAL / R300VK_WSI_SW env fallback strings
+src/amd/r300/vulkan/r3v_pipeline.c	R300VK_DEBUG env fallback string
+src/amd/r300/vulkan/r3v_private.h	R300VK_EXPERIMENTAL_NEAREST_STITCH and FP32x4 identity env fallback strings
+src/amd/r300/vulkan/r3v_queue.c	R300VK_DEBUG env fallback string
 src/gallium/drivers/r300/r300_compute_admission.c	R300VK_DEBUG env fallback read; canonical R3V_ debug flag path
 #
 # external-artifact: an on-box deqp-vk build directory named before the rename;

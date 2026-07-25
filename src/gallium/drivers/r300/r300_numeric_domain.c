@@ -883,7 +883,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       /* Four independent RGBA8_UNORM render targets written in parallel by
        * a single fragment shader with layout(location=0..3) outputs.
        * r3v exposes maxColorAttachments=4 in r3v_GetPhysicalDeviceProperties
-       * (rg --fixed-strings maxColorAttachments src/amd/r300/vulkan/r3v/).
+       * (rg --fixed-strings maxColorAttachments src/amd/r300/vulkan/).
        * independentBlend=false: all 4 attachments share RB3D_CBLEND state,
        * but distinct FS output locations route to distinct color buffers.
        * RS482 probe: 4-attachment framebuffer, FS writes 0x01020304 /
