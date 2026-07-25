@@ -361,6 +361,15 @@ Speculative: adjacent Evergreen behavior suggests the same cache-domain rule, bu
 
 Use `breakthrough` only for a discontinuous result that changes the evidence graph. For normal Mesa work, use the mechanism: `driver enablement`, `conformance improvement`, `lowering-path correction`, `descriptor-path repair`, `packet grammar recovery`, `hazard-model refinement`, `silicon-behavior characterization`, `validation-methodology improvement`, or `source-grounded architecture model`.
 
+## Headless hardware GL
+
+`headless-hardware-gl-runner.md` carries the procedure for reaching a hardware GL
+provider on a display-manager host: the render-node EGL/GBM path that needs no X
+server, the headless glamor X path for tests requiring a real default framebuffer,
+and the provider verification that separates a hardware result from an llvmpipe
+one. A `DRISWRAST` provider or an `llvmpipe` renderer string means the run
+measured software, whatever driver was under test.
+
 ## Standalone build
 
 Mesa builds from this repository alone, with reproducible native files and
@@ -765,7 +774,9 @@ Markdown loaded by agents uses exactly one H1, heading depth no deeper than `###
 
 Use tables only when columns carry independent comparison value. Prefer bullets for simple ownership, lookup, and rule lists.
 
-Rule files carry plain ASCII, present-tense declarative text with exact cross-references. Slice-loaded text stands without nearby context.
+Rule files carry present-tense declarative text with exact cross-references. Slice-loaded text stands without nearby context.
+
+Checked-in text is emoji-free. An emoji carries no information its word does not, and it breaks greps, widens diffs, and renders as a box or a double-width cell wherever the glyph is missing. Typographic substitutes stay out on the same grounds: straight quotes over curly ones, `--` over an em dash, `...` over an ellipsis glyph. Symbols that carry meaning stay in -- mathematical operators, Greek letters in ISA and equation text, arrows in state transitions, box-drawing in descriptor and packet diagrams, the degree and micro signs. A name keeps the spelling its owner uses, so accented characters in upstream author and copyright lines are preserved verbatim; `Copyright (c) 2024 Vitaliy Triang3l Kuzmin` and its Unicode copyright sign both stand as written.
 
 ### Comment-hygiene linter and Git hook
 
