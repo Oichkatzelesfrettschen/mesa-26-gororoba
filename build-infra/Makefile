@@ -202,7 +202,7 @@ LOCKED_TOOL_ENV := \
         install-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache \
         rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
         install-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
-        rebuild-all-tiers audit-werror \
+        rebuild-all-tiers audit-werror driver-root-audit \
         build-lease-test build-job-policy-test \
         pkg-mesa-gororoba deploy-mesa-gororoba \
         help
@@ -212,6 +212,13 @@ LOCKED_TOOL_ENV := \
 .PHONY: profile-audit
 profile-audit:
 	python3 $(CURDIR)/scripts/profile_audit.py --repo-root $(CURDIR)/..
+
+# Driver-root gate: each AMD GPU family's Vulkan driver keeps its source root
+# at the family's vulkan/ directory, and the build graph enters it there.
+.PHONY: driver-root-audit
+driver-root-audit:
+	python3 $(CURDIR)/scripts/driver_root_audit.py --self-test
+	python3 $(CURDIR)/scripts/driver_root_audit.py --repo-root $(CURDIR)/..
 
 help:
 	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"
@@ -224,6 +231,7 @@ help:
 	@echo "  distclean         atomically clean + archive \$$(PREFIX) under one lease"
 	@echo "  audit             verify host tools, env policy, profile-audit, and profile requirements"
 	@echo "  profile-audit     fail when a profile selects drivers outside its allowlist row"
+	@echo "  driver-root-audit fail when an AMD Vulkan driver root or its subdir() entry drifts"
 	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
 	@echo "  artifact-check    list installed Terakan/r600/r3v artifacts under \$$(PREFIX); warn on stale r300 ICDs"
 	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
@@ -282,7 +290,7 @@ audit-werror:
 	if [ $$rc -eq 0 ]; then echo "OK    audit-werror: profiles werror=true; packaging meson -Dwerror=true; prime/-o0 no /usr activation"; fi; \
 	exit $$rc
 
-audit: vostro-prefix-check audit-werror profile-audit
+audit: vostro-prefix-check audit-werror profile-audit driver-root-audit
 	@failures=0; warnings=0; \
 	fail() { echo "FAIL  $$*" >&2; failures=$$((failures + 1)); }; \
 	warn() { echo "WARN  $$*" >&2; warnings=$$((warnings + 1)); }; \
