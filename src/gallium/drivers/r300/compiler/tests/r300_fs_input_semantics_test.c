@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * Fragment input-semantics helper oracle.

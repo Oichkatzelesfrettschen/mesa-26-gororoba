@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 #
-# Copyright (c) 2026 Terascale Functionalists
 # SPDX-License-Identifier: MIT
 #
 # Acceptance matrix for terakan_env_gate_enabled() (the strict =1 helper

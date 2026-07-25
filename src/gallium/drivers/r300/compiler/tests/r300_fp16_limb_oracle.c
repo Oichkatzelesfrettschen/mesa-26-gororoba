@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * CPU oracle for the virtual IEEE FP16 machine (R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL).

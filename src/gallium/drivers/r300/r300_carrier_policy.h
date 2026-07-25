@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * Carrier policy for the RS482 compute-as-raster dispatch-replay.

@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * Regression guard for the r300 SW-TCL vertex integer lowering that closes the

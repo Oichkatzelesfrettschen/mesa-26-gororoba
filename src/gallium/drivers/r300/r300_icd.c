@@ -1,7 +1,6 @@
 /*
  * Copyright 2009 Corbin Simpson <MostAwesomeDude@gmail.com>
  * Copyright 2009 Marek Olšák <maraeo@gmail.com>
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * ICD direct-emit extraction API.

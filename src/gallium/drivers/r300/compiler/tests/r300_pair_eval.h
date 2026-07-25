@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * Value-level CPU evaluator over the scheduled RGB/Alpha pair form, with a

@@ -1,6 +1,5 @@
 /*
  * Copyright (c) 2024 Vitaliy "Triang3l" Kuzmin
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * External-sync helpers for terakan: signal DRM syncobj handles that

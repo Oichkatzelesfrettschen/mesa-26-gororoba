@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 Terascale Functionalists
 # SPDX-License-Identifier: MIT
 """Generate r300_display_reg.h from the MIT-licensed X.Org DDX radeon_reg.h.
 
@@ -60,7 +59,6 @@ HEADER = """\
 /*
  * Copyright 2000 ATI Technologies Inc., Markham, Ontario, and
  *                VA Linux Systems Inc., Fremont, California.
- * Copyright (c) 2026 Terascale Functionalists
  *
  * SPDX-License-Identifier: MIT
  *

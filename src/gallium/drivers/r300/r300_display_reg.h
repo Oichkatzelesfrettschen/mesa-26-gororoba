@@ -1,7 +1,6 @@
 /*
  * Copyright 2000 ATI Technologies Inc., Markham, Ontario, and
  *                VA Linux Systems Inc., Fremont, California.
- * Copyright (c) 2026 Terascale Functionalists
  *
  * SPDX-License-Identifier: MIT
  *
