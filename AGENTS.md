@@ -443,15 +443,15 @@ profiles live in `build-infra/configs/alternates/`.  The Makefile resolves a
 bare `PROFILE=` name against both directories, so `make` invocations name a
 profile by basename regardless of which directory holds it.
 
-- `3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache.meson` (DEFAULT, in `configs/`): maximal r300 plus `ati_r300` ICD; debugoptimized; vostro.
-- `1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): maximal r300 plus `ati_r300` ICD; ASan+UBSan debug; vostro.
-- `2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): maximal r300 plus `ati_r300` ICD; unoptimized debug; vostro.
-- `4_r300_full_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): maximal r300 plus `ati_r300` ICD; release; vostro. The conformance-baseline profile: GL/GLES/Piglit and silicon-evidence runs use this, because an assertions-live debug build can abort a case release would pass.
-- `r300_h264dec_full_debug_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): r300 H.264 decode development surface; debugoptimized; vostro.
-- `3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): r600, zink, softpipe, LLVM, `amd_terascale`, and Rusticl; release; x130e.
-- `4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): r600, zink, softpipe, LLVM, `amd_terascale`, and Rusticl; debug; x130e.
-- `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): same as profile 3 without Rusticl; release; x130e fallback.
-- `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): same as profile 4 without Rusticl; debug; x130e fallback.
+Each profile's `.meson` file declares its own drivers, buildtype, and
+options; read the config for the enumeration. The facts the configs do
+not state: profile `3_r300_full_debug_optimized_*` is the default
+(maximal r300 plus the `ati_r300` ICD, debugoptimized, vostro); profile
+`4_r300_full_release_*` is the conformance baseline -- GL/GLES/Piglit
+and silicon-evidence runs use it because an assertions-live debug build
+can abort a case release would pass; the `terakan_full` release/debug
+pair serves x130e with `terakan_norusticl` variants as fallbacks; and
+`r300_h264dec_full_debug_*` is a development surface.
 
 Active host envs live in `build-infra/env/`:
 `vostro1000-x86-64-v1-clang22-ccache-distcc.env` for the numbered profiles,
@@ -488,19 +488,7 @@ pollutes the worktree and requires separate `LIBGL_DRIVERS_PATH` or
 
 ### Clean and reconfigure
 
-Incremental clean removes compiled objects and keeps Meson configuration:
-
-```bash
-ninja -C <builddir> clean
-```
-
-Full wipe and reconfigure is required when Meson options change or after a Meson upgrade:
-
-```bash
-meson setup --wipe <builddir> [options...]
-```
-
-`--wipe` gives a fresh directory setup while preserving download caches. `meson-private/cmd_line.txt` is generated state and changes only through `meson setup` and `meson configure`. After `--wipe`, run `ninja -C <builddir>` and `ninja -C <builddir> install` in full before collecting evidence.
+Incremental `ninja clean` removes compiled objects and keeps Meson configuration. A Meson option change or a Meson upgrade requires `meson setup --wipe`, which gives a fresh directory setup while preserving download caches. `meson-private/cmd_line.txt` is generated state and changes only through `meson setup` and `meson configure`. After `--wipe`, run the build and install in full before collecting evidence.
 
 ## Build-system and cache discipline
 
@@ -1066,15 +1054,9 @@ file is the authoritative checklist; this section is only the pointer to it.
 
 ## Key subsystems
 
-Use these root paths for first-pass scope:
-
-- Terakan Vulkan: `src/amd/terascale/vulkan/`
-- Gallium r600, SFN, and VLIW5: `src/gallium/drivers/r600/`
-- Gallium r300: `src/gallium/drivers/r300/`
-- Rusticl/OpenCL when enabled: `src/gallium/frontends/rusticl/`
-- winsys/drm: `src/gallium/winsys/`, `src/drm-shim/` where applicable
-- NIR and compiler plumbing: `src/compiler/`, `src/gallium/auxiliary/`, affected lowering paths
-- Build entry: `build-infra/`, `meson.build`, `meson.options`, `meson_options.txt`, native files, install scripts
+Driver, compiler, and build-entry paths follow the standard Mesa
+layout under `src/` and `build-infra/`; the source tree is the map, and
+`Project scope and priorities` names the Terakan root.
 
 `rust-toolchain.toml` is an upstream Mesa file with `channel = "nightly"`. Active builds select Rust through Meson and toolchain policy, not checked-in absolute paths.
 
