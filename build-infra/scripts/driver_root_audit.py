@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """Verify the AMD Vulkan driver source roots and their build-graph entry points.
 
 Within an AMD GPU-family namespace, the Vulkan driver's source root is that
@@ -7,9 +8,19 @@ family's `vulkan/` directory.  A driver-named leaf beneath it (the retired
 pass-through directories that carry no meson.build, so a reader resolving the
 path by analogy with a sibling family reaches a directory holding no sources.
 
-The audit pins each family's root, the `subdir()` call that enters it, and the
-installed artifact names, which are driver identity rather than directory
-placement and stay spelled as the ICD manifests spell them.
+The audit pins each family's root, every `subdir()` call that enters it, and
+the installed artifact definitions.  A family reached from more than one
+configuration has more than one entry point, and each is required: the r300
+Vulkan root is entered from `src/amd/meson.build` in a loader-only build and
+from `src/meson.build` in a Gallium-backed build, so checking one leaves the
+other free to lose the ICD while the verdict still reads OK.
+
+Artifact identity is read from the definitions rather than from the presence
+of a name: an assignment target, a comment, or a stale reference keeps the
+substring after the installed DSO or manifest output has been renamed.  The
+audit matches the `shared_library()` name argument and the ICD
+`custom_target()` output, which are what the loader and the ICD manifests
+actually spell.
 """
 
 import argparse
@@ -19,18 +30,26 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Family namespace -> the meson.build that enters that family's vulkan/ root.
+# Family namespace -> every meson.build that enters that family's vulkan/ root.
+# The r300 root is reached from both the loader-only and the Gallium-backed
+# configuration, and losing either entry loses the ICD in that configuration.
 AMD_VULKAN_FAMILIES = {
-    "src/amd/vulkan": "src/amd/meson.build",
-    "src/amd/terascale/vulkan": "src/amd/meson.build",
-    "src/amd/r300/vulkan": "src/meson.build",
+    "src/amd/vulkan": ["src/amd/meson.build"],
+    "src/amd/terascale/vulkan": ["src/amd/meson.build"],
+    "src/amd/r300/vulkan": ["src/amd/meson.build", "src/meson.build"],
 }
 
-# Driver identity survives a directory move: these names are spelled by the
-# installed DSO and the ICD manifests, and the audit holds them fixed.
-DRIVER_ARTIFACT_NAMES = {
-    "src/amd/r300/vulkan/meson.build": ["vulkan_r3v", "r3v_icd"],
-    "src/amd/terascale/vulkan/meson.build": ["vulkan_terascale", "terascale_icd"],
+# Driver identity survives a directory move: the DSO name the loader resolves
+# and the ICD manifest stem the runtime reads.  Both are held fixed.
+DRIVER_ARTIFACTS = {
+    "src/amd/r300/vulkan/meson.build": {
+        "shared_library": "vulkan_r3v",
+        "icd_output": "r3v_icd",
+    },
+    "src/amd/terascale/vulkan/meson.build": {
+        "shared_library": "vulkan_terascale",
+        "icd_output": "terascale_icd",
+    },
 }
 
 RETIRED_PATHS = ["src/amd/r300/vulkan/r3v"]
@@ -41,16 +60,11 @@ RETIRED_PATHS = ["src/amd/r300/vulkan/r3v"]
 RETIRED_PATH_STRINGS = ["src/amd/r300/vulkan/r3v/", "r3v/meson.build"]
 
 # Retained evidence records the path that existed when it was produced.  The
-# allowlist and the migration docs are the two current-authority files that
-# quote a retired path deliberately.
+# allowlist is the one current-authority file that quotes a retired path
+# deliberately, and this script names the path in order to detect it.
 EVIDENCE_PREFIXES = (
     "docs/r3v-rename-allowlist.txt",
-)
-EVIDENCE_DIR_PARTS = frozenset({"results", "bundles", ".git", "build", "builddir"})
-
-TEXT_SUFFIXES = frozenset(
-    {".c", ".h", ".cpp", ".hpp", ".py", ".build", ".options", ".md",
-     ".txt", ".rst", ".sh", ".ini", ".toml", ".yml", ".yaml", ".meson"}
+    "build-infra/scripts/driver_root_audit.py",
 )
 
 
@@ -59,128 +73,245 @@ def strip_meson_comments(text):
     return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
 
 
-def check_tree(root):
-    """Return the list of failure strings for the tree rooted at `root`."""
-    failures = []
-
-    for family_root, entry_file in AMD_VULKAN_FAMILIES.items():
+def check_entry_points(root, failures):
+    """Require every configuration's subdir() into each family root."""
+    for family_root, entry_files in AMD_VULKAN_FAMILIES.items():
         meson = root / family_root / "meson.build"
         if not meson.is_file():
-            failures.append(f"missing driver root meson.build: {family_root}/meson.build")
+            failures.append(
+                f"missing driver root meson.build: {family_root}/meson.build")
+        for entry_file in entry_files:
+            entry = root / entry_file
+            if not entry.is_file():
+                failures.append(f"missing build entry point: {entry_file}")
+                continue
+            # subdir() paths are relative to the entering file's directory.
+            relative = str(
+                Path(family_root).relative_to(Path(entry_file).parent))
+            body = strip_meson_comments(
+                entry.read_text(encoding="utf-8", errors="replace"))
+            if not re.search(r"subdir\s*\(\s*['\"]%s['\"]"
+                             % re.escape(relative), body):
+                failures.append(
+                    f"{entry_file} does not enter {relative} via subdir()")
 
-        entry = root / entry_file
-        if not entry.is_file():
-            failures.append(f"missing build entry point: {entry_file}")
-            continue
-        # subdir() paths are relative to the entering file's directory.
-        relative = str(Path(family_root).relative_to(Path(entry_file).parent))
-        body = strip_meson_comments(entry.read_text(encoding="utf-8", errors="replace"))
-        if not re.search(r"subdir\s*\(\s*['\"]%s['\"]" % re.escape(relative), body):
-            failures.append(f"{entry_file} does not enter {relative} via subdir()")
 
-    for retired in RETIRED_PATHS:
-        if (root / retired).exists():
-            failures.append(f"retired driver-named leaf present: {retired}")
-
-    for meson_rel, names in DRIVER_ARTIFACT_NAMES.items():
+def check_artifacts(root, failures):
+    """Require the DSO name argument and the ICD manifest output."""
+    for meson_rel, artifacts in DRIVER_ARTIFACTS.items():
         meson = root / meson_rel
         if not meson.is_file():
             continue
-        body = meson.read_text(encoding="utf-8", errors="replace")
-        for name in names:
-            if name not in body:
-                failures.append(f"{meson_rel} no longer names the artifact {name}")
+        body = strip_meson_comments(
+            meson.read_text(encoding="utf-8", errors="replace"))
+        # shared_library('<name>', ...): the first positional argument is the
+        # library name the loader resolves, and it may sit on its own line.
+        dso = artifacts["shared_library"]
+        if not re.search(r"shared_library\s*\(\s*['\"]%s['\"]"
+                         % re.escape(dso), body):
+            failures.append(
+                f"{meson_rel} defines no shared_library named {dso}")
+        # The install ICD target names its manifest through `output :`; the
+        # devenv target's separate stem is deliberately not matched here.
+        icd = artifacts["icd_output"]
+        if not re.search(r"output\s*:\s*['\"]%s\." % re.escape(icd), body):
+            failures.append(
+                f"{meson_rel} emits no ICD manifest named {icd}.<cpu>.json")
 
+
+def check_tree(root):
+    """Return the list of failure strings for the tree rooted at `root`."""
+    failures = []
+    check_entry_points(root, failures)
+    for retired in RETIRED_PATHS:
+        if (root / retired).exists():
+            failures.append(f"retired driver-named leaf present: {retired}")
+    check_artifacts(root, failures)
     failures.extend(scan_retired_path_strings(root))
     return failures
 
 
-def candidate_files(root):
-    """Yield the tracked text files that carry current authority.
-
-    Tracked files are the repository's own statements; build directories and
-    retained logs sit outside the index and record what ran at the time.
-    """
-    try:
-        listing = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
-            check=True, capture_output=True, text=True).stdout.split("\0")
-        rels = [Path(name) for name in listing if name]
-    except (OSError, subprocess.CalledProcessError):
-        rels = [p.relative_to(root) for p in root.rglob("*") if p.is_file()]
-    for rel in rels:
-        path = root / rel
-        if path.suffix in TEXT_SUFFIXES and path.is_file():
-            yield rel, path
-
-
 def scan_retired_path_strings(root):
-    """Report current-authority files that still spell a retired path."""
+    """Report tracked files that still spell a retired build path.
+
+    `git grep -I` searches every tracked file and skips the ones Git detects
+    as binary, so a Makefile, a PKGBUILD, an extensionless script, a `.cc`
+    source, or a JSON manifest is covered.  A suffix allowlist would exempt
+    each of those, and the build system is written in exactly those formats.
+    Untracked build directories and retained logs are outside the index by
+    construction, so they record what ran without failing the gate.
+    """
     failures = []
-    this_file = Path(__file__).resolve()
     for needle in RETIRED_PATH_STRINGS:
-        for rel, path in candidate_files(root):
-            if EVIDENCE_DIR_PARTS.intersection(rel.parts):
+        result = subprocess.run(
+            ["git", "-C", str(root), "grep", "-I", "-l", "-F", needle],
+            capture_output=True, text=True)
+        # Exit 1 means no match; anything above that is a real grep failure.
+        if result.returncode > 1:
+            failures.append(
+                f"git grep failed while scanning for {needle}: "
+                f"{result.stderr.strip()}")
+            continue
+        for rel in result.stdout.splitlines():
+            if rel.startswith(EVIDENCE_PREFIXES):
                 continue
-            if str(rel).startswith(EVIDENCE_PREFIXES):
-                continue
-            # The audit names the retired path to detect it.
-            if path.resolve() == this_file:
-                continue
-            try:
-                body = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if needle in body:
-                failures.append(f"{rel} references the retired path {needle}")
+            failures.append(f"{rel} references the retired path {needle}")
     return failures
 
 
+def _write_family(base, family, artifacts_ok=True):
+    """Stage one family root with definitions the artifact check accepts."""
+    (base / family).mkdir(parents=True, exist_ok=True)
+    artifacts = DRIVER_ARTIFACTS.get(family + "/meson.build")
+    body = "project_files = []\n"
+    if artifacts and artifacts_ok:
+        body += ("lib = shared_library(\n  '%s',\n  project_files,\n)\n"
+                 % artifacts["shared_library"])
+        body += ("icd = custom_target(\n  'icd',\n"
+                 "  output : '%s.@0@.json'.format(host_machine.cpu()),\n)\n"
+                 % artifacts["icd_output"])
+    elif artifacts:
+        # The names survive as an assignment target and a comment while the
+        # definitions they claim to pin have been renamed.
+        body += ("lib%s = shared_library(\n  'vulkan_renamed',\n)\n"
+                 % artifacts["shared_library"])
+        body += ("# %s\nicd = custom_target(\n"
+                 "  output : 'renamed_icd.@0@.json',\n)\n"
+                 % artifacts["icd_output"])
+    (base / family / "meson.build").write_text(body)
+
+
 def self_test():
-    """Calibrate the verdict against a known-good and a known-bad tree.
+    """Calibrate every independent rejection against a named known-bad tree.
 
-    The known-bad reproduces the exact pre-move defect: the driver-named leaf
-    holds the sources and the entry point spells the leaf in its subdir() call.
+    Each known-bad isolates one check, and the calibration compares the
+    failure set against the exact expectation.  Reducing a known-bad to
+    `bool(failures)` lets two of three checks regress unnoticed as long as the
+    third still fires, which is how a verdict producer goes quietly blind.
     """
-    results = []
-    with tempfile.TemporaryDirectory() as tmp:
-        good = Path(tmp) / "good"
-        for family in AMD_VULKAN_FAMILIES:
-            (good / family).mkdir(parents=True)
-            body = "meson.build\n"
-            for name in DRIVER_ARTIFACT_NAMES.get(family + "/meson.build", []):
-                body += f"# {name}\n"
-            (good / family / "meson.build").write_text(body)
-        (good / "src/amd/meson.build").write_text(
-            "subdir('vulkan')\nsubdir('terascale/vulkan')\n")
-        (good / "src/meson.build").write_text("subdir('amd/r300/vulkan')\n")
-        results.append(("known-good tree", check_tree(good), False))
+    cases = []
 
-        bad = Path(tmp) / "bad"
+    def stage_good(base):
         for family in AMD_VULKAN_FAMILIES:
-            (bad / family).mkdir(parents=True)
-            if family != "src/amd/r300/vulkan":
-                body = "meson.build\n"
-                for name in DRIVER_ARTIFACT_NAMES.get(family + "/meson.build", []):
-                    body += f"# {name}\n"
-                (bad / family / "meson.build").write_text(body)
+            _write_family(base, family)
+        (base / "src/amd/meson.build").write_text(
+            "subdir('vulkan')\nsubdir('terascale/vulkan')\n"
+            "subdir('r300/vulkan')\n")
+        (base / "src/meson.build").write_text("subdir('amd/r300/vulkan')\n")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+
+        good = tmp / "good"
+        stage_good(good)
+        cases.append(("known-good tree", check_tree(good), []))
+
+        # 1. The pre-move defect in full: the leaf holds the sources and the
+        #    Gallium-backed entry spells the leaf.
+        bad = tmp / "retired-leaf"
+        stage_good(bad)
+        (bad / "src/amd/r300/vulkan/meson.build").unlink()
         leaf = bad / "src/amd/r300/vulkan/r3v"
         leaf.mkdir(parents=True)
-        (leaf / "meson.build").write_text("# vulkan_r3v r3v_icd\n")
+        _write_family(bad, "src/amd/r300/vulkan/r3v")
+        (bad / "src/meson.build").write_text("subdir('amd/r300/vulkan/r3v')\n")
+        cases.append(("known-bad: retired leaf holds the sources", check_tree(bad), [
+            "missing driver root meson.build: src/amd/r300/vulkan/meson.build",
+            "src/meson.build does not enter amd/r300/vulkan via subdir()",
+            "retired driver-named leaf present: src/amd/r300/vulkan/r3v",
+        ]))
+
+        # 2. The loader-only entry alone is removed.  The Gallium-backed entry
+        #    still resolves, so a single-entry audit reports OK here.
+        bad = tmp / "loader-entry-dropped"
+        stage_good(bad)
         (bad / "src/amd/meson.build").write_text(
             "subdir('vulkan')\nsubdir('terascale/vulkan')\n")
-        (bad / "src/meson.build").write_text("subdir('amd/r300/vulkan/r3v')\n")
-        results.append(("known-bad tree", check_tree(bad), True))
+        cases.append(("known-bad: loader-only entry dropped", check_tree(bad), [
+            "src/amd/meson.build does not enter r300/vulkan via subdir()",
+        ]))
+
+        # 3. The Gallium-backed entry alone is removed.
+        bad = tmp / "gallium-entry-dropped"
+        stage_good(bad)
+        (bad / "src/meson.build").write_text("subdir('amd/common')\n")
+        cases.append(("known-bad: Gallium-backed entry dropped", check_tree(bad), [
+            "src/meson.build does not enter amd/r300/vulkan via subdir()",
+        ]))
+
+        # 4. The entry is present but commented out.
+        bad = tmp / "entry-commented"
+        stage_good(bad)
+        (bad / "src/meson.build").write_text("# subdir('amd/r300/vulkan')\n")
+        cases.append(("known-bad: entry commented out", check_tree(bad), [
+            "src/meson.build does not enter amd/r300/vulkan via subdir()",
+        ]))
+
+        # 5. The artifact names survive as an assignment target and a comment
+        #    while the DSO and the manifest have both been renamed.
+        bad = tmp / "artifacts-renamed"
+        stage_good(bad)
+        _write_family(bad, "src/amd/r300/vulkan", artifacts_ok=False)
+        cases.append(("known-bad: artifact definitions renamed", check_tree(bad), [
+            "src/amd/r300/vulkan/meson.build defines no shared_library named "
+            "vulkan_r3v",
+            "src/amd/r300/vulkan/meson.build emits no ICD manifest named "
+            "r3v_icd.<cpu>.json",
+        ]))
+
+        # 6. The same drift on the sibling family.
+        bad = tmp / "terascale-artifacts-renamed"
+        stage_good(bad)
+        _write_family(bad, "src/amd/terascale/vulkan", artifacts_ok=False)
+        cases.append((
+            "known-bad: sibling family artifacts renamed", check_tree(bad), [
+                "src/amd/terascale/vulkan/meson.build defines no "
+                "shared_library named vulkan_terascale",
+                "src/amd/terascale/vulkan/meson.build emits no ICD manifest "
+                "named terascale_icd.<cpu>.json",
+            ]))
+
+        # 7. The root meson.build is gone while both entries still call it.
+        bad = tmp / "root-missing"
+        stage_good(bad)
+        (bad / "src/amd/r300/vulkan/meson.build").unlink()
+        cases.append(("known-bad: driver root meson.build removed", check_tree(bad), [
+            "missing driver root meson.build: src/amd/r300/vulkan/meson.build",
+        ]))
+
+        # 8. The retired leaf reappears beside a correct root.
+        bad = tmp / "leaf-reappears"
+        stage_good(bad)
+        (bad / "src/amd/r300/vulkan/r3v").mkdir(parents=True)
+        cases.append(("known-bad: retired leaf reappears", check_tree(bad), [
+            "retired driver-named leaf present: src/amd/r300/vulkan/r3v",
+        ]))
+
+        # 9. An entry file the tree no longer carries.
+        bad = tmp / "entry-file-missing"
+        stage_good(bad)
+        (bad / "src/amd/meson.build").unlink()
+        cases.append(("known-bad: entry file absent", check_tree(bad), [
+            "missing build entry point: src/amd/meson.build",
+            "missing build entry point: src/amd/meson.build",
+            "missing build entry point: src/amd/meson.build",
+        ]))
 
     ok = True
-    for label, failures, expect_failures in results:
-        detected = bool(failures)
-        verdict = "OK" if detected == expect_failures else "MISCALIBRATED"
-        if detected != expect_failures:
+    for label, failures, expected in cases:
+        # The synthetic trees are not Git repositories, so the tracked-file
+        # scan reports its own failure there; it is calibrated against the
+        # real tree by the run this gate performs in the build.
+        failures = [f for f in failures if not f.startswith("git grep failed")]
+        if sorted(failures) == sorted(expected):
+            print(f"OK    {label}: {len(failures)} failure(s) as expected")
+        else:
             ok = False
-        print(f"{verdict}  {label}: {len(failures)} failure(s)")
-        for line in failures:
-            print(f"        {line}")
+            print(f"MISCALIBRATED  {label}")
+            for line in sorted(set(expected) - set(failures)):
+                print(f"        expected, absent: {line}")
+            for line in sorted(set(failures) - set(expected)):
+                print(f"        unexpected: {line}")
     return ok
 
 
@@ -189,7 +320,7 @@ def main():
     ap.add_argument("--repo-root", default=None,
                     help="repository root (default: git rev-parse --show-toplevel)")
     ap.add_argument("--self-test", action="store_true",
-                    help="calibrate the verdict on synthetic known-good and known-bad trees")
+                    help="calibrate every rejection on named known-bad trees")
     args = ap.parse_args()
 
     if args.self_test:
