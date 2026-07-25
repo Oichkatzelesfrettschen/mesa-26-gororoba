@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rs482-stack-manifest.schema.json",
+  "title": "RS482 stack manifest",
+  "description": "Frozen stack identity required before an Xorg-associated hardware verdict can be promoted. Instances are evidence and live with their bundles in steinmarder-r300.",
+  "type": "object",
+  "required": [
+    "boot_id",
+    "xorg",
+    "mesa",
+    "kernel",
+    "evidence"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "boot_id": {
+      "type": "string",
+      "description": "/proc/sys/kernel/random/boot_id at capture time"
+    },
+    "captured_utc": {
+      "type": "string",
+      "description": "ISO-8601 UTC capture timestamp"
+    },
+    "xorg": {
+      "type": "object",
+      "required": ["package", "xorg_binary_sha256", "glamor_sha256", "active_ddx"],
+      "additionalProperties": false,
+      "properties": {
+        "package": {
+          "type": "string",
+          "description": "xorg-server package name-version-pkgrel (pacman -Q form)"
+        },
+        "xorg_binary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "xorg_build_id": {"type": "string"},
+        "glamor_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256 of libglamoregl.so"
+        },
+        "glamor_build_id": {"type": "string"},
+        "active_ddx": {
+          "type": "string",
+          "enum": ["modesetting", "radeon"],
+          "description": "DDX actually loaded for the session; a bare 'Xorg active' is inadmissible"
+        },
+        "ddx_module_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ddx_package": {
+          "type": "string",
+          "description": "xf86-video-ati package version when active_ddx is radeon"
+        },
+        "config_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "sha256"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {"type": "string"},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        },
+        "glamor_initialized": {
+          "type": "boolean",
+          "description": "Xorg log shows glamor initialization for the session"
+        }
+      }
+    },
+    "mesa": {
+      "type": "object",
+      "required": ["source_sha", "libgallium_sha256", "prefix"],
+      "additionalProperties": false,
+      "properties": {
+        "source_sha": {
+          "type": "string",
+          "description": "mesa-26-gororoba commit SHA the image was built from"
+        },
+        "libgallium_path": {"type": "string"},
+        "libgallium_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "libgallium_build_id": {"type": "string"},
+        "prefix": {"type": "string", "description": "install prefix of the image"},
+        "profile": {"type": "string", "description": "build-infra profile name"}
+      }
+    },
+    "kernel": {
+      "type": "object",
+      "required": ["kernel_release", "radeon_package", "radeon_srcversion"],
+      "additionalProperties": false,
+      "properties": {
+        "kernel_release": {"type": "string", "description": "uname -r"},
+        "radeon_package": {
+          "type": "string",
+          "description": "radeon-unified-dkms package name-version-pkgrel"
+        },
+        "radeon_srcversion": {
+          "type": "string",
+          "description": "/sys/module/radeon/srcversion"
+        },
+        "radeon_parameters": {
+          "type": "object",
+          "description": "non-default module parameters",
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["stein_sha"],
+      "additionalProperties": false,
+      "properties": {
+        "stein_sha": {
+          "type": "string",
+          "description": "steinmarder-r300 commit SHA of the runner and trigger in use"
+        },
+        "runner_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "trigger_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "reducer_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {"type": "string"},
+        "watchdog_package": {"type": "string"},
+        "ec_package": {"type": "string"}
+      }
+    }
+  }
+}

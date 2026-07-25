@@ -34,7 +34,7 @@ drivers and the direct fix for the unrecoverable fence-hang class.
 
 | Package | Module | Purpose | Source (current) |
 | --- | --- | --- | --- |
-| `radeon-unified-dkms` v0.3 (pkgrel 83) | `radeon` | RS480/R600 hazard mitigation plus RS480 `gpu_reset` recovery: the 0043 force-clock reset ladder, the 0046-0062 parked-GPU containment gates, and the 0063-0068 parameterized 0x0000F0 soft-reset mask candidates (allow-listed to the 3D bits, default BASELINE = existing 0043 behavior); Arch + Debian packaging adapters. `packaging/arch/radeon-unified-dkms/dkms.conf` is the live patch list | external `radeon-custom` repository (sibling out-of-tree modules checkout) |
+| `radeon-unified-dkms` v0.3 (pkgrel 89) | `radeon` | RS480/R600 hazard mitigation plus RS480 `gpu_reset` recovery: the 0043 force-clock reset ladder, the 0046-0062 parked-GPU containment gates, and the 0063-0068 parameterized 0x0000F0 soft-reset mask candidates (allow-listed to the 3D bits, default BASELINE = existing 0043 behavior); Arch + Debian packaging adapters. `packaging/arch/radeon-unified-dkms/dkms.conf` is the live patch list | external `radeon-custom` repository (sibling out-of-tree modules checkout) |
 | `radeon-rs480-safe-regs` v0.2 | `radeon` | `rs480_safe_regs` debugfs reader (gated-readback safe register set) | `steinmarder-r300/src/re/r300/PKGBUILDs/radeon-rs480-safe-regs-dkms/` |
 | `radeon-palm-gate` v1.0 | `radeon` | Palm/Warrior gate: `mc_wait_for_idle` timeout, `pci_config_reset_safe` gate, SMX_DC_CTL0 validator; ships pre-patched source | `steinmarder/mesa-rekit/staged/radeon-palm-gate-dkms/` |
 
