@@ -1054,11 +1054,12 @@ file is the authoritative checklist; this section is only the pointer to it.
 
 ## Key subsystems
 
-Driver and compiler paths follow the standard Mesa layout under
-`src/`; the source tree is the map. Terakan Vulkan lives at
-`src/amd/terascale/vulkan/`, the one non-obvious anchor. Build entry
-spans the repository-root `meson.build`, `meson.options`, and
-`meson_options.txt` plus `build-infra/`, native files, and install
+Gallium driver and compiler paths follow the standard Mesa layout
+under `src/`; the source tree is the map. Both Vulkan drivers sit
+outside it, under `src/amd/`, and are the non-obvious anchors: Terakan
+at `src/amd/terascale/vulkan/` and R3V at `src/amd/r300/vulkan/r3v/`.
+Build entry spans the repository-root `meson.build`, `meson.options`,
+and `meson_options.txt` plus `build-infra/`, native files, and install
 scripts.
 
 `rust-toolchain.toml` is an upstream Mesa file with `channel = "nightly"`. Active builds select Rust through Meson and toolchain policy, not checked-in absolute paths.
