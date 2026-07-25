@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * Pipeline cache key structures for Terakan (TeraScale-2 / Evergreen).

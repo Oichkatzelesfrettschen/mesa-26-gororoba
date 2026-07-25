@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 Terascale Functionalists
 # SPDX-License-Identifier: MIT
 
 """Audit r300_reg.h against the RS482 register evidence registry.

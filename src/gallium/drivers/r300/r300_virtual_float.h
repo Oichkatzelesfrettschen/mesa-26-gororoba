@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * Types for the virtual IEEE FP16 machine emulated on the RS482/r300 FP24

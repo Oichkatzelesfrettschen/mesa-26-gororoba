@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * Value-parity guard for transform_DP2 (radeon_program_alu.c radeonTransformALU).
