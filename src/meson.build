@@ -134,7 +134,8 @@ endif
 
 # r3v Gallium-backed ICD: deferred until after src/gallium so that
 # driver_r300 (declared in src/gallium/drivers/r300/meson.build) is in
-# scope when r3v/meson.build processes the shared_library() call.
+# scope when src/amd/r300/vulkan/meson.build processes the
+# shared_library() call.
 # The loader-only r3v build (no Gallium dep) is handled earlier from
 # src/amd/meson.build.
 if with_ati_r300_vk and get_option('r3v-gallium-backend') and with_gallium_r300
