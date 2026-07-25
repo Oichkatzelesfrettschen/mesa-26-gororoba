@@ -1059,7 +1059,7 @@ Mesa layout puts them, under `src/gallium/` and `src/compiler/`; for
 those the source tree is the map. The two Vulkan drivers live outside
 the Gallium layout, under `src/amd/`, so each one gets named here:
 Terakan at `src/amd/terascale/vulkan/`, R3V at
-`src/amd/r300/vulkan/r3v/`. Build entry spans the repository-root
+`src/amd/r300/vulkan/`. Build entry spans the repository-root
 `meson.build`, `meson.options`, and `meson_options.txt` plus
 `build-infra/`, native files, and install scripts.
 

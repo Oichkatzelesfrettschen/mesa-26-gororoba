@@ -46,6 +46,6 @@ if with_ati_r300_vk
   # (after subdir('gallium')) so driver_r300 is in scope.  The
   # loader-only build (no Gallium) is processed here as before.
   if not (get_option('r3v-gallium-backend') and with_gallium_r300)
-    subdir('r300/vulkan/r3v')
+    subdir('r300/vulkan')
   endif
 endif

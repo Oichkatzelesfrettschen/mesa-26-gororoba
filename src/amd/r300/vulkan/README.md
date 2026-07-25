@@ -50,7 +50,7 @@ RS/TX/US/CB/ZB blocks remain hardware-backed.
 ## Repository layout
 
 ```
-src/amd/r300/vulkan/r3v/
+src/amd/r300/vulkan/
   r3v_private.h            PCI IDs, API version, conformance macro
   r3v_instance.h           struct r3v_instance
   r3v_instance.c           vkCreateInstance / vk_icdGetInstanceProcAddr
@@ -176,13 +176,13 @@ meson setup builddir-r3v \
     -Dglx=disabled -Degl=disabled \
     -Dplatforms=x11 -Dllvm=disabled -Dlibunwind=disabled \
     -Dbuildtype=debug
-ninja -C builddir-r3v src/amd/r300/vulkan/r3v/libvulkan_r3v.so
+ninja -C builddir-r3v src/amd/r300/vulkan/libvulkan_r3v.so
 ```
 
 To exercise the ICD in-tree without installing:
 
 ```sh
-export VK_ICD_FILENAMES=$PWD/builddir-r3v/src/amd/r300/vulkan/r3v/r3v_devenv_icd.x86_64.json
+export VK_ICD_FILENAMES=$PWD/builddir-r3v/src/amd/r300/vulkan/r3v_devenv_icd.x86_64.json
 export R3V_DEBUG=startup
 vulkaninfo --summary
 ```

@@ -35,7 +35,7 @@ This repository is a Mesa 26.x fork with custom driver and build lanes layered o
 | `src/amd/terascale/vulkan/` | Terakan Vulkan driver lane for TeraScale-era hardware work. |
 | `src/gallium/drivers/r300/` and `src/gallium/drivers/r600/` | Gallium driver backends touched by fork-specific bring-up and conformance work. |
 | `src/gallium/auxiliary/vl/` | Shared video/decode infrastructure used by r300/r600 video paths (including g3dvl-related work). |
-| `src/amd/r300/vulkan/r3v/` | R300 Vulkan research lane and probe tooling (`tests/` wrappers). |
+| `src/amd/r300/vulkan/` | R300 Vulkan research lane and probe tooling (`tests/` wrappers). |
 | `build-infra/` | Canonical orchestration layer (Makefile + Meson native profiles + host env overlays). Meson owns configure/build internals; Make owns profile/host selection and orchestration targets. |
 | `docs/submittingpatches.rst` | Upstream Mesa patch/testing expectations used as review baseline (component prefixes, tested commits, clean history). |
 

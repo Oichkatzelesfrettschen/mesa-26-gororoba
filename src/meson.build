@@ -138,7 +138,7 @@ endif
 # The loader-only r3v build (no Gallium dep) is handled earlier from
 # src/amd/meson.build.
 if with_ati_r300_vk and get_option('r3v-gallium-backend') and with_gallium_r300
-  subdir('amd/r300/vulkan/r3v')
+  subdir('amd/r300/vulkan')
 endif
 # These require libgallium (shared_glapi_lib)
 if with_gallium and (with_glx != 'disabled' or with_egl)
