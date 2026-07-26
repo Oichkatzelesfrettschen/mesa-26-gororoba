@@ -14,14 +14,20 @@ prefix.
 |---|---|---|---|---|
 | `3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache` (default) | vostro (RS482, r300) | maximal r300 + ati_r300 ICD | debug | `configs/` |
 | `4_r300_full_release_x86_64v1-clang22-distcc-cache` | vostro (RS482, r300) | maximal r300 + ati_r300 ICD | release (conformance baseline) | `configs/alternates/` |
+| `5_r300_full_release_x86_64v1-gcc-distcc-cache` | vostro (RS482, r300) | r300 + zink override + ati_r300 ICD + h264dec + tests | release (GCC diagnostic gate) | `configs/alternates/` |
 | `3_terakan_full_release_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | r600+zink+soft+llvm+amd_terascale + Rusticl | release | `configs/alternates/` |
 | `4_terakan_full_debug_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | r600+zink+soft+llvm+amd_terascale + Rusticl | debug | `configs/alternates/` |
 | `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | same as 3_ without Rusticl | release | `configs/alternates/` |
 | `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | same as 4_ without Rusticl | debug | `configs/alternates/` |
 
-All six numbered profiles use
-`HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` and
-`COMPILER_CHAIN=ccache`.  Conformance and silicon-evidence runs use the release
+The clang profiles use `HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc`
+and `COMPILER_CHAIN=ccache`.  Profile `5_r300_full_release_*-gcc-*` is the GCC
+sibling of profile 4_: it pairs with
+`HOSTENV=vostro1000-x86-64-v1-gcc-ccache-distcc` and `COMPILER_FAMILY=gnu`, and
+it builds the wider r300 surface -- zink as a loader override, the h264dec
+codec, the in-tree tools, the Vulkan layers, and `build-tests` -- because gcc's
+warnings-as-errors set reads defect classes clang's does not.  It is a
+diagnostic gate; conformance and silicon evidence stay on profile 4_.  Conformance and silicon-evidence runs use the release
 profile
 (`4_r300_full_release`, now under `alternates/`) because an asserts-live debug
 build can abort a CTS/Piglit case that release would pass.  `make install
@@ -40,12 +46,14 @@ build-infra/
 |   |-- 3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache.meson   # default profile
 |   +-- alternates/                # non-default profiles; pass PROFILE= explicitly
 |       |-- 4_r300_full_release_x86_64v1-clang22-distcc-cache.meson
+|       |-- 5_r300_full_release_x86_64v1-gcc-distcc-cache.meson
 |       |-- 3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson
 |       |-- 4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson
 |       |-- 5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson
 |       +-- 6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson
 +-- env/
-    |-- vostro1000-x86-64-v1-clang22-ccache-distcc.env  # numbered profiles
+    |-- vostro1000-x86-64-v1-clang22-ccache-distcc.env  # clang numbered profiles
+    |-- vostro1000-x86-64-v1-gcc-ccache-distcc.env      # gcc profile 5_
     |-- generic-x86-64-os.env       # portable ad hoc lane
     +-- Archive/                    # removed host envs retained for provenance
 ```
