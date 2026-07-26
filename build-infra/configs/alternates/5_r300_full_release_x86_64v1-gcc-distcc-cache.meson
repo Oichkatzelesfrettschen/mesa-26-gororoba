@@ -1,0 +1,85 @@
+# 5_r300_full_release_x86_64v1-gcc-distcc-cache: the GCC sibling of profile
+# 4_r300_full_release_x86_64v1-clang22-distcc-cache.  Same r300 surface, same
+# release buildtype, same x86-64-v1 baseline ISA, built by gcc instead of clang.
+#
+# Why a second compiler family: gcc and clang diagnose different defect classes
+# under warnings-as-errors.  gcc's -Werror=stringop-overflow= reads the range a
+# function proved and rejects a write the reloaded bound no longer covers, which
+# clang does not report; clang's -Werror set catches shapes gcc accepts.  A lane
+# that builds green under both has passed two independent static readings of the
+# same source, so this profile is a diagnostic gate rather than a shipping image.
+#
+# The install prefix stays the isolated per-profile default.  Conformance and
+# silicon evidence run on profile 4_; this profile's artifacts prove the build.
+#
+# Surface relative to profile 4_: this profile adds zink, the h264dec codec,
+# the in-tree tools, the Vulkan layers, and build-tests, because a diagnostic
+# gate wants the widest r300-reachable compile surface.  It leaves out the
+# debug-lane instrumentation profile 3_ carries -- valgrind, libunwind, and
+# perfetto -- which belongs to the assertions-live RCA build.  Software
+# rasterizers stay out on both: llvm='disabled' and no softpipe or llvmpipe, so
+# zink runs over the hardware ati_r300 ICD or the probe fails loudly.
+#
+# Pair with the vostro1000-x86-64-v1-gcc-ccache-distcc HOSTENV and
+# COMPILER_FAMILY=gnu, which resolves gcc/g++ into the toolchain overlay and
+# leaves Meson on GNU binutils.  The family gate requires llvm='disabled' below:
+# gcc supplies no llvm-config, and configuring Mesa against a foreign
+# toolchain's LLVM would mix two compilers' runtime expectations.
+
+[built-in options]
+buildtype = 'release'
+b_ndebug = 'true'
+# gcc uses the native TLS model on linux x86_64, so the clang lane's
+# -fno-emulated-tls has no gcc counterpart and is absent here.  Everything else
+# matches profile 4_: machine-neutral baseline ISA and the hardening set.
+c_args = ['-march=x86-64', '-mtune=generic', '-O2', '-D_FORTIFY_SOURCE=2', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-O2', '-D_FORTIFY_SOURCE=2', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+
+[project options]
+platforms = ['x11', 'wayland']
+# r300 is the driver the hardware selects; zink is built alongside it as an
+# override a probe asks for by name through MESA_LOADER_DRIVER_OVERRIDE.  Zink
+# rides the ati_r300 ICD, so the override reaches the same silicon through
+# Vulkan rather than through a software rasterizer.
+gallium-drivers = ['r300', 'zink']
+vulkan-drivers = ['ati_r300']
+r3v-gallium-backend = true
+
+opengl = true
+gles1 = 'enabled'
+gles2 = 'enabled'
+
+glvnd = 'enabled'
+glx = 'dri'
+egl = 'enabled'
+egl-native-platform = 'surfaceless'
+gbm = 'enabled'
+
+shader-cache = 'enabled'
+gallium-extra-hud = true
+lmsensors = 'enabled'
+
+# No software rasterizer, and the COMPILER_FAMILY=gnu gate reads this line.
+llvm = 'disabled'
+draw-use-llvm = false
+gallium-rusticl = false
+
+# Both r300 video decode surfaces: the g3dvl MPEG-1/MPEG-2 shader kernels and
+# the h264dec compute-as-raster path, whose CAVLC and reconstruction code is the
+# newest and least compiler-exercised C in the lane.  The gcc diagnostic set
+# reaches it only when the codec is configured in.
+video-codecs = ['mpeg12dec', 'h264dec']
+gallium-va = 'enabled'
+gallium-xa = true
+
+# In-tree tools and the unit-test executables.  A compiler gate that builds no
+# tests proves the library compiles and nothing about the checks; build-tests
+# puts the r300, NIR, and vl suites under the same warnings-as-errors reading.
+tools = ['nir', 'glsl', 'dlclose-skip']
+build-tests = true
+vulkan-layers = ['anti-lag', 'device-select', 'overlay']
+
+# Warnings are defects in every configured lane.
+werror = true

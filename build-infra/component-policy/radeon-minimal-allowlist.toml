@@ -17,6 +17,11 @@ tag = "release"
 gallium-drivers = ["r300", "zink"]
 vulkan-drivers = ["ati_r300"]
 
+[profile."5_r300_full_release_x86_64v1-gcc-distcc-cache"]
+tag = "release"
+gallium-drivers = ["r300", "zink"]
+vulkan-drivers = ["ati_r300"]
+
 [profile."1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache"]
 tag = "debug"
 gallium-drivers = ["r300", "zink"]
