@@ -18,6 +18,17 @@
 /* The longest CAVLC codeword in any table is 16 bits (coeff_token, Table 9-5). */
 #define VL_H264_CAVLC_MAX_CODE_BITS 16
 
+/* One capacity governs all three per-coefficient arrays, so the residual
+ * decoder's single bound check covers every write below.  A struct edit that
+ * shrinks one array independently stops the build here rather than at a
+ * diagnostic on one of the writes. */
+static_assert(ARRAY_SIZE(((struct vl_h264_cavlc_block *)0)->level) ==
+              VL_H264_CAVLC_MAX_COEFF, "level[] holds one entry per coefficient");
+static_assert(ARRAY_SIZE(((struct vl_h264_cavlc_block *)0)->run) ==
+              VL_H264_CAVLC_MAX_COEFF, "run[] holds one entry per coefficient");
+static_assert(ARRAY_SIZE(((struct vl_h264_cavlc_block *)0)->coeff) ==
+              VL_H264_CAVLC_MAX_COEFF, "coeff[] holds one entry per coefficient");
+
 /*
  * Bounded prefix matcher: the tables are prefix-free, so the first entry whose
  * top len bits equal the next len bits of the stream is the match.  Peeks a
@@ -161,7 +172,8 @@ decode_one_level(struct vl_h264_reader *reader, unsigned *suffix_length,
 
 bool
 vl_h264_cavlc_decode_levels(struct vl_h264_reader *reader, unsigned total_coeff,
-                            unsigned trailing_ones, int16_t level[16])
+                            unsigned trailing_ones,
+                            int16_t level[VL_H264_CAVLC_MAX_COEFF])
 {
    unsigned i = 0;
 
@@ -183,23 +195,39 @@ vl_h264_cavlc_residual_block(struct vl_h264_reader *reader,
                              unsigned max_num_coeff, int nc,
                              struct vl_h264_cavlc_block *out)
 {
+   /* level[], run[], and coeff[] hold one entry per coefficient position, so a
+    * max_num_coeff above that capacity would let a decoded total_coeff index
+    * past the end.  H.264 sec 7.4.5.3.2 caps the value at 16 for every block
+    * type, and rejecting a larger one bounds every write below against the
+    * array size rather than against the parameter.  The rejection precedes the
+    * memset, so a caller that passes an impossible capacity gets its block back
+    * unmodified. */
+   if (max_num_coeff > VL_H264_CAVLC_MAX_COEFF)
+      return false;
+
    memset(out, 0, sizeof(*out));
 
-   if (!vl_h264_cavlc_coeff_token(reader, nc, &out->total_coeff,
-                                  &out->trailing_ones))
+   unsigned total_coeff, trailing_ones;
+   if (!vl_h264_cavlc_coeff_token(reader, nc, &total_coeff, &trailing_ones))
       return false;
-   if (out->total_coeff == 0)
+   if (total_coeff > max_num_coeff)
+      return false;
+   out->total_coeff = total_coeff;
+   out->trailing_ones = trailing_ones;
+   if (total_coeff == 0)
       return true;                 /* a coded-but-empty block is valid */
-   if (out->total_coeff > max_num_coeff)
-      return false;
 
-   if (!vl_h264_cavlc_decode_levels(reader, out->total_coeff,
-                                    out->trailing_ones, out->level))
+   /* The counts stay in locals through the indexing below.  Each helper takes
+    * a pointer into *out, so a compiler that reloads out->total_coeff after a
+    * call loses the bound this function just proved, and the locals keep the
+    * bound where the indices are formed. */
+   if (!vl_h264_cavlc_decode_levels(reader, total_coeff, trailing_ones,
+                                    out->level))
       return false;
 
    unsigned zeros_left;
-   if (out->total_coeff < max_num_coeff) {
-      if (!vl_h264_cavlc_total_zeros(reader, out->total_coeff, max_num_coeff,
+   if (total_coeff < max_num_coeff) {
+      if (!vl_h264_cavlc_total_zeros(reader, total_coeff, max_num_coeff,
                                      &out->total_zeros))
          return false;
       zeros_left = out->total_zeros;
@@ -209,7 +237,7 @@ vl_h264_cavlc_residual_block(struct vl_h264_reader *reader,
 
    /* Each level but the last carries the run of zeros before it; the last takes
     * whatever zeros remain (sec 7.3.5.3.1). */
-   for (unsigned i = 0; i + 1 < out->total_coeff; i++) {
+   for (unsigned i = 0; i + 1 < total_coeff; i++) {
       unsigned run = 0;
       if (zeros_left > 0) {
          if (!vl_h264_cavlc_run_before(reader, zeros_left, &run))
@@ -220,11 +248,11 @@ vl_h264_cavlc_residual_block(struct vl_h264_reader *reader,
       out->run[i] = (uint8_t)run;
       zeros_left -= run;
    }
-   out->run[out->total_coeff - 1] = (uint8_t)zeros_left;
+   out->run[total_coeff - 1] = (uint8_t)zeros_left;
 
    /* Combine runs and levels into scan order (sec 9.2.4). */
    int coeff_num = -1;
-   for (unsigned i = out->total_coeff; i-- > 0;) {
+   for (unsigned i = total_coeff; i-- > 0;) {
       coeff_num += out->run[i] + 1;
       if (coeff_num < 0 || coeff_num >= (int)max_num_coeff)
          return false;

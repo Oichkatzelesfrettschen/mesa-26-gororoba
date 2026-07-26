@@ -26,6 +26,11 @@
 extern "C" {
 #endif
 
+/* Coefficient capacity of a residual block.  H.264 sec 7.4.5.3.2 caps
+ * TotalCoeff at 16 for every block type, so one bound covers level[], run[],
+ * and coeff[] alike, and the decoder rejects a max_num_coeff above it. */
+enum { VL_H264_CAVLC_MAX_COEFF = 16 };
+
 /* One residual block's decode result.  level and run are in reverse-significance
  * order (the order the levels are coded); coeff is the quantized coefficient
  * level placed in zig-zag scan order, the form the dequant stage consumes. */
@@ -33,9 +38,9 @@ struct vl_h264_cavlc_block {
    unsigned total_coeff;
    unsigned trailing_ones;
    unsigned total_zeros;
-   int16_t level[16];
-   uint8_t run[16];
-   int16_t coeff[16];
+   int16_t level[VL_H264_CAVLC_MAX_COEFF];
+   uint8_t run[VL_H264_CAVLC_MAX_COEFF];
+   int16_t coeff[VL_H264_CAVLC_MAX_COEFF];
 };
 
 /*
@@ -73,14 +78,16 @@ bool vl_h264_cavlc_run_before(struct vl_h264_reader *reader,
  */
 bool vl_h264_cavlc_decode_levels(struct vl_h264_reader *reader,
                                  unsigned total_coeff, unsigned trailing_ones,
-                                 int16_t level[16]);
+                                 int16_t level[VL_H264_CAVLC_MAX_COEFF]);
 
 /*
  * Decode one residual block (sec 7.3.5.3.1): coeff_token (by nC), the levels,
  * total_zeros, and run_before, combined (sec 9.2.4) into out->coeff in scan
  * order.  max_num_coeff is 16 for a 4x4 luma/AC block, 15 for an AC block that
  * skips the DC, 4 for a chroma DC 2x2.  Returns false on a malformed codeword or
- * an out-of-range coefficient position, leaving out usable only on true.
+ * an out-of-range coefficient position, leaving out usable only on true.  A
+ * max_num_coeff above VL_H264_CAVLC_MAX_COEFF is rejected before out is touched,
+ * so a caller-side capacity error leaves the caller's block intact.
  */
 bool vl_h264_cavlc_residual_block(struct vl_h264_reader *reader,
                                   unsigned max_num_coeff, int nc,
