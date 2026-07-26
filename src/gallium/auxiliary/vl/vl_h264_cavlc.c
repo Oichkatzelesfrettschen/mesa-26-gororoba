@@ -18,6 +18,17 @@
 /* The longest CAVLC codeword in any table is 16 bits (coeff_token, Table 9-5). */
 #define VL_H264_CAVLC_MAX_CODE_BITS 16
 
+/* One capacity governs all three per-coefficient arrays, so the residual
+ * decoder's single bound check covers every write below.  A struct edit that
+ * shrinks one array independently stops the build here rather than at a
+ * diagnostic on one of the writes. */
+static_assert(ARRAY_SIZE(((struct vl_h264_cavlc_block *)0)->level) ==
+              VL_H264_CAVLC_MAX_COEFF, "level[] holds one entry per coefficient");
+static_assert(ARRAY_SIZE(((struct vl_h264_cavlc_block *)0)->run) ==
+              VL_H264_CAVLC_MAX_COEFF, "run[] holds one entry per coefficient");
+static_assert(ARRAY_SIZE(((struct vl_h264_cavlc_block *)0)->coeff) ==
+              VL_H264_CAVLC_MAX_COEFF, "coeff[] holds one entry per coefficient");
+
 /*
  * Bounded prefix matcher: the tables are prefix-free, so the first entry whose
  * top len bits equal the next len bits of the stream is the match.  Peeks a
@@ -161,7 +172,8 @@ decode_one_level(struct vl_h264_reader *reader, unsigned *suffix_length,
 
 bool
 vl_h264_cavlc_decode_levels(struct vl_h264_reader *reader, unsigned total_coeff,
-                            unsigned trailing_ones, int16_t level[16])
+                            unsigned trailing_ones,
+                            int16_t level[VL_H264_CAVLC_MAX_COEFF])
 {
    unsigned i = 0;
 
@@ -183,15 +195,17 @@ vl_h264_cavlc_residual_block(struct vl_h264_reader *reader,
                              unsigned max_num_coeff, int nc,
                              struct vl_h264_cavlc_block *out)
 {
-   memset(out, 0, sizeof(*out));
-
    /* level[], run[], and coeff[] hold one entry per coefficient position, so a
     * max_num_coeff above that capacity would let a decoded total_coeff index
     * past the end.  H.264 sec 7.4.5.3.2 caps the value at 16 for every block
     * type, and rejecting a larger one bounds every write below against the
-    * array size rather than against the parameter. */
-   if (max_num_coeff > ARRAY_SIZE(out->run))
+    * array size rather than against the parameter.  The rejection precedes the
+    * memset, so a caller that passes an impossible capacity gets its block back
+    * unmodified. */
+   if (max_num_coeff > VL_H264_CAVLC_MAX_COEFF)
       return false;
+
+   memset(out, 0, sizeof(*out));
 
    unsigned total_coeff, trailing_ones;
    if (!vl_h264_cavlc_coeff_token(reader, nc, &total_coeff, &trailing_ones))

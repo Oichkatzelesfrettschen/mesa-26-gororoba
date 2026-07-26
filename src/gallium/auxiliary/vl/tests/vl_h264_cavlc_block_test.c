@@ -10,11 +10,14 @@
  * combine against a separate implementation.  The vectors cover an empty block,
  * a single coefficient, two adjacent levels, a level with a zero run, a dense
  * block on the nC>=2 table, and a chroma DC 2x2 block.  The decisive
- * spec-value check is the later real-bitstream oracle gate.
+ * spec-value check is the later real-bitstream oracle gate.  One negative
+ * vector pins the capacity contract: a max_num_coeff past the block's array
+ * capacity is rejected with the caller's block left untouched.
  */
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "vl_h264_cavlc.h"
 
@@ -44,9 +47,34 @@ static const struct vector vectors[] = {
    { "chroma_dc", -1, 4, 2, {54}, 1, {1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0} },
 };
 
+/* A max_num_coeff above the block's own array capacity is a caller error the
+ * decoder rejects before it reads a bit or writes a byte.  The sentinel fill
+ * survives the call, which is the observable form of "out is untouched": the
+ * capacity check runs ahead of the memset that opens a real decode. */
+static int
+test_capacity_rejected(void)
+{
+   struct vl_h264_reader reader;
+   struct vl_h264_cavlc_block block, before;
+   const uint8_t bytes[] = {88};
+
+   memset(&block, 0xa5, sizeof(block));
+   before = block;
+
+   CHECK(vl_h264_reader_init(&reader, bytes, sizeof(bytes)));
+   CHECK(!vl_h264_cavlc_residual_block(&reader, VL_H264_CAVLC_MAX_COEFF + 1, 0,
+                                       &block));
+   CHECK(memcmp(&block, &before, sizeof(block)) == 0);
+   vl_h264_reader_fini(&reader);
+   return 0;
+}
+
 int
 main(void)
 {
+   if (test_capacity_rejected() != 0)
+      return 1;
+
    for (unsigned v = 0; v < sizeof(vectors) / sizeof(vectors[0]); v++) {
       const struct vector *vec = &vectors[v];
       struct vl_h264_reader reader;
@@ -74,6 +102,6 @@ main(void)
    }
 
    printf("vl_h264_cavlc_block: residual blocks round-trip an independent "
-          "encoder PASS\n");
+          "encoder, an over-capacity max_num_coeff is rejected PASS\n");
    return 0;
 }
