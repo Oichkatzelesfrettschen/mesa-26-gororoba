@@ -92,8 +92,8 @@ containing `meson.build` and either `meson.options` or the historical
 source worktree and this build-infra control worktree to match their recorded
 commits.  The cleanliness check compares the real index to `HEAD`, then
 compares worktree bytes through a fresh temporary index.  Staged-only changes,
-untracked files, ordinary tracked changes, and tracked changes hidden by
-`assume-unchanged` all fail the comparison.
+unignored untracked files, ordinary tracked changes, and tracked changes
+hidden by `assume-unchanged` all fail the comparison.
 
 Path selection rejects whitespace and shell metacharacters, resolves symlinks
 before containment checks, and keeps the external build root, build directory,
@@ -151,15 +151,17 @@ failed.  Artifact reporting joins the same final root identity and accepts a
 missing build directory only when the retained root record still binds the
 source, control plane, and prefix.
 
-Each mutating recipe captures canonical paths and device/inode/file-type
-anchors during Makefile evaluation, acquires the shared build lease, and
-revalidates those values immediately after acquisition.  A path replacement
+Each mutating recipe captures source commit, source tree, control commit,
+canonical paths, and device/inode/file-type anchors during Makefile
+evaluation, acquires the shared build lease, and revalidates those values
+immediately after acquisition.  A revision change or path replacement
 completed while a cooperating command waits on the lease fails before layout,
 identity, removal, or archival logic runs.  The lease is the coordination
 boundary for same-user build processes; direct filesystem mutation by a
 process that bypasses Make is outside that cooperative boundary.  Clean,
-clean-all, and distclean report success only after the removal or archival
-command succeeds and the selected path satisfies its postcondition.
+clean-all, and distclean reject selected targets that contain a Git worktree
+marker.  They report success only after the removal or archival command
+succeeds and the selected path satisfies its postcondition.
 
 Each compared revision gets a distinct `BUILD_ROOT`, `BUILDDIR`, and `PREFIX`.
 `clean-all` remains a control-worktree operation and rejects every external
@@ -170,15 +172,15 @@ The build-infra worktree remains the control plane.  Its profile, host
 environment, allowlist, toolchain selection, and Make logic govern every
 selected source tree.  `make source-root-selection-test` calibrates GNU Make
 4.2 input transport when that lower-bound executable is installed, exact-root
-selection, legacy option-file admission, incomplete, unborn, dirty, staged,
+selection, legacy option-file admission, incomplete, unborn, dirty,
 assume-unchanged, and nested root rejection, shell-input rejection, physical
 containment, namespace ownership, sibling-worktree protection, clean-all
 refusal, lease-bound path replacement, build-root and prefix identity drift,
 configure and install transactions, failed reconfiguration revocation,
 clean-then-distclean archival, archival retry, artifact attribution, shared
 prefix refusal, and the Meson source argument.  `make
-source-root-control-unit-test` exercises the pure path, layout, cleanliness,
-anchor, namespace, and identity-record invariants directly.
+source-root-control-unit-test` exercises the pure path, layout, staged-only
+cleanliness, anchor, namespace, and identity-record invariants directly.
 
 ## Build-system policy
 

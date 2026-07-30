@@ -123,12 +123,18 @@ GOROROBA_CONTROL_ROOT_ANCHOR := $(word 10,$(SOURCE_ROOT_FIELDS))
 GOROROBA_BUILD_ROOT_ANCHOR := $(word 11,$(SOURCE_ROOT_FIELDS))
 GOROROBA_BUILDDIR_ANCHOR := $(word 12,$(SOURCE_ROOT_FIELDS))
 GOROROBA_PREFIX_ANCHOR := $(word 13,$(SOURCE_ROOT_FIELDS))
+GOROROBA_SOURCE_COMMIT_CAPTURED := $(SOURCE_COMMIT)
+GOROROBA_SOURCE_TREE_CAPTURED := $(SOURCE_TREE)
+GOROROBA_CONTROL_COMMIT_CAPTURED := $(CONTROL_COMMIT)
 export GOROROBA_CONTROL_ROOT_INPUT
 export GOROROBA_SOURCE_ROOT_ANCHOR
 export GOROROBA_CONTROL_ROOT_ANCHOR
 export GOROROBA_BUILD_ROOT_ANCHOR
 export GOROROBA_BUILDDIR_ANCHOR
 export GOROROBA_PREFIX_ANCHOR
+export GOROROBA_SOURCE_COMMIT_CAPTURED
+export GOROROBA_SOURCE_TREE_CAPTURED
+export GOROROBA_CONTROL_COMMIT_CAPTURED
 # Every later Python check consumes the same physical path tuple that recipes
 # interpolate.  Retaining the caller's symlink spelling here would let a
 # blocked recipe validate a retargeted selector while deleting the path that
@@ -184,8 +190,8 @@ define CHECK_LAYOUT
 python3 "$(SOURCE_ROOT_CONTROL)" check-layout --operation="$1" || exit 2
 endef
 
-define VERIFY_CAPTURED_PATHS
-python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-paths --fields $1 || exit 2
+define VERIFY_CAPTURED_INPUTS
+python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-inputs --fields $1 || exit 2
 endef
 
 define PREPARE_SOURCE_IDENTITY
@@ -587,7 +593,7 @@ audit: source-root-check source-root-control-unit-test \
 configure: source-root-check vostro-prefix-check
 	@$(call CHECK_LAYOUT,configure); \
 	$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
 	$(PREPARE_SOURCE_IDENTITY); \
 	mkdir -p "$(dir $(BUILDDIR))"; \
 	test -f $(ENVFILE) && . $(ENVFILE) || true; \
@@ -743,7 +749,7 @@ build: source-root-check
 	test -d "$(BUILDDIR)" || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
 	$(call CHECK_LAYOUT,build); \
 	$(VERIFY_SOURCE_IDENTITY); \
 	build_jobs="$(JOBS)"; \
@@ -763,7 +769,7 @@ build: source-root-check
 
 clean:
 	@$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
 	$(call CHECK_LAYOUT,clean); \
 	$(VERIFY_DELETE_IDENTITY); \
 	$(REMOVE_TREE) "$(BUILDDIR)" || { \
@@ -779,7 +785,7 @@ clean:
 # regenerable artifacts and never touches the source or an installed PREFIX.
 clean-all:
 	@$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root); \
 	$(call CHECK_LAYOUT,clean-all); \
 	$(REMOVE_TREE) "$(BUILD_ROOT)" || { \
 		echo "failed to remove build root: $(BUILD_ROOT)" >&2; exit 2; \
@@ -791,7 +797,7 @@ clean-all:
 
 distclean:
 	@$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
 	$(call CHECK_LAYOUT,distclean); \
 	$(VERIFY_DISTCLEAN_IDENTITY); \
 	$(REMOVE_TREE) "$(BUILDDIR)" || { \
@@ -825,7 +831,7 @@ install: source-root-check vostro-prefix-check
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	env $(LOCKED_TOOL_ENV) \
 	    $(FLOCK) -x -w $(LOCK_WAIT) "$(BUILD_LOCK)" bash -c 'set -euo pipefail; \
-	    python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-paths \
+	    python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-inputs \
 	      --fields source_root control_root build_root builddir prefix; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" verify-identity; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
@@ -851,7 +857,7 @@ artifact-check: source-root-check vostro-prefix-check
 	@set -euo pipefail; \
 	$(call CHECK_LAYOUT,artifact); \
 	$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
 	$(call CHECK_LAYOUT,artifact); \
 	$(VERIFY_ARTIFACT_IDENTITY); \
 	test -d "$(PREFIX)" || { echo "prefix missing: $(PREFIX)"; exit 1; }; \
@@ -875,7 +881,7 @@ test: source-root-check
 	test -d "$(BUILDDIR)" || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
 	$(call CHECK_LAYOUT,test); \
 	$(VERIFY_SOURCE_IDENTITY); \
 	env $(LOCKED_TOOL_ENV) \
@@ -1005,7 +1011,8 @@ build-lease-test:
 	echo "OK    distclean holds one build lease"
 
 source-root-selection-test:
-	@test_namespace="/var/tmp/mesa-26-gororoba-$$(id -u)"; \
+	@set -euo pipefail; \
+	test_namespace="/var/tmp/mesa-26-gororoba-$$(id -u)"; \
 	umask 077; \
 	mkdir -p "$$test_namespace"; \
 	test -O "$$test_namespace" && test ! -L "$$test_namespace" || { \
@@ -1252,6 +1259,30 @@ source-root-selection-test:
 		echo "FAIL  clean changed the sibling Git worktree" >&2; exit 1; \
 	}; \
 	echo "OK    destructive build roots exclude sibling Git worktrees"; \
+	nested_repository_root="$$tmpdir/nested-repository-holder"; \
+	nested_repository_builddir="$$nested_repository_root/probe"; \
+	nested_repository="$$nested_repository_builddir/retained-repository"; \
+	mkdir -p "$$nested_repository"; \
+	git -C "$$nested_repository" init -q; \
+	touch "$$nested_repository/retained-sentinel"; \
+	if nested_repository_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+		clean TOPSRC="$(CONTROL_ROOT)" \
+		BUILD_ROOT="$$nested_repository_root" \
+		BUILDDIR="$$nested_repository_builddir" \
+		PREFIX="$$nested_repository_root/prefix" \
+		BUILD_LOCK="$$tmpdir/nested-repository.lock" LOCK_WAIT=0 2>&1 )"; then \
+		echo "FAIL  clean accepted a nested Git worktree" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$nested_repository_output" | \
+		grep -F "refusing BUILDDIR containing a Git worktree marker" >/dev/null || { \
+			echo "FAIL  nested Git worktree returned the wrong diagnostic" >&2; \
+			printf '%s\n' "$$nested_repository_output" >&2; exit 1; \
+		}; \
+	test -f "$$nested_repository/retained-sentinel" || { \
+		echo "FAIL  clean deleted the nested Git worktree" >&2; exit 1; \
+	}; \
+	echo "OK    destructive targets preserve nested Git worktrees"; \
 	if control_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		artifact-check TOPSRC="$$source_root" \
 		BUILD_ROOT="$$tmpdir/control-prefix-build" \
@@ -1961,6 +1992,62 @@ source-root-selection-test:
 		exit 1; \
 	}; \
 	echo "OK    destructive operations reject build-root replacement at the lease"; \
+	revision_source="$$tmpdir/revision-lease-source"; \
+	mkdir -p "$$revision_source"; \
+	git -C "$$revision_source" init -q; \
+	touch "$$revision_source/meson.build" "$$revision_source/meson.options"; \
+	printf '%s\n' "revision-a" > "$$revision_source/revision-marker"; \
+	git -C "$$revision_source" add meson.build meson.options revision-marker; \
+	git -C "$$revision_source" \
+		-c user.name=source-root-test -c user.email=source-root-test.invalid \
+		commit -qm "test: add source revision A"; \
+	revision_a="$$(git -C "$$revision_source" rev-parse HEAD)"; \
+	printf '%s\n' "revision-b" > "$$revision_source/revision-marker"; \
+	git -C "$$revision_source" add revision-marker; \
+	git -C "$$revision_source" \
+		-c user.name=source-root-test -c user.email=source-root-test.invalid \
+		commit -qm "test: add source revision B"; \
+	revision_b="$$(git -C "$$revision_source" rev-parse HEAD)"; \
+	git -C "$$revision_source" switch --detach -q "$$revision_a"; \
+	revision_build_root="$$tmpdir/revision-lease-build"; \
+	revision_ready="$$tmpdir/revision.ready"; \
+	revision_release="$$tmpdir/revision.release"; \
+	revision_output="$$tmpdir/revision.output"; \
+	GOROROBA_RETARGET_READY="$$revision_ready" \
+	GOROROBA_RETARGET_RELEASE="$$revision_release" \
+		$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+			TOPSRC="$$revision_source" BUILD_ROOT="$$revision_build_root" \
+			BUILDDIR="$$revision_build_root/probe" \
+			PREFIX="$$revision_build_root/prefix" \
+			BUILD_LOCK="$$tmpdir/revision.lock" LOCK_WAIT=5 \
+			FLOCK="$$retarget_flock" \
+			COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true \
+			> "$$revision_output" 2>&1 & \
+	revision_pid=$$!; \
+	revision_wait=0; \
+	while [ ! -e "$$revision_ready" ] && [ "$$revision_wait" -lt 500 ]; do \
+		sleep 0.01; revision_wait=$$((revision_wait + 1)); \
+	done; \
+	if [ ! -e "$$revision_ready" ]; then \
+		touch "$$revision_release"; wait "$$revision_pid" 2>/dev/null || true; \
+		echo "FAIL  revision mutant never reached the build lease" >&2; \
+		exit 1; \
+	fi; \
+	git -C "$$revision_source" switch --detach -q "$$revision_b"; \
+	touch "$$revision_release"; \
+	if wait "$$revision_pid"; then \
+		echo "FAIL  configure accepted a source revision change at the lease" >&2; \
+		exit 1; \
+	fi; \
+	grep -F "selected revision changed while waiting for the build lease: source_commit" \
+		"$$revision_output" >/dev/null || { \
+			echo "FAIL  source revision change returned the wrong diagnostic" >&2; \
+			cat "$$revision_output" >&2; exit 1; \
+		}; \
+	test ! -e "$$revision_build_root" || { \
+		echo "FAIL  source revision change mutated the build root" >&2; exit 1; \
+	}; \
+	echo "OK    build lease binds the selected source commit and tree"; \
 	if shared_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$legacy_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_build_root/legacy-probe" \

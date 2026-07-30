@@ -302,6 +302,27 @@ def containing_git_worktree(path: Path) -> Path | None:
     return None
 
 
+def contained_git_worktree(path: Path) -> Path | None:
+    if not path.is_dir():
+        return None
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    try:
+        for directory, directory_names, file_names in os.walk(
+            path,
+            topdown=True,
+            onerror=raise_walk_error,
+            followlinks=False,
+        ):
+            if ".git" in directory_names or ".git" in file_names:
+                return Path(directory)
+    except OSError as error:
+        fail(f"cannot inspect destructive target {path}: {error}")
+    return None
+
+
 def path_anchor(path: Path) -> str:
     try:
         path_status = path.stat()
@@ -313,10 +334,27 @@ def path_anchor(path: Path) -> str:
     return f"{path_status.st_dev:x}:{path_status.st_ino:x}:{file_type:x}"
 
 
-def require_captured_paths(
+def require_captured_inputs(
     values: dict[str, Path | str],
     fields: tuple[str, ...],
 ) -> None:
+    revision_variables = {
+        "source_commit": "GOROROBA_SOURCE_COMMIT_CAPTURED",
+        "source_tree": "GOROROBA_SOURCE_TREE_CAPTURED",
+        "control_commit": "GOROROBA_CONTROL_COMMIT_CAPTURED",
+    }
+    for field, variable_name in revision_variables.items():
+        selected_revision = values[field]
+        assert isinstance(selected_revision, str)
+        captured_revision = os.environ.get(variable_name, "")
+        if not captured_revision:
+            fail(f"captured revision is missing for {field}")
+        if selected_revision != captured_revision:
+            fail(
+                "selected revision changed while waiting for the "
+                f"build lease: {field} ({captured_revision})"
+            )
+
     anchor_variables = {
         "source_root": "GOROROBA_SOURCE_ROOT_ANCHOR",
         "control_root": "GOROROBA_CONTROL_ROOT_ANCHOR",
@@ -353,6 +391,30 @@ def require_captured_paths(
             fail(
                 "selected path identity changed while waiting for the "
                 f"build lease: {field} ({selected_path})"
+            )
+
+
+def reject_git_worktree_target(
+    path: Path,
+    label: str,
+    repository_root: Path,
+    repository_build_root: Path,
+    *,
+    scan_descendants: bool,
+) -> None:
+    repository_boundary = containing_git_worktree(path)
+    canonical_build_exception = (
+        repository_boundary == repository_root
+        and is_within_or_equal(path, repository_build_root)
+    )
+    if repository_boundary is not None and not canonical_build_exception:
+        fail(f"refusing {label} inside a Git worktree: {repository_boundary}")
+    if scan_descendants:
+        contained_repository = contained_git_worktree(path)
+        if contained_repository is not None:
+            fail(
+                f"refusing {label} containing a Git worktree marker: "
+                f"{contained_repository}"
             )
 
 
@@ -446,6 +508,13 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
         fail(f"refusing BUILD_ROOT inside a Git worktree: {repository_boundary}")
     if not is_strict_descendant(builddir, build_root):
         fail(f"refusing BUILDDIR outside BUILD_ROOT: {builddir}")
+    reject_git_worktree_target(
+        builddir,
+        "BUILDDIR",
+        repository_root,
+        repository_build_root,
+        scan_descendants=operation in {"clean", "distclean"},
+    )
 
     source_is_control = source_root == repository_root
     if source_is_control:
@@ -470,9 +539,16 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
 
     if operation in {"configure", "install", "distclean", "artifact"}:
         validate_prefix(values)
+        prefix = values["prefix"]
+        assert isinstance(prefix, Path)
+        reject_git_worktree_target(
+            prefix,
+            "PREFIX",
+            repository_root,
+            repository_build_root,
+            scan_descendants=operation == "distclean",
+        )
         if not source_is_control:
-            prefix = values["prefix"]
-            assert isinstance(prefix, Path)
             if prefix.parent != build_root:
                 fail(f"external PREFIX must be a direct child of BUILD_ROOT: {prefix}")
             if prefix == builddir:
@@ -486,6 +562,13 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
                 "clean-all only removes the repository build root: "
                 f"{repository_build_root}"
             )
+        reject_git_worktree_target(
+            build_root,
+            "BUILD_ROOT",
+            repository_root,
+            repository_build_root,
+            scan_descendants=True,
+        )
 
 
 def base_identity_payload(
@@ -826,7 +909,7 @@ def parse_arguments() -> argparse.Namespace:
     subparsers.add_parser("verify-artifact-identity")
     subparsers.add_parser("verify-delete-identity")
     subparsers.add_parser("verify-distclean-identity")
-    captured_parser = subparsers.add_parser("verify-captured-paths")
+    captured_parser = subparsers.add_parser("verify-captured-inputs")
     captured_parser.add_argument(
         "--fields",
         nargs="+",
@@ -883,8 +966,8 @@ def main() -> int:
         verify_delete_identity(values, allow_provisional=True)
     elif arguments.command == "verify-distclean-identity":
         verify_delete_identity(values, allow_provisional=False)
-    elif arguments.command == "verify-captured-paths":
-        require_captured_paths(values, tuple(arguments.fields))
+    elif arguments.command == "verify-captured-inputs":
+        require_captured_inputs(values, tuple(arguments.fields))
     else:
         fail(f"unsupported command: {arguments.command}")
     return 0

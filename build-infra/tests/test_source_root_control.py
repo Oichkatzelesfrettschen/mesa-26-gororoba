@@ -36,6 +36,21 @@ def layout_values(tmp_path: Path) -> dict[str, Path | str]:
     }
 
 
+def set_captured_revisions(
+    values: dict[str, Path | str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision_names = {
+        "source_commit": "GOROROBA_SOURCE_COMMIT_CAPTURED",
+        "source_tree": "GOROROBA_SOURCE_TREE_CAPTURED",
+        "control_commit": "GOROROBA_CONTROL_COMMIT_CAPTURED",
+    }
+    for field, variable_name in revision_names.items():
+        revision = values[field]
+        assert isinstance(revision, str)
+        monkeypatch.setenv(variable_name, revision)
+
+
 @pytest.mark.parametrize(
     "protected_path",
     (
@@ -98,6 +113,30 @@ def test_validate_layout_rejects_peer_git_worktree(
         source_root_control.validate_layout("build", values)
 
 
+def test_validate_layout_rejects_nested_git_worktree_before_clean(
+    tmp_path: Path,
+) -> None:
+    values = layout_values(tmp_path)
+    builddir = values["builddir"]
+    assert isinstance(builddir, Path)
+    nested_repository = builddir / "retained-repository"
+    (nested_repository / ".git").mkdir(parents=True)
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.validate_layout("clean", values)
+
+
+def test_validate_layout_rejects_nested_git_worktree_before_archive(
+    tmp_path: Path,
+) -> None:
+    values = layout_values(tmp_path)
+    prefix = values["prefix"]
+    assert isinstance(prefix, Path)
+    nested_repository = prefix / "retained-repository"
+    (nested_repository / ".git").mkdir(parents=True)
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.validate_layout("distclean", values)
+
+
 def test_owned_build_namespaces_ignore_home_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -148,11 +187,12 @@ def test_validate_owned_namespace_rejects_writable_mode(
         )
 
 
-def test_require_captured_paths_rejects_replacement(
+def test_require_captured_inputs_rejects_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values = layout_values(tmp_path)
+    set_captured_revisions(values, monkeypatch)
     environment_names = {
         "source_root": "GOROROBA_TOPSRC_INPUT",
         "control_root": "GOROROBA_CONTROL_ROOT_INPUT",
@@ -178,7 +218,7 @@ def test_require_captured_paths_rejects_replacement(
         )
 
     fields = tuple(environment_names)
-    source_root_control.require_captured_paths(values, fields)
+    source_root_control.require_captured_inputs(values, fields)
 
     builddir = values["builddir"]
     assert isinstance(builddir, Path)
@@ -186,24 +226,37 @@ def test_require_captured_paths_rejects_replacement(
     builddir.rename(moved_builddir)
     builddir.mkdir()
     with pytest.raises(source_root_control.ControlError):
-        source_root_control.require_captured_paths(values, ("builddir",))
+        source_root_control.require_captured_inputs(values, ("builddir",))
 
 
-def test_require_captured_paths_rejects_retargeted_selector(
+def test_require_captured_inputs_rejects_retargeted_selector(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_path = tmp_path / "captured"
     selected_path = tmp_path / "selected"
     selected_path.mkdir()
+    values = layout_values(tmp_path)
+    values["builddir"] = selected_path
+    set_captured_revisions(values, monkeypatch)
     monkeypatch.setenv("GOROROBA_BUILDDIR_INPUT", str(captured_path))
     monkeypatch.setenv(
         "GOROROBA_BUILDDIR_ANCHOR",
         source_root_control.path_anchor(selected_path),
     )
-    values: dict[str, Path | str] = {"builddir": selected_path}
     with pytest.raises(source_root_control.ControlError):
-        source_root_control.require_captured_paths(values, ("builddir",))
+        source_root_control.require_captured_inputs(values, ("builddir",))
+
+
+def test_require_captured_inputs_rejects_revision_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = layout_values(tmp_path)
+    set_captured_revisions(values, monkeypatch)
+    monkeypatch.setenv("GOROROBA_SOURCE_COMMIT_CAPTURED", "4" * 40)
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.require_captured_inputs(values, ())
 
 
 def test_require_clean_worktree_detects_assume_unchanged(
