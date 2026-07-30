@@ -1023,8 +1023,7 @@ source-root-selection-test:
 		echo "FAIL  unsafe test build namespace: $$test_namespace" >&2; exit 1; \
 	}; \
 	tmpdir="$$(mktemp -d "$$test_namespace/source-root.XXXXXX")"; \
-	control_dirty_marker="$(CONTROL_ROOT)/.source-root-control-dirty-$$$$"; \
-	trap 'rm -f "$$control_dirty_marker"; rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	if legacy_make_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		MAKE_VERSION=4.1 source-root-check 2>&1 )"; then \
 		echo "FAIL  source-root control accepted GNU Make 4.1" >&2; \
@@ -1106,19 +1105,6 @@ source-root-selection-test:
 			}; \
 	done; \
 	echo "OK    command-line variables cannot forge resolver-owned inputs"; \
-	touch "$$control_dirty_marker"; \
-	if control_dirty_output="$$( $(MAKE) --no-print-directory \
-		-C "$(CURDIR)" source-root-check TOPSRC="$$source_root" 2>&1 )"; then \
-		echo "FAIL  source-root-check accepted a dirty control worktree" >&2; \
-		exit 1; \
-	fi; \
-	printf '%s\n' "$$control_dirty_output" | \
-		grep -F "control worktree is dirty" >/dev/null || { \
-		echo "FAIL  dirty control worktree returned the wrong diagnostic" >&2; \
-		printf '%s\n' "$$control_dirty_output" >&2; exit 1; \
-	}; \
-	rm -f "$$control_dirty_marker"; \
-	echo "OK    external TOPSRC rejects dirty control-plane state"; \
 	nested_root="$$source_root/nested"; \
 	mkdir -p "$$nested_root"; \
 	touch "$$nested_root/meson.build" "$$nested_root/meson.options"; \

@@ -186,7 +186,10 @@ binding, shared prefix refusal, and the Meson source argument.  When the host
 permits private user and mount namespaces, the same target proves that exact
 and descendant same-device bind mounts fail before recursive removal.  `make
 source-root-control-unit-test` exercises the pure path, layout, staged-only
-cleanliness, anchor, namespace, and identity-record invariants directly.
+cleanliness, dirty external-control rejection, anchor, namespace, and
+identity-record invariants directly.  Its temporary repositories keep the
+control checkout immutable, so concurrent calibration runs do not invalidate
+one another.
 
 ## Build-system policy
 

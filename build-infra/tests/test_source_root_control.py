@@ -453,6 +453,49 @@ def test_external_source_checks_source_and_control(
     ]
 
 
+def test_external_source_rejects_dirty_control_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    control_root = tmp_path / "control"
+    for repository in (source_root, control_root):
+        repository.mkdir()
+        subprocess.run(
+            ["git", "-C", str(repository), "init", "-q"],
+            check=True,
+        )
+        source_file = repository / "meson.build"
+        source_file.write_text("project('clean')\n", encoding="ascii")
+        subprocess.run(
+            ["git", "-C", str(repository), "add", "meson.build"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "-c",
+                "user.name=source-root-test",
+                "-c",
+                "user.email=source-root-test.invalid",
+                "commit",
+                "-qm",
+                "test: add tracked source",
+            ],
+            check=True,
+        )
+    monkeypatch.setattr(
+        source_root_control,
+        "control_root",
+        lambda: control_root,
+    )
+    (control_root / "untracked-control-input").touch()
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.require_clean_external_source(source_root)
+
+
 def test_require_identity_fields_reports_value_drift(
     tmp_path: Path,
 ) -> None:
