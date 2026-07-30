@@ -12,7 +12,286 @@
     "evidence"
   ],
   "additionalProperties": false,
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "git_object": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "source_release_provenance": {
+      "type": "object",
+      "required": [
+        "source_repository",
+        "source_commit",
+        "source_tree",
+        "release_repository",
+        "release_commit",
+        "release_input_sha256",
+        "package_artifact_sha256",
+        "installed_payload_manifest_sha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_repository": {"type": "string"},
+        "source_commit": {"$ref": "#/$defs/git_object"},
+        "source_tree": {
+          "$ref": "#/$defs/git_object",
+          "description": "Git tree object consumed by the release repository"
+        },
+        "release_repository": {"type": "string"},
+        "release_commit": {"$ref": "#/$defs/git_object"},
+        "release_input_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the deterministic source export or patch-series input"
+        },
+        "package_artifact_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the package archive installed on the target"
+        },
+        "installed_payload_manifest_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the retained path-and-content manifest after installation"
+        }
+      }
+    },
+    "mesa_provenance": {
+      "type": "object",
+      "required": [
+        "source_repository",
+        "source_tree",
+        "build_manifest_sha256",
+        "immutable_image_manifest_sha256",
+        "installed_payload_manifest_sha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_repository": {
+          "const": "mesa-26-gororoba"
+        },
+        "source_tree": {
+          "$ref": "#/$defs/git_object",
+          "description": "Git tree object named by mesa.source_sha"
+        },
+        "build_manifest_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the compiler, options, profile, and build-input manifest"
+        },
+        "immutable_image_manifest_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the completed immutable image manifest"
+        },
+        "installed_payload_manifest_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the retained target-side image manifest"
+        }
+      }
+    },
+    "kernel_equivalence": {
+      "type": "object",
+      "required": [
+        "migration_input_sha256",
+        "normalization_tool_sha256",
+        "source_export_tool_sha256",
+        "generator_source_sha256",
+        "generator_binary_sha256",
+        "normalized_source_manifest_sha256",
+        "normalization_record_sha256",
+        "source_export_manifest_sha256",
+        "source_comparison_sha256",
+        "generated_output_proof_sha256",
+        "generated_output_comparison_sha256",
+        "machine_record_sha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "migration_input_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of MIGRATION_INPUT.toml"
+        },
+        "normalization_tool_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of normalize_legacy_source_tree.sh"
+        },
+        "source_export_tool_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of manifest_source_tree.py"
+        },
+        "generator_source_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the mkregtable.c input"
+        },
+        "generator_binary_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the mkregtable executable built for the proof"
+        },
+        "normalized_source_manifest_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the normalized legacy source manifest"
+        },
+        "normalization_record_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the per-path normalization record"
+        },
+        "source_export_manifest_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the candidate repository source-export manifest"
+        },
+        "source_comparison_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the retained normalized-versus-export comparison output"
+        },
+        "generated_output_proof_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the generated-output proof declaration"
+        },
+        "generated_output_comparison_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of retained byte comparisons for generated register-policy outputs"
+        },
+        "machine_record_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the retained machine-readable equivalence record"
+        }
+      }
+    },
+    "kernel_provenance": {
+      "type": "object",
+      "required": [
+        "source_repository",
+        "source_commit",
+        "source_tree",
+        "source_pin_sha256",
+        "source_archive_sha256",
+        "release_repository",
+        "release_commit",
+        "package_artifact_sha256",
+        "installed_payload_manifest_sha256",
+        "module_sha256",
+        "module_build_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_repository": {
+          "type": "string",
+          "enum": ["radeon-custom", "linux-radeon-gororoba"]
+        },
+        "source_commit": {"$ref": "#/$defs/git_object"},
+        "source_tree": {
+          "$ref": "#/$defs/git_object",
+          "description": "Qualified Git tree object consumed by packaging"
+        },
+        "source_pin_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the immutable source-pin declaration consumed by packaging"
+        },
+        "source_archive_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the source archive built from the qualified pin"
+        },
+        "release_repository": {
+          "const": "radeon-custom"
+        },
+        "release_commit": {"$ref": "#/$defs/git_object"},
+        "package_artifact_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the DKMS package archive installed on the target"
+        },
+        "installed_payload_manifest_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the retained target-side package payload manifest"
+        },
+        "module_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the installed radeon.ko corresponding to the running module"
+        },
+        "module_build_id": {
+          "type": "string",
+          "description": "ELF Build ID of the installed radeon.ko corresponding to the running module"
+        },
+        "equivalence": {"$ref": "#/$defs/kernel_equivalence"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source_repository": {
+                "const": "linux-radeon-gororoba"
+              }
+            },
+            "required": ["source_repository"]
+          },
+          "then": {
+            "required": ["equivalence"]
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provenance_contract": {
+            "const": "source-to-payload-v2"
+          }
+        },
+        "required": ["provenance_contract"]
+      },
+      "then": {
+        "properties": {
+          "xorg": {
+            "required": [
+              "xorg_build_id",
+              "glamor_build_id",
+              "ddx_module_sha256",
+              "ddx_module_build_id",
+              "server_provenance"
+            ],
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "active_ddx": {
+                      "const": "radeon"
+                    }
+                  },
+                  "required": ["active_ddx"]
+                },
+                "then": {
+                  "required": [
+                    "ddx_package",
+                    "radeon_ddx_provenance"
+                  ]
+                }
+              }
+            ]
+          },
+          "mesa": {
+            "required": [
+              "libgallium_path",
+              "libgallium_build_id",
+              "provenance"
+            ],
+            "properties": {
+              "source_sha": {"$ref": "#/$defs/git_object"}
+            }
+          },
+          "kernel": {
+            "required": ["provenance"]
+          }
+        }
+      }
+    }
+  ],
   "properties": {
+    "provenance_contract": {
+      "type": "string",
+      "const": "source-to-payload-v2",
+      "description": "Enables the decision-grade source, release, installed-payload, and kernel-equivalence contract. Its absence identifies a legacy manifest."
+    },
     "boot_id": {
       "type": "string",
       "description": "/proc/sys/kernel/random/boot_id at capture time"
@@ -30,11 +309,10 @@
           "type": "string",
           "description": "xorg-server package name-version-pkgrel (pacman -Q form)"
         },
-        "xorg_binary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "xorg_binary_sha256": {"$ref": "#/$defs/sha256"},
         "xorg_build_id": {"type": "string"},
         "glamor_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$",
+          "$ref": "#/$defs/sha256",
           "description": "sha256 of libglamoregl.so"
         },
         "glamor_build_id": {"type": "string"},
@@ -43,7 +321,8 @@
           "enum": ["modesetting", "radeon"],
           "description": "DDX actually loaded for the session; a bare 'Xorg active' is inadmissible"
         },
-        "ddx_module_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ddx_module_sha256": {"$ref": "#/$defs/sha256"},
+        "ddx_module_build_id": {"type": "string"},
         "ddx_package": {
           "type": "string",
           "description": "xf86-video-ati package version when active_ddx is radeon"
@@ -56,13 +335,39 @@
             "additionalProperties": false,
             "properties": {
               "path": {"type": "string"},
-              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              "sha256": {"$ref": "#/$defs/sha256"}
             }
           }
         },
         "glamor_initialized": {
           "type": "boolean",
           "description": "Xorg log shows glamor initialization for the session"
+        },
+        "server_provenance": {
+          "allOf": [
+            {"$ref": "#/$defs/source_release_provenance"},
+            {
+              "properties": {
+                "source_repository": {"const": "xserver-rs48x"},
+                "release_repository": {
+                  "const": "PKGBUILD_xorg-server-glamor-r300fix"
+                }
+              }
+            }
+          ]
+        },
+        "radeon_ddx_provenance": {
+          "allOf": [
+            {"$ref": "#/$defs/source_release_provenance"},
+            {
+              "properties": {
+                "source_repository": {"const": "xf86-video-ati-rs482"},
+                "release_repository": {
+                  "const": "PKGBUILD_xf86-video-ati-rs482"
+                }
+              }
+            }
+          ]
         }
       }
     },
@@ -76,10 +381,11 @@
           "description": "mesa-26-gororoba commit SHA the image was built from"
         },
         "libgallium_path": {"type": "string"},
-        "libgallium_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "libgallium_sha256": {"$ref": "#/$defs/sha256"},
         "libgallium_build_id": {"type": "string"},
         "prefix": {"type": "string", "description": "install prefix of the image"},
-        "profile": {"type": "string", "description": "build-infra profile name"}
+        "profile": {"type": "string", "description": "build-infra profile name"},
+        "provenance": {"$ref": "#/$defs/mesa_provenance"}
       }
     },
     "kernel": {
@@ -100,7 +406,8 @@
           "type": "object",
           "description": "non-default module parameters",
           "additionalProperties": {"type": "string"}
-        }
+        },
+        "provenance": {"$ref": "#/$defs/kernel_provenance"}
       }
     },
     "evidence": {
@@ -112,9 +419,9 @@
           "type": "string",
           "description": "steinmarder-r300 commit SHA of the runner and trigger in use"
         },
-        "runner_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "trigger_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "reducer_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "runner_sha256": {"$ref": "#/$defs/sha256"},
+        "trigger_sha256": {"$ref": "#/$defs/sha256"},
+        "reducer_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "platform": {

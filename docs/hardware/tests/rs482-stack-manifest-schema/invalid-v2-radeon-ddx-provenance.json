@@ -1,0 +1,60 @@
+{
+  "provenance_contract": "source-to-payload-v2",
+  "boot_id": "11111111-2222-3333-4444-555555555555",
+  "xorg": {
+    "package": "xorg-server 21.1.24-1.5",
+    "xorg_binary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "xorg_build_id": "1111111111111111111111111111111111111111",
+    "glamor_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "glamor_build_id": "2222222222222222222222222222222222222222",
+    "active_ddx": "radeon",
+    "ddx_module_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "ddx_module_build_id": "3333333333333333333333333333333333333333",
+    "ddx_package": "xf86-video-ati 1:22.0.0-1",
+    "server_provenance": {
+      "source_repository": "xserver-rs48x",
+      "source_commit": "4444444444444444444444444444444444444444",
+      "source_tree": "5555555555555555555555555555555555555555",
+      "release_repository": "PKGBUILD_xorg-server-glamor-r300fix",
+      "release_commit": "6666666666666666666666666666666666666666",
+      "release_input_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "package_artifact_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "installed_payload_manifest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  },
+  "mesa": {
+    "source_sha": "7777777777777777777777777777777777777777",
+    "libgallium_path": "/opt/mesa-rs482-profile-4/lib/libgallium.so",
+    "libgallium_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "libgallium_build_id": "8888888888888888888888888888888888888888",
+    "prefix": "/opt/mesa-rs482-profile-4",
+    "provenance": {
+      "source_repository": "mesa-26-gororoba",
+      "source_tree": "9999999999999999999999999999999999999999",
+      "build_manifest_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "immutable_image_manifest_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "installed_payload_manifest_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  },
+  "kernel": {
+    "kernel_release": "6.18.0-rs482",
+    "radeon_package": "radeon-unified-dkms 0.3-92",
+    "radeon_srcversion": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "provenance": {
+      "source_repository": "radeon-custom",
+      "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "source_pin_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "source_archive_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "release_repository": "radeon-custom",
+      "release_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "package_artifact_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "installed_payload_manifest_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+      "module_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+      "module_build_id": "dddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  "evidence": {
+    "stein_sha": "cccccccccccccccccccccccccccccccccccccccc"
+  }
+}
