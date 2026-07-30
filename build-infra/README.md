@@ -2,6 +2,10 @@
 
 Canonical build infrastructure for the gororoba Mesa fork.
 
+The entry point requires GNU Make 4.2 or newer because source-root resolution
+uses `.SHELLSTATUS` to preserve Python validation failures during Makefile
+evaluation.
+
 ## Canonical profiles
 
 The default profile sits at the top of `build-infra/configs/`; the other five
@@ -100,21 +104,25 @@ roots.
 Successful external configuration writes
 `$BUILD_ROOT/.gororoba-external-source-identity.json` and
 `$BUILDDIR/.gororoba-source-identity.json`.  Before Meson runs, the build-root
-record provisionally reserves the entire root for one selected source root,
-commit, tree, control root, control commit, build directory, and prefix.  Meson
-success finalizes the matching build-directory record.  Meson failure leaves
-only the provisional root record, which admits cleanup of the interrupted
-build directory but cannot satisfy a build, test, install, or distclean
-identity check.  Finalization rejects any source tuple that differs from the
-provisional reservation.  A source revision or control-plane commit change
-uses a fresh empty build root; the old root remains an immutable attribution
-boundary.
+record enters a provisional transaction that reserves the entire root for one
+selected source root, commit, tree, control root, control commit, build
+directory, and prefix.  Meson success writes matching final records with one
+transaction identifier.  Meson failure leaves the root provisional.  A
+previous build-directory record may remain after failed reconfiguration, but
+its final state cannot satisfy build, test, install, or distclean while the
+root transaction stays provisional.  Cleanup accepts a matching provisional
+root so it can remove an interrupted build.  Finalization rejects any source
+tuple that differs from the provisional reservation.  A source revision or
+control-plane commit change uses a fresh empty build root; the old root remains
+an immutable attribution boundary.
 
 External `clean` verifies the recorded source identity before removing an
 existing build directory.  An absent build directory remains a successful
-no-op.  `distclean` verifies the same source and prefix identity before it
-removes the build directory or archives the prefix.  Every validation step
-uses the physical path tuple captured before the build lease, so retargeting a
+no-op only when the build-root identity matches the requested source and path
+tuple.  `distclean` verifies the same root and prefix identity before it
+removes the build directory or archives the prefix, including after `clean`
+has already removed the per-build record.  Every validation step uses the
+physical path tuple captured before the build lease, so retargeting a
 caller-owned symlink while a command waits cannot redirect either validation
 or deletion.  Clean, clean-all, and distclean report success only after the
 removal or archival command succeeds and the selected path satisfies its
@@ -130,8 +138,11 @@ environment, allowlist, toolchain selection, and Make logic govern every
 selected source tree.  `make source-root-selection-test` calibrates exact-root
 selection, legacy option-file admission, incomplete, unborn, dirty, and nested
 root rejection, shell-input rejection, physical containment, control-worktree
-protection, clean-all refusal, build-root and prefix identity drift, shared
-prefix refusal, and the Meson source argument.
+protection, clean-all refusal, build-root and prefix identity drift,
+provisional-to-final transaction behavior, failed reconfiguration revocation,
+clean-then-distclean archival, shared prefix refusal, and the Meson source
+argument.  `make source-root-control-unit-test` exercises the pure path,
+layout, and identity-record invariants directly.
 
 ## Build-system policy
 

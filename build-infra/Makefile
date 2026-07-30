@@ -28,6 +28,21 @@
 
 SHELL := /bin/bash
 
+MAKE_VERSION_COMPONENTS := $(subst ., ,$(MAKE_VERSION))
+MAKE_VERSION_MAJOR := $(word 1,$(MAKE_VERSION_COMPONENTS))
+MAKE_VERSION_MINOR := $(word 2,$(MAKE_VERSION_COMPONENTS))
+MAKE_VERSION_SUPPORTED := $(shell \
+	major="$(MAKE_VERSION_MAJOR)"; minor="$(MAKE_VERSION_MINOR)"; \
+	if printf '%s\n' "$$major:$$minor" | \
+	   grep -Eq '^[0-9]+:[0-9]+$$' && \
+	   { [ "$$major" -gt 4 ] || \
+	     { [ "$$major" -eq 4 ] && [ "$$minor" -ge 2 ]; }; }; then \
+		printf '%s\n' yes; \
+	fi)
+ifneq ($(MAKE_VERSION_SUPPORTED),yes)
+$(error GNU Make 4.2 or newer is required; found $(MAKE_VERSION))
+endif
+
 # --- configurable parameters -------------------------------------------------
 PROFILE  ?= 3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
 # Default HOSTENV must match the default PROFILE's lane.  The default profile is
@@ -166,6 +181,10 @@ define VERIFY_DELETE_IDENTITY
 python3 "$(SOURCE_ROOT_CONTROL)" verify-delete-identity || exit 2
 endef
 
+define VERIFY_DISTCLEAN_IDENTITY
+python3 "$(SOURCE_ROOT_CONTROL)" verify-distclean-identity || exit 2
+endef
+
 # --- internal paths ---------------------------------------------------------
 # The default profile sits at the top of configs/; every other profile (the
 # release r300 sibling and the x130e terakan lanes) sits in configs/alternates/.
@@ -222,7 +241,8 @@ LOCKED_TOOL_ENV := \
     DISTCC_HOSTS="$${DISTCC_HOSTS:-}" \
     SCCACHE_DIR="$${SCCACHE_DIR:-}"
 
-.PHONY: list source-root-check source-root-selection-test \
+.PHONY: list source-root-check source-root-control-unit-test \
+        source-root-selection-test \
         vostro-prefix-check audit configure build clean clean-all distclean install \
         artifact-check test \
         rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache \
@@ -258,6 +278,10 @@ source-root-check:
 	@echo "OK    source commit: $(SOURCE_COMMIT)"
 	@echo "OK    source tree: $(SOURCE_TREE)"
 
+source-root-control-unit-test:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+		python3 -m pytest -q $(CURDIR)/tests/test_source_root_control.py
+
 # Driver-root gate: each AMD GPU family's Vulkan driver keeps its source root
 # at the family's vulkan/ directory, and the build graph enters it there.
 .PHONY: driver-root-audit
@@ -278,6 +302,7 @@ help:
 	@echo "  profile-audit     fail when a profile selects drivers outside its allowlist row"
 	@echo "  driver-root-audit fail when an AMD Vulkan driver root or its subdir() entry drifts"
 	@echo "  source-root-check require TOPSRC to be an exact Mesa Git worktree root"
+	@echo "  source-root-control-unit-test exercise path and identity invariants"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
 	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
 	@echo "  artifact-check    list installed Terakan/r600/r3v artifacts under \$$(PREFIX); warn on stale r300 ICDs"
@@ -338,7 +363,8 @@ audit-werror:
 	if [ $$rc -eq 0 ]; then echo "OK    audit-werror: profiles werror=true; packaging meson -Dwerror=true; prime/-o0 no /usr activation"; fi; \
 	exit $$rc
 
-audit: source-root-check source-root-selection-test \
+audit: source-root-check source-root-control-unit-test \
+       source-root-selection-test \
        vostro-prefix-check audit-werror profile-audit driver-root-audit
 	@failures=0; warnings=0; \
 	fail() { echo "FAIL  $$*" >&2; failures=$$((failures + 1)); }; \
@@ -734,7 +760,7 @@ clean-all:
 distclean:
 	@$(ACQUIRE_BUILD_LOCK) \
 	$(call CHECK_LAYOUT,distclean); \
-	$(VERIFY_SOURCE_IDENTITY); \
+	$(VERIFY_DISTCLEAN_IDENTITY); \
 	$(REMOVE_TREE) "$(BUILDDIR)" || { \
 		echo "failed to remove build directory: $(BUILDDIR)" >&2; exit 2; \
 	}; \
@@ -927,6 +953,17 @@ build-lease-test:
 source-root-selection-test:
 	@tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	if legacy_make_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+		MAKE_VERSION=4.1 source-root-check 2>&1 )"; then \
+		echo "FAIL  source-root control accepted GNU Make 4.1" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$legacy_make_output" | \
+		grep -F "GNU Make 4.2 or newer is required" >/dev/null || { \
+		echo "FAIL  old GNU Make returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$legacy_make_output" >&2; exit 1; \
+	}; \
+	echo "OK    source-root control declares the GNU Make 4.2 floor"; \
 	source_root="$$tmpdir/source"; \
 	mkdir -p "$$source_root"; \
 	git -C "$$source_root" init -q; \
@@ -1190,15 +1227,19 @@ source-root-selection-test:
 	}; \
 	rmdir "$$external_builddir"; \
 	echo "OK    external clean rejects an existing unbound build directory"; \
-	$(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+	if absent_clean_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
 		TOPSRC="$$source_root" BUILD_ROOT="$$external_build_root" \
 		BUILDDIR="$$external_builddir" \
-		BUILD_LOCK="$$tmpdir/external-build.lock" LOCK_WAIT=0 >/dev/null; \
-	test ! -e "$$external_builddir" || { \
-		echo "FAIL  clean left the external build directory in place" >&2; \
+		BUILD_LOCK="$$tmpdir/external-build.lock" LOCK_WAIT=0 2>&1 )"; then \
+		echo "FAIL  external clean adopted an absent unbound build directory" >&2; \
 		exit 1; \
+	fi; \
+	printf '%s\n' "$$absent_clean_output" | \
+		grep -F "external build root lacks source identity" >/dev/null || { \
+		echo "FAIL  absent unbound clean returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$absent_clean_output" >&2; exit 1; \
 	}; \
-	echo "OK    external clean accepts an absent isolated build directory"; \
+	echo "OK    external clean rejects an absent unbound build directory"; \
 	mkdir -p "$$source_build_root"; \
 	touch "$$source_build_root/sentinel"; \
 	if clean_all_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
@@ -1280,6 +1321,12 @@ source-root-selection-test:
 	}; \
 	test -f "$$failed_config_root/.gororoba-external-source-identity.json" || { \
 		echo "FAIL  failed configure omitted its provisional root identity" >&2; \
+		exit 1; \
+	}; \
+	grep -F '"state": "provisional"' \
+		"$$failed_config_root/.gororoba-external-source-identity.json" \
+		>/dev/null || { \
+		echo "FAIL  failed configure did not mark its root provisional" >&2; \
 		exit 1; \
 	}; \
 	test ! -e "$$failed_config_builddir/.gororoba-source-identity.json" || { \
@@ -1364,6 +1411,90 @@ source-root-selection-test:
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct NINJA=true >/dev/null; \
 	echo "OK    external build verifies the configure-time identity"; \
+	if reconfigure_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=false 2>&1 )"; then \
+		echo "FAIL  failed reconfigure reported success" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$reconfigure_output" | \
+		grep -F "Meson setup failed; source identity remains provisional" \
+		>/dev/null || { \
+		echo "FAIL  failed reconfigure returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$reconfigure_output" >&2; exit 1; \
+	}; \
+	grep -F '"state": "provisional"' \
+		"$$identity_build_root/.gororoba-external-source-identity.json" \
+		>/dev/null || { \
+		echo "FAIL  failed reconfigure left the root identity final" >&2; \
+		exit 1; \
+	}; \
+	if stale_build_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" build \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct NINJA=true 2>&1 )"; then \
+		echo "FAIL  build accepted a final identity under a provisional root" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$stale_build_output" | \
+		grep -F "expected final" >/dev/null || { \
+		echo "FAIL  stale build returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$stale_build_output" >&2; exit 1; \
+	}; \
+	if stale_test_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" test \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESON=true 2>&1 )"; then \
+		echo "FAIL  test accepted a final identity under a provisional root" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$stale_test_output" | \
+		grep -F "expected final" >/dev/null || { \
+		echo "FAIL  stale test returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$stale_test_output" >&2; exit 1; \
+	}; \
+	if stale_install_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" install \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESON=true SUDO=true 2>&1 )"; then \
+		echo "FAIL  install accepted a final identity under a provisional root" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$stale_install_output" | \
+		grep -F "expected final" >/dev/null || { \
+		echo "FAIL  stale install returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$stale_install_output" >&2; exit 1; \
+	}; \
+	if stale_distclean_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+		distclean TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 SUDO= 2>&1 )"; then \
+		echo "FAIL  distclean accepted a stale final build identity" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$stale_distclean_output" | \
+		grep -F "expected final" >/dev/null || { \
+		echo "FAIL  stale distclean returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$stale_distclean_output" >&2; exit 1; \
+	}; \
+	echo "OK    failed reconfigure revokes every finalized-identity consumer"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
+	grep -F '"state": "final"' \
+		"$$identity_build_root/.gororoba-external-source-identity.json" \
+		>/dev/null || { \
+		echo "FAIL  successful reconfigure did not finalize its root" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    successful reconfigure restores one final transaction"; \
 	if prefix_drift_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" build \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" \
@@ -1459,6 +1590,40 @@ source-root-selection-test:
 		exit 1; \
 	fi; \
 	echo "OK    distclean propagates prefix archival failure"; \
+	clean_distclean_root="$$tmpdir/clean-distclean"; \
+	clean_distclean_builddir="$$clean_distclean_root/probe"; \
+	clean_distclean_prefix="$$clean_distclean_root/prefix"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$clean_distclean_root" \
+		BUILDDIR="$$clean_distclean_builddir" PREFIX="$$clean_distclean_prefix" \
+		BUILD_LOCK="$$tmpdir/clean-distclean.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
+	mkdir -p "$$clean_distclean_prefix"; \
+	touch "$$clean_distclean_prefix/sentinel"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+		TOPSRC="$$source_root" BUILD_ROOT="$$clean_distclean_root" \
+		BUILDDIR="$$clean_distclean_builddir" PREFIX="$$clean_distclean_prefix" \
+		BUILD_LOCK="$$tmpdir/clean-distclean.lock" LOCK_WAIT=0 >/dev/null; \
+	test ! -e "$$clean_distclean_builddir" && \
+	test -f "$$clean_distclean_prefix/sentinel" || { \
+		echo "FAIL  clean-then-distclean setup lost a protected target" >&2; \
+		exit 1; \
+	}; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
+		TOPSRC="$$source_root" BUILD_ROOT="$$clean_distclean_root" \
+		BUILDDIR="$$clean_distclean_builddir" PREFIX="$$clean_distclean_prefix" \
+		BUILD_LOCK="$$tmpdir/clean-distclean.lock" LOCK_WAIT=0 SUDO= \
+		>/dev/null; \
+	test ! -e "$$clean_distclean_prefix" || { \
+		echo "FAIL  distclean left the bound prefix after clean" >&2; \
+		exit 1; \
+	}; \
+	set -- "$$clean_distclean_prefix".disabled.*; \
+	test "$$#" -eq 1 && test -f "$$1/sentinel" || { \
+		echo "FAIL  distclean did not retain one archived prefix after clean" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    clean then distclean archives the source-bound prefix"; \
 	touch "$$identity_builddir/ownership-sentinel"; \
 	if clean_owner_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
 		TOPSRC="$$legacy_root" BUILD_ROOT="$$identity_build_root" \
