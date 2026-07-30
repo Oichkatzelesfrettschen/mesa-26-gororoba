@@ -36,7 +36,10 @@ def input_path(name: str) -> Path:
         fail(f"{name} is empty")
     if not SAFE_PATH_INPUT.fullmatch(raw):
         fail(f"{name} contains unsupported path characters")
-    return Path(raw).expanduser().resolve(strict=False)
+    resolved = Path(raw).expanduser().resolve(strict=False)
+    if not SAFE_PATH_INPUT.fullmatch(str(resolved)):
+        fail(f"{name} resolves to a path with unsupported characters")
+    return resolved
 
 
 def run_git(root: Path, *arguments: str) -> str:

@@ -983,6 +983,27 @@ source-root-selection-test:
 		printf '%s\n' "$$whitespace_output" >&2; exit 1; \
 	}; \
 	echo "OK    external TOPSRC rejects whitespace before planning"; \
+	unsafe_physical="$$tmpdir/source'physical"; \
+	unsafe_link="$$tmpdir/safe-source-link"; \
+	mkdir -p "$$unsafe_physical"; \
+	git -C "$$unsafe_physical" init -q; \
+	touch "$$unsafe_physical/meson.build" "$$unsafe_physical/meson.options"; \
+	git -C "$$unsafe_physical" add meson.build meson.options; \
+	git -C "$$unsafe_physical" \
+		-c user.name=source-root-test -c user.email=source-root-test.invalid \
+		commit -qm "test: add unsafe physical root"; \
+	ln -s "$$unsafe_physical" "$$unsafe_link"; \
+	if resolved_output="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" \
+		configure TOPSRC="$$unsafe_link" 2>&1 )"; then \
+		echo "FAIL  source-root-check accepted an unsafe resolved path" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$resolved_output" | \
+		grep -F "resolves to a path with unsupported characters" >/dev/null || { \
+		echo "FAIL  unsafe resolved TOPSRC returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$resolved_output" >&2; exit 1; \
+	}; \
+	echo "OK    external TOPSRC rejects unsafe physical symlink targets"; \
 	source_build_root="$$source_root/build"; \
 	if source_build_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		clean TOPSRC="$$source_root" BUILD_ROOT="$$source_build_root" \
