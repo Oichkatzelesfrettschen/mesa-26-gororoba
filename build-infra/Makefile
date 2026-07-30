@@ -1097,6 +1097,7 @@ source-root-selection-test:
 	configure_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" \
 		configure TOPSRC="$$source_root" BUILD_ROOT="$$external_build_root" \
 		BUILDDIR="$$external_build_root/configure" \
+		PREFIX="$$external_build_root/prefix" \
 		BUILD_LOCK="$$tmpdir/configure.lock" LOCK_WAIT=0 \
 		MESON=meson PROFILE="$(PROFILE)" 2>/dev/null )"; \
 	printf '%s\n' "$$configure_plan" | grep -F "meson setup" >/dev/null && \
@@ -1105,20 +1106,35 @@ source-root-selection-test:
 		printf '%s\n' "$$configure_plan" >&2; exit 1; \
 	}; \
 	echo "OK    configure passes the exact external TOPSRC to Meson"; \
+	default_prefix_build_root="$$tmpdir/default-prefix-build"; \
+	if default_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$default_prefix_build_root" \
+		BUILDDIR="$$default_prefix_build_root/probe" \
+		BUILD_LOCK="$$tmpdir/default-prefix.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true 2>&1 )"; then \
+		echo "FAIL  external configure accepted the shared default prefix" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$default_prefix_output" | \
+		grep -F "external PREFIX must be a direct child of BUILD_ROOT" >/dev/null || { \
+		echo "FAIL  shared default prefix returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$default_prefix_output" >&2; exit 1; \
+	}; \
+	echo "OK    external configure rejects the shared default prefix"; \
 	unbound_build_root="$$tmpdir/unbound-build"; \
 	unbound_builddir="$$unbound_build_root/probe"; \
 	mkdir -p "$$unbound_builddir"; \
 	touch "$$unbound_builddir/sentinel"; \
 	if unbound_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$source_root" BUILD_ROOT="$$unbound_build_root" \
-		BUILDDIR="$$unbound_builddir" PREFIX="$$tmpdir/unbound-prefix" \
+		BUILDDIR="$$unbound_builddir" PREFIX="$$unbound_build_root/prefix" \
 		BUILD_LOCK="$$tmpdir/unbound.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true 2>&1 )"; then \
 		echo "FAIL  configure adopted a nonempty unbound build directory" >&2; \
 		exit 1; \
 	fi; \
 	printf '%s\n' "$$unbound_output" | \
-		grep -F "external build directory lacks a source identity" >/dev/null || { \
+		grep -F "external build root lacks a source identity" >/dev/null || { \
 		echo "FAIL  unbound build directory returned the wrong diagnostic" >&2; \
 		printf '%s\n' "$$unbound_output" >&2; exit 1; \
 	}; \
@@ -1129,21 +1145,56 @@ source-root-selection-test:
 	echo "OK    configure rejects a nonempty unbound build directory"; \
 	identity_build_root="$$tmpdir/identity-build"; \
 	identity_builddir="$$identity_build_root/probe"; \
+	identity_prefix="$$identity_build_root/prefix"; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
-		BUILDDIR="$$identity_builddir" PREFIX="$$tmpdir/prefix" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
 	test -f "$$identity_builddir/.gororoba-source-identity.json" || { \
 		echo "FAIL  configure omitted the external source identity" >&2; \
 		exit 1; \
 	}; \
+	test -f "$$identity_build_root/.gororoba-external-source-identity.json" || { \
+		echo "FAIL  configure omitted the external build-root identity" >&2; \
+		exit 1; \
+	}; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" build \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
-		BUILDDIR="$$identity_builddir" PREFIX="$$tmpdir/prefix" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct NINJA=true >/dev/null; \
 	echo "OK    external build verifies the configure-time identity"; \
+	if prefix_drift_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" build \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" \
+		PREFIX="$$identity_build_root/alternate-prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct NINJA=true 2>&1 )"; then \
+		echo "FAIL  build accepted a prefix outside its source identity" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$prefix_drift_output" | \
+		grep -F "external source identity drift: prefix" >/dev/null || { \
+		echo "FAIL  prefix identity drift returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$prefix_drift_output" >&2; exit 1; \
+	}; \
+	echo "OK    external build rejects prefix identity drift"; \
+	if shared_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$legacy_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_build_root/legacy-probe" \
+		PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true 2>&1 )"; then \
+		echo "FAIL  configure shared one prefix across source revisions" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$shared_prefix_output" | \
+		grep -F "external source identity drift" >/dev/null || { \
+		echo "FAIL  shared-prefix source conflict returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$shared_prefix_output" >&2; exit 1; \
+	}; \
+	echo "OK    external build root rejects a second source revision"; \
 	printf '%s\n' "identity drift" >> "$$source_root/meson.build"; \
 	git -C "$$source_root" add meson.build; \
 	git -C "$$source_root" \
@@ -1151,7 +1202,7 @@ source-root-selection-test:
 		commit -qm "test: move external source identity"; \
 	if drift_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" build \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
-		BUILDDIR="$$identity_builddir" PREFIX="$$tmpdir/prefix" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct NINJA=true 2>&1 )"; then \
 		echo "FAIL  build accepted a moving external source identity" >&2; \
@@ -1163,17 +1214,33 @@ source-root-selection-test:
 		printf '%s\n' "$$drift_output" >&2; exit 1; \
 	}; \
 	echo "OK    external build rejects source commit drift"; \
-	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+	if refresh_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
-		BUILDDIR="$$identity_builddir" PREFIX="$$tmpdir/prefix" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true 2>&1 )"; then \
+		echo "FAIL  configure refreshed a source-bound build root in place" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$refresh_output" | \
+		grep -F "external source identity drift" >/dev/null || { \
+		echo "FAIL  in-place source refresh returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$refresh_output" >&2; exit 1; \
+	}; \
+	refreshed_build_root="$$tmpdir/refreshed-build"; \
+	refreshed_builddir="$$refreshed_build_root/probe"; \
+	refreshed_prefix="$$refreshed_build_root/prefix"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$refreshed_build_root" \
+		BUILDDIR="$$refreshed_builddir" PREFIX="$$refreshed_prefix" \
+		BUILD_LOCK="$$tmpdir/refreshed.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" build \
-		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
-		BUILDDIR="$$identity_builddir" PREFIX="$$tmpdir/prefix" \
-		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		TOPSRC="$$source_root" BUILD_ROOT="$$refreshed_build_root" \
+		BUILDDIR="$$refreshed_builddir" PREFIX="$$refreshed_prefix" \
+		BUILD_LOCK="$$tmpdir/refreshed.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct NINJA=true >/dev/null; \
-	echo "OK    configure explicitly refreshes source identity"; \
+	echo "OK    source revision changes require a fresh isolated build root"; \
 	touch "$$source_root/untracked"; \
 	if dirty_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		source-root-check TOPSRC="$$source_root" 2>&1 )"; then \

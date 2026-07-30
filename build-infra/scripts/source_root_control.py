@@ -15,6 +15,7 @@ from typing import NoReturn
 
 SCHEMA_VERSION = 1
 IDENTITY_FILENAME = ".gororoba-source-identity.json"
+ROOT_IDENTITY_FILENAME = ".gororoba-external-source-identity.json"
 SAFE_PATH_INPUT = re.compile(r"^[A-Za-z0-9_./:+@=~-]+$")
 
 
@@ -208,6 +209,16 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
 
     if operation in {"configure", "install", "distclean", "artifact"}:
         validate_prefix(values)
+        if not source_is_control:
+            prefix = values["prefix"]
+            assert isinstance(prefix, Path)
+            if prefix.parent != build_root:
+                fail(
+                    "external PREFIX must be a direct child of BUILD_ROOT: "
+                    f"{prefix}"
+                )
+            if prefix == builddir:
+                fail(f"external PREFIX aliases BUILDDIR: {prefix}")
 
     if operation == "clean-all":
         if not source_is_control:
@@ -232,6 +243,22 @@ def identity_payload(values: dict[str, Path | str]) -> dict[str, str | int]:
         "control_commit": str(values["control_commit"]),
         "build_root": str(values["build_root"]),
         "builddir": str(values["builddir"]),
+        "prefix": str(values["prefix"]),
+    }
+
+
+def root_identity_payload(values: dict[str, Path | str]) -> dict[str, str | int]:
+    source_root = values["source_root"]
+    assert isinstance(source_root, Path)
+    require_clean_external_source(source_root)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "source_root": str(source_root),
+        "source_commit": str(values["source_commit"]),
+        "source_tree": str(values["source_tree"]),
+        "control_root": str(values["control_root"]),
+        "control_commit": str(values["control_commit"]),
+        "build_root": str(values["build_root"]),
     }
 
 
@@ -239,6 +266,12 @@ def identity_path(values: dict[str, Path | str]) -> Path:
     builddir = values["builddir"]
     assert isinstance(builddir, Path)
     return builddir / IDENTITY_FILENAME
+
+
+def root_identity_path(values: dict[str, Path | str]) -> Path:
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    return build_root / ROOT_IDENTITY_FILENAME
 
 
 def read_identity(path: Path) -> dict[str, object]:
@@ -251,24 +284,48 @@ def read_identity(path: Path) -> dict[str, object]:
     return value
 
 
+def require_identity_fields(
+    recorded: dict[str, object],
+    expected: dict[str, str | int],
+    path: Path,
+) -> None:
+    mismatches = [
+        field
+        for field, expected_value in expected.items()
+        if recorded.get(field) != expected_value
+    ]
+    if mismatches:
+        fail(
+            "external source identity drift: "
+            + ", ".join(sorted(mismatches))
+            + f" ({path})"
+        )
+
+
 def prepare_identity(values: dict[str, Path | str]) -> None:
     source_root = values["source_root"]
+    build_root = values["build_root"]
     builddir = values["builddir"]
     assert isinstance(source_root, Path)
+    assert isinstance(build_root, Path)
     assert isinstance(builddir, Path)
     if source_root == values["control_root"]:
         return
 
     expected = identity_payload(values)
+    root_expected = root_identity_payload(values)
+    root_path = root_identity_path(values)
+    if root_path.exists():
+        require_identity_fields(read_identity(root_path), root_expected, root_path)
+    elif build_root.exists() and any(build_root.iterdir()):
+        fail(
+            "external build root lacks a source identity; "
+            f"select an empty build root: {build_root}"
+        )
+
     path = identity_path(values)
     if path.exists():
-        recorded = read_identity(path)
-        for field in ("source_root", "control_root", "build_root", "builddir"):
-            if recorded.get(field) != expected[field]:
-                fail(
-                    f"source identity {field} mismatch: "
-                    f"{recorded.get(field)!r} != {expected[field]!r}"
-                )
+        require_identity_fields(read_identity(path), expected, path)
         return
 
     if builddir.exists() and any(builddir.iterdir()):
@@ -278,20 +335,11 @@ def prepare_identity(values: dict[str, Path | str]) -> None:
         )
 
 
-def write_identity(values: dict[str, Path | str]) -> None:
-    source_root = values["source_root"]
-    builddir = values["builddir"]
-    assert isinstance(source_root, Path)
-    assert isinstance(builddir, Path)
-    if source_root == values["control_root"]:
-        return
-
-    payload = identity_payload(values)
-    builddir.mkdir(parents=True, exist_ok=True)
-    output = identity_path(values)
+def write_json_atomic(output: Path, payload: dict[str, str | int]) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
-        dir=builddir,
-        prefix=f"{IDENTITY_FILENAME}.",
+        dir=output.parent,
+        prefix=f"{output.name}.",
         text=True,
     )
     try:
@@ -309,6 +357,21 @@ def write_identity(values: dict[str, Path | str]) -> None:
         raise
 
 
+def write_identity(values: dict[str, Path | str]) -> None:
+    source_root = values["source_root"]
+    assert isinstance(source_root, Path)
+    if source_root == values["control_root"]:
+        return
+
+    payload = identity_payload(values)
+    root_payload = root_identity_payload(values)
+    root_path = root_identity_path(values)
+    if root_path.exists():
+        require_identity_fields(read_identity(root_path), root_payload, root_path)
+    write_json_atomic(root_path, root_payload)
+    write_json_atomic(identity_path(values), payload)
+
+
 def verify_identity(values: dict[str, Path | str]) -> None:
     source_root = values["source_root"]
     assert isinstance(source_root, Path)
@@ -316,21 +379,16 @@ def verify_identity(values: dict[str, Path | str]) -> None:
         return
 
     expected = identity_payload(values)
+    root_expected = root_identity_payload(values)
+    root_path = root_identity_path(values)
+    if not root_path.is_file():
+        fail(f"external build root lacks source identity: {root_path}")
+    require_identity_fields(read_identity(root_path), root_expected, root_path)
+
     path = identity_path(values)
     if not path.is_file():
         fail(f"external build directory lacks source identity: {path}")
-    recorded = read_identity(path)
-    mismatches = [
-        field
-        for field, expected_value in expected.items()
-        if recorded.get(field) != expected_value
-    ]
-    if mismatches:
-        fail(
-            "external source identity drift: "
-            + ", ".join(sorted(mismatches))
-            + f" ({path})"
-        )
+    require_identity_fields(read_identity(path), expected, path)
 
 
 def parse_arguments() -> argparse.Namespace:

@@ -75,9 +75,9 @@ warning policy, and Meson option generator:
 make -C build-infra configure \
   TOPSRC=/path/to/mesa-source-worktree \
   PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache \
-  BUILD_ROOT=/path/to/isolated-build-root \
-  BUILDDIR=/path/to/isolated-build-root/source-identity \
-  PREFIX=/path/to/isolated-prefix/source-identity
+  BUILD_ROOT=/path/to/source-identity-root \
+  BUILDDIR=/path/to/source-identity-root/build \
+  PREFIX=/path/to/source-identity-root/prefix
 ```
 
 The source selector accepts only a clean, committed, exact Git worktree root
@@ -85,15 +85,18 @@ containing `meson.build` and either `meson.options` or the historical
 `meson_options.txt` spelling.  Path selection rejects whitespace and shell
 metacharacters, resolves symlinks before containment checks, and keeps the
 external build root, build directory, and prefix outside both the selected
-source tree and the control worktree.
+source tree and the control worktree.  The external prefix is a direct child
+of its build root, so the shared profile default under `/opt/local` never
+aliases two comparison sources.
 
 Successful external configuration writes
-`$BUILDDIR/.gororoba-source-identity.json`.  The record binds the build
-directory to the selected source root, commit, tree, control root, and control
-commit.  Build, test, and install verify that record before using the build
-directory.  A source revision change requires an explicit `make configure` to
-refresh the identity.  A nonempty external build directory without an identity
-requires `make clean` before configuration.
+`$BUILD_ROOT/.gororoba-external-source-identity.json` and
+`$BUILDDIR/.gororoba-source-identity.json`.  The build-root record reserves the
+entire root for one selected source root, commit, tree, control root, and
+control commit.  The build-directory record also binds the exact prefix.
+Build, test, and install verify both records before using the build directory.
+A source revision or control-plane commit change uses a fresh empty build root;
+the old root remains an immutable attribution boundary.
 
 Each compared revision gets a distinct `BUILD_ROOT`, `BUILDDIR`, and `PREFIX`.
 `clean-all` remains a control-worktree operation and rejects every external
@@ -105,7 +108,8 @@ environment, allowlist, toolchain selection, and Make logic govern every
 selected source tree.  `make source-root-selection-test` calibrates exact-root
 selection, legacy option-file admission, incomplete, unborn, dirty, and nested
 root rejection, shell-input rejection, physical containment, control-worktree
-protection, clean-all refusal, identity drift, and the Meson source argument.
+protection, clean-all refusal, build-root and prefix identity drift, shared
+prefix refusal, and the Meson source argument.
 
 ## Build-system policy
 
