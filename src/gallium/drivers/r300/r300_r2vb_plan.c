@@ -275,6 +275,86 @@ plan_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
     return adm;
 }
 
+enum r300_r2vb_constant_source_contract
+r300_r2vb_constant_source_scan(nir_shader *producer,
+                               uint32_t *required_bytes)
+{
+    if (required_bytes)
+        *required_bytes = 0;
+    if (!producer)
+        return R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED;
+
+    uint64_t maximum_end = 0;
+    bool external_load = false;
+    nir_foreach_function_impl(impl, producer) {
+        nir_foreach_block(block, impl) {
+            nir_foreach_instr(instr, block) {
+                if (instr->type != nir_instr_type_intrinsic)
+                    continue;
+                nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+                if (intr->intrinsic == nir_intrinsic_load_deref) {
+                    nir_variable *var = nir_intrinsic_get_var(intr, 0);
+                    if (var &&
+                        (var->data.mode &
+                         (nir_var_uniform | nir_var_mem_ubo |
+                          nir_var_mem_push_const |
+                          nir_var_mem_constant)))
+                        return R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED;
+                    continue;
+                }
+                if (intr->intrinsic == nir_intrinsic_load_push_constant ||
+                    intr->intrinsic == nir_intrinsic_load_constant ||
+                    intr->intrinsic == nir_intrinsic_load_uniform)
+                    return R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED;
+                if (intr->intrinsic != nir_intrinsic_load_ubo &&
+                    intr->intrinsic != nir_intrinsic_load_ubo_vec4)
+                    continue;
+
+                external_load = true;
+                if (!nir_src_is_const(intr->src[0]) ||
+                    nir_src_as_uint(intr->src[0]) != 0 ||
+                    !nir_src_is_const(intr->src[1]) ||
+                    intr->def.bit_size == 0 ||
+                    intr->def.bit_size % 8 != 0)
+                    return R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED;
+
+                const uint64_t component_bytes = intr->def.bit_size / 8;
+                const uint64_t component =
+                    nir_intrinsic_has_component(intr)
+                        ? nir_intrinsic_component(intr)
+                        : 0;
+                uint64_t offset = nir_src_as_uint(intr->src[1]);
+                if (intr->intrinsic == nir_intrinsic_load_ubo_vec4) {
+                    const uint64_t base =
+                        nir_intrinsic_has_base(intr)
+                            ? nir_intrinsic_base(intr)
+                            : 0;
+                    if (component + intr->num_components >
+                        16 / component_bytes)
+                        return R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED;
+                    offset = (base + offset) * 16 +
+                             component * component_bytes;
+                } else {
+                    if (nir_intrinsic_has_base(intr))
+                        offset += nir_intrinsic_base(intr);
+                    offset += component * component_bytes;
+                }
+                const uint64_t bytes =
+                    (uint64_t)intr->num_components * component_bytes;
+                if (offset > 64 || bytes > 64 - offset)
+                    return R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED;
+                maximum_end = MAX2(maximum_end, offset + bytes);
+            }
+        }
+    }
+
+    if (!external_load)
+        return R300_R2VB_CONSTANT_SOURCE_NONE;
+    if (required_bytes)
+        *required_bytes = (uint32_t)maximum_end;
+    return R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64;
+}
+
 /* One evaluated split candidate: the partition plus both admitted halves'
  * resource vectors. */
 struct plan_split_result {
@@ -449,6 +529,8 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
         return false;
     }
     plan_scan_typed_source(pos, plan);
+    plan->constant_source =
+        r300_r2vb_constant_source_scan(pos, &plan->constant_bytes);
 
     switch (adm) {
     case R300_FS_ADMIT_FITS:

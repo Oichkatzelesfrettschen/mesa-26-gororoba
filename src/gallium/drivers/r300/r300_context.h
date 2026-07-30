@@ -750,6 +750,21 @@ struct r300_context {
     bool r2vb_transform_fs_vp_valid;
     struct pipe_resource *r2vb_slot_pos_bo;
     unsigned r2vb_slot_pos_count;
+    bool r2vb_slot_pos_grid;
+
+    /* Per-draw AUTO_SINGLE admission result.  The route initializes this
+     * before classification and sets it after the complete policy, including
+     * the selected slot representation and BO-submit gates, returns OK.
+     * Execution keys delivery to the per-draw result, keeping manual and
+     * automatic admissions independent. */
+    bool r2vb_auto_single_selected;
+    enum {
+        R300_R2VB_AUTO_SINGLE_OUTCOME_NONE = 0,
+        R300_R2VB_AUTO_SINGLE_OUTCOME_DELIVERED,
+        R300_R2VB_AUTO_SINGLE_OUTCOME_TRIVIAL_REJECT,
+        R300_R2VB_AUTO_SINGLE_OUTCOME_FALLBACK,
+        R300_R2VB_AUTO_SINGLE_OUTCOME_PRODUCER_CONSUMED_WITHOUT_DELIVERY,
+    } r2vb_auto_single_outcome;
 
     /* Minimal vertex shader (position + one varying) bound during a producer pass
      * so update_derived_state sizes the VAP output / PSC / RS-block to the

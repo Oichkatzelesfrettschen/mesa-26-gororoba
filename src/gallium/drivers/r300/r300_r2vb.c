@@ -266,6 +266,9 @@ static nir_def *r2vb_build_producer_output(nir_builder *b, nir_def *comp[4],
                                 r300, space);
 }
 
+static void
+r2vb_accrue_app_state_restore(struct r300_context *r300);
+
 /* Clip-classification oracle gate (R300_R2VB_CLIP_CLASSIFY): run the
  * position producer in POSITION_CLIP mode, classify the actual FP24 clip-BO
  * contents against the Draw-parity clip codes, print machine-readable
@@ -291,17 +294,18 @@ static bool r300_r2vb_clip_classify_enabled(void)
  * splitting -- geometric clipping is edge generation's job. */
 static bool r300_r2vb_auto_single_armed(uint32_t *floor_out);
 
-static bool r300_r2vb_clip_route_enabled(void)
+static bool
+r300_r2vb_clip_route_enabled(const struct r300_context *r300)
 {
     static int cached = -1;
     if (cached < 0) {
         const char *e = getenv("R300_R2VB_CLIP_ROUTE");
         cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    /* The armed AUTO_SINGLE canary delivers through the clip-route action;
-     * the producer path only runs for draws the canary admitted, so the
-     * implied action never engages outside the admission contract. */
-    return cached || r300_r2vb_auto_single_armed(NULL);
+    /* An admitted AUTO_SINGLE draw delivers through the clip-route action.
+     * The per-draw result prevents a process-wide arm from enabling delivery
+     * for a draw that the policy declined. */
+    return cached || (r300 && r300->r2vb_auto_single_selected);
 }
 
 /* Edge-generation gate (R300_R2VB_CLIP_EDGE, requires R300_R2VB_CLIP_ROUTE):
@@ -365,14 +369,15 @@ static bool r300_r2vb_fresh_clip_copy_enabled(void)
  * run unchanged over that list.  A gathered list without the clip route to
  * classify and act on it renders nothing useful, so this gate is ANDed with
  * R300_R2VB_CLIP_ROUTE rather than acting alone. */
-static bool r300_r2vb_topology_enabled(void)
+static bool
+r300_r2vb_topology_enabled(const struct r300_context *r300)
 {
     static int cached = -1;
     if (cached < 0) {
         const char *e = getenv("R300_R2VB_TOPOLOGY");
         cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    return cached && r300_r2vb_clip_route_enabled();
+    return cached && r300_r2vb_clip_route_enabled(r300);
 }
 
 /* Drop the clip-edge replacement streams after the delivery they were built
@@ -825,18 +830,30 @@ unsigned r300_r2vb_count_position_inputs(nir_shader *vs_nir)
 }
 
 /* Data-independent producer position stream: one window-space point per output
- * slot at pixel (slot+0.5, 0.5, 0, 1), FP32x4.  Reused across draws, grown when
- * a draw needs more slots.  PIPE_BIND_CUSTOM forces a real winsys BO (the SWTCL
+ * slot at the layout's pixel center, FP32x4.  The legacy-row and 2048-wide-grid
+ * representations have separate cache identities because their Y coordinates
+ * diverge above slot 2047.  PIPE_BIND_CUSTOM forces a real winsys BO (the SWTCL
  * path otherwise keeps vertex resources as a CPU shadow with no ->buf, which a
  * LOAD_VBPNTR cannot fetch). */
 static struct pipe_resource *r300_r2vb_get_slot_pos_bo(struct r300_context *r300,
-                                                       unsigned count)
+                                                       const struct r300_r2vb_slot_layout *layout)
 {
-    if (r300->r2vb_slot_pos_bo && r300->r2vb_slot_pos_count >= count)
+    uint32_t last_x, last_y;
+    uint64_t last_offset;
+    if (!layout ||
+        !r300_r2vb_slot_layout_address(layout, layout->count - 1,
+                                       &last_x, &last_y, &last_offset))
+        return NULL;
+
+    bool grid = layout->policy == R300_R2VB_LAYOUT_GRID_2048;
+    if (r300->r2vb_slot_pos_bo &&
+        r300->r2vb_slot_pos_grid == grid &&
+        r300->r2vb_slot_pos_count >= layout->count)
         return r300->r2vb_slot_pos_bo;
 
     pipe_resource_reference(&r300->r2vb_slot_pos_bo, NULL);
-    unsigned cap = align(count, 64);
+    r300->r2vb_slot_pos_count = 0;
+    unsigned cap = align(layout->count, 64);
     struct pipe_screen *pscreen = r300->context.screen;
     struct pipe_resource templ = {0};
     templ.target = PIPE_BUFFER;
@@ -854,17 +871,22 @@ static struct pipe_resource *r300_r2vb_get_slot_pos_bo(struct r300_context *r300
     struct pipe_transfer *xfer = NULL;
     struct pipe_box box = { .width = cap * 16, .height = 1, .depth = 1 };
     float *map = r300->context.buffer_map(&r300->context, bo, 0, PIPE_MAP_WRITE, &box, &xfer);
-    if (map) {
-        for (unsigned s = 0; s < cap; s++) {
-            map[s * 4 + 0] = (float)s + 0.5f;
-            map[s * 4 + 1] = 0.5f;
-            map[s * 4 + 2] = 0.0f;
-            map[s * 4 + 3] = 1.0f;
-        }
-        r300->context.buffer_unmap(&r300->context, xfer);
+    if (!map) {
+        pipe_resource_reference(&bo, NULL);
+        return NULL;
     }
+    for (unsigned s = 0; s < cap; s++) {
+        uint32_t x = grid ? s % 2048u : s;
+        uint32_t y = grid ? s / 2048u : 0;
+        map[s * 4 + 0] = (float)x + 0.5f;
+        map[s * 4 + 1] = (float)y + 0.5f;
+        map[s * 4 + 2] = 0.0f;
+        map[s * 4 + 3] = 1.0f;
+    }
+    r300->context.buffer_unmap(&r300->context, xfer);
     r300->r2vb_slot_pos_bo = bo;
     r300->r2vb_slot_pos_count = cap;
+    r300->r2vb_slot_pos_grid = grid;
     return bo;
 }
 
@@ -874,10 +896,16 @@ static struct pipe_resource *r300_r2vb_get_slot_pos_bo(struct r300_context *r300
  * sequence.  Pure CPU setup; no draw, no GPU work. */
 static void r300_r2vb_mvp_init_selftest(struct r300_context *r300, unsigned count)
 {
+    struct r300_r2vb_slot_layout layout;
+    if (!r300_r2vb_slot_layout_init(count, false, &layout))
+        return;
     void *fs = r300_r2vb_get_transform_fs(r300, r2vb_env_space());
-    struct pipe_resource *bo = r300_r2vb_get_slot_pos_bo(r300, count);
-    fprintf(stderr, "r2vb_mvp_init transform_fs=%p slot_pos_bo=%p req_count=%u cap=%u\n",
-            fs, (void *)bo, count, r300->r2vb_slot_pos_count);
+    struct pipe_resource *bo = r300_r2vb_get_slot_pos_bo(r300, &layout);
+    fprintf(stderr,
+            "r2vb_mvp_init transform_fs=%p slot_pos_bo=%p req_count=%u "
+            "layout=%ux%u pitch=%u cap=%u\n",
+            fs, (void *)bo, count, layout.width, layout.height,
+            layout.pitch_pixels, r300->r2vb_slot_pos_count);
     if (!bo)
         return;
     struct pipe_transfer *xfer = NULL;
@@ -1129,12 +1157,16 @@ r2vb_clip_build_clipped_list(struct r300_context *r300,
                              float (*const *extras)[4],
                              float (**out_model)[4], float (**out_extras)[4])
 {
-    if (out_model)
-        *out_model = NULL;
-    if (out_extras)
-        *out_extras = NULL;
-    if (1 + n_extra > R300_R2VB_CLIP_MAX_ATTRS)
+    if (!r300 || !res || !model || !out_model ||
+        (n_extra && (!extras || !out_extras)) ||
+        n_extra >= R300_R2VB_CLIP_MAX_ATTRS)
         return -1;
+    *out_model = NULL;
+    for (unsigned extra = 0; extra < n_extra; extra++) {
+        if (!extras[extra])
+            return -1;
+        out_extras[extra] = NULL;
+    }
     struct pipe_transfer *xfer = NULL;
     struct pipe_box box = {
         .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
@@ -1272,6 +1304,20 @@ r2vb_size_mul(size_t a, size_t b, size_t *out)
     return true;
 }
 
+static bool
+r2vb_float_velem_format_supported(enum pipe_format format)
+{
+    switch (format) {
+    case PIPE_FORMAT_R32_FLOAT:
+    case PIPE_FORMAT_R32G32_FLOAT:
+    case PIPE_FORMAT_R32G32B32_FLOAT:
+    case PIPE_FORMAT_R32G32B32A32_FLOAT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* True when base + index * stride + format_size fits the bound resource.
  * User vertex buffers have no size in the pipe ABI; they cannot be extent-
  * checked here and remain the caller's contract.  Each term is accumulated
@@ -1279,9 +1325,13 @@ r2vb_size_mul(size_t a, size_t b, size_t *out)
 static bool
 r2vb_velem_index_in_bounds(struct r300_context *r300, unsigned e, uint32_t index)
 {
-    if (e >= r300->velems->count || !r300->velems->velem[e].src_stride)
+    if (!r300->velems || e >= r300->velems->count)
         return false;
     struct pipe_vertex_element *pe = &r300->velems->velem[e];
+    const unsigned record_bytes = util_format_get_blocksize(pe->src_format);
+    if (pe->instance_divisor != 0 || pe->src_stride == 0 ||
+        record_bytes == 0)
+        return false;
     if (pe->vertex_buffer_index >= r300->nr_vertex_buffers)
         return false;
     struct pipe_vertex_buffer *vb =
@@ -1297,7 +1347,7 @@ r2vb_velem_index_in_bounds(struct r300_context *r300, unsigned e, uint32_t index
         return false;
     if (!r2vb_size_add(base, row, &need))
         return false;
-    if (!r2vb_size_add(need, util_format_get_blocksize(pe->src_format), &need))
+    if (!r2vb_size_add(need, record_bytes, &need))
         return false;
     return need <= (size_t)vb->buffer.resource->width0;
 }
@@ -1306,18 +1356,14 @@ static float (*
 r2vb_read_velem_floats(struct r300_context *r300, unsigned e,
                        const uint32_t *indices, uint32_t count))[4]
 {
-    if (e >= r300->velems->count)
+    if (!r300->velems || e >= r300->velems->count ||
+        (count != 0 && !indices))
         return NULL;
     struct pipe_vertex_element *pe = &r300->velems->velem[e];
-    switch (pe->src_format) {
-    case PIPE_FORMAT_R32_FLOAT:
-    case PIPE_FORMAT_R32G32_FLOAT:
-    case PIPE_FORMAT_R32G32B32_FLOAT:
-    case PIPE_FORMAT_R32G32B32A32_FLOAT:
-        break;
-    default:
+    if (!r2vb_float_velem_format_supported(pe->src_format) ||
+        pe->instance_divisor != 0 ||
+        pe->vertex_buffer_index >= r300->nr_vertex_buffers)
         return NULL;
-    }
     struct pipe_vertex_buffer *vb = &r300->vertex_buffer[pe->vertex_buffer_index];
     const uint8_t *base = NULL;
     if (vb->is_user_buffer)
@@ -1326,7 +1372,7 @@ r2vb_read_velem_floats(struct r300_context *r300, unsigned e,
         base = r300_resource(vb->buffer.resource)->malloced_buffer;
     if (!base || !pe->src_stride)
         return NULL;
-    base += vb->buffer_offset + pe->src_offset;
+    base += (size_t)vb->buffer_offset + pe->src_offset;
     unsigned comps = util_format_get_nr_components(pe->src_format);
     float (*out)[4] = malloc((size_t)count * sizeof(*out));
     if (!out)
@@ -1528,7 +1574,8 @@ static bool r2vb_sed_oracle_selftest(void)
 static void
 r300_r2vb_dump_immd_state(struct r300_context *r300, uint32_t num_vertices,
                           unsigned num_attrs, uint32_t vtx_dwords,
-                          uint32_t output_pitch, bool transform_mode)
+                          const struct r300_r2vb_slot_layout *layout,
+                          bool transform_mode)
 {
     const char *gate = getenv("R300_R2VB_IMMD_STATE");
     if (!gate || strcmp(gate, "1") != 0)
@@ -1541,9 +1588,11 @@ r300_r2vb_dump_immd_state(struct r300_context *r300, uint32_t num_vertices,
         (struct r300_viewport_state *)r300->viewport_state.state;
     fprintf(stderr,
             "r2vb_immd_state begin num_vertices=%u num_attrs=%u "
-            "transform_mode=%u vap_vtx_size=%u vf_max=%u output_pitch=%u\n",
+            "transform_mode=%u vap_vtx_size=%u vf_max=%u "
+            "layout=%ux%u output_pitch=%u\n",
             num_vertices, num_attrs, transform_mode ? 1 : 0, vtx_dwords,
-            num_vertices - 1, output_pitch);
+            num_vertices - 1, layout->width, layout->height,
+            layout->pitch_pixels);
     if (vs) {
         fprintf(stderr, "r2vb_immd_state psc_count=%u\n", vs->count);
         for (unsigned i = 0; i < 8; i++)
@@ -1582,7 +1631,7 @@ r300_r2vb_dump_immd_state(struct r300_context *r300, uint32_t num_vertices,
             (uint32_t)(R300_VTX_XY_FMT | R300_VTX_Z_FMT),
             (uint32_t)R300_CLIP_DISABLE,
             transform_mode ? "c4_32_fp_rgba" : "c4_32_fp_bgra",
-            num_vertices + 1440 - 1, 1 + 1440 - 1);
+            layout->width + 1440 - 1, layout->height + 1440 - 1);
 }
 
 /* Producer output-target prologue, shared by the embedded-immediate draw and
@@ -1594,11 +1643,10 @@ r300_r2vb_dump_immd_state(struct r300_context *r300, uint32_t num_vertices,
 static void r2vb_emit_producer_target_prologue(struct r300_context *r300,
                                                struct r300_resource *output_gart_bo,
                                                uint32_t output_gart_bo_offset,
-                                               uint32_t num_vertices,
+                                               const struct r300_r2vb_slot_layout *layout,
                                                bool transform_mode)
 {
     CS_LOCALS(r300);
-    uint32_t output_pitch = align(num_vertices, 2);
 
     struct r300_fragment_shader *r2vb_fs = r300_fs(r300);
     struct rc_constant_list *r2vb_consts =
@@ -1615,15 +1663,23 @@ static void r2vb_emit_producer_target_prologue(struct r300_context *r300,
         }
     }
 
-    /* ZB_CNTL through VAP_VTE_CNTL: 31 fixed dwords plus the per-matching
-     * viewport-constant wpos override. */
-    BEGIN_CS(31 + (int)r2vb_vp_override_dwords);
+    /* ZB_CNTL through VAP_VTE_CNTL: 55 fixed dwords plus the per-matching
+     * viewport-constant wpos override.  The fixed range also installs a
+     * one-target, one-sample, full-write producer pipeline independent of
+     * application blend, alpha-test, logic-op, MRT, and sample state. */
+    BEGIN_CS(55 + (int)r2vb_vp_override_dwords);
 
     OUT_CS_REG(R300_ZB_CNTL, 0);
+    OUT_CS_REG_SEQ(R300_GB_MSPOS0, 2);
+    OUT_CS(0x66666666);
+    OUT_CS(0x06666666);
+    OUT_CS_REG(R300_GB_AA_CONFIG, R300_GB_AA_CONFIG_AA_DISABLE);
+    OUT_CS_REG(R300_RB3D_AARESOLVE_CTL, 0);
+    OUT_CS_REG(R300_SC_SCREENDOOR, 0x00ffffff);
     OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
     OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
-    OUT_CS(((num_vertices + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
-           ((1 + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
+    OUT_CS(((layout->width + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
+           ((layout->height + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
     /* Flush the OUTGOING color buffer before retargeting RB3D_COLOROFFSET0.
      * Every framebuffer change in the driver pairs with the gpu_flush atom's
      * cb_flush_clean (r300_mark_fb_state_dirty marks gpu_flush dirty), which
@@ -1638,17 +1694,37 @@ static void r2vb_emit_producer_target_prologue(struct r300_context *r300,
                R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
                    R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
     OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+    OUT_CS_REG(
+        R300_RB3D_CCTL,
+        r300->screen->caps.is_r500
+            ? R300_RB3D_CCTL_INDEPENDENT_COLORFORMAT_ENABLE_ENABLE
+            : 0);
     OUT_CS_REG(R300_RB3D_COLOROFFSET0, output_gart_bo_offset);
     OUT_CS_RELOC(output_gart_bo);
-    OUT_CS_REG(R300_RB3D_COLORPITCH0, output_pitch | R300_COLOR_FORMAT_ARGB32323232);
+    OUT_CS_REG(R300_RB3D_COLORPITCH0,
+               layout->pitch_pixels | R300_COLOR_FORMAT_ARGB32323232);
     /* RGBA identity select for the transform producer (FS outputs (x,y,z,w)
      * directly); BGRA for the passthrough producer (copies a pre-swizzled
      * (z,y,x,w) attribute).  Both target the ARGB32323232 BO. */
-    OUT_CS_REG(R300_US_OUT_FMT_0, transform_mode
-                   ? (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_R | R300_C1_SEL_G |
-                      R300_C2_SEL_B | R300_C3_SEL_A)
-                   : (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
-                      R300_C2_SEL_R | R300_C3_SEL_A));
+    OUT_CS_REG_SEQ(R300_US_OUT_FMT_0, 4);
+    OUT_CS(transform_mode
+               ? (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_R |
+                  R300_C1_SEL_G | R300_C2_SEL_B | R300_C3_SEL_A)
+               : (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B |
+                  R300_C1_SEL_G | R300_C2_SEL_R | R300_C3_SEL_A));
+    OUT_CS(R300_US_OUT_FMT_UNUSED);
+    OUT_CS(R300_US_OUT_FMT_UNUSED);
+    OUT_CS(R300_US_OUT_FMT_UNUSED);
+    OUT_CS_REG(R300_RB3D_ROPCNTL, 0);
+    OUT_CS_REG_SEQ(R300_RB3D_CBLEND, 3);
+    OUT_CS(0);
+    OUT_CS(0);
+    OUT_CS(RB3D_COLOR_CHANNEL_MASK_BLUE_MASK0 |
+           RB3D_COLOR_CHANNEL_MASK_GREEN_MASK0 |
+           RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
+           RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0);
+    OUT_CS_REG(R300_RB3D_DITHER_CTL, 0);
+    OUT_CS_REG(R300_FG_ALPHA_FUNC, R300_FG_ALPHA_FUNC_DISABLE);
     /* Identity wpos for a gl_FragCoord-based passthrough FS (no-op for a
      * transform FS, whose constants are matrix externals, not viewport state). */
     if (r2vb_consts) {
@@ -1686,7 +1762,7 @@ static void r2vb_emit_producer_target_prologue(struct r300_context *r300,
             /* ps6 = px*6 is packed into a 16-bit GA_POINT_SIZE field per axis. */
             r2vb_point_px = (px > 0 && px <= 65535 / 6) ? (int)px : 1;
         }
-        int px = (num_vertices == 1) ? r2vb_point_px : 1;
+        int px = (layout->count == 1) ? r2vb_point_px : 1;
         uint32_t ps6 = (uint32_t)px * 6;
         OUT_CS_REG(R300_GA_POINT_SIZE, (ps6 << R300_POINTSIZE_Y_SHIFT) |
                                            (ps6 << R300_POINTSIZE_X_SHIFT));
@@ -1696,6 +1772,13 @@ static void r2vb_emit_producer_target_prologue(struct r300_context *r300,
     OUT_CS_REG(R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
     OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
     END_CS;
+
+    /* The prologue writes outside the atom cache.  Accrue restoration debt
+     * at the mutation owner, before any later return can bypass cleanup.
+     * The flags emit no packets until the next prepare_for_rendering call,
+     * so the producer draw and order tail remain contiguous. */
+    r2vb_accrue_app_state_restore(r300);
+    r300->vertex_arrays_dirty = true;
 }
 
 /* Producer cache-publication tail, shared by both producer forms: push the
@@ -1733,14 +1816,18 @@ static void r2vb_emit_producer_order_tail(struct r300_context *r300)
     END_CS;
 }
 
-static void r300_r2vb_emit_producer(struct r300_context *r300,
+static bool r300_r2vb_emit_producer(struct r300_context *r300,
                                     struct r300_resource *output_gart_bo,
                                     uint32_t output_gart_bo_offset, uint32_t num_vertices,
                                     const float (*vertex_attrs)[4], unsigned num_attrs,
+                                    const struct r300_r2vb_slot_layout *layout,
                                     bool transform_mode)
 {
     CS_LOCALS(r300);
-    uint32_t output_pitch = align(num_vertices, 2);
+    assert(layout && layout->count == num_vertices);
+    if (!layout || layout->count != num_vertices ||
+        !r300_r2vb_immediate_producer_shape_ok(num_vertices, num_attrs))
+        return false;
 
     /* Embedded vertex = slot position + num_attrs model attributes, each FP32x4, so
      * VAP_VTX_SIZE and the DRAW_IMMD body are 4*(1+num_attrs) dwords per vertex.
@@ -1755,7 +1842,7 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
     uint32_t vtx_dwords = 4 * (1 + num_attrs);
 
     r300_r2vb_dump_immd_state(r300, num_vertices, num_attrs, vtx_dwords,
-                              output_pitch, transform_mode);
+                              layout, transform_mode);
 
     r300->rws->cs_add_buffer(&r300->cs, output_gart_bo->buf,
                              RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
@@ -1763,7 +1850,7 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
                              RADEON_DOMAIN_GTT);
 
     r2vb_emit_producer_target_prologue(r300, output_gart_bo,
-                                       output_gart_bo_offset, num_vertices,
+                                       output_gart_bo_offset, layout,
                                        transform_mode);
 
     /* VTX_SIZE + VF_MAX + the DRAW_IMMD header pair, then the embedded body. */
@@ -1774,8 +1861,10 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
     OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (num_vertices << 16) |
            R300_VAP_VF_CNTL__PRIM_POINTS);
     for (uint32_t pv = 0; pv < num_vertices; pv++) {
-        OUT_CS_32F((float)pv + 0.5f);
-        OUT_CS_32F(0.5f);
+        uint32_t slot_x = pv % layout->width;
+        uint32_t slot_y = pv / layout->width;
+        OUT_CS_32F((float)slot_x + 0.5f);
+        OUT_CS_32F((float)slot_y + 0.5f);
         OUT_CS_32F(0.0f);
         OUT_CS_32F(1.0f);
         if (transform_mode) {
@@ -1800,6 +1889,7 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
     END_CS;
 
     r2vb_emit_producer_order_tail(r300);
+    return true;
 }
 
 void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
@@ -1824,6 +1914,18 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     if (stage3_color_bo && (stage3_width == 0 || stage3_height == 0))
         return;
 
+    struct r300_r2vb_slot_layout layout;
+    if (!r300_r2vb_slot_layout_select(
+            num_vertices, getenv("R300_R2VB_SLOT_LAYOUT"),
+            r300_r2vb_slot_grid_gate_value(getenv("R300_R2VB_SLOT_GRID")),
+            &layout))
+        return;
+    if ((uint64_t)output_gart_bo_offset + layout.storage_bytes >
+        output_gart_bo->b.width0)
+        return;
+    if (!r300_r2vb_immediate_producer_shape_ok(num_vertices, 1))
+        return;
+
     /* FP32x4 linear color targets need an even-pixel pitch; the scissor remains
      * the logical vertex count so the padding pixel is not rendered. */
     uint32_t stage3_pitch = align(stage3_width, 2);
@@ -1839,8 +1941,10 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
 
     /* Producer: stage 1 (render one synthesized vertex per slot through the
      * bound fragment program) + the cb_flush_clean barrier, into output_gart_bo. */
-    r300_r2vb_emit_producer(r300, output_gart_bo, output_gart_bo_offset, num_vertices,
-                            vertex_attrs, 1, transform_mode);
+    if (!r300_r2vb_emit_producer(
+            r300, output_gart_bo, output_gart_bo_offset, num_vertices,
+            vertex_attrs, 1, &layout, transform_mode))
+        return;
 
     /* C0 baseline cell gate (R300_PTSIZE_C0=1): write VAP_OUTPUT_VTX_FMT_0/1
      * (0x2090/0x2094) explicitly on the re-ingest so PT_SIZE_PRESENT (bit 16 of
@@ -2439,7 +2543,16 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
     }
     cfg.num_vertices = nverts;
 
-    struct pipe_resource *res = r2vb_create_selftest_bo(r300, align(cfg.num_vertices, 2) * 16, 0);
+    struct r300_r2vb_slot_layout selftest_layout;
+    if (!r300_r2vb_slot_layout_select(
+            cfg.num_vertices, getenv("R300_R2VB_SLOT_LAYOUT"),
+            r300_r2vb_slot_grid_gate_value(getenv("R300_R2VB_SLOT_GRID")),
+            &selftest_layout)) {
+        free(heap_attrs);
+        return false;
+    }
+    struct pipe_resource *res = r2vb_create_selftest_bo(
+        r300, (uint32_t)selftest_layout.storage_bytes, 0);
     if (!res) {
         free(heap_attrs);
         return false;
@@ -3271,6 +3384,11 @@ bool r300_r2vb_slot_grid_gate_value(const char *value)
     return value && strcmp(value, "1") == 0;
 }
 
+bool r300_r2vb_bo_draw_delivery_mode_value(const char *value)
+{
+    return value && strcmp(value, "producer_deliver") == 0;
+}
+
 bool r300_r2vb_slot_fetch_gate_value(const char *value)
 {
     return value && strcmp(value, "1") == 0;
@@ -3310,6 +3428,157 @@ void r300_r2vb_model_fetch_fini(struct r300_r2vb_model_fetch *m)
     r300_r2vb_model_fetch_init(m);
 }
 
+struct r300_r2vb_model_source_window {
+    enum r300_r2vb_model_source_kind kind;
+    struct pipe_resource *resource;
+    struct r300_resource *resource_state;
+    uint32_t record_bytes;
+    uint32_t stride_bytes;
+    uint64_t source_offset;
+    uint64_t source_end;
+    uint64_t span_bytes;
+};
+
+static enum r300_r2vb_producer_input_status
+r300_r2vb_model_source_window_preflight(
+    const struct pipe_vertex_buffer *vb,
+    const struct pipe_vertex_element *ve, uint32_t start, uint32_t count,
+    const struct r300_r2vb_producer_stream *model_stream,
+    struct r300_r2vb_model_source_window *out)
+{
+    if (!vb || !ve)
+        return R300_R2VB_PRODUCER_INPUT_BUFFER_BINDING;
+    if (ve->instance_divisor != 0)
+        return R300_R2VB_PRODUCER_INPUT_INSTANCE_RATE;
+    if (!model_stream ||
+        (model_stream->size_dwords != 3 &&
+         model_stream->size_dwords != 4) ||
+        model_stream->logical_components != 4)
+        return R300_R2VB_PRODUCER_INPUT_FORMAT;
+    if (model_stream->stride_dwords < model_stream->size_dwords ||
+        model_stream->stride_dwords > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX ||
+        model_stream->offset_bytes % 4 != 0)
+        return R300_R2VB_PRODUCER_INPUT_STRIDE;
+
+    uint32_t record_bytes = model_stream->size_dwords * 4;
+    uint32_t stride_bytes = model_stream->stride_dwords * 4;
+    if (ve->src_stride != stride_bytes)
+        return R300_R2VB_PRODUCER_INPUT_STRIDE;
+    if (count == 0 || count >= 65536)
+        return R300_R2VB_PRODUCER_INPUT_SPAN;
+
+    struct pipe_resource *resource =
+        vb->is_user_buffer ? NULL : vb->buffer.resource;
+    if (!vb->is_user_buffer && !resource)
+        return R300_R2VB_PRODUCER_INPUT_BUFFER_BINDING;
+    struct r300_resource *resource_state =
+        resource ? r300_resource(resource) : NULL;
+    enum r300_r2vb_model_source_kind kind =
+        r300_r2vb_model_source_classify(
+            vb->is_user_buffer, resource_state && resource_state->buf,
+            resource_state && resource_state->malloced_buffer);
+    if (kind == R300_R2VB_MODEL_UNSUPPORTED)
+        return R300_R2VB_PRODUCER_INPUT_SOURCE_CLASS;
+
+    uint64_t source_offset =
+        (uint64_t)vb->buffer_offset + ve->src_offset +
+        (uint64_t)start * stride_bytes;
+    if (source_offset != model_stream->offset_bytes)
+        return R300_R2VB_PRODUCER_INPUT_SPAN;
+    uint64_t source_end =
+        source_offset + (uint64_t)(count - 1) * stride_bytes + record_bytes;
+    if (source_offset > UINT32_MAX || source_end > resource->width0 ||
+        source_end - source_offset > UINT_MAX)
+        return R300_R2VB_PRODUCER_INPUT_SPAN;
+
+    if (out) {
+        *out = (struct r300_r2vb_model_source_window) {
+            .kind = kind,
+            .resource = resource,
+            .resource_state = resource_state,
+            .record_bytes = record_bytes,
+            .stride_bytes = stride_bytes,
+            .source_offset = source_offset,
+            .source_end = source_end,
+            .span_bytes = source_end - source_offset,
+        };
+    }
+    return R300_R2VB_PRODUCER_INPUT_OK;
+}
+
+enum r300_r2vb_producer_input_status
+r300_r2vb_producer_input_preflight(
+    const struct r300_r2vb_producer_plan *plan,
+    const struct pipe_vertex_element *velems, unsigned velem_count,
+    const struct pipe_vertex_buffer *vertex_buffers,
+    unsigned nr_vertex_buffers, uint32_t start, uint32_t count)
+{
+    if (!plan || !plan->position_source.valid ||
+        plan->num_position_inputs != 1 ||
+        plan->position_source.app_driver_location != 0 ||
+        plan->position_source.location_rank != 0 ||
+        !velems ||
+        plan->position_source.location_rank >= velem_count)
+        return R300_R2VB_PRODUCER_INPUT_POSITION_SOURCE;
+
+    const struct pipe_vertex_element *ve =
+        &velems[plan->position_source.location_rank];
+    if (ve->instance_divisor != 0)
+        return R300_R2VB_PRODUCER_INPUT_INSTANCE_RATE;
+    if (!vertex_buffers || ve->vertex_buffer_index >= nr_vertex_buffers ||
+        (!vertex_buffers[ve->vertex_buffer_index].is_user_buffer &&
+         !vertex_buffers[ve->vertex_buffer_index].buffer.resource))
+        return R300_R2VB_PRODUCER_INPUT_BUFFER_BINDING;
+    if (ve->src_format != PIPE_FORMAT_R32G32B32_FLOAT &&
+        ve->src_format != PIPE_FORMAT_R32G32B32A32_FLOAT)
+        return R300_R2VB_PRODUCER_INPUT_FORMAT;
+
+    uint32_t record_bytes =
+        ve->src_format == PIPE_FORMAT_R32G32B32_FLOAT ? 12 : 16;
+    if (ve->src_stride % 4 != 0 || ve->src_stride < record_bytes ||
+        ve->src_stride / 4 > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX)
+        return R300_R2VB_PRODUCER_INPUT_STRIDE;
+
+    const struct pipe_vertex_buffer *vb =
+        &vertex_buffers[ve->vertex_buffer_index];
+    if (vb->is_user_buffer)
+        return R300_R2VB_PRODUCER_INPUT_SOURCE_CLASS;
+    struct r300_r2vb_producer_streams streams;
+    if (!r300_r2vb_producer_streams_init(
+            vb->buffer_offset, ve->src_offset, ve->src_stride,
+            ve->src_format, start, &streams))
+        return R300_R2VB_PRODUCER_INPUT_SPAN;
+    enum r300_r2vb_producer_input_status status =
+        r300_r2vb_model_source_window_preflight(
+            vb, ve, start, count, &streams.stream[1], NULL);
+    if (status != R300_R2VB_PRODUCER_INPUT_OK)
+        return status;
+    return r300_resource(vb->buffer.resource)->malloced_buffer
+               ? R300_R2VB_PRODUCER_INPUT_OK
+               : R300_R2VB_PRODUCER_INPUT_CPU_ACCESS;
+}
+
+enum r300_r2vb_delivery_stream_status
+r300_r2vb_delivery_element_preflight(
+    const struct pipe_vertex_element *element)
+{
+    if (!element)
+        return R300_R2VB_DELIVERY_STREAM_LAYOUT;
+    if (element->instance_divisor != 0)
+        return R300_R2VB_DELIVERY_STREAM_INSTANCE_RATE;
+
+    if (element->src_format != PIPE_FORMAT_R32G32B32A32_FLOAT)
+        return R300_R2VB_DELIVERY_STREAM_FORMAT;
+    const unsigned record_bytes = 16;
+    if (element->src_offset % 4 != 0 || element->src_stride == 0 ||
+        element->src_stride % 4 != 0 ||
+        element->src_stride / 4 > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX ||
+        (uint64_t)element->src_offset + record_bytes >
+            element->src_stride)
+        return R300_R2VB_DELIVERY_STREAM_STRIDE;
+    return R300_R2VB_DELIVERY_STREAM_OK;
+}
+
 static bool
 r300_r2vb_materialize_model_fetch(struct r300_context *r300,
                                   const struct pipe_vertex_buffer *vb,
@@ -3323,78 +3592,44 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
     assert(out->kind == R300_R2VB_MODEL_UNSUPPORTED && !out->resource);
     memset(out, 0, sizeof(*out));
     out->kind = R300_R2VB_MODEL_UNSUPPORTED;
-    /* The validated stream record is the single source of the record and
-     * stride widths -- re-proved here so the materializer trusts neither
-     * its caller nor the builder -- and the bounded stride keeps the
-     * byte multiplications from wrapping. */
-    if (!model_stream ||
-        (model_stream->size_dwords != 3 && model_stream->size_dwords != 4) ||
-        model_stream->logical_components != 4 ||
-        model_stream->stride_dwords < model_stream->size_dwords ||
-        model_stream->stride_dwords > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX ||
-        model_stream->offset_bytes % 4 != 0)
-        return false;
-    uint32_t record_bytes = model_stream->size_dwords * 4;
-    uint32_t stride_bytes = model_stream->stride_dwords * 4;
-    if (count == 0 || count >= 65536 || ve->src_stride != stride_bytes)
-        return false;
-    struct pipe_resource *res =
-        vb->is_user_buffer ? NULL : vb->buffer.resource;
-    struct r300_resource *rres = res ? r300_resource(res) : NULL;
-    enum r300_r2vb_model_source_kind kind = r300_r2vb_model_source_classify(
-        vb->is_user_buffer, rres && rres->buf,
-        rres && rres->malloced_buffer);
-    if (kind == R300_R2VB_MODEL_UNSUPPORTED)
+    struct r300_r2vb_model_source_window window;
+    if (r300_r2vb_model_source_window_preflight(
+            vb, ve, start, count, model_stream, &window) !=
+        R300_R2VB_PRODUCER_INPUT_OK)
         return false;
 
-    uint64_t source_offset = (uint64_t)vb->buffer_offset + ve->src_offset +
-                             (uint64_t)start * stride_bytes;
-    /* Offset coherence: the stream builder computed the same start-
-     * adjusted offset; a divergence means the two contracts describe
-     * different bytes, and the rebased emission stream would then point
-     * the GPU at the wrong part of the upload. */
-    if (source_offset != model_stream->offset_bytes)
-        return false;
-    uint64_t source_end = source_offset +
-                          (uint64_t)(count - 1) * stride_bytes +
-                          record_bytes;
-    if (source_end > res->width0 || source_offset > UINT32_MAX ||
-        source_end - source_offset > UINT_MAX) {
-        r300_r2vb_model_fetch_fini(out);
-        return false;
-    }
-
-    uint64_t span = source_end - source_offset;
-    if (kind == R300_R2VB_MODEL_REAL_BO) {
-        pipe_resource_reference(&out->resource, res);
-        out->kind = kind;
-        out->gpu_offset = (uint32_t)source_offset;
+    if (window.kind == R300_R2VB_MODEL_REAL_BO) {
+        pipe_resource_reference(&out->resource, window.resource);
+        out->kind = window.kind;
+        out->gpu_offset = (uint32_t)window.source_offset;
         out->count = count;
         out->stride_dwords = model_stream->stride_dwords;
         out->record_dwords = model_stream->size_dwords;
-        out->span_bytes = span;
+        out->span_bytes = window.span_bytes;
         return true;
     }
 
     unsigned upload_offset = 0;
     struct pipe_resource *uploaded = NULL;
     u_upload_data_ref(r300->uploader, 0,
-                      (unsigned)(source_end - source_offset), 4,
-                      rres->malloced_buffer + source_offset, &upload_offset,
+                      (unsigned)window.span_bytes, 4,
+                      window.resource_state->malloced_buffer +
+                          window.source_offset,
+                      &upload_offset,
                       &uploaded);
     if (!uploaded) {
         r300_r2vb_model_fetch_fini(out);
         return false;
     }
     u_upload_unmap(r300->uploader);
-    out->kind = kind;
+    out->kind = window.kind;
     out->resource = uploaded;
     out->gpu_offset = upload_offset;
     out->count = count;
     out->stride_dwords = model_stream->stride_dwords;
     out->record_dwords = model_stream->size_dwords;
-    out->span_bytes = span;
-    out->uploaded_bytes = span;
+    out->span_bytes = window.span_bytes;
+    out->uploaded_bytes = window.span_bytes;
     return true;
 }
 
@@ -3864,6 +4099,7 @@ bool r300_r2vb_producer_bo_draw_validate(
     const struct r300_vertex_stream_state *psc_state,
     const struct pipe_vertex_buffer *vb, const struct pipe_vertex_element *ve,
     unsigned velem_count, unsigned nr_vertex_buffers,
+    const struct r300_r2vb_slot_layout *layout,
     struct pipe_resource *slot_resource,
     struct pipe_resource *output_resource, uint32_t start, uint32_t count,
     enum r300_r2vb_position_space space,
@@ -3883,7 +4119,7 @@ bool r300_r2vb_producer_bo_draw_validate(
         r2vb_bo_draw_validate_decline("slot_fetch_gate");
         return false;
     }
-    if (!plan || !vb || !ve || !slot_resource || !output_resource ||
+    if (!plan || !vb || !ve || !layout || !slot_resource || !output_resource ||
         !rs || !psc_state) {
         r2vb_bo_draw_validate_decline("null_input");
         return false;
@@ -3902,10 +4138,15 @@ bool r300_r2vb_producer_bo_draw_validate(
         r2vb_bo_draw_validate_decline("input_mapping");
         return false;
     }
-    if (!r300_r2vb_slot_layout_init(count, false, &out->layout)) {
+    uint32_t last_x, last_y;
+    uint64_t last_offset;
+    if (layout->count != count ||
+        !r300_r2vb_slot_layout_address(layout, count - 1, &last_x, &last_y,
+                                       &last_offset)) {
         r2vb_bo_draw_validate_decline("slot_layout");
         return false;
     }
+    out->layout = *layout;
     struct r300_r2vb_producer_streams streams;
     if (!r300_r2vb_producer_streams_init(vb->buffer_offset, ve->src_offset,
                                          ve->src_stride, ve->src_format,
@@ -3943,11 +4184,10 @@ bool r300_r2vb_producer_bo_draw_validate(
         r2vb_bo_draw_validate_decline("binding_check");
         goto fail;
     }
-    /* Output authority: the one-row producer writes count FP32x4 texels
-     * from offset zero of the bound framebuffer color target, whose
-     * relocation rides the dirty framebuffer state atom.  Validation
-     * proves that identity, the storage extent, the exact producer
-     * format, and -- when a winsys buffer backs the resource -- the GTT
+    /* Output authority: the producer writes count FP32x4 texels through the
+     * selected raster layout from offset zero of the bound framebuffer color
+     * target.  Validation proves the framebuffer dimensions, complete physical
+     * storage including the poisonable tail, exact producer format, and GTT
      * placement the calibrated delivery observed. */
     {
         const struct pipe_framebuffer_state *fb =
@@ -3970,12 +4210,15 @@ bool r300_r2vb_producer_bo_draw_validate(
             r2vb_bo_draw_validate_decline("output_format");
             goto fail;
         }
-        if (output_resource->width0 < out->layout.width ||
-            output_resource->height0 < out->layout.height) {
+        if (fb->width < out->layout.width ||
+            fb->height < out->layout.height ||
+            (uint64_t)output_resource->width0 <
+                out->layout.storage_bytes) {
             r2vb_bo_draw_validate_decline("output_extent");
             goto fail;
         }
-        out->output_required_bytes = (uint64_t)count * 16;
+        out->output_required_bytes = out->layout.storage_bytes;
+        out->output_valid_bytes = (uint64_t)count * 16;
         out->output_offset = 0;
         out->output_pitch_pixels = out->layout.pitch_pixels;
     }
@@ -4085,10 +4328,9 @@ bool r300_r2vb_producer_bo_draw_emit(struct r300_context *r300,
     /* Lifecycle: emission consumes a READY transaction exactly once. */
     if (txn->state != R300_R2VB_BO_DRAW_READY)
         return false;
-    /* Dirty state first.  Staging validated the complete buffer list, so
-     * from here every operation completes mechanically; the atoms this
-     * writes are the ones the capacity reservation accounted for. */
-    r300_emit_dirty_state(r300);
+    /* The caller lands application dirty state before the raw producer
+     * prologue.  Emission stays mechanical from this point so no atom can
+     * overwrite the producer target or neutral raster state before DRAW_VBUF. */
     const struct r300_r2vb_producer_stream *slot =
         &txn->fetch.streams.stream[0];
     const struct r300_r2vb_producer_stream *model =
@@ -4178,13 +4420,12 @@ void r300_r2vb_producer_bo_draw_fini(struct r300_r2vb_producer_bo_draw *txn)
  * same streams/fetch/interface helpers the immediate producer uses, so
  * it round-trips from_state by construction -- allocates real GTT slot,
  * model, and output BOs, installs a framebuffer whose cbufs[0] is the
- * output target (validate requires that identity; left unmarked so
- * emit_dirty_state does not touch it), then for each of the five widths
+ * output target for validation, then for each of the five widths
  * runs the real validate -> stage_cs -> emit through the live winsys and
  * flushes RADEON_FLUSH_NOOP.  R300_TRACE captures each IB before
  * DRM_RADEON_CS, so the run carries zero submission and the decoded
- * custom range proves the 64-dword size is count-independent except the
- * VF_MAX_VTX_INDX and DRAW_VBUF_2 count words. */
+ * isolated custom range proves the 64-dword size is count-independent
+ * except the VF_MAX_VTX_INDX and DRAW_VBUF_2 count words. */
 bool r300_r2vb_bo_draw_capture_selftest(struct r300_context *r300,
                                         bool from_flush)
 {
@@ -4273,13 +4514,13 @@ bool r300_r2vb_bo_draw_capture_selftest(struct r300_context *r300,
     cap_fb.cbufs[0].format = PIPE_FORMAT_R32G32B32A32_FLOAT;
     r300->fb_state.state = &cap_fb;
 
-    /* Neutralize the application's dirty atoms for the length capture:
+    /* Isolate the fixed-range length capture from enclosing dirty state:
      * r300_add_state_buffers reads the parallel r300->fb_cbufs surface
      * array and the aa/textures atoms, which do not match this synthetic
-     * framebuffer, and r300_emit_dirty_state would emit them.  Clearing
-     * the dirty flags and the dirty-atom span keeps both to the three
-     * producer BOs and the custom command range; the state is restored
-     * after the capture so the enclosing flush is unaffected. */
+     * framebuffer.  Clearing the dirty flags and dirty-atom span keeps the
+     * staged resource list to the three producer BOs and the emitted PM4 to
+     * the custom range; the state is restored after the capture so the
+     * enclosing flush is unaffected. */
     bool saved_fb_dirty = r300->fb_state.dirty;
     bool saved_aa_dirty = r300->aa_state.dirty;
     bool saved_tex_dirty = r300->textures_state.dirty;
@@ -4303,12 +4544,16 @@ bool r300_r2vb_bo_draw_capture_selftest(struct r300_context *r300,
     ve.vertex_buffer_index = 0;
 
     for (unsigned w = 0; w < 5; w++) {
+        struct r300_r2vb_slot_layout layout;
         struct r300_r2vb_producer_bo_draw txn;
         r300_r2vb_producer_bo_draw_init(&txn);
         bool ok =
+            r300_r2vb_slot_layout_init_policy(
+                widths[w], R300_R2VB_LAYOUT_LEGACY_ROW, &layout) &&
             r300_r2vb_producer_bo_draw_validate(
-                r300, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, slot_res,
-                out_res, 0, widths[w], R300_R2VB_POSITION_WINDOW, &txn) &&
+                r300, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &layout,
+                slot_res, out_res, 0, widths[w],
+                R300_R2VB_POSITION_WINDOW, &txn) &&
             r300_r2vb_producer_bo_draw_stage_cs(r300, &txn, &plan, &fs, &rs,
                                                 &psc) &&
             r300_r2vb_producer_bo_draw_emit(r300, &txn);
@@ -4454,27 +4699,32 @@ bool r300_r2vb_slot_layout_init_policy(uint32_t count,
 {
     /* The 16-bit VAP_VF_MAX_VTX_INDX bounds every re-ingest regardless of
      * producer storage. */
-    if (count == 0 || count >= 65536)
+    if (!out || count == 0 || count >= 65536)
         return false;
-    struct r300_r2vb_slot_layout l = { .count = count };
+    struct r300_r2vb_slot_layout l = {
+        .policy = policy,
+        .count = count,
+    };
     switch (policy) {
     case R300_R2VB_LAYOUT_LEGACY_ROW:
         if (count > 4096)
             return false;
         l.width = count;
         l.height = 1;
+        l.pitch_pixels = align(count, 2);
         break;
     case R300_R2VB_LAYOUT_GRID_2048:
         l.width = 2048;
         l.height = (count + 2047u) / 2048u;
+        l.pitch_pixels = l.width;
         break;
     default:
         return false;
     }
-    l.pitch_pixels = l.width;
     l.storage_slots = (uint64_t)l.pitch_pixels * l.height;
     l.storage_bytes = l.storage_slots * 16u;
-    if (l.storage_slots < count || l.pitch_pixels != l.width)
+    if (l.storage_slots < count || l.pitch_pixels < l.width ||
+        (l.height > 1 && l.pitch_pixels != l.width))
         return false;
     *out = l;
     return true;
@@ -4483,9 +4733,9 @@ bool r300_r2vb_slot_layout_init_policy(uint32_t count,
 bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
                                 struct r300_r2vb_slot_layout *out)
 {
-    /* The proven one-row shape rides byte-for-byte through 4096 whether or
-     * not the grid gate is armed: the first silicon comparison isolates
-     * only the new multirow mechanism. */
+    /* The proven one-row shape rides byte-for-byte through 4096 under both
+     * grid-gate states.  The silicon comparison therefore isolates the
+     * multirow representation. */
     if (count != 0 && count <= 4096)
         return r300_r2vb_slot_layout_init_policy(
             count, R300_R2VB_LAYOUT_LEGACY_ROW, out);
@@ -4493,6 +4743,118 @@ bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
         return false;
     return r300_r2vb_slot_layout_init_policy(count, R300_R2VB_LAYOUT_GRID_2048,
                                              out);
+}
+
+bool r300_r2vb_slot_layout_select(uint32_t count, const char *selector,
+                                  bool grid_enabled,
+                                  struct r300_r2vb_slot_layout *out)
+{
+    if (!selector)
+        return r300_r2vb_slot_layout_init(count, grid_enabled, out);
+    if (strcmp(selector, "legacy_row") == 0)
+        return r300_r2vb_slot_layout_init_policy(
+            count, R300_R2VB_LAYOUT_LEGACY_ROW, out);
+    if (strcmp(selector, "grid_2048") == 0 && grid_enabled)
+        return r300_r2vb_slot_layout_init_policy(
+            count, R300_R2VB_LAYOUT_GRID_2048, out);
+    return false;
+}
+
+bool r300_r2vb_slot_layout_address(
+    const struct r300_r2vb_slot_layout *layout, uint32_t slot,
+    uint32_t *x, uint32_t *y, uint64_t *byte_offset)
+{
+    if (!layout || !x || !y || !byte_offset || slot >= layout->count)
+        return false;
+
+    struct r300_r2vb_slot_layout expected;
+    if (!r300_r2vb_slot_layout_init_policy(layout->count, layout->policy,
+                                            &expected) ||
+        expected.width != layout->width ||
+        expected.height != layout->height ||
+        expected.pitch_pixels != layout->pitch_pixels ||
+        expected.storage_slots != layout->storage_slots ||
+        expected.storage_bytes != layout->storage_bytes)
+        return false;
+
+    uint32_t slot_x = slot % layout->width;
+    uint32_t slot_y = slot / layout->width;
+    uint64_t physical_slot =
+        (uint64_t)slot_y * layout->pitch_pixels + slot_x;
+    if (slot_y >= layout->height || physical_slot != slot)
+        return false;
+
+    *x = slot_x;
+    *y = slot_y;
+    *byte_offset = physical_slot * 16u;
+    return true;
+}
+
+bool
+r300_r2vb_immediate_producer_shape_ok(uint32_t count,
+                                      unsigned num_model_inputs)
+{
+    return count > 0 && num_model_inputs > 0 &&
+           num_model_inputs <= R300_R2VB_MAX_PRODUCER_INPUTS &&
+           (uint64_t)count * (1u + num_model_inputs) <= 2048u;
+}
+
+bool
+r300_r2vb_rebased_buffer_offset(uint32_t buffer_offset,
+                                uint32_t stride_bytes, uint32_t start,
+                                uint32_t *rebased_offset)
+{
+    uint64_t offset =
+        (uint64_t)buffer_offset + (uint64_t)stride_bytes * start;
+    if (!rebased_offset || offset > UINT32_MAX)
+        return false;
+    *rebased_offset = (uint32_t)offset;
+    return true;
+}
+
+bool
+r300_r2vb_vertex_buffer_upload_end(
+    const struct pipe_vertex_element *elements, unsigned element_count,
+    unsigned vertex_buffer_index, uint32_t buffer_offset, uint32_t start,
+    uint32_t count, uint32_t resource_width, uint32_t *upload_end)
+{
+    if (!elements || !count || !upload_end)
+        return false;
+
+    const uint64_t last = (uint64_t)start + count - 1;
+    if (last > UINT32_MAX)
+        return false;
+    bool referenced = false;
+    uint64_t maximum_end = 0;
+    for (unsigned i = 0; i < element_count; i++) {
+        const struct pipe_vertex_element *element = &elements[i];
+        if (element->vertex_buffer_index != vertex_buffer_index)
+            continue;
+        referenced = true;
+        const unsigned record_bytes =
+            util_format_get_blocksize(element->src_format);
+        if (element->instance_divisor != 0 || element->src_stride == 0 ||
+            record_bytes == 0)
+            return false;
+        if (buffer_offset > resource_width ||
+            element->src_offset > resource_width - buffer_offset)
+            return false;
+        const uint64_t base =
+            (uint64_t)buffer_offset + element->src_offset;
+        if (record_bytes > resource_width - base)
+            return false;
+        const uint64_t remaining =
+            resource_width - base - record_bytes;
+        if (last > remaining / element->src_stride)
+            return false;
+        const uint64_t end =
+            base + last * element->src_stride + record_bytes;
+        maximum_end = MAX2(maximum_end, end);
+    }
+    if (!referenced)
+        return false;
+    *upload_end = (uint32_t)maximum_end;
+    return true;
 }
 
 /* Strict positive decimal uint32: bare digits only.  Sign, whitespace,
@@ -4516,15 +4878,51 @@ bool r300_r2vb_auto_single_floor_value(const char *value, uint32_t *floor)
     return true;
 }
 
+bool
+r300_r2vb_auto_single_mode_values_compatible(
+    const struct r300_r2vb_auto_single_mode_values *values)
+{
+    return values && !values->diagnostic && !values->barrier &&
+           !values->inspect &&
+           !r300_r2vb_option_is(values->clip_classify, "1") &&
+           !r300_r2vb_option_is(values->clip_edge, "1") &&
+           !r300_r2vb_option_is(values->budget_escape, "spill1") &&
+           !r300_r2vb_option_is(values->typed_split, "1") &&
+           !r300_r2vb_option_is(values->force_split, "1") &&
+           !r300_r2vb_option_is(values->varying, "1") &&
+           !r300_r2vb_option_is(values->delivery_capture, "1");
+}
+
 const char *
 r300_r2vb_auto_single_reason_str(enum r300_r2vb_auto_single_reason reason)
 {
     static const char *names[R300_R2VB_AUTO_SINGLE_REASON_COUNT] = {
         "ok",
+        "passthrough_route",
+        "hardware_tcl",
         "indexed",
         "instanced",
         "unsupported_primitive",
         "count_ceiling",
+        "slot_layout",
+        "slot_fetch",
+        "raw_submit",
+        "bo_draw_mode",
+        "ordering_mode",
+        "mode_conflict",
+        "query_active",
+        "input_unchecked",
+        "input_constants",
+        "input_constant_source",
+        "input_position_source",
+        "input_instance_rate",
+        "input_buffer_binding",
+        "input_source_class",
+        "input_cpu_access",
+        "input_uploader",
+        "input_format",
+        "input_stride",
+        "input_span",
         "frontface",
         "clip_planes",
         "fs_external_constants",
@@ -4532,11 +4930,101 @@ r300_r2vb_auto_single_reason_str(enum r300_r2vb_auto_single_reason reason)
         "plan_not_single",
         "typed_source",
         "input_shape",
+        "output_streams",
         "delivery_cell",
         "below_vertex_floor",
     };
     return reason < R300_R2VB_AUTO_SINGLE_REASON_COUNT ? names[reason]
                                                        : "unknown";
+}
+
+static const char *
+r300_r2vb_producer_input_status_str(
+    enum r300_r2vb_producer_input_status status)
+{
+    static const char *names[R300_R2VB_PRODUCER_INPUT_STATUS_COUNT] = {
+        "unchecked",
+        "ok",
+        "constants",
+        "constant_source",
+        "position_source",
+        "instance_rate",
+        "buffer_binding",
+        "source_class",
+        "cpu_access",
+        "uploader",
+        "format",
+        "stride",
+        "span",
+    };
+    return status < R300_R2VB_PRODUCER_INPUT_STATUS_COUNT ? names[status]
+                                                          : "unknown";
+}
+
+static const char *
+r300_r2vb_delivery_stream_status_str(
+    enum r300_r2vb_delivery_stream_status status)
+{
+    static const char *names[R300_R2VB_DELIVERY_STREAM_STATUS_COUNT] = {
+        "unchecked",
+        "ok",
+        "layout",
+        "instance_rate",
+        "format",
+        "stride",
+        "buffer_binding",
+        "source_class",
+        "span",
+        "capacity",
+    };
+    return status < R300_R2VB_DELIVERY_STREAM_STATUS_COUNT ? names[status]
+                                                           : "unknown";
+}
+
+void
+r300_r2vb_auto_single_note_outcome(
+    struct r300_context *r300,
+    const struct pipe_draw_info *info,
+    const struct pipe_draw_start_count_bias *draw,
+    bool route_executed)
+{
+    const char *outcome = "fallback";
+    if (route_executed) {
+        switch (r300->r2vb_auto_single_outcome) {
+        case R300_R2VB_AUTO_SINGLE_OUTCOME_DELIVERED:
+            outcome = "delivered";
+            break;
+        case R300_R2VB_AUTO_SINGLE_OUTCOME_TRIVIAL_REJECT:
+            outcome = "trivial_reject";
+            break;
+        case R300_R2VB_AUTO_SINGLE_OUTCOME_PRODUCER_CONSUMED_WITHOUT_DELIVERY:
+        case R300_R2VB_AUTO_SINGLE_OUTCOME_NONE:
+        case R300_R2VB_AUTO_SINGLE_OUTCOME_FALLBACK:
+            outcome = "producer_consumed_without_delivery";
+            break;
+        }
+    }
+
+    struct r300_r2vb_slot_layout layout;
+    bool layout_available = r300_r2vb_slot_layout_select(
+        draw->count, getenv("R300_R2VB_SLOT_LAYOUT"),
+        r300_r2vb_slot_grid_gate_value(getenv("R300_R2VB_SLOT_GRID")),
+        &layout);
+    fprintf(stderr,
+            "r2vb_auto_single_outcome gate=1 hash=%s"
+            " submitted_vertices=%" PRIu64 " topology=%u"
+            " layout=%s/%ux%u/%u outcome=%s\n",
+            r300_r2vb_telemetry_vs_content_hex(r300),
+            (uint64_t)draw->count * info->instance_count, info->mode,
+            layout_available
+                ? (layout.policy == R300_R2VB_LAYOUT_GRID_2048
+                       ? "grid_2048"
+                       : "legacy_row")
+                : "-",
+            layout_available ? layout.width : 0,
+            layout_available ? layout.height : 0,
+            layout_available ? layout.pitch_pixels : 0, outcome);
+    r300->r2vb_auto_single_outcome = R300_R2VB_AUTO_SINGLE_OUTCOME_NONE;
 }
 
 /* One delivery cell of the plain route: READY SINGLE untyped one-input. */
@@ -4569,6 +5057,8 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
                              const struct r300_r2vb_auto_single_draw *d,
                              uint32_t floor)
 {
+    if (d->route_reason != R300_R2VB_AUTO_SINGLE_OK)
+        return d->route_reason;
     /* Route-support shape first: the clip-route delivery acts on a plain
      * whole-triangle list only. */
     if (d->index_size != 0)
@@ -4577,15 +5067,55 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
         return R300_R2VB_AUTO_SINGLE_INSTANCED;
     if (d->mode != MESA_PRIM_TRIANGLES || d->count % 3 != 0)
         return R300_R2VB_AUTO_SINGLE_UNSUPPORTED_PRIMITIVE;
-    /* The producer's slot-pixel stream renders one point per output slot on
-     * a single row (r300_r2vb_get_slot_pos_bo), so a deliverable draw tops
-     * out at the producer's 4096-slot ceiling -- far below the 16-bit
-     * re-ingest index limit.  An admitted count past this ceiling would
-     * decline inside the producer and fall back to gallivm after the
-     * decision token already read "execute", so the policy holds the real
-     * ceiling; raising it is the producer's 2D slot-layout reshape. */
-    if (d->count == 0 || d->count > 4096)
+    if (d->count == 0 || d->count >= 65536)
         return R300_R2VB_AUTO_SINGLE_COUNT_CEILING;
+    if (!d->slot_layout_available)
+        return R300_R2VB_AUTO_SINGLE_SLOT_LAYOUT;
+    /* AUTO_SINGLE always executes through the fixed-size BO-fetch producer.
+     * The same transaction serves one-row and multirow layouts, so lowering
+     * the vertex floor cannot expose the count-scaled immediate packet. */
+    if (!d->slot_fetch_enabled)
+        return R300_R2VB_AUTO_SINGLE_SLOT_FETCH;
+    if (!d->raw_submit_accepted)
+        return R300_R2VB_AUTO_SINGLE_RAW_SUBMIT;
+    if (!d->bo_draw_mode_compatible)
+        return R300_R2VB_AUTO_SINGLE_BO_MODE;
+    if (!d->bo_delivery_ordering_compatible)
+        return R300_R2VB_AUTO_SINGLE_ORDERING_MODE;
+    if (!d->route_mode_compatible)
+        return R300_R2VB_AUTO_SINGLE_MODE_CONFLICT;
+    if (d->query_active)
+        return R300_R2VB_AUTO_SINGLE_QUERY_ACTIVE;
+    switch (d->producer_input_status) {
+    case R300_R2VB_PRODUCER_INPUT_UNCHECKED:
+        return R300_R2VB_AUTO_SINGLE_INPUT_UNCHECKED;
+    case R300_R2VB_PRODUCER_INPUT_OK:
+        break;
+    case R300_R2VB_PRODUCER_INPUT_CONSTANTS:
+        return R300_R2VB_AUTO_SINGLE_INPUT_CONSTANTS;
+    case R300_R2VB_PRODUCER_INPUT_CONSTANT_SOURCE:
+        return R300_R2VB_AUTO_SINGLE_INPUT_CONSTANT_SOURCE;
+    case R300_R2VB_PRODUCER_INPUT_POSITION_SOURCE:
+        return R300_R2VB_AUTO_SINGLE_INPUT_POSITION_SOURCE;
+    case R300_R2VB_PRODUCER_INPUT_INSTANCE_RATE:
+        return R300_R2VB_AUTO_SINGLE_INPUT_INSTANCE_RATE;
+    case R300_R2VB_PRODUCER_INPUT_BUFFER_BINDING:
+        return R300_R2VB_AUTO_SINGLE_INPUT_BUFFER_BINDING;
+    case R300_R2VB_PRODUCER_INPUT_SOURCE_CLASS:
+        return R300_R2VB_AUTO_SINGLE_INPUT_SOURCE_CLASS;
+    case R300_R2VB_PRODUCER_INPUT_CPU_ACCESS:
+        return R300_R2VB_AUTO_SINGLE_INPUT_CPU_ACCESS;
+    case R300_R2VB_PRODUCER_INPUT_UPLOADER:
+        return R300_R2VB_AUTO_SINGLE_INPUT_UPLOADER;
+    case R300_R2VB_PRODUCER_INPUT_FORMAT:
+        return R300_R2VB_AUTO_SINGLE_INPUT_FORMAT;
+    case R300_R2VB_PRODUCER_INPUT_STRIDE:
+        return R300_R2VB_AUTO_SINGLE_INPUT_STRIDE;
+    case R300_R2VB_PRODUCER_INPUT_SPAN:
+        return R300_R2VB_AUTO_SINGLE_INPUT_SPAN;
+    default:
+        return R300_R2VB_AUTO_SINGLE_INPUT_SOURCE_CLASS;
+    }
     if (d->fs_reads_face)
         return R300_R2VB_AUTO_SINGLE_FRONTFACE;
     if (d->clip_planes_enabled)
@@ -4601,6 +5131,20 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
         return reason;
     if (!r2vb_auto_single_cell_ok(window_plan, &reason))
         return R300_R2VB_AUTO_SINGLE_DELIVERY_CELL;
+    switch (d->delivery_stream_status) {
+    case R300_R2VB_DELIVERY_STREAM_OK:
+        break;
+    case R300_R2VB_DELIVERY_STREAM_INSTANCE_RATE:
+        return R300_R2VB_AUTO_SINGLE_INPUT_INSTANCE_RATE;
+    case R300_R2VB_DELIVERY_STREAM_FORMAT:
+        return R300_R2VB_AUTO_SINGLE_INPUT_FORMAT;
+    case R300_R2VB_DELIVERY_STREAM_STRIDE:
+        return R300_R2VB_AUTO_SINGLE_INPUT_STRIDE;
+    case R300_R2VB_DELIVERY_STREAM_SPAN:
+        return R300_R2VB_AUTO_SINGLE_INPUT_SPAN;
+    default:
+        return R300_R2VB_AUTO_SINGLE_OUTPUT_STREAMS;
+    }
     /* The floor separates the amortizing large-draw class from the tiny-draw
      * tail that gallivm serves better; instance_count == 1 above, so count
      * is the submitted vertex total. */
@@ -5002,12 +5546,14 @@ enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
      * plain triangle list on the MVP/clip route only.  The pure passthrough
      * path still emits draw_arrays without resolving indices, so indexed
      * identity-VS draws are rejected below even when topology is enabled. */
-    if (info->index_size != 0 && !r300_r2vb_topology_enabled())
+    if (info->index_size != 0 && !r300_r2vb_topology_enabled(r300))
         return R2VB_REJECT_INDEXED;
     if (info->instance_count != 1)
         return R2VB_REJECT_INSTANCED;
     /* VAP_VF_MAX_VTX_INDX is 16-bit, so the re-ingest tops out below 2^16. */
-    if (draw->count == 0 || draw->count >= 65536)
+    if (draw->count == 0 || draw->count >= 65536 ||
+        (info->index_size == 0 &&
+         draw->start > UINT32_MAX - (draw->count - 1u)))
         return R2VB_REJECT_COUNT;
     /* Only the topologies proven pixel-exact through the re-ingest (POINTS is in
      * the set structurally; its rasterization is a separate open item). */
@@ -5100,21 +5646,27 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
                     const struct pipe_vertex_element *pe =
                         &r300->velems->velem[0];
                     const struct pipe_vertex_buffer *vb =
-                        &r300->vertex_buffer[pe->vertex_buffer_index];
+                        pe->vertex_buffer_index < r300->nr_vertex_buffers
+                            ? &r300->vertex_buffer[pe->vertex_buffer_index]
+                            : NULL;
                     struct pipe_resource *res =
-                        vb->is_user_buffer ? NULL : vb->buffer.resource;
+                        !vb || vb->is_user_buffer ? NULL
+                                                 : vb->buffer.resource;
                     fprintf(stderr,
                             "r2vb_producer_input hash=%s input=0 format=%s"
                             " format_dwords=%u stride_bytes=%u"
+                            " buffer_bound=%d"
                             " buffer_offset=%u src_offset=%u draw_start=%u"
                             " model_offset=%" PRIu64 " resource_width=%u"
                             " bo_materialized=%d\n",
                             r300_r2vb_telemetry_vs_content_hex(r300),
                             util_format_short_name(pe->src_format),
                             util_format_get_blocksize(pe->src_format) / 4,
-                            pe->src_stride, vb->buffer_offset,
+                            pe->src_stride, vb ? 1 : 0,
+                            vb ? vb->buffer_offset : 0,
                             pe->src_offset, draw->start,
-                            (uint64_t)vb->buffer_offset + pe->src_offset +
+                            (uint64_t)(vb ? vb->buffer_offset : 0) +
+                                pe->src_offset +
                                 (uint64_t)draw->start * pe->src_stride,
                             res ? res->width0 : 0,
                             res && r300_resource(res)->buf ? 1 : 0);
@@ -5219,12 +5771,101 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
     return (exec || inspect) && v == R2VB_ROUTE_PASSTHROUGH;
 }
 
+enum r300_r2vb_delivery_stream_status
+r300_r2vb_auto_single_output_streams_preflight(
+    struct r300_context *r300, nir_shader *vs_nir,
+    const struct pipe_draw_start_count_bias *draw)
+{
+    if (!r300 || !r300->velems || !vs_nir || !draw)
+        return R300_R2VB_DELIVERY_STREAM_LAYOUT;
+    struct r300_r2vb_reingest_stream streams[PIPE_MAX_ATTRIBS];
+    int count = r300_r2vb_reingest_stream_layout(
+        vs_nir, -1, streams, ARRAY_SIZE(streams));
+    if (count < 1 || (unsigned)count != r300->vertex_info.num_attribs ||
+        draw->count == 0)
+        return R300_R2VB_DELIVERY_STREAM_LAYOUT;
+    uint64_t last = (uint64_t)draw->start + draw->count - 1;
+    if (last > UINT32_MAX)
+        return R300_R2VB_DELIVERY_STREAM_SPAN;
+    unsigned rebased_streams = 0;
+    for (int i = 0; i < count; i++) {
+        if (streams[i].components != 4 || streams[i].bit_size != 32 ||
+            streams[i].write_mask != 0xf)
+            return R300_R2VB_DELIVERY_STREAM_FORMAT;
+        if (streams[i].kind != R2VB_STREAM_PASSTHROUGH)
+            continue;
+        if (streams[i].src_velem < 0 ||
+            (unsigned)streams[i].src_velem >= r300->velems->count)
+            return R300_R2VB_DELIVERY_STREAM_LAYOUT;
+        const struct pipe_vertex_element *element =
+            &r300->velems->velem[streams[i].src_velem];
+        enum r300_r2vb_delivery_stream_status element_status =
+            r300_r2vb_delivery_element_preflight(element);
+        if (element_status != R300_R2VB_DELIVERY_STREAM_OK)
+            return element_status;
+        if (element->vertex_buffer_index >= r300->nr_vertex_buffers)
+            return R300_R2VB_DELIVERY_STREAM_BUFFER_BINDING;
+        const struct pipe_vertex_buffer *buffer =
+            &r300->vertex_buffer[element->vertex_buffer_index];
+        if (buffer->is_user_buffer)
+            return R300_R2VB_DELIVERY_STREAM_SOURCE_CLASS;
+        if (!buffer->buffer.resource)
+            return R300_R2VB_DELIVERY_STREAM_BUFFER_BINDING;
+        struct r300_resource *resource =
+            r300_resource(buffer->buffer.resource);
+        if (r300_r2vb_model_source_classify(
+                false, resource->buf != NULL,
+                resource->malloced_buffer != NULL) ==
+            R300_R2VB_MODEL_UNSUPPORTED)
+            return R300_R2VB_DELIVERY_STREAM_SOURCE_CLASS;
+        if (!r2vb_velem_index_in_bounds(
+                r300, (unsigned)streams[i].src_velem, draw->start) ||
+            !r2vb_velem_index_in_bounds(
+                r300, (unsigned)streams[i].src_velem, (uint32_t)last))
+            return R300_R2VB_DELIVERY_STREAM_SPAN;
+        if (draw->start != 0)
+            rebased_streams++;
+    }
+    return r300->nr_vertex_buffers + 2 + rebased_streams <= PIPE_MAX_ATTRIBS
+               ? R300_R2VB_DELIVERY_STREAM_OK
+               : R300_R2VB_DELIVERY_STREAM_CAPACITY;
+}
+
+enum r300_r2vb_auto_single_reason
+r300_r2vb_auto_single_route_reason(enum r300_r2vb_verdict verdict)
+{
+    switch (verdict) {
+    case R2VB_ROUTE_CANDIDATE:
+        return R300_R2VB_AUTO_SINGLE_OK;
+    case R2VB_ROUTE_PASSTHROUGH:
+        return R300_R2VB_AUTO_SINGLE_PASSTHROUGH_ROUTE;
+    case R2VB_REJECT_HW_TCL:
+        return R300_R2VB_AUTO_SINGLE_HARDWARE_TCL;
+    case R2VB_REJECT_INDEXED:
+        return R300_R2VB_AUTO_SINGLE_INDEXED;
+    case R2VB_REJECT_INSTANCED:
+        return R300_R2VB_AUTO_SINGLE_INSTANCED;
+    case R2VB_REJECT_COUNT:
+        return R300_R2VB_AUTO_SINGLE_COUNT_CEILING;
+    case R2VB_REJECT_PRIM:
+        return R300_R2VB_AUTO_SINGLE_UNSUPPORTED_PRIMITIVE;
+    case R2VB_REJECT_FRONTFACE:
+        return R300_R2VB_AUTO_SINGLE_FRONTFACE;
+    case R2VB_VERDICT_COUNT:
+        break;
+    }
+    return R300_R2VB_AUTO_SINGLE_INPUT_UNCHECKED;
+}
+
 /* Gate the MVP route on its own opt-in so the passthrough exec stays unaffected.
  * Returns true only for an MVP-shape candidate draw under R300_R2VB_MVP_EXEC. */
 bool r300_r2vb_route_mvp(struct r300_context *r300,
                          const struct pipe_draw_info *info,
                          const struct pipe_draw_start_count_bias *draw)
 {
+    r300->r2vb_auto_single_selected = false;
+    r300->r2vb_auto_single_outcome =
+        R300_R2VB_AUTO_SINGLE_OUTCOME_NONE;
     static int gate = -1;
     if (gate < 0) {
         const char *e = getenv("R300_R2VB_MVP_EXEC");
@@ -5234,16 +5875,16 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
     bool auto_armed = r300_r2vb_auto_single_armed(&auto_floor);
     if (!gate && !auto_armed)
         return false;
-    if (r300_r2vb_classify_draw(r300, info, draw) != R2VB_ROUTE_CANDIDATE)
-        return false;
+    enum r300_r2vb_verdict route_verdict =
+        r300_r2vb_classify_draw(r300, info, draw);
     /* AUTO_SINGLE canary: the pure policy decides, one token per decision,
      * and the manual gates keep their behavior when the canary declines
      * (both armed together lets the manual battery drive the canary image). */
     if (auto_armed) {
         struct r300_vertex_shader *avs = r300_vs(r300);
-        if (!avs || avs->state.type != PIPE_SHADER_IR_NIR ||
-            !avs->state.ir.nir)
-            return false;
+        bool candidate_nir =
+            route_verdict == R2VB_ROUTE_CANDIDATE && avs &&
+            avs->state.type == PIPE_SHADER_IR_NIR && avs->state.ir.nir;
         const struct r300_rs_state *rs =
             (const struct r300_rs_state *)r300->rs_state.state;
         const struct r300_fragment_shader *afs = r300_fs(r300);
@@ -5254,6 +5895,24 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
                 if (cl->Constants[i].Type == RC_CONSTANT_EXTERNAL)
                     fs_ext = true;
         }
+        struct r300_r2vb_slot_layout layout;
+        bool layout_available = r300_r2vb_slot_layout_select(
+            draw->count, getenv("R300_R2VB_SLOT_LAYOUT"),
+            r300_r2vb_slot_grid_gate_value(getenv("R300_R2VB_SLOT_GRID")),
+            &layout);
+        const char *bo_draw_mode = getenv("R300_R2VB_BO_DRAW");
+        const struct r300_r2vb_auto_single_mode_values mode_values = {
+            .diagnostic = getenv("R300_R2VB_DIAG"),
+            .barrier = getenv("R300_R2VB_BARRIER"),
+            .inspect = getenv("R300_R2VB_INSPECT"),
+            .clip_classify = getenv("R300_R2VB_CLIP_CLASSIFY"),
+            .clip_edge = getenv("R300_R2VB_CLIP_EDGE"),
+            .budget_escape = getenv("R300_R2VB_BUDGET_ESCAPE"),
+            .typed_split = getenv("R300_R2VB_TYPED_SPLIT"),
+            .force_split = getenv("R300_R2VB_FORCE_SPLIT"),
+            .varying = getenv("R300_R2VB_VARYING"),
+            .delivery_capture = getenv("R300_R2VB_DELIVERY_CAPTURE"),
+        };
         struct r300_r2vb_auto_single_draw d = {
             .mode = info->mode,
             .count = draw->count,
@@ -5263,33 +5922,104 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
                              afs->shader->inputs.face != ATTR_UNUSED,
             .clip_planes_enabled = rs && rs->rs.clip_plane_enable != 0,
             .fs_reads_external_constants = fs_ext,
+            .slot_layout_available = layout_available,
+            .uses_grid_layout =
+                layout_available &&
+                layout.policy == R300_R2VB_LAYOUT_GRID_2048,
+            .slot_fetch_enabled = r300_r2vb_slot_fetch_gate_value(
+                getenv("R300_R2VB_SLOT_FETCH")),
+            .raw_submit_accepted = r300_r2vb_option_is(
+                getenv("R300_RAW_SUBMIT_ACCEPTED"), "1"),
+            .bo_draw_mode_compatible =
+                !bo_draw_mode ||
+                r300_r2vb_bo_draw_delivery_mode_value(bo_draw_mode),
+            .bo_delivery_ordering_compatible =
+                !r300_r2vb_option_is(getenv("R300_R2VB_MVP_SINGLECS"), "1"),
+            .route_mode_compatible =
+                r300_r2vb_auto_single_mode_values_compatible(&mode_values),
+            .query_active = r300->query_current != NULL,
+            .route_reason =
+                r300_r2vb_auto_single_route_reason(route_verdict),
+            .delivery_stream_status = R300_R2VB_DELIVERY_STREAM_UNCHECKED,
+            .producer_input_status = R300_R2VB_PRODUCER_INPUT_UNCHECKED,
         };
-        const struct r300_r2vb_producer_plan *cp =
-            r300_r2vb_producer_plan_get(r300, false, R300_R2VB_POSITION_CLIP);
-        const struct r300_r2vb_producer_plan *wp =
-            r300_r2vb_producer_plan_get(r300, false,
-                                        R300_R2VB_POSITION_WINDOW);
+        const struct r300_r2vb_producer_plan *cp = NULL;
+        const struct r300_r2vb_producer_plan *wp = NULL;
+        enum r300_r2vb_producer_input_status input_status =
+            R300_R2VB_PRODUCER_INPUT_UNCHECKED;
+        if (candidate_nir) {
+            cp = r300_r2vb_producer_plan_get(
+                r300, false, R300_R2VB_POSITION_CLIP);
+            wp = r300_r2vb_producer_plan_get(
+                r300, false, R300_R2VB_POSITION_WINDOW);
+            if (!cp ||
+                cp->constant_source !=
+                    R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64 ||
+                cp->constant_bytes == 0 || cp->constant_bytes > 64) {
+                input_status =
+                    R300_R2VB_PRODUCER_INPUT_CONSTANT_SOURCE;
+            } else if (!r300->swtcl_vs_const0_ptr ||
+                       r300->swtcl_vs_const0_size < 64) {
+                input_status = R300_R2VB_PRODUCER_INPUT_CONSTANTS;
+            } else {
+                input_status = r300_r2vb_producer_input_preflight(
+                    cp, r300->velems ? r300->velems->velem : NULL,
+                    r300->velems ? r300->velems->count : 0,
+                    r300->vertex_buffer, r300->nr_vertex_buffers,
+                    draw->start, draw->count);
+                if (input_status == R300_R2VB_PRODUCER_INPUT_OK &&
+                    !r300->uploader)
+                    input_status = R300_R2VB_PRODUCER_INPUT_UPLOADER;
+            }
+            d.delivery_stream_status =
+                r300_r2vb_auto_single_output_streams_preflight(
+                    r300, avs->state.ir.nir, draw);
+            d.producer_input_status = input_status;
+        }
         enum r300_r2vb_auto_single_reason reason =
             r300_r2vb_auto_single_policy(cp, wp, &d, auto_floor);
+        r300->r2vb_auto_single_selected =
+            reason == R300_R2VB_AUTO_SINGLE_OK;
         fprintf(stderr,
                 "r2vb_auto_single gate=1 hash=%s submitted_vertices=%" PRIu64
                 " threshold=%u topology=%u indexed=%u"
+                " layout=%s/%ux%u/%u slot_fetch=%u raw_submit=%u"
+                " bo_mode_ok=%u ordering_ok=%u mode_ok=%u outputs=%s"
+                " input=%s"
                 " plan_clip=%s/%u/%u/%u plan_window=%s/%u/%u/%u"
                 " decision=%s reason=%s\n",
                 r300_r2vb_telemetry_vs_content_hex(r300),
                 (uint64_t)draw->count * info->instance_count, auto_floor,
                 info->mode, info->index_size ? 1 : 0,
+                layout_available
+                    ? (layout.policy == R300_R2VB_LAYOUT_GRID_2048
+                           ? "grid_2048"
+                           : "legacy_row")
+                    : "-",
+                layout_available ? layout.width : 0,
+                layout_available ? layout.height : 0,
+                layout_available ? layout.pitch_pixels : 0,
+                d.slot_fetch_enabled ? 1 : 0,
+                d.raw_submit_accepted ? 1 : 0,
+                d.bo_draw_mode_compatible ? 1 : 0,
+                d.bo_delivery_ordering_compatible ? 1 : 0,
+                d.route_mode_compatible ? 1 : 0,
+                r300_r2vb_delivery_stream_status_str(
+                    d.delivery_stream_status),
+                r300_r2vb_producer_input_status_str(input_status),
                 cp ? r300_r2vb_plan_action_str(cp->action) : "-",
                 cp ? cp->baseline.alu : 0, cp ? cp->baseline.temps : 0,
                 cp ? cp->baseline.consts : 0,
                 wp ? r300_r2vb_plan_action_str(wp->action) : "-",
                 wp ? wp->baseline.alu : 0, wp ? wp->baseline.temps : 0,
                 wp ? wp->baseline.consts : 0,
-                reason == R300_R2VB_AUTO_SINGLE_OK ? "execute" : "decline",
+                reason == R300_R2VB_AUTO_SINGLE_OK ? "admit" : "decline",
                 r300_r2vb_auto_single_reason_str(reason));
         if (!gate)
-            return reason == R300_R2VB_AUTO_SINGLE_OK;
+            return r300->r2vb_auto_single_selected;
     }
+    if (route_verdict != R2VB_ROUTE_CANDIDATE)
+        return false;
     /* The re-staging route (R300_R2VB_RESTAGE) derives the producer from the VS,
      * so it runs any fragment-aluable straight-line VS; the hand-built and
      * externals producers only express the exact MVP shape. */
@@ -5298,6 +6028,9 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_RESTAGE");
         restage = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
+    bool route_restage =
+        restage || r300->r2vb_auto_single_selected ||
+        r300_r2vb_bo_draw_delivery_mode_value(getenv("R300_R2VB_BO_DRAW"));
     /* Computed varyings (a fragment-aluable function of the position input, not a
      * straight passthrough) ride a further opt-in: the route then runs a producer
      * pass per varying into its own BO.  Off by default so the proven
@@ -5317,14 +6050,15 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
     if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
         return false;
     unsigned npos = r300_r2vb_count_position_inputs(vs->state.ir.nir);
-    if (npos > 1 && !restage)
+    if (npos > 1 && !route_restage)
         return false;
-    bool al = restage ? r300_vs_is_fragment_aluable(r300, varying) : r300_vs_is_mvp(r300);
+    bool al = route_restage ? r300_vs_is_fragment_aluable(r300, varying)
+                            : r300_vs_is_mvp(r300);
     if (getenv("R300_R2VB_EXEC_DEBUG"))
         fprintf(stderr,
                 "r2vb_route_mvp gate=%d restage=%d varying=%d aluable=%d "
                 "npos=%u count=%u\n",
-                gate, restage, varying, al, npos, draw->count);
+                gate, route_restage ? 1 : 0, varying, al, npos, draw->count);
     return al;
 }
 
@@ -5432,23 +6166,43 @@ int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
             if (intr->intrinsic != nir_intrinsic_store_deref)
                 continue;
+            nir_deref_instr *dst_deref = nir_src_as_deref(intr->src[0]);
             nir_variable *o = nir_intrinsic_get_var(intr, 0);
             if (!o || !(o->data.mode & nir_var_shader_out))
                 continue;
+            const unsigned components = nir_src_num_components(intr->src[1]);
+            const unsigned bit_size = nir_src_bit_size(intr->src[1]);
+            const unsigned write_mask = nir_intrinsic_write_mask(intr);
+            if (!dst_deref || dst_deref->deref_type != nir_deref_type_var ||
+                components != 4 || bit_size != 32 || write_mask != 0xf ||
+                o->data.location == VARYING_SLOT_PSIZ)
+                return -1;
+            for (unsigned i = 0; i < n; i++)
+                if (out[i].slot == o->data.location)
+                    return -1;
             if (n >= max)
                 return -1;
             struct r300_r2vb_reingest_stream *s = &out[n++];
             s->slot = (gl_varying_slot)o->data.location;
             s->src_velem = -1;
+            s->components = components;
+            s->bit_size = bit_size;
+            s->write_mask = write_mask;
             if (o->data.location == VARYING_SLOT_POS) {
                 s->kind = R2VB_STREAM_POS;
             } else if ((int)o->data.location == computed_slot) {
                 s->kind = R2VB_STREAM_COMPUTED;
             } else {
                 nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
+                nir_deref_instr *src_deref =
+                    val && val->intrinsic == nir_intrinsic_load_deref
+                        ? nir_src_as_deref(val->src[0])
+                        : NULL;
                 nir_variable *src = (val && val->intrinsic == nir_intrinsic_load_deref)
                                         ? nir_intrinsic_get_var(val, 0) : NULL;
-                if (!src || !(src->data.mode & nir_var_shader_in))
+                if (!src_deref ||
+                    src_deref->deref_type != nir_deref_type_var ||
+                    !src || !(src->data.mode & nir_var_shader_in))
                     return -1; /* neither computed nor a clean input passthrough */
                 s->kind = R2VB_STREAM_PASSTHROUGH;
                 s->src_velem = r300_r2vb_input_velem_index(vs, src);
@@ -5492,17 +6246,33 @@ int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
  * wedged the ring.  The caller decides which classes may submit; this routine only
  * builds the wiring and gates on the invariant. */
 
-/* Re-emit application raster state after a producer hand-wrote registers
- * outside the atom system.  Every delivery decline that follows a successful
- * producer must call this before falling back to gallivm. */
+/* Re-emit every application atom whose registers the raw producer prologue
+ * replaces, including viewport-derived fragment constants.  The prologue
+ * accrues this debt at the mutation site; later delivery and fallback paths
+ * consume it through normal state emission. */
 static void
-r2vb_redirty_app_raster_state(struct r300_context *r300)
+r2vb_accrue_app_state_restore(struct r300_context *r300)
 {
+    r300_mark_atom_dirty(r300, &r300->aa_state);
     r300_mark_atom_dirty(r300, &r300->fb_state);
+    r300_mark_atom_dirty(r300, &r300->fb_state_pipelined);
+    r300_mark_atom_dirty(r300, &r300->blend_state);
     r300_mark_atom_dirty(r300, &r300->scissor_state);
+    r300_mark_atom_dirty(r300, &r300->sample_mask);
     r300_mark_atom_dirty(r300, &r300->viewport_state);
     r300_mark_atom_dirty(r300, &r300->dsa_state);
     r300_mark_atom_dirty(r300, &r300->rs_state);
+    r300_mark_atom_dirty(r300, &r300->fs_rc_constant_state);
+    r300_mark_atom_dirty(r300, &r300->vertex_stream_state);
+    r300_mark_atom_dirty(r300, &r300->rs_block_state);
+}
+
+static void
+r2vb_clear_producer_bookkeeping(struct r300_context *r300)
+{
+    r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+    r300->r2vb_capture_clip = NULL;
+    r2vb_edge_streams_release(r300);
 }
 
 /* Wait for GPU writes on a BO before a CPU read map.  r300_buffer_transfer_map
@@ -5524,7 +6294,7 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
 {
     struct r300_vertex_element_state *ve = r300->velems;
     if (!ve || !r300_resource(clip)->buf || (vslot >= 0 && (!vbo || !r300_resource(vbo)->buf))) {
-        r2vb_redirty_app_raster_state(r300);
+        r2vb_accrue_app_state_restore(r300);
         return false;
     }
 
@@ -5554,12 +6324,12 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
             if (streams[i].kind == R2VB_STREAM_PASSTHROUGH &&
                 r300->r2vb_edge_stream_attr[i])
                 n_edge++;
-    if (vbo_slot + n_edge >= PIPE_MAX_ATTRIBS || n_stream < 1 ||
-        (unsigned)n_stream != n_out || n_out > PIPE_MAX_ATTRIBS) {
+    if (n_stream < 1 || (unsigned)n_stream != n_out ||
+        n_out > PIPE_MAX_ATTRIBS) {
         fprintf(stderr,
                 "r2vb_reingest invariant=FAIL (stream_layout=%d vs num_attribs=%u; unmapped or count mismatch)\n",
                 n_stream, n_out);
-        r2vb_redirty_app_raster_state(r300);
+        r2vb_accrue_app_state_restore(r300);
         return false;
     }
 
@@ -5579,11 +6349,6 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
         saved_velem[i] = ve->velem[i];
         saved_fmtsz[i] = ve->format_size[i];
     }
-    unsigned n_fresh = 2 + n_edge;
-    struct pipe_vertex_buffer saved_vb[PIPE_MAX_ATTRIBS];
-    for (unsigned i = 0; i < n_fresh; i++)
-        saved_vb[i] = r300->vertex_buffer[clip_slot + i];
-
     /* Capture each stream's expected source resource BEFORE the rebuild: position
      * -> clip, computed -> vbo, passthrough -> the app buffer its source velem
      * binds.  The invariant checks the rebuilt velem points at exactly this. */
@@ -5592,18 +6357,37 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
      * declares more inputs than the application bound velems for, it can exceed
      * the velem set and the lookup would read past the valid region.  Refuse with
      * a diagnostic rather than fetch garbage. */
-    for (int i = 0; i < n_stream; i++)
-        if (streams[i].kind == R2VB_STREAM_PASSTHROUGH &&
-            (streams[i].src_velem < 0 || (unsigned)streams[i].src_velem >= saved_count)) {
+    for (int i = 0; i < n_stream; i++) {
+        if (streams[i].kind != R2VB_STREAM_PASSTHROUGH)
+            continue;
+        if (streams[i].src_velem < 0 ||
+            (unsigned)streams[i].src_velem >= saved_count) {
             fprintf(stderr,
                     "r2vb_reingest invariant=FAIL (passthrough stream%d src_velem=%d out of bounds, app_velems=%u)\n",
                     i, streams[i].src_velem, saved_count);
-            r2vb_redirty_app_raster_state(r300);
+            r2vb_accrue_app_state_restore(r300);
             return false;
         }
+        unsigned source_buffer =
+            saved_velem[streams[i].src_velem].vertex_buffer_index;
+        if (source_buffer >= saved_nvb ||
+            source_buffer >= PIPE_MAX_ATTRIBS) {
+            fprintf(stderr,
+                    "r2vb_reingest invariant=FAIL (passthrough stream%d "
+                    "vertex_buffer=%u out of bounds, app_buffers=%u)\n",
+                    i, source_buffer, saved_nvb);
+            r2vb_accrue_app_state_restore(r300);
+            return false;
+        }
+    }
 
     struct pipe_resource *expect[PIPE_MAX_ATTRIBS];
     bool edge_stream[PIPE_MAX_ATTRIBS] = {0};
+    bool rebased_stream[PIPE_MAX_ATTRIBS] = {0};
+    uint32_t rebased_buffer_offset[PIPE_MAX_ATTRIBS] = {0};
+    struct r300_resource edge_resource[PIPE_MAX_ATTRIBS];
+    memset(edge_resource, 0, sizeof(edge_resource));
+    unsigned n_rebased = 0;
     for (int i = 0; i < n_stream; i++) {
         if (streams[i].kind == R2VB_STREAM_POS) {
             expect[i] = clip;
@@ -5611,10 +6395,13 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
             expect[i] = vbo;
         } else if (r300->r2vb_edge_streams_active &&
                    r300->r2vb_edge_stream_attr[i]) {
-            /* Interpolated replacement: a user buffer carries no resource;
-             * the invariant for this stream is the user-pointer identity,
-             * checked in the rebuild loop below. */
-            expect[i] = NULL;
+            /* Interpolated replacement: a bounded CPU-shadow resource gives
+             * the upload path exact byte authority over the rebuilt rows. */
+            edge_resource[i].b.target = PIPE_BUFFER;
+            edge_resource[i].b.width0 = draw->count * 16u;
+            edge_resource[i].malloced_buffer =
+                (uint8_t *)r300->r2vb_edge_stream_attr[i];
+            expect[i] = &edge_resource[i].b;
             edge_stream[i] = true;
         } else {
             struct pipe_vertex_buffer *src_vb =
@@ -5625,12 +6412,48 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
                 fprintf(stderr,
                         "r2vb_reingest decline: passthrough stream%d is a user "
                         "vertex buffer; upload path required\n", i);
-                r2vb_redirty_app_raster_state(r300);
+                r2vb_accrue_app_state_restore(r300);
                 return false;
+            }
+            const struct pipe_vertex_element *source_element =
+                &saved_velem[streams[i].src_velem];
+            uint64_t last =
+                (uint64_t)draw->start + (draw->count ? draw->count - 1 : 0);
+            if (!src_vb->buffer.resource || draw->count == 0 ||
+                !r300_r2vb_rebased_buffer_offset(
+                    src_vb->buffer_offset, source_element->src_stride,
+                    draw->start, &rebased_buffer_offset[i]) ||
+                last > UINT32_MAX ||
+                !r2vb_velem_index_in_bounds(
+                    r300, (unsigned)streams[i].src_velem, draw->start) ||
+                !r2vb_velem_index_in_bounds(
+                    r300, (unsigned)streams[i].src_velem, (uint32_t)last)) {
+                fprintf(stderr,
+                        "r2vb_reingest decline: passthrough stream%d "
+                        "cannot rebase start=%u count=%u\n",
+                        i, draw->start, draw->count);
+                r2vb_accrue_app_state_restore(r300);
+                return false;
+            }
+            if (draw->start != 0) {
+                rebased_stream[i] = true;
+                n_rebased++;
             }
             expect[i] = src_vb->buffer.resource;
         }
     }
+    unsigned n_fresh = 2 + n_edge + n_rebased;
+    if (clip_slot + n_fresh > PIPE_MAX_ATTRIBS) {
+        fprintf(stderr,
+                "r2vb_reingest invariant=FAIL (fresh buffers=%u base=%u "
+                "capacity=%u)\n",
+                n_fresh, clip_slot, PIPE_MAX_ATTRIBS);
+        r2vb_accrue_app_state_restore(r300);
+        return false;
+    }
+    struct pipe_vertex_buffer saved_vb[PIPE_MAX_ATTRIBS];
+    for (unsigned i = 0; i < n_fresh; i++)
+        saved_vb[i] = r300->vertex_buffer[clip_slot + i];
 
     /* Reconstruct one velem per VS output, in output-vector order.  Position and
      * the computed varying get the two fresh FP32x4 slots (clip, vbo); each
@@ -5644,6 +6467,7 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
     r300->vertex_buffer[vbo_slot].buffer.resource = vbo;
     r300->nr_vertex_buffers = clip_slot + n_fresh;
     unsigned next_edge_slot = vbo_slot + 1;
+    unsigned next_rebased_slot = next_edge_slot + n_edge;
     for (int i = 0; i < n_stream; i++) {
         if (streams[i].kind == R2VB_STREAM_POS) {
             ve->velem[i] = (struct pipe_vertex_element){ .vertex_buffer_index = clip_slot,
@@ -5654,18 +6478,25 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
                 .src_offset = 0, .src_stride = 16, .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT };
             ve->format_size[i] = 16;
         } else if (edge_stream[i]) {
-            /* Interpolated passthrough replacement: a fresh user-buffer slot
-             * over the clip-edge CPU array.  The passthrough emit uploads a
-             * velem-referenced user buffer to a BO before the draw. */
+            /* Interpolated passthrough replacement: a fresh bounded
+             * CPU-shadow resource over the clip-edge array. */
             unsigned esl = next_edge_slot++;
-            r300->vertex_buffer[esl].is_user_buffer = true;
-            r300->vertex_buffer[esl].buffer.user =
-                r300->r2vb_edge_stream_attr[i];
+            r300->vertex_buffer[esl].buffer.resource =
+                &edge_resource[i].b;
             ve->velem[i] = (struct pipe_vertex_element){ .vertex_buffer_index = esl,
                 .src_offset = 0, .src_stride = 16, .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT };
             ve->format_size[i] = 16;
         } else {
             ve->velem[i] = saved_velem[streams[i].src_velem];
+            if (rebased_stream[i]) {
+                unsigned rebased_slot = next_rebased_slot++;
+                r300->vertex_buffer[rebased_slot] =
+                    r300->vertex_buffer[
+                        ve->velem[i].vertex_buffer_index];
+                r300->vertex_buffer[rebased_slot].buffer_offset =
+                    rebased_buffer_offset[i];
+                ve->velem[i].vertex_buffer_index = rebased_slot;
+            }
             ve->format_size[i] = saved_fmtsz[streams[i].src_velem];
         }
     }
@@ -5674,7 +6505,7 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
      * outside the atom system; mark the owners dirty so the re-ingest prepare
      * re-emits the application values (else the producer's CLIP_DISABLE
      * over-rasterizes). */
-    r2vb_redirty_app_raster_state(r300);
+    r2vb_accrue_app_state_restore(r300);
 
     /* Post-reconstruction routing dump + the resource-pointer invariant: every
      * stream's rebuilt velem must point at its expected source.  position -> clip
@@ -5690,14 +6521,19 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
                           edge_stream[i] ? "edge" : "passthrough";
         bool hold;
         if (edge_stream[i]) {
-            /* User-pointer identity: the stream fetches exactly the
-             * interpolated array the clip route built. */
-            hold = svb->is_user_buffer &&
-                   svb->buffer.user == r300->r2vb_edge_stream_attr[i];
+            /* Resource and shadow identity: the stream fetches exactly the
+             * bounded interpolated array the clip route built. */
+            hold = !svb->is_user_buffer &&
+                   svb->buffer.resource == expect[i] &&
+                   r300_resource(svb->buffer.resource)->malloced_buffer ==
+                       (uint8_t *)r300->r2vb_edge_stream_attr[i];
             fprintf(stderr,
-                    "r2vb_reingest post stream%d slot=%u kind=%s vbi=%u user=%p expect=%p%s\n",
+                    "r2vb_reingest post stream%d slot=%u kind=%s vbi=%u "
+                    "shadow=%p expect=%p%s\n",
                     i, streams[i].slot, tag, ve->velem[i].vertex_buffer_index,
-                    svb->buffer.user, (void *)r300->r2vb_edge_stream_attr[i],
+                    (void *)r300_resource(svb->buffer.resource)
+                        ->malloced_buffer,
+                    (void *)r300->r2vb_edge_stream_attr[i],
                     hold ? "" : " MISMATCH");
         } else {
             struct pipe_resource *res = svb->buffer.resource;
@@ -5723,14 +6559,19 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
     } else {
         /* Two-submit path needs no adjacent barrier; single-CS mode must keep
          * the re-ingest barrier so the color/VAP flush orders the producer BO. */
+        bool saved_reingest_barrier = r300->r2vb_reingest_barrier;
+        bool saved_source_window = r300->r2vb_source_window;
         r300->r2vb_reingest_barrier = r2vb_single_cs_enabled();
         /* The delivery coordinate mode derives from the producer's actual
          * output contract: a window-space producer BO fetches verbatim, a
          * clip-space one runs the hardware viewport transform. */
         r300->r2vb_source_window =
             r300->r2vb_produced_space == R300_R2VB_POSITION_WINDOW;
-        ok = r300_r2vb_exec_passthrough_draw(r300, info, draw);
-        r300->r2vb_source_window = false;
+        struct pipe_draw_start_count_bias delivery_draw = *draw;
+        delivery_draw.start = 0;
+        ok = r300_r2vb_exec_passthrough_draw(r300, info, &delivery_draw);
+        r300->r2vb_reingest_barrier = saved_reingest_barrier;
+        r300->r2vb_source_window = saved_source_window;
         /* CS-decode correlation: after the emit the producer/app buffers are in the
          * command stream, so print their relocation indices.  The captured IB's
          * LOAD_VBPNTR array i must reference the matching buffer -- the r300-native
@@ -5776,7 +6617,14 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
     for (unsigned i = 0; i < n_fresh; i++)
         r300->vertex_buffer[clip_slot + i] = saved_vb[i];
     r300->nr_vertex_buffers = saved_nvb;
+    r300_r2vb_restore_vertex_array_state(r300);
     return ok;
+}
+
+void
+r300_r2vb_restore_vertex_array_state(struct r300_context *r300)
+{
+    r300->vertex_arrays_dirty = true;
 }
 
 static bool r2vb_single_cs_enabled(void)
@@ -5813,6 +6661,7 @@ static bool r2vb_single_cs_enabled(void)
  * producer pass follows). */
 static bool r300_r2vb_emit_split_pass(struct r300_context *r300, void *pass_fs,
                                       struct pipe_resource *target,
+                                      const struct r300_r2vb_slot_layout *layout,
                                       uint32_t count, const float (*attrs)[4],
                                       unsigned num_attrs, const float *cols)
 {
@@ -5824,13 +6673,12 @@ static bool r300_r2vb_emit_split_pass(struct r300_context *r300, void *pass_fs,
         r300->context.bind_vs_state(&r300->context, pvs);
     r300_r2vb_set_transform_consts_raw(r300, cols);
     r300_update_derived_state(r300);
-    bool emitted = false;
-    if (r300_r2vb_prepare_states(r300,
-                                 64 + (int)count * 4 * (1 + (int)num_attrs) + 64)) {
-        r300_r2vb_emit_producer(r300, r300_resource(target), 0, count, attrs,
-                                num_attrs, true);
-        emitted = true;
-    }
+    bool emitted =
+        r300_r2vb_immediate_producer_shape_ok(count, num_attrs) &&
+        r300_r2vb_prepare_states(
+            r300, 64u + count * 4u * (1u + num_attrs) + 64u) &&
+        r300_r2vb_emit_producer(r300, r300_resource(target), 0, count,
+                                attrs, num_attrs, layout, true);
     r300->context.bind_fs_state(&r300->context, saved_fs);
     if (pvs)
         r300->context.bind_vs_state(&r300->context, saved_vs);
@@ -5855,6 +6703,7 @@ static bool r300_r2vb_emit_split_pass(struct r300_context *r300, void *pass_fs,
  * gallivm; true means pass B rendered into clip. */
 static bool r300_r2vb_run_split_producer(struct r300_context *r300,
                                          struct pipe_resource *clip,
+                                         const struct r300_r2vb_slot_layout *layout,
                                          uint32_t count, const float (*model)[4],
                                          unsigned num_in, const float *cols,
                                          enum r300_r2vb_position_space space,
@@ -5931,7 +6780,7 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
     }
 
     struct pipe_resource *carry_bo =
-        r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
+        r2vb_create_selftest_bo(r300, (uint32_t)layout->storage_bytes, 0);
     struct pipe_shader_state st_a = {0};
     st_a.type = PIPE_SHADER_IR_NIR;
     st_a.ir.nir = pass_a; /* create_fs_state takes ownership and precompiles */
@@ -5947,8 +6796,8 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
         goto fail;
 
     /* Pass A: the carry producer, into the carry BO. */
-    if (!r300_r2vb_emit_split_pass(r300, pa_fs, carry_bo, count, model, num_in,
-                                   cols))
+    if (!r300_r2vb_emit_split_pass(r300, pa_fs, carry_bo, layout, count, model,
+                                   num_in, cols))
         goto fail;
 
     /* Carry round-trip: the flush + read map waits for the producer submit and
@@ -5979,7 +6828,7 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
     }
 
     /* Pass B: the position remainder, into the clip BO the delivery re-ingests. */
-    if (!r300_r2vb_emit_split_pass(r300, pb_fs, clip, count,
+    if (!r300_r2vb_emit_split_pass(r300, pb_fs, clip, layout, count,
                                    (const float (*)[4])bmodel, num_in + 1, cols))
         goto fail;
 
@@ -6052,35 +6901,101 @@ fail:
     return false;
 }
 
-/* First-cell arm selector for the shipped BO-fetch producer draw.  Exact
- * values only: producer_capture3 runs the full real-path transaction and
- * discards the IB with RADEON_FLUSH_NOOP; producer_submit3 submits it and
- * reads the producer BO back.  Any other value keeps the arm closed. */
-static int r2vb_bo_draw_producer3_mode(void)
+/* Exact BO-fetch producer selector.  The historical diagnostic spellings
+ * remain stable for retained probe runners.  producer_deliver uses the same
+ * fixed-size LOAD_VBPNTR transaction as the automatic grid route and hands
+ * its output to the established classify and re-ingest path. */
+enum r2vb_bo_draw_mode {
+    R2VB_BO_DRAW_OFF = 0,
+    R2VB_BO_DRAW_CAPTURE,
+    R2VB_BO_DRAW_SUBMIT,
+    R2VB_BO_DRAW_ALU12_CAPTURE,
+    R2VB_BO_DRAW_ALU12_SUBMIT,
+    R2VB_BO_DRAW_WIDTH_CAPTURE,
+    R2VB_BO_DRAW_WIDTH_SUBMIT,
+    R2VB_BO_DRAW_SIGNFLIP_CAPTURE,
+    R2VB_BO_DRAW_SIGNFLIP_SUBMIT,
+    R2VB_BO_DRAW_DELIVER,
+};
+
+static enum r2vb_bo_draw_mode
+r2vb_bo_draw_producer3_mode(void)
 {
-    static int mode = -1;
-    if (mode < 0) {
+    static enum r2vb_bo_draw_mode mode = R2VB_BO_DRAW_OFF;
+    static bool initialized = false;
+    if (!initialized) {
         const char *e = getenv("R300_R2VB_BO_DRAW");
         if (e && strcmp(e, "producer_capture3") == 0)
-            mode = 1;
+            mode = R2VB_BO_DRAW_CAPTURE;
         else if (e && strcmp(e, "producer_submit3") == 0)
-            mode = 2;
+            mode = R2VB_BO_DRAW_SUBMIT;
         else if (e && strcmp(e, "producer_alu12") == 0)
-            mode = 3;
+            mode = R2VB_BO_DRAW_ALU12_CAPTURE;
         else if (e && strcmp(e, "producer_alu12_submit") == 0)
-            mode = 4;
+            mode = R2VB_BO_DRAW_ALU12_SUBMIT;
         else if (e && strcmp(e, "producer_width") == 0)
-            mode = 5;
+            mode = R2VB_BO_DRAW_WIDTH_CAPTURE;
         else if (e && strcmp(e, "producer_width_submit") == 0)
-            mode = 6;
+            mode = R2VB_BO_DRAW_WIDTH_SUBMIT;
         else if (e && strcmp(e, "producer_signflip") == 0)
-            mode = 7;
+            mode = R2VB_BO_DRAW_SIGNFLIP_CAPTURE;
         else if (e && strcmp(e, "producer_signflip_submit") == 0)
-            mode = 8;
-        else
-            mode = 0;
+            mode = R2VB_BO_DRAW_SIGNFLIP_SUBMIT;
+        else if (r300_r2vb_bo_draw_delivery_mode_value(e))
+            mode = R2VB_BO_DRAW_DELIVER;
+        initialized = true;
     }
     return mode;
+}
+
+static bool
+r2vb_bo_draw_mode_is_submit(enum r2vb_bo_draw_mode mode)
+{
+    return mode == R2VB_BO_DRAW_SUBMIT ||
+           mode == R2VB_BO_DRAW_ALU12_SUBMIT ||
+           mode == R2VB_BO_DRAW_WIDTH_SUBMIT ||
+           mode == R2VB_BO_DRAW_SIGNFLIP_SUBMIT;
+}
+
+static bool
+r2vb_bo_draw_mode_is_width(enum r2vb_bo_draw_mode mode)
+{
+    return mode == R2VB_BO_DRAW_WIDTH_CAPTURE ||
+           mode == R2VB_BO_DRAW_WIDTH_SUBMIT;
+}
+
+static bool
+r2vb_bo_draw_mode_is_signflip(enum r2vb_bo_draw_mode mode)
+{
+    return mode == R2VB_BO_DRAW_SIGNFLIP_CAPTURE ||
+           mode == R2VB_BO_DRAW_SIGNFLIP_SUBMIT;
+}
+
+static bool
+r2vb_bo_draw_mode_is_alu12(enum r2vb_bo_draw_mode mode)
+{
+    return mode == R2VB_BO_DRAW_ALU12_CAPTURE ||
+           mode == R2VB_BO_DRAW_ALU12_SUBMIT;
+}
+
+enum r2vb_bo_draw_action {
+    R2VB_BO_DRAW_ACTION_CAPTURE,
+    R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME,
+    R2VB_BO_DRAW_ACTION_DELIVER,
+};
+
+static const char *
+r2vb_bo_draw_action_name(enum r2vb_bo_draw_action action)
+{
+    switch (action) {
+    case R2VB_BO_DRAW_ACTION_CAPTURE:
+        return "capture";
+    case R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME:
+        return "submit";
+    case R2VB_BO_DRAW_ACTION_DELIVER:
+        return "deliver";
+    }
+    return "invalid";
 }
 
 /* Twelve-lane arithmetic discriminator FS for the fragment-ALU sign
@@ -6218,7 +7133,7 @@ static void *r2vb_build_signflip_fs(struct r300_context *r300)
 }
 
 /* Run the shipped LOAD_VBPNTR producer transaction at the real producer call
- * site, for the first three-vertex cell.  The caller has the producer FS and
+ * site.  The caller has the producer FS and
  * VS bound and the derived state updated; this arm consumes the cached plan,
  * the live derived RS block, the bound producer FS semantics, and the
  * application's position vertex element -- the transaction materializes the
@@ -6227,32 +7142,41 @@ static void *r2vb_build_signflip_fs(struct r300_context *r300)
  *
  * Emission order: the transaction stages the complete buffer list first
  * (capacity reservation, then dirty-state resources plus the three producer
- * BOs, then cs_validate); dirty state and the shared output-target prologue
+ * BOs, then cs_validate); the caller lands dirty state before the shared
+ * output-target prologue
  * land next, so the raw COLOROFFSET0 retarget and its relocation precede the
  * custom range exactly as the proven immediate producer orders them; the
  * 64-dword custom range and the shared cache-publication tail close the
- * producer.  capture discards the IB with RADEON_FLUSH_NOOP; submit flushes
- * through the normal path, waits the BO, and prints every output record for
- * the off-box oracle.  Either way the caller falls back to gallivm for the
- * visible draw -- the cell tests exactly one new hardware mechanism, the
- * BO-fetched producer input, and delivers nothing. */
-/* Outcome of the first-cell arm, threaded to the route so the visible draw
- * is consumed after a live submission: once a producer IB has been emitted
- * or flushed, a further gallivm submission would ride an unproven GPU state,
- * so the submit cell ends the process's GPU work.  A decline before any PM4
- * emission keeps the clean gallivm fallback. */
+ * producer.  CAPTURE discards the IB with RADEON_FLUSH_NOOP.
+ * SUBMIT_CONSUME flushes, waits, and prints the producer BO for the retained
+ * diagnostic oracle.  DELIVER leaves ordering to the established producer
+ * caller, which performs its normal flush/read and then classifies or
+ * re-ingests the output. */
+/* Once a diagnostic submit emits PM4, the route consumes the visible draw.
+ * A production delivery instead returns PRODUCED so the normal classify and
+ * re-ingest path continues from the emitted BO. */
 enum r300_r2vb_bo3_result {
     R300_R2VB_BO3_DECLINED = 0,
     R300_R2VB_BO3_CAPTURED,
     R300_R2VB_BO3_SUBMITTED_CONSUME,
+    R300_R2VB_BO3_PRODUCED,
+};
+
+enum r300_r2vb_model_binding {
+    R300_R2VB_MODEL_APPLICATION_STREAM = 0,
+    R300_R2VB_MODEL_REBUILT_ROWS,
 };
 
 static enum r300_r2vb_bo3_result
 r2vb_run_bo_fetch_producer3(struct r300_context *r300,
                             struct pipe_resource *clip,
+                            const struct r300_r2vb_slot_layout *layout,
                             uint32_t count, uint32_t start,
+                            const float (*model_rows)[4],
+                            enum r300_r2vb_model_binding model_binding,
                             enum r300_r2vb_position_space space,
-                            bool submit)
+                            enum r2vb_bo_draw_mode mode,
+                            enum r2vb_bo_draw_action action)
 {
     const char *why = NULL;
     struct pipe_resource *slot_res = NULL;
@@ -6266,20 +7190,30 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         (const struct r300_rs_block *)r300->rs_block_state.state;
     const struct pipe_vertex_element *ve = NULL;
     const struct pipe_vertex_buffer *vb = NULL;
+    unsigned effective_velem_count = r300->velems ? r300->velems->count : 0;
+    unsigned effective_vertex_buffer_count = r300->nr_vertex_buffers;
+    uint32_t effective_start = start;
+    struct r300_resource rebuilt_resource;
+    struct pipe_vertex_buffer rebuilt_vb;
+    struct pipe_vertex_element rebuilt_ve;
 
-    /* The live-submit half additionally rides the workspace raw-submit
-     * consent gate; capture stays reachable without it. */
-    if (submit && !r300_r2vb_option_is(getenv("R300_RAW_SUBMIT_ACCEPTED"), "1"))
+    /* Every submitted action rides the exact raw-submit consent gate.
+     * Capture uses its separate path because RADEON_FLUSH_NOOP discards the
+     * command stream before DRM_RADEON_CS. */
+    if (action != R2VB_BO_DRAW_ACTION_CAPTURE &&
+        !r300_r2vb_option_is(getenv("R300_RAW_SUBMIT_ACCEPTED"), "1"))
         why = "raw_submit_gate";
-    /* The width modes admit exactly the one-row boundary counts: 2048 and
+    /* Diagnostic width modes admit exactly the one-row boundary counts: 2048 and
      * 2049 (the first frontier, silicon-green), 2559/2560/2561 (the RS482
      * color-render-axis boundary), and 4096 (the one-row storage ceiling,
      * the row half of the layout-boundary comparison against 2048x2);
-     * every other mode keeps the proven three-vertex cell. */
-    else if (r2vb_bo_draw_producer3_mode() >= 5
-                 ? (count != 2048 && count != 2049 && count != 2559 &&
-                    count != 2560 && count != 2561 && count != 4096)
-                 : count != 3)
+     * every other diagnostic mode keeps the proven three-vertex cell.
+     * Production delivery accepts the full validated layout domain. */
+    else if (action != R2VB_BO_DRAW_ACTION_DELIVER &&
+             (r2vb_bo_draw_mode_is_width(mode)
+                  ? (count != 2048 && count != 2049 && count != 2559 &&
+                     count != 2560 && count != 2561 && count != 4096)
+                  : count != 3))
         why = "count";
     else if (!plan || plan->status != R300_R2VB_PLAN_READY ||
              plan->action != R300_R2VB_PLAN_SINGLE ||
@@ -6289,17 +7223,45 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         why = "producer_fs";
     else if (!rs)
         why = "rs_block";
-    else if (!r300->velems ||
-             plan->position_source.location_rank >= r300->velems->count)
+    else if (model_binding == R300_R2VB_MODEL_REBUILT_ROWS) {
+        if (!model_rows || count > UINT32_MAX / 16u) {
+            why = "rebuilt_model";
+        } else {
+            memset(&rebuilt_resource, 0, sizeof(rebuilt_resource));
+            rebuilt_resource.b.target = PIPE_BUFFER;
+            rebuilt_resource.b.width0 = count * 16u;
+            rebuilt_resource.malloced_buffer = (uint8_t *)model_rows;
+            rebuilt_vb = (struct pipe_vertex_buffer) {
+                .buffer.resource = &rebuilt_resource.b,
+            };
+            rebuilt_ve = (struct pipe_vertex_element) {
+                .src_stride = 16,
+                .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+            };
+            vb = &rebuilt_vb;
+            ve = &rebuilt_ve;
+            effective_velem_count = 1;
+            effective_vertex_buffer_count = 1;
+            effective_start = 0;
+        }
+    } else if (model_binding != R300_R2VB_MODEL_APPLICATION_STREAM) {
+        why = "model_binding";
+    } else if (!r300->velems ||
+               plan->position_source.location_rank >= r300->velems->count) {
         why = "velems";
+    }
     if (!why) {
-        ve = &r300->velems->velem[plan->position_source.location_rank];
-        if (ve->vertex_buffer_index >= r300->nr_vertex_buffers)
-            why = "vb_index";
-        else {
-            vb = &r300->vertex_buffer[ve->vertex_buffer_index];
-            if (!vb->buffer.resource)
-                why = "user_buffer";
+        if (model_binding == R300_R2VB_MODEL_APPLICATION_STREAM) {
+            ve = &r300->velems->velem[plan->position_source.location_rank];
+            if (ve->vertex_buffer_index >= r300->nr_vertex_buffers) {
+                why = "vb_index";
+            } else {
+                vb = &r300->vertex_buffer[ve->vertex_buffer_index];
+                if (vb->is_user_buffer)
+                    why = "user_buffer";
+                else if (!vb->buffer.resource)
+                    why = "buffer_resource";
+            }
         }
     }
 
@@ -6314,8 +7276,8 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
     if (!why &&
         (!r300_r2vb_producer_streams_init(vb->buffer_offset, ve->src_offset,
                                           ve->src_stride, ve->src_format,
-                                          start, &st) ||
-         !r300_r2vb_producer_fetch_init(&st, count, (uint64_t)count * 16,
+                                          effective_start, &st) ||
+         !r300_r2vb_producer_fetch_init(&st, count, layout->storage_bytes,
                                         vb->buffer.resource->width0, &ft) ||
          !r300_r2vb_producer_interface_init(
              &ft, R300_R2VB_CAL_SLOT_DST_VEC_LOC,
@@ -6330,30 +7292,13 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         psc.count = 1;
     }
 
-    /* Slot positions: the same one-row pixel centers the immediate producer
-     * embeds, written once by the CPU before any GPU use of the BO. */
+    /* Slot positions come from the representation-keyed context cache, so
+     * every producer draw and every cache reuse carries the same row fold as
+     * the target scissor and color pitch. */
     if (!why) {
-        slot_res = r2vb_create_selftest_bo(r300, count * 16, 0);
+        slot_res = r300_r2vb_get_slot_pos_bo(r300, layout);
         if (!slot_res)
             why = "slot_bo";
-    }
-    if (!why) {
-        struct pipe_transfer *xfer = NULL;
-        struct pipe_box box = { .width = (int)(count * 16), .height = 1,
-                                .depth = 1 };
-        float *slots = r300->context.buffer_map(&r300->context, slot_res, 0,
-                                                PIPE_MAP_WRITE, &box, &xfer);
-        if (!slots)
-            why = "slot_map";
-        else {
-            for (uint32_t i = 0; i < count; i++) {
-                slots[i * 4 + 0] = (float)i + 0.5f;
-                slots[i * 4 + 1] = 0.5f;
-                slots[i * 4 + 2] = 0.0f;
-                slots[i * 4 + 3] = 1.0f;
-            }
-            r300->context.buffer_unmap(&r300->context, xfer);
-        }
     }
 
     /* Sentinel-fill the producer output so the readback separates written
@@ -6364,7 +7309,9 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
                                 .depth = 1 };
         void *m = r300->context.buffer_map(&r300->context, clip, 0,
                                            PIPE_MAP_WRITE, &box, &xfer);
-        if (m) {
+        if (!m) {
+            why = "output_map";
+        } else {
             memset(m, 0xcb, clip->width0);
             r300->context.buffer_unmap(&r300->context, xfer);
         }
@@ -6372,12 +7319,14 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
 
     bool ok = false;
     if (!why) {
-        /* Capacity only, before any fallible transaction work: the shared
-         * prologue (31 + wpos override) + 64-dword custom range + 8-dword
-         * tail, with margin; PREP_EMIT_STATES adds the live dirty-dword
-         * count on top.  The reservation may flush and rotate the CS but
-         * emits nothing, so every register write stays behind the
-         * transaction's complete-list validation. */
+        /* Capacity only, before any fallible transaction work: the 55-dword
+         * shared prologue, up to two 5-dword window-position overrides,
+         * 64-dword custom range, and 8-dword tail total at most 137 dwords.
+         * The 160-dword reservation retains 23 dwords of margin;
+         * PREP_EMIT_STATES accounts for the live dirty atoms separately.  The
+         * reservation may flush and rotate the CS but emits nothing, so every
+         * register write stays behind the transaction's complete-list
+         * validation. */
         r300_r2vb_reserve_bo_draw_cs(r300, 160);
     }
     if (!why) {
@@ -6390,16 +7339,16 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         void *saved_fb = r300->fb_state.state;
         struct pipe_framebuffer_state pfb;
         memset(&pfb, 0, sizeof(pfb));
-        pfb.width = (uint16_t)align(count, 2);
-        pfb.height = 1;
+        pfb.width = (uint16_t)layout->width;
+        pfb.height = (uint16_t)layout->height;
         pfb.nr_cbufs = 1;
         pfb.cbufs[0].texture = clip;
         pfb.cbufs[0].format = PIPE_FORMAT_R32G32B32A32_FLOAT;
         r300->fb_state.state = &pfb;
         bool validated = r300_r2vb_producer_bo_draw_validate(
             r300, plan, &pfs->shader->inputs, rs, &psc, vb, ve,
-            r300->velems->count, r300->nr_vertex_buffers, slot_res, clip,
-            start, count, space, &txn);
+            effective_velem_count, effective_vertex_buffer_count, layout,
+            slot_res, clip, effective_start, count, space, &txn);
         r300->fb_state.state = saved_fb;
         if (!validated)
             why = "validate";
@@ -6412,7 +7361,7 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
      * above leaves the attempt unconsumed, and every qualifying call after
      * the first declines here instead of emitting a second candidate. */
     static bool producer_submit3_fired = false;
-    if (!why && submit) {
+    if (!why && action == R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME) {
         if (producer_submit3_fired)
             why = "already_fired";
         else
@@ -6428,7 +7377,7 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
          * prologue so no dirty emission can follow the retarget. */
         r300_emit_dirty_state(r300);
         r2vb_emit_producer_target_prologue(r300, r300_resource(clip), 0,
-                                           count, true);
+                                           layout, true);
         if (!r300_r2vb_producer_bo_draw_emit(r300, &txn)) {
             why = "emit";
         } else {
@@ -6440,21 +7389,27 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
 
     fprintf(stderr,
             "r2vb_bo_draw_producer3 mode=%s ok=%d why=%s count=%u start=%u "
-            "space=%s slot_reloc=%d model_reloc=%d output_reloc=%d\n",
-            submit ? "submit" : "capture", ok, why ? why : "-", count, start,
+            "model=%s "
+            "space=%s layout=%ux%u pitch=%u slot_reloc=%d model_reloc=%d "
+            "output_reloc=%d\n",
+            r2vb_bo_draw_action_name(action), ok, why ? why : "-", count,
+            effective_start,
+            model_binding == R300_R2VB_MODEL_REBUILT_ROWS ? "rebuilt"
+                                                          : "application",
             space == R300_R2VB_POSITION_WINDOW ? "window" : "clip",
+            layout->width, layout->height, layout->pitch_pixels,
             txn.slot_reloc_index, txn.model_reloc_index,
             txn.output_reloc_index);
 
     enum r300_r2vb_bo3_result result = R300_R2VB_BO3_DECLINED;
-    if (ok && !submit) {
+    if (ok && action == R2VB_BO_DRAW_ACTION_CAPTURE) {
         /* Discard the producer IB before DRM_RADEON_CS; R300_TRACE has
          * already retained it for the full-path decode. */
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
         fprintf(stderr, "r2vb_bo_draw_producer3 decision=capture "
                         "(no-submit; RADEON_FLUSH_NOOP)\n");
         result = R300_R2VB_BO3_CAPTURED;
-    } else if (ok && submit) {
+    } else if (ok && action == R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME) {
         /* The producer IB reaches DRM_RADEON_CS here; the emitted state is
          * committed, so the process's GPU work ends with this candidate
          * whatever the readback outcome. */
@@ -6472,7 +7427,8 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
                     "r2vb_bo_draw_producer3 retirement=readback_ok\n");
             uint32_t nrec = clip->width0 / 16;
             uint32_t sentinel_clean = 0;
-            bool width_mode = r2vb_bo_draw_producer3_mode() >= 5;
+            bool width_mode =
+                r2vb_bo_draw_mode_is_width(mode) || layout->height > 1;
             /* Width cells report by full-span hash plus boundary records --
              * the row edges (0, 1, count-1), the 128-lane payload wrap
              * (127, 128), the 2048 frontier (2046..2048), the 2560
@@ -6524,31 +7480,61 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         } else {
             fprintf(stderr, "r2vb_bo_draw_producer3 readback=map_failed\n");
         }
+    } else if (ok && action == R2VB_BO_DRAW_ACTION_DELIVER) {
+        result = R300_R2VB_BO3_PRODUCED;
+        fprintf(stderr,
+                "r2vb_bo_draw_producer3 decision=deliver "
+                "layout=%ux%u pitch=%u count=%u\n",
+                layout->width, layout->height, layout->pitch_pixels, count);
     }
 
-    /* The producer hand-wrote raster registers outside the atom system, and
-     * the capture arm discarded a CS carrying emitted state; re-mark the
-     * application state either way.  After a live submission the caller
-     * consumes the draw, so the re-marking serves only a later process
-     * teardown path. */
-    r2vb_redirty_app_raster_state(r300);
-    r300->vertex_arrays_dirty = true;
+    /* Diagnostic outcomes leave the route here, so restore the application
+     * atoms before fallback or process teardown.  DELIVER keeps the producer
+     * state live until the established re-ingest reconstructs its streams and
+     * re-dirties the owning atoms immediately before submission. */
+    if (result != R300_R2VB_BO3_PRODUCED) {
+        r2vb_accrue_app_state_restore(r300);
+        r300->vertex_arrays_dirty = true;
+    }
     r300_r2vb_producer_bo_draw_fini(&txn);
-    pipe_resource_reference(&slot_res, NULL);
     return result;
 }
 
 static bool r2vb_run_transform_producer(struct r300_context *r300,
                                         struct pipe_resource *clip,
+                                        const struct r300_r2vb_slot_layout *layout,
                                         uint32_t count, const float (*model)[4],
                                         unsigned num_in, const float *cols,
                                         uint32_t start,
+                                        enum r300_r2vb_model_binding model_binding,
                                         enum r300_r2vb_position_space space,
                                         bool restage, bool externals,
                                         bool *bo3_consumed)
 {
     void *xfs;
     bool xfs_cached = false;
+    enum r2vb_bo_draw_mode bo_mode = r2vb_bo_draw_producer3_mode();
+    bool automatic_bo_delivery = r300->r2vb_auto_single_selected;
+    bool use_bo_draw =
+        bo_mode != R2VB_BO_DRAW_OFF || automatic_bo_delivery;
+    enum r2vb_bo_draw_action bo_action = R2VB_BO_DRAW_ACTION_CAPTURE;
+
+    if (automatic_bo_delivery || bo_mode == R2VB_BO_DRAW_DELIVER)
+        bo_action = R2VB_BO_DRAW_ACTION_DELIVER;
+    else if (r2vb_bo_draw_mode_is_submit(bo_mode))
+        bo_action = R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME;
+
+    /* A multirow target always uses the fixed-size BO transaction selected by
+     * AUTO_SINGLE or the explicit delivery mode. */
+    if (layout->height > 1 &&
+        (!use_bo_draw || bo_action != R2VB_BO_DRAW_ACTION_DELIVER))
+        return false;
+    if (!use_bo_draw &&
+        !r300_r2vb_immediate_producer_shape_ok(count, num_in))
+        return false;
+    if (bo_action == R2VB_BO_DRAW_ACTION_DELIVER &&
+        r2vb_single_cs_enabled())
+        return false;
 
     if (restage) {
         /* Producer re-entry admission: the clip-route accept action re-runs
@@ -6583,6 +7569,8 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
             r300_vs(r300)->r2vb_admission[0]
                           [space == R300_R2VB_POSITION_WINDOW ? 1 : 0] ==
                 R300_R2VB_ADMIT_SPLIT) {
+            if (use_bo_draw)
+                return false;
             /* A typed cell executes from the cached plan; under spill1 a
              * float cell keeps the legacy rebuild (the contract declines it
              * on typed_source_absent), so the spill1 path stays
@@ -6601,8 +7589,8 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
                 if (!plan && !r300_r2vb_budget_escape_enabled())
                     return false;
             }
-            return r300_r2vb_run_split_producer(r300, clip, count, model, num_in,
-                                                cols, space, plan);
+            return r300_r2vb_run_split_producer(
+                r300, clip, layout, count, model, num_in, cols, space, plan);
         }
     }
     if (restage) {
@@ -6615,16 +7603,18 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
          * shape, same transaction, per-lane arithmetic classes instead of
          * the transform -- so the BO-fetch path stays byte-identical
          * outside the fragment program. */
-        if (r2vb_bo_draw_producer3_mode() >= 7)
+        if (r2vb_bo_draw_mode_is_signflip(bo_mode))
             xfs = r2vb_build_signflip_fs(r300);
-        else if (r2vb_bo_draw_producer3_mode() >= 5)
+        else if (r2vb_bo_draw_mode_is_width(bo_mode))
             xfs = r2vb_build_width_identity_fs(r300);
-        else if (r2vb_bo_draw_producer3_mode() >= 3)
+        else if (r2vb_bo_draw_mode_is_alu12(bo_mode))
             xfs = r2vb_build_alu12_fs(r300);
         else
             xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
                                              VARYING_SLOT_POS, space);
-        if (xfs && r2vb_bo_draw_producer3_mode() < 3)
+        if (xfs && !r2vb_bo_draw_mode_is_alu12(bo_mode) &&
+            !r2vb_bo_draw_mode_is_width(bo_mode) &&
+            !r2vb_bo_draw_mode_is_signflip(bo_mode))
             r300_r2vb_set_transform_consts_raw(r300, cols);
     } else if (externals) {
         xfs = r300_r2vb_get_transform_fs(r300, space);
@@ -6654,25 +7644,28 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
      * producer is bypassed entirely, so the run carries exactly one
      * producer form.  prepared stays false, so the caller restores the
      * application shaders and falls back to gallivm for the visible draw. */
-    int bo3 = r2vb_bo_draw_producer3_mode();
     bool prepared = false;
-    if (bo3 != 0 && restage && num_in == 1) {
-        if (r2vb_run_bo_fetch_producer3(r300, clip, count, start, space,
-                                        bo3 == 2 || bo3 == 4 || bo3 == 6 ||
-                                        bo3 == 8) ==
-            R300_R2VB_BO3_SUBMITTED_CONSUME)
+    bool bo_produced = false;
+    if (use_bo_draw && restage && num_in == 1) {
+        enum r300_r2vb_bo3_result bo_result =
+            r2vb_run_bo_fetch_producer3(
+                r300, clip, layout, count, start, model, model_binding, space,
+                bo_mode, bo_action);
+        if (bo_result == R300_R2VB_BO3_SUBMITTED_CONSUME)
             *bo3_consumed = true;
-    } else if (bo3 != 0) {
+        else if (bo_result == R300_R2VB_BO3_PRODUCED)
+            prepared = bo_produced = true;
+    } else if (use_bo_draw) {
         fprintf(stderr,
                 "r2vb_bo_draw_producer3 mode=%s ok=0 why=%s count=%u\n",
-                (bo3 == 2 || bo3 == 4) ? "submit" : "capture",
+                r2vb_bo_draw_action_name(bo_action),
                 restage ? "num_in" : "restage", count);
     } else {
-        prepared = r300_r2vb_prepare_states(
-            r300, 64u + count * 4u * (1u + num_in) + 64u);
-        if (prepared)
+        prepared =
+            r300_r2vb_prepare_states(
+                r300, 64u + count * 4u * (1u + num_in) + 64u) &&
             r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count,
-                                    model, num_in, true);
+                                    model, num_in, layout, true);
     }
     r300->context.bind_fs_state(&r300->context, saved_fs);
     if (pvs)
@@ -6692,12 +7685,46 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
         r300->context.flush(&r300->context, NULL, 0);
         r2vb_wait_bo(r300, clip);
         struct pipe_transfer *sxfer = NULL;
-        struct pipe_box sbox = { .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
+        struct pipe_box sbox = {
+            .width = bo_produced ? (int)layout->storage_bytes
+                                 : (int)((count ? count : 1) * 16),
+            .height = 1,
+            .depth = 1,
+        };
         void *sm = r300->context.buffer_map(&r300->context, clip, 0, PIPE_MAP_READ, &sbox, &sxfer);
         if (!sm) {
             r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
             r300->r2vb_capture_clip = NULL;
+            if (bo_produced)
+                *bo3_consumed = true;
             return false;
+        }
+        if (bo_produced) {
+            const uint32_t *words = sm;
+            uint32_t padding_slots =
+                (uint32_t)(layout->storage_slots - layout->count);
+            uint32_t clean_padding = 0;
+            for (uint64_t slot = layout->count;
+                 slot < layout->storage_slots; slot++) {
+                const uint32_t *record = &words[slot * 4];
+                if (record[0] == 0xcbcbcbcbu &&
+                    record[1] == 0xcbcbcbcbu &&
+                    record[2] == 0xcbcbcbcbu &&
+                    record[3] == 0xcbcbcbcbu)
+                    clean_padding++;
+            }
+            fprintf(stderr,
+                    "r2vb_bo_draw_producer3 padding_untouched=%u/%u "
+                    "layout=%ux%u pitch=%u\n",
+                    clean_padding, padding_slots, layout->width,
+                    layout->height, layout->pitch_pixels);
+            if (clean_padding != padding_slots) {
+                r300->context.buffer_unmap(&r300->context, sxfer);
+                r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
+                r300->r2vb_capture_clip = NULL;
+                *bo3_consumed = true;
+                return false;
+            }
         }
         r300->context.buffer_unmap(&r300->context, sxfer);
     }
@@ -6897,12 +7924,10 @@ r2vb_topology_gather_indices(struct r300_context *r300,
 
 /* Route-exec MVP path: run gl_Position = M * in_pos on the fragment ALU.  The
  * producer transforms the application's model-space positions into a clip-space
- * BO through the 4-DP4 transform-FS, emitted under the normal draw flow (where
- * prepare_for_rendering carries the FS/RS/const atoms) -- not the r300_flush
- * self-test, which is reentrant.  R300_R2VB_XFORM_VERIFY flushes and checks the
- * BO holds M*model.  The re-ingest (draw the transformed positions with the
- * application FS) is the remaining step; until then this returns false so the
- * draw falls back to gallivm and the screen stays correct. */
+ * BO through the 4-DP4 transform FS under the normal draw flow, where
+ * prepare_for_rendering carries the FS, RS, and constant atoms.
+ * R300_R2VB_XFORM_VERIFY checks that the BO holds M*model.  The clip classifier
+ * then selects TCL_BYPASS delivery, a proven trivial reject, or Draw fallback. */
 bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                              const struct pipe_draw_info *info,
                              const struct pipe_draw_start_count_bias *draw)
@@ -6911,6 +7936,11 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         fprintf(stderr, "r2vb_exec_entry const0=%p size=%u velems=%p vcount=%u draw_count=%u\n",
                 r300->swtcl_vs_const0_ptr, r300->swtcl_vs_const0_size,
                 (void *)r300->velems, r300->velems ? r300->velems->count : 0, draw->count);
+    /* Producer point draws are implementation work, not application
+     * visibility.  An active occlusion query would count both producer
+     * passes before the visible delivery and corrupt the query result. */
+    if (r300->query_current)
+        return false;
     if (!r300->swtcl_vs_const0_ptr || r300->swtcl_vs_const0_size < 64)
         return false;
     if (!r300->velems || r300->velems->count == 0)
@@ -6930,6 +7960,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         num_in = R300_R2VB_MAX_PRODUCER_INPUTS;
     if (num_in > r300->velems->count)
         num_in = r300->velems->count;
+    if (num_in == 0)
+        return false;
 
     /* Topology gather (R300_R2VB_TOPOLOGY, requires R300_R2VB_CLIP_ROUTE):
      * an indexed draw or a TRIANGLE_STRIP/TRIANGLE_FAN topology is resolved
@@ -6945,7 +7977,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * path when the gate is off: r300_r2vb_topology_enabled() is false, so
      * topo_shape is always false and the original count/index arithmetic
      * below runs unchanged. */
-    bool topo_shape = r300_r2vb_topology_enabled() &&
+    bool topo_shape = r300_r2vb_topology_enabled(r300) &&
                       (info->index_size != 0 ||
                        info->mode == MESA_PRIM_TRIANGLE_STRIP ||
                        info->mode == MESA_PRIM_TRIANGLE_FAN);
@@ -6967,7 +7999,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         topo_info_storage.has_user_indices = false;
         topo_info_storage.primitive_restart = false;
         einfo = &topo_info_storage;
-    } else if (count == 0 || count > 4096) {
+    } else if (count == 0) {
         return false;
     }
 
@@ -6978,6 +8010,13 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     }
     for (unsigned a = 0; a < num_in; a++) {
         struct pipe_vertex_element *pe = &r300->velems->velem[a];
+        if (!r2vb_float_velem_format_supported(pe->src_format) ||
+            pe->instance_divisor != 0 ||
+            pe->vertex_buffer_index >= r300->nr_vertex_buffers) {
+            free(model);
+            free(topo_idx);
+            return false;
+        }
         struct pipe_vertex_buffer *vb = &r300->vertex_buffer[pe->vertex_buffer_index];
         const uint8_t *base = NULL;
         if (vb->is_user_buffer)
@@ -6989,7 +8028,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             free(topo_idx);
             return false;
         }
-        base += vb->buffer_offset + pe->src_offset;
+        base += (size_t)vb->buffer_offset + pe->src_offset;
         unsigned comps = util_format_get_nr_components(pe->src_format);
         for (unsigned i = 0; i < count; i++) {
             const uint32_t vidx =
@@ -7093,12 +8132,24 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             if (vf)
                 r300->context.delete_fs_state(&r300->context, vf);
         }
+        r2vb_clear_producer_bookkeeping(r300);
         free(model);
         return false;
     }
 
-    struct pipe_resource *clip = r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
+    struct r300_r2vb_slot_layout layout;
+    if (!r300_r2vb_slot_layout_select(
+            count, getenv("R300_R2VB_SLOT_LAYOUT"),
+            r300_r2vb_slot_grid_gate_value(getenv("R300_R2VB_SLOT_GRID")),
+            &layout)) {
+        r2vb_clear_producer_bookkeeping(r300);
+        free(model);
+        return false;
+    }
+    struct pipe_resource *clip =
+        r2vb_create_selftest_bo(r300, (uint32_t)layout.storage_bytes, 0);
     if (!clip) {
+        r2vb_clear_producer_bookkeeping(r300);
         free(model);
         return false;
     }
@@ -7124,30 +8175,39 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_RESTAGE");
         restage = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    /* The canary admits only VS-derived producers, so it runs the restaged
-     * builder; the hand-built MVP and externals forms stay manual-gate. */
-    if (r300_r2vb_auto_single_armed(NULL))
-        restage = 1;
+    /* The canary and explicit delivery mode use the VS-derived producer. */
+    bool producer_restage =
+        restage || r300->r2vb_auto_single_selected ||
+        r2vb_bo_draw_producer3_mode() == R2VB_BO_DRAW_DELIVER;
     /* The classification oracle and the clip-route action both need the raw
      * homogeneous result: force the clip-space producer regardless of the
      * divide gate.  The route's accept action re-runs the producer in window
      * space afterwards, so produced_space is reassigned then. */
     enum r300_r2vb_position_space produced_space =
-        (r300_r2vb_clip_classify_enabled() || r300_r2vb_clip_route_enabled())
+        (r300_r2vb_clip_classify_enabled() ||
+         r300_r2vb_clip_route_enabled(r300))
             ? R300_R2VB_POSITION_CLIP
             : r2vb_env_space();
     r300->r2vb_produced_space = produced_space;
     bool bo3_consumed = false;
-    if (!r2vb_run_transform_producer(r300, clip, count, model, num_in, cols,
-                                     draw->start, produced_space, restage,
-                                     externals, &bo3_consumed)) {
+    enum r300_r2vb_model_binding model_binding =
+        topo_gathered ? R300_R2VB_MODEL_REBUILT_ROWS
+                      : R300_R2VB_MODEL_APPLICATION_STREAM;
+    if (!r2vb_run_transform_producer(r300, clip, &layout, count, model, num_in,
+                                     cols, draw->start, model_binding,
+                                     produced_space, producer_restage, externals,
+                                     &bo3_consumed)) {
+        r2vb_clear_producer_bookkeeping(r300);
         pipe_resource_reference(&clip, NULL);
         free(model);
         /* A live BO-fetch candidate ends this process's GPU work: consume
          * the draw so the route neither delivers nor falls back to a
          * gallivm submission after the candidate. */
-        if (bo3_consumed)
+        if (bo3_consumed) {
+            r300->r2vb_auto_single_outcome =
+                R300_R2VB_AUTO_SINGLE_OUTCOME_PRODUCER_CONSUMED_WITHOUT_DELIVERY;
             return true;
+        }
         return false;
     }
 
@@ -7185,9 +8245,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * ordered the producer against this CPU read. */
     if (r300_r2vb_clip_classify_enabled()) {
         r2vb_clip_classify_readback(r300, clip, count, einfo->mode);
-        r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
-        r300->r2vb_capture_clip = NULL;
-        r2vb_redirty_app_raster_state(r300);
+        r2vb_clear_producer_bookkeeping(r300);
+        r2vb_accrue_app_state_restore(r300);
         pipe_resource_reference(&clip, NULL);
         free(model);
         return false;
@@ -7215,7 +8274,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         ddraw = &rdraw;
     }
 
-    if (r300_r2vb_clip_route_enabled()) {
+    if (r300_r2vb_clip_route_enabled(r300)) {
         const struct r300_rs_state *rs =
             (const struct r300_rs_state *)r300->rs_state.state;
         const struct r300_fragment_shader *afs = r300_fs(r300);
@@ -7335,12 +8394,24 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                     verdict = R2VB_CLIP_ROUTE_REJECT;
                     action = "consume";
                 } else if (n2 > 0) {
-                    struct pipe_resource *cbo = r2vb_create_selftest_bo(
-                        r300, align((uint32_t)n2, 2) * 16, 0);
+                    struct r300_r2vb_slot_layout clipped_layout;
+                    bool layout_ok = r300_r2vb_slot_layout_select(
+                        (uint32_t)n2, getenv("R300_R2VB_SLOT_LAYOUT"),
+                        r300_r2vb_slot_grid_gate_value(
+                            getenv("R300_R2VB_SLOT_GRID")),
+                        &clipped_layout);
+                    struct pipe_resource *cbo =
+                        layout_ok
+                            ? r2vb_create_selftest_bo(
+                                  r300,
+                                  (uint32_t)clipped_layout.storage_bytes, 0)
+                            : NULL;
                     if (cbo) {
                         free(model);
                         model = cmodel;
                         count = (uint32_t)n2;
+                        layout = clipped_layout;
+                        model_binding = R300_R2VB_MODEL_REBUILT_ROWS;
                         pipe_resource_reference(&clip, NULL);
                         clip = cbo;
                         rdraw.start = 0;
@@ -7382,6 +8453,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                         supported, action);
         }
         if (!supported || verdict == R2VB_CLIP_ROUTE_FALLBACK) {
+            r2vb_clear_producer_bookkeeping(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
             return false;
@@ -7390,6 +8462,9 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             /* Every triangle is trivially outside one clip plane, so the
              * draw's correct image contribution is nothing.  Consuming it
              * with no delivery submit IS the rendering. */
+            r2vb_clear_producer_bookkeeping(r300);
+            r300->r2vb_auto_single_outcome =
+                R300_R2VB_AUTO_SINGLE_OUTCOME_TRIVIAL_REJECT;
             pipe_resource_reference(&clip, NULL);
             free(model);
             return true;
@@ -7401,19 +8476,24 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
          * a single pass exporting both spaces is a later optimization. */
         produced_space = R300_R2VB_POSITION_WINDOW;
         r300->r2vb_produced_space = produced_space;
-        if (!r2vb_run_transform_producer(r300, clip, count, model, num_in,
-                                         cols, draw->start, produced_space,
-                                         restage, externals, &bo3_consumed)) {
+        if (!r2vb_run_transform_producer(r300, clip, &layout, count, model,
+                                         num_in, cols, draw->start, model_binding,
+                                         produced_space, producer_restage,
+                                         externals,
+                                         &bo3_consumed)) {
             r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
             r300->r2vb_capture_clip = NULL;
-            r2vb_redirty_app_raster_state(r300);
+            r2vb_accrue_app_state_restore(r300);
             r2vb_edge_streams_release(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
             /* A live BO-fetch candidate consumed the process's GPU work;
              * the draw ends here with no delivery and no gallivm. */
-            if (bo3_consumed)
+            if (bo3_consumed) {
+                r300->r2vb_auto_single_outcome =
+                    R300_R2VB_AUTO_SINGLE_OUTCOME_PRODUCER_CONSUMED_WITHOUT_DELIVERY;
                 return true;
+            }
             return false;
         }
         /* Both producer runs are complete here; the split kind on the context
@@ -7428,7 +8508,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                     "r2vb_split_delivery_bypass producers=complete action=gallivm\n");
             r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
             r300->r2vb_capture_clip = NULL;
-            r2vb_redirty_app_raster_state(r300);
+            r2vb_accrue_app_state_restore(r300);
             r2vb_edge_streams_release(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
@@ -7445,7 +8525,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         if (r300_r2vb_fresh_clip_copy_enabled() &&
             r300->r2vb_producer_kind == R300_R2VB_PRODUCER_SPLIT) {
             struct pipe_resource *fresh =
-                r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
+                r2vb_create_selftest_bo(
+                    r300, (uint32_t)layout.storage_bytes, 0);
             bool copied = false;
             r2vb_wait_bo(r300, clip);
             if (fresh) {
@@ -7539,6 +8620,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
          * which would turn an explicit validation mode into a non-verifying pass. */
         if (!r2vb_quat_oracle_selftest()) {
             fprintf(stderr, "r2vb_posquat_verify ABORT (quaternion oracle self-test failed)\n");
+            r2vb_clear_producer_bookkeeping(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
             return false;
@@ -7580,12 +8662,14 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             fprintf(stderr,
                     "r2vb_sed_verify ABORT (R300_R2VB_SED=%s; use exact q0|q1|q2|q3)\n",
                     sed);
+            r2vb_clear_producer_bookkeeping(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
             return false;
         }
         if (!r2vb_sed_oracle_selftest()) {
             fprintf(stderr, "r2vb_sed_verify ABORT (sedenion oracle self-test failed)\n");
+            r2vb_clear_producer_bookkeeping(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
             return false;
@@ -7690,7 +8774,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         void *vfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
                                                (gl_varying_slot)vslot,
                                                produced_space);
-        struct pipe_resource *vbo = r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
+        struct pipe_resource *vbo =
+            r2vb_create_selftest_bo(r300, (uint32_t)layout.storage_bytes, 0);
         if (vfs && vbo) {
             void *saved = r300->fs.state;
             void *saved_vs = r300->vs_state.state;
@@ -7709,9 +8794,10 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             r300_r2vb_set_transform_consts_raw(r300, cols);
             r300_update_derived_state(r300);
             bool vprepared =
-                r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64);
-            if (vprepared)
-                r300_r2vb_emit_producer(r300, r300_resource(vbo), 0, count, model, 1, true);
+                r300_r2vb_immediate_producer_shape_ok(count, 1) &&
+                r300_r2vb_prepare_states(r300, 64u + count * 8u + 64u) &&
+                r300_r2vb_emit_producer(r300, r300_resource(vbo), 0, count,
+                                        model, 1, &layout, true);
             r300->context.bind_fs_state(&r300->context, saved);
             if (pvs)
                 r300->context.bind_vs_state(&r300->context, saved_vs);
@@ -7720,13 +8806,11 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             if (!vprepared) {
                 if (vfs)
                     r300->context.delete_fs_state(&r300->context, vfs);
-                r2vb_edge_streams_release(r300);
+                r2vb_clear_producer_bookkeeping(r300);
                 pipe_resource_reference(&vbo, NULL);
                 pipe_resource_reference(&clip, NULL);
                 free(model);
-                r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
-                r300->r2vb_capture_clip = NULL;
-                r2vb_redirty_app_raster_state(r300);
+                r2vb_accrue_app_state_restore(r300);
                 return false;
             }
             r300->context.flush(&r300->context, NULL, 0);
@@ -7794,7 +8878,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         }
         if (vfs)
             r300->context.delete_fs_state(&r300->context, vfs);
-        r2vb_edge_streams_release(r300);
+        r2vb_clear_producer_bookkeeping(r300);
         pipe_resource_reference(&vbo, NULL);
         pipe_resource_reference(&clip, NULL);
         free(model);
@@ -7817,6 +8901,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     }
     if (num_in >= 2) {
         if (!mvp_reingest) {
+            r2vb_clear_producer_bookkeeping(r300);
             pipe_resource_reference(&clip, NULL);
             free(model);
             return true;
@@ -7831,6 +8916,10 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
          * velem > output mismatch and wedged the ring.  R300_R2VB_INSPECT dumps the
          * wiring and skips the draw; without it one gated submit runs. */
         bool ok = r300_r2vb_reingest_outputs(r300, einfo, draw, clip, NULL, -1);
+        if (ok)
+            r300->r2vb_auto_single_outcome =
+                R300_R2VB_AUTO_SINGLE_OUTCOME_DELIVERED;
+        r2vb_clear_producer_bookkeeping(r300);
         pipe_resource_reference(&clip, NULL);
         free(model);
         return ok;
@@ -7868,12 +8957,13 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                 r300->vertex_info.num_attribs, r300->velems->count, n_ostream,
                 fetch_dwords);
     bool ok = r300_r2vb_reingest_outputs(r300, einfo, ddraw, clip, NULL, -1);
+    if (ok)
+        r300->r2vb_auto_single_outcome =
+            R300_R2VB_AUTO_SINGLE_OUTCOME_DELIVERED;
     if (!ok) {
-        r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
-        r300->r2vb_capture_clip = NULL;
-        r2vb_redirty_app_raster_state(r300);
+        r2vb_accrue_app_state_restore(r300);
     }
-    r2vb_edge_streams_release(r300);
+    r2vb_clear_producer_bookkeeping(r300);
     pipe_resource_reference(&clip, NULL);
     free(model);
     return ok;
