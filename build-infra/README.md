@@ -99,12 +99,16 @@ roots.
 
 Successful external configuration writes
 `$BUILD_ROOT/.gororoba-external-source-identity.json` and
-`$BUILDDIR/.gororoba-source-identity.json`.  The build-root record reserves the
-entire root for one selected source root, commit, tree, control root, and
-control commit.  The build-directory record also binds the exact prefix.
-Build, test, and install verify both records before using the build directory.
-A source revision or control-plane commit change uses a fresh empty build root;
-the old root remains an immutable attribution boundary.
+`$BUILDDIR/.gororoba-source-identity.json`.  Before Meson runs, the build-root
+record provisionally reserves the entire root for one selected source root,
+commit, tree, control root, control commit, build directory, and prefix.  Meson
+success finalizes the matching build-directory record.  Meson failure leaves
+only the provisional root record, which admits cleanup of the interrupted
+build directory but cannot satisfy a build, test, install, or distclean
+identity check.  Finalization rejects any source tuple that differs from the
+provisional reservation.  A source revision or control-plane commit change
+uses a fresh empty build root; the old root remains an immutable attribution
+boundary.
 
 External `clean` verifies the recorded source identity before removing an
 existing build directory.  An absent build directory remains a successful
@@ -112,7 +116,9 @@ no-op.  `distclean` verifies the same source and prefix identity before it
 removes the build directory or archives the prefix.  Every validation step
 uses the physical path tuple captured before the build lease, so retargeting a
 caller-owned symlink while a command waits cannot redirect either validation
-or deletion.
+or deletion.  Clean, clean-all, and distclean report success only after the
+removal or archival command succeeds and the selected path satisfies its
+postcondition.
 
 Each compared revision gets a distinct `BUILD_ROOT`, `BUILDDIR`, and `PREFIX`.
 `clean-all` remains a control-worktree operation and rejects every external

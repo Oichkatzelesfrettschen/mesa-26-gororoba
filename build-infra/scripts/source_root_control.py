@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import NoReturn
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 IDENTITY_FILENAME = ".gororoba-source-identity.json"
 ROOT_IDENTITY_FILENAME = ".gororoba-external-source-identity.json"
 SAFE_PATH_INPUT = re.compile(r"^[A-Za-z0-9_./:+@=~-]+$")
@@ -282,6 +282,8 @@ def root_identity_payload(values: dict[str, Path | str]) -> dict[str, str | int]
         "control_root": str(values["control_root"]),
         "control_commit": str(values["control_commit"]),
         "build_root": str(values["build_root"]),
+        "builddir": str(values["builddir"]),
+        "prefix": str(values["prefix"]),
     }
 
 
@@ -349,13 +351,12 @@ def prepare_identity(values: dict[str, Path | str]) -> None:
     path = identity_path(values)
     if path.exists():
         require_identity_fields(read_identity(path), expected, path)
-        return
-
-    if builddir.exists() and any(builddir.iterdir()):
+    elif builddir.exists() and any(builddir.iterdir()):
         fail(
             "external build directory lacks a source identity; "
             f"clean it before configure: {builddir}"
         )
+    write_json_atomic(root_path, root_expected)
 
 
 def write_json_atomic(output: Path, payload: dict[str, str | int]) -> None:
@@ -389,9 +390,9 @@ def write_identity(values: dict[str, Path | str]) -> None:
     payload = identity_payload(values)
     root_payload = root_identity_payload(values)
     root_path = root_identity_path(values)
-    if root_path.exists():
-        require_identity_fields(read_identity(root_path), root_payload, root_path)
-    write_json_atomic(root_path, root_payload)
+    if not root_path.is_file():
+        fail(f"external build root lacks prepared source identity: {root_path}")
+    require_identity_fields(read_identity(root_path), root_payload, root_path)
     write_json_atomic(identity_path(values), payload)
 
 
@@ -421,7 +422,19 @@ def verify_delete_identity(values: dict[str, Path | str]) -> None:
     assert isinstance(builddir, Path)
     if source_root == values["control_root"] or not builddir.exists():
         return
-    verify_identity(values)
+    root_expected = root_identity_payload(values)
+    root_path = root_identity_path(values)
+    if not root_path.is_file():
+        fail(f"external build root lacks source identity: {root_path}")
+    require_identity_fields(read_identity(root_path), root_expected, root_path)
+
+    path = identity_path(values)
+    if path.exists():
+        require_identity_fields(
+            read_identity(path),
+            identity_payload(values),
+            path,
+        )
 
 
 def parse_arguments() -> argparse.Namespace:

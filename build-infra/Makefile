@@ -126,6 +126,7 @@ NINJA ?= ninja
 SUDO ?= sudo
 FLOCK ?= flock
 NINJA_TARGETS ?=
+REMOVE_TREE ?= rm -rf
 # Extra flags for the build ninja invocation.  NINJA_ARGS=-k0 keeps compiling
 # after the first failure, so one warnings-as-errors run reports every
 # diagnostic in the tree and the fixes get scoped from a complete list.
@@ -677,7 +678,10 @@ configure: source-root-check vostro-prefix-check
 	echo "profile -D flags: $$profile_dflags"; \
 	$(MESON) setup $(SETUP_ARGS) $$profile_dflags \
 		--prefix="$(PREFIX)" --sysconfdir="$(SYSCONFDIR)" \
-		"$(BUILDDIR)" "$(TOPSRC)"; \
+		"$(BUILDDIR)" "$(TOPSRC)" || { \
+			echo "Meson setup failed; source identity remains provisional" >&2; \
+			exit 2; \
+		}; \
 	$(WRITE_SOURCE_IDENTITY)
 
 build: source-root-check
@@ -705,7 +709,12 @@ clean:
 	@$(ACQUIRE_BUILD_LOCK) \
 	$(call CHECK_LAYOUT,clean); \
 	$(VERIFY_DELETE_IDENTITY); \
-	rm -rf "$(BUILDDIR)"; \
+	$(REMOVE_TREE) "$(BUILDDIR)" || { \
+		echo "failed to remove build directory: $(BUILDDIR)" >&2; exit 2; \
+	}; \
+	{ [ ! -e "$(BUILDDIR)" ] && [ ! -L "$(BUILDDIR)" ]; } || { \
+		echo "build directory remains after removal: $(BUILDDIR)" >&2; exit 2; \
+	}; \
 	echo "cleaned: $(BUILDDIR)"
 
 # Remove the entire repo-local build/ tree (every profile's builddir), not just
@@ -714,18 +723,37 @@ clean:
 clean-all:
 	@$(ACQUIRE_BUILD_LOCK) \
 	$(call CHECK_LAYOUT,clean-all); \
-	rm -rf "$(BUILD_ROOT)"; \
+	$(REMOVE_TREE) "$(BUILD_ROOT)" || { \
+		echo "failed to remove build root: $(BUILD_ROOT)" >&2; exit 2; \
+	}; \
+	{ [ ! -e "$(BUILD_ROOT)" ] && [ ! -L "$(BUILD_ROOT)" ]; } || { \
+		echo "build root remains after removal: $(BUILD_ROOT)" >&2; exit 2; \
+	}; \
 	echo "cleaned: $(BUILD_ROOT) (all profile builddirs)"
 
 distclean:
 	@$(ACQUIRE_BUILD_LOCK) \
 	$(call CHECK_LAYOUT,distclean); \
 	$(VERIFY_SOURCE_IDENTITY); \
-	rm -rf "$(BUILDDIR)"; \
+	$(REMOVE_TREE) "$(BUILDDIR)" || { \
+		echo "failed to remove build directory: $(BUILDDIR)" >&2; exit 2; \
+	}; \
+	{ [ ! -e "$(BUILDDIR)" ] && [ ! -L "$(BUILDDIR)" ]; } || { \
+		echo "build directory remains after removal: $(BUILDDIR)" >&2; exit 2; \
+	}; \
 	echo "cleaned: $(BUILDDIR)"; \
-	if [ -e "$(PREFIX)" ]; then \
-		archive="$(PREFIX).disabled.$$(date -u +%Y%m%dT%H%M%SZ)"; \
-		$(SUDO) mv "$(PREFIX)" "$$archive"; \
+	if [ -e "$(PREFIX)" ] || [ -L "$(PREFIX)" ]; then \
+		archive="$(PREFIX).disabled.$$(date -u +%Y%m%dT%H%M%SZ).$$$$"; \
+		{ [ ! -e "$$archive" ] && [ ! -L "$$archive" ]; } || { \
+			echo "archive target already exists: $$archive" >&2; exit 2; \
+		}; \
+		$(SUDO) mv "$(PREFIX)" "$$archive" || { \
+			echo "failed to archive prefix: $(PREFIX)" >&2; exit 2; \
+		}; \
+		{ [ ! -e "$(PREFIX)" ] && [ ! -L "$(PREFIX)" ]; } && \
+		{ [ -e "$$archive" ] || [ -L "$$archive" ]; } || { \
+			echo "prefix archival postcondition failed: $(PREFIX)" >&2; exit 2; \
+		}; \
 		echo "archived prefix: $(PREFIX) -> $$archive"; \
 	else \
 		echo "prefix already absent: $(PREFIX)"; \
@@ -1089,6 +1117,40 @@ source-root-selection-test:
 		fi; \
 	done; \
 	echo "OK    destructive operations reject system build roots"; \
+	remove_failure_root="$$tmpdir/remove-failure"; \
+	remove_failure_builddir="$$remove_failure_root/probe"; \
+	mkdir -p "$$remove_failure_builddir"; \
+	touch "$$remove_failure_builddir/sentinel"; \
+	if remove_failure_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+		TOPSRC="$(CONTROL_ROOT)" BUILD_ROOT="$$remove_failure_root" \
+		BUILDDIR="$$remove_failure_builddir" \
+		PREFIX="$$remove_failure_root/prefix" \
+		BUILD_LOCK="$$tmpdir/remove-failure.lock" LOCK_WAIT=0 \
+		REMOVE_TREE=false 2>&1 )"; then \
+		echo "FAIL  clean reported success after its remove command failed" >&2; \
+		exit 1; \
+	fi; \
+	test -f "$$remove_failure_builddir/sentinel" || { \
+		echo "FAIL  remove-failure calibration changed its sentinel" >&2; \
+		exit 1; \
+	}; \
+	if printf '%s\n' "$$remove_failure_output" | grep -F "cleaned:" >/dev/null; then \
+		echo "FAIL  clean printed success after remove failure" >&2; \
+		exit 1; \
+	fi; \
+	echo "OK    clean propagates remove failure"; \
+	if clean_all_failure_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" clean-all \
+		TOPSRC="$(CONTROL_ROOT)" BUILD_ROOT="$(CONTROL_ROOT)/build" \
+		BUILD_LOCK="$$tmpdir/clean-all-failure.lock" LOCK_WAIT=0 \
+		REMOVE_TREE=false 2>&1 )"; then \
+		echo "FAIL  clean-all reported success after its remove command failed" >&2; \
+		exit 1; \
+	fi; \
+	if printf '%s\n' "$$clean_all_failure_output" | grep -F "cleaned:" >/dev/null; then \
+		echo "FAIL  clean-all printed success after remove failure" >&2; \
+		exit 1; \
+	fi; \
+	echo "OK    clean-all propagates remove failure"; \
 	safe_build_root="$$tmpdir/safe-build"; \
 	outside_root="$$tmpdir/outside"; \
 	mkdir -p "$$safe_build_root" "$$outside_root/victim"; \
@@ -1200,6 +1262,86 @@ source-root-selection-test:
 		exit 1; \
 	}; \
 	echo "OK    configure rejects a nonempty unbound build directory"; \
+	failed_config_root="$$tmpdir/failed-config"; \
+	failed_config_builddir="$$failed_config_root/probe"; \
+	failed_config_prefix="$$failed_config_root/prefix"; \
+	if failed_config_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$failed_config_root" \
+		BUILDDIR="$$failed_config_builddir" PREFIX="$$failed_config_prefix" \
+		BUILD_LOCK="$$tmpdir/failed-config.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=false 2>&1 )"; then \
+		echo "FAIL  configure finalized identity after Meson failure" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$failed_config_output" | \
+		grep -F "Meson setup failed; source identity remains provisional" >/dev/null || { \
+		echo "FAIL  Meson failure returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$failed_config_output" >&2; exit 1; \
+	}; \
+	test -f "$$failed_config_root/.gororoba-external-source-identity.json" || { \
+		echo "FAIL  failed configure omitted its provisional root identity" >&2; \
+		exit 1; \
+	}; \
+	test ! -e "$$failed_config_builddir/.gororoba-source-identity.json" || { \
+		echo "FAIL  failed configure wrote a finalized build identity" >&2; \
+		exit 1; \
+	}; \
+	test ! -d "$$failed_config_builddir/meson-private" || { \
+		echo "FAIL  false Meson command produced meson-private" >&2; \
+		exit 1; \
+	}; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+		TOPSRC="$$source_root" BUILD_ROOT="$$failed_config_root" \
+		BUILDDIR="$$failed_config_builddir" PREFIX="$$failed_config_prefix" \
+		BUILD_LOCK="$$tmpdir/failed-config.lock" LOCK_WAIT=0 >/dev/null; \
+	test ! -e "$$failed_config_builddir" || { \
+		echo "FAIL  provisional identity did not admit interrupted-build cleanup" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    Meson failure leaves a provisional cleanup identity"; \
+	transaction_source="$$tmpdir/transaction-source"; \
+	transaction_build_root="$$tmpdir/transaction-build"; \
+	transaction_builddir="$$transaction_build_root/probe"; \
+	transaction_prefix="$$transaction_build_root/prefix"; \
+	mkdir -p "$$transaction_source"; \
+	git -C "$$transaction_source" init -q; \
+	touch "$$transaction_source/meson.build" "$$transaction_source/meson.options"; \
+	git -C "$$transaction_source" add meson.build meson.options; \
+	git -C "$$transaction_source" \
+		-c user.name=source-root-test -c user.email=source-root-test.invalid \
+		commit -qm "test: prepare source identity"; \
+	env \
+		GOROROBA_TOPSRC_INPUT="$$transaction_source" \
+		GOROROBA_BUILD_ROOT_INPUT="$$transaction_build_root" \
+		GOROROBA_BUILDDIR_INPUT="$$transaction_builddir" \
+		GOROROBA_PREFIX_INPUT="$$transaction_prefix" \
+		GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+		python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
+	printf '%s\n' "source drift" >> "$$transaction_source/meson.build"; \
+	git -C "$$transaction_source" add meson.build; \
+	git -C "$$transaction_source" \
+		-c user.name=source-root-test -c user.email=source-root-test.invalid \
+		commit -qm "test: drift prepared source identity"; \
+	if transaction_output="$$( env \
+		GOROROBA_TOPSRC_INPUT="$$transaction_source" \
+		GOROROBA_BUILD_ROOT_INPUT="$$transaction_build_root" \
+		GOROROBA_BUILDDIR_INPUT="$$transaction_builddir" \
+		GOROROBA_PREFIX_INPUT="$$transaction_prefix" \
+		GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+		python3 "$(SOURCE_ROOT_CONTROL)" write-identity 2>&1 )"; then \
+		echo "FAIL  identity finalization accepted a different source tuple" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$transaction_output" | \
+		grep -F "external source identity drift" >/dev/null || { \
+		echo "FAIL  source transaction drift returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$transaction_output" >&2; exit 1; \
+	}; \
+	test ! -e "$$transaction_builddir/.gororoba-source-identity.json" || { \
+		echo "FAIL  source transaction drift wrote a finalized identity" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    identity finalization preserves the prepared source tuple"; \
 	identity_build_root="$$tmpdir/identity-build"; \
 	identity_builddir="$$identity_build_root/probe"; \
 	identity_prefix="$$identity_build_root/prefix"; \
@@ -1261,6 +1403,62 @@ source-root-selection-test:
 		exit 1; \
 	}; \
 	echo "OK    external distclean rejects unbound prefix mutation"; \
+	remove_distclean_root="$$tmpdir/remove-distclean"; \
+	remove_distclean_builddir="$$remove_distclean_root/probe"; \
+	remove_distclean_prefix="$$remove_distclean_root/prefix"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$remove_distclean_root" \
+		BUILDDIR="$$remove_distclean_builddir" PREFIX="$$remove_distclean_prefix" \
+		BUILD_LOCK="$$tmpdir/remove-distclean.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
+	mkdir -p "$$remove_distclean_prefix"; \
+	touch "$$remove_distclean_prefix/sentinel"; \
+	if remove_distclean_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
+		TOPSRC="$$source_root" BUILD_ROOT="$$remove_distclean_root" \
+		BUILDDIR="$$remove_distclean_builddir" PREFIX="$$remove_distclean_prefix" \
+		BUILD_LOCK="$$tmpdir/remove-distclean.lock" LOCK_WAIT=0 \
+		REMOVE_TREE=false SUDO= 2>&1 )"; then \
+		echo "FAIL  distclean reported success after remove failure" >&2; \
+		exit 1; \
+	fi; \
+	test -d "$$remove_distclean_builddir" && \
+	test -f "$$remove_distclean_prefix/sentinel" || { \
+		echo "FAIL  remove-failure distclean changed a protected target" >&2; \
+		exit 1; \
+	}; \
+	if printf '%s\n' "$$remove_distclean_output" | grep -E "cleaned:|archived prefix:" >/dev/null; then \
+		echo "FAIL  distclean printed success after remove failure" >&2; \
+		exit 1; \
+	fi; \
+	echo "OK    distclean propagates remove failure before prefix archival"; \
+	archive_failure_root="$$tmpdir/archive-failure"; \
+	archive_failure_builddir="$$archive_failure_root/probe"; \
+	archive_failure_prefix="$$archive_failure_root/prefix"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$archive_failure_root" \
+		BUILDDIR="$$archive_failure_builddir" PREFIX="$$archive_failure_prefix" \
+		BUILD_LOCK="$$tmpdir/archive-failure.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
+	mkdir -p "$$archive_failure_prefix"; \
+	touch "$$archive_failure_prefix/sentinel"; \
+	if archive_failure_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
+		TOPSRC="$$source_root" BUILD_ROOT="$$archive_failure_root" \
+		BUILDDIR="$$archive_failure_builddir" PREFIX="$$archive_failure_prefix" \
+		BUILD_LOCK="$$tmpdir/archive-failure.lock" LOCK_WAIT=0 \
+		SUDO=false 2>&1 )"; then \
+		echo "FAIL  distclean reported success after archive failure" >&2; \
+		exit 1; \
+	fi; \
+	test ! -e "$$archive_failure_builddir" && \
+	test -f "$$archive_failure_prefix/sentinel" || { \
+		echo "FAIL  archive-failure distclean violated its ordered effects" >&2; \
+		exit 1; \
+	}; \
+	if printf '%s\n' "$$archive_failure_output" | grep -F "archived prefix:" >/dev/null; then \
+		echo "FAIL  distclean printed archival success after mv failure" >&2; \
+		exit 1; \
+	fi; \
+	echo "OK    distclean propagates prefix archival failure"; \
 	touch "$$identity_builddir/ownership-sentinel"; \
 	if clean_owner_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
 		TOPSRC="$$legacy_root" BUILD_ROOT="$$identity_build_root" \
