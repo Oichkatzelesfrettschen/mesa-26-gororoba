@@ -5,8 +5,8 @@ Canonical build infrastructure for the gororoba Mesa fork.
 The entry point requires GNU Make 4.2 or newer because source-root resolution
 uses `.SHELLSTATUS` to preserve Python validation failures during Makefile
 evaluation.  Parse-time path inputs travel as directly quoted environment
-assignments because GNU Make 4.3 does not place Makefile `export` values in the
-environment of every `$(shell ...)` expansion.
+assignments because GNU Make before 4.4 does not place Makefile `export` values
+in the environment of every `$(shell ...)` expansion.
 
 The Make process is the caller execution boundary.  GNU Make evaluates
 immediate command-line assignments using `:=`, `::=`, `:::=`, or `!=` before
@@ -128,9 +128,11 @@ namespaces:
 <workspace>/.mesa-26-gororoba-builds/
 ```
 
-The account home comes from the account database rather than `HOME`.  A
-selected namespace carries the current uid, has no group or world write bit,
-and contains no symlink component.  A build root inside any Git worktree is
+The account home comes from the account database rather than `HOME`.  Each
+account-home or workspace boundary and every selected namespace component
+carries the current uid, has no group or world write bit, and contains no
+symlink component.  `/tmp` and `/var/tmp` qualify only as root-owned sticky
+directories.  A build root inside any Git worktree or bare Git directory is
 rejected, including a sibling repository under the same workspace.  The
 control worktree's canonical `build/` remains the direct local exception.  A
 control-source prefix is either a named Mesa profile prefix under `/opt` or a
@@ -141,9 +143,10 @@ Successful external configuration writes
 `$BUILD_ROOT/.gororoba-external-source-identity.json` and
 `$BUILDDIR/.gororoba-source-identity.json`.  Before Meson runs, the build-root
 record enters a provisional transaction that reserves the entire root for one
-selected source root, commit, tree, control root, control commit, build
-directory, and prefix.  Meson success writes matching final records with one
-transaction identifier.  Meson failure leaves the root provisional.  A
+selected source root, commit, tree, control root, control commit, control tree,
+build directory, prefix, and sysconfdir.  Meson success writes matching final
+records with one transaction identifier.  Meson failure leaves the root
+provisional.  A
 previous build-directory record may remain after failed reconfiguration, but
 its final state cannot satisfy build, test, install, or distclean while the
 root transaction stays provisional.  Cleanup accepts a matching provisional
@@ -169,14 +172,14 @@ missing build directory only when the retained root record still binds the
 source, control plane, and prefix.
 
 Each mutating recipe captures source commit, source tree, control commit,
-canonical paths, and device/inode/file-type anchors during Makefile
-evaluation, acquires the shared build lease, and revalidates those values
-immediately after acquisition.  A revision change or path replacement
+control tree, canonical paths, and device/inode/file-type anchors during
+Makefile evaluation, acquires the shared build lease, and revalidates those
+values immediately after acquisition.  A revision change or path replacement
 completed while a cooperating command waits on the lease fails before layout,
 identity, removal, or archival logic runs.  The lease is the coordination
 boundary for same-user build processes; direct filesystem mutation by a
 process that bypasses Make is outside that cooperative boundary.  Clean,
-clean-all, and distclean reject selected targets that contain a Git worktree
+clean-all, and distclean reject selected targets that contain a Git repository
 marker.  Configure, build, test, install, clean, and distclean reject an exact
 or descendant build-directory mount point in the active mount namespace.
 Install, artifact reporting, and distclean apply the same mount boundary to
@@ -191,22 +194,24 @@ directory.
 
 The build-infra worktree remains the control plane.  Its profile, host
 environment, allowlist, toolchain selection, and Make logic govern every
-selected source tree.  `make source-root-selection-test` calibrates GNU Make
+selected source tree.  Git probes discard ambient `GIT_*` variables, global
+and system configuration, hooks, fsmonitor commands, untracked caches, and
+replacement objects.  `make source-root-selection-test` calibrates GNU Make
 4.2 input transport when that lower-bound executable is installed, exact-root
 selection, legacy option-file admission, incomplete, unborn, dirty,
-assume-unchanged, and nested root rejection, shell-input rejection, physical
-containment, namespace ownership, sibling-worktree protection, clean-all
-refusal, lease-bound path replacement, build-root and prefix identity drift,
-configure and install transactions, failed reconfiguration revocation,
-clean-then-distclean archival, archival retry, artifact-report source-tuple
-binding, shared prefix refusal, and the Meson source argument.  When the host
-permits private user and mount namespaces, the same target proves that exact
-and descendant same-device bind mounts fail before recursive removal.  `make
-source-root-control-unit-test` exercises the pure path, layout, staged-only
-cleanliness, dirty external-control rejection, anchor, namespace, and
-identity-record invariants directly.  Its temporary repositories keep the
-control checkout immutable, so concurrent calibration runs do not invalidate
-one another.
+assume-unchanged, ignored-subproject, nested-worktree, and bare-repository
+rejection, shell-input rejection, physical containment, namespace ownership,
+sibling-worktree protection, clean-all refusal, lease-bound path replacement,
+build-root and prefix identity drift, configure and install transactions,
+failed reconfiguration revocation, clean-then-distclean archival, archival
+retry, artifact-report source-tuple binding, shared prefix refusal, and the
+Meson source argument.  When the host permits private user and mount
+namespaces, the same target proves that exact and descendant same-device bind
+mounts fail before recursive removal.  `make source-root-control-unit-test`
+exercises the pure path, layout, staged-only cleanliness,
+dirty external-control rejection, anchor, namespace, and identity-record
+invariants directly.  Its temporary repositories keep the control checkout
+immutable, so concurrent calibration runs do not invalidate one another.
 
 ## Build-system policy
 

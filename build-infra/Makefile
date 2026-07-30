@@ -165,7 +165,7 @@ override SOURCE_ROOT_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(SOURCE_ROOT_RESOLVE_STATUS),0)
 $(error source root and build path resolution failed)
 endif
-ifneq ($(words $(SOURCE_ROOT_FIELDS)),15)
+ifneq ($(words $(SOURCE_ROOT_FIELDS)),16)
 $(error source root control returned an invalid field set)
 endif
 override TOPSRC := $(word 1,$(SOURCE_ROOT_FIELDS))
@@ -176,16 +176,18 @@ override SYSCONFDIR := $(word 5,$(SOURCE_ROOT_FIELDS))
 override SOURCE_COMMIT := $(word 6,$(SOURCE_ROOT_FIELDS))
 override SOURCE_TREE := $(word 7,$(SOURCE_ROOT_FIELDS))
 override CONTROL_COMMIT := $(word 8,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_CONTROL_ROOT_INPUT := $(word 9,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_SOURCE_ROOT_ANCHOR := $(word 10,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_CONTROL_ROOT_ANCHOR := $(word 11,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_BUILD_ROOT_ANCHOR := $(word 12,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_BUILDDIR_ANCHOR := $(word 13,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_PREFIX_ANCHOR := $(word 14,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_SYSCONFDIR_ANCHOR := $(word 15,$(SOURCE_ROOT_FIELDS))
+override CONTROL_TREE := $(word 9,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_CONTROL_ROOT_INPUT := $(word 10,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_SOURCE_ROOT_ANCHOR := $(word 11,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_CONTROL_ROOT_ANCHOR := $(word 12,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_BUILD_ROOT_ANCHOR := $(word 13,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_BUILDDIR_ANCHOR := $(word 14,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_PREFIX_ANCHOR := $(word 15,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_SYSCONFDIR_ANCHOR := $(word 16,$(SOURCE_ROOT_FIELDS))
 override GOROROBA_SOURCE_COMMIT_CAPTURED := $(SOURCE_COMMIT)
 override GOROROBA_SOURCE_TREE_CAPTURED := $(SOURCE_TREE)
 override GOROROBA_CONTROL_COMMIT_CAPTURED := $(CONTROL_COMMIT)
+override GOROROBA_CONTROL_TREE_CAPTURED := $(CONTROL_TREE)
 export GOROROBA_CONTROL_ROOT_INPUT
 export GOROROBA_SOURCE_ROOT_ANCHOR
 export GOROROBA_CONTROL_ROOT_ANCHOR
@@ -196,6 +198,7 @@ export GOROROBA_SYSCONFDIR_ANCHOR
 export GOROROBA_SOURCE_COMMIT_CAPTURED
 export GOROROBA_SOURCE_TREE_CAPTURED
 export GOROROBA_CONTROL_COMMIT_CAPTURED
+export GOROROBA_CONTROL_TREE_CAPTURED
 # Every later Python check consumes the same physical path tuple that recipes
 # interpolate.  Retaining the caller's symlink spelling here would let a
 # blocked recipe validate a retargeted selector while deleting the path that
@@ -396,6 +399,7 @@ source-root-check:
 	@echo "OK    source tree: $(SOURCE_TREE)"
 	@echo "OK    control root: $(CONTROL_ROOT)"
 	@echo "OK    control commit: $(CONTROL_COMMIT)"
+	@echo "OK    control tree: $(CONTROL_TREE)"
 
 source-root-control-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
@@ -948,15 +952,25 @@ artifact-check: source-root-check vostro-prefix-check
 	$(call CHECK_LAYOUT,artifact); \
 	$(VERIFY_ARTIFACT_IDENTITY); \
 	test -d "$(PREFIX)" || { echo "prefix missing: $(PREFIX)"; exit 1; }; \
-	find "$(PREFIX)" -maxdepth 5 -type f \
+	if ! artifact_rows="$$(find "$(PREFIX)" -maxdepth 5 -type f \
 		\( -name "libvulkan_terascale.so" -o -name "libvulkan_r3v.so" -o \
 		   -name "r600_dri.so" -o -name "r300_dri.so" -o \
 		   -name "libdril_dri.so" -o -name "libgallium-*.so" -o \
 		   -name "terascale_icd*.json" -o -name "r3v_icd*.json" \) \
-		-printf "%p %TY-%Tm-%Td %TH:%TM:%TS %s bytes\n" | sort; \
-	stale=$$(find "$(PREFIX)" -maxdepth 6 -type f \
+		-printf "%p %TY-%Tm-%Td %TH:%TM:%TS %s bytes\n" 2>&1)"; then \
+		echo "FAIL  artifact scan could not read PREFIX: $(PREFIX)" >&2; \
+		printf '%s\n' "$$artifact_rows" >&2; \
+		exit 2; \
+	fi; \
+	printf '%s\n' "$$artifact_rows" | sort; \
+	if ! stale="$$(find "$(PREFIX)" -maxdepth 6 -type f \
 		\( -name "libvulkan_r300.so" -o -name "r300_icd*.json" -o \
-		   -name "r300_devenv_icd*.json" \) 2>/dev/null | sort); \
+		   -name "r300_devenv_icd*.json" \) 2>&1)"; then \
+		echo "FAIL  stale-artifact scan could not read PREFIX: $(PREFIX)" >&2; \
+		printf '%s\n' "$$stale" >&2; \
+		exit 2; \
+	fi; \
+	stale="$$(printf '%s\n' "$$stale" | sort)"; \
 	if [ -n "$$stale" ]; then \
 		echo "WARN  stale pre-rename r300 Vulkan ICD artifacts still under $(PREFIX):" >&2; \
 		echo "$$stale" | sed 's/^/WARN    /' >&2; \
@@ -1101,6 +1115,14 @@ build-lease-test:
 
 source-root-selection-test:
 	@set -euo pipefail; \
+	while IFS= read -r environment_name; do \
+		case "$$environment_name" in \
+			GIT_*) unset "$$environment_name" ;; \
+		esac; \
+	done < <(compgen -e); \
+	export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+		GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
+		GIT_TERMINAL_PROMPT=0; \
 	tmpdir="$$(python3 "$(SOURCE_ROOT_CONTROL)" \
 		create-test-directory --label=source-root)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
@@ -1164,14 +1186,15 @@ source-root-selection-test:
 	source_commit="$$(git -C "$$source_root" rev-parse HEAD)"; \
 	source_tree="$$(git -C "$$source_root" rev-parse HEAD^{tree})"; \
 	control_commit="$$(git -C "$(CONTROL_ROOT)" rev-parse HEAD)"; \
+	control_tree="$$(git -C "$(CONTROL_ROOT)" rev-parse HEAD^{tree})"; \
 	resolver_override_output="$$( $(MAKE) --no-print-directory \
 		-C "$(CURDIR)" source-root-check TOPSRC="$$source_root" \
 		CURDIR=/tmp BUILD_INFRA_ROOT=/tmp BUILD_INFRA_MAKEFILE=/tmp \
 		CONTROL_ROOT=/ SOURCE_ROOT_CONTROL=/bin/false \
 		MOUNT_BOUNDARY_CALIBRATION=/bin/false \
-		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m n o' \
+		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m n o p' \
 		SOURCE_ROOT_RESOLVE_STATUS=1 SOURCE_COMMIT=forged \
-		SOURCE_TREE=forged CONTROL_COMMIT=forged \
+		SOURCE_TREE=forged CONTROL_COMMIT=forged CONTROL_TREE=forged \
 		GOROROBA_TOPSRC_INPUT=/ GOROROBA_BUILD_ROOT_INPUT=/ \
 		GOROROBA_BUILDDIR_INPUT=/ GOROROBA_PREFIX_INPUT=/ \
 		GOROROBA_SYSCONFDIR_INPUT=/ \
@@ -1194,6 +1217,7 @@ source-root-selection-test:
 		GOROROBA_SOURCE_COMMIT_CAPTURED=forged \
 		GOROROBA_SOURCE_TREE_CAPTURED=forged \
 		GOROROBA_CONTROL_COMMIT_CAPTURED=forged \
+		GOROROBA_CONTROL_TREE_CAPTURED=forged \
 		make_shell_quote=forged 2>&1 \
 	)" || { \
 		echo "FAIL  command-line proof inputs replaced resolver authority" >&2; \
@@ -1204,7 +1228,8 @@ source-root-selection-test:
 		"OK    source commit: $$source_commit" \
 		"OK    source tree: $$source_tree" \
 		"OK    control root: $(CONTROL_ROOT)" \
-		"OK    control commit: $$control_commit"; do \
+		"OK    control commit: $$control_commit" \
+		"OK    control tree: $$control_tree"; do \
 		printf '%s\n' "$$resolver_override_output" | \
 			grep -F "$$expected_line" >/dev/null || { \
 				echo "FAIL  resolver authority returned the wrong identity" >&2; \
@@ -1493,6 +1518,27 @@ source-root-selection-test:
 		echo "FAIL  clean changed the sibling Git worktree" >&2; exit 1; \
 	}; \
 	echo "OK    destructive build roots exclude sibling Git worktrees"; \
+	bare_repository="$$tmpdir/retained-bare-repository.git"; \
+	git init --bare -q "$$bare_repository"; \
+	touch "$$bare_repository/retained-sentinel"; \
+	if bare_repository_output="$$( $(MAKE) --no-print-directory \
+		-C "$(CURDIR)" clean TOPSRC="$(CONTROL_ROOT)" \
+		BUILD_ROOT="$$bare_repository" \
+		BUILDDIR="$$bare_repository/objects/probe" \
+		PREFIX="$$bare_repository/prefix" \
+		BUILD_LOCK="$$tmpdir/bare-repository.lock" LOCK_WAIT=0 2>&1 )"; then \
+		echo "FAIL  clean accepted a build directory inside a bare Git repository" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$bare_repository_output" | \
+		grep -F "refusing BUILDDIR inside a Git directory" >/dev/null || { \
+			echo "FAIL  bare Git repository returned the wrong diagnostic" >&2; \
+			printf '%s\n' "$$bare_repository_output" >&2; exit 1; \
+		}; \
+	test -f "$$bare_repository/retained-sentinel" || { \
+		echo "FAIL  clean changed the bare Git repository" >&2; exit 1; \
+	}; \
+	echo "OK    destructive targets preserve bare Git repositories"; \
 	nested_repository_root="$$tmpdir/nested-repository-holder"; \
 	nested_repository_builddir="$$nested_repository_root/probe"; \
 	nested_repository="$$nested_repository_builddir/retained-repository"; \
@@ -1509,7 +1555,7 @@ source-root-selection-test:
 		exit 1; \
 	fi; \
 	printf '%s\n' "$$nested_repository_output" | \
-		grep -F "refusing BUILDDIR containing a Git worktree marker" >/dev/null || { \
+		grep -F "refusing BUILDDIR containing a Git repository marker" >/dev/null || { \
 			echo "FAIL  nested Git worktree returned the wrong diagnostic" >&2; \
 			printf '%s\n' "$$nested_repository_output" >&2; exit 1; \
 		}; \
@@ -1904,9 +1950,9 @@ source-root-selection-test:
 		COMPILER_CHAIN=direct NINJA=true \
 		CURDIR=/tmp BUILD_INFRA_ROOT=/tmp BUILD_INFRA_MAKEFILE=/tmp \
 		CONTROL_ROOT=/ SOURCE_ROOT_CONTROL=/bin/false \
-		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m n o' \
+		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m n o p' \
 		SOURCE_ROOT_RESOLVE_STATUS=1 SOURCE_COMMIT=forged \
-		SOURCE_TREE=forged CONTROL_COMMIT=forged \
+		SOURCE_TREE=forged CONTROL_COMMIT=forged CONTROL_TREE=forged \
 		GOROROBA_TOPSRC_INPUT=/ GOROROBA_BUILD_ROOT_INPUT=/ \
 		GOROROBA_BUILDDIR_INPUT=/ GOROROBA_PREFIX_INPUT=/ \
 		GOROROBA_SYSCONFDIR_INPUT=/ \
@@ -1928,7 +1974,8 @@ source-root-selection-test:
 		GOROROBA_SYSCONFDIR_ANCHOR=forged \
 		GOROROBA_SOURCE_COMMIT_CAPTURED=forged \
 		GOROROBA_SOURCE_TREE_CAPTURED=forged \
-		GOROROBA_CONTROL_COMMIT_CAPTURED=forged >/dev/null; \
+		GOROROBA_CONTROL_COMMIT_CAPTURED=forged \
+		GOROROBA_CONTROL_TREE_CAPTURED=forged >/dev/null; \
 	echo "OK    resolver-owned proof inputs override command-line forgeries"; \
 	if install_failure_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" install \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
@@ -2461,6 +2508,25 @@ source-root-selection-test:
 	git -C "$$source_root" show HEAD:meson.build > "$$source_root/meson.build"; \
 	git -C "$$source_root" update-index --no-assume-unchanged meson.build; \
 	echo "OK    external TOPSRC detects assume-unchanged drift"; \
+	printf '/build/\n/subprojects/\n' > "$$source_root/.gitignore"; \
+	git -C "$$source_root" add .gitignore; \
+	git -C "$$source_root" \
+		-c user.name=source-root-test -c user.email=source-root-test.invalid \
+		commit -qm "test: ignore Meson subproject sources"; \
+	mkdir -p "$$source_root/subprojects/retained-source"; \
+	touch "$$source_root/subprojects/retained-source/meson.build"; \
+	if ignored_subproject_output="$$( $(MAKE) --no-print-directory \
+		-C "$(CURDIR)" source-root-check TOPSRC="$$source_root" 2>&1 )"; then \
+		echo "FAIL  source-root-check accepted ignored subproject sources" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$ignored_subproject_output" | \
+		grep -F "external TOPSRC is dirty" >/dev/null || { \
+			echo "FAIL  ignored subproject returned the wrong diagnostic" >&2; \
+			printf '%s\n' "$$ignored_subproject_output" >&2; exit 1; \
+		}; \
+	rm -rf "$$source_root/subprojects"; \
+	echo "OK    external TOPSRC rejects ignored subproject sources"; \
 	touch "$$source_root/untracked"; \
 	if dirty_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		source-root-check TOPSRC="$$source_root" 2>&1 )"; then \

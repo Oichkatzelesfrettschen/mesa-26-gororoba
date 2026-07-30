@@ -1,13 +1,11 @@
-# Copyright 2026 Oichkatzelesfrettschen
 # SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
 import importlib.util
 import os
-import pwd
-import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,8 +59,7 @@ def test_input_identifier_accepts_mechanism_leaf_values(
 ) -> None:
     monkeypatch.setenv("GOROROBA_TEST_IDENTIFIER", identifier)
     assert (
-        source_root_control.input_identifier("GOROROBA_TEST_IDENTIFIER")
-        == identifier
+        source_root_control.input_identifier("GOROROBA_TEST_IDENTIFIER") == identifier
     )
 
 
@@ -165,6 +162,7 @@ def layout_values(tmp_path: Path) -> dict[str, Path | str]:
         "source_tree": "2" * 40,
         "control_root": tmp_path / "control",
         "control_commit": "3" * 40,
+        "control_tree": "4" * 40,
         "build_root": build_root,
         "builddir": build_root / "build",
         "prefix": build_root / "prefix",
@@ -180,11 +178,37 @@ def set_captured_revisions(
         "source_commit": "GOROROBA_SOURCE_COMMIT_CAPTURED",
         "source_tree": "GOROROBA_SOURCE_TREE_CAPTURED",
         "control_commit": "GOROROBA_CONTROL_COMMIT_CAPTURED",
+        "control_tree": "GOROROBA_CONTROL_TREE_CAPTURED",
     }
     for field, variable_name in revision_names.items():
         revision = values[field]
         assert isinstance(revision, str)
         monkeypatch.setenv(variable_name, revision)
+
+
+def commit_repository(repository: Path, message: str) -> None:
+    source_root_control.run_git(repository, "add", "--all")
+    source_root_control.run_git(
+        repository,
+        "-c",
+        "user.name=source-root-test",
+        "-c",
+        "user.email=source-root-test.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-qm",
+        message,
+    )
+
+
+def committed_repository(repository: Path) -> Path:
+    repository.mkdir(parents=True)
+    source_root_control.run_git(repository, "init", "-q", "-b", "main")
+    source_file = repository / "meson.build"
+    source_file.write_text("project('clean')\n", encoding="ascii")
+    commit_repository(repository, "test: add tracked source")
+    return source_file
 
 
 @pytest.mark.parametrize(
@@ -211,7 +235,14 @@ def test_reject_protected_path_rejects_system_roots(
 
 def test_validate_layout_accepts_isolated_external_build(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    build_namespace = tmp_path / ".mesa-26-gororoba-builds"
+    monkeypatch.setattr(
+        source_root_control,
+        "owned_build_namespaces",
+        lambda _repository_root: (build_namespace,),
+    )
     source_root_control.validate_layout("build", layout_values(tmp_path))
 
 
@@ -271,6 +302,62 @@ def test_validate_layout_rejects_nested_git_worktree_before_archive(
     (nested_repository / ".git").mkdir(parents=True)
     with pytest.raises(source_root_control.ControlError):
         source_root_control.validate_layout("distclean", values)
+
+
+def test_validate_layout_rejects_bare_repository_ancestor(
+    tmp_path: Path,
+) -> None:
+    values = layout_values(tmp_path)
+    namespace = tmp_path / ".mesa-26-gororoba-builds"
+    bare_repository = namespace / "retained.git"
+    bare_repository.mkdir(parents=True)
+    source_root_control.run_git(
+        bare_repository,
+        "init",
+        "--bare",
+        "-q",
+        ".",
+    )
+    values["build_root"] = bare_repository
+    values["builddir"] = bare_repository / "objects"
+    values["prefix"] = bare_repository / "prefix"
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="inside a Git directory",
+    ):
+        source_root_control.validate_layout("clean", values)
+
+
+def test_validate_layout_rejects_nested_bare_repository(
+    tmp_path: Path,
+) -> None:
+    values = layout_values(tmp_path)
+    builddir = values["builddir"]
+    assert isinstance(builddir, Path)
+    bare_repository = builddir / "retained.git"
+    bare_repository.mkdir(parents=True)
+    source_root_control.run_git(
+        bare_repository,
+        "init",
+        "--bare",
+        "-q",
+        ".",
+    )
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="containing a Git repository marker",
+    ):
+        source_root_control.validate_layout("clean", values)
+
+
+def test_is_git_directory_accepts_linked_worktree_metadata(
+    tmp_path: Path,
+) -> None:
+    git_directory = tmp_path / "linked-git-directory"
+    git_directory.mkdir()
+    for filename in ("HEAD", "commondir", "gitdir"):
+        (git_directory / filename).touch()
+    assert source_root_control.is_git_directory(git_directory)
 
 
 def test_parse_mountinfo_decodes_kernel_path_escapes() -> None:
@@ -363,8 +450,16 @@ def test_owned_build_namespaces_ignore_home_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    user_id = 1234
+    account_home = tmp_path / "account-home"
+    account_home.mkdir()
     monkeypatch.setenv("HOME", "/")
-    account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    monkeypatch.setattr(source_root_control.os, "getuid", lambda: user_id)
+    monkeypatch.setattr(
+        source_root_control.pwd,
+        "getpwuid",
+        lambda _user_id: SimpleNamespace(pw_dir=str(account_home)),
+    )
     namespaces = source_root_control.owned_build_namespaces(
         tmp_path / "control",
     )
@@ -380,6 +475,80 @@ def test_owned_build_namespaces_reject_root(
     monkeypatch.setattr(source_root_control.os, "getuid", lambda: 0)
     with pytest.raises(source_root_control.ControlError):
         source_root_control.owned_build_namespaces(tmp_path / "control")
+
+
+def test_validate_build_namespace_chain_creates_private_intermediates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = os.getuid()
+    account_home = tmp_path / "account-home"
+    account_home.mkdir(mode=0o700)
+    namespace = account_home / ".cache" / "mesa-26-gororoba" / "external-builds"
+    monkeypatch.setattr(
+        source_root_control,
+        "trusted_account_home",
+        lambda _user_id: account_home,
+    )
+    source_root_control.validate_build_namespace_chain(
+        namespace,
+        tmp_path / "control",
+        create=True,
+    )
+    for candidate in (
+        account_home / ".cache",
+        account_home / ".cache" / "mesa-26-gororoba",
+        namespace,
+    ):
+        assert candidate.stat().st_uid == user_id
+        assert candidate.stat().st_mode & 0o777 == 0o700
+
+
+def test_validate_build_namespace_chain_rejects_writable_intermediate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_home = tmp_path / "account-home"
+    account_home.mkdir(mode=0o700)
+    cache = account_home / ".cache"
+    cache.mkdir(mode=0o770)
+    cache.chmod(0o770)
+    namespace = cache / "mesa-26-gororoba" / "external-builds"
+    monkeypatch.setattr(
+        source_root_control,
+        "trusted_account_home",
+        lambda _user_id: account_home,
+    )
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.validate_build_namespace_chain(
+            namespace,
+            tmp_path / "control",
+            create=True,
+        )
+
+
+def test_validate_build_namespace_chain_rejects_writable_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_home = tmp_path / "account-home"
+    account_home.mkdir(mode=0o777)
+    account_home.chmod(0o777)
+    namespace = account_home / ".cache" / "mesa-26-gororoba" / "external-builds"
+    monkeypatch.setattr(
+        source_root_control,
+        "trusted_account_home",
+        lambda _user_id: account_home,
+    )
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="group/world writable",
+    ):
+        source_root_control.validate_build_namespace_chain(
+            namespace,
+            tmp_path / "control",
+            create=True,
+        )
 
 
 def test_validate_owned_namespace_rejects_symlink(
@@ -538,6 +707,7 @@ def test_require_captured_inputs_rejects_retargeted_selector(
         ("source_commit", "GOROROBA_SOURCE_COMMIT_CAPTURED"),
         ("source_tree", "GOROROBA_SOURCE_TREE_CAPTURED"),
         ("control_commit", "GOROROBA_CONTROL_COMMIT_CAPTURED"),
+        ("control_tree", "GOROROBA_CONTROL_TREE_CAPTURED"),
     ),
 )
 def test_require_captured_inputs_rejects_each_revision_change(
@@ -548,7 +718,7 @@ def test_require_captured_inputs_rejects_each_revision_change(
 ) -> None:
     values = layout_values(tmp_path)
     set_captured_revisions(values, monkeypatch)
-    monkeypatch.setenv(variable_name, "4" * 40)
+    monkeypatch.setenv(variable_name, "f" * 40)
     with pytest.raises(
         source_root_control.ControlError,
         match=f"build lease: {field}",
@@ -560,46 +730,16 @@ def test_require_clean_worktree_detects_assume_unchanged(
     tmp_path: Path,
 ) -> None:
     repository = tmp_path / "repository"
-    repository.mkdir()
-    subprocess.run(
-        ["git", "-C", str(repository), "init", "-q"],
-        check=True,
-    )
-    source_file = repository / "meson.build"
-    source_file.write_text("project('clean')\n", encoding="ascii")
-    subprocess.run(
-        ["git", "-C", str(repository), "add", "meson.build"],
-        check=True,
-    )
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository),
-            "-c",
-            "user.name=source-root-test",
-            "-c",
-            "user.email=source-root-test.invalid",
-            "commit",
-            "-qm",
-            "test: add tracked source",
-        ],
-        check=True,
-    )
+    source_file = committed_repository(repository)
     source_root_control.require_clean_worktree(
         repository,
         "test worktree",
     )
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository),
-            "update-index",
-            "--assume-unchanged",
-            "meson.build",
-        ],
-        check=True,
+    source_root_control.run_git(
+        repository,
+        "update-index",
+        "--assume-unchanged",
+        "meson.build",
     )
     source_file.write_text("project('dirty')\n", encoding="ascii")
     with pytest.raises(source_root_control.ControlError):
@@ -613,43 +753,81 @@ def test_require_clean_worktree_detects_staged_only_change(
     tmp_path: Path,
 ) -> None:
     repository = tmp_path / "repository"
-    repository.mkdir()
-    subprocess.run(
-        ["git", "-C", str(repository), "init", "-q"],
-        check=True,
-    )
-    source_file = repository / "meson.build"
-    source_file.write_text("project('clean')\n", encoding="ascii")
-    subprocess.run(
-        ["git", "-C", str(repository), "add", "meson.build"],
-        check=True,
-    )
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository),
-            "-c",
-            "user.name=source-root-test",
-            "-c",
-            "user.email=source-root-test.invalid",
-            "commit",
-            "-qm",
-            "test: add tracked source",
-        ],
-        check=True,
-    )
+    source_file = committed_repository(repository)
     source_file.write_text("project('staged')\n", encoding="ascii")
-    subprocess.run(
-        ["git", "-C", str(repository), "add", "meson.build"],
-        check=True,
-    )
+    source_root_control.run_git(repository, "add", "meson.build")
     source_file.write_text("project('clean')\n", encoding="ascii")
     with pytest.raises(source_root_control.ControlError):
         source_root_control.require_clean_worktree(
             repository,
             "test worktree",
         )
+
+
+def test_require_clean_worktree_rejects_ignored_subproject_sources(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    committed_repository(repository)
+    subprojects = repository / "subprojects"
+    subprojects.mkdir()
+    (subprojects / ".gitignore").write_text("/*/\n", encoding="ascii")
+    commit_repository(repository, "test: ignore populated subprojects")
+    source_root_control.require_clean_worktree(repository, "test worktree")
+    ignored_source = subprojects / "Vulkan-Profiles" / "meson.build"
+    ignored_source.parent.mkdir()
+    ignored_source.write_text("project('ignored-input')\n", encoding="ascii")
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.require_clean_worktree(repository, "test worktree")
+
+
+def test_run_git_ignores_ambient_repository_and_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    committed_repository(repository)
+    hostile_repository = tmp_path / "hostile"
+    committed_repository(hostile_repository)
+    hostile_index = tmp_path / "hostile-index"
+    hostile_config = tmp_path / "hostile-gitconfig"
+    hostile_config.write_text(
+        "[commit]\n\tgpgsign = true\n[core]\n\thooksPath = /missing\n",
+        encoding="ascii",
+    )
+    monkeypatch.setenv("GIT_DIR", str(hostile_repository / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(hostile_repository))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(hostile_index))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(hostile_config))
+    assert source_root_control.run_git(
+        repository, "rev-parse", "--show-toplevel"
+    ) == str(repository)
+    source_root_control.require_clean_worktree(repository, "test worktree")
+
+
+def test_run_git_disables_repository_fsmonitor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    committed_repository(repository)
+    marker = tmp_path / "fsmonitor-executed"
+    hook = tmp_path / "fsmonitor-hook"
+    hook.write_text(
+        "#!/bin/sh\n: > \"$GOROROBA_FSMONITOR_MARKER\"\nprintf '\\n'\n",
+        encoding="ascii",
+    )
+    hook.chmod(0o755)
+    source_root_control.run_git(
+        repository,
+        "config",
+        "--local",
+        "core.fsmonitor",
+        str(hook),
+    )
+    monkeypatch.setenv("GOROROBA_FSMONITOR_MARKER", str(marker))
+    source_root_control.require_clean_worktree(repository, "test worktree")
+    assert not marker.exists()
 
 
 def test_external_source_checks_source_and_control(
@@ -683,32 +861,7 @@ def test_external_source_rejects_dirty_control_worktree(
     source_root = tmp_path / "source"
     control_root = tmp_path / "control"
     for repository in (source_root, control_root):
-        repository.mkdir()
-        subprocess.run(
-            ["git", "-C", str(repository), "init", "-q"],
-            check=True,
-        )
-        source_file = repository / "meson.build"
-        source_file.write_text("project('clean')\n", encoding="ascii")
-        subprocess.run(
-            ["git", "-C", str(repository), "add", "meson.build"],
-            check=True,
-        )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repository),
-                "-c",
-                "user.name=source-root-test",
-                "-c",
-                "user.email=source-root-test.invalid",
-                "commit",
-                "-qm",
-                "test: add tracked source",
-            ],
-            check=True,
-        )
+        committed_repository(repository)
     monkeypatch.setattr(
         source_root_control,
         "control_root",

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# Copyright 2026 Oichkatzelesfrettschen
 # SPDX-License-Identifier: MIT
 """Validate external Mesa source selection and bind it to a build directory."""
 
@@ -18,7 +17,7 @@ import tempfile
 from pathlib import Path
 from typing import NoReturn
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 IDENTITY_FILENAME = ".gororoba-source-identity.json"
 ROOT_IDENTITY_FILENAME = ".gororoba-external-source-identity.json"
 SAFE_PATH_INPUT = re.compile(r"^[A-Za-z0-9_./:+@=~-]+$")
@@ -29,6 +28,7 @@ TRANSACTION_ID = re.compile(r"^[0-9a-f]{32}$")
 PROVISIONAL_STATE = "provisional"
 FINAL_STATE = "final"
 MOUNTINFO_PATH = Path("/proc/self/mountinfo")
+SHARED_TEMPORARY_BOUNDARIES = (Path("/tmp"), Path("/var/tmp"))
 
 
 class ControlError(RuntimeError):
@@ -57,11 +57,7 @@ def input_path(name: str) -> Path:
 
 def input_identifier(name: str) -> str:
     raw = os.environ.get(name, "")
-    if (
-        not raw
-        or raw in {".", ".."}
-        or SAFE_LEAF_IDENTIFIER.fullmatch(raw) is None
-    ):
+    if not raw or raw in {".", ".."} or SAFE_LEAF_IDENTIFIER.fullmatch(raw) is None:
         fail(f"{name} contains an invalid leaf identifier")
     return raw
 
@@ -73,8 +69,7 @@ def input_enum(
     raw = os.environ.get(name, "")
     if raw not in allowed_values:
         allowed_text = ", ".join(
-            "default" if value == "" else value
-            for value in sorted(allowed_values)
+            "default" if value == "" else value for value in sorted(allowed_values)
         )
         fail(f"{name} must be one of: {allowed_text}")
     return raw
@@ -98,14 +93,42 @@ def validate_make_version(version: str) -> None:
         fail(f"GNU Make 4.2 or newer is required; found {version}")
 
 
+def git_command(root: Path, *arguments: str) -> list[str]:
+    return [
+        "git",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.untrackedCache=false",
+        "-C",
+        str(root),
+        *arguments,
+    ]
+
+
 def run_git_process(
     root: Path,
     *arguments: str,
     extra_environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    command = ["git", "--no-optional-locks", "-C", str(root), *arguments]
-    environment = os.environ.copy()
-    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    command = git_command(root, *arguments)
+    environment = {
+        name: value for name, value in os.environ.items() if not name.startswith("GIT_")
+    }
+    environment.update(
+        {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
     if extra_environment is not None:
         environment.update(extra_environment)
     return subprocess.run(
@@ -123,7 +146,7 @@ def run_git(
     *arguments: str,
     extra_environment: dict[str, str] | None = None,
 ) -> str:
-    command = ["git", "--no-optional-locks", "-C", str(root), *arguments]
+    command = git_command(root, *arguments)
     result = run_git_process(
         root,
         *arguments,
@@ -172,13 +195,9 @@ def require_clean_worktree(root: Path, label: str) -> None:
     if staged_result.returncode == 1:
         fail(f"{label} is dirty: {root}")
 
-    descriptor, temporary_index = tempfile.mkstemp(
-        prefix="gororoba-git-index.",
-    )
-    os.close(descriptor)
-    os.unlink(temporary_index)
-    index_environment = {"GIT_INDEX_FILE": temporary_index}
-    try:
+    with tempfile.TemporaryDirectory(prefix="gororoba-git-index.") as directory:
+        temporary_index = Path(directory) / "index"
+        index_environment = {"GIT_INDEX_FILE": str(temporary_index)}
         run_git(
             root,
             "read-tree",
@@ -212,11 +231,19 @@ def require_clean_worktree(root: Path, label: str) -> None:
             "--exclude-standard",
             extra_environment=index_environment,
         )
-        if tracked_result.returncode == 1 or untracked:
+        ignored_subprojects = run_git(
+            root,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "--",
+            "subprojects",
+            extra_environment=index_environment,
+        )
+        if tracked_result.returncode == 1 or untracked or ignored_subprojects:
             fail(f"{label} is dirty: {root}")
-    finally:
-        Path(temporary_index).unlink(missing_ok=True)
-        Path(f"{temporary_index}.lock").unlink(missing_ok=True)
 
 
 def require_clean_external_source(source_root: Path) -> None:
@@ -237,7 +264,7 @@ def resolved_inputs() -> dict[str, Path | str]:
     prefix = input_path("GOROROBA_PREFIX_INPUT")
     sysconfdir = input_path("GOROROBA_SYSCONFDIR_INPUT")
     repository_root = control_root()
-    control_commit, _control_tree = source_identity(repository_root)
+    control_commit, control_tree = source_identity(repository_root)
     return {
         "source_root": source_root,
         "source_commit": source_commit,
@@ -248,6 +275,7 @@ def resolved_inputs() -> dict[str, Path | str]:
         "sysconfdir": sysconfdir,
         "control_root": repository_root,
         "control_commit": control_commit,
+        "control_tree": control_tree,
     }
 
 
@@ -344,6 +372,64 @@ def owned_build_namespaces(repository_root: Path) -> tuple[Path, ...]:
     )
 
 
+def build_namespace_parent_boundary(
+    namespace: Path,
+    repository_root: Path,
+) -> Path:
+    user_id = os.getuid()
+    temporary_boundaries = (*SHARED_TEMPORARY_BOUNDARIES, repository_root.parent)
+    for boundary in temporary_boundaries:
+        if namespace.parent == boundary:
+            return boundary
+    account_home = trusted_account_home(user_id)
+    if is_strict_descendant(namespace, account_home):
+        return account_home
+    return namespace.parent
+
+
+def validate_build_namespace_boundary(boundary: Path, user_id: int) -> Path:
+    if boundary not in SHARED_TEMPORARY_BOUNDARIES:
+        return validate_owned_namespace(boundary, user_id)
+    lexical_path = Path(os.path.abspath(boundary))
+    try:
+        boundary_status = lexical_path.lstat()
+    except OSError as error:
+        fail(f"cannot inspect shared build boundary {lexical_path}: {error}")
+    if (
+        lexical_path.resolve(strict=False) != lexical_path
+        or not stat.S_ISDIR(boundary_status.st_mode)
+        or boundary_status.st_uid != 0
+        or not boundary_status.st_mode & stat.S_ISVTX
+    ):
+        fail(f"shared build boundary is unsafe: {lexical_path}")
+    return lexical_path
+
+
+def validate_build_namespace_chain(
+    namespace: Path,
+    repository_root: Path,
+    *,
+    create: bool,
+) -> Path:
+    user_id = os.getuid()
+    boundary = build_namespace_parent_boundary(namespace, repository_root)
+    validate_build_namespace_boundary(boundary, user_id)
+    if not is_strict_descendant(namespace, boundary):
+        fail(f"build namespace is outside its parent boundary: {namespace}")
+    relative_parts = namespace.relative_to(boundary).parts
+    candidate = boundary
+    for part in relative_parts:
+        candidate /= part
+        if create and not candidate.exists() and not candidate.is_symlink():
+            try:
+                candidate.mkdir(mode=0o700)
+                candidate.chmod(0o700)
+            except OSError as error:
+                fail(f"cannot create build namespace {candidate}: {error}")
+        validate_owned_namespace(candidate, user_id)
+    return namespace
+
+
 def ensure_selected_build_namespace(
     values: dict[str, Path | str],
 ) -> None:
@@ -352,11 +438,11 @@ def ensure_selected_build_namespace(
     namespace = selected_build_boundary(values)
     if namespace == repository_root:
         return
-    try:
-        namespace.mkdir(parents=True, mode=0o700, exist_ok=True)
-    except OSError as error:
-        fail(f"cannot create build namespace {namespace}: {error}")
-    validate_owned_namespace(namespace, os.getuid())
+    validate_build_namespace_chain(
+        namespace,
+        repository_root,
+        create=True,
+    )
 
 
 def selected_build_boundary(
@@ -369,7 +455,11 @@ def selected_build_boundary(
     if build_root == repository_root / "build":
         return repository_root
     matching_namespaces = tuple(
-        validate_owned_namespace(namespace, os.getuid())
+        validate_build_namespace_chain(
+            namespace,
+            repository_root,
+            create=False,
+        )
         for namespace in owned_build_namespaces(repository_root)
         if is_strict_descendant(build_root, namespace)
     )
@@ -382,6 +472,21 @@ def containing_git_worktree(path: Path) -> Path | None:
     for candidate in (path, *path.parents):
         git_marker = candidate / ".git"
         if git_marker.exists() or git_marker.is_symlink():
+            return candidate
+    return None
+
+
+def is_git_directory(path: Path) -> bool:
+    if not (path / "HEAD").is_file():
+        return False
+    bare_layout = (path / "objects").is_dir() and (path / "refs").is_dir()
+    linked_layout = (path / "commondir").is_file() and (path / "gitdir").is_file()
+    return bare_layout or linked_layout
+
+
+def containing_git_directory(path: Path) -> Path | None:
+    for candidate in (path, *path.parents):
+        if is_git_directory(candidate):
             return candidate
     return None
 
@@ -482,6 +587,8 @@ def contained_git_worktree(path: Path) -> Path | None:
         ):
             if ".git" in directory_names or ".git" in file_names:
                 return Path(directory)
+            if is_git_directory(Path(directory)):
+                return Path(directory)
     except OSError as error:
         fail(f"cannot inspect destructive target {path}: {error}")
     return None
@@ -506,6 +613,7 @@ def require_captured_inputs(
         "source_commit": "GOROROBA_SOURCE_COMMIT_CAPTURED",
         "source_tree": "GOROROBA_SOURCE_TREE_CAPTURED",
         "control_commit": "GOROROBA_CONTROL_COMMIT_CAPTURED",
+        "control_tree": "GOROROBA_CONTROL_TREE_CAPTURED",
     }
     for field, variable_name in revision_variables.items():
         selected_revision = values[field]
@@ -568,6 +676,9 @@ def reject_git_worktree_target(
     *,
     scan_descendants: bool,
 ) -> None:
+    git_directory = containing_git_directory(path)
+    if git_directory is not None:
+        fail(f"refusing {label} inside a Git directory: {git_directory}")
     repository_boundary = containing_git_worktree(path)
     canonical_build_exception = (
         repository_boundary == repository_root
@@ -579,7 +690,7 @@ def reject_git_worktree_target(
         contained_repository = contained_git_worktree(path)
         if contained_repository is not None:
             fail(
-                f"refusing {label} containing a Git worktree marker: "
+                f"refusing {label} containing a Git repository marker: "
                 f"{contained_repository}"
             )
 
@@ -778,6 +889,7 @@ def base_identity_payload(
         "source_tree": str(values["source_tree"]),
         "control_root": str(values["control_root"]),
         "control_commit": str(values["control_commit"]),
+        "control_tree": str(values["control_tree"]),
         "build_root": str(values["build_root"]),
         "builddir": str(values["builddir"]),
         "prefix": str(values["prefix"]),
@@ -1179,6 +1291,7 @@ def main() -> int:
             values["source_commit"],
             values["source_tree"],
             values["control_commit"],
+            values["control_tree"],
             values["control_root"],
             path_anchor(values["source_root"]),
             path_anchor(values["control_root"]),
