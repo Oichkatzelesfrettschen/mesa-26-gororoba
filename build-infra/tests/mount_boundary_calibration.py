@@ -67,6 +67,7 @@ def layout_values(
         "build_root": build_root,
         "builddir": build_root / builddir_name,
         "prefix": build_root / "prefix",
+        "sysconfdir": Path("/etc"),
     }
 
 
@@ -231,6 +232,7 @@ def main() -> int:
         "build_root": control_root / "build",
         "builddir": control_root / "build" / "mount-boundary-probe",
         "prefix": Path("/opt/local/mesa-26-gororoba"),
+        "sysconfdir": Path("/etc"),
     }
     require_mount_rejection(
         module,

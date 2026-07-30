@@ -94,6 +94,69 @@ def test_input_enum_rejects_undeclared_values(
         )
 
 
+@pytest.mark.parametrize(
+    ("value", "minimum", "expected"),
+    (
+        ("0", 0, "0"),
+        ("1", 1, "1"),
+        ("0006", 1, "6"),
+        ("7200", 0, "7200"),
+    ),
+)
+def test_input_decimal_accepts_bounded_integers(
+    value: str,
+    minimum: int,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOROROBA_TEST_DECIMAL", value)
+    assert (
+        source_root_control.input_decimal(
+            "GOROROBA_TEST_DECIMAL",
+            minimum=minimum,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "minimum"),
+    (
+        ("", 0),
+        ("-1", 0),
+        ("0", 1),
+        ("1.0", 0),
+        ("1; touch marker", 0),
+        ('1"; touch marker; #', 0),
+    ),
+)
+def test_input_decimal_rejects_non_decimal_or_below_minimum(
+    value: str,
+    minimum: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOROROBA_TEST_DECIMAL", value)
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.input_decimal(
+            "GOROROBA_TEST_DECIMAL",
+            minimum=minimum,
+        )
+
+
+@pytest.mark.parametrize("version", ("4.2", "4.3", "4.4.1", "5.0"))
+def test_validate_make_version_accepts_supported_versions(version: str) -> None:
+    source_root_control.validate_make_version(version)
+
+
+@pytest.mark.parametrize(
+    "version",
+    ("", "4", "4.1", "4.1.9", "4.2; touch marker", '4"; touch marker; #.4'),
+)
+def test_validate_make_version_rejects_old_or_non_versions(version: str) -> None:
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.validate_make_version(version)
+
+
 def layout_values(tmp_path: Path) -> dict[str, Path | str]:
     build_root = tmp_path / ".mesa-26-gororoba-builds" / "source-root-control-test"
     return {
@@ -105,6 +168,7 @@ def layout_values(tmp_path: Path) -> dict[str, Path | str]:
         "build_root": build_root,
         "builddir": build_root / "build",
         "prefix": build_root / "prefix",
+        "sysconfdir": tmp_path / "etc",
     }
 
 
@@ -417,6 +481,7 @@ def test_require_captured_inputs_rejects_replacement(
         "build_root": "GOROROBA_BUILD_ROOT_INPUT",
         "builddir": "GOROROBA_BUILDDIR_INPUT",
         "prefix": "GOROROBA_PREFIX_INPUT",
+        "sysconfdir": "GOROROBA_SYSCONFDIR_INPUT",
     }
     anchor_names = {
         "source_root": "GOROROBA_SOURCE_ROOT_ANCHOR",
@@ -424,6 +489,7 @@ def test_require_captured_inputs_rejects_replacement(
         "build_root": "GOROROBA_BUILD_ROOT_ANCHOR",
         "builddir": "GOROROBA_BUILDDIR_ANCHOR",
         "prefix": "GOROROBA_PREFIX_ANCHOR",
+        "sysconfdir": "GOROROBA_SYSCONFDIR_ANCHOR",
     }
     for field, input_name in environment_names.items():
         path = values[field]
@@ -656,8 +722,14 @@ def test_external_source_rejects_dirty_control_worktree(
 def test_require_identity_fields_reports_value_drift(
     tmp_path: Path,
 ) -> None:
-    expected = {"schema_version": 3, "source_commit": "1" * 40}
-    recorded = {"schema_version": 3, "source_commit": "2" * 40}
+    expected = {
+        "schema_version": source_root_control.SCHEMA_VERSION,
+        "source_commit": "1" * 40,
+    }
+    recorded = {
+        "schema_version": source_root_control.SCHEMA_VERSION,
+        "source_commit": "2" * 40,
+    }
     with pytest.raises(source_root_control.ControlError):
         source_root_control.require_identity_fields(
             recorded,
@@ -669,7 +741,10 @@ def test_require_identity_fields_reports_value_drift(
 def test_require_identity_record_accepts_exact_final_record(
     tmp_path: Path,
 ) -> None:
-    expected = {"schema_version": 3, "source_commit": "1" * 40}
+    expected = {
+        "schema_version": source_root_control.SCHEMA_VERSION,
+        "source_commit": "1" * 40,
+    }
     recorded = {
         **expected,
         "state": source_root_control.FINAL_STATE,
@@ -688,7 +763,10 @@ def test_require_identity_record_accepts_exact_final_record(
 def test_require_identity_record_rejects_provisional_use(
     tmp_path: Path,
 ) -> None:
-    expected = {"schema_version": 3, "source_commit": "1" * 40}
+    expected = {
+        "schema_version": source_root_control.SCHEMA_VERSION,
+        "source_commit": "1" * 40,
+    }
     recorded = {
         **expected,
         "state": source_root_control.PROVISIONAL_STATE,
@@ -706,7 +784,10 @@ def test_require_identity_record_rejects_provisional_use(
 def test_require_identity_record_rejects_unknown_fields(
     tmp_path: Path,
 ) -> None:
-    expected = {"schema_version": 3, "source_commit": "1" * 40}
+    expected = {
+        "schema_version": source_root_control.SCHEMA_VERSION,
+        "source_commit": "1" * 40,
+    }
     recorded = {
         **expected,
         "state": source_root_control.FINAL_STATE,

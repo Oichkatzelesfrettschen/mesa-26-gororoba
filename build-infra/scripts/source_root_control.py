@@ -18,11 +18,13 @@ import tempfile
 from pathlib import Path
 from typing import NoReturn
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 IDENTITY_FILENAME = ".gororoba-source-identity.json"
 ROOT_IDENTITY_FILENAME = ".gororoba-external-source-identity.json"
 SAFE_PATH_INPUT = re.compile(r"^[A-Za-z0-9_./:+@=~-]+$")
 SAFE_LEAF_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
+DECIMAL_INTEGER = re.compile(r"^[0-9]+$")
+GNU_MAKE_VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
 TRANSACTION_ID = re.compile(r"^[0-9a-f]{32}$")
 PROVISIONAL_STATE = "provisional"
 FINAL_STATE = "final"
@@ -76,6 +78,24 @@ def input_enum(
         )
         fail(f"{name} must be one of: {allowed_text}")
     return raw
+
+
+def input_decimal(name: str, *, minimum: int) -> str:
+    raw = os.environ.get(name, "")
+    if DECIMAL_INTEGER.fullmatch(raw) is None:
+        fail(f"{name} must be a decimal integer")
+    value = int(raw)
+    if value < minimum:
+        fail(f"{name} must be at least {minimum}")
+    return str(value)
+
+
+def validate_make_version(version: str) -> None:
+    if GNU_MAKE_VERSION.fullmatch(version) is None:
+        fail(f"GNU Make version is invalid: {version}")
+    components = tuple(int(component) for component in version.split("."))
+    if components < (4, 2):
+        fail(f"GNU Make 4.2 or newer is required; found {version}")
 
 
 def run_git_process(
@@ -215,6 +235,7 @@ def resolved_inputs() -> dict[str, Path | str]:
     build_root = input_path("GOROROBA_BUILD_ROOT_INPUT")
     builddir = input_path("GOROROBA_BUILDDIR_INPUT")
     prefix = input_path("GOROROBA_PREFIX_INPUT")
+    sysconfdir = input_path("GOROROBA_SYSCONFDIR_INPUT")
     repository_root = control_root()
     control_commit, _control_tree = source_identity(repository_root)
     return {
@@ -224,6 +245,7 @@ def resolved_inputs() -> dict[str, Path | str]:
         "build_root": build_root,
         "builddir": builddir,
         "prefix": prefix,
+        "sysconfdir": sysconfdir,
         "control_root": repository_root,
         "control_commit": control_commit,
     }
@@ -503,6 +525,7 @@ def require_captured_inputs(
         "build_root": "GOROROBA_BUILD_ROOT_ANCHOR",
         "builddir": "GOROROBA_BUILDDIR_ANCHOR",
         "prefix": "GOROROBA_PREFIX_ANCHOR",
+        "sysconfdir": "GOROROBA_SYSCONFDIR_ANCHOR",
     }
     input_variables = {
         "source_root": "GOROROBA_TOPSRC_INPUT",
@@ -510,6 +533,7 @@ def require_captured_inputs(
         "build_root": "GOROROBA_BUILD_ROOT_INPUT",
         "builddir": "GOROROBA_BUILDDIR_INPUT",
         "prefix": "GOROROBA_PREFIX_INPUT",
+        "sysconfdir": "GOROROBA_SYSCONFDIR_INPUT",
     }
     for field in fields:
         selected_path = values[field]
@@ -757,6 +781,7 @@ def base_identity_payload(
         "build_root": str(values["build_root"]),
         "builddir": str(values["builddir"]),
         "prefix": str(values["prefix"]),
+        "sysconfdir": str(values["sysconfdir"]),
     }
 
 
@@ -1056,6 +1081,8 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate-selectors")
+    subparsers.add_parser("validate-build-execution")
+    subparsers.add_parser("validate-make-version")
     test_directory_parser = subparsers.add_parser("create-test-directory")
     test_directory_parser.add_argument(
         "--label",
@@ -1097,6 +1124,7 @@ def parse_arguments() -> argparse.Namespace:
             "build_root",
             "builddir",
             "prefix",
+            "sysconfdir",
         ),
     )
     return parser.parse_args()
@@ -1104,6 +1132,10 @@ def parse_arguments() -> argparse.Namespace:
 
 def main() -> int:
     arguments = parse_arguments()
+    if arguments.command == "validate-make-version":
+        validate_make_version(os.environ.get("GOROROBA_MAKE_VERSION_INPUT", ""))
+        print("yes")
+        return 0
     if arguments.command == "validate-selectors":
         mode = input_enum(
             "GOROROBA_MODE_INPUT",
@@ -1124,6 +1156,14 @@ def main() -> int:
             ),
         )
         return 0
+    if arguments.command == "validate-build-execution":
+        print(
+            input_decimal("GOROROBA_JOBS_INPUT", minimum=1),
+            input_decimal("GOROROBA_DISTCC_JOBS_INPUT", minimum=1),
+            input_decimal("GOROROBA_LOCK_WAIT_INPUT", minimum=0),
+            input_path("GOROROBA_BUILD_LOCK_INPUT"),
+        )
+        return 0
     if arguments.command == "create-test-directory":
         print(create_test_directory(arguments.label))
         return 0
@@ -1135,6 +1175,7 @@ def main() -> int:
             values["build_root"],
             values["builddir"],
             values["prefix"],
+            values["sysconfdir"],
             values["source_commit"],
             values["source_tree"],
             values["control_commit"],
@@ -1144,6 +1185,7 @@ def main() -> int:
             path_anchor(values["build_root"]),
             path_anchor(values["builddir"]),
             path_anchor(values["prefix"]),
+            path_anchor(values["sysconfdir"]),
         )
         print(" ".join(str(field) for field in fields))
     elif arguments.command == "check-source":

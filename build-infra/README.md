@@ -8,6 +8,23 @@ evaluation.  Parse-time path inputs travel as directly quoted environment
 assignments because GNU Make 4.3 does not place Makefile `export` values in the
 environment of every `$(shell ...)` expansion.
 
+The Make process is the caller execution boundary.  GNU Make evaluates
+immediate command-line assignments using `:=`, `::=`, `:::=`, or `!=` before
+the repository Makefile loads, so those operators receive trusted operator
+text only.  Recursive command-line assignments reach the Makefile as data.
+The entry point rejects dollar syntax in those values, then validates all
+named build selectors, resource counts, and source/build paths before recipe
+planning.  `JOBS`, `DISTCC_JOBS`, and `LOCK_WAIT` are typed decimal values.
+`BUILD_LOCK` and `SYSCONFDIR` resolve through the same path-character control
+as `TOPSRC`, `BUILD_ROOT`, `BUILDDIR`, and `PREFIX`; the install recipe passes
+its canonical sysconfdir to the locked shell through the environment instead
+of embedding caller text in the shell program.
+
+`MESON`, `NINJA`, `SUDO`, `FLOCK`, and `REMOVE_TREE` are trusted operator
+command hooks.  `NINJA_ARGS`, `NINJA_TARGETS`, and `MESON_TEST_ARGS` are
+trusted command-argument hooks.  These hooks intentionally execute caller
+syntax and never receive untrusted text.
+
 ## Canonical profiles
 
 The default profile sits at the top of `build-infra/configs/`; the other five

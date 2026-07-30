@@ -34,6 +34,10 @@ ifneq ($(BUILD_INFRA_MAKEFILE),$(BUILD_INFRA_ROOT)/Makefile)
 $(error build-infra Makefile identity is invalid: $(BUILD_INFRA_MAKEFILE))
 endif
 override CURDIR := $(BUILD_INFRA_ROOT)
+# GNU Make evaluates immediate command-line assignments such as :=, ::=, :::=,
+# and != before this Makefile loads.  The caller already owns that execution
+# boundary.  This guard validates recursive command-line values that reach the
+# repository build controls after Make accepts the invocation.
 override COMMAND_VARIABLE_WITH_DOLLAR := $(firstword \
 	$(foreach variable,$(.VARIABLES),\
 		$(if \
@@ -95,17 +99,10 @@ endif
 override COMPILER_CHAIN := $(word 5,$(SELECTOR_FIELDS))
 override COMPILER_FAMILY := $(word 6,$(SELECTOR_FIELDS))
 
-override MAKE_VERSION_COMPONENTS := $(subst ., ,$(MAKE_VERSION))
-override MAKE_VERSION_MAJOR := $(word 1,$(MAKE_VERSION_COMPONENTS))
-override MAKE_VERSION_MINOR := $(word 2,$(MAKE_VERSION_COMPONENTS))
 override MAKE_VERSION_SUPPORTED := $(shell \
-	major="$(MAKE_VERSION_MAJOR)"; minor="$(MAKE_VERSION_MINOR)"; \
-	if printf '%s\n' "$$major:$$minor" | \
-	   grep -Eq '^[0-9]+:[0-9]+$$' && \
-	   { [ "$$major" -gt 4 ] || \
-	     { [ "$$major" -eq 4 ] && [ "$$minor" -ge 2 ]; }; }; then \
-		printf '%s\n' yes; \
-	fi)
+	GOROROBA_MAKE_VERSION_INPUT=$(call make_shell_quote,$(value MAKE_VERSION)) \
+	python3 $(call make_shell_quote,$(BUILD_INFRA_ROOT)/scripts/source_root_control.py) \
+	validate-make-version)
 ifneq ($(MAKE_VERSION_SUPPORTED),yes)
 $(error GNU Make 4.2 or newer is required; found $(MAKE_VERSION))
 endif
@@ -142,12 +139,14 @@ override GOROROBA_TOPSRC_INPUT := $(value TOPSRC)
 override GOROROBA_BUILD_ROOT_INPUT := $(value BUILD_ROOT)
 override GOROROBA_BUILDDIR_INPUT := $(value BUILDDIR)
 override GOROROBA_PREFIX_INPUT := $(value PREFIX)
+override GOROROBA_SYSCONFDIR_INPUT := $(value SYSCONFDIR)
 override GOROROBA_PROFILE_INPUT := $(value PROFILE)
 override GOROROBA_HOSTENV_INPUT := $(value HOSTENV)
 export GOROROBA_TOPSRC_INPUT
 export GOROROBA_BUILD_ROOT_INPUT
 export GOROROBA_BUILDDIR_INPUT
 export GOROROBA_PREFIX_INPUT
+export GOROROBA_SYSCONFDIR_INPUT
 export GOROROBA_PROFILE_INPUT
 export GOROROBA_HOSTENV_INPUT
 
@@ -158,6 +157,7 @@ override SOURCE_ROOT_FIELDS := $(shell \
 	GOROROBA_BUILD_ROOT_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILD_ROOT_INPUT)) \
 	GOROROBA_BUILDDIR_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILDDIR_INPUT)) \
 	GOROROBA_PREFIX_INPUT=$(call make_shell_quote,$(value GOROROBA_PREFIX_INPUT)) \
+	GOROROBA_SYSCONFDIR_INPUT=$(call make_shell_quote,$(value GOROROBA_SYSCONFDIR_INPUT)) \
 	GOROROBA_PROFILE_INPUT=$(call make_shell_quote,$(value GOROROBA_PROFILE_INPUT)) \
 	GOROROBA_HOSTENV_INPUT=$(call make_shell_quote,$(value GOROROBA_HOSTENV_INPUT)) \
 	python3 $(SOURCE_ROOT_CONTROL) resolve-make)
@@ -165,22 +165,24 @@ override SOURCE_ROOT_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(SOURCE_ROOT_RESOLVE_STATUS),0)
 $(error source root and build path resolution failed)
 endif
-ifneq ($(words $(SOURCE_ROOT_FIELDS)),13)
+ifneq ($(words $(SOURCE_ROOT_FIELDS)),15)
 $(error source root control returned an invalid field set)
 endif
 override TOPSRC := $(word 1,$(SOURCE_ROOT_FIELDS))
 override BUILD_ROOT := $(word 2,$(SOURCE_ROOT_FIELDS))
 override BUILDDIR := $(word 3,$(SOURCE_ROOT_FIELDS))
 override PREFIX := $(word 4,$(SOURCE_ROOT_FIELDS))
-override SOURCE_COMMIT := $(word 5,$(SOURCE_ROOT_FIELDS))
-override SOURCE_TREE := $(word 6,$(SOURCE_ROOT_FIELDS))
-override CONTROL_COMMIT := $(word 7,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_CONTROL_ROOT_INPUT := $(word 8,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_SOURCE_ROOT_ANCHOR := $(word 9,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_CONTROL_ROOT_ANCHOR := $(word 10,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_BUILD_ROOT_ANCHOR := $(word 11,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_BUILDDIR_ANCHOR := $(word 12,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_PREFIX_ANCHOR := $(word 13,$(SOURCE_ROOT_FIELDS))
+override SYSCONFDIR := $(word 5,$(SOURCE_ROOT_FIELDS))
+override SOURCE_COMMIT := $(word 6,$(SOURCE_ROOT_FIELDS))
+override SOURCE_TREE := $(word 7,$(SOURCE_ROOT_FIELDS))
+override CONTROL_COMMIT := $(word 8,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_CONTROL_ROOT_INPUT := $(word 9,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_SOURCE_ROOT_ANCHOR := $(word 10,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_CONTROL_ROOT_ANCHOR := $(word 11,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_BUILD_ROOT_ANCHOR := $(word 12,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_BUILDDIR_ANCHOR := $(word 13,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_PREFIX_ANCHOR := $(word 14,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_SYSCONFDIR_ANCHOR := $(word 15,$(SOURCE_ROOT_FIELDS))
 override GOROROBA_SOURCE_COMMIT_CAPTURED := $(SOURCE_COMMIT)
 override GOROROBA_SOURCE_TREE_CAPTURED := $(SOURCE_TREE)
 override GOROROBA_CONTROL_COMMIT_CAPTURED := $(CONTROL_COMMIT)
@@ -190,6 +192,7 @@ export GOROROBA_CONTROL_ROOT_ANCHOR
 export GOROROBA_BUILD_ROOT_ANCHOR
 export GOROROBA_BUILDDIR_ANCHOR
 export GOROROBA_PREFIX_ANCHOR
+export GOROROBA_SYSCONFDIR_ANCHOR
 export GOROROBA_SOURCE_COMMIT_CAPTURED
 export GOROROBA_SOURCE_TREE_CAPTURED
 export GOROROBA_CONTROL_COMMIT_CAPTURED
@@ -201,6 +204,7 @@ override GOROROBA_TOPSRC_INPUT := $(TOPSRC)
 override GOROROBA_BUILD_ROOT_INPUT := $(BUILD_ROOT)
 override GOROROBA_BUILDDIR_INPUT := $(BUILDDIR)
 override GOROROBA_PREFIX_INPUT := $(PREFIX)
+override GOROROBA_SYSCONFDIR_INPUT := $(SYSCONFDIR)
 # Pair-member descriptor: one space-separated row per build variant.
 # Field order: profile hostenv builddir prefix namespace.  Accessors:
 # $(call PAIR_PROFILE,LIST), $(call PAIR_HOSTENV,LIST), etc.  Adding a
@@ -212,13 +216,38 @@ override PAIR_BUILDDIR  = $(word 3,$1)
 override PAIR_PREFIX    = $(word 4,$1)
 override PAIR_NAMESPACE = $(word 5,$1)
 
-JOBS     ?= $(shell nproc)
-DISTCC_JOBS ?= 6
+ifeq ($(origin JOBS),undefined)
+JOBS := $(shell nproc)
+endif
+ifeq ($(origin DISTCC_JOBS),undefined)
+DISTCC_JOBS := 6
+endif
 # Build serialization lease: held across every Make-managed build-directory
 # mutation so concurrent agents cannot configure, build, test, or clean the
 # same build domain at once.  Direct Meson and Ninja commands bypass it.
-BUILD_LOCK ?= $(HOME)/.cache/mesa-26-gororoba/mesa-build.lock
-LOCK_WAIT ?= 7200
+ifeq ($(origin BUILD_LOCK),undefined)
+BUILD_LOCK := $(HOME)/.cache/mesa-26-gororoba/mesa-build.lock
+endif
+ifeq ($(origin LOCK_WAIT),undefined)
+LOCK_WAIT := 7200
+endif
+override BUILD_EXECUTION_FIELDS := $(shell \
+	GOROROBA_JOBS_INPUT=$(call make_shell_quote,$(value JOBS)) \
+	GOROROBA_DISTCC_JOBS_INPUT=$(call make_shell_quote,$(value DISTCC_JOBS)) \
+	GOROROBA_LOCK_WAIT_INPUT=$(call make_shell_quote,$(value LOCK_WAIT)) \
+	GOROROBA_BUILD_LOCK_INPUT=$(call make_shell_quote,$(value BUILD_LOCK)) \
+	python3 $(SOURCE_ROOT_CONTROL) validate-build-execution)
+override BUILD_EXECUTION_RESOLVE_STATUS := $(.SHELLSTATUS)
+ifneq ($(BUILD_EXECUTION_RESOLVE_STATUS),0)
+$(error build execution control resolution failed)
+endif
+ifneq ($(words $(BUILD_EXECUTION_FIELDS)),4)
+$(error build execution control returned an invalid field set)
+endif
+override JOBS := $(word 1,$(BUILD_EXECUTION_FIELDS))
+override DISTCC_JOBS := $(word 2,$(BUILD_EXECUTION_FIELDS))
+override LOCK_WAIT := $(word 3,$(BUILD_EXECUTION_FIELDS))
+override BUILD_LOCK := $(word 4,$(BUILD_EXECUTION_FIELDS))
 MESON ?= meson
 NINJA ?= ninja
 SUDO ?= sudo
@@ -650,7 +679,7 @@ audit: source-root-check source-root-control-unit-test \
 configure: source-root-check vostro-prefix-check
 	@$(call CHECK_LAYOUT,configure); \
 	$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(PREPARE_SOURCE_IDENTITY); \
 	mkdir -p "$(dir $(BUILDDIR))"; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
@@ -794,7 +823,7 @@ configure: source-root-check vostro-prefix-check
 		echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	echo "profile -D flags: $$profile_dflags"; \
 	$(MESON) setup $(SETUP_ARGS) $$profile_dflags \
-		--prefix="$(PREFIX)" --sysconfdir="$(SYSCONFDIR)" \
+		--prefix="$(PREFIX)" --sysconfdir="$${GOROROBA_SYSCONFDIR_INPUT}" \
 		"$(BUILDDIR)" "$(TOPSRC)" || { \
 			echo "Meson setup failed; source identity remains provisional" >&2; \
 			exit 2; \
@@ -806,7 +835,7 @@ build: source-root-check
 	test -d "$(BUILDDIR)" || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(call CHECK_LAYOUT,build); \
 	$(VERIFY_SOURCE_IDENTITY); \
 	build_jobs="$(JOBS)"; \
@@ -826,7 +855,7 @@ build: source-root-check
 
 clean:
 	@$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(call CHECK_LAYOUT,clean); \
 	$(VERIFY_DELETE_IDENTITY); \
 	$(REMOVE_TREE) "$(BUILDDIR)" || { \
@@ -854,7 +883,7 @@ clean-all:
 
 distclean:
 	@$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(call CHECK_LAYOUT,distclean); \
 	$(VERIFY_DISTCLEAN_IDENTITY); \
 	$(REMOVE_TREE) "$(BUILDDIR)" || { \
@@ -886,10 +915,10 @@ install: source-root-check vostro-prefix-check
 	test -d "$(BUILDDIR)" || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
-	env $(LOCKED_TOOL_ENV) \
+	env $(LOCKED_TOOL_ENV) GOROROBA_SYSCONFDIR_INPUT="$(SYSCONFDIR)" \
 	    $(FLOCK) -x -w $(LOCK_WAIT) "$(BUILD_LOCK)" bash -c 'set -euo pipefail; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-inputs \
-	      --fields source_root control_root build_root builddir prefix; \
+	      --fields source_root control_root build_root builddir prefix sysconfdir; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" check-layout --operation=install; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" verify-identity; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
@@ -898,7 +927,7 @@ install: source-root-check vostro-prefix-check
 	    profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)") || { \
 	      echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix="$(PREFIX)" \
-	      --sysconfdir="$(SYSCONFDIR)" "$(BUILDDIR)" "$(TOPSRC)" || { \
+	      --sysconfdir="$$GOROROBA_SYSCONFDIR_INPUT" "$(BUILDDIR)" "$(TOPSRC)" || { \
 	      echo "Meson setup failed; source identity remains provisional" >&2; \
 	      exit 2; \
 	    }; \
@@ -915,7 +944,7 @@ artifact-check: source-root-check vostro-prefix-check
 	@set -euo pipefail; \
 	$(call CHECK_LAYOUT,artifact); \
 	$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(call CHECK_LAYOUT,artifact); \
 	$(VERIFY_ARTIFACT_IDENTITY); \
 	test -d "$(PREFIX)" || { echo "prefix missing: $(PREFIX)"; exit 1; }; \
@@ -939,7 +968,7 @@ test: source-root-check
 	test -d "$(BUILDDIR)" || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	$(ACQUIRE_BUILD_LOCK) \
-	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(call CHECK_LAYOUT,test); \
 	$(VERIFY_SOURCE_IDENTITY); \
 	env $(LOCKED_TOOL_ENV) \
@@ -1048,10 +1077,17 @@ build-lease-test:
 	install_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" install \
 		BUILD_ROOT="$$tmpdir" BUILDDIR="$$tmpdir/build" PREFIX="$$tmpdir/prefix" \
 		SYSCONFDIR="$$tmpdir/etc" 2>/dev/null )"; \
-	printf '%s\n' "$$install_plan" | grep -F -- "--sysconfdir=\"$$tmpdir/etc\"" >/dev/null || { \
-		echo "FAIL  install reconfigure omitted SYSCONFDIR" >&2; exit 1; \
-	}; \
-	echo "OK    install reconfigure preserves SYSCONFDIR"; \
+	printf '%s\n' "$$install_plan" | \
+		grep -F -- "GOROROBA_SYSCONFDIR_INPUT=\"$$tmpdir/etc\"" >/dev/null || { \
+			echo "FAIL  install omitted canonical SYSCONFDIR transport" >&2; \
+			exit 1; \
+		}; \
+	printf '%s\n' "$$install_plan" | \
+		grep -F -- '--sysconfdir="$$GOROROBA_SYSCONFDIR_INPUT"' >/dev/null || { \
+			echo "FAIL  install interpolated SYSCONFDIR into locked program text" >&2; \
+			exit 1; \
+		}; \
+	echo "OK    install transports canonical SYSCONFDIR outside locked program text"; \
 	distclean_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" distclean \
 		BUILD_ROOT="$$tmpdir" BUILDDIR="$$tmpdir/build" \
 		PREFIX="$$tmpdir/prefix" BUILD_LOCK="$$tmpdir/plan.lock" )"; \
@@ -1079,6 +1115,22 @@ source-root-selection-test:
 		printf '%s\n' "$$legacy_make_output" >&2; exit 1; \
 	}; \
 	echo "OK    source-root control declares the GNU Make 4.2 floor"; \
+	make_version_marker="$$tmpdir/make-version-executed"; \
+	hostile_make_version='4"; touch '"$$make_version_marker"'; #.4'; \
+	if make_version_output="$$( $(MAKE) --no-print-directory \
+		-C "$(CURDIR)" help "MAKE_VERSION=$$hostile_make_version" 2>&1 )"; then \
+		echo "FAIL  MAKE_VERSION accepted shell metacharacters" >&2; \
+		exit 1; \
+	fi; \
+	test ! -e "$$make_version_marker" || { \
+		echo "FAIL  MAKE_VERSION entered shell program text" >&2; exit 1; \
+	}; \
+	printf '%s\n' "$$make_version_output" | \
+		grep -F "GNU Make version is invalid" >/dev/null || { \
+			echo "FAIL  MAKE_VERSION metacharacters returned the wrong diagnostic" >&2; \
+			printf '%s\n' "$$make_version_output" >&2; exit 1; \
+		}; \
+	echo "OK    MAKE_VERSION comparison treats caller text as data"; \
 	if lower_bound_make="$$(command -v make-4.2 2>/dev/null)"; then \
 		lower_bound_output="$$( "$$lower_bound_make" --no-print-directory \
 			-C "$(CURDIR)" help TOPSRC="$(CONTROL_ROOT)" \
@@ -1117,11 +1169,12 @@ source-root-selection-test:
 		CURDIR=/tmp BUILD_INFRA_ROOT=/tmp BUILD_INFRA_MAKEFILE=/tmp \
 		CONTROL_ROOT=/ SOURCE_ROOT_CONTROL=/bin/false \
 		MOUNT_BOUNDARY_CALIBRATION=/bin/false \
-		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m' \
+		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m n o' \
 		SOURCE_ROOT_RESOLVE_STATUS=1 SOURCE_COMMIT=forged \
 		SOURCE_TREE=forged CONTROL_COMMIT=forged \
 		GOROROBA_TOPSRC_INPUT=/ GOROROBA_BUILD_ROOT_INPUT=/ \
 		GOROROBA_BUILDDIR_INPUT=/ GOROROBA_PREFIX_INPUT=/ \
+		GOROROBA_SYSCONFDIR_INPUT=/ \
 		GOROROBA_PROFILE_INPUT=forged \
 		GOROROBA_HOSTENV_INPUT=forged \
 		GOROROBA_PROFILE_RAW=forged GOROROBA_HOSTENV_RAW=forged \
@@ -1137,6 +1190,7 @@ source-root-selection-test:
 		GOROROBA_BUILD_ROOT_ANCHOR=forged \
 		GOROROBA_BUILDDIR_ANCHOR=forged \
 		GOROROBA_PREFIX_ANCHOR=forged \
+		GOROROBA_SYSCONFDIR_ANCHOR=forged \
 		GOROROBA_SOURCE_COMMIT_CAPTURED=forged \
 		GOROROBA_SOURCE_TREE_CAPTURED=forged \
 		GOROROBA_CONTROL_COMMIT_CAPTURED=forged \
@@ -1197,7 +1251,64 @@ source-root-selection-test:
 			echo "FAIL  HOSTENV metacharacters returned the wrong diagnostic" >&2; \
 			printf '%s\n' "$$hostenv_output" >&2; exit 1; \
 		}; \
-	echo "OK    profile and host selectors reject executable syntax"; \
+	echo "OK    recursive build selectors reject executable syntax"; \
+	sysconfdir_marker="$$tmpdir/sysconfdir-executed"; \
+	sysconfdir_injection='"; touch '"$$sysconfdir_marker"'; #'; \
+	if sysconfdir_output="$$( $(MAKE) --no-print-directory \
+		-C "$(CURDIR)" install \
+		BUILD_ROOT="$$tmpdir/sysconfdir-build" \
+		BUILDDIR="$$tmpdir/sysconfdir-build/probe" \
+		PREFIX="$$tmpdir/sysconfdir-build/prefix" \
+		SYSCONFDIR="$$sysconfdir_injection" \
+		MESON=true SUDO=true 2>&1 )"; then \
+		echo "FAIL  SYSCONFDIR accepted shell metacharacters" >&2; \
+		exit 1; \
+	fi; \
+	test ! -e "$$sysconfdir_marker" || { \
+		echo "FAIL  SYSCONFDIR entered locked shell program text" >&2; exit 1; \
+	}; \
+	printf '%s\n' "$$sysconfdir_output" | \
+		grep -F "GOROROBA_SYSCONFDIR_INPUT contains unsupported path characters" \
+		>/dev/null || { \
+			echo "FAIL  SYSCONFDIR metacharacters returned the wrong diagnostic" >&2; \
+			printf '%s\n' "$$sysconfdir_output" >&2; exit 1; \
+		}; \
+	echo "OK    SYSCONFDIR rejects shell metacharacters before recipe planning"; \
+	execution_control_marker="$$tmpdir/build-execution-control-executed"; \
+	execution_control_injection='1"; touch '"$$execution_control_marker"'; #'; \
+	for control_name in JOBS DISTCC_JOBS LOCK_WAIT; do \
+		if control_output="$$( $(MAKE) --no-print-directory \
+			-C "$(CURDIR)" help \
+			"$$control_name=$$execution_control_injection" 2>&1 )"; then \
+			echo "FAIL  $$control_name accepted shell metacharacters" >&2; \
+			exit 1; \
+		fi; \
+		test ! -e "$$execution_control_marker" || { \
+			echo "FAIL  $$control_name entered shell program text" >&2; exit 1; \
+		}; \
+		printf '%s\n' "$$control_output" | \
+			grep -F "GOROROBA_$${control_name}_INPUT must be a decimal integer" \
+			>/dev/null || { \
+				echo "FAIL  $$control_name returned the wrong diagnostic" >&2; \
+				printf '%s\n' "$$control_output" >&2; exit 1; \
+			}; \
+	done; \
+	build_lock_injection='"; touch '"$$execution_control_marker"'; #'; \
+	if build_lock_output="$$( $(MAKE) --no-print-directory \
+		-C "$(CURDIR)" help BUILD_LOCK="$$build_lock_injection" 2>&1 )"; then \
+		echo "FAIL  BUILD_LOCK accepted shell metacharacters" >&2; \
+		exit 1; \
+	fi; \
+	test ! -e "$$execution_control_marker" || { \
+		echo "FAIL  BUILD_LOCK entered shell program text" >&2; exit 1; \
+	}; \
+	printf '%s\n' "$$build_lock_output" | \
+		grep -F "GOROROBA_BUILD_LOCK_INPUT contains unsupported path characters" \
+		>/dev/null || { \
+			echo "FAIL  BUILD_LOCK metacharacters returned the wrong diagnostic" >&2; \
+			printf '%s\n' "$$build_lock_output" >&2; exit 1; \
+		}; \
+	echo "OK    build execution controls reject shell metacharacters"; \
 	nested_root="$$source_root/nested"; \
 	mkdir -p "$$nested_root"; \
 	touch "$$nested_root/meson.build" "$$nested_root/meson.options"; \
@@ -1793,11 +1904,12 @@ source-root-selection-test:
 		COMPILER_CHAIN=direct NINJA=true \
 		CURDIR=/tmp BUILD_INFRA_ROOT=/tmp BUILD_INFRA_MAKEFILE=/tmp \
 		CONTROL_ROOT=/ SOURCE_ROOT_CONTROL=/bin/false \
-		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m' \
+		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m n o' \
 		SOURCE_ROOT_RESOLVE_STATUS=1 SOURCE_COMMIT=forged \
 		SOURCE_TREE=forged CONTROL_COMMIT=forged \
 		GOROROBA_TOPSRC_INPUT=/ GOROROBA_BUILD_ROOT_INPUT=/ \
 		GOROROBA_BUILDDIR_INPUT=/ GOROROBA_PREFIX_INPUT=/ \
+		GOROROBA_SYSCONFDIR_INPUT=/ \
 		GOROROBA_PROFILE_INPUT=forged \
 		GOROROBA_HOSTENV_INPUT=forged \
 		GOROROBA_PROFILE_RAW=forged GOROROBA_HOSTENV_RAW=forged \
@@ -1813,6 +1925,7 @@ source-root-selection-test:
 		GOROROBA_BUILD_ROOT_ANCHOR=forged \
 		GOROROBA_BUILDDIR_ANCHOR=forged \
 		GOROROBA_PREFIX_ANCHOR=forged \
+		GOROROBA_SYSCONFDIR_ANCHOR=forged \
 		GOROROBA_SOURCE_COMMIT_CAPTURED=forged \
 		GOROROBA_SOURCE_TREE_CAPTURED=forged \
 		GOROROBA_CONTROL_COMMIT_CAPTURED=forged >/dev/null; \
