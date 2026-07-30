@@ -6260,6 +6260,7 @@ r2vb_accrue_app_state_restore(struct r300_context *r300)
     r300_mark_atom_dirty(r300, &r300->scissor_state);
     r300_mark_atom_dirty(r300, &r300->sample_mask);
     r300_mark_atom_dirty(r300, &r300->viewport_state);
+    r300_mark_atom_dirty(r300, &r300->clip_state);
     r300_mark_atom_dirty(r300, &r300->dsa_state);
     r300_mark_atom_dirty(r300, &r300->rs_state);
     r300_mark_atom_dirty(r300, &r300->fs_rc_constant_state);

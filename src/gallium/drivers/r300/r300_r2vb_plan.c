@@ -304,7 +304,13 @@ r300_r2vb_constant_source_scan(nir_shader *producer,
                 }
                 if (intr->intrinsic == nir_intrinsic_load_push_constant ||
                     intr->intrinsic == nir_intrinsic_load_constant ||
-                    intr->intrinsic == nir_intrinsic_load_uniform)
+                    intr->intrinsic == nir_intrinsic_load_uniform ||
+                    intr->intrinsic ==
+                        nir_intrinsic_load_ubo_uniform_block_intel ||
+                    intr->intrinsic ==
+                        nir_intrinsic_load_global_constant_uniform_block_intel ||
+                    intr->intrinsic == nir_intrinsic_load_push_data_intel ||
+                    intr->intrinsic == nir_intrinsic_load_push_constant_zink)
                     return R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED;
                 if (intr->intrinsic != nir_intrinsic_load_ubo &&
                     intr->intrinsic != nir_intrinsic_load_ubo_vec4)

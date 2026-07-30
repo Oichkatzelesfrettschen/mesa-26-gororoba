@@ -736,6 +736,10 @@ enum constant_source_fixture {
    CONSTANT_SOURCE_FIXTURE_DYNAMIC_OFFSET,
    CONSTANT_SOURCE_FIXTURE_PUSH,
    CONSTANT_SOURCE_FIXTURE_CONSTANT,
+   CONSTANT_SOURCE_FIXTURE_UBO_UNIFORM_BLOCK_INTEL,
+   CONSTANT_SOURCE_FIXTURE_GLOBAL_CONSTANT_UNIFORM_BLOCK_INTEL,
+   CONSTANT_SOURCE_FIXTURE_PUSH_DATA_INTEL,
+   CONSTANT_SOURCE_FIXTURE_PUSH_CONSTANT_ZINK,
 };
 
 static nir_shader *
@@ -782,6 +786,22 @@ build_constant_source_fixture(enum constant_source_fixture fixture)
       nir_load_constant(&b, 4, 32, nir_imm_int(&b, 0),
                         .align_mul = 16, .range = 16);
       break;
+   case CONSTANT_SOURCE_FIXTURE_UBO_UNIFORM_BLOCK_INTEL:
+      nir_load_ubo_uniform_block_intel(
+         &b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+         .align_mul = 16, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_GLOBAL_CONSTANT_UNIFORM_BLOCK_INTEL:
+      nir_load_global_constant_uniform_block_intel(
+         &b, 4, 32, nir_imm_int64(&b, 0), .align_mul = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_PUSH_DATA_INTEL:
+      nir_load_push_data_intel(&b, 4, 32, nir_imm_int(&b, 0),
+                               .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_PUSH_CONSTANT_ZINK:
+      nir_load_push_constant_zink(&b, 4, 32, nir_imm_int(&b, 0));
+      break;
    }
 
    nir_validate_shader(b.shader, "R2VB constant-source fixture");
@@ -823,6 +843,18 @@ check_constant_source_contract(void)
       {CONSTANT_SOURCE_FIXTURE_CONSTANT,
        R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
        "constant source: constant-memory loads decline"},
+      {CONSTANT_SOURCE_FIXTURE_UBO_UNIFORM_BLOCK_INTEL,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: Intel uniform-block UBO loads decline"},
+      {CONSTANT_SOURCE_FIXTURE_GLOBAL_CONSTANT_UNIFORM_BLOCK_INTEL,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: Intel uniform-block global loads decline"},
+      {CONSTANT_SOURCE_FIXTURE_PUSH_DATA_INTEL,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: Intel push-data loads decline"},
+      {CONSTANT_SOURCE_FIXTURE_PUSH_CONSTANT_ZINK,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: Zink push-constant loads decline"},
    };
 
    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
