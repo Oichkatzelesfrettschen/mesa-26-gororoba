@@ -79,7 +79,7 @@ def require_mount_rejection(
     operation: str,
     expected_label: str,
 ) -> None:
-    mount_point.mkdir(parents=True)
+    mount_point.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["mount", "--bind", str(victim), str(mount_point)],
         check=True,
@@ -90,7 +90,7 @@ def require_mount_rejection(
     try:
         module.validate_layout(operation, values)
     except module.ControlError as error:
-        expected_diagnostic = f"refusing {expected_label} containing a mount point"
+        expected_diagnostic = f"refusing {expected_label} crossing a mount point"
         if expected_diagnostic not in str(error):
             fail(f"bind mount returned the wrong diagnostic: {error}")
     else:
@@ -144,6 +144,18 @@ def main() -> int:
         "install-prefix-build",
         "probe",
     )
+    clean_ancestor_values = layout_values(
+        control_root,
+        build_namespace,
+        "clean-ancestor-build",
+        "probe",
+    )
+    artifact_ancestor_values = layout_values(
+        control_root,
+        build_namespace,
+        "artifact-ancestor-build",
+        "probe",
+    )
     module.validate_layout("clean", clean_descendant_values)
     module.validate_layout("clean", clean_exact_values)
     module.validate_layout("install", install_builddir_values)
@@ -153,10 +165,14 @@ def main() -> int:
     clean_exact_builddir = clean_exact_values["builddir"]
     install_builddir = install_builddir_values["builddir"]
     install_prefix = install_prefix_values["prefix"]
+    clean_ancestor_build_root = clean_ancestor_values["build_root"]
+    artifact_ancestor_build_root = artifact_ancestor_values["build_root"]
     assert isinstance(clean_descendant_builddir, Path)
     assert isinstance(clean_exact_builddir, Path)
     assert isinstance(install_builddir, Path)
     assert isinstance(install_prefix, Path)
+    assert isinstance(clean_ancestor_build_root, Path)
+    assert isinstance(artifact_ancestor_build_root, Path)
     require_mount_rejection(
         module,
         clean_descendant_values,
@@ -189,9 +205,64 @@ def main() -> int:
         operation="install",
         expected_label="PREFIX",
     )
+    require_mount_rejection(
+        module,
+        clean_ancestor_values,
+        victim,
+        mount_point=clean_ancestor_build_root,
+        operation="clean",
+        expected_label="BUILDDIR",
+    )
+    require_mount_rejection(
+        module,
+        artifact_ancestor_values,
+        victim,
+        mount_point=artifact_ancestor_build_root,
+        operation="artifact",
+        expected_label="PREFIX",
+    )
+
+    control_prefix_values = {
+        "source_root": control_root,
+        "source_commit": "1" * 40,
+        "source_tree": "2" * 40,
+        "control_root": control_root,
+        "control_commit": "3" * 40,
+        "build_root": control_root / "build",
+        "builddir": control_root / "build" / "mount-boundary-probe",
+        "prefix": Path("/opt/local/mesa-26-gororoba"),
+    }
+    require_mount_rejection(
+        module,
+        control_prefix_values,
+        victim,
+        mount_point=Path("/opt/local"),
+        operation="artifact",
+        expected_label="PREFIX",
+    )
+
+    trusted_boundary = audit_root / "trusted-boundary"
+    trusted_boundary.mkdir()
+    trusted_victim = audit_root / "trusted-victim"
+    trusted_victim.mkdir()
+    subprocess.run(
+        ["mount", "--bind", str(trusted_victim), str(trusted_boundary)],
+        check=True,
+        shell=False,
+    )
+    module.owned_build_namespaces = lambda _repository_root: (trusted_boundary,)
+    module.validate_layout(
+        "build",
+        layout_values(
+            control_root,
+            trusted_boundary,
+            "boundary-mount-build",
+            "probe",
+        ),
+    )
     if not (victim / "sentinel").is_file():
         fail("bind-mount calibration changed the victim sentinel")
-    print("OK    mutation targets reject build and prefix bind mounts")
+    print("OK    mutation paths reject crossing build and prefix bind mounts")
     return 0
 
 

@@ -22,6 +22,7 @@ SCHEMA_VERSION = 3
 IDENTITY_FILENAME = ".gororoba-source-identity.json"
 ROOT_IDENTITY_FILENAME = ".gororoba-external-source-identity.json"
 SAFE_PATH_INPUT = re.compile(r"^[A-Za-z0-9_./:+@=~-]+$")
+SAFE_LEAF_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
 TRANSACTION_ID = re.compile(r"^[0-9a-f]{32}$")
 PROVISIONAL_STATE = "provisional"
 FINAL_STATE = "final"
@@ -50,6 +51,31 @@ def input_path(name: str) -> Path:
     if not SAFE_PATH_INPUT.fullmatch(str(resolved)):
         fail(f"{name} resolves to a path with unsupported characters")
     return resolved
+
+
+def input_identifier(name: str) -> str:
+    raw = os.environ.get(name, "")
+    if (
+        not raw
+        or raw in {".", ".."}
+        or SAFE_LEAF_IDENTIFIER.fullmatch(raw) is None
+    ):
+        fail(f"{name} contains an invalid leaf identifier")
+    return raw
+
+
+def input_enum(
+    name: str,
+    allowed_values: frozenset[str],
+) -> str:
+    raw = os.environ.get(name, "")
+    if raw not in allowed_values:
+        allowed_text = ", ".join(
+            "default" if value == "" else value
+            for value in sorted(allowed_values)
+        )
+        fail(f"{name} must be one of: {allowed_text}")
+    return raw
 
 
 def run_git_process(
@@ -182,6 +208,8 @@ def require_clean_external_source(source_root: Path) -> None:
 
 
 def resolved_inputs() -> dict[str, Path | str]:
+    input_identifier("GOROROBA_PROFILE_INPUT")
+    input_identifier("GOROROBA_HOSTENV_INPUT")
     source_root = input_path("GOROROBA_TOPSRC_INPUT")
     source_commit, source_tree = source_identity(source_root)
     build_root = input_path("GOROROBA_BUILD_ROOT_INPUT")
@@ -260,6 +288,29 @@ def validate_owned_namespace(namespace: Path, user_id: int) -> Path:
     return lexical_path
 
 
+def create_test_directory(
+    label: str,
+    *,
+    parent: Path = Path("/var/tmp"),
+    user_id: int | None = None,
+) -> Path:
+    if SAFE_LEAF_IDENTIFIER.fullmatch(label) is None:
+        fail(f"invalid test directory label: {label}")
+    selected_user_id = os.getuid() if user_id is None else user_id
+    namespace = parent / f"mesa-26-gororoba-{selected_user_id}"
+    try:
+        namespace.mkdir(mode=0o700, exist_ok=True)
+    except OSError as error:
+        fail(f"cannot create test namespace {namespace}: {error}")
+    validate_owned_namespace(namespace, selected_user_id)
+    try:
+        directory = Path(tempfile.mkdtemp(prefix=f"{label}.", dir=namespace))
+    except OSError as error:
+        fail(f"cannot create test directory in {namespace}: {error}")
+    validate_owned_namespace(directory, selected_user_id)
+    return directory
+
+
 def owned_build_namespaces(repository_root: Path) -> tuple[Path, ...]:
     user_id = os.getuid()
     account_home = trusted_account_home(user_id)
@@ -275,11 +326,26 @@ def ensure_selected_build_namespace(
     values: dict[str, Path | str],
 ) -> None:
     repository_root = values["control_root"]
+    assert isinstance(repository_root, Path)
+    namespace = selected_build_boundary(values)
+    if namespace == repository_root:
+        return
+    try:
+        namespace.mkdir(parents=True, mode=0o700, exist_ok=True)
+    except OSError as error:
+        fail(f"cannot create build namespace {namespace}: {error}")
+    validate_owned_namespace(namespace, os.getuid())
+
+
+def selected_build_boundary(
+    values: dict[str, Path | str],
+) -> Path:
+    repository_root = values["control_root"]
     build_root = values["build_root"]
     assert isinstance(repository_root, Path)
     assert isinstance(build_root, Path)
     if build_root == repository_root / "build":
-        return
+        return repository_root
     matching_namespaces = tuple(
         validate_owned_namespace(namespace, os.getuid())
         for namespace in owned_build_namespaces(repository_root)
@@ -287,12 +353,7 @@ def ensure_selected_build_namespace(
     )
     if len(matching_namespaces) != 1:
         fail(f"external BUILD_ROOT has no unique namespace: {build_root}")
-    namespace = matching_namespaces[0]
-    try:
-        namespace.mkdir(parents=True, mode=0o700, exist_ok=True)
-    except OSError as error:
-        fail(f"cannot create build namespace {namespace}: {error}")
-    validate_owned_namespace(namespace, os.getuid())
+    return matching_namespaces[0]
 
 
 def containing_git_worktree(path: Path) -> Path | None:
@@ -361,15 +422,24 @@ def current_mount_points(
     return parse_mountinfo(mountinfo)
 
 
-def contained_mount_point(
-    path: Path,
+def crossing_mount_point(
+    target: Path,
+    trusted_boundary: Path,
     mount_points: tuple[Path, ...] | None = None,
 ) -> Path | None:
+    if not is_strict_descendant(target, trusted_boundary):
+        fail(
+            "mutation target is outside its trusted boundary: "
+            f"{target} ({trusted_boundary})"
+        )
     selected_mount_points = (
         current_mount_points() if mount_points is None else mount_points
     )
     for mount_point in selected_mount_points:
-        if is_within_or_equal(mount_point, path):
+        if is_strict_descendant(mount_point, trusted_boundary) and (
+            is_within_or_equal(mount_point, target)
+            or is_within_or_equal(target, mount_point)
+        ):
             return mount_point
     return None
 
@@ -490,10 +560,17 @@ def reject_git_worktree_target(
             )
 
 
-def reject_mount_target(path: Path, label: str) -> None:
-    mount_point = contained_mount_point(path)
+def reject_mount_target(
+    path: Path,
+    label: str,
+    trusted_boundary: Path,
+) -> None:
+    mount_point = crossing_mount_point(path, trusted_boundary)
     if mount_point is not None:
-        fail(f"refusing {label} containing a mount point: {mount_point}")
+        fail(
+            f"refusing {label} crossing a mount point below "
+            f"{trusted_boundary}: {mount_point}"
+        )
 
 
 def reject_protected_path(path: Path, label: str) -> None:
@@ -550,6 +627,21 @@ def validate_prefix(values: dict[str, Path | str]) -> None:
         )
 
 
+def selected_prefix_boundary(
+    values: dict[str, Path | str],
+    build_boundary: Path,
+) -> Path:
+    prefix = values["prefix"]
+    build_root = values["build_root"]
+    assert isinstance(prefix, Path)
+    assert isinstance(build_root, Path)
+    if prefix.parent == build_root:
+        return build_boundary
+    if is_strict_descendant(prefix, Path("/opt")):
+        return Path("/opt")
+    fail(f"PREFIX has no trusted mutation boundary: {prefix}")
+
+
 def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
     source_root = values["source_root"]
     build_root = values["build_root"]
@@ -565,22 +657,7 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
     if build_root in {home, source_root, repository_root}:
         fail(f"refusing unsafe BUILD_ROOT: {build_root}")
     repository_build_root = repository_root / "build"
-    if build_root != repository_build_root:
-        matching_namespaces = tuple(
-            namespace
-            for namespace in owned_build_namespaces(repository_root)
-            if is_strict_descendant(build_root, namespace)
-        )
-        if len(matching_namespaces) != 1:
-            fail(
-                "BUILD_ROOT must be the repository build root or a strict "
-                "descendant of a Mesa build namespace: "
-                f"{build_root}"
-            )
-        validate_owned_namespace(
-            matching_namespaces[0],
-            os.getuid(),
-        )
+    build_boundary = selected_build_boundary(values)
     repository_boundary = containing_git_worktree(build_root)
     if repository_boundary is not None and build_root != repository_build_root:
         fail(f"refusing BUILD_ROOT inside a Git worktree: {repository_boundary}")
@@ -596,7 +673,7 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
     }
     destructive_builddir = operation in {"clean", "distclean"}
     if builddir_mutation:
-        reject_mount_target(builddir, "BUILDDIR")
+        reject_mount_target(builddir, "BUILDDIR", build_boundary)
     reject_git_worktree_target(
         builddir,
         "BUILDDIR",
@@ -631,7 +708,8 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
         prefix = values["prefix"]
         assert isinstance(prefix, Path)
         if operation in {"artifact", "distclean", "install"}:
-            reject_mount_target(prefix, "PREFIX")
+            prefix_boundary = selected_prefix_boundary(values, build_boundary)
+            reject_mount_target(prefix, "PREFIX", prefix_boundary)
         reject_git_worktree_target(
             prefix,
             "PREFIX",
@@ -653,7 +731,7 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
                 "clean-all only removes the repository build root: "
                 f"{repository_build_root}"
             )
-        reject_mount_target(build_root, "BUILD_ROOT")
+        reject_mount_target(build_root, "BUILD_ROOT", repository_root)
         reject_git_worktree_target(
             build_root,
             "BUILD_ROOT",
@@ -977,6 +1055,13 @@ def verify_delete_identity(
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("validate-selectors")
+    test_directory_parser = subparsers.add_parser("create-test-directory")
+    test_directory_parser.add_argument(
+        "--label",
+        choices=("build-jobs", "build-lease", "source-root"),
+        required=True,
+    )
     subparsers.add_parser("resolve-make")
     subparsers.add_parser("check-source")
 
@@ -1019,6 +1104,29 @@ def parse_arguments() -> argparse.Namespace:
 
 def main() -> int:
     arguments = parse_arguments()
+    if arguments.command == "validate-selectors":
+        mode = input_enum(
+            "GOROROBA_MODE_INPUT",
+            frozenset(("", "stable")),
+        )
+        print(
+            input_identifier("GOROROBA_PROFILE_INPUT"),
+            input_identifier("GOROROBA_HOSTENV_INPUT"),
+            input_identifier("GOROROBA_INSTALL_NAMESPACE_INPUT"),
+            mode or "default",
+            input_enum(
+                "GOROROBA_COMPILER_CHAIN_INPUT",
+                frozenset(("ccache", "direct", "distcc")),
+            ),
+            input_enum(
+                "GOROROBA_COMPILER_FAMILY_INPUT",
+                frozenset(("gnu", "llvm")),
+            ),
+        )
+        return 0
+    if arguments.command == "create-test-directory":
+        print(create_test_directory(arguments.label))
+        return 0
     values = resolved_inputs()
 
     if arguments.command == "resolve-make":

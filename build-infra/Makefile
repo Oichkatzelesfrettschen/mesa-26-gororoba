@@ -26,21 +26,23 @@
 #   build-infra/configs/*.meson              -- canonical option sets
 #   build-infra/env/*.env                    -- per-host toolchain env
 
-SHELL := /bin/bash
+override SHELL := /bin/bash
 
-MAKE_VERSION_COMPONENTS := $(subst ., ,$(MAKE_VERSION))
-MAKE_VERSION_MAJOR := $(word 1,$(MAKE_VERSION_COMPONENTS))
-MAKE_VERSION_MINOR := $(word 2,$(MAKE_VERSION_COMPONENTS))
-MAKE_VERSION_SUPPORTED := $(shell \
-	major="$(MAKE_VERSION_MAJOR)"; minor="$(MAKE_VERSION_MINOR)"; \
-	if printf '%s\n' "$$major:$$minor" | \
-	   grep -Eq '^[0-9]+:[0-9]+$$' && \
-	   { [ "$$major" -gt 4 ] || \
-	     { [ "$$major" -eq 4 ] && [ "$$minor" -ge 2 ]; }; }; then \
-		printf '%s\n' yes; \
-	fi)
-ifneq ($(MAKE_VERSION_SUPPORTED),yes)
-$(error GNU Make 4.2 or newer is required; found $(MAKE_VERSION))
+override BUILD_INFRA_MAKEFILE := $(realpath $(lastword $(MAKEFILE_LIST)))
+override BUILD_INFRA_ROOT := $(realpath $(dir $(BUILD_INFRA_MAKEFILE)))
+ifneq ($(BUILD_INFRA_MAKEFILE),$(BUILD_INFRA_ROOT)/Makefile)
+$(error build-infra Makefile identity is invalid: $(BUILD_INFRA_MAKEFILE))
+endif
+override CURDIR := $(BUILD_INFRA_ROOT)
+override COMMAND_VARIABLE_WITH_DOLLAR := $(firstword \
+	$(foreach variable,$(.VARIABLES),\
+		$(if \
+			$(and \
+				$(filter command line,$(origin $(variable))),\
+				$(findstring $$,$(value $(variable)))),\
+			$(variable))))
+ifneq ($(COMMAND_VARIABLE_WITH_DOLLAR),)
+$(error command-line variable $(COMMAND_VARIABLE_WITH_DOLLAR) contains executable dollar syntax)
 endif
 
 # --- configurable parameters -------------------------------------------------
@@ -55,6 +57,59 @@ PROFILE  ?= 3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
 # host env unless the caller passes a different HOSTENV explicitly.
 HOSTENV  ?= vostro1000-x86-64-v1-clang22-ccache-distcc
 INSTALL_NAMESPACE ?= mesa
+MODE ?=
+COMPILER_CHAIN ?= ccache
+COMPILER_FAMILY ?= llvm
+override make_shell_quote = '$(subst ','"'"',$(1))'
+override GOROROBA_PROFILE_RAW := $(value PROFILE)
+override GOROROBA_HOSTENV_RAW := $(value HOSTENV)
+override GOROROBA_INSTALL_NAMESPACE_RAW := $(value INSTALL_NAMESPACE)
+override GOROROBA_MODE_RAW := $(value MODE)
+override GOROROBA_COMPILER_CHAIN_RAW := $(value COMPILER_CHAIN)
+override GOROROBA_COMPILER_FAMILY_RAW := $(value COMPILER_FAMILY)
+override SELECTOR_FIELDS := $(shell \
+	GOROROBA_PROFILE_INPUT=$(call make_shell_quote,$(value GOROROBA_PROFILE_RAW)) \
+	GOROROBA_HOSTENV_INPUT=$(call make_shell_quote,$(value GOROROBA_HOSTENV_RAW)) \
+	GOROROBA_INSTALL_NAMESPACE_INPUT=$(call make_shell_quote,$(value GOROROBA_INSTALL_NAMESPACE_RAW)) \
+	GOROROBA_MODE_INPUT=$(call make_shell_quote,$(value GOROROBA_MODE_RAW)) \
+	GOROROBA_COMPILER_CHAIN_INPUT=$(call make_shell_quote,$(value GOROROBA_COMPILER_CHAIN_RAW)) \
+	GOROROBA_COMPILER_FAMILY_INPUT=$(call make_shell_quote,$(value GOROROBA_COMPILER_FAMILY_RAW)) \
+	python3 $(call make_shell_quote,$(BUILD_INFRA_ROOT)/scripts/source_root_control.py) \
+	validate-selectors)
+override SELECTOR_RESOLVE_STATUS := $(.SHELLSTATUS)
+ifneq ($(SELECTOR_RESOLVE_STATUS),0)
+$(error build selector resolution failed)
+endif
+ifneq ($(words $(SELECTOR_FIELDS)),6)
+$(error build selector control returned an invalid field set)
+endif
+override PROFILE := $(word 1,$(SELECTOR_FIELDS))
+override HOSTENV := $(word 2,$(SELECTOR_FIELDS))
+override INSTALL_NAMESPACE := $(word 3,$(SELECTOR_FIELDS))
+override MODE_SELECTOR := $(word 4,$(SELECTOR_FIELDS))
+ifeq ($(MODE_SELECTOR),default)
+override MODE :=
+else
+override MODE := $(MODE_SELECTOR)
+endif
+override COMPILER_CHAIN := $(word 5,$(SELECTOR_FIELDS))
+override COMPILER_FAMILY := $(word 6,$(SELECTOR_FIELDS))
+
+override MAKE_VERSION_COMPONENTS := $(subst ., ,$(MAKE_VERSION))
+override MAKE_VERSION_MAJOR := $(word 1,$(MAKE_VERSION_COMPONENTS))
+override MAKE_VERSION_MINOR := $(word 2,$(MAKE_VERSION_COMPONENTS))
+override MAKE_VERSION_SUPPORTED := $(shell \
+	major="$(MAKE_VERSION_MAJOR)"; minor="$(MAKE_VERSION_MINOR)"; \
+	if printf '%s\n' "$$major:$$minor" | \
+	   grep -Eq '^[0-9]+:[0-9]+$$' && \
+	   { [ "$$major" -gt 4 ] || \
+	     { [ "$$major" -eq 4 ] && [ "$$minor" -ge 2 ]; }; }; then \
+		printf '%s\n' yes; \
+	fi)
+ifneq ($(MAKE_VERSION_SUPPORTED),yes)
+$(error GNU Make 4.2 or newer is required; found $(MAKE_VERSION))
+endif
+
 override CONTROL_ROOT := $(abspath $(CURDIR)/..)
 ifeq ($(origin TOPSRC),undefined)
 TOPSRC := $(CONTROL_ROOT)
@@ -88,13 +143,14 @@ override GOROROBA_BUILD_ROOT_INPUT := $(value BUILD_ROOT)
 override GOROROBA_BUILDDIR_INPUT := $(value BUILDDIR)
 override GOROROBA_PREFIX_INPUT := $(value PREFIX)
 override GOROROBA_PROFILE_INPUT := $(value PROFILE)
+override GOROROBA_HOSTENV_INPUT := $(value HOSTENV)
 export GOROROBA_TOPSRC_INPUT
 export GOROROBA_BUILD_ROOT_INPUT
 export GOROROBA_BUILDDIR_INPUT
 export GOROROBA_PREFIX_INPUT
 export GOROROBA_PROFILE_INPUT
+export GOROROBA_HOSTENV_INPUT
 
-override make_shell_quote = '$(subst ','"'"',$(1))'
 override SOURCE_ROOT_CONTROL := $(CURDIR)/scripts/source_root_control.py
 override MOUNT_BOUNDARY_CALIBRATION := $(CURDIR)/tests/mount_boundary_calibration.py
 override SOURCE_ROOT_FIELDS := $(shell \
@@ -103,6 +159,7 @@ override SOURCE_ROOT_FIELDS := $(shell \
 	GOROROBA_BUILDDIR_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILDDIR_INPUT)) \
 	GOROROBA_PREFIX_INPUT=$(call make_shell_quote,$(value GOROROBA_PREFIX_INPUT)) \
 	GOROROBA_PROFILE_INPUT=$(call make_shell_quote,$(value GOROROBA_PROFILE_INPUT)) \
+	GOROROBA_HOSTENV_INPUT=$(call make_shell_quote,$(value GOROROBA_HOSTENV_INPUT)) \
 	python3 $(SOURCE_ROOT_CONTROL) resolve-make)
 override SOURCE_ROOT_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(SOURCE_ROOT_RESOLVE_STATUS),0)
@@ -149,11 +206,11 @@ override GOROROBA_PREFIX_INPUT := $(PREFIX)
 # $(call PAIR_PROFILE,LIST), $(call PAIR_HOSTENV,LIST), etc.  Adding a
 # new variant means defining one new PAIR_<NAME> list, not five
 # parallel _PROFILE/_HOSTENV/_BUILDDIR/_PREFIX/_NAMESPACE variables.
-PAIR_PROFILE   = $(word 1,$1)
-PAIR_HOSTENV   = $(word 2,$1)
-PAIR_BUILDDIR  = $(word 3,$1)
-PAIR_PREFIX    = $(word 4,$1)
-PAIR_NAMESPACE = $(word 5,$1)
+override PAIR_PROFILE   = $(word 1,$1)
+override PAIR_HOSTENV   = $(word 2,$1)
+override PAIR_BUILDDIR  = $(word 3,$1)
+override PAIR_PREFIX    = $(word 4,$1)
+override PAIR_NAMESPACE = $(word 5,$1)
 
 JOBS     ?= $(shell nproc)
 DISTCC_JOBS ?= 6
@@ -224,18 +281,15 @@ endef
 # release r300 sibling and the x130e terakan lanes) sits in configs/alternates/.
 # Resolve PROFILE against both directories so a bare basename still names a
 # profile and the per-profile rebuild-/install- targets need no path prefix.
-CONFIG   := $(firstword $(wildcard $(CURDIR)/configs/$(PROFILE).meson $(CURDIR)/configs/alternates/$(PROFILE).meson))
-ENVFILE  := $(CURDIR)/env/$(HOSTENV).env
-TOOLCHAIN_NATIVE := $(BUILDDIR)/gororoba-toolchain.meson
-COMPILER_CHAIN ?= ccache
+override CONFIG := $(firstword $(wildcard $(CURDIR)/configs/$(PROFILE).meson $(CURDIR)/configs/alternates/$(PROFILE).meson))
+override ENVFILE := $(CURDIR)/env/$(HOSTENV).env
+override TOOLCHAIN_NATIVE := $(BUILDDIR)/gororoba-toolchain.meson
 
 # Compiler family the toolchain overlay resolves.  llvm selects a coherent
 # clang/clang++/llvm-config major and the matching LLVM binutils; gnu selects
 # gcc/g++ and leaves Meson on the GNU binutils it finds.  The gnu lane needs a
 # profile that declares llvm='disabled', because gcc supplies no llvm-config and
 # a mismatched one would configure Mesa against a different toolchain's LLVM.
-COMPILER_FAMILY ?= llvm
-
 ifeq (,$(CONFIG))
 $(error unknown PROFILE='$(PROFILE)'; see `make list`)
 endif
@@ -251,19 +305,19 @@ endif
 # native file does not re-apply.  auto on x86_64 pulls lavapipe while r300
 # profiles keep llvm=disabled, so configure aborts.  CLI -D flags override
 # that reset and keep the profile's declared surface.
-PROFILE_DFLAGS_SCRIPT := $(CURDIR)/scripts/meson_profile_dflags.py
+override PROFILE_DFLAGS_SCRIPT := $(CURDIR)/scripts/meson_profile_dflags.py
 # -Dwerror=true is always on the CLI so a profile that drops the option, or a
 # coredata reset of werror, cannot re-open a warnings-are-nonfatal configure.
 # Profile dflags still re-assert every other project option (and werror again).
-SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) --reconfigure -Dwerror=true
+override SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) --reconfigure -Dwerror=true
 # MODE=stable pins the same safe -O2 release level through a command-line
 # override without enabling LTO.  Default (unset / clean / rebuild) keeps the
 # config level.
 ifeq ($(MODE),stable)
-SETUP_ARGS += -Doptimization=2 -Db_lto=false
+override SETUP_ARGS += -Doptimization=2 -Db_lto=false
 endif
-MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER_PORT INCLUDE_SERVER_ARGS INCLUDE_SERVER_PID
-LOCKED_TOOL_ENV := \
+override MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER_PORT INCLUDE_SERVER_ARGS INCLUDE_SERVER_PID
+override LOCKED_TOOL_ENV := \
     PATH="$$PATH" \
     CCACHE_BASEDIR="$${CCACHE_BASEDIR:-}" \
     CCACHE_COMPILERCHECK="$${CCACHE_COMPILERCHECK:-}" \
@@ -599,7 +653,7 @@ configure: source-root-check vostro-prefix-check
 	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix); \
 	$(PREPARE_SOURCE_IDENTITY); \
 	mkdir -p "$(dir $(BUILDDIR))"; \
-	test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	version_major() { \
 		case "$$1" in \
 			clang|clang++) "$$1" --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p;q' ;; \
@@ -734,9 +788,9 @@ configure: source-root-check vostro-prefix-check
 		[ -z "$$llvm_objcopy_cmd" ] || printf "objcopy = '%s'\n" "$$llvm_objcopy_cmd"; \
 	} > "$(TOOLCHAIN_NATIVE)"; \
 	echo "wrote Meson toolchain overlay: $(TOOLCHAIN_NATIVE) ($$toolchain_label, $(COMPILER_CHAIN))"; \
-	test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-	profile_dflags=$$(python3 $(PROFILE_DFLAGS_SCRIPT) $(CONFIG)) || { \
+	profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)") || { \
 		echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	echo "profile -D flags: $$profile_dflags"; \
 	$(MESON) setup $(SETUP_ARGS) $$profile_dflags \
@@ -841,7 +895,7 @@ install: source-root-check vostro-prefix-check
 	    python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-	    profile_dflags=$$(python3 $(PROFILE_DFLAGS_SCRIPT) $(CONFIG)) || { \
+	    profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)") || { \
 	      echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix="$(PREFIX)" \
 	      --sysconfdir="$(SYSCONFDIR)" "$(BUILDDIR)" "$(TOPSRC)" || { \
@@ -892,13 +946,8 @@ test: source-root-check
 	    $(MESON) test -C "$(BUILDDIR)" $(MESON_TEST_ARGS)
 
 build-lease-test:
-	@test_namespace="/var/tmp/mesa-26-gororoba-$$(id -u)"; \
-	umask 077; \
-	mkdir -p "$$test_namespace"; \
-	test -O "$$test_namespace" && test ! -L "$$test_namespace" || { \
-		echo "FAIL  unsafe test build namespace: $$test_namespace" >&2; exit 1; \
-	}; \
-	tmpdir="$$(mktemp -d "$$test_namespace/build-lease.XXXXXX")"; \
+	@tmpdir="$$(python3 "$(SOURCE_ROOT_CONTROL)" \
+		create-test-directory --label=build-lease)"; \
 	canonical_builddir="$(TOPSRC)/build/.build-lease-test-$$$$"; \
 	trap 'rm -rf "$$tmpdir" "$$canonical_builddir"' EXIT HUP INT TERM; \
 	lock="$$tmpdir/mesa-build.lock"; \
@@ -1016,13 +1065,8 @@ build-lease-test:
 
 source-root-selection-test:
 	@set -euo pipefail; \
-	test_namespace="/var/tmp/mesa-26-gororoba-$$(id -u)"; \
-	umask 077; \
-	mkdir -p "$$test_namespace"; \
-	test -O "$$test_namespace" && test ! -L "$$test_namespace" || { \
-		echo "FAIL  unsafe test build namespace: $$test_namespace" >&2; exit 1; \
-	}; \
-	tmpdir="$$(mktemp -d "$$test_namespace/source-root.XXXXXX")"; \
+	tmpdir="$$(python3 "$(SOURCE_ROOT_CONTROL)" \
+		create-test-directory --label=source-root)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	if legacy_make_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		MAKE_VERSION=4.1 source-root-check 2>&1 )"; then \
@@ -1070,6 +1114,7 @@ source-root-selection-test:
 	control_commit="$$(git -C "$(CONTROL_ROOT)" rev-parse HEAD)"; \
 	resolver_override_output="$$( $(MAKE) --no-print-directory \
 		-C "$(CURDIR)" source-root-check TOPSRC="$$source_root" \
+		CURDIR=/tmp BUILD_INFRA_ROOT=/tmp BUILD_INFRA_MAKEFILE=/tmp \
 		CONTROL_ROOT=/ SOURCE_ROOT_CONTROL=/bin/false \
 		MOUNT_BOUNDARY_CALIBRATION=/bin/false \
 		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m' \
@@ -1078,6 +1123,14 @@ source-root-selection-test:
 		GOROROBA_TOPSRC_INPUT=/ GOROROBA_BUILD_ROOT_INPUT=/ \
 		GOROROBA_BUILDDIR_INPUT=/ GOROROBA_PREFIX_INPUT=/ \
 		GOROROBA_PROFILE_INPUT=forged \
+		GOROROBA_HOSTENV_INPUT=forged \
+		GOROROBA_PROFILE_RAW=forged GOROROBA_HOSTENV_RAW=forged \
+		GOROROBA_INSTALL_NAMESPACE_RAW=forged GOROROBA_MODE_RAW=forged \
+		GOROROBA_COMPILER_CHAIN_RAW=forged \
+		GOROROBA_COMPILER_FAMILY_RAW=forged \
+		MODE_SELECTOR=forged \
+		SELECTOR_FIELDS='forged forged forged forged forged forged' \
+		SELECTOR_RESOLVE_STATUS=1 COMMAND_VARIABLE_WITH_DOLLAR=forged \
 		GOROROBA_CONTROL_ROOT_INPUT=/ \
 		GOROROBA_SOURCE_ROOT_ANCHOR=forged \
 		GOROROBA_CONTROL_ROOT_ANCHOR=forged \
@@ -1105,6 +1158,46 @@ source-root-selection-test:
 			}; \
 	done; \
 	echo "OK    command-line variables cannot forge resolver-owned inputs"; \
+	selector_marker="$$tmpdir/selector-executed"; \
+	make_selector_input='$$(shell touch '"$$selector_marker"')'; \
+	for selector_name in PROFILE HOSTENV INSTALL_NAMESPACE MODE \
+		COMPILER_CHAIN COMPILER_FAMILY; do \
+		if selector_output="$$( $(MAKE) --no-print-directory \
+			-C "$(CURDIR)" help \
+			"$$selector_name=$$make_selector_input" 2>&1 )"; then \
+			echo "FAIL  $$selector_name accepted a Make function" >&2; \
+			exit 1; \
+		fi; \
+		test ! -e "$$selector_marker" || { \
+			echo "FAIL  $$selector_name executed a Make function" >&2; \
+			exit 1; \
+		}; \
+		printf '%s\n' "$$selector_output" | \
+			grep -F "contains executable dollar syntax" >/dev/null || { \
+				echo "FAIL  $$selector_name returned the wrong diagnostic" >&2; \
+				printf '%s\n' "$$selector_output" >&2; exit 1; \
+			}; \
+	done; \
+	hostenv_marker="$$tmpdir/hostenv-injected"; \
+	hostenv_injection='missing; touch '"$$hostenv_marker"'; #'; \
+	if hostenv_output="$$( $(MAKE) --no-print-directory \
+		-C "$(CURDIR)" configure \
+		BUILD_ROOT="$$tmpdir/selector-build" \
+		BUILDDIR="$$tmpdir/selector-build/probe" \
+		PREFIX="$$tmpdir/selector-build/prefix" \
+		HOSTENV="$$hostenv_injection" MESON=true 2>&1 )"; then \
+		echo "FAIL  HOSTENV accepted shell metacharacters" >&2; \
+		exit 1; \
+	fi; \
+	test ! -e "$$hostenv_marker" || { \
+		echo "FAIL  HOSTENV executed shell metacharacters" >&2; exit 1; \
+	}; \
+	printf '%s\n' "$$hostenv_output" | \
+		grep -F "contains an invalid leaf identifier" >/dev/null || { \
+			echo "FAIL  HOSTENV metacharacters returned the wrong diagnostic" >&2; \
+			printf '%s\n' "$$hostenv_output" >&2; exit 1; \
+		}; \
+	echo "OK    profile and host selectors reject executable syntax"; \
 	nested_root="$$source_root/nested"; \
 	mkdir -p "$$nested_root"; \
 	touch "$$nested_root/meson.build" "$$nested_root/meson.options"; \
@@ -1316,18 +1409,34 @@ source-root-selection-test:
 	if command -v unshare >/dev/null 2>&1 && \
 		command -v mount >/dev/null 2>&1 && \
 		unshare --user --map-root-user --mount true >/dev/null 2>&1; then \
+		if [ -e /opt/local ]; then \
+			opt_local_before="present:$$(stat -c '%d:%i:%f:%u:%g' /opt/local)"; \
+		else \
+			opt_local_before=absent; \
+		fi; \
 		mount_boundary_output="$$( \
 			GOROROBA_MOUNT_BOUNDARY_CALIBRATION=1 \
 			unshare --user --map-root-user --mount bash -c '\
 				set -euo pipefail; \
 				mount --make-rprivate /; \
 				mount -t tmpfs -o mode=0700 tmpfs /tmp; \
+				mount -t tmpfs -o mode=0755 tmpfs /opt; \
+				mkdir -p /opt/local; \
 				exec python3 "$$1" --control-root "$$2"' \
 				_ "$(MOUNT_BOUNDARY_CALIBRATION)" "$(CONTROL_ROOT)" \
 				2>&1 \
 		)" || { \
 			echo "FAIL  private mount-boundary calibration failed" >&2; \
 			printf '%s\n' "$$mount_boundary_output" >&2; exit 1; \
+		}; \
+		if [ -e /opt/local ]; then \
+			opt_local_after="present:$$(stat -c '%d:%i:%f:%u:%g' /opt/local)"; \
+		else \
+			opt_local_after=absent; \
+		fi; \
+		test "$$opt_local_before" = "$$opt_local_after" || { \
+			echo "FAIL  private mount calibration changed host /opt/local" >&2; \
+			exit 1; \
 		}; \
 		printf '%s\n' "$$mount_boundary_output"; \
 	else \
@@ -1628,11 +1737,36 @@ source-root-selection-test:
 	identity_build_root="$$tmpdir/identity-build"; \
 	identity_builddir="$$identity_build_root/probe"; \
 	identity_prefix="$$identity_build_root/prefix"; \
+	internal_path_marker="$$tmpdir/internal-path-executed"; \
+	forged_envfile="$$tmpdir/forged.env"; \
+	forged_toolchain="$$tmpdir/outside/forged-toolchain.meson"; \
+	mkdir -p "$$(dirname "$$forged_toolchain")"; \
+	printf 'touch %s\n' "$$internal_path_marker" > "$$forged_envfile"; \
+	forged_setup_args='; touch '"$$internal_path_marker"'; #'; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
-		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true \
+		CONFIG=/bin/false ENVFILE="$$forged_envfile" \
+		PROFILE_DFLAGS_SCRIPT=/bin/false \
+		TOOLCHAIN_NATIVE="$$forged_toolchain" \
+		SETUP_ARGS="$$forged_setup_args" SHELL=/bin/false \
+		MESON_SETUP_LOCAL_UNSET="x; touch $$internal_path_marker; #" \
+		>/dev/null; \
+	test ! -e "$$internal_path_marker" || { \
+		echo "FAIL  configure executed a forged internal selector" >&2; \
+		exit 1; \
+	}; \
+	test ! -e "$$forged_toolchain" || { \
+		echo "FAIL  configure wrote a forged toolchain path" >&2; \
+		exit 1; \
+	}; \
+	test -f "$$identity_builddir/gororoba-toolchain.meson" || { \
+		echo "FAIL  configure omitted the selected build toolchain" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    derived build controls override command-line forgeries"; \
 	test -f "$$identity_builddir/.gororoba-source-identity.json" || { \
 		echo "FAIL  configure omitted the external source identity" >&2; \
 		exit 1; \
@@ -1645,19 +1779,34 @@ source-root-selection-test:
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
-		COMPILER_CHAIN=direct NINJA=true >/dev/null; \
+		COMPILER_CHAIN=direct NINJA=true SHELL=/bin/false \
+		LOCKED_TOOL_ENV="; touch $$internal_path_marker; #" >/dev/null; \
+	test ! -e "$$internal_path_marker" || { \
+		echo "FAIL  build executed a forged locked environment" >&2; \
+		exit 1; \
+	}; \
 	echo "OK    external build verifies the configure-time identity"; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" build \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct NINJA=true \
+		CURDIR=/tmp BUILD_INFRA_ROOT=/tmp BUILD_INFRA_MAKEFILE=/tmp \
 		CONTROL_ROOT=/ SOURCE_ROOT_CONTROL=/bin/false \
 		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m' \
 		SOURCE_ROOT_RESOLVE_STATUS=1 SOURCE_COMMIT=forged \
 		SOURCE_TREE=forged CONTROL_COMMIT=forged \
 		GOROROBA_TOPSRC_INPUT=/ GOROROBA_BUILD_ROOT_INPUT=/ \
 		GOROROBA_BUILDDIR_INPUT=/ GOROROBA_PREFIX_INPUT=/ \
+		GOROROBA_PROFILE_INPUT=forged \
+		GOROROBA_HOSTENV_INPUT=forged \
+		GOROROBA_PROFILE_RAW=forged GOROROBA_HOSTENV_RAW=forged \
+		GOROROBA_INSTALL_NAMESPACE_RAW=forged GOROROBA_MODE_RAW=forged \
+		GOROROBA_COMPILER_CHAIN_RAW=forged \
+		GOROROBA_COMPILER_FAMILY_RAW=forged \
+		MODE_SELECTOR=forged \
+		SELECTOR_FIELDS='forged forged forged forged forged forged' \
+		SELECTOR_RESOLVE_STATUS=1 COMMAND_VARIABLE_WITH_DOLLAR=forged \
 		GOROROBA_CONTROL_ROOT_INPUT=/ \
 		GOROROBA_SOURCE_ROOT_ANCHOR=forged \
 		GOROROBA_CONTROL_ROOT_ANCHOR=forged \
@@ -2214,13 +2363,8 @@ source-root-selection-test:
 	echo "OK    external TOPSRC rejects dirty source state"
 
 build-job-policy-test:
-	@test_namespace="/var/tmp/mesa-26-gororoba-$$(id -u)"; \
-	umask 077; \
-	mkdir -p "$$test_namespace"; \
-	test -O "$$test_namespace" && test ! -L "$$test_namespace" || { \
-		echo "FAIL  unsafe test build namespace: $$test_namespace" >&2; exit 1; \
-	}; \
-	tmpdir="$$(mktemp -d "$$test_namespace/build-jobs.XXXXXX")"; \
+	@tmpdir="$$(python3 "$(SOURCE_ROOT_CONTROL)" \
+		create-test-directory --label=build-jobs)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	mkdir -p "$$tmpdir/build"; \
 	local_jobs="$$(nproc)"; \

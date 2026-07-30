@@ -22,6 +22,78 @@ source_root_control = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(source_root_control)
 
 
+@pytest.mark.parametrize(
+    "identifier",
+    (
+        "",
+        ".",
+        "..",
+        "bad/name",
+        "bad value",
+        "bad;value",
+        "bad'value",
+        'bad"value',
+        "$(shell touch marker)",
+        "$$(touch marker)",
+        "bad\nvalue",
+    ),
+)
+def test_input_identifier_rejects_non_leaf_values(
+    identifier: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOROROBA_TEST_IDENTIFIER", identifier)
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.input_identifier("GOROROBA_TEST_IDENTIFIER")
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    (
+        "4_r300_full_release_x86_64v1-clang22-distcc-cache",
+        "vostro1000-x86-64-v1-clang22-ccache-distcc",
+        "profile.v1+audit",
+    ),
+)
+def test_input_identifier_accepts_mechanism_leaf_values(
+    identifier: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOROROBA_TEST_IDENTIFIER", identifier)
+    assert (
+        source_root_control.input_identifier("GOROROBA_TEST_IDENTIFIER")
+        == identifier
+    )
+
+
+@pytest.mark.parametrize("value", ("", "stable"))
+def test_input_enum_accepts_declared_values(
+    value: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOROROBA_TEST_ENUM", value)
+    assert (
+        source_root_control.input_enum(
+            "GOROROBA_TEST_ENUM",
+            frozenset(("", "stable")),
+        )
+        == value
+    )
+
+
+@pytest.mark.parametrize("value", ("debug", "stable;id", "$(shell id)"))
+def test_input_enum_rejects_undeclared_values(
+    value: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOROROBA_TEST_ENUM", value)
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.input_enum(
+            "GOROROBA_TEST_ENUM",
+            frozenset(("", "stable")),
+        )
+
+
 def layout_values(tmp_path: Path) -> dict[str, Path | str]:
     build_root = tmp_path / ".mesa-26-gororoba-builds" / "source-root-control-test"
     return {
@@ -167,28 +239,53 @@ def test_parse_mountinfo_rejects_malformed_records(
         source_root_control.parse_mountinfo(mountinfo)
 
 
-def test_contained_mount_point_uses_path_components() -> None:
+def test_crossing_mount_point_rejects_ancestor_and_descendant_mounts() -> None:
     mount_points = (
         Path("/"),
-        Path("/tmp/build/mounted"),
-        Path("/tmp/building"),
-        Path("/tmp/build/mounted"),
+        Path("/tmp/namespace/build-root"),
+        Path("/tmp/namespace/build-root/probe/mounted"),
+        Path("/tmp/namespace-sibling"),
     )
-    assert source_root_control.contained_mount_point(
-        Path("/tmp/build"),
+    assert source_root_control.crossing_mount_point(
+        Path("/tmp/namespace/build-root/probe"),
+        Path("/tmp/namespace"),
         mount_points,
-    ) == Path("/tmp/build/mounted")
-    assert source_root_control.contained_mount_point(
-        Path("/tmp/build/mounted"),
-        mount_points,
-    ) == Path("/tmp/build/mounted")
+    ) == Path("/tmp/namespace/build-root")
     assert (
-        source_root_control.contained_mount_point(
-            Path("/tmp/build-other"),
+        source_root_control.crossing_mount_point(
+            Path("/tmp/namespace/other/probe"),
+            Path("/tmp/namespace"),
             mount_points,
         )
         is None
     )
+
+
+def test_crossing_mount_point_allows_trusted_boundary_and_ancestors() -> None:
+    mount_points = (
+        Path("/"),
+        Path("/tmp"),
+        Path("/tmp/namespace"),
+        Path("/tmp/namespace/sibling"),
+        Path("/tmp/namespace-sibling"),
+    )
+    assert (
+        source_root_control.crossing_mount_point(
+            Path("/tmp/namespace/build-root/probe"),
+            Path("/tmp/namespace"),
+            mount_points,
+        )
+        is None
+    )
+
+
+def test_crossing_mount_point_requires_strict_containment() -> None:
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.crossing_mount_point(
+            Path("/tmp/other/probe"),
+            Path("/tmp/namespace"),
+            (Path("/"),),
+        )
 
 
 def test_current_mount_points_fails_closed_when_unreadable(
@@ -235,16 +332,76 @@ def test_validate_owned_namespace_rejects_symlink(
         )
 
 
+@pytest.mark.parametrize("mode", (0o770, 0o777))
 def test_validate_owned_namespace_rejects_writable_mode(
     tmp_path: Path,
+    mode: int,
 ) -> None:
     namespace = tmp_path / "namespace"
-    namespace.mkdir(mode=0o777)
-    namespace.chmod(0o777)
+    namespace.mkdir(mode=mode)
+    namespace.chmod(mode)
     with pytest.raises(source_root_control.ControlError):
         source_root_control.validate_owned_namespace(
             namespace,
             os.getuid(),
+        )
+
+
+def test_validate_owned_namespace_rejects_foreign_owner(
+    tmp_path: Path,
+) -> None:
+    namespace = tmp_path / "namespace"
+    namespace.mkdir(mode=0o700)
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.validate_owned_namespace(
+            namespace,
+            os.getuid() + 1,
+        )
+
+
+def test_create_test_directory_accepts_new_and_existing_private_namespace(
+    tmp_path: Path,
+) -> None:
+    first = source_root_control.create_test_directory(
+        "source-root",
+        parent=tmp_path,
+    )
+    second = source_root_control.create_test_directory(
+        "build-lease",
+        parent=tmp_path,
+    )
+    assert first.is_dir()
+    assert second.is_dir()
+    assert first.parent == second.parent
+    assert first.parent.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("mode", (0o770, 0o777))
+def test_create_test_directory_rejects_writable_namespace(
+    tmp_path: Path,
+    mode: int,
+) -> None:
+    namespace = tmp_path / f"mesa-26-gororoba-{os.getuid()}"
+    namespace.mkdir(mode=mode)
+    namespace.chmod(mode)
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.create_test_directory(
+            "source-root",
+            parent=tmp_path,
+        )
+
+
+def test_create_test_directory_rejects_symlink_namespace(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    namespace = tmp_path / f"mesa-26-gororoba-{os.getuid()}"
+    namespace.symlink_to(target, target_is_directory=True)
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.create_test_directory(
+            "source-root",
+            parent=tmp_path,
         )
 
 
