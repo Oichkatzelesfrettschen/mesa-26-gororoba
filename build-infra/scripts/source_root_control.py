@@ -142,9 +142,11 @@ def validate_prefix(values: dict[str, Path | str]) -> None:
     prefix = values["prefix"]
     source_root = values["source_root"]
     repository_root = values["control_root"]
+    build_root = values["build_root"]
     assert isinstance(prefix, Path)
     assert isinstance(source_root, Path)
     assert isinstance(repository_root, Path)
+    assert isinstance(build_root, Path)
 
     profile = os.environ.get("GOROROBA_PROFILE_INPUT", "")
     allowed_opt_prefixes = {
@@ -155,8 +157,6 @@ def validate_prefix(values: dict[str, Path | str]) -> None:
         Path("/opt/mesa-gororoba-debug-asan"),
         Path("/opt/mesa-gororoba-debug-o0"),
     }
-    if is_within_or_equal(prefix, Path("/opt")) and prefix not in allowed_opt_prefixes:
-        fail(f"refusing unsafe PREFIX: {prefix}")
     reject_protected_path(prefix, "PREFIX")
     home = Path.home().resolve(strict=False)
     if prefix == home:
@@ -165,6 +165,15 @@ def validate_prefix(values: dict[str, Path | str]) -> None:
         fail(f"refusing PREFIX inside TOPSRC: {prefix}")
     if is_within_or_equal(prefix, repository_root):
         fail(f"refusing PREFIX inside the control worktree: {prefix}")
+    if (
+        source_root == repository_root
+        and prefix not in allowed_opt_prefixes
+        and prefix.parent != build_root
+    ):
+        fail(
+            "control-source PREFIX must be an owned profile prefix or "
+            f"a direct child of BUILD_ROOT: {prefix}"
+        )
 
 
 def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
@@ -181,11 +190,25 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
     home = Path.home().resolve(strict=False)
     if build_root in {home, source_root, repository_root}:
         fail(f"refusing unsafe BUILD_ROOT: {build_root}")
+    repository_build_root = repository_root / "build"
+    owned_build_boundaries = (
+        home,
+        repository_root.parent,
+        Path("/tmp"),
+        Path("/var/tmp"),
+    )
+    if build_root != repository_build_root and not any(
+        is_strict_descendant(build_root, boundary)
+        for boundary in owned_build_boundaries
+    ):
+        fail(
+            "BUILD_ROOT must be the repository build root or a descendant "
+            f"of an owned workspace or temporary root: {build_root}"
+        )
     if not is_strict_descendant(builddir, build_root):
         fail(f"refusing BUILDDIR outside BUILD_ROOT: {builddir}")
 
     source_is_control = source_root == repository_root
-    repository_build_root = repository_root / "build"
     if source_is_control:
         if (
             is_within_or_equal(build_root, repository_root)
@@ -391,6 +414,16 @@ def verify_identity(values: dict[str, Path | str]) -> None:
     require_identity_fields(read_identity(path), expected, path)
 
 
+def verify_delete_identity(values: dict[str, Path | str]) -> None:
+    source_root = values["source_root"]
+    builddir = values["builddir"]
+    assert isinstance(source_root, Path)
+    assert isinstance(builddir, Path)
+    if source_root == values["control_root"] or not builddir.exists():
+        return
+    verify_identity(values)
+
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -415,6 +448,7 @@ def parse_arguments() -> argparse.Namespace:
     subparsers.add_parser("prepare-identity")
     subparsers.add_parser("write-identity")
     subparsers.add_parser("verify-identity")
+    subparsers.add_parser("verify-delete-identity")
     return parser.parse_args()
 
 
@@ -447,6 +481,8 @@ def main() -> int:
         write_identity(values)
     elif arguments.command == "verify-identity":
         verify_identity(values)
+    elif arguments.command == "verify-delete-identity":
+        verify_delete_identity(values)
     else:
         fail(f"unsupported command: {arguments.command}")
     return 0

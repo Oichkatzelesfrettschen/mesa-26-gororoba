@@ -89,6 +89,14 @@ source tree and the control worktree.  The external prefix is a direct child
 of its build root, so the shared profile default under `/opt/local` never
 aliases two comparison sources.
 
+Build roots resolve inside the current user's home, the parent workspace, or a
+strict child of `/tmp` or `/var/tmp`; the control worktree's canonical
+`build/` remains the direct local exception.  Destructive targets therefore
+stay inside an owned source-build namespace.  A control-source prefix is
+either a named Mesa profile prefix under `/opt` or a direct child of its build
+root.  System top-level directories never qualify as install prefixes or build
+roots.
+
 Successful external configuration writes
 `$BUILD_ROOT/.gororoba-external-source-identity.json` and
 `$BUILDDIR/.gororoba-source-identity.json`.  The build-root record reserves the
@@ -97,6 +105,14 @@ control commit.  The build-directory record also binds the exact prefix.
 Build, test, and install verify both records before using the build directory.
 A source revision or control-plane commit change uses a fresh empty build root;
 the old root remains an immutable attribution boundary.
+
+External `clean` verifies the recorded source identity before removing an
+existing build directory.  An absent build directory remains a successful
+no-op.  `distclean` verifies the same source and prefix identity before it
+removes the build directory or archives the prefix.  Every validation step
+uses the physical path tuple captured before the build lease, so retargeting a
+caller-owned symlink while a command waits cannot redirect either validation
+or deletion.
 
 Each compared revision gets a distinct `BUILD_ROOT`, `BUILDDIR`, and `PREFIX`.
 `clean-all` remains a control-worktree operation and rejects every external

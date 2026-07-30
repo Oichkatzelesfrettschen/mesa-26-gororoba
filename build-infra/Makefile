@@ -95,6 +95,14 @@ override PREFIX := $(word 4,$(SOURCE_ROOT_FIELDS))
 SOURCE_COMMIT := $(word 5,$(SOURCE_ROOT_FIELDS))
 SOURCE_TREE := $(word 6,$(SOURCE_ROOT_FIELDS))
 CONTROL_COMMIT := $(word 7,$(SOURCE_ROOT_FIELDS))
+# Every later Python check consumes the same physical path tuple that recipes
+# interpolate.  Retaining the caller's symlink spelling here would let a
+# blocked recipe validate a retargeted selector while deleting the path that
+# Make captured before it waited on the build lease.
+override GOROROBA_TOPSRC_INPUT := $(TOPSRC)
+override GOROROBA_BUILD_ROOT_INPUT := $(BUILD_ROOT)
+override GOROROBA_BUILDDIR_INPUT := $(BUILDDIR)
+override GOROROBA_PREFIX_INPUT := $(PREFIX)
 # Pair-member descriptor: one space-separated row per build variant.
 # Field order: profile hostenv builddir prefix namespace.  Accessors:
 # $(call PAIR_PROFILE,LIST), $(call PAIR_HOSTENV,LIST), etc.  Adding a
@@ -151,6 +159,10 @@ endef
 
 define VERIFY_SOURCE_IDENTITY
 python3 "$(SOURCE_ROOT_CONTROL)" verify-identity || exit 2
+endef
+
+define VERIFY_DELETE_IDENTITY
+python3 "$(SOURCE_ROOT_CONTROL)" verify-delete-identity || exit 2
 endef
 
 # --- internal paths ---------------------------------------------------------
@@ -692,6 +704,7 @@ build: source-root-check
 clean:
 	@$(ACQUIRE_BUILD_LOCK) \
 	$(call CHECK_LAYOUT,clean); \
+	$(VERIFY_DELETE_IDENTITY); \
 	rm -rf "$(BUILDDIR)"; \
 	echo "cleaned: $(BUILDDIR)"
 
@@ -1047,6 +1060,35 @@ source-root-selection-test:
 		printf '%s\n' "$$control_prefix_output" >&2; exit 1; \
 	}; \
 	echo "OK    external TOPSRC protects the control worktree prefix"; \
+	system_prefix_build_root="$$tmpdir/system-prefix-build"; \
+	for system_prefix in / /boot /dev /etc /home /proc /root /run /sys /tmp /var; do \
+		if env \
+			GOROROBA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
+			GOROROBA_BUILD_ROOT_INPUT="$$system_prefix_build_root" \
+			GOROROBA_BUILDDIR_INPUT="$$system_prefix_build_root/probe" \
+			GOROROBA_PREFIX_INPUT="$$system_prefix" \
+			GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+			python3 "$(SOURCE_ROOT_CONTROL)" \
+				check-layout --operation=distclean >/dev/null 2>&1; then \
+			echo "FAIL  distclean layout accepted system prefix $$system_prefix" >&2; \
+			exit 1; \
+		fi; \
+	done; \
+	echo "OK    control-source distclean rejects system top-level prefixes"; \
+	for system_build_root in / /boot /dev /etc /home /proc /root /run /sys /tmp /var /var/lib /var/tmp; do \
+		if env \
+			GOROROBA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
+			GOROROBA_BUILD_ROOT_INPUT="$$system_build_root" \
+			GOROROBA_BUILDDIR_INPUT="$$system_build_root/probe" \
+			GOROROBA_PREFIX_INPUT="/opt/local/mesa-$(PROFILE)" \
+			GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+			python3 "$(SOURCE_ROOT_CONTROL)" \
+				check-layout --operation=distclean >/dev/null 2>&1; then \
+			echo "FAIL  distclean layout accepted system build root $$system_build_root" >&2; \
+			exit 1; \
+		fi; \
+	done; \
+	echo "OK    destructive operations reject system build roots"; \
 	safe_build_root="$$tmpdir/safe-build"; \
 	outside_root="$$tmpdir/outside"; \
 	mkdir -p "$$safe_build_root" "$$outside_root/victim"; \
@@ -1072,6 +1114,20 @@ source-root-selection-test:
 	external_build_root="$$tmpdir/build"; \
 	external_builddir="$$external_build_root/probe"; \
 	mkdir -p "$$external_builddir"; \
+	if empty_clean_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+		TOPSRC="$$source_root" BUILD_ROOT="$$external_build_root" \
+		BUILDDIR="$$external_builddir" \
+		BUILD_LOCK="$$tmpdir/external-build.lock" LOCK_WAIT=0 2>&1 )"; then \
+		echo "FAIL  external clean adopted an empty unbound build directory" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$empty_clean_output" | \
+		grep -F "external build root lacks source identity" >/dev/null || { \
+		echo "FAIL  empty unbound clean returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$empty_clean_output" >&2; exit 1; \
+	}; \
+	rmdir "$$external_builddir"; \
+	echo "OK    external clean rejects an existing unbound build directory"; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" clean \
 		TOPSRC="$$source_root" BUILD_ROOT="$$external_build_root" \
 		BUILDDIR="$$external_builddir" \
@@ -1080,7 +1136,7 @@ source-root-selection-test:
 		echo "FAIL  clean left the external build directory in place" >&2; \
 		exit 1; \
 	}; \
-	echo "OK    external TOPSRC accepts an isolated external build root"; \
+	echo "OK    external clean accepts an absent isolated build directory"; \
 	mkdir -p "$$source_build_root"; \
 	touch "$$source_build_root/sentinel"; \
 	if clean_all_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
@@ -1205,6 +1261,89 @@ source-root-selection-test:
 		exit 1; \
 	}; \
 	echo "OK    external distclean rejects unbound prefix mutation"; \
+	touch "$$identity_builddir/ownership-sentinel"; \
+	if clean_owner_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+		TOPSRC="$$legacy_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 2>&1 )"; then \
+		echo "FAIL  clean deleted a build directory owned by another source" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$clean_owner_output" | \
+		grep -F "external source identity drift" >/dev/null || { \
+		echo "FAIL  clean source ownership returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$clean_owner_output" >&2; exit 1; \
+	}; \
+	test -f "$$identity_builddir/ownership-sentinel" || { \
+		echo "FAIL  clean removed the source-owned build directory" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    external clean verifies build-directory ownership"; \
+	mkdir -p "$$identity_prefix"; \
+	touch "$$identity_prefix/ownership-sentinel"; \
+	retarget_flock="$$tmpdir/retarget-flock"; \
+	retarget_ready="$$tmpdir/retarget.ready"; \
+	retarget_release="$$tmpdir/retarget.release"; \
+	retarget_output="$$tmpdir/retarget.output"; \
+	retarget_build_selector="$$tmpdir/retarget-build-selector"; \
+	retarget_prefix_selector="$$tmpdir/retarget-prefix-selector"; \
+	retarget_victim_build="$$tmpdir/retarget-victim-build"; \
+	retarget_victim_prefix="$$tmpdir/retarget-victim-prefix"; \
+	mkdir -p "$$retarget_victim_build" "$$retarget_victim_prefix"; \
+	touch "$$retarget_victim_build/sentinel" "$$retarget_victim_prefix/sentinel"; \
+	ln -s "$$retarget_victim_build" "$$retarget_build_selector"; \
+	ln -s "$$retarget_victim_prefix" "$$retarget_prefix_selector"; \
+	printf '%s\n' \
+		'#!/bin/sh' \
+		': > "$$GOROROBA_RETARGET_READY"' \
+		'while [ ! -e "$$GOROROBA_RETARGET_RELEASE" ]; do sleep 0.01; done' \
+		'exec flock "$$@"' > "$$retarget_flock"; \
+	chmod +x "$$retarget_flock"; \
+	GOROROBA_RETARGET_READY="$$retarget_ready" \
+	GOROROBA_RETARGET_RELEASE="$$retarget_release" \
+		$(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
+			TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+			BUILDDIR="$$retarget_build_selector" \
+			PREFIX="$$retarget_prefix_selector" \
+			BUILD_LOCK="$$tmpdir/retarget.lock" LOCK_WAIT=5 \
+			FLOCK="$$retarget_flock" SUDO= \
+			> "$$retarget_output" 2>&1 & \
+	retarget_pid=$$!; \
+	retarget_wait=0; \
+	while [ ! -e "$$retarget_ready" ] && [ "$$retarget_wait" -lt 500 ]; do \
+		sleep 0.01; retarget_wait=$$((retarget_wait + 1)); \
+	done; \
+	if [ ! -e "$$retarget_ready" ]; then \
+		touch "$$retarget_release"; wait "$$retarget_pid" 2>/dev/null || true; \
+		echo "FAIL  retarget mutant never reached the build lease" >&2; \
+		exit 1; \
+	fi; \
+	ln -sfnT "$$identity_builddir" "$$retarget_build_selector"; \
+	ln -sfnT "$$identity_prefix" "$$retarget_prefix_selector"; \
+	touch "$$retarget_release"; \
+	if wait "$$retarget_pid"; then \
+		echo "FAIL  distclean accepted retargeted path selectors" >&2; \
+		exit 1; \
+	fi; \
+	grep -E "refusing BUILDDIR outside BUILD_ROOT|external source identity drift" \
+		"$$retarget_output" >/dev/null || { \
+		echo "FAIL  retargeted selectors returned the wrong diagnostic" >&2; \
+		cat "$$retarget_output" >&2; exit 1; \
+	}; \
+	test -f "$$retarget_victim_build/sentinel" || { \
+		echo "FAIL  distclean deleted the initially selected build victim" >&2; \
+		exit 1; \
+	}; \
+	test -f "$$retarget_victim_prefix/sentinel" || { \
+		echo "FAIL  distclean moved the initially selected prefix victim" >&2; \
+		exit 1; \
+	}; \
+	test -f "$$identity_builddir/ownership-sentinel" && \
+	test -f "$$identity_prefix/ownership-sentinel" || { \
+		echo "FAIL  retarget mutant changed the bound identity paths" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    destructive operations retain one canonical path tuple"; \
 	if shared_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$legacy_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_build_root/legacy-probe" \
