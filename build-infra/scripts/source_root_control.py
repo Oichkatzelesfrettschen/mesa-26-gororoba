@@ -8,8 +8,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pwd
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import tempfile
@@ -49,17 +51,36 @@ def input_path(name: str) -> Path:
     return resolved
 
 
-def run_git(root: Path, *arguments: str) -> str:
+def run_git_process(
+    root: Path,
+    *arguments: str,
+    extra_environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     command = ["git", "--no-optional-locks", "-C", str(root), *arguments]
     environment = os.environ.copy()
     environment["GIT_OPTIONAL_LOCKS"] = "0"
-    result = subprocess.run(
+    if extra_environment is not None:
+        environment.update(extra_environment)
+    return subprocess.run(
         command,
         check=False,
         capture_output=True,
         env=environment,
         shell=False,
         text=True,
+    )
+
+
+def run_git(
+    root: Path,
+    *arguments: str,
+    extra_environment: dict[str, str] | None = None,
+) -> str:
+    command = ["git", "--no-optional-locks", "-C", str(root), *arguments]
+    result = run_git_process(
+        root,
+        *arguments,
+        extra_environment=extra_environment,
     )
     if result.returncode != 0:
         diagnostic = result.stderr.strip() or result.stdout.strip()
@@ -81,27 +102,82 @@ def source_identity(source_root: Path) -> tuple[str, str]:
     git_root_text = run_git(source_root, "rev-parse", "--show-toplevel")
     git_root = Path(git_root_text).resolve(strict=True)
     if git_root != source_root:
-        fail(
-            "TOPSRC is not the Git worktree root: "
-            f"{source_root} (root {git_root})"
-        )
+        fail(f"TOPSRC is not the Git worktree root: {source_root} (root {git_root})")
 
     commit = run_git(source_root, "rev-parse", "--verify", "HEAD^{commit}")
     tree = run_git(source_root, "rev-parse", "--verify", "HEAD^{tree}")
     return commit, tree
 
 
-def require_clean_external_source(source_root: Path) -> None:
-    if source_root == control_root():
-        return
-    status = run_git(
-        source_root,
-        "status",
-        "--porcelain=v1",
-        "--untracked-files=all",
+def require_clean_worktree(root: Path, label: str) -> None:
+    staged_result = run_git_process(
+        root,
+        "diff-index",
+        "--cached",
+        "--quiet",
+        "--ignore-submodules=none",
+        "HEAD",
+        "--",
     )
-    if status:
-        fail(f"external TOPSRC is dirty: {source_root}")
+    if staged_result.returncode not in (0, 1):
+        diagnostic = staged_result.stderr.strip() or staged_result.stdout.strip()
+        fail(f"failed to verify {label} index state: {diagnostic}")
+    if staged_result.returncode == 1:
+        fail(f"{label} is dirty: {root}")
+
+    descriptor, temporary_index = tempfile.mkstemp(
+        prefix="gororoba-git-index.",
+    )
+    os.close(descriptor)
+    os.unlink(temporary_index)
+    index_environment = {"GIT_INDEX_FILE": temporary_index}
+    try:
+        run_git(
+            root,
+            "read-tree",
+            "HEAD",
+            extra_environment=index_environment,
+        )
+        refresh_result = run_git_process(
+            root,
+            "update-index",
+            "--really-refresh",
+            extra_environment=index_environment,
+        )
+        if refresh_result.returncode not in (0, 1):
+            diagnostic = refresh_result.stderr.strip() or refresh_result.stdout.strip()
+            fail(f"failed to refresh {label} worktree state: {diagnostic}")
+        tracked_result = run_git_process(
+            root,
+            "diff-files",
+            "--quiet",
+            "--ignore-submodules=none",
+            "--",
+            extra_environment=index_environment,
+        )
+        if tracked_result.returncode not in (0, 1):
+            diagnostic = tracked_result.stderr.strip() or tracked_result.stdout.strip()
+            fail(f"failed to verify {label} tracked state: {diagnostic}")
+        untracked = run_git(
+            root,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            extra_environment=index_environment,
+        )
+        if tracked_result.returncode == 1 or untracked:
+            fail(f"{label} is dirty: {root}")
+    finally:
+        Path(temporary_index).unlink(missing_ok=True)
+        Path(f"{temporary_index}.lock").unlink(missing_ok=True)
+
+
+def require_clean_external_source(source_root: Path) -> None:
+    repository_root = control_root()
+    if source_root == repository_root:
+        return
+    require_clean_worktree(source_root, "external TOPSRC")
+    require_clean_worktree(repository_root, "control worktree")
 
 
 def resolved_inputs() -> dict[str, Path | str]:
@@ -130,6 +206,154 @@ def is_within_or_equal(path: Path, parent: Path) -> bool:
 
 def is_strict_descendant(path: Path, parent: Path) -> bool:
     return path != parent and path.is_relative_to(parent)
+
+
+def trusted_account_home(user_id: int) -> Path:
+    if user_id == 0:
+        fail("root cannot own Mesa build namespaces")
+    try:
+        account_home_text = pwd.getpwuid(user_id).pw_dir
+    except KeyError:
+        fail(f"account home is unavailable for uid {user_id}")
+    try:
+        account_home = Path(account_home_text).resolve(strict=True)
+    except OSError as error:
+        fail(f"cannot resolve account home {account_home_text}: {error}")
+    if account_home in {
+        Path("/"),
+        Path("/boot"),
+        Path("/dev"),
+        Path("/etc"),
+        Path("/home"),
+        Path("/proc"),
+        Path("/root"),
+        Path("/run"),
+        Path("/sys"),
+        Path("/tmp"),
+        Path("/usr"),
+        Path("/var"),
+        Path("/var/lib"),
+        Path("/var/tmp"),
+    }:
+        fail(f"refusing unsafe account home: {account_home}")
+    return account_home
+
+
+def validate_owned_namespace(namespace: Path, user_id: int) -> Path:
+    lexical_path = Path(os.path.abspath(namespace))
+    resolved_path = lexical_path.resolve(strict=False)
+    if resolved_path != lexical_path:
+        fail(f"build namespace contains a symlink: {lexical_path}")
+    try:
+        namespace_status = lexical_path.lstat()
+    except FileNotFoundError:
+        return lexical_path
+    except OSError as error:
+        fail(f"cannot inspect build namespace {lexical_path}: {error}")
+    if not stat.S_ISDIR(namespace_status.st_mode):
+        fail(f"build namespace is not a directory: {lexical_path}")
+    if namespace_status.st_uid != user_id:
+        fail(f"build namespace has a foreign owner: {lexical_path}")
+    if namespace_status.st_mode & 0o022:
+        fail(f"build namespace is group/world writable: {lexical_path}")
+    return lexical_path
+
+
+def owned_build_namespaces(repository_root: Path) -> tuple[Path, ...]:
+    user_id = os.getuid()
+    account_home = trusted_account_home(user_id)
+    return (
+        (account_home / ".cache" / "mesa-26-gororoba" / "external-builds"),
+        Path("/tmp") / f"mesa-26-gororoba-{user_id}",
+        Path("/var/tmp") / f"mesa-26-gororoba-{user_id}",
+        repository_root.parent / ".mesa-26-gororoba-builds",
+    )
+
+
+def ensure_selected_build_namespace(
+    values: dict[str, Path | str],
+) -> None:
+    repository_root = values["control_root"]
+    build_root = values["build_root"]
+    assert isinstance(repository_root, Path)
+    assert isinstance(build_root, Path)
+    if build_root == repository_root / "build":
+        return
+    matching_namespaces = tuple(
+        validate_owned_namespace(namespace, os.getuid())
+        for namespace in owned_build_namespaces(repository_root)
+        if is_strict_descendant(build_root, namespace)
+    )
+    if len(matching_namespaces) != 1:
+        fail(f"external BUILD_ROOT has no unique namespace: {build_root}")
+    namespace = matching_namespaces[0]
+    try:
+        namespace.mkdir(parents=True, mode=0o700, exist_ok=True)
+    except OSError as error:
+        fail(f"cannot create build namespace {namespace}: {error}")
+    validate_owned_namespace(namespace, os.getuid())
+
+
+def containing_git_worktree(path: Path) -> Path | None:
+    for candidate in (path, *path.parents):
+        git_marker = candidate / ".git"
+        if git_marker.exists() or git_marker.is_symlink():
+            return candidate
+    return None
+
+
+def path_anchor(path: Path) -> str:
+    try:
+        path_status = path.stat()
+    except FileNotFoundError:
+        return "absent"
+    except OSError as error:
+        fail(f"cannot stat selected path {path}: {error}")
+    file_type = stat.S_IFMT(path_status.st_mode)
+    return f"{path_status.st_dev:x}:{path_status.st_ino:x}:{file_type:x}"
+
+
+def require_captured_paths(
+    values: dict[str, Path | str],
+    fields: tuple[str, ...],
+) -> None:
+    anchor_variables = {
+        "source_root": "GOROROBA_SOURCE_ROOT_ANCHOR",
+        "control_root": "GOROROBA_CONTROL_ROOT_ANCHOR",
+        "build_root": "GOROROBA_BUILD_ROOT_ANCHOR",
+        "builddir": "GOROROBA_BUILDDIR_ANCHOR",
+        "prefix": "GOROROBA_PREFIX_ANCHOR",
+    }
+    input_variables = {
+        "source_root": "GOROROBA_TOPSRC_INPUT",
+        "control_root": "GOROROBA_CONTROL_ROOT_INPUT",
+        "build_root": "GOROROBA_BUILD_ROOT_INPUT",
+        "builddir": "GOROROBA_BUILDDIR_INPUT",
+        "prefix": "GOROROBA_PREFIX_INPUT",
+    }
+    for field in fields:
+        selected_path = values[field]
+        assert isinstance(selected_path, Path)
+        captured_text = os.environ.get(input_variables[field], "")
+        if not captured_text:
+            fail(f"captured canonical path is missing for {field}")
+        captured_path = Path(captured_text)
+        if not captured_path.is_absolute():
+            fail(f"captured canonical path is not absolute for {field}")
+        if selected_path != captured_path:
+            fail(
+                "selected path target changed while waiting for the "
+                f"build lease: {field} ({captured_path})"
+            )
+        expected_anchor = os.environ.get(anchor_variables[field], "")
+        if not expected_anchor:
+            fail(f"captured path anchor is missing for {field}")
+        current_anchor = path_anchor(selected_path)
+        if current_anchor != expected_anchor:
+            fail(
+                "selected path identity changed while waiting for the "
+                f"build lease: {field} ({selected_path})"
+            )
 
 
 def reject_protected_path(path: Path, label: str) -> None:
@@ -201,20 +425,25 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
     if build_root in {home, source_root, repository_root}:
         fail(f"refusing unsafe BUILD_ROOT: {build_root}")
     repository_build_root = repository_root / "build"
-    owned_build_boundaries = (
-        home,
-        repository_root.parent,
-        Path("/tmp"),
-        Path("/var/tmp"),
-    )
-    if build_root != repository_build_root and not any(
-        is_strict_descendant(build_root, boundary)
-        for boundary in owned_build_boundaries
-    ):
-        fail(
-            "BUILD_ROOT must be the repository build root or a descendant "
-            f"of an owned workspace or temporary root: {build_root}"
+    if build_root != repository_build_root:
+        matching_namespaces = tuple(
+            namespace
+            for namespace in owned_build_namespaces(repository_root)
+            if is_strict_descendant(build_root, namespace)
         )
+        if len(matching_namespaces) != 1:
+            fail(
+                "BUILD_ROOT must be the repository build root or a strict "
+                "descendant of a Mesa build namespace: "
+                f"{build_root}"
+            )
+        validate_owned_namespace(
+            matching_namespaces[0],
+            os.getuid(),
+        )
+    repository_boundary = containing_git_worktree(build_root)
+    if repository_boundary is not None and build_root != repository_build_root:
+        fail(f"refusing BUILD_ROOT inside a Git worktree: {repository_boundary}")
     if not is_strict_descendant(builddir, build_root):
         fail(f"refusing BUILDDIR outside BUILD_ROOT: {builddir}")
 
@@ -225,9 +454,8 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
             and build_root != repository_build_root
         ):
             fail(f"refusing BUILD_ROOT inside TOPSRC: {build_root}")
-        if (
-            is_within_or_equal(builddir, repository_root)
-            and not is_strict_descendant(builddir, repository_build_root)
+        if is_within_or_equal(builddir, repository_root) and not is_strict_descendant(
+            builddir, repository_build_root
         ):
             fail(f"refusing BUILDDIR inside TOPSRC: {builddir}")
     else:
@@ -246,10 +474,7 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
             prefix = values["prefix"]
             assert isinstance(prefix, Path)
             if prefix.parent != build_root:
-                fail(
-                    "external PREFIX must be a direct child of BUILD_ROOT: "
-                    f"{prefix}"
-                )
+                fail(f"external PREFIX must be a direct child of BUILD_ROOT: {prefix}")
             if prefix == builddir:
                 fail(f"external PREFIX aliases BUILDDIR: {prefix}")
 
@@ -385,6 +610,7 @@ def prepare_identity(values: dict[str, Path | str]) -> None:
     assert isinstance(source_root, Path)
     assert isinstance(build_root, Path)
     assert isinstance(builddir, Path)
+    ensure_selected_build_namespace(values)
     if source_root == values["control_root"]:
         return
 
@@ -477,10 +703,7 @@ def write_identity(values: dict[str, Path | str]) -> None:
     expected_base = base_identity_payload(values)
     root_path = root_identity_path(values)
     if not root_path.is_file():
-        fail(
-            "external build root lacks prepared source identity: "
-            f"{root_path}"
-        )
+        fail(f"external build root lacks prepared source identity: {root_path}")
     _root_state, transaction_id = require_identity_record(
         read_identity(root_path),
         expected_base,
@@ -600,8 +823,22 @@ def parse_arguments() -> argparse.Namespace:
     subparsers.add_parser("prepare-identity")
     subparsers.add_parser("write-identity")
     subparsers.add_parser("verify-identity")
+    subparsers.add_parser("verify-artifact-identity")
     subparsers.add_parser("verify-delete-identity")
     subparsers.add_parser("verify-distclean-identity")
+    captured_parser = subparsers.add_parser("verify-captured-paths")
+    captured_parser.add_argument(
+        "--fields",
+        nargs="+",
+        required=True,
+        choices=(
+            "source_root",
+            "control_root",
+            "build_root",
+            "builddir",
+            "prefix",
+        ),
+    )
     return parser.parse_args()
 
 
@@ -618,6 +855,12 @@ def main() -> int:
             values["source_commit"],
             values["source_tree"],
             values["control_commit"],
+            values["control_root"],
+            path_anchor(values["source_root"]),
+            path_anchor(values["control_root"]),
+            path_anchor(values["build_root"]),
+            path_anchor(values["builddir"]),
+            path_anchor(values["prefix"]),
         )
         print(" ".join(str(field) for field in fields))
     elif arguments.command == "check-source":
@@ -634,10 +877,14 @@ def main() -> int:
         write_identity(values)
     elif arguments.command == "verify-identity":
         verify_identity(values)
+    elif arguments.command == "verify-artifact-identity":
+        verify_delete_identity(values, allow_provisional=False)
     elif arguments.command == "verify-delete-identity":
         verify_delete_identity(values, allow_provisional=True)
     elif arguments.command == "verify-distclean-identity":
         verify_delete_identity(values, allow_provisional=False)
+    elif arguments.command == "verify-captured-paths":
+        require_captured_paths(values, tuple(arguments.fields))
     else:
         fail(f"unsupported command: {arguments.command}")
     return 0

@@ -4,7 +4,9 @@ Canonical build infrastructure for the gororoba Mesa fork.
 
 The entry point requires GNU Make 4.2 or newer because source-root resolution
 uses `.SHELLSTATUS` to preserve Python validation failures during Makefile
-evaluation.
+evaluation.  Parse-time path inputs travel as directly quoted environment
+assignments because GNU Make 4.3 does not place Makefile `export` values in the
+environment of every `$(shell ...)` expansion.
 
 ## Canonical profiles
 
@@ -84,22 +86,39 @@ make -C build-infra configure \
   PREFIX=/path/to/source-identity-root/prefix
 ```
 
-The source selector accepts only a clean, committed, exact Git worktree root
+The source selector accepts only a committed, exact Git worktree root
 containing `meson.build` and either `meson.options` or the historical
-`meson_options.txt` spelling.  Path selection rejects whitespace and shell
-metacharacters, resolves symlinks before containment checks, and keeps the
-external build root, build directory, and prefix outside both the selected
-source tree and the control worktree.  The external prefix is a direct child
-of its build root, so the shared profile default under `/opt/local` never
-aliases two comparison sources.
+`meson_options.txt` spelling.  External comparisons require both the selected
+source worktree and this build-infra control worktree to match their recorded
+commits.  The cleanliness check compares the real index to `HEAD`, then
+compares worktree bytes through a fresh temporary index.  Staged-only changes,
+untracked files, ordinary tracked changes, and tracked changes hidden by
+`assume-unchanged` all fail the comparison.
 
-Build roots resolve inside the current user's home, the parent workspace, or a
-strict child of `/tmp` or `/var/tmp`; the control worktree's canonical
-`build/` remains the direct local exception.  Destructive targets therefore
-stay inside an owned source-build namespace.  A control-source prefix is
-either a named Mesa profile prefix under `/opt` or a direct child of its build
-root.  System top-level directories never qualify as install prefixes or build
-roots.
+Path selection rejects whitespace and shell metacharacters, resolves symlinks
+before containment checks, and keeps the external build root, build directory,
+and prefix outside both source worktrees.  The external prefix is a direct
+child of its build root, so the shared profile default under `/opt/local`
+never aliases two comparison sources.
+
+External and noncanonical build roots use one strict child of these designated
+namespaces:
+
+```text
+<account-home>/.cache/mesa-26-gororoba/external-builds/
+/tmp/mesa-26-gororoba-<uid>/
+/var/tmp/mesa-26-gororoba-<uid>/
+<workspace>/.mesa-26-gororoba-builds/
+```
+
+The account home comes from the account database rather than `HOME`.  A
+selected namespace carries the current uid, has no group or world write bit,
+and contains no symlink component.  A build root inside any Git worktree is
+rejected, including a sibling repository under the same workspace.  The
+control worktree's canonical `build/` remains the direct local exception.  A
+control-source prefix is either a named Mesa profile prefix under `/opt` or a
+direct child of its build root.  System top-level directories never qualify as
+install prefixes or build roots.
 
 Successful external configuration writes
 `$BUILD_ROOT/.gororoba-external-source-identity.json` and
@@ -116,17 +135,31 @@ tuple that differs from the provisional reservation.  A source revision or
 control-plane commit change uses a fresh empty build root; the old root remains
 an immutable attribution boundary.
 
+Install reconfiguration uses the same transaction.  It verifies the existing
+final identity, marks the root provisional before `meson setup`, and finalizes
+matching root and build-directory records only after setup succeeds.  A failed
+install setup therefore revokes build, test, install, and artifact consumers
+until a successful configure restores one final transaction.
+
 External `clean` verifies the recorded source identity before removing an
 existing build directory.  An absent build directory remains a successful
 no-op only when the build-root identity matches the requested source and path
 tuple.  `distclean` verifies the same root and prefix identity before it
 removes the build directory or archives the prefix, including after `clean`
-has already removed the per-build record.  Every validation step uses the
-physical path tuple captured before the build lease, so retargeting a
-caller-owned symlink while a command waits cannot redirect either validation
-or deletion.  Clean, clean-all, and distclean report success only after the
-removal or archival command succeeds and the selected path satisfies its
-postcondition.
+has already removed the per-build record and when a prior archival attempt
+failed.  Artifact reporting joins the same final root identity and accepts a
+missing build directory only when the retained root record still binds the
+source, control plane, and prefix.
+
+Each mutating recipe captures canonical paths and device/inode/file-type
+anchors during Makefile evaluation, acquires the shared build lease, and
+revalidates those values immediately after acquisition.  A path replacement
+completed while a cooperating command waits on the lease fails before layout,
+identity, removal, or archival logic runs.  The lease is the coordination
+boundary for same-user build processes; direct filesystem mutation by a
+process that bypasses Make is outside that cooperative boundary.  Clean,
+clean-all, and distclean report success only after the removal or archival
+command succeeds and the selected path satisfies its postcondition.
 
 Each compared revision gets a distinct `BUILD_ROOT`, `BUILDDIR`, and `PREFIX`.
 `clean-all` remains a control-worktree operation and rejects every external
@@ -135,14 +168,17 @@ directory.
 
 The build-infra worktree remains the control plane.  Its profile, host
 environment, allowlist, toolchain selection, and Make logic govern every
-selected source tree.  `make source-root-selection-test` calibrates exact-root
-selection, legacy option-file admission, incomplete, unborn, dirty, and nested
-root rejection, shell-input rejection, physical containment, control-worktree
-protection, clean-all refusal, build-root and prefix identity drift,
-provisional-to-final transaction behavior, failed reconfiguration revocation,
-clean-then-distclean archival, shared prefix refusal, and the Meson source
-argument.  `make source-root-control-unit-test` exercises the pure path,
-layout, and identity-record invariants directly.
+selected source tree.  `make source-root-selection-test` calibrates GNU Make
+4.2 input transport when that lower-bound executable is installed, exact-root
+selection, legacy option-file admission, incomplete, unborn, dirty, staged,
+assume-unchanged, and nested root rejection, shell-input rejection, physical
+containment, namespace ownership, sibling-worktree protection, clean-all
+refusal, lease-bound path replacement, build-root and prefix identity drift,
+configure and install transactions, failed reconfiguration revocation,
+clean-then-distclean archival, archival retry, artifact attribution, shared
+prefix refusal, and the Meson source argument.  `make
+source-root-control-unit-test` exercises the pure path, layout, cleanliness,
+anchor, namespace, and identity-record invariants directly.
 
 ## Build-system policy
 

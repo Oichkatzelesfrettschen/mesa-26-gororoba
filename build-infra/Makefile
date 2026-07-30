@@ -94,13 +94,20 @@ export GOROROBA_BUILDDIR_INPUT
 export GOROROBA_PREFIX_INPUT
 export GOROROBA_PROFILE_INPUT
 
+make_shell_quote = '$(subst ','"'"',$(1))'
 SOURCE_ROOT_CONTROL := $(CURDIR)/scripts/source_root_control.py
-SOURCE_ROOT_FIELDS := $(shell python3 $(SOURCE_ROOT_CONTROL) resolve-make)
+SOURCE_ROOT_FIELDS := $(shell \
+	GOROROBA_TOPSRC_INPUT=$(call make_shell_quote,$(value GOROROBA_TOPSRC_INPUT)) \
+	GOROROBA_BUILD_ROOT_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILD_ROOT_INPUT)) \
+	GOROROBA_BUILDDIR_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILDDIR_INPUT)) \
+	GOROROBA_PREFIX_INPUT=$(call make_shell_quote,$(value GOROROBA_PREFIX_INPUT)) \
+	GOROROBA_PROFILE_INPUT=$(call make_shell_quote,$(value GOROROBA_PROFILE_INPUT)) \
+	python3 $(SOURCE_ROOT_CONTROL) resolve-make)
 SOURCE_ROOT_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(SOURCE_ROOT_RESOLVE_STATUS),0)
 $(error source root and build path resolution failed)
 endif
-ifneq ($(words $(SOURCE_ROOT_FIELDS)),7)
+ifneq ($(words $(SOURCE_ROOT_FIELDS)),13)
 $(error source root control returned an invalid field set)
 endif
 override TOPSRC := $(word 1,$(SOURCE_ROOT_FIELDS))
@@ -110,6 +117,18 @@ override PREFIX := $(word 4,$(SOURCE_ROOT_FIELDS))
 SOURCE_COMMIT := $(word 5,$(SOURCE_ROOT_FIELDS))
 SOURCE_TREE := $(word 6,$(SOURCE_ROOT_FIELDS))
 CONTROL_COMMIT := $(word 7,$(SOURCE_ROOT_FIELDS))
+GOROROBA_CONTROL_ROOT_INPUT := $(word 8,$(SOURCE_ROOT_FIELDS))
+GOROROBA_SOURCE_ROOT_ANCHOR := $(word 9,$(SOURCE_ROOT_FIELDS))
+GOROROBA_CONTROL_ROOT_ANCHOR := $(word 10,$(SOURCE_ROOT_FIELDS))
+GOROROBA_BUILD_ROOT_ANCHOR := $(word 11,$(SOURCE_ROOT_FIELDS))
+GOROROBA_BUILDDIR_ANCHOR := $(word 12,$(SOURCE_ROOT_FIELDS))
+GOROROBA_PREFIX_ANCHOR := $(word 13,$(SOURCE_ROOT_FIELDS))
+export GOROROBA_CONTROL_ROOT_INPUT
+export GOROROBA_SOURCE_ROOT_ANCHOR
+export GOROROBA_CONTROL_ROOT_ANCHOR
+export GOROROBA_BUILD_ROOT_ANCHOR
+export GOROROBA_BUILDDIR_ANCHOR
+export GOROROBA_PREFIX_ANCHOR
 # Every later Python check consumes the same physical path tuple that recipes
 # interpolate.  Retaining the caller's symlink spelling here would let a
 # blocked recipe validate a retargeted selector while deleting the path that
@@ -165,6 +184,10 @@ define CHECK_LAYOUT
 python3 "$(SOURCE_ROOT_CONTROL)" check-layout --operation="$1" || exit 2
 endef
 
+define VERIFY_CAPTURED_PATHS
+python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-paths --fields $1 || exit 2
+endef
+
 define PREPARE_SOURCE_IDENTITY
 python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity || exit 2
 endef
@@ -175,6 +198,10 @@ endef
 
 define VERIFY_SOURCE_IDENTITY
 python3 "$(SOURCE_ROOT_CONTROL)" verify-identity || exit 2
+endef
+
+define VERIFY_ARTIFACT_IDENTITY
+python3 "$(SOURCE_ROOT_CONTROL)" verify-artifact-identity || exit 2
 endef
 
 define VERIFY_DELETE_IDENTITY
@@ -560,6 +587,7 @@ audit: source-root-check source-root-control-unit-test \
 configure: source-root-check vostro-prefix-check
 	@$(call CHECK_LAYOUT,configure); \
 	$(ACQUIRE_BUILD_LOCK) \
+	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
 	$(PREPARE_SOURCE_IDENTITY); \
 	mkdir -p "$(dir $(BUILDDIR))"; \
 	test -f $(ENVFILE) && . $(ENVFILE) || true; \
@@ -715,6 +743,8 @@ build: source-root-check
 	test -d "$(BUILDDIR)" || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	$(ACQUIRE_BUILD_LOCK) \
+	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
+	$(call CHECK_LAYOUT,build); \
 	$(VERIFY_SOURCE_IDENTITY); \
 	build_jobs="$(JOBS)"; \
 	case "$(COMPILER_CHAIN):$${CCACHE_PREFIX:-}" in \
@@ -733,6 +763,7 @@ build: source-root-check
 
 clean:
 	@$(ACQUIRE_BUILD_LOCK) \
+	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
 	$(call CHECK_LAYOUT,clean); \
 	$(VERIFY_DELETE_IDENTITY); \
 	$(REMOVE_TREE) "$(BUILDDIR)" || { \
@@ -748,6 +779,7 @@ clean:
 # regenerable artifacts and never touches the source or an installed PREFIX.
 clean-all:
 	@$(ACQUIRE_BUILD_LOCK) \
+	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root); \
 	$(call CHECK_LAYOUT,clean-all); \
 	$(REMOVE_TREE) "$(BUILD_ROOT)" || { \
 		echo "failed to remove build root: $(BUILD_ROOT)" >&2; exit 2; \
@@ -759,6 +791,7 @@ clean-all:
 
 distclean:
 	@$(ACQUIRE_BUILD_LOCK) \
+	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
 	$(call CHECK_LAYOUT,distclean); \
 	$(VERIFY_DISTCLEAN_IDENTITY); \
 	$(REMOVE_TREE) "$(BUILDDIR)" || { \
@@ -792,12 +825,20 @@ install: source-root-check vostro-prefix-check
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	env $(LOCKED_TOOL_ENV) \
 	    $(FLOCK) -x -w $(LOCK_WAIT) "$(BUILD_LOCK)" bash -c 'set -euo pipefail; \
+	    python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-paths \
+	      --fields source_root control_root build_root builddir prefix; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" verify-identity; \
+	    python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
 	    profile_dflags=$$(python3 $(PROFILE_DFLAGS_SCRIPT) $(CONFIG)) || { \
 	      echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
-	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix="$(PREFIX)" --sysconfdir="$(SYSCONFDIR)" "$(BUILDDIR)" "$(TOPSRC)"; \
+	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix="$(PREFIX)" \
+	      --sysconfdir="$(SYSCONFDIR)" "$(BUILDDIR)" "$(TOPSRC)" || { \
+	      echo "Meson setup failed; source identity remains provisional" >&2; \
+	      exit 2; \
+	    }; \
+	    python3 "$(SOURCE_ROOT_CONTROL)" write-identity; \
 	    echo "[install] running meson install --no-rebuild --only-changed -C $(BUILDDIR)"; \
 	    $(SUDO) $(MESON) install --no-rebuild --only-changed -C "$(BUILDDIR)"; \
 	    : "sudo meson install writes meson-logs/install-log.txt as root; restore"; \
@@ -806,16 +847,21 @@ install: source-root-check vostro-prefix-check
 	    $(SUDO) chown -R "$$(id -un):$$(id -gn)" "$(BUILDDIR)/meson-logs"; \
 	    echo "[install] complete; releasing flock"'
 
-artifact-check: vostro-prefix-check
-	@$(call CHECK_LAYOUT,artifact)
-	@test -d "$(PREFIX)" || { echo "prefix missing: $(PREFIX)"; exit 1; }
+artifact-check: source-root-check vostro-prefix-check
+	@set -euo pipefail; \
+	$(call CHECK_LAYOUT,artifact); \
+	$(ACQUIRE_BUILD_LOCK) \
+	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
+	$(call CHECK_LAYOUT,artifact); \
+	$(VERIFY_ARTIFACT_IDENTITY); \
+	test -d "$(PREFIX)" || { echo "prefix missing: $(PREFIX)"; exit 1; }; \
 	find "$(PREFIX)" -maxdepth 5 -type f \
 		\( -name "libvulkan_terascale.so" -o -name "libvulkan_r3v.so" -o \
 		   -name "r600_dri.so" -o -name "r300_dri.so" -o \
 		   -name "libdril_dri.so" -o -name "libgallium-*.so" -o \
 		   -name "terascale_icd*.json" -o -name "r3v_icd*.json" \) \
-		-printf "%p %TY-%Tm-%Td %TH:%TM:%TS %s bytes\n" | sort
-	@stale=$$(find "$(PREFIX)" -maxdepth 6 -type f \
+		-printf "%p %TY-%Tm-%Td %TH:%TM:%TS %s bytes\n" | sort; \
+	stale=$$(find "$(PREFIX)" -maxdepth 6 -type f \
 		\( -name "libvulkan_r300.so" -o -name "r300_icd*.json" -o \
 		   -name "r300_devenv_icd*.json" \) 2>/dev/null | sort); \
 	if [ -n "$$stale" ]; then \
@@ -829,12 +875,20 @@ test: source-root-check
 	test -d "$(BUILDDIR)" || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	$(ACQUIRE_BUILD_LOCK) \
+	$(call VERIFY_CAPTURED_PATHS,source_root control_root build_root builddir prefix); \
+	$(call CHECK_LAYOUT,test); \
 	$(VERIFY_SOURCE_IDENTITY); \
 	env $(LOCKED_TOOL_ENV) \
 	    $(MESON) test -C "$(BUILDDIR)" $(MESON_TEST_ARGS)
 
 build-lease-test:
-	@tmpdir="$$(mktemp -d)"; \
+	@test_namespace="/var/tmp/mesa-26-gororoba-$$(id -u)"; \
+	umask 077; \
+	mkdir -p "$$test_namespace"; \
+	test -O "$$test_namespace" && test ! -L "$$test_namespace" || { \
+		echo "FAIL  unsafe test build namespace: $$test_namespace" >&2; exit 1; \
+	}; \
+	tmpdir="$$(mktemp -d "$$test_namespace/build-lease.XXXXXX")"; \
 	canonical_builddir="$(TOPSRC)/build/.build-lease-test-$$$$"; \
 	trap 'rm -rf "$$tmpdir" "$$canonical_builddir"' EXIT HUP INT TERM; \
 	lock="$$tmpdir/mesa-build.lock"; \
@@ -951,8 +1005,15 @@ build-lease-test:
 	echo "OK    distclean holds one build lease"
 
 source-root-selection-test:
-	@tmpdir="$$(mktemp -d)"; \
-	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	@test_namespace="/var/tmp/mesa-26-gororoba-$$(id -u)"; \
+	umask 077; \
+	mkdir -p "$$test_namespace"; \
+	test -O "$$test_namespace" && test ! -L "$$test_namespace" || { \
+		echo "FAIL  unsafe test build namespace: $$test_namespace" >&2; exit 1; \
+	}; \
+	tmpdir="$$(mktemp -d "$$test_namespace/source-root.XXXXXX")"; \
+	control_dirty_marker="$(CONTROL_ROOT)/.source-root-control-dirty-$$$$"; \
+	trap 'rm -f "$$control_dirty_marker"; rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	if legacy_make_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		MAKE_VERSION=4.1 source-root-check 2>&1 )"; then \
 		echo "FAIL  source-root control accepted GNU Make 4.1" >&2; \
@@ -964,6 +1025,24 @@ source-root-selection-test:
 		printf '%s\n' "$$legacy_make_output" >&2; exit 1; \
 	}; \
 	echo "OK    source-root control declares the GNU Make 4.2 floor"; \
+	if lower_bound_make="$$(command -v make-4.2 2>/dev/null)"; then \
+		lower_bound_output="$$( "$$lower_bound_make" --no-print-directory \
+			-C "$(CURDIR)" help TOPSRC="$(CONTROL_ROOT)" \
+			BUILD_ROOT="$$tmpdir/make42-build" \
+			BUILDDIR="$$tmpdir/make42-build/probe" \
+			PREFIX="$$tmpdir/make42-build/prefix" 2>&1 )" || { \
+			echo "FAIL  GNU Make 4.2 could not transport path inputs" >&2; \
+			printf '%s\n' "$$lower_bound_output" >&2; exit 1; \
+		}; \
+		printf '%s\n' "$$lower_bound_output" | \
+			grep -F "topsrc:    $(CONTROL_ROOT)" >/dev/null || { \
+			echo "FAIL  GNU Make 4.2 returned the wrong source root" >&2; \
+			printf '%s\n' "$$lower_bound_output" >&2; exit 1; \
+		}; \
+		echo "OK    GNU Make 4.2 transports parse-time path inputs"; \
+	else \
+		echo "SKIP  GNU Make 4.2 executable is unavailable"; \
+	fi; \
 	source_root="$$tmpdir/source"; \
 	mkdir -p "$$source_root"; \
 	git -C "$$source_root" init -q; \
@@ -976,6 +1055,19 @@ source-root-selection-test:
 	$(MAKE) --no-print-directory -C "$(CURDIR)" source-root-check \
 		TOPSRC="$$source_root" >/dev/null; \
 	echo "OK    external TOPSRC accepts a clean committed Mesa worktree"; \
+	touch "$$control_dirty_marker"; \
+	if control_dirty_output="$$( $(MAKE) --no-print-directory \
+		-C "$(CURDIR)" source-root-check TOPSRC="$$source_root" 2>&1 )"; then \
+		echo "FAIL  source-root-check accepted a dirty control worktree" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$control_dirty_output" | \
+		grep -F "control worktree is dirty" >/dev/null || { \
+		echo "FAIL  dirty control worktree returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$control_dirty_output" >&2; exit 1; \
+	}; \
+	rm -f "$$control_dirty_marker"; \
+	echo "OK    external TOPSRC rejects dirty control-plane state"; \
 	nested_root="$$source_root/nested"; \
 	mkdir -p "$$nested_root"; \
 	touch "$$nested_root/meson.build" "$$nested_root/meson.options"; \
@@ -1051,6 +1143,34 @@ source-root-selection-test:
 		exit 1; \
 	fi; \
 	echo "OK    external TOPSRC rejects shell metacharacters before planning"; \
+	command_marker="$$tmpdir/command-substitution-executed"; \
+	command_input='$$(touch '"$$command_marker"')'; \
+	if command_output="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" \
+		configure TOPSRC="$$command_input" 2>&1 )"; then \
+		echo "FAIL  source-root-check accepted command substitution" >&2; \
+		exit 1; \
+	fi; \
+	test ! -e "$$command_marker" || { \
+		echo "FAIL  TOPSRC command substitution executed" >&2; exit 1; \
+	}; \
+	printf '%s\n' "$$command_output" | \
+		grep -F "contains unsupported path characters" >/dev/null || { \
+		echo "FAIL  command-substitution TOPSRC returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$command_output" >&2; exit 1; \
+	}; \
+	echo "OK    parse-time transport preserves command substitution as data"; \
+	quote_input="source'quote"; \
+	if quote_output="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" \
+		configure TOPSRC="$$quote_input" 2>&1 )"; then \
+		echo "FAIL  source-root-check accepted a single quote" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$quote_output" | \
+		grep -F "contains unsupported path characters" >/dev/null || { \
+		echo "FAIL  single-quote TOPSRC returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$quote_output" >&2; exit 1; \
+	}; \
+	echo "OK    parse-time transport rejects single quotes as data"; \
 	if whitespace_output="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" \
 		configure TOPSRC="$$tmpdir/source root" 2>&1 )"; then \
 		echo "FAIL  source-root-check accepted whitespace" >&2; \
@@ -1111,6 +1231,27 @@ source-root-selection-test:
 		printf '%s\n' "$$control_build_output" >&2; exit 1; \
 	}; \
 	echo "OK    external TOPSRC protects the control worktree build tree"; \
+	peer_root="$$tmpdir/peer-repository"; \
+	mkdir -p "$$peer_root"; \
+	git -C "$$peer_root" init -q; \
+	touch "$$peer_root/peer-sentinel"; \
+	if peer_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+		TOPSRC="$$source_root" BUILD_ROOT="$$peer_root/build-output" \
+		BUILDDIR="$$peer_root/build-output/probe" \
+		PREFIX="$$peer_root/build-output/prefix" \
+		BUILD_LOCK="$$tmpdir/peer.lock" LOCK_WAIT=0 2>&1 )"; then \
+		echo "FAIL  clean accepted a sibling Git worktree" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$peer_output" | \
+		grep -F "refusing BUILD_ROOT inside a Git worktree" >/dev/null || { \
+		echo "FAIL  sibling Git worktree returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$peer_output" >&2; exit 1; \
+	}; \
+	test -f "$$peer_root/peer-sentinel" || { \
+		echo "FAIL  clean changed the sibling Git worktree" >&2; exit 1; \
+	}; \
+	echo "OK    destructive build roots exclude sibling Git worktrees"; \
 	if control_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		artifact-check TOPSRC="$$source_root" \
 		BUILD_ROOT="$$tmpdir/control-prefix-build" \
@@ -1154,6 +1295,20 @@ source-root-selection-test:
 		fi; \
 	done; \
 	echo "OK    destructive operations reject system build roots"; \
+	for hostile_home in / /var/lib; do \
+		if HOME="$$hostile_home" env \
+			GOROROBA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
+			GOROROBA_BUILD_ROOT_INPUT="$$hostile_home/gororoba-review" \
+			GOROROBA_BUILDDIR_INPUT="$$hostile_home/gororoba-review/probe" \
+			GOROROBA_PREFIX_INPUT="/opt/local/mesa-$(PROFILE)" \
+			GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+			python3 "$(SOURCE_ROOT_CONTROL)" \
+				check-layout --operation=clean >/dev/null 2>&1; then \
+			echo "FAIL  HOME=$$hostile_home admitted a destructive root" >&2; \
+			exit 1; \
+		fi; \
+	done; \
+	echo "OK    build namespace ownership ignores caller-controlled HOME"; \
 	remove_failure_root="$$tmpdir/remove-failure"; \
 	remove_failure_builddir="$$remove_failure_root/probe"; \
 	mkdir -p "$$remove_failure_builddir"; \
@@ -1411,6 +1566,75 @@ source-root-selection-test:
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct NINJA=true >/dev/null; \
 	echo "OK    external build verifies the configure-time identity"; \
+	if install_failure_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" install \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESON=false SUDO=true 2>&1 )"; then \
+		echo "FAIL  install finalized identity after Meson failure" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$install_failure_output" | \
+		grep -F "Meson setup failed; source identity remains provisional" \
+		>/dev/null || { \
+		echo "FAIL  install Meson failure returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$install_failure_output" >&2; exit 1; \
+	}; \
+	grep -F '"state": "provisional"' \
+		"$$identity_build_root/.gororoba-external-source-identity.json" \
+		>/dev/null || { \
+		echo "FAIL  failed install left the root identity final" >&2; \
+		exit 1; \
+	}; \
+	if install_stale_build="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" build \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct NINJA=true 2>&1 )"; then \
+		echo "FAIL  build accepted state after failed install setup" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$install_stale_build" | \
+		grep -F "expected final" >/dev/null || { \
+		echo "FAIL  failed-install build returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$install_stale_build" >&2; exit 1; \
+	}; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" install \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESON=true SUDO=true >/dev/null; \
+	cmp -s "$$identity_build_root/.gororoba-external-source-identity.json" \
+		"$$identity_builddir/.gororoba-source-identity.json" || { \
+		echo "FAIL  successful install wrote mismatched transactions" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    install setup revokes and finalizes one source transaction"; \
+	mkdir -p "$$identity_prefix"; \
+	touch "$$identity_prefix/libgallium-source-root-test.so"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" artifact-check \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 >/dev/null; \
+	if artifact_drift_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+		artifact-check TOPSRC="$$legacy_root" \
+		BUILD_ROOT="$$identity_build_root" BUILDDIR="$$identity_builddir" \
+		PREFIX="$$identity_prefix" BUILD_LOCK="$$tmpdir/identity.lock" \
+		LOCK_WAIT=0 2>&1 )"; then \
+		echo "FAIL  artifact-check accepted another source identity" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$artifact_drift_output" | \
+		grep -F "external source identity drift" >/dev/null || { \
+		echo "FAIL  artifact source drift returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$artifact_drift_output" >&2; exit 1; \
+	}; \
+	echo "OK    artifact reporting joins the external source identity"; \
 	if reconfigure_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
@@ -1590,6 +1814,20 @@ source-root-selection-test:
 		exit 1; \
 	fi; \
 	echo "OK    distclean propagates prefix archival failure"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
+		TOPSRC="$$source_root" BUILD_ROOT="$$archive_failure_root" \
+		BUILDDIR="$$archive_failure_builddir" PREFIX="$$archive_failure_prefix" \
+		BUILD_LOCK="$$tmpdir/archive-failure.lock" LOCK_WAIT=0 SUDO= \
+		>/dev/null; \
+	test ! -e "$$archive_failure_prefix" || { \
+		echo "FAIL  distclean retry left the bound prefix" >&2; exit 1; \
+	}; \
+	set -- "$$archive_failure_prefix".disabled.*; \
+	test "$$#" -eq 1 && test -f "$$1/sentinel" || { \
+		echo "FAIL  distclean retry did not retain one archived prefix" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    distclean resumes after prefix archival failure"; \
 	clean_distclean_root="$$tmpdir/clean-distclean"; \
 	clean_distclean_builddir="$$clean_distclean_root/probe"; \
 	clean_distclean_prefix="$$clean_distclean_root/prefix"; \
@@ -1609,6 +1847,11 @@ source-root-selection-test:
 		echo "FAIL  clean-then-distclean setup lost a protected target" >&2; \
 		exit 1; \
 	}; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" artifact-check \
+		TOPSRC="$$source_root" BUILD_ROOT="$$clean_distclean_root" \
+		BUILDDIR="$$clean_distclean_builddir" PREFIX="$$clean_distclean_prefix" \
+		BUILD_LOCK="$$tmpdir/clean-distclean.lock" LOCK_WAIT=0 >/dev/null; \
+	echo "OK    artifact reporting uses final root identity after clean"; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
 		TOPSRC="$$source_root" BUILD_ROOT="$$clean_distclean_root" \
 		BUILDDIR="$$clean_distclean_builddir" PREFIX="$$clean_distclean_prefix" \
@@ -1644,18 +1887,26 @@ source-root-selection-test:
 	echo "OK    external clean verifies build-directory ownership"; \
 	mkdir -p "$$identity_prefix"; \
 	touch "$$identity_prefix/ownership-sentinel"; \
+	retarget_root="$$tmpdir/retarget-root"; \
+	retarget_builddir="$$retarget_root/probe"; \
+	retarget_prefix="$$retarget_root/prefix"; \
+	retarget_original="$$tmpdir/retarget-original"; \
+	retarget_victim="$$tmpdir/retarget-victim"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$retarget_root" \
+		BUILDDIR="$$retarget_builddir" PREFIX="$$retarget_prefix" \
+		BUILD_LOCK="$$tmpdir/retarget-configure.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
+	mkdir -p "$$retarget_prefix" \
+		"$$retarget_victim/probe" "$$retarget_victim/prefix"; \
+	touch "$$retarget_builddir/original-sentinel" \
+		"$$retarget_prefix/original-sentinel" \
+		"$$retarget_victim/probe/victim-sentinel" \
+		"$$retarget_victim/prefix/victim-sentinel"; \
 	retarget_flock="$$tmpdir/retarget-flock"; \
 	retarget_ready="$$tmpdir/retarget.ready"; \
 	retarget_release="$$tmpdir/retarget.release"; \
 	retarget_output="$$tmpdir/retarget.output"; \
-	retarget_build_selector="$$tmpdir/retarget-build-selector"; \
-	retarget_prefix_selector="$$tmpdir/retarget-prefix-selector"; \
-	retarget_victim_build="$$tmpdir/retarget-victim-build"; \
-	retarget_victim_prefix="$$tmpdir/retarget-victim-prefix"; \
-	mkdir -p "$$retarget_victim_build" "$$retarget_victim_prefix"; \
-	touch "$$retarget_victim_build/sentinel" "$$retarget_victim_prefix/sentinel"; \
-	ln -s "$$retarget_victim_build" "$$retarget_build_selector"; \
-	ln -s "$$retarget_victim_prefix" "$$retarget_prefix_selector"; \
 	printf '%s\n' \
 		'#!/bin/sh' \
 		': > "$$GOROROBA_RETARGET_READY"' \
@@ -1665,9 +1916,8 @@ source-root-selection-test:
 	GOROROBA_RETARGET_READY="$$retarget_ready" \
 	GOROROBA_RETARGET_RELEASE="$$retarget_release" \
 		$(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
-			TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
-			BUILDDIR="$$retarget_build_selector" \
-			PREFIX="$$retarget_prefix_selector" \
+			TOPSRC="$$source_root" BUILD_ROOT="$$retarget_root" \
+			BUILDDIR="$$retarget_builddir" PREFIX="$$retarget_prefix" \
 			BUILD_LOCK="$$tmpdir/retarget.lock" LOCK_WAIT=5 \
 			FLOCK="$$retarget_flock" SUDO= \
 			> "$$retarget_output" 2>&1 & \
@@ -1681,32 +1931,36 @@ source-root-selection-test:
 		echo "FAIL  retarget mutant never reached the build lease" >&2; \
 		exit 1; \
 	fi; \
-	ln -sfnT "$$identity_builddir" "$$retarget_build_selector"; \
-	ln -sfnT "$$identity_prefix" "$$retarget_prefix_selector"; \
+	mv "$$retarget_root" "$$retarget_original"; \
+	ln -s "$$retarget_victim" "$$retarget_root"; \
 	touch "$$retarget_release"; \
 	if wait "$$retarget_pid"; then \
-		echo "FAIL  distclean accepted retargeted path selectors" >&2; \
+		echo "FAIL  distclean accepted a replaced build root" >&2; \
 		exit 1; \
 	fi; \
-	grep -E "refusing BUILDDIR outside BUILD_ROOT|external source identity drift" \
+	grep -E "selected path (target|identity) changed" \
 		"$$retarget_output" >/dev/null || { \
-		echo "FAIL  retargeted selectors returned the wrong diagnostic" >&2; \
+		echo "FAIL  replaced build root returned the wrong diagnostic" >&2; \
 		cat "$$retarget_output" >&2; exit 1; \
 	}; \
-	test -f "$$retarget_victim_build/sentinel" || { \
-		echo "FAIL  distclean deleted the initially selected build victim" >&2; \
+	test -f "$$retarget_original/probe/original-sentinel" && \
+	test -f "$$retarget_original/prefix/original-sentinel" || { \
+		echo "FAIL  distclean changed the originally selected root" >&2; \
 		exit 1; \
 	}; \
-	test -f "$$retarget_victim_prefix/sentinel" || { \
-		echo "FAIL  distclean moved the initially selected prefix victim" >&2; \
+	test -f "$$retarget_victim/probe/victim-sentinel" && \
+	test -f "$$retarget_victim/prefix/victim-sentinel" || { \
+		echo "FAIL  distclean changed the replacement root" >&2; \
 		exit 1; \
 	}; \
+	unlink "$$retarget_root"; \
+	mv "$$retarget_original" "$$retarget_root"; \
 	test -f "$$identity_builddir/ownership-sentinel" && \
 	test -f "$$identity_prefix/ownership-sentinel" || { \
 		echo "FAIL  retarget mutant changed the bound identity paths" >&2; \
 		exit 1; \
 	}; \
-	echo "OK    destructive operations retain one canonical path tuple"; \
+	echo "OK    destructive operations reject build-root replacement at the lease"; \
 	if shared_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$legacy_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_build_root/legacy-probe" \
@@ -1768,6 +2022,21 @@ source-root-selection-test:
 		BUILD_LOCK="$$tmpdir/refreshed.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct NINJA=true >/dev/null; \
 	echo "OK    source revision changes require a fresh isolated build root"; \
+	git -C "$$source_root" update-index --assume-unchanged meson.build; \
+	printf '%s\n' "assume-unchanged drift" >> "$$source_root/meson.build"; \
+	if assume_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+		source-root-check TOPSRC="$$source_root" 2>&1 )"; then \
+		echo "FAIL  source-root-check accepted assume-unchanged drift" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$assume_output" | \
+		grep -F "external TOPSRC is dirty" >/dev/null || { \
+		echo "FAIL  assume-unchanged drift returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$assume_output" >&2; exit 1; \
+	}; \
+	git -C "$$source_root" show HEAD:meson.build > "$$source_root/meson.build"; \
+	git -C "$$source_root" update-index --no-assume-unchanged meson.build; \
+	echo "OK    external TOPSRC detects assume-unchanged drift"; \
 	touch "$$source_root/untracked"; \
 	if dirty_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		source-root-check TOPSRC="$$source_root" 2>&1 )"; then \
@@ -1783,7 +2052,13 @@ source-root-selection-test:
 	echo "OK    external TOPSRC rejects dirty source state"
 
 build-job-policy-test:
-	@tmpdir="$$(mktemp -d)"; \
+	@test_namespace="/var/tmp/mesa-26-gororoba-$$(id -u)"; \
+	umask 077; \
+	mkdir -p "$$test_namespace"; \
+	test -O "$$test_namespace" && test ! -L "$$test_namespace" || { \
+		echo "FAIL  unsafe test build namespace: $$test_namespace" >&2; exit 1; \
+	}; \
+	tmpdir="$$(mktemp -d "$$test_namespace/build-jobs.XXXXXX")"; \
 	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	mkdir -p "$$tmpdir/build"; \
 	local_jobs="$$(nproc)"; \
