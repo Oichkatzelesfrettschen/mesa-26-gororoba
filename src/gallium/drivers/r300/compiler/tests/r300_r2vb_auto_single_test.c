@@ -20,14 +20,16 @@
 #include "nir.h"
 #include "nir_builder.h"
 
+#include "util/u_inlines.h"
+#include "util/u_upload_mgr.h"
 #include "r300_context.h"
-#include "r300_reg.h"
+#include "r300_emit.h"
+#include "r300_r2vb.h"
 #include "r300_r2vb_plan.h"
+#include "r300_reg.h"
 #include "r300_screen.h"
 #include "r300_shader_semantics.h"
 #include "radeon_regalloc.h"
-#include "util/u_upload_mgr.h"
-#include "util/u_inlines.h"
 
 static unsigned g_failures;
 
@@ -104,6 +106,42 @@ check_floor_parser(void)
          "floor: uint32 max parses");
 }
 
+static void
+check_mode_compatibility(void)
+{
+   struct r300_r2vb_auto_single_mode_values values;
+   memset(&values, 0, sizeof(values));
+   CHECK(r300_r2vb_auto_single_mode_values_compatible(&values),
+         "mode: an uncontaminated AUTO path is compatible");
+   CHECK(!r300_r2vb_auto_single_mode_values_compatible(NULL),
+         "mode: an unchecked mode record declines");
+
+#define CHECK_MODE_CONFLICT(member, value, name)                           \
+   do {                                                                    \
+      memset(&values, 0, sizeof(values));                                  \
+      values.member = value;                                               \
+      CHECK(!r300_r2vb_auto_single_mode_values_compatible(&values), name); \
+   } while (0)
+
+   CHECK_MODE_CONFLICT(diagnostic, "", "mode: diagnostic presence conflicts");
+   CHECK_MODE_CONFLICT(barrier, "", "mode: barrier override presence conflicts");
+   CHECK_MODE_CONFLICT(inspect, "", "mode: no-submit inspection conflicts");
+   CHECK_MODE_CONFLICT(clip_classify, "1",
+                       "mode: classify-only route conflicts");
+   CHECK_MODE_CONFLICT(clip_edge, "1",
+                       "mode: CPU edge reconstruction conflicts");
+   CHECK_MODE_CONFLICT(budget_escape, "spill1",
+                       "mode: split budget escape conflicts");
+   CHECK_MODE_CONFLICT(typed_split, "1", "mode: typed split conflicts");
+   CHECK_MODE_CONFLICT(force_split, "1", "mode: forced split conflicts");
+   CHECK_MODE_CONFLICT(varying, "1",
+                       "mode: computed-varying diagnostic conflicts");
+   CHECK_MODE_CONFLICT(delivery_capture, "1",
+                       "mode: discarded delivery capture conflicts");
+
+#undef CHECK_MODE_CONFLICT
+}
+
 /* Synthetic delivery-cell plan the decline rows perturb: READY SINGLE
  * untyped one-input, the shape the policy admits. */
 static struct r300_r2vb_producer_plan
@@ -115,6 +153,9 @@ single_cell(enum r300_r2vb_position_space space)
    plan.action = R300_R2VB_PLAN_SINGLE;
    plan.key.space = space;
    plan.num_position_inputs = 1;
+   plan.position_source.valid = true;
+   plan.position_source.app_driver_location = 0;
+   plan.position_source.location_rank = 0;
    return plan;
 }
 
@@ -128,6 +169,12 @@ census_draw(void)
    d.mode = MESA_PRIM_TRIANGLES;
    d.count = 21516;
    d.instance_count = 1;
+   d.slot_layout_available = false;
+   d.bo_draw_mode_compatible = false;
+   d.bo_delivery_ordering_compatible = false;
+   d.route_mode_compatible = true;
+   d.delivery_stream_status = R300_R2VB_DELIVERY_STREAM_OK;
+   d.producer_input_status = R300_R2VB_PRODUCER_INPUT_OK;
    return d;
 }
 
@@ -152,17 +199,63 @@ check_policy_matrix(void)
    struct r300_r2vb_producer_plan wp = single_cell(R300_R2VB_POSITION_WINDOW);
    struct r300_r2vb_auto_single_draw d = census_draw();
 
-   /* The census-dominant 21,516-vertex draw sits past the producer's
-    * single-row slot ceiling: the policy declines it truthfully instead of
-    * letting the producer fall back after an "execute" token (RS482
-    * observation, glmark2 build scene). */
-   check_policy(&cp, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_COUNT_CEILING,
-                "census draw exceeds the producer slot ceiling");
+   /* The census-dominant 21,516-vertex draw requires the selected grid
+    * representation, the BO-fetch producer, and explicit raw-submit consent.
+    * Each missing contract declines before the decision token can say execute. */
+   check_policy(&cp, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_SLOT_LAYOUT,
+                "census draw has no admitted slot layout");
+   d.slot_layout_available = true;
+   d.uses_grid_layout = true;
+   check_policy(&cp, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_SLOT_FETCH,
+                "census grid has no BO-fetch producer");
+   d.slot_fetch_enabled = true;
+   check_policy(&cp, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_RAW_SUBMIT,
+                "census grid has no raw-submit consent");
+   d.raw_submit_accepted = true;
+   check_policy(&cp, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_BO_MODE,
+                "census grid conflicts with a diagnostic BO mode");
+   d.bo_draw_mode_compatible = true;
+   check_policy(&cp, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_ORDERING_MODE,
+                "census grid conflicts with single-CS ordering");
+   d.bo_delivery_ordering_compatible = true;
+   check_policy(&cp, &wp, &d, 16384, R300_R2VB_AUTO_SINGLE_OK,
+                "census grid carries every producer gate");
+
+   static const struct {
+      enum r300_r2vb_verdict verdict;
+      enum r300_r2vb_auto_single_reason reason;
+   } route_reasons[] = {
+      {R2VB_ROUTE_PASSTHROUGH,
+       R300_R2VB_AUTO_SINGLE_PASSTHROUGH_ROUTE},
+      {R2VB_ROUTE_CANDIDATE, R300_R2VB_AUTO_SINGLE_OK},
+      {R2VB_REJECT_HW_TCL, R300_R2VB_AUTO_SINGLE_HARDWARE_TCL},
+      {R2VB_REJECT_INDEXED, R300_R2VB_AUTO_SINGLE_INDEXED},
+      {R2VB_REJECT_INSTANCED, R300_R2VB_AUTO_SINGLE_INSTANCED},
+      {R2VB_REJECT_COUNT, R300_R2VB_AUTO_SINGLE_COUNT_CEILING},
+      {R2VB_REJECT_PRIM, R300_R2VB_AUTO_SINGLE_UNSUPPORTED_PRIMITIVE},
+      {R2VB_REJECT_FRONTFACE, R300_R2VB_AUTO_SINGLE_FRONTFACE},
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(route_reasons); i++) {
+      CHECK(r300_r2vb_auto_single_route_reason(
+               route_reasons[i].verdict) == route_reasons[i].reason,
+            "policy: classifier verdict has one AUTO_SINGLE reason");
+   }
+   struct r300_r2vb_auto_single_draw passthrough_route = d;
+   passthrough_route.route_reason =
+      R300_R2VB_AUTO_SINGLE_PASSTHROUGH_ROUTE;
+   check_policy(&cp, &wp, &passthrough_route, 16384,
+                R300_R2VB_AUTO_SINGLE_PASSTHROUGH_ROUTE,
+                "passthrough path declines before producer inspection");
 
    struct r300_r2vb_auto_single_draw fits = census_draw();
    fits.count = 4095;
+   fits.slot_layout_available = true;
+   fits.slot_fetch_enabled = true;
+   fits.raw_submit_accepted = true;
+   fits.bo_draw_mode_compatible = true;
+   fits.bo_delivery_ordering_compatible = true;
    check_policy(&cp, &wp, &fits, 1024, R300_R2VB_AUTO_SINGLE_OK,
-                "ceiling-sized draw above a low floor");
+                "one-row draw uses the fixed-size BO producer");
    check_policy(&cp, &wp, &fits, 8192,
                 R300_R2VB_AUTO_SINGLE_BELOW_VERTEX_FLOOR,
                 "ceiling-sized draw under a higher floor");
@@ -202,6 +295,12 @@ check_policy_matrix(void)
    check_policy(&cp, &wp, &instanced, 1024,
                 R300_R2VB_AUTO_SINGLE_INSTANCED, "instanced draw");
 
+   struct r300_r2vb_auto_single_draw query = fits;
+   query.query_active = true;
+   check_policy(&cp, &wp, &query, 1024,
+                R300_R2VB_AUTO_SINGLE_QUERY_ACTIVE,
+                "active application query");
+
    struct r300_r2vb_auto_single_draw face = fits;
    face.fs_reads_face = true;
    check_policy(&cp, &wp, &face, 1024, R300_R2VB_AUTO_SINGLE_FRONTFACE,
@@ -217,6 +316,95 @@ check_policy_matrix(void)
    check_policy(&cp, &wp, &ext, 1024,
                 R300_R2VB_AUTO_SINGLE_FS_EXTERNAL_CONSTANTS,
                 "FS external constants");
+
+   static const struct {
+      enum r300_r2vb_producer_input_status status;
+      enum r300_r2vb_auto_single_reason reason;
+      const char *name;
+   } input_declines[] = {
+      {R300_R2VB_PRODUCER_INPUT_UNCHECKED,
+       R300_R2VB_AUTO_SINGLE_INPUT_UNCHECKED,
+       "input admission was never evaluated"},
+      {R300_R2VB_PRODUCER_INPUT_CONSTANTS,
+       R300_R2VB_AUTO_SINGLE_INPUT_CONSTANTS, "missing transform constants"},
+      {R300_R2VB_PRODUCER_INPUT_CONSTANT_SOURCE,
+       R300_R2VB_AUTO_SINGLE_INPUT_CONSTANT_SOURCE,
+       "constant source is outside mirrored UBO0"},
+      {R300_R2VB_PRODUCER_INPUT_POSITION_SOURCE,
+       R300_R2VB_AUTO_SINGLE_INPUT_POSITION_SOURCE,
+       "unresolved position source"},
+      {R300_R2VB_PRODUCER_INPUT_INSTANCE_RATE,
+       R300_R2VB_AUTO_SINGLE_INPUT_INSTANCE_RATE,
+       "per-instance position source"},
+      {R300_R2VB_PRODUCER_INPUT_BUFFER_BINDING,
+       R300_R2VB_AUTO_SINGLE_INPUT_BUFFER_BINDING,
+       "missing vertex buffer binding"},
+      {R300_R2VB_PRODUCER_INPUT_SOURCE_CLASS,
+       R300_R2VB_AUTO_SINGLE_INPUT_SOURCE_CLASS,
+       "ambiguous model source authority"},
+      {R300_R2VB_PRODUCER_INPUT_CPU_ACCESS,
+       R300_R2VB_AUTO_SINGLE_INPUT_CPU_ACCESS,
+       "model source lacks CPU access"},
+      {R300_R2VB_PRODUCER_INPUT_UPLOADER,
+       R300_R2VB_AUTO_SINGLE_INPUT_UPLOADER,
+       "CPU-shadow source has no uploader"},
+      {R300_R2VB_PRODUCER_INPUT_FORMAT,
+       R300_R2VB_AUTO_SINGLE_INPUT_FORMAT, "unsupported model format"},
+      {R300_R2VB_PRODUCER_INPUT_STRIDE,
+       R300_R2VB_AUTO_SINGLE_INPUT_STRIDE, "invalid model stride"},
+      {R300_R2VB_PRODUCER_INPUT_SPAN,
+       R300_R2VB_AUTO_SINGLE_INPUT_SPAN, "model span exceeds the resource"},
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(input_declines); i++) {
+      struct r300_r2vb_auto_single_draw bad_input = fits;
+      bad_input.producer_input_status = input_declines[i].status;
+      check_policy(&cp, &wp, &bad_input, 1024, input_declines[i].reason,
+                   input_declines[i].name);
+   }
+
+   struct r300_r2vb_auto_single_draw mode_conflict = fits;
+   mode_conflict.route_mode_compatible = false;
+   check_policy(&cp, &wp, &mode_conflict, 1024,
+                R300_R2VB_AUTO_SINGLE_MODE_CONFLICT,
+                "diagnostic or split mode conflicts with the canary");
+
+   static const struct {
+      enum r300_r2vb_delivery_stream_status status;
+      enum r300_r2vb_auto_single_reason reason;
+      const char *name;
+   } output_declines[] = {
+      {R300_R2VB_DELIVERY_STREAM_UNCHECKED,
+       R300_R2VB_AUTO_SINGLE_OUTPUT_STREAMS, "unchecked outputs"},
+      {R300_R2VB_DELIVERY_STREAM_LAYOUT,
+       R300_R2VB_AUTO_SINGLE_OUTPUT_STREAMS, "unmapped output layout"},
+      {R300_R2VB_DELIVERY_STREAM_INSTANCE_RATE,
+       R300_R2VB_AUTO_SINGLE_INPUT_INSTANCE_RATE,
+       "per-instance passthrough output"},
+      {R300_R2VB_DELIVERY_STREAM_FORMAT,
+       R300_R2VB_AUTO_SINGLE_INPUT_FORMAT,
+       "unconverted passthrough format"},
+      {R300_R2VB_DELIVERY_STREAM_STRIDE,
+       R300_R2VB_AUTO_SINGLE_INPUT_STRIDE,
+       "passthrough stride cannot cover its record"},
+      {R300_R2VB_DELIVERY_STREAM_BUFFER_BINDING,
+       R300_R2VB_AUTO_SINGLE_OUTPUT_STREAMS,
+       "passthrough buffer is unbound"},
+      {R300_R2VB_DELIVERY_STREAM_SOURCE_CLASS,
+       R300_R2VB_AUTO_SINGLE_OUTPUT_STREAMS,
+       "passthrough source has no extent authority"},
+      {R300_R2VB_DELIVERY_STREAM_SPAN,
+       R300_R2VB_AUTO_SINGLE_INPUT_SPAN,
+       "passthrough span exceeds its resource"},
+      {R300_R2VB_DELIVERY_STREAM_CAPACITY,
+       R300_R2VB_AUTO_SINGLE_OUTPUT_STREAMS,
+       "temporary delivery slots exceed capacity"},
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(output_declines); i++) {
+      struct r300_r2vb_auto_single_draw output_conflict = fits;
+      output_conflict.delivery_stream_status = output_declines[i].status;
+      check_policy(&cp, &wp, &output_conflict, 1024,
+                   output_declines[i].reason, output_declines[i].name);
+   }
 
    check_policy(NULL, &wp, &fits, 1024, R300_R2VB_AUTO_SINGLE_PLAN_NOT_READY,
                 "missing clip plan");
@@ -246,6 +434,448 @@ check_policy_matrix(void)
                 "rejected window cell");
    check_policy(&cp, NULL, &fits, 1024, R300_R2VB_AUTO_SINGLE_DELIVERY_CELL,
                 "missing window plan");
+}
+
+static void
+check_producer_input_preflight(void)
+{
+   enum { INPUT_COUNT = 5,
+          INPUT_STRIDE = 12 };
+   struct r300_r2vb_producer_plan plan =
+      single_cell(R300_R2VB_POSITION_CLIP);
+   uint8_t bytes[INPUT_COUNT * INPUT_STRIDE];
+   struct r300_resource resource;
+   memset(&resource, 0, sizeof(resource));
+   resource.b.width0 = sizeof(bytes);
+   resource.malloced_buffer = bytes;
+   struct pipe_vertex_buffer vb = {
+      .buffer.resource = &resource.b,
+   };
+   struct pipe_vertex_element ve = {
+      .src_stride = INPUT_STRIDE,
+      .src_format = PIPE_FORMAT_R32G32B32_FLOAT,
+   };
+
+   CHECK(r300_r2vb_producer_input_preflight(
+            &plan, &ve, 1, &vb, 1, 0, INPUT_COUNT) ==
+            R300_R2VB_PRODUCER_INPUT_OK,
+         "input preflight: CPU-shadow position span is admitted");
+
+   struct r300_r2vb_producer_plan bad_plan = plan;
+   bad_plan.position_source.valid = false;
+   CHECK(r300_r2vb_producer_input_preflight(
+            &bad_plan, &ve, 1, &vb, 1, 0, INPUT_COUNT) ==
+            R300_R2VB_PRODUCER_INPUT_POSITION_SOURCE,
+         "input preflight: unresolved position source declines");
+
+   struct pipe_vertex_element bad_ve = ve;
+   bad_ve.instance_divisor = 1;
+   CHECK(r300_r2vb_producer_input_preflight(
+            &plan, &bad_ve, 1, &vb, 1, 0, INPUT_COUNT) ==
+            R300_R2VB_PRODUCER_INPUT_INSTANCE_RATE,
+         "input preflight: per-instance position source declines");
+
+   bad_ve = ve;
+   bad_ve.vertex_buffer_index = 1;
+   CHECK(r300_r2vb_producer_input_preflight(
+            &plan, &bad_ve, 1, &vb, 1, 0, INPUT_COUNT) ==
+            R300_R2VB_PRODUCER_INPUT_BUFFER_BINDING,
+         "input preflight: unbound vertex-buffer index declines");
+
+   struct pipe_vertex_buffer user_vb = {
+      .is_user_buffer = true,
+      .buffer.user = bytes,
+   };
+   CHECK(r300_r2vb_producer_input_preflight(
+            &plan, &ve, 1, &user_vb, 1, 0, INPUT_COUNT) ==
+            R300_R2VB_PRODUCER_INPUT_SOURCE_CLASS,
+         "input preflight: user pointer has no resource extent authority");
+
+   resource.buf = (struct pb_buffer_lean *)(uintptr_t)1;
+   CHECK(r300_r2vb_producer_input_preflight(
+            &plan, &ve, 1, &vb, 1, 0, INPUT_COUNT) ==
+            R300_R2VB_PRODUCER_INPUT_SOURCE_CLASS,
+         "input preflight: dual CPU and winsys backing declines");
+   resource.malloced_buffer = NULL;
+   CHECK(r300_r2vb_producer_input_preflight(
+            &plan, &ve, 1, &vb, 1, 0, INPUT_COUNT) ==
+            R300_R2VB_PRODUCER_INPUT_CPU_ACCESS,
+         "input preflight: winsys-only source cannot build the CPU model");
+   resource.buf = NULL;
+   resource.malloced_buffer = bytes;
+
+   bad_ve = ve;
+   bad_ve.src_format = PIPE_FORMAT_R32G32_FLOAT;
+   CHECK(r300_r2vb_producer_input_preflight(
+            &plan, &bad_ve, 1, &vb, 1, 0, INPUT_COUNT) ==
+            R300_R2VB_PRODUCER_INPUT_FORMAT,
+         "input preflight: format outside the BO producer contract declines");
+
+   bad_ve = ve;
+   bad_ve.src_stride = 10;
+   CHECK(r300_r2vb_producer_input_preflight(
+            &plan, &bad_ve, 1, &vb, 1, 0, INPUT_COUNT) ==
+            R300_R2VB_PRODUCER_INPUT_STRIDE,
+         "input preflight: non-dword stride declines");
+
+   resource.b.width0 = sizeof(bytes) - 1;
+   CHECK(r300_r2vb_producer_input_preflight(
+            &plan, &ve, 1, &vb, 1, 0, INPUT_COUNT) ==
+            R300_R2VB_PRODUCER_INPUT_SPAN,
+         "input preflight: final fetched byte must fit the resource");
+}
+
+static void
+check_delivery_element_preflight(void)
+{
+   struct pipe_vertex_element element = {
+      .src_stride = 16,
+      .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+   };
+   CHECK(r300_r2vb_delivery_element_preflight(&element) ==
+            R300_R2VB_DELIVERY_STREAM_OK,
+         "delivery element: exact FP32x4 vertex stream is admitted");
+
+   struct pipe_vertex_element bad = element;
+   bad.instance_divisor = 1;
+   CHECK(r300_r2vb_delivery_element_preflight(&bad) ==
+            R300_R2VB_DELIVERY_STREAM_INSTANCE_RATE,
+         "delivery element: per-instance stream declines");
+
+   bad = element;
+   bad.src_format = PIPE_FORMAT_R32G32_FLOAT;
+   CHECK(r300_r2vb_delivery_element_preflight(&bad) ==
+            R300_R2VB_DELIVERY_STREAM_FORMAT,
+         "delivery element: compact float stream needs conversion");
+
+   bad = element;
+   bad.src_format = PIPE_FORMAT_R32G32B32A32_SINT;
+   CHECK(r300_r2vb_delivery_element_preflight(&bad) ==
+            R300_R2VB_DELIVERY_STREAM_FORMAT,
+         "delivery element: same-size integer stream needs conversion");
+
+   bad = element;
+   bad.src_stride = 0;
+   CHECK(r300_r2vb_delivery_element_preflight(&bad) ==
+            R300_R2VB_DELIVERY_STREAM_STRIDE,
+         "delivery element: zero stride declines");
+
+   bad = element;
+   bad.src_offset = 16;
+   CHECK(r300_r2vb_delivery_element_preflight(&bad) ==
+            R300_R2VB_DELIVERY_STREAM_STRIDE,
+         "delivery element: record outside the stride declines");
+}
+
+static void
+check_output_stream_preflight(void)
+{
+   nir_builder builder = nir_builder_init_simple_shader(
+      MESA_SHADER_VERTEX, g_screen.screen.nir_options[MESA_SHADER_VERTEX],
+      "auto_single_output_preflight");
+   nir_variable *input_position = nir_variable_create(
+      builder.shader, nir_var_shader_in, glsl_vec4_type(), "in_position");
+   input_position->data.location = VERT_ATTRIB_POS;
+   nir_variable *input_attribute = nir_variable_create(
+      builder.shader, nir_var_shader_in, glsl_vec4_type(), "in_attribute");
+   input_attribute->data.location = VERT_ATTRIB_GENERIC0;
+   nir_variable *output_position = nir_variable_create(
+      builder.shader, nir_var_shader_out, glsl_vec4_type(), "gl_Position");
+   output_position->data.location = VARYING_SLOT_POS;
+   nir_variable *output_attribute = nir_variable_create(
+      builder.shader, nir_var_shader_out, glsl_vec4_type(), "out_attribute");
+   output_attribute->data.location = VARYING_SLOT_VAR0;
+   nir_def *position = nir_load_var(&builder, input_position);
+   nir_store_var(&builder, output_position,
+                 nir_fadd(&builder, position, position), 0xf);
+   nir_store_var(&builder, output_attribute,
+                 nir_load_var(&builder, input_attribute), 0xf);
+   nir_validate_shader(builder.shader, "AUTO_SINGLE output preflight");
+
+   struct r300_vertex_element_state elements;
+   memset(&elements, 0, sizeof(elements));
+   elements.count = 2;
+   elements.velem[0] = (struct pipe_vertex_element){
+      .src_stride = 16,
+      .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+      .vertex_buffer_index = 0,
+   };
+   elements.velem[1] = (struct pipe_vertex_element){
+      .src_stride = 16,
+      .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+      .vertex_buffer_index = 1,
+   };
+   uint8_t shadow_bytes[48] = {0};
+   struct r300_resource position_resource;
+   struct r300_resource attribute_resource;
+   memset(&position_resource, 0, sizeof(position_resource));
+   memset(&attribute_resource, 0, sizeof(attribute_resource));
+   position_resource.b.width0 = sizeof(shadow_bytes);
+   position_resource.buf = (struct pb_buffer_lean *)(uintptr_t)1;
+   attribute_resource.b.width0 = sizeof(shadow_bytes);
+   attribute_resource.buf = (struct pb_buffer_lean *)(uintptr_t)2;
+
+   struct r300_vertex_element_state *saved_elements = g_context.velems;
+   struct vertex_info saved_vertex_info = g_context.vertex_info;
+   unsigned saved_buffer_count = g_context.nr_vertex_buffers;
+   struct pipe_vertex_buffer saved_buffers[2] = {
+      g_context.vertex_buffer[0],
+      g_context.vertex_buffer[1],
+   };
+   g_context.velems = &elements;
+   g_context.vertex_info.num_attribs = 2;
+   g_context.nr_vertex_buffers = 2;
+   g_context.vertex_buffer[0] = (struct pipe_vertex_buffer){
+      .buffer.resource = &position_resource.b,
+   };
+   g_context.vertex_buffer[1] = (struct pipe_vertex_buffer){
+      .buffer.resource = &attribute_resource.b,
+   };
+   const struct pipe_draw_start_count_bias draw = {
+      .start = 1,
+      .count = 2,
+   };
+
+   CHECK(r300_r2vb_auto_single_output_streams_preflight(
+            &g_context, builder.shader, &draw) ==
+            R300_R2VB_DELIVERY_STREAM_OK,
+         "output preflight: one real-BO authority is admitted");
+
+   attribute_resource.malloced_buffer = shadow_bytes;
+   CHECK(r300_r2vb_auto_single_output_streams_preflight(
+            &g_context, builder.shader, &draw) ==
+            R300_R2VB_DELIVERY_STREAM_SOURCE_CLASS,
+         "output preflight: dual backing authority declines");
+
+   attribute_resource.buf = NULL;
+   CHECK(r300_r2vb_auto_single_output_streams_preflight(
+            &g_context, builder.shader, &draw) ==
+            R300_R2VB_DELIVERY_STREAM_OK,
+         "output preflight: one CPU-shadow authority is admitted");
+
+   attribute_resource.malloced_buffer = NULL;
+   CHECK(r300_r2vb_auto_single_output_streams_preflight(
+            &g_context, builder.shader, &draw) ==
+            R300_R2VB_DELIVERY_STREAM_SOURCE_CLASS,
+         "output preflight: missing backing authority declines");
+
+   attribute_resource.malloced_buffer = shadow_bytes;
+   attribute_resource.b.width0 = sizeof(shadow_bytes) - 1;
+   CHECK(r300_r2vb_auto_single_output_streams_preflight(
+            &g_context, builder.shader, &draw) ==
+            R300_R2VB_DELIVERY_STREAM_SPAN,
+         "output preflight: one-byte-short passthrough span declines");
+
+   g_context.velems = saved_elements;
+   g_context.vertex_info = saved_vertex_info;
+   g_context.nr_vertex_buffers = saved_buffer_count;
+   g_context.vertex_buffer[0] = saved_buffers[0];
+   g_context.vertex_buffer[1] = saved_buffers[1];
+   ralloc_free(builder.shader);
+}
+
+static void
+check_passthrough_upload_extent(void)
+{
+   struct pipe_vertex_element elements[2] = {
+      {
+         .src_offset = 0,
+         .src_stride = 32,
+         .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+         .vertex_buffer_index = 2,
+      },
+      {
+         .src_offset = 16,
+         .src_stride = 32,
+         .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+         .vertex_buffer_index = 2,
+      },
+   };
+   uint32_t end = 0;
+   CHECK(r300_r2vb_vertex_buffer_upload_end(
+            elements, ARRAY_SIZE(elements), 2, 8, 2, 3, 168, &end) &&
+            end == 168,
+         "passthrough upload: high interleaved offset fixes the exact end");
+   CHECK(!r300_r2vb_vertex_buffer_upload_end(
+            elements, ARRAY_SIZE(elements), 2, 8, 2, 3, 167, &end),
+         "passthrough upload: one-byte-short resource declines");
+
+   struct pipe_vertex_element extreme = {
+      .src_offset = UINT16_MAX,
+      .src_stride = UINT16_MAX,
+      .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+      .vertex_buffer_index = 0,
+   };
+   CHECK(!r300_r2vb_vertex_buffer_upload_end(
+            &extreme, 1, 0, UINT32_MAX, UINT32_MAX, UINT32_MAX,
+            UINT32_MAX, &end),
+         "passthrough upload: maximum offsets cannot wrap the extent");
+
+   extreme.src_offset = 0;
+   CHECK(!r300_r2vb_vertex_buffer_upload_end(
+            &extreme, 1, 0, 0, UINT32_MAX, 2, UINT32_MAX, &end),
+         "passthrough upload: start plus count overflow declines");
+
+   elements[0].instance_divisor = 1;
+   CHECK(!r300_r2vb_vertex_buffer_upload_end(
+            elements, ARRAY_SIZE(elements), 2, 8, 2, 3, 168, &end),
+         "passthrough upload: per-instance element declines");
+   elements[0].instance_divisor = 0;
+   CHECK(!r300_r2vb_vertex_buffer_upload_end(
+            elements, ARRAY_SIZE(elements), 2, 8, 2, 3, 168, NULL),
+         "passthrough upload: missing result storage declines");
+}
+
+enum constant_source_fixture {
+   CONSTANT_SOURCE_FIXTURE_NONE = 0,
+   CONSTANT_SOURCE_FIXTURE_UBO0,
+   CONSTANT_SOURCE_FIXTURE_UBO0_END,
+   CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN,
+   CONSTANT_SOURCE_FIXTURE_UBO1,
+   CONSTANT_SOURCE_FIXTURE_DYNAMIC_BLOCK,
+   CONSTANT_SOURCE_FIXTURE_DYNAMIC_OFFSET,
+   CONSTANT_SOURCE_FIXTURE_PUSH,
+   CONSTANT_SOURCE_FIXTURE_CONSTANT,
+   CONSTANT_SOURCE_FIXTURE_UBO_UNIFORM_BLOCK_INTEL,
+   CONSTANT_SOURCE_FIXTURE_GLOBAL_CONSTANT_UNIFORM_BLOCK_INTEL,
+   CONSTANT_SOURCE_FIXTURE_PUSH_DATA_INTEL,
+   CONSTANT_SOURCE_FIXTURE_PUSH_CONSTANT_ZINK,
+};
+
+static nir_shader *
+build_constant_source_fixture(enum constant_source_fixture fixture)
+{
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_VERTEX, g_screen.screen.nir_options[MESA_SHADER_VERTEX],
+      "r2vb_constant_source_fixture");
+   b.shader->info.num_ubos = 2;
+
+   nir_def *dynamic = nir_load_vertex_id(&b);
+   switch (fixture) {
+   case CONSTANT_SOURCE_FIXTURE_NONE:
+      break;
+   case CONSTANT_SOURCE_FIXTURE_UBO0:
+      nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                   .align_mul = 16, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_UBO0_END:
+      nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 48),
+                   .align_mul = 16, .range_base = 48, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN:
+      nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 64),
+                   .align_mul = 16, .range_base = 64, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_UBO1:
+      nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                   .align_mul = 16, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_DYNAMIC_BLOCK:
+      nir_load_ubo(&b, 4, 32, dynamic, nir_imm_int(&b, 0),
+                   .align_mul = 16, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_DYNAMIC_OFFSET:
+      nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), dynamic,
+                   .align_mul = 4, .range = 64);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_PUSH:
+      nir_load_push_constant(&b, 4, 32, nir_imm_int(&b, 0),
+                             .align_mul = 16, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_CONSTANT:
+      nir_load_constant(&b, 4, 32, nir_imm_int(&b, 0),
+                        .align_mul = 16, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_UBO_UNIFORM_BLOCK_INTEL:
+      nir_load_ubo_uniform_block_intel(
+         &b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+         .align_mul = 16, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_GLOBAL_CONSTANT_UNIFORM_BLOCK_INTEL:
+      nir_load_global_constant_uniform_block_intel(
+         &b, 4, 32, nir_imm_int64(&b, 0), .align_mul = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_PUSH_DATA_INTEL:
+      nir_load_push_data_intel(&b, 4, 32, nir_imm_int(&b, 0),
+                               .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_PUSH_CONSTANT_ZINK:
+      nir_load_push_constant_zink(&b, 4, 32, nir_imm_int(&b, 0));
+      break;
+   }
+
+   nir_validate_shader(b.shader, "R2VB constant-source fixture");
+   return b.shader;
+}
+
+static void
+check_constant_source_contract(void)
+{
+   struct {
+      enum constant_source_fixture fixture;
+      enum r300_r2vb_constant_source_contract expected_contract;
+      uint32_t expected_bytes;
+      const char *name;
+   } cases[] = {
+      {CONSTANT_SOURCE_FIXTURE_NONE, R300_R2VB_CONSTANT_SOURCE_NONE, 0,
+       "constant source: shader without external loads needs no mirror"},
+      {CONSTANT_SOURCE_FIXTURE_UBO0,
+       R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64, 16,
+       "constant source: first UBO0 vector maps to the mirrored prefix"},
+      {CONSTANT_SOURCE_FIXTURE_UBO0_END,
+       R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64, 64,
+       "constant source: final UBO0 prefix vector ends at byte 64"},
+      {CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: UBO0 byte 64 starts outside the mirror"},
+      {CONSTANT_SOURCE_FIXTURE_UBO1,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: UBO1 remains outside the production contract"},
+      {CONSTANT_SOURCE_FIXTURE_DYNAMIC_BLOCK,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: dynamic UBO selection declines"},
+      {CONSTANT_SOURCE_FIXTURE_DYNAMIC_OFFSET,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: dynamic UBO offset declines"},
+      {CONSTANT_SOURCE_FIXTURE_PUSH,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: push constants decline"},
+      {CONSTANT_SOURCE_FIXTURE_CONSTANT,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: constant-memory loads decline"},
+      {CONSTANT_SOURCE_FIXTURE_UBO_UNIFORM_BLOCK_INTEL,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: Intel uniform-block UBO loads decline"},
+      {CONSTANT_SOURCE_FIXTURE_GLOBAL_CONSTANT_UNIFORM_BLOCK_INTEL,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: Intel uniform-block global loads decline"},
+      {CONSTANT_SOURCE_FIXTURE_PUSH_DATA_INTEL,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: Intel push-data loads decline"},
+      {CONSTANT_SOURCE_FIXTURE_PUSH_CONSTANT_ZINK,
+       R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
+       "constant source: Zink push-constant loads decline"},
+   };
+
+   for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+      nir_shader *shader = build_constant_source_fixture(cases[i].fixture);
+      uint32_t required_bytes = UINT32_MAX;
+      enum r300_r2vb_constant_source_contract contract =
+         r300_r2vb_constant_source_scan(shader, &required_bytes);
+      CHECK(contract == cases[i].expected_contract &&
+               required_bytes == cases[i].expected_bytes,
+            cases[i].name);
+      ralloc_free(shader);
+   }
+}
+
+static void
+check_vertex_array_restore(void)
+{
+   g_context.vertex_arrays_dirty = false;
+   r300_r2vb_restore_vertex_array_state(&g_context);
+   CHECK(g_context.vertex_arrays_dirty,
+         "re-ingest restore: application vertex arrays are re-emitted");
 }
 
 /* Fitting float producer of the retained-corpus shape: one position input,
@@ -291,6 +921,11 @@ check_live_plans(void)
    if (cok && wok) {
       struct r300_r2vb_auto_single_draw d = census_draw();
       d.count = 4095;
+      d.slot_layout_available = true;
+      d.slot_fetch_enabled = true;
+      d.raw_submit_accepted = true;
+      d.bo_draw_mode_compatible = true;
+      d.bo_delivery_ordering_compatible = true;
       check_policy(&cp, &wp, &d, 1024, R300_R2VB_AUTO_SINGLE_OK,
                    "live plans execute a ceiling-sized draw");
       d.count = 300;
@@ -317,16 +952,18 @@ check_layout_accept(uint32_t count, bool grid, uint32_t width,
    char label[160];
    snprintf(label, sizeof(label), "layout: %s -> %ux%u", name, width, height);
    CHECK(ok && l.width == width && l.height == height &&
-            l.pitch_pixels == l.width && l.storage_slots >= count &&
+            l.pitch_pixels == (height == 1 ? align(width, 2) : width) &&
+            l.storage_slots >= count &&
             l.storage_bytes == l.storage_slots * 16u,
          label);
    if (!ok)
       return;
    bool map_ok = true;
    for (uint32_t s = 0; s < count; s++) {
-      uint32_t x = s % l.width, y = s / l.width;
-      if (x >= l.width || y >= l.height ||
-          (uint64_t)y * l.pitch_pixels + x != s)
+      uint32_t x = UINT32_MAX, y = UINT32_MAX;
+      uint64_t byte_offset = UINT64_MAX;
+      if (!r300_r2vb_slot_layout_address(&l, s, &x, &y, &byte_offset) ||
+          x >= l.width || y >= l.height || byte_offset != (uint64_t)s * 16u)
          map_ok = false;
    }
    snprintf(label, sizeof(label), "layout: %s pitch-tight mapping", name);
@@ -350,6 +987,51 @@ check_slot_layout(void)
             !r300_r2vb_slot_grid_gate_value("0") &&
             r300_r2vb_slot_grid_gate_value("1"),
          "layout: grid gate exact-value parser");
+   CHECK(!r300_r2vb_bo_draw_delivery_mode_value(NULL) &&
+            !r300_r2vb_bo_draw_delivery_mode_value("") &&
+            !r300_r2vb_bo_draw_delivery_mode_value("producer_submit3") &&
+            !r300_r2vb_bo_draw_delivery_mode_value("PRODUCER_DELIVER") &&
+            r300_r2vb_bo_draw_delivery_mode_value("producer_deliver"),
+         "layout: BO delivery selector exact-value parser");
+   CHECK(!r300_r2vb_immediate_producer_shape_ok(0, 1) &&
+            !r300_r2vb_immediate_producer_shape_ok(1, 0) &&
+            r300_r2vb_immediate_producer_shape_ok(1024, 1) &&
+            !r300_r2vb_immediate_producer_shape_ok(1025, 1) &&
+            r300_r2vb_immediate_producer_shape_ok(682, 2) &&
+            !r300_r2vb_immediate_producer_shape_ok(683, 2) &&
+            r300_r2vb_immediate_producer_shape_ok(227, 8) &&
+            !r300_r2vb_immediate_producer_shape_ok(228, 8) &&
+            !r300_r2vb_immediate_producer_shape_ok(1, 9) &&
+            !r300_r2vb_immediate_producer_shape_ok(2047, 1) &&
+            !r300_r2vb_immediate_producer_shape_ok(2048, 1),
+         "layout: count-scaled immediate payload stays within one IB");
+   uint32_t rebased_offset = UINT32_MAX;
+   CHECK(r300_r2vb_rebased_buffer_offset(8, 12, 2, &rebased_offset) &&
+            rebased_offset == 32 &&
+            r300_r2vb_rebased_buffer_offset(UINT32_MAX, 1, 0,
+                                            &rebased_offset) &&
+            rebased_offset == UINT32_MAX &&
+            !r300_r2vb_rebased_buffer_offset(UINT32_MAX, 1, 1,
+                                             &rebased_offset) &&
+            !r300_r2vb_rebased_buffer_offset(0, 16, 1, NULL),
+         "layout: passthrough buffer rebasing is checked and exact");
+   struct r300_r2vb_slot_layout selected;
+   CHECK(r300_r2vb_slot_layout_select(4097, NULL, true, &selected) &&
+            selected.policy == R300_R2VB_LAYOUT_GRID_2048,
+         "layout: absent selector uses the count-derived grid policy");
+   CHECK(r300_r2vb_slot_layout_select(4096, "legacy_row", true, &selected) &&
+            selected.policy == R300_R2VB_LAYOUT_LEGACY_ROW &&
+            selected.width == 4096 && selected.height == 1,
+         "layout: explicit legacy-row selector");
+   CHECK(r300_r2vb_slot_layout_select(4096, "grid_2048", true, &selected) &&
+            selected.policy == R300_R2VB_LAYOUT_GRID_2048 &&
+            selected.width == 2048 && selected.height == 2,
+         "layout: explicit grid selector");
+   CHECK(!r300_r2vb_slot_layout_select(4096, "grid_2048", false, &selected),
+         "layout: explicit grid selector requires the grid gate");
+   CHECK(!r300_r2vb_slot_layout_select(4096, "", true, &selected) &&
+            !r300_r2vb_slot_layout_select(4096, "grid", true, &selected),
+         "layout: empty and unrecognized selectors fail closed");
    check_layout_reject(0, true, "count zero");
    check_layout_accept(1, false, 1, 1, "single slot");
    check_layout_accept(2048, true, 2048, 1, "one grid row");
@@ -384,18 +1066,52 @@ check_slot_layout(void)
             grid.width == 2048 && grid.height == 3 &&
             grid.storage_slots - grid.count == 2047,
          "layout: policy grid 4097 -> 2048x3, 2047-slot sentinel tail");
+   {
+      uint32_t x = UINT32_MAX, y = UINT32_MAX;
+      uint64_t byte_offset = UINT64_MAX;
+      struct r300_r2vb_slot_layout malformed = grid;
+      malformed.pitch_pixels++;
+      CHECK(!r300_r2vb_slot_layout_address(&malformed, 4096, &x, &y,
+                                           &byte_offset) &&
+               x == UINT32_MAX && y == UINT32_MAX &&
+               byte_offset == UINT64_MAX,
+            "layout: malformed grid pitch fails without output mutation");
+      malformed = grid;
+      malformed.storage_bytes -= 16;
+      CHECK(!r300_r2vb_slot_layout_address(&malformed, 4096, &x, &y,
+                                           &byte_offset),
+            "layout: malformed storage extent fails closed");
+      CHECK(!r300_r2vb_slot_layout_address(&grid, grid.count, &x, &y,
+                                           &byte_offset) &&
+               !r300_r2vb_slot_layout_address(NULL, 0, &x, &y,
+                                              &byte_offset) &&
+               !r300_r2vb_slot_layout_address(&grid, 0, NULL, &y,
+                                              &byte_offset),
+            "layout: out-of-domain slot and null arguments fail closed");
+   }
    CHECK(!r300_r2vb_slot_layout_init_policy(4097,
                                             R300_R2VB_LAYOUT_LEGACY_ROW,
                                             &row),
          "layout: policy row rejects 4097");
+   CHECK(!r300_r2vb_slot_layout_init_policy(
+            1, R300_R2VB_LAYOUT_LEGACY_ROW, NULL) &&
+            !r300_r2vb_slot_layout_init(1, false, NULL) &&
+            !r300_r2vb_slot_layout_select(1, NULL, false, NULL),
+         "layout: null output rejects every constructor");
    for (uint32_t w = 2559; w <= 2561; w++) {
       char label[64];
       snprintf(label, sizeof(label), "layout: policy row %u one-row", w);
       CHECK(r300_r2vb_slot_layout_init_policy(w, R300_R2VB_LAYOUT_LEGACY_ROW,
                                               &row) &&
-               row.width == w && row.height == 1 && row.pitch_pixels == w,
+               row.width == w && row.height == 1 &&
+               row.pitch_pixels == align(w, 2),
             label);
    }
+   CHECK(r300_r2vb_slot_layout_init_policy(2559,
+                                           R300_R2VB_LAYOUT_LEGACY_ROW,
+                                           &row) &&
+            row.storage_slots - row.count == 1,
+         "layout: odd one-row width retains one physical tail slot");
    CHECK(r300_r2vb_slot_layout_init_policy(8192, R300_R2VB_LAYOUT_GRID_2048,
                                            &grid) &&
             grid.width == 2048 && grid.height == 4,
@@ -660,6 +1376,60 @@ fws_check_space(struct radeon_cmdbuf *rcs, unsigned dw)
 }
 
 static struct radeon_winsys g_fake_winsys;
+
+static void
+check_swtcl_vertex_size_restore(void)
+{
+   uint32_t command_stream[32] = {
+      CP_PACKET0(R300_VAP_VTX_SIZE, 0),
+      8,
+   };
+   struct radeon_winsys *saved_winsys = g_context.rws;
+   uint32_t *saved_buffer = g_context.cs.current.buf;
+   unsigned saved_max_dwords = g_context.cs.current.max_dw;
+   unsigned saved_current_dword = g_context.cs.current.cdw;
+   struct pb_buffer_lean *saved_vbo = g_context.vbo;
+   size_t saved_vbo_offset = g_context.draw_vbo_offset;
+   unsigned saved_vertex_size = g_context.vertex_info.size;
+
+   memset(&g_fws, 0, sizeof(g_fws));
+   g_fake_winsys.cs_lookup_buffer = fws_lookup_buffer;
+   struct pb_buffer_lean *application_vbo =
+      (struct pb_buffer_lean *)(uintptr_t)1;
+   g_fws.seen[0] = application_vbo;
+   g_fws.num_seen = 1;
+   g_context.rws = &g_fake_winsys;
+   g_context.cs.current.buf = command_stream;
+   g_context.cs.current.max_dw = ARRAY_SIZE(command_stream);
+   g_context.cs.current.cdw = 2;
+   g_context.vbo = application_vbo;
+   g_context.draw_vbo_offset = 64;
+   g_context.vertex_info.size = 12;
+
+   const unsigned start = g_context.cs.current.cdw;
+   r300_emit_vertex_arrays_swtcl(&g_context, false);
+   CHECK(g_context.cs.current.cdw - start ==
+            R300_EMIT_VERTEX_ARRAYS_SWTCL_DWORDS,
+         "SWTCL arrays: emission and reservation share one dword count");
+   CHECK(command_stream[0] == CP_PACKET0(R300_VAP_VTX_SIZE, 0) &&
+            command_stream[1] == 8,
+         "SWTCL arrays: the preceding producer vertex size remains historical");
+   CHECK(command_stream[start] == CP_PACKET0(R300_VAP_VTX_SIZE, 0) &&
+            command_stream[start + 1] == 12,
+         "SWTCL arrays: application VAP_VTX_SIZE precedes its vertex fetch");
+   CHECK(command_stream[start + 2] ==
+               CP_PACKET3(R300_PACKET3_3D_LOAD_VBPNTR, 3) &&
+            command_stream[start + 4] == (12 | (12 << 8)),
+         "SWTCL arrays: LOAD_VBPNTR carries the same application tuple");
+
+   g_context.rws = saved_winsys;
+   g_context.cs.current.buf = saved_buffer;
+   g_context.cs.current.max_dw = saved_max_dwords;
+   g_context.cs.current.cdw = saved_current_dword;
+   g_context.vbo = saved_vbo;
+   g_context.draw_vbo_offset = saved_vbo_offset;
+   g_context.vertex_info.size = saved_vertex_size;
+}
 
 static struct pipe_transfer g_fake_transfer;
 
@@ -1331,22 +2101,28 @@ check_logical_binding(void)
                                         .src_stride = TSTRIDE,
                                         .src_format =
                                            PIPE_FORMAT_R32G32B32_FLOAT };
+      struct r300_r2vb_slot_layout txn_layout;
+      CHECK(r300_r2vb_slot_layout_init_policy(
+               TCOUNT, R300_R2VB_LAYOUT_LEGACY_ROW, &txn_layout),
+            "txn: the output layout is valid");
       struct fake_buffer *slotfb = (struct fake_buffer *)fake_resource_create(
          &g_screen.screen, &(struct pipe_resource){ .width0 = 4096 * 16 });
       /* Output authority fixture: a CPU-shadow color target bound as the
        * framebuffer's first color buffer, one row of FP32x4 texels. */
       struct r300_resource outshadow;
       memset(&outshadow, 0, sizeof(outshadow));
-      outshadow.b.width0 = TCOUNT;
+      outshadow.b.width0 = (uint32_t)txn_layout.storage_bytes;
       outshadow.b.height0 = 1;
       outshadow.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
       pipe_reference_init(&outshadow.b.reference, 1);
-      uint8_t *outbytes = calloc(1, (size_t)TCOUNT * 16);
+      uint8_t *outbytes = calloc(1, (size_t)txn_layout.storage_bytes);
       outshadow.malloced_buffer = outbytes;
       outshadow.buf = (struct pb_buffer_lean *)outbytes;
       outshadow.domain = RADEON_DOMAIN_GTT;
       struct pipe_framebuffer_state tfb;
       memset(&tfb, 0, sizeof(tfb));
+      tfb.width = txn_layout.width;
+      tfb.height = txn_layout.height;
       tfb.nr_cbufs = 1;
       tfb.cbufs[0].texture = &outshadow.b;
       g_context.fb_state.state = &tfb;
@@ -1356,21 +2132,24 @@ check_logical_binding(void)
        * operation, before the model upload retains anything. */
       unsetenv("R300_R2VB_SLOT_FETCH");
       CHECK(!r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
-               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource &&
                txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: gate off declines before any upload");
       setenv("R300_R2VB_SLOT_FETCH", "1", 1);
       CHECK(r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
-               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn),
             "txn: the complete validate phase builds the transaction");
       CHECK(txn.slot_resource == &slotfb->r.b &&
                txn.output_resource == &outshadow.b && txn.model.resource &&
                txn.count == TCOUNT &&
                txn.state == R300_R2VB_BO_DRAW_VALIDATED &&
-               txn.output_required_bytes == (uint64_t)TCOUNT * 16 &&
+               txn.output_required_bytes == txn_layout.storage_bytes &&
+               txn.output_valid_bytes == (uint64_t)TCOUNT * 16 &&
                txn.output_offset == 0 &&
                txn.output_pitch_pixels == txn.layout.pitch_pixels &&
                txn.required_cs_dwords ==
@@ -1383,8 +2162,9 @@ check_logical_binding(void)
                                              &txn.logical, &rs) == 0,
             "txn: the built transaction passes the full contract check");
       CHECK(!r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
-               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn),
             "txn: validate into an owned transaction declines");
       r300_r2vb_producer_bo_draw_fini(&txn);
       CHECK(txn.slot_resource == NULL && txn.model.resource == NULL &&
@@ -1392,13 +2172,78 @@ check_logical_binding(void)
                txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: fini releases all three references and returns to EMPTY");
 
+      /* Multirow transaction: the first count above the legacy-row ceiling
+       * allocates three physical rows.  Validation distinguishes the valid
+       * 4097-record prefix from the 2047 poisonable padding records. */
+      {
+         enum { GRID_COUNT = 4097 };
+         struct r300_r2vb_slot_layout grid_layout;
+         CHECK(r300_r2vb_slot_layout_init_policy(
+                  GRID_COUNT, R300_R2VB_LAYOUT_GRID_2048, &grid_layout),
+               "txn grid: the 2048-wide multirow layout is valid");
+         struct r300_resource grid_shadow;
+         memset(&grid_shadow, 0, sizeof(grid_shadow));
+         grid_shadow.b.width0 = GRID_COUNT * TSTRIDE;
+         pipe_reference_init(&grid_shadow.b.reference, 1);
+         uint8_t *grid_model_bytes = calloc(1, grid_shadow.b.width0);
+         grid_shadow.malloced_buffer = grid_model_bytes;
+         struct pipe_vertex_buffer grid_vb = {
+            .buffer_offset = 0,
+            .buffer.resource = &grid_shadow.b,
+         };
+         struct fake_buffer *grid_slot =
+            (struct fake_buffer *)fake_resource_create(
+               &g_screen.screen,
+               &(struct pipe_resource){
+                  .width0 = (uint32_t)grid_layout.storage_bytes,
+               });
+         struct r300_resource grid_output;
+         memset(&grid_output, 0, sizeof(grid_output));
+         grid_output.b.width0 = (uint32_t)grid_layout.storage_bytes;
+         grid_output.b.height0 = 1;
+         grid_output.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+         pipe_reference_init(&grid_output.b.reference, 1);
+         uint8_t *grid_output_bytes =
+            calloc(1, (size_t)grid_layout.storage_bytes);
+         grid_output.malloced_buffer = grid_output_bytes;
+         grid_output.buf = (struct pb_buffer_lean *)grid_output_bytes;
+         grid_output.domain = RADEON_DOMAIN_GTT;
+         tfb.width = grid_layout.width;
+         tfb.height = grid_layout.height;
+         tfb.cbufs[0].texture = &grid_output.b;
+         r300_r2vb_producer_bo_draw_init(&txn);
+         CHECK(grid_model_bytes && grid_slot && grid_output_bytes &&
+                  r300_r2vb_producer_bo_draw_validate(
+                     &g_context, &plan, &fs, &rs, &psc, &grid_vb, &ve, 1, 1,
+                     &grid_layout, &grid_slot->r.b, &grid_output.b, 0,
+                     GRID_COUNT, R300_R2VB_POSITION_WINDOW, &txn),
+               "txn grid: validation accepts the complete physical extent");
+         CHECK(txn.state == R300_R2VB_BO_DRAW_VALIDATED &&
+                  txn.layout.width == 2048 && txn.layout.height == 3 &&
+                  txn.output_valid_bytes == (uint64_t)GRID_COUNT * 16 &&
+                  txn.output_required_bytes == grid_layout.storage_bytes &&
+                  txn.output_required_bytes - txn.output_valid_bytes ==
+                     (uint64_t)2047 * 16,
+               "txn grid: valid prefix and poisonable padding stay distinct");
+         r300_r2vb_producer_bo_draw_fini(&txn);
+         if (grid_slot) {
+            struct pipe_resource *grid_slot_resource = &grid_slot->r.b;
+            pipe_resource_reference(&grid_slot_resource, NULL);
+         }
+         free(grid_output_bytes);
+         free(grid_model_bytes);
+         tfb.width = txn_layout.width;
+         tfb.height = txn_layout.height;
+         tfb.cbufs[0].texture = &outshadow.b;
+      }
+
       /* Failure edges: each fallible layer declines and leaves no
        * retained storage. */
       struct r300_r2vb_producer_plan badplan = plan;
       badplan.position_source.valid = false;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &badplan, &fs, &rs, &psc, &vb, &ve, 1, 1,
-               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: an unmeasured source declines with nothing retained");
@@ -1406,21 +2251,22 @@ check_logical_binding(void)
       badve.src_format = PIPE_FORMAT_R32G32_FLOAT;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &badve, 1, 1,
-               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn),
             "txn: an inadmissible element format declines");
       struct fake_buffer *tiny = (struct fake_buffer *)fake_resource_create(
          &g_screen.screen, &(struct pipe_resource){ .width0 = 16 });
       CHECK(!r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &tiny->r.b,
-               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn) &&
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &tiny->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: an undersized slot BO declines and releases the model");
       struct r300_vertex_stream_state badpsc = psc;
       badpsc.vap_prog_stream_cntl[0] = 0x25030003;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &badpsc, &vb, &ve, 1, 1,
-               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: a drifted derived binding declines after materialization");
@@ -1429,23 +2275,31 @@ check_logical_binding(void)
       tfb.cbufs[0].texture = &slotfb->r.b;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
-               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource && !txn.output_resource,
             "txn: an output that is not the bound color target declines");
       tfb.cbufs[0].texture = &outshadow.b;
-      outshadow.b.width0 = TCOUNT - 1;
+      tfb.width = txn_layout.width - 1;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
-               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
-            "txn: a one-texel-short output extent declines");
-      outshadow.b.width0 = TCOUNT;
+            "txn: a one-pixel-short framebuffer extent declines");
+      tfb.width = txn_layout.width;
+      outshadow.b.width0 = (uint32_t)txn_layout.storage_bytes - 1;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn) &&
+               !txn.model.resource,
+            "txn: one byte short of the physical storage declines");
+      outshadow.b.width0 = (uint32_t)txn_layout.storage_bytes;
       outshadow.b.format = PIPE_FORMAT_R8G8B8A8_UNORM;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
-               &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, &txn) &&
                !txn.model.resource,
             "txn: an output format outside FP32x4 declines");
@@ -1465,8 +2319,9 @@ check_logical_binding(void)
       memset(&g_fws, 0, sizeof(g_fws));
       r300_r2vb_producer_bo_draw_init(&txn);
       CHECK(r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
-               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn),
             "cs: validate builds the transaction for staging");
       CHECK(!r300_r2vb_producer_bo_draw_emit(&g_context, &txn),
             "cs: emission before READY declines");
@@ -1504,8 +2359,9 @@ check_logical_binding(void)
        * producer BOs, so the relocation indices come from the final CS. */
       r300_r2vb_producer_bo_draw_init(&txn);
       CHECK(r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
-               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn),
             "cs: validate for the retry row");
       memset(&g_fws, 0, sizeof(g_fws));
       g_fws.fail_validates = 1;
@@ -1520,8 +2376,9 @@ check_logical_binding(void)
        * retained, zero registers written. */
       r300_r2vb_producer_bo_draw_init(&txn);
       CHECK(r300_r2vb_producer_bo_draw_validate(
-               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &slotfb->r.b,
-               &outshadow.b, 0, TCOUNT, R300_R2VB_POSITION_WINDOW, &txn),
+               &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, &txn),
             "cs: validate for the double-failure row");
       memset(&g_fws, 0, sizeof(g_fws));
       g_fws.fail_validates = 2;
@@ -1593,9 +2450,9 @@ check_position_mapping_and_interface(void)
    /* Interface builder: PSC words from the shared translators, both
     * elements in the first register pair, LAST_VEC on the model, unused
     * registers zeroed, VAP_VTX_SIZE carried from the fetch object. */
-   struct r300_r2vb_producer_streams st;
-   struct r300_r2vb_producer_fetch ft;
-   struct r300_r2vb_producer_interface it;
+   struct r300_r2vb_producer_streams st = {0};
+   struct r300_r2vb_producer_fetch ft = {0};
+   struct r300_r2vb_producer_interface it = {0};
    CHECK(r300_r2vb_producer_streams_init(0, 0, 12,
                                          PIPE_FORMAT_R32G32B32_FLOAT, 0,
                                          &st) &&
@@ -1679,8 +2536,24 @@ main(void)
    check_gate_parser();
    printf("auto-single floor parser:\n");
    check_floor_parser();
+   printf("auto-single mode compatibility:\n");
+   check_mode_compatibility();
    printf("auto-single policy matrix:\n");
    check_policy_matrix();
+   printf("auto-single producer input preflight:\n");
+   check_producer_input_preflight();
+   printf("auto-single delivery element preflight:\n");
+   check_delivery_element_preflight();
+   printf("auto-single output stream preflight:\n");
+   check_output_stream_preflight();
+   printf("passthrough upload extent:\n");
+   check_passthrough_upload_extent();
+   printf("constant-source contract:\n");
+   check_constant_source_contract();
+   printf("re-ingest vertex-array restore:\n");
+   check_vertex_array_restore();
+   printf("SWTCL application vertex-size restoration:\n");
+   check_swtcl_vertex_size_restore();
    printf("auto-single live plans:\n");
    check_live_plans();
 

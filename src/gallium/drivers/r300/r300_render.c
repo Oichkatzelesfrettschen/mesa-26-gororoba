@@ -216,7 +216,7 @@ static bool r300_reserve_cs_dwords(struct r300_context *r300,
         cs_dwords += 55; /* emit_vertex_arrays */
 
     if (emit_vertex_arrays_swtcl)
-        cs_dwords += 7; /* emit_vertex_arrays_swtcl */
+        cs_dwords += R300_EMIT_VERTEX_ARRAYS_SWTCL_DWORDS;
 
     cs_dwords += r300_get_num_cs_end_dwords(r300);
 
@@ -1697,13 +1697,11 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
      * UNREFERENCED slot is NULLed so the validate loop skips it.  Velem-referenced
      * real-BO slots are left as-is (they carry a valid ->buf).  Restored after. */
     bool referenced[PIPE_MAX_ATTRIBS] = {0};
-    unsigned ref_stride[PIPE_MAX_ATTRIBS] = {0};
     for (unsigned i = 0; i < r300->velems->count; i++) {
         unsigned vbi = r300->velems->velem[i].vertex_buffer_index;
         if (vbi >= nvb)
             R2VB_BAIL("velem_vbi_oob"); /* element points outside the bound buffers */
         referenced[vbi] = true;
-        ref_stride[vbi] = MAX2(ref_stride[vbi], r300->velems->velem[i].src_stride);
     }
 
     for (unsigned vbi = 0; vbi < nvb && ok; vbi++) {
@@ -1732,27 +1730,56 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
         const void *cpu_src = NULL;
         bool real_bo = false;
         if (vb->is_user_buffer) {
-            cpu_src = vb->buffer.user;
+            /* pipe_vertex_buffer carries no byte extent for a user pointer,
+             * so a direct upload cannot prove the final fetched byte. */
+            if (getenv("R300_R2VB_ROUTE_DEBUG"))
+                fprintf(stderr,
+                        "r2vb_passthrough_fallback reason=user_buffer_extent "
+                        "vbi=%u\n",
+                        vbi);
+            ok = false;
+            break;
         } else if (vb->buffer.resource) {
             struct r300_resource *rr = r300_resource(vb->buffer.resource);
-            if (rr->buf)
+            enum r300_r2vb_model_source_kind source_kind =
+                r300_r2vb_model_source_classify(
+                    false, rr->buf != NULL, rr->malloced_buffer != NULL);
+            if (source_kind == R300_R2VB_MODEL_REAL_BO)
                 real_bo = true;
-            else
+            else if (source_kind == R300_R2VB_MODEL_CPU_SHADOW_UPLOAD)
                 cpu_src = rr->malloced_buffer;
+            else {
+                if (getenv("R300_R2VB_ROUTE_DEBUG"))
+                    fprintf(stderr,
+                            "r2vb_passthrough_fallback "
+                            "reason=source_authority vbi=%u\n",
+                            vbi);
+                ok = false;
+                break;
+            }
         }
 
-        if (real_bo)
-            continue; /* already a BO; the validate loop will add it */
-
-        if (!cpu_src || !ref_stride[vbi]) {
+        uint32_t size = 0;
+        if (!vb->buffer.resource ||
+            !r300_r2vb_vertex_buffer_upload_end(
+                r300->velems->velem, r300->velems->count, vbi,
+                vb->buffer_offset, draw->start, draw->count,
+                vb->buffer.resource->width0, &size)) {
             if (getenv("R300_R2VB_ROUTE_DEBUG"))
-                fprintf(stderr, "r2vb_passthrough_fallback reason=no_cpu_src vbi=%u res=%p user=%d\n",
-                        vbi, (void *)vb->buffer.resource, vb->is_user_buffer);
+                fprintf(stderr,
+                        "r2vb_passthrough_fallback "
+                        "reason=cpu_source_extent vbi=%u res=%p\n",
+                        vbi, (void *)vb->buffer.resource);
+            ok = false;
+            break;
+        }
+        if (real_bo)
+            continue; /* validated BO; the validate loop adds it directly */
+        if (!cpu_src) {
             ok = false;
             break;
         }
 
-        unsigned size = vb->buffer_offset + (draw->start + draw->count) * ref_stride[vbi];
         unsigned out_off = 0;
         struct pipe_resource *out_res = NULL;
         /* _ref so out_res gains a reference we own; the CS keeps its own via
@@ -1771,9 +1798,9 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
         vb->buffer.resource = out_res;
     }
 
+    if (any_swap)
+        u_upload_unmap(r300->uploader);
     if (ok) {
-        if (any_swap)
-            u_upload_unmap(r300->uploader);
         /* Force the vertex-array validate + emit to pick up the swapped buffers
          * (r300_emit_buffer_validate adds the BOs only when this is set). */
         r300->vertex_arrays_dirty = true;
@@ -1904,6 +1931,8 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                                          capture_clip, vap_vtx_size, draw_pkt_off);
                 r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
             }
+        } else {
+            ok = false;
         }
         if (getenv("R300_R2VB_ROUTE_DEBUG")) {
             static bool once = false;
@@ -2080,13 +2109,9 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
                     fscode ? fscode->deriv_src_generic : -2, want);
     }
 
-    /* RS482 fragment-ALU R2VB vertex route (experiment-gated by R300_R2VB_ROUTE).
-     * Classifies the draw against the simple-draw class and, once the producer is
-     * built, would transform + re-ingest it instead of running the gallivm CPU
-     * draw module.  Returns false today (classifier only), so this falls through
-     * to gallivm with zero behaviour change.  This is the single choke point for
-     * both GL and r3v-Vulkan draws -- r3v replays through this same gallium
-     * draw_vbo, so no separate Vulkan-side wiring is needed. */
+    /* RS482 fragment-ALU R2VB routing shares this Gallium draw_vbo choke point
+     * between GL and r3v.  A route that declines enters Draw; a route that
+     * delivers or proves a trivial reject consumes the visible draw here. */
     /* Clear the producer-fed discriminator for this draw before routing: only a
      * producer pass that runs during this draw's route sets SINGLE or SPLIT, so a
      * producer that ran for an earlier draw but whose re-ingest refused delivery
@@ -2094,18 +2119,26 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
     r300->r2vb_producer_kind = R300_R2VB_PRODUCER_NONE;
     r300->r2vb_capture_clip = NULL;
 
+    /* The fragment-ALU producer route either consumes the visible draw or
+     * declines into Draw.  AUTO_SINGLE records the terminal outcome after
+     * execution, so an admitted producer that later declines cannot appear
+     * as a delivered route.  This decision precedes the separate passthrough
+     * route so every armed draw contributes exactly one AUTO_SINGLE token. */
+    bool r2vb_mvp_routed = r300_r2vb_route_mvp(r300, info, &draw);
+    bool r2vb_auto_single_selected = r300->r2vb_auto_single_selected;
+    bool r2vb_mvp_executed =
+        r2vb_mvp_routed && r300_r2vb_exec_mvp_draw(r300, info, &draw);
+    if (r2vb_auto_single_selected)
+        r300_r2vb_auto_single_note_outcome(
+            r300, info, &draw, r2vb_mvp_executed);
+    if (r2vb_mvp_executed)
+        return;
+
     /* Passthrough direct-VB route: re-ingest the app vertex arrays at TCL_BYPASS,
      * skipping the gallivm draw module.  Falls back to gallivm if the route
      * declines or cannot execute the draw. */
     if (r300_r2vb_route_draw(r300, info, &draw) &&
         r300_r2vb_exec_passthrough_draw(r300, info, &draw))
-        return;
-
-    /* MVP route (gl_Position = M * in_pos on the fragment ALU), separately gated
-     * by R300_R2VB_MVP_EXEC.  Returns false until the re-ingest half is built, so
-     * this falls through to gallivm with no behaviour change. */
-    if (r300_r2vb_route_mvp(r300, info, &draw) &&
-        r300_r2vb_exec_mvp_draw(r300, info, &draw))
         return;
 
     draw_vbo(r300->draw, info, drawid_offset, NULL, &draw, 1, 0);

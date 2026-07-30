@@ -14,6 +14,7 @@
 #include "r300_context.h"
 #include "r300_fs.h"
 #include "r300_nir_ssa_cut.h"
+#include "r300_r2vb.h"
 #include "r300_r2vb_clip.h"
 
 #ifdef __cplusplus
@@ -153,6 +154,15 @@ struct r300_r2vb_position_source {
     bool valid;
 };
 
+/* External constant-source correspondence for the retained position
+ * producer.  AUTO_SINGLE mirrors only byte-addressed UBO block 0 through
+ * the first 64 bytes; every other source domain stays unsupported. */
+enum r300_r2vb_constant_source_contract {
+    R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED = 0,
+    R300_R2VB_CONSTANT_SOURCE_NONE,
+    R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64,
+};
+
 struct r300_r2vb_producer_plan {
     enum r300_r2vb_plan_status status;
     enum r300_r2vb_plan_action action;
@@ -165,6 +175,8 @@ struct r300_r2vb_producer_plan {
 
     unsigned num_position_inputs;
     struct r300_r2vb_position_source position_source;
+    enum r300_r2vb_constant_source_contract constant_source;
+    uint32_t constant_bytes;
 
     /* Backend resource vectors from the admission oracle: the unsplit
      * position producer when it emitted, and the two admitted halves on
@@ -194,6 +206,9 @@ bool r300_r2vb_plan_producer(struct r300_context *r300,
                              bool allow_computed_varying,
                              enum r300_r2vb_position_space space,
                              struct r300_r2vb_producer_plan *plan);
+enum r300_r2vb_constant_source_contract
+r300_r2vb_constant_source_scan(struct nir_shader *producer,
+                               uint32_t *required_bytes);
 
 /* Free the plan's owned candidate NIR and clear the record. */
 void r300_r2vb_plan_release(struct r300_r2vb_producer_plan *plan);
@@ -302,10 +317,31 @@ int r300_r2vb_first_computed_varying(struct nir_shader *vs_nir);
  * vertex floor.  Everything outside the contract declines to gallivm. */
 enum r300_r2vb_auto_single_reason {
     R300_R2VB_AUTO_SINGLE_OK = 0,
+    R300_R2VB_AUTO_SINGLE_PASSTHROUGH_ROUTE,
+    R300_R2VB_AUTO_SINGLE_HARDWARE_TCL,
     R300_R2VB_AUTO_SINGLE_INDEXED,
     R300_R2VB_AUTO_SINGLE_INSTANCED,
     R300_R2VB_AUTO_SINGLE_UNSUPPORTED_PRIMITIVE,
     R300_R2VB_AUTO_SINGLE_COUNT_CEILING,
+    R300_R2VB_AUTO_SINGLE_SLOT_LAYOUT,
+    R300_R2VB_AUTO_SINGLE_SLOT_FETCH,
+    R300_R2VB_AUTO_SINGLE_RAW_SUBMIT,
+    R300_R2VB_AUTO_SINGLE_BO_MODE,
+    R300_R2VB_AUTO_SINGLE_ORDERING_MODE,
+    R300_R2VB_AUTO_SINGLE_MODE_CONFLICT,
+    R300_R2VB_AUTO_SINGLE_QUERY_ACTIVE,
+    R300_R2VB_AUTO_SINGLE_INPUT_UNCHECKED,
+    R300_R2VB_AUTO_SINGLE_INPUT_CONSTANTS,
+    R300_R2VB_AUTO_SINGLE_INPUT_CONSTANT_SOURCE,
+    R300_R2VB_AUTO_SINGLE_INPUT_POSITION_SOURCE,
+    R300_R2VB_AUTO_SINGLE_INPUT_INSTANCE_RATE,
+    R300_R2VB_AUTO_SINGLE_INPUT_BUFFER_BINDING,
+    R300_R2VB_AUTO_SINGLE_INPUT_SOURCE_CLASS,
+    R300_R2VB_AUTO_SINGLE_INPUT_CPU_ACCESS,
+    R300_R2VB_AUTO_SINGLE_INPUT_UPLOADER,
+    R300_R2VB_AUTO_SINGLE_INPUT_FORMAT,
+    R300_R2VB_AUTO_SINGLE_INPUT_STRIDE,
+    R300_R2VB_AUTO_SINGLE_INPUT_SPAN,
     R300_R2VB_AUTO_SINGLE_FRONTFACE,
     R300_R2VB_AUTO_SINGLE_CLIP_PLANES,
     R300_R2VB_AUTO_SINGLE_FS_EXTERNAL_CONSTANTS,
@@ -313,27 +349,10 @@ enum r300_r2vb_auto_single_reason {
     R300_R2VB_AUTO_SINGLE_PLAN_NOT_SINGLE,
     R300_R2VB_AUTO_SINGLE_TYPED_SOURCE,
     R300_R2VB_AUTO_SINGLE_INPUT_SHAPE,
+    R300_R2VB_AUTO_SINGLE_OUTPUT_STREAMS,
     R300_R2VB_AUTO_SINGLE_DELIVERY_CELL,
     R300_R2VB_AUTO_SINGLE_BELOW_VERTEX_FLOOR,
     R300_R2VB_AUTO_SINGLE_REASON_COUNT,
-};
-
-/* Producer slot-grid layout: the slot-pixel stream maps slot s to raster
- * center ((s % width) + 0.5, (s / width) + 0.5) and to linear BO byte
- * (s * 16).  pitch_pixels == width is the load-bearing invariant: a
- * pitch-tight row makes the two mappings agree, so the producer rasterizes
- * in two dimensions while the re-ingest VAP reads the first count FP32x4
- * records as a flat vertex array with no gather or copy.  Grid disabled or
- * count <= 4096 keeps the proven one-row layout byte-for-byte; above 4096
- * the grid uses width = pitch = 2048 (inside the RS482 tiled render-width
- * ceiling) and height = ceil(count / 2048). */
-struct r300_r2vb_slot_layout {
-    uint32_t count;
-    uint32_t width;
-    uint32_t height;
-    uint32_t pitch_pixels;
-    uint64_t storage_slots;
-    uint64_t storage_bytes;
 };
 
 /* Explicit slot-layout representation.  The policy names the shape rather
@@ -341,13 +360,31 @@ struct r300_r2vb_slot_layout {
  * count (4096 as a legacy row versus 2048x2) stay separately addressable
  * for the layout-boundary silicon comparison.  LEGACY_ROW is the proven
  * one-row shape (width == count, height == 1) up to the 4096 storage
- * ceiling; GRID_2048 always uses width == pitch == 2048 with
+ * ceiling and rounds its physical pitch to an even pixel count.
+ * GRID_2048 always uses width == pitch == 2048 with
  * height == ceil(count / 2048), the common rendered-and-sampled axis from
  * the RS482 virtualization matrix (2560 is the color-render axis; the
  * one-row 2559/2560/2561 boundary cells probe it under LEGACY_ROW). */
 enum r300_r2vb_slot_layout_policy {
     R300_R2VB_LAYOUT_LEGACY_ROW,
     R300_R2VB_LAYOUT_GRID_2048,
+};
+
+/* Producer slot-grid layout: the slot-pixel stream maps slot s to raster
+ * center ((s % width) + 0.5, (s / width) + 0.5) and the color target maps
+ * that pixel to (y * pitch_pixels + x) * 16.  Every valid slot maps to
+ * s * 16, so the re-ingest VAP reads the first count FP32x4 records as one
+ * flat vertex array.  A one-row layout may carry an even-pitch tail after
+ * its valid records.  A multirow layout requires pitch_pixels == width,
+ * which keeps row transitions contiguous. */
+struct r300_r2vb_slot_layout {
+    enum r300_r2vb_slot_layout_policy policy;
+    uint32_t count;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch_pixels;
+    uint64_t storage_slots;
+    uint64_t storage_bytes;
 };
 
 /* Pure over (count, policy); fails on count == 0, count >= 65536 (the
@@ -361,8 +398,39 @@ bool r300_r2vb_slot_layout_init_policy(uint32_t count,
 bool r300_r2vb_slot_layout_init(uint32_t count, bool grid_enabled,
                                 struct r300_r2vb_slot_layout *out);
 
+/* Pure runtime selection.  An absent selector uses the count-derived policy;
+ * "legacy_row" and "grid_2048" select an explicit representation.  The
+ * grid representation additionally requires its exact-value gate.  Empty
+ * and unrecognized values fail closed. */
+bool r300_r2vb_slot_layout_select(uint32_t count, const char *selector,
+                                  bool grid_enabled,
+                                  struct r300_r2vb_slot_layout *out);
+
+/* Resolve one valid logical slot in a canonical layout to its raster
+ * coordinates and physical FP32x4 byte offset.  Accepted mappings equal the
+ * flat re-ingest mapping slot * 16. */
+bool r300_r2vb_slot_layout_address(
+    const struct r300_r2vb_slot_layout *layout, uint32_t slot,
+    uint32_t *x, uint32_t *y, uint64_t *byte_offset);
+
+/* The count-scaled 3D_DRAW_IMMD producer remains bounded to the retained
+ * one-input 1024-vertex payload.  The product covers one slot vector plus
+ * every model input; larger draws use the fixed-size BO producer. */
+bool r300_r2vb_immediate_producer_shape_ok(uint32_t count,
+                                           unsigned num_model_inputs);
+
+/* Rebase an application vertex buffer for a delivery draw whose producer
+ * outputs begin at slot zero.  The element offset stays unchanged. */
+bool r300_r2vb_rebased_buffer_offset(uint32_t buffer_offset,
+                                     uint32_t stride_bytes, uint32_t start,
+                                     uint32_t *rebased_offset);
+
 /* Slot-grid gate value (R300_R2VB_SLOT_GRID, exact "1"); pure parser. */
 bool r300_r2vb_slot_grid_gate_value(const char *value);
+
+/* Production BO delivery selector (R300_R2VB_BO_DRAW, exact
+ * "producer_deliver"); pure parser. */
+bool r300_r2vb_bo_draw_delivery_mode_value(const char *value);
 
 /* BO-fetched producer vertex streams: stream 0 is the slot-position BO
  * (FP32x4, stride 16, offset 0) and stream 1 is the application model
@@ -407,24 +475,6 @@ bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
 /* Slot-fetch gate value (R300_R2VB_SLOT_FETCH, exact "1"); pure parser. */
 bool r300_r2vb_slot_fetch_gate_value(const char *value);
 
-/* Model-source classification for the BO-fetch producer: a real winsys BO
- * fetches in place; a CPU-shadow resource (the no-TCL allocation policy
- * keeps non-custom vertex buffers in malloced_buffer with no winsys BO)
- * uploads its exact fetched subrange through the context uploader; a user
- * pointer stays outside the first contract because it carries no
- * resource-width authority.  Pure over the three source facts so the
- * calibration drives every arm. */
-enum r300_r2vb_model_source_kind {
-    /* Zero is the invalid state so a cleared record is fail-closed. */
-    R300_R2VB_MODEL_UNSUPPORTED = 0,
-    R300_R2VB_MODEL_REAL_BO,
-    R300_R2VB_MODEL_CPU_SHADOW_UPLOAD,
-};
-
-enum r300_r2vb_model_source_kind
-r300_r2vb_model_source_classify(bool is_user_buffer, bool has_winsys_bo,
-                                bool has_cpu_shadow);
-
 /* One materialized model fetch: an owned resource reference (released by
  * the caller after the CS takes its own) and the descriptor offset --
  * the upload subrange begins at the first fetched record, so the offset
@@ -446,6 +496,33 @@ struct r300_r2vb_model_fetch {
 
 struct pipe_vertex_buffer;
 struct pipe_vertex_element;
+
+/* Side-effect-free BO-fetch input admission.  Each status names one
+ * deterministic boundary that the route proves before its decision token.
+ * Allocation and command submission remain later runtime operations. */
+enum r300_r2vb_producer_input_status {
+    R300_R2VB_PRODUCER_INPUT_UNCHECKED = 0,
+    R300_R2VB_PRODUCER_INPUT_OK,
+    R300_R2VB_PRODUCER_INPUT_CONSTANTS,
+    R300_R2VB_PRODUCER_INPUT_CONSTANT_SOURCE,
+    R300_R2VB_PRODUCER_INPUT_POSITION_SOURCE,
+    R300_R2VB_PRODUCER_INPUT_INSTANCE_RATE,
+    R300_R2VB_PRODUCER_INPUT_BUFFER_BINDING,
+    R300_R2VB_PRODUCER_INPUT_SOURCE_CLASS,
+    R300_R2VB_PRODUCER_INPUT_CPU_ACCESS,
+    R300_R2VB_PRODUCER_INPUT_UPLOADER,
+    R300_R2VB_PRODUCER_INPUT_FORMAT,
+    R300_R2VB_PRODUCER_INPUT_STRIDE,
+    R300_R2VB_PRODUCER_INPUT_SPAN,
+    R300_R2VB_PRODUCER_INPUT_STATUS_COUNT,
+};
+
+enum r300_r2vb_producer_input_status
+r300_r2vb_producer_input_preflight(
+    const struct r300_r2vb_producer_plan *plan,
+    const struct pipe_vertex_element *velems, unsigned velem_count,
+    const struct pipe_vertex_buffer *vertex_buffers,
+    unsigned nr_vertex_buffers, uint32_t start, uint32_t count);
 
 /* Lifetime: init once, materialize into an empty record, fini on every
  * exit.  fini releases the owned reference and returns the record to
@@ -490,10 +567,15 @@ bool r300_r2vb_auto_single_gate_value(const char *value);
 bool r300_r2vb_auto_single_floor_value(const char *value, uint32_t *floor);
 const char *
 r300_r2vb_auto_single_reason_str(enum r300_r2vb_auto_single_reason reason);
+enum r300_r2vb_auto_single_reason
+r300_r2vb_auto_single_route_reason(enum r300_r2vb_verdict verdict);
 
 /* Draw-shape facts the policy consumes, gathered by the route at the draw
  * and constructed directly by the host oracle. */
 struct r300_r2vb_auto_single_draw {
+    /* The shared route classifier owns the outer path class.  OK means the
+     * producer candidate reaches the detailed AUTO_SINGLE contract. */
+    enum r300_r2vb_auto_single_reason route_reason;
     unsigned mode;               /* enum mesa_prim */
     uint32_t count;
     uint32_t instance_count;
@@ -501,7 +583,37 @@ struct r300_r2vb_auto_single_draw {
     bool fs_reads_face;
     bool clip_planes_enabled;
     bool fs_reads_external_constants;
+    bool slot_layout_available;
+    bool uses_grid_layout;
+    bool slot_fetch_enabled;
+    bool raw_submit_accepted;
+    bool bo_draw_mode_compatible;
+    bool bo_delivery_ordering_compatible;
+    bool route_mode_compatible;
+    bool query_active;
+    enum r300_r2vb_delivery_stream_status delivery_stream_status;
+    enum r300_r2vb_producer_input_status producer_input_status;
 };
+
+/* Process-mode values that can replace, discard, split, or diagnose the
+ * production AUTO_SINGLE path.  Presence-sensitive modes retain their raw
+ * pointer so even an empty value conflicts when the consuming path treats
+ * getenv() presence as enabled. */
+struct r300_r2vb_auto_single_mode_values {
+    const char *diagnostic;
+    const char *barrier;
+    const char *inspect;
+    const char *clip_classify;
+    const char *clip_edge;
+    const char *budget_escape;
+    const char *typed_split;
+    const char *force_split;
+    const char *varying;
+    const char *delivery_capture;
+};
+
+bool r300_r2vb_auto_single_mode_values_compatible(
+    const struct r300_r2vb_auto_single_mode_values *values);
 
 /* The pure admission policy: route-support shape first (plain TRIANGLES,
  * whole triangles, non-indexed, single instance, below the 16-bit re-ingest
@@ -705,6 +817,7 @@ struct r300_r2vb_producer_bo_draw {
      * output relocation index is diagnostic. */
     struct pipe_resource *output_resource;
     uint64_t output_required_bytes;
+    uint64_t output_valid_bytes;
     uint32_t output_offset;
     uint32_t output_pitch_pixels;
 
@@ -752,6 +865,7 @@ bool r300_r2vb_producer_bo_draw_validate(
     const struct r300_vertex_stream_state *psc_state,
     const struct pipe_vertex_buffer *vb, const struct pipe_vertex_element *ve,
     unsigned velem_count, unsigned nr_vertex_buffers,
+    const struct r300_r2vb_slot_layout *layout,
     struct pipe_resource *slot_resource,
     struct pipe_resource *output_resource, uint32_t start, uint32_t count,
     enum r300_r2vb_position_space space,
@@ -766,9 +880,10 @@ bool r300_r2vb_producer_bo_draw_stage_cs(
 
 /* Mechanical emission of the fixed 64-dword producer draw from the
  * transaction's snapshot words alone.  Requires READY (the complete
- * buffer list passed cs_validate at staging), emits the dirty state
- * atoms first, then the calibrated stream/RS/draw range; the cursor
- * delta of the custom range equals cs_dwords() by construction. */
+ * buffer list passed cs_validate at staging).  The caller lands dirty
+ * application atoms before the raw producer prologue; this function emits
+ * only the calibrated stream/RS/draw range.  Its cursor delta equals
+ * cs_dwords() by construction. */
 bool r300_r2vb_producer_bo_draw_emit(struct r300_context *r300,
                                      struct r300_r2vb_producer_bo_draw *txn);
 

@@ -357,9 +357,13 @@ static void r500_rs_tex_write(struct r300_rs_block* rs, int id, int fp_offset)
  * and error. */
 static void r300_update_rs_block(struct r300_context *r300)
 {
-    struct r300_vertex_shader_code *vs = r300_vs(r300)->shader;
+    struct r300_vertex_shader *vs_state = r300_vs(r300);
+    struct r300_fragment_shader *fs_state = r300_fs(r300);
+    assume(vs_state && vs_state->shader);
+    assume(fs_state && fs_state->shader);
+    struct r300_vertex_shader_code *vs = vs_state->shader;
     struct r300_shader_semantics *vs_outputs = &vs->outputs;
-    struct r300_shader_semantics *fs_inputs = &r300_fs(r300)->shader->inputs;
+    struct r300_shader_semantics *fs_inputs = &fs_state->shader->inputs;
     struct r300_rs_block rs = {0};
     int i, col_count = 0, tex_count = 0, fp_offset = 0, count, loc = 0, tex_ptr = 0;
     int gen_offset = 0;
@@ -387,7 +391,7 @@ static void r300_update_rs_block(struct r300_context *r300)
     /* SWTCL analytic derivatives: route the draw-injected gradient generics into
      * the rewritten FS inputs. Gated on the gradient draw output existing, like
      * FACE/PCOORD; the indices come from the bound FS's NIR derivative pass. */
-    const struct r300_fragment_shader_code *deriv_fs = r300_fs(r300)->shader;
+    const struct r300_fragment_shader_code *deriv_fs = fs_state->shader;
     const bool derivative_via_draw = r300->derivative_via_draw && deriv_fs &&
         deriv_fs->deriv_ddx_generic >= 0 &&
         draw_find_shader_output(r300->draw, TGSI_SEMANTIC_GENERIC,
@@ -1473,6 +1477,16 @@ static void r300_validate_fragment_shader(struct r300_context *r300)
         struct r300_fragment_program_external_state state;
         memset(&state, 0, sizeof(state));
         r300_fragment_program_get_external_state(r300, &state);
+        /* R2VB producer fragments are pipeline-internal vertex computation.
+         * Application alpha-to-one and polygon stipple apply to the visible
+         * delivery draw, not to the producer BO.  Keeping them out of the
+         * producer variant key complements the raw neutral producer state and
+         * preserves every FP32x4 output component. */
+        if (r300_fs(r300)->input_semantics ==
+            R300_FS_INPUT_R2VB_FLAT_VERTEX) {
+            state.alpha_to_one = false;
+            state.pstipple = false;
+        }
 
         /* Pick the fragment shader based on external states.
          * Then mark the state dirty if the fragment shader is either dirty

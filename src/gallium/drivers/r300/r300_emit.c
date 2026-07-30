@@ -1175,13 +1175,16 @@ void r300_emit_vertex_arrays_swtcl(struct r300_context *r300, bool indexed)
             "vertex size %d\n", r300->vbo,
             r300->vertex_info.size);
     /* Set the pointer to our vertex buffer. The emitted values are this:
+     * PACKET0 [VAP_VTX_SIZE]
+     * SIZE    [vertex size in dwords]
      * PACKET3 [3D_LOAD_VBPNTR]
      * COUNT   [1]
      * FORMAT  [size | stride << 8]
      * OFFSET  [offset into BO]
      * VBPNTR  [relocated BO]
      */
-    BEGIN_CS(7);
+    BEGIN_CS(R300_EMIT_VERTEX_ARRAYS_SWTCL_DWORDS);
+    OUT_CS_REG(R300_VAP_VTX_SIZE, r300->vertex_info.size);
     OUT_CS_PKT3(R300_PACKET3_3D_LOAD_VBPNTR, 3);
     OUT_CS(1 | (!indexed ? R300_VC_FORCE_PREFETCH : 0));
     OUT_CS(r300->vertex_info.size |

@@ -16,19 +16,56 @@ struct pipe_fence_handle;
 struct pipe_draw_info;
 struct pipe_draw_start_count_bias;
 struct pipe_resource;
+struct pipe_vertex_element;
 struct nir_shader;
 
+/* Runtime source authority for a vertex-buffer record.  A real winsys BO
+ * fetches in place.  A CPU-shadow resource uploads its exact fetched span.
+ * User pointers and resources with zero or two backing authorities decline. */
+enum r300_r2vb_model_source_kind {
+    R300_R2VB_MODEL_UNSUPPORTED = 0,
+    R300_R2VB_MODEL_REAL_BO,
+    R300_R2VB_MODEL_CPU_SHADOW_UPLOAD,
+};
+
+enum r300_r2vb_model_source_kind
+r300_r2vb_model_source_classify(bool is_user_buffer, bool has_winsys_bo,
+                                bool has_cpu_shadow);
+
+/* Delivery-stream admission stays typed so an automatic route never emits
+ * producer work for a stream the VAP tuple or application buffer cannot
+ * reproduce. */
+enum r300_r2vb_delivery_stream_status {
+    R300_R2VB_DELIVERY_STREAM_UNCHECKED = 0,
+    R300_R2VB_DELIVERY_STREAM_OK,
+    R300_R2VB_DELIVERY_STREAM_LAYOUT,
+    R300_R2VB_DELIVERY_STREAM_INSTANCE_RATE,
+    R300_R2VB_DELIVERY_STREAM_FORMAT,
+    R300_R2VB_DELIVERY_STREAM_STRIDE,
+    R300_R2VB_DELIVERY_STREAM_BUFFER_BINDING,
+    R300_R2VB_DELIVERY_STREAM_SOURCE_CLASS,
+    R300_R2VB_DELIVERY_STREAM_SPAN,
+    R300_R2VB_DELIVERY_STREAM_CAPACITY,
+    R300_R2VB_DELIVERY_STREAM_STATUS_COUNT,
+};
+
+enum r300_r2vb_delivery_stream_status
+r300_r2vb_delivery_element_preflight(
+    const struct pipe_vertex_element *element);
+
 /* One re-ingest vertex stream: a VS output and where TCL_BYPASS fetches its data.
- * Streams follow r300 PSC/VAP output-vector order (POS, PSIZ, COL*, BFC*,
- * GENERIC*, FOG) -- the same order r300_draw_emit_all_attribs and
- * r300_draw_fill_vs_outputs assign -- so stream i drives velem i / PSC stream i
- * / output vec i.  Numeric gl_varying_slot order places PSIZ after colors and
- * is not used. */
+ * Streams follow r300 PSC/VAP output-vector order -- the same order
+ * r300_draw_emit_all_attribs and r300_draw_fill_vs_outputs assign -- so stream
+ * i drives velem i / PSC stream i / output vec i.  The exact FP32x4 delivery
+ * contract admits full vector stores and refuses scalar PSIZ. */
 enum r300_r2vb_reingest_kind { R2VB_STREAM_POS, R2VB_STREAM_COMPUTED, R2VB_STREAM_PASSTHROUGH };
 struct r300_r2vb_reingest_stream {
     gl_varying_slot slot;
     enum r300_r2vb_reingest_kind kind;
     int src_velem;   /* passthrough: app velem index of the source input; else -1 */
+    uint8_t components;
+    uint8_t bit_size;
+    uint8_t write_mask;
 };
 
 /* Enumerate the bound VS's outputs into output-vector order and classify each:
@@ -42,6 +79,14 @@ struct r300_r2vb_reingest_stream {
  * unit (r300_r2vb_reingest_layout_test). */
 int r300_r2vb_reingest_stream_layout(struct nir_shader *vs, int computed_slot,
                                      struct r300_r2vb_reingest_stream *out, unsigned max);
+
+/* Join the output-vector layout to the current application vertex bindings.
+ * Every passthrough output must resolve to one exact FP32x4, per-vertex stream
+ * whose complete draw span has one backing authority. */
+enum r300_r2vb_delivery_stream_status
+r300_r2vb_auto_single_output_streams_preflight(
+    struct r300_context *r300, struct nir_shader *vs,
+    const struct pipe_draw_start_count_bias *draw);
 
 /* Verdict from the simple-draw-class classifier: whether a draw is a candidate
  * for the fragment-ALU R2VB vertex route, or the reason it is not. */
@@ -71,27 +116,29 @@ enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
  * The source shader remains unchanged. */
 bool r300_r2vb_nir_is_mvp(struct nir_shader *nir);
 
-/* Gated routing decision for r300_swtcl_draw_vbo.  Returns true only if the draw
- * should be executed via the R2VB route instead of the gallivm draw module.
- * Enabled by R300_R2VB_ROUTE=1; classifies + tallies each draw and logs the
- * verdict distribution.  Route EXECUTION (the fragment-ALU producer that turns a
- * real VS + vertex arrays into the GART vertex buffer) is a later increment, so
- * this currently returns false even for candidates -- a zero-risk classifier with
- * a gallivm fallback. */
+/* Gated passthrough decision for r300_swtcl_draw_vbo.  R300_R2VB_ROUTE=1
+ * classifies and tallies draws.  R300_R2VB_EXEC=1 admits only the identity-VS
+ * passthrough class for direct TCL_BYPASS delivery; every other verdict enters
+ * Draw. */
 bool r300_r2vb_route_draw(struct r300_context *r300,
                           const struct pipe_draw_info *info,
                           const struct pipe_draw_start_count_bias *draw);
 
-/* MVP route: gate (R300_R2VB_MVP_EXEC) + exec.  route_mvp returns true for an
- * MVP-shape candidate draw under the opt-in; exec_mvp_draw runs the fragment-ALU
- * MVP transform producer (gl_Position = M * in_pos) under the normal draw flow
- * and returns false (gallivm fallback) until the re-ingest half is built. */
+/* MVP route: gate plus execution.  route_mvp admits a fragment-ALU producer
+ * candidate under R300_R2VB_MVP_EXEC or the complete AUTO_SINGLE contract.
+ * exec_mvp_draw produces, classifies, and either delivers through TCL_BYPASS,
+ * consumes a trivial reject, or declines into Draw. */
 bool r300_r2vb_route_mvp(struct r300_context *r300,
                          const struct pipe_draw_info *info,
                          const struct pipe_draw_start_count_bias *draw);
 bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                              const struct pipe_draw_info *info,
                              const struct pipe_draw_start_count_bias *draw);
+void r300_r2vb_auto_single_note_outcome(
+    struct r300_context *r300,
+    const struct pipe_draw_info *info,
+    const struct pipe_draw_start_count_bias *draw,
+    bool route_executed);
 
 /* The passthrough direct-VB re-ingest (defined in r300_render.c): re-ingest the
  * bound velems/vertex_buffers at TCL_BYPASS with the application FS and the HW
@@ -100,6 +147,18 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
 bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                                      const struct pipe_draw_info *info,
                                      const struct pipe_draw_start_count_bias *draw);
+
+/* Mark the restored application vertex-array binding for re-emission after
+ * a producer delivery temporarily rewires the elements and buffers. */
+void r300_r2vb_restore_vertex_array_state(struct r300_context *r300);
+
+/* Compute the exact CPU-shadow prefix a passthrough upload must retain.
+ * Every referenced element contributes its final fetched byte; overflow,
+ * instance-rate elements, missing strides, and resource overrun decline. */
+bool r300_r2vb_vertex_buffer_upload_end(
+    const struct pipe_vertex_element *elements, unsigned element_count,
+    unsigned vertex_buffer_index, uint32_t buffer_offset, uint32_t start,
+    uint32_t count, uint32_t resource_width, uint32_t *upload_end);
 
 /* Emit the RS482 render-to-vertex-buffer (R2VB) synthesized-vertex loop into the
  * current command stream.  The caller binds the r300 fragment-shader state (the

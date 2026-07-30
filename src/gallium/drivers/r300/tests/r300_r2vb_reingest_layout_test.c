@@ -16,9 +16,9 @@
  * enumeration: two outputs sourced from one input produce two streams carrying
  * the same src_velem; distinct sources keep distinct src_velem ranks; the
  * computed varying maps by slot; streams sort into r300 PSC/VAP output-vector
- * order (POS, PSIZ, COL*, GENERIC*, FOG) regardless of store order; and a
- * varying that is neither the computed slot nor a direct input load is
- * refused, not guessed.
+ * order regardless of store order; every delivered output is one full FP32x4
+ * vector; and a varying that is neither the computed slot nor a direct input
+ * load is refused, not guessed.
  */
 
 #include <stdio.h>
@@ -39,6 +39,19 @@ static int failures;
    } while (0)
 
 static const nir_shader_compiler_options vs_options = {0};
+
+static void
+check_full_fp32x4_shape(const struct r300_r2vb_reingest_stream *streams,
+                        int count, const char *name)
+{
+   for (int i = 0; i < count; i++) {
+      char label[128];
+      snprintf(label, sizeof(label), "%s stream %d is full FP32x4", name, i);
+      CHECK(streams[i].components == 4 && streams[i].bit_size == 32 &&
+               streams[i].write_mask == 0xf,
+            label);
+   }
+}
 
 struct vs_io {
    nir_variable *in_pos;
@@ -101,6 +114,7 @@ test_duplicate_source_outputs(void)
    int n = r300_r2vb_reingest_stream_layout(b.shader, -1, s, 8);
    CHECK(n == 3, "dup-source stream count is the output count");
    if (n == 3) {
+      check_full_fp32x4_shape(s, n, "dup-source");
       CHECK(s[0].kind == R2VB_STREAM_POS && s[0].slot == VARYING_SLOT_POS,
             "dup-source stream 0 is position");
       CHECK(s[1].kind == R2VB_STREAM_PASSTHROUGH && s[1].src_velem == 1,
@@ -131,6 +145,7 @@ test_distinct_source_outputs(void)
    int n = r300_r2vb_reingest_stream_layout(b.shader, -1, s, 8);
    CHECK(n == 3, "distinct-source stream count");
    if (n == 3) {
+      check_full_fp32x4_shape(s, n, "distinct-source");
       CHECK(s[1].kind == R2VB_STREAM_PASSTHROUGH && s[1].src_velem == 1,
             "distinct-source stream 1 keeps velem rank 1");
       CHECK(s[2].kind == R2VB_STREAM_PASSTHROUGH && s[2].src_velem == 2,
@@ -156,6 +171,7 @@ test_computed_varying_mapping(void)
    int n = r300_r2vb_reingest_stream_layout(b.shader, VARYING_SLOT_VAR0, s, 8);
    CHECK(n == 3, "computed-varying stream count");
    if (n == 3) {
+      check_full_fp32x4_shape(s, n, "computed-varying");
       CHECK(s[0].kind == R2VB_STREAM_POS, "computed-varying stream 0 is position");
       CHECK(s[1].kind == R2VB_STREAM_COMPUTED && s[1].slot == VARYING_SLOT_VAR0,
             "computed-varying stream 1 is the producer BO");
@@ -182,6 +198,7 @@ test_store_order_independence(void)
    int n = r300_r2vb_reingest_stream_layout(b.shader, -1, s, 8);
    CHECK(n == 3, "store-order stream count");
    if (n == 3) {
+      check_full_fp32x4_shape(s, n, "store-order");
       CHECK(s[0].slot == VARYING_SLOT_POS, "store-order position sorts first");
       CHECK(s[1].slot == VARYING_SLOT_VAR0 && s[2].slot == VARYING_SLOT_VAR1,
             "store-order varyings sort ascending");
@@ -209,6 +226,92 @@ test_unmappable_varying_refused(void)
    ralloc_free(b.shader);
 }
 
+static void
+test_scalar_point_size_refused(void)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &vs_options,
+                                     "scalar_point_size");
+   nir_variable *in_pos = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "inPos");
+   in_pos->data.location = VERT_ATTRIB_POS;
+   nir_variable *out_pos = nir_variable_create(
+      b.shader, nir_var_shader_out, glsl_vec4_type(), "outPos");
+   out_pos->data.location = VARYING_SLOT_POS;
+   nir_variable *out_psiz = nir_variable_create(
+      b.shader, nir_var_shader_out, glsl_float_type(), "outPointSize");
+   out_psiz->data.location = VARYING_SLOT_PSIZ;
+   nir_store_var(&b, out_pos, nir_load_var(&b, in_pos), 0xf);
+   nir_store_var(&b, out_psiz, nir_imm_float(&b, 1.0f), 0x1);
+
+   struct r300_r2vb_reingest_stream streams[8];
+   CHECK(r300_r2vb_reingest_stream_layout(
+            b.shader, -1, streams, ARRAY_SIZE(streams)) == -1,
+         "scalar point-size output is refused");
+   ralloc_free(b.shader);
+}
+
+static void
+test_vec2_output_refused(void)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &vs_options,
+                                     "vec2_output");
+   nir_variable *in_pos = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "inPos");
+   in_pos->data.location = VERT_ATTRIB_POS;
+   nir_variable *in_attr = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec2_type(), "inAttr");
+   in_attr->data.location = VERT_ATTRIB_GENERIC0;
+   nir_variable *out_pos = nir_variable_create(
+      b.shader, nir_var_shader_out, glsl_vec4_type(), "outPos");
+   out_pos->data.location = VARYING_SLOT_POS;
+   nir_variable *out_var = nir_variable_create(
+      b.shader, nir_var_shader_out, glsl_vec2_type(), "outVar");
+   out_var->data.location = VARYING_SLOT_VAR0;
+   nir_store_var(&b, out_pos, nir_load_var(&b, in_pos), 0xf);
+   nir_store_var(&b, out_var, nir_load_var(&b, in_attr), 0x3);
+
+   struct r300_r2vb_reingest_stream streams[8];
+   CHECK(r300_r2vb_reingest_stream_layout(
+            b.shader, -1, streams, ARRAY_SIZE(streams)) == -1,
+         "vec2 passthrough output is refused");
+   ralloc_free(b.shader);
+}
+
+static void
+test_partial_write_refused(void)
+{
+   struct vs_io io;
+   nir_builder b = vs_shell(&io, false, "partial_write");
+   nir_store_var(&b, io.out_pos, nir_load_var(&b, io.in_pos), 0xf);
+   nir_store_var(&b, io.out_var0, nir_load_var(&b, io.in_attr0), 0x3);
+
+   struct r300_r2vb_reingest_stream streams[8];
+   CHECK(r300_r2vb_reingest_stream_layout(
+            b.shader, -1, streams, ARRAY_SIZE(streams)) == -1,
+         "partial vec4 output write is refused");
+   ralloc_free(b.shader);
+}
+
+static void
+test_duplicate_output_store_refused(void)
+{
+   struct vs_io io;
+   nir_builder b = vs_shell(&io, false, "duplicate_output_store");
+   nir_def *position = nir_load_var(&b, io.in_pos);
+   nir_def *attribute = nir_load_var(&b, io.in_attr0);
+   nir_store_var(&b, io.out_pos, position, 0xf);
+   nir_store_var(&b, io.out_var0, attribute, 0xf);
+   nir_store_var(&b, io.out_var0, attribute, 0xf);
+
+   struct r300_r2vb_reingest_stream streams[8];
+   CHECK(r300_r2vb_reingest_stream_layout(
+            b.shader, -1, streams, ARRAY_SIZE(streams)) == -1,
+         "duplicate output-slot stores are refused");
+   ralloc_free(b.shader);
+}
+
 int
 main(void)
 {
@@ -219,6 +322,10 @@ main(void)
    test_computed_varying_mapping();
    test_store_order_independence();
    test_unmappable_varying_refused();
+   test_scalar_point_size_refused();
+   test_vec2_output_refused();
+   test_partial_write_refused();
+   test_duplicate_output_store_refused();
 
    glsl_type_singleton_decref();
 

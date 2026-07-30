@@ -74,6 +74,8 @@ void r300_emit_scissor_state(struct r300_context* r300,
 void r300_emit_textures_state(struct r300_context *r300,
                               unsigned size, void *state);
 
+#define R300_EMIT_VERTEX_ARRAYS_SWTCL_DWORDS 9
+
 void r300_emit_vertex_arrays_swtcl(struct r300_context *r300, bool indexed);
 
 void r300_emit_vap_invariant_state(struct r300_context *r300,
