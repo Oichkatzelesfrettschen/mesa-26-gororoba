@@ -25,6 +25,7 @@ SAFE_PATH_INPUT = re.compile(r"^[A-Za-z0-9_./:+@=~-]+$")
 TRANSACTION_ID = re.compile(r"^[0-9a-f]{32}$")
 PROVISIONAL_STATE = "provisional"
 FINAL_STATE = "final"
+MOUNTINFO_PATH = Path("/proc/self/mountinfo")
 
 
 class ControlError(RuntimeError):
@@ -302,6 +303,77 @@ def containing_git_worktree(path: Path) -> Path | None:
     return None
 
 
+def decode_mountinfo_path(encoded_path: bytes) -> Path:
+    decoded_path = bytearray()
+    index = 0
+    while index < len(encoded_path):
+        value = encoded_path[index]
+        if value != ord("\\"):
+            decoded_path.append(value)
+            index += 1
+            continue
+        octal_escape = encoded_path[index + 1 : index + 4]
+        if octal_escape not in {b"011", b"012", b"040", b"134"}:
+            fail("invalid mountinfo path escape")
+        decoded_path.append(int(octal_escape, 8))
+        index += 4
+
+    try:
+        path_text = os.fsdecode(bytes(decoded_path))
+        mount_point = Path(path_text)
+    except (TypeError, ValueError) as error:
+        fail(f"invalid mountinfo path: {error}")
+    if not mount_point.is_absolute():
+        fail(f"mountinfo path is not absolute: {path_text}")
+    normalized_mount_point = Path(os.path.normpath(path_text))
+    if normalized_mount_point != mount_point:
+        fail(f"mountinfo path is not normalized: {path_text}")
+    return mount_point
+
+
+def parse_mountinfo(mountinfo: bytes) -> tuple[Path, ...]:
+    mount_points = []
+    for line_number, record in enumerate(mountinfo.splitlines(), start=1):
+        pre_separator, separator, post_separator = record.partition(b" - ")
+        pre_fields = pre_separator.split()
+        post_fields = post_separator.split()
+        if (
+            not separator
+            or len(pre_fields) < 6
+            or len(post_fields) < 3
+            or not pre_fields[0].isdigit()
+            or not pre_fields[1].isdigit()
+        ):
+            fail(f"invalid mountinfo record at line {line_number}")
+        mount_points.append(decode_mountinfo_path(pre_fields[4]))
+    if not mount_points:
+        fail("mountinfo contains no mount records")
+    return tuple(mount_points)
+
+
+def current_mount_points(
+    mountinfo_path: Path = MOUNTINFO_PATH,
+) -> tuple[Path, ...]:
+    try:
+        mountinfo = mountinfo_path.read_bytes()
+    except OSError as error:
+        fail(f"cannot read mount topology {mountinfo_path}: {error}")
+    return parse_mountinfo(mountinfo)
+
+
+def contained_mount_point(
+    path: Path,
+    mount_points: tuple[Path, ...] | None = None,
+) -> Path | None:
+    selected_mount_points = (
+        current_mount_points() if mount_points is None else mount_points
+    )
+    for mount_point in selected_mount_points:
+        if is_within_or_equal(mount_point, path):
+            return mount_point
+    return None
+
+
 def contained_git_worktree(path: Path) -> Path | None:
     if not path.is_dir():
         return None
@@ -418,6 +490,12 @@ def reject_git_worktree_target(
             )
 
 
+def reject_mount_target(path: Path, label: str) -> None:
+    mount_point = contained_mount_point(path)
+    if mount_point is not None:
+        fail(f"refusing {label} containing a mount point: {mount_point}")
+
+
 def reject_protected_path(path: Path, label: str) -> None:
     protected = (
         Path("/"),
@@ -508,12 +586,23 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
         fail(f"refusing BUILD_ROOT inside a Git worktree: {repository_boundary}")
     if not is_strict_descendant(builddir, build_root):
         fail(f"refusing BUILDDIR outside BUILD_ROOT: {builddir}")
+    builddir_mutation = operation in {
+        "build",
+        "clean",
+        "configure",
+        "distclean",
+        "install",
+        "test",
+    }
+    destructive_builddir = operation in {"clean", "distclean"}
+    if builddir_mutation:
+        reject_mount_target(builddir, "BUILDDIR")
     reject_git_worktree_target(
         builddir,
         "BUILDDIR",
         repository_root,
         repository_build_root,
-        scan_descendants=operation in {"clean", "distclean"},
+        scan_descendants=destructive_builddir,
     )
 
     source_is_control = source_root == repository_root
@@ -541,6 +630,8 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
         validate_prefix(values)
         prefix = values["prefix"]
         assert isinstance(prefix, Path)
+        if operation in {"artifact", "distclean", "install"}:
+            reject_mount_target(prefix, "PREFIX")
         reject_git_worktree_target(
             prefix,
             "PREFIX",
@@ -562,6 +653,7 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
                 "clean-all only removes the repository build root: "
                 f"{repository_build_root}"
             )
+        reject_mount_target(build_root, "BUILD_ROOT")
         reject_git_worktree_target(
             build_root,
             "BUILD_ROOT",

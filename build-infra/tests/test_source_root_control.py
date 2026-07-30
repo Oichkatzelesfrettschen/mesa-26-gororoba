@@ -137,6 +137,67 @@ def test_validate_layout_rejects_nested_git_worktree_before_archive(
         source_root_control.validate_layout("distclean", values)
 
 
+def test_parse_mountinfo_decodes_kernel_path_escapes() -> None:
+    mountinfo = (
+        b"1 0 0:1 / / rw - rootfs rootfs rw\n"
+        b"2 1 0:1 / /tmp/space\\040tab\\011line\\012slash\\134end "
+        b"rw - tmpfs tmpfs rw\n"
+    )
+    assert source_root_control.parse_mountinfo(mountinfo) == (
+        Path("/"),
+        Path("/tmp/space tab\tline\nslash\\end"),
+    )
+
+
+@pytest.mark.parametrize(
+    "mountinfo",
+    (
+        b"",
+        b"1 0 0:1 / / rw rootfs rootfs rw\n",
+        b"1 0 0:1 / relative rw - rootfs rootfs rw\n",
+        b"1 0 0:1 / /tmp/bad\\09x rw - tmpfs tmpfs rw\n",
+        b"1 0 0:1 / /tmp/bad\\000 rw - tmpfs tmpfs rw\n",
+        b"1 0 0:1 / /tmp/bad\\400 rw - tmpfs tmpfs rw\n",
+    ),
+)
+def test_parse_mountinfo_rejects_malformed_records(
+    mountinfo: bytes,
+) -> None:
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.parse_mountinfo(mountinfo)
+
+
+def test_contained_mount_point_uses_path_components() -> None:
+    mount_points = (
+        Path("/"),
+        Path("/tmp/build/mounted"),
+        Path("/tmp/building"),
+        Path("/tmp/build/mounted"),
+    )
+    assert source_root_control.contained_mount_point(
+        Path("/tmp/build"),
+        mount_points,
+    ) == Path("/tmp/build/mounted")
+    assert source_root_control.contained_mount_point(
+        Path("/tmp/build/mounted"),
+        mount_points,
+    ) == Path("/tmp/build/mounted")
+    assert (
+        source_root_control.contained_mount_point(
+            Path("/tmp/build-other"),
+            mount_points,
+        )
+        is None
+    )
+
+
+def test_current_mount_points_fails_closed_when_unreadable(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.current_mount_points(tmp_path / "missing-mountinfo")
+
+
 def test_owned_build_namespaces_ignore_home_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

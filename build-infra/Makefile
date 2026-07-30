@@ -55,7 +55,7 @@ PROFILE  ?= 3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
 # host env unless the caller passes a different HOSTENV explicitly.
 HOSTENV  ?= vostro1000-x86-64-v1-clang22-ccache-distcc
 INSTALL_NAMESPACE ?= mesa
-CONTROL_ROOT := $(abspath $(CURDIR)/..)
+override CONTROL_ROOT := $(abspath $(CURDIR)/..)
 ifeq ($(origin TOPSRC),undefined)
 TOPSRC := $(CONTROL_ROOT)
 endif
@@ -83,27 +83,28 @@ SYSCONFDIR ?= /etc
 # receives them through the process environment, validates their character
 # domain, resolves symlinks, and returns canonical paths before any recipe
 # interpolates them into shell syntax.
-GOROROBA_TOPSRC_INPUT := $(value TOPSRC)
-GOROROBA_BUILD_ROOT_INPUT := $(value BUILD_ROOT)
-GOROROBA_BUILDDIR_INPUT := $(value BUILDDIR)
-GOROROBA_PREFIX_INPUT := $(value PREFIX)
-GOROROBA_PROFILE_INPUT := $(value PROFILE)
+override GOROROBA_TOPSRC_INPUT := $(value TOPSRC)
+override GOROROBA_BUILD_ROOT_INPUT := $(value BUILD_ROOT)
+override GOROROBA_BUILDDIR_INPUT := $(value BUILDDIR)
+override GOROROBA_PREFIX_INPUT := $(value PREFIX)
+override GOROROBA_PROFILE_INPUT := $(value PROFILE)
 export GOROROBA_TOPSRC_INPUT
 export GOROROBA_BUILD_ROOT_INPUT
 export GOROROBA_BUILDDIR_INPUT
 export GOROROBA_PREFIX_INPUT
 export GOROROBA_PROFILE_INPUT
 
-make_shell_quote = '$(subst ','"'"',$(1))'
-SOURCE_ROOT_CONTROL := $(CURDIR)/scripts/source_root_control.py
-SOURCE_ROOT_FIELDS := $(shell \
+override make_shell_quote = '$(subst ','"'"',$(1))'
+override SOURCE_ROOT_CONTROL := $(CURDIR)/scripts/source_root_control.py
+override MOUNT_BOUNDARY_CALIBRATION := $(CURDIR)/tests/mount_boundary_calibration.py
+override SOURCE_ROOT_FIELDS := $(shell \
 	GOROROBA_TOPSRC_INPUT=$(call make_shell_quote,$(value GOROROBA_TOPSRC_INPUT)) \
 	GOROROBA_BUILD_ROOT_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILD_ROOT_INPUT)) \
 	GOROROBA_BUILDDIR_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILDDIR_INPUT)) \
 	GOROROBA_PREFIX_INPUT=$(call make_shell_quote,$(value GOROROBA_PREFIX_INPUT)) \
 	GOROROBA_PROFILE_INPUT=$(call make_shell_quote,$(value GOROROBA_PROFILE_INPUT)) \
 	python3 $(SOURCE_ROOT_CONTROL) resolve-make)
-SOURCE_ROOT_RESOLVE_STATUS := $(.SHELLSTATUS)
+override SOURCE_ROOT_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(SOURCE_ROOT_RESOLVE_STATUS),0)
 $(error source root and build path resolution failed)
 endif
@@ -114,18 +115,18 @@ override TOPSRC := $(word 1,$(SOURCE_ROOT_FIELDS))
 override BUILD_ROOT := $(word 2,$(SOURCE_ROOT_FIELDS))
 override BUILDDIR := $(word 3,$(SOURCE_ROOT_FIELDS))
 override PREFIX := $(word 4,$(SOURCE_ROOT_FIELDS))
-SOURCE_COMMIT := $(word 5,$(SOURCE_ROOT_FIELDS))
-SOURCE_TREE := $(word 6,$(SOURCE_ROOT_FIELDS))
-CONTROL_COMMIT := $(word 7,$(SOURCE_ROOT_FIELDS))
-GOROROBA_CONTROL_ROOT_INPUT := $(word 8,$(SOURCE_ROOT_FIELDS))
-GOROROBA_SOURCE_ROOT_ANCHOR := $(word 9,$(SOURCE_ROOT_FIELDS))
-GOROROBA_CONTROL_ROOT_ANCHOR := $(word 10,$(SOURCE_ROOT_FIELDS))
-GOROROBA_BUILD_ROOT_ANCHOR := $(word 11,$(SOURCE_ROOT_FIELDS))
-GOROROBA_BUILDDIR_ANCHOR := $(word 12,$(SOURCE_ROOT_FIELDS))
-GOROROBA_PREFIX_ANCHOR := $(word 13,$(SOURCE_ROOT_FIELDS))
-GOROROBA_SOURCE_COMMIT_CAPTURED := $(SOURCE_COMMIT)
-GOROROBA_SOURCE_TREE_CAPTURED := $(SOURCE_TREE)
-GOROROBA_CONTROL_COMMIT_CAPTURED := $(CONTROL_COMMIT)
+override SOURCE_COMMIT := $(word 5,$(SOURCE_ROOT_FIELDS))
+override SOURCE_TREE := $(word 6,$(SOURCE_ROOT_FIELDS))
+override CONTROL_COMMIT := $(word 7,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_CONTROL_ROOT_INPUT := $(word 8,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_SOURCE_ROOT_ANCHOR := $(word 9,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_CONTROL_ROOT_ANCHOR := $(word 10,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_BUILD_ROOT_ANCHOR := $(word 11,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_BUILDDIR_ANCHOR := $(word 12,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_PREFIX_ANCHOR := $(word 13,$(SOURCE_ROOT_FIELDS))
+override GOROROBA_SOURCE_COMMIT_CAPTURED := $(SOURCE_COMMIT)
+override GOROROBA_SOURCE_TREE_CAPTURED := $(SOURCE_TREE)
+override GOROROBA_CONTROL_COMMIT_CAPTURED := $(CONTROL_COMMIT)
 export GOROROBA_CONTROL_ROOT_INPUT
 export GOROROBA_SOURCE_ROOT_ANCHOR
 export GOROROBA_CONTROL_ROOT_ANCHOR
@@ -310,6 +311,8 @@ source-root-check:
 	@echo "OK    source root: $(TOPSRC)"
 	@echo "OK    source commit: $(SOURCE_COMMIT)"
 	@echo "OK    source tree: $(SOURCE_TREE)"
+	@echo "OK    control root: $(CONTROL_ROOT)"
+	@echo "OK    control commit: $(CONTROL_COMMIT)"
 
 source-root-control-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
@@ -833,6 +836,7 @@ install: source-root-check vostro-prefix-check
 	    $(FLOCK) -x -w $(LOCK_WAIT) "$(BUILD_LOCK)" bash -c 'set -euo pipefail; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-inputs \
 	      --fields source_root control_root build_root builddir prefix; \
+	    python3 "$(SOURCE_ROOT_CONTROL)" check-layout --operation=install; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" verify-identity; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
@@ -1062,6 +1066,46 @@ source-root-selection-test:
 	$(MAKE) --no-print-directory -C "$(CURDIR)" source-root-check \
 		TOPSRC="$$source_root" >/dev/null; \
 	echo "OK    external TOPSRC accepts a clean committed Mesa worktree"; \
+	source_commit="$$(git -C "$$source_root" rev-parse HEAD)"; \
+	source_tree="$$(git -C "$$source_root" rev-parse HEAD^{tree})"; \
+	control_commit="$$(git -C "$(CONTROL_ROOT)" rev-parse HEAD)"; \
+	resolver_override_output="$$( $(MAKE) --no-print-directory \
+		-C "$(CURDIR)" source-root-check TOPSRC="$$source_root" \
+		CONTROL_ROOT=/ SOURCE_ROOT_CONTROL=/bin/false \
+		MOUNT_BOUNDARY_CALIBRATION=/bin/false \
+		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m' \
+		SOURCE_ROOT_RESOLVE_STATUS=1 SOURCE_COMMIT=forged \
+		SOURCE_TREE=forged CONTROL_COMMIT=forged \
+		GOROROBA_TOPSRC_INPUT=/ GOROROBA_BUILD_ROOT_INPUT=/ \
+		GOROROBA_BUILDDIR_INPUT=/ GOROROBA_PREFIX_INPUT=/ \
+		GOROROBA_PROFILE_INPUT=forged \
+		GOROROBA_CONTROL_ROOT_INPUT=/ \
+		GOROROBA_SOURCE_ROOT_ANCHOR=forged \
+		GOROROBA_CONTROL_ROOT_ANCHOR=forged \
+		GOROROBA_BUILD_ROOT_ANCHOR=forged \
+		GOROROBA_BUILDDIR_ANCHOR=forged \
+		GOROROBA_PREFIX_ANCHOR=forged \
+		GOROROBA_SOURCE_COMMIT_CAPTURED=forged \
+		GOROROBA_SOURCE_TREE_CAPTURED=forged \
+		GOROROBA_CONTROL_COMMIT_CAPTURED=forged \
+		make_shell_quote=forged 2>&1 \
+	)" || { \
+		echo "FAIL  command-line proof inputs replaced resolver authority" >&2; \
+		printf '%s\n' "$$resolver_override_output" >&2; exit 1; \
+	}; \
+	for expected_line in \
+		"OK    source root: $$source_root" \
+		"OK    source commit: $$source_commit" \
+		"OK    source tree: $$source_tree" \
+		"OK    control root: $(CONTROL_ROOT)" \
+		"OK    control commit: $$control_commit"; do \
+		printf '%s\n' "$$resolver_override_output" | \
+			grep -F "$$expected_line" >/dev/null || { \
+				echo "FAIL  resolver authority returned the wrong identity" >&2; \
+				printf '%s\n' "$$resolver_override_output" >&2; exit 1; \
+			}; \
+	done; \
+	echo "OK    command-line variables cannot forge resolver-owned inputs"; \
 	touch "$$control_dirty_marker"; \
 	if control_dirty_output="$$( $(MAKE) --no-print-directory \
 		-C "$(CURDIR)" source-root-check TOPSRC="$$source_root" 2>&1 )"; then \
@@ -1283,6 +1327,26 @@ source-root-selection-test:
 		echo "FAIL  clean deleted the nested Git worktree" >&2; exit 1; \
 	}; \
 	echo "OK    destructive targets preserve nested Git worktrees"; \
+	if command -v unshare >/dev/null 2>&1 && \
+		command -v mount >/dev/null 2>&1 && \
+		unshare --user --map-root-user --mount true >/dev/null 2>&1; then \
+		mount_boundary_output="$$( \
+			GOROROBA_MOUNT_BOUNDARY_CALIBRATION=1 \
+			unshare --user --map-root-user --mount bash -c '\
+				set -euo pipefail; \
+				mount --make-rprivate /; \
+				mount -t tmpfs -o mode=0700 tmpfs /tmp; \
+				exec python3 "$$1" --control-root "$$2"' \
+				_ "$(MOUNT_BOUNDARY_CALIBRATION)" "$(CONTROL_ROOT)" \
+				2>&1 \
+		)" || { \
+			echo "FAIL  private mount-boundary calibration failed" >&2; \
+			printf '%s\n' "$$mount_boundary_output" >&2; exit 1; \
+		}; \
+		printf '%s\n' "$$mount_boundary_output"; \
+	else \
+		echo "SKIP  private user/mount namespace is unavailable"; \
+	fi; \
 	if control_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		artifact-check TOPSRC="$$source_root" \
 		BUILD_ROOT="$$tmpdir/control-prefix-build" \
@@ -1597,6 +1661,27 @@ source-root-selection-test:
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct NINJA=true >/dev/null; \
 	echo "OK    external build verifies the configure-time identity"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" build \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct NINJA=true \
+		CONTROL_ROOT=/ SOURCE_ROOT_CONTROL=/bin/false \
+		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m' \
+		SOURCE_ROOT_RESOLVE_STATUS=1 SOURCE_COMMIT=forged \
+		SOURCE_TREE=forged CONTROL_COMMIT=forged \
+		GOROROBA_TOPSRC_INPUT=/ GOROROBA_BUILD_ROOT_INPUT=/ \
+		GOROROBA_BUILDDIR_INPUT=/ GOROROBA_PREFIX_INPUT=/ \
+		GOROROBA_CONTROL_ROOT_INPUT=/ \
+		GOROROBA_SOURCE_ROOT_ANCHOR=forged \
+		GOROROBA_CONTROL_ROOT_ANCHOR=forged \
+		GOROROBA_BUILD_ROOT_ANCHOR=forged \
+		GOROROBA_BUILDDIR_ANCHOR=forged \
+		GOROROBA_PREFIX_ANCHOR=forged \
+		GOROROBA_SOURCE_COMMIT_CAPTURED=forged \
+		GOROROBA_SOURCE_TREE_CAPTURED=forged \
+		GOROROBA_CONTROL_COMMIT_CAPTURED=forged >/dev/null; \
+	echo "OK    resolver-owned proof inputs override command-line forgeries"; \
 	if install_failure_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" install \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
@@ -1665,7 +1750,7 @@ source-root-selection-test:
 		echo "FAIL  artifact source drift returned the wrong diagnostic" >&2; \
 		printf '%s\n' "$$artifact_drift_output" >&2; exit 1; \
 	}; \
-	echo "OK    artifact reporting joins the external source identity"; \
+	echo "OK    artifact reporting binds the selected source tuple"; \
 	if reconfigure_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
@@ -2008,6 +2093,7 @@ source-root-selection-test:
 		-c user.name=source-root-test -c user.email=source-root-test.invalid \
 		commit -qm "test: add source revision B"; \
 	revision_b="$$(git -C "$$revision_source" rev-parse HEAD)"; \
+	revision_b_tree="$$(git -C "$$revision_source" rev-parse HEAD^{tree})"; \
 	git -C "$$revision_source" switch --detach -q "$$revision_a"; \
 	revision_build_root="$$tmpdir/revision-lease-build"; \
 	revision_ready="$$tmpdir/revision.ready"; \
@@ -2021,6 +2107,9 @@ source-root-selection-test:
 			PREFIX="$$revision_build_root/prefix" \
 			BUILD_LOCK="$$tmpdir/revision.lock" LOCK_WAIT=5 \
 			FLOCK="$$retarget_flock" \
+			SOURCE_COMMIT="$$revision_b" SOURCE_TREE="$$revision_b_tree" \
+			GOROROBA_SOURCE_COMMIT_CAPTURED="$$revision_b" \
+			GOROROBA_SOURCE_TREE_CAPTURED="$$revision_b_tree" \
 			COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true \
 			> "$$revision_output" 2>&1 & \
 	revision_pid=$$!; \

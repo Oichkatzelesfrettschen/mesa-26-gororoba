@@ -160,8 +160,12 @@ identity, removal, or archival logic runs.  The lease is the coordination
 boundary for same-user build processes; direct filesystem mutation by a
 process that bypasses Make is outside that cooperative boundary.  Clean,
 clean-all, and distclean reject selected targets that contain a Git worktree
-marker.  They report success only after the removal or archival command
-succeeds and the selected path satisfies its postcondition.
+marker.  Configure, build, test, install, clean, and distclean reject an exact
+or descendant build-directory mount point in the active mount namespace.
+Install, artifact reporting, and distclean apply the same mount boundary to
+the prefix.  Mount topology is checked before any descendant Git-marker walk.
+Removal and archival report success only after the command succeeds and the
+selected path satisfies its postcondition.
 
 Each compared revision gets a distinct `BUILD_ROOT`, `BUILDDIR`, and `PREFIX`.
 `clean-all` remains a control-worktree operation and rejects every external
@@ -177,8 +181,10 @@ assume-unchanged, and nested root rejection, shell-input rejection, physical
 containment, namespace ownership, sibling-worktree protection, clean-all
 refusal, lease-bound path replacement, build-root and prefix identity drift,
 configure and install transactions, failed reconfiguration revocation,
-clean-then-distclean archival, archival retry, artifact attribution, shared
-prefix refusal, and the Meson source argument.  `make
+clean-then-distclean archival, archival retry, artifact-report source-tuple
+binding, shared prefix refusal, and the Meson source argument.  When the host
+permits private user and mount namespaces, the same target proves that exact
+and descendant same-device bind mounts fail before recursive removal.  `make
 source-root-control-unit-test` exercises the pure path, layout, staged-only
 cleanliness, anchor, namespace, and identity-record invariants directly.
 
