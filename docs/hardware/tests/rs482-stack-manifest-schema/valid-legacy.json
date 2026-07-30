@@ -1,0 +1,22 @@
+{
+  "boot_id": "11111111-2222-3333-4444-555555555555",
+  "xorg": {
+    "package": "xorg-server 21.1.24-1.5",
+    "xorg_binary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "glamor_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "active_ddx": "modesetting"
+  },
+  "mesa": {
+    "source_sha": "1111111111111111111111111111111111111111",
+    "libgallium_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "prefix": "/opt/mesa-rs482-profile-4"
+  },
+  "kernel": {
+    "kernel_release": "6.18.0-rs482",
+    "radeon_package": "radeon-unified-dkms 0.3-92",
+    "radeon_srcversion": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "evidence": {
+    "stein_sha": "2222222222222222222222222222222222222222"
+  }
+}

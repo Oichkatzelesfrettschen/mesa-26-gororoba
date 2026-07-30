@@ -28,7 +28,7 @@ Seven principles generate the rules in this file. A case no rule names resolves 
 
 ### Boundary, paths, and instruction files
 
-- Mesa normal flows -- build, install, test, source-comment, upstream-sync, submission -- stand complete inside this repository. `steinmarder` supplies evidence only; its bundles and findings live in `steinmarder`, and Mesa driver changes live in Mesa.
+- Mesa normal flows -- build, install, test, source-comment, upstream intake, and owned-origin publication -- stand complete inside this repository. `steinmarder` supplies evidence only; its bundles and findings live in `steinmarder`, and Mesa driver changes live in Mesa.
 - Paths in checked-in work are repository-relative, generated native files, PATH-resolved tools, or explicit user roots; discover the repository root with `repo_root=$(git rev-parse --show-toplevel)`.
 - Local absolute paths, private host FQDNs, per-user toolchains, raw IP literals, and worktree names are workspace-local facts and live outside the tree.
 - Instruction files are regular tracked files; each loader holds the `@AGENTS.md` reference plus tool-specific notes, and doctrine lives in `AGENTS.md` alone.
@@ -80,14 +80,15 @@ These rules expand in `Standalone build` and `Validation expectations`.
 - Meson Rust ignores `RUSTC_WRAPPER`; a Meson native file names the Rust toolchain by a stable path, never a hardcoded `~/.rustup/toolchains/.../bin/rustc`.
 - Compiler selection, audit policy, clean, build, install, and hazard consent live in Make and build-infra; standalone helper scripts for them stay out.
 
-### Git, merge, and submission
+### Git, merge, and owned-origin publication
 
 - Branches, commit subjects, PR titles, source comments, finding filenames, and bundle directories carry durable mechanism names. The branch name, first commit subject, and PR title are set before first push. Load-bearing identity comes from mechanism and content; wave, phase, mission, session, PR, reviewer, agent, and worktree labels live in registry metadata at most.
 - Merges preserve all non-refuted content; the default resolution is union plus synthesis. `git merge -X theirs`, `git checkout --theirs`, blanket conflict-marker stripping such as `sed -i '/^<<</d; ...'`, and unreviewed deletion are not synthesis.
 - A force-push to `main` or a shared branch carries explicit user sign-off and a commit message explaining why.
 - A skipped pre-commit hook is an emergency move, with the reason in the commit message.
 - `upstream/main` integrates into fork `main` through an intentional rebase; `git push origin upstream/main:main` stays out.
-- A human submitter understands and owns each Mesa patch; no autonomous tool submits Mesa patches.
+- `origin/main` is the owned publication target. Codex and compatible agents execute branch creation, implementation, validation, commit, push, PR review, merge, main synchronization, and scoped branch or worktree cleanup for authorized work.
+- External remotes are intake-only. A push or submission to freedesktop.org or another external project requires separate explicit user authority.
 
 ### AI disclosure, authorship, and copyright
 
@@ -550,21 +551,39 @@ ccache --show-stats --verbose
 
 Expected status: a first full build populates `~/.cache/ccache` and shows about 95% misses while filling the cache. Later rebuilds with unchanged sources should show more than 90% hits.
 
-## Submission and upstream
+## Owned-origin publication and upstream intake
 
-`origin` names this fork. `upstream` names freedesktop.org Mesa (`mesa/mesa`).
+`origin` names the owned fork, and `origin/main` is its publication target.
+`upstream` names the fetch-only freedesktop.org Mesa source (`mesa/mesa`).
+Owned-origin publication writes only to this repository's `origin`. Upstream
+intake fetches and deliberately integrates source from freedesktop.org.
+External upstream publication writes or submits to a repository outside the
+owned origin.
 
 `upstream/main` reaches fork `main` only through an intentional rebase, with any divergence recorded; a direct `git push origin upstream/main:main` stays out.
 
-Separate upstreamable fixes from local evidence and bring-up scaffolding. Keep Terakan and R300VK changes reviewable by mechanism, not batch size.
+An authorized change flows through a mechanism-named branch, local validation,
+an intentional commit, a push to `origin`, a pull request targeting
+`origin/main`, resolution of current review findings, merge,
+canonical-main synchronization, and scoped branch or worktree cleanup. Codex
+and compatible agents complete that flow end-to-end.
 
-Use `docs/submittingpatches.rst` on the mesa-26 branch for Mesa submission rules. Apply those rules unless a fork-local task explicitly narrows scope. Patches keep behavior separate from formatting churn, affect one component when possible, keep builds green, remain bisectable, are tested prudently, and arrive without fixup commits for review.
+External upstream publication remains outside this project's normal workflow.
+A separate explicit user authorization names the external destination, scope,
+credentials, and review boundary before any push or submission.
+
+Use `docs/submittingpatches.rst` on the mesa-26 branch as a patch-construction
+and review-quality baseline. `origin/main` remains the publication target.
+Patches keep behavior separate from formatting churn, affect one component
+when possible, keep builds green, remain bisectable, are tested prudently,
+and arrive without fixup commits for review.
+
+Keep fork-local Terakan, R3V, r300, and r600 changes reviewable by mechanism,
+not batch size.
 
 Commit subjects use a component prefix and a concise mechanism. Commit bodies name the invariant or bug, describe the change at maintainer-review depth, cite evidence, and state tests without turning the message into a template.
 
 Use `Closes:` for GitLab issue URLs. Use `Fixes:` only for the earlier commit that introduced the defect. Use `Backport-to:` or the current Mesa stable marker only when appropriate.
-
-Mesa patches go out through a human submitter who understands and owns the change and adds AI disclosure trailers when Mesa policy requires them.
 
 ### AI-assistance trailers
 
