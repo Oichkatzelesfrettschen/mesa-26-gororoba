@@ -1,7 +1,8 @@
 # build-infra/Makefile -- mesa-26-gororoba build entry point
 #
 # Selects a PROFILE -> meson config file -> builddir under
-# ../build/mesa-<profile>/.
+# ../build/mesa-<profile>/.  TOPSRC may name another immutable Mesa worktree
+# when two source revisions need one build policy and toolchain.
 #
 # Usage:
 #   make configure PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache
@@ -90,17 +91,41 @@ $(FLOCK) -x -w "$(LOCK_WAIT)" 9 || { \
 };
 endef
 
+define VALIDATE_TOPSRC
+topsrc="$(TOPSRC)"; \
+case "$$topsrc" in \
+  ""|/) echo "refusing unsafe TOPSRC: $$topsrc" >&2; exit 2 ;; \
+esac; \
+test -f "$$topsrc/meson.build" || { \
+  echo "TOPSRC lacks meson.build: $$topsrc" >&2; exit 2; \
+}; \
+test -f "$$topsrc/meson.options" || { \
+  echo "TOPSRC lacks meson.options: $$topsrc" >&2; exit 2; \
+}; \
+git_root="$$(git -C "$$topsrc" rev-parse --show-toplevel 2>/dev/null)" || { \
+  echo "TOPSRC is not a Git worktree: $$topsrc" >&2; exit 2; \
+}; \
+test "$$git_root" = "$$topsrc" || { \
+  echo "TOPSRC is not the Git worktree root: $$topsrc (root $$git_root)" >&2; \
+  exit 2; \
+};
+endef
+
 define VALIDATE_BUILDDIR
 build_root="$(abspath $(BUILD_ROOT))"; \
 builddir="$(abspath $(BUILDDIR))"; \
 topsrc="$(abspath $(TOPSRC))"; \
+control_root="$(abspath $(CURDIR)/..)"; \
 repo_build_root="$$topsrc/build"; \
 case "$$build_root" in \
   ""|/|"$(HOME)"|"$$topsrc") \
     echo "refusing unsafe BUILD_ROOT: $$build_root" >&2; exit 2 ;; \
 esac; \
 case "$$builddir" in \
-  "$$repo_build_root"/*) ;; \
+  "$$repo_build_root"/*) \
+    if [ "$$topsrc" != "$$control_root" ]; then \
+      echo "refusing BUILDDIR inside external TOPSRC: $$builddir" >&2; exit 2; \
+    fi ;; \
   "$$topsrc"|"$$topsrc"/*) \
     echo "refusing BUILDDIR inside the source tree: $$builddir" >&2; exit 2 ;; \
 esac; \
@@ -139,7 +164,8 @@ $(call VALIDATE_PREFIX_PATH,$(PREFIX))
 endef
 
 # --- internal paths ---------------------------------------------------------
-TOPSRC   := $(abspath $(CURDIR)/..)
+TOPSRC ?= $(abspath $(CURDIR)/..)
+override TOPSRC := $(abspath $(TOPSRC))
 # The default profile sits at the top of configs/; every other profile (the
 # release r300 sibling and the x130e terakan lanes) sits in configs/alternates/.
 # Resolve PROFILE against both directories so a bare basename still names a
@@ -195,7 +221,8 @@ LOCKED_TOOL_ENV := \
     DISTCC_HOSTS="$${DISTCC_HOSTS:-}" \
     SCCACHE_DIR="$${SCCACHE_DIR:-}"
 
-.PHONY: list vostro-prefix-check audit configure build clean clean-all distclean install \
+.PHONY: list source-root-check source-root-selection-test \
+        vostro-prefix-check audit configure build clean clean-all distclean install \
         artifact-check test \
         rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache \
         install-4_r300_full_release_x86_64v1-clang22-distcc-cache \
@@ -224,6 +251,10 @@ LOCKED_TOOL_ENV := \
 profile-audit:
 	python3 $(CURDIR)/scripts/profile_audit.py --repo-root $(CURDIR)/..
 
+source-root-check:
+	@$(VALIDATE_TOPSRC)
+	@echo "OK    source root: $(TOPSRC)"
+
 # Driver-root gate: each AMD GPU family's Vulkan driver keeps its source root
 # at the family's vulkan/ directory, and the build graph enters it there.
 .PHONY: driver-root-audit
@@ -232,7 +263,7 @@ driver-root-audit:
 	python3 $(CURDIR)/scripts/driver_root_audit.py --repo-root $(CURDIR)/..
 
 help:
-	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"
+	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [TOPSRC=<mesa-worktree>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"
 	@echo ""
 	@echo "targets:"
 	@echo "  configure         meson setup the builddir from configs/[alternates/]\$$(PROFILE).meson"
@@ -243,6 +274,8 @@ help:
 	@echo "  audit             verify host tools, env policy, profile-audit, and profile requirements"
 	@echo "  profile-audit     fail when a profile selects drivers outside its allowlist row"
 	@echo "  driver-root-audit fail when an AMD Vulkan driver root or its subdir() entry drifts"
+	@echo "  source-root-check require TOPSRC to be an exact Mesa Git worktree root"
+	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
 	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
 	@echo "  artifact-check    list installed Terakan/r600/r3v artifacts under \$$(PREFIX); warn on stale r300 ICDs"
 	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
@@ -253,6 +286,7 @@ help:
 	@echo ""
 	@echo "profile:   $(PROFILE)"
 	@echo "hostenv:   $(HOSTENV)"
+	@echo "topsrc:    $(TOPSRC)"
 	@echo "builddir:  $(BUILDDIR)"
 	@echo "prefix:    $(PREFIX)"
 	@echo "compiler chain: $(COMPILER_CHAIN)"
@@ -301,7 +335,8 @@ audit-werror:
 	if [ $$rc -eq 0 ]; then echo "OK    audit-werror: profiles werror=true; packaging meson -Dwerror=true; prime/-o0 no /usr activation"; fi; \
 	exit $$rc
 
-audit: vostro-prefix-check audit-werror profile-audit driver-root-audit
+audit: source-root-check source-root-selection-test \
+       vostro-prefix-check audit-werror profile-audit driver-root-audit
 	@failures=0; warnings=0; \
 	fail() { echo "FAIL  $$*" >&2; failures=$$((failures + 1)); }; \
 	warn() { echo "WARN  $$*" >&2; warnings=$$((warnings + 1)); }; \
@@ -493,7 +528,7 @@ audit: vostro-prefix-check audit-werror profile-audit driver-root-audit
 	if [ "$$failures" -gt 0 ]; then echo; echo "Terakan host audit failed: $$failures failure(s), $$warnings warning(s)." >&2; exit 1; fi; \
 	echo; echo "Terakan host audit passed with $$warnings warning(s)."
 
-configure: vostro-prefix-check
+configure: source-root-check vostro-prefix-check
 	@$(ACQUIRE_BUILD_LOCK) \
 	mkdir -p "$(dir $(BUILDDIR))"; \
 	test -f $(ENVFILE) && . $(ENVFILE) || true; \
@@ -686,7 +721,7 @@ distclean:
 		echo "prefix already absent: $(PREFIX)"; \
 	fi
 
-install: vostro-prefix-check
+install: source-root-check vostro-prefix-check
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@$(VALIDATE_PREFIX)
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
@@ -846,6 +881,83 @@ build-lease-test:
 		echo "FAIL  distclean plan uses $$flock_count $$flock_base leases" >&2; exit 1; \
 	}; \
 	echo "OK    distclean holds one build lease"
+
+source-root-selection-test:
+	@tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	source_root="$$tmpdir/source"; \
+	mkdir -p "$$source_root"; \
+	git -C "$$source_root" init -q; \
+	touch "$$source_root/meson.build" "$$source_root/meson.options"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" source-root-check \
+		TOPSRC="$$source_root" >/dev/null; \
+	echo "OK    external TOPSRC accepts an exact Mesa Git worktree root"; \
+	nested_root="$$source_root/nested"; \
+	mkdir -p "$$nested_root"; \
+	touch "$$nested_root/meson.build" "$$nested_root/meson.options"; \
+	if nested_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+		source-root-check TOPSRC="$$nested_root" 2>&1 )"; then \
+		echo "FAIL  source-root-check accepted a nested Git directory" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$nested_output" | \
+		grep -F "TOPSRC is not the Git worktree root" >/dev/null || { \
+		echo "FAIL  nested TOPSRC returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$nested_output" >&2; exit 1; \
+	}; \
+	echo "OK    external TOPSRC rejects a nested Git directory"; \
+	missing_root="$$tmpdir/missing-options"; \
+	mkdir -p "$$missing_root"; \
+	git -C "$$missing_root" init -q; \
+	touch "$$missing_root/meson.build"; \
+	if missing_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+		source-root-check TOPSRC="$$missing_root" 2>&1 )"; then \
+		echo "FAIL  source-root-check accepted a tree without meson.options" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$missing_output" | \
+		grep -F "TOPSRC lacks meson.options" >/dev/null || { \
+		echo "FAIL  incomplete TOPSRC returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$missing_output" >&2; exit 1; \
+	}; \
+	echo "OK    external TOPSRC rejects an incomplete Mesa root"; \
+	source_build_root="$$source_root/build"; \
+	if source_build_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+		clean TOPSRC="$$source_root" BUILD_ROOT="$$source_build_root" \
+		BUILDDIR="$$source_build_root/probe" \
+		BUILD_LOCK="$$tmpdir/source-build.lock" LOCK_WAIT=0 2>&1 )"; then \
+		echo "FAIL  clean accepted a build directory inside external TOPSRC" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$source_build_output" | \
+		grep -F "refusing BUILDDIR inside external TOPSRC" >/dev/null || { \
+		echo "FAIL  source-tree BUILDDIR returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$source_build_output" >&2; exit 1; \
+	}; \
+	echo "OK    external TOPSRC rejects in-source build directories"; \
+	external_build_root="$$tmpdir/build"; \
+	external_builddir="$$external_build_root/probe"; \
+	mkdir -p "$$external_builddir"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" clean \
+		TOPSRC="$$source_root" BUILD_ROOT="$$external_build_root" \
+		BUILDDIR="$$external_builddir" \
+		BUILD_LOCK="$$tmpdir/external-build.lock" LOCK_WAIT=0 >/dev/null; \
+	test ! -e "$$external_builddir" || { \
+		echo "FAIL  clean left the external build directory in place" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    external TOPSRC accepts an isolated external build root"; \
+	configure_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" \
+		configure TOPSRC="$$source_root" BUILD_ROOT="$$external_build_root" \
+		BUILDDIR="$$external_build_root/configure" \
+		BUILD_LOCK="$$tmpdir/configure.lock" LOCK_WAIT=0 \
+		MESON=meson PROFILE="$(PROFILE)" 2>/dev/null )"; \
+	printf '%s\n' "$$configure_plan" | \
+		grep -F "meson setup" | grep -F " $$source_root" >/dev/null || { \
+		echo "FAIL  configure does not pass external TOPSRC to Meson" >&2; \
+		printf '%s\n' "$$configure_plan" >&2; exit 1; \
+	}; \
+	echo "OK    configure passes the exact external TOPSRC to Meson"
 
 build-job-policy-test:
 	@tmpdir="$$(mktemp -d)"; \

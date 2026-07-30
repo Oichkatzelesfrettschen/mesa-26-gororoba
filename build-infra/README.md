@@ -64,6 +64,34 @@ subdir.  Each worktree gets its own `build/`, so parallel profile builds do not
 collide.  (`git clean -xdf` also removes them since they are ignored; prefer
 `make clean` to drop one profile without touching the others or the source.)
 
+## Immutable source comparisons
+
+`TOPSRC` selects the Mesa Git worktree that Meson configures.  The default is
+the worktree that owns `build-infra/`.  An explicit `TOPSRC` lets two immutable
+source revisions use the same profile, host environment, compiler resolver,
+warning policy, and Meson option generator:
+
+```bash
+make -C build-infra configure \
+  TOPSRC=/path/to/mesa-source-worktree \
+  PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache \
+  BUILD_ROOT=/path/to/isolated-build-root \
+  BUILDDIR=/path/to/isolated-build-root/source-identity \
+  PREFIX=/path/to/isolated-prefix/source-identity
+```
+
+The source selector accepts only an exact Git worktree root containing
+`meson.build` and `meson.options`.  The build directory remains outside
+that source tree.  Each compared revision gets a distinct `BUILD_ROOT`,
+`BUILDDIR`, and `PREFIX`; the caller records the source commit and tree object
+beside the resulting artifacts.
+
+The build-infra worktree remains the control plane.  Its profile, host
+environment, allowlist, toolchain selection, and Make logic govern every
+selected source tree.  `make source-root-selection-test` calibrates exact-root
+selection, incomplete and nested-root rejection, in-source build rejection,
+and the Meson source argument.
+
 ## Build-system policy
 
 - Meson native files carry Mesa options.
