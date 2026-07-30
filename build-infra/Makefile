@@ -707,6 +707,7 @@ clean-all:
 distclean:
 	@$(ACQUIRE_BUILD_LOCK) \
 	$(call CHECK_LAYOUT,distclean); \
+	$(VERIFY_SOURCE_IDENTITY); \
 	rm -rf "$(BUILDDIR)"; \
 	echo "cleaned: $(BUILDDIR)"; \
 	if [ -e "$(PREFIX)" ]; then \
@@ -1180,6 +1181,30 @@ source-root-selection-test:
 		printf '%s\n' "$$prefix_drift_output" >&2; exit 1; \
 	}; \
 	echo "OK    external build rejects prefix identity drift"; \
+	alternate_prefix="$$identity_build_root/alternate-prefix"; \
+	mkdir -p "$$alternate_prefix"; \
+	touch "$$alternate_prefix/sentinel"; \
+	if distclean_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$alternate_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 SUDO= 2>&1 )"; then \
+		echo "FAIL  distclean accepted a prefix outside its source identity" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$distclean_prefix_output" | \
+		grep -F "external source identity drift: prefix" >/dev/null || { \
+		echo "FAIL  distclean prefix drift returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$distclean_prefix_output" >&2; exit 1; \
+	}; \
+	test -d "$$identity_builddir" || { \
+		echo "FAIL  distclean deleted the source-bound build directory" >&2; \
+		exit 1; \
+	}; \
+	test -f "$$alternate_prefix/sentinel" || { \
+		echo "FAIL  distclean moved the unbound alternate prefix" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    external distclean rejects unbound prefix mutation"; \
 	if shared_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$legacy_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_build_root/legacy-probe" \
