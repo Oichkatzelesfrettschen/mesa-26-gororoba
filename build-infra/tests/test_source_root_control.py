@@ -248,14 +248,27 @@ def test_require_captured_inputs_rejects_retargeted_selector(
         source_root_control.require_captured_inputs(values, ("builddir",))
 
 
-def test_require_captured_inputs_rejects_revision_change(
+@pytest.mark.parametrize(
+    ("field", "variable_name"),
+    (
+        ("source_commit", "GOROROBA_SOURCE_COMMIT_CAPTURED"),
+        ("source_tree", "GOROROBA_SOURCE_TREE_CAPTURED"),
+        ("control_commit", "GOROROBA_CONTROL_COMMIT_CAPTURED"),
+    ),
+)
+def test_require_captured_inputs_rejects_each_revision_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    variable_name: str,
 ) -> None:
     values = layout_values(tmp_path)
     set_captured_revisions(values, monkeypatch)
-    monkeypatch.setenv("GOROROBA_SOURCE_COMMIT_CAPTURED", "4" * 40)
-    with pytest.raises(source_root_control.ControlError):
+    monkeypatch.setenv(variable_name, "4" * 40)
+    with pytest.raises(
+        source_root_control.ControlError,
+        match=f"build lease: {field}",
+    ):
         source_root_control.require_captured_inputs(values, ())
 
 
