@@ -1212,7 +1212,7 @@ source-root-selection-test:
 		exit 1; \
 	fi; \
 	printf '%s\n' "$$source_build_output" | \
-		grep -E "refusing (BUILD_ROOT|BUILDDIR) inside external TOPSRC" >/dev/null || { \
+		grep -E "refusing (BUILD_ROOT|BUILDDIR) inside external TOPSRC|refusing BUILD_ROOT inside a Git worktree" >/dev/null || { \
 		echo "FAIL  source-tree BUILDDIR returned the wrong diagnostic" >&2; \
 		printf '%s\n' "$$source_build_output" >&2; exit 1; \
 	}; \
