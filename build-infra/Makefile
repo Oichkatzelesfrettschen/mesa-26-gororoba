@@ -1284,7 +1284,7 @@ source-root-selection-test:
 		echo "FAIL  TOPSRC command substitution executed" >&2; exit 1; \
 	}; \
 	printf '%s\n' "$$command_output" | \
-		grep -F "contains unsupported path characters" >/dev/null || { \
+		grep -F "contains executable dollar syntax" >/dev/null || { \
 		echo "FAIL  command-substitution TOPSRC returned the wrong diagnostic" >&2; \
 		printf '%s\n' "$$command_output" >&2; exit 1; \
 	}; \
