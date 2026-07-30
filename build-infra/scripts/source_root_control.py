@@ -231,6 +231,9 @@ def require_clean_worktree(root: Path, label: str) -> None:
             "--exclude-standard",
             extra_environment=index_environment,
         )
+        # External comparisons run Meson with --wrap-mode=nodownload. Any
+        # ignored subproject bytes therefore come from an unrecorded source
+        # mutation rather than the selected commit and tree.
         ignored_subprojects = run_git(
             root,
             "ls-files",

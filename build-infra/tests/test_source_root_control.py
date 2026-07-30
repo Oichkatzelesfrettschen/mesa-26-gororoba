@@ -781,6 +781,19 @@ def test_require_clean_worktree_rejects_ignored_subproject_sources(
         source_root_control.require_clean_worktree(repository, "test worktree")
 
 
+def test_require_clean_worktree_accepts_ignored_build_outputs(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    committed_repository(repository)
+    (repository / ".gitignore").write_text("/build/\n", encoding="ascii")
+    commit_repository(repository, "test: ignore build outputs")
+    ignored_output = repository / "build" / "artifact"
+    ignored_output.parent.mkdir()
+    ignored_output.write_text("regenerable\n", encoding="ascii")
+    source_root_control.require_clean_worktree(repository, "test worktree")
+
+
 def test_run_git_ignores_ambient_repository_and_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

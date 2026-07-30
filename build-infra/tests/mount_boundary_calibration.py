@@ -379,32 +379,36 @@ def run_trusted_boundary_case(
         "boundary-mount-build",
         "probe",
     )
+    previous_owned_build_namespaces = context.module.owned_build_namespaces
     context.module.owned_build_namespaces = lambda _repository_root: (trusted_boundary,)
-    require_layout_acceptance(
-        context.module,
-        "build",
-        trusted_values,
-        "trusted boundary before bind mount",
-    )
-    create_fixture_directory(trusted_boundary)
-    require_layout_acceptance(
-        context.module,
-        "build",
-        trusted_values,
-        "trusted boundary directory before bind mount",
-    )
-    bind_mount(
-        context.mount_executable,
-        trusted_victim,
-        trusted_boundary,
-        context.mounted_paths,
-    )
-    require_layout_acceptance(
-        context.module,
-        "build",
-        trusted_values,
-        "trusted boundary after bind mount",
-    )
+    try:
+        require_layout_acceptance(
+            context.module,
+            "build",
+            trusted_values,
+            "trusted boundary before bind mount",
+        )
+        create_fixture_directory(trusted_boundary)
+        require_layout_acceptance(
+            context.module,
+            "build",
+            trusted_values,
+            "trusted boundary directory before bind mount",
+        )
+        bind_mount(
+            context.mount_executable,
+            trusted_victim,
+            trusted_boundary,
+            context.mounted_paths,
+        )
+        require_layout_acceptance(
+            context.module,
+            "build",
+            trusted_values,
+            "trusted boundary after bind mount",
+        )
+    finally:
+        context.module.owned_build_namespaces = previous_owned_build_namespaces
 
 
 def run_calibration(

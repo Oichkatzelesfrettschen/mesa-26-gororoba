@@ -341,7 +341,13 @@ override PROFILE_DFLAGS_SCRIPT := $(CURDIR)/scripts/meson_profile_dflags.py
 # -Dwerror=true is always on the CLI so a profile that drops the option, or a
 # coredata reset of werror, cannot re-open a warnings-are-nonfatal configure.
 # Profile dflags still re-assert every other project option (and werror again).
-override SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) --reconfigure -Dwerror=true
+ifeq ($(TOPSRC),$(CONTROL_ROOT))
+override EXTERNAL_SOURCE_WRAP_ARG :=
+else
+override EXTERNAL_SOURCE_WRAP_ARG := --wrap-mode=nodownload
+endif
+override SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) \
+	--reconfigure -Dwerror=true $(EXTERNAL_SOURCE_WRAP_ARG)
 # MODE=stable pins the same safe -O2 release level through a command-line
 # override without enabling LTO.  Default (unset / clean / rebuild) keeps the
 # config level.
@@ -1763,11 +1769,13 @@ source-root-selection-test:
 		BUILD_LOCK="$$tmpdir/configure.lock" LOCK_WAIT=0 \
 		MESON=meson PROFILE="$(PROFILE)" 2>/dev/null )"; \
 	printf '%s\n' "$$configure_plan" | grep -F "meson setup" >/dev/null && \
-	printf '%s\n' "$$configure_plan" | grep -F "\"$$source_root\"" >/dev/null || { \
+	printf '%s\n' "$$configure_plan" | grep -F "\"$$source_root\"" >/dev/null && \
+	printf '%s\n' "$$configure_plan" | \
+		grep -F -- "--wrap-mode=nodownload" >/dev/null || { \
 		echo "FAIL  configure does not pass external TOPSRC to Meson" >&2; \
 		printf '%s\n' "$$configure_plan" >&2; exit 1; \
 	}; \
-	echo "OK    configure passes the exact external TOPSRC to Meson"; \
+	echo "OK    configure passes external TOPSRC with wrap downloads disabled"; \
 	default_prefix_build_root="$$tmpdir/default-prefix-build"; \
 	if default_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$source_root" BUILD_ROOT="$$default_prefix_build_root" \

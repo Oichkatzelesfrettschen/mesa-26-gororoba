@@ -111,6 +111,12 @@ commits.  The cleanliness check compares the real index to `HEAD`, then
 compares worktree bytes through a fresh temporary index.  Staged-only changes,
 unignored untracked files, ordinary tracked changes, and tracked changes
 hidden by `assume-unchanged` all fail the comparison.
+External Meson setup uses `--wrap-mode=nodownload`, so it cannot populate an
+ignored `subprojects/` checkout after source identity is recorded.  A required
+wrap dependency is present as committed source or a system dependency, or the
+setup fails while the build-root identity remains provisional.  Ignored build
+outputs outside `subprojects/` remain regenerable and do not make the source
+worktree dirty.
 
 Path selection rejects whitespace and shell metacharacters, resolves symlinks
 before containment checks, and keeps the external build root, build directory,
