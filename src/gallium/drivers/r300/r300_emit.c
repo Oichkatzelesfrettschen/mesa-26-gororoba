@@ -258,7 +258,10 @@ void r300_emit_fs(struct r300_context* r300, unsigned size, void *state)
     struct r300_fragment_shader *fs = r300_fs(r300);
     CS_LOCALS(r300);
 
-    if (getenv("R300_FS_EMIT_DEBUG"))
+    static int emit_debug = -1;
+    if (emit_debug < 0)
+        emit_debug = getenv("R300_FS_EMIT_DEBUG") != NULL;
+    if (emit_debug)
         fprintf(stderr, "r300 fs emit: fs=%p cb_code_size=%u\n",
                 (void *)fs, fs->shader->cb_code_size);
 
@@ -273,7 +276,10 @@ void r300_emit_fs_constants(struct r300_context* r300, unsigned size, void *stat
     unsigned i, j;
     CS_LOCALS(r300);
 
-    if (getenv("R300_FS_EMIT_DEBUG"))
+    static int emit_debug = -1;
+    if (emit_debug < 0)
+        emit_debug = getenv("R300_FS_EMIT_DEBUG") != NULL;
+    if (emit_debug)
         fprintf(stderr, "r300 fs_constants emit: fs=%p count=%u remap=%p "
                 "ptr=%p c0=%.3f,%.3f,%.3f,%.3f\n",
                 (void *)fs, count, (void *)buf->remap_table, (void *)buf->ptr,
