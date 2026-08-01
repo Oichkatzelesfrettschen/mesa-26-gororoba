@@ -1551,6 +1551,9 @@ static void r300_bind_fs_state(struct pipe_context* pipe, void* shader)
     r300->fs.state = fs;
     r300->fs_status = FRAGMENT_SHADER_DIRTY;
 
+    if (getenv("R300_FS_EMIT_DEBUG"))
+        fprintf(stderr, "r300 fs bind: fs=%p\n", (void *)fs);
+
     /* Keep the draw module's bound FS in sync so the wide-point stage can read
      * the gl_PointCoord input for SW-expanded points. */
     if (r300->draw)
