@@ -1483,10 +1483,35 @@ util_make_fs_clear_color_nir(struct pipe_context *pipe, bool write_all_cbufs,
                                            glsl_vec4_type(), "color");
    out->data.location = write_all_cbufs ? FRAG_RESULT_COLOR
                                         : FRAG_RESULT_DATA0;
-   nir_def *value = use_const_buf
-      ? nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
-                     .align_mul = 16, .range_base = 0, .range = 16)
-      : nir_imm_vec4(&b, 0.0f, 0.0f, 0.0f, 0.0f);
+   nir_def *value;
+   if (use_const_buf) {
+      /* Declare the sized block-0 UBO interface for the clear color.  A
+       * backend that sizes its constant file from the nir_var_mem_ubo
+       * declaration (r300's nir_to_rc const-file setup) sees a raw
+       * load_ubo with only info.num_ubos set as a zero-sized const file,
+       * drops the set_constant_buffer upload, and the clear paints
+       * whatever the constant file already holds. */
+      const struct glsl_type *ubo_type =
+         glsl_array_type(glsl_vec4_type(), 1, 16);
+      nir_variable *ubo = nir_variable_create(b.shader, nir_var_mem_ubo,
+                                              ubo_type, "clear_color_ubo");
+      ubo->data.driver_location = 0;
+      ubo->data.binding = 0;
+      ubo->data.explicit_binding = 1;
+      struct glsl_struct_field ubo_field = {
+         .type = ubo_type,
+         .name = "data",
+         .location = -1,
+      };
+      ubo->interface_type =
+         glsl_interface_type(&ubo_field, 1, GLSL_INTERFACE_PACKING_STD430,
+                             false, "__blitter_clear_color_ubo");
+      b.shader->info.num_ubos = 1;
+      value = nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                           .align_mul = 16, .range_base = 0, .range = 16);
+   } else {
+      value = nir_imm_vec4(&b, 0.0f, 0.0f, 0.0f, 0.0f);
+   }
    nir_store_var(&b, out, value, 0xf);
    return util_nir_fs_cso(pipe, &b);
 }
