@@ -7204,16 +7204,19 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
     if (action != R2VB_BO_DRAW_ACTION_CAPTURE &&
         !r300_r2vb_option_is(getenv("R300_RAW_SUBMIT_ACCEPTED"), "1"))
         why = "raw_submit_gate";
-    /* Diagnostic width modes admit exactly the one-row boundary counts: 2048 and
-     * 2049 (the first frontier, silicon-green), 2559/2560/2561 (the RS482
-     * color-render-axis boundary), and 4096 (the one-row storage ceiling,
-     * the row half of the layout-boundary comparison against 2048x2);
+    /* Diagnostic width modes admit exactly the layout boundary counts: 2048
+     * and 2049 (the first one-row frontier, silicon-green), 2559/2560/2561
+     * (the RS482 color-render-axis boundary), 4096 (the one-row storage
+     * ceiling and the row half of the layout-boundary comparison against
+     * 2048x2), and the 2048-wide grid ladder 6144 (2048x3), 8192 (2048x4),
+     * and 21516 (2048x11 with a 1012-slot poisonable final-row tail);
      * every other diagnostic mode keeps the proven three-vertex cell.
      * Production delivery accepts the full validated layout domain. */
     else if (action != R2VB_BO_DRAW_ACTION_DELIVER &&
              (r2vb_bo_draw_mode_is_width(mode)
                   ? (count != 2048 && count != 2049 && count != 2559 &&
-                     count != 2560 && count != 2561 && count != 4096)
+                     count != 2560 && count != 2561 && count != 4096 &&
+                     count != 6144 && count != 8192 && count != 21516)
                   : count != 3))
         why = "count";
     else if (!plan || plan->status != R300_R2VB_PLAN_READY ||
@@ -7448,6 +7451,12 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
                             print = true;
                     if (i == count - 1 || i == count)
                         print = true;
+                    /* Grid layouts add every 2048-wide row edge so a
+                     * row-boundary divergence localizes without a full
+                     * record dump. */
+                    if (layout->height > 1 &&
+                        (i % 2048u == 0 || i % 2048u == 2047u))
+                        print = true;
                 }
                 if (print && i < count) {
                     float f[4];
@@ -7525,10 +7534,13 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
     else if (r2vb_bo_draw_mode_is_submit(bo_mode))
         bo_action = R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME;
 
-    /* A multirow target always uses the fixed-size BO transaction selected by
-     * AUTO_SINGLE or the explicit delivery mode. */
+    /* A multirow target always uses the fixed-size BO transaction selected
+     * by AUTO_SINGLE, the explicit delivery mode, or the diagnostic width
+     * modes (whose readback witness hashes the grid span and checks the
+     * final-row poison tail). */
     if (layout->height > 1 &&
-        (!use_bo_draw || bo_action != R2VB_BO_DRAW_ACTION_DELIVER))
+        (!use_bo_draw || (bo_action != R2VB_BO_DRAW_ACTION_DELIVER &&
+                          !r2vb_bo_draw_mode_is_width(bo_mode))))
         return false;
     if (!use_bo_draw &&
         !r300_r2vb_immediate_producer_shape_ok(count, num_in))
