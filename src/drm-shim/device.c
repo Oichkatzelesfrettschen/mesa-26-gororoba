@@ -418,9 +418,11 @@ drm_shim_state_token_name_parse(int fd,
        status.st_size < (off_t)sysconf(_SC_PAGESIZE))
       return false;
 
+   /* The raw syscall keeps the header read outside the shim's own pread
+    * interposer, which takes the device lock. */
    struct drm_shim_state_token_header candidate;
    ssize_t read_length =
-      pread(fd, &candidate, sizeof(candidate), 0);
+      syscall(SYS_pread64, fd, &candidate, sizeof(candidate), 0);
    if (read_length != (ssize_t)sizeof(candidate) ||
        candidate.magic != DRM_SHIM_STATE_TOKEN_MAGIC ||
        candidate.version != DRM_SHIM_STATE_TOKEN_VERSION ||
