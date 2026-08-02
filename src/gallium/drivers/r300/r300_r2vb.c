@@ -707,6 +707,30 @@ nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                 nir_instr_remove(instr);
             } else if (out && (out->data.mode & nir_var_shader_out) &&
                        out->data.location == target &&
+                       target != VARYING_SLOT_POS &&
+                       intr->src[1].ssa->num_components < 4) {
+                /* A partial varying store (a scalar lighting varying is the
+                 * dominant shape) pads to FP32x4 with zeros so the producer
+                 * writes the complete BO record the FLOAT_4 delivery fetch
+                 * reads; the FS consumes the components the GLSL varying
+                 * defines. */
+                nir_builder pb = nir_builder_at(nir_before_instr(instr));
+                nir_def *src = intr->src[1].ssa;
+                nir_def *zero = nir_imm_float(&pb, 0.0f);
+                nir_def *comp[4];
+                for (unsigned k = 0; k < 4; k++)
+                    comp[k] = k < src->num_components
+                                  ? nir_channel(&pb, src, k)
+                                  : zero;
+                nir_def *padded = nir_vec(&pb, comp, 4);
+                out->type = glsl_vec4_type();
+                nir_deref_instr *dv = nir_src_as_deref(intr->src[0]);
+                dv->type = glsl_vec4_type();
+                nir_src_rewrite(&intr->src[1], padded);
+                intr->num_components = 4;
+                nir_intrinsic_set_write_mask(intr, 0xf);
+            } else if (out && (out->data.mode & nir_var_shader_out) &&
+                       out->data.location == target &&
                        target == VARYING_SLOT_POS &&
                        intr->src[1].ssa->num_components == 4) {
                 /* Position pass output contract: same divide + viewport as the
@@ -5871,8 +5895,12 @@ r300_r2vb_auto_single_output_streams_preflight(
         return R300_R2VB_DELIVERY_STREAM_SPAN;
     unsigned rebased_streams = 0;
     for (int i = 0; i < count; i++) {
-        if (streams[i].components != 4 || streams[i].bit_size != 32 ||
-            streams[i].write_mask != 0xf)
+        /* The computed stream's producer pads a partial store to FP32x4,
+         * so only the bit size binds it; every other stream is the exact
+         * full-vector form. */
+        if (streams[i].bit_size != 32 ||
+            (streams[i].kind != R2VB_STREAM_COMPUTED &&
+             (streams[i].components != 4 || streams[i].write_mask != 0xf)))
             return R300_R2VB_DELIVERY_STREAM_FORMAT;
         if (streams[i].kind != R2VB_STREAM_PASSTHROUGH)
             continue;
@@ -6288,8 +6316,20 @@ int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
             const unsigned components = nir_src_num_components(intr->src[1]);
             const unsigned bit_size = nir_src_bit_size(intr->src[1]);
             const unsigned write_mask = nir_intrinsic_write_mask(intr);
+            /* The computed stream tolerates a partial store (a scalar
+             * lighting varying is the dominant-workload shape): the varying
+             * producer pads the record to FP32x4 with zeros, so the
+             * delivery fetch stays the qualified FLOAT_4 form and the FS
+             * consumes the components the GLSL varying defines.  Position
+             * and passthrough keep the full-vector rule. */
+            bool partial_computed_ok =
+                (int)o->data.location == computed_slot &&
+                components >= 1 && components <= 4 &&
+                write_mask == (unsigned)((1u << components) - 1);
             if (!dst_deref || dst_deref->deref_type != nir_deref_type_var ||
-                components != 4 || bit_size != 32 || write_mask != 0xf ||
+                (components != 4 && !partial_computed_ok) ||
+                bit_size != 32 ||
+                (write_mask != 0xf && !partial_computed_ok) ||
                 o->data.location == VARYING_SLOT_PSIZ) {
                 if (r2vb_exec_debug_enabled())
                     fprintf(stderr,
