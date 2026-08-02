@@ -1,0 +1,112 @@
+# 4_r300_full_release_x86_64v1-clang22-distcc-cache: the maximal-feature r300
+# RELEASE profile for the CachyOS Vostro 1000 (AMD Turion 64 X2 TL-66,
+# RS482/RS485 radeon).  This is the canonical full r300 build: it enables every
+# r300-reachable API and loader surface in one artifact, so a single install
+# serves desktop GL, GLES, EGL/GBM headless conformance, and the ati_r300 Vulkan
+# ICD.  buildtype=release, assertions OFF, no sanitizer -- the clean conformance
+# and silicon-evidence baseline.  Pair with 3_r300_full_debug_optimized for the
+# assertions-live RCA sibling.
+#
+# Tier map (renumbered by priority; all build the same full r300 surface):
+#   1_ debug-asan      -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
+#   2_ debug-o0         -- -O0 -g asserts, no sanitizer, /opt + run-wrapper.
+#   3_ debug-optimized  -- -O2 -g3 asserts, the default debug, /usr-capable.
+#   4_ (THIS) release   -- optimized, no asserts, no sanitizer, /usr.
+#
+# Why maximal-r300 but no software rasterizer: the r300 surface (desktop GL,
+# GLES1, GLES2, GLVND, GLX-DRI, EGL, GBM, shader cache, HUD/lm-sensors, r300
+# tools, ati_r300 ICD) is enabled in full so nothing r300 can do is left out of
+# the build.  llvm and draw-use-llvm stay off so there is no llvmpipe/swrast: a
+# probe gets hardware r300 or fails loudly, never a silent software trace
+# masquerading as a conformance pass.  This is the isolated /opt/local
+# measurement and bring-up build; the separate full-mesa system package keeps
+# llvmpipe for the desktop fallback.
+#
+# Why a release profile: GL/GLES conformance and silicon evidence must run
+# against buildtype='release'.  A debugoptimized build keeps assertions live and
+# takes -O0-shaped error paths, so a driver assert can abort a CTS/Piglit case
+# that release would pass (or fail differently), which contaminates the
+# pass/fail baseline.
+#
+# Deliberately EXCLUDED: swrast/llvmpipe/softpipe/zink/r600/radeonsi/terakan
+# (this is the r300 lane), Rusticl, unrelated video codecs, Vulkan layers,
+# perfetto, libunwind, and valgrind.  MPEG-2 decode and XA/Xv remain included
+# because they are r300/RS482 surfaces.
+#
+# Pair with the vostro1000-x86-64-v1-clang22-ccache-distcc HOSTENV: clang 22
+# over ccache-first distcc, x86-64-v1 baseline ISA.  x86-64-v1 is a safe subset
+# of the Turion 64 X2, so remote distcc volunteers never emit instructions the
+# Vostro cannot run.  -O2 is the portable default shared with the packaging lane.
+
+[built-in options]
+buildtype = 'release'
+b_ndebug = 'true'
+# -fno-emulated-tls: clang on linux x86_64 otherwise emulates TLS and the
+# libglapi link fails; this profile builds the GL stack (opengl=true), so it
+# needs the native-TLS model.  The default is machine-neutral and hardened:
+# no -pipe, no LTO, no -fno-plt, no native tune, and no frame-pointer omission.
+c_args = ['-march=x86-64', '-mtune=generic', '-O2', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-O2', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+
+[project options]
+# Window-system platforms only (matches profile 3_).  Current Mesa's platforms
+# option lists only window systems; the DRM-native and surfaceless EGL platforms
+# build unconditionally with egl=enabled and the default is egl-native-platform
+# ('drm', set below) for headless deqp/piglit and renderD128-only Vulkan.
+platforms = ['x11', 'wayland']
+gallium-drivers = ['r300']
+vulkan-drivers = ['ati_r300']
+r3v-gallium-backend = true
+
+# Maximal OpenGL/GLES surface: RS480 exposes desktop GL 2.1 and GLES 2.0; build
+# the full desktop GL, GLES1, and GLES2 entrypoints so every context type a
+# conformance lane can request is present.
+opengl = true
+gles1 = 'enabled'
+gles2 = 'enabled'
+
+# Loader and window-system surfaces.  GLVND vendor dispatch, GLX over DRI, EGL,
+# and GBM.  egl-native-platform='surfaceless' makes EGL_DEFAULT_DISPLAY use the surfaceless
+# native platform for the renderD128 headless path the Piglit/deqp lane runs on;
+# x11/wayland callers select their platform explicitly.
+glvnd = 'enabled'
+glx = 'dri'
+egl = 'enabled'
+egl-native-platform = 'surfaceless'
+gbm = 'enabled'
+
+# r300 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.
+shader-cache = 'enabled'
+gallium-extra-hud = true
+lmsensors = 'enabled'
+
+# No software rasterizer: hardware r300 or a loud failure.
+llvm = 'disabled'
+draw-use-llvm = false
+gallium-rusticl = false
+
+# r300 gallium-va video decode (MPEG-1/MPEG-2 / mpeg12dec): the restored pure-NIR
+# g3dvl shader decode kernels (vl_idct/vl_mc/vl_zscan/vl_matrix_filter/
+# vl_mpeg12_decoder) and the r300 video backend (r300_video.c get_video_param +
+# create_video_codec) are wired, so this build exposes the MPEG-2 decode profile
+# through the va frontend on RS482 (no UVD; the 3D pipe is the decoder).  H.264/
+# MPEG-4 (the h264_legacy compute-as-raster path) lands as a later codec addition.
+video-codecs = ['mpeg12dec']
+gallium-va = 'enabled'
+gallium-xa = true
+
+# Warnings are defects in every configured lane.
+werror = true
+
+# The in-tree unit tests.  meson.options defaults build-tests to false, and
+# every `if with_tests` block that registers a test() reads that one boolean, so
+# omitting the key leaves `meson test` reporting no tests defined.  This profile
+# is the conformance and silicon-evidence baseline, so it runs the r300, NIR,
+# GLSL, util, and gallium-auxiliary suites its debugoptimized and gcc siblings
+# already run.  The suites pass under b_ndebug='true': the gcc release profile
+# builds them with assertions compiled out and reports 100 pass, 1 skip, 0 fail,
+# where the skip is the retained-corpus census returning the meson skip code 77
+# for an absent corpus directory.
+build-tests = true
