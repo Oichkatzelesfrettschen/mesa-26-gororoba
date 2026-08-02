@@ -178,6 +178,16 @@ struct r300_r2vb_producer_plan {
     enum r300_r2vb_constant_source_contract constant_source;
     uint32_t constant_bytes;
 
+    /* Computed-varying admission record (allow_computed_varying cells only):
+     * the varying's slot, the single application input feeding it (same
+     * rank/driver-location identity as position_source), and the UBO0 prefix
+     * the varying producer reads.  varying_slot stays -1 on cells whose VS
+     * carries no computed varying. */
+    int varying_slot;
+    struct r300_r2vb_position_source varying_source;
+    enum r300_r2vb_constant_source_contract varying_constant_source;
+    uint32_t varying_constant_bytes;
+
     /* Backend resource vectors from the admission oracle: the unsplit
      * position producer when it emitted, and the two admitted halves on
      * SPLIT. */
@@ -685,6 +695,14 @@ struct nir_shader;
 bool r300_r2vb_position_source_scan(struct nir_shader *vs_nir,
                                     struct r300_r2vb_position_source *out);
 
+/* Source identity of the one application input feeding the computed varying
+ * at `slot`: strip every store except that varying's, DCE, and require
+ * exactly one surviving input.  Same rank/driver-location record as the
+ * position scan, so the BO-fetch route feeds the varying pass through the
+ * identical single-model-stream contract. */
+bool r300_r2vb_varying_source_scan(struct nir_shader *vs_nir, int slot,
+                                   struct r300_r2vb_position_source *out);
+
 /* The element mapper the delivery route uses (rank among VS inputs in
  * ascending location order), exported so the rank oracle proves the
  * scan and the mapper share one convention. */
@@ -869,6 +887,7 @@ bool r300_r2vb_producer_bo_draw_validate(
     struct pipe_resource *slot_resource,
     struct pipe_resource *output_resource, uint32_t start, uint32_t count,
     enum r300_r2vb_position_space space,
+    const struct r300_r2vb_position_source *model_source,
     struct r300_r2vb_producer_bo_draw *out);
 
 bool r300_r2vb_producer_bo_draw_stage_cs(

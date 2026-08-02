@@ -637,32 +637,32 @@ check_output_stream_preflight(void)
    };
 
    CHECK(r300_r2vb_auto_single_output_streams_preflight(
-            &g_context, builder.shader, &draw) ==
+            &g_context, builder.shader, -1, &draw) ==
             R300_R2VB_DELIVERY_STREAM_OK,
          "output preflight: one real-BO authority is admitted");
 
    attribute_resource.malloced_buffer = shadow_bytes;
    CHECK(r300_r2vb_auto_single_output_streams_preflight(
-            &g_context, builder.shader, &draw) ==
+            &g_context, builder.shader, -1, &draw) ==
             R300_R2VB_DELIVERY_STREAM_SOURCE_CLASS,
          "output preflight: dual backing authority declines");
 
    attribute_resource.buf = NULL;
    CHECK(r300_r2vb_auto_single_output_streams_preflight(
-            &g_context, builder.shader, &draw) ==
+            &g_context, builder.shader, -1, &draw) ==
             R300_R2VB_DELIVERY_STREAM_OK,
          "output preflight: one CPU-shadow authority is admitted");
 
    attribute_resource.malloced_buffer = NULL;
    CHECK(r300_r2vb_auto_single_output_streams_preflight(
-            &g_context, builder.shader, &draw) ==
+            &g_context, builder.shader, -1, &draw) ==
             R300_R2VB_DELIVERY_STREAM_SOURCE_CLASS,
          "output preflight: missing backing authority declines");
 
    attribute_resource.malloced_buffer = shadow_bytes;
    attribute_resource.b.width0 = sizeof(shadow_bytes) - 1;
    CHECK(r300_r2vb_auto_single_output_streams_preflight(
-            &g_context, builder.shader, &draw) ==
+            &g_context, builder.shader, -1, &draw) ==
             R300_R2VB_DELIVERY_STREAM_SPAN,
          "output preflight: one-byte-short passthrough span declines");
 
@@ -730,6 +730,7 @@ enum constant_source_fixture {
    CONSTANT_SOURCE_FIXTURE_NONE = 0,
    CONSTANT_SOURCE_FIXTURE_UBO0,
    CONSTANT_SOURCE_FIXTURE_UBO0_END,
+   CONSTANT_SOURCE_FIXTURE_UBO0_SECOND_MATRIX,
    CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN,
    CONSTANT_SOURCE_FIXTURE_UBO1,
    CONSTANT_SOURCE_FIXTURE_DYNAMIC_BLOCK,
@@ -762,9 +763,13 @@ build_constant_source_fixture(enum constant_source_fixture fixture)
       nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 48),
                    .align_mul = 16, .range_base = 48, .range = 16);
       break;
-   case CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN:
+   case CONSTANT_SOURCE_FIXTURE_UBO0_SECOND_MATRIX:
       nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 64),
                    .align_mul = 16, .range_base = 64, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN:
+      nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 128),
+                   .align_mul = 16, .range_base = 128, .range = 16);
       break;
    case CONSTANT_SOURCE_FIXTURE_UBO1:
       nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
@@ -825,9 +830,12 @@ check_constant_source_contract(void)
       {CONSTANT_SOURCE_FIXTURE_UBO0_END,
        R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64, 64,
        "constant source: final UBO0 prefix vector ends at byte 64"},
+      {CONSTANT_SOURCE_FIXTURE_UBO0_SECOND_MATRIX,
+       R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64, 80,
+       "constant source: the second-matrix window at byte 64 scans"},
       {CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN,
        R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
-       "constant source: UBO0 byte 64 starts outside the mirror"},
+       "constant source: UBO0 byte 128 starts outside the window"},
       {CONSTANT_SOURCE_FIXTURE_UBO1,
        R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
        "constant source: UBO1 remains outside the production contract"},
@@ -2134,7 +2142,7 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn) &&
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.model.resource &&
                txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: gate off declines before any upload");
@@ -2142,7 +2150,7 @@ check_logical_binding(void)
       CHECK(r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn),
+               R300_R2VB_POSITION_WINDOW, NULL, &txn),
             "txn: the complete validate phase builds the transaction");
       CHECK(txn.slot_resource == &slotfb->r.b &&
                txn.output_resource == &outshadow.b && txn.model.resource &&
@@ -2164,7 +2172,7 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn),
+               R300_R2VB_POSITION_WINDOW, NULL, &txn),
             "txn: validate into an owned transaction declines");
       r300_r2vb_producer_bo_draw_fini(&txn);
       CHECK(txn.slot_resource == NULL && txn.model.resource == NULL &&
@@ -2216,7 +2224,7 @@ check_logical_binding(void)
                   r300_r2vb_producer_bo_draw_validate(
                      &g_context, &plan, &fs, &rs, &psc, &grid_vb, &ve, 1, 1,
                      &grid_layout, &grid_slot->r.b, &grid_output.b, 0,
-                     GRID_COUNT, R300_R2VB_POSITION_WINDOW, &txn),
+                     GRID_COUNT, R300_R2VB_POSITION_WINDOW, NULL, &txn),
                "txn grid: validation accepts the complete physical extent");
          CHECK(txn.state == R300_R2VB_BO_DRAW_VALIDATED &&
                   txn.layout.width == 2048 && txn.layout.height == 3 &&
@@ -2244,7 +2252,7 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &badplan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn) &&
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.model.resource,
             "txn: an unmeasured source declines with nothing retained");
       struct pipe_vertex_element badve = ve;
@@ -2252,14 +2260,14 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &badve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn),
+               R300_R2VB_POSITION_WINDOW, NULL, &txn),
             "txn: an inadmissible element format declines");
       struct fake_buffer *tiny = (struct fake_buffer *)fake_resource_create(
          &g_screen.screen, &(struct pipe_resource){ .width0 = 16 });
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &tiny->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn) &&
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.model.resource,
             "txn: an undersized slot BO declines and releases the model");
       struct r300_vertex_stream_state badpsc = psc;
@@ -2267,7 +2275,7 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &badpsc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn) &&
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.model.resource,
             "txn: a drifted derived binding declines after materialization");
       /* Output-authority negatives: framebuffer identity, extent, and
@@ -2276,7 +2284,7 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn) &&
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.model.resource && !txn.output_resource,
             "txn: an output that is not the bound color target declines");
       tfb.cbufs[0].texture = &outshadow.b;
@@ -2284,7 +2292,7 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn) &&
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.model.resource,
             "txn: a one-pixel-short framebuffer extent declines");
       tfb.width = txn_layout.width;
@@ -2292,7 +2300,7 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn) &&
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.model.resource,
             "txn: one byte short of the physical storage declines");
       outshadow.b.width0 = (uint32_t)txn_layout.storage_bytes;
@@ -2300,7 +2308,7 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn) &&
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.model.resource,
             "txn: an output format outside FP32x4 declines");
       outshadow.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
@@ -2321,7 +2329,7 @@ check_logical_binding(void)
       CHECK(r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn),
+               R300_R2VB_POSITION_WINDOW, NULL, &txn),
             "cs: validate builds the transaction for staging");
       CHECK(!r300_r2vb_producer_bo_draw_emit(&g_context, &txn),
             "cs: emission before READY declines");
@@ -2361,7 +2369,7 @@ check_logical_binding(void)
       CHECK(r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn),
+               R300_R2VB_POSITION_WINDOW, NULL, &txn),
             "cs: validate for the retry row");
       memset(&g_fws, 0, sizeof(g_fws));
       g_fws.fail_validates = 1;
@@ -2378,7 +2386,7 @@ check_logical_binding(void)
       CHECK(r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, &txn),
+               R300_R2VB_POSITION_WINDOW, NULL, &txn),
             "cs: validate for the double-failure row");
       memset(&g_fws, 0, sizeof(g_fws));
       g_fws.fail_validates = 2;
