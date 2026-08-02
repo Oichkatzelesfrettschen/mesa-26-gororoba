@@ -762,6 +762,12 @@ nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                 if (j != i && sur[j]->data.location < sur[i]->data.location)
                     crank++;
             sur[i]->data.location = VARYING_SLOT_VAR0 + crank;
+            /* nir_to_rc sizes the input register file from the driver
+             * location, so the compaction moves it with the slot; a
+             * surviving second-rank input would otherwise report a
+             * two-register file and fail the one-input producer FS
+             * contract. */
+            sur[i]->data.driver_location = crank;
         }
     }
     nir_shader_gather_info(fs, nir_shader_get_entrypoint(fs));
