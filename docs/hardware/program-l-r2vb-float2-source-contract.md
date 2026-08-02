@@ -30,8 +30,9 @@ two dwords, so the complete producer fetch is exactly six dwords per vertex.
 - R300 data type;
 - synthesized component selectors.
 
-It does not declare route eligibility.  `r300_r2vb_source_contract.h` owns the
-bounded Program L source policy:
+It does not declare route eligibility.  `r300_vertex_format_pipe.h` is the
+Gallium-only adapter between `pipe_format` and the neutral format identity.
+`r300_r2vb_source_contract.h` owns the bounded Program L source policy:
 
 - FLOAT_3 and FLOAT_4 remain admitted controls;
 - FLOAT_2 requires its own exact-value experimental gate;
