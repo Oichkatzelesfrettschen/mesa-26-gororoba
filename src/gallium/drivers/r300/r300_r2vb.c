@@ -7208,15 +7208,19 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
      * and 2049 (the first one-row frontier, silicon-green), 2559/2560/2561
      * (the RS482 color-render-axis boundary), 4096 (the one-row storage
      * ceiling and the row half of the layout-boundary comparison against
-     * 2048x2), and the 2048-wide grid ladder 6144 (2048x3), 8192 (2048x4),
-     * and 21516 (2048x11 with a 1012-slot poisonable final-row tail);
+     * 2048x2), the 2048-wide grid ladder 6144 (2048x3), 8192 (2048x4),
+     * and 21516 (2048x11 with a 1012-slot poisonable final-row tail), and
+     * the raster-stop discriminators 3072, 4032, and 4016 (the one-row
+     * 4096 cell delivers exactly 4016 records; these widths decide an
+     * absolute stop column against a width-relative stop);
      * every other diagnostic mode keeps the proven three-vertex cell.
      * Production delivery accepts the full validated layout domain. */
     else if (action != R2VB_BO_DRAW_ACTION_DELIVER &&
              (r2vb_bo_draw_mode_is_width(mode)
                   ? (count != 2048 && count != 2049 && count != 2559 &&
                      count != 2560 && count != 2561 && count != 4096 &&
-                     count != 6144 && count != 8192 && count != 21516)
+                     count != 6144 && count != 8192 && count != 21516 &&
+                     count != 3072 && count != 4032 && count != 4016)
                   : count != 3))
         why = "count";
     else if (!plan || plan->status != R300_R2VB_PLAN_READY ||
