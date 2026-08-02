@@ -5858,8 +5858,14 @@ r300_r2vb_auto_single_output_streams_preflight(
     int count = r300_r2vb_reingest_stream_layout(
         vs_nir, computed_slot, streams, ARRAY_SIZE(streams));
     if (count < 1 || (unsigned)count != r300->vertex_info.num_attribs ||
-        draw->count == 0)
+        draw->count == 0) {
+        if (r2vb_exec_debug_enabled())
+            fprintf(stderr,
+                    "r2vb_output_streams decline stream_layout=%d "
+                    "num_attribs=%u computed_slot=%d\n",
+                    count, r300->vertex_info.num_attribs, computed_slot);
         return R300_R2VB_DELIVERY_STREAM_LAYOUT;
+    }
     uint64_t last = (uint64_t)draw->start + draw->count - 1;
     if (last > UINT32_MAX)
         return R300_R2VB_DELIVERY_STREAM_SPAN;
@@ -6284,11 +6290,24 @@ int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
             const unsigned write_mask = nir_intrinsic_write_mask(intr);
             if (!dst_deref || dst_deref->deref_type != nir_deref_type_var ||
                 components != 4 || bit_size != 32 || write_mask != 0xf ||
-                o->data.location == VARYING_SLOT_PSIZ)
+                o->data.location == VARYING_SLOT_PSIZ) {
+                if (r2vb_exec_debug_enabled())
+                    fprintf(stderr,
+                            "r2vb_stream_layout decline slot=%d comps=%u "
+                            "bits=%u mask=0x%x\n",
+                            o->data.location, components, bit_size,
+                            write_mask);
                 return -1;
+            }
             for (unsigned i = 0; i < n; i++)
-                if (out[i].slot == o->data.location)
+                if (out[i].slot == o->data.location) {
+                    if (r2vb_exec_debug_enabled())
+                        fprintf(stderr,
+                                "r2vb_stream_layout decline slot=%d "
+                                "duplicate_store\n",
+                                o->data.location);
                     return -1;
+                }
             if (n >= max)
                 return -1;
             struct r300_r2vb_reingest_stream *s = &out[n++];
