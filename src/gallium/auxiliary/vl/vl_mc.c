@@ -411,10 +411,18 @@ init_pipe_state(struct vl_mc *r)
       blend.independent_blend_enable = 0;
       blend.rt[0].blend_enable = 1;
       blend.rt[0].rgb_func = PIPE_BLEND_ADD;
-      blend.rt[0].rgb_src_factor = PIPE_BLENDFACTOR_SRC_ALPHA;
+      /* Every MC fragment shader pre-multiplies its weight into the color and
+       * writes a unit alpha, so ONE and SRC_ALPHA are the same factor by
+       * construction -- except on a single-component render target (R8/I8/L8
+       * take the I8 hardware format with the COLORMASK_RRRR swizzle), where
+       * the blender reads the replicated color as the alpha and SRC_ALPHA
+       * squares the source: measured on RS480, the decode target holds
+       * value^2 and the intra mid-level 0.5 lands at 0.25.  ONE delivers the
+       * shader value on every render-target format. */
+      blend.rt[0].rgb_src_factor = PIPE_BLENDFACTOR_ONE;
       blend.rt[0].rgb_dst_factor = PIPE_BLENDFACTOR_ZERO;
       blend.rt[0].alpha_func = PIPE_BLEND_ADD;
-      blend.rt[0].alpha_src_factor = PIPE_BLENDFACTOR_SRC_ALPHA;
+      blend.rt[0].alpha_src_factor = PIPE_BLENDFACTOR_ONE;
       blend.rt[0].alpha_dst_factor = PIPE_BLENDFACTOR_ZERO;
       blend.logicop_enable = 0;
       blend.logicop_func = PIPE_LOGICOP_CLEAR;
