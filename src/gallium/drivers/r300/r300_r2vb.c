@@ -9054,6 +9054,21 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                  * cell precommit the exact varying bytes (an FP24-exact
                  * input through an exact op stays bit-exact). */
                 if (r2vb_exec_debug_enabled()) {
+                    static const uint32_t vb_bounds[] = { 0, 1, 2, 127, 128,
+                                                          2047, 2048, 2049 };
+                    for (unsigned k = 0; k < ARRAY_SIZE(vb_bounds); k++) {
+                        uint32_t i = vb_bounds[k];
+                        if (i >= count)
+                            continue;
+                        float f[4];
+                        memcpy(f, &words[i * 4], sizeof(f));
+                        fprintf(stderr,
+                                "r2vb_varying_producer3 rec=%u %08x %08x "
+                                "%08x %08x (%g %g %g %g)\n",
+                                i, words[i * 4], words[i * 4 + 1],
+                                words[i * 4 + 2], words[i * 4 + 3], f[0],
+                                f[1], f[2], f[3]);
+                    }
                     blake3_hash hash;
                     _mesa_blake3_compute(words, (size_t)count * 16, hash);
                     char hex[BLAKE3_HEX_LEN];
