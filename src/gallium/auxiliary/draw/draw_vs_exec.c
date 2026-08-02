@@ -247,7 +247,16 @@ draw_create_vs_exec(struct draw_context *draw,
                     const struct pipe_shader_state *state)
 {
    if (state->type == PIPE_SHADER_IR_NIR) {
-      if (draw_vs_nir_supported(state))
+      /* DRAW_NIR_FORCE_BRIDGE=1 routes every NIR vertex shader through the
+       * nir_to_tgsi bridge below.  The supported() verdict itself is
+       * untouched, so a driver that pre-filters on it keeps its own
+       * admission unchanged. */
+      static int force_bridge = -1;
+      if (force_bridge < 0) {
+         const char *e = getenv("DRAW_NIR_FORCE_BRIDGE");
+         force_bridge = (e && strcmp(e, "1") == 0) ? 1 : 0;
+      }
+      if (!force_bridge && draw_vs_nir_supported(state))
          return draw_create_vs_nir(draw, state);
    }
 
@@ -257,6 +266,10 @@ draw_create_vs_exec(struct draw_context *draw,
       return NULL;
 
    if (state->type == PIPE_SHADER_IR_NIR) {
+      if (draw_vs_nir_telemetry_enabled())
+         fprintf(stderr, "draw_vs_bridge nir_to_tgsi shader=%s\n",
+                 ((nir_shader *)state->ir.nir)->info.name
+                    ? ((nir_shader *)state->ir.nir)->info.name : "-");
       vs->base.state.type = PIPE_SHADER_IR_TGSI;
       vs->base.state.tokens = nir_to_tgsi(state->ir.nir, draw->pipe->screen);
    } else {
