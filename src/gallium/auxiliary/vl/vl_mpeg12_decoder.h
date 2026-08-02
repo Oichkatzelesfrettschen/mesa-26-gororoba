@@ -80,6 +80,8 @@ struct vl_mpeg12_decoder
    unsigned current_buffer;
    struct vl_mpeg12_buffer *dec_buffers[4];
 
+   unsigned dump_frame;
+
    struct list_head buffer_privates;
 };
 
