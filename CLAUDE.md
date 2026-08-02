@@ -18,6 +18,8 @@ Claude Code task tracking is transient working state; durable state lands in cod
 
 Subagent limits, the read-only default, model economy, and citation duties live in `AGENTS.md` under `Agent coordination` and `Tooling for RCA and audits`.
 
+The em-dash substitute convention (`word--word`, closed up, no surrounding spaces) lives in `AGENTS.md` under `Comments, commits, and Markdown`.
+
 ## Response shape
 
 Responses report results, decisions, evidence, and remaining uncertainty in mechanism-first form: changed mechanism, evidence used, validation run, tests not run and why, risks or unresolved falsifiers. Chained reasoning appears when it explains the next action or a validation requirement; the rest of the deliberation lives in thoughtspace. Responses are plain ASCII mechanism prose under durable names.
