@@ -409,8 +409,14 @@ static int pvr_ioctl_create_bo(int fd, UNUSED unsigned long request, void *arg)
 
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = calloc(1, sizeof(*bo));
+   if (!bo)
+      return -ENOMEM;
 
-   drm_shim_bo_init(bo, args->size);
+   int ret = drm_shim_bo_init(bo, args->size);
+   if (ret) {
+      free(bo);
+      return ret;
+   }
 
    args->handle = drm_shim_bo_get_handle(shim_fd, bo);
 
@@ -426,10 +432,13 @@ pvr_ioctl_get_bo_mmap_offset(int fd, UNUSED unsigned long request, void *arg)
 
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, args->handle);
+   if (!bo)
+      return -ENOENT;
 
-   args->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
+   int ret = drm_shim_bo_get_mmap_offset(shim_fd, bo, &args->offset);
+   drm_shim_bo_put(bo);
 
-   return 0;
+   return ret;
 }
 
 #define PVR_IOC_NR(_name) (_IOC_NR(DRM_IOCTL_PVR_##_name) - DRM_COMMAND_BASE)

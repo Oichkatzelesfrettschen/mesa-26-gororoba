@@ -124,13 +124,24 @@ nouveau_ioctl_gem_new(int fd, unsigned long request, void *arg)
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_nouveau_gem_new *create = arg;
    struct nouveau_shim_bo *bo = calloc(1, sizeof(*bo));
+   if (!bo)
+      return -ENOMEM;
 
-   drm_shim_bo_init(&bo->base, create->info.size);
+   int ret = drm_shim_bo_init(&bo->base, create->info.size);
+   if (ret) {
+      free(bo);
+      return ret;
+   }
 
    assert(ULONG_MAX - nouveau.next_offset > create->info.size);
 
+   ret = drm_shim_bo_get_mmap_offset(shim_fd, &bo->base,
+                                     &create->info.map_handle);
+   if (ret) {
+      drm_shim_bo_put(&bo->base);
+      return ret;
+   }
    create->info.handle = drm_shim_bo_get_handle(shim_fd, &bo->base);
-   create->info.map_handle = drm_shim_bo_get_mmap_offset(shim_fd, &bo->base);
 
    if (create->align != 0)
       nouveau.next_offset = align64(nouveau.next_offset, create->align);
@@ -149,9 +160,16 @@ nouveau_ioctl_gem_info(int fd, unsigned long request, void *arg)
 {
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_nouveau_gem_info *info = arg;
-   struct nouveau_shim_bo *bo =
-      nouveau_shim_bo(drm_shim_bo_lookup(shim_fd, info->handle));
-   info->map_handle = drm_shim_bo_get_mmap_offset(shim_fd, &bo->base);
+   struct shim_bo *base = drm_shim_bo_lookup(shim_fd, info->handle);
+   if (!base)
+      return -ENOENT;
+   struct nouveau_shim_bo *bo = nouveau_shim_bo(base);
+   int ret =
+      drm_shim_bo_get_mmap_offset(shim_fd, &bo->base, &info->map_handle);
+   if (ret) {
+      drm_shim_bo_put(&bo->base);
+      return ret;
+   }
    info->offset = bo->offset;
    info->size = bo->base.size;
 
@@ -183,7 +201,13 @@ nouveau_ioctl_channel_alloc(int fd, unsigned long request, void *arg)
     * free. However only one channel is created per screen, so impact should
     * be limited. */
    struct nouveau_shim_bo *notify = calloc(1, sizeof(*notify));
-   drm_shim_bo_init(&notify->base, 0x1000);
+   if (!notify)
+      return -ENOMEM;
+   int ret = drm_shim_bo_init(&notify->base, 0x1000);
+   if (ret) {
+      free(notify);
+      return ret;
+   }
    notify->offset = nouveau.next_offset;
    nouveau.next_offset += 0x1000;
    alloc->notifier_handle = drm_shim_bo_get_handle(shim_fd, &notify->base);
@@ -241,7 +265,7 @@ nouveau_ioctl_get_param(int fd, unsigned long request, void *arg)
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_NOUVEAU_GETPARAM %llu\n",
               (long long unsigned)gp->param);
-      return -1;
+      return -EINVAL;
    }
 }
 

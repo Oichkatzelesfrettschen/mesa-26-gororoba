@@ -129,7 +129,7 @@ simple_mtx_unlock(simple_mtx_t *mtx)
 
    HG(ANNOTATE_RWLOCK_RELEASED(mtx, 1));
 
-   c = p_atomic_fetch_add(&mtx->val, -1);
+   c = p_atomic_fetch_add(&mtx->val, UINT32_MAX);
 
    assert(c != _SIMPLE_MTX_INVALID_VALUE);
 

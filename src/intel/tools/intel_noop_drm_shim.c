@@ -21,6 +21,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -68,11 +69,12 @@ i915_ioctl_gem_set_tiling(int fd, unsigned long request, void *arg)
    struct i915_bo *bo = (struct i915_bo *) drm_shim_bo_lookup(shim_fd, tiling_arg->handle);
 
    if (!bo)
-      return -1;
+      return -ENOENT;
 
    bo->tiling_mode = tiling_arg->tiling_mode;
    bo->stride = tiling_arg->stride;
 
+   drm_shim_bo_put(&bo->base);
    return 0;
 }
 
@@ -84,12 +86,13 @@ i915_ioctl_gem_get_tiling(int fd, unsigned long request, void *arg)
    struct i915_bo *bo = (struct i915_bo *) drm_shim_bo_lookup(shim_fd, tiling_arg->handle);
 
    if (!bo)
-      return -1;
+      return -ENOENT;
 
    tiling_arg->tiling_mode = bo->tiling_mode;
    tiling_arg->swizzle_mode = I915_BIT_6_SWIZZLE_NONE;
    tiling_arg->phys_swizzle_mode = I915_BIT_6_SWIZZLE_NONE;
 
+   drm_shim_bo_put(&bo->base);
    return 0;
 }
 
@@ -99,8 +102,14 @@ i915_ioctl_gem_create(int fd, unsigned long request, void *arg)
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_i915_gem_create *create = arg;
    struct i915_bo *bo = calloc(1, sizeof(*bo));
+   if (!bo)
+      return -ENOMEM;
 
-   drm_shim_bo_init(&bo->base, create->size);
+   int ret = drm_shim_bo_init(&bo->base, create->size);
+   if (ret) {
+      free(bo);
+      return ret;
+   }
 
    create->handle = drm_shim_bo_get_handle(shim_fd, &bo->base);
 
@@ -115,8 +124,14 @@ i915_ioctl_gem_create_ext(int fd, unsigned long request, void *arg)
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_i915_gem_create_ext *create = arg;
    struct i915_bo *bo = calloc(1, sizeof(*bo));
+   if (!bo)
+      return -ENOMEM;
 
-   drm_shim_bo_init(&bo->base, create->size);
+   int ret = drm_shim_bo_init(&bo->base, create->size);
+   if (ret) {
+      free(bo);
+      return ret;
+   }
 
    create->handle = drm_shim_bo_get_handle(shim_fd, &bo->base);
 
@@ -133,14 +148,29 @@ i915_ioctl_gem_mmap(int fd, unsigned long request, void *arg)
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, mmap_arg->handle);
 
    if (!bo)
-      return -1;
+      return -ENOENT;
 
+   uint64_t mmap_offset;
+   int ret =
+      drm_shim_bo_get_mmap_offset(shim_fd, bo, &mmap_offset);
+   if (ret) {
+      drm_shim_bo_put(bo);
+      return ret;
+   }
    if (!bo->map)
-      bo->map = drm_shim_mmap(shim_fd, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, -1,
-                              drm_shim_bo_get_mmap_offset(shim_fd, bo));
+      bo->map =
+         drm_shim_mmap(shim_fd, NULL, bo->size, PROT_READ | PROT_WRITE,
+                       MAP_SHARED, -1, mmap_offset);
+   if (bo->map == MAP_FAILED) {
+      ret = -errno;
+      bo->map = NULL;
+      drm_shim_bo_put(bo);
+      return ret;
+   }
 
    mmap_arg->addr_ptr = (uint64_t) (bo->map + mmap_arg->offset);
 
+   drm_shim_bo_put(bo);
    return 0;
 }
 
@@ -152,14 +182,19 @@ i915_ioctl_gem_mmap_offset(int fd, unsigned long request, void *arg)
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, mmap_arg->handle);
 
    if (!bo)
-      return -1;
+      return -ENOENT;
 
-   if (!bo->map)
-      bo->map = drm_shim_mmap(shim_fd, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, -1,
-                              drm_shim_bo_get_mmap_offset(shim_fd, bo));
+   uint64_t mmap_offset;
+   int ret =
+      drm_shim_bo_get_mmap_offset(shim_fd, bo, &mmap_offset);
+   if (ret) {
+      drm_shim_bo_put(bo);
+      return ret;
+   }
 
-   mmap_arg->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
+   mmap_arg->offset = mmap_offset;
 
+   drm_shim_bo_put(bo);
    return 0;
 }
 
@@ -173,8 +208,14 @@ i915_ioctl_gem_userptr(int fd, unsigned long request, void *arg)
       return -EINVAL;
 
    struct i915_bo *bo = calloc(1, sizeof(*bo));
+   if (!bo)
+      return -ENOMEM;
 
-   drm_shim_bo_init(&bo->base, userptr->user_size);
+   int ret = drm_shim_bo_init(&bo->base, userptr->user_size);
+   if (ret) {
+      free(bo);
+      return ret;
+   }
 
    userptr->handle = drm_shim_bo_get_handle(shim_fd, &bo->base);
 
@@ -297,7 +338,7 @@ i915_ioctl_get_param(int fd, unsigned long request, void *arg)
    }
 
    fprintf(stderr, "Unknown DRM_IOCTL_I915_GET_PARAM %d\n", gp->param);
-   return -1;
+   return -EINVAL;
 }
 
 static int
@@ -402,7 +443,7 @@ i915_ioctl_query(int fd, unsigned long request, void *arg)
             return 0;
          } else if (item->length < data_length) {
             item->length = -EINVAL;
-            return -1;
+            return -EINVAL;
          } else {
             memset(info, 0, data_length);
 
@@ -446,7 +487,7 @@ i915_ioctl_query(int fd, unsigned long request, void *arg)
             return 0;
          } else if (item->length < (int32_t)data_length) {
             item->length = -EINVAL;
-            return -1;
+            return -EINVAL;
          } else {
             memset(info, 0, data_length);
             info->num_regions = num_regions;
@@ -504,14 +545,14 @@ static int
 i915_ioctl_load_device_info(int fd, unsigned long request, void *arg)
 {
    if(!i915_device_from_json)
-      return -1;
+      return -EINVAL;
 
    struct drm_intel_stub_devinfo *stub_arg = (struct drm_intel_stub_devinfo*) arg;
    struct intel_device_info *stub_info = (struct intel_device_info*) stub_arg->addr;
 
    if (stub_arg->size != sizeof(i915.devinfo)) {
       assert(false);
-      return -1;
+      return -EINVAL;
    }
    memcpy(stub_info, &i915.devinfo, sizeof(i915.devinfo));
    return 0;

@@ -31,17 +31,25 @@ msm_ioctl_noop(int fd, unsigned long request, void *arg)
 static int
 msm_ioctl_gem_new(int fd, unsigned long request, void *arg)
 {
-   struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_msm_gem_new *create = arg;
-   size_t size = (size_t)align64(create->size, 4096);
 
-   if (!size)
+   if (!create->size)
       return -EINVAL;
+   if (create->size > UINT32_MAX)
+      return -ENOSPC;
 
+   uint64_t aligned_size = align64(create->size, 4096);
+   if (aligned_size > UINT32_MAX)
+      return -ENOSPC;
+
+   struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = calloc(1, sizeof(*bo));
    int ret;
 
-   ret = drm_shim_bo_init(bo, size);
+   if (!bo)
+      return -ENOMEM;
+
+   ret = drm_shim_bo_init(bo, aligned_size);
    if (ret) {
       free(bo);
       return ret;
@@ -64,10 +72,15 @@ msm_ioctl_gem_info(int fd, unsigned long request, void *arg)
    if (!bo)
       return -ENOENT;
 
+   int ret = 0;
    switch (args->info) {
-   case MSM_INFO_GET_OFFSET:
-      args->value = drm_shim_bo_get_mmap_offset(shim_fd, bo);
+   case MSM_INFO_GET_OFFSET: {
+      uint64_t mmap_offset;
+      ret = drm_shim_bo_get_mmap_offset(shim_fd, bo, &mmap_offset);
+      if (!ret)
+         args->value = mmap_offset;
       break;
+   }
    case MSM_INFO_GET_IOVA:
       args->value = bo->mem_addr;
       break;
@@ -79,12 +92,12 @@ msm_ioctl_gem_info(int fd, unsigned long request, void *arg)
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_MSM_GEM_INFO %d\n", args->info);
       drm_shim_bo_put(bo);
-      return -1;
+      return -EINVAL;
    }
 
    drm_shim_bo_put(bo);
 
-   return 0;
+   return ret;
 }
 
 static int
@@ -153,7 +166,7 @@ msm_ioctl_get_param(int fd, unsigned long request, void *arg)
 
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_MSM_GET_PARAM %d\n", gp->param);
-      return -1;
+      return -EINVAL;
    }
 }
 
@@ -384,6 +397,9 @@ msm_driver_get_device_info(void)
 void
 drm_shim_driver_init(void)
 {
+   drm_shim_set_mem_addr_range(UINT64_C(0x100000000),
+                               UINT64_C(1) << 48);
+
    shim_device.driver_ioctls = driver_ioctls;
    shim_device.driver_ioctl_count = ARRAY_SIZE(driver_ioctls);
 

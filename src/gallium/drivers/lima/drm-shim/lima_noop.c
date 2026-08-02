@@ -50,7 +50,7 @@ lima_ioctl_get_param(int fd, unsigned long request, void *arg)
       return 0;
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_LIMA_GET_PARAM %d\n", gp->param);
-      return -1;
+      return -EINVAL;
    }
 }
 
@@ -59,11 +59,23 @@ lima_ioctl_gem_create(int fd, unsigned long request, void *arg)
 {
    struct drm_lima_gem_create *create = arg;
 
+   if (!create->size)
+      return -EINVAL;
+
+   uint64_t aligned_size = align64(create->size, 4096);
+   if (aligned_size > UINT32_MAX)
+      return -ENOSPC;
+
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = calloc(1, sizeof(*bo));
-   size_t size = align(create->size, 4096);
+   if (!bo)
+      return -ENOMEM;
 
-   drm_shim_bo_init(bo, size);
+   int ret = drm_shim_bo_init(bo, aligned_size);
+   if (ret) {
+      free(bo);
+      return ret;
+   }
 
    create->handle = drm_shim_bo_get_handle(shim_fd, bo);
 
@@ -79,11 +91,17 @@ lima_ioctl_gem_info(int fd, unsigned long request, void *arg)
 
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, gem_info->handle);
+   if (!bo)
+      return -ENOENT;
 
    gem_info->va = bo->mem_addr;
-   gem_info->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
+   uint64_t mmap_offset;
+   int ret = drm_shim_bo_get_mmap_offset(shim_fd, bo, &mmap_offset);
+   if (!ret)
+      gem_info->offset = mmap_offset;
+   drm_shim_bo_put(bo);
 
-   return 0;
+   return ret;
 }
 
 static ioctl_fn_t driver_ioctls[] = {
@@ -99,6 +117,9 @@ static ioctl_fn_t driver_ioctls[] = {
 void
 drm_shim_driver_init(void)
 {
+   drm_shim_set_mem_addr_range(UINT64_C(0x1000),
+                               UINT64_C(0x0fff00000));
+
    shim_device.driver_ioctls = driver_ioctls;
    shim_device.driver_ioctl_count = ARRAY_SIZE(driver_ioctls);
 

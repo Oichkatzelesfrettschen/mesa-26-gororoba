@@ -95,8 +95,14 @@ v3d_ioctl_create_bo(int fd, unsigned long request, void *arg)
         struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
         struct drm_v3d_create_bo *create = arg;
         struct v3d_bo *bo = calloc(1, sizeof(*bo));
+        if (!bo)
+                return -ENOMEM;
 
-        drm_shim_bo_init(&bo->base, create->size);
+        int ret = drm_shim_bo_init(&bo->base, create->size);
+        if (ret) {
+                free(bo);
+                return ret;
+        }
 
         assert(UINT_MAX - v3d.next_offset > create->size);
         bo->offset = v3d.next_offset;
@@ -116,6 +122,8 @@ v3d_ioctl_get_bo_offset(int fd, unsigned long request, void *arg)
         struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
         struct drm_v3d_get_bo_offset *args = arg;
         struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, args->handle);
+        if (!bo)
+                return -ENOENT;
 
         args->offset = v3d_bo(bo)->offset;
 
@@ -130,12 +138,15 @@ v3d_ioctl_mmap_bo(int fd, unsigned long request, void *arg)
         struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
         struct drm_v3d_mmap_bo *map = arg;
         struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, map->handle);
+        if (!bo)
+                return -ENOENT;
 
-        map->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
+        int ret =
+                drm_shim_bo_get_mmap_offset(shim_fd, bo, &map->offset);
 
         drm_shim_bo_put(bo);
 
-        return 0;
+        return ret;
 }
 
 static int
@@ -181,7 +192,7 @@ v3d_ioctl_get_param(int fd, unsigned long request, void *arg)
         }
 
         mesa_loge("Unknown DRM_IOCTL_V3D_GET_PARAM %d", gp->param);
-        return -1;
+        return -EINVAL;
 }
 
 static ioctl_fn_t driver_ioctls[] = {

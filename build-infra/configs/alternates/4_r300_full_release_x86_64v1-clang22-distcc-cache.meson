@@ -78,6 +78,7 @@ egl-native-platform = 'surfaceless'
 gbm = 'enabled'
 
 # r300 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.
+tools = ['drm-shim']
 shader-cache = 'enabled'
 gallium-extra-hud = true
 lmsensors = 'enabled'

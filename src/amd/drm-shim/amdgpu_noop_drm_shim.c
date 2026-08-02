@@ -28,6 +28,9 @@ amdgpu_ioctl_gem_create(int fd, unsigned long request, void *_arg)
    struct shim_bo *bo = calloc(1, sizeof(*bo));
    int ret;
 
+   if (!bo)
+      return -ENOMEM;
+
    ret = drm_shim_bo_init(bo, arg->in.bo_size);
    if (ret) {
       free(bo);
@@ -47,10 +50,17 @@ amdgpu_ioctl_gem_mmap(int fd, unsigned long request, void *_arg)
    union drm_amdgpu_gem_mmap *arg = _arg;
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, arg->in.handle);
+   if (!bo)
+      return -ENOENT;
 
-   arg->out.addr_ptr = drm_shim_bo_get_mmap_offset(shim_fd, bo);
+   uint64_t mmap_offset;
+   int ret =
+      drm_shim_bo_get_mmap_offset(shim_fd, bo, &mmap_offset);
+   if (!ret)
+      arg->out.addr_ptr = mmap_offset;
+   drm_shim_bo_put(bo);
 
-   return 0;
+   return ret;
 }
 
 static void

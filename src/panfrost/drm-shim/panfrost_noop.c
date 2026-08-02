@@ -96,7 +96,7 @@ panfrost_ioctl_get_param(int fd, unsigned long request, void *arg)
       return 0;
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_PANFROST_GET_PARAM %d\n", gp->param);
-      return -1;
+      return -EINVAL;
    }
 }
 
@@ -105,11 +105,23 @@ panfrost_ioctl_create_bo(int fd, unsigned long request, void *arg)
 {
    struct drm_panfrost_create_bo *create = arg;
 
+   if (!create->size)
+      return -EINVAL;
+
+   uint64_t aligned_size = align64(create->size, 4096);
+   if (aligned_size > UINT32_MAX)
+      return -ENOSPC;
+
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = calloc(1, sizeof(*bo));
-   size_t size = align_uintptr(create->size, 4096);
+   if (!bo)
+      return -ENOMEM;
 
-   drm_shim_bo_init(bo, size);
+   int ret = drm_shim_bo_init(bo, aligned_size);
+   if (ret) {
+      free(bo);
+      return ret;
+   }
 
    create->handle = drm_shim_bo_get_handle(shim_fd, bo);
    create->offset = bo->mem_addr;
@@ -126,10 +138,16 @@ panfrost_ioctl_mmap_bo(int fd, unsigned long request, void *arg)
 
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, mmap_bo->handle);
+   if (!bo)
+      return -ENOENT;
 
-   mmap_bo->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
+   uint64_t mmap_offset;
+   int ret = drm_shim_bo_get_mmap_offset(shim_fd, bo, &mmap_offset);
+   if (!ret)
+      mmap_bo->offset = mmap_offset;
+   drm_shim_bo_put(bo);
 
-   return 0;
+   return ret;
 }
 
 static int
@@ -226,7 +244,7 @@ panthor_ioctl_dev_query(int fd, unsigned long request, void *arg)
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_PANTHOR_DEV_QUERY %d\n",
               dev_query->type);
-      return -1;
+      return -EINVAL;
    }
 
    return 0;
@@ -237,11 +255,25 @@ panthor_ioctl_bo_create(int fd, unsigned long request, void *arg)
 {
    struct drm_panthor_bo_create *bo_create = arg;
 
+   if (!bo_create->size)
+      return -EINVAL;
+   if (bo_create->size > UINT32_MAX)
+      return -ENOSPC;
+
+   uint64_t aligned_size = align64(bo_create->size, 4096);
+   if (aligned_size > UINT32_MAX)
+      return -ENOSPC;
+
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = calloc(1, sizeof(*bo));
-   size_t size = align_uintptr(bo_create->size, 4096);
+   if (!bo)
+      return -ENOMEM;
 
-   drm_shim_bo_init(bo, size);
+   int ret = drm_shim_bo_init(bo, aligned_size);
+   if (ret) {
+      free(bo);
+      return ret;
+   }
 
    bo_create->handle = drm_shim_bo_get_handle(shim_fd, bo);
 
@@ -257,10 +289,16 @@ panthor_ioctl_bo_mmap_offset(int fd, unsigned long request, void *arg)
 
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, mmap_offset->handle);
+   if (!bo)
+      return -ENOENT;
 
-   mmap_offset->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
+   uint64_t offset;
+   int ret = drm_shim_bo_get_mmap_offset(shim_fd, bo, &offset);
+   if (!ret)
+      mmap_offset->offset = offset;
+   drm_shim_bo_put(bo);
 
-   return 0;
+   return ret;
 }
 
 static ioctl_fn_t panthor_driver_ioctls[] = {
@@ -321,6 +359,9 @@ drm_shim_driver_init(void)
 
       drm_shim_platform_device_setup("panthor", "/soc/mali", "arm,mali-valhall-csf");
    } else {
+      drm_shim_set_mem_addr_range(UINT64_C(0x02000000),
+                                  UINT64_C(0x100000000));
+
       shim_device.version_minor = 1;
       shim_device.driver_ioctls = panfrost_driver_ioctls;
       shim_device.driver_ioctl_count = ARRAY_SIZE(panfrost_driver_ioctls);

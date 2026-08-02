@@ -49,8 +49,14 @@ asahi_ioctl_gem_create(int fd, unsigned long request, void *arg)
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_asahi_gem_create *create = arg;
    struct asahi_bo *bo = calloc(1, sizeof(*bo));
+   if (!bo)
+      return -ENOMEM;
 
-   drm_shim_bo_init(&bo->base, create->size);
+   int ret = drm_shim_bo_init(&bo->base, create->size);
+   if (ret) {
+      free(bo);
+      return ret;
+   }
 
    assert(UINT64_MAX - asahi.next_offset > create->size);
    bo->offset = asahi.next_offset;
@@ -69,12 +75,14 @@ asahi_ioctl_gem_mmap_offset(int fd, unsigned long request, void *arg)
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_asahi_gem_mmap_offset *map = arg;
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, map->handle);
+   if (!bo)
+      return -ENOENT;
 
-   map->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
+   int ret = drm_shim_bo_get_mmap_offset(shim_fd, bo, &map->offset);
 
    drm_shim_bo_put(bo);
 
-   return 0;
+   return ret;
 }
 
 static int
@@ -91,7 +99,7 @@ asahi_ioctl_get_param(int fd, unsigned long request, void *arg)
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_ASAHI_GET_PARAMS %d\n",
               gp->param_group);
-      return -1;
+      return -EINVAL;
    }
 }
 
