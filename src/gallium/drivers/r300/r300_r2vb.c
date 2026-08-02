@@ -3441,6 +3441,13 @@ bool r300_r2vb_auto_single_gate_value(const char *value)
     return value && strcmp(value, "1") == 0;
 }
 
+/* R300_R2VB_STANDING opens on the exact value 1; unset, empty, zero, and
+ * boolean aliases stay closed. */
+bool r300_r2vb_standing_gate_value(const char *value)
+{
+    return value && strcmp(value, "1") == 0;
+}
+
 bool r300_r2vb_slot_grid_gate_value(const char *value)
 {
     return value && strcmp(value, "1") == 0;
