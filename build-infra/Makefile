@@ -288,6 +288,10 @@ define PREPARE_SOURCE_IDENTITY
 python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity || exit 2
 endef
 
+define PREPARE_SOURCE_VIEW
+python3 "$(SOURCE_ROOT_CONTROL)" prepare-source-view || exit 2
+endef
+
 define WRITE_SOURCE_IDENTITY
 python3 "$(SOURCE_ROOT_CONTROL)" write-identity || exit 2
 endef
@@ -342,9 +346,13 @@ override PROFILE_DFLAGS_SCRIPT := $(CURDIR)/scripts/meson_profile_dflags.py
 # coredata reset of werror, cannot re-open a warnings-are-nonfatal configure.
 # Profile dflags still re-assert every other project option (and werror again).
 ifeq ($(TOPSRC),$(CONTROL_ROOT))
+override MESON_SOURCE_ROOT := $(TOPSRC)
 override EXTERNAL_SOURCE_WRAP_ARG :=
+override EXTERNAL_MESON_SETUP_LOCAL_UNSET :=
 else
-override EXTERNAL_SOURCE_WRAP_ARG := --wrap-mode=nodownload
+override MESON_SOURCE_ROOT := $(BUILD_ROOT)/.gororoba-source-view
+override EXTERNAL_SOURCE_WRAP_ARG := --wrap-mode=default
+override EXTERNAL_MESON_SETUP_LOCAL_UNSET := MESON_PACKAGE_CACHE_DIR
 endif
 override SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) \
 	--reconfigure -Dwerror=true $(EXTERNAL_SOURCE_WRAP_ARG)
@@ -354,7 +362,9 @@ override SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE)
 ifeq ($(MODE),stable)
 override SETUP_ARGS += -Doptimization=2 -Db_lto=false
 endif
-override MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER_PORT INCLUDE_SERVER_ARGS INCLUDE_SERVER_PID
+override MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP \
+	INCLUDE_SERVER_PORT INCLUDE_SERVER_ARGS INCLUDE_SERVER_PID \
+	$(EXTERNAL_MESON_SETUP_LOCAL_UNSET)
 override LOCKED_TOOL_ENV := \
     PATH="$$PATH" \
     CCACHE_BASEDIR="$${CCACHE_BASEDIR:-}" \
@@ -691,6 +701,7 @@ configure: source-root-check vostro-prefix-check
 	$(ACQUIRE_BUILD_LOCK) \
 	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(PREPARE_SOURCE_IDENTITY); \
+	$(PREPARE_SOURCE_VIEW); \
 	mkdir -p "$(dir $(BUILDDIR))"; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	version_major() { \
@@ -834,7 +845,7 @@ configure: source-root-check vostro-prefix-check
 	echo "profile -D flags: $$profile_dflags"; \
 	$(MESON) setup $(SETUP_ARGS) $$profile_dflags \
 		--prefix="$(PREFIX)" --sysconfdir="$${GOROROBA_SYSCONFDIR_INPUT}" \
-		"$(BUILDDIR)" "$(TOPSRC)" || { \
+		"$(BUILDDIR)" "$(MESON_SOURCE_ROOT)" || { \
 			echo "Meson setup failed; source identity remains provisional" >&2; \
 			exit 2; \
 		}; \
@@ -861,7 +872,10 @@ build: source-root-check
 	esac; \
 	echo "ninja jobs: $$build_jobs ($(COMPILER_CHAIN))"; \
 	env $(LOCKED_TOOL_ENV) \
-	    $(NINJA) -C "$(BUILDDIR)" -j"$$build_jobs" $(NINJA_ARGS) $(NINJA_TARGETS)
+	    $(NINJA) -C "$(BUILDDIR)" -j"$$build_jobs" $(NINJA_ARGS) $(NINJA_TARGETS); \
+	build_status=$$?; \
+	$(VERIFY_SOURCE_IDENTITY); \
+	exit "$$build_status"
 
 clean:
 	@$(ACQUIRE_BUILD_LOCK) \
@@ -932,12 +946,13 @@ install: source-root-check vostro-prefix-check
 	    python3 "$(SOURCE_ROOT_CONTROL)" check-layout --operation=install; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" verify-identity; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
+	    python3 "$(SOURCE_ROOT_CONTROL)" prepare-source-view; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
 	    profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)") || { \
 	      echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix="$(PREFIX)" \
-	      --sysconfdir="$$GOROROBA_SYSCONFDIR_INPUT" "$(BUILDDIR)" "$(TOPSRC)" || { \
+	      --sysconfdir="$$GOROROBA_SYSCONFDIR_INPUT" "$(BUILDDIR)" "$(MESON_SOURCE_ROOT)" || { \
 	      echo "Meson setup failed; source identity remains provisional" >&2; \
 	      exit 2; \
 	    }; \
@@ -948,6 +963,7 @@ install: source-root-check vostro-prefix-check
 	    : "ownership so a later non-sudo makepkg of the same builddir can rewrite"; \
 	    : "it instead of failing package() with a PermissionError under fakeroot"; \
 	    $(SUDO) chown -R "$$(id -un):$$(id -gn)" "$(BUILDDIR)/meson-logs"; \
+	    python3 "$(SOURCE_ROOT_CONTROL)" verify-identity; \
 	    echo "[install] complete; releasing flock"'
 
 artifact-check: source-root-check vostro-prefix-check
@@ -992,7 +1008,10 @@ test: source-root-check
 	$(call CHECK_LAYOUT,test); \
 	$(VERIFY_SOURCE_IDENTITY); \
 	env $(LOCKED_TOOL_ENV) \
-	    $(MESON) test -C "$(BUILDDIR)" $(MESON_TEST_ARGS)
+	    $(MESON) test -C "$(BUILDDIR)" $(MESON_TEST_ARGS); \
+	test_status=$$?; \
+	$(VERIFY_SOURCE_IDENTITY); \
+	exit "$$test_status"
 
 build-lease-test:
 	@tmpdir="$$(python3 "$(SOURCE_ROOT_CONTROL)" \
@@ -1768,14 +1787,171 @@ source-root-selection-test:
 		PREFIX="$$external_build_root/prefix" \
 		BUILD_LOCK="$$tmpdir/configure.lock" LOCK_WAIT=0 \
 		MESON=meson PROFILE="$(PROFILE)" 2>/dev/null )"; \
+	external_source_view="$$external_build_root/.gororoba-source-view"; \
 	printf '%s\n' "$$configure_plan" | grep -F "meson setup" >/dev/null && \
-	printf '%s\n' "$$configure_plan" | grep -F "\"$$source_root\"" >/dev/null && \
-	printf '%s\n' "$$configure_plan" | \
-		grep -F -- "--wrap-mode=nodownload" >/dev/null || { \
-		echo "FAIL  configure does not pass external TOPSRC to Meson" >&2; \
+	printf '%s\n' "$$configure_plan" | grep -F "\"$$external_source_view\"" >/dev/null && \
+	printf '%s\n' "$$configure_plan" | grep -F -- "--wrap-mode=default" >/dev/null && \
+	printf '%s\n' "$$configure_plan" | grep -F "MESON_PACKAGE_CACHE_DIR" >/dev/null || { \
+		echo "FAIL  configure does not pass the derived source view to Meson" >&2; \
 		printf '%s\n' "$$configure_plan" >&2; exit 1; \
 	}; \
-	echo "OK    configure passes external TOPSRC with wrap downloads disabled"; \
+	if printf '%s\n' "$$configure_plan" | grep -F -- "--wrap-mode=nodownload" >/dev/null; then \
+		echo "FAIL  external source view still disables required wrap population" >&2; \
+		exit 1; \
+	fi; \
+	echo "OK    external configure plans the derived source view"; \
+	control_plan_build_root="$$tmpdir/control-plan-build"; \
+	control_configure_plan="$$( $(MAKE) --no-print-directory -n -C "$(CURDIR)" \
+		configure TOPSRC="$(CONTROL_ROOT)" BUILD_ROOT="$$control_plan_build_root" \
+		BUILDDIR="$$control_plan_build_root/configure" \
+		PREFIX="$$control_plan_build_root/prefix" \
+		BUILD_LOCK="$$tmpdir/control-plan.lock" LOCK_WAIT=0 \
+		MESON=meson PROFILE="$(PROFILE)" 2>/dev/null )"; \
+	printf '%s\n' "$$control_configure_plan" | grep -F "meson setup" >/dev/null && \
+	printf '%s\n' "$$control_configure_plan" | grep -F "\"$(CONTROL_ROOT)\"" >/dev/null || { \
+		echo "FAIL  control configure does not pass the control source root to Meson" >&2; \
+		printf '%s\n' "$$control_configure_plan" >&2; exit 1; \
+	}; \
+	if printf '%s\n' "$$control_configure_plan" | \
+		grep -F ".gororoba-source-view" >/dev/null; then \
+		echo "FAIL  control configure planned an external source view" >&2; \
+		exit 1; \
+	fi; \
+	if printf '%s\n' "$$control_configure_plan" | \
+		grep -F -- "--wrap-mode=default" >/dev/null; then \
+		echo "FAIL  control configure changed its wrap policy" >&2; \
+		exit 1; \
+	fi; \
+	if printf '%s\n' "$$control_configure_plan" | \
+		grep -F "MESON_PACKAGE_CACHE_DIR" >/dev/null; then \
+		echo "FAIL  control configure changed its package-cache environment" >&2; \
+		exit 1; \
+	fi; \
+	echo "OK    control configure retains the original source path"; \
+	wrap_archive_root="$$tmpdir/wrap-archive-root"; \
+	wrap_archive="$$tmpdir/Vulkan-Profiles-fixture.tar"; \
+	mkdir -p "$$wrap_archive_root/Vulkan-Profiles-source"; \
+	printf '%s\n' "project('Vulkan-Profiles-fixture')" > \
+		"$$wrap_archive_root/Vulkan-Profiles-source/meson.build"; \
+	tar --format=ustar --sort=name --mtime=@0 --owner=0 --group=0 \
+		--numeric-owner -cf "$$wrap_archive" -C "$$wrap_archive_root" \
+		Vulkan-Profiles-source; \
+	wrap_archive_hash="$$(sha256sum "$$wrap_archive" | awk '{print $$1}')"; \
+	wrap_source_root="$$tmpdir/wrap-source"; \
+	mkdir -p "$$wrap_source_root/subprojects"; \
+	git -C "$$wrap_source_root" init -q; \
+	printf '%s\n' "project('source-view-wrap-fixture')" > \
+		"$$wrap_source_root/meson.build"; \
+	touch "$$wrap_source_root/meson.options"; \
+	{ \
+		printf '%s\n' "[wrap-file]"; \
+		printf '%s\n' "directory = Vulkan-Profiles-source"; \
+		printf '%s\n' "source_url = file://$$wrap_archive"; \
+		printf '%s\n' "source_filename = Vulkan-Profiles-fixture.tar"; \
+		printf '%s\n' "source_hash = $$wrap_archive_hash"; \
+	} > "$$wrap_source_root/subprojects/Vulkan-Profiles.wrap"; \
+	git -C "$$wrap_source_root" add meson.build meson.options subprojects; \
+	git -C "$$wrap_source_root" \
+		-c user.name=source-root-test -c user.email=source-root-test.invalid \
+		commit -qm "test: add hashed Vulkan-Profiles fixture"; \
+	synthetic_meson="$$tmpdir/synthetic-meson"; \
+	{ \
+		printf '%s\n' '#!/bin/sh' 'set -eu' \
+			'for argument do source_view=$$argument; done' \
+			'wrap=$$source_view/subprojects/Vulkan-Profiles.wrap' \
+			'directory=$$(sed -n "s/^directory = //p" "$$wrap")' \
+			'source_url=$$(sed -n "s/^source_url = //p" "$$wrap")' \
+			'source_hash=$$(sed -n "s/^source_hash = //p" "$$wrap")' \
+			'case "$$source_url" in file://*) archive=$${source_url#file://} ;; *) exit 2 ;; esac' \
+			'printf "%s  %s\n" "$$source_hash" "$$archive" | sha256sum -c - >/dev/null' \
+			'tar -xf "$$archive" -C "$$source_view/subprojects"' \
+			'test -f "$$source_view/subprojects/$$directory/meson.build"'; \
+	} > "$$synthetic_meson"; \
+	chmod 700 "$$synthetic_meson"; \
+	wrap_build_root="$$tmpdir/wrap-build"; \
+	wrap_builddir="$$wrap_build_root/probe"; \
+	wrap_prefix="$$wrap_build_root/prefix"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$wrap_source_root" BUILD_ROOT="$$wrap_build_root" \
+		BUILDDIR="$$wrap_builddir" PREFIX="$$wrap_prefix" \
+		BUILD_LOCK="$$tmpdir/wrap.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 \
+		MESON="$$synthetic_meson" >/dev/null; \
+	wrap_source_view="$$wrap_build_root/.gororoba-source-view"; \
+	test -f "$$wrap_source_view/subprojects/Vulkan-Profiles-source/meson.build" || { \
+		echo "FAIL  hashed Vulkan-Profiles fixture was not populated in the source view" >&2; \
+		exit 1; \
+	}; \
+	test -z "$$(git -C "$$wrap_source_root" status --porcelain=v1 \
+		--untracked-files=all)" || { \
+		echo "FAIL  wrap preparation mutated the original external TOPSRC" >&2; \
+		exit 1; \
+	}; \
+	grep -F "\"source_view\": \"$$wrap_source_view\"" \
+		"$$wrap_build_root/.gororoba-external-source-identity.json" >/dev/null && \
+	grep -E '"source_view_digest": "sha256:[0-9a-f]{64}"' \
+		"$$wrap_build_root/.gororoba-external-source-identity.json" >/dev/null || { \
+		echo "FAIL  final identity omitted the source-view path or digest" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    hashed Vulkan-Profiles fixture populates only the derived source view"; \
+	wrap_population_file="$$wrap_source_view/subprojects/Vulkan-Profiles-source/meson.build"; \
+	printf '%s\n' "source-view drift" >> "$$wrap_population_file"; \
+	touch "$$wrap_builddir/drift-sentinel"; \
+	for drift_target in build test install artifact-check clean; do \
+		if drift_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+			"$$drift_target" TOPSRC="$$wrap_source_root" \
+			BUILD_ROOT="$$wrap_build_root" BUILDDIR="$$wrap_builddir" \
+			PREFIX="$$wrap_prefix" BUILD_LOCK="$$tmpdir/wrap.lock" \
+			LOCK_WAIT=0 COMPILER_CHAIN=direct NINJA=true MESON=true \
+			SUDO=true 2>&1 )"; then \
+			echo "FAIL  $$drift_target accepted source-view drift" >&2; \
+			exit 1; \
+		fi; \
+		printf '%s\n' "$$drift_output" | \
+			grep -F "source view content drift" >/dev/null || { \
+			echo "FAIL  $$drift_target returned the wrong source-view diagnostic" >&2; \
+			printf '%s\n' "$$drift_output" >&2; exit 1; \
+		}; \
+	done; \
+	test -f "$$wrap_builddir/drift-sentinel" || { \
+		echo "FAIL  drift-rejected clean mutated the bound build directory" >&2; \
+		exit 1; \
+	}; \
+	printf '%s\n' "project('Vulkan-Profiles-fixture')" > "$$wrap_population_file"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" build \
+		TOPSRC="$$wrap_source_root" BUILD_ROOT="$$wrap_build_root" \
+		BUILDDIR="$$wrap_builddir" PREFIX="$$wrap_prefix" \
+		BUILD_LOCK="$$tmpdir/wrap.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct NINJA=true >/dev/null; \
+	echo "OK    every finalized consumer rejects source-view content drift"; \
+	sed -i '/^source_hash = /d' \
+		"$$wrap_source_root/subprojects/Vulkan-Profiles.wrap"; \
+	git -C "$$wrap_source_root" add subprojects/Vulkan-Profiles.wrap; \
+	git -C "$$wrap_source_root" \
+		-c user.name=source-root-test -c user.email=source-root-test.invalid \
+		commit -qm "test: remove wrap source hash"; \
+	unhashed_build_root="$$tmpdir/unhashed-wrap-build"; \
+	if unhashed_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$wrap_source_root" BUILD_ROOT="$$unhashed_build_root" \
+		BUILDDIR="$$unhashed_build_root/probe" \
+		PREFIX="$$unhashed_build_root/prefix" \
+		BUILD_LOCK="$$tmpdir/unhashed-wrap.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 \
+		MESON="$$synthetic_meson" 2>&1 )"; then \
+		echo "FAIL  configure admitted an unhashed wrap-file download" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$unhashed_output" | \
+		grep -F "wrap-file source_hash must be SHA-256" >/dev/null || { \
+		echo "FAIL  unhashed wrap returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$unhashed_output" >&2; exit 1; \
+	}; \
+	test ! -e "$$unhashed_build_root/.gororoba-source-view" || { \
+		echo "FAIL  unhashed wrap published a derived source view" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    external configure rejects an unhashed wrap-file download"; \
 	default_prefix_build_root="$$tmpdir/default-prefix-build"; \
 	if default_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$source_root" BUILD_ROOT="$$default_prefix_build_root" \

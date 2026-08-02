@@ -89,10 +89,11 @@ collide.  (`git clean -xdf` also removes them since they are ignored; prefer
 
 ## Immutable source comparisons
 
-`TOPSRC` selects the Mesa Git worktree that Meson configures.  The default is
-the worktree that owns `build-infra/`.  An explicit `TOPSRC` lets two immutable
-source revisions use the same profile, host environment, compiler resolver,
-warning policy, and Meson option generator:
+`TOPSRC` selects the committed Mesa Git input.  The default is the worktree
+that owns `build-infra/`, and control-source builds continue to pass that path
+directly to Meson.  An explicit external `TOPSRC` lets two immutable source
+revisions use the same profile, host environment, compiler resolver, warning
+policy, and Meson option generator:
 
 ```bash
 make -C build-infra configure \
@@ -111,12 +112,27 @@ commits.  The cleanliness check compares the real index to `HEAD`, then
 compares worktree bytes through a fresh temporary index.  Staged-only changes,
 unignored untracked files, ordinary tracked changes, and tracked changes
 hidden by `assume-unchanged` all fail the comparison.
-External Meson setup uses `--wrap-mode=nodownload`, so it cannot populate an
-ignored `subprojects/` checkout after source identity is recorded.  A required
-wrap dependency is present as committed source or a system dependency, or the
-setup fails while the build-root identity remains provisional.  Ignored build
-outputs outside `subprojects/` remain regenerable and do not make the source
-worktree dirty.
+
+External setup creates `$BUILD_ROOT/.gororoba-source-view` from the captured
+source commit with argv-only `git archive` and in-process tar extraction.
+Meson receives that derived path and may populate required wrap dependencies
+there, including zink's Vulkan-Profiles source, while the selected Git
+worktree remains unchanged.  External setup passes `--wrap-mode=default` and
+clears `MESON_PACKAGE_CACHE_DIR`, so Meson's package cache and extracted
+sources stay under the derived view.  Every `[wrap-file]` download declares a
+SHA-256 `source_hash`; a downloaded patch declares `patch_hash`.  The control
+rejects an absent or malformed hash before publishing the source view, and
+Meson verifies the declared hash while fetching the archive.
+
+After setup, the final identity records the derived path and a deterministic
+SHA-256 digest over every relative path, file type, permission mode, regular
+file size and bytes, and symbolic-link target.  Build, test, install, artifact
+reporting, and finalized cleanup recompute that digest and reject source-view
+drift.  A provisional transaction admits interrupted-setup cleanup by its
+exact source tuple and fixed derived path because Meson may have stopped
+between wrap extraction and final digest publication.  Ignored build outputs
+in the original worktree remain regenerable, while ignored original
+`subprojects/` sources remain rejected.
 
 Path selection rejects whitespace and shell metacharacters, resolves symlinks
 before containment checks, and keeps the external build root, build directory,
@@ -150,16 +166,19 @@ Successful external configuration writes
 `$BUILDDIR/.gororoba-source-identity.json`.  Before Meson runs, the build-root
 record enters a provisional transaction that reserves the entire root for one
 selected source root, commit, tree, control root, control commit, control tree,
-build directory, prefix, and sysconfdir.  Meson success writes matching final
-records with one transaction identifier.  Meson failure leaves the root
+derived source-view path, build directory, prefix, and sysconfdir.  Archive
+preparation records the initial derived-view digest under the provisional
+transaction.  Meson success records the post-setup digest and writes matching
+final records with one transaction identifier.  Meson failure leaves the root
 provisional.  A
 previous build-directory record may remain after failed reconfiguration, but
 its final state cannot satisfy build, test, install, or distclean while the
 root transaction stays provisional.  Cleanup accepts a matching provisional
 root so it can remove an interrupted build.  Finalization rejects any source
-tuple that differs from the provisional reservation.  A source revision or
-control-plane commit change uses a fresh empty build root; the old root remains
-an immutable attribution boundary.
+tuple that differs from the provisional reservation and binds the complete
+post-setup source view.  A source revision or control-plane commit change uses
+a fresh empty build root; the old root remains an immutable attribution
+boundary.
 
 Install reconfiguration uses the same transaction.  It verifies the existing
 final identity, marks the root provisional before `meson setup`, and finalizes
@@ -170,12 +189,13 @@ until a successful configure restores one final transaction.
 External `clean` verifies the recorded source identity before removing an
 existing build directory.  An absent build directory remains a successful
 no-op only when the build-root identity matches the requested source and path
-tuple.  `distclean` verifies the same root and prefix identity before it
-removes the build directory or archives the prefix, including after `clean`
-has already removed the per-build record and when a prior archival attempt
-failed.  Artifact reporting joins the same final root identity and accepts a
-missing build directory only when the retained root record still binds the
-source, control plane, and prefix.
+tuple; a final root also requires the recorded source-view digest.
+`distclean` verifies the same root, derived view, and prefix identity before
+it removes the build directory or archives the prefix, including after
+`clean` has already removed the per-build record and when a prior archival
+attempt failed.  Artifact reporting joins the same final root identity and
+accepts a missing build directory only when the retained root record still
+binds the source, control plane, derived view, and prefix.
 
 Each mutating recipe captures source commit, source tree, control commit,
 control tree, canonical paths, and device/inode/file-type anchors during
@@ -209,12 +229,14 @@ assume-unchanged, ignored-subproject, nested-worktree, and bare-repository
 rejection, shell-input rejection, physical containment, namespace ownership,
 sibling-worktree protection, clean-all refusal, lease-bound path replacement,
 build-root and prefix identity drift, configure and install transactions,
-failed reconfiguration revocation, clean-then-distclean archival, archival
-retry, artifact-report source-tuple binding, shared prefix refusal, and the
-Meson source argument.  When the host permits private user and mount
-namespaces, the same target proves that exact and descendant same-device bind
-mounts fail before recursive removal.  `make source-root-control-unit-test`
-exercises the pure path, layout, staged-only cleanliness,
+failed reconfiguration revocation, hashed synthetic Vulkan-Profiles
+population, source-view drift, unhashed download rejection,
+clean-then-distclean archival, archival retry, artifact-report source-tuple
+binding, shared prefix refusal, and the external and control Meson source
+arguments.  When the host permits private user and mount namespaces, the same
+target proves that exact and descendant same-device bind mounts fail before
+recursive removal.  `make source-root-control-unit-test` exercises the pure
+path, layout, staged-only cleanliness,
 dirty external-control rejection, anchor, namespace, and identity-record
 invariants directly.  Its temporary repositories keep the control checkout
 immutable, so concurrent calibration runs do not invalidate one another.

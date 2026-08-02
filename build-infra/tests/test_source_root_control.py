@@ -207,8 +207,45 @@ def committed_repository(repository: Path) -> Path:
     source_root_control.run_git(repository, "init", "-q", "-b", "main")
     source_file = repository / "meson.build"
     source_file.write_text("project('clean')\n", encoding="ascii")
+    (repository / "meson.options").write_text("", encoding="ascii")
     commit_repository(repository, "test: add tracked source")
     return source_file
+
+
+def source_view_values(tmp_path: Path) -> dict[str, Path | str]:
+    values = layout_values(tmp_path)
+    source_root = values["source_root"]
+    build_root = values["build_root"]
+    assert isinstance(source_root, Path)
+    assert isinstance(build_root, Path)
+    committed_repository(source_root)
+    (source_root / "tracked-source").write_text("archive input\n", encoding="ascii")
+    commit_repository(source_root, "test: add source view input")
+    values["source_commit"] = source_root_control.run_git(
+        source_root,
+        "rev-parse",
+        "HEAD",
+    )
+    values["source_tree"] = source_root_control.run_git(
+        source_root,
+        "rev-parse",
+        "HEAD^{tree}",
+    )
+    build_root.mkdir(parents=True)
+    return values
+
+
+def write_provisional_identity(values: dict[str, Path | str]) -> None:
+    base_payload = source_root_control.base_identity_payload(values)
+    source_root_control.write_json_atomic(
+        source_root_control.root_identity_path(values),
+        source_root_control.identity_record(
+            base_payload,
+            source_root_control.PROVISIONAL_STATE,
+            "a" * 32,
+            source_root_control.PENDING_SOURCE_VIEW_DIGEST,
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -244,6 +281,46 @@ def test_validate_layout_accepts_isolated_external_build(
         lambda _repository_root: (build_namespace,),
     )
     source_root_control.validate_layout("build", layout_values(tmp_path))
+
+
+@pytest.mark.parametrize("operation", ("build", "clean", "configure", "test"))
+def test_validate_layout_rejects_builddir_inside_source_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    build_namespace = tmp_path / ".mesa-26-gororoba-builds"
+    monkeypatch.setattr(
+        source_root_control,
+        "owned_build_namespaces",
+        lambda _repository_root: (build_namespace,),
+    )
+    values = layout_values(tmp_path)
+    values["builddir"] = source_root_control.source_view_path(values) / "nested-build"
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="BUILDDIR overlaps the source view",
+    ):
+        source_root_control.validate_layout(operation, values)
+
+
+def test_validate_layout_rejects_prefix_equal_to_source_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_namespace = tmp_path / ".mesa-26-gororoba-builds"
+    monkeypatch.setattr(
+        source_root_control,
+        "owned_build_namespaces",
+        lambda _repository_root: (build_namespace,),
+    )
+    values = layout_values(tmp_path)
+    values["prefix"] = source_root_control.source_view_path(values)
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="PREFIX aliases the source view",
+    ):
+        source_root_control.validate_layout("configure", values)
 
 
 def test_validate_layout_rejects_builddir_equal_to_build_root(
@@ -794,6 +871,248 @@ def test_require_clean_worktree_accepts_ignored_build_outputs(
     source_root_control.require_clean_worktree(repository, "test worktree")
 
 
+def test_require_hashed_wrap_sources_accepts_vulkan_profiles(
+    tmp_path: Path,
+) -> None:
+    source_view = tmp_path / "source-view"
+    subprojects = source_view / "subprojects"
+    subprojects.mkdir(parents=True)
+    (subprojects / "Vulkan-Profiles.wrap").write_text(
+        "[wrap-file]\n"
+        "directory = Vulkan-Profiles-source\n"
+        "source_url = file:///fixtures/Vulkan-Profiles.tar\n"
+        "source_filename = Vulkan-Profiles.tar\n"
+        f"source_hash = {'1' * 64}\n",
+        encoding="ascii",
+    )
+    source_root_control.require_hashed_wrap_sources(source_view)
+
+
+def test_require_hashed_wrap_sources_rejects_unhashed_download(
+    tmp_path: Path,
+) -> None:
+    source_view = tmp_path / "source-view"
+    subprojects = source_view / "subprojects"
+    subprojects.mkdir(parents=True)
+    wrap_path = subprojects / "Vulkan-Profiles.wrap"
+    wrap_path.write_text(
+        "[wrap-file]\n"
+        "directory = Vulkan-Profiles-source\n"
+        "source_url = file:///fixtures/Vulkan-Profiles.tar\n"
+        "source_filename = Vulkan-Profiles.tar\n",
+        encoding="ascii",
+    )
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="wrap-file source_hash must be SHA-256",
+    ):
+        source_root_control.require_hashed_wrap_sources(source_view)
+
+
+def test_require_hashed_wrap_sources_rejects_unhashed_patch(
+    tmp_path: Path,
+) -> None:
+    source_view = tmp_path / "source-view"
+    subprojects = source_view / "subprojects"
+    subprojects.mkdir(parents=True)
+    wrap_path = subprojects / "Vulkan-Profiles.wrap"
+    wrap_path.write_text(
+        "[wrap-file]\n"
+        "directory = Vulkan-Profiles-source\n"
+        "source_url = file:///fixtures/Vulkan-Profiles.tar\n"
+        "source_filename = Vulkan-Profiles.tar\n"
+        f"source_hash = {'1' * 64}\n"
+        "patch_url = file:///fixtures/Vulkan-Profiles-patch.tar\n"
+        "patch_filename = Vulkan-Profiles-patch.tar\n",
+        encoding="ascii",
+    )
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="wrap-file patch_hash must be SHA-256",
+    ):
+        source_root_control.require_hashed_wrap_sources(source_view)
+
+
+def test_source_view_content_digest_is_deterministic_and_complete(
+    tmp_path: Path,
+) -> None:
+    source_view = tmp_path / "source-view"
+    source_view.mkdir()
+    source_file = source_view / "source"
+    source_file.write_text("stable\n", encoding="ascii")
+    source_file.chmod(0o755)
+    (source_view / "source-link").symlink_to("source")
+    initial_digest = source_root_control.source_view_content_digest(source_view)
+    assert initial_digest == source_root_control.source_view_content_digest(source_view)
+    source_file.write_text("mutated\n", encoding="ascii")
+    assert initial_digest != source_root_control.source_view_content_digest(source_view)
+
+
+def test_prepare_source_view_archives_exact_source_and_replaces_owned_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path)
+    source_root = values["source_root"]
+    assert isinstance(source_root, Path)
+    subprojects = source_root / "subprojects"
+    subprojects.mkdir()
+    (subprojects / "Vulkan-Profiles.wrap").write_text(
+        "[wrap-file]\n"
+        "directory = Vulkan-Profiles-source\n"
+        "source_url = file:///fixtures/Vulkan-Profiles.tar\n"
+        "source_filename = Vulkan-Profiles.tar\n"
+        f"source_hash = {'2' * 64}\n",
+        encoding="ascii",
+    )
+    commit_repository(source_root, "test: add hashed wrap")
+    values["source_commit"] = source_root_control.run_git(
+        source_root,
+        "rev-parse",
+        "HEAD",
+    )
+    values["source_tree"] = source_root_control.run_git(
+        source_root,
+        "rev-parse",
+        "HEAD^{tree}",
+    )
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_provisional_identity(values)
+    source_view = source_root_control.source_view_path(values)
+    nested_git_marker = source_view / "subprojects" / "old-wrap" / ".git"
+    nested_git_marker.mkdir(parents=True)
+    (nested_git_marker / "HEAD").write_text("ref: refs/heads/main\n", encoding="ascii")
+
+    source_root_control.prepare_source_view(values)
+
+    assert (source_view / "tracked-source").read_text(encoding="ascii") == (
+        "archive input\n"
+    )
+    assert not (source_view / ".git").exists()
+    assert not nested_git_marker.exists()
+    assert (
+        source_root_control.run_git(
+            source_root,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        )
+        == ""
+    )
+    root_record = source_root_control.read_identity(
+        source_root_control.root_identity_path(values)
+    )
+    assert root_record["source_view"] == str(source_view)
+    assert root_record["source_view_digest"] == (
+        source_root_control.source_view_content_digest(source_view)
+    )
+
+
+def test_prepare_source_view_rejects_unhashed_wrap_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path)
+    source_root = values["source_root"]
+    assert isinstance(source_root, Path)
+    subprojects = source_root / "subprojects"
+    subprojects.mkdir()
+    (subprojects / "Vulkan-Profiles.wrap").write_text(
+        "[wrap-file]\n"
+        "directory = Vulkan-Profiles-source\n"
+        "source_url = file:///fixtures/Vulkan-Profiles.tar\n"
+        "source_filename = Vulkan-Profiles.tar\n",
+        encoding="ascii",
+    )
+    commit_repository(source_root, "test: add unhashed wrap")
+    values["source_commit"] = source_root_control.run_git(
+        source_root,
+        "rev-parse",
+        "HEAD",
+    )
+    values["source_tree"] = source_root_control.run_git(
+        source_root,
+        "rev-parse",
+        "HEAD^{tree}",
+    )
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_provisional_identity(values)
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="wrap-file source_hash must be SHA-256",
+    ):
+        source_root_control.prepare_source_view(values)
+    assert not source_root_control.source_view_path(values).exists()
+
+
+def test_final_identity_consumers_reject_source_view_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_provisional_identity(values)
+    source_root_control.prepare_source_view(values)
+    source_root_control.write_identity(values)
+    source_view = source_root_control.source_view_path(values)
+    (source_view / "tracked-source").write_text("drift\n", encoding="ascii")
+
+    with pytest.raises(source_root_control.ControlError, match="content drift"):
+        source_root_control.verify_identity(values)
+    for allow_provisional in (False, True):
+        with pytest.raises(source_root_control.ControlError, match="content drift"):
+            source_root_control.verify_delete_identity(
+                values,
+                allow_provisional=allow_provisional,
+            )
+
+
+def test_provisional_cleanup_accepts_mesons_source_view_population(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_provisional_identity(values)
+    source_root_control.prepare_source_view(values)
+    source_view = source_root_control.source_view_path(values)
+    populated_source = source_view / "subprojects" / "fixture" / "meson.build"
+    populated_source.parent.mkdir(parents=True)
+    populated_source.write_text("project('fixture')\n", encoding="ascii")
+    source_root_control.verify_delete_identity(values, allow_provisional=True)
+
+
+def test_control_source_preparation_retains_the_selected_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = layout_values(tmp_path)
+    values["source_root"] = values["control_root"]
+    monkeypatch.setattr(
+        source_root_control,
+        "run_git_archive",
+        lambda *_arguments: pytest.fail("control source was archived"),
+    )
+    source_root_control.prepare_source_view(values)
+
+
 def test_run_git_ignores_ambient_repository_and_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -913,17 +1232,21 @@ def test_require_identity_record_accepts_exact_final_record(
     }
     recorded = {
         **expected,
+        "source_view_digest": f"sha256:{'b' * 64}",
         "state": source_root_control.FINAL_STATE,
         "transaction_id": "a" * 32,
     }
-    state, transaction_id = source_root_control.require_identity_record(
-        recorded,
-        expected,
-        tmp_path / "identity.json",
-        frozenset((source_root_control.FINAL_STATE,)),
+    state, transaction_id, source_view_digest = (
+        source_root_control.require_identity_record(
+            recorded,
+            expected,
+            tmp_path / "identity.json",
+            frozenset((source_root_control.FINAL_STATE,)),
+        )
     )
     assert state == source_root_control.FINAL_STATE
     assert transaction_id == "a" * 32
+    assert source_view_digest == f"sha256:{'b' * 64}"
 
 
 def test_require_identity_record_rejects_provisional_use(
@@ -935,6 +1258,7 @@ def test_require_identity_record_rejects_provisional_use(
     }
     recorded = {
         **expected,
+        "source_view_digest": source_root_control.PENDING_SOURCE_VIEW_DIGEST,
         "state": source_root_control.PROVISIONAL_STATE,
         "transaction_id": "a" * 32,
     }
@@ -956,6 +1280,7 @@ def test_require_identity_record_rejects_unknown_fields(
     }
     recorded = {
         **expected,
+        "source_view_digest": f"sha256:{'b' * 64}",
         "state": source_root_control.FINAL_STATE,
         "transaction_id": "a" * 32,
         "unbound_field": True,

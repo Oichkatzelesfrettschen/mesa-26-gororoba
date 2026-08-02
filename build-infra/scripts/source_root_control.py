@@ -1,30 +1,38 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Validate external Mesa source selection and bind it to a build directory."""
+"""Bind an immutable external Mesa source view to one build identity."""
 
 from __future__ import annotations
 
 import argparse
+import configparser
+import hashlib
 import json
 import os
 import pwd
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 from typing import NoReturn
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 IDENTITY_FILENAME = ".gororoba-source-identity.json"
 ROOT_IDENTITY_FILENAME = ".gororoba-external-source-identity.json"
+SOURCE_VIEW_DIRECTORY = ".gororoba-source-view"
 SAFE_PATH_INPUT = re.compile(r"^[A-Za-z0-9_./:+@=~-]+$")
 SAFE_LEAF_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
 DECIMAL_INTEGER = re.compile(r"^[0-9]+$")
 GNU_MAKE_VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
 TRANSACTION_ID = re.compile(r"^[0-9a-f]{32}$")
+SHA256_VALUE = re.compile(r"^[0-9a-fA-F]{64}$")
+SOURCE_VIEW_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+PENDING_SOURCE_VIEW_DIGEST = "pending"
 PROVISIONAL_STATE = "provisional"
 FINAL_STATE = "final"
 MOUNTINFO_PATH = Path("/proc/self/mountinfo")
@@ -109,12 +117,9 @@ def git_command(root: Path, *arguments: str) -> list[str]:
     ]
 
 
-def run_git_process(
-    root: Path,
-    *arguments: str,
+def git_environment(
     extra_environment: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    command = git_command(root, *arguments)
+) -> dict[str, str]:
     environment = {
         name: value for name, value in os.environ.items() if not name.startswith("GIT_")
     }
@@ -131,11 +136,20 @@ def run_git_process(
     )
     if extra_environment is not None:
         environment.update(extra_environment)
+    return environment
+
+
+def run_git_process(
+    root: Path,
+    *arguments: str,
+    extra_environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = git_command(root, *arguments)
     return subprocess.run(
         command,
         check=False,
         capture_output=True,
-        env=environment,
+        env=git_environment(extra_environment),
         shell=False,
         text=True,
     )
@@ -156,6 +170,27 @@ def run_git(
         diagnostic = result.stderr.strip() or result.stdout.strip()
         fail(f"{' '.join(command)} failed: {diagnostic}")
     return result.stdout.strip()
+
+
+def run_git_archive(root: Path, commit: str, output: Path) -> None:
+    command = git_command(
+        root,
+        "archive",
+        "--format=tar",
+        f"--output={output}",
+        commit,
+    )
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        env=git_environment(),
+        shell=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        diagnostic = result.stderr.strip() or result.stdout.strip()
+        fail(f"{' '.join(command)} failed: {diagnostic}")
 
 
 def source_identity(source_root: Path) -> tuple[str, str]:
@@ -231,9 +266,9 @@ def require_clean_worktree(root: Path, label: str) -> None:
             "--exclude-standard",
             extra_environment=index_environment,
         )
-        # External comparisons run Meson with --wrap-mode=nodownload. Any
-        # ignored subproject bytes therefore come from an unrecorded source
-        # mutation rather than the selected commit and tree.
+        # External Meson setup uses an archive-derived source view. Ignored
+        # subproject bytes in TOPSRC therefore sit outside the selected commit
+        # and never enter the derived view.
         ignored_subprojects = run_git(
             root,
             "ls-files",
@@ -840,6 +875,17 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
                 fail(f"refusing BUILD_ROOT inside {name}: {build_root}")
             if is_within_or_equal(builddir, boundary):
                 fail(f"refusing BUILDDIR inside {name}: {builddir}")
+        source_view = source_view_path(values)
+        if is_within_or_equal(builddir, source_view) or is_within_or_equal(
+            source_view,
+            builddir,
+        ):
+            fail(f"external BUILDDIR overlaps the source view: {builddir}")
+        reject_mount_target(
+            source_view,
+            "source view",
+            build_boundary,
+        )
 
     if operation in {"configure", "install", "distclean", "artifact"}:
         validate_prefix(values)
@@ -860,6 +906,8 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
                 fail(f"external PREFIX must be a direct child of BUILD_ROOT: {prefix}")
             if prefix == builddir:
                 fail(f"external PREFIX aliases BUILDDIR: {prefix}")
+            if prefix == source_view_path(values):
+                fail(f"external PREFIX aliases the source view: {prefix}")
 
     if operation == "clean-all":
         if not source_is_control:
@@ -879,6 +927,143 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
         )
 
 
+def source_view_path(values: dict[str, Path | str]) -> Path:
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    return build_root / SOURCE_VIEW_DIRECTORY
+
+
+def require_source_view_target(values: dict[str, Path | str]) -> Path:
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    source_view = source_view_path(values)
+    if source_view.parent != build_root:
+        fail(f"source view is outside BUILD_ROOT: {source_view}")
+    if source_view.is_symlink():
+        fail(f"source view is a symlink: {source_view}")
+    if source_view.exists() and not source_view.is_dir():
+        fail(f"source view is not a directory: {source_view}")
+    reject_mount_target(
+        source_view,
+        "source view",
+        selected_build_boundary(values),
+    )
+    return source_view
+
+
+def require_hashed_wrap_sources(source_view: Path) -> None:
+    subprojects = source_view / "subprojects"
+    if not subprojects.is_dir():
+        return
+    for wrap_path in sorted(subprojects.rglob("*.wrap")):
+        if wrap_path.is_symlink() or not wrap_path.is_file():
+            fail(f"Meson wrap path is not a regular file: {wrap_path}")
+        parser = configparser.ConfigParser(
+            interpolation=None,
+            strict=True,
+        )
+        try:
+            wrap_text = wrap_path.read_text(encoding="ascii")
+            parser.read_string(wrap_text, source=str(wrap_path))
+        except (OSError, UnicodeError, configparser.Error) as error:
+            fail(f"invalid Meson wrap file {wrap_path}: {error}")
+        if not parser.has_section("wrap-file"):
+            continue
+        wrap_file = parser["wrap-file"]
+        if not wrap_file.get("source_url") or not wrap_file.get("source_filename"):
+            fail(f"wrap-file source archive is incomplete: {wrap_path}")
+        source_hash = wrap_file.get("source_hash", "")
+        if SHA256_VALUE.fullmatch(source_hash) is None:
+            fail(f"wrap-file source_hash must be SHA-256: {wrap_path}")
+        if wrap_file.get("patch_url") or wrap_file.get("patch_filename"):
+            patch_hash = wrap_file.get("patch_hash", "")
+            if SHA256_VALUE.fullmatch(patch_hash) is None:
+                fail(f"wrap-file patch_hash must be SHA-256: {wrap_path}")
+
+
+def digest_frame(
+    digest: hashlib._Hash,
+    label: bytes,
+    value: bytes,
+) -> None:
+    digest.update(label)
+    digest.update(len(value).to_bytes(8, byteorder="big"))
+    digest.update(value)
+
+
+def source_view_content_digest(source_view: Path) -> str:
+    if source_view.is_symlink() or not source_view.is_dir():
+        fail(f"source view is not a directory: {source_view}")
+    digest = hashlib.sha256()
+
+    def visit(directory: Path, relative_directory: Path) -> None:
+        try:
+            with os.scandir(directory) as directory_entries:
+                entries = sorted(
+                    directory_entries,
+                    key=lambda entry: os.fsencode(entry.name),
+                )
+        except OSError as error:
+            fail(f"cannot read source view {directory}: {error}")
+        for entry in entries:
+            relative_path = relative_directory / entry.name
+            path_bytes = os.fsencode(relative_path)
+            try:
+                entry_status = entry.stat(follow_symlinks=False)
+            except OSError as error:
+                fail(f"cannot stat source view entry {entry.path}: {error}")
+            mode_bytes = f"{stat.S_IMODE(entry_status.st_mode):04o}".encode("ascii")
+            digest_frame(digest, b"path", path_bytes)
+            digest_frame(digest, b"mode", mode_bytes)
+            if stat.S_ISDIR(entry_status.st_mode):
+                digest_frame(digest, b"type", b"directory")
+                visit(Path(entry.path), relative_path)
+            elif stat.S_ISREG(entry_status.st_mode):
+                digest_frame(digest, b"type", b"regular")
+                digest_frame(
+                    digest,
+                    b"size",
+                    str(entry_status.st_size).encode("ascii"),
+                )
+                try:
+                    with open(entry.path, "rb") as source_file:
+                        while data := source_file.read(1024 * 1024):
+                            digest.update(data)
+                except OSError as error:
+                    fail(f"cannot read source view entry {entry.path}: {error}")
+            elif stat.S_ISLNK(entry_status.st_mode):
+                digest_frame(digest, b"type", b"symlink")
+                try:
+                    link_target = os.fsencode(os.readlink(entry.path))
+                except OSError as error:
+                    fail(f"cannot read source view link {entry.path}: {error}")
+                digest_frame(digest, b"target", link_target)
+            else:
+                fail(f"source view contains an unsupported file type: {entry.path}")
+
+    visit(source_view, Path())
+    return f"sha256:{digest.hexdigest()}"
+
+
+def remove_directory_tree(path: Path, label: str) -> None:
+    if path.is_symlink():
+        fail(f"{label} is a symlink: {path}")
+    if not path.exists():
+        return
+    if not path.is_dir():
+        fail(f"{label} is not a directory: {path}")
+    try:
+        shutil.rmtree(path)
+    except OSError as error:
+        fail(f"cannot remove {label} {path}: {error}")
+    if path.exists() or path.is_symlink():
+        fail(f"{label} remains after removal: {path}")
+
+
+def remove_source_view(source_view: Path) -> None:
+    remove_directory_tree(source_view, "source view")
+
+
 def base_identity_payload(
     values: dict[str, Path | str],
 ) -> dict[str, str | int]:
@@ -890,6 +1075,7 @@ def base_identity_payload(
         "source_root": str(source_root),
         "source_commit": str(values["source_commit"]),
         "source_tree": str(values["source_tree"]),
+        "source_view": str(source_view_path(values)),
         "control_root": str(values["control_root"]),
         "control_commit": str(values["control_commit"]),
         "control_tree": str(values["control_tree"]),
@@ -904,9 +1090,11 @@ def identity_record(
     base_payload: dict[str, str | int],
     state: str,
     transaction_id: str,
+    source_view_digest: str,
 ) -> dict[str, str | int]:
     return {
         **base_payload,
+        "source_view_digest": source_view_digest,
         "state": state,
         "transaction_id": transaction_id,
     }
@@ -957,9 +1145,15 @@ def require_identity_record(
     expected_base: dict[str, str | int],
     path: Path,
     allowed_states: frozenset[str],
-) -> tuple[str, str]:
+    *,
+    expected_source_view_digest: str | None = None,
+) -> tuple[str, str, str]:
     require_identity_fields(recorded, expected_base, path)
-    expected_fields = set(expected_base) | {"state", "transaction_id"}
+    expected_fields = set(expected_base) | {
+        "source_view_digest",
+        "state",
+        "transaction_id",
+    }
     actual_fields = set(recorded)
     if actual_fields != expected_fields:
         missing = sorted(expected_fields - actual_fields)
@@ -984,7 +1178,41 @@ def require_identity_record(
         transaction_id
     ):
         fail(f"invalid source identity transaction_id ({path})")
-    return state, transaction_id
+
+    source_view_digest = recorded["source_view_digest"]
+    valid_digest = isinstance(source_view_digest, str) and (
+        SOURCE_VIEW_DIGEST.fullmatch(source_view_digest) is not None
+        or (
+            state == PROVISIONAL_STATE
+            and source_view_digest == PENDING_SOURCE_VIEW_DIGEST
+        )
+    )
+    if not valid_digest:
+        fail(f"invalid source identity source_view_digest ({path})")
+    assert isinstance(source_view_digest, str)
+    if (
+        expected_source_view_digest is not None
+        and source_view_digest != expected_source_view_digest
+    ):
+        fail(f"external source identity drift: source_view_digest ({path})")
+    return state, transaction_id, source_view_digest
+
+
+def verify_recorded_source_view(
+    values: dict[str, Path | str],
+    state: str,
+    recorded_digest: str,
+    *,
+    allow_provisional_content: bool,
+) -> None:
+    source_view = require_source_view_target(values)
+    if state == PROVISIONAL_STATE and allow_provisional_content:
+        return
+    if recorded_digest == PENDING_SOURCE_VIEW_DIGEST:
+        fail(f"source view content identity is pending: {source_view}")
+    current_digest = source_view_content_digest(source_view)
+    if current_digest != recorded_digest:
+        fail(f"source view content drift: {source_view}")
 
 
 def require_matching_transaction(
@@ -1011,12 +1239,23 @@ def prepare_identity(values: dict[str, Path | str]) -> None:
     root_path = root_identity_path(values)
     root_state: str | None = None
     root_transaction_id: str | None = None
+    root_source_view_digest = PENDING_SOURCE_VIEW_DIGEST
     if root_path.exists():
-        root_state, root_transaction_id = require_identity_record(
+        (
+            root_state,
+            root_transaction_id,
+            root_source_view_digest,
+        ) = require_identity_record(
             read_identity(root_path),
             expected_base,
             root_path,
             frozenset((PROVISIONAL_STATE, FINAL_STATE)),
+        )
+        verify_recorded_source_view(
+            values,
+            root_state,
+            root_source_view_digest,
+            allow_provisional_content=True,
         )
     elif build_root.exists() and any(build_root.iterdir()):
         fail(
@@ -1026,7 +1265,11 @@ def prepare_identity(values: dict[str, Path | str]) -> None:
 
     path = identity_path(values)
     if path.exists():
-        _build_state, build_transaction_id = require_identity_record(
+        (
+            _build_state,
+            build_transaction_id,
+            build_source_view_digest,
+        ) = require_identity_record(
             read_identity(path),
             expected_base,
             path,
@@ -1034,6 +1277,8 @@ def prepare_identity(values: dict[str, Path | str]) -> None:
         )
         if root_state == FINAL_STATE:
             assert root_transaction_id is not None
+            if build_source_view_digest != root_source_view_digest:
+                fail(f"external source identity digest drift ({path})")
             require_matching_transaction(
                 root_transaction_id,
                 build_transaction_id,
@@ -1053,6 +1298,93 @@ def prepare_identity(values: dict[str, Path | str]) -> None:
             expected_base,
             PROVISIONAL_STATE,
             transaction_id,
+            root_source_view_digest,
+        ),
+    )
+
+
+def prepare_source_view(values: dict[str, Path | str]) -> None:
+    source_root = values["source_root"]
+    source_commit = values["source_commit"]
+    build_root = values["build_root"]
+    assert isinstance(source_root, Path)
+    assert isinstance(source_commit, str)
+    assert isinstance(build_root, Path)
+    if source_root == values["control_root"]:
+        return
+
+    expected_base = base_identity_payload(values)
+    root_path = root_identity_path(values)
+    if not root_path.is_file():
+        fail(f"external build root lacks prepared source identity: {root_path}")
+    _root_state, transaction_id, _recorded_digest = require_identity_record(
+        read_identity(root_path),
+        expected_base,
+        root_path,
+        frozenset((PROVISIONAL_STATE,)),
+    )
+    source_view = require_source_view_target(values)
+
+    try:
+        staging_path = Path(
+            tempfile.mkdtemp(
+                prefix=f"{SOURCE_VIEW_DIRECTORY}.staging.",
+                dir=build_root,
+            )
+        )
+    except OSError as error:
+        fail(f"cannot create source view staging directory in {build_root}: {error}")
+    try:
+        archive_descriptor, archive_name = tempfile.mkstemp(
+            prefix=".gororoba-source-archive.",
+            suffix=".tar",
+            dir=build_root,
+        )
+    except OSError as error:
+        remove_directory_tree(staging_path, "source view staging directory")
+        fail(f"cannot create source archive in {build_root}: {error}")
+    os.close(archive_descriptor)
+    archive_path = Path(archive_name)
+    staging_is_live = True
+    try:
+        run_git_archive(source_root, source_commit, archive_path)
+        try:
+            with tarfile.open(archive_path, mode="r:") as archive:
+                archive.extractall(staging_path, filter="data")
+        except (OSError, tarfile.TarError) as error:
+            fail(f"cannot extract source archive {archive_path}: {error}")
+        if not (staging_path / "meson.build").is_file():
+            fail(f"source archive lacks meson.build: {source_commit}")
+        if not (
+            (staging_path / "meson.options").is_file()
+            or (staging_path / "meson_options.txt").is_file()
+        ):
+            fail(f"source archive lacks Mesa option definitions: {source_commit}")
+        require_hashed_wrap_sources(staging_path)
+        remove_source_view(source_view)
+        try:
+            os.replace(staging_path, source_view)
+        except OSError as error:
+            fail(f"cannot publish source view {source_view}: {error}")
+        staging_is_live = False
+    finally:
+        try:
+            archive_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            fail(f"cannot remove source archive {archive_path}: {error}")
+        if staging_is_live:
+            remove_directory_tree(staging_path, "source view staging directory")
+
+    source_view_digest = source_view_content_digest(source_view)
+    write_json_atomic(
+        root_path,
+        identity_record(
+            expected_base,
+            PROVISIONAL_STATE,
+            transaction_id,
+            source_view_digest,
         ),
     )
 
@@ -1097,16 +1429,20 @@ def write_identity(values: dict[str, Path | str]) -> None:
     root_path = root_identity_path(values)
     if not root_path.is_file():
         fail(f"external build root lacks prepared source identity: {root_path}")
-    _root_state, transaction_id = require_identity_record(
+    _root_state, transaction_id, _recorded_digest = require_identity_record(
         read_identity(root_path),
         expected_base,
         root_path,
         frozenset((PROVISIONAL_STATE,)),
     )
+    source_view = require_source_view_target(values)
+    require_hashed_wrap_sources(source_view)
+    source_view_digest = source_view_content_digest(source_view)
     final_record = identity_record(
         expected_base,
         FINAL_STATE,
         transaction_id,
+        source_view_digest,
     )
     write_json_atomic(identity_path(values), final_record)
     write_json_atomic(root_path, final_record)
@@ -1122,21 +1458,34 @@ def verify_identity(values: dict[str, Path | str]) -> None:
     root_path = root_identity_path(values)
     if not root_path.is_file():
         fail(f"external build root lacks source identity: {root_path}")
-    _root_state, root_transaction_id = require_identity_record(
+    (
+        root_state,
+        root_transaction_id,
+        root_source_view_digest,
+    ) = require_identity_record(
         read_identity(root_path),
         expected_base,
         root_path,
         frozenset((FINAL_STATE,)),
     )
+    verify_recorded_source_view(
+        values,
+        root_state,
+        root_source_view_digest,
+        allow_provisional_content=False,
+    )
 
     path = identity_path(values)
     if not path.is_file():
         fail(f"external build directory lacks source identity: {path}")
-    _build_state, build_transaction_id = require_identity_record(
-        read_identity(path),
-        expected_base,
-        path,
-        frozenset((FINAL_STATE,)),
+    _build_state, build_transaction_id, _build_source_view_digest = (
+        require_identity_record(
+            read_identity(path),
+            expected_base,
+            path,
+            frozenset((FINAL_STATE,)),
+            expected_source_view_digest=root_source_view_digest,
+        )
     )
     require_matching_transaction(
         root_transaction_id,
@@ -1165,24 +1514,38 @@ def verify_delete_identity(
         if allow_provisional
         else frozenset((FINAL_STATE,))
     )
-    root_state, root_transaction_id = require_identity_record(
+    (
+        root_state,
+        root_transaction_id,
+        root_source_view_digest,
+    ) = require_identity_record(
         read_identity(root_path),
         expected_base,
         root_path,
         allowed_root_states,
+    )
+    verify_recorded_source_view(
+        values,
+        root_state,
+        root_source_view_digest,
+        allow_provisional_content=allow_provisional,
     )
     if not builddir.exists():
         return
 
     path = identity_path(values)
     if path.exists():
-        _build_state, build_transaction_id = require_identity_record(
-            read_identity(path),
-            expected_base,
-            path,
-            frozenset((FINAL_STATE,)),
+        _build_state, build_transaction_id, build_source_view_digest = (
+            require_identity_record(
+                read_identity(path),
+                expected_base,
+                path,
+                frozenset((FINAL_STATE,)),
+            )
         )
         if root_state == FINAL_STATE:
+            if build_source_view_digest != root_source_view_digest:
+                fail(f"external source identity digest drift ({path})")
             require_matching_transaction(
                 root_transaction_id,
                 build_transaction_id,
@@ -1223,6 +1586,7 @@ def parse_arguments() -> argparse.Namespace:
         ),
     )
     subparsers.add_parser("prepare-identity")
+    subparsers.add_parser("prepare-source-view")
     subparsers.add_parser("write-identity")
     subparsers.add_parser("verify-identity")
     subparsers.add_parser("verify-artifact-identity")
@@ -1313,6 +1677,9 @@ def main() -> int:
     elif arguments.command == "prepare-identity":
         validate_layout("configure", values)
         prepare_identity(values)
+    elif arguments.command == "prepare-source-view":
+        validate_layout("configure", values)
+        prepare_source_view(values)
     elif arguments.command == "write-identity":
         validate_layout("configure", values)
         write_identity(values)
