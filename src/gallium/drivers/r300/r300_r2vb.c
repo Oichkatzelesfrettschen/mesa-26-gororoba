@@ -7680,7 +7680,13 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
             const char *e = getenv("R300_R2VB_VARYING");
             varying_mode = (e && strcmp(e, "1") == 0) ? 1 : 0;
         }
-        if (!r300_vs_admits_producer(r300, varying_mode == 1, space)) {
+        /* The AUTO_SINGLE cv admission runs the same cell mode the policy
+         * classified under, so the re-entry admission and the classify
+         * agree on the computed-varying axis. */
+        bool cv_cell = varying_mode == 1 ||
+                       (r300->r2vb_auto_single_selected &&
+                        r300->r2vb_auto_single_cv_slot >= 0);
+        if (!r300_vs_admits_producer(r300, cv_cell, space)) {
             if (getenv("R300_R2VB_EXEC_DEBUG"))
                 fprintf(stderr,
                         "r2vb_producer decline=cell_admission space=%s\n",
