@@ -623,11 +623,28 @@ draw_vs_nir_dump_stats(nir_function_impl *impl, const char *name)
  * is bit-for-bit what the interpreter would receive, so it cannot admit a
  * shape draw_create_vs_nir's UNREACHABLE paths would reject.  The clone is
  * discarded; state->ir.nir stays untouched for the unsupported-shape bridge. */
+/* DRAW_NIR_TELEMETRY=1 prints one admit/decline line per supported()
+ * verdict--the decline names its reason and the shader--and one line
+ * per nir_to_tgsi conversion in draw_create_vs_exec.  The prints change
+ * no decision. */
+bool
+draw_vs_nir_telemetry_enabled(void)
+{
+   static int gate = -1;
+   if (gate < 0) {
+      const char *e = getenv("DRAW_NIR_TELEMETRY");
+      gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
+   }
+   return gate == 1;
+}
+
 bool
 draw_vs_nir_supported(const struct pipe_shader_state *state)
 {
    assert(state->type == PIPE_SHADER_IR_NIR);
    nir_shader *nir = nir_shader_clone(NULL, state->ir.nir);
+   const char *why = NULL;
+   char whybuf[64];
 
    draw_vs_nir_lower(nir);
 
@@ -637,8 +654,10 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
    bool supported =
       draw_vs_nir_io_spans(nir, &input_span, &output_span);
 
-   if (!supported)
+   if (!supported) {
+      why = "io_spans";
       goto done;
+   }
 
    nir_foreach_block(block, impl) {
       nir_foreach_instr(instr, block) {
@@ -669,6 +688,10 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
                break;
             default:
                /* interp_intrinsic's default case, mirrored here. */
+               snprintf(whybuf, sizeof(whybuf), "intrinsic:%s",
+                        nir_intrinsic_infos[
+                           nir_instr_as_intrinsic(instr)->intrinsic].name);
+               why = whybuf;
                supported = false;
                break;
             }
@@ -680,6 +703,7 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
             case nir_jump_return:
                break;
             default:
+               why = "jump";
                supported = false;
                break;
             }
@@ -687,6 +711,9 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
          default:
             /* nir_instr_type_tex, nir_instr_type_call, and any other type
              * interp_block does not list fall to its UNREACHABLE default. */
+            snprintf(whybuf, sizeof(whybuf), "instr_type:%d",
+                     (int)instr->type);
+            why = whybuf;
             supported = false;
             break;
          }
@@ -696,6 +723,12 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
    }
 
 done:
+   if (draw_vs_nir_telemetry_enabled())
+      fprintf(stderr, "draw_vs_nir %s shader=%s%s%s\n",
+              supported ? "admit" : "decline",
+              state->ir.nir && ((nir_shader *)state->ir.nir)->info.name
+                 ? ((nir_shader *)state->ir.nir)->info.name : "-",
+              supported ? "" : " reason=", supported ? "" : why);
    ralloc_free(nir);
    return supported;
 }

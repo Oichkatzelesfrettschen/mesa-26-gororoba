@@ -168,6 +168,9 @@ draw_create_vs_nir(struct draw_context *draw,
 bool
 draw_vs_nir_supported(const struct pipe_shader_state *state);
 
+bool
+draw_vs_nir_telemetry_enabled(void);
+
 #if DRAW_LLVM_AVAILABLE
 struct draw_vertex_shader *
 draw_create_vs_llvm(struct draw_context *draw,
