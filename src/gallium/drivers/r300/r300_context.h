@@ -758,6 +758,10 @@ struct r300_context {
      * Execution keys delivery to the per-draw result, keeping manual and
      * automatic admissions independent. */
     bool r2vb_auto_single_selected;
+    /* The admitted computed-varying slot for this draw, or -1: the delivery
+     * path runs the varying producer pass and re-ingests its BO exactly when
+     * the policy admitted the slot. */
+    int r2vb_auto_single_cv_slot;
     enum {
         R300_R2VB_AUTO_SINGLE_OUTCOME_NONE = 0,
         R300_R2VB_AUTO_SINGLE_OUTCOME_DELIVERED,

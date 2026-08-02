@@ -741,6 +741,29 @@ nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
     nir_opt_dce(fs);
     nir_remove_dead_variables(fs, nir_var_shader_in | nir_var_shader_out |
                                       nir_var_mem_push_const, NULL);
+
+    /* Varying-pass input compaction: the surviving inputs re-rank among
+     * themselves onto VAR0.., so a varying computed from a non-first
+     * application input (its position input dead after the store drop)
+     * still presents the single-generic FS input contract the qualified
+     * single-model-stream producer feeds.  The caller feeds the matching
+     * attribute via r300_r2vb_varying_source_scan's rank.  The position
+     * pass keeps the uncompacted rank-over-all mapping the multi-input
+     * producer feeds. */
+    if (target != VARYING_SLOT_POS) {
+        nir_variable *sur[PIPE_MAX_ATTRIBS];
+        unsigned n_sur = 0;
+        nir_foreach_variable_with_modes(var, fs, nir_var_shader_in)
+            if (n_sur < PIPE_MAX_ATTRIBS)
+                sur[n_sur++] = var;
+        for (unsigned i = 0; i < n_sur; i++) {
+            unsigned crank = 0;
+            for (unsigned j = 0; j < n_sur; j++)
+                if (j != i && sur[j]->data.location < sur[i]->data.location)
+                    crank++;
+            sur[i]->data.location = VARYING_SLOT_VAR0 + crank;
+        }
+    }
     nir_shader_gather_info(fs, nir_shader_get_entrypoint(fs));
 
     if (getenv("R300_R2VB_VS_DUMP"))
@@ -3141,49 +3164,43 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
         }
     }
 
-    /* Position-input arity.  A computed varying is produced from the first input
-     * only (the varying producer feeds a single attribute), so a shader that
-     * produces a computed varying stays single-input position and keeps the
-     * original restriction: every non-first input must appear solely as a
-     * passthrough varying source, leaving velem[0] (the first input) as the only one
-     * feeding computation.  Without a computed varying, position may read up to
-     * R300_R2VB_MAX_PRODUCER_INPUTS inputs -- the multi-input position path -- which
-     * the producer feeds at VAR0+a in input order.  The two are kept orthogonal so a
-     * failure localizes to one mechanism. */
+    /* Computed-varying arity.  The varying producer runs the qualified
+     * single-model-stream BO-fetch transaction, so a shader producing a
+     * computed varying keeps single-input position, carries exactly one
+     * computed varying, and that varying reads exactly one application
+     * input (any rank: the restage compaction presents it at VAR0 and the
+     * producer feeds the matching velem).  Without a computed varying,
+     * position may read up to R300_R2VB_MAX_PRODUCER_INPUTS inputs -- the
+     * multi-input position path.  The two stay orthogonal so a failure
+     * localizes to one mechanism. */
     if (allow_computed_varying && r300_r2vb_first_computed_varying(nir) >= 0) {
-        nir_variable *first_in = NULL;
-        nir_foreach_variable_with_modes(v, nir, nir_var_shader_in) {
-            first_in = v;
-            break;
-        }
+        int vslot = r300_r2vb_first_computed_varying(nir);
+        unsigned n_computed = 0;
         nir_foreach_block(block, impl) {
             nir_foreach_instr(instr, block) {
                 if (instr->type != nir_instr_type_intrinsic)
                     continue;
                 nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-                if (intr->intrinsic != nir_intrinsic_load_deref)
+                if (intr->intrinsic != nir_intrinsic_store_deref)
                     continue;
-                nir_variable *in = nir_intrinsic_get_var(intr, 0);
-                if (!in || !(in->data.mode & nir_var_shader_in) || in == first_in)
+                nir_variable *o = nir_intrinsic_get_var(intr, 0);
+                if (!o || !(o->data.mode & nir_var_shader_out) ||
+                    o->data.location == VARYING_SLOT_POS)
                     continue;
-                /* A non-first input: its every use must be a passthrough varying store. */
-                nir_foreach_use(use, &intr->def) {
-                    if (nir_src_is_if(use))
-                        return false;
-                    nir_instr *cons = nir_src_use_instr(use);
-                    if (cons->type != nir_instr_type_intrinsic)
-                        return false;
-                    nir_intrinsic_instr *ci = nir_instr_as_intrinsic(cons);
-                    if (ci->intrinsic != nir_intrinsic_store_deref)
-                        return false;
-                    nir_variable *o = nir_intrinsic_get_var(ci, 0);
-                    if (!o || !(o->data.mode & nir_var_shader_out) ||
-                        o->data.location == VARYING_SLOT_POS)
-                        return false;
-                }
+                nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
+                nir_variable *src =
+                    (val && val->intrinsic == nir_intrinsic_load_deref)
+                        ? nir_intrinsic_get_var(val, 0)
+                        : NULL;
+                if (src && (src->data.mode & nir_var_shader_in))
+                    continue; /* passthrough */
+                n_computed++;
             }
         }
-        return true;
+        struct r300_r2vb_position_source vsrc;
+        return n_computed == 1 &&
+               r300_r2vb_count_position_inputs(nir) == 1 &&
+               r300_r2vb_varying_source_scan(nir, vslot, &vsrc);
     }
 
     /* Multi-input position (no computed varying): bound the inputs feeding position
@@ -3644,14 +3661,12 @@ bool r300_r2vb_position_input_mapping_ok(unsigned num_position_inputs,
 {
     if (num_position_inputs != 1 || velem_count < 1)
         return false;
-    /* The first canary restricts the source identity executably: the one
-     * position input must sit at application driver location zero and
-     * compact to rank zero, so velem[0] is its element by the
-     * element-i-feeds-input-i convention.  A shader whose single position
-     * source lives at a nonzero original location declines here rather
-     * than fetching the wrong element; widening this needs the plan to
-     * carry the source's location and rank as data. */
-    if (app_driver_location != 0 || location_rank != 0)
+    /* Source identity comes from the plan's measured record: the rank names
+     * velem[rank] by the element-i-feeds-input-i convention, so the rank
+     * must name an existing element and agree with the driver location the
+     * scan observed.  A disagreement means the feed would fetch a different
+     * element than the one the plan measured, and the mapping declines. */
+    if (app_driver_location != location_rank || location_rank >= velem_count)
         return false;
     if (vertex_buffer_index >= nr_vertex_buffers || !buffer_bound)
         return false;
@@ -3747,6 +3762,58 @@ bool r300_r2vb_position_source_scan(nir_shader *vs_nir,
      * driver location alone -- names the element.  The bound VS arrives in
      * deref/variable form (r300_optimize_nir does not run nir_lower_io),
      * matching r300_r2vb_input_velem_index. */
+    unsigned rank = 0;
+    nir_foreach_variable_with_modes(var, vs_nir, nir_var_shader_in)
+        if (var->data.location < surviving_location)
+            rank++;
+    if (driver_location > 255 || rank > 255)
+        return false;
+    out->app_driver_location = driver_location;
+    out->location_rank = rank;
+    out->valid = true;
+    return true;
+}
+
+bool r300_r2vb_varying_source_scan(nir_shader *vs_nir, int slot,
+                                   struct r300_r2vb_position_source *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (slot < 0)
+        return false;
+    nir_shader *tmp = nir_shader_clone(NULL, vs_nir);
+    if (!tmp)
+        return false;
+    /* Strip every store except the target varying's, DCE, and drop dead
+     * inputs: the survivors are exactly the inputs feeding the varying.
+     * The single-model-stream BO-fetch producer feeds one attribute, so
+     * exactly one survivor is admissible. */
+    nir_function_impl *impl = nir_shader_get_entrypoint(tmp);
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_deref)
+                continue;
+            nir_variable *o = nir_intrinsic_get_var(intr, 0);
+            if (o && (o->data.mode & nir_var_shader_out) &&
+                (int)o->data.location != slot)
+                nir_instr_remove(instr);
+        }
+    }
+    nir_opt_dce(tmp);
+    nir_remove_dead_variables(tmp, nir_var_shader_in, NULL);
+    unsigned n = 0;
+    int surviving_location = -1;
+    unsigned driver_location = 0;
+    nir_foreach_variable_with_modes(var, tmp, nir_var_shader_in) {
+        n++;
+        surviving_location = var->data.location;
+        driver_location = var->data.driver_location;
+    }
+    ralloc_free(tmp);
+    if (n != 1)
+        return false;
     unsigned rank = 0;
     nir_foreach_variable_with_modes(var, vs_nir, nir_var_shader_in)
         if (var->data.location < surviving_location)
@@ -4103,6 +4170,7 @@ bool r300_r2vb_producer_bo_draw_validate(
     struct pipe_resource *slot_resource,
     struct pipe_resource *output_resource, uint32_t start, uint32_t count,
     enum r300_r2vb_position_space space,
+    const struct r300_r2vb_position_source *model_source,
     struct r300_r2vb_producer_bo_draw *out)
 {
     /* Lifecycle: validate consumes an EMPTY transaction only; an owned
@@ -4125,8 +4193,10 @@ bool r300_r2vb_producer_bo_draw_validate(
         return false;
     }
     /* Source identity from the plan's measured record; literals never
-     * reach the mapping contract. */
-    const struct r300_r2vb_position_source *src = &plan->position_source;
+     * reach the mapping contract.  The varying pass supplies its own
+     * measured source; the position pass takes the plan's. */
+    const struct r300_r2vb_position_source *src =
+        model_source ? model_source : &plan->position_source;
     if (!src->valid) {
         r2vb_bo_draw_validate_decline("position_source");
         return false;
@@ -4553,7 +4623,7 @@ bool r300_r2vb_bo_draw_capture_selftest(struct r300_context *r300,
             r300_r2vb_producer_bo_draw_validate(
                 r300, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &layout,
                 slot_res, out_res, 0, widths[w],
-                R300_R2VB_POSITION_WINDOW, &txn) &&
+                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
             r300_r2vb_producer_bo_draw_stage_cs(r300, &txn, &plan, &fs, &rs,
                                                 &psc) &&
             r300_r2vb_producer_bo_draw_emit(r300, &txn);
@@ -5773,14 +5843,14 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
 
 enum r300_r2vb_delivery_stream_status
 r300_r2vb_auto_single_output_streams_preflight(
-    struct r300_context *r300, nir_shader *vs_nir,
+    struct r300_context *r300, nir_shader *vs_nir, int computed_slot,
     const struct pipe_draw_start_count_bias *draw)
 {
     if (!r300 || !r300->velems || !vs_nir || !draw)
         return R300_R2VB_DELIVERY_STREAM_LAYOUT;
     struct r300_r2vb_reingest_stream streams[PIPE_MAX_ATTRIBS];
     int count = r300_r2vb_reingest_stream_layout(
-        vs_nir, -1, streams, ARRAY_SIZE(streams));
+        vs_nir, computed_slot, streams, ARRAY_SIZE(streams));
     if (count < 1 || (unsigned)count != r300->vertex_info.num_attribs ||
         draw->count == 0)
         return R300_R2VB_DELIVERY_STREAM_LAYOUT;
@@ -5864,6 +5934,7 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
                          const struct pipe_draw_start_count_bias *draw)
 {
     r300->r2vb_auto_single_selected = false;
+    r300->r2vb_auto_single_cv_slot = -1;
     r300->r2vb_auto_single_outcome =
         R300_R2VB_AUTO_SINGLE_OUTCOME_NONE;
     static int gate = -1;
@@ -5947,11 +6018,35 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
         const struct r300_r2vb_producer_plan *wp = NULL;
         enum r300_r2vb_producer_input_status input_status =
             R300_R2VB_PRODUCER_INPUT_UNCHECKED;
+        int cv_slot = -1;
         if (candidate_nir) {
+            /* A computed varying selects the allow_computed_varying plan
+             * cells, which measure the varying pass and record its single
+             * source input; the cells decline shaders outside the
+             * single-computed-varying, single-source contract, and the
+             * policy then declines at plan_not_ready. */
+            cv_slot =
+                r300_r2vb_first_computed_varying(avs->state.ir.nir);
+            bool want_cv = cv_slot >= 0;
             cp = r300_r2vb_producer_plan_get(
-                r300, false, R300_R2VB_POSITION_CLIP);
+                r300, want_cv, R300_R2VB_POSITION_CLIP);
             wp = r300_r2vb_producer_plan_get(
-                r300, false, R300_R2VB_POSITION_WINDOW);
+                r300, want_cv, R300_R2VB_POSITION_WINDOW);
+            /* The varying producer reads the application UBO0 prefix
+             * beyond the position pass's 64-byte matrix window; the
+             * mirrored const0 must cover it, and the source identity must
+             * have survived the plan scan. */
+            if (want_cv && cp && wp &&
+                (!cp->varying_source.valid || !wp->varying_source.valid ||
+                 cp->varying_slot != cv_slot ||
+                 cp->varying_constant_source ==
+                     R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED ||
+                 cp->varying_constant_bytes > 128 ||
+                 (cp->varying_constant_bytes > 0 &&
+                  (!r300->swtcl_vs_const0_ptr ||
+                   r300->swtcl_vs_const0_size <
+                       cp->varying_constant_bytes))))
+                cv_slot = -2; /* admission record incomplete: decline */
             if (!cp ||
                 cp->constant_source !=
                     R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64 ||
@@ -5972,14 +6067,18 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
                     input_status = R300_R2VB_PRODUCER_INPUT_UPLOADER;
             }
             d.delivery_stream_status =
-                r300_r2vb_auto_single_output_streams_preflight(
-                    r300, avs->state.ir.nir, draw);
+                cv_slot == -2
+                    ? R300_R2VB_DELIVERY_STREAM_LAYOUT
+                    : r300_r2vb_auto_single_output_streams_preflight(
+                          r300, avs->state.ir.nir, cv_slot, draw);
             d.producer_input_status = input_status;
         }
         enum r300_r2vb_auto_single_reason reason =
             r300_r2vb_auto_single_policy(cp, wp, &d, auto_floor);
         r300->r2vb_auto_single_selected =
             reason == R300_R2VB_AUTO_SINGLE_OK;
+        r300->r2vb_auto_single_cv_slot =
+            r300->r2vb_auto_single_selected && cv_slot >= 0 ? cv_slot : -1;
         fprintf(stderr,
                 "r2vb_auto_single gate=1 hash=%s submitted_vertices=%" PRIu64
                 " threshold=%u topology=%u indexed=%u"
@@ -6015,6 +6114,9 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
                 wp ? wp->baseline.consts : 0,
                 reason == R300_R2VB_AUTO_SINGLE_OK ? "admit" : "decline",
                 r300_r2vb_auto_single_reason_str(reason));
+        if (cv_slot != -1)
+            fprintf(stderr, "r2vb_auto_single_cv slot=%d admitted=%d\n",
+                    cv_slot, r300->r2vb_auto_single_cv_slot >= 0);
         if (!gate)
             return r300->r2vb_auto_single_selected;
     }
@@ -6052,7 +6154,8 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
     unsigned npos = r300_r2vb_count_position_inputs(vs->state.ir.nir);
     if (npos > 1 && !route_restage)
         return false;
-    bool al = route_restage ? r300_vs_is_fragment_aluable(r300, varying)
+    bool cv_mode = varying == 1 || r300->r2vb_auto_single_cv_slot >= 0;
+    bool al = route_restage ? r300_vs_is_fragment_aluable(r300, cv_mode)
                             : r300_vs_is_mvp(r300);
     if (getenv("R300_R2VB_EXEC_DEBUG"))
         fprintf(stderr,
@@ -7177,15 +7280,24 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
                             enum r300_r2vb_model_binding model_binding,
                             enum r300_r2vb_position_space space,
                             enum r2vb_bo_draw_mode mode,
-                            enum r2vb_bo_draw_action action)
+                            enum r2vb_bo_draw_action action,
+                            const struct r300_r2vb_producer_plan *plan_override,
+                            const struct r300_r2vb_position_source *model_source)
 {
     const char *why = NULL;
     struct pipe_resource *slot_res = NULL;
     struct r300_r2vb_producer_bo_draw txn;
     r300_r2vb_producer_bo_draw_init(&txn);
 
+    /* The varying pass supplies its allow_computed_varying plan cell and its
+     * own measured model source; the position pass keeps the cv=0 cell and
+     * the plan's position source. */
     const struct r300_r2vb_producer_plan *plan =
-        r300_r2vb_producer_plan_get(r300, false, space);
+        plan_override ? plan_override
+                      : r300_r2vb_producer_plan_get(r300, false, space);
+    const struct r300_r2vb_position_source *msrc =
+        model_source ? model_source
+                     : (plan ? &plan->position_source : NULL);
     struct r300_fragment_shader *pfs = r300_fs(r300);
     const struct r300_rs_block *rs =
         (const struct r300_rs_block *)r300->rs_block_state.state;
@@ -7224,8 +7336,7 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
                   : count != 3))
         why = "count";
     else if (!plan || plan->status != R300_R2VB_PLAN_READY ||
-             plan->action != R300_R2VB_PLAN_SINGLE ||
-             !plan->position_source.valid)
+             plan->action != R300_R2VB_PLAN_SINGLE || !msrc || !msrc->valid)
         why = "plan";
     else if (!pfs || !pfs->shader)
         why = "producer_fs";
@@ -7255,12 +7366,12 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
     } else if (model_binding != R300_R2VB_MODEL_APPLICATION_STREAM) {
         why = "model_binding";
     } else if (!r300->velems ||
-               plan->position_source.location_rank >= r300->velems->count) {
+               msrc->location_rank >= r300->velems->count) {
         why = "velems";
     }
     if (!why) {
         if (model_binding == R300_R2VB_MODEL_APPLICATION_STREAM) {
-            ve = &r300->velems->velem[plan->position_source.location_rank];
+            ve = &r300->velems->velem[msrc->location_rank];
             if (ve->vertex_buffer_index >= r300->nr_vertex_buffers) {
                 why = "vb_index";
             } else {
@@ -7356,7 +7467,7 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         bool validated = r300_r2vb_producer_bo_draw_validate(
             r300, plan, &pfs->shader->inputs, rs, &psc, vb, ve,
             effective_velem_count, effective_vertex_buffer_count, layout,
-            slot_res, clip, effective_start, count, space, &txn);
+            slot_res, clip, effective_start, count, space, msrc, &txn);
         r300->fb_state.state = saved_fb;
         if (!validated)
             why = "validate";
@@ -7667,7 +7778,7 @@ static bool r2vb_run_transform_producer(struct r300_context *r300,
         enum r300_r2vb_bo3_result bo_result =
             r2vb_run_bo_fetch_producer3(
                 r300, clip, layout, count, start, model, model_binding, space,
-                bo_mode, bo_action);
+                bo_mode, bo_action, NULL, NULL);
         if (bo_result == R300_R2VB_BO3_SUBMITTED_CONSUME)
             *bo3_consumed = true;
         else if (bo_result == R300_R2VB_BO3_PRODUCED)
@@ -8786,7 +8897,120 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_VARYING");
         varying = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
+    /* AUTO_SINGLE computed-varying delivery: the policy admitted the slot,
+     * so the varying pass runs the same qualified single-model-stream
+     * BO-fetch transaction as the position pass -- restaged varying FS,
+     * model stream = the varying's measured source element, target = its
+     * own BO -- and the re-ingest then fetches position from the clip BO
+     * and the varying from that BO. */
+    int auto_cv =
+        r300->r2vb_auto_single_selected ? r300->r2vb_auto_single_cv_slot : -1;
+    if (auto_cv >= 0) {
+        bool vok = false;
+        struct pipe_resource *vbo =
+            r2vb_create_selftest_bo(r300, (uint32_t)layout.storage_bytes, 0);
+        const struct r300_r2vb_producer_plan *vplan =
+            r300_r2vb_producer_plan_get(r300, true, produced_space);
+        void *vfs = (vplan && vbo)
+                        ? r300_r2vb_restage_vs_as_fs(
+                              r300, r300_vs(r300)->state.ir.nir,
+                              (gl_varying_slot)auto_cv, produced_space)
+                        : NULL;
+        if (vfs && vplan->varying_source.valid &&
+            vplan->varying_slot == auto_cv &&
+            model_binding == R300_R2VB_MODEL_APPLICATION_STREAM) {
+            void *saved_fs = r300->fs.state;
+            void *saved_vs = r300->vs_state.state;
+            void *pvs = r300_r2vb_get_producer_vs(r300, 1);
+            r300->context.bind_fs_state(&r300->context, vfs);
+            if (pvs)
+                r300->context.bind_vs_state(&r300->context, pvs);
+            /* The varying producer reads the application UBO0 prefix the
+             * plan measured (e.g. a normal matrix past the position pass's
+             * 64-byte matrix window), mirrored through the swtcl const0
+             * pointer the policy validated. */
+            if (vplan->varying_constant_bytes > 0 && r300->swtcl_vs_const0_ptr)
+                r2vb_bind_producer_fs_consts(
+                    r300, r300->swtcl_vs_const0_ptr,
+                    MIN2(align(vplan->varying_constant_bytes, 16),
+                         r300->swtcl_vs_const0_size));
+            r300_update_derived_state(r300);
+            enum r300_r2vb_bo3_result vres = r2vb_run_bo_fetch_producer3(
+                r300, vbo, &layout, count, draw->start, NULL,
+                R300_R2VB_MODEL_APPLICATION_STREAM, produced_space,
+                R2VB_BO_DRAW_OFF, R2VB_BO_DRAW_ACTION_DELIVER, vplan,
+                &vplan->varying_source);
+            r300->context.bind_fs_state(&r300->context, saved_fs);
+            if (pvs)
+                r300->context.bind_vs_state(&r300->context, saved_vs);
+            r300_r2vb_restore_app_fs_consts(r300);
+            r300_update_derived_state(r300);
+            vok = vres == R300_R2VB_BO3_PRODUCED;
+        }
+        if (vfs)
+            r300->context.delete_fs_state(&r300->context, vfs);
+        /* Padding oracle before delivery, same as the position pass: the
+         * transaction sentinel-filled the BO, so a touched padding slot is
+         * a raster overrun and the draw falls back instead of delivering. */
+        if (vok && !r2vb_single_cs_enabled()) {
+            r300->context.flush(&r300->context, NULL, 0);
+            r2vb_wait_bo(r300, vbo);
+            struct pipe_transfer *vx = NULL;
+            struct pipe_box vbx = { .width = (int)vbo->width0, .height = 1,
+                                    .depth = 1 };
+            const uint32_t *words = r300->context.buffer_map(
+                &r300->context, vbo, 0, PIPE_MAP_READ, &vbx, &vx);
+            if (!words) {
+                vok = false;
+            } else {
+                uint32_t padding_slots =
+                    (uint32_t)(layout.storage_slots - layout.count);
+                uint32_t clean = 0;
+                for (uint64_t slot = layout.count;
+                     slot < layout.storage_slots; slot++) {
+                    const uint32_t *rec = &words[slot * 4];
+                    if (rec[0] == 0xcbcbcbcbu && rec[1] == 0xcbcbcbcbu &&
+                        rec[2] == 0xcbcbcbcbu && rec[3] == 0xcbcbcbcbu)
+                        clean++;
+                }
+                fprintf(stderr,
+                        "r2vb_varying_producer3 padding_untouched=%u/%u "
+                        "slot=%d\n",
+                        clean, padding_slots, auto_cv);
+                if (clean != padding_slots)
+                    vok = false;
+                r300->context.buffer_unmap(&r300->context, vx);
+            }
+        }
+        bool ok = vok && r300_r2vb_reingest_outputs(r300, einfo, ddraw, clip,
+                                                    vbo, auto_cv);
+        if (ok)
+            r300->r2vb_auto_single_outcome =
+                R300_R2VB_AUTO_SINGLE_OUTCOME_DELIVERED;
+        else
+            r2vb_accrue_app_state_restore(r300);
+        r2vb_clear_producer_bookkeeping(r300);
+        pipe_resource_reference(&vbo, NULL);
+        pipe_resource_reference(&clip, NULL);
+        free(model);
+        return ok;
+    }
+
     int vslot = varying ? r300_r2vb_first_computed_varying(r300_vs(r300)->state.ir.nir) : -1;
+    if (vslot >= 0) {
+        /* The immediate diagnostic lane feeds velem[0]; a varying sourced
+         * from another element belongs to the BO-fetch delivery above, so
+         * the lane declines it rather than verify against the wrong data. */
+        struct r300_r2vb_position_source esrc;
+        if (!r300_r2vb_varying_source_scan(r300_vs(r300)->state.ir.nir, vslot,
+                                           &esrc) ||
+            esrc.location_rank != 0) {
+            fprintf(stderr,
+                    "r2vb_varying decline=source_rank (immediate lane feeds "
+                    "velem[0])\n");
+            vslot = -1;
+        }
+    }
     if (vslot >= 0) {
         void *vfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
                                                (gl_varying_slot)vslot,

@@ -190,49 +190,42 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
         }
 
         /* The production arity rule (r300_vs_nir_is_fragment_aluable): with
-         * a computed varying present, the varying producer feeds a single
-         * attribute, so every non-first input appears solely as a
-         * passthrough varying source. */
-        if (r300_r2vb_first_computed_varying(nir) >= 0) {
-            nir_variable *first_in = NULL;
-            nir_foreach_variable_with_modes(v, nir, nir_var_shader_in) {
-                first_in = v;
-                break;
-            }
+         * a computed varying present, the varying producer runs the
+         * single-model-stream BO-fetch transaction, so the cell keeps
+         * single-input position, exactly one computed varying, and a
+         * varying fed by exactly one application input (any rank; the
+         * restage compaction presents it at VAR0). */
+        int cv = r300_r2vb_first_computed_varying(nir);
+        if (cv >= 0) {
+            unsigned n_computed = 0;
             nir_foreach_block(block, impl) {
                 nir_foreach_instr(instr, block) {
                     if (instr->type != nir_instr_type_intrinsic)
                         continue;
                     nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-                    if (intr->intrinsic != nir_intrinsic_load_deref)
+                    if (intr->intrinsic != nir_intrinsic_store_deref)
                         continue;
-                    nir_variable *in = nir_intrinsic_get_var(intr, 0);
-                    if (!in || !(in->data.mode & nir_var_shader_in) ||
-                        in == first_in)
+                    nir_variable *o = nir_intrinsic_get_var(intr, 0);
+                    if (!o || !(o->data.mode & nir_var_shader_out) ||
+                        o->data.location == VARYING_SLOT_POS)
                         continue;
-                    nir_foreach_use(use, &intr->def) {
-                        if (nir_src_is_if(use)) {
-                            plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
-                            return false;
-                        }
-                        nir_instr *cons = nir_src_use_instr(use);
-                        if (cons->type != nir_instr_type_intrinsic) {
-                            plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
-                            return false;
-                        }
-                        nir_intrinsic_instr *ci = nir_instr_as_intrinsic(cons);
-                        if (ci->intrinsic != nir_intrinsic_store_deref) {
-                            plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
-                            return false;
-                        }
-                        nir_variable *o = nir_intrinsic_get_var(ci, 0);
-                        if (!o || !(o->data.mode & nir_var_shader_out) ||
-                            o->data.location == VARYING_SLOT_POS) {
-                            plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
-                            return false;
-                        }
-                    }
+                    nir_intrinsic_instr *val =
+                        nir_src_as_intrinsic(intr->src[1]);
+                    nir_variable *src =
+                        (val && val->intrinsic == nir_intrinsic_load_deref)
+                            ? nir_intrinsic_get_var(val, 0)
+                            : NULL;
+                    if (src && (src->data.mode & nir_var_shader_in))
+                        continue;
+                    n_computed++;
                 }
+            }
+            struct r300_r2vb_position_source vsrc;
+            if (n_computed != 1 ||
+                r300_r2vb_count_position_inputs(nir) != 1 ||
+                !r300_r2vb_varying_source_scan(nir, cv, &vsrc)) {
+                plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
+                return false;
             }
         }
     }
@@ -491,6 +484,7 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
                         struct r300_r2vb_producer_plan *plan)
 {
     memset(plan, 0, sizeof(*plan));
+    plan->varying_slot = -1;
     plan->key.allow_computed_varying = allow_computed_varying;
     plan->key.space = space;
     plan->key.input_semantics = R300_FS_INPUT_R2VB_FLAT_VERTEX;
@@ -543,15 +537,31 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
         if (allow_computed_varying) {
             int dv = r300_r2vb_first_computed_varying(vs_nir);
             if (dv >= 0) {
+                nir_shader *vfs = NULL;
                 enum r300_fs_admission va = plan_measure_pass(
-                    r300, vs_nir, (gl_varying_slot)dv, space, NULL, NULL);
+                    r300, vs_nir, (gl_varying_slot)dv, space, NULL, &vfs);
                 if (va != R300_FS_ADMIT_FITS) {
+                    ralloc_free(vfs);
                     plan_observe(plan,
                                  va == R300_FS_ADMIT_OVER_ALU_BUDGET
                                      ? R300_R2VB_PLAN_OVER_ALU_NO_SPLIT
                                      : R300_R2VB_PLAN_BACKEND);
                     break;
                 }
+                /* The varying pass carries its own admission record: the
+                 * single application input feeding it and the UBO0 prefix
+                 * its restaged producer reads, both consumed by the
+                 * BO-fetch delivery route. */
+                if (!r300_r2vb_varying_source_scan(vs_nir, dv,
+                                                   &plan->varying_source)) {
+                    ralloc_free(vfs);
+                    plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
+                    break;
+                }
+                plan->varying_slot = dv;
+                plan->varying_constant_source = r300_r2vb_constant_source_scan(
+                    vfs, &plan->varying_constant_bytes);
+                ralloc_free(vfs);
             }
         }
         if (plan->has_typed_source) {

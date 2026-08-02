@@ -85,7 +85,7 @@ int r300_r2vb_reingest_stream_layout(struct nir_shader *vs, int computed_slot,
  * whose complete draw span has one backing authority. */
 enum r300_r2vb_delivery_stream_status
 r300_r2vb_auto_single_output_streams_preflight(
-    struct r300_context *r300, struct nir_shader *vs,
+    struct r300_context *r300, struct nir_shader *vs, int computed_slot,
     const struct pipe_draw_start_count_bias *draw);
 
 /* Verdict from the simple-draw-class classifier: whether a draw is a candidate
