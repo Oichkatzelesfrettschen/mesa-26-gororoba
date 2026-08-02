@@ -577,6 +577,7 @@ bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
 /* Gate and floor parsers, pure over the string so the calibration test
  * drives every arm without process environment state. */
 bool r300_r2vb_auto_single_gate_value(const char *value);
+bool r300_r2vb_standing_gate_value(const char *value);
 bool r300_r2vb_auto_single_floor_value(const char *value, uint32_t *floor);
 const char *
 r300_r2vb_auto_single_reason_str(enum r300_r2vb_auto_single_reason reason);

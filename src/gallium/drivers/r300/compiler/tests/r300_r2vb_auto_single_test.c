@@ -2668,6 +2668,21 @@ main(void)
    printf("auto-single producer input preflight:\n");
    check_producer_input_preflight();
    check_source_domain_matrix();
+
+   /* R300_R2VB_STANDING opens on the exact value 1; unset, empty, zero,
+    * and boolean aliases stay closed. */
+   CHECK(r300_r2vb_standing_gate_value("1"),
+         "standing gate: exact 1 arms");
+   CHECK(!r300_r2vb_standing_gate_value(NULL),
+         "standing gate: unset stays closed");
+   CHECK(!r300_r2vb_standing_gate_value(""),
+         "standing gate: empty stays closed");
+   CHECK(!r300_r2vb_standing_gate_value("0"),
+         "standing gate: zero stays closed");
+   CHECK(!r300_r2vb_standing_gate_value("true"),
+         "standing gate: boolean alias stays closed");
+   CHECK(!r300_r2vb_standing_gate_value("11"),
+         "standing gate: prefix match stays closed");
    printf("auto-single delivery element preflight:\n");
    check_delivery_element_preflight();
    printf("auto-single output stream preflight:\n");
