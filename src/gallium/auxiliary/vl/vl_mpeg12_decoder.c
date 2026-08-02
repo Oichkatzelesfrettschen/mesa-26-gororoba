@@ -27,7 +27,11 @@
 
 #include <math.h>
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 
+#include "util/box.h"
+#include "util/format/u_format.h"
 #include "util/u_memory.h"
 #include "util/u_sampler.h"
 #include "util/u_surface.h"
@@ -851,6 +855,78 @@ vl_mpeg12_decode_bitstream(struct pipe_video_codec *decoder,
    vl_mpg12_bs_decode(&buf->bs, target, desc, num_buffers, buffers, sizes);
 }
 
+/* VL_MPEG12_DUMP_DIR names a writable directory; when set, end_frame writes
+ * the fenced stage surfaces of the frame it just flushed as raw files:
+ * the zscan/dequant output (idct_source planes), the first-pass IDCT output
+ * (mc_source planes), and the decode-target planes.  texture_map with
+ * PIPE_MAP_READ synchronizes on the flush, so each file holds the GPU
+ * result at that stage boundary.  The filename carries frame, stage, plane,
+ * extent, and pixel format, so the raw payload is self-describing. */
+static void
+dump_stage_plane(struct pipe_context *pipe, struct pipe_resource *tex,
+                 const char *dir, unsigned frame, const char *stage,
+                 unsigned plane)
+{
+   struct pipe_transfer *transfer;
+   struct pipe_box box;
+   unsigned depth = tex->target == PIPE_TEXTURE_3D ? tex->depth0
+                                                   : tex->array_size;
+   unsigned bpp = util_format_get_blocksize(tex->format);
+   uint8_t *map;
+   char path[1024];
+   FILE *f;
+   unsigned y, z;
+
+   u_box_3d(0, 0, 0, tex->width0, tex->height0, depth, &box);
+   map = pipe->texture_map(pipe, tex, 0, PIPE_MAP_READ, &box, &transfer);
+   if (!map)
+      return;
+
+   snprintf(path, sizeof(path), "%s/f%03u_%s_p%u_%ux%ux%u_%s.raw",
+            dir, frame, stage, plane, tex->width0, tex->height0, depth,
+            util_format_short_name(tex->format));
+   f = fopen(path, "wb");
+   if (f) {
+      for (z = 0; z < depth; ++z)
+         for (y = 0; y < tex->height0; ++y)
+            fwrite(map + (size_t)z * transfer->layer_stride
+                       + (size_t)y * transfer->stride,
+                   bpp, tex->width0, f);
+      fclose(f);
+   }
+   pipe->texture_unmap(pipe, transfer);
+}
+
+static void
+dump_stage_surfaces(struct vl_mpeg12_decoder *dec,
+                    struct pipe_video_buffer *target, const char *dir)
+{
+   struct pipe_sampler_view **sv;
+   unsigned i;
+
+   if (dec->idct_source) {
+      sv = dec->idct_source->get_sampler_view_planes(dec->idct_source);
+      for (i = 0; sv && i < VL_NUM_COMPONENTS; ++i)
+         if (sv[i])
+            dump_stage_plane(dec->context, sv[i]->texture, dir,
+                             dec->dump_frame, "coeff", i);
+   }
+
+   sv = dec->mc_source->get_sampler_view_planes(dec->mc_source);
+   for (i = 0; sv && i < VL_NUM_COMPONENTS; ++i)
+      if (sv[i])
+         dump_stage_plane(dec->context, sv[i]->texture, dir,
+                          dec->dump_frame, "stage1", i);
+
+   sv = target->get_sampler_view_planes(target);
+   for (i = 0; sv && i < VL_NUM_COMPONENTS; ++i)
+      if (sv[i])
+         dump_stage_plane(dec->context, sv[i]->texture, dir,
+                          dec->dump_frame, "out", i);
+
+   ++dec->dump_frame;
+}
+
 static int
 vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
                     struct pipe_video_buffer *target,
@@ -959,6 +1035,12 @@ vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
    dec->context->flush(dec->context, NULL, 0);
    ++dec->current_buffer;
    dec->current_buffer %= 4;
+
+   {
+      const char *dump_dir = getenv("VL_MPEG12_DUMP_DIR");
+      if (dump_dir && dump_dir[0])
+         dump_stage_surfaces(dec, target, dump_dir);
+   }
 
    return 0;
 }
