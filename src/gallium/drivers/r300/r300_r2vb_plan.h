@@ -362,6 +362,9 @@ enum r300_r2vb_auto_single_reason {
     R300_R2VB_AUTO_SINGLE_OUTPUT_STREAMS,
     R300_R2VB_AUTO_SINGLE_DELIVERY_CELL,
     R300_R2VB_AUTO_SINGLE_BELOW_VERTEX_FLOOR,
+    R300_R2VB_AUTO_SINGLE_POINT_SIZE_WRITER,
+    R300_R2VB_AUTO_SINGLE_POINT_COORD_STATE,
+    R300_R2VB_AUTO_SINGLE_POINT_VERTEX_SIZE,
     R300_R2VB_AUTO_SINGLE_REASON_COUNT,
 };
 
@@ -601,6 +604,14 @@ struct r300_r2vb_auto_single_draw {
     bool bo_delivery_ordering_compatible;
     bool route_mode_compatible;
     bool query_active;
+    /* Fixed-size point contract for a POINTS draw: the re-ingest transports
+     * position (plus an admitted computed varying) only, so a per-vertex
+     * point size (VS PSIZ writer or rasterizer point_size_per_vertex) or a
+     * sprite-coord/point-quad request would be silently dropped by delivery.
+     * Each names its own decline. */
+    bool vs_writes_point_size;
+    bool sprite_coord_requested;
+    bool point_size_per_vertex;
     enum r300_r2vb_delivery_stream_status delivery_stream_status;
     enum r300_r2vb_producer_input_status producer_input_status;
 };
@@ -625,8 +636,9 @@ struct r300_r2vb_auto_single_mode_values {
 bool r300_r2vb_auto_single_mode_values_compatible(
     const struct r300_r2vb_auto_single_mode_values *values);
 
-/* The pure admission policy: route-support shape first (plain TRIANGLES,
- * whole triangles, non-indexed, single instance, below the 16-bit re-ingest
+/* The pure admission policy: route-support shape first (plain TRIANGLES with
+ * whole triangles, or POINTS under the fixed-size point contract,
+ * non-indexed, single instance, below the 16-bit re-ingest
  * ceiling, no face/clip-plane/FS-external dependency -- the clip-route
  * delivery contract), then both delivery cells (READY SINGLE untyped
  * one-input plans for cv=0 clip and cv=0 window), then the vertex floor.
