@@ -1105,8 +1105,8 @@ static uint32_t r2vb_verify_bo_readback(struct r300_context *r300, struct pipe_r
  * host FP32 can round to opposite sides, and the hardware-produced value is
  * the route's authoritative input.  Guard-band k = 0.5 matches the r300/Draw
  * XY guard-band configuration; the near plane follows the context's
- * clip_halfz.  Triangle records are emitted for TRIANGLES topology; every
- * other topology gets per-vertex records only.
+ * clip_halfz.  Triangle records are emitted for TRIANGLES topology; POINTS
+ * classifies per vertex; every other topology gets per-vertex records only.
  *
  * The return value is the whole-draw verdict for the conservative route
  * action: ACCEPT only when every classified triangle is trivially accepted,
@@ -1176,6 +1176,21 @@ r2vb_clip_classify_readback(struct r300_context *r300,
             case R300_R2VB_TRI_PARTIAL: n_partial++; break;
             case R300_R2VB_TRI_FALLBACK: n_fallback++; break;
             }
+        }
+    } else if (mode == MESA_PRIM_POINTS) {
+        /* A point delivers whole or not at all, so the only non-fallback
+         * whole-draw verdict is trivial accept: every vertex finite, safe w,
+         * and inside every active plane at the guard band.  Point culling
+         * stays with gallivm: a wide point centered outside the guard band
+         * can still touch the viewport, so trivial reject would need a
+         * size-aware bound. */
+        for (uint32_t v = 0; v < count; v++) {
+            const float *g = &got[v * 4];
+            if (!r300_r2vb_clip_nonfinite(g) && !r300_r2vb_w_unsafe(g[3]) &&
+                r300_r2vb_clipcode_planes(g, k, half_z, planes) == 0)
+                n_accept++;
+            else
+                n_fallback++;
         }
     }
     fprintf(stderr,
@@ -5033,6 +5048,9 @@ r300_r2vb_auto_single_reason_str(enum r300_r2vb_auto_single_reason reason)
         "output_streams",
         "delivery_cell",
         "below_vertex_floor",
+        "point_size_writer",
+        "point_coord_state",
+        "point_vertex_size",
     };
     return reason < R300_R2VB_AUTO_SINGLE_REASON_COUNT ? names[reason]
                                                        : "unknown";
@@ -5165,8 +5183,21 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
         return R300_R2VB_AUTO_SINGLE_INDEXED;
     if (d->instance_count != 1)
         return R300_R2VB_AUTO_SINGLE_INSTANCED;
-    if (d->mode != MESA_PRIM_TRIANGLES || d->count % 3 != 0)
+    if (d->mode == MESA_PRIM_POINTS) {
+        /* Fixed-size point contract: delivery transports position (plus an
+         * admitted computed varying) only, and the re-ingest rasterizes at
+         * GA_POINT_SIZE with PT_SIZE_PRESENT clear.  A draw whose semantics
+         * need more than that declines by name rather than render fixed-size
+         * points silently. */
+        if (d->vs_writes_point_size)
+            return R300_R2VB_AUTO_SINGLE_POINT_SIZE_WRITER;
+        if (d->sprite_coord_requested)
+            return R300_R2VB_AUTO_SINGLE_POINT_COORD_STATE;
+        if (d->point_size_per_vertex)
+            return R300_R2VB_AUTO_SINGLE_POINT_VERTEX_SIZE;
+    } else if (d->mode != MESA_PRIM_TRIANGLES || d->count % 3 != 0) {
         return R300_R2VB_AUTO_SINGLE_UNSUPPORTED_PRIMITIVE;
+    }
     if (d->count == 0 || d->count >= 65536)
         return R300_R2VB_AUTO_SINGLE_COUNT_CEILING;
     if (!d->slot_layout_available)
@@ -6049,6 +6080,18 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
             .route_mode_compatible =
                 r300_r2vb_auto_single_mode_values_compatible(&mode_values),
             .query_active = r300->query_current != NULL,
+            .vs_writes_point_size =
+                candidate_nir &&
+                (((const nir_shader *)avs->state.ir.nir)
+                     ->info.outputs_written &
+                 VARYING_BIT_PSIZ) != 0,
+            /* GLES2 sets point_quad_rasterization on every rasterizer
+             * state, so the coord-replace mask alone is the decline axis:
+             * on this tgsi_texcoord=false screen an FS reading
+             * gl_PointCoord always arrives with an enable bit set. */
+            .sprite_coord_requested =
+                rs && rs->rs.sprite_coord_enable != 0,
+            .point_size_per_vertex = rs && rs->rs.point_size_per_vertex,
             .route_reason =
                 r300_r2vb_auto_single_route_reason(route_verdict),
             .delivery_stream_status = R300_R2VB_DELIVERY_STREAM_UNCHECKED,
@@ -8457,7 +8500,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * consumes the draw with no delivery submit; anything else falls the
      * whole draw back to gallivm.  The action is scoped to the exactly
      * provable class: a non-indexed TRIANGLES list with a whole number of
-     * triangles, single-input position, no user clip planes, and an
+     * triangles or a POINTS list under the fixed-size point contract,
+     * single-input position, no user clip planes, and an
      * application FS that reads no external constants (the producer pass
      * overwrites FS constant file 0).  Indexed and instanced draws are
      * already rejected by r300_r2vb_classify_draw before this path. */
@@ -8484,8 +8528,23 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                 if (cl->Constants[i].Type == RC_CONSTANT_EXTERNAL)
                     fs_reads_externals = true;
         }
-        const bool supported = einfo->mode == MESA_PRIM_TRIANGLES &&
-                               count % 3 == 0 && num_in == 1 &&
+        /* POINTS ride the same delivery under the fixed-size point contract
+         * the AUTO_SINGLE policy admits; the manual clip-route arm re-checks
+         * it here so an env-armed run cannot deliver a point draw whose
+         * size/coord semantics the re-ingest does not transport. */
+        const struct r300_vertex_shader *pvs = r300_vs(r300);
+        const nir_shader *pvs_nir =
+            pvs && pvs->state.type == PIPE_SHADER_IR_NIR
+                ? (const nir_shader *)pvs->state.ir.nir : NULL;
+        const bool point_state_ok =
+            pvs_nir &&
+            (pvs_nir->info.outputs_written & VARYING_BIT_PSIZ) == 0 &&
+            rs && rs->rs.sprite_coord_enable == 0 &&
+            !rs->rs.point_size_per_vertex;
+        const bool prim_ok =
+            (einfo->mode == MESA_PRIM_TRIANGLES && count % 3 == 0) ||
+            (einfo->mode == MESA_PRIM_POINTS && point_state_ok);
+        const bool supported = prim_ok && num_in == 1 &&
                                rs && rs->rs.clip_plane_enable == 0 &&
                                !fs_reads_externals;
         enum r2vb_clip_route_verdict verdict = R2VB_CLIP_ROUTE_FALLBACK;
@@ -8504,7 +8563,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
          * index, which the rebuilt list invalidates, so its presence declines
          * the clip action unless a CPU-interpolated replacement stream stands
          * in for it. */
-        if (supported && verdict == R2VB_CLIP_ROUTE_FALLBACK &&
+        if (supported && einfo->mode == MESA_PRIM_TRIANGLES &&
+            verdict == R2VB_CLIP_ROUTE_FALLBACK &&
             r300_r2vb_clip_edge_enabled()) {
             /* Edge rebuild interpolates model inputs and re-runs the producer.
              * That is exact only for affine/MVP position transforms

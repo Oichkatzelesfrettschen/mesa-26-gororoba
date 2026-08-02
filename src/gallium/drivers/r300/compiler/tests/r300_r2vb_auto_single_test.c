@@ -267,12 +267,29 @@ check_policy_matrix(void)
                 R300_R2VB_AUTO_SINGLE_UNSUPPORTED_PRIMITIVE,
                 "four-vertex fan quad");
 
-   struct r300_r2vb_auto_single_draw points = census_draw();
+   /* POINTS admit under the fixed-size point contract; each requested
+    * point semantic the re-ingest does not transport names its own
+    * decline. */
+   struct r300_r2vb_auto_single_draw points = fits;
    points.mode = MESA_PRIM_POINTS;
-   points.count = 65535;
-   check_policy(&cp, &wp, &points, 16384,
-                R300_R2VB_AUTO_SINGLE_UNSUPPORTED_PRIMITIVE,
-                "large POINTS draw");
+   points.count = 4093; /* points carry no whole-triangle count rule */
+   check_policy(&cp, &wp, &points, 1024, R300_R2VB_AUTO_SINGLE_OK,
+                "fixed-size POINTS draw");
+   struct r300_r2vb_auto_single_draw psiz_writer = points;
+   psiz_writer.vs_writes_point_size = true;
+   check_policy(&cp, &wp, &psiz_writer, 1024,
+                R300_R2VB_AUTO_SINGLE_POINT_SIZE_WRITER,
+                "POINTS with a VS PSIZ writer");
+   struct r300_r2vb_auto_single_draw sprite = points;
+   sprite.sprite_coord_requested = true;
+   check_policy(&cp, &wp, &sprite, 1024,
+                R300_R2VB_AUTO_SINGLE_POINT_COORD_STATE,
+                "POINTS with sprite-coord state");
+   struct r300_r2vb_auto_single_draw pv_size = points;
+   pv_size.point_size_per_vertex = true;
+   check_policy(&cp, &wp, &pv_size, 1024,
+                R300_R2VB_AUTO_SINGLE_POINT_VERTEX_SIZE,
+                "POINTS with per-vertex point size");
 
    struct r300_r2vb_auto_single_draw ragged = census_draw();
    ragged.count = 21517;
