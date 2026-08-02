@@ -8979,6 +8979,18 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                         clean, padding_slots, auto_cv);
                 if (clean != padding_slots)
                     vok = false;
+                /* Value oracle: the valid-span BLAKE3 lets a first-contact
+                 * cell precommit the exact varying bytes (an FP24-exact
+                 * input through an exact op stays bit-exact). */
+                if (r2vb_exec_debug_enabled()) {
+                    blake3_hash hash;
+                    _mesa_blake3_compute(words, (size_t)count * 16, hash);
+                    char hex[BLAKE3_HEX_LEN];
+                    _mesa_blake3_format(hex, hash);
+                    fprintf(stderr,
+                            "r2vb_varying_producer3 span_blake3=%s bytes=%u\n",
+                            hex, count * 16);
+                }
                 r300->context.buffer_unmap(&r300->context, vx);
             }
         }
