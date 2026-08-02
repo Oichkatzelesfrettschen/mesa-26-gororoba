@@ -542,6 +542,106 @@ check_producer_input_preflight(void)
          "input preflight: final fetched byte must fit the resource");
 }
 
+/* The finite source-domain matrix of the automatic route: the producer
+ * model fetch admits exactly the two packed FP32 position formats, and
+ * every typed, normalized, scaled, packed, or narrow format declines at
+ * input_format before any transport.  The delivery side admits exactly
+ * FP32x4.  Together with the plan-oracle typed-op classification (sint,
+ * uint, and bool NIR ops mark has_typed_source and the policy declines
+ * at typed_source / plan_not_ready), this pins the automatically
+ * admitted source domain to the float set whose bit-exact transport,
+ * w-fill, signedness, and re-ingest identity the silicon corpus proves. */
+static void
+check_source_domain_matrix(void)
+{
+   enum { INPUT_COUNT = 5, MAX_STRIDE = 16 };
+   struct r300_r2vb_producer_plan plan =
+      single_cell(R300_R2VB_POSITION_CLIP);
+   uint8_t bytes[INPUT_COUNT * MAX_STRIDE];
+   struct r300_resource resource;
+   memset(&resource, 0, sizeof(resource));
+   resource.b.width0 = sizeof(bytes);
+   resource.malloced_buffer = bytes;
+   struct pipe_vertex_buffer vb = {
+      .buffer.resource = &resource.b,
+   };
+
+   static const struct {
+      enum pipe_format format;
+      unsigned stride;
+      enum r300_r2vb_producer_input_status expect;
+      const char *name;
+   } inputs[] = {
+      { PIPE_FORMAT_R32G32B32_FLOAT, 12,
+        R300_R2VB_PRODUCER_INPUT_OK, "FLOAT_3 packed" },
+      { PIPE_FORMAT_R32G32B32A32_FLOAT, 16,
+        R300_R2VB_PRODUCER_INPUT_OK, "FLOAT_4 packed" },
+      { PIPE_FORMAT_R32_FLOAT, 4,
+        R300_R2VB_PRODUCER_INPUT_FORMAT, "FLOAT_1" },
+      { PIPE_FORMAT_R32G32_FLOAT, 8,
+        R300_R2VB_PRODUCER_INPUT_FORMAT, "FLOAT_2" },
+      { PIPE_FORMAT_R16G16B16A16_FLOAT, 8,
+        R300_R2VB_PRODUCER_INPUT_FORMAT, "FP16x4" },
+      { PIPE_FORMAT_R32G32B32A32_SINT, 16,
+        R300_R2VB_PRODUCER_INPUT_FORMAT, "SINT32x4" },
+      { PIPE_FORMAT_R32G32B32A32_UINT, 16,
+        R300_R2VB_PRODUCER_INPUT_FORMAT, "UINT32x4" },
+      { PIPE_FORMAT_R16G16B16_SSCALED, 8,
+        R300_R2VB_PRODUCER_INPUT_FORMAT, "GL_SHORT scaled" },
+      { PIPE_FORMAT_R16G16B16A16_SNORM, 8,
+        R300_R2VB_PRODUCER_INPUT_FORMAT, "SNORM16x4" },
+      { PIPE_FORMAT_R8G8B8A8_UNORM, 4,
+        R300_R2VB_PRODUCER_INPUT_FORMAT, "UNORM8x4" },
+      { PIPE_FORMAT_R8G8B8A8_USCALED, 4,
+        R300_R2VB_PRODUCER_INPUT_FORMAT, "GL_UBYTE scaled" },
+      { PIPE_FORMAT_R10G10B10A2_UNORM, 4,
+        R300_R2VB_PRODUCER_INPUT_FORMAT, "packed 10_10_10_2" },
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(inputs); i++) {
+      struct pipe_vertex_element ve = {
+         .src_stride = inputs[i].stride,
+         .src_format = inputs[i].format,
+      };
+      char label[128];
+      snprintf(label, sizeof(label), "input matrix: %s -> %s",
+               inputs[i].name,
+               inputs[i].expect == R300_R2VB_PRODUCER_INPUT_OK
+                  ? "admitted" : "input_format");
+      CHECK(r300_r2vb_producer_input_preflight(
+               &plan, &ve, 1, &vb, 1, 0, INPUT_COUNT) == inputs[i].expect,
+            label);
+   }
+
+   static const struct {
+      enum pipe_format format;
+      enum r300_r2vb_delivery_stream_status expect;
+      const char *name;
+   } outputs[] = {
+      { PIPE_FORMAT_R32G32B32A32_FLOAT,
+        R300_R2VB_DELIVERY_STREAM_OK, "FLOAT_4" },
+      { PIPE_FORMAT_R32G32B32_FLOAT,
+        R300_R2VB_DELIVERY_STREAM_FORMAT, "FLOAT_3" },
+      { PIPE_FORMAT_R32G32B32A32_SINT,
+        R300_R2VB_DELIVERY_STREAM_FORMAT, "SINT32x4" },
+      { PIPE_FORMAT_R8G8B8A8_UNORM,
+        R300_R2VB_DELIVERY_STREAM_FORMAT, "UNORM8x4" },
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(outputs); i++) {
+      struct pipe_vertex_element element = {
+         .src_stride = 16,
+         .src_format = outputs[i].format,
+      };
+      char label[128];
+      snprintf(label, sizeof(label), "delivery matrix: %s -> %s",
+               outputs[i].name,
+               outputs[i].expect == R300_R2VB_DELIVERY_STREAM_OK
+                  ? "admitted" : "format");
+      CHECK(r300_r2vb_delivery_element_preflight(&element) ==
+               outputs[i].expect,
+            label);
+   }
+}
+
 static void
 check_delivery_element_preflight(void)
 {
@@ -2567,6 +2667,7 @@ main(void)
    check_policy_matrix();
    printf("auto-single producer input preflight:\n");
    check_producer_input_preflight();
+   check_source_domain_matrix();
    printf("auto-single delivery element preflight:\n");
    check_delivery_element_preflight();
    printf("auto-single output stream preflight:\n");
