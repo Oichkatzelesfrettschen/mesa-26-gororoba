@@ -730,6 +730,7 @@ enum constant_source_fixture {
    CONSTANT_SOURCE_FIXTURE_NONE = 0,
    CONSTANT_SOURCE_FIXTURE_UBO0,
    CONSTANT_SOURCE_FIXTURE_UBO0_END,
+   CONSTANT_SOURCE_FIXTURE_UBO0_SECOND_MATRIX,
    CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN,
    CONSTANT_SOURCE_FIXTURE_UBO1,
    CONSTANT_SOURCE_FIXTURE_DYNAMIC_BLOCK,
@@ -762,9 +763,13 @@ build_constant_source_fixture(enum constant_source_fixture fixture)
       nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 48),
                    .align_mul = 16, .range_base = 48, .range = 16);
       break;
-   case CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN:
+   case CONSTANT_SOURCE_FIXTURE_UBO0_SECOND_MATRIX:
       nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 64),
                    .align_mul = 16, .range_base = 64, .range = 16);
+      break;
+   case CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN:
+      nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 128),
+                   .align_mul = 16, .range_base = 128, .range = 16);
       break;
    case CONSTANT_SOURCE_FIXTURE_UBO1:
       nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
@@ -825,9 +830,12 @@ check_constant_source_contract(void)
       {CONSTANT_SOURCE_FIXTURE_UBO0_END,
        R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64, 64,
        "constant source: final UBO0 prefix vector ends at byte 64"},
+      {CONSTANT_SOURCE_FIXTURE_UBO0_SECOND_MATRIX,
+       R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64, 80,
+       "constant source: the second-matrix window at byte 64 scans"},
       {CONSTANT_SOURCE_FIXTURE_UBO0_OVERRUN,
        R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
-       "constant source: UBO0 byte 64 starts outside the mirror"},
+       "constant source: UBO0 byte 128 starts outside the window"},
       {CONSTANT_SOURCE_FIXTURE_UBO1,
        R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED, 0,
        "constant source: UBO1 remains outside the production contract"},

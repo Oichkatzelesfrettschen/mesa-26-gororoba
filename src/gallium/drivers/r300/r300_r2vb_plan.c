@@ -338,9 +338,12 @@ r300_r2vb_constant_source_scan(nir_shader *producer,
                         offset += nir_intrinsic_base(intr);
                     offset += component * component_bytes;
                 }
+                /* The scan window covers the varying producer's second
+                 * matrix at bytes 64..127; the position-pass policy keeps
+                 * its own 64-byte ceiling on the reported size. */
                 const uint64_t bytes =
                     (uint64_t)intr->num_components * component_bytes;
-                if (offset > 64 || bytes > 64 - offset)
+                if (offset > 128 || bytes > 128 - offset)
                     return R300_R2VB_CONSTANT_SOURCE_UNSUPPORTED;
                 maximum_end = MAX2(maximum_end, offset + bytes);
             }
