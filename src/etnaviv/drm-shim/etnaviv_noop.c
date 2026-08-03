@@ -162,8 +162,14 @@ etnaviv_ioctl_gem_new(int fd, unsigned long request, void *arg)
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_etnaviv_gem_new *create = arg;
    struct shim_bo *bo = calloc(1, sizeof(*bo));
+   if (!bo)
+      return -ENOMEM;
 
-   drm_shim_bo_init(bo, create->size);
+   int ret = drm_shim_bo_init(bo, create->size);
+   if (ret) {
+      free(bo);
+      return ret;
+   }
    create->handle = drm_shim_bo_get_handle(shim_fd, bo);
    drm_shim_bo_put(bo);
 
@@ -176,11 +182,13 @@ etnaviv_ioctl_gem_info(int fd, unsigned long request, void *arg)
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_etnaviv_gem_info *args = arg;
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, args->handle);
+   if (!bo)
+      return -ENOENT;
 
-   args->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
+   int ret = drm_shim_bo_get_mmap_offset(shim_fd, bo, &args->offset);
    drm_shim_bo_put(bo);
 
-   return 0;
+   return ret;
 }
 
 static int
@@ -190,7 +198,7 @@ etnaviv_ioctl_get_param(int fd, unsigned long request, void *arg)
 
    if (gp->param > ETNAVIV_PARAM_SOFTPIN_START_ADDR) {
       fprintf(stderr, "Unknown DRM_IOCTL_ETNAVIV_GET_PARAM %d\n", gp->param);
-      return -1;
+      return -EINVAL;
    }
 
    gp->value = shim_gpu->reg_map[gp->param];
