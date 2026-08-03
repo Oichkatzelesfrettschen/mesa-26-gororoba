@@ -38,6 +38,7 @@
 #include "util/u_helpers.h"
 #include "util/u_prim.h"
 #include "util/format/u_format.h"
+#include "tgsi/tgsi_from_mesa.h"
 #include "draw_context.h"
 #include "draw_pipe.h"
 #include "draw_prim_assembler.h"
@@ -603,6 +604,52 @@ draw_enable_derivative_injection(struct draw_context *draw, bool enable,
       draw_alloc_extra_vertex_attrib(draw, TGSI_SEMANTIC_GENERIC, ddx_generic);
       draw_alloc_extra_vertex_attrib(draw, TGSI_SEMANTIC_GENERIC, ddy_generic);
    }
+}
+
+
+/**
+ * Translate a neutral output location into the TGSI semantic pair the shader
+ * info carries for it.
+ *
+ * Every draw stage scans its NIR with nir_tgsi_scan_shader(nir, info, true),
+ * so the info this module searches is keyed with needs_texcoord_semantic set,
+ * whatever the driver screen reports for tgsi_texcoord. Under that flag
+ * VARYING_SLOT_VAR0 + n resolves to (GENERIC, n) and the TEX0..TEX7 range to
+ * (TEXCOORD, 0..7), which keeps the neutral location and the TGSI index in the
+ * same space and makes the translation exact in both directions.
+ */
+void
+draw_output_location_semantic(gl_varying_slot location,
+                              enum tgsi_semantic *semantic_name,
+                              unsigned *semantic_index)
+{
+   unsigned name, index;
+
+   tgsi_get_gl_varying_semantic(location, true, &name, &index);
+
+   *semantic_name = (enum tgsi_semantic)name;
+   *semantic_index = index;
+}
+
+
+/**
+ * Find a shader output by neutral location.
+ *
+ * This is draw_find_shader_output() addressed in gl_varying_slot terms, for
+ * consumers that hold a varying location rather than a TGSI semantic pair.
+ * The return value follows draw_find_shader_output(): the output index, or -1
+ * when the location has no output.
+ */
+int
+draw_find_shader_output_location(const struct draw_context *draw,
+                                 gl_varying_slot location)
+{
+   enum tgsi_semantic semantic_name;
+   unsigned semantic_index;
+
+   draw_output_location_semantic(location, &semantic_name, &semantic_index);
+
+   return draw_find_shader_output(draw, semantic_name, semantic_index);
 }
 
 

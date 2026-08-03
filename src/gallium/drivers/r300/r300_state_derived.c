@@ -40,10 +40,9 @@ enum r300_rs_col_write_type {
 
 static void r300_draw_emit_attrib(struct r300_context* r300,
                                   enum attrib_emit emit,
-                                  enum tgsi_semantic sname,
-                                  unsigned sindex)
+                                  gl_varying_slot location)
 {
-    int output = draw_find_shader_output(r300->draw, sname, sindex);
+    int output = draw_find_shader_output_location(r300->draw, location);
     draw_emit_vertex_attr(&r300->vertex_info, emit, output);
 }
 
@@ -57,41 +56,41 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
      * only during the pipeline run, so a -1 slot (draw prepare) means skip it;
      * the run-time r300_render_get_vertex_info rebuild emits it. */
     const bool pcoord_via_draw = r300->point_sprite_via_draw &&
-        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0;
+        draw_find_shader_output_location(r300->draw, VARYING_SLOT_PNTC) >= 0;
     /* SWTCL analytic derivatives: the draw module supplies the two per-triangle
      * gradient vectors as generic vertex outputs at deriv_ddx/ddy_generic. Valid
      * only once those outputs exist (draw run time), matching FACE/PCOORD. */
     const struct r300_fragment_shader_code *fscode = r300_fs(r300)->shader;
     const bool deriv_via_draw = r300->derivative_via_draw && fscode &&
         fscode->deriv_ddx_generic >= 0 &&
-        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_GENERIC,
-                                fscode->deriv_ddx_generic) >= 0;
+        draw_find_shader_output_location(
+            r300->draw, VARYING_SLOT_VAR0 + fscode->deriv_ddx_generic) >= 0;
     const int deriv_ddx_g = deriv_via_draw ? fscode->deriv_ddx_generic : -1;
     const int deriv_ddy_g = deriv_via_draw ? fscode->deriv_ddy_generic : -1;
 
     /* Position. */
     if (vs_outputs->pos != ATTR_UNUSED) {
-        r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_POSITION, 0);
+        r300_draw_emit_attrib(r300, EMIT_4F, VARYING_SLOT_POS);
     } else {
         assert(0);
     }
 
     /* Point size. */
     if (vs_outputs->psize != ATTR_UNUSED) {
-        r300_draw_emit_attrib(r300, EMIT_1F_PSIZE, TGSI_SEMANTIC_PSIZE, 0);
+        r300_draw_emit_attrib(r300, EMIT_1F_PSIZE, VARYING_SLOT_PSIZ);
     }
 
     /* Colors. */
     for (i = 0; i < ATTR_COLOR_COUNT; i++) {
         if (vs_outputs->color[i] != ATTR_UNUSED) {
-            r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_COLOR, i);
+            r300_draw_emit_attrib(r300, EMIT_4F, VARYING_SLOT_COL0 + i);
         }
     }
 
     /* Back-face colors. */
     for (i = 0; i < ATTR_COLOR_COUNT; i++) {
         if (vs_outputs->bcolor[i] != ATTR_UNUSED) {
-            r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_BCOLOR, i);
+            r300_draw_emit_attrib(r300, EMIT_4F, VARYING_SLOT_BFC0 + i);
         }
     }
 
@@ -106,9 +105,9 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
     bool face_via_draw =
         r300->frontface_via_draw &&
         fscode && fscode->inputs.face != ATTR_UNUSED &&
-        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0;
+        draw_find_shader_output_location(r300->draw, VARYING_SLOT_FACE) >= 0;
     if (face_via_draw)
-        r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_FACE, 0);
+        r300_draw_emit_attrib(r300, EMIT_4F, VARYING_SLOT_FACE);
 
     /* Texture coordinates. */
     /* Only 8 generic vertex attributes can be used. If there are more,
@@ -120,7 +119,7 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
     for (i = 0; i < ATTR_GENERIC_COUNT && gen_count < gen_limit; i++) {
         if (vs_outputs->generic[i] != ATTR_UNUSED &&
             (!(r300->sprite_coord_enable & (1U << i)) || !r300->is_point)) {
-            r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_GENERIC, i);
+            r300_draw_emit_attrib(r300, EMIT_4F, VARYING_SLOT_VAR0 + i);
             gen_count++;
         } else if (pcoord_via_draw && (r300->point_sprite_sce & (1U << i))) {
             /* gl_PointCoord sprite for a SW-expanded point. The live
@@ -129,21 +128,21 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
              * at the same generic position r300_update_rs_block routes it, so
              * vertex_info and the RS stream stay index-aligned for
              * r300_swtcl_vertex_psc. */
-            r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_PCOORD, 0);
+            r300_draw_emit_attrib(r300, EMIT_4F, VARYING_SLOT_PNTC);
             gen_count++;
         } else if (i == deriv_ddx_g || i == deriv_ddy_g) {
             /* Draw-injected per-triangle screen-space gradient. Emit it as a
              * generic vertex output at the same index r300_update_rs_block routes
              * it, after the real generics, so vertex_info and the RS stream stay
              * index-aligned for r300_swtcl_vertex_psc. */
-            r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_GENERIC, i);
+            r300_draw_emit_attrib(r300, EMIT_4F, VARYING_SLOT_VAR0 + i);
             gen_count++;
         }
     }
 
     /* Fog coordinates. */
     if (gen_count < gen_limit && vs_outputs->fog != ATTR_UNUSED) {
-        r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_FOG, 0);
+        r300_draw_emit_attrib(r300, EMIT_4F, VARYING_SLOT_FOGC);
         gen_count++;
     }
 
@@ -161,7 +160,7 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
 
         DBG(r300, DBG_SWTCL, "draw_emit_attrib: WPOS, slot: %u\n",
             wpos_slot);
-        r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_GENERIC, wpos_slot);
+        r300_draw_emit_attrib(r300, EMIT_4F, VARYING_SLOT_VAR0 + wpos_slot);
     }
 
     /* Dummy-texcoord payload vector: r300_update_rs_block declared a TEX0
@@ -172,7 +171,7 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
      * dangling draw-output lookup.  Emitted last so vertex_info stays
      * index-aligned with stream_loc_notcl, whose dummy entry is also last. */
     if (r300->swtcl_dummy_texcoord) {
-        r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_POSITION, 0);
+        r300_draw_emit_attrib(r300, EMIT_4F, VARYING_SLOT_POS);
     }
 }
 
@@ -382,20 +381,20 @@ static void r300_update_rs_block(struct r300_context *r300)
      * r300_render_get_vertex_info) so the draw-prepare pass stays consistent
      * with r300_draw_emit_all_attribs. */
     const bool pcoord_via_draw = r300->point_sprite_via_draw &&
-        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0;
+        draw_find_shader_output_location(r300->draw, VARYING_SLOT_PNTC) >= 0;
     /* gl_FrontFacing on an R300-class part: the draw module computed the face
      * and emitted it as a FACE vertex output (the RS WRITE_BACKFACE encoding is
      * an R500 addition). Gated on the FACE draw output existing, like PCOORD. */
     const bool frontface_via_draw = r300->frontface_via_draw &&
-        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0;
+        draw_find_shader_output_location(r300->draw, VARYING_SLOT_FACE) >= 0;
     /* SWTCL analytic derivatives: route the draw-injected gradient generics into
      * the rewritten FS inputs. Gated on the gradient draw output existing, like
      * FACE/PCOORD; the indices come from the bound FS's NIR derivative pass. */
     const struct r300_fragment_shader_code *deriv_fs = fs_state->shader;
     const bool derivative_via_draw = r300->derivative_via_draw && deriv_fs &&
         deriv_fs->deriv_ddx_generic >= 0 &&
-        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_GENERIC,
-                                deriv_fs->deriv_ddx_generic) >= 0;
+        draw_find_shader_output_location(r300->draw,
+                                         VARYING_SLOT_VAR0 + deriv_fs->deriv_ddx_generic) >= 0;
     const int deriv_ddx_g = derivative_via_draw ? deriv_fs->deriv_ddx_generic : -1;
     const int deriv_ddy_g = derivative_via_draw ? deriv_fs->deriv_ddy_generic : -1;
 

@@ -178,6 +178,15 @@ draw_find_shader_output(const struct draw_context *draw,
                         enum tgsi_semantic semantic_name,
                         unsigned semantic_index);
 
+void
+draw_output_location_semantic(gl_varying_slot location,
+                              enum tgsi_semantic *semantic_name,
+                              unsigned *semantic_index);
+
+int
+draw_find_shader_output_location(const struct draw_context *draw,
+                                 gl_varying_slot location);
+
 bool
 draw_will_inject_frontface(const struct draw_context *draw);
 
