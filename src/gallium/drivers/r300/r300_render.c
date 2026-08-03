@@ -2206,16 +2206,16 @@ r300_render_get_vertex_info(struct vbuf_render* render)
     if (getenv("R300_DERIV_DEBUG") && r300->derivative_via_draw && deriv_ddx_g >= 0)
         fprintf(stderr, "r300 deriv: get_vertex_info: ddx_generic=%d "
                 "draw_output=%d\n", deriv_ddx_g,
-                draw_find_shader_output(r300->draw, TGSI_SEMANTIC_GENERIC,
-                                        deriv_ddx_g));
+                draw_find_shader_output_location(
+                   r300->draw, VARYING_SLOT_VAR0 + deriv_ddx_g));
     if (!r300->in_swtcl_layout_rebuild &&
         ((r300->point_sprite_via_draw &&
-          draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0) ||
+          draw_find_shader_output_location(r300->draw, VARYING_SLOT_PNTC) >= 0) ||
          (r300->frontface_via_draw &&
-          draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0) ||
+          draw_find_shader_output_location(r300->draw, VARYING_SLOT_FACE) >= 0) ||
          (r300->derivative_via_draw && deriv_ddx_g >= 0 &&
-          draw_find_shader_output(r300->draw, TGSI_SEMANTIC_GENERIC,
-                                  deriv_ddx_g) >= 0))) {
+          draw_find_shader_output_location(
+             r300->draw, VARYING_SLOT_VAR0 + deriv_ddx_g) >= 0))) {
         r300->in_swtcl_layout_rebuild = true;
         r300_swtcl_rebuild_vertex_layout(r300);
         r300_mark_atom_dirty(r300, &r300->rs_block_state);

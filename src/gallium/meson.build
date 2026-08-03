@@ -366,6 +366,26 @@ if with_tests and with_gallium_softpipe
     ),
     suite: 'gallium',
   )
+
+endif
+
+# Exact-index oracle for the neutral Draw output-location overlay
+# (draw/draw_context.c): pins each gl_varying_slot translation against the TGSI
+# semantic pair the consumer held before moving to the location entry point, so
+# a consumer cannot observe a shifted output index.  The translation is pure,
+# so this runs wherever the tests are built rather than only alongside a
+# software rasterizer.
+if with_tests
+  test('draw-output-location-semantic',
+    executable(
+      'draw_output_location_semantic_test',
+      'auxiliary/draw/tests/draw_output_location_semantic_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux],
+      link_with : [libgallium],
+      dependencies : [idep_nir, idep_mesautil, dep_thread],
+    ),
+    suite: 'gallium',
+  )
 endif
 
 if with_gallium_asahi
