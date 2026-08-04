@@ -2,7 +2,7 @@
 
 ## Scope
 
-This is the first Program L implementation slice.  It defines the neutral
+This is the first Program L implementation sequence.  It defines the neutral
 R300 F32 vertex-format semantics and the pure source-transaction contract
 needed for a future legacy R2VB FLOAT_2 producer input.
 
@@ -41,22 +41,37 @@ Gallium-only adapter between `pipe_format` and the neutral format identity.
 - the exact allocation or suballocation, not a parent BO's spare capacity, is
   the validation authority.
 
+## Build integration
+
+The source-contract and Gallium-adapter translation units are normal Meson
+tests when both `with_tests` and Gallium r300 are enabled.  Their build owner is
+`src/amd/r300/common/meson.build`: the neutral vocabulary has one common test
+entry point, while the pipe-format adapter remains conditional on r300g.
+
+The tests are host-only.  They create no winsys, BO, command stream, or kernel
+submission and therefore establish no runtime or silicon result.
+
 ## Nonclaims
 
-This slice does not:
+This sequence does not yet:
 
 - wire FLOAT_2 into the live Gallium R2VB draw path;
+- route the existing FLOAT_3/FLOAT_4 producer through the neutral contract;
 - alter `R300_R2VB_STANDING` or its closed source-domain matrix;
 - admit FLOAT_2 as a final delivery format;
-- close the open R2VB output-format residual;
+- reopen or replace the closed legacy output-format verdict;
 - submit PM4 to the kernel;
 - establish kernel validation of synthesized PSC lanes;
 - earn a runtime, silicon, Vulkan, or performance verdict.
 
 ## Next Program L slice
 
-The legacy bridge must consume this contract in producer preflight, stream
-construction, PSC validation, PM4 no-submit capture, and the exact source gate.
+First, refactor the existing FLOAT_3 and FLOAT_4 producer preflight, stream
+construction, and PSC validation through the neutral format authority while
+requiring byte-identical PM4 and unchanged route outcomes.  Only after that
+control remains exact may the separate FLOAT_2 source gate reach a no-submit
+six-dword `FLOAT_4 + FLOAT_2` transaction.
+
 Final delivery remains FP32x4.  Automatic live promotion stays disabled until
 the kernel validates XY01/XYZ1 synthesized-lane tuples and Steinmarder retains
 the bounded FLOAT_2 silicon ladder.
