@@ -34,7 +34,8 @@ two dwords, so the complete producer fetch is exactly six dwords per vertex.
 It does not declare route eligibility.
 
 `r300_vertex_format_pipe.h` adapts between Gallium `pipe_format` and the neutral
-R300 format identity.
+R300 format identity, then forwards the mapped identity into the same source
+contract. It adds no route policy of its own.
 
 `r300_r2vb_source_contract.h` owns the bounded source policy and exact
 slot-plus-model tuple:
