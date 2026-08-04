@@ -8,7 +8,7 @@
 #include <stdbool.h>
 
 #include "amd/r300/common/r300_vertex_format.h"
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 
 /* Gallium adapter only.  The neutral format record carries no pipe_format
  * dependency and no route-admission decision. */

@@ -41,6 +41,13 @@ if with_amd_terascale_vk
   subdir('terascale/vulkan')
 endif
 
+# API-neutral R300 format/source-contract tests.  They are registered here
+# rather than in the Gallium driver subdirectory so the shared vocabulary has
+# one build owner while the Gallium adapter remains conditional on r300g.
+if with_tests and with_gallium_r300
+  subdir('r300/common')
+endif
+
 if with_ati_r300_vk
   # When the Gallium backend is enabled, defer r3v to src/meson.build
   # (after subdir('gallium')) so driver_r300 is in scope.  The
