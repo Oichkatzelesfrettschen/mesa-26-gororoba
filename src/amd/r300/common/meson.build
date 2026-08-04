@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
 
-# Program L format/source-contract gates.  These are host-only tests over the
-# API-neutral R300 format vocabulary and its Gallium adapter; they perform no
-# winsys setup and submit no command stream.
-r300_program_l_test_c_args = ['-Werror=unused-function']
-r300_program_l_test_includes = [
+# R300 format and R2VB source-contract tests. These are host-only tests over
+# the API-neutral R300 format vocabulary and its Gallium adapter; they perform
+# no winsys setup and submit no command stream.
+r300_format_contract_test_c_args = ['-Werror=unused-function']
+r300_format_contract_test_includes = [
   inc_src,
   inc_include,
   inc_gallium,
@@ -15,8 +15,8 @@ r300_program_l_test_includes = [
 r300_r2vb_source_contract_test = executable(
   'r300_r2vb_source_contract_test',
   files('../../../gallium/drivers/r300/compiler/tests/r300_r2vb_source_contract_test.c'),
-  c_args : r300_program_l_test_c_args,
-  include_directories : r300_program_l_test_includes,
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
   dependencies : [idep_mesautil],
   gnu_symbol_visibility : 'hidden',
 )
@@ -29,8 +29,8 @@ test(
 r300_vertex_format_pipe_test = executable(
   'r300_vertex_format_pipe_test',
   files('../../../gallium/drivers/r300/compiler/tests/r300_vertex_format_pipe_test.c'),
-  c_args : r300_program_l_test_c_args,
-  include_directories : r300_program_l_test_includes,
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
   dependencies : [idep_mesautil],
   gnu_symbol_visibility : 'hidden',
 )
