@@ -1,5 +1,19 @@
 # R3V product denominators: Gallium, native, and complete Vulkan
 
+## Document status
+
+The current-implementation statements describe mesa-26-gororoba at
+71489583726e15eb657a2e064c8ea045a062a169.  Program N and Program P sections
+define proposed product contracts and acceptance boundaries; they do not
+describe implemented native ownership.  A later source change revalidates the
+affected current-source row rather than silently inheriting this document's
+prior reading.
+
+The Program L FLOAT_2 source transaction has one home:
+`program-l-r2vb-float2-source-contract.md`.  This document owns the L/N/P
+ownership boundaries; that document owns the current Program L implementation
+sequence.
+
 ## Purpose
 
 R3V work has three independent product denominators.  They share compiler,
@@ -50,6 +64,21 @@ A rejected or unrecognized kernel can still produce a successful pipeline and
 a successful no-op dispatch.  That behavior is an explicit semantic defect and
 never counts toward Program P.
 
+### Current-source authority
+
+Each current-implementation claim above binds to a named Mesa source location
+and a structural query that revalidates it.
+
+| Claim | Mesa authority | Structural query |
+|---|---|---|
+| Gallium-backed R3V build and link boundary | `src/meson.build`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-gallium-backend\|driver_r300\|libgalliumvl' src/meson.build src/amd/r300/vulkan/meson.build` |
+| `struct r3v_device` Gallium ownership | `src/amd/r300/vulkan/r3v_device.h`; `r3v_device.c` | `rg -n 'struct r3v_device\|radeon_winsys\|pipe_screen\|pipe_context' src/amd/r300/vulkan/r3v_device.h` |
+| Gallium queue replay and fence completion | `src/amd/r300/vulkan/r3v_queue.c` | `rg -n 'pipe->flush\|fence_finish' src/amd/r300/vulkan/r3v_queue.c` |
+| Direct-backend selector still falls through | `src/amd/r300/vulkan/r3v_queue.c`; `r3v_device.c` | `rg -n 'R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED' src/amd/r300/vulkan/` |
+| Extracted shader descriptors retain Gallium ownership | `src/gallium/drivers/r300/r300_public.h` (extraction API); `src/amd/r300/vulkan/r3v_pipeline.c` | `rg -n 'extract' src/gallium/drivers/r300/r300_public.h src/amd/r300/vulkan/r3v_pipeline.c` |
+| Unsupported compute can succeed without execution | `src/amd/r300/vulkan/r3v_pipeline.c`; `r3v_cmd_buffer.c` | `rg -n 'R300_COMPUTE_REJECT_UNKNOWN_SHAPE\|no-op' src/amd/r300/vulkan/r3v_pipeline.c` |
+| Current R2VB source and delivery domains | `src/gallium/drivers/r300/r300_r2vb.c`; `src/amd/r300/common/r300_r2vb_source_contract.h` | `rg -n 'producer_input_preflight\|delivery_element_preflight' src/gallium/drivers/r300/r300_r2vb.c` |
+
 ## Program L: Gallium RS482 product
 
 ### Product definition
@@ -78,6 +107,24 @@ Program L includes the following surfaces.
 | WSI | common WSI over Gallium-exported resources or the explicit software fallback |
 | X11 display | Xserver, glamor, Radeon DDX, KMS, scanout, and package identity |
 | Evidence | drm-shim host models, no-submit captures, Steinmarder result bundles, kernel parser replay, and target runs |
+
+Every surface carries one ownership class:
+
+- Mesa-owned mechanism: the live Gallium, R300 compiler, Draw, R2VB, VL,
+  drm-shim, and R3V code -- every surface above except the two below.
+- External runtime dependency: the X11 display surface.  Xserver, glamor
+  packaging, the Radeon DDX, KMS policy, and package identity qualify Program L
+  results; their source lives in the Xserver and package repositories named
+  under Cross-repository authority.
+- External evidence authority: the Steinmarder result bundles and target runs
+  inside the Evidence surface.  Mesa carries the citation; the bundles live in
+  `steinmarder-r300`.
+- Kernel transport authority: the Radeon DRM parser replay inside the Evidence
+  surface.  The kernel owns transport, validation, completion, and containment,
+  as the Purpose section states.
+
+Program L's product-wide denominator spans all four classes; its Mesa source
+ownership spans only the first.
 
 ### NIR-only direction
 
@@ -485,6 +532,7 @@ F32_4 -> 4 physical dwords -> XYZW logical vec4
 The live automatic R2VB producer still admits F32_3 and F32_4.  Final delivery
 still admits FP32x4 only.  F32_2 remains outside the live route.
 
+The transaction detail lives in `program-l-r2vb-float2-source-contract.md`.
 Program L advances in this order:
 
 1. Register the neutral source and Gallium adapter tests in Meson.

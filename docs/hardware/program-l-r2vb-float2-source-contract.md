@@ -4,7 +4,9 @@
 
 This is the first Program L implementation sequence.  It defines the neutral
 R300 F32 vertex-format semantics and the pure source-transaction contract
-needed for a future legacy R2VB FLOAT_2 producer input.
+needed for a future legacy R2VB FLOAT_2 producer input.  The L/N/P product
+ownership boundaries live in `r3v-product-denominators.md`; this document owns
+the FLOAT_2 source transaction.
 
 The intended transaction is:
 
