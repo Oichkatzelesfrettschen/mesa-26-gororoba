@@ -16,6 +16,29 @@ struct r300_r2vb_source_extents {
    uint64_t hardware_end;
 };
 
+enum r300_r2vb_source_stream_index {
+   R300_R2VB_SOURCE_STREAM_SLOT = 0,
+   R300_R2VB_SOURCE_STREAM_MODEL = 1,
+   R300_R2VB_SOURCE_STREAM_COUNT = 2,
+};
+
+/* Neutral encodings for the load-bearing fields in one 16-bit
+ * VAP_PROG_STREAM_CNTL element.  Keep these independent of r300_reg.h so the
+ * source contract can be consumed by Gallium, a future native driver, and
+ * host-side parser tests without importing a frontend-specific header. */
+#define R300_R2VB_PSC_DATA_TYPE_MASK 0x0fu
+#define R300_R2VB_PSC_DST_VEC_SHIFT 8u
+#define R300_R2VB_PSC_DST_VEC_MASK 0x1fu
+#define R300_R2VB_PSC_LAST_VEC (1u << 13)
+
+struct r300_r2vb_source_stream_contract {
+   enum r300_vertex_data_type data_type;
+   uint8_t fetch_dwords;
+   uint8_t dst_vec;
+   bool last;
+   uint16_t psc_swizzle;
+};
+
 struct r300_r2vb_source_contract {
    enum r300_vertex_format_id format;
    uint32_t stride_bytes;
@@ -29,6 +52,16 @@ struct r300_r2vb_source_contract {
    uint16_t model_psc_swizzle;
 
    struct r300_r2vb_source_extents extents;
+};
+
+/* Complete two-stream hardware tuple derived from the source contract.  The
+ * first CNTL/EXT pair is load-bearing; every later pair must remain zero. */
+struct r300_r2vb_source_tuple {
+   struct r300_r2vb_source_stream_contract
+      stream[R300_R2VB_SOURCE_STREAM_COUNT];
+   uint32_t prog_stream_cntl[8];
+   uint32_t prog_stream_cntl_ext[8];
+   uint8_t vap_vtx_size_dwords;
 };
 
 static inline bool
@@ -167,6 +200,99 @@ r300_r2vb_source_contract_init(enum r300_vertex_format_id format,
       .model_psc_swizzle = r300_vertex_format_psc_swizzle(model),
       .extents = extents,
    };
+   return true;
+}
+
+static inline uint16_t
+r300_r2vb_source_stream_cntl(
+   const struct r300_r2vb_source_stream_contract *stream)
+{
+   if (!stream || stream->dst_vec > R300_R2VB_PSC_DST_VEC_MASK)
+      return 0;
+
+   return ((uint16_t)stream->data_type & R300_R2VB_PSC_DATA_TYPE_MASK) |
+          ((uint16_t)stream->dst_vec << R300_R2VB_PSC_DST_VEC_SHIFT) |
+          (stream->last ? R300_R2VB_PSC_LAST_VEC : 0u);
+}
+
+/* Build the exact slot-plus-model PSC/VAP tuple.  Destination vectors are
+ * caller-owned interface state, but must be distinct five-bit values. */
+static inline bool
+r300_r2vb_source_tuple_init(const struct r300_r2vb_source_contract *contract,
+                             uint8_t slot_dst_vec,
+                             uint8_t model_dst_vec,
+                             struct r300_r2vb_source_tuple *out)
+{
+   const struct r300_vertex_format_semantics *slot =
+      r300_vertex_format_semantics(R300_VERTEX_FORMAT_F32_4);
+   const struct r300_vertex_format_semantics *model =
+      contract ? r300_vertex_format_semantics(contract->format) : NULL;
+
+   if (!contract || !out || !slot || !model ||
+       slot_dst_vec > R300_R2VB_PSC_DST_VEC_MASK ||
+       model_dst_vec > R300_R2VB_PSC_DST_VEC_MASK ||
+       slot_dst_vec == model_dst_vec ||
+       contract->model_fetch_dwords != model->hardware_fetch_dwords ||
+       contract->logical_components != model->logical_components ||
+       contract->model_data_type != model->data_type ||
+       contract->model_psc_swizzle !=
+          r300_vertex_format_psc_swizzle(model) ||
+       contract->vap_vtx_size_dwords !=
+          slot->hardware_fetch_dwords + model->hardware_fetch_dwords)
+      return false;
+
+   *out = (struct r300_r2vb_source_tuple) {0};
+   out->stream[R300_R2VB_SOURCE_STREAM_SLOT] =
+      (struct r300_r2vb_source_stream_contract) {
+         .data_type = slot->data_type,
+         .fetch_dwords = slot->hardware_fetch_dwords,
+         .dst_vec = slot_dst_vec,
+         .last = false,
+         .psc_swizzle = r300_vertex_format_psc_swizzle(slot),
+      };
+   out->stream[R300_R2VB_SOURCE_STREAM_MODEL] =
+      (struct r300_r2vb_source_stream_contract) {
+         .data_type = model->data_type,
+         .fetch_dwords = model->hardware_fetch_dwords,
+         .dst_vec = model_dst_vec,
+         .last = true,
+         .psc_swizzle = r300_vertex_format_psc_swizzle(model),
+      };
+
+   const uint16_t slot_cntl = r300_r2vb_source_stream_cntl(
+      &out->stream[R300_R2VB_SOURCE_STREAM_SLOT]);
+   const uint16_t model_cntl = r300_r2vb_source_stream_cntl(
+      &out->stream[R300_R2VB_SOURCE_STREAM_MODEL]);
+   out->prog_stream_cntl[0] =
+      (uint32_t)slot_cntl | ((uint32_t)model_cntl << 16);
+   out->prog_stream_cntl_ext[0] =
+      (uint32_t)out->stream[R300_R2VB_SOURCE_STREAM_SLOT].psc_swizzle |
+      ((uint32_t)out->stream[R300_R2VB_SOURCE_STREAM_MODEL].psc_swizzle
+       << 16);
+   out->vap_vtx_size_dwords = contract->vap_vtx_size_dwords;
+   return true;
+}
+
+/* Validate a complete emitted tuple, including the zero tail.  This is a
+ * structural source-transaction check: it does not prove BO residency,
+ * LOAD_VBPNTR relocation identity, topology, clipping, or final delivery. */
+static inline bool
+r300_r2vb_source_tuple_matches(
+   const struct r300_r2vb_source_tuple *expected,
+   const uint32_t prog_stream_cntl[8],
+   const uint32_t prog_stream_cntl_ext[8],
+   uint32_t vap_vtx_size_dwords)
+{
+   if (!expected || !prog_stream_cntl || !prog_stream_cntl_ext ||
+       vap_vtx_size_dwords != expected->vap_vtx_size_dwords ||
+       prog_stream_cntl[0] != expected->prog_stream_cntl[0] ||
+       prog_stream_cntl_ext[0] != expected->prog_stream_cntl_ext[0])
+      return false;
+
+   for (unsigned i = 1; i < 8; i++) {
+      if (prog_stream_cntl[i] != 0 || prog_stream_cntl_ext[i] != 0)
+         return false;
+   }
    return true;
 }
 
