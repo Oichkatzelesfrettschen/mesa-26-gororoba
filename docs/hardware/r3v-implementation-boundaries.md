@@ -1,0 +1,414 @@
+# R3V implementation boundaries and Vulkan completion criteria
+
+## Status
+
+The current-source statements in this document describe
+`mesa-26-gororoba` at
+`a576afb9414c47b39f54c5a3f4e4ece6cb61fb21`.
+
+The current Gallium-backed implementation is live code. The native Radeon DRM
+implementation and the complete Vulkan semantic/conformance sections are
+proposed implementation contracts. They do not describe native ownership or
+Vulkan conformance that already exists.
+
+The bounded R300 R2VB `FLOAT_2` source transaction has one home:
+`r300-r2vb-float2-source-contract.md`. This document owns the implementation
+and conformance boundaries; that document owns the source-format transaction.
+
+## Purpose
+
+R3V has three distinct boundaries:
+
+1. the current Gallium-backed experimental Vulkan ICD;
+2. a future native R3V implementation with R3V-owned memory, queues, command
+   lowering, PM4, and completion;
+3. complete Vulkan command semantics, synchronization, WSI, feature exposure,
+   and conformance.
+
+A result at one boundary never closes another. Source architecture, build and
+link identity, runtime reachability, silicon execution, API semantics, and
+conformance remain separate evidence classes.
+
+The Linux Radeon driver owns memory placement, command validation, relocation,
+submission, completion primitives, and hazard containment. Mesa userspace owns
+Vulkan objects, R300 state construction, vertex semantics, route selection, and
+execution planning. Kernel acceptance proves that a submitted tuple is safe; it
+does not supply missing userspace semantics.
+
+PALM and Terakan provide reusable direct-DRM engineering patterns. Their
+Evergreen register values, packet semantics, cache rules, shader ISA, and
+silicon results are not RS480 authority.
+
+## Current-source authority
+
+Each current-implementation claim binds to a named Mesa source location and a
+structural query.
+
+| Claim | Mesa authority | Structural query |
+|---|---|---|
+| Gallium-backed R3V build and link boundary | `src/meson.build`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-gallium-backend\|driver_r300\|libgalliumvl' src/meson.build src/amd/r300/vulkan/meson.build` |
+| `r3v_device` Gallium ownership | `src/amd/r300/vulkan/r3v_device.h`; `r3v_device.c` | `rg -n 'struct r3v_device\|radeon_winsys\|pipe_screen\|pipe_context' src/amd/r300/vulkan/r3v_device.h` |
+| Gallium queue replay and fence completion | `src/amd/r300/vulkan/r3v_queue.c` | `rg -n 'pipe->flush\|fence_finish' src/amd/r300/vulkan/r3v_queue.c` |
+| Direct-backend consent still falls through to Gallium | `src/amd/r300/vulkan/r3v_queue.c`; `r3v_device.c` | `rg -n 'R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED' src/amd/r300/vulkan/` |
+| Extracted shader descriptors still borrow Gallium-owned storage | `src/gallium/drivers/r300/r300_public.h`; `src/amd/r300/vulkan/r3v_pipeline.c` | `rg -n 'extract' src/gallium/drivers/r300/r300_public.h src/amd/r300/vulkan/r3v_pipeline.c` |
+| Unsupported compute shapes can complete without execution | `src/amd/r300/vulkan/r3v_pipeline.c`; `r3v_cmd_buffer.c` | `rg -n 'R300_COMPUTE_REJECT_UNKNOWN_SHAPE\|no-op' src/amd/r300/vulkan/r3v_pipeline.c` |
+| Current R2VB source and delivery domains | `src/gallium/drivers/r300/r300_r2vb.c`; `src/amd/r300/common/r300_r2vb_source_contract.h` | `rg -n 'producer_input_preflight\|delivery_element_preflight' src/gallium/drivers/r300/r300_r2vb.c` |
+
+## Current Gallium-backed R3V implementation
+
+### Ownership boundary
+
+The functional R3V ICD is built with Gallium r300 support and links
+`driver_r300`, `libgallium`, and `libgalliumvl` into
+`libvulkan_r3v.so`.
+
+`struct r3v_device` owns a `radeon_winsys`, `pipe_screen`, and
+`pipe_context`. Vulkan buffers, images, and device memory own or borrow
+`pipe_resource` objects. Queue submission replays recorded commands through
+Gallium, flushes the `pipe_context`, waits for a Gallium fence, and synchronizes
+host-shadow resources.
+
+The `R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1` selector records explicit consent
+for direct submission experiments. It does not select an implemented direct
+backend; submission still executes the Gallium replay path.
+
+The r300 extraction API exposes precompiled shader descriptors, including the
+fragment US/FG PM4 block. Those descriptors still reference Gallium CSO
+storage. They are bridge inputs, not R3V-owned native binaries.
+
+### Included Mesa mechanisms
+
+| Surface | Current mechanism |
+|---|---|
+| OpenGL and GLES | Gallium state trackers over r300g |
+| Experimental Vulkan | SPIR-V and Vulkan commands lowered into Gallium CSOs and `pipe_context` replay |
+| NIR ingress | r300 NIR lowering, `nir_to_rc`, and the direct Draw NIR executor where admitted |
+| NIR compatibility | `nir_to_tgsi` for Draw shapes outside the direct executor |
+| CPU vertex execution | Gallium Draw SW TCL, including direct NIR, TGSI, and optional LLVM lanes |
+| R300 graphics | RC compilation plus VAP, PSC, RS, US, TX, CB, ZB, ROP, viewport, and raster state |
+| R2VB | fragment-ALU producer, CB export to GTT, cache publication, and TCL-bypass re-ingest |
+| Graphics-as-compute | explicitly admitted raster kernels and multipass carriers |
+| Video | Gallium VL MPEG-1/MPEG-2 shader decode and separately gated experiments |
+| Memory and transfers | `pipe_resource`, Gallium winsys BOs, maps, uploads, copies, blits, and clears |
+| Queue and completion | synchronous Gallium replay and Gallium fences |
+| WSI | common WSI over Gallium-exported resources or a separate software fallback |
+| Host modeling | Radeon drm-shim identity, BO-domain, and ioctl models |
+
+The Xserver, glamor packaging, Radeon DDX, KMS policy, installed package
+identity, kernel parser, and retained target bundles are qualification
+dependencies or evidence authorities. Their source does not become Mesa-owned
+by appearing in the end-to-end product denominator.
+
+### Maintenance criteria
+
+A capability in the Gallium-backed implementation is current only when:
+
+- its tests are present in the normal build graph;
+- every admitted command executes its documented semantics;
+- unsupported commands fail or decline at a documented boundary;
+- source, build, runtime, silicon, conformance, and deployment evidence are
+  labeled separately;
+- current Mesa, kernel, package, and target identities are retained for
+  hardware claims;
+- each verdict producer has known-good and known-bad calibration;
+- PALM or Terakan silicon observations are not promoted into RS480 facts.
+
+The Gallium-backed ICD may remain intentionally nonconformant. It must still be
+semantically honest inside every capability it exposes.
+
+## Native Radeon DRM R3V implementation
+
+### Required ownership
+
+A native R3V ICD owns its Vulkan objects, BOs, memory bindings, command buffers,
+execution graph, queues, PM4, synchronization, and completion. Its complete
+functional build omits runtime ownership by `driver_r300`, `libgallium`,
+`libgalliumvl`, `pipe_context`, `pipe_screen`, `pipe_resource`, and Gallium CSOs.
+
+A loader-only skeleton is not the native implementation. A direct selector that
+falls back to Gallium is not the native implementation. Extracted PM4 that
+still aliases a Gallium CSO is not native ownership.
+
+### Source-layer split
+
+| Layer | Authority |
+|---|---|
+| `src/amd/radeon/drm_vk/` | Radeon DRM BO, map, PRIME, relocation, submission, and finite completion transport |
+| `src/amd/r300/common/` | RS480/R300 device facts, formats, packet fields, state packs, barriers, and validators |
+| `src/amd/r300/cpu/` | scalar reference and K8-safe vertex execution |
+| `src/amd/r300/vulkan/` | Vulkan objects, command lowering, execution graph, queue policy, images, WSI, and entry points |
+
+The shared Radeon DRM layer contains no R300 or Evergreen graphics state.
+R300 packet values, registers, tiling, cache operations, shader metadata,
+vertex tuples, and R2VB semantics stay in the R300 layers.
+
+### Native object graph
+
+```text
+r3v_instance
+  -> r3v_physical_device
+       -> render-node fd
+       -> RS480 device information
+       -> one UMA budget model
+  -> r3v_device
+       -> radeon_drm_vk_device
+       -> completion service
+       -> native queues and object registries
+  -> r3v_device_memory
+       -> one owned r3v_bo
+  -> r3v_buffer / r3v_image
+       -> bound range or layout views of memory BOs
+  -> r3v_pipeline
+       -> owned shader binaries and immutable R300 state packs
+  -> r3v_cmd_buffer
+       -> Vulkan-semantic command records
+  -> r3v_exec_graph
+       -> resource-scoped execution nodes
+```
+
+`VkBuffer` and `VkImage` create metadata. Memory binding installs a range or
+layout view into an already allocated `VkDeviceMemory` BO. Host mapping maps the
+owned BO under an explicit unsnooped-UMA visibility contract.
+
+### Owned pipeline binaries
+
+The existing r300 extraction API is a migration bridge. A native pipeline must
+deep-copy every consumed word and subordinate table into R3V-owned storage
+before the Gallium CSO can be destroyed.
+
+The first owned fragment binary carries:
+
+- the US/FG PM4 block;
+- immutable validation metadata;
+- external and state-constant layout;
+- a content hash;
+- source compiler identity.
+
+A temporary build-time compiler bridge may produce the binary. The runtime
+artifact and queue path must remain valid after all Gallium objects are
+released.
+
+### Native execution and first hardware witness
+
+A native command buffer lowers to explicit resource-scoped nodes such as
+`CPU_VERTEX`, `R2VB_PRODUCER`, `PM4_DRAW`, `COPY`, `CLEAR`, `BARRIER`, and
+`PRESENT`. Each node names BO reads and writes, byte ranges, domains,
+coordinate space, precision contract, and predecessors.
+
+The first native hardware witness is one pretransformed TCL-bypass triangle,
+not PVS and not R2VB. It uses:
+
+- one GTT vertex BO and one color BO;
+- one `FLOAT_4` position stream;
+- identity `XYZW` PSC selectors;
+- `VAP_VTX_SIZE = 4`;
+- position-only VAP output;
+- no index buffer, instancing, user clip planes, query, texture, or external
+  shader constants;
+- one owned fragment binary;
+- explicit cache/VAP publication;
+- one complete relocation list;
+- one finite completion object.
+
+The no-submit form first fixes PM4, relocation identity, state coverage, and
+command size. Radeon shim results remain host-model evidence. Offline kernel
+replay proves parser acceptance and calibrated malformed rejection. Only then
+does an attended RS480-family target submit the known-good cell.
+
+### CPU vertex execution and R2VB migration
+
+The first general native vertex route is NIR-driven but independent of Gallium
+Draw ownership:
+
+```text
+Vulkan vertex and index state
+-> scalar semantic reference
+-> measured K8 SSE2/SSE3 specialization
+-> direct writes into the final mapped GTT carrier
+-> TCL-bypass delivery
+```
+
+R2VB migration follows the fixed triangle and CPU route:
+
+1. migrate the `FLOAT_4` identity source control;
+2. migrate the qualified `FLOAT_3` producer source with `XYZ1` reconstruction;
+3. add `FLOAT_2` only after `XY01` userspace and kernel validators agree;
+4. migrate qualified count, grid, and topology cells;
+5. add computed varyings one measured shape at a time;
+6. add hybrid carriers only with an explicit final VAP join.
+
+The native route owns its BOs, PM4, packers, barriers, and completion. Calling
+the Gallium R2VB function from a native queue remains Gallium-backed execution.
+
+### Native WSI
+
+Native WSI begins after native BO ownership and export identity are established:
+
+```text
+native image-memory BO
+-> PRIME dma-buf export
+-> identical BO at common WSI
+-> same-GPU presentation
+-> retirement and reuse
+```
+
+X11 and Wayland are independent qualification cells. A Gallium resource export
+does not close native presentation.
+
+### Completion criteria
+
+The native implementation is complete only when:
+
+- native and Gallium-backed ICDs have distinct build and runtime identities;
+- the complete native functional target links without Gallium runtime
+  ownership;
+- dependency, symbol, and include audits prove that separation;
+- memory owns real BOs and bound objects are views;
+- queues submit bounded direct PM4 and complete finitely;
+- the first valid PM4 cell retires and a malformed control fails closed;
+- CPU vertex and migrated R2VB paths retain exact output oracles;
+- every advertised native capability has current kernel and target evidence.
+
+## Complete Vulkan semantics and conformance
+
+Complete Vulkan support begins from a working native implementation and closes
+the API contract. It requires:
+
+- authoritative image-format, creation, and memory-binding rules;
+- complete aliasing, mapping, flush, invalidate, and external-memory semantics;
+- resource-scoped queue ordering, fences, semaphores, events, and barriers;
+- native transfers, clears, render passes, dynamic rendering, queries, and
+  presentation;
+- complete graphics pipeline and vertex-interface semantics;
+- compute only when workgroups, descriptors, storage access, atomics, barriers,
+  and dispatch semantics exist;
+- no successful no-op command;
+- each advertised X11 and Wayland WSI surface;
+- feature and extension tables generated from implemented behavior;
+- CTS, dEQP, Piglit, and workload evidence appropriate to every exposed
+  surface;
+- default promotion only after image, queue, memory, execution, and WSI
+  identities are current and replayable.
+
+Complete Vulkan semantics never follow merely because Gallium emulates an
+operation or because the native queue can submit one direct draw.
+
+## R300 extraction boundary
+
+Suitable common value-type mechanisms include:
+
+- neutral vertex format records;
+- DATA_TYPE and component-selector packing;
+- checked source and destination extents;
+- FP24 constant packing;
+- shader admission cost records;
+- deep-copied fragment binary descriptors;
+- immutable blend, DSA, raster, viewport, scissor, and output-format packs;
+- VAP, PSC, and RS tuple construction and validation;
+- R2VB slot layout and source contracts;
+- PM4 packet and relocation writers;
+- cache and role-transition barrier packs;
+- texture and image layout arithmetic with value-type inputs.
+
+R300-specific mechanisms remain under R300 common or Vulkan code:
+
+- RS480 family capabilities and quirks;
+- invariant and VAP-invariant register values;
+- R300 shader ISA and RC metadata;
+- VAP, PSC, RS, GA, US, TX, CB, ZB, and ROP registers;
+- R300 texture layout and tiling rules;
+- R300 cache publication and flush sequences;
+- R300 draw packet construction;
+- R2VB producer and delivery semantics.
+
+Gallium-owned objects remain in the Gallium-backed implementation:
+`pipe_context`, `pipe_screen`, `pipe_resource`, dirty atoms, CSO lifetime,
+Draw/vbuf ownership, `u_upload`, `u_blitter`, transfer helpers, VL decoder
+ownership, and Gallium winsys command buffers and fences.
+
+A helper becomes common code only after its inputs and outputs are independent
+value types and its tests run without a Gallium object.
+
+## R2VB source-format transition
+
+The neutral source contract defines:
+
+```text
+F32_2 -> 2 physical dwords -> XY01 logical vec4
+F32_3 -> 3 physical dwords -> XYZ1 logical vec4
+F32_4 -> 4 physical dwords -> XYZW logical vec4
+```
+
+The live automatic R2VB producer admits `F32_3` and `F32_4`. Final delivery
+admits FP32x4 only. `F32_2` remains outside the live route.
+
+The integration order is:
+
+1. keep the neutral source and Gallium-adapter tests in the normal build;
+2. route existing `F32_3` and `F32_4` construction through the neutral contract
+   with byte-identical PM4 controls;
+3. add an exact `F32_2` source gate that never rides `R300_R2VB_STANDING`;
+4. capture the six-dword `FLOAT_4 + FLOAT_2` producer tuple without submit;
+5. extend userspace and kernel validators from identity-only PSC to explicit
+   synthesized-lane contracts;
+6. run the bounded `FLOAT_2` silicon ladder;
+7. decide standing promotion in a separate change.
+
+The native implementation migrates `F32_3` before `F32_2`. Producer support for
+a narrow source never implies narrow final-delivery support.
+
+## Repository authority
+
+| Repository | Authority |
+|---|---|
+| `mesa-26-gororoba` | Gallium-backed and native R3V userspace, compilers, state packs, R2VB, WSI, and tests |
+| `steinmarder-r300` | RS480 frontier, probes, falsifiers, findings, manifests, and target result bundles |
+| `vostro1000-re` | K8 and platform behavior plus CPU-executor qualification |
+| `linux-radeon-gororoba` | Radeon parser, GEM, GART, faults, completion, recovery, and containment |
+| `radeon-custom` | source pin, package construction, deployment transition, rollback, and installed runtime identity |
+| Xserver and Radeon DDX repositories | X11 source, package, and installed-image authority |
+| `steinmarder-r600-terakan` | reusable process patterns and PALM evidence, never RS480 hardware facts |
+
+Mesa behavior changes land in Mesa. Kernel changes land in the kernel source
+repository. Package policy lands in the package repository. Target evidence and
+findings remain in the evidence repository.
+
+## Ordered development
+
+1. Keep the Gallium-backed implementation current and semantically honest.
+2. Refactor existing `F32_3` and `F32_4` R2VB construction through the neutral
+   source contract.
+3. Land the gated `F32_2` no-submit producer transaction and validators.
+4. Extract a generic Radeon DRM transport layer with host tests.
+5. Deep-copy R300 fragment binaries into R3V-owned storage.
+6. Create distinct Gallium-backed and native ICD identities.
+7. Build native BO, memory, command, queue, and completion ownership.
+8. Emit and offline-validate the fixed identity-bypass triangle.
+9. Run the attended native triangle cell.
+10. Build and qualify the native K8 vertex executor.
+11. Migrate native R2VB `F32_3`, then `F32_2`.
+12. Add native images, transfers, and resource-scoped synchronization.
+13. Prove native same-GPU WSI.
+14. Complete Vulkan semantics and conformance before default promotion.
+
+The Gallium-backed implementation remains the differential reference and a
+useful bounded acceleration path while native work proceeds.
+
+## Evidence classes
+
+Every result names one class:
+
+- source proof;
+- host unit proof;
+- build and link proof;
+- no-submit PM4 proof;
+- offline kernel-parser proof;
+- attended kernel-submission proof;
+- silicon-output proof;
+- conformance proof;
+- deployment proof.
+
+A higher class never appears by implication. A Radeon shim result is a host
+model. Parser acceptance is not execution. Fence retirement is not output
+correctness. An output hash from an old Mesa image is not evidence for the
+current head.
