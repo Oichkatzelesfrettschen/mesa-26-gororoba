@@ -21,6 +21,11 @@ classification reported to external tooling is therefore
 `experimental_nonconformant_graphics_without_compute` -- see
 `r3v_private.h` for the canonical macro `R3V_CONFORMANCE_STATUS`.
 
+The product boundary between this Gallium-backed driver (Program L), a
+future native R3V implementation (Program N), and complete Vulkan
+semantics (Program P) lives in
+`docs/hardware/r3v-product-denominators.md`.
+
 ## Hardware target
 
 | Field | Value | Primary source |
