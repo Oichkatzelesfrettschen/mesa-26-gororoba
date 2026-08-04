@@ -9,7 +9,6 @@ r300_program_l_test_includes = [
   inc_include,
   inc_gallium,
   inc_gallium_aux,
-  inc_gallium_drivers,
   include_directories('../../../gallium/drivers/r300'),
 ]
 
