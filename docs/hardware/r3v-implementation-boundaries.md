@@ -97,7 +97,7 @@ storage. They are bridge inputs, not R3V-owned native binaries.
 The Xserver, glamor packaging, Radeon DDX, KMS policy, installed package
 identity, kernel parser, and retained target bundles are qualification
 dependencies or evidence authorities. Their source does not become Mesa-owned
-by appearing in the end-to-end product denominator.
+by participating in the end-to-end qualification boundary.
 
 ### Maintenance criteria
 
