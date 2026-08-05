@@ -72,6 +72,12 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
    }
    memcpy(vertex_memory->map, r300_tcl_bypass_triangle_vertices,
           R3V_TRIANGLE_VERTEX_BYTES);
+   /* The GART aperture reads unsnooped, so the vertex bytes publish by
+    * cache writeback while the mapping's address is still live; munmap
+    * leaves dirty lines in place and is not a publication mechanism.
+    */
+   radeon_drm_vk_bo_cache_sync(&device->drm, vertex_memory->map,
+                               R3V_TRIANGLE_VERTEX_BYTES);
    if (owns_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
                              vertex_memory->map);
@@ -107,11 +113,13 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
       .handle = vertex_memory->bo.handle,
       .read_domains = RADEON_GEM_DOMAIN_GTT,
       .write_domain = 0,
+      .memory = vertex_memory,
    };
    references[R300_TRIANGLE_SLOT_COLOR] = (struct r3v_native_bo_reference){
       .handle = color_memory->bo.handle,
       .read_domains = 0,
       .write_domain = RADEON_GEM_DOMAIN_GTT,
+      .memory = color_memory,
    };
 
    r3v_native_cmd_buffer_install_ib(cmd_buffer, cell.ib, cell.ib_size_dwords,

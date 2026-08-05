@@ -122,6 +122,23 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * the manifest above keeps the pre-completion relocation list, the
        * exact list the offline replay consumes.
        */
+      /* The RS480 GART reads and writes with request snooping disabled,
+       * and every GTT mapping is ttm_cached, so the driver keeps the
+       * HOST_COHERENT promise itself: every referenced memory with a live
+       * CPU mapping publishes its cache lines before the submission ioctl
+       * and invalidates them after completion, the only device-access
+       * window the synchronous submit model has.
+       */
+      for (uint32_t r = 0; r < cmd_buffer->reference_count; r++) {
+         const struct r3v_native_bo_reference *reference =
+            &cmd_buffer->references[r];
+         if (reference->memory != NULL && reference->memory->map != NULL) {
+            radeon_drm_vk_bo_cache_sync(&device->drm,
+                                        reference->memory->map,
+                                        reference->memory->bo.size);
+         }
+      }
+
       struct radeon_drm_vk_completion completion;
       if (radeon_drm_vk_completion_init(&device->drm, &completion) != 0) {
          radeon_drm_vk_reloc_list_finish(&relocs);
@@ -140,6 +157,21 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       int result = radeon_drm_vk_cs_submit(&device->drm, &cs);
       if (result == 0)
          result = radeon_drm_vk_completion_await(&device->drm, &completion);
+      if (result == 0) {
+         /* Device writes landed in memory past the cache; drop every
+          * stale line over the live mappings before the host reads them.
+          */
+         for (uint32_t r = 0; r < cmd_buffer->reference_count; r++) {
+            const struct r3v_native_bo_reference *reference =
+               &cmd_buffer->references[r];
+            if (reference->memory != NULL &&
+                reference->memory->map != NULL) {
+               radeon_drm_vk_bo_cache_sync(&device->drm,
+                                           reference->memory->map,
+                                           reference->memory->bo.size);
+            }
+         }
+      }
       radeon_drm_vk_completion_finish(&device->drm, &completion);
       radeon_drm_vk_reloc_list_finish(&relocs);
       if (result != 0) {

@@ -88,6 +88,12 @@ r3v_MapMemory(VkDevice _device, VkDeviceMemory _memory, VkDeviceSize offset,
                                &memory->map) != 0) {
          return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
       }
+      /* A fresh mapping may alias cache lines from an earlier map window
+       * while the GPU wrote the pages past the cache; drop them before
+       * the host reads through the new mapping.
+       */
+      radeon_drm_vk_bo_cache_sync(&device->drm, memory->map,
+                                  memory->bo.size);
    }
    *ppData = (char *)memory->map + offset;
    return VK_SUCCESS;
@@ -101,6 +107,10 @@ r3v_UnmapMemory(VkDevice _device, VkDeviceMemory _memory)
 
    if (memory == NULL || memory->map == NULL)
       return;
+   /* Host writes publish while the address is still live; munmap leaves
+    * dirty lines behind and is not a publication mechanism.
+    */
+   radeon_drm_vk_bo_cache_sync(&device->drm, memory->map, memory->bo.size);
    radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
    memory->map = NULL;
 }
