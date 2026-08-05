@@ -42,6 +42,7 @@
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
+#include <radeon_drm.h>
 #include <xf86drm.h>
 
 static bool
@@ -391,6 +392,7 @@ r3v_physical_device_init_properties(struct vk_properties *const props,
    props->independentResolve     = true;
 }
 
+#ifndef R3V_NATIVE_BACKEND
 static const struct vk_device_extension_table r3v_device_extensions_supported = {
    /* Host-side query reset is a CPU clear of the per-slot query storage
     * (r3v_ResetQueryPool); it needs no GPU-side encoding, so the
@@ -546,11 +548,30 @@ static const struct vk_device_extension_table r3v_device_extensions_supported = 
     * gated by the samplerMirrorClampToEdge feature below. */
    .KHR_sampler_mirror_clamp_to_edge = true,
 };
+#endif /* R3V_NATIVE_BACKEND */
+
+#ifdef R3V_NATIVE_BACKEND
+/* The native implementation advertises only surfaces its own entry points
+ * execute.  Every 1.0 memory and buffer entry point routes through the
+ * vk_common *2-form bridges into the native one-BO implementations, so the
+ * core surface needs no extension; the extension table stays empty until a
+ * native route lands behind each name.
+ */
+static const struct vk_device_extension_table
+   r3v_native_device_extensions_supported = {0};
+#endif
 
 static void
 r3v_physical_device_init_features(struct vk_features *features)
 {
    memset(features, 0, sizeof(*features));
+#ifdef R3V_NATIVE_BACKEND
+   /* The native implementation executes no optional feature; the feature
+    * set is the empty core-1.0 baseline, and each bit returns with the
+    * native route that makes it true.
+    */
+   return;
+#endif
    features->robustBufferAccess = true;
    features->scalarBlockLayout = true;
    /* Logic ops run in r300's ROP unit (RB3D_ROPCNTL); the blend CSO carries
@@ -840,8 +861,15 @@ r3v_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &wsi_physical_device_entrypoints, false);
 
+#ifdef R3V_NATIVE_BACKEND
+   const struct vk_device_extension_table *supported_extensions =
+      &r3v_native_device_extensions_supported;
+#else
+   const struct vk_device_extension_table *supported_extensions =
+      &r3v_device_extensions_supported;
+#endif
    VkResult result = vk_physical_device_init(&device->vk, &instance->vk,
-                                             &r3v_device_extensions_supported,
+                                             supported_extensions,
                                              &features, &properties, &dispatch_table);
    if (result != VK_SUCCESS) {
       /* terakan_physical_device_init does not call vk_physical_device_finish
@@ -893,10 +921,20 @@ r3v_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
 {
    VK_FROM_HANDLE(r3v_physical_device, pdev, physicalDevice);
    VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties2, out, pProperties, pCount);
+#ifdef R3V_NATIVE_BACKEND
+   /* The native queue transports device-internal fixed IBs through the
+    * gated submission boundary; no Vulkan command class records into it,
+    * so no capability bit is advertised.  Each bit returns with the
+    * recording surface that executes it.
+    */
+   (void)pdev;
+   VkQueueFlags queue_flags = 0;
+#else
    VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT;
 
    if (pdev->hybrid_compute_enabled)
       queue_flags |= VK_QUEUE_COMPUTE_BIT;
+#endif
 
    vk_outarray_append_typed(VkQueueFamilyProperties2, &out, p) {
       p->queueFamilyProperties = (VkQueueFamilyProperties){
@@ -1333,6 +1371,45 @@ r3v_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
 {
    VkPhysicalDeviceMemoryProperties *const m = &pMemoryProperties->memoryProperties;
 
+#ifdef R3V_NATIVE_BACKEND
+   /* RS480-family UMA: the GART aperture and the BIOS shared-VRAM carve-out
+    * both draw from system memory, so the native report is one budget --
+    * a single DEVICE_LOCAL heap sized by DRM_RADEON_GEM_INFO's gart_size +
+    * vram_size, the two kernel pools every native GEM allocation lands in.
+    * Type 0 is the host-visible GTT|CPU_ACCESS placement and type 1 the
+    * VRAM|GTT NO_CPU_ACCESS placement, matching
+    * r3v_native_memory_type_policy.  HOST_COHERENT holds because the
+    * fail-closed submission gate admits no GPU access that could race a
+    * host mapping; the attended-cell staging revisits coherency before the
+    * gate opens.
+    */
+   VK_FROM_HANDLE(r3v_physical_device, pdev, physicalDevice);
+   uint64_t heap_bytes =
+      R3V_PLACEHOLDER_GTT_HEAP_SIZE + R3V_PLACEHOLDER_VRAM_HEAP_SIZE;
+   struct drm_radeon_gem_info gem_info = {0};
+   if (drmCommandWriteRead(pdev->render_node_fd, DRM_RADEON_GEM_INFO,
+                           &gem_info, sizeof(gem_info)) == 0 &&
+       gem_info.gart_size + gem_info.vram_size > 0)
+      heap_bytes = gem_info.gart_size + gem_info.vram_size;
+
+   m->memoryHeapCount = 1;
+   m->memoryHeaps[0] = (VkMemoryHeap){
+      .size = heap_bytes,
+      .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
+   };
+   m->memoryTypeCount = 2;
+   m->memoryTypes[0] = (VkMemoryType){
+      .propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .heapIndex = 0,
+   };
+   m->memoryTypes[1] = (VkMemoryType){
+      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .heapIndex = 0,
+   };
+   return;
+#else
    /* Report the real GART and shared-VRAM sizes when a Gallium r300g oracle is
     * attached.  query_info hands back the radeon_info the winsys cached from
     * DRM_RADEON_GEM_INFO at creation; gart_size_kb / vram_size_kb are the total
@@ -1382,4 +1459,5 @@ r3v_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
       .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
       .heapIndex = 1,
    };
+#endif /* R3V_NATIVE_BACKEND */
 }
