@@ -79,27 +79,31 @@ fence, and synchronizes host-shadow resources.
 Pipeline barriers issue a Gallium flush and update r3v's image-layout ledger.
 Gallium's dirty-atom machinery re-emits required R300 state before later draws.
 
-## Native direct-submission status
+## Native ICD status
 
-`R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1` records explicit consent for direct
-submission experiments. It does not select an implemented native queue path.
-Submission still falls through to the Gallium replay implementation.
+`-Dr3v-native-backend=true` builds `libvulkan_r3v_native.so`, a second ICD
+(manifest `r3v_native_icd.<cpu>.json`) that owns its Radeon DRM transport
+through `src/amd/radeon/drm_vk/` and links no Gallium runtime library; a
+separation-audit test enforces that boundary. The native library owns
+GEM-backed `VkDeviceMemory` (one BO per allocation, buffer-only), a queue
+whose submission path builds the three-chunk `DRM_RADEON_CS` object, and
+command-carrier objects. Fragment binaries are deep-copied into R3V-owned
+`r300_fragment_binary` storage with a content hash and structural validator.
 
-The r300 public extraction API now exposes precompiled vertex and fragment
-descriptors. The fragment descriptor includes the prepared US/FG PM4 block, but
-its pointers still alias Gallium CSO storage. A native implementation must
-deep-copy every consumed word and subordinate table into R3V-owned storage
-before Gallium objects can be destroyed.
+Real submission sits behind the exact-value gate
+`R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1`. The closed gate retains the IB,
+relocation list, and manifest under `R3V_NATIVE_MANIFEST_DIR` and fails
+closed with `VK_ERROR_DEVICE_LOST`. The fixed TCL-bypass triangle is lowered
+into a native command buffer by the private entry
+`r3v_native_record_tcl_bypass_triangle`; public `vkBeginCommandBuffer` and
+`vkEndCommandBuffer` record nothing themselves, and graphics pipelines,
+images, descriptors, transfers, and WSI remain outside the native surface.
+No live `DRM_RADEON_CS` submission has occurred; the drm-shim harness and
+offline kernel-parser replay carry the pre-hardware evidence.
 
-A native queue additionally requires:
-
-- R3V-owned BO and memory objects;
-- complete R300 state packs and relocation ownership;
-- bounded PM4 construction;
-- explicit cache and role-transition barriers;
-- finite completion;
-- resource-scoped synchronization;
-- device-loss propagation.
+In the Gallium-backed library, `R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1`
+records consent only; that library's submission executes the Gallium replay
+implementation.
 
 The first native hardware witness and the ordered migration path are specified
 in `docs/hardware/r3v-implementation-boundaries.md`.
@@ -119,11 +123,14 @@ No queue family advertises `VK_QUEUE_COMPUTE_BIT`.
 ## R2VB source-format work
 
 The live Gallium r300 R2VB producer admits `R32G32B32_FLOAT` and
-`R32G32B32A32_FLOAT` source records. Final delivery remains FP32x4.
+`R32G32B32A32_FLOAT` source records, routed through the neutral
+vertex-format contract with a byte-identity test pin. Final delivery remains
+FP32x4.
 
-The neutral `FLOAT_2` source transaction is defined, host-tested, and still
-outside the live route. Its exact source contract and next integration step live
-in:
+The `FLOAT_2` source transaction is gated behind the exact-value
+`R300_R2VB_FLOAT2_SOURCE` experiment and captured without submit; every
+production admission path holds it out of the automatic route. Its exact
+source contract and next integration step live in:
 
 `docs/hardware/r300-r2vb-float2-source-contract.md`
 
@@ -132,9 +139,14 @@ Narrow source fetch support never implies narrow final-delivery support.
 ## Repository layout
 
 ```text
+src/amd/radeon/drm_vk/     Gallium-free Radeon DRM transport (BO, PRIME,
+                           relocation, CS build/submit, finite completion)
+
 src/amd/r300/
-  common/                  R300-neutral format and source-contract vocabulary
-  vulkan/                  r3v Vulkan objects and Gallium-backed execution
+  common/                  R300-neutral format, source-contract, fragment-
+                           binary, and triangle-cell vocabulary
+  vulkan/                  r3v Vulkan objects: Gallium-backed execution and
+                           the native ICD (r3v_native_*.c)
 
 src/gallium/drivers/r300/
   r300_public.h            r300 extraction interface
@@ -175,6 +187,10 @@ meson setup builddir-r3v \
 
 ninja -C builddir-r3v src/amd/r300/vulkan/libvulkan_r3v.so
 ```
+
+Adding `-Dr3v-native-backend=true` builds `libvulkan_r3v_native.so` beside
+the Gallium-backed library; adding `drm-shim` to `-Dtools` builds the
+render-node model its triangle-cell harness preloads.
 
 A loader-only configuration sets `-Dr3v-gallium-backend=false`. It is an
 enumeration/build boundary, not the native functional implementation.
