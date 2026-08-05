@@ -69,6 +69,12 @@ The current live path:
 - captures the six-dword `FLOAT_4 + FLOAT_2` producer tuple without submit;
   the `r300_r2vb_float2_tuple_test` pin holds the tuple, the `XY01`
   expansion, and the known-bad declines;
+- derives the slot-plus-model PSC/VAP tuple from the source contract through
+  `r300_r2vb_source_tuple_init` and validates emitted tuples, including the
+  zero tail, through `r300_r2vb_source_tuple_matches`; the neutral PSC field
+  encodings are pinned against `r300_reg.h` by static assertion, and
+  `check_source_tuples` holds the `FLOAT_2` tuple to the same golden words
+  as the capture pin;
 - leaves `R300_R2VB_STANDING` and the closed automatic source-domain matrix
   unchanged; `R300_R2VB_FLOAT2_SOURCE` never joins `standing_gates[]`;
 - keeps final delivery at FP32x4;
