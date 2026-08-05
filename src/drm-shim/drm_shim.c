@@ -337,6 +337,20 @@ drm_shim_test_arm_path_snapshot_barrier(int ready_fd, int release_fd)
 }
 #endif
 
+/* True when the fd names the synthetic render-node backing file itself: a
+ * raw open of the synthetic path bypasses the interposer, and identity
+ * parsing recognizes the backing inode as this instance's render node.
+ */
+bool
+drm_shim_fd_names_render_backing(int fd)
+{
+   struct stat status;
+   return synthetic_render_status.st_ino != 0 &&
+          syscall(SYS_fstat, fd, &status) == 0 &&
+          status.st_dev == synthetic_render_status.st_dev &&
+          status.st_ino == synthetic_render_status.st_ino;
+}
+
 static void
 render_stat_set_device(struct stat *status)
 {
