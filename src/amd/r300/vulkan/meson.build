@@ -30,6 +30,10 @@ libr3v_files = files(
   'r3v_cpu_sync.c',
 )
 
+# The Gallium arm appends to libr3v_files below; the native ICD builds from
+# this loader-base snapshot.
+r3v_loader_base_files = libr3v_files
+
 libr3v_deps = [
   dep_libdrm,
   idep_mesautil,
@@ -300,3 +304,103 @@ _dev_icd = custom_target(
 )
 
 devenv.append('VK_ICD_FILENAMES', _dev_icd.full_path())
+
+# Native ICD identity: libvulkan_r3v_native builds the loader-base files over
+# the generic Radeon DRM transport with no Gallium runtime ownership.  The
+# two ICDs coexist under one loader; each option produces its own library and
+# manifest, and the separation-audit test proves the native library carries
+# no Gallium entry symbol.
+if get_option('r3v-native-backend')
+  libvulkan_r3v_native = shared_library(
+    'vulkan_r3v_native',
+    [r3v_loader_base_files, r3v_entrypoints],
+    vs_module_defs : vulkan_api_def,
+    include_directories : [inc_include, inc_src, inc_gallium],
+    dependencies : [
+      dep_libdrm,
+      idep_mesautil,
+      idep_vulkan_runtime,
+      idep_vulkan_util,
+      idep_vulkan_wsi,
+    ],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args, '-DR3V_NATIVE_BACKEND'],
+    link_args : [
+      ld_args_build_id,
+      ld_args_bsymbolic,
+      ld_args_gc_sections,
+      vulkan_icd_link_args,
+    ],
+    link_depends : vulkan_icd_link_depends,
+    gnu_symbol_visibility : 'hidden',
+    install : true,
+  )
+
+  native_icd_file_name = 'libvulkan_r3v_native.so'
+
+  r3v_native_icd = custom_target(
+    'r3v_native_icd',
+    input : [vk_icd_gen, vk_api_xml],
+    output : 'r3v_native_icd.@0@.json'.format(host_machine.cpu()),
+    command : [
+      prog_python, '@INPUT0@',
+      '--api-version', '1.0',
+      '--xml', '@INPUT1@',
+      '--icd-lib-path', icd_lib_path,
+      '--icd-filename', native_icd_file_name,
+      '--out', '@OUTPUT@',
+    ],
+    build_by_default : true,
+    install_dir : with_vulkan_icd_dir,
+    install : true,
+  )
+
+  _native_dev_icd = custom_target(
+    'r3v_native_devenv_icd',
+    input : [vk_icd_gen, vk_api_xml],
+    output : 'r3v_native_devenv_icd.@0@.json'.format(host_machine.cpu()),
+    command : [
+      prog_python, '@INPUT0@',
+      '--api-version', '1.0',
+      '--xml', '@INPUT1@',
+      '--icd-lib-path', meson.current_build_dir(),
+      '--icd-filename', native_icd_file_name,
+      '--out', '@OUTPUT@',
+    ],
+    build_by_default : true,
+    install : false,
+  )
+
+  # Executable form of the boundaries doc's dependency/symbol audit: the
+  # native library defines no Gallium or winsys entry symbol, in any binding.
+  prog_nm_r3v = find_program('nm', required : false)
+  if with_tests and prog_nm_r3v.found()
+    test(
+      'r3v-native-gallium-separation',
+      prog_python,
+      args : [
+        files('tests/r3v_native_separation_audit.py'),
+        prog_nm_r3v.full_path(),
+        libvulkan_r3v_native.full_path(),
+      ],
+      depends : libvulkan_r3v_native,
+      suite : ['r3v'],
+    )
+    # Known-bad calibration: the Gallium-backed library carries
+    # r300_screen_create, so the audit must fail on it.
+    if get_option('r3v-gallium-backend') and with_gallium_r300
+      test(
+        'r3v-native-gallium-separation-known-bad',
+        prog_python,
+        args : [
+          files('tests/r3v_native_separation_audit.py'),
+          prog_nm_r3v.full_path(),
+          libvulkan_r3v.full_path(),
+        ],
+        depends : libvulkan_r3v,
+        should_fail : true,
+        suite : ['r3v'],
+      )
+    endif
+  endif
+endif
