@@ -1,0 +1,15 @@
+FAIL: direct UNSHARE GEM create returned -1 handle 0 errno 95
+FAIL: fd identity exposed payload: read 1 byte 0x10 offset 18 errno 0
+FAIL: fd identity exposed pread payload: read 1 byte 0x31 offset 18 errno 0
+FAIL: fd identity fallback 0 returned -1 device 0xffffffff errno 25
+FAIL: fd identity fallback 1 returned -1 device 0xffffffff errno 25
+FAIL: fd identity lseek/read/unlock fallback returned -1 domain 0xffffffff errno 25
+FAIL: fd identity same-inode replacement exposed handle: -1 errno 25 domain 0xffffffff
+FAIL: first-discovery GEM create returned -1 handle 0 errno 95
+FAIL: fork-close GEM create returned -1 handle 0 errno 95
+FAIL: fork-identity GEM create returned -1 handle 0 errno 95
+FAIL: UNSHARE leader GEM close returned -1 errno 95
+FAIL: UNSHARE worker completed with join 0 result 1
+FAIL: UNSHARE worker identity is tid 0 render 11 identity -1
+FAIL: UNSHARE worker replaced leader handles: -1 domain 0xffffffff
+FAIL: untracked render discovery returned -1 value 0xffffffff

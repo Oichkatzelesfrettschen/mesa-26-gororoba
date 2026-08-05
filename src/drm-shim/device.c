@@ -470,6 +470,76 @@ drm_shim_state_token_name_parse(int fd,
    return true;
 }
 
+/* Recovers a state token's identity from its memfd name alone.  An O_PATH
+ * descriptor carries no read access, so the header pread that
+ * drm_shim_state_token_name_parse cross-checks against is unavailable,
+ * and the same descriptor survives exec with only its name reachable.
+ * The name is shim-authored and carries every field the header does:
+ * accepting it requires the version prefix, three well-formed
+ * identifiers, this process's render marker, and this driver's name, so
+ * the descriptor is the same class of artifact the two-sided parse
+ * admits.  State operations stay closed on a path-only descriptor
+ * through shim_fd->state_available, so this recovers identity alone.
+ */
+static bool
+drm_shim_state_token_name_only_parse(int fd, char instance[33])
+{
+   /* Only a path-only descriptor takes this route: a readable descriptor
+    * that fails the header parse is not a token this shim authored, and
+    * admitting it by name alone would let a stale or foreign descriptor
+    * enter the fd registry.
+    */
+   int status_flags = syscall(SYS_fcntl, fd, F_GETFL);
+   if (status_flags < 0 || (status_flags & O_PATH) != O_PATH)
+      return false;
+
+   struct stat status;
+   if (syscall(SYS_fstat, fd, &status) < 0 || !S_ISREG(status.st_mode) ||
+       status.st_size < (off_t)sysconf(_SC_PAGESIZE))
+      return false;
+
+   char name[DRM_SHIM_STATE_TOKEN_NAME_CAPACITY];
+   size_t name_length;
+   if (!drm_shim_memfd_name_read(fd, name, sizeof(name), &name_length))
+      return false;
+
+   /* version:instance:marker:state_id:driver_name */
+   static const char version_prefix[] = DRM_SHIM_STATE_TOKEN_NAME_VERSION;
+   const size_t version_length = sizeof(version_prefix) - 1;
+   if (name_length <= version_length ||
+       memcmp(name, version_prefix, version_length) != 0 ||
+       name[version_length] != ':')
+      return false;
+
+   char candidate_instance[33];
+   char candidate_marker[33];
+   char candidate_state_id[33];
+   const char *cursor = name + version_length + 1;
+   const char *name_end = name + name_length;
+   char *const fields[] = {candidate_instance, candidate_marker,
+                           candidate_state_id};
+   for (unsigned i = 0; i < 3; i++) {
+      if (name_end - cursor < 33 || cursor[32] != ':')
+         return false;
+      memcpy(fields[i], cursor, 32);
+      fields[i][32] = '\0';
+      if (!drm_shim_state_token_identifier_valid(fields[i]))
+         return false;
+      cursor += 33;
+   }
+
+   if (strcmp(cursor, shim_device.driver_name) != 0)
+      return false;
+
+   char marker[33];
+   drm_shim_render_marker_token(marker);
+   if (memcmp(candidate_marker, marker, sizeof(marker)) != 0)
+      return false;
+
+   memcpy(instance, candidate_instance, sizeof(candidate_instance));
+   return true;
+}
+
 static bool
 drm_shim_render_identity_name_parse(int fd, char instance[33])
 {
@@ -532,6 +602,18 @@ drm_shim_render_identity_parse(int fd,
       identity->origin_pid = shim_device.render_owner_pid;
       identity->current_instance =
          memcmp(header.instance, shim_device.render_instance,
+                sizeof(shim_device.render_instance)) == 0;
+      return true;
+   }
+
+   /* A path-only or exec-inherited state token reaches here with its
+    * header unreadable; its memfd name carries the same identity fields.
+    */
+   char token_instance[33];
+   if (drm_shim_state_token_name_only_parse(fd, token_instance)) {
+      identity->origin_pid = shim_device.render_owner_pid;
+      identity->current_instance =
+         memcmp(token_instance, shim_device.render_instance,
                 sizeof(shim_device.render_instance)) == 0;
       return true;
    }
