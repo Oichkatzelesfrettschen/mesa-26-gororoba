@@ -6,6 +6,11 @@
  * every ungated entry declines the F32_2 source.
  */
 
+/* The asserts carry the test's side effects and verdicts, so they stay
+ * live in NDEBUG builds.
+ */
+#undef NDEBUG
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>

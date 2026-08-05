@@ -5,6 +5,11 @@
  * hash stability, and structural stream admission.
  */
 
+/* The asserts carry the test's side effects and verdicts, so they stay
+ * live in NDEBUG builds.
+ */
+#undef NDEBUG
+
 #include "r300_fragment_binary.h"
 
 #include <assert.h>

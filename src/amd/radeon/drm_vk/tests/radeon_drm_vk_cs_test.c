@@ -4,6 +4,11 @@
  * Host test for DRM_RADEON_CS argument construction and mock submission.
  */
 
+/* The asserts carry the test's side effects and verdicts, so they stay
+ * live in NDEBUG builds.
+ */
+#undef NDEBUG
+
 #include "radeon_drm_vk_cs.h"
 #include "radeon_drm_vk_device.h"
 #include "radeon_drm_vk_reloc.h"

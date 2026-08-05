@@ -5,6 +5,11 @@
  * reference counting.
  */
 
+/* The asserts carry the test's side effects and verdicts, so they stay
+ * live in NDEBUG builds.
+ */
+#undef NDEBUG
+
 #include "radeon_drm_vk_bo.h"
 #include "radeon_drm_vk_completion.h"
 #include "radeon_drm_vk_device.h"

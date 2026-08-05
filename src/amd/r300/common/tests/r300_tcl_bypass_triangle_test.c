@@ -6,6 +6,11 @@
  * sites bind the right slots, and emission is deterministic.
  */
 
+/* The asserts carry the test's side effects and verdicts, so they stay
+ * live in NDEBUG builds.
+ */
+#undef NDEBUG
+
 #include "r300_fragment_binary.h"
 #include "r300_tcl_bypass_triangle.h"
 

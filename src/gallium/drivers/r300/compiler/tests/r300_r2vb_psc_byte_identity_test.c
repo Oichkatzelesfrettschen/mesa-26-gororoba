@@ -8,6 +8,11 @@
  * construction it replaced, for each admitted F32 width.
  */
 
+/* The asserts carry the test's side effects and verdicts, so they stay
+ * live in NDEBUG builds.
+ */
+#undef NDEBUG
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>

@@ -4,6 +4,11 @@
  * Host test for relocation-list aggregation semantics.
  */
 
+/* The asserts carry the test's side effects and verdicts, so they stay
+ * live in NDEBUG builds.
+ */
+#undef NDEBUG
+
 #include "radeon_drm_vk_reloc.h"
 
 #include <assert.h>
