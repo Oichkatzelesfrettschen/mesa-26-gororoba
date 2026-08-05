@@ -311,9 +311,16 @@ devenv.append('VK_ICD_FILENAMES', _dev_icd.full_path())
 # manifest, and the separation-audit test proves the native library carries
 # no Gallium entry symbol.
 if get_option('r3v-native-backend')
+  r3v_native_files = files(
+    'r3v_native_cmd.c',
+    'r3v_native_device.c',
+    'r3v_native_memory.c',
+    'r3v_native_queue.c',
+  )
+
   libvulkan_r3v_native = shared_library(
     'vulkan_r3v_native',
-    [r3v_loader_base_files, r3v_entrypoints],
+    [r3v_loader_base_files, r3v_native_files, r3v_entrypoints],
     vs_module_defs : vulkan_api_def,
     include_directories : [inc_include, inc_src, inc_gallium],
     dependencies : [
