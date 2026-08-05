@@ -13,6 +13,8 @@
 #include "r300/r300_public.h"
 #include "r300/r300_compute_admission.h"
 
+#include "amd/r300/common/r300_fragment_binary.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -44,6 +46,13 @@ struct r3v_pipeline {
    struct r300_fs_hw_code  fs_hw;
    bool                    vs_hw_valid;
    bool                    fs_hw_valid;
+
+   /* R3V-owned deep copy of fs_hw: every consumed dword is copied out of the
+    * Gallium CSO at extraction time, so the descriptor outlives
+    * delete_fs_state.  A native queue consumes only this copy; the replay
+    * path keeps reading fs_hw through the live CSO. */
+   struct r300_fragment_binary fs_owned;
+   bool                    fs_owned_valid;
 
    /* The UBO descriptor (set, binding) each stage selects, if any.  r300 has
     * separate vertex and fragment constant files, so each stage binds its own

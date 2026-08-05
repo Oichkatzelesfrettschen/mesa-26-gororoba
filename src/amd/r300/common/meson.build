@@ -26,6 +26,21 @@ test(
   suite : ['r300'],
 )
 
+r300_fragment_binary_test = executable(
+  'r300_fragment_binary_test',
+  files('r300_fragment_binary.c', 'tests/r300_fragment_binary_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-fragment-binary',
+  r300_fragment_binary_test,
+  suite : ['r300'],
+)
+
 r300_vertex_format_pipe_test = executable(
   'r300_vertex_format_pipe_test',
   files('../../../gallium/drivers/r300/compiler/tests/r300_vertex_format_pipe_test.c'),

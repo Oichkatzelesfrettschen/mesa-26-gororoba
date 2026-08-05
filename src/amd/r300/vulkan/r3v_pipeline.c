@@ -1522,6 +1522,25 @@ r3v_prepare_shader_nir(struct r3v_device *device,
    return VK_SUCCESS;
 }
 
+/* Deep-copies the freshly extracted fs_hw descriptor into R3V-owned storage.
+ * Extraction-API pointers alias r300g CSO storage and die with the CSO; the
+ * owned copy is the only form a native queue may consume.  A copy failure
+ * leaves fs_owned_valid false and the Gallium replay path unaffected. */
+static void
+r3v_pipeline_own_fs_binary(struct r3v_pipeline *pl)
+{
+   if (pl->fs_owned_valid) {
+      r300_fragment_binary_finish(&pl->fs_owned);
+      pl->fs_owned_valid = false;
+   }
+   if (!pl->fs_hw_valid)
+      return;
+   pl->fs_owned_valid =
+      r300_fragment_binary_init(&pl->fs_owned, pl->fs_hw.cb_code,
+                                pl->fs_hw.cb_code_size, pl->fs_hw.fg_depth_src,
+                                pl->fs_hw.us_out_w, "r300g-rc") == 0;
+}
+
 static VkResult
 r3v_compile_shader(struct r3v_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
@@ -1552,6 +1571,7 @@ r3v_compile_shader(struct r3v_device *device,
          return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
       }
       pl->fs_hw_valid = r300_fs_get_hw_code(pl->fs_cso, &pl->fs_hw);
+      r3v_pipeline_own_fs_binary(pl);
    }
    return VK_SUCCESS;
 }
@@ -2246,6 +2266,7 @@ r3v_create_one_pipeline(struct r3v_device *device,
          if (!pl->fs_cso)
             FAIL_PIPELINE(vk_error(device, VK_ERROR_INITIALIZATION_FAILED));
          pl->fs_hw_valid = r300_fs_get_hw_code(pl->fs_cso, &pl->fs_hw);
+         r3v_pipeline_own_fs_binary(pl);
       }
    }
 
@@ -5212,6 +5233,10 @@ r3v_DestroyPipeline(VkDevice _device,
    if (!pl)
       return;
 
+   if (pl->fs_owned_valid) {
+      r300_fragment_binary_finish(&pl->fs_owned);
+      pl->fs_owned_valid = false;
+   }
    if (pl->vs_cso)
       device->pipe->delete_vs_state(device->pipe, pl->vs_cso);
    if (pl->fs_cso)
