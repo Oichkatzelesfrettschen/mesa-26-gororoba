@@ -7,6 +7,13 @@ if with_tools.contains('drm-shim')
   subdir('drm-shim')
 endif
 
+# Generic Radeon DRM Vulkan transport (GEM/PRIME/CS/completion mechanics
+# over radeon_drm.h).  It carries no Gallium dependency, so it builds from
+# this early site for any consumer.
+if dep_libdrm.found() and (with_ati_r300_vk or with_tests)
+  subdir('radeon/drm_vk')
+endif
+
 if with_amd_vk or with_gallium_radeonsi
   subdir('addrlib')
   subdir('common')
