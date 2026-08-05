@@ -345,6 +345,24 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Byte-identity pin between the legacy pipe-format PSC construction and the
+  # neutral vertex-format identity the producer interface routes through.
+  test(
+    'r300-r2vb-psc-byte-identity',
+    executable(
+      'r300_r2vb_psc_byte_identity_test',
+      files('compiler/tests/r300_r2vb_psc_byte_identity_test.c'),
+      c_args : r300_test_c_args,
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('.'),
+      ],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # R2VB carry-BO producer split decision: an over-budget position-pass FS cut
   # at a single-vec4 SSA frontier into two FP32 halves that both compile under
   # the 64-slot ceiling; wide and unproven integer carries decline, while
