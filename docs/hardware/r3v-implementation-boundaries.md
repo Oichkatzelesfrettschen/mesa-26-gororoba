@@ -432,7 +432,10 @@ the no-submit, drm-shim, and offline kernel-parser classes.
    buffer-only memory, private fixed-cell recording).
 8. Emit and offline-validate the fixed identity-bypass triangle (landed).
 9. Run the attended native triangle cell (separately authorized attended
-   run with precommitted falsifiers).
+   run; preconditions, arming, predictions, falsifiers, rollback, and the
+   retained record live in `docs/hardware/r3v-native-attended-cell-procedure.md`,
+   and the multi-factor submission gate that admits it is
+   `r3v_native_arming_evaluate`).
 10. Build and qualify the native K8 vertex executor.
 11. Migrate native R2VB `F32_3`, then `F32_2`.
 12. Add native images, transfers, and resource-scoped synchronization.
