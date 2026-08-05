@@ -20,11 +20,18 @@ if with_tests
     gnu_symbol_visibility: 'hidden',
   )
 
+  # The state-token residue calibration pins the exact failure set of the
+  # full-surface selector runs, so neither a new failure nor a silent
+  # repair passes unnoticed; the signature file names the mechanism.
+  drm_shim_residue_check = files(
+    'tests/radeon_noop_drm_shim_residue_check.py',
+  )[0]
+  drm_shim_full_selector_signature = files(
+    'tests/state_token_residue_full_selector.signature',
+  )[0]
+
   foreach selector_test : [
     ['default', 'DEFAULT', '0x7140', 'RV515', 'identity'],
-    ['rs482_numeric', '0x5974', '0x5974', 'RS480', 'full'],
-    ['cayman_vm', 'CAYMAN', '0x6700', 'CAYMAN', 'full'],
-    ['tahiti_shader_array', 'TAHITI', '0x6780', 'TAHITI', 'full'],
     ['rs482_name', 'RS482_5974', '0x5974', 'RS480', 'identity'],
     ['rs482_name_lowercase', 'rs482_5974', '0x5974', 'RS480', 'identity'],
     ['rs480_family', 'RS480', '0x5954', 'RS480', 'identity'],
@@ -39,6 +46,29 @@ if with_tests
         selector_test[3],
         selector_test[4],
       ],
+      suite: ['amd', 'drm-shim'],
+    )
+  endforeach
+
+  foreach selector_test : [
+    ['rs482_numeric', '0x5974', '0x5974', 'RS480'],
+    ['cayman_vm', 'CAYMAN', '0x6700', 'CAYMAN'],
+    ['tahiti_shader_array', 'TAHITI', '0x6780', 'TAHITI'],
+  ]
+    test(
+      'radeon-noop-drm-shim-@0@-residue'.format(selector_test[0]),
+      prog_python,
+      args: [
+        drm_shim_residue_check,
+        '--signature', drm_shim_full_selector_signature,
+        '--',
+        radeon_noop_drm_shim_test,
+        selector_test[1],
+        selector_test[2],
+        selector_test[3],
+        'full',
+      ],
+      depends: [radeon_noop_drm_shim_test],
       suite: ['amd', 'drm-shim'],
     )
   endforeach
@@ -128,6 +158,12 @@ if with_tests and cc.get_define(
     timeout: 30,
     suite: ['amd', 'drm-shim'],
   )
+  # The preload runs carry the same state-token residue from the other
+  # side: the exec-inherited child aborts.  They stay uncalibrated while
+  # the OFD-lock alias registration in drm_shim_register_identity_aliases
+  # intermittently exhausts its offset search and reports EAGAIN on a
+  # synthetic sysfs open under parallel test load, which would make an
+  # exact-signature check flaky.
   test(
     'radeon-noop-drm-shim-preload-modern',
     radeon_noop_drm_shim_preload_test,
