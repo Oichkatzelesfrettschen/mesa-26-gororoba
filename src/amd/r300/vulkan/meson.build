@@ -443,6 +443,25 @@ if get_option('r3v-native-backend')
     endif
   endif
 
+  # Attended cell: performs a live DRM_RADEON_CS on RS482 silicon under the
+  # authorization and procedure in
+  # docs/hardware/r3v-native-attended-cell-procedure.md.  It drives the
+  # native ICD directly, so it builds wherever the native backend does; it
+  # is built and never registered as a test, because running it is a
+  # hardware authorization rather than a build-graph result.
+  r3v_native_attended_cell = executable(
+    'r3v_native_attended_cell',
+    files('tests/r3v_native_attended_cell.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+    build_by_default : true,
+    install : false,
+  )
+
   # Full-chain triangle-cell harness on the radeon noop drm-shim: the
   # closed-gate leg proves the fail-closed verdict and byte-identity of
   # the retained IB against the direct emitter, and the open-gate leg
@@ -514,24 +533,6 @@ if get_option('r3v-native-backend')
         r3v_native_arming_runner,
       ],
       suite : ['r3v'],
-    )
-
-    # Attended cell: performs a live DRM_RADEON_CS on RS482 silicon under
-    # the authorization and procedure in
-    # docs/hardware/r3v-native-attended-cell-procedure.md.  It is built,
-    # never registered as a test, because running it is a hardware
-    # authorization rather than a build-graph result.
-    r3v_native_attended_cell = executable(
-      'r3v_native_attended_cell',
-      files('tests/r3v_native_attended_cell.c'),
-      include_directories : [r3v_native_inc, include_directories('.')],
-      dependencies : r3v_native_deps,
-      link_whole : [libr3v_native_impl],
-      link_with : [libradeon_drm_vk],
-      c_args : [no_override_init_args],
-      gnu_symbol_visibility : 'hidden',
-      build_by_default : true,
-      install : false,
     )
 
     # Provider-attestation calibration: with the shim absent from

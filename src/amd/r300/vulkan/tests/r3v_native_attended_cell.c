@@ -15,6 +15,7 @@
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -41,6 +42,20 @@ stage(const char *name)
    fflush(stdout);
 }
 
+/* One directory reached by two spellings is still one directory, so the
+ * comparison resolves both paths when they exist.
+ */
+static bool
+same_directory(const char *a, const char *b)
+{
+   if (strcmp(a, b) == 0)
+      return true;
+   char resolved_a[PATH_MAX];
+   char resolved_b[PATH_MAX];
+   return realpath(a, resolved_a) != NULL && realpath(b, resolved_b) != NULL &&
+          strcmp(resolved_a, resolved_b) == 0;
+}
+
 static int
 write_target(const char *dir, const void *data, size_t size)
 {
@@ -62,10 +77,23 @@ main(int argc, char **argv)
    }
    const char *evidence_dir = argv[1];
 
-   /* The driver reads the evidence directory from the environment; the
-    * argument and the environment must name the same directory so the
-    * retained artifacts and the readback land together.
+   /* The driver reads the evidence directory from the environment, and the
+    * arming conjunction consumes the one-shot token in whichever directory
+    * the environment names.  A caller-supplied value that disagrees with
+    * the argument would arm one directory and read back another, breaking
+    * the binding between the armed cell and the retained result, so the two
+    * name one directory and a disagreement refuses.
     */
+   const char *declared = getenv("R3V_NATIVE_MANIFEST_DIR");
+   if (declared != NULL && declared[0] != '\0' &&
+       !same_directory(declared, evidence_dir)) {
+      fprintf(stderr,
+              "R3V_NATIVE_MANIFEST_DIR names %s and the argument names %s; "
+              "the armed directory and the readback directory are one "
+              "directory\n",
+              declared, evidence_dir);
+      return 2;
+   }
    setenv("R3V_NATIVE_MANIFEST_DIR", evidence_dir, 1);
 
    stage("instance");
@@ -237,8 +265,14 @@ main(int argc, char **argv)
       fprintf(stderr, "color readback map failed\n");
       return 1;
    }
-   if (write_target(evidence_dir, color_map, R3V_ATTENDED_COLOR_BYTES) != 0)
+   /* The color target is the run's primary artifact and the submission is
+    * one-shot, so the oracle's verdict reaches the console only once the
+    * bytes behind it are durable.
+    */
+   if (write_target(evidence_dir, color_map, R3V_ATTENDED_COLOR_BYTES) != 0) {
       fprintf(stderr, "color target retention failed\n");
+      return 1;
+   }
 
    struct r300_triangle_oracle_verdict verdict;
    r300_tcl_bypass_triangle_oracle(color_map, R3V_ATTENDED_COLOR_BYTES,
