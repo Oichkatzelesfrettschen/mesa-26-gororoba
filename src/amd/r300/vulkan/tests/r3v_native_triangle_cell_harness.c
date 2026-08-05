@@ -177,16 +177,15 @@ main(int argc, char **argv)
       return 3;
 
    char manifest_dir[] = "/tmp/r3v-native-cell-XXXXXX";
-   if (open_gate) {
-      setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
-   } else {
-      if (mkdtemp(manifest_dir) == NULL) {
-         fprintf(stderr, "mkdtemp failed\n");
-         return 2;
-      }
-      setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
-      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+   if (mkdtemp(manifest_dir) == NULL) {
+      fprintf(stderr, "mkdtemp failed\n");
+      return 2;
    }
+   setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
+   if (open_gate)
+      setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
+   else
+      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
 
    icd_gipa_fn gipa = vk_icdGetInstanceProcAddr;
    record_cell_fn record_cell = r3v_native_record_tcl_bypass_triangle;
@@ -327,6 +326,32 @@ main(int argc, char **argv)
    if (open_gate) {
       CHECK(result == VK_SUCCESS,
             "open-gate submission through the shim: %d", result);
+
+      /* The retained submit object is distinct from the semantic cell:
+       * its relocation list folds the completion reference in as a third
+       * entry, and the manifest binds both artifacts by digest.
+       */
+      void *submit_relocs = NULL;
+      size_t submit_relocs_size = 0;
+      CHECK(read_whole_file(manifest_dir, "submit_relocs.bin",
+                            &submit_relocs, &submit_relocs_size) == 0,
+            "submit_relocs.bin is retained");
+      CHECK(submit_relocs_size ==
+               (R300_TRIANGLE_SLOT_COUNT + 1) *
+                  sizeof(struct drm_radeon_cs_reloc),
+            "submit object carries the completion reloc (%zu bytes)",
+            submit_relocs_size);
+      free(submit_relocs);
+
+      void *submit_manifest = NULL;
+      size_t submit_manifest_size = 0;
+      CHECK(read_whole_file(manifest_dir, "submit_manifest.json",
+                            &submit_manifest, &submit_manifest_size) == 0 &&
+               submit_manifest_size > 0 &&
+               memmem(submit_manifest, submit_manifest_size,
+                      "\"submit-object\"", 15) != NULL,
+            "submit_manifest.json names the submit object");
+      free(submit_manifest);
 
       /* Mapping the color target after completion invalidates its stale
        * cache lines through the map-establishment sync.
