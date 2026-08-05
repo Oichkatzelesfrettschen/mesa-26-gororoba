@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 
 #include <radeon_drm.h>
 #include <vulkan/vulkan.h>
@@ -25,6 +26,8 @@
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "r3v_native.h"
+
+#include "util/mesa-blake3.h"
 
 /* The harness links the native implementation directly (the ICD version
  * script keeps the shared library's export surface at the three vk_icd*
@@ -190,10 +193,52 @@ main(int argc, char **argv)
       manifest_dir = manifest_template;
       setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
    }
-   if (open_gate)
+   if (open_gate) {
       setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
-   else
+      /* The arming gate admits this shim run only when the harness
+       * declares the same facts the driver collects: the reference
+       * cell's IB digest, this host's kernel release, and its radeon
+       * module srcversion ("none" when no module is loaded).  Declaring
+       * them exercises every comparison; no factor is skipped.
+       */
+      struct r300_tcl_bypass_triangle_ib authorized;
+      if (build_reference_ib(&authorized) != 0) {
+         fprintf(stderr, "reference IB build failed\n");
+         return 2;
+      }
+      char digest[BLAKE3_OUT_LEN * 2 + 1];
+      struct mesa_blake3 ctx;
+      uint8_t raw[BLAKE3_OUT_LEN];
+      _mesa_blake3_init(&ctx);
+      _mesa_blake3_update(&ctx, authorized.ib,
+                          authorized.ib_size_dwords * sizeof(uint32_t));
+      _mesa_blake3_final(&ctx, raw);
+      _mesa_blake3_format(digest, raw);
+      r300_tcl_bypass_triangle_release(&authorized);
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", digest, 1);
+
+      struct utsname host;
+      if (uname(&host) != 0) {
+         fprintf(stderr, "uname failed\n");
+         return 2;
+      }
+      setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", host.release, 1);
+
+      char srcversion[128] = "none";
+      FILE *module = fopen("/sys/module/radeon/srcversion", "r");
+      if (module != NULL) {
+         if (fgets(srcversion, sizeof(srcversion), module) != NULL) {
+            size_t length = strlen(srcversion);
+            while (length > 0 && (srcversion[length - 1] == '\n' ||
+                                  srcversion[length - 1] == ' '))
+               srcversion[--length] = '\0';
+         }
+         fclose(module);
+      }
+      setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION", srcversion, 1);
+   } else {
       unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+   }
 
    icd_gipa_fn gipa = vk_icdGetInstanceProcAddr;
    record_cell_fn record_cell = r3v_native_record_tcl_bypass_triangle;

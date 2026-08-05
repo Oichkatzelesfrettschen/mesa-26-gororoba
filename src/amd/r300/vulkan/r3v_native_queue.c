@@ -6,6 +6,8 @@
  */
 
 #include "r3v_native.h"
+#include "r3v_native_arming.h"
+#include "r3v_physical_device.h"
 
 #include "amd/radeon/drm_vk/radeon_drm_vk_cs.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
@@ -284,6 +286,41 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                           "r3v-native: submit-object evidence retention "
                           "failed; refusing before the ioctl");
+      }
+
+      /* Last gate before the ioctl: every arming factor -- declared
+       * bundle digest against the IB about to travel, authorized chip,
+       * kernel release, radeon module srcversion, and a fresh evidence
+       * directory -- holds at once, or nothing is sent.  Writing the
+       * attempt token disarms the directory, so a second run through the
+       * same evidence refuses even with the same environment.
+       */
+      char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
+      char kernel_release[128];
+      char module_srcversion[128];
+      blake3_hex(cmd_buffer->ib,
+                 cmd_buffer->ib_size_dwords * sizeof(uint32_t), ib_digest);
+      struct r3v_native_arming_facts facts;
+      r3v_native_arming_collect(&facts, device->pdevice->pci_vendor_id,
+                                device->pdevice->pci_device_id, ib_digest,
+                                device->manifest_dir, kernel_release,
+                                sizeof(kernel_release), module_srcversion,
+                                sizeof(module_srcversion));
+      enum r3v_native_arming_verdict arming =
+         r3v_native_arming_evaluate(&facts);
+      if (arming != R3V_NATIVE_ARMING_ARMED) {
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: submission refused: %s",
+                          r3v_native_arming_verdict_name(arming));
+      }
+      if (r3v_native_arming_disarm(device->manifest_dir) != 0) {
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: one-shot disarm failed; refusing "
+                          "before the ioctl");
       }
 
       int result = radeon_drm_vk_cs_submit(&device->drm, &cs);
