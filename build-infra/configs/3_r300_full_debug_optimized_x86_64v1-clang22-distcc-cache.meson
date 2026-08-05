@@ -60,6 +60,10 @@ platforms = ['x11', 'wayland']
 gallium-drivers = ['r300', 'zink']
 vulkan-drivers = ['ati_r300']
 r3v-gallium-backend = true
+# The Gallium-free native ICD (libvulkan_r3v_native) rides beside the Gallium
+# backend as a second library; its drm-shim harness and separation audits run
+# from this build's test graph.
+r3v-native-backend = true
 
 # Maximal OpenGL/GLES surface (desktop GL, GLES1, GLES2).
 opengl = true
@@ -106,8 +110,10 @@ datasources = ['auto']
 # Standalone compiler RCA tools: nir and glsl build the offline NIR/GLSL
 # compilers (so an r300 RC fault can be reproduced off the X server), and
 # dlclose-skip keeps dlopened drivers resident so a gdb backtrace through the
-# pipe-loaded r300 driver keeps its symbols.
-tools = ['nir', 'glsl', 'dlclose-skip']
+# pipe-loaded r300 driver keeps its symbols.  drm-shim builds
+# libradeon_noop_drm_shim, the render-node model the r3v native triangle-cell
+# harness preloads.
+tools = ['nir', 'glsl', 'dlclose-skip', 'drm-shim']
 
 # Build the in-tree unit tests (the r300 compiler and NIR tests), so a compiler
 # fault can be reproduced by a deterministic test instead of only through the
