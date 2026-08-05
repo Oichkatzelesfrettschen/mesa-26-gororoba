@@ -55,4 +55,21 @@ int r300_tcl_bypass_triangle_emit(
 
 void r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib);
 
+/* Builds the cell's reference fragment binary: a structurally valid US
+ * configuration writing config, pixsize, code offset, and the four
+ * code-address words.  Every pre-hardware consumer -- manifest tool, native
+ * recorder, harness -- takes the block from here so their IBs stay
+ * byte-identical; a compiled binary replaces it at attended-cell staging.
+ * Returns 0 or a negative errno; the caller owns the binary.
+ */
+int r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs);
+
+/* The pretransformed screen-space triangle for a 64x64 color target: three
+ * FLOAT_4 positions, sixteen bytes each, the payload of the cell's vertex
+ * BO.
+ */
+#define R300_TRIANGLE_VERTEX_DWORDS 12
+extern const float
+   r300_tcl_bypass_triangle_vertices[R300_TRIANGLE_VERTEX_DWORDS];
+
 #endif /* R300_TCL_BYPASS_TRIANGLE_H */

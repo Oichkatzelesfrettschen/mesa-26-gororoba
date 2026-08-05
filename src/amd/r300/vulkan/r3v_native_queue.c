@@ -115,11 +115,37 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "attended run");
       }
 
+      /* Finite completion: a 4-byte write-domain BO rides the relocation
+       * chunk, the kernel fences it at submit, and the bounded
+       * GEM_WAIT_IDLE returns when the submission retires or escalates to
+       * device loss.  The CS rebuild folds the completion reference in;
+       * the manifest above keeps the pre-completion relocation list, the
+       * exact list the offline replay consumes.
+       */
+      struct radeon_drm_vk_completion completion;
+      if (radeon_drm_vk_completion_init(&device->drm, &completion) != 0) {
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      }
+      uint32_t completion_index;
+      if (radeon_drm_vk_completion_reference(&completion, &relocs,
+                                             &completion_index) != 0) {
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      radeon_drm_vk_cs_build(&cs, cmd_buffer->ib,
+                             cmd_buffer->ib_size_dwords, &relocs, 0, true);
+
       int result = radeon_drm_vk_cs_submit(&device->drm, &cs);
+      if (result == 0)
+         result = radeon_drm_vk_completion_await(&device->drm, &completion);
+      radeon_drm_vk_completion_finish(&device->drm, &completion);
       radeon_drm_vk_reloc_list_finish(&relocs);
       if (result != 0) {
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                          "r3v-native: DRM_RADEON_CS failed: %d", result);
+                          "r3v-native: submission or completion wait "
+                          "failed: %d", result);
       }
    }
 

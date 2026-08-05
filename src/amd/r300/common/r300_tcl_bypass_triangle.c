@@ -142,3 +142,26 @@ r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib)
    free(ib->ib);
    memset(ib, 0, sizeof(*ib));
 }
+
+int
+r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs)
+{
+   static const uint32_t stream[] = {
+      CP_PACKET0(0x4600, 0), 0x0,
+      CP_PACKET0(0x4604, 0), 0x0,
+      CP_PACKET0(0x4608, 0), 0x0,
+      CP_PACKET0(0x4610, 3), 0x0, 0x0, 0x0, 0x00040040,
+   };
+   return r300_fragment_binary_init(fs, stream,
+                                    sizeof(stream) / sizeof(stream[0]), 0, 0,
+                                    "r300-tcl-bypass-triangle-reference");
+}
+
+/* TCL bypass consumes screen-space positions: an inset triangle inside the
+ * 64x64 target, z = 0, w = 1.
+ */
+const float r300_tcl_bypass_triangle_vertices[R300_TRIANGLE_VERTEX_DWORDS] = {
+    8.0f,  8.0f, 0.0f, 1.0f,
+   56.0f,  8.0f, 0.0f, 1.0f,
+   32.0f, 56.0f, 0.0f, 1.0f,
+};

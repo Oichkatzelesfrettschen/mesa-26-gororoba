@@ -1,0 +1,124 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Fixed-cell recorder: lowers the TCL-bypass triangle into a native
+ * command buffer from live GEM buffer objects.
+ */
+
+#include "r3v_native.h"
+
+#include "amd/r300/common/r300_fragment_binary.h"
+#include "amd/r300/common/r300_tcl_bypass_triangle.h"
+
+#include "util/macros.h"
+#include "vk_command_pool.h"
+#include "vk_log.h"
+
+#include <radeon_drm.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* The cell renders a 64x64 RGBA8 color target at a 64-pixel pitch; the
+ * pitch/format word carries the pitch field only until the attended-cell
+ * staging selects the format field.
+ */
+#define R3V_TRIANGLE_COLOR_BYTES (64 * 64 * 4)
+#define R3V_TRIANGLE_COLOR_PITCH_FORMAT 64
+#define R3V_TRIANGLE_VERTEX_BYTES \
+   (R300_TRIANGLE_VERTEX_DWORDS * sizeof(float))
+
+/* Records the fixed TCL-bypass triangle cell into a native command buffer:
+ * writes the pretransformed vertices through the vertex memory's mapping,
+ * builds the reference fragment binary, emits the cell IB, and installs it
+ * with the two BO references in relocation-slot order.  The pre-hardware
+ * harness and the attended-cell runner link this entry directly; the
+ * recording is submit-free, and the queue's hazard gate guards execution.
+ */
+VkResult
+r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
+                                      VkDeviceMemory vertexMemory,
+                                      VkDeviceMemory colorMemory)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, color_memory, colorMemory);
+
+   if (cmd_buffer == NULL || vertex_memory == NULL || color_memory == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   if (vertex_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
+       color_memory->bo.size < R3V_TRIANGLE_COLOR_BYTES) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: triangle cell needs %zu vertex bytes "
+                       "and %u color bytes",
+                       (size_t)R3V_TRIANGLE_VERTEX_BYTES,
+                       R3V_TRIANGLE_COLOR_BYTES);
+   }
+
+   /* The vertex payload lands through the memory's CPU mapping; a
+    * NO_CPU_ACCESS placement fails here and the recorder reports it
+    * instead of submitting an unwritten stream.
+    */
+   bool owns_map = vertex_memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &vertex_memory->bo,
+                            &vertex_memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: triangle vertex memory is not "
+                       "CPU-mappable");
+   }
+   memcpy(vertex_memory->map, r300_tcl_bypass_triangle_vertices,
+          R3V_TRIANGLE_VERTEX_BYTES);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
+                             vertex_memory->map);
+      vertex_memory->map = NULL;
+   }
+
+   struct r300_fragment_binary fs;
+   if (r300_tcl_bypass_triangle_reference_fs(&fs) != 0)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   struct r300_tcl_bypass_triangle_params params = {
+      .vertex_offset = 0,
+      .color_pitch_format = R3V_TRIANGLE_COLOR_PITCH_FORMAT,
+      .fragment_binary = &fs,
+   };
+   struct r300_tcl_bypass_triangle_ib cell;
+   int emit_result = r300_tcl_bypass_triangle_emit(&params, &cell);
+   r300_fragment_binary_finish(&fs);
+   if (emit_result != 0)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   /* Reference order is relocation-slot order: the queue folds the array
+    * in index order and the dedupe keeps first-add order, so the IB's
+    * slot payloads name the final relocation indices.
+    */
+   struct r3v_native_bo_reference *references =
+      calloc(R300_TRIANGLE_SLOT_COUNT, sizeof(*references));
+   if (references == NULL) {
+      r300_tcl_bypass_triangle_release(&cell);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   references[R300_TRIANGLE_SLOT_VERTEX] = (struct r3v_native_bo_reference){
+      .handle = vertex_memory->bo.handle,
+      .read_domains = RADEON_GEM_DOMAIN_GTT,
+      .write_domain = 0,
+   };
+   references[R300_TRIANGLE_SLOT_COLOR] = (struct r3v_native_bo_reference){
+      .handle = color_memory->bo.handle,
+      .read_domains = 0,
+      .write_domain = RADEON_GEM_DOMAIN_GTT,
+   };
+
+   r3v_native_cmd_buffer_install_ib(cmd_buffer, cell.ib, cell.ib_size_dwords,
+                                    references, R300_TRIANGLE_SLOT_COUNT);
+   /* install_ib took ownership of cell.ib; only the descriptor resets. */
+   cell.ib = NULL;
+   r300_tcl_bypass_triangle_release(&cell);
+
+   return VK_SUCCESS;
+}
