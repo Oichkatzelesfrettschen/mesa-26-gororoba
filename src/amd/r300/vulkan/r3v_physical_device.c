@@ -318,7 +318,12 @@ r3v_physical_device_init_properties(struct vk_properties *const props,
    props->deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 
    const char *const chip_name = r3v_chip_name_from_pci_device_id(pci_device_id);
+#ifdef R3V_NATIVE_BACKEND
+   snprintf(props->deviceName, sizeof(props->deviceName), "%s (r3v-native)",
+            chip_name);
+#else
    snprintf(props->deviceName, sizeof(props->deviceName), "%s", chip_name);
+#endif
 
    /* Pipeline-cache UUID: BLAKE3 of the driver build identity plus the PCI
     * device ID, so a driver rebuild or a chip switch invalidates stale
@@ -355,8 +360,17 @@ r3v_physical_device_init_properties(struct vk_properties *const props,
     * accepted: r3v is not run for conformance submission.
     */
    props->driverID = (VkDriverId)0;
+#ifdef R3V_NATIVE_BACKEND
+   /* The native ICD coexists with the Gallium-backed ICD under one loader,
+    * so each carries a distinct driverName and the deviceName states which
+    * implementation the application selected. */
+   snprintf(props->driverName, sizeof(props->driverName), "%s", "r3v-native");
+   snprintf(props->driverInfo, sizeof(props->driverInfo), "%s",
+            "Mesa r3v native (Radeon DRM, pre-hardware)");
+#else
    snprintf(props->driverName, sizeof(props->driverName), "%s", "r3v");
    snprintf(props->driverInfo, sizeof(props->driverInfo), "%s", "Mesa r3v");
+#endif
    props->conformanceVersion = (VkConformanceVersion){0, 0, 0, 0};
    /* VK_EXT_custom_border_color: the border colour lives in the sampler CSO,
     * so the count is bounded only by sampler objects; report the 1.0-era

@@ -924,6 +924,13 @@ option(
 )
 
 option(
+  'r3v-native-backend',
+  type : 'boolean',
+  value : false,
+  description : 'Build the native R3V ICD (libvulkan_r3v_native) over the generic Radeon DRM transport, with no Gallium runtime ownership. Coexists with r3v-gallium-backend; each option produces its own library and ICD manifest.',
+)
+
+option(
   'gallium-xa',
   type : 'boolean',
   value : false,
