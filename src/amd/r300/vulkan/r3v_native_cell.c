@@ -18,12 +18,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The cell renders a 64x64 RGBA8 color target at a 64-pixel pitch; the
- * pitch/format word carries the pitch field only until the attended-cell
- * staging selects the format field.
+/* The cell renders a 64x64 ARGB8888 target at a 64-pixel pitch; the color
+ * allocation carries one extra row past the render extent as the output
+ * oracle's canary, and the whole allocation is sentinel-filled before
+ * submission so any device write is detectable.
  */
-#define R3V_TRIANGLE_COLOR_BYTES (64 * 64 * 4)
-#define R3V_TRIANGLE_COLOR_PITCH_FORMAT 64
+#define R3V_TRIANGLE_COLOR_BYTES (64 * 65 * 4)
 #define R3V_TRIANGLE_VERTEX_BYTES \
    (R300_TRIANGLE_VERTEX_DWORDS * sizeof(float))
 
@@ -84,13 +84,36 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
       vertex_memory->map = NULL;
    }
 
+   /* Sentinel-fill the whole color allocation and publish it, so the
+    * output oracle reads a deterministic pre-draw state and any device
+    * write -- inside or past the render extent -- is detectable.
+    */
+   bool owns_color_map = color_memory->map == NULL;
+   if (owns_color_map &&
+       radeon_drm_vk_bo_map(&device->drm, &color_memory->bo,
+                            &color_memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: triangle color memory is not "
+                       "CPU-mappable");
+   }
+   uint32_t *color_pixels = color_memory->map;
+   for (uint64_t i = 0; i < color_memory->bo.size / 4; i++)
+      color_pixels[i] = R300_TRIANGLE_COLOR_SENTINEL;
+   radeon_drm_vk_bo_cache_sync(&device->drm, color_memory->map,
+                               color_memory->bo.size);
+   if (owns_color_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &color_memory->bo,
+                             color_memory->map);
+      color_memory->map = NULL;
+   }
+
    struct r300_fragment_binary fs;
    if (r300_tcl_bypass_triangle_reference_fs(&fs) != 0)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
-      .color_pitch_format = R3V_TRIANGLE_COLOR_PITCH_FORMAT,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
       .fragment_binary = &fs,
    };
    struct r300_tcl_bypass_triangle_ib cell;

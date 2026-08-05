@@ -7,6 +7,7 @@
 #ifndef R300_TCL_BYPASS_TRIANGLE_H
 #define R300_TCL_BYPASS_TRIANGLE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct r300_fragment_binary;
@@ -55,14 +56,49 @@ int r300_tcl_bypass_triangle_emit(
 
 void r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib);
 
-/* Builds the cell's reference fragment binary: a structurally valid US
- * configuration writing config, pixsize, code offset, and the four
- * code-address words.  Every pre-hardware consumer -- manifest tool, native
- * recorder, harness -- takes the block from here so their IBs stay
- * byte-identical; a compiled binary replaces it at attended-cell staging.
- * Returns 0 or a negative errno; the caller owns the binary.
+/* Builds the cell's fragment binary from the compiled constant-color US
+ * block (r300_tcl_bypass_triangle_fs_block.h, baked by
+ * r300_tcl_bypass_fs_tool from the classic compiler ladder).  Every
+ * pre-hardware consumer -- manifest tool, native recorder, harness --
+ * takes the block from here so their IBs stay byte-identical.  Returns 0
+ * or a negative errno; the caller owns the binary.
  */
 int r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs);
+
+/* Packs RB3D_COLORPITCH0 for a linear little-endian ARGB8888 target the
+ * way r300_texture.c derives surf->pitch: the pitch in pixels ORed with
+ * the ARGB8888 color-format field, tiling and endian fields zero.  Returns
+ * 0 when the pitch is odd or exceeds the register's pitch field.
+ */
+uint32_t r300_rb3d_colorpitch0_pack_argb8888(uint32_t pitch_pixels);
+
+/* The compiled fragment program writes opaque green; this is that color as
+ * one ARGB8888 dword, the value the output oracle demands from interior
+ * pixels.  The attended run is the falsifier for the byte order.
+ */
+#define R300_TRIANGLE_DRAW_COLOR_ARGB8888 0xff00ff00u
+
+/* Deterministic pre-draw fill for the color target; it differs from the
+ * draw color in every byte lane, so any device write is detectable.
+ */
+#define R300_TRIANGLE_COLOR_SENTINEL 0xa5a5a5a5u
+
+/* Output-oracle verdict over a sentinel-initialized 64-pixel-pitch
+ * ARGB8888 target.  executed reports any deviation from the sentinel;
+ * interior demands the draw color at sample points inside the triangle;
+ * exterior demands the sentinel at in-target points outside it; canary
+ * demands the sentinel in every row past the 64-row render extent.
+ */
+struct r300_triangle_oracle_verdict {
+   bool executed;
+   bool interior_pass;
+   bool exterior_pass;
+   bool canary_pass;
+};
+
+void r300_tcl_bypass_triangle_oracle(
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_oracle_verdict *verdict);
 
 /* The pretransformed screen-space triangle for a 64x64 color target: three
  * FLOAT_4 positions, sixteen bytes each, the payload of the cell's vertex

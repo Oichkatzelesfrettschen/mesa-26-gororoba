@@ -47,7 +47,7 @@ main(int argc, char **argv)
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
       /* 64-pixel pitch, format field left to the attended-cell staging. */
-      .color_pitch_format = 64,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
       .fragment_binary = &fs,
    };
    struct r300_tcl_bypass_triangle_ib cell;

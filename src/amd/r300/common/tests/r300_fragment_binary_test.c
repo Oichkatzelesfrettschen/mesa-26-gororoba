@@ -25,6 +25,7 @@
 #define US_PIXSIZE 0x4604
 #define US_CODE_ADDR_0 0x4610
 #define FG_DEPTH_SRC 0x4bd8
+#define PFS_PARAM_TAIL 0x4df0 /* last vec4 of the US constant file */
 #define GA_US_VECTOR_DATA 0x4058
 #define ZB_DEPTHOFFSET 0x4f20 /* outside the US/FG block */
 
@@ -117,7 +118,7 @@ test_validator_rejects_known_bad(void)
 
    /* A sequence that starts inside the block and runs past its end. */
    const uint32_t runs_out[] = {
-      PKT0(FG_DEPTH_SRC, 12), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      PKT0(PFS_PARAM_TAIL, 12), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
    };
    assert(!r300_fragment_binary_stream_valid(
       runs_out, sizeof(runs_out) / sizeof(uint32_t)));

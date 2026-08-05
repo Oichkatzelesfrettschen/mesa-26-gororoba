@@ -2,6 +2,7 @@
 
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_fragment_binary.h"
+#include "r300_tcl_bypass_triangle_fs_block.h"
 
 #include "r300_reg.h"
 
@@ -146,15 +147,98 @@ r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib)
 int
 r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs)
 {
-   static const uint32_t stream[] = {
-      CP_PACKET0(0x4600, 0), 0x0,
-      CP_PACKET0(0x4604, 0), 0x0,
-      CP_PACKET0(0x4608, 0), 0x0,
-      CP_PACKET0(0x4610, 3), 0x0, 0x0, 0x0, 0x00040040,
+   return r300_fragment_binary_init(
+      fs, r300_tcl_bypass_triangle_fs_block,
+      sizeof(r300_tcl_bypass_triangle_fs_block) /
+         sizeof(r300_tcl_bypass_triangle_fs_block[0]),
+      R300_TCL_BYPASS_TRIANGLE_FS_FG_DEPTH_SRC,
+      R300_TCL_BYPASS_TRIANGLE_FS_US_OUT_W,
+      "r300-tcl-bypass-triangle-compiled");
+}
+
+uint32_t
+r300_rb3d_colorpitch0_pack_argb8888(uint32_t pitch_pixels)
+{
+   /* R300_COLORPITCH_MASK covers bits 1-13, so the pitch is even and at
+    * most 0x3ffe pixels; the format field is R300_COLOR_FORMAT_ARGB8888,
+    * and the linear little-endian target keeps tile, microtile, and
+    * endian at zero.
+    */
+   if (pitch_pixels == 0 || (pitch_pixels & 1) != 0 ||
+       pitch_pixels > R300_COLORPITCH_MASK)
+      return 0;
+   return pitch_pixels | R300_COLOR_FORMAT_ARGB8888;
+}
+
+/* Edge function twice the signed area of (a, b, p); the triangle's
+ * vertices wind so every interior point yields three positive values.
+ */
+static int32_t
+triangle_edge(int32_t ax, int32_t ay, int32_t bx, int32_t by, int32_t px,
+              int32_t py)
+{
+   return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+}
+
+static bool
+triangle_interior(uint32_t x, uint32_t y)
+{
+   /* The cell's vertices: (8,8), (56,8), (32,56). */
+   return triangle_edge(8, 8, 56, 8, (int32_t)x, (int32_t)y) > 0 &&
+          triangle_edge(56, 8, 32, 56, (int32_t)x, (int32_t)y) > 0 &&
+          triangle_edge(32, 56, 8, 8, (int32_t)x, (int32_t)y) > 0;
+}
+
+void
+r300_tcl_bypass_triangle_oracle(const uint32_t *pixels, uint32_t size_bytes,
+                                struct r300_triangle_oracle_verdict *verdict)
+{
+   /* Sample points sit at least two pixels from every triangle edge, so
+    * the verdict does not ride the hardware's exact fill rule.
+    */
+   static const struct { uint8_t x, y; } interior[] = {
+      { 32, 20 }, { 20, 12 }, { 44, 12 }, { 32, 44 },
    };
-   return r300_fragment_binary_init(fs, stream,
-                                    sizeof(stream) / sizeof(stream[0]), 0, 0,
-                                    "r300-tcl-bypass-triangle-reference");
+   static const struct { uint8_t x, y; } exterior[] = {
+      { 0, 0 }, { 63, 0 }, { 0, 63 }, { 63, 63 }, { 2, 32 }, { 61, 32 },
+   };
+
+   *verdict = (struct r300_triangle_oracle_verdict) {
+      .interior_pass = true,
+      .exterior_pass = true,
+      .canary_pass = true,
+   };
+
+   const uint32_t pixel_count = size_bytes / 4;
+   for (uint32_t i = 0; i < pixel_count; i++) {
+      if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL) {
+         verdict->executed = true;
+         break;
+      }
+   }
+
+   /* Each sample also re-proves its own triangle membership, so a sample
+    * table drifting out of the analytic geometry reads as a failed
+    * verdict instead of a wrong oracle.
+    */
+   for (unsigned i = 0; i < sizeof(interior) / sizeof(interior[0]); i++) {
+      uint32_t index = (uint32_t)interior[i].y * 64 + interior[i].x;
+      if (!triangle_interior(interior[i].x, interior[i].y) ||
+          index >= pixel_count ||
+          pixels[index] != R300_TRIANGLE_DRAW_COLOR_ARGB8888)
+         verdict->interior_pass = false;
+   }
+   for (unsigned i = 0; i < sizeof(exterior) / sizeof(exterior[0]); i++) {
+      uint32_t index = (uint32_t)exterior[i].y * 64 + exterior[i].x;
+      if (triangle_interior(exterior[i].x, exterior[i].y) ||
+          index >= pixel_count ||
+          pixels[index] != R300_TRIANGLE_COLOR_SENTINEL)
+         verdict->exterior_pass = false;
+   }
+   for (uint32_t i = 64 * 64; i < pixel_count; i++) {
+      if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL)
+         verdict->canary_pass = false;
+   }
 }
 
 /* TCL bypass consumes screen-space positions: an inset triangle inside the

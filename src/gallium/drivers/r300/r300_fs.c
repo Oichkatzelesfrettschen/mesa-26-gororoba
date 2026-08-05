@@ -221,7 +221,7 @@ static void r300_dummy_fragment_shader(
     ralloc_free(state.ir.nir);
 }
 
-static void r300_emit_fs_code_to_buffer(
+void r300_emit_fs_code_to_buffer(
     struct r300_context *r300,
     struct r300_fragment_shader_code *shader)
 {
