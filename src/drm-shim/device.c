@@ -520,6 +520,44 @@ drm_shim_render_identity_parse(int fd,
       identity->current_instance = true;
       return true;
    }
+
+   /* drm_shim_render_node_open hands out per-open state-token memfds, so a
+    * render fd normally reaches here with an inode distinct from the
+    * identity anchor.  The token header carries the instance identifier;
+    * a header that parses under this driver's marker is a render fd, and
+    * an instance match makes it current.
+    */
+   struct drm_shim_state_token_header header;
+   if (drm_shim_state_token_name_parse(fd, &header)) {
+      identity->origin_pid = shim_device.render_owner_pid;
+      identity->current_instance =
+         memcmp(header.instance, shim_device.render_instance,
+                sizeof(shim_device.render_instance)) == 0;
+      return true;
+   }
+
+   /* An identity-anchor memfd inherited across exec has the anchor's name
+    * but a reopened inode; the name parse recovers the instance.
+    */
+   char instance[33];
+   if (drm_shim_render_identity_name_parse(fd, instance)) {
+      identity->origin_pid = shim_device.render_owner_pid;
+      identity->current_instance =
+         memcmp(instance, shim_device.render_instance,
+                sizeof(instance)) == 0;
+      return true;
+   }
+
+   /* A raw open of the synthetic render-node path bypasses the interposer
+    * and lands on the backing file itself; the backing inode is this
+    * instance's render node.
+    */
+   if (drm_shim_fd_names_render_backing(fd)) {
+      identity->origin_pid = shim_device.render_owner_pid;
+      identity->current_instance = true;
+      return true;
+   }
+
    return false;
 }
 
@@ -1224,9 +1262,19 @@ drm_shim_file_create(int fd, bool enable_state)
    if (!shim_fd)
       return NULL;
 
+   /* The backing identity is the fd's own file: render_node_open hands out
+    * per-open state-token memfds, so the anchor's dev/ino describes only
+    * the anchor and drm_shim_fd_matches revalidates each fd against the
+    * file it was registered with.
+    */
+   struct stat backing_status;
+   if (syscall(SYS_fstat, fd, &backing_status) < 0) {
+      free(shim_fd);
+      return NULL;
+   }
    shim_fd->fd = fd;
-   shim_fd->backing_dev = shim_device.lock_backing_dev;
-   shim_fd->backing_ino = shim_device.lock_backing_ino;
+   shim_fd->backing_dev = backing_status.st_dev;
+   shim_fd->backing_ino = backing_status.st_ino;
    shim_fd->owner_pid = getpid();
    int status_flags = syscall(SYS_fcntl, fd, F_GETFL);
    if (status_flags < 0) {
@@ -1972,11 +2020,14 @@ drm_shim_fd_prepare_exec(int **fds, int **descriptor_flags,
       struct shim_fd *shim_fd = entry->data;
       int descriptor_status = syscall(SYS_fcntl, fd, F_GETFD);
       int file_status = syscall(SYS_fcntl, fd, F_GETFL);
+      /* Map membership already proves render identity: every shim_fd was
+       * identity-parsed at registration, and a per-open state token backs
+       * it rather than the anchor file.
+       */
+      (void)shim_fd;
       if (descriptor_status >= 0 &&
           !(descriptor_status & FD_CLOEXEC) &&
-          file_status >= 0 && (file_status & O_PATH) != O_PATH &&
-          shim_fd->backing_dev == shim_device.lock_backing_dev &&
-          shim_fd->backing_ino == shim_device.lock_backing_ino) {
+          file_status >= 0 && (file_status & O_PATH) != O_PATH) {
          locator_fd = fd;
          break;
       }

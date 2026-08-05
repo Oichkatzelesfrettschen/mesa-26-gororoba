@@ -162,6 +162,7 @@ extern const int render_node_minor;
 bool drm_shim_inited(void);
 bool drm_shim_fd_is_internal(int fd);
 bool drm_shim_fd_reports_selected_device(int fd);
+bool drm_shim_fd_names_render_backing(int fd);
 int drm_shim_render_node_open(int flags);
 int drm_shim_render_node_path(char *path, size_t capacity);
 void drm_shim_fd_scan_inherited(void);
