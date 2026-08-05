@@ -4,12 +4,16 @@
 
 The current-source statements in this document describe
 `mesa-26-gororoba` at
-`a576afb9414c47b39f54c5a3f4e4ece6cb61fb21`.
+`3737a1dfb94c84015ea6b847c966ab05f5f16124`.
 
-The current Gallium-backed implementation is live code. The native Radeon DRM
-implementation and the complete Vulkan semantic/conformance sections are
-proposed implementation contracts. They do not describe native ownership or
-Vulkan conformance that already exists.
+The current Gallium-backed implementation is live code. The native R3V ICD
+exists as a distinct Gallium-free library with an owned Radeon DRM transport,
+GEM-backed memory, queue and command-carrier objects, and one privately
+injected fixed-cell PM4 lowering path; its evidence stands at the host-unit,
+build/link, no-submit PM4, offline kernel-parser, and drm-shim host-model
+classes. It is not yet a native Vulkan graphics driver, a live Radeon DRM
+execution witness, or a proven RS482 raster path. The complete Vulkan
+semantic/conformance sections remain implementation contracts.
 
 The bounded R300 R2VB `FLOAT_2` source transaction has one home:
 `r300-r2vb-float2-source-contract.md`. This document owns the implementation
@@ -53,6 +57,10 @@ structural query.
 | Extracted shader descriptors still borrow Gallium-owned storage | `src/gallium/drivers/r300/r300_public.h`; `src/amd/r300/vulkan/r3v_pipeline.c` | `rg -n 'extract' src/gallium/drivers/r300/r300_public.h src/amd/r300/vulkan/r3v_pipeline.c` |
 | Unsupported compute shapes can complete without execution | `src/amd/r300/vulkan/r3v_pipeline.c`; `r3v_cmd_buffer.c` | `rg -n 'R300_COMPUTE_REJECT_UNKNOWN_SHAPE\|no-op' src/amd/r300/vulkan/r3v_pipeline.c` |
 | Current R2VB source and delivery domains | `src/gallium/drivers/r300/r300_r2vb.c`; `src/amd/r300/common/r300_r2vb_source_contract.h` | `rg -n 'producer_input_preflight\|delivery_element_preflight' src/gallium/drivers/r300/r300_r2vb.c` |
+| Native ICD build identity and separation audit | `meson.options`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-backend\|libvulkan_r3v_native\|separation' meson.options src/amd/r300/vulkan/meson.build` |
+| Gallium-free Radeon DRM transport | `src/amd/radeon/drm_vk/` | `rg -n 'radeon_drm_vk_cs_build\|radeon_drm_vk_completion' src/amd/radeon/drm_vk/` |
+| Native submit gate fails closed and retains the manifest | `src/amd/r300/vulkan/r3v_native_queue.c` | `rg -n 'R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED\|R3V_NATIVE_MANIFEST_DIR' src/amd/r300/vulkan/` |
+| Private fixed-cell recording outside the ICD export surface | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native.h` | `rg -n 'r3v_native_record_tcl_bypass_triangle' src/amd/r300/vulkan/` |
 
 ## Current Gallium-backed R3V implementation
 
@@ -128,6 +136,36 @@ functional build omits runtime ownership by `driver_r300`, `libgallium`,
 A loader-only skeleton is not the native implementation. A direct selector that
 falls back to Gallium is not the native implementation. Extracted PM4 that
 still aliases a Gallium CSO is not native ownership.
+
+### Current native state
+
+`-Dr3v-native-backend=true` builds `libvulkan_r3v_native.so` beside the
+Gallium-backed ICD; the separation audit holds its exports to the three
+`vk_icd*` symbols and its dependency list free of Gallium runtime libraries.
+The landed mechanisms are:
+
+- the Gallium-free transport `src/amd/radeon/drm_vk/` (ioctl vtable seam,
+  BO/PRIME refcount, relocation dedupe, three-chunk CS build/submit split,
+  finite completion via a write-domain BO plus bounded `GEM_WAIT_IDLE`);
+- deep-copied fragment binaries (`r300_fragment_binary`) with content hash
+  and structural validator;
+- native device, memory (one owned GEM BO per `VkDeviceMemory`, buffer-only),
+  queue, and command-carrier objects; reporting narrowed to executable
+  routes: empty feature and extension tables, queue flags zero, one UMA
+  heap sized from `DRM_RADEON_GEM_INFO`;
+- the fixed TCL-bypass triangle lowered into a native command buffer by
+  `r3v_native_record_tcl_bypass_triangle`, a private entry linked directly
+  by the pre-hardware harness; `vkBeginCommandBuffer` and
+  `vkEndCommandBuffer` record nothing themselves;
+- the exact-value submit gate `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1`; the
+  closed gate retains the IB, relocation list, and manifest under
+  `R3V_NATIVE_MANIFEST_DIR` and fails closed with `VK_ERROR_DEVICE_LOST`;
+- the drm-shim triangle-cell harness driving both gate states, with the
+  closed-gate retained IB byte-identical to the direct emitter.
+
+Graphics and compute pipelines, public Vulkan command recording, images,
+descriptors, transfers, WSI, the CPU vertex route, native R2VB, and any live
+`DRM_RADEON_CS` submission remain outside the landed surface.
 
 ### Source-layer split
 
@@ -342,13 +380,17 @@ F32_4 -> 4 physical dwords -> XYZW logical vec4
 The live automatic R2VB producer admits `F32_3` and `F32_4`. Final delivery
 admits FP32x4 only. `F32_2` remains outside the live route.
 
-The integration order is:
+The integration order, with steps 1 through 4 landed at the pinned head:
 
-1. keep the neutral source and Gallium-adapter tests in the normal build;
+1. keep the neutral source and Gallium-adapter tests in the normal build
+   (landed);
 2. route existing `F32_3` and `F32_4` construction through the neutral contract
-   with byte-identical PM4 controls;
-3. add an exact `F32_2` source gate that never rides `R300_R2VB_STANDING`;
-4. capture the six-dword `FLOAT_4 + FLOAT_2` producer tuple without submit;
+   with byte-identical PM4 controls (landed; pinned by
+   `r300_r2vb_psc_byte_identity_test`);
+3. add an exact `F32_2` source gate that never rides `R300_R2VB_STANDING`
+   (landed as `R300_R2VB_FLOAT2_SOURCE`);
+4. capture the six-dword `FLOAT_4 + FLOAT_2` producer tuple without submit
+   (landed; pinned by `r300_r2vb_float2_tuple_test`);
 5. extend userspace and kernel validators from identity-only PSC to explicit
    synthesized-lane contracts;
 6. run the bounded `FLOAT_2` silicon ladder;
@@ -375,16 +417,22 @@ findings remain in the evidence repository.
 
 ## Ordered development
 
+Steps 2 through 8 are landed at the pinned head; step 8's evidence stands at
+the no-submit, drm-shim, and offline kernel-parser classes.
+
 1. Keep the Gallium-backed implementation current and semantically honest.
 2. Refactor existing `F32_3` and `F32_4` R2VB construction through the neutral
-   source contract.
-3. Land the gated `F32_2` no-submit producer transaction and validators.
-4. Extract a generic Radeon DRM transport layer with host tests.
-5. Deep-copy R300 fragment binaries into R3V-owned storage.
-6. Create distinct Gallium-backed and native ICD identities.
-7. Build native BO, memory, command, queue, and completion ownership.
-8. Emit and offline-validate the fixed identity-bypass triangle.
-9. Run the attended native triangle cell.
+   source contract (landed).
+3. Land the gated `F32_2` no-submit producer transaction and validators
+   (landed; the synthesized-lane validator extension remains open).
+4. Extract a generic Radeon DRM transport layer with host tests (landed).
+5. Deep-copy R300 fragment binaries into R3V-owned storage (landed).
+6. Create distinct Gallium-backed and native ICD identities (landed).
+7. Build native BO, memory, command, queue, and completion ownership (landed;
+   buffer-only memory, private fixed-cell recording).
+8. Emit and offline-validate the fixed identity-bypass triangle (landed).
+9. Run the attended native triangle cell (separately authorized attended
+   run with precommitted falsifiers).
 10. Build and qualify the native K8 vertex executor.
 11. Migrate native R2VB `F32_3`, then `F32_2`.
 12. Add native images, transfers, and resource-scoped synchronization.

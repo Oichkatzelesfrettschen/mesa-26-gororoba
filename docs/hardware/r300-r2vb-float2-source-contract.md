@@ -58,22 +58,30 @@ submission and establish no runtime or silicon result.
 
 The current live path:
 
-- does not admit `FLOAT_2`;
-- has not routed existing `FLOAT_3`/`FLOAT_4` construction through the neutral
-  contract;
+- routes `FLOAT_3` and `FLOAT_4` producer preflight, stream construction, and
+  PSC validation through the neutral format authority; the
+  `r300_r2vb_psc_byte_identity_test` pin holds the legacy and neutral PSC
+  words dword-equal;
+- carries the exact-value `R300_R2VB_FLOAT2_SOURCE` experimental gate through
+  the `_gated` producer variants; every production admission path passes
+  `float2_enabled = false` literally, so `FLOAT_2` structurally cannot enter
+  the automatic route;
+- captures the six-dword `FLOAT_4 + FLOAT_2` producer tuple without submit;
+  the `r300_r2vb_float2_tuple_test` pin holds the tuple, the `XY01`
+  expansion, and the known-bad declines;
 - leaves `R300_R2VB_STANDING` and the closed automatic source-domain matrix
-  unchanged;
+  unchanged; `R300_R2VB_FLOAT2_SOURCE` never joins `standing_gates[]`;
 - keeps final delivery at FP32x4;
 - has no kernel validation claim for synthesized `XY01` lanes.
 
 ## Next integration step
 
-Refactor the existing `FLOAT_3` and `FLOAT_4` producer preflight, stream
-construction, and PSC validation through the neutral format authority while
-requiring byte-identical PM4 and unchanged route outcomes.
-
-Only after that control remains exact may a separate `FLOAT_2` source gate reach
-a no-submit six-dword `FLOAT_4 + FLOAT_2` transaction.
+Extend the userspace and kernel synthesized-lane validators from
+identity-only PSC to the explicit per-format selector contract
+(`FLOAT_2 -> X, Y, ZERO, ONE`), keeping `semantic_end` and `hardware_end`
+distinct. The kernel counterpart (VAP_PROG_STREAM_CNTL(_EXT), VAP_VTX_SIZE,
+and LOAD_VBPNTR acceptance of the `FLOAT_2 + XY01 + vtx_size 6` tuple) lands
+in the Radeon kernel source repository.
 
 Automatic live promotion remains disabled until userspace and kernel validators
 agree on the synthesized-lane contract and a bounded RS480-family silicon
