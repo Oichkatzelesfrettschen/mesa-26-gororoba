@@ -176,12 +176,20 @@ main(int argc, char **argv)
    if (attest_shim_provider() != 0)
       return 3;
 
-   char manifest_dir[] = "/tmp/r3v-native-cell-XXXXXX";
-   if (mkdtemp(manifest_dir) == NULL) {
-      fprintf(stderr, "mkdtemp failed\n");
-      return 2;
+   /* A caller-provided manifest directory survives the run, so an outer
+    * replay harness can consume the retained artifacts; otherwise a
+    * private directory serves the in-process checks.
+    */
+   char manifest_template[] = "/tmp/r3v-native-cell-XXXXXX";
+   const char *manifest_dir = getenv("R3V_NATIVE_MANIFEST_DIR");
+   if (manifest_dir == NULL || manifest_dir[0] == '\0') {
+      if (mkdtemp(manifest_template) == NULL) {
+         fprintf(stderr, "mkdtemp failed\n");
+         return 2;
+      }
+      manifest_dir = manifest_template;
+      setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
    }
-   setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
    if (open_gate)
       setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
    else
