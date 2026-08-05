@@ -753,6 +753,28 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Constant-color US block for the TCL-bypass triangle cell: --check proves
+  # the checked-in golden header regenerates from the classic ladder and the
+  # production cb_code baker; --emit rewrites it.
+  r300_tcl_bypass_fs_tool = executable(
+    'r300_tcl_bypass_fs_tool',
+    files('compiler/tests/r300_tcl_bypass_fs_tool.c'),
+    c_args : r300_test_c_args,
+    include_directories : [
+      inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+      include_directories('compiler'),
+    ],
+    link_with : [libr300, libgallium],
+    dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'r300-tcl-bypass-fs-block-regeneration',
+    r300_tcl_bypass_fs_tool,
+    args : ['--check'],
+    suite : ['r300'],
+  )
+
   # Classic fragment-compiler register allocation: chain recycling and the
   # register-file boundary, fit and reject sides.
   test(

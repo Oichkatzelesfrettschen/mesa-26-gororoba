@@ -96,7 +96,7 @@ make_cell(struct r300_fragment_binary *fs,
 
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
-      .color_pitch_format = 64,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
    };
    params.fragment_binary = fs;
    assert(r300_tcl_bypass_triangle_emit(&params, cell) == 0);
@@ -190,6 +190,58 @@ test_emit_rejects_unvalidated_binary(void)
    assert(r300_tcl_bypass_triangle_emit(&params, &cell) == -EINVAL);
 }
 
+static void
+test_colorpitch0_pack(void)
+{
+   /* 64 pixels, linear little-endian ARGB8888: pitch field 64 plus the
+    * ARGB8888 format select (6 << 21).
+    */
+   assert(r300_rb3d_colorpitch0_pack_argb8888(64) == 0x00c00040u);
+   assert(r300_rb3d_colorpitch0_pack_argb8888(0) == 0);
+   assert(r300_rb3d_colorpitch0_pack_argb8888(63) == 0);
+   assert(r300_rb3d_colorpitch0_pack_argb8888(0x4000) == 0);
+}
+
+static void
+test_output_oracle(void)
+{
+   enum { PIXELS = 64 * 65 };
+   static uint32_t target[PIXELS];
+   struct r300_triangle_oracle_verdict verdict;
+
+   /* Untouched sentinel target: no execution evidence, boundaries hold. */
+   for (unsigned i = 0; i < PIXELS; i++)
+      target[i] = R300_TRIANGLE_COLOR_SENTINEL;
+   r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
+   assert(!verdict.executed && !verdict.interior_pass &&
+          verdict.exterior_pass && verdict.canary_pass);
+
+   /* A painted block covering every interior sample point carries the
+    * draw color while the exterior samples stay sentinel.
+    */
+   for (unsigned y = 9; y < 55; y++)
+      for (unsigned x = 10; x < 54; x++)
+         target[y * 64 + x] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+   r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
+   assert(verdict.executed && verdict.interior_pass);
+
+   /* Wrong interior color fails the interior check. */
+   target[20 * 64 + 32] = 0xffff0000u;
+   r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
+   assert(!verdict.interior_pass);
+   target[20 * 64 + 32] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+
+   /* A stray exterior write and a canary-row write each fail closed. */
+   target[0] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+   r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
+   assert(!verdict.exterior_pass);
+   target[0] = R300_TRIANGLE_COLOR_SENTINEL;
+
+   target[64 * 64 + 5] = 0x00000001u;
+   r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
+   assert(!verdict.canary_pass);
+}
+
 int
 main(void)
 {
@@ -197,6 +249,8 @@ main(void)
    test_reloc_sites_bind_slots();
    test_emission_is_deterministic();
    test_emit_rejects_unvalidated_binary();
+   test_colorpitch0_pack();
+   test_output_oracle();
    printf("r300_tcl_bypass_triangle_test: all checks passed\n");
    return 0;
 }

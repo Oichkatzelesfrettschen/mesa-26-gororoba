@@ -16,12 +16,14 @@
 #define R300_FRAGMENT_BINARY_PKT_COUNT(header) ((((header) >> 16) & 0x3fff) + 1)
 #define R300_FRAGMENT_BINARY_PKT_REG(header) (((header) & 0xffff) << 2)
 
-/* The R300/R400 fragment program lives in the US/FG register block, and the
- * R500 upload path streams instruction words through the GA US vector
+/* The R300/R400 fragment program lives in the US/FG register block, its
+ * immediate constants in the US constant file (R300_PFS_PARAM_0_X 0x4C00
+ * through the last parameter word below RB3D at 0x4E00), and the R500
+ * upload path streams instruction words through the GA US vector
  * index/data pair.
  */
 #define R300_FRAGMENT_BINARY_US_FG_FIRST 0x4600
-#define R300_FRAGMENT_BINARY_US_FG_END 0x4c00
+#define R300_FRAGMENT_BINARY_US_FG_END 0x4e00
 #define R300_FRAGMENT_BINARY_GA_US_VECTOR_INDEX 0x4054
 #define R300_FRAGMENT_BINARY_GA_US_VECTOR_DATA 0x4058
 

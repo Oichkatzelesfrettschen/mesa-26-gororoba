@@ -186,6 +186,13 @@ void *r300_create_fs_state_internal(struct pipe_context *pipe,
                                     const struct pipe_shader_state *shader,
                                     enum r300_fs_input_semantics input_semantics);
 
+/* Bake the compiled fragment-program code into the shader's cb_code PM4
+ * register-write stream.  Reads only screen caps (is_r500, is_r400,
+ * hb_r400_us) and options.ieeemath from the context, so a compiler tool can
+ * drive it with a zeroed context naming a fake screen. */
+void r300_emit_fs_code_to_buffer(struct r300_context *r300,
+                                 struct r300_fragment_shader_code *shader);
+
 /* Return TRUE if the shader was switched and should be re-emitted. */
 bool r300_pick_fragment_shader(struct r300_context *r300,
                                struct r300_fragment_shader* fs,

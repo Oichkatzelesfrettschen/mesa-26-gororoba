@@ -155,7 +155,7 @@ build_reference_ib(struct r300_tcl_bypass_triangle_ib *cell)
       return 1;
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
-      .color_pitch_format = 64,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
       .fragment_binary = &fs,
    };
    int rc = r300_tcl_bypass_triangle_emit(&params, cell);
@@ -259,7 +259,7 @@ main(int argc, char **argv)
    result = vkAllocateMemory(device, &alloc_info, NULL, &vertex_memory);
    CHECK(result == VK_SUCCESS, "vertex vkAllocateMemory: %d", result);
 
-   alloc_info.allocationSize = 64 * 64 * 4;
+   alloc_info.allocationSize = 64 * 65 * 4;
    VkDeviceMemory color_memory = VK_NULL_HANDLE;
    result = vkAllocateMemory(device, &alloc_info, NULL, &color_memory);
    CHECK(result == VK_SUCCESS, "color vkAllocateMemory: %d", result);
@@ -313,8 +313,8 @@ main(int argc, char **argv)
     */
    struct r3v_native_device *native_device =
       r3v_native_device_from_handle(device);
-   CHECK(native_device->drm.cache_sync_count == 1,
-         "recorder publication ran once: %" PRIu64,
+   CHECK(native_device->drm.cache_sync_count == 2,
+         "recorder published the vertex and sentinel writes: %" PRIu64,
          native_device->drm.cache_sync_count);
 
    result = vkQueueSubmit(queue, 1,
@@ -337,9 +337,22 @@ main(int argc, char **argv)
                         &color_map) == VK_SUCCESS &&
                color_map != NULL,
             "color memory maps after completion");
-      CHECK(native_device->drm.cache_sync_count == 2,
+      CHECK(native_device->drm.cache_sync_count == 3,
             "map establishment invalidated the color target: %" PRIu64,
             native_device->drm.cache_sync_count);
+
+      /* The shim absorbs the submission without executing it, so the
+       * honest oracle verdict is a sentinel-intact target: no execution
+       * evidence, exterior and canary untouched.
+       */
+      struct r300_triangle_oracle_verdict oracle;
+      r300_tcl_bypass_triangle_oracle(color_map, 64 * 65 * 4, &oracle);
+      CHECK(!oracle.executed && !oracle.interior_pass &&
+               oracle.exterior_pass && oracle.canary_pass,
+            "shim run leaves the sentinel intact (executed %d interior %d "
+            "exterior %d canary %d)",
+            oracle.executed, oracle.interior_pass, oracle.exterior_pass,
+            oracle.canary_pass);
    } else {
       CHECK(result == VK_ERROR_DEVICE_LOST,
             "closed gate fails closed: %d", result);
