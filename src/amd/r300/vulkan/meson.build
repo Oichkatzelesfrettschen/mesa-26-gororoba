@@ -80,6 +80,7 @@ if get_option('r3v-gallium-backend') and with_gallium_r300
     'r3v_dp4_fs_nir.c',
     'r3v_pipeline.c',
     'r3v_object.c',
+    '../common/r300_fragment_binary.c',
   )
   libr3v_deps += [
     idep_nir,
@@ -157,7 +158,8 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
     'r3v-static-offset',
     executable(
       'r3v_static_offset_test',
-      files('r3v_dp4_fs_nir.c', 'tests/r3v_static_offset_test.c'),
+      files('r3v_dp4_fs_nir.c', 'tests/r3v_static_offset_test.c',
+            '../common/r300_fragment_binary.c'),
       include_directories : [libr3v_inc, include_directories('.')],
       dependencies : libr3v_deps,
       link_with : libr3v_link_with,
@@ -211,6 +213,7 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
     executable(
       'r3v_r2vb_typed_route_oracle_test',
       [r3v_entrypoints[0], files('r3v_pipeline.c', 'r3v_dp4_fs_nir.c',
+                                 '../common/r300_fragment_binary.c',
                                  'tests/r3v_r2vb_typed_route_oracle_test.c')],
       include_directories : [
         libr3v_inc, include_directories('.'),
@@ -239,6 +242,7 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
     executable(
       'r3v_r2vb_producer_census',
       [r3v_entrypoints[0], files('r3v_pipeline.c', 'r3v_dp4_fs_nir.c',
+                                 '../common/r300_fragment_binary.c',
                                  'tests/r3v_r2vb_producer_census.c')],
       include_directories : [
         libr3v_inc, include_directories('.'),
