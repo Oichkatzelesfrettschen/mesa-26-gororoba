@@ -14,19 +14,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define PKT0(reg, count) ((((count) - 1) << 16) | ((reg) >> 2))
-
-/* The cell's fixed fragment block until a compiled binary feeds the tool: a
- * structurally valid US configuration writing config, pixsize, code offset,
- * and the four code-address words.
- */
-static const uint32_t manifest_fs_stream[] = {
-   PKT0(0x4600, 1), 0x0,
-   PKT0(0x4604, 1), 0x0,
-   PKT0(0x4608, 1), 0x0,
-   PKT0(0x4610, 4), 0x0, 0x0, 0x0, 0x00040040,
-};
-
 static int
 write_file(const char *dir, const char *name, const void *data, size_t size)
 {
@@ -52,10 +39,7 @@ main(int argc, char **argv)
    const char *dir = argv[1];
 
    struct r300_fragment_binary fs;
-   if (r300_fragment_binary_init(&fs, manifest_fs_stream,
-                                 sizeof(manifest_fs_stream) /
-                                    sizeof(uint32_t),
-                                 0, 0, "r300-triangle-manifest") != 0) {
+   if (r300_tcl_bypass_triangle_reference_fs(&fs) != 0) {
       fprintf(stderr, "fragment binary construction failed\n");
       return 1;
    }

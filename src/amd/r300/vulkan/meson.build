@@ -312,26 +312,57 @@ devenv.append('VK_ICD_FILENAMES', _dev_icd.full_path())
 # no Gallium entry symbol.
 if get_option('r3v-native-backend')
   r3v_native_files = files(
+    'r3v_native_cell.c',
     'r3v_native_cmd.c',
     'r3v_native_device.c',
     'r3v_native_memory.c',
     'r3v_native_queue.c',
+    '../common/r300_fragment_binary.c',
+    '../common/r300_tcl_bypass_triangle.c',
+  )
+
+  r3v_native_inc = [
+    inc_include,
+    inc_src,
+    inc_gallium,
+    # r300_reg.h for the fixed-cell emitter.
+    include_directories('../../../gallium/drivers/r300'),
+  ]
+  r3v_native_deps = [
+    dep_libdrm,
+    idep_mesautil,
+    idep_vulkan_runtime,
+    idep_vulkan_util,
+    idep_vulkan_wsi,
+  ]
+
+  # One compile of the native implementation feeds both the ICD shared
+  # library and the triangle-cell harness; the ICD version script keeps
+  # the loader surface at the three vk_icd* exports, so the harness links
+  # the implementation directly instead of dlopening the ICD.  The static
+  # library takes compile-only partial dependencies so the runtime and WSI
+  # objects link once, at each consumer.
+  r3v_native_compile_deps = []
+  foreach _dep : r3v_native_deps
+    r3v_native_compile_deps += _dep.partial_dependency(
+      compile_args : true, includes : true, sources : true)
+  endforeach
+
+  libr3v_native_impl = static_library(
+    'r3v_native_impl',
+    [r3v_loader_base_files, r3v_native_files, r3v_entrypoints],
+    include_directories : r3v_native_inc,
+    dependencies : r3v_native_compile_deps,
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args, '-DR3V_NATIVE_BACKEND'],
+    gnu_symbol_visibility : 'hidden',
   )
 
   libvulkan_r3v_native = shared_library(
     'vulkan_r3v_native',
-    [r3v_loader_base_files, r3v_native_files, r3v_entrypoints],
     vs_module_defs : vulkan_api_def,
-    include_directories : [inc_include, inc_src, inc_gallium],
-    dependencies : [
-      dep_libdrm,
-      idep_mesautil,
-      idep_vulkan_runtime,
-      idep_vulkan_util,
-      idep_vulkan_wsi,
-    ],
-    link_with : [libradeon_drm_vk],
-    c_args : [no_override_init_args, '-DR3V_NATIVE_BACKEND'],
+    link_whole : [libr3v_native_impl],
+    dependencies : r3v_native_deps,
     link_args : [
       ld_args_build_id,
       ld_args_bsymbolic,
@@ -409,5 +440,41 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endif
+  endif
+
+  # Full-chain triangle-cell harness on the radeon noop drm-shim: the
+  # closed-gate leg proves the fail-closed verdict and byte-identity of
+  # the retained IB against the direct emitter, and the open-gate leg
+  # proves the transport path with the shim absorbing DRM_RADEON_CS.
+  if with_tests and with_tools.contains('drm-shim') and cc.get_define(
+    '__GLIBC__', prefix : '#include <features.h>') != ''
+    r3v_native_triangle_cell_harness = executable(
+      'r3v_native_triangle_cell_harness',
+      files('tests/r3v_native_triangle_cell_harness.c'),
+      include_directories : r3v_native_inc,
+      dependencies : r3v_native_deps,
+      # The entrypoint tables reference driver functions weakly, so the
+      # whole implementation archive links in; plain link_with would skip
+      # the objects only the dispatch tables name.
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    )
+    r3v_native_cell_env = environment({
+      'LD_PRELOAD' : libradeon_noop_drm_shim.full_path(),
+      'RADEON_GPU_ID' : '0x5974',
+    })
+    foreach cell_mode : ['closed', 'open']
+      test(
+        'r3v-native-triangle-cell-@0@'.format(cell_mode),
+        r3v_native_triangle_cell_harness,
+        args : [cell_mode],
+        env : r3v_native_cell_env,
+        depends : [libradeon_noop_drm_shim],
+        timeout : 60,
+        suite : ['r3v'],
+      )
+    endforeach
   endif
 endif

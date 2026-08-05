@@ -102,4 +102,13 @@ void r3v_native_cmd_buffer_install_ib(
 VkResult r3v_native_queue_submit(struct vk_queue *queue,
                                  struct vk_queue_submit *submit);
 
+/* Fixed-cell recorder, linked directly by the pre-hardware harness and the
+ * attended-cell runner: lowers the TCL-bypass triangle into the command
+ * buffer from the two live buffer-object memories.  Recording is
+ * submit-free; the queue's hazard gate guards execution.
+ */
+VkResult r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
+                                               VkDeviceMemory vertexMemory,
+                                               VkDeviceMemory colorMemory);
+
 #endif /* R3V_NATIVE_H */
