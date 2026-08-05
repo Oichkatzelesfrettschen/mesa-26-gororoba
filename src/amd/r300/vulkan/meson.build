@@ -452,7 +452,7 @@ if get_option('r3v-native-backend')
       'r3v_native_triangle_cell_harness',
       files('tests/r3v_native_triangle_cell_harness.c'),
       include_directories : r3v_native_inc,
-      dependencies : r3v_native_deps,
+      dependencies : [r3v_native_deps, dep_dl],
       # The entrypoint tables reference driver functions weakly, so the
       # whole implementation archive links in; plain link_with would skip
       # the objects only the dispatch tables name.
@@ -464,6 +464,7 @@ if get_option('r3v-native-backend')
     r3v_native_cell_env = environment({
       'LD_PRELOAD' : libradeon_noop_drm_shim.full_path(),
       'RADEON_GPU_ID' : '0x5974',
+      'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
     })
     foreach cell_mode : ['closed', 'open']
       test(
@@ -476,5 +477,22 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+    # Provider-attestation calibration: with the shim absent from
+    # LD_PRELOAD, open and ioctl resolve into libc, and the harness
+    # refuses before the hazard gate opens and before any Vulkan call.
+    r3v_native_cell_unattested_env = environment({
+      'RADEON_GPU_ID' : '0x5974',
+      'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
+    })
+    test(
+      'r3v-native-triangle-cell-unattested',
+      r3v_native_triangle_cell_harness,
+      args : ['open'],
+      env : r3v_native_cell_unattested_env,
+      depends : [libradeon_noop_drm_shim],
+      should_fail : true,
+      timeout : 60,
+      suite : ['r3v'],
+    )
   endif
 endif

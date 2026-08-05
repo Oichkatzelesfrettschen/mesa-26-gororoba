@@ -10,11 +10,13 @@
  * absorbing DRM_RADEON_CS.
  */
 
+#include <dlfcn.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include <radeon_drm.h>
 #include <vulkan/vulkan.h>
@@ -43,6 +45,69 @@ static unsigned failures;
          failures++;                            \
       }                                         \
    } while (0)
+
+/* A VK_SUCCESS open-gate run only proves the shim absorbed DRM_RADEON_CS
+ * when the interposed entry points actually resolve into the preloaded
+ * shim DSO; the same result code would come back from a live kernel
+ * accept.  The attestation resolves each interposed symbol with dlsym,
+ * maps it to its providing object with dladdr, and compares that object
+ * to DRM_SHIM_EXPECTED_DSO by device and inode.  It runs before the
+ * hazard gate opens and before any Vulkan call, so a wrong or missing
+ * provider refuses the run ahead of device enumeration and GEM
+ * allocation.
+ */
+static bool
+same_file(const char *left, const char *right)
+{
+   struct stat left_status;
+   struct stat right_status;
+   return stat(left, &left_status) == 0 &&
+          stat(right, &right_status) == 0 &&
+          left_status.st_dev == right_status.st_dev &&
+          left_status.st_ino == right_status.st_ino;
+}
+
+static int
+attest_shim_provider(void)
+{
+   const char *expected = getenv("DRM_SHIM_EXPECTED_DSO");
+   if (expected == NULL || expected[0] == '\0') {
+      fprintf(stderr,
+              "REFUSE: DRM_SHIM_EXPECTED_DSO is unset; the harness "
+              "cannot attest the interposition provider\n");
+      return 1;
+   }
+
+   /* The shim interposes open (open64 aliases it) and ioctl; the render
+    * node open and DRM_RADEON_CS both travel through them.
+    */
+   static const char *const interposed[] = { "open", "ioctl" };
+   for (unsigned i = 0; i < 2; i++) {
+      dlerror();
+      void *symbol = dlsym(RTLD_DEFAULT, interposed[i]);
+      const char *error = dlerror();
+      if (symbol == NULL || error != NULL) {
+         fprintf(stderr, "REFUSE: symbol %s is unavailable: %s\n",
+                 interposed[i], error != NULL ? error : "unknown");
+         return 1;
+      }
+      Dl_info info;
+      memset(&info, 0, sizeof(info));
+      if (dladdr(symbol, &info) == 0 || info.dli_fname == NULL) {
+         fprintf(stderr, "REFUSE: symbol %s has no provider object\n",
+                 interposed[i]);
+         return 1;
+      }
+      if (!same_file(info.dli_fname, expected)) {
+         fprintf(stderr,
+                 "REFUSE: symbol %s provider %s differs from expected "
+                 "shim %s\n",
+                 interposed[i], info.dli_fname, expected);
+         return 1;
+      }
+   }
+   return 0;
+}
 
 typedef PFN_vkVoidFunction (*icd_gipa_fn)(VkInstance, const char *);
 typedef VkResult (*record_cell_fn)(VkCommandBuffer, VkDeviceMemory,
@@ -105,6 +170,9 @@ main(int argc, char **argv)
       return 2;
    }
    const bool open_gate = strcmp(argv[1], "open") == 0;
+
+   if (attest_shim_provider() != 0)
+      return 3;
 
    char manifest_dir[] = "/tmp/r3v-native-cell-XXXXXX";
    if (open_gate) {
