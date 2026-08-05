@@ -784,6 +784,10 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
      * value 1. */
     if (r300screen->caps.family == CHIP_RS480 &&
         r300_r2vb_standing_gate_value(getenv("R300_R2VB_STANDING"))) {
+        /* R300_R2VB_FLOAT2_SOURCE stays outside this list: the F32_2
+         * source is an exact-value experimental gate consumed only by
+         * no-submit capture fixtures, and the standing route never arms
+         * it. */
         static const char *const standing_gates[][2] = {
             { "R300_R2VB_ROUTE", "1" },
             { "R300_R2VB_AUTO_SINGLE", "1" },

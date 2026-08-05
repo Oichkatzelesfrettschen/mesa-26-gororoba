@@ -363,6 +363,26 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Six-dword FLOAT_4+FLOAT_2 producer tuple through the gated pure chain,
+  # with the structural standing exclusion (ungated entries decline) and the
+  # exact-value gate parser calibration.
+  test(
+    'r300-r2vb-float2-tuple',
+    executable(
+      'r300_r2vb_float2_tuple_test',
+      files('compiler/tests/r300_r2vb_float2_tuple_test.c'),
+      c_args : r300_test_c_args,
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # R2VB carry-BO producer split decision: an over-budget position-pass FS cut
   # at a single-vec4 SSA frontier into two FP32 halves that both compile under
   # the 64-slot ceiling; wide and unproven integer carries decline, while

@@ -581,6 +581,13 @@ bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
                                    uint64_t model_bo_bytes,
                                    struct r300_r2vb_producer_fetch *out);
 
+/* The unsuffixed entry keeps the F32_2 gate closed; the _gated variant
+ * serves only the no-submit capture fixture. */
+bool r300_r2vb_producer_fetch_init_gated(
+    const struct r300_r2vb_producer_streams *s, uint32_t count,
+    uint64_t slot_bo_bytes, uint64_t model_bo_bytes, bool float2_enabled,
+    struct r300_r2vb_producer_fetch *out);
+
 /* Gate and floor parsers, pure over the string so the calibration test
  * drives every arm without process environment state. */
 bool r300_r2vb_auto_single_gate_value(const char *value);

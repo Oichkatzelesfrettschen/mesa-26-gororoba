@@ -4745,6 +4745,15 @@ bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
                                    uint64_t model_bo_bytes,
                                    struct r300_r2vb_producer_fetch *out)
 {
+    return r300_r2vb_producer_fetch_init_gated(s, count, slot_bo_bytes,
+                                               model_bo_bytes, false, out);
+}
+
+bool r300_r2vb_producer_fetch_init_gated(
+    const struct r300_r2vb_producer_streams *s, uint32_t count,
+    uint64_t slot_bo_bytes, uint64_t model_bo_bytes, bool float2_enabled,
+    struct r300_r2vb_producer_fetch *out)
+{
     if (!s || s->num != 2 || count == 0 || count >= 65536)
         return false;
     const struct r300_r2vb_producer_stream *slot = &s->stream[0];
@@ -4759,9 +4768,13 @@ bool r300_r2vb_producer_fetch_init(const struct r300_r2vb_producer_streams *s,
         slot->stride_dwords < slot->size_dwords ||
         slot->logical_components != 4)
         return false;
-    if ((model->size_dwords != 3 && model->size_dwords != 4) ||
-        model->logical_components != 4)
-        return false;
+    {
+        enum r300_vertex_format_id model_id =
+            r300_vertex_format_from_f32_components(model->size_dwords);
+        if (!r300_r2vb_source_format_admitted(model_id, float2_enabled) ||
+            model->logical_components != 4)
+            return false;
+    }
     if (model->offset_bytes % 4 != 0)
         return false;
     if (s->fetch_dwords != slot->size_dwords + model->size_dwords)
