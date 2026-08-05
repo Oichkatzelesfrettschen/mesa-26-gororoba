@@ -11,6 +11,7 @@
  */
 
 #include <dlfcn.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -23,6 +24,7 @@
 
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "r3v_native.h"
 
 /* The harness links the native implementation directly (the ICD version
  * script keeps the shared library's export surface at the three vk_icd*
@@ -306,6 +308,15 @@ main(int argc, char **argv)
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
 
+   /* The recorder published the vertex write while its mapping was live;
+    * exactly one cache sync has run before any submission.
+    */
+   struct r3v_native_device *native_device =
+      r3v_native_device_from_handle(device);
+   CHECK(native_device->drm.cache_sync_count == 1,
+         "recorder publication ran once: %" PRIu64,
+         native_device->drm.cache_sync_count);
+
    result = vkQueueSubmit(queue, 1,
                           &(VkSubmitInfo){
                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -316,6 +327,19 @@ main(int argc, char **argv)
    if (open_gate) {
       CHECK(result == VK_SUCCESS,
             "open-gate submission through the shim: %d", result);
+
+      /* Mapping the color target after completion invalidates its stale
+       * cache lines through the map-establishment sync.
+       */
+      LOAD_DEVICE(vkMapMemory);
+      void *color_map = NULL;
+      CHECK(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                        &color_map) == VK_SUCCESS &&
+               color_map != NULL,
+            "color memory maps after completion");
+      CHECK(native_device->drm.cache_sync_count == 2,
+            "map establishment invalidated the color target: %" PRIu64,
+            native_device->drm.cache_sync_count);
    } else {
       CHECK(result == VK_ERROR_DEVICE_LOST,
             "closed gate fails closed: %d", result);

@@ -15,6 +15,7 @@ radeon_drm_vk_device_init(struct radeon_drm_vk_device *device, int fd,
 {
    device->fd = fd;
    device->ops = ops != NULL ? ops : &radeon_drm_vk_ioctl_ops_drm;
+   device->cache_sync_count = 0;
    device->shared_bo_reference_counts =
       _mesa_hash_table_create(NULL, _mesa_hash_pointer,
                               _mesa_key_pointer_equal);

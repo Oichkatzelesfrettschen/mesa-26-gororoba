@@ -66,6 +66,28 @@ test_create_error_propagates(void)
 }
 
 static void
+test_cache_sync_counts_and_guards(void)
+{
+   radeon_drm_vk_mock_reset();
+   struct radeon_drm_vk_device device;
+   assert(radeon_drm_vk_device_init(&device, 42,
+                                    &radeon_drm_vk_mock_ops) == 0);
+   assert(device.cache_sync_count == 0);
+
+   char range[256];
+   radeon_drm_vk_bo_cache_sync(&device, range, sizeof(range));
+   assert(device.cache_sync_count == 1);
+
+   /* A null map, an empty range, and a null device execute nothing. */
+   radeon_drm_vk_bo_cache_sync(&device, NULL, 4096);
+   radeon_drm_vk_bo_cache_sync(&device, range, 0);
+   radeon_drm_vk_bo_cache_sync(NULL, range, sizeof(range));
+   assert(device.cache_sync_count == 1);
+
+   radeon_drm_vk_device_finish(&device);
+}
+
+static void
 test_map_reaches_gem_mmap(void)
 {
    radeon_drm_vk_mock_reset();
@@ -194,6 +216,7 @@ main(void)
 {
    test_create_passes_domain_and_flag_policy();
    test_create_error_propagates();
+   test_cache_sync_counts_and_guards();
    test_map_reaches_gem_mmap();
    test_prime_refcount_two_imports_one_close();
    test_export_requires_shareable();

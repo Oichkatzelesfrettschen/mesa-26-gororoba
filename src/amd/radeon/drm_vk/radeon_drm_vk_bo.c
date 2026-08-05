@@ -178,3 +178,28 @@ radeon_drm_vk_bo_import_fd(struct radeon_drm_vk_device *device, int prime_fd,
    bo->shareable = true;
    return 0;
 }
+
+void
+radeon_drm_vk_bo_cache_sync(struct radeon_drm_vk_device *device,
+                            const void *map, uint64_t size)
+{
+   if (device == NULL || map == NULL || size == 0)
+      return;
+
+#if defined(__x86_64__) || defined(__i386__)
+   /* SEQ_CST fences compile to MFENCE, ordering the flush against the
+    * stores it publishes and the loads that follow it; CLFLUSH itself is
+    * unordered against other lines.  64 bytes is the K8 cache-line size.
+    */
+   __atomic_thread_fence(__ATOMIC_SEQ_CST);
+   const uintptr_t line = 64;
+   uintptr_t start = (uintptr_t)map & ~(line - 1);
+   uintptr_t end = (uintptr_t)map + size;
+   for (uintptr_t p = start; p < end; p += line)
+      __builtin_ia32_clflush((const void *)p);
+   __atomic_thread_fence(__ATOMIC_SEQ_CST);
+#else
+   __atomic_thread_fence(__ATOMIC_SEQ_CST);
+#endif
+   device->cache_sync_count++;
+}

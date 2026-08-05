@@ -1378,10 +1378,16 @@ r3v_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
     * vram_size, the two kernel pools every native GEM allocation lands in.
     * Type 0 is the host-visible GTT|CPU_ACCESS placement and type 1 the
     * VRAM|GTT NO_CPU_ACCESS placement, matching
-    * r3v_native_memory_type_policy.  HOST_COHERENT holds because the
-    * fail-closed submission gate admits no GPU access that could race a
-    * host mapping; the attended-cell staging revisits coherency before the
-    * gate opens.
+    * r3v_native_memory_type_policy.  The mapping is CPU-cached and the
+    * aperture is unsnooped: radeon_bo_create strips RADEON_GEM_GTT_WC/UC
+    * on every non-PCIE device, so the GTT mmap is always ttm_cached, and
+    * rs400_gart_enable programs RS480_AGP_MODE_CNTL with
+    * REQ_TYPE_SNOOP_DIS.  HOST_CACHED reports the mapping attribute;
+    * HOST_COHERENT holds because the driver performs the maintenance
+    * itself with radeon_drm_vk_bo_cache_sync -- publish at the vertex
+    * write and over live mappings before the submission ioctl, invalidate
+    * after completion and at map establishment -- at the only
+    * device-access window the synchronous submit model has.
     */
    VK_FROM_HANDLE(r3v_physical_device, pdev, physicalDevice);
    uint64_t heap_bytes =
@@ -1401,6 +1407,7 @@ r3v_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
    m->memoryTypes[0] = (VkMemoryType){
       .propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
       .heapIndex = 0,
    };

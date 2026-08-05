@@ -27,6 +27,10 @@ struct radeon_drm_vk_device {
    const struct radeon_drm_vk_ioctl_ops *ops;
    mtx_t shared_bo_mutex;
    struct hash_table *shared_bo_reference_counts;
+   /* Count of radeon_drm_vk_bo_cache_sync executions; host tests read it to
+    * prove the coherency-maintenance call sites fire.
+    */
+   uint64_t cache_sync_count;
 };
 
 /* ops == NULL selects the production libdrm table. Returns 0 or -ENOMEM. */

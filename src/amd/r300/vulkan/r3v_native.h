@@ -25,10 +25,17 @@
  * reference by its index in this array; the queue folds the array into the
  * submission relocation list.
  */
+struct r3v_native_memory;
+
 struct r3v_native_bo_reference {
    uint32_t handle;
    uint32_t read_domains;
    uint32_t write_domain;
+   /* Owning device memory when the reference names one; the queue keeps
+    * the unsnooped-GART coherency contract over its live CPU mapping
+    * (publish before submission, invalidate after completion).
+    */
+   struct r3v_native_memory *memory;
 };
 
 /* Native command buffer: one fixed IB dword vector plus its BO references,
