@@ -516,6 +516,24 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
 
+    # Attended cell: performs a live DRM_RADEON_CS on RS482 silicon under
+    # the authorization and procedure in
+    # docs/hardware/r3v-native-attended-cell-procedure.md.  It is built,
+    # never registered as a test, because running it is a hardware
+    # authorization rather than a build-graph result.
+    r3v_native_attended_cell = executable(
+      'r3v_native_attended_cell',
+      files('tests/r3v_native_attended_cell.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : r3v_native_deps,
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+      build_by_default : true,
+      install : false,
+    )
+
     # Provider-attestation calibration: with the shim absent from
     # LD_PRELOAD, open and ioctl resolve into libc, and the harness
     # refuses before the hazard gate opens and before any Vulkan call.
