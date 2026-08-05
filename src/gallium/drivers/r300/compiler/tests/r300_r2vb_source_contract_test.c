@@ -2,6 +2,11 @@
  * SPDX-License-Identifier: MIT
  */
 
+/* The asserts carry the test's side effects and verdicts, so they stay
+ * live in NDEBUG builds.
+ */
+#undef NDEBUG
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
