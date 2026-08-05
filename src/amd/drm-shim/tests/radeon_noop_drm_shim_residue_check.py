@@ -43,21 +43,30 @@ def main():
         return 2
 
     result = subprocess.run(command, capture_output=True, text=True)
-    observed = sorted({normalize(line)
-                       for line in result.stderr.splitlines()
-                       if line.startswith("FAIL:")})
+    # Multiset, not set: two failures that normalize to one line are two
+    # distinct defects, and repairing one of them must not pass because
+    # the other still emits the line.
+    observed = sorted(normalize(line)
+                      for line in result.stderr.splitlines()
+                      if line.startswith("FAIL:"))
 
     with open(args.signature, "r", encoding="utf-8") as handle:
-        expected = sorted({normalize(line) for line in handle
-                           if line.startswith("FAIL:")})
+        expected = sorted(normalize(line) for line in handle
+                          if line.startswith("FAIL:"))
 
     if result.returncode < 0 and not args.expect_abort:
         print("FAIL: run died on signal {}".format(-result.returncode),
               file=sys.stderr)
         return 1
 
-    missing = [line for line in expected if line not in observed]
-    added = [line for line in observed if line not in expected]
+    remaining = list(observed)
+    missing = []
+    for line in expected:
+        if line in remaining:
+            remaining.remove(line)
+        else:
+            missing.append(line)
+    added = remaining
     if missing or added:
         for line in missing:
             print("signature line no longer observed: {}".format(line),

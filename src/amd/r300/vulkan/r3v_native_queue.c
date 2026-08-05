@@ -173,6 +173,28 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
    struct r3v_native_device *device =
       container_of(queue_base->base.device, struct r3v_native_device, vk);
 
+   /* An authorization declares one IB digest and its evidence directory
+    * disarms after one attempt, so an open gate admits exactly one
+    * executable command buffer.  Refusing the whole submit up front
+    * keeps a multi-buffer submit from executing its first buffer and
+    * then reporting device loss on the disarmed second.
+    */
+   if (device->submit_hazard_accepted) {
+      uint32_t executable = 0;
+      for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
+         const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+            submit->command_buffers[i], struct r3v_native_cmd_buffer, vk);
+         if (cmd_buffer->ib_size_dwords != 0)
+            executable++;
+      }
+      if (executable > 1) {
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: an armed submission carries one "
+                          "command buffer; this submit carries %u",
+                          executable);
+      }
+   }
+
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       struct r3v_native_cmd_buffer *cmd_buffer = container_of(
          submit->command_buffers[i], struct r3v_native_cmd_buffer, vk);

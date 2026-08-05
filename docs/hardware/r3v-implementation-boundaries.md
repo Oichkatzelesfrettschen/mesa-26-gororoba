@@ -4,12 +4,16 @@
 
 The current-source statements in this document describe
 `mesa-26-gororoba` at
-`3737a1dfb94c84015ea6b847c966ab05f5f16124`.
+`0c975d467b4f146e0a599aedbbfb85de2bccf987`.
 
 The current Gallium-backed implementation is live code. The native R3V ICD
 exists as a distinct Gallium-free library with an owned Radeon DRM transport,
-GEM-backed memory, queue and command-carrier objects, and one privately
-injected fixed-cell PM4 lowering path; its evidence stands at the host-unit,
+GEM-backed memory whose host coherency the driver maintains itself over the
+unsnooped GART, queue and command-carrier objects, and one privately
+injected fixed-cell PM4 lowering path carrying a compiler-produced fragment
+program. Submission sits behind a multi-factor arming conjunction with
+one-shot disarm, and both the semantic cell and the exact submit object
+retain as digest-bound evidence. Its evidence stands at the host-unit,
 build/link, no-submit PM4, offline kernel-parser, and drm-shim host-model
 classes. It is not yet a native Vulkan graphics driver, a live Radeon DRM
 execution witness, or a proven RS482 raster path. The complete Vulkan
@@ -59,7 +63,10 @@ structural query.
 | Current R2VB source and delivery domains | `src/gallium/drivers/r300/r300_r2vb.c`; `src/amd/r300/common/r300_r2vb_source_contract.h` | `rg -n 'producer_input_preflight\|delivery_element_preflight' src/gallium/drivers/r300/r300_r2vb.c` |
 | Native ICD build identity and separation audit | `meson.options`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-backend\|libvulkan_r3v_native\|separation' meson.options src/amd/r300/vulkan/meson.build` |
 | Gallium-free Radeon DRM transport | `src/amd/radeon/drm_vk/` | `rg -n 'radeon_drm_vk_cs_build\|radeon_drm_vk_completion' src/amd/radeon/drm_vk/` |
-| Native submit gate fails closed and retains the manifest | `src/amd/r300/vulkan/r3v_native_queue.c` | `rg -n 'R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED\|R3V_NATIVE_MANIFEST_DIR' src/amd/r300/vulkan/` |
+| Native submission arms on a multi-factor conjunction with one-shot disarm | `src/amd/r300/vulkan/r3v_native_arming.c`; `r3v_native_queue.c` | `rg -n 'r3v_native_arming_evaluate\|attempt.token' src/amd/r300/vulkan/` |
+| Native submit gate fails closed and retains cell and submit object by digest | `src/amd/r300/vulkan/r3v_native_queue.c` | `rg -n 'R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED\|R3V_NATIVE_MANIFEST_DIR\|submit_manifest' src/amd/r300/vulkan/` |
+| Native host coherency over the unsnooped GART | `src/amd/radeon/drm_vk/radeon_drm_vk_bo.c`; `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'radeon_drm_vk_bo_cache_sync\|HOST_CACHED' src/amd/` |
+| Triangle-cell fragment program is compiler output | `src/gallium/drivers/r300/compiler/tests/r300_tcl_bypass_fs_tool.c`; `src/amd/r300/common/r300_tcl_bypass_triangle_fs_block.h` | `rg -n 'r300_tcl_bypass_fs_tool\|r300_tcl_bypass_triangle_fs_block' src/` |
 | Private fixed-cell recording outside the ICD export surface | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native.h` | `rg -n 'r3v_native_record_tcl_bypass_triangle' src/amd/r300/vulkan/` |
 
 ## Current Gallium-backed R3V implementation
