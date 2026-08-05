@@ -312,6 +312,7 @@ devenv.append('VK_ICD_FILENAMES', _dev_icd.full_path())
 # no Gallium entry symbol.
 if get_option('r3v-native-backend')
   r3v_native_files = files(
+    'r3v_native_arming.c',
     'r3v_native_cell.c',
     'r3v_native_cmd.c',
     'r3v_native_device.c',
@@ -477,6 +478,44 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+    # Arming-gate calibration: the complete fact set arms, and each
+    # single-factor defect refuses with its own verdict.  The evaluator is
+    # pure, so the test compiles it directly.
+    test(
+      'r3v-native-arming',
+      executable(
+        'r3v_native_arming_test',
+        files('r3v_native_arming.c', 'tests/r3v_native_arming_test.c'),
+        include_directories : [inc_include, inc_src,
+                               include_directories('.')],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+
+    # Non-submitting arming runner: reports the cell digest and every
+    # arming factor, then stops at the authorization boundary.  The test
+    # leg runs it against a fresh directory with no declarations, so the
+    # expected verdict is a refusal.
+    r3v_native_arming_runner = executable(
+      'r3v_native_arming_runner',
+      files('r3v_native_arming.c', 'tests/r3v_native_arming_runner.c',
+            '../common/r300_fragment_binary.c',
+            '../common/r300_tcl_bypass_triangle.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-arming-runner-refuses-undeclared',
+      prog_python,
+      args : [
+        files('tests/r3v_native_arming_runner_check.py'),
+        r3v_native_arming_runner,
+      ],
+      suite : ['r3v'],
+    )
+
     # Provider-attestation calibration: with the shim absent from
     # LD_PRELOAD, open and ioctl resolve into libc, and the harness
     # refuses before the hazard gate opens and before any Vulkan call.
