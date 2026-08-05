@@ -494,5 +494,18 @@ if get_option('r3v-native-backend')
       timeout : 60,
       suite : ['r3v'],
     )
+    # Exact-submit-object replay: the open-gate harness retains the object
+    # the ioctl carried, and the kernel decision code replays those exact
+    # bytes with malformed controls.  Runtime-gated on
+    # R3V_KERNEL_REPLAY_TOOL (skip 77 when unset).
+    test(
+      'r3v-native-submit-object-replay',
+      files('tests/run_submit_object_replay.sh')[0],
+      args : [r3v_native_triangle_cell_harness],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
   endif
 endif
