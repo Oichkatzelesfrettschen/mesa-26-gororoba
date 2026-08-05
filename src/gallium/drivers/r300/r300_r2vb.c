@@ -36,8 +36,10 @@
 #include "compiler/nir/nir_builder.h"
 
 #include "compiler/r300_nir.h"
+#include "amd/r300/common/r300_r2vb_source_contract.h"
 #include "r300_context.h"
 #include "r300_r2vb_clip.h"
+#include "r300_vertex_format_pipe.h"
 #include "r300_state_inlines.h"
 #include "r300_cs.h"
 #include "r300_emit.h"
@@ -3598,12 +3600,15 @@ r300_r2vb_producer_input_preflight(
         (!vertex_buffers[ve->vertex_buffer_index].is_user_buffer &&
          !vertex_buffers[ve->vertex_buffer_index].buffer.resource))
         return R300_R2VB_PRODUCER_INPUT_BUFFER_BINDING;
-    if (ve->src_format != PIPE_FORMAT_R32G32B32_FLOAT &&
-        ve->src_format != PIPE_FORMAT_R32G32B32A32_FLOAT)
+    enum r300_vertex_format_id preflight_format_id;
+    if (!r300_vertex_format_from_pipe(ve->src_format,
+                                      &preflight_format_id) ||
+        !r300_r2vb_source_format_admitted(preflight_format_id, false))
         return R300_R2VB_PRODUCER_INPUT_FORMAT;
 
     uint32_t record_bytes =
-        ve->src_format == PIPE_FORMAT_R32G32B32_FLOAT ? 12 : 16;
+        r300_vertex_format_semantics(preflight_format_id)
+           ->semantic_record_bytes;
     if (ve->src_stride % 4 != 0 || ve->src_stride < record_bytes ||
         ve->src_stride / 4 > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX)
         return R300_R2VB_PRODUCER_INPUT_STRIDE;
@@ -3722,14 +3727,24 @@ bool r300_r2vb_position_input_mapping_ok(unsigned num_position_inputs,
         return false;
     if (vertex_buffer_index >= nr_vertex_buffers || !buffer_bound)
         return false;
-    return format == PIPE_FORMAT_R32G32B32_FLOAT ||
-           format == PIPE_FORMAT_R32G32B32A32_FLOAT;
+    enum r300_vertex_format_id mapping_format_id;
+    return r300_vertex_format_from_pipe(format, &mapping_format_id) &&
+           r300_r2vb_source_format_admitted(mapping_format_id, false);
 }
 
 bool r300_r2vb_producer_interface_init(
     const struct r300_r2vb_producer_fetch *fetch,
     unsigned slot_dst_vec_loc, unsigned model_dst_vec_loc,
     struct r300_r2vb_producer_interface *out)
+{
+    return r300_r2vb_producer_interface_init_gated(
+        fetch, slot_dst_vec_loc, model_dst_vec_loc, false, out);
+}
+
+bool r300_r2vb_producer_interface_init_gated(
+    const struct r300_r2vb_producer_fetch *fetch,
+    unsigned slot_dst_vec_loc, unsigned model_dst_vec_loc,
+    bool float2_enabled, struct r300_r2vb_producer_interface *out)
 {
     if (!fetch || fetch->streams.num != 2)
         return false;
@@ -3739,35 +3754,31 @@ bool r300_r2vb_producer_interface_init(
         slot_dst_vec_loc == model_dst_vec_loc)
         return false;
     const struct r300_r2vb_producer_stream *model = &fetch->streams.stream[1];
-    enum pipe_format model_format;
-    switch (model->size_dwords) {
-    case 3:
-        model_format = PIPE_FORMAT_R32G32B32_FLOAT;
-        break;
-    case 4:
-        model_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
-        break;
-    default:
-        return false;
-    }
-    uint16_t slot_type = r300_translate_vertex_data_type(
-        PIPE_FORMAT_R32G32B32A32_FLOAT);
-    uint16_t model_type = r300_translate_vertex_data_type(model_format);
-    if (slot_type == R300_INVALID_FORMAT ||
-        model_type == R300_INVALID_FORMAT)
+    /* The neutral identity supplies the DATA_TYPE and the synthesized-lane
+     * selectors for both elements; the words are bit-identical to the
+     * r300_translate_vertex_data_type/swizzle construction for every F32
+     * width, which the byte-identity test pins. */
+    const struct r300_vertex_format_semantics *slot_semantics =
+        r300_vertex_format_semantics(R300_VERTEX_FORMAT_F32_4);
+    const struct r300_vertex_format_semantics *model_semantics =
+        r300_vertex_format_semantics(
+            r300_vertex_format_from_f32_components(model->size_dwords));
+    if (!slot_semantics || !model_semantics ||
+        !r300_r2vb_source_format_admitted(model_semantics->id,
+                                          float2_enabled))
         return false;
     memset(out, 0, sizeof(*out));
     /* Two elements share the first register pair; the model element is
      * the last fetched vector. */
-    uint32_t e0 = slot_type | (slot_dst_vec_loc << R300_DST_VEC_LOC_SHIFT);
-    uint32_t e1 = model_type |
+    uint32_t e0 = (uint32_t)slot_semantics->data_type |
+                  (slot_dst_vec_loc << R300_DST_VEC_LOC_SHIFT);
+    uint32_t e1 = (uint32_t)model_semantics->data_type |
                   (model_dst_vec_loc << R300_DST_VEC_LOC_SHIFT) |
                   R300_LAST_VEC;
     out->prog_stream_cntl[0] = e0 | (e1 << 16);
     out->prog_stream_cntl_ext[0] =
-        (uint32_t)r300_translate_vertex_data_swizzle(
-            PIPE_FORMAT_R32G32B32A32_FLOAT) |
-        ((uint32_t)r300_translate_vertex_data_swizzle(model_format) << 16);
+        (uint32_t)r300_vertex_format_psc_swizzle(slot_semantics) |
+        ((uint32_t)r300_vertex_format_psc_swizzle(model_semantics) << 16);
     out->vap_vtx_size = fetch->vap_vtx_size;
     return true;
 }
@@ -4069,8 +4080,19 @@ bool r300_r2vb_producer_logical_binding_from_state(
         r2vb_bo_draw_validate_decline("psc_slot_type");
         return false;
     }
-    if ((e1 & 0xf) != R300_DATA_TYPE_FLOAT_4 &&
-        (e1 & 0xf) != R300_DATA_TYPE_FLOAT_3) {
+    /* The accepted model DATA_TYPE set is the bounded source contract's
+     * admitted set with the F32_2 gate closed, decoded back from the live
+     * word. */
+    bool model_type_admitted = false;
+    for (enum r300_vertex_format_id id = R300_VERTEX_FORMAT_F32_1;
+         id < R300_VERTEX_FORMAT_COUNT; id++) {
+        const struct r300_vertex_format_semantics *sem =
+            r300_vertex_format_semantics(id);
+        if (sem && r300_r2vb_source_format_admitted(id, false) &&
+            (e1 & 0xf) == (uint32_t)sem->data_type)
+            model_type_admitted = true;
+    }
+    if (!model_type_admitted) {
         r2vb_bo_draw_validate_decline("psc_model_type");
         return false;
     }
@@ -4096,32 +4118,32 @@ bool r300_r2vb_producer_logical_binding_from_state(
 }
 
 /* Decode one packed PSC element pair field-by-field for its MEANING:
- * data type, destination vector, LAST_VEC, and the semantic swizzle --
- * FLOAT_4 reads XYZW identity, FLOAT_3 reads X,Y,Z with W from the
- * constant-one select, both with the full write mask. */
+ * data type, destination vector, LAST_VEC, and the semantic swizzle.  The
+ * neutral vertex-format record is the per-width synthesized-lane contract:
+ * each expected selector is the memory lane or constant the format
+ * synthesizes, with the full write mask. */
 static bool r2vb_psc_element_ok(uint32_t cntl, uint32_t ext, unsigned elem,
                                 unsigned record_dwords, unsigned dst_vec_loc,
                                 bool want_last)
 {
     uint32_t c = (cntl >> (elem * 16)) & 0xffff;
     uint32_t s = (ext >> (elem * 16)) & 0xffff;
-    unsigned want_type = record_dwords == 3 ? R300_DATA_TYPE_FLOAT_3
-                                            : R300_DATA_TYPE_FLOAT_4;
-    if (record_dwords != 3 && record_dwords != 4)
+    const struct r300_vertex_format_semantics *semantics =
+        r300_vertex_format_semantics(
+            r300_vertex_format_from_f32_components(record_dwords));
+    if (!semantics ||
+        !r300_r2vb_source_format_admitted(semantics->id, false))
         return false;
-    if ((c & 0xf) != want_type)
+    if ((c & 0xf) != (uint32_t)semantics->data_type)
         return false;
     if (((c >> R300_DST_VEC_LOC_SHIFT) & 0x1f) != dst_vec_loc)
         return false;
     if (((c & R300_LAST_VEC) != 0) != want_last)
         return false;
-    unsigned want_w = record_dwords == 3 ? R300_SWIZZLE_SELECT_FP_ONE
-                                         : R300_SWIZZLE_SELECT_W;
-    return ((s >> R300_SWIZZLE_SELECT_X_SHIFT) & 7) == R300_SWIZZLE_SELECT_X &&
-           ((s >> R300_SWIZZLE_SELECT_Y_SHIFT) & 7) == R300_SWIZZLE_SELECT_Y &&
-           ((s >> R300_SWIZZLE_SELECT_Z_SHIFT) & 7) == R300_SWIZZLE_SELECT_Z &&
-           ((s >> R300_SWIZZLE_SELECT_W_SHIFT) & 7) == want_w &&
-           ((s >> R300_WRITE_ENA_SHIFT) & 0xf) == 0xf;
+    for (unsigned lane = 0; lane < 4; lane++)
+        if (((s >> (lane * 3)) & 7) != (uint32_t)semantics->select[lane])
+            return false;
+    return ((s >> R300_WRITE_ENA_SHIFT) & 0xf) == 0xf;
 }
 
 unsigned r300_r2vb_producer_binding_check(
@@ -4774,21 +4796,31 @@ bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
                                      enum pipe_format format, uint32_t start,
                                      struct r300_r2vb_producer_streams *out)
 {
-    /* The observed dominant workload feeds a tightly packed FLOAT_3
-     * position stream (record 12 bytes); the PSC swizzle synthesizes W
-     * from FP_ONE, reproducing the immediate path's (x,y,z) -> (x,y,z,1)
-     * convention without padded uploads. */
-    uint32_t record_dwords;
-    switch (format) {
-    case PIPE_FORMAT_R32G32B32A32_FLOAT:
-        record_dwords = 4;
-        break;
-    case PIPE_FORMAT_R32G32B32_FLOAT:
-        record_dwords = 3;
-        break;
-    default:
+    return r300_r2vb_producer_streams_init_gated(
+        buffer_offset, src_offset, src_stride_bytes, format, start, false,
+        out);
+}
+
+bool r300_r2vb_producer_streams_init_gated(
+    uint32_t buffer_offset, uint32_t src_offset, uint32_t src_stride_bytes,
+    enum pipe_format format, uint32_t start, bool float2_enabled,
+    struct r300_r2vb_producer_streams *out)
+{
+    /* The neutral vertex-format identity carries the fetch width and the
+     * synthesized-lane selectors; admission comes from the bounded source
+     * contract, which holds F32_2 behind its own gate.  Missing lanes are
+     * synthesized by the PSC selectors -- W from FP_ONE reproduces the
+     * immediate path's (x,y,z) -> (x,y,z,1) convention without padded
+     * uploads. */
+    enum r300_vertex_format_id format_id;
+    if (!r300_vertex_format_from_pipe(format, &format_id) ||
+        !r300_r2vb_source_format_admitted(format_id, float2_enabled))
         return false;
-    }
+    const struct r300_vertex_format_semantics *semantics =
+        r300_vertex_format_semantics(format_id);
+    if (!semantics)
+        return false;
+    uint32_t record_dwords = semantics->hardware_fetch_dwords;
     /* The LOAD_VBPNTR format word carries the stride in dwords, and a
      * stride under one record would overlap fetches. */
     if (src_stride_bytes % 4 != 0 || src_stride_bytes < record_dwords * 4)

@@ -474,16 +474,23 @@ struct r300_r2vb_producer_streams {
     uint32_t fetch_dwords;   /* == producer VAP_VTX_SIZE */
 };
 
-/* Pure over the model element facts; fails on a format outside the first
- * contract, a stride that is zero or not a dword multiple, or offset
+/* Pure over the model element facts; fails on a format outside the admitted
+ * source contract, a stride that is zero or not a dword multiple, or offset
  * arithmetic that overflows uint32.  start is the draw's first vertex:
  * the model stream begins at buffer_offset + src_offset + start * stride
- * while the slot stream always begins at slot zero. */
+ * while the slot stream always begins at slot zero.  The unsuffixed name is
+ * the production entry and keeps the F32_2 gate closed; the _gated variant
+ * takes the explicit flag and serves only the no-submit capture fixture. */
 bool r300_r2vb_producer_streams_init(uint32_t buffer_offset,
                                      uint32_t src_offset,
                                      uint32_t src_stride_bytes,
                                      enum pipe_format format, uint32_t start,
                                      struct r300_r2vb_producer_streams *out);
+
+bool r300_r2vb_producer_streams_init_gated(
+    uint32_t buffer_offset, uint32_t src_offset, uint32_t src_stride_bytes,
+    enum pipe_format format, uint32_t start, bool float2_enabled,
+    struct r300_r2vb_producer_streams *out);
 
 /* Slot-fetch gate value (R300_R2VB_SLOT_FETCH, exact "1"); pure parser. */
 bool r300_r2vb_slot_fetch_gate_value(const char *value);
@@ -690,6 +697,13 @@ bool r300_r2vb_producer_interface_init(
     const struct r300_r2vb_producer_fetch *fetch,
     unsigned slot_dst_vec_loc, unsigned model_dst_vec_loc,
     struct r300_r2vb_producer_interface *out);
+
+/* The unsuffixed entry keeps the F32_2 gate closed; the _gated variant
+ * serves the no-submit capture fixture. */
+bool r300_r2vb_producer_interface_init_gated(
+    const struct r300_r2vb_producer_fetch *fetch,
+    unsigned slot_dst_vec_loc, unsigned model_dst_vec_loc,
+    bool float2_enabled, struct r300_r2vb_producer_interface *out);
 
 /* Rebind the application stream contract onto the materialized GPU
  * objects: the model offset becomes the transaction's gpu_offset (for
