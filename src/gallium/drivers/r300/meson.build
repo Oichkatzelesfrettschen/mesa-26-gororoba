@@ -772,8 +772,8 @@ if with_tests
     suite : ['r300'],
   )
 
-  # Classic fragment-compiler NIR selection: the phase-1 subset selects, and
-  # everything outside it rejects with a named reason.
+  # Classic fragment-compiler NIR selection: the supported instruction
+  # subset selects, and everything outside it rejects with a named reason.
   test(
     'r300-classic-select',
     executable(

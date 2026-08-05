@@ -688,8 +688,8 @@ r3v_stitch_tile_sample(nir_builder *b, nir_shader *nir,
  * -- so a column-0 sample is u*scale_u0 and a column-1 sample is u*scale_u1+bias_u1,
  * and the select picks the tile whose threshold the coordinate crosses.  For a
  * single-tile image the thresholds are 2.0, so right/bottom are always false and
- * the expansion collapses to tile 0.  Phase 1 stitches one sampler at base_unit
- * with its geometry at const_byte_offset. */
+ * the expansion collapses to tile 0.  The stitch pass wires one sampler at
+ * base_unit with its geometry at const_byte_offset. */
 static bool
 r3v_nir_stitch_samplers(nir_shader *nir, uint32_t base_unit,
                            unsigned const_byte_offset)
@@ -1194,7 +1194,7 @@ r3v_prepare_shader_nir(struct r3v_device *device,
 
    /* Experimental NEAREST tile-stitch: expand each fragment texture() into the
     * tiled-sampler form so a >2048 (multi-tile) sampled image samples the correct
-    * tile instead of only the first.  Phase 1 wires one stitched sampler at unit 0
+    * tile instead of only the first.  The pass wires one stitched sampler at unit 0
     * with its per-image affine/split geometry in the first two block-0 CONST vec4s
     * (declared here so externals_count covers them); the replay binds the four
     * tile views and uploads the geometry.  Off unless the gate is set. */

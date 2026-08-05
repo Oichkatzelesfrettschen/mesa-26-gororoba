@@ -10,7 +10,7 @@
 
 #include "util/ralloc.h"
 
-/* Exercises the Phase-1 exit criterion: the IR validates and prints.  The
+/* The classic IR validates and prints.  The
  * positive case builds a representative fragment program (constant-scaled
  * varying through MAD, a dependent texture read, a DP3, a color export) and
  * requires validation plus a stable text dump.  Each negative case flips one

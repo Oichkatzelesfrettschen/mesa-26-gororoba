@@ -34,7 +34,7 @@
  * cross-instruction RGB+Alpha merge changes the pair multiset, so the
  * multiset-invariance proof r300_classic_new_sched_test.c uses for the
  * identity-permutation increment no longer stands in for value equality (see
- * classic-r300-fs-compiler-backend-scoping.md, Phase 1, item 6).  This file
+ * classic-r300-fs-compiler-backend-scoping.md).  This file
  * adds a value-level CPU evaluator over the paired RGB/Alpha form itself and
  * checks it two ways: hand-built pair streams with a directly computable
  * expected result isolate one scheduler mechanism at a time (merge over

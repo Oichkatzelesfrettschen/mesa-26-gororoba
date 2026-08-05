@@ -17,8 +17,8 @@
 #include "radeon_compiler.h"
 #include "radeon_regalloc.h"
 
-/* Phase-4 exit criterion: the classic-path rc_program is structurally valid
- * per RC's own validators.  The test runs the whole classic ladder -- NIR
+/* The classic-path rc_program is structurally valid per RC's own
+ * validators.  The test runs the whole classic ladder -- NIR
  * through the production optimizer, selection, SSA register allocation,
  * emission -- and then the real backend pass chain
  * (r3xx_compile_fragment_program: native rewrite, pair translate, pair
