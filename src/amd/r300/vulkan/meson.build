@@ -464,6 +464,26 @@ if get_option('r3v-native-backend')
       args : [files('tests/r3v_native_entrypoint_audit.py'), '--selftest'],
       suite : ['r3v'],
     )
+    # Lifecycle-pair calibration on synthetic surfaces.  A --drop fixture
+    # cannot reach this verdict: the dropped command fails the completeness
+    # verdict in the same run, so a pair analysis that had stopped running
+    # would still leave the fixture failing.  Each surface below reaches the
+    # pair rule alone.
+    foreach pair_case : [['complete', false],
+                         ['missing-create', true],
+                         ['missing-destroy', true],
+                         ['explicit-complete', false],
+                         ['explicit-missing-release', true],
+                         ['plural-missing-release', true]]
+      test(
+        'r3v-native-lifecycle-pair-@0@'.format(pair_case[0]),
+        prog_python,
+        args : [files('tests/r3v_native_entrypoint_audit.py'),
+                '--pair-fixture', pair_case[0]],
+        should_fail : pair_case[1],
+        suite : ['r3v'],
+      )
+    endforeach
     test(
       'r3v-native-entrypoint-closure',
       prog_python,

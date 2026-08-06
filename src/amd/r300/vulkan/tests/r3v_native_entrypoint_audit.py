@@ -22,6 +22,10 @@ registry.
 
 Modes:
   --selftest   synthetic known-good and known-bad closures
+  --pair-fixture NAME
+               the lifecycle-pair verdict over one synthetic surface from
+               PAIR_FIXTURES, which calibrates that verdict where the
+               completeness verdict cannot answer in its place
   --enforce    zero open edges, complete core 1.0 device coverage, a
                registry-permitted refusal result, and every native core
                command classified, over inputs that clear the structural
@@ -346,7 +350,17 @@ def selftest():
                        {})
     assert permitted_refusal_results(layered, {"A"}) == set()
 
-    print("r3v_native_entrypoint_audit selftest: 12 legs OK")
+    # The pair verdict runs against synthetic surfaces, where the exact tuple
+    # is checkable and no other verdict stands in front of it.
+    for fixture, expected in ((name, PAIR_FIXTURES[name][2])
+                              for name in sorted(PAIR_FIXTURES)):
+        core, populated, _ = PAIR_FIXTURES[fixture]
+        found = pair_asymmetries(Registry({}, set(), core, {}, {}, {}),
+                                 populated)
+        assert found == expected, (fixture, found, expected)
+
+    print("r3v_native_entrypoint_audit selftest: 12 closure and result legs "
+          f"OK, {len(PAIR_FIXTURES)} lifecycle-pair legs OK")
     return 0
 
 
@@ -402,6 +416,45 @@ def pair_asymmetries(reg, populated):
         elif have_release and not have_acquire:
             found.append((acquire, release, acquire))
     return found
+
+
+# Synthetic lifecycle surfaces the pair verdict answers directly.  Dropping a
+# real entrypoint cannot calibrate that verdict: a core 1.0 command missing
+# from the surface fails the completeness verdict in the same run, so a pair
+# analysis that had stopped running would still show a failing fixture.  Each
+# entry is (core set, populated set, expected asymmetries).
+PAIR_FIXTURES = {
+    # Create/Destroy, the suffix-derived family.
+    "complete": ({"CreateX", "DestroyX"}, {"CreateX", "DestroyX"}, []),
+    "missing-destroy": ({"CreateX", "DestroyX"}, {"CreateX"},
+                        [("CreateX", "DestroyX", "DestroyX")]),
+    "missing-create": ({"CreateX", "DestroyX"}, {"DestroyX"},
+                       [("CreateX", "DestroyX", "CreateX")]),
+    # MapMemory/UnmapMemory shares no type suffix, so it pairs through
+    # EXPLICIT_PAIRS rather than the name rule.
+    "explicit-complete": ({"MapMemory", "UnmapMemory"},
+                          {"MapMemory", "UnmapMemory"}, []),
+    "explicit-missing-release": ({"MapMemory", "UnmapMemory"},
+                                 {"MapMemory"},
+                                 [("MapMemory", "UnmapMemory",
+                                   "UnmapMemory")]),
+    # A plural acquiring command releases through the singular spelling, which
+    # is how vkAllocateCommandBuffers reaches vkFreeCommandBuffers.
+    "plural-missing-release": ({"AllocateThings", "FreeThing"},
+                               {"AllocateThings"},
+                               [("AllocateThings", "FreeThing",
+                                 "FreeThing")]),
+}
+
+
+def pair_fixture(name):
+    """Run the lifecycle-pair verdict over one synthetic surface."""
+    core, populated, _ = PAIR_FIXTURES[name]
+    found = pair_asymmetries(Registry({}, set(), core, {}, {}, {}), populated)
+    print(f"lifecycle-pair fixture {name}: {len(found)} one-sided")
+    for acquire, release, missing in found:
+        print(f"  ONE-SIDED {acquire}/{release}: {missing} is absent")
+    return 1 if found else 0
 
 
 def permitted_refusal_results(reg, refusing):
@@ -510,6 +563,12 @@ def emit_c_surface(reg, out_path: Path):
 def main():
     if sys.argv[1:] == ["--selftest"]:
         return selftest()
+
+    # The lifecycle-pair verdict over one synthetic surface, registered as its
+    # own passing and failing tests so the rule is calibrated where no other
+    # verdict can answer for it.
+    if sys.argv[1:2] == ["--pair-fixture"]:
+        return pair_fixture(sys.argv[2])
 
     # Table generation reads the registry alone; the surface it describes is
     # what the sweeps then measure against the built library.
