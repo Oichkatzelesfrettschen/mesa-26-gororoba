@@ -464,6 +464,53 @@ if get_option('r3v-native-backend')
       args : [files('tests/r3v_native_entrypoint_audit.py'), '--selftest'],
       suite : ['r3v'],
     )
+    # Lifecycle-pair calibration on synthetic surfaces.  A --drop fixture
+    # cannot reach this verdict: the dropped command fails the completeness
+    # verdict in the same run, so a pair analysis that had stopped running
+    # would still leave the fixture failing.  Each surface below reaches the
+    # pair rule alone.
+    foreach pair_case : [['complete', false],
+                         ['missing-create', true],
+                         ['missing-destroy', true],
+                         ['explicit-complete', false],
+                         ['explicit-missing-release', true],
+                         ['plural-missing-release', true]]
+      test(
+        'r3v-native-lifecycle-pair-@0@'.format(pair_case[0]),
+        prog_python,
+        args : [files('tests/r3v_native_entrypoint_audit.py'),
+                '--pair-fixture', pair_case[0]],
+        should_fail : pair_case[1],
+        suite : ['r3v'],
+      )
+    endforeach
+    # Source headers carry the license grant and the file's description.  The
+    # audit runs over the lane, and each fixture mutates one clean header so
+    # a rule that stopped reading its line fails its own calibration.
+    test(
+      'r3v-source-header-audit',
+      prog_python,
+      args : [files('tests/r3v_source_header_audit.py'),
+              meson.current_source_dir()],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-source-header-audit-selftest',
+      prog_python,
+      args : [files('tests/r3v_source_header_audit.py'), '--selftest'],
+      suite : ['r3v'],
+    )
+    foreach header_defect : ['missing-spdx', 'invented-copyright',
+                             'ai-disclosure']
+      test(
+        'r3v-source-header-audit-known-bad-@0@'.format(header_defect),
+        prog_python,
+        args : [files('tests/r3v_source_header_audit.py'),
+                '--fixture', header_defect],
+        should_fail : true,
+        suite : ['r3v'],
+      )
+    endforeach
     test(
       'r3v-native-entrypoint-closure',
       prog_python,
@@ -584,17 +631,20 @@ if get_option('r3v-native-backend')
       timeout : 60,
       suite : ['r3v'],
     )
-    # Known-bad calibration for the absent legs: judging a command the
-    # surface really provides under the absent rule must report a leak, which
-    # is what gives those legs teeth against a promoted alias or a swapchain
-    # command reaching the device table.  vkCmdDraw stands for the core
-    # spellings and vkQueueSubmit for the queue surface.
-    foreach leaked : ['vkCmdDraw', 'vkQueueSubmit']
+    # Known-bad calibration for the absent legs, one per absent table: the
+    # fixture appends a command the surface really provides as a row of the
+    # named table, so the leak is judged by that table's own loop.  A leg that
+    # stopped comparing its rows passes here, which is what gives all three
+    # teeth against a promoted alias or a swapchain command reaching the
+    # device table.
+    foreach leak : [['higher-core', 'higher core:vkCmdDraw'],
+                    ['promoted-alias', 'promoted alias:vkMapMemory'],
+                    ['closed-extension', 'closed extension:vkQueueSubmit']]
       test(
-        'r3v-native-direct-table-sweep-known-bad-@0@'.format(leaked),
+        'r3v-native-direct-table-sweep-known-bad-@0@'.format(leak[0]),
         r3v_native_direct_table_sweep,
         env : environment(r3v_native_cell_vars + {
-          'R3V_SURFACE_FIXTURE_LEAK' : leaked,
+          'R3V_SURFACE_FIXTURE_LEAK' : leak[1],
         }),
         depends : [libradeon_noop_drm_shim],
         should_fail : true,
@@ -609,27 +659,49 @@ if get_option('r3v-native-backend')
     # skip rather than a missing test.
     prog_xvfb_run = find_program('xvfb-run', required : false)
     if dep_xcb.found() and prog_xvfb_run.found()
+      r3v_native_wsi_surface_contract = executable(
+        'r3v_native_wsi_surface_contract',
+        files('tests/r3v_native_wsi_surface_contract.c'),
+        include_directories : r3v_native_inc,
+        dependencies : [r3v_native_deps, dep_xcb],
+        link_whole : [libr3v_native_impl],
+        link_with : [libradeon_drm_vk],
+        c_args : [no_override_init_args],
+        gnu_symbol_visibility : 'hidden',
+      )
+      # The X display number is a host-wide resource, and xvfb-run -a searches
+      # it for a free one.  Concurrent searches settle on the same number, and
+      # the instance that loses reports its own cleanup failure as the test
+      # status, so the four surface tests run one at a time.
       test(
         'r3v-native-wsi-surface-contract',
         prog_xvfb_run,
-        args : [
-          '-a',
-          executable(
-            'r3v_native_wsi_surface_contract',
-            files('tests/r3v_native_wsi_surface_contract.c'),
-            include_directories : r3v_native_inc,
-            dependencies : [r3v_native_deps, dep_xcb],
-            link_whole : [libr3v_native_impl],
-            link_with : [libradeon_drm_vk],
-            c_args : [no_override_init_args],
-            gnu_symbol_visibility : 'hidden',
-          ).full_path(),
-        ],
+        args : ['-a', r3v_native_wsi_surface_contract.full_path()],
         env : r3v_native_cell_env,
         depends : [libradeon_noop_drm_shim],
+        is_parallel : false,
         timeout : 120,
         suite : ['r3v'],
       )
+      # Query-verdict calibration: the fixture replaces one loaded query
+      # pointer with a stub that reports an error, and the run then reaches
+      # the same result checks as the ordinary one.  A check that stopped
+      # judging its result passes both, which is what these three catch.
+      foreach wsi_query : ['capabilities', 'formats', 'modes']
+        test(
+          'r3v-native-wsi-surface-contract-known-bad-@0@'.format(wsi_query),
+          prog_xvfb_run,
+          args : ['-a', r3v_native_wsi_surface_contract.full_path()],
+          env : environment(r3v_native_cell_vars + {
+            'R3V_WSI_FIXTURE_QUERY_ERROR' : wsi_query,
+          }),
+          depends : [libradeon_noop_drm_shim],
+          is_parallel : false,
+          should_fail : true,
+          timeout : 120,
+          suite : ['r3v'],
+        )
+      endforeach
     endif
 
     # Loader black-box sweep: the real Vulkan loader resolves and calls the

@@ -48,6 +48,38 @@ resolve(const struct r3v_surface_command *cmd, VkInstance instance,
    return vk_icdGetInstanceProcAddr(instance, cmd->name);
 }
 
+/* Calibration for the absent legs, spelled "<table label>:<command>" in
+ * R3V_SURFACE_FIXTURE_LEAK.  Naming a command the surface really provides
+ * appends it as a row of the named table, where it meets the same loop and the
+ * same comparison as the generated rows.  A leg that stopped judging its rows
+ * reports its ordinary pass rather than the leak, which is what makes the
+ * fixture measure the loop under test instead of a check beside it.
+ */
+static const struct r3v_surface_command *
+with_injected_row(const char *label, const struct r3v_surface_command *table,
+                  uint32_t *count)
+{
+   const char *fixture = getenv("R3V_SURFACE_FIXTURE_LEAK");
+   if (fixture == NULL)
+      return table;
+
+   const char *sep = strchr(fixture, ':');
+   if (sep == NULL || (size_t)(sep - fixture) != strlen(label) ||
+       strncmp(fixture, label, sep - fixture) != 0)
+      return table;
+
+   struct r3v_surface_command *injected =
+      malloc((*count + 1) * sizeof(*injected));
+   if (injected == NULL)
+      return table;
+   memcpy(injected, table, *count * sizeof(*injected));
+   injected[*count] = (struct r3v_surface_command){ sep + 1,
+                                                    R3V_SCOPE_DEVICE };
+   (*count)++;
+   printf("%s: fixture row %s injected\n", label, sep + 1);
+   return injected;
+}
+
 /* Absence carries a verdict at device scope alone.  vk_instance_get_proc_addr
  * answers an instance-scope name straight from the instance dispatch table and
  * a physical-device-scope name from the trampoline table, both without
@@ -62,6 +94,9 @@ sweep(const char *label, const struct r3v_surface_command *table,
       uint32_t count, bool expect_present, VkInstance instance,
       VkDevice device, PFN_vkGetDeviceProcAddr gdpa)
 {
+   const struct r3v_surface_command *generated = table;
+   table = with_injected_row(label, table, &count);
+
    unsigned judged = 0, judged_present = 0, observed_present = 0;
    unsigned observed = 0;
    for (uint32_t i = 0; i < count; i++) {
@@ -84,6 +119,9 @@ sweep(const char *label, const struct r3v_surface_command *table,
       printf("; %u unfiltered instance/physical-device names observed, "
              "%u present", observed, observed_present);
    printf("\n");
+
+   if (table != generated)
+      free((void *)table);
 }
 
 /* A Vulkan 1.0 implementation returns VK_ERROR_INCOMPATIBLE_DRIVER when the
@@ -206,24 +244,6 @@ sweep_scope_separation(VkDevice device, PFN_vkGetDeviceProcAddr gdpa)
           "by vkGetDeviceProcAddr\n", judged);
 }
 
-/* Calibration for the absent legs: naming a command here judges it under the
- * absent rule regardless of which table holds it.  Naming one the surface
- * really provides makes the sweep report a leak, which is what proves those
- * legs would catch a promoted alias or a swapchain command appearing in the
- * device table.
- */
-static void
-sweep_injected_leak(VkDevice device, PFN_vkGetDeviceProcAddr gdpa)
-{
-   const char *injected = getenv("R3V_SURFACE_FIXTURE_LEAK");
-   if (injected == NULL)
-      return;
-   CHECK(gdpa(device, injected) == NULL,
-         "injected leak fixture: %s resolves through vkGetDeviceProcAddr",
-         injected);
-   printf("injected leak fixture: %s judged absent\n", injected);
-}
-
 int
 main(void)
 {
@@ -323,7 +343,6 @@ main(void)
       return 1;
 
    sweep_scope_separation(device, gdpa);
-   sweep_injected_leak(device, gdpa);
 
    sweep("core 1.0", r3v_surface_core10, r3v_surface_core10_count, true,
          instance, device, gdpa);
