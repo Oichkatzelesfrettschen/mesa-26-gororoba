@@ -93,10 +93,11 @@ int r300_first_draw_state_emit(const struct r300_first_draw_contract *contract,
 
 /* Poison-model checker: applies the command stream over an arbitrary
  * predecessor register state and reports every contract clause the final
- * state leaves unsatisfied. A checker that stopped at its first failure
- * would reproduce the silicon blind spot -- three orthogonal open gates
- * compose into one indistinguishable blank target -- so the report is the
- * complete set.
+ * state leaves unsatisfied. The report is the complete set because the
+ * open gates are indistinguishable on silicon -- US_OUT_FMT_0 UNUSED, a
+ * zero color channel mask, and a zero screendoor each alone produce the
+ * same byte-identical unwritten target -- so only the full set tells the
+ * caller which writes remain missing.
  */
 struct r300_first_draw_check_report {
    /* Indices into the contract's entries, one per unsatisfied clause. */
