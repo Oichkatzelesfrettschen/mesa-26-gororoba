@@ -5,6 +5,7 @@
  * instance scope, with no presentation capability at device scope.
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,42 @@ static unsigned failures;
 
 #define LOAD(instance, name) \
    PFN_##name name = (PFN_##name)vk_icdGetInstanceProcAddr(instance, #name)
+
+/* Calibration for the query verdicts: R3V_WSI_FIXTURE_QUERY_ERROR names one
+ * of the three queries, and the stub below replaces the loaded pointer for
+ * that query alone.  The substitution lands after entrypoint loading and
+ * before the first call, so the fixture run reaches the same result checks as
+ * the ordinary run and a check that stopped judging its result passes both.
+ */
+static bool
+fixture_selects(const char *query)
+{
+   const char *selected = getenv("R3V_WSI_FIXTURE_QUERY_ERROR");
+   return selected != NULL && strcmp(selected, query) == 0;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+fixture_capabilities_error(VkPhysicalDevice pdev, VkSurfaceKHR surface,
+                           VkSurfaceCapabilitiesKHR *pCaps)
+{
+   return VK_ERROR_SURFACE_LOST_KHR;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+fixture_formats_error(VkPhysicalDevice pdev, VkSurfaceKHR surface,
+                      uint32_t *pCount, VkSurfaceFormatKHR *pFormats)
+{
+   *pCount = 0;
+   return VK_ERROR_SURFACE_LOST_KHR;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+fixture_modes_error(VkPhysicalDevice pdev, VkSurfaceKHR surface,
+                    uint32_t *pCount, VkPresentModeKHR *pModes)
+{
+   *pCount = 0;
+   return VK_ERROR_SURFACE_LOST_KHR;
+}
 
 int
 main(void)
@@ -81,7 +118,7 @@ main(void)
    CHECK(result == VK_SUCCESS,
          "the surface extensions enable at instance creation: %d", result);
    if (result != VK_SUCCESS)
-      return 1;
+      goto out_window;
 
    LOAD(instance, vkCreateXcbSurfaceKHR);
    LOAD(instance, vkDestroySurfaceKHR);
@@ -93,11 +130,24 @@ main(void)
    LOAD(instance, vkGetPhysicalDeviceQueueFamilyProperties);
    LOAD(instance, vkDestroyInstance);
    CHECK(vkCreateXcbSurfaceKHR && vkDestroySurfaceKHR &&
-            vkGetPhysicalDeviceSurfaceSupportKHR,
+            vkGetPhysicalDeviceSurfaceSupportKHR &&
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR &&
+            vkGetPhysicalDeviceSurfaceFormatsKHR &&
+            vkGetPhysicalDeviceSurfacePresentModesKHR,
          "the enabled surface extension resolves its entrypoints");
    if (!vkCreateXcbSurfaceKHR || !vkDestroySurfaceKHR ||
-       !vkGetPhysicalDeviceSurfaceSupportKHR)
-      return 1;
+       !vkGetPhysicalDeviceSurfaceSupportKHR ||
+       !vkGetPhysicalDeviceSurfaceCapabilitiesKHR ||
+       !vkGetPhysicalDeviceSurfaceFormatsKHR ||
+       !vkGetPhysicalDeviceSurfacePresentModesKHR)
+      goto out_instance;
+
+   if (fixture_selects("capabilities"))
+      vkGetPhysicalDeviceSurfaceCapabilitiesKHR = fixture_capabilities_error;
+   if (fixture_selects("formats"))
+      vkGetPhysicalDeviceSurfaceFormatsKHR = fixture_formats_error;
+   if (fixture_selects("modes"))
+      vkGetPhysicalDeviceSurfacePresentModesKHR = fixture_modes_error;
 
    uint32_t pdev_count = 1;
    VkPhysicalDevice pdev = VK_NULL_HANDLE;
@@ -105,7 +155,7 @@ main(void)
    CHECK(pdev != VK_NULL_HANDLE, "one physical device enumerates: %d",
          result);
    if (pdev == VK_NULL_HANDLE)
-      return 1;
+      goto out_instance;
 
    VkSurfaceKHR surface = VK_NULL_HANDLE;
    result = vkCreateXcbSurfaceKHR(
@@ -119,7 +169,7 @@ main(void)
    CHECK(result == VK_SUCCESS && surface != VK_NULL_HANDLE,
          "vkCreateXcbSurfaceKHR: %d", result);
    if (surface == VK_NULL_HANDLE)
-      return 1;
+      goto out_instance;
 
    /* The surface exists and answers queries; presentation is what the native
     * device withholds.  Every queue family reports no present support, so an
@@ -138,27 +188,94 @@ main(void)
       printf("queue family %u present support: %u\n", i, supported);
    }
 
-   /* The capability queries answer without reaching a swapchain, so an
-    * application probing the surface completes its survey.
+   /* The queries answer without reaching a swapchain, and the survey an
+    * application runs over the surface is what they have to complete: a
+    * capability set it can size an image list against, and an enumeration of
+    * at least one format and one present mode to choose between.  A query
+    * that reports an error leaves that survey unfinished, so each result
+    * carries the verdict.
     */
    VkSurfaceCapabilitiesKHR caps;
    memset(&caps, 0, sizeof(caps));
    result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(pdev, surface, &caps);
+   CHECK(result == VK_SUCCESS,
+         "vkGetPhysicalDeviceSurfaceCapabilitiesKHR: %d", result);
+   /* maxImageCount is zero when the surface sets no upper bound, so
+    * minImageCount is the floor that fixes a usable image count.
+    */
+   CHECK(result != VK_SUCCESS || caps.minImageCount >= 1,
+         "the surface reports minImageCount %u", caps.minImageCount);
    printf("surface capabilities query: %d, images %u..%u\n", result,
           caps.minImageCount, caps.maxImageCount);
 
    uint32_t format_count = 0;
    result = vkGetPhysicalDeviceSurfaceFormatsKHR(pdev, surface,
                                                  &format_count, NULL);
+   CHECK(result == VK_SUCCESS,
+         "vkGetPhysicalDeviceSurfaceFormatsKHR count query: %d", result);
+   CHECK(format_count > 0, "the surface enumerates %u formats",
+         format_count);
    printf("surface formats query: %d, %u formats\n", result, format_count);
+
+   if (format_count > 0) {
+      VkSurfaceFormatKHR *formats =
+         malloc(format_count * sizeof(*formats));
+      uint32_t written = format_count;
+      result = vkGetPhysicalDeviceSurfaceFormatsKHR(pdev, surface, &written,
+                                                    formats);
+      CHECK(result == VK_SUCCESS && written == format_count,
+            "the format array query is %d and writes %u of %u", result,
+            written, format_count);
+
+      /* The two-call idiom clamps to the capacity the caller offers and
+       * reports VK_INCOMPLETE, so a short array is what proves the
+       * enumeration honors its count parameter rather than writing past it.
+       */
+      if (format_count > 1) {
+         written = format_count - 1;
+         result = vkGetPhysicalDeviceSurfaceFormatsKHR(pdev, surface,
+                                                       &written, formats);
+         CHECK(result == VK_INCOMPLETE && written == format_count - 1,
+               "the short format array query is %d and writes %u of the %u "
+               "offered", result, written, format_count - 1);
+      }
+      free(formats);
+   }
 
    uint32_t mode_count = 0;
    result = vkGetPhysicalDeviceSurfacePresentModesKHR(pdev, surface,
                                                       &mode_count, NULL);
+   CHECK(result == VK_SUCCESS,
+         "vkGetPhysicalDeviceSurfacePresentModesKHR count query: %d", result);
+   CHECK(mode_count > 0, "the surface enumerates %u present modes",
+         mode_count);
    printf("surface present modes query: %d, %u modes\n", result, mode_count);
 
+   if (mode_count > 0) {
+      VkPresentModeKHR *modes = malloc(mode_count * sizeof(*modes));
+      uint32_t written = mode_count;
+      result = vkGetPhysicalDeviceSurfacePresentModesKHR(pdev, surface,
+                                                         &written, modes);
+      CHECK(result == VK_SUCCESS && written == mode_count,
+            "the present-mode array query is %d and writes %u of %u", result,
+            written, mode_count);
+
+      if (mode_count > 1) {
+         written = mode_count - 1;
+         result = vkGetPhysicalDeviceSurfacePresentModesKHR(pdev, surface,
+                                                            &written, modes);
+         CHECK(result == VK_INCOMPLETE && written == mode_count - 1,
+               "the short present-mode array query is %d and writes %u of "
+               "the %u offered", result, written, mode_count - 1);
+      }
+      free(modes);
+   }
+
    vkDestroySurfaceKHR(instance, surface, NULL);
-   vkDestroyInstance(instance, NULL);
+out_instance:
+   if (vkDestroyInstance != NULL)
+      vkDestroyInstance(instance, NULL);
+out_window:
    xcb_destroy_window(connection, window);
    xcb_disconnect(connection);
 

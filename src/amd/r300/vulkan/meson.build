@@ -632,27 +632,49 @@ if get_option('r3v-native-backend')
     # skip rather than a missing test.
     prog_xvfb_run = find_program('xvfb-run', required : false)
     if dep_xcb.found() and prog_xvfb_run.found()
+      r3v_native_wsi_surface_contract = executable(
+        'r3v_native_wsi_surface_contract',
+        files('tests/r3v_native_wsi_surface_contract.c'),
+        include_directories : r3v_native_inc,
+        dependencies : [r3v_native_deps, dep_xcb],
+        link_whole : [libr3v_native_impl],
+        link_with : [libradeon_drm_vk],
+        c_args : [no_override_init_args],
+        gnu_symbol_visibility : 'hidden',
+      )
+      # The X display number is a host-wide resource, and xvfb-run -a searches
+      # it for a free one.  Concurrent searches settle on the same number, and
+      # the instance that loses reports its own cleanup failure as the test
+      # status, so the four surface tests run one at a time.
       test(
         'r3v-native-wsi-surface-contract',
         prog_xvfb_run,
-        args : [
-          '-a',
-          executable(
-            'r3v_native_wsi_surface_contract',
-            files('tests/r3v_native_wsi_surface_contract.c'),
-            include_directories : r3v_native_inc,
-            dependencies : [r3v_native_deps, dep_xcb],
-            link_whole : [libr3v_native_impl],
-            link_with : [libradeon_drm_vk],
-            c_args : [no_override_init_args],
-            gnu_symbol_visibility : 'hidden',
-          ).full_path(),
-        ],
+        args : ['-a', r3v_native_wsi_surface_contract.full_path()],
         env : r3v_native_cell_env,
         depends : [libradeon_noop_drm_shim],
+        is_parallel : false,
         timeout : 120,
         suite : ['r3v'],
       )
+      # Query-verdict calibration: the fixture replaces one loaded query
+      # pointer with a stub that reports an error, and the run then reaches
+      # the same result checks as the ordinary one.  A check that stopped
+      # judging its result passes both, which is what these three catch.
+      foreach wsi_query : ['capabilities', 'formats', 'modes']
+        test(
+          'r3v-native-wsi-surface-contract-known-bad-@0@'.format(wsi_query),
+          prog_xvfb_run,
+          args : ['-a', r3v_native_wsi_surface_contract.full_path()],
+          env : environment(r3v_native_cell_vars + {
+            'R3V_WSI_FIXTURE_QUERY_ERROR' : wsi_query,
+          }),
+          depends : [libradeon_noop_drm_shim],
+          is_parallel : false,
+          should_fail : true,
+          timeout : 120,
+          suite : ['r3v'],
+        )
+      endforeach
     endif
 
     # Loader black-box sweep: the real Vulkan loader resolves and calls the
