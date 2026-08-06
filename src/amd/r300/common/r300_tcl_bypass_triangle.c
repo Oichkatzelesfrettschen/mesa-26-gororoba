@@ -195,6 +195,33 @@ r300_tcl_bypass_triangle_reference_contract(
    return r300_first_draw_contract_resolve(&params, out);
 }
 
+int
+r300_tcl_bypass_triangle_reference_emit(
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   struct r300_fragment_binary fs;
+   int rc = r300_tcl_bypass_triangle_reference_fs(&fs);
+   if (rc != 0)
+      return rc;
+
+   struct r300_first_draw_contract contract;
+   rc = r300_tcl_bypass_triangle_reference_contract(&contract);
+   if (rc != 0) {
+      r300_fragment_binary_finish(&fs);
+      return rc;
+   }
+
+   struct r300_tcl_bypass_triangle_params params = {
+      .vertex_offset = 0,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
+      .fragment_binary = &fs,
+      .first_draw_contract = &contract,
+   };
+   rc = r300_tcl_bypass_triangle_emit(&params, out);
+   r300_fragment_binary_finish(&fs);
+   return rc;
+}
+
 uint32_t
 r300_rb3d_colorpitch0_pack_argb8888(uint32_t pitch_pixels)
 {
