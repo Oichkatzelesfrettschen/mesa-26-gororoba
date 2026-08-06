@@ -317,6 +317,7 @@ if get_option('r3v-native-backend')
     'r3v_native_cmd.c',
     'r3v_native_device.c',
     'r3v_native_memory.c',
+    'r3v_native_object.c',
     'r3v_native_queue.c',
     'r3v_native_recording.c',
     '../common/r300_first_draw_state.c',
@@ -470,6 +471,28 @@ if get_option('r3v-native-backend')
       depends : libvulkan_r3v_native,
       suite : ['r3v'],
     )
+    test(
+      'r3v-native-public-surface-policy',
+      prog_python,
+      args : [r3v_native_entrypoint_audit_args, '--policy'],
+      depends : libvulkan_r3v_native,
+      suite : ['r3v'],
+    )
+    # Known-bad calibration for --enforce: removing one entrypoint from the
+    # parsed surface must fail it.  Dropping a core 1.0 device command opens
+    # the completeness verdict, and dropping a *2-form target opens the
+    # closure verdict through the common bridge that dispatches into it.
+    foreach dropped : ['CreateImage', 'BindBufferMemory2']
+      test(
+        'r3v-native-entrypoint-closure-known-bad-@0@'.format(dropped),
+        prog_python,
+        args : [r3v_native_entrypoint_audit_args, '--enforce',
+                '--drop', dropped],
+        depends : libvulkan_r3v_native,
+        should_fail : true,
+        suite : ['r3v'],
+      )
+    endforeach
   endif
 
   # Attended cell: performs a live DRM_RADEON_CS on RS482 silicon under the
