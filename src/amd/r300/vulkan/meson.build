@@ -604,17 +604,20 @@ if get_option('r3v-native-backend')
       timeout : 60,
       suite : ['r3v'],
     )
-    # Known-bad calibration for the absent legs: judging a command the
-    # surface really provides under the absent rule must report a leak, which
-    # is what gives those legs teeth against a promoted alias or a swapchain
-    # command reaching the device table.  vkCmdDraw stands for the core
-    # spellings and vkQueueSubmit for the queue surface.
-    foreach leaked : ['vkCmdDraw', 'vkQueueSubmit']
+    # Known-bad calibration for the absent legs, one per absent table: the
+    # fixture appends a command the surface really provides as a row of the
+    # named table, so the leak is judged by that table's own loop.  A leg that
+    # stopped comparing its rows passes here, which is what gives all three
+    # teeth against a promoted alias or a swapchain command reaching the
+    # device table.
+    foreach leak : [['higher-core', 'higher core:vkCmdDraw'],
+                    ['promoted-alias', 'promoted alias:vkMapMemory'],
+                    ['closed-extension', 'closed extension:vkQueueSubmit']]
       test(
-        'r3v-native-direct-table-sweep-known-bad-@0@'.format(leaked),
+        'r3v-native-direct-table-sweep-known-bad-@0@'.format(leak[0]),
         r3v_native_direct_table_sweep,
         env : environment(r3v_native_cell_vars + {
-          'R3V_SURFACE_FIXTURE_LEAK' : leaked,
+          'R3V_SURFACE_FIXTURE_LEAK' : leak[1],
         }),
         depends : [libradeon_noop_drm_shim],
         should_fail : true,
