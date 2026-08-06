@@ -12,9 +12,9 @@ and walks the transitive closure: every dependency of a reachable
 Vulkan 1.0 device-scope slot must itself resolve to a populated slot.
 
 Modes:
-  --selftest             synthetic known-good and known-bad closures
-  --expect-open NAMES    calibration: the named slots must have open edges
-  --enforce              zero open edges required
+  --selftest   synthetic known-good and known-bad closures
+  --enforce    zero open edges required, over inputs that clear the
+               structural floors
 """
 
 import re
@@ -48,11 +48,14 @@ def parse_registry(vk_xml: Path):
               first_param_type.text in DEVICE_DISPATCH_TYPES:
             device_level.add(name)
     # The registry splits core 1.0 into base/compute/graphics feature sets
-    # (VK_BASE_VERSION_1_0 and peers); core 1.0 is their union.
+    # (VK_BASE_VERSION_1_0 and peers); core 1.0 is their union.  The api
+    # attribute separates them from VKSC_VERSION_1_0, whose commands belong
+    # to Vulkan SC alone.
     core10 = set()
     for feature in root.findall("feature"):
         name = feature.get("name", "")
-        if not name.endswith("_VERSION_1_0"):
+        apis = feature.get("api", "vulkan").split(",")
+        if not name.endswith("_VERSION_1_0") or "vulkan" not in apis:
             continue
         for req in feature.findall("require/command"):
             core10.add(req.get("name")[2:])
@@ -193,6 +196,24 @@ def main():
     open_edges = closure_audit(native, common, deps, alias, reachable)
     open_slots = sorted({slot for slot, _ in open_edges})
 
+    # A closed table and an empty model both report zero open edges, so the
+    # inputs carry floors: Vulkan 1.0 fixes the device-scope core set near
+    # 123 commands, the linked table holds hundreds of slots, and the
+    # runtime scan reaches every common provider.  A parse that collapses
+    # (an unreadable library, a registry whose 1.0 feature sets moved)
+    # trips these before the verdict claims closure.
+    core_device = core10 & device_level
+    floors = [
+        ("core 1.0 device-scope commands", len(core_device), 100),
+        ("populated device slots", len(populated), 100),
+        ("common providers with dispatch dependencies", len(deps), 50),
+    ]
+    for name, value, floor in floors:
+        if value < floor:
+            print(f"model failure: {name} is {value}, below the floor "
+                  f"{floor}; the audit inputs did not parse")
+            return 2
+
     print(f"device-scope commands: {len(device_level)}")
     print(f"populated device slots: {len(populated)} "
           f"(native {len(populated & native)}, "
@@ -205,15 +226,6 @@ def main():
 
     if mode == "--enforce":
         return 1 if open_edges else 0
-    if mode == "--expect-open":
-        expected = set(sys.argv[6].split(","))
-        missing = expected - set(open_slots)
-        if missing:
-            print("calibration failure, expected-open slots not detected: "
-                  + ", ".join(sorted(missing)))
-            return 1
-        print(f"calibration: all {len(expected)} expected-open slots detected")
-        return 0
     print(f"unknown mode {mode}")
     return 2
 
