@@ -181,6 +181,49 @@ sweep_wsi_contract(VkInstance instance, VkPhysicalDevice pdev)
    }
 }
 
+/* Each scope answers through its own procaddr entrypoint, so a device table
+ * holding an instance- or physical-device-scope command would let a program
+ * dispatch it against a device that never owned it.  vkGetDeviceProcAddr
+ * answers none of the 16 core 1.0 names outside device scope.
+ */
+static void
+sweep_scope_separation(VkDevice device, PFN_vkGetDeviceProcAddr gdpa)
+{
+   unsigned judged = 0;
+   for (uint32_t i = 0; i < r3v_surface_core10_count; i++) {
+      if (r3v_surface_core10[i].scope == R3V_SCOPE_DEVICE)
+         continue;
+      judged++;
+      CHECK(gdpa(device, r3v_surface_core10[i].name) == NULL,
+            "scope separation: vkGetDeviceProcAddr answers the %s-scope "
+            "command %s",
+            r3v_surface_core10[i].scope == R3V_SCOPE_GLOBAL ? "global" :
+            r3v_surface_core10[i].scope == R3V_SCOPE_INSTANCE ? "instance" :
+            "physical-device",
+            r3v_surface_core10[i].name);
+   }
+   printf("scope separation: %u non-device core 1.0 names, none answered "
+          "by vkGetDeviceProcAddr\n", judged);
+}
+
+/* Calibration for the absent legs: naming a command here judges it under the
+ * absent rule regardless of which table holds it.  Naming one the surface
+ * really provides makes the sweep report a leak, which is what proves those
+ * legs would catch a promoted alias or a swapchain command appearing in the
+ * device table.
+ */
+static void
+sweep_injected_leak(VkDevice device, PFN_vkGetDeviceProcAddr gdpa)
+{
+   const char *injected = getenv("R3V_SURFACE_FIXTURE_LEAK");
+   if (injected == NULL)
+      return;
+   CHECK(gdpa(device, injected) == NULL,
+         "injected leak fixture: %s resolves through vkGetDeviceProcAddr",
+         injected);
+   printf("injected leak fixture: %s judged absent\n", injected);
+}
+
 int
 main(void)
 {
@@ -278,6 +321,9 @@ main(void)
    CHECK(result == VK_SUCCESS, "vkCreateDevice: %d", result);
    if (result != VK_SUCCESS)
       return 1;
+
+   sweep_scope_separation(device, gdpa);
+   sweep_injected_leak(device, gdpa);
 
    sweep("core 1.0", r3v_surface_core10, r3v_surface_core10_count, true,
          instance, device, gdpa);

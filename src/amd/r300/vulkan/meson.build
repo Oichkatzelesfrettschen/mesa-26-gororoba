@@ -533,11 +533,14 @@ if get_option('r3v-native-backend')
       c_args : [no_override_init_args],
       gnu_symbol_visibility : 'hidden',
     )
-    r3v_native_cell_env = environment({
+    # The shim fixture as a dictionary so a test that needs one more
+    # variable derives its environment instead of composing two.
+    r3v_native_cell_vars = {
       'LD_PRELOAD' : libradeon_noop_drm_shim.full_path(),
       'RADEON_GPU_ID' : '0x5974',
       'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
-    })
+    }
+    r3v_native_cell_env = environment(r3v_native_cell_vars)
     foreach cell_mode : ['closed', 'open']
       test(
         'r3v-native-triangle-cell-@0@'.format(cell_mode),
@@ -561,25 +564,44 @@ if get_option('r3v-native-backend')
 
     # Direct-table sweep: the ICD's own procaddr entrypoints with no loader
     # in the process, so a NULL names a table the driver built that way.
+    r3v_native_direct_table_sweep = executable(
+      'r3v_native_direct_table_sweep',
+      [files('tests/r3v_native_direct_table_sweep.c'),
+       r3v_native_surface_table],
+      include_directories : [r3v_native_inc,
+                             include_directories('tests')],
+      dependencies : r3v_native_deps,
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    )
     test(
       'r3v-native-direct-table-sweep',
-      executable(
-        'r3v_native_direct_table_sweep',
-        [files('tests/r3v_native_direct_table_sweep.c'),
-         r3v_native_surface_table],
-        include_directories : [r3v_native_inc,
-                               include_directories('tests')],
-        dependencies : r3v_native_deps,
-        link_whole : [libr3v_native_impl],
-        link_with : [libradeon_drm_vk],
-        c_args : [no_override_init_args],
-        gnu_symbol_visibility : 'hidden',
-      ),
+      r3v_native_direct_table_sweep,
       env : r3v_native_cell_env,
       depends : [libradeon_noop_drm_shim],
       timeout : 60,
       suite : ['r3v'],
     )
+    # Known-bad calibration for the absent legs: judging a command the
+    # surface really provides under the absent rule must report a leak, which
+    # is what gives those legs teeth against a promoted alias or a swapchain
+    # command reaching the device table.  vkCmdDraw stands for the core
+    # spellings and vkQueueSubmit for the queue surface.
+    foreach leaked : ['vkCmdDraw', 'vkQueueSubmit']
+      test(
+        'r3v-native-direct-table-sweep-known-bad-@0@'.format(leaked),
+        r3v_native_direct_table_sweep,
+        env : environment(r3v_native_cell_vars + {
+          'R3V_SURFACE_FIXTURE_LEAK' : leaked,
+        }),
+        depends : [libradeon_noop_drm_shim],
+        should_fail : true,
+        timeout : 60,
+        suite : ['r3v'],
+      )
+    endforeach
 
     # Surface-query-only WSI boundary: an X server backs the surface, so the
     # test registers where xcb and a virtual server are available and skips
@@ -615,10 +637,7 @@ if get_option('r3v-native-backend')
     # reaches.  It registers where that loader is present.
     dep_vulkan_loader = cc.find_library('vulkan', required : false)
     if dep_vulkan_loader.found()
-      r3v_native_loader_env = environment({
-        'LD_PRELOAD' : libradeon_noop_drm_shim.full_path(),
-        'RADEON_GPU_ID' : '0x5974',
-        'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
+      r3v_native_loader_env = environment(r3v_native_cell_vars + {
         'VK_DRIVER_FILES' : _native_dev_icd.full_path(),
       })
       test(
