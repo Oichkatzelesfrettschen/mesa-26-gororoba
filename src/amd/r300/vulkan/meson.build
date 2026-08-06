@@ -549,6 +549,67 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+
+    # The public-surface tables the sweeps measure, generated from the same
+    # registry parse the policy audit reads.
+    r3v_native_surface_table = custom_target(
+      'r3v_native_surface_table',
+      input : [files('tests/r3v_native_entrypoint_audit.py'), vk_api_xml],
+      output : 'r3v_native_surface_table.c',
+      command : [prog_python, '@INPUT0@', '--emit-c', '@INPUT1@', '@OUTPUT@'],
+    )
+
+    # Direct-table sweep: the ICD's own procaddr entrypoints with no loader
+    # in the process, so a NULL names a table the driver built that way.
+    test(
+      'r3v-native-direct-table-sweep',
+      executable(
+        'r3v_native_direct_table_sweep',
+        [files('tests/r3v_native_direct_table_sweep.c'),
+         r3v_native_surface_table],
+        include_directories : [r3v_native_inc,
+                               include_directories('tests')],
+        dependencies : r3v_native_deps,
+        link_whole : [libr3v_native_impl],
+        link_with : [libradeon_drm_vk],
+        c_args : [no_override_init_args],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+
+    # Loader black-box sweep: the real Vulkan loader resolves and calls the
+    # built ICD, so it measures what an application linked against libvulkan
+    # reaches.  It registers where that loader is present.
+    dep_vulkan_loader = cc.find_library('vulkan', required : false)
+    if dep_vulkan_loader.found()
+      r3v_native_loader_env = environment({
+        'LD_PRELOAD' : libradeon_noop_drm_shim.full_path(),
+        'RADEON_GPU_ID' : '0x5974',
+        'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
+        'VK_DRIVER_FILES' : _native_dev_icd.full_path(),
+      })
+      test(
+        'r3v-native-loader-sweep',
+        executable(
+          'r3v_native_loader_sweep',
+          [files('tests/r3v_native_loader_sweep.c'),
+           r3v_native_surface_table],
+          include_directories : [inc_include, inc_src,
+                                 include_directories('tests')],
+          dependencies : [dep_vulkan_loader, idep_mesautil],
+          c_args : [no_override_init_args],
+        ),
+        env : r3v_native_loader_env,
+        depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
+                   _native_dev_icd],
+        timeout : 120,
+        suite : ['r3v'],
+      )
+    endif
     # Arming-gate calibration: the complete fact set arms, and each
     # single-factor defect refuses with its own verdict.  The evaluator is
     # pure, so the test compiles it directly.

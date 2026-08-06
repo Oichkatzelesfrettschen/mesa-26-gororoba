@@ -386,9 +386,75 @@ def emit_policy(reg, native, common, deps):
             ",".join(sorted(deps.get(canon, ()))) or "-")))
 
 
+SCOPE_ENUM = {"global": "R3V_SCOPE_GLOBAL",
+              "instance": "R3V_SCOPE_INSTANCE",
+              "physical-device": "R3V_SCOPE_PHYSICAL_DEVICE",
+              "device": "R3V_SCOPE_DEVICE"}
+
+# Extensions the sweeps expect absent from the native surface.  The device
+# extension table is empty, so every VK_KHR_swapchain command must resolve to
+# NULL; VK_KHR_surface is an instance extension the sweep leaves unenabled,
+# so its commands must resolve to NULL as well.
+CLOSED_EXTENSIONS = ("VK_KHR_swapchain", "VK_KHR_surface")
+
+
+def emit_c_surface(reg, out_path: Path):
+    """Write the sweep's command table: the core 1.0 set and the absent sets.
+
+    The sweeps read one generated table so the surface they check and the
+    surface the policy audits come from the same registry parse.
+    """
+    def owned_by_higher_core(owner):
+        return (owner.endswith(("_VERSION_1_1", "_VERSION_1_2",
+                                "_VERSION_1_3", "_VERSION_1_4")) and
+                "VERSION_1_0" not in owner)
+
+    core = sorted(n for n in reg.core10 if n in reg.scope)
+    # A promoted spelling carries its own scope entry, so both the core 1.1
+    # name and its KHR alias reach the sweep and must resolve to NULL under a
+    # 1.0 instance.
+    higher = sorted(n for n, own in reg.owner.items()
+                    if n in reg.scope and n not in reg.core10 and
+                    owned_by_higher_core(own))
+    closed_ext = sorted(n for n, own in reg.owner.items()
+                        if n in reg.scope and own in CLOSED_EXTENSIONS)
+
+    lines = ["/* SPDX-License-Identifier: MIT */",
+             "/* Generated from vk.xml by r3v_native_entrypoint_audit.py. */",
+             "",
+             '#include "r3v_native_surface.h"',
+             ""]
+
+    def table(symbol, names):
+        lines.append(f"const struct r3v_surface_command {symbol}[] = {{")
+        for name in names:
+            lines.append(f'   {{ "vk{name}", {SCOPE_ENUM[reg.scope[name]]} }},')
+        lines.append("};")
+        lines.append(f"const uint32_t {symbol}_count = "
+                     f"ARRAY_SIZE({symbol});")
+        lines.append("")
+
+    table("r3v_surface_core10", core)
+    table("r3v_surface_higher_core", higher)
+    table("r3v_surface_closed_extension", closed_ext)
+    out_path.write_text("\n".join(lines))
+    return len(core), len(higher), len(closed_ext)
+
+
 def main():
     if sys.argv[1:] == ["--selftest"]:
         return selftest()
+
+    # Table generation reads the registry alone; the surface it describes is
+    # what the sweeps then measure against the built library.
+    if sys.argv[1] == "--emit-c":
+        reg = parse_registry(Path(sys.argv[2]))
+        counts = emit_c_surface(reg, Path(sys.argv[3]))
+        if counts[0] != 137:
+            print(f"model failure: core 1.0 command set is {counts[0]}, not "
+                  f"the 137 Vulkan 1.0 fixes")
+            return 2
+        return 0
 
     nm, library, vk_xml, runtime_dir = sys.argv[1:5]
     argv = sys.argv[5:]
