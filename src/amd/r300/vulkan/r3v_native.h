@@ -21,6 +21,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* The result every native refusal returns.  Each command's registry entry
+ * fixes the results it may return, and VK_ERROR_UNKNOWN is the one error the
+ * whole native refusal set shares: the other universal member,
+ * VK_ERROR_VALIDATION_FAILED, belongs to validation layers.  The public-surface
+ * policy recomputes that intersection from vk.xml and fails when a single
+ * result stops covering the set.
+ */
+#define R3V_NATIVE_REFUSAL_RESULT VK_ERROR_UNKNOWN
+
 /* One recorded BO reference of a native command buffer.  The IB names the
  * reference by its index in this array; the queue folds the array into the
  * submission relocation list.

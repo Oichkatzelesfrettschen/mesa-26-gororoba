@@ -317,6 +317,7 @@ if get_option('r3v-native-backend')
     'r3v_native_cmd.c',
     'r3v_native_device.c',
     'r3v_native_memory.c',
+    'r3v_native_object.c',
     'r3v_native_queue.c',
     'r3v_native_recording.c',
     '../common/r300_first_draw_state.c',
@@ -470,6 +471,28 @@ if get_option('r3v-native-backend')
       depends : libvulkan_r3v_native,
       suite : ['r3v'],
     )
+    test(
+      'r3v-native-public-surface-policy',
+      prog_python,
+      args : [r3v_native_entrypoint_audit_args, '--policy'],
+      depends : libvulkan_r3v_native,
+      suite : ['r3v'],
+    )
+    # Known-bad calibration for --enforce: removing one entrypoint from the
+    # parsed surface must fail it.  Dropping a core 1.0 device command opens
+    # the completeness verdict, and dropping a *2-form target opens the
+    # closure verdict through the common bridge that dispatches into it.
+    foreach dropped : ['CreateImage', 'BindBufferMemory2']
+      test(
+        'r3v-native-entrypoint-closure-known-bad-@0@'.format(dropped),
+        prog_python,
+        args : [r3v_native_entrypoint_audit_args, '--enforce',
+                '--drop', dropped],
+        depends : libvulkan_r3v_native,
+        should_fail : true,
+        suite : ['r3v'],
+      )
+    endforeach
   endif
 
   # Attended cell: performs a live DRM_RADEON_CS on RS482 silicon under the
@@ -510,11 +533,14 @@ if get_option('r3v-native-backend')
       c_args : [no_override_init_args],
       gnu_symbol_visibility : 'hidden',
     )
-    r3v_native_cell_env = environment({
+    # The shim fixture as a dictionary so a test that needs one more
+    # variable derives its environment instead of composing two.
+    r3v_native_cell_vars = {
       'LD_PRELOAD' : libradeon_noop_drm_shim.full_path(),
       'RADEON_GPU_ID' : '0x5974',
       'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
-    })
+    }
+    r3v_native_cell_env = environment(r3v_native_cell_vars)
     foreach cell_mode : ['closed', 'open']
       test(
         'r3v-native-triangle-cell-@0@'.format(cell_mode),
@@ -526,6 +552,112 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+
+    # The public-surface tables the sweeps measure, generated from the same
+    # registry parse the policy audit reads.
+    r3v_native_surface_table = custom_target(
+      'r3v_native_surface_table',
+      input : [files('tests/r3v_native_entrypoint_audit.py'), vk_api_xml],
+      output : 'r3v_native_surface_table.c',
+      command : [prog_python, '@INPUT0@', '--emit-c', '@INPUT1@', '@OUTPUT@'],
+    )
+
+    # Direct-table sweep: the ICD's own procaddr entrypoints with no loader
+    # in the process, so a NULL names a table the driver built that way.
+    r3v_native_direct_table_sweep = executable(
+      'r3v_native_direct_table_sweep',
+      [files('tests/r3v_native_direct_table_sweep.c'),
+       r3v_native_surface_table],
+      include_directories : [r3v_native_inc,
+                             include_directories('tests')],
+      dependencies : r3v_native_deps,
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-direct-table-sweep',
+      r3v_native_direct_table_sweep,
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+    # Known-bad calibration for the absent legs: judging a command the
+    # surface really provides under the absent rule must report a leak, which
+    # is what gives those legs teeth against a promoted alias or a swapchain
+    # command reaching the device table.  vkCmdDraw stands for the core
+    # spellings and vkQueueSubmit for the queue surface.
+    foreach leaked : ['vkCmdDraw', 'vkQueueSubmit']
+      test(
+        'r3v-native-direct-table-sweep-known-bad-@0@'.format(leaked),
+        r3v_native_direct_table_sweep,
+        env : environment(r3v_native_cell_vars + {
+          'R3V_SURFACE_FIXTURE_LEAK' : leaked,
+        }),
+        depends : [libradeon_noop_drm_shim],
+        should_fail : true,
+        timeout : 60,
+        suite : ['r3v'],
+      )
+    endforeach
+
+    # Surface-query-only WSI boundary: an X server backs the surface, so the
+    # test registers where xcb and a virtual server are available and skips
+    # at run time when no display answers.  Its absence stays visible as a
+    # skip rather than a missing test.
+    prog_xvfb_run = find_program('xvfb-run', required : false)
+    if dep_xcb.found() and prog_xvfb_run.found()
+      test(
+        'r3v-native-wsi-surface-contract',
+        prog_xvfb_run,
+        args : [
+          '-a',
+          executable(
+            'r3v_native_wsi_surface_contract',
+            files('tests/r3v_native_wsi_surface_contract.c'),
+            include_directories : r3v_native_inc,
+            dependencies : [r3v_native_deps, dep_xcb],
+            link_whole : [libr3v_native_impl],
+            link_with : [libradeon_drm_vk],
+            c_args : [no_override_init_args],
+            gnu_symbol_visibility : 'hidden',
+          ).full_path(),
+        ],
+        env : r3v_native_cell_env,
+        depends : [libradeon_noop_drm_shim],
+        timeout : 120,
+        suite : ['r3v'],
+      )
+    endif
+
+    # Loader black-box sweep: the real Vulkan loader resolves and calls the
+    # built ICD, so it measures what an application linked against libvulkan
+    # reaches.  It registers where that loader is present.
+    dep_vulkan_loader = cc.find_library('vulkan', required : false)
+    if dep_vulkan_loader.found()
+      r3v_native_loader_env = environment(r3v_native_cell_vars + {
+        'VK_DRIVER_FILES' : _native_dev_icd.full_path(),
+      })
+      test(
+        'r3v-native-loader-sweep',
+        executable(
+          'r3v_native_loader_sweep',
+          [files('tests/r3v_native_loader_sweep.c'),
+           r3v_native_surface_table],
+          include_directories : [inc_include, inc_src,
+                                 include_directories('tests')],
+          dependencies : [dep_vulkan_loader, idep_mesautil],
+          c_args : [no_override_init_args],
+        ),
+        env : r3v_native_loader_env,
+        depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
+                   _native_dev_icd],
+        timeout : 120,
+        suite : ['r3v'],
+      )
+    endif
     # Arming-gate calibration: the complete fact set arms, and each
     # single-factor defect refuses with its own verdict.  The evaluator is
     # pure, so the test compiles it directly.
