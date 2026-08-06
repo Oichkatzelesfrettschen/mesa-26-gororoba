@@ -233,51 +233,84 @@ call_flush_empty(void)
    return vkInvalidateMappedMemoryRanges(device, 0, NULL) != VK_SUCCESS;
 }
 
-/* The one live allocation the mapped-range legs validate against.  It is
- * allocated in the parent: the drm-shim keeps its buffer-object state per
- * process, so a GEM create in a forked child refuses, and the range checks
- * under test read the allocation size rather than the kernel.
+/* The one live allocation the mapped-range legs validate against, mapped for
+ * the whole sweep because vkFlushMappedMemoryRanges and
+ * vkInvalidateMappedMemoryRanges name a currently mapped allocation.  The
+ * parent allocates and maps it, and each child inherits the handle: the
+ * drm-shim keeps its buffer-object state per process, so a GEM create in a
+ * forked child refuses.  That inheritance is a property of this harness and
+ * the shim under it, and the range checks under test read the allocation size
+ * rather than the kernel.  A child that creates its own instance and device
+ * through exec is what a harness measuring object lifetime across processes
+ * would need.
  */
 static VkDeviceMemory live_memory = VK_NULL_HANDLE;
+static VkDeviceSize live_size;
+static VkDeviceSize atom_size = 1;
 
 /* VkDeviceMemory is real, so the mapped-range commands run their validation
- * against a live allocation: the whole-size range covers it and succeeds, an
- * offset past its end refuses, a size that would wrap its offset refuses, and
- * the commitment of a non-lazy allocation reports zero.
+ * against a live mapped allocation.  Each leg sets one bit, so a single exit
+ * status names which range the validator judged wrongly.
  */
 static int
 call_memory_range_validation(void)
 {
-   VkDeviceMemory memory = live_memory;
-   int rc = 0;
-   VkMappedMemoryRange whole = {
+   const VkMappedMemoryRange base = {
       .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-      .memory = memory,
-      .offset = 0,
-      .size = VK_WHOLE_SIZE,
+      .memory = live_memory,
    };
-   if (vkFlushMappedMemoryRanges(device, 1, &whole) != VK_SUCCESS)
-      rc |= 1;
-   if (vkInvalidateMappedMemoryRanges(device, 1, &whole) != VK_SUCCESS)
-      rc |= 2;
+   /* An offset and a size a flush names are multiples of nonCoherentAtomSize,
+    * so each range below is built from that granularity.  The first three are
+    * ranges an application forms; the last four lie outside the allocation,
+    * which the specification forbids and the validator answers by refusing
+    * rather than by reading past the bound it was given.
+    */
+   const struct {
+      VkDeviceSize offset, size;
+      bool succeeds;
+      const char *what;
+   } cases[] = {
+      { 0, VK_WHOLE_SIZE, true, "the whole allocation" },
+      { atom_size, VK_WHOLE_SIZE, true,
+        "an interior offset expanded to the remaining bytes" },
+      { 0, live_size, true, "an explicit size covering the allocation" },
+      { live_size, atom_size, false, "an offset at the end" },
+      { live_size + atom_size, atom_size, false, "an offset past the end" },
+      { live_size - atom_size, atom_size * 2, false,
+        "a size past the remaining bytes" },
+      { atom_size * 2, UINT64_MAX - atom_size, false,
+        "a size that wraps its offset" },
+   };
 
-   VkMappedMemoryRange past_end = whole;
-   past_end.offset = 1 << 20;
-   past_end.size = 64;
-   if (vkFlushMappedMemoryRanges(device, 1, &past_end) == VK_SUCCESS)
-      rc |= 4;
+   int rc = 0;
+   for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+      VkMappedMemoryRange range = base;
+      range.offset = cases[i].offset;
+      range.size = cases[i].size;
+      const bool flushed =
+         vkFlushMappedMemoryRanges(device, 1, &range) == VK_SUCCESS;
+      const bool invalidated =
+         vkInvalidateMappedMemoryRanges(device, 1, &range) == VK_SUCCESS;
+      if (flushed != cases[i].succeeds || invalidated != cases[i].succeeds) {
+         fprintf(stderr, "FAIL: %s: flush %d invalidate %d, %d expected\n",
+                 cases[i].what, flushed, invalidated, cases[i].succeeds);
+         rc |= 1 << i;
+      }
+   }
 
-   /* A size that would wrap the offset must not pass the bound check. */
-   VkMappedMemoryRange wrapping = whole;
-   wrapping.offset = 2048;
-   wrapping.size = UINT64_MAX - 1024;
-   if (vkFlushMappedMemoryRanges(device, 1, &wrapping) == VK_SUCCESS)
-      rc |= 8;
+   /* Zero ranges name no allocation and succeed. */
+   if (vkFlushMappedMemoryRanges(device, 0, NULL) != VK_SUCCESS ||
+       vkInvalidateMappedMemoryRanges(device, 0, NULL) != VK_SUCCESS)
+      rc |= 1 << ARRAY_SIZE(cases);
 
+   /* The commitment query describes memory carrying
+    * VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, and the native device
+    * advertises no such memory type, so the query reports zero.
+    */
    VkDeviceSize committed = 1;
-   vkGetDeviceMemoryCommitment(device, memory, &committed);
+   vkGetDeviceMemoryCommitment(device, live_memory, &committed);
    if (committed != 0)
-      rc |= 16;
+      rc |= 1 << (ARRAY_SIZE(cases) + 1);
 
    return rc;
 }
@@ -444,15 +477,41 @@ main(void)
           "no, it answers every higher-core name and carries no driver "
           "verdict");
 
+   /* nonCoherentAtomSize is the granularity a flush range is built from, so
+    * the allocation is sized to a whole number of atoms and every offset the
+    * mapped-range legs name is a multiple of one.
+    */
+   VkPhysicalDeviceProperties props;
+   vkGetPhysicalDeviceProperties(pdev, &props);
+   atom_size = props.limits.nonCoherentAtomSize;
+   CHECK(atom_size >= 1 && (atom_size & (atom_size - 1)) == 0,
+         "nonCoherentAtomSize is %llu, not a power of two",
+         (unsigned long long)atom_size);
+   if (atom_size == 0)
+      atom_size = 1;
+   live_size = atom_size * 4;
+
    result = vkAllocateMemory(
       device, &(VkMemoryAllocateInfo){
                  .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                 .allocationSize = 4096,
+                 .allocationSize = live_size,
                  .memoryTypeIndex = 0,
               },
       NULL, &live_memory);
    CHECK(result == VK_SUCCESS, "vkAllocateMemory through the loader: %d",
          result);
+
+   /* Both mapped-range commands name a currently mapped allocation, so the
+    * map is what makes those legs valid use rather than a call the
+    * specification leaves undefined.
+    */
+   void *live_map = NULL;
+   if (result == VK_SUCCESS) {
+      result = vkMapMemory(device, live_memory, 0, VK_WHOLE_SIZE, 0,
+                           &live_map);
+      CHECK(result == VK_SUCCESS && live_map != NULL,
+            "vkMapMemory over the live allocation: %d", result);
+   }
 
    in_child("vkCreateImage refuses", call_create_image);
    in_child("vkCreateEvent refuses", call_create_event);
@@ -470,6 +529,8 @@ main(void)
    in_child("mapped-range validation over a live allocation",
             call_memory_range_validation);
 
+   if (live_map != NULL)
+      vkUnmapMemory(device, live_memory);
    vkFreeMemory(device, live_memory, NULL);
    vkDestroyDevice(device, NULL);
    vkDestroyInstance(instance, NULL);
