@@ -350,6 +350,60 @@ def selftest():
     return 0
 
 
+# Lifecycle pairings whose two sides do not share a type suffix.  The
+# suffix-derived pairs (Create<X>/Destroy<X>, Allocate<X>/Free<X>) come from
+# the command names themselves.
+EXPLICIT_PAIRS = (
+    ("MapMemory", "UnmapMemory"),
+    ("BeginCommandBuffer", "EndCommandBuffer"),
+    ("CreateDescriptorPool", "ResetDescriptorPool"),
+    ("CreateCommandPool", "ResetCommandPool"),
+    ("CreateEvent", "ResetEvent"),
+    ("CreateFence", "ResetFences"),
+)
+
+
+def lifecycle_pairs(names):
+    """Pair each acquiring command with the releasing command of its type.
+
+    An object a program acquires it must be able to release, so a populated
+    releasing command whose acquiring command is absent leaves a handle no
+    program can obtain, and an acquiring command with no releasing command
+    leaks by construction.
+    """
+    pairs = set()
+    for name in names:
+        for acquire, release in (("Create", "Destroy"), ("Allocate", "Free")):
+            if not name.startswith(acquire):
+                continue
+            suffix = name[len(acquire):]
+            partner = release + suffix
+            # vkFreeDescriptorSets releases what vkAllocateDescriptorSets
+            # acquires; the plural forms line up the same way.
+            if partner not in names and partner.endswith("s"):
+                partner = partner[:-1]
+            if partner in names:
+                pairs.add((name, partner))
+    for acquire, release in EXPLICIT_PAIRS:
+        if acquire in names and release in names:
+            pairs.add((acquire, release))
+    return sorted(pairs)
+
+
+def pair_asymmetries(reg, populated):
+    """Return [(acquire, release, which side is absent)] over core 1.0."""
+    core = reg.core10
+    found = []
+    for acquire, release in lifecycle_pairs(core):
+        have_acquire = acquire in populated
+        have_release = release in populated
+        if have_acquire and not have_release:
+            found.append((acquire, release, release))
+        elif have_release and not have_acquire:
+            found.append((acquire, release, acquire))
+    return found
+
+
 def permitted_refusal_results(reg, refusing):
     """Error results every refusing command permits, layer-owned ones removed."""
     sets = [set(reg.results[name][1]) for name in sorted(refusing)
@@ -523,6 +577,9 @@ def main():
     unclassified = sorted(n for n in core_device & native
                           if behavior_class(n, native, common) ==
                           "UNCLASSIFIED")
+    all_populated = populated | {n for n in reg.core10
+                                 if n in native or n in common}
+    asymmetries = pair_asymmetries(reg, all_populated)
 
     print(f"device-scope commands: {len(reg.device_level)}")
     print(f"populated device slots: {len(populated)} "
@@ -535,15 +592,19 @@ def main():
     print(f"refusal result {REFUSAL_RESULT} permitted by all "
           f"{len(refusing)} refusing commands: "
           f"{REFUSAL_RESULT in permitted}")
+    print(f"core 1.0 lifecycle pairs: {len(lifecycle_pairs(reg.core10))}, "
+          f"{len(asymmetries)} one-sided")
     for slot, dep in open_edges:
         print(f"  OPEN {slot} -> {dep}")
     for name in absent:
         print(f"  ABSENT {name}")
     for name in unclassified:
         print(f"  UNCLASSIFIED {name}")
+    for acquire, release, missing in asymmetries:
+        print(f"  ONE-SIDED {acquire}/{release}: {missing} is absent")
 
     if mode == "--enforce":
-        return 1 if (open_edges or absent or unclassified or
+        return 1 if (open_edges or absent or unclassified or asymmetries or
                      REFUSAL_RESULT not in permitted) else 0
     print(f"unknown mode {mode}")
     return 2

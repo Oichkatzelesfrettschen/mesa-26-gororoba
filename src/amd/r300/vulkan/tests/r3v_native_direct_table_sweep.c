@@ -126,6 +126,61 @@ sweep_instance_versions(PFN_vkCreateInstance create_instance,
    }
 }
 
+/* The native product boundary is surface queries without presentation: the
+ * instance may construct and query a surface, and the device advertises no
+ * swapchain capability.  The device extension table is empty, so
+ * vkEnumerateDeviceExtensionProperties reports nothing and VK_KHR_swapchain
+ * is unreachable; the one queue family advertises no capability bit, so no
+ * family can present.  The absence of the swapchain entrypoints themselves is
+ * the closed-extension leg of the procaddr sweep.
+ */
+static void
+sweep_wsi_contract(VkInstance instance, VkPhysicalDevice pdev)
+{
+   PFN_vkEnumerateDeviceExtensionProperties enumerate_device_ext =
+      (PFN_vkEnumerateDeviceExtensionProperties)vk_icdGetInstanceProcAddr(
+         instance, "vkEnumerateDeviceExtensionProperties");
+   CHECK(enumerate_device_ext != NULL,
+         "vkEnumerateDeviceExtensionProperties resolves");
+   if (enumerate_device_ext == NULL)
+      return;
+
+   uint32_t device_ext_count = 0;
+   VkResult result =
+      enumerate_device_ext(pdev, NULL, &device_ext_count, NULL);
+   CHECK(result == VK_SUCCESS && device_ext_count == 0,
+         "the device advertises no extension: %d count %u", result,
+         device_ext_count);
+   printf("device extensions: %u\n", device_ext_count);
+
+   PFN_vkGetPhysicalDeviceQueueFamilyProperties queue_families =
+      (PFN_vkGetPhysicalDeviceQueueFamilyProperties)
+         vk_icdGetInstanceProcAddr(
+            instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+   CHECK(queue_families != NULL,
+         "vkGetPhysicalDeviceQueueFamilyProperties resolves");
+   if (queue_families == NULL)
+      return;
+
+   uint32_t family_count = 0;
+   queue_families(pdev, &family_count, NULL);
+   CHECK(family_count >= 1 && family_count <= 4,
+         "the physical device advertises %u queue families", family_count);
+   if (family_count == 0 || family_count > 4)
+      return;
+
+   VkQueueFamilyProperties families[4];
+   queue_families(pdev, &family_count, families);
+   for (uint32_t i = 0; i < family_count; i++) {
+      CHECK(families[i].queueFlags == 0,
+            "queue family %u advertises flags 0x%x, so a capability is "
+            "claimed that no recording surface executes", i,
+            families[i].queueFlags);
+      printf("queue family %u: flags 0x%x, %u queues\n", i,
+             families[i].queueFlags, families[i].queueCount);
+   }
+}
+
 int
 main(void)
 {
@@ -201,6 +256,8 @@ main(void)
          pdev_count);
    if (pdev == VK_NULL_HANDLE)
       return 1;
+
+   sweep_wsi_contract(instance, pdev);
 
    const float queue_priority = 1.0f;
    VkDevice device = VK_NULL_HANDLE;

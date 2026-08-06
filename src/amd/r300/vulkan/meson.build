@@ -581,6 +581,35 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
 
+    # Surface-query-only WSI boundary: an X server backs the surface, so the
+    # test registers where xcb and a virtual server are available and skips
+    # at run time when no display answers.  Its absence stays visible as a
+    # skip rather than a missing test.
+    prog_xvfb_run = find_program('xvfb-run', required : false)
+    if dep_xcb.found() and prog_xvfb_run.found()
+      test(
+        'r3v-native-wsi-surface-contract',
+        prog_xvfb_run,
+        args : [
+          '-a',
+          executable(
+            'r3v_native_wsi_surface_contract',
+            files('tests/r3v_native_wsi_surface_contract.c'),
+            include_directories : r3v_native_inc,
+            dependencies : [r3v_native_deps, dep_xcb],
+            link_whole : [libr3v_native_impl],
+            link_with : [libradeon_drm_vk],
+            c_args : [no_override_init_args],
+            gnu_symbol_visibility : 'hidden',
+          ).full_path(),
+        ],
+        env : r3v_native_cell_env,
+        depends : [libradeon_noop_drm_shim],
+        timeout : 120,
+        suite : ['r3v'],
+      )
+    endif
+
     # Loader black-box sweep: the real Vulkan loader resolves and calls the
     # built ICD, so it measures what an application linked against libvulkan
     # reaches.  It registers where that loader is present.
