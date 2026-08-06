@@ -329,6 +329,8 @@ main(void)
          instance, device, gdpa);
    sweep("higher core", r3v_surface_higher_core,
          r3v_surface_higher_core_count, false, instance, device, gdpa);
+   sweep("promoted alias", r3v_surface_alias, r3v_surface_alias_count, false,
+         instance, device, gdpa);
    sweep("closed extension", r3v_surface_closed_extension,
          r3v_surface_closed_extension_count, false, instance, device, gdpa);
 
@@ -340,6 +342,8 @@ main(void)
    for (uint32_t i = 0; i < r3v_surface_higher_core_count; i++)
       device_scope_absent +=
          r3v_surface_higher_core[i].scope == R3V_SCOPE_DEVICE;
+   for (uint32_t i = 0; i < r3v_surface_alias_count; i++)
+      device_scope_absent += r3v_surface_alias[i].scope == R3V_SCOPE_DEVICE;
    for (uint32_t i = 0; i < r3v_surface_closed_extension_count; i++)
       device_scope_absent +=
          r3v_surface_closed_extension[i].scope == R3V_SCOPE_DEVICE;

@@ -34,6 +34,13 @@ extern const uint32_t r3v_surface_core10_count;
 extern const struct r3v_surface_command r3v_surface_higher_core[];
 extern const uint32_t r3v_surface_higher_core_count;
 
+/* Promoted KHR/EXT spellings of commands a later core version carries.  Each
+ * belongs to the extension that introduced it, so a device whose extension
+ * table is empty resolves none of them.
+ */
+extern const struct r3v_surface_command r3v_surface_alias[];
+extern const uint32_t r3v_surface_alias_count;
+
 /* Commands owned by the surface and swapchain extensions the native ICD
  * leaves unenabled.  A device with an empty extension table resolves none.
  */

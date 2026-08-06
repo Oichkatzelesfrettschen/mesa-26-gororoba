@@ -135,6 +135,73 @@ call_create_descriptor_pool(void)
    return (result != VK_SUCCESS && pool == VK_NULL_HANDLE) ? 0 : 1;
 }
 
+/* A query pool and a descriptor set layout take no object handle, so their
+ * creation is invocable with fully valid input and its refusal is observed
+ * rather than argued from the class map.
+ */
+static int
+call_create_query_pool(void)
+{
+   VkQueryPool pool = (VkQueryPool)(uintptr_t)0x1;
+   VkResult result = vkCreateQueryPool(
+      device,
+      &(VkQueryPoolCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+         .queryType = VK_QUERY_TYPE_OCCLUSION,
+         .queryCount = 1,
+      },
+      NULL, &pool);
+   return (result != VK_SUCCESS && pool == VK_NULL_HANDLE) ? 0 : 1;
+}
+
+static int
+call_create_descriptor_set_layout(void)
+{
+   VkDescriptorSetLayout layout = (VkDescriptorSetLayout)(uintptr_t)0x1;
+   VkResult result = vkCreateDescriptorSetLayout(
+      device,
+      &(VkDescriptorSetLayoutCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+      },
+      NULL, &layout);
+   return (result != VK_SUCCESS && layout == VK_NULL_HANDLE) ? 0 : 1;
+}
+
+/* vkCreateBuffer executes natively, so a real VkBuffer is available and the
+ * buffer-view creation that consumes it runs on valid input.
+ */
+static int
+call_create_buffer_view(void)
+{
+   VkBuffer buffer = VK_NULL_HANDLE;
+   VkResult result = vkCreateBuffer(
+      device,
+      &(VkBufferCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+         .size = 1024,
+         .usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      },
+      NULL, &buffer);
+   if (result != VK_SUCCESS || buffer == VK_NULL_HANDLE)
+      return 1;
+
+   VkBufferView view = (VkBufferView)(uintptr_t)0x1;
+   result = vkCreateBufferView(
+      device,
+      &(VkBufferViewCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+         .buffer = buffer,
+         .format = VK_FORMAT_R8G8B8A8_UNORM,
+         .offset = 0,
+         .range = VK_WHOLE_SIZE,
+      },
+      NULL, &view);
+   const int rc = (result != VK_SUCCESS && view == VK_NULL_HANDLE) ? 0 : 1;
+   vkDestroyBuffer(device, buffer, NULL);
+   return rc;
+}
+
 /* Destroying the null handle is a specified no-op. */
 static int
 call_destroy_image_null(void)
@@ -333,20 +400,24 @@ main(void)
    sweep("higher core", r3v_surface_higher_core,
          r3v_surface_higher_core_count, false, &higher_gipa, &higher_gdpa,
          &higher_judged);
+   unsigned alias_gipa = 0;
+   sweep("promoted alias", r3v_surface_alias, r3v_surface_alias_count, false,
+         &alias_gipa, &higher_gdpa, &higher_judged);
    sweep("closed extension", r3v_surface_closed_extension,
          r3v_surface_closed_extension_count, false, &ext_gipa, &ext_gdpa,
          &ext_judged);
 
    printf("core 1.0: %u device names, GetDeviceProcAddr answers %u\n",
           core_judged, core_gdpa);
-   printf("higher core: %u device names, GetDeviceProcAddr answers %u\n",
-          higher_judged, higher_gdpa);
+   printf("higher core and promoted aliases: %u device names, "
+          "GetDeviceProcAddr answers %u\n", higher_judged, higher_gdpa);
    printf("closed extension: %u device names, GetDeviceProcAddr answers "
           "%u\n", ext_judged, ext_gdpa);
-   printf("GetInstanceProcAddr answers %u core 1.0, %u higher core, %u "
-          "closed extension of %u/%u/%u names\n", core_gipa, higher_gipa,
-          ext_gipa, r3v_surface_core10_count, r3v_surface_higher_core_count,
-          r3v_surface_closed_extension_count);
+   printf("GetInstanceProcAddr answers %u/%u core 1.0, %u/%u higher core, "
+          "%u/%u promoted alias, %u/%u closed extension\n", core_gipa,
+          r3v_surface_core10_count, higher_gipa,
+          r3v_surface_higher_core_count, alias_gipa, r3v_surface_alias_count,
+          ext_gipa, r3v_surface_closed_extension_count);
 
    /* Calibration before the completeness result carries weight: the loader
     * answers a device-level vkGetInstanceProcAddr query from its own
@@ -363,9 +434,15 @@ main(void)
          "vkGetDeviceProcAddr separates the implemented surface from the "
          "absent one: %u/%u core, %u higher, %u extension", core_gdpa,
          core_judged, higher_gdpa, ext_gdpa);
-   printf("vkGetInstanceProcAddr discriminates: %s\n",
-          higher_gipa < r3v_surface_higher_core_count ? "yes" : "no, it "
-          "answers every name and carries no driver verdict");
+   /* The higher-core leg is the one that isolates the version rule: every
+    * one of those names belongs to a core version this instance did not
+    * request, so answering all of them is the loader answering from its own
+    * table rather than the driver reporting what it implements.
+    */
+   printf("vkGetInstanceProcAddr applies the requested version: %s\n",
+          higher_gipa < r3v_surface_higher_core_count ? "yes" :
+          "no, it answers every higher-core name and carries no driver "
+          "verdict");
 
    result = vkAllocateMemory(
       device, &(VkMemoryAllocateInfo){
@@ -381,6 +458,11 @@ main(void)
    in_child("vkCreateEvent refuses", call_create_event);
    in_child("vkCreateSampler refuses", call_create_sampler);
    in_child("vkCreateDescriptorPool refuses", call_create_descriptor_pool);
+   in_child("vkCreateQueryPool refuses", call_create_query_pool);
+   in_child("vkCreateDescriptorSetLayout refuses",
+            call_create_descriptor_set_layout);
+   in_child("vkCreateBufferView refuses over a live buffer",
+            call_create_buffer_view);
    in_child("vkDestroy* over the null handle", call_destroy_image_null);
    in_child("vkUpdateDescriptorSets over zero writes",
             call_update_descriptor_sets_empty);

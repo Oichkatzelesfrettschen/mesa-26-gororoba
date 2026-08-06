@@ -463,15 +463,26 @@ def emit_c_surface(reg, out_path: Path):
                                 "_VERSION_1_3", "_VERSION_1_4")) and
                 "VERSION_1_0" not in owner)
 
+    # An alias command carries no scope entry of its own -- the registry gives
+    # it a target instead of a prototype -- so its scope comes from the
+    # canonical spelling it names.
+    def scope_of(name):
+        return reg.scope.get(name) or reg.scope.get(canonical(name,
+                                                              reg.alias))
+
     core = sorted(n for n in reg.core10 if n in reg.scope)
-    # A promoted spelling carries its own scope entry, so both the core 1.1
-    # name and its KHR alias reach the sweep and must resolve to NULL under a
-    # 1.0 instance.
     higher = sorted(n for n, own in reg.owner.items()
                     if n in reg.scope and n not in reg.core10 and
                     owned_by_higher_core(own))
+    # Every promoted KHR/EXT spelling belongs to the extension that
+    # introduced it, and the device extension table is empty, so each must
+    # resolve to NULL alongside the core spelling it aliases.
+    aliases = sorted(n for n in reg.alias
+                     if scope_of(n) is not None and
+                     canonical(n, reg.alias) not in reg.core10)
     closed_ext = sorted(n for n, own in reg.owner.items()
-                        if n in reg.scope and own in CLOSED_EXTENSIONS)
+                        if scope_of(n) is not None and
+                        own in CLOSED_EXTENSIONS)
 
     lines = ["/* SPDX-License-Identifier: MIT */",
              "/* Generated from vk.xml by r3v_native_entrypoint_audit.py. */",
@@ -482,7 +493,7 @@ def emit_c_surface(reg, out_path: Path):
     def table(symbol, names):
         lines.append(f"const struct r3v_surface_command {symbol}[] = {{")
         for name in names:
-            lines.append(f'   {{ "vk{name}", {SCOPE_ENUM[reg.scope[name]]} }},')
+            lines.append(f'   {{ "vk{name}", {SCOPE_ENUM[scope_of(name)]} }},')
         lines.append("};")
         lines.append(f"const uint32_t {symbol}_count = "
                      f"ARRAY_SIZE({symbol});")
@@ -490,9 +501,10 @@ def emit_c_surface(reg, out_path: Path):
 
     table("r3v_surface_core10", core)
     table("r3v_surface_higher_core", higher)
+    table("r3v_surface_alias", aliases)
     table("r3v_surface_closed_extension", closed_ext)
     out_path.write_text("\n".join(lines))
-    return len(core), len(higher), len(closed_ext)
+    return len(core), len(higher), len(aliases), len(closed_ext)
 
 
 def main():
@@ -503,10 +515,18 @@ def main():
     # what the sweeps then measure against the built library.
     if sys.argv[1] == "--emit-c":
         reg = parse_registry(Path(sys.argv[2]))
-        counts = emit_c_surface(reg, Path(sys.argv[3]))
-        if counts[0] != 137:
-            print(f"model failure: core 1.0 command set is {counts[0]}, not "
-                  f"the 137 Vulkan 1.0 fixes")
+        core, higher, aliases, closed = emit_c_surface(reg, Path(sys.argv[3]))
+        print(f"surface table: {core} core 1.0, {higher} higher core, "
+              f"{aliases} promoted aliases, {closed} closed-extension")
+        # The alias spellings live behind a registry attribute the scope walk
+        # skips, so a parse that loses them empties that table in silence.
+        if core != 137:
+            print(f"model failure: core 1.0 command set is {core}, not the "
+                  f"137 Vulkan 1.0 fixes")
+            return 2
+        if aliases < 100 or higher < 50 or closed < 5:
+            print(f"model failure: the absent tables are {higher}/{aliases}/"
+                  f"{closed}, too small to have parsed")
             return 2
         return 0
 
