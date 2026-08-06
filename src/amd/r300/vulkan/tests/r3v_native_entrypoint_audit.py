@@ -53,7 +53,9 @@ SCOPE_OVERRIDE = {"GetInstanceProcAddr": "global"}
 
 # The result every native refusal returns, held identical to
 # R3V_NATIVE_REFUSAL_RESULT in r3v_native.h.  --enforce intersects the
-# permitted error sets of the refusing commands and requires this member.
+# permitted error sets of every native core 1.0 device command returning
+# VkResult and requires this member: the behavior class below describes what a
+# command does, and any of them can reach a refusal path.
 REFUSAL_RESULT = "VK_ERROR_UNKNOWN"
 
 # VK_ERROR_VALIDATION_FAILED also spans every command, and validation layers
