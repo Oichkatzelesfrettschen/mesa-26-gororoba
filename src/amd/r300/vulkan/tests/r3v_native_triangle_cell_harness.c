@@ -352,7 +352,7 @@ main(int argc, char **argv)
    CHECK(vkCmdDraw != NULL, "vkCmdDraw resolves through the native table");
    vkCmdDraw(cmd, 3, 1, 0, 0);
    result = vkEndCommandBuffer(cmd);
-   CHECK(result == VK_ERROR_FEATURE_NOT_PRESENT,
+   CHECK(result == R3V_NATIVE_REFUSAL_RESULT,
          "recorded command poisons the buffer: %d", result);
 
    if (poison_mode) {

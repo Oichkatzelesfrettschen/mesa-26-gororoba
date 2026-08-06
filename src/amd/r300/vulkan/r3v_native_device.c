@@ -51,7 +51,7 @@ r3v_CreateGraphicsPipelines(VkDevice _device, VkPipelineCache pipelineCache,
    VK_FROM_HANDLE(r3v_native_device, device, _device);
    for (uint32_t i = 0; i < createInfoCount; i++)
       pPipelines[i] = VK_NULL_HANDLE;
-   return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
+   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -64,7 +64,7 @@ r3v_CreateComputePipelines(VkDevice _device, VkPipelineCache pipelineCache,
    VK_FROM_HANDLE(r3v_native_device, device, _device);
    for (uint32_t i = 0; i < createInfoCount; i++)
       pPipelines[i] = VK_NULL_HANDLE;
-   return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
+   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 }
 
 VkResult

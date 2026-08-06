@@ -15,7 +15,7 @@
 
 /* The native command buffer executes only a device-internally installed
  * fixed IB; a Vulkan-recorded command has no lowering.  Every core 1.0
- * vkCmd* entrypoint therefore records VK_ERROR_FEATURE_NOT_PRESENT into the
+ * vkCmd* entrypoint therefore records R3V_NATIVE_REFUSAL_RESULT into the
  * command buffer: vkEndCommandBuffer returns the error, the buffer ends
  * INVALID, and the queue refuses it.  A native definition for the whole
  * core set also keeps the runtime's common bridges (render-pass emulation,
@@ -26,7 +26,7 @@ static void
 r3v_native_cmd_poison(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(vk_command_buffer, cmd_buffer, commandBuffer);
-   vk_command_buffer_set_error(cmd_buffer, VK_ERROR_FEATURE_NOT_PRESENT);
+   vk_command_buffer_set_error(cmd_buffer, R3V_NATIVE_REFUSAL_RESULT);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -512,7 +512,7 @@ r3v_BindImageMemory(VkDevice _device, VkImage image, VkDeviceMemory memory,
                     VkDeviceSize memoryOffset)
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
-   return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
+   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 }
 
 VKAPI_ATTR void VKAPI_CALL
