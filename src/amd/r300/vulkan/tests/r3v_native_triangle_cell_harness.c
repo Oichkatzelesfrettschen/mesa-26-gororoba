@@ -24,6 +24,7 @@
 #include <vulkan/vulkan.h>
 
 #include "amd/r300/common/r300_fragment_binary.h"
+#include "amd/r300/common/r300_first_draw_state.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "r3v_native.h"
 
@@ -156,10 +157,14 @@ build_reference_ib(struct r300_tcl_bypass_triangle_ib *cell)
    struct r300_fragment_binary fs;
    if (r300_tcl_bypass_triangle_reference_fs(&fs) != 0)
       return 1;
+   struct r300_first_draw_contract contract;
+   if (r300_tcl_bypass_triangle_reference_contract(&contract) != 0)
+      return 1;
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
       .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
       .fragment_binary = &fs,
+      .first_draw_contract = &contract,
    };
    int rc = r300_tcl_bypass_triangle_emit(&params, cell);
    r300_fragment_binary_finish(&fs);

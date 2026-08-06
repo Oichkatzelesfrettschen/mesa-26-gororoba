@@ -179,6 +179,34 @@ main(void)
       assert(report_names(&contract, &report, gates[g]));
    }
 
+   /* Integrated emission: the emitter's contract path produces the exact
+    * successor stream -- the contract prefix followed by the bare cell --
+    * and the shared reference contract resolves to this test's parameters,
+    * so every pre-hardware consumer builds one byte-identical IB.
+    */
+   struct r300_first_draw_contract reference;
+   assert(r300_tcl_bypass_triangle_reference_contract(&reference) == 0);
+   assert(reference.count == contract.count);
+   assert(memcmp(reference.entries, contract.entries,
+                 contract.count * sizeof(contract.entries[0])) == 0);
+
+   struct r300_tcl_bypass_triangle_params successor_params = cell_params;
+   successor_params.first_draw_contract = &reference;
+   struct r300_tcl_bypass_triangle_ib integrated;
+   assert(r300_tcl_bypass_triangle_emit(&successor_params, &integrated) == 0);
+   assert(integrated.ib_size_dwords == successor_dwords);
+   assert(memcmp(integrated.ib, successor, successor_dwords * 4) == 0);
+   /* The prefix shifts every relocation site by its dword count; each
+    * site still names its slot payload behind a reloc NOP header.
+    */
+   assert(integrated.reloc_site_count == cell.reloc_site_count);
+   for (unsigned i = 0; i < integrated.reloc_site_count; i++) {
+      assert(integrated.reloc_sites[i].ib_index ==
+             cell.reloc_sites[i].ib_index + (uint32_t)state_dwords);
+      assert(integrated.reloc_sites[i].slot == cell.reloc_sites[i].slot);
+   }
+   r300_tcl_bypass_triangle_release(&integrated);
+
    /* Write-order control: emission is deterministic, and the ordering
     * fragments precede the pipelined state -- the cache flush pair lands
     * before any RB3D backend write.

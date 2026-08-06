@@ -7,6 +7,7 @@
 
 #include "r3v_native.h"
 
+#include "amd/r300/common/r300_first_draw_state.h"
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 
@@ -111,10 +112,21 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
    if (r300_tcl_bypass_triangle_reference_fs(&fs) != 0)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   /* The recorded cell is self-contained: the first-draw contract prefix
+    * establishes every register the draw depends on, so the result does
+    * not ride whatever state the previous client left in the pipeline.
+    */
+   struct r300_first_draw_contract contract;
+   if (r300_tcl_bypass_triangle_reference_contract(&contract) != 0) {
+      r300_fragment_binary_finish(&fs);
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   }
+
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
       .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
       .fragment_binary = &fs,
+      .first_draw_contract = &contract,
    };
    struct r300_tcl_bypass_triangle_ib cell;
    int emit_result = r300_tcl_bypass_triangle_emit(&params, &cell);
