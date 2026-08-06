@@ -590,9 +590,13 @@ def main():
     # The refusal result must be permitted by every command that refuses, and
     # the classification must cover every native core command, so a new
     # entrypoint arrives with a class rather than widening the surface in
-    # silence.
+    # silence.  Every native command returning VkResult can reach a refusal
+    # path, so the legality check spans that whole surface rather than the
+    # unconditionally refusing subset: vkFlushMappedMemoryRanges executes on
+    # the native transport and still returns the refusal result for a range it
+    # rejects.
     refusing = {n for n in core_device & native
-                if behavior_class(n, native, common) == "CORE_FAIL_CLOSED"}
+                if reg.results.get(n, ("void", ()))[0] == "VkResult"}
     permitted = permitted_refusal_results(reg, refusing)
     unclassified = sorted(n for n in core_device & native
                           if behavior_class(n, native, common) ==
@@ -610,7 +614,7 @@ def main():
     print(f"open dispatch edges: {len(open_edges)} "
           f"across {len(open_slots)} slots")
     print(f"refusal result {REFUSAL_RESULT} permitted by all "
-          f"{len(refusing)} refusing commands: "
+          f"{len(refusing)} native VkResult commands: "
           f"{REFUSAL_RESULT in permitted}")
     print(f"core 1.0 lifecycle pairs: {len(lifecycle_pairs(reg.core10))}, "
           f"{len(asymmetries)} one-sided")
