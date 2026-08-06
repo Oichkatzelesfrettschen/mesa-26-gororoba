@@ -442,6 +442,46 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endif
+
+    # Dispatch-closure audit: the common overlay populates 1.0 bridge slots
+    # whose downstream dispatch targets the native link set does not carry,
+    # so a populated entrypoint can call through a null slot.  The selftest
+    # proves both audit directions on synthetic tables; the baseline test
+    # pins the known-open bridge families so the audit stays calibrated;
+    # the enforce gate flips to a plain pass when the native table closes.
+    r3v_native_entrypoint_audit_args = [
+      files('tests/r3v_native_entrypoint_audit.py'),
+      prog_nm_r3v.full_path(),
+      libvulkan_r3v_native.full_path(),
+      vk_api_xml,
+      meson.project_source_root() / 'src' / 'vulkan' / 'runtime',
+    ]
+    test(
+      'r3v-native-entrypoint-audit-selftest',
+      prog_python,
+      args : [files('tests/r3v_native_entrypoint_audit.py'), '--selftest'],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-entrypoint-audit-baseline',
+      prog_python,
+      args : [
+        r3v_native_entrypoint_audit_args,
+        '--expect-open',
+        'BindImageMemory,GetImageMemoryRequirements,CmdBeginRenderPass,'
+        + 'CmdBindVertexBuffers,CmdCopyBuffer,CmdPipelineBarrier',
+      ],
+      depends : libvulkan_r3v_native,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-entrypoint-closure',
+      prog_python,
+      args : [r3v_native_entrypoint_audit_args, '--enforce'],
+      depends : libvulkan_r3v_native,
+      should_fail : true,
+      suite : ['r3v'],
+    )
   endif
 
   # Attended cell: performs a live DRM_RADEON_CS on RS482 silicon under the
