@@ -195,6 +195,21 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
+   /* Recording fails closed: an unsupported command poisons the buffer's
+    * record_result and vkEndCommandBuffer returns the error.  The runtime
+    * moves every submitted buffer to PENDING before driver_submit runs, so
+    * record_result is the signal that survives to this boundary; a poisoned
+    * buffer refuses the whole submit before any buffer runs.
+    */
+   for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
+      const struct vk_command_buffer *vk_cmd = submit->command_buffers[i];
+      if (vk_cmd->record_result != VK_SUCCESS) {
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: command buffer %u carries recording "
+                          "error %d", i, vk_cmd->record_result);
+      }
+   }
+
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       struct r3v_native_cmd_buffer *cmd_buffer = container_of(
          submit->command_buffers[i], struct r3v_native_cmd_buffer, vk);

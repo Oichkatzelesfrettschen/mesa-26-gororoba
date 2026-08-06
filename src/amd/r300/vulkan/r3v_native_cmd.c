@@ -87,18 +87,23 @@ const struct vk_command_buffer_ops r3v_native_cmd_buffer_ops = {
    .destroy = r3v_native_cmd_buffer_destroy,
 };
 
+/* The runtime lifecycle carries the fail-closed recording contract: begin
+ * enters RECORDING (an implicit re-begin resets, releasing any installed
+ * IB), a poisoned recording ends INVALID with its recorded error returned,
+ * and the queue admits only EXECUTABLE buffers.
+ */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_BeginCommandBuffer(VkCommandBuffer commandBuffer,
                        const VkCommandBufferBeginInfo *pBeginInfo)
 {
-   (void)commandBuffer;
-   (void)pBeginInfo;
+   VK_FROM_HANDLE(vk_command_buffer, cmd_buffer, commandBuffer);
+   vk_command_buffer_begin(cmd_buffer, pBeginInfo);
    return VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_EndCommandBuffer(VkCommandBuffer commandBuffer)
 {
-   (void)commandBuffer;
-   return VK_SUCCESS;
+   VK_FROM_HANDLE(vk_command_buffer, cmd_buffer, commandBuffer);
+   return vk_command_buffer_end(cmd_buffer);
 }

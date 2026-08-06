@@ -193,6 +193,24 @@ def main():
     open_edges = closure_audit(native, common, deps, alias, reachable)
     open_slots = sorted({slot for slot, _ in open_edges})
 
+    # A closed table and an empty model both report zero open edges, so the
+    # inputs carry floors: Vulkan 1.0 fixes the device-scope core set near
+    # 123 commands, the linked table holds hundreds of slots, and the
+    # runtime scan reaches every common provider.  A parse that collapses
+    # (an unreadable library, a registry whose 1.0 feature sets moved)
+    # trips these before the verdict claims closure.
+    core_device = core10 & device_level
+    floors = [
+        ("core 1.0 device-scope commands", len(core_device), 100),
+        ("populated device slots", len(populated), 100),
+        ("common providers with dispatch dependencies", len(deps), 50),
+    ]
+    for name, value, floor in floors:
+        if value < floor:
+            print(f"model failure: {name} is {value}, below the floor "
+                  f"{floor}; the audit inputs did not parse")
+            return 2
+
     print(f"device-scope commands: {len(device_level)}")
     print(f"populated device slots: {len(populated)} "
           f"(native {len(populated & native)}, "

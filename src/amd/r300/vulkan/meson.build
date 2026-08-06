@@ -318,6 +318,7 @@ if get_option('r3v-native-backend')
     'r3v_native_device.c',
     'r3v_native_memory.c',
     'r3v_native_queue.c',
+    'r3v_native_recording.c',
     '../common/r300_first_draw_state.c',
     '../common/r300_fragment_binary.c',
     '../common/r300_tcl_bypass_triangle.c',
@@ -463,23 +464,10 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
     test(
-      'r3v-native-entrypoint-audit-baseline',
-      prog_python,
-      args : [
-        r3v_native_entrypoint_audit_args,
-        '--expect-open',
-        'BindImageMemory,GetImageMemoryRequirements,CmdBeginRenderPass,'
-        + 'CmdBindVertexBuffers,CmdCopyBuffer,CmdPipelineBarrier',
-      ],
-      depends : libvulkan_r3v_native,
-      suite : ['r3v'],
-    )
-    test(
       'r3v-native-entrypoint-closure',
       prog_python,
       args : [r3v_native_entrypoint_audit_args, '--enforce'],
       depends : libvulkan_r3v_native,
-      should_fail : true,
       suite : ['r3v'],
     )
   endif
@@ -584,6 +572,15 @@ if get_option('r3v-native-backend')
       'RADEON_GPU_ID' : '0x5974',
       'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
     })
+    test(
+      'r3v-native-recording-poison',
+      r3v_native_triangle_cell_harness,
+      args : ['poison'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
     test(
       'r3v-native-triangle-cell-unattested',
       r3v_native_triangle_cell_harness,

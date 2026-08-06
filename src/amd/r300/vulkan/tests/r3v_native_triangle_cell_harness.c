@@ -161,11 +161,17 @@ int
 main(int argc, char **argv)
 {
    if (argc != 2 ||
-       (strcmp(argv[1], "closed") != 0 && strcmp(argv[1], "open") != 0)) {
-      fprintf(stderr, "usage: %s closed|open\n", argv[0]);
+       (strcmp(argv[1], "closed") != 0 && strcmp(argv[1], "open") != 0 &&
+        strcmp(argv[1], "poison") != 0)) {
+      fprintf(stderr, "usage: %s closed|open|poison\n", argv[0]);
       return 2;
    }
    const bool open_gate = strcmp(argv[1], "open") == 0;
+   /* The poison mode ends at the recording surface: refusing a submission
+    * marks the queue lost, so the calibration owns its own device rather
+    * than sharing one with a cell that submits afterward.
+    */
+   const bool poison_mode = strcmp(argv[1], "poison") == 0;
 
    if (attest_shim_provider() != 0)
       return 3;
@@ -292,6 +298,7 @@ main(int argc, char **argv)
    LOAD_DEVICE(vkEndCommandBuffer);
    LOAD_DEVICE(vkQueueSubmit);
    LOAD_DEVICE(vkDestroyDevice);
+   LOAD_DEVICE(vkCmdDraw);
 
    VkMemoryAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -328,6 +335,55 @@ main(int argc, char **argv)
       },
       &cmd);
    CHECK(result == VK_SUCCESS, "vkAllocateCommandBuffers: %d", result);
+
+   /* Known-bad calibration for the fail-closed recording surface: a core
+    * vkCmd* resolves through the dispatch table, poisons the buffer, and
+    * the end returns the poison, leaving the buffer INVALID.  The runtime
+    * asserts away an INVALID submit in assertions-live builds, and the
+    * queue's record_result gate refuses it in release builds; the
+    * implicit-reset re-begin below clears the poison for the real
+    * recording.
+    */
+   result = vkBeginCommandBuffer(
+      cmd, &(VkCommandBufferBeginInfo){
+              .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+           });
+   CHECK(result == VK_SUCCESS, "vkBeginCommandBuffer: %d", result);
+   CHECK(vkCmdDraw != NULL, "vkCmdDraw resolves through the native table");
+   vkCmdDraw(cmd, 3, 1, 0, 0);
+   result = vkEndCommandBuffer(cmd);
+   CHECK(result == VK_ERROR_FEATURE_NOT_PRESENT,
+         "recorded command poisons the buffer: %d", result);
+
+   if (poison_mode) {
+#ifdef NDEBUG
+      /* The queue's own refusal is the mechanism that carries builds with
+       * assertions compiled out, where the runtime's INVALID-state
+       * assertion is gone and a poisoned buffer would otherwise reach the
+       * submit loop, install no IB, and report success.  The absent
+       * manifest places the refusal ahead of the retention path.
+       */
+      VkQueue poison_queue = VK_NULL_HANDLE;
+      vkGetDeviceQueue(device, 0, 0, &poison_queue);
+      result = vkQueueSubmit(poison_queue, 1,
+                             &(VkSubmitInfo){
+                                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                .commandBufferCount = 1,
+                                .pCommandBuffers = &cmd,
+                             },
+                             VK_NULL_HANDLE);
+      CHECK(result == VK_ERROR_DEVICE_LOST,
+            "poisoned buffer refuses submission: %d", result);
+
+      void *poison_ib = NULL;
+      size_t poison_ib_size = 0;
+      CHECK(read_whole_file(manifest_dir, "ib.bin", &poison_ib,
+                            &poison_ib_size) != 0,
+            "the refusal precedes any manifest retention");
+      free(poison_ib);
+#endif
+      goto done;
+   }
 
    result = vkBeginCommandBuffer(
       cmd, &(VkCommandBufferBeginInfo){
@@ -464,6 +520,7 @@ main(int argc, char **argv)
       }
    }
 
+done:
    vkDestroyCommandPool(device, pool, NULL);
    vkFreeMemory(device, vertex_memory, NULL);
    vkFreeMemory(device, color_memory, NULL);
