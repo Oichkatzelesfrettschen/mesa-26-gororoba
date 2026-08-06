@@ -108,31 +108,14 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
       color_memory->map = NULL;
    }
 
-   struct r300_fragment_binary fs;
-   if (r300_tcl_bypass_triangle_reference_fs(&fs) != 0)
-      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   /* The recorded cell is self-contained: the first-draw contract prefix
-    * establishes every register the draw depends on, so the result does
-    * not ride whatever state the previous client left in the pipeline.
+   /* The recorded cell is self-contained: the reference emission opens
+    * with the first-draw contract prefix, so the result does not ride
+    * whatever state the previous client left in the pipeline, and the
+    * same construction backs the arming digest and the manifest.
     */
-   struct r300_first_draw_contract contract;
-   if (r300_tcl_bypass_triangle_reference_contract(&contract) != 0) {
-      r300_fragment_binary_finish(&fs);
-      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
-   }
-
-   struct r300_tcl_bypass_triangle_params params = {
-      .vertex_offset = 0,
-      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
-      .fragment_binary = &fs,
-      .first_draw_contract = &contract,
-   };
    struct r300_tcl_bypass_triangle_ib cell;
-   int emit_result = r300_tcl_bypass_triangle_emit(&params, &cell);
-   r300_fragment_binary_finish(&fs);
-   if (emit_result != 0)
-      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
 
    /* Reference order is relocation-slot order: the queue folds the array
     * in index order and the dedupe keeps first-add order, so the IB's

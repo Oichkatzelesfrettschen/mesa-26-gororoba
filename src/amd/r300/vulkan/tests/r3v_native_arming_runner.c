@@ -19,24 +19,15 @@
 #include <string.h>
 
 /* Builds the fixed cell and returns its IB digest, the content an
- * authorization declares through R3V_NATIVE_AUTHORIZED_IB_BLAKE3.
+ * authorization declares through R3V_NATIVE_AUTHORIZED_IB_BLAKE3.  The
+ * reference emission is the same construction the recorder installs and
+ * the queue recomputes, so the armed digest names the submitted bytes.
  */
 static int
 cell_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
 {
-   struct r300_fragment_binary fs;
-   if (r300_tcl_bypass_triangle_reference_fs(&fs) != 0)
-      return 1;
-
-   struct r300_tcl_bypass_triangle_params params = {
-      .vertex_offset = 0,
-      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
-      .fragment_binary = &fs,
-   };
    struct r300_tcl_bypass_triangle_ib cell;
-   int emit_result = r300_tcl_bypass_triangle_emit(&params, &cell);
-   r300_fragment_binary_finish(&fs);
-   if (emit_result != 0)
+   if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0)
       return 1;
 
    struct mesa_blake3 ctx;

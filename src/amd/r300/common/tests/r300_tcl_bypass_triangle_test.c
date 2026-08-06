@@ -289,6 +289,57 @@ test_output_oracle(void)
    assert(!verdict.canary_pass);
 }
 
+/* One reference construction backs every fixed-cell authority: the
+ * reference emission equals the explicit fs-plus-contract composition
+ * byte for byte, repeats deterministically, and differs from the bare
+ * cell -- so an authority that hashed the bare cell would fail the
+ * digest comparison instead of falsely reporting armed.
+ */
+static void
+test_reference_emit_is_the_single_authority(void)
+{
+   struct r300_tcl_bypass_triangle_ib ref;
+   assert(r300_tcl_bypass_triangle_reference_emit(&ref) == 0);
+
+   struct r300_tcl_bypass_triangle_ib again;
+   assert(r300_tcl_bypass_triangle_reference_emit(&again) == 0);
+   assert(again.ib_size_dwords == ref.ib_size_dwords);
+   assert(memcmp(again.ib, ref.ib,
+                 ref.ib_size_dwords * sizeof(uint32_t)) == 0);
+   r300_tcl_bypass_triangle_release(&again);
+
+   struct r300_fragment_binary fs;
+   assert(r300_tcl_bypass_triangle_reference_fs(&fs) == 0);
+   struct r300_first_draw_contract contract;
+   assert(r300_tcl_bypass_triangle_reference_contract(&contract) == 0);
+   struct r300_tcl_bypass_triangle_params params = {
+      .vertex_offset = 0,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
+      .fragment_binary = &fs,
+      .first_draw_contract = &contract,
+   };
+   struct r300_tcl_bypass_triangle_ib composed;
+   assert(r300_tcl_bypass_triangle_emit(&params, &composed) == 0);
+   assert(composed.ib_size_dwords == ref.ib_size_dwords);
+   assert(memcmp(composed.ib, ref.ib,
+                 ref.ib_size_dwords * sizeof(uint32_t)) == 0);
+   r300_tcl_bypass_triangle_release(&composed);
+
+   /* The bare cell is the retained negative control: shorter, and not a
+    * prefix-extension equal of the reference bytes.
+    */
+   params.first_draw_contract = NULL;
+   struct r300_tcl_bypass_triangle_ib bare;
+   assert(r300_tcl_bypass_triangle_emit(&params, &bare) == 0);
+   assert(bare.ib_size_dwords < ref.ib_size_dwords);
+   assert(memcmp(bare.ib, ref.ib,
+                 bare.ib_size_dwords * sizeof(uint32_t)) != 0);
+   r300_tcl_bypass_triangle_release(&bare);
+
+   r300_fragment_binary_finish(&fs);
+   r300_tcl_bypass_triangle_release(&ref);
+}
+
 int
 main(void)
 {
@@ -296,6 +347,7 @@ main(void)
    test_reloc_sites_bind_slots();
    test_emission_is_deterministic();
    test_contract_emission_is_self_contained();
+   test_reference_emit_is_the_single_authority();
    test_emit_rejects_unvalidated_binary();
    test_colorpitch0_pack();
    test_output_oracle();

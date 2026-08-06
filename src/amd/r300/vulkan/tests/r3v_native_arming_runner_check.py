@@ -59,6 +59,27 @@ def main():
             print(gated.stdout, file=sys.stderr)
             return 1
 
+        # The retained bare-cell digest -- the 76-dword IB the first
+        # attended run submitted, before the first-draw contract prefix
+        # -- is the stale-authorization negative control: the runner's
+        # own digest names the contract-prefixed successor, and an
+        # authorization still declaring the bare cell refuses as a
+        # digest mismatch instead of arming.
+        bare_cell_digest = ("855a8c2f5926dbb685ff0710caa2101e"
+                            "5be39269f6e1d075379fa0a02bf80ebf")
+        if digest.group(1) == bare_cell_digest:
+            print("FAIL: runner digest names the bare cell, not the "
+                  "contract-prefixed successor", file=sys.stderr)
+            return 1
+        environment["R3V_NATIVE_AUTHORIZED_IB_BLAKE3"] = bare_cell_digest
+        stale = subprocess.run([runner, evidence_dir], env=environment,
+                               capture_output=True, text=True)
+        if stale.returncode == 0 or "MISMATCH" not in stale.stdout:
+            print("FAIL: stale bare-cell authorization did not refuse "
+                  "on the digest factor", file=sys.stderr)
+            print(stale.stdout, file=sys.stderr)
+            return 1
+
         # A wrong chip refuses even with the bundle declared correctly.
         environment["R3V_NATIVE_AUTHORIZED_IB_BLAKE3"] = digest.group(1)
         environment["R3V_NATIVE_RUNNER_PCI_DEVICE"] = "0x5975"
@@ -71,7 +92,7 @@ def main():
             return 1
 
         # No run may claim a submission happened.
-        for result in (undeclared, gated, wrong_chip):
+        for result in (undeclared, gated, stale, wrong_chip):
             if "no submission attempted" not in result.stdout:
                 print("FAIL: report omits the no-submission statement",
                       file=sys.stderr)

@@ -84,6 +84,16 @@ int r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs);
 int r300_tcl_bypass_triangle_reference_contract(
    struct r300_first_draw_contract *out);
 
+/* Emits the complete reference cell -- reference fragment binary,
+ * reference first-draw contract, vertex offset zero, linear 64-pixel
+ * ARGB8888 pitch -- so every fixed-cell authority (native recorder,
+ * arming runner, manifest tool, harness reference) produces one
+ * byte-identical IB from one construction.  Returns 0 or a negative
+ * errno; the caller owns the returned IB allocation.
+ */
+int r300_tcl_bypass_triangle_reference_emit(
+   struct r300_tcl_bypass_triangle_ib *out);
+
 /* Packs RB3D_COLORPITCH0 for a linear little-endian ARGB8888 target the
  * way r300_texture.c derives surf->pitch: the pitch in pixels ORed with
  * the ARGB8888 color-format field, tiling and endian fields zero.  Returns

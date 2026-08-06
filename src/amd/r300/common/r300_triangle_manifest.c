@@ -39,28 +39,19 @@ main(int argc, char **argv)
    }
    const char *dir = argv[1];
 
+   /* The manifest hashes the reference fragment binary separately, so it
+    * resolves the same binary the reference emission bakes into the IB.
+    */
    struct r300_fragment_binary fs;
    if (r300_tcl_bypass_triangle_reference_fs(&fs) != 0) {
       fprintf(stderr, "fragment binary construction failed\n");
       return 1;
    }
 
-   struct r300_first_draw_contract contract;
-   if (r300_tcl_bypass_triangle_reference_contract(&contract) != 0) {
-      fprintf(stderr, "first-draw contract resolution failed\n");
-      return 1;
-   }
-
-   struct r300_tcl_bypass_triangle_params params = {
-      .vertex_offset = 0,
-      /* 64-pixel pitch, format field left to the attended-cell staging. */
-      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
-      .fragment_binary = &fs,
-      .first_draw_contract = &contract,
-   };
    struct r300_tcl_bypass_triangle_ib cell;
-   if (r300_tcl_bypass_triangle_emit(&params, &cell) != 0) {
+   if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0) {
       fprintf(stderr, "triangle emission failed\n");
+      r300_fragment_binary_finish(&fs);
       return 1;
    }
 
