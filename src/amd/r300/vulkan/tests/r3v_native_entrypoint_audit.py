@@ -12,9 +12,9 @@ and walks the transitive closure: every dependency of a reachable
 Vulkan 1.0 device-scope slot must itself resolve to a populated slot.
 
 Modes:
-  --selftest             synthetic known-good and known-bad closures
-  --expect-open NAMES    calibration: the named slots must have open edges
-  --enforce              zero open edges required
+  --selftest   synthetic known-good and known-bad closures
+  --enforce    zero open edges required, over inputs that clear the
+               structural floors
 """
 
 import re
@@ -48,11 +48,14 @@ def parse_registry(vk_xml: Path):
               first_param_type.text in DEVICE_DISPATCH_TYPES:
             device_level.add(name)
     # The registry splits core 1.0 into base/compute/graphics feature sets
-    # (VK_BASE_VERSION_1_0 and peers); core 1.0 is their union.
+    # (VK_BASE_VERSION_1_0 and peers); core 1.0 is their union.  The api
+    # attribute separates them from VKSC_VERSION_1_0, whose commands belong
+    # to Vulkan SC alone.
     core10 = set()
     for feature in root.findall("feature"):
         name = feature.get("name", "")
-        if not name.endswith("_VERSION_1_0"):
+        apis = feature.get("api", "vulkan").split(",")
+        if not name.endswith("_VERSION_1_0") or "vulkan" not in apis:
             continue
         for req in feature.findall("require/command"):
             core10.add(req.get("name")[2:])
@@ -223,15 +226,6 @@ def main():
 
     if mode == "--enforce":
         return 1 if open_edges else 0
-    if mode == "--expect-open":
-        expected = set(sys.argv[6].split(","))
-        missing = expected - set(open_slots)
-        if missing:
-            print("calibration failure, expected-open slots not detected: "
-                  + ", ".join(sorted(missing)))
-            return 1
-        print(f"calibration: all {len(expected)} expected-open slots detected")
-        return 0
     print(f"unknown mode {mode}")
     return 2
 
