@@ -20,11 +20,10 @@ scissor_word(uint32_t x, uint32_t y)
           ((y + R300_FDS_SCISSOR_BIAS) << 13);
 }
 
-/* The table lists every register the verified-rendering r300g triangle
- * establishes before its draw and the native cell does not, in emission
- * order, with the value the reference draw uses on RS482
- * (steinmarder-r300 results/rs482-r300g-first-draw-reference-stream,
- * triangle-target differential). Entries whose value derives from the
+/* The table lists every register a verified-rendering r300g TCL-bypass
+ * triangle on RS482 establishes before its draw and the fixed cell does
+ * not, in emission order, with the traced reference value. Entries whose
+ * value derives from the
  * draw parameters carry 0 here and are resolved in
  * r300_first_draw_contract_resolve; entries marked REFERENCE_ARTIFACT
  * document reference state the neutral cell must not import and are
@@ -280,11 +279,10 @@ r300_first_draw_state_check(const struct r300_first_draw_contract *contract,
    }
 
    memset(report, 0, sizeof(*report));
-   /* A clause is satisfied only by a write reaching the contract value.
-    * A poison seed that happens to equal the value does not satisfy it --
-    * that is the same vacuity a mutation arm forcing an already-present
-    * value has -- so an unwritten register is unsatisfied under every
-    * seed, which is the context-independence property itself.
+   /* A clause is satisfied only by a write in the stream that reaches the
+    * contract value. A seed equal to the value leaves an unwritten
+    * register unsatisfied, so a stream passes only when it establishes
+    * every value itself, independent of predecessor state.
     */
    for (uint32_t e = 0; e < contract->count; e++) {
       if (!written[e] || state[e] != contract->entries[e].value) {
