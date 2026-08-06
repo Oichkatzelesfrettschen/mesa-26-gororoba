@@ -318,6 +318,7 @@ if get_option('r3v-native-backend')
     'r3v_native_device.c',
     'r3v_native_memory.c',
     'r3v_native_queue.c',
+    '../common/r300_first_draw_state.c',
     '../common/r300_fragment_binary.c',
     '../common/r300_tcl_bypass_triangle.c',
   )
@@ -519,6 +520,7 @@ if get_option('r3v-native-backend')
     r3v_native_arming_runner = executable(
       'r3v_native_arming_runner',
       files('r3v_native_arming.c', 'tests/r3v_native_arming_runner.c',
+            '../common/r300_first_draw_state.c',
             '../common/r300_fragment_binary.c',
             '../common/r300_tcl_bypass_triangle.c'),
       include_directories : [r3v_native_inc, include_directories('.')],

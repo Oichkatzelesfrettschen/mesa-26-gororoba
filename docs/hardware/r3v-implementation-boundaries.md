@@ -3,8 +3,8 @@
 ## Status
 
 The current-source statements in this document describe
-`mesa-26-gororoba` at
-`0c975d467b4f146e0a599aedbbfb85de2bccf987`.
+`mesa-26-gororoba` at the commit that carries this document revision;
+`git log -1 -- docs/hardware/r3v-implementation-boundaries.md` names it.
 
 The current Gallium-backed implementation is live code. The native R3V ICD
 exists as a distinct Gallium-free library with an owned Radeon DRM transport,
@@ -14,10 +14,17 @@ injected fixed-cell PM4 lowering path carrying a compiler-produced fragment
 program. Submission sits behind a multi-factor arming conjunction with
 one-shot disarm, and both the semantic cell and the exact submit object
 retain as digest-bound evidence. Its evidence stands at the host-unit,
-build/link, no-submit PM4, offline kernel-parser, and drm-shim host-model
-classes. It is not yet a native Vulkan graphics driver, a live Radeon DRM
-execution witness, or a proven RS482 raster path. The complete Vulkan
-semantic/conformance sections remain implementation contracts.
+build/link, no-submit PM4, offline kernel-parser, drm-shim host-model, and
+one-shot silicon classes: one attended armed submission on RS482 was
+accepted and retired clean by the running radeon kernel, with the color
+target retaining its sentinel fill. The inert output is the first-draw
+inheritance mechanism -- the submitted cell owned none of the three
+silicon-proven color-write gates -- and the recorded cell now opens with
+the neutral first-draw state contract so the stream establishes every
+register it depends on itself. It is not yet a native Vulkan graphics
+driver or a proven RS482 raster path; the pixel-producing witness for the
+self-contained successor cell is the next attended run. The complete
+Vulkan semantic/conformance sections remain implementation contracts.
 
 The bounded R300 R2VB `FLOAT_2` source transaction has one home:
 `r300-r2vb-float2-source-contract.md`. This document owns the implementation
@@ -162,7 +169,10 @@ The landed mechanisms are:
   heap sized from `DRM_RADEON_GEM_INFO`;
 - the fixed TCL-bypass triangle lowered into a native command buffer by
   `r3v_native_record_tcl_bypass_triangle`, a private entry linked directly
-  by the pre-hardware harness; `vkBeginCommandBuffer` and
+  by the pre-hardware harness; the recording opens with the neutral
+  first-draw state contract (`src/amd/r300/common/r300_first_draw_state.c`),
+  emitted in pipeline order and proven self-establishing by the
+  poison-model checker; `vkBeginCommandBuffer` and
   `vkEndCommandBuffer` record nothing themselves;
 - the exact-value submit gate `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1`; the
   closed gate retains the IB, relocation list, and manifest under
@@ -171,8 +181,11 @@ The landed mechanisms are:
   closed-gate retained IB byte-identical to the direct emitter.
 
 Graphics and compute pipelines, public Vulkan command recording, images,
-descriptors, transfers, WSI, the CPU vertex route, native R2VB, and any live
-`DRM_RADEON_CS` submission remain outside the landed surface.
+descriptors, transfers, WSI, the CPU vertex route, and native R2VB remain
+outside the landed surface. Live `DRM_RADEON_CS` submission has one
+attended witness: kernel-accepted, retired clean, color target unwritten;
+the self-contained successor cell's silicon run is separately authorized
+and outstanding.
 
 ### Source-layer split
 

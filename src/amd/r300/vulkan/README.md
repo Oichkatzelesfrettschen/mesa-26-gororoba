@@ -112,8 +112,20 @@ into a native command buffer by the private entry
 `r3v_native_record_tcl_bypass_triangle`; public `vkBeginCommandBuffer` and
 `vkEndCommandBuffer` record nothing themselves, and graphics pipelines,
 images, descriptors, transfers, and WSI remain outside the native surface.
-No live `DRM_RADEON_CS` submission has occurred; the drm-shim harness and
-offline kernel-parser replay carry the pre-hardware evidence.
+The drm-shim harness and offline kernel-parser replay carry the
+pre-hardware evidence; the attended-cell runner has carried one armed
+`DRM_RADEON_CS` submission on RS482 that the kernel accepted and retired
+clean while the color target retained its sentinel fill. That unwritten
+target is the first-draw inheritance mechanism: the original cell owned
+none of the registers a first draw depends on, and on RS482 an
+unestablished `US_OUT_FMT_0`, `RB3D_COLOR_CHANNEL_MASK`, or
+`SC_SCREENDOOR` each alone suppresses every color write. The recorded
+cell therefore now opens with the neutral first-draw state contract
+(`src/amd/r300/common/r300_first_draw_state.c`): the contract's clauses
+are emitted in pipeline order ahead of the cell, the poison-model checker
+proves the stream establishes every clause itself, and the recorder,
+manifest tool, and harness reference all build the one byte-identical
+successor IB. The successor cell awaits its own attended silicon run.
 
 In the Gallium-backed library, `R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1`
 records consent only; that library's submission executes the Gallium replay

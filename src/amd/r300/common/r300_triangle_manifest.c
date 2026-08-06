@@ -6,6 +6,7 @@
  * consumes.
  */
 
+#include "r300_first_draw_state.h"
 #include "r300_fragment_binary.h"
 #include "r300_tcl_bypass_triangle.h"
 
@@ -44,11 +45,18 @@ main(int argc, char **argv)
       return 1;
    }
 
+   struct r300_first_draw_contract contract;
+   if (r300_tcl_bypass_triangle_reference_contract(&contract) != 0) {
+      fprintf(stderr, "first-draw contract resolution failed\n");
+      return 1;
+   }
+
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
       /* 64-pixel pitch, format field left to the attended-cell staging. */
       .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
       .fragment_binary = &fs,
+      .first_draw_contract = &contract,
    };
    struct r300_tcl_bypass_triangle_ib cell;
    if (r300_tcl_bypass_triangle_emit(&params, &cell) != 0) {

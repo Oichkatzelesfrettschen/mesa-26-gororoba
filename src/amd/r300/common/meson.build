@@ -43,7 +43,8 @@ test(
 
 r300_tcl_bypass_triangle_test = executable(
   'r300_tcl_bypass_triangle_test',
-  files('r300_fragment_binary.c', 'r300_tcl_bypass_triangle.c',
+  files('r300_fragment_binary.c', 'r300_first_draw_state.c',
+        'r300_tcl_bypass_triangle.c',
         'tests/r300_tcl_bypass_triangle_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -61,8 +62,8 @@ test(
 # replay test drives it and the attended-cell staging invokes it directly.
 r300_triangle_manifest = executable(
   'r300_triangle_manifest',
-  files('r300_fragment_binary.c', 'r300_tcl_bypass_triangle.c',
-        'r300_triangle_manifest.c'),
+  files('r300_fragment_binary.c', 'r300_first_draw_state.c',
+        'r300_tcl_bypass_triangle.c', 'r300_triangle_manifest.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
                          include_directories('.')],

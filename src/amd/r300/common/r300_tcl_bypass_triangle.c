@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "r300_tcl_bypass_triangle.h"
+#include "r300_first_draw_state.h"
 #include "r300_fragment_binary.h"
 #include "r300_tcl_bypass_triangle_fs_block.h"
 
@@ -24,7 +25,11 @@
  */
 #define R300_TRIANGLE_PSC_EXT_IDENTITY 0xF688F688u
 
-#define R300_TRIANGLE_MAX_DWORDS 256
+/* Holds the bare-cell state plus the two-dword-per-clause first-draw
+ * contract prefix; the prefix emission checks its room against this bound
+ * and the allocation adds the fragment binary's size on top.
+ */
+#define R300_TRIANGLE_MAX_DWORDS 512
 
 struct r300_triangle_writer {
    uint32_t *ib;
@@ -77,6 +82,23 @@ r300_tcl_bypass_triangle_emit(
 
    struct r300_triangle_writer w = {.ib = ib, .count = 0, .out = out};
    out->ib = ib;
+
+   /* First-draw state prefix: the contract's writes land before any cell
+    * state, so every register the draw depends on -- the three proven
+    * color-write gates included -- comes from this stream rather than
+    * from the previous client.
+    */
+   if (params->first_draw_contract != NULL) {
+      int state_dwords = r300_first_draw_state_emit(
+         params->first_draw_contract, &ib[w.count],
+         R300_TRIANGLE_MAX_DWORDS - w.count);
+      if (state_dwords < 0) {
+         free(ib);
+         memset(out, 0, sizeof(*out));
+         return state_dwords;
+      }
+      w.count += (uint32_t)state_dwords;
+   }
 
    /* Vertex path: pretransformed positions bypass the TCL block, one
     * FLOAT_4 stream lands whole in output vector zero, and every PSC
@@ -154,6 +176,23 @@ r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs)
       R300_TCL_BYPASS_TRIANGLE_FS_FG_DEPTH_SRC,
       R300_TCL_BYPASS_TRIANGLE_FS_US_OUT_W,
       "r300-tcl-bypass-triangle-compiled");
+}
+
+int
+r300_tcl_bypass_triangle_reference_contract(
+   struct r300_first_draw_contract *out)
+{
+   /* The cell's target is 64x64, the draw fetches vertices 0..2, and it
+    * binds no texture; the contract resolution derives scissor, clip, and
+    * the maximum vertex index from these parameters.
+    */
+   struct r300_first_draw_params params = {
+      .width = 64,
+      .height = 64,
+      .max_vtx_index = 2,
+      .texture_enabled = false,
+   };
+   return r300_first_draw_contract_resolve(&params, out);
 }
 
 uint32_t

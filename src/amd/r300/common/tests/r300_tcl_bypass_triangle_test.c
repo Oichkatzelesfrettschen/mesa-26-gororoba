@@ -11,6 +11,7 @@
  */
 #undef NDEBUG
 
+#include "r300_first_draw_state.h"
 #include "r300_fragment_binary.h"
 #include "r300_tcl_bypass_triangle.h"
 
@@ -178,6 +179,52 @@ test_emission_is_deterministic(void)
 }
 
 static void
+test_contract_emission_is_self_contained(void)
+{
+   /* The reference-contract cell still satisfies the kernel's TCL-bypass
+    * vertex-output contract, and its stream establishes every first-draw
+    * clause itself from an all-zero predecessor -- the state under which
+    * the three proven color-write gates all suppress output.
+    */
+   struct r300_fragment_binary fs;
+   static const uint32_t fs_stream[] = {
+      PKT0(0x4600, 1), 0x0,
+      PKT0(0x4604, 1), 0x0,
+   };
+   assert(r300_fragment_binary_init(&fs, fs_stream,
+                                    sizeof(fs_stream) / sizeof(uint32_t), 0,
+                                    0, "test") == 0);
+
+   struct r300_first_draw_contract contract;
+   assert(r300_tcl_bypass_triangle_reference_contract(&contract) == 0);
+
+   struct r300_tcl_bypass_triangle_params params = {
+      .vertex_offset = 0,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
+      .fragment_binary = &fs,
+      .first_draw_contract = &contract,
+   };
+   struct r300_tcl_bypass_triangle_ib cell;
+   assert(r300_tcl_bypass_triangle_emit(&params, &cell) == 0);
+
+   struct tracker t;
+   memset(&t, 0, sizeof(t));
+   track(&t, cell.ib, cell.ib_size_dwords);
+   assert(t.cntl_status_seen && (t.cntl_status & (1u << 8)));
+   assert(t.vtx_size_seen && t.vtx_size == 4);
+   assert(t.ext_seen_mask == 0xff && !t.ext_nonidentity);
+   assert(t.draw_count == 1);
+
+   struct r300_first_draw_check_report report;
+   assert(r300_first_draw_state_check(&contract, cell.ib,
+                                      cell.ib_size_dwords, 0x00000000,
+                                      &report) == 0);
+
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_fragment_binary_finish(&fs);
+}
+
+static void
 test_emit_rejects_unvalidated_binary(void)
 {
    struct r300_tcl_bypass_triangle_ib cell;
@@ -248,6 +295,7 @@ main(void)
    test_stream_satisfies_kernel_contract();
    test_reloc_sites_bind_slots();
    test_emission_is_deterministic();
+   test_contract_emission_is_self_contained();
    test_emit_rejects_unvalidated_binary();
    test_colorpitch0_pack();
    test_output_oracle();
