@@ -484,6 +484,33 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+    # Source headers carry the license grant and the file's description.  The
+    # audit runs over the lane, and each fixture mutates one clean header so
+    # a rule that stopped reading its line fails its own calibration.
+    test(
+      'r3v-source-header-audit',
+      prog_python,
+      args : [files('tests/r3v_source_header_audit.py'),
+              meson.current_source_dir()],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-source-header-audit-selftest',
+      prog_python,
+      args : [files('tests/r3v_source_header_audit.py'), '--selftest'],
+      suite : ['r3v'],
+    )
+    foreach header_defect : ['missing-spdx', 'invented-copyright',
+                             'ai-disclosure']
+      test(
+        'r3v-source-header-audit-known-bad-@0@'.format(header_defect),
+        prog_python,
+        args : [files('tests/r3v_source_header_audit.py'),
+                '--fixture', header_defect],
+        should_fail : true,
+        suite : ['r3v'],
+      )
+    endforeach
     test(
       'r3v-native-entrypoint-closure',
       prog_python,
