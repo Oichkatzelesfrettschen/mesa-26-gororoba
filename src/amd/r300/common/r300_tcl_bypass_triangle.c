@@ -281,13 +281,13 @@ int
 r300_tcl_bypass_triangle_reference_contract(
    struct r300_first_draw_contract *out)
 {
-   /* The cell's target is 64x64, the draw fetches vertices 0..2, and it
-    * binds no texture; the contract resolution derives scissor, clip, and
-    * the maximum vertex index from these parameters.
+   /* The draw fetches vertices 0..2 and binds no texture; the contract
+    * resolution derives scissor, clip, and the maximum vertex index from
+    * the published target geometry.
     */
    struct r300_first_draw_params params = {
-      .width = 64,
-      .height = 64,
+      .width = R300_TRIANGLE_TARGET_WIDTH,
+      .height = R300_TRIANGLE_TARGET_HEIGHT,
       .max_vtx_index = 2,
       .texture_enabled = false,
    };
@@ -312,7 +312,8 @@ r300_tcl_bypass_triangle_reference_emit(
 
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
-      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
+      .color_pitch_format =
+         r300_rb3d_colorpitch0_pack_argb8888(R300_TRIANGLE_TARGET_PITCH_PIXELS),
       .fragment_binary = &fs,
       .first_draw_contract = &contract,
    };
@@ -387,20 +388,24 @@ r300_tcl_bypass_triangle_oracle(const uint32_t *pixels, uint32_t size_bytes,
     * verdict instead of a wrong oracle.
     */
    for (unsigned i = 0; i < sizeof(interior) / sizeof(interior[0]); i++) {
-      uint32_t index = (uint32_t)interior[i].y * 64 + interior[i].x;
+      uint32_t index = (uint32_t)interior[i].y *
+                          R300_TRIANGLE_TARGET_PITCH_PIXELS + interior[i].x;
       if (!triangle_interior(interior[i].x, interior[i].y) ||
           index >= pixel_count ||
           pixels[index] != R300_TRIANGLE_DRAW_COLOR_ARGB8888)
          verdict->interior_pass = false;
    }
    for (unsigned i = 0; i < sizeof(exterior) / sizeof(exterior[0]); i++) {
-      uint32_t index = (uint32_t)exterior[i].y * 64 + exterior[i].x;
+      uint32_t index = (uint32_t)exterior[i].y *
+                          R300_TRIANGLE_TARGET_PITCH_PIXELS + exterior[i].x;
       if (triangle_interior(exterior[i].x, exterior[i].y) ||
           index >= pixel_count ||
           pixels[index] != R300_TRIANGLE_COLOR_SENTINEL)
          verdict->exterior_pass = false;
    }
-   for (uint32_t i = 64 * 64; i < pixel_count; i++) {
+   for (uint32_t i = R300_TRIANGLE_TARGET_PITCH_PIXELS *
+                     R300_TRIANGLE_TARGET_HEIGHT;
+        i < pixel_count; i++) {
       if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL)
          verdict->canary_pass = false;
    }

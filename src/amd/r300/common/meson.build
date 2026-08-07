@@ -87,6 +87,18 @@ r300_triangle_manifest = executable(
   gnu_symbol_visibility : 'hidden',
 )
 
+# The writer's own artifacts, checked against each other: the unit test
+# proves the helper, this proves the executable published what the helper
+# computed.
+test(
+  'r300-triangle-manifest-integration',
+  prog_python,
+  args : [files('tests/r300_triangle_manifest_check.py'),
+          r300_triangle_manifest.full_path()],
+  depends : [r300_triangle_manifest],
+  suite : ['r300'],
+)
+
 r300_staging_manifest_test = executable(
   'r300_staging_manifest_test',
   files('r300_fragment_binary.c', 'r300_first_draw_state.c',
