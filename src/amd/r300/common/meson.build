@@ -41,10 +41,25 @@ test(
   suite : ['r300'],
 )
 
+r300_pm4_builder_test = executable(
+  'r300_pm4_builder_test',
+  files('r300_pm4_builder.c', 'tests/r300_pm4_builder_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-pm4-builder',
+  r300_pm4_builder_test,
+  suite : ['r300'],
+)
+
 r300_tcl_bypass_triangle_test = executable(
   'r300_tcl_bypass_triangle_test',
   files('r300_fragment_binary.c', 'r300_first_draw_state.c',
-        'r300_tcl_bypass_triangle.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c',
         'tests/r300_tcl_bypass_triangle_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -63,7 +78,8 @@ test(
 r300_triangle_manifest = executable(
   'r300_triangle_manifest',
   files('r300_fragment_binary.c', 'r300_first_draw_state.c',
-        'r300_tcl_bypass_triangle.c', 'r300_triangle_manifest.c'),
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c',
+        'r300_triangle_manifest.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
                          include_directories('.')],
@@ -82,9 +98,23 @@ test(
   suite : ['r300'],
 )
 
+# Full CS parser and tracker replay, gated on R3V_CS_TRACK_REPLAY_TOOL
+# pointing at replay_r300_cs_track built in the Linux radeon source tree.
+# The width replay above decides one predicate; this one walks packet
+# framing, register admission, relocation consumption, and every buffer
+# bound r100_cs_track_check applies.  R3V_CS_TRACK_CONTROLS adds the
+# parser-invalid and semantically blank control classes.
+test(
+  'r300-cs-track-replay',
+  files('tests/run_cs_track_replay.sh')[0],
+  args : [r300_triangle_manifest],
+  suite : ['r300'],
+)
+
 r300_first_draw_state_test = executable(
   'r300_first_draw_state_test',
-  files('r300_fragment_binary.c', 'r300_tcl_bypass_triangle.c',
+  files('r300_fragment_binary.c', 'r300_pm4_builder.c',
+        'r300_tcl_bypass_triangle.c',
         'r300_first_draw_state.c', 'tests/r300_first_draw_state_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,

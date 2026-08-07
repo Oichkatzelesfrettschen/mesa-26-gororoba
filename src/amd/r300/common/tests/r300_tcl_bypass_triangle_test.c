@@ -15,6 +15,9 @@
 #include "r300_fragment_binary.h"
 #include "r300_tcl_bypass_triangle.h"
 
+#include "util/macros.h"
+#include "util/mesa-blake3.h"
+
 #include <assert.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -155,6 +158,46 @@ test_reloc_sites_bind_slots(void)
       assert(cell.ib[index] == cell.reloc_sites[i].slot * 4);
       assert(cell.ib[index - 1] == 0xC0001000u);
    }
+
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_fragment_binary_finish(&fs);
+}
+
+/* The checks the site validator proves against the stream itself: a site is
+ * the payload of a relocation NOP, so index zero and a corrupted header each
+ * refuse, and the site indices follow the stream order.  An in-range
+ * ordinary dword coincidentally equal to the payload satisfies none of them.
+ */
+static void
+test_reloc_site_validator_refuses_each_defect(void)
+{
+   struct r300_fragment_binary fs;
+   struct r300_tcl_bypass_triangle_ib cell;
+   make_cell(&fs, &cell);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
+   /* Corrupting the NOP header alone refuses the otherwise-intact site. */
+   const uint32_t header_index = cell.reloc_sites[0].ib_index - 1;
+   const uint32_t saved_header = cell.ib[header_index];
+   cell.ib[header_index] ^= 1u;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == -EINVAL);
+   cell.ib[header_index] = saved_header;
+
+   /* Index zero has no preceding dword to hold the header. */
+   const uint32_t saved_index = cell.reloc_sites[0].ib_index;
+   cell.reloc_sites[0].ib_index = 0;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == -ERANGE);
+   cell.reloc_sites[0].ib_index = saved_index;
+
+   /* Site indices that do not increase contradict the stream order even
+    * when each site is individually intact.
+    */
+   struct r300_tcl_bypass_triangle_ib m = cell;
+   m.reloc_sites[0].ib_index = cell.reloc_sites[1].ib_index;
+   m.reloc_sites[1].ib_index = cell.reloc_sites[0].ib_index;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) != 0);
+
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
 
    r300_tcl_bypass_triangle_release(&cell);
    r300_fragment_binary_finish(&fs);
@@ -340,11 +383,203 @@ test_reference_emit_is_the_single_authority(void)
    r300_tcl_bypass_triangle_release(&ref);
 }
 
+/* The contract cell's exact size and content, pinned so a change to the emitter,
+ * the contract, or the fragment binary reports as a size or digest movement
+ * rather than as a silently different cell.  The digest is the one the
+ * staging manifest and the arming gate carry.
+ */
+#define R300_TRIANGLE_CONTRACT_CELL_DWORDS 234
+
+static void
+test_contract_cell_size_and_digest_are_pinned(void)
+{
+   struct r300_tcl_bypass_triangle_ib ref;
+   assert(r300_tcl_bypass_triangle_reference_emit(&ref) == 0);
+   assert(ref.ib_size_dwords == R300_TRIANGLE_CONTRACT_CELL_DWORDS);
+
+   /* The reference cell hashed as the little-endian dword stream the
+    * manifest writes and the kernel parser reads.
+    */
+   static const uint8_t expected[BLAKE3_OUT_LEN] = {
+      0x55, 0xa2, 0x10, 0x3c, 0x39, 0x1a, 0x59, 0x89,
+      0x6f, 0xd1, 0x29, 0x4a, 0xc9, 0x34, 0x59, 0xe1,
+      0x1f, 0x26, 0xce, 0x5e, 0x5b, 0x2a, 0x75, 0xa4,
+      0xc5, 0x73, 0xed, 0x91, 0x0d, 0x84, 0x87, 0xd0,
+   };
+   blake3_hash digest;
+   struct mesa_blake3 ctx;
+   _mesa_blake3_init(&ctx);
+   _mesa_blake3_update(&ctx, ref.ib,
+                       ref.ib_size_dwords * sizeof(uint32_t));
+   _mesa_blake3_final(&ctx, digest);
+   assert(memcmp(digest, expected, sizeof(expected)) == 0);
+
+   r300_tcl_bypass_triangle_release(&ref);
+}
+
+/* Emission into caller storage takes the whole cell or none of it.  Every
+ * capacity below the cell's size refuses, which covers a destination one
+ * dword short of the contract prefix, of the fragment block, and of every
+ * packet between them.  Guard words on both sides of the destination make a
+ * write past the bound visible.
+ */
+static void
+test_emit_into_holds_its_capacity(void)
+{
+   struct r300_fragment_binary fs;
+   assert(r300_tcl_bypass_triangle_reference_fs(&fs) == 0);
+   struct r300_first_draw_contract contract;
+   assert(r300_tcl_bypass_triangle_reference_contract(&contract) == 0);
+   const struct r300_tcl_bypass_triangle_params params = {
+      .vertex_offset = 0,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
+      .fragment_binary = &fs,
+      .first_draw_contract = &contract,
+   };
+
+   enum { SLACK = 4 };
+   static uint32_t storage[1 + R300_TRIANGLE_CONTRACT_CELL_DWORDS + SLACK + 1];
+   uint32_t *const words = &storage[1];
+
+   for (uint32_t capacity = 0;
+        capacity <= R300_TRIANGLE_CONTRACT_CELL_DWORDS + SLACK; capacity++) {
+      memset(storage, 0, sizeof(storage));
+      storage[0] = 0xdeadbeefu;
+      storage[ARRAY_SIZE(storage) - 1] = 0xdeadbeefu;
+
+      struct r300_tcl_bypass_triangle_ib cell;
+      const int rc =
+         r300_tcl_bypass_triangle_emit_into(&params, words, capacity, &cell);
+
+      if (capacity < R300_TRIANGLE_CONTRACT_CELL_DWORDS) {
+         assert(rc == -ENOSPC);
+         assert(cell.ib_size_dwords == 0);
+         assert(cell.ib == NULL);
+      } else {
+         assert(rc == 0);
+         assert(cell.ib_size_dwords == R300_TRIANGLE_CONTRACT_CELL_DWORDS);
+         assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+      }
+
+      assert(storage[0] == 0xdeadbeefu);
+      assert(storage[ARRAY_SIZE(storage) - 1] == 0xdeadbeefu);
+      /* The dwords past the cell stay untouched at every capacity, so a
+       * refusal short of the end wrote nothing beyond what it reported.
+       */
+      for (uint32_t i = R300_TRIANGLE_CONTRACT_CELL_DWORDS;
+           i < R300_TRIANGLE_CONTRACT_CELL_DWORDS + SLACK; i++)
+         assert(words[i] == 0);
+   }
+
+   r300_fragment_binary_finish(&fs);
+}
+
+/* The emitted cell writes into caller storage without claiming it, so the
+ * release leaves that storage alone and frees only what the allocating form
+ * owns.
+ */
+static void
+test_emit_into_does_not_own_caller_storage(void)
+{
+   struct r300_fragment_binary fs;
+   assert(r300_tcl_bypass_triangle_reference_fs(&fs) == 0);
+   struct r300_first_draw_contract contract;
+   assert(r300_tcl_bypass_triangle_reference_contract(&contract) == 0);
+   const struct r300_tcl_bypass_triangle_params params = {
+      .vertex_offset = 0,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
+      .fragment_binary = &fs,
+      .first_draw_contract = &contract,
+   };
+
+   static uint32_t words[R300_TRIANGLE_CONTRACT_CELL_DWORDS];
+   struct r300_tcl_bypass_triangle_ib cell;
+   assert(r300_tcl_bypass_triangle_emit_into(&params, words,
+                                             ARRAY_SIZE(words), &cell) == 0);
+   assert(!cell.owns_ib);
+   r300_tcl_bypass_triangle_release(&cell);
+
+   struct r300_tcl_bypass_triangle_ib owned;
+   assert(r300_tcl_bypass_triangle_reference_emit(&owned) == 0);
+   assert(owned.owns_ib);
+   /* Both forms produce the same stream. */
+   assert(owned.ib_size_dwords == R300_TRIANGLE_CONTRACT_CELL_DWORDS);
+   assert(memcmp(owned.ib, words, sizeof(words)) == 0);
+   r300_tcl_bypass_triangle_release(&owned);
+
+   r300_fragment_binary_finish(&fs);
+}
+
+/* Each way a relocation site can misname the stream it indexes.  The emitted
+ * sites validate, and every mutation of them is refused, so the validator
+ * decides on the site rather than on the cell having been emitted.
+ */
+static void
+test_reloc_site_mutations_refuse(void)
+{
+   struct r300_fragment_binary fs;
+   struct r300_tcl_bypass_triangle_ib cell;
+   make_cell(&fs, &cell);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
+   struct r300_tcl_bypass_triangle_ib m;
+
+   /* A site index at the end of the stream indexes no dword in it. */
+   m = cell;
+   m.reloc_sites[0].ib_index = cell.ib_size_dwords;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) == -ERANGE);
+
+   /* A slot equal to the slot count names no BO the transport binds. */
+   m = cell;
+   m.reloc_sites[1].slot = R300_TRIANGLE_SLOT_COUNT;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) == -EINVAL);
+
+   /* Two sites naming one slot leave the other slot unrelocated. */
+   m = cell;
+   m.reloc_sites[1] = m.reloc_sites[0];
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) == -EEXIST);
+
+   /* A missing vertex site leaves the vertex BO unresolved. */
+   m = cell;
+   m.reloc_site_count = 1;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) == -EINVAL);
+
+   /* Swapping the slots makes each site name the payload of the other. */
+   m = cell;
+   m.reloc_sites[0].slot = R300_TRIANGLE_SLOT_VERTEX;
+   m.reloc_sites[1].slot = R300_TRIANGLE_SLOT_COLOR;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) == -EINVAL);
+
+   /* A site count that is not one per slot: the equality guard refuses it
+    * before the loop reads an index, which is what keeps a count past the
+    * storage from reaching the array.
+    */
+   m = cell;
+   m.reloc_site_count = R300_TRIANGLE_MAX_RELOC_SITES + 1;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) == -EINVAL);
+
+   /* A site whose payload dword stops naming its slot. */
+   m = cell;
+   uint32_t saved = cell.ib[cell.reloc_sites[0].ib_index];
+   cell.ib[cell.reloc_sites[0].ib_index] = saved + 1;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) == -EINVAL);
+   cell.ib[cell.reloc_sites[0].ib_index] = saved;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_fragment_binary_finish(&fs);
+}
+
 int
 main(void)
 {
+   test_contract_cell_size_and_digest_are_pinned();
+   test_emit_into_holds_its_capacity();
+   test_emit_into_does_not_own_caller_storage();
+   test_reloc_site_mutations_refuse();
    test_stream_satisfies_kernel_contract();
    test_reloc_sites_bind_slots();
+   test_reloc_site_validator_refuses_each_defect();
    test_emission_is_deterministic();
    test_contract_emission_is_self_contained();
    test_reference_emit_is_the_single_authority();

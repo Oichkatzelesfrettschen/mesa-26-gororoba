@@ -3,20 +3,19 @@
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_first_draw_state.h"
 #include "r300_fragment_binary.h"
+#include "r300_pm4_builder.h"
 #include "r300_tcl_bypass_triangle_fs_block.h"
 
 #include "r300_reg.h"
+#include "util/macros.h"
 
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* The radeon CS grammar for a BO reference: a type-3 NOP whose one payload
- * dword indexes the relocation chunk in dword units, four dwords per
- * drm_radeon_cs_reloc entry.
+/* Four dwords per drm_radeon_cs_reloc entry, so a slot's payload indexes the
+ * relocation chunk at four times the slot.
  */
-#define R300_TRIANGLE_PACKET3_NOP 0x00001000
-#define R300_TRIANGLE_RELOC_HEADER CP_PACKET3(R300_TRIANGLE_PACKET3_NOP, 0)
 #define R300_TRIANGLE_RELOC_PAYLOAD(slot) ((slot) * 4)
 
 /* Identity PSC swizzle select: X, Y, Z, W in place with a full write mask,
@@ -31,35 +30,140 @@
  */
 #define R300_TRIANGLE_MAX_DWORDS 512
 
-struct r300_triangle_writer {
-   uint32_t *ib;
-   uint32_t count;
-   struct r300_tcl_bypass_triangle_ib *out;
-};
-
+/* Records one relocation site as the builder places it.  A slot outside the
+ * cell's slot space, or a site past the site array, refuses the emission
+ * rather than storing a site no relocation list can resolve.
+ */
 static void
-write_dword(struct r300_triangle_writer *w, uint32_t value)
+write_reloc(struct r300_pm4_builder *b, struct r300_tcl_bypass_triangle_ib *out,
+            uint32_t slot)
 {
-   w->ib[w->count++] = value;
-}
+   if (b->error != 0)
+      return;
+   if (slot >= R300_TRIANGLE_SLOT_COUNT ||
+       out->reloc_site_count >= R300_TRIANGLE_MAX_RELOC_SITES) {
+      b->error = -EINVAL;
+      return;
+   }
 
-static void
-write_reg(struct r300_triangle_writer *w, uint32_t reg, uint32_t value)
-{
-   write_dword(w, CP_PACKET0(reg, 0));
-   write_dword(w, value);
-}
+   const uint32_t index =
+      r300_pm4_reloc_nop(b, R300_TRIANGLE_RELOC_PAYLOAD(slot));
+   if (index == R300_PM4_NO_INDEX)
+      return;
 
-static void
-write_reloc(struct r300_triangle_writer *w, uint32_t slot)
-{
-   write_dword(w, R300_TRIANGLE_RELOC_HEADER);
-   w->out->reloc_sites[w->out->reloc_site_count++] =
+   out->reloc_sites[out->reloc_site_count++] =
       (struct r300_tcl_bypass_triangle_reloc_site){
-         .ib_index = w->count,
+         .ib_index = index,
          .slot = slot,
       };
-   write_dword(w, R300_TRIANGLE_RELOC_PAYLOAD(slot));
+}
+
+int
+r300_tcl_bypass_triangle_emit_into(
+   const struct r300_tcl_bypass_triangle_params *params, uint32_t *words,
+   uint32_t capacity, struct r300_tcl_bypass_triangle_ib *out)
+{
+   const struct r300_fragment_binary *fs = params->fragment_binary;
+
+   memset(out, 0, sizeof(*out));
+   if (fs == NULL || !fs->validated) {
+      return -EINVAL;
+   }
+
+   struct r300_pm4_builder b;
+   r300_pm4_builder_init(&b, words, capacity);
+
+   /* First-draw state prefix: the contract's writes land before any cell
+    * state, so every register the draw depends on -- the three proven
+    * color-write gates included -- comes from this stream rather than
+    * from the previous client.  The builder reserves the emitter's declared
+    * extent and admits exactly that many dwords, so the count <= capacity
+    * invariant stays the builder's alone.
+    */
+   if (params->first_draw_contract != NULL && b.error == 0) {
+      const uint32_t state_dwords =
+         r300_first_draw_state_dwords(params->first_draw_contract);
+      if (r300_pm4_builder_reserve(&b, state_dwords)) {
+         const int emitted = r300_first_draw_state_emit(
+            params->first_draw_contract, &b.words[b.count], state_dwords);
+         if (emitted < 0)
+            b.error = emitted;
+         else if ((uint32_t)emitted != state_dwords)
+            b.error = -EINVAL;
+         else
+            b.count += state_dwords;
+      }
+   }
+
+   /* Vertex path: pretransformed positions bypass the TCL block, one
+    * FLOAT_4 stream lands whole in output vector zero, and every PSC
+    * extended selector stays identity, so the kernel's vertex-output check
+    * can prove VAP_VTX_SIZE = 4 covers the fetch.
+    */
+   r300_pm4_reg(&b, R300_VAP_CNTL_STATUS, R300_VAP_TCL_BYPASS);
+   r300_pm4_reg(&b, R300_VAP_PROG_STREAM_CNTL_0,
+                R300_DATA_TYPE_FLOAT_4 | (0 << R300_DST_VEC_LOC_SHIFT) |
+                   R300_LAST_VEC);
+   static const uint32_t psc_ext_identity[8] = {
+      R300_TRIANGLE_PSC_EXT_IDENTITY, R300_TRIANGLE_PSC_EXT_IDENTITY,
+      R300_TRIANGLE_PSC_EXT_IDENTITY, R300_TRIANGLE_PSC_EXT_IDENTITY,
+      R300_TRIANGLE_PSC_EXT_IDENTITY, R300_TRIANGLE_PSC_EXT_IDENTITY,
+      R300_TRIANGLE_PSC_EXT_IDENTITY, R300_TRIANGLE_PSC_EXT_IDENTITY,
+   };
+   r300_pm4_packet0(&b, R300_VAP_PROG_STREAM_CNTL_EXT_0, psc_ext_identity,
+                    ARRAY_SIZE(psc_ext_identity));
+   r300_pm4_reg(&b, R300_VAP_OUTPUT_VTX_FMT_0,
+                R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
+   r300_pm4_reg(&b, R300_VAP_OUTPUT_VTX_FMT_1, 0);
+   r300_pm4_reg(&b, R300_VAP_VTX_SIZE, 4);
+
+   /* Fragment program: the owned binary's US/FG block verbatim, then the
+    * two register values the descriptor keeps outside the sequence.
+    */
+   r300_pm4_block(&b, fs->cb_code, fs->cb_code_size);
+   r300_pm4_reg(&b, R300_FG_DEPTH_SRC, fs->fg_depth_src);
+   r300_pm4_reg(&b, R300_US_W_FMT, fs->us_out_w);
+
+   /* One color target, depth disabled.  RB3D_COLOROFFSET carries the color
+    * BO reference; the pitch/format word travels plain because the
+    * submission sets RADEON_CS_KEEP_TILING_FLAGS.
+    */
+   r300_pm4_reg(&b, R300_RB3D_CCTL, 0);
+   r300_pm4_reg(&b, R300_ZB_CNTL, 0);
+   r300_pm4_reg(&b, R300_RB3D_COLOROFFSET0, 0);
+   write_reloc(&b, out, R300_TRIANGLE_SLOT_COLOR);
+   r300_pm4_reg(&b, R300_RB3D_COLORPITCH0, params->color_pitch_format);
+
+   /* Vertex fetch: one array, sixteen bytes per vertex, stride sixteen. */
+   const uint32_t vbpntr[3] = {
+      1 | R300_VC_FORCE_PREFETCH,
+      R300_VBPNTR_SIZE0(16) | R300_VBPNTR_STRIDE0(16),
+      params->vertex_offset,
+   };
+   r300_pm4_packet3(&b, R300_PACKET3_3D_LOAD_VBPNTR, vbpntr,
+                    ARRAY_SIZE(vbpntr));
+   write_reloc(&b, out, R300_TRIANGLE_SLOT_VERTEX);
+
+   /* One vertex-list triangle; the draw packet carries VAP_VF_CNTL. */
+   const uint32_t draw = R300_VAP_VF_CNTL__PRIM_TRIANGLES |
+                         R300_PRIM_WALK_LIST |
+                         (3 << R300_PRIM_NUM_VERTICES_SHIFT);
+   r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, &draw, 1);
+
+   /* Destination-cache publication retires the color writes before the IB
+    * completes.
+    */
+   r300_pm4_reg(&b, R300_RB3D_DSTCACHE_CTLSTAT,
+                R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+
+   const int rc = r300_pm4_builder_finish(&b, &out->ib_size_dwords);
+   if (rc != 0) {
+      memset(out, 0, sizeof(*out));
+      return rc;
+   }
+   out->ib = words;
+   return 0;
 }
 
 int
@@ -69,101 +173,94 @@ r300_tcl_bypass_triangle_emit(
 {
    const struct r300_fragment_binary *fs = params->fragment_binary;
 
+   memset(out, 0, sizeof(*out));
    if (fs == NULL || !fs->validated) {
       return -EINVAL;
    }
 
-   memset(out, 0, sizeof(*out));
-   uint32_t *ib = calloc(R300_TRIANGLE_MAX_DWORDS + fs->cb_code_size,
-                         sizeof(uint32_t));
+   const uint32_t capacity = R300_TRIANGLE_MAX_DWORDS + fs->cb_code_size;
+   uint32_t *ib = calloc(capacity, sizeof(uint32_t));
    if (ib == NULL) {
       return -ENOMEM;
    }
 
-   struct r300_triangle_writer w = {.ib = ib, .count = 0, .out = out};
-   out->ib = ib;
-
-   /* First-draw state prefix: the contract's writes land before any cell
-    * state, so every register the draw depends on -- the three proven
-    * color-write gates included -- comes from this stream rather than
-    * from the previous client.
-    */
-   if (params->first_draw_contract != NULL) {
-      int state_dwords = r300_first_draw_state_emit(
-         params->first_draw_contract, &ib[w.count],
-         R300_TRIANGLE_MAX_DWORDS - w.count);
-      if (state_dwords < 0) {
-         free(ib);
-         memset(out, 0, sizeof(*out));
-         return state_dwords;
-      }
-      w.count += (uint32_t)state_dwords;
+   const int rc = r300_tcl_bypass_triangle_emit_into(params, ib, capacity,
+                                                     out);
+   if (rc != 0) {
+      free(ib);
+      return rc;
    }
-
-   /* Vertex path: pretransformed positions bypass the TCL block, one
-    * FLOAT_4 stream lands whole in output vector zero, and every PSC
-    * extended selector stays identity, so the kernel's vertex-output check
-    * can prove VAP_VTX_SIZE = 4 covers the fetch.
-    */
-   write_reg(&w, R300_VAP_CNTL_STATUS, R300_VAP_TCL_BYPASS);
-   write_reg(&w, R300_VAP_PROG_STREAM_CNTL_0,
-             R300_DATA_TYPE_FLOAT_4 | (0 << R300_DST_VEC_LOC_SHIFT) |
-                R300_LAST_VEC);
-   write_dword(&w, CP_PACKET0(R300_VAP_PROG_STREAM_CNTL_EXT_0, 7));
-   for (unsigned i = 0; i < 8; i++) {
-      write_dword(&w, R300_TRIANGLE_PSC_EXT_IDENTITY);
-   }
-   write_reg(&w, R300_VAP_OUTPUT_VTX_FMT_0,
-             R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
-   write_reg(&w, R300_VAP_OUTPUT_VTX_FMT_1, 0);
-   write_reg(&w, R300_VAP_VTX_SIZE, 4);
-
-   /* Fragment program: the owned binary's US/FG block verbatim, then the
-    * two register values the descriptor keeps outside the sequence.
-    */
-   memcpy(&ib[w.count], fs->cb_code, fs->cb_code_size * sizeof(uint32_t));
-   w.count += fs->cb_code_size;
-   write_reg(&w, R300_FG_DEPTH_SRC, fs->fg_depth_src);
-   write_reg(&w, R300_US_W_FMT, fs->us_out_w);
-
-   /* One color target, depth disabled.  RB3D_COLOROFFSET carries the color
-    * BO reference; the pitch/format word travels plain because the
-    * submission sets RADEON_CS_KEEP_TILING_FLAGS.
-    */
-   write_reg(&w, R300_RB3D_CCTL, 0);
-   write_reg(&w, R300_ZB_CNTL, 0);
-   write_reg(&w, R300_RB3D_COLOROFFSET0, 0);
-   write_reloc(&w, R300_TRIANGLE_SLOT_COLOR);
-   write_reg(&w, R300_RB3D_COLORPITCH0, params->color_pitch_format);
-
-   /* Vertex fetch: one array, sixteen bytes per vertex, stride sixteen. */
-   write_dword(&w, CP_PACKET3(R300_PACKET3_3D_LOAD_VBPNTR, 2));
-   write_dword(&w, 1 | R300_VC_FORCE_PREFETCH);
-   write_dword(&w, R300_VBPNTR_SIZE0(16) | R300_VBPNTR_STRIDE0(16));
-   write_dword(&w, params->vertex_offset);
-   write_reloc(&w, R300_TRIANGLE_SLOT_VERTEX);
-
-   /* One vertex-list triangle; the draw packet carries VAP_VF_CNTL. */
-   write_dword(&w, CP_PACKET3(R300_PACKET3_3D_DRAW_VBUF_2, 0));
-   write_dword(&w, R300_VAP_VF_CNTL__PRIM_TRIANGLES | R300_PRIM_WALK_LIST |
-                      (3 << R300_PRIM_NUM_VERTICES_SHIFT));
-
-   /* Destination-cache publication retires the color writes before the IB
-    * completes.
-    */
-   write_reg(&w, R300_RB3D_DSTCACHE_CTLSTAT,
-             R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
-                R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
-
-   out->ib_size_dwords = w.count;
+   out->owns_ib = true;
    return 0;
 }
 
 void
 r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib)
 {
-   free(ib->ib);
+   if (ib->owns_ib)
+      free(ib->ib);
    memset(ib, 0, sizeof(*ib));
+}
+
+int
+r300_tcl_bypass_triangle_validate_reloc_sites(
+   const struct r300_tcl_bypass_triangle_ib *ib)
+{
+   /* The emitter places one site per slot in a fixed order, so the cell's
+    * relocation list is fully determined: every slot appears once, each site
+    * indexes the payload of a relocation NOP inside the stream, and that
+    * payload names the slot.  A relocation list built from sites failing any
+    * of these resolves a BO into a position the stream does not reference.
+    */
+   if (ib->reloc_site_count != R300_TRIANGLE_SLOT_COUNT)
+      return -EINVAL;
+
+   /* The uniqueness set below is one uint32_t of slot bits. */
+   static_assert(R300_TRIANGLE_SLOT_COUNT <= 32,
+                 "slot uniqueness is proven in a 32-bit mask");
+
+   uint32_t seen = 0;
+   for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
+      const struct r300_tcl_bypass_triangle_reloc_site *site =
+         &ib->reloc_sites[i];
+      if (site->slot >= R300_TRIANGLE_SLOT_COUNT)
+         return -EINVAL;
+      if ((seen & (1u << site->slot)) != 0)
+         return -EEXIST;
+      seen |= 1u << site->slot;
+
+      /* The site is the payload dword of a relocation NOP, so the header
+       * precedes it; an in-range ordinary dword that happens to equal the
+       * payload does not qualify.
+       */
+      if (site->ib_index == 0 || site->ib_index >= ib->ib_size_dwords)
+         return -ERANGE;
+      if (ib->ib[site->ib_index - 1] != CP_PACKET3(R300_PM4_PACKET3_NOP, 0))
+         return -EINVAL;
+      if (ib->ib[site->ib_index] != R300_TRIANGLE_RELOC_PAYLOAD(site->slot))
+         return -EINVAL;
+   }
+
+   /* The relocation list follows the stream: the color target is programmed
+    * before the vertex array is bound.  Command-stream order is its own
+    * fact, distinct from enum order, so the expected sequence is spelled
+    * out rather than derived.
+    */
+   static const uint32_t expected_slots[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_VERTEX,
+   };
+   static_assert(ARRAY_SIZE(expected_slots) == R300_TRIANGLE_SLOT_COUNT,
+                 "every slot has a place in the stream order");
+   for (uint32_t i = 0; i < R300_TRIANGLE_SLOT_COUNT; i++) {
+      if (ib->reloc_sites[i].slot != expected_slots[i])
+         return -EINVAL;
+      if (i > 0 &&
+          ib->reloc_sites[i - 1].ib_index >= ib->reloc_sites[i].ib_index)
+         return -EINVAL;
+   }
+
+   return 0;
 }
 
 int

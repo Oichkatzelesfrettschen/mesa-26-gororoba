@@ -322,6 +322,7 @@ if get_option('r3v-native-backend')
     'r3v_native_recording.c',
     '../common/r300_first_draw_state.c',
     '../common/r300_fragment_binary.c',
+    '../common/r300_pm4_builder.c',
     '../common/r300_tcl_bypass_triangle.c',
   )
 
@@ -754,6 +755,7 @@ if get_option('r3v-native-backend')
       files('r3v_native_arming.c', 'tests/r3v_native_arming_runner.c',
             '../common/r300_first_draw_state.c',
             '../common/r300_fragment_binary.c',
+            '../common/r300_pm4_builder.c',
             '../common/r300_tcl_bypass_triangle.c'),
       include_directories : [r3v_native_inc, include_directories('.')],
       dependencies : [idep_mesautil],

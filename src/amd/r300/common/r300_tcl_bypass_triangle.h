@@ -7,6 +7,7 @@
 #ifndef R300_TCL_BYPASS_TRIANGLE_H
 #define R300_TCL_BYPASS_TRIANGLE_H
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -46,11 +47,24 @@ struct r300_tcl_bypass_triangle_reloc_site {
    uint32_t slot;
 };
 
+/* The emitter references each slot exactly once, so the site array holds one
+ * entry per slot.  The site validator proves slot uniqueness in one uint32_t
+ * of slot bits, so the slot space stays inside 32.
+ */
+#define R300_TRIANGLE_MAX_RELOC_SITES R300_TRIANGLE_SLOT_COUNT
+static_assert(R300_TRIANGLE_SLOT_COUNT <= 32,
+              "slot uniqueness is proven in a 32-bit mask");
+
 struct r300_tcl_bypass_triangle_ib {
    uint32_t *ib;
    uint32_t ib_size_dwords;
-   struct r300_tcl_bypass_triangle_reloc_site reloc_sites[4];
+   struct r300_tcl_bypass_triangle_reloc_site
+      reloc_sites[R300_TRIANGLE_MAX_RELOC_SITES];
    uint32_t reloc_site_count;
+   /* Set when the emission allocated ib, so the release frees what it owns
+    * and leaves caller storage alone.
+    */
+   bool owns_ib;
 };
 
 /* Emits the complete fixed cell: the first-draw contract prefix when the
@@ -64,7 +78,23 @@ int r300_tcl_bypass_triangle_emit(
    const struct r300_tcl_bypass_triangle_params *params,
    struct r300_tcl_bypass_triangle_ib *out);
 
+/* Emits into caller storage of exactly capacity dwords.  The write refuses
+ * with -ENOSPC the moment an operation would pass that bound, leaving the
+ * words already placed intact and reporting no dword count, so a destination
+ * too small for the cell yields a refusal rather than a short stream.
+ */
+int r300_tcl_bypass_triangle_emit_into(
+   const struct r300_tcl_bypass_triangle_params *params, uint32_t *words,
+   uint32_t capacity, struct r300_tcl_bypass_triangle_ib *out);
+
 void r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib);
+
+/* Checks the emitted relocation sites against the stream they index: one site
+ * per slot in stream order, each inside the stream, and each naming the slot
+ * whose payload sits at that index.  Returns 0 or a negative errno.
+ */
+int r300_tcl_bypass_triangle_validate_reloc_sites(
+   const struct r300_tcl_bypass_triangle_ib *ib);
 
 /* Builds the cell's fragment binary from the compiled constant-color US
  * block (r300_tcl_bypass_triangle_fs_block.h, baked by
@@ -78,7 +108,8 @@ int r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs);
 /* Resolves the first-draw contract for the cell's 64x64 target and three
  * vertices with the texture block disabled.  Every pre-hardware consumer
  * -- manifest tool, native recorder, harness reference -- takes the
- * contract from here so their successor IBs stay byte-identical.  Returns
+ * contract from here so their contract-prefixed cells stay byte-identical.
+ * Returns
  * 0 or a negative errno.
  */
 int r300_tcl_bypass_triangle_reference_contract(
