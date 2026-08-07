@@ -98,6 +98,19 @@ test(
   suite : ['r300'],
 )
 
+# Full CS parser and tracker replay, gated on R3V_CS_TRACK_REPLAY_TOOL
+# pointing at replay_r300_cs_track built in the Linux radeon source tree.
+# The width replay above decides one predicate; this one walks packet
+# framing, register admission, relocation consumption, and every buffer
+# bound r100_cs_track_check applies.  R3V_CS_TRACK_CONTROLS adds the
+# parser-invalid and semantically blank control classes.
+test(
+  'r300-cs-track-replay',
+  files('tests/run_cs_track_replay.sh')[0],
+  args : [r300_triangle_manifest],
+  suite : ['r300'],
+)
+
 r300_first_draw_state_test = executable(
   'r300_first_draw_state_test',
   files('r300_fragment_binary.c', 'r300_pm4_builder.c',
