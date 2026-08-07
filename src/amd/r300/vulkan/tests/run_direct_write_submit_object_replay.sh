@@ -104,8 +104,9 @@ validate_relocs() {
         echo "reloc chunk decodes to $# dwords, not 8" >&2
         return 1
     fi
-    color_handle=$1; color_read=$2; color_write=$3
+    color_handle=$1; color_read=$2; color_write=$3; color_flags=$4
     completion_handle=$5; completion_read=$6; completion_write=$7
+    completion_flags=$8
     if [ "${color_write}" != "00000002" ] || \
        [ "${completion_write}" != "00000002" ] || \
        [ "${color_read}" != "00000000" ] || \
@@ -113,6 +114,15 @@ validate_relocs() {
         echo "reloc domains diverge from the GTT write binding:" \
              "color ${color_read}/${color_write}" \
              "completion ${completion_read}/${completion_write}" >&2
+        return 1
+    fi
+    # Both relocation constructors pass priority zero, so a nonzero
+    # flags dword (RADEON_RELOC_PRIO_MASK lives in its low bits) marks a
+    # changed or corrupted submit path.
+    if [ "${color_flags}" != "00000000" ] || \
+       [ "${completion_flags}" != "00000000" ]; then
+        echo "reloc flags diverge from priority zero:" \
+             "color ${color_flags} completion ${completion_flags}" >&2
         return 1
     fi
     if [ "${color_handle}" = "00000000" ] || \
