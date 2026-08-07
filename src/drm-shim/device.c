@@ -720,6 +720,8 @@ drm_shim_identity_anchor_from_fd(int fd)
                   O_PATH | O_CLOEXEC, 0);
 }
 
+static int drm_shim_create_identity_anchor(void);
+
 static int
 drm_shim_inherited_identity_locator(char instance[33])
 {
@@ -785,18 +787,53 @@ drm_shim_inherited_identity_locator(char instance[33])
    int locator = (int)locator_value;
    int status_flags = syscall(SYS_fcntl, locator, F_GETFL);
    char observed_instance[33];
-   if (status_flags < 0 ||
-       (status_flags & O_PATH) == O_PATH ||
-       !drm_shim_render_identity_name_parse(locator,
-                                            observed_instance) ||
-       memcmp(observed_instance, locator_instance,
+   bool locator_is_anchor = false;
+   if (status_flags < 0 || (status_flags & O_PATH) == O_PATH) {
+      free(value);
+      errno = EBADF;
+      return -1;
+   }
+   if (drm_shim_render_identity_name_parse(locator,
+                                           observed_instance)) {
+      locator_is_anchor = true;
+   } else {
+      /* drm_shim_fd_prepare_exec exports an inherited render fd,
+       * and drm_shim_render_node_open backs each render fd with a
+       * per-open state-token memfd whose
+       * drm_shim_state_token_header names the instance under this
+       * driver's marker; the header parse validates all three.
+       */
+      struct drm_shim_state_token_header header;
+      if (!drm_shim_state_token_name_parse(locator, &header)) {
+         free(value);
+         errno = EBADF;
+         return -1;
+      }
+      memcpy(observed_instance, header.instance,
+             sizeof(observed_instance));
+   }
+   if (memcmp(observed_instance, locator_instance,
               sizeof(observed_instance)) != 0) {
       free(value);
       errno = EBADF;
       return -1;
    }
 
-   int anchor = drm_shim_identity_anchor_from_fd(locator);
+   int anchor;
+   if (locator_is_anchor) {
+      anchor = drm_shim_identity_anchor_from_fd(locator);
+   } else {
+      /* A state token's inode is its own memfd, so the anchor's
+       * backing inode does not cross the exec.
+       * drm_shim_create_identity_anchor rebuilds the sealed anchor
+       * memfd under the inherited instance name, and inherited
+       * descriptors match through the instance-name parse paths in
+       * drm_shim_render_identity_parse.
+       */
+      memcpy(shim_device.render_instance, locator_instance,
+             sizeof(shim_device.render_instance));
+      anchor = drm_shim_create_identity_anchor();
+   }
    if (anchor >= 0) {
       memcpy(instance, locator_instance, sizeof(locator_instance));
       shim_device.exec_locator_fd = locator;
