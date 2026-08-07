@@ -130,10 +130,10 @@ int r300_tcl_bypass_triangle_reference_emit(
  * every consumer together.  The allocation carries one row past the render
  * extent, which the output oracle reads as its canary.
  */
-#define R300_TRIANGLE_TARGET_WIDTH 64
-#define R300_TRIANGLE_TARGET_HEIGHT 64
-#define R300_TRIANGLE_TARGET_PITCH_PIXELS 64
-#define R300_TRIANGLE_ALLOCATION_ROWS 65
+#define R300_TRIANGLE_TARGET_WIDTH 64u
+#define R300_TRIANGLE_TARGET_HEIGHT 64u
+#define R300_TRIANGLE_TARGET_PITCH_PIXELS 64u
+#define R300_TRIANGLE_ALLOCATION_ROWS 65u
 
 /* The canonical IB artifact encoding is little-endian uint32_t dwords: dword
  * i occupies bytes [4i, 4i+4) as (byte0 = dword & 0xff, byte1 = dword >> 8,

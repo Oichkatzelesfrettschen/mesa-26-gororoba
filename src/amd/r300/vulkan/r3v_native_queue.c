@@ -17,6 +17,7 @@
 
 #include "util/mesa-blake3.h"
 
+#include <stdint.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,12 +85,15 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
    /* ib.bin carries the canonical little-endian encoding
     * (r300_triangle_ib_serialize), matching ib_blake3 above.
     */
-   uint8_t *ib_bytes = malloc(ib_size_dwords * sizeof(uint32_t));
+   if (ib_size_dwords > SIZE_MAX / sizeof(uint32_t))
+      return -EOVERFLOW;
+   const size_t ib_byte_size = (size_t)ib_size_dwords * sizeof(uint32_t);
+   uint8_t *ib_bytes = malloc(ib_byte_size);
    int result = ib_bytes == NULL ? -ENOMEM : 0;
    if (result == 0) {
       r300_triangle_ib_serialize(ib, ib_size_dwords, ib_bytes);
       result = write_file_atomic(device->manifest_dir, "ib.bin", ib_bytes,
-                                 ib_size_dwords * sizeof(uint32_t));
+                                 ib_byte_size);
    }
    free(ib_bytes);
    if (result == 0) {

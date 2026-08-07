@@ -124,6 +124,27 @@ test_a_changed_dword_changes_the_digest(void)
    r300_tcl_bypass_triangle_release(&cell);
 }
 
+/* A type-2 CP packet is one filler dword with no payload; its bits 29:16
+ * decode as zero under the type-0/type-3 count rule, so a walk applying
+ * that rule to a filler directly before the draw would step over the draw
+ * header and miss it.  The synthetic stream places the filler at the draw's
+ * doorstep and requires the walk to report the draw.
+ */
+static void
+test_draw_walk_skips_type2_filler(void)
+{
+   uint32_t words[3] = {
+      0x80000000u,
+      (3u << 30) | R300_PACKET3_3D_DRAW_VBUF_2,
+      0,
+   };
+   const struct r300_tcl_bypass_triangle_ib synthetic = {
+      .ib = words,
+      .ib_size_dwords = 3,
+   };
+   assert(r300_triangle_draw_dword(&synthetic) == 1);
+}
+
 /* The manifest's published geometry is the geometry the contract resolves
  * against, and the draw index it publishes is the draw the stream carries.
  */
@@ -189,6 +210,7 @@ main(void)
    test_serialize_writes_little_endian_bytes();
    test_helper_matches_an_independent_hash();
    test_a_changed_dword_changes_the_digest();
+   test_draw_walk_skips_type2_filler();
    test_published_geometry_matches_the_cell();
    test_published_clause_count_matches_the_contract();
    printf("r300_staging_manifest_test: digest and geometry parity held\n");

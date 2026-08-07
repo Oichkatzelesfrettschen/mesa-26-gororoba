@@ -117,7 +117,7 @@ read_first_token(const char *path, char *storage, size_t size)
    fclose(f);
 }
 
-/* --- The host provider: the only place collection touches the machine --- */
+/* The host provider: the only place collection touches the machine. */
 
 static const char *
 host_read_env(void *ctx, const char *name)
@@ -217,11 +217,19 @@ r3v_native_arming_collect_from(
       facts->evidence_dir_present =
          provider->directory_present(provider->ctx, evidence_dir);
 
+      /* A truncated path would probe a different file than the token, so
+       * truncation reads as an attempt already present and the gate stays
+       * closed.
+       */
       char token_path[1024];
-      snprintf(token_path, sizeof(token_path), "%s/%s", evidence_dir,
-               R3V_NATIVE_ATTEMPT_TOKEN);
-      facts->attempt_token_present =
-         provider->file_present(provider->ctx, token_path);
+      int token_length =
+         snprintf(token_path, sizeof(token_path), "%s/%s", evidence_dir,
+                  R3V_NATIVE_ATTEMPT_TOKEN);
+      if (token_length < 0 || (size_t)token_length >= sizeof(token_path))
+         facts->attempt_token_present = true;
+      else
+         facts->attempt_token_present =
+            provider->file_present(provider->ctx, token_path);
    }
 }
 

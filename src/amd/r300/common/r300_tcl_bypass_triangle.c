@@ -470,7 +470,12 @@ r300_triangle_draw_dword(const struct r300_tcl_bypass_triangle_ib *ib)
    uint32_t i = 0;
    while (i < ib->ib_size_dwords) {
       const uint32_t header = ib->ib[i];
-      const uint32_t count = ((header >> 16) & 0x3fff) + 1;
+      /* A type-2 CP packet is one filler dword with no payload; its bits
+       * 29:16 are not a count, so only type-0 and type-3 headers advance
+       * past a payload.
+       */
+      const uint32_t count =
+         (header >> 30) == 2 ? 0 : ((header >> 16) & 0x3fff) + 1;
       /* R300_PACKET3_3D_DRAW_VBUF_2 carries the opcode already positioned in
        * bits 8-15, which is the form CP_PACKET3 takes, so the header's
        * opcode field is compared in place rather than shifted down.
