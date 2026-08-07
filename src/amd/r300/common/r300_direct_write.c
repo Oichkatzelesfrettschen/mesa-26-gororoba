@@ -13,6 +13,8 @@
  * reg_srcs/r300 safe list and passes the CS parser unchecked;
  * DST_PITCH_OFFSET is the r300_packet0_check case r100_reloc_pitch_offset
  * handles, which consumes the cell's one relocation.
+ * (rg --fixed-strings reg_srcs drivers/gpu/drm/radeon/r300.c;
+ * rg --fixed-strings r100_reloc_pitch_offset drivers/gpu/drm/radeon/)
  */
 #define RADEON_DST_PITCH_OFFSET 0x142C
 #define RADEON_DST_Y_X 0x1438
@@ -213,7 +215,13 @@ r300_direct_write_oracle(const uint32_t *pixels, uint32_t size_bytes,
                          struct r300_direct_write_verdict *verdict)
 {
    const uint32_t pitch = R300_TRIANGLE_TARGET_PITCH_PIXELS;
-   const uint32_t total = size_bytes / 4;
+   /* The oracle covers target plus canary row (allocation rows) only;
+    * an allocation tail past the canary row carries no expectation and
+    * stays unscanned.
+    */
+   const uint32_t covered = R300_TRIANGLE_ALLOCATION_ROWS * pitch;
+   const uint32_t total_avail = size_bytes / 4;
+   const uint32_t total = total_avail < covered ? total_avail : covered;
    const uint32_t target = R300_TRIANGLE_TARGET_HEIGHT * pitch;
    const uint32_t a = R300_DIRECT_WRITE_A_Y * pitch + R300_DIRECT_WRITE_A_X;
    const uint32_t b = R300_DIRECT_WRITE_B_Y * pitch + R300_DIRECT_WRITE_B_X;

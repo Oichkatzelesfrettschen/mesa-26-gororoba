@@ -178,6 +178,18 @@ test(
   suite : ['r300'],
 )
 
+# The writer's own artifacts, checked against each other: the unit test
+# proves the emitter and oracle, this proves the executable published
+# what the emitter computed.
+test(
+  'r300-direct-write-manifest-integration',
+  prog_python,
+  args : [files('tests/r300_direct_write_manifest_check.py'),
+          r300_direct_write_manifest.full_path()],
+  depends : [r300_direct_write_manifest],
+  suite : ['r300'],
+)
+
 r300_first_draw_state_test = executable(
   'r300_first_draw_state_test',
   files('r300_fragment_binary.c', 'r300_pm4_builder.c',

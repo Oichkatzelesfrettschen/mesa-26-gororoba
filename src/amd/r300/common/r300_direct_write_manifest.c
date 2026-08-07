@@ -26,8 +26,11 @@ write_file(const char *dir, const char *name, const void *data, size_t size)
       return 1;
    }
    size_t written = fwrite(data, 1, size, f);
-   fclose(f);
-   return written == size ? 0 : 1;
+   /* fclose flushes stdio's buffer; a failed flush leaves a partial
+    * file, so its result gates the verdict with the write's.
+    */
+   int close_err = fclose(f);
+   return (written == size && close_err == 0) ? 0 : 1;
 }
 
 int

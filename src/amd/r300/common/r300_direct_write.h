@@ -10,9 +10,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The control writes the successor's target geometry through the 2D
- * engine alone: two 1x1 solid fills into a 64x64 linear ARGB8888
- * surface, no VAP, RS, US, RB3D, or ZB state and no source fetch, so a
+/* The control writes the attended triangle cell's target geometry --
+ * a 64x64 linear ARGB8888 surface at pitch 64 pixels -- through the 2D
+ * engine alone: two 1x1 solid fills,
+ * no VAP, RS, US, RB3D, or ZB state and no source fetch, so a
  * landed byte proves the transport carries device writes outside the
  * 3D color-write gates.  The register contract and its kernel-source
  * derivation live in docs/hardware/r300-direct-write-2d-fill-authority.md;
