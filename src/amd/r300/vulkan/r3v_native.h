@@ -127,4 +127,13 @@ VkResult r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
                                                VkDeviceMemory vertexMemory,
                                                VkDeviceMemory colorMemory);
 
+/* Direct-write control recorder: lowers the 2D solid-fill cell
+ * (src/amd/r300/common/r300_direct_write.h) into the command buffer
+ * from the one live color memory.  The cell reads no source BO, so the
+ * color target is the whole relocation surface.  Recording is
+ * submit-free; the queue's hazard gate guards execution.
+ */
+VkResult r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
+                                        VkDeviceMemory colorMemory);
+
 #endif /* R3V_NATIVE_H */
