@@ -40,8 +40,7 @@ static int failures;
       }                                                                      \
    } while (0)
 
-/* ---------- RC IR CPU evaluator ---------- */
-
+/* RC IR CPU evaluator */
 struct rc_eval {
    float temps[128][4];
    float inputs[8][4];
@@ -265,8 +264,7 @@ eval_program(struct rc_eval *e, struct radeon_compiler *c)
    return true;
 }
 
-/* ---------- dual-front-end compile ---------- */
-
+/* dual-front-end compile */
 static struct pipe_screen *
 fake_r300_screen(struct r300_screen *s)
 {
@@ -380,7 +378,7 @@ run_eval(struct r300_fragment_program_compiler *fc, unsigned input_set,
  * ext carries per-unit sampler state (shadow compare func, swizzle) through
  * both compilers; NULL compiles the plain zero state every non-shadow
  * corpus shader uses.  count_diverge_as_failure gates whether a per-channel
- * mismatch fails the suite; every corpus entry currently runs with it true,
+ * mismatch fails the suite; every corpus entry runs with it true,
  * so parity_probe is a superset of parity() available for a shader that
  * needs a non-NULL ext.  Returns true if any input set showed a per-channel
  * mismatch. */
@@ -673,8 +671,7 @@ mode_epsilon(const char *name, nir_shader *(*build)(void))
    parity_probe_mode(name, build, NULL, true, R300_FS_INPUT_R2VB_FLAT_VERTEX);
 }
 
-/* ---------- corpus ---------- */
-
+/* corpus */
 static nir_builder
 fs_builder(const char *name)
 {

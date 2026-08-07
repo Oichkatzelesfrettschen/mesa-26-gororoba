@@ -42,8 +42,7 @@ static int failures;
       }                                                                      \
    } while (0)
 
-/* ---------- corpus half: full legacy pipeline, real compiler output ---------- */
-
+/* corpus half: full legacy pipeline, real compiler output */
 static struct pipe_screen *
 fake_r300_screen(struct r300_screen *s)
 {
@@ -294,8 +293,7 @@ corpus_case(const char *name, nir_shader *(*build)(void),
    rc_destroy_regalloc_state(&rs);
 }
 
-/* ---------- synthetic half: isolate each check against a hand-built pair ---------- */
-
+/* synthetic half: isolate each check against a hand-built pair */
 static struct rc_instruction *
 append_pair(struct radeon_compiler *c, struct rc_instruction *tail,
            const struct rc_pair_instruction *p)

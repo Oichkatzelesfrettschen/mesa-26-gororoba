@@ -36,9 +36,10 @@ extern "C" {
  * 8-bit shift.  r3v_copy_buffer_region_to_image and
  * r3v_copy_image_region_to_buffer carry the per-aspect read-modify-write
  * (r3v_zs_pack_texel / r3v_zs_unpack_texel) that bridges it, so Z16/X8Z24/
- * S8_UINT_Z24 are TRANSFER_DST-capable below.  Verified byte-exact against the
- * NVIDIA oracle; see steinmarder finding
- * rs482-r3v-depth-transfer-repack-first-principles. */
+ * S8_UINT_Z24 are TRANSFER_DST-capable below.  The repack moves the depth
+ * aspect by exactly that 8-bit shift and leaves the other aspect's bits
+ * where they sit, so a copy out of an image returns the bytes the copy into
+ * it wrote. */
 static inline enum pipe_format
 r3v_vk_format_to_pipe_format(VkFormat vk_format)
 {

@@ -65,9 +65,9 @@ set_presub_nop(struct rc_instruction *emitted)
 /* DestIndex and Src[].Index are RC_REGISTER_INDEX_BITS-wide bitfields, so a
  * value assigned through that field is always inside [0, RC_REGISTER_MAX_INDEX)
  * by construction; the writer tables are sized to match.  The check below is
- * a defense against that invariant changing under a future encoding, not a
- * condition this subset's inputs can currently trigger: an index outside the
- * bound is treated as an unmodeled hazard and the whole pass defers rather
+ * a defense against that invariant changing under a future encoding, past what
+ * the modeled input subset reaches: an index outside the bound is treated as
+ * an unmodeled hazard and the whole pass defers rather
  * than indexing a writer table on trust. */
 static bool
 temp_index_in_range(int idx)

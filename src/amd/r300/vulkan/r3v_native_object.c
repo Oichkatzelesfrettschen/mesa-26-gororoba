@@ -26,9 +26,10 @@
  * VkDeviceMemory is the exception: r3v_AllocateMemory builds a real GEM
  * buffer object, so the mapped-range commands below validate and execute
  * rather than refuse.
+ *
+ * The definitions follow those shapes in order: creation, destruction,
+ * access, then the device-memory commands.
  */
-
-/* --- Creation of types with no native route --- */
 
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
@@ -129,8 +130,6 @@ r3v_AllocateDescriptorSets(VkDevice _device,
    return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 }
 
-/* --- Destruction of types with no native route --- */
-
 /* Destruction of the null handle is a specified no-op, and the creation
  * commands above hand back no other handle, so each of these performs the
  * no-op for every input a valid program can present.
@@ -200,8 +199,6 @@ r3v_ResetDescriptorPool(VkDevice _device, VkDescriptorPool descriptorPool,
    return VK_SUCCESS;
 }
 
-/* --- Access to types with no native route --- */
-
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_GetEventStatus(VkDevice _device, VkEvent event)
 {
@@ -243,8 +240,6 @@ r3v_UpdateDescriptorSets(VkDevice _device, uint32_t descriptorWriteCount,
                          const VkCopyDescriptorSet *pDescriptorCopies)
 {
 }
-
-/* --- Device memory, which the native implementation does construct --- */
 
 /* The committed size is defined for lazily-allocated memory.  Every native
  * memory type commits its whole allocation at r3v_AllocateMemory and none

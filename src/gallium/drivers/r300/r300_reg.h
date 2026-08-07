@@ -3535,10 +3535,11 @@ enum {
 
 /* RS480 0x4xxx fragment/pixel-pipe registers found by live hardware read and
  * write-verify-restore on real RS480 silicon; documented by no register source
- * (AMD R3xx-Evergreen datasheets, Linux radeon, Mesa) and named here from the
- * steinmarder atom inventory.  Each is full-32-bit writable storage; the driver
- * does not program them.  The 0x4ff8 block edge and the 0x2200-0x2504 vertex
- * engine are non-completing-read hazards and are excluded. */
+ * (AMD R3xx-Evergreen datasheets, Linux radeon, Mesa), so each name below is
+ * built from the offset it was found at.  Each is full-32-bit writable
+ * storage that the driver leaves unprogrammed.  The survey excludes the
+ * 0x4ff8 block edge and the 0x2200-0x2504 vertex engine as
+ * non-completing-read hazards. */
 #define R300_GB_UNDOC_400C     0x400c
 #define R300_GB_UNDOC_4030     0x4030
 #define R300_GB_UNDOC_4034     0x4034

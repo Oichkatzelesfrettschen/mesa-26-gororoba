@@ -1002,7 +1002,7 @@ r3v_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
 }
 
 /* Record a push-constant window update into the entry stream.  vk_common forwards
- * CmdPushConstants to this driver base entrypoint, so leaving it unimplemented
+ * CmdPushConstants to the r3v base entrypoint, so leaving it unimplemented
  * makes the call jump to a NULL dispatch slot (SIGSEGV).  Replay applies these in
  * order into the running maxPushConstantsSize buffer that a push-constants-only
  * pipeline binds at CONST[0] (r3v_bind_push_constants); a pipeline that reads

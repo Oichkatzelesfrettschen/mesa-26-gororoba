@@ -27,10 +27,6 @@
 #include "r300_numeric_domain.h"
 #include "r300_virtual_float.h"
 
-/* -------------------------------------------------------------------------
- * Helpers
- * ---------------------------------------------------------------------- */
-
 static int g_failures = 0;
 
 #define CHECK(cond, name)                                      \
@@ -43,9 +39,7 @@ static int g_failures = 0;
       }                                                        \
    } while (0)
 
-/* -------------------------------------------------------------------------
- * Suite 1: Domain catalog
- * ---------------------------------------------------------------------- */
+/* Suite 1: Domain catalog. */
 
 static void
 test_domain_catalog(void)
@@ -142,9 +136,7 @@ test_domain_catalog(void)
          "catalog: Q16.16 MAC has no production detector");
 }
 
-/* -------------------------------------------------------------------------
- * Suite 2: FP16 classification
- * ---------------------------------------------------------------------- */
+/* Suite 2: FP16 classification. */
 
 /* Reference classifier: partitions all 65536 FP16 bit patterns. */
 static enum r300_fp16_class
@@ -205,9 +197,7 @@ test_classification(void)
    CHECK(mismatches == 0, label);
 }
 
-/* -------------------------------------------------------------------------
- * Suite 3: 2-limb base-64 significand multiply with RNE rounding
- * ---------------------------------------------------------------------- */
+/* Suite 3: 2-limb base-64 significand multiply with RNE rounding. */
 
 /* Decode the biased exponent and significand from a normal FP16 value.
  * Returns false if bits is not a normal (exp in [1..30]). */
@@ -685,10 +675,6 @@ test_multiply(void)
    printf("note: RS482 silicon probing (fp16_class_lut_probe, fp16_mul_rne_probe)\n");
    printf("note: is the next gate before any GPU-side implementation.\n");
 }
-
-/* -------------------------------------------------------------------------
- * Entry point
- * ---------------------------------------------------------------------- */
 
 int main(void)
 {
