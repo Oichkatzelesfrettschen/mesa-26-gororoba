@@ -80,6 +80,20 @@ the second question does not gate the first. A failed fill classifies
 as CONTROL FAILED / INCONCLUSIVE under the direct-write control's own
 rule.
 
+The parser admits the stream without bounding the 2D destination: the
+CS tracker's extent checks cover the 3D color-buffer path
+(`r100_cs_track_check` over the RB3D state), and `r100_reloc_pitch_offset`
+patches the DST_PITCH_OFFSET relocation without comparing the fill
+extent to the buffer object's size, and the relocation domains steer
+placement rather than gate validation. Replay probes against the
+retained cell confirm each: an undersized 4096-byte color BO table, a
+zero write-domain table, and a VRAM write-domain table all replay
+ACCEPT-NO-DRAW through `replay_r300_cs_track`. Kernel admission is
+therefore packet-grammar and safe-list admission only; the write's
+containment inside the allocated target rests on the cell's own
+pitch/offset/extent correctness, which the emitter's unit test, the
+byte-identity check against the retained IB, and the canary row carry.
+
 ## Evidence chain
 
 - `r300_packet3_check`, `r300_packet0_check`, `r100_reloc_pitch_offset`,

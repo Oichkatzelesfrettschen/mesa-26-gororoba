@@ -320,6 +320,7 @@ if get_option('r3v-native-backend')
     'r3v_native_object.c',
     'r3v_native_queue.c',
     'r3v_native_recording.c',
+    '../common/r300_direct_write.c',
     '../common/r300_first_draw_state.c',
     '../common/r300_fragment_binary.c',
     '../common/r300_pm4_builder.c',
@@ -637,6 +638,31 @@ if get_option('r3v-native-backend')
       )
     endforeach
 
+    # Direct-write control harness on the same shim fixture: the 2D
+    # solid-fill cell through the same recorder/queue/retention path,
+    # armed by the control's own digest in the open leg.
+    r3v_native_direct_write_harness = executable(
+      'r3v_native_direct_write_harness',
+      files('tests/r3v_native_direct_write_harness.c'),
+      include_directories : r3v_native_inc,
+      dependencies : [r3v_native_deps, dep_dl],
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    )
+    foreach cell_mode : ['closed', 'open']
+      test(
+        'r3v-native-direct-write-@0@'.format(cell_mode),
+        r3v_native_direct_write_harness,
+        args : [cell_mode],
+        env : r3v_native_cell_env,
+        depends : [libradeon_noop_drm_shim],
+        timeout : 60,
+        suite : ['r3v'],
+      )
+    endforeach
+
     # The public-surface tables the sweeps measure, generated from the same
     # registry parse the policy audit reads.
     r3v_native_surface_table = custom_target(
@@ -892,6 +918,18 @@ if get_option('r3v-native-backend')
       'r3v-native-submit-object-replay',
       files('tests/run_submit_object_replay.sh')[0],
       args : [r3v_native_triangle_cell_harness],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+    # The direct-write control's exact-submit-object replay, through the
+    # full CS parser/tracker.  Runtime-gated on R3V_CS_TRACK_REPLAY_TOOL
+    # (skip 77 when unset).
+    test(
+      'r3v-native-direct-write-submit-object-replay',
+      files('tests/run_direct_write_submit_object_replay.sh')[0],
+      args : [r3v_native_direct_write_harness],
       env : r3v_native_cell_env,
       depends : [libradeon_noop_drm_shim],
       timeout : 60,
