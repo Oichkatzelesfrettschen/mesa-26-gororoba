@@ -26,6 +26,18 @@ set -u
 
 xvfb_bin=${R3V_XVFB_BINARY:-Xvfb}
 
+# Meson's should_fail accepts every nonzero status except 77, so a raw
+# infrastructure 125 could still satisfy a known-bad leg.  --expect-status N
+# closes that: the wrapper exits 0 exactly when the wrapped command exits N,
+# 1 on any other command status, and 125 stays the infrastructure verdict,
+# so an expected-failure leg registers as a plain test that only the
+# intended fixture behavior satisfies.
+expect_status=""
+if [ "${1:-}" = "--expect-status" ]; then
+    expect_status=$2
+    shift 2
+fi
+
 if [ "$#" -eq 0 ]; then
     echo "run_under_xvfb.sh: no command given" >&2
     exit 125
@@ -119,4 +131,12 @@ fi
 
 cleanup_dir
 
+if [ -n "$expect_status" ]; then
+    if [ "$cmd_status" -eq "$expect_status" ]; then
+        exit 0
+    fi
+    echo "run_under_xvfb.sh: command exited $cmd_status, expected" \
+         "$expect_status" >&2
+    exit 1
+fi
 exit "$cmd_status"

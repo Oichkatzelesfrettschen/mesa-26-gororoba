@@ -509,7 +509,7 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
     foreach header_defect : ['missing-spdx', 'invented-copyright',
-                             'ai-disclosure']
+                             'ai-disclosure', 'missing-root']
       test(
         'r3v-source-header-audit-known-bad-@0@'.format(header_defect),
         prog_python,
@@ -722,12 +722,14 @@ if get_option('r3v-native-backend')
         args : ['sh', '-c', 'exit 77'],
         suite : ['r3v'],
       )
+      # The infrastructure verdict is exactly 125, asserted as an equality
+      # rather than through should_fail, which any nonzero status but 77
+      # would satisfy.
       test(
         'r3v-xvfb-wrapper-infrastructure-refusal',
-        r3v_xvfb_wrapper,
-        args : ['true'],
-        env : {'R3V_XVFB_BINARY' : '/bin/false'},
-        should_fail : true,
+        find_program('sh'),
+        args : ['-c', 'R3V_XVFB_BINARY=/bin/false "$1" true; test $? -eq 125',
+                'assert-125', r3v_xvfb_wrapper],
         suite : ['r3v'],
       )
       r3v_native_wsi_surface_contract = executable(
@@ -754,15 +756,18 @@ if get_option('r3v-native-backend')
       # the same result checks as the ordinary one.  A check that stopped
       # judging its result passes both, which is what these three catch.
       foreach wsi_query : ['capabilities', 'formats', 'modes']
+        # --expect-status 1 turns the leg into a plain test only the
+        # fixture's own failing verdict satisfies; an Xvfb infrastructure
+        # failure surfaces as 125 instead of standing in for it.
         test(
           'r3v-native-wsi-surface-contract-known-bad-@0@'.format(wsi_query),
           r3v_xvfb_wrapper,
-          args : [r3v_native_wsi_surface_contract.full_path()],
+          args : ['--expect-status', '1',
+                  r3v_native_wsi_surface_contract.full_path()],
           env : environment(r3v_native_cell_vars + {
             'R3V_WSI_FIXTURE_QUERY_ERROR' : wsi_query,
           }),
           depends : [libradeon_noop_drm_shim],
-          should_fail : true,
           timeout : 120,
           suite : ['r3v'],
         )

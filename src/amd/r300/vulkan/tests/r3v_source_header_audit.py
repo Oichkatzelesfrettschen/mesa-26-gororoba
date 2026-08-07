@@ -135,19 +135,36 @@ def selftest():
     return 0
 
 
-def main():
-    argv = sys.argv[1:]
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["--selftest"]:
         return selftest()
     if argv[:1] == ["--fixture"]:
+        if argv[1] == "missing-root":
+            # The dropped-subtree calibration: one absent root beside a
+            # resolvable file must refuse through the same per-root check
+            # the real audit runs, never report a clean scan of the rest.
+            return main([__file__, "does-not-exist-root"])
         return run_fixture(argv[1],
                            CLEAN_HEADER if argv[1] == "clean" else None)
+
+    # A root that resolves to nothing reports a clean audit it never ran,
+    # so every requested root must exist and contribute at least one file
+    # before the aggregate verdict counts.
+    missing = [root for root in argv
+               if not Path(root).exists() or
+               (Path(root).is_dir() and
+                not any(p.suffix in SUFFIXES for p in Path(root).rglob("*")))]
+    if missing:
+        for root in missing:
+            print(f"model failure: root {root} is absent or contributes "
+                  f"no source files")
+        return 2
 
     audited, defects = audit_roots(argv)
     for defect in defects:
         print(defect)
     print(f"source headers: {audited} audited, {len(defects)} defects")
-    # A root that matched nothing reports a clean audit it never ran.
     if audited < 20:
         print(f"model failure: {audited} files audited, too few for the "
               f"R3V lane; the roots did not resolve")

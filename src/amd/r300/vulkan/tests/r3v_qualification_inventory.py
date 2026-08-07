@@ -25,6 +25,7 @@ Modes:
 
 import argparse
 import ctypes.util
+import hashlib
 import json
 import os
 import shutil
@@ -111,6 +112,31 @@ def tool_row(name: str) -> tuple[str, bool]:
     return (name, shutil.which(name) is not None)
 
 
+def replay_provenance_state() -> tuple[str, bool]:
+    """The replay tool qualifies only through its provenance record: the
+    record parses, its correspondence gate passed rather than being skipped,
+    and its ELF SHA-256 matches the tool on disk, which binds the running
+    replay to the pinned kernel tree build_kernel_replay.py proved."""
+    tool = os.environ.get("R3V_CS_TRACK_REPLAY_TOOL", "")
+    record = os.environ.get("R3V_CS_TRACK_REPLAY_PROVENANCE", "")
+    if not record:
+        return ("unset", False)
+    try:
+        with open(record) as f:
+            provenance = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return ("unreadable", False)
+    if provenance.get("correspondence_gate") != "pass":
+        return ("correspondence-gate-not-passed", False)
+    try:
+        digest = hashlib.sha256(Path(tool).read_bytes()).hexdigest()
+    except OSError:
+        return ("tool-unreadable", False)
+    if digest != provenance.get("output_sha256"):
+        return ("digest-mismatch", False)
+    return ("verified", True)
+
+
 def env_tool_row(var: str) -> tuple[str, str, bool]:
     """A replay or controls program named by environment: the row reports
     unset, set-but-not-executable, and executable distinctly, because the
@@ -143,6 +169,9 @@ class HostProbes:
     def env_tool(self, var: str) -> tuple[str, bool]:
         return env_tool_row(var)[1:]
 
+    def replay_provenance(self) -> tuple[str, bool]:
+        return replay_provenance_state()
+
 
 class GoodProbes(HostProbes):
     def tool_present(self, name: str) -> bool:
@@ -156,6 +185,9 @@ class GoodProbes(HostProbes):
 
     def env_tool(self, var: str) -> tuple[str, bool]:
         return ("executable", True)
+
+    def replay_provenance(self) -> tuple[str, bool]:
+        return ("verified", True)
 
 
 def evaluate(registered: set[str], options: dict[str, object],
@@ -204,6 +236,11 @@ def evaluate(registered: set[str], options: dict[str, object],
         print(f"env {var}: {state}")
         if not ok:
             failures.append(f"{var} {state}")
+
+    state, ok = probes.replay_provenance()
+    print(f"replay provenance: {state}")
+    if not ok:
+        failures.append(f"replay provenance {state}")
 
     by_suite: dict[str, int] = {}
     for suite in ("r300", "r3v", "radeon-drm-vk", "drm-shim"):
