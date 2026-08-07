@@ -204,13 +204,8 @@ main(int argc, char **argv)
          return 2;
       }
       char digest[BLAKE3_OUT_LEN * 2 + 1];
-      struct mesa_blake3 ctx;
-      uint8_t raw[BLAKE3_OUT_LEN];
-      _mesa_blake3_init(&ctx);
-      _mesa_blake3_update(&ctx, authorized.ib,
-                          authorized.ib_size_dwords * sizeof(uint32_t));
-      _mesa_blake3_final(&ctx, raw);
-      _mesa_blake3_format(digest, raw);
+      r300_triangle_ib_digest_hex(authorized.ib, authorized.ib_size_dwords,
+                                  digest);
       r300_tcl_bypass_triangle_release(&authorized);
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", digest, 1);
 
@@ -498,8 +493,23 @@ main(int argc, char **argv)
                   reference.ib_size_dwords * sizeof(uint32_t),
                "ib.bin length %zu matches the emitter's %u dwords",
                ib_size, reference.ib_size_dwords);
-         CHECK(memcmp(ib_data, reference.ib, ib_size) == 0,
-               "ib.bin is byte-identical to the direct emitter stream");
+         /* ib.bin carries the canonical little-endian encoding
+          * (r300_triangle_ib_serialize); the comparison serializes the
+          * reference stream the same way rather than reading its host
+          * memory layout.
+          */
+         uint8_t *reference_bytes =
+            malloc(reference.ib_size_dwords * sizeof(uint32_t));
+         CHECK(reference_bytes != NULL, "reference serialization buffer");
+         if (reference_bytes != NULL) {
+            r300_triangle_ib_serialize(reference.ib,
+                                       reference.ib_size_dwords,
+                                       reference_bytes);
+            CHECK(memcmp(ib_data, reference_bytes, ib_size) == 0,
+                  "ib.bin is byte-identical to the canonical serialization "
+                  "of the direct emitter stream");
+            free(reference_bytes);
+         }
          free(ib_data);
       }
       r300_tcl_bypass_triangle_release(&reference);

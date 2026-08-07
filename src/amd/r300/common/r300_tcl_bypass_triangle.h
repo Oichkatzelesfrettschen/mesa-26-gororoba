@@ -135,10 +135,20 @@ int r300_tcl_bypass_triangle_reference_emit(
 #define R300_TRIANGLE_TARGET_PITCH_PIXELS 64
 #define R300_TRIANGLE_ALLOCATION_ROWS 65
 
-/* BLAKE3 over the cell's dwords as ib.bin carries them.  Every authority that
- * names a digest -- staging manifest, arming runner, native recorder, queue
+/* The canonical IB artifact encoding is little-endian uint32_t dwords: dword
+ * i occupies bytes [4i, 4i+4) as (byte0 = dword & 0xff, byte1 = dword >> 8,
+ * byte2 = dword >> 16, byte3 = dword >> 24).  ib.bin, the BLAKE3 digest, the
+ * manifest, and cross-host identity all resolve against this encoding, so a
+ * host's native uint32_t layout never enters the artifact.
+ */
+void r300_triangle_ib_serialize(const uint32_t *dwords, uint32_t count,
+                                uint8_t *out);
+
+/* BLAKE3 over the canonical encoding above.  Every authority that names a
+ * digest -- staging manifest, arming runner, native recorder, queue
  * pre-submit recomputation -- takes it from here, so a digest disagreement is
- * a stream disagreement rather than two hashes of different byte ranges.
+ * a stream disagreement rather than two hashes of different byte ranges or
+ * two hosts' memory layouts.
  */
 #define R300_TRIANGLE_DIGEST_SIZE 32
 void r300_triangle_ib_digest(const uint32_t *ib, uint32_t ib_size_dwords,

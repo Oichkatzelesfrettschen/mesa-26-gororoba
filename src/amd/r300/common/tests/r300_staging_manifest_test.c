@@ -19,20 +19,52 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* An independent hash of the same bytes, written from the BLAKE3 primitive
- * rather than through the shared helper, so the helper and its callers are
- * checked against something other than themselves.
+/* An independent hash of the canonical little-endian encoding, written from
+ * the BLAKE3 primitive and its own dword-to-byte shift loop rather than
+ * through r300_triangle_ib_serialize or r300_triangle_ib_digest, so the
+ * shared helper and its callers are checked against something other than
+ * themselves.  The reconstruction stays independent of host uint32_t
+ * layout: it hashes the encoding, not host memory.
  */
 static void
-independent_digest_hex(const void *data, size_t size, char *out)
+independent_digest_hex(const uint32_t *dwords, uint32_t count, char *out)
 {
+   uint8_t *bytes = malloc((size_t)count * 4);
+   assert(bytes != NULL);
+   for (uint32_t i = 0; i < count; i++) {
+      bytes[4 * i + 0] = (uint8_t)(dwords[i] & 0xff);
+      bytes[4 * i + 1] = (uint8_t)((dwords[i] >> 8) & 0xff);
+      bytes[4 * i + 2] = (uint8_t)((dwords[i] >> 16) & 0xff);
+      bytes[4 * i + 3] = (uint8_t)((dwords[i] >> 24) & 0xff);
+   }
+
    uint8_t digest[BLAKE3_OUT_LEN];
    struct mesa_blake3 ctx;
    _mesa_blake3_init(&ctx);
-   _mesa_blake3_update(&ctx, data, size);
+   _mesa_blake3_update(&ctx, bytes, (size_t)count * 4);
    _mesa_blake3_final(&ctx, digest);
    for (unsigned i = 0; i < BLAKE3_OUT_LEN; i++)
       snprintf(&out[2 * i], 3, "%02x", digest[i]);
+   free(bytes);
+}
+
+/* The serializer writes each dword as four little-endian bytes; a known
+ * pattern proves the byte order directly rather than through a digest.
+ */
+static void
+test_serialize_writes_little_endian_bytes(void)
+{
+   const uint32_t dwords[] = {0x11223344u, 0x00000001u, 0xff000000u};
+   uint8_t bytes[sizeof(dwords) / sizeof(dwords[0]) * 4];
+   r300_triangle_ib_serialize(dwords, sizeof(dwords) / sizeof(dwords[0]),
+                              bytes);
+
+   static const uint8_t expected[] = {
+      0x44, 0x33, 0x22, 0x11, /* 0x11223344 */
+      0x01, 0x00, 0x00, 0x00, /* 0x00000001 */
+      0x00, 0x00, 0x00, 0xff, /* 0xff000000 */
+   };
+   assert(memcmp(bytes, expected, sizeof(expected)) == 0);
 }
 
 /* The shared helper hashes the dwords a caller hands it, and hashing the same
@@ -50,9 +82,7 @@ test_helper_matches_an_independent_hash(void)
    r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, shared);
 
    char independent[2 * BLAKE3_OUT_LEN + 1];
-   independent_digest_hex(cell.ib,
-                          cell.ib_size_dwords * sizeof(uint32_t),
-                          independent);
+   independent_digest_hex(cell.ib, cell.ib_size_dwords, independent);
 
    assert(strcmp(shared, independent) == 0);
 
@@ -156,6 +186,7 @@ test_published_clause_count_matches_the_contract(void)
 int
 main(void)
 {
+   test_serialize_writes_little_endian_bytes();
    test_helper_matches_an_independent_hash();
    test_a_changed_dword_changes_the_digest();
    test_published_geometry_matches_the_cell();

@@ -30,13 +30,7 @@ cell_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
    if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0)
       return 1;
 
-   struct mesa_blake3 ctx;
-   uint8_t raw[BLAKE3_OUT_LEN];
-   _mesa_blake3_init(&ctx);
-   _mesa_blake3_update(&ctx, cell.ib,
-                       cell.ib_size_dwords * sizeof(uint32_t));
-   _mesa_blake3_final(&ctx, raw);
-   _mesa_blake3_format(out, raw);
+   r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, out);
    *ib_dwords = cell.ib_size_dwords;
    r300_tcl_bypass_triangle_release(&cell);
    return 0;

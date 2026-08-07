@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int
@@ -65,8 +66,21 @@ main(int argc, char **argv)
       return 1;
    }
 
-   int rc = write_file(dir, "ib.bin", cell.ib,
+   /* ib.bin carries the canonical little-endian encoding
+    * (r300_triangle_ib_serialize), so the file matches the digest below and
+    * the offline replay reads the same bytes on every host.
+    */
+   uint8_t *ib_bytes = malloc(cell.ib_size_dwords * sizeof(uint32_t));
+   if (ib_bytes == NULL) {
+      fprintf(stderr, "ib.bin serialization allocation failed\n");
+      r300_tcl_bypass_triangle_release(&cell);
+      r300_fragment_binary_finish(&fs);
+      return 1;
+   }
+   r300_triangle_ib_serialize(cell.ib, cell.ib_size_dwords, ib_bytes);
+   int rc = write_file(dir, "ib.bin", ib_bytes,
                        cell.ib_size_dwords * sizeof(uint32_t));
+   free(ib_bytes);
 
    char bo_table[512];
    int bo_table_len = snprintf(

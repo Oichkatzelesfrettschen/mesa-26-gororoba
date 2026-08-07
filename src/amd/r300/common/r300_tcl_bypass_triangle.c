@@ -416,12 +416,36 @@ const float r300_tcl_bypass_triangle_vertices[R300_TRIANGLE_VERTEX_DWORDS] = {
 };
 
 void
+r300_triangle_ib_serialize(const uint32_t *dwords, uint32_t count,
+                           uint8_t *out)
+{
+   for (uint32_t i = 0; i < count; i++) {
+      const uint32_t dword = dwords[i];
+      out[4 * i + 0] = (uint8_t)(dword & 0xff);
+      out[4 * i + 1] = (uint8_t)((dword >> 8) & 0xff);
+      out[4 * i + 2] = (uint8_t)((dword >> 16) & 0xff);
+      out[4 * i + 3] = (uint8_t)((dword >> 24) & 0xff);
+   }
+}
+
+void
 r300_triangle_ib_digest(const uint32_t *ib, uint32_t ib_size_dwords,
                         uint8_t out[R300_TRIANGLE_DIGEST_SIZE])
 {
+   /* Chunks through a stack buffer sized to a whole number of dwords, so no
+    * allocation failure path exists and BLAKE3's streaming update makes the
+    * chunk boundary invisible to the digest.
+    */
+   static const uint32_t chunk_dwords = 256;
+   uint8_t chunk[chunk_dwords * 4];
+
    struct mesa_blake3 ctx;
    _mesa_blake3_init(&ctx);
-   _mesa_blake3_update(&ctx, ib, ib_size_dwords * sizeof(uint32_t));
+   for (uint32_t offset = 0; offset < ib_size_dwords; offset += chunk_dwords) {
+      const uint32_t n = MIN2(chunk_dwords, ib_size_dwords - offset);
+      r300_triangle_ib_serialize(&ib[offset], n, chunk);
+      _mesa_blake3_update(&ctx, chunk, n * sizeof(uint32_t));
+   }
    _mesa_blake3_final(&ctx, out);
 }
 
