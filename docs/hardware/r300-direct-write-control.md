@@ -86,13 +86,16 @@ only byte range 0..16639, the oracle-covered region. The canary is the
 row-64 range 16384..16639 alone.
 
 Pixel A sits at (x=16, y=16), byte offset 16*256 + 16*4 = 4160. Pixel B sits
-at (x=47, y=47), byte offset 47*256 + 47*4 = 12220.
+at (x=21, y=47), byte offset 47*256 + 21*4 = 12116. Pixel B sits off the
+x = y diagonal, so a transposed row/column address computation moves it
+and the readback reports the miss; a diagonal pair would leave
+transposition invisible.
 
 The control writes two distinct values at two distinct locations:
 
 ```text
 pixel A, byte offset 4160    0x11223344
-pixel B, byte offset 12220   0xa1b2c3d4
+pixel B, byte offset 12116   0xa1b2c3d4
 every 32-bit target pixel whose byte offset is in 0..16383,
   except pixel A and pixel B = 0xa5a5a5a5 sentinel
 every 32-bit canary pixel whose byte offset is in 16384..16639
@@ -162,21 +165,22 @@ The record comes from kernel stacks, the journal, and netconsole.
 
 ## Artifact identity
 
-The control is not implemented. This document invents no manifest path,
-stream dword count, digest, or submit object for it. Once
-`r300_direct_write_manifest` (or its equivalent) exists, it pins:
+The emitter (`src/amd/r300/common/r300_direct_write.c`), the oracle, and
+the `r300_direct_write_manifest` writer exist and are test-covered: the
+writer pins the stream dword count, packet/register contract, relocation
+site, BO role and size, and BLAKE3 digest, and the
+`r300-direct-write-manifest-integration` test proves the published
+artifacts against each other. The register contract's kernel-source
+derivation lives in `docs/hardware/r300-direct-write-2d-fill-authority.md`.
+This document quotes no digest: the manifest the run's own build writes
+is the digest authority, and the arming gate takes the digest from that
+manifest, so a stale doc constant can never authorize a stream.
 
-- manifest path
-- stream dword count
-- packet/register contract
-- relocation sites
-- BO roles and sizes
-- BLAKE3 digest
-- SHA-256 digest
-- exact submit object
-
-Execution BLOCKED until `r300_direct_write_manifest` (or equivalent) exists
-and these fields are generated and pinned.
+Execution remains BLOCKED on the stages the manifest does not cover: the
+exact submit object binding, the retained-submit offline replay, the
+arming-gate integration under the control's own digest, and the
+dual-host dual-profile qualification of all of it -- and on the separate
+explicit authorization every live submission requires.
 
 ## What the control does not decide
 

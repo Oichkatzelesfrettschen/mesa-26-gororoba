@@ -13,8 +13,10 @@
  * reg_srcs/r300 safe list and passes the CS parser unchecked;
  * DST_PITCH_OFFSET is the r300_packet0_check case r100_reloc_pitch_offset
  * handles, which consumes the cell's one relocation.
- * (rg --fixed-strings reg_srcs drivers/gpu/drm/radeon/r300.c;
- * rg --fixed-strings r100_reloc_pitch_offset drivers/gpu/drm/radeon/)
+ * (safe-list membership: rg -e 0x1438 -e 0x1598 -e 0x146C
+ * drivers/gpu/drm/radeon/reg_srcs/r300, one line per emitted register;
+ * case dispatch: rg --fixed-strings r100_reloc_pitch_offset
+ * drivers/gpu/drm/radeon/r300.c)
  */
 #define RADEON_DST_PITCH_OFFSET 0x142C
 #define RADEON_DST_Y_X 0x1438

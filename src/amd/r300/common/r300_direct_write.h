@@ -29,12 +29,14 @@ enum r300_direct_write_slot {
 /* The two probe pixels and their values.  Each value is asymmetric
  * across all four byte lanes and the two differ in every lane, so the
  * readback separates byte-order, address, and extent failures a single
- * value fuses.
+ * value fuses.  Pixel B sits off the x = y diagonal, so a transposed
+ * row/column address computation moves it and the oracle reports the
+ * miss; a diagonal pair would render transposition invisible.
  */
 #define R300_DIRECT_WRITE_A_X 16u
 #define R300_DIRECT_WRITE_A_Y 16u
 #define R300_DIRECT_WRITE_A_VALUE 0x11223344u
-#define R300_DIRECT_WRITE_B_X 47u
+#define R300_DIRECT_WRITE_B_X 21u
 #define R300_DIRECT_WRITE_B_Y 47u
 #define R300_DIRECT_WRITE_B_VALUE 0xa1b2c3d4u
 
