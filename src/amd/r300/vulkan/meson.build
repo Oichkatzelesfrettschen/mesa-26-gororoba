@@ -486,13 +486,20 @@ if get_option('r3v-native-backend')
       )
     endforeach
     # Source headers carry the license grant and the file's description.  The
-    # audit runs over the lane, and each fixture mutates one clean header so
-    # a rule that stopped reading its line fails its own calibration.
+    # audit covers the complete native ownership surface -- the Vulkan lane,
+    # the shared r300 common code, the Radeon DRM transport, and the native
+    # build-infra scripts -- and each fixture mutates one clean header so a
+    # rule that stopped reading its line fails its own calibration.  Imported
+    # and upstream-verbatim source stays outside these roots; a file arriving
+    # with an upstream header joins REAL_COPYRIGHT_HOLDERS by review.
     test(
       'r3v-source-header-audit',
       prog_python,
       args : [files('tests/r3v_source_header_audit.py'),
-              meson.current_source_dir()],
+              meson.current_source_dir(),
+              meson.project_source_root() / 'src/amd/r300/common',
+              meson.project_source_root() / 'src/amd/radeon/drm_vk',
+              meson.project_source_root() / 'build-infra/r3v'],
       suite : ['r3v'],
     )
     test(
@@ -502,7 +509,7 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
     foreach header_defect : ['missing-spdx', 'invented-copyright',
-                             'ai-disclosure']
+                             'ai-disclosure', 'missing-root']
       test(
         'r3v-source-header-audit-known-bad-@0@'.format(header_defect),
         prog_python,
@@ -512,6 +519,35 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+    # Qualification test-inventory gate: a build that silently registered
+    # fewer tests must fail a qualification run rather than return a smaller
+    # green suite.  The ordinary registration reports the inventory; the
+    # zero-native fixture replays the build that once registered no native
+    # tests and must refuse; the selftest proves both directions through the
+    # same evaluation.  The fatal --qualification mode belongs to the
+    # qualification wrapper, which supplies the replay and controls programs
+    # this build cannot know.
+    test(
+      'r3v-qualification-inventory',
+      prog_python,
+      args : [files('tests/r3v_qualification_inventory.py'),
+              meson.project_build_root()],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-qualification-inventory-selftest',
+      prog_python,
+      args : [files('tests/r3v_qualification_inventory.py'), '--selftest'],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-qualification-inventory-known-bad-zero-native',
+      prog_python,
+      args : [files('tests/r3v_qualification_inventory.py'),
+              '--fixture', 'zero-native'],
+      should_fail : true,
+      suite : ['r3v'],
+    )
     test(
       'r3v-native-entrypoint-closure',
       prog_python,
@@ -658,8 +694,44 @@ if get_option('r3v-native-backend')
     # test registers where xcb and a virtual server are available and skips
     # at run time when no display answers.  Its absence stays visible as a
     # skip rather than a missing test.
-    prog_xvfb_run = find_program('xvfb-run', required : false)
-    if dep_xcb.found() and prog_xvfb_run.found()
+    prog_xvfb = find_program('Xvfb', required : false)
+    r3v_xvfb_wrapper = files('tests/run_under_xvfb.sh')
+    if dep_xcb.found() and prog_xvfb.found()
+      # The wrapper allocates the display through Xvfb -displayfd, returns
+      # the wrapped binary's exact status, and reports infrastructure
+      # failure as 125, so a should_fail expectation is satisfied only by
+      # the binary's own verdict.  These four legs calibrate the wrapper
+      # itself: status 0 and 1 pass through, 77 stays a skip, and a
+      # startup failure refuses as 125 rather than any of those.
+      test(
+        'r3v-xvfb-wrapper-passthrough-success',
+        r3v_xvfb_wrapper,
+        args : ['true'],
+        suite : ['r3v'],
+      )
+      test(
+        'r3v-xvfb-wrapper-passthrough-failure',
+        r3v_xvfb_wrapper,
+        args : ['false'],
+        should_fail : true,
+        suite : ['r3v'],
+      )
+      test(
+        'r3v-xvfb-wrapper-passthrough-skip',
+        r3v_xvfb_wrapper,
+        args : ['sh', '-c', 'exit 77'],
+        suite : ['r3v'],
+      )
+      # The infrastructure verdict is exactly 125, asserted as an equality
+      # rather than through should_fail, which any nonzero status but 77
+      # would satisfy.
+      test(
+        'r3v-xvfb-wrapper-infrastructure-refusal',
+        find_program('sh'),
+        args : ['-c', 'R3V_XVFB_BINARY=/bin/false "$1" true; test $? -eq 125',
+                'assert-125', r3v_xvfb_wrapper],
+        suite : ['r3v'],
+      )
       r3v_native_wsi_surface_contract = executable(
         'r3v_native_wsi_surface_contract',
         files('tests/r3v_native_wsi_surface_contract.c'),
@@ -670,17 +742,12 @@ if get_option('r3v-native-backend')
         c_args : [no_override_init_args],
         gnu_symbol_visibility : 'hidden',
       )
-      # The X display number is a host-wide resource, and xvfb-run -a searches
-      # it for a free one.  Concurrent searches settle on the same number, and
-      # the instance that loses reports its own cleanup failure as the test
-      # status, so the four surface tests run one at a time.
       test(
         'r3v-native-wsi-surface-contract',
-        prog_xvfb_run,
-        args : ['-a', r3v_native_wsi_surface_contract.full_path()],
+        r3v_xvfb_wrapper,
+        args : [r3v_native_wsi_surface_contract.full_path()],
         env : r3v_native_cell_env,
         depends : [libradeon_noop_drm_shim],
-        is_parallel : false,
         timeout : 120,
         suite : ['r3v'],
       )
@@ -689,16 +756,18 @@ if get_option('r3v-native-backend')
       # the same result checks as the ordinary one.  A check that stopped
       # judging its result passes both, which is what these three catch.
       foreach wsi_query : ['capabilities', 'formats', 'modes']
+        # --expect-status 1 turns the leg into a plain test only the
+        # fixture's own failing verdict satisfies; an Xvfb infrastructure
+        # failure surfaces as 125 instead of standing in for it.
         test(
           'r3v-native-wsi-surface-contract-known-bad-@0@'.format(wsi_query),
-          prog_xvfb_run,
-          args : ['-a', r3v_native_wsi_surface_contract.full_path()],
+          r3v_xvfb_wrapper,
+          args : ['--expect-status', '1',
+                  r3v_native_wsi_surface_contract.full_path()],
           env : environment(r3v_native_cell_vars + {
             'R3V_WSI_FIXTURE_QUERY_ERROR' : wsi_query,
           }),
           depends : [libradeon_noop_drm_shim],
-          is_parallel : false,
-          should_fail : true,
           timeout : 120,
           suite : ['r3v'],
         )
@@ -739,6 +808,24 @@ if get_option('r3v-native-backend')
       executable(
         'r3v_native_arming_test',
         files('r3v_native_arming.c', 'tests/r3v_native_arming_test.c'),
+        include_directories : [inc_include, inc_src,
+                               include_directories('.')],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+
+    # Positive ARMED calibration through the collection seam: a
+    # deterministic provider supplies every exact fact, the verdict is
+    # ARMED with exit status zero, and each single-fact mutation refuses
+    # through the same collect-then-evaluate path.  The binary links the
+    # arming translation unit alone, so no Vulkan object, DRM fd, ioctl,
+    # or attempt token can exist in the run.
+    test(
+      'r3v-native-arming-positive',
+      executable(
+        'r3v_native_arming_positive',
+        files('r3v_native_arming.c', 'tests/r3v_native_arming_positive.c'),
         include_directories : [inc_include, inc_src,
                                include_directories('.')],
         gnu_symbol_visibility : 'hidden',

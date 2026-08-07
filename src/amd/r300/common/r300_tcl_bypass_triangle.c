@@ -8,8 +8,10 @@
 
 #include "r300_reg.h"
 #include "util/macros.h"
+#include "util/mesa-blake3.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -279,13 +281,13 @@ int
 r300_tcl_bypass_triangle_reference_contract(
    struct r300_first_draw_contract *out)
 {
-   /* The cell's target is 64x64, the draw fetches vertices 0..2, and it
-    * binds no texture; the contract resolution derives scissor, clip, and
-    * the maximum vertex index from these parameters.
+   /* The draw fetches vertices 0..2 and binds no texture; the contract
+    * resolution derives scissor, clip, and the maximum vertex index from
+    * the published target geometry.
     */
    struct r300_first_draw_params params = {
-      .width = 64,
-      .height = 64,
+      .width = R300_TRIANGLE_TARGET_WIDTH,
+      .height = R300_TRIANGLE_TARGET_HEIGHT,
       .max_vtx_index = 2,
       .texture_enabled = false,
    };
@@ -310,7 +312,8 @@ r300_tcl_bypass_triangle_reference_emit(
 
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
-      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
+      .color_pitch_format =
+         r300_rb3d_colorpitch0_pack_argb8888(R300_TRIANGLE_TARGET_PITCH_PIXELS),
       .fragment_binary = &fs,
       .first_draw_contract = &contract,
    };
@@ -385,20 +388,24 @@ r300_tcl_bypass_triangle_oracle(const uint32_t *pixels, uint32_t size_bytes,
     * verdict instead of a wrong oracle.
     */
    for (unsigned i = 0; i < sizeof(interior) / sizeof(interior[0]); i++) {
-      uint32_t index = (uint32_t)interior[i].y * 64 + interior[i].x;
+      uint32_t index = (uint32_t)interior[i].y *
+                          R300_TRIANGLE_TARGET_PITCH_PIXELS + interior[i].x;
       if (!triangle_interior(interior[i].x, interior[i].y) ||
           index >= pixel_count ||
           pixels[index] != R300_TRIANGLE_DRAW_COLOR_ARGB8888)
          verdict->interior_pass = false;
    }
    for (unsigned i = 0; i < sizeof(exterior) / sizeof(exterior[0]); i++) {
-      uint32_t index = (uint32_t)exterior[i].y * 64 + exterior[i].x;
+      uint32_t index = (uint32_t)exterior[i].y *
+                          R300_TRIANGLE_TARGET_PITCH_PIXELS + exterior[i].x;
       if (triangle_interior(exterior[i].x, exterior[i].y) ||
           index >= pixel_count ||
           pixels[index] != R300_TRIANGLE_COLOR_SENTINEL)
          verdict->exterior_pass = false;
    }
-   for (uint32_t i = 64 * 64; i < pixel_count; i++) {
+   for (uint32_t i = R300_TRIANGLE_TARGET_PITCH_PIXELS *
+                     R300_TRIANGLE_TARGET_HEIGHT;
+        i < pixel_count; i++) {
       if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL)
          verdict->canary_pass = false;
    }
@@ -412,3 +419,76 @@ const float r300_tcl_bypass_triangle_vertices[R300_TRIANGLE_VERTEX_DWORDS] = {
    56.0f,  8.0f, 0.0f, 1.0f,
    32.0f, 56.0f, 0.0f, 1.0f,
 };
+
+void
+r300_triangle_ib_serialize(const uint32_t *dwords, uint32_t count,
+                           uint8_t *out)
+{
+   for (uint32_t i = 0; i < count; i++) {
+      const uint32_t dword = dwords[i];
+      out[4 * i + 0] = (uint8_t)(dword & 0xff);
+      out[4 * i + 1] = (uint8_t)((dword >> 8) & 0xff);
+      out[4 * i + 2] = (uint8_t)((dword >> 16) & 0xff);
+      out[4 * i + 3] = (uint8_t)((dword >> 24) & 0xff);
+   }
+}
+
+void
+r300_triangle_ib_digest(const uint32_t *ib, uint32_t ib_size_dwords,
+                        uint8_t out[R300_TRIANGLE_DIGEST_SIZE])
+{
+   /* Chunks through a stack buffer sized to a whole number of dwords, so no
+    * allocation failure path exists and BLAKE3's streaming update makes the
+    * chunk boundary invisible to the digest.
+    */
+   static const uint32_t chunk_dwords = 256;
+   uint8_t chunk[chunk_dwords * 4];
+
+   struct mesa_blake3 ctx;
+   _mesa_blake3_init(&ctx);
+   for (uint32_t offset = 0; offset < ib_size_dwords; offset += chunk_dwords) {
+      const uint32_t n = MIN2(chunk_dwords, ib_size_dwords - offset);
+      r300_triangle_ib_serialize(&ib[offset], n, chunk);
+      _mesa_blake3_update(&ctx, chunk, n * sizeof(uint32_t));
+   }
+   _mesa_blake3_final(&ctx, out);
+}
+
+void
+r300_triangle_ib_digest_hex(const uint32_t *ib, uint32_t ib_size_dwords,
+                            char out[2 * R300_TRIANGLE_DIGEST_SIZE + 1])
+{
+   uint8_t digest[R300_TRIANGLE_DIGEST_SIZE];
+   r300_triangle_ib_digest(ib, ib_size_dwords, digest);
+   for (unsigned i = 0; i < R300_TRIANGLE_DIGEST_SIZE; i++)
+      snprintf(&out[2 * i], 3, "%02x", digest[i]);
+}
+
+uint32_t
+r300_triangle_draw_dword(const struct r300_tcl_bypass_triangle_ib *ib)
+{
+   /* The draw is the last type-3 packet the cell emits, so the walk reports
+    * the final draw opcode it meets rather than a fixed offset that a
+    * contract or fragment-binary change would move.
+    */
+   uint32_t found = 0;
+   uint32_t i = 0;
+   while (i < ib->ib_size_dwords) {
+      const uint32_t header = ib->ib[i];
+      /* A type-2 CP packet is one filler dword with no payload; its bits
+       * 29:16 are not a count, so only type-0 and type-3 headers advance
+       * past a payload.
+       */
+      const uint32_t count =
+         (header >> 30) == 2 ? 0 : ((header >> 16) & 0x3fff) + 1;
+      /* R300_PACKET3_3D_DRAW_VBUF_2 carries the opcode already positioned in
+       * bits 8-15, which is the form CP_PACKET3 takes, so the header's
+       * opcode field is compared in place rather than shifted down.
+       */
+      if ((header >> 30) == 3 &&
+          (header & 0xff00) == R300_PACKET3_3D_DRAW_VBUF_2)
+         found = i;
+      i += 1 + count;
+   }
+   return found;
+}

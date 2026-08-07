@@ -9,6 +9,7 @@
 #include "r3v_native_arming.h"
 #include "r3v_physical_device.h"
 
+#include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_cs.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
 
@@ -16,8 +17,10 @@
 
 #include "util/mesa-blake3.h"
 
+#include <stdint.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Writes one evidence file atomically: the payload lands in a dot-prefixed
@@ -75,12 +78,24 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
 {
    char ib_hex[BLAKE3_OUT_LEN * 2 + 1];
    char reloc_hex[BLAKE3_OUT_LEN * 2 + 1];
-   blake3_hex(ib, ib_size_dwords * sizeof(uint32_t), ib_hex);
+   r300_triangle_ib_digest_hex(ib, ib_size_dwords, ib_hex);
    blake3_hex(relocs->relocs, relocs->count * sizeof(relocs->relocs[0]),
               reloc_hex);
 
-   int result = write_file_atomic(device->manifest_dir, "ib.bin", ib,
-                                  ib_size_dwords * sizeof(uint32_t));
+   /* ib.bin carries the canonical little-endian encoding
+    * (r300_triangle_ib_serialize), matching ib_blake3 above.
+    */
+   if (ib_size_dwords > SIZE_MAX / sizeof(uint32_t))
+      return -EOVERFLOW;
+   const size_t ib_byte_size = (size_t)ib_size_dwords * sizeof(uint32_t);
+   uint8_t *ib_bytes = malloc(ib_byte_size);
+   int result = ib_bytes == NULL ? -ENOMEM : 0;
+   if (result == 0) {
+      r300_triangle_ib_serialize(ib, ib_size_dwords, ib_bytes);
+      result = write_file_atomic(device->manifest_dir, "ib.bin", ib_bytes,
+                                 ib_byte_size);
+   }
+   free(ib_bytes);
    if (result == 0) {
       result = write_file_atomic(device->manifest_dir, "relocs.bin",
                                  relocs->relocs,
@@ -124,7 +139,7 @@ r3v_native_queue_write_submit_object(
 {
    char ib_hex[BLAKE3_OUT_LEN * 2 + 1];
    char reloc_hex[BLAKE3_OUT_LEN * 2 + 1];
-   blake3_hex(ib, ib_size_dwords * sizeof(uint32_t), ib_hex);
+   r300_triangle_ib_digest_hex(ib, ib_size_dwords, ib_hex);
    blake3_hex(relocs->relocs, relocs->count * sizeof(relocs->relocs[0]),
               reloc_hex);
 
@@ -335,8 +350,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
       char kernel_release[128];
       char module_srcversion[128];
-      blake3_hex(cmd_buffer->ib,
-                 cmd_buffer->ib_size_dwords * sizeof(uint32_t), ib_digest);
+      r300_triangle_ib_digest_hex(cmd_buffer->ib, cmd_buffer->ib_size_dwords,
+                                  ib_digest);
       struct r3v_native_arming_facts facts;
       r3v_native_arming_collect(&facts, device->pdevice->pci_vendor_id,
                                 device->pdevice->pci_device_id, ib_digest,

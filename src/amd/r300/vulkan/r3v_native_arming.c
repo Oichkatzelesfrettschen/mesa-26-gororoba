@@ -117,6 +117,122 @@ read_first_token(const char *path, char *storage, size_t size)
    fclose(f);
 }
 
+/* The host provider: the only place collection touches the machine. */
+
+static const char *
+host_read_env(void *ctx, const char *name)
+{
+   (void)ctx;
+   return getenv(name);
+}
+
+static void
+host_read_kernel_release(void *ctx, char *out, size_t size)
+{
+   (void)ctx;
+   struct utsname host;
+   out[0] = '\0';
+   if (uname(&host) == 0)
+      snprintf(out, size, "%s", host.release);
+}
+
+static void
+host_read_module_srcversion(void *ctx, char *out, size_t size)
+{
+   (void)ctx;
+   read_first_token("/sys/module/radeon/srcversion", out, size);
+}
+
+static bool
+host_directory_present(void *ctx, const char *path)
+{
+   (void)ctx;
+   struct stat status;
+   return stat(path, &status) == 0 && S_ISDIR(status.st_mode);
+}
+
+static bool
+host_file_present(void *ctx, const char *path)
+{
+   (void)ctx;
+   struct stat status;
+   return stat(path, &status) == 0;
+}
+
+static const struct r3v_native_arming_provider host_provider = {
+   .read_env = host_read_env,
+   .read_kernel_release = host_read_kernel_release,
+   .read_module_srcversion = host_read_module_srcversion,
+   .directory_present = host_directory_present,
+   .file_present = host_file_present,
+   .ctx = NULL,
+};
+
+const struct r3v_native_arming_provider *
+r3v_native_arming_host_provider(void)
+{
+   return &host_provider;
+}
+
+void
+r3v_native_arming_collect_from(
+   const struct r3v_native_arming_provider *provider,
+   struct r3v_native_arming_facts *facts, uint32_t pci_vendor_id,
+   uint32_t pci_device_id, const char *actual_ib_blake3,
+   const char *evidence_dir, char *kernel_storage, size_t kernel_size,
+   char *module_storage, size_t module_size)
+{
+   memset(facts, 0, sizeof(*facts));
+
+   facts->hazard_gate =
+      provider->read_env(provider->ctx, "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+   facts->authorized_ib_blake3 =
+      provider->read_env(provider->ctx, "R3V_NATIVE_AUTHORIZED_IB_BLAKE3");
+   facts->actual_ib_blake3 = actual_ib_blake3;
+   facts->pci_vendor_id = pci_vendor_id;
+   facts->pci_device_id = pci_device_id;
+   facts->authorized_kernel_release =
+      provider->read_env(provider->ctx,
+                         "R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE");
+   facts->authorized_module_srcversion =
+      provider->read_env(provider->ctx,
+                         "R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION");
+
+   kernel_storage[0] = '\0';
+   provider->read_kernel_release(provider->ctx, kernel_storage, kernel_size);
+   facts->running_kernel_release = kernel_storage;
+
+   /* An unloaded radeon module reads as the literal "none", so the
+    * operator declares that state explicitly instead of an unreadable
+    * fact silently matching an unset declaration.
+    */
+   module_storage[0] = '\0';
+   provider->read_module_srcversion(provider->ctx, module_storage,
+                                    module_size);
+   if (module_storage[0] == '\0')
+      snprintf(module_storage, module_size, "none");
+   facts->running_module_srcversion = module_storage;
+
+   if (declared(evidence_dir)) {
+      facts->evidence_dir_present =
+         provider->directory_present(provider->ctx, evidence_dir);
+
+      /* A truncated path would probe a different file than the token, so
+       * truncation reads as an attempt already present and the gate stays
+       * closed.
+       */
+      char token_path[1024];
+      int token_length =
+         snprintf(token_path, sizeof(token_path), "%s/%s", evidence_dir,
+                  R3V_NATIVE_ATTEMPT_TOKEN);
+      if (token_length < 0 || (size_t)token_length >= sizeof(token_path))
+         facts->attempt_token_present = true;
+      else
+         facts->attempt_token_present =
+            provider->file_present(provider->ctx, token_path);
+   }
+}
+
 void
 r3v_native_arming_collect(struct r3v_native_arming_facts *facts,
                           uint32_t pci_vendor_id, uint32_t pci_device_id,
@@ -125,45 +241,10 @@ r3v_native_arming_collect(struct r3v_native_arming_facts *facts,
                           size_t kernel_size, char *module_storage,
                           size_t module_size)
 {
-   memset(facts, 0, sizeof(*facts));
-
-   facts->hazard_gate = getenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
-   facts->authorized_ib_blake3 = getenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3");
-   facts->actual_ib_blake3 = actual_ib_blake3;
-   facts->pci_vendor_id = pci_vendor_id;
-   facts->pci_device_id = pci_device_id;
-   facts->authorized_kernel_release =
-      getenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE");
-   facts->authorized_module_srcversion =
-      getenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION");
-
-   struct utsname host;
-   kernel_storage[0] = '\0';
-   if (uname(&host) == 0) {
-      snprintf(kernel_storage, kernel_size, "%s", host.release);
-   }
-   facts->running_kernel_release = kernel_storage;
-
-   /* An unloaded radeon module reads as the literal "none", so the
-    * operator declares that state explicitly instead of an unreadable
-    * fact silently matching an unset declaration.
-    */
-   read_first_token("/sys/module/radeon/srcversion", module_storage,
-                    module_size);
-   if (module_storage[0] == '\0')
-      snprintf(module_storage, module_size, "none");
-   facts->running_module_srcversion = module_storage;
-
-   if (declared(evidence_dir)) {
-      struct stat status;
-      facts->evidence_dir_present =
-         stat(evidence_dir, &status) == 0 && S_ISDIR(status.st_mode);
-
-      char token_path[1024];
-      snprintf(token_path, sizeof(token_path), "%s/%s", evidence_dir,
-               R3V_NATIVE_ATTEMPT_TOKEN);
-      facts->attempt_token_present = stat(token_path, &status) == 0;
-   }
+   r3v_native_arming_collect_from(&host_provider, facts, pci_vendor_id,
+                                  pci_device_id, actual_ib_blake3,
+                                  evidence_dir, kernel_storage, kernel_size,
+                                  module_storage, module_size);
 }
 
 int
