@@ -23,9 +23,11 @@ lockup line. The color target showed no modification: the oracle's
 historical cause remains underdetermined: the run did not retain the
 predecessor values of `US_OUT_FMT_0`, `COLOR_CHANNEL_MASK`, and
 `SC_SCREENDOOR`, so which register, if any, produced that outcome is
-unidentified. The later silicon matrix proved that each of the three,
-left at a killing value, is independently sufficient to reproduce the
-same observation, and the submitted cell established none of them.
+unidentified. A later RS482 silicon matrix (steinmarder-r300 bundle
+`rs482-first-draw-color-write-gate-discrimination`) proved that each
+of the three, left at a killing value, is independently sufficient to
+reproduce the same observation, byte-identical to the sentinel fill,
+and the submitted cell established none of them.
 The successor establishes all three, which removes the
 predecessor-state dependence rather than settling the historical
 mechanism. A ring wedge occurred later in the same boot; the run that
@@ -145,9 +147,11 @@ prediction is not revised after the fact.
   draw reached memory with the wrong color, coverage, or byte order.
   An interior mismatch that is a channel permutation of `0xff00ff00`
   is a color-order finding, not a raster failure. `0xff00ff00` is
-  symmetric under red/blue exchange, so a passing run witnesses green
-  and alpha behavior only; full channel-order identity requires a
-  later asymmetric 3D color witness.
+  symmetric under red/blue exchange and under alpha/green exchange, so
+  a passing run witnesses that the alpha/green channel pair carries
+  0xff and the red/blue pair carries zero, and separates neither pair
+  internally; full channel-order identity requires a later asymmetric
+  3D color witness.
 - The oracle reports `exterior_pass` or `canary_pass` false: the write
   landed outside the intended extent, which implicates the pitch word or
   the color-target binding and is the most dangerous outcome because it

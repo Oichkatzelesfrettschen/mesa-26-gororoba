@@ -93,8 +93,10 @@ The control writes two distinct values at two distinct locations:
 ```text
 pixel A, byte offset 4160    0x11223344
 pixel B, byte offset 12220   0xa1b2c3d4
-every other 32-bit pixel in 0..16383 = 0xa5a5a5a5 sentinel
-canary range 16384..16639    0xa5a5a5a5 sentinel
+every 32-bit target pixel whose byte offset is in 0..16383,
+  except pixel A and pixel B = 0xa5a5a5a5 sentinel
+every 32-bit canary pixel whose byte offset is in 16384..16639
+  = 0xa5a5a5a5 sentinel
 ```
 
 Both values are asymmetric across all four byte lanes and differ from each
@@ -109,10 +111,11 @@ other in every lane, so the readback separates the cases a single value fuses:
   or partial execution; the readback alone does not pick one;
 - values present at transposed locations: candidate classes include pitch
   and row-stride error; the readback alone does not pick one;
-- neither value present, sentinel intact: CONTROL FAILED / INCONCLUSIVE
-  under the Failure classification above; the experiment establishes
-  neither positive write visibility nor a pipeline mechanism; stop and
-  retain the bundle;
+- neither expected value present, whatever else the target carries:
+  CONTROL FAILED / INCONCLUSIVE under the Failure classification above;
+  the experiment establishes neither positive write visibility nor a
+  pipeline mechanism; stop and retain the bundle, and apply the
+  containment rule below when the canary range is disturbed;
 - canary range disturbed: the write passed the render extent into byte range
   16384..16639, which is a containment failure and stops the sequence.
 
