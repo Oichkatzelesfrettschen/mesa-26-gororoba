@@ -57,10 +57,64 @@ if [ -z "${cell_digest}" ] || [ "${cell_digest}" != "${submit_digest}" ]; then
 fi
 
 # The submit relocation chunk carries the color reference plus the
-# completion reference, sixteen bytes per drm_radeon_cs_reloc.
+# completion reference; the size derives from the two factors so a
+# failure names which one moved.
+reloc_entry_bytes=16
+expected_relocs=2
 submit_reloc_bytes=$(wc -c < "${workdir}/submit_relocs.bin")
-if [ "${submit_reloc_bytes}" -ne 32 ]; then
-    echo "submit reloc chunk is ${submit_reloc_bytes} bytes, not 32" >&2
+if [ "${submit_reloc_bytes}" -ne      "$((reloc_entry_bytes * expected_relocs))" ]; then
+    echo "submit reloc chunk is ${submit_reloc_bytes} bytes, not" \
+         "${expected_relocs} entries of ${reloc_entry_bytes}" >&2
+    exit 1
+fi
+
+# validate_relocs FILE: decode the retained drm_radeon_cs_reloc entries
+# -- handle, read_domains, write_domain, flags per entry -- and hold the
+# submit binding: both entries write-bind GTT (0x2) with no read domain,
+# and the two handles are nonzero and distinct.
+validate_relocs() {
+    # Word splitting is the decode: od emits one hex token per dword.
+    # shellcheck disable=SC2046
+    set -- $(od -An -v -tx4 "$1")
+    if [ "$#" -ne 8 ]; then
+        echo "reloc chunk decodes to $# dwords, not 8" >&2
+        return 1
+    fi
+    color_handle=$1; color_read=$2; color_write=$3
+    completion_handle=$5; completion_read=$6; completion_write=$7
+    if [ "${color_write}" != "00000002" ] || \
+       [ "${completion_write}" != "00000002" ] || \
+       [ "${color_read}" != "00000000" ] || \
+       [ "${completion_read}" != "00000000" ]; then
+        echo "reloc domains diverge from the GTT write binding:" \
+             "color ${color_read}/${color_write}" \
+             "completion ${completion_read}/${completion_write}" >&2
+        return 1
+    fi
+    if [ "${color_handle}" = "00000000" ] || \
+       [ "${completion_handle}" = "00000000" ] || \
+       [ "${color_handle}" = "${completion_handle}" ]; then
+        echo "reloc handles are not two distinct live objects:" \
+             "${color_handle} ${completion_handle}" >&2
+        return 1
+    fi
+    return 0
+}
+
+if ! validate_relocs "${workdir}/submit_relocs.bin"; then
+    echo "retained submit relocation chunk failed validation" >&2
+    exit 1
+fi
+
+# The validator earns its verdict by refusing a mutated chunk: zeroing
+# the color write-domain dword must fail.
+{
+    dd if="${workdir}/submit_relocs.bin" bs=4 count=2 2>/dev/null
+    printf '\000\000\000\000'
+    dd if="${workdir}/submit_relocs.bin" bs=4 skip=3 2>/dev/null
+} > "${workdir}/mutated_relocs.bin"
+if validate_relocs "${workdir}/mutated_relocs.bin" 2>/dev/null; then
+    echo "reloc validator accepted a zeroed write domain" >&2
     exit 1
 fi
 
@@ -80,7 +134,7 @@ good=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
     "${workdir}/ib.bin")
 echo "${good}"
 case "${good}" in
-    *"relocs="*"ACCEPT-NO-DRAW"*) ;;
+    *"relocs=${expected_relocs} "*"verdict=ACCEPT-NO-DRAW"*) ;;
     *)
         echo "retained direct-write submit object did not replay" \
              "ACCEPT-NO-DRAW" >&2
@@ -95,11 +149,19 @@ esac
     printf '\014\005\000\000'
     dd if="${workdir}/ib.bin" bs=4 skip=1 2>/dev/null
 } > "${workdir}/bad-register.bin"
-if "${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
-    "${workdir}/bad-register.bin" 2>/dev/null | grep -q ACCEPT; then
-    echo "default-reject register mutation was accepted" >&2
-    exit 1
-fi
+# A crash, a missing input, or a nonexistent tool prints no verdict, so
+# the leg demands the parser's own REJECT verdict rather than the mere
+# absence of an accept.
+bad=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
+    "${workdir}/bad-register.bin" 2>/dev/null) && :
+case "${bad}" in
+    *"verdict=REJECT"*) ;;
+    *)
+        echo "default-reject register mutation did not earn" \
+             "verdict=REJECT: ${bad}" >&2
+        exit 1
+        ;;
+esac
 
 # Known-bad: dropping the final dword cuts the last packet mid-body, so
 # the stream must fail decode and never pass.  A cut on a packet
@@ -107,11 +169,16 @@ fi
 # one dword from the end instead of prefixing.
 ib_bytes=$(wc -c < "${workdir}/ib.bin")
 head -c "$((ib_bytes - 4))" "${workdir}/ib.bin" > "${workdir}/truncated.bin"
-if "${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
-    "${workdir}/truncated.bin" 2>/dev/null | grep -q ACCEPT; then
-    echo "truncated submit object replayed successfully" >&2
-    exit 1
-fi
+bad=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
+    "${workdir}/truncated.bin" 2>/dev/null) && :
+case "${bad}" in
+    *"verdict=REJECT"*) ;;
+    *)
+        echo "truncated submit object did not earn verdict=REJECT:" \
+             "${bad}" >&2
+        exit 1
+        ;;
+esac
 
 echo "direct-write submit-object replay: retained bytes ACCEPT-NO-DRAW," \
      "malformed controls hold"

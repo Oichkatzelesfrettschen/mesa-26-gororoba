@@ -123,10 +123,18 @@ read_whole_file(const char *dir, const char *name, void **data_out,
    FILE *f = fopen(path, "rb");
    if (f == NULL)
       return 1;
-   fseek(f, 0, SEEK_END);
-   long size = ftell(f);
-   fseek(f, 0, SEEK_SET);
+   long size = -1;
+   if (fseek(f, 0, SEEK_END) == 0)
+      size = ftell(f);
+   if (size < 0 || fseek(f, 0, SEEK_SET) != 0) {
+      fclose(f);
+      return 1;
+   }
    void *data = malloc(size > 0 ? (size_t)size : 1);
+   if (data == NULL) {
+      fclose(f);
+      return 1;
+   }
    size_t got = fread(data, 1, (size_t)size, f);
    fclose(f);
    if ((long)got != size) {
@@ -274,6 +282,8 @@ main(int argc, char **argv)
    VkDeviceMemory color_memory = VK_NULL_HANDLE;
    result = vkAllocateMemory(device, &alloc_info, NULL, &color_memory);
    CHECK(result == VK_SUCCESS, "color vkAllocateMemory: %d", result);
+   if (color_memory == VK_NULL_HANDLE)
+      return 1;
 
    /* An allocation below target-plus-canary must refuse recording; the
     * undersized memory exists only for that calibration.
@@ -282,6 +292,8 @@ main(int argc, char **argv)
    VkDeviceMemory undersized_memory = VK_NULL_HANDLE;
    result = vkAllocateMemory(device, &alloc_info, NULL, &undersized_memory);
    CHECK(result == VK_SUCCESS, "undersized vkAllocateMemory: %d", result);
+   if (undersized_memory == VK_NULL_HANDLE)
+      return 1;
 
    VkCommandPool pool = VK_NULL_HANDLE;
    result = vkCreateCommandPool(
@@ -292,6 +304,8 @@ main(int argc, char **argv)
       },
       NULL, &pool);
    CHECK(result == VK_SUCCESS, "vkCreateCommandPool: %d", result);
+   if (pool == VK_NULL_HANDLE)
+      return 1;
 
    VkCommandBuffer cmd = VK_NULL_HANDLE;
    result = vkAllocateCommandBuffers(
@@ -304,6 +318,8 @@ main(int argc, char **argv)
       },
       &cmd);
    CHECK(result == VK_SUCCESS, "vkAllocateCommandBuffers: %d", result);
+   if (cmd == VK_NULL_HANDLE)
+      return 1;
 
    result = vkBeginCommandBuffer(
       cmd, &(VkCommandBufferBeginInfo){

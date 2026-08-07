@@ -16,6 +16,7 @@
 #include "vk_command_pool.h"
 #include "vk_log.h"
 
+#include <inttypes.h>
 #include <radeon_drm.h>
 #include <stdlib.h>
 #include <string.h>
@@ -185,6 +186,22 @@ r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
       return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
                        "r3v-native: direct-write color memory is not "
                        "CPU-mappable");
+   }
+   if (color_memory->map == NULL) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: direct-write color mapping is absent "
+                       "after a successful map");
+   }
+   /* The dword fill covers whole pixels; a trailing sub-dword remainder
+    * would sit outside every 32-bit oracle read but still count as
+    * unpublished bytes, so the recorder refuses it instead of leaving
+    * host-undefined content behind the sentinel claim.
+    */
+   if (color_memory->bo.size % 4 != 0) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: direct-write color size %" PRIu64
+                       " is not whole dwords",
+                       (uint64_t)color_memory->bo.size);
    }
    uint32_t *color_pixels = color_memory->map;
    for (uint64_t i = 0; i < color_memory->bo.size / 4; i++)
