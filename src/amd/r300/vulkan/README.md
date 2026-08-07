@@ -115,11 +115,14 @@ images, descriptors, transfers, and WSI remain outside the native surface.
 The drm-shim harness and offline kernel-parser replay carry the
 pre-hardware evidence; the attended-cell runner has carried one armed
 `DRM_RADEON_CS` submission on RS482 that the kernel accepted and retired
-clean while the color target retained its sentinel fill. That unwritten
-target is the first-draw inheritance mechanism: the original cell owned
-none of the registers a first draw depends on, and on RS482 an
-unestablished `US_OUT_FMT_0`, `RB3D_COLOR_CHANNEL_MASK`, or
-`SC_SCREENDOOR` each alone suppresses every color write. The recorded
+clean while the color target retained its sentinel fill. The cause of
+that unwritten target is underdetermined -- the run retained no
+predecessor register values, and
+`docs/hardware/r3v-native-attended-cell-procedure.md` carries the
+canonical classification -- while a later RS482 silicon matrix proved
+that an unestablished `US_OUT_FMT_0`, `RB3D_COLOR_CHANNEL_MASK`, or
+`SC_SCREENDOOR` each alone suppresses every color write, and the
+original cell owned none of the three. The recorded
 cell therefore now opens with the neutral first-draw state contract
 (`src/amd/r300/common/r300_first_draw_state.c`): the contract's clauses
 are emitted in pipeline order ahead of the cell, the poison-model checker

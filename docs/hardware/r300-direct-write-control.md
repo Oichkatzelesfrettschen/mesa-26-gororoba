@@ -82,7 +82,8 @@ allocation covering target plus canary is 16640 bytes. If the control
 allocates 65536 bytes, allocation size and oracle-covered range are separate
 facts: allocated bytes 65536, oracle-covered bytes 0..16639, unused tail
 16640..65535. The unused tail is not itself a canary; this control scans
-only byte range 0..16639, and that range is the canary.
+only byte range 0..16639, the oracle-covered region. The canary is the
+row-64 range 16384..16639 alone.
 
 Pixel A sits at (x=16, y=16), byte offset 16*256 + 16*4 = 4160. Pixel B sits
 at (x=47, y=47), byte offset 47*256 + 47*4 = 12220.
@@ -92,8 +93,10 @@ The control writes two distinct values at two distinct locations:
 ```text
 pixel A, byte offset 4160    0x11223344
 pixel B, byte offset 12220   0xa1b2c3d4
-every other byte in 0..16383 0xa5a5a5a5 sentinel
-canary range 16384..16639    0xa5a5a5a5 sentinel
+every 32-bit target pixel whose byte offset is in 0..16383,
+  except pixel A and pixel B = 0xa5a5a5a5 sentinel
+every 32-bit canary pixel whose byte offset is in 16384..16639
+  = 0xa5a5a5a5 sentinel
 ```
 
 Both values are asymmetric across all four byte lanes and differ from each
@@ -104,12 +107,15 @@ other in every lane, so the readback separates the cases a single value fuses:
 - both values present with lanes permuted: the transport carries writes and
   the host and device disagree on byte order, which also reinterprets the
   first run's uniform sentinel;
-- one value present: the write reached the target and the address arithmetic
-  or the extent is wrong;
-- values present at transposed locations: pitch or row-stride error;
-- neither value present, sentinel intact: the transport carries no device
-  write, and the first run's result is explained without reference to the
-  pipeline;
+- one value present: candidate classes include address arithmetic, extent,
+  or partial execution; the readback alone does not pick one;
+- values present at transposed locations: candidate classes include pitch
+  and row-stride error; the readback alone does not pick one;
+- neither expected value present, whatever else the target carries:
+  CONTROL FAILED / INCONCLUSIVE under the Failure classification above;
+  the experiment establishes neither positive write visibility nor a
+  pipeline mechanism; stop and retain the bundle, and apply the
+  containment rule below when the canary range is disturbed;
 - canary range disturbed: the write passed the render extent into byte range
   16384..16639, which is a containment failure and stops the sequence.
 

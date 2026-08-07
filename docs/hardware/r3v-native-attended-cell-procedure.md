@@ -1,8 +1,12 @@
 # R3V native attended-cell procedure
 
-This document is the procedure for the second live `DRM_RADEON_CS`
-submission from the native R3V ICD, a physically attended run on the
-RS482 host under a separate explicit authorization. It states what
+This document is the procedure for the second attended native
+triangle-cell submission from the native R3V ICD, a physically
+attended run on the RS482 host under a separate explicit
+authorization. The ordinal counts attended triangle-cell runs, not
+native `DRM_RADEON_CS` submissions globally; other native controls
+(the direct-write control among them) carry their own submissions
+outside this count. It states what
 must hold before the run, what it records, which observations falsify
 it, and how it rolls back. Executing it requires that authorization;
 reading and rehearsing it does not.
@@ -16,11 +20,17 @@ contract prefix. The radeon kernel driver accepted the submission and
 the completion retired clean: no CS validation error, no reset, no
 lockup line. The color target showed no modification: the oracle's
 `executed` verdict was false, so the falsifier fired on that run. The
-finding is the mechanism, not an open question -- RS482 requires the
-command stream to establish `US_OUT_FMT_0`, `COLOR_CHANNEL_MASK`, and
-`SC_SCREENDOOR` itself; each register alone, left at its inherited
-value, kills every color write, and the submitted cell owned none of
-the three. A ring wedge occurred later in the same boot; the run that
+historical cause remains underdetermined: the run did not retain the
+predecessor values of `US_OUT_FMT_0`, `COLOR_CHANNEL_MASK`, and
+`SC_SCREENDOOR`, so which register, if any, produced that outcome is
+unidentified. A later RS482 silicon matrix (steinmarder-r300 bundle
+`rs482-first-draw-color-write-gate-discrimination`) proved that each
+of the three, left at a killing value, is independently sufficient to
+reproduce the same observation, byte-identical to the sentinel fill,
+and the submitted cell established none of them.
+The successor establishes all three, which removes the
+predecessor-state dependence rather than settling the historical
+mechanism. A ring wedge occurred later in the same boot; the run that
 produced it, and whether it traces to the attended submission or to
 unrelated same-boot activity, is unresolved.
 
@@ -135,9 +145,13 @@ prediction is not revised after the fact.
   nothing, so the cell is inert rather than correct.
 - The oracle reports `interior_pass` false while `executed` is true: the
   draw reached memory with the wrong color, coverage, or byte order.
-  The draw-color byte order is unproven until this run, so an interior
-  mismatch that is a channel permutation of `0xff00ff00` is a color-order
-  finding, not a raster failure.
+  An interior mismatch that is a channel permutation of `0xff00ff00`
+  is a color-order finding, not a raster failure. `0xff00ff00` is
+  symmetric under red/blue exchange and under alpha/green exchange, so
+  a passing run witnesses that the alpha/green channel pair carries
+  0xff and the red/blue pair carries zero, and separates neither pair
+  internally; full channel-order identity requires a later asymmetric
+  3D color witness.
 - The oracle reports `exterior_pass` or `canary_pass` false: the write
   landed outside the intended extent, which implicates the pitch word or
   the color-target binding and is the most dangerous outcome because it
