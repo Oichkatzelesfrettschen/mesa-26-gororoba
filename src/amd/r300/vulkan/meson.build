@@ -746,6 +746,24 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
 
+    # Positive ARMED calibration through the collection seam: a
+    # deterministic provider supplies every exact fact, the verdict is
+    # ARMED with exit status zero, and each single-fact mutation refuses
+    # through the same collect-then-evaluate path.  The binary links the
+    # arming translation unit alone, so no Vulkan object, DRM fd, ioctl,
+    # or attempt token can exist in the run.
+    test(
+      'r3v-native-arming-positive',
+      executable(
+        'r3v_native_arming_positive',
+        files('r3v_native_arming.c', 'tests/r3v_native_arming_positive.c'),
+        include_directories : [inc_include, inc_src,
+                               include_directories('.')],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+
     # Non-submitting arming runner: reports the cell digest and every
     # arming factor, then stops at the authorization boundary.  The test
     # leg runs it against a fresh directory with no declarations, so the
