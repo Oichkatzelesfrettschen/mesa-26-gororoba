@@ -72,6 +72,40 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts);
 const char *
 r3v_native_arming_verdict_name(enum r3v_native_arming_verdict verdict);
 
+/* The seam every fact crosses on its way into the gate.  Collection reads the
+ * environment, uname, sysfs, and the evidence directory; routing all four
+ * through one interface is what lets the positive verdict be exercised
+ * without the hardware, the kernel, or the operator's environment, and what
+ * bounds the collector's side effects to the calls named here.
+ */
+struct r3v_native_arming_provider {
+   const char *(*read_env)(void *ctx, const char *name);
+   /* Writes the running kernel release, or leaves storage empty when it is
+    * unreadable, which refuses.
+    */
+   void (*read_kernel_release)(void *ctx, char *out, size_t size);
+   /* Writes the running radeon module srcversion, or leaves storage empty
+    * when no module is loaded.
+    */
+   void (*read_module_srcversion)(void *ctx, char *out, size_t size);
+   bool (*directory_present)(void *ctx, const char *path);
+   bool (*file_present)(void *ctx, const char *path);
+   void *ctx;
+};
+
+/* The provider the production path uses: getenv, uname, sysfs, stat. */
+const struct r3v_native_arming_provider *r3v_native_arming_host_provider(void);
+
+/* Collects through an explicit provider.  r3v_native_arming_collect is this
+ * over the host provider.
+ */
+void r3v_native_arming_collect_from(
+   const struct r3v_native_arming_provider *provider,
+   struct r3v_native_arming_facts *facts, uint32_t pci_vendor_id,
+   uint32_t pci_device_id, const char *actual_ib_blake3,
+   const char *evidence_dir, char *kernel_storage, size_t kernel_size,
+   char *module_storage, size_t module_size);
+
 /* Collects the live facts: environment values, the running kernel
  * release from uname, and the radeon module srcversion from sysfs.  The
  * caller supplies the chip identity, the IB digest, and the evidence
