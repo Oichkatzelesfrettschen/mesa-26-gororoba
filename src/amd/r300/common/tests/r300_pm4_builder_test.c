@@ -12,6 +12,7 @@
 #include "r300_pm4_builder.h"
 
 #include "r300_reg.h"
+#include "util/macros.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -99,6 +100,45 @@ test_reserve_refuses_overflow(void)
    assert(!r300_pm4_builder_reserve(&b, 8));
    assert(b.error == -ENOSPC);
    assert(b.count == UINT32_MAX - 2);
+}
+
+/* A run is one dword longer than its payload, so a payload at UINT32_MAX has
+ * no representable run length: adding one wraps to zero, a zero-dword
+ * reservation always fits, and the copy that follows would take the payload
+ * count as written.  Both packet forms refuse that length before reserving.
+ */
+static void
+test_run_length_refuses_overflow(void)
+{
+   struct guarded g;
+   const uint32_t payload[1] = { 0x77 };
+
+   guarded_init(&g);
+   struct r300_pm4_builder b;
+   r300_pm4_builder_init(&b, g.words, ARRAY_SIZE(g.words));
+   r300_pm4_packet0(&b, R300_VAP_VTX_SIZE, payload, UINT32_MAX);
+   assert(b.error == -EINVAL);
+   assert(b.count == 0);
+   assert(g.words[0] == 0);
+   guards_hold(&g);
+
+   guarded_init(&g);
+   r300_pm4_builder_init(&b, g.words, ARRAY_SIZE(g.words));
+   r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, payload, UINT32_MAX);
+   assert(b.error == -EINVAL);
+   assert(b.count == 0);
+   assert(g.words[0] == 0);
+   guards_hold(&g);
+
+   /* One below that length is representable, so it refuses for capacity
+    * rather than for the encoding, which keeps the two causes distinct.
+    */
+   guarded_init(&g);
+   r300_pm4_builder_init(&b, g.words, ARRAY_SIZE(g.words));
+   r300_pm4_packet0(&b, R300_VAP_VTX_SIZE, payload, UINT32_MAX - 1);
+   assert(b.error == -ENOSPC);
+   assert(b.count == 0);
+   guards_hold(&g);
 }
 
 /* The first refusal is the one reported, and every later operation is a
@@ -257,6 +297,7 @@ main(void)
    test_zero_capacity_refuses();
    test_reserve_is_exact();
    test_reserve_refuses_overflow();
+   test_run_length_refuses_overflow();
    test_first_failure_is_preserved();
    test_packet_runs_are_all_or_nothing();
    test_packet_shapes();

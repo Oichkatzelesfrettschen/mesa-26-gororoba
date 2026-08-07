@@ -34,6 +34,24 @@ r300_pm4_builder_reserve(struct r300_pm4_builder *b, uint32_t needed)
    return true;
 }
 
+/* Reserve a header plus its payload.  The run is one dword longer than the
+ * payload, so a payload at UINT32_MAX has no representable run length: adding
+ * one wraps to zero, and a zero-dword reservation always fits.  Refusing that
+ * length here is what keeps the reservation the whole gate, since the copy
+ * below it takes the payload count as written.
+ */
+static bool
+reserve_run(struct r300_pm4_builder *b, uint32_t payload_count)
+{
+   if (b->error != 0)
+      return false;
+   if (payload_count == UINT32_MAX) {
+      b->error = -EINVAL;
+      return false;
+   }
+   return r300_pm4_builder_reserve(b, payload_count + 1);
+}
+
 void
 r300_pm4_dword(struct r300_pm4_builder *b, uint32_t value)
 {
@@ -55,7 +73,7 @@ r300_pm4_packet0(struct r300_pm4_builder *b, uint32_t reg,
       b->error = -EINVAL;
       return;
    }
-   if (!r300_pm4_builder_reserve(b, count + 1))
+   if (!reserve_run(b, count))
       return;
 
    b->words[b->count++] = CP_PACKET0(reg, count - 1);
@@ -83,7 +101,7 @@ r300_pm4_packet3(struct r300_pm4_builder *b, uint32_t opcode,
       b->error = -EINVAL;
       return;
    }
-   if (!r300_pm4_builder_reserve(b, count + 1))
+   if (!reserve_run(b, count))
       return;
 
    b->words[b->count++] = CP_PACKET3(opcode, count == 0 ? 0 : count - 1);

@@ -510,7 +510,10 @@ test_reloc_site_mutations_refuse(void)
    m.reloc_sites[1].slot = R300_TRIANGLE_SLOT_COLOR;
    assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) == -EINVAL);
 
-   /* A site count past the storage the emitter reserves. */
+   /* A site count that is not one per slot: the equality guard refuses it
+    * before the loop reads an index, which is what keeps a count past the
+    * storage from reaching the array.
+    */
    m = cell;
    m.reloc_site_count = R300_TRIANGLE_MAX_RELOC_SITES + 1;
    assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) == -EINVAL);
