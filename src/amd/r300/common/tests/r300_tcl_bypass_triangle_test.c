@@ -163,6 +163,46 @@ test_reloc_sites_bind_slots(void)
    r300_fragment_binary_finish(&fs);
 }
 
+/* The checks the site validator proves against the stream itself: a site is
+ * the payload of a relocation NOP, so index zero and a corrupted header each
+ * refuse, and the site indices follow the stream order.  An in-range
+ * ordinary dword coincidentally equal to the payload satisfies none of them.
+ */
+static void
+test_reloc_site_validator_refuses_each_defect(void)
+{
+   struct r300_fragment_binary fs;
+   struct r300_tcl_bypass_triangle_ib cell;
+   make_cell(&fs, &cell);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
+   /* Corrupting the NOP header alone refuses the otherwise-intact site. */
+   const uint32_t header_index = cell.reloc_sites[0].ib_index - 1;
+   const uint32_t saved_header = cell.ib[header_index];
+   cell.ib[header_index] ^= 1u;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == -EINVAL);
+   cell.ib[header_index] = saved_header;
+
+   /* Index zero has no preceding dword to hold the header. */
+   const uint32_t saved_index = cell.reloc_sites[0].ib_index;
+   cell.reloc_sites[0].ib_index = 0;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == -ERANGE);
+   cell.reloc_sites[0].ib_index = saved_index;
+
+   /* Site indices that do not increase contradict the stream order even
+    * when each site is individually intact.
+    */
+   struct r300_tcl_bypass_triangle_ib m = cell;
+   m.reloc_sites[0].ib_index = cell.reloc_sites[1].ib_index;
+   m.reloc_sites[1].ib_index = cell.reloc_sites[0].ib_index;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&m) != 0);
+
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_fragment_binary_finish(&fs);
+}
+
 static void
 test_emission_is_deterministic(void)
 {
@@ -343,19 +383,19 @@ test_reference_emit_is_the_single_authority(void)
    r300_tcl_bypass_triangle_release(&ref);
 }
 
-/* The successor's exact size and content, pinned so a change to the emitter,
+/* The contract cell's exact size and content, pinned so a change to the emitter,
  * the contract, or the fragment binary reports as a size or digest movement
  * rather than as a silently different cell.  The digest is the one the
  * staging manifest and the arming gate carry.
  */
-#define R300_TRIANGLE_SUCCESSOR_DWORDS 234
+#define R300_TRIANGLE_CONTRACT_CELL_DWORDS 234
 
 static void
-test_successor_size_and_digest_are_pinned(void)
+test_contract_cell_size_and_digest_are_pinned(void)
 {
    struct r300_tcl_bypass_triangle_ib ref;
    assert(r300_tcl_bypass_triangle_reference_emit(&ref) == 0);
-   assert(ref.ib_size_dwords == R300_TRIANGLE_SUCCESSOR_DWORDS);
+   assert(ref.ib_size_dwords == R300_TRIANGLE_CONTRACT_CELL_DWORDS);
 
    /* The reference cell hashed as the little-endian dword stream the
     * manifest writes and the kernel parser reads.
@@ -398,11 +438,11 @@ test_emit_into_holds_its_capacity(void)
    };
 
    enum { SLACK = 4 };
-   static uint32_t storage[1 + R300_TRIANGLE_SUCCESSOR_DWORDS + SLACK + 1];
+   static uint32_t storage[1 + R300_TRIANGLE_CONTRACT_CELL_DWORDS + SLACK + 1];
    uint32_t *const words = &storage[1];
 
    for (uint32_t capacity = 0;
-        capacity <= R300_TRIANGLE_SUCCESSOR_DWORDS + SLACK; capacity++) {
+        capacity <= R300_TRIANGLE_CONTRACT_CELL_DWORDS + SLACK; capacity++) {
       memset(storage, 0, sizeof(storage));
       storage[0] = 0xdeadbeefu;
       storage[ARRAY_SIZE(storage) - 1] = 0xdeadbeefu;
@@ -411,13 +451,13 @@ test_emit_into_holds_its_capacity(void)
       const int rc =
          r300_tcl_bypass_triangle_emit_into(&params, words, capacity, &cell);
 
-      if (capacity < R300_TRIANGLE_SUCCESSOR_DWORDS) {
+      if (capacity < R300_TRIANGLE_CONTRACT_CELL_DWORDS) {
          assert(rc == -ENOSPC);
          assert(cell.ib_size_dwords == 0);
          assert(cell.ib == NULL);
       } else {
          assert(rc == 0);
-         assert(cell.ib_size_dwords == R300_TRIANGLE_SUCCESSOR_DWORDS);
+         assert(cell.ib_size_dwords == R300_TRIANGLE_CONTRACT_CELL_DWORDS);
          assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
       }
 
@@ -426,8 +466,8 @@ test_emit_into_holds_its_capacity(void)
       /* The dwords past the cell stay untouched at every capacity, so a
        * refusal short of the end wrote nothing beyond what it reported.
        */
-      for (uint32_t i = R300_TRIANGLE_SUCCESSOR_DWORDS;
-           i < R300_TRIANGLE_SUCCESSOR_DWORDS + SLACK; i++)
+      for (uint32_t i = R300_TRIANGLE_CONTRACT_CELL_DWORDS;
+           i < R300_TRIANGLE_CONTRACT_CELL_DWORDS + SLACK; i++)
          assert(words[i] == 0);
    }
 
@@ -452,7 +492,7 @@ test_emit_into_does_not_own_caller_storage(void)
       .first_draw_contract = &contract,
    };
 
-   static uint32_t words[R300_TRIANGLE_SUCCESSOR_DWORDS];
+   static uint32_t words[R300_TRIANGLE_CONTRACT_CELL_DWORDS];
    struct r300_tcl_bypass_triangle_ib cell;
    assert(r300_tcl_bypass_triangle_emit_into(&params, words,
                                              ARRAY_SIZE(words), &cell) == 0);
@@ -463,7 +503,7 @@ test_emit_into_does_not_own_caller_storage(void)
    assert(r300_tcl_bypass_triangle_reference_emit(&owned) == 0);
    assert(owned.owns_ib);
    /* Both forms produce the same stream. */
-   assert(owned.ib_size_dwords == R300_TRIANGLE_SUCCESSOR_DWORDS);
+   assert(owned.ib_size_dwords == R300_TRIANGLE_CONTRACT_CELL_DWORDS);
    assert(memcmp(owned.ib, words, sizeof(words)) == 0);
    r300_tcl_bypass_triangle_release(&owned);
 
@@ -533,12 +573,13 @@ test_reloc_site_mutations_refuse(void)
 int
 main(void)
 {
-   test_successor_size_and_digest_are_pinned();
+   test_contract_cell_size_and_digest_are_pinned();
    test_emit_into_holds_its_capacity();
    test_emit_into_does_not_own_caller_storage();
    test_reloc_site_mutations_refuse();
    test_stream_satisfies_kernel_contract();
    test_reloc_sites_bind_slots();
+   test_reloc_site_validator_refuses_each_defect();
    test_emission_is_deterministic();
    test_contract_emission_is_self_contained();
    test_reference_emit_is_the_single_authority();

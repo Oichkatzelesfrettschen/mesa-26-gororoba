@@ -126,7 +126,7 @@ main(void)
           cell_failures, contract.count);
 
    /* The contract emission converges from every poison vector, and a
-    * successor stream -- contract state followed by the current cell --
+    * contract-prefixed stream -- contract state followed by the current cell --
     * still satisfies every clause, so the cell overwrites nothing the
     * contract establishes incompatibly except the values the contract
     * itself owns.
@@ -135,17 +135,17 @@ main(void)
    int state_dwords = r300_first_draw_state_emit(&contract, state_ib, 256);
    assert(state_dwords > 0);
 
-   uint32_t successor[1024];
-   memcpy(successor, state_ib, (size_t)state_dwords * 4);
-   memcpy(successor + state_dwords, cell.ib, cell.ib_size_dwords * 4);
-   uint32_t successor_dwords = (uint32_t)state_dwords + cell.ib_size_dwords;
+   uint32_t prefixed[1024];
+   memcpy(prefixed, state_ib, (size_t)state_dwords * 4);
+   memcpy(prefixed + state_dwords, cell.ib, cell.ib_size_dwords * 4);
+   uint32_t prefixed_dwords = (uint32_t)state_dwords + cell.ib_size_dwords;
 
    for (unsigned v = 0; v < sizeof(poison_vectors) / 4; v++) {
       assert(r300_first_draw_state_check(&contract, state_ib,
                                          (uint32_t)state_dwords,
                                          poison_vectors[v], &report) == 0);
       uint32_t left = r300_first_draw_state_check(
-         &contract, successor, successor_dwords, poison_vectors[v], &report);
+         &contract, prefixed, prefixed_dwords, poison_vectors[v], &report);
       if (left != 0) {
          for (uint32_t i = 0; i < report.unsatisfied_count; i++) {
             fprintf(stderr, "poison 0x%08x leaves %s\n", poison_vectors[v],
@@ -180,7 +180,7 @@ main(void)
    }
 
    /* Integrated emission: the emitter's contract path produces the exact
-    * successor stream -- the contract prefix followed by the bare cell --
+    * contract-prefixed stream -- the contract prefix followed by the bare cell --
     * and the shared reference contract resolves to this test's parameters,
     * so every pre-hardware consumer builds one byte-identical IB.
     */
@@ -190,12 +190,12 @@ main(void)
    assert(memcmp(reference.entries, contract.entries,
                  contract.count * sizeof(contract.entries[0])) == 0);
 
-   struct r300_tcl_bypass_triangle_params successor_params = cell_params;
-   successor_params.first_draw_contract = &reference;
+   struct r300_tcl_bypass_triangle_params prefixed_params = cell_params;
+   prefixed_params.first_draw_contract = &reference;
    struct r300_tcl_bypass_triangle_ib integrated;
-   assert(r300_tcl_bypass_triangle_emit(&successor_params, &integrated) == 0);
-   assert(integrated.ib_size_dwords == successor_dwords);
-   assert(memcmp(integrated.ib, successor, successor_dwords * 4) == 0);
+   assert(r300_tcl_bypass_triangle_emit(&prefixed_params, &integrated) == 0);
+   assert(integrated.ib_size_dwords == prefixed_dwords);
+   assert(memcmp(integrated.ib, prefixed, prefixed_dwords * 4) == 0);
    /* The prefix shifts every relocation site by its dword count; each
     * site still names its slot payload behind a reloc NOP header.
     */
