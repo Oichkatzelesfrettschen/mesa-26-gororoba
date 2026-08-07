@@ -809,7 +809,7 @@ If the linter is mirrored or vendored into Mesa, wire it through the local pre-c
 Advisory sibling invocation, when the checkout layout provides it:
 
 ```bash
-../steinmarder/src/re/r600/scripts/lint/comment_hygiene_lint.py --staged
+../steinmarder/src/re/scripts/lint/comment_hygiene_lint.py --staged
 ```
 
 A blocking Git hook in Mesa points at Mesa-resident tooling only: a hook that depends on an external checkout violates Mesa independence and turns comment hygiene into an environment accident.
