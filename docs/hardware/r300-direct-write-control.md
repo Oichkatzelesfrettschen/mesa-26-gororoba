@@ -58,16 +58,16 @@ that substitutes any of them decides a different question.
   recovery sequence when that bound is reached without completion.
 - Readback invalidation: the same invalidate before the host reads.
 
-The command stream is what differs. R300 exposes no command that writes
-memory independent of every graphics-pipeline state element; whether such a
-command exists at all is an open design question, not one this control
-answers. The control emits the minimum state setup that lets one write
-instruction execute -- not the first-draw state contract the successor
-emits -- and then a write whose effect does not depend on rasterization,
-fragment shading, or the color-write gates the first run implicated. Until
-the open question above is resolved, the control's state setup remains
-graphics-path-bearing by construction, and this document names that residual
-dependency instead of describing the control as pipeline-removed.
+The command stream is what differs. The selected primitive is the 2D
+engine's solid rectangle fill, driven by PACKET0 writes the r300 user-CS
+parser admits, with the destination bound by the `DST_PITCH_OFFSET`
+relocation case; `docs/hardware/r300-direct-write-2d-fill-authority.md`
+carries the register contract and its kernel-source derivation. The fill
+touches no VAP, RS, US, RB3D, or ZB state and performs no source fetch,
+so the write path is brush value, ROP, 2D destination -- outside the
+color-write gates the first run implicated. Whether the RS482 2D engine
+writes an unsnooped-GART destination coherently under the in-stream
+flush and wait remains the silicon hypothesis this control tests.
 
 ## The observable
 
@@ -86,13 +86,16 @@ only byte range 0..16639, the oracle-covered region. The canary is the
 row-64 range 16384..16639 alone.
 
 Pixel A sits at (x=16, y=16), byte offset 16*256 + 16*4 = 4160. Pixel B sits
-at (x=47, y=47), byte offset 47*256 + 47*4 = 12220.
+at (x=21, y=47), byte offset 47*256 + 21*4 = 12116. Pixel B sits off the
+x = y diagonal, so a transposed row/column address computation moves it
+and the readback reports the miss; a diagonal pair would leave
+transposition invisible.
 
 The control writes two distinct values at two distinct locations:
 
 ```text
 pixel A, byte offset 4160    0x11223344
-pixel B, byte offset 12220   0xa1b2c3d4
+pixel B, byte offset 12116   0xa1b2c3d4
 every 32-bit target pixel whose byte offset is in 0..16383,
   except pixel A and pixel B = 0xa5a5a5a5 sentinel
 every 32-bit canary pixel whose byte offset is in 16384..16639
@@ -162,21 +165,22 @@ The record comes from kernel stacks, the journal, and netconsole.
 
 ## Artifact identity
 
-The control is not implemented. This document invents no manifest path,
-stream dword count, digest, or submit object for it. Once
-`r300_direct_write_manifest` (or its equivalent) exists, it pins:
+The emitter (`src/amd/r300/common/r300_direct_write.c`), the oracle, and
+the `r300_direct_write_manifest` writer exist and are test-covered: the
+writer pins the stream dword count, packet/register contract, relocation
+site, BO role and size, and BLAKE3 digest, and the
+`r300-direct-write-manifest-integration` test proves the published
+artifacts against each other. The register contract's kernel-source
+derivation lives in `docs/hardware/r300-direct-write-2d-fill-authority.md`.
+This document quotes no digest: the manifest the run's own build writes
+is the digest authority, and the arming gate takes the digest from that
+manifest, so a stale doc constant can never authorize a stream.
 
-- manifest path
-- stream dword count
-- packet/register contract
-- relocation sites
-- BO roles and sizes
-- BLAKE3 digest
-- SHA-256 digest
-- exact submit object
-
-Execution BLOCKED until `r300_direct_write_manifest` (or equivalent) exists
-and these fields are generated and pinned.
+Execution remains BLOCKED on the stages the manifest does not cover: the
+exact submit object binding, the retained-submit offline replay, the
+arming-gate integration under the control's own digest, and the
+dual-host dual-profile qualification of all of it -- and on the separate
+explicit authorization every live submission requires.
 
 ## What the control does not decide
 
