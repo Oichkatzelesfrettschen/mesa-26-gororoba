@@ -48,6 +48,16 @@ main(int argc, char **argv)
       return 1;
    }
 
+   /* The manifest publishes the contract's clause count, so it resolves the
+    * same contract the reference emission prefixes.
+    */
+   struct r300_first_draw_contract contract;
+   if (r300_tcl_bypass_triangle_reference_contract(&contract) != 0) {
+      fprintf(stderr, "first-draw contract resolution failed\n");
+      r300_fragment_binary_finish(&fs);
+      return 1;
+   }
+
    struct r300_tcl_bypass_triangle_ib cell;
    if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0) {
       fprintf(stderr, "triangle emission failed\n");
@@ -78,16 +88,51 @@ main(int argc, char **argv)
       snprintf(&hash_hex[2 * i], 3, "%02x", fs.hash[i]);
    }
 
-   char manifest[1024];
+   /* The digest the arming gate compares against its authorized value, taken
+    * over the same bytes ib.bin carries, through the one helper every other
+    * site uses.  A manifest without it leaves the gate authorizing a cell it
+    * never hashed.
+    */
+   char ib_blake3_hex[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, ib_blake3_hex);
+
+   /* The draw is the last packet, and its dword index is what a replay names
+    * when it reports which packet a verdict came from.
+    */
+   const uint32_t draw_dword = r300_triangle_draw_dword(&cell);
+
+   char sites[256];
+   int sites_len = 0;
+   for (uint32_t i = 0; i < cell.reloc_site_count; i++) {
+      sites_len += snprintf(&sites[sites_len],
+                            sizeof(sites) - (size_t)sites_len,
+                            "%s{\"slot\": %u, \"ib_index\": %u}",
+                            i == 0 ? "" : ", ", cell.reloc_sites[i].slot,
+                            cell.reloc_sites[i].ib_index);
+   }
+
+   char manifest[2048];
    int manifest_len = snprintf(
       manifest, sizeof(manifest),
       "{\n"
-      "  \"ib_dwords\": %u,\n"
-      "  \"reloc_sites\": %u,\n"
+      "  \"schema\": \"r300-tcl-bypass-cell/1\",\n"
+      "  \"cell_kind\": \"contract-prefixed-successor\",\n"
       "  \"emitter\": \"r300_tcl_bypass_triangle\",\n"
-      "  \"fragment_binary_blake3\": \"%s\"\n"
+      "  \"ib_dwords\": %u,\n"
+      "  \"draw_dword\": %u,\n"
+      "  \"ib_blake3\": \"%s\",\n"
+      "  \"fragment_binary_blake3\": \"%s\",\n"
+      "  \"contract_clause_count\": %u,\n"
+      "  \"reloc_sites\": [%s],\n"
+      "  \"target_width\": %u,\n"
+      "  \"target_height\": %u,\n"
+      "  \"target_pitch_pixels\": %u,\n"
+      "  \"allocation_rows\": %u\n"
       "}\n",
-      cell.ib_size_dwords, cell.reloc_site_count, hash_hex);
+      cell.ib_size_dwords, draw_dword, ib_blake3_hex, hash_hex,
+      contract.count, sites, R300_TRIANGLE_TARGET_WIDTH,
+      R300_TRIANGLE_TARGET_HEIGHT, R300_TRIANGLE_TARGET_PITCH_PIXELS,
+      R300_TRIANGLE_ALLOCATION_ROWS);
    rc |= write_file(dir, "manifest.json", manifest, (size_t)manifest_len);
 
    r300_tcl_bypass_triangle_release(&cell);

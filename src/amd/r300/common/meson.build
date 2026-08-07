@@ -87,6 +87,23 @@ r300_triangle_manifest = executable(
   gnu_symbol_visibility : 'hidden',
 )
 
+r300_staging_manifest_test = executable(
+  'r300_staging_manifest_test',
+  files('r300_fragment_binary.c', 'r300_first_draw_state.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c',
+        'tests/r300_staging_manifest_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-staging-manifest',
+  r300_staging_manifest_test,
+  suite : ['r300'],
+)
+
 # Offline kernel-parser replay, gated on R3V_KERNEL_REPLAY_TOOL pointing at
 # the replay binary built in the Linux radeon source tree.  The script exits
 # 77 (meson SKIP) when the tool is absent, so the default graph never

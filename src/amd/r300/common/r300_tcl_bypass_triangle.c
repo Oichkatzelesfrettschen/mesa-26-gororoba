@@ -8,8 +8,10 @@
 
 #include "r300_reg.h"
 #include "util/macros.h"
+#include "util/mesa-blake3.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -412,3 +414,47 @@ const float r300_tcl_bypass_triangle_vertices[R300_TRIANGLE_VERTEX_DWORDS] = {
    56.0f,  8.0f, 0.0f, 1.0f,
    32.0f, 56.0f, 0.0f, 1.0f,
 };
+
+void
+r300_triangle_ib_digest(const uint32_t *ib, uint32_t ib_size_dwords,
+                        uint8_t out[R300_TRIANGLE_DIGEST_SIZE])
+{
+   struct mesa_blake3 ctx;
+   _mesa_blake3_init(&ctx);
+   _mesa_blake3_update(&ctx, ib, ib_size_dwords * sizeof(uint32_t));
+   _mesa_blake3_final(&ctx, out);
+}
+
+void
+r300_triangle_ib_digest_hex(const uint32_t *ib, uint32_t ib_size_dwords,
+                            char out[2 * R300_TRIANGLE_DIGEST_SIZE + 1])
+{
+   uint8_t digest[R300_TRIANGLE_DIGEST_SIZE];
+   r300_triangle_ib_digest(ib, ib_size_dwords, digest);
+   for (unsigned i = 0; i < R300_TRIANGLE_DIGEST_SIZE; i++)
+      snprintf(&out[2 * i], 3, "%02x", digest[i]);
+}
+
+uint32_t
+r300_triangle_draw_dword(const struct r300_tcl_bypass_triangle_ib *ib)
+{
+   /* The draw is the last type-3 packet the cell emits, so the walk reports
+    * the final draw opcode it meets rather than a fixed offset that a
+    * contract or fragment-binary change would move.
+    */
+   uint32_t found = 0;
+   uint32_t i = 0;
+   while (i < ib->ib_size_dwords) {
+      const uint32_t header = ib->ib[i];
+      const uint32_t count = ((header >> 16) & 0x3fff) + 1;
+      /* R300_PACKET3_3D_DRAW_VBUF_2 carries the opcode already positioned in
+       * bits 8-15, which is the form CP_PACKET3 takes, so the header's
+       * opcode field is compared in place rather than shifted down.
+       */
+      if ((header >> 30) == 3 &&
+          (header & 0xff00) == R300_PACKET3_3D_DRAW_VBUF_2)
+         found = i;
+      i += 1 + count;
+   }
+   return found;
+}
