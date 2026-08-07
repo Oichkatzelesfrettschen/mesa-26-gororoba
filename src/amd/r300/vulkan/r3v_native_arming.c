@@ -7,11 +7,14 @@
 #include "r3v_native_arming.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <time.h>
+#include <unistd.h>
 
 #define R3V_NATIVE_ATTEMPT_TOKEN "attempt.token"
 
@@ -248,23 +251,62 @@ r3v_native_arming_collect(struct r3v_native_arming_facts *facts,
 }
 
 int
-r3v_native_arming_disarm(const char *evidence_dir)
+r3v_native_arming_disarm(const char *evidence_dir,
+                         const char *declared_digest)
 {
    if (!declared(evidence_dir))
       return -EINVAL;
 
+   /* A truncated path would disarm a different location than the directory
+    * the collection probes, so truncation refuses before any file exists.
+    */
    char token_path[1024];
-   snprintf(token_path, sizeof(token_path), "%s/%s", evidence_dir,
-            R3V_NATIVE_ATTEMPT_TOKEN);
+   int token_length = snprintf(token_path, sizeof(token_path), "%s/%s",
+                               evidence_dir, R3V_NATIVE_ATTEMPT_TOKEN);
+   if (token_length < 0 || (size_t)token_length >= sizeof(token_path))
+      return -ENAMETOOLONG;
 
    /* Exclusive creation is the disarm: a token that already exists means
-    * an earlier arming reached this point, and creation fails.
+    * an earlier arming reached this point, and creation fails.  The token
+    * carries the declared digest and the wall-clock instant, and both the
+    * file and the directory entry fsync before this returns -- the caller
+    * issues the ioctl only after, so a power failure past the ioctl cannot
+    * leave the directory apparently unused.
     */
-   FILE *token = fopen(token_path, "wx");
-   if (token == NULL)
+   int fd = open(token_path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+   if (fd < 0)
       return -errno;
-   fputs("r3v-native: one submission attempt was armed in this directory\n",
-         token);
-   int result = fclose(token) == 0 ? 0 : -EIO;
+
+   struct timespec now;
+   clock_gettime(CLOCK_REALTIME, &now);
+   char body[256];
+   int body_length = snprintf(
+      body, sizeof(body),
+      "declared_ib_blake3: %s\nunix_time: %lld.%09ld\n",
+      declared(declared_digest) ? declared_digest : "(undeclared)",
+      (long long)now.tv_sec, now.tv_nsec);
+   if (body_length < 0 || (size_t)body_length >= sizeof(body)) {
+      close(fd);
+      return -EIO;
+   }
+   size_t total = 0;
+   while (total < (size_t)body_length) {
+      ssize_t written = write(fd, body + total, (size_t)body_length - total);
+      if (written < 0) {
+         if (errno == EINTR)
+            continue;
+         close(fd);
+         return -EIO;
+      }
+      total += (size_t)written;
+   }
+   if (fsync(fd) != 0 || close(fd) != 0)
+      return -EIO;
+
+   int dir_fd = open(evidence_dir, O_RDONLY | O_DIRECTORY);
+   if (dir_fd < 0)
+      return -errno;
+   int result = fsync(dir_fd) == 0 ? 0 : -errno;
+   close(dir_fd);
    return result;
 }

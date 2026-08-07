@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 # The qualification-critical tests.  A name here is load-bearing evidence for
-# the pre-hardware verdict: transport admission, arming, dispatch closure,
+# the qualification verdict: transport admission, arming, dispatch closure,
 # parser replay, or a known-bad calibration whose absence would let a broken
 # verdict pass unchallenged.
 REQUIRED_TESTS: tuple[str, ...] = (

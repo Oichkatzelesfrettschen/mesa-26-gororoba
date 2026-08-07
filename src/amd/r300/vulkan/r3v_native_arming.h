@@ -124,6 +124,7 @@ void r3v_native_arming_collect(struct r3v_native_arming_facts *facts,
  * that reaches the ioctl leaves the token behind, so a second arming in
  * the same directory refuses.  Returns 0 or a negative errno.
  */
-int r3v_native_arming_disarm(const char *evidence_dir);
+int r3v_native_arming_disarm(const char *evidence_dir,
+                             const char *declared_digest);
 
 #endif /* R3V_NATIVE_ARMING_H */

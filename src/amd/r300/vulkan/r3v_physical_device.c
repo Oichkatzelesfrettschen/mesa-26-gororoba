@@ -367,7 +367,7 @@ r3v_physical_device_init_properties(struct vk_properties *const props,
     * implementation the application selected. */
    snprintf(props->driverName, sizeof(props->driverName), "%s", "r3v-native");
    snprintf(props->driverInfo, sizeof(props->driverInfo), "%s",
-            "Mesa r3v native (Radeon DRM, pre-hardware)");
+            "Mesa r3v native (Radeon DRM, private-cell experimental, nonconformant)");
 #else
    snprintf(props->driverName, sizeof(props->driverName), "%s", "r3v");
    snprintf(props->driverInfo, sizeof(props->driverInfo), "%s", "Mesa r3v");
