@@ -411,6 +411,22 @@ main(int argc, char **argv)
             "sentinel %d canary %d)",
             oracle.executed, oracle.value_a_pass, oracle.value_b_pass,
             oracle.sentinel_pass, oracle.canary_pass);
+
+      /* The oracle's contract stops at the target-plus-canary extent;
+       * the recorder sentinel-filled the whole 65536-byte allocation, so
+       * on the shim -- where no device write is legitimate -- the tail
+       * past the oracle-covered range must hold sentinel too, or a write
+       * landed where no predicate would report it.
+       */
+      const uint32_t *all_pixels = color_map;
+      uint32_t disturbed_tail = 0;
+      for (uint32_t i = 65 * 64; i < 65536 / 4; i++) {
+         if (all_pixels[i] != R300_TRIANGLE_COLOR_SENTINEL)
+            disturbed_tail++;
+      }
+      CHECK(disturbed_tail == 0,
+            "allocation tail past the canary row holds sentinel "
+            "(%u pixels disturbed)", disturbed_tail);
    } else {
       CHECK(result == VK_ERROR_DEVICE_LOST,
             "closed gate fails closed: %d", result);

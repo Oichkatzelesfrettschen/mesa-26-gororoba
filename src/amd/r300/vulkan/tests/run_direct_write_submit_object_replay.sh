@@ -56,6 +56,30 @@ if [ -z "${cell_digest}" ] || [ "${cell_digest}" != "${submit_digest}" ]; then
     exit 1
 fi
 
+# The two manifests were computed from the same in-memory IB, so their
+# agreement alone does not identify the retained file; recompute BLAKE3
+# over ib.bin itself where an independent hasher is available, and prove
+# the comparison by refusing a mutated copy.
+if command -v b3sum >/dev/null 2>&1; then
+    file_digest=$(b3sum --no-names "${workdir}/ib.bin")
+    if [ "${file_digest}" != "${cell_digest}" ]; then
+        echo "retained ib.bin hashes to ${file_digest}, manifest declares" \
+             "${cell_digest}" >&2
+        exit 1
+    fi
+    {
+        dd if="${workdir}/ib.bin" bs=4 count=31 2>/dev/null
+        printf '\377\377\377\377'
+    } > "${workdir}/mutated_ib.bin"
+    if [ "$(b3sum --no-names "${workdir}/mutated_ib.bin")" = \
+         "${cell_digest}" ]; then
+        echo "digest comparison failed to separate a mutated IB" >&2
+        exit 1
+    fi
+else
+    echo "b3sum absent; retained-file digest recomputation not run" >&2
+fi
+
 # The submit relocation chunk carries the color reference plus the
 # completion reference; the size derives from the two factors so a
 # failure names which one moved.
@@ -103,6 +127,28 @@ validate_relocs() {
 
 if ! validate_relocs "${workdir}/submit_relocs.bin"; then
     echo "retained submit relocation chunk failed validation" >&2
+    exit 1
+fi
+
+# The chunk's entry order binds to the manifest's bo_table by
+# reloc_index: the IB consumes relocation index 0, so a swapped chunk
+# would point DST_PITCH_OFFSET at the completion buffer while the
+# manifests still agree.  Compare each chunk handle to the handle the
+# manifest records for that index.
+manifest_handle_0=$(sed -n \
+    's/.*"reloc_index": 0, "handle": \([0-9]*\),.*/\1/p' \
+    "${workdir}/submit_manifest.json")
+manifest_handle_1=$(sed -n \
+    's/.*"reloc_index": 1, "handle": \([0-9]*\),.*/\1/p' \
+    "${workdir}/submit_manifest.json")
+chunk_handle_0=$((0x${color_handle}))
+chunk_handle_1=$((0x${completion_handle}))
+if [ -z "${manifest_handle_0}" ] || [ -z "${manifest_handle_1}" ] || \
+   [ "${chunk_handle_0}" -ne "${manifest_handle_0}" ] || \
+   [ "${chunk_handle_1}" -ne "${manifest_handle_1}" ]; then
+    echo "chunk handles (${chunk_handle_0}, ${chunk_handle_1}) do not" \
+         "bind to the manifest bo_table (${manifest_handle_0}," \
+         "${manifest_handle_1}) by reloc_index" >&2
     exit 1
 fi
 
