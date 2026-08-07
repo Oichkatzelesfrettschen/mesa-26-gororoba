@@ -340,8 +340,7 @@ r300_pair_eval_program(struct r300_pair_eval *e, struct radeon_compiler *c)
    return true;
 }
 
-/* ---------- deterministic schedule serialization ---------- */
-
+/* deterministic schedule serialization */
 static const char *
 model_name(enum r300_source_read_model m)
 {

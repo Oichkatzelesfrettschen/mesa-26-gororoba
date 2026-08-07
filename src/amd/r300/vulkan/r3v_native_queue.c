@@ -85,8 +85,14 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
    /* ib.bin carries the canonical little-endian encoding
     * (r300_triangle_ib_serialize), matching ib_blake3 above.
     */
+   /* The byte size can exceed size_t only where size_t is narrower than
+    * the dword count times four, so the guard compiles only there; a
+    * 64-bit size_t admits every uint32_t dword count.
+    */
+#if SIZE_MAX < UINT64_C(4) * UINT32_MAX
    if (ib_size_dwords > SIZE_MAX / sizeof(uint32_t))
       return -EOVERFLOW;
+#endif
    const size_t ib_byte_size = (size_t)ib_size_dwords * sizeof(uint32_t);
    uint8_t *ib_bytes = malloc(ib_byte_size);
    int result = ib_bytes == NULL ? -ENOMEM : 0;

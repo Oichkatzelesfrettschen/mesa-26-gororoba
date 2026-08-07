@@ -103,6 +103,7 @@ These rules expand in `Standalone build` and `Validation expectations`.
 ### Comments, prose, and safety
 
 - A source comment stands on its own for a Mesa maintainer six months later, without this project's task tracker or RCA campaign. It cites no internal GitHub/GitLab fork issue number, private PR chronology, wave label, task number, author tag, local path, private host, deictic time, or retained-experiment name, and it states a demonstrated property as the mechanism rather than by analogy to the experiment that demonstrated it.
+- A comment carries content: a compact semantic table or diagram belongs where it maps a descriptor word, packet layout, bit field, or state transition more precisely than prose, and delimiter lines, banner boxes, and ASCII art are decoration. Structure that persists across a file lives at file or type scope, and the point of use keeps the local link.
 - New or modified source comments, commit messages, and documentation by this project's contributors use American (United States) English spelling. A behavior patch leaves upstream comment spelling alone.
 - A patch changes behavior or structure with intent: no mass reformat, no stub, placeholder, dead code, or `TODO: finish later` prose absent explicit tracked rationale and user agreement.
 - Reports state results and decisions directly: the outcome, the decision, the evidence, and the residual uncertainty, each sentence carrying a result the reader uses. A claim states its positive term and names the mechanism, and the mechanism entails what the artifact lacks.

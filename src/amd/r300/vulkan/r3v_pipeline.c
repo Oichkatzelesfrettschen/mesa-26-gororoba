@@ -70,7 +70,7 @@ r3v_vertex_attr_data_size(enum pipe_format format)
     * independent of this value, and the kernel CS validator bounds that against
     * the page-aligned BO, not the tight binding range.  Counting by the dword
     * span instead dropped the final in-bounds vertex and violated the
-    * robustBufferAccess this driver advertises (manifested as a one-pixel
+    * robustBufferAccess r3v advertises (manifested as a one-pixel
     * image-compare miss on the sparsest draw of
     * dEQP-VK.memory.pipeline_barrier.transfer_dst_vertex_buffer.*_stride_2). */
    return util_format_get_blocksize(format);

@@ -4,6 +4,9 @@
  * Loader black-box sweep of the native R3V public surface: the real Vulkan
  * loader resolves and calls the ICD, and each invocation runs in a child
  * process so a null call reports as a signal rather than killing the sweep.
+ * Each invocation body reaches its command through a loader-linked symbol,
+ * and the procaddr legs that follow them query the tables instead of
+ * calling.
  */
 
 #include "r3v_native_surface.h"
@@ -64,8 +67,6 @@ in_child(const char *label, int (*body)(void))
    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
          "%s: exit status %d", label, WEXITSTATUS(status));
 }
-
-/* --- The invocation bodies, each reached through a loader-linked symbol --- */
 
 /* Creation of an unsupported type refuses and hands back no handle. */
 static int
@@ -314,8 +315,6 @@ call_memory_range_validation(void)
 
    return rc;
 }
-
-/* --- The procaddr legs --- */
 
 /* Device-scope names the loader answers from its own table for a Vulkan 1.0
  * instance even though this ICD leaves them NULL.  The direct-table sweep

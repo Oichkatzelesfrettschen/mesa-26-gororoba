@@ -768,7 +768,7 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     return true;
 }
 
-/* ---- >64-ALU FS multipass: NIR DAG partition and RGBA8 carry ----
+/* >64-ALU FS multipass: NIR DAG partition and RGBA8 carry
  *
  * A fragment program that the RC backend rejects at the R300_PFS_MAX_ALU_INST
  * ceiling splits into two passes at a cut through its single-block SSA DAG.

@@ -69,8 +69,7 @@ static int failures;
       }                                                                      \
    } while (0)
 
-/* ---------- classic compile to normal RC IR ---------- */
-
+/* classic compile to normal RC IR */
 static struct pipe_screen *
 fake_r300_screen(struct r300_screen *s)
 {
@@ -127,7 +126,7 @@ compile_classic(void *ctx, nir_shader *s,
    return true;
 }
 
-/* ---------- pair-stream oracles ---------- */
+/* Pair-stream oracles. */
 
 /* Snapshot every pair's operation with the NOP bubble cleared, so a
  * post-schedule multiset compare ignores the one field scheduling is allowed
@@ -422,8 +421,7 @@ legal_after_schedule_check(const char *name, nir_shader *(*build)(void))
    ralloc_free(ctx);
 }
 
-/* ---------- subset corpus ---------- */
-
+/* subset corpus */
 static nir_builder
 fs_builder(const char *name)
 {
@@ -602,7 +600,7 @@ build_tex(void)
    return b.shader;
 }
 
-/* ---------- safety tests: defer instead of hard-fail ----------
+/* safety tests: defer instead of hard-fail
  *
  * These three shapes cannot arise from any real front end (a genuine RAW
  * cycle, an already-over-budget translated stream, and so on are not

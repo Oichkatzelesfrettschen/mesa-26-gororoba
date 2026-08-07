@@ -2245,7 +2245,7 @@ build_const_fill_two_stores(void)
 static void
 case_constfill_regression(void)
 {
-   /* --- Byte extraction: 0xDEADBEEF (all bytes distinct) ---
+   /* Byte extraction: 0xDEADBEEF (all bytes distinct)
     * LE decomposition: R=byte0=0xEF, G=byte1=0xBE, B=byte2=0xAD, A=byte3=0xDE.
     * All four bytes differ so a channel-swap or mask truncation produces a
     * detectable mismatch. */
@@ -2262,7 +2262,7 @@ case_constfill_regression(void)
       ralloc_free(nir);
    }
 
-   /* --- Byte extraction: 0x00000000 (all-zero) --- */
+   /* Byte extraction: 0x00000000 (all-zero) */
    {
       nir_shader *nir = build_const_fill_zero();
       struct r300_compute_const_fill_pattern cf = {0};
@@ -2275,7 +2275,7 @@ case_constfill_regression(void)
       ralloc_free(nir);
    }
 
-   /* --- Byte extraction: 0xFFFFFFFF (saturation ceiling) --- */
+   /* Byte extraction: 0xFFFFFFFF (saturation ceiling) */
    {
       nir_shader *nir = build_const_fill_ff();
       struct r300_compute_const_fill_pattern cf = {0};
@@ -2288,7 +2288,7 @@ case_constfill_regression(void)
       ralloc_free(nir);
    }
 
-   /* --- Binding capture at non-zero binding 7 --- */
+   /* Binding capture at non-zero binding 7 */
    {
       nir_shader *nir = build_const_fill_binding7();
       struct r300_compute_const_fill_pattern cf = {0};
@@ -2304,7 +2304,7 @@ case_constfill_regression(void)
       ralloc_free(nir);
    }
 
-   /* --- Negative: non-contiguous output byte offset. --- */
+   /* Negative: non-contiguous output byte offset. */
    {
       nir_shader *nir = build_const_fill_strided_address();
       struct r300_compute_const_fill_pattern cf = {0};
@@ -2314,7 +2314,7 @@ case_constfill_regression(void)
       ralloc_free(nir);
    }
 
-   /* --- Negative: a fixed output byte offset is not out[gid]. --- */
+   /* Negative: a fixed output byte offset is not out[gid]. */
    {
       nir_shader *nir = build_const_fill_constant_address();
       struct r300_compute_const_fill_pattern cf = {0};
@@ -3325,7 +3325,7 @@ case_cas(void)
    ralloc_free(gen);
 }
 
-/* ---- storage-image RT-export detector ---- */
+/* Storage-image RT-export detector. */
 
 /* Single 2D image, or an array-of-images variable (descriptor array).  The
  * array form is a glsl_array_type of a non-array 2D image -- not a 2D-array

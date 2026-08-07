@@ -33,11 +33,10 @@
 /* Oracle (a) on the SCHEDULED-AND-MERGED pair stream: r300_classic_schedule's
  * cross-instruction RGB+Alpha merge changes the pair multiset, so the
  * multiset-invariance proof r300_classic_new_sched_test.c uses for the
- * identity-permutation increment no longer stands in for value equality (see
- * classic-r300-fs-compiler-backend-scoping.md).  This file
- * adds a value-level CPU evaluator over the paired RGB/Alpha form itself and
- * checks it two ways: hand-built pair streams with a directly computable
- * expected result isolate one scheduler mechanism at a time (merge over
+ * identity-permutation increment no longer stands in for value equality.
+ * This file adds a value-level CPU evaluator over the paired RGB/Alpha form
+ * itself and checks it two ways: hand-built pair streams with a directly
+ * computable expected result isolate one scheduler mechanism at a time (merge over
  * independent temporary writes, merge over disjoint output-channel writes, a
  * merge that legally refuses across mixed temp/output shapes, DP4's
  * raw-fourth-term read, DP3's three-term dot merged with an independent alpha
@@ -65,7 +64,7 @@ nearly_equal(float a, float b)
    return fabsf(a - b) <= 1e-4f;
 }
 
-/* ---------- hand-built pair corpus helpers ----------
+/* hand-built pair corpus helpers
  *
  * These shapes engineer one scheduler mechanism at a time (a genuine RAW
  * cycle, an independent RGB-only/Alpha-only pair, a critical-path height
@@ -607,7 +606,7 @@ test_reorder_prioritizes_critical_path(void)
    rc_destroy_regalloc_state(&rs);
 }
 
-/* ---------- real-front-end corpus: merge chained to the nir_to_rc oracle ----------
+/* real-front-end corpus: merge chained to the nir_to_rc oracle
  *
  * gl_FragColor.rgb from one computation and gl_FragColor.a from an
  * independent one, mirroring r300_classic_parity_test.c's
@@ -1097,7 +1096,7 @@ test_dp3_full_pair_broadcast(void)
    rc_destroy_regalloc_state(&rs);
 }
 
-/* ---------- RS48x source-read profile calibration ----------
+/* RS48x source-read profile calibration
  *
  * The profile earns trust the standard way: known-good inputs are the
  * retained RS482 silicon lanes (sign-flip mov discriminator, MAD product
