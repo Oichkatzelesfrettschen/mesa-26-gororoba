@@ -1,21 +1,37 @@
 # R3V native attended-cell procedure
 
-The first live `DRM_RADEON_CS` from the native R3V ICD is a physically
-attended run on the RS482 host under a separate explicit authorization.
-This document is the procedure that run follows: what must hold before
-it, what it records, which observations falsify it, and how it rolls
-back. Executing it requires that authorization; reading and rehearsing
-it does not.
+This document is the procedure for the second live `DRM_RADEON_CS`
+submission from the native R3V ICD, a physically attended run on the
+RS482 host under a separate explicit authorization. It states what
+must hold before the run, what it records, which observations falsify
+it, and how it rolls back. Executing it requires that authorization;
+reading and rehearsing it does not.
 
 ## Boundary this procedure crosses
 
-Every result the native lane holds today is pre-hardware: host unit
-tests, build and link separation, no-submit PM4 with retained evidence,
-the drm-shim host model, and offline replay through kernel decision code
-compiled from the RS482 host's own kernel source. None of it is silicon
-execution. The attended run is the first submission the radeon kernel
-driver validates and the command processor executes, so it is the first
-opportunity for a GPU hang, a bus fault, or a host lockup.
+A historical attended run already carries the first live
+`DRM_RADEON_CS` submission from the native lane. That run submitted the
+bare, inherited-state cell -- a recording with no first-draw state
+contract prefix. The radeon kernel driver accepted the submission and
+the completion retired clean: no CS validation error, no reset, no
+lockup line. The color target showed no modification: the oracle's
+`executed` verdict was false, so the falsifier fired on that run. The
+finding is the mechanism, not an open question -- RS482 requires the
+command stream to establish `US_OUT_FMT_0`, `COLOR_CHANNEL_MASK`, and
+`SC_SCREENDOOR` itself; each register alone, left at its inherited
+value, kills every color write, and the submitted cell owned none of
+the three. A ring wedge occurred later in the same boot; the run that
+produced it, and whether it traces to the attended submission or to
+unrelated same-boot activity, is unresolved.
+
+The current run submits the 234-dword self-contained cell that opens
+with the first-draw state contract
+(`src/amd/r300/common/r300_first_draw_state.c`), establishing every
+register the draw depends on before the draw itself, rather than
+inheriting GPU state from whatever ran before it. This is a separate
+authorization from the historical run, and its intended outcome is the
+first correct-pixel witness: a color target that actually carries the
+drawn triangle rather than its sentinel fill.
 
 `docs/hardware/r3v-implementation-boundaries.md` holds the ordered
 development list this run completes; it is step 9 there.
@@ -28,11 +44,37 @@ The run proceeds only when all of the following hold.
   program compiled by `r300_tcl_bypass_fs_tool` and its checked-in block
   proven to regenerate by `r300-tcl-bypass-fs-block-regeneration`.
 - `r300-tcl-bypass-offline-replay` and
-  `r3v-native-submit-object-replay` pass on the RS482 host itself with
-  `R3V_KERNEL_REPLAY_TOOL` pointing at a replay binary built from the
-  kernel source tree the running kernel was built from.
-- The four-suite run on the RS482 host reproduces its recorded vector,
-  and any drm-shim residue matches the calibrated signature.
+  `r3v-native-submit-object-replay` pass on the RS482 host itself. The
+  replay binary is a build output, not an operator-supplied binary:
+  `build-infra/r3v/build_kernel_replay.py` compiles
+  `replay_r300_cs_track` from the pinned kernel tree the running kernel
+  was built from, runs that tree's own
+  `r300_cs_grammar_correspondence` fidelity gate against
+  `r300_packet0_check`, and writes a provenance record binding the
+  output ELF to the exact kernel commit, per-file source hashes,
+  compiler identity, and compile argv.
+- The suite run on the RS482 host reproduces its recorded vector:
+
+  ```sh
+  meson test -C <builddir> --suite r300 --suite r3v \
+    --suite radeon-drm-vk --suite drm-shim
+  ```
+
+  and the qualification inventory gate confirms the required test set
+  is complete and the replay tool's provenance is current:
+
+  ```sh
+  R3V_CS_TRACK_REPLAY_TOOL=<path to replay_r300_cs_track> \
+  R3V_CS_TRACK_CONTROLS=<path to its controls fixture> \
+  R3V_CS_TRACK_REPLAY_PROVENANCE=<path to the provenance record> \
+  python3 src/amd/r300/vulkan/tests/r3v_qualification_inventory.py \
+    <builddir> --qualification
+  ```
+
+  The inventory verifies the replay tool against its provenance record
+  -- the correspondence gate passed and the ELF's SHA-256 matches the
+  recorded hash -- rather than trusting a binary handed to it by name
+  alone. Any drm-shim residue matches the calibrated signature.
 - `r3v_native_arming_runner` reports `armed` for the exact evidence
   directory the run will use.
 - The host has an off-box log path (netconsole or serial), because a
@@ -121,11 +163,16 @@ prediction is not revised after the fact.
 The run keeps, in the evidence directory and mirrored into the r300
 evidence repository:
 
-- `ib.bin`, `relocs.bin`, `manifest.json` -- the semantic cell;
+- `ib.bin`, `relocs.bin`, `manifest.json` -- the semantic cell, the IB
+  and relocation list before the completion reference folds in;
 - `submit_relocs.bin`, `submit_manifest.json` -- the exact submit
-  object, whose relocation list carries the completion reference the
-  semantic cell does not;
-- `attempt.token` -- proof the directory was armed once;
+  object: the three CS chunk IDs and dword lengths, the CS flags, the
+  BO table, the completion BO, and the relocation list with the
+  completion reference the semantic cell does not carry;
+- `attempt.token` -- the declared IB BLAKE3 digest and the wall-clock
+  instant the directory was disarmed, written by exclusive creation and
+  fsynced durably before the ioctl, so a power failure past the ioctl
+  cannot leave the directory apparently unused;
 - the arming runner's full report, including every declared and observed
   factor;
 - the color target's bytes and the oracle verdict;

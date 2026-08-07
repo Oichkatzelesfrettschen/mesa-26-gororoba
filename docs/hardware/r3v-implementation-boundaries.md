@@ -193,7 +193,7 @@ and outstanding.
 |---|---|
 | `src/amd/radeon/drm_vk/` | Radeon DRM BO, map, PRIME, relocation, submission, and finite completion transport |
 | `src/amd/r300/common/` | RS480/R300 device facts, formats, packet fields, state packs, barriers, and validators |
-| `src/amd/r300/cpu/` | scalar reference and K8-safe vertex execution |
+| `src/amd/r300/cpu/` (planned, absent from the tree) | scalar reference and K8-safe vertex execution |
 | `src/amd/r300/vulkan/` | Vulkan objects, command lowering, execution graph, queue policy, images, WSI, and entry points |
 
 The shared Radeon DRM layer contains no R300 or Evergreen graphics state.
