@@ -385,15 +385,51 @@ main(int argc, char **argv)
             "submit_manifest.json names the submit object");
       free(submit_manifest);
 
+      /* The retained ib.bin identifies itself against the in-tree
+       * emitter, byte for byte in the canonical little-endian encoding,
+       * so file identity holds without an external hasher: a retention
+       * path that wrote different parser-valid bytes fails here.
+       */
+      struct r300_direct_write_ib reference;
+      CHECK(r300_direct_write_emit(&reference) == 0,
+            "reference direct-write emission");
+      void *ib_data = NULL;
+      size_t ib_size = 0;
+      CHECK(read_whole_file(manifest_dir, "ib.bin", &ib_data, &ib_size) ==
+               0,
+            "retained ib.bin reads back");
+      if (ib_data != NULL) {
+         CHECK(ib_size == reference.ib_size_dwords * sizeof(uint32_t),
+               "retained ib.bin length %zu matches the emitter's %u "
+               "dwords", ib_size, reference.ib_size_dwords);
+         uint8_t *reference_bytes =
+            malloc(reference.ib_size_dwords * sizeof(uint32_t));
+         CHECK(reference_bytes != NULL, "reference serialization buffer");
+         if (reference_bytes != NULL &&
+             ib_size == reference.ib_size_dwords * sizeof(uint32_t)) {
+            r300_triangle_ib_serialize(reference.ib,
+                                       reference.ib_size_dwords,
+                                       reference_bytes);
+            CHECK(memcmp(ib_data, reference_bytes, ib_size) == 0,
+                  "retained ib.bin is byte-identical to the emitter "
+                  "stream");
+         }
+         free(reference_bytes);
+         free(ib_data);
+      }
+      r300_direct_write_release(&reference);
+
       /* Mapping the color target after completion invalidates its stale
        * cache lines through the map-establishment sync.
        */
       LOAD_DEVICE(vkMapMemory);
       void *color_map = NULL;
-      CHECK(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
-                        &color_map) == VK_SUCCESS &&
-               color_map != NULL,
-            "color memory maps after completion");
+      VkResult map_result = vkMapMemory(device, color_memory, 0,
+                                        VK_WHOLE_SIZE, 0, &color_map);
+      CHECK(map_result == VK_SUCCESS && color_map != NULL,
+            "color memory maps after completion: %d", map_result);
+      if (map_result != VK_SUCCESS || color_map == NULL)
+         return 1;
       CHECK(native_device->drm.cache_sync_count == 2,
             "map establishment invalidated the color target: %" PRIu64,
             native_device->drm.cache_sync_count);
@@ -412,11 +448,11 @@ main(int argc, char **argv)
             oracle.executed, oracle.value_a_pass, oracle.value_b_pass,
             oracle.sentinel_pass, oracle.canary_pass);
 
-      /* The oracle's contract stops at the target-plus-canary extent;
-       * the recorder sentinel-filled the whole 65536-byte allocation, so
-       * on the shim -- where no device write is legitimate -- the tail
-       * past the oracle-covered range must hold sentinel too, or a write
-       * landed where no predicate would report it.
+      /* The tail check detects writes outside the oracle's contract:
+       * the oracle stops at the target-plus-canary extent, the recorder
+       * sentinel-fills the whole 65536-byte allocation, and on the shim
+       * no device write is legitimate, so any disturbed tail pixel is a
+       * write no oracle predicate reports.
        */
       const uint32_t *all_pixels = color_map;
       uint32_t disturbed_tail = 0;
