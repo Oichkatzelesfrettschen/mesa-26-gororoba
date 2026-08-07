@@ -58,16 +58,16 @@ that substitutes any of them decides a different question.
   recovery sequence when that bound is reached without completion.
 - Readback invalidation: the same invalidate before the host reads.
 
-The command stream is what differs. R300 exposes no command that writes
-memory independent of every graphics-pipeline state element; whether such a
-command exists at all is an open design question, not one this control
-answers. The control emits the minimum state setup that lets one write
-instruction execute -- not the first-draw state contract the successor
-emits -- and then a write whose effect does not depend on rasterization,
-fragment shading, or the color-write gates the first run implicated. Until
-the open question above is resolved, the control's state setup remains
-graphics-path-bearing by construction, and this document names that residual
-dependency instead of describing the control as pipeline-removed.
+The command stream is what differs. The selected primitive is the 2D
+engine's solid rectangle fill, driven by PACKET0 writes the r300 user-CS
+parser admits, with the destination bound by the `DST_PITCH_OFFSET`
+relocation case; `docs/hardware/r300-direct-write-2d-fill-authority.md`
+carries the register contract and its kernel-source derivation. The fill
+touches no VAP, RS, US, RB3D, or ZB state and performs no source fetch,
+so the write path is brush value, ROP, 2D destination -- outside the
+color-write gates the first run implicated. Whether the RS482 2D engine
+writes an unsnooped-GART destination coherently under the in-stream
+flush and wait remains the silicon hypothesis this control tests.
 
 ## The observable
 

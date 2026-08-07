@@ -140,6 +140,44 @@ test(
   suite : ['r300'],
 )
 
+# The 2D solid-fill direct-write control cell: the emitter, its oracle,
+# the manifest writer, and the offline kernel-parser replay with the
+# parser-decidable known-bad arms.
+r300_direct_write_test = executable(
+  'r300_direct_write_test',
+  files('r300_direct_write.c', 'r300_fragment_binary.c',
+        'r300_first_draw_state.c', 'r300_pm4_builder.c',
+        'r300_tcl_bypass_triangle.c', 'tests/r300_direct_write_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-direct-write',
+  r300_direct_write_test,
+  suite : ['r300'],
+)
+
+r300_direct_write_manifest = executable(
+  'r300_direct_write_manifest',
+  files('r300_direct_write.c', 'r300_direct_write_manifest.c',
+        'r300_fragment_binary.c', 'r300_first_draw_state.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-direct-write-cs-track-replay',
+  files('tests/run_direct_write_cs_track_replay.sh')[0],
+  args : [r300_direct_write_manifest],
+  suite : ['r300'],
+)
+
 r300_first_draw_state_test = executable(
   'r300_first_draw_state_test',
   files('r300_fragment_binary.c', 'r300_pm4_builder.c',
