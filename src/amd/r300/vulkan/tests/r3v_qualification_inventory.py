@@ -65,6 +65,13 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-triangle-cell-closed",
     "r3v-native-triangle-cell-open",
     "r3v-native-triangle-cell-unattested",
+    # Direct-write control: emitter, manifest, and native binding.
+    "r300-direct-write",
+    "r300-direct-write-manifest-integration",
+    "r300-direct-write-cs-track-replay",
+    "r3v-native-direct-write-closed",
+    "r3v-native-direct-write-open",
+    "r3v-native-direct-write-submit-object-replay",
     "r3v-native-gallium-separation",
     "r3v-native-gallium-separation-known-bad",
     "r3v-native-lifecycle-pair-complete",
