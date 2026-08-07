@@ -58,6 +58,7 @@ Seven principles generate the rules in this file. A case no rule names resolves 
 - A new probe, lint, or verdict-producing script earns trust by calibration against known-good and known-bad inputs first.
 - Build targets, tests, and validation checks survive a narrow fix.
 - A generated-file change runs the generator, or documents why the generator is unavailable.
+- A decision-grade result comes from a clean tree at the declared SHA: `git status --porcelain=v2` empty, `git diff HEAD` and `git diff --cached HEAD` empty, and `HEAD` equal to the declared source SHA, in an isolated worktree for qualification runs.
 
 These rules expand in `Standalone build` and `Validation expectations`.
 
@@ -992,6 +993,8 @@ Minimum validation depends on the changed surface.
 - Scripts: shellcheck when applicable plus known-good and known-bad paths.
 
 A pass claim rests on a run; an unrun test reads `not run` with its reason. A test blocked by hardware safety names the required gate. CTS/Piglit/deqp movement that differs from prediction is evidence.
+
+A decision-grade build or test result binds to one committed state. Ninja builds the working tree, so uncommitted edits outside the tested commit's diff enter the binaries and the result stops describing the declared SHA; a shared checkout carrying a peer's in-flight edits fails this silently. Before a qualification, conformance-baseline, or merge-gating run: `git status --porcelain=v2` reports nothing, `git diff HEAD` and `git diff --cached HEAD` are empty, and `HEAD` equals the declared source SHA. Qualification runs use an isolated worktree (`git worktree add --detach`), which satisfies the check by construction and leaves the shared checkout's state out of the evidence.
 
 ## Security and hardware stop-line
 
