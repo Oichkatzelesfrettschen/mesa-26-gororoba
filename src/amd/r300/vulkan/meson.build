@@ -658,8 +658,42 @@ if get_option('r3v-native-backend')
     # test registers where xcb and a virtual server are available and skips
     # at run time when no display answers.  Its absence stays visible as a
     # skip rather than a missing test.
-    prog_xvfb_run = find_program('xvfb-run', required : false)
-    if dep_xcb.found() and prog_xvfb_run.found()
+    prog_xvfb = find_program('Xvfb', required : false)
+    r3v_xvfb_wrapper = files('tests/run_under_xvfb.sh')
+    if dep_xcb.found() and prog_xvfb.found()
+      # The wrapper allocates the display through Xvfb -displayfd, returns
+      # the wrapped binary's exact status, and reports infrastructure
+      # failure as 125, so a should_fail expectation is satisfied only by
+      # the binary's own verdict.  These four legs calibrate the wrapper
+      # itself: status 0 and 1 pass through, 77 stays a skip, and a
+      # startup failure refuses as 125 rather than any of those.
+      test(
+        'r3v-xvfb-wrapper-passthrough-success',
+        r3v_xvfb_wrapper,
+        args : ['true'],
+        suite : ['r3v'],
+      )
+      test(
+        'r3v-xvfb-wrapper-passthrough-failure',
+        r3v_xvfb_wrapper,
+        args : ['false'],
+        should_fail : true,
+        suite : ['r3v'],
+      )
+      test(
+        'r3v-xvfb-wrapper-passthrough-skip',
+        r3v_xvfb_wrapper,
+        args : ['sh', '-c', 'exit 77'],
+        suite : ['r3v'],
+      )
+      test(
+        'r3v-xvfb-wrapper-infrastructure-refusal',
+        r3v_xvfb_wrapper,
+        args : ['true'],
+        env : {'R3V_XVFB_BINARY' : '/bin/false'},
+        should_fail : true,
+        suite : ['r3v'],
+      )
       r3v_native_wsi_surface_contract = executable(
         'r3v_native_wsi_surface_contract',
         files('tests/r3v_native_wsi_surface_contract.c'),
@@ -670,17 +704,12 @@ if get_option('r3v-native-backend')
         c_args : [no_override_init_args],
         gnu_symbol_visibility : 'hidden',
       )
-      # The X display number is a host-wide resource, and xvfb-run -a searches
-      # it for a free one.  Concurrent searches settle on the same number, and
-      # the instance that loses reports its own cleanup failure as the test
-      # status, so the four surface tests run one at a time.
       test(
         'r3v-native-wsi-surface-contract',
-        prog_xvfb_run,
-        args : ['-a', r3v_native_wsi_surface_contract.full_path()],
+        r3v_xvfb_wrapper,
+        args : [r3v_native_wsi_surface_contract.full_path()],
         env : r3v_native_cell_env,
         depends : [libradeon_noop_drm_shim],
-        is_parallel : false,
         timeout : 120,
         suite : ['r3v'],
       )
@@ -691,13 +720,12 @@ if get_option('r3v-native-backend')
       foreach wsi_query : ['capabilities', 'formats', 'modes']
         test(
           'r3v-native-wsi-surface-contract-known-bad-@0@'.format(wsi_query),
-          prog_xvfb_run,
-          args : ['-a', r3v_native_wsi_surface_contract.full_path()],
+          r3v_xvfb_wrapper,
+          args : [r3v_native_wsi_surface_contract.full_path()],
           env : environment(r3v_native_cell_vars + {
             'R3V_WSI_FIXTURE_QUERY_ERROR' : wsi_query,
           }),
           depends : [libradeon_noop_drm_shim],
-          is_parallel : false,
           should_fail : true,
           timeout : 120,
           suite : ['r3v'],
