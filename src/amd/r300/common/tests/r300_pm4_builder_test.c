@@ -102,43 +102,60 @@ test_reserve_refuses_overflow(void)
    assert(b.count == UINT32_MAX - 2);
 }
 
-/* A run is one dword longer than its payload, so a payload at UINT32_MAX has
- * no representable run length: adding one wraps to zero, a zero-dword
- * reservation always fits, and the copy that follows would take the payload
- * count as written.  Both packet forms refuse that length before reserving.
+/* The 14-bit header field carries count - 1, so 1..0x4000 payload dwords
+ * encode and no other length does.  The bound also removes the count + 1
+ * wrap: without it, UINT32_MAX + 1 reserves zero dwords, always fits, and
+ * the copy takes the payload count as written.  Each refused length reports
+ * -EINVAL before any reservation, so encoding and capacity stay distinct
+ * causes.
  */
+static uint32_t run_bound_payload[R300_PM4_MAX_RUN];
+static uint32_t run_bound_dest[R300_PM4_MAX_RUN + 1];
+
 static void
-test_run_length_refuses_overflow(void)
+test_run_length_boundaries(void)
 {
-   struct guarded g;
-   const uint32_t payload[1] = { 0x77 };
+   static const struct {
+      uint32_t count;
+      int expected_error;
+   } cases[] = {
+      { 0, -EINVAL },
+      { 1, 0 },
+      { R300_PM4_MAX_RUN, 0 },
+      { R300_PM4_MAX_RUN + 1, -EINVAL },
+      { UINT32_MAX, -EINVAL },
+   };
 
-   guarded_init(&g);
-   struct r300_pm4_builder b;
-   r300_pm4_builder_init(&b, g.words, ARRAY_SIZE(g.words));
-   r300_pm4_packet0(&b, R300_VAP_VTX_SIZE, payload, UINT32_MAX);
-   assert(b.error == -EINVAL);
-   assert(b.count == 0);
-   assert(g.words[0] == 0);
-   guards_hold(&g);
+   for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+      struct r300_pm4_builder b;
 
-   guarded_init(&g);
-   r300_pm4_builder_init(&b, g.words, ARRAY_SIZE(g.words));
-   r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, payload, UINT32_MAX);
-   assert(b.error == -EINVAL);
-   assert(b.count == 0);
-   assert(g.words[0] == 0);
-   guards_hold(&g);
+      memset(run_bound_dest, 0, sizeof(run_bound_dest));
+      r300_pm4_builder_init(&b, run_bound_dest, ARRAY_SIZE(run_bound_dest));
+      r300_pm4_packet0(&b, R300_VAP_VTX_SIZE, run_bound_payload,
+                       cases[i].count);
+      assert(b.error == cases[i].expected_error);
+      assert(b.count == (cases[i].expected_error == 0 ? cases[i].count + 1
+                                                      : 0));
 
-   /* One below that length is representable, so it refuses for capacity
-    * rather than for the encoding, which keeps the two causes distinct.
+      memset(run_bound_dest, 0, sizeof(run_bound_dest));
+      r300_pm4_builder_init(&b, run_bound_dest, ARRAY_SIZE(run_bound_dest));
+      r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, run_bound_payload,
+                       cases[i].count);
+      assert(b.error == cases[i].expected_error);
+      assert(b.count == (cases[i].expected_error == 0 ? cases[i].count + 1
+                                                      : 0));
+   }
+
+   /* An encodable run that exceeds the destination refuses for capacity,
+    * which keeps the two causes distinct.
     */
-   guarded_init(&g);
-   r300_pm4_builder_init(&b, g.words, ARRAY_SIZE(g.words));
-   r300_pm4_packet0(&b, R300_VAP_VTX_SIZE, payload, UINT32_MAX - 1);
+   struct r300_pm4_builder b;
+   uint32_t small[4];
+   r300_pm4_builder_init(&b, small, ARRAY_SIZE(small));
+   r300_pm4_packet0(&b, R300_VAP_VTX_SIZE, run_bound_payload,
+                    R300_PM4_MAX_RUN);
    assert(b.error == -ENOSPC);
    assert(b.count == 0);
-   guards_hold(&g);
 }
 
 /* The first refusal is the one reported, and every later operation is a
@@ -209,8 +226,8 @@ test_packet_runs_are_all_or_nothing(void)
    guards_hold(&g);
 }
 
-/* PACKET0 encodes count - 1, so an empty run has no encoding; PACKET3 encodes
- * an empty payload as zero, so a header alone is a packet.
+/* Both packet headers name count - 1 payload dwords, so an empty run has no
+ * encoding in either form, and a null payload is malformed at any count.
  */
 static void
 test_packet_shapes(void)
@@ -230,10 +247,9 @@ test_packet_shapes(void)
    assert(b.error == -EINVAL);
 
    r300_pm4_builder_init(&b, g.words, 16);
-   r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, NULL, 0);
-   assert(b.error == 0);
-   assert(b.count == 1);
-   assert(g.words[0] == CP_PACKET3(R300_PACKET3_3D_DRAW_VBUF_2, 0));
+   r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, &one, 0);
+   assert(b.error == -EINVAL);
+   assert(b.count == 0);
 
    r300_pm4_builder_init(&b, g.words, 16);
    r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, NULL, 2);
@@ -289,6 +305,12 @@ test_null_destination(void)
    r300_pm4_dword(&b, 1);
    assert(b.error == -EINVAL);
    assert(b.count == 0);
+
+   /* Null with zero capacity is the same malformed builder; a zero-capacity
+    * probe supplies a valid pointer instead.
+    */
+   r300_pm4_builder_init(&b, NULL, 0);
+   assert(b.error == -EINVAL);
 }
 
 int
@@ -297,7 +319,7 @@ main(void)
    test_zero_capacity_refuses();
    test_reserve_is_exact();
    test_reserve_refuses_overflow();
-   test_run_length_refuses_overflow();
+   test_run_length_boundaries();
    test_first_failure_is_preserved();
    test_packet_runs_are_all_or_nothing();
    test_packet_shapes();

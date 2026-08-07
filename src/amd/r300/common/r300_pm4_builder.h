@@ -26,6 +26,20 @@ struct r300_pm4_builder {
 /* The index a reloc payload lands at when the write refuses. */
 #define R300_PM4_NO_INDEX UINT32_MAX
 
+/* Both packet headers carry the payload run length as a 14-bit count - 1
+ * field, so one to 0x4000 payload dwords have an encoding and no other
+ * length does.
+ */
+#define R300_PM4_MAX_RUN 0x4000u
+
+/* The radeon CS grammar for a BO reference: a type-3 NOP whose single
+ * payload dword indexes the relocation chunk in dword units.
+ */
+#define R300_PM4_PACKET3_NOP 0x00001000
+
+/* A null destination is a malformed builder whatever its capacity, so init
+ * records -EINVAL and every operation stays a no-op.
+ */
 void r300_pm4_builder_init(struct r300_pm4_builder *b, uint32_t *words,
                            uint32_t capacity);
 
@@ -39,7 +53,8 @@ bool r300_pm4_builder_reserve(struct r300_pm4_builder *b, uint32_t needed);
 void r300_pm4_dword(struct r300_pm4_builder *b, uint32_t value);
 
 /* PACKET0 header plus payload: a register write run of count dwords starting
- * at reg.  The header encodes count - 1, so a zero count is -EINVAL.
+ * at reg.  A count outside 1..R300_PM4_MAX_RUN has no header encoding and is
+ * -EINVAL.
  */
 void r300_pm4_packet0(struct r300_pm4_builder *b, uint32_t reg,
                       const uint32_t *payload, uint32_t count);
@@ -47,8 +62,10 @@ void r300_pm4_packet0(struct r300_pm4_builder *b, uint32_t reg,
 /* The one-dword PACKET0 case. */
 void r300_pm4_reg(struct r300_pm4_builder *b, uint32_t reg, uint32_t value);
 
-/* PACKET3 header plus payload.  The header encodes count - 1, and a
- * zero-payload packet is legal, so count zero writes the header alone.
+/* PACKET3 header plus payload.  The header names count - 1 following payload
+ * dwords, so an empty payload has no encoding: CP_PACKET3(op, 0) tells the
+ * parser one payload dword follows.  A count outside 1..R300_PM4_MAX_RUN is
+ * -EINVAL.
  */
 void r300_pm4_packet3(struct r300_pm4_builder *b, uint32_t opcode,
                       const uint32_t *payload, uint32_t count);

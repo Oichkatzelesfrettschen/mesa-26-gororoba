@@ -7,11 +7,6 @@
 #include <errno.h>
 #include <string.h>
 
-/* The radeon CS grammar for a BO reference: a type-3 NOP whose one payload
- * dword indexes the relocation chunk in dword units.
- */
-#define R300_PM4_PACKET3_NOP 0x00001000
-
 void
 r300_pm4_builder_init(struct r300_pm4_builder *b, uint32_t *words,
                       uint32_t capacity)
@@ -19,7 +14,7 @@ r300_pm4_builder_init(struct r300_pm4_builder *b, uint32_t *words,
    b->words = words;
    b->capacity = words != NULL ? capacity : 0;
    b->count = 0;
-   b->error = words == NULL && capacity != 0 ? -EINVAL : 0;
+   b->error = words == NULL ? -EINVAL : 0;
 }
 
 bool
@@ -34,18 +29,17 @@ r300_pm4_builder_reserve(struct r300_pm4_builder *b, uint32_t needed)
    return true;
 }
 
-/* Reserve a header plus its payload.  The run is one dword longer than the
- * payload, so a payload at UINT32_MAX has no representable run length: adding
- * one wraps to zero, and a zero-dword reservation always fits.  Refusing that
- * length here is what keeps the reservation the whole gate, since the copy
- * below it takes the payload count as written.
+/* Admit a payload run and reserve it with its header.  The header's 14-bit
+ * field carries payload_count - 1, so only 1..R300_PM4_MAX_RUN encode; the
+ * bound also keeps payload_count + 1 exact, so the reservation stays the
+ * whole gate and the copy below it takes the payload count as written.
  */
 static bool
 reserve_run(struct r300_pm4_builder *b, uint32_t payload_count)
 {
    if (b->error != 0)
       return false;
-   if (payload_count == UINT32_MAX) {
+   if (payload_count == 0 || payload_count > R300_PM4_MAX_RUN) {
       b->error = -EINVAL;
       return false;
    }
@@ -66,10 +60,7 @@ r300_pm4_packet0(struct r300_pm4_builder *b, uint32_t reg,
 {
    if (b->error != 0)
       return;
-   /* The header carries count - 1, so a run of zero registers has no
-    * encoding.
-    */
-   if (count == 0 || payload == NULL) {
+   if (payload == NULL) {
       b->error = -EINVAL;
       return;
    }
@@ -93,22 +84,20 @@ r300_pm4_packet3(struct r300_pm4_builder *b, uint32_t opcode,
 {
    if (b->error != 0)
       return;
-   /* A type-3 header carries count - 1 for a payload and encodes an empty
-    * payload as zero, so only a null pointer with a nonzero count is
-    * malformed.
+   /* A type-3 header names count - 1 following payload dwords, so an empty
+    * payload has no encoding; the relocation NOP is the count-field-zero,
+    * one-payload-dword case.
     */
-   if (count != 0 && payload == NULL) {
+   if (payload == NULL) {
       b->error = -EINVAL;
       return;
    }
    if (!reserve_run(b, count))
       return;
 
-   b->words[b->count++] = CP_PACKET3(opcode, count == 0 ? 0 : count - 1);
-   if (count != 0) {
-      memcpy(&b->words[b->count], payload, count * sizeof(*payload));
-      b->count += count;
-   }
+   b->words[b->count++] = CP_PACKET3(opcode, count - 1);
+   memcpy(&b->words[b->count], payload, count * sizeof(*payload));
+   b->count += count;
 }
 
 void
