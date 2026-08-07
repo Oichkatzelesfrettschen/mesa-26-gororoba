@@ -18,15 +18,35 @@
 #include "util/mesa-blake3.h"
 
 #include <stdint.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
-/* Writes one evidence file atomically: the payload lands in a dot-prefixed
- * temporary and renames into place, so a reader never sees a torn file and
- * a failed write leaves no half-named artifact.  Returns 0 or a negative
- * errno.
+/* Publishes the directory entry itself: rename makes the file visible, and
+ * the entry survives power loss only after the directory's own metadata
+ * reaches storage.  Returns 0 or a negative errno.
+ */
+static int
+fsync_dir(const char *dir)
+{
+   int fd = open(dir, O_RDONLY | O_DIRECTORY);
+   if (fd < 0)
+      return -errno;
+   int result = fsync(fd) == 0 ? 0 : -errno;
+   close(fd);
+   return result;
+}
+
+/* Writes one evidence file durably: the payload lands in a dot-prefixed
+ * temporary, every byte is written and fsynced, the rename publishes the
+ * final name, and the directory fsync makes the entry itself survive power
+ * loss -- a reader never sees a torn file, and a crash after return cannot
+ * lose the artifact.  A path that would truncate refuses up front, since a
+ * truncated name writes evidence somewhere the reader never looks.
+ * Returns 0 or a negative errno.
  */
 static int
 write_file_atomic(const char *dir, const char *name, const void *data,
@@ -34,24 +54,39 @@ write_file_atomic(const char *dir, const char *name, const void *data,
 {
    char tmp_path[1024];
    char path[1024];
-   snprintf(tmp_path, sizeof(tmp_path), "%s/.%s.tmp", dir, name);
-   snprintf(path, sizeof(path), "%s/%s", dir, name);
+   int tmp_length =
+      snprintf(tmp_path, sizeof(tmp_path), "%s/.%s.tmp", dir, name);
+   int length = snprintf(path, sizeof(path), "%s/%s", dir, name);
+   if (tmp_length < 0 || (size_t)tmp_length >= sizeof(tmp_path) ||
+       length < 0 || (size_t)length >= sizeof(path))
+      return -ENAMETOOLONG;
 
-   FILE *f = fopen(tmp_path, "wb");
-   if (f == NULL)
+   int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+   if (fd < 0)
       return -errno;
-   size_t written = fwrite(data, 1, size, f);
-   int flush_result = fflush(f);
-   if (fclose(f) != 0 || written != size || flush_result != 0) {
-      remove(tmp_path);
+   const uint8_t *bytes = data;
+   size_t total = 0;
+   while (total < size) {
+      ssize_t written = write(fd, bytes + total, size - total);
+      if (written < 0) {
+         if (errno == EINTR)
+            continue;
+         close(fd);
+         unlink(tmp_path);
+         return -EIO;
+      }
+      total += (size_t)written;
+   }
+   if (fsync(fd) != 0 || close(fd) != 0) {
+      unlink(tmp_path);
       return -EIO;
    }
    if (rename(tmp_path, path) != 0) {
       int saved = -errno;
-      remove(tmp_path);
+      unlink(tmp_path);
       return saved;
    }
-   return 0;
+   return fsync_dir(dir);
 }
 
 static void
@@ -63,6 +98,60 @@ blake3_hex(const void *data, size_t size, char out[BLAKE3_OUT_LEN * 2 + 1])
    _mesa_blake3_update(&ctx, data, size);
    _mesa_blake3_final(&ctx, digest);
    _mesa_blake3_format(out, digest);
+}
+
+/* Resolves the running driver's own ELF identity: /proc/self/maps names the
+ * loaded libvulkan_r3v_native.so, and the digest is over that file's bytes,
+ * so the retained bundle binds the submission to the exact binary that
+ * issued it.  A driver loaded under another name records "unresolved".
+ */
+static void
+driver_elf_identity(char *path_out, size_t path_size,
+                    char digest_out[BLAKE3_OUT_LEN * 2 + 1])
+{
+   snprintf(path_out, path_size, "unresolved");
+   snprintf(digest_out, BLAKE3_OUT_LEN * 2 + 1, "unresolved");
+
+   FILE *maps = fopen("/proc/self/maps", "r");
+   if (maps == NULL)
+      return;
+   char line[1024];
+   char so_path[1024] = "";
+   while (fgets(line, sizeof(line), maps) != NULL) {
+      const char *name = strstr(line, "libvulkan_r3v_native.so");
+      if (name == NULL)
+         continue;
+      const char *start = strchr(line, '/');
+      if (start == NULL || start > name)
+         continue;
+      size_t length = strcspn(start, "\n");
+      if (length >= sizeof(so_path))
+         continue;
+      memcpy(so_path, start, length);
+      so_path[length] = '\0';
+      break;
+   }
+   fclose(maps);
+   if (so_path[0] == '\0')
+      return;
+
+   FILE *so = fopen(so_path, "rb");
+   if (so == NULL)
+      return;
+   struct mesa_blake3 ctx;
+   _mesa_blake3_init(&ctx);
+   uint8_t chunk[4096];
+   size_t got;
+   while ((got = fread(chunk, 1, sizeof(chunk), so)) > 0)
+      _mesa_blake3_update(&ctx, chunk, got);
+   int failed = ferror(so);
+   fclose(so);
+   if (failed)
+      return;
+   uint8_t digest[BLAKE3_OUT_LEN];
+   _mesa_blake3_final(&ctx, digest);
+   _mesa_blake3_format(digest_out, digest);
+   snprintf(path_out, path_size, "%s", so_path);
 }
 
 /* Retains the semantic cell -- the IB and the command buffer's own
@@ -141,7 +230,12 @@ static int
 r3v_native_queue_write_submit_object(
    struct r3v_native_device *device, const uint32_t *ib,
    uint32_t ib_size_dwords, const struct radeon_drm_vk_reloc_list *relocs,
-   const struct radeon_drm_vk_cs *cs)
+   const struct radeon_drm_vk_cs *cs,
+   const struct r3v_native_bo_reference *references,
+   uint32_t reference_count, uint32_t completion_handle,
+   uint32_t completion_domains, uint64_t completion_size,
+   const char *kernel_release,
+   const char *module_srcversion)
 {
    char ib_hex[BLAKE3_OUT_LEN * 2 + 1];
    char reloc_hex[BLAKE3_OUT_LEN * 2 + 1];
@@ -149,11 +243,48 @@ r3v_native_queue_write_submit_object(
    blake3_hex(relocs->relocs, relocs->count * sizeof(relocs->relocs[0]),
               reloc_hex);
 
+   char elf_path[1024];
+   char elf_hex[BLAKE3_OUT_LEN * 2 + 1];
+   driver_elf_identity(elf_path, sizeof(elf_path), elf_hex);
+
    int result = write_file_atomic(device->manifest_dir, "submit_relocs.bin",
                                   relocs->relocs,
                                   relocs->count * sizeof(relocs->relocs[0]));
    if (result == 0) {
-      char manifest[1400];
+      /* The command buffer's own references in relocation order, then the
+       * completion BO the CS rebuild folded in; the reloc index is the
+       * position the kernel resolves.
+       */
+      char bo_table[1024];
+      int bo_length = 0;
+      for (uint32_t r = 0; r < reference_count && bo_length >= 0; r++) {
+         bo_length += snprintf(
+            &bo_table[bo_length], sizeof(bo_table) - (size_t)bo_length,
+            "%s    { \"reloc_index\": %u, \"handle\": %u, "
+            "\"read_domains\": %u, \"write_domain\": %u, "
+            "\"size\": %llu, \"role\": \"command\" }",
+            r == 0 ? "" : ",\n", r, references[r].handle,
+            references[r].read_domains, references[r].write_domain,
+            references[r].memory != NULL
+               ? (unsigned long long)references[r].memory->bo.size
+               : 0ull);
+         if ((size_t)bo_length >= sizeof(bo_table))
+            return -EIO;
+      }
+      char completion_row[192];
+      int completion_length = snprintf(
+         completion_row, sizeof(completion_row),
+         "%s    { \"reloc_index\": %u, \"handle\": %u, "
+         "\"read_domains\": 0, \"write_domain\": %u, "
+         "\"size\": %llu, \"role\": \"completion\" }",
+         reference_count == 0 ? "" : ",\n", reference_count,
+         completion_handle, completion_domains,
+         (unsigned long long)completion_size);
+      if (completion_length < 0 ||
+          (size_t)completion_length >= sizeof(completion_row))
+         return -EIO;
+
+      char manifest[4096];
       int length = snprintf(
          manifest, sizeof(manifest),
          "{\n"
@@ -162,17 +293,26 @@ r3v_native_queue_write_submit_object(
          "  \"reloc_count\": %u,\n"
          "  \"ib_blake3\": \"%s\",\n"
          "  \"submit_relocs_blake3\": \"%s\",\n"
+         "  \"cs_flags\": [%u, %u, %u],\n"
          "  \"chunks\": [\n"
          "    { \"id\": %u, \"length_dw\": %u },\n"
          "    { \"id\": %u, \"length_dw\": %u },\n"
          "    { \"id\": %u, \"length_dw\": %u }\n"
          "  ],\n"
+         "  \"bo_table\": [\n%s%s\n  ],\n"
+         "  \"kernel_release\": \"%s\",\n"
+         "  \"module_srcversion\": \"%s\",\n"
+         "  \"driver_elf_path\": \"%s\",\n"
+         "  \"driver_elf_blake3\": \"%s\",\n"
          "  \"emitter\": \"r3v-native\"\n"
          "}\n",
          ib_size_dwords, relocs->count, ib_hex, reloc_hex,
+         cs->flags[0], cs->flags[1], cs->flags[2],
          cs->chunks[0].chunk_id, cs->chunks[0].length_dw,
          cs->chunks[1].chunk_id, cs->chunks[1].length_dw,
-         cs->chunks[2].chunk_id, cs->chunks[2].length_dw);
+         cs->chunks[2].chunk_id, cs->chunks[2].length_dw,
+         bo_table, completion_row, kernel_release, module_srcversion,
+         elf_path, elf_hex);
       result = length > 0 && (size_t)length < sizeof(manifest)
                   ? write_file_atomic(device->manifest_dir,
                                       "submit_manifest.json", manifest,
@@ -333,12 +473,31 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       radeon_drm_vk_cs_build(&cs, cmd_buffer->ib,
                              cmd_buffer->ib_size_dwords, &relocs, 0, true);
 
+      /* The arming facts collect before retention so the retained bundle
+       * carries the same kernel and module identity the gate below judges;
+       * the evaluation itself stays the last gate before the ioctl.
+       */
+      char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
+      char kernel_release[128];
+      char module_srcversion[128];
+      r300_triangle_ib_digest_hex(cmd_buffer->ib, cmd_buffer->ib_size_dwords,
+                                  ib_digest);
+      struct r3v_native_arming_facts facts;
+      r3v_native_arming_collect(&facts, device->pdevice->pci_vendor_id,
+                                device->pdevice->pci_device_id, ib_digest,
+                                device->manifest_dir, kernel_release,
+                                sizeof(kernel_release), module_srcversion,
+                                sizeof(module_srcversion));
+
       /* The exact ioctl payload retains before the ioctl; a retention
        * failure refuses the submission with nothing sent.
        */
-      if (r3v_native_queue_write_submit_object(device, cmd_buffer->ib,
-                                               cmd_buffer->ib_size_dwords,
-                                               &relocs, &cs) != 0) {
+      if (r3v_native_queue_write_submit_object(
+             device, cmd_buffer->ib, cmd_buffer->ib_size_dwords, &relocs,
+             &cs, cmd_buffer->references, cmd_buffer->reference_count,
+             completion.bo.handle, completion.bo.domains,
+             completion.bo.size, kernel_release,
+             module_srcversion) != 0) {
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -353,17 +512,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * attempt token disarms the directory, so a second run through the
        * same evidence refuses even with the same environment.
        */
-      char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
-      char kernel_release[128];
-      char module_srcversion[128];
-      r300_triangle_ib_digest_hex(cmd_buffer->ib, cmd_buffer->ib_size_dwords,
-                                  ib_digest);
-      struct r3v_native_arming_facts facts;
-      r3v_native_arming_collect(&facts, device->pdevice->pci_vendor_id,
-                                device->pdevice->pci_device_id, ib_digest,
-                                device->manifest_dir, kernel_release,
-                                sizeof(kernel_release), module_srcversion,
-                                sizeof(module_srcversion));
       enum r3v_native_arming_verdict arming =
          r3v_native_arming_evaluate(&facts);
       if (arming != R3V_NATIVE_ARMING_ARMED) {
@@ -373,7 +521,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: submission refused: %s",
                           r3v_native_arming_verdict_name(arming));
       }
-      if (r3v_native_arming_disarm(device->manifest_dir) != 0) {
+      if (r3v_native_arming_disarm(device->manifest_dir, ib_digest) != 0) {
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,

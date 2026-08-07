@@ -153,8 +153,26 @@ test_disarm_is_one_shot(void)
    assert(facts.running_kernel_release != NULL &&
           facts.running_kernel_release[0] != '\0');
 
-   assert(r3v_native_arming_disarm(dir) == 0);
-   assert(r3v_native_arming_disarm(dir) != 0);
+   assert(r3v_native_arming_disarm(dir, "0123456789abcdef") == 0);
+   assert(r3v_native_arming_disarm(dir, "0123456789abcdef") != 0);
+
+   /* The token binds the attempt to the declared digest and the wall-clock
+    * instant, so a post-incident read of the directory names what was
+    * armed and when.
+    */
+   {
+      char token_path[1024];
+      snprintf(token_path, sizeof(token_path), "%s/attempt.token", dir);
+      FILE *token_file = fopen(token_path, "r");
+      assert(token_file != NULL);
+      char contents[512] = "";
+      size_t got = fread(contents, 1, sizeof(contents) - 1, token_file);
+      contents[got] = '\0';
+      fclose(token_file);
+      assert(strstr(contents,
+                    "declared_ib_blake3: 0123456789abcdef") != NULL);
+      assert(strstr(contents, "unix_time: ") != NULL);
+   }
 
    r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PCI_VENDOR,
                              R3V_NATIVE_ARMING_PCI_DEVICE,
@@ -162,8 +180,8 @@ test_disarm_is_one_shot(void)
                              module, sizeof(module));
    assert(facts.attempt_token_present);
 
-   assert(r3v_native_arming_disarm(NULL) != 0);
-   assert(r3v_native_arming_disarm("") != 0);
+   assert(r3v_native_arming_disarm(NULL, "x") != 0);
+   assert(r3v_native_arming_disarm("", "x") != 0);
 
    char token[1024];
    snprintf(token, sizeof(token), "%s/attempt.token", dir);
