@@ -124,11 +124,48 @@ def env_tool_row(var: str) -> tuple[str, str, bool]:
     return (var, "not-executable", False)
 
 
+class HostProbes:
+    """The host-facing lookups evaluate() consumes.  The default instance
+    reads the real machine; the selftest substitutes deterministic results
+    so both verdict directions travel the same evaluation and the fixture's
+    failure is attributable to its test-list mutation alone."""
+
+    def tool_present(self, name: str) -> bool:
+        return shutil.which(name) is not None
+
+    def loader(self) -> str | None:
+        return ctypes.util.find_library("vulkan")
+
+    def libc(self) -> str:
+        return "glibc" if "glibc" in (os.confstr("CS_GNU_LIBC_VERSION")
+                                      or "") else "other"
+
+    def env_tool(self, var: str) -> tuple[str, bool]:
+        return env_tool_row(var)[1:]
+
+
+class GoodProbes(HostProbes):
+    def tool_present(self, name: str) -> bool:
+        return True
+
+    def loader(self) -> str | None:
+        return "libvulkan.so.1"
+
+    def libc(self) -> str:
+        return "glibc"
+
+    def env_tool(self, var: str) -> tuple[str, bool]:
+        return ("executable", True)
+
+
 def evaluate(registered: set[str], options: dict[str, object],
-             qualification: bool) -> int:
+             qualification: bool,
+             probes: HostProbes | None = None) -> int:
     """Report the inventory; in qualification mode, any absence is fatal.
     Every row prints before the verdict so a failing run names each missing
     item rather than the first."""
+    if probes is None:
+        probes = HostProbes()
     failures: list[str] = []
 
     native = options.get("r3v-native-backend")
@@ -145,29 +182,28 @@ def evaluate(registered: set[str], options: dict[str, object],
     gallium = options.get("gallium-drivers")
     print(f"option gallium-drivers: {gallium}")
 
-    for name, present in (tool_row("nm"), tool_row("Xvfb"),
-                          tool_row("xvfb-run")):
+    for name in ("nm", "Xvfb"):
+        present = probes.tool_present(name)
         print(f"tool {name}: {'present' if present else 'absent'}")
         if not present:
             failures.append(f"tool {name} absent")
 
-    loader = ctypes.util.find_library("vulkan")
+    loader = probes.loader()
     print(f"vulkan loader: {loader or 'absent'}")
     if loader is None:
         failures.append("vulkan loader absent")
 
     # The drm-shim preload rides LD_PRELOAD against glibc's loader.
-    glibc = "glibc" if "glibc" in (os.confstr("CS_GNU_LIBC_VERSION") or "") \
-        else "other"
+    glibc = probes.libc()
     print(f"libc: {glibc}")
     if glibc != "glibc":
         failures.append("non-glibc host; drm-shim preload unavailable")
 
     for var in ("R3V_CS_TRACK_REPLAY_TOOL", "R3V_CS_TRACK_CONTROLS"):
-        name, state, ok = env_tool_row(var)
-        print(f"env {name}: {state}")
+        state, ok = probes.env_tool(var)
+        print(f"env {var}: {state}")
         if not ok:
-            failures.append(f"{name} {state}")
+            failures.append(f"{var} {state}")
 
     by_suite: dict[str, int] = {}
     for suite in ("r300", "r3v", "radeon-drm-vk", "drm-shim"):
@@ -236,26 +272,24 @@ QUALIFYING_OPTIONS = {"r3v-native-backend": "enabled", "build-tests": True,
 
 
 def run_fixture() -> int:
+    # Good probes isolate the mutation: the fixture's refusal comes from the
+    # removed native registrations alone, not from this host's environment.
     entries = zero_native(synthetic_complete())
-    rc = evaluate(collect(entries), QUALIFYING_OPTIONS, qualification=True)
-    # The fixture is the known-bad leg: the gate must refuse it, so the
-    # process exit inverts the evaluation for Meson's should_fail.
-    return rc
+    return evaluate(collect(entries), QUALIFYING_OPTIONS, qualification=True,
+                    probes=GoodProbes())
 
 
 def run_selftest() -> int:
+    probes = GoodProbes()
     bad = evaluate(collect(zero_native(synthetic_complete())),
-                   QUALIFYING_OPTIONS, qualification=True)
+                   QUALIFYING_OPTIONS, qualification=True, probes=probes)
     if bad == 0:
         print("selftest: zero-native fixture passed the gate", file=sys.stderr)
         return 1
-    # The passing direction runs without the host-environment rows deciding
-    # the verdict: the synthetic set must at least clear the required-test
-    # check, so the selftest evaluates test membership alone.
-    names = collect(synthetic_complete())
-    missing = [n for n in REQUIRED_TESTS if n not in names]
-    if missing:
-        print(f"selftest: complete set missing {missing}", file=sys.stderr)
+    good = evaluate(collect(synthetic_complete()), QUALIFYING_OPTIONS,
+                    qualification=True, probes=probes)
+    if good != 0:
+        print("selftest: complete set failed the gate", file=sys.stderr)
         return 1
     print("selftest: gate refuses zero-native and admits the complete set")
     return 0

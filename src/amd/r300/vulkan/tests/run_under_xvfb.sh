@@ -63,14 +63,21 @@ exec 8<"$displayfd_pipe"
 # read is the readiness gate: Xvfb writes only after it can accept
 # connections, so a value on fd 8 means the server is usable. A bounded
 # timeout guards a hung or wedged Xvfb that never writes.
-if command -v timeout >/dev/null 2>&1; then
-    # shellcheck disable=SC2016  # $n is the inner sh -c's variable, not this shell's.
-    display_num=$(timeout 15 sh -c 'read -r n <&8 && echo "$n"' 8<&8)
-    read_status=$?
-else
-    display_num=$(read -r n <&8 && echo "$n")
-    read_status=$?
+# The bounded wait is load-bearing: a wedged Xvfb that never writes the
+# display number must surface as infrastructure status 125, so a missing
+# timeout utility refuses up front instead of falling back to an
+# unbounded read.
+if ! command -v timeout >/dev/null 2>&1; then
+    echo "run_under_xvfb.sh: timeout utility not found" >&2
+    kill "$xvfb_pid" 2>/dev/null
+    wait "$xvfb_pid" 2>/dev/null
+    exec 8<&-
+    cleanup_dir
+    exit 125
 fi
+# shellcheck disable=SC2016  # $n is the inner sh -c's variable, not this shell's.
+display_num=$(timeout 15 sh -c 'read -r n <&8 && echo "$n"' 8<&8)
+read_status=$?
 exec 8<&-
 
 if [ "$read_status" -ne 0 ] || [ -z "$display_num" ]; then

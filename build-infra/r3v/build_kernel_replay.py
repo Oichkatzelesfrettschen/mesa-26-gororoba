@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import NoReturn
 
 REPLAY_SOURCE_RELPATH = "scripts/replay_r300_cs_track.c"
 CORRESPONDENCE_SCRIPT_RELPATH = "scripts/run_r300_cs_grammar_correspondence.sh"
@@ -42,7 +43,7 @@ COMPILE_FLAGS = ["-O2", "-Wall", "-Wextra", "-Werror"]
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"')
 
 
-def fail(message: str) -> "NoReturn":
+def fail(message: str) -> NoReturn:
     print(f"build_kernel_replay: {message}", file=sys.stderr)
     sys.exit(1)
 
@@ -267,17 +268,19 @@ def parse_args(argv=None) -> argparse.Namespace:
                     "and record its build provenance."
     )
     parser.add_argument("--kernel-root", required=True, type=Path,
-                         help="path to the linux-radeon-gororoba working tree")
+                        help="path to the linux-radeon-gororoba working tree")
     parser.add_argument("--kernel-commit", required=True,
-                         help="full or abbreviated SHA the kernel root must be checked out at")
+                        help="full or abbreviated SHA the kernel root must "
+                             "be checked out at")
     parser.add_argument("--cc", default="cc", help="C compiler (default: cc)")
     parser.add_argument("--output", required=True, type=Path,
-                         help="path for the built replay_r300_cs_track ELF")
+                        help="path for the built replay_r300_cs_track ELF")
     parser.add_argument("--provenance", required=True, type=Path,
-                         help="path for the JSON provenance record")
+                        help="path for the JSON provenance record")
     parser.add_argument("--skip-correspondence", action="store_true",
-                         help="skip the kernel-grammar correspondence fidelity gate "
-                              "(recorded in the provenance; the gate runs by default)")
+                        help="skip the kernel-grammar correspondence "
+                             "fidelity gate (recorded in the provenance; "
+                             "the gate runs by default)")
     return parser.parse_args(argv)
 
 
@@ -286,6 +289,16 @@ def main(argv=None) -> int:
     kernel_root = args.kernel_root.resolve()
     output = args.output.resolve()
     provenance_path = args.provenance.resolve()
+
+    # The ELF and the provenance are two artifacts: one destination would
+    # overwrite the digested ELF with JSON, and a destination inside the
+    # kernel root would dirty the pinned tree the build just proved clean.
+    if output == provenance_path:
+        fail("--output and --provenance resolve to the same path")
+    for destination in (output, provenance_path):
+        if destination.is_relative_to(kernel_root):
+            fail(f"artifact destination {destination} lies inside the "
+                 "pinned kernel root")
 
     resolved_commit = require_clean_pinned_tree(kernel_root, args.kernel_commit)
 
@@ -315,7 +328,14 @@ def main(argv=None) -> int:
             correspondence_gate=correspondence_gate,
         )
 
-    provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
+    # The clean-tree proof holds only while the tree stays unchanged, so the
+    # check runs again after the gate, header generation, compile, and
+    # hashing: a tree that moved during the build invalidates the provenance
+    # before it is published.
+    require_clean_pinned_tree(kernel_root, args.kernel_commit)
+
+    provenance_path.write_text(
+        json.dumps(provenance, indent=2, sort_keys=True) + "\n")
 
     print(f"{output} sha256={output_sha256[:12]} correspondence_gate={correspondence_gate}")
     return 0
