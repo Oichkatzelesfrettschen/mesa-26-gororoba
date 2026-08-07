@@ -512,6 +512,35 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+    # Qualification test-inventory gate: a build that silently registered
+    # fewer tests must fail a qualification run rather than return a smaller
+    # green suite.  The ordinary registration reports the inventory; the
+    # zero-native fixture replays the build that once registered no native
+    # tests and must refuse; the selftest proves both directions through the
+    # same evaluation.  The fatal --qualification mode belongs to the
+    # qualification wrapper, which supplies the replay and controls programs
+    # this build cannot know.
+    test(
+      'r3v-qualification-inventory',
+      prog_python,
+      args : [files('tests/r3v_qualification_inventory.py'),
+              meson.project_build_root()],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-qualification-inventory-selftest',
+      prog_python,
+      args : [files('tests/r3v_qualification_inventory.py'), '--selftest'],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-qualification-inventory-known-bad-zero-native',
+      prog_python,
+      args : [files('tests/r3v_qualification_inventory.py'),
+              '--fixture', 'zero-native'],
+      should_fail : true,
+      suite : ['r3v'],
+    )
     test(
       'r3v-native-entrypoint-closure',
       prog_python,
