@@ -76,17 +76,23 @@ r300_tcl_bypass_triangle_emit_into(
    /* First-draw state prefix: the contract's writes land before any cell
     * state, so every register the draw depends on -- the three proven
     * color-write gates included -- comes from this stream rather than
-    * from the previous client.
+    * from the previous client.  The builder reserves the emitter's declared
+    * extent and admits exactly that many dwords, so the count <= capacity
+    * invariant stays the builder's alone.
     */
    if (params->first_draw_contract != NULL && b.error == 0) {
-      int state_dwords = r300_first_draw_state_emit(
-         params->first_draw_contract, &words[b.count],
-         b.capacity - b.count);
-      if (state_dwords < 0) {
-         memset(out, 0, sizeof(*out));
-         return state_dwords;
+      const uint32_t state_dwords =
+         r300_first_draw_state_dwords(params->first_draw_contract);
+      if (r300_pm4_builder_reserve(&b, state_dwords)) {
+         const int emitted = r300_first_draw_state_emit(
+            params->first_draw_contract, &b.words[b.count], state_dwords);
+         if (emitted < 0)
+            b.error = emitted;
+         else if ((uint32_t)emitted != state_dwords)
+            b.error = -EINVAL;
+         else
+            b.count += state_dwords;
       }
-      b.count += (uint32_t)state_dwords;
    }
 
    /* Vertex path: pretransformed positions bypass the TCL block, one
@@ -202,12 +208,16 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
 {
    /* The emitter places one site per slot in a fixed order, so the cell's
     * relocation list is fully determined: every slot appears once, each site
-    * indexes a dword inside the stream, and the dword there is the payload
-    * naming that slot.  A relocation list built from sites failing any of
-    * these resolves a BO into a position the stream does not reference.
+    * indexes the payload of a relocation NOP inside the stream, and that
+    * payload names the slot.  A relocation list built from sites failing any
+    * of these resolves a BO into a position the stream does not reference.
     */
    if (ib->reloc_site_count != R300_TRIANGLE_SLOT_COUNT)
       return -EINVAL;
+
+   /* The uniqueness set below is one uint32_t of slot bits. */
+   static_assert(R300_TRIANGLE_SLOT_COUNT <= 32,
+                 "slot uniqueness is proven in a 32-bit mask");
 
    uint32_t seen = 0;
    for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
@@ -219,20 +229,36 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
          return -EEXIST;
       seen |= 1u << site->slot;
 
-      if (site->ib_index >= ib->ib_size_dwords)
+      /* The site is the payload dword of a relocation NOP, so the header
+       * precedes it; an in-range ordinary dword that happens to equal the
+       * payload does not qualify.
+       */
+      if (site->ib_index == 0 || site->ib_index >= ib->ib_size_dwords)
          return -ERANGE;
-      if (ib->ib[site->ib_index] != site->slot * 4)
+      if (ib->ib[site->ib_index - 1] != CP_PACKET3(R300_PM4_PACKET3_NOP, 0))
+         return -EINVAL;
+      if (ib->ib[site->ib_index] != R300_TRIANGLE_RELOC_PAYLOAD(site->slot))
          return -EINVAL;
    }
 
-   /* Color precedes vertex: the color target is programmed before the
-    * vertex array is bound, and the relocation order follows the stream.
+   /* The relocation list follows the stream: the color target is programmed
+    * before the vertex array is bound.  Command-stream order is its own
+    * fact, distinct from enum order, so the expected sequence is spelled
+    * out rather than derived.
     */
-   if (ib->reloc_sites[0].slot != R300_TRIANGLE_SLOT_COLOR ||
-       ib->reloc_sites[1].slot != R300_TRIANGLE_SLOT_VERTEX)
-      return -EINVAL;
-   if (ib->reloc_sites[0].ib_index >= ib->reloc_sites[1].ib_index)
-      return -EINVAL;
+   static const uint32_t expected_slots[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_VERTEX,
+   };
+   static_assert(ARRAY_SIZE(expected_slots) == R300_TRIANGLE_SLOT_COUNT,
+                 "every slot has a place in the stream order");
+   for (uint32_t i = 0; i < R300_TRIANGLE_SLOT_COUNT; i++) {
+      if (ib->reloc_sites[i].slot != expected_slots[i])
+         return -EINVAL;
+      if (i > 0 &&
+          ib->reloc_sites[i - 1].ib_index >= ib->reloc_sites[i].ib_index)
+         return -EINVAL;
+   }
 
    return 0;
 }

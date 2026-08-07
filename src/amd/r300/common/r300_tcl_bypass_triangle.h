@@ -48,13 +48,12 @@ struct r300_tcl_bypass_triangle_reloc_site {
 };
 
 /* The emitter references each slot exactly once, so the site array holds one
- * entry per slot.  The assertion binds the storage to that emission rather
- * than to a literal, so a slot added to the enum without room to record it
- * fails the build instead of overrunning the array.
+ * entry per slot.  The site validator proves slot uniqueness in one uint32_t
+ * of slot bits, so the slot space stays inside 32.
  */
 #define R300_TRIANGLE_MAX_RELOC_SITES R300_TRIANGLE_SLOT_COUNT
-static_assert(R300_TRIANGLE_MAX_RELOC_SITES >= R300_TRIANGLE_SLOT_COUNT,
-              "the reloc site array holds one entry per referenced slot");
+static_assert(R300_TRIANGLE_SLOT_COUNT <= 32,
+              "slot uniqueness is proven in a 32-bit mask");
 
 struct r300_tcl_bypass_triangle_ib {
    uint32_t *ib;
@@ -109,7 +108,8 @@ int r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs);
 /* Resolves the first-draw contract for the cell's 64x64 target and three
  * vertices with the texture block disabled.  Every pre-hardware consumer
  * -- manifest tool, native recorder, harness reference -- takes the
- * contract from here so their successor IBs stay byte-identical.  Returns
+ * contract from here so their contract-prefixed cells stay byte-identical.
+ * Returns
  * 0 or a negative errno.
  */
 int r300_tcl_bypass_triangle_reference_contract(

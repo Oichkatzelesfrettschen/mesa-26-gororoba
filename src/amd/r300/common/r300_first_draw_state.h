@@ -91,6 +91,17 @@ int r300_first_draw_contract_resolve(const struct r300_first_draw_params *params
 int r300_first_draw_state_emit(const struct r300_first_draw_contract *contract,
                                uint32_t *ib, uint32_t max_dwords);
 
+/* The emission is one single-register PACKET0 per entry -- a header and a
+ * payload -- so the stream is exactly twice the entry count.  A caller
+ * reserving room for the emission takes the size from here, so the emitter
+ * stays the one authority over its own extent.
+ */
+static inline uint32_t
+r300_first_draw_state_dwords(const struct r300_first_draw_contract *contract)
+{
+   return contract->count * 2;
+}
+
 /* Poison-model checker: applies the command stream over an arbitrary
  * predecessor register state and reports every contract clause the final
  * state leaves unsatisfied. The report is the complete set because the
