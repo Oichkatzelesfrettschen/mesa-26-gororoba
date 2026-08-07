@@ -252,6 +252,12 @@ def build_provenance(
     return {
         "kernel_commit": resolved_commit,
         "kernel_commit_requested": kernel_commit_arg,
+        # The tool source and the driver logic compile from one pinned tree,
+        # so the two authority fields carry the same object; a future build
+        # whose replay tooling rides a different commit than the driver
+        # under test splits here rather than silently.
+        "kernel_tool_source_sha": resolved_commit,
+        "kernel_driver_logic_sha": resolved_commit,
         "kernel_root": str(kernel_root),
         "sources": sources,
         "compiler": compiler_identity(cc),
@@ -281,6 +287,22 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="skip the kernel-grammar correspondence "
                              "fidelity gate (recorded in the provenance; "
                              "the gate runs by default)")
+    parser.add_argument("--isolate-worktree", action="store_true",
+                        help="build from a fresh detached git worktree at "
+                             "the pinned commit instead of the given "
+                             "checkout, so concurrent edits or generated "
+                             "files in a shared tree cannot enter the "
+                             "provenance")
+    parser.add_argument("--deployed-driver-tree", default=None,
+                        help="driver-tree object of the deployed module "
+                             "source, recorded verbatim so the provenance "
+                             "separates the tool-source authority from the "
+                             "deployed driver logic")
+    parser.add_argument("--running-module-srcversion", default=None,
+                        help="srcversion of the module on the target, "
+                             "recorded verbatim as the running-kernel "
+                             "authority the replay verdicts are compared "
+                             "against")
     return parser.parse_args(argv)
 
 
@@ -289,6 +311,23 @@ def main(argv=None) -> int:
     kernel_root = args.kernel_root.resolve()
     output = args.output.resolve()
     provenance_path = args.provenance.resolve()
+
+    # Worktree isolation: the build root becomes a fresh detached checkout
+    # at the pinned commit, clean by construction, so a shared checkout's
+    # concurrent edits or generated files stay out of the provenance.  The
+    # worktree lives outside the given root and is removed after the build.
+    isolation_tmp = None
+    if args.isolate_worktree:
+        isolation_tmp = tempfile.TemporaryDirectory(
+            prefix="r300-cs-replay-worktree-")
+        worktree = Path(isolation_tmp.name) / "tree"
+        add = subprocess.run(
+            ["git", "-C", str(kernel_root), "worktree", "add", "--detach",
+             str(worktree), args.kernel_commit],
+            capture_output=True, text=True)
+        if add.returncode != 0:
+            fail(f"git worktree add failed: {add.stderr.strip()}")
+        kernel_root = worktree
 
     # The ELF and the provenance are two artifacts: one destination would
     # overwrite the digested ELF with JSON, and a destination inside the
@@ -333,6 +372,17 @@ def main(argv=None) -> int:
     # hashing: a tree that moved during the build invalidates the provenance
     # before it is published.
     require_clean_pinned_tree(kernel_root, args.kernel_commit)
+
+    provenance["isolated_worktree"] = bool(args.isolate_worktree)
+    provenance["deployed_driver_tree"] = args.deployed_driver_tree
+    provenance["running_module_srcversion"] = args.running_module_srcversion
+
+    if isolation_tmp is not None:
+        subprocess.run(
+            ["git", "-C", str(args.kernel_root.resolve()), "worktree",
+             "remove", "--force", str(kernel_root)],
+            capture_output=True, text=True)
+        isolation_tmp.cleanup()
 
     provenance_path.write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n")
