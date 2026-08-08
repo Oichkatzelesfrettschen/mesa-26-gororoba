@@ -12,6 +12,13 @@ libr300_cpu = static_library(
 )
 
 if with_tests
+  # Silicon timing evidence comes from buildtype=release, so the bench
+  # learns the Meson build type here -- compiler macros alone cannot
+  # separate release from debugoptimized with b_ndebug -- and marks any
+  # other build's row stream as smoke output.
+  bench_release_args = get_option('buildtype') == 'release' \
+    ? ['-DR300_CPU_VERTEX_BENCH_MESON_RELEASE=1'] : []
+
   # Timing bench, run by hand on the target host: baseline versus the
   # SSE2 and SSE3 candidates against the memcpy copy ceiling.  The
   # measurement is host-specific evidence, so no meson test wraps it.
@@ -24,6 +31,7 @@ if with_tests
     include_directories : [inc_src, inc_include,
                            include_directories('.')],
     link_with : [libr300_cpu],
+    c_args : bench_release_args,
     gnu_symbol_visibility : 'hidden',
   )
 
@@ -44,7 +52,7 @@ if with_tests
       files('r300_cpu_vertex.c', 'tests/r300_cpu_vertex_bench.c'),
       include_directories : [inc_src, inc_include,
                              include_directories('.')],
-      c_args : ['-march=k8-sse3', '-mtune=k8-sse3'],
+      c_args : ['-march=k8-sse3', '-mtune=k8-sse3'] + bench_release_args,
       gnu_symbol_visibility : 'hidden',
     )
   endif

@@ -253,15 +253,18 @@ main(int argc, char **argv)
 
    calibrate_known_bad();
 
-   /* Decision-grade rows come from optimized codegen with assertions
-    * compiled out; any other build marks the row stream itself, so a
-    * recorder consuming stdout carries the non-decision-grade status
-    * with the rows.
+   /* Decision-grade rows come from a Meson buildtype=release build:
+    * the build system defines R300_CPU_VERTEX_BENCH_MESON_RELEASE
+    * there, because compiler macros alone cannot separate release from
+    * debugoptimized with b_ndebug.  Any other build marks the row
+    * stream itself, so a recorder consuming stdout carries the
+    * non-decision-grade status with the rows.
     */
-#if !defined(NDEBUG) || !defined(__OPTIMIZE__)
+#if !defined(R300_CPU_VERTEX_BENCH_MESON_RELEASE) || \
+   !defined(NDEBUG) || !defined(__OPTIMIZE__)
    fprintf(stderr,
-           "warning: assertions or unoptimized codegen in this build; "
-           "rows are smoke output, not dispatch evidence\n");
+           "warning: this is not a release build with optimized "
+           "codegen; rows are smoke output, not dispatch evidence\n");
    printf("# non-release build: rows are smoke output, not dispatch "
           "evidence\n");
 #endif
