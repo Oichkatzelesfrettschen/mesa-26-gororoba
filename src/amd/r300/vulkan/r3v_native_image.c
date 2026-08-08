@@ -15,9 +15,11 @@
 
 /* Creation admits exactly the render-target shape the qualified cell
  * lowers: 2D, B8G8R8A8_UNORM, 64x64, one mip, one layer, one sample,
- * linear, exclusive, color-attachment usage with transfer-source
- * readback allowed.  Every other shape refuses with a cleared handle,
- * so no image exists whose lowering the implementation cannot record.
+ * linear, exclusive, color-attachment usage alone -- readback of the
+ * rendered pixels rides the host mapping of the bound memory, and a
+ * transfer usage would promise copy commands the recording surface
+ * poisons.  Every other shape refuses with a cleared handle, so no
+ * image exists whose lowering the implementation cannot record.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
@@ -28,7 +30,7 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    *pImage = VK_NULL_HANDLE;
 
    const VkImageUsageFlags allowed_usage =
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
    if (pCreateInfo->flags != 0 ||
        pCreateInfo->imageType != VK_IMAGE_TYPE_2D ||
        pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||

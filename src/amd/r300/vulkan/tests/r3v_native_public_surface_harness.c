@@ -295,8 +295,7 @@ main(void)
       .arrayLayers = 1,
       .samples = VK_SAMPLE_COUNT_1_BIT,
       .tiling = VK_IMAGE_TILING_LINEAR,
-      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
    };
    assert(vkCreateImage(device, &image_info, NULL, &image) == VK_SUCCESS);
