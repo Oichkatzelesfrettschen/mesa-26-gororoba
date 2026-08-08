@@ -51,13 +51,34 @@ struct r3v_native_image;
 struct r3v_native_pipeline;
 struct r3v_native_buffer;
 
+/* Deferred draw execution: vertex reads and the load-op clear happen at
+ * queue submission, matching Vulkan's execution-time semantics, so the
+ * recorded state names the sources by reference.  The application keeps
+ * the bound buffer and target memory alive until execution completes,
+ * the lifetime the Vulkan command-buffer contract already requires.
+ */
+struct r3v_native_deferred_draw {
+   bool pending;
+   struct r3v_native_buffer *buffer;
+   /* Bind offset plus the pipeline's attribute offset, into the buffer
+    * range.
+    */
+   uint64_t stream_base;
+   uint32_t stride;
+   uint32_t first_vertex;
+   int format_id;
+   struct r3v_native_memory *target_memory;
+};
+
 /* Native command buffer: one fixed IB dword vector plus its BO references,
  * installed whole by a device-internal emitter or by the public triangle
  * recording surface.  The recording-state members carry the public
  * surface's begin/bind/draw progress; a command outside the qualified
  * contract poisons the buffer, so EndCommandBuffer returns the error and
  * the queue refuses it.  owned_carrier is the CPU_VERTEX node's gather
- * destination, allocated at draw recording and released with the buffer.
+ * destination, allocated at draw recording and released with the buffer;
+ * deferred_draw carries the vertex and clear work the queue executes at
+ * submission.
  */
 struct r3v_native_cmd_buffer {
    struct vk_command_buffer vk;
@@ -73,6 +94,7 @@ struct r3v_native_cmd_buffer {
    bool vertex_bound;
    bool draw_recorded;
    struct r3v_native_memory *owned_carrier;
+   struct r3v_native_deferred_draw deferred_draw;
 };
 
 struct r3v_native_queue {
@@ -234,8 +256,8 @@ VkResult r3v_native_record_tcl_bypass_triangle_from_stream(
    const struct r3v_native_vertex_stream_desc *stream);
 
 /* The struct-level carrier-delivery recorder behind the handle wrapper
- * above, shared with the public draw lowering: the carrier memory is
- * the gather destination BO and the color memory is the render target.
+ * above: the carrier memory is the gather destination BO and the color
+ * memory is the render target.
  */
 VkResult r3v_native_record_tcl_bypass_triangle_gathered(
    struct r3v_native_device *device,
@@ -243,6 +265,26 @@ VkResult r3v_native_record_tcl_bypass_triangle_gathered(
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_memory *color_memory,
    const struct r3v_native_vertex_stream_desc *stream);
+
+/* Record-only cell installer for the public draw lowering: emits the
+ * fixed cell IB against the carrier and color references and installs
+ * it, with no memory writes.  The vertex gather and the sentinel clear
+ * ride cmd_buffer->deferred_draw and execute at queue submission.
+ */
+VkResult r3v_native_record_tcl_bypass_triangle_carrier(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory,
+   struct r3v_native_memory *color_memory);
+
+/* Executes the command buffer's deferred draw at submission: gathers the
+ * bound stream through the CPU vertex executor into the owned carrier
+ * and sentinel-clears the target image's declared memory footprint, each
+ * published for the unsnooped GART while its mapping is live.
+ */
+VkResult r3v_native_cmd_buffer_execute_deferred_draw(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer);
 
 /* Direct-write control recorder: lowers the 2D solid-fill cell
  * (src/amd/r300/common/r300_direct_write.h) into the command buffer

@@ -4,8 +4,10 @@
  * Public-surface harness on the drm-shim fixture: an application-shaped
  * render-pass/pipeline/draw sequence records the qualified triangle
  * cell through public entry points alone, and every contract deviation
- * refuses.  Recording-only: the hazard gate stays closed and no
- * submission is attempted.
+ * refuses.  The hazard gate stays closed, so each vkQueueSubmit refuses
+ * before the ioctl; the submit attempts exist because the deferred
+ * vertex gather and load-op clear execute at submission, and the
+ * harness verifies that execution-time boundary from both sides.
  */
 
 /* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
@@ -46,10 +48,11 @@ static VkCommandPool pool;
    f(vkDestroyFramebuffer) f(vkCreateShaderModule)                         \
    f(vkDestroyShaderModule) f(vkCreatePipelineLayout)                      \
    f(vkDestroyPipelineLayout) f(vkCreateGraphicsPipelines)                 \
-   f(vkDestroyPipeline) f(vkCreateCommandPool)                             \
+   f(vkDestroyPipeline) f(vkCreateCommandPool) f(vkDestroyCommandPool)     \
    f(vkAllocateCommandBuffers) f(vkBeginCommandBuffer)                     \
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
-   f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)
+   f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
+   f(vkGetDeviceQueue) f(vkQueueSubmit) f(vkDestroyDevice)
 
 #define DECLARE(name) static PFN_##name name;
 DEVICE_COMMANDS(DECLARE)
@@ -266,6 +269,10 @@ main(void)
    DEVICE_COMMANDS(LOAD)
 #undef LOAD
 
+   VkQueue queue = VK_NULL_HANDLE;
+   vkGetDeviceQueue(device, 0, 0, &queue);
+   assert(queue != VK_NULL_HANDLE);
+
    assert(vkCreateCommandPool(
              device,
              &(VkCommandPoolCreateInfo){
@@ -298,12 +305,16 @@ main(void)
    vkGetImageMemoryRequirements(device, image, &reqs);
    assert(reqs.size == R3V_NATIVE_TARGET_MEMORY_BYTES);
 
+   /* One page past the image requirement: the tail proves the load-op
+    * clear stays inside the image's declared footprint, so a resource
+    * bound after it in the same allocation would survive the draw.
+    */
    VkDeviceMemory color_memory = VK_NULL_HANDLE;
    assert(vkAllocateMemory(device,
                            &(VkMemoryAllocateInfo){
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                              .allocationSize = reqs.size,
+                              .allocationSize = reqs.size + 4096,
                               .memoryTypeIndex = 0,
                            },
                            NULL, &color_memory) == VK_SUCCESS);
@@ -471,7 +482,62 @@ main(void)
           native_cmd->owned_carrier->bo.handle);
    r300_tcl_bypass_triangle_release(&reference);
 
+   /* Execution-time boundary, record side: recording defers the vertex
+    * gather and load-op clear, so the executable command buffer has
+    * touched neither the application's image memory nor its own
+    * carrier.
+    */
+   assert(native_cmd->deferred_draw.pending);
+   uint32_t *color_map = NULL;
+   assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&color_map) == VK_SUCCESS);
+   assert(color_map[0] != R300_TRIANGLE_COLOR_SENTINEL);
+   vkUnmapMemory(device, color_memory);
+
+   /* Execution-time boundary, submit side: the stream bytes the carrier
+    * travels with are the ones live at submission, so a write after
+    * recording is honored and each submission re-reads.  The closed
+    * hazard gate refuses the ioctl after the deferred execution ran.
+    */
+   const uint32_t original_first_dword =
+      ((const uint32_t *)r300_tcl_bypass_triangle_vertices)[0];
+   assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
+          VK_SUCCESS);
+   ((uint32_t *)map)[0] = original_first_dword ^ 0x00400000u;
+   vkUnmapMemory(device, vertex_memory);
+
+   const VkSubmitInfo submit_info = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &cmd,
+   };
+   assert(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE) ==
+          VK_ERROR_DEVICE_LOST);
+
    void *carrier_map = NULL;
+   assert(radeon_drm_vk_bo_map(&native_device->drm,
+                               &native_cmd->owned_carrier->bo,
+                               &carrier_map) == 0);
+   assert(((const uint32_t *)carrier_map)[0] ==
+          (original_first_dword ^ 0x00400000u));
+   radeon_drm_vk_bo_unmap(&native_device->drm,
+                          &native_cmd->owned_carrier->bo, carrier_map);
+
+   /* Restore and re-execute: the runtime latches the device lost after
+    * the refused submit and later submits return before the driver
+    * runs, so re-execution exercises the queue's execution step
+    * directly -- the harness links the implementation.  Each execution
+    * re-reads, so the carrier now equals the restored reference
+    * stream.
+    */
+   assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
+          VK_SUCCESS);
+   memcpy(map, r300_tcl_bypass_triangle_vertices,
+          R300_TRIANGLE_VERTEX_DWORDS * 4);
+   vkUnmapMemory(device, vertex_memory);
+   assert(r3v_native_cmd_buffer_execute_deferred_draw(
+             native_device, native_cmd) == VK_SUCCESS);
+
    assert(radeon_drm_vk_bo_map(&native_device->drm,
                                &native_cmd->owned_carrier->bo,
                                &carrier_map) == 0);
@@ -479,6 +545,19 @@ main(void)
                  R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
    radeon_drm_vk_bo_unmap(&native_device->drm,
                           &native_cmd->owned_carrier->bo, carrier_map);
+
+   /* The load-op clear executed at submission over the image's declared
+    * footprint alone: sentinel inside, the page past the footprint
+    * untouched.
+    */
+   assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&color_map) == VK_SUCCESS);
+   assert(color_map[0] == R300_TRIANGLE_COLOR_SENTINEL);
+   assert(color_map[(R3V_NATIVE_TARGET_MEMORY_BYTES / 4) - 1] ==
+          R300_TRIANGLE_COLOR_SENTINEL);
+   assert(color_map[R3V_NATIVE_TARGET_MEMORY_BYTES / 4] !=
+          R300_TRIANGLE_COLOR_SENTINEL);
+   vkUnmapMemory(device, color_memory);
 
    /* The F32_3 delivery shape reaches the same cell: the reference
     * vertices carry w = 1, so an xyz stream reproduces the carrier.
@@ -511,6 +590,8 @@ main(void)
    vkCmdEndRenderPass(xyz_cmd);
    assert(vkEndCommandBuffer(xyz_cmd) == VK_SUCCESS);
    VK_FROM_HANDLE(r3v_native_cmd_buffer, native_xyz, xyz_cmd);
+   assert(r3v_native_cmd_buffer_execute_deferred_draw(
+             native_device, native_xyz) == VK_SUCCESS);
    assert(radeon_drm_vk_bo_map(&native_device->drm,
                                &native_xyz->owned_carrier->bo,
                                &carrier_map) == 0);
@@ -590,6 +671,20 @@ main(void)
    vkCmdEndRenderPass(bad_cmd);
    assert(vkEndCommandBuffer(bad_cmd) == R3V_NATIVE_REFUSAL_RESULT);
 
+   /* A second render pass after the recorded cell refuses: its load-op
+    * clear has no lowering, so accepting it would record a pass that
+    * never executes.
+    */
+   bad_cmd = fresh_cmd();
+   vkCmdBeginRenderPass(bad_cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdBindPipeline(bad_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+   vkCmdBindVertexBuffers(bad_cmd, 0, 1, &vertex_buffer,
+                          &(VkDeviceSize){ 0 });
+   vkCmdDraw(bad_cmd, 3, 1, 0, 0);
+   vkCmdEndRenderPass(bad_cmd);
+   vkCmdBeginRenderPass(bad_cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
+   assert(vkEndCommandBuffer(bad_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+
    /* A bound range too short for the three records refuses at the draw
     * through the gather's bound proof.
     */
@@ -627,8 +722,18 @@ main(void)
    vkFreeMemory(device, vertex_memory, NULL);
    vkFreeMemory(device, color_memory, NULL);
 
+   /* Pool destruction frees every allocated command buffer, so the
+    * owned-carrier release path runs for each recorded draw before the
+    * device and instance close.
+    */
+   vkDestroyCommandPool(device, pool, NULL);
+   vkDestroyDevice(device, NULL);
+   PFN_vkDestroyInstance destroy_instance =
+      (PFN_vkDestroyInstance)gipa(instance, "vkDestroyInstance");
+   destroy_instance(instance, NULL);
+
    printf("r3v_native_public_surface: the public render-pass/pipeline/draw "
-          "sequence records the qualified cell and every deviation "
-          "refuses\n");
+          "sequence records the qualified cell, execution defers to "
+          "submission, and every deviation refuses\n");
    return 0;
 }

@@ -10,6 +10,10 @@
 #include "r3v_instance.h"
 #include "r3v_private.h"
 
+#ifdef R3V_NATIVE_BACKEND
+#include "r3v_native.h"
+#endif
+
 #include "util/disk_cache.h"
 #include "util/macros.h"
 #include "util/mesa-blake3.h"
@@ -922,13 +926,13 @@ r3v_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
    VK_FROM_HANDLE(r3v_physical_device, pdev, physicalDevice);
    VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties2, out, pProperties, pCount);
 #ifdef R3V_NATIVE_BACKEND
-   /* The native queue transports device-internal fixed IBs through the
-    * gated submission boundary; no Vulkan command class records into it,
-    * so no capability bit is advertised.  Each bit returns with the
-    * recording surface that executes it.
+   /* The public recording surface records the graphics command subset
+    * -- render pass, pipeline bind, vertex bind, draw -- on this
+    * family, so GRAPHICS is advertised.  Each further bit returns with
+    * the recording surface that executes it.
     */
    (void)pdev;
-   VkQueueFlags queue_flags = 0;
+   VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT;
 #else
    VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT;
 
@@ -996,6 +1000,30 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
 {
    memset(properties, 0, sizeof(*properties));
    properties->sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+
+#ifdef R3V_NATIVE_BACKEND
+   /* The native backend has no Gallium screen; its capabilities are the
+    * public recording surface's accepted subset, advertised exactly so
+    * a capability-aware application reaches the qualified route: the
+    * linear B8G8R8A8 color target and the F32-family vertex formats the
+    * CPU vertex executor gathers.
+    */
+   switch (vk_format) {
+   case VK_FORMAT_B8G8R8A8_UNORM:
+      properties->linearTilingFeatures =
+         VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT;
+      break;
+   case VK_FORMAT_R32_SFLOAT:
+   case VK_FORMAT_R32G32_SFLOAT:
+   case VK_FORMAT_R32G32B32_SFLOAT:
+   case VK_FORMAT_R32G32B32A32_SFLOAT:
+      properties->bufferFeatures = VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
+      break;
+   default:
+      break;
+   }
+   return;
+#endif
 
    const enum pipe_format pipe_format = r3v_vk_format_to_pipe_format(vk_format);
    if (pipe_format == PIPE_FORMAT_NONE)
@@ -1225,6 +1253,18 @@ r3v_get_image_format_properties(
       max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_2D:
+#ifdef R3V_NATIVE_BACKEND
+      /* The native image contract is the qualified cell's fixed target,
+       * so the reported ceiling is that shape and vkCreateImage accepts
+       * exactly what this query admits.
+       */
+      max_extent = (VkExtent3D){
+         R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1,
+      };
+      max_mip_levels = 1;
+      max_array_layers = 1;
+      break;
+#else
       /* The flat multi-tile reach.  Usage-keyed extents were measured to
        * break zink's surfaceless framebuffer (its internal sampled-usage
        * probe at the device dimension must succeed), so the dimension stays
@@ -1238,6 +1278,7 @@ r3v_get_image_format_properties(
       max_mip_levels = util_logbase2(R3V_R3XX_MAX_TEXTURE_DIMENSION) + 1;
       max_array_layers = 1;
       break;
+#endif
    case VK_IMAGE_TYPE_3D:
       /* r3v backs every image with a single PIPE_TEXTURE_2D resource of
        * depth0 == 1 (r3v_image_create_tile_resources), so a 3D image's

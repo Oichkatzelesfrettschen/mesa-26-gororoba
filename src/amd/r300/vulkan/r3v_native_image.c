@@ -74,10 +74,15 @@ VKAPI_ATTR void VKAPI_CALL
 r3v_GetImageMemoryRequirements(VkDevice _device, VkImage image,
                                VkMemoryRequirements *pMemoryRequirements)
 {
+   /* Type 0 alone: the draw's load-op clear executes through a CPU
+    * mapping of the bound allocation, and type 1 allocates with
+    * RADEON_GEM_NO_CPU_ACCESS, so an allocation the requirement admits
+    * is always one the clear can map.
+    */
    *pMemoryRequirements = (VkMemoryRequirements){
       .size = R3V_NATIVE_TARGET_MEMORY_BYTES,
       .alignment = 4096,
-      .memoryTypeBits = 0x3,
+      .memoryTypeBits = 0x1,
    };
 }
 

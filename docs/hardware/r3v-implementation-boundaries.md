@@ -33,9 +33,14 @@ command-buffer-owned carrier -- records the byte-identical cell IB
 through public `vkCmd*` entry points, at the drm-shim host-model class
 under the `r3v-native-public-surface` harness, and every contract
 deviation poisons or refuses.  The recorded IB equals the digest the
-arming authority qualifies, so the existing silicon witness stands for
-what the public route records; general vertex routes and the complete
-Vulkan semantic/conformance sections remain implementation contracts.
+arming authority qualifies, so the command-stream grammar the silicon
+witnessed is what the public route records; the witness's rendered
+pixels are bound to the reference vertex payload the attended run
+carried, and a public draw with other in-range records or a nonzero
+`firstVertex` changes the carrier bytes the same IB fetches, an input
+set the silicon has not yet observed.  General vertex routes and the
+complete Vulkan semantic/conformance sections remain implementation
+contracts.
 
 The bounded R300 R2VB `FLOAT_2` source transaction has one home:
 `r300-r2vb-float2-source-contract.md`. This document owns the implementation

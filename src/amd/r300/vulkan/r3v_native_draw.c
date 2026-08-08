@@ -10,6 +10,7 @@
 #include "r3v_entrypoints.h"
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/common/r300_vertex_format.h"
 
 #include "vk_framebuffer.h"
 #include "vk_log.h"
@@ -53,7 +54,12 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(vk_framebuffer, framebuffer,
                   pRenderPassBegin->framebuffer);
 
-   if (cmd_buffer->pass_target != NULL ||
+   /* The bounded contract is one pass with one draw per command buffer;
+    * a second pass after the recorded cell would need a second clear and
+    * draw lowering the cell does not carry, so it refuses instead of
+    * recording a pass whose load op never executes.
+    */
+   if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
        framebuffer->width != R3V_NATIVE_TARGET_WIDTH ||
@@ -134,13 +140,14 @@ r3v_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
    cmd_buffer->vertex_bound = true;
 }
 
-/* The draw lowering realizes the CPU_VERTEX node and the fixed cell in
- * one step: the bound buffer's records gather through the byte-defined
- * executor into a command-buffer-owned GTT carrier, and the cell
- * records against that carrier and the pass target's memory.  The cell
- * draws exactly three vertices in one instance, so the accepted draw
- * arguments are that shape with any firstVertex the bound range
- * proves readable.
+/* The draw lowering realizes the CPU_VERTEX node and the fixed cell:
+ * recording installs the cell IB against a command-buffer-owned GTT
+ * carrier and the pass target's memory, and the vertex gather plus the
+ * load-op clear ride deferred_draw to queue submission, so resource
+ * reads and the clear carry execution-time semantics.  The cell draws
+ * exactly three vertices in one instance, so the accepted draw
+ * arguments are that shape with any firstVertex the bound range proves
+ * readable.
  */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
@@ -176,10 +183,19 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
       return;
    }
 
-   bool owns_map = memory->map == NULL;
-   if (owns_map &&
-       radeon_drm_vk_bo_map(&device->drm, &memory->bo, &memory->map) != 0) {
-      poison(commandBuffer, VK_ERROR_MEMORY_MAP_FAILED);
+   /* Early bound proof at recording, the same arithmetic the gather
+    * enforces at submission: the last requested record closes inside
+    * the readable range, so a stream the execution would refuse
+    * poisons here where the application still sees the recording error.
+    */
+   const struct r300_vertex_format_semantics *format =
+      r300_vertex_format_semantics(
+         (enum r300_vertex_format_id)pipeline->format_id);
+   const uint64_t available = buffer->vk.size - stream_base;
+   if (format == NULL || available < format->semantic_record_bytes ||
+       ((uint64_t)firstVertex + 2) * pipeline->binding_stride >
+          available - format->semantic_record_bytes) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
 
@@ -189,30 +205,12 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
                                RADEON_GEM_DOMAIN_GTT, 0, false,
                                &carrier->bo) != 0) {
       free(carrier);
-      if (owns_map) {
-         radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
-         memory->map = NULL;
-      }
       poison(commandBuffer, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       return;
    }
 
-   const struct r3v_native_vertex_stream_desc stream = {
-      .records = (const uint8_t *)memory->map + buffer->offset + stream_base,
-      .size_bytes = buffer->vk.size - stream_base,
-      .stride = pipeline->binding_stride,
-      .first_vertex = firstVertex,
-      .format_id = pipeline->format_id,
-   };
-   VkResult result = r3v_native_record_tcl_bypass_triangle_gathered(
-      device, cmd_buffer, carrier, cmd_buffer->pass_target->memory,
-      &stream);
-
-   if (owns_map) {
-      radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
-      memory->map = NULL;
-   }
-
+   VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
+      device, cmd_buffer, carrier, cmd_buffer->pass_target->memory);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       free(carrier);
@@ -221,5 +219,14 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    }
 
    cmd_buffer->owned_carrier = carrier;
+   cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
+      .pending = true,
+      .buffer = buffer,
+      .stream_base = stream_base,
+      .stride = pipeline->binding_stride,
+      .first_vertex = firstVertex,
+      .format_id = pipeline->format_id,
+      .target_memory = cmd_buffer->pass_target->memory,
+   };
    cmd_buffer->draw_recorded = true;
 }

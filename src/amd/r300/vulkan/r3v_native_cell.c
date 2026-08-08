@@ -98,22 +98,18 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
                                     color_memory);
 }
 
-/* The delivery-independent remainder of triangle recording: sentinel
- * publication, cell emission, and installation.  Both delivery routes
- * -- the frozen reference copy and the CPU-executor gather -- resolve
- * to this one tail, so the recorded IB and its digest cannot depend on
- * how the carrier was written.
+/* Sentinel-fills the leading fill_bytes of the color memory and
+ * publishes them for the unsnooped GART, so the output oracle reads a
+ * deterministic pre-draw state and any device write inside the filled
+ * range is detectable.  fill_bytes bounds the write to the caller's
+ * declared footprint; content past it in the same allocation stays
+ * untouched.
  */
 static VkResult
-record_triangle_cell_tail(struct r3v_native_device *device,
-                          struct r3v_native_cmd_buffer *cmd_buffer,
-                          struct r3v_native_memory *vertex_memory,
-                          struct r3v_native_memory *color_memory)
+sentinel_fill_color(struct r3v_native_device *device,
+                    struct r3v_native_memory *color_memory,
+                    uint64_t fill_bytes)
 {
-   /* Sentinel-fill the whole color allocation and publish it, so the
-    * output oracle reads a deterministic pre-draw state and any device
-    * write -- inside or past the render extent -- is detectable.
-    */
    bool owns_color_map = color_memory->map == NULL;
    if (owns_color_map &&
        radeon_drm_vk_bo_map(&device->drm, &color_memory->bo,
@@ -123,16 +119,28 @@ record_triangle_cell_tail(struct r3v_native_device *device,
                        "CPU-mappable");
    }
    uint32_t *color_pixels = color_memory->map;
-   for (uint64_t i = 0; i < color_memory->bo.size / 4; i++)
+   for (uint64_t i = 0; i < fill_bytes / 4; i++)
       color_pixels[i] = R300_TRIANGLE_COLOR_SENTINEL;
    radeon_drm_vk_bo_cache_sync(&device->drm, color_memory->map,
-                               color_memory->bo.size);
+                               fill_bytes);
    if (owns_color_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &color_memory->bo,
                              color_memory->map);
       color_memory->map = NULL;
    }
+   return VK_SUCCESS;
+}
 
+/* Cell emission and installation with no memory writes: the emitted IB
+ * and its references depend only on the two BO handles, so the recorded
+ * digest is independent of when the carrier and target bytes land.
+ */
+static VkResult
+emit_and_install_triangle_cell(struct r3v_native_device *device,
+                               struct r3v_native_cmd_buffer *cmd_buffer,
+                               struct r3v_native_memory *vertex_memory,
+                               struct r3v_native_memory *color_memory)
+{
    /* The recorded cell is self-contained: the reference emission opens
     * with the first-draw contract prefix, so the result does not ride
     * whatever state the previous client left in the pipeline, and the
@@ -172,6 +180,129 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    r300_tcl_bypass_triangle_release(&cell);
 
    return VK_SUCCESS;
+}
+
+/* The delivery-independent remainder of triangle recording for the
+ * record-time delivery routes: sentinel publication over the whole
+ * allocation -- their oracle contract covers every byte -- then cell
+ * emission and installation.
+ */
+static VkResult
+record_triangle_cell_tail(struct r3v_native_device *device,
+                          struct r3v_native_cmd_buffer *cmd_buffer,
+                          struct r3v_native_memory *vertex_memory,
+                          struct r3v_native_memory *color_memory)
+{
+   VkResult result =
+      sentinel_fill_color(device, color_memory, color_memory->bo.size);
+   if (result != VK_SUCCESS)
+      return result;
+   return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
+                                         color_memory);
+}
+
+VkResult
+r3v_native_record_tcl_bypass_triangle_carrier(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory,
+   struct r3v_native_memory *color_memory)
+{
+   if (carrier_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
+       color_memory->bo.size < R3V_TRIANGLE_COLOR_BYTES) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: triangle cell needs %zu vertex bytes "
+                       "and %u color bytes",
+                       (size_t)R3V_TRIANGLE_VERTEX_BYTES,
+                       R3V_TRIANGLE_COLOR_BYTES);
+   }
+   return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
+                                         color_memory);
+}
+
+/* Submission-time execution of the public draw: the bound stream reads
+ * and the load-op clear happen here, so a vertex write between record
+ * and submit is honored and an unsubmitted command buffer leaves
+ * application memory untouched.
+ */
+VkResult
+r3v_native_cmd_buffer_execute_deferred_draw(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
+   if (!draw->pending)
+      return VK_SUCCESS;
+
+   struct r3v_native_buffer *buffer = draw->buffer;
+   struct r3v_native_memory *memory = buffer->memory;
+   struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
+
+   bool owns_map = memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &memory->bo, &memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: bound vertex memory is not "
+                       "CPU-mappable at submission");
+   }
+   const struct r3v_native_vertex_stream_desc stream = {
+      .records =
+         (const uint8_t *)memory->map + buffer->offset + draw->stream_base,
+      .size_bytes = buffer->vk.size - draw->stream_base,
+      .stride = draw->stride,
+      .first_vertex = draw->first_vertex,
+      .format_id = draw->format_id,
+   };
+
+   bool owns_carrier_map = carrier->map == NULL;
+   VkResult result = VK_SUCCESS;
+   if (owns_carrier_map &&
+       radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
+                            &carrier->map) != 0) {
+      result = vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                         "r3v-native: carrier memory is not CPU-mappable "
+                         "at submission");
+   } else {
+      const struct r300_cpu_vertex_stream source = {
+         .data = stream.records,
+         .stride = stream.stride,
+         .size_bytes = stream.size_bytes,
+      };
+      int gathered = r300_cpu_vertex_gather(
+         stream.format_id, &source, stream.first_vertex,
+         R300_TRIANGLE_VERTEX_DWORDS / 4, carrier->map,
+         R300_TRIANGLE_VERTEX_DWORDS);
+      if (gathered != 0) {
+         result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                            "r3v-native: vertex gather refused (%d)",
+                            gathered);
+      } else {
+         radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
+                                     R3V_TRIANGLE_VERTEX_BYTES);
+      }
+      if (owns_carrier_map) {
+         radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
+         carrier->map = NULL;
+      }
+   }
+
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+      memory->map = NULL;
+   }
+   if (result != VK_SUCCESS)
+      return result;
+
+   /* The load-op clear realizes as the sentinel fill over the image's
+    * declared memory footprint alone; a larger allocation keeps its
+    * remaining bytes, so a resource bound past the image survives the
+    * draw.
+    */
+   /* pending stays set: every submission re-reads the stream and
+    * re-clears, the execution-time semantics each submit carries.
+    */
+   return sentinel_fill_color(device, draw->target_memory,
+                              R3V_NATIVE_TARGET_MEMORY_BYTES);
 }
 
 /* Carrier delivery: gathers the cell's three vertices from the caller's

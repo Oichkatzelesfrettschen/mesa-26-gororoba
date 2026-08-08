@@ -385,6 +385,17 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       if (cmd_buffer->ib_size_dwords == 0)
          continue;
 
+      /* The public draw's vertex reads and load-op clear execute here,
+       * per submission, so the stream bytes the carrier travels with are
+       * the ones live at submit -- Vulkan's execution-time ordering --
+       * and an unsubmitted command buffer leaves application memory
+       * untouched.
+       */
+      VkResult deferred =
+         r3v_native_cmd_buffer_execute_deferred_draw(device, cmd_buffer);
+      if (deferred != VK_SUCCESS)
+         return deferred;
+
       struct radeon_drm_vk_reloc_list relocs;
       radeon_drm_vk_reloc_list_init(&relocs);
       for (uint32_t r = 0; r < cmd_buffer->reference_count; r++) {

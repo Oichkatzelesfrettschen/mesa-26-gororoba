@@ -210,9 +210,14 @@ sweep_wsi_contract(VkInstance instance, VkPhysicalDevice pdev)
    VkQueueFamilyProperties families[4];
    queue_families(pdev, &family_count, families);
    for (uint32_t i = 0; i < family_count; i++) {
-      CHECK(families[i].queueFlags == 0,
-            "queue family %u advertises flags 0x%x, so a capability is "
-            "claimed that no recording surface executes", i,
+      /* The advertised capability set equals the recording surface: the
+       * public render-pass/pipeline/draw subset records graphics work,
+       * so GRAPHICS is claimed and every other bit waits for the
+       * surface that executes it.
+       */
+      CHECK(families[i].queueFlags == VK_QUEUE_GRAPHICS_BIT,
+            "queue family %u advertises flags 0x%x; the recording "
+            "surface executes exactly VK_QUEUE_GRAPHICS_BIT", i,
             families[i].queueFlags);
       printf("queue family %u: flags 0x%x, %u queues\n", i,
              families[i].queueFlags, families[i].queueCount);
