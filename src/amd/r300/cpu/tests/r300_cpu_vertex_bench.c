@@ -9,15 +9,24 @@
  * margin the copy ceiling shows is real.  Each lane verifies its output
  * against the baseline before any timing, so a lane's row is evidence
  * about the implementation its label names.  Results are host-specific
- * and belong in an evidence bundle, not in a meson test verdict; the
- * one meson-visible property is that the bench runs to completion.
+ * and belong in an evidence bundle, not in a meson test verdict, so the
+ * build registers no test over this executable.
+ *
+ * The implementations alternate inside each input shape -- shape-major,
+ * lane-inner -- so frequency, thermal, and cache drift across the run
+ * lands inside every lane's rows rather than between the lanes under
+ * comparison.  The base-offset dimension starts the record stream 0 and
+ * 4 bytes past the 16-byte-aligned allocation, because the unaligned
+ * 16-byte load is the one form the SSE2/SSE3 candidates differ in and
+ * an aligned-only corpus never exercises it.
  *
  * Usage: r300_cpu_vertex_bench [reps]
  *   reps: timing repetitions per row (default 9); the row reports the
  *   best rep, which is the least-preempted one.
  *
  * Output: TSV rows
- *   implementation  format  stride  vertex_count  reps  best_ns_per_vertex
+ *   implementation  format  stride  base_offset  vertex_count  reps
+ *   best_ns_per_vertex
  */
 
 #include "r300_cpu_vertex.h"
@@ -80,10 +89,11 @@ static uint32_t *reference;
 
 static void
 bench_row(const char *label, gather_fn fn, int format_id,
-          uint32_t stride, uint32_t vertex_count, unsigned reps)
+          uint32_t stride, uint32_t base_offset, uint32_t vertex_count,
+          unsigned reps)
 {
    const struct r300_cpu_vertex_stream stream = {
-      .data = records,
+      .data = records + base_offset,
       .stride = stride,
       .size_bytes = (uint64_t)MAX_VERTICES * stride,
    };
@@ -120,8 +130,9 @@ bench_row(const char *label, gather_fn fn, int format_id,
    }
    double per_vertex =
       (double)best / ((double)inner * (double)vertex_count);
-   printf("%s\t%d\t%" PRIu32 "\t%" PRIu32 "\t%u\t%.3f\n", label, format_id,
-          stride, vertex_count, reps, per_vertex);
+   printf("%s\t%d\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32 "\t%u\t%.3f\n",
+          label, format_id, stride, base_offset, vertex_count, reps,
+          per_vertex);
 }
 
 int
@@ -129,9 +140,10 @@ main(int argc, char **argv)
 {
    unsigned reps = 9;
    if (argc > 1) {
-      long parsed = strtol(argv[1], NULL, 10);
-      if (parsed < 1 || parsed > 1000) {
-         fprintf(stderr, "reps must be 1..1000\n");
+      char *end = NULL;
+      long parsed = strtol(argv[1], &end, 10);
+      if (end == argv[1] || *end != '\0' || parsed < 1 || parsed > 1000) {
+         fprintf(stderr, "reps must be a whole number 1..1000\n");
          return 1;
       }
       reps = (unsigned)parsed;
@@ -146,8 +158,8 @@ main(int argc, char **argv)
    }
    fill_records(records, (uint64_t)MAX_VERTICES * 32, 0xbe4c0000u);
 
-   printf("implementation\tformat\tstride\tvertex_count\treps\t"
-          "best_ns_per_vertex\n");
+   printf("implementation\tformat\tstride\tbase_offset\tvertex_count\t"
+          "reps\tbest_ns_per_vertex\n");
 
    static const struct { const char *label; gather_fn fn; } lanes[] = {
       { "baseline", r300_cpu_vertex_gather_baseline },
@@ -161,24 +173,26 @@ main(int argc, char **argv)
       R300_VERTEX_FORMAT_F32_2,
    };
    static const uint32_t counts[] = { 3, 4096, MAX_VERTICES };
+   static const uint32_t offsets[] = { 0, 4 };
 
-   for (unsigned l = 0; l < 4; l++) {
-      for (unsigned f = 0; f < 3; f++) {
-         const struct r300_vertex_format_semantics *format =
-            r300_vertex_format_semantics(
-               (enum r300_vertex_format_id)formats[f]);
-         uint32_t strides[2] = { format->semantic_record_bytes,
-                                 format->semantic_record_bytes + 8 };
-         for (unsigned s = 0; s < 2; s++) {
+   for (unsigned f = 0; f < 3; f++) {
+      const struct r300_vertex_format_semantics *format =
+         r300_vertex_format_semantics(
+            (enum r300_vertex_format_id)formats[f]);
+      uint32_t strides[2] = { format->semantic_record_bytes,
+                              format->semantic_record_bytes + 8 };
+      for (unsigned s = 0; s < 2; s++) {
+         for (unsigned o = 0; o < 2; o++) {
             for (unsigned c = 0; c < 3; c++) {
                /* The padded stride at the max count would read past the
                 * record area; the bound refuses it, so skip the shape.
                 */
-               if ((uint64_t)counts[c] * strides[s] >
+               if ((uint64_t)counts[c] * strides[s] + offsets[o] >
                    (uint64_t)MAX_VERTICES * 32)
                   continue;
-               bench_row(lanes[l].label, lanes[l].fn, formats[f],
-                         strides[s], counts[c], reps);
+               for (unsigned l = 0; l < 4; l++)
+                  bench_row(lanes[l].label, lanes[l].fn, formats[f],
+                            strides[s], offsets[o], counts[c], reps);
             }
          }
       }

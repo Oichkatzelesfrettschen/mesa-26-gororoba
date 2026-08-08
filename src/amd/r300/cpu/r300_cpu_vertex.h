@@ -31,9 +31,10 @@
  * on the target host justifies it.  The tuned candidates are SSE2 and
  * SSE3 -- the K8 primary target's CPUID ceiling is k8-sse3, so SSE3 is
  * the last vector extension the target implements -- and both are
- * correctness-qualified by the oracle.  The timing bench decides which
- * candidate the auto dispatch keeps; until the target measurement
- * lands, r300_cpu_vertex_gather selects the SSE2 path.
+ * correctness-qualified by the oracle.  r300_cpu_vertex_gather selects
+ * the SSE2 path on builds that carry it; the r300_cpu_vertex_bench
+ * measurement on the target host is the authority for changing that
+ * selection.
  */
 
 /* One bound attribute stream: data points at the first record of the
