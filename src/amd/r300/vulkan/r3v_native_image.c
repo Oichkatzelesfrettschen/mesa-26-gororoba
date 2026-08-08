@@ -90,8 +90,12 @@ r3v_GetImageMemoryRequirements(VkDevice _device, VkImage image,
 }
 
 /* VK_KHR_get_memory_requirements2 resolves through this entry; the
- * requirement is the fixed contract above, and a dedicated-allocation
- * query learns the image neither prefers nor requires one.
+ * requirement is the fixed contract above.  The dedicated-allocation
+ * query reports a dedicated allocation required: the cell's color
+ * reference resolves to the BO base through the relocation payload the
+ * qualified digest freezes, so the image binds at offset zero, and a
+ * required dedicated allocation is the vocabulary that tells a
+ * conformant allocator exactly that.
  */
 VKAPI_ATTR void VKAPI_CALL
 r3v_GetImageMemoryRequirements2(VkDevice _device,
@@ -104,8 +108,8 @@ r3v_GetImageMemoryRequirements2(VkDevice _device,
    vk_foreach_struct(ext, pMemoryRequirements->pNext) {
       if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
          VkMemoryDedicatedRequirements *dedicated = (void *)ext;
-         dedicated->prefersDedicatedAllocation = VK_FALSE;
-         dedicated->requiresDedicatedAllocation = VK_FALSE;
+         dedicated->prefersDedicatedAllocation = VK_TRUE;
+         dedicated->requiresDedicatedAllocation = VK_TRUE;
       }
    }
 }

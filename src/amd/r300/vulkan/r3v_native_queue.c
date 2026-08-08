@@ -470,6 +470,17 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       if (deferred != VK_SUCCESS) {
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
+         /* vkQueueSubmit's registry contract carries host and device
+          * exhaustion plus device loss, so a map failure reports as
+          * host exhaustion -- the exhausted resource is host address
+          * space -- and any other execution failure reports as device
+          * loss.
+          */
+         if (deferred == VK_ERROR_MEMORY_MAP_FAILED)
+            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         if (deferred != VK_ERROR_OUT_OF_HOST_MEMORY &&
+             deferred != VK_ERROR_OUT_OF_DEVICE_MEMORY)
+            return vk_error(device, VK_ERROR_DEVICE_LOST);
          return deferred;
       }
 

@@ -222,7 +222,7 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
       device, cmd_buffer, carrier, cmd_buffer->pass_target->memory);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
-      free(carrier);
+      vk_free(&cmd_buffer->vk.pool->alloc, carrier);
       poison(commandBuffer, result);
       return;
    }
