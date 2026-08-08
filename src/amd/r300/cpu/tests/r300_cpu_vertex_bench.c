@@ -269,6 +269,19 @@ main(int argc, char **argv)
           "evidence\n");
 #endif
 
+   /* The lane rotation covers every starting phase only when each lane
+    * leads at least one repetition, so a shorter run marks its rows as
+    * smoke output.
+    */
+   if (reps < LANE_COUNT) {
+      fprintf(stderr,
+              "warning: %u repetitions cover fewer lane starts than %u "
+              "lanes; rows are smoke output, not dispatch evidence\n",
+              reps, (unsigned)LANE_COUNT);
+      printf("# reps below lane count: rows are smoke output, not "
+             "dispatch evidence\n");
+   }
+
    /* Absent ISA lanes mark the stream: a tuned entry point compiled out
     * of this build reports -ENOSYS, and the marker line tells a
     * collector this stream is not the three-way result -- a silent
