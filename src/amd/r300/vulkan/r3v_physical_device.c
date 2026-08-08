@@ -1232,11 +1232,13 @@ r3v_get_image_format_properties(
 
 #ifdef R3V_NATIVE_BACKEND
    /* The native image contract is one 2D flat shape with no create
-    * flags, so the query reports every other type or flagged request
-    * unsupported before the shared type switch -- the same refusal
-    * vkCreateImage applies.
+    * flags and color-attachment usage alone, so the query reports every
+    * other type, flagged, or differently-used request unsupported
+    * before the shared type switch -- the same refusal vkCreateImage
+    * applies.
     */
-   if (info->type != VK_IMAGE_TYPE_2D || info->flags != 0)
+   if (info->type != VK_IMAGE_TYPE_2D || info->flags != 0 ||
+       info->usage != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
       goto unsupported;
 #endif
 
@@ -1374,9 +1376,19 @@ r3v_GetPhysicalDeviceImageFormatProperties2(
    const VkPhysicalDeviceExternalImageFormatInfo *external_info =
       vk_find_struct_const(pImageFormatInfo->pNext,
                            PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
+#ifdef R3V_NATIVE_BACKEND
+   /* The native link set carries no export entry point and the native
+    * extension table advertises no external-memory family, so an
+    * external-handle query reports the format unsupported for that use
+    * instead of promising an export route no advertised extension can
+    * reach.
+    */
+   const VkExternalMemoryHandleTypeFlags supported_handles = 0;
+#else
    const VkExternalMemoryHandleTypeFlags supported_handles =
       VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT |
       VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+#endif
    if (external_info && external_info->handleType != 0 &&
        (!(external_info->handleType & supported_handles) ||
         pImageFormatInfo->type != VK_IMAGE_TYPE_2D))

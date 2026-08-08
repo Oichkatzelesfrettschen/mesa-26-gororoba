@@ -378,7 +378,7 @@ def selftest():
                                  populated)
         assert found == expected, (fixture, found, expected)
 
-    print("r3v_native_entrypoint_audit selftest: 12 closure and result legs "
+    print("r3v_native_entrypoint_audit selftest: 15 closure and result legs "
           f"OK, {len(PAIR_FIXTURES)} lifecycle-pair legs OK")
     return 0
 

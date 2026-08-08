@@ -42,15 +42,19 @@ set the silicon has not yet observed.  General vertex routes and the
 complete Vulkan semantic/conformance sections remain implementation
 contracts.
 
-Two capability claims outrun the one-cell surface, and both are
-recorded deferred conformance gaps whose removal path is the native
-transfer and extent generalization of the expansion order below.  The
-graphics queue bit is required for `vkCmdDraw` validity, and the
-registry grants every graphics family the core transfer commands; the
-recording surface poisons those commands, so they fail closed with a
-reported error rather than misbehave, and the gap closes when native
-copies execute.  `VkImageFormatProperties` speaks only in maxima, so
-the reported 64x64 ceiling admits smaller extents that `vkCreateImage`
+Three capability claims outrun the one-cell surface, and each is a
+recorded deferred conformance gap whose removal path is the native
+transfer, compute, and extent generalization of the expansion order
+below.  The graphics queue bit is required for `vkCmdDraw` validity,
+and the registry grants every graphics family the core transfer
+commands; the recording surface poisons those commands, so they fail
+closed with a reported error rather than misbehave, and the gap closes
+when native copies execute.  Vulkan 1.0 requires an implementation
+that exposes graphics to expose at least one family supporting both
+graphics and compute; the native family carries graphics alone, the
+compute commands fail closed, and the gap closes when a native compute
+route lands.  `VkImageFormatProperties` speaks only in maxima, so the
+reported 64x64 ceiling admits smaller extents that `vkCreateImage`
 refuses; the query vocabulary cannot state the exact-shape contract,
 reporting the combination unsupported would hide the one supported
 shape, and the gap closes when creation accepts in-range extents.
@@ -104,6 +108,10 @@ structural query.
 | Native host coherency over the unsnooped GART | `src/amd/radeon/drm_vk/radeon_drm_vk_bo.c`; `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'radeon_drm_vk_bo_cache_sync\|HOST_CACHED' src/amd/` |
 | Triangle-cell fragment program is compiler output | `src/gallium/drivers/r300/compiler/tests/r300_tcl_bypass_fs_tool.c`; `src/amd/r300/common/r300_tcl_bypass_triangle_fs_block.h` | `rg -n 'r300_tcl_bypass_fs_tool\|r300_tcl_bypass_triangle_fs_block' src/` |
 | Private fixed-cell recording outside the ICD export surface | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native.h` | `rg -n 'r3v_native_record_tcl_bypass_triangle' src/amd/r300/vulkan/` |
+| Public recording surface: image, view, pipeline, and draw subset | `src/amd/r300/vulkan/r3v_native_image.c`; `r3v_native_pipeline.c`; `r3v_native_draw.c` | `rg -n 'r3v_CmdDraw\|r3v_CreateImage\|NATIVE_LIVE_CMDS' src/amd/r300/vulkan/` |
+| Deferred draw execution at queue submission | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native_queue.c` | `rg -n 'execute_deferred_draw' src/amd/r300/vulkan/` |
+| Native queue GRAPHICS advertisement and format subset | `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'VK_QUEUE_GRAPHICS_BIT\|R3V_NATIVE_BACKEND' src/amd/r300/vulkan/r3v_physical_device.c` |
+| Reference SPIR-V admission pair and its generator | `src/amd/r300/vulkan/r3v_native_reference_spirv.h`; `shaders/generate_reference_spirv.py` | `rg -n 'r3v_reference_vertex_spirv\|generate_reference_spirv' src/amd/r300/vulkan/` |
 
 ## Current Gallium-backed R3V implementation
 

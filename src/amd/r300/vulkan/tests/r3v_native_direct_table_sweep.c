@@ -185,14 +185,36 @@ sweep_wsi_contract(VkInstance instance, VkPhysicalDevice pdev)
 
    /* The advertised set is exactly the memory-requirements contract the
     * native image path executes: the *2 query and bind entry points and
-    * the dedicated-allocation signal.
+    * the dedicated-allocation signal.  The check compares names, so the
+    * count is a consequence of the identity rather than a proxy for it.
     */
+   static const char *const expected_extensions[] = {
+      "VK_KHR_get_memory_requirements2",
+      "VK_KHR_bind_memory2",
+      "VK_KHR_dedicated_allocation",
+   };
    uint32_t device_ext_count = 0;
    VkResult result =
       enumerate_device_ext(pdev, NULL, &device_ext_count, NULL);
    CHECK(result == VK_SUCCESS && device_ext_count == 3,
          "the device advertises the three memory-contract extensions: "
          "%d count %u", result, device_ext_count);
+   if (result == VK_SUCCESS && device_ext_count == 3) {
+      VkExtensionProperties properties[3];
+      result = enumerate_device_ext(pdev, NULL, &device_ext_count,
+                                    properties);
+      CHECK(result == VK_SUCCESS, "extension enumeration fills: %d",
+            result);
+      for (unsigned e = 0; e < 3; e++) {
+         int found = 0;
+         for (unsigned p = 0; p < 3; p++) {
+            if (strcmp(properties[p].extensionName,
+                       expected_extensions[e]) == 0)
+               found = 1;
+         }
+         CHECK(found, "the device advertises %s", expected_extensions[e]);
+      }
+   }
    printf("device extensions: %u\n", device_ext_count);
 
    PFN_vkGetPhysicalDeviceQueueFamilyProperties queue_families =

@@ -29,9 +29,10 @@ poison(VkCommandBuffer commandBuffer, VkResult error)
 
 /* The clear value the cell realizes: the sentinel fill 0xa5a5a5a5,
  * which in B8G8R8A8_UNORM is 0xa5 in every channel.  The comparison is
- * exact -- 165/255 is representable and the application writes the
- * same expression -- so a different clear color refuses rather than
- * silently clearing to the sentinel.
+ * exact against the identically evaluated expression: 165.0f/255.0f
+ * rounds to one binary32 value, the application writes that same
+ * expression, and both sides land on the same bits, so a different
+ * clear color refuses rather than silently clearing to the sentinel.
  */
 static bool
 clear_is_sentinel(const VkClearValue *value)

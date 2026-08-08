@@ -319,6 +319,21 @@ main(void)
                            NULL, &color_memory) == VK_SUCCESS);
    assert(vkBindImageMemory(device, image, color_memory, 0) == VK_SUCCESS);
 
+   /* Seed the whole allocation with a known non-sentinel value, so the
+    * untouched-memory verdicts below compare against a defined byte
+    * pattern rather than fresh-allocation content.
+    */
+#define COLOR_SEED 0x5c5c5c5cu
+   {
+      uint32_t *seed_map = NULL;
+      assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&seed_map) == VK_SUCCESS);
+      for (unsigned i = 0; i < (R3V_NATIVE_TARGET_MEMORY_BYTES + 4096) / 4;
+           i++)
+         seed_map[i] = COLOR_SEED;
+      vkUnmapMemory(device, color_memory);
+   }
+
    VkImageView view = VK_NULL_HANDLE;
    assert(vkCreateImageView(
              device,
@@ -490,7 +505,7 @@ main(void)
    uint32_t *color_map = NULL;
    assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                       (void **)&color_map) == VK_SUCCESS);
-   assert(color_map[0] != R300_TRIANGLE_COLOR_SENTINEL);
+   assert(color_map[0] == COLOR_SEED);
    vkUnmapMemory(device, color_memory);
 
    /* Execution-time boundary, submit side: the stream bytes the carrier
@@ -498,11 +513,15 @@ main(void)
     * recording is honored and each submission re-reads.  The closed
     * hazard gate refuses the ioctl after the deferred execution ran.
     */
-   const uint32_t original_first_dword =
-      ((const uint32_t *)r300_tcl_bypass_triangle_vertices)[0];
+   uint32_t original_first_dword;
+   memcpy(&original_first_dword, r300_tcl_bypass_triangle_vertices,
+          sizeof(original_first_dword));
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
           VK_SUCCESS);
-   ((uint32_t *)map)[0] = original_first_dword ^ 0x00400000u;
+   {
+      const uint32_t mutated = original_first_dword ^ 0x00400000u;
+      memcpy(map, &mutated, sizeof(mutated));
+   }
    vkUnmapMemory(device, vertex_memory);
 
    const VkSubmitInfo submit_info = {
@@ -517,8 +536,11 @@ main(void)
    assert(radeon_drm_vk_bo_map(&native_device->drm,
                                &native_cmd->owned_carrier->bo,
                                &carrier_map) == 0);
-   assert(((const uint32_t *)carrier_map)[0] ==
-          (original_first_dword ^ 0x00400000u));
+   {
+      uint32_t carrier_first;
+      memcpy(&carrier_first, carrier_map, sizeof(carrier_first));
+      assert(carrier_first == (original_first_dword ^ 0x00400000u));
+   }
    radeon_drm_vk_bo_unmap(&native_device->drm,
                           &native_cmd->owned_carrier->bo, carrier_map);
 
@@ -554,8 +576,7 @@ main(void)
    assert(color_map[0] == R300_TRIANGLE_COLOR_SENTINEL);
    assert(color_map[(R3V_NATIVE_TARGET_MEMORY_BYTES / 4) - 1] ==
           R300_TRIANGLE_COLOR_SENTINEL);
-   assert(color_map[R3V_NATIVE_TARGET_MEMORY_BYTES / 4] !=
-          R300_TRIANGLE_COLOR_SENTINEL);
+   assert(color_map[R3V_NATIVE_TARGET_MEMORY_BYTES / 4] == COLOR_SEED);
    vkUnmapMemory(device, color_memory);
 
    /* The F32_3 delivery shape reaches the same cell: the reference
@@ -718,7 +739,7 @@ main(void)
    vkCmdBindVertexBuffers(bad_cmd, 0, 1, &short_buffer,
                           &(VkDeviceSize){ 0 });
    vkCmdDraw(bad_cmd, 3, 1, 0, 0);
-   assert(vkEndCommandBuffer(bad_cmd) != VK_SUCCESS);
+   assert(vkEndCommandBuffer(bad_cmd) == R3V_NATIVE_REFUSAL_RESULT);
 
    vkDestroyBuffer(device, short_buffer, NULL);
    vkDestroyImage(device, unbound_image, NULL);

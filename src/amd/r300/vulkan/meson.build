@@ -932,7 +932,9 @@ if get_option('r3v-native-backend')
     # Public recording surface on the drm-shim fixture: the
     # application-shaped render-pass/pipeline/draw sequence records the
     # qualified cell through public entry points, and every contract
-    # deviation refuses.  Recording-only, gate closed, no submission.
+    # deviation refuses.  The gate stays closed and no ioctl runs; the
+    # harness drives the deferred draw, so the vertex gather and the
+    # sentinel clear write host memory.
     test(
       'r3v-native-public-surface',
       executable(
