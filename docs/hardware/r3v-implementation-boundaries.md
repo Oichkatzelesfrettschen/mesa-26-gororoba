@@ -195,7 +195,7 @@ and outstanding.
 |---|---|
 | `src/amd/radeon/drm_vk/` | Radeon DRM BO, map, PRIME, relocation, submission, and finite completion transport |
 | `src/amd/r300/common/` | RS480/R300 device facts, formats, packet fields, state packs, barriers, and validators |
-| `src/amd/r300/cpu/` | scalar reference and K8-safe vertex execution |
+| `src/amd/r300/cpu/` | portable byte-defined vertex execution baseline plus measured per-target tuned paths |
 | `src/amd/r300/vulkan/` | Vulkan objects, command lowering, execution graph, queue policy, images, WSI, and entry points |
 
 The shared Radeon DRM layer contains no R300 or Evergreen graphics state.
@@ -282,8 +282,11 @@ Draw ownership:
 
 ```text
 Vulkan vertex and index state
--> scalar semantic reference
--> measured K8 SSE2/SSE3 specialization
+-> byte-defined portable baseline (any host endianness; R300-era hosts
+   span x86, x86-64, and PowerPC)
+-> per-target tuned path only where a measurement on that target
+   justifies it (K8 is the primary measured target; general code speed
+   rides the build profile's compiler flags)
 -> direct writes into the final mapped GTT carrier
 -> TCL-bypass delivery
 ```
@@ -458,10 +461,11 @@ the no-submit, drm-shim, and offline kernel-parser classes.
    retained record live in
    `docs/hardware/r3v-native-attended-cell-procedure.md`, and the
    witness bundle is the frozen private-cell reference).
-10. Build and qualify the native K8 vertex executor (gather stage
-    landed: `src/amd/r300/cpu/` carries the scalar reference and SSE2
-    specialization under the `r300-cpu-vertex` oracle at the host-unit
-    class; carrier delivery through the native recorder remains open).
+10. Build and qualify the native CPU vertex executor (gather stage
+    landed: `src/amd/r300/cpu/` carries the portable byte-defined
+    baseline and an SSE2 tuned path under the `r300-cpu-vertex` oracle
+    at the host-unit class; the tuned path's K8 timing measurement and
+    carrier delivery through the native recorder remain open).
 11. Migrate native R2VB `F32_3`, then `F32_2`.
 12. Add native images, transfers, and resource-scoped synchronization.
 13. Prove native same-GPU WSI.

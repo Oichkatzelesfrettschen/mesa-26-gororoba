@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * K8-safe CPU vertex executor: scalar reference and SSE2 specialization.
+ * Portable CPU vertex executor: byte-copy baseline and SSE2 tuned path.
  */
 
 #include "r300_cpu_vertex.h"
@@ -16,11 +16,11 @@
 #include <emmintrin.h>
 #endif
 
-/* The synthesized lane constants, by bit pattern rather than float
- * literal, so the carrier encoding is host-independent.
+/* The synthesized lane constants as explicit little-endian carrier
+ * bytes, so every host writes the same encoding.
  */
-#define R300_CPU_VERTEX_ZERO_BITS 0x00000000u
-#define R300_CPU_VERTEX_ONE_BITS 0x3f800000u
+static const uint8_t lane_zero_bytes[4] = { 0x00, 0x00, 0x00, 0x00 };
+static const uint8_t lane_one_bytes[4] = { 0x00, 0x00, 0x80, 0x3f };
 
 static int
 validate(const struct r300_vertex_format_semantics **format_out,
@@ -43,7 +43,7 @@ validate(const struct r300_vertex_format_semantics **format_out,
 }
 
 int
-r300_cpu_vertex_gather_scalar(
+r300_cpu_vertex_gather_baseline(
    int format_id, const struct r300_cpu_vertex_stream *stream,
    uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
    uint32_t carrier_dwords)
@@ -56,40 +56,40 @@ r300_cpu_vertex_gather_scalar(
 
    const uint8_t *record =
       stream->data + (uint64_t)first_vertex * stream->stride;
+   uint8_t *out = (uint8_t *)carrier;
    for (uint32_t v = 0; v < vertex_count; v++) {
       for (unsigned lane = 0; lane < 4; lane++) {
-         uint32_t bits;
+         const uint8_t *src;
          switch (format->select[lane]) {
          case R300_VERTEX_SELECT_ZERO:
-            bits = R300_CPU_VERTEX_ZERO_BITS;
+            src = lane_zero_bytes;
             break;
          case R300_VERTEX_SELECT_ONE:
-            bits = R300_CPU_VERTEX_ONE_BITS;
+            src = lane_one_bytes;
             break;
-         default: {
+         default:
             /* X..W name physical components; the vocabulary orders the
              * selector values so the component index is the selector.
              */
-            unsigned component = (unsigned)format->select[lane];
-            const uint8_t *src = record + component * 4;
-            bits = (uint32_t)src[0] | (uint32_t)src[1] << 8 |
-                   (uint32_t)src[2] << 16 | (uint32_t)src[3] << 24;
+            src = record + (unsigned)format->select[lane] * 4;
             break;
          }
-         }
-         carrier[(uint64_t)v * 4 + lane] = bits;
+         memcpy(out + lane * 4, src, 4);
       }
       record += stream->stride;
+      out += 16;
    }
    return 0;
 }
 
 #if defined(__SSE2__)
 
-/* SSE2 gathers for the F32 family.  Every path is loads, shuffles, and
- * stores; the lanes never enter arithmetic, so the bit-exactness
- * contract holds.  K8 implements SSE2/SSE3, so this specialization is
- * the measured x86-64-v1 path.
+/* SSE2 gathers for the F32 family: loads, shuffles, and stores alone,
+ * so the byte contract holds.  The vector ONE constant is expressed as
+ * a lane value, which equals the carrier's byte encoding because SSE2
+ * implies a little-endian host.  The K8 primary target implements
+ * SSE2/SSE3; this path is correctness-qualified by the oracle and its
+ * K8 timing measurement decides whether it stays.
  */
 static int
 gather_sse2(const struct r300_vertex_format_semantics *format,
@@ -98,7 +98,7 @@ gather_sse2(const struct r300_vertex_format_semantics *format,
 {
    const uint8_t *record =
       stream->data + (uint64_t)first_vertex * stream->stride;
-   const __m128i one_w = _mm_set_epi32((int)R300_CPU_VERTEX_ONE_BITS, 0, 0, 0);
+   const __m128i one_w = _mm_set_epi32(0x3f800000, 0, 0, 0);
 
    switch (format->id) {
    case R300_VERTEX_FORMAT_F32_4:
@@ -145,8 +145,8 @@ gather_sse2(const struct r300_vertex_format_semantics *format,
 }
 
 /* The specializations above encode the F32 family's identity selector
- * patterns; a vocabulary row that deviates routes to the scalar
- * reference, so a table change degrades to the slower correct path.
+ * patterns; a vocabulary row that deviates routes to the baseline, so
+ * a table change degrades to the slower correct path.
  */
 static bool
 sse2_pattern_matches(const struct r300_vertex_format_semantics *format)
@@ -195,9 +195,9 @@ r300_cpu_vertex_gather(int format_id,
       return gather_sse2(format, stream, first_vertex, vertex_count,
                          carrier);
 #endif
-   return r300_cpu_vertex_gather_scalar(format_id, stream, first_vertex,
-                                        vertex_count, carrier,
-                                        carrier_dwords);
+   return r300_cpu_vertex_gather_baseline(format_id, stream, first_vertex,
+                                          vertex_count, carrier,
+                                          carrier_dwords);
 }
 
 const char *
@@ -206,6 +206,6 @@ r300_cpu_vertex_implementation(void)
 #if defined(__SSE2__)
    return "sse2";
 #else
-   return "scalar";
+   return "baseline";
 #endif
 }

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Qualification oracle for the CPU vertex executor: an independent
- * reference model, bit-pattern preservation, scalar/specialization
+ * reference model, bit-pattern preservation, baseline/tuned-path
  * identity, refusal legs, and known-bad calibration.
  */
 
@@ -67,14 +67,21 @@ reference_gather(int format_id, const uint8_t *base, uint32_t stride,
       const uint8_t *record =
          base + (uint64_t)(first_vertex + v) * stride;
       for (unsigned lane = 0; lane < 4; lane++) {
-         uint32_t bits;
+         /* The expected model is byte-defined like the contract: a
+          * physical lane copies its four record bytes and a synthesized
+          * lane writes the little-endian encoding, whatever the host's
+          * own byte order.
+          */
+         static const uint8_t zero_bytes[4] = { 0x00, 0x00, 0x00, 0x00 };
+         static const uint8_t one_bytes[4] = { 0x00, 0x00, 0x80, 0x3f };
+         uint8_t *lane_out = (uint8_t *)out + (uint64_t)v * 16 + lane * 4;
          if (format->select[lane] == R300_VERTEX_SELECT_ZERO)
-            bits = 0x00000000u;
+            memcpy(lane_out, zero_bytes, 4);
          else if (format->select[lane] == R300_VERTEX_SELECT_ONE)
-            bits = 0x3f800000u;
+            memcpy(lane_out, one_bytes, 4);
          else
-            memcpy(&bits, record + (unsigned)format->select[lane] * 4, 4);
-         out[(uint64_t)v * 4 + lane] = bits;
+            memcpy(lane_out,
+                   record + (unsigned)format->select[lane] * 4, 4);
       }
    }
 }
@@ -103,20 +110,20 @@ check_format(int format_id, uint32_t stride_extra, uint32_t first_vertex,
     * neither writes past the gathered range: the carrier tail keeps
     * its canary.
     */
-   uint32_t scalar_out[CARRIER_DWORDS + 1];
+   uint32_t baseline_out[CARRIER_DWORDS + 1];
    uint32_t dispatch_out[CARRIER_DWORDS + 1];
    for (uint32_t i = 0; i < CARRIER_DWORDS + 1; i++)
-      scalar_out[i] = dispatch_out[i] = CANARY;
-   assert(r300_cpu_vertex_gather_scalar(format_id, &stream, first_vertex,
-                                        vertex_count, scalar_out,
+      baseline_out[i] = dispatch_out[i] = CANARY;
+   assert(r300_cpu_vertex_gather_baseline(format_id, &stream, first_vertex,
+                                        vertex_count, baseline_out,
                                         CARRIER_DWORDS) == 0);
    assert(r300_cpu_vertex_gather(format_id, &stream, first_vertex,
                                  vertex_count, dispatch_out,
                                  CARRIER_DWORDS) == 0);
-   assert(memcmp(scalar_out, expected, vertex_count * 16) == 0);
+   assert(memcmp(baseline_out, expected, vertex_count * 16) == 0);
    assert(memcmp(dispatch_out, expected, vertex_count * 16) == 0);
    for (uint32_t i = vertex_count * 4; i < CARRIER_DWORDS + 1; i++) {
-      assert(scalar_out[i] == CANARY);
+      assert(baseline_out[i] == CANARY);
       assert(dispatch_out[i] == CANARY);
    }
 }
@@ -180,15 +187,28 @@ main(void)
    assert(memcmp(good, wrong_stride, sizeof(good)) != 0);
 
    /* The special encodings landed in the records and survived: vertex 0
-    * of the packed F32_4 gather carries them verbatim.
+    * of the packed F32_4 gather carries their bytes verbatim.
     */
    uint32_t first_vertex_lanes[4];
-   reference_gather(R300_VERTEX_FORMAT_F32_4, data, 16, 0, 1,
-                    first_vertex_lanes);
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &stream, 0, 1,
+                                 first_vertex_lanes, 4) == 0);
    for (unsigned lane = 0; lane < 4; lane++)
-      assert(first_vertex_lanes[lane] == special_bits[lane]);
+      assert(memcmp((uint8_t *)first_vertex_lanes + lane * 4,
+                    data + lane * 4, 4) == 0);
 
-   printf("r300_cpu_vertex: %s implementation matches the reference "
+   /* The synthesized ONE lane carries the little-endian carrier bytes
+    * 00 00 80 3f on every host; the assertion reads bytes, not a host
+    * dword, so a byte-order defect cannot cancel out of it.
+    */
+   uint32_t one_lane[4];
+   struct r300_cpu_vertex_stream f1_stream = { .data = data, .stride = 4 };
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_1, &f1_stream, 0, 1,
+                                 one_lane, 4) == 0);
+   const uint8_t *w_bytes = (const uint8_t *)one_lane + 12;
+   assert(w_bytes[0] == 0x00 && w_bytes[1] == 0x00 && w_bytes[2] == 0x80 &&
+          w_bytes[3] == 0x3f);
+
+   printf("r300_cpu_vertex: %s implementation matches the byte-defined reference "
           "bit-exactly\n",
           r300_cpu_vertex_implementation());
    return 0;

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
-# K8-safe CPU vertex execution: the scalar reference and the SSE2
-# specialization behind one gather contract.  Host-only code; the
+# Portable CPU vertex execution: the byte-defined baseline and the SSE2
+# tuned path behind one gather contract.  Host-only code; the
 # native R3V layer links it, and the qualification oracle proves the
 # implementations bit-identical against an independent reference model.
 libr300_cpu = static_library(

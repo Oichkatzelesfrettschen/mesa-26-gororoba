@@ -55,7 +55,7 @@ if with_tests and with_gallium_r300
   subdir('r300/common')
 endif
 
-# K8-safe CPU vertex execution for the native R3V lane; host-only, with
+# Portable CPU vertex execution for the native R3V lane; host-only, with
 # its qualification oracle under with_tests.
 if with_ati_r300_vk or (with_tests and with_gallium_r300)
   subdir('r300/cpu')
