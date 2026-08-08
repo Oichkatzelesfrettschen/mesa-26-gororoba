@@ -124,7 +124,13 @@ unsigned
 rc_constants_add_immediate_scalar(struct rc_constant_list *c, float data, unsigned *swizzle,
                                   unsigned *negate)
 {
-   unsigned index, free_comp;
+   unsigned index;
+   /* free_comp pairs with free_index: both assign in the same branch and
+    * the free_index >= 0 guard covers every read, so the zero is never
+    * consumed; it exists because the two-variable invariant sits outside
+    * what flow analysis proves.
+    */
+   unsigned free_comp = 0;
    int free_index = -1;
    struct rc_constant constant;
 
