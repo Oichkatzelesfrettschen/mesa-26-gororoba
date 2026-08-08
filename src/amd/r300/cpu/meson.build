@@ -30,16 +30,21 @@ if with_tests
   # The K8-target bench: the same bench with the gather compiled at the
   # TL-66 CPUID ceiling, so all three lanes exist under the exact
   # target codegen whatever the enclosing profile's -march is.  The
-  # gather compiles into this binary directly because the lanes live in
-  # r300_cpu_vertex.c, and the library copy keeps the profile's flags.
+  # tune override rides along because the enclosing profiles set
+  # -mtune=generic, and -mtune selects the scheduling model, so the
+  # measured gather assembly matches the K8 pipeline only with both
+  # flags pinned.  The gather compiles into this binary directly
+  # because the lanes live in r300_cpu_vertex.c, and the library copy
+  # keeps the profile's flags.
   if host_machine.cpu_family() == 'x86_64' and \
-     cc.has_argument('-march=k8-sse3')
+     cc.has_argument('-march=k8-sse3') and \
+     cc.has_argument('-mtune=k8-sse3')
     executable(
       'r300_cpu_vertex_bench_k8',
       files('r300_cpu_vertex.c', 'tests/r300_cpu_vertex_bench.c'),
       include_directories : [inc_src, inc_include,
                              include_directories('.')],
-      c_args : ['-march=k8-sse3'],
+      c_args : ['-march=k8-sse3', '-mtune=k8-sse3'],
       gnu_symbol_visibility : 'hidden',
     )
   endif

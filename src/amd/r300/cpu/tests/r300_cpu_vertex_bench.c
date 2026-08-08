@@ -201,8 +201,13 @@ bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
    /* Inner iterations amortize clock granularity for small counts. */
    unsigned inner = vertex_count < 4096 ? 4096 / (vertex_count ? vertex_count : 1)
                                         : 1;
+   /* The starting lane rotates with the repetition index, so no lane
+    * occupies a fixed phase of the repetition and a systematic drift
+    * within one repetition cannot bias the selected minima.
+    */
    for (unsigned r = 0; r < reps; r++) {
-      for (unsigned l = 0; l < LANE_COUNT; l++) {
+      for (unsigned i = 0; i < LANE_COUNT; i++) {
+         unsigned l = (r + i) % LANE_COUNT;
          if (!available[l])
             continue;
          uint64_t dt = time_one_rep(lanes[l].fn, format_id, &stream,
