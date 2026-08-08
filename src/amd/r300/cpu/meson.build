@@ -27,7 +27,7 @@ if with_tests
   # absent rather than substituting.
   executable(
     'r300_cpu_vertex_bench',
-    files('tests/r300_cpu_vertex_bench.c'),
+    [files('tests/r300_cpu_vertex_bench.c'), sha1_h],
     include_directories : [inc_src, inc_include,
                            include_directories('.')],
     link_with : [libr300_cpu],
@@ -50,7 +50,7 @@ if with_tests
      cc.has_argument('-mtune=k8-sse3')
     executable(
       'r300_cpu_vertex_bench_k8',
-      files('r300_cpu_vertex.c', 'tests/r300_cpu_vertex_bench.c'),
+      [files('r300_cpu_vertex.c', 'tests/r300_cpu_vertex_bench.c'), sha1_h],
       include_directories : [inc_src, inc_include,
                              include_directories('.')],
       c_args : ['-march=k8-sse3', '-mtune=k8-sse3'] + bench_release_args,

@@ -32,6 +32,8 @@
 
 #include "r300_cpu_vertex.h"
 
+#include "git_sha1.h"
+
 #include "amd/r300/common/r300_vertex_format.h"
 
 #include <errno.h>
@@ -208,11 +210,16 @@ bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
    /* Inner iterations amortize clock granularity for small counts. */
    unsigned inner = vertex_count < 4096 ? 4096 / (vertex_count ? vertex_count : 1)
                                         : 1;
-   /* The starting lane rotates with the repetition index, so no lane
-    * occupies a fixed phase of the repetition and a systematic drift
-    * within one repetition cannot bias the selected minima.
+   /* The starting lane rotates with the repetition index, and the
+    * repetition count rounds up to whole rotation cycles, so every
+    * present lane leads exactly rounded / present_count times and no
+    * lane occupies a fixed phase of the repetition; a partial cycle
+    * would hand the earlier lanes an extra lead.  The row reports the
+    * executed count.
     */
-   for (unsigned r = 0; r < reps; r++) {
+   unsigned rounded =
+      ((reps + present_count - 1) / present_count) * present_count;
+   for (unsigned r = 0; r < rounded; r++) {
       for (unsigned i = 0; i < present_count; i++) {
          unsigned l = present[(r + i) % present_count];
          uint64_t dt = time_one_rep(lanes[l].fn, format_id, &stream,
@@ -228,7 +235,7 @@ bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
          (double)best[l] / ((double)inner * (double)vertex_count);
       printf("%s\t%d\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32 "\t%u\t%.3f\n",
              lanes[l].label, format_id, stride, base_offset, vertex_count,
-             reps, per_vertex);
+             rounded, per_vertex);
    }
 }
 
@@ -273,18 +280,14 @@ main(int argc, char **argv)
           "evidence\n");
 #endif
 
-   /* The lane rotation covers every starting phase only when each lane
-    * leads at least one repetition, so a shorter run marks its rows as
-    * smoke output.
+   /* The row stream carries the source identity the binary was built
+    * from, so a retained bundle binds the timings to a commit; the
+    * clean-tree, declared-SHA, isolated-worktree requirement for a
+    * decision-grade run is procedural and its verdict rides the
+    * evidence bundle.
     */
-   if (reps < LANE_COUNT) {
-      fprintf(stderr,
-              "warning: %u repetitions cover fewer lane starts than %u "
-              "lanes; rows are smoke output, not dispatch evidence\n",
-              reps, (unsigned)LANE_COUNT);
-      printf("# reps below lane count: rows are smoke output, not "
-             "dispatch evidence\n");
-   }
+   printf("# source%s\n",
+          MESA_GIT_SHA1[0] != '\0' ? MESA_GIT_SHA1 : " unknown");
 
    /* Absent ISA lanes mark the stream: a tuned entry point compiled out
     * of this build reports -ENOSYS, and the marker line tells a
