@@ -12,13 +12,14 @@
  * and belong in an evidence bundle, not in a meson test verdict, so the
  * build registers no test over this executable.
  *
- * The implementations alternate inside each input shape -- shape-major,
- * lane-inner -- so frequency, thermal, and cache drift across the run
- * lands inside every lane's rows rather than between the lanes under
- * comparison.  The base-offset dimension starts the record stream 0 and
- * 4 bytes past the 16-byte-aligned allocation, because the unaligned
- * 16-byte load is the one form the SSE2/SSE3 candidates differ in and
- * an aligned-only corpus never exercises it.
+ * The lanes rotate inside every timing repetition of each input shape,
+ * so frequency, thermal, and cache drift across the run lands inside
+ * every lane's repetition set rather than between the lanes under
+ * comparison.  The base-offset dimension starts the record stream 0,
+ * 4, 8, and 12 bytes past the 16-byte-aligned allocation -- every
+ * four-byte-aligned residue a packed stream can carry -- because the
+ * unaligned 16-byte load is the one form the SSE2/SSE3 candidates
+ * differ in and an aligned-only corpus never exercises it.
  *
  * Usage: r300_cpu_vertex_bench [reps]
  *   reps: timing repetitions per row (default 9); the row reports the
@@ -115,10 +116,72 @@ calibrate_known_bad(void)
    }
 }
 
+/* Availability probe and pre-timing calibration: the lane's bytes equal
+ * the baseline's before its clock starts.  -ENOSYS means the build
+ * carries no such instruction set and the lane reports absent.  -EINVAL
+ * from a tuned lane means the vocabulary row no longer matches the
+ * kernel's encoded pattern, which is a calibration failure; only the
+ * memcpy ceiling declares shapes outside its contract, and it alone may
+ * skip on -EINVAL.  Returns 1 for a timeable lane and 0 for a skipped
+ * one.
+ */
+static int
+calibrate_lane(const char *label, gather_fn fn, int format_id,
+               const struct r300_cpu_vertex_stream *stream,
+               uint32_t vertex_count, int allow_unsupported)
+{
+   int rc = fn(format_id, stream, 0, vertex_count, carrier,
+               MAX_VERTICES * 4);
+   if (rc == -ENOSYS)
+      return 0;
+   if (rc == -EINVAL) {
+      if (allow_unsupported)
+         return 0;
+      fprintf(stderr,
+              "calibration failure: %s refused format %d stride %u\n",
+              label, format_id, stream->stride);
+      exit(1);
+   }
+   if (rc != 0 ||
+       r300_cpu_vertex_gather_baseline(format_id, stream, 0, vertex_count,
+                                       reference, MAX_VERTICES * 4) != 0 ||
+       memcmp(carrier, reference, (uint64_t)vertex_count * 16) != 0) {
+      fprintf(stderr,
+              "calibration failure: %s format %d stride %u count %u\n",
+              label, format_id, stream->stride, vertex_count);
+      exit(1);
+   }
+   return 1;
+}
+
+static uint64_t
+time_one_rep(gather_fn fn, int format_id,
+             const struct r300_cpu_vertex_stream *stream,
+             uint32_t vertex_count, unsigned inner)
+{
+   uint64_t t0 = now_ns();
+   for (unsigned i = 0; i < inner; i++)
+      fn(format_id, stream, 0, vertex_count, carrier, MAX_VERTICES * 4);
+   return now_ns() - t0;
+}
+
+#define LANE_COUNT 4
+
+struct bench_lane {
+   const char *label;
+   gather_fn fn;
+   int allow_unsupported;
+};
+
+/* One input-shape cell across every lane: calibrate each lane, then
+ * rotate the lanes inside every repetition, so frequency, thermal, and
+ * scheduler drift lands within each lane's repetition set rather than
+ * between the lanes under comparison; each lane's row reports its best
+ * repetition.
+ */
 static void
-bench_row(const char *label, gather_fn fn, int format_id,
-          uint32_t stride, uint32_t base_offset, uint32_t vertex_count,
-          unsigned reps, int allow_unsupported)
+bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
+            uint32_t base_offset, uint32_t vertex_count, unsigned reps)
 {
    const struct r300_cpu_vertex_stream stream = {
       .data = records + base_offset,
@@ -126,54 +189,38 @@ bench_row(const char *label, gather_fn fn, int format_id,
       .size_bytes = (uint64_t)MAX_VERTICES * stride,
    };
 
-   /* Availability probe and pre-timing calibration: the lane's bytes
-    * equal the baseline's before its clock starts.  -ENOSYS means the
-    * build carries no such instruction set and the lane reports absent.
-    * -EINVAL from a tuned lane means the vocabulary row no longer
-    * matches the kernel's encoded pattern, which is a calibration
-    * failure; only the memcpy ceiling declares shapes outside its
-    * contract, and it alone may skip on -EINVAL.
-    */
-   int rc = fn(format_id, &stream, 0, vertex_count, carrier,
-               MAX_VERTICES * 4);
-   if (rc == -ENOSYS)
-      return;
-   if (rc == -EINVAL) {
-      if (allow_unsupported)
-         return;
-      fprintf(stderr,
-              "calibration failure: %s refused format %d stride %u\n",
-              label, format_id, stride);
-      exit(1);
-   }
-   if (rc != 0 ||
-       r300_cpu_vertex_gather_baseline(format_id, &stream, 0, vertex_count,
-                                       reference, MAX_VERTICES * 4) != 0 ||
-       memcmp(carrier, reference, (uint64_t)vertex_count * 16) != 0) {
-      fprintf(stderr,
-              "calibration failure: %s format %d stride %u count %u\n",
-              label, format_id, stride, vertex_count);
-      exit(1);
+   int available[LANE_COUNT];
+   uint64_t best[LANE_COUNT];
+   for (unsigned l = 0; l < LANE_COUNT; l++) {
+      available[l] = calibrate_lane(lanes[l].label, lanes[l].fn, format_id,
+                                    &stream, vertex_count,
+                                    lanes[l].allow_unsupported);
+      best[l] = UINT64_MAX;
    }
 
    /* Inner iterations amortize clock granularity for small counts. */
    unsigned inner = vertex_count < 4096 ? 4096 / (vertex_count ? vertex_count : 1)
                                         : 1;
-   uint64_t best = UINT64_MAX;
    for (unsigned r = 0; r < reps; r++) {
-      uint64_t t0 = now_ns();
-      for (unsigned i = 0; i < inner; i++)
-         fn(format_id, &stream, 0, vertex_count, carrier,
-            MAX_VERTICES * 4);
-      uint64_t dt = now_ns() - t0;
-      if (dt < best)
-         best = dt;
+      for (unsigned l = 0; l < LANE_COUNT; l++) {
+         if (!available[l])
+            continue;
+         uint64_t dt = time_one_rep(lanes[l].fn, format_id, &stream,
+                                    vertex_count, inner);
+         if (dt < best[l])
+            best[l] = dt;
+      }
    }
-   double per_vertex =
-      (double)best / ((double)inner * (double)vertex_count);
-   printf("%s\t%d\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32 "\t%u\t%.3f\n",
-          label, format_id, stride, base_offset, vertex_count, reps,
-          per_vertex);
+
+   for (unsigned l = 0; l < LANE_COUNT; l++) {
+      if (!available[l])
+         continue;
+      double per_vertex =
+         (double)best[l] / ((double)inner * (double)vertex_count);
+      printf("%s\t%d\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32 "\t%u\t%.3f\n",
+             lanes[l].label, format_id, stride, base_offset, vertex_count,
+             reps, per_vertex);
+   }
 }
 
 int
@@ -202,23 +249,22 @@ main(int argc, char **argv)
    calibrate_known_bad();
 
    /* Decision-grade rows come from optimized codegen with assertions
-    * compiled out; any other build is identified so its rows read as
-    * smoke output.
+    * compiled out; any other build marks the row stream itself, so a
+    * recorder consuming stdout carries the non-decision-grade status
+    * with the rows.
     */
 #if !defined(NDEBUG) || !defined(__OPTIMIZE__)
    fprintf(stderr,
            "warning: assertions or unoptimized codegen in this build; "
            "rows are smoke output, not dispatch evidence\n");
+   printf("# non-release build: rows are smoke output, not dispatch "
+          "evidence\n");
 #endif
 
    printf("implementation\tformat\tstride\tbase_offset\tvertex_count\t"
           "reps\tbest_ns_per_vertex\n");
 
-   static const struct {
-      const char *label;
-      gather_fn fn;
-      int allow_unsupported;
-   } lanes[] = {
+   static const struct bench_lane lanes[LANE_COUNT] = {
       { "baseline", r300_cpu_vertex_gather_baseline, 0 },
       { "sse2", r300_cpu_vertex_gather_sse2, 0 },
       { "sse3", r300_cpu_vertex_gather_sse3, 0 },
@@ -231,7 +277,12 @@ main(int argc, char **argv)
       R300_VERTEX_FORMAT_F32_1,
    };
    static const uint32_t counts[] = { 3, 4096, MAX_VERTICES };
-   static const uint32_t offsets[] = { 0, 4 };
+   /* Every four-byte-aligned start a packed stream can carry: the
+    * stride preserves the initial alignment across vertices, so these
+    * offsets cover each residue of the 16-byte load the SSE2/SSE3
+    * candidates differ in.
+    */
+   static const uint32_t offsets[] = { 0, 4, 8, 12 };
 
    for (unsigned f = 0; f < 4; f++) {
       const struct r300_vertex_format_semantics *format =
@@ -240,7 +291,7 @@ main(int argc, char **argv)
       uint32_t strides[2] = { format->semantic_record_bytes,
                               format->semantic_record_bytes + 8 };
       for (unsigned s = 0; s < 2; s++) {
-         for (unsigned o = 0; o < 2; o++) {
+         for (unsigned o = 0; o < 4; o++) {
             for (unsigned c = 0; c < 3; c++) {
                /* The padded stride at the max count would read past the
                 * record area; the bound refuses it, so skip the shape.
@@ -248,10 +299,8 @@ main(int argc, char **argv)
                if ((uint64_t)counts[c] * strides[s] + offsets[o] >
                    (uint64_t)MAX_VERTICES * 32)
                   continue;
-               for (unsigned l = 0; l < 4; l++)
-                  bench_row(lanes[l].label, lanes[l].fn, formats[f],
-                            strides[s], offsets[o], counts[c], reps,
-                            lanes[l].allow_unsupported);
+               bench_shape(lanes, formats[f], strides[s], offsets[o],
+                           counts[c], reps);
             }
          }
       }
