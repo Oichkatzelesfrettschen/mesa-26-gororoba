@@ -28,9 +28,12 @@
  * Tuning is a separate property from the contract.  General code speed
  * rides each build profile's compiler flags; an explicit SIMD path is a
  * second implementation to qualify and exists only where a measurement
- * on the target host justifies it.  The one tuned path here is SSE2
- * (the K8 primary target implements SSE2/SSE3), correctness-qualified
- * by the oracle and awaiting its K8 timing measurement.
+ * on the target host justifies it.  The tuned candidates are SSE2 and
+ * SSE3 -- the K8 primary target's CPUID ceiling is k8-sse3, so SSE3 is
+ * the last vector extension the target implements -- and both are
+ * correctness-qualified by the oracle.  The timing bench decides which
+ * candidate the auto dispatch keeps; until the target measurement
+ * lands, r300_cpu_vertex_gather selects the SSE2 path.
  */
 
 /* One bound attribute stream: data points at the first record of the
@@ -63,6 +66,22 @@ int r300_cpu_vertex_gather(int format_id,
  * same contract as r300_cpu_vertex_gather.
  */
 int r300_cpu_vertex_gather_baseline(
+   int format_id, const struct r300_cpu_vertex_stream *stream,
+   uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
+   uint32_t carrier_dwords);
+
+/* The named tuned candidates, for the oracle and the timing bench.
+ * Each returns -ENOSYS on a build without its instruction set and
+ * -EINVAL when the vocabulary row deviates from the identity selector
+ * pattern the tuned kernels encode, so a bench lane never silently
+ * times a different implementation than its label names.
+ */
+int r300_cpu_vertex_gather_sse2(
+   int format_id, const struct r300_cpu_vertex_stream *stream,
+   uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
+   uint32_t carrier_dwords);
+
+int r300_cpu_vertex_gather_sse3(
    int format_id, const struct r300_cpu_vertex_stream *stream,
    uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
    uint32_t carrier_dwords);

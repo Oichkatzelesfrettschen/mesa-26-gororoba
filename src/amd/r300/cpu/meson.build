@@ -12,6 +12,18 @@ libr300_cpu = static_library(
 )
 
 if with_tests
+  # Timing bench, run by hand on the target host: baseline versus the
+  # SSE2 and SSE3 candidates against the memcpy copy ceiling.  The
+  # measurement is host-specific evidence, so no meson test wraps it.
+  executable(
+    'r300_cpu_vertex_bench',
+    files('tests/r300_cpu_vertex_bench.c'),
+    include_directories : [inc_src, inc_include,
+                           include_directories('.')],
+    link_with : [libr300_cpu],
+    gnu_symbol_visibility : 'hidden',
+  )
+
   test(
     'r300-cpu-vertex',
     executable(
