@@ -192,10 +192,19 @@ The landed mechanisms are:
   finite completion via a write-domain BO plus bounded `GEM_WAIT_IDLE`);
 - deep-copied fragment binaries (`r300_fragment_binary`) with content hash
   and structural validator;
-- native device, memory (one owned GEM BO per `VkDeviceMemory`, buffer-only),
-  queue, and command-carrier objects; reporting narrowed to executable
-  routes: empty feature and extension tables, queue flags zero, one UMA
-  heap sized from `DRM_RADEON_GEM_INFO`;
+- native device, memory (one owned GEM BO per `VkDeviceMemory`), buffer,
+  image, image-view, pipeline, queue, and command-carrier objects;
+  reporting narrowed to executable routes: the queue family advertises
+  `VK_QUEUE_GRAPHICS_BIT` for the recording surface, format properties
+  advertise the accepted subset (the linear B8G8R8A8 color target and
+  the F32-family vertex formats), and one UMA heap sizes from
+  `DRM_RADEON_GEM_INFO`;
+- the public graphics recording surface: the qualified 64x64 linear
+  image and identity view, the pipeline admitted by byte equality with
+  the reference SPIR-V pair and the cell's fixed state vector, and the
+  render-pass/bind/draw command subset whose draw lowers through the
+  CPU vertex carrier into the fixed cell, with the vertex gather and
+  load-op clear executing at queue submission;
 - the fixed TCL-bypass triangle lowered into a native command buffer by
   `r3v_native_record_tcl_bypass_triangle`, a private entry linked directly
   by the pre-hardware harness; the recording opens with the neutral
@@ -209,9 +218,9 @@ The landed mechanisms are:
 - the drm-shim triangle-cell harness driving both gate states, with the
   closed-gate retained IB byte-identical to the direct emitter.
 
-Graphics and compute pipelines, public Vulkan command recording, images,
-descriptors, transfers, WSI, the CPU vertex carrier delivery, and native
-R2VB remain outside the landed surface. Live `DRM_RADEON_CS` submission
+Compute pipelines, descriptors, transfers, WSI, extents and formats
+past the fixed cell, and native R2VB remain outside the landed
+surface. Live `DRM_RADEON_CS` submission
 has three attended witnesses, each kernel-accepted and retired clean:
 the bare inherited-state cell left the color target unwritten, the
 direct-write 2D control landed its probe bytes exactly, and the

@@ -33,7 +33,7 @@ r3v_native_cmd_buffer_release_recording(
       struct r3v_native_device *device = container_of(
          cmd_buffer->vk.base.device, struct r3v_native_device, vk);
       radeon_drm_vk_bo_free(&device->drm, &cmd_buffer->owned_carrier->bo);
-      free(cmd_buffer->owned_carrier);
+      vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_carrier);
       cmd_buffer->owned_carrier = NULL;
    }
    cmd_buffer->pass_target = NULL;

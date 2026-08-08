@@ -17,7 +17,7 @@
 #include "vk_render_pass.h"
 
 #include <radeon_drm.h>
-#include <stdlib.h>
+#include "vk_alloc.h"
 #include <string.h>
 
 static void
@@ -199,7 +199,13 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
       return;
    }
 
-   struct r3v_native_memory *carrier = calloc(1, sizeof(*carrier));
+   /* The carrier descriptor is recording-lifetime state, so it rides
+    * the command pool's allocator and a custom host-memory policy
+    * covers it with the command buffer itself.
+    */
+   struct r3v_native_memory *carrier =
+      vk_zalloc(&cmd_buffer->vk.pool->alloc, sizeof(*carrier), 8,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (carrier == NULL) {
       poison(commandBuffer, VK_ERROR_OUT_OF_HOST_MEMORY);
       return;
@@ -207,7 +213,7 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    if (radeon_drm_vk_bo_create(&device->drm, 4096, 4096,
                                RADEON_GEM_DOMAIN_GTT, 0, false,
                                &carrier->bo) != 0) {
-      free(carrier);
+      vk_free(&cmd_buffer->vk.pool->alloc, carrier);
       poison(commandBuffer, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       return;
    }
