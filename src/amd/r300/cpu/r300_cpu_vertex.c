@@ -202,11 +202,16 @@ sse2_pattern_matches(const struct r300_vertex_format_semantics *format)
 
 #if defined(__SSE3__)
 
-/* The SSE3 candidate: LDDQU replaces MOVDQU on the F32_4 pass-through
- * load, the one kernel wide enough for the unaligned-load form to
- * matter.  SSE3 adds no form for the 8- and 4-byte partial loads, so
- * the remaining formats share the SSE2 kernels and the bench's
- * SSE2-versus-SSE3 delta isolates the load instruction alone.
+/* The SSE3 candidate: _mm_lddqu_si128 replaces _mm_loadu_si128 on the
+ * F32_4 pass-through load, the one kernel wide enough for the
+ * unaligned-load form to matter.  _mm_lddqu_si128 compiles to LDDQU;
+ * the SSE2 intrinsic's opcode is the compiler's choice (MOVDQU or
+ * MOVUPS), so the bench's SSE2-versus-SSE3 delta compares the two
+ * compiled kernels as shipped, and the retained disassembly in the
+ * evidence bundle names the exact instruction pair the measurement
+ * timed.  SSE3 adds no form for the 8- and 4-byte partial loads, so
+ * the remaining formats share the SSE2 kernels and the delta isolates
+ * the load path alone.
  */
 static int
 gather_sse3(const struct r300_vertex_format_semantics *format,

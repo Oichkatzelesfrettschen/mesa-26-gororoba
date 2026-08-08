@@ -246,6 +246,45 @@ bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
 int
 main(int argc, char **argv)
 {
+   /* The K8 target binary's rows decide the TL-66 dispatch, and K8
+    * codegen on another microarchitecture times that host's pipeline,
+    * so the executing CPU must identify as AMD family 0Fh (K8) or the
+    * rows mark as smoke output.  The SSE3 feature bit is a hard
+    * refusal: the whole binary compiles at -march=k8-sse3, so a host
+    * without SSE3 -- an early-revision family 0Fh part -- would fault
+    * mid-run instead of producing marked rows.
+    */
+#ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
+   {
+      unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
+      int is_k8 = 0;
+      int has_sse3 = 0;
+      if (__get_cpuid(0, &eax, &ebx, &ecx, &edx) &&
+          ebx == 0x68747541u /* "Auth" */ &&
+          edx == 0x69746e65u /* "enti" */ &&
+          ecx == 0x444d4163u /* "cAMD" */ &&
+          __get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+         unsigned base_family = (eax >> 8) & 0xf;
+         unsigned ext_family = (eax >> 20) & 0xff;
+         is_k8 = base_family == 0xf && ext_family == 0;
+         has_sse3 = (ecx & bit_SSE3) != 0;
+      }
+      if (!has_sse3) {
+         fprintf(stderr,
+                 "error: executing CPU lacks SSE3; this binary's "
+                 "k8-sse3 codegen would fault\n");
+         return 1;
+      }
+      if (!is_k8) {
+         fprintf(stderr,
+                 "warning: executing CPU is not AMD family 0Fh (K8); "
+                 "rows are smoke output, not dispatch evidence\n");
+         printf("# non-K8 host: rows are smoke output, not dispatch "
+                "evidence\n");
+      }
+   }
+#endif
+
    unsigned reps = 9;
    if (argc > 1) {
       char *end = NULL;
@@ -293,33 +332,6 @@ main(int argc, char **argv)
    printf("# source%s\n",
           MESA_GIT_SHA1[0] != '\0' ? MESA_GIT_SHA1 : " unknown");
 
-   /* The K8 target binary's rows decide the TL-66 dispatch, and K8
-    * codegen on another microarchitecture times that host's pipeline,
-    * so the executing CPU must identify as AMD family 0Fh (K8) or the
-    * rows mark as smoke output.
-    */
-#ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
-   {
-      unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
-      int is_k8 = 0;
-      if (__get_cpuid(0, &eax, &ebx, &ecx, &edx) &&
-          ebx == 0x68747541u /* "Auth" */ &&
-          edx == 0x69746e65u /* "enti" */ &&
-          ecx == 0x444d4163u /* "cAMD" */ &&
-          __get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
-         unsigned base_family = (eax >> 8) & 0xf;
-         unsigned ext_family = (eax >> 20) & 0xff;
-         is_k8 = base_family == 0xf && ext_family == 0;
-      }
-      if (!is_k8) {
-         fprintf(stderr,
-                 "warning: executing CPU is not AMD family 0Fh (K8); "
-                 "rows are smoke output, not dispatch evidence\n");
-         printf("# non-K8 host: rows are smoke output, not dispatch "
-                "evidence\n");
-      }
-   }
-#endif
 
    /* Absent ISA lanes mark the stream: a tuned entry point compiled out
     * of this build reports -ENOSYS, and the marker line tells a
