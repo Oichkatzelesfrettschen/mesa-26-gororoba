@@ -32,6 +32,7 @@ if with_tests
                            include_directories('.')],
     link_with : [libr300_cpu],
     c_args : bench_release_args,
+    dependencies : [dep_clock],
     gnu_symbol_visibility : 'hidden',
   )
 
@@ -53,6 +54,7 @@ if with_tests
       include_directories : [inc_src, inc_include,
                              include_directories('.')],
       c_args : ['-march=k8-sse3', '-mtune=k8-sse3'] + bench_release_args,
+      dependencies : [dep_clock],
       gnu_symbol_visibility : 'hidden',
     )
   endif

@@ -269,6 +269,30 @@ main(int argc, char **argv)
           "evidence\n");
 #endif
 
+   /* Absent ISA lanes mark the stream: a tuned entry point compiled out
+    * of this build reports -ENOSYS, and the marker line tells a
+    * collector this stream is not the three-way result -- a silent
+    * omission would let a two-way stream read as complete.
+    */
+   {
+      const struct r300_cpu_vertex_stream probe_stream = {
+         .data = records,
+         .stride = 16,
+         .size_bytes = 64,
+      };
+      static const struct { const char *label; gather_fn fn; } tuned[] = {
+         { "sse2", r300_cpu_vertex_gather_sse2 },
+         { "sse3", r300_cpu_vertex_gather_sse3 },
+      };
+      for (unsigned t = 0; t < 2; t++) {
+         if (tuned[t].fn(R300_VERTEX_FORMAT_F32_4, &probe_stream, 0, 3,
+                         carrier, MAX_VERTICES * 4) == -ENOSYS) {
+            printf("# lane absent: %s (build carries no such instruction "
+                   "set)\n", tuned[t].label);
+         }
+      }
+   }
+
    printf("implementation\tformat\tstride\tbase_offset\tvertex_count\t"
           "reps\tbest_ns_per_vertex\n");
 
