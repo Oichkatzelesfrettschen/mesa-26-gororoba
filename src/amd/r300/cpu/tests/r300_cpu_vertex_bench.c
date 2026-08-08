@@ -87,10 +87,38 @@ static uint8_t *records;
 static uint32_t *carrier;
 static uint32_t *reference;
 
+/* Known-bad calibration: a corrupted carrier byte trips the same
+ * comparison bench_row uses as its verdict, so the comparison is proven
+ * live before any timing row it certifies.
+ */
+static void
+calibrate_known_bad(void)
+{
+   const struct r300_cpu_vertex_stream stream = {
+      .data = records,
+      .stride = 16,
+      .size_bytes = (uint64_t)MAX_VERTICES * 16,
+   };
+   if (r300_cpu_vertex_gather_baseline(R300_VERTEX_FORMAT_F32_4, &stream,
+                                       0, 64, carrier, MAX_VERTICES * 4) != 0 ||
+       r300_cpu_vertex_gather_baseline(R300_VERTEX_FORMAT_F32_4, &stream,
+                                       0, 64, reference,
+                                       MAX_VERTICES * 4) != 0) {
+      fprintf(stderr, "known-bad calibration: baseline gather failed\n");
+      exit(1);
+   }
+   ((uint8_t *)carrier)[17] ^= 0x40;
+   if (memcmp(carrier, reference, 64 * 16) == 0) {
+      fprintf(stderr,
+              "known-bad calibration: corrupted carrier compared equal\n");
+      exit(1);
+   }
+}
+
 static void
 bench_row(const char *label, gather_fn fn, int format_id,
           uint32_t stride, uint32_t base_offset, uint32_t vertex_count,
-          unsigned reps)
+          unsigned reps, int allow_unsupported)
 {
    const struct r300_cpu_vertex_stream stream = {
       .data = records + base_offset,
@@ -99,12 +127,25 @@ bench_row(const char *label, gather_fn fn, int format_id,
    };
 
    /* Availability probe and pre-timing calibration: the lane's bytes
-    * equal the baseline's before its clock starts.
+    * equal the baseline's before its clock starts.  -ENOSYS means the
+    * build carries no such instruction set and the lane reports absent.
+    * -EINVAL from a tuned lane means the vocabulary row no longer
+    * matches the kernel's encoded pattern, which is a calibration
+    * failure; only the memcpy ceiling declares shapes outside its
+    * contract, and it alone may skip on -EINVAL.
     */
    int rc = fn(format_id, &stream, 0, vertex_count, carrier,
                MAX_VERTICES * 4);
-   if (rc == -ENOSYS || rc == -EINVAL)
+   if (rc == -ENOSYS)
       return;
+   if (rc == -EINVAL) {
+      if (allow_unsupported)
+         return;
+      fprintf(stderr,
+              "calibration failure: %s refused format %d stride %u\n",
+              label, format_id, stride);
+      exit(1);
+   }
    if (rc != 0 ||
        r300_cpu_vertex_gather_baseline(format_id, &stream, 0, vertex_count,
                                        reference, MAX_VERTICES * 4) != 0 ||
@@ -158,24 +199,41 @@ main(int argc, char **argv)
    }
    fill_records(records, (uint64_t)MAX_VERTICES * 32, 0xbe4c0000u);
 
+   calibrate_known_bad();
+
+   /* Decision-grade rows come from optimized codegen with assertions
+    * compiled out; any other build is identified so its rows read as
+    * smoke output.
+    */
+#if !defined(NDEBUG) || !defined(__OPTIMIZE__)
+   fprintf(stderr,
+           "warning: assertions or unoptimized codegen in this build; "
+           "rows are smoke output, not dispatch evidence\n");
+#endif
+
    printf("implementation\tformat\tstride\tbase_offset\tvertex_count\t"
           "reps\tbest_ns_per_vertex\n");
 
-   static const struct { const char *label; gather_fn fn; } lanes[] = {
-      { "baseline", r300_cpu_vertex_gather_baseline },
-      { "sse2", r300_cpu_vertex_gather_sse2 },
-      { "sse3", r300_cpu_vertex_gather_sse3 },
-      { "memcpy-ceiling", gather_memcpy_ceiling },
+   static const struct {
+      const char *label;
+      gather_fn fn;
+      int allow_unsupported;
+   } lanes[] = {
+      { "baseline", r300_cpu_vertex_gather_baseline, 0 },
+      { "sse2", r300_cpu_vertex_gather_sse2, 0 },
+      { "sse3", r300_cpu_vertex_gather_sse3, 0 },
+      { "memcpy-ceiling", gather_memcpy_ceiling, 1 },
    };
    static const int formats[] = {
       R300_VERTEX_FORMAT_F32_4,
       R300_VERTEX_FORMAT_F32_3,
       R300_VERTEX_FORMAT_F32_2,
+      R300_VERTEX_FORMAT_F32_1,
    };
    static const uint32_t counts[] = { 3, 4096, MAX_VERTICES };
    static const uint32_t offsets[] = { 0, 4 };
 
-   for (unsigned f = 0; f < 3; f++) {
+   for (unsigned f = 0; f < 4; f++) {
       const struct r300_vertex_format_semantics *format =
          r300_vertex_format_semantics(
             (enum r300_vertex_format_id)formats[f]);
@@ -192,7 +250,8 @@ main(int argc, char **argv)
                   continue;
                for (unsigned l = 0; l < 4; l++)
                   bench_row(lanes[l].label, lanes[l].fn, formats[f],
-                            strides[s], offsets[o], counts[c], reps);
+                            strides[s], offsets[o], counts[c], reps,
+                            lanes[l].allow_unsupported);
             }
          }
       }
