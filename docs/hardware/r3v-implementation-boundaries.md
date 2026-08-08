@@ -24,9 +24,18 @@ relocation, and readback substrate; and the contract-prefixed 234-dword
 cell rendered the triangle as predicted -- interior `0xff00ff00`,
 exterior and canary at the sentinel -- so the inert first run is closed
 as a first-draw state-contract failure. The proven raster path is that
-one fixed cell; the public recording surface, general vertex routes,
-and the complete Vulkan semantic/conformance sections remain
-implementation contracts.
+one fixed cell.  The public recording surface now reaches it: a bounded
+render-pass/pipeline/draw vocabulary -- the qualified 64x64 linear
+color target, a pipeline admitted by byte equality with the reference
+SPIR-V pair and the cell's fixed state vector, and a draw that gathers
+the bound vertex buffer through the CPU executor into a
+command-buffer-owned carrier -- records the byte-identical cell IB
+through public `vkCmd*` entry points, at the drm-shim host-model class
+under the `r3v-native-public-surface` harness, and every contract
+deviation poisons or refuses.  The recorded IB equals the digest the
+arming authority qualifies, so the existing silicon witness stands for
+what the public route records; general vertex routes and the complete
+Vulkan semantic/conformance sections remain implementation contracts.
 
 The bounded R300 R2VB `FLOAT_2` source transaction has one home:
 `r300-r2vb-float2-source-contract.md`. This document owns the implementation

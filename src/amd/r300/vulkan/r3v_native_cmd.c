@@ -26,6 +26,25 @@ r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
 }
 
 void
+r3v_native_cmd_buffer_release_recording(
+   struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   if (cmd_buffer->owned_carrier != NULL) {
+      struct r3v_native_device *device = container_of(
+         cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+      radeon_drm_vk_bo_free(&device->drm, &cmd_buffer->owned_carrier->bo);
+      free(cmd_buffer->owned_carrier);
+      cmd_buffer->owned_carrier = NULL;
+   }
+   cmd_buffer->pass_target = NULL;
+   cmd_buffer->bound_pipeline = NULL;
+   cmd_buffer->bound_vertex_buffer = NULL;
+   cmd_buffer->bound_vertex_offset = 0;
+   cmd_buffer->vertex_bound = false;
+   cmd_buffer->draw_recorded = false;
+}
+
+void
 r3v_native_cmd_buffer_install_ib(struct r3v_native_cmd_buffer *cmd_buffer,
                                  uint32_t *ib, uint32_t ib_size_dwords,
                                  struct r3v_native_bo_reference *references,
@@ -69,6 +88,7 @@ r3v_native_cmd_buffer_reset(struct vk_command_buffer *cmd_buffer_base,
       container_of(cmd_buffer_base, struct r3v_native_cmd_buffer, vk);
    vk_command_buffer_reset(&cmd_buffer->vk);
    r3v_native_cmd_buffer_release_ib(cmd_buffer);
+   r3v_native_cmd_buffer_release_recording(cmd_buffer);
 }
 
 static void
@@ -77,6 +97,7 @@ r3v_native_cmd_buffer_destroy(struct vk_command_buffer *cmd_buffer_base)
    struct r3v_native_cmd_buffer *cmd_buffer =
       container_of(cmd_buffer_base, struct r3v_native_cmd_buffer, vk);
    r3v_native_cmd_buffer_release_ib(cmd_buffer);
+   r3v_native_cmd_buffer_release_recording(cmd_buffer);
    vk_command_buffer_finish(&cmd_buffer->vk);
    vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer);
 }

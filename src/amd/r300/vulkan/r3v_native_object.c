@@ -32,26 +32,6 @@
  */
 
 VKAPI_ATTR VkResult VKAPI_CALL
-r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
-                const VkAllocationCallbacks *pAllocator, VkImage *pImage)
-{
-   VK_FROM_HANDLE(r3v_native_device, device, _device);
-   *pImage = VK_NULL_HANDLE;
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-r3v_CreateImageView(VkDevice _device,
-                    const VkImageViewCreateInfo *pCreateInfo,
-                    const VkAllocationCallbacks *pAllocator,
-                    VkImageView *pView)
-{
-   VK_FROM_HANDLE(r3v_native_device, device, _device);
-   *pView = VK_NULL_HANDLE;
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateBufferView(VkDevice _device,
                      const VkBufferViewCreateInfo *pCreateInfo,
                      const VkAllocationCallbacks *pAllocator,
@@ -134,17 +114,6 @@ r3v_AllocateDescriptorSets(VkDevice _device,
  * commands above hand back no other handle, so each of these performs the
  * no-op for every input a valid program can present.
  */
-VKAPI_ATTR void VKAPI_CALL
-r3v_DestroyImage(VkDevice _device, VkImage image,
-                 const VkAllocationCallbacks *pAllocator)
-{
-}
-
-VKAPI_ATTR void VKAPI_CALL
-r3v_DestroyImageView(VkDevice _device, VkImageView imageView,
-                     const VkAllocationCallbacks *pAllocator)
-{
-}
 
 VKAPI_ATTR void VKAPI_CALL
 r3v_DestroyBufferView(VkDevice _device, VkBufferView bufferView,

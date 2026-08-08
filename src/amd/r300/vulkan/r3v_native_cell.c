@@ -197,6 +197,18 @@ r3v_native_record_tcl_bypass_triangle_from_stream(
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
 
+   return r3v_native_record_tcl_bypass_triangle_gathered(
+      device, cmd_buffer, vertex_memory, color_memory, stream);
+}
+
+VkResult
+r3v_native_record_tcl_bypass_triangle_gathered(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *vertex_memory,
+   struct r3v_native_memory *color_memory,
+   const struct r3v_native_vertex_stream_desc *stream)
+{
    if (vertex_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
        color_memory->bo.size < R3V_TRIANGLE_COLOR_BYTES) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,

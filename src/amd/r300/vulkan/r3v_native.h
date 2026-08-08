@@ -47,10 +47,17 @@ struct r3v_native_bo_reference {
    struct r3v_native_memory *memory;
 };
 
+struct r3v_native_image;
+struct r3v_native_pipeline;
+struct r3v_native_buffer;
+
 /* Native command buffer: one fixed IB dword vector plus its BO references,
- * installed whole by a device-internal emitter.  Vulkan command recording
- * into this buffer declines; the recording surface arrives with the
- * execution-node vocabulary.
+ * installed whole by a device-internal emitter or by the public triangle
+ * recording surface.  The recording-state members carry the public
+ * surface's begin/bind/draw progress; a command outside the qualified
+ * contract poisons the buffer, so EndCommandBuffer returns the error and
+ * the queue refuses it.  owned_carrier is the CPU_VERTEX node's gather
+ * destination, allocated at draw recording and released with the buffer.
  */
 struct r3v_native_cmd_buffer {
    struct vk_command_buffer vk;
@@ -58,6 +65,14 @@ struct r3v_native_cmd_buffer {
    uint32_t ib_size_dwords;
    struct r3v_native_bo_reference *references;
    uint32_t reference_count;
+
+   struct r3v_native_image *pass_target;
+   struct r3v_native_pipeline *bound_pipeline;
+   struct r3v_native_buffer *bound_vertex_buffer;
+   VkDeviceSize bound_vertex_offset;
+   bool vertex_bound;
+   bool draw_recorded;
+   struct r3v_native_memory *owned_carrier;
 };
 
 struct r3v_native_queue {
@@ -104,7 +119,63 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_memory, vk.base, VkDeviceMemory,
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_buffer, vk.base, VkBuffer,
                                VK_OBJECT_TYPE_BUFFER)
 
+/* The public recording surface's qualified render target: a 64x64
+ * B8G8R8A8_UNORM linear 2D color attachment, the one image shape whose
+ * lowering is the qualified triangle cell.  The pixel geometry and the
+ * memory contract (a 65-row allocation whose last row is oracle
+ * headroom past the render extent) are fixed by the cell.
+ */
+#define R3V_NATIVE_TARGET_WIDTH 64
+#define R3V_NATIVE_TARGET_HEIGHT 64
+#define R3V_NATIVE_TARGET_FORMAT VK_FORMAT_B8G8R8A8_UNORM
+#define R3V_NATIVE_TARGET_ROW_BYTES (R3V_NATIVE_TARGET_WIDTH * 4)
+#define R3V_NATIVE_TARGET_MEMORY_BYTES \
+   (R3V_NATIVE_TARGET_ROW_BYTES * (R3V_NATIVE_TARGET_HEIGHT + 1))
+
+struct r3v_native_image {
+   struct vk_object_base base;
+   /* Bound memory, offset zero; the cell references the BO base. */
+   struct r3v_native_memory *memory;
+};
+
+struct r3v_native_image_view {
+   struct vk_object_base base;
+   struct r3v_native_image *image;
+};
+
+/* The qualified graphics pipeline: creation admits exactly the fixed
+ * cell's state vector plus the vertex-input freedom the CPU executor
+ * covers, so the pipeline's own state is the one attribute's format,
+ * stride, and offset.
+ */
+struct r3v_native_pipeline {
+   struct vk_object_base base;
+   int format_id;
+   uint32_t binding_stride;
+   uint32_t attribute_offset;
+};
+
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_image, base, VkImage,
+                               VK_OBJECT_TYPE_IMAGE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_image_view, base, VkImageView,
+                               VK_OBJECT_TYPE_IMAGE_VIEW)
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_pipeline, base, VkPipeline,
+                               VK_OBJECT_TYPE_PIPELINE)
+
 extern const struct vk_command_buffer_ops r3v_native_cmd_buffer_ops;
+
+/* The render-pass shape whose one subpass the qualified cell realizes;
+ * pipeline creation and render-pass begin validate against the same
+ * predicate so the two admissions cannot drift apart.
+ */
+struct vk_render_pass;
+bool r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass);
+
+/* Releases the public recording state and the owned carrier BO; reset,
+ * destroy, and a failed draw lowering all resolve here.
+ */
+void r3v_native_cmd_buffer_release_recording(
+   struct r3v_native_cmd_buffer *cmd_buffer);
 
 /* Installs a complete IB and reference list into a native command buffer,
  * taking ownership of both allocations.  The fixed-cell emitters are the
@@ -160,6 +231,17 @@ struct r3v_native_vertex_stream_desc {
 VkResult r3v_native_record_tcl_bypass_triangle_from_stream(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
    VkDeviceMemory colorMemory,
+   const struct r3v_native_vertex_stream_desc *stream);
+
+/* The struct-level carrier-delivery recorder behind the handle wrapper
+ * above, shared with the public draw lowering: the carrier memory is
+ * the gather destination BO and the color memory is the render target.
+ */
+VkResult r3v_native_record_tcl_bypass_triangle_gathered(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory,
+   struct r3v_native_memory *color_memory,
    const struct r3v_native_vertex_stream_desc *stream);
 
 /* Direct-write control recorder: lowers the 2D solid-fill cell
