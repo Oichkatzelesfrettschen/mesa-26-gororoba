@@ -15,16 +15,18 @@ program. Submission sits behind a multi-factor arming conjunction with
 one-shot disarm, and both the semantic cell and the exact submit object
 retain as digest-bound evidence. Its evidence stands at the host-unit,
 build/link, no-submit PM4, offline kernel-parser, drm-shim host-model, and
-one-shot silicon classes: one attended armed submission on RS482 was
-accepted and retired clean by the running radeon kernel, with the color
-target retaining its sentinel fill. The inert output is the first-draw
-inheritance mechanism -- the submitted cell owned none of the three
-silicon-proven color-write gates -- and the recorded cell now opens with
-the neutral first-draw state contract so the stream establishes every
-register it depends on itself. It is not yet a native Vulkan graphics
-driver or a proven RS482 raster path; the pixel-producing witness for the
-self-contained successor cell is the next attended run. The complete
-Vulkan semantic/conformance sections remain implementation contracts.
+one-shot silicon classes: three attended armed submissions on RS482 were
+accepted and retired clean by the running radeon kernel. The first
+submitted the bare inherited-state cell and left the target at its
+sentinel fill; the direct-write 2D control then proved the transport
+carries device writes byte-exact through the same BO, cache,
+relocation, and readback substrate; and the contract-prefixed 234-dword
+cell rendered the triangle as predicted -- interior `0xff00ff00`,
+exterior and canary at the sentinel -- so the inert first run is closed
+as a first-draw state-contract failure. The proven raster path is that
+one fixed cell; the public recording surface, general vertex routes,
+and the complete Vulkan semantic/conformance sections remain
+implementation contracts.
 
 The bounded R300 R2VB `FLOAT_2` source transaction has one home:
 `r300-r2vb-float2-source-contract.md`. This document owns the implementation
@@ -181,11 +183,13 @@ The landed mechanisms are:
   closed-gate retained IB byte-identical to the direct emitter.
 
 Graphics and compute pipelines, public Vulkan command recording, images,
-descriptors, transfers, WSI, the CPU vertex route, and native R2VB remain
-outside the landed surface. Live `DRM_RADEON_CS` submission has one
-attended witness: kernel-accepted, retired clean, color target unwritten;
-the self-contained successor cell's silicon run is separately authorized
-and outstanding.
+descriptors, transfers, WSI, the CPU vertex carrier delivery, and native
+R2VB remain outside the landed surface. Live `DRM_RADEON_CS` submission
+has three attended witnesses, each kernel-accepted and retired clean:
+the bare inherited-state cell left the color target unwritten, the
+direct-write 2D control landed its probe bytes exactly, and the
+contract-prefixed successor cell rendered the triangle as predicted;
+the witness bundle is the frozen private-cell reference.
 
 ### Source-layer split
 
@@ -193,7 +197,7 @@ and outstanding.
 |---|---|
 | `src/amd/radeon/drm_vk/` | Radeon DRM BO, map, PRIME, relocation, submission, and finite completion transport |
 | `src/amd/r300/common/` | RS480/R300 device facts, formats, packet fields, state packs, barriers, and validators |
-| `src/amd/r300/cpu/` (planned, absent from the tree) | scalar reference and K8-safe vertex execution |
+| `src/amd/r300/cpu/` | portable byte-defined vertex execution baseline plus measured per-target tuned paths |
 | `src/amd/r300/vulkan/` | Vulkan objects, command lowering, execution graph, queue policy, images, WSI, and entry points |
 
 The shared Radeon DRM layer contains no R300 or Evergreen graphics state.
@@ -280,8 +284,11 @@ Draw ownership:
 
 ```text
 Vulkan vertex and index state
--> scalar semantic reference
--> measured K8 SSE2/SSE3 specialization
+-> byte-defined portable baseline (any host endianness; R300-era hosts
+   span x86, x86-64, and PowerPC)
+-> per-target tuned path only where a measurement on that target
+   justifies it (K8 is the primary measured target; general code speed
+   rides the build profile's compiler flags)
 -> direct writes into the final mapped GTT carrier
 -> TCL-bypass delivery
 ```
@@ -451,12 +458,16 @@ the no-submit, drm-shim, and offline kernel-parser classes.
 7. Build native BO, memory, command, queue, and completion ownership (landed;
    buffer-only memory, private fixed-cell recording).
 8. Emit and offline-validate the fixed identity-bypass triangle (landed).
-9. Run the attended native triangle cell (separately authorized attended
-   run; preconditions, arming, predictions, falsifiers, rollback, and the
-   retained record live in `docs/hardware/r3v-native-attended-cell-procedure.md`,
-   and the multi-factor submission gate that admits it is
-   `r3v_native_arming_evaluate`).
-10. Build and qualify the native K8 vertex executor.
+9. Run the attended native triangle cell (landed: the contract-prefixed
+   cell rendered as predicted on RS482; procedure, arming, and the
+   retained record live in
+   `docs/hardware/r3v-native-attended-cell-procedure.md`, and the
+   witness bundle is the frozen private-cell reference).
+10. Build and qualify the native CPU vertex executor (gather stage
+    landed: `src/amd/r300/cpu/` carries the portable byte-defined
+    baseline and an SSE2 tuned path under the `r300-cpu-vertex` oracle
+    at the host-unit class; the tuned path's K8 timing measurement and
+    carrier delivery through the native recorder remain open).
 11. Migrate native R2VB `F32_3`, then `F32_2`.
 12. Add native images, transfers, and resource-scoped synchronization.
 13. Prove native same-GPU WSI.
