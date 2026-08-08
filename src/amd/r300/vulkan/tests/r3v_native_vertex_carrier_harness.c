@@ -272,6 +272,16 @@ main(void)
                 .format_id = 99,
              }) == VK_ERROR_INITIALIZATION_FAILED);
 
+   /* Refusal preserves the carrier: the last accepted delivery wrote
+    * the mutated stream, and both refused calls above left those exact
+    * bytes in place, so the refusal path performed no BO write.
+    */
+   assert(map_memory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
+             VK_SUCCESS &&
+          map != NULL);
+   assert(memcmp(map, mutated, sizeof(mutated)) == 0);
+   unmap_memory(device, vertex_memory);
+
    printf("r3v_native_vertex_carrier: every delivery shape reproduces the "
           "frozen carrier and cell\n");
    return 0;
