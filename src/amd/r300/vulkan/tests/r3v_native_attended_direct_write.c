@@ -255,16 +255,28 @@ main(int argc, char **argv)
       fprintf(stderr, "command buffer allocation failed\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
-   vkBeginCommandBuffer(cmd, &(VkCommandBufferBeginInfo){
-                                .sType =
-                                   VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                             });
+   /* The submission is one-shot, so a failed recording boundary refuses
+    * here rather than carrying a non-executable command buffer into the
+    * hazardous ioctl.
+    */
+   result = vkBeginCommandBuffer(
+      cmd, &(VkCommandBufferBeginInfo){
+              .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+           });
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "vkBeginCommandBuffer: %d\n", result);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
    result = r3v_native_record_direct_write(cmd, color_memory);
    if (result != VK_SUCCESS) {
       fprintf(stderr, "cell recording failed: %d\n", result);
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
-   vkEndCommandBuffer(cmd);
+   result = vkEndCommandBuffer(cmd);
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "vkEndCommandBuffer: %d\n", result);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
 
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
