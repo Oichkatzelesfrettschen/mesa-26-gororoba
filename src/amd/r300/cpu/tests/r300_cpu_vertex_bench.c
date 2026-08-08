@@ -189,14 +189,21 @@ bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
       .size_bytes = (uint64_t)MAX_VERTICES * stride,
    };
 
-   int available[LANE_COUNT];
+   /* The rotation runs over the compact set of lanes this shape can
+    * time, so every present lane leads equally often whatever slots
+    * calibrated absent.
+    */
+   unsigned present[LANE_COUNT];
+   unsigned present_count = 0;
    uint64_t best[LANE_COUNT];
    for (unsigned l = 0; l < LANE_COUNT; l++) {
-      available[l] = calibrate_lane(lanes[l].label, lanes[l].fn, format_id,
-                                    &stream, vertex_count,
-                                    lanes[l].allow_unsupported);
+      if (calibrate_lane(lanes[l].label, lanes[l].fn, format_id, &stream,
+                         vertex_count, lanes[l].allow_unsupported))
+         present[present_count++] = l;
       best[l] = UINT64_MAX;
    }
+   if (present_count == 0)
+      return;
 
    /* Inner iterations amortize clock granularity for small counts. */
    unsigned inner = vertex_count < 4096 ? 4096 / (vertex_count ? vertex_count : 1)
@@ -206,10 +213,8 @@ bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
     * within one repetition cannot bias the selected minima.
     */
    for (unsigned r = 0; r < reps; r++) {
-      for (unsigned i = 0; i < LANE_COUNT; i++) {
-         unsigned l = (r + i) % LANE_COUNT;
-         if (!available[l])
-            continue;
+      for (unsigned i = 0; i < present_count; i++) {
+         unsigned l = present[(r + i) % present_count];
          uint64_t dt = time_one_rep(lanes[l].fn, format_id, &stream,
                                     vertex_count, inner);
          if (dt < best[l])
@@ -217,9 +222,8 @@ bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
       }
    }
 
-   for (unsigned l = 0; l < LANE_COUNT; l++) {
-      if (!available[l])
-         continue;
+   for (unsigned i = 0; i < present_count; i++) {
+      unsigned l = present[i];
       double per_vertex =
          (double)best[l] / ((double)inner * (double)vertex_count);
       printf("%s\t%d\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32 "\t%u\t%.3f\n",
