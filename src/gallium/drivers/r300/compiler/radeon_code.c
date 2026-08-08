@@ -124,7 +124,13 @@ unsigned
 rc_constants_add_immediate_scalar(struct rc_constant_list *c, float data, unsigned *swizzle,
                                   unsigned *negate)
 {
-   unsigned index, free_comp;
+   unsigned index;
+   /* free_comp pairs with free_index: both assign in one branch, and
+    * every read sits under the free_index >= 0 guard, so a read always
+    * sees the paired assignment; the initializer satisfies flow
+    * analysis, which tracks each variable alone.
+    */
+   unsigned free_comp = 0;
    int free_index = -1;
    struct rc_constant constant;
 
