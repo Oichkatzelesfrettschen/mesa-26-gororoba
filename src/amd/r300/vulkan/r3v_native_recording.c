@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Native R3V fail-closed recording surface: every core Vulkan 1.0 command
- * poisons its command buffer, and the image bridge slots decline.
+ * outside the qualified draw subset poisons its command buffer.
  */
 
 #include "r3v_native.h"
@@ -13,14 +13,15 @@
 
 #include <string.h>
 
-/* The native command buffer executes only a device-internally installed
- * fixed IB; a Vulkan-recorded command has no lowering.  Every core 1.0
- * vkCmd* entrypoint therefore records R3V_NATIVE_REFUSAL_RESULT into the
- * command buffer: vkEndCommandBuffer returns the error, the buffer ends
- * INVALID, and the queue refuses it.  A native definition for the whole
- * core set also keeps the runtime's common bridges (render-pass emulation,
- * the 1.0-to-1.3 forwarders) from dispatching into table slots the native
- * link set leaves NULL.
+/* The native command buffer executes only an installed fixed IB, and
+ * the public surface in r3v_native_draw.c is the one route that
+ * installs it through Vulkan recording.  Every other core 1.0 vkCmd*
+ * entrypoint records R3V_NATIVE_REFUSAL_RESULT into the command
+ * buffer: vkEndCommandBuffer returns the error, the buffer ends
+ * INVALID, and the queue refuses it.  A native definition for the
+ * whole core set also keeps the runtime's common bridges (render-pass
+ * emulation, the 1.0-to-1.3 forwarders) from dispatching into table
+ * slots the native link set leaves NULL.
  */
 static void
 r3v_native_cmd_poison(VkCommandBuffer commandBuffer)
@@ -35,15 +36,6 @@ r3v_CmdBeginQuery(
    VkQueryPool queryPool,
    uint32_t query,
    VkQueryControlFlags flags)
-{
-   r3v_native_cmd_poison(commandBuffer);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-r3v_CmdBeginRenderPass(
-   VkCommandBuffer commandBuffer,
-   const VkRenderPassBeginInfo *pRenderPassBegin,
-   VkSubpassContents contents)
 {
    r3v_native_cmd_poison(commandBuffer);
 }
@@ -68,26 +60,6 @@ r3v_CmdBindIndexBuffer(
    VkBuffer buffer,
    VkDeviceSize offset,
    VkIndexType indexType)
-{
-   r3v_native_cmd_poison(commandBuffer);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-r3v_CmdBindPipeline(
-   VkCommandBuffer commandBuffer,
-   VkPipelineBindPoint pipelineBindPoint,
-   VkPipeline pipeline)
-{
-   r3v_native_cmd_poison(commandBuffer);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-r3v_CmdBindVertexBuffers(
-   VkCommandBuffer commandBuffer,
-   uint32_t firstBinding,
-   uint32_t bindingCount,
-   const VkBuffer *pBuffers,
-   const VkDeviceSize *pOffsets)
 {
    r3v_native_cmd_poison(commandBuffer);
 }
@@ -223,17 +195,6 @@ r3v_CmdDispatchIndirect(
 }
 
 VKAPI_ATTR void VKAPI_CALL
-r3v_CmdDraw(
-   VkCommandBuffer commandBuffer,
-   uint32_t vertexCount,
-   uint32_t instanceCount,
-   uint32_t firstVertex,
-   uint32_t firstInstance)
-{
-   r3v_native_cmd_poison(commandBuffer);
-}
-
-VKAPI_ATTR void VKAPI_CALL
 r3v_CmdDrawIndexed(
    VkCommandBuffer commandBuffer,
    uint32_t indexCount,
@@ -272,13 +233,6 @@ r3v_CmdEndQuery(
    VkCommandBuffer commandBuffer,
    VkQueryPool queryPool,
    uint32_t query)
-{
-   r3v_native_cmd_poison(commandBuffer);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-r3v_CmdEndRenderPass(
-   VkCommandBuffer commandBuffer)
 {
    r3v_native_cmd_poison(commandBuffer);
 }
@@ -500,28 +454,10 @@ r3v_CmdWriteTimestamp(
    r3v_native_cmd_poison(commandBuffer);
 }
 
-
-/* The native implementation creates no VkImage, so a valid image handle
- * cannot reach these entrypoints; the definitions exist so the runtime's
- * 1.0-to-1.1 bridges (vk_common_BindImageMemory and peers) never dispatch
- * into unpopulated *2 slots.  Each fails closed: the bind declines, and the
- * getters return empty requirements and a zeroed layout.
+/* The one image shape is a linear color target with its whole
+ * allocation committed at bind, so its sparse requirement set is
+ * empty.
  */
-VKAPI_ATTR VkResult VKAPI_CALL
-r3v_BindImageMemory(VkDevice _device, VkImage image, VkDeviceMemory memory,
-                    VkDeviceSize memoryOffset)
-{
-   VK_FROM_HANDLE(r3v_native_device, device, _device);
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-r3v_GetImageMemoryRequirements(VkDevice _device, VkImage image,
-                               VkMemoryRequirements *pMemoryRequirements)
-{
-   memset(pMemoryRequirements, 0, sizeof(*pMemoryRequirements));
-}
-
 VKAPI_ATTR void VKAPI_CALL
 r3v_GetImageSparseMemoryRequirements(
    VkDevice _device, VkImage image,
@@ -531,10 +467,3 @@ r3v_GetImageSparseMemoryRequirements(
    *pSparseMemoryRequirementCount = 0;
 }
 
-VKAPI_ATTR void VKAPI_CALL
-r3v_GetImageSubresourceLayout(VkDevice _device, VkImage image,
-                              const VkImageSubresource *pSubresource,
-                              VkSubresourceLayout *pLayout)
-{
-   memset(pLayout, 0, sizeof(*pLayout));
-}

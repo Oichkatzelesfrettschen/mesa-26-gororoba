@@ -65,7 +65,8 @@ LAYER_OWNED_RESULTS = {"VK_ERROR_VALIDATION_FAILED"}
 # Behavior class of each core 1.0 device command the native link set provides.
 # A native entrypoint that reaches this surface without a class fails
 # --enforce, so adding one is a classification decision rather than a silent
-# widening.  vkCmd* is uniform and resolves by prefix.
+# widening.  vkCmd* resolves by prefix except for the public recording
+# surface's live subset below.
 #
 #   NATIVE_LIVE           executes on the native transport
 #   CORE_FAIL_CLOSED      refuses with REFUSAL_RESULT
@@ -85,11 +86,12 @@ NATIVE_BEHAVIOR = {
     "EndCommandBuffer": "NATIVE_LIVE",
     "FlushMappedMemoryRanges": "NATIVE_LIVE",
     "InvalidateMappedMemoryRanges": "NATIVE_LIVE",
-    "CreateGraphicsPipelines": "CORE_FAIL_CLOSED",
+    "CreateGraphicsPipelines": "NATIVE_LIVE",
+    "DestroyPipeline": "NATIVE_LIVE",
     "CreateComputePipelines": "CORE_FAIL_CLOSED",
-    "BindImageMemory": "CORE_FAIL_CLOSED",
-    "CreateImage": "CORE_FAIL_CLOSED",
-    "CreateImageView": "CORE_FAIL_CLOSED",
+    "BindImageMemory": "NATIVE_LIVE",
+    "CreateImage": "NATIVE_LIVE",
+    "CreateImageView": "NATIVE_LIVE",
     "CreateBufferView": "CORE_FAIL_CLOSED",
     "CreateSampler": "CORE_FAIL_CLOSED",
     "CreateEvent": "CORE_FAIL_CLOSED",
@@ -101,12 +103,12 @@ NATIVE_BEHAVIOR = {
     "SetEvent": "CORE_FAIL_CLOSED",
     "ResetEvent": "CORE_FAIL_CLOSED",
     "GetQueryPoolResults": "CORE_FAIL_CLOSED",
-    "GetImageMemoryRequirements": "CORE_QUERY_ZERO",
+    "GetImageMemoryRequirements": "NATIVE_LIVE",
     "GetImageSparseMemoryRequirements": "CORE_QUERY_ZERO",
-    "GetImageSubresourceLayout": "CORE_QUERY_ZERO",
+    "GetImageSubresourceLayout": "NATIVE_LIVE",
     "GetDeviceMemoryCommitment": "CORE_QUERY_ZERO",
-    "DestroyImage": "CORE_NULL_DESTROY_SAFE",
-    "DestroyImageView": "CORE_NULL_DESTROY_SAFE",
+    "DestroyImage": "NATIVE_LIVE",
+    "DestroyImageView": "NATIVE_LIVE",
     "DestroyBufferView": "CORE_NULL_DESTROY_SAFE",
     "DestroySampler": "CORE_NULL_DESTROY_SAFE",
     "DestroyEvent": "CORE_NULL_DESTROY_SAFE",
@@ -115,6 +117,17 @@ NATIVE_BEHAVIOR = {
     "FreeDescriptorSets": "CORE_NULL_DESTROY_SAFE",
     "ResetDescriptorPool": "CORE_NULL_DESTROY_SAFE",
     "UpdateDescriptorSets": "CORE_NULL_DESTROY_SAFE",
+}
+
+# The public recording surface's live command subset: the one begin/bind/
+# draw sequence whose lowering is the qualified triangle cell.  Every
+# other vkCmd* keeps the fail-closed prefix resolution.
+NATIVE_LIVE_CMDS = {
+    "CmdBeginRenderPass",
+    "CmdEndRenderPass",
+    "CmdBindPipeline",
+    "CmdBindVertexBuffers",
+    "CmdDraw",
 }
 
 # Dispatch dependencies the source scanner cannot see through simple
@@ -326,8 +339,12 @@ def selftest():
 
     # A native command outside NATIVE_BEHAVIOR reads UNCLASSIFIED, which is
     # what makes a new entrypoint arrive with a classification decision; the
-    # vkCmd* prefix resolves without a map entry.
+    # vkCmd* prefix resolves without a map entry, and the live draw subset
+    # overrides the prefix.
     assert behavior_class("CmdInvented", {"CmdInvented"}, set()) == \
+        "CORE_FAIL_CLOSED"
+    assert behavior_class("CmdDraw", {"CmdDraw"}, set()) == "NATIVE_LIVE"
+    assert behavior_class("CmdDrawIndexed", {"CmdDrawIndexed"}, set()) == \
         "CORE_FAIL_CLOSED"
     assert behavior_class("Invented", {"Invented"}, set()) == "UNCLASSIFIED"
     assert behavior_class("MapMemory", {"MapMemory"}, set()) == "NATIVE_LIVE"
@@ -361,7 +378,7 @@ def selftest():
                                  populated)
         assert found == expected, (fixture, found, expected)
 
-    print("r3v_native_entrypoint_audit selftest: 12 closure and result legs "
+    print("r3v_native_entrypoint_audit selftest: 15 closure and result legs "
           f"OK, {len(PAIR_FIXTURES)} lifecycle-pair legs OK")
     return 0
 
@@ -472,6 +489,8 @@ def behavior_class(name, native, common):
     """Behavior class of a populated core 1.0 device command."""
     if name not in native:
         return "COMMON_CLOSED" if name in common else "ABSENT"
+    if name in NATIVE_LIVE_CMDS:
+        return "NATIVE_LIVE"
     if name.startswith("Cmd"):
         return "CORE_FAIL_CLOSED"
     return NATIVE_BEHAVIOR.get(name, "UNCLASSIFIED")

@@ -165,10 +165,15 @@ r3v_GetBufferMemoryRequirements2(VkDevice _device,
 {
    VK_FROM_HANDLE(r3v_native_buffer, buffer, pInfo->buffer);
 
+   /* Type 0 alone: the draw's submission-time gather reads the bound
+    * buffer through a CPU mapping, and type 1 allocates with
+    * RADEON_GEM_NO_CPU_ACCESS, so an allocation the requirement admits
+    * is always one the gather can map.
+    */
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
       .size = buffer->vk.size,
       .alignment = 4096,
-      .memoryTypeBits = 0x3,
+      .memoryTypeBits = 0x1,
    };
 }
 

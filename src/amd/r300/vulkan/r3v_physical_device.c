@@ -10,6 +10,10 @@
 #include "r3v_instance.h"
 #include "r3v_private.h"
 
+#ifdef R3V_NATIVE_BACKEND
+#include "r3v_native.h"
+#endif
+
 #include "util/disk_cache.h"
 #include "util/macros.h"
 #include "util/mesa-blake3.h"
@@ -553,12 +557,19 @@ static const struct vk_device_extension_table r3v_device_extensions_supported = 
 #ifdef R3V_NATIVE_BACKEND
 /* The native implementation advertises only surfaces its own entry points
  * execute.  Every 1.0 memory and buffer entry point routes through the
- * vk_common *2-form bridges into the native one-BO implementations, so the
- * core surface needs no extension; the extension table stays empty until a
- * native route lands behind each name.
+ * vk_common *2-form bridges into the native one-BO implementations.  The
+ * three advertised extensions are the memory-requirements contract the
+ * image path executes: the *2 query and bind entry points resolve, and
+ * VK_KHR_dedicated_allocation carries the required-dedicated signal
+ * that states the image's offset-zero binding to an allocator; a
+ * further extension returns with the native route that executes it.
  */
 static const struct vk_device_extension_table
-   r3v_native_device_extensions_supported = {0};
+   r3v_native_device_extensions_supported = {
+      .KHR_get_memory_requirements2 = true,
+      .KHR_bind_memory2 = true,
+      .KHR_dedicated_allocation = true,
+   };
 #endif
 
 static void
@@ -922,13 +933,13 @@ r3v_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
    VK_FROM_HANDLE(r3v_physical_device, pdev, physicalDevice);
    VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties2, out, pProperties, pCount);
 #ifdef R3V_NATIVE_BACKEND
-   /* The native queue transports device-internal fixed IBs through the
-    * gated submission boundary; no Vulkan command class records into it,
-    * so no capability bit is advertised.  Each bit returns with the
-    * recording surface that executes it.
+   /* The public recording surface records the graphics command subset
+    * -- render pass, pipeline bind, vertex bind, draw -- on this
+    * family, so GRAPHICS is advertised.  Each further bit returns with
+    * the recording surface that executes it.
     */
    (void)pdev;
-   VkQueueFlags queue_flags = 0;
+   VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT;
 #else
    VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT;
 
@@ -996,6 +1007,34 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
 {
    memset(properties, 0, sizeof(*properties));
    properties->sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+
+#ifdef R3V_NATIVE_BACKEND
+   /* The native backend has no Gallium screen; its capabilities are the
+    * public recording surface's accepted subset, advertised exactly so
+    * a capability-aware application reaches the qualified route: the
+    * linear B8G8R8A8 color target and the F32-family vertex formats the
+    * CPU vertex executor gathers.
+    */
+   switch (vk_format) {
+   case VK_FORMAT_B8G8R8A8_UNORM:
+      /* COLOR_ATTACHMENT alone: readback of the rendered pixels rides
+       * the host mapping of the bound memory, and a transfer feature
+       * would promise copy commands the recording surface poisons.
+       */
+      properties->linearTilingFeatures =
+         VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT;
+      break;
+   case VK_FORMAT_R32_SFLOAT:
+   case VK_FORMAT_R32G32_SFLOAT:
+   case VK_FORMAT_R32G32B32_SFLOAT:
+   case VK_FORMAT_R32G32B32A32_SFLOAT:
+      properties->bufferFeatures = VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
+      break;
+   default:
+      break;
+   }
+   return;
+#endif
 
    const enum pipe_format pipe_format = r3v_vk_format_to_pipe_format(vk_format);
    if (pipe_format == PIPE_FORMAT_NONE)
@@ -1191,6 +1230,18 @@ r3v_get_image_format_properties(
    VkFormatProperties3 format_properties;
    r3v_get_format_properties(device, info->format, &format_properties);
 
+#ifdef R3V_NATIVE_BACKEND
+   /* The native image contract is one 2D flat shape with no create
+    * flags and color-attachment usage alone, so the query reports every
+    * other type, flagged, or differently-used request unsupported
+    * before the shared type switch -- the same refusal vkCreateImage
+    * applies.
+    */
+   if (info->type != VK_IMAGE_TYPE_2D || info->flags != 0 ||
+       info->usage != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+      goto unsupported;
+#endif
+
    VkFormatFeatureFlags2 image_features = 0;
    switch (info->tiling) {
    case VK_IMAGE_TILING_LINEAR:
@@ -1225,6 +1276,18 @@ r3v_get_image_format_properties(
       max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_2D:
+#ifdef R3V_NATIVE_BACKEND
+      /* The native image contract is the qualified cell's fixed target,
+       * so the reported ceiling is that shape and vkCreateImage accepts
+       * exactly what this query admits.
+       */
+      max_extent = (VkExtent3D){
+         R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1,
+      };
+      max_mip_levels = 1;
+      max_array_layers = 1;
+      break;
+#else
       /* The flat multi-tile reach.  Usage-keyed extents were measured to
        * break zink's surfaceless framebuffer (its internal sampled-usage
        * probe at the device dimension must succeed), so the dimension stays
@@ -1238,6 +1301,7 @@ r3v_get_image_format_properties(
       max_mip_levels = util_logbase2(R3V_R3XX_MAX_TEXTURE_DIMENSION) + 1;
       max_array_layers = 1;
       break;
+#endif
    case VK_IMAGE_TYPE_3D:
       /* r3v backs every image with a single PIPE_TEXTURE_2D resource of
        * depth0 == 1 (r3v_image_create_tile_resources), so a 3D image's
@@ -1312,9 +1376,19 @@ r3v_GetPhysicalDeviceImageFormatProperties2(
    const VkPhysicalDeviceExternalImageFormatInfo *external_info =
       vk_find_struct_const(pImageFormatInfo->pNext,
                            PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
+#ifdef R3V_NATIVE_BACKEND
+   /* The native link set carries no export entry point and the native
+    * extension table advertises no external-memory family, so an
+    * external-handle query reports the format unsupported for that use
+    * instead of promising an export route no advertised extension can
+    * reach.
+    */
+   const VkExternalMemoryHandleTypeFlags supported_handles = 0;
+#else
    const VkExternalMemoryHandleTypeFlags supported_handles =
       VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT |
       VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+#endif
    if (external_info && external_info->handleType != 0 &&
        (!(external_info->handleType & supported_handles) ||
         pImageFormatInfo->type != VK_IMAGE_TYPE_2D))

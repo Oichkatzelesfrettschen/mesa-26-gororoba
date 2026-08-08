@@ -14,6 +14,7 @@
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
 
 #include "vk_log.h"
+#include "vk_sync.h"
 
 #include "util/mesa-blake3.h"
 
@@ -360,6 +361,24 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
+   /* Declared dependencies order the deferred CPU execution below: each
+    * wait completes before any gather or clear runs, so a producer that
+    * supplies the vertex data through a semaphore is honored.  The
+    * synchronous submit model signals every sync at completion, so a
+    * same-queue wait is already satisfied and completes immediately.
+    */
+   for (uint32_t w = 0; w < submit->wait_count; w++) {
+      VkResult wait_result =
+         vk_sync_wait(&device->vk, submit->waits[w].sync,
+                      submit->waits[w].wait_value, VK_SYNC_WAIT_COMPLETE,
+                      UINT64_MAX);
+      if (wait_result != VK_SUCCESS) {
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: semaphore wait %u failed: %d", w,
+                          wait_result);
+      }
+   }
+
    /* Recording fails closed: an unsupported command poisons the buffer's
     * record_result and vkEndCommandBuffer returns the error.  The runtime
     * moves every submitted buffer to PENDING before driver_submit runs, so
@@ -414,11 +433,63 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "failed; refusing before any ioctl");
       }
 
+      /* Finite completion: a 4-byte write-domain BO rides the relocation
+       * chunk, the kernel fences it at submit, and the bounded
+       * GEM_WAIT_IDLE returns when the submission retires or escalates to
+       * device loss.  The CS rebuild folds the completion reference in;
+       * the manifest above keeps the pre-completion relocation list, the
+       * exact list the offline replay consumes.  The completion allocates
+       * here, before the deferred execution below, so every fallible
+       * preparation step precedes the first application-memory write and
+       * an allocation failure returns with the target untouched.
+       */
+      struct radeon_drm_vk_completion completion;
+      if (radeon_drm_vk_completion_init(&device->drm, &completion) != 0) {
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      }
+      uint32_t completion_index;
+      if (radeon_drm_vk_completion_reference(&completion, &relocs,
+                                             &completion_index) != 0) {
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      radeon_drm_vk_cs_build(&cs, cmd_buffer->ib,
+                             cmd_buffer->ib_size_dwords, &relocs, 0, true);
+
+      /* The public draw's vertex reads and load-op clear execute here,
+       * per submission, so the stream bytes the carrier travels with are
+       * the ones live at submit -- Vulkan's execution-time ordering --
+       * and an unsubmitted command buffer leaves application memory
+       * untouched.  Execution precedes the hazard gate because the
+       * deferred work is CPU-side; the gate guards the ioctl alone.
+       */
+      VkResult deferred =
+         r3v_native_cmd_buffer_execute_deferred_draw(device, cmd_buffer);
+      if (deferred != VK_SUCCESS) {
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         /* vkQueueSubmit's registry contract carries host and device
+          * exhaustion plus device loss, so a map failure reports as
+          * host exhaustion -- the exhausted resource is host address
+          * space -- and any other execution failure reports as device
+          * loss.
+          */
+         if (deferred == VK_ERROR_MEMORY_MAP_FAILED)
+            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         if (deferred != VK_ERROR_OUT_OF_HOST_MEMORY &&
+             deferred != VK_ERROR_OUT_OF_DEVICE_MEMORY)
+            return vk_error(device, VK_ERROR_DEVICE_LOST);
+         return deferred;
+      }
+
       /* The submission ioctl opens only on the exact-value hazard gate; the
        * closed gate completes the full build, retains the manifest, and
        * fails closed instead of reporting an execution that did not run.
        */
       if (!device->submit_hazard_accepted) {
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                           "r3v-native: submission gate closed; set "
@@ -431,6 +502,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * exact submit object retains below before the ioctl runs.
        */
       if (device->manifest_dir == NULL) {
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                           "r3v-native: open gate requires "
@@ -438,13 +510,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "retention");
       }
 
-      /* Finite completion: a 4-byte write-domain BO rides the relocation
-       * chunk, the kernel fences it at submit, and the bounded
-       * GEM_WAIT_IDLE returns when the submission retires or escalates to
-       * device loss.  The CS rebuild folds the completion reference in;
-       * the manifest above keeps the pre-completion relocation list, the
-       * exact list the offline replay consumes.
-       */
       /* The RS480 GART reads and writes with request snooping disabled,
        * and every GTT mapping is ttm_cached, so the driver keeps the
        * HOST_COHERENT promise itself: every referenced memory with a live
@@ -461,21 +526,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                                         reference->memory->bo.size);
          }
       }
-
-      struct radeon_drm_vk_completion completion;
-      if (radeon_drm_vk_completion_init(&device->drm, &completion) != 0) {
-         radeon_drm_vk_reloc_list_finish(&relocs);
-         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
-      }
-      uint32_t completion_index;
-      if (radeon_drm_vk_completion_reference(&completion, &relocs,
-                                             &completion_index) != 0) {
-         radeon_drm_vk_completion_finish(&device->drm, &completion);
-         radeon_drm_vk_reloc_list_finish(&relocs);
-         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-      }
-      radeon_drm_vk_cs_build(&cs, cmd_buffer->ib,
-                             cmd_buffer->ib_size_dwords, &relocs, 0, true);
 
       /* The arming facts collect before retention so the retained bundle
        * carries the same kernel and module identity the gate below judges;
@@ -560,5 +610,10 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
-   return VK_SUCCESS;
+   /* The bounded completion wait above retired every buffer, so the
+    * submit's signal set fires here and a dependent submit's wait
+    * completes immediately.
+    */
+   return vk_sync_signal_many(&device->vk, submit->signal_count,
+                              submit->signals);
 }

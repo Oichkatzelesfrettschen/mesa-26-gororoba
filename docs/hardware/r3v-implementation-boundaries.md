@@ -24,9 +24,40 @@ relocation, and readback substrate; and the contract-prefixed 234-dword
 cell rendered the triangle as predicted -- interior `0xff00ff00`,
 exterior and canary at the sentinel -- so the inert first run is closed
 as a first-draw state-contract failure. The proven raster path is that
-one fixed cell; the public recording surface, general vertex routes,
-and the complete Vulkan semantic/conformance sections remain
-implementation contracts.
+one fixed cell.  The public recording surface now reaches it: a bounded
+render-pass/pipeline/draw vocabulary -- the qualified 64x64 linear
+color target, a pipeline admitted by byte equality with the reference
+SPIR-V pair and the cell's fixed state vector, and a draw that gathers
+the bound vertex buffer through the CPU executor into a
+command-buffer-owned carrier -- records the byte-identical cell IB
+through public `vkCmd*` entry points, at the drm-shim host-model class
+under the `r3v-native-public-surface` harness, and every contract
+deviation poisons or refuses.  The recorded IB equals the digest the
+arming authority qualifies, so the command-stream grammar the silicon
+witnessed is what the public route records; the witness's rendered
+pixels are bound to the reference vertex payload the attended run
+carried, and a public draw with other in-range records or a nonzero
+`firstVertex` changes the carrier bytes the same IB fetches, an input
+set the silicon has not yet observed.  General vertex routes and the
+complete Vulkan semantic/conformance sections remain implementation
+contracts.
+
+Three capability claims outrun the one-cell surface, and each is a
+recorded deferred conformance gap whose removal path is the native
+transfer, compute, and extent generalization of the expansion order
+below.  The graphics queue bit is required for `vkCmdDraw` validity,
+and the registry grants every graphics family the core transfer
+commands; the recording surface poisons those commands, so they fail
+closed with a reported error rather than misbehave, and the gap closes
+when native copies execute.  Vulkan 1.0 requires an implementation
+that exposes graphics to expose at least one family supporting both
+graphics and compute; the native family carries graphics alone, the
+compute commands fail closed, and the gap closes when a native compute
+route lands.  `VkImageFormatProperties` speaks only in maxima, so the
+reported 64x64 ceiling admits smaller extents that `vkCreateImage`
+refuses; the query vocabulary cannot state the exact-shape contract,
+reporting the combination unsupported would hide the one supported
+shape, and the gap closes when creation accepts in-range extents.
 
 The bounded R300 R2VB `FLOAT_2` source transaction has one home:
 `r300-r2vb-float2-source-contract.md`. This document owns the implementation
@@ -77,6 +108,10 @@ structural query.
 | Native host coherency over the unsnooped GART | `src/amd/radeon/drm_vk/radeon_drm_vk_bo.c`; `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'radeon_drm_vk_bo_cache_sync\|HOST_CACHED' src/amd/` |
 | Triangle-cell fragment program is compiler output | `src/gallium/drivers/r300/compiler/tests/r300_tcl_bypass_fs_tool.c`; `src/amd/r300/common/r300_tcl_bypass_triangle_fs_block.h` | `rg -n 'r300_tcl_bypass_fs_tool\|r300_tcl_bypass_triangle_fs_block' src/` |
 | Private fixed-cell recording outside the ICD export surface | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native.h` | `rg -n 'r3v_native_record_tcl_bypass_triangle' src/amd/r300/vulkan/` |
+| Public recording surface: image, view, pipeline, and draw subset | `src/amd/r300/vulkan/r3v_native_image.c`; `r3v_native_pipeline.c`; `r3v_native_draw.c` | `rg -n 'r3v_CmdDraw\|r3v_CreateImage\|NATIVE_LIVE_CMDS' src/amd/r300/vulkan/` |
+| Deferred draw execution at queue submission | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native_queue.c` | `rg -n 'execute_deferred_draw' src/amd/r300/vulkan/` |
+| Native queue GRAPHICS advertisement and format subset | `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'VK_QUEUE_GRAPHICS_BIT\|R3V_NATIVE_BACKEND' src/amd/r300/vulkan/r3v_physical_device.c` |
+| Reference SPIR-V admission pair and its generator | `src/amd/r300/vulkan/r3v_native_reference_spirv.h`; `shaders/generate_reference_spirv.py` | `rg -n 'r3v_reference_vertex_spirv\|generate_reference_spirv' src/amd/r300/vulkan/` |
 
 ## Current Gallium-backed R3V implementation
 
@@ -165,10 +200,19 @@ The landed mechanisms are:
   finite completion via a write-domain BO plus bounded `GEM_WAIT_IDLE`);
 - deep-copied fragment binaries (`r300_fragment_binary`) with content hash
   and structural validator;
-- native device, memory (one owned GEM BO per `VkDeviceMemory`, buffer-only),
-  queue, and command-carrier objects; reporting narrowed to executable
-  routes: empty feature and extension tables, queue flags zero, one UMA
-  heap sized from `DRM_RADEON_GEM_INFO`;
+- native device, memory (one owned GEM BO per `VkDeviceMemory`), buffer,
+  image, image-view, pipeline, queue, and command-carrier objects;
+  reporting narrowed to executable routes: the queue family advertises
+  `VK_QUEUE_GRAPHICS_BIT` for the recording surface, format properties
+  advertise the accepted subset (the linear B8G8R8A8 color target and
+  the F32-family vertex formats), and one UMA heap sizes from
+  `DRM_RADEON_GEM_INFO`;
+- the public graphics recording surface: the qualified 64x64 linear
+  image and identity view, the pipeline admitted by byte equality with
+  the reference SPIR-V pair and the cell's fixed state vector, and the
+  render-pass/bind/draw command subset whose draw lowers through the
+  CPU vertex carrier into the fixed cell, with the vertex gather and
+  load-op clear executing at queue submission;
 - the fixed TCL-bypass triangle lowered into a native command buffer by
   `r3v_native_record_tcl_bypass_triangle`, a private entry linked directly
   by the pre-hardware harness; the recording opens with the neutral
@@ -182,9 +226,9 @@ The landed mechanisms are:
 - the drm-shim triangle-cell harness driving both gate states, with the
   closed-gate retained IB byte-identical to the direct emitter.
 
-Graphics and compute pipelines, public Vulkan command recording, images,
-descriptors, transfers, WSI, the CPU vertex carrier delivery, and native
-R2VB remain outside the landed surface. Live `DRM_RADEON_CS` submission
+Compute pipelines, descriptors, transfers, WSI, extents and formats
+past the fixed cell, and native R2VB remain outside the landed
+surface. Live `DRM_RADEON_CS` submission
 has three attended witnesses, each kernel-accepted and retired clean:
 the bare inherited-state cell left the color target unwritten, the
 direct-write 2D control landed its probe bytes exactly, and the

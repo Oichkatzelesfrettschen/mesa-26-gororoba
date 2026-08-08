@@ -68,6 +68,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     # Direct-write control: emitter, manifest, and native binding.
     "r300-cpu-vertex",
     "r3v-native-vertex-carrier",
+    "r3v-native-public-surface",
     "r300-direct-write",
     "r300-direct-write-manifest-integration",
     "r300-direct-write-cs-track-replay",

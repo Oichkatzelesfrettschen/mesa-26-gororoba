@@ -316,8 +316,11 @@ if get_option('r3v-native-backend')
     'r3v_native_cell.c',
     'r3v_native_cmd.c',
     'r3v_native_device.c',
+    'r3v_native_draw.c',
+    'r3v_native_image.c',
     'r3v_native_memory.c',
     'r3v_native_object.c',
+    'r3v_native_pipeline.c',
     'r3v_native_queue.c',
     'r3v_native_recording.c',
     '../cpu/r300_cpu_vertex.c',
@@ -913,6 +916,30 @@ if get_option('r3v-native-backend')
       executable(
         'r3v_native_vertex_carrier_harness',
         files('tests/r3v_native_vertex_carrier_harness.c'),
+        include_directories : r3v_native_inc,
+        dependencies : r3v_native_deps,
+        link_whole : [libr3v_native_impl],
+        link_with : [libradeon_drm_vk],
+        c_args : [no_override_init_args],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+
+    # Public recording surface on the drm-shim fixture: the
+    # application-shaped render-pass/pipeline/draw sequence records the
+    # qualified cell through public entry points, and every contract
+    # deviation refuses.  The gate stays closed and no ioctl runs; the
+    # harness drives the deferred draw, so the vertex gather and the
+    # sentinel clear write host memory.
+    test(
+      'r3v-native-public-surface',
+      executable(
+        'r3v_native_public_surface_harness',
+        files('tests/r3v_native_public_surface_harness.c'),
         include_directories : r3v_native_inc,
         dependencies : r3v_native_deps,
         link_whole : [libr3v_native_impl],
