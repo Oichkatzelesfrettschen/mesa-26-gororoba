@@ -67,6 +67,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-triangle-cell-unattested",
     # Direct-write control: emitter, manifest, and native binding.
     "r300-cpu-vertex",
+    "r3v-native-vertex-carrier",
     "r300-direct-write",
     "r300-direct-write-manifest-integration",
     "r300-direct-write-cs-track-replay",

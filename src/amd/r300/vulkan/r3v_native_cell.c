@@ -11,6 +11,7 @@
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_direct_write.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/cpu/r300_cpu_vertex.h"
 
 #include "util/macros.h"
 #include "vk_command_pool.h"
@@ -29,6 +30,12 @@
 #define R3V_TRIANGLE_COLOR_BYTES (64 * 65 * 4)
 #define R3V_TRIANGLE_VERTEX_BYTES \
    (R300_TRIANGLE_VERTEX_DWORDS * sizeof(float))
+
+static VkResult
+record_triangle_cell_tail(struct r3v_native_device *device,
+                          struct r3v_native_cmd_buffer *cmd_buffer,
+                          struct r3v_native_memory *vertex_memory,
+                          struct r3v_native_memory *color_memory);
 
 /* Records the fixed TCL-bypass triangle cell into a native command buffer:
  * writes the pretransformed vertices through the vertex memory's mapping,
@@ -87,6 +94,22 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
       vertex_memory->map = NULL;
    }
 
+   return record_triangle_cell_tail(device, cmd_buffer, vertex_memory,
+                                    color_memory);
+}
+
+/* The delivery-independent remainder of triangle recording: sentinel
+ * publication, cell emission, and installation.  Both delivery routes
+ * -- the frozen reference copy and the CPU-executor gather -- resolve
+ * to this one tail, so the recorded IB and its digest cannot depend on
+ * how the carrier was written.
+ */
+static VkResult
+record_triangle_cell_tail(struct r3v_native_device *device,
+                          struct r3v_native_cmd_buffer *cmd_buffer,
+                          struct r3v_native_memory *vertex_memory,
+                          struct r3v_native_memory *color_memory)
+{
    /* Sentinel-fill the whole color allocation and publish it, so the
     * output oracle reads a deterministic pre-draw state and any device
     * write -- inside or past the render extent -- is detectable.
@@ -149,6 +172,76 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
    r300_tcl_bypass_triangle_release(&cell);
 
    return VK_SUCCESS;
+}
+
+/* Carrier delivery: gathers the cell's three vertices from the caller's
+ * stream through the CPU vertex executor, byte-defined end to end, into
+ * the mapped GTT carrier, then records the same fixed cell through the
+ * shared tail.  A refused gather -- unknown format, unproven bound,
+ * undersized carrier -- reports before any BO write.
+ */
+VkResult
+r3v_native_record_tcl_bypass_triangle_from_stream(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory,
+   const struct r3v_native_vertex_stream_desc *stream)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, color_memory, colorMemory);
+
+   if (cmd_buffer == NULL || vertex_memory == NULL || color_memory == NULL ||
+       stream == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   if (vertex_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
+       color_memory->bo.size < R3V_TRIANGLE_COLOR_BYTES) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: triangle cell needs %zu vertex bytes "
+                       "and %u color bytes",
+                       (size_t)R3V_TRIANGLE_VERTEX_BYTES,
+                       R3V_TRIANGLE_COLOR_BYTES);
+   }
+
+   bool owns_map = vertex_memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &vertex_memory->bo,
+                            &vertex_memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: triangle vertex memory is not "
+                       "CPU-mappable");
+   }
+   const struct r300_cpu_vertex_stream source = {
+      .data = stream->records,
+      .stride = stream->stride,
+      .size_bytes = stream->size_bytes,
+   };
+   int gathered = r300_cpu_vertex_gather(
+      stream->format_id, &source, stream->first_vertex,
+      R300_TRIANGLE_VERTEX_DWORDS / 4, vertex_memory->map,
+      R300_TRIANGLE_VERTEX_DWORDS);
+   if (gathered != 0) {
+      if (owns_map) {
+         radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
+                                vertex_memory->map);
+         vertex_memory->map = NULL;
+      }
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: vertex gather refused (%d)", gathered);
+   }
+   radeon_drm_vk_bo_cache_sync(&device->drm, vertex_memory->map,
+                               R3V_TRIANGLE_VERTEX_BYTES);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
+                             vertex_memory->map);
+      vertex_memory->map = NULL;
+   }
+
+   return record_triangle_cell_tail(device, cmd_buffer, vertex_memory,
+                                    color_memory);
 }
 
 /* Records the direct-write control cell: sentinel-fills and publishes the

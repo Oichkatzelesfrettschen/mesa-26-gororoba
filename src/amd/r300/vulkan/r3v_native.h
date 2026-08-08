@@ -135,6 +135,33 @@ VkResult r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
                                                VkDeviceMemory vertexMemory,
                                                VkDeviceMemory colorMemory);
 
+/* One application-shaped vertex source for carrier delivery: host
+ * records in the little-endian component encoding the VAP fetches,
+ * bounded by size_bytes, with format_id naming an
+ * r300_vertex_format_id row.  The gather validates the request against
+ * the bound and refuses what it cannot prove readable.
+ */
+struct r3v_native_vertex_stream_desc {
+   const void *records;
+   uint64_t size_bytes;
+   uint32_t stride;
+   uint32_t first_vertex;
+   int format_id;
+};
+
+/* Carrier-delivery recorder: gathers the triangle's three vertices from
+ * the caller's stream through the CPU vertex executor into the mapped
+ * GTT carrier, then records the same fixed cell as
+ * r3v_native_record_tcl_bypass_triangle -- the IB and its digest do not
+ * depend on the delivery route, only the vertex BO contents do.  A
+ * stream the gather refuses returns VK_ERROR_INITIALIZATION_FAILED
+ * before any write.
+ */
+VkResult r3v_native_record_tcl_bypass_triangle_from_stream(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory,
+   const struct r3v_native_vertex_stream_desc *stream);
+
 /* Direct-write control recorder: lowers the 2D solid-fill cell
  * (src/amd/r300/common/r300_direct_write.h) into the command buffer
  * from the one live color memory.  The cell reads no source BO, so the
