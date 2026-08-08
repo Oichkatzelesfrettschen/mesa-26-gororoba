@@ -1,7 +1,8 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Portable CPU vertex executor: byte-copy baseline and SSE2 tuned path.
+ * Portable CPU vertex executor: byte-copy baseline and the SSE2/SSE3
+ * tuned candidates.
  */
 
 #include "r300_cpu_vertex.h"
@@ -14,6 +15,9 @@
 
 #if defined(__SSE2__)
 #include <emmintrin.h>
+#endif
+#if defined(__SSE3__)
+#include <pmmintrin.h>
 #endif
 
 /* The synthesized lane constants as explicit little-endian carrier
@@ -105,8 +109,8 @@ r300_cpu_vertex_gather_baseline(
  * so the byte contract holds.  The vector ONE constant is expressed as
  * a lane value, which equals the carrier's byte encoding because SSE2
  * implies a little-endian host.  The K8 primary target implements
- * SSE2/SSE3; this path is correctness-qualified by the oracle and its
- * K8 timing measurement decides whether it stays.
+ * SSE2/SSE3; this path is correctness-qualified by the oracle and the
+ * target timing measurement decides which candidate stays.
  */
 static int
 gather_sse2(const struct r300_vertex_format_semantics *format,
@@ -195,6 +199,96 @@ sse2_pattern_matches(const struct r300_vertex_format_semantics *format)
 }
 
 #endif /* __SSE2__ */
+
+#if defined(__SSE3__)
+
+/* The SSE3 candidate: _mm_lddqu_si128 replaces _mm_loadu_si128 on the
+ * F32_4 pass-through load, the one kernel wide enough for the
+ * unaligned-load form to matter.  _mm_lddqu_si128 compiles to LDDQU;
+ * the SSE2 intrinsic's opcode is the compiler's choice (MOVDQU or
+ * MOVUPS), so the bench's SSE2-versus-SSE3 delta compares the two
+ * compiled kernels as shipped, and the retained disassembly in the
+ * evidence bundle names the exact instruction pair the measurement
+ * timed.  SSE3 adds no form for the 8- and 4-byte partial loads, so
+ * the remaining formats share the SSE2 kernels and the delta isolates
+ * the load path alone.
+ */
+static int
+gather_sse3(const struct r300_vertex_format_semantics *format,
+            const struct r300_cpu_vertex_stream *stream,
+            uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier)
+{
+   if (format->id == R300_VERTEX_FORMAT_F32_4) {
+      const uint8_t *record =
+         stream->data + (uint64_t)first_vertex * stream->stride;
+      for (uint32_t v = 0; v < vertex_count; v++) {
+         _mm_storeu_si128((__m128i *)(carrier + (uint64_t)v * 4),
+                          _mm_lddqu_si128((const __m128i *)record));
+         record += stream->stride;
+      }
+      return 0;
+   }
+   return gather_sse2(format, stream, first_vertex, vertex_count, carrier);
+}
+
+#endif /* __SSE3__ */
+
+/* The named tuned entry points refuse rather than substitute: a build
+ * without the instruction set reports -ENOSYS, and a vocabulary row
+ * outside the encoded identity patterns reports -EINVAL, so a bench
+ * lane's label always names the kernels it timed.
+ */
+int
+r300_cpu_vertex_gather_sse2(int format_id,
+                            const struct r300_cpu_vertex_stream *stream,
+                            uint32_t first_vertex, uint32_t vertex_count,
+                            uint32_t *carrier, uint32_t carrier_dwords)
+{
+#if defined(__SSE2__)
+   const struct r300_vertex_format_semantics *format;
+   int result = validate(&format, format_id, stream, first_vertex,
+                         vertex_count, carrier, carrier_dwords);
+   if (result != 0)
+      return result;
+   if (!sse2_pattern_matches(format))
+      return -EINVAL;
+   return gather_sse2(format, stream, first_vertex, vertex_count, carrier);
+#else
+   (void)format_id;
+   (void)stream;
+   (void)first_vertex;
+   (void)vertex_count;
+   (void)carrier;
+   (void)carrier_dwords;
+   return -ENOSYS;
+#endif
+}
+
+int
+r300_cpu_vertex_gather_sse3(int format_id,
+                            const struct r300_cpu_vertex_stream *stream,
+                            uint32_t first_vertex, uint32_t vertex_count,
+                            uint32_t *carrier, uint32_t carrier_dwords)
+{
+#if defined(__SSE3__)
+   const struct r300_vertex_format_semantics *format;
+   int result = validate(&format, format_id, stream, first_vertex,
+                         vertex_count, carrier, carrier_dwords);
+   if (result != 0)
+      return result;
+   if (!sse2_pattern_matches(format))
+      return -EINVAL;
+   return gather_sse3(format, stream, first_vertex, vertex_count, carrier);
+#else
+   (void)format_id;
+   (void)stream;
+   (void)first_vertex;
+   (void)vertex_count;
+   (void)carrier;
+   (void)carrier_dwords;
+   return -ENOSYS;
+#endif
+}
 
 int
 r300_cpu_vertex_gather(int format_id,

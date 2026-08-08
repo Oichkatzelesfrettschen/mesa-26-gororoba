@@ -463,11 +463,15 @@ the no-submit, drm-shim, and offline kernel-parser classes.
    retained record live in
    `docs/hardware/r3v-native-attended-cell-procedure.md`, and the
    witness bundle is the frozen private-cell reference).
-10. Build and qualify the native CPU vertex executor (gather stage
-    landed: `src/amd/r300/cpu/` carries the portable byte-defined
-    baseline and an SSE2 tuned path under the `r300-cpu-vertex` oracle
-    at the host-unit class; the tuned path's K8 timing measurement and
-    carrier delivery through the native recorder remain open).
+10. Build and qualify the native CPU vertex executor (gather stage and
+    carrier delivery landed: `src/amd/r300/cpu/` carries the portable
+    byte-defined baseline and the SSE2/SSE3 tuned candidates under the
+    `r300-cpu-vertex` oracle at the host-unit class, and the stream-fed
+    recorder delivers through `r300_cpu_vertex_gather`; the
+    `r300_cpu_vertex_bench` three-way measurement -- baseline versus
+    SSE2 versus SSE3 against the memcpy copy ceiling, on the K8 target
+    under the `k8-sse3` profile flags -- remains open and decides which
+    candidate the auto dispatch keeps).
 11. Migrate native R2VB `F32_3`, then `F32_2`.
 12. Add native images, transfers, and resource-scoped synchronization.
 13. Prove native same-GPU WSI.

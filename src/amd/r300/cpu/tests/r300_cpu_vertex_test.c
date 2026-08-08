@@ -127,6 +127,30 @@ check_format(int format_id, uint32_t stride_extra, uint32_t first_vertex,
       assert(baseline_out[i] == CANARY);
       assert(dispatch_out[i] == CANARY);
    }
+
+   /* The named tuned candidates qualify against the same reference on
+    * every build that carries their instruction set; a build without
+    * one reports -ENOSYS and the identity claim stays scoped to the
+    * builds that ran it.
+    */
+   int (*const tuned[])(int, const struct r300_cpu_vertex_stream *,
+                        uint32_t, uint32_t, uint32_t *, uint32_t) = {
+      r300_cpu_vertex_gather_sse2,
+      r300_cpu_vertex_gather_sse3,
+   };
+   for (unsigned t = 0; t < 2; t++) {
+      uint32_t tuned_out[CARRIER_DWORDS + 1];
+      for (uint32_t i = 0; i < CARRIER_DWORDS + 1; i++)
+         tuned_out[i] = CANARY;
+      int rc = tuned[t](format_id, &stream, first_vertex, vertex_count,
+                        tuned_out, CARRIER_DWORDS);
+      if (rc == -ENOSYS)
+         continue;
+      assert(rc == 0);
+      assert(memcmp(tuned_out, expected, vertex_count * 16) == 0);
+      for (uint32_t i = vertex_count * 4; i < CARRIER_DWORDS + 1; i++)
+         assert(tuned_out[i] == CANARY);
+   }
 }
 
 int
