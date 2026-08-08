@@ -42,6 +42,19 @@ set the silicon has not yet observed.  General vertex routes and the
 complete Vulkan semantic/conformance sections remain implementation
 contracts.
 
+Two capability claims outrun the one-cell surface, and both are
+recorded deferred conformance gaps whose removal path is the native
+transfer and extent generalization of the expansion order below.  The
+graphics queue bit is required for `vkCmdDraw` validity, and the
+registry grants every graphics family the core transfer commands; the
+recording surface poisons those commands, so they fail closed with a
+reported error rather than misbehave, and the gap closes when native
+copies execute.  `VkImageFormatProperties` speaks only in maxima, so
+the reported 64x64 ceiling admits smaller extents that `vkCreateImage`
+refuses; the query vocabulary cannot state the exact-shape contract,
+reporting the combination unsupported would hide the one supported
+shape, and the gap closes when creation accepts in-range extents.
+
 The bounded R300 R2VB `FLOAT_2` source transaction has one home:
 `r300-r2vb-float2-source-contract.md`. This document owns the implementation
 and conformance boundaries; that document owns the source-format transaction.

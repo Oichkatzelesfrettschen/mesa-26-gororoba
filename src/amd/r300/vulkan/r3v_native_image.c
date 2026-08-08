@@ -10,6 +10,7 @@
 #include "r3v_entrypoints.h"
 
 #include "vk_log.h"
+#include "vk_util.h"
 
 #include <string.h>
 
@@ -88,6 +89,27 @@ r3v_GetImageMemoryRequirements(VkDevice _device, VkImage image,
    };
 }
 
+/* VK_KHR_get_memory_requirements2 resolves through this entry; the
+ * requirement is the fixed contract above, and a dedicated-allocation
+ * query learns the image neither prefers nor requires one.
+ */
+VKAPI_ATTR void VKAPI_CALL
+r3v_GetImageMemoryRequirements2(VkDevice _device,
+                                const VkImageMemoryRequirementsInfo2 *pInfo,
+                                VkMemoryRequirements2 *pMemoryRequirements)
+{
+   r3v_GetImageMemoryRequirements(_device, pInfo->image,
+                                  &pMemoryRequirements->memoryRequirements);
+
+   vk_foreach_struct(ext, pMemoryRequirements->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
+         VkMemoryDedicatedRequirements *dedicated = (void *)ext;
+         dedicated->prefersDedicatedAllocation = VK_FALSE;
+         dedicated->requiresDedicatedAllocation = VK_FALSE;
+      }
+   }
+}
+
 /* The cell's color reference names the BO base, so the bind admits
  * offset zero over an allocation the memory contract fits.
  */
@@ -105,6 +127,26 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
 
    image->memory = memory;
    return VK_SUCCESS;
+}
+
+/* VK_KHR_bind_memory2 resolves through this entry; each bind runs the
+ * same admission as r3v_BindImageMemory, and the first refusal reports
+ * after every remaining bind has been attempted, matching the
+ * all-or-report batch contract.
+ */
+VKAPI_ATTR VkResult VKAPI_CALL
+r3v_BindImageMemory2(VkDevice _device, uint32_t bindInfoCount,
+                     const VkBindImageMemoryInfo *pBindInfos)
+{
+   VkResult result = VK_SUCCESS;
+   for (uint32_t i = 0; i < bindInfoCount; i++) {
+      VkResult bind = r3v_BindImageMemory(_device, pBindInfos[i].image,
+                                          pBindInfos[i].memory,
+                                          pBindInfos[i].memoryOffset);
+      if (bind != VK_SUCCESS && result == VK_SUCCESS)
+         result = bind;
+   }
+   return result;
 }
 
 VKAPI_ATTR void VKAPI_CALL

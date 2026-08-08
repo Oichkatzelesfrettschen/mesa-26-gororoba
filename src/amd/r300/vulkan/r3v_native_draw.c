@@ -200,8 +200,11 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    }
 
    struct r3v_native_memory *carrier = calloc(1, sizeof(*carrier));
-   if (carrier == NULL ||
-       radeon_drm_vk_bo_create(&device->drm, 4096, 4096,
+   if (carrier == NULL) {
+      poison(commandBuffer, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return;
+   }
+   if (radeon_drm_vk_bo_create(&device->drm, 4096, 4096,
                                RADEON_GEM_DOMAIN_GTT, 0, false,
                                &carrier->bo) != 0) {
       free(carrier);
