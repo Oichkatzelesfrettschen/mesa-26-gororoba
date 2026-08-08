@@ -1,7 +1,9 @@
 # RS482 direct native write control
 
-Status: DESIGN-COMPLETE, not EXECUTION-READY. See Artifact identity for the
-blocking condition.
+Status: EXECUTION-READY pending the separate explicit authorization. See
+Artifact identity for what stands proven and
+`docs/hardware/r3v-native-direct-write-attended-procedure.md` for the
+live-run procedure.
 
 ## What this control decides
 
@@ -176,11 +178,26 @@ This document quotes no digest: the manifest the run's own build writes
 is the digest authority, and the arming gate takes the digest from that
 manifest, so a stale doc constant can never authorize a stream.
 
-Execution remains BLOCKED on the stages the manifest does not cover: the
-exact submit object binding, the retained-submit offline replay, the
-arming-gate integration under the control's own digest, and the
-dual-host dual-profile qualification of all of it -- and on the separate
-explicit authorization every live submission requires.
+The host-side chain past the manifest stands proven: the native
+recorder installs the cell (`r3v_native_record_direct_write`), the
+queue retains the exact submit object, the retained object replays
+through the kernel CS parser (`r3v-native-direct-write-submit-object-replay`),
+the arming gate arms under the control's own digest and refuses the
+triangle digest and every single-fact mutation
+(`r3v-native-direct-write-arming-positive`,
+`r3v-native-direct-write-arming-runner`), one digest names the cell
+across every producing and retaining authority
+(`r3v-native-direct-write-authority-parity`). Dual-host dual-profile
+qualification rides the steinmarder-r300
+`direct_write_control_dual_host_qualification_*` bundle series; a live
+run requires a bundle at the exact source SHA it will execute. The
+live-run executable is `r3v_native_attended_direct_write` under
+`docs/hardware/r3v-native-direct-write-attended-procedure.md`.
+
+Execution remains BLOCKED on the separate explicit authorization every
+live submission requires, and on that procedure's operational
+preconditions: the sacrificial boot, the attended operator, and the
+off-box log path.
 
 ## What the control does not decide
 

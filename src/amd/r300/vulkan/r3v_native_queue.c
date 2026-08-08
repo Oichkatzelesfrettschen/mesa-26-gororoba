@@ -46,11 +46,13 @@ fsync_dir(const char *dir)
  * loss -- a reader never sees a torn file, and a crash after return cannot
  * lose the artifact.  A path that would truncate refuses up front, since a
  * truncated name writes evidence somewhere the reader never looks.
- * Returns 0 or a negative errno.
+ * Returns 0 or a negative errno.  The attended runners retain their
+ * readback artifacts through this same writer, so every one-shot result
+ * shares one durability contract.
  */
-static int
-write_file_atomic(const char *dir, const char *name, const void *data,
-                  size_t size)
+int
+r3v_native_evidence_write_file(const char *dir, const char *name,
+                               const void *data, size_t size)
 {
    char tmp_path[1024];
    char path[1024];
@@ -187,14 +189,15 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
    int result = ib_bytes == NULL ? -ENOMEM : 0;
    if (result == 0) {
       r300_triangle_ib_serialize(ib, ib_size_dwords, ib_bytes);
-      result = write_file_atomic(device->manifest_dir, "ib.bin", ib_bytes,
-                                 ib_byte_size);
+      result = r3v_native_evidence_write_file(device->manifest_dir,
+                                              "ib.bin", ib_bytes,
+                                              ib_byte_size);
    }
    free(ib_bytes);
    if (result == 0) {
-      result = write_file_atomic(device->manifest_dir, "relocs.bin",
-                                 relocs->relocs,
-                                 relocs->count * sizeof(relocs->relocs[0]));
+      result = r3v_native_evidence_write_file(
+         device->manifest_dir, "relocs.bin", relocs->relocs,
+         relocs->count * sizeof(relocs->relocs[0]));
    }
    if (result == 0) {
       char manifest[1024];
@@ -209,8 +212,9 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
                             "}\n",
                             ib_size_dwords, relocs->count, ib_hex, reloc_hex);
       result = length > 0 && (size_t)length < sizeof(manifest)
-                  ? write_file_atomic(device->manifest_dir, "manifest.json",
-                                      manifest, (size_t)length)
+                  ? r3v_native_evidence_write_file(device->manifest_dir,
+                                                   "manifest.json", manifest,
+                                                   (size_t)length)
                   : -EIO;
    }
    if (result != 0) {
@@ -247,9 +251,9 @@ r3v_native_queue_write_submit_object(
    char elf_hex[BLAKE3_OUT_LEN * 2 + 1];
    driver_elf_identity(elf_path, sizeof(elf_path), elf_hex);
 
-   int result = write_file_atomic(device->manifest_dir, "submit_relocs.bin",
-                                  relocs->relocs,
-                                  relocs->count * sizeof(relocs->relocs[0]));
+   int result = r3v_native_evidence_write_file(
+      device->manifest_dir, "submit_relocs.bin", relocs->relocs,
+      relocs->count * sizeof(relocs->relocs[0]));
    if (result == 0) {
       /* The command buffer's own references in relocation order, then the
        * completion BO the CS rebuild folded in; the reloc index is the
@@ -314,9 +318,9 @@ r3v_native_queue_write_submit_object(
          bo_table, completion_row, kernel_release, module_srcversion,
          elf_path, elf_hex);
       result = length > 0 && (size_t)length < sizeof(manifest)
-                  ? write_file_atomic(device->manifest_dir,
-                                      "submit_manifest.json", manifest,
-                                      (size_t)length)
+                  ? r3v_native_evidence_write_file(device->manifest_dir,
+                                                   "submit_manifest.json",
+                                                   manifest, (size_t)length)
                   : -EIO;
    }
    if (result != 0) {

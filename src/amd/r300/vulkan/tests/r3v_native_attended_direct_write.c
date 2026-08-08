@@ -1,0 +1,411 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Attended direct-write control: submits the fixed 2D solid-fill cell to
+ * RS482 silicon through the native ICD, retains the complete color target
+ * durably, and classifies the outcome.  This program performs a live
+ * DRM_RADEON_CS and runs only under the authorization and procedure in
+ * docs/hardware/r3v-native-direct-write-attended-procedure.md; the
+ * driver's arming conjunction admits it under the control's own digest,
+ * and every stage prints and flushes before it runs so a hang names the
+ * stage it hung in.  The triangle cell keeps its own attended runner;
+ * neither runner records the other's cell.
+ */
+
+#include "r3v_native.h"
+#include "r3v_native_arming.h"
+
+#include "amd/r300/common/r300_direct_write.h"
+#include "amd/r300/common/r300_tcl_bypass_triangle.h"
+
+#include <limits.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <vulkan/vulkan.h>
+
+PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
+                                             const char *pName);
+
+/* The control's target allocation: the size the retained bo_table.json
+ * declares for the color slot.  The oracle covers the 65-row render
+ * extent plus canary; the allocation tail past it is scanned separately,
+ * since a device write there is an out-of-extent write whatever the
+ * oracle's own contract covers.
+ */
+#define R3V_DIRECT_WRITE_TARGET_BYTES 65536u
+
+/* The run's outcome classes.  Every class except CONTROL_PASS exits
+ * nonzero, and the run never retries: a failed control is
+ * INCONCLUSIVE / CONTROL FAILED under the classification in
+ * docs/hardware/r300-direct-write-control.md, not a transport verdict.
+ */
+enum outcome {
+   OUTCOME_CONTROL_PASS,
+   OUTCOME_CONTROL_FAILED_INCONCLUSIVE,
+   OUTCOME_CONTAINMENT_FAILURE,
+   OUTCOME_SUBMISSION_REFUSED,
+   OUTCOME_COMPLETION_FAILURE,
+   OUTCOME_RETENTION_FAILURE,
+};
+
+static const char *const outcome_names[] = {
+   [OUTCOME_CONTROL_PASS] = "CONTROL_PASS",
+   [OUTCOME_CONTROL_FAILED_INCONCLUSIVE] = "CONTROL_FAILED_INCONCLUSIVE",
+   [OUTCOME_CONTAINMENT_FAILURE] = "CONTAINMENT_FAILURE",
+   [OUTCOME_SUBMISSION_REFUSED] = "SUBMISSION_REFUSED",
+   [OUTCOME_COMPLETION_FAILURE] = "COMPLETION_FAILURE",
+   [OUTCOME_RETENTION_FAILURE] = "RETENTION_FAILURE",
+};
+
+static int
+finish(enum outcome outcome)
+{
+   printf("verdict: %s\n", outcome_names[outcome]);
+   fflush(stdout);
+   return outcome == OUTCOME_CONTROL_PASS ? 0 : 1;
+}
+
+/* Names the stage about to run.  A hang leaves its stage as the last
+ * line on the console and in the off-box log.
+ */
+static void
+stage(const char *name)
+{
+   printf("[stage] %s\n", name);
+   fflush(stdout);
+}
+
+/* One directory reached by two spellings is still one directory, so the
+ * comparison resolves both paths when they exist.
+ */
+static bool
+same_directory(const char *a, const char *b)
+{
+   if (strcmp(a, b) == 0)
+      return true;
+   char resolved_a[PATH_MAX];
+   char resolved_b[PATH_MAX];
+   return realpath(a, resolved_a) != NULL && realpath(b, resolved_b) != NULL &&
+          strcmp(resolved_a, resolved_b) == 0;
+}
+
+int
+main(int argc, char **argv)
+{
+   if (argc != 2) {
+      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+      return 2;
+   }
+   const char *evidence_dir = argv[1];
+
+   /* A silicon result binds to the real libc entry points.  A preloaded
+    * interposer -- the drm-shim fixture or any other -- would let the
+    * run report a silicon verdict it never earned, so any LD_PRELOAD
+    * refuses before the first Vulkan call.
+    */
+   const char *preload = getenv("LD_PRELOAD");
+   if (preload != NULL && preload[0] != '\0') {
+      fprintf(stderr,
+              "LD_PRELOAD is set (%s); a hardware control run admits no "
+              "interposer\n",
+              preload);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+
+   /* The driver reads the evidence directory from the environment, and the
+    * arming conjunction consumes the one-shot token in whichever directory
+    * the environment names.  The armed directory and the readback directory
+    * are one directory, so a disagreement refuses.
+    */
+   const char *declared = getenv("R3V_NATIVE_MANIFEST_DIR");
+   if (declared == NULL || declared[0] == '\0' ||
+       !same_directory(declared, evidence_dir)) {
+      fprintf(stderr,
+              "R3V_NATIVE_MANIFEST_DIR names %s and the argument names %s; "
+              "the armed directory and the readback directory are one "
+              "directory\n",
+              declared != NULL ? declared : "(unset)", evidence_dir);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+
+   stage("instance");
+   PFN_vkVoidFunction (*gipa)(VkInstance, const char *) =
+      vk_icdGetInstanceProcAddr;
+   PFN_vkCreateInstance create_instance =
+      (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
+   VkInstance instance = VK_NULL_HANDLE;
+   VkResult result = create_instance(
+      &(VkInstanceCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+      },
+      NULL, &instance);
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "vkCreateInstance: %d\n", result);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+
+#define LOAD_INSTANCE(name) PFN_##name name = (PFN_##name)gipa(instance, #name)
+   LOAD_INSTANCE(vkEnumeratePhysicalDevices);
+   LOAD_INSTANCE(vkGetPhysicalDeviceProperties);
+   LOAD_INSTANCE(vkCreateDevice);
+   LOAD_INSTANCE(vkGetDeviceProcAddr);
+   LOAD_INSTANCE(vkDestroyInstance);
+
+   stage("physical device");
+   uint32_t pdev_count = 1;
+   VkPhysicalDevice pdev = VK_NULL_HANDLE;
+   result = vkEnumeratePhysicalDevices(instance, &pdev_count, &pdev);
+   if ((result != VK_SUCCESS && result != VK_INCOMPLETE) ||
+       pdev_count != 1 || pdev == VK_NULL_HANDLE) {
+      fprintf(stderr, "no native physical device: %d count %u\n", result,
+              pdev_count);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+   VkPhysicalDeviceProperties props;
+   vkGetPhysicalDeviceProperties(pdev, &props);
+   printf("[identity] vendor 0x%04x device 0x%04x name %s\n",
+          props.vendorID, props.deviceID, props.deviceName);
+   fflush(stdout);
+   /* The arming gate enforces this too; refusing here keeps the run off
+    * a chip whose falsifiers were not written.
+    */
+   if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
+       props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
+      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+
+   stage("device");
+   const float priority = 1.0f;
+   VkDevice device = VK_NULL_HANDLE;
+   result = vkCreateDevice(
+      pdev,
+      &(VkDeviceCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+         .queueCreateInfoCount = 1,
+         .pQueueCreateInfos =
+            &(VkDeviceQueueCreateInfo){
+               .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+               .queueFamilyIndex = 0,
+               .queueCount = 1,
+               .pQueuePriorities = &priority,
+            },
+      },
+      NULL, &device);
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "vkCreateDevice: %d\n", result);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+
+   PFN_vkGetDeviceProcAddr gdpa = vkGetDeviceProcAddr;
+#define LOAD_DEVICE(name) PFN_##name name = (PFN_##name)gdpa(device, #name)
+   LOAD_DEVICE(vkAllocateMemory);
+   LOAD_DEVICE(vkFreeMemory);
+   LOAD_DEVICE(vkMapMemory);
+   LOAD_DEVICE(vkGetDeviceQueue);
+   LOAD_DEVICE(vkCreateCommandPool);
+   LOAD_DEVICE(vkDestroyCommandPool);
+   LOAD_DEVICE(vkAllocateCommandBuffers);
+   LOAD_DEVICE(vkBeginCommandBuffer);
+   LOAD_DEVICE(vkEndCommandBuffer);
+   LOAD_DEVICE(vkQueueSubmit);
+   LOAD_DEVICE(vkDestroyDevice);
+
+   /* The cell reads no source, so the color target is the run's one
+    * allocation.
+    */
+   stage("memory");
+   VkDeviceMemory color_memory = VK_NULL_HANDLE;
+   if (vkAllocateMemory(device,
+                        &(VkMemoryAllocateInfo){
+                           .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                           .allocationSize = R3V_DIRECT_WRITE_TARGET_BYTES,
+                           .memoryTypeIndex = 0,
+                        },
+                        NULL, &color_memory) != VK_SUCCESS) {
+      fprintf(stderr, "color allocation failed\n");
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+
+   stage("record");
+   VkCommandPool pool = VK_NULL_HANDLE;
+   if (vkCreateCommandPool(
+          device,
+          &(VkCommandPoolCreateInfo){
+             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+             .queueFamilyIndex = 0,
+          },
+          NULL, &pool) != VK_SUCCESS) {
+      fprintf(stderr, "command pool creation failed\n");
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+   VkCommandBuffer cmd = VK_NULL_HANDLE;
+   if (vkAllocateCommandBuffers(
+          device,
+          &(VkCommandBufferAllocateInfo){
+             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+             .commandPool = pool,
+             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+             .commandBufferCount = 1,
+          },
+          &cmd) != VK_SUCCESS) {
+      fprintf(stderr, "command buffer allocation failed\n");
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+   /* The submission is one-shot, so a failed recording boundary refuses
+    * here rather than carrying a non-executable command buffer into the
+    * hazardous ioctl.
+    */
+   result = vkBeginCommandBuffer(
+      cmd, &(VkCommandBufferBeginInfo){
+              .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+           });
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "vkBeginCommandBuffer: %d\n", result);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+   result = r3v_native_record_direct_write(cmd, color_memory);
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "cell recording failed: %d\n", result);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+   result = vkEndCommandBuffer(cmd);
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "vkEndCommandBuffer: %d\n", result);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+
+   VkQueue queue = VK_NULL_HANDLE;
+   vkGetDeviceQueue(device, 0, 0, &queue);
+
+   /* The hazard: a live DRM_RADEON_CS reaches the command processor
+    * here, and the bounded completion wait follows it inside the queue.
+    * The submission is one-shot; whatever it returns, no resubmission
+    * follows.
+    */
+   stage("submit");
+   VkResult submit_result =
+      vkQueueSubmit(queue, 1,
+                    &(VkSubmitInfo){
+                       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                       .commandBufferCount = 1,
+                       .pCommandBuffers = &cmd,
+                    },
+                    VK_NULL_HANDLE);
+   printf("[submit] vkQueueSubmit returned %d\n", submit_result);
+   fflush(stdout);
+
+   /* Readback and retention run for every submit result: a refused or
+    * incomplete submission still leaves the target's state as evidence.
+    */
+   stage("readback");
+   void *color_map = NULL;
+   if (vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0, &color_map) !=
+          VK_SUCCESS ||
+       color_map == NULL) {
+      fprintf(stderr, "color readback map failed\n");
+      return finish(OUTCOME_RETENTION_FAILURE);
+   }
+   /* The target is the run's primary artifact and the submission is
+    * one-shot, so the oracle's verdict reaches the console only once the
+    * complete allocation is durable.
+    */
+   if (r3v_native_evidence_write_file(evidence_dir, "color_target.bin",
+                                      color_map,
+                                      R3V_DIRECT_WRITE_TARGET_BYTES) != 0) {
+      fprintf(stderr, "color target retention failed\n");
+      return finish(OUTCOME_RETENTION_FAILURE);
+   }
+
+   stage("oracle");
+   struct r300_direct_write_verdict verdict;
+   r300_direct_write_oracle(color_map, R3V_DIRECT_WRITE_TARGET_BYTES,
+                            &verdict);
+   const uint32_t *pixels = color_map;
+   const uint32_t pixel_a =
+      pixels[R300_DIRECT_WRITE_A_Y * R300_TRIANGLE_TARGET_PITCH_PIXELS +
+             R300_DIRECT_WRITE_A_X];
+   const uint32_t pixel_b =
+      pixels[R300_DIRECT_WRITE_B_Y * R300_TRIANGLE_TARGET_PITCH_PIXELS +
+             R300_DIRECT_WRITE_B_X];
+   /* The allocation tail past the canary row carries no legitimate
+    * device write, so any disturbed tail pixel is an out-of-extent
+    * write.
+    */
+   uint32_t disturbed_tail = 0;
+   for (uint32_t i =
+           R300_TRIANGLE_ALLOCATION_ROWS * R300_TRIANGLE_TARGET_PITCH_PIXELS;
+        i < R3V_DIRECT_WRITE_TARGET_BYTES / 4; i++) {
+      if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL)
+         disturbed_tail++;
+   }
+   printf("[oracle] executed=%d value_a=%d value_b=%d sentinel=%d canary=%d "
+          "tail_disturbed=%u\n",
+          verdict.executed, verdict.value_a_pass, verdict.value_b_pass,
+          verdict.sentinel_pass, verdict.canary_pass, disturbed_tail);
+   printf("[oracle] pixel A (%u,%u)=0x%08x pixel B (%u,%u)=0x%08x\n",
+          R300_DIRECT_WRITE_A_X, R300_DIRECT_WRITE_A_Y, pixel_a,
+          R300_DIRECT_WRITE_B_X, R300_DIRECT_WRITE_B_Y, pixel_b);
+   fflush(stdout);
+
+   /* Classification order: a write past the render extent stops the
+    * sequence whatever else passed; then the transport's own failures;
+    * then the control verdict.  A failed control is INCONCLUSIVE /
+    * CONTROL FAILED, so no pipeline or transport hypothesis follows
+    * from it.
+    */
+   enum outcome outcome;
+   if (!verdict.canary_pass || disturbed_tail != 0)
+      outcome = OUTCOME_CONTAINMENT_FAILURE;
+   else if (submit_result == VK_ERROR_DEVICE_LOST)
+      outcome = OUTCOME_COMPLETION_FAILURE;
+   else if (submit_result != VK_SUCCESS)
+      outcome = OUTCOME_SUBMISSION_REFUSED;
+   else if (verdict.executed && verdict.value_a_pass &&
+            verdict.value_b_pass && verdict.sentinel_pass)
+      outcome = OUTCOME_CONTROL_PASS;
+   else
+      outcome = OUTCOME_CONTROL_FAILED_INCONCLUSIVE;
+
+   char outcome_json[1024];
+   int length = snprintf(
+      outcome_json, sizeof(outcome_json),
+      "{\n"
+      "  \"schema\": \"r3v-native-direct-write-outcome/1\",\n"
+      "  \"verdict\": \"%s\",\n"
+      "  \"submit_result\": %d,\n"
+      "  \"executed\": %s,\n"
+      "  \"value_a_pass\": %s,\n"
+      "  \"value_b_pass\": %s,\n"
+      "  \"sentinel_pass\": %s,\n"
+      "  \"canary_pass\": %s,\n"
+      "  \"tail_disturbed_pixels\": %u,\n"
+      "  \"pixel_a_observed\": \"0x%08x\",\n"
+      "  \"pixel_b_observed\": \"0x%08x\"\n"
+      "}\n",
+      outcome_names[outcome], submit_result,
+      verdict.executed ? "true" : "false",
+      verdict.value_a_pass ? "true" : "false",
+      verdict.value_b_pass ? "true" : "false",
+      verdict.sentinel_pass ? "true" : "false",
+      verdict.canary_pass ? "true" : "false", disturbed_tail, pixel_a,
+      pixel_b);
+   if (length <= 0 || (size_t)length >= sizeof(outcome_json) ||
+       r3v_native_evidence_write_file(evidence_dir,
+                                      "direct_write_outcome.json",
+                                      outcome_json, (size_t)length) != 0) {
+      fprintf(stderr, "outcome retention failed\n");
+      return finish(OUTCOME_RETENTION_FAILURE);
+   }
+
+   stage("teardown");
+   vkDestroyCommandPool(device, pool, NULL);
+   vkFreeMemory(device, color_memory, NULL);
+   vkDestroyDevice(device, NULL);
+   vkDestroyInstance(instance, NULL);
+
+   return finish(outcome);
+}
