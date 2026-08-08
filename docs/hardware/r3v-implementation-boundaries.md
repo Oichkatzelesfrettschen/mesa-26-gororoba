@@ -183,11 +183,13 @@ The landed mechanisms are:
   closed-gate retained IB byte-identical to the direct emitter.
 
 Graphics and compute pipelines, public Vulkan command recording, images,
-descriptors, transfers, WSI, the CPU vertex route, and native R2VB remain
-outside the landed surface. Live `DRM_RADEON_CS` submission has one
-attended witness: kernel-accepted, retired clean, color target unwritten;
-the self-contained successor cell's silicon run is separately authorized
-and outstanding.
+descriptors, transfers, WSI, the CPU vertex carrier delivery, and native
+R2VB remain outside the landed surface. Live `DRM_RADEON_CS` submission
+has three attended witnesses, each kernel-accepted and retired clean:
+the bare inherited-state cell left the color target unwritten, the
+direct-write 2D control landed its probe bytes exactly, and the
+contract-prefixed successor cell rendered the triangle as predicted;
+the witness bundle is the frozen private-cell reference.
 
 ### Source-layer split
 

@@ -35,11 +35,16 @@
 
 /* One bound attribute stream: data points at the first record of the
  * first vertex (binding base plus attribute offset already applied),
- * and stride is the byte distance between records.
+ * stride is the byte distance between records, and size_bytes bounds
+ * the readable range from data.  The gather validates every requested
+ * record against the bound in 64-bit arithmetic and refuses a range it
+ * cannot prove readable, so a malformed binding rejects instead of
+ * reading outside the mapped vertex data.
  */
 struct r300_cpu_vertex_stream {
    const uint8_t *data;
    uint32_t stride;
+   uint64_t size_bytes;
 };
 
 /* Gathers vertex_count records starting at first_vertex into the

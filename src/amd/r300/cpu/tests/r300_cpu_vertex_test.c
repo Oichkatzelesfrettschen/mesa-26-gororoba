@@ -100,6 +100,7 @@ check_format(int format_id, uint32_t stride_extra, uint32_t first_vertex,
    const struct r300_cpu_vertex_stream stream = {
       .data = data,
       .stride = stride,
+      .size_bytes = sizeof(data),
    };
 
    uint32_t expected[CARRIER_DWORDS];
@@ -156,19 +157,33 @@ main(void)
     */
    uint8_t data[64];
    fill_records(data, sizeof(data), 1u);
-   struct r300_cpu_vertex_stream stream = { .data = data, .stride = 16 };
+   struct r300_cpu_vertex_stream stream = { .data = data, .stride = 16, .size_bytes = sizeof(data) };
    uint32_t carrier[8];
    assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_INVALID, &stream, 0, 1,
                                  carrier, 8) == -EINVAL);
    assert(r300_cpu_vertex_gather(99, &stream, 0, 1, carrier, 8) == -EINVAL);
-   struct r300_cpu_vertex_stream null_stream = { .data = NULL, .stride = 16 };
+   struct r300_cpu_vertex_stream null_stream = { .data = NULL, .stride = 16, .size_bytes = 64 };
    assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &null_stream, 0,
                                  1, carrier, 8) == -EINVAL);
-   struct r300_cpu_vertex_stream narrow = { .data = data, .stride = 12 };
+   struct r300_cpu_vertex_stream narrow = { .data = data, .stride = 12, .size_bytes = sizeof(data) };
    assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &narrow, 0, 1,
                                  carrier, 8) == -EINVAL);
    assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &stream, 0, 3,
                                  carrier, 8) == -ENOSPC);
+   /* The stream bound rejects a NULL carrier for a nonzero gather, an
+    * out-of-range first_vertex, an incomplete final record, and a
+    * first_vertex/count pair whose product would wrap 32-bit math.
+    */
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &stream, 0, 1,
+                                 NULL, 8) == -EINVAL);
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &stream, 4, 1,
+                                 carrier, 8) == -EINVAL);
+   struct r300_cpu_vertex_stream short_tail = { .data = data, .stride = 16,
+                                                .size_bytes = 60 };
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &short_tail, 3,
+                                 1, carrier, 8) == -EINVAL);
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &stream,
+                                 0xffffffffu, 1, carrier, 8) == -EINVAL);
 
    /* Known-bad calibration: the comparison detects a single corrupted
     * lane, and a wrong stride produces a different carrier, so the
@@ -181,7 +196,7 @@ main(void)
    bad[5] ^= 1u;
    assert(memcmp(good, bad, sizeof(good)) != 0);
    uint32_t wrong_stride[12];
-   struct r300_cpu_vertex_stream wide = { .data = data, .stride = 20 };
+   struct r300_cpu_vertex_stream wide = { .data = data, .stride = 20, .size_bytes = sizeof(data) };
    assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &wide, 0, 3,
                                  wrong_stride, 12) == 0);
    assert(memcmp(good, wrong_stride, sizeof(good)) != 0);
@@ -201,7 +216,7 @@ main(void)
     * dword, so a byte-order defect cannot cancel out of it.
     */
    uint32_t one_lane[4];
-   struct r300_cpu_vertex_stream f1_stream = { .data = data, .stride = 4 };
+   struct r300_cpu_vertex_stream f1_stream = { .data = data, .stride = 4, .size_bytes = sizeof(data) };
    assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_1, &f1_stream, 0, 1,
                                  one_lane, 4) == 0);
    const uint8_t *w_bytes = (const uint8_t *)one_lane + 12;

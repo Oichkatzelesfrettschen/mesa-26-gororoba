@@ -25,7 +25,8 @@ static const uint8_t lane_one_bytes[4] = { 0x00, 0x00, 0x80, 0x3f };
 static int
 validate(const struct r300_vertex_format_semantics **format_out,
          int format_id, const struct r300_cpu_vertex_stream *stream,
-         uint32_t vertex_count, uint32_t carrier_dwords)
+         uint32_t first_vertex, uint32_t vertex_count,
+         const uint32_t *carrier, uint32_t carrier_dwords)
 {
    const struct r300_vertex_format_semantics *format =
       r300_vertex_format_semantics((enum r300_vertex_format_id)format_id);
@@ -36,6 +37,22 @@ validate(const struct r300_vertex_format_semantics **format_out,
     */
    if (stream->stride < format->semantic_record_bytes)
       return -EINVAL;
+   if (vertex_count != 0) {
+      if (carrier == NULL)
+         return -EINVAL;
+      /* Every requested record lies inside the stream bound: the last
+       * record's start plus its record bytes fits size_bytes.  The
+       * comparison divides rather than multiplies -- the last index is
+       * at most 2^33 and the stride is at least the record size, so no
+       * intermediate can wrap into an in-range value.
+       */
+      if (stream->size_bytes < format->semantic_record_bytes)
+         return -EINVAL;
+      uint64_t last_index = (uint64_t)first_vertex + vertex_count - 1;
+      if (last_index > (stream->size_bytes -
+                        format->semantic_record_bytes) / stream->stride)
+         return -EINVAL;
+   }
    if (vertex_count > carrier_dwords / 4)
       return -ENOSPC;
    *format_out = format;
@@ -49,8 +66,8 @@ r300_cpu_vertex_gather_baseline(
    uint32_t carrier_dwords)
 {
    const struct r300_vertex_format_semantics *format;
-   int result = validate(&format, format_id, stream, vertex_count,
-                         carrier_dwords);
+   int result = validate(&format, format_id, stream, first_vertex,
+                         vertex_count, carrier, carrier_dwords);
    if (result != 0)
       return result;
 
@@ -187,8 +204,8 @@ r300_cpu_vertex_gather(int format_id,
 {
 #if defined(__SSE2__)
    const struct r300_vertex_format_semantics *format;
-   int result = validate(&format, format_id, stream, vertex_count,
-                         carrier_dwords);
+   int result = validate(&format, format_id, stream, first_vertex,
+                         vertex_count, carrier, carrier_dwords);
    if (result != 0)
       return result;
    if (sse2_pattern_matches(format))
