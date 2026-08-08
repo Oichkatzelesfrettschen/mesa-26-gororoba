@@ -320,6 +320,7 @@ if get_option('r3v-native-backend')
     'r3v_native_object.c',
     'r3v_native_queue.c',
     'r3v_native_recording.c',
+    '../cpu/r300_cpu_vertex.c',
     '../common/r300_direct_write.c',
     '../common/r300_first_draw_state.c',
     '../common/r300_fragment_binary.c',
@@ -901,6 +902,27 @@ if get_option('r3v-native-backend')
         files('tests/r3v_native_arming_runner_check.py'),
         r3v_native_arming_runner,
       ],
+      suite : ['r3v'],
+    )
+
+    # Carrier-delivery harness: the stream-fed recorder reproduces the
+    # frozen carrier bytes and cell IB for every F32 delivery shape;
+    # recording-only, gate closed, no submission.
+    test(
+      'r3v-native-vertex-carrier',
+      executable(
+        'r3v_native_vertex_carrier_harness',
+        files('tests/r3v_native_vertex_carrier_harness.c'),
+        include_directories : r3v_native_inc,
+        dependencies : r3v_native_deps,
+        link_whole : [libr3v_native_impl],
+        link_with : [libradeon_drm_vk],
+        c_args : [no_override_init_args],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
       suite : ['r3v'],
     )
 
