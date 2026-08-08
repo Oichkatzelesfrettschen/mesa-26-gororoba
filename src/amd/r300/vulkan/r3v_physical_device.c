@@ -557,12 +557,19 @@ static const struct vk_device_extension_table r3v_device_extensions_supported = 
 #ifdef R3V_NATIVE_BACKEND
 /* The native implementation advertises only surfaces its own entry points
  * execute.  Every 1.0 memory and buffer entry point routes through the
- * vk_common *2-form bridges into the native one-BO implementations, so the
- * core surface needs no extension; the extension table stays empty until a
- * native route lands behind each name.
+ * vk_common *2-form bridges into the native one-BO implementations.  The
+ * three advertised extensions are the memory-requirements contract the
+ * image path executes: the *2 query and bind entry points resolve, and
+ * VK_KHR_dedicated_allocation carries the required-dedicated signal
+ * that states the image's offset-zero binding to an allocator; a
+ * further extension returns with the native route that executes it.
  */
 static const struct vk_device_extension_table
-   r3v_native_device_extensions_supported = {0};
+   r3v_native_device_extensions_supported = {
+      .KHR_get_memory_requirements2 = true,
+      .KHR_bind_memory2 = true,
+      .KHR_dedicated_allocation = true,
+   };
 #endif
 
 static void

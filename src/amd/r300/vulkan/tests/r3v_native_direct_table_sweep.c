@@ -183,12 +183,16 @@ sweep_wsi_contract(VkInstance instance, VkPhysicalDevice pdev)
    if (enumerate_device_ext == NULL)
       return;
 
+   /* The advertised set is exactly the memory-requirements contract the
+    * native image path executes: the *2 query and bind entry points and
+    * the dedicated-allocation signal.
+    */
    uint32_t device_ext_count = 0;
    VkResult result =
       enumerate_device_ext(pdev, NULL, &device_ext_count, NULL);
-   CHECK(result == VK_SUCCESS && device_ext_count == 0,
-         "the device advertises no extension: %d count %u", result,
-         device_ext_count);
+   CHECK(result == VK_SUCCESS && device_ext_count == 3,
+         "the device advertises the three memory-contract extensions: "
+         "%d count %u", result, device_ext_count);
    printf("device extensions: %u\n", device_ext_count);
 
    PFN_vkGetPhysicalDeviceQueueFamilyProperties queue_families =

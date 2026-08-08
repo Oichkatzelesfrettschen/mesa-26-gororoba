@@ -126,6 +126,14 @@ r3v_BeginCommandBuffer(VkCommandBuffer commandBuffer,
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_EndCommandBuffer(VkCommandBuffer commandBuffer)
 {
-   VK_FROM_HANDLE(vk_command_buffer, cmd_buffer, commandBuffer);
-   return vk_command_buffer_end(cmd_buffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+
+   /* A render pass left open has no closing lowering, so the buffer
+    * poisons instead of becoming executable with an incomplete pass.
+    */
+   if (cmd_buffer->pass_target != NULL) {
+      vk_command_buffer_set_error(&cmd_buffer->vk,
+                                  R3V_NATIVE_REFUSAL_RESULT);
+   }
+   return vk_command_buffer_end(&cmd_buffer->vk);
 }

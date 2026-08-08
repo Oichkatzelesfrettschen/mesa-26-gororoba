@@ -670,6 +670,18 @@ main(void)
    vkCmdEndRenderPass(bad_cmd);
    assert(vkEndCommandBuffer(bad_cmd) == R3V_NATIVE_REFUSAL_RESULT);
 
+   /* A render pass left open poisons at vkEndCommandBuffer: the open
+    * pass has no closing lowering, so the buffer never becomes
+    * executable.
+    */
+   bad_cmd = fresh_cmd();
+   vkCmdBeginRenderPass(bad_cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdBindPipeline(bad_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+   vkCmdBindVertexBuffers(bad_cmd, 0, 1, &vertex_buffer,
+                          &(VkDeviceSize){ 0 });
+   vkCmdDraw(bad_cmd, 3, 1, 0, 0);
+   assert(vkEndCommandBuffer(bad_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+
    /* A second render pass after the recorded cell refuses: its load-op
     * clear has no lowering, so accepting it would record a pass that
     * never executes.
