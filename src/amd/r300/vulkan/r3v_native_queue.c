@@ -14,6 +14,7 @@
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
 
 #include "vk_log.h"
+#include "vk_sync.h"
 
 #include "util/mesa-blake3.h"
 
@@ -360,6 +361,24 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
+   /* Declared dependencies order the deferred CPU execution below: each
+    * wait completes before any gather or clear runs, so a producer that
+    * supplies the vertex data through a semaphore is honored.  The
+    * synchronous submit model signals every sync at completion, so a
+    * same-queue wait is already satisfied and completes immediately.
+    */
+   for (uint32_t w = 0; w < submit->wait_count; w++) {
+      VkResult wait_result =
+         vk_sync_wait(&device->vk, submit->waits[w].sync,
+                      submit->waits[w].wait_value, VK_SYNC_WAIT_COMPLETE,
+                      UINT64_MAX);
+      if (wait_result != VK_SUCCESS) {
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: semaphore wait %u failed: %d", w,
+                          wait_result);
+      }
+   }
+
    /* Recording fails closed: an unsupported command poisons the buffer's
     * record_result and vkEndCommandBuffer returns the error.  The runtime
     * moves every submitted buffer to PENDING before driver_submit runs, so
@@ -571,5 +590,10 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
-   return VK_SUCCESS;
+   /* The bounded completion wait above retired every buffer, so the
+    * submit's signal set fires here and a dependent submit's wait
+    * completes immediately.
+    */
+   return vk_sync_signal_many(&device->vk, submit->signal_count,
+                              submit->signals);
 }

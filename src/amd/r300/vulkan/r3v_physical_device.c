@@ -1010,8 +1010,13 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
     */
    switch (vk_format) {
    case VK_FORMAT_B8G8R8A8_UNORM:
+      /* TRANSFER_SRC rides along because vkCreateImage admits the
+       * target with transfer-source usage for CPU readback of the
+       * rendered pixels.
+       */
       properties->linearTilingFeatures =
-         VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT;
+         VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
+         VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT;
       break;
    case VK_FORMAT_R32_SFLOAT:
    case VK_FORMAT_R32G32_SFLOAT:
@@ -1256,8 +1261,12 @@ r3v_get_image_format_properties(
 #ifdef R3V_NATIVE_BACKEND
       /* The native image contract is the qualified cell's fixed target,
        * so the reported ceiling is that shape and vkCreateImage accepts
-       * exactly what this query admits.
+       * exactly what this query admits; vkCreateImage rejects every
+       * create flag, so the query reports a flagged request unsupported
+       * for the same reason.
        */
+      if (info->flags != 0)
+         goto unsupported;
       max_extent = (VkExtent3D){
          R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1,
       };
