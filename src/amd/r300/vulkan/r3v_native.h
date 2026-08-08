@@ -118,6 +118,14 @@ void r3v_native_cmd_buffer_install_ib(
 VkResult r3v_native_queue_submit(struct vk_queue *queue,
                                  struct vk_queue_submit *submit);
 
+/* Durable evidence writer shared by the queue's retained submit objects
+ * and the attended runners' readback artifacts: temporary file, full
+ * write, fsync, atomic rename, directory fsync.  Returns 0 or a negative
+ * errno.
+ */
+int r3v_native_evidence_write_file(const char *dir, const char *name,
+                                   const void *data, size_t size);
+
 /* Fixed-cell recorder, linked directly by the pre-hardware harness and the
  * attended-cell runner: lowers the TCL-bypass triangle into the command
  * buffer from the two live buffer-object memories.  Recording is

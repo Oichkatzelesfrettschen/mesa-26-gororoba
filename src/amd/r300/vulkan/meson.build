@@ -599,6 +599,26 @@ if get_option('r3v-native-backend')
     install : false,
   )
 
+  # Attended direct-write control: performs a live DRM_RADEON_CS on RS482
+  # silicon under the authorization and procedure in
+  # docs/hardware/r3v-native-direct-write-attended-procedure.md.  The
+  # triangle attended cell keeps its own executable; each cell's digest
+  # authorizes only its own stream.  Built and never registered as a
+  # test, because running it is a hardware authorization rather than a
+  # build-graph result.
+  r3v_native_attended_direct_write = executable(
+    'r3v_native_attended_direct_write',
+    files('tests/r3v_native_attended_direct_write.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+    build_by_default : true,
+    install : false,
+  )
+
   # Full-chain triangle-cell harness on the radeon noop drm-shim: the
   # closed-gate leg proves the fail-closed verdict and byte-identity of
   # the retained IB against the direct emitter, and the open-gate leg
@@ -884,6 +904,55 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
 
+    # Non-submitting direct-write arming runner: reports the control
+    # cell's digest and every arming factor, then stops at the
+    # authorization boundary.  The check drives the refusal legs and the
+    # wrong-cell negative against the triangle runner's digest.
+    r3v_native_direct_write_arming_runner = executable(
+      'r3v_native_direct_write_arming_runner',
+      files('r3v_native_arming.c',
+            'tests/r3v_native_direct_write_arming_runner.c',
+            '../common/r300_direct_write.c',
+            '../common/r300_first_draw_state.c',
+            '../common/r300_fragment_binary.c',
+            '../common/r300_pm4_builder.c',
+            '../common/r300_tcl_bypass_triangle.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-direct-write-arming-runner',
+      prog_python,
+      args : [
+        files('tests/r3v_native_direct_write_arming_runner_check.py'),
+        r3v_native_direct_write_arming_runner,
+        r3v_native_arming_runner,
+      ],
+      suite : ['r3v'],
+    )
+
+    # Positive ARMED calibration under the direct-write control's own
+    # digest, through the collection seam; each single-fact mutation
+    # refuses, and the triangle digest refuses as the wrong cell.
+    test(
+      'r3v-native-direct-write-arming-positive',
+      executable(
+        'r3v_native_direct_write_arming_positive',
+        files('r3v_native_arming.c',
+              'tests/r3v_native_direct_write_arming_positive.c',
+              '../common/r300_direct_write.c',
+              '../common/r300_first_draw_state.c',
+              '../common/r300_fragment_binary.c',
+              '../common/r300_pm4_builder.c',
+              '../common/r300_tcl_bypass_triangle.c'),
+        include_directories : [r3v_native_inc, include_directories('.')],
+        dependencies : [idep_mesautil],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+
     # Provider-attestation calibration: with the shim absent from
     # LD_PRELOAD, open and ioctl resolve into libc, and the harness
     # refuses before the hazard gate opens and before any Vulkan call.
@@ -935,5 +1004,29 @@ if get_option('r3v-native-backend')
       timeout : 60,
       suite : ['r3v'],
     )
+    # Authority parity: one digest names the direct-write cell across the
+    # standalone manifest writer, the arming runner, and the
+    # queue-retained IB from both harness legs, and each attended runner
+    # calls only its own cell's recorder.  The manifest writer builds
+    # under the r300 Gallium test tree, so the check registers only where
+    # that target exists.
+    if is_variable('r300_direct_write_manifest')
+      test(
+        'r3v-native-direct-write-authority-parity',
+        prog_python,
+        args : [
+          files('tests/r3v_native_direct_write_authority_parity.py'),
+          r300_direct_write_manifest,
+          r3v_native_direct_write_arming_runner,
+          r3v_native_direct_write_harness,
+          files('tests/r3v_native_attended_direct_write.c'),
+          files('tests/r3v_native_attended_cell.c'),
+        ],
+        env : r3v_native_cell_env,
+        depends : [libradeon_noop_drm_shim],
+        timeout : 120,
+        suite : ['r3v'],
+      )
+    endif
   endif
 endif
