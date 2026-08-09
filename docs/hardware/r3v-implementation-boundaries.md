@@ -74,10 +74,20 @@ bypass the extent reaches the hardware through the `SC_SCISSORS_BR`
 and `SC_CLIPRECT_BR_0` payloads alone, `RB3D_COLORPITCH0` keeps the
 64-pixel word because pitch is a memory-layout property, and at the
 maximum extent the emission is byte-identical to the silicon-witnessed
-reference cell, whose digest anchors the family.  A non-maximum extent
-differs from the witnessed IB in those two dwords, an input class the
-silicon has not yet observed; that narrowing rides the same
-host-model-versus-silicon boundary as the vertex payload note above.
+reference cell, whose digest anchors the family.  The evidence classes
+split at the reference: the 64x64 cell is host-model proven,
+loader-boundary proven, and silicon witnessed; every other admitted
+extent is host-model proven only.  A non-maximum extent differs from
+the witnessed IB in the two scissor-family dwords, an input class the
+silicon has not observed, and the checked-in attended submitter
+records the 64x64 reference cell alone -- the arming runner's
+`--extent` option is a no-submit digest and IB-generation facility, so
+non-maximum silicon execution is blocked on a future parameterized
+public-route runner with extent-aware retention.  Host support and
+oracle eligibility are also separate sets: the extent oracle fails
+closed when a target carries no margin-qualified samples, so an
+API-admissible extent such as 1x1 is not thereby eligible for the
+triangle raster oracle.
 
 The bounded R300 R2VB `FLOAT_2` source transaction has one home:
 `r300-r2vb-float2-source-contract.md`. This document owns the implementation
@@ -251,9 +261,9 @@ The landed mechanisms are:
 - the drm-shim triangle-cell harness driving both gate states, with the
   closed-gate retained IB byte-identical to the direct emitter.
 
-Compute pipelines, descriptors, transfers, WSI, extents and formats
-past the fixed cell, and native R2VB remain outside the landed
-surface. Live `DRM_RADEON_CS` submission
+Compute pipelines, descriptors, transfers, WSI, formats past the fixed
+cell, silicon witnesses for non-maximum extents, and native R2VB
+remain outside the landed surface. Live `DRM_RADEON_CS` submission
 has three attended witnesses, each kernel-accepted and retired clean:
 the bare inherited-state cell left the color target unwritten, the
 direct-write 2D control landed its probe bytes exactly, and the

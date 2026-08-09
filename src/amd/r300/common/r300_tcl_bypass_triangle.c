@@ -443,6 +443,20 @@ r300_tcl_bypass_triangle_extent_oracle(
       return;
    }
 
+   /* The verdict reads the full retained footprint: every rendered row
+    * at the fixed pitch plus the canary row past the render extent.  A
+    * buffer short of that footprint carries no observable canary band,
+    * so the truncated call fails closed before any pass initializes
+    * rather than leaving canary_pass vacuously true.
+    */
+   const uint64_t required_bytes =
+      (uint64_t)R300_TRIANGLE_TARGET_PITCH_PIXELS * (height + 1u) *
+      sizeof(uint32_t);
+   if (pixels == NULL || size_bytes < required_bytes) {
+      *verdict = (struct r300_triangle_oracle_verdict){ 0 };
+      return;
+   }
+
    const struct triangle_geometry g = triangle_geometry_at(width, height);
 
    *verdict = (struct r300_triangle_oracle_verdict) {

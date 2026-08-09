@@ -557,8 +557,8 @@ main(void)
                                &carrier_map) == 0);
    {
       /* The carrier holds the transformed stream: the mutated NDC x
-       * (-0.75 with its exponent bit flipped, -0.5) maps through the
-       * same viewport expression the execution applies.
+       * (-0.75 with binary32 mantissa bit 22 flipped, -0.5) maps
+       * through the same viewport expression the execution applies.
        */
       float mutated_ndc_x;
       const uint32_t mutated_bits = original_first_dword ^ 0x00400000u;
@@ -674,6 +674,33 @@ main(void)
       VK_FROM_HANDLE(r3v_native_cmd_buffer, native_domain, domain_cmd);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_domain) != VK_SUCCESS);
+
+      /* A NaN coordinate refuses through the same gate: the domain
+       * check is a negated conjunction of ordered comparisons, and
+       * every ordered comparison on NaN is false, so the negation
+       * admits the record into the refusal branch rather than past it.
+       */
+      uint32_t nan_bits = 0x7fc00000u;
+      memcpy(&out_of_domain[0], &nan_bits, sizeof(nan_bits));
+      out_of_domain[3] = 1.0f;
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, out_of_domain, sizeof(out_of_domain));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer nan_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(nan_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(nan_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipeline);
+      vkCmdBindVertexBuffers(nan_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(nan_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(nan_cmd);
+      assert(vkEndCommandBuffer(nan_cmd) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_nan, nan_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_nan) != VK_SUCCESS);
+
       /* Restore the reference stream for the legs below. */
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
@@ -848,6 +875,15 @@ main(void)
              R3V_NATIVE_REFUSAL_RESULT &&
           bad_image == VK_NULL_HANDLE);
    bad_image_info.extent.width = R3V_NATIVE_TARGET_WIDTH + 1;
+   assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
+             R3V_NATIVE_REFUSAL_RESULT &&
+          bad_image == VK_NULL_HANDLE);
+   bad_image_info = image_info;
+   bad_image_info.extent.height = 0;
+   assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
+             R3V_NATIVE_REFUSAL_RESULT &&
+          bad_image == VK_NULL_HANDLE);
+   bad_image_info.extent.height = R3V_NATIVE_TARGET_HEIGHT + 1;
    assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
              R3V_NATIVE_REFUSAL_RESULT &&
           bad_image == VK_NULL_HANDLE);

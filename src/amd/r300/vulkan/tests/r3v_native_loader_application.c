@@ -469,16 +469,17 @@ main(void)
          getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_FOOTPRINT");
       const char *corrupt_tail =
          getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_TAIL");
+      const VkDeviceSize footprint_dwords = footprint_bytes / 4;
       if (corrupt_footprint != NULL && strcmp(corrupt_footprint, "1") == 0)
-         color_map[footprint_bytes / 8] = COLOR_SEED;
+         color_map[footprint_dwords / 2] = COLOR_SEED;
       if (corrupt_tail != NULL && strcmp(corrupt_tail, "1") == 0)
-         color_map[footprint_bytes / 4 + 1] = SENTINEL_PIXEL;
+         color_map[footprint_dwords + 1] = SENTINEL_PIXEL;
       VkDeviceSize mismatches = 0;
-      for (VkDeviceSize i = 0; i < footprint_bytes / 4; i++) {
+      for (VkDeviceSize i = 0; i < footprint_dwords; i++) {
          if (color_map[i] != SENTINEL_PIXEL)
             mismatches++;
       }
-      for (VkDeviceSize i = footprint_bytes / 4;
+      for (VkDeviceSize i = footprint_dwords;
            i < (footprint_bytes + 4096) / 4; i++) {
          if (color_map[i] != COLOR_SEED)
             mismatches++;

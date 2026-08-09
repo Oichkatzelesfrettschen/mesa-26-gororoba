@@ -19,12 +19,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The cell extent an authorization names; the default is the maximum,
- * the silicon-witnessed reference cell.  --extent selects another
- * member of the family, so an attended procedure authorizing a
- * non-maximum target computes the exact digest of the IB the recorder
- * installs for it; the queue's digest check then admits that one
- * variant and refuses every other.
+/* The cell extent the report names; the default is the maximum, the
+ * silicon-witnessed reference cell and the one target the checked-in
+ * attended submitter records.  --extent selects another member of the
+ * host-model family as a no-submit digest and IB-generation facility:
+ * it names the IB the recorder installs for that target, but no
+ * checked-in submitter records a non-maximum target, so such a digest
+ * arms nothing until a parameterized public-route runner exists.
  */
 static uint32_t cell_width = R300_TRIANGLE_TARGET_WIDTH;
 static uint32_t cell_height = R300_TRIANGLE_TARGET_HEIGHT;

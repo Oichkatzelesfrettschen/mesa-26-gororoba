@@ -374,6 +374,27 @@ test_extent_oracle_calibration(void)
           verdict.exterior_pass && verdict.canary_pass);
    assert(verdict.interior_samples > 0 && verdict.exterior_samples > 0);
 
+   /* The oracle admits the exact retained footprint,
+    * pitch * (height + 1) pixels, and refuses anything shorter: a
+    * buffer holding only the render rows carries no observable canary
+    * band, so the truncated calls fail every pass with zero samples
+    * instead of leaving canary_pass vacuously true.
+    */
+   const uint32_t required_bytes = PITCH * (height + 1) * 4;
+   r300_tcl_bypass_triangle_extent_oracle(width, height, target,
+                                          required_bytes, &verdict);
+   assert(verdict.executed && verdict.interior_pass &&
+          verdict.exterior_pass && verdict.canary_pass);
+   r300_tcl_bypass_triangle_extent_oracle(width, height, target,
+                                          PITCH * height * 4, &verdict);
+   assert(!verdict.executed && !verdict.interior_pass &&
+          !verdict.exterior_pass && !verdict.canary_pass &&
+          verdict.interior_samples == 0 && verdict.exterior_samples == 0);
+   r300_tcl_bypass_triangle_extent_oracle(width, height, target,
+                                          required_bytes - 4, &verdict);
+   assert(!verdict.executed && !verdict.canary_pass &&
+          verdict.interior_samples == 0);
+
    /* A write in the sub-pitch padding band fails the canary. */
    target[5 * PITCH + 50] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
    r300_tcl_bypass_triangle_extent_oracle(width, height, target,
