@@ -15,21 +15,37 @@ import subprocess
 import sys
 
 FORBIDDEN_PREFIXES = (
-    "r3v_native_",
-    "r3v_Cmd",
-    "r300_tcl_bypass_",
-    "r300_cpu_vertex_",
+    "r3v_",
+    "r300_",
     "radeon_drm_vk_",
+)
+
+# The reference SPIR-V data header is the one driver artifact the
+# application compiles in; its two const word arrays are the only
+# admitted names under the forbidden prefixes.
+ALLOWED_SYMBOLS = (
+    "r3v_reference_vertex_spirv",
+    "r3v_reference_fragment_spirv",
 )
 
 REQUIRED_UNDEFINED = "vkCreateInstance"
 
 
 def main() -> int:
+    if len(sys.argv) != 3:
+        print(f"usage: {sys.argv[0]} <nm> <binary>", file=sys.stderr)
+        return 2
     nm, binary = sys.argv[1], sys.argv[2]
-    table = subprocess.run(
+    result = subprocess.run(
         [nm, binary], check=False, capture_output=True, text=True
-    ).stdout
+    )
+    if result.returncode != 0:
+        print(
+            f"nm failed with status {result.returncode}: {result.stderr}",
+            file=sys.stderr,
+        )
+        return 2
+    table = result.stdout
 
     forbidden = sorted(
         {
@@ -37,6 +53,7 @@ def main() -> int:
             for line in table.splitlines()
             if (fields := line.split())
             and any(fields[-1].startswith(p) for p in FORBIDDEN_PREFIXES)
+            and fields[-1] not in ALLOWED_SYMBOLS
         }
     )
     if forbidden:

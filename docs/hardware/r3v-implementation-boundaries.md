@@ -38,7 +38,9 @@ standalone application against the installed Vulkan loader alone,
 reaches the ICD only through its manifest, performs the complete
 instance-to-submit sequence, and byte-compares the submit-retained IB
 against the independently emitted reference cell, while its symbol
-audit holds the binary free of every driver symbol in any binding.
+audit holds the binary free of every audited driver-symbol prefix in
+any binding, the reference SPIR-V data header being the one driver
+artifact the application compiles in.
 The recorded IB equals the digest the
 arming authority qualifies, so the command-stream grammar the silicon
 witnessed is what the public route records; the witness's rendered
@@ -119,6 +121,7 @@ structural query.
 | Deferred draw execution at queue submission | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native_queue.c` | `rg -n 'execute_deferred_draw' src/amd/r300/vulkan/` |
 | Native queue GRAPHICS advertisement and format subset | `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'VK_QUEUE_GRAPHICS_BIT\|R3V_NATIVE_BACKEND' src/amd/r300/vulkan/r3v_physical_device.c` |
 | Reference SPIR-V admission pair and its generator | `src/amd/r300/vulkan/r3v_native_reference_spirv.h`; `shaders/generate_reference_spirv.py` | `rg -n 'r3v_reference_vertex_spirv\|generate_reference_spirv' src/amd/r300/vulkan/` |
+| Loader-boundary application gate and its symbol audit | `src/amd/r300/vulkan/tests/r3v_native_loader_application.c`; `tests/r3v_native_loader_application_symbol_audit.py`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-loader-application|FORBIDDEN_PREFIXES|R3V_EXPECTED_ICD_DSO' src/amd/r300/vulkan/` |
 
 ## Current Gallium-backed R3V implementation
 

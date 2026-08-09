@@ -942,13 +942,19 @@ if get_option('r3v-native-backend')
         timeout : 120,
         suite : ['r3v'],
       )
+      # The known-bad legs assert the judged-mismatch status 1 exactly:
+      # the check scripts report infrastructure failure as 2, so a
+      # crash, a missing tool, or a failed reference emission refuses
+      # the calibration instead of standing in for its verdict.
       test(
         'r3v-native-loader-application-known-bad-ib',
-        prog_python,
+        find_program('sh'),
         args : [
+          '-c', '"$1" "$2" "$3" "$4"; test $? -eq 1', 'assert-verdict',
+          prog_python.full_path(),
           files('tests/r3v_native_loader_application_check.py'),
-          r3v_native_loader_application,
-          r3v_native_arming_runner,
+          r3v_native_loader_application.full_path(),
+          r3v_native_arming_runner.full_path(),
         ],
         env : environment(r3v_native_loader_app_vars + {
           'R3V_LOADER_APP_FIXTURE_MUTATE_IB' : '1',
@@ -956,7 +962,6 @@ if get_option('r3v-native-backend')
         depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
                    _native_dev_icd, r3v_native_loader_application,
                    r3v_native_arming_runner],
-        should_fail : true,
         timeout : 120,
         suite : ['r3v'],
       )
@@ -979,14 +984,15 @@ if get_option('r3v-native-backend')
         )
         test(
           'r3v-native-loader-application-symbols-known-bad',
-          prog_python,
+          find_program('sh'),
           args : [
+            '-c', '"$1" "$2" "$3" "$4"; test $? -eq 1', 'assert-verdict',
+            prog_python.full_path(),
             files('tests/r3v_native_loader_application_symbol_audit.py'),
             prog_nm_r3v.full_path(),
             r3v_native_triangle_cell_harness.full_path(),
           ],
           depends : [r3v_native_triangle_cell_harness],
-          should_fail : true,
           suite : ['r3v'],
         )
       endif

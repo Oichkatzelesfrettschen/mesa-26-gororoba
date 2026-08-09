@@ -32,7 +32,7 @@ def main() -> int:
                 f"loader application failed: status {run.returncode}",
                 file=sys.stderr,
             )
-            return 1
+            return 2
 
         ib_path = os.path.join(manifest_dir, "ib.bin")
         if not os.path.isfile(ib_path):
@@ -48,6 +48,10 @@ def main() -> int:
             return 2
         with open(reference_path, "rb") as handle:
             reference = handle.read()
+
+    if len(reference) == 0:
+        print("reference emission produced no bytes", file=sys.stderr)
+        return 2
 
     if os.environ.get("R3V_LOADER_APP_FIXTURE_MUTATE_IB") == "1":
         reference = bytes([reference[0] ^ 0x01]) + reference[1:]

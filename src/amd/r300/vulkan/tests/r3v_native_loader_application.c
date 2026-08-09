@@ -446,15 +446,24 @@ main(void)
 
    /* Readback oracle: the load-op clear filled exactly the image
     * footprint with the sentinel, and the seeded tail past it
-    * survived.
+    * survived.  The footprint is the declared memory contract -- the
+    * row pitch times the height plus one oracle-headroom row -- pinned
+    * against the requirements query so the oracle and the driver share
+    * one definition, then swept in full: every footprint dword is the
+    * sentinel and every tail dword keeps the seed.
     */
    {
+      const VkDeviceSize footprint_bytes =
+         (VkDeviceSize)TARGET_WIDTH * 4 * (TARGET_HEIGHT + 1);
+      assert(reqs.size == footprint_bytes);
       uint32_t *color_map = NULL;
       assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                          (void **)&color_map) == VK_SUCCESS);
-      assert(color_map[0] == SENTINEL_PIXEL);
-      assert(color_map[reqs.size / 4 - 1] == SENTINEL_PIXEL);
-      assert(color_map[reqs.size / 4] == COLOR_SEED);
+      for (VkDeviceSize i = 0; i < footprint_bytes / 4; i++)
+         assert(color_map[i] == SENTINEL_PIXEL);
+      for (VkDeviceSize i = footprint_bytes / 4;
+           i < (footprint_bytes + 4096) / 4; i++)
+         assert(color_map[i] == COLOR_SEED);
       vkUnmapMemory(device, color_memory);
    }
 
