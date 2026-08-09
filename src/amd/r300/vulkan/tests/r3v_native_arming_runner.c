@@ -113,6 +113,22 @@ main(int argc, char **argv)
       unsigned long parsed[2];
       for (int axis = 0; axis < 2; axis++) {
          const char *text = argv[argi + 1 + axis];
+         /* Decimal digits only: strtoul itself admits signs and
+          * leading whitespace, so the token is vetted before the
+          * numeric parse.
+          */
+         bool digits_only = text[0] != '\0';
+         for (const char *c = text; *c != '\0'; c++) {
+            if (*c < '0' || *c > '9')
+               digits_only = false;
+         }
+         if (!digits_only) {
+            fprintf(stderr,
+                    "extent outside the admitted 1..%u x 1..%u\n",
+                    R300_TRIANGLE_TARGET_WIDTH,
+                    R300_TRIANGLE_TARGET_HEIGHT);
+            return 2;
+         }
          char *end = NULL;
          errno = 0;
          parsed[axis] = strtoul(text, &end, 10);

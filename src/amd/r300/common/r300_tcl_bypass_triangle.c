@@ -432,6 +432,17 @@ r300_tcl_bypass_triangle_extent_oracle(
    uint32_t width, uint32_t height, const uint32_t *pixels,
    uint32_t size_bytes, struct r300_triangle_oracle_verdict *verdict)
 {
+   /* The verdict producer admits the same domain the emitter admits: an
+    * extent outside it fails every pass with zero samples, so an
+    * inadmissible call reads as a failed verdict rather than dividing
+    * by a zero edge length or wrapping the extent arithmetic.
+    */
+   if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
+       height > R300_TRIANGLE_TARGET_HEIGHT) {
+      *verdict = (struct r300_triangle_oracle_verdict){ 0 };
+      return;
+   }
+
    const struct triangle_geometry g = triangle_geometry_at(width, height);
 
    *verdict = (struct r300_triangle_oracle_verdict) {

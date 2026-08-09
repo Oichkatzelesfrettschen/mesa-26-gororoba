@@ -116,10 +116,11 @@ operator and matched by the driver, and no factor has a bypass.
    - `R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION=<contents of
      /sys/module/radeon/srcversion>`
    - `R3V_NATIVE_MANIFEST_DIR=<fresh directory>`
-3. Run `r3v_native_arming_runner <evidence-dir>` -- with the same
-   `--extent <w> <h>` arguments as step 1 for a non-maximum target, so
-   the runner recomputes the digest of the declared variant -- and
-   require the `armed` verdict. The runner creates no device and
+3. Run `r3v_native_arming_runner <evidence-dir>` -- for a non-maximum
+   target, `r3v_native_arming_runner --extent <w> <h> <evidence-dir>`
+   with the same extent values as step 1, the option before the
+   directory, so the runner recomputes the digest of the declared
+   variant -- and require the `armed` verdict. The runner creates no device and
    issues no ioctl.
 4. The submitting run may proceed only after step 3 reports `armed`.
 

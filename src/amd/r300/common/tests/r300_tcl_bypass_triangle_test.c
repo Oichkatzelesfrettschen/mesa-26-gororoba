@@ -13,6 +13,7 @@
 
 #include "r300_first_draw_state.h"
 #include "r300_fragment_binary.h"
+#include "r300_reg.h"
 #include "r300_tcl_bypass_triangle.h"
 
 #include "util/macros.h"
@@ -401,6 +402,18 @@ test_extent_oracle_calibration(void)
    r300_tcl_bypass_triangle_extent_oracle(1, 1, target, 2 * PITCH * 4,
                                           &verdict);
    assert(verdict.interior_samples == 0 && !verdict.interior_pass);
+
+   /* An extent outside the emitter's domain fails every pass with zero
+    * samples.
+    */
+   r300_tcl_bypass_triangle_extent_oracle(0, 20, target, sizeof(target),
+                                          &verdict);
+   assert(!verdict.interior_pass && !verdict.exterior_pass &&
+          !verdict.canary_pass && verdict.interior_samples == 0);
+   r300_tcl_bypass_triangle_extent_oracle(65, 20, target, sizeof(target),
+                                          &verdict);
+   assert(!verdict.interior_pass && !verdict.exterior_pass &&
+          !verdict.canary_pass && verdict.interior_samples == 0);
 }
 
 /* One reference construction backs every fixed-cell authority: the
@@ -669,15 +682,20 @@ test_extent_emit_deviates_in_scissor_words_alone(void)
     * variant replaces exactly those two payloads with its own.
     */
    const uint32_t reference_br =
-      (R300_TRIANGLE_TARGET_WIDTH - 1 + 1440) |
-      ((R300_TRIANGLE_TARGET_HEIGHT - 1 + 1440) << 13);
+      ((R300_TRIANGLE_TARGET_WIDTH - 1 + R300_SCISSORS_OFFSET)
+       << R300_SCISSORS_X_SHIFT) |
+      ((R300_TRIANGLE_TARGET_HEIGHT - 1 + R300_SCISSORS_OFFSET)
+       << R300_SCISSORS_Y_SHIFT);
 
    static const uint32_t extents[][2] = {
       { 1, 1 }, { 17, 33 }, { 48, 20 }, { 33, 64 }, { 64, 1 },
    };
    for (unsigned i = 0; i < ARRAY_SIZE(extents); i++) {
-      const uint32_t extent_br = (extents[i][0] - 1 + 1440) |
-                                 ((extents[i][1] - 1 + 1440) << 13);
+      const uint32_t extent_br =
+         ((extents[i][0] - 1 + R300_SCISSORS_OFFSET)
+          << R300_SCISSORS_X_SHIFT) |
+         ((extents[i][1] - 1 + R300_SCISSORS_OFFSET)
+          << R300_SCISSORS_Y_SHIFT);
       struct r300_tcl_bypass_triangle_ib cell;
       assert(r300_tcl_bypass_triangle_extent_emit(extents[i][0],
                                                   extents[i][1],

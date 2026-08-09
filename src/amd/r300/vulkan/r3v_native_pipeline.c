@@ -133,8 +133,6 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
       return false;
    if (scissor->offset.x != 0 || scissor->offset.y != 0)
       return false;
-   *target_width = width;
-   *target_height = height;
 
    const VkPipelineRasterizationStateCreateInfo *rs =
       info->pRasterizationState;
@@ -171,6 +169,11 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
         info->pDynamicState->dynamicStateCount != 0))
       return false;
 
+   /* The out-parameters publish on the single success return, so a
+    * refused pipeline never leaves a validated-looking extent behind.
+    */
+   *target_width = width;
+   *target_height = height;
    return true;
 }
 

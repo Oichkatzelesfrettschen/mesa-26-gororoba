@@ -232,6 +232,11 @@ void r300_tcl_bypass_triangle_oracle(
 /* The extent-parameterized oracle: the analytic triangle is the fixed
  * NDC reference payload through the viewport transform at this extent,
  * so the verdict matches what the admitted public draw renders there.
+ * pixels carries the fixed 64-pixel row pitch whatever the extent --
+ * the indexing and the padding-band canary read
+ * R300_TRIANGLE_TARGET_PITCH_PIXELS columns per row -- and an extent
+ * outside the emitter's admitted domain fails every pass with zero
+ * samples.
  */
 void r300_tcl_bypass_triangle_extent_oracle(
    uint32_t width, uint32_t height, const uint32_t *pixels,

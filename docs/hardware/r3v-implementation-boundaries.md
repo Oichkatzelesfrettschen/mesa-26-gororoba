@@ -25,9 +25,10 @@ cell rendered the triangle as predicted -- interior `0xff00ff00`,
 exterior and canary at the sentinel -- so the inert first run is closed
 as a first-draw state-contract failure. The proven raster path is that
 one fixed cell.  The public recording surface now reaches it: a bounded
-render-pass/pipeline/draw vocabulary -- the qualified 64x64 linear
-color target, a pipeline admitted by byte equality with the reference
-SPIR-V pair and the cell's fixed state vector, and a draw that gathers
+render-pass/pipeline/draw vocabulary -- the qualified linear color
+target at any extent inside the 64x64 maximum, a pipeline admitted by
+byte equality with the reference SPIR-V pair and the cell's fixed
+state vector, and a draw that gathers
 the bound vertex buffer through the CPU executor, applies the Vulkan
 viewport transform over the pass target's extent inside a bounded
 clip-volume domain (w exactly 1, NDC inside the clip volume, so
@@ -131,7 +132,7 @@ structural query.
 | Deferred draw execution at queue submission | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native_queue.c` | `rg -n 'execute_deferred_draw' src/amd/r300/vulkan/` |
 | Native queue GRAPHICS advertisement and format subset | `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'VK_QUEUE_GRAPHICS_BIT\|R3V_NATIVE_BACKEND' src/amd/r300/vulkan/r3v_physical_device.c` |
 | Reference SPIR-V admission pair and its generator | `src/amd/r300/vulkan/r3v_native_reference_spirv.h`; `shaders/generate_reference_spirv.py` | `rg -n 'r3v_reference_vertex_spirv\|generate_reference_spirv' src/amd/r300/vulkan/` |
-| Loader-boundary application gate and its symbol audit | `src/amd/r300/vulkan/tests/r3v_native_loader_application.c`; `src/amd/r300/vulkan/tests/r3v_native_loader_application_symbol_audit.py`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-loader-application|FORBIDDEN_PREFIXES|R3V_EXPECTED_ICD_DSO' src/amd/r300/vulkan/` |
+| Loader-boundary application gate and its symbol audit | `src/amd/r300/vulkan/tests/r3v_native_loader_application.c`; `src/amd/r300/vulkan/tests/r3v_native_loader_application_symbol_audit.py`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-loader-application\|FORBIDDEN_PREFIXES\|R3V_EXPECTED_ICD_DSO' src/amd/r300/vulkan/` |
 
 ## Current Gallium-backed R3V implementation
 
@@ -227,12 +228,16 @@ The landed mechanisms are:
   advertise the accepted subset (the linear B8G8R8A8 color target and
   the F32-family vertex formats), and one UMA heap sizes from
   `DRM_RADEON_GEM_INFO`;
-- the public graphics recording surface: the qualified 64x64 linear
-  image and identity view, the pipeline admitted by byte equality with
-  the reference SPIR-V pair and the cell's fixed state vector, and the
+- the public graphics recording surface: the qualified linear image
+  family at any extent inside the 64x64 maximum over the fixed
+  64-pixel pitch (larger extents refuse at creation), its identity
+  view, the pipeline admitted by byte equality with the reference
+  SPIR-V pair and the cell's fixed state vector with the
+  viewport/scissor pair as its target-extent claim, and the
   render-pass/bind/draw command subset whose draw lowers through the
-  CPU vertex carrier into the fixed cell, with the vertex gather and
-  load-op clear executing at queue submission;
+  CPU vertex carrier -- viewport-transformed inside the bounded
+  clip-volume domain -- into the extent-resolved cell, with the vertex
+  gather and load-op clear executing at queue submission;
 - the fixed TCL-bypass triangle lowered into a native command buffer by
   `r3v_native_record_tcl_bypass_triangle`, a private entry linked directly
   by the pre-hardware harness; the recording opens with the neutral
