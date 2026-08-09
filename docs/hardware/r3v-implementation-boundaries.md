@@ -28,7 +28,11 @@ one fixed cell.  The public recording surface now reaches it: a bounded
 render-pass/pipeline/draw vocabulary -- the qualified 64x64 linear
 color target, a pipeline admitted by byte equality with the reference
 SPIR-V pair and the cell's fixed state vector, and a draw that gathers
-the bound vertex buffer through the CPU executor into a
+the bound vertex buffer through the CPU executor, applies the Vulkan
+viewport transform over the pass target's extent inside a bounded
+clip-volume domain (w exactly 1, NDC inside the clip volume, so
+scissor and clip coincide and the identity perspective divide is
+exact), and lands the window-space records in a
 command-buffer-owned carrier -- records the byte-identical cell IB
 through public `vkCmd*` entry points, at the drm-shim host-model class
 under the `r3v-native-public-surface` harness, and every contract
@@ -44,10 +48,11 @@ artifact the application compiles in.
 The recorded IB equals the digest the
 arming authority qualifies, so the command-stream grammar the silicon
 witnessed is what the public route records; the witness's rendered
-pixels are bound to the reference vertex payload the attended run
-carried, and a public draw with other in-range records or a nonzero
-`firstVertex` changes the carrier bytes the same IB fetches, an input
-set the silicon has not yet observed.  General vertex routes and the
+pixels are bound to the window-space payload the attended run carried,
+which the public route reproduces byte-exactly from the NDC triangle
+the viewport transform maps onto it; other in-domain records or a
+nonzero `firstVertex` change the carrier bytes the same IB fetches, an
+input set the silicon has not yet observed.  General vertex routes and the
 complete Vulkan semantic/conformance sections remain implementation
 contracts.
 

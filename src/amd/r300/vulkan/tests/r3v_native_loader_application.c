@@ -36,13 +36,16 @@
 #define SENTINEL_PIXEL 0xa5a5a5a5u
 #define COLOR_SEED 0x5c5c5c5cu
 
-/* The reference triangle: screen-space positions inset in the 64x64
- * target, z = 0, w = 1, the payload the silicon witness rendered.
+/* The reference triangle in NDC: the driver's CPU vertex node applies
+ * the Vulkan viewport transform, and over the 64x64 target these
+ * positions map byte-exactly onto the window-space payload the silicon
+ * witness rendered -- (x + 1) * 32 lands on 8, 56, and 32 in binary32
+ * with no rounding.
  */
 static const float triangle_vertices[12] = {
-    8.0f,  8.0f, 0.0f, 1.0f,
-   56.0f,  8.0f, 0.0f, 1.0f,
-   32.0f, 56.0f, 0.0f, 1.0f,
+   -0.75f, -0.75f, 0.0f, 1.0f,
+    0.75f, -0.75f, 0.0f, 1.0f,
+    0.00f,  0.75f, 0.0f, 1.0f,
 };
 
 /* The loader resolves the ICD through its manifest, so the proof that

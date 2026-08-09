@@ -36,6 +36,18 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
 
 #define CLEAR_SENTINEL ((float)0xa5 / 255.0f)
 
+/* The application payload is NDC: the public route's CPU vertex node
+ * applies the Vulkan viewport transform, and over the 64x64 target
+ * this triangle maps byte-exactly onto the window-space reference
+ * payload the silicon witnessed -- (x + 1) * 32 lands on 8, 56, and
+ * 32 in binary32 with no rounding.
+ */
+static const float ndc_triangle[12] = {
+   -0.75f, -0.75f, 0.0f, 1.0f,
+    0.75f, -0.75f, 0.0f, 1.0f,
+    0.00f,  0.75f, 0.0f, 1.0f,
+};
+
 static VkDevice device;
 static VkCommandPool pool;
 
@@ -386,8 +398,7 @@ main(void)
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
              VK_SUCCESS &&
           map != NULL);
-   memcpy(map, r300_tcl_bypass_triangle_vertices,
-          R300_TRIANGLE_VERTEX_DWORDS * 4);
+   memcpy(map, ndc_triangle, sizeof(ndc_triangle));
    vkUnmapMemory(device, vertex_memory);
 
    /* Render pass, framebuffer, and layout through the runtime's common
@@ -522,7 +533,7 @@ main(void)
     * hazard gate refuses the ioctl after the deferred execution ran.
     */
    uint32_t original_first_dword;
-   memcpy(&original_first_dword, r300_tcl_bypass_triangle_vertices,
+   memcpy(&original_first_dword, ndc_triangle,
           sizeof(original_first_dword));
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
           VK_SUCCESS);
@@ -545,9 +556,19 @@ main(void)
                                &native_cmd->owned_carrier->bo,
                                &carrier_map) == 0);
    {
+      /* The carrier holds the transformed stream: the mutated NDC x
+       * (-0.75 with its exponent bit flipped, -0.5) maps through the
+       * same viewport expression the execution applies.
+       */
+      float mutated_ndc_x;
+      const uint32_t mutated_bits = original_first_dword ^ 0x00400000u;
+      memcpy(&mutated_ndc_x, &mutated_bits, sizeof(mutated_ndc_x));
+      const float expected_window_x = (mutated_ndc_x + 1.0f) * 32.0f;
+      uint32_t expected_bits;
+      memcpy(&expected_bits, &expected_window_x, sizeof(expected_bits));
       uint32_t carrier_first;
       memcpy(&carrier_first, carrier_map, sizeof(carrier_first));
-      assert(carrier_first == (original_first_dword ^ 0x00400000u));
+      assert(carrier_first == expected_bits);
    }
    radeon_drm_vk_bo_unmap(&native_device->drm,
                           &native_cmd->owned_carrier->bo, carrier_map);
@@ -561,8 +582,7 @@ main(void)
     */
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
           VK_SUCCESS);
-   memcpy(map, r300_tcl_bypass_triangle_vertices,
-          R300_TRIANGLE_VERTEX_DWORDS * 4);
+   memcpy(map, ndc_triangle, sizeof(ndc_triangle));
    vkUnmapMemory(device, vertex_memory);
    assert(r3v_native_cmd_buffer_execute_deferred_draw(
              native_device, native_cmd) == VK_SUCCESS);
@@ -592,7 +612,7 @@ main(void)
     */
    float xyz[9];
    for (unsigned v = 0; v < 3; v++)
-      memcpy(&xyz[v * 3], &r300_tcl_bypass_triangle_vertices[v * 4], 12);
+      memcpy(&xyz[v * 3], &ndc_triangle[v * 4], 12);
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
           VK_SUCCESS);
    memcpy(map, xyz, sizeof(xyz));
@@ -627,6 +647,39 @@ main(void)
                  R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
    radeon_drm_vk_bo_unmap(&native_device->drm,
                           &native_xyz->owned_carrier->bo, carrier_map);
+
+   /* A record outside the admitted clip volume, or one whose w is not
+    * exactly 1, refuses at execution: the transform's perspective
+    * divide is the identity only there, so the route reports instead
+    * of rasterizing an untransformed stream.
+    */
+   {
+      float out_of_domain[12];
+      memcpy(out_of_domain, ndc_triangle, sizeof(out_of_domain));
+      out_of_domain[3] = 2.0f;
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, out_of_domain, sizeof(out_of_domain));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer domain_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(domain_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(domain_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipeline);
+      vkCmdBindVertexBuffers(domain_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(domain_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(domain_cmd);
+      assert(vkEndCommandBuffer(domain_cmd) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_domain, domain_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_domain) != VK_SUCCESS);
+      /* Restore the reference stream for the legs below. */
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, ndc_triangle, sizeof(ndc_triangle));
+      vkUnmapMemory(device, vertex_memory);
+   }
 
    /* The extent family through the public route: a 48x20 target's
     * footprint follows the fixed 256-byte pitch, its recorded IB

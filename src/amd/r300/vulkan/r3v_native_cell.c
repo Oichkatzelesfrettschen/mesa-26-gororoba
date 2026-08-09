@@ -284,8 +284,38 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                             "r3v-native: vertex gather refused (%d)",
                             gathered);
       } else {
-         radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
-                                     R3V_TRIANGLE_VERTEX_BYTES);
+         /* The admitted vertex program passes its input to
+          * gl_Position, so the CPU vertex node realizes the Vulkan
+          * viewport transform here: x and y map from NDC to window
+          * coordinates over the pass target's extent, z passes
+          * through the identity depth range, and w carries the exact
+          * value 1 -- the perspective divide is the identity there.
+          * The admitted domain is the clip volume, so scissor and
+          * clip coincide and the raster needs no clipper; a record
+          * outside it refuses, and the submit reports device loss.
+          */
+         float positions[R300_TRIANGLE_VERTEX_DWORDS];
+         memcpy(positions, carrier->map, sizeof(positions));
+         for (unsigned v = 0;
+              result == VK_SUCCESS && v < R300_TRIANGLE_VERTEX_DWORDS / 4;
+              v++) {
+            float *pos = &positions[v * 4];
+            if (pos[3] != 1.0f || pos[0] < -1.0f || pos[0] > 1.0f ||
+                pos[1] < -1.0f || pos[1] > 1.0f || pos[2] < 0.0f ||
+                pos[2] > 1.0f) {
+               result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                                  "r3v-native: vertex %u outside the "
+                                  "admitted clip volume or w != 1", v);
+               break;
+            }
+            pos[0] = (pos[0] + 1.0f) * ((float)draw->target_width / 2.0f);
+            pos[1] = (pos[1] + 1.0f) * ((float)draw->target_height / 2.0f);
+         }
+         if (result == VK_SUCCESS) {
+            memcpy(carrier->map, positions, sizeof(positions));
+            radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
+                                        R3V_TRIANGLE_VERTEX_BYTES);
+         }
       }
       if (owns_carrier_map) {
          radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);

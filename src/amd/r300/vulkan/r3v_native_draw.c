@@ -253,6 +253,8 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
       .target_memory = cmd_buffer->pass_target->memory,
       .target_fill_bytes =
          r3v_native_image_footprint_bytes(cmd_buffer->pass_target->height),
+      .target_width = cmd_buffer->pass_target->width,
+      .target_height = cmd_buffer->pass_target->height,
    };
    cmd_buffer->draw_recorded = true;
 }

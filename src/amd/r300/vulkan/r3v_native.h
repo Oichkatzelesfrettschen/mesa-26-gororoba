@@ -72,6 +72,11 @@ struct r3v_native_deferred_draw {
     * byte bound at execution.
     */
    uint64_t target_fill_bytes;
+   /* The pass target's extent: the viewport transform's window scale
+    * at execution.
+    */
+   uint32_t target_width;
+   uint32_t target_height;
 };
 
 /* Native command buffer: one fixed IB dword vector plus its BO references,
