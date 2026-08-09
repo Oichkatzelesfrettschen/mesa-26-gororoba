@@ -377,8 +377,12 @@ override LOCKED_TOOL_ENV := \
     DISTCC_HOSTS="$${DISTCC_HOSTS:-}" \
     SCCACHE_DIR="$${SCCACHE_DIR:-}"
 
+override define CREATE_DISTCC_PROBE_DIRECTORY
+probe_dir="$$(mktemp -d)" && [ -n "$$probe_dir" ] && [ -d "$$probe_dir" ]
+endef
+
 .PHONY: list source-root-check source-root-control-unit-test \
-        source-root-selection-test \
+        source-root-selection-test distcc-probe-directory-test \
         vostro-prefix-check audit configure build clean clean-all distclean install \
         artifact-check test \
         rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache \
@@ -443,6 +447,7 @@ help:
 	@echo "  source-root-check require TOPSRC to be an exact Mesa Git worktree root"
 	@echo "  source-root-control-unit-test exercise path and identity invariants"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
+	@echo "  distcc-probe-directory-test calibrates host-audit probe directory creation"
 	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
 	@echo "  artifact-check    list installed Terakan/r600/r3v artifacts under \$$(PREFIX); warn on stale r300 ICDs"
 	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
@@ -502,8 +507,46 @@ audit-werror:
 	if [ $$rc -eq 0 ]; then echo "OK    audit-werror: profiles werror=true; packaging meson -Dwerror=true; prime/-o0 no /usr activation"; fi; \
 	exit $$rc
 
+distcc-probe-directory-test:
+	@set -euo pipefail; \
+	tmpdir="$$(mktemp -d)"; \
+	test -n "$$tmpdir" && test -d "$$tmpdir"; \
+	trap 'rm -rf -- "$$tmpdir"' EXIT HUP INT TERM; \
+	failed_status_path="$$tmpdir/failed-status"; \
+	mkdir -- "$$failed_status_path"; \
+	mktemp() { printf '%s\n' "$$failed_status_path"; return 1; }; \
+	if $(CREATE_DISTCC_PROBE_DIRECTORY); then \
+		echo "FAIL  distcc probe directory accepted a failed mktemp command" >&2; \
+		exit 1; \
+	fi; \
+	test "$$probe_dir" = "$$failed_status_path" || { \
+		echo "FAIL  failed mktemp calibration returned the wrong path" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    distcc probe directory rejects a failed mktemp command"; \
+	missing_path="$$tmpdir/missing"; \
+	mktemp() { printf '%s\n' "$$missing_path"; }; \
+	if $(CREATE_DISTCC_PROBE_DIRECTORY); then \
+		echo "FAIL  distcc probe directory accepted a missing path" >&2; \
+		exit 1; \
+	fi; \
+	echo "OK    distcc probe directory rejects a missing path"; \
+	created_path="$$tmpdir/created"; \
+	mktemp() { mkdir -- "$$created_path"; printf '%s\n' "$$created_path"; }; \
+	if ! $(CREATE_DISTCC_PROBE_DIRECTORY); then \
+		echo "FAIL  distcc probe directory rejected a created path" >&2; \
+		exit 1; \
+	fi; \
+	test "$$probe_dir" = "$$created_path" || { \
+		echo "FAIL  successful mktemp calibration returned the wrong path" >&2; \
+		exit 1; \
+	}; \
+	rmdir -- "$$probe_dir"; \
+	echo "OK    distcc probe directory accepts a created path"
+
 audit: source-root-check source-root-control-unit-test \
        source-root-selection-test \
+       distcc-probe-directory-test \
        vostro-prefix-check audit-werror profile-audit driver-root-audit
 	@failures=0; warnings=0; \
 	fail() { echo "FAIL  $$*" >&2; failures=$$((failures + 1)); }; \
@@ -658,19 +701,25 @@ audit: source-root-check source-root-control-unit-test \
 			else \
 				fail "distcc remote hostname does not resolve: $$remote_distcc_host"; \
 			fi; \
-			probe_dir="$$(mktemp -d)"; \
-			printf '%s\n' 'int gororoba_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; \
-			if [ -n "$${audit_clang_tool:-}" ] && \
-			   DISTCC_HOSTS="$$remote_distcc_spec" DISTCC_FALLBACK=0 \
-			   distcc "$$audit_clang_tool" -Wall -Wextra -Werror \
-			      -c "$$probe_dir/probe.c" -o "$$probe_dir/probe.o" \
-			      >/dev/null 2>"$$probe_dir/probe.err"; then \
-				ok "distcc remote Clang dispatch: $$remote_distcc_host ($$audit_clang_tool)"; \
+			if $(CREATE_DISTCC_PROBE_DIRECTORY); then \
+				printf '%s\n' 'int gororoba_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; \
+				if [ -n "$${audit_clang_tool:-}" ] && \
+				   DISTCC_HOSTS="$$remote_distcc_spec" DISTCC_FALLBACK=0 \
+				   distcc "$$audit_clang_tool" -Wall -Wextra -Werror \
+				      -c "$$probe_dir/probe.c" -o "$$probe_dir/probe.o" \
+				      >/dev/null 2>"$$probe_dir/probe.err"; then \
+					ok "distcc remote Clang dispatch: $$remote_distcc_host ($$audit_clang_tool)"; \
+				else \
+					fail "distcc remote Clang dispatch failed: $$remote_distcc_host ($${audit_clang_tool:-unresolved})"; \
+					sed -n '1,12p' "$$probe_dir/probe.err" >&2; \
+				fi; \
+				if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err" || \
+				   ! rmdir -- "$$probe_dir"; then \
+					fail "cannot remove distcc remote probe directory: $$probe_dir"; \
+				fi; \
 			else \
-				fail "distcc remote Clang dispatch failed: $$remote_distcc_host ($${audit_clang_tool:-unresolved})"; \
-				sed -n '1,12p' "$$probe_dir/probe.err" >&2; \
+				fail "cannot create distcc remote probe directory"; \
 			fi; \
-			rm -rf "$$probe_dir"; \
 		fi; \
 	else ok "distcc not in active compiler chain; skipping host policy check"; fi; \
 		if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then \
