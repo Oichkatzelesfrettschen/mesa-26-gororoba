@@ -328,6 +328,7 @@ if get_option('r3v-native-backend')
     '../common/r300_first_draw_state.c',
     '../common/r300_fragment_binary.c',
     '../common/r300_pm4_builder.c',
+    '../common/r300_r2vb_carrier_delivery.c',
     '../common/r300_tcl_bypass_triangle.c',
   )
 

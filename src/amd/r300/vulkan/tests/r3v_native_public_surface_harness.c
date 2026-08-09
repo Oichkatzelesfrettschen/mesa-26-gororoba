@@ -708,6 +708,55 @@ main(void)
       vkUnmapMemory(device, vertex_memory);
    }
 
+   /* The R2VB identity delivery route: on the exact opt-in value the
+    * deferred draw delivers the F32_4 stream through the FP24
+    * fixed-point identity model instead of the CPU gather, and the
+    * final carrier is byte-identical to the CPU route's -- the NDC
+    * reference payload is FP24-exact and the shared viewport transform
+    * runs after delivery on both routes.  The routing itself is
+    * witnessed by the domain narrowing: a component with set low
+    * mantissa bits (0.1) rides the CPU gather and refuses only under
+    * the R2VB route, and a non-"1" gate value keeps the CPU route.
+    */
+   {
+      assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_cmd) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(&native_device->drm,
+                                  &native_cmd->owned_carrier->bo,
+                                  &carrier_map) == 0);
+      assert(memcmp(carrier_map, r300_tcl_bypass_triangle_vertices,
+                    R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
+      radeon_drm_vk_bo_unmap(&native_device->drm,
+                             &native_cmd->owned_carrier->bo, carrier_map);
+
+      float narrow[12];
+      memcpy(narrow, ndc_triangle, sizeof(narrow));
+      narrow[0] = 0.1f;
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, narrow, sizeof(narrow));
+      vkUnmapMemory(device, vertex_memory);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_cmd) != VK_SUCCESS);
+
+      /* The same stream rides the CPU route: an unset gate and a non-"1"
+       * value both keep the default delivery.
+       */
+      assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "0", 1) == 0);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_cmd) == VK_SUCCESS);
+      assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_cmd) == VK_SUCCESS);
+
+      /* Restore the reference stream for the legs below. */
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, ndc_triangle, sizeof(ndc_triangle));
+      vkUnmapMemory(device, vertex_memory);
+   }
+
    /* The extent family through the public route: a 48x20 target's
     * footprint follows the fixed 256-byte pitch, its recorded IB
     * deviates from the reference cell in the two scissor-family dwords
