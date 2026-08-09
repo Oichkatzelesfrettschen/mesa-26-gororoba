@@ -570,6 +570,18 @@ if get_option('r3v-native-backend')
       depends : libvulkan_r3v_native,
       suite : ['r3v'],
     )
+    # Refusal-result legality spans the complete native core VkResult surface.
+    # Removing the refusal result from one live command's registry set must
+    # fail that verdict while the linked command surface remains intact.
+    test(
+      'r3v-native-refusal-result-known-bad-BeginCommandBuffer',
+      prog_python,
+      args : [r3v_native_entrypoint_audit_args, '--enforce',
+              '--deny-refusal', 'BeginCommandBuffer'],
+      depends : libvulkan_r3v_native,
+      should_fail : true,
+      suite : ['r3v'],
+    )
     # Known-bad calibration for --enforce: removing one entrypoint from the
     # parsed surface must fail it.  Dropping a core 1.0 device command opens
     # the completeness verdict, and dropping a *2-form target opens the

@@ -121,7 +121,7 @@ r3v_BeginCommandBuffer(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(vk_command_buffer, cmd_buffer, commandBuffer);
    vk_command_buffer_begin(cmd_buffer, pBeginInfo);
-   return VK_SUCCESS;
+   return vk_command_buffer_get_record_result(cmd_buffer);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
