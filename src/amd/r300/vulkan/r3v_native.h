@@ -68,6 +68,10 @@ enum r3v_native_copy_kind {
    R3V_NATIVE_COPY_BUFFER_TO_IMAGE,
    R3V_NATIVE_COPY_IMAGE_TO_BUFFER,
    R3V_NATIVE_COPY_IMAGE_TO_IMAGE,
+   /* Whole-subresource color fill: dst_image alone, clear_dword the
+    * packed little-endian B8G8R8A8 texel.
+    */
+   R3V_NATIVE_COPY_CLEAR_IMAGE,
 };
 
 struct r3v_native_deferred_copy {
@@ -80,6 +84,7 @@ struct r3v_native_deferred_copy {
    uint32_t src_x, src_y;
    uint32_t dst_x, dst_y;
    uint32_t width, height;
+   uint32_t clear_dword;
 };
 
 #define R3V_NATIVE_MAX_DEFERRED_COPIES 16

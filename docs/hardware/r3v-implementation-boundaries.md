@@ -291,8 +291,10 @@ The landed mechanisms are:
   addressable by the qualified direct-write 2D path -- and the
   footprint is the rows alone; the oracle-headroom row is the render
   family's contract.  `vkCmdCopyBufferToImage`,
-  `vkCmdCopyImageToBuffer`, and `vkCmdCopyImage` record region-admitted
-  deferred copies -- subresource, bounds, usage bits, and the buffer
+  `vkCmdCopyImageToBuffer`, `vkCmdCopyImage`, and
+  `vkCmdClearColorImage` (whole-subresource, clamp-then-round unorm
+  pack with NaN converting as zero) record region-admitted deferred
+  copies -- subresource, bounds, usage bits, and the buffer
   byte footprint all prove at record time -- and execute them in order
   at queue submission through host mappings, with each destination
   published for the unsnooped GART; a copy-carrying command buffer

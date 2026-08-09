@@ -185,13 +185,60 @@ r3v_CmdClearAttachments(
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdClearColorImage(
    VkCommandBuffer commandBuffer,
-   VkImage image,
+   VkImage _image,
    VkImageLayout imageLayout,
    const VkClearColorValue *pColor,
    uint32_t rangeCount,
    const VkImageSubresourceRange *pRanges)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_image, image, _image);
+
+   /* The one-mip one-layer image has one clearable subresource, so
+    * every admitted range names the whole image and the fill covers the
+    * full extent.  The float clear value converts to B8G8R8A8_UNORM by
+    * clamp then round-to-nearest, packed in the little-endian texel
+    * order the render family's readback proved on silicon: B in byte
+    * 0, G, R, then A.  A NaN component converts as zero -- every
+    * ordered comparison on NaN is false, so it slips both clamp arms,
+    * and the float-to-integer cast of NaN has no defined value.
+    */
+   for (uint32_t r = 0; r < rangeCount; r++) {
+      const VkImageSubresourceRange *range = &pRanges[r];
+      struct r3v_native_deferred_copy *op =
+         r3v_native_copy_slot(commandBuffer);
+      if (op == NULL || image == NULL || !image->transfer_family ||
+          image->memory == NULL ||
+          (image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
+          range->aspectMask != VK_IMAGE_ASPECT_COLOR_BIT ||
+          range->baseMipLevel != 0 ||
+          (range->levelCount != 1 &&
+           range->levelCount != VK_REMAINING_MIP_LEVELS) ||
+          range->baseArrayLayer != 0 ||
+          (range->layerCount != 1 &&
+           range->layerCount != VK_REMAINING_ARRAY_LAYERS)) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      uint32_t packed = 0;
+      static const unsigned lane_byte[4] = { 2, 1, 0, 3 };
+      for (unsigned c = 0; c < 4; c++) {
+         float f = pColor->float32[c];
+         if (f != f)
+            f = 0.0f;
+         f = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+         const uint32_t unorm = (uint32_t)(f * 255.0f + 0.5f);
+         packed |= unorm << (lane_byte[c] * 8);
+      }
+      *op = (struct r3v_native_deferred_copy){
+         .kind = R3V_NATIVE_COPY_CLEAR_IMAGE,
+         .dst_image = image,
+         .width = image->width,
+         .height = image->height,
+         .clear_dword = packed,
+      };
+      cmd_buffer->deferred_copy_count++;
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL

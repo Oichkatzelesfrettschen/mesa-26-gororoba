@@ -66,6 +66,7 @@ static VkCommandPool pool;
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
    f(vkCmdCopyBufferToImage) f(vkCmdCopyImage) f(vkCmdCopyImageToBuffer)   \
+   f(vkCmdClearColorImage)                                                 \
    f(vkGetDeviceQueue) f(vkQueueSubmit) f(vkDestroyDevice)
 
 #define DECLARE(name) static PFN_##name name;
@@ -691,6 +692,96 @@ main(void)
       assert(pixel_map[3 * 16 + 13] == R300_TRIANGLE_COLOR_SENTINEL);
       assert(pixel_map[7 * 16 + 5] == R300_TRIANGLE_COLOR_SENTINEL);
       vkUnmapMemory(device, mem_b);
+
+      /* Whole-image clear on a padded-pitch image: a 3-texel row rides
+       * a 16-texel pitch, so the fill's row walk is observable -- the
+       * cleared texels carry the packed unorm color, the pitch padding
+       * and the bytes past the footprint keep the sentinel.  The
+       * second clear carries a NaN green component, which converts as
+       * zero rather than tripping the float-to-integer cast.
+       */
+      {
+         VkImageCreateInfo clear_info = transfer_info;
+         clear_info.extent.width = 3;
+         clear_info.extent.height = 5;
+         VkImage img_c = VK_NULL_HANDLE;
+         assert(vkCreateImage(device, &clear_info, NULL, &img_c) ==
+                VK_SUCCESS);
+         VkDeviceMemory mem_c = VK_NULL_HANDLE;
+         assert(vkAllocateMemory(device, &transfer_alloc, NULL, &mem_c) ==
+                VK_SUCCESS);
+         assert(vkBindImageMemory(device, img_c, mem_c, 0) == VK_SUCCESS);
+         uint32_t *clear_map;
+         assert(vkMapMemory(device, mem_c, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&clear_map) == VK_SUCCESS);
+         for (uint32_t t = 0; t < 1024; t++)
+            clear_map[t] = R300_TRIANGLE_COLOR_SENTINEL;
+         vkUnmapMemory(device, mem_c);
+
+         VkCommandBuffer clear_cmd = fresh_cmd();
+         const VkImageSubresourceRange full_range = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+         };
+         vkCmdClearColorImage(
+            clear_cmd, img_c, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &(VkClearColorValue){ .float32 = { 1.0f, 0.5f, 0.0f, 1.0f } },
+            1, &full_range);
+         assert(vkEndCommandBuffer(clear_cmd) == VK_SUCCESS);
+         assert(vkQueueSubmit(queue, 1,
+                              &(VkSubmitInfo){
+                                 .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                 .commandBufferCount = 1,
+                                 .pCommandBuffers = &clear_cmd,
+                              },
+                              VK_NULL_HANDLE) == VK_SUCCESS);
+         assert(vkMapMemory(device, mem_c, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&clear_map) == VK_SUCCESS);
+         for (uint32_t row = 0; row < 5; row++) {
+            for (uint32_t x = 0; x < 3; x++)
+               assert(clear_map[row * 16 + x] == 0xffff8000u);
+            assert(clear_map[row * 16 + 3] ==
+                   R300_TRIANGLE_COLOR_SENTINEL);
+         }
+         assert(clear_map[5 * 16] == R300_TRIANGLE_COLOR_SENTINEL);
+         vkUnmapMemory(device, mem_c);
+
+         float nan_green;
+         const uint32_t nan_green_bits = 0x7fc00000u;
+         memcpy(&nan_green, &nan_green_bits, sizeof(nan_green));
+         VkCommandBuffer nan_cmd = fresh_cmd();
+         vkCmdClearColorImage(
+            nan_cmd, img_c, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &(VkClearColorValue){
+               .float32 = { 1.0f, nan_green, 0.0f, 1.0f } },
+            1, &full_range);
+         assert(vkEndCommandBuffer(nan_cmd) == VK_SUCCESS);
+         assert(vkQueueSubmit(queue, 1,
+                              &(VkSubmitInfo){
+                                 .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                 .commandBufferCount = 1,
+                                 .pCommandBuffers = &nan_cmd,
+                              },
+                              VK_NULL_HANDLE) == VK_SUCCESS);
+         assert(vkMapMemory(device, mem_c, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&clear_map) == VK_SUCCESS);
+         assert(clear_map[0] == 0xffff0000u);
+         vkUnmapMemory(device, mem_c);
+
+         /* A clear on a render-family image poisons: the family
+          * carries no transfer usage.
+          */
+         VkCommandBuffer bad_clear = fresh_cmd();
+         vkCmdClearColorImage(
+            bad_clear, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &(VkClearColorValue){ .float32 = { 0.0f, 0.0f, 0.0f, 0.0f } },
+            1, &full_range);
+         assert(vkEndCommandBuffer(bad_clear) == R3V_NATIVE_REFUSAL_RESULT);
+
+         vkDestroyImage(device, img_c, NULL);
+         vkFreeMemory(device, mem_c, NULL);
+      }
 
       /* Refusals poison the recording: a region past the image, a
        * source buffer without TRANSFER_SRC, and a copy after the
