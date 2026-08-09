@@ -43,6 +43,8 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-first-draw-state",
     "r300-tcl-bypass-triangle",
     "r300-r2vb-carrier-delivery",
+    "r300-r2vb-producer-pass",
+    "r300-r2vb-producer-replay",
     "r300-tcl-bypass-fs-block-regeneration",
     "r300-tcl-bypass-offline-replay",
     "r300-cs-track-replay",
