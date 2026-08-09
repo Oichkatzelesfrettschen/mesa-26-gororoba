@@ -10,7 +10,9 @@
 #include "amd/r300/common/r300_first_draw_state.h"
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_direct_write.h"
+#include "amd/r300/common/r300_r2vb_carrier_delivery.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/cpu/r300_cpu_vertex.h"
 
 #include "util/macros.h"
@@ -275,15 +277,51 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          .stride = stream.stride,
          .size_bytes = stream.size_bytes,
       };
-      int gathered = r300_cpu_vertex_gather(
-         stream.format_id, &source, stream.first_vertex,
-         R300_TRIANGLE_VERTEX_DWORDS / 4, carrier->map,
-         R300_TRIANGLE_VERTEX_DWORDS);
-      if (gathered != 0) {
-         result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                            "r3v-native: vertex gather refused (%d)",
-                            gathered);
+      /* Delivery route selection: the CPU gather is the default and the
+       * semantic oracle.  The R2VB identity delivery engages only on
+       * the exact opt-in value and the F32_4 format; it models the
+       * producer's passthrough copy on the FP24 fixed-point domain and
+       * refuses outside it, and the CPU gather then re-derives the same
+       * carrier -- a byte divergence falsifies the identity control and
+       * refuses the draw rather than submitting bytes the two routes
+       * disagree on.
+       */
+      const char *r2vb_gate =
+         getenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
+      const bool r2vb_route =
+         r2vb_gate != NULL && strcmp(r2vb_gate, "1") == 0 &&
+         stream.format_id == R300_VERTEX_FORMAT_F32_4;
+      int gathered;
+      if (r2vb_route) {
+         gathered = r300_r2vb_f32_4_identity_deliver(
+            stream.format_id, &source, stream.first_vertex,
+            R300_TRIANGLE_VERTEX_DWORDS / 4, carrier->map,
+            R300_TRIANGLE_VERTEX_DWORDS);
+         if (gathered == 0) {
+            uint32_t oracle[R300_TRIANGLE_VERTEX_DWORDS];
+            gathered = r300_cpu_vertex_gather(
+               stream.format_id, &source, stream.first_vertex,
+               R300_TRIANGLE_VERTEX_DWORDS / 4, oracle,
+               R300_TRIANGLE_VERTEX_DWORDS);
+            if (gathered == 0 &&
+                memcmp(oracle, carrier->map,
+                       R300_TRIANGLE_VERTEX_DWORDS * 4) != 0) {
+               result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                                  "r3v-native: R2VB delivery diverged "
+                                  "from the CPU gather oracle");
+            }
+         }
       } else {
+         gathered = r300_cpu_vertex_gather(
+            stream.format_id, &source, stream.first_vertex,
+            R300_TRIANGLE_VERTEX_DWORDS / 4, carrier->map,
+            R300_TRIANGLE_VERTEX_DWORDS);
+      }
+      if (result == VK_SUCCESS && gathered != 0) {
+         result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                            "r3v-native: vertex %s refused (%d)",
+                            r2vb_route ? "delivery" : "gather", gathered);
+      } else if (result == VK_SUCCESS) {
          /* The admitted vertex program passes its input to
           * gl_Position, so the CPU vertex node realizes the Vulkan
           * viewport transform here: x and y map from NDC to window

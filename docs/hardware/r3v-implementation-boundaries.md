@@ -259,11 +259,29 @@ The landed mechanisms are:
   closed gate retains the IB, relocation list, and manifest under
   `R3V_NATIVE_MANIFEST_DIR` and fails closed with `VK_ERROR_DEVICE_LOST`;
 - the drm-shim triangle-cell harness driving both gate states, with the
-  closed-gate retained IB byte-identical to the direct emitter.
+  closed-gate retained IB byte-identical to the direct emitter;
+- the R2VB F32_4 identity delivery route
+  (`r300_r2vb_carrier_delivery`): on the exact opt-in
+  `R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL=1` and the F32_4 format alone,
+  the deferred draw delivers the vertex stream through the host model
+  of the producer's passthrough copy instead of the CPU gather.  The
+  R2VB producer routes every attribute through the US fragment
+  datapath -- s1e7m16 (FP24) registers and interpolators into the
+  C4_32_FP color container -- so a binary32 value survives delivery
+  byte-exact only as a fixed point of the FP24 round trip; the model
+  admits exactly that domain (+-0, +-Inf, low-7-zero mantissas with
+  unbiased exponent in [-62, 63]) and refuses NaN payloads, denormals,
+  and off-grid values with -EDOM before any carrier write.  On the
+  admitted domain the round trip is the identity, so delivery is a
+  verbatim copy there, the CPU gather re-derives the carrier as the
+  semantic oracle at every R2VB execution, and a byte divergence
+  refuses the draw.  The CPU route is the default, the delivered PM4 is
+  unchanged, and the route is host-model evidence only.
 
 Compute pipelines, descriptors, transfers, WSI, formats past the fixed
-cell, silicon witnesses for non-maximum extents, and native R2VB
-remain outside the landed surface. Live `DRM_RADEON_CS` submission
+cell, silicon witnesses for non-maximum extents, the R2VB producer-pass
+PM4 emitter (target prologue, POINTS body, PVS-flush publication
+tail), and live R2VB delivery remain outside the landed surface. Live `DRM_RADEON_CS` submission
 has three attended witnesses, each kernel-accepted and retired clean:
 the bare inherited-state cell left the color target unwritten, the
 direct-write 2D control landed its probe bytes exactly, and the

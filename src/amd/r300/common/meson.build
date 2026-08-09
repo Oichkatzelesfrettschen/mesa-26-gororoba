@@ -26,6 +26,22 @@ test(
   suite : ['r300'],
 )
 
+r300_r2vb_carrier_delivery_test = executable(
+  'r300_r2vb_carrier_delivery_test',
+  files('r300_r2vb_carrier_delivery.c', '../cpu/r300_cpu_vertex.c',
+        'tests/r300_r2vb_carrier_delivery_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-r2vb-carrier-delivery',
+  r300_r2vb_carrier_delivery_test,
+  suite : ['r300'],
+)
+
 r300_fragment_binary_test = executable(
   'r300_fragment_binary_test',
   files('r300_fragment_binary.c', 'tests/r300_fragment_binary_test.c'),
