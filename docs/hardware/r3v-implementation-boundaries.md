@@ -32,7 +32,14 @@ the bound vertex buffer through the CPU executor into a
 command-buffer-owned carrier -- records the byte-identical cell IB
 through public `vkCmd*` entry points, at the drm-shim host-model class
 under the `r3v-native-public-surface` harness, and every contract
-deviation poisons or refuses.  The recorded IB equals the digest the
+deviation poisons or refuses.  The loader boundary is proven at the
+same host-model class: the `r3v-native-loader-application` gate links a
+standalone application against the installed Vulkan loader alone,
+reaches the ICD only through its manifest, performs the complete
+instance-to-submit sequence, and byte-compares the submit-retained IB
+against the independently emitted reference cell, while its symbol
+audit holds the binary free of every driver symbol in any binding.
+The recorded IB equals the digest the
 arming authority qualifies, so the command-stream grammar the silicon
 witnessed is what the public route records; the witness's rendered
 pixels are bound to the reference vertex payload the attended run

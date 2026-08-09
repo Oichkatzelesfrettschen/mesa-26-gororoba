@@ -49,14 +49,53 @@ report(const char *factor, const char *declared, const char *observed)
           state);
 }
 
+/* Writes the reference cell's serialized bytes, the independent
+ * comparison source for a recorded-IB manifest: the emission is the
+ * direct reference construction, so equality with a retained ib.bin
+ * proves the recording route reproduced the qualified cell.
+ */
+static int
+emit_reference_ib(const char *path)
+{
+   struct r300_tcl_bypass_triangle_ib cell;
+   if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0) {
+      fprintf(stderr, "cell construction failed\n");
+      return 2;
+   }
+   int status = 0;
+   uint8_t *bytes = malloc((size_t)cell.ib_size_dwords * 4);
+   FILE *out = bytes != NULL ? fopen(path, "wb") : NULL;
+   if (out == NULL) {
+      fprintf(stderr, "emit-ib: cannot write %s\n", path);
+      status = 2;
+   } else {
+      r300_triangle_ib_serialize(cell.ib, cell.ib_size_dwords, bytes);
+      const size_t written =
+         fwrite(bytes, 1, (size_t)cell.ib_size_dwords * 4, out);
+      const int close_error = fclose(out);
+      if (written != (size_t)cell.ib_size_dwords * 4 || close_error != 0) {
+         fprintf(stderr, "emit-ib: short write to %s\n", path);
+         status = 2;
+      }
+   }
+   free(bytes);
+   r300_tcl_bypass_triangle_release(&cell);
+   return status;
+}
+
 int
 main(int argc, char **argv)
 {
+   if (argc == 3 && strcmp(argv[1], "--emit-ib") == 0)
+      return emit_reference_ib(argv[2]);
+
    /* The runner takes the evidence directory an attended run would use;
     * its freshness is itself an arming factor.
     */
    if (argc != 2) {
-      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+      fprintf(stderr,
+              "usage: %s <evidence-directory> | --emit-ib <path>\n",
+              argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
