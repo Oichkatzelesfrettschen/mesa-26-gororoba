@@ -377,7 +377,7 @@ override LOCKED_TOOL_ENV := \
     DISTCC_HOSTS="$${DISTCC_HOSTS:-}" \
     SCCACHE_DIR="$${SCCACHE_DIR:-}"
 
-override define CREATE_DISTCC_PROBE_DIRECTORY
+override define CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY
 probe_dir="$$(mktemp -d)" && [ -n "$$probe_dir" ] && [ -d "$$probe_dir" ]
 endef
 
@@ -515,7 +515,7 @@ distcc-probe-directory-test:
 	failed_status_path="$$tmpdir/failed-status"; \
 	mkdir -- "$$failed_status_path"; \
 	mktemp() { printf '%s\n' "$$failed_status_path"; return 1; }; \
-	if $(CREATE_DISTCC_PROBE_DIRECTORY); then \
+	if $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
 		echo "FAIL  distcc probe directory accepted a failed mktemp command" >&2; \
 		exit 1; \
 	fi; \
@@ -526,14 +526,14 @@ distcc-probe-directory-test:
 	echo "OK    distcc probe directory rejects a failed mktemp command"; \
 	missing_path="$$tmpdir/missing"; \
 	mktemp() { printf '%s\n' "$$missing_path"; }; \
-	if $(CREATE_DISTCC_PROBE_DIRECTORY); then \
+	if $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
 		echo "FAIL  distcc probe directory accepted a missing path" >&2; \
 		exit 1; \
 	fi; \
 	echo "OK    distcc probe directory rejects a missing path"; \
 	created_path="$$tmpdir/created"; \
 	mktemp() { mkdir -- "$$created_path"; printf '%s\n' "$$created_path"; }; \
-	if ! $(CREATE_DISTCC_PROBE_DIRECTORY); then \
+	if ! $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
 		echo "FAIL  distcc probe directory rejected a created path" >&2; \
 		exit 1; \
 	fi; \
@@ -542,7 +542,22 @@ distcc-probe-directory-test:
 		exit 1; \
 	}; \
 	rmdir -- "$$probe_dir"; \
-	echo "OK    distcc probe directory accepts a created path"
+	echo "OK    distcc probe directory accepts a created path"; \
+	space_tmpdir="$$tmpdir/TMPDIR with spaces"; \
+	mkdir -- "$$space_tmpdir"; \
+	mktemp() { command mktemp "$$@"; }; \
+	TMPDIR="$$space_tmpdir"; export TMPDIR; \
+	if ! $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
+		echo "FAIL  distcc probe directory rejected a TMPDIR path with spaces" >&2; \
+		exit 1; \
+	fi; \
+	case "$$probe_dir" in \
+		"$$space_tmpdir"/*) ;; \
+		*) echo "FAIL  distcc probe directory ignored TMPDIR with spaces" >&2; \
+		   exit 1 ;; \
+	esac; \
+	rmdir -- "$$probe_dir"; \
+	echo "OK    distcc probe directory accepts TMPDIR paths with spaces"
 
 audit: source-root-check source-root-control-unit-test \
        source-root-selection-test \
@@ -701,7 +716,7 @@ audit: source-root-check source-root-control-unit-test \
 			else \
 				fail "distcc remote hostname does not resolve: $$remote_distcc_host"; \
 			fi; \
-			if $(CREATE_DISTCC_PROBE_DIRECTORY); then \
+			if $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
 				printf '%s\n' 'int gororoba_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; \
 				if [ -n "$${audit_clang_tool:-}" ] && \
 				   DISTCC_HOSTS="$$remote_distcc_spec" DISTCC_FALLBACK=0 \
@@ -713,8 +728,9 @@ audit: source-root-check source-root-control-unit-test \
 					fail "distcc remote Clang dispatch failed: $$remote_distcc_host ($${audit_clang_tool:-unresolved})"; \
 					sed -n '1,12p' "$$probe_dir/probe.err" >&2; \
 				fi; \
-				if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err" || \
-				   ! rmdir -- "$$probe_dir"; then \
+				if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err"; then \
+					fail "cannot remove distcc remote probe files: $$probe_dir"; \
+				elif ! rmdir -- "$$probe_dir"; then \
 					fail "cannot remove distcc remote probe directory: $$probe_dir"; \
 				fi; \
 			else \
