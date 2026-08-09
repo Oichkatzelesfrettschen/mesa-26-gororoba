@@ -36,6 +36,18 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
 
 #define CLEAR_SENTINEL ((float)0xa5 / 255.0f)
 
+/* The application payload is NDC: the public route's CPU vertex node
+ * applies the Vulkan viewport transform, and over the 64x64 target
+ * this triangle maps byte-exactly onto the window-space reference
+ * payload the silicon witnessed -- (x + 1) * 32 lands on 8, 56, and
+ * 32 in binary32 with no rounding.
+ */
+static const float ndc_triangle[12] = {
+   -0.75f, -0.75f, 0.0f, 1.0f,
+    0.75f, -0.75f, 0.0f, 1.0f,
+    0.00f,  0.75f, 0.0f, 1.0f,
+};
+
 static VkDevice device;
 static VkCommandPool pool;
 
@@ -103,6 +115,9 @@ struct pipeline_shape {
    VkBool32 blend_enable;
    const uint32_t *fragment_words;
    size_t fragment_bytes;
+   /* Viewport/scissor extent; zero selects the maximum target extent. */
+   uint32_t extent_width;
+   uint32_t extent_height;
 };
 
 static VkResult
@@ -113,6 +128,12 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
                                    sizeof(r3v_reference_vertex_spirv));
    VkShaderModule fs =
       make_module(shape->fragment_words, shape->fragment_bytes);
+   const uint32_t extent_width = shape->extent_width != 0
+                                    ? shape->extent_width
+                                    : R3V_NATIVE_TARGET_WIDTH;
+   const uint32_t extent_height = shape->extent_height != 0
+                                     ? shape->extent_height
+                                     : R3V_NATIVE_TARGET_HEIGHT;
 
    const VkGraphicsPipelineCreateInfo info = {
       .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -163,15 +184,14 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
             .viewportCount = 1,
             .pViewports =
                &(VkViewport){
-                  .width = R3V_NATIVE_TARGET_WIDTH,
-                  .height = R3V_NATIVE_TARGET_HEIGHT,
+                  .width = (float)extent_width,
+                  .height = (float)extent_height,
                   .maxDepth = 1.0f,
                },
             .scissorCount = 1,
             .pScissors =
                &(VkRect2D){
-                  .extent = { R3V_NATIVE_TARGET_WIDTH,
-                              R3V_NATIVE_TARGET_HEIGHT },
+                  .extent = { extent_width, extent_height },
                },
          },
       .pRasterizationState =
@@ -378,8 +398,7 @@ main(void)
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
              VK_SUCCESS &&
           map != NULL);
-   memcpy(map, r300_tcl_bypass_triangle_vertices,
-          R300_TRIANGLE_VERTEX_DWORDS * 4);
+   memcpy(map, ndc_triangle, sizeof(ndc_triangle));
    vkUnmapMemory(device, vertex_memory);
 
    /* Render pass, framebuffer, and layout through the runtime's common
@@ -514,7 +533,7 @@ main(void)
     * hazard gate refuses the ioctl after the deferred execution ran.
     */
    uint32_t original_first_dword;
-   memcpy(&original_first_dword, r300_tcl_bypass_triangle_vertices,
+   memcpy(&original_first_dword, ndc_triangle,
           sizeof(original_first_dword));
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
           VK_SUCCESS);
@@ -537,9 +556,19 @@ main(void)
                                &native_cmd->owned_carrier->bo,
                                &carrier_map) == 0);
    {
+      /* The carrier holds the transformed stream: the mutated NDC x
+       * (-0.75 with binary32 mantissa bit 22 flipped, -0.5) maps
+       * through the same viewport expression the execution applies.
+       */
+      float mutated_ndc_x;
+      const uint32_t mutated_bits = original_first_dword ^ 0x00400000u;
+      memcpy(&mutated_ndc_x, &mutated_bits, sizeof(mutated_ndc_x));
+      const float expected_window_x = (mutated_ndc_x + 1.0f) * 32.0f;
+      uint32_t expected_bits;
+      memcpy(&expected_bits, &expected_window_x, sizeof(expected_bits));
       uint32_t carrier_first;
       memcpy(&carrier_first, carrier_map, sizeof(carrier_first));
-      assert(carrier_first == (original_first_dword ^ 0x00400000u));
+      assert(carrier_first == expected_bits);
    }
    radeon_drm_vk_bo_unmap(&native_device->drm,
                           &native_cmd->owned_carrier->bo, carrier_map);
@@ -553,8 +582,7 @@ main(void)
     */
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
           VK_SUCCESS);
-   memcpy(map, r300_tcl_bypass_triangle_vertices,
-          R300_TRIANGLE_VERTEX_DWORDS * 4);
+   memcpy(map, ndc_triangle, sizeof(ndc_triangle));
    vkUnmapMemory(device, vertex_memory);
    assert(r3v_native_cmd_buffer_execute_deferred_draw(
              native_device, native_cmd) == VK_SUCCESS);
@@ -584,7 +612,7 @@ main(void)
     */
    float xyz[9];
    for (unsigned v = 0; v < 3; v++)
-      memcpy(&xyz[v * 3], &r300_tcl_bypass_triangle_vertices[v * 4], 12);
+      memcpy(&xyz[v * 3], &ndc_triangle[v * 4], 12);
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
           VK_SUCCESS);
    memcpy(map, xyz, sizeof(xyz));
@@ -620,6 +648,199 @@ main(void)
    radeon_drm_vk_bo_unmap(&native_device->drm,
                           &native_xyz->owned_carrier->bo, carrier_map);
 
+   /* A record outside the admitted clip volume, or one whose w is not
+    * exactly 1, refuses at execution: the transform's perspective
+    * divide is the identity only there, so the route reports instead
+    * of rasterizing an untransformed stream.
+    */
+   {
+      float out_of_domain[12];
+      memcpy(out_of_domain, ndc_triangle, sizeof(out_of_domain));
+      out_of_domain[3] = 2.0f;
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, out_of_domain, sizeof(out_of_domain));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer domain_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(domain_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(domain_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipeline);
+      vkCmdBindVertexBuffers(domain_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(domain_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(domain_cmd);
+      assert(vkEndCommandBuffer(domain_cmd) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_domain, domain_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_domain) != VK_SUCCESS);
+
+      /* A NaN coordinate refuses through the same gate: the domain
+       * check is a negated conjunction of ordered comparisons, and
+       * every ordered comparison on NaN is false, so the negation
+       * admits the record into the refusal branch rather than past it.
+       */
+      uint32_t nan_bits = 0x7fc00000u;
+      memcpy(&out_of_domain[0], &nan_bits, sizeof(nan_bits));
+      out_of_domain[3] = 1.0f;
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, out_of_domain, sizeof(out_of_domain));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer nan_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(nan_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(nan_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipeline);
+      vkCmdBindVertexBuffers(nan_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(nan_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(nan_cmd);
+      assert(vkEndCommandBuffer(nan_cmd) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_nan, nan_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_nan) != VK_SUCCESS);
+
+      /* Restore the reference stream for the legs below. */
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, ndc_triangle, sizeof(ndc_triangle));
+      vkUnmapMemory(device, vertex_memory);
+   }
+
+   /* The extent family through the public route: a 48x20 target's
+    * footprint follows the fixed 256-byte pitch, its recorded IB
+    * deviates from the reference cell in the two scissor-family dwords
+    * alone, and the deferred clear covers exactly the declared
+    * footprint.
+    */
+   {
+      const uint32_t sub_w = 48, sub_h = 20;
+      VkImage sub_image = VK_NULL_HANDLE;
+      VkImageCreateInfo sub_info = image_info;
+      sub_info.extent.width = sub_w;
+      sub_info.extent.height = sub_h;
+      assert(vkCreateImage(device, &sub_info, NULL, &sub_image) ==
+             VK_SUCCESS);
+      VkMemoryRequirements sub_reqs;
+      vkGetImageMemoryRequirements(device, sub_image, &sub_reqs);
+      assert(sub_reqs.size ==
+             (VkDeviceSize)R3V_NATIVE_TARGET_ROW_BYTES * (sub_h + 1));
+
+      VkDeviceMemory sub_memory = VK_NULL_HANDLE;
+      assert(vkAllocateMemory(
+                device,
+                &(VkMemoryAllocateInfo){
+                   .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                   .allocationSize = sub_reqs.size + 4096,
+                   .memoryTypeIndex = 0,
+                },
+                NULL, &sub_memory) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, sub_image, sub_memory, 0) ==
+             VK_SUCCESS);
+      uint32_t *sub_map = NULL;
+      assert(vkMapMemory(device, sub_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&sub_map) == VK_SUCCESS);
+      for (VkDeviceSize i = 0; i < (sub_reqs.size + 4096) / 4; i++)
+         sub_map[i] = COLOR_SEED;
+      vkUnmapMemory(device, sub_memory);
+
+      VkImageView sub_view = VK_NULL_HANDLE;
+      assert(vkCreateImageView(
+                device,
+                &(VkImageViewCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                   .image = sub_image,
+                   .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                   .format = R3V_NATIVE_TARGET_FORMAT,
+                   .subresourceRange = { .aspectMask =
+                                            VK_IMAGE_ASPECT_COLOR_BIT,
+                                         .levelCount = 1,
+                                         .layerCount = 1 },
+                },
+                NULL, &sub_view) == VK_SUCCESS);
+      VkFramebuffer sub_framebuffer = VK_NULL_HANDLE;
+      assert(vkCreateFramebuffer(
+                device,
+                &(VkFramebufferCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                   .renderPass = pass,
+                   .attachmentCount = 1,
+                   .pAttachments = &sub_view,
+                   .width = sub_w,
+                   .height = sub_h,
+                   .layers = 1,
+                },
+                NULL, &sub_framebuffer) == VK_SUCCESS);
+
+      struct pipeline_shape sub_shape = contract_shape;
+      sub_shape.extent_width = sub_w;
+      sub_shape.extent_height = sub_h;
+      VkPipeline sub_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&sub_shape, pass, layout, &sub_pipeline) ==
+             VK_SUCCESS);
+
+      VkRenderPassBeginInfo sub_begin = begin_pass;
+      sub_begin.framebuffer = sub_framebuffer;
+      sub_begin.renderArea =
+         (VkRect2D){ .extent = { sub_w, sub_h } };
+      VkCommandBuffer sub_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(sub_cmd, &sub_begin, VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(sub_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        sub_pipeline);
+      vkCmdBindVertexBuffers(sub_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(sub_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(sub_cmd);
+      assert(vkEndCommandBuffer(sub_cmd) == VK_SUCCESS);
+
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_sub, sub_cmd);
+      struct r300_tcl_bypass_triangle_ib sub_reference;
+      assert(r300_tcl_bypass_triangle_reference_emit(&sub_reference) == 0);
+      assert(native_sub->ib_size_dwords == sub_reference.ib_size_dwords);
+      uint32_t deviating = 0;
+      for (uint32_t d = 0; d < sub_reference.ib_size_dwords; d++) {
+         if (native_sub->ib[d] != sub_reference.ib[d])
+            deviating++;
+      }
+      assert(deviating == 2);
+      r300_tcl_bypass_triangle_release(&sub_reference);
+
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_sub) == VK_SUCCESS);
+      assert(vkMapMemory(device, sub_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&sub_map) == VK_SUCCESS);
+      assert(sub_map[0] == R300_TRIANGLE_COLOR_SENTINEL);
+      assert(sub_map[(sub_reqs.size / 4) - 1] ==
+             R300_TRIANGLE_COLOR_SENTINEL);
+      assert(sub_map[sub_reqs.size / 4] == COLOR_SEED);
+      vkUnmapMemory(device, sub_memory);
+
+      /* A pipeline whose extent claim deviates from the pass target
+       * poisons at the draw.
+       */
+      VkCommandBuffer mismatch_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(mismatch_cmd, &sub_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(mismatch_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipeline);
+      vkCmdBindVertexBuffers(mismatch_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(mismatch_cmd, 3, 1, 0, 0);
+      /* The pass closes, so the refusal below is the draw's
+       * extent-mismatch poison rather than the open-pass poison.
+       */
+      vkCmdEndRenderPass(mismatch_cmd);
+      assert(vkEndCommandBuffer(mismatch_cmd) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+
+      vkDestroyPipeline(device, sub_pipeline, NULL);
+      vkDestroyFramebuffer(device, sub_framebuffer, NULL);
+      vkDestroyImageView(device, sub_view, NULL);
+      vkDestroyImage(device, sub_image, NULL);
+      vkFreeMemory(device, sub_memory, NULL);
+   }
+
    /* Creation refusals: each deviation clears the handle and reports
     * the refusal result, so the negative legs calibrate the contract
     * checks the positive leg rode through.
@@ -648,8 +869,21 @@ main(void)
           refused == VK_NULL_HANDLE);
 
    VkImageCreateInfo bad_image_info = image_info;
-   bad_image_info.extent.width = 32;
+   bad_image_info.extent.width = 0;
    VkImage bad_image = VK_NULL_HANDLE;
+   assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
+             R3V_NATIVE_REFUSAL_RESULT &&
+          bad_image == VK_NULL_HANDLE);
+   bad_image_info.extent.width = R3V_NATIVE_TARGET_WIDTH + 1;
+   assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
+             R3V_NATIVE_REFUSAL_RESULT &&
+          bad_image == VK_NULL_HANDLE);
+   bad_image_info = image_info;
+   bad_image_info.extent.height = 0;
+   assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
+             R3V_NATIVE_REFUSAL_RESULT &&
+          bad_image == VK_NULL_HANDLE);
+   bad_image_info.extent.height = R3V_NATIVE_TARGET_HEIGHT + 1;
    assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
              R3V_NATIVE_REFUSAL_RESULT &&
           bad_image == VK_NULL_HANDLE);

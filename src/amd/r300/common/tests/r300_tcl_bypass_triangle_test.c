@@ -13,6 +13,7 @@
 
 #include "r300_first_draw_state.h"
 #include "r300_fragment_binary.h"
+#include "r300_reg.h"
 #include "r300_tcl_bypass_triangle.h"
 
 #include "util/macros.h"
@@ -315,11 +316,14 @@ test_output_oracle(void)
    r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
    assert(verdict.executed && verdict.interior_pass);
 
-   /* Wrong interior color fails the interior check. */
-   target[20 * 64 + 32] = 0xffff0000u;
+   /* Wrong interior color fails the interior check; the corrupted
+    * pixel is the analytic centroid, a sample at every extent whose
+    * triangle carries the fill-rule margin.
+    */
+   target[24 * 64 + 32] = 0xffff0000u;
    r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
    assert(!verdict.interior_pass);
-   target[20 * 64 + 32] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+   target[24 * 64 + 32] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
 
    /* A stray exterior write and a canary-row write each fail closed. */
    target[0] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
@@ -330,6 +334,107 @@ test_output_oracle(void)
    target[64 * 64 + 5] = 0x00000001u;
    r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
    assert(!verdict.canary_pass);
+}
+
+/* The extent oracle's calibration: a synthesized correct 48x20 witness
+ * passes with positive sample counts, each corruption class fails its
+ * verdict, and an extent whose triangle cannot carry the fill-rule
+ * margin fails closed with zero interior samples.
+ */
+static void
+test_extent_oracle_calibration(void)
+{
+   enum { PITCH = 64 };
+   const uint32_t width = 48, height = 20;
+   static uint32_t target[PITCH * 21];
+   struct r300_triangle_oracle_verdict verdict;
+
+   /* The analytic triangle at 48x20: the NDC reference through the
+    * viewport transform, rasterized at pixel centers.
+    */
+   const float v[6] = { 6.0f, 2.5f, 42.0f, 2.5f, 24.0f, 17.5f };
+   for (unsigned i = 0; i < PITCH * 21; i++)
+      target[i] = R300_TRIANGLE_COLOR_SENTINEL;
+   for (uint32_t y = 0; y < height; y++) {
+      for (uint32_t x = 0; x < width; x++) {
+         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+         const float e0 = (v[2] - v[0]) * (py - v[1]) -
+                          (v[3] - v[1]) * (px - v[0]);
+         const float e1 = (v[4] - v[2]) * (py - v[3]) -
+                          (v[5] - v[3]) * (px - v[2]);
+         const float e2 = (v[0] - v[4]) * (py - v[5]) -
+                          (v[1] - v[5]) * (px - v[4]);
+         if (e0 > 0.0f && e1 > 0.0f && e2 > 0.0f)
+            target[y * PITCH + x] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+      }
+   }
+   r300_tcl_bypass_triangle_extent_oracle(width, height, target,
+                                          sizeof(target), &verdict);
+   assert(verdict.executed && verdict.interior_pass &&
+          verdict.exterior_pass && verdict.canary_pass);
+   assert(verdict.interior_samples > 0 && verdict.exterior_samples > 0);
+
+   /* The oracle admits the exact retained footprint,
+    * pitch * (height + 1) pixels, and refuses anything shorter: a
+    * buffer holding only the render rows carries no observable canary
+    * band, so the truncated calls fail every pass with zero samples
+    * instead of leaving canary_pass vacuously true.
+    */
+   const uint32_t required_bytes = PITCH * (height + 1) * 4;
+   r300_tcl_bypass_triangle_extent_oracle(width, height, target,
+                                          required_bytes, &verdict);
+   assert(verdict.executed && verdict.interior_pass &&
+          verdict.exterior_pass && verdict.canary_pass);
+   r300_tcl_bypass_triangle_extent_oracle(width, height, target,
+                                          PITCH * height * 4, &verdict);
+   assert(!verdict.executed && !verdict.interior_pass &&
+          !verdict.exterior_pass && !verdict.canary_pass &&
+          verdict.interior_samples == 0 && verdict.exterior_samples == 0);
+   r300_tcl_bypass_triangle_extent_oracle(width, height, target,
+                                          required_bytes - 4, &verdict);
+   assert(!verdict.executed && !verdict.canary_pass &&
+          verdict.interior_samples == 0);
+
+   /* A write in the sub-pitch padding band fails the canary. */
+   target[5 * PITCH + 50] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+   r300_tcl_bypass_triangle_extent_oracle(width, height, target,
+                                          sizeof(target), &verdict);
+   assert(!verdict.canary_pass);
+   target[5 * PITCH + 50] = R300_TRIANGLE_COLOR_SENTINEL;
+
+   /* A write past the render extent fails the canary. */
+   target[height * PITCH + 3] = 0x00000001u;
+   r300_tcl_bypass_triangle_extent_oracle(width, height, target,
+                                          sizeof(target), &verdict);
+   assert(!verdict.canary_pass);
+   target[height * PITCH + 3] = R300_TRIANGLE_COLOR_SENTINEL;
+
+   /* An untouched target reports no execution and no interior. */
+   for (unsigned i = 0; i < PITCH * 21; i++)
+      target[i] = R300_TRIANGLE_COLOR_SENTINEL;
+   r300_tcl_bypass_triangle_extent_oracle(width, height, target,
+                                          sizeof(target), &verdict);
+   assert(!verdict.executed && !verdict.interior_pass);
+
+   /* A 1x1 extent's triangle carries no fill-rule margin, so the
+    * oracle fails closed with zero interior samples rather than
+    * passing vacuously.
+    */
+   r300_tcl_bypass_triangle_extent_oracle(1, 1, target, 2 * PITCH * 4,
+                                          &verdict);
+   assert(verdict.interior_samples == 0 && !verdict.interior_pass);
+
+   /* An extent outside the emitter's domain fails every pass with zero
+    * samples.
+    */
+   r300_tcl_bypass_triangle_extent_oracle(0, 20, target, sizeof(target),
+                                          &verdict);
+   assert(!verdict.interior_pass && !verdict.exterior_pass &&
+          !verdict.canary_pass && verdict.interior_samples == 0);
+   r300_tcl_bypass_triangle_extent_oracle(65, 20, target, sizeof(target),
+                                          &verdict);
+   assert(!verdict.interior_pass && !verdict.exterior_pass &&
+          !verdict.canary_pass && verdict.interior_samples == 0);
 }
 
 /* One reference construction backs every fixed-cell authority: the
@@ -570,6 +675,80 @@ test_reloc_site_mutations_refuse(void)
    r300_fragment_binary_finish(&fs);
 }
 
+/* The extent family's two invariants: at the maximum extent the
+ * parameterized emission is byte-identical to the reference cell, so
+ * the qualified digest anchors the family; at any other extent exactly
+ * two dwords deviate -- the SC_SCISSORS_BR and SC_CLIPRECT_BR_0
+ * payloads the first-draw contract resolves from the extent -- so the
+ * pitch word and every other register class carry the qualified bytes.
+ */
+static void
+test_extent_emit_deviates_in_scissor_words_alone(void)
+{
+   struct r300_tcl_bypass_triangle_ib reference;
+   assert(r300_tcl_bypass_triangle_reference_emit(&reference) == 0);
+
+   struct r300_tcl_bypass_triangle_ib anchor;
+   assert(r300_tcl_bypass_triangle_extent_emit(
+             R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+             &anchor) == 0);
+   assert(anchor.ib_size_dwords == reference.ib_size_dwords);
+   assert(memcmp(anchor.ib, reference.ib,
+                 reference.ib_size_dwords * sizeof(uint32_t)) == 0);
+   r300_tcl_bypass_triangle_release(&anchor);
+
+   /* Scissor and clip-rectangle payloads on non-R500 silicon carry a
+    * 1440 bias in both axes, packed x | (y << 13); the reference cell's
+    * two BR payloads hold the maximum extent's word, and an extent
+    * variant replaces exactly those two payloads with its own.
+    */
+   const uint32_t reference_br =
+      ((R300_TRIANGLE_TARGET_WIDTH - 1 + R300_SCISSORS_OFFSET)
+       << R300_SCISSORS_X_SHIFT) |
+      ((R300_TRIANGLE_TARGET_HEIGHT - 1 + R300_SCISSORS_OFFSET)
+       << R300_SCISSORS_Y_SHIFT);
+
+   static const uint32_t extents[][2] = {
+      { 1, 1 }, { 17, 33 }, { 48, 20 }, { 33, 64 }, { 64, 1 },
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(extents); i++) {
+      const uint32_t extent_br =
+         ((extents[i][0] - 1 + R300_SCISSORS_OFFSET)
+          << R300_SCISSORS_X_SHIFT) |
+         ((extents[i][1] - 1 + R300_SCISSORS_OFFSET)
+          << R300_SCISSORS_Y_SHIFT);
+      struct r300_tcl_bypass_triangle_ib cell;
+      assert(r300_tcl_bypass_triangle_extent_emit(extents[i][0],
+                                                  extents[i][1],
+                                                  &cell) == 0);
+      assert(cell.ib_size_dwords == reference.ib_size_dwords);
+      uint32_t deviating = 0;
+      for (uint32_t d = 0; d < cell.ib_size_dwords; d++) {
+         if (cell.ib[d] != reference.ib[d]) {
+            /* Each deviating dword is a BR payload: the reference held
+             * the maximum extent's biased word there, and the variant
+             * holds its own extent's word.
+             */
+            assert(reference.ib[d] == reference_br);
+            assert(cell.ib[d] == extent_br);
+            deviating++;
+         }
+      }
+      assert(deviating == 2);
+      r300_tcl_bypass_triangle_release(&cell);
+   }
+
+   struct r300_tcl_bypass_triangle_ib refused;
+   assert(r300_tcl_bypass_triangle_extent_emit(0, 32, &refused) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_extent_emit(32, 0, &refused) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_extent_emit(
+             R300_TRIANGLE_TARGET_WIDTH + 1, 32, &refused) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_extent_emit(
+             32, R300_TRIANGLE_TARGET_HEIGHT + 1, &refused) == -EINVAL);
+
+   r300_tcl_bypass_triangle_release(&reference);
+}
+
 int
 main(void)
 {
@@ -586,6 +765,8 @@ main(void)
    test_emit_rejects_unvalidated_binary();
    test_colorpitch0_pack();
    test_output_oracle();
+   test_extent_oracle_calibration();
+   test_extent_emit_deviates_in_scissor_words_alone();
    printf("r300_tcl_bypass_triangle_test: all checks passed\n");
    return 0;
 }

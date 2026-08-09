@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 /* Four dwords per drm_radeon_cs_reloc entry, so a slot's payload indexes the
@@ -295,16 +296,31 @@ r300_tcl_bypass_triangle_reference_contract(
 }
 
 int
-r300_tcl_bypass_triangle_reference_emit(
+r300_tcl_bypass_triangle_extent_emit(
+   uint32_t width, uint32_t height,
    struct r300_tcl_bypass_triangle_ib *out)
 {
+   if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
+       height > R300_TRIANGLE_TARGET_HEIGHT)
+      return -EINVAL;
+
    struct r300_fragment_binary fs;
    int rc = r300_tcl_bypass_triangle_reference_fs(&fs);
    if (rc != 0)
       return rc;
 
+   /* The extent parameterizes the contract's GEOMETRY_PARAMETER entries
+    * alone; the pitch word stays the reference cell's, so the row
+    * layout and every other register class are the qualified bytes.
+    */
+   struct r300_first_draw_params draw_params = {
+      .width = width,
+      .height = height,
+      .max_vtx_index = 2,
+      .texture_enabled = false,
+   };
    struct r300_first_draw_contract contract;
-   rc = r300_tcl_bypass_triangle_reference_contract(&contract);
+   rc = r300_first_draw_contract_resolve(&draw_params, &contract);
    if (rc != 0) {
       r300_fragment_binary_finish(&fs);
       return rc;
@@ -320,6 +336,15 @@ r300_tcl_bypass_triangle_reference_emit(
    rc = r300_tcl_bypass_triangle_emit(&params, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+int
+r300_tcl_bypass_triangle_reference_emit(
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   return r300_tcl_bypass_triangle_extent_emit(R300_TRIANGLE_TARGET_WIDTH,
+                                               R300_TRIANGLE_TARGET_HEIGHT,
+                                               out);
 }
 
 uint32_t
@@ -339,35 +364,100 @@ r300_rb3d_colorpitch0_pack_argb8888(uint32_t pitch_pixels)
 /* Edge function twice the signed area of (a, b, p); the triangle's
  * vertices wind so every interior point yields three positive values.
  */
-static int32_t
-triangle_edge(int32_t ax, int32_t ay, int32_t bx, int32_t by, int32_t px,
-              int32_t py)
+static float
+triangle_edgef(float ax, float ay, float bx, float by, float px, float py)
 {
    return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
 
-static bool
-triangle_interior(uint32_t x, uint32_t y)
+/* Signed pixel distance from p to the line through (a, b), positive on
+ * the triangle's interior side; the margin tests below divide the edge
+ * function by the edge length.
+ */
+static float
+triangle_edge_distance(float ax, float ay, float bx, float by, float px,
+                       float py)
 {
-   /* The cell's vertices: (8,8), (56,8), (32,56). */
-   return triangle_edge(8, 8, 56, 8, (int32_t)x, (int32_t)y) > 0 &&
-          triangle_edge(56, 8, 32, 56, (int32_t)x, (int32_t)y) > 0 &&
-          triangle_edge(32, 56, 8, 8, (int32_t)x, (int32_t)y) > 0;
+   const float dx = bx - ax, dy = by - ay;
+   const float length = sqrtf(dx * dx + dy * dy);
+   return triangle_edgef(ax, ay, bx, by, px, py) / length;
 }
 
-void
-r300_tcl_bypass_triangle_oracle(const uint32_t *pixels, uint32_t size_bytes,
-                                struct r300_triangle_oracle_verdict *verdict)
-{
-   /* Sample points sit at least two pixels from every triangle edge, so
-    * the verdict does not ride the hardware's exact fill rule.
+struct triangle_geometry {
+   /* Window-space vertices: the NDC reference payload through the
+    * viewport transform at the oracle's extent.
     */
-   static const struct { uint8_t x, y; } interior[] = {
-      { 32, 20 }, { 20, 12 }, { 44, 12 }, { 32, 44 },
-   };
-   static const struct { uint8_t x, y; } exterior[] = {
-      { 0, 0 }, { 63, 0 }, { 0, 63 }, { 63, 63 }, { 2, 32 }, { 61, 32 },
-   };
+   float v[6];
+};
+
+static struct triangle_geometry
+triangle_geometry_at(uint32_t width, uint32_t height)
+{
+   static const float ndc[6] = { -0.75f, -0.75f, 0.75f, -0.75f,
+                                 0.0f, 0.75f };
+   struct triangle_geometry g;
+   for (unsigned i = 0; i < 3; i++) {
+      g.v[i * 2 + 0] = (ndc[i * 2 + 0] + 1.0f) * ((float)width / 2.0f);
+      g.v[i * 2 + 1] = (ndc[i * 2 + 1] + 1.0f) * ((float)height / 2.0f);
+   }
+   return g;
+}
+
+/* The minimum of the three signed edge distances: positive inside with
+ * that margin, negative outside with it.  Sample points require at
+ * least a two-pixel magnitude, so the verdict does not ride the
+ * hardware's exact fill rule.
+ */
+static float
+triangle_signed_margin(const struct triangle_geometry *g, float px,
+                       float py)
+{
+   float margin = triangle_edge_distance(g->v[0], g->v[1], g->v[2],
+                                         g->v[3], px, py);
+   const float d1 = triangle_edge_distance(g->v[2], g->v[3], g->v[4],
+                                           g->v[5], px, py);
+   const float d2 = triangle_edge_distance(g->v[4], g->v[5], g->v[0],
+                                           g->v[1], px, py);
+   if (d1 < margin)
+      margin = d1;
+   if (d2 < margin)
+      margin = d2;
+   return margin;
+}
+
+#define R300_TRIANGLE_ORACLE_MARGIN 2.0f
+
+void
+r300_tcl_bypass_triangle_extent_oracle(
+   uint32_t width, uint32_t height, const uint32_t *pixels,
+   uint32_t size_bytes, struct r300_triangle_oracle_verdict *verdict)
+{
+   /* The verdict producer admits the same domain the emitter admits: an
+    * extent outside it fails every pass with zero samples, so an
+    * inadmissible call reads as a failed verdict rather than dividing
+    * by a zero edge length or wrapping the extent arithmetic.
+    */
+   if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
+       height > R300_TRIANGLE_TARGET_HEIGHT) {
+      *verdict = (struct r300_triangle_oracle_verdict){ 0 };
+      return;
+   }
+
+   /* The verdict reads the full retained footprint: every rendered row
+    * at the fixed pitch plus the canary row past the render extent.  A
+    * buffer short of that footprint carries no observable canary band,
+    * so the truncated call fails closed before any pass initializes
+    * rather than leaving canary_pass vacuously true.
+    */
+   const uint64_t required_bytes =
+      (uint64_t)R300_TRIANGLE_TARGET_PITCH_PIXELS * (height + 1u) *
+      sizeof(uint32_t);
+   if (pixels == NULL || size_bytes < required_bytes) {
+      *verdict = (struct r300_triangle_oracle_verdict){ 0 };
+      return;
+   }
+
+   const struct triangle_geometry g = triangle_geometry_at(width, height);
 
    *verdict = (struct r300_triangle_oracle_verdict) {
       .interior_pass = true,
@@ -383,32 +473,88 @@ r300_tcl_bypass_triangle_oracle(const uint32_t *pixels, uint32_t size_bytes,
       }
    }
 
-   /* Each sample also re-proves its own triangle membership, so a sample
-    * table drifting out of the analytic geometry reads as a failed
-    * verdict instead of a wrong oracle.
+   /* Interior candidates: the centroid and its midpoints toward each
+    * vertex.  A candidate qualifies with the fill-rule margin inside
+    * the triangle and inside the extent; the count is part of the
+    * verdict, and zero qualifying candidates fail the pass, so an
+    * extent whose triangle is too small to witness refuses instead of
+    * passing vacuously.
     */
-   for (unsigned i = 0; i < sizeof(interior) / sizeof(interior[0]); i++) {
-      uint32_t index = (uint32_t)interior[i].y *
-                          R300_TRIANGLE_TARGET_PITCH_PIXELS + interior[i].x;
-      if (!triangle_interior(interior[i].x, interior[i].y) ||
-          index >= pixel_count ||
+   const float cx = (g.v[0] + g.v[2] + g.v[4]) / 3.0f;
+   const float cy = (g.v[1] + g.v[3] + g.v[5]) / 3.0f;
+   const float interior_candidates[8] = {
+      cx, cy,
+      (cx + g.v[0]) / 2.0f, (cy + g.v[1]) / 2.0f,
+      (cx + g.v[2]) / 2.0f, (cy + g.v[3]) / 2.0f,
+      (cx + g.v[4]) / 2.0f, (cy + g.v[5]) / 2.0f,
+   };
+   for (unsigned i = 0; i < 4; i++) {
+      const uint32_t x = (uint32_t)interior_candidates[i * 2 + 0];
+      const uint32_t y = (uint32_t)interior_candidates[i * 2 + 1];
+      if (x >= width || y >= height ||
+          triangle_signed_margin(&g, (float)x + 0.5f, (float)y + 0.5f) <
+             R300_TRIANGLE_ORACLE_MARGIN)
+         continue;
+      verdict->interior_samples++;
+      const uint32_t index = y * R300_TRIANGLE_TARGET_PITCH_PIXELS + x;
+      if (index >= pixel_count ||
           pixels[index] != R300_TRIANGLE_DRAW_COLOR_ARGB8888)
          verdict->interior_pass = false;
    }
-   for (unsigned i = 0; i < sizeof(exterior) / sizeof(exterior[0]); i++) {
-      uint32_t index = (uint32_t)exterior[i].y *
-                          R300_TRIANGLE_TARGET_PITCH_PIXELS + exterior[i].x;
-      if (triangle_interior(exterior[i].x, exterior[i].y) ||
-          index >= pixel_count ||
+   if (verdict->interior_samples == 0)
+      verdict->interior_pass = false;
+
+   /* Exterior candidates: the extent's corners and edge midpoints,
+    * qualified by the same margin outside the triangle.
+    */
+   const float last_x = (float)(width - 1), last_y = (float)(height - 1);
+   const float exterior_candidates[16] = {
+      0.0f, 0.0f, last_x, 0.0f, 0.0f, last_y, last_x, last_y,
+      last_x / 2.0f, 0.0f, last_x / 2.0f, last_y,
+      0.0f, last_y / 2.0f, last_x, last_y / 2.0f,
+   };
+   for (unsigned i = 0; i < 8; i++) {
+      const uint32_t x = (uint32_t)exterior_candidates[i * 2 + 0];
+      const uint32_t y = (uint32_t)exterior_candidates[i * 2 + 1];
+      if (x >= width || y >= height ||
+          triangle_signed_margin(&g, (float)x + 0.5f, (float)y + 0.5f) >
+             -R300_TRIANGLE_ORACLE_MARGIN)
+         continue;
+      verdict->exterior_samples++;
+      const uint32_t index = y * R300_TRIANGLE_TARGET_PITCH_PIXELS + x;
+      if (index >= pixel_count ||
           pixels[index] != R300_TRIANGLE_COLOR_SENTINEL)
          verdict->exterior_pass = false;
    }
-   for (uint32_t i = R300_TRIANGLE_TARGET_PITCH_PIXELS *
-                     R300_TRIANGLE_TARGET_HEIGHT;
+   if (verdict->exterior_samples == 0)
+      verdict->exterior_pass = false;
+
+   /* Canary: the sub-pitch padding band of every rendered row, then
+    * every row past the render extent, all at the sentinel.
+    */
+   for (uint32_t y = 0; y < height; y++) {
+      for (uint32_t x = width; x < R300_TRIANGLE_TARGET_PITCH_PIXELS;
+           x++) {
+         const uint32_t index = y * R300_TRIANGLE_TARGET_PITCH_PIXELS + x;
+         if (index < pixel_count &&
+             pixels[index] != R300_TRIANGLE_COLOR_SENTINEL)
+            verdict->canary_pass = false;
+      }
+   }
+   for (uint32_t i = R300_TRIANGLE_TARGET_PITCH_PIXELS * height;
         i < pixel_count; i++) {
       if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL)
          verdict->canary_pass = false;
    }
+}
+
+void
+r300_tcl_bypass_triangle_oracle(const uint32_t *pixels, uint32_t size_bytes,
+                                struct r300_triangle_oracle_verdict *verdict)
+{
+   r300_tcl_bypass_triangle_extent_oracle(R300_TRIANGLE_TARGET_WIDTH,
+                                          R300_TRIANGLE_TARGET_HEIGHT,
+                                          pixels, size_bytes, verdict);
 }
 
 /* TCL bypass consumes screen-space positions: an inset triangle inside the

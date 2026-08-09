@@ -14,20 +14,34 @@
 
 #include "util/mesa-blake3.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Builds the fixed cell and returns its IB digest, the content an
- * authorization declares through R3V_NATIVE_AUTHORIZED_IB_BLAKE3.  The
- * reference emission is the same construction the recorder installs and
- * the queue recomputes, so the armed digest names the submitted bytes.
+/* The cell extent the report names; the default is the maximum, the
+ * silicon-witnessed reference cell and the one target the checked-in
+ * attended submitter records.  --extent selects another member of the
+ * host-model family as a no-submit digest and IB-generation facility:
+ * it names the IB the recorder installs for that target, but no
+ * checked-in submitter records a non-maximum target, so such a digest
+ * arms nothing until a parameterized public-route runner exists.
+ */
+static uint32_t cell_width = R300_TRIANGLE_TARGET_WIDTH;
+static uint32_t cell_height = R300_TRIANGLE_TARGET_HEIGHT;
+
+/* Builds the cell at the selected extent and returns its IB digest,
+ * the content an authorization declares through
+ * R3V_NATIVE_AUTHORIZED_IB_BLAKE3.  The emission is the same
+ * construction the recorder installs and the queue recomputes, so the
+ * armed digest names the submitted bytes.
  */
 static int
 cell_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
 {
    struct r300_tcl_bypass_triangle_ib cell;
-   if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0)
+   if (r300_tcl_bypass_triangle_extent_emit(cell_width, cell_height,
+                                            &cell) != 0)
       return 1;
 
    r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, out);
@@ -58,7 +72,8 @@ static int
 emit_reference_ib(const char *path)
 {
    struct r300_tcl_bypass_triangle_ib cell;
-   if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0) {
+   if (r300_tcl_bypass_triangle_extent_emit(cell_width, cell_height,
+                                            &cell) != 0) {
       fprintf(stderr, "cell construction failed\n");
       return 2;
    }
@@ -86,19 +101,66 @@ emit_reference_ib(const char *path)
 int
 main(int argc, char **argv)
 {
-   if (argc == 3 && strcmp(argv[1], "--emit-ib") == 0)
-      return emit_reference_ib(argv[2]);
+   int argi = 1;
+   if (argc >= argi + 3 && strcmp(argv[argi], "--extent") == 0) {
+      /* Authorization input parses fail-closed: the value is judged in
+       * the unnarrowed type against errno, the end pointer, and the
+       * admitted bounds before any assignment, so a declaration
+       * congruent to an admitted extent modulo 2^32 refuses instead of
+       * authorizing the wrong cell.
+       */
+      const unsigned long bounds[2] = { R300_TRIANGLE_TARGET_WIDTH,
+                                        R300_TRIANGLE_TARGET_HEIGHT };
+      unsigned long parsed[2];
+      for (int axis = 0; axis < 2; axis++) {
+         const char *text = argv[argi + 1 + axis];
+         /* Decimal digits only: strtoul itself admits signs and
+          * leading whitespace, so the token is vetted before the
+          * numeric parse.
+          */
+         bool digits_only = text[0] != '\0';
+         for (const char *c = text; *c != '\0'; c++) {
+            if (*c < '0' || *c > '9')
+               digits_only = false;
+         }
+         if (!digits_only) {
+            fprintf(stderr,
+                    "extent outside the admitted 1..%u x 1..%u\n",
+                    R300_TRIANGLE_TARGET_WIDTH,
+                    R300_TRIANGLE_TARGET_HEIGHT);
+            return 2;
+         }
+         char *end = NULL;
+         errno = 0;
+         parsed[axis] = strtoul(text, &end, 10);
+         if (errno != 0 || end == text || *end != '\0' ||
+             parsed[axis] < 1 || parsed[axis] > bounds[axis]) {
+            fprintf(stderr,
+                    "extent outside the admitted 1..%u x 1..%u\n",
+                    R300_TRIANGLE_TARGET_WIDTH,
+                    R300_TRIANGLE_TARGET_HEIGHT);
+            return 2;
+         }
+      }
+      cell_width = (uint32_t)parsed[0];
+      cell_height = (uint32_t)parsed[1];
+      argi += 3;
+   }
+
+   if (argc == argi + 2 && strcmp(argv[argi], "--emit-ib") == 0)
+      return emit_reference_ib(argv[argi + 1]);
 
    /* The runner takes the evidence directory an attended run would use;
     * its freshness is itself an arming factor.
     */
-   if (argc != 2) {
+   if (argc != argi + 1) {
       fprintf(stderr,
-              "usage: %s <evidence-directory> | --emit-ib <path>\n",
+              "usage: %s [--extent <w> <h>] <evidence-directory> | "
+              "[--extent <w> <h>] --emit-ib <path>\n",
               argv[0]);
       return 2;
    }
-   const char *evidence_dir = argv[1];
+   const char *evidence_dir = argv[argi];
 
    char digest[BLAKE3_OUT_LEN * 2 + 1];
    uint32_t ib_dwords = 0;

@@ -68,6 +68,15 @@ struct r3v_native_deferred_draw {
    uint32_t first_vertex;
    int format_id;
    struct r3v_native_memory *target_memory;
+   /* The pass target's declared footprint: the load-op clear's exact
+    * byte bound at execution.
+    */
+   uint64_t target_fill_bytes;
+   /* The pass target's extent: the viewport transform's window scale
+    * at execution.
+    */
+   uint32_t target_width;
+   uint32_t target_height;
 };
 
 /* Native command buffer: one fixed IB dword vector plus its BO references,
@@ -141,11 +150,13 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_memory, vk.base, VkDeviceMemory,
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_buffer, vk.base, VkBuffer,
                                VK_OBJECT_TYPE_BUFFER)
 
-/* The public recording surface's qualified render target: a 64x64
- * B8G8R8A8_UNORM linear 2D color attachment, the one image shape whose
- * lowering is the qualified triangle cell.  The pixel geometry and the
- * memory contract (a 65-row allocation whose last row is oracle
- * headroom past the render extent) are fixed by the cell.
+/* The public recording surface's qualified render-target family:
+ * B8G8R8A8_UNORM linear 2D color attachments at any extent inside the
+ * 64x64 maximum, all sharing the maximum extent's row pitch.  The pitch
+ * is a memory-layout property the cell's RB3D_COLORPITCH0 word freezes,
+ * so the extent varies only the scissor-family dwords and the memory
+ * footprint: pitch times height plus one oracle-headroom row past the
+ * render extent.
  */
 #define R3V_NATIVE_TARGET_WIDTH 64
 #define R3V_NATIVE_TARGET_HEIGHT 64
@@ -154,10 +165,19 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_buffer, vk.base, VkBuffer,
 #define R3V_NATIVE_TARGET_MEMORY_BYTES \
    (R3V_NATIVE_TARGET_ROW_BYTES * (R3V_NATIVE_TARGET_HEIGHT + 1))
 
+static inline uint64_t
+r3v_native_image_footprint_bytes(uint32_t height)
+{
+   return (uint64_t)R3V_NATIVE_TARGET_ROW_BYTES * (height + 1);
+}
+
 struct r3v_native_image {
    struct vk_object_base base;
    /* Bound memory, offset zero; the cell references the BO base. */
    struct r3v_native_memory *memory;
+   /* Creation extent, inside the published maximum. */
+   uint32_t width;
+   uint32_t height;
 };
 
 struct r3v_native_image_view {
@@ -175,6 +195,11 @@ struct r3v_native_pipeline {
    int format_id;
    uint32_t binding_stride;
    uint32_t attribute_offset;
+   /* The viewport/scissor extent creation admitted; the draw requires
+    * it equal to the pass target's extent.
+    */
+   uint32_t target_width;
+   uint32_t target_height;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_image, base, VkImage,
@@ -275,7 +300,7 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
-   struct r3v_native_memory *color_memory);
+   struct r3v_native_image *target_image);
 
 /* Executes the command buffer's deferred draw at submission: gathers the
  * bound stream through the CPU vertex executor into the owned carrier

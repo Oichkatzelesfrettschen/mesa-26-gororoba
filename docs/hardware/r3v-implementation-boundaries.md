@@ -25,10 +25,15 @@ cell rendered the triangle as predicted -- interior `0xff00ff00`,
 exterior and canary at the sentinel -- so the inert first run is closed
 as a first-draw state-contract failure. The proven raster path is that
 one fixed cell.  The public recording surface now reaches it: a bounded
-render-pass/pipeline/draw vocabulary -- the qualified 64x64 linear
-color target, a pipeline admitted by byte equality with the reference
-SPIR-V pair and the cell's fixed state vector, and a draw that gathers
-the bound vertex buffer through the CPU executor into a
+render-pass/pipeline/draw vocabulary -- the qualified linear color
+target at any extent inside the 64x64 maximum, a pipeline admitted by
+byte equality with the reference SPIR-V pair and the cell's fixed
+state vector, and a draw that gathers
+the bound vertex buffer through the CPU executor, applies the Vulkan
+viewport transform over the pass target's extent inside a bounded
+clip-volume domain (w exactly 1, NDC inside the clip volume, so
+scissor and clip coincide and the identity perspective divide is
+exact), and lands the window-space records in a
 command-buffer-owned carrier -- records the byte-identical cell IB
 through public `vkCmd*` entry points, at the drm-shim host-model class
 under the `r3v-native-public-surface` harness, and every contract
@@ -44,29 +49,45 @@ artifact the application compiles in.
 The recorded IB equals the digest the
 arming authority qualifies, so the command-stream grammar the silicon
 witnessed is what the public route records; the witness's rendered
-pixels are bound to the reference vertex payload the attended run
-carried, and a public draw with other in-range records or a nonzero
-`firstVertex` changes the carrier bytes the same IB fetches, an input
-set the silicon has not yet observed.  General vertex routes and the
+pixels are bound to the window-space payload the attended run carried,
+which the public route reproduces byte-exactly from the NDC triangle
+the viewport transform maps onto it; other in-domain records or a
+nonzero `firstVertex` change the carrier bytes the same IB fetches, an
+input set the silicon has not yet observed.  General vertex routes and the
 complete Vulkan semantic/conformance sections remain implementation
 contracts.
 
-Three capability claims outrun the one-cell surface, and each is a
+Two capability claims outrun the one-cell surface, and each is a
 recorded deferred conformance gap whose removal path is the native
-transfer, compute, and extent generalization of the expansion order
-below.  The graphics queue bit is required for `vkCmdDraw` validity,
-and the registry grants every graphics family the core transfer
-commands; the recording surface poisons those commands, so they fail
-closed with a reported error rather than misbehave, and the gap closes
-when native copies execute.  Vulkan 1.0 requires an implementation
-that exposes graphics to expose at least one family supporting both
-graphics and compute; the native family carries graphics alone, the
-compute commands fail closed, and the gap closes when a native compute
-route lands.  `VkImageFormatProperties` speaks only in maxima, so the
-reported 64x64 ceiling admits smaller extents that `vkCreateImage`
-refuses; the query vocabulary cannot state the exact-shape contract,
-reporting the combination unsupported would hide the one supported
-shape, and the gap closes when creation accepts in-range extents.
+transfer and compute expansion of the order below.  The graphics queue
+bit is required for `vkCmdDraw` validity, and the registry grants
+every graphics family the core transfer commands; the recording
+surface poisons those commands, so they fail closed with a reported
+error rather than misbehave, and the gap closes when native copies
+execute.  Vulkan 1.0 requires an implementation that exposes graphics
+to expose at least one family supporting both graphics and compute;
+the native family carries graphics alone, the compute commands fail
+closed, and the gap closes when a native compute route lands.  The
+extent gap is closed: `vkCreateImage` accepts every extent inside the
+reported 64x64 maximum, and the cell family realizes it -- in TCL
+bypass the extent reaches the hardware through the `SC_SCISSORS_BR`
+and `SC_CLIPRECT_BR_0` payloads alone, `RB3D_COLORPITCH0` keeps the
+64-pixel word because pitch is a memory-layout property, and at the
+maximum extent the emission is byte-identical to the silicon-witnessed
+reference cell, whose digest anchors the family.  The evidence classes
+split at the reference: the 64x64 cell is host-model proven,
+loader-boundary proven, and silicon witnessed; every other admitted
+extent is host-model proven only.  A non-maximum extent differs from
+the witnessed IB in the two scissor-family dwords, an input class the
+silicon has not observed, and the checked-in attended submitter
+records the 64x64 reference cell alone -- the arming runner's
+`--extent` option is a no-submit digest and IB-generation facility, so
+non-maximum silicon execution is blocked on a future parameterized
+public-route runner with extent-aware retention.  Host support and
+oracle eligibility are also separate sets: the extent oracle fails
+closed when a target carries no margin-qualified samples, so an
+API-admissible extent such as 1x1 is not thereby eligible for the
+triangle raster oracle.
 
 The bounded R300 R2VB `FLOAT_2` source transaction has one home:
 `r300-r2vb-float2-source-contract.md`. This document owns the implementation
@@ -121,7 +142,7 @@ structural query.
 | Deferred draw execution at queue submission | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native_queue.c` | `rg -n 'execute_deferred_draw' src/amd/r300/vulkan/` |
 | Native queue GRAPHICS advertisement and format subset | `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'VK_QUEUE_GRAPHICS_BIT\|R3V_NATIVE_BACKEND' src/amd/r300/vulkan/r3v_physical_device.c` |
 | Reference SPIR-V admission pair and its generator | `src/amd/r300/vulkan/r3v_native_reference_spirv.h`; `shaders/generate_reference_spirv.py` | `rg -n 'r3v_reference_vertex_spirv\|generate_reference_spirv' src/amd/r300/vulkan/` |
-| Loader-boundary application gate and its symbol audit | `src/amd/r300/vulkan/tests/r3v_native_loader_application.c`; `tests/r3v_native_loader_application_symbol_audit.py`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-loader-application|FORBIDDEN_PREFIXES|R3V_EXPECTED_ICD_DSO' src/amd/r300/vulkan/` |
+| Loader-boundary application gate and its symbol audit | `src/amd/r300/vulkan/tests/r3v_native_loader_application.c`; `src/amd/r300/vulkan/tests/r3v_native_loader_application_symbol_audit.py`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-loader-application\|FORBIDDEN_PREFIXES\|R3V_EXPECTED_ICD_DSO' src/amd/r300/vulkan/` |
 
 ## Current Gallium-backed R3V implementation
 
@@ -217,12 +238,16 @@ The landed mechanisms are:
   advertise the accepted subset (the linear B8G8R8A8 color target and
   the F32-family vertex formats), and one UMA heap sizes from
   `DRM_RADEON_GEM_INFO`;
-- the public graphics recording surface: the qualified 64x64 linear
-  image and identity view, the pipeline admitted by byte equality with
-  the reference SPIR-V pair and the cell's fixed state vector, and the
+- the public graphics recording surface: the qualified linear image
+  family at any extent inside the 64x64 maximum over the fixed
+  64-pixel pitch (larger extents refuse at creation), its identity
+  view, the pipeline admitted by byte equality with the reference
+  SPIR-V pair and the cell's fixed state vector with the
+  viewport/scissor pair as its target-extent claim, and the
   render-pass/bind/draw command subset whose draw lowers through the
-  CPU vertex carrier into the fixed cell, with the vertex gather and
-  load-op clear executing at queue submission;
+  CPU vertex carrier -- viewport-transformed inside the bounded
+  clip-volume domain -- into the extent-resolved cell, with the vertex
+  gather and load-op clear executing at queue submission;
 - the fixed TCL-bypass triangle lowered into a native command buffer by
   `r3v_native_record_tcl_bypass_triangle`, a private entry linked directly
   by the pre-hardware harness; the recording opens with the neutral
@@ -236,9 +261,9 @@ The landed mechanisms are:
 - the drm-shim triangle-cell harness driving both gate states, with the
   closed-gate retained IB byte-identical to the direct emitter.
 
-Compute pipelines, descriptors, transfers, WSI, extents and formats
-past the fixed cell, and native R2VB remain outside the landed
-surface. Live `DRM_RADEON_CS` submission
+Compute pipelines, descriptors, transfers, WSI, formats past the fixed
+cell, silicon witnesses for non-maximum extents, and native R2VB
+remain outside the landed surface. Live `DRM_RADEON_CS` submission
 has three attended witnesses, each kernel-accepted and retired clean:
 the bare inherited-state cell left the color target unwritten, the
 direct-write 2D control landed its probe bytes exactly, and the

@@ -14,13 +14,16 @@
 
 #include <string.h>
 
-/* Creation admits exactly the render-target shape the qualified cell
- * lowers: 2D, B8G8R8A8_UNORM, 64x64, one mip, one layer, one sample,
- * linear, exclusive, color-attachment usage alone -- readback of the
- * rendered pixels rides the host mapping of the bound memory, and a
- * transfer usage would promise copy commands the recording surface
- * poisons.  Every other shape refuses with a cleared handle, so no
- * image exists whose lowering the implementation cannot record.
+/* Creation admits the render-target family the cell lowers: 2D,
+ * B8G8R8A8_UNORM, any extent inside the 64x64 maximum over the fixed
+ * 64-pixel row pitch, one mip, one layer, one sample, linear,
+ * exclusive, color-attachment usage alone -- readback of the rendered
+ * pixels rides the host mapping of the bound memory, and a transfer
+ * usage would promise copy commands the recording surface poisons.
+ * The footprint follows the extent as pitch times height plus one
+ * oracle-headroom row.  Every other shape refuses with a cleared
+ * handle, so no image exists whose lowering the implementation cannot
+ * record.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
@@ -35,8 +38,10 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    if (pCreateInfo->flags != 0 ||
        pCreateInfo->imageType != VK_IMAGE_TYPE_2D ||
        pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
-       pCreateInfo->extent.width != R3V_NATIVE_TARGET_WIDTH ||
-       pCreateInfo->extent.height != R3V_NATIVE_TARGET_HEIGHT ||
+       pCreateInfo->extent.width < 1 ||
+       pCreateInfo->extent.width > R3V_NATIVE_TARGET_WIDTH ||
+       pCreateInfo->extent.height < 1 ||
+       pCreateInfo->extent.height > R3V_NATIVE_TARGET_HEIGHT ||
        pCreateInfo->extent.depth != 1 || pCreateInfo->mipLevels != 1 ||
        pCreateInfo->arrayLayers != 1 ||
        pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT ||
@@ -52,6 +57,8 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    if (image == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   image->width = pCreateInfo->extent.width;
+   image->height = pCreateInfo->extent.height;
    *pImage = r3v_native_image_to_handle(image);
    return VK_SUCCESS;
 }
@@ -74,16 +81,18 @@ r3v_DestroyImage(VkDevice _device, VkImage _image,
  * the extent alone.
  */
 VKAPI_ATTR void VKAPI_CALL
-r3v_GetImageMemoryRequirements(VkDevice _device, VkImage image,
+r3v_GetImageMemoryRequirements(VkDevice _device, VkImage _image,
                                VkMemoryRequirements *pMemoryRequirements)
 {
+   VK_FROM_HANDLE(r3v_native_image, image, _image);
+
    /* Type 0 alone: the draw's load-op clear executes through a CPU
     * mapping of the bound allocation, and type 1 allocates with
     * RADEON_GEM_NO_CPU_ACCESS, so an allocation the requirement admits
     * is always one the clear can map.
     */
    *pMemoryRequirements = (VkMemoryRequirements){
-      .size = R3V_NATIVE_TARGET_MEMORY_BYTES,
+      .size = r3v_native_image_footprint_bytes(image->height),
       .alignment = 4096,
       .memoryTypeBits = 0x1,
    };
@@ -126,7 +135,7 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
    VK_FROM_HANDLE(r3v_native_memory, memory, _memory);
 
    if (image == NULL || memory == NULL || memoryOffset != 0 ||
-       memory->bo.size < R3V_NATIVE_TARGET_MEMORY_BYTES)
+       memory->bo.size < r3v_native_image_footprint_bytes(image->height))
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    image->memory = memory;
@@ -154,14 +163,15 @@ r3v_BindImageMemory2(VkDevice _device, uint32_t bindInfoCount,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-r3v_GetImageSubresourceLayout(VkDevice _device, VkImage image,
+r3v_GetImageSubresourceLayout(VkDevice _device, VkImage _image,
                               const VkImageSubresource *pSubresource,
                               VkSubresourceLayout *pLayout)
 {
+   VK_FROM_HANDLE(r3v_native_image, image, _image);
+
    *pLayout = (VkSubresourceLayout){
       .offset = 0,
-      .size = (VkDeviceSize)R3V_NATIVE_TARGET_ROW_BYTES *
-              R3V_NATIVE_TARGET_HEIGHT,
+      .size = (VkDeviceSize)R3V_NATIVE_TARGET_ROW_BYTES * image->height,
       .rowPitch = R3V_NATIVE_TARGET_ROW_BYTES,
    };
 }

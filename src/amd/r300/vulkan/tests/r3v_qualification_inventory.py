@@ -62,6 +62,8 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-loader-sweep",
     "r3v-native-loader-application",
     "r3v-native-loader-application-known-bad-ib",
+    "r3v-native-loader-application-known-bad-corrupt_footprint",
+    "r3v-native-loader-application-known-bad-corrupt_tail",
     "r3v-native-loader-application-symbols",
     "r3v-native-loader-application-symbols-known-bad",
     "r3v-native-recording-poison",

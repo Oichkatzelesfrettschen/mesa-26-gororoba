@@ -36,13 +36,16 @@
 #define SENTINEL_PIXEL 0xa5a5a5a5u
 #define COLOR_SEED 0x5c5c5c5cu
 
-/* The reference triangle: screen-space positions inset in the 64x64
- * target, z = 0, w = 1, the payload the silicon witness rendered.
+/* The reference triangle in NDC: the driver's CPU vertex node applies
+ * the Vulkan viewport transform, and over the 64x64 target these
+ * positions map byte-exactly onto the window-space payload the silicon
+ * witness rendered -- (x + 1) * 32 lands on 8, 56, and 32 in binary32
+ * with no rounding.
  */
 static const float triangle_vertices[12] = {
-    8.0f,  8.0f, 0.0f, 1.0f,
-   56.0f,  8.0f, 0.0f, 1.0f,
-   32.0f, 56.0f, 0.0f, 1.0f,
+   -0.75f, -0.75f, 0.0f, 1.0f,
+    0.75f, -0.75f, 0.0f, 1.0f,
+    0.00f,  0.75f, 0.0f, 1.0f,
 };
 
 /* The loader resolves the ICD through its manifest, so the proof that
@@ -449,8 +452,11 @@ main(void)
     * survived.  The footprint is the declared memory contract -- the
     * row pitch times the height plus one oracle-headroom row -- pinned
     * against the requirements query so the oracle and the driver share
-    * one definition, then swept in full: every footprint dword is the
-    * sentinel and every tail dword keeps the seed.
+    * one definition, then swept in full.  An oracle failure exits with
+    * status 3, its own verdict class; the corrupt fixtures write one
+    * deviating dword through the application's own mapping before the
+    * sweep, so the exact-status calibration legs prove the sweep still
+    * judges bytes.
     */
    {
       const VkDeviceSize footprint_bytes =
@@ -459,12 +465,33 @@ main(void)
       uint32_t *color_map = NULL;
       assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                          (void **)&color_map) == VK_SUCCESS);
-      for (VkDeviceSize i = 0; i < footprint_bytes / 4; i++)
-         assert(color_map[i] == SENTINEL_PIXEL);
-      for (VkDeviceSize i = footprint_bytes / 4;
-           i < (footprint_bytes + 4096) / 4; i++)
-         assert(color_map[i] == COLOR_SEED);
+      const char *corrupt_footprint =
+         getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_FOOTPRINT");
+      const char *corrupt_tail =
+         getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_TAIL");
+      const VkDeviceSize footprint_dwords = footprint_bytes / 4;
+      if (corrupt_footprint != NULL && strcmp(corrupt_footprint, "1") == 0)
+         color_map[footprint_dwords / 2] = COLOR_SEED;
+      if (corrupt_tail != NULL && strcmp(corrupt_tail, "1") == 0)
+         color_map[footprint_dwords + 1] = SENTINEL_PIXEL;
+      VkDeviceSize mismatches = 0;
+      for (VkDeviceSize i = 0; i < footprint_dwords; i++) {
+         if (color_map[i] != SENTINEL_PIXEL)
+            mismatches++;
+      }
+      for (VkDeviceSize i = footprint_dwords;
+           i < (footprint_bytes + 4096) / 4; i++) {
+         if (color_map[i] != COLOR_SEED)
+            mismatches++;
+      }
       vkUnmapMemory(device, color_memory);
+      if (mismatches != 0) {
+         fprintf(stderr,
+                 "readback oracle: %llu deviating dwords in the cleared "
+                 "footprint or seeded tail\n",
+                 (unsigned long long)mismatches);
+         return 3;
+      }
    }
 
    /* Full public teardown. */
