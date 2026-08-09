@@ -66,7 +66,7 @@ static VkCommandPool pool;
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
    f(vkCmdCopyBufferToImage) f(vkCmdCopyImage) f(vkCmdCopyImageToBuffer)   \
-   f(vkCmdClearColorImage)                                                 \
+   f(vkCmdClearColorImage) f(vkCmdPipelineBarrier)                         \
    f(vkGetDeviceQueue) f(vkQueueSubmit) f(vkDestroyDevice)
 
 #define DECLARE(name) static PFN_##name name;
@@ -638,6 +638,27 @@ main(void)
       vkCmdCopyBufferToImage(copy_cmd, staging, img_a,
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                              &upload);
+      /* The canonical upload barrier records as an admitted no-op: the
+       * single-thread in-order execution already carries the
+       * dependency, and the round trip below proves the recording
+       * survives it.
+       */
+      vkCmdPipelineBarrier(
+         copy_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+         &(VkImageMemoryBarrier){
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = img_a,
+            .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                  .levelCount = 1,
+                                  .layerCount = 1 },
+         });
       const VkImageCopy cross = {
          .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                              .layerCount = 1 },
@@ -827,6 +848,32 @@ main(void)
       vkCmdCopyImage(bad_copy, img_a, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                      img_b, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                      &wrap_extent);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      /* Barrier refusals: an ownership transfer names a queue family
+       * the one-family device does not expose, and a barrier inside
+       * the render pass has no self-dependency lowering.
+       */
+      bad_copy = fresh_cmd();
+      vkCmdPipelineBarrier(
+         bad_copy, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
+         &(VkBufferMemoryBarrier){
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcQueueFamilyIndex = 0,
+            .dstQueueFamilyIndex = 1,
+            .buffer = staging,
+            .size = VK_WHOLE_SIZE,
+         },
+         0, NULL);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      bad_copy = fresh_cmd();
+      vkCmdBeginRenderPass(bad_copy, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdPipelineBarrier(bad_copy, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0,
+                           NULL, 0, NULL);
       assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
 
       bad_copy = fresh_cmd();
