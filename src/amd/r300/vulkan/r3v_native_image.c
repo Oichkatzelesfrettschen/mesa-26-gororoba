@@ -14,13 +14,16 @@
 
 #include <string.h>
 
-/* Creation admits exactly the render-target shape the qualified cell
- * lowers: 2D, B8G8R8A8_UNORM, 64x64, one mip, one layer, one sample,
- * linear, exclusive, color-attachment usage alone -- readback of the
- * rendered pixels rides the host mapping of the bound memory, and a
- * transfer usage would promise copy commands the recording surface
- * poisons.  Every other shape refuses with a cleared handle, so no
- * image exists whose lowering the implementation cannot record.
+/* Creation admits the render-target family the cell lowers: 2D,
+ * B8G8R8A8_UNORM, any extent inside the 64x64 maximum over the fixed
+ * 64-pixel row pitch, one mip, one layer, one sample, linear,
+ * exclusive, color-attachment usage alone -- readback of the rendered
+ * pixels rides the host mapping of the bound memory, and a transfer
+ * usage would promise copy commands the recording surface poisons.
+ * The footprint follows the extent as pitch times height plus one
+ * oracle-headroom row.  Every other shape refuses with a cleared
+ * handle, so no image exists whose lowering the implementation cannot
+ * record.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,

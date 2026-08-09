@@ -462,9 +462,13 @@ main(void)
       uint32_t *color_map = NULL;
       assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                          (void **)&color_map) == VK_SUCCESS);
-      if (getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_FOOTPRINT") != NULL)
+      const char *corrupt_footprint =
+         getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_FOOTPRINT");
+      const char *corrupt_tail =
+         getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_TAIL");
+      if (corrupt_footprint != NULL && strcmp(corrupt_footprint, "1") == 0)
          color_map[footprint_bytes / 8] = COLOR_SEED;
-      if (getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_TAIL") != NULL)
+      if (corrupt_tail != NULL && strcmp(corrupt_tail, "1") == 0)
          color_map[footprint_bytes / 4 + 1] = SENTINEL_PIXEL;
       VkDeviceSize mismatches = 0;
       for (VkDeviceSize i = 0; i < footprint_bytes / 4; i++) {

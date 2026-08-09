@@ -14,6 +14,7 @@
 
 #include "util/mesa-blake3.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,19 +102,31 @@ main(int argc, char **argv)
 {
    int argi = 1;
    if (argc >= argi + 3 && strcmp(argv[argi], "--extent") == 0) {
-      char *end = NULL;
-      cell_width = (uint32_t)strtoul(argv[argi + 1], &end, 10);
-      if (end == NULL || *end != '\0')
-         cell_width = 0;
-      cell_height = (uint32_t)strtoul(argv[argi + 2], &end, 10);
-      if (end == NULL || *end != '\0')
-         cell_height = 0;
-      if (cell_width < 1 || cell_width > R300_TRIANGLE_TARGET_WIDTH ||
-          cell_height < 1 || cell_height > R300_TRIANGLE_TARGET_HEIGHT) {
-         fprintf(stderr, "extent outside the admitted 1..%u x 1..%u\n",
-                 R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT);
-         return 2;
+      /* Authorization input parses fail-closed: the value is judged in
+       * the unnarrowed type against errno, the end pointer, and the
+       * admitted bounds before any assignment, so a declaration
+       * congruent to an admitted extent modulo 2^32 refuses instead of
+       * authorizing the wrong cell.
+       */
+      const unsigned long bounds[2] = { R300_TRIANGLE_TARGET_WIDTH,
+                                        R300_TRIANGLE_TARGET_HEIGHT };
+      unsigned long parsed[2];
+      for (int axis = 0; axis < 2; axis++) {
+         const char *text = argv[argi + 1 + axis];
+         char *end = NULL;
+         errno = 0;
+         parsed[axis] = strtoul(text, &end, 10);
+         if (errno != 0 || end == text || *end != '\0' ||
+             parsed[axis] < 1 || parsed[axis] > bounds[axis]) {
+            fprintf(stderr,
+                    "extent outside the admitted 1..%u x 1..%u\n",
+                    R300_TRIANGLE_TARGET_WIDTH,
+                    R300_TRIANGLE_TARGET_HEIGHT);
+            return 2;
+         }
       }
+      cell_width = (uint32_t)parsed[0];
+      cell_height = (uint32_t)parsed[1];
       argi += 3;
    }
 
