@@ -51,22 +51,27 @@ set the silicon has not yet observed.  General vertex routes and the
 complete Vulkan semantic/conformance sections remain implementation
 contracts.
 
-Three capability claims outrun the one-cell surface, and each is a
+Two capability claims outrun the one-cell surface, and each is a
 recorded deferred conformance gap whose removal path is the native
-transfer, compute, and extent generalization of the expansion order
-below.  The graphics queue bit is required for `vkCmdDraw` validity,
-and the registry grants every graphics family the core transfer
-commands; the recording surface poisons those commands, so they fail
-closed with a reported error rather than misbehave, and the gap closes
-when native copies execute.  Vulkan 1.0 requires an implementation
-that exposes graphics to expose at least one family supporting both
-graphics and compute; the native family carries graphics alone, the
-compute commands fail closed, and the gap closes when a native compute
-route lands.  `VkImageFormatProperties` speaks only in maxima, so the
-reported 64x64 ceiling admits smaller extents that `vkCreateImage`
-refuses; the query vocabulary cannot state the exact-shape contract,
-reporting the combination unsupported would hide the one supported
-shape, and the gap closes when creation accepts in-range extents.
+transfer and compute expansion of the order below.  The graphics queue
+bit is required for `vkCmdDraw` validity, and the registry grants
+every graphics family the core transfer commands; the recording
+surface poisons those commands, so they fail closed with a reported
+error rather than misbehave, and the gap closes when native copies
+execute.  Vulkan 1.0 requires an implementation that exposes graphics
+to expose at least one family supporting both graphics and compute;
+the native family carries graphics alone, the compute commands fail
+closed, and the gap closes when a native compute route lands.  The
+extent gap is closed: `vkCreateImage` accepts every extent inside the
+reported 64x64 maximum, and the cell family realizes it -- in TCL
+bypass the extent reaches the hardware through the `SC_SCISSORS_BR`
+and `SC_CLIPRECT_BR_0` payloads alone, `RB3D_COLORPITCH0` keeps the
+64-pixel word because pitch is a memory-layout property, and at the
+maximum extent the emission is byte-identical to the silicon-witnessed
+reference cell, whose digest anchors the family.  A non-maximum extent
+differs from the witnessed IB in those two dwords, an input class the
+silicon has not yet observed; that narrowing rides the same
+host-model-versus-silicon boundary as the vertex payload note above.
 
 The bounded R300 R2VB `FLOAT_2` source transaction has one home:
 `r300-r2vb-float2-source-contract.md`. This document owns the implementation

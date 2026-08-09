@@ -125,6 +125,22 @@ int r300_tcl_bypass_triangle_reference_contract(
 int r300_tcl_bypass_triangle_reference_emit(
    struct r300_tcl_bypass_triangle_ib *out);
 
+/* Emits the cell for a target extent inside the published maximum.  In
+ * TCL bypass the extent reaches the hardware through two register words
+ * alone -- SC_SCISSORS_BR and SC_CLIPRECT_BR_0, resolved by the
+ * first-draw contract with the non-R500 1440 bias -- while
+ * RB3D_COLORPITCH0 keeps the 64-pixel word for every admitted extent:
+ * COLORPITCH holds the pitch in 2-pixel units, pitch is a memory-layout
+ * property, and the scissor bounds the raster inside each fixed
+ * 256-byte row.  At the maximum extent the emission is byte-identical
+ * to the reference cell, so the qualified digest anchors the family;
+ * every other extent differs in the two scissor-family dwords alone.
+ * Returns -EINVAL for an extent outside 1..64 on either axis.
+ */
+int r300_tcl_bypass_triangle_extent_emit(
+   uint32_t width, uint32_t height,
+   struct r300_tcl_bypass_triangle_ib *out);
+
 /* The cell's render geometry.  The manifest publishes these and the contract
  * resolution derives scissor, clip, and pitch from them, so one change moves
  * every consumer together.  The allocation carries one row past the render

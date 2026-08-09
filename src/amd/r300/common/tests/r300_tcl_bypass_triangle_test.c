@@ -570,6 +570,57 @@ test_reloc_site_mutations_refuse(void)
    r300_fragment_binary_finish(&fs);
 }
 
+/* The extent family's two invariants: at the maximum extent the
+ * parameterized emission is byte-identical to the reference cell, so
+ * the qualified digest anchors the family; at any other extent exactly
+ * two dwords deviate -- the SC_SCISSORS_BR and SC_CLIPRECT_BR_0
+ * payloads the first-draw contract resolves from the extent -- so the
+ * pitch word and every other register class carry the qualified bytes.
+ */
+static void
+test_extent_emit_deviates_in_scissor_words_alone(void)
+{
+   struct r300_tcl_bypass_triangle_ib reference;
+   assert(r300_tcl_bypass_triangle_reference_emit(&reference) == 0);
+
+   struct r300_tcl_bypass_triangle_ib anchor;
+   assert(r300_tcl_bypass_triangle_extent_emit(
+             R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+             &anchor) == 0);
+   assert(anchor.ib_size_dwords == reference.ib_size_dwords);
+   assert(memcmp(anchor.ib, reference.ib,
+                 reference.ib_size_dwords * sizeof(uint32_t)) == 0);
+   r300_tcl_bypass_triangle_release(&anchor);
+
+   static const uint32_t extents[][2] = {
+      { 1, 1 }, { 17, 33 }, { 48, 20 }, { 33, 64 }, { 64, 1 },
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(extents); i++) {
+      struct r300_tcl_bypass_triangle_ib cell;
+      assert(r300_tcl_bypass_triangle_extent_emit(extents[i][0],
+                                                  extents[i][1],
+                                                  &cell) == 0);
+      assert(cell.ib_size_dwords == reference.ib_size_dwords);
+      uint32_t deviating = 0;
+      for (uint32_t d = 0; d < cell.ib_size_dwords; d++) {
+         if (cell.ib[d] != reference.ib[d])
+            deviating++;
+      }
+      assert(deviating == 2);
+      r300_tcl_bypass_triangle_release(&cell);
+   }
+
+   struct r300_tcl_bypass_triangle_ib refused;
+   assert(r300_tcl_bypass_triangle_extent_emit(0, 32, &refused) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_extent_emit(32, 0, &refused) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_extent_emit(
+             R300_TRIANGLE_TARGET_WIDTH + 1, 32, &refused) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_extent_emit(
+             32, R300_TRIANGLE_TARGET_HEIGHT + 1, &refused) == -EINVAL);
+
+   r300_tcl_bypass_triangle_release(&reference);
+}
+
 int
 main(void)
 {
@@ -586,6 +637,7 @@ main(void)
    test_emit_rejects_unvalidated_binary();
    test_colorpitch0_pack();
    test_output_oracle();
+   test_extent_emit_deviates_in_scissor_words_alone();
    printf("r300_tcl_bypass_triangle_test: all checks passed\n");
    return 0;
 }

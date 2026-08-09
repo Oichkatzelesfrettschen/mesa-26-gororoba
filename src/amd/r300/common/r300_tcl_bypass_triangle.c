@@ -295,16 +295,31 @@ r300_tcl_bypass_triangle_reference_contract(
 }
 
 int
-r300_tcl_bypass_triangle_reference_emit(
+r300_tcl_bypass_triangle_extent_emit(
+   uint32_t width, uint32_t height,
    struct r300_tcl_bypass_triangle_ib *out)
 {
+   if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
+       height > R300_TRIANGLE_TARGET_HEIGHT)
+      return -EINVAL;
+
    struct r300_fragment_binary fs;
    int rc = r300_tcl_bypass_triangle_reference_fs(&fs);
    if (rc != 0)
       return rc;
 
+   /* The extent parameterizes the contract's GEOMETRY_PARAMETER entries
+    * alone; the pitch word stays the reference cell's, so the row
+    * layout and every other register class are the qualified bytes.
+    */
+   struct r300_first_draw_params draw_params = {
+      .width = width,
+      .height = height,
+      .max_vtx_index = 2,
+      .texture_enabled = false,
+   };
    struct r300_first_draw_contract contract;
-   rc = r300_tcl_bypass_triangle_reference_contract(&contract);
+   rc = r300_first_draw_contract_resolve(&draw_params, &contract);
    if (rc != 0) {
       r300_fragment_binary_finish(&fs);
       return rc;
@@ -320,6 +335,15 @@ r300_tcl_bypass_triangle_reference_emit(
    rc = r300_tcl_bypass_triangle_emit(&params, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+int
+r300_tcl_bypass_triangle_reference_emit(
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   return r300_tcl_bypass_triangle_extent_emit(R300_TRIANGLE_TARGET_WIDTH,
+                                               R300_TRIANGLE_TARGET_HEIGHT,
+                                               out);
 }
 
 uint32_t

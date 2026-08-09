@@ -139,15 +139,18 @@ static VkResult
 emit_and_install_triangle_cell(struct r3v_native_device *device,
                                struct r3v_native_cmd_buffer *cmd_buffer,
                                struct r3v_native_memory *vertex_memory,
-                               struct r3v_native_memory *color_memory)
+                               struct r3v_native_memory *color_memory,
+                               uint32_t width, uint32_t height)
 {
-   /* The recorded cell is self-contained: the reference emission opens
-    * with the first-draw contract prefix, so the result does not ride
-    * whatever state the previous client left in the pipeline, and the
-    * same construction backs the arming digest and the manifest.
+   /* The recorded cell is self-contained: the emission opens with the
+    * first-draw contract prefix resolved at the target extent, so the
+    * result does not ride whatever state the previous client left in
+    * the pipeline; at the maximum extent the construction is the
+    * byte-identical reference cell backing the arming digest and the
+    * manifest.
     */
    struct r300_tcl_bypass_triangle_ib cell;
-   if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0)
+   if (r300_tcl_bypass_triangle_extent_emit(width, height, &cell) != 0)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
 
    /* Reference order is relocation-slot order: the queue folds the array
@@ -198,7 +201,9 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    if (result != VK_SUCCESS)
       return result;
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
-                                         color_memory);
+                                         color_memory,
+                                         R3V_NATIVE_TARGET_WIDTH,
+                                         R3V_NATIVE_TARGET_HEIGHT);
 }
 
 VkResult
@@ -206,18 +211,20 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
-   struct r3v_native_memory *color_memory)
+   struct r3v_native_image *target_image)
 {
+   struct r3v_native_memory *color_memory = target_image->memory;
    if (carrier_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
-       color_memory->bo.size < R3V_TRIANGLE_COLOR_BYTES) {
+       color_memory->bo.size <
+          r3v_native_image_footprint_bytes(target_image->height)) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: triangle cell needs %zu vertex bytes "
-                       "and %u color bytes",
-                       (size_t)R3V_TRIANGLE_VERTEX_BYTES,
-                       R3V_TRIANGLE_COLOR_BYTES);
+                       "and the target image's declared footprint",
+                       (size_t)R3V_TRIANGLE_VERTEX_BYTES);
    }
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
-                                         color_memory);
+                                         color_memory, target_image->width,
+                                         target_image->height);
 }
 
 /* Submission-time execution of the public draw: the bound stream reads
@@ -302,7 +309,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     * re-clears, the execution-time semantics each submit carries.
     */
    return sentinel_fill_color(device, draw->target_memory,
-                              R3V_NATIVE_TARGET_MEMORY_BYTES);
+                              draw->target_fill_bytes);
 }
 
 /* Carrier delivery: gathers the cell's three vertices from the caller's

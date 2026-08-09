@@ -63,20 +63,25 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
-       framebuffer->width != R3V_NATIVE_TARGET_WIDTH ||
-       framebuffer->height != R3V_NATIVE_TARGET_HEIGHT ||
        framebuffer->layers != 1 || framebuffer->attachment_count != 1) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
 
+   /* The framebuffer and render area name the attached image's own
+    * extent in full: the load-op clear realizes over the image
+    * footprint, so a partial render area would clear more than it
+    * declares.
+    */
    VK_FROM_HANDLE(r3v_native_image_view, view, framebuffer->attachments[0]);
    const VkRect2D *area = &pRenderPassBegin->renderArea;
    if (view == NULL || view->image == NULL ||
-       view->image->memory == NULL || area->offset.x != 0 ||
-       area->offset.y != 0 ||
-       area->extent.width != R3V_NATIVE_TARGET_WIDTH ||
-       area->extent.height != R3V_NATIVE_TARGET_HEIGHT ||
+       view->image->memory == NULL ||
+       framebuffer->width != view->image->width ||
+       framebuffer->height != view->image->height ||
+       area->offset.x != 0 || area->offset.y != 0 ||
+       area->extent.width != view->image->width ||
+       area->extent.height != view->image->height ||
        pRenderPassBegin->clearValueCount < 1 ||
        !clear_is_sentinel(&pRenderPassBegin->pClearValues[0])) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
@@ -169,6 +174,15 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
       return;
    }
 
+   /* The pipeline's viewport/scissor claim and the pass target carry
+    * one extent: the cell's scissor words resolve from it once.
+    */
+   if (pipeline->target_width != cmd_buffer->pass_target->width ||
+       pipeline->target_height != cmd_buffer->pass_target->height) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+
    /* The readable stream range is the bound buffer past the bind and
     * attribute offsets; the gather then proves each requested record
     * against it.  The buffer range itself must close inside the bound
@@ -220,7 +234,7 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    }
 
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
-      device, cmd_buffer, carrier, cmd_buffer->pass_target->memory);
+      device, cmd_buffer, carrier, cmd_buffer->pass_target);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);
@@ -237,6 +251,8 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
       .first_vertex = firstVertex,
       .format_id = pipeline->format_id,
       .target_memory = cmd_buffer->pass_target->memory,
+      .target_fill_bytes =
+         r3v_native_image_footprint_bytes(cmd_buffer->pass_target->height),
    };
    cmd_buffer->draw_recorded = true;
 }

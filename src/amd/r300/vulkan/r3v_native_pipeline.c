@@ -99,8 +99,15 @@ stages_match_reference(const VkGraphicsPipelineCreateInfo *info)
    return vertex_seen && fragment_seen;
 }
 
+/* The viewport/scissor pair is the pipeline's target-extent claim: both
+ * name one extent inside the published maximum at offset zero, the draw
+ * later requires it equal to the pass target's extent, and the
+ * matching cell resolves its scissor words from it.  Every other fixed
+ * state stays the cell's exact vector.
+ */
 static bool
-fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info)
+fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
+                         uint32_t *target_width, uint32_t *target_height)
 {
    const VkPipelineInputAssemblyStateCreateInfo *ia =
       info->pInputAssemblyState;
@@ -113,16 +120,21 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info)
        vp->pViewports == NULL || vp->pScissors == NULL)
       return false;
    const VkViewport *viewport = &vp->pViewports[0];
+   const VkRect2D *scissor = &vp->pScissors[0];
+   const uint32_t width = scissor->extent.width;
+   const uint32_t height = scissor->extent.height;
+   if (width < 1 || width > R3V_NATIVE_TARGET_WIDTH || height < 1 ||
+       height > R3V_NATIVE_TARGET_HEIGHT)
+      return false;
    if (viewport->x != 0.0f || viewport->y != 0.0f ||
-       viewport->width != (float)R3V_NATIVE_TARGET_WIDTH ||
-       viewport->height != (float)R3V_NATIVE_TARGET_HEIGHT ||
+       viewport->width != (float)width ||
+       viewport->height != (float)height ||
        viewport->minDepth != 0.0f || viewport->maxDepth != 1.0f)
       return false;
-   const VkRect2D *scissor = &vp->pScissors[0];
-   if (scissor->offset.x != 0 || scissor->offset.y != 0 ||
-       scissor->extent.width != R3V_NATIVE_TARGET_WIDTH ||
-       scissor->extent.height != R3V_NATIVE_TARGET_HEIGHT)
+   if (scissor->offset.x != 0 || scissor->offset.y != 0)
       return false;
+   *target_width = width;
+   *target_height = height;
 
    const VkPipelineRasterizationStateCreateInfo *rs =
       info->pRasterizationState;
@@ -187,10 +199,12 @@ create_pipeline(struct r3v_native_device *device,
 
    const struct r300_vertex_format_semantics *format =
       r300_vertex_format_semantics(format_id);
+   uint32_t target_width = 0, target_height = 0;
    if (format == NULL || info->flags != 0 ||
        vi->pVertexBindingDescriptions[0].stride <
           format->semantic_record_bytes ||
-       !stages_match_reference(info) || !fixed_state_matches_cell(info) ||
+       !stages_match_reference(info) ||
+       !fixed_state_matches_cell(info, &target_width, &target_height) ||
        layout == NULL || layout->set_count != 0 ||
        layout->push_range_count != 0 ||
        !r3v_native_render_pass_matches_cell(pass) || info->subpass != 0)
@@ -205,6 +219,8 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->format_id = (int)format_id;
    pipeline->binding_stride = vi->pVertexBindingDescriptions[0].stride;
    pipeline->attribute_offset = vi->pVertexAttributeDescriptions[0].offset;
+   pipeline->target_width = target_width;
+   pipeline->target_height = target_height;
 
    *pPipeline = r3v_native_pipeline_to_handle(pipeline);
    return VK_SUCCESS;
