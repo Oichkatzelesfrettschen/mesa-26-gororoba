@@ -67,6 +67,8 @@ static VkCommandPool pool;
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
    f(vkCmdCopyBufferToImage) f(vkCmdCopyImage) f(vkCmdCopyImageToBuffer)   \
    f(vkCmdClearColorImage) f(vkCmdPipelineBarrier)                         \
+   f(vkCreateFence) f(vkDestroyFence) f(vkWaitForFences)                   \
+   f(vkCreateSemaphore) f(vkDestroySemaphore)                              \
    f(vkGetDeviceQueue) f(vkQueueSubmit) f(vkDestroyDevice)
 
 #define DECLARE(name) static PFN_##name name;
@@ -849,6 +851,64 @@ main(void)
                      img_b, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                      &wrap_extent);
       assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      /* Synchronization vocabulary over the copy path: a fence
+       * signals at the synchronous submit's completion, a semaphore
+       * chains two submissions, and a re-submitted command buffer
+       * executes its recorded copies again -- the round trip's bytes
+       * are idempotent, so the second execution's correctness is the
+       * same byte oracle.
+       */
+      {
+         VkFence fence = VK_NULL_HANDLE;
+         assert(vkCreateFence(device,
+                              &(VkFenceCreateInfo){
+                                 .sType =
+                                    VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                              },
+                              NULL, &fence) == VK_SUCCESS);
+         VkSemaphore chain = VK_NULL_HANDLE;
+         assert(vkCreateSemaphore(
+                   device,
+                   &(VkSemaphoreCreateInfo){
+                      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                   },
+                   NULL, &chain) == VK_SUCCESS);
+
+         assert(vkQueueSubmit(queue, 1,
+                              &(VkSubmitInfo){
+                                 .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                 .commandBufferCount = 1,
+                                 .pCommandBuffers = &copy_cmd,
+                                 .signalSemaphoreCount = 1,
+                                 .pSignalSemaphores = &chain,
+                              },
+                              fence) == VK_SUCCESS);
+         assert(vkWaitForFences(device, 1, &fence, VK_TRUE,
+                                UINT64_MAX) == VK_SUCCESS);
+
+         const VkPipelineStageFlags chain_stage =
+            VK_PIPELINE_STAGE_TRANSFER_BIT;
+         assert(vkQueueSubmit(queue, 1,
+                              &(VkSubmitInfo){
+                                 .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                 .waitSemaphoreCount = 1,
+                                 .pWaitSemaphores = &chain,
+                                 .pWaitDstStageMask = &chain_stage,
+                                 .commandBufferCount = 1,
+                                 .pCommandBuffers = &copy_cmd,
+                              },
+                              VK_NULL_HANDLE) == VK_SUCCESS);
+
+         assert(vkMapMemory(device, staging_mem, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&staging_map) == VK_SUCCESS);
+         for (uint32_t t = 0; t < copy_w * copy_h; t++)
+            assert(staging_map[t + 512] == (0x40000000u | t));
+         vkUnmapMemory(device, staging_mem);
+
+         vkDestroySemaphore(device, chain, NULL);
+         vkDestroyFence(device, fence, NULL);
+      }
 
       /* Barrier refusals: an ownership transfer names a queue family
        * the one-family device does not expose, and a barrier inside
