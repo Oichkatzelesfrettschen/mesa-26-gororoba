@@ -31,7 +31,14 @@ HDR="${SELF_DIR}/../terakan_env.h"
 # anywhere.  The previous "terakan_env_gate_drv.XXXXXX.c" pattern
 # breaks on BSD because Xs are not trailing.  Use a private temp
 # directory + fixed filenames inside it for cross-platform safety.
-TMP_DIR="$(mktemp -d -t terakan_env_gate.XXXXXX)"
+if ! TMP_DIR="$(mktemp -d -t terakan_env_gate.XXXXXX)"; then
+    printf '%s\n' "temporary directory creation failed" >&2
+    exit 2
+fi
+if [ -z "${TMP_DIR}" ] || [ ! -d "${TMP_DIR}" ]; then
+    printf '%s\n' "temporary directory creation returned an invalid path" >&2
+    exit 2
+fi
 TMP_DRV="${TMP_DIR}/drv.c"
 TMP_BIN="${TMP_DIR}/drv.bin"
 trap 'rm -rf "${TMP_DIR}"' EXIT
