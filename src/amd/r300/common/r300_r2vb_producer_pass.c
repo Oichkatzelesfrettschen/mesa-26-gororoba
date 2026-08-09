@@ -110,7 +110,7 @@ r300_r2vb_producer_pass_emit_into(
     */
    for (uint32_t v = 0; v < layout->count; v++) {
       for (uint32_t c = 0; c < 4; c++) {
-         if (!r300_r2vb_f32_4_identity_admits(
+         if (!r300_r2vb_fp24_identity_admits(
                 float_bits(params->records[v][c])))
             return -EDOM;
       }

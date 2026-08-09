@@ -61,9 +61,9 @@ static void
 test_admission_predicate(void)
 {
    for (unsigned i = 0; i < sizeof(admitted_bits) / 4; i++)
-      assert(r300_r2vb_f32_4_identity_admits(admitted_bits[i]));
+      assert(r300_r2vb_fp24_identity_admits(admitted_bits[i]));
    for (unsigned i = 0; i < sizeof(refused_bits) / 4; i++)
-      assert(!r300_r2vb_f32_4_identity_admits(refused_bits[i]));
+      assert(!r300_r2vb_fp24_identity_admits(refused_bits[i]));
 }
 
 /* Records over the admitted vocabulary with a stride gap, so the
@@ -95,7 +95,7 @@ test_three_way_identity(void)
    for (unsigned i = 0; i < VERTS * 4 + 1; i++)
       delivered[i] = baseline[i] = dispatched[i] = CANARY;
 
-   assert(r300_r2vb_f32_4_identity_deliver(R300_VERTEX_FORMAT_F32_4,
+   assert(r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4,
                                            &stream, FIRST, VERTS, delivered,
                                            VERTS * 4) == 0);
    assert(r300_cpu_vertex_gather_baseline(R300_VERTEX_FORMAT_F32_4,
@@ -128,21 +128,47 @@ test_refusals(void)
    };
    uint32_t carrier[16];
 
-   assert(r300_r2vb_f32_4_identity_deliver(R300_VERTEX_FORMAT_F32_3,
+   assert(r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_1,
                                            &stream, 0, 3, carrier,
                                            16) == -EINVAL);
-   assert(r300_r2vb_f32_4_identity_deliver(R300_VERTEX_FORMAT_F32_4,
-                                           &stream, 0, 5, carrier,
-                                           16) == -ENOSPC);
-   assert(r300_r2vb_f32_4_identity_deliver(R300_VERTEX_FORMAT_F32_4,
+   /* A stride below the record size describes overlapping records, the
+    * binding the gather refuses; delivery holds the same contract.
+    */
+   const struct r300_cpu_vertex_stream overlapping = {
+      .data = data,
+      .stride = 12,
+      .size_bytes = sizeof(data),
+   };
+   assert(r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4,
+                                           &overlapping, 0, 3, carrier,
+                                           16) == -EINVAL);
+   assert(r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4,
+                                           &stream, 0, 4, carrier,
+                                           8) == -ENOSPC);
+   assert(r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4,
                                            &stream, 2, 3, carrier,
                                            16) == -EINVAL);
+   /* The bounds proof holds where a last_index * stride product wraps
+    * mod 2^64: the gather's divide form refuses this input, and the
+    * delivery holds the same contract instead of reading past the
+    * stream.
+    */
+   const struct r300_cpu_vertex_stream wrap = {
+      .data = data,
+      .stride = 0xffffffffu,
+      .size_bytes = 16,
+   };
+   assert(r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4, &wrap,
+                                     0xffffffffu, 3, carrier,
+                                     16) == -EINVAL);
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &wrap,
+                                 0xffffffffu, 3, carrier, 16) != 0);
 
    for (unsigned i = 0; i < sizeof(refused_bits) / 4; i++) {
       memcpy(data + 16 + 8, &refused_bits[i], 4);
       for (unsigned j = 0; j < 16; j++)
          carrier[j] = CANARY;
-      assert(r300_r2vb_f32_4_identity_deliver(R300_VERTEX_FORMAT_F32_4,
+      assert(r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4,
                                               &stream, 0, 4, carrier,
                                               16) == -EDOM);
       for (unsigned j = 0; j < 16; j++)
@@ -157,11 +183,109 @@ test_refusals(void)
    }
 }
 
+/* F32_3 and F32_2 delivery synthesizes the lanes past the source
+ * record exactly as the gather does -- Z as +0.0, W as 1.0 -- so the
+ * three-way byte identity extends to the synthesized shapes.  The
+ * domain scan covers the source lanes alone: bytes between the record
+ * end and the stride are binding padding the route never reads, so a
+ * refused bit pattern there delivers clean, while the same pattern
+ * inside a source lane refuses with the carrier untouched.
+ */
+static void
+test_synthesized_identity(void)
+{
+   static const int formats[2] = { R300_VERTEX_FORMAT_F32_3,
+                                   R300_VERTEX_FORMAT_F32_2 };
+   static const uint32_t record_bytes[2] = { 12, 8 };
+   const uint32_t stride = 20;
+   const uint32_t verts = 4;
+   const uint32_t first = 1;
+
+   for (unsigned f = 0; f < 2; f++) {
+      const unsigned lanes = record_bytes[f] / 4;
+      uint8_t data[(1 + 4) * 20];
+      memset(data, 0, sizeof(data));
+      for (uint32_t v = 0; v < first + verts; v++) {
+         for (unsigned lane = 0; lane < lanes; lane++) {
+            const uint32_t bits = admitted_bits[(v * lanes + lane) %
+                                                (sizeof(admitted_bits) / 4)];
+            memcpy(data + v * stride + lane * 4, &bits, 4);
+         }
+         /* Padding bytes carry a refused pattern (0.1's bits): the
+          * route reads record_bytes per record, so the pattern never
+          * scans.
+          */
+         const uint32_t off_grid = 0x3dcccccdu;
+         for (uint32_t pad = record_bytes[f]; pad + 4 <= stride; pad += 4)
+            memcpy(data + v * stride + pad, &off_grid, 4);
+      }
+      /* The record before first_vertex carries a refused pattern in its
+       * source lanes: the delivery scans the requested records alone,
+       * so it never reads it.
+       */
+      const uint32_t leading_off_grid = 0x3dcccccdu;
+      memcpy(data, &leading_off_grid, 4);
+
+      const struct r300_cpu_vertex_stream stream = {
+         .data = data,
+         .stride = stride,
+         .size_bytes = sizeof(data),
+      };
+
+      uint32_t delivered[4 * 4 + 1], baseline[4 * 4 + 1],
+         dispatched[4 * 4 + 1];
+      delivered[verts * 4] = CANARY;
+      baseline[verts * 4] = CANARY;
+      dispatched[verts * 4] = CANARY;
+      assert(r300_r2vb_identity_deliver(formats[f], &stream, first, verts,
+                                        delivered, verts * 4) == 0);
+      assert(r300_cpu_vertex_gather_baseline(formats[f], &stream, first,
+                                             verts, baseline,
+                                             verts * 4) == 0);
+      assert(r300_cpu_vertex_gather(formats[f], &stream, first, verts,
+                                    dispatched, verts * 4) == 0);
+      assert(memcmp(delivered, baseline, verts * 16) == 0);
+      assert(memcmp(delivered, dispatched, verts * 16) == 0);
+      assert(delivered[verts * 4] == CANARY &&
+             baseline[verts * 4] == CANARY &&
+             dispatched[verts * 4] == CANARY);
+      for (uint32_t v = 0; v < verts; v++) {
+         if (lanes < 3)
+            assert(delivered[v * 4 + 2] == 0);
+         assert(delivered[v * 4 + 3] == 0x3f800000u);
+      }
+
+      /* The same refused pattern inside a source lane refuses -EDOM
+       * with the carrier untouched, while the gather still carries it.
+       */
+      uint8_t bad[sizeof(data)];
+      memcpy(bad, data, sizeof(data));
+      const uint32_t off_grid = 0x3dcccccdu;
+      memcpy(bad + (first + 1) * stride + (lanes - 1) * 4, &off_grid, 4);
+      const struct r300_cpu_vertex_stream bad_stream = {
+         .data = bad,
+         .stride = stride,
+         .size_bytes = sizeof(bad),
+      };
+      for (unsigned j = 0; j < verts * 4 + 1; j++)
+         delivered[j] = CANARY;
+      assert(r300_r2vb_identity_deliver(formats[f], &bad_stream, first,
+                                        verts, delivered,
+                                        verts * 4) == -EDOM);
+      for (unsigned j = 0; j < verts * 4 + 1; j++)
+         assert(delivered[j] == CANARY);
+      assert(r300_cpu_vertex_gather(formats[f], &bad_stream, first, verts,
+                                    dispatched, verts * 4) == 0);
+      assert(dispatched[1 * 4 + (lanes - 1)] == off_grid);
+   }
+}
+
 int
 main(void)
 {
    test_admission_predicate();
    test_three_way_identity();
+   test_synthesized_identity();
    test_refusals();
    printf("r300_r2vb_carrier_delivery_test: all checks passed\n");
    return 0;

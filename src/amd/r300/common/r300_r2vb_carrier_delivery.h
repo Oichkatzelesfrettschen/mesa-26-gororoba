@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Host model of R2VB carrier delivery for the F32_4 identity plan: the
+ * Host model of R2VB carrier delivery for the F32 identity plan: the
  * producer pass that copies application vertex records into the native
  * TCL-bypass carrier through the fragment path.
  */
@@ -29,18 +29,25 @@
  * is the identity, so the delivery is a verbatim copy there and the
  * model needs no rounding arithmetic.
  */
-bool r300_r2vb_f32_4_identity_admits(uint32_t bits);
+bool r300_r2vb_fp24_identity_admits(uint32_t bits);
 
-/* Delivers vertex_count F32_4 records starting at first_vertex into the
- * carrier, the same contract as r300_cpu_vertex_gather: bounds prove in
- * 64-bit arithmetic before any write, -ENOSPC on carrier overrun,
- * -EINVAL on a format other than F32_4.  Every component must admit
- * into the FP24 fixed-point domain above; an out-of-domain component
- * refuses with -EDOM before any carrier write, so the caller's rollback
- * authority selects the CPU route instead of receiving bytes the
- * silicon producer would not reproduce.  Returns 0 on success.
+/* Delivers vertex_count F32_4, F32_3, or F32_2 records starting at
+ * first_vertex into the carrier, the same contract as
+ * r300_cpu_vertex_gather: bounds prove in the gather's wrap-free
+ * divide form before any read, a stride below the record size refuses
+ * the overlapping binding, -ENOSPC on carrier overrun, -EINVAL on any
+ * other format --
+ * F32_1's synthesized Y stays a CPU-route shape until its identity
+ * control exists.  Source components must admit into the FP24
+ * fixed-point domain above; an out-of-domain component refuses with
+ * -EDOM before any carrier write, so the caller's rollback authority
+ * selects the CPU route instead of receiving bytes the silicon
+ * producer would not reproduce.  The lanes past the source record
+ * synthesize as the gather does -- Z as +0.0, W as 1.0 -- values the
+ * producer embeds host-side, both FP24 fixed points by construction,
+ * so the synthesis needs no admission scan.  Returns 0 on success.
  */
-int r300_r2vb_f32_4_identity_deliver(
+int r300_r2vb_identity_deliver(
    int format_id, const struct r300_cpu_vertex_stream *stream,
    uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
    uint32_t carrier_dwords);

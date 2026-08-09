@@ -279,21 +279,24 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       };
       /* Delivery route selection: the CPU gather is the default and the
        * semantic oracle.  The R2VB identity delivery engages only on
-       * the exact opt-in value and the F32_4 format; it models the
-       * producer's passthrough copy on the FP24 fixed-point domain and
-       * refuses outside it, and the CPU gather then re-derives the same
-       * carrier -- a byte divergence falsifies the identity control and
-       * refuses the draw rather than submitting bytes the two routes
-       * disagree on.
+       * the exact opt-in value and the formats it models -- F32_4's
+       * verbatim copy plus F32_3 and F32_2 with their host-embedded
+       * Z = 0 / W = 1 synthesis; it holds the FP24 fixed-point domain
+       * and refuses outside it, and the CPU gather then re-derives the
+       * same carrier -- a byte divergence falsifies the identity
+       * control and refuses the draw rather than submitting bytes the
+       * two routes disagree on.
        */
       const char *r2vb_gate =
          getenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
       const bool r2vb_route =
          r2vb_gate != NULL && strcmp(r2vb_gate, "1") == 0 &&
-         stream.format_id == R300_VERTEX_FORMAT_F32_4;
+         (stream.format_id == R300_VERTEX_FORMAT_F32_4 ||
+          stream.format_id == R300_VERTEX_FORMAT_F32_3 ||
+          stream.format_id == R300_VERTEX_FORMAT_F32_2);
       int gathered;
       if (r2vb_route) {
-         gathered = r300_r2vb_f32_4_identity_deliver(
+         gathered = r300_r2vb_identity_deliver(
             stream.format_id, &source, stream.first_vertex,
             R300_TRIANGLE_VERTEX_DWORDS / 4, carrier->map,
             R300_TRIANGLE_VERTEX_DWORDS);
