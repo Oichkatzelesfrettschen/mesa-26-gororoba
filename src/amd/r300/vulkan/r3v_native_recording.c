@@ -514,7 +514,39 @@ r3v_CmdPipelineBarrier(
    uint32_t imageMemoryBarrierCount,
    const VkImageMemoryBarrier *pImageMemoryBarriers)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+
+   /* The deferred ops execute in recorded order on one host thread and
+    * every destination publishes before the submission retires, so
+    * execution dependencies, availability, and visibility all hold by
+    * construction and the barrier records nothing.  Admission still
+    * bounds the vocabulary to what that construction covers: barriers
+    * outside a render pass (the pass's one draw has no self-dependency
+    * lowering), no ownership transfer -- the device exposes one queue
+    * family, so an ownership-transferring pair names a family that
+    * does not exist -- and image barriers over color aspects of images
+    * this driver created.
+    */
+   if (cmd_buffer->pass_target != NULL) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   for (uint32_t i = 0; i < bufferMemoryBarrierCount; i++) {
+      const VkBufferMemoryBarrier *barrier = &pBufferMemoryBarriers[i];
+      if (barrier->srcQueueFamilyIndex != barrier->dstQueueFamilyIndex) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+   }
+   for (uint32_t i = 0; i < imageMemoryBarrierCount; i++) {
+      const VkImageMemoryBarrier *barrier = &pImageMemoryBarriers[i];
+      if (barrier->srcQueueFamilyIndex != barrier->dstQueueFamilyIndex ||
+          barrier->subresourceRange.aspectMask !=
+             VK_IMAGE_ASPECT_COLOR_BIT) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL

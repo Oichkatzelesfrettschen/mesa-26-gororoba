@@ -299,11 +299,18 @@ The landed mechanisms are:
   at queue submission through host mappings, with each destination
   published for the unsnooped GART; a copy-carrying command buffer
   holds no IB and reaches no ioctl.  The format query, the advertised
-  transfer features, and creation admit the same family.  Usage mixing
-  the families refuses, no view admits the family, and a command
-  buffer carries either the qualified render pass or copies, so the
-  attachment path and the qualified render cell never see a transfer
-  image.
+  transfer features, and creation admit the same family.
+  `vkCmdPipelineBarrier` outside a render pass records as an admitted
+  no-op -- the deferred ops execute in recorded order on one host
+  thread and every destination publishes before the submission
+  retires, so execution dependencies, availability, and visibility
+  hold by construction -- while an ownership-transferring barrier
+  refuses (the device exposes one queue family) and an in-pass
+  barrier refuses (the pass's one draw has no self-dependency
+  lowering).  Usage mixing the families refuses, no view admits the
+  family, and a command buffer carries either the qualified render
+  pass or copies, so the attachment path and the qualified render
+  cell never see a transfer image.
 - the delivery route resolver (`r300_delivery_route_resolve`): the one
   home of the route policy the deferred draw consults -- CPU gather by
   default, the R2VB host model on the exact gate value and the three
