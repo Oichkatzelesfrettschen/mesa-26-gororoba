@@ -277,11 +277,28 @@ The landed mechanisms are:
   semantic oracle at every R2VB execution, and a byte divergence
   refuses the draw.  The CPU route is the default, the delivered PM4 is
   unchanged, and the route is host-model evidence only.
+- the R2VB producer-pass PM4 emitter (`r300_r2vb_producer_pass`): the
+  raster pass that writes an F32_4 carrier through the color backend --
+  first-draw contract prefix, target prologue (destination-cache barrier,
+  carrier retarget to C4_32_FP with one read-write GTT relocation, BGRA
+  output select canceling the body's (z, y, x, w) pre-swizzle, full-write
+  blend state, one-pixel point raster), the embedded `3D_DRAW_IMMD_2`
+  POINTS body (`VAP_VTX_SIZE` = 8, one slot center plus one pre-swizzled
+  record per vertex, 2047-vertex ceiling from the packet header's 14-bit
+  payload field), and the publication tail whose closing
+  `VAP_PVS_STATE_FLUSH_REG = 0` syncs the vertex engine so a later fetch
+  of the same BO cannot read stale vertex-cache content.  The emission
+  refuses records outside the FP24 fixed-point domain with -EDOM.  The
+  reference pass replays clean through the kernel CS-track model (accept,
+  one relocation; truncation, undersized `VAP_VTX_SIZE`, and an
+  undersized carrier each reject), and the TCL-bypass width predicate
+  declines its PRIM_WALK-3 draw by declared scope.  No-submit structural
+  evidence only.
 
 Compute pipelines, descriptors, transfers, WSI, formats past the fixed
-cell, silicon witnesses for non-maximum extents, the R2VB producer-pass
-PM4 emitter (target prologue, POINTS body, PVS-flush publication
-tail), and live R2VB delivery remain outside the landed surface. Live `DRM_RADEON_CS` submission
+cell, silicon witnesses for non-maximum extents, the producer US
+program and its RS varying routing, and live R2VB delivery remain
+outside the landed surface. Live `DRM_RADEON_CS` submission
 has three attended witnesses, each kernel-accepted and retired clean:
 the bare inherited-state cell left the color target unwritten, the
 direct-write 2D control landed its probe bytes exactly, and the
