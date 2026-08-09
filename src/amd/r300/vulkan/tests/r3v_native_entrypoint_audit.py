@@ -34,6 +34,9 @@ Modes:
   --drop NAME  remove NAME from the parsed native symbol set before the
                verdict; the known-bad fixtures use it to prove each verdict
                fails on a surface that lost one entrypoint
+  --deny-refusal NAME
+               remove REFUSAL_RESULT from NAME's parsed registry result set;
+               the known-bad fixture calibrates the full result-bearing set
 """
 
 import re
@@ -54,8 +57,9 @@ SCOPE_OVERRIDE = {"GetInstanceProcAddr": "global"}
 # The result every native refusal returns, held identical to
 # R3V_NATIVE_REFUSAL_RESULT in r3v_native.h.  --enforce intersects the
 # permitted error sets of every native core 1.0 device command returning
-# VkResult and requires this member: the behavior class below describes what a
-# command does, and any of them can reach a refusal path.
+# VkResult and requires this member.  This conservative whole-surface
+# intersection binds every result-bearing entrypoint to one registry result
+# contract; the behavior class below describes each narrower execution path.
 REFUSAL_RESULT = "VK_ERROR_UNKNOWN"
 
 # VK_ERROR_VALIDATION_FAILED also spans every command, and validation layers
@@ -614,8 +618,22 @@ def main():
     argv = sys.argv[5:]
     mode = argv[0]
     dropped = {argv[i + 1] for i, a in enumerate(argv) if a == "--drop"}
+    denied_refusal = {
+        argv[i + 1] for i, a in enumerate(argv) if a == "--deny-refusal"
+    }
 
     reg = parse_registry(Path(vk_xml))
+    for command in sorted(denied_refusal):
+        return_type, results = reg.results.get(command, ("", ()))
+        if return_type != "VkResult" or REFUSAL_RESULT not in results:
+            print(f"model failure: {command} cannot calibrate the refusal "
+                  "result set")
+            return 2
+        reg.results[command] = (
+            return_type,
+            tuple(result for result in results if result != REFUSAL_RESULT),
+        )
+        print(f"refusal-result fixture denies {REFUSAL_RESULT} for {command}")
     native, common = linked_symbols(nm, library)
     deps = scan_common_deps(Path(runtime_dir))
     # The known-bad fixtures remove one entrypoint from the parsed surface;
@@ -667,14 +685,14 @@ def main():
         emit_policy(reg, native, common, deps)
         return 0
 
-    # The refusal result must be permitted by every command that refuses, and
-    # the classification must cover every native core command, so a new
-    # entrypoint arrives with a class rather than widening the surface in
-    # silence.  Every native command returning VkResult can reach a refusal
-    # path, so the legality check spans that whole surface rather than the
-    # unconditionally refusing subset: vkFlushMappedMemoryRanges executes on
-    # the native transport and still returns the refusal result for a range it
-    # rejects.
+    # Every refusing command's registry result set must permit the refusal
+    # result, and every native core command carries one behavior class.  The
+    # refusal-result legality check conservatively spans every native core
+    # command returning VkResult.  The whole result-bearing surface therefore
+    # shares one registry result contract, while individual implementations
+    # may expose narrower conditional paths:
+    # vkFlushMappedMemoryRanges executes on the native transport and still
+    # returns the refusal result for a range it rejects.
     refusing = {n for n in core_device & native
                 if reg.results.get(n, ("void", ()))[0] == "VkResult"}
     permitted = permitted_refusal_results(reg, refusing)
