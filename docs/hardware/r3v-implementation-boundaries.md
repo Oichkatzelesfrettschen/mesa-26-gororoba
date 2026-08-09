@@ -126,7 +126,7 @@ structural query.
 | Deferred draw execution at queue submission | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native_queue.c` | `rg -n 'execute_deferred_draw' src/amd/r300/vulkan/` |
 | Native queue GRAPHICS advertisement and format subset | `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'VK_QUEUE_GRAPHICS_BIT\|R3V_NATIVE_BACKEND' src/amd/r300/vulkan/r3v_physical_device.c` |
 | Reference SPIR-V admission pair and its generator | `src/amd/r300/vulkan/r3v_native_reference_spirv.h`; `shaders/generate_reference_spirv.py` | `rg -n 'r3v_reference_vertex_spirv\|generate_reference_spirv' src/amd/r300/vulkan/` |
-| Loader-boundary application gate and its symbol audit | `src/amd/r300/vulkan/tests/r3v_native_loader_application.c`; `tests/r3v_native_loader_application_symbol_audit.py`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-loader-application|FORBIDDEN_PREFIXES|R3V_EXPECTED_ICD_DSO' src/amd/r300/vulkan/` |
+| Loader-boundary application gate and its symbol audit | `src/amd/r300/vulkan/tests/r3v_native_loader_application.c`; `src/amd/r300/vulkan/tests/r3v_native_loader_application_symbol_audit.py`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-loader-application|FORBIDDEN_PREFIXES|R3V_EXPECTED_ICD_DSO' src/amd/r300/vulkan/` |
 
 ## Current Gallium-backed R3V implementation
 

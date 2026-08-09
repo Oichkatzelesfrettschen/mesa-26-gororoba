@@ -449,8 +449,11 @@ main(void)
     * survived.  The footprint is the declared memory contract -- the
     * row pitch times the height plus one oracle-headroom row -- pinned
     * against the requirements query so the oracle and the driver share
-    * one definition, then swept in full: every footprint dword is the
-    * sentinel and every tail dword keeps the seed.
+    * one definition, then swept in full.  An oracle failure exits with
+    * status 3, its own verdict class; the corrupt fixtures write one
+    * deviating dword through the application's own mapping before the
+    * sweep, so the exact-status calibration legs prove the sweep still
+    * judges bytes.
     */
    {
       const VkDeviceSize footprint_bytes =
@@ -459,12 +462,28 @@ main(void)
       uint32_t *color_map = NULL;
       assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                          (void **)&color_map) == VK_SUCCESS);
-      for (VkDeviceSize i = 0; i < footprint_bytes / 4; i++)
-         assert(color_map[i] == SENTINEL_PIXEL);
+      if (getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_FOOTPRINT") != NULL)
+         color_map[footprint_bytes / 8] = COLOR_SEED;
+      if (getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_TAIL") != NULL)
+         color_map[footprint_bytes / 4 + 1] = SENTINEL_PIXEL;
+      VkDeviceSize mismatches = 0;
+      for (VkDeviceSize i = 0; i < footprint_bytes / 4; i++) {
+         if (color_map[i] != SENTINEL_PIXEL)
+            mismatches++;
+      }
       for (VkDeviceSize i = footprint_bytes / 4;
-           i < (footprint_bytes + 4096) / 4; i++)
-         assert(color_map[i] == COLOR_SEED);
+           i < (footprint_bytes + 4096) / 4; i++) {
+         if (color_map[i] != COLOR_SEED)
+            mismatches++;
+      }
       vkUnmapMemory(device, color_memory);
+      if (mismatches != 0) {
+         fprintf(stderr,
+                 "readback oracle: %llu deviating dwords in the cleared "
+                 "footprint or seeded tail\n",
+                 (unsigned long long)mismatches);
+         return 3;
+      }
    }
 
    /* Full public teardown. */

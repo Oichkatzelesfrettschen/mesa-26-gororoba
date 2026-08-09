@@ -966,6 +966,32 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
 
+      # Readback-oracle calibration: each corrupt fixture writes one
+      # deviating dword through the application's own mapping before
+      # the sweep, and the leg asserts the oracle's own status 3
+      # exactly, so a sweep that stopped judging bytes fails here.
+      foreach oracle_leak : ['CORRUPT_FOOTPRINT', 'CORRUPT_TAIL']
+        test(
+          'r3v-native-loader-application-known-bad-@0@'.format(
+            oracle_leak.to_lower()),
+          find_program('sh'),
+          args : [
+            '-c',
+            'd=$(mktemp -d) && R3V_NATIVE_MANIFEST_DIR="$d" "$1"; s=$?; ' +
+            'rm -rf "$d"; test $s -eq 3',
+            'assert-oracle',
+            r3v_native_loader_application.full_path(),
+          ],
+          env : environment(r3v_native_loader_app_vars + {
+            'R3V_LOADER_APP_FIXTURE_@0@'.format(oracle_leak) : '1',
+          }),
+          depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
+                     _native_dev_icd, r3v_native_loader_application],
+          timeout : 120,
+          suite : ['r3v'],
+        )
+      endforeach
+
       # The application's black-box claim as an executable audit: no
       # driver symbol in any binding, and the Vulkan surface imported
       # from the loader.  The known-bad leg runs the same audit against
