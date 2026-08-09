@@ -533,7 +533,9 @@ distcc-probe-directory-test:
 	echo "OK    distcc probe directory rejects a missing path"; \
 	created_path="$$tmpdir/created"; \
 	mktemp() { mkdir -- "$$created_path"; printf '%s\n' "$$created_path"; }; \
-	if ! $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
+	if $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
+		:; \
+	else \
 		echo "FAIL  distcc probe directory rejected a created path" >&2; \
 		exit 1; \
 	fi; \
@@ -547,7 +549,9 @@ distcc-probe-directory-test:
 	mkdir -- "$$space_tmpdir"; \
 	mktemp() { command mktemp "$$@"; }; \
 	TMPDIR="$$space_tmpdir"; export TMPDIR; \
-	if ! $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
+	if $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
+		:; \
+	else \
 		echo "FAIL  distcc probe directory rejected a TMPDIR path with spaces" >&2; \
 		exit 1; \
 	fi; \
