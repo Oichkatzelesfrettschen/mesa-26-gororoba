@@ -82,6 +82,35 @@ execute_copy(struct r3v_native_device *device,
       dst_base_offset = op->buffer->offset + op->buffer_offset;
       dst_pitch = op->buffer_row_length * 4;
       break;
+   case R3V_NATIVE_COPY_CLEAR_IMAGE: {
+      /* One mapping, one fill: the packed texel lands across the full
+       * extent, the row walk skipping the pitch padding the family
+       * leaves untouched.
+       */
+      dst_memory = op->dst_image->memory;
+      if (dst_memory == NULL)
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: clear destination is unbound at "
+                          "submission");
+      uint8_t *clear_map;
+      bool clear_owned;
+      VkResult clear_result =
+         map_memory(device, dst_memory, &clear_map, &clear_owned);
+      if (clear_result != VK_SUCCESS)
+         return clear_result;
+      for (uint32_t row = 0; row < op->height; row++) {
+         uint32_t *texels =
+            (uint32_t *)(clear_map +
+                         (uint64_t)row * op->dst_image->row_pitch_bytes);
+         for (uint32_t x = 0; x < op->width; x++)
+            texels[x] = op->clear_dword;
+      }
+      if (!clear_owned)
+         radeon_drm_vk_bo_cache_sync(&device->drm, clear_map,
+                                     dst_memory->bo.size);
+      release_memory(device, dst_memory, clear_owned);
+      return VK_SUCCESS;
+   }
    case R3V_NATIVE_COPY_IMAGE_TO_IMAGE:
       src_memory = op->src_image->memory;
       src_base_offset = (uint64_t)op->src_y * op->src_image->row_pitch_bytes +
