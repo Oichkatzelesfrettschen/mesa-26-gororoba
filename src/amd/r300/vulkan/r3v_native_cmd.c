@@ -43,6 +43,7 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->vertex_bound = false;
    cmd_buffer->draw_recorded = false;
    cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){0};
+   cmd_buffer->deferred_copy_count = 0;
 }
 
 void

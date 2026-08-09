@@ -57,6 +57,33 @@ struct r3v_native_buffer;
  * the bound buffer and target memory alive until execution completes,
  * the lifetime the Vulkan command-buffer contract already requires.
  */
+/* One recorded transfer copy over the linear families.  Regions are
+ * admitted at record time -- subresource, bounds, usage, and the
+ * buffer byte footprint -- so execution resolves mappings and moves
+ * rows without re-deciding validity.  buffer_row_length is resolved to
+ * texels at record: the region's bufferRowLength, or the copy width
+ * when the application passed zero.
+ */
+enum r3v_native_copy_kind {
+   R3V_NATIVE_COPY_BUFFER_TO_IMAGE,
+   R3V_NATIVE_COPY_IMAGE_TO_BUFFER,
+   R3V_NATIVE_COPY_IMAGE_TO_IMAGE,
+};
+
+struct r3v_native_deferred_copy {
+   enum r3v_native_copy_kind kind;
+   struct r3v_native_buffer *buffer;
+   struct r3v_native_image *src_image;
+   struct r3v_native_image *dst_image;
+   uint64_t buffer_offset;
+   uint32_t buffer_row_length;
+   uint32_t src_x, src_y;
+   uint32_t dst_x, dst_y;
+   uint32_t width, height;
+};
+
+#define R3V_NATIVE_MAX_DEFERRED_COPIES 16
+
 struct r3v_native_deferred_draw {
    bool pending;
    struct r3v_native_buffer *buffer;
@@ -104,6 +131,15 @@ struct r3v_native_cmd_buffer {
    bool draw_recorded;
    struct r3v_native_memory *owned_carrier;
    struct r3v_native_deferred_draw deferred_draw;
+   /* Recorded transfer copies, executed in order at submission through
+    * host mappings of the bound memory.  A command buffer carries
+    * either the qualified render pass or transfer copies; the
+    * recording refuses the mix, so execution order between the two
+    * never arises.
+    */
+   struct r3v_native_deferred_copy
+      deferred_copies[R3V_NATIVE_MAX_DEFERRED_COPIES];
+   uint32_t deferred_copy_count;
 };
 
 struct r3v_native_queue {
@@ -171,13 +207,52 @@ r3v_native_image_footprint_bytes(uint32_t height)
    return (uint64_t)R3V_NATIVE_TARGET_ROW_BYTES * (height + 1);
 }
 
+/* The linear transfer family: B8G8R8A8_UNORM 2D images under transfer
+ * usage alone, at any extent inside 2048 per axis -- a deliberately
+ * conservative policy bound taken from the RS48x single-tile texture
+ * ceiling, below every constraint that could bind a linear surface.
+ * The row pitch aligns each row to 64 bytes: the 2D engine's
+ * DST_PITCH_OFFSET word carries the pitch in 64-byte units, so every
+ * transfer-family row layout stays addressable by the qualified
+ * direct-write 2D path.  The recorded vkCmdCopy* subset executes the
+ * family's copies through host mappings at submission, so the
+ * footprint is the rows alone; the oracle-headroom row is the render
+ * family's contract.
+ */
+#define R3V_NATIVE_TRANSFER_DIMENSION_MAX 2048
+
+static inline uint32_t
+r3v_native_transfer_row_pitch_bytes(uint32_t width)
+{
+   return (width * 4 + 63u) & ~63u;
+}
+
+static inline uint64_t
+r3v_native_transfer_footprint_bytes(uint32_t width, uint32_t height)
+{
+   return (uint64_t)r3v_native_transfer_row_pitch_bytes(width) * height;
+}
+
 struct r3v_native_image {
    struct vk_object_base base;
    /* Bound memory, offset zero; the cell references the BO base. */
    struct r3v_native_memory *memory;
-   /* Creation extent, inside the published maximum. */
+   /* Creation extent, inside the family's published maximum. */
    uint32_t width;
    uint32_t height;
+   /* Row layout in bytes: the fixed target pitch for the render
+    * family, the width-derived 64-byte-aligned pitch for the transfer
+    * family.
+    */
+   uint32_t row_pitch_bytes;
+   /* Creation usage; the copy recording admits each direction by its
+    * bit.
+    */
+   VkImageUsageFlags usage;
+   /* Set for the transfer family: usage is transfer alone, so no view,
+    * render pass, or attachment path admits the image.
+    */
+   bool transfer_family;
 };
 
 struct r3v_native_image_view {
@@ -307,6 +382,14 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
  * and sentinel-clears the target image's declared memory footprint, each
  * published for the unsnooped GART while its mapping is live.
  */
+/* Executes the command buffer's recorded transfer copies in order at
+ * submission, each through host mappings of the bound memory with the
+ * destination published for the unsnooped GART.
+ */
+VkResult r3v_native_cmd_buffer_execute_deferred_copies(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer);
+
 VkResult r3v_native_cmd_buffer_execute_deferred_draw(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer);

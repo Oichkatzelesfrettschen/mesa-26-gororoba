@@ -282,6 +282,26 @@ The landed mechanisms are:
   semantic oracle at every R2VB execution, and a byte divergence
   refuses the draw.  The CPU route is the default, the delivered PM4 is
   unchanged, and the route is host-model evidence only.
+- the linear transfer image family and its synchronous copies:
+  B8G8R8A8_UNORM 2D images under transfer usage alone at any extent
+  inside 2048 per axis, a deliberately conservative policy bound taken
+  from the RS48x single-tile texture ceiling.  The row pitch aligns
+  each row to 64 bytes -- the 2D engine's DST_PITCH_OFFSET word
+  carries pitch in 64-byte units, so every family row layout stays
+  addressable by the qualified direct-write 2D path -- and the
+  footprint is the rows alone; the oracle-headroom row is the render
+  family's contract.  `vkCmdCopyBufferToImage`,
+  `vkCmdCopyImageToBuffer`, and `vkCmdCopyImage` record region-admitted
+  deferred copies -- subresource, bounds, usage bits, and the buffer
+  byte footprint all prove at record time -- and execute them in order
+  at queue submission through host mappings, with each destination
+  published for the unsnooped GART; a copy-carrying command buffer
+  holds no IB and reaches no ioctl.  The format query, the advertised
+  transfer features, and creation admit the same family.  Usage mixing
+  the families refuses, no view admits the family, and a command
+  buffer carries either the qualified render pass or copies, so the
+  attachment path and the qualified render cell never see a transfer
+  image.
 - the delivery route resolver (`r300_delivery_route_resolve`): the one
   home of the route policy the deferred draw consults -- CPU gather by
   default, the R2VB host model on the exact gate value and the three
