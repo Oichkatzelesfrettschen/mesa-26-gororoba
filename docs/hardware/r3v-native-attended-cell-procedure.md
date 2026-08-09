@@ -96,7 +96,12 @@ The run proceeds only when all of the following hold.
 The submission gate is a conjunction; every factor is declared by the
 operator and matched by the driver, and no factor has a bypass.
 
-1. Build the cell and read its digest from the runner's report.
+1. Build the cell and read its digest from the runner's report. The
+   default report names the maximum-extent reference cell; an attended
+   run targeting another admitted extent passes `--extent <w> <h>` to
+   the runner so the declared digest names the exact IB the recorder
+   installs for that target, and the queue's digest check then admits
+   that one variant and refuses every other.
 2. Declare the authorization:
    - `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1`
    - `R3V_NATIVE_AUTHORIZED_IB_BLAKE3=<digest from step 1>`

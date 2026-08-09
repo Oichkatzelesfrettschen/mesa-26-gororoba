@@ -747,6 +747,10 @@ main(void)
       vkCmdBindVertexBuffers(mismatch_cmd, 0, 1, &vertex_buffer,
                              &(VkDeviceSize){ 0 });
       vkCmdDraw(mismatch_cmd, 3, 1, 0, 0);
+      /* The pass closes, so the refusal below is the draw's
+       * extent-mismatch poison rather than the open-pass poison.
+       */
+      vkCmdEndRenderPass(mismatch_cmd);
       assert(vkEndCommandBuffer(mismatch_cmd) ==
              R3V_NATIVE_REFUSAL_RESULT);
 

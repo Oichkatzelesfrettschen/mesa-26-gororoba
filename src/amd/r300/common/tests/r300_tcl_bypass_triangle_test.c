@@ -592,10 +592,21 @@ test_extent_emit_deviates_in_scissor_words_alone(void)
                  reference.ib_size_dwords * sizeof(uint32_t)) == 0);
    r300_tcl_bypass_triangle_release(&anchor);
 
+   /* Scissor and clip-rectangle payloads on non-R500 silicon carry a
+    * 1440 bias in both axes, packed x | (y << 13); the reference cell's
+    * two BR payloads hold the maximum extent's word, and an extent
+    * variant replaces exactly those two payloads with its own.
+    */
+   const uint32_t reference_br =
+      (R300_TRIANGLE_TARGET_WIDTH - 1 + 1440) |
+      ((R300_TRIANGLE_TARGET_HEIGHT - 1 + 1440) << 13);
+
    static const uint32_t extents[][2] = {
       { 1, 1 }, { 17, 33 }, { 48, 20 }, { 33, 64 }, { 64, 1 },
    };
    for (unsigned i = 0; i < ARRAY_SIZE(extents); i++) {
+      const uint32_t extent_br = (extents[i][0] - 1 + 1440) |
+                                 ((extents[i][1] - 1 + 1440) << 13);
       struct r300_tcl_bypass_triangle_ib cell;
       assert(r300_tcl_bypass_triangle_extent_emit(extents[i][0],
                                                   extents[i][1],
@@ -603,8 +614,15 @@ test_extent_emit_deviates_in_scissor_words_alone(void)
       assert(cell.ib_size_dwords == reference.ib_size_dwords);
       uint32_t deviating = 0;
       for (uint32_t d = 0; d < cell.ib_size_dwords; d++) {
-         if (cell.ib[d] != reference.ib[d])
+         if (cell.ib[d] != reference.ib[d]) {
+            /* Each deviating dword is a BR payload: the reference held
+             * the maximum extent's biased word there, and the variant
+             * holds its own extent's word.
+             */
+            assert(reference.ib[d] == reference_br);
+            assert(cell.ib[d] == extent_br);
             deviating++;
+         }
       }
       assert(deviating == 2);
       r300_tcl_bypass_triangle_release(&cell);

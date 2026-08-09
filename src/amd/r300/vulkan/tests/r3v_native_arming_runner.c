@@ -18,16 +18,28 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Builds the fixed cell and returns its IB digest, the content an
- * authorization declares through R3V_NATIVE_AUTHORIZED_IB_BLAKE3.  The
- * reference emission is the same construction the recorder installs and
- * the queue recomputes, so the armed digest names the submitted bytes.
+/* The cell extent an authorization names; the default is the maximum,
+ * the silicon-witnessed reference cell.  --extent selects another
+ * member of the family, so an attended procedure authorizing a
+ * non-maximum target computes the exact digest of the IB the recorder
+ * installs for it; the queue's digest check then admits that one
+ * variant and refuses every other.
+ */
+static uint32_t cell_width = R300_TRIANGLE_TARGET_WIDTH;
+static uint32_t cell_height = R300_TRIANGLE_TARGET_HEIGHT;
+
+/* Builds the cell at the selected extent and returns its IB digest,
+ * the content an authorization declares through
+ * R3V_NATIVE_AUTHORIZED_IB_BLAKE3.  The emission is the same
+ * construction the recorder installs and the queue recomputes, so the
+ * armed digest names the submitted bytes.
  */
 static int
 cell_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
 {
    struct r300_tcl_bypass_triangle_ib cell;
-   if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0)
+   if (r300_tcl_bypass_triangle_extent_emit(cell_width, cell_height,
+                                            &cell) != 0)
       return 1;
 
    r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, out);
@@ -58,7 +70,8 @@ static int
 emit_reference_ib(const char *path)
 {
    struct r300_tcl_bypass_triangle_ib cell;
-   if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0) {
+   if (r300_tcl_bypass_triangle_extent_emit(cell_width, cell_height,
+                                            &cell) != 0) {
       fprintf(stderr, "cell construction failed\n");
       return 2;
    }
@@ -86,19 +99,38 @@ emit_reference_ib(const char *path)
 int
 main(int argc, char **argv)
 {
-   if (argc == 3 && strcmp(argv[1], "--emit-ib") == 0)
-      return emit_reference_ib(argv[2]);
+   int argi = 1;
+   if (argc >= argi + 3 && strcmp(argv[argi], "--extent") == 0) {
+      char *end = NULL;
+      cell_width = (uint32_t)strtoul(argv[argi + 1], &end, 10);
+      if (end == NULL || *end != '\0')
+         cell_width = 0;
+      cell_height = (uint32_t)strtoul(argv[argi + 2], &end, 10);
+      if (end == NULL || *end != '\0')
+         cell_height = 0;
+      if (cell_width < 1 || cell_width > R300_TRIANGLE_TARGET_WIDTH ||
+          cell_height < 1 || cell_height > R300_TRIANGLE_TARGET_HEIGHT) {
+         fprintf(stderr, "extent outside the admitted 1..%u x 1..%u\n",
+                 R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT);
+         return 2;
+      }
+      argi += 3;
+   }
+
+   if (argc == argi + 2 && strcmp(argv[argi], "--emit-ib") == 0)
+      return emit_reference_ib(argv[argi + 1]);
 
    /* The runner takes the evidence directory an attended run would use;
     * its freshness is itself an arming factor.
     */
-   if (argc != 2) {
+   if (argc != argi + 1) {
       fprintf(stderr,
-              "usage: %s <evidence-directory> | --emit-ib <path>\n",
+              "usage: %s [--extent <w> <h>] <evidence-directory> | "
+              "[--extent <w> <h>] --emit-ib <path>\n",
               argv[0]);
       return 2;
    }
-   const char *evidence_dir = argv[1];
+   const char *evidence_dir = argv[argi];
 
    char digest[BLAKE3_OUT_LEN * 2 + 1];
    uint32_t ib_dwords = 0;
