@@ -26,7 +26,7 @@ struct r300_first_draw_contract;
  * The US datapath narrows every routed value to s1e7m16, so the pass
  * carries a record byte-exact only when each component is a fixed point
  * of the FP24 round trip; the emission refuses a record outside
- * r300_r2vb_f32_4_identity_admits with -EDOM before writing any dword,
+ * r300_r2vb_fp24_identity_admits with -EDOM before writing any dword,
  * keeping the emitted stream inside the domain where delivery is the
  * identity.
  */

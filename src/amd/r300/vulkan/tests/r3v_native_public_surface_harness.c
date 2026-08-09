@@ -757,6 +757,105 @@ main(void)
       vkUnmapMemory(device, vertex_memory);
    }
 
+   /* The synthesized delivery shapes ride the same route: under the
+    * gate, F32_3 delivers xyz with W synthesized as 1.0 and F32_2
+    * delivers xy with Z = 0.0 / W = 1.0, the reference payload's own
+    * values, so both carriers stay byte-identical to the reference --
+    * on the delivery route and the CPU oracle alike.  The routing is
+    * witnessed per shape by the domain narrowing: an off-grid source
+    * component refuses only under the gate.
+    */
+   {
+      assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, xyz, sizeof(xyz));
+      vkUnmapMemory(device, vertex_memory);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_xyz) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(&native_device->drm,
+                                  &native_xyz->owned_carrier->bo,
+                                  &carrier_map) == 0);
+      assert(memcmp(carrier_map, r300_tcl_bypass_triangle_vertices,
+                    R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
+      radeon_drm_vk_bo_unmap(&native_device->drm,
+                             &native_xyz->owned_carrier->bo, carrier_map);
+
+      float xy[6];
+      for (unsigned v = 0; v < 3; v++)
+         memcpy(&xy[v * 2], &ndc_triangle[v * 4], 8);
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, xy, sizeof(xy));
+      vkUnmapMemory(device, vertex_memory);
+      const struct pipeline_shape xy_shape = {
+         .attribute_format = VK_FORMAT_R32G32_SFLOAT,
+         .stride = 8,
+         .blend_enable = VK_FALSE,
+         .fragment_words = r3v_reference_fragment_spirv,
+         .fragment_bytes = sizeof(r3v_reference_fragment_spirv),
+      };
+      VkPipeline xy_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&xy_shape, pass, layout, &xy_pipeline) ==
+                VK_SUCCESS);
+      VkCommandBuffer xy_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(xy_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(xy_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        xy_pipeline);
+      vkCmdBindVertexBuffers(xy_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(xy_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(xy_cmd);
+      assert(vkEndCommandBuffer(xy_cmd) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_xy, xy_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_xy) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(&native_device->drm,
+                                  &native_xy->owned_carrier->bo,
+                                  &carrier_map) == 0);
+      assert(memcmp(carrier_map, r300_tcl_bypass_triangle_vertices,
+                    R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
+      radeon_drm_vk_bo_unmap(&native_device->drm,
+                             &native_xy->owned_carrier->bo, carrier_map);
+
+      /* Domain narrowing per shape: an off-grid x refuses the F32_3
+       * and F32_2 deliveries under the gate and rides the CPU gather
+       * without it.
+       */
+      float xyz_narrow[9];
+      memcpy(xyz_narrow, xyz, sizeof(xyz_narrow));
+      xyz_narrow[0] = 0.1f;
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, xyz_narrow, sizeof(xyz_narrow));
+      vkUnmapMemory(device, vertex_memory);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_xyz) != VK_SUCCESS);
+
+      float xy_narrow[6];
+      memcpy(xy_narrow, xy, sizeof(xy_narrow));
+      xy_narrow[0] = 0.1f;
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, xy_narrow, sizeof(xy_narrow));
+      vkUnmapMemory(device, vertex_memory);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_xy) != VK_SUCCESS);
+      assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_xy) == VK_SUCCESS);
+
+      vkDestroyPipeline(device, xy_pipeline, NULL);
+
+      /* Restore the reference stream for the legs below. */
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, ndc_triangle, sizeof(ndc_triangle));
+      vkUnmapMemory(device, vertex_memory);
+   }
+
    /* The extent family through the public route: a 48x20 target's
     * footprint follows the fixed 256-byte pitch, its recorded IB
     * deviates from the reference cell in the two scissor-family dwords

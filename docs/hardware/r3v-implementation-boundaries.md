@@ -260,11 +260,16 @@ The landed mechanisms are:
   `R3V_NATIVE_MANIFEST_DIR` and fails closed with `VK_ERROR_DEVICE_LOST`;
 - the drm-shim triangle-cell harness driving both gate states, with the
   closed-gate retained IB byte-identical to the direct emitter;
-- the R2VB F32_4 identity delivery route
+- the R2VB identity delivery route
   (`r300_r2vb_carrier_delivery`): on the exact opt-in
-  `R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL=1` and the F32_4 format alone,
-  the deferred draw delivers the vertex stream through the host model
-  of the producer's passthrough copy instead of the CPU gather.  The
+  `R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL=1` and the F32_4, F32_3, and
+  F32_2 formats, the deferred draw delivers the vertex stream through
+  the host model of the producer's passthrough copy instead of the CPU
+  gather; F32_3 and F32_2 synthesize the lanes past the source record
+  exactly as the gather does -- Z as 0.0, W as 1.0, values the producer
+  embeds host-side, both FP24 fixed points by construction, so the
+  synthesis needs no admission scan.  F32_1's synthesized Y stays a
+  CPU-route shape until its identity control exists.  The
   R2VB producer routes every attribute through the US fragment
   datapath -- s1e7m16 (FP24) registers and interpolators into the
   C4_32_FP color container -- so a binary32 value survives delivery
