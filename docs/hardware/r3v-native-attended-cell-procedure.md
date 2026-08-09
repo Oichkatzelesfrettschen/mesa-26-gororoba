@@ -101,7 +101,14 @@ operator and matched by the driver, and no factor has a bypass.
    run targeting another admitted extent passes `--extent <w> <h>` to
    the runner so the declared digest names the exact IB the recorder
    installs for that target, and the queue's digest check then admits
-   that one variant and refuses every other.
+   that one variant and refuses every other.  The readback verdicts
+   for such a target come from
+   `r300_tcl_bypass_triangle_extent_oracle` at the declared extent --
+   its analytic triangle is the NDC reference payload through the
+   viewport transform, its canary covers the sub-pitch padding band
+   and the rows past the render extent, and a pass requires positive
+   sample counts, so an extent too small to witness fails closed
+   rather than reporting a vacuous pass.
 2. Declare the authorization:
    - `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1`
    - `R3V_NATIVE_AUTHORIZED_IB_BLAKE3=<digest from step 1>`

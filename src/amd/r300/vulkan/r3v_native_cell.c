@@ -300,9 +300,14 @@ r3v_native_cmd_buffer_execute_deferred_draw(
               result == VK_SUCCESS && v < R300_TRIANGLE_VERTEX_DWORDS / 4;
               v++) {
             float *pos = &positions[v * 4];
-            if (pos[3] != 1.0f || pos[0] < -1.0f || pos[0] > 1.0f ||
-                pos[1] < -1.0f || pos[1] > 1.0f || pos[2] < 0.0f ||
-                pos[2] > 1.0f) {
+            /* Negated-conjunction bounds: an unordered comparison
+             * fails its conjunct, so a NaN component refuses instead
+             * of passing every ordered test.
+             */
+            if (!(pos[3] == 1.0f) ||
+                !(pos[0] >= -1.0f && pos[0] <= 1.0f) ||
+                !(pos[1] >= -1.0f && pos[1] <= 1.0f) ||
+                !(pos[2] >= 0.0f && pos[2] <= 1.0f)) {
                result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                                   "r3v-native: vertex %u outside the "
                                   "admitted clip volume or w != 1", v);

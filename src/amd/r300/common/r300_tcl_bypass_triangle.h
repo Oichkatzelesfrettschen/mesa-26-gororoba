@@ -207,20 +207,35 @@ uint32_t r300_rb3d_colorpitch0_pack_argb8888(uint32_t pitch_pixels);
 
 /* Output-oracle verdict over a sentinel-initialized 64-pixel-pitch
  * ARGB8888 target.  executed reports any deviation from the sentinel;
- * interior demands the draw color at sample points inside the triangle;
- * exterior demands the sentinel at in-target points outside it; canary
- * demands the sentinel in every row past the 64-row render extent.
+ * interior demands the draw color at margin-checked sample points
+ * inside the analytic triangle; exterior demands the sentinel at
+ * in-extent points outside it; canary demands the sentinel in the
+ * sub-pitch padding band of every rendered row and in every row past
+ * the render extent.  The sample counts report how many analytic
+ * candidates carried at least the fill-rule margin: a pass with zero
+ * samples cannot exist, because each pass verdict requires its count
+ * positive, so an extent too small to witness fails closed.
  */
 struct r300_triangle_oracle_verdict {
    bool executed;
    bool interior_pass;
    bool exterior_pass;
    bool canary_pass;
+   uint32_t interior_samples;
+   uint32_t exterior_samples;
 };
 
 void r300_tcl_bypass_triangle_oracle(
    const uint32_t *pixels, uint32_t size_bytes,
    struct r300_triangle_oracle_verdict *verdict);
+
+/* The extent-parameterized oracle: the analytic triangle is the fixed
+ * NDC reference payload through the viewport transform at this extent,
+ * so the verdict matches what the admitted public draw renders there.
+ */
+void r300_tcl_bypass_triangle_extent_oracle(
+   uint32_t width, uint32_t height, const uint32_t *pixels,
+   uint32_t size_bytes, struct r300_triangle_oracle_verdict *verdict);
 
 /* The pretransformed screen-space triangle for a 64x64 color target: three
  * FLOAT_4 positions, sixteen bytes each, the payload of the cell's vertex
