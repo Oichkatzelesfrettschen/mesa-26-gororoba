@@ -323,6 +323,7 @@ if get_option('r3v-native-backend')
     'r3v_native_pipeline.c',
     'r3v_native_queue.c',
     'r3v_native_recording.c',
+    'r3v_native_transfer.c',
     '../cpu/r300_cpu_vertex.c',
     '../common/r300_direct_write.c',
     '../common/r300_first_draw_state.c',

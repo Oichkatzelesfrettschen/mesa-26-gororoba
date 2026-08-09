@@ -398,6 +398,24 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       struct r3v_native_cmd_buffer *cmd_buffer = container_of(
          submit->command_buffers[i], struct r3v_native_cmd_buffer, vk);
 
+      /* Recorded transfer copies execute here, per submission, through
+       * host mappings -- Vulkan's execution-time ordering, the same
+       * contract the deferred draw holds below.  The recording refuses
+       * a buffer mixing copies with the pass, so a copy-carrying
+       * buffer has no IB and finishes at the continue.
+       */
+      VkResult copies =
+         r3v_native_cmd_buffer_execute_deferred_copies(device, cmd_buffer);
+      if (copies != VK_SUCCESS) {
+         /* The runtime folds every driver_submit failure through
+          * vk_queue_set_lost, so the application observes device loss
+          * whatever code returns here; the loss is the honest verdict
+          * for a submission whose earlier copies may already have
+          * landed.
+          */
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
+      }
+
       /* An empty command buffer has nothing to execute and nothing to
        * pretend about.
        */

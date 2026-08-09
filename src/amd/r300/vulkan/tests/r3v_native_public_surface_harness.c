@@ -55,7 +55,8 @@ static VkCommandPool pool;
    f(vkAllocateMemory) f(vkFreeMemory) f(vkMapMemory) f(vkUnmapMemory)     \
    f(vkCreateBuffer) f(vkDestroyBuffer) f(vkBindBufferMemory)              \
    f(vkCreateImage) f(vkDestroyImage) f(vkGetImageMemoryRequirements)      \
-   f(vkBindImageMemory) f(vkCreateImageView) f(vkDestroyImageView)         \
+   f(vkGetImageSubresourceLayout) f(vkBindImageMemory)                     \
+   f(vkCreateImageView) f(vkDestroyImageView)                              \
    f(vkCreateRenderPass) f(vkDestroyRenderPass) f(vkCreateFramebuffer)     \
    f(vkDestroyFramebuffer) f(vkCreateShaderModule)                         \
    f(vkDestroyShaderModule) f(vkCreatePipelineLayout)                      \
@@ -64,6 +65,7 @@ static VkCommandPool pool;
    f(vkAllocateCommandBuffers) f(vkBeginCommandBuffer)                     \
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
+   f(vkCmdCopyBufferToImage) f(vkCmdCopyImage) f(vkCmdCopyImageToBuffer)   \
    f(vkGetDeviceQueue) f(vkQueueSubmit) f(vkDestroyDevice)
 
 #define DECLARE(name) static PFN_##name name;
@@ -542,6 +544,215 @@ main(void)
       memcpy(map, &mutated, sizeof(mutated));
    }
    vkUnmapMemory(device, vertex_memory);
+
+   /* The copy legs run before the first closed-gate draw submission:
+    * that expected refusal marks the queue lost in the runtime, and
+    * every later vkQueueSubmit short-circuits, so the copy-carrying
+    * submissions must precede it.
+    */
+   /* Synchronous copies over the transfer family, through the public
+    * queue: buffer-to-image with a sub-rectangle at an offset,
+    * image-to-image between two images, image-to-buffer readback --
+    * three ops in one command buffer, executed in recorded order at
+    * submission, a copy-carrying buffer reaching no ioctl.  The byte
+    * oracle is the staging pattern itself: each texel carries its own
+    * coordinates, so a wrong pitch, offset, or direction lands wrong
+    * bytes.
+    */
+   {
+      const uint32_t copy_w = 8, copy_h = 4;
+      VkImageCreateInfo transfer_info = image_info;
+      transfer_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      transfer_info.extent.width = 16;
+      transfer_info.extent.height = 8;
+      VkImage img_a = VK_NULL_HANDLE, img_b = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &transfer_info, NULL, &img_a) ==
+             VK_SUCCESS);
+      assert(vkCreateImage(device, &transfer_info, NULL, &img_b) ==
+             VK_SUCCESS);
+
+      VkDeviceMemory mem_a = VK_NULL_HANDLE, mem_b = VK_NULL_HANDLE;
+      const VkMemoryAllocateInfo transfer_alloc = {
+         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+         .allocationSize = 4096,
+         .memoryTypeIndex = 0,
+      };
+      assert(vkAllocateMemory(device, &transfer_alloc, NULL, &mem_a) ==
+             VK_SUCCESS);
+      assert(vkAllocateMemory(device, &transfer_alloc, NULL, &mem_b) ==
+             VK_SUCCESS);
+      assert(vkBindImageMemory(device, img_a, mem_a, 0) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, img_b, mem_b, 0) == VK_SUCCESS);
+
+      VkBuffer staging = VK_NULL_HANDLE;
+      assert(vkCreateBuffer(
+                device,
+                &(VkBufferCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                   .size = 4096,
+                   .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                   .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                },
+                NULL, &staging) == VK_SUCCESS);
+      VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+      assert(vkAllocateMemory(device, &transfer_alloc, NULL,
+                              &staging_mem) == VK_SUCCESS);
+      assert(vkBindBufferMemory(device, staging, staging_mem, 0) ==
+             VK_SUCCESS);
+
+      /* Source pattern plus sentinel grounds for both images. */
+      uint32_t *staging_map;
+      assert(vkMapMemory(device, staging_mem, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&staging_map) == VK_SUCCESS);
+      for (uint32_t t = 0; t < copy_w * copy_h; t++)
+         staging_map[t] = 0x40000000u | t;
+      for (uint32_t t = copy_w * copy_h; t < 1024; t++)
+         staging_map[t] = 0xdeadbeefu;
+      vkUnmapMemory(device, staging_mem);
+      uint32_t *pixel_map;
+      assert(vkMapMemory(device, mem_a, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&pixel_map) == VK_SUCCESS);
+      for (uint32_t t = 0; t < 1024; t++)
+         pixel_map[t] = R300_TRIANGLE_COLOR_SENTINEL;
+      vkUnmapMemory(device, mem_a);
+      assert(vkMapMemory(device, mem_b, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&pixel_map) == VK_SUCCESS);
+      for (uint32_t t = 0; t < 1024; t++)
+         pixel_map[t] = R300_TRIANGLE_COLOR_SENTINEL;
+      vkUnmapMemory(device, mem_b);
+
+      /* Record: pattern into img_a at (2, 1); img_a rectangle into
+       * img_b at (5, 3); img_b rectangle back out to the staging tail.
+       */
+      VkCommandBuffer copy_cmd = fresh_cmd();
+      const VkBufferImageCopy upload = {
+         .bufferOffset = 0,
+         .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                               .layerCount = 1 },
+         .imageOffset = { 2, 1, 0 },
+         .imageExtent = { copy_w, copy_h, 1 },
+      };
+      vkCmdCopyBufferToImage(copy_cmd, staging, img_a,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                             &upload);
+      const VkImageCopy cross = {
+         .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .layerCount = 1 },
+         .srcOffset = { 2, 1, 0 },
+         .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .layerCount = 1 },
+         .dstOffset = { 5, 3, 0 },
+         .extent = { copy_w, copy_h, 1 },
+      };
+      vkCmdCopyImage(copy_cmd, img_a,
+                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img_b,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cross);
+      const VkBufferImageCopy readback = {
+         .bufferOffset = 2048,
+         .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                               .layerCount = 1 },
+         .imageOffset = { 5, 3, 0 },
+         .imageExtent = { copy_w, copy_h, 1 },
+      };
+      vkCmdCopyImageToBuffer(copy_cmd, img_b,
+                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             staging, 1, &readback);
+      assert(vkEndCommandBuffer(copy_cmd) == VK_SUCCESS);
+
+      assert(vkQueueSubmit(queue, 1,
+                           &(VkSubmitInfo){
+                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                              .commandBufferCount = 1,
+                              .pCommandBuffers = &copy_cmd,
+                           },
+                           VK_NULL_HANDLE) == VK_SUCCESS);
+
+      /* The pattern round-tripped through both images: the staging
+       * tail carries every texel, and the texel before and after the
+       * copy rectangle in img_b still carries the sentinel, so the
+       * pitch walk stayed inside the region.
+       */
+      assert(vkMapMemory(device, staging_mem, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&staging_map) == VK_SUCCESS);
+      for (uint32_t t = 0; t < copy_w * copy_h; t++)
+         assert(staging_map[t + 512] == (0x40000000u | t));
+      vkUnmapMemory(device, staging_mem);
+      assert(vkMapMemory(device, mem_b, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&pixel_map) == VK_SUCCESS);
+      assert(pixel_map[3 * 16 + 4] == R300_TRIANGLE_COLOR_SENTINEL);
+      assert(pixel_map[3 * 16 + 5] == (0x40000000u | 0));
+      assert(pixel_map[2 * 16 + 5] == R300_TRIANGLE_COLOR_SENTINEL);
+      /* The right and bottom neighbors hold too: a pitch or extent
+       * defect overruns past the rectangle's far edges, the side the
+       * left and top sentinels cannot see.
+       */
+      assert(pixel_map[3 * 16 + 13] == R300_TRIANGLE_COLOR_SENTINEL);
+      assert(pixel_map[7 * 16 + 5] == R300_TRIANGLE_COLOR_SENTINEL);
+      vkUnmapMemory(device, mem_b);
+
+      /* Refusals poison the recording: a region past the image, a
+       * source buffer without TRANSFER_SRC, and a copy after the
+       * render pass began.
+       */
+      VkCommandBuffer bad_copy = fresh_cmd();
+      VkBufferImageCopy bad_region = upload;
+      bad_region.imageOffset.x = 9;
+      vkCmdCopyBufferToImage(bad_copy, staging, img_a,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                             &bad_region);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      bad_copy = fresh_cmd();
+      vkCmdCopyBufferToImage(bad_copy, vertex_buffer, img_a,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                             &upload);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      bad_copy = fresh_cmd();
+      vkCmdBeginRenderPass(bad_copy, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdCopyBufferToImage(bad_copy, staging, img_a,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                             &upload);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      /* Wrapping arithmetic refuses: an extent whose 32-bit offset sum
+       * would wrap to zero, and a bufferOffset whose 64-bit footprint
+       * sum would wrap past the buffer, each poison at record -- the
+       * containment proofs run widened, so neither reaches execution.
+       */
+      bad_copy = fresh_cmd();
+      const VkImageCopy wrap_extent = {
+         .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .layerCount = 1 },
+         .srcOffset = { 1, 0, 0 },
+         .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .layerCount = 1 },
+         .dstOffset = { 1, 0, 0 },
+         .extent = { 0xffffffffu, 1, 1 },
+      };
+      vkCmdCopyImage(bad_copy, img_a, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     img_b, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                     &wrap_extent);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      bad_copy = fresh_cmd();
+      VkBufferImageCopy wrap_offset = upload;
+      wrap_offset.bufferOffset = 0xfffffffffffffffcull;
+      vkCmdCopyBufferToImage(bad_copy, staging, img_a,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                             &wrap_offset);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      vkDestroyBuffer(device, staging, NULL);
+      vkFreeMemory(device, staging_mem, NULL);
+      vkDestroyImage(device, img_a, NULL);
+      vkDestroyImage(device, img_b, NULL);
+      vkFreeMemory(device, mem_a, NULL);
+      vkFreeMemory(device, mem_b, NULL);
+   }
 
    const VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -1041,6 +1252,98 @@ main(void)
           VK_SUCCESS);
    assert(vkBindImageMemory(device, unbound_image, color_memory, 4096) ==
           R3V_NATIVE_REFUSAL_RESULT);
+
+   /* The linear transfer family: transfer usage alone admits extents
+    * past the render ceiling up to 2048 per axis, the row pitch aligns
+    * to the 2D engine's 64-byte pitch unit, the footprint is the rows
+    * alone, and no view admits the family.  Usage mixing the families
+    * and empty usage both refuse.
+    */
+   {
+      VkImageCreateInfo transfer_info = image_info;
+      transfer_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      transfer_info.extent.width = 2048;
+      transfer_info.extent.height = 2048;
+      VkImage transfer_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &transfer_info, NULL,
+                           &transfer_image) == VK_SUCCESS);
+      VkMemoryRequirements transfer_reqs;
+      vkGetImageMemoryRequirements(device, transfer_image, &transfer_reqs);
+      assert(transfer_reqs.size == (VkDeviceSize)2048 * 4 * 2048);
+      vkDestroyImage(device, transfer_image, NULL);
+
+      /* A 3-pixel row aligns up to one 64-byte pitch unit, and the
+       * layout query publishes the aligned pitch.
+       */
+      transfer_info.extent.width = 3;
+      transfer_info.extent.height = 5;
+      assert(vkCreateImage(device, &transfer_info, NULL,
+                           &transfer_image) == VK_SUCCESS);
+      vkGetImageMemoryRequirements(device, transfer_image, &transfer_reqs);
+      assert(transfer_reqs.size == 64 * 5);
+      VkSubresourceLayout transfer_layout;
+      vkGetImageSubresourceLayout(
+         device, transfer_image,
+         &(VkImageSubresource){ .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT },
+         &transfer_layout);
+      assert(transfer_layout.rowPitch == 64 &&
+             transfer_layout.size == 64 * 5);
+
+      /* No view admits the transfer family. */
+      VkImageView transfer_view = VK_NULL_HANDLE;
+      assert(vkCreateImageView(
+                device,
+                &(VkImageViewCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                   .image = transfer_image,
+                   .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                   .format = R3V_NATIVE_TARGET_FORMAT,
+                   .subresourceRange = { .aspectMask =
+                                            VK_IMAGE_ASPECT_COLOR_BIT,
+                                         .levelCount = 1,
+                                         .layerCount = 1 },
+                },
+                NULL, &transfer_view) == R3V_NATIVE_REFUSAL_RESULT &&
+             transfer_view == VK_NULL_HANDLE);
+
+      /* An allocation covering the row footprint binds; one below it
+       * refuses -- the 64x64 transfer footprint is 16384 bytes against
+       * the 4096-byte allocation.
+       */
+      assert(vkBindImageMemory(device, transfer_image, vertex_memory, 0) ==
+             VK_SUCCESS);
+      vkDestroyImage(device, transfer_image, NULL);
+
+      transfer_info.extent.width = 64;
+      transfer_info.extent.height = 64;
+      assert(vkCreateImage(device, &transfer_info, NULL,
+                           &transfer_image) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, transfer_image, vertex_memory, 0) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+      vkDestroyImage(device, transfer_image, NULL);
+
+      transfer_info.extent.width = R3V_NATIVE_TRANSFER_DIMENSION_MAX + 1;
+      transfer_info.extent.height = 1;
+      VkImage refused_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &transfer_info, NULL, &refused_image) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+
+      VkImageCreateInfo mixed_info = image_info;
+      mixed_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      assert(vkCreateImage(device, &mixed_info, NULL, &refused_image) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+
+      VkImageCreateInfo empty_info = image_info;
+      empty_info.usage = 0;
+      assert(vkCreateImage(device, &empty_info, NULL, &refused_image) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+   }
+
 
    /* Recording refusals: a deviating command poisons its buffer, so
     * vkEndCommandBuffer returns the error and the buffer never reaches

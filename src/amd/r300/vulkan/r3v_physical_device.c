@@ -1017,12 +1017,14 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
     */
    switch (vk_format) {
    case VK_FORMAT_B8G8R8A8_UNORM:
-      /* COLOR_ATTACHMENT alone: readback of the rendered pixels rides
-       * the host mapping of the bound memory, and a transfer feature
-       * would promise copy commands the recording surface poisons.
+      /* The render family's color-attachment grant plus the transfer
+       * family's copy grant: the recorded vkCmdCopy* subset executes
+       * the transfer features through host mappings at submission.
        */
       properties->linearTilingFeatures =
-         VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT;
+         VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
+         VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
       break;
    case VK_FORMAT_R32_SFLOAT:
    case VK_FORMAT_R32G32_SFLOAT:
@@ -1231,14 +1233,20 @@ r3v_get_image_format_properties(
    r3v_get_format_properties(device, info->format, &format_properties);
 
 #ifdef R3V_NATIVE_BACKEND
-   /* The native image contract is one 2D flat shape with no create
-    * flags and color-attachment usage alone, so the query reports every
-    * other type, flagged, or differently-used request unsupported
-    * before the shared type switch -- the same refusal vkCreateImage
-    * applies.
+   /* The native image contract carries two 2D flat families with no
+    * create flags -- color-attachment usage alone, and transfer usage
+    * alone -- so the query reports every other type, flagged, or
+    * differently-used request unsupported before the shared type
+    * switch, the same refusal vkCreateImage applies.
     */
+   const VkImageUsageFlags r3v_native_transfer_usage =
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   const bool r3v_native_transfer_query =
+      info->usage != 0 &&
+      (info->usage & ~r3v_native_transfer_usage) == 0;
    if (info->type != VK_IMAGE_TYPE_2D || info->flags != 0 ||
-       info->usage != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+       (info->usage != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT &&
+        !r3v_native_transfer_query))
       goto unsupported;
 #endif
 
@@ -1277,13 +1285,17 @@ r3v_get_image_format_properties(
       break;
    case VK_IMAGE_TYPE_2D:
 #ifdef R3V_NATIVE_BACKEND
-      /* The native image contract is the qualified cell's fixed target,
-       * so the reported ceiling is that shape and vkCreateImage accepts
-       * exactly what this query admits.
+      /* The reported ceiling follows the family the usage names --
+       * the qualified cell's fixed target for attachment usage, the
+       * linear transfer bound for transfer usage -- so vkCreateImage
+       * accepts exactly what this query admits for each.
        */
-      max_extent = (VkExtent3D){
-         R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1,
-      };
+      max_extent =
+         r3v_native_transfer_query
+            ? (VkExtent3D){ R3V_NATIVE_TRANSFER_DIMENSION_MAX,
+                            R3V_NATIVE_TRANSFER_DIMENSION_MAX, 1 }
+            : (VkExtent3D){ R3V_NATIVE_TARGET_WIDTH,
+                            R3V_NATIVE_TARGET_HEIGHT, 1 };
       max_mip_levels = 1;
       max_array_layers = 1;
       break;

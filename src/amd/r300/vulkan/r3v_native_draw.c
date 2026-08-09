@@ -61,6 +61,7 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
     * recording a pass whose load op never executes.
     */
    if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
+       cmd_buffer->deferred_copy_count != 0 ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
        framebuffer->layers != 1 || framebuffer->attachment_count != 1) {
