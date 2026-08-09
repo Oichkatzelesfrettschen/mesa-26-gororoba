@@ -10,6 +10,7 @@
 #include "amd/r300/common/r300_first_draw_state.h"
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_direct_write.h"
+#include "amd/r300/common/r300_delivery_route.h"
 #include "amd/r300/common/r300_r2vb_carrier_delivery.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
@@ -277,23 +278,21 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          .stride = stream.stride,
          .size_bytes = stream.size_bytes,
       };
-      /* Delivery route selection: the CPU gather is the default and the
-       * semantic oracle.  The R2VB identity delivery engages only on
-       * the exact opt-in value and the formats it models -- F32_4's
-       * verbatim copy plus F32_3 and F32_2 with their host-embedded
-       * Z = 0 / W = 1 synthesis; it holds the FP24 fixed-point domain
-       * and refuses outside it, and the CPU gather then re-derives the
-       * same carrier -- a byte divergence falsifies the identity
-       * control and refuses the draw rather than submitting bytes the
-       * two routes disagree on.
+      /* Delivery route selection lives in r300_delivery_route_resolve:
+       * the CPU gather is the default and the semantic oracle, and the
+       * R2VB identity delivery engages only on the exact opt-in value
+       * and the formats it models.  Under the R2VB route the delivery
+       * holds the FP24 fixed-point domain and refuses outside it, and
+       * the CPU gather then re-derives the same carrier -- a byte
+       * divergence falsifies the identity control and refuses the draw
+       * rather than submitting bytes the two routes disagree on.
        */
-      const char *r2vb_gate =
-         getenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
+      struct r300_delivery_route_decision route_decision;
+      r300_delivery_route_resolve(
+         getenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL"),
+         stream.format_id, &route_decision);
       const bool r2vb_route =
-         r2vb_gate != NULL && strcmp(r2vb_gate, "1") == 0 &&
-         (stream.format_id == R300_VERTEX_FORMAT_F32_4 ||
-          stream.format_id == R300_VERTEX_FORMAT_F32_3 ||
-          stream.format_id == R300_VERTEX_FORMAT_F32_2);
+         route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL;
       int gathered;
       if (r2vb_route) {
          gathered = r300_r2vb_identity_deliver(

@@ -282,6 +282,16 @@ The landed mechanisms are:
   semantic oracle at every R2VB execution, and a byte divergence
   refuses the draw.  The CPU route is the default, the delivered PM4 is
   unchanged, and the route is host-model evidence only.
+- the delivery route resolver (`r300_delivery_route_resolve`): the one
+  home of the route policy the deferred draw consults -- CPU gather by
+  default, the R2VB host model on the exact gate value and the three
+  modeled formats, every refused input landing on the CPU route with a
+  naming reason.  A production R2VB promotion is a measurement decision
+  the resolver holds closed: it requires total draw latency measured on
+  silicon with live delivery -- producer submission, cache publication,
+  and the re-ingest stall included, gather time alone deciding nothing
+  -- and no such measurement exists while live R2VB submission remains
+  outside the landed surface.
 - the R2VB producer-pass PM4 emitter (`r300_r2vb_producer_pass`): the
   raster pass that writes an F32_4 carrier through the color backend --
   first-draw contract prefix, target prologue (destination-cache barrier,
