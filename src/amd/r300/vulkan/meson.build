@@ -908,6 +908,96 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
 
+    # Loader-only application gate: the complete public sequence of an
+    # external Vulkan program, linked against the installed loader alone
+    # and reaching the ICD only through its manifest.  The check wrapper
+    # byte-compares the submit-retained ib.bin against the arming
+    # runner's independent reference emission, so the recorded-cell
+    # equality claim spans the loader boundary; the mutate fixture
+    # calibrates that the comparison judges bytes.
+    if dep_vulkan_loader.found()
+      r3v_native_loader_application = executable(
+        'r3v_native_loader_application',
+        files('tests/r3v_native_loader_application.c'),
+        include_directories : [inc_include, include_directories('.')],
+        dependencies : [dep_vulkan_loader],
+        c_args : [no_override_init_args],
+      )
+      r3v_native_loader_app_vars = r3v_native_cell_vars + {
+        'VK_DRIVER_FILES' : _native_dev_icd.full_path(),
+        'R3V_EXPECTED_ICD_DSO' : libvulkan_r3v_native.full_path(),
+      }
+      test(
+        'r3v-native-loader-application',
+        prog_python,
+        args : [
+          files('tests/r3v_native_loader_application_check.py'),
+          r3v_native_loader_application,
+          r3v_native_arming_runner,
+        ],
+        env : environment(r3v_native_loader_app_vars),
+        depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
+                   _native_dev_icd, r3v_native_loader_application,
+                   r3v_native_arming_runner],
+        timeout : 120,
+        suite : ['r3v'],
+      )
+      # The known-bad legs assert the judged-mismatch status 1 exactly:
+      # the check scripts report infrastructure failure as 2, so a
+      # crash, a missing tool, or a failed reference emission refuses
+      # the calibration instead of standing in for its verdict.
+      test(
+        'r3v-native-loader-application-known-bad-ib',
+        find_program('sh'),
+        args : [
+          '-c', '"$1" "$2" "$3" "$4"; test $? -eq 1', 'assert-verdict',
+          prog_python.full_path(),
+          files('tests/r3v_native_loader_application_check.py'),
+          r3v_native_loader_application.full_path(),
+          r3v_native_arming_runner.full_path(),
+        ],
+        env : environment(r3v_native_loader_app_vars + {
+          'R3V_LOADER_APP_FIXTURE_MUTATE_IB' : '1',
+        }),
+        depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
+                   _native_dev_icd, r3v_native_loader_application,
+                   r3v_native_arming_runner],
+        timeout : 120,
+        suite : ['r3v'],
+      )
+
+      # The application's black-box claim as an executable audit: no
+      # driver symbol in any binding, and the Vulkan surface imported
+      # from the loader.  The known-bad leg runs the same audit against
+      # the triangle-cell harness, which links the implementation.
+      if prog_nm_r3v.found()
+        test(
+          'r3v-native-loader-application-symbols',
+          prog_python,
+          args : [
+            files('tests/r3v_native_loader_application_symbol_audit.py'),
+            prog_nm_r3v.full_path(),
+            r3v_native_loader_application.full_path(),
+          ],
+          depends : [r3v_native_loader_application],
+          suite : ['r3v'],
+        )
+        test(
+          'r3v-native-loader-application-symbols-known-bad',
+          find_program('sh'),
+          args : [
+            '-c', '"$1" "$2" "$3" "$4"; test $? -eq 1', 'assert-verdict',
+            prog_python.full_path(),
+            files('tests/r3v_native_loader_application_symbol_audit.py'),
+            prog_nm_r3v.full_path(),
+            r3v_native_triangle_cell_harness.full_path(),
+          ],
+          depends : [r3v_native_triangle_cell_harness],
+          suite : ['r3v'],
+        )
+      endif
+    endif
+
     # Carrier-delivery harness: the stream-fed recorder reproduces the
     # frozen carrier bytes and cell IB for every F32 delivery shape;
     # recording-only, gate closed, no submission.
