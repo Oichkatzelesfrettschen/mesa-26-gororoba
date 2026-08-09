@@ -21,6 +21,10 @@
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
     },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
     "source_release_provenance": {
       "type": "object",
       "required": [
@@ -208,8 +212,7 @@
           "description": "Digest of the installed radeon.ko corresponding to the running module"
         },
         "module_build_id": {
-          "type": "string",
-          "minLength": 1,
+          "$ref": "#/$defs/non_empty_string",
           "description": "ELF Build ID of the installed radeon.ko corresponding to the running module"
         },
         "equivalence": {"$ref": "#/$defs/kernel_equivalence"}
@@ -294,8 +297,7 @@
       "description": "Enables the decision-grade source, release, installed-payload, and kernel-equivalence contract. Its absence identifies a legacy manifest."
     },
     "boot_id": {
-      "type": "string",
-      "minLength": 1,
+      "$ref": "#/$defs/non_empty_string",
       "description": "/proc/sys/kernel/random/boot_id at capture time"
     },
     "captured_utc": {
@@ -308,27 +310,25 @@
       "additionalProperties": false,
       "properties": {
         "package": {
-          "type": "string",
-          "minLength": 1,
+          "$ref": "#/$defs/non_empty_string",
           "description": "xorg-server package name-version-pkgrel (pacman -Q form)"
         },
         "xorg_binary_sha256": {"$ref": "#/$defs/sha256"},
-        "xorg_build_id": {"type": "string", "minLength": 1},
+        "xorg_build_id": {"$ref": "#/$defs/non_empty_string"},
         "glamor_sha256": {
           "$ref": "#/$defs/sha256",
           "description": "sha256 of libglamoregl.so"
         },
-        "glamor_build_id": {"type": "string", "minLength": 1},
+        "glamor_build_id": {"$ref": "#/$defs/non_empty_string"},
         "active_ddx": {
           "type": "string",
           "enum": ["modesetting", "radeon"],
           "description": "DDX actually loaded for the session; a bare 'Xorg active' is inadmissible"
         },
         "ddx_module_sha256": {"$ref": "#/$defs/sha256"},
-        "ddx_module_build_id": {"type": "string", "minLength": 1},
+        "ddx_module_build_id": {"$ref": "#/$defs/non_empty_string"},
         "ddx_package": {
-          "type": "string",
-          "minLength": 1,
+          "$ref": "#/$defs/non_empty_string",
           "description": "xf86-video-ati package version when active_ddx is radeon"
         },
         "config_files": {
@@ -381,14 +381,13 @@
       "additionalProperties": false,
       "properties": {
         "source_sha": {
-          "type": "string",
-          "minLength": 1,
+          "$ref": "#/$defs/non_empty_string",
           "description": "mesa-26-gororoba commit SHA the image was built from"
         },
-        "libgallium_path": {"type": "string", "minLength": 1},
+        "libgallium_path": {"$ref": "#/$defs/non_empty_string"},
         "libgallium_sha256": {"$ref": "#/$defs/sha256"},
-        "libgallium_build_id": {"type": "string", "minLength": 1},
-        "prefix": {"type": "string", "minLength": 1, "description": "install prefix of the image"},
+        "libgallium_build_id": {"$ref": "#/$defs/non_empty_string"},
+        "prefix": {"$ref": "#/$defs/non_empty_string", "description": "install prefix of the image"},
         "profile": {"type": "string", "description": "build-infra profile name"},
         "provenance": {"$ref": "#/$defs/mesa_provenance"}
       }
@@ -398,15 +397,13 @@
       "required": ["kernel_release", "radeon_package", "radeon_srcversion"],
       "additionalProperties": false,
       "properties": {
-        "kernel_release": {"type": "string", "minLength": 1, "description": "uname -r"},
+        "kernel_release": {"$ref": "#/$defs/non_empty_string", "description": "uname -r"},
         "radeon_package": {
-          "type": "string",
-          "minLength": 1,
+          "$ref": "#/$defs/non_empty_string",
           "description": "radeon-unified-dkms package name-version-pkgrel"
         },
         "radeon_srcversion": {
-          "type": "string",
-          "minLength": 1,
+          "$ref": "#/$defs/non_empty_string",
           "description": "/sys/module/radeon/srcversion"
         },
         "radeon_parameters": {
@@ -423,8 +420,7 @@
       "additionalProperties": false,
       "properties": {
         "stein_sha": {
-          "type": "string",
-          "minLength": 1,
+          "$ref": "#/$defs/non_empty_string",
           "description": "steinmarder-r300 commit SHA of the runner and trigger in use"
         },
         "runner_sha256": {"$ref": "#/$defs/sha256"},
