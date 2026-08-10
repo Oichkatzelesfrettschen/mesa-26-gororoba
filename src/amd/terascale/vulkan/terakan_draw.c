@@ -388,8 +388,8 @@ terakan_CmdDraw(VkCommandBuffer const commandBuffer, uint32_t const vertexCount,
     * the driver push-constant slot consumed by the load_view_index NIR
     * lowering (which materializes gl_ViewIndex for the application),
     * and redirect every bound attachment to render only to its
-    * corresponding array slice.  view_mask == 0 keeps the original
-    * single-view path with view_index left at its default 0. */
+    * corresponding array slice.  view_mask == 0 writes view_index 0 before
+    * the single-view draw. */
    uint32_t view_mask = command_writer->state_draw.view_mask;
    if (view_mask != 0) {
       while (view_mask != 0) {
@@ -401,6 +401,7 @@ terakan_CmdDraw(VkCommandBuffer const commandBuffer, uint32_t const vertexCount,
                                       firstVertex, firstInstance);
       }
    } else {
+      terakan_set_view_index_push_constant(command_writer, 0);
       terakan_emit_draw_index_auto(command_writer, vertexCount,
                                    firstVertex, firstInstance);
    }
@@ -452,8 +453,8 @@ terakan_CmdDrawIndexed(VkCommandBuffer const commandBuffer, uint32_t const index
    /* VK_KHR_multiview view-loop expansion for indexed draws.  When
     * view_mask != 0 the indexed draw expands to one
     * PKT3_DRAW_INDEX_OFFSET per set bit, updating the view_index push
-    * constant and the per-attachment array slice before each.
-    * view_mask == 0 falls through to the original single-view path. */
+    * constant and the per-attachment array slice before each.  view_mask == 0
+    * writes view_index 0 before the single-view draw. */
    uint32_t view_mask = command_writer->state_draw.view_mask;
    if (view_mask != 0) {
       while (view_mask != 0) {
@@ -464,6 +465,7 @@ terakan_CmdDrawIndexed(VkCommandBuffer const commandBuffer, uint32_t const index
          terakan_emit_draw_index_offset(command_writer, indexCount, firstIndex);
       }
    } else {
+      terakan_set_view_index_push_constant(command_writer, 0);
       terakan_emit_draw_index_offset(command_writer, indexCount, firstIndex);
    }
 }
@@ -623,8 +625,6 @@ terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const comma
                                  true);
 }
 
-/* --- vkCmdDrawIndirect --- */
-
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdDrawIndirect(VkCommandBuffer const commandBuffer,
                         VkBuffer const bufferHandle,
@@ -661,13 +661,12 @@ terakan_CmdDrawIndirect(VkCommandBuffer const commandBuffer,
                                           drawCount, stride, bo, false);
       }
    } else {
+      terakan_set_view_index_push_constant(command_writer, 0);
       terakan_emit_draw_indirect_batch(command_writer, offset,
                                        buffer->vk.size,
                                        drawCount, stride, bo, false);
    }
 }
-
-/* --- vkCmdDrawIndexedIndirect --- */
 
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdDrawIndexedIndirect(VkCommandBuffer const commandBuffer,
@@ -702,6 +701,7 @@ terakan_CmdDrawIndexedIndirect(VkCommandBuffer const commandBuffer,
                                           drawCount, stride, bo, true);
       }
    } else {
+      terakan_set_view_index_push_constant(command_writer, 0);
       terakan_emit_draw_indirect_batch(command_writer, offset,
                                        buffer->vk.size,
                                        drawCount, stride, bo, true);
