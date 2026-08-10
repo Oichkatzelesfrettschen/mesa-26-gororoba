@@ -12,6 +12,7 @@
 
 #include <dlfcn.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -180,9 +181,25 @@ main(int argc, char **argv)
     * replay harness can consume the retained artifacts; otherwise a
     * private directory serves the in-process checks.
     */
-   char manifest_template[] = "/tmp/r3v-native-cell-XXXXXX";
+   char manifest_template[PATH_MAX];
    const char *manifest_dir = getenv("R3V_NATIVE_MANIFEST_DIR");
    if (manifest_dir == NULL || manifest_dir[0] == '\0') {
+      const char *tmp_dir = getenv("TMPDIR");
+      if (tmp_dir == NULL || tmp_dir[0] == '\0')
+         tmp_dir = getenv("MESON_BUILD_ROOT");
+      if (tmp_dir == NULL || tmp_dir[0] == '\0')
+         tmp_dir = ".";
+
+      size_t tmp_dir_length = strlen(tmp_dir);
+      int template_length = snprintf(
+         manifest_template, sizeof(manifest_template), "%s%s%s",
+         tmp_dir, tmp_dir[tmp_dir_length - 1] == '/' ? "" : "/",
+         "r3v-native-cell-XXXXXX");
+      if (template_length < 0 ||
+          (size_t)template_length >= sizeof(manifest_template)) {
+         fprintf(stderr, "manifest template path is too long\n");
+         return 2;
+      }
       if (mkdtemp(manifest_template) == NULL) {
          fprintf(stderr, "mkdtemp failed\n");
          return 2;
