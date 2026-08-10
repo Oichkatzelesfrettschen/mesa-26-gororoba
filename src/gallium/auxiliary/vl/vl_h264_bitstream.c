@@ -159,7 +159,9 @@ vl_h264_se(struct vl_h264_reader *reader)
 unsigned
 vl_h264_te(struct vl_h264_reader *reader, unsigned range)
 {
-   /* sec 9.1.1: a cMax of 1 is a single inverted bit; otherwise ue(v). */
+   /* sec 9.1.1: cMax == 0 fixes the value at zero without coded bits. */
+   if (range == 0)
+      return 0;
    if (range == 1)
       return 1u - vl_h264_u(reader, 1);
    return vl_h264_ue(reader);
