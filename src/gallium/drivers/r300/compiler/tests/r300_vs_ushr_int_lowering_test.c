@@ -22,6 +22,7 @@
  * gl_InstanceIndex dynamic-index compare reads a numeric value (2).
  */
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -309,17 +310,33 @@ run_ushr_lowering(enum shift_kind kind, bool with_prepass)
    ralloc_free(s);
 }
 
+static bool
+wait_for_child(pid_t child, int *status)
+{
+   for (;;) {
+      pid_t waited = waitpid(child, status, 0);
+      if (waited == child)
+         return true;
+      if (waited < 0 && errno == EINTR)
+         continue;
+      return false;
+   }
+}
+
 /* true == the child returned (no abort). */
 static bool
 ushr_survives(enum shift_kind kind, bool with_prepass)
 {
    pid_t pid = fork();
+   if (pid < 0)
+      return false;
    if (pid == 0) {
       run_ushr_lowering(kind, with_prepass);
       _exit(0);
    }
    int status = 0;
-   waitpid(pid, &status, 0);
+   if (!wait_for_child(pid, &status))
+      return false;
    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
@@ -330,6 +347,8 @@ static int
 sysval_encode_result(bool numeric_use, bool with_shift)
 {
    pid_t pid = fork();
+   if (pid < 0)
+      return 2;
    if (pid == 0) {
       nir_shader *s = build_vs_sysval(numeric_use, with_shift);
       bool unsupported = false;
@@ -340,7 +359,8 @@ sysval_encode_result(bool numeric_use, bool with_shift)
       _exit(progress ? 1 : 0);
    }
    int status = 0;
-   waitpid(pid, &status, 0);
+   if (!wait_for_child(pid, &status))
+      return 2;
    if (!WIFEXITED(status))
       return 2;
    return WEXITSTATUS(status);
