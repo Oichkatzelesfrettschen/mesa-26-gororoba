@@ -1614,8 +1614,8 @@ terakan_physical_device_init(
 
    device->nir_options_fs = device->nir_options_non_fs;
 
-   /* The soft-float64 library is built lazily on the first fp64 shader, not
-    * here, so it costs nothing on devices that never compile fp64. */
+   /* The soft-float64 library is built lazily on the first call to
+    * terakan_physical_device_get_softfp64(), not here. */
    device->softfp64 = NULL;
    simple_mtx_init(&device->softfp64_mutex, mtx_plain);
 
@@ -1624,7 +1624,8 @@ terakan_physical_device_init(
     */
    device->isa = calloc(1, sizeof(struct r600_isa));
    if (device->isa == NULL) {
-      return vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      result = vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      goto fail_mutex;
    }
    if (r600_isa_init(device->chip_info.is_r9xx ? CAYMAN : EVERGREEN, device->isa) != 0) {
       result = vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -1682,7 +1683,12 @@ terakan_physical_device_init(
 fail_device:
    vk_physical_device_finish(&device->vk);
 fail_isa:
-   r600_isa_destroy(device->isa);
+   if (device->isa != NULL) {
+      r600_isa_destroy(device->isa);
+      device->isa = NULL;
+   }
+fail_mutex:
+   simple_mtx_destroy(&device->softfp64_mutex);
    return result;
 }
 
