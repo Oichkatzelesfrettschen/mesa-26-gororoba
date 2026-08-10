@@ -323,6 +323,7 @@ main(int argc, char **argv)
 
    alloc_info.allocationSize = 64 * 65 * 4;
    VkDeviceMemory color_memory = VK_NULL_HANDLE;
+   VkDeviceMemory aliased_memory = VK_NULL_HANDLE;
    result = vkAllocateMemory(device, &alloc_info, NULL, &color_memory);
    CHECK(result == VK_SUCCESS, "color vkAllocateMemory: %d", result);
 
@@ -411,6 +412,30 @@ main(int argc, char **argv)
    CHECK(result == VK_ERROR_INITIALIZATION_FAILED,
          "undersized color memory refuses recording: %d", result);
 
+   /* Known-bad calibration: two roles at byte offset zero require distinct
+    * GEM objects.  The recorder rejects the alias before mapping either
+    * role, so the command buffer remains empty and no duplicate-handle
+    * reference list reaches the queue.
+    */
+   alloc_info.allocationSize = 64 * 65 * 4;
+   result = vkAllocateMemory(device, &alloc_info, NULL, &aliased_memory);
+   CHECK(result == VK_SUCCESS, "aliased vkAllocateMemory: %d", result);
+   if (aliased_memory != VK_NULL_HANDLE) {
+      const struct r3v_native_device *native_device =
+         r3v_native_device_from_handle(device);
+      const struct r3v_native_cmd_buffer *native_cmd =
+         r3v_native_cmd_buffer_from_handle(cmd);
+      uint64_t sync_count = native_device->drm.cache_sync_count;
+      result = record_cell(cmd, aliased_memory, aliased_memory);
+      CHECK(result == VK_ERROR_INITIALIZATION_FAILED,
+            "aliased vertex and color memory refuses recording: %d", result);
+      CHECK(native_cmd->ib == NULL && native_cmd->references == NULL,
+            "aliased roles leave the command buffer empty");
+      CHECK(native_device->drm.cache_sync_count == sync_count,
+            "aliased roles refuse before cache publication: %" PRIu64,
+            native_device->drm.cache_sync_count);
+   }
+
    result = record_cell(cmd, vertex_memory, color_memory);
    CHECK(result == VK_SUCCESS, "cell recording: %d", result);
 
@@ -423,7 +448,7 @@ main(int argc, char **argv)
    /* The recorder published the vertex write while its mapping was live;
     * exactly one cache sync has run before any submission.
     */
-   struct r3v_native_device *native_device =
+   const struct r3v_native_device *native_device =
       r3v_native_device_from_handle(device);
    CHECK(native_device->drm.cache_sync_count == 2,
          "recorder published the vertex and sentinel writes: %" PRIu64,
@@ -552,6 +577,7 @@ done:
    vkDestroyCommandPool(device, pool, NULL);
    vkFreeMemory(device, vertex_memory, NULL);
    vkFreeMemory(device, color_memory, NULL);
+   vkFreeMemory(device, aliased_memory, NULL);
    vkDestroyDevice(device, NULL);
    vkDestroyInstance(instance, NULL);
 
