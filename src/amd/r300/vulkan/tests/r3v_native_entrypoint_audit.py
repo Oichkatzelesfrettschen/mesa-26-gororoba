@@ -21,7 +21,7 @@ each command belongs to one dispatch scope, fixed by the type of its first
 parameter, so the scope census must match the registry.
 
 Modes:
-  --selftest   synthetic known-good and known-bad closures
+  --selftest   synthetic known-good and known-bad closures and model shapes
   --pair-fixture NAME
                the lifecycle-pair verdict over one synthetic surface from
                PAIR_FIXTURES, which calibrates that verdict where the
@@ -174,6 +174,60 @@ class Registry:
 
     def in_scope(self, scope):
         return {n for n, s in self.scope.items() if s == scope}
+
+
+# Shape expectations make a registry, linked table, and runtime scan carry
+# enough structure for the closure verdict to have evidence behind it.
+MODEL_SCOPE_GLOBAL = "core 1.0 global-scope commands"
+MODEL_SCOPE_INSTANCE = "core 1.0 instance-scope commands"
+MODEL_SCOPE_PHYSICAL_DEVICE = "core 1.0 physical-device-scope commands"
+MODEL_SCOPE_DEVICE = "core 1.0 device-scope commands"
+MODEL_POPULATED_SLOTS = "populated device slots"
+MODEL_COMMON_DEPENDENCIES = "common providers with dispatch dependencies"
+MODEL_SCOPE_REGISTRY = (
+    (MODEL_SCOPE_GLOBAL, "global"),
+    (MODEL_SCOPE_INSTANCE, "instance"),
+    (MODEL_SCOPE_PHYSICAL_DEVICE, "physical-device"),
+)
+
+MODEL_CENSUS = (
+    (MODEL_SCOPE_GLOBAL, 4),
+    (MODEL_SCOPE_INSTANCE, 2),
+    (MODEL_SCOPE_PHYSICAL_DEVICE, 10),
+    (MODEL_SCOPE_DEVICE, 121),
+)
+
+MODEL_FLOORS = (
+    (MODEL_POPULATED_SLOTS, 100),
+    (MODEL_COMMON_DEPENDENCIES, 50),
+)
+MODEL_FLOOR_COUNTS = dict(MODEL_FLOORS)
+
+
+def model_failures(scope_counts, populated_count, dependency_count):
+    """Return model-shape defects before the closure verdict runs."""
+    failures = []
+    for name, expected in MODEL_CENSUS:
+        if name not in scope_counts:
+            failures.append(f"{name} is missing; the audit inputs did not "
+                            "parse")
+            continue
+        value = scope_counts[name]
+        if value != expected:
+            failures.append(f"{name} is {value}, not the {expected} "
+                            "Vulkan 1.0 fixes; the audit inputs did not "
+                            "parse")
+
+    floor_values = {
+        MODEL_POPULATED_SLOTS: populated_count,
+        MODEL_COMMON_DEPENDENCIES: dependency_count,
+    }
+    for name, floor in MODEL_FLOORS:
+        value = floor_values[name]
+        if value < floor:
+            failures.append(f"{name} is {value}, below the floor {floor}; "
+                            "the audit inputs did not parse")
+    return failures
 
 
 def parse_registry(vk_xml: Path):
@@ -382,8 +436,57 @@ def selftest():
                                  populated)
         assert found == expected, (fixture, found, expected)
 
+    model_counts = {name: expected for name, expected in MODEL_CENSUS}
+    assert model_failures(
+        model_counts,
+        MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+        MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
+    ) == []
+    model_bad_fixtures = (
+        (MODEL_SCOPE_DEVICE, model_counts[MODEL_SCOPE_DEVICE] - 1,
+         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
+         (MODEL_SCOPE_DEVICE, str(model_counts[MODEL_SCOPE_DEVICE] - 1))),
+        (MODEL_POPULATED_SLOTS,
+         model_counts[MODEL_SCOPE_DEVICE],
+         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS] - 1,
+         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
+         (MODEL_POPULATED_SLOTS,
+          str(MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS] - 1))),
+        (MODEL_COMMON_DEPENDENCIES,
+         model_counts[MODEL_SCOPE_DEVICE],
+         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES] - 1,
+         (MODEL_COMMON_DEPENDENCIES,
+          str(MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES] - 1))),
+    )
+    for (name, core_device_count, populated_count, dependency_count,
+         expected_markers) in model_bad_fixtures:
+        bad_counts = model_counts.copy()
+        bad_counts[MODEL_SCOPE_DEVICE] = core_device_count
+        found = model_failures(bad_counts, populated_count, dependency_count)
+        if len(found) != 1:
+            raise AssertionError((name, found))
+        if any(marker not in found[0] for marker in expected_markers):
+            raise AssertionError((name, found))
+
+    missing_counts = model_counts.copy()
+    del missing_counts[MODEL_SCOPE_INSTANCE]
+    found = model_failures(
+        missing_counts,
+        MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+        MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
+    )
+    if len(found) != 1:
+        raise AssertionError(found)
+    if MODEL_SCOPE_INSTANCE not in found[0]:
+        raise AssertionError(found)
+    if "missing" not in found[0]:
+        raise AssertionError(found)
+
     print("r3v_native_entrypoint_audit selftest: 15 closure and result legs "
-          f"OK, {len(PAIR_FIXTURES)} lifecycle-pair legs OK")
+          f"OK, {len(model_bad_fixtures) + 1} model-shape rejection legs OK, "
+          f"{len(PAIR_FIXTURES)} lifecycle-pair legs OK")
     return 0
 
 
@@ -656,30 +759,16 @@ def main():
     # vary with the build, so those carry floors.  A collapsed parse -- an
     # unreadable library, a registry whose 1.0 feature sets moved -- fails
     # here before any verdict claims closure.
-    census = [
-        ("core 1.0 global-scope commands",
-         len(reg.core10 & reg.in_scope("global")), 4),
-        ("core 1.0 instance-scope commands",
-         len(reg.core10 & reg.in_scope("instance")), 2),
-        ("core 1.0 physical-device-scope commands",
-         len(reg.core10 & reg.in_scope("physical-device")), 10),
-        ("core 1.0 device-scope commands", len(core_device), 121),
-    ]
-    for name, value, expected in census:
-        if value != expected:
-            print(f"model failure: {name} is {value}, not the {expected} "
-                  f"Vulkan 1.0 fixes; the audit inputs did not parse")
-            return 2
-
-    floors = [
-        ("populated device slots", len(populated), 100),
-        ("common providers with dispatch dependencies", len(deps), 50),
-    ]
-    for name, value, floor in floors:
-        if value < floor:
-            print(f"model failure: {name} is {value}, below the floor "
-                  f"{floor}; the audit inputs did not parse")
-            return 2
+    scope_counts = {
+        name: len(reg.core10 & reg.in_scope(registry_scope))
+        for name, registry_scope in MODEL_SCOPE_REGISTRY
+    }
+    scope_counts[MODEL_SCOPE_DEVICE] = len(core_device)
+    model_defects = model_failures(scope_counts, len(populated), len(deps))
+    for failure in model_defects:
+        print(f"model failure: {failure}")
+    if model_defects:
+        return 2
 
     if mode == "--policy":
         emit_policy(reg, native, common, deps)
