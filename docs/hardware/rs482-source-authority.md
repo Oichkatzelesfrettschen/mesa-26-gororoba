@@ -56,6 +56,19 @@ generated output equivalence. `radeon-custom` consumes an immutable signed
 commit and tree instead of constructing the active module from its historical
 patch files.
 
+The public cutover anchors bind each proof layer to a tracked record:
+
+<!-- markdownlint-disable MD013 -->
+
+| Proof layer | Record | Exact identity |
+| --- | --- | --- |
+| Signed source equivalence | `linux-radeon-gororoba/docs/source-equivalence-attestation.toml` | tag object `81a2510e34d1d62f5486683bcd6e240db8223b7d`, commit `9079be562eebd184da9cf891fbc6a72d5ac0d9f3`, driver tree `b0f40a1970f57d00b690890120ad1ba8fd1e474c` |
+| Normalized source and generated output | `linux-radeon-gororoba/MIGRATION_INPUT.toml` | base manifest SHA-256 `1f085124056f24cdfe26ff3c19e615c32cefdb5fef5a9343205acce17e7d94c7`, migration manifest SHA-256 `71ae424fc8af1828200ec98e9233b646c6483c11ecfb778d91ec64ef6bf9f5dc`, generated output proof SHA-256 `1efe8d77577c8c9173093d5c47a8df2905fd487471a22c5c9d0507693502909a` |
+| Active package source pin | `radeon-custom/packaging/arch/radeon-unified-dkms/source-identity.toml` | signed tag object `c3745d24ea7481ec56c5c0b1aa397be4b8788b72`, source commit `2433cbd69cd99d1dd002447bb4d481ed66141562`, driver tree `e3432f8dda41e2fcb93fad23a0f3825541c15e93` |
+| Loaded module identity | `steinmarder-r300/src/re/r300/results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/` | manifest SHA-256 `84340d65c87cb4ca3aa1f01faaa559a00d7950a55fad4cee344b988d3eeff386`, ledger SHA-256 `cc8a82f210cdccc847f9320faa7dc9f6136e537ef3555c78d867f0055ca70e42` |
+
+<!-- markdownlint-enable MD013 -->
+
 The current identities stay on separate axes:
 
 <!-- markdownlint-disable MD013 -->
@@ -81,11 +94,16 @@ It records successful boot ring and indirect buffer initialization. It runs no
 controlled graphics workload and establishes no conformance, reset, register,
 performance, or silicon safety verdict.
 
+The target capture observes installed package version 0.7-1. It does not bind
+the installed files to the signed release archive bytes. Exact signed archive
+installation provenance therefore remains open even though the loaded module
+to source identity join closes.
+
 The durable cutover proof retains the migration input, source closure,
 normalization and export manifests, generated output comparison, source tag,
-source archive, package identity, and installed module joins. A source commit
-becomes a deployed authority only after `radeon-custom` advances the signed pin
-and retained evidence identifies the loaded module.
+package identity, and installed module joins. A source commit becomes a
+deployed authority only after `radeon-custom` advances the signed pin and
+retained evidence identifies the loaded module.
 
 ## Layer discriminator for observed defects
 
