@@ -201,8 +201,8 @@ elif system_has_kms_drm
 endif
 
 # Evergreen/PALM has no native FP64; the shared soft-float64 GLSL library is
-# compiled to a SPIR-V header at build time and imported via spirv_to_nir at
-# device init (terakan_softfp64.c), mirroring src/intel/shaders/meson.build.
+# compiled to a SPIR-V header at build time and converted to a cached NIR
+# library lazily by terakan_physical_device_get_softfp64() in terakan_softfp64.c.
 terakan_float64_spv_h = custom_target(
   'terakan_float64_spv.h',
   input : [glsl2spirv, float64_glsl_file],
@@ -312,6 +312,12 @@ if with_tests
     'terakan-multiview-state-contract',
     prog_python,
     args : [files('tests/terakan_multiview_state_contract_test.py')],
+    suite : ['terakan'],
+  )
+  test(
+    'terakan-softfp64-lifetime-contract',
+    prog_python,
+    args : [files('tests/terakan_softfp64_lifetime_contract_test.py')],
     suite : ['terakan'],
   )
 endif
