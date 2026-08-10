@@ -426,9 +426,12 @@ main(void)
    assert(dedicated.prefersDedicatedAllocation == VK_FALSE);
    assert(dedicated.requiresDedicatedAllocation == VK_FALSE);
 
-   /* Vulkan 1.0 exposes the KHR query above; the core 1.3 query remains
-    * behind the driver entrypoint, so exercise its identical pNext path
-    * directly as part of the native implementation contract.
+   /* The Vulkan registry at src/vulkan/registry/vk.xml promotes
+    * VK_KHR_get_memory_requirements2 to Vulkan 1.1 and
+    * VK_KHR_maintenance4 to Vulkan 1.3.  R3V_API_VERSION in
+    * src/amd/r300/vulkan/r3v_private.h is Vulkan 1.0, so the enabled public
+    * route resolves the get-memory-requirements2 KHR alias; this direct call
+    * covers the maintenance4 device-buffer implementation path.
     */
    VkBufferCreateInfo device_buffer_create_info = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,

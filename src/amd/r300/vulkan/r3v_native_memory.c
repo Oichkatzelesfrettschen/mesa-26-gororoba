@@ -146,8 +146,9 @@ r3v_DestroyBuffer(VkDevice _device, VkBuffer _buffer,
    vk_buffer_destroy(&device->vk, pAllocator, &buffer->vk);
 }
 
-/* Native buffers bind slices of explicitly allocated BOs, so their memory
- * requirements permit shared allocations and do not request a dedicated BO.
+/* r3v_AllocateMemory creates one GEM BO per VkDeviceMemory, and
+ * r3v_BindBufferMemory2 stores each buffer's memory and offset.  That binding
+ * model permits shared allocations and does not request a dedicated BO.
  */
 static void
 r3v_native_fill_buffer_dedicated_requirements(
