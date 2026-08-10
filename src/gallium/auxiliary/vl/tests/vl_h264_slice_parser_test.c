@@ -3,8 +3,8 @@
  */
 
 /*
- * Stage (a) test for the clean-room slice-header parser: parse the IDR slice of
- * a real Constrained-Baseline QCIF clip and assert every retained field against
+ * The clean-room slice-header parser test parses the IDR slice of a real
+ * Constrained-Baseline QCIF clip and asserts every retained field against
  * the values an independent ffmpeg trace_headers decode reports for the same
  * NAL.  The SPS/PPS are the clip's, transcribed from that trace; the slice NAL
  * (h264_cb_idr_slice.bin) is the clip's first IDR NAL with its one-byte header.
