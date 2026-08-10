@@ -168,13 +168,14 @@ u_upload_alloc_buffer(struct u_upload_mgr *upload, unsigned min_size, struct pip
 {
    struct pipe_screen *screen = upload->pipe->screen;
    struct pipe_resource buffer;
+   struct pipe_resource *old_buffer = upload->buffer;
+   unsigned old_buffer_size = upload->buffer_size;
    unsigned size;
 
-   /* Release the old buffer, if present:
-    */
+   /* The old buffer stays owned by the uploader until the replacement maps. */
    u_upload_release_buffer(upload);
-   *releasebuf = upload->buffer;
    upload->buffer = NULL;
+   *releasebuf = NULL;
 
    /* Allocate a new one:
     */
@@ -197,8 +198,11 @@ u_upload_alloc_buffer(struct u_upload_mgr *upload, unsigned min_size, struct pip
    }
 
    upload->buffer = screen->resource_create(screen, &buffer);
-   if (upload->buffer == NULL)
+   if (upload->buffer == NULL) {
+      upload->buffer = old_buffer;
+      upload->buffer_size = old_buffer_size;
       return 0;
+   }
 
    /* Map the new buffer. */
    upload->map = pipe_buffer_map_range(upload->pipe, upload->buffer,
@@ -207,13 +211,13 @@ u_upload_alloc_buffer(struct u_upload_mgr *upload, unsigned min_size, struct pip
    if (upload->map == NULL) {
       u_upload_release_buffer(upload);
       pipe_resource_release(upload->pipe, upload->buffer);
-      /* The next allocation reads upload->buffer as the buffer to hand
-       * back through *releasebuf; a dangling pointer here would release
-       * the freed buffer a second time. */
       upload->buffer = NULL;
+      upload->buffer = old_buffer;
+      upload->buffer_size = old_buffer_size;
       return 0;
    }
 
+   *releasebuf = old_buffer;
    upload->buffer_size = size;
    upload->offset = 0;
    return size;
@@ -246,6 +250,11 @@ u_upload_alloc(struct u_upload_mgr *upload,
    unsigned buffer_size = upload->buffer_size;
    unsigned offset = MAX2(min_out_offset, upload->offset);
 
+   *out_offset = ~0u;
+   *outbuf = NULL;
+   *releasebuf = NULL;
+   *ptr = NULL;
+
    offset = align(offset, alignment);
 
    /* Make sure we have enough space in the upload buffer
@@ -256,16 +265,8 @@ u_upload_alloc(struct u_upload_mgr *upload,
       offset = align(min_out_offset, alignment);
       buffer_size = u_upload_alloc_buffer(upload, offset + size, releasebuf);
 
-      if (unlikely(!buffer_size)) {
-         *out_offset = ~0;
-         *ptr = NULL;
-         /* u_upload_alloc_buffer already moved the previous buffer into
-          * *releasebuf; the caller releases it even on failure, so
-          * overwriting it here would leak that buffer. */
+      if (unlikely(!buffer_size))
          return;
-      }
-   } else {
-      *releasebuf = NULL;
    }
 
    if (unlikely(!upload->map)) {
@@ -276,9 +277,6 @@ u_upload_alloc(struct u_upload_mgr *upload,
                                           &upload->transfer);
       if (unlikely(!upload->map)) {
          upload->transfer = NULL;
-         *out_offset = ~0;
-         *ptr = NULL;
-         *releasebuf = NULL;
          return;
       }
 
