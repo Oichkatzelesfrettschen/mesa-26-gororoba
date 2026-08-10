@@ -70,7 +70,8 @@ unsigned vl_h264_ue(struct vl_h264_reader *reader);
 int vl_h264_se(struct vl_h264_reader *reader);
 
 /* te(v): truncated Exp-Golomb (sec 9.1.1).  range is the syntax element's cMax:
- * for cMax == 1 it is a single inverted bit, otherwise it is ue(v). */
+ * cMax == 0 is a fixed zero with no coded bits, cMax == 1 is a single inverted
+ * bit, and larger cMax values use ue(v). */
 unsigned vl_h264_te(struct vl_h264_reader *reader, unsigned range);
 
 /*

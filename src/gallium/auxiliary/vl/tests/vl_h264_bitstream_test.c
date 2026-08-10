@@ -107,7 +107,7 @@ test_exp_golomb(void)
 
    memset(&w, 0, sizeof(w));
 
-   /* A fixed prefix, then the ue and se sequences, then two te(v) cases. */
+   /* A fixed prefix, then the ue and se sequences, then te(v) cases. */
    put_bits(&w, 5, 3);                 /* u(3) = 101 = 5 */
    for (i = 0; i < sizeof(ue_vec) / sizeof(ue_vec[0]); i++)
       put_ue(&w, ue_vec[i]);
@@ -121,6 +121,9 @@ test_exp_golomb(void)
    CHECK(vl_h264_reader_init(&r, w.buf, (w.nbits + 7) / 8));
 
    CHECK(vl_h264_u(&r, 3) == 5);
+   unsigned before_te_zero = vl_h264_bits_consumed(&r);
+   CHECK(vl_h264_te(&r, 0) == 0);
+   CHECK(vl_h264_bits_consumed(&r) == before_te_zero);
    CHECK(vl_h264_more_rbsp_data(&r));
    for (i = 0; i < sizeof(ue_vec) / sizeof(ue_vec[0]); i++)
       CHECK(vl_h264_ue(&r) == ue_vec[i]);
