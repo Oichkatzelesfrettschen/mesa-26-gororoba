@@ -195,6 +195,10 @@ def model_failures(scope_counts, populated_count, dependency_count):
     """Return model-shape defects before the closure verdict runs."""
     failures = []
     for name, expected in MODEL_CENSUS:
+        if name not in scope_counts:
+            failures.append(f"{name} is missing; the audit inputs did not "
+                            "parse")
+            continue
         value = scope_counts[name]
         if value != expected:
             failures.append(f"{name} is {value}, not the {expected} "
@@ -423,24 +427,34 @@ def selftest():
     assert model_failures(model_counts, 100, 50) == []
     model_bad_fixtures = (
         ("core 1.0 device-scope commands", 120, 100, 50,
-         "core 1.0 device-scope commands is 120, not the 121 Vulkan 1.0 "
-         "fixes; the audit inputs did not parse"),
+         ("core 1.0 device-scope commands", "120")),
         ("populated device slots", 121, 99, 50,
-         "populated device slots is 99, below the floor 100; the audit "
-         "inputs did not parse"),
+         ("populated device slots", "99")),
         ("common providers with dispatch dependencies", 121, 100, 49,
-         "common providers with dispatch dependencies is 49, below the "
-         "floor 50; the audit inputs did not parse"),
+         ("common providers with dispatch dependencies", "49")),
     )
     for (name, core_device_count, populated_count, dependency_count,
-         expected_failure) in model_bad_fixtures:
+         expected_markers) in model_bad_fixtures:
         bad_counts = model_counts.copy()
         bad_counts["core 1.0 device-scope commands"] = core_device_count
         found = model_failures(bad_counts, populated_count, dependency_count)
-        assert found == [expected_failure], (name, found)
+        if len(found) != 1:
+            raise AssertionError((name, found))
+        if any(marker not in found[0] for marker in expected_markers):
+            raise AssertionError((name, found))
+
+    missing_counts = model_counts.copy()
+    del missing_counts["core 1.0 instance-scope commands"]
+    found = model_failures(missing_counts, 100, 50)
+    if len(found) != 1:
+        raise AssertionError(found)
+    if "core 1.0 instance-scope commands" not in found[0]:
+        raise AssertionError(found)
+    if "missing" not in found[0]:
+        raise AssertionError(found)
 
     print("r3v_native_entrypoint_audit selftest: 15 closure and result legs "
-          f"OK, {len(model_bad_fixtures)} model-shape rejection legs OK, "
+          f"OK, {len(model_bad_fixtures) + 1} model-shape rejection legs OK, "
           f"{len(PAIR_FIXTURES)} lifecycle-pair legs OK")
     return 0
 
