@@ -102,6 +102,118 @@ main(int argc, char **argv)
 
    vl_h264_reader_fini(&reader);
 
+   /* These non-IDR I-slice controls encode the exact SPS boundary widths.  The
+    * first has frame_num width 16 and pic_order_cnt_type 2.  The second has
+    * frame_num width 4, pic_order_cnt_type 0, and POC-LSB width 16. */
+   static const uint8_t max_frame_num_slice[] = { 0xb8, 0x00, 0x06 };
+   static const uint8_t max_poc_lsb_slice[] = { 0xb8, 0x00, 0x00, 0x60 };
+   static const struct {
+      const uint8_t *slice;
+      unsigned slice_size;
+      uint8_t log2_max_frame_num_minus4;
+      uint8_t pic_order_cnt_type;
+      uint8_t log2_max_pic_order_cnt_lsb_minus4;
+   } valid_sps_cases[] = {
+      { max_frame_num_slice, sizeof(max_frame_num_slice), 12, 2, 0 },
+      { max_poc_lsb_slice, sizeof(max_poc_lsb_slice), 0, 0, 12 },
+   };
+   for (unsigned i = 0;
+        i < sizeof(valid_sps_cases) / sizeof(valid_sps_cases[0]); i++) {
+      fill_fixture_sps_pps(&sps, &pps);
+      pps.deblocking_filter_control_present_flag = 0;
+      sps.log2_max_frame_num_minus4 =
+         valid_sps_cases[i].log2_max_frame_num_minus4;
+      sps.pic_order_cnt_type = valid_sps_cases[i].pic_order_cnt_type;
+      sps.log2_max_pic_order_cnt_lsb_minus4 =
+         valid_sps_cases[i].log2_max_pic_order_cnt_lsb_minus4;
+      pic.pps = &pps;
+
+      CHECK(vl_h264_reader_init(&reader, valid_sps_cases[i].slice,
+                                valid_sps_cases[i].slice_size));
+      CHECK(vl_h264_parse_slice_header(&reader, &pic, 0, 1, &sh));
+      CHECK(sh.first_mb_in_slice == 0);
+      CHECK(sh.slice_type == VL_H264_SLICE_I);
+      CHECK(!sh.idr);
+      CHECK(sh.pic_parameter_set_id == 0);
+      CHECK(sh.frame_num == 0);
+      CHECK(sh.slice_qp == 23);
+      CHECK(sh.num_reorder_l0 == 0);
+      CHECK(!vl_h264_overrun(&reader));
+      vl_h264_reader_fini(&reader);
+   }
+
+   /* ITU-T H.264 sec 7.4.2.1.1 bounds these SPS fields at 12.  Each invalid
+    * value is rejected before the parser consumes any slice-header bits. */
+   static const struct {
+      const uint8_t *slice;
+      unsigned slice_size;
+      uint8_t log2_max_frame_num_minus4;
+      uint8_t pic_order_cnt_type;
+      uint8_t log2_max_pic_order_cnt_lsb_minus4;
+   } invalid_sps_cases[] = {
+      { max_frame_num_slice, sizeof(max_frame_num_slice), 13, 2, 0 },
+      { max_poc_lsb_slice, sizeof(max_poc_lsb_slice), 0, 3, 0 },
+      { max_poc_lsb_slice, sizeof(max_poc_lsb_slice), 0, 0, 13 },
+   };
+   for (unsigned i = 0;
+        i < sizeof(invalid_sps_cases) / sizeof(invalid_sps_cases[0]); i++) {
+      fill_fixture_sps_pps(&sps, &pps);
+      pps.deblocking_filter_control_present_flag = 0;
+      sps.log2_max_frame_num_minus4 =
+         invalid_sps_cases[i].log2_max_frame_num_minus4;
+      sps.pic_order_cnt_type = invalid_sps_cases[i].pic_order_cnt_type;
+      sps.log2_max_pic_order_cnt_lsb_minus4 =
+         invalid_sps_cases[i].log2_max_pic_order_cnt_lsb_minus4;
+      pic.pps = &pps;
+
+      CHECK(vl_h264_reader_init(&reader, invalid_sps_cases[i].slice,
+                                invalid_sps_cases[i].slice_size));
+      CHECK(!vl_h264_parse_slice_header(&reader, &pic, 0, 1, &sh));
+      CHECK(vl_h264_bits_consumed(&reader) == 0);
+      CHECK(!vl_h264_overrun(&reader));
+      vl_h264_reader_fini(&reader);
+   }
+
+   /* The P-slice bits are 1|1|1|0000|0|1|00100|1|1, where the fields are
+    * first_mb_in_slice, slice_type, pps_id, frame_num, override flag,
+    * ref_pic_list_modification_flag_l0, idc=3, slice_qp_delta, and the
+    * rbsp_stop_one_bit.  This control has a valid list terminator. */
+   static const uint8_t ref_list_terminator[] = { 0xe0, 0x93 };
+   fill_fixture_sps_pps(&sps, &pps);
+   pps.deblocking_filter_control_present_flag = 0;
+   pic.pps = &pps;
+   CHECK(vl_h264_reader_init(&reader, ref_list_terminator,
+                             sizeof(ref_list_terminator)));
+   CHECK(vl_h264_parse_slice_header(&reader, &pic, 0, 1, &sh));
+   CHECK(sh.slice_type == VL_H264_SLICE_P);
+   CHECK(sh.num_reorder_l0 == 0);
+   CHECK(vl_h264_bits_consumed(&reader) == 15);
+   CHECK(!vl_h264_overrun(&reader));
+   vl_h264_reader_fini(&reader);
+
+   /* The invalid P-slice fixture encodes idc=4 followed by idc=3.  The
+    * parser rejects the invalid modification ID after consuming its code. */
+   static const uint8_t invalid_ref_list_idc[] = { 0xe0, 0x94, 0x98 };
+   CHECK(vl_h264_reader_init(&reader, invalid_ref_list_idc,
+                             sizeof(invalid_ref_list_idc)));
+   CHECK(!vl_h264_parse_slice_header(&reader, &pic, 0, 1, &sh));
+   CHECK(vl_h264_bits_consumed(&reader) == 14);
+   CHECK(!vl_h264_overrun(&reader));
+   vl_h264_reader_fini(&reader);
+
+   /* The malformed P-slice fixture ends after
+    * ref_pic_list_modification_flag_l0.  The stop bit follows that flag, so
+    * sec 7.3.3.1's required idc=3 is absent.
+    * The parser rejects the missing terminator at the RBSP boundary instead of
+    * reading alignment bits indefinitely. */
+   static const uint8_t missing_ref_list_terminator[] = { 0xe0, 0xc0 };
+   CHECK(vl_h264_reader_init(&reader, missing_ref_list_terminator,
+                             sizeof(missing_ref_list_terminator)));
+   CHECK(!vl_h264_parse_slice_header(&reader, &pic, 0, 1, &sh));
+   CHECK(vl_h264_bits_consumed(&reader) == 9);
+   CHECK(!vl_h264_overrun(&reader));
+   vl_h264_reader_fini(&reader);
+
    /* The CAVLC-only parser rejects a CABAC PPS before consuming slice syntax. */
    pps.entropy_coding_mode_flag = 1;
    CHECK(vl_h264_reader_init(&reader, nal + 1, (unsigned)(nal_size - 1)));
@@ -111,6 +223,6 @@ main(int argc, char **argv)
 
    vl_h264_reader_fini(&reader);
    free(nal);
-   printf("vl_h264_slice_parser: IDR slice header matches ffmpeg ground truth PASS\n");
+   printf("vl_h264_slice_parser: IDR ground truth and malformed-input bounds PASS\n");
    return 0;
 }
