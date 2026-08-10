@@ -1221,8 +1221,11 @@ terakan_physical_device_get_capabilities(
     * Adds vkGetDeviceImageMemoryRequirements and
     * vkGetDeviceImageSparseMemoryRequirements -- info-only helpers
     * satisfied by Mesa-vulkan runtime defaults that consult the
-    * existing vkGetImageMemoryRequirements path.
+    * existing vkGetImageMemoryRequirements path.  The `maxBufferSize`
+    * property reports the winsys maximum allocation size used by the
+    * 32-bit Radeon BO address path.
     */
+   properties_out->maxBufferSize = max_memory_allocation_size;
    extensions_out->KHR_maintenance4 = true;
    features_out->maintenance4 = true;
 
