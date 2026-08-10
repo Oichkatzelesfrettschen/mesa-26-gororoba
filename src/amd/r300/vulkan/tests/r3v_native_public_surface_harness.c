@@ -72,8 +72,8 @@ static VkCommandPool pool;
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
    f(vkCmdCopyBufferToImage) f(vkCmdCopyImage) f(vkCmdCopyImageToBuffer)   \
    f(vkCmdClearColorImage) f(vkCmdPipelineBarrier)                         \
-   f(vkCreateFence) f(vkDestroyFence) f(vkWaitForFences)                   \
-   f(vkCreateSemaphore) f(vkDestroySemaphore)                              \
+   f(vkCreateFence) f(vkDestroyFence) f(vkGetFenceStatus)                   \
+   f(vkWaitForFences) f(vkCreateSemaphore) f(vkDestroySemaphore)            \
    f(vkGetDeviceQueue) f(vkQueueSubmit) f(vkDestroyDevice)
 
 #define DECLARE(name) static PFN_##name name;
@@ -926,6 +926,7 @@ main(void)
                                     VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
                               },
                               NULL, &fence) == VK_SUCCESS);
+         assert(vkGetFenceStatus(device, fence) == VK_NOT_READY);
          VkSemaphore chain = VK_NULL_HANDLE;
          assert(vkCreateSemaphore(
                    device,
