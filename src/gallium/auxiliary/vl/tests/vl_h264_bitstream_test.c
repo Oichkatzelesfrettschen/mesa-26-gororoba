@@ -3,7 +3,7 @@
  */
 
 /*
- * Stage (a) unit test for the clean-room H.264 bitstream reader: RBSP de-escape
+ * Unit test for the clean-room H.264 bitstream reader: RBSP de-escape
  * (sec 7.4.1), the Exp-Golomb codes ue/se/te (sec 9.1/9.1.1), and the
  * more_rbsp_data end test (sec 7.2).  The vectors are hand-derived from the spec
  * code tables, not from any decoder.  A small MSB-first bit writer builds the
