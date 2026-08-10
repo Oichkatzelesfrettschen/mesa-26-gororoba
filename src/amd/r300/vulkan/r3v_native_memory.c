@@ -148,7 +148,8 @@ r3v_DestroyBuffer(VkDevice _device, VkBuffer _buffer,
 
 /* r3v_AllocateMemory creates one GEM BO per VkDeviceMemory, and
  * r3v_BindBufferMemory2 stores each buffer's memory and offset.  That binding
- * model permits shared allocations and does not request a dedicated BO.
+ * model permits shared allocations, so native buffer requirements report both
+ * dedicated-allocation flags as false.
  */
 static void
 r3v_native_fill_buffer_dedicated_requirements(
