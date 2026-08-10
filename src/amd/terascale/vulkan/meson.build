@@ -306,3 +306,12 @@ _dev_icd = custom_target(
 )
 
 devenv.append('VK_ICD_FILENAMES', _dev_icd.full_path())
+
+if with_tests
+  test(
+    'terakan-multiview-state-contract',
+    prog_python,
+    args : [files('tests/terakan_multiview_state_contract_test.py')],
+    suite : ['terakan'],
+  )
+endif
