@@ -98,9 +98,16 @@ void u_upload_unmap( struct u_upload_mgr *upload );
  * \param size             Size of the allocation.
  * \param alignment        Alignment of the suballocation within the buffer
  * \param out_offset       Pointer to where the new buffer offset will be returned.
- * \param outbuf           Pointer to where the upload buffer will be returned.
- * \param releasebuf       If non-null, this buffer must be released by the caller
+ * \param outbuf           Borrowed pointer to the upload buffer.
+ * \param releasebuf       Previous upload buffer transferred to the caller after
+ *                         a successful rotation.
  * \param ptr              Pointer to the allocated memory that is returned.
+ *
+ * A successful rotation transfers the previous upload buffer through
+ * releasebuf, and the caller releases that buffer after its deferred use.
+ * A failed allocation or map retains the previous upload buffer in the
+ * uploader and returns ~0, NULL, NULL, and NULL through out_offset, outbuf,
+ * releasebuf, and ptr respectively.
  */
 void u_upload_alloc(struct u_upload_mgr *upload,
                     unsigned min_out_offset,

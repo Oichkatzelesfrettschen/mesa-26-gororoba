@@ -900,14 +900,15 @@ if with_tests
     suite: 'gallium',
   )
 
-  # Failure-path ownership contract for the shared upload manager: map
-  # failure leaves no dangling current buffer, allocation failure keeps
-  # the rotated-out buffer owned by the caller's release slot.
+  # Transactional upload rotation preserves the uploader-owned buffer on
+  # failure, clears caller outputs, and publishes each successful handoff.
   test('u-upload-mgr-failure-ownership',
     executable(
       'u_upload_mgr_test',
-      ['util/u_upload_mgr.c', 'util/tests/u_upload_mgr_test.c'],
-      include_directories : [inc_include, inc_src, inc_gallium],
+      'util/tests/u_upload_mgr_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             inc_gallium_aux],
+      link_with : libgallium,
       dependencies : [idep_mesautil],
     ),
     suite: 'gallium',
