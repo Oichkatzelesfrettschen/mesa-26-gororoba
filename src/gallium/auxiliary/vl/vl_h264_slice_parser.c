@@ -55,7 +55,7 @@ parse_ref_pic_list_modification(struct vl_h264_reader *reader,
             return false;
 
          idc = vl_h264_ue(reader);
-      if (vl_h264_overrun(reader) || idc > 3)
+         if (vl_h264_overrun(reader) || idc > 3)
             return false;
 
          unsigned value = 0;
