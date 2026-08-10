@@ -21,7 +21,7 @@ each command belongs to one dispatch scope, fixed by the type of its first
 parameter, so the scope census must match the registry.
 
 Modes:
-  --selftest   synthetic known-good and known-bad closures
+  --selftest   synthetic known-good and known-bad closures and model shapes
   --pair-fixture NAME
                the lifecycle-pair verdict over one synthetic surface from
                PAIR_FIXTURES, which calibrates that verdict where the
@@ -174,6 +174,43 @@ class Registry:
 
     def in_scope(self, scope):
         return {n for n, s in self.scope.items() if s == scope}
+
+
+# Shape expectations make a registry, linked table, and runtime scan carry
+# enough structure for the closure verdict to have evidence behind it.
+MODEL_CENSUS = (
+    ("core 1.0 global-scope commands", 4),
+    ("core 1.0 instance-scope commands", 2),
+    ("core 1.0 physical-device-scope commands", 10),
+    ("core 1.0 device-scope commands", 121),
+)
+
+MODEL_FLOORS = (
+    ("populated device slots", 100),
+    ("common providers with dispatch dependencies", 50),
+)
+
+
+def model_failures(scope_counts, populated_count, dependency_count):
+    """Return model-shape defects before the closure verdict runs."""
+    failures = []
+    for name, expected in MODEL_CENSUS:
+        value = scope_counts[name]
+        if value != expected:
+            failures.append(f"{name} is {value}, not the {expected} "
+                            "Vulkan 1.0 fixes; the audit inputs did not "
+                            "parse")
+
+    floor_values = {
+        "populated device slots": populated_count,
+        "common providers with dispatch dependencies": dependency_count,
+    }
+    for name, floor in MODEL_FLOORS:
+        value = floor_values[name]
+        if value < floor:
+            failures.append(f"{name} is {value}, below the floor {floor}; "
+                            "the audit inputs did not parse")
+    return failures
 
 
 def parse_registry(vk_xml: Path):
@@ -382,8 +419,29 @@ def selftest():
                                  populated)
         assert found == expected, (fixture, found, expected)
 
+    model_counts = {name: expected for name, expected in MODEL_CENSUS}
+    assert model_failures(model_counts, 100, 50) == []
+    model_bad_fixtures = (
+        ("core 1.0 device-scope commands", 120, 100, 50,
+         "core 1.0 device-scope commands is 120, not the 121 Vulkan 1.0 "
+         "fixes; the audit inputs did not parse"),
+        ("populated device slots", 121, 99, 50,
+         "populated device slots is 99, below the floor 100; the audit "
+         "inputs did not parse"),
+        ("common providers with dispatch dependencies", 121, 100, 49,
+         "common providers with dispatch dependencies is 49, below the "
+         "floor 50; the audit inputs did not parse"),
+    )
+    for (name, core_device_count, populated_count, dependency_count,
+         expected_failure) in model_bad_fixtures:
+        bad_counts = model_counts.copy()
+        bad_counts["core 1.0 device-scope commands"] = core_device_count
+        found = model_failures(bad_counts, populated_count, dependency_count)
+        assert found == [expected_failure], (name, found)
+
     print("r3v_native_entrypoint_audit selftest: 15 closure and result legs "
-          f"OK, {len(PAIR_FIXTURES)} lifecycle-pair legs OK")
+          f"OK, {len(model_bad_fixtures)} model-shape rejection legs OK, "
+          f"{len(PAIR_FIXTURES)} lifecycle-pair legs OK")
     return 0
 
 
@@ -656,30 +714,18 @@ def main():
     # vary with the build, so those carry floors.  A collapsed parse -- an
     # unreadable library, a registry whose 1.0 feature sets moved -- fails
     # here before any verdict claims closure.
-    census = [
-        ("core 1.0 global-scope commands",
-         len(reg.core10 & reg.in_scope("global")), 4),
-        ("core 1.0 instance-scope commands",
-         len(reg.core10 & reg.in_scope("instance")), 2),
-        ("core 1.0 physical-device-scope commands",
-         len(reg.core10 & reg.in_scope("physical-device")), 10),
-        ("core 1.0 device-scope commands", len(core_device), 121),
-    ]
-    for name, value, expected in census:
-        if value != expected:
-            print(f"model failure: {name} is {value}, not the {expected} "
-                  f"Vulkan 1.0 fixes; the audit inputs did not parse")
-            return 2
-
-    floors = [
-        ("populated device slots", len(populated), 100),
-        ("common providers with dispatch dependencies", len(deps), 50),
-    ]
-    for name, value, floor in floors:
-        if value < floor:
-            print(f"model failure: {name} is {value}, below the floor "
-                  f"{floor}; the audit inputs did not parse")
-            return 2
+    scope_counts = {
+        "core 1.0 global-scope commands":
+            len(reg.core10 & reg.in_scope("global")),
+        "core 1.0 instance-scope commands":
+            len(reg.core10 & reg.in_scope("instance")),
+        "core 1.0 physical-device-scope commands":
+            len(reg.core10 & reg.in_scope("physical-device")),
+        "core 1.0 device-scope commands": len(core_device),
+    }
+    for failure in model_failures(scope_counts, len(populated), len(deps)):
+        print(f"model failure: {failure}")
+        return 2
 
     if mode == "--policy":
         emit_policy(reg, native, common, deps)
