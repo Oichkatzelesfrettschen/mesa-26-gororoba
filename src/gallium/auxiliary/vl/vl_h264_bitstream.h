@@ -49,10 +49,11 @@ struct vl_h264_reader {
 };
 
 /*
- * Initialise the reader over one NAL's EBSP payload (the bytes after the start
- * code and the one-byte NAL header).  De-escapes 0x000003 -> 0x0000 into an owned
- * RBSP buffer and starts vl_vlc over it.  Returns false on allocation failure or
- * an empty payload, leaving the reader safe to fini.
+ * vl_h264_reader_init() initializes the reader from one NAL's EBSP payload (the
+ * bytes after the start code and the one-byte NAL header).  The reader
+ * de-escapes 0x000003 -> 0x0000 into an owned RBSP buffer and starts vl_vlc over
+ * it.  vl_h264_reader_init() returns false on allocation failure or an empty
+ * payload; vl_h264_reader_fini() safely releases the reader after either result.
  */
 bool vl_h264_reader_init(struct vl_h264_reader *reader,
                          const uint8_t *ebsp, unsigned ebsp_size);
