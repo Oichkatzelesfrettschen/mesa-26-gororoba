@@ -472,7 +472,11 @@ def selftest():
 
     missing_counts = model_counts.copy()
     del missing_counts[MODEL_SCOPE_INSTANCE]
-    found = model_failures(missing_counts, 100, 50)
+    found = model_failures(
+        missing_counts,
+        MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+        MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
+    )
     if len(found) != 1:
         raise AssertionError(found)
     if MODEL_SCOPE_INSTANCE not in found[0]:
