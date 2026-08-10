@@ -208,8 +208,9 @@ python3 docs/hardware/tests/test_rs482_stack_manifest_schema.py -v
 
 ## Registry currency
 
-The kernel-module registry for this platform is
-`docs/hardware/vostro1000-kernel-modules.md`; its package versions track the
-installed box state (verify with `pacman -Q radeon-unified-dkms xorg-server
-xf86-video-ati` on the target). A version drift between the registry and the
-installed package invalidates claimed image provenance until corrected.
+The loaded target deployment row in the current identities table tracks the
+installed Radeon package version. Verify it with `pacman -Q
+radeon-unified-dkms` on the target. A version drift between that row and the
+installed package invalidates the loaded deployment identity until corrected.
+`docs/hardware/vostro1000-kernel-modules.md` tracks stable module mechanisms
+and ownership rather than changing package versions.
