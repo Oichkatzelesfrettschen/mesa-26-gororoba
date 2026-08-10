@@ -906,7 +906,8 @@ if with_tests
     executable(
       'u_upload_mgr_test',
       'util/tests/u_upload_mgr_test.c',
-      include_directories : [inc_include, inc_src, inc_gallium],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             inc_gallium_aux],
       link_with : libgallium,
       dependencies : [idep_mesautil],
     ),

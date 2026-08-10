@@ -619,7 +619,6 @@ u_vbuf_translate_buffers(struct u_vbuf *mgr, struct translate_key *key,
       tr->run(tr, 0, num_vertices, 0, 0, out_map);
    }
 
-   /* Unmap all buffers. */
    u_vbuf_unmap_transfers(mgr, vb_transfer, vb_mask);
 
    /* Setup the new vertex buffer. */

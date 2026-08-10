@@ -40,7 +40,6 @@ struct fake_buffer {
 static bool g_fail_resource_create;
 static bool g_fail_buffer_map;
 static unsigned g_live_buffers;
-static bool g_preserve_destroyed;
 static struct fake_buffer *g_preserved_buffers;
 static bool g_double_release;
 
@@ -91,12 +90,10 @@ fake_resource_destroy(struct pipe_screen *screen, struct pipe_resource *res)
    fb->data = NULL;
    g_live_buffers--;
 
-   if (g_preserve_destroyed) {
-      fb->preserved_next = g_preserved_buffers;
-      g_preserved_buffers = fb;
-   } else {
-      free(fb);
-   }
+   /* The release hook needs destroyed records to remain addressable so a
+    * second release becomes an explicit test verdict. */
+   fb->preserved_next = g_preserved_buffers;
+   g_preserved_buffers = fb;
 }
 
 static void
@@ -265,6 +262,7 @@ check_persistent_upload_failures(void)
 
    g_fail_resource_create = false;
    g_fail_buffer_map = false;
+   g_double_release = false;
    screen.resource_create = fake_resource_create;
    screen.resource_destroy = fake_resource_destroy;
    pipe.screen = &screen;
@@ -316,7 +314,7 @@ check_persistent_upload_failures(void)
          "persistent replacement-map failure retries on the old mapping");
 
    u_upload_destroy(mgr);
-   CHECK(g_live_buffers == 0,
+   CHECK(g_live_buffers == 0 && !g_double_release,
          "persistent uploader destruction releases its retained buffer");
 }
 
@@ -331,8 +329,6 @@ check_wrapper_reference_contract(void)
 
    g_fail_resource_create = false;
    g_fail_buffer_map = false;
-   g_preserve_destroyed = true;
-   g_preserved_buffers = NULL;
    g_double_release = false;
 
    mgr = u_upload_create(&g_pipe, 4096, PIPE_BIND_VERTEX_BUFFER,
@@ -366,8 +362,6 @@ check_wrapper_reference_contract(void)
 cleanup:
    if (outbuf)
       fake_resource_release(&g_pipe, outbuf);
-   g_preserve_destroyed = false;
-   fake_free_preserved_buffers();
 }
 
 static void
@@ -380,7 +374,6 @@ check_u_vbuf_failure_ownership(void)
    struct u_vbuf *vbuf = NULL;
    struct pipe_resource *base_buffer = NULL;
    struct pipe_resource *base_releasebuf = NULL;
-   struct pipe_screen input_screen = g_screen;
    struct pipe_resource input_template;
    struct pipe_vertex_buffer vertex_buffer;
    struct cso_velems_state velems;
@@ -393,8 +386,6 @@ check_u_vbuf_failure_ownership(void)
 
    g_fail_resource_create = false;
    g_fail_buffer_map = false;
-   g_preserve_destroyed = true;
-   g_preserved_buffers = NULL;
    g_double_release = false;
    g_vbuf_input_resource = NULL;
    g_vbuf_input_map_calls = 0;
@@ -428,7 +419,7 @@ check_u_vbuf_failure_ownership(void)
    input_template.height0 = 1;
    input_template.depth0 = 1;
    input_template.array_size = 1;
-   input = fake_resource_create(&input_screen, &input_template);
+   input = fake_resource_create(&g_screen, &input_template);
    CHECK(input != NULL, "u_vbuf fixture creates an input resource");
    if (!input)
       goto cleanup;
@@ -488,6 +479,21 @@ check_u_vbuf_failure_ownership(void)
    CHECK(!g_double_release,
          "failed second draw does not release a stale handoff slot");
 
+   g_vbuf_input_resource = NULL;
+   g_vbuf_input_map_calls = 0;
+   g_vbuf_resource_create_calls = 0;
+   g_vbuf_stream_map_calls = 0;
+   g_vbuf_draw_calls = 0;
+   g_double_release = false;
+   g_vbuf_test_active = true;
+   u_vbuf_draw_vbo(&g_pipe, &info, 0, NULL, draws, ARRAY_SIZE(draws));
+   g_vbuf_test_active = false;
+
+   CHECK(g_vbuf_draw_calls == 2,
+         "u_vbuf submits both draws when every input map succeeds");
+   CHECK(!g_double_release,
+         "successful translated draws release every handoff exactly once");
+
 cleanup:
    g_vbuf_test_active = false;
    g_vbuf_input_resource = NULL;
@@ -499,10 +505,8 @@ cleanup:
       u_upload_destroy(stream_uploader);
    if (input)
       fake_resource_release(&g_pipe, input);
-   CHECK(g_live_buffers == 0,
+   CHECK(g_live_buffers == 0 && !g_double_release,
          "u_vbuf failure cleanup releases all fixture resources");
-   g_preserve_destroyed = false;
-   fake_free_preserved_buffers();
 }
 
 int
@@ -683,6 +687,19 @@ main(void)
    printf("repeated failure/recovery lifetime:\n");
    {
       bool lifetime_ok = true;
+      unsigned failure_iteration = ~0u;
+      const char *failure_condition = NULL;
+
+#define LIFETIME_REQUIRE(condition, description)                            \
+      do {                                                                  \
+         if (!(condition)) {                                                \
+            lifetime_ok = false;                                            \
+            if (!failure_condition) {                                       \
+               failure_iteration = i;                                       \
+               failure_condition = description;                             \
+            }                                                               \
+         }                                                                  \
+      } while (0)
 
       /* The lifetime control drives a rotation or existing-buffer remap on
        * every iteration and alternates injected failures with clean retries. */
@@ -701,7 +718,8 @@ main(void)
          g_fail_buffer_map = false;
 
          if (edge == 2) {
-            lifetime_ok &= upload_bytes(mgr, 64, (uint8_t)i, NULL);
+            LIFETIME_REQUIRE(upload_bytes(mgr, 64, (uint8_t)i, NULL),
+                             "pre-remap upload succeeds");
             u_upload_unmap(mgr);
          } else {
             u_upload_unmap(mgr);
@@ -716,36 +734,51 @@ main(void)
          g_fail_buffer_map = false;
 
          if (inject_failure) {
-            lifetime_ok &= iteration_offset == ~0u &&
-                           iteration_buffer == NULL &&
-                           iteration_releasebuf == NULL &&
-                           iteration_map == NULL;
-            lifetime_ok &= g_live_buffers == 1;
-            lifetime_ok &= upload_bytes(mgr, 64, (uint8_t)(i + 1), NULL);
+            LIFETIME_REQUIRE(iteration_offset == ~0u &&
+                                iteration_buffer == NULL &&
+                                iteration_releasebuf == NULL &&
+                                iteration_map == NULL,
+                             "failure clears every output");
+            LIFETIME_REQUIRE(g_live_buffers == 1,
+                             "failure retains one live buffer");
+            LIFETIME_REQUIRE(
+               upload_bytes(mgr, 64, (uint8_t)(i + 1), NULL),
+               "clean retry succeeds");
          } else {
-            lifetime_ok &= iteration_offset != ~0u &&
-                           iteration_buffer != NULL && iteration_map != NULL;
+            LIFETIME_REQUIRE(iteration_offset != ~0u &&
+                                iteration_buffer != NULL &&
+                                iteration_map != NULL,
+                             "successful allocation publishes outputs");
             if (edge != 2) {
-               lifetime_ok &= iteration_releasebuf != NULL;
-               lifetime_ok &= g_live_buffers == 2;
+               LIFETIME_REQUIRE(iteration_releasebuf != NULL,
+                                "successful rotation transfers a buffer");
+               LIFETIME_REQUIRE(g_live_buffers == 2,
+                                "successful rotation holds two buffers");
             } else {
-               lifetime_ok &= iteration_releasebuf == NULL;
+               LIFETIME_REQUIRE(iteration_releasebuf == NULL,
+                                "existing-buffer allocation has no handoff");
             }
             if (iteration_releasebuf)
                pipe_resource_release(&g_pipe, iteration_releasebuf);
          }
 
-         lifetime_ok &= g_live_buffers == 1;
+         LIFETIME_REQUIRE(g_live_buffers == 1,
+                          "iteration cleanup retains one buffer");
       }
 
       g_fail_resource_create = false;
       g_fail_buffer_map = false;
+      if (!lifetime_ok)
+         printf("  first failure at iteration %u, edge %u: %s\n",
+                failure_iteration, failure_iteration % 3,
+                failure_condition);
       CHECK(lifetime_ok,
             "1000-cycle mixed failure/recovery loop keeps one live buffer");
+#undef LIFETIME_REQUIRE
    }
 
    u_upload_destroy(mgr);
-   CHECK(g_live_buffers == 0,
+   CHECK(g_live_buffers == 0 && !g_double_release,
          "destroy returns the allocator to zero live buffers");
 
    check_persistent_upload_failures();
@@ -758,6 +791,7 @@ main(void)
    g_pipe.draw_vbo = fake_draw_vbo;
    check_u_vbuf_failure_ownership();
 
+   fake_free_preserved_buffers();
    printf("%s\n", g_fails ? "FAILED" : "OK");
    return g_fails ? 1 : 0;
 }
