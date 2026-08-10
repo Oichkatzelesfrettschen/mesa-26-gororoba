@@ -3,9 +3,10 @@
 """Validate the Terakan soft-fp64 construction and teardown contract.
 
 The physical-device initializer creates the soft-fp64 mutex before fallible
-ISA, Vulkan, and WSI initialization.  Every failure path destroys the mutex,
-and the build and runtime comments name the first lazy-library call.  The
-mutant checks reject missing cleanup and either stale lazy-trigger description.
+ISA, Vulkan, and WSI initialization.  Every failure edge reaches the shared
+mutex cleanup, and the build and runtime comments name the first lazy-library
+call.  The mutant checks reject missing cleanup, a direct calloc return, and
+either stale lazy-trigger description.
 """
 
 from pathlib import Path
@@ -38,6 +39,12 @@ def function_body(source: str, function_name: str) -> str:
     return source[opening : matching_brace(source, opening) + 1]
 
 
+def block_body(source: str, anchor: str) -> str:
+    anchor_index = source.index(anchor)
+    opening = source.index("{", anchor_index)
+    return source[opening : matching_brace(source, opening) + 1]
+
+
 def verify_contract(source: str, meson: str, softfp64: str) -> None:
     init = function_body(source, "terakan_physical_device_init")
     mutex_init = "simple_mtx_init(&device->softfp64_mutex, mtx_plain);"
@@ -47,13 +54,23 @@ def verify_contract(source: str, meson: str, softfp64: str) -> None:
     if init.count(mutex_destroy) != 1:
         raise ContractViolationError("initializer has one softfp64 mutex cleanup")
 
-    calloc_failure = init[init.index("device->isa = calloc") :]
-    if "goto fail_mutex;" not in calloc_failure:
-        raise ContractViolationError("ISA allocation failure reaches mutex cleanup")
+    failure_edges = (
+        ("if (device->isa == NULL)", "goto fail_mutex;"),
+        ("if (r600_isa_init(", "goto fail_isa;"),
+        ("result = vk_physical_device_init(", "goto fail_isa;"),
+        ("result = terakan_wsi_init(", "goto fail_device;"),
+    )
+    for anchor, edge in failure_edges:
+        if edge not in block_body(init, anchor):
+            raise ContractViolationError(f"{anchor} does not reach {edge}")
 
     fail_device = init.index("fail_device:")
     fail_isa = init.index("fail_isa:", fail_device)
     fail_mutex = init.index("fail_mutex:", fail_isa)
+    if any(token in init[fail_device:fail_isa] for token in ("goto ", "return ")):
+        raise ContractViolationError("fail_device does not fall through to fail_isa")
+    if any(token in init[fail_isa:fail_mutex] for token in ("goto ", "return ")):
+        raise ContractViolationError("fail_isa does not fall through to fail_mutex")
     if "vk_physical_device_finish(&device->vk);" not in init[fail_device:fail_isa]:
         raise ContractViolationError("WSI failure finishes the Vulkan device")
     isa_cleanup = init[fail_isa:fail_mutex]
@@ -85,6 +102,14 @@ def remove_mutex_cleanup(source: str) -> str:
     )
 
 
+def restore_calloc_direct_return(source: str) -> str:
+    return source.replace(
+        "result = vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);\n      goto fail_mutex;",
+        "return vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);",
+        1,
+    )
+
+
 def restore_stale_physical_comment(source: str) -> str:
     return source.replace(
         "terakan_physical_device_get_softfp64(), not here.",
@@ -109,6 +134,7 @@ def main() -> int:
 
     mutants = (
         ("missing mutex cleanup", remove_mutex_cleanup(source), meson),
+        ("calloc direct return", restore_calloc_direct_return(source), meson),
         (
             "stale physical-device trigger",
             restore_stale_physical_comment(source),
