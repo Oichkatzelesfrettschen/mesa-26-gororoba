@@ -97,6 +97,73 @@ test_de_escape(void)
 }
 
 static int
+test_malformed_reads(void)
+{
+   const uint8_t short_rbsp[] = { 0x80 };
+   const uint8_t wide_rbsp[] = {
+      0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
+   };
+   struct bitwriter saturated;
+   struct bitwriter truncated_saturated;
+   struct vl_h264_reader r;
+   unsigned consumed;
+
+   CHECK(vl_h264_reader_init(&r, short_rbsp, sizeof(short_rbsp)));
+   CHECK(vl_h264_u(&r, 0) == 0);
+   CHECK(!vl_h264_overrun(&r));
+   consumed = vl_h264_bits_consumed(&r);
+   CHECK(vl_h264_u(&r, 33) == 0);
+   CHECK(vl_h264_overrun(&r));
+   CHECK(vl_h264_bits_consumed(&r) == consumed);
+   vl_h264_reader_fini(&r);
+
+   CHECK(vl_h264_reader_init(&r, short_rbsp, sizeof(short_rbsp)));
+   consumed = vl_h264_bits_consumed(&r);
+   CHECK(vl_h264_u(&r, 9) == 0);
+   CHECK(vl_h264_overrun(&r));
+   CHECK(vl_h264_bits_consumed(&r) == consumed);
+   vl_h264_reader_fini(&r);
+
+   CHECK(vl_h264_reader_init(&r, wide_rbsp, sizeof(wide_rbsp)));
+   CHECK(vl_h264_u(&r, 1) == 1);
+   CHECK(vl_h264_u(&r, 32) == 0);
+   consumed = vl_h264_bits_consumed(&r);
+   CHECK(vl_h264_u(&r, 33) == 0);
+   CHECK(vl_h264_overrun(&r));
+   CHECK(vl_h264_bits_consumed(&r) == consumed);
+   vl_h264_reader_fini(&r);
+
+   memset(&saturated, 0, sizeof(saturated));
+   for (unsigned i = 0; i < 33; i++)
+      put_bit(&saturated, 0);
+   put_bit(&saturated, 1);
+   for (unsigned i = 0; i < 33; i++)
+      put_bit(&saturated, 0);
+   put_bit(&saturated, 1);
+   put_bit(&saturated, 1);
+
+   CHECK(vl_h264_reader_init(&r, saturated.buf,
+                             (saturated.nbits + 7) / 8));
+   CHECK(vl_h264_ue(&r) == UINT32_MAX);
+   CHECK(!vl_h264_overrun(&r));
+   CHECK(vl_h264_bits_consumed(&r) == 67);
+   CHECK(vl_h264_u(&r, 1) == 1);
+   CHECK(!vl_h264_more_rbsp_data(&r));
+   vl_h264_reader_fini(&r);
+
+   memset(&truncated_saturated, 0, sizeof(truncated_saturated));
+   for (unsigned i = 0; i < 33; i++)
+      put_bit(&truncated_saturated, 0);
+   put_bit(&truncated_saturated, 1);
+   CHECK(vl_h264_reader_init(&r, truncated_saturated.buf,
+                             (truncated_saturated.nbits + 7) / 8));
+   CHECK(vl_h264_ue(&r) == UINT32_MAX);
+   CHECK(vl_h264_overrun(&r));
+   vl_h264_reader_fini(&r);
+   return 0;
+}
+
+static int
 test_exp_golomb(void)
 {
    const uint32_t ue_vec[] = { 0, 1, 2, 3, 7, 14, 15, 100 };
@@ -144,8 +211,10 @@ main(void)
 {
    if (test_de_escape())
       return 1;
+   if (test_malformed_reads())
+      return 1;
    if (test_exp_golomb())
       return 1;
-   printf("vl_h264_bitstream: de-escape + Exp-Golomb + more_rbsp_data PASS\n");
+   printf("vl_h264_bitstream: de-escape + bounded reads + Exp-Golomb PASS\n");
    return 0;
 }
