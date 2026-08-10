@@ -184,6 +184,11 @@ MODEL_SCOPE_PHYSICAL_DEVICE = "core 1.0 physical-device-scope commands"
 MODEL_SCOPE_DEVICE = "core 1.0 device-scope commands"
 MODEL_POPULATED_SLOTS = "populated device slots"
 MODEL_COMMON_DEPENDENCIES = "common providers with dispatch dependencies"
+MODEL_SCOPE_REGISTRY = (
+    (MODEL_SCOPE_GLOBAL, "global"),
+    (MODEL_SCOPE_INSTANCE, "instance"),
+    (MODEL_SCOPE_PHYSICAL_DEVICE, "physical-device"),
+)
 
 MODEL_CENSUS = (
     (MODEL_SCOPE_GLOBAL, 4),
@@ -196,6 +201,7 @@ MODEL_FLOORS = (
     (MODEL_POPULATED_SLOTS, 100),
     (MODEL_COMMON_DEPENDENCIES, 50),
 )
+MODEL_FLOOR_COUNTS = dict(MODEL_FLOORS)
 
 
 def model_failures(scope_counts, populated_count, dependency_count):
@@ -431,14 +437,28 @@ def selftest():
         assert found == expected, (fixture, found, expected)
 
     model_counts = {name: expected for name, expected in MODEL_CENSUS}
-    assert model_failures(model_counts, 100, 50) == []
+    assert model_failures(
+        model_counts,
+        MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+        MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
+    ) == []
     model_bad_fixtures = (
-        (MODEL_SCOPE_DEVICE, 120, 100, 50,
-         (MODEL_SCOPE_DEVICE, "120")),
-        (MODEL_POPULATED_SLOTS, 121, 99, 50,
-         (MODEL_POPULATED_SLOTS, "99")),
-        (MODEL_COMMON_DEPENDENCIES, 121, 100, 49,
-         (MODEL_COMMON_DEPENDENCIES, "49")),
+        (MODEL_SCOPE_DEVICE, model_counts[MODEL_SCOPE_DEVICE] - 1,
+         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
+         (MODEL_SCOPE_DEVICE, str(model_counts[MODEL_SCOPE_DEVICE] - 1))),
+        (MODEL_POPULATED_SLOTS,
+         model_counts[MODEL_SCOPE_DEVICE],
+         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS] - 1,
+         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
+         (MODEL_POPULATED_SLOTS,
+          str(MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS] - 1))),
+        (MODEL_COMMON_DEPENDENCIES,
+         model_counts[MODEL_SCOPE_DEVICE],
+         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES] - 1,
+         (MODEL_COMMON_DEPENDENCIES,
+          str(MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES] - 1))),
     )
     for (name, core_device_count, populated_count, dependency_count,
          expected_markers) in model_bad_fixtures:
@@ -736,14 +756,10 @@ def main():
     # unreadable library, a registry whose 1.0 feature sets moved -- fails
     # here before any verdict claims closure.
     scope_counts = {
-        MODEL_SCOPE_GLOBAL:
-            len(reg.core10 & reg.in_scope("global")),
-        MODEL_SCOPE_INSTANCE:
-            len(reg.core10 & reg.in_scope("instance")),
-        MODEL_SCOPE_PHYSICAL_DEVICE:
-            len(reg.core10 & reg.in_scope("physical-device")),
-        MODEL_SCOPE_DEVICE: len(core_device),
+        name: len(reg.core10 & reg.in_scope(registry_scope))
+        for name, registry_scope in MODEL_SCOPE_REGISTRY
     }
+    scope_counts[MODEL_SCOPE_DEVICE] = len(core_device)
     model_defects = model_failures(scope_counts, len(populated), len(deps))
     for failure in model_defects:
         print(f"model failure: {failure}")
