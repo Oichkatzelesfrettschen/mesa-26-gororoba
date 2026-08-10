@@ -40,6 +40,23 @@ record_triangle_cell_tail(struct r3v_native_device *device,
                           struct r3v_native_memory *vertex_memory,
                           struct r3v_native_memory *color_memory);
 
+/* The triangle cell binds both roles at byte offset zero.  A shared GEM BO
+ * makes the vertex fetch overlap the color target, and the DRM relocation
+ * list folds the two role references into one slot.  The recorder rejects
+ * aliased roles before either mapping or sentinel publication begins.
+ */
+static VkResult
+validate_triangle_memory_roles(struct r3v_native_device *device,
+                               const struct r3v_native_memory *vertex_memory,
+                               const struct r3v_native_memory *color_memory)
+{
+   if (vertex_memory->bo.handle == color_memory->bo.handle)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: triangle vertex and color roles "
+                       "require distinct GEM objects");
+   return VK_SUCCESS;
+}
+
 /* Records the fixed TCL-bypass triangle cell into a native command buffer:
  * writes the pretransformed vertices through the vertex memory's mapping,
  * builds the reference fragment binary, emits the cell IB, and installs it
@@ -70,6 +87,11 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
                        (size_t)R3V_TRIANGLE_VERTEX_BYTES,
                        R3V_TRIANGLE_COLOR_BYTES);
    }
+
+   VkResult role_result = validate_triangle_memory_roles(
+      device, vertex_memory, color_memory);
+   if (role_result != VK_SUCCESS)
+      return role_result;
 
    /* The vertex payload lands through the memory's CPU mapping; a
     * NO_CPU_ACCESS placement fails here and the recorder reports it
@@ -145,6 +167,11 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                struct r3v_native_memory *color_memory,
                                uint32_t width, uint32_t height)
 {
+   VkResult role_result = validate_triangle_memory_roles(
+      device, vertex_memory, color_memory);
+   if (role_result != VK_SUCCESS)
+      return role_result;
+
    /* The recorded cell is self-contained: the emission opens with the
     * first-draw contract prefix resolved at the target extent, so the
     * result does not ride whatever state the previous client left in
@@ -199,6 +226,11 @@ record_triangle_cell_tail(struct r3v_native_device *device,
                           struct r3v_native_memory *vertex_memory,
                           struct r3v_native_memory *color_memory)
 {
+   VkResult role_result = validate_triangle_memory_roles(
+      device, vertex_memory, color_memory);
+   if (role_result != VK_SUCCESS)
+      return role_result;
+
    VkResult result =
       sentinel_fill_color(device, color_memory, color_memory->bo.size);
    if (result != VK_SUCCESS)
@@ -217,6 +249,11 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_image *target_image)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
+   VkResult role_result = validate_triangle_memory_roles(
+      device, carrier_memory, color_memory);
+   if (role_result != VK_SUCCESS)
+      return role_result;
+
    if (carrier_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
        color_memory->bo.size <
           r3v_native_image_footprint_bytes(target_image->height)) {
@@ -430,6 +467,11 @@ r3v_native_record_tcl_bypass_triangle_gathered(
                        (size_t)R3V_TRIANGLE_VERTEX_BYTES,
                        R3V_TRIANGLE_COLOR_BYTES);
    }
+
+   VkResult role_result = validate_triangle_memory_roles(
+      device, vertex_memory, color_memory);
+   if (role_result != VK_SUCCESS)
+      return role_result;
 
    bool owns_map = vertex_memory->map == NULL;
    if (owns_map &&
