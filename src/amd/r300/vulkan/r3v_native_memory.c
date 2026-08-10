@@ -10,6 +10,7 @@
 
 #include "vk_alloc.h"
 #include "vk_log.h"
+#include "vk_util.h"
 
 #include <radeon_drm.h>
 
@@ -145,6 +146,23 @@ r3v_DestroyBuffer(VkDevice _device, VkBuffer _buffer,
    vk_buffer_destroy(&device->vk, pAllocator, &buffer->vk);
 }
 
+/* r3v_AllocateMemory creates one GEM BO per VkDeviceMemory, and
+ * r3v_BindBufferMemory2 stores each buffer's memory and offset.  That binding
+ * model permits shared allocations, so native buffer requirements report both
+ * dedicated-allocation flags as false.
+ */
+static void
+r3v_native_fill_buffer_dedicated_requirements(
+   VkMemoryRequirements2 *pMemoryRequirements)
+{
+   VkMemoryDedicatedRequirements *dedicated =
+      vk_find_struct(pMemoryRequirements->pNext, MEMORY_DEDICATED_REQUIREMENTS);
+   if (dedicated != NULL) {
+      dedicated->prefersDedicatedAllocation = VK_FALSE;
+      dedicated->requiresDedicatedAllocation = VK_FALSE;
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 r3v_GetDeviceBufferMemoryRequirements(
    VkDevice _device, const VkDeviceBufferMemoryRequirements *pInfo,
@@ -156,6 +174,7 @@ r3v_GetDeviceBufferMemoryRequirements(
       .alignment = 4096,
       .memoryTypeBits = 0x3,
    };
+   r3v_native_fill_buffer_dedicated_requirements(pMemoryRequirements);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -175,6 +194,7 @@ r3v_GetBufferMemoryRequirements2(VkDevice _device,
       .alignment = 4096,
       .memoryTypeBits = 0x1,
    };
+   r3v_native_fill_buffer_dedicated_requirements(pMemoryRequirements);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

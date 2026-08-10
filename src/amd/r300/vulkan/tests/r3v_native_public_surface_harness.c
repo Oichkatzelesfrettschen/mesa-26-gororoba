@@ -34,6 +34,10 @@
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
                                              const char *pName);
 
+VKAPI_ATTR void VKAPI_CALL r3v_GetDeviceBufferMemoryRequirements(
+   VkDevice device, const VkDeviceBufferMemoryRequirements *pInfo,
+   VkMemoryRequirements2 *pMemoryRequirements);
+
 #define CLEAR_SENTINEL ((float)0xa5 / 255.0f)
 
 /* The application payload is NDC: the public route's CPU vertex node
@@ -53,7 +57,8 @@ static VkCommandPool pool;
 
 #define DEVICE_COMMANDS(f)                                                 \
    f(vkAllocateMemory) f(vkFreeMemory) f(vkMapMemory) f(vkUnmapMemory)     \
-   f(vkCreateBuffer) f(vkDestroyBuffer) f(vkBindBufferMemory)              \
+   f(vkCreateBuffer) f(vkDestroyBuffer) f(vkGetBufferMemoryRequirements2KHR) \
+   f(vkBindBufferMemory)                                                    \
    f(vkCreateImage) f(vkDestroyImage) f(vkGetImageMemoryRequirements)      \
    f(vkGetImageSubresourceLayout) f(vkBindImageMemory)                     \
    f(vkCreateImageView) f(vkDestroyImageView)                              \
@@ -274,6 +279,10 @@ main(void)
           pdev_count == 1);
 
    const float priority = 1.0f;
+   const char *device_extensions[] = {
+      VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+      VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+   };
    assert(create_device(
              pdev,
              &(VkDeviceCreateInfo){
@@ -287,6 +296,8 @@ main(void)
                       .queueCount = 1,
                       .pQueuePriorities = &priority,
                    },
+                .enabledExtensionCount = 2,
+                .ppEnabledExtensionNames = device_extensions,
              },
              NULL, &device) == VK_SUCCESS);
 
@@ -397,6 +408,54 @@ main(void)
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                          },
                          NULL, &vertex_buffer) == VK_SUCCESS);
+   VkMemoryDedicatedRequirements dedicated = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+      .prefersDedicatedAllocation = VK_TRUE,
+      .requiresDedicatedAllocation = VK_TRUE,
+   };
+   VkMemoryRequirements2 buffer_requirements = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+      .pNext = &dedicated,
+   };
+   VkBufferMemoryRequirementsInfo2 buffer_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2,
+      .buffer = vertex_buffer,
+   };
+   vkGetBufferMemoryRequirements2KHR(device, &buffer_info,
+                                     &buffer_requirements);
+   assert(dedicated.prefersDedicatedAllocation == VK_FALSE);
+   assert(dedicated.requiresDedicatedAllocation == VK_FALSE);
+
+   /* The Vulkan registry at src/vulkan/registry/vk.xml promotes
+    * VK_KHR_get_memory_requirements2 to Vulkan 1.1 and
+    * VK_KHR_maintenance4 to Vulkan 1.3.  R3V_API_VERSION in
+    * src/amd/r300/vulkan/r3v_private.h is Vulkan 1.0, so the enabled public
+    * route resolves the get-memory-requirements2 KHR alias; this direct call
+    * covers the maintenance4 device-buffer implementation path.
+    */
+   VkBufferCreateInfo device_buffer_create_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = 384,
+      .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkDeviceBufferMemoryRequirements device_buffer_info = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS,
+      .pCreateInfo = &device_buffer_create_info,
+   };
+   VkMemoryDedicatedRequirements device_dedicated = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+      .prefersDedicatedAllocation = VK_TRUE,
+      .requiresDedicatedAllocation = VK_TRUE,
+   };
+   VkMemoryRequirements2 device_buffer_requirements = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+      .pNext = &device_dedicated,
+   };
+   r3v_GetDeviceBufferMemoryRequirements(device, &device_buffer_info,
+                                         &device_buffer_requirements);
+   assert(device_dedicated.prefersDedicatedAllocation == VK_FALSE);
+   assert(device_dedicated.requiresDedicatedAllocation == VK_FALSE);
    assert(vkBindBufferMemory(device, vertex_buffer, vertex_memory, 0) ==
           VK_SUCCESS);
    void *map = NULL;
