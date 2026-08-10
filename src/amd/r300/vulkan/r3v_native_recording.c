@@ -18,10 +18,33 @@
  * installs it through Vulkan recording.  Every other core 1.0 vkCmd*
  * entrypoint records R3V_NATIVE_REFUSAL_RESULT into the command
  * buffer: vkEndCommandBuffer returns the error, the buffer ends
- * INVALID, and the queue refuses it.  A native definition for the
- * whole core set also keeps the runtime's common bridges (render-pass
- * emulation, the 1.0-to-1.3 forwarders) from dispatching into table
- * slots the native link set leaves NULL.
+ * INVALID, and the queue refuses it.  Native definitions for the whole
+ * core set keep common bridges from occupying native direct-entrypoint
+ * slots, while the closure audit checks every reachable bridge target.
+ * Two load-bearing bridge forms show the shape: vk_common_BindImageMemory in
+ * src/vulkan/runtime/vk_device.c calls dispatch_table.BindImageMemory2, and
+ * vk_common_CmdBeginRenderPass in src/vulkan/runtime/vk_render_pass.c
+ * calls dispatch_table.CmdBeginRenderPass2.  The native table supplies
+ * r3v_BindImageMemory and r3v_CmdBeginRenderPass before the common
+ * overlay, so those direct slots stay native when the common providers
+ * would otherwise be selected.
+ *
+ * Symbol discovery uses `(rg --fixed-strings
+ * "vk_common_device_entrypoints" src/amd/r300/vulkan/r3v_native_device.c)`,
+ * `(rg --fixed-strings "vk_common_BindImageMemory"
+ * src/vulkan/runtime/vk_device.c)`, `(rg --fixed-strings
+ * "vk_common_CmdBeginRenderPass" src/vulkan/runtime/vk_render_pass.c)`,
+ * `(rg --fixed-strings "r3v_BindImageMemory"
+ * src/amd/r300/vulkan/r3v_native_image.c)`,
+ * `(rg --fixed-strings "r3v_BindImageMemory2"
+ * src/amd/r300/vulkan/r3v_native_image.c)`, `(rg --fixed-strings
+ * "vk_common_CmdBeginRenderPass2" src/vulkan/runtime/vk_render_pass.c)`,
+ * `(rg --fixed-strings "r3v_CmdBeginRenderPass"
+ * src/amd/r300/vulkan/r3v_native_draw.c)`, and
+ * `(rg --fixed-strings "r3v_entrypoints"
+ * src/amd/r300/vulkan/meson.build)`.  The
+ * r3v-native-entrypoint-closure audit enforces the linked closure, and
+ * its `--drop BindBufferMemory2` case calibrates the known-bad open edge.
  */
 static void
 r3v_native_cmd_poison(VkCommandBuffer commandBuffer)
@@ -734,4 +757,3 @@ r3v_GetImageSparseMemoryRequirements(
 {
    *pSparseMemoryRequirementCount = 0;
 }
-
