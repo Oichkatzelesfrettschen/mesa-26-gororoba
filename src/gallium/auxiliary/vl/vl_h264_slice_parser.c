@@ -30,7 +30,7 @@ chroma_array_type(const struct pipe_h264_sps *sps)
  * list-1) reordering commands.  The list-0 commands are retained in out so
  * build_ref_pic_list0 can reorder RefPicList0 (sec 8.2.4.3.1); list-1 (B only) is
  * consumed without retention. */
-static void
+static bool
 parse_ref_pic_list_modification(struct vl_h264_reader *reader,
                                 struct vl_h264_slice_header *out)
 {
@@ -39,19 +39,31 @@ parse_ref_pic_list_modification(struct vl_h264_reader *reader,
 
    out->num_reorder_l0 = 0;
    if (slice_type == VL_H264_SLICE_I || slice_type == VL_H264_SLICE_SI)
-      return;
+      return true;
 
    for (unsigned list = 0; list < lists; list++) {
       if (list == 1 && slice_type != VL_H264_SLICE_B)
          break;
-      if (!vl_h264_u(reader, 1))   /* ref_pic_list_modification_flag_lX */
+      if (!vl_h264_u(reader, 1)) { /* ref_pic_list_modification_flag_lX */
+         if (vl_h264_overrun(reader))
+            return false;
          continue;
+      }
       unsigned idc;
       do {
+         if (!vl_h264_more_rbsp_data(reader))
+            return false;
+
          idc = vl_h264_ue(reader);
+      if (vl_h264_overrun(reader) || idc > 3)
+            return false;
+
          unsigned value = 0;
          if (idc == 0 || idc == 1 || idc == 2)
             value = vl_h264_ue(reader); /* abs_diff_pic_num_minus1 / long_term_pic_num */
+         if (vl_h264_overrun(reader))
+            return false;
+
          if (list == 0 && idc != 3 &&
              out->num_reorder_l0 < VL_H264_MAX_REORDER_L0) {
             out->reorder_l0[out->num_reorder_l0].idc = (uint8_t) idc;
@@ -60,6 +72,8 @@ parse_ref_pic_list_modification(struct vl_h264_reader *reader,
          }
       } while (idc != 3);
    }
+
+   return true;
 }
 
 /* pred_weight_table (sec 7.3.3.2): consume the explicit weights.  Constrained
@@ -170,6 +184,15 @@ vl_h264_parse_slice_header(struct vl_h264_reader *reader,
    const struct pipe_h264_sps *sps = pps ? pps->sps : NULL;
    if (!pps || !sps)
       return false;
+
+   /* ITU-T H.264 sec 7.4.2.1.1 bounds the SPS fields that determine
+    * slice-header u(v) widths and picture-order syntax. */
+   if (sps->log2_max_frame_num_minus4 > 12 ||
+       sps->pic_order_cnt_type > 2 ||
+       (sps->pic_order_cnt_type == 0 &&
+        sps->log2_max_pic_order_cnt_lsb_minus4 > 12))
+      return false;
+
    if (pps->entropy_coding_mode_flag)
       return false;
 
@@ -219,7 +242,8 @@ vl_h264_parse_slice_header(struct vl_h264_reader *reader,
          out->num_ref_idx_l0_active = vl_h264_ue(reader) + 1;
    }
 
-   parse_ref_pic_list_modification(reader, out);
+   if (!parse_ref_pic_list_modification(reader, out))
+      return false;
 
    if (pps->weighted_pred_flag && out->slice_type == VL_H264_SLICE_P)
       parse_pred_weight_table(reader, sps, out->slice_type,

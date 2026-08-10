@@ -52,11 +52,14 @@ struct vl_h264_slice_header {
 };
 
 /*
- * Parse one slice header from reader, which must be positioned at the first
- * slice-header bit (the provider has stripped the start code and the one-byte
- * NAL header and passes its nal_ref_idc/nal_unit_type here).  picture supplies
- * the active PPS and SPS.  Returns false when the PPS/SPS are missing or the
- * slice type is outside the Constrained Baseline subset.
+ * vl_h264_parse_slice_header() parses one slice header from reader, which must
+ * be positioned at the first slice-header bit (the provider has stripped the
+ * start code and the one-byte NAL header and passes its nal_ref_idc/nal_unit_type
+ * here).  The picture supplies the active PPS and SPS.  It returns false when
+ * the PPS/SPS are missing, the slice type is outside the I/P, frame-only, CAVLC
+ * subset defined by ITU-T H.264 sec. 7.3.3 and Annex A.2.1, a checked SPS
+ * range is invalid under sec. 7.4.2.1.1, or ref_pic_list_modification lacks
+ * the idc=3 terminator required by sec. 7.3.3.1.
  */
 bool vl_h264_parse_slice_header(struct vl_h264_reader *reader,
                                 const struct pipe_h264_picture_desc *picture,
