@@ -55,9 +55,11 @@ that substitutes any of them decides a different question.
 - Transport: the same `DRM_RADEON_CS` ioctl through the same command-stream
   builder, armed under `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1` by the control's
   own stream digest, not the successor's.
-- Completion: the same `DRM_RADEON_GEM_WAIT_IDLE` call, reaching the same
-  configured completion bound the successor uses; see Containment for the
-  recovery sequence when that bound is reached without completion.
+- Completion: the same `DRM_RADEON_GEM_WAIT_IDLE` call through
+  `radeon_drm_vk_completion_await`, which makes at most three attempts. The
+  canonical kernel's `radeon_gem_wait_idle_ioctl` bounds each attempt with
+  interruptible `dma_resv_wait_timeout(..., true, 30 * HZ)`; see Containment
+  for the recovery sequence after the final attempt returns without retirement.
 - Readback invalidation: the same invalidate before the host reads.
 
 The command stream is what differs. The selected primitive is the 2D
@@ -131,6 +133,9 @@ the native R3V arming gate, after every factor in that gate's conjunction
 reports clear: the exact stream digest, the qualified kernel, the loaded
 kernel module, and a fresh evidence directory. `R300_TRACE_HAZARD_ACCEPTED`
 arms a different submission path and does not arm this control.
+`r3v_native_submit_hazard_accepted` and `r3v_native_arming_evaluate` accept
+only the exact string `1`; unset, empty, `0`, padded, and every other value
+keep native submission closed.
 
 1. `replay_r300_cs_track` accepts the control's stream against the control's
    own bundle, and every parser-invalid control against that stream rejects.
@@ -156,14 +161,14 @@ successor: a run that wedges the ring or parks the GPU changes the state the
 successor would inherit, and the successor's own evidence requires a cold boot
 with no intervening 3D client.
 
-Recovery follows one sequence. `DRM_RADEON_GEM_WAIT_IDLE` reaches the
-configured completion bound; then: do not resubmit; capture off-box logs;
-if the host is responsive, reboot; if the host is unresponsive, physical
-power cycle. `lockup_timeout=0` means no automatic reset runs, so a wedged
-ring stays wedged, and the parked latch is unreachable along that path. No
-userspace unwinder attaches to a task blocked in `radeon_fence_default_wait`:
-the wait is uninterruptible, and attaching to it has already cost a session.
-The record comes from kernel stacks, the journal, and netconsole.
+Recovery follows one sequence. `radeon_drm_vk_completion_await` makes at most
+three `DRM_RADEON_GEM_WAIT_IDLE` calls; the canonical kernel bounds each call
+at `30 * HZ` and permits signal interruption. After the final call returns:
+do not resubmit; capture off-box logs; if the host is responsive, reboot; if
+the host is unresponsive, physical power cycle. `lockup_timeout=0` disables
+the automatic Radeon lockup-reset path and leaves the per-ioctl reservation
+wait bound intact. The record comes from kernel stacks, the journal, and
+netconsole.
 
 ## Artifact identity
 
