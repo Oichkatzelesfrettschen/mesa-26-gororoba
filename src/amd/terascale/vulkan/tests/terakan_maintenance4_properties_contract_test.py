@@ -5,7 +5,7 @@
 The capability table assigns maxBufferSize from the winsys maximum allocation
 size before it advertises VK_KHR_maintenance4.  The DRM Radeon and WDDM
 initializers provide page-aligned UINT32_MAX limits.  The calibrated mutants
-reject missing, zero-valued, wrong-source, and wrong-order assignments.
+reject missing, zero-valued, wrong-source, and wrong-provider assignments.
 """
 
 from pathlib import Path
@@ -44,6 +44,37 @@ def function_body(source: str, function_name: str) -> str:
     return source[opening : matching_brace(source, opening) + 1]
 
 
+def matching_parenthesis(source: str, opening: int) -> int:
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "(":
+            depth += 1
+        elif source[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    raise ContractViolationError("unbalanced call parentheses")
+
+
+def call_arguments(source: str, function_name: str) -> list[str]:
+    signature = source.index(function_name + "(")
+    opening = source.index("(", signature)
+    arguments = source[opening + 1 : matching_parenthesis(source, opening)]
+    result: list[str] = []
+    argument_start = 0
+    depth = 0
+    for index, character in enumerate(arguments):
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            result.append(arguments[argument_start:index].strip())
+            argument_start = index + 1
+    result.append(arguments[argument_start:].strip())
+    return result
+
+
 def verify_contract(source: str, drm_source: str, wddm_source: str) -> None:
     capabilities = function_body(source, "terakan_physical_device_get_capabilities")
     maintenance4_start = capabilities.index(
@@ -54,15 +85,17 @@ def verify_contract(source: str, drm_source: str, wddm_source: str) -> None:
     )
     maintenance4 = capabilities[maintenance4_start:maintenance4_end]
     assignment = "properties_out->maxBufferSize = max_memory_allocation_size;"
-    storage_range = "properties_out->maxStorageBufferRange ="
     extension = "extensions_out->KHR_maintenance4 = true;"
     feature = "features_out->maintenance4 = true;"
 
     if maintenance4.count(assignment) != 1:
         raise ContractViolationError("maintenance4 assigns one nonzero buffer limit")
-    if capabilities.index(storage_range) > capabilities.index(assignment):
+    max_memory_property = (
+        "properties_out->maxMemoryAllocationSize = max_memory_allocation_size;"
+    )
+    if max_memory_property not in capabilities:
         raise ContractViolationError(
-            "maintenance4 reports a limit after maxStorageBufferRange"
+            "the allocation limit populates maxMemoryAllocationSize"
         )
     if extension not in maintenance4 or feature not in maintenance4:
         raise ContractViolationError(
@@ -76,10 +109,18 @@ def verify_contract(source: str, drm_source: str, wddm_source: str) -> None:
         raise ContractViolationError(
             "maintenance4 assigns the limit before feature advertisement"
         )
-    if "UINT32_MAX & ~(page_size - 1)" not in drm_source:
-        raise ContractViolationError("DRM Radeon passes a page-aligned 32-bit limit")
-    if "UINT32_MAX & ~(system_info.dwAllocationGranularity - 1)" not in wddm_source:
-        raise ContractViolationError("WDDM passes a page-aligned 32-bit limit")
+    drm_arguments = call_arguments(drm_source, "terakan_physical_device_init")
+    if len(drm_arguments) < 10 or drm_arguments[8:10] != [
+        "UINT32_MAX & ~(page_size - 1)",
+        "page_size",
+    ]:
+        raise ContractViolationError("DRM Radeon passes the aligned limit to init")
+    wddm_arguments = call_arguments(wddm_source, "terakan_physical_device_init")
+    if len(wddm_arguments) < 10 or wddm_arguments[8:10] != [
+        "UINT32_MAX & ~(system_info.dwAllocationGranularity - 1)",
+        "system_info.dwAllocationGranularity",
+    ]:
+        raise ContractViolationError("WDDM passes the aligned limit to init")
 
 
 def remove_max_buffer_size_assignment(source: str) -> str:
@@ -104,15 +145,21 @@ def use_max_memory_property(source: str) -> str:
     )
 
 
-def move_max_buffer_size_before_storage_range(source: str) -> str:
-    assignment = "   properties_out->maxBufferSize = max_memory_allocation_size;\n"
-    storage_range = (
-        "   properties_out->maxStorageBufferRange = "
-        "~(((uint32_t)1 << tile_pipe_interleave_bytes_log2) - 1);\n"
+def use_drm_page_size_for_max_allocation(source: str) -> str:
+    return source.replace(
+        "UINT32_MAX & ~(page_size - 1), page_size, &tiling_info",
+        "page_size, page_size, &tiling_info",
+        1,
     )
-    source_without_assignment = source.replace(assignment, "", 1)
-    return source_without_assignment.replace(
-        storage_range, assignment + storage_range, 1
+
+
+def use_wddm_granularity_for_max_allocation(source: str) -> str:
+    return source.replace(
+        "UINT32_MAX & ~(system_info.dwAllocationGranularity - 1),\n"
+        "      system_info.dwAllocationGranularity, &tiling_info",
+        "system_info.dwAllocationGranularity,\n"
+        "      system_info.dwAllocationGranularity, &tiling_info",
+        1,
     )
 
 
@@ -122,17 +169,42 @@ def main() -> int:
     wddm_source = WDDM_SOURCE_PATH.read_text(encoding="utf-8")
     verify_contract(source, drm_source, wddm_source)
 
-    for name, mutant_source in (
-        ("missing maxBufferSize assignment", remove_max_buffer_size_assignment(source)),
-        ("zero maxBufferSize assignment", zero_max_buffer_size_assignment(source)),
-        ("wrong maxBufferSize source", use_max_memory_property(source)),
+    for name, mutant_source, mutant_drm_source, mutant_wddm_source in (
         (
-            "maxBufferSize before maxStorageBufferRange",
-            move_max_buffer_size_before_storage_range(source),
+            "missing maxBufferSize assignment",
+            remove_max_buffer_size_assignment(source),
+            drm_source,
+            wddm_source,
+        ),
+        (
+            "zero maxBufferSize assignment",
+            zero_max_buffer_size_assignment(source),
+            drm_source,
+            wddm_source,
+        ),
+        (
+            "wrong maxBufferSize source",
+            use_max_memory_property(source),
+            drm_source,
+            wddm_source,
+        ),
+        (
+            "DRM wrong max allocation argument",
+            source,
+            use_drm_page_size_for_max_allocation(drm_source),
+            wddm_source,
+        ),
+        (
+            "WDDM wrong max allocation argument",
+            source,
+            drm_source,
+            use_wddm_granularity_for_max_allocation(wddm_source),
         ),
     ):
         try:
-            verify_contract(mutant_source, drm_source, wddm_source)
+            verify_contract(
+                mutant_source, mutant_drm_source, mutant_wddm_source
+            )
         except ContractViolationError:
             continue
         raise ContractViolationError(f"the {name} mutant passed")
