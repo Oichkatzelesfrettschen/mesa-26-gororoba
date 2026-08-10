@@ -744,7 +744,7 @@ _glslang_preamble_version = '12.2'
 prog_glslang = find_program(
   'glslangValidator',
   native : true,
-  required : with_vulkan_overlay_layer or with_aco_tests or with_bvh
+  required : with_vulkan_overlay_layer or with_aco_tests or with_bvh or with_amd_terascale_vk
 )
 
 if prog_glslang.found()
