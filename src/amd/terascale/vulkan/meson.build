@@ -74,6 +74,7 @@ libterakan_files = files(
   'terakan_descriptor_set.h',
   'terakan_descriptor_set_layout.c',
   'terakan_descriptor_set_layout.h',
+  'terakan_descriptor_set_layout_mask.h',
   'terakan_device.c',
   'terakan_device.h',
   'terakan_fix_ac_warmup.c',
@@ -308,6 +309,17 @@ _dev_icd = custom_target(
 devenv.append('VK_ICD_FILENAMES', _dev_icd.full_path())
 
 if with_tests
+  terakan_descriptor_set_layout_mask_test = executable(
+    'terakan_descriptor_set_layout_mask_test',
+    files('tests/terakan_descriptor_set_layout_mask_test.c'),
+    include_directories : include_directories('.'),
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'terakan-descriptor-set-layout-mask',
+    terakan_descriptor_set_layout_mask_test,
+    suite : ['terakan'],
+  )
   test(
     'terakan-multiview-state-contract',
     prog_python,

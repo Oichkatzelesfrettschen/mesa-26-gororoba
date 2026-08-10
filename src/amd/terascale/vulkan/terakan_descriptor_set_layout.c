@@ -23,6 +23,8 @@
 
 #include "terakan_descriptor_set_layout.h"
 
+#include "terakan_descriptor_set_layout_mask.h"
+
 #include "terakan_descriptor.h"
 #include "terakan_descriptor_set.h"
 #include "terakan_device.h"
@@ -688,9 +690,9 @@ terakan_CreateDescriptorSetLayout(VkDevice const deviceHandle,
           * tighter cap is the 32-bit width of the per-stage sampler-
           * occupancy bitfields (non_immutable_samplers /
           * immutable_samplers_unnormalized_coordinates).  The OR-into-
-          * shifted-mask immediately below would invoke shift UB if
-          * stage_sampler_count + binding->descriptor_count exceeded the
-          * mask width. */
+          * shifted-mask immediately below needs a full-width case for a
+          * 32-descriptor binding and a cumulative count within the mask
+          * width. */
          if (TERAKAN_DESCRIPTOR_SET_PER_STAGE_SAMPLER_MASK_BITS - stage_sampler_count <
              binding->descriptor_count) {
             goto too_many_descriptors_destroy;
@@ -715,8 +717,9 @@ terakan_CreateDescriptorSetLayout(VkDevice const deviceHandle,
             layout_shader->immutable_samplers_unnormalized_coordinates |=
                binding->immutable_samplers_unnormalized_coordinates << stage_sampler_count;
          } else {
-            layout_shader->non_immutable_samplers |=
-               (((uint32_t)1 << binding->descriptor_count) - 1) << stage_sampler_count;
+            uint32_t const binding_sampler_mask =
+               terakan_descriptor_set_layout_sampler_mask(binding->descriptor_count);
+            layout_shader->non_immutable_samplers |= binding_sampler_mask << stage_sampler_count;
          }
 
          stage_sampler_count += binding->descriptor_count;
