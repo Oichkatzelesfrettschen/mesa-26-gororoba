@@ -178,16 +178,23 @@ class Registry:
 
 # Shape expectations make a registry, linked table, and runtime scan carry
 # enough structure for the closure verdict to have evidence behind it.
+MODEL_SCOPE_GLOBAL = "core 1.0 global-scope commands"
+MODEL_SCOPE_INSTANCE = "core 1.0 instance-scope commands"
+MODEL_SCOPE_PHYSICAL_DEVICE = "core 1.0 physical-device-scope commands"
+MODEL_SCOPE_DEVICE = "core 1.0 device-scope commands"
+MODEL_POPULATED_SLOTS = "populated device slots"
+MODEL_COMMON_DEPENDENCIES = "common providers with dispatch dependencies"
+
 MODEL_CENSUS = (
-    ("core 1.0 global-scope commands", 4),
-    ("core 1.0 instance-scope commands", 2),
-    ("core 1.0 physical-device-scope commands", 10),
-    ("core 1.0 device-scope commands", 121),
+    (MODEL_SCOPE_GLOBAL, 4),
+    (MODEL_SCOPE_INSTANCE, 2),
+    (MODEL_SCOPE_PHYSICAL_DEVICE, 10),
+    (MODEL_SCOPE_DEVICE, 121),
 )
 
 MODEL_FLOORS = (
-    ("populated device slots", 100),
-    ("common providers with dispatch dependencies", 50),
+    (MODEL_POPULATED_SLOTS, 100),
+    (MODEL_COMMON_DEPENDENCIES, 50),
 )
 
 
@@ -206,8 +213,8 @@ def model_failures(scope_counts, populated_count, dependency_count):
                             "parse")
 
     floor_values = {
-        "populated device slots": populated_count,
-        "common providers with dispatch dependencies": dependency_count,
+        MODEL_POPULATED_SLOTS: populated_count,
+        MODEL_COMMON_DEPENDENCIES: dependency_count,
     }
     for name, floor in MODEL_FLOORS:
         value = floor_values[name]
@@ -426,17 +433,17 @@ def selftest():
     model_counts = {name: expected for name, expected in MODEL_CENSUS}
     assert model_failures(model_counts, 100, 50) == []
     model_bad_fixtures = (
-        ("core 1.0 device-scope commands", 120, 100, 50,
-         ("core 1.0 device-scope commands", "120")),
-        ("populated device slots", 121, 99, 50,
-         ("populated device slots", "99")),
-        ("common providers with dispatch dependencies", 121, 100, 49,
-         ("common providers with dispatch dependencies", "49")),
+        (MODEL_SCOPE_DEVICE, 120, 100, 50,
+         (MODEL_SCOPE_DEVICE, "120")),
+        (MODEL_POPULATED_SLOTS, 121, 99, 50,
+         (MODEL_POPULATED_SLOTS, "99")),
+        (MODEL_COMMON_DEPENDENCIES, 121, 100, 49,
+         (MODEL_COMMON_DEPENDENCIES, "49")),
     )
     for (name, core_device_count, populated_count, dependency_count,
          expected_markers) in model_bad_fixtures:
         bad_counts = model_counts.copy()
-        bad_counts["core 1.0 device-scope commands"] = core_device_count
+        bad_counts[MODEL_SCOPE_DEVICE] = core_device_count
         found = model_failures(bad_counts, populated_count, dependency_count)
         if len(found) != 1:
             raise AssertionError((name, found))
@@ -444,11 +451,11 @@ def selftest():
             raise AssertionError((name, found))
 
     missing_counts = model_counts.copy()
-    del missing_counts["core 1.0 instance-scope commands"]
+    del missing_counts[MODEL_SCOPE_INSTANCE]
     found = model_failures(missing_counts, 100, 50)
     if len(found) != 1:
         raise AssertionError(found)
-    if "core 1.0 instance-scope commands" not in found[0]:
+    if MODEL_SCOPE_INSTANCE not in found[0]:
         raise AssertionError(found)
     if "missing" not in found[0]:
         raise AssertionError(found)
@@ -729,16 +736,18 @@ def main():
     # unreadable library, a registry whose 1.0 feature sets moved -- fails
     # here before any verdict claims closure.
     scope_counts = {
-        "core 1.0 global-scope commands":
+        MODEL_SCOPE_GLOBAL:
             len(reg.core10 & reg.in_scope("global")),
-        "core 1.0 instance-scope commands":
+        MODEL_SCOPE_INSTANCE:
             len(reg.core10 & reg.in_scope("instance")),
-        "core 1.0 physical-device-scope commands":
+        MODEL_SCOPE_PHYSICAL_DEVICE:
             len(reg.core10 & reg.in_scope("physical-device")),
-        "core 1.0 device-scope commands": len(core_device),
+        MODEL_SCOPE_DEVICE: len(core_device),
     }
-    for failure in model_failures(scope_counts, len(populated), len(deps)):
+    model_defects = model_failures(scope_counts, len(populated), len(deps))
+    for failure in model_defects:
         print(f"model failure: {failure}")
+    if model_defects:
         return 2
 
     if mode == "--policy":
