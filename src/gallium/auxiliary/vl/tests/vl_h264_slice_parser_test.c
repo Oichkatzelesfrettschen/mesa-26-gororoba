@@ -101,6 +101,15 @@ main(int argc, char **argv)
    CHECK(sh.num_ref_idx_l0_active == 1);
 
    vl_h264_reader_fini(&reader);
+
+   /* The CAVLC-only parser rejects a CABAC PPS before consuming slice syntax. */
+   pps.entropy_coding_mode_flag = 1;
+   CHECK(vl_h264_reader_init(&reader, nal + 1, (unsigned)(nal_size - 1)));
+   CHECK(!vl_h264_parse_slice_header(&reader, &pic, nal_ref_idc, nal_unit_type,
+                                     &sh));
+   CHECK(vl_h264_bits_consumed(&reader) == 0);
+
+   vl_h264_reader_fini(&reader);
    free(nal);
    printf("vl_h264_slice_parser: IDR slice header matches ffmpeg ground truth PASS\n");
    return 0;

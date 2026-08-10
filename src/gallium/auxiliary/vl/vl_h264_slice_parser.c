@@ -170,6 +170,8 @@ vl_h264_parse_slice_header(struct vl_h264_reader *reader,
    const struct pipe_h264_sps *sps = pps ? pps->sps : NULL;
    if (!pps || !sps)
       return false;
+   if (pps->entropy_coding_mode_flag)
+      return false;
 
    memset(out, 0, sizeof(*out));
    out->nal_ref_idc = nal_ref_idc;
