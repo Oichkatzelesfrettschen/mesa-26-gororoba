@@ -81,10 +81,17 @@ vl_h264_u(struct vl_h264_reader *reader, unsigned num_bits)
    if (num_bits == 0)
       return 0;
 
+   /* vl_h264_u() accepts widths through 32 bits, matching its unsigned return
+    * contract and vl_vlc_get_uimsbf's fixed-width bit-buffer contract. */
+   if (num_bits > 32) {
+      reader->overrun = true;
+      return 0;
+   }
+
    vl_vlc_fillbits(&reader->vlc);
-   /* A truncated or malformed stream can ask for more bits than remain; reading
-    * them would assert in vl_vlc or return trailing zeros as data.  Flag the
-    * overrun and return zero so callers can reject the stream. */
+   /* A truncated or malformed stream can ask for more bits than remain. Reading
+    * them asserts in vl_vlc or returns trailing zeros as data. The reader marks
+    * the overrun and returns zero so callers can reject the stream. */
    if (vl_vlc_valid_bits(&reader->vlc) < num_bits) {
       reader->overrun = true;
       return 0;
@@ -138,10 +145,18 @@ vl_h264_ue(struct vl_h264_reader *reader)
    if (leading_zeros == 0)
       return 0;
 
-   /* A run of 32 or more zeros cannot encode a valid codeNum; clamp rather than
-    * shift by the bit width. */
-   if (leading_zeros >= 32)
+   /* A run of 32 or more zeros cannot encode a valid codeNum. Its suffix uses
+    * u(32)-bounded chunks before vl_h264_ue() returns the saturated value. */
+   if (leading_zeros >= 32) {
+      unsigned remaining = leading_zeros;
+
+      while (remaining > 0 && !reader->overrun) {
+         unsigned chunk = remaining > 32 ? 32 : remaining;
+         (void) vl_h264_u(reader, chunk);
+         remaining -= chunk;
+      }
       return UINT32_MAX;
+   }
 
    return ((1u << leading_zeros) - 1) + vl_h264_u(reader, leading_zeros);
 }
