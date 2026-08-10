@@ -538,10 +538,10 @@ terakan_physical_device_get_capabilities(
    /* TODO(Triang3l): Shader storage image format features. */
    /* TODO(Triang3l): Shader binding array dynamic indexing. */
    /* shaderFloat64: Evergreen / TeraScale-2 VLIW5 has no native FP64
-    * support; NIR uses `nir_lower_fp64_full_software` for the full double
-    * set (configured in nir_options_non_fs below).  Cayman / TeraScale-3
-    * VLIW4 still uses a partial double-lowering mask, so keep full FP64
-    * hidden there until the compiler path is fully software-lowered too. */
+    * support; NIR uses the Evergreen soft-fp64 lowering mask configured in
+    * nir_options_non_fs below.  Cayman / TeraScale-3 VLIW4 still uses a
+    * partial double-lowering mask, so keep full FP64 hidden there until the
+    * compiler path is fully software-lowered too. */
    features_out->shaderFloat64 = !chip_info->is_r9xx;
    /* shaderResourceMinLod: nir_tex_src_min_lod is lowered in SFN via fmax(computed_lod, min_lod)
     * before the texture instruction (sfn_nir_lower_tex.cpp), providing correct clamped LOD.
@@ -1047,10 +1047,9 @@ terakan_physical_device_get_capabilities(
     * structure zeroed, which makes CTS treat the float-control surface as
     * unsupported even when the extension bit is exposed. */
    extensions_out->KHR_shader_float_controls = true;
-   /* FP16 inherits FP32 semantics via emulation.  FP64 inherits via
-    * nir_lower_fp64_full_software on Evergreen / TeraScale-2 VLIW5, so
-    * report independent denorm behavior for the explicitly different FP16
-    * and FP64 FTZ modes. */
+   /* FP16 inherits FP32 semantics via emulation.  FP64 inherits through the
+    * Evergreen soft-fp64 lowering mask, so report independent denorm behavior
+    * for the explicitly different FP16 and FP64 FTZ modes. */
    properties_out->denormBehaviorIndependence =
       VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
    properties_out->roundingModeIndependence =
@@ -1069,7 +1068,7 @@ terakan_physical_device_get_capabilities(
    properties_out->shaderDenormPreserveFloat16           = false;
    properties_out->shaderRoundingModeRTEFloat16          = true;
    properties_out->shaderRoundingModeRTZFloat16          = false;
-   /* FP64 inherits via nir_lower_fp64_full_software emulation.  The
+   /* FP64 inherits through the Evergreen soft-fp64 lowering mask.  The
     * software path implements IEEE-754 default semantics for all three
     * preserve modes; RTE is the only rounding emitted.  Report FTZ as
     * disabled for Float64 even though software emulation may flush
@@ -1495,6 +1494,10 @@ terakan_physical_device_init(
 
    device->submission_info_gfx = *submission_info_gfx;
 
+   const nir_lower_doubles_options evergreen_fp64_lowering_options =
+      nir_lower_fp64_full_software | nir_lower_dceil | nir_lower_drcp |
+      nir_lower_dsqrt | nir_lower_drsq;
+
    device->nir_options_non_fs = (nir_shader_compiler_options){
       .lower_fdiv = true,
 
@@ -1603,7 +1606,7 @@ terakan_physical_device_init(
       .lower_doubles_options = device->chip_info.is_r9xx
                                   ? nir_lower_ddiv | nir_lower_dfloor | nir_lower_dceil |
                                        nir_lower_dmod | nir_lower_dsub | nir_lower_dtrunc
-                                  : nir_lower_fp64_full_software,
+                                  : evergreen_fp64_lowering_options,
 
       .lower_image_offset_to_range_base = true,
 
@@ -1644,7 +1647,7 @@ terakan_physical_device_init(
       &features, &properties);
    device->winsys_fn->get_winsys_extensions(device, &extensions, &features, &properties);
    assert(!features.shaderFloat64 ||
-          device->nir_options_non_fs.lower_doubles_options == nir_lower_fp64_full_software);
+          device->nir_options_non_fs.lower_doubles_options == evergreen_fp64_lowering_options);
 
    struct vk_physical_device_dispatch_table dispatch_table;
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,

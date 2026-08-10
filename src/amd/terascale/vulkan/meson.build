@@ -326,4 +326,10 @@ if with_tests
     args : [files('tests/terakan_maintenance4_properties_contract_test.py')],
     suite : ['terakan'],
   )
+  test(
+    'terakan-softfp64-path-contract',
+    prog_python,
+    args : [files('tests/terakan_softfp64_path_contract_test.py')],
+    suite : ['terakan'],
+  )
 endif
