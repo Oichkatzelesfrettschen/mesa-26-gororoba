@@ -237,9 +237,10 @@ r300_r2vb_producer_plan_get(struct r300_context *r300,
 struct r300_vertex_shader;
 void r300_r2vb_plan_cache_release(struct r300_vertex_shader *vs);
 
-/* Shadow-parity divergence accounting: the admission memo stays
- * authoritative, a divergence increments this process-wide counter for the
- * planner test and telemetry, and rendering never changes. */
+/* Shadow-parity divergence accounting: assertion builds stop at a mismatch.
+ * Assertion-disabled builds keep the admission memo authoritative, increment
+ * this process-wide counter for the planner test and telemetry, and leave
+ * rendering unchanged. */
 void r300_r2vb_plan_note_shadow_divergence(void);
 uint32_t r300_r2vb_plan_shadow_divergences(void);
 
