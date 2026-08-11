@@ -8,11 +8,10 @@
  * shape validation, restage, plan, cut walk, and the emitted-slot admission
  * compile -- with a fake screen and context supplying only what that chain
  * reads (screen caps and NIR options, the fragment regalloc state, a debug
- * pointer, a zeroed viewport).  The typed split's earlier unreachability was a
- * representation-boundary failure: downstream producer tests were green while
- * the application-VS route rejected every typed shader, so this oracle pins
- * the plan's verdict at the exact entry the route consumes, not at the cut
- * machinery below it.
+ * pointer, a zeroed viewport).  The typed split crosses a representation
+ * boundary: downstream producer tests can pass while the application-VS route
+ * rejects every typed shader, so this oracle pins the plan's verdict at the
+ * exact entry the route consumes, not at the cut machinery below it.
  *
  * Required rows: a fitting float producer plans SINGLE; an over-budget float
  * chain plans SPLIT with a float carry; over-budget bool/sint/uint typed
