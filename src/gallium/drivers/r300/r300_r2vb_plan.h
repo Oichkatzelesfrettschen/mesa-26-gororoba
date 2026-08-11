@@ -26,11 +26,18 @@ struct r300_context;
 struct nir_shader;
 
 /* Producer input ceiling: the split pass-B draw feeds every model attribute
- * plus the carry, and the producer VAP_OUT_VTX_FMT / PSC packing, the
- * per-input passthrough varyings, and the R300 RS texcoord-unit count (8, the
- * binding limit) all scale with the input count.  The CD-4 sedenion product
- * (two 16-component sedenions = 8 FP32x4 velems) is HW-confirmed at this
- * width on RS482. */
+ * plus one carry input.  The register authority is
+ * src/gallium/drivers/r300/r300_reg.h for the VAP stream and RS register
+ * definitions, and r300_context.h exposes eight VAP_PROG_STREAM_CNTL and
+ * VAP_PROG_STREAM_CNTL_EXT entries plus eight IP and INST entries; state
+ * derivation limits VAP_OUTPUT_VTX_FMT_1 and rasterizer texcoord allocation
+ * to eight slots (r300_state_derived.c).  The RS482 register-table notes in
+ * docs/hardware/rs482-hybrid-vertex-tcl-design.md and the retained VAP/RS
+ * captures are calibration evidence for that 0..7 surface, not primary
+ * hardware authority.  Pass-B admission requires num_in + 1 <= 8.  A
+ * nine-input RS482 pass-B capture that executes without truncation or decline
+ * falsifies this bound; the calibrated software witness is reproducible with
+ * `meson test -C build r300-r2vb-plan-oracle`. */
 #define R300_R2VB_MAX_PRODUCER_INPUTS 8
 
 /* The R2VB producer plan: one classification record per (vertex shader, plan

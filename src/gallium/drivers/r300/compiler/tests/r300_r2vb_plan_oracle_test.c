@@ -273,13 +273,39 @@ build_unsupported_intrinsic(void)
 /* A single dependent chain long enough that no balanced cut leaves both
  * halves (plus their pack/unpack overhead) under the 64-slot ceiling: the
  * ranked candidates fail alternately on the carry half and the position
- * half, so the walk retains two distinct failure classes.  This is the
- * shape of the silicon-validated over-budget decline witness. */
+ * half, so the walk retains two distinct failure classes.  This is a
+ * host-calibrated admission witness, not a silicon result; reproduce it with
+ * `meson test -C build r300-r2vb-plan-oracle`.  The register/source
+ * authority for the separate eight-stream boundary is
+ * `src/gallium/drivers/r300/r300_reg.h` and `r300_context.h`; the RS482
+ * register-table notes in `docs/hardware/rs482-hybrid-vertex-tcl-design.md`
+ * and this nine-input calibration row are retained evidence, not primary
+ * hardware authority.  A nine-input pass-B capture that executes without
+ * truncation or decline falsifies that boundary. */
 static nir_shader *
 build_unsplittable_long_chain(void)
 {
    struct vs_build v = begin_vs("plan_unsplittable_chain", true);
    nir_def *c = fmad_chain(&v.b, nir_channel(&v.b, v.pos, 0), 140);
+   return end_vs(&v, nir_replicate(&v.b, c, 4));
+}
+
+/* Keep every model input live in gl_Position so the planner counts the
+ * declared position-input domain rather than a varying-only declaration. */
+static nir_shader *
+build_input_ceiling(unsigned num_inputs)
+{
+   struct vs_build v = begin_vs("plan_input_ceiling", true);
+   nir_def *sum = nir_channel(&v.b, v.pos, 0);
+   for (unsigned i = 1; i < num_inputs; i++) {
+      nir_variable *input = nir_variable_create(
+         v.b.shader, nir_var_shader_in, glsl_vec4_type(), "model_input");
+      input->data.location = VERT_ATTRIB_GENERIC0 + i;
+      input->data.driver_location = i;
+      nir_def *value = nir_load_var(&v.b, input);
+      sum = nir_fadd(&v.b, sum, nir_channel(&v.b, value, i % 4));
+   }
+   nir_def *c = fmad_chain(&v.b, sum, 90);
    return end_vs(&v, nir_replicate(&v.b, c, 4));
 }
 
@@ -747,6 +773,34 @@ case_wide_frontier(struct r300_context *r300)
 }
 
 static void
+case_input_ceiling(struct r300_context *r300)
+{
+   printf("split pass-B admits seven inputs and declines eight\n");
+   for (unsigned num_inputs = R300_R2VB_MAX_PRODUCER_INPUTS - 1;
+        num_inputs <= R300_R2VB_MAX_PRODUCER_INPUTS; num_inputs++) {
+      nir_shader *vs = build_input_ceiling(num_inputs);
+      struct r300_r2vb_producer_plan plan;
+      CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan),
+            "input ceiling row runs");
+      CHECK(plan.num_position_inputs == num_inputs,
+            num_inputs == 7 ? "seven position inputs counted"
+                             : "eight position inputs counted");
+      if (num_inputs == R300_R2VB_MAX_PRODUCER_INPUTS - 1) {
+         CHECK(plan.action == R300_R2VB_PLAN_SPLIT,
+               "seven model inputs plus carry split");
+         CHECK(plan.pass_b_cost.alu > 0 && plan.pass_b_cost.alu <= 64,
+               "seven-input pass B fits the ALU budget");
+      } else {
+         CHECK(plan.action == R300_R2VB_PLAN_REJECT &&
+                  plan.primary_reason == R300_R2VB_PLAN_IO_SHAPE,
+               "eight model inputs plus carry decline at the ceiling");
+      }
+      r300_r2vb_plan_release(&plan);
+      ralloc_free(vs);
+   }
+}
+
+static void
 case_typed_float_before_cut(struct r300_context *r300)
 {
    printf("typed source folded to float before the cut splits with a float carry\n");
@@ -904,6 +958,7 @@ main(void)
    case_unsupported_intrinsic(r300);
    case_multi_candidate_failures(r300);
    case_wide_frontier(r300);
+   case_input_ceiling(r300);
    case_cache_lifetime(r300);
    case_deterministic(r300);
 
