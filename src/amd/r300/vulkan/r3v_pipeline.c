@@ -1061,10 +1061,11 @@ r3v_nir_uses_view_index(nir_shader *nir)
    return false;
 }
 
-/* Gallium's vertex rows use driver_location as a dense AOS index.  The
- * pipeline input validator checks attribute descriptions for a contiguous
- * prefix; apply the same native row span to shader input variables before
- * publishing num_inputs. */
+/* Gallium's vertex rows use driver_location as a dense AOS index.
+ * r3v_validate_vertex_input (rg --fixed-strings
+ * r3v_validate_vertex_input src/) accepts only a contiguous attribute prefix,
+ * and r3v_assign_vs_input_locations publishes the matching native row span in
+ * nir->num_inputs before the shader reaches the draw path. */
 static bool
 r3v_assign_vs_input_locations(nir_shader *nir)
 {
