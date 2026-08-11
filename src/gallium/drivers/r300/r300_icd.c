@@ -25,9 +25,13 @@ r300_vs_get_hw_code(void *vs_cso, struct r300_vs_hw_code *out)
       return false;
 
    /* SW-TCL path: draw_vs is non-NULL and shader->code.length is 0.
-    * RS482/RS485 keeps caps.has_tcl = false, so this guard is the normal
-    * result there: the ICD must not try to emit a zero-length hardware VS
-    * program for a Gallium Draw vertex shader. */
+    * r300_parse_chipset in r300_chipset.c leaves num_vert_fpus at zero for
+    * CHIP_RS480, and the same function derives caps.has_tcl from that count.
+    * r300_context.c routes !has_tcl through Gallium Draw, so this guard keeps
+    * the ICD from emitting a zero-length hardware VS program.  Symbol
+    * discovery uses (rg --fixed-strings r300_parse_chipset
+    * src/gallium/drivers/r300/; rg --fixed-strings has_tcl
+    * src/gallium/drivers/r300/r300_context.c). */
    struct r300_vertex_program_code *code = &vs->shader->code;
    if (code->length == 0)
       return false;
