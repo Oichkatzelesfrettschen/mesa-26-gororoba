@@ -1374,6 +1374,11 @@ check_producer_fetch(void)
    /* Forged-descriptor matrix: the emission object re-proves the tuple
     * against records the normal builder would never produce. */
    struct r300_r2vb_producer_streams forged;
+   forged = s;
+   forged.stream[1].stride_dwords =
+      R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX + 1;
+   CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
+         "fetch: model stride-field ceiling rejects");
    forged = s; forged.stream[0].offset_bytes = 16;
    CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
          "fetch: nonzero slot offset rejects");

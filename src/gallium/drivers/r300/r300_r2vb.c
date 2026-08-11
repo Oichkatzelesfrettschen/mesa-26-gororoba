@@ -4872,6 +4872,8 @@ bool r300_r2vb_producer_streams_init_gated(
     if (!semantics)
         return false;
     uint32_t record_dwords = semantics->hardware_fetch_dwords;
+    if (record_dwords == 0)
+        return false;
     /* The LOAD_VBPNTR format word carries the stride in dwords, and a
      * stride under one record would overlap fetches. */
     if (src_stride_bytes % 4 != 0 ||
