@@ -1357,6 +1357,8 @@ main(void)
       vkCmdPipelineBarrier(bad_copy, VK_PIPELINE_STAGE_TRANSFER_BIT,
                            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0,
                            NULL, 0, NULL);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, barrier_native, bad_copy);
+      assert(barrier_native->vk.record_result == R3V_NATIVE_REFUSAL_RESULT);
       assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
 
       bad_copy = fresh_cmd();
