@@ -325,6 +325,9 @@ main(void)
 
    rc_destroy_regalloc_state(&g_context.fs_regalloc_state);
    glsl_type_singleton_decref();
-   printf(g_failures ? "FAILED (%u)\n" : "PASSED\n", g_failures);
+   if (g_failures)
+      printf("FAILED (%u)\n", g_failures);
+   else
+      printf("PASSED\n");
    return g_failures ? 1 : 0;
 }
