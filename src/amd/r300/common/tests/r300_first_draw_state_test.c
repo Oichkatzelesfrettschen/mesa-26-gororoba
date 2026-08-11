@@ -88,7 +88,20 @@ main(void)
    bad.width = 0;
    struct r300_first_draw_contract scratch;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
-   bad.width = 4096 - 1440 + 2;
+   /* 4095 - 1440 + 1 is the largest extent whose high coordinate fits. */
+   const uint32_t max_extent = 2656;
+   bad.width = max_extent;
+   assert(r300_first_draw_contract_resolve(&bad, &scratch) == 0);
+   bad.width++;
+   assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
+   bad.width = UINT32_MAX;
+   assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
+   bad = params;
+   bad.height = max_extent;
+   assert(r300_first_draw_contract_resolve(&bad, &scratch) == 0);
+   bad.height++;
+   assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
+   bad.height = UINT32_MAX;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
 
    /* The reference artifacts stay out: no depth-resource or dummy-texture
