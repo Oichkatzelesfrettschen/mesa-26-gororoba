@@ -29,6 +29,17 @@ r3v_native_submit_hazard_accepted(void)
    return value != NULL && strcmp(value, "1") == 0;
 }
 
+/* An empty evidence path has no retention destination.  Treat it like an
+ * unset value so the queue cannot format artifact names against the root
+ * directory while the submit gate is open.
+ */
+static const char *
+r3v_native_manifest_dir(void)
+{
+   const char *value = getenv("R3V_NATIVE_MANIFEST_DIR");
+   return value != NULL && value[0] != '\0' ? value : NULL;
+}
+
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 r3v_GetDeviceProcAddr(VkDevice _device, const char *pName)
 {
@@ -113,7 +124,7 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
    device->queue.vk.driver_submit = r3v_native_queue_submit;
 
    device->submit_hazard_accepted = r3v_native_submit_hazard_accepted();
-   device->manifest_dir = getenv("R3V_NATIVE_MANIFEST_DIR");
+   device->manifest_dir = r3v_native_manifest_dir();
 
    *pDevice = r3v_native_device_to_handle(device);
    return VK_SUCCESS;

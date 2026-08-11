@@ -286,24 +286,34 @@ r3v_native_arming_disarm(const char *evidence_dir,
       close(fd);
       return -EIO;
    }
+   int result = 0;
    size_t total = 0;
-   while (total < (size_t)body_length) {
+   while (result == 0 && total < (size_t)body_length) {
       ssize_t written = write(fd, body + total, (size_t)body_length - total);
       if (written < 0) {
          if (errno == EINTR)
             continue;
-         close(fd);
-         return -EIO;
+         result = -errno;
+         break;
+      }
+      if (written == 0) {
+         result = -EIO;
+         break;
       }
       total += (size_t)written;
    }
-   if (fsync(fd) != 0 || close(fd) != 0)
-      return -EIO;
+   if (result == 0 && fsync(fd) != 0)
+      result = -errno;
+   if (close(fd) != 0 && result == 0)
+      result = -errno;
+   if (result != 0)
+      return result;
 
    int dir_fd = open(evidence_dir, O_RDONLY | O_DIRECTORY);
    if (dir_fd < 0)
       return -errno;
-   int result = fsync(dir_fd) == 0 ? 0 : -errno;
-   close(dir_fd);
+   result = fsync(dir_fd) == 0 ? 0 : -errno;
+   if (close(dir_fd) != 0 && result == 0)
+      result = -errno;
    return result;
 }
