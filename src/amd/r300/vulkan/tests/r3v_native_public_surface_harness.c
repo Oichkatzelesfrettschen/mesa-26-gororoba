@@ -873,6 +873,19 @@ main(void)
                                   .levelCount = 1,
                                   .layerCount = 1 },
          });
+      vkCmdPipelineBarrier(
+         copy_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
+         &(VkBufferMemoryBarrier){
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .srcQueueFamilyIndex = 0,
+            .dstQueueFamilyIndex = 0,
+            .buffer = staging,
+            .size = VK_WHOLE_SIZE,
+         },
+         0, NULL);
       const VkImageCopy cross = {
          .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                              .layerCount = 1 },
@@ -1171,6 +1184,38 @@ main(void)
       vkCmdCopyBufferToImage(bad_copy, vertex_buffer, img_a,
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                              &upload);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      /* Equal foreign indices are ownership-transfer metadata too: the
+       * native device exposes family 0 and the ignored sentinel only.
+       */
+      bad_copy = fresh_cmd();
+      vkCmdPipelineBarrier(
+         bad_copy, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
+         &(VkBufferMemoryBarrier){
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcQueueFamilyIndex = 1,
+            .dstQueueFamilyIndex = 1,
+            .buffer = staging,
+            .size = VK_WHOLE_SIZE,
+         },
+         0, NULL);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      bad_copy = fresh_cmd();
+      vkCmdPipelineBarrier(
+         bad_copy, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+         &(VkImageMemoryBarrier){
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcQueueFamilyIndex = 1,
+            .dstQueueFamilyIndex = 1,
+            .image = img_a,
+            .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                  .levelCount = 1,
+                                  .layerCount = 1 },
+         });
       assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
 
       bad_copy = fresh_cmd();
