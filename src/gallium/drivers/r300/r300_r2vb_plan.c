@@ -97,8 +97,11 @@ plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
  * the production route). */
 static bool
 plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
-                    struct r300_r2vb_producer_plan *plan)
+                    struct r300_r2vb_producer_plan *plan,
+                    bool *transient_failure)
 {
+    if (transient_failure)
+        *transient_failure = false;
     nir_function_impl *impl = nir_shader_get_entrypoint(nir);
     if (!impl) {
         plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
@@ -220,9 +223,16 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
                     n_computed++;
                 }
             }
+            unsigned num_position_inputs =
+                r300_r2vb_count_position_inputs(nir);
+            if (!num_position_inputs) {
+                plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
+                if (transient_failure)
+                    *transient_failure = true;
+                return false;
+            }
             struct r300_r2vb_position_source vsrc;
-            if (n_computed != 1 ||
-                r300_r2vb_count_position_inputs(nir) != 1 ||
+            if (n_computed != 1 || num_position_inputs != 1 ||
                 !r300_r2vb_varying_source_scan(nir, cv, &vsrc)) {
                 plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
                 return false;
@@ -231,6 +241,12 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
     }
 
     plan->num_position_inputs = r300_r2vb_count_position_inputs(nir);
+    if (!plan->num_position_inputs) {
+        plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
+        if (transient_failure)
+            *transient_failure = true;
+        return false;
+    }
     /* Retain the measured source identity alongside the count, so the
      * BO-fetch route passes plan data -- never literals -- into the
      * position-mapping contract.  A failed scan leaves the record
@@ -252,12 +268,17 @@ plan_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
                   gl_varying_slot target,
                   enum r300_r2vb_position_space space,
                   struct r300_fs_admission_cost *out_cost,
-                  nir_shader **keep_nir)
+                  nir_shader **keep_nir, bool *transient_failure)
 {
+    if (transient_failure)
+        *transient_failure = false;
     nir_shader *fs =
         r300_r2vb_build_restaged_fs_nir(r300, vs_nir, target, space);
-    if (!fs)
+    if (!fs) {
+        if (transient_failure)
+            *transient_failure = true;
         return R300_FS_ADMIT_REJECT;
+    }
     r300_optimize_nir(fs, r300->screen);
     enum r300_fs_admission adm = r300_fs_measure_nir_admission(
         r300, fs, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, out_cost);
@@ -399,8 +420,11 @@ plan_split_better(const struct plan_split_result *n,
  * reason mask. */
 static bool
 plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
-                           struct r300_r2vb_producer_plan *plan)
+                           struct r300_r2vb_producer_plan *plan,
+                           bool *transient_failure)
 {
+    if (transient_failure)
+        *transient_failure = false;
     struct r300_mp_partition cands[R300_MP_MAX_CANDIDATES];
     unsigned n = r300_mp_find_cuts(pos, cands, R300_MP_MAX_CANDIDATES);
     if (!n) {
@@ -409,6 +433,12 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
     }
 
     struct hash_table *range_ht = _mesa_pointer_hash_table_create(NULL);
+    if (!range_ht) {
+        plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
+        if (transient_failure)
+            *transient_failure = true;
+        return false;
+    }
     struct plan_split_result best;
     bool have_best = false;
     for (unsigned i = 0; i < n; i++) {
@@ -441,13 +471,15 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
             r300_mp_build_pos_pass_b(pos, &cands[i],
                                      plan->num_position_inputs);
         if (!pass_a || !pass_b) {
-            plan_observe(plan, !pass_a ? R300_R2VB_PLAN_PASS_A
-                                       : R300_R2VB_PLAN_PASS_B);
+            plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
             if (pass_a)
                 ralloc_free(pass_a);
             if (pass_b)
                 ralloc_free(pass_b);
-            continue;
+            _mesa_hash_table_destroy(range_ht, NULL);
+            if (transient_failure)
+                *transient_failure = true;
+            return false;
         }
         r300_optimize_nir(pass_a, r300->screen);
         r300_optimize_nir(pass_b, r300->screen);
@@ -513,9 +545,16 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
         progress |= nir_opt_dce(folded);
     } while (progress);
 
-    bool shape_ok = plan_scan_structure(folded, allow_computed_varying, plan);
+    bool shape_transient = false;
+    bool shape_ok = plan_scan_structure(folded, allow_computed_varying, plan,
+                                        &shape_transient);
     ralloc_free(folded);
     if (!shape_ok) {
+        if (shape_transient) {
+            plan->primary_reason = R300_R2VB_PLAN_OUT_OF_MEMORY;
+            plan->status = R300_R2VB_PLAN_TRANSIENT_FAILURE;
+            return false;
+        }
         plan->primary_reason = plan_primary_reason(plan->observed_reason_mask);
         return true;
     }
@@ -523,9 +562,11 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
     /* Position-pass verdict from the emitted-slot admission oracle, on the
      * same restaged and preprocessed program the delivery path compiles. */
     nir_shader *pos = NULL;
+    bool position_transient = false;
     enum r300_fs_admission adm = plan_measure_pass(
-        r300, vs_nir, VARYING_SLOT_POS, space, &plan->baseline, &pos);
-    if (!pos) {
+        r300, vs_nir, VARYING_SLOT_POS, space, &plan->baseline, &pos,
+        &position_transient);
+    if (position_transient || !pos) {
         plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
         plan->primary_reason = R300_R2VB_PLAN_OUT_OF_MEMORY;
         plan->status = R300_R2VB_PLAN_TRANSIENT_FAILURE;
@@ -541,8 +582,17 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
             int dv = r300_r2vb_first_computed_varying(vs_nir);
             if (dv >= 0) {
                 nir_shader *vfs = NULL;
+                bool varying_transient = false;
                 enum r300_fs_admission va = plan_measure_pass(
-                    r300, vs_nir, (gl_varying_slot)dv, space, NULL, &vfs);
+                    r300, vs_nir, (gl_varying_slot)dv, space, NULL, &vfs,
+                    &varying_transient);
+                if (varying_transient) {
+                    ralloc_free(vfs);
+                    plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
+                    plan->primary_reason = R300_R2VB_PLAN_OUT_OF_MEMORY;
+                    plan->status = R300_R2VB_PLAN_TRANSIENT_FAILURE;
+                    return false;
+                }
                 if (va != R300_FS_ADMIT_FITS) {
                     ralloc_free(vfs);
                     plan_observe(plan,
@@ -591,8 +641,15 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
             plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
             break;
         }
-        if (plan_walk_split_candidates(r300, pos, plan))
+        bool split_transient = false;
+        if (plan_walk_split_candidates(r300, pos, plan, &split_transient))
             plan->action = R300_R2VB_PLAN_SPLIT;
+        else if (split_transient) {
+            ralloc_free(pos);
+            plan->primary_reason = R300_R2VB_PLAN_OUT_OF_MEMORY;
+            plan->status = R300_R2VB_PLAN_TRANSIENT_FAILURE;
+            return false;
+        }
         break;
 
     case R300_FS_ADMIT_REJECT:

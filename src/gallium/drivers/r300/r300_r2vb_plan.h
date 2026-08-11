@@ -323,6 +323,9 @@ r300_r2vb_typed_split_note_format(const struct r300_r2vb_producer_plan *plan,
                                   enum r300_r2vb_position_space space,
                                   const char *decline, char *buf, size_t len);
 unsigned r300_r2vb_count_position_inputs(struct nir_shader *vs_nir);
+/* Test calibration injects one failed position-input clone.  Normal driver
+ * execution leaves this flag clear. */
+void r300_r2vb_test_fail_position_input_clone_once(void);
 int r300_r2vb_first_computed_varying(struct nir_shader *vs_nir);
 
 /* AUTO_SINGLE canary: automatic route selection for the untyped fitting
