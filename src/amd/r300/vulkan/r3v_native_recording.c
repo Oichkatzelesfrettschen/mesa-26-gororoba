@@ -89,9 +89,14 @@ static bool
 r3v_native_image_layout_ok(const struct r3v_native_image *image,
                            VkImageLayout layout)
 {
-   if (image->transfer_family)
-      return r3v_native_transfer_source_layout_ok(layout) ||
-             r3v_native_transfer_destination_layout_ok(layout);
+   if (image->transfer_family) {
+      if (layout == VK_IMAGE_LAYOUT_GENERAL)
+         return true;
+      return ((image->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0 &&
+              r3v_native_transfer_source_layout_ok(layout)) ||
+             ((image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0 &&
+              r3v_native_transfer_destination_layout_ok(layout));
+   }
    return r3v_native_render_layout_ok(layout);
 }
 
@@ -102,7 +107,22 @@ r3v_native_image_layout_ok(const struct r3v_native_image *image,
  * layouts the executor implements, while image barriers admit transitions
  * from Vulkan's undefined or preinitialized states.  Render-family barriers
  * use the general and color-attachment layouts accepted by the render pass
- * path.
+ * path.  The Vulkan 1.3 specification's `vkCmdPipelineBarrier` and
+ * `VkImageMemoryBarrier` valid-usage rules define layout transitions and
+ * queue-family ownership; the `vkCmdCopyBufferToImage`, `vkCmdCopyImage`,
+ * and `vkCmdCopyImageToBuffer` rules bind transfer layouts to image usage.
+ * The bounded predicates are r3v_native_image_barrier_layouts_ok,
+ * r3v_native_image_layout_ok, r3v_native_transfer_source_layout_ok,
+ * r3v_native_transfer_destination_layout_ok, r3v_native_render_layout_ok,
+ * and r3v_native_queue_family_pair_ok.  Symbol discovery uses
+ * `(rg --fixed-strings r3v_native_image_barrier_layouts_ok
+ * src/amd/r300/vulkan/)`, `(rg --fixed-strings r3v_native_image_layout_ok
+ * src/amd/r300/vulkan/)`, `(rg --fixed-strings
+ * r3v_native_transfer_source_layout_ok src/amd/r300/vulkan/)`,
+ * `(rg --fixed-strings r3v_native_transfer_destination_layout_ok
+ * src/amd/r300/vulkan/)`, `(rg --fixed-strings r3v_native_render_layout_ok
+ * src/amd/r300/vulkan/)`, and `(rg --fixed-strings
+ * r3v_native_queue_family_pair_ok src/amd/r300/vulkan/)`.
  */
 static bool
 r3v_native_image_barrier_range_ok(const VkImageSubresourceRange *range)
@@ -716,6 +736,18 @@ r3v_CmdPipelineBarrier(
     * render-family color subresource with its supported layout vocabulary.
     * Equal queue-family fields still name either the native family (0) or
     * the no-ownership-transfer sentinel.
+    * Vulkan 1.3 `vkCmdPipelineBarrier` valid usage binds image layout and
+    * queue ownership to r3v_native_image_barrier_layouts_ok and
+    * r3v_native_queue_family_pair_ok.  The copy-command valid-usage rules
+    * bind transfer layouts to image usage through
+    * r3v_native_image_layout_ok, which composes
+    * r3v_native_transfer_source_layout_ok,
+    * r3v_native_transfer_destination_layout_ok, and
+    * r3v_native_render_layout_ok.  Symbol discovery uses
+    * `(rg --fixed-strings r3v_native_image_barrier_layouts_ok
+    * src/amd/r300/vulkan/)`, `(rg --fixed-strings r3v_native_image_layout_ok
+    * src/amd/r300/vulkan/)`, and `(rg --fixed-strings
+    * r3v_native_queue_family_pair_ok src/amd/r300/vulkan/)`.
     */
    if (cmd_buffer->pass_target != NULL) {
       r3v_native_cmd_poison(commandBuffer);
