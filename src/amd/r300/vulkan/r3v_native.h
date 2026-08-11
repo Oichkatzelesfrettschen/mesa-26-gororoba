@@ -50,6 +50,7 @@ struct r3v_native_bo_reference {
 struct r3v_native_image;
 struct r3v_native_pipeline;
 struct r3v_native_buffer;
+struct r3v_native_arming_provider;
 
 /* Deferred draw execution: vertex reads and the load-op clear happen at
  * queue submission, matching Vulkan's execution-time semantics, so the
@@ -164,6 +165,10 @@ struct r3v_native_device {
    struct r3v_native_queue queue;
    bool submit_hazard_accepted;
    const char *manifest_dir;
+   /* The production path leaves this NULL and collects host facts.  The
+    * drm-shim harness installs an explicit host-model provider so a missing
+    * radeon module cannot become a matchable live identity. */
+   const struct r3v_native_arming_provider *arming_provider;
 };
 
 VK_DEFINE_HANDLE_CASTS(r3v_native_device, vk.base, VkDevice,

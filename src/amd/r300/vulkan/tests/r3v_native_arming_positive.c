@@ -175,6 +175,14 @@ main(void)
    f.running_srcversion = "OTHERSRCVERSION000000000";
    assert(evaluate_armed_variant(&f) == R3V_NATIVE_ARMING_MODULE_MISMATCH);
 
+   /* A missing module identity remains empty during collection.  The
+    * operator cannot turn that absence into an authorized live state by
+    * declaring the sentinel string used by older shim fixtures. */
+   f = armed_fixture;
+   f.authorized_srcversion = "none";
+   f.running_srcversion = NULL;
+   assert(evaluate_armed_variant(&f) == R3V_NATIVE_ARMING_MODULE_MISMATCH);
+
    f = armed_fixture;
    f.evidence_dir_present = false;
    assert(evaluate_armed_variant(&f) == R3V_NATIVE_ARMING_EVIDENCE_ABSENT);

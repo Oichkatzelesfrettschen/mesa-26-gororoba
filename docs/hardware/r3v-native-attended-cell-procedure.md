@@ -53,6 +53,13 @@ The run proceeds only when all of the following hold.
 - The cell under test is the fixed TCL-bypass triangle, its fragment
   program compiled by `r300_tcl_bypass_fs_tool` and its checked-in block
   proven to regenerate by `r300-tcl-bypass-fs-block-regeneration`.
+- The live submitting runner is the Meson target
+  `r3v_native_attended_cell`, invoked as
+  `r3v_native_attended_cell <evidence-dir>`. It statically links the
+  native implementation, so `submit_manifest.json` identifies this
+  executable as the issuer. The drm-shim harness
+  `r3v_native_triangle_cell_harness` is a host-model test and is not the
+  live submitter.
 - `r300-tcl-bypass-offline-replay` and
   `r3v-native-submit-object-replay` pass on the RS482 host itself. The
   replay binary is a build output, not an operator-supplied binary:
@@ -206,8 +213,8 @@ evidence repository:
   factor;
 - the color target's bytes and the oracle verdict;
 - `dmesg` before and after, captured off-box;
-- kernel release, radeon module srcversion, Mesa commit, and the ELF
-  identity of the native library that ran.
+- kernel release, radeon module srcversion, Mesa commit, and the
+  executable or loaded native DSO identity that issued the ioctl.
 
 A run whose retained record is incomplete produces no claim. The driver
 enforces the first half of that rule itself: evidence retention failure

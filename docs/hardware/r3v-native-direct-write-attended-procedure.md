@@ -33,9 +33,12 @@ the evidence directory before the submission:
 
 - Mesa source SHA: the clean worktree SHA the native library was built
   from, with `git status --porcelain=v2` empty at build time.
-- Native ELF identity: the SHA-256 (and build ID when present) of the
-  `libvulkan_r3v_native.so` that will load; the queue additionally
-  records the running library's BLAKE3 in `submit_manifest.json`.
+- Native issuer identity: the queue resolves the regular executable or
+  loaded native DSO containing the identity helper, verifies its
+  executable mappings against that file, and records its mapped path and
+  BLAKE3 in `submit_manifest.json`. The attended direct-write runner is
+  the static executable `r3v_native_attended_direct_write`, so the
+  manifest names that executable rather than assuming a DSO name.
 - Direct-write IB digest: the `ib_blake3` reported by
   `r3v_native_direct_write_arming_runner` on this build, which the
   authority-parity test proves equal to the manifest writer's and the

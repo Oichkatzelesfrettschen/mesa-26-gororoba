@@ -28,6 +28,7 @@
 #include "amd/r300/common/r300_first_draw_state.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "r3v_native.h"
+#include "tests/r3v_native_shim_arming.h"
 
 #include "util/mesa-blake3.h"
 
@@ -211,9 +212,9 @@ main(int argc, char **argv)
       setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
       /* The arming gate admits this shim run only when the harness
        * declares the same facts the driver collects: the reference
-       * cell's IB digest, this host's kernel release, and its radeon
-       * module srcversion ("none" when no module is loaded).  Declaring
-       * them exercises every comparison; no factor is skipped.
+       * cell's IB digest, this host's kernel release, and the deterministic
+      * shim provider's module srcversion.  Declaring them exercises every
+      * comparison; no factor is skipped.
        */
       struct r300_tcl_bypass_triangle_ib authorized;
       if (build_reference_ib(&authorized) != 0) {
@@ -233,18 +234,8 @@ main(int argc, char **argv)
       }
       setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", host.release, 1);
 
-      char srcversion[128] = "none";
-      FILE *module = fopen("/sys/module/radeon/srcversion", "r");
-      if (module != NULL) {
-         if (fgets(srcversion, sizeof(srcversion), module) != NULL) {
-            size_t length = strlen(srcversion);
-            while (length > 0 && (srcversion[length - 1] == '\n' ||
-                                  srcversion[length - 1] == ' '))
-               srcversion[--length] = '\0';
-         }
-         fclose(module);
-      }
-      setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION", srcversion, 1);
+      setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+             R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
    } else {
       unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
    }
@@ -299,6 +290,9 @@ main(int argc, char **argv)
    CHECK(result == VK_SUCCESS, "vkCreateDevice: %d", result);
    if (result != VK_SUCCESS)
       return 1;
+   struct r3v_native_device *native_device =
+      r3v_native_device_from_handle(device);
+   native_device->arming_provider = &r3v_native_shim_arming_provider;
 
    LOAD_DEVICE(vkAllocateMemory);
    LOAD_DEVICE(vkFreeMemory);
@@ -448,8 +442,6 @@ main(int argc, char **argv)
    /* The recorder published the vertex write while its mapping was live;
     * exactly one cache sync has run before any submission.
     */
-   const struct r3v_native_device *native_device =
-      r3v_native_device_from_handle(device);
    CHECK(native_device->drm.cache_sync_count == 2,
          "recorder published the vertex and sentinel writes: %" PRIu64,
          native_device->drm.cache_sync_count);

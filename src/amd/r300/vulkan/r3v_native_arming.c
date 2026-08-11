@@ -205,15 +205,12 @@ r3v_native_arming_collect_from(
    provider->read_kernel_release(provider->ctx, kernel_storage, kernel_size);
    facts->running_kernel_release = kernel_storage;
 
-   /* An unloaded radeon module reads as the literal "none", so the
-    * operator declares that state explicitly instead of an unreadable
-    * fact silently matching an unset declaration.
-    */
+   /* An absent or unreadable radeon module has no identity.  The empty fact
+    * remains undeclared so an operator value such as "none" cannot authorize
+    * a live submission without a module identity. */
    module_storage[0] = '\0';
    provider->read_module_srcversion(provider->ctx, module_storage,
                                     module_size);
-   if (module_storage[0] == '\0')
-      snprintf(module_storage, module_size, "none");
    facts->running_module_srcversion = module_storage;
 
    if (declared(evidence_dir)) {
