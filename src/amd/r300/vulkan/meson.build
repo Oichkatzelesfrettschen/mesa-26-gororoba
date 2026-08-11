@@ -318,6 +318,7 @@ if get_option('r3v-native-backend')
     'r3v_native_device.c',
     'r3v_native_draw.c',
     'r3v_native_image.c',
+    'r3v_native_identity.c',
     'r3v_native_memory.c',
     'r3v_native_object.c',
     'r3v_native_pipeline.c',
@@ -701,6 +702,18 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+    test(
+      'r3v-native-submit-manifest',
+      prog_python,
+      args : [
+        files('tests/r3v_native_submit_manifest_check.py'),
+        r3v_native_direct_write_harness,
+      ],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim, r3v_native_direct_write_harness],
+      timeout : 60,
+      suite : ['r3v'],
+    )
 
     # The public-surface tables the sweeps measure, generated from the same
     # registry parse the policy audit reads.
@@ -868,6 +881,19 @@ if get_option('r3v-native-backend')
     # Arming-gate calibration: the complete fact set arms, and each
     # single-factor defect refuses with its own verdict.  The evaluator is
     # pure, so the test compiles it directly.
+    test(
+      'r3v-native-identity',
+      executable(
+        'r3v_native_identity_test',
+        files('r3v_native_identity.c', 'tests/r3v_native_identity_test.c'),
+        include_directories : [inc_include, inc_src,
+                               include_directories('.')],
+        dependencies : [idep_mesautil],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+
     test(
       'r3v-native-arming',
       executable(

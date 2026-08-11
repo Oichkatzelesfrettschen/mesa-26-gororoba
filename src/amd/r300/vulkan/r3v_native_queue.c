@@ -7,6 +7,7 @@
 
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
+#include "r3v_native_identity.h"
 #include "r3v_physical_device.h"
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
@@ -103,60 +104,6 @@ blake3_hex(const void *data, size_t size, char out[BLAKE3_OUT_LEN * 2 + 1])
    _mesa_blake3_format(out, digest);
 }
 
-/* Resolves the running driver's own ELF identity: /proc/self/maps names the
- * loaded libvulkan_r3v_native.so, and the digest is over that file's bytes,
- * so the retained bundle binds the submission to the exact binary that
- * issued it.  A driver loaded under another name records "unresolved".
- */
-static void
-driver_elf_identity(char *path_out, size_t path_size,
-                    char digest_out[BLAKE3_OUT_LEN * 2 + 1])
-{
-   snprintf(path_out, path_size, "unresolved");
-   snprintf(digest_out, BLAKE3_OUT_LEN * 2 + 1, "unresolved");
-
-   FILE *maps = fopen("/proc/self/maps", "r");
-   if (maps == NULL)
-      return;
-   char line[1024];
-   char so_path[1024] = "";
-   while (fgets(line, sizeof(line), maps) != NULL) {
-      const char *name = strstr(line, "libvulkan_r3v_native.so");
-      if (name == NULL)
-         continue;
-      const char *start = strchr(line, '/');
-      if (start == NULL || start > name)
-         continue;
-      size_t length = strcspn(start, "\n");
-      if (length >= sizeof(so_path))
-         continue;
-      memcpy(so_path, start, length);
-      so_path[length] = '\0';
-      break;
-   }
-   fclose(maps);
-   if (so_path[0] == '\0')
-      return;
-
-   FILE *so = fopen(so_path, "rb");
-   if (so == NULL)
-      return;
-   struct mesa_blake3 ctx;
-   _mesa_blake3_init(&ctx);
-   uint8_t chunk[4096];
-   size_t got;
-   while ((got = fread(chunk, 1, sizeof(chunk), so)) > 0)
-      _mesa_blake3_update(&ctx, chunk, got);
-   int failed = ferror(so);
-   fclose(so);
-   if (failed)
-      return;
-   uint8_t digest[BLAKE3_OUT_LEN];
-   _mesa_blake3_final(&ctx, digest);
-   _mesa_blake3_format(digest_out, digest);
-   snprintf(path_out, path_size, "%s", so_path);
-}
-
 /* Retains the semantic cell -- the IB and the command buffer's own
  * relocation list, before the completion reference folds in -- as
  * content-bound evidence: ib.bin and relocs.bin land atomically, and
@@ -250,9 +197,24 @@ r3v_native_queue_write_submit_object(
 
    char elf_path[1024];
    char elf_hex[BLAKE3_OUT_LEN * 2 + 1];
-   driver_elf_identity(elf_path, sizeof(elf_path), elf_hex);
+   char escaped_kernel_release[128 * 6 + 1];
+   char escaped_module_srcversion[128 * 6 + 1];
+   char escaped_elf_path[sizeof(elf_path) * 6 + 1];
+   int result = r3v_native_identity_collect(
+      elf_path, sizeof(elf_path), elf_hex, sizeof(elf_hex));
+   if (result != 0)
+      return result;
+   if (r3v_native_json_escape(escaped_kernel_release,
+                              sizeof(escaped_kernel_release),
+                              kernel_release) < 0 ||
+       r3v_native_json_escape(escaped_module_srcversion,
+                              sizeof(escaped_module_srcversion),
+                              module_srcversion) < 0 ||
+       r3v_native_json_escape(escaped_elf_path, sizeof(escaped_elf_path),
+                              elf_path) < 0)
+      return -EIO;
 
-   int result = r3v_native_evidence_write_file(
+   result = r3v_native_evidence_write_file(
       device->manifest_dir, "submit_relocs.bin", relocs->relocs,
       relocs->count * sizeof(relocs->relocs[0]));
    if (result == 0) {
@@ -289,7 +251,7 @@ r3v_native_queue_write_submit_object(
           (size_t)completion_length >= sizeof(completion_row))
          return -EIO;
 
-      char manifest[4096];
+      char manifest[16384];
       int length = snprintf(
          manifest, sizeof(manifest),
          "{\n"
@@ -316,8 +278,8 @@ r3v_native_queue_write_submit_object(
          cs->chunks[0].chunk_id, cs->chunks[0].length_dw,
          cs->chunks[1].chunk_id, cs->chunks[1].length_dw,
          cs->chunks[2].chunk_id, cs->chunks[2].length_dw,
-         bo_table, completion_row, kernel_release, module_srcversion,
-         elf_path, elf_hex);
+         bo_table, completion_row, escaped_kernel_release,
+         escaped_module_srcversion, escaped_elf_path, elf_hex);
       result = length > 0 && (size_t)length < sizeof(manifest)
                   ? r3v_native_evidence_write_file(device->manifest_dir,
                                                    "submit_manifest.json",
@@ -555,11 +517,15 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       r300_triangle_ib_digest_hex(cmd_buffer->ib, cmd_buffer->ib_size_dwords,
                                   ib_digest);
       struct r3v_native_arming_facts facts;
-      r3v_native_arming_collect(&facts, device->pdevice->pci_vendor_id,
-                                device->pdevice->pci_device_id, ib_digest,
-                                device->manifest_dir, kernel_release,
-                                sizeof(kernel_release), module_srcversion,
-                                sizeof(module_srcversion));
+      const struct r3v_native_arming_provider *arming_provider =
+         device->arming_provider != NULL
+            ? device->arming_provider
+            : r3v_native_arming_host_provider();
+      r3v_native_arming_collect_from(
+         arming_provider, &facts, device->pdevice->pci_vendor_id,
+         device->pdevice->pci_device_id, ib_digest, device->manifest_dir,
+         kernel_release, sizeof(kernel_release), module_srcversion,
+         sizeof(module_srcversion));
 
       /* The exact ioctl payload retains before the ioctl; a retention
        * failure refuses the submission with nothing sent.

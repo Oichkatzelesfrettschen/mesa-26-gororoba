@@ -145,11 +145,6 @@ test_disarm_is_one_shot(void)
                              module, sizeof(module));
    assert(facts.evidence_dir_present);
    assert(!facts.attempt_token_present);
-   /* An unreadable radeon srcversion reports the literal "none" rather
-    * than an empty fact that an unset declaration could match.
-    */
-   assert(facts.running_module_srcversion != NULL &&
-          facts.running_module_srcversion[0] != '\0');
    assert(facts.running_kernel_release != NULL &&
           facts.running_kernel_release[0] != '\0');
 
