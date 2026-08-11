@@ -25,18 +25,19 @@ extern "C" {
 struct r300_context;
 struct nir_shader;
 
-/* Producer input ceiling: split pass B feeds every model attribute plus one
- * carry input.  The R300 vertex-stream state exposes eight
- * VAP_PROG_STREAM_CNTL and VAP_PROG_STREAM_CNTL_EXT entries, and the RS state
- * exposes eight IP and INST entries (r300_context.h); state derivation also
- * limits VAP_OUTPUT_VTX_FMT_1 and rasterizer texcoord allocation to eight
- * slots (r300_state_derived.c).  The RS482 VAP register table in
- * docs/hardware/rs482-hybrid-vertex-tcl-design.md names the same 0..7 stream
- * range, and retained RS482 VAP/RS captures enumerate that programmed
- * surface, so pass-B admission requires num_in + 1 <= 8.  A nine-input RS482
- * pass-B capture that executes without truncation or decline falsifies this
- * bound; reproduce the software admission boundary with `meson test -C build
- * r300-r2vb-plan-oracle`. */
+/* Producer input ceiling: the split pass-B draw feeds every model attribute
+ * plus one carry input.  The register authority is
+ * src/gallium/drivers/r300/r300_reg.h for the VAP stream and RS register
+ * definitions, and r300_context.h exposes eight VAP_PROG_STREAM_CNTL and
+ * VAP_PROG_STREAM_CNTL_EXT entries plus eight IP and INST entries; state
+ * derivation limits VAP_OUTPUT_VTX_FMT_1 and rasterizer texcoord allocation
+ * to eight slots (r300_state_derived.c).  The RS482 register-table notes in
+ * docs/hardware/rs482-hybrid-vertex-tcl-design.md and the retained VAP/RS
+ * captures are calibration evidence for that 0..7 surface, not primary
+ * hardware authority.  Pass-B admission requires num_in + 1 <= 8.  A
+ * nine-input RS482 pass-B capture that executes without truncation or decline
+ * falsifies this bound; the calibrated software witness is reproducible with
+ * `meson test -C build r300-r2vb-plan-oracle`. */
 #define R300_R2VB_MAX_PRODUCER_INPUTS 8
 
 /* The R2VB producer plan: one classification record per (vertex shader, plan
@@ -243,9 +244,10 @@ r300_r2vb_producer_plan_get(struct r300_context *r300,
 struct r300_vertex_shader;
 void r300_r2vb_plan_cache_release(struct r300_vertex_shader *vs);
 
-/* Shadow-parity divergence accounting: the admission memo stays
- * authoritative, a divergence increments this process-wide counter for the
- * planner test and telemetry, and rendering never changes. */
+/* Shadow-parity divergence accounting: assertion builds stop at a mismatch.
+ * Assertion-disabled builds keep the admission memo authoritative, increment
+ * this process-wide counter for the planner test and telemetry, and leave
+ * rendering unchanged. */
 void r300_r2vb_plan_note_shadow_divergence(void);
 uint32_t r300_r2vb_plan_shadow_divergences(void);
 

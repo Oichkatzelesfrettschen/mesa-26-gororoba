@@ -5577,10 +5577,10 @@ static void r300_r2vb_plan_shadow_check(struct r300_context *r300,
         allow_computed_varying, space,
         r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir));
     if (effective != memo) {
-        /* A divergence is a planner defect finding, never an application
-         * abort: the memo stays authoritative, the counter records the
-         * event for the planner test and telemetry, and the print rides an
-         * exact opt-in gate. */
+        /* A divergence is a planner defect finding. Assertion builds stop at
+         * the inconsistent decision; release builds keep the memo
+         * authoritative, record the event, and print only under an opt-in
+         * diagnostic gate. */
         r300_r2vb_plan_note_shadow_divergence();
         static int dbg = -1;
         if (dbg < 0) {
@@ -5596,6 +5596,7 @@ static void r300_r2vb_plan_shadow_check(struct r300_context *r300,
                     plan->observed_reason_mask,
                     space == R300_R2VB_POSITION_WINDOW ? "window" : "clip",
                     allow_computed_varying);
+        assert(effective == memo);
     }
 }
 
