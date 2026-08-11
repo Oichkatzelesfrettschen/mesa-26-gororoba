@@ -838,7 +838,7 @@ main(void)
          .allocationSize = 8192,
          .memoryTypeIndex = 0,
       };
-      const VkDeviceSize transfer_image_offset = 4096;
+      const VkDeviceSize transfer_image_offset = R3V_NATIVE_MEMORY_ALIGNMENT;
       const uint32_t transfer_image_base_word =
          transfer_image_offset / sizeof(uint32_t);
       const uint32_t transfer_allocation_words =

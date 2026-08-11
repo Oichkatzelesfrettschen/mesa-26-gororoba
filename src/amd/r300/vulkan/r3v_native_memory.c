@@ -69,7 +69,8 @@ r3v_AllocateMemory(VkDevice _device,
                                  &flags);
 
    if (radeon_drm_vk_bo_create(&device->drm, pAllocateInfo->allocationSize,
-                               4096, domains, flags, false,
+                               R3V_NATIVE_MEMORY_ALIGNMENT, domains, flags,
+                               false,
                                &memory->bo) != 0) {
       vk_device_memory_destroy(&device->vk, pAllocator, &memory->vk);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -186,7 +187,7 @@ r3v_GetDeviceBufferMemoryRequirements(
    (void)_device;
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
       .size = pInfo->pCreateInfo->size,
-      .alignment = 4096,
+      .alignment = R3V_NATIVE_MEMORY_ALIGNMENT,
       .memoryTypeBits = 0x1,
    };
    r3v_native_fill_buffer_dedicated_requirements(pMemoryRequirements);
@@ -206,7 +207,7 @@ r3v_GetBufferMemoryRequirements2(VkDevice _device,
     */
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
       .size = buffer->vk.size,
-      .alignment = 4096,
+      .alignment = R3V_NATIVE_MEMORY_ALIGNMENT,
       .memoryTypeBits = 0x1,
    };
    r3v_native_fill_buffer_dedicated_requirements(pMemoryRequirements);

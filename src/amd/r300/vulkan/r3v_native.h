@@ -197,6 +197,9 @@ struct r3v_native_memory {
    void *map;
 };
 
+/* Vulkan bindings and their GEM BOs use one page of alignment. */
+#define R3V_NATIVE_MEMORY_ALIGNMENT 4096
+
 struct r3v_native_buffer {
    struct vk_buffer vk;
    struct r3v_native_memory *memory;

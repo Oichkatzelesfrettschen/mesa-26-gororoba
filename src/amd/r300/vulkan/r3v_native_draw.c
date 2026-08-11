@@ -235,7 +235,8 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
       poison(commandBuffer, VK_ERROR_OUT_OF_HOST_MEMORY);
       return;
    }
-   if (radeon_drm_vk_bo_create(&device->drm, 4096, 4096,
+   if (radeon_drm_vk_bo_create(&device->drm, 4096,
+                               R3V_NATIVE_MEMORY_ALIGNMENT,
                                RADEON_GEM_DOMAIN_GTT, 0, false,
                                &carrier->bo) != 0) {
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);
