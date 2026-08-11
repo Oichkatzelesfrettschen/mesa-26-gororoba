@@ -1061,9 +1061,10 @@ r3v_nir_uses_view_index(nir_shader *nir)
    return false;
 }
 
-/* Gallium's vertex rows use driver_location as a dense AOS index.  Vulkan
- * vertex locations are already validated as a contiguous prefix, so preserve
- * that location mapping and publish the resulting row span in num_inputs. */
+/* Gallium's vertex rows use driver_location as a dense AOS index.  The
+ * pipeline input validator checks attribute descriptions for a contiguous
+ * prefix; apply the same native row span to shader input variables before
+ * publishing num_inputs. */
 static bool
 r3v_assign_vs_input_locations(nir_shader *nir)
 {
@@ -1077,8 +1078,8 @@ r3v_assign_vs_input_locations(nir_shader *nir)
          var->data.location - VERT_ATTRIB_GENERIC0;
       const unsigned slots =
          glsl_count_attribute_slots(var->type, false);
-      if (driver_location >= PIPE_MAX_ATTRIBS ||
-          slots > PIPE_MAX_ATTRIBS - driver_location)
+      if (driver_location >= R3V_MAX_VERTEX_BINDINGS ||
+          slots > R3V_MAX_VERTEX_BINDINGS - driver_location)
          return false;
 
       var->data.driver_location = driver_location;
