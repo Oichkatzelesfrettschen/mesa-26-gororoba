@@ -126,10 +126,12 @@ static struct pipe_resource *r2vb_create_selftest_bo(struct r300_context *r300,
         struct pipe_transfer *xfer = NULL;
         struct pipe_box box = { .width = width_bytes, .height = 1, .depth = 1 };
         void *map = r300->context.buffer_map(&r300->context, res, 0, PIPE_MAP_WRITE, &box, &xfer);
-        if (map) {
-            memset(map, fill_val, width_bytes);
-            r300->context.buffer_unmap(&r300->context, xfer);
+        if (!map) {
+            pipe_resource_reference(&res, NULL);
+            return NULL;
         }
+        memset(map, fill_val, width_bytes);
+        r300->context.buffer_unmap(&r300->context, xfer);
     }
     return res;
 }
@@ -2718,6 +2720,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
         return true;
     }
 
+    bool submit_signalled = !cfg.do_submit;
     if (cfg.do_submit) {
         struct pipe_fence_handle *fence = NULL;
         int64_t t0, t1, t2, t3;
@@ -2738,6 +2741,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
             signalled = r300->rws->fence_wait(r300->rws, fence, (uint64_t)5 * 1000 * 1000 * 1000);
             r300->rws->fence_reference(r300->rws, &fence, NULL);
         }
+        submit_signalled = signalled;
         t3 = os_time_get_nano();
         double enqueue_ms = (double)(t1 - t0) / 1.0e6;
         double submit_ms = (double)(t2 - t1) / 1.0e6;
@@ -2757,11 +2761,19 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
                 cfg.num_vertices, r300->screen->caps.num_vert_fpus);
     }
 
-    if (stage3)
-        r2vb_report_stage3_readback(r300, stage3, cfg.s3dim);
+    if (stage3) {
+        if (submit_signalled)
+            r2vb_report_stage3_readback(r300, stage3, cfg.s3dim);
+        else
+            debug_printf("r2vb: skipping stage3 readback after unsignalled submit\n");
+    }
 
-    if (cfg.observe)
-        r2vb_report_bo_a_diagnostic(r300, res, cfg.num_vertices);
+    if (cfg.observe) {
+        if (submit_signalled)
+            r2vb_report_bo_a_diagnostic(r300, res, cfg.num_vertices);
+        else
+            debug_printf("r2vb: skipping stage1 readback after unsignalled submit\n");
+    }
 
     /* Transform verify: the producer output BO should hold M*model for each slot.
      * res keeps the stage-1 data when stage 3 rendered into the separate observe
