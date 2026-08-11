@@ -153,7 +153,7 @@ fresh_cmd(void)
 }
 
 static void
-record_transfer_image_barrier(VkCommandBuffer command_buffer, VkImage image,
+record_image_barrier(VkCommandBuffer command_buffer, VkImage image,
                               VkImageLayout old_layout,
                               VkImageLayout new_layout,
                               VkPipelineStageFlags src_stage,
@@ -778,6 +778,14 @@ main(void)
     * installs the reference cell against the byte-identical carrier.
     */
    VkCommandBuffer cmd = fresh_cmd();
+   /* Render-family images use a separate barrier vocabulary from transfer
+    * images, and the transition precedes the render pass.
+    */
+   record_image_barrier(
+      cmd, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
    vkCmdBeginRenderPass(cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer,
@@ -936,7 +944,7 @@ main(void)
       /* A newly created image starts undefined.  The transfer recorder
        * admits the transition into the destination layout before upload.
        */
-      record_transfer_image_barrier(
+      record_image_barrier(
          copy_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -947,12 +955,12 @@ main(void)
       /* The barrier validates the image-layout transition while the
        * single-thread in-order execution carries the dependency.
        */
-      record_transfer_image_barrier(
+      record_image_barrier(
          copy_cmd, img_a, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
          VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-      record_transfer_image_barrier(
+      record_image_barrier(
          copy_cmd, img_b, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -982,7 +990,7 @@ main(void)
       vkCmdCopyImage(copy_cmd, img_a,
                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img_b,
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cross);
-      record_transfer_image_barrier(
+      record_image_barrier(
          copy_cmd, img_b, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1019,7 +1027,7 @@ main(void)
       };
 
       VkCommandBuffer sixteen_cmd = fresh_cmd();
-      record_transfer_image_barrier(
+      record_image_barrier(
          sixteen_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1036,7 +1044,7 @@ main(void)
       assert(vkEndCommandBuffer(sixteen_cmd) == VK_SUCCESS);
 
       VkCommandBuffer seventeen_cmd = fresh_cmd();
-      record_transfer_image_barrier(
+      record_image_barrier(
          seventeen_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1054,7 +1062,7 @@ main(void)
 
       VkCommandBuffer mixed_cmd = fresh_cmd();
       for (uint32_t i = 0; i < 8; i++) {
-         record_transfer_image_barrier(
+         record_image_barrier(
             mixed_cmd, img_a,
             i == 0 ? VK_IMAGE_LAYOUT_UNDEFINED
                     : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1069,12 +1077,12 @@ main(void)
          vkCmdCopyBufferToImage(mixed_cmd, staging, img_a,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                 &upload);
-         record_transfer_image_barrier(
+         record_image_barrier(
             mixed_cmd, img_a, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-         record_transfer_image_barrier(
+         record_image_barrier(
             mixed_cmd, img_b,
             i == 0 ? VK_IMAGE_LAYOUT_UNDEFINED
                     : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1086,7 +1094,7 @@ main(void)
          vkCmdCopyImage(mixed_cmd, img_a,
                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img_b,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cross);
-         record_transfer_image_barrier(
+         record_image_barrier(
             mixed_cmd, img_b, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1121,7 +1129,7 @@ main(void)
       assert(reset_native->deferred_copy_count == 0);
       assert(reset_native->deferred_copy_capacity == 0);
       assert(reset_native->deferred_copies == NULL);
-      record_transfer_image_barrier(
+      record_image_barrier(
          mixed_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1147,7 +1155,7 @@ main(void)
          .pfnReallocation = deferred_copy_test_reallocate,
          .pfnFree = deferred_copy_test_free,
       };
-      record_transfer_image_barrier(
+      record_image_barrier(
          allocation_failure_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1176,7 +1184,7 @@ main(void)
          .pfnReallocation = deferred_copy_test_reallocate,
          .pfnFree = deferred_copy_test_free,
       };
-      record_transfer_image_barrier(
+      record_image_barrier(
          growth_failure_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1271,7 +1279,7 @@ main(void)
             .levelCount = 1,
             .layerCount = 1,
          };
-         record_transfer_image_barrier(
+         record_image_barrier(
             clear_cmd, img_c, VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,

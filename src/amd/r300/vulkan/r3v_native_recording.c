@@ -78,12 +78,31 @@ r3v_native_transfer_destination_layout_ok(VkImageLayout layout)
           layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 }
 
-/* The synchronous transfer executor has no hardware image-layout register:
+static bool
+r3v_native_render_layout_ok(VkImageLayout layout)
+{
+   return layout == VK_IMAGE_LAYOUT_GENERAL ||
+          layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+}
+
+static bool
+r3v_native_image_layout_ok(const struct r3v_native_image *image,
+                           VkImageLayout layout)
+{
+   if (image->transfer_family)
+      return r3v_native_transfer_source_layout_ok(layout) ||
+             r3v_native_transfer_destination_layout_ok(layout);
+   return r3v_native_render_layout_ok(layout);
+}
+
+/* The synchronous host executor has no hardware image-layout register:
  * host mappings execute in recorded order, and every destination publishes
  * before submission completion.  The API layout tokens still carry a
- * contract.  Image copies accept only the source or destination layouts the
- * executor implements, while image barriers admit the transitions that can
- * lead to those layouts from Vulkan's undefined or preinitialized states.
+ * contract.  Transfer image copies accept only the source or destination
+ * layouts the executor implements, while image barriers admit transitions
+ * from Vulkan's undefined or preinitialized states.  Render-family barriers
+ * use the general and color-attachment layouts accepted by the render pass
+ * path.
  */
 static bool
 r3v_native_image_barrier_range_ok(const VkImageSubresourceRange *range)
@@ -104,13 +123,13 @@ r3v_native_image_barrier_layouts_ok(const VkImageMemoryBarrier *barrier)
    const bool old_layout_ok =
       barrier->oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ||
       barrier->oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED ||
-      r3v_native_transfer_source_layout_ok(barrier->oldLayout) ||
-      r3v_native_transfer_destination_layout_ok(barrier->oldLayout);
+      (image != NULL &&
+       r3v_native_image_layout_ok(image, barrier->oldLayout));
    const bool new_layout_ok =
-      r3v_native_transfer_source_layout_ok(barrier->newLayout) ||
-      r3v_native_transfer_destination_layout_ok(barrier->newLayout);
+      image != NULL &&
+      r3v_native_image_layout_ok(image, barrier->newLayout);
 
-   return image != NULL && image->transfer_family && image->memory != NULL &&
+   return image != NULL && image->memory != NULL &&
           r3v_native_image_barrier_range_ok(&barrier->subresourceRange) &&
           old_layout_ok && new_layout_ok;
 }
@@ -693,10 +712,10 @@ r3v_CmdPipelineBarrier(
     * outside a render pass (the pass's one draw has no self-dependency
     * lowering), no ownership transfer -- the device exposes one queue
     * family, so an ownership-transferring pair names a family that
-    * does not exist -- and image barriers over the qualified
-    * transfer-family color subresource with the supported layout
-    * vocabulary.  Equal queue-family fields still name either the native
-    * family (0) or the no-ownership-transfer sentinel.
+    * does not exist -- and image barriers over the qualified transfer or
+    * render-family color subresource with its supported layout vocabulary.
+    * Equal queue-family fields still name either the native family (0) or
+    * the no-ownership-transfer sentinel.
     */
    if (cmd_buffer->pass_target != NULL) {
       r3v_native_cmd_poison(commandBuffer);
