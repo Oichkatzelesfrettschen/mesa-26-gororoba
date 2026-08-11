@@ -52,6 +52,15 @@ static const float ndc_triangle[12] = {
     0.00f,  0.75f, 0.0f, 1.0f,
 };
 
+/* Every source component is a non-negative FP24 fixed point, so this
+ * payload isolates host-model admission from the negative-NDC CPU route.
+ */
+static const float positive_triangle[12] = {
+   0.0f,  0.25f, 0.0f, 1.0f,
+   0.25f, 0.5f,  0.0f, 1.0f,
+   0.5f,  0.75f, 0.0f, 1.0f,
+};
+
 static VkDevice device;
 static VkCommandPool pool;
 
@@ -1286,18 +1295,18 @@ main(void)
       vkUnmapMemory(device, vertex_memory);
    }
 
-   /* The R2VB identity delivery route: on the exact opt-in value the
-    * deferred draw delivers the F32_4 stream through the FP24
-    * fixed-point identity model instead of the CPU gather, and the
-    * final carrier is byte-identical to the CPU route's -- the NDC
-    * reference payload is FP24-exact and the shared viewport transform
-    * runs after delivery on both routes.  The routing itself is
-    * witnessed by the domain narrowing: a component with set low
-    * mantissa bits (0.1) rides the CPU gather and refuses only under
-    * the R2VB route, and a non-"1" gate value keeps the CPU route.
+   /* The R2VB identity delivery route keeps its source-domain boundary
+    * visible at this API-shaped call site.  The canonical NDC payload
+    * contains negative coordinates, so it stays on the CPU route with
+    * the gate unset.  A separate non-negative FP24 payload proves
+    * positive host-model admission under the exact opt-in; replacing its
+    * first component with off-grid 0.1 then refuses, while the same
+    * bytes remain valid on the CPU route.  The common carrier test also
+    * compares admitted delivery against both CPU oracles without a
+    * viewport transform.
     */
    {
-      assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_cmd) == VK_SUCCESS);
       assert(radeon_drm_vk_bo_map(&native_device->drm,
@@ -1308,8 +1317,16 @@ main(void)
       radeon_drm_vk_bo_unmap(&native_device->drm,
                              &native_cmd->owned_carrier->bo, carrier_map);
 
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, positive_triangle, sizeof(positive_triangle));
+      vkUnmapMemory(device, vertex_memory);
+      assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_cmd) == VK_SUCCESS);
+
       float narrow[12];
-      memcpy(narrow, ndc_triangle, sizeof(narrow));
+      memcpy(narrow, positive_triangle, sizeof(narrow));
       narrow[0] = 0.1f;
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
@@ -1335,16 +1352,16 @@ main(void)
       vkUnmapMemory(device, vertex_memory);
    }
 
-   /* The synthesized delivery shapes ride the same route: under the
-    * gate, F32_3 delivers xyz with W synthesized as 1.0 and F32_2
-    * delivers xy with Z = 0.0 / W = 1.0, the reference payload's own
-    * values, so both carriers stay byte-identical to the reference --
-    * on the delivery route and the CPU oracle alike.  The routing is
-    * witnessed per shape by the domain narrowing: an off-grid source
-    * component refuses only under the gate.
+   /* The synthesized delivery shapes preserve the same route boundary:
+    * negative NDC coordinates use the CPU route with the gate unset,
+    * while non-negative FP24 inputs admit under the exact host-model
+    * opt-in.  Replacing one positive component with off-grid 0.1 refuses
+    * under that gate and succeeds on the CPU route.  The common carrier
+    * test owns the positive admitted identity comparison for F32_3 and
+    * F32_2, independent of viewport execution.
     */
    {
-      assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
 
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
@@ -1359,6 +1376,18 @@ main(void)
                     R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
       radeon_drm_vk_bo_unmap(&native_device->drm,
                              &native_xyz->owned_carrier->bo, carrier_map);
+
+      float positive_xyz[9];
+      for (unsigned v = 0; v < 3; v++)
+         memcpy(&positive_xyz[v * 3], &positive_triangle[v * 4], 12);
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, positive_xyz, sizeof(positive_xyz));
+      vkUnmapMemory(device, vertex_memory);
+      assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_xyz) == VK_SUCCESS);
+      assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
 
       float xy[6];
       for (unsigned v = 0; v < 3; v++)
@@ -1398,12 +1427,23 @@ main(void)
       radeon_drm_vk_bo_unmap(&native_device->drm,
                              &native_xy->owned_carrier->bo, carrier_map);
 
+      float positive_xy[6];
+      for (unsigned v = 0; v < 3; v++)
+         memcpy(&positive_xy[v * 2], &positive_triangle[v * 4], 8);
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, positive_xy, sizeof(positive_xy));
+      vkUnmapMemory(device, vertex_memory);
+      assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_xy) == VK_SUCCESS);
+
       /* Domain narrowing per shape: an off-grid x refuses the F32_3
        * and F32_2 deliveries under the gate and rides the CPU gather
        * without it.
        */
       float xyz_narrow[9];
-      memcpy(xyz_narrow, xyz, sizeof(xyz_narrow));
+      memcpy(xyz_narrow, positive_xyz, sizeof(xyz_narrow));
       xyz_narrow[0] = 0.1f;
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
@@ -1413,7 +1453,7 @@ main(void)
                 native_device, native_xyz) != VK_SUCCESS);
 
       float xy_narrow[6];
-      memcpy(xy_narrow, xy, sizeof(xy_narrow));
+      memcpy(xy_narrow, positive_xy, sizeof(xy_narrow));
       xy_narrow[0] = 0.1f;
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
@@ -1422,6 +1462,8 @@ main(void)
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_xy) != VK_SUCCESS);
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_xyz) == VK_SUCCESS);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_xy) == VK_SUCCESS);
 
