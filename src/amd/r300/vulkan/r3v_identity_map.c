@@ -1048,6 +1048,53 @@ nth_storage_buffer_binding(const struct r3v_descriptor_set *set,
    return false;
 }
 
+static unsigned
+compute_storage_buffer_binding_count(const struct r3v_descriptor_set *set)
+{
+   unsigned count = 0;
+   for (uint32_t i = 0; i < set->layout->binding_count; i++) {
+      if (storage_buffer_binding_is_compute_usable(&set->layout->bindings[i]))
+         count++;
+   }
+   return count;
+}
+
+/* Resolve a detector's role bindings without using binding 0 as an unknown
+ * sentinel.  A complete capture is authoritative, including zero-valued
+ * bindings.  An all-unknown capture uses the positional contract only when
+ * the descriptor layout contains exactly one compute-visible storage buffer
+ * per role.  The exact-count check keeps an opaque source from silently
+ * selecting a prefix of an unrelated layout.  A partial capture has no safe
+ * reconstruction because the missing role could be interleaved anywhere in
+ * binding order, so dispatch refuses it. */
+static bool
+idm_resolve_binding_roles(struct r3v_device *device,
+                          const struct r3v_descriptor_set *set,
+                          unsigned role_count, uint32_t *bindings,
+                          unsigned valid_mask)
+{
+   const enum r300_compute_binding_capture_state state =
+      r300_compute_binding_capture_classify(valid_mask, role_count);
+   if (state == R300_COMPUTE_BINDINGS_COMPLETE)
+      return true;
+   if (state == R300_COMPUTE_BINDINGS_PARTIAL) {
+      IDM_LOG("binding resolution refused partial capture mask=0x%x roles=%u",
+              valid_mask, role_count);
+      return false;
+   }
+
+   if (compute_storage_buffer_binding_count(set) != role_count) {
+      IDM_LOG("binding resolution refused opaque layout storage-buffer-count=%u expected=%u",
+              compute_storage_buffer_binding_count(set), role_count);
+      return false;
+   }
+   for (unsigned i = 0; i < role_count; i++) {
+      if (!nth_storage_buffer_binding(set, i, &bindings[i]))
+         return false;
+   }
+   return true;
+}
+
 /* Output-only shapes have no input binding to disambiguate a positional
  * fallback.  When the detector cannot recover a constant store binding, the
  * layout must contain exactly one compute-visible STORAGE_BUFFER or the
@@ -1184,26 +1231,27 @@ r3v_identity_map_dispatch_replay(struct r3v_device *device,
       return false;
    }
 
-   /* The detector's pl->identity_map.{input,output}_ssbo_binding only
-    * carry the Vulkan binding indices when the NIR load_ssbo / store_ssbo
-    * sources were constants -- which they are NOT after
-    * nir_lower_explicit_io with nir_address_format_32bit_index_offset (the
-    * binding is a load_vulkan_descriptor handle).  Fall back to the
-    * descriptor-set layout: input = first compute-visible STORAGE_BUFFER,
-    * output = second.  This is the contract the identity-map kernel class
-    * follows: a single compute-visible input storage buffer and a single
-    * compute-visible output storage buffer, declared in that order. */
+   /* The detector carries an explicit validity bit for each binding.  A
+    * complete capture is authoritative, including binding zero.  When both
+    * sources are opaque, the descriptor-set contract supplies input = first
+    * and output = second compute-visible STORAGE_BUFFER; a partial capture is
+    * refused because the missing role cannot be recovered safely. */
    uint32_t in_binding = pl->identity_map.input_ssbo_binding;
    uint32_t out_binding = pl->identity_map.output_ssbo_binding;
-   if (in_binding == out_binding && in_binding == 0) {
-      if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
-          !nth_storage_buffer_binding(set, 1, &out_binding)) {
-         IDM_LOG("early-return layout-has-fewer-than-two-storage-buffers");
-         return false;
-      }
-      IDM_LOG("recovered bindings from layout: in=%u out=%u",
-              in_binding, out_binding);
+   const unsigned binding_valid_mask =
+      (pl->identity_map.input_ssbo_binding_valid ? 1u : 0u) |
+      (pl->identity_map.output_ssbo_binding_valid ? 2u : 0u);
+   uint32_t bindings[2] = { in_binding, out_binding };
+   if (!idm_resolve_binding_roles(device, set, 2, bindings,
+                                  binding_valid_mask)) {
+      IDM_LOG("early-return identity-binding-resolution");
+      return false;
    }
+   in_binding = bindings[0];
+   out_binding = bindings[1];
+   IDM_LOG("resolved identity bindings: in=%u out=%u source=%s",
+           in_binding, out_binding,
+           binding_valid_mask == 0 ? "positional" : "detector");
 
    const struct r3v_descriptor *in_desc =
       find_descriptor_by_binding(set, in_binding);
@@ -1608,9 +1656,10 @@ r3v_shift_logical_dispatch_replay(
  * sampler views at fragment stages 0 + 1, draws the fullscreen quad with the
  * pipeline's synthesized VS + FS (pl->fs_cso -- the binary-map ALU FS or the
  * DP4 dot FS), and copies the RB3D color export back to the output SSBO.  The
- * caller passes the three ssbo bindings its detector captured; binary-map and
- * dp4 are thin wrappers that differ only in which captured bindings they pass
- * and which FS pl->fs_cso already holds. */
+ * caller passes the three SSBO bindings its detector captured plus an optional
+ * validity mask; binary-map uses the explicit mask, while legacy wrappers
+ * retain their positional fallback until their detectors carry validity
+ * metadata. */
 static bool
 r3v_two_in_one_out_dispatch_replay(struct r3v_device *device,
                                       const struct r3v_pipeline *pl,
@@ -1618,6 +1667,8 @@ r3v_two_in_one_out_dispatch_replay(struct r3v_device *device,
                                       const struct r3v_cmd_bind_descriptor_sets *binds,
                                       uint32_t cap_in_a, uint32_t cap_in_b,
                                       uint32_t cap_out,
+                                      bool binding_validity_explicit,
+                                      unsigned binding_valid_mask,
                                       enum pipe_format input_fmt,
                                       enum pipe_format output_fmt,
                                       enum pipe_format output_buffer_fmt)
@@ -1650,28 +1701,36 @@ r3v_two_in_one_out_dispatch_replay(struct r3v_device *device,
       return false;
    }
 
-   /* Binding-index resolution.  Two sources, in priority order:
-    *  (1) The caller's detector reads constant binding sources from the
-    *      kernel's load_ssbo / store_ssbo intrinsics.  When the kernel's NIR
-    *      retains constant binding sources, the captured indices are
-    *      authoritative and preserve the detector's operand order for any
-    *      binding declaration order.
-    *  (2) When all three captured indices are zero (Vulkan forbids duplicate
-    *      bindings within a set, so all-zero means the detector saw opaque
-    *      post-explicit_io handles instead of constants), fall back to
-    *      positional layout iteration: input_a = 1st compute-visible
-    *      STORAGE_BUFFER, input_b = 2nd, output = 3rd. */
+   /* Binary-map dispatch supplies explicit validity bits.  Complete capture
+    * preserves operand order and binding zero; all-opaque capture uses the
+    * exact three-role positional contract; partial capture refuses replay.
+    * Other legacy two-input patterns still use their historical nonzero
+    * capture rule until their detectors carry the same validity metadata. */
    uint32_t in_a_binding = cap_in_a;
    uint32_t in_b_binding = cap_in_b;
    uint32_t out_binding  = cap_out;
-   const bool detector_captured = (in_a_binding != 0 || in_b_binding != 0 ||
-                                   out_binding  != 0);
-   if (!detector_captured) {
-      if (!nth_storage_buffer_binding(set, 0, &in_a_binding) ||
-          !nth_storage_buffer_binding(set, 1, &in_b_binding) ||
-          !nth_storage_buffer_binding(set, 2, &out_binding)) {
-         IDM_LOG("2in1out early-return layout-has-fewer-than-three-storage-buffers");
+   bool detector_captured = false;
+   if (binding_validity_explicit) {
+      uint32_t bindings[3] = { in_a_binding, in_b_binding, out_binding };
+      if (!idm_resolve_binding_roles(device, set, 3, bindings,
+                                     binding_valid_mask)) {
+         IDM_LOG("2in1out early-return explicit-binding-resolution");
          return false;
+      }
+      in_a_binding = bindings[0];
+      in_b_binding = bindings[1];
+      out_binding = bindings[2];
+      detector_captured = binding_valid_mask != 0;
+   } else {
+      detector_captured = (in_a_binding != 0 || in_b_binding != 0 ||
+                           out_binding  != 0);
+      if (!detector_captured) {
+         if (!nth_storage_buffer_binding(set, 0, &in_a_binding) ||
+             !nth_storage_buffer_binding(set, 1, &in_b_binding) ||
+             !nth_storage_buffer_binding(set, 2, &out_binding)) {
+            IDM_LOG("2in1out early-return layout-has-fewer-than-three-storage-buffers");
+            return false;
+         }
       }
    }
    IDM_LOG("2in1out bindings: in_a=%u in_b=%u out=%u source=%s",
@@ -1901,6 +1960,10 @@ r3v_binary_map_dispatch_replay(struct r3v_device *device,
          pl->binary_map.input_a_ssbo_binding,
          pl->binary_map.input_b_ssbo_binding,
          pl->binary_map.output_ssbo_binding,
+         true,
+         (pl->binary_map.input_a_ssbo_binding_valid ? 1u : 0u) |
+         (pl->binary_map.input_b_ssbo_binding_valid ? 2u : 0u) |
+         (pl->binary_map.output_ssbo_binding_valid ? 4u : 0u),
          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
          PIPE_FORMAT_R32G32B32A32_FLOAT);
    }
@@ -1909,6 +1972,10 @@ r3v_binary_map_dispatch_replay(struct r3v_device *device,
       pl->binary_map.input_a_ssbo_binding,
       pl->binary_map.input_b_ssbo_binding,
       pl->binary_map.output_ssbo_binding,
+      true,
+      (pl->binary_map.input_a_ssbo_binding_valid ? 1u : 0u) |
+      (pl->binary_map.input_b_ssbo_binding_valid ? 2u : 0u) |
+      (pl->binary_map.output_ssbo_binding_valid ? 4u : 0u),
       PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_FORMAT_R8G8B8A8_UNORM,
       PIPE_FORMAT_NONE);
 }
@@ -1944,6 +2011,7 @@ r3v_binary_transcendental_dispatch_replay(
       pl->binary_transcendental.input_a_ssbo_binding,
       pl->binary_transcendental.input_b_ssbo_binding,
       pl->binary_transcendental.output_ssbo_binding,
+      false, 0,
       in_fmt, PIPE_FORMAT_R16G16B16A16_FLOAT, in_fmt);
 }
 
@@ -2198,6 +2266,7 @@ r3v_dp4_dispatch_replay(struct r3v_device *device,
       pl->dp4.input_a_ssbo_binding,
       pl->dp4.input_b_ssbo_binding,
       pl->dp4.output_ssbo_binding,
+      false, 0,
       input_fmt, PIPE_FORMAT_R8G8B8A8_UNORM,
       PIPE_FORMAT_NONE);
 }
@@ -2230,6 +2299,7 @@ r3v_qmul_dispatch_replay(struct r3v_device *device,
       pl->qmul.input_a_ssbo_binding,
       pl->qmul.input_b_ssbo_binding,
       pl->qmul.output_ssbo_binding,
+      false, 0,
       PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
@@ -2259,6 +2329,7 @@ r3v_qdiv_dispatch_replay(struct r3v_device *device,
       pl->qdiv.input_a_ssbo_binding,
       pl->qdiv.input_b_ssbo_binding,
       pl->qdiv.output_ssbo_binding,
+      false, 0,
       PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
@@ -2287,6 +2358,7 @@ r3v_qrotate_dispatch_replay(struct r3v_device *device,
       pl->qrotate.input_q_ssbo_binding,
       pl->qrotate.input_v_ssbo_binding,
       pl->qrotate.output_ssbo_binding,
+      false, 0,
       PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
@@ -3306,6 +3378,7 @@ r3v_onorm_dispatch_replay(struct r3v_device *device,
       device, pl, dispatch, binds,
       pl->onorm.input_a_ssbo_binding, pl->onorm.input_b_ssbo_binding,
       pl->onorm.output_ssbo_binding,
+      false, 0,
       PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
@@ -4381,17 +4454,20 @@ r3v_blend_acc_reduction_dispatch_replay(struct r3v_device *device,
       return false;
    }
 
-   /* Detector binding-index priority with a positional fallback (same policy
-    * as r3v_binary_map_dispatch_replay): value = first compute-visible
-    * STORAGE_BUFFER, output = second, when the detector could not record
-    * constant indices. */
+   /* Complete detector capture is authoritative, including binding zero.  An
+    * all-opaque capture uses the exact two-role positional contract; partial
+    * capture is refused rather than pairing a known role with a guessed one. */
    uint32_t value_binding  = pl->blend_acc_reduction.value_ssbo_binding;
    uint32_t output_binding = pl->blend_acc_reduction.output_ssbo_binding;
-   if (!idm_recover_in_out_bindings(set, &value_binding, &output_binding)) {
-      IDM_LOG("blend_acc early-return layout-has-fewer-than-two-storage-buffers");
+   const unsigned binding_valid_mask =
+      (pl->blend_acc_reduction.value_ssbo_binding_valid ? 1u : 0u) |
+      (pl->blend_acc_reduction.output_ssbo_binding_valid ? 2u : 0u);
+   uint32_t bindings[2] = { value_binding, output_binding };
+   if (!idm_resolve_binding_roles(device, set, 2, bindings,
+                                  binding_valid_mask)) {
+      IDM_LOG("blend_acc early-return binding-resolution");
       return false;
    }
-   uint32_t bindings[2] = { value_binding, output_binding };
    const struct r3v_descriptor *descs[2] = {0};
    struct r3v_buffer *bufs[2] = {0};
    if (!r3v_idm_resolve_buffers(device, set, 2, bindings, descs, bufs))
@@ -4595,11 +4671,15 @@ r3v_zpass_reduction_dispatch_replay(struct r3v_device *device,
    }
    uint32_t value_binding  = pl->zpass_reduction.value_ssbo_binding;
    uint32_t output_binding = pl->zpass_reduction.output_ssbo_binding;
-   if (!idm_recover_in_out_bindings(set, &value_binding, &output_binding)) {
-      IDM_LOG("zpass early-return layout-has-fewer-than-two-storage-buffers");
+   const unsigned binding_valid_mask =
+      (pl->zpass_reduction.value_ssbo_binding_valid ? 1u : 0u) |
+      (pl->zpass_reduction.output_ssbo_binding_valid ? 2u : 0u);
+   uint32_t bindings[2] = { value_binding, output_binding };
+   if (!idm_resolve_binding_roles(device, set, 2, bindings,
+                                  binding_valid_mask)) {
+      IDM_LOG("zpass early-return binding-resolution");
       return false;
    }
-   uint32_t bindings[2] = { value_binding, output_binding };
    const struct r3v_descriptor *descs[2] = {0};
    struct r3v_buffer *bufs[2] = {0};
    if (!r3v_idm_resolve_buffers(device, set, 2, bindings, descs, bufs))

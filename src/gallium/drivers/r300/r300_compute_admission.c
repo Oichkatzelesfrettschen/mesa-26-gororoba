@@ -33,6 +33,20 @@
 #define R300_COMPUTE_STORE_ADDR_MAX_DEPTH 8u
 #define R300_COMPUTE_OFFSET_EQ_MAX_DEPTH 8u
 
+enum r300_compute_binding_capture_state
+r300_compute_binding_capture_classify(unsigned valid_mask, unsigned role_count)
+{
+   if (role_count == 0 || role_count > 8)
+      return R300_COMPUTE_BINDINGS_PARTIAL;
+
+   const unsigned complete_mask = (1u << role_count) - 1u;
+   if (valid_mask == 0)
+      return R300_COMPUTE_BINDINGS_ALL_UNKNOWN;
+   if (valid_mask == complete_mask)
+      return R300_COMPUTE_BINDINGS_COMPLETE;
+   return R300_COMPUTE_BINDINGS_PARTIAL;
+}
+
 static util_once_flag identity_map_debug_once = UTIL_ONCE_FLAG_INIT;
 static bool identity_map_debug;
 
@@ -271,8 +285,10 @@ offset_scalar_semantically_equal(nir_scalar a, nir_scalar b, unsigned depth)
 /* Walk the kernel and detect the identity-map structural pattern:
  * exactly one store_ssbo whose value source is the SSA def of exactly one
  * load_ssbo.  The load and store binding sources are recorded when they are
- * compile-time constants; descriptor-lowered Vulkan kernels carry opaque
- * handles that the dispatch resolves through the descriptor-set layout.
+ * compile-time constants, with a validity bit for each role so binding zero
+ * remains distinguishable from an opaque source.  Descriptor-lowered Vulkan
+ * kernels carry opaque handles that the dispatch resolves through the
+ * descriptor-set layout.
  *
  * The index-equivalence between the load and the store (both indexed by
  * gl_GlobalInvocationID.xy) is asserted via offset_scalar_semantically_equal,
@@ -287,6 +303,8 @@ r300_nir_detect_identity_map(const nir_shader *s,
    out->is_identity_map     = false;
    out->input_ssbo_binding  = 0;
    out->output_ssbo_binding = 0;
+   out->input_ssbo_binding_valid  = false;
+   out->output_ssbo_binding_valid = false;
    out->value_components    = 0;
    out->value_bit_size      = 0;
    out->value_is_float      = false;
@@ -372,13 +390,17 @@ r300_nir_detect_identity_map(const nir_shader *s,
     * load_vulkan_descriptor (or similar) handle after nir_lower_explicit_io
     * with nir_address_format_32bit_index_offset, NOT a constant -- the
     * earlier const-binding check rejected every real identity-map kernel.
-    * Capture what's a constant when it IS one (for diagnostic), but the
-    * orchestrator resolves the actual VkBuffer bindings from the bound
-    * descriptor set's layout at dispatch time, not from the NIR. */
-   if (nir_src_is_const(load->src[0]))
+    * Capture what's a constant when it IS one, preserving valid binding zero
+    * with an explicit flag.  The orchestrator resolves opaque roles from the
+    * bound descriptor set's layout at dispatch time. */
+   if (nir_src_is_const(load->src[0])) {
       out->input_ssbo_binding = nir_src_as_uint(load->src[0]);
-   if (nir_src_is_const(store->src[1]))
+      out->input_ssbo_binding_valid = true;
+   }
+   if (nir_src_is_const(store->src[1])) {
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+      out->output_ssbo_binding_valid = true;
+   }
    out->value_components = store->num_components;
    out->value_bit_size = store->src[0].ssa->bit_size;
    out->value_is_float = intrinsic_base_type_is_float(
@@ -418,6 +440,9 @@ r300_nir_detect_binary_map(const nir_shader *s,
    out->input_a_ssbo_binding  = 0;
    out->input_b_ssbo_binding  = 0;
    out->output_ssbo_binding   = 0;
+   out->input_a_ssbo_binding_valid = false;
+   out->input_b_ssbo_binding_valid = false;
+   out->output_ssbo_binding_valid  = false;
    out->alu_op                = 0;
    out->value_components      = 0;
    out->value_bit_size        = 0;
@@ -515,15 +540,21 @@ r300_nir_detect_binary_map(const nir_shader *s,
     * operand order, so remap before capturing binding indices. */
    const nir_intrinsic_instr *op_lhs = ab ? load_a : load_b;
    const nir_intrinsic_instr *op_rhs = ab ? load_b : load_a;
-   /* Capture constant binding indices when present; the orchestrator's
-    * descriptor-set layout fallback picks the first three compute-visible
-    * STORAGE_BUFFER bindings when these stay at the defaults. */
-   if (nir_src_is_const(op_lhs->src[0]))
+   /* Capture constant binding indices when present, preserving binding zero
+    * with explicit validity bits.  An all-opaque capture uses the replay
+    * contract's positional layout fallback; a partial capture is refused. */
+   if (nir_src_is_const(op_lhs->src[0])) {
       out->input_a_ssbo_binding = nir_src_as_uint(op_lhs->src[0]);
-   if (nir_src_is_const(op_rhs->src[0]))
+      out->input_a_ssbo_binding_valid = true;
+   }
+   if (nir_src_is_const(op_rhs->src[0])) {
       out->input_b_ssbo_binding = nir_src_as_uint(op_rhs->src[0]);
-   if (nir_src_is_const(store->src[1]))
+      out->input_b_ssbo_binding_valid = true;
+   }
+   if (nir_src_is_const(store->src[1])) {
       out->output_ssbo_binding  = nir_src_as_uint(store->src[1]);
+      out->output_ssbo_binding_valid = true;
+   }
    out->value_components = store->num_components;
    out->value_bit_size = store->src[0].ssa->bit_size;
    out->value_is_float = intrinsic_base_type_is_float(
@@ -1670,6 +1701,8 @@ r300_nir_detect_blend_acc_reduction(const nir_shader *s,
    out->is_blend_acc_reduction = false;
    out->value_ssbo_binding     = 0;
    out->output_ssbo_binding    = 0;
+   out->value_ssbo_binding_valid  = false;
+   out->output_ssbo_binding_valid = false;
    out->alu_op                 = 0;
 
    const nir_intrinsic_instr *atomic = NULL;
@@ -1733,10 +1766,14 @@ r300_nir_detect_blend_acc_reduction(const nir_shader *s,
 
    out->is_blend_acc_reduction = true;
    out->alu_op = (uint16_t)nir_op_iadd;
-   if (nir_src_is_const(load->src[0]))
+   if (nir_src_is_const(load->src[0])) {
       out->value_ssbo_binding  = nir_src_as_uint(load->src[0]);
-   if (nir_src_is_const(atomic->src[0]))
+      out->value_ssbo_binding_valid = true;
+   }
+   if (nir_src_is_const(atomic->src[0])) {
       out->output_ssbo_binding = nir_src_as_uint(atomic->src[0]);
+      out->output_ssbo_binding_valid = true;
+   }
 }
 
 /* Recursive transitive dependency: does `def` derive from `root` through any
@@ -1796,6 +1833,8 @@ r300_nir_detect_zpass_reduction(const nir_shader *s,
    out->is_zpass_reduction  = false;
    out->value_ssbo_binding  = 0;
    out->output_ssbo_binding = 0;
+   out->value_ssbo_binding_valid  = false;
+   out->output_ssbo_binding_valid = false;
    out->alu_op              = 0;
 
    const nir_intrinsic_instr *atomic = NULL;
@@ -1858,10 +1897,14 @@ r300_nir_detect_zpass_reduction(const nir_shader *s,
 
    out->is_zpass_reduction = true;
    out->alu_op = (uint16_t)nir_op_iadd;
-   if (nir_src_is_const(load->src[0]))
+   if (nir_src_is_const(load->src[0])) {
       out->value_ssbo_binding  = nir_src_as_uint(load->src[0]);
-   if (nir_src_is_const(atomic->src[0]))
+      out->value_ssbo_binding_valid = true;
+   }
+   if (nir_src_is_const(atomic->src[0])) {
       out->output_ssbo_binding = nir_src_as_uint(atomic->src[0]);
+      out->output_ssbo_binding_valid = true;
+   }
 }
 
 /* A per-iteration step doubles its loop-carried value when it is x*2

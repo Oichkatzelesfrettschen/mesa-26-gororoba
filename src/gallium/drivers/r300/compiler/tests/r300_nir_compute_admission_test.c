@@ -207,6 +207,58 @@ build_binary_map_f32vec4(void)
    return b.shader;
 }
 
+static nir_def *
+build_opaque_binding(nir_builder *b, unsigned offset)
+{
+   return nir_load_ubo(b, 1, 32, nir_imm_int(b, 1), nir_imm_int(b, offset),
+                       .align_mul = 4, .align_offset = 0, .range = 4);
+}
+
+static nir_shader *
+build_identity_map_opaque_input(void)
+{
+   nir_builder b = cs_builder("cs_identity_map_opaque_input");
+   nir_def *opaque_input = build_opaque_binding(&b, 0);
+   nir_def *in = nir_load_ssbo(&b, 4, 32, opaque_input, nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_store_ssbo(&b, in, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_binary_map_opaque_input(void)
+{
+   nir_builder b = cs_builder("cs_binary_map_opaque_input");
+   nir_def *opaque_input = build_opaque_binding(&b, 0);
+   nir_def *a = nir_load_ssbo(&b, 1, 32, opaque_input, nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *bb = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 1),
+                               nir_imm_int(&b, 0), .align_mul = 4,
+                               .align_offset = 0);
+   nir_def *sum = nir_iadd(&b, a, bb);
+   nir_store_ssbo(&b, sum, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_binary_map_all_opaque(void)
+{
+   nir_builder b = cs_builder("cs_binary_map_all_opaque");
+   nir_def *opaque_a = build_opaque_binding(&b, 0);
+   nir_def *opaque_b = build_opaque_binding(&b, 4);
+   nir_def *a = nir_load_ssbo(&b, 1, 32, opaque_a, nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *bb = nir_load_ssbo(&b, 1, 32, opaque_b, nir_imm_int(&b, 0),
+                               .align_mul = 4, .align_offset = 0);
+   nir_def *sum = nir_iadd(&b, a, bb);
+   nir_def *opaque_out = build_opaque_binding(&b, 8);
+   nir_store_ssbo(&b, sum, opaque_out, nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 /* isub with loads emitted in program order (binding 0 first = load_a,
  * binding 1 second = load_b) but the op's left operand is load_b and right is
  * load_a: isub(load_b, load_a).  This is the ba case in r300_nir_detect_binary_map.
@@ -1055,6 +1107,10 @@ case_identity_metadata(void)
    CHECK(adm.admissible, "float4 identity-map kernel admits");
    r300_nir_detect_identity_map(nir, &ident);
    CHECK(ident.is_identity_map, "float4 identity-map shape detected");
+   CHECK(ident.input_ssbo_binding_valid && ident.input_ssbo_binding == 0,
+         "identity-map metadata preserves valid input binding zero");
+   CHECK(ident.output_ssbo_binding_valid && ident.output_ssbo_binding == 1,
+         "identity-map metadata marks output binding as captured");
    CHECK(ident.value_components == 4, "identity-map metadata records vec4 width");
    CHECK(ident.value_bit_size == 32, "identity-map metadata records 32-bit lanes");
    ralloc_free(nir);
@@ -1073,10 +1129,67 @@ case_binary_metadata(void)
    r300_nir_detect_binary_map(nir, &binmap);
    CHECK(binmap.is_binary_map, "float4 binary-map shape detected");
    CHECK(binmap.alu_op == nir_op_fadd, "binary-map metadata records fadd opcode");
+   CHECK(binmap.input_a_ssbo_binding_valid &&
+         binmap.input_a_ssbo_binding == 0,
+         "binary-map metadata preserves valid input_a binding zero");
+   CHECK(binmap.input_b_ssbo_binding_valid &&
+         binmap.input_b_ssbo_binding == 1,
+         "binary-map metadata preserves input_b binding");
+   CHECK(binmap.output_ssbo_binding_valid &&
+         binmap.output_ssbo_binding == 2,
+         "binary-map metadata preserves output binding");
    CHECK(binmap.value_components == 4, "binary-map metadata records vec4 width");
    CHECK(binmap.value_bit_size == 32, "binary-map metadata records 32-bit lanes");
    CHECK(binmap.value_is_float, "binary-map metadata records float result");
    ralloc_free(nir);
+}
+
+static void
+case_binding_provenance_metadata(void)
+{
+   nir_shader *identity = build_identity_map_opaque_input();
+   struct r300_compute_identity_pattern ident = {0};
+   prepare_detect_shader(identity);
+   r300_nir_detect_identity_map(identity, &ident);
+   CHECK(ident.is_identity_map, "opaque identity-map shape remains detectable");
+   CHECK(!ident.input_ssbo_binding_valid &&
+         ident.output_ssbo_binding_valid && ident.output_ssbo_binding == 1,
+         "identity-map marks only the opaque role unknown");
+   ralloc_free(identity);
+
+   nir_shader *partial = build_binary_map_opaque_input();
+   struct r300_compute_binary_map_pattern partial_map = {0};
+   prepare_detect_shader(partial);
+   r300_nir_detect_binary_map(partial, &partial_map);
+   CHECK(partial_map.is_binary_map, "partial binary-map shape remains detectable");
+   CHECK(!partial_map.input_a_ssbo_binding_valid &&
+         partial_map.input_b_ssbo_binding_valid &&
+         partial_map.output_ssbo_binding_valid,
+         "binary-map records partial binding capture explicitly");
+   CHECK(r300_compute_binding_capture_classify(
+            (partial_map.input_a_ssbo_binding_valid ? 1u : 0u) |
+            (partial_map.input_b_ssbo_binding_valid ? 2u : 0u) |
+            (partial_map.output_ssbo_binding_valid ? 4u : 0u), 3) ==
+            R300_COMPUTE_BINDINGS_PARTIAL,
+         "partial binary-map capture is classified as refusal");
+   ralloc_free(partial);
+
+   nir_shader *opaque = build_binary_map_all_opaque();
+   struct r300_compute_binary_map_pattern opaque_map = {0};
+   prepare_detect_shader(opaque);
+   r300_nir_detect_binary_map(opaque, &opaque_map);
+   CHECK(opaque_map.is_binary_map, "all-opaque binary-map shape remains detectable");
+   CHECK(!opaque_map.input_a_ssbo_binding_valid &&
+         !opaque_map.input_b_ssbo_binding_valid &&
+         !opaque_map.output_ssbo_binding_valid,
+         "all-opaque binary-map capture has no false binding values");
+   CHECK(r300_compute_binding_capture_classify(0, 3) ==
+            R300_COMPUTE_BINDINGS_ALL_UNKNOWN,
+         "all-opaque binary-map capture selects positional fallback");
+   CHECK(r300_compute_binding_capture_classify(7, 3) ==
+            R300_COMPUTE_BINDINGS_COMPLETE,
+         "three-role binary-map capture is complete");
+   ralloc_free(opaque);
 }
 
 /* Verify that r300_nir_detect_binary_map normalises binding capture to
@@ -3602,6 +3715,7 @@ main(void)
                 "fp64 source operand rejects");
    case_identity_metadata();
    case_binary_metadata();
+   case_binding_provenance_metadata();
    case_binary_map_isub_ba_operand_order();
    case_identity_binary_map_offset_gate();
    case_qfmul_metadata();

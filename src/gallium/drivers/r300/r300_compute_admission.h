@@ -80,6 +80,19 @@ r300_compute_reject_lookup(enum r300_compute_reject reason);
 /* The absent hardware capability behind a rejection (static string). */
 const char *r300_compute_reject_substrate_absence(enum r300_compute_reject reason);
 
+/* Binding provenance states used by detector/replay handoff.  A complete
+ * capture includes one validity bit for every role; an all-unknown capture is
+ * eligible for a descriptor-layout fallback, while a partial capture cannot
+ * identify the remaining roles safely. */
+enum r300_compute_binding_capture_state {
+   R300_COMPUTE_BINDINGS_ALL_UNKNOWN,
+   R300_COMPUTE_BINDINGS_COMPLETE,
+   R300_COMPUTE_BINDINGS_PARTIAL,
+};
+
+enum r300_compute_binding_capture_state
+r300_compute_binding_capture_classify(unsigned valid_mask, unsigned role_count);
+
 /* Identity-map pattern recognized at compute-pipeline-create time so the
  * dispatch-replay can lower the kernel to a fullscreen-quad fragment draw that
  * samples in_tex (NEAREST) and writes the RB3D color export.  The pattern is
@@ -95,6 +108,8 @@ struct r300_compute_identity_pattern {
    bool       is_identity_map;
    uint32_t   input_ssbo_binding;   /* binding index of the load_ssbo source */
    uint32_t   output_ssbo_binding;  /* binding index of the store_ssbo dest */
+   bool       input_ssbo_binding_valid;
+   bool       output_ssbo_binding_valid;
    uint8_t    value_components;     /* stored value vector width */
    uint8_t    value_bit_size;       /* stored value component width */
    bool       value_is_float;       /* store_ssbo src_type base == nir_type_float */
@@ -103,8 +118,10 @@ struct r300_compute_identity_pattern {
 /* Detect the identity-map pattern in a classify-admitted kernel.  Pure
  * read-only analysis.  Sets out->is_identity_map = true when exactly one
  * store_ssbo's value is the result of exactly one load_ssbo.  Constant
- * bindings are recorded here; descriptor-lowered Vulkan kernels carry opaque
- * handles that dispatch resolves through the descriptor-set layout. */
+ * bindings are recorded here with per-role validity bits; binding zero is
+ * therefore distinct from an opaque source.  Descriptor-lowered Vulkan
+ * kernels carry opaque handles that dispatch resolves through the
+ * descriptor-set layout. */
 void r300_nir_detect_identity_map(const struct nir_shader *s,
                                   struct r300_compute_identity_pattern *out);
 
@@ -116,14 +133,18 @@ void r300_nir_detect_identity_map(const struct nir_shader *s,
  * FP24 map; richer arithmetic needs its own carrier and exactness audit.
  *
  * alu_op carries the NIR opcode value so the orchestrator's FS synthesis
- * picks the right PFS instruction; the bindings are 0 when the post-
- * explicit_io load_ssbo / store_ssbo binding sources are not constants
- * (the orchestrator's descriptor-set layout fallback recovers them then). */
+ * picks the right PFS instruction.  Binding values have a separate validity
+ * flag because binding 0 is a valid Vulkan binding; a false flag means the
+ * post-explicit_io source was opaque and dispatch must resolve the role from
+ * its descriptor-set contract. */
 struct r300_compute_binary_map_pattern {
    bool       is_binary_map;
    uint32_t   input_a_ssbo_binding;
    uint32_t   input_b_ssbo_binding;
    uint32_t   output_ssbo_binding;
+   bool       input_a_ssbo_binding_valid;
+   bool       input_b_ssbo_binding_valid;
+   bool       output_ssbo_binding_valid;
    uint16_t   alu_op;     /* nir_op enum value, only valid if is_binary_map */
    uint8_t    value_components; /* store_ssbo value vector width */
    uint8_t    value_bit_size;   /* store_ssbo value component width */
@@ -348,9 +369,9 @@ void r300_nir_detect_shift_variable(
  *
  * value_ssbo_binding is the binding of the load_ssbo feeding the atomic
  * value; output_ssbo_binding is the binding of the atomic's target buffer
- * (the histogram).  When the post-explicit_io binding sources are not
- * constants, both stay 0 and the orchestrator's descriptor-set layout
- * fallback recovers them (same policy as the binary-map detector).  alu_op
+ * (the histogram).  Each binding has a validity flag because binding 0 is a
+ * valid Vulkan binding.  When both flags are false, dispatch uses the
+ * descriptor-set positional contract; a partial capture is rejected.  alu_op
  * holds nir_op_iadd for the first cut; fadd will land alongside in a future
  * extension when the FP24 envelope analysis confirms the per-bin sum stays
  * exact. */
@@ -358,6 +379,8 @@ struct r300_compute_blend_acc_reduction_pattern {
    bool       is_blend_acc_reduction;
    uint32_t   value_ssbo_binding;
    uint32_t   output_ssbo_binding;
+   bool       value_ssbo_binding_valid;
+   bool       output_ssbo_binding_valid;
    uint16_t   alu_op;     /* nir_op enum value, only valid if true */
 };
 
@@ -393,12 +416,15 @@ void r300_nir_detect_blend_acc_reduction(const struct nir_shader *s,
  *
  * value_ssbo_binding is the binding of the predicate load_ssbo;
  * output_ssbo_binding is the binding of the single-element counter
- * buffer.  Bindings stay 0 when the post-explicit_io binding sources
- * are not constants (the orchestrator's positional fallback recovers them). */
+ * buffer.  Each binding has a validity flag because binding 0 is a valid
+ * Vulkan binding.  When both flags are false, dispatch uses the
+ * descriptor-set positional contract; a partial capture is rejected. */
 struct r300_compute_zpass_reduction_pattern {
    bool       is_zpass_reduction;
    uint32_t   value_ssbo_binding;     /* binding of the predicate-source load_ssbo */
    uint32_t   output_ssbo_binding;    /* binding of the single-element counter */
+   bool       value_ssbo_binding_valid;
+   bool       output_ssbo_binding_valid;
    uint16_t   alu_op;                 /* nir_op_iadd for the first cut */
 };
 
