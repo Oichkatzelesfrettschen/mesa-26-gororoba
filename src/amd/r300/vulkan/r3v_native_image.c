@@ -160,7 +160,9 @@ r3v_GetImageMemoryRequirements2(VkDevice _device,
 /* The render family binds at offset zero because its color reference names
  * the BO base and its dedicated-allocation requirement keeps that address
  * stable.  The transfer family binds any aligned suballocation whose
- * footprint fits and carries that offset into every host copy address.
+ * footprint fits and carries that offset into every host copy address.  The
+ * complete field consumer set is enumerated by `(rg --fixed-strings
+ * memory_offset src/amd/r300/vulkan/)`.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
