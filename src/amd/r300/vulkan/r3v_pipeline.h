@@ -66,9 +66,11 @@ struct r3v_pipeline {
    bool                    vs_has_ubo;
    uint32_t                vs_ubo_set;
    uint32_t                vs_ubo_binding;
+   uint32_t                vs_ubo_size;
    bool                    fs_has_ubo;
    uint32_t                fs_ubo_set;
    uint32_t                fs_ubo_binding;
+   uint32_t                fs_ubo_size;
 
    /* The fragment shader reads a subpass input attachment (subpassLoad), lowered
     * to a normalized texture() at gl_FragCoord*inv_extent.  The replay binds the

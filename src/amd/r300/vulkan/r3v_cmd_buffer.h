@@ -339,6 +339,11 @@ struct r3v_cmd_bind_descriptor_sets {
    struct r3v_descriptor_set *sets[R3V_MAX_BOUND_DESCRIPTOR_SETS];
    uint32_t                      dynamic_offset_count;
    uint32_t                      dynamic_offsets[R3V_MAX_DYNAMIC_OFFSETS];
+   /* Replay state points these views at per-bind-point storage.  Keeping the
+    * tables outside each recorded entry avoids paying for replay-only state in
+    * every command. */
+   uint32_t                     *dynamic_offset_count_by_set;
+   uint32_t                    (*dynamic_offsets_by_set)[R3V_MAX_DYNAMIC_OFFSETS];
 };
 
 /* One vkCmdBeginQuery / vkCmdEndQuery.  r300 supports only occlusion queries;

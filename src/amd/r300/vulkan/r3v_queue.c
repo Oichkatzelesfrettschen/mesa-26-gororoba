@@ -13,6 +13,7 @@
 #include "r3v_memory.h"
 #include "r3v_identity_map.h"
 #include "r3v_queue_map_range.h"
+#include "r3v_ubo_binding.h"
 
 #include "vk_queue.h"
 #include "vk_sync.h"
@@ -35,6 +36,7 @@
 #include "util/os_time.h"
 
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Convert a VkViewport to Gallium's scale/translate form.
@@ -742,6 +744,7 @@ r3v_replay_bind_descriptor_sets(struct r3v_cmd_bind_descriptor_sets *accum,
     * e.g. a UBO in set 0 and a combined image sampler in set 1 bound by two
     * separate calls -- instead of only the most recent call's sets. */
    const struct r3v_cmd_bind_descriptor_sets *b = &e->bind_dsets;
+   uint32_t dynamic_cursor = 0;
    accum->bind_point      = b->bind_point;
    accum->pipeline_layout = b->pipeline_layout;
    for (uint32_t i = 0; i < b->set_count; i++) {
@@ -751,11 +754,29 @@ r3v_replay_bind_descriptor_sets(struct r3v_cmd_bind_descriptor_sets *accum,
       accum->sets[abs_set] = b->sets[i];
       if (abs_set + 1 > accum->set_count)
          accum->set_count = abs_set + 1;
+
+      accum->dynamic_offset_count_by_set[abs_set] = 0;
+      memset(accum->dynamic_offsets_by_set[abs_set], 0,
+             sizeof(accum->dynamic_offsets_by_set[abs_set]));
+      const struct r3v_descriptor_set *set = b->sets[i];
+      const uint32_t dynamic_count =
+         set && set->layout ? set->layout->base.dynamic_descriptor_count : 0;
+      const uint32_t available =
+         b->dynamic_offset_count > dynamic_cursor
+         ? b->dynamic_offset_count - dynamic_cursor : 0;
+      const uint32_t copy_count = MIN2(dynamic_count,
+                                       MIN2(available,
+                                            R3V_MAX_DYNAMIC_OFFSETS));
+      if (copy_count > 0)
+         memcpy(accum->dynamic_offsets_by_set[abs_set],
+                &b->dynamic_offsets[dynamic_cursor],
+                copy_count * sizeof(b->dynamic_offsets[0]));
+      accum->dynamic_offset_count_by_set[abs_set] = copy_count;
+      dynamic_cursor += dynamic_count;
    }
    accum->first_set = 0;
-   /* Dynamic offsets apply to the dynamic descriptors of the sets in this call;
-    * r3v binds only static uniform buffers, so carry the latest call's offsets
-    * rather than tracking them per set. */
+   /* Keep the flat copy for command-entry diagnostics; draw replay uses the
+    * per-set arrays above so separately bound sets retain their own offsets. */
    accum->dynamic_offset_count = b->dynamic_offset_count;
    for (uint32_t i = 0; i < b->dynamic_offset_count; i++)
       accum->dynamic_offsets[i] = b->dynamic_offsets[i];
@@ -1300,6 +1321,39 @@ r3v_bind_missing_stage_ubo_zero(struct r3v_device *device,
    device->pipe->set_constant_buffer(device->pipe, stage, 0, &cb);
 }
 
+/* r300_emit_fs_constants (rg --fixed-strings "r300_emit_fs_constants"
+ * src/gallium/drivers/r300) uploads externals_count vec4s without consulting
+ * pipe_constant_buffer::buffer_size. Copy the descriptor-visible prefix into
+ * a zero-filled draw-local buffer when the declared UBO span reaches beyond
+ * that prefix. The copy is rounded down to complete scalar words so a
+ * partially covered word remains zero rather than exposing descriptor bytes. */
+static bool
+r3v_copy_ubo_prefix(struct r3v_device *device, struct r3v_buffer *buf,
+                     VkDeviceSize offset, VkDeviceSize range,
+                     uint32_t required_size, uint8_t *scratch)
+{
+   if (required_size > sizeof(r3v_zero_ubo))
+      return false;
+
+   memset(scratch, 0, sizeof(r3v_zero_ubo));
+   VkDeviceSize copy_size = r3v_ubo_scratch_copy_size(range, required_size);
+   if (copy_size == 0)
+      return true;
+
+   if (!r3v_map_range_representable(offset, copy_size, buf->size))
+      return false;
+
+   struct pipe_transfer *transfer = NULL;
+   void *mapped = pipe_buffer_map_range(device->pipe, buf->resource,
+                                        (unsigned)offset, (unsigned)copy_size,
+                                        PIPE_MAP_READ, &transfer);
+   if (!mapped)
+      return false;
+   memcpy(scratch, mapped, (size_t)copy_size);
+   pipe_buffer_unmap(device->pipe, transfer);
+   return true;
+}
+
 /* Bind one stage's selected uniform buffer to its r300 constant file at
  * CONST[0], so that stage's load_ubo(0, ...) reads it.  Match the exact
  * (ubo_set, ubo_binding) the shader read: a set may declare several UBO bindings
@@ -1313,18 +1367,27 @@ static bool
 r3v_try_bind_one_stage_ubo(struct r3v_device *device,
                               const struct r3v_cmd_bind_descriptor_sets *binds,
                               mesa_shader_stage stage,
-                              uint32_t ubo_set, uint32_t ubo_binding)
+                              uint32_t ubo_set, uint32_t ubo_binding,
+                              uint32_t required_size, uint8_t **scratch)
 {
    struct pipe_context *pipe = device->pipe;
+   /* The pipeline records the explicit shader UBO span.  A missing or
+    * unrepresentable span cannot establish a bound for r300g's FS upload, so
+    * the caller binds the zero UBO instead of reading an arbitrary range. */
+   if (required_size == 0 || required_size > sizeof(r3v_zero_ubo))
+      return false;
+
    for (uint32_t s = 0; s < binds->set_count; s++) {
-      if (binds->first_set + s != ubo_set)
+      const uint32_t abs_set = binds->first_set + s;
+      if (abs_set != ubo_set)
          continue;
       const struct r3v_descriptor_set *set = binds->sets[s];
       if (!set || !set->layout)
          continue;
       for (uint32_t b = 0; b < set->layout->binding_count; b++) {
          const struct r3v_dsl_binding *bnd = &set->layout->bindings[b];
-         if (bnd->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+         const bool dynamic = r3v_ubo_descriptor_type_is_dynamic(bnd->type);
+         if ((!dynamic && bnd->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) ||
              bnd->binding != ubo_binding)
             continue;
          const struct r3v_descriptor *desc = &set->descriptors[bnd->offset];
@@ -1332,26 +1395,66 @@ r3v_try_bind_one_stage_ubo(struct r3v_device *device,
          if (!buf || !buf->resource)
             return false;
 
+         uint32_t dynamic_offset = 0;
+         if (dynamic) {
+            const uint32_t dynamic_index =
+               r3v_ubo_dynamic_offset_index(set->layout, bnd->binding, 0);
+            if (dynamic_index == UINT32_MAX ||
+                dynamic_index >= binds->dynamic_offset_count_by_set[abs_set])
+               return false;
+            dynamic_offset =
+               binds->dynamic_offsets_by_set[abs_set][dynamic_index];
+         }
+
+         if (desc->buf.offset > buf->size)
+            return false;
+         const VkDeviceSize descriptor_range =
+            desc->buf.range == VK_WHOLE_SIZE
+            ? buf->size - desc->buf.offset : desc->buf.range;
+         struct r3v_ubo_effective_range effective;
+         if (!r3v_ubo_effective_range(desc->buf.offset, descriptor_range,
+                                      dynamic_offset, buf->size, &effective))
+            return false;
+
          struct pipe_constant_buffer cb;
          memset(&cb, 0, sizeof(cb));
-         cb.buffer        = buf->resource;
-         cb.buffer_offset = (unsigned)desc->buf.offset;
-         cb.buffer_size   = desc->buf.range == VK_WHOLE_SIZE
-                            ? (unsigned)(buf->size - desc->buf.offset)
-                            : (unsigned)desc->buf.range;
+         if (effective.size < required_size) {
+            if (!*scratch)
+               *scratch = malloc(sizeof(r3v_zero_ubo));
+            if (!*scratch)
+               return false;
+            if (!r3v_copy_ubo_prefix(device, buf, effective.offset,
+                                     effective.size, required_size, *scratch)) {
+               free(*scratch);
+               *scratch = NULL;
+               return false;
+            }
+            cb.user_buffer = *scratch;
+            cb.buffer_size = sizeof(r3v_zero_ubo);
+         } else {
+            cb.buffer        = buf->resource;
+            cb.buffer_offset = (unsigned)effective.offset;
+            cb.buffer_size   = (unsigned)MIN2(effective.size,
+                                               (VkDeviceSize)UINT_MAX);
+         }
          if (device->dbg_log_draws && stage == MESA_SHADER_VERTEX) {
             struct pipe_transfer *cx = NULL;
-            const float *cf = pipe_buffer_map_range(pipe, buf->resource,
-                                                    cb.buffer_offset,
-                                                    MIN2(cb.buffer_size, 32),
-                                                    PIPE_MAP_READ, &cx);
+            const float *cf = cb.user_buffer
+                              ? (const float *)cb.user_buffer
+                              : pipe_buffer_map_range(pipe, buf->resource,
+                                                      cb.buffer_offset,
+                                                      MIN2(cb.buffer_size, 32),
+                                                      PIPE_MAP_READ, &cx);
             if (cf) {
-               fprintf(stderr, "r3v vs-ubo: off=%u size=%u "
-                       "c0=[%g %g %g %g][%g %g %g %g]\n",
-                       cb.buffer_offset, cb.buffer_size,
-                       cf[0], cf[1], cf[2], cf[3],
-                       cf[4], cf[5], cf[6], cf[7]);
-               pipe_buffer_unmap(pipe, cx);
+               const unsigned float_count =
+                  MIN2(cb.buffer_size / sizeof(float), 8);
+               fprintf(stderr, "r3v vs-ubo: off=%u size=%u",
+                       cb.buffer_offset, cb.buffer_size);
+               for (unsigned i = 0; i < float_count; i++)
+                  fprintf(stderr, " c%u=%g", i, cf[i]);
+               fputc('\n', stderr);
+               if (cx)
+                  pipe_buffer_unmap(pipe, cx);
             }
          }
          pipe->set_constant_buffer(pipe, stage, 0, &cb);
@@ -1366,10 +1469,12 @@ static void
 r3v_bind_one_stage_ubo(struct r3v_device *device,
                           const struct r3v_cmd_bind_descriptor_sets *binds,
                           mesa_shader_stage stage,
-                          uint32_t ubo_set, uint32_t ubo_binding)
+                          uint32_t ubo_set, uint32_t ubo_binding,
+                          uint32_t required_size, uint8_t **scratch)
 {
    if (!r3v_try_bind_one_stage_ubo(device, binds, stage,
-                                      ubo_set, ubo_binding))
+                                      ubo_set, ubo_binding, required_size,
+                                      scratch))
       r3v_bind_missing_stage_ubo_zero(device, stage);
 }
 
@@ -1380,16 +1485,19 @@ r3v_bind_one_stage_ubo(struct r3v_device *device,
 static void
 r3v_bind_descriptor_ubo(struct r3v_device *device,
                            const struct r3v_pipeline *pipeline,
-                           const struct r3v_cmd_bind_descriptor_sets *binds)
+                           const struct r3v_cmd_bind_descriptor_sets *binds,
+                           uint8_t **vs_scratch, uint8_t **fs_scratch)
 {
    if (!binds || !pipeline)
       return;
    if (pipeline->vs_has_ubo)
       r3v_bind_one_stage_ubo(device, binds, MESA_SHADER_VERTEX,
-                                pipeline->vs_ubo_set, pipeline->vs_ubo_binding);
+                                pipeline->vs_ubo_set, pipeline->vs_ubo_binding,
+                                pipeline->vs_ubo_size, vs_scratch);
    if (pipeline->fs_has_ubo)
       r3v_bind_one_stage_ubo(device, binds, MESA_SHADER_FRAGMENT,
-                                pipeline->fs_ubo_set, pipeline->fs_ubo_binding);
+                                pipeline->fs_ubo_set, pipeline->fs_ubo_binding,
+                                pipeline->fs_ubo_size, fs_scratch);
 }
 
 /* Bind the running push-constant window at CONST[0] for both stages -- the slot a
@@ -2474,12 +2582,15 @@ r3v_replay_draw(struct r3v_device *device,
       /* pc_scratch holds the int->float-converted push window; it must outlive
        * the draw_vbo below (set_constant_buffer reads user_buffer directly). */
       uint8_t pc_scratch[R3V_MAX_PUSH_CONSTANTS_SIZE];
+      uint8_t *vs_ubo_scratch = NULL;
+      uint8_t *fs_ubo_scratch = NULL;
       if (bound_pipeline && bound_pipeline->uses_push_constants)
          r3v_bind_push_constants(device, push_const,
                                     bound_pipeline->push_const_int_word_mask,
                                     pc_scratch);
       else
-         r3v_bind_descriptor_ubo(device, bound_pipeline, last_bind_dsets);
+         r3v_bind_descriptor_ubo(device, bound_pipeline, last_bind_dsets,
+                                  &vs_ubo_scratch, &fs_ubo_scratch);
 
       /* Bind fragment textures for this draw, then release them after: the
        * sampler views are transient (created over the descriptor's image at
@@ -2563,6 +2674,8 @@ r3v_replay_draw(struct r3v_device *device,
       if (ia_bind_ok)
          pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
       r3v_unbind_descriptor_textures(device, &bound_tex);
+      free(vs_ubo_scratch);
+      free(fs_ubo_scratch);
    }
 }
 
@@ -3153,11 +3266,20 @@ struct r3v_replay_state {
    uint8_t replay_pc[128];
    const struct r3v_pipeline *bound_pipeline;
    struct r3v_dyn_overlay dyn_ov;
-   const struct r3v_cmd_bind_descriptor_sets *last_bind_dsets;
-   /* Per-set accumulation of the descriptor sets bound so far, so a draw sees
-    * every set even when separate vkCmdBindDescriptorSets calls bind different
-    * sets.  last_bind_dsets points here once any set is bound. */
-   struct r3v_cmd_bind_descriptor_sets accum_dsets;
+   const struct r3v_cmd_bind_descriptor_sets *last_graphics_bind_dsets;
+   const struct r3v_cmd_bind_descriptor_sets *last_compute_bind_dsets;
+   /* Per-bind-point accumulation keeps graphics and compute descriptor state
+    * independent while separate bind calls still accumulate absolute sets. */
+   struct r3v_cmd_bind_descriptor_sets graphics_dsets;
+   struct r3v_cmd_bind_descriptor_sets compute_dsets;
+   uint32_t graphics_dynamic_offset_count_by_set[
+      R3V_MAX_BOUND_DESCRIPTOR_SETS];
+   uint32_t graphics_dynamic_offsets_by_set[
+      R3V_MAX_BOUND_DESCRIPTOR_SETS][R3V_MAX_DYNAMIC_OFFSETS];
+   uint32_t compute_dynamic_offset_count_by_set[
+      R3V_MAX_BOUND_DESCRIPTOR_SETS];
+   uint32_t compute_dynamic_offsets_by_set[
+      R3V_MAX_BOUND_DESCRIPTOR_SETS][R3V_MAX_DYNAMIC_OFFSETS];
    const struct r3v_cmd_entry *last_viewport;
    const struct r3v_cmd_entry *last_scissor;
    struct pipe_query *active_oq;
@@ -3183,12 +3305,21 @@ static void
 r3v_replay_state_rebind(struct r3v_device *device,
                            struct r3v_replay_state *state)
 {
-   /* last_bind_dsets references this state's own accum_dsets.  A per-tile replay
-    * copies the whole state by value, which leaves the pointer aimed at the
-    * source state's accum_dsets; repoint it here, where every segment and tile
-    * re-enters, so a draw reads the descriptor sets accumulated in this state. */
-   if (state->last_bind_dsets)
-      state->last_bind_dsets = &state->accum_dsets;
+   /* A per-tile replay copies the whole state by value, which leaves the
+    * replay-only offset-table pointers aimed at the source state's arrays.
+    * Repoint both bind-point states before each segment or tile enters. */
+   state->graphics_dsets.dynamic_offset_count_by_set =
+      state->graphics_dynamic_offset_count_by_set;
+   state->graphics_dsets.dynamic_offsets_by_set =
+      state->graphics_dynamic_offsets_by_set;
+   state->compute_dsets.dynamic_offset_count_by_set =
+      state->compute_dynamic_offset_count_by_set;
+   state->compute_dsets.dynamic_offsets_by_set =
+      state->compute_dynamic_offsets_by_set;
+   if (state->last_graphics_bind_dsets)
+      state->last_graphics_bind_dsets = &state->graphics_dsets;
+   if (state->last_compute_bind_dsets)
+      state->last_compute_bind_dsets = &state->compute_dsets;
 
    if (!state->bound_pipeline)
       return;
@@ -3443,7 +3574,7 @@ r3v_replay_gpu_range(struct r3v_device *device,
       case R3V_CMD_DRAW_INDEXED:
          if (skip_render_pass) break;
          r3v_replay_draw(device, e, state->bound_pipeline,
-                            state->last_bind_dsets, state->replay_pc,
+                            state->last_graphics_bind_dsets, state->replay_pc,
                             state->vb_cache, state->vb_sizes,
                             state->vb_max_used, &state->vb_dirty,
                             tile_origin_x, tile_origin_y, tile_width,
@@ -3507,7 +3638,7 @@ r3v_replay_gpu_range(struct r3v_device *device,
             synth.draw.first_instance = args->firstInstance;
             synth.draw.topology       = di->topology;
             r3v_replay_draw(device, &synth, state->bound_pipeline,
-                               state->last_bind_dsets, state->replay_pc,
+                               state->last_graphics_bind_dsets, state->replay_pc,
                                state->vb_cache, state->vb_sizes,
                                state->vb_max_used, &state->vb_dirty,
                                tile_origin_x, tile_origin_y, tile_width,
@@ -3573,7 +3704,7 @@ r3v_replay_gpu_range(struct r3v_device *device,
             synth.draw_indexed.first_instance = args->firstInstance;
             synth.draw_indexed.topology       = di->topology;
             r3v_replay_draw(device, &synth, state->bound_pipeline,
-                               state->last_bind_dsets, state->replay_pc,
+                               state->last_graphics_bind_dsets, state->replay_pc,
                                state->vb_cache, state->vb_sizes,
                                state->vb_max_used, &state->vb_dirty,
                                tile_origin_x, tile_origin_y, tile_width,
@@ -3645,15 +3776,20 @@ r3v_replay_gpu_range(struct r3v_device *device,
          break;
 
       case R3V_CMD_BIND_DESCRIPTOR_SETS:
-         r3v_replay_bind_descriptor_sets(&state->accum_dsets, e);
-         state->last_bind_dsets = &state->accum_dsets;
+         if (e->bind_dsets.bind_point == VK_PIPELINE_BIND_POINT_COMPUTE) {
+            r3v_replay_bind_descriptor_sets(&state->compute_dsets, e);
+            state->last_compute_bind_dsets = &state->compute_dsets;
+         } else {
+            r3v_replay_bind_descriptor_sets(&state->graphics_dsets, e);
+            state->last_graphics_bind_dsets = &state->graphics_dsets;
+         }
          break;
 
       case R3V_CMD_DISPATCH: {
          if (current_render_pass)
             break;
          VkResult result =
-            r3v_replay_dispatch(device, e, state->last_bind_dsets,
+            r3v_replay_dispatch(device, e, state->last_compute_bind_dsets,
                                    state->replay_pc);
          if (result != VK_SUCCESS)
             return result;
@@ -3745,6 +3881,7 @@ r3v_replay_gpu(struct r3v_device *device,
    const uint32_t cmd_tile_pass_count = r3v_cmd_tile_pass_count(cmd);
    struct r3v_replay_state state;
    memset(&state, 0, sizeof(state));
+   r3v_replay_state_rebind(device, &state);
 
    for (uint32_t i = 0; i < cmd->entry_count;) {
       const uint32_t outside_begin = i;
@@ -3792,8 +3929,10 @@ r3v_replay_gpu(struct r3v_device *device,
             r3v_dyn_overlay_cleanup(device, &tile_state.dyn_ov);
             if (result != VK_SUCCESS)
                break;
-            if (tile_pass + 1 == segment_tile_pass_count)
+            if (tile_pass + 1 == segment_tile_pass_count) {
                state = tile_state;
+               r3v_replay_state_rebind(device, &state);
+            }
          }
          if (result != VK_SUCCESS)
             break;

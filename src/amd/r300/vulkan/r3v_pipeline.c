@@ -12,6 +12,7 @@
 #include "r3v_device.h"
 #include "r3v_dp4_fs_nir.h"
 #include "r3v_shader_module.h"
+#include "r3v_ubo_binding.h"
 
 #include "vk_alloc.h"
 #include "vk_format.h"
@@ -791,6 +792,19 @@ r3v_find_block0_ubo(nir_shader *nir)
    return NULL;
 }
 
+static nir_variable *
+r3v_find_ubo_descriptor(nir_shader *nir, uint32_t descriptor_set,
+                        uint32_t binding)
+{
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
+      if (var->data.descriptor_set == descriptor_set &&
+          var->data.binding == binding)
+         return var;
+   }
+
+   return NULL;
+}
+
 static void
 r3v_shape_block0_ubo(nir_variable *ubo, unsigned size_bytes)
 {
@@ -1331,14 +1345,23 @@ r3v_prepare_shader_nir(struct r3v_device *device,
     * the stages); each is bound independently rather than forcing one buffer
     * onto both. */
    if (stage_has_ubo && pl) {
+      const nir_variable *ubo =
+         r3v_find_ubo_descriptor(nir, stage_ubo_set, stage_ubo_binding);
+      /* r300's constant emitter uploads complete vec4 slots.  Keep the
+       * recorded span at that granularity so a partial final interface slot
+       * takes the zero-filled prefix path instead of the direct resource path. */
+      const uint32_t ubo_size =
+         ubo ? r3v_ubo_constant_span(r3v_ubo_interface_size(ubo)) : 0;
       if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT) {
          pl->vs_has_ubo = true;
          pl->vs_ubo_set = stage_ubo_set;
          pl->vs_ubo_binding = stage_ubo_binding;
+         pl->vs_ubo_size = ubo_size;
       } else {
          pl->fs_has_ubo = true;
          pl->fs_ubo_set = stage_ubo_set;
          pl->fs_ubo_binding = stage_ubo_binding;
+         pl->fs_ubo_size = ubo_size;
       }
    }
 
