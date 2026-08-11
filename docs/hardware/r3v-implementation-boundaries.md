@@ -1009,8 +1009,8 @@ The landed mechanisms are:
   output select canceling the body's (z, y, x, w) pre-swizzle, full-write
   blend state, one-pixel point raster), the embedded `3D_DRAW_IMMD_2`
   POINTS body (`VAP_VTX_SIZE` = 8, one slot center plus one pre-swizzled
-  record per vertex, 2047-vertex ceiling from the packet header's 14-bit
-  payload field), and the publication tail whose closing
+  record per vertex, 1024-vertex admission ceiling from
+  `R300_R2VB_PRODUCER_MAX_COUNT`), and the publication tail whose closing
   `VAP_PVS_STATE_FLUSH_REG = 0` syncs the vertex engine so a later fetch
   of the same BO cannot read stale vertex-cache content.  The emission
   refuses records outside the FP24 fixed-point domain with -EDOM.  The
