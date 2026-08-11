@@ -1096,6 +1096,47 @@ case_verdict(nir_shader *nir, bool want_admit, enum r300_compute_reject want,
 }
 
 static void
+case_reject_registry_calibration(void)
+{
+   printf("reject-reason registry\n");
+
+   for (unsigned reason_value = R300_COMPUTE_ADMIT;
+        reason_value <= R300_COMPUTE_REJECT_UNKNOWN_SHAPE; reason_value++) {
+      const enum r300_compute_reject reason =
+         (enum r300_compute_reject)reason_value;
+      const struct r300_compute_reject_row *row =
+         r300_compute_reject_lookup(reason);
+
+      CHECK(row->reason == reason, "valid reject enum preserves its registry row");
+      CHECK(strcmp(r300_compute_reject_name(reason), row->key) == 0,
+            "valid reject enum preserves its stable key");
+      CHECK(r300_compute_reject_substrate_absence(reason) != NULL,
+            "valid reject enum preserves its substrate explanation");
+   }
+
+   const enum r300_compute_reject invalid_reasons[] = {
+      (enum r300_compute_reject)-1,
+      (enum r300_compute_reject)(R300_COMPUTE_REJECT_UNKNOWN + 1),
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(invalid_reasons); i++) {
+      const struct r300_compute_reject_row *row =
+         r300_compute_reject_lookup(invalid_reasons[i]);
+
+      CHECK(row->reason == R300_COMPUTE_REJECT_UNKNOWN,
+            "invalid reject enum fails closed to the unknown row");
+      CHECK(strcmp(r300_compute_reject_name(invalid_reasons[i]), "unknown") == 0,
+            "invalid reject enum reports the unknown key");
+      CHECK(strcmp(r300_compute_reject_name(invalid_reasons[i]), "admit") != 0,
+            "invalid reject enum never reports admit");
+   }
+
+   const struct r300_compute_reject_row *unknown =
+      r300_compute_reject_lookup(R300_COMPUTE_REJECT_UNKNOWN);
+   CHECK(unknown->reason == R300_COMPUTE_REJECT_UNKNOWN,
+         "explicit unknown enum keeps the unknown row");
+}
+
+static void
 case_identity_metadata(void)
 {
    nir_shader *nir = build_identity_map_f32vec4();
@@ -3713,6 +3754,7 @@ main(void)
                 "fp64 arithmetic rejects");
    case_verdict(build_fp64_operand_conversion(), false, R300_COMPUTE_REJECT_FP64,
                 "fp64 source operand rejects");
+   case_reject_registry_calibration();
    case_identity_metadata();
    case_binary_metadata();
    case_binding_provenance_metadata();

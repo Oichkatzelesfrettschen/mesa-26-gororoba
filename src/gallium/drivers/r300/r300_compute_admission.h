@@ -39,6 +39,7 @@ enum r300_compute_reject {
    R300_COMPUTE_REJECT_ARBITRARY_SCATTER, /* store_global / store_global_2x32 */
    R300_COMPUTE_REJECT_IMAGE_STORE,       /* image_store / image_deref_store / bindless_image_store */
    R300_COMPUTE_REJECT_UNKNOWN_SHAPE,     /* admitted but no raster verb matched at dispatch */
+   R300_COMPUTE_REJECT_UNKNOWN,           /* enum value outside the supported domain */
 };
 
 /* Result of classifying a compute nir_shader.  classify-only: the analysis
@@ -73,7 +74,7 @@ struct r300_compute_reject_row {
    const char *substrate_absence; /* the absent hardware capability */
 };
 
-/* Registry row for a reason; never NULL for a valid enum value. */
+/* Registry row for a reason; invalid enum values return the UNKNOWN row. */
 const struct r300_compute_reject_row *
 r300_compute_reject_lookup(enum r300_compute_reject reason);
 
