@@ -152,6 +152,32 @@ fresh_cmd(void)
    return cmd;
 }
 
+static void
+record_transfer_image_barrier(VkCommandBuffer command_buffer, VkImage image,
+                              VkImageLayout old_layout,
+                              VkImageLayout new_layout,
+                              VkPipelineStageFlags src_stage,
+                              VkPipelineStageFlags dst_stage,
+                              VkAccessFlags src_access,
+                              VkAccessFlags dst_access)
+{
+   vkCmdPipelineBarrier(
+      command_buffer, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1,
+      &(VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .srcAccessMask = src_access,
+         .dstAccessMask = dst_access,
+         .oldLayout = old_layout,
+         .newLayout = new_layout,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .image = image,
+         .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                               .levelCount = 1,
+                               .layerCount = 1 },
+      });
+}
+
 static VkShaderModule
 make_module(const uint32_t *words, size_t bytes)
 {
@@ -907,30 +933,30 @@ main(void)
          .imageOffset = { 2, 1, 0 },
          .imageExtent = { copy_w, copy_h, 1 },
       };
+      /* A newly created image starts undefined.  The transfer recorder
+       * admits the transition into the destination layout before upload.
+       */
+      record_transfer_image_barrier(
+         copy_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, 0);
       vkCmdCopyBufferToImage(copy_cmd, staging, img_a,
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                              &upload);
-      /* The canonical upload barrier records as an admitted no-op: the
-       * single-thread in-order execution already carries the
-       * dependency, and the round trip below proves the recording
-       * survives it.
+      /* The barrier validates the image-layout transition while the
+       * single-thread in-order execution carries the dependency.
        */
-      vkCmdPipelineBarrier(
-         copy_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
-         &(VkImageMemoryBarrier){
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = img_a,
-            .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                  .levelCount = 1,
-                                  .layerCount = 1 },
-         });
+      record_transfer_image_barrier(
+         copy_cmd, img_a, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+      record_transfer_image_barrier(
+         copy_cmd, img_b, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, 0);
       vkCmdPipelineBarrier(
          copy_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
@@ -956,6 +982,11 @@ main(void)
       vkCmdCopyImage(copy_cmd, img_a,
                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img_b,
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cross);
+      record_transfer_image_barrier(
+         copy_cmd, img_b, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
       const VkBufferImageCopy readback = {
          .bufferOffset = 2048,
          .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -988,6 +1019,11 @@ main(void)
       };
 
       VkCommandBuffer sixteen_cmd = fresh_cmd();
+      record_transfer_image_barrier(
+         sixteen_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, 0);
       for (uint32_t i = 0; i < 16; i++) {
          vkCmdClearColorImage(sixteen_cmd, img_a,
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1000,6 +1036,11 @@ main(void)
       assert(vkEndCommandBuffer(sixteen_cmd) == VK_SUCCESS);
 
       VkCommandBuffer seventeen_cmd = fresh_cmd();
+      record_transfer_image_barrier(
+         seventeen_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, 0);
       for (uint32_t i = 0; i < 17; i++) {
          vkCmdClearColorImage(seventeen_cmd, img_a,
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1013,15 +1054,43 @@ main(void)
 
       VkCommandBuffer mixed_cmd = fresh_cmd();
       for (uint32_t i = 0; i < 8; i++) {
+         record_transfer_image_barrier(
+            mixed_cmd, img_a,
+            i == 0 ? VK_IMAGE_LAYOUT_UNDEFINED
+                    : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            i == 0 ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                    : VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            i == 0 ? 0 : VK_ACCESS_TRANSFER_READ_BIT, 0);
          vkCmdClearColorImage(mixed_cmd, img_a,
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               &capacity_clear, 1, &capacity_range);
          vkCmdCopyBufferToImage(mixed_cmd, staging, img_a,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                 &upload);
+         record_transfer_image_barrier(
+            mixed_cmd, img_a, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+         record_transfer_image_barrier(
+            mixed_cmd, img_b,
+            i == 0 ? VK_IMAGE_LAYOUT_UNDEFINED
+                    : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            i == 0 ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                    : VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            i == 0 ? 0 : VK_ACCESS_TRANSFER_READ_BIT, 0);
          vkCmdCopyImage(mixed_cmd, img_a,
                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img_b,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cross);
+         record_transfer_image_barrier(
+            mixed_cmd, img_b, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
          vkCmdCopyImageToBuffer(mixed_cmd, img_b,
                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                 staging, 1, &readback);
@@ -1052,6 +1121,11 @@ main(void)
       assert(reset_native->deferred_copy_count == 0);
       assert(reset_native->deferred_copy_capacity == 0);
       assert(reset_native->deferred_copies == NULL);
+      record_transfer_image_barrier(
+         mixed_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, 0);
       vkCmdClearColorImage(mixed_cmd, img_a,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            &capacity_clear, 1, &capacity_range);
@@ -1073,6 +1147,11 @@ main(void)
          .pfnReallocation = deferred_copy_test_reallocate,
          .pfnFree = deferred_copy_test_free,
       };
+      record_transfer_image_barrier(
+         allocation_failure_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, 0);
       vkCmdClearColorImage(allocation_failure_cmd, img_a,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            &capacity_clear, 1, &capacity_range);
@@ -1097,6 +1176,11 @@ main(void)
          .pfnReallocation = deferred_copy_test_reallocate,
          .pfnFree = deferred_copy_test_free,
       };
+      record_transfer_image_barrier(
+         growth_failure_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, 0);
       for (uint32_t i = 0; i < 17; i++) {
          vkCmdClearColorImage(growth_failure_cmd, img_a,
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1187,6 +1271,11 @@ main(void)
             .levelCount = 1,
             .layerCount = 1,
          };
+         record_transfer_image_barrier(
+            clear_cmd, img_c, VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0);
          vkCmdClearColorImage(
             clear_cmd, img_c, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             &(VkClearColorValue){ .float32 = { 1.0f, 0.5f, 0.0f, 1.0f } },
@@ -1269,6 +1358,12 @@ main(void)
       assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
 
       bad_copy = fresh_cmd();
+      vkCmdCopyBufferToImage(bad_copy, staging, img_a,
+                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1,
+                             &upload);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      bad_copy = fresh_cmd();
       vkCmdCopyBuffer(
          bad_copy, staging, staging, 1,
          &(VkBufferCopy){
@@ -1293,6 +1388,23 @@ main(void)
             .size = VK_WHOLE_SIZE,
          },
          0, NULL);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      bad_copy = fresh_cmd();
+      vkCmdPipelineBarrier(
+         bad_copy, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+         &(VkImageMemoryBarrier){
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = img_a,
+            .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                  .levelCount = 1,
+                                  .layerCount = 1 },
+         });
       assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
 
       bad_copy = fresh_cmd();
@@ -1340,10 +1452,9 @@ main(void)
 
       /* Synchronization vocabulary over the copy path: a fence
        * signals at the synchronous submit's completion, a semaphore
-       * chains two submissions, and a re-submitted command buffer
-       * executes its recorded copies again -- the round trip's bytes
-       * are idempotent, so the second execution's correctness is the
-       * same byte oracle.
+       * chains two submissions, and a second buffer copy executes after
+       * the wait.  The image command's layout transitions remain tied to
+       * its first execution, so the chained operation carries no image.
        */
       {
          VkFence fence = VK_NULL_HANDLE;
@@ -1361,6 +1472,10 @@ main(void)
                       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
                    },
                    NULL, &chain) == VK_SUCCESS);
+
+         VkCommandBuffer sync_cmd = fresh_cmd();
+         vkCmdCopyBuffer(sync_cmd, staging, staging, 1, &buffer_copy);
+         assert(vkEndCommandBuffer(sync_cmd) == VK_SUCCESS);
 
          assert(vkQueueSubmit(queue, 1,
                               &(VkSubmitInfo){
@@ -1383,7 +1498,7 @@ main(void)
                                  .pWaitSemaphores = &chain,
                                  .pWaitDstStageMask = &chain_stage,
                                  .commandBufferCount = 1,
-                                 .pCommandBuffers = &copy_cmd,
+                                 .pCommandBuffers = &sync_cmd,
                               },
                               VK_NULL_HANDLE) == VK_SUCCESS);
 
