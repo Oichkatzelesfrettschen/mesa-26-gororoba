@@ -157,16 +157,30 @@ canonical_root=${R3V_CANONICAL_ROOT:?set R3V_CANONICAL_ROOT to the canonical che
 canonical_root=$(realpath -e -- "$canonical_root")
 worktree_root=$(realpath -e -- "$(git rev-parse --show-toplevel)")
 test "$worktree_root" != "$canonical_root"
-registered_worktree=false
-while IFS= read -r registered_root; do
-  registered_root=$(realpath -e -- "$registered_root")
-  if test "$registered_root" = "$worktree_root"; then
-    registered_worktree=true
-  fi
-done <<EOF
+registered_worktree_matches() {
+  expected_root=$1
+  registered_worktree=false
+  while IFS= read -r registered_root; do
+    if test ! -e "$registered_root"; then
+      continue
+    fi
+    registered_root=$(realpath -e -- "$registered_root")
+    if test "$registered_root" = "$expected_root"; then
+      registered_worktree=true
+    fi
+  done
+  test "$registered_worktree" = true
+}
+
+registered_worktree_matches "$worktree_root" <<EOF
 $(git worktree list --porcelain | sed -n 's/^worktree //p')
 EOF
-test "$registered_worktree" = true
+prunable_fixture="$worktree_root/.r3v-missing-worktree-fixture"
+test ! -e "$prunable_fixture"
+registered_worktree_matches "$worktree_root" <<EOF
+$prunable_fixture
+$worktree_root
+EOF
 test "$(git rev-parse --verify HEAD)" = "$expected_sha"
 test -z "$(git status --porcelain=v2)"
 git diff --quiet
@@ -177,11 +191,18 @@ function_body() {
 }
 
 native_branch() {
-  function_body "$1" "$2" | awk '
+  function_body "$1" "$2" | native_branch_filter
+}
+
+native_branch_filter() {
+  awk '
+    function is_native_opener(line) {
+      return line ~ /^[[:space:]]*#[[:space:]]*ifdef[[:space:]]+R3V_NATIVE_BACKEND[[:space:]]*$/
+    }
     function is_open_directive(line) {
       return line ~ /^[[:space:]]*#[[:space:]]*(if|ifdef|ifndef)([[:space:]]|$)/
     }
-    /#ifdef[[:space:]]+R3V_NATIVE_BACKEND/ {
+    is_native_opener($0) {
       in_native=1
       depth=1
       print
@@ -203,6 +224,81 @@ native_branch() {
     }
     in_native { print }
   '
+}
+
+# Directive fixtures keep native_branch exact: both accepted spellings enter
+# the branch, while comments and suffixed macro names stay outside it.
+native_plain_fixture=$(cat <<'EOF'
+#ifdef R3V_NATIVE_BACKEND
+native_plain
+#else
+gallium_plain
+#endif
+EOF
+)
+native_spaced_fixture=$(cat <<'EOF'
+# ifdef R3V_NATIVE_BACKEND
+native_spaced
+#else
+gallium_spaced
+#endif
+EOF
+)
+native_comment_fixture=$(cat <<'EOF'
+/* #ifdef R3V_NATIVE_BACKEND */
+comment_text
+#else
+gallium_comment
+#endif
+EOF
+)
+native_suffix_fixture=$(cat <<'EOF'
+#ifdef R3V_NATIVE_BACKEND_EXTRA
+suffix_text
+#else
+gallium_suffix
+#endif
+EOF
+)
+native_plain=$(printf '%s\n' "$native_plain_fixture" | native_branch_filter)
+native_spaced=$(printf '%s\n' "$native_spaced_fixture" | native_branch_filter)
+native_comment=$(printf '%s\n' "$native_comment_fixture" | native_branch_filter)
+native_suffix=$(printf '%s\n' "$native_suffix_fixture" | native_branch_filter)
+printf '%s\n' "$native_plain" | rg -n --fixed-strings 'native_plain'
+printf '%s\n' "$native_spaced" | rg -n --fixed-strings 'native_spaced'
+test -z "$native_comment"
+test -z "$native_suffix"
+
+# Absence checks accept only ripgrep's status 1 no-match result.  A match
+# fails the check, and an execution error propagates to the ledger.
+assert_absent() {
+  value=$1
+  pattern=$2
+  matches=
+  if matches=$(printf '%s\n' "$value" | rg -F "$pattern"); then
+    test -z "$matches"
+  else
+    status=$?
+    case "$status" in
+      1) test -z "$matches" ;;
+      *) return "$status" ;;
+    esac
+  fi
+}
+
+rg_count() {
+  value=$1
+  pattern=$2
+  count=0
+  if count=$(printf '%s\n' "$value" | rg -F -c "$pattern"); then
+    printf '%s\n' "$count"
+  else
+    status=$?
+    case "$status" in
+      1) printf '0\n' ;;
+      *) return "$status" ;;
+    esac
+  fi
 }
 
 native_initializer() {
@@ -307,8 +403,7 @@ native_queue=$(native_branch \
   src/amd/r300/vulkan/r3v_physical_device.c)
 printf '%s\n' "$native_queue" | rg -n --fixed-strings \
   -e 'VK_QUEUE_GRAPHICS_BIT' -e '#ifdef R3V_NATIVE_BACKEND'
-test -z "$(printf '%s\n' "$native_queue" | \
-  rg -F 'VK_QUEUE_COMPUTE_BIT' || true)"
+assert_absent "$native_queue" 'VK_QUEUE_COMPUTE_BIT'
 native_compute=$(function_body r3v_CreateComputePipelines \
   src/amd/r300/vulkan/r3v_native_device.c)
 printf '%s\n' "$native_compute" | rg -n --fixed-strings \
@@ -322,8 +417,7 @@ printf '%s\n' "$native_extensions" | rg -n --fixed-strings \
   -e '.KHR_get_memory_requirements2 = true,' \
   -e '.KHR_bind_memory2 = true,' \
   -e '.KHR_dedicated_allocation = true,'
-test "$(printf '%s\n' "$native_extensions" | \
-  rg -F -c '.KHR_' || true)" -eq 3
+test "$(rg_count "$native_extensions" '.KHR_')" -eq 3
 native_create=$(function_body r3v_CreateDevice \
   src/amd/r300/vulkan/r3v_native_device.c)
 printf '%s\n' "$native_create" | rg -n --fixed-strings \
@@ -349,10 +443,18 @@ printf '%s\n' "$native_image_create" | rg -n --fixed-strings \
   -e 'VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT' \
   -e 'VK_IMAGE_USAGE_TRANSFER_SRC_BIT' \
   -e 'VK_IMAGE_USAGE_TRANSFER_DST_BIT'
-test -z "$(printf '%s\n' "$native_format" | \
-  rg -F 'r3v_vk_format_to_pipe_format' || true)"
-test -z "$(printf '%s\n' "$native_image_query" | \
-  rg -F 'r3v_image_usage_supported' || true)"
+assert_absent "$native_format" 'r3v_vk_format_to_pipe_format'
+assert_absent "$native_image_query" 'r3v_image_usage_supported'
+
+# Public query/create usage matrix: zero, color-only, each transfer bit,
+# both transfer bits, and mixed color/transfer cases all run through both
+# entry points on the drm-shim fixture.
+rg -n --fixed-strings \
+  -e 'check_image_usage_surface' \
+  -e 'query_image_properties' \
+  -e 'VK_ERROR_FORMAT_NOT_SUPPORTED' \
+  -e 'VK_IMAGE_USAGE_SAMPLED_BIT' \
+  src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c
 
 # Usage-family predicates: source shape plus calibrated semantic mutants.
 python3 - <<'PY'
@@ -394,6 +496,15 @@ def exact_usage_policy(body, prefix, color_operator, transfer_name):
     return color is not None and transfer is not None
 
 
+def exact_transfer_mask(body, name):
+    return re.search(
+        rf"const VkImageUsageFlags {re.escape(name)}\s*=\s*"
+        r"VK_IMAGE_USAGE_TRANSFER_SRC_BIT\s*\|\s*"
+        r"VK_IMAGE_USAGE_TRANSFER_DST_BIT\s*;",
+        body,
+    ) is not None
+
+
 physical = Path("src/amd/r300/vulkan/r3v_physical_device.c").read_text()
 native_image = Path("src/amd/r300/vulkan/r3v_native_image.c").read_text()
 query = function_body(physical, "r3v_get_image_format_properties")
@@ -402,6 +513,8 @@ assert exact_usage_policy(
     query, "info", "!=", "r3v_native_transfer_usage"
 )
 assert exact_usage_policy(create, "pCreateInfo", "==", "transfer_usage")
+assert exact_transfer_mask(query, "r3v_native_transfer_usage")
+assert exact_transfer_mask(create, "transfer_usage")
 
 COLOR = 1
 TRANSFER_SRC = 2
@@ -409,14 +522,70 @@ TRANSFER_DST = 4
 TRANSFER = TRANSFER_SRC | TRANSFER_DST
 
 
-def family_policy(usage):
-    return usage == COLOR or (usage != 0 and usage & ~TRANSFER == 0)
+def source_usage_policy(body, prefix, color_operator, transfer_name, usage):
+    transfer = re.search(
+        rf"{re.escape(prefix)}->usage\s*!=\s*0\s*"
+        r"([&|]{2})\s*\("
+        rf"{re.escape(prefix)}->usage\s*&\s*~{re.escape(transfer_name)}\)"
+        r"\s*==\s*0",
+        body,
+        re.S,
+    )
+    mask = exact_transfer_mask(body, transfer_name)
+    if transfer is None or not mask:
+        return False
+    if transfer.group(1) == "&&":
+        transfer_accepts = usage != 0 and usage & ~TRANSFER == 0
+    elif transfer.group(1) == "||":
+        transfer_accepts = usage != 0 or usage & ~TRANSFER == 0
+    else:
+        return False
+
+    if prefix == "info":
+        rejection_name = "r3v_native_transfer_query"
+        rejection = re.search(
+            rf"\({re.escape(prefix)}->usage\s*!=\s*"
+            r"VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT\s*"
+            r"([&|]{2})\s*!"
+            rf"{re.escape(rejection_name)}\)",
+            body,
+            re.S,
+        )
+        if rejection is None:
+            return False
+        color_is_not_render = usage != COLOR
+        not_transfer = not transfer_accepts
+        if rejection.group(1) == "&&":
+            return not (color_is_not_render and not_transfer)
+        if rejection.group(1) == "||":
+            return not (color_is_not_render or not_transfer)
+        return False
+
+    if color_operator == "==":
+        return usage == COLOR or transfer_accepts
+    return False
 
 
 known_good = (COLOR, TRANSFER_SRC, TRANSFER_DST, TRANSFER)
 known_bad = (0, COLOR | TRANSFER_SRC, COLOR | TRANSFER_DST)
-assert all(family_policy(usage) for usage in known_good)
-assert not any(family_policy(usage) for usage in known_bad)
+expected_good = (True,) * len(known_good)
+expected_bad = (False,) * len(known_bad)
+for body, prefix, color_operator, transfer_name in (
+    (query, "info", "!=", "r3v_native_transfer_usage"),
+    (create, "pCreateInfo", "==", "transfer_usage"),
+):
+    assert tuple(
+        source_usage_policy(
+            body, prefix, color_operator, transfer_name, usage
+        )
+        for usage in known_good
+    ) == expected_good
+    assert tuple(
+        source_usage_policy(
+            body, prefix, color_operator, transfer_name, usage
+        )
+        for usage in known_bad
+    ) == expected_bad
 
 mutants = (
     (
@@ -450,8 +619,90 @@ for name, mutant, prefix, color_operator, transfer_name in mutants:
         mutant, prefix, color_operator, transfer_name
     ), name
 
+semantic_mutants = (
+    (
+        "query-or-transfer",
+        query.replace("info->usage != 0 &&", "info->usage != 0 ||", 1),
+        "info",
+        "!=",
+        "r3v_native_transfer_usage",
+    ),
+    (
+        "query-or-rejection",
+        query.replace(
+            "info->usage != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT &&\n"
+            "        !r3v_native_transfer_query",
+            "info->usage != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ||\n"
+            "        !r3v_native_transfer_query",
+            1,
+        ),
+        "info",
+        "!=",
+        "r3v_native_transfer_usage",
+    ),
+    (
+        "create-or-transfer",
+        create.replace(
+            "pCreateInfo->usage != 0 &&",
+            "pCreateInfo->usage != 0 ||",
+            1,
+        ),
+        "pCreateInfo",
+        "==",
+        "transfer_usage",
+    ),
+)
+for name, mutant, prefix, color_operator, transfer_name in semantic_mutants:
+    mutant_good = tuple(
+        source_usage_policy(
+            mutant, prefix, color_operator, transfer_name, usage
+        )
+        for usage in known_good
+    )
+    mutant_bad = tuple(
+        source_usage_policy(
+            mutant, prefix, color_operator, transfer_name, usage
+        )
+        for usage in known_bad
+    )
+    assert mutant_good != expected_good or mutant_bad != expected_bad, name
+
+mask_source = re.compile(
+    r"VK_IMAGE_USAGE_TRANSFER_SRC_BIT\s*\|\s*"
+    r"VK_IMAGE_USAGE_TRANSFER_DST_BIT\s*;"
+)
+
+
+def expand_transfer_mask(body):
+    expanded, replacements = mask_source.subn(
+        "VK_IMAGE_USAGE_TRANSFER_SRC_BIT |\n"
+        "      VK_IMAGE_USAGE_TRANSFER_DST_BIT |\n"
+        "      VK_IMAGE_USAGE_SAMPLED_BIT;",
+        body,
+        count=1,
+    )
+    assert replacements == 1
+    return expanded
+
+
+mask_mutants = (
+    (
+        "query-expanded-transfer-mask",
+        expand_transfer_mask(query),
+        "r3v_native_transfer_usage",
+    ),
+    (
+        "create-expanded-transfer-mask",
+        expand_transfer_mask(create),
+        "transfer_usage",
+    ),
+)
+for name, mutant, mask_name in mask_mutants:
+    assert not exact_transfer_mask(mutant, mask_name), name
+
 print("usage-policy known-good cases: PASS")
 print("usage-policy known-bad mutants: PASS")
+print("usage-policy exact transfer masks: PASS")
 PY
 
 # Reference SPIR-V admission pair and its generator.
