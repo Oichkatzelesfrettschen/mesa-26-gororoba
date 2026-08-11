@@ -36,6 +36,19 @@
 #include <limits.h>
 #include <string.h>
 
+/* Gallium's pipe_buffer_map_range takes unsigned byte offsets and lengths.
+ * This predicate proves both values and their end fit in that interface while
+ * keeping the range inside the Vulkan buffer. */
+static bool
+r3v_map_range_representable(uint64_t offset, uint64_t size,
+                            uint64_t buffer_size)
+{
+   if (offset > UINT_MAX || size > UINT_MAX || size > buffer_size)
+      return false;
+
+   return offset <= buffer_size - size && offset <= UINT_MAX - size;
+}
+
 /* Convert a VkViewport to Gallium's scale/translate form.
  * Gallium clip space is [0, 1] depth; VkViewport uses [minDepth, maxDepth]. */
 static void
@@ -197,9 +210,8 @@ r3v_indexed_draw_map_indices(struct pipe_context *pipe,
    const uint64_t index_offset64 = (uint64_t)start_elem * draw->index_size;
    const uint64_t index_span64 =
       (uint64_t)(count - 1u) * draw->index_size + draw->index_size;
-   if (index_offset64 > UINT_MAX || index_span64 > UINT_MAX ||
-       index_span64 > draw->index_buffer->size ||
-       index_offset64 > draw->index_buffer->size - index_span64)
+   if (!r3v_map_range_representable(index_offset64, index_span64,
+                                    draw->index_buffer->size))
       return false;
 
    *indices = pipe_buffer_map_range(pipe, draw->index_buffer->resource,
@@ -3481,14 +3493,13 @@ r3v_replay_gpu_range(struct r3v_device *device,
          /* Bound the mapped extent against the buffer before the unsigned
           * cast: an app may record an offset/draw_count that runs past the
           * BO, and pipe_buffer_map_range would otherwise map past the
-          * resource (the kernel CS validator rejects the same overflow in
-          * evergreen_cs.c evergreen_packet3_check PACKET3_DRAW_INDIRECT).
-          * Compute span in 64-bit; the subtract form avoids add overflow. */
+         * resource (the kernel CS validator rejects the same overflow in
+         * evergreen_cs.c evergreen_packet3_check PACKET3_DRAW_INDIRECT).
+         * Compute span in 64-bit; the subtract form avoids add overflow. */
          const uint64_t span64 = (uint64_t)(di->draw_count - 1u) * stride +
                                  sizeof(VkDrawIndirectCommand);
-         if (di->offset > UINT_MAX || span64 > UINT_MAX ||
-             span64 > di->buffer->size ||
-             di->offset > di->buffer->size - span64)
+         if (!r3v_map_range_representable(di->offset, span64,
+                                          di->buffer->size))
             break;
          const unsigned span = (unsigned)span64;
          struct pipe_transfer *ixfer = NULL;
@@ -3541,15 +3552,14 @@ r3v_replay_gpu_range(struct r3v_device *device,
             di->stride ? di->stride
                        : (unsigned)sizeof(VkDrawIndexedIndirectCommand);
          /* Bound the mapped extent against the buffer before the unsigned cast;
-          * the kernel CS validator rejects the same overrun in evergreen_cs.c
-          * evergreen_packet3_check.  Compute span in 64-bit; the subtract form
-          * avoids add overflow. */
+         * the kernel CS validator rejects the same overrun in evergreen_cs.c
+         * evergreen_packet3_check.  Compute span in 64-bit; the subtract form
+         * avoids add overflow. */
          const uint64_t span64 =
             (uint64_t)(di->draw_count - 1u) * stride +
             sizeof(VkDrawIndexedIndirectCommand);
-         if (di->offset > UINT_MAX || span64 > UINT_MAX ||
-             span64 > di->buffer->size ||
-             di->offset > di->buffer->size - span64)
+         if (!r3v_map_range_representable(di->offset, span64,
+                                          di->buffer->size))
             break;
          const unsigned span = (unsigned)span64;
          struct pipe_transfer *ixfer = NULL;
@@ -4431,10 +4441,11 @@ r3v_fill_buffer(struct r3v_device *device,
    if (size == 0)
       return;
    /* pipe_buffer_map_range takes unsigned offsets; size is already clamped to
-    * the buffer, but guard the offset cast and the vkCmdFillBuffer 4-byte
-    * dstOffset alignment so a >4 GiB descriptor or a misaligned offset cannot
-    * map at a truncated or unaligned address. */
-   if (offset > UINT_MAX || size > UINT_MAX || (offset & 3u) != 0)
+   * the buffer, but guard the offset cast and the vkCmdFillBuffer 4-byte
+   * dstOffset alignment so a >4 GiB descriptor or a misaligned offset cannot
+   * map at a truncated or unaligned address. */
+   if (!r3v_map_range_representable(offset, size, total) ||
+       (offset & 3u) != 0)
       return;
 
    struct pipe_transfer *xfer = NULL;
@@ -4457,39 +4468,46 @@ r3v_copy_buffer_region(struct r3v_device *device,
    struct pipe_context  *pipe = device->pipe;
    struct pipe_resource *src  = cb->src ? cb->src->resource : NULL;
    struct pipe_resource *dst  = cb->dst ? cb->dst->resource : NULL;
-   const unsigned size = (unsigned)cb->size;
+   const uint64_t size = cb->size;
    if (!src || !dst || size == 0)
       return;
    /* Reject a region running past either buffer; pipe_buffer_map_range takes
     * unsigned offsets, so validate the 64-bit extent before the cast (the
     * buffer-to-image copies bounds-check the same way).  The subtract form
     * avoids a 64-bit add overflow on a malformed offset/size. */
-   if (cb->size > cb->src->size || cb->src_offset > cb->src->size - cb->size ||
-       cb->size > cb->dst->size || cb->dst_offset > cb->dst->size - cb->size ||
-       cb->src_offset > UINT_MAX || cb->dst_offset > UINT_MAX)
+   if (!r3v_map_range_representable(cb->src_offset, size, cb->src->size) ||
+       !r3v_map_range_representable(cb->dst_offset, size, cb->dst->size))
       return;
+
+   const unsigned map_size = (unsigned)size;
 
    if (src == dst) {
       const uint64_t lo = MIN2(cb->src_offset, cb->dst_offset);
-      const uint64_t hi = MAX2(cb->src_offset, cb->dst_offset) + size;
+      const uint64_t max_offset = MAX2(cb->src_offset, cb->dst_offset);
+      if (max_offset > UINT64_MAX - size)
+         return;
+      const uint64_t union_size = max_offset - lo + size;
+      if (!r3v_map_range_representable(lo, union_size, cb->src->size))
+         return;
       struct pipe_transfer *xfer = NULL;
       uint8_t *map = pipe_buffer_map_range(pipe, dst, (unsigned)lo,
-                                           (unsigned)(hi - lo),
+                                           (unsigned)union_size,
                                            PIPE_MAP_READ | PIPE_MAP_WRITE, &xfer);
       if (!map)
          return;
-      memmove(map + (cb->dst_offset - lo), map + (cb->src_offset - lo), size);
+      memmove(map + (cb->dst_offset - lo), map + (cb->src_offset - lo),
+              map_size);
       pipe_buffer_unmap(pipe, xfer);
       return;
    }
 
    struct pipe_transfer *sxfer = NULL, *dxfer = NULL;
    const uint8_t *smap = pipe_buffer_map_range(pipe, src, (unsigned)cb->src_offset,
-                                               size, PIPE_MAP_READ, &sxfer);
+                                               map_size, PIPE_MAP_READ, &sxfer);
    uint8_t *dmap = pipe_buffer_map_range(pipe, dst, (unsigned)cb->dst_offset,
-                                         size, PIPE_MAP_WRITE, &dxfer);
+                                         map_size, PIPE_MAP_WRITE, &dxfer);
    if (smap && dmap)
-      memcpy(dmap, smap, size);
+      memcpy(dmap, smap, map_size);
    if (smap)
       pipe_buffer_unmap(pipe, sxfer);
    if (dmap)
@@ -4503,21 +4521,22 @@ r3v_update_buffer(struct r3v_device *device,
 {
    struct pipe_context  *pipe = device->pipe;
    struct pipe_resource *buf  = ub->buffer ? ub->buffer->resource : NULL;
-   const unsigned size = (unsigned)ub->size;
+   const uint64_t size = ub->size;
    if (!buf || !ub->data || size == 0)
       return;
    /* Reject an update running past the buffer; validate in 64-bit before the
     * unsigned offset cast. */
-   if (ub->size > ub->buffer->size ||
-       ub->offset > ub->buffer->size - ub->size || ub->offset > UINT_MAX)
+   if (!r3v_map_range_representable(ub->offset, size, ub->buffer->size))
       return;
 
+   const unsigned map_size = (unsigned)size;
    struct pipe_transfer *xfer = NULL;
-   uint8_t *map = pipe_buffer_map_range(pipe, buf, (unsigned)ub->offset, size,
+   uint8_t *map = pipe_buffer_map_range(pipe, buf, (unsigned)ub->offset,
+                                        map_size,
                                         PIPE_MAP_WRITE, &xfer);
    if (!map)
       return;
-   memcpy(map, ub->data, size);
+   memcpy(map, ub->data, map_size);
    pipe_buffer_unmap(pipe, xfer);
 }
 
