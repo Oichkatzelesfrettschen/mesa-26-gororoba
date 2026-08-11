@@ -607,6 +607,10 @@ main(void)
    };
    r3v_GetDeviceBufferMemoryRequirements(device, &device_buffer_info,
                                          &device_buffer_requirements);
+   assert((device_buffer_requirements.memoryRequirements.memoryTypeBits & 1) !=
+          0);
+   assert((device_buffer_requirements.memoryRequirements.memoryTypeBits & 2) ==
+          0);
    assert(device_dedicated.prefersDedicatedAllocation == VK_FALSE);
    assert(device_dedicated.requiresDedicatedAllocation == VK_FALSE);
    assert(vkBindBufferMemory(device, vertex_buffer, vertex_memory, 0) ==
