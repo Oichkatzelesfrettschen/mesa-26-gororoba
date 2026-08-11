@@ -155,10 +155,10 @@ r3v_GetImageMemoryRequirements2(VkDevice _device,
    }
 }
 
-/* Both families bind at offset zero over an allocation their footprint
- * fits: the render family because the cell's color reference names the
- * BO base, the transfer family because its copies address the mapping
- * from the same base.
+/* The render family binds at offset zero because its color reference names
+ * the BO base and its dedicated-allocation requirement keeps that address
+ * stable.  The transfer family binds any aligned suballocation whose
+ * footprint fits and carries that offset into every host copy address.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
@@ -175,11 +175,15 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
                                                      image->height)
                : r3v_native_image_footprint_bytes(image->height))
          : 0;
-   if (image == NULL || memory == NULL || memoryOffset != 0 ||
-       memory->bo.size < footprint)
+   if (image == NULL || memory == NULL ||
+       memoryOffset % 4096 != 0 ||
+       (!image->transfer_family && memoryOffset != 0) ||
+       memoryOffset > memory->bo.size ||
+       footprint > memory->bo.size - memoryOffset)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    image->memory = memory;
+   image->memory_offset = memoryOffset;
    return VK_SUCCESS;
 }
 

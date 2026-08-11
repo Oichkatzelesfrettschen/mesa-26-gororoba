@@ -257,8 +257,9 @@ r3v_native_transfer_footprint_bytes(uint32_t width, uint32_t height)
 
 struct r3v_native_image {
    struct vk_object_base base;
-   /* Bound memory, offset zero; the cell references the BO base. */
+   /* Bound memory and the allocation offset at which the image starts. */
    struct r3v_native_memory *memory;
+   VkDeviceSize memory_offset;
    /* Creation extent, inside the family's published maximum. */
    uint32_t width;
    uint32_t height;

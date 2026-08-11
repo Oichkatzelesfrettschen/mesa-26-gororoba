@@ -979,6 +979,10 @@ The landed mechanisms are:
   `radeon_drm_vk_bo_map()`.  The 64-byte row layout remains compatible
   with the qualified direct-write 2D packet, but these transfer commands
   execute as host copies rather than GPU 2D packets.
+  Transfer images report 4096-byte alignment and accept an aligned nonzero
+  binding offset when the remaining allocation covers the footprint; copy
+  and clear addresses include that stored offset.  Render images retain
+  dedicated offset-zero binding for the color reference.
   The format query, the advertised
   transfer features, and creation admit the same family.
   `vkCmdPipelineBarrier` outside a render pass records as an admitted

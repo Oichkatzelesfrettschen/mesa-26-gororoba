@@ -835,15 +835,22 @@ main(void)
       VkDeviceMemory mem_a = VK_NULL_HANDLE, mem_b = VK_NULL_HANDLE;
       const VkMemoryAllocateInfo transfer_alloc = {
          .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-         .allocationSize = 4096,
+         .allocationSize = 8192,
          .memoryTypeIndex = 0,
       };
+      const VkDeviceSize transfer_image_offset = 4096;
+      const uint32_t transfer_image_base_word =
+         transfer_image_offset / sizeof(uint32_t);
+      const uint32_t transfer_allocation_words =
+         transfer_alloc.allocationSize / sizeof(uint32_t);
       assert(vkAllocateMemory(device, &transfer_alloc, NULL, &mem_a) ==
              VK_SUCCESS);
       assert(vkAllocateMemory(device, &transfer_alloc, NULL, &mem_b) ==
              VK_SUCCESS);
-      assert(vkBindImageMemory(device, img_a, mem_a, 0) == VK_SUCCESS);
-      assert(vkBindImageMemory(device, img_b, mem_b, 0) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, img_a, mem_a,
+                               transfer_image_offset) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, img_b, mem_b,
+                               transfer_image_offset) == VK_SUCCESS);
 
       VkBuffer staging = VK_NULL_HANDLE;
       assert(vkCreateBuffer(
@@ -874,12 +881,12 @@ main(void)
       uint32_t *pixel_map;
       assert(vkMapMemory(device, mem_a, 0, VK_WHOLE_SIZE, 0,
                          (void **)&pixel_map) == VK_SUCCESS);
-      for (uint32_t t = 0; t < 1024; t++)
+      for (uint32_t t = 0; t < transfer_allocation_words; t++)
          pixel_map[t] = R300_TRIANGLE_COLOR_SENTINEL;
       vkUnmapMemory(device, mem_a);
       assert(vkMapMemory(device, mem_b, 0, VK_WHOLE_SIZE, 0,
                          (void **)&pixel_map) == VK_SUCCESS);
-      for (uint32_t t = 0; t < 1024; t++)
+      for (uint32_t t = 0; t < transfer_allocation_words; t++)
          pixel_map[t] = R300_TRIANGLE_COLOR_SENTINEL;
       vkUnmapMemory(device, mem_b);
 
@@ -1125,16 +1132,28 @@ main(void)
       vkUnmapMemory(device, staging_mem);
       assert(vkMapMemory(device, mem_b, 0, VK_WHOLE_SIZE, 0,
                          (void **)&pixel_map) == VK_SUCCESS);
-      assert(pixel_map[3 * 16 + 4] == R300_TRIANGLE_COLOR_SENTINEL);
-      assert(pixel_map[3 * 16 + 5] == (0x40000000u | 0));
-      assert(pixel_map[2 * 16 + 5] == R300_TRIANGLE_COLOR_SENTINEL);
+      assert(pixel_map[0] == R300_TRIANGLE_COLOR_SENTINEL);
+      assert(pixel_map[transfer_image_base_word + 3 * 16 + 4] ==
+             R300_TRIANGLE_COLOR_SENTINEL);
+      assert(pixel_map[transfer_image_base_word + 3 * 16 + 5] ==
+             (0x40000000u | 0));
+      assert(pixel_map[transfer_image_base_word + 2 * 16 + 5] ==
+             R300_TRIANGLE_COLOR_SENTINEL);
       /* The right and bottom neighbors hold too: a pitch or extent
        * defect overruns past the rectangle's far edges, the side the
        * left and top sentinels cannot see.
        */
-      assert(pixel_map[3 * 16 + 13] == R300_TRIANGLE_COLOR_SENTINEL);
-      assert(pixel_map[7 * 16 + 5] == R300_TRIANGLE_COLOR_SENTINEL);
+      assert(pixel_map[transfer_image_base_word + 3 * 16 + 13] ==
+             R300_TRIANGLE_COLOR_SENTINEL);
+      assert(pixel_map[transfer_image_base_word + 7 * 16 + 5] ==
+             R300_TRIANGLE_COLOR_SENTINEL);
       vkUnmapMemory(device, mem_b);
+      assert(vkMapMemory(device, mem_a, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&pixel_map) == VK_SUCCESS);
+      assert(pixel_map[0] == R300_TRIANGLE_COLOR_SENTINEL);
+      assert(pixel_map[transfer_image_base_word + 16 + 2] ==
+             (0x40000000u | 0));
+      vkUnmapMemory(device, mem_a);
 
       /* Whole-image clear on a padded-pitch image: a 3-texel row rides
        * a 16-texel pitch, so the fill's row walk is observable -- the
@@ -1153,11 +1172,12 @@ main(void)
          VkDeviceMemory mem_c = VK_NULL_HANDLE;
          assert(vkAllocateMemory(device, &transfer_alloc, NULL, &mem_c) ==
                 VK_SUCCESS);
-         assert(vkBindImageMemory(device, img_c, mem_c, 0) == VK_SUCCESS);
+         assert(vkBindImageMemory(device, img_c, mem_c,
+                                  transfer_image_offset) == VK_SUCCESS);
          uint32_t *clear_map;
          assert(vkMapMemory(device, mem_c, 0, VK_WHOLE_SIZE, 0,
                             (void **)&clear_map) == VK_SUCCESS);
-         for (uint32_t t = 0; t < 1024; t++)
+         for (uint32_t t = 0; t < transfer_allocation_words; t++)
             clear_map[t] = R300_TRIANGLE_COLOR_SENTINEL;
          vkUnmapMemory(device, mem_c);
 
@@ -1181,13 +1201,16 @@ main(void)
                               VK_NULL_HANDLE) == VK_SUCCESS);
          assert(vkMapMemory(device, mem_c, 0, VK_WHOLE_SIZE, 0,
                             (void **)&clear_map) == VK_SUCCESS);
+         assert(clear_map[0] == R300_TRIANGLE_COLOR_SENTINEL);
          for (uint32_t row = 0; row < 5; row++) {
             for (uint32_t x = 0; x < 3; x++)
-               assert(clear_map[row * 16 + x] == 0xffff8000u);
-            assert(clear_map[row * 16 + 3] ==
+               assert(clear_map[transfer_image_base_word + row * 16 + x] ==
+                      0xffff8000u);
+            assert(clear_map[transfer_image_base_word + row * 16 + 3] ==
                    R300_TRIANGLE_COLOR_SENTINEL);
          }
-         assert(clear_map[5 * 16] == R300_TRIANGLE_COLOR_SENTINEL);
+         assert(clear_map[transfer_image_base_word + 5 * 16] ==
+                R300_TRIANGLE_COLOR_SENTINEL);
          vkUnmapMemory(device, mem_c);
 
          float nan_green;
@@ -1209,7 +1232,8 @@ main(void)
                               VK_NULL_HANDLE) == VK_SUCCESS);
          assert(vkMapMemory(device, mem_c, 0, VK_WHOLE_SIZE, 0,
                             (void **)&clear_map) == VK_SUCCESS);
-         assert(clear_map[0] == 0xffff0000u);
+         assert(clear_map[0] == R300_TRIANGLE_COLOR_SENTINEL);
+         assert(clear_map[transfer_image_base_word] == 0xffff0000u);
          vkUnmapMemory(device, mem_c);
 
          /* A clear on a render-family image poisons: the family
