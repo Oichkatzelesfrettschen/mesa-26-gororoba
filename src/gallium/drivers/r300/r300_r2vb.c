@@ -29,6 +29,7 @@
 #include <string.h>
 
 #include "util/u_inlines.h"
+#include "util/u_atomic.h"
 #include "util/format/u_format.h"
 #include "util/mesa-blake3.h"
 #include "util/os_time.h"
@@ -56,6 +57,14 @@
 /* Forward: CPU classify/edge maps and re-ingest run before these helpers. */
 static void r2vb_wait_bo(struct r300_context *r300, struct pipe_resource *res);
 static bool r2vb_single_cs_enabled(void);
+
+static uint32_t r300_r2vb_fail_position_input_clone;
+
+void
+r300_r2vb_test_fail_position_input_clone_once(void)
+{
+    p_atomic_set(&r300_r2vb_fail_position_input_clone, 1);
+}
 
 /* Active hardwired clip planes for the oracle: XY always; NEAR/FAR only when
  * the rasterizer keeps depth clipping (draw_update_clip_flags parity). */
@@ -858,12 +867,18 @@ int r300_r2vb_first_computed_varying(nir_shader *vs_nir)
  * (drop every non-position output store, DCE, then drop the now-dead inputs) on a
  * throwaway clone and count what survives, so the count matches the inputs the
  * re-staged position FS actually reads at VAR0+i.  An MVP or single-input-position
- * VS returns 1 even when the application declares extra (varying-only) inputs. */
+ * VS returns 1 even when the application declares extra (varying-only) inputs.
+ * Zero is reserved for a missing shader or failed clone; no valid producer has
+ * zero position inputs, so callers use it as a transient fail-closed result. */
 unsigned r300_r2vb_count_position_inputs(nir_shader *vs_nir)
 {
+    if (!vs_nir)
+        return 0;
+    if (p_atomic_xchg(&r300_r2vb_fail_position_input_clone, 0))
+        return 0;
     nir_shader *tmp = nir_shader_clone(NULL, vs_nir);
     if (!tmp)
-        return 1;
+        return 0;
     nir_function_impl *impl = nir_shader_get_entrypoint(tmp);
     nir_foreach_block(block, impl) {
         nir_foreach_instr_safe(instr, block) {
@@ -3276,15 +3291,19 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
                 n_computed++;
             }
         }
+        unsigned num_position_inputs =
+            r300_r2vb_count_position_inputs(nir);
         struct r300_r2vb_position_source vsrc;
-        return n_computed == 1 &&
-               r300_r2vb_count_position_inputs(nir) == 1 &&
+        return num_position_inputs != 0 && n_computed == 1 &&
+               num_position_inputs == 1 &&
                r300_r2vb_varying_source_scan(nir, vslot, &vsrc);
     }
 
     /* Multi-input position (no computed varying): bound the inputs feeding position
      * to what the producer's embedded vertex and the VAP output vectors carry. */
-    if (r300_r2vb_count_position_inputs(nir) > R300_R2VB_MAX_PRODUCER_INPUTS)
+    unsigned num_position_inputs = r300_r2vb_count_position_inputs(nir);
+    if (!num_position_inputs ||
+        num_position_inputs > R300_R2VB_MAX_PRODUCER_INPUTS)
         return false;
     return true;
 }
@@ -3329,15 +3348,20 @@ static enum r300_fs_admission
 r300_r2vb_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
                        gl_varying_slot target, const char *pass_name,
                        enum r300_r2vb_position_space space,
-                       unsigned *out_alu)
+                       unsigned *out_alu, bool *transient_failure)
 {
+    if (transient_failure)
+        *transient_failure = false;
     /* WINDOW includes frcp + viewport MADs; CLIP does not.  Admission is
      * keyed by space so a CLIP-route classify pass cannot inherit a WINDOW
      * force-split memo (or the reverse). */
     nir_shader *fs = r300_r2vb_build_restaged_fs_nir(r300, vs_nir, target,
                                                      space);
-    if (fs == NULL)
+    if (fs == NULL) {
+        if (transient_failure)
+            *transient_failure = true;
         return R300_FS_ADMIT_REJECT;
+    }
     r300_optimize_nir(fs, r300->screen);
     unsigned alu_len = 0;
     enum r300_fs_admission adm =
@@ -3362,10 +3386,12 @@ static bool r300_r2vb_measure_pass_fits(struct r300_context *r300,
                                         nir_shader *vs_nir,
                                         gl_varying_slot target,
                                         const char *pass_name,
-                                        enum r300_r2vb_position_space space)
+                                        enum r300_r2vb_position_space space,
+                                        bool *transient_failure)
 {
     return r300_r2vb_measure_pass(r300, vs_nir, target, pass_name, space,
-                                  NULL) == R300_FS_ADMIT_FITS;
+                                  NULL, transient_failure) ==
+           R300_FS_ADMIT_FITS;
 }
 
 /* Compact carry-composition string for the EXEC_DEBUG trace: one letter per
@@ -3397,22 +3423,31 @@ static void r300_r2vb_carry_types_str(const struct r300_mp_partition *p,
 /* Attempt the single-vec4 carry-BO split on the over-budget position pass:
  * derive the same optimized position producer FS the oracle measured, rank a
  * single-vec4 cut, build the two FP32 halves, and admit only when both compile
- * under the emit ceiling.  Every failure (no admissible cut, either half over
- * budget or rejected, a construction failure) declines and the caller falls
- * back to a plain reject exactly as the pre-split route does. */
-static bool r300_r2vb_split_admitted(struct r300_context *r300,
-                                     nir_shader *vs_nir, unsigned num_in,
-                                     enum r300_r2vb_position_space space)
+ * under the emit ceiling.  Semantic declines and construction failures stay
+ * distinct so an allocation failure leaves the admission memo unmeasured and
+ * the next request retries the producer. */
+enum r300_r2vb_split_admission {
+    R300_R2VB_SPLIT_REJECT,
+    R300_R2VB_SPLIT_ADMITTED,
+    R300_R2VB_SPLIT_TRANSIENT,
+};
+
+static enum r300_r2vb_split_admission
+r300_r2vb_split_admitted(struct r300_context *r300, nir_shader *vs_nir,
+                        unsigned num_in,
+                        enum r300_r2vb_position_space space)
 {
     /* The pass-B producer draw feeds num_in model attributes plus the carry,
      * so the split is deliverable only within the producer's input ceiling. */
+    if (!num_in)
+        return R300_R2VB_SPLIT_TRANSIENT;
     if (num_in + 1 > R300_R2VB_MAX_PRODUCER_INPUTS)
-        return false;
+        return R300_R2VB_SPLIT_REJECT;
 
     nir_shader *pos = r300_r2vb_build_restaged_fs_nir(r300, vs_nir,
                                                       VARYING_SLOT_POS, space);
     if (pos == NULL)
-        return false;
+        return R300_R2VB_SPLIT_TRANSIENT;
     r300_optimize_nir(pos, r300->screen);
 
     struct r300_mp_partition part;
@@ -3420,40 +3455,44 @@ static bool r300_r2vb_split_admitted(struct r300_context *r300,
     if (r300_mp_find_vec4_cut(pos, &part)) {
         nir_shader *pass_a = r300_mp_build_carry_pass_a(pos, &part);
         nir_shader *pass_b = r300_mp_build_pos_pass_b(pos, &part, num_in);
-        if (pass_a && pass_b) {
-            r300_optimize_nir(pass_a, r300->screen);
-            r300_optimize_nir(pass_b, r300->screen);
-            unsigned la = 0, lb = 0;
-            enum r300_fs_admission aa =
-                r300_fs_measure_nir_admission(r300, pass_a, &la,
-                                              R300_FS_INPUT_R2VB_FLAT_VERTEX,
-                                              NULL);
-            enum r300_fs_admission ab =
-                r300_fs_measure_nir_admission(r300, pass_b, &lb,
-                                              R300_FS_INPUT_R2VB_FLAT_VERTEX,
-                                              NULL);
-            admitted = aa == R300_FS_ADMIT_FITS && ab == R300_FS_ADMIT_FITS;
-            if (getenv("R300_R2VB_EXEC_DEBUG")) {
-                char types[R300_MP_MAX_CARRY_COMPS + 1];
-                r300_r2vb_carry_types_str(&part, types, sizeof(types));
-                fprintf(stderr,
-                        "r2vb_split cut=%u carry_bases=%u carry_comps=%u "
-                        "carry_types=%s passA_alu=%u passB_alu=%u admitted=%d\n",
-                        part.cut_index, part.num_bases, part.total_comps, types,
-                        la, lb, admitted);
-            }
+        if (!pass_a || !pass_b) {
+            if (pass_a)
+                ralloc_free(pass_a);
+            if (pass_b)
+                ralloc_free(pass_b);
+            ralloc_free(pos);
+            return R300_R2VB_SPLIT_TRANSIENT;
         }
-        if (pass_a)
-            ralloc_free(pass_a);
-        if (pass_b)
-            ralloc_free(pass_b);
+        r300_optimize_nir(pass_a, r300->screen);
+        r300_optimize_nir(pass_b, r300->screen);
+        unsigned la = 0, lb = 0;
+        enum r300_fs_admission aa =
+            r300_fs_measure_nir_admission(r300, pass_a, &la,
+                                          R300_FS_INPUT_R2VB_FLAT_VERTEX,
+                                          NULL);
+        enum r300_fs_admission ab =
+            r300_fs_measure_nir_admission(r300, pass_b, &lb,
+                                          R300_FS_INPUT_R2VB_FLAT_VERTEX,
+                                          NULL);
+        admitted = aa == R300_FS_ADMIT_FITS && ab == R300_FS_ADMIT_FITS;
+        if (getenv("R300_R2VB_EXEC_DEBUG")) {
+            char types[R300_MP_MAX_CARRY_COMPS + 1];
+            r300_r2vb_carry_types_str(&part, types, sizeof(types));
+            fprintf(stderr,
+                    "r2vb_split cut=%u carry_bases=%u carry_comps=%u "
+                    "carry_types=%s passA_alu=%u passB_alu=%u admitted=%d\n",
+                    part.cut_index, part.num_bases, part.total_comps, types,
+                    la, lb, admitted);
+        }
+        ralloc_free(pass_a);
+        ralloc_free(pass_b);
     } else if (getenv("R300_R2VB_EXEC_DEBUG")) {
         fprintf(stderr,
                 "r2vb_split declined: no exact single-vec4 cut (width, "
                 "logical type, or integer range)\n");
     }
     ralloc_free(pos);
-    return admitted;
+    return admitted ? R300_R2VB_SPLIT_ADMITTED : R300_R2VB_SPLIT_REJECT;
 }
 
 /* Shadow decision parity: the producer plan classifies the same (VS,
@@ -5610,17 +5649,28 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
     if (*memo)
         return *memo != R300_R2VB_ADMIT_REJECT;
 
+    unsigned num_in = r300_r2vb_count_position_inputs(vs->state.ir.nir);
+    if (!num_in)
+        return false;
+
     unsigned alu = 0;
+    bool measure_transient = false;
     enum r300_fs_admission adm =
         r300_r2vb_measure_pass(r300, vs->state.ir.nir, VARYING_SLOT_POS,
-                               "position", space, &alu);
+                               "position", space, &alu, &measure_transient);
+    if (measure_transient)
+        return false;
     bool fits = adm == R300_FS_ADMIT_FITS;
     if (fits && allow_computed_varying) {
         int dv = r300_r2vb_first_computed_varying(vs->state.ir.nir);
-        if (dv >= 0)
+        if (dv >= 0) {
+            bool varying_transient = false;
             fits = r300_r2vb_measure_pass_fits(r300, vs->state.ir.nir,
                                                (gl_varying_slot)dv, "varying",
-                                               space);
+                                               space, &varying_transient);
+            if (varying_transient)
+                return false;
+        }
     }
     /* R300_R2VB_FORCE_SPLIT requests the split producer for a fitting position
      * pass when the spill1 gate is enabled. A declined split keeps the normal
@@ -5633,9 +5683,11 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
         }
         if (force_split && !allow_computed_varying &&
             r300_r2vb_budget_escape_enabled()) {
-            unsigned num_in = r300_r2vb_count_position_inputs(vs->state.ir.nir);
-            if (r300_r2vb_split_admitted(r300, vs->state.ir.nir, num_in,
-                                         space)) {
+            enum r300_r2vb_split_admission split = r300_r2vb_split_admitted(
+                r300, vs->state.ir.nir, num_in, space);
+            if (split == R300_R2VB_SPLIT_TRANSIENT)
+                return false;
+            if (split == R300_R2VB_SPLIT_ADMITTED) {
                 fprintf(stderr,
                         "r2vb_force_split under_budget=1 space=%s admitted=1\n",
                         space_i ? "window" : "clip");
@@ -5660,8 +5712,11 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
      * to the pre-split route. */
     if (adm == R300_FS_ADMIT_OVER_ALU_BUDGET && !allow_computed_varying &&
         r300_r2vb_budget_escape_enabled()) {
-        unsigned num_in = r300_r2vb_count_position_inputs(vs->state.ir.nir);
-        if (r300_r2vb_split_admitted(r300, vs->state.ir.nir, num_in, space)) {
+        enum r300_r2vb_split_admission split = r300_r2vb_split_admitted(
+            r300, vs->state.ir.nir, num_in, space);
+        if (split == R300_R2VB_SPLIT_TRANSIENT)
+            return false;
+        if (split == R300_R2VB_SPLIT_ADMITTED) {
             *memo = R300_R2VB_ADMIT_SPLIT;
             r300_r2vb_plan_shadow_check(r300, allow_computed_varying, space,
                                         *memo,
@@ -5692,9 +5747,12 @@ static bool r300_r2vb_typed_split_admit(struct r300_context *r300,
     if (*memo)
         return *memo != R300_R2VB_ADMIT_REJECT;
 
+    unsigned num_in = r300_r2vb_count_position_inputs(vs->state.ir.nir);
+    if (!num_in)
+        return false;
+
     const struct r300_r2vb_producer_plan *plan =
         r300_r2vb_producer_plan_get(r300, false, space);
-    unsigned num_in = r300_r2vb_count_position_inputs(vs->state.ir.nir);
     const char *decline =
         r300_r2vb_typed_split_contract(plan, false, space, num_in);
     r300_r2vb_typed_split_note(plan, space, decline);
@@ -6332,7 +6390,7 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
     if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
         return false;
     unsigned npos = r300_r2vb_count_position_inputs(vs->state.ir.nir);
-    if (npos > 1 && !route_restage)
+    if (!npos || (npos > 1 && !route_restage))
         return false;
     bool cv_mode = varying == 1 || r300->r2vb_auto_single_cv_slot >= 0;
     bool al = route_restage ? r300_vs_is_fragment_aluable(r300, cv_mode)
@@ -8295,6 +8353,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * each element honors its buffer/offset/stride and component count (a vec3 gets
      * w = 1).  num_in == 1 reduces to the MVP single-attribute read. */
     unsigned num_in = r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir);
+    if (!num_in)
+        return false;
     if (num_in > R300_R2VB_MAX_PRODUCER_INPUTS)
         num_in = R300_R2VB_MAX_PRODUCER_INPUTS;
     if (num_in > r300->velems->count)

@@ -20,9 +20,10 @@
  * class as the primary reason; an under-budget typed producer rejects
  * TYPED_SINGLE_PASS_UNPROVEN; control flow rejects CONTROL_FLOW; a shader
  * without a uniform interface rejects IO_SHAPE; a wide frontier whose every
- * cut crosses more than one vec4 rejects with CARRY_WIDTH observed; and
- * planning is deterministic across repeated runs and across clip and window
- * spaces.
+ * cut crosses more than one vec4 rejects with CARRY_WIDTH observed; one
+ * injected position-input clone failure leaves no cached plan before the next
+ * request retries successfully; and planning is deterministic across repeated
+ * runs and across clip and window spaces.
  */
 
 #include <stdbool.h>
@@ -801,6 +802,37 @@ case_input_ceiling(struct r300_context *r300)
 }
 
 static void
+case_input_count_failure(struct r300_context *r300)
+{
+   printf("position-input count has an explicit failure value\n");
+   CHECK(r300_r2vb_count_position_inputs(NULL) == 0,
+         "missing shader count fails closed");
+
+   nir_shader *vs = build_float_fits();
+   CHECK(r300_r2vb_count_position_inputs(vs) == 1,
+         "valid single-input shader counts one");
+
+   static struct r300_vertex_shader fake_vs;
+   memset(&fake_vs, 0, sizeof(fake_vs));
+   fake_vs.state.type = PIPE_SHADER_IR_NIR;
+   fake_vs.state.ir.nir = vs;
+   r300->vs_state.state = &fake_vs;
+   r300_r2vb_test_fail_position_input_clone_once();
+   const struct r300_r2vb_producer_plan *failed =
+      r300_r2vb_producer_plan_get(r300, false, R300_R2VB_POSITION_CLIP);
+   CHECK(!failed && !fake_vs.r2vb_plan[0][0],
+         "injected clone failure leaves the plan slot empty");
+   const struct r300_r2vb_producer_plan *retry =
+      r300_r2vb_producer_plan_get(r300, false, R300_R2VB_POSITION_CLIP);
+   CHECK(retry && retry->status == R300_R2VB_PLAN_READY &&
+            retry->action == R300_R2VB_PLAN_SINGLE,
+         "the next request retries and caches the known-good plan");
+   r300_r2vb_plan_cache_release(&fake_vs);
+   r300->vs_state.state = NULL;
+   ralloc_free(vs);
+}
+
+static void
 case_typed_float_before_cut(struct r300_context *r300)
 {
    printf("typed source folded to float before the cut splits with a float carry\n");
@@ -959,6 +991,7 @@ main(void)
    case_multi_candidate_failures(r300);
    case_wide_frontier(r300);
    case_input_ceiling(r300);
+   case_input_count_failure(r300);
    case_cache_lifetime(r300);
    case_deterministic(r300);
 
