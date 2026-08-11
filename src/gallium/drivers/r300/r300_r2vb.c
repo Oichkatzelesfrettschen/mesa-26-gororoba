@@ -2570,6 +2570,10 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
                                            struct pipe_fence_handle **out_fence)
 {
     static bool fired = false;
+    /* CHIP_RS480 covers RS480, RS482, and RS485.  The zero-FPU, no-TCL
+     * capability shape selects the SWTCL path whose R2VB packet contract
+     * this self-test measures; hardware-TCL parts keep their native VAP
+     * programming and never receive these RS482-only packets. */
     if (r300->screen->caps.family != CHIP_RS480 ||
         r300->screen->caps.has_tcl ||
         r300->screen->caps.num_vert_fpus != 0)
