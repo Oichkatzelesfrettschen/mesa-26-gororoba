@@ -15,16 +15,25 @@ program. Submission sits behind a multi-factor arming conjunction with
 one-shot disarm, and both the semantic cell and the exact submit object
 retain as digest-bound evidence. Its evidence stands at the host-unit,
 build/link, no-submit PM4, offline kernel-parser, drm-shim host-model, and
-one-shot silicon classes: three attended armed submissions on RS482 were
-accepted and retired clean by the running radeon kernel. The first
-submitted the bare inherited-state cell and left the target at its
-sentinel fill; the direct-write 2D control then proved the transport
-carries device writes byte-exact through the same BO, cache,
-relocation, and readback substrate; and the contract-prefixed 234-dword
-cell rendered the triangle as predicted -- interior `0xff00ff00`,
-exterior and canary at the sentinel -- so the inert first run is closed
-as a first-draw state-contract failure. The proven raster path is that
-one fixed cell.  The public recording surface now reaches it: a bounded
+one-shot silicon classes: three attended armed records on RS482 exist. The
+first submitted the bare inherited-state cell and left the target at its
+sentinel fill; its kernel acceptance, retirement, and oracle are
+operator-observed because the runner output is not retained. The
+direct-write 2D control's retained outcome proves the transport carries
+device writes byte-exact through the same BO, cache, relocation, and
+readback substrate; and the contract-prefixed 234-dword cell's retained
+outcome reports the predicted triangle -- interior `0xff00ff00`,
+exterior and canary at the sentinel. The first-run color-write cause
+remains underdetermined. The gate matrix proves that
+`US_OUT_FMT_0`, `RB3D_COLOR_CHANNEL_MASK`, and `SC_SCREENDOOR` each
+independently suppress color writes on RS482, while its identical
+readbacks cannot identify which predecessor state the first cell
+inherited. The self-contained successor proves that establishing those
+gates enables the witnessed raster output; it does not identify the
+historical predecessor state. The direct-write control proves the shared
+BO, cache, relocation, and readback transport carries device writes; it
+does not identify a 3D color-write gate. The proven raster path is that
+one fixed cell. The public recording surface now reaches it: a bounded
 render-pass/pipeline/draw vocabulary -- the qualified linear color
 target at any extent inside the 64x64 maximum, a pipeline admitted by
 byte equality with the reference SPIR-V pair and the cell's fixed
@@ -57,17 +66,19 @@ input set the silicon has not yet observed.  General vertex routes and the
 complete Vulkan semantic/conformance sections remain implementation
 contracts.
 
-Two capability claims outrun the one-cell surface, and each is a
-recorded deferred conformance gap whose removal path is the native
-transfer and compute expansion of the order below.  The graphics queue
-bit is required for `vkCmdDraw` validity, and the registry grants
-every graphics family the core transfer commands; the recording
-surface poisons those commands, so they fail closed with a reported
-error rather than misbehave, and the gap closes when native copies
-execute.  Vulkan 1.0 requires an implementation that exposes graphics
-to expose at least one family supporting both graphics and compute;
-the native family carries graphics alone, the compute commands fail
-closed, and the gap closes when a native compute route lands.  The
+The native graphics family carries a bounded transfer surface in addition
+to the fixed render cell: transfer-only linear `B8G8R8A8_UNORM` images up
+to 2048 texels per axis, region-validated buffer/image copies, whole-image
+color clear, and an outside-render-pass barrier no-op. These operations
+execute synchronously through host mappings, publish destination memory,
+use no IB and issue no `DRM_RADEON_CS` submission ioctl; a host mapping may
+issue `DRM_RADEON_GEM_MMAP` through `radeon_drm_vk_bo_map()`. They carry
+host-unit and drm-shim evidence rather than GPU-transfer or silicon evidence.
+Broader transfer formats, usages, GPU copy packets, and target transfer
+observations remain open. Vulkan 1.0 requires an implementation that exposes
+graphics to expose at least one family supporting both graphics and compute;
+the native family carries graphics alone, the compute commands fail closed,
+and the gap closes when a native compute route lands. The
 extent gap is closed: `vkCreateImage` accepts every extent inside the
 reported 64x64 maximum, and the cell family realizes it -- in TCL
 bypass the extent reaches the hardware through the `SC_SCISSORS_BR`
@@ -122,27 +133,124 @@ silicon results are not RS480 authority.
 Each current-implementation claim binds to a named Mesa source location and a
 structural query.
 
-| Claim | Mesa authority | Structural query |
-|---|---|---|
-| Gallium-backed R3V build and link boundary | `src/meson.build`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-gallium-backend\|driver_r300\|libgalliumvl' src/meson.build src/amd/r300/vulkan/meson.build` |
-| `r3v_device` Gallium ownership | `src/amd/r300/vulkan/r3v_device.h`; `r3v_device.c` | `rg -n 'struct r3v_device\|radeon_winsys\|pipe_screen\|pipe_context' src/amd/r300/vulkan/r3v_device.h` |
-| Gallium queue replay and fence completion | `src/amd/r300/vulkan/r3v_queue.c` | `rg -n 'pipe->flush\|fence_finish' src/amd/r300/vulkan/r3v_queue.c` |
-| Direct-backend consent still falls through to Gallium | `src/amd/r300/vulkan/r3v_queue.c`; `r3v_device.c` | `rg -n 'R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED' src/amd/r300/vulkan/` |
-| Extracted shader descriptors still borrow Gallium-owned storage | `src/gallium/drivers/r300/r300_public.h`; `src/amd/r300/vulkan/r3v_pipeline.c` | `rg -n 'extract' src/gallium/drivers/r300/r300_public.h src/amd/r300/vulkan/r3v_pipeline.c` |
-| Unsupported compute shapes can complete without execution | `src/amd/r300/vulkan/r3v_pipeline.c`; `r3v_cmd_buffer.c` | `rg -n 'R300_COMPUTE_REJECT_UNKNOWN_SHAPE\|no-op' src/amd/r300/vulkan/r3v_pipeline.c` |
-| Current R2VB source and delivery domains | `src/gallium/drivers/r300/r300_r2vb.c`; `src/amd/r300/common/r300_r2vb_source_contract.h` | `rg -n 'producer_input_preflight\|delivery_element_preflight' src/gallium/drivers/r300/r300_r2vb.c` |
-| Native ICD build identity and separation audit | `meson.options`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-backend\|libvulkan_r3v_native\|separation' meson.options src/amd/r300/vulkan/meson.build` |
-| Gallium-free Radeon DRM transport | `src/amd/radeon/drm_vk/` | `rg -n 'radeon_drm_vk_cs_build\|radeon_drm_vk_completion' src/amd/radeon/drm_vk/` |
-| Native submission arms on a multi-factor conjunction with one-shot disarm | `src/amd/r300/vulkan/r3v_native_arming.c`; `r3v_native_queue.c` | `rg -n 'r3v_native_arming_evaluate\|attempt.token' src/amd/r300/vulkan/` |
-| Native submit gate fails closed and retains cell and submit object by digest | `src/amd/r300/vulkan/r3v_native_queue.c` | `rg -n 'R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED\|R3V_NATIVE_MANIFEST_DIR\|submit_manifest' src/amd/r300/vulkan/` |
-| Native host coherency over the unsnooped GART | `src/amd/radeon/drm_vk/radeon_drm_vk_bo.c`; `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'radeon_drm_vk_bo_cache_sync\|HOST_CACHED' src/amd/` |
-| Triangle-cell fragment program is compiler output | `src/gallium/drivers/r300/compiler/tests/r300_tcl_bypass_fs_tool.c`; `src/amd/r300/common/r300_tcl_bypass_triangle_fs_block.h` | `rg -n 'r300_tcl_bypass_fs_tool\|r300_tcl_bypass_triangle_fs_block' src/` |
-| Private fixed-cell recording outside the ICD export surface | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native.h` | `rg -n 'r3v_native_record_tcl_bypass_triangle' src/amd/r300/vulkan/` |
-| Public recording surface: image, view, pipeline, and draw subset | `src/amd/r300/vulkan/r3v_native_image.c`; `r3v_native_pipeline.c`; `r3v_native_draw.c` | `rg -n 'r3v_CmdDraw\|r3v_CreateImage\|NATIVE_LIVE_CMDS' src/amd/r300/vulkan/` |
-| Deferred draw execution at queue submission | `src/amd/r300/vulkan/r3v_native_cell.c`; `r3v_native_queue.c` | `rg -n 'execute_deferred_draw' src/amd/r300/vulkan/` |
-| Native queue GRAPHICS advertisement and format subset | `src/amd/r300/vulkan/r3v_physical_device.c` | `rg -n 'VK_QUEUE_GRAPHICS_BIT\|R3V_NATIVE_BACKEND' src/amd/r300/vulkan/r3v_physical_device.c` |
-| Reference SPIR-V admission pair and its generator | `src/amd/r300/vulkan/r3v_native_reference_spirv.h`; `shaders/generate_reference_spirv.py` | `rg -n 'r3v_reference_vertex_spirv\|generate_reference_spirv' src/amd/r300/vulkan/` |
-| Loader-boundary application gate and its symbol audit | `src/amd/r300/vulkan/tests/r3v_native_loader_application.c`; `src/amd/r300/vulkan/tests/r3v_native_loader_application_symbol_audit.py`; `src/amd/r300/vulkan/meson.build` | `rg -n 'r3v-native-loader-application\|FORBIDDEN_PREFIXES\|R3V_EXPECTED_ICD_DSO' src/amd/r300/vulkan/` |
+```sh
+# Gallium-backed R3V build and link boundary.
+rg -n 'r3v-gallium-backend|driver_r300|libgalliumvl' \
+  src/meson.build \
+  src/amd/r300/vulkan/meson.build
+
+# r3v_device owns the Gallium screen and context.
+rg -n 'struct r3v_device|radeon_winsys|pipe_screen|pipe_context' \
+  src/amd/r300/vulkan/r3v_device.h \
+  src/amd/r300/vulkan/r3v_device.c
+
+# Gallium queue replay and fence completion.
+rg -n 'pipe->flush|fence_finish' \
+  src/amd/r300/vulkan/r3v_queue.c
+
+# Direct-backend consent still falls through to Gallium.
+rg -n 'R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED' \
+  src/amd/r300/vulkan/r3v_queue.c \
+  src/amd/r300/vulkan/r3v_device.c
+
+# Extracted shader descriptors borrow Gallium-owned storage.
+rg -n 'extract' \
+  src/gallium/drivers/r300/r300_public.h \
+  src/amd/r300/vulkan/r3v_pipeline.c
+
+# Unsupported compute shapes complete without execution.
+rg -n 'R300_COMPUTE_REJECT_UNKNOWN_SHAPE|no-op' \
+  src/amd/r300/vulkan/r3v_pipeline.c \
+  src/amd/r300/vulkan/r3v_cmd_buffer.c
+
+# Current R2VB source and delivery domains.
+rg -n 'producer_input_preflight|delivery_element_preflight' \
+  src/gallium/drivers/r300/r300_r2vb.c \
+  src/amd/r300/common/r300_r2vb_source_contract.h
+
+# Native ICD build identity and separation audit.
+rg -n 'r3v-native-backend|libvulkan_r3v_native|separation' \
+  meson.options \
+  src/amd/r300/vulkan/meson.build
+
+# Gallium-free Radeon DRM transport.
+rg -n 'radeon_drm_vk_cs_build|radeon_drm_vk_completion' \
+  src/amd/radeon/drm_vk/
+
+# Native submission arming and one-shot disarm.
+rg -n 'r3v_native_arming_evaluate|attempt.token' \
+  src/amd/r300/vulkan/r3v_native_arming.c \
+  src/amd/r300/vulkan/r3v_native_queue.c
+
+# Native submit gate and digest-bound submission objects.
+rg -n \
+  -e 'R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED' \
+  -e 'R3V_NATIVE_MANIFEST_DIR' \
+  -e 'submit_manifest' \
+  src/amd/r300/vulkan/r3v_native_queue.c
+
+# Native host coherency over the unsnooped GART.
+rg -n 'radeon_drm_vk_bo_cache_sync|HOST_CACHED' \
+  src/amd/radeon/drm_vk/radeon_drm_vk_bo.c \
+  src/amd/r300/vulkan/r3v_physical_device.c
+
+# Triangle-cell fragment program compiler output.
+rg -n 'r300_tcl_bypass_fs_tool|r300_tcl_bypass_triangle_fs_block' \
+  src/gallium/drivers/r300/compiler/tests/r300_tcl_bypass_fs_tool.c \
+  src/amd/r300/common/r300_tcl_bypass_triangle_fs_block.h
+
+# Private fixed-cell recording outside the ICD export surface.
+rg -n 'r3v_native_record_tcl_bypass_triangle' \
+  src/amd/r300/vulkan/r3v_native_cell.c \
+  src/amd/r300/vulkan/r3v_native.h
+
+# Public recording surface for image, view, pipeline, and draw.
+rg -n 'r3v_CmdDraw|r3v_CreateImage|NATIVE_LIVE_CMDS' \
+  src/amd/r300/vulkan/r3v_native_image.c \
+  src/amd/r300/vulkan/r3v_native_pipeline.c \
+  src/amd/r300/vulkan/r3v_native_draw.c
+
+# Deferred draw execution at queue submission.
+rg -n 'execute_deferred_draw' \
+  src/amd/r300/vulkan/r3v_native_cell.c \
+  src/amd/r300/vulkan/r3v_native_queue.c
+
+# Native queue GRAPHICS advertisement and format subset.
+rg -n 'VK_QUEUE_GRAPHICS_BIT|R3V_NATIVE_BACKEND' \
+  src/amd/r300/vulkan/r3v_physical_device.c
+
+# Reference SPIR-V admission pair and its generator.
+rg -n 'r3v_reference_vertex_spirv|generate_reference_spirv' \
+  src/amd/r300/vulkan/r3v_native_reference_spirv.h \
+  src/amd/r300/vulkan/shaders/generate_reference_spirv.py
+
+# Loader-boundary application gate and symbol audit.
+rg -n 'r3v-native-loader-application|FORBIDDEN_PREFIXES|R3V_EXPECTED_ICD_DSO' \
+  src/amd/r300/vulkan/tests/r3v_native_loader_application.c \
+  src/amd/r300/vulkan/tests/r3v_native_loader_application_symbol_audit.py \
+  src/amd/r300/vulkan/meson.build
+
+# Native transfer image family and deferred host copies.
+rg -n \
+  -e 'R3V_NATIVE_TRANSFER_DIMENSION_MAX' \
+  -e 'r3v_CmdCopyBufferToImage' \
+  -e 'r3v_CmdClearColorImage' \
+  -e 'r3v_native_cmd_buffer_execute_deferred_copies' \
+  src/amd/r300/vulkan/r3v_native_image.c \
+  src/amd/r300/vulkan/r3v_native_recording.c \
+  src/amd/r300/vulkan/r3v_native_transfer.c \
+  src/amd/r300/vulkan/r3v_physical_device.c \
+  src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c
+
+# Native WSI surface and presentation boundary.
+rg -n \
+  -e 'r3v_native_device_extensions_supported' \
+  -e 'r3v_init_wsi' \
+  -e 'r3v-native-wsi-surface-contract' \
+  src/amd/r300/vulkan/r3v_physical_device.c \
+  src/amd/r300/vulkan/tests/r3v_native_wsi_surface_contract.c \
+  src/amd/r300/vulkan/meson.build
+```
 
 ## Current Gallium-backed R3V implementation
 
@@ -235,9 +343,9 @@ The landed mechanisms are:
   image, image-view, pipeline, queue, and command-carrier objects;
   reporting narrowed to executable routes: the queue family advertises
   `VK_QUEUE_GRAPHICS_BIT` for the recording surface, format properties
-  advertise the accepted subset (the linear B8G8R8A8 color target and
-  the F32-family vertex formats), and one UMA heap sizes from
-  `DRM_RADEON_GEM_INFO`;
+  advertise the accepted subset (the linear B8G8R8A8 render target, the
+  transfer-only linear B8G8R8A8 family, and the F32-family vertex formats),
+  and one UMA heap sizes from `DRM_RADEON_GEM_INFO`;
 - the public graphics recording surface: the qualified linear image
   family at any extent inside the 64x64 maximum over the fixed
   64-pixel pitch (larger extents refuse at creation), its identity
@@ -298,7 +406,12 @@ The landed mechanisms are:
   byte footprint all prove at record time -- and execute them in order
   at queue submission through host mappings, with each destination
   published for the unsnooped GART; a copy-carrying command buffer
-  holds no IB and reaches no ioctl.  The format query, the advertised
+  holds no IB and issues no `DRM_RADEON_CS` submission ioctl; a host
+  mapping may issue `DRM_RADEON_GEM_MMAP` through
+  `radeon_drm_vk_bo_map()`.  The 64-byte row layout remains compatible
+  with the qualified direct-write 2D packet, but these transfer commands
+  execute as host copies rather than GPU 2D packets.
+  The format query, the advertised
   transfer features, and creation admit the same family.
   `vkCmdPipelineBarrier` outside a render pass records as an admitted
   no-op -- the deferred ops execute in recorded order on one host
@@ -339,15 +452,65 @@ The landed mechanisms are:
   declines its PRIM_WALK-3 draw by declared scope.  No-submit structural
   evidence only.
 
-Compute pipelines, descriptors, transfers, WSI, formats past the fixed
-cell, silicon witnesses for non-maximum extents, the producer US
-program and its RS varying routing, and live R2VB delivery remain
-outside the landed surface. Live `DRM_RADEON_CS` submission
-has three attended witnesses, each kernel-accepted and retired clean:
-the bare inherited-state cell left the color target unwritten, the
-direct-write 2D control landed its probe bytes exactly, and the
-contract-prefixed successor cell rendered the triangle as predicted;
-the witness bundle is the frozen private-cell reference.
+Compute pipelines, descriptors, transfer images and copies beyond the
+bounded linear `B8G8R8A8_UNORM` family, native WSI presentation and
+external-memory handles, formats outside the accepted render and transfer
+families, silicon witnesses for non-maximum render extents or any native
+transfer operation, the producer US program and its RS varying routing,
+and live R2VB delivery remain outside the landed surface. Live
+`DRM_RADEON_CS` evidence has three attended records. The first-submission
+record carries the bare inherited-state cell and its all-sentinel target;
+its kernel acceptance, retirement, and oracle are operator-observed because
+the runner output is not retained. The direct-write 2D control retains its
+byte-exact probe result, and the contract-prefixed successor retains its
+accepted and retired raster result. The retained records are repository-
+relative paths in the sibling
+`steinmarder-r300` checkout:
+
+- `results/r3v-native-attended-cell-rs482-first-submission/` records the
+  inherited-state cell and all-sentinel target; acceptance and retirement
+  are operator-observed;
+- `results/rs482_native_direct_write_transport_visibility_pass_20260808T065343Z/`
+  records the byte-exact direct-write transport control;
+- `results/rs482_native_triangle_first_correct_pixel_witness_20260808T070427Z/`
+  records the accepted and retired self-contained cell with the green
+  interior and sentinel exterior.
+
+The separate gate matrix at
+`results/rs482-first-draw-color-write-gate-discrimination/` records the
+single-register controls that leave the historical first-run cause
+underdetermined. Its mutation logs, readbacks, manifests, and hash file
+are retained, but it retains no same-run kernel window or mapped-DSO
+capture; its manifest contract records both gaps. The
+`results/rs482-post-attended-cell-fence-wedge/` record retains the
+recovered wedged-boot kernel log, journal tail, boot and module identity,
+and wedge classification, but no dmesg or serial capture covers the
+06:11:14-06:13:31 interval, so attribution between the native submission
+and an unrelated desktop draw remains unresolved.
+
+The first-submission bundle retains the semantic cell (`ib.bin`,
+`relocs.bin`, `manifest.json`), exact submit object (`submit_relocs.bin`,
+`submit_manifest.json`), one-shot token, color target and census,
+`dmesg-before.txt`, `dmesg-after.txt`, boot continuity, procedure, README,
+bundle/run manifests, and `bundle_hashes.sha256`. Its acceptance,
+retirement, and oracle result are operator-observed because stdout, stderr,
+and process exit status are not retained. The direct-write bundle retains
+the semantic cell (`ib.bin`, `relocs.bin`, `manifest.json`), exact submit
+object (`submit_relocs.bin`, `submit_manifest.json`), one-shot token, color
+target, `direct_write_outcome.json`, `attended_run_stdout.txt`,
+`dmesg_before.txt`, `dmesg_after.txt`, `netconsole.log`,
+`host_identity.txt`, `mesa_sha.txt`, `elf_identity.sha256`,
+`arming_report_armed.txt`, `arming_report_undeclared.txt`, `README.md`, and
+`SHA256SUMS`. The triangle
+bundle retains the semantic cell (`ib.bin`, `relocs.bin`, `manifest.json`),
+exact submit object (`submit_relocs.bin`, `submit_manifest.json`), one-shot
+token, `color_target.bin`, `attended_run_stdout.txt`, `preflight.txt`,
+`dmesg_before.txt`, `dmesg_after.txt`, `netconsole.log`,
+`host_identity.txt`, `mesa_sha.txt`, `elf_identity.sha256`,
+`arming_report_armed.txt`, `arming_report_undeclared.txt`, `README.md`, and
+`SHA256SUMS`. These retention
+shapes differ; each result remains evidence for its recorded Mesa source
+and target boot, not current-head runtime or conformance proof.
 
 ### Source-layer split
 
@@ -465,7 +628,19 @@ the Gallium R2VB function from a native queue remains Gallium-backed execution.
 
 ### Native WSI
 
-Native WSI begins after native BO ownership and export identity are established:
+The native build initializes common WSI surface plumbing, but its extension
+table advertises only memory-requirements, batched-bind, and dedicated-
+allocation contracts. Native `VK_KHR_swapchain` and external-memory handle
+entry points remain outside the native ICD. The source test
+`r3v-native-wsi-surface-contract` defines XCB surface construction and
+surface capability, format, and present-mode queries at the host-model
+class; its queue-family assertion requires no present support, and its path
+stops before swapchain creation. The source contract covers surface-query
+behavior. Native presentation, PRIME export, and silicon WSI require
+separate evidence.
+
+Future native WSI qualification begins after native BO ownership and export
+identity are established:
 
 ```text
 native image-memory BO
@@ -562,10 +737,13 @@ F32_3 -> 3 physical dwords -> XYZ1 logical vec4
 F32_4 -> 4 physical dwords -> XYZW logical vec4
 ```
 
-The live automatic R2VB producer admits `F32_3` and `F32_4`. Final delivery
-admits FP32x4 only. `F32_2` remains outside the live route.
+The live automatic Gallium R2VB producer admits `F32_3` and `F32_4`. Final
+delivery admits FP32x4 only. The native identity-delivery host model covers
+`F32_4`, `F32_3`, and `F32_2` under its exact opt-in, but live producer
+submission and re-ingest remain outside the native route.
 
-The integration order, with steps 1 through 4 landed at the pinned head:
+The integration order separates landed no-submit source transactions from
+remaining validator, live-delivery, and silicon work:
 
 1. keep the neutral source and Gallium-adapter tests in the normal build
    (landed);
@@ -602,8 +780,10 @@ findings remain in the evidence repository.
 
 ## Ordered development
 
-Steps 2 through 8 are landed at the pinned head; step 8's evidence stands at
-the no-submit, drm-shim, and offline kernel-parser classes.
+The landed surfaces carry source, host-unit, build/link, no-submit, drm-shim,
+offline kernel-parser, and bounded attended-silicon evidence classes as
+stated above. The ordered list marks remaining mechanisms; one evidence class
+does not promote another.
 
 1. Keep the Gallium-backed implementation current and semantically honest.
 2. Refactor existing `F32_3` and `F32_4` R2VB construction through the neutral
@@ -614,13 +794,14 @@ the no-submit, drm-shim, and offline kernel-parser classes.
 5. Deep-copy R300 fragment binaries into R3V-owned storage (landed).
 6. Create distinct Gallium-backed and native ICD identities (landed).
 7. Build native BO, memory, command, queue, and completion ownership (landed;
-   buffer-only memory, private fixed-cell recording).
+   native render and transfer image families, host-mapped transfer records,
+   and private fixed-cell recording each keep a bounded ownership contract).
 8. Emit and offline-validate the fixed identity-bypass triangle (landed).
 9. Run the attended native triangle cell (landed: the contract-prefixed
-   cell rendered as predicted on RS482; procedure, arming, and the
-   retained record live in
-   `docs/hardware/r3v-native-attended-cell-procedure.md`, and the
-   witness bundle is the frozen private-cell reference).
+   cell rendered as predicted on RS482; procedure and arming live in
+   `docs/hardware/r3v-native-attended-cell-procedure.md`, while the
+   retained record in the sibling `steinmarder-r300` repository is
+   `results/rs482_native_triangle_first_correct_pixel_witness_20260808T070427Z/`).
 10. Build and qualify the native CPU vertex executor (gather stage and
     carrier delivery landed: `src/amd/r300/cpu/` carries the portable
     byte-defined baseline and the SSE2/SSE3 tuned candidates under the
@@ -630,8 +811,13 @@ the no-submit, drm-shim, and offline kernel-parser classes.
     SSE2 versus SSE3 against the memcpy copy ceiling, on the K8 target
     under the `k8-sse3` profile flags -- remains open and decides which
     candidate the auto dispatch keeps).
-11. Migrate native R2VB `F32_3`, then `F32_2`.
-12. Add native images, transfers, and resource-scoped synchronization.
+11. Migrate native R2VB producer and live delivery (`F32_3`, then `F32_2`);
+    the identity-delivery host model and no-submit producer emitter are
+    landed, while live producer submission and re-ingest evidence remain open.
+12. Extend native image, transfer, and resource-scoped synchronization
+    semantics; the bounded linear transfer family and its host-order barrier
+    contract are landed, while broader GPU-backed transfer semantics remain
+    open.
 13. Prove native same-GPU WSI.
 14. Complete Vulkan semantics and conformance before default promotion.
 
