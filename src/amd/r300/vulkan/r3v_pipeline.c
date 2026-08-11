@@ -1115,6 +1115,10 @@ r3v_prepare_shader_nir(struct r3v_device *device,
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                        "r3v: unsupported shader stage 0x%x",
                        stage_info->stage);
+   if (stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT && !pl)
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r3v: fragment shader preparation requires a "
+                       "pipeline layout");
    assert(stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT || pl);
 
    VK_FROM_HANDLE(r3v_shader_module, mod, stage_info->module);

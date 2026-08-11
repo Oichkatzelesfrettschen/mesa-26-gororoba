@@ -538,11 +538,29 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
    CHECK(strcmp(g_transcript[0], g_transcript[1]) == 0, label);
 }
 
+static void
+check_fragment_pipeline_layout_guard(void)
+{
+   const VkPipelineShaderStageCreateInfo stage_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+      .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+      .module = VK_NULL_HANDLE,
+      .pName = "main",
+   };
+   nir_shader *nir = NULL;
+   VkResult result = r3v_prepare_shader_nir(&g_r3v_device, &stage_info, NULL,
+                                            NULL, &nir);
+   CHECK(result == VK_ERROR_FEATURE_NOT_PRESENT && nir == NULL,
+         "fragment preparation rejects a missing pipeline layout");
+}
+
 int
 main(void)
 {
    glsl_type_singleton_init_or_ref();
    fake_stack_init();
+
+   check_fragment_pipeline_layout_guard();
 
    for (unsigned i = 0; i < ARRAY_SIZE(rows); i++) {
       run_row(&rows[i], R300_R2VB_POSITION_CLIP);
@@ -551,6 +569,9 @@ main(void)
 
    rc_destroy_regalloc_state(&g_context.fs_regalloc_state);
    glsl_type_singleton_decref();
-   printf(g_failures ? "FAILED (%u)\n" : "PASSED\n", g_failures);
+   if (g_failures)
+      printf("FAILED (%u)\n", g_failures);
+   else
+      printf("PASSED\n");
    return g_failures ? 1 : 0;
 }
