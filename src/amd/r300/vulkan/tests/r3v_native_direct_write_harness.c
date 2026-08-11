@@ -276,7 +276,7 @@ main(int argc, char **argv)
    VkDeviceMemory color_memory = VK_NULL_HANDLE;
    result = vkAllocateMemory(device, &alloc_info, NULL, &color_memory);
    CHECK(result == VK_SUCCESS, "color vkAllocateMemory: %d", result);
-   if (color_memory == VK_NULL_HANDLE)
+   if (result != VK_SUCCESS || color_memory == VK_NULL_HANDLE)
       return 1;
 
    /* An allocation below target-plus-canary must refuse recording; the
@@ -286,7 +286,7 @@ main(int argc, char **argv)
    VkDeviceMemory undersized_memory = VK_NULL_HANDLE;
    result = vkAllocateMemory(device, &alloc_info, NULL, &undersized_memory);
    CHECK(result == VK_SUCCESS, "undersized vkAllocateMemory: %d", result);
-   if (undersized_memory == VK_NULL_HANDLE)
+   if (result != VK_SUCCESS || undersized_memory == VK_NULL_HANDLE)
       return 1;
 
    VkCommandPool pool = VK_NULL_HANDLE;
@@ -298,7 +298,7 @@ main(int argc, char **argv)
       },
       NULL, &pool);
    CHECK(result == VK_SUCCESS, "vkCreateCommandPool: %d", result);
-   if (pool == VK_NULL_HANDLE)
+   if (result != VK_SUCCESS || pool == VK_NULL_HANDLE)
       return 1;
 
    VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -312,7 +312,7 @@ main(int argc, char **argv)
       },
       &cmd);
    CHECK(result == VK_SUCCESS, "vkAllocateCommandBuffers: %d", result);
-   if (cmd == VK_NULL_HANDLE)
+   if (result != VK_SUCCESS || cmd == VK_NULL_HANDLE)
       return 1;
 
    result = vkBeginCommandBuffer(
@@ -320,6 +320,8 @@ main(int argc, char **argv)
               .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
            });
    CHECK(result == VK_SUCCESS, "vkBeginCommandBuffer: %d", result);
+   if (result != VK_SUCCESS)
+      return 1;
 
    result = r3v_native_record_direct_write(cmd, undersized_memory);
    CHECK(result == VK_ERROR_INITIALIZATION_FAILED,
@@ -382,9 +384,12 @@ main(int argc, char **argv)
        * so file identity holds without an external hasher: a retention
        * path that wrote different parser-valid bytes fails here.
        */
-      struct r300_direct_write_ib reference;
-      CHECK(r300_direct_write_emit(&reference) == 0,
-            "reference direct-write emission");
+      struct r300_direct_write_ib reference = {0};
+      int emit_result = r300_direct_write_emit(&reference);
+      CHECK(emit_result == 0, "reference direct-write emission: %d",
+            emit_result);
+      if (emit_result != 0)
+         return 1;
       void *ib_data = NULL;
       size_t ib_size = 0;
       CHECK(read_whole_file(manifest_dir, "ib.bin", &ib_data, &ib_size) ==
@@ -463,9 +468,12 @@ main(int argc, char **argv)
        * byte, and the relocation chunk carries exactly the one color
        * reference.
        */
-      struct r300_direct_write_ib reference;
-      CHECK(r300_direct_write_emit(&reference) == 0,
-            "reference direct-write emission");
+      struct r300_direct_write_ib reference = {0};
+      int emit_result = r300_direct_write_emit(&reference);
+      CHECK(emit_result == 0, "reference direct-write emission: %d",
+            emit_result);
+      if (emit_result != 0)
+         return 1;
       void *ib_data = NULL;
       size_t ib_size = 0;
       CHECK(read_whole_file(manifest_dir, "ib.bin", &ib_data, &ib_size) ==
