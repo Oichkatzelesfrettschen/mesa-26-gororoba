@@ -523,7 +523,6 @@ static const uint32_t t_bool_spirv[] = {
    0x0003003e, 0x00000155, 0x00000156, 0x000100fd,
    0x00010038,
 };
-static const size_t t_bool_spirv_size = sizeof(t_bool_spirv);
 
 static const uint32_t t_sint_exact_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000157,
@@ -1035,7 +1034,6 @@ static const uint32_t t_sint_exact_spirv[] = {
    0x0000000a, 0x00000156, 0x0000000c, 0x0003003e,
    0x00000155, 0x00000156, 0x000100fd, 0x00010038,
 };
-static const size_t t_sint_exact_spirv_size = sizeof(t_sint_exact_spirv);
 
 static const uint32_t t_sint_neg_outside_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000157,
@@ -1547,7 +1545,6 @@ static const uint32_t t_sint_neg_outside_spirv[] = {
    0x0000000a, 0x00000156, 0x0000000c, 0x0003003e,
    0x00000155, 0x00000156, 0x000100fd, 0x00010038,
 };
-static const size_t t_sint_neg_outside_spirv_size = sizeof(t_sint_neg_outside_spirv);
 
 static const uint32_t t_sint_pos_outside_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000157,
@@ -2059,7 +2056,6 @@ static const uint32_t t_sint_pos_outside_spirv[] = {
    0x0000000a, 0x00000156, 0x0000000c, 0x0003003e,
    0x00000155, 0x00000156, 0x000100fd, 0x00010038,
 };
-static const size_t t_sint_pos_outside_spirv_size = sizeof(t_sint_pos_outside_spirv);
 
 static const uint32_t t_sint_to_uint_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000158,
@@ -2572,7 +2568,6 @@ static const uint32_t t_sint_to_uint_spirv[] = {
    0x0000000a, 0x00000157, 0x0000000c, 0x0003003e,
    0x00000156, 0x00000157, 0x000100fd, 0x00010038,
 };
-static const size_t t_sint_to_uint_spirv_size = sizeof(t_sint_to_uint_spirv);
 
 static const uint32_t t_uint_exact_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000158,
@@ -3086,7 +3081,6 @@ static const uint32_t t_uint_exact_spirv[] = {
    0x0000000c, 0x0003003e, 0x00000156, 0x00000157,
    0x000100fd, 0x00010038,
 };
-static const size_t t_uint_exact_spirv_size = sizeof(t_uint_exact_spirv);
 
 static const uint32_t t_uint_outside_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000158,
@@ -3600,7 +3594,6 @@ static const uint32_t t_uint_outside_spirv[] = {
    0x0000000c, 0x0003003e, 0x00000156, 0x00000157,
    0x000100fd, 0x00010038,
 };
-static const size_t t_uint_outside_spirv_size = sizeof(t_uint_outside_spirv);
 
 static const uint32_t t_uint_to_sint_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000159,
@@ -4115,7 +4108,6 @@ static const uint32_t t_uint_to_sint_spirv[] = {
    0x0000000c, 0x0003003e, 0x00000157, 0x00000158,
    0x000100fd, 0x00010038,
 };
-static const size_t t_uint_to_sint_spirv_size = sizeof(t_uint_to_sint_spirv);
 
 static const uint32_t t_uint_unbounded_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000156,
@@ -4626,7 +4618,6 @@ static const uint32_t t_uint_unbounded_spirv[] = {
    0x00000155, 0x0000000c, 0x0003003e, 0x00000154,
    0x00000155, 0x000100fd, 0x00010038,
 };
-static const size_t t_uint_unbounded_spirv_size = sizeof(t_uint_unbounded_spirv);
 
 static const uint32_t t_bool_carry_spirv[] = {
    0x07230203, 0x00010000, 0x00070000, 0x00000157,
@@ -5136,6 +5127,5 @@ static const uint32_t t_bool_carry_spirv[] = {
    0x00000156, 0x00000006, 0x0003003e, 0x00000007,
    0x00000156, 0x000100fd, 0x00010038,
 };
-static const size_t t_bool_carry_spirv_size = sizeof(t_bool_carry_spirv);
 
 #endif /* R3V_TYPED_CARRY_SPIRV_H */

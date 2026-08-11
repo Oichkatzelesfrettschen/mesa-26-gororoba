@@ -1750,14 +1750,14 @@ r300_fs_code_reset(struct r300_fragment_shader_code *shader)
 
 /* Measure a fragment program against the real backend budgets by compiling it
  * into a throwaway code object and discarding the result.  The emitted
- * alu.length (emit_alu in r300_fragprog_emit.c) is the only authority on
- * whether a program fits the 64-slot envelope: scalar-NIR instruction counts
- * over-reject dense kernels the vectorizing backend packs far smaller.  The
- * "Too many ALU instructions" error string keys the one failure a multipass
- * or spill escape can recover; any other failure (temp file, const file,
- * unsupported shape) is a plain reject.  The probe compiles a clone (the body
- * clones internally) and never binds, so the caller's context state is
- * untouched and nothing reaches the CS. */
+ * instruction count (alu.length on R300, inst_end + 1 on R500) is the only
+ * authority on whether a program fits the backend envelope: scalar-NIR
+ * instruction counts over-reject dense kernels the vectorizing backend packs
+ * far smaller.  The "Too many ALU instructions" error string keys the one
+ * failure a multipass or spill escape can recover; any other failure (temp
+ * file, const file, unsupported shape) is a plain reject.  The probe compiles
+ * a clone (the body clones internally) and never binds, so the caller's
+ * context state is untouched and nothing reaches the CS. */
 static enum r300_fs_admission
 r300_fs_measure_nir_admission_core(struct r300_context *r300,
                                    struct nir_shader *fs_nir,
@@ -1786,29 +1786,50 @@ r300_fs_measure_nir_admission_core(struct r300_context *r300,
 
     enum r300_fs_admission verdict;
     if (!probe->dummy && !probe->error) {
-        if (out_alu_len)
-            *out_alu_len = probe->code.code.r300.alu.length;
-        if (out_cost && !r300->screen->caps.is_r500) {
-            out_cost->alu = probe->code.code.r300.alu.length;
-            out_cost->temps = probe->code.code.r300.pixsize;
-            out_cost->consts = probe->code.constants.Count;
+        unsigned emitted_slots;
+        unsigned temp_high_water;
+        unsigned constant_count = probe->code.constants.Count;
+
+        if (r300->screen->caps.is_r500) {
+            const struct r500_fragment_program_code *code =
+                &probe->code.code.r500;
+            emitted_slots = code->inst_end >= 0 ?
+                            (unsigned)code->inst_end + 1 : 0;
+            temp_high_water = code->max_temp_idx;
+        } else {
+            const struct r300_fragment_program_code *code =
+                &probe->code.code.r300;
+            emitted_slots = code->alu.length;
+            temp_high_water = code->pixsize;
         }
-        verdict = R300_FS_ADMIT_FITS;
-        if (out_program && !r300->screen->caps.is_r500) {
-            /* Flat struct copy: r300_fragment_program_code holds no
-             * pointers, so the snapshot survives the probe reset below. */
-            out_program->code = probe->code.code.r300;
-            out_program->num_constants = probe->code.constants.Count;
-            if (out_program->num_constants) {
-                size_t bytes = out_program->num_constants *
-                               sizeof(struct rc_constant);
-                out_program->constants = MALLOC(bytes);
-                if (out_program->constants) {
-                    memcpy(out_program->constants,
-                           probe->code.constants.Constants, bytes);
-                } else {
-                    memset(out_program, 0, sizeof(*out_program));
-                    verdict = R300_FS_ADMIT_REJECT;
+
+        if (emitted_slots == 0) {
+            verdict = R300_FS_ADMIT_REJECT;
+        } else {
+            if (out_alu_len)
+                *out_alu_len = emitted_slots;
+            if (out_cost) {
+                out_cost->alu = emitted_slots;
+                out_cost->temps = temp_high_water;
+                out_cost->consts = constant_count;
+            }
+            verdict = R300_FS_ADMIT_FITS;
+            if (out_program && !r300->screen->caps.is_r500) {
+                /* Flat struct copy: r300_fragment_program_code holds no
+                 * pointers, so the snapshot survives the probe reset below. */
+                out_program->code = probe->code.code.r300;
+                out_program->num_constants = constant_count;
+                if (out_program->num_constants) {
+                    size_t bytes = out_program->num_constants *
+                                   sizeof(struct rc_constant);
+                    out_program->constants = MALLOC(bytes);
+                    if (out_program->constants) {
+                        memcpy(out_program->constants,
+                               probe->code.constants.Constants, bytes);
+                    } else {
+                        memset(out_program, 0, sizeof(*out_program));
+                        verdict = R300_FS_ADMIT_REJECT;
+                    }
                 }
             }
         }

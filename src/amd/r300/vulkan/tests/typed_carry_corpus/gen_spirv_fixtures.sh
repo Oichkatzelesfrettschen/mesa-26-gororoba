@@ -10,6 +10,38 @@ cd "$(dirname "$0")"
 out=r3v_typed_carry_spirv.h
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+# SPIR-V binary words are little-endian.  Reading one-byte units keeps the
+# generated values independent of the host byte order used by od.
+emit_spirv_words()
+{
+  od -An -tx1 -v "$1" |
+    awk '{
+      for (i = 1; i <= NF; i++) {
+        bytes[++byte_in_word] = $i
+        byte_count++
+        if (byte_in_word == 4) {
+          if (word_in_line == 0)
+            printf "   "
+          else
+            printf " "
+          printf "0x%s%s%s%s,", bytes[4], bytes[3], bytes[2], bytes[1]
+          word_in_line++
+          if (word_in_line == 4) {
+            printf "\n"
+            word_in_line = 0
+          }
+          byte_in_word = 0
+        }
+      }
+    }
+    END {
+      if (byte_count == 0 || byte_in_word != 0)
+        exit 1
+      if (word_in_line != 0)
+        printf "\n"
+    }'
+}
 {
   printf '/*\n'
   printf ' * SPDX-License-Identifier: MIT\n */\n\n'
@@ -23,11 +55,9 @@ trap 'rm -rf "$tmp"' EXIT
     name=$(basename "$v" .vert)
     glslangValidator -V "$v" -o "$tmp/$name.spv" >/dev/null
     printf 'static const uint32_t %s_spirv[] = {\n' "$name"
-    od -An -tx4 -v "$tmp/$name.spv" | \
-      sed 's/^ */   /; s/\([0-9a-f]\{8\}\)/0x\1,/g'
+    emit_spirv_words "$tmp/$name.spv"
     printf '};\n'
-    printf 'static const size_t %s_spirv_size = sizeof(%s_spirv);\n\n' \
-      "$name" "$name"
+    printf '\n'
   done
   # SPIR-V assembly fixtures of record: the assembly pins the exact
   # representation (select-versus-branch, boolean lifetime), so it
@@ -38,11 +68,9 @@ trap 'rm -rf "$tmp"' EXIT
     spirv-as "$a" -o "$tmp/$name.spv"
     spirv-val "$tmp/$name.spv"
     printf 'static const uint32_t %s_spirv[] = {\n' "$name"
-    od -An -tx4 -v "$tmp/$name.spv" | \
-      sed 's/^ */   /; s/\([0-9a-f]\{8\}\)/0x\1,/g'
+    emit_spirv_words "$tmp/$name.spv"
     printf '};\n'
-    printf 'static const size_t %s_spirv_size = sizeof(%s_spirv);\n\n' \
-      "$name" "$name"
+    printf '\n'
   done
   printf '#endif /* R3V_TYPED_CARRY_SPIRV_H */\n'
 } > "$out"
