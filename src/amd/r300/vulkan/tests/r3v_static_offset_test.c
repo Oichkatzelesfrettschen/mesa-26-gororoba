@@ -194,6 +194,17 @@ check_vs_input_span(void)
    ralloc_free(b.shader);
 
    b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &options,
+                                      "r3v invalid native VS input span");
+   nir_variable *native_limit =
+      nir_variable_create(b.shader, nir_var_shader_in, glsl_vec4_type(),
+                          "native_limit");
+   native_limit->data.location =
+      VERT_ATTRIB_GENERIC0 + R3V_MAX_VERTEX_BINDINGS;
+   CHECK(!r3v_assign_vs_input_locations(b.shader),
+         "VS input locations outside the native row span are rejected");
+   ralloc_free(b.shader);
+
+   b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &options,
                                       "r3v invalid VS input span");
    nir_variable *invalid =
       nir_variable_create(b.shader, nir_var_shader_in, glsl_vec4_type(),
