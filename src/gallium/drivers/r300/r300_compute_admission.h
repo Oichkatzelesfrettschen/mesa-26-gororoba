@@ -392,7 +392,7 @@ void r300_nir_detect_blend_acc_reduction(const struct nir_shader *s,
  * predicate-gated counter shape:
  *
  *     uint gid = gl_GlobalInvocationID.x;
- *     if (in_data[gid] >= THRESHOLD)
+ *     if (in_data[gid] != 0u)
  *         atomicAdd(count_out, 1u);
  *
  * On RS482 this lowers to the depth/stencil unit's ZPASS coverage-count verb:
@@ -402,18 +402,21 @@ void r300_nir_detect_blend_acc_reduction(const struct nir_shader *s,
  * accumulates the per-pipe surviving-fragment count.  Mesa's existing
  * r300_query.c chain (r300_create_query + begin_query + end_query +
  * get_query_result) wraps this register pair as PIPE_QUERY_OCCLUSION_COUNTER
- * returning a u64 fragment sum; the orchestrator writes that sum to
- * count_out[0].  The mechanism is hardware-confirmed at the substrate verb
- * level (surviving-fragment count read back through the occlusion query).
+ * returning a u64 fragment sum; the orchestrator reads count_out[0], applies
+ * the increment with uint32 wraparound, and writes the updated counter.  The
+ * mechanism is hardware-confirmed at the substrate verb level
+ * (surviving-fragment count read back through the occlusion query).
  *
  * Discriminator from the blend-acc reduction:
  *
  *   blend-acc: 1 ssbo_atomic-iadd + 1 load_ssbo, the atomic's value
  *              source SSA == load's def (load's RESULT is the
  *              accumulated value).
- *   zpass:     1 ssbo_atomic-iadd + 1 load_ssbo, the atomic's value
- *              source is the CONSTANT 1 (NOT the load's def); the load
- *              feeds an nir_if condition that GATES the atomic.
+ *   zpass:     1 ssbo_atomic-iadd + 1 load_ssbo, both scalar 32-bit; the
+ *              atomic's value source is the CONSTANT 1 (NOT the load's def),
+ *              its offset is zero, and the load uses the gid * 4 stream; the
+ *              load feeds a direct `load != 0` nir_if condition in the then
+ *              branch, outside loops.
  *
  * value_ssbo_binding is the binding of the predicate load_ssbo;
  * output_ssbo_binding is the binding of the single-element counter

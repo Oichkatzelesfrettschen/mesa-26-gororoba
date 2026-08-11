@@ -4626,7 +4626,8 @@ r3v_blend_acc_reduction_dispatch_replay(struct r3v_device *device,
  *      and bakes 1.0f if (in_data[gid] != 0u) else 0.0f.
  *   3. A pipe_query (PIPE_QUERY_OCCLUSION_COUNTER) brackets the draw;
  *      get_query_result(wait=true) returns the u64 sum of surviving
- *      fragments, truncated to u32 and written to count_out[0].
+ *      fragments; the existing count_out[0] value is read and the u32
+ *      atomicAdd increment is applied with wraparound.
  *
  * No blend (only the ZPASS path matters); RT clear unnecessary (RT
  * contents never read).  Other surfaces reuse the identity-map
@@ -4811,14 +4812,43 @@ r3v_zpass_reduction_dispatch_replay(struct r3v_device *device,
       IDM_LOG("zpass early-return get_query_result-failed");
       return false;
    }
-   /* Saturate u64->u32: the ZPASS counter on RS482 is a per-pipe u32
-    * accumulator that the kernel sums across pipes into a u64; for the
-    * first-cut probe N is bounded at 2048*2048, well under UINT32_MAX. */
+   /* The admitted atomic is a 32-bit atomicAdd.  Preserve its existing
+    * counter value and apply the query increment with uint32 wraparound. */
    const uint64_t raw_sum = qr.u64;
-   const uint32_t saturated = (raw_sum > UINT32_MAX)
-      ? UINT32_MAX : (uint32_t)raw_sum;
-   IDM_LOG("zpass query u64=%llu saturated_u32=%u",
-           (unsigned long long)raw_sum, saturated);
+   const uint32_t increment = (uint32_t)raw_sum;
+
+   uint32_t existing = 0;
+   bool existing_ok = false;
+   {
+      struct pipe_box out_box;
+      memset(&out_box, 0, sizeof(out_box));
+      out_box.x      = (unsigned)out_desc->buf.offset;
+      out_box.width  = (unsigned)sizeof(uint32_t);
+      out_box.height = 1; out_box.depth = 1;
+      struct pipe_transfer *out_xfer = NULL;
+      const void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                                PIPE_MAP_READ, &out_box,
+                                                &out_xfer);
+      if (out_bytes) {
+         memcpy(&existing, out_bytes, sizeof(existing));
+         pipe->buffer_unmap(pipe, out_xfer);
+         existing_ok = true;
+      }
+   }
+   if (!existing_ok) {
+      pipe->set_vertex_buffers(pipe, 0, NULL);
+      struct pipe_framebuffer_state empty_fb;
+      memset(&empty_fb, 0, sizeof(empty_fb));
+      pipe->set_framebuffer_state(pipe, &empty_fb);
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      IDM_LOG("zpass early-return output-counter-read-failed");
+      return false;
+   }
+   const uint32_t updated = existing + increment;
+   IDM_LOG("zpass query u64=%llu increment_u32=%u existing=%u updated=%u",
+           (unsigned long long)raw_sum, increment, existing, updated);
 
    bool copy_ok = false;
    {
@@ -4833,7 +4863,7 @@ r3v_zpass_reduction_dispatch_replay(struct r3v_device *device,
                                          PIPE_MAP_DISCARD_RANGE,
                                          &out_box, &out_xfer);
       if (out_bytes) {
-         memcpy(out_bytes, &saturated, sizeof(uint32_t));
+         memcpy(out_bytes, &updated, sizeof(uint32_t));
          pipe->buffer_unmap(pipe, out_xfer);
          copy_ok = true;
       }

@@ -96,6 +96,92 @@ build_general_atomic(void)
    return b.shader;
 }
 
+enum zpass_test_shape {
+   ZPASS_TEST_CANONICAL,
+   ZPASS_TEST_EQUAL_ZERO,
+   ZPASS_TEST_THRESHOLD,
+   ZPASS_TEST_LOAD_ZERO_OFFSET,
+   ZPASS_TEST_LOAD_STRIDED_OFFSET,
+   ZPASS_TEST_ATOMIC_OFFSET,
+   ZPASS_TEST_ATOMIC_64,
+   ZPASS_TEST_ELSE_BRANCH,
+   ZPASS_TEST_LOOP,
+};
+
+static void
+append_zpass_atomic(nir_builder *b, nir_def *offset, unsigned bit_size)
+{
+   nir_intrinsic_instr *atom =
+      nir_intrinsic_instr_create(b->shader, nir_intrinsic_ssbo_atomic);
+   atom->num_components = 1;
+   nir_def_init(&atom->instr, &atom->def, 1, bit_size);
+   nir_intrinsic_set_atomic_op(atom, nir_atomic_op_iadd);
+   atom->src[0] = nir_src_for_ssa(nir_imm_int(b, 1));
+   atom->src[1] = nir_src_for_ssa(offset);
+   atom->src[2] = nir_src_for_ssa(bit_size == 64
+                                     ? nir_imm_int64(b, 1)
+                                     : nir_imm_int(b, 1));
+   nir_builder_instr_insert(b, &atom->instr);
+}
+
+static nir_shader *
+build_zpass_reduction_form(enum zpass_test_shape shape)
+{
+   nir_builder b = cs_builder("cs_zpass_reduction");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *load_offset = NULL;
+   switch (shape) {
+   case ZPASS_TEST_LOAD_ZERO_OFFSET:
+      load_offset = nir_imm_int(&b, 0);
+      break;
+   case ZPASS_TEST_LOAD_STRIDED_OFFSET:
+      load_offset = nir_imul(&b, gid, nir_imm_int(&b, 8));
+      break;
+   default:
+      load_offset = nir_imul(&b, gid, nir_imm_int(&b, 4));
+      break;
+   }
+
+   nir_def *value = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), load_offset,
+                                  .align_mul = 4, .align_offset = 0);
+   nir_def *condition = NULL;
+   switch (shape) {
+   case ZPASS_TEST_EQUAL_ZERO:
+      condition = nir_ieq(&b, value, nir_imm_int(&b, 0));
+      break;
+   case ZPASS_TEST_THRESHOLD:
+      condition = nir_uge(&b, value, nir_imm_int(&b, 4));
+      break;
+   default:
+      condition = nir_ine(&b, value, nir_imm_int(&b, 0));
+      break;
+   }
+
+   nir_loop *loop = NULL;
+   if (shape == ZPASS_TEST_LOOP)
+      loop = nir_push_loop(&b);
+
+   nir_if *if_node = nir_push_if(&b, condition);
+   nir_def *atomic_offset = nir_imm_int(&b, 0);
+   if (shape == ZPASS_TEST_ATOMIC_OFFSET)
+      atomic_offset = nir_imm_int(&b, 4);
+   const unsigned atomic_bit_size =
+      shape == ZPASS_TEST_ATOMIC_64 ? 64 : 32;
+   if (shape == ZPASS_TEST_ELSE_BRANCH) {
+      nir_push_else(&b, if_node);
+      append_zpass_atomic(&b, atomic_offset, atomic_bit_size);
+   } else {
+      append_zpass_atomic(&b, atomic_offset, atomic_bit_size);
+   }
+   nir_pop_if(&b, if_node);
+
+   if (loop) {
+      nir_jump(&b, nir_jump_break);
+      nir_pop_loop(&b, loop);
+   }
+   return b.shader;
+}
+
 static nir_shader *
 build_fp64(void)
 {
@@ -1155,6 +1241,50 @@ case_identity_metadata(void)
    CHECK(ident.value_components == 4, "identity-map metadata records vec4 width");
    CHECK(ident.value_bit_size == 32, "identity-map metadata records 32-bit lanes");
    ralloc_free(nir);
+}
+
+static void
+case_zpass_metadata(void)
+{
+   printf("zpass admission contract\n");
+
+   nir_shader *canonical = build_zpass_reduction_form(ZPASS_TEST_CANONICAL);
+   struct r300_compute_zpass_reduction_pattern pattern = {0};
+   prepare_detect_shader(canonical);
+   r300_nir_detect_zpass_reduction(canonical, &pattern);
+   CHECK(pattern.is_zpass_reduction,
+         "canonical gid*4 load and nonzero predicate admit");
+   CHECK(pattern.value_ssbo_binding_valid && pattern.value_ssbo_binding == 0,
+         "zpass metadata preserves predicate binding zero");
+   CHECK(pattern.output_ssbo_binding_valid && pattern.output_ssbo_binding == 1,
+         "zpass metadata preserves counter binding one");
+   CHECK(pattern.alu_op == nir_op_iadd, "zpass metadata records iadd");
+   struct r300_compute_admission admission;
+   r300_nir_classify_compute(canonical, &admission);
+   CHECK(admission.admissible, "canonical zpass shape admits classification");
+   ralloc_free(canonical);
+
+   const struct {
+      enum zpass_test_shape shape;
+      const char *label;
+   } known_bad[] = {
+      { ZPASS_TEST_EQUAL_ZERO, "equality-to-zero predicate rejects" },
+      { ZPASS_TEST_THRESHOLD, "threshold predicate rejects" },
+      { ZPASS_TEST_LOAD_ZERO_OFFSET, "constant load offset rejects" },
+      { ZPASS_TEST_LOAD_STRIDED_OFFSET, "strided load offset rejects" },
+      { ZPASS_TEST_ATOMIC_OFFSET, "nonzero atomic offset rejects" },
+      { ZPASS_TEST_ATOMIC_64, "64-bit atomic counter rejects" },
+      { ZPASS_TEST_ELSE_BRANCH, "else-branch atomic rejects" },
+      { ZPASS_TEST_LOOP, "loop-enclosed atomic rejects" },
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(known_bad); i++) {
+      nir_shader *nir = build_zpass_reduction_form(known_bad[i].shape);
+      struct r300_compute_zpass_reduction_pattern bad = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_zpass_reduction(nir, &bad);
+      CHECK(!bad.is_zpass_reduction, known_bad[i].label);
+      ralloc_free(nir);
+   }
 }
 
 static void
@@ -3756,6 +3886,7 @@ main(void)
                 "fp64 source operand rejects");
    case_reject_registry_calibration();
    case_identity_metadata();
+   case_zpass_metadata();
    case_binary_metadata();
    case_binding_provenance_metadata();
    case_binary_map_isub_ba_operand_order();
