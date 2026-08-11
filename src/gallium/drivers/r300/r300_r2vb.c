@@ -2706,11 +2706,11 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
          * before the GPU retires the work, so if that wait is sub-millisecond the
          * R2VB GPU work is genuinely fast and the earlier ~505 ms was purely the
          * raw winsys BO-wait poll. */
-        int flush_rc = r300->rws->cs_flush(&r300->cs, flush_flags, out_fence);
+        r300->context.flush(&r300->context, out_fence, flush_flags);
         fprintf(stderr,
-                "r2vb_nowait_submit nverts=%u flush_rc=%d gave_fence=%d "
+                "r2vb_nowait_submit nverts=%u context_flush=1 gave_fence=%d "
                 "(GPU completion timed by app vkWaitForFences) hb_vert_fpu=%u\n",
-                cfg.num_vertices, flush_rc, out_fence && *out_fence ? 1 : 0,
+                cfg.num_vertices, out_fence && *out_fence ? 1 : 0,
                 r300->screen->caps.num_vert_fpus);
         free(heap_attrs);
         pipe_resource_reference(&stage3, NULL);
@@ -2722,14 +2722,15 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
         struct pipe_fence_handle *fence = NULL;
         int64_t t0, t1, t2, t3;
         bool signalled = false;
-        /* Three-way split to localise the per-submit cost.  cs_flush only ENQUEUES
-         * the IB to the radeon threaded-submit queue and returns; cs_sync_flush
-         * blocks until that worker has issued the DRM_RADEON_CS ioctl; fence_wait
-         * blocks until the GPU retires the fence BO.  So enqueue_ms is CPU-side
-         * bookkeeping, submit_ms is the kernel submit + BO pin, and gpu_ms is the
-         * actual GPU execution -- the number that should scale with vertex work. */
+        /* Three-way split to localise the per-submit cost.  The pipe flush hook
+         * runs the driver's cleanup and re-arm path before it enqueues the IB;
+         * cs_sync_flush blocks until the threaded-submit worker has issued the
+         * DRM_RADEON_CS ioctl; fence_wait blocks until the GPU retires the fence
+         * BO.  So enqueue_ms includes driver cleanup and CPU-side bookkeeping,
+         * submit_ms is the kernel submit plus BO pin, and gpu_ms is the actual
+         * GPU execution -- the number that should scale with vertex work. */
         t0 = os_time_get_nano();
-        int flush_rc = r300->rws->cs_flush(&r300->cs, 0, &fence);
+        r300->context.flush(&r300->context, &fence, 0);
         t1 = os_time_get_nano();
         r300->rws->cs_sync_flush(&r300->cs);
         t2 = os_time_get_nano();
@@ -2745,8 +2746,8 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
         double mvps = gpu_ms > 0.0 ? (double)cfg.num_vertices / (gpu_ms * 1e3) : 0.0;
         fprintf(stderr,
                 "r2vb_direct_vap_timing nverts=%u total_ms=%.4f enqueue_ms=%.4f submit_ms=%.4f "
-                "gpu_ms=%.4f gpu_Mvps=%.3f flush_rc=%d signalled=%d hb_vert_fpu=%u\n",
-                cfg.num_vertices, total_ms, enqueue_ms, submit_ms, gpu_ms, mvps, flush_rc,
+                "gpu_ms=%.4f gpu_Mvps=%.3f context_flush=1 signalled=%d hb_vert_fpu=%u\n",
+                cfg.num_vertices, total_ms, enqueue_ms, submit_ms, gpu_ms, mvps,
                 signalled, r300->screen->caps.num_vert_fpus);
     } else {
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
