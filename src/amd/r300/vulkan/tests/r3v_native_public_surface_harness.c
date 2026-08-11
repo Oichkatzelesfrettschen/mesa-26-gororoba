@@ -260,7 +260,7 @@ static void
 check_image_usage_surface(
    VkPhysicalDevice physical_device,
    VkDevice image_device,
-   PFN_vkGetPhysicalDeviceImageFormatProperties2 query_properties)
+   PFN_vkGetPhysicalDeviceImageFormatProperties2KHR query_properties)
 {
    const VkImageUsageFlags transfer_usage =
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -274,6 +274,10 @@ check_image_usage_surface(
            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_ERROR_FORMAT_NOT_SUPPORTED, R3V_NATIVE_REFUSAL_RESULT },
       { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+           VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_ERROR_FORMAT_NOT_SUPPORTED, R3V_NATIVE_REFUSAL_RESULT },
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+           VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_ERROR_FORMAT_NOT_SUPPORTED, R3V_NATIVE_REFUSAL_RESULT },
    };
@@ -336,10 +340,21 @@ main(void)
       vk_icdGetInstanceProcAddr;
    PFN_vkCreateInstance create_instance =
       (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
+   const char *const instance_extensions[] = {
+      VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+   };
    VkInstance instance = VK_NULL_HANDLE;
    assert(create_instance(&(VkInstanceCreateInfo){
                              .sType =
                                 VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                             .pApplicationInfo =
+                                &(VkApplicationInfo){
+                                   .sType =
+                                      VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                   .apiVersion = VK_API_VERSION_1_0,
+                                },
+                             .enabledExtensionCount = 1,
+                             .ppEnabledExtensionNames = instance_extensions,
                           },
                           NULL, &instance) == VK_SUCCESS);
 
@@ -350,9 +365,9 @@ main(void)
       (PFN_vkCreateDevice)gipa(instance, "vkCreateDevice");
    PFN_vkGetDeviceProcAddr gdpa =
       (PFN_vkGetDeviceProcAddr)gipa(instance, "vkGetDeviceProcAddr");
-   PFN_vkGetPhysicalDeviceImageFormatProperties2 query_image_properties =
-      (PFN_vkGetPhysicalDeviceImageFormatProperties2)gipa(
-         instance, "vkGetPhysicalDeviceImageFormatProperties2");
+   PFN_vkGetPhysicalDeviceImageFormatProperties2KHR query_image_properties =
+      (PFN_vkGetPhysicalDeviceImageFormatProperties2KHR)gipa(
+         instance, "vkGetPhysicalDeviceImageFormatProperties2KHR");
    assert(query_image_properties != NULL);
 
    uint32_t pdev_count = 1;

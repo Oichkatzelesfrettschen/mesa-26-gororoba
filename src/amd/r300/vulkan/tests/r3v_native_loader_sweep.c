@@ -364,6 +364,70 @@ sweep(const char *label, const struct r3v_surface_command *table,
    }
 }
 
+/* A Vulkan 1.0 application reaches the image-format query through the
+ * VK_KHR_get_physical_device_properties2 command alias.  Resolve that alias
+ * through the loader, then run the usage boundary over the same accepted and
+ * refused families as the direct public-surface harness.
+ */
+static int
+check_image_query_alias(VkInstance alias_instance)
+{
+   PFN_vkGetPhysicalDeviceImageFormatProperties2KHR query =
+      (PFN_vkGetPhysicalDeviceImageFormatProperties2KHR)vkGetInstanceProcAddr(
+         alias_instance, "vkGetPhysicalDeviceImageFormatProperties2KHR");
+   if (query == NULL)
+      return 1;
+
+   uint32_t pdev_count = 1;
+   VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+   VkResult result = vkEnumeratePhysicalDevices(alias_instance, &pdev_count,
+                                                &physical_device);
+   if ((result != VK_SUCCESS && result != VK_INCOMPLETE) ||
+       pdev_count != 1 || physical_device == VK_NULL_HANDLE)
+      return 1;
+
+   const VkImageUsageFlags transfer_usage =
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   const struct {
+      VkImageUsageFlags usage;
+      VkResult expected;
+   } cases[] = {
+      { 0, VK_ERROR_FORMAT_NOT_SUPPORTED },
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_SUCCESS },
+      { VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_SUCCESS },
+      { VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SUCCESS },
+      { transfer_usage, VK_SUCCESS },
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+           VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_ERROR_FORMAT_NOT_SUPPORTED },
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+           VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_ERROR_FORMAT_NOT_SUPPORTED },
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+           VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+           VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_ERROR_FORMAT_NOT_SUPPORTED },
+   };
+
+   for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+      const VkPhysicalDeviceImageFormatInfo2 query_info = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+         .format = VK_FORMAT_B8G8R8A8_UNORM,
+         .type = VK_IMAGE_TYPE_2D,
+         .tiling = VK_IMAGE_TILING_LINEAR,
+         .usage = cases[i].usage,
+      };
+      VkImageFormatProperties2 properties = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+      };
+      if (query(physical_device, &query_info, &properties) !=
+          cases[i].expected)
+         return 1;
+   }
+
+   return 0;
+}
+
 int
 main(void)
 {
@@ -372,7 +436,32 @@ main(void)
     */
    unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
 
+   const char *const instance_extensions[] = {
+      VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+   };
+   VkInstance alias_instance = VK_NULL_HANDLE;
    VkResult result = vkCreateInstance(
+      &(VkInstanceCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+         .pApplicationInfo =
+            &(VkApplicationInfo){
+               .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+               .apiVersion = VK_API_VERSION_1_0,
+            },
+         .enabledExtensionCount = 1,
+         .ppEnabledExtensionNames = instance_extensions,
+      },
+      NULL, &alias_instance);
+   CHECK(result == VK_SUCCESS,
+         "Vulkan 1.0 enables VK_KHR_get_physical_device_properties2: %d",
+         result);
+   if (result == VK_SUCCESS) {
+      CHECK(check_image_query_alias(alias_instance) == 0,
+            "the loader resolves and executes the KHR image-query alias");
+      vkDestroyInstance(alias_instance, NULL);
+   }
+
+   result = vkCreateInstance(
       &(VkInstanceCreateInfo){
          .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
          .pApplicationInfo =
