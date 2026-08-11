@@ -1299,6 +1299,27 @@ check_producer_streams(void)
                                           PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
                                           &s),
          "streams: non-dword stride rejects");
+   CHECK(!r300_r2vb_producer_streams_init(0, 0, 1024,
+                                          PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                          &s),
+         "streams: stride above packet field rejects");
+   CHECK(r300_r2vb_producer_streams_init(0, 0, 1020,
+                                         PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                         &s) &&
+            s.stream[1].stride_dwords == R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX,
+         "streams: packet stride field maximum is representable");
+   CHECK(!r300_r2vb_producer_streams_init(UINT32_MAX - 14, 0, 16,
+                                          PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                          &s),
+         "streams: fetch crossing 32-bit offset rejects");
+   CHECK(r300_r2vb_producer_streams_init(UINT32_MAX - 15, 0, 16,
+                                         PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                         &s),
+         "streams: fetch ending at 32-bit boundary fits");
+   CHECK(!r300_r2vb_producer_streams_init(0, 0, 16,
+                                          PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                          NULL),
+         "streams: null output rejects");
    CHECK(!r300_r2vb_producer_streams_init(UINT32_MAX, UINT32_MAX, 16,
                                           PIPE_FORMAT_R32G32B32A32_FLOAT,
                                           65535, &s),
@@ -1379,12 +1400,12 @@ check_producer_fetch(void)
    f3.fetch_dwords = 8;
    CHECK(!r300_r2vb_producer_fetch_init(&f3, 4, 1 << 20, 1 << 20, &f),
          "fetch: overstated float3 total rejects");
-   /* The packet stride field is 8 bits of dwords. */
+   /* The packet stride field is 8 bits of dwords; streams_init rejects the
+    * unrepresentable value before fetch construction. */
    struct r300_r2vb_producer_streams huge;
-   CHECK(r300_r2vb_producer_streams_init(0, 0, 1024,
-                                         PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
-                                         &huge) &&
-            !r300_r2vb_producer_fetch_init(&huge, 2, 32, 4096, &f),
+   CHECK(!r300_r2vb_producer_streams_init(0, 0, 1024,
+                                          PIPE_FORMAT_R32G32B32A32_FLOAT, 0,
+                                          &huge),
          "fetch: packet stride-field ceiling rejects");
 }
 

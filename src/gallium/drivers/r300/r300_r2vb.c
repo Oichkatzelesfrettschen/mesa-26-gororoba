@@ -4854,6 +4854,9 @@ bool r300_r2vb_producer_streams_init_gated(
     enum pipe_format format, uint32_t start, bool float2_enabled,
     struct r300_r2vb_producer_streams *out)
 {
+    if (!out)
+        return false;
+
     /* The neutral vertex-format identity carries the fetch width and the
      * synthesized-lane selectors; admission comes from the bounded source
      * contract, which holds F32_2 behind its own gate.  Missing lanes are
@@ -4871,11 +4874,15 @@ bool r300_r2vb_producer_streams_init_gated(
     uint32_t record_dwords = semantics->hardware_fetch_dwords;
     /* The LOAD_VBPNTR format word carries the stride in dwords, and a
      * stride under one record would overlap fetches. */
-    if (src_stride_bytes % 4 != 0 || src_stride_bytes < record_dwords * 4)
+    if (src_stride_bytes % 4 != 0 ||
+        src_stride_bytes < record_dwords * 4 ||
+        src_stride_bytes / 4 > R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX)
         return false;
     uint64_t model_off = (uint64_t)buffer_offset + src_offset +
                          (uint64_t)start * src_stride_bytes;
-    if (model_off > UINT32_MAX)
+    const uint64_t record_bytes = (uint64_t)record_dwords * 4;
+    if (model_off > UINT32_MAX ||
+        model_off > UINT32_MAX - (record_bytes - 1))
         return false;
     struct r300_r2vb_producer_streams s = {
         .num = 2,
