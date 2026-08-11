@@ -508,11 +508,23 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_error(device, VK_ERROR_DEVICE_LOST);
       }
 
-      /* An empty command buffer has nothing to execute and nothing to
-       * pretend about.
+      /* A zero-IB command buffer can still carry a deferred load-op clear
+       * from an empty render pass.  Execute that host-side work before
+       * treating the buffer as having no transport submission.
        */
-      if (cmd_buffer->ib_size_dwords == 0)
+      if (cmd_buffer->ib_size_dwords == 0) {
+         VkResult deferred =
+            r3v_native_cmd_buffer_execute_deferred_draw(device, cmd_buffer);
+         if (deferred != VK_SUCCESS) {
+            if (deferred == VK_ERROR_MEMORY_MAP_FAILED)
+               return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+            if (deferred != VK_ERROR_OUT_OF_HOST_MEMORY &&
+                deferred != VK_ERROR_OUT_OF_DEVICE_MEMORY)
+               return vk_error(device, VK_ERROR_DEVICE_LOST);
+            return deferred;
+         }
          continue;
+      }
 
       struct radeon_drm_vk_reloc_list relocs;
       radeon_drm_vk_reloc_list_init(&relocs);

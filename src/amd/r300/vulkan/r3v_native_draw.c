@@ -55,12 +55,13 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(vk_framebuffer, framebuffer,
                   pRenderPassBegin->framebuffer);
 
-   /* The bounded contract is one pass with one draw per command buffer;
-    * a second pass after the recorded cell would need a second clear and
-    * draw lowering the cell does not carry, so it refuses instead of
-    * recording a pass whose load op never executes.
+   /* The bounded contract is one pass with at most one draw per command
+    * buffer; a second pass would need a second clear and draw lowering the
+    * cell does not carry, so it refuses instead of recording a pass whose
+    * load op never executes.
     */
    if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
+       cmd_buffer->deferred_draw.pending ||
        cmd_buffer->deferred_copy_count != 0 ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
@@ -90,18 +91,26 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    }
 
    cmd_buffer->pass_target = view->image;
+   cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
+      .pending = true,
+      .target_memory = view->image->memory,
+      .target_fill_bytes =
+         r3v_native_image_footprint_bytes(view->image->height),
+      .target_width = view->image->width,
+      .target_height = view->image->height,
+   };
 }
 
-/* The bounded pass contract is one draw: the cell's IB carries exactly
- * one draw packet, so a pass that recorded none has no lowering and
- * refuses at its close.
+/* A pass with no draw still carries its load-op clear through deferred_draw.
+ * The zero-IB queue path executes that clear, while a draw extends the same
+ * record with the carrier and vertex stream needed by the cell.
  */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdEndRenderPass(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
-   if (cmd_buffer->pass_target == NULL || !cmd_buffer->draw_recorded) {
+   if (cmd_buffer->pass_target == NULL) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }

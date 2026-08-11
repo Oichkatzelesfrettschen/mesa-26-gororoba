@@ -694,9 +694,6 @@ main(void)
              VK_SUCCESS &&
           pipeline != VK_NULL_HANDLE);
 
-   /* The positive leg: the full public sequence ends EXECUTABLE and
-    * installs the reference cell against the byte-identical carrier.
-    */
    const VkRenderPassBeginInfo begin_pass = {
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
       .renderPass = pass,
@@ -711,6 +708,49 @@ main(void)
          },
    };
 
+   /* A render pass applies LOAD_OP_CLEAR even when its subpass records no
+    * draw.  The host model must accept the empty pass, retain clear work on
+    * its zero-IB command buffer, and execute that work at submission.
+    */
+   VkCommandBuffer empty_cmd = fresh_cmd();
+   vkCmdBeginRenderPass(empty_cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_empty, empty_cmd);
+   vkCmdEndRenderPass(empty_cmd);
+   assert(vkEndCommandBuffer(empty_cmd) == VK_SUCCESS);
+   assert(native_empty->ib_size_dwords == 0);
+   assert(native_empty->deferred_draw.pending);
+   assert(native_empty->deferred_draw.buffer == NULL);
+   assert(native_empty->owned_carrier == NULL);
+   uint32_t *empty_color_map = NULL;
+   assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&empty_color_map) == VK_SUCCESS);
+   assert(empty_color_map[0] == COLOR_SEED);
+   vkUnmapMemory(device, color_memory);
+   assert(vkQueueSubmit(
+             queue, 1,
+             &(VkSubmitInfo){
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .commandBufferCount = 1,
+                .pCommandBuffers = &empty_cmd,
+             },
+             VK_NULL_HANDLE) == VK_SUCCESS);
+   assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&empty_color_map) == VK_SUCCESS);
+   assert(empty_color_map[0] == R300_TRIANGLE_COLOR_SENTINEL);
+   assert(empty_color_map[(R3V_NATIVE_TARGET_MEMORY_BYTES / 4) - 1] ==
+          R300_TRIANGLE_COLOR_SENTINEL);
+   assert(empty_color_map[R3V_NATIVE_TARGET_MEMORY_BYTES / 4] == COLOR_SEED);
+   vkUnmapMemory(device, color_memory);
+   assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&empty_color_map) == VK_SUCCESS);
+   for (unsigned i = 0; i < (R3V_NATIVE_TARGET_MEMORY_BYTES + 4096) / 4;
+        i++)
+      empty_color_map[i] = COLOR_SEED;
+   vkUnmapMemory(device, color_memory);
+
+   /* The positive leg: the full public sequence ends EXECUTABLE and
+    * installs the reference cell against the byte-identical carrier.
+    */
    VkCommandBuffer cmd = fresh_cmd();
    vkCmdBeginRenderPass(cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -2048,11 +2088,6 @@ main(void)
    vkCmdDraw(bad_cmd, 3, 1, 0, 0);
    assert(vkEndCommandBuffer(bad_cmd) == R3V_NATIVE_REFUSAL_RESULT);
 
-   bad_cmd = fresh_cmd();
-   vkCmdBeginRenderPass(bad_cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
-   vkCmdEndRenderPass(bad_cmd);
-   assert(vkEndCommandBuffer(bad_cmd) == R3V_NATIVE_REFUSAL_RESULT);
-
    /* A render pass left open poisons at vkEndCommandBuffer: the open
     * pass has no closing lowering, so the buffer never becomes
     * executable.
@@ -2065,9 +2100,9 @@ main(void)
    vkCmdDraw(bad_cmd, 3, 1, 0, 0);
    assert(vkEndCommandBuffer(bad_cmd) == R3V_NATIVE_REFUSAL_RESULT);
 
-   /* A second render pass after the recorded cell refuses: its load-op
-    * clear has no lowering, so accepting it would record a pass that
-    * never executes.
+   /* A second render pass after the recorded cell refuses: one command
+    * buffer carries one deferred target record, so it cannot represent a
+    * second pass's clear and draw.
     */
    bad_cmd = fresh_cmd();
    vkCmdBeginRenderPass(bad_cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
