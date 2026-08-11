@@ -187,7 +187,7 @@ r3v_GetDeviceBufferMemoryRequirements(
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
       .size = pInfo->pCreateInfo->size,
       .alignment = 4096,
-      .memoryTypeBits = 0x3,
+      .memoryTypeBits = 0x1,
    };
    r3v_native_fill_buffer_dedicated_requirements(pMemoryRequirements);
 }
