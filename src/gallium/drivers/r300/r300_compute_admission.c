@@ -4873,7 +4873,8 @@ r300_nir_classify_compute(const nir_shader *s,
  * substrate lacks, which is why the construct cannot lower.  This is the single
  * source of truth for both r300_compute_reject_name and the substrate-absence
  * reason -- the classifier's per-site detail string names the specific
- * construct, this names the category. */
+ * construct, this names the category.  The final UNKNOWN row receives values
+ * outside the enum domain and keeps invalid reasons fail-closed. */
 static const struct r300_compute_reject_row r300_compute_reject_registry[] = {
    { R300_COMPUTE_ADMIT, "admit",
      "admissible: the kernel maps onto a compute-as-raster substrate verb" },
@@ -4895,22 +4896,24 @@ static const struct r300_compute_reject_row r300_compute_reject_registry[] = {
      "image_store / image_deref_store / bindless_image_store; the substrate export is a single 2D RT, not a random-access texel write" },
    { R300_COMPUTE_REJECT_UNKNOWN_SHAPE, "unknown-shape",
      "kernel admitted classification but matched no raster-verb pattern at dispatch; dispatch is a silent no-op" },
+   { R300_COMPUTE_REJECT_UNKNOWN, "unknown",
+     "the rejection reason is outside the supported compute-admission enum domain" },
    };
 
-   const struct r300_compute_reject_row *
-   r300_compute_reject_lookup(enum r300_compute_reject reason)
-   {
+const struct r300_compute_reject_row *
+r300_compute_reject_lookup(enum r300_compute_reject reason)
+{
    /* One row per enum value: this guard fails the build if a reason is added to
    * the enum without a registry row -- the divergence the registry prevents.
    * STATIC_ASSERT is a do/while statement, so it lives inside a function. */
    STATIC_ASSERT(ARRAY_SIZE(r300_compute_reject_registry) ==
-                R300_COMPUTE_REJECT_UNKNOWN_SHAPE + 1);
-   for (unsigned i = 0; i < ARRAY_SIZE(r300_compute_reject_registry); i++) {
-      if (r300_compute_reject_registry[i].reason == reason)
-         return &r300_compute_reject_registry[i];
-   }
-   /* Not reachable for a valid enum value; the admit row is the safe default. */
-   return &r300_compute_reject_registry[0];
+                R300_COMPUTE_REJECT_UNKNOWN + 1);
+
+   const unsigned reason_index = (unsigned)reason;
+   if (reason_index >= ARRAY_SIZE(r300_compute_reject_registry))
+      return &r300_compute_reject_registry[R300_COMPUTE_REJECT_UNKNOWN];
+
+   return &r300_compute_reject_registry[reason_index];
 }
 
 const char *
