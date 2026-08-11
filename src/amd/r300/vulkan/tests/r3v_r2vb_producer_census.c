@@ -166,10 +166,16 @@ fake_stack_init(void)
    g_context.viewport.translate[2] = 0.5f;
 
    memset(&g_vk_instance, 0, sizeof(g_vk_instance));
+   vk_object_base_instance_init(&g_vk_instance, &g_vk_instance.base,
+                                VK_OBJECT_TYPE_INSTANCE);
    g_vk_instance.app_info.api_version = VK_API_VERSION_1_0;
    memset(&g_vk_pdev, 0, sizeof(g_vk_pdev));
+   vk_object_base_instance_init(&g_vk_instance, &g_vk_pdev.base,
+                                VK_OBJECT_TYPE_PHYSICAL_DEVICE);
    g_vk_pdev.instance = &g_vk_instance;
    memset(&g_r3v_device, 0, sizeof(g_r3v_device));
+   vk_object_base_init(&g_r3v_device.vk, &g_r3v_device.vk.base,
+                       VK_OBJECT_TYPE_DEVICE);
    g_r3v_device.vk.physical = &g_vk_pdev;
    g_r3v_device.screen = (struct pipe_screen *)&g_screen;
 }
