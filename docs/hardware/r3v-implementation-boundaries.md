@@ -67,18 +67,32 @@ complete Vulkan semantic/conformance sections remain implementation
 contracts.
 
 The native graphics family carries a bounded transfer surface in addition
-to the fixed render cell: transfer-only linear `B8G8R8A8_UNORM` images up
-to 2048 texels per axis, region-validated buffer/image copies, whole-image
-color clear, and an outside-render-pass barrier no-op. These operations
-execute synchronously through host mappings, publish destination memory,
-use no IB and issue no `DRM_RADEON_CS` submission ioctl; a host mapping may
-issue `DRM_RADEON_GEM_MMAP` through `radeon_drm_vk_bo_map()`. They carry
-host-unit and drm-shim evidence rather than GPU-transfer or silicon evidence.
-Broader transfer formats, usages, GPU copy packets, and target transfer
-observations remain open. Vulkan 1.0 requires an implementation that exposes
-graphics to expose at least one family supporting both graphics and compute;
-the native family carries graphics alone, the compute commands fail closed,
-and the gap closes when a native compute route lands. The
+to the fixed render cell: one linear `B8G8R8A8_UNORM` format whose single
+`linearTilingFeatures` mask contains
+`VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT`,
+`VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT`, and
+`VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT`. `r3v_GetPhysicalDeviceImageFormatProperties2`
+and `r3v_CreateImage`
+partition that mask into color-attachment usage alone for the render family
+or a nonzero subset of transfer usage bits for the transfer family; mixed
+usage is refused. The transfer operations cover images up to 2048 texels per
+axis, region-validated buffer/image copies, whole-image color clear, and an
+outside-render-pass barrier no-op. They execute synchronously through host
+mappings, publish destination memory, use no IB and issue no
+`DRM_RADEON_CS` submission ioctl; a host mapping may issue
+`DRM_RADEON_GEM_MMAP` through `radeon_drm_vk_bo_map()`. They carry host-unit
+and drm-shim evidence rather than GPU-transfer or silicon evidence. Broader
+transfer formats, usages, GPU copy packets, and target transfer observations
+remain open. The [Vulkan queues rule](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#devsandqueues-physical-device-queue-properties)
+requires an implementation that exposes graphics to expose at least one
+family supporting both graphics and compute. The native source branch reports
+`VK_QUEUE_GRAPHICS_BIT` only from
+`r3v_GetPhysicalDeviceQueueFamilyProperties2`, while
+`r3v_native_device.c:r3v_CreateComputePipelines` returns
+`R3V_NATIVE_REFUSAL_RESULT`; this is an experimental nonconformant source
+surface rather than a Vulkan 1.0 capability claim. Native promotion remains
+blocked until a family advertises both operations and the compute route
+executes them. The
 extent gap is closed: `vkCreateImage` accepts every extent inside the
 reported 64x64 maximum, and the cell family realizes it -- in TCL
 bypass the extent reaches the hardware through the `SC_SCISSORS_BR`
@@ -134,104 +148,190 @@ Each current-implementation claim binds to a named Mesa source location and a
 structural query.
 
 ```sh
+# Isolated-worktree and declared-source identity gate.
+set -eu
+expected_sha=${R3V_EXPECTED_SHA:?set R3V_EXPECTED_SHA to the audited commit}
+canonical_root=${R3V_CANONICAL_ROOT:?set R3V_CANONICAL_ROOT to the canonical checkout}
+worktree_root=$(git rev-parse --show-toplevel)
+test "$worktree_root" != "$canonical_root"
+git worktree list --porcelain | grep -Fx "worktree $worktree_root" >/dev/null
+test "$(git rev-parse --verify HEAD)" = "$expected_sha"
+test -z "$(git status --porcelain=v2)"
+git diff --quiet
+git diff --cached --quiet
+
+function_body() {
+  sed -n "/^$1(/,/^}/p" "$2"
+}
+
+native_branch() {
+  function_body "$1" "$2" | awk '
+    /#ifdef R3V_NATIVE_BACKEND/ { in_native=1; print; next }
+    in_native && /^#else/ { exit }
+    in_native { print }
+  '
+}
+
+native_initializer() {
+  sed -n "/$1 = {/,/^[[:space:]]*};/p" "$2"
+}
+
 # Gallium-backed R3V build and link boundary.
-rg -n 'r3v-gallium-backend|driver_r300|libgalliumvl' \
+rg -n --fixed-strings -e 'r3v-gallium-backend' -e 'driver_r300' \
+  -e 'libgalliumvl' \
   src/meson.build \
   src/amd/r300/vulkan/meson.build
 
 # r3v_device owns the Gallium screen and context.
-rg -n 'struct r3v_device|radeon_winsys|pipe_screen|pipe_context' \
+rg -n --fixed-strings -e 'struct r3v_device' -e 'radeon_winsys' \
+  -e 'pipe_screen' -e 'pipe_context' \
   src/amd/r300/vulkan/r3v_device.h \
   src/amd/r300/vulkan/r3v_device.c
 
 # Gallium queue replay and fence completion.
-rg -n 'pipe->flush|fence_finish' \
+rg -n --fixed-strings -e 'pipe->flush' -e 'fence_finish' \
   src/amd/r300/vulkan/r3v_queue.c
 
 # Direct-backend consent still falls through to Gallium.
-rg -n 'R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED' \
+rg -n --fixed-strings 'R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED' \
   src/amd/r300/vulkan/r3v_queue.c \
   src/amd/r300/vulkan/r3v_device.c
 
 # Extracted shader descriptors borrow Gallium-owned storage.
-rg -n 'extract' \
+rg -n --fixed-strings -e 'r300_fs_get_hw_code' \
+  -e 'r3v_pipeline_own_fs_binary' \
   src/gallium/drivers/r300/r300_public.h \
   src/amd/r300/vulkan/r3v_pipeline.c
 
 # Unsupported compute shapes complete without execution.
-rg -n 'R300_COMPUTE_REJECT_UNKNOWN_SHAPE|no-op' \
+rg -n --fixed-strings -e 'r3v_CreateComputePipelines' \
+  -e 'R300_COMPUTE_REJECT_UNKNOWN_SHAPE' \
   src/amd/r300/vulkan/r3v_pipeline.c \
   src/amd/r300/vulkan/r3v_cmd_buffer.c
 
 # Current R2VB source and delivery domains.
-rg -n 'producer_input_preflight|delivery_element_preflight' \
+rg -n --fixed-strings -e 'r300_r2vb_producer_input_preflight' \
+  -e 'r300_r2vb_delivery_element_preflight' \
   src/gallium/drivers/r300/r300_r2vb.c \
   src/amd/r300/common/r300_r2vb_source_contract.h
 
 # Native ICD build identity and separation audit.
-rg -n 'r3v-native-backend|libvulkan_r3v_native|separation' \
+rg -n --fixed-strings -e 'r3v-native-backend' \
+  -e 'libvulkan_r3v_native' -e 'separation' \
   meson.options \
   src/amd/r300/vulkan/meson.build
 
 # Gallium-free Radeon DRM transport.
-rg -n 'radeon_drm_vk_cs_build|radeon_drm_vk_completion' \
+rg -n --fixed-strings -e 'radeon_drm_vk_cs_build' \
+  -e 'radeon_drm_vk_completion' \
   src/amd/radeon/drm_vk/
 
 # Native submission arming and one-shot disarm.
-rg -n 'r3v_native_arming_evaluate|attempt.token' \
+rg -n --fixed-strings -e 'r3v_native_arming_evaluate' \
+  -e 'attempt.token' \
   src/amd/r300/vulkan/r3v_native_arming.c \
   src/amd/r300/vulkan/r3v_native_queue.c
 
 # Native submit gate and digest-bound submission objects.
-rg -n \
+rg -n --fixed-strings \
   -e 'R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED' \
   -e 'R3V_NATIVE_MANIFEST_DIR' \
   -e 'submit_manifest' \
   src/amd/r300/vulkan/r3v_native_queue.c
 
 # Native host coherency over the unsnooped GART.
-rg -n 'radeon_drm_vk_bo_cache_sync|HOST_CACHED' \
+rg -n --fixed-strings -e 'radeon_drm_vk_bo_cache_sync' \
+  -e 'HOST_CACHED' \
   src/amd/radeon/drm_vk/radeon_drm_vk_bo.c \
   src/amd/r300/vulkan/r3v_physical_device.c
 
 # Triangle-cell fragment program compiler output.
-rg -n 'r300_tcl_bypass_fs_tool|r300_tcl_bypass_triangle_fs_block' \
+rg -n --fixed-strings -e 'r300_tcl_bypass_fs_tool' \
+  -e 'r300_tcl_bypass_triangle_fs_block' \
   src/gallium/drivers/r300/compiler/tests/r300_tcl_bypass_fs_tool.c \
   src/amd/r300/common/r300_tcl_bypass_triangle_fs_block.h
 
 # Private fixed-cell recording outside the ICD export surface.
-rg -n 'r3v_native_record_tcl_bypass_triangle' \
+rg -n --fixed-strings 'r3v_native_record_tcl_bypass_triangle' \
   src/amd/r300/vulkan/r3v_native_cell.c \
   src/amd/r300/vulkan/r3v_native.h
 
 # Public recording surface for image, view, pipeline, and draw.
-rg -n 'r3v_CmdDraw|r3v_CreateImage|NATIVE_LIVE_CMDS' \
+rg -n --fixed-strings -e 'r3v_CmdDraw' -e 'r3v_CreateImage' \
+  -e 'NATIVE_LIVE_CMDS' \
   src/amd/r300/vulkan/r3v_native_image.c \
   src/amd/r300/vulkan/r3v_native_pipeline.c \
   src/amd/r300/vulkan/r3v_native_draw.c
 
 # Deferred draw execution at queue submission.
-rg -n 'execute_deferred_draw' \
+rg -n --fixed-strings 'execute_deferred_draw' \
   src/amd/r300/vulkan/r3v_native_cell.c \
   src/amd/r300/vulkan/r3v_native_queue.c
 
-# Native queue GRAPHICS advertisement and format subset.
-rg -n 'VK_QUEUE_GRAPHICS_BIT|R3V_NATIVE_BACKEND' \
-  src/amd/r300/vulkan/r3v_physical_device.c
+# Native queue branch and compute refusal, scoped to their functions.
+native_queue=$(native_branch \
+  r3v_GetPhysicalDeviceQueueFamilyProperties2 \
+  src/amd/r300/vulkan/r3v_physical_device.c)
+printf '%s\n' "$native_queue" | rg -n --fixed-strings \
+  -e 'VK_QUEUE_GRAPHICS_BIT' -e '#ifdef R3V_NATIVE_BACKEND'
+test -z "$(printf '%s\n' "$native_queue" | \
+  rg -F 'VK_QUEUE_COMPUTE_BIT' || true)"
+native_compute=$(function_body r3v_CreateComputePipelines \
+  src/amd/r300/vulkan/r3v_native_device.c)
+printf '%s\n' "$native_compute" | rg -n --fixed-strings \
+  'R3V_NATIVE_REFUSAL_RESULT'
+
+# Native extension table and dispatch overlay, scoped to the native branch.
+native_extensions=$(native_initializer \
+  r3v_native_device_extensions_supported \
+  src/amd/r300/vulkan/r3v_physical_device.c)
+printf '%s\n' "$native_extensions" | rg -n --fixed-strings \
+  -e '.KHR_get_memory_requirements2 = true,' \
+  -e '.KHR_bind_memory2 = true,' \
+  -e '.KHR_dedicated_allocation = true,'
+test "$(printf '%s\n' "$native_extensions" | \
+  rg -F -c '.KHR_' || true)" -eq 3
+native_create=$(function_body r3v_CreateDevice \
+  src/amd/r300/vulkan/r3v_native_device.c)
+printf '%s\n' "$native_create" | rg -n --fixed-strings \
+  -e 'r3v_device_entrypoints' -e 'vk_common_device_entrypoints'
+
+# Native linear B8G8R8A8 format mask and usage gates.
+native_format=$(native_branch r3v_get_format_properties \
+  src/amd/r300/vulkan/r3v_physical_device.c)
+printf '%s\n' "$native_format" | rg -n --fixed-strings \
+  -e 'VK_FORMAT_B8G8R8A8_UNORM' \
+  -e 'VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT' \
+  -e 'VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT' \
+  -e 'VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT'
+native_image_query=$(native_branch r3v_get_image_format_properties \
+  src/amd/r300/vulkan/r3v_physical_device.c)
+printf '%s\n' "$native_image_query" | rg -n --fixed-strings \
+  -e 'VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT' \
+  -e 'VK_IMAGE_USAGE_TRANSFER_SRC_BIT' \
+  -e 'VK_IMAGE_USAGE_TRANSFER_DST_BIT'
+native_image_create=$(function_body r3v_CreateImage \
+  src/amd/r300/vulkan/r3v_native_image.c)
+printf '%s\n' "$native_image_create" | rg -n --fixed-strings \
+  -e 'VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT' \
+  -e 'VK_IMAGE_USAGE_TRANSFER_SRC_BIT' \
+  -e 'VK_IMAGE_USAGE_TRANSFER_DST_BIT'
 
 # Reference SPIR-V admission pair and its generator.
-rg -n 'r3v_reference_vertex_spirv|generate_reference_spirv' \
+rg -n --fixed-strings -e 'r3v_reference_vertex_spirv' \
+  -e 'generate_reference_spirv' \
   src/amd/r300/vulkan/r3v_native_reference_spirv.h \
   src/amd/r300/vulkan/shaders/generate_reference_spirv.py
 
 # Loader-boundary application gate and symbol audit.
-rg -n 'r3v-native-loader-application|FORBIDDEN_PREFIXES|R3V_EXPECTED_ICD_DSO' \
+rg -n --fixed-strings -e 'r3v-native-loader-application' \
+  -e 'FORBIDDEN_PREFIXES' -e 'R3V_EXPECTED_ICD_DSO' \
   src/amd/r300/vulkan/tests/r3v_native_loader_application.c \
   src/amd/r300/vulkan/tests/r3v_native_loader_application_symbol_audit.py \
   src/amd/r300/vulkan/meson.build
 
 # Native transfer image family and deferred host copies.
-rg -n \
+rg -n --fixed-strings \
   -e 'R3V_NATIVE_TRANSFER_DIMENSION_MAX' \
   -e 'r3v_CmdCopyBufferToImage' \
   -e 'r3v_CmdClearColorImage' \
@@ -243,13 +343,26 @@ rg -n \
   src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c
 
 # Native WSI surface and presentation boundary.
-rg -n \
+rg -n --fixed-strings \
   -e 'r3v_native_device_extensions_supported' \
   -e 'r3v_init_wsi' \
   -e 'r3v-native-wsi-surface-contract' \
   src/amd/r300/vulkan/r3v_physical_device.c \
   src/amd/r300/vulkan/tests/r3v_native_wsi_surface_contract.c \
   src/amd/r300/vulkan/meson.build
+
+# Present-support, entrypoint-closure, and loader-boundary audit contracts.
+rg -n --fixed-strings -e 'supported == VK_FALSE' \
+  -e 'r3v-native-wsi-surface-contract' \
+  src/amd/r300/vulkan/tests/r3v_native_wsi_surface_contract.c \
+  src/amd/r300/vulkan/meson.build
+rg -n --fixed-strings -e 'r3v-native-entrypoint-closure' \
+  -e 'r3v-native-public-surface-policy' \
+  src/amd/r300/vulkan/meson.build
+rg -n --fixed-strings -e 'r3v-native-loader-application' \
+  -e 'r3v-native-loader-application-symbols' \
+  src/amd/r300/vulkan/meson.build
+python3 src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py --selftest
 ```
 
 ## Current Gallium-backed R3V implementation
@@ -341,11 +454,21 @@ The landed mechanisms are:
   and structural validator;
 - native device, memory (one owned GEM BO per `VkDeviceMemory`), buffer,
   image, image-view, pipeline, queue, and command-carrier objects;
-  reporting narrowed to executable routes: the queue family advertises
-  `VK_QUEUE_GRAPHICS_BIT` for the recording surface, format properties
-  advertise the accepted subset (the linear B8G8R8A8 render target, the
-  transfer-only linear B8G8R8A8 family, and the F32-family vertex formats),
-  and one UMA heap sizes from `DRM_RADEON_GEM_INFO`;
+  reporting narrowed to executable source routes: the native queue family
+  remains an experimental graphics-only surface because
+  `r3v_GetPhysicalDeviceQueueFamilyProperties2` emits
+  `VK_QUEUE_GRAPHICS_BIT` while `r3v_native_device.c:r3v_CreateComputePipelines`
+  refuses. The Vulkan 1.0 queue-family rule therefore keeps native promotion
+  open until one family advertises and executes both graphics and compute.
+  Format properties advertise one linear `B8G8R8A8_UNORM`
+  `linearTilingFeatures` mask containing
+  `VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT`,
+  `VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT`, and
+  `VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT`; image format query and creation
+  split those bits into color-attachment usage alone or a nonzero
+  transfer-bit subset, and reject mixed usage. The F32-
+  family vertex formats and one UMA heap size from `DRM_RADEON_GEM_INFO`
+  remain advertised;
 - the public graphics recording surface: the qualified linear image
   family at any extent inside the 64x64 maximum over the fixed
   64-pixel pitch (larger extents refuse at creation), its identity
@@ -391,14 +514,17 @@ The landed mechanisms are:
   refuses the draw.  The CPU route is the default, the delivered PM4 is
   unchanged, and the route is host-model evidence only.
 - the linear transfer image family and its synchronous copies:
-  B8G8R8A8_UNORM 2D images under transfer usage alone at any extent
-  inside 2048 per axis, a deliberately conservative policy bound taken
-  from the RS48x single-tile texture ceiling.  The row pitch aligns
-  each row to 64 bytes -- the 2D engine's DST_PITCH_OFFSET word
-  carries pitch in 64-byte units, so every family row layout stays
-  addressable by the qualified direct-write 2D path -- and the
-  footprint is the rows alone; the oracle-headroom row is the render
-  family's contract.  `vkCmdCopyBufferToImage`,
+  linear `B8G8R8A8_UNORM` 2D images whose usage is a nonzero subset of
+  `VK_IMAGE_USAGE_TRANSFER_SRC_BIT` and `VK_IMAGE_USAGE_TRANSFER_DST_BIT`
+  at any extent inside 2048 per axis, a deliberately conservative policy
+  bound taken from the RS48x single-tile texture ceiling. The image-format
+  query and `r3v_CreateImage` admit this transfer subset, admit the render
+  family only for color-attachment usage alone, and refuse mixed usage. The
+  row pitch aligns each row to 64 bytes -- the 2D engine's DST_PITCH_OFFSET
+  word carries pitch in 64-byte units, so every family row layout stays
+  addressable by the qualified direct-write 2D path -- and the footprint is
+  the rows alone; the oracle-headroom row is the render family's contract.
+  `vkCmdCopyBufferToImage`,
   `vkCmdCopyImageToBuffer`, `vkCmdCopyImage`, and
   `vkCmdClearColorImage` (whole-subresource, clamp-then-round unorm
   pack with NaN converting as zero) record region-admitted deferred
@@ -737,10 +863,11 @@ F32_3 -> 3 physical dwords -> XYZ1 logical vec4
 F32_4 -> 4 physical dwords -> XYZW logical vec4
 ```
 
-The live automatic Gallium R2VB producer admits `F32_3` and `F32_4`. Final
-delivery admits FP32x4 only. The native identity-delivery host model covers
-`F32_4`, `F32_3`, and `F32_2` under its exact opt-in, but live producer
-submission and re-ingest remain outside the native route.
+The live automatic Gallium R2VB producer admits `F32_3` and `F32_4`, and its
+live automatic Gallium final delivery admits FP32x4 only. The native
+identity-delivery host model covers `F32_4`, `F32_3`, and `F32_2` under its
+exact opt-in, but live producer submission and re-ingest remain outside the
+native route.
 
 The integration order separates landed no-submit source transactions from
 remaining validator, live-delivery, and silicon work:
