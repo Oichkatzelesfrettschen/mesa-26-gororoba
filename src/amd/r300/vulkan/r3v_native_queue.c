@@ -25,11 +25,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
-/* Publishes the directory entry itself: rename makes the file visible, and
- * the entry survives power loss only after the directory's own metadata
- * reaches storage.  Returns 0 or a negative errno.
+/* Publishes the directory entry itself: the final hard link makes the file
+ * visible, and the entry survives power loss only after the directory's own
+ * metadata reaches storage.  Returns 0 or a negative errno.
  */
 static int
 fsync_dir(const char *dir)
@@ -42,12 +43,11 @@ fsync_dir(const char *dir)
    return result;
 }
 
-/* Writes one evidence file durably: the payload lands in a dot-prefixed
- * temporary, every byte is written and fsynced, the rename publishes the
- * final name, and the directory fsync makes the entry itself survive power
- * loss -- a reader never sees a torn file, and a crash after return cannot
- * lose the artifact.  A path that would truncate refuses up front, since a
- * truncated name writes evidence somewhere the reader never looks.
+/* Writes one evidence file durably: the payload lands in a unique temporary,
+ * every byte is written and fsynced, a hard link publishes the final name
+ * without replacing an existing artifact, and the directory fsync makes the
+ * entry itself survive power loss.  A final name is one-shot evidence: a
+ * second writer returns an error instead of mixing bytes from two submits.
  * Returns 0 or a negative errno.  The attended runners retain their
  * readback artifacts through this same writer, so every one-shot result
  * shares one durability contract.
@@ -59,38 +59,73 @@ r3v_native_evidence_write_file(const char *dir, const char *name,
    char tmp_path[1024];
    char path[1024];
    int tmp_length =
-      snprintf(tmp_path, sizeof(tmp_path), "%s/.%s.tmp", dir, name);
+      snprintf(tmp_path, sizeof(tmp_path), "%s/.%s.XXXXXX", dir, name);
    int length = snprintf(path, sizeof(path), "%s/%s", dir, name);
    if (tmp_length < 0 || (size_t)tmp_length >= sizeof(tmp_path) ||
        length < 0 || (size_t)length >= sizeof(path))
       return -ENAMETOOLONG;
 
-   int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+   int fd = mkstemp(tmp_path);
    if (fd < 0)
       return -errno;
+
+   int result = 0;
+   if (fchmod(fd, 0644) != 0)
+      result = -errno;
    const uint8_t *bytes = data;
    size_t total = 0;
-   while (total < size) {
+   while (result == 0 && total < size) {
       ssize_t written = write(fd, bytes + total, size - total);
       if (written < 0) {
          if (errno == EINTR)
             continue;
-         close(fd);
-         unlink(tmp_path);
-         return -EIO;
+         result = -errno;
+         break;
+      }
+      if (written == 0) {
+         result = -EIO;
+         break;
       }
       total += (size_t)written;
    }
-   if (fsync(fd) != 0 || close(fd) != 0) {
+
+   if (result == 0 && fsync(fd) != 0)
+      result = -errno;
+   if (close(fd) != 0 && result == 0)
+      result = -errno;
+   if (result != 0) {
       unlink(tmp_path);
-      return -EIO;
+      return result;
    }
-   if (rename(tmp_path, path) != 0) {
+
+   /* link() is the publication step: unlike rename(), it never replaces a
+    * final artifact that another submit already retained.  The temporary
+    * name is removed only after the final name exists. */
+   if (link(tmp_path, path) != 0) {
       int saved = -errno;
       unlink(tmp_path);
       return saved;
    }
+   if (unlink(tmp_path) != 0)
+      return -errno;
    return fsync_dir(dir);
+}
+
+static int
+r3v_native_evidence_require_fresh(const char *dir,
+                                  const char *const *names, size_t count)
+{
+   char path[1024];
+   for (size_t i = 0; i < count; i++) {
+      int length = snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+      if (length < 0 || (size_t)length >= sizeof(path))
+         return -ENAMETOOLONG;
+      if (access(path, F_OK) == 0)
+         return -EEXIST;
+      if (errno != ENOENT)
+         return -errno;
+   }
+   return 0;
 }
 
 static void
@@ -115,6 +150,14 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
                                 const uint32_t *ib, uint32_t ib_size_dwords,
                                 const struct radeon_drm_vk_reloc_list *relocs)
 {
+   static const char *const names[] = {
+      "ib.bin", "relocs.bin", "manifest.json",
+   };
+   int result = r3v_native_evidence_require_fresh(
+      device->manifest_dir, names, ARRAY_SIZE(names));
+   if (result != 0)
+      return result;
+
    char ib_hex[BLAKE3_OUT_LEN * 2 + 1];
    char reloc_hex[BLAKE3_OUT_LEN * 2 + 1];
    r300_triangle_ib_digest_hex(ib, ib_size_dwords, ib_hex);
@@ -134,7 +177,7 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
 #endif
    const size_t ib_byte_size = (size_t)ib_size_dwords * sizeof(uint32_t);
    uint8_t *ib_bytes = malloc(ib_byte_size);
-   int result = ib_bytes == NULL ? -ENOMEM : 0;
+   result = ib_bytes == NULL ? -ENOMEM : 0;
    if (result == 0) {
       r300_triangle_ib_serialize(ib, ib_size_dwords, ib_bytes);
       result = r3v_native_evidence_write_file(device->manifest_dir,
@@ -189,6 +232,14 @@ r3v_native_queue_write_submit_object(
    const char *kernel_release,
    const char *module_srcversion)
 {
+   static const char *const names[] = {
+      "submit_relocs.bin", "submit_manifest.json",
+   };
+   int result = r3v_native_evidence_require_fresh(
+      device->manifest_dir, names, ARRAY_SIZE(names));
+   if (result != 0)
+      return result;
+
    char ib_hex[BLAKE3_OUT_LEN * 2 + 1];
    char reloc_hex[BLAKE3_OUT_LEN * 2 + 1];
    r300_triangle_ib_digest_hex(ib, ib_size_dwords, ib_hex);
@@ -200,7 +251,7 @@ r3v_native_queue_write_submit_object(
    char escaped_kernel_release[128 * 6 + 1];
    char escaped_module_srcversion[128 * 6 + 1];
    char escaped_elf_path[sizeof(elf_path) * 6 + 1];
-   int result = r3v_native_identity_collect(
+   result = r3v_native_identity_collect(
       elf_path, sizeof(elf_path), elf_hex, sizeof(elf_hex));
    if (result != 0)
       return result;
@@ -307,7 +358,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
     * keeps a multi-buffer submit from executing its first buffer and
     * then reporting device loss on the disarmed second.
     */
-   if (device->submit_hazard_accepted) {
+   if (device->submit_hazard_accepted || device->manifest_dir != NULL) {
       uint32_t executable = 0;
       for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
          const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
@@ -317,7 +368,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
       if (executable > 1) {
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                          "r3v-native: an armed submission carries one "
+                          "r3v-native: a retained submission carries one "
                           "command buffer; this submit carries %u",
                           executable);
       }
@@ -403,6 +454,44 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       radeon_drm_vk_cs_build(&cs, cmd_buffer->ib,
                              cmd_buffer->ib_size_dwords, &relocs, 0, true);
 
+      char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
+      char kernel_release[128];
+      char module_srcversion[128];
+      struct r3v_native_arming_facts facts;
+      if (device->submit_hazard_accepted) {
+         /* An open gate without a retention destination fails before the
+          * deferred CPU execution and before any evidence bytes are written.
+          */
+         if (device->manifest_dir == NULL) {
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "r3v-native: open gate requires "
+                             "R3V_NATIVE_MANIFEST_DIR for submit-object "
+                             "retention");
+         }
+
+         r300_triangle_ib_digest_hex(cmd_buffer->ib,
+                                     cmd_buffer->ib_size_dwords, ib_digest);
+         r3v_native_arming_collect_from(
+            device->arming_provider != NULL
+               ? device->arming_provider
+               : r3v_native_arming_host_provider(),
+            &facts, device->pdevice->pci_vendor_id,
+            device->pdevice->pci_device_id, ib_digest,
+            device->manifest_dir, kernel_release, sizeof(kernel_release),
+            module_srcversion, sizeof(module_srcversion));
+
+         if (facts.attempt_token_present) {
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(
+               device, VK_ERROR_DEVICE_LOST,
+               "r3v-native: submission refused before evidence retention: "
+               "%s",
+               r3v_native_arming_verdict_name(
+                  R3V_NATIVE_ARMING_ALREADY_ATTEMPTED));
+         }
+      }
+
       if (device->manifest_dir != NULL &&
           r3v_native_queue_write_manifest(device, cmd_buffer->ib,
                                           cmd_buffer->ib_size_dwords,
@@ -477,19 +566,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "attended run");
       }
 
-      /* An open gate submits only with the evidence chain intact: the
-       * manifest directory is part of the submission contract, and the
-       * exact submit object retains below before the ioctl runs.
-       */
-      if (device->manifest_dir == NULL) {
-         radeon_drm_vk_completion_finish(&device->drm, &completion);
-         radeon_drm_vk_reloc_list_finish(&relocs);
-         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                          "r3v-native: open gate requires "
-                          "R3V_NATIVE_MANIFEST_DIR for submit-object "
-                          "retention");
-      }
-
       /* The RS480 GART reads and writes with request snooping disabled,
        * and every GTT mapping is ttm_cached, so the driver keeps the
        * HOST_COHERENT promise itself: every referenced memory with a live
@@ -507,28 +583,10 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
 
-      /* The arming facts collect before retention so the retained bundle
-       * carries the same kernel and module identity the gate below judges;
-       * the evaluation itself stays the last gate before the ioctl.
-       */
-      char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
-      char kernel_release[128];
-      char module_srcversion[128];
-      r300_triangle_ib_digest_hex(cmd_buffer->ib, cmd_buffer->ib_size_dwords,
-                                  ib_digest);
-      struct r3v_native_arming_facts facts;
-      const struct r3v_native_arming_provider *arming_provider =
-         device->arming_provider != NULL
-            ? device->arming_provider
-            : r3v_native_arming_host_provider();
-      r3v_native_arming_collect_from(
-         arming_provider, &facts, device->pdevice->pci_vendor_id,
-         device->pdevice->pci_device_id, ib_digest, device->manifest_dir,
-         kernel_release, sizeof(kernel_release), module_srcversion,
-         sizeof(module_srcversion));
-
-      /* The exact ioctl payload retains before the ioctl; a retention
-       * failure refuses the submission with nothing sent.
+      /* The collected arming facts carry the same kernel and module identity
+       * the gate below judges; the evaluation itself stays the last gate
+       * before the ioctl.  The exact ioctl payload retains before that gate,
+       * and a retention failure refuses with nothing sent.
        */
       if (r3v_native_queue_write_submit_object(
              device, cmd_buffer->ib, cmd_buffer->ib_size_dwords, &relocs,

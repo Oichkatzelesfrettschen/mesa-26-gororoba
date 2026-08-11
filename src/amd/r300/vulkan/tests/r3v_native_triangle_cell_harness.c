@@ -164,11 +164,16 @@ main(int argc, char **argv)
 {
    if (argc != 2 ||
        (strcmp(argv[1], "closed") != 0 && strcmp(argv[1], "open") != 0 &&
-        strcmp(argv[1], "poison") != 0)) {
-      fprintf(stderr, "usage: %s closed|open|poison\n", argv[0]);
+        strcmp(argv[1], "poison") != 0 &&
+        strcmp(argv[1], "multi") != 0 &&
+        strcmp(argv[1], "empty") != 0)) {
+      fprintf(stderr, "usage: %s closed|open|poison|multi|empty\n", argv[0]);
       return 2;
    }
-   const bool open_gate = strcmp(argv[1], "open") == 0;
+   const bool multi_mode = strcmp(argv[1], "multi") == 0;
+   const bool empty_manifest_mode = strcmp(argv[1], "empty") == 0;
+   const bool open_gate = strcmp(argv[1], "open") == 0 || multi_mode ||
+                          empty_manifest_mode;
    /* The poison mode ends at the recording surface: refusing a submission
     * marks the queue lost, so the calibration owns its own device rather
     * than sharing one with a cell that submits afterward.
@@ -184,7 +189,9 @@ main(int argc, char **argv)
     */
    char manifest_template[PATH_MAX];
    const char *manifest_dir = getenv("R3V_NATIVE_MANIFEST_DIR");
-   if (manifest_dir == NULL || manifest_dir[0] == '\0') {
+   if (empty_manifest_mode) {
+      setenv("R3V_NATIVE_MANIFEST_DIR", "", 1);
+   } else if (manifest_dir == NULL || manifest_dir[0] == '\0') {
       const char *tmp_dir = getenv("TMPDIR");
       if (tmp_dir == NULL || tmp_dir[0] == '\0')
          tmp_dir = getenv("MESON_BUILD_ROOT");
@@ -305,6 +312,10 @@ main(int argc, char **argv)
    LOAD_DEVICE(vkQueueSubmit);
    LOAD_DEVICE(vkDestroyDevice);
    LOAD_DEVICE(vkCmdDraw);
+
+   if (empty_manifest_mode)
+      CHECK(native_device->manifest_dir == NULL,
+            "empty R3V_NATIVE_MANIFEST_DIR stays absent at device creation");
 
    VkMemoryAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -439,6 +450,54 @@ main(int argc, char **argv)
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
 
+   if (multi_mode) {
+      VkCommandBuffer second_cmd = VK_NULL_HANDLE;
+      result = vkAllocateCommandBuffers(
+         device,
+         &(VkCommandBufferAllocateInfo){
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+         },
+         &second_cmd);
+      CHECK(result == VK_SUCCESS, "second command buffer allocation: %d",
+            result);
+      if (result != VK_SUCCESS || second_cmd == VK_NULL_HANDLE)
+         goto done;
+
+      result = vkBeginCommandBuffer(
+         second_cmd, &(VkCommandBufferBeginInfo){
+                        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                     });
+      CHECK(result == VK_SUCCESS, "second command buffer begin: %d", result);
+      if (result != VK_SUCCESS)
+         goto done;
+
+      result = record_cell(second_cmd, vertex_memory, color_memory);
+      CHECK(result == VK_SUCCESS, "second cell recording: %d", result);
+      if (result != VK_SUCCESS)
+         goto done;
+
+      result = vkEndCommandBuffer(second_cmd);
+      CHECK(result == VK_SUCCESS, "second command buffer end: %d", result);
+      if (result != VK_SUCCESS)
+         goto done;
+
+      VkCommandBuffer commands[] = {cmd, second_cmd};
+      result = vkQueueSubmit(queue, 1,
+                             &(VkSubmitInfo){
+                                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                .commandBufferCount = 2,
+                                .pCommandBuffers = commands,
+                             },
+                             VK_NULL_HANDLE);
+      CHECK(result == VK_ERROR_DEVICE_LOST,
+            "retained multi-command submit refuses before retention: %d",
+            result);
+      goto done;
+   }
+
    /* The recorder published the vertex write while its mapping was live;
     * exactly one cache sync has run before any submission.
     */
@@ -453,6 +512,12 @@ main(int argc, char **argv)
                              .pCommandBuffers = &cmd,
                           },
                           VK_NULL_HANDLE);
+   if (empty_manifest_mode) {
+      CHECK(result == VK_ERROR_DEVICE_LOST,
+            "empty manifest path refuses before deferred execution: %d",
+            result);
+      goto done;
+   }
    if (open_gate) {
       CHECK(result == VK_SUCCESS,
             "open-gate submission through the shim: %d", result);
