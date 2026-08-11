@@ -85,7 +85,6 @@ fi
 # failure names which one moved.
 reloc_entry_bytes=16
 expected_relocs=2
-expected_consumed_relocs=1
 submit_reloc_bytes=$(wc -c < "${workdir}/submit_relocs.bin")
 if [ "${submit_reloc_bytes}" -ne      "$((reloc_entry_bytes * expected_relocs))" ]; then
     echo "submit reloc chunk is ${submit_reloc_bytes} bytes, not" \
@@ -190,9 +189,13 @@ EOF
 good=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
     "${workdir}/ib.bin")
 echo "${good}"
+# The replay tool's relocs field reports the number of BO slots in the
+# supplied bundle, not the number of IB relocation sites consumed.  The
+# bundle mirrors both submitted entries, while reloc_index handle validation
+# above binds the one consumed site to the color entry.
 accept_replay_verdict() {
     case "$1" in
-        *"relocs=${expected_consumed_relocs} "*"verdict=ACCEPT-NO-DRAW"*)
+        *"relocs=${expected_relocs} "*"verdict=ACCEPT-NO-DRAW"*)
             return 0
             ;;
         *)
@@ -206,8 +209,8 @@ if ! accept_replay_verdict "${good}"; then
     exit 1
 fi
 if accept_replay_verdict \
-        "relocs=${expected_relocs} verdict=ACCEPT-NO-DRAW"; then
-    echo "replay verdict accepted the unconsumed completion relocation" >&2
+        "relocs=1 verdict=ACCEPT-NO-DRAW"; then
+    echo "replay matcher accepted a bundle with one BO slot" >&2
     exit 1
 fi
 
