@@ -85,6 +85,7 @@ fi
 # failure names which one moved.
 reloc_entry_bytes=16
 expected_relocs=2
+expected_consumed_relocs=1
 submit_reloc_bytes=$(wc -c < "${workdir}/submit_relocs.bin")
 if [ "${submit_reloc_bytes}" -ne      "$((reloc_entry_bytes * expected_relocs))" ]; then
     echo "submit reloc chunk is ${submit_reloc_bytes} bytes, not" \
@@ -189,14 +190,26 @@ EOF
 good=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
     "${workdir}/ib.bin")
 echo "${good}"
-case "${good}" in
-    *"relocs=${expected_relocs} "*"verdict=ACCEPT-NO-DRAW"*) ;;
-    *)
-        echo "retained direct-write submit object did not replay" \
-             "ACCEPT-NO-DRAW" >&2
-        exit 1
-        ;;
-esac
+accept_replay_verdict() {
+    case "$1" in
+        *"relocs=${expected_consumed_relocs} "*"verdict=ACCEPT-NO-DRAW"*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+if ! accept_replay_verdict "${good}"; then
+    echo "retained direct-write submit object did not replay" \
+         "ACCEPT-NO-DRAW" >&2
+    exit 1
+fi
+if accept_replay_verdict \
+        "relocs=${expected_relocs} verdict=ACCEPT-NO-DRAW"; then
+    echo "replay verdict accepted the unconsumed completion relocation" >&2
+    exit 1
+fi
 
 # Known-bad: rewriting the DST_PITCH_OFFSET header (dword 0) to
 # register 0x1430, which the safe bitmap flags and r300_packet0_check
