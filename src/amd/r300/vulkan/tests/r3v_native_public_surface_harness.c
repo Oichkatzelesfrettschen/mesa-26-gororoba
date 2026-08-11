@@ -1452,6 +1452,29 @@ main(void)
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_xyz) != VK_SUCCESS);
 
+      /* Replay the same F32_3 bytes before staging the F32_2 payload. */
+      assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_xyz) == VK_SUCCESS);
+      float expected_xyz_cpu[12];
+      for (unsigned v = 0; v < 3; v++) {
+         expected_xyz_cpu[v * 4 + 0] =
+            (xyz_narrow[v * 3 + 0] + 1.0f) * 32.0f;
+         expected_xyz_cpu[v * 4 + 1] =
+            (xyz_narrow[v * 3 + 1] + 1.0f) * 32.0f;
+         expected_xyz_cpu[v * 4 + 2] = xyz_narrow[v * 3 + 2];
+         expected_xyz_cpu[v * 4 + 3] = 1.0f;
+      }
+      assert(radeon_drm_vk_bo_map(&native_device->drm,
+                                  &native_xyz->owned_carrier->bo,
+                                  &carrier_map) == 0);
+      assert(memcmp(carrier_map, expected_xyz_cpu,
+                    R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
+      radeon_drm_vk_bo_unmap(&native_device->drm,
+                             &native_xyz->owned_carrier->bo, carrier_map);
+
+      assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+
       float xy_narrow[6];
       memcpy(xy_narrow, positive_xy, sizeof(xy_narrow));
       xy_narrow[0] = 0.1f;
@@ -1462,8 +1485,6 @@ main(void)
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_xy) != VK_SUCCESS);
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
-                native_device, native_xyz) == VK_SUCCESS);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_xy) == VK_SUCCESS);
 
