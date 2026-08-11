@@ -121,7 +121,8 @@ r3v_native_cache_publication_precedes_close(uint64_t cache_event,
    f(vkAllocateCommandBuffers) f(vkBeginCommandBuffer)                     \
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
-   f(vkCmdCopyBufferToImage) f(vkCmdCopyImage) f(vkCmdCopyImageToBuffer)   \
+   f(vkCmdCopyBuffer) f(vkCmdCopyBufferToImage) f(vkCmdCopyImage)          \
+   f(vkCmdCopyImageToBuffer)                                               \
    f(vkCmdClearColorImage) f(vkCmdPipelineBarrier)                         \
    f(vkCreateFence) f(vkDestroyFence) f(vkGetFenceStatus)                   \
    f(vkWaitForFences) f(vkCreateSemaphore) f(vkDestroySemaphore)            \
@@ -1077,7 +1078,8 @@ main(void)
       assert(vkMapMemory(device, staging_mem, 0, VK_WHOLE_SIZE, 0,
                          (void **)&staging_map) == VK_SUCCESS);
       for (uint32_t t = 0; t < copy_w * copy_h; t++)
-         assert(staging_map[t + 1024] == (0x40000000u | t));
+         assert(staging_map[t + 1024 / sizeof(*staging_map)] ==
+                (0x40000000u | t));
       for (uint32_t t = 0; t < copy_w * copy_h; t++)
          assert(staging_map[t + 512] == (0x40000000u | t));
       vkUnmapMemory(device, staging_mem);
