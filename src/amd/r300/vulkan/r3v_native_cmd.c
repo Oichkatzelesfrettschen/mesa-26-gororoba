@@ -36,6 +36,9 @@ r3v_native_cmd_buffer_release_recording(
       vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_carrier);
       cmd_buffer->owned_carrier = NULL;
    }
+   vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->deferred_copies);
+   cmd_buffer->deferred_copies = NULL;
+   cmd_buffer->deferred_copy_capacity = 0;
    cmd_buffer->pass_target = NULL;
    cmd_buffer->bound_pipeline = NULL;
    cmd_buffer->bound_vertex_buffer = NULL;
