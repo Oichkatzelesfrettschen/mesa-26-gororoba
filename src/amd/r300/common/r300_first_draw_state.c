@@ -12,6 +12,8 @@
  */
 #define R300_FDS_SCISSOR_BIAS 1440
 #define R300_FDS_SCISSOR_MAX 4095
+#define R300_FDS_MAX_EXTENT \
+   (R300_FDS_SCISSOR_MAX - R300_FDS_SCISSOR_BIAS + 1)
 
 static uint32_t
 scissor_word(uint32_t x, uint32_t y)
@@ -179,9 +181,12 @@ int
 r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
                                  struct r300_first_draw_contract *out)
 {
+   /* Bound before subtracting and adding the bias so unsigned scissor
+    * arithmetic cannot wrap into the accepted range.
+    */
    if (params->width == 0 || params->height == 0 ||
-       params->width - 1 + R300_FDS_SCISSOR_BIAS > R300_FDS_SCISSOR_MAX ||
-       params->height - 1 + R300_FDS_SCISSOR_BIAS > R300_FDS_SCISSOR_MAX) {
+       params->width > R300_FDS_MAX_EXTENT ||
+       params->height > R300_FDS_MAX_EXTENT) {
       return -EINVAL;
    }
 
