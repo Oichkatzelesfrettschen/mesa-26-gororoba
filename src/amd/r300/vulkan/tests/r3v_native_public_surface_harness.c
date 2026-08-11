@@ -1803,12 +1803,32 @@ main(void)
                 .memoryTypeIndex = 0,
              },
              NULL, &implicitly_unmapped) == VK_SUCCESS);
+   VK_FROM_HANDLE(r3v_native_memory, native_implicitly_unmapped,
+                  implicitly_unmapped);
+   const uint32_t implicitly_unmapped_handle =
+      native_implicitly_unmapped->bo.handle;
    void *implicitly_mapped = NULL;
    assert(vkMapMemory(device, implicitly_unmapped, 0, VK_WHOLE_SIZE, 0,
                       &implicitly_mapped) == VK_SUCCESS);
    ((uint32_t *)implicitly_mapped)[0] = COLOR_SEED;
    vkFreeMemory(device, implicitly_unmapped, NULL);
    assert(native_device->drm.cache_sync_count == free_sync_before + 2);
+   assert(atomic_load_explicit(&native_device->drm.cache_sync_last_map,
+                               memory_order_acquire) ==
+          (uintptr_t)implicitly_mapped);
+   assert(atomic_load_explicit(&native_device->drm.cache_sync_last_bo_handle,
+                               memory_order_acquire) ==
+          implicitly_unmapped_handle);
+   assert(atomic_load_explicit(&native_device->drm.bo_close_last_handle,
+                               memory_order_acquire) ==
+          implicitly_unmapped_handle);
+   assert(atomic_load_explicit(&native_device->drm.cache_sync_last_event,
+                               memory_order_acquire) <
+          atomic_load_explicit(&native_device->drm.bo_close_last_event,
+                               memory_order_acquire));
+   /* The host-model verdict rejects the known-bad permutation in which
+    * GEM close receives the lower event number than cache publication.
+    */
 
    vkDestroyPipeline(device, xyz_pipeline, NULL);
    vkDestroyPipeline(device, pipeline, NULL);

@@ -52,6 +52,12 @@ void radeon_drm_vk_bo_unmap(struct radeon_drm_vk_device *device,
 void radeon_drm_vk_bo_cache_sync(struct radeon_drm_vk_device *device,
                                  const void *map, uint64_t size);
 
+/* The BO-aware form records the handle in host-model event instrumentation
+ * while applying the same cache-line publication primitive. */
+void radeon_drm_vk_bo_cache_sync_for_bo(struct radeon_drm_vk_device *device,
+                                        const struct radeon_drm_vk_bo *bo,
+                                        const void *map, uint64_t size);
+
 void radeon_drm_vk_bo_free(struct radeon_drm_vk_device *device,
                            struct radeon_drm_vk_bo *bo);
 
