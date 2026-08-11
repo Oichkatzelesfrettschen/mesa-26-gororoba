@@ -106,6 +106,12 @@ r3v_native_cache_publication_precedes_close(uint64_t cache_event,
    return cache_event < close_event;
 }
 
+static bool
+r3v_native_memory_type_bits_are_type_zero_only(uint32_t memory_type_bits)
+{
+   return memory_type_bits == 0x1u;
+}
+
 #define DEVICE_COMMANDS(f)                                                 \
    f(vkAllocateMemory) f(vkFreeMemory) f(vkMapMemory) f(vkUnmapMemory)     \
    f(vkCreateBuffer) f(vkDestroyBuffer) f(vkGetBufferMemoryRequirements2KHR) \
@@ -632,12 +638,18 @@ main(void)
       .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
       .pNext = &device_dedicated,
    };
+
+   /* Calibrate the exact-mask verdict with the missing-type and extra-bit
+    * host mutations before checking the live device query.
+    */
+   assert(r3v_native_memory_type_bits_are_type_zero_only(0x1u));
+   assert(!r3v_native_memory_type_bits_are_type_zero_only(0x0u));
+   assert(!r3v_native_memory_type_bits_are_type_zero_only(0x5u));
+
    r3v_GetDeviceBufferMemoryRequirements(device, &device_buffer_info,
                                          &device_buffer_requirements);
-   assert((device_buffer_requirements.memoryRequirements.memoryTypeBits & 1) !=
-          0);
-   assert((device_buffer_requirements.memoryRequirements.memoryTypeBits & 2) ==
-          0);
+   assert(r3v_native_memory_type_bits_are_type_zero_only(
+      device_buffer_requirements.memoryRequirements.memoryTypeBits));
    assert(device_dedicated.prefersDedicatedAllocation == VK_FALSE);
    assert(device_dedicated.requiresDedicatedAllocation == VK_FALSE);
    assert(vkBindBufferMemory(device, vertex_buffer, vertex_memory, 0) ==
