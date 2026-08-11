@@ -32,6 +32,7 @@
 #include "util/u_inlines.h"
 #include "util/format/u_format.h"
 #include "util/mesa-blake3.h"
+#include "util/u_debug.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
 
@@ -2504,13 +2505,18 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg,
         hb_tcl, mode, raw_submit_accepted, from_flush, already_fired,
         query_active);
     if (cfg->action == R300_R2VB_SELFTEST_DECLINE) {
-        if (from_flush && !already_fired &&
-            r300_r2vb_option_is(hb_tcl, "1") &&
-            r300_r2vb_option_is(mode, "submit") &&
+        const bool selftest_armed =
+            from_flush && !already_fired && r300_r2vb_option_is(hb_tcl, "1");
+        if (selftest_armed && mode != NULL &&
+            !r300_r2vb_option_is(mode, "capture") &&
+            !r300_r2vb_option_is(mode, "submit"))
+            debug_printf("r2vb selftest: ignoring unknown "
+                         "R300_R2VB_TIMING=%s; use capture or submit\n",
+                         mode);
+        if (selftest_armed && r300_r2vb_option_is(mode, "submit") &&
             !r300_r2vb_option_is(raw_submit_accepted, "1"))
-            fprintf(stderr,
-                    "r2vb selftest: submit mode needs "
-                    "R300_RAW_SUBMIT_ACCEPTED=1\n");
+            debug_printf("r2vb selftest: submit mode needs "
+                         "R300_RAW_SUBMIT_ACCEPTED=1\n");
         return;
     }
 
@@ -2562,6 +2568,15 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
                                            struct pipe_fence_handle **out_fence)
 {
     static bool fired = false;
+    /* CHIP_RS480 covers RS480, RS482, and RS485.  The zero-FPU, no-TCL
+     * capability shape selects the SWTCL path whose R2VB packet contract
+     * this self-test measures; hardware-TCL parts keep their native VAP
+     * programming and never receive these RS482-only packets. */
+    if (r300->screen->caps.family != CHIP_RS480 ||
+        r300->screen->caps.has_tcl ||
+        r300->screen->caps.num_vert_fpus != 0)
+        return false;
+
     struct r2vb_selftest_config cfg;
     r2vb_get_selftest_config(&cfg, from_flush, fired,
                              r300->query_current != NULL);
