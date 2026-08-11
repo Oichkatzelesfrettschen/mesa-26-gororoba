@@ -236,14 +236,71 @@ test_layout_domain(void)
 {
    struct r300_r2vb_producer_layout layout;
    CHECK(r300_r2vb_producer_layout_single_row(0, &layout) == -EINVAL);
-   CHECK(r300_r2vb_producer_layout_single_row(
-            R300_R2VB_PRODUCER_MAX_COUNT + 1, &layout) == -EINVAL);
+   CHECK(r300_r2vb_producer_layout_single_row(1024, &layout) == 0);
+   CHECK(layout.width == 1024 && layout.pitch_pixels == 1024 &&
+         layout.height == 1);
+   CHECK(r300_r2vb_producer_layout_single_row(1025, &layout) == -EINVAL);
+   CHECK(r300_r2vb_producer_layout_single_row(2047, &layout) == -EINVAL);
    CHECK(r300_r2vb_producer_layout_single_row(1, &layout) == 0);
    CHECK(layout.width == 2 && layout.pitch_pixels == 2 &&
          layout.height == 1);
-   CHECK(r300_r2vb_producer_layout_single_row(
-            R300_R2VB_PRODUCER_MAX_COUNT, &layout) == 0);
-   CHECK(layout.pitch_pixels == R300_R2VB_PRODUCER_MAX_COUNT + 1);
+}
+
+static void
+test_immediate_count_ceiling(void)
+{
+   static float records[1024][4];
+   for (uint32_t v = 0; v < 1024; v++) {
+      records[v][0] = (float)(v & 3u);
+      records[v][1] = 1.0f;
+      records[v][2] = 0.5f;
+      records[v][3] = 1.0f;
+   }
+
+   struct r300_r2vb_producer_layout layout = {
+      .count = 1024,
+      .width = 1024,
+      .height = 1,
+      .pitch_pixels = 1024,
+   };
+   struct r300_r2vb_producer_params params = {
+      .carrier_offset = 0,
+      .layout = layout,
+      .records = records,
+      .first_draw_contract = NULL,
+   };
+   struct r300_r2vb_producer_ib pass = { 0 };
+   const int emit_rc = r300_r2vb_producer_pass_emit(&params, &pass);
+   CHECK(emit_rc == 0);
+   if (emit_rc != 0)
+      return;
+   const int validate_rc = r300_r2vb_producer_pass_validate_reloc_sites(&pass);
+   CHECK(validate_rc == 0);
+   if (validate_rc != 0) {
+      r300_r2vb_producer_pass_release(&pass);
+      return;
+   }
+   struct walk_state st;
+   const int walk_rc = walk_stream(pass.ib, pass.ib_size_dwords, &st);
+   CHECK(walk_rc == 0);
+   if (walk_rc != 0) {
+      r300_r2vb_producer_pass_release(&pass);
+      return;
+   }
+   CHECK(st.draw_count == 1);
+   if (st.draw_count == 1)
+      CHECK(PACKET_GET_COUNT(pass.ib[st.draw_header_index]) == 1024 * 8);
+   r300_r2vb_producer_pass_release(&pass);
+
+   const uint32_t rejected_counts[] = { 1025, 2047 };
+   for (unsigned i = 0; i < sizeof(rejected_counts) /
+                                  sizeof(rejected_counts[0]); i++) {
+      params.layout.count = rejected_counts[i];
+      params.layout.width = rejected_counts[i] + 1;
+      params.layout.pitch_pixels = rejected_counts[i] + 1;
+      CHECK(r300_r2vb_producer_pass_emit(&params, &pass) == -EINVAL);
+      CHECK(pass.ib == NULL && pass.ib_size_dwords == 0);
+   }
 }
 
 static void
@@ -326,6 +383,7 @@ main(void)
 {
    test_reference_structure();
    test_layout_domain();
+   test_immediate_count_ceiling();
    test_refusals();
 
    if (failures != 0) {
