@@ -27,11 +27,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "util/u_inlines.h"
 #include "util/format/u_format.h"
 #include "util/mesa-blake3.h"
+#include "util/os_time.h"
 #include "util/u_debug.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
@@ -2717,7 +2717,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
 
     if (cfg.do_submit) {
         struct pipe_fence_handle *fence = NULL;
-        struct timespec t0, t1, t2, t3;
+        int64_t t0, t1, t2, t3;
         bool signalled = false;
         /* Three-way split to localise the per-submit cost.  cs_flush only ENQUEUES
          * the IB to the radeon threaded-submit queue and returns; cs_sync_flush
@@ -2725,19 +2725,19 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
          * blocks until the GPU retires the fence BO.  So enqueue_ms is CPU-side
          * bookkeeping, submit_ms is the kernel submit + BO pin, and gpu_ms is the
          * actual GPU execution -- the number that should scale with vertex work. */
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        t0 = os_time_get_nano();
         int flush_rc = r300->rws->cs_flush(&r300->cs, 0, &fence);
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        t1 = os_time_get_nano();
         r300->rws->cs_sync_flush(&r300->cs);
-        clock_gettime(CLOCK_MONOTONIC, &t2);
+        t2 = os_time_get_nano();
         if (fence) {
             signalled = r300->rws->fence_wait(r300->rws, fence, (uint64_t)5 * 1000 * 1000 * 1000);
             r300->rws->fence_reference(r300->rws, &fence, NULL);
         }
-        clock_gettime(CLOCK_MONOTONIC, &t3);
-        double enqueue_ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
-        double submit_ms = (double)(t2.tv_sec - t1.tv_sec) * 1e3 + (double)(t2.tv_nsec - t1.tv_nsec) / 1e6;
-        double gpu_ms = (double)(t3.tv_sec - t2.tv_sec) * 1e3 + (double)(t3.tv_nsec - t2.tv_nsec) / 1e6;
+        t3 = os_time_get_nano();
+        double enqueue_ms = (double)(t1 - t0) / 1.0e6;
+        double submit_ms = (double)(t2 - t1) / 1.0e6;
+        double gpu_ms = (double)(t3 - t2) / 1.0e6;
         double total_ms = enqueue_ms + submit_ms + gpu_ms;
         double mvps = gpu_ms > 0.0 ? (double)cfg.num_vertices / (gpu_ms * 1e3) : 0.0;
         fprintf(stderr,
