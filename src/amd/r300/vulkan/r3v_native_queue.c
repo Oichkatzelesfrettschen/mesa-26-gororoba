@@ -216,6 +216,48 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
    return result;
 }
 
+static int
+r3v_native_queue_append_bo_row(char **table, size_t *length,
+                               size_t *capacity, bool first,
+                               uint32_t reloc_index, uint32_t handle,
+                               uint32_t read_domains, uint32_t write_domain,
+                               uint64_t size, const char *role)
+{
+   char row[256];
+   int row_length = snprintf(
+      row, sizeof(row),
+      "%s    { \"reloc_index\": %u, \"handle\": %u, "
+      "\"read_domains\": %u, \"write_domain\": %u, "
+      "\"size\": %llu, \"role\": \"%s\" }",
+      first ? "" : ",\n", reloc_index, handle, read_domains,
+      write_domain, (unsigned long long)size, role);
+   if (row_length < 0 || (size_t)row_length >= sizeof(row))
+      return -EIO;
+
+   const size_t row_bytes = (size_t)row_length;
+   if (*length > SIZE_MAX - row_bytes - 1)
+      return -EOVERFLOW;
+   const size_t required = *length + row_bytes + 1;
+   if (required > *capacity) {
+      size_t new_capacity = *capacity == 0 ? 256 : *capacity;
+      while (new_capacity < required) {
+         if (new_capacity > SIZE_MAX / 2)
+            return -EOVERFLOW;
+         new_capacity *= 2;
+      }
+      char *new_table = realloc(*table, new_capacity);
+      if (new_table == NULL)
+         return -ENOMEM;
+      *table = new_table;
+      *capacity = new_capacity;
+   }
+
+   memcpy(*table + *length, row, row_bytes);
+   *length += row_bytes;
+   (*table)[*length] = '\0';
+   return 0;
+}
+
 /* Retains the exact submit object -- the final IB and the relocation list
  * with the completion reference folded in, the byte content the
  * DRM_RADEON_CS ioctl would carry -- distinct from the semantic cell.
@@ -227,8 +269,9 @@ r3v_native_queue_write_submit_object(
    uint32_t ib_size_dwords, const struct radeon_drm_vk_reloc_list *relocs,
    const struct radeon_drm_vk_cs *cs,
    const struct r3v_native_bo_reference *references,
-   uint32_t reference_count, uint32_t completion_handle,
-   uint32_t completion_domains, uint64_t completion_size,
+   const uint32_t *reference_indices, uint32_t reference_count,
+   uint32_t completion_index, uint32_t completion_handle,
+   uint64_t completion_size,
    const char *kernel_release,
    const char *module_srcversion)
 {
@@ -265,42 +308,64 @@ r3v_native_queue_write_submit_object(
                               elf_path) < 0)
       return -EIO;
 
-   result = r3v_native_evidence_write_file(
-      device->manifest_dir, "submit_relocs.bin", relocs->relocs,
-      relocs->count * sizeof(relocs->relocs[0]));
    if (result == 0) {
-      /* The command buffer's own references in relocation order, then the
-       * completion BO the CS rebuild folded in; the reloc index is the
-       * position the kernel resolves.
-       */
-      char bo_table[1024];
-      int bo_length = 0;
-      for (uint32_t r = 0; r < reference_count && bo_length >= 0; r++) {
-         bo_length += snprintf(
-            &bo_table[bo_length], sizeof(bo_table) - (size_t)bo_length,
-            "%s    { \"reloc_index\": %u, \"handle\": %u, "
-            "\"read_domains\": %u, \"write_domain\": %u, "
-            "\"size\": %llu, \"role\": \"command\" }",
-            r == 0 ? "" : ",\n", r, references[r].handle,
-            references[r].read_domains, references[r].write_domain,
-            references[r].memory != NULL
-               ? (unsigned long long)references[r].memory->bo.size
-               : 0ull);
-         if ((size_t)bo_length >= sizeof(bo_table))
-            return -EIO;
+      /* The final relocation array is deduplicated by handle.  Each row uses
+      * that array's index and domains, while the reference index map supplies
+      * the command BO size and the completion index supplies its role.
+      */
+      if (reference_count != 0 && reference_indices == NULL)
+         return -EINVAL;
+      if (completion_index >= relocs->count)
+         return -EINVAL;
+
+      const struct r3v_native_bo_reference **references_by_index = NULL;
+      char *bo_table = NULL;
+      size_t bo_length = 0;
+      size_t bo_capacity = 0;
+      if (relocs->count != 0) {
+         references_by_index = calloc(relocs->count,
+                                      sizeof(*references_by_index));
+         if (references_by_index == NULL)
+            return -ENOMEM;
       }
-      char completion_row[192];
-      int completion_length = snprintf(
-         completion_row, sizeof(completion_row),
-         "%s    { \"reloc_index\": %u, \"handle\": %u, "
-         "\"read_domains\": 0, \"write_domain\": %u, "
-         "\"size\": %llu, \"role\": \"completion\" }",
-         reference_count == 0 ? "" : ",\n", reference_count,
-         completion_handle, completion_domains,
-         (unsigned long long)completion_size);
-      if (completion_length < 0 ||
-          (size_t)completion_length >= sizeof(completion_row))
-         return -EIO;
+      for (uint32_t r = 0; r < reference_count; r++) {
+         if (reference_indices[r] >= relocs->count) {
+            result = -EINVAL;
+            goto submit_manifest_cleanup;
+         }
+         if (references_by_index[reference_indices[r]] == NULL)
+            references_by_index[reference_indices[r]] = &references[r];
+      }
+
+      for (uint32_t reloc_index = 0; reloc_index < relocs->count;
+           reloc_index++) {
+         const struct r3v_native_bo_reference *reference =
+            references_by_index[reloc_index];
+         const bool is_completion = reloc_index == completion_index;
+         if (reference == NULL && !is_completion) {
+            result = -EINVAL;
+            goto submit_manifest_cleanup;
+         }
+         if (is_completion &&
+             relocs->relocs[reloc_index].handle != completion_handle) {
+            result = -EINVAL;
+            goto submit_manifest_cleanup;
+         }
+
+         const uint64_t size = is_completion
+                                  ? completion_size
+                                  : reference->memory != NULL
+                                       ? reference->memory->bo.size
+                                       : 0;
+         const char *role = is_completion ? "completion" : "command";
+         result = r3v_native_queue_append_bo_row(
+            &bo_table, &bo_length, &bo_capacity, reloc_index == 0,
+            reloc_index, relocs->relocs[reloc_index].handle,
+            relocs->relocs[reloc_index].read_domains,
+            relocs->relocs[reloc_index].write_domain, size, role);
+         if (result != 0)
+            goto submit_manifest_cleanup;
+      }
 
       char manifest[16384];
       int length = snprintf(
@@ -317,7 +382,7 @@ r3v_native_queue_write_submit_object(
          "    { \"id\": %u, \"length_dw\": %u },\n"
          "    { \"id\": %u, \"length_dw\": %u }\n"
          "  ],\n"
-         "  \"bo_table\": [\n%s%s\n  ],\n"
+         "  \"bo_table\": [\n%s\n  ],\n"
          "  \"kernel_release\": \"%s\",\n"
          "  \"module_srcversion\": \"%s\",\n"
          "  \"driver_elf_path\": \"%s\",\n"
@@ -329,13 +394,27 @@ r3v_native_queue_write_submit_object(
          cs->chunks[0].chunk_id, cs->chunks[0].length_dw,
          cs->chunks[1].chunk_id, cs->chunks[1].length_dw,
          cs->chunks[2].chunk_id, cs->chunks[2].length_dw,
-         bo_table, completion_row, escaped_kernel_release,
+         bo_table != NULL ? bo_table : "", escaped_kernel_release,
          escaped_module_srcversion, escaped_elf_path, elf_hex);
-      result = length > 0 && (size_t)length < sizeof(manifest)
-                  ? r3v_native_evidence_write_file(device->manifest_dir,
-                                                   "submit_manifest.json",
-                                                   manifest, (size_t)length)
-                  : -EIO;
+      if (length <= 0 || (size_t)length >= sizeof(manifest)) {
+         result = -EIO;
+      } else {
+         /* Validate and size every derived field before publishing either
+          * final artifact, so allocation failure cannot leave a partial
+          * submit-object group in a fresh evidence directory.
+          */
+         result = r3v_native_evidence_write_file(
+            device->manifest_dir, "submit_relocs.bin", relocs->relocs,
+            relocs->count * sizeof(relocs->relocs[0]));
+         if (result == 0)
+            result = r3v_native_evidence_write_file(
+               device->manifest_dir, "submit_manifest.json", manifest,
+               (size_t)length);
+      }
+
+submit_manifest_cleanup:
+      free(bo_table);
+      free(references_by_index);
    }
    if (result != 0) {
       vk_logw(VK_LOG_OBJS(&device->vk.base),
@@ -437,14 +516,21 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
 
       struct radeon_drm_vk_reloc_list relocs;
       radeon_drm_vk_reloc_list_init(&relocs);
+      uint32_t *reference_indices = NULL;
+      if (cmd_buffer->reference_count != 0) {
+         reference_indices = calloc(cmd_buffer->reference_count,
+                                    sizeof(*reference_indices));
+         if (reference_indices == NULL)
+            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
       for (uint32_t r = 0; r < cmd_buffer->reference_count; r++) {
          const struct r3v_native_bo_reference *reference =
             &cmd_buffer->references[r];
-         uint32_t index;
          if (radeon_drm_vk_reloc_list_add(&relocs, reference->handle,
                                           reference->read_domains,
                                           reference->write_domain, 0,
-                                          &index) != 0) {
+                                          &reference_indices[r]) != 0) {
+            free(reference_indices);
             radeon_drm_vk_reloc_list_finish(&relocs);
             return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
          }
@@ -463,6 +549,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
           * deferred CPU execution and before any evidence bytes are written.
           */
          if (device->manifest_dir == NULL) {
+            free(reference_indices);
             radeon_drm_vk_reloc_list_finish(&relocs);
             return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                              "r3v-native: open gate requires "
@@ -482,6 +569,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             module_srcversion, sizeof(module_srcversion));
 
          if (facts.attempt_token_present) {
+            free(reference_indices);
             radeon_drm_vk_reloc_list_finish(&relocs);
             return vk_errorf(
                device, VK_ERROR_DEVICE_LOST,
@@ -496,6 +584,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
           r3v_native_queue_write_manifest(device, cmd_buffer->ib,
                                           cmd_buffer->ib_size_dwords,
                                           &relocs) != 0) {
+         free(reference_indices);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                           "r3v-native: semantic-cell evidence retention "
@@ -506,20 +595,23 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * chunk, the kernel fences it at submit, and the bounded
        * GEM_WAIT_IDLE returns when the submission retires or escalates to
        * device loss.  The CS rebuild folds the completion reference in;
-       * the manifest above keeps the pre-completion relocation list, the
-       * exact list the offline replay consumes.  The completion allocates
+       * the semantic manifest above keeps the pre-completion relocation list,
+       * while submit_manifest.json describes the final list that
+       * submit_relocs.bin carries.  The completion allocates
        * here, before the deferred execution below, so every fallible
        * preparation step precedes the first application-memory write and
        * an allocation failure returns with the target untouched.
        */
       struct radeon_drm_vk_completion completion;
       if (radeon_drm_vk_completion_init(&device->drm, &completion) != 0) {
+         free(reference_indices);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       }
       uint32_t completion_index;
       if (radeon_drm_vk_completion_reference(&completion, &relocs,
                                              &completion_index) != 0) {
+         free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -537,6 +629,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       VkResult deferred =
          r3v_native_cmd_buffer_execute_deferred_draw(device, cmd_buffer);
       if (deferred != VK_SUCCESS) {
+         free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          /* vkQueueSubmit's registry contract carries host and device
@@ -558,6 +651,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * fails closed instead of reporting an execution that did not run.
        */
       if (!device->submit_hazard_accepted) {
+         free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -590,10 +684,11 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        */
       if (r3v_native_queue_write_submit_object(
              device, cmd_buffer->ib, cmd_buffer->ib_size_dwords, &relocs,
-             &cs, cmd_buffer->references, cmd_buffer->reference_count,
-             completion.bo.handle, completion.bo.domains,
-             completion.bo.size, kernel_release,
+             &cs, cmd_buffer->references, reference_indices,
+             cmd_buffer->reference_count, completion_index,
+             completion.bo.handle, completion.bo.size, kernel_release,
              module_srcversion) != 0) {
+         free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -611,6 +706,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       enum r3v_native_arming_verdict arming =
          r3v_native_arming_evaluate(&facts);
       if (arming != R3V_NATIVE_ARMING_ARMED) {
+         free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -618,6 +714,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           r3v_native_arming_verdict_name(arming));
       }
       if (r3v_native_arming_disarm(device->manifest_dir, ib_digest) != 0) {
+         free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -643,6 +740,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             }
          }
       }
+      free(reference_indices);
       radeon_drm_vk_completion_finish(&device->drm, &completion);
       radeon_drm_vk_reloc_list_finish(&relocs);
       if (result != 0) {

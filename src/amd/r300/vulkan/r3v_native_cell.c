@@ -41,9 +41,11 @@ record_triangle_cell_tail(struct r3v_native_device *device,
                           struct r3v_native_memory *color_memory);
 
 /* The triangle cell binds both roles at byte offset zero.  A shared GEM BO
- * makes the vertex fetch overlap the color target, and the DRM relocation
- * list folds the two role references into one slot.  The recorder rejects
- * aliased roles before either mapping or sentinel publication begins.
+ * makes the vertex fetch overlap the color target, and
+ * radeon_drm_vk_reloc_list_add (rg --fixed-strings
+ * radeon_drm_vk_reloc_list_add src/) folds duplicate handles into one
+ * relocation slot.  The recorder rejects aliased roles before either mapping
+ * or sentinel publication begins.
  */
 static VkResult
 validate_triangle_memory_roles(struct r3v_native_device *device,
@@ -183,9 +185,12 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    if (r300_tcl_bypass_triangle_extent_emit(width, height, &cell) != 0)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
 
-   /* Reference order is relocation-slot order: the queue folds the array
-    * in index order and the dedupe keeps first-add order, so the IB's
-    * slot payloads name the final relocation indices.
+   /* Reference order is relocation-slot order: the queue records the index
+    * returned by radeon_drm_vk_reloc_list_add for each reference, and the
+    * distinct-role check keeps this cell's slot payloads equal to the final
+    * relocation indices.  The fixed cell rejects shared handles before this
+    * list reaches the queue, so deduplication cannot leave a slot payload
+    * outside the relocation chunk.
     */
    struct r3v_native_bo_reference *references =
       calloc(R300_TRIANGLE_SLOT_COUNT, sizeof(*references));

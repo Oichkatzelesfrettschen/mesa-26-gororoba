@@ -6,6 +6,7 @@
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,90 @@ def read_bytes(path):
         return artifact.read()
 
 
+def submit_identity_error(manifest, reloc_bytes):
+    entry_size = 16
+    if len(reloc_bytes) % entry_size != 0:
+        return "submit relocation bytes are not whole entries"
+    relocations = [
+        struct.unpack_from("<4I", reloc_bytes, offset)
+        for offset in range(0, len(reloc_bytes), entry_size)
+    ]
+    rows = manifest.get("bo_table")
+    if not isinstance(rows, list) or len(rows) != len(relocations):
+        return "bo_table length differs from submit relocation count"
+    if manifest.get("reloc_count") != len(relocations):
+        return "manifest relocation count differs from submit bytes"
+
+    completion_rows = 0
+    for index, (relocation, row) in enumerate(zip(relocations, rows)):
+        if not isinstance(row, dict):
+            return "bo_table row is not an object"
+        if row.get("reloc_index") != index:
+            return "bo_table relocation index is not final-list order"
+        for field, word in zip(("handle", "read_domains", "write_domain",
+                                "flags"), relocation):
+            if field != "flags" and row.get(field) != word:
+                return "bo_table field differs from submit relocation bytes"
+        role = row.get("role")
+        if role == "completion":
+            completion_rows += 1
+        elif role != "command":
+            return "bo_table row has no recognized role"
+    if completion_rows != 1:
+        return "bo_table does not identify one completion relocation"
+    return None
+
+
+def duplicate_relocation_model_error():
+    references = [
+        (31, 0x1, 0),
+        (47, 0, 0x2),
+        (31, 0, 0x4),
+    ]
+    index_by_handle = {}
+    relocations = []
+    indices = []
+    for handle, read_domains, write_domain in references:
+        index = index_by_handle.get(handle)
+        if index is None:
+            index = len(relocations)
+            index_by_handle[handle] = index
+            relocations.append([handle, read_domains, write_domain, 0])
+        else:
+            relocations[index][1] |= read_domains
+            relocations[index][2] |= write_domain
+        indices.append(index)
+
+    if indices != [0, 1, 0] or len(relocations) != 2:
+        return "duplicate relocation model lost the returned index"
+
+    completion_index = len(relocations)
+    relocations.append([53, 0, 0x2, 0])
+    rows = [
+        {
+            "reloc_index": index,
+            "handle": relocation[0],
+            "read_domains": relocation[1],
+            "write_domain": relocation[2],
+            "role": "completion" if index == completion_index else "command",
+        }
+        for index, relocation in enumerate(relocations)
+    ]
+    manifest = {"reloc_count": len(relocations), "bo_table": rows}
+    reloc_bytes = b"".join(struct.pack("<4I", *relocation)
+                             for relocation in relocations)
+    error = submit_identity_error(manifest, reloc_bytes)
+    if error is not None:
+        return "duplicate relocation model failed identity check: " + error
+
+    mutant = {"reloc_count": len(relocations),
+              "bo_table": [dict(row) for row in rows]}
+    mutant["bo_table"][0]["reloc_index"] = 1
+    if submit_identity_error(mutant, reloc_bytes) is None:
+        return "duplicate relocation identity mutant was accepted"
+    return None
+
+
 def main():
     if len(sys.argv) != 2:
         print("usage: r3v_native_submit_manifest_check.py <harness>",
@@ -32,6 +117,10 @@ def main():
     triangle_harness = os.path.join(
         os.path.dirname(harness), "r3v_native_triangle_cell_harness")
     environment = dict(os.environ)
+
+    model_error = duplicate_relocation_model_error()
+    if model_error is not None:
+        return fail("duplicate relocation calibration failed", model_error)
 
     with tempfile.TemporaryDirectory() as manifest_dir:
         environment["R3V_NATIVE_MANIFEST_DIR"] = manifest_dir
@@ -99,6 +188,17 @@ def main():
             except OSError as error:
                 return fail("initial retained artifact is unreadable", name,
                             error)
+
+        identity_error = submit_identity_error(
+            manifest, baseline["submit_relocs.bin"])
+        if identity_error is not None:
+            return fail("submit manifest does not bind submit_relocs.bin",
+                        identity_error)
+        mutant_manifest = json.loads(manifest_text)
+        mutant_manifest["bo_table"][0]["reloc_index"] = 1
+        if submit_identity_error(mutant_manifest,
+                                 baseline["submit_relocs.bin"]) is None:
+            return fail("relocation-index manifest mutant was accepted")
 
         # A reused evidence directory is a known-bad submit destination.  A
         # stale semantic manifest must remain untouched, and no other byte
