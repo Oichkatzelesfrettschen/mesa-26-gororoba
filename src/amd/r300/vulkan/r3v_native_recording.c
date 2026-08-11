@@ -625,7 +625,12 @@ r3v_CmdPipelineBarrier(
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
    /* The deferred ops execute in recorded order on one host thread and
-    * every destination publishes before the submission retires, so
+    * every destination publishes before the submission retires.  The
+    * executors and publication symbols resolve with (rg --fixed-strings
+    * r3v_native_cmd_buffer_execute_deferred_copies src/amd/r300/vulkan/;
+    * rg --fixed-strings r3v_native_cmd_buffer_execute_deferred_draw
+    * src/amd/r300/vulkan/; rg --fixed-strings radeon_drm_vk_bo_cache_sync
+    * src/amd/r300/vulkan/), so
     * execution dependencies, availability, and visibility all hold by
     * construction and the barrier records nothing.  Admission still
     * bounds the vocabulary to what that construction covers: barriers
