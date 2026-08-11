@@ -1788,6 +1788,28 @@ main(void)
 
    vkDestroyBuffer(device, short_buffer, NULL);
    vkDestroyImage(device, unbound_image, NULL);
+
+   /* Freeing a mapped allocation performs the implicit unmap path.  The
+    * cache publication count proves that publication runs before GEM close
+    * without an explicit vkUnmapMemory call.
+    */
+   const uint64_t free_sync_before = native_device->drm.cache_sync_count;
+   VkDeviceMemory implicitly_unmapped = VK_NULL_HANDLE;
+   assert(vkAllocateMemory(
+             device,
+             &(VkMemoryAllocateInfo){
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .allocationSize = 4096,
+                .memoryTypeIndex = 0,
+             },
+             NULL, &implicitly_unmapped) == VK_SUCCESS);
+   void *implicitly_mapped = NULL;
+   assert(vkMapMemory(device, implicitly_unmapped, 0, VK_WHOLE_SIZE, 0,
+                      &implicitly_mapped) == VK_SUCCESS);
+   ((uint32_t *)implicitly_mapped)[0] = COLOR_SEED;
+   vkFreeMemory(device, implicitly_unmapped, NULL);
+   assert(native_device->drm.cache_sync_count == free_sync_before + 2);
+
    vkDestroyPipeline(device, xyz_pipeline, NULL);
    vkDestroyPipeline(device, pipeline, NULL);
    vkDestroyPipelineLayout(device, layout, NULL);

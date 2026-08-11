@@ -31,6 +31,20 @@ r3v_native_memory_type_policy(uint32_t type_index, uint32_t *domains,
    }
 }
 
+static void
+r3v_native_unmap_memory(struct r3v_native_device *device,
+                        struct r3v_native_memory *memory)
+{
+   if (memory == NULL || memory->map == NULL)
+      return;
+   /* Host writes publish while the address is still live; munmap leaves
+    * dirty lines behind and is not a publication mechanism.
+    */
+   radeon_drm_vk_bo_cache_sync(&device->drm, memory->map, memory->bo.size);
+   radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+   memory->map = NULL;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_AllocateMemory(VkDevice _device,
                    const VkMemoryAllocateInfo *pAllocateInfo,
@@ -71,8 +85,11 @@ r3v_FreeMemory(VkDevice _device, VkDeviceMemory _memory,
    if (memory == NULL)
       return;
 
-   if (memory->map != NULL)
-      radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+   /* Freeing a live host mapping is an implicit unmap.  The shared unmap
+    * path publishes cache lines before GEM close, so BO reuse cannot expose
+    * dirty CPU cache lines to the device.
+    */
+   r3v_native_unmap_memory(device, memory);
    radeon_drm_vk_bo_free(&device->drm, &memory->bo);
    vk_device_memory_destroy(&device->vk, pAllocator, &memory->vk);
 }
@@ -106,14 +123,7 @@ r3v_UnmapMemory(VkDevice _device, VkDeviceMemory _memory)
    VK_FROM_HANDLE(r3v_native_device, device, _device);
    VK_FROM_HANDLE(r3v_native_memory, memory, _memory);
 
-   if (memory == NULL || memory->map == NULL)
-      return;
-   /* Host writes publish while the address is still live; munmap leaves
-    * dirty lines behind and is not a publication mechanism.
-    */
-   radeon_drm_vk_bo_cache_sync(&device->drm, memory->map, memory->bo.size);
-   radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
-   memory->map = NULL;
+   r3v_native_unmap_memory(device, memory);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
