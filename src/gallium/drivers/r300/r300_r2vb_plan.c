@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "nir.h"
+#include "util/u_atomic.h"
 
 #include "r300_context.h"
 #include "compiler/r300_nir.h"
@@ -756,13 +757,13 @@ static uint32_t plan_shadow_divergences;
 void
 r300_r2vb_plan_note_shadow_divergence(void)
 {
-    plan_shadow_divergences++;
+    p_atomic_inc(&plan_shadow_divergences);
 }
 
 uint32_t
 r300_r2vb_plan_shadow_divergences(void)
 {
-    return plan_shadow_divergences;
+    return p_atomic_read(&plan_shadow_divergences);
 }
 
 const char *

@@ -30,6 +30,7 @@
 
 #include "util/u_inlines.h"
 #include "util/u_atomic.h"
+#include "util/u_call_once.h"
 #include "util/format/u_format.h"
 #include "util/mesa-blake3.h"
 #include "util/os_time.h"
@@ -59,6 +60,23 @@ static void r2vb_wait_bo(struct r300_context *r300, struct pipe_resource *res);
 static bool r2vb_single_cs_enabled(void);
 
 static uint32_t r300_r2vb_fail_position_input_clone;
+
+static util_once_flag r300_r2vb_plan_debug_once = UTIL_ONCE_FLAG_INIT;
+static bool r300_r2vb_plan_debug;
+
+static void
+r300_r2vb_plan_init_debug(void)
+{
+    const char *value = getenv("R300_R2VB_PLAN_DEBUG");
+    r300_r2vb_plan_debug = value && strcmp(value, "1") == 0;
+}
+
+static bool
+r300_r2vb_plan_debug_enabled(void)
+{
+    util_call_once(&r300_r2vb_plan_debug_once, r300_r2vb_plan_init_debug);
+    return r300_r2vb_plan_debug;
+}
 
 void
 r300_r2vb_test_fail_position_input_clone_once(void)
@@ -5621,12 +5639,7 @@ static void r300_r2vb_plan_shadow_check(struct r300_context *r300,
          * authoritative, record the event, and print only under an opt-in
          * diagnostic gate. */
         r300_r2vb_plan_note_shadow_divergence();
-        static int dbg = -1;
-        if (dbg < 0) {
-            const char *e = getenv("R300_R2VB_PLAN_DEBUG");
-            dbg = (e && strcmp(e, "1") == 0) ? 1 : 0;
-        }
-        if (dbg)
+        if (r300_r2vb_plan_debug_enabled())
             fprintf(stderr,
                     "r2vb_plan shadow mismatch: memo=%u plan=%s/%s "
                     "mask=0x%" PRIx64 " space=%s cv=%d\n",
