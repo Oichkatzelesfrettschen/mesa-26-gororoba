@@ -447,14 +447,18 @@ assert_absent "$native_format" 'r3v_vk_format_to_pipe_format'
 assert_absent "$native_image_query" 'r3v_image_usage_supported'
 
 # Public query/create usage matrix: zero, color-only, each transfer bit,
-# both transfer bits, and mixed color/transfer cases all run through both
-# entry points on the drm-shim fixture.
+# both transfer bits, and every mixed color/transfer combination all run
+# through both entry points on the drm-shim fixture.  The Vulkan 1.0 KHR
+# alias route is exercised by the real-loader sweep as well.
 rg -n --fixed-strings \
   -e 'check_image_usage_surface' \
   -e 'query_image_properties' \
   -e 'VK_ERROR_FORMAT_NOT_SUPPORTED' \
   -e 'VK_IMAGE_USAGE_SAMPLED_BIT' \
-  src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c
+  -e 'VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME' \
+  -e 'vkGetPhysicalDeviceImageFormatProperties2KHR' \
+  src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c \
+  src/amd/r300/vulkan/tests/r3v_native_loader_sweep.c
 
 # Usage-family predicates: source shape plus calibrated semantic mutants.
 python3 - <<'PY'
@@ -497,12 +501,21 @@ def exact_usage_policy(body, prefix, color_operator, transfer_name):
 
 
 def exact_transfer_mask(body, name):
-    return re.search(
+    match = re.search(
         rf"const VkImageUsageFlags {re.escape(name)}\s*=\s*"
-        r"VK_IMAGE_USAGE_TRANSFER_SRC_BIT\s*\|\s*"
-        r"VK_IMAGE_USAGE_TRANSFER_DST_BIT\s*;",
+        r"(?P<left>VK_IMAGE_USAGE_TRANSFER_(?:SRC|DST)_BIT)\s*\|\s*"
+        r"(?P<right>VK_IMAGE_USAGE_TRANSFER_(?:SRC|DST)_BIT)\s*;",
         body,
-    ) is not None
+    )
+    if match is None:
+        return False
+    return {
+        match.group("left"),
+        match.group("right"),
+    } == {
+        "VK_IMAGE_USAGE_TRANSFER_SRC_BIT",
+        "VK_IMAGE_USAGE_TRANSFER_DST_BIT",
+    }
 
 
 physical = Path("src/amd/r300/vulkan/r3v_physical_device.c").read_text()
@@ -567,7 +580,12 @@ def source_usage_policy(body, prefix, color_operator, transfer_name, usage):
 
 
 known_good = (COLOR, TRANSFER_SRC, TRANSFER_DST, TRANSFER)
-known_bad = (0, COLOR | TRANSFER_SRC, COLOR | TRANSFER_DST)
+known_bad = (
+    0,
+    COLOR | TRANSFER_SRC,
+    COLOR | TRANSFER_DST,
+    COLOR | TRANSFER,
+)
 expected_good = (True,) * len(known_good)
 expected_bad = (False,) * len(known_bad)
 for body, prefix, color_operator, transfer_name in (
@@ -668,8 +686,10 @@ for name, mutant, prefix, color_operator, transfer_name in semantic_mutants:
     assert mutant_good != expected_good or mutant_bad != expected_bad, name
 
 mask_source = re.compile(
-    r"VK_IMAGE_USAGE_TRANSFER_SRC_BIT\s*\|\s*"
-    r"VK_IMAGE_USAGE_TRANSFER_DST_BIT\s*;"
+    r"(?:VK_IMAGE_USAGE_TRANSFER_SRC_BIT\s*\|\s*"
+    r"VK_IMAGE_USAGE_TRANSFER_DST_BIT|"
+    r"VK_IMAGE_USAGE_TRANSFER_DST_BIT\s*\|\s*"
+    r"VK_IMAGE_USAGE_TRANSFER_SRC_BIT)\s*;"
 )
 
 
@@ -683,6 +703,26 @@ def expand_transfer_mask(body):
     )
     assert replacements == 1
     return expanded
+
+
+def reverse_transfer_mask(body):
+    reversed_body, replacements = re.subn(
+        r"VK_IMAGE_USAGE_TRANSFER_SRC_BIT\s*\|\s*"
+        r"VK_IMAGE_USAGE_TRANSFER_DST_BIT\s*;",
+        "VK_IMAGE_USAGE_TRANSFER_DST_BIT |\n"
+        "      VK_IMAGE_USAGE_TRANSFER_SRC_BIT;",
+        body,
+        count=1,
+    )
+    assert replacements == 1
+    return reversed_body
+
+
+for body, mask_name in (
+    (query, "r3v_native_transfer_usage"),
+    (create, "transfer_usage"),
+):
+    assert exact_transfer_mask(reverse_transfer_mask(body), mask_name)
 
 
 mask_mutants = (
@@ -716,6 +756,15 @@ rg -n --fixed-strings -e 'r3v-native-loader-application' \
   -e 'FORBIDDEN_PREFIXES' -e 'R3V_EXPECTED_ICD_DSO' \
   src/amd/r300/vulkan/tests/r3v_native_loader_application.c \
   src/amd/r300/vulkan/tests/r3v_native_loader_application_symbol_audit.py \
+  src/amd/r300/vulkan/meson.build
+
+# Vulkan 1.0 KHR physical-device-properties2 alias through the real loader.
+rg -n --fixed-strings \
+  -e 'r3v-native-loader-sweep' \
+  -e 'VK_API_VERSION_1_0' \
+  -e 'VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME' \
+  -e 'vkGetPhysicalDeviceImageFormatProperties2KHR' \
+  src/amd/r300/vulkan/tests/r3v_native_loader_sweep.c \
   src/amd/r300/vulkan/meson.build
 
 # Native transfer image family and deferred host copies.
