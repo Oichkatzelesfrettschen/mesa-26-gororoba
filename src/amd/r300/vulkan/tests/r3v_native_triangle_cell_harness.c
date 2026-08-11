@@ -11,6 +11,7 @@
  */
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -53,6 +54,20 @@ static unsigned failures;
          failures++;                            \
       }                                         \
    } while (0)
+
+static void
+check_cell_emitter_error_mapping(void)
+{
+   /* Host calibration covers the allocator failure returned by both fixed
+    * cell emitters and a structural emitter refusal.
+    */
+   CHECK(r3v_native_cell_vk_result_from_errno(-ENOMEM) ==
+            VK_ERROR_OUT_OF_HOST_MEMORY,
+         "-ENOMEM maps to VK_ERROR_OUT_OF_HOST_MEMORY");
+   CHECK(r3v_native_cell_vk_result_from_errno(-EINVAL) ==
+            VK_ERROR_INITIALIZATION_FAILED,
+         "structural emitter errors map to initialization failure");
+}
 
 /* A VK_SUCCESS open-gate run only proves the shim absorbed DRM_RADEON_CS
  * when the interposed entry points actually resolve into the preloaded
@@ -170,6 +185,9 @@ main(int argc, char **argv)
       fprintf(stderr, "usage: %s closed|open|poison|multi|empty\n", argv[0]);
       return 2;
    }
+
+   check_cell_emitter_error_mapping();
+
    const bool multi_mode = strcmp(argv[1], "multi") == 0;
    const bool empty_manifest_mode = strcmp(argv[1], "empty") == 0;
    const bool open_gate = strcmp(argv[1], "open") == 0 || multi_mode ||

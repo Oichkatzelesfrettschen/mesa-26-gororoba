@@ -420,6 +420,12 @@ VkResult r3v_native_cmd_buffer_execute_deferred_draw(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer);
 
+/* Fixed-cell emitters return negative errno.  The mapper keeps allocator
+ * exhaustion distinct from structural emission failures at the Vulkan
+ * recording boundary.
+ */
+VkResult r3v_native_cell_vk_result_from_errno(int emit_result);
+
 /* Direct-write control recorder: lowers the 2D solid-fill cell
  * (src/amd/r300/common/r300_direct_write.h) into the command buffer
  * from the one live color memory.  The cell reads no source BO, so the
