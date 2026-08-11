@@ -1801,10 +1801,54 @@ def_derives_from(const nir_def *def, const nir_def *root, unsigned depth)
    return false;
 }
 
+static bool zpass_load_offset_matches_replay(const nir_def *def);
+static bool zpass_atomic_offset_is_zero(const nir_def *def);
+
+static bool
+zpass_predicate_is_nonzero(const nir_alu_instr *alu, const nir_def *load)
+{
+   if (!alu || !load ||
+       (alu->op != nir_op_ine && alu->op != nir_op_ine32) ||
+       alu->def.num_components != 1 || load->num_components != 1 ||
+       load->bit_size != 32)
+      return false;
+
+   const bool load_lhs =
+      alu->src[0].src.ssa == load && alu->src[0].swizzle[0] == 0 &&
+      nir_src_is_const(alu->src[1].src) &&
+      nir_src_comp_as_uint(alu->src[1].src, alu->src[1].swizzle[0]) == 0;
+   const bool load_rhs =
+      alu->src[1].src.ssa == load && alu->src[1].swizzle[0] == 0 &&
+      nir_src_is_const(alu->src[0].src) &&
+      nir_src_comp_as_uint(alu->src[0].src, alu->src[0].swizzle[0]) == 0;
+   return load_lhs || load_rhs;
+}
+
+static bool
+zpass_block_is_in_loop(const nir_block *block)
+{
+   for (const nir_cf_node *parent = block->cf_node.parent; parent;
+        parent = parent->parent) {
+      if (parent->type == nir_cf_node_loop)
+         return true;
+   }
+   return false;
+}
+
+static bool
+zpass_atomic_is_in_then(const nir_if *if_node, const nir_block *atomic_block)
+{
+   foreach_list_typed(nir_cf_node, child, node, &if_node->then_list) {
+      if (child == &atomic_block->cf_node)
+         return true;
+   }
+   return false;
+}
+
 /* ZPASS coverage-count detector.  Recognises the shape:
  *
  *     uint gid = gl_GlobalInvocationID.x;
- *     if (in_data[gid] >= THRESHOLD)
+ *     if (in_data[gid] != 0u)
  *         atomicAdd(count_out, 1u);
  *
  * which lowers to the depth/stencil unit's ZPASS occlusion-counter verb
@@ -1813,15 +1857,15 @@ def_derives_from(const nir_def *def, const nir_def *root, unsigned depth)
  *
  *   1. Exactly 1 ssbo_atomic + 1 load_ssbo + 0 store_ssbo.
  *   2. The atomic's ATOMIC_OP is nir_atomic_op_iadd.
- *   3. The atomic's value-source (src[2]) is a NIR-constant equal to 1.
+ *   3. The atomic's value-source (src[2]) is a scalar 32-bit NIR-constant
+ *      equal to 1, and its destination is a scalar 32-bit counter.
  *      This is the discriminator from blend-acc: blend-acc's value source
  *      is a load_ssbo def, ZPASS's is a literal 1.
- *   4. The atomic is contained in a block whose parent cf_node is a
- *      nir_if (the if-then branch with the atomic; nested if's not
- *      supported in the first cut).
- *   5. The nir_if's condition SSA def transitively derives from the
- *      load_ssbo's def via ALU operations (the predicate is computed
- *      from the load result).
+ *   4. The load uses the scalar gid * 4 byte stream, and the atomic offset
+ *      is zero relative to its descriptor.
+ *   5. The atomic is a direct child of the nir_if then-list, outside every
+ *      nir_loop.
+ *   6. The nir_if condition is the direct 32-bit `load != 0` comparison.
  *
  * Bin-mask analysis is NOT performed: the output buffer is single-element
  * (1 uint32 cell) and the orchestrator binds it directly without
@@ -1876,23 +1920,36 @@ r300_nir_detect_zpass_reduction(const nir_shader *s,
    if (nir_intrinsic_atomic_op(atomic) != nir_atomic_op_iadd)
       return;
 
-   /* Value source must be a NIR constant equal to 1.  This is the
-    * load-bearing discriminator from blend-acc-reduction. */
+   /* The replay increments one scalar uint32 counter.  A wider source or
+    * destination would truncate or split the operation in the replay. */
    if (!nir_src_is_const(atomic->src[2]) ||
-       nir_src_as_uint(atomic->src[2]) != 1)
+       nir_src_as_uint(atomic->src[2]) != 1 || !atomic->src[2].ssa ||
+       atomic->src[2].ssa->num_components != 1 ||
+       atomic->src[2].ssa->bit_size != 32 || atomic->def.num_components != 1 ||
+       atomic->def.bit_size != 32 || !load || load->def.num_components != 1 ||
+       load->def.bit_size != 32)
       return;
 
-   /* The atomic must be inside an if-then (or if-else) branch, not at
-    * the function impl's top level. */
+   if (!atomic->src[1].ssa || !zpass_atomic_offset_is_zero(atomic->src[1].ssa) ||
+       !load->src[1].ssa ||
+       !zpass_load_offset_matches_replay(load->src[1].ssa))
+      return;
+
+   /* The atomic must be a direct child of the if-then branch.  The replay
+    * has no representation for an else-side or nested control-flow action. */
    const nir_cf_node *parent_cf = atomic_block->cf_node.parent;
    if (!parent_cf || parent_cf->type != nir_cf_node_if)
       return;
    const nir_if *if_node = nir_cf_node_as_if(parent_cf);
+   if (!zpass_atomic_is_in_then(if_node, atomic_block) ||
+       zpass_block_is_in_loop(atomic_block))
+      return;
 
-   /* The if condition must transitively derive from the load_ssbo's def.
-    * This rules out kernels where the predicate is computed from some
-    * other source (a uniform, gl_GlobalInvocationID directly, etc.). */
-   if (!def_derives_from(if_node->condition.ssa, &load->def, 0))
+   /* The replay converts the loaded uint32 to a boolean by comparing it to
+    * zero.  Other comparisons and threshold predicates are not equivalent. */
+   const nir_alu_instr *predicate =
+      nir_def_as_alu_or_null(if_node->condition.ssa);
+   if (!zpass_predicate_is_nonzero(predicate, &load->def))
       return;
 
    out->is_zpass_reduction = true;
@@ -2652,6 +2709,23 @@ static bool
 dp4_offset_is_contiguous_invocation_stream(const struct dp4_offset_affine *e)
 {
    return e->ax == 1 && e->ay == 0 && e->az == 0 && e->b == 0;
+}
+
+static bool
+zpass_load_offset_matches_replay(const nir_def *def)
+{
+   struct dp4_offset_affine element_offset;
+   return dp4_offset_to_element_index(def, 4, &element_offset) &&
+          dp4_offset_is_contiguous_invocation_stream(&element_offset);
+}
+
+static bool
+zpass_atomic_offset_is_zero(const nir_def *def)
+{
+   struct dp4_offset_affine offset;
+   if (!dp4_offset_resolve(def, 0, 0, &offset))
+      return false;
+   return offset.ax == 0 && offset.ay == 0 && offset.az == 0 && offset.b == 0;
 }
 
 static bool
