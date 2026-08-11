@@ -26,10 +26,15 @@
  * runs and across clip and window spaces.
  */
 
-#include <stdbool.h>
 #include <inttypes.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "nir.h"
 #include "nir_builder.h"
@@ -893,7 +898,8 @@ case_multi_candidate_failures(struct r300_context *r300)
 
 /* Cache lifetime through the real getter: the fake context binds a fake VS
  * so r300_r2vb_producer_plan_get exercises key compare, replacement, and
- * release exactly as the driver does. */
+ * release exactly as the driver does.  The known-good route then writes the
+ * admission memo and reaches the shadow checker before the counter witness. */
 static void
 case_cache_lifetime(struct r300_context *r300)
 {
@@ -933,6 +939,72 @@ case_cache_lifetime(struct r300_context *r300)
          "viewport bit change re-plans window space");
    CHECK(clip3 == clip1, "clip plan survives the viewport change");
    r300->viewport.scale[0] = 320.0f;
+
+   static struct r300_fragment_shader fake_fs;
+   static struct r300_fragment_shader_code fake_fs_code;
+   memset(&fake_fs, 0, sizeof(fake_fs));
+   memset(&fake_fs_code, 0, sizeof(fake_fs_code));
+   fake_fs.shader = &fake_fs_code;
+   fake_fs_code.inputs.face = ATTR_UNUSED;
+   r300->fs.state = &fake_fs;
+
+   struct pipe_draw_info info = {0};
+   info.mode = MESA_PRIM_TRIANGLES;
+   info.instance_count = 1;
+   struct pipe_draw_start_count_bias draw = { .count = 3 };
+   unsetenv("R300_R2VB_AUTO_SINGLE");
+   unsetenv("R300_R2VB_AUTO_SINGLE_MIN_VERTICES");
+   unsetenv("R300_R2VB_BUDGET_ESCAPE");
+   unsetenv("R300_R2VB_BO_DRAW");
+   unsetenv("R300_R2VB_DIVIDE");
+   unsetenv("R300_R2VB_FORCE_SPLIT");
+   unsetenv("R300_R2VB_PLAN_DEBUG");
+   unsetenv("R300_R2VB_TYPED_SPLIT");
+   unsetenv("R300_R2VB_VARYING");
+   unsetenv("R300_R2VB_TELEMETRY");
+   unsetenv("R300_R2VB_TELEMETRY_RETAIN");
+   unsetenv("R300_R2VB_TELEMETRY_RETAIN_SCOPE");
+   setenv("R300_R2VB_MVP_EXEC", "1", 1);
+   setenv("R300_R2VB_RESTAGE", "1", 1);
+   bool route_ok = r300_r2vb_route_mvp(r300, &info, &draw);
+   CHECK(route_ok, "admission memo path accepts the known-good producer");
+   CHECK(fake_vs.r2vb_admission[0][0] == R300_R2VB_ADMIT_FITS,
+         "known-good route records the FITS memo");
+   CHECK(r300_r2vb_plan_shadow_divergences() == 0,
+         "known-good shadow check records no divergence");
+
+   /* The mismatch witness runs in a child because assertion builds terminate
+    * at the shadow boundary.  Release builds keep the memo authoritative and
+    * return normally, so the expected outcome follows the build contract. */
+   bool child_witness = false;
+   struct r300_r2vb_producer_plan *cached = fake_vs.r2vb_plan[0][0];
+   if (cached) {
+      enum r300_r2vb_plan_action saved_action = cached->action;
+      fake_vs.r2vb_admission[0][0] = R300_R2VB_ADMIT_UNMEASURED;
+      cached->action = R300_R2VB_PLAN_REJECT;
+      pid_t child = fork();
+      if (child == 0) {
+         bool admitted = r300_r2vb_route_mvp(r300, &info, &draw);
+         _exit(admitted ? 0 : 1);
+      } else if (child > 0) {
+         int status = 0;
+         child_witness = waitpid(child, &status, 0) == child;
+#ifdef NDEBUG
+         child_witness = child_witness && WIFEXITED(status) &&
+                         WEXITSTATUS(status) == 0;
+#else
+         child_witness = child_witness && WIFSIGNALED(status) &&
+                         WTERMSIG(status) == SIGABRT;
+#endif
+      }
+      cached->action = saved_action;
+      fake_vs.r2vb_admission[0][0] = R300_R2VB_ADMIT_UNMEASURED;
+   }
+   CHECK(child_witness,
+         "controlled shadow mismatch reaches its failure contract");
+   unsetenv("R300_R2VB_MVP_EXEC");
+   unsetenv("R300_R2VB_RESTAGE");
+   r300->fs.state = NULL;
 
    r300_r2vb_plan_cache_release(&fake_vs);
    bool all_null = true;
