@@ -245,6 +245,85 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
    return result;
 }
 
+struct image_usage_case {
+   VkImageUsageFlags usage;
+   VkResult query_result;
+   VkResult create_result;
+};
+
+/* Query and creation are separate public entry points, so exercise the
+ * complete image-family matrix through both dispatch paths.  The native
+ * transfer mask is exactly the two transfer bits; color is its own exclusive
+ * family, and zero or a mixed color/transfer mask refuses at both boundaries.
+ */
+static void
+check_image_usage_surface(
+   VkPhysicalDevice physical_device,
+   VkDevice image_device,
+   PFN_vkGetPhysicalDeviceImageFormatProperties2 query_properties)
+{
+   const VkImageUsageFlags transfer_usage =
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   const struct image_usage_case cases[] = {
+      { 0, VK_ERROR_FORMAT_NOT_SUPPORTED, R3V_NATIVE_REFUSAL_RESULT },
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_SUCCESS, VK_SUCCESS },
+      { VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_SUCCESS, VK_SUCCESS },
+      { VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SUCCESS, VK_SUCCESS },
+      { transfer_usage, VK_SUCCESS, VK_SUCCESS },
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+           VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_ERROR_FORMAT_NOT_SUPPORTED, R3V_NATIVE_REFUSAL_RESULT },
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+           VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_ERROR_FORMAT_NOT_SUPPORTED, R3V_NATIVE_REFUSAL_RESULT },
+   };
+
+   assert(transfer_usage ==
+          (VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+           VK_IMAGE_USAGE_TRANSFER_DST_BIT));
+   assert(transfer_usage !=
+          (VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+           VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+           VK_IMAGE_USAGE_SAMPLED_BIT));
+
+   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+      const VkPhysicalDeviceImageFormatInfo2 query_info = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+         .format = R3V_NATIVE_TARGET_FORMAT,
+         .type = VK_IMAGE_TYPE_2D,
+         .tiling = VK_IMAGE_TILING_LINEAR,
+         .usage = cases[i].usage,
+      };
+      VkImageFormatProperties2 properties = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+      };
+      assert(query_properties(physical_device, &query_info, &properties) ==
+             cases[i].query_result);
+
+      const VkImageCreateInfo create_info = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+         .imageType = VK_IMAGE_TYPE_2D,
+         .format = R3V_NATIVE_TARGET_FORMAT,
+         .extent = { R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1 },
+         .mipLevels = 1,
+         .arrayLayers = 1,
+         .samples = VK_SAMPLE_COUNT_1_BIT,
+         .tiling = VK_IMAGE_TILING_LINEAR,
+         .usage = cases[i].usage,
+         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      };
+      VkImage image = VK_NULL_HANDLE;
+      assert(vkCreateImage(image_device, &create_info, NULL, &image) ==
+             cases[i].create_result);
+      if (cases[i].create_result == VK_SUCCESS) {
+         assert(image != VK_NULL_HANDLE);
+         vkDestroyImage(image_device, image, NULL);
+      } else {
+         assert(image == VK_NULL_HANDLE);
+      }
+   }
+}
+
 int
 main(void)
 {
@@ -271,6 +350,10 @@ main(void)
       (PFN_vkCreateDevice)gipa(instance, "vkCreateDevice");
    PFN_vkGetDeviceProcAddr gdpa =
       (PFN_vkGetDeviceProcAddr)gipa(instance, "vkGetDeviceProcAddr");
+   PFN_vkGetPhysicalDeviceImageFormatProperties2 query_image_properties =
+      (PFN_vkGetPhysicalDeviceImageFormatProperties2)gipa(
+         instance, "vkGetPhysicalDeviceImageFormatProperties2");
+   assert(query_image_properties != NULL);
 
    uint32_t pdev_count = 1;
    VkPhysicalDevice pdev = VK_NULL_HANDLE;
@@ -304,6 +387,10 @@ main(void)
 #define LOAD(name) name = (PFN_##name)gdpa(device, #name); assert(name);
    DEVICE_COMMANDS(LOAD)
 #undef LOAD
+
+   /* The public query and create entry points agree over every admitted and
+    * refused usage family before the longer transfer and render sequence. */
+   check_image_usage_surface(pdev, device, query_image_properties);
 
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
