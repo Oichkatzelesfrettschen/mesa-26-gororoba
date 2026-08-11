@@ -1641,7 +1641,10 @@ static bool r2vb_sed_oracle_selftest(void)
  * atoms, so the authoritative record is those bound atoms plus the
  * registers the emit path writes itself.  One key=value line per
  * register keeps the record machine-reducible into the
- * producer-immediate-logical-state calibration artifact. */
+ * producer-immediate-logical-state calibration artifact.  Source discovery
+ * uses rg --fixed-strings r300_r2vb_dump_immd_state
+ * src/gallium/drivers/r300/ and follows the R300_VAP_PROG_STREAM_CNTL,
+ * R300_RS_IP_0, and r300_emit_vertex_arrays_swtcl definitions. */
 static void
 r300_r2vb_dump_immd_state(struct r300_context *r300, uint32_t num_vertices,
                           unsigned num_attrs, uint32_t vtx_dwords,
@@ -3918,7 +3921,10 @@ bool r300_r2vb_producer_fs_input_hwreg(
      * ntr_fixup_varying_slots shifts FS VAR0..VAR22 inputs up by nine
      * (texcoords and pointcoord occupy the low generic indices), so the
      * restaged producer's single VAR0 input records at generic[9].  The
-     * hardware register replay below is index-independent. */
+     * hardware register replay below is index-independent.  Source discovery
+     * uses rg --fixed-strings ntr_fixup_varying_slots
+     * src/gallium/drivers/r300/ and follows its declaration in nir_to_rc.h
+     * to the call in nir_to_rc.c. */
     int used = -1;
     for (unsigned i = 0; i < ATTR_GENERIC_COUNT; i++) {
         if (inputs->generic[i] != ATTR_UNUSED) {

@@ -1332,17 +1332,16 @@ int r300_swtcl_us_resync_mode(void)
     return cached;
 }
 
-/* RS482 first-CS clear/A constant-alias diagnostic: the u_blitter clear FS
- * sources PFS constant 0, and the next draw's constant upload overwrites
- * that register in the same IB with no draw-completion wait, so a fan
- * primitive still rasterizing can observe the successor draw's constants
- * (retained boot eda700c9 first CS: raster-progress-bounded A-red over the
- * clear).  The gate closes the draw-to-next-reprogram window: when a draw
- * has been emitted into the open CS and a US-touching atom (fs,
- * fs_rc_constant_state, fs_constants) is dirty, a WAIT_3D_IDLECLEAN lands
- * before the dirty-state emission.  This is the opposite boundary from the
- * refuted R300_SWTCL_US_RESYNC upload-to-draw fences.  Exact opt-in;
- * unset, empty, and other values stay closed. */
+/* Hypothesis: RS482 first-CS clear/A constant aliasing lets the u_blitter
+ * clear FS source PFS constant 0, and the next draw's constant upload
+ * overwrites that register in the same IB with no draw-completion wait, so a
+ * fan primitive still rasterizing can observe the successor draw's constants.
+ * The gate tests the draw-to-next-reprogram window: when a draw has been
+ * emitted into the open CS and a US-touching atom (fs, fs_rc_constant_state,
+ * fs_constants) is dirty, a WAIT_3D_IDLECLEAN lands before the dirty-state
+ * emission.  This is the opposite boundary from the refuted
+ * R300_SWTCL_US_RESYNC upload-to-draw fences.  Exact opt-in; unset, empty,
+ * and other values stay closed. */
 int r300_swtcl_wait_before_us_reprogram(void)
 {
     static int cached = -1;
