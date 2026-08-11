@@ -25,12 +25,18 @@ extern "C" {
 struct r300_context;
 struct nir_shader;
 
-/* Producer input ceiling: the split pass-B draw feeds every model attribute
- * plus the carry, and the producer VAP_OUT_VTX_FMT / PSC packing, the
- * per-input passthrough varyings, and the R300 RS texcoord-unit count (8, the
- * binding limit) all scale with the input count.  The CD-4 sedenion product
- * (two 16-component sedenions = 8 FP32x4 velems) is HW-confirmed at this
- * width on RS482. */
+/* Producer input ceiling: split pass B feeds every model attribute plus one
+ * carry input.  The R300 vertex-stream state exposes eight
+ * VAP_PROG_STREAM_CNTL and VAP_PROG_STREAM_CNTL_EXT entries, and the RS state
+ * exposes eight IP and INST entries (r300_context.h); state derivation also
+ * limits VAP_OUTPUT_VTX_FMT_1 and rasterizer texcoord allocation to eight
+ * slots (r300_state_derived.c).  The RS482 VAP register table in
+ * docs/hardware/rs482-hybrid-vertex-tcl-design.md names the same 0..7 stream
+ * range, and retained RS482 VAP/RS captures enumerate that programmed
+ * surface, so pass-B admission requires num_in + 1 <= 8.  A nine-input RS482
+ * pass-B capture that executes without truncation or decline falsifies this
+ * bound; reproduce the software admission boundary with `meson test -C build
+ * r300-r2vb-plan-oracle`. */
 #define R300_R2VB_MAX_PRODUCER_INPUTS 8
 
 /* The R2VB producer plan: one classification record per (vertex shader, plan
