@@ -59,12 +59,12 @@ static struct r300_screen g_screen;
 static struct r300_context g_context;
 
 static void
-fake_stack_init(void)
+fake_stack_init(bool is_r500)
 {
    memset(&g_screen, 0, sizeof(g_screen));
    g_screen.caps.has_tcl = false;
    g_screen.caps.is_r400 = false;
-   g_screen.caps.is_r500 = false;
+   g_screen.caps.is_r500 = is_r500;
    r300_screen_init_nir_options(&g_screen);
 
    memset(&g_context, 0, sizeof(g_context));
@@ -194,6 +194,57 @@ costs_equal(const struct r300_fs_admission_cost *a,
             const struct r300_fs_admission_cost *b)
 {
    return a->alu == b->alu && a->temps == b->temps && a->consts == b->consts;
+}
+
+static nir_shader *
+build_r500_admission_fs(unsigned chain_length, const char *name)
+{
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, g_screen.screen.nir_options[MESA_SHADER_FRAGMENT],
+      "%s", name);
+   nir_variable *in = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "in_color");
+   in->data.location = VARYING_SLOT_VAR0;
+   in->data.driver_location = 0;
+   in->data.interpolation = INTERP_MODE_FLAT;
+   nir_variable *out = nir_variable_create(
+      b.shader, nir_var_shader_out, glsl_vec4_type(), "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *base = nir_channel(&b, nir_load_var(&b, in), 0);
+   nir_def *value = fmad_chain(&b, base, chain_length);
+   nir_store_var(&b, out, nir_replicate(&b, value, 4), 0xf);
+   nir_validate_shader(b.shader, "r500 admission cost");
+   return b.shader;
+}
+
+static void
+run_r500_admission_cost(void)
+{
+   nir_shader *fits = build_r500_admission_fs(4, "r500_admission_fits");
+   struct r300_fs_admission_cost cost = {17, 19, 23};
+   unsigned alu = 29;
+   enum r300_fs_admission verdict = r300_fs_measure_nir_admission(
+      &g_context, fits, &alu, R300_FS_INPUT_R2VB_FLAT_VERTEX, &cost);
+   CHECK(verdict == R300_FS_ADMIT_FITS,
+         "R500 known-good shader fits the admission budget");
+   CHECK(alu == cost.alu && cost.alu > 0,
+         "R500 admission reports emitted instruction slots in both outputs");
+   CHECK(cost.temps > 0 && cost.consts > 0,
+         "R500 admission reports temporary and constant high-water marks");
+   ralloc_free(fits);
+
+   /* A null shader is a known-bad admission input. */
+   struct r300_fs_admission_cost rejected_cost = {17, 19, 23};
+   unsigned rejected_alu = 29;
+   verdict = r300_fs_measure_nir_admission(
+      &g_context, NULL, &rejected_alu, R300_FS_INPUT_R2VB_FLAT_VERTEX,
+      &rejected_cost);
+   CHECK(verdict == R300_FS_ADMIT_REJECT && rejected_alu == 0 &&
+            rejected_cost.alu == 0 && rejected_cost.temps == 0 &&
+            rejected_cost.consts == 0,
+         "R500 rejected input preserves the zeroed cost invariant");
 }
 
 /* Value-wise constant comparison: type, use mask, and the active union arm.
@@ -377,11 +428,14 @@ int
 main(void)
 {
    glsl_type_singleton_init_or_ref();
-   fake_stack_init();
+   fake_stack_init(false);
 
    run_space(R300_R2VB_POSITION_CLIP);
    run_space(R300_R2VB_POSITION_WINDOW);
 
+   rc_destroy_regalloc_state(&g_context.fs_regalloc_state);
+   fake_stack_init(true);
+   run_r500_admission_cost();
    rc_destroy_regalloc_state(&g_context.fs_regalloc_state);
    glsl_type_singleton_decref();
    printf(g_failures ? "FAILED (%u)\n" : "PASSED\n", g_failures);

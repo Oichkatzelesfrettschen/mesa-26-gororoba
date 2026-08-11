@@ -133,8 +133,8 @@ enum r300_fs_admission {
     R300_FS_ADMIT_REJECT,
 };
 
-/* Backend resource vector of one admission measurement: emitted ALU slots,
- * the US_PIXSIZE temporary high-water mark, and the constant-file vec4
+/* Backend resource vector of one admission measurement: emitted instruction
+ * slots, the US_PIXSIZE temporary high-water mark, and the constant-file vec4
  * count.  Zero when the compile died before emission. */
 struct r300_fs_admission_cost {
    unsigned alu;
