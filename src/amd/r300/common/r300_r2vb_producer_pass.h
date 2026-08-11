@@ -52,12 +52,12 @@ struct r300_r2vb_producer_layout {
    uint32_t pitch_pixels;
 };
 
-/* The draw packet's 14-bit payload field holds 0x4000 dwords: the
- * VAP_VF_CNTL dword plus eight dwords per vertex, so 2047 vertices is
- * the largest encodable embedded row.  The pitch register's 13-bit pixel
- * field admits more, so the packet header is the binding ceiling.
+/* The complete immediate pass includes the fixed producer state and
+ * publication tail around the embedded draw.  The shared one-input producer
+ * admission keeps that whole IB at the established 1024-vertex ceiling; the
+ * packet field alone can encode 2047 and is not the submit-safe bound.
  */
-#define R300_R2VB_PRODUCER_MAX_COUNT 2047u
+#define R300_R2VB_PRODUCER_MAX_COUNT 1024u
 
 /* Resolves the single-row layout for count vertices.  Returns -EINVAL
  * outside 1..R300_R2VB_PRODUCER_MAX_COUNT.

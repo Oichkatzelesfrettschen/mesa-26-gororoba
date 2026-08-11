@@ -28,13 +28,14 @@
 /* Slot position plus one pre-swizzled record, each FP32x4. */
 #define R300_R2VB_PRODUCER_VTX_DWORDS 8u
 
-/* The draw header below is written as a raw dword, so the ceiling proves
- * its 14-bit payload-count field never truncates.
+/* The draw header below is written as a raw dword.  Keep the shared 1024
+ * admission inside the packet's 14-bit payload-count encoding; the bound in
+ * the public header also leaves room for the surrounding state in one IB.
  */
 static_assert(1u + R300_R2VB_PRODUCER_MAX_COUNT *
                       R300_R2VB_PRODUCER_VTX_DWORDS <=
                  R300_PM4_MAX_RUN,
-              "the embedded body encodes in one PACKET3 header");
+              "the embedded body fits the PACKET3 payload bound");
 
 int
 r300_r2vb_producer_layout_single_row(uint32_t count,
