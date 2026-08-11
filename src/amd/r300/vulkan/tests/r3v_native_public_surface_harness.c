@@ -64,6 +64,41 @@ static const float positive_triangle[12] = {
 static VkDevice device;
 static VkCommandPool pool;
 
+struct deferred_copy_allocation_control {
+   uint32_t command_allocations_before_failure;
+};
+
+static void *
+deferred_copy_test_allocate(void *user_data, size_t size, size_t alignment,
+                            VkSystemAllocationScope scope)
+{
+   struct deferred_copy_allocation_control *control = user_data;
+   (void)alignment;
+   if (scope == VK_SYSTEM_ALLOCATION_SCOPE_COMMAND) {
+      if (control->command_allocations_before_failure == 0)
+         return NULL;
+      control->command_allocations_before_failure--;
+   }
+   return malloc(size);
+}
+
+static void *
+deferred_copy_test_reallocate(void *user_data, void *memory, size_t size,
+                              size_t alignment, VkSystemAllocationScope scope)
+{
+   (void)user_data;
+   (void)alignment;
+   (void)scope;
+   return realloc(memory, size);
+}
+
+static void
+deferred_copy_test_free(void *user_data, void *memory)
+{
+   (void)user_data;
+   free(memory);
+}
+
 static bool
 r3v_native_cache_publication_precedes_close(uint64_t cache_event,
                                             uint64_t close_event)
@@ -861,6 +896,143 @@ main(void)
                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                              staging, 1, &readback);
       assert(vkEndCommandBuffer(copy_cmd) == VK_SUCCESS);
+
+      /* Capacity calibration covers the first allocation, growth past the
+       * former ceiling, every deferred-copy kind, reset reuse, and a
+       * command-scope allocation refusal.  The command buffer owns the
+       * storage through the pool allocator, so reset releases it before the
+       * next begin allocates a fresh first block.
+       */
+      const VkImageSubresourceRange capacity_range = {
+         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+         .levelCount = 1,
+         .layerCount = 1,
+      };
+      const VkClearColorValue capacity_clear = {
+         .float32 = { 0.25f, 0.5f, 0.75f, 1.0f },
+      };
+
+      VkCommandBuffer sixteen_cmd = fresh_cmd();
+      for (uint32_t i = 0; i < 16; i++) {
+         vkCmdClearColorImage(sixteen_cmd, img_a,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              &capacity_clear, 1, &capacity_range);
+      }
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, sixteen_native, sixteen_cmd);
+      assert(sixteen_native->deferred_copy_count == 16);
+      assert(sixteen_native->deferred_copy_capacity == 16);
+      assert(sixteen_native->deferred_copies != NULL);
+      assert(vkEndCommandBuffer(sixteen_cmd) == VK_SUCCESS);
+
+      VkCommandBuffer seventeen_cmd = fresh_cmd();
+      for (uint32_t i = 0; i < 17; i++) {
+         vkCmdClearColorImage(seventeen_cmd, img_a,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              &capacity_clear, 1, &capacity_range);
+      }
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, seventeen_native, seventeen_cmd);
+      assert(seventeen_native->deferred_copy_count == 17);
+      assert(seventeen_native->deferred_copy_capacity == 32);
+      assert(seventeen_native->deferred_copies != NULL);
+      assert(vkEndCommandBuffer(seventeen_cmd) == VK_SUCCESS);
+
+      VkCommandBuffer mixed_cmd = fresh_cmd();
+      for (uint32_t i = 0; i < 8; i++) {
+         vkCmdClearColorImage(mixed_cmd, img_a,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              &capacity_clear, 1, &capacity_range);
+         vkCmdCopyBufferToImage(mixed_cmd, staging, img_a,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                &upload);
+         vkCmdCopyImage(mixed_cmd, img_a,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img_b,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cross);
+         vkCmdCopyImageToBuffer(mixed_cmd, img_b,
+                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                staging, 1, &readback);
+      }
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, mixed_native, mixed_cmd);
+      assert(mixed_native->deferred_copy_count == 32);
+      assert(mixed_native->deferred_copy_capacity == 32);
+      assert(mixed_native->deferred_copies != NULL);
+      for (uint32_t i = 0; i < 8; i++) {
+         const uint32_t base = i * 4;
+         assert(mixed_native->deferred_copies[base].kind ==
+                R3V_NATIVE_COPY_CLEAR_IMAGE);
+         assert(mixed_native->deferred_copies[base + 1].kind ==
+                R3V_NATIVE_COPY_BUFFER_TO_IMAGE);
+         assert(mixed_native->deferred_copies[base + 2].kind ==
+                R3V_NATIVE_COPY_IMAGE_TO_IMAGE);
+         assert(mixed_native->deferred_copies[base + 3].kind ==
+                R3V_NATIVE_COPY_IMAGE_TO_BUFFER);
+      }
+      assert(vkEndCommandBuffer(mixed_cmd) == VK_SUCCESS);
+
+      assert(vkBeginCommandBuffer(
+                mixed_cmd,
+                &(VkCommandBufferBeginInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                }) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, reset_native, mixed_cmd);
+      assert(reset_native->deferred_copy_count == 0);
+      assert(reset_native->deferred_copy_capacity == 0);
+      assert(reset_native->deferred_copies == NULL);
+      vkCmdClearColorImage(mixed_cmd, img_a,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           &capacity_clear, 1, &capacity_range);
+      assert(reset_native->deferred_copy_count == 1);
+      assert(reset_native->deferred_copy_capacity == 16);
+      assert(vkEndCommandBuffer(mixed_cmd) == VK_SUCCESS);
+
+      VkCommandBuffer allocation_failure_cmd = fresh_cmd();
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, allocation_failure_native,
+                     allocation_failure_cmd);
+      struct deferred_copy_allocation_control allocation_control = {
+         .command_allocations_before_failure = 0,
+      };
+      const VkAllocationCallbacks saved_allocator =
+         allocation_failure_native->vk.pool->alloc;
+      allocation_failure_native->vk.pool->alloc = (VkAllocationCallbacks){
+         .pUserData = &allocation_control,
+         .pfnAllocation = deferred_copy_test_allocate,
+         .pfnReallocation = deferred_copy_test_reallocate,
+         .pfnFree = deferred_copy_test_free,
+      };
+      vkCmdClearColorImage(allocation_failure_cmd, img_a,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           &capacity_clear, 1, &capacity_range);
+      assert(allocation_failure_native->deferred_copy_count == 0);
+      assert(allocation_failure_native->deferred_copy_capacity == 0);
+      assert(allocation_failure_native->deferred_copies == NULL);
+      assert(vkEndCommandBuffer(allocation_failure_cmd) ==
+             VK_ERROR_OUT_OF_HOST_MEMORY);
+      allocation_failure_native->vk.pool->alloc = saved_allocator;
+
+      VkCommandBuffer growth_failure_cmd = fresh_cmd();
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, growth_failure_native,
+                     growth_failure_cmd);
+      allocation_control = (struct deferred_copy_allocation_control){
+         .command_allocations_before_failure = 1,
+      };
+      const VkAllocationCallbacks growth_saved_allocator =
+         growth_failure_native->vk.pool->alloc;
+      growth_failure_native->vk.pool->alloc = (VkAllocationCallbacks){
+         .pUserData = &allocation_control,
+         .pfnAllocation = deferred_copy_test_allocate,
+         .pfnReallocation = deferred_copy_test_reallocate,
+         .pfnFree = deferred_copy_test_free,
+      };
+      for (uint32_t i = 0; i < 17; i++) {
+         vkCmdClearColorImage(growth_failure_cmd, img_a,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              &capacity_clear, 1, &capacity_range);
+      }
+      assert(growth_failure_native->deferred_copy_count == 16);
+      assert(growth_failure_native->deferred_copy_capacity == 16);
+      assert(growth_failure_native->deferred_copies != NULL);
+      assert(vkEndCommandBuffer(growth_failure_cmd) ==
+             VK_ERROR_OUT_OF_HOST_MEMORY);
+      growth_failure_native->vk.pool->alloc = growth_saved_allocator;
 
       assert(vkQueueSubmit(queue, 1,
                            &(VkSubmitInfo){

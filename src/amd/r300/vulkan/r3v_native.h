@@ -88,7 +88,10 @@ struct r3v_native_deferred_copy {
    uint32_t clear_dword;
 };
 
-#define R3V_NATIVE_MAX_DEFERRED_COPIES 16
+/* The first command-pool allocation keeps ordinary copy recordings compact;
+ * r3v_native_copy_slot grows the storage when a recording reaches it.
+ */
+#define R3V_NATIVE_DEFERRED_COPY_INITIAL_CAPACITY 16
 
 struct r3v_native_deferred_draw {
    bool pending;
@@ -143,9 +146,12 @@ struct r3v_native_cmd_buffer {
     * recording refuses the mix, so execution order between the two
     * never arises.
     */
-   struct r3v_native_deferred_copy
-      deferred_copies[R3V_NATIVE_MAX_DEFERRED_COPIES];
+   /* Command-pool storage grows with the recorded operation count and is
+    * released by r3v_native_cmd_buffer_release_recording.
+    */
+   struct r3v_native_deferred_copy *deferred_copies;
    uint32_t deferred_copy_count;
+   uint32_t deferred_copy_capacity;
 };
 
 struct r3v_native_queue {

@@ -9,8 +9,10 @@
 
 #include "r3v_entrypoints.h"
 
+#include "vk_alloc.h"
 #include "vk_log.h"
 
+#include <limits.h>
 #include <string.h>
 
 /* The native command buffer executes only an installed fixed IB, and
@@ -68,11 +70,45 @@ r3v_native_copy_slot(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
-   if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
-       cmd_buffer->deferred_copy_count >= R3V_NATIVE_MAX_DEFERRED_COPIES) {
+   if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded) {
       r3v_native_cmd_poison(commandBuffer);
       return NULL;
    }
+
+   if (cmd_buffer->deferred_copy_count == cmd_buffer->deferred_copy_capacity) {
+      const uint32_t old_capacity = cmd_buffer->deferred_copy_capacity;
+      const uint32_t new_capacity = old_capacity != 0
+                                       ? old_capacity * 2
+                                       : R3V_NATIVE_DEFERRED_COPY_INITIAL_CAPACITY;
+      if (new_capacity < old_capacity ||
+          (size_t)new_capacity >
+             SIZE_MAX / sizeof(*cmd_buffer->deferred_copies)) {
+         vk_command_buffer_set_error(&cmd_buffer->vk,
+                                     VK_ERROR_OUT_OF_HOST_MEMORY);
+         return NULL;
+      }
+
+      const size_t allocation_size =
+         (size_t)new_capacity * sizeof(*cmd_buffer->deferred_copies);
+      struct r3v_native_deferred_copy *copies = vk_alloc(
+         &cmd_buffer->vk.pool->alloc, allocation_size, 8,
+         VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (copies == NULL) {
+         vk_command_buffer_set_error(&cmd_buffer->vk,
+                                     VK_ERROR_OUT_OF_HOST_MEMORY);
+         return NULL;
+      }
+
+      if (cmd_buffer->deferred_copy_count != 0) {
+         memcpy(copies, cmd_buffer->deferred_copies,
+                (size_t)cmd_buffer->deferred_copy_count *
+                   sizeof(*cmd_buffer->deferred_copies));
+      }
+      vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->deferred_copies);
+      cmd_buffer->deferred_copies = copies;
+      cmd_buffer->deferred_copy_capacity = new_capacity;
+   }
+
    return &cmd_buffer->deferred_copies[cmd_buffer->deferred_copy_count];
 }
 
