@@ -272,10 +272,10 @@ r3v_native_record_tcl_bypass_triangle_carrier(
                                          target_image->height);
 }
 
-/* Submission-time execution of the public draw: the bound stream reads
- * and the load-op clear happen here, so a vertex write between record
- * and submit is honored and an unsubmitted command buffer leaves
- * application memory untouched.
+/* Submission-time execution of the public render pass: an empty pass applies
+ * its load-op clear, while a draw also reads the bound stream.  Both paths
+ * execute here, so a vertex write between record and submit is honored and
+ * an unsubmitted command buffer leaves application memory untouched.
  */
 VkResult
 r3v_native_cmd_buffer_execute_deferred_draw(
@@ -285,6 +285,14 @@ r3v_native_cmd_buffer_execute_deferred_draw(
    struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
    if (!draw->pending)
       return VK_SUCCESS;
+
+   /* CmdBeginRenderPass records the load-op clear before a draw exists.  An
+    * empty subpass has no vertex stream or carrier to execute, but its clear
+    * still realizes at queue submission.
+    */
+   if (draw->buffer == NULL)
+      return sentinel_fill_color(device, draw->target_memory,
+                                 draw->target_fill_bytes);
 
    struct r3v_native_buffer *buffer = draw->buffer;
    struct r3v_native_memory *memory = buffer->memory;
