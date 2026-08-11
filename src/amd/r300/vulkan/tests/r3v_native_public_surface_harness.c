@@ -153,7 +153,7 @@ fresh_cmd(void)
 }
 
 static void
-record_transfer_image_barrier(VkCommandBuffer command_buffer, VkImage image,
+record_image_barrier(VkCommandBuffer command_buffer, VkImage image,
                               VkImageLayout old_layout,
                               VkImageLayout new_layout,
                               VkPipelineStageFlags src_stage,
@@ -778,6 +778,14 @@ main(void)
     * installs the reference cell against the byte-identical carrier.
     */
    VkCommandBuffer cmd = fresh_cmd();
+   /* Render-family images use a separate barrier vocabulary from transfer
+    * images, and the transition precedes the render pass.
+    */
+   record_image_barrier(
+      cmd, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
    vkCmdBeginRenderPass(cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer,
@@ -785,6 +793,27 @@ main(void)
    vkCmdDraw(cmd, 3, 1, 0, 0);
    vkCmdEndRenderPass(cmd);
    assert(vkEndCommandBuffer(cmd) == VK_SUCCESS);
+
+   /* Render-family barriers admit the linear-image preinitialized state and
+    * the color-attachment layout, while transfer layouts remain refused.
+    */
+   VkCommandBuffer render_layout_cmd = fresh_cmd();
+   record_image_barrier(
+      render_layout_cmd, image, VK_IMAGE_LAYOUT_PREINITIALIZED,
+      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+   assert(vkEndCommandBuffer(render_layout_cmd) == VK_SUCCESS);
+
+   VkCommandBuffer bad_render_layout_cmd = fresh_cmd();
+   record_image_barrier(
+      bad_render_layout_cmd, image, VK_IMAGE_LAYOUT_UNDEFINED,
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+      VK_ACCESS_TRANSFER_WRITE_BIT);
+   assert(vkEndCommandBuffer(bad_render_layout_cmd) ==
+          R3V_NATIVE_REFUSAL_RESULT);
 
    /* The harness links the implementation, so the installed IB and the
     * owned carrier are directly readable: the public route records the
@@ -878,6 +907,28 @@ main(void)
       assert(vkBindImageMemory(device, img_b, mem_b,
                                transfer_image_offset) == VK_SUCCESS);
 
+      VkImageCreateInfo source_only_info = transfer_info;
+      source_only_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      VkImageCreateInfo destination_only_info = transfer_info;
+      destination_only_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      VkImage source_only = VK_NULL_HANDLE;
+      VkImage destination_only = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &source_only_info, NULL, &source_only) ==
+             VK_SUCCESS);
+      assert(vkCreateImage(device, &destination_only_info, NULL,
+                           &destination_only) == VK_SUCCESS);
+      VkDeviceMemory source_only_memory = VK_NULL_HANDLE;
+      VkDeviceMemory destination_only_memory = VK_NULL_HANDLE;
+      assert(vkAllocateMemory(device, &transfer_alloc, NULL,
+                              &source_only_memory) == VK_SUCCESS);
+      assert(vkAllocateMemory(device, &transfer_alloc, NULL,
+                              &destination_only_memory) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, source_only, source_only_memory,
+                               transfer_image_offset) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, destination_only,
+                               destination_only_memory,
+                               transfer_image_offset) == VK_SUCCESS);
+
       VkBuffer staging = VK_NULL_HANDLE;
       assert(vkCreateBuffer(
                 device,
@@ -936,7 +987,7 @@ main(void)
       /* A newly created image starts undefined.  The transfer recorder
        * admits the transition into the destination layout before upload.
        */
-      record_transfer_image_barrier(
+      record_image_barrier(
          copy_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -947,12 +998,12 @@ main(void)
       /* The barrier validates the image-layout transition while the
        * single-thread in-order execution carries the dependency.
        */
-      record_transfer_image_barrier(
+      record_image_barrier(
          copy_cmd, img_a, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
          VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-      record_transfer_image_barrier(
+      record_image_barrier(
          copy_cmd, img_b, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -982,7 +1033,7 @@ main(void)
       vkCmdCopyImage(copy_cmd, img_a,
                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img_b,
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cross);
-      record_transfer_image_barrier(
+      record_image_barrier(
          copy_cmd, img_b, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1003,6 +1054,44 @@ main(void)
              R3V_NATIVE_COPY_BUFFER_TO_BUFFER);
       assert(vkEndCommandBuffer(copy_cmd) == VK_SUCCESS);
 
+      /* Transfer barriers follow the image usage bits: source-only images
+       * admit source layout transitions, destination-only images admit
+       * destination transitions, and each rejects the opposite layout.
+       */
+      VkCommandBuffer source_layout_cmd = fresh_cmd();
+      record_image_barrier(
+         source_layout_cmd, source_only, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, VK_ACCESS_TRANSFER_READ_BIT);
+      assert(vkEndCommandBuffer(source_layout_cmd) == VK_SUCCESS);
+
+      VkCommandBuffer bad_source_layout_cmd = fresh_cmd();
+      record_image_barrier(
+         bad_source_layout_cmd, source_only, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, VK_ACCESS_TRANSFER_WRITE_BIT);
+      assert(vkEndCommandBuffer(bad_source_layout_cmd) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+
+      VkCommandBuffer destination_layout_cmd = fresh_cmd();
+      record_image_barrier(
+         destination_layout_cmd, destination_only,
+         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, VK_ACCESS_TRANSFER_WRITE_BIT);
+      assert(vkEndCommandBuffer(destination_layout_cmd) == VK_SUCCESS);
+
+      VkCommandBuffer bad_destination_layout_cmd = fresh_cmd();
+      record_image_barrier(
+         bad_destination_layout_cmd, destination_only,
+         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+         0, VK_ACCESS_TRANSFER_READ_BIT);
+      assert(vkEndCommandBuffer(bad_destination_layout_cmd) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+
       /* Capacity calibration covers the first allocation, growth past the
        * former ceiling, every deferred-copy kind, reset reuse, and a
        * command-scope allocation refusal.  The command buffer owns the
@@ -1019,7 +1108,7 @@ main(void)
       };
 
       VkCommandBuffer sixteen_cmd = fresh_cmd();
-      record_transfer_image_barrier(
+      record_image_barrier(
          sixteen_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1036,7 +1125,7 @@ main(void)
       assert(vkEndCommandBuffer(sixteen_cmd) == VK_SUCCESS);
 
       VkCommandBuffer seventeen_cmd = fresh_cmd();
-      record_transfer_image_barrier(
+      record_image_barrier(
          seventeen_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1054,7 +1143,7 @@ main(void)
 
       VkCommandBuffer mixed_cmd = fresh_cmd();
       for (uint32_t i = 0; i < 8; i++) {
-         record_transfer_image_barrier(
+         record_image_barrier(
             mixed_cmd, img_a,
             i == 0 ? VK_IMAGE_LAYOUT_UNDEFINED
                     : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1069,12 +1158,12 @@ main(void)
          vkCmdCopyBufferToImage(mixed_cmd, staging, img_a,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                 &upload);
-         record_transfer_image_barrier(
+         record_image_barrier(
             mixed_cmd, img_a, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-         record_transfer_image_barrier(
+         record_image_barrier(
             mixed_cmd, img_b,
             i == 0 ? VK_IMAGE_LAYOUT_UNDEFINED
                     : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1086,7 +1175,7 @@ main(void)
          vkCmdCopyImage(mixed_cmd, img_a,
                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img_b,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cross);
-         record_transfer_image_barrier(
+         record_image_barrier(
             mixed_cmd, img_b, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1121,7 +1210,7 @@ main(void)
       assert(reset_native->deferred_copy_count == 0);
       assert(reset_native->deferred_copy_capacity == 0);
       assert(reset_native->deferred_copies == NULL);
-      record_transfer_image_barrier(
+      record_image_barrier(
          mixed_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1147,7 +1236,7 @@ main(void)
          .pfnReallocation = deferred_copy_test_reallocate,
          .pfnFree = deferred_copy_test_free,
       };
-      record_transfer_image_barrier(
+      record_image_barrier(
          allocation_failure_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1176,7 +1265,7 @@ main(void)
          .pfnReallocation = deferred_copy_test_reallocate,
          .pfnFree = deferred_copy_test_free,
       };
-      record_transfer_image_barrier(
+      record_image_barrier(
          growth_failure_cmd, img_a, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1271,7 +1360,7 @@ main(void)
             .levelCount = 1,
             .layerCount = 1,
          };
-         record_transfer_image_barrier(
+         record_image_barrier(
             clear_cmd, img_c, VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1550,6 +1639,10 @@ main(void)
 
       vkDestroyBuffer(device, staging, NULL);
       vkFreeMemory(device, staging_mem, NULL);
+      vkDestroyImage(device, source_only, NULL);
+      vkDestroyImage(device, destination_only, NULL);
+      vkFreeMemory(device, source_only_memory, NULL);
+      vkFreeMemory(device, destination_only_memory, NULL);
       vkDestroyImage(device, img_a, NULL);
       vkDestroyImage(device, img_b, NULL);
       vkFreeMemory(device, mem_a, NULL);
@@ -2107,6 +2200,15 @@ main(void)
    assert(vkCreateImage(device, &image_info, NULL, &unbound_image) ==
           VK_SUCCESS);
    assert(vkBindImageMemory(device, unbound_image, color_memory, 4096) ==
+          R3V_NATIVE_REFUSAL_RESULT);
+
+   VkCommandBuffer unbound_layout_cmd = fresh_cmd();
+   record_image_barrier(
+      unbound_layout_cmd, unbound_image, VK_IMAGE_LAYOUT_UNDEFINED,
+      VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+   assert(vkEndCommandBuffer(unbound_layout_cmd) ==
           R3V_NATIVE_REFUSAL_RESULT);
 
    /* The linear transfer family: transfer usage alone admits extents
