@@ -19,15 +19,16 @@
  * s1e7m16 (FP24), and the C4_32_FP color target widens the result back
  * to binary32.  A binary32 value therefore survives delivery byte-exact
  * only when it is a fixed point of that round trip, and the delivery
- * model admits exactly that domain: +-0, +-Inf, and normals whose low 7
- * mantissa bits are zero with unbiased exponent in [-62, 63] -- the
- * s1e7m16 normal range under bias 63.  NaN refuses because the 23-bit
- * payload truncates to 16 bits, denormals refuse because binary32
- * denormals sit below the FP24 normal range, and values that would land
- * on FP24 denormals refuse as a conservative fail-closed cut even where
- * silicon might preserve them.  On the admitted domain the round trip
- * is the identity, so the delivery is a verbatim copy there and the
- * model needs no rounding arithmetic.
+ * model admits non-negative binary32 values that are already fixed points
+ * of the shared FP24 quantizer: positive zero and normal values from the
+ * measured minimum through the measured finite maximum with the low 7
+ * mantissa bits clear.  The RS48x source-read model canonicalizes negative
+ * zero and steps negative nonzero values toward zero, so negative values
+ * refuse.  Infinities, NaNs, denormals, off-grid values, and values outside
+ * the measured normal range also refuse because quantization changes their
+ * bits.  On the admitted domain the round trip is the identity, so the
+ * delivery is a verbatim copy there and the model needs no rounding
+ * arithmetic.
  */
 bool r300_r2vb_fp24_identity_admits(uint32_t bits);
 
@@ -38,11 +39,11 @@ bool r300_r2vb_fp24_identity_admits(uint32_t bits);
  * the overlapping binding, -ENOSPC on carrier overrun, -EINVAL on any
  * other format --
  * F32_1's synthesized Y stays a CPU-route shape until its identity
- * control exists.  Source components must admit into the FP24
- * fixed-point domain above; an out-of-domain component refuses with
- * -EDOM before any carrier write, so the caller's rollback authority
- * selects the CPU route instead of receiving bytes the silicon
- * producer would not reproduce.  The lanes past the source record
+ * control exists.  Source components are little-endian binary32 bytes and
+ * must admit into the FP24 fixed-point domain above; an out-of-domain
+ * component refuses with -EDOM before any carrier write, so the caller's
+ * rollback authority selects the CPU route instead of receiving bytes the
+ * silicon producer would not reproduce.  The lanes past the source record
  * synthesize as the gather does -- Z as +0.0, W as 1.0 -- values the
  * producer embeds host-side, both FP24 fixed points by construction,
  * so the synthesis needs no admission scan.  Returns 0 on success.

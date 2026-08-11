@@ -254,8 +254,8 @@ test_refusals(void)
 
    static const float records[3][4] = {
       { 1.0f, 2.0f, 0.5f, 1.0f },
-      { -0.75f, 8.0f, 0.0f, 1.0f },
-      { 56.0f, -0.5f, 0.25f, 1.0f },
+      { 0.75f, 8.0f, 0.0f, 1.0f },
+      { 56.0f, 0.5f, 0.25f, 1.0f },
    };
 
    /* Null records refuse. */
@@ -285,6 +285,22 @@ test_refusals(void)
    uint32_t canary[512];
    memset(canary, 0xc5, sizeof(canary));
    struct r300_r2vb_producer_ib into = { 0 };
+   CHECK(r300_r2vb_producer_pass_emit_into(&params, canary, 512, &into) ==
+         -EDOM);
+   for (unsigned i = 0; i < 512; i++)
+      CHECK(canary[i] == 0xc5c5c5c5u);
+   params.records = records;
+
+   /* Negative source values are outside the identity route: the measured
+    * RS48x source-read model shifts them toward zero before the producer's
+    * copy, so the shared admission must refuse them before emission. */
+   static const float negative_records[3][4] = {
+      { 1.0f, 2.0f, 0.5f, 1.0f },
+      { -0.75f, 8.0f, 0.0f, 1.0f },
+      { 56.0f, 0.5f, 0.25f, 1.0f },
+   };
+   params.records = negative_records;
+   memset(canary, 0xc5, sizeof(canary));
    CHECK(r300_r2vb_producer_pass_emit_into(&params, canary, 512, &into) ==
          -EDOM);
    for (unsigned i = 0; i < 512; i++)

@@ -942,12 +942,17 @@ The landed mechanisms are:
   datapath -- s1e7m16 (FP24) registers and interpolators into the
   C4_32_FP color container -- so a binary32 value survives delivery
   byte-exact only as a fixed point of the FP24 round trip; the model
-  admits exactly that domain (+-0, +-Inf, low-7-zero mantissas with
-  unbiased exponent in [-62, 63]) and refuses NaN payloads, denormals,
-  and off-grid values with -EDOM before any carrier write.  On the
-  admitted domain the round trip is the identity, so delivery is a
-  verbatim copy there, the CPU gather re-derives the carrier as the
-  semantic oracle at every R2VB execution, and a byte divergence
+  admits non-negative binary32 encodings that equal the shared FP24
+  quantizer: positive zero and normal values from the measured minimum
+  through the measured finite maximum with the low 7 mantissa bits clear.
+  The RS48x source-read model canonicalizes negative zero and steps
+  negative nonzero values toward zero, so negative values refuse along
+  with infinities, NaNs, denormals, off-grid values, and values outside
+  the measured range.  Stream components use little-endian binary32
+  bytes, and the host model decodes those bytes explicitly before
+  admission.  On the admitted domain the round trip is the identity, so
+  delivery is a verbatim copy there, the CPU gather re-derives the carrier
+  as the semantic oracle at every R2VB execution, and a byte divergence
   refuses the draw.  The CPU route is the default, the delivered PM4 is
   unchanged, and the route is host-model evidence only.
 - the linear transfer image family and its synchronous copies:

@@ -14,6 +14,7 @@
 #include "r300_r2vb_carrier_delivery.h"
 
 #include "amd/r300/common/r300_vertex_format.h"
+#include "r300_us_source_read.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -23,47 +24,62 @@
 
 #define CANARY 0xdeadbeefu
 
-/* FP24 fixed points: +-0, +-Inf, exact small constants, the window
- * coordinates the viewport transform produces for the reference
- * triangle, and the s1e7m16 range corners -- low 7 mantissa bits zero,
- * unbiased exponent -62 and 63.
+static void
+store_le32(uint8_t *dst, uint32_t bits)
+{
+   dst[0] = (uint8_t)bits;
+   dst[1] = (uint8_t)(bits >> 8);
+   dst[2] = (uint8_t)(bits >> 16);
+   dst[3] = (uint8_t)(bits >> 24);
+}
+
+/* FP24 fixed points: positive zero, exact non-negative constants, the
+ * window coordinates the viewport transform produces for the reference
+ * triangle, and the measured s1e7m16 normal-range corners.
  */
 static const uint32_t admitted_bits[] = {
    0x00000000u, /* +0 */
-   0x80000000u, /* -0 */
    0x3f800000u, /* 1.0 */
-   0xbf400000u, /* -0.75 */
    0x3f400000u, /* 0.75 */
    0x41000000u, /* 8.0 */
    0x42600000u, /* 56.0 */
-   0x7f800000u, /* +Inf */
-   0xff800000u, /* -Inf */
-   0x20800000u, /* 2^-62, the smallest FP24 normal */
-   0x5f7fff80u, /* largest binary32 with the FP24 mantissa grid at 2^63 */
+   R300_FP24_MIN_NORMAL_F32_BITS,
+   R300_FP24_MAX_FINITE_F32_BITS,
 };
 
-/* Encodings the FP24 round trip does not reproduce: NaN payloads
- * truncate, binary32 denormals underflow the FP24 normal range, a set
- * low mantissa bit falls off the 16-bit grid, and exponents outside
- * [-62, 63] leave the s1e7m16 field.
+/* Encodings the source-read and FP24 models do not reproduce: negative
+ * values are shifted or canonicalized by the source read, infinities
+ * saturate, NaN payloads truncate, binary32 denormals underflow the FP24
+ * normal range, a set low mantissa bit falls off the 16-bit grid, and
+ * exponents outside the measured normal range are clamped or flushed.
  */
 static const uint32_t refused_bits[] = {
+   0x80000000u, /* -0: source reads as +0 */
+   0xbf400000u, /* -0.75: source read steps toward zero */
+   0xff800000u, /* -Inf: source route is not an identity */
+   0x7f800000u, /* +Inf: quantizer saturates to max finite */
    0x7fa00001u, /* signaling NaN with payload */
    0x7fc00123u, /* quiet NaN with payload */
    0x00000001u, /* smallest binary32 denormal */
    0x3dcccccdu, /* 0.1: low mantissa bits set */
    0x3f800001u, /* 1.0 + one binary32 ulp */
-   0x20000000u, /* 2^-63, below the FP24 normal range */
-   0x60000000u, /* 2^65, above the FP24 normal range */
+   0x20800000u, /* 2^-62, below the FP24 normal range */
+   0x61000000u, /* above the FP24 finite maximum */
 };
 
 static void
 test_admission_predicate(void)
 {
-   for (unsigned i = 0; i < sizeof(admitted_bits) / 4; i++)
+   for (unsigned i = 0; i < sizeof(admitted_bits) / 4; i++) {
       assert(r300_r2vb_fp24_identity_admits(admitted_bits[i]));
-   for (unsigned i = 0; i < sizeof(refused_bits) / 4; i++)
+      assert(r300_fp24_quantize_bits(admitted_bits[i]) == admitted_bits[i]);
+   }
+   for (unsigned i = 0; i < sizeof(refused_bits) / 4; i++) {
       assert(!r300_r2vb_fp24_identity_admits(refused_bits[i]));
+      if ((refused_bits[i] & 0x80000000u) == 0)
+         assert(r300_fp24_quantize_bits(refused_bits[i]) !=
+                refused_bits[i]);
+   }
 }
 
 /* Records over the admitted vocabulary with a stride gap, so the
@@ -80,7 +96,7 @@ test_three_way_identity(void)
       for (unsigned lane = 0; lane < 4; lane++) {
          const uint32_t bits =
             admitted_bits[(v * 4 + lane) % (sizeof(admitted_bits) / 4)];
-         memcpy(data + v * STRIDE + lane * 4, &bits, 4);
+         store_le32(data + v * STRIDE + lane * 4, bits);
       }
    }
    const struct r300_cpu_vertex_stream stream = {
@@ -165,7 +181,7 @@ test_refusals(void)
                                  0xffffffffu, 3, carrier, 16) != 0);
 
    for (unsigned i = 0; i < sizeof(refused_bits) / 4; i++) {
-      memcpy(data + 16 + 8, &refused_bits[i], 4);
+      store_le32(data + 16 + 8, refused_bits[i]);
       for (unsigned j = 0; j < 16; j++)
          carrier[j] = CANARY;
       assert(r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4,
@@ -176,10 +192,9 @@ test_refusals(void)
       uint32_t gathered[16];
       assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &stream, 0,
                                     4, gathered, 16) == 0);
-      uint32_t bits;
-      memcpy(&bits, data + 16 + 8, 4);
-      assert(gathered[4 + 2] == bits);
-      memset(data + 16 + 8, 0, 4);
+      assert(memcmp((const uint8_t *)&gathered[4 + 2], data + 16 + 8,
+                    4) == 0);
+      store_le32(data + 16 + 8, 0);
    }
 }
 
@@ -209,7 +224,7 @@ test_synthesized_identity(void)
          for (unsigned lane = 0; lane < lanes; lane++) {
             const uint32_t bits = admitted_bits[(v * lanes + lane) %
                                                 (sizeof(admitted_bits) / 4)];
-            memcpy(data + v * stride + lane * 4, &bits, 4);
+            store_le32(data + v * stride + lane * 4, bits);
          }
          /* Padding bytes carry a refused pattern (0.1's bits): the
           * route reads record_bytes per record, so the pattern never
@@ -217,14 +232,14 @@ test_synthesized_identity(void)
           */
          const uint32_t off_grid = 0x3dcccccdu;
          for (uint32_t pad = record_bytes[f]; pad + 4 <= stride; pad += 4)
-            memcpy(data + v * stride + pad, &off_grid, 4);
+            store_le32(data + v * stride + pad, off_grid);
       }
       /* The record before first_vertex carries a refused pattern in its
        * source lanes: the delivery scans the requested records alone,
        * so it never reads it.
        */
       const uint32_t leading_off_grid = 0x3dcccccdu;
-      memcpy(data, &leading_off_grid, 4);
+      store_le32(data, leading_off_grid);
 
       const struct r300_cpu_vertex_stream stream = {
          .data = data,
@@ -249,10 +264,12 @@ test_synthesized_identity(void)
       assert(delivered[verts * 4] == CANARY &&
              baseline[verts * 4] == CANARY &&
              dispatched[verts * 4] == CANARY);
+      static const uint8_t lane_one_bytes[4] = {0x00, 0x00, 0x80, 0x3f};
       for (uint32_t v = 0; v < verts; v++) {
          if (lanes < 3)
             assert(delivered[v * 4 + 2] == 0);
-         assert(delivered[v * 4 + 3] == 0x3f800000u);
+         assert(memcmp((const uint8_t *)&delivered[v * 4 + 3],
+                       lane_one_bytes, sizeof(lane_one_bytes)) == 0);
       }
 
       /* The same refused pattern inside a source lane refuses -EDOM
@@ -261,7 +278,7 @@ test_synthesized_identity(void)
       uint8_t bad[sizeof(data)];
       memcpy(bad, data, sizeof(data));
       const uint32_t off_grid = 0x3dcccccdu;
-      memcpy(bad + (first + 1) * stride + (lanes - 1) * 4, &off_grid, 4);
+      store_le32(bad + (first + 1) * stride + (lanes - 1) * 4, off_grid);
       const struct r300_cpu_vertex_stream bad_stream = {
          .data = bad,
          .stride = stride,
@@ -276,7 +293,8 @@ test_synthesized_identity(void)
          assert(delivered[j] == CANARY);
       assert(r300_cpu_vertex_gather(formats[f], &bad_stream, first, verts,
                                     dispatched, verts * 4) == 0);
-      assert(dispatched[1 * 4 + (lanes - 1)] == off_grid);
+      assert(memcmp((const uint8_t *)&dispatched[1 * 4 + (lanes - 1)],
+                    bad + (first + 1) * stride + (lanes - 1) * 4, 4) == 0);
    }
 }
 

@@ -5,28 +5,35 @@
 #include "r300_r2vb_carrier_delivery.h"
 
 #include "amd/r300/common/r300_vertex_format.h"
+#include "r300_us_source_read.h"
 
 #include <errno.h>
 #include <string.h>
 
+static uint32_t
+load_le32(const uint8_t *bytes)
+{
+   return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+          ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
 bool
 r300_r2vb_fp24_identity_admits(uint32_t bits)
 {
-   const uint32_t exponent = (bits >> 23) & 0xffu;
-   const uint32_t mantissa = bits & 0x7fffffu;
-
-   if (exponent == 0)
-      return mantissa == 0; /* +-0 admits; binary32 denormals refuse. */
-   if (exponent == 0xffu)
-      return mantissa == 0; /* +-Inf admits; NaN payloads truncate. */
-
-   /* s1e7m16 holds 16 mantissa bits against binary32's 23, so the low 7
-    * bits must be zero, and its normal exponents under bias 63 span
-    * unbiased [-62, 63] -- biased binary32 [65, 190].
+   /* The R2VB identity path reads the value through the US source-operand
+    * path.  The r300_us_source_read.h RS48x source-read model canonicalizes
+    * negative zero and steps every negative nonzero value toward zero, so
+    * no negative source encoding is byte-identical on this route.
     */
-   if ((mantissa & 0x7fu) != 0)
+   if ((bits & 0x80000000u) != 0)
       return false;
-   return exponent >= 65 && exponent <= 190;
+
+   /* The shared FP24 store quantizer is authoritative for the lattice
+    * boundary, saturation, and low-mantissa policy.  Equality rejects
+    * infinities, NaNs, denormals, off-grid values, and values outside the
+    * measured normal range without duplicating its constants here.
+    */
+   return r300_fp24_quantize_bits(bits) == bits;
 }
 
 /* The synthesized lane constants as explicit little-endian carrier
@@ -89,8 +96,7 @@ r300_r2vb_identity_deliver(
       const uint8_t *record =
          stream->data + ((uint64_t)first_vertex + v) * stream->stride;
       for (unsigned lane = 0; lane < source_lanes; lane++) {
-         uint32_t bits;
-         memcpy(&bits, record + lane * 4, 4);
+         const uint32_t bits = load_le32(record + lane * 4);
          if (!r300_r2vb_fp24_identity_admits(bits))
             return -EDOM;
       }
