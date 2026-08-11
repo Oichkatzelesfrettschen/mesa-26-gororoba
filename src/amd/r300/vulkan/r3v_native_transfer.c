@@ -64,6 +64,33 @@ execute_copy(struct r3v_native_device *device,
    uint64_t src_pitch, dst_pitch;
 
    switch (op->kind) {
+   case R3V_NATIVE_COPY_BUFFER_TO_BUFFER: {
+      src_memory = op->src_buffer->memory;
+      dst_memory = op->dst_buffer->memory;
+      if (src_memory == NULL || dst_memory == NULL)
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: buffer copy source or destination "
+                          "is unbound at submission");
+
+      uint8_t *src_map, *dst_map;
+      bool src_owned, dst_owned;
+      VkResult result = map_memory(device, src_memory, &src_map, &src_owned);
+      if (result != VK_SUCCESS)
+         return result;
+      result = map_memory(device, dst_memory, &dst_map, &dst_owned);
+      if (result != VK_SUCCESS) {
+         release_memory(device, src_memory, src_owned);
+         return result;
+      }
+      memmove(dst_map + op->dst_buffer->offset + op->dst_offset,
+              src_map + op->src_buffer->offset + op->src_offset, op->size);
+      if (!dst_owned)
+         radeon_drm_vk_bo_cache_sync(&device->drm, dst_map,
+                                     dst_memory->bo.size);
+      release_memory(device, dst_memory, dst_owned);
+      release_memory(device, src_memory, src_owned);
+      return VK_SUCCESS;
+   }
    case R3V_NATIVE_COPY_BUFFER_TO_IMAGE:
       src_memory = op->buffer->memory;
       src_base_offset = op->buffer->offset + op->buffer_offset;

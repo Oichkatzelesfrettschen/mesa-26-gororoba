@@ -191,6 +191,19 @@ r3v_native_copy_buffer_ok(const struct r3v_native_buffer *buffer,
    return true;
 }
 
+static bool
+r3v_native_copy_buffer_range_ok(const struct r3v_native_buffer *buffer,
+                                VkBufferUsageFlags usage_bit,
+                                VkDeviceSize offset, VkDeviceSize size)
+{
+   if (buffer == NULL || (buffer->vk.usage & usage_bit) == 0 ||
+       buffer->memory == NULL || buffer->offset > buffer->memory->bo.size ||
+       buffer->vk.size > buffer->memory->bo.size - buffer->offset ||
+       offset > buffer->vk.size || size > buffer->vk.size - offset)
+      return false;
+   return true;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdBeginQuery(
    VkCommandBuffer commandBuffer,
@@ -329,7 +342,34 @@ r3v_CmdCopyBuffer(
    uint32_t regionCount,
    const VkBufferCopy *pRegions)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_buffer, src, srcBuffer);
+   VK_FROM_HANDLE(r3v_native_buffer, dst, dstBuffer);
+
+   for (uint32_t r = 0; r < regionCount; r++) {
+      const VkBufferCopy *region = &pRegions[r];
+      struct r3v_native_deferred_copy *op =
+         r3v_native_copy_slot(commandBuffer);
+      if (op == NULL ||
+          !r3v_native_copy_buffer_range_ok(
+             src, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, region->srcOffset,
+             region->size) ||
+          !r3v_native_copy_buffer_range_ok(
+             dst, VK_BUFFER_USAGE_TRANSFER_DST_BIT, region->dstOffset,
+             region->size)) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      *op = (struct r3v_native_deferred_copy){
+         .kind = R3V_NATIVE_COPY_BUFFER_TO_BUFFER,
+         .src_buffer = src,
+         .dst_buffer = dst,
+         .src_offset = region->srcOffset,
+         .dst_offset = region->dstOffset,
+         .size = region->size,
+      };
+      cmd_buffer->deferred_copy_count++;
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL

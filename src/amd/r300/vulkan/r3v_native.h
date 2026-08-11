@@ -66,6 +66,7 @@ struct r3v_native_arming_provider;
  * when the application passed zero.
  */
 enum r3v_native_copy_kind {
+   R3V_NATIVE_COPY_BUFFER_TO_BUFFER,
    R3V_NATIVE_COPY_BUFFER_TO_IMAGE,
    R3V_NATIVE_COPY_IMAGE_TO_BUFFER,
    R3V_NATIVE_COPY_IMAGE_TO_IMAGE,
@@ -78,9 +79,14 @@ enum r3v_native_copy_kind {
 struct r3v_native_deferred_copy {
    enum r3v_native_copy_kind kind;
    struct r3v_native_buffer *buffer;
+   struct r3v_native_buffer *src_buffer;
+   struct r3v_native_buffer *dst_buffer;
    struct r3v_native_image *src_image;
    struct r3v_native_image *dst_image;
    uint64_t buffer_offset;
+   uint64_t src_offset;
+   uint64_t dst_offset;
+   uint64_t size;
    uint32_t buffer_row_length;
    uint32_t src_x, src_y;
    uint32_t dst_x, dst_y;

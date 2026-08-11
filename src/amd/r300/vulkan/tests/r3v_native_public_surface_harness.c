@@ -121,7 +121,8 @@ r3v_native_cache_publication_precedes_close(uint64_t cache_event,
    f(vkAllocateCommandBuffers) f(vkBeginCommandBuffer)                     \
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
-   f(vkCmdCopyBufferToImage) f(vkCmdCopyImage) f(vkCmdCopyImageToBuffer)   \
+   f(vkCmdCopyBuffer) f(vkCmdCopyBufferToImage) f(vkCmdCopyImage)          \
+   f(vkCmdCopyImageToBuffer)                                               \
    f(vkCmdClearColorImage) f(vkCmdPipelineBarrier)                         \
    f(vkCreateFence) f(vkDestroyFence) f(vkGetFenceStatus)                   \
    f(vkWaitForFences) f(vkCreateSemaphore) f(vkDestroySemaphore)            \
@@ -769,8 +770,8 @@ main(void)
     * every later vkQueueSubmit short-circuits, so the copy-carrying
     * submissions must precede it.
     */
-   /* Synchronous copies over the transfer family, through the public
-    * queue: buffer-to-image with a sub-rectangle at an offset,
+   /* Synchronous copies over the graphics family, through the public queue:
+    * buffer-to-buffer and buffer-to-image with a sub-rectangle at an offset,
     * image-to-image between two images, image-to-buffer readback --
     * three ops in one command buffer, executed in recorded order at
     * submission, a copy-carrying buffer reaching no ioctl.  The byte
@@ -846,6 +847,12 @@ main(void)
        * img_b at (5, 3); img_b rectangle back out to the staging tail.
        */
       VkCommandBuffer copy_cmd = fresh_cmd();
+      const VkBufferCopy buffer_copy = {
+         .srcOffset = 0,
+         .dstOffset = 1024,
+         .size = copy_w * copy_h * sizeof(uint32_t),
+      };
+      vkCmdCopyBuffer(copy_cmd, staging, staging, 1, &buffer_copy);
       const VkBufferImageCopy upload = {
          .bufferOffset = 0,
          .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -912,6 +919,10 @@ main(void)
       vkCmdCopyImageToBuffer(copy_cmd, img_b,
                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                              staging, 1, &readback);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, copy_native, copy_cmd);
+      assert(copy_native->deferred_copy_count == 4);
+      assert(copy_native->deferred_copies[0].kind ==
+             R3V_NATIVE_COPY_BUFFER_TO_BUFFER);
       assert(vkEndCommandBuffer(copy_cmd) == VK_SUCCESS);
 
       /* Capacity calibration covers the first allocation, growth past the
@@ -1059,13 +1070,16 @@ main(void)
                            },
                            VK_NULL_HANDLE) == VK_SUCCESS);
 
-      /* The pattern round-tripped through both images: the staging
-       * tail carries every texel, and the texel before and after the
+      /* The pattern round-tripped through the buffer and both images: the
+       * staging tail carries every texel, and the texel before and after the
        * copy rectangle in img_b still carries the sentinel, so the
        * pitch walk stayed inside the region.
        */
       assert(vkMapMemory(device, staging_mem, 0, VK_WHOLE_SIZE, 0,
                          (void **)&staging_map) == VK_SUCCESS);
+      for (uint32_t t = 0; t < copy_w * copy_h; t++)
+         assert(staging_map[t + 1024 / sizeof(*staging_map)] ==
+                (0x40000000u | t));
       for (uint32_t t = 0; t < copy_w * copy_h; t++)
          assert(staging_map[t + 512] == (0x40000000u | t));
       vkUnmapMemory(device, staging_mem);
@@ -1188,6 +1202,16 @@ main(void)
       vkCmdCopyBufferToImage(bad_copy, vertex_buffer, img_a,
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                              &upload);
+      assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      bad_copy = fresh_cmd();
+      vkCmdCopyBuffer(
+         bad_copy, staging, staging, 1,
+         &(VkBufferCopy){
+            .srcOffset = 4092,
+            .dstOffset = 0,
+            .size = 8,
+         });
       assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
 
       /* Equal foreign indices are ownership-transfer metadata too: the
