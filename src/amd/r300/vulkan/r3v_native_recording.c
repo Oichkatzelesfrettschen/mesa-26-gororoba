@@ -64,6 +64,57 @@ r3v_native_queue_family_pair_ok(uint32_t src_queue_family,
            src_queue_family == VK_QUEUE_FAMILY_IGNORED);
 }
 
+static bool
+r3v_native_transfer_source_layout_ok(VkImageLayout layout)
+{
+   return layout == VK_IMAGE_LAYOUT_GENERAL ||
+          layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+}
+
+static bool
+r3v_native_transfer_destination_layout_ok(VkImageLayout layout)
+{
+   return layout == VK_IMAGE_LAYOUT_GENERAL ||
+          layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+}
+
+/* The synchronous transfer executor has no hardware image-layout register:
+ * host mappings execute in recorded order, and every destination publishes
+ * before submission completion.  The API layout tokens still carry a
+ * contract.  Image copies accept only the source or destination layouts the
+ * executor implements, while image barriers admit the transitions that can
+ * lead to those layouts from Vulkan's undefined or preinitialized states.
+ */
+static bool
+r3v_native_image_barrier_range_ok(const VkImageSubresourceRange *range)
+{
+   return range->aspectMask == VK_IMAGE_ASPECT_COLOR_BIT &&
+          range->baseMipLevel == 0 &&
+          (range->levelCount == 1 ||
+           range->levelCount == VK_REMAINING_MIP_LEVELS) &&
+          range->baseArrayLayer == 0 &&
+          (range->layerCount == 1 ||
+           range->layerCount == VK_REMAINING_ARRAY_LAYERS);
+}
+
+static bool
+r3v_native_image_barrier_layouts_ok(const VkImageMemoryBarrier *barrier)
+{
+   VK_FROM_HANDLE(r3v_native_image, image, barrier->image);
+   const bool old_layout_ok =
+      barrier->oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ||
+      barrier->oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED ||
+      r3v_native_transfer_source_layout_ok(barrier->oldLayout) ||
+      r3v_native_transfer_destination_layout_ok(barrier->oldLayout);
+   const bool new_layout_ok =
+      r3v_native_transfer_source_layout_ok(barrier->newLayout) ||
+      r3v_native_transfer_destination_layout_ok(barrier->newLayout);
+
+   return image != NULL && image->transfer_family && image->memory != NULL &&
+          r3v_native_image_barrier_range_ok(&barrier->subresourceRange) &&
+          old_layout_ok && new_layout_ok;
+}
+
 /* Transfer-copy recording over the linear families.  A copy records
  * outside the render pass into a command buffer carrying no draw --
  * the buffer holds either the qualified pass or copies, so execution
@@ -290,6 +341,7 @@ r3v_CmdClearColorImage(
          r3v_native_copy_slot(commandBuffer);
       if (op == NULL || image == NULL || !image->transfer_family ||
           image->memory == NULL ||
+          !r3v_native_transfer_destination_layout_ok(imageLayout) ||
           (image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
           range->aspectMask != VK_IMAGE_ASPECT_COLOR_BIT ||
           range->baseMipLevel != 0 ||
@@ -391,6 +443,7 @@ r3v_CmdCopyBufferToImage(
          r3v_native_copy_slot(commandBuffer);
       uint32_t row_length;
       if (op == NULL ||
+          !r3v_native_transfer_destination_layout_ok(dstImageLayout) ||
           !r3v_native_copy_subresource_ok(&region->imageSubresource) ||
           !r3v_native_copy_rect_ok(image, region->imageOffset,
                                    region->imageExtent) ||
@@ -435,6 +488,8 @@ r3v_CmdCopyImage(
       struct r3v_native_deferred_copy *op =
          r3v_native_copy_slot(commandBuffer);
       if (op == NULL ||
+          !r3v_native_transfer_source_layout_ok(srcImageLayout) ||
+          !r3v_native_transfer_destination_layout_ok(dstImageLayout) ||
           !r3v_native_copy_subresource_ok(&region->srcSubresource) ||
           !r3v_native_copy_subresource_ok(&region->dstSubresource) ||
           !r3v_native_copy_rect_ok(src, region->srcOffset,
@@ -480,6 +535,7 @@ r3v_CmdCopyImageToBuffer(
          r3v_native_copy_slot(commandBuffer);
       uint32_t row_length;
       if (op == NULL ||
+          !r3v_native_transfer_source_layout_ok(srcImageLayout) ||
           !r3v_native_copy_subresource_ok(&region->imageSubresource) ||
           !r3v_native_copy_rect_ok(image, region->imageOffset,
                                    region->imageExtent) ||
@@ -637,9 +693,10 @@ r3v_CmdPipelineBarrier(
     * outside a render pass (the pass's one draw has no self-dependency
     * lowering), no ownership transfer -- the device exposes one queue
     * family, so an ownership-transferring pair names a family that
-    * does not exist -- and image barriers over color aspects of images
-    * this driver created.  Equal queue-family fields still name either
-    * the native family (0) or the no-ownership-transfer sentinel.
+    * does not exist -- and image barriers over the qualified
+    * transfer-family color subresource with the supported layout
+    * vocabulary.  Equal queue-family fields still name either the native
+    * family (0) or the no-ownership-transfer sentinel.
     */
    if (cmd_buffer->pass_target != NULL) {
       r3v_native_cmd_poison(commandBuffer);
@@ -657,8 +714,7 @@ r3v_CmdPipelineBarrier(
       const VkImageMemoryBarrier *barrier = &pImageMemoryBarriers[i];
       if (!r3v_native_queue_family_pair_ok(barrier->srcQueueFamilyIndex,
                                             barrier->dstQueueFamilyIndex) ||
-          barrier->subresourceRange.aspectMask !=
-             VK_IMAGE_ASPECT_COLOR_BIT) {
+          !r3v_native_image_barrier_layouts_ok(barrier)) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
