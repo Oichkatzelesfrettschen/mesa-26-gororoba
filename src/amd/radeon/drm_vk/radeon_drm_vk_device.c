@@ -16,12 +16,9 @@ radeon_drm_vk_device_init(struct radeon_drm_vk_device *device, int fd,
    device->fd = fd;
    device->ops = ops != NULL ? ops : &radeon_drm_vk_ioctl_ops_drm;
    atomic_init(&device->cache_sync_count, 0);
-   atomic_init(&device->cache_event_sequence, 0);
-   atomic_init(&device->cache_sync_last_map, 0);
-   atomic_init(&device->cache_sync_last_bo_handle, 0);
-   atomic_init(&device->cache_sync_last_event, 0);
-   atomic_init(&device->bo_close_last_handle, 0);
-   atomic_init(&device->bo_close_last_event, 0);
+   device->cache_event_sequence = 0;
+   device->cache_sync_last = (struct radeon_drm_vk_cache_event){ 0 };
+   device->bo_close_last = (struct radeon_drm_vk_close_event){ 0 };
    device->shared_bo_reference_counts =
       _mesa_hash_table_create(NULL, _mesa_hash_pointer,
                               _mesa_key_pointer_equal);
@@ -33,12 +30,19 @@ radeon_drm_vk_device_init(struct radeon_drm_vk_device *device, int fd,
       device->shared_bo_reference_counts = NULL;
       return -ENOMEM;
    }
+   if (mtx_init(&device->cache_event_mutex, mtx_plain) != thrd_success) {
+      mtx_destroy(&device->shared_bo_mutex);
+      _mesa_hash_table_destroy(device->shared_bo_reference_counts, NULL);
+      device->shared_bo_reference_counts = NULL;
+      return -ENOMEM;
+   }
    return 0;
 }
 
 void
 radeon_drm_vk_device_finish(struct radeon_drm_vk_device *device)
 {
+   mtx_destroy(&device->cache_event_mutex);
    mtx_destroy(&device->shared_bo_mutex);
    _mesa_hash_table_destroy(device->shared_bo_reference_counts, NULL);
    device->shared_bo_reference_counts = NULL;

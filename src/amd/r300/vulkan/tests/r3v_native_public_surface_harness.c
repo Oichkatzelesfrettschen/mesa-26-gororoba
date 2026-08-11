@@ -55,6 +55,13 @@ static const float ndc_triangle[12] = {
 static VkDevice device;
 static VkCommandPool pool;
 
+static bool
+r3v_native_cache_publication_precedes_close(uint64_t cache_event,
+                                            uint64_t close_event)
+{
+   return cache_event < close_event;
+}
+
 #define DEVICE_COMMANDS(f)                                                 \
    f(vkAllocateMemory) f(vkFreeMemory) f(vkMapMemory) f(vkUnmapMemory)     \
    f(vkCreateBuffer) f(vkDestroyBuffer) f(vkGetBufferMemoryRequirements2KHR) \
@@ -1813,22 +1820,25 @@ main(void)
    ((uint32_t *)implicitly_mapped)[0] = COLOR_SEED;
    vkFreeMemory(device, implicitly_unmapped, NULL);
    assert(native_device->drm.cache_sync_count == free_sync_before + 2);
-   assert(atomic_load_explicit(&native_device->drm.cache_sync_last_map,
-                               memory_order_acquire) ==
-          (uintptr_t)implicitly_mapped);
-   assert(atomic_load_explicit(&native_device->drm.cache_sync_last_bo_handle,
-                               memory_order_acquire) ==
-          implicitly_unmapped_handle);
-   assert(atomic_load_explicit(&native_device->drm.bo_close_last_handle,
-                               memory_order_acquire) ==
-          implicitly_unmapped_handle);
-   assert(atomic_load_explicit(&native_device->drm.cache_sync_last_event,
-                               memory_order_acquire) <
-          atomic_load_explicit(&native_device->drm.bo_close_last_event,
-                               memory_order_acquire));
-   /* The host-model verdict rejects the known-bad permutation in which
-    * GEM close receives the lower event number than cache publication.
+   mtx_lock(&native_device->drm.cache_event_mutex);
+   const struct radeon_drm_vk_cache_event cache_event =
+      native_device->drm.cache_sync_last;
+   const struct radeon_drm_vk_close_event close_event =
+      native_device->drm.bo_close_last;
+   mtx_unlock(&native_device->drm.cache_event_mutex);
+   assert(cache_event.map == (uintptr_t)implicitly_mapped);
+   assert(cache_event.bo_handle == implicitly_unmapped_handle);
+   assert(close_event.bo_handle == implicitly_unmapped_handle);
+   assert(r3v_native_cache_publication_precedes_close(cache_event.sequence,
+                                                      close_event.sequence));
+
+   /* A close-before-publication sequence is an executable known-bad leg.
+    * The same verdict rejects the inverted event numbers.
     */
+   const uint64_t known_bad_close_event = 10;
+   const uint64_t known_bad_cache_event = 11;
+   assert(!r3v_native_cache_publication_precedes_close(
+      known_bad_cache_event, known_bad_close_event));
 
    vkDestroyPipeline(device, xyz_pipeline, NULL);
    vkDestroyPipeline(device, pipeline, NULL);

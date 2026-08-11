@@ -37,10 +37,12 @@ r3v_native_unmap_memory(struct r3v_native_device *device,
 {
    if (memory == NULL || memory->map == NULL)
       return;
-   /* Linux radeon rs400_gart_enable programs
-    * RS480_AGP_MODE_CNTL.REQ_TYPE_SNOOP_DIS, so GTT mappings stay cached;
-    * the radeon_drm_vk_bo.h transport contract uses CLFLUSH to publish host
-    * writes while the address is live, before munmap and GEM close.
+   /* Linux radeon drivers/gpu/drm/radeon/rs400.c:111-177
+    * (rg --fixed-strings rs400_gart_enable drivers/gpu/drm/radeon) shows
+    * rs400_gart_enable programming RS480_REQ_TYPE_SNOOP_DIS, so GTT
+    * mappings stay cached; the radeon_drm_vk_bo.h transport contract uses
+    * CLFLUSH to publish host writes while the address is live, before munmap
+    * and GEM close.
     */
    radeon_drm_vk_bo_cache_sync_for_bo(&device->drm, &memory->bo,
                                       memory->map, memory->bo.size);
