@@ -2757,8 +2757,9 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
         fprintf(stderr,
                 "r2vb_capture nverts=%u (no-submit; RADEON_FLUSH_NOOP) "
-                "hb_tcl=1 hb_vert_fpu=%u\n",
-                cfg.num_vertices, r300->screen->caps.num_vert_fpus);
+                "hb_tcl=%u hb_vert_fpu=%u\n",
+                cfg.num_vertices, r300->screen->hb_tcl.enabled,
+                r300->screen->caps.num_vert_fpus);
     }
 
     if (stage3) {
