@@ -2505,6 +2505,14 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg,
         query_active);
     if (cfg->action == R300_R2VB_SELFTEST_DECLINE) {
         if (from_flush && !already_fired &&
+            r300_r2vb_option_is(hb_tcl, "1") && mode != NULL &&
+            !r300_r2vb_option_is(mode, "capture") &&
+            !r300_r2vb_option_is(mode, "submit"))
+            fprintf(stderr,
+                    "r2vb selftest: ignoring unknown R300_R2VB_TIMING=%s; "
+                    "use capture or submit\n",
+                    mode);
+        if (from_flush && !already_fired &&
             r300_r2vb_option_is(hb_tcl, "1") &&
             r300_r2vb_option_is(mode, "submit") &&
             !r300_r2vb_option_is(raw_submit_accepted, "1"))
@@ -2562,6 +2570,11 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
                                            struct pipe_fence_handle **out_fence)
 {
     static bool fired = false;
+    if (r300->screen->caps.family != CHIP_RS480 ||
+        r300->screen->caps.has_tcl ||
+        r300->screen->caps.num_vert_fpus != 0)
+        return false;
+
     struct r2vb_selftest_config cfg;
     r2vb_get_selftest_config(&cfg, from_flush, fired,
                              r300->query_current != NULL);
