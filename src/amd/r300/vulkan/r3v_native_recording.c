@@ -55,6 +55,15 @@ r3v_native_cmd_poison(VkCommandBuffer commandBuffer)
    vk_command_buffer_set_error(cmd_buffer, R3V_NATIVE_REFUSAL_RESULT);
 }
 
+static bool
+r3v_native_queue_family_pair_ok(uint32_t src_queue_family,
+                                uint32_t dst_queue_family)
+{
+   return src_queue_family == dst_queue_family &&
+          (src_queue_family == 0 ||
+           src_queue_family == VK_QUEUE_FAMILY_IGNORED);
+}
+
 /* Transfer-copy recording over the linear families.  A copy records
  * outside the render pass into a command buffer carrying no draw --
  * the buffer holds either the qualified pass or copies, so execution
@@ -584,7 +593,8 @@ r3v_CmdPipelineBarrier(
     * lowering), no ownership transfer -- the device exposes one queue
     * family, so an ownership-transferring pair names a family that
     * does not exist -- and image barriers over color aspects of images
-    * this driver created.
+    * this driver created.  Equal queue-family fields still name either
+    * the native family (0) or the no-ownership-transfer sentinel.
     */
    if (cmd_buffer->pass_target != NULL) {
       r3v_native_cmd_poison(commandBuffer);
@@ -592,14 +602,16 @@ r3v_CmdPipelineBarrier(
    }
    for (uint32_t i = 0; i < bufferMemoryBarrierCount; i++) {
       const VkBufferMemoryBarrier *barrier = &pBufferMemoryBarriers[i];
-      if (barrier->srcQueueFamilyIndex != barrier->dstQueueFamilyIndex) {
+      if (!r3v_native_queue_family_pair_ok(barrier->srcQueueFamilyIndex,
+                                            barrier->dstQueueFamilyIndex)) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
    }
    for (uint32_t i = 0; i < imageMemoryBarrierCount; i++) {
       const VkImageMemoryBarrier *barrier = &pImageMemoryBarriers[i];
-      if (barrier->srcQueueFamilyIndex != barrier->dstQueueFamilyIndex ||
+      if (!r3v_native_queue_family_pair_ok(barrier->srcQueueFamilyIndex,
+                                            barrier->dstQueueFamilyIndex) ||
           barrier->subresourceRange.aspectMask !=
              VK_IMAGE_ASPECT_COLOR_BIT) {
          r3v_native_cmd_poison(commandBuffer);
