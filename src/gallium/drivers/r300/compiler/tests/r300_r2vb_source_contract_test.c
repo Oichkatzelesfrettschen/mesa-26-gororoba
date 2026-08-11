@@ -164,10 +164,34 @@ check_float2_contract(void)
             R300_VERTEX_FORMAT_F32_2, true, 40, 0, 0, 10, 0, 5,
             &contract),
          "non-dword FLOAT_2 stride fails closed");
+   CHECK(r300_r2vb_source_contract_init(
+            R300_VERTEX_FORMAT_F32_2, true, 1028, 0, 0, 1020, 0, 2,
+            &contract),
+         "maximum LOAD_VBPNTR stride remains accepted");
+   CHECK(!r300_r2vb_source_contract_init(
+            R300_VERTEX_FORMAT_F32_2, true, 1024u * 5u, 0, 0, 1024, 0, 5,
+            &contract),
+         "stride beyond the LOAD_VBPNTR field fails closed");
    CHECK(!r300_r2vb_source_contract_init(
             R300_VERTEX_FORMAT_F32_2, true, 40, 0, 0, 8, 0, 0,
             &contract),
          "zero-count FLOAT_2 draw fails closed");
+   CHECK(!r300_r2vb_source_contract_init(
+            R300_VERTEX_FORMAT_F32_2, true, 48, 2, 0, 8, 0, 5,
+            &contract),
+         "unaligned composed source offset fails closed");
+   CHECK(!r300_r2vb_source_contract_init(
+            R300_VERTEX_FORMAT_F32_2, true, UINT64_MAX,
+            (uint64_t)UINT32_MAX - 3u, 4, 8, 0, 1, &contract),
+         "source offset beyond the LOAD_VBPNTR address field fails closed");
+   CHECK(r300_r2vb_source_contract_init(
+            R300_VERTEX_FORMAT_F32_2, true, (uint64_t)65535u * 8u,
+            0, 0, 8, 0, 65535, &contract),
+         "maximum VAP vertex count remains accepted");
+   CHECK(!r300_r2vb_source_contract_init(
+            R300_VERTEX_FORMAT_F32_2, true, (uint64_t)65536u * 8u,
+            0, 0, 8, 0, 65536, &contract),
+         "count beyond the VAP vertex field fails closed");
    CHECK(!r300_r2vb_source_contract_init(
             R300_VERTEX_FORMAT_F32_2, true, UINT64_MAX,
             UINT64_MAX - 3u, 8, 8, 0, 1, &contract),
@@ -196,7 +220,7 @@ build_tuple(enum r300_vertex_format_id format, bool float2_enabled,
    return r300_r2vb_source_contract_init(
              format, float2_enabled, (uint64_t)record_bytes * 5u,
              0, 0, record_bytes, 0, 5, &contract) &&
-          r300_r2vb_source_tuple_init(&contract, 0, 1, tuple);
+          r300_r2vb_source_tuple_init(&contract, 0, 6, tuple);
 }
 
 static void
@@ -208,7 +232,7 @@ check_source_tuples(void)
             tuple.prog_stream_cntl[0] ==
                (R300_DATA_TYPE_FLOAT_4 |
                 ((R300_DATA_TYPE_FLOAT_2 |
-                  (1u << R300_DST_VEC_LOC_SHIFT) |
+                  (6u << R300_DST_VEC_LOC_SHIFT) |
                   R300_LAST_VEC) << 16)) &&
             tuple.prog_stream_cntl_ext[0] ==
                (R300_VAP_SWIZZLE_XYZW |
@@ -240,6 +264,22 @@ check_source_tuples(void)
          "out-of-range slot destination fails closed");
    CHECK(!r300_r2vb_source_tuple_init(&contract, 0, 32, &tuple),
          "out-of-range model destination fails closed");
+   CHECK(!r300_r2vb_source_tuple_init(&contract, 256, 6, &tuple),
+         "wide out-of-range slot destination fails before narrowing");
+   CHECK(!r300_r2vb_source_tuple_init(&contract, 0, 256, &tuple),
+         "wide out-of-range model destination fails before narrowing");
+
+   struct r300_r2vb_source_contract stale = {
+      .format = R300_VERTEX_FORMAT_F32_1,
+      .float2_enabled = false,
+      .model_fetch_dwords = 1,
+      .logical_components = 4,
+      .vap_vtx_size_dwords = 5,
+      .model_data_type = R300_VERTEX_DATA_FLOAT_1,
+      .model_psc_swizzle = R300_VAP_SWIZZLE_X001,
+   };
+   CHECK(!r300_r2vb_source_tuple_init(&stale, 0, 6, &tuple),
+         "stale inadmissible FLOAT_1 contract fails closed");
 }
 
 static void

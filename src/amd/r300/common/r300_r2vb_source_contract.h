@@ -31,6 +31,11 @@ enum r300_r2vb_source_stream_index {
 #define R300_R2VB_PSC_DST_VEC_MASK 0x1fu
 #define R300_R2VB_PSC_LAST_VEC (1u << 13)
 
+/* The LOAD_VBPNTR stride field stores dwords in eight bits, and the R300
+ * VAP_VF_CNTL vertex-count field stores sixteen bits. */
+#define R300_R2VB_SOURCE_STRIDE_DWORDS_MAX 255u
+#define R300_R2VB_SOURCE_COUNT_LIMIT 65536u
+
 struct r300_r2vb_source_stream_contract {
    enum r300_vertex_data_type data_type;
    uint8_t fetch_dwords;
@@ -41,6 +46,7 @@ struct r300_r2vb_source_stream_contract {
 
 struct r300_r2vb_source_contract {
    enum r300_vertex_format_id format;
+   bool float2_enabled;
    uint32_t stride_bytes;
    uint32_t start;
    uint32_t count;
@@ -118,8 +124,10 @@ r300_r2vb_source_extents_init(uint64_t allocation_bytes,
                                uint32_t hardware_fetch_dwords,
                                struct r300_r2vb_source_extents *out)
 {
-   if (!out || count == 0 || semantic_record_bytes == 0 ||
-       hardware_fetch_dwords == 0)
+   if (!out || count == 0 || count >= R300_R2VB_SOURCE_COUNT_LIMIT ||
+       stride_bytes == 0 || stride_bytes % 4u != 0 ||
+       stride_bytes / 4u > R300_R2VB_SOURCE_STRIDE_DWORDS_MAX ||
+       semantic_record_bytes == 0 || hardware_fetch_dwords == 0)
       return false;
 
    uint64_t start_bytes;
@@ -138,6 +146,9 @@ r300_r2vb_source_extents_init(uint64_t allocation_bytes,
        !r300_r2vb_u64_add(final_record, semantic_record_bytes,
                           &semantic_end) ||
        !r300_r2vb_u64_add(final_record, hardware_bytes, &hardware_end))
+      return false;
+
+   if (source_offset > UINT32_MAX || source_offset % 4u != 0)
       return false;
 
    if (semantic_end > allocation_bytes || hardware_end > allocation_bytes)
@@ -189,6 +200,7 @@ r300_r2vb_source_contract_init(enum r300_vertex_format_id format,
 
    *out = (struct r300_r2vb_source_contract) {
       .format = format,
+      .float2_enabled = float2_enabled,
       .stride_bytes = stride_bytes,
       .start = start,
       .count = count,
@@ -219,8 +231,8 @@ r300_r2vb_source_stream_cntl(
  * caller-owned interface state, but must be distinct five-bit values. */
 static inline bool
 r300_r2vb_source_tuple_init(const struct r300_r2vb_source_contract *contract,
-                             uint8_t slot_dst_vec,
-                             uint8_t model_dst_vec,
+                             uint32_t slot_dst_vec,
+                             uint32_t model_dst_vec,
                              struct r300_r2vb_source_tuple *out)
 {
    const struct r300_vertex_format_semantics *slot =
@@ -229,6 +241,8 @@ r300_r2vb_source_tuple_init(const struct r300_r2vb_source_contract *contract,
       contract ? r300_vertex_format_semantics(contract->format) : NULL;
 
    if (!contract || !out || !slot || !model ||
+       !r300_r2vb_source_format_admitted(contract->format,
+                                         contract->float2_enabled) ||
        slot_dst_vec > R300_R2VB_PSC_DST_VEC_MASK ||
        model_dst_vec > R300_R2VB_PSC_DST_VEC_MASK ||
        slot_dst_vec == model_dst_vec ||
@@ -246,7 +260,7 @@ r300_r2vb_source_tuple_init(const struct r300_r2vb_source_contract *contract,
       (struct r300_r2vb_source_stream_contract) {
          .data_type = slot->data_type,
          .fetch_dwords = slot->hardware_fetch_dwords,
-         .dst_vec = slot_dst_vec,
+         .dst_vec = (uint8_t)slot_dst_vec,
          .last = false,
          .psc_swizzle = r300_vertex_format_psc_swizzle(slot),
       };
@@ -254,7 +268,7 @@ r300_r2vb_source_tuple_init(const struct r300_r2vb_source_contract *contract,
       (struct r300_r2vb_source_stream_contract) {
          .data_type = model->data_type,
          .fetch_dwords = model->hardware_fetch_dwords,
-         .dst_vec = model_dst_vec,
+         .dst_vec = (uint8_t)model_dst_vec,
          .last = true,
          .psc_swizzle = r300_vertex_format_psc_swizzle(model),
       };

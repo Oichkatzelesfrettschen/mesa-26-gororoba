@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "amd/r300/common/r300_r2vb_source_contract.h"
 #include "compiler/shader_enums.h"
 #include "compiler/radeon_code.h"
 #include "r300_context.h"
@@ -560,7 +561,8 @@ void r300_r2vb_model_fetch_fini(struct r300_r2vb_model_fetch *m);
 
 /* The 3D_LOAD_VBPNTR format word packs the stride into an 8-bit dword
  * field; a host-accepted stride past it would truncate in the emitter. */
-#define R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX 255u
+#define R300_R2VB_VBPNTR_STRIDE_DWORDS_MAX \
+    R300_R2VB_SOURCE_STRIDE_DWORDS_MAX
 
 /* Emission-ready producer fetch: the stream contract plus the properties
  * only the draw and the bound resources can prove -- the final fetched
