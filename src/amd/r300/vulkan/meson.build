@@ -177,11 +177,7 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
     executable(
       'r3v_queue_map_range_test',
       files('tests/r3v_queue_map_range_test.c'),
-      include_directories : [libr3v_inc, include_directories('.')],
-      dependencies : libr3v_deps,
-      link_with : libr3v_link_with,
-      c_args : libr3v_c_args,
-      link_args : ['-Wl,--gc-sections'],
+      include_directories : [include_directories('.')],
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r3v'],
