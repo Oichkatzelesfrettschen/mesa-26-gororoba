@@ -12,6 +12,7 @@
 #include "r3v_descriptor.h"
 #include "r3v_memory.h"
 #include "r3v_identity_map.h"
+#include "r3v_queue_map_range.h"
 
 #include "vk_queue.h"
 #include "vk_sync.h"
@@ -35,19 +36,6 @@
 
 #include <limits.h>
 #include <string.h>
-
-/* Gallium's pipe_buffer_map_range takes unsigned byte offsets and lengths.
- * This predicate proves both values and their end fit in that interface while
- * keeping the range inside the Vulkan buffer. */
-static bool
-r3v_map_range_representable(uint64_t offset, uint64_t size,
-                            uint64_t buffer_size)
-{
-   if (offset > UINT_MAX || size > UINT_MAX || size > buffer_size)
-      return false;
-
-   return offset <= buffer_size - size && offset <= UINT_MAX - size;
-}
 
 /* Convert a VkViewport to Gallium's scale/translate form.
  * Gallium clip space is [0, 1] depth; VkViewport uses [minDepth, maxDepth]. */
