@@ -20,6 +20,7 @@
 #include "vk_command_pool.h"
 #include "vk_log.h"
 
+#include <errno.h>
 #include <inttypes.h>
 #include <radeon_drm.h>
 #include <stdlib.h>
@@ -39,6 +40,13 @@ record_triangle_cell_tail(struct r3v_native_device *device,
                           struct r3v_native_cmd_buffer *cmd_buffer,
                           struct r3v_native_memory *vertex_memory,
                           struct r3v_native_memory *color_memory);
+
+VkResult
+r3v_native_cell_vk_result_from_errno(int emit_result)
+{
+   return emit_result == -ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY
+                                 : VK_ERROR_INITIALIZATION_FAILED;
+}
 
 /* The triangle cell binds both roles at byte offset zero.  A shared GEM BO
  * makes the vertex fetch overlap the color target, and
@@ -182,8 +190,11 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     * manifest.
     */
    struct r300_tcl_bypass_triangle_ib cell;
-   if (r300_tcl_bypass_triangle_extent_emit(width, height, &cell) != 0)
-      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   int emit_result =
+      r300_tcl_bypass_triangle_extent_emit(width, height, &cell);
+   if (emit_result != 0)
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(emit_result));
 
    /* Reference order is relocation-slot order: the queue records the index
     * returned by radeon_drm_vk_reloc_list_add for each reference, and the
@@ -589,8 +600,10 @@ r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
    }
 
    struct r300_direct_write_ib cell;
-   if (r300_direct_write_emit(&cell) != 0)
-      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   int emit_result = r300_direct_write_emit(&cell);
+   if (emit_result != 0)
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(emit_result));
    if (r300_direct_write_validate_reloc_sites(&cell) != 0) {
       r300_direct_write_release(&cell);
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);

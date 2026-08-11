@@ -12,6 +12,7 @@
  */
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -51,6 +52,20 @@ static unsigned failures;
          failures++;                            \
       }                                         \
    } while (0)
+
+static void
+check_cell_emitter_error_mapping(void)
+{
+   /* Host calibration covers the allocator failure returned by both fixed
+    * cell emitters and a structural emitter refusal.
+    */
+   CHECK(r3v_native_cell_vk_result_from_errno(-ENOMEM) ==
+            VK_ERROR_OUT_OF_HOST_MEMORY,
+         "-ENOMEM maps to VK_ERROR_OUT_OF_HOST_MEMORY");
+   CHECK(r3v_native_cell_vk_result_from_errno(-EINVAL) ==
+            VK_ERROR_INITIALIZATION_FAILED,
+         "structural emitter errors map to initialization failure");
+}
 
 static bool
 same_file(const char *left, const char *right)
@@ -155,6 +170,9 @@ main(int argc, char **argv)
       fprintf(stderr, "usage: %s closed|open\n", argv[0]);
       return 2;
    }
+
+   check_cell_emitter_error_mapping();
+
    const bool open_gate = strcmp(argv[1], "open") == 0;
 
    if (attest_shim_provider() != 0)
