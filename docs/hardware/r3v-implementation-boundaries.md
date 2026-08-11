@@ -67,17 +67,19 @@ complete Vulkan semantic/conformance sections remain implementation
 contracts.
 
 The native graphics family carries a bounded transfer surface in addition
-to the fixed render cell: one linear `B8G8R8A8_UNORM` format whose single
+to the fixed render cell: one linear `B8G8R8A8_UNORM` format. Its single
 `linearTilingFeatures` mask contains
 `VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT`,
 `VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT`, and
-`VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT`. `r3v_GetPhysicalDeviceImageFormatProperties2`
-and `r3v_CreateImage`
-partition that mask into color-attachment usage alone for the render family
-or a nonzero subset of transfer usage bits for the transfer family; mixed
-usage is refused. The transfer operations cover images up to 2048 texels per
-axis, region-validated buffer/image copies, whole-image color clear, and an
-outside-render-pass barrier no-op. They execute synchronously through host
+`VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT`.
+
+Format capability and image-usage policy are separate contracts.
+`r3v_GetPhysicalDeviceImageFormatProperties2` and `r3v_CreateImage`
+admit color-attachment usage alone for the render family or a nonzero subset
+of transfer usage bits for the transfer family; mixed usage is refused. The
+transfer operations cover images up to 2048 texels per axis, region-validated
+buffer/image copies, whole-image color clear, and an outside-render-pass
+barrier no-op. They execute synchronously through host
 mappings, publish destination memory, use no IB and issue no
 `DRM_RADEON_CS` submission ioctl; a host mapping may issue
 `DRM_RADEON_GEM_MMAP` through `radeon_drm_vk_bo_map()`. They carry host-unit
@@ -152,9 +154,19 @@ structural query.
 set -eu
 expected_sha=${R3V_EXPECTED_SHA:?set R3V_EXPECTED_SHA to the audited commit}
 canonical_root=${R3V_CANONICAL_ROOT:?set R3V_CANONICAL_ROOT to the canonical checkout}
-worktree_root=$(git rev-parse --show-toplevel)
+canonical_root=$(realpath -e -- "$canonical_root")
+worktree_root=$(realpath -e -- "$(git rev-parse --show-toplevel)")
 test "$worktree_root" != "$canonical_root"
-git worktree list --porcelain | grep -Fx "worktree $worktree_root" >/dev/null
+registered_worktree=false
+while IFS= read -r registered_root; do
+  registered_root=$(realpath -e -- "$registered_root")
+  if test "$registered_root" = "$worktree_root"; then
+    registered_worktree=true
+  fi
+done <<EOF
+$(git worktree list --porcelain | sed -n 's/^worktree //p')
+EOF
+test "$registered_worktree" = true
 test "$(git rev-parse --verify HEAD)" = "$expected_sha"
 test -z "$(git status --porcelain=v2)"
 git diff --quiet
@@ -166,8 +178,29 @@ function_body() {
 
 native_branch() {
   function_body "$1" "$2" | awk '
-    /#ifdef R3V_NATIVE_BACKEND/ { in_native=1; print; next }
-    in_native && /^#else/ { exit }
+    function is_open_directive(line) {
+      return line ~ /^[[:space:]]*#[[:space:]]*(if|ifdef|ifndef)([[:space:]]|$)/
+    }
+    /#ifdef[[:space:]]+R3V_NATIVE_BACKEND/ {
+      in_native=1
+      depth=1
+      print
+      next
+    }
+    in_native && is_open_directive($0) {
+      depth++
+      print
+      next
+    }
+    in_native && /^[[:space:]]*#[[:space:]]*(else|elif)([[:space:]]|$)/ \
+      && depth == 1 { exit }
+    in_native && /^[[:space:]]*#[[:space:]]*endif([[:space:]]|$)/ {
+      if (depth == 1)
+        exit
+      depth--
+      print
+      next
+    }
     in_native { print }
   '
 }
@@ -316,6 +349,110 @@ printf '%s\n' "$native_image_create" | rg -n --fixed-strings \
   -e 'VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT' \
   -e 'VK_IMAGE_USAGE_TRANSFER_SRC_BIT' \
   -e 'VK_IMAGE_USAGE_TRANSFER_DST_BIT'
+test -z "$(printf '%s\n' "$native_format" | \
+  rg -F 'r3v_vk_format_to_pipe_format' || true)"
+test -z "$(printf '%s\n' "$native_image_query" | \
+  rg -F 'r3v_image_usage_supported' || true)"
+
+# Usage-family predicates: source shape plus calibrated semantic mutants.
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+
+def function_body(text, name):
+    match = re.search(rf"(?m)^{re.escape(name)}\s*\(", text)
+    if match is None:
+        raise AssertionError(f"missing function: {name}")
+    brace = text.find("{", match.end())
+    if brace < 0:
+        raise AssertionError(f"missing body: {name}")
+    depth = 0
+    for index in range(brace, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[match.start():index + 1]
+    raise AssertionError(f"unterminated body: {name}")
+
+
+def exact_usage_policy(body, prefix, color_operator, transfer_name):
+    color = re.search(
+        rf"{re.escape(prefix)}->usage\s*{color_operator}\s*"
+        r"VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT",
+        body,
+    )
+    transfer = re.search(
+        rf"{re.escape(prefix)}->usage\s*!=\s*0\s*&&\s*"
+        rf"\({re.escape(prefix)}->usage\s*&\s*~{transfer_name}\)"
+        r"\s*==\s*0",
+        body,
+        re.S,
+    )
+    return color is not None and transfer is not None
+
+
+physical = Path("src/amd/r300/vulkan/r3v_physical_device.c").read_text()
+native_image = Path("src/amd/r300/vulkan/r3v_native_image.c").read_text()
+query = function_body(physical, "r3v_get_image_format_properties")
+create = function_body(native_image, "r3v_CreateImage")
+assert exact_usage_policy(
+    query, "info", "!=", "r3v_native_transfer_usage"
+)
+assert exact_usage_policy(create, "pCreateInfo", "==", "transfer_usage")
+
+COLOR = 1
+TRANSFER_SRC = 2
+TRANSFER_DST = 4
+TRANSFER = TRANSFER_SRC | TRANSFER_DST
+
+
+def family_policy(usage):
+    return usage == COLOR or (usage != 0 and usage & ~TRANSFER == 0)
+
+
+known_good = (COLOR, TRANSFER_SRC, TRANSFER_DST, TRANSFER)
+known_bad = (0, COLOR | TRANSFER_SRC, COLOR | TRANSFER_DST)
+assert all(family_policy(usage) for usage in known_good)
+assert not any(family_policy(usage) for usage in known_bad)
+
+mutants = (
+    (
+        "create-color-bit-test",
+        create.replace(
+            "pCreateInfo->usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT",
+            "pCreateInfo->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT",
+            1,
+        ),
+        "pCreateInfo",
+        "==",
+        "transfer_usage",
+    ),
+    (
+        "create-zero-transfer-admission",
+        create.replace("pCreateInfo->usage != 0", "true", 1),
+        "pCreateInfo",
+        "==",
+        "transfer_usage",
+    ),
+    (
+        "query-zero-transfer-admission",
+        query.replace("info->usage != 0", "true", 1),
+        "info",
+        "!=",
+        "r3v_native_transfer_usage",
+    ),
+)
+for name, mutant, prefix, color_operator, transfer_name in mutants:
+    assert not exact_usage_policy(
+        mutant, prefix, color_operator, transfer_name
+    ), name
+
+print("usage-policy known-good cases: PASS")
+print("usage-policy known-bad mutants: PASS")
+PY
 
 # Reference SPIR-V admission pair and its generator.
 rg -n --fixed-strings -e 'r3v_reference_vertex_spirv' \
