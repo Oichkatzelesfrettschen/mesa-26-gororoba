@@ -168,6 +168,8 @@ fake_stack_init(void)
    memset(&g_vk_instance, 0, sizeof(g_vk_instance));
    vk_object_base_instance_init(&g_vk_instance, &g_vk_instance.base,
                                 VK_OBJECT_TYPE_INSTANCE);
+   list_inithead(&g_vk_instance.debug_utils.instance_callbacks);
+   list_inithead(&g_vk_instance.debug_utils.callbacks);
    g_vk_instance.app_info.api_version = VK_API_VERSION_1_0;
    memset(&g_vk_pdev, 0, sizeof(g_vk_pdev));
    vk_object_base_instance_init(&g_vk_instance, &g_vk_pdev.base,
