@@ -80,6 +80,8 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    image->row_pitch_bytes = row_pitch_bytes;
    image->usage = pCreateInfo->usage;
    image->transfer_family = transfer_family;
+   image->memory = NULL;
+   image->memory_offset = 0;
    *pImage = r3v_native_image_to_handle(image);
    return VK_SUCCESS;
 }
@@ -119,7 +121,7 @@ r3v_GetImageMemoryRequirements(VkDevice _device, VkImage _image,
                  ? r3v_native_transfer_footprint_bytes(image->width,
                                                        image->height)
                  : r3v_native_image_footprint_bytes(image->height),
-      .alignment = 4096,
+      .alignment = R3V_NATIVE_MEMORY_ALIGNMENT,
       .memoryTypeBits = 0x1,
    };
 }
@@ -155,10 +157,12 @@ r3v_GetImageMemoryRequirements2(VkDevice _device,
    }
 }
 
-/* Both families bind at offset zero over an allocation their footprint
- * fits: the render family because the cell's color reference names the
- * BO base, the transfer family because its copies address the mapping
- * from the same base.
+/* The render family binds at offset zero because its color reference names
+ * the BO base and its dedicated-allocation requirement keeps that address
+ * stable.  The transfer family binds any aligned suballocation whose
+ * footprint fits and carries that offset into every host copy address.  The
+ * complete field consumer set is enumerated by `(rg --fixed-strings
+ * memory_offset src/amd/r300/vulkan/)`.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
@@ -175,11 +179,15 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
                                                      image->height)
                : r3v_native_image_footprint_bytes(image->height))
          : 0;
-   if (image == NULL || memory == NULL || memoryOffset != 0 ||
-       memory->bo.size < footprint)
+   if (image == NULL || memory == NULL ||
+       memoryOffset % R3V_NATIVE_MEMORY_ALIGNMENT != 0 ||
+       (!image->transfer_family && memoryOffset != 0) ||
+       memoryOffset > memory->bo.size ||
+       footprint > memory->bo.size - memoryOffset)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    image->memory = memory;
+   image->memory_offset = memoryOffset;
    return VK_SUCCESS;
 }
 

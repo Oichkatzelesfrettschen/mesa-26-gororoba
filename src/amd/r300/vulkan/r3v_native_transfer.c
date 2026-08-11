@@ -72,7 +72,7 @@ execute_copy(struct r3v_native_device *device,
                           "r3v-native: buffer copy source or destination "
                           "is unbound at submission");
 
-      uint8_t *src_map, *dst_map;
+      uint8_t *src_map = NULL, *dst_map = NULL;
       bool src_owned, dst_owned;
       VkResult result = map_memory(device, src_memory, &src_map, &src_owned);
       if (result != VK_SUCCESS)
@@ -96,13 +96,15 @@ execute_copy(struct r3v_native_device *device,
       src_base_offset = op->buffer->offset + op->buffer_offset;
       src_pitch = op->buffer_row_length * 4;
       dst_memory = op->dst_image->memory;
-      dst_base_offset = (uint64_t)op->dst_y * op->dst_image->row_pitch_bytes +
+      dst_base_offset = op->dst_image->memory_offset +
+                        (uint64_t)op->dst_y * op->dst_image->row_pitch_bytes +
                         (uint64_t)op->dst_x * 4;
       dst_pitch = op->dst_image->row_pitch_bytes;
       break;
    case R3V_NATIVE_COPY_IMAGE_TO_BUFFER:
       src_memory = op->src_image->memory;
-      src_base_offset = (uint64_t)op->src_y * op->src_image->row_pitch_bytes +
+      src_base_offset = op->src_image->memory_offset +
+                        (uint64_t)op->src_y * op->src_image->row_pitch_bytes +
                         (uint64_t)op->src_x * 4;
       src_pitch = op->src_image->row_pitch_bytes;
       dst_memory = op->buffer->memory;
@@ -119,7 +121,7 @@ execute_copy(struct r3v_native_device *device,
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                           "r3v-native: clear destination is unbound at "
                           "submission");
-      uint8_t *clear_map;
+      uint8_t *clear_map = NULL;
       bool clear_owned;
       VkResult clear_result =
          map_memory(device, dst_memory, &clear_map, &clear_owned);
@@ -127,7 +129,7 @@ execute_copy(struct r3v_native_device *device,
          return clear_result;
       for (uint32_t row = 0; row < op->height; row++) {
          uint32_t *texels =
-            (uint32_t *)(clear_map +
+            (uint32_t *)(clear_map + op->dst_image->memory_offset +
                          (uint64_t)row * op->dst_image->row_pitch_bytes);
          for (uint32_t x = 0; x < op->width; x++)
             texels[x] = op->clear_dword;
@@ -140,11 +142,13 @@ execute_copy(struct r3v_native_device *device,
    }
    case R3V_NATIVE_COPY_IMAGE_TO_IMAGE:
       src_memory = op->src_image->memory;
-      src_base_offset = (uint64_t)op->src_y * op->src_image->row_pitch_bytes +
+      src_base_offset = op->src_image->memory_offset +
+                        (uint64_t)op->src_y * op->src_image->row_pitch_bytes +
                         (uint64_t)op->src_x * 4;
       src_pitch = op->src_image->row_pitch_bytes;
       dst_memory = op->dst_image->memory;
-      dst_base_offset = (uint64_t)op->dst_y * op->dst_image->row_pitch_bytes +
+      dst_base_offset = op->dst_image->memory_offset +
+                        (uint64_t)op->dst_y * op->dst_image->row_pitch_bytes +
                         (uint64_t)op->dst_x * 4;
       dst_pitch = op->dst_image->row_pitch_bytes;
       break;
@@ -161,7 +165,7 @@ execute_copy(struct r3v_native_device *device,
                        "r3v-native: transfer source or destination is "
                        "unbound at submission");
 
-   uint8_t *src_map, *dst_map;
+   uint8_t *src_map = NULL, *dst_map = NULL;
    bool src_owned, dst_owned;
    VkResult result = map_memory(device, src_memory, &src_map, &src_owned);
    if (result != VK_SUCCESS)
