@@ -37,10 +37,13 @@ r3v_native_unmap_memory(struct r3v_native_device *device,
 {
    if (memory == NULL || memory->map == NULL)
       return;
-   /* Host writes publish while the address is still live; munmap leaves
-    * dirty lines behind and is not a publication mechanism.
+   /* Linux radeon rs400_gart_enable programs
+    * RS480_AGP_MODE_CNTL.REQ_TYPE_SNOOP_DIS, so GTT mappings stay cached;
+    * the radeon_drm_vk_bo.h transport contract uses CLFLUSH to publish host
+    * writes while the address is live, before munmap and GEM close.
     */
-   radeon_drm_vk_bo_cache_sync(&device->drm, memory->map, memory->bo.size);
+   radeon_drm_vk_bo_cache_sync_for_bo(&device->drm, &memory->bo,
+                                      memory->map, memory->bo.size);
    radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
    memory->map = NULL;
 }

@@ -12,6 +12,7 @@
 #include "c11/threads.h"
 
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
 struct hash_table;
@@ -27,10 +28,17 @@ struct radeon_drm_vk_device {
    const struct radeon_drm_vk_ioctl_ops *ops;
    mtx_t shared_bo_mutex;
    struct hash_table *shared_bo_reference_counts;
-   /* Count of radeon_drm_vk_bo_cache_sync executions; host tests read it to
-    * prove the coherency-maintenance call sites fire.
-    */
-   uint64_t cache_sync_count;
+   /* Host-model instrumentation stays atomic because Vulkan permits
+    * independent VkDeviceMemory frees to execute concurrently.  The event
+    * fields let tests identify the mapped BO and compare cache publication
+    * with the GEM-close event while the production ordering stays visible. */
+   _Atomic uint64_t cache_sync_count;
+   _Atomic uint64_t cache_event_sequence;
+   _Atomic uintptr_t cache_sync_last_map;
+   _Atomic uint32_t cache_sync_last_bo_handle;
+   _Atomic uint64_t cache_sync_last_event;
+   _Atomic uint32_t bo_close_last_handle;
+   _Atomic uint64_t bo_close_last_event;
 };
 
 /* ops == NULL selects the production libdrm table. Returns 0 or -ENOMEM. */

@@ -110,10 +110,24 @@ radeon_drm_vk_bo_free(struct radeon_drm_vk_device *device,
          close_bo = true;
       }
       if (close_bo) {
+         const uint64_t event =
+            atomic_fetch_add_explicit(&device->cache_event_sequence, 1,
+                                      memory_order_acq_rel) + 1;
+         atomic_store_explicit(&device->bo_close_last_handle, bo->handle,
+                               memory_order_release);
+         atomic_store_explicit(&device->bo_close_last_event, event,
+                               memory_order_release);
          device->ops->gem_close(device->fd, bo->handle);
       }
       mtx_unlock(&device->shared_bo_mutex);
    } else {
+      const uint64_t event =
+         atomic_fetch_add_explicit(&device->cache_event_sequence, 1,
+                                   memory_order_acq_rel) + 1;
+      atomic_store_explicit(&device->bo_close_last_handle, bo->handle,
+                            memory_order_release);
+      atomic_store_explicit(&device->bo_close_last_event, event,
+                            memory_order_release);
       device->ops->gem_close(device->fd, bo->handle);
    }
 
@@ -180,8 +194,9 @@ radeon_drm_vk_bo_import_fd(struct radeon_drm_vk_device *device, int prime_fd,
 }
 
 void
-radeon_drm_vk_bo_cache_sync(struct radeon_drm_vk_device *device,
-                            const void *map, uint64_t size)
+radeon_drm_vk_bo_cache_sync_for_bo(struct radeon_drm_vk_device *device,
+                                   const struct radeon_drm_vk_bo *bo,
+                                   const void *map, uint64_t size)
 {
    if (device == NULL || map == NULL || size == 0)
       return;
@@ -201,5 +216,22 @@ radeon_drm_vk_bo_cache_sync(struct radeon_drm_vk_device *device,
 #else
    __atomic_thread_fence(__ATOMIC_SEQ_CST);
 #endif
-   device->cache_sync_count++;
+   const uint64_t event =
+      atomic_fetch_add_explicit(&device->cache_event_sequence, 1,
+                                memory_order_acq_rel) + 1;
+   atomic_store_explicit(&device->cache_sync_last_map, (uintptr_t)map,
+                         memory_order_release);
+   atomic_store_explicit(&device->cache_sync_last_bo_handle,
+                         bo != NULL ? bo->handle : 0, memory_order_release);
+   atomic_store_explicit(&device->cache_sync_last_event, event,
+                         memory_order_release);
+   atomic_fetch_add_explicit(&device->cache_sync_count, 1,
+                             memory_order_acq_rel);
+}
+
+void
+radeon_drm_vk_bo_cache_sync(struct radeon_drm_vk_device *device,
+                            const void *map, uint64_t size)
+{
+   radeon_drm_vk_bo_cache_sync_for_bo(device, NULL, map, size);
 }
