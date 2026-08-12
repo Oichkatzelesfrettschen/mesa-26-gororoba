@@ -58,6 +58,7 @@
 
 #include "r300_context.h"
 #include "r300_fs.h"
+#include "compiler/r300_nir.h"
 #include "r300_r2vb_plan.h"
 #include "r300_screen.h"
 #include "radeon_regalloc.h"
@@ -297,34 +298,53 @@ struct census_row {
    nir_shader *(*build)(void);
    enum r300_r2vb_plan_action action;
    enum r300_r2vb_plan_reason primary_reason;
+   /* Prepared-producer contract: the typed scan reads the restaged position
+    * candidate, so these fields describe the producer the row measures. */
+   bool prepared_has_typed;
+   enum r300_r2vb_typed_source_class typed_source_class;
+   /* SPLIT carry contract: the required transport and the complete allowed
+    * transport alphabet for the selected partition. */
+   char required_carry;
+   const char *allowed_carry;
 };
 
 static const struct census_row rows[] = {
    { "census_float_fits", NULL, 0, build_float_fits,
-     R300_R2VB_PLAN_SINGLE, R300_R2VB_PLAN_OK },
+     R300_R2VB_PLAN_SINGLE, R300_R2VB_PLAN_OK,
+     false, R300_R2VB_TYPED_SOURCE_NONE, 0, "" },
    { "census_float_over", NULL, 0, build_float_over_budget,
-     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK },
+     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
+     false, R300_R2VB_TYPED_SOURCE_NONE, 0, "f" },
    { "t_bool", t_bool_spirv, sizeof(t_bool_spirv), NULL,
-     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK },
+     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
+     false, R300_R2VB_TYPED_SOURCE_NONE, 0, "f" },
    { "t_sint_exact", t_sint_exact_spirv, sizeof(t_sint_exact_spirv), NULL,
-     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK },
+     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
+     true, R300_R2VB_TYPED_SOURCE_SINT, 'i', "fi" },
    { "t_uint_exact", t_uint_exact_spirv, sizeof(t_uint_exact_spirv), NULL,
-     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK },
+     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
+     true, R300_R2VB_TYPED_SOURCE_UINT, 'u', "fu" },
    { "t_sint_pos_outside", t_sint_pos_outside_spirv,
      sizeof(t_sint_pos_outside_spirv), NULL,
-     R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_SIGNED_RANGE },
+     R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_SIGNED_RANGE,
+     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
    { "t_sint_neg_outside", t_sint_neg_outside_spirv,
      sizeof(t_sint_neg_outside_spirv), NULL,
-     R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_SIGNED_RANGE },
+     R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_SIGNED_RANGE,
+     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
    { "t_uint_outside", t_uint_outside_spirv, sizeof(t_uint_outside_spirv),
-     NULL, R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_UNSIGNED_RANGE },
+     NULL, R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_UNSIGNED_RANGE,
+     true, R300_R2VB_TYPED_SOURCE_UINT, 0, "" },
    { "t_uint_unbounded", t_uint_unbounded_spirv,
      sizeof(t_uint_unbounded_spirv), NULL,
-     R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_UNSIGNED_RANGE },
+     R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_UNSIGNED_RANGE,
+     true, R300_R2VB_TYPED_SOURCE_UINT, 0, "" },
    { "t_sint_to_uint", t_sint_to_uint_spirv, sizeof(t_sint_to_uint_spirv),
-     NULL, R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_MIXED_SIGNEDNESS },
+     NULL, R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_MIXED_SIGNEDNESS,
+     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
    { "t_uint_to_sint", t_uint_to_sint_spirv, sizeof(t_uint_to_sint_spirv),
-     NULL, R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_MIXED_SIGNEDNESS },
+     NULL, R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_MIXED_SIGNEDNESS,
+     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
 };
 
 /* Stable names for the machine-readable row: enum renumbering must never
@@ -335,7 +355,6 @@ plan_status_str(enum r300_r2vb_plan_status status)
    switch (status) {
    case R300_R2VB_PLAN_READY:             return "ready";
    case R300_R2VB_PLAN_SEMANTIC_REJECT:   return "semantic_reject";
-   case R300_R2VB_PLAN_POLICY_REJECT:     return "policy_reject";
    case R300_R2VB_PLAN_TRANSIENT_FAILURE: return "transient_failure";
    }
    return "unknown";
@@ -448,10 +467,9 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
       nir_shader *vs = row->build
                           ? row->build()
                           : prepare_module(row->spirv, row->spirv_size);
-      snprintf(label, sizeof(label), "%s/%s specimen builds", row->name,
-               space_name);
-      if (attempt == 0)
-         CHECK(vs != NULL, label);
+      snprintf(label, sizeof(label), "%s/%s specimen builds attempt %u",
+               row->name, space_name, attempt + 1);
+      CHECK(vs != NULL, label);
       if (!vs)
          return;
 
@@ -484,6 +502,8 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
       /* The plan-selected programs, recompiled under named phases: the
        * miner reads these records, and the walk sequence stays diagnostic. */
       unsigned selected_stats = 0;
+      unsigned selected_pass_a_stats = 0;
+      unsigned selected_pass_b_stats = 0;
       if (plan.action == R300_R2VB_PLAN_SINGLE && plan.candidate) {
          selected_stats += census_selected_phase(
             row, space_name, "selected-baseline", plan.candidate,
@@ -494,17 +514,21 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
          nir_shader *pass_b = r300_mp_build_pos_pass_b(
             plan.candidate, &plan.partition, plan.num_position_inputs);
          if (pass_a) {
-            selected_stats += census_selected_phase(
+            r300_optimize_nir(pass_a, &g_screen);
+            selected_pass_a_stats = census_selected_phase(
                row, space_name, "selected-pass-a", pass_a, attempt == 0,
                transcript, transcript_len, &clean);
+            selected_stats += selected_pass_a_stats;
             ralloc_free(pass_a);
          } else {
             clean = false;
          }
          if (pass_b) {
-            selected_stats += census_selected_phase(
+            r300_optimize_nir(pass_b, &g_screen);
+            selected_pass_b_stats = census_selected_phase(
                row, space_name, "selected-pass-b", pass_b, attempt == 0,
                transcript, transcript_len, &clean);
+            selected_stats += selected_pass_b_stats;
             ralloc_free(pass_b);
          } else {
             clean = false;
@@ -519,15 +543,43 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
                   space_name,
                   r300_r2vb_plan_reason_str(row->primary_reason));
          CHECK(plan.primary_reason == row->primary_reason, label);
+         snprintf(label, sizeof(label), "%s/%s typed producer contract",
+                  row->name, space_name);
+         CHECK(plan.has_typed_source == row->prepared_has_typed &&
+                  plan.typed_source_class == row->typed_source_class,
+               label);
+         if (row->action == R300_R2VB_PLAN_SPLIT &&
+             plan.action == R300_R2VB_PLAN_SPLIT) {
+            char sig[R300_MP_MAX_CARRY_COMPS + 1];
+            carry_sig(&plan, sig, sizeof(sig));
+            bool has_required = row->required_carry == 0 ||
+                                strchr(sig, row->required_carry) != NULL;
+            bool all_allowed = true;
+            for (const char *c = sig; *c; c++)
+               if (!strchr(row->allowed_carry, *c))
+                  all_allowed = false;
+            snprintf(label, sizeof(label), "%s/%s carry {%s} within {%s}",
+                     row->name, space_name, sig, row->allowed_carry);
+            CHECK(has_required && all_allowed, label);
+         }
          if (plan.action == R300_R2VB_PLAN_SINGLE ||
              plan.action == R300_R2VB_PLAN_SPLIT) {
             snprintf(label, sizeof(label), "%s/%s walk statistics captured",
                      row->name, space_name);
             CHECK(walk_stats > 0, label);
-            snprintf(label, sizeof(label),
-                     "%s/%s selected-phase statistics captured", row->name,
-                     space_name);
-            CHECK(selected_stats > 0, label);
+            if (plan.action == R300_R2VB_PLAN_SINGLE) {
+               snprintf(label, sizeof(label),
+                        "%s/%s selected baseline statistics captured",
+                        row->name, space_name);
+               CHECK(selected_stats > 0, label);
+            } else {
+               snprintf(label, sizeof(label), "%s/%s selected pass-A stats",
+                        row->name, space_name);
+               CHECK(selected_pass_a_stats > 0, label);
+               snprintf(label, sizeof(label), "%s/%s selected pass-B stats",
+                        row->name, space_name);
+               CHECK(selected_pass_b_stats > 0, label);
+            }
          }
          snprintf(label, sizeof(label), "%s/%s statistics capture clean",
                   row->name, space_name);
