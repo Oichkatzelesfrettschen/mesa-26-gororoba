@@ -882,8 +882,9 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       /* Four independent RGBA8_UNORM render targets written in parallel by
        * a single fragment shader with layout(location=0..3) outputs.
-       * r3v exposes maxColorAttachments=4 in r3v_GetPhysicalDeviceProperties
-       * (rg --fixed-strings maxColorAttachments src/amd/r300/vulkan/).
+       * r3v exposes maxColorAttachments=4 in r3v_physical_device_init_limits
+       * (rg --fixed-strings r3v_physical_device_init_limits src/amd/r300/vulkan/;
+       *  rg --fixed-strings maxColorAttachments src/amd/r300/vulkan/).
        * independentBlend=false: all 4 attachments share RB3D_CBLEND state,
        * but distinct FS output locations route to distinct color buffers.
        * RS482 probe: 4-attachment framebuffer, FS writes 0x01020304 /
@@ -900,8 +901,9 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       /* VK_STENCIL_OP_INVERT flips all 8 bits of the stencil plane per
        * fragment.  r300_translate_stencil_op maps PIPE_STENCIL_OP_INVERT to
-       * R300_ZS_INVERT, and r3v_translate_stencil_op maps the Vulkan operation
-       * to the Gallium operation (rg --fixed-strings PIPE_STENCIL_OP_INVERT src/).
+       * R300_ZS_INVERT, and r3v_stencil_op_to_pipe maps the Vulkan operation
+       * to the Gallium operation (rg --fixed-strings r3v_stencil_op_to_pipe
+       * src/amd/r300/vulkan/; rg --fixed-strings PIPE_STENCIL_OP_INVERT src/).
        * Bitwise contract: INVERT(x) = ~x for all x in [0, 255].
        * RS482 probe: fill 0xA5, INVERT once, readback 0x5A -- exact.
        * Enables bitwise NOT on U8 stencil payloads without the ALU. */
