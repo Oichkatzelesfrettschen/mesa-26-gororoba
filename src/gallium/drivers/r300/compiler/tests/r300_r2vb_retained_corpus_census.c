@@ -15,8 +15,9 @@
  * Serialized NIR is an internal representation bound to the producing
  * source tree, so the corpus directory carries a provenance manifest
  * (corpus-provenance.txt, `mesa_git_sha1=<short sha>`) and the loader
- * compares it against its own MESA_GIT_SHA1.  A missing or mismatching
- * manifest refuses the corpus; the exact-value research override
+ * compares it against its own MESA_GIT_SHA1.  A nonempty corpus with a
+ * missing or mismatching manifest refuses the corpus; the exact-value
+ * research override
  * R300_R2VB_CORPUS_COMPAT_OVERRIDE=1 proceeds with the whole run marked
  * serialization_compatibility=unverified.
  *
@@ -127,19 +128,26 @@ typed_class_str(enum r300_r2vb_typed_source_class source_class)
 }
 
 /* Order-independent carry signature of a SPLIT plan: one letter per carried
- * component, sorted, so equal partitions print equal signatures regardless
- * of base order. */
+ * scalar component, sorted, so equal partitions print equal signatures
+ * regardless of base order.  A base can be a vector, so its transport class
+ * repeats for every component in the machine-readable row. */
 static void
 carry_sig(const struct r300_r2vb_producer_plan *plan, char *buf, size_t len)
 {
    unsigned n = 0;
    for (unsigned i = 0; i < plan->partition.num_bases && n + 1 < len; i++) {
+      char type;
       switch (plan->partition.r2vb_transport[i]) {
-      case R300_MP_R2VB_SINT:   buf[n++] = 'i'; break;
-      case R300_MP_R2VB_UINT:   buf[n++] = 'u'; break;
+      case R300_MP_R2VB_SINT:   type = 'i'; break;
+      case R300_MP_R2VB_UINT:   type = 'u'; break;
       case R300_MP_R2VB_BOOL1:
-      case R300_MP_R2VB_BOOL32: buf[n++] = 'b'; break;
-      default:                  buf[n++] = 'f'; break;
+      case R300_MP_R2VB_BOOL32: type = 'b'; break;
+      default:                  type = 'f'; break;
+      }
+      unsigned width = plan->partition.bases[i]->num_components;
+      for (unsigned component = 0;
+           component < width && n + 1 < len; component++) {
+         buf[n++] = type;
       }
    }
    buf[n] = '\0';
@@ -485,27 +493,6 @@ main(void)
       return 77;
    }
 
-   /* Serialization compatibility: the corpus manifest's producer SHA must
-    * equal this loader's own source SHA, or the exact-value override
-    * accepts the corpus with the whole run marked unverified. */
-   char own_sha[64], producer_sha[64];
-   loader_git_sha(own_sha, sizeof(own_sha));
-   corpus_git_sha(dir, producer_sha, sizeof(producer_sha));
-   bool sha_match = own_sha[0] && producer_sha[0] &&
-                    strcmp(own_sha, producer_sha) == 0;
-   const char *override_env = getenv("R300_R2VB_CORPUS_COMPAT_OVERRIDE");
-   bool override = override_env && strcmp(override_env, "1") == 0;
-   if (!sha_match && !override) {
-      printf("FAIL - corpus provenance %s/%s (producer mesa_git_sha1=%s) "
-             "does not match this loader (%s); serialized NIR is source-"
-             "tree-bound, so set R300_R2VB_CORPUS_COMPAT_OVERRIDE=1 only "
-             "for research reads\n",
-             dir, CORPUS_PROVENANCE_NAME,
-             producer_sha[0] ? producer_sha : "absent",
-             own_sha[0] ? own_sha : "absent");
-      return 1;
-   }
-
    DIR *d = opendir(dir);
    if (!d) {
       printf("FAIL - corpus directory %s does not open\n", dir);
@@ -550,6 +537,30 @@ main(void)
       free(names);
       printf("corpus directory %s holds no specimens; SKIP\n", dir);
       return 77;
+   }
+
+   /* Serialization compatibility applies to evidence-bearing corpora only.
+    * An empty directory proves nothing, so its skip verdict precedes the
+    * manifest check and does not require a producer identity. */
+   char own_sha[64], producer_sha[64];
+   loader_git_sha(own_sha, sizeof(own_sha));
+   corpus_git_sha(dir, producer_sha, sizeof(producer_sha));
+   bool sha_match = own_sha[0] && producer_sha[0] &&
+                    strcmp(own_sha, producer_sha) == 0;
+   const char *override_env = getenv("R300_R2VB_CORPUS_COMPAT_OVERRIDE");
+   bool override = override_env && strcmp(override_env, "1") == 0;
+   if (!sha_match && !override) {
+      printf("FAIL - corpus provenance %s/%s (producer mesa_git_sha1=%s) "
+             "does not match this loader (%s); serialized NIR is source-"
+             "tree-bound, so set R300_R2VB_CORPUS_COMPAT_OVERRIDE=1 only "
+             "for research reads\n",
+             dir, CORPUS_PROVENANCE_NAME,
+             producer_sha[0] ? producer_sha : "absent",
+             own_sha[0] ? own_sha : "absent");
+      for (unsigned i = 0; i < num_names; i++)
+         free(names[i]);
+      free(names);
+      return 1;
    }
    qsort(names, num_names, sizeof(*names), name_cmp);
 
