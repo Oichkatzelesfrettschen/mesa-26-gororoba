@@ -60,6 +60,13 @@
 static void r2vb_wait_bo(struct r300_context *r300, struct pipe_resource *res);
 static bool r2vb_single_cs_enabled(void);
 
+/* Test boundary for the production per-cell admission path.  The wrapper
+ * keeps the route's structural check and telemetry bridge together in the
+ * calibration binary without widening the runtime route API. */
+bool r300_r2vb_admits_producer_for_test(
+    struct r300_context *r300, bool allow_computed_varying,
+    enum r300_r2vb_position_space space);
+
 /* Route telemetry keeps its own cell ledger.  The admission memo belongs to
  * the execution route, so an observation cannot write a reject into that
  * memo.  The VS pointer identifies the owner while the content hash protects
@@ -6026,6 +6033,19 @@ r300_r2vb_telemetry_note_cell(
         r300_r2vb_telemetry_note(r300, plan);
 }
 
+bool
+r300_r2vb_telemetry_note_structural_admission_reject(
+    struct r300_context *r300, bool allow_computed_varying,
+    enum r300_r2vb_position_space space)
+{
+    const struct r300_r2vb_producer_plan *plan =
+        r300_r2vb_producer_plan_get(r300, allow_computed_varying, space);
+    if (!plan || plan->action != R300_R2VB_PLAN_REJECT)
+        return false;
+    r300_r2vb_telemetry_note_cell(r300, plan);
+    return true;
+}
+
 enum r300_r2vb_admission_memo
 r300_r2vb_plan_effective_admission(const struct r300_r2vb_producer_plan *plan,
                                    enum r300_r2vb_memo_writer writer,
@@ -6249,6 +6269,11 @@ static bool r300_vs_admits_producer(struct r300_context *r300,
     struct r300_vertex_shader *vs = r300_vs(r300);
     if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
         return false;
+    unsigned space_i = space == R300_R2VB_POSITION_WINDOW ? 1u : 0u;
+    uint8_t *memo = &vs->r2vb_admission[allow_computed_varying ? 1 : 0]
+                                       [space_i];
+    if (*memo == R300_R2VB_ADMIT_REJECT)
+        return false;
     nir_shader *clone = nir_shader_clone(NULL, vs->state.ir.nir);
     if (!clone)
         return false;
@@ -6275,7 +6300,18 @@ static bool r300_vs_admits_producer(struct r300_context *r300,
      * one-vec4 carry).  Gated off, the structural reject stands unchanged. */
     else if (!allow_computed_varying && r300_r2vb_typed_split_enabled())
         ok = r300_r2vb_typed_split_admit(r300, space);
+    else if (r300_r2vb_telemetry_note_structural_admission_reject(
+                r300, allow_computed_varying, space))
+        *memo = R300_R2VB_ADMIT_REJECT;
     return ok;
+}
+
+bool
+r300_r2vb_admits_producer_for_test(
+    struct r300_context *r300, bool allow_computed_varying,
+    enum r300_r2vb_position_space space)
+{
+    return r300_vs_admits_producer(r300, allow_computed_varying, space);
 }
 
 static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
@@ -6375,7 +6411,7 @@ r300_r2vb_telemetry_record_inputs(
         return;
 
     struct r300_r2vb_position_source position_sources[
-        R300_R2VB_MAX_PRODUCER_INPUTS];
+        R300_R2VB_MAX_PRODUCER_INPUTS] = {0};
     unsigned position_source_count = 0;
     if (!plan || plan->num_position_inputs > 1)
         position_source_count = r300_r2vb_position_source_scan_list_status(
