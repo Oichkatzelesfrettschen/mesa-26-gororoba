@@ -913,4 +913,24 @@ if with_tests
     ),
     suite : ['r300'],
   )
+
+  # Host calibration for the blend-factor target remapper.  RGB and alpha
+  # SRC_ALPHA_SATURATE factors have different contracts, and intensity
+  # targets retain their replicated destination alpha instead of using the
+  # no-alpha constants.
+  test(
+    'r300-blend-factor-target',
+    executable(
+      'r300_blend_factor_target_test',
+      files('tests/r300_blend_factor_target_test.c'),
+      c_args : r300_test_c_args,
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux,
+        inc_gallium_drivers, include_directories('.'),
+      ],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
 endif

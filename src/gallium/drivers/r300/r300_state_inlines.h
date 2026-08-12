@@ -21,6 +21,36 @@ static inline int pack_float_16_6x(float f) {
 
 /* Blend state. */
 
+enum r300_blend_target {
+    R300_BLEND_TARGET_RGBA,
+    R300_BLEND_TARGET_NO_ALPHA,
+    R300_BLEND_TARGET_INTENSITY,
+};
+
+/* Preserve the channel-specific meaning of blend factors when a colorbuffer
+ * has an implied or replicated destination alpha. */
+static inline enum pipe_blendfactor
+r300_blend_factor_for_target(enum pipe_blendfactor factor, bool alpha,
+                             enum r300_blend_target target)
+{
+    switch (factor) {
+    case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
+        /* The alpha-channel factor for SRC_ALPHA_SATURATE is ONE. */
+        if (alpha)
+            return PIPE_BLENDFACTOR_ONE;
+        return target == R300_BLEND_TARGET_NO_ALPHA ?
+               PIPE_BLENDFACTOR_ZERO : factor;
+    case PIPE_BLENDFACTOR_DST_ALPHA:
+        return target == R300_BLEND_TARGET_NO_ALPHA ?
+               PIPE_BLENDFACTOR_ONE : factor;
+    case PIPE_BLENDFACTOR_INV_DST_ALPHA:
+        return target == R300_BLEND_TARGET_NO_ALPHA ?
+               PIPE_BLENDFACTOR_ZERO : factor;
+    default:
+        return factor;
+    }
+}
+
 static inline uint32_t r300_translate_blend_function(int blend_func,
                                                      bool clamp)
 {
