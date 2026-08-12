@@ -691,6 +691,39 @@ def selftest():
                           permitted_refusal_results(layered, {"A"}), set()):
         return 1
 
+    # The result-bearing selection covers native live commands as well as
+    # fail-closed commands.  Removing the shared refusal result from the live
+    # member must make the full surface illegal; filtering live commands out
+    # would leave the synthetic surface apparently calibrated.
+    result_surface = Registry(
+        {}, set(),
+        {"FlushMappedMemoryRanges", "CreateComputePipelines", "DestroyDevice"},
+        {},
+        {"FlushMappedMemoryRanges": (
+            "VkResult", ("VK_ERROR_UNKNOWN", "VK_ERROR_OUT_OF_HOST_MEMORY")),
+         "CreateComputePipelines": ("VkResult", ("VK_ERROR_UNKNOWN",)),
+         "DestroyDevice": ("void", ())},
+        {})
+    result_core = result_surface.core10
+    result_native = result_core.copy()
+    result_bearing = native_result_commands(
+        result_surface, result_core, result_native)
+    if not selftest_check(
+            "live VkResult behavior class",
+            behavior_class("FlushMappedMemoryRanges", result_native, set()),
+            "NATIVE_LIVE"):
+        return 1
+    if not selftest_check(
+            "native VkResult surface includes live command", result_bearing,
+            {"FlushMappedMemoryRanges", "CreateComputePipelines"}):
+        return 1
+    result_surface.results["FlushMappedMemoryRanges"] = (
+        "VkResult", ("VK_ERROR_OUT_OF_HOST_MEMORY",))
+    if not selftest_check(
+            "live VkResult refusal denial",
+            permitted_refusal_results(result_surface, result_bearing), set()):
+        return 1
+
     # The pair verdict runs against synthetic surfaces, where the exact tuple
     # is checkable and no other verdict stands in front of it.
     for fixture, expected in ((name, PAIR_FIXTURES[name][2])
@@ -757,7 +790,7 @@ def selftest():
 
     print("r3v_native_entrypoint_audit selftest: canonical-provider, "
           "comment-strip, optional-guard, and exact-baseline legs OK; "
-          "15 closure and result legs OK, "
+          "18 closure and result legs OK, "
           f"{len(model_bad_fixtures) + 1} model-shape rejection legs OK, "
           f"{len(PAIR_FIXTURES)} lifecycle-pair legs OK")
     return 0
@@ -863,6 +896,12 @@ def permitted_refusal_results(reg, refusing):
     if not sets:
         return set()
     return set.intersection(*sets) - LAYER_OWNED_RESULTS
+
+
+def native_result_commands(reg, core_device, native):
+    """Return native core device commands that return VkResult."""
+    return {name for name in core_device & native
+            if reg.results.get(name, ("void", ()))[0] == "VkResult"}
 
 
 def behavior_class(name, native, common):
@@ -1078,8 +1117,7 @@ def main():
     # may expose narrower conditional paths:
     # vkFlushMappedMemoryRanges executes on the native transport and still
     # returns the refusal result for a range it rejects.
-    result_bearing = {n for n in core_device & native
-                      if reg.results.get(n, ("void", ()))[0] == "VkResult"}
+    result_bearing = native_result_commands(reg, core_device, native)
     permitted = permitted_refusal_results(reg, result_bearing)
     unclassified = sorted(n for n in core_device & native
                           if behavior_class(n, native, common) ==
