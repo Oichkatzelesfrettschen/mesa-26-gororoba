@@ -212,6 +212,15 @@ MODEL_FLOORS = (
 )
 MODEL_FLOOR_COUNTS = dict(MODEL_FLOORS)
 
+# Explicit malformed counts keep each scope expectation independent from the
+# model census used by the known-good fixture.
+MODEL_SCOPE_CENSUS_REJECTION_FIXTURES = (
+    (MODEL_SCOPE_GLOBAL, 3),
+    (MODEL_SCOPE_INSTANCE, 1),
+    (MODEL_SCOPE_PHYSICAL_DEVICE, 9),
+    (MODEL_SCOPE_DEVICE, 120),
+)
+
 
 def model_failures(scope_counts, populated_count, dependency_count):
     """Return model-shape defects before the closure verdict runs."""
@@ -735,41 +744,68 @@ def selftest():
             return 1
 
     model_counts = {name: expected for name, expected in MODEL_CENSUS}
-    if not selftest_check("model floors",
-        model_failures(
-        model_counts,
-        MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
-        MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
-        ), []):
+    if not selftest_check(
+            "model floors",
+            model_failures(
+                model_counts,
+                MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+                MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
+            ),
+            []):
         return 1
-    model_bad_fixtures = (
-        (MODEL_SCOPE_DEVICE, model_counts[MODEL_SCOPE_DEVICE] - 1,
-         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
-         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
-         (MODEL_SCOPE_DEVICE, str(model_counts[MODEL_SCOPE_DEVICE] - 1))),
+    model_scope_rejection_fixtures = MODEL_SCOPE_CENSUS_REJECTION_FIXTURES
+    for name, invalid_count in model_scope_rejection_fixtures:
+        bad_counts = model_counts.copy()
+        bad_counts[name] = invalid_count
+        found = model_failures(
+            bad_counts,
+            MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+            MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
+        )
+        if not selftest_check(f"model rejection count {name}", len(found), 1):
+            return 1
+        if not selftest_check(
+                f"model rejection marker {name}",
+                all(marker in found[0]
+                    for marker in (name, str(invalid_count))), True):
+            return 1
+
+    model_floor_rejection_fixtures = (
         (MODEL_POPULATED_SLOTS,
-         model_counts[MODEL_SCOPE_DEVICE],
          MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS] - 1,
          MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
          (MODEL_POPULATED_SLOTS,
           str(MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS] - 1))),
         (MODEL_COMMON_DEPENDENCIES,
-         model_counts[MODEL_SCOPE_DEVICE],
          MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
          MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES] - 1,
          (MODEL_COMMON_DEPENDENCIES,
           str(MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES] - 1))),
     )
-    for (name, core_device_count, populated_count, dependency_count,
-         expected_markers) in model_bad_fixtures:
+    for (name, populated_count, dependency_count,
+         expected_markers) in model_floor_rejection_fixtures:
         bad_counts = model_counts.copy()
-        bad_counts[MODEL_SCOPE_DEVICE] = core_device_count
         found = model_failures(bad_counts, populated_count, dependency_count)
         if not selftest_check(f"model rejection count {name}", len(found), 1):
             return 1
         if not selftest_check(
                 f"model rejection marker {name}",
                 all(marker in found[0] for marker in expected_markers), True):
+            return 1
+
+    model_floor_positive_fixtures = (
+        (MODEL_POPULATED_SLOTS,
+         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS] + 1,
+         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES]),
+        (MODEL_COMMON_DEPENDENCIES,
+         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
+         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES] + 1),
+    )
+    for name, populated_count, dependency_count in model_floor_positive_fixtures:
+        if not selftest_check(
+                f"model above-floor acceptance {name}",
+                model_failures(
+                    model_counts, populated_count, dependency_count), []):
             return 1
 
     missing_counts = model_counts.copy()
@@ -788,10 +824,17 @@ def selftest():
                           found[0], True):
         return 1
 
+    model_calibration_leg_count = sum((
+        len(model_scope_rejection_fixtures),
+        len(model_floor_rejection_fixtures),
+        len(model_floor_positive_fixtures),
+        1,
+    ))
     print("r3v_native_entrypoint_audit selftest: canonical-provider, "
           "comment-strip, optional-guard, and exact-baseline legs OK; "
           "18 closure and result legs OK, "
-          f"{len(model_bad_fixtures) + 1} model-shape rejection legs OK, "
+          f"{model_calibration_leg_count} model-shape "
+          "calibration legs OK, "
           f"{len(PAIR_FIXTURES)} lifecycle-pair legs OK")
     return 0
 
