@@ -2109,6 +2109,7 @@ static bool r300_r2vb_emit_producer(struct r300_context *r300,
     END_CS;
 
     r2vb_emit_producer_order_tail(r300);
+    r300->draw_emitted_this_cs = true;
     return true;
 }
 
