@@ -736,10 +736,14 @@ bool r300_r2vb_position_input_mapping_ok(unsigned num_position_inputs,
                                          enum pipe_format format);
 
 /* The ALU12 discriminator reads the reciprocal denominator from the logical
- * W lane.  Its source contract admits only R32G32B32 input, whose PSC tuple
- * supplies W=1.0, and excludes the effective alpha-to-one lowering state so
- * FRAG_RESULT_COLOR.W remains a discriminator lane. */
+ * W lane. Its source contract admits only R32G32B32 input, whose PSC tuple
+ * supplies W=1.0. r300_validate_fragment_shader clears alpha_to_one for the
+ * R300_FS_INPUT_R2VB_FLAT_VERTEX producer variant, as located by
+ * (rg --fixed-strings 'state.alpha_to_one = false'
+ * src/gallium/drivers/r300/). The gate therefore evaluates the producer
+ * variant semantics together with the application state. */
 bool r300_r2vb_alu12_contract_ok(enum pipe_format source_format,
+                                 enum r300_fs_input_semantics input_semantics,
                                  bool alpha_to_one, bool msaa_enable);
 
 /* The producer's programmable-stream interface, derived mechanically
