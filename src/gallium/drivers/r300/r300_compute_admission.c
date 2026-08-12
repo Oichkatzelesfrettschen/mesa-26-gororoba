@@ -1979,32 +1979,104 @@ r300_nir_detect_zpass_reduction(const nir_shader *s,
  * substrate-absence rejection.  Scalars are resolved through bit-exact
  * mov/vec chains so a doubling that arrives via a copy still matches. */
 static bool
-multipass_step_is_doubling(const nir_alu_instr *alu)
+multipass_step_is_doubling_of(const nir_alu_instr *alu, nir_scalar carried)
 {
    switch (alu->op) {
    case nir_op_ishl: {
+      nir_scalar value =
+         nir_scalar_resolved(alu->src[0].src.ssa, alu->src[0].swizzle[0]);
       nir_scalar amt =
          nir_scalar_resolved(alu->src[1].src.ssa, alu->src[1].swizzle[0]);
-      return nir_scalar_is_const(amt) && nir_scalar_as_uint(amt) == 1;
+      return nir_scalar_equal(value, carried) && nir_scalar_is_const(amt) &&
+             nir_scalar_as_uint(amt) == 1;
    }
-   case nir_op_imul:
-      for (unsigned i = 0; i < 2; i++) {
-         nir_scalar sc =
-            nir_scalar_resolved(alu->src[i].src.ssa, alu->src[i].swizzle[0]);
-         if (nir_scalar_is_const(sc) && nir_scalar_as_uint(sc) == 2)
-            return true;
-      }
-      return false;
+   case nir_op_imul: {
+      nir_scalar a =
+         nir_scalar_resolved(alu->src[0].src.ssa, alu->src[0].swizzle[0]);
+      nir_scalar b =
+         nir_scalar_resolved(alu->src[1].src.ssa, alu->src[1].swizzle[0]);
+      return (nir_scalar_equal(a, carried) && nir_scalar_is_const(b) &&
+              nir_scalar_as_uint(b) == 2) ||
+             (nir_scalar_equal(b, carried) && nir_scalar_is_const(a) &&
+              nir_scalar_as_uint(a) == 2);
+   }
    case nir_op_iadd: {
       nir_scalar a =
          nir_scalar_resolved(alu->src[0].src.ssa, alu->src[0].swizzle[0]);
       nir_scalar b =
          nir_scalar_resolved(alu->src[1].src.ssa, alu->src[1].swizzle[0]);
-      return nir_scalar_equal(a, b);
+      return nir_scalar_equal(a, carried) && nir_scalar_equal(b, carried);
    }
    default:
       return false;
    }
+}
+
+static nir_loop *
+multipass_loop_for_header(nir_block *header)
+{
+   for (nir_cf_node *parent = header->cf_node.parent; parent;
+        parent = parent->parent) {
+      if (parent->type != nir_cf_node_loop)
+         continue;
+
+      nir_loop *loop = nir_cf_node_as_loop(parent);
+      if (nir_loop_first_block(loop) == header)
+         return loop;
+   }
+
+   return NULL;
+}
+
+static bool
+multipass_phi_matches_loop(nir_phi_instr *phi, nir_loop *loop,
+                           const nir_intrinsic_instr **input_load,
+                           uint16_t *step_op)
+{
+   if (phi->def.num_components != 1 || phi->def.bit_size != 32)
+      return false;
+
+   nir_phi_src *initial = NULL;
+   nir_phi_src *backedge = NULL;
+   nir_block *preheader = nir_loop_predecessor_block(loop);
+   unsigned source_count = 0;
+   nir_foreach_phi_src (src, phi) {
+      source_count++;
+      if (src->pred == preheader) {
+         if (initial)
+            return false;
+         initial = src;
+      } else {
+         if (backedge)
+            return false;
+         backedge = src;
+      }
+   }
+
+   if (source_count != 2 || !initial || !backedge ||
+       initial->src.ssa->num_components != 1 ||
+       backedge->src.ssa->num_components != 1)
+      return false;
+
+   nir_scalar initial_value =
+      nir_scalar_chase_movs(nir_get_scalar(initial->src.ssa, 0));
+   if (!nir_scalar_is_intrinsic(initial_value))
+      return false;
+
+   nir_intrinsic_instr *load = nir_scalar_as_intrinsic(initial_value);
+   if (load->intrinsic != nir_intrinsic_load_ssbo)
+      return false;
+
+   nir_scalar update =
+      nir_scalar_chase_movs(nir_get_scalar(backedge->src.ssa, 0));
+   nir_scalar carried = nir_get_scalar(&phi->def, 0);
+   if (!nir_scalar_is_alu(update) ||
+       !multipass_step_is_doubling_of(nir_scalar_as_alu(update), carried))
+      return false;
+
+   *input_load = load;
+   *step_op = (uint16_t)nir_scalar_alu_op(update);
+   return true;
 }
 
 /* Multipass ping-pong scan detector.  Recognises the per-element self-iterated
@@ -2021,10 +2093,10 @@ multipass_step_is_doubling(const nir_alu_instr *alu)
  *   2. At least 2 load_ssbo: the per-element data plus the runtime
  *      pass_count from the params buffer.
  *   3. A nir_loop is present (the unique discriminator).
- *   4. A per-iteration DOUBLING step (x*2 / x<<1 / x+x) sits inside a
- *      loop body.  The admit set equals what the orchestrator executes:
- *      a loop carrying any other arithmetic is not the realizable
- *      iterated-scale shape and is rejected, not silently mis-scaled.
+ *   4. The stored value resolves through mov/vec nodes to a loop-header phi.
+ *      The phi has a per-element load_ssbo preheader source and one backedge
+ *      update that doubles that same phi (x*2 / x<<1 / x+x).  An unrelated
+ *      accumulator doubling therefore cannot trigger replay admission.
  *
  * step_op carries the per-iteration nir_op for diagnostics; the orchestrator
  * hard-codes the doubling, which is sound precisely because every admitted
@@ -2040,23 +2112,16 @@ r300_nir_detect_multipass_scan_pattern(const nir_shader *s,
    out->output_ssbo_binding = 0;
    out->step_op             = 0;
 
-   const nir_intrinsic_instr *store      = NULL;
-   const nir_intrinsic_instr *first_load = NULL;
+   const nir_intrinsic_instr *store = NULL;
    unsigned atomic_count = 0, load_count = 0, store_count = 0;
    bool has_loop = false;
-   uint16_t step_op = 0;
-   bool step_found = false;
 
    nir_foreach_function_impl (impl, s) {
       nir_foreach_block (block, impl) {
-         /* A block sits in a loop body when any cf-node ancestor is a
-          * nir_cf_node_loop.  Walking the parent chain catches loops at
-          * any nesting depth. */
-         bool block_in_loop = false;
+         /* Walking the parent chain catches loops at any nesting depth. */
          for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
             if (p->type == nir_cf_node_loop) {
                has_loop = true;
-               block_in_loop = true;
                break;
             }
          }
@@ -2066,33 +2131,39 @@ r300_nir_detect_multipass_scan_pattern(const nir_shader *s,
                if (is_ssbo_atomic(intr->intrinsic)) {
                   atomic_count++;
                } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
-                  if (!first_load)
-                     first_load = intr;
                   load_count++;
                } else if (intr->intrinsic == nir_intrinsic_store_ssbo) {
                   store = intr;
                   store_count++;
-               }
-            } else if (block_in_loop && !step_found &&
-                       instr->type == nir_instr_type_alu) {
-               const nir_alu_instr *alu = nir_instr_as_alu(instr);
-               if (multipass_step_is_doubling(alu)) {
-                  step_op    = (uint16_t)alu->op;
-                  step_found = true;
                }
             }
          }
       }
    }
 
-   if (store_count != 1 || atomic_count != 0 || load_count < 2 ||
-       !has_loop || !step_found)
+   if (store_count != 1 || atomic_count != 0 || load_count < 2 || !has_loop ||
+       !store || store->src[0].ssa->num_components != 1)
+      return;
+
+   nir_scalar stored =
+      nir_scalar_chase_movs(nir_get_scalar(store->src[0].ssa, 0));
+   if (!nir_scalar_is_phi(stored))
+      return;
+
+   nir_phi_instr *value_phi = nir_scalar_as_phi(stored);
+   nir_loop *loop = multipass_loop_for_header(nir_def_block(stored.def));
+   if (!loop)
+      return;
+
+   const nir_intrinsic_instr *input_load = NULL;
+   uint16_t step_op = 0;
+   if (!multipass_phi_matches_loop(value_phi, loop, &input_load, &step_op))
       return;
 
    out->is_multipass_scan = true;
    out->step_op = step_op;
-   if (first_load && nir_src_is_const(first_load->src[0]))
-      out->input_ssbo_binding = nir_src_as_uint(first_load->src[0]);
+   if (input_load && nir_src_is_const(input_load->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(input_load->src[0]);
    if (store && nir_src_is_const(store->src[1]))
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
 }
