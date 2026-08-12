@@ -394,8 +394,8 @@ run_space(enum r300_r2vb_position_space space)
 
    /* Typed over-budget producer: the identity holds on the exact halves
     * the typed diagnostic route executes -- rebuilt from the plan's owned
-    * candidate and retained partition, with a typed transport in the
-    * selected carry. */
+    * candidate and retained partition, optimized before their admission
+    * costs are compared, with a typed transport in the selected carry. */
    nir_shader *typed = build_sint_carry_producer("cso_identity_sint");
    ran = r300_r2vb_plan_producer(&g_context, typed, false, space, &plan);
    snprintf(label, sizeof(label), "sint/%s plans SPLIT with typed carry",
@@ -412,11 +412,13 @@ run_space(enum r300_r2vb_position_space space)
       snprintf(label, sizeof(label), "sint/%s halves rebuild", space_name);
       CHECK(pass_a && pass_b, label);
       if (pass_a) {
+         r300_optimize_nir(pass_a, &g_screen);
          snprintf(label, sizeof(label), "sint/%s carry pass", space_name);
          check_identity(label, pass_a, &plan.pass_a_cost);
          ralloc_free(pass_a);
       }
       if (pass_b) {
+         r300_optimize_nir(pass_b, &g_screen);
          snprintf(label, sizeof(label), "sint/%s position pass", space_name);
          check_identity(label, pass_b, &plan.pass_b_cost);
          ralloc_free(pass_b);
