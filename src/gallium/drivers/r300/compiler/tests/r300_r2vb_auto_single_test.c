@@ -548,11 +548,9 @@ check_producer_input_preflight(void)
  * input_format before any transport.  The delivery side admits exactly
  * FP32x4.  Together with the plan-oracle typed-op classification (sint,
  * uint, and bool NIR ops mark has_typed_source and the policy declines
- * at typed_source / plan_not_ready), this pins the automatically
- * admitted source domain to the float set whose transport, w-fill, signedness,
- * and re-ingest identity this policy matrix checks. Rank-1 silicon observations
- * remain external evidence; this unit test records the bounded software
- * admission contract. */
+ * at typed_source / plan_not_ready), this unit test records the bounded
+ * format-admission contract.  Runtime transport, w-fill, signedness,
+ * re-ingest identity, and silicon observations belong to separate evidence. */
 static void
 check_source_domain_matrix(void)
 {

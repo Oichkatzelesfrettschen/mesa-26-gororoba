@@ -1354,11 +1354,13 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
      * transform) for gallivm's window-space output; the route needs the HW
      * viewport transform for clip-space app verts.  Report both the bound
      * vte_control and r300->viewport scale/offset the route would program.
-     * The driver path is anchored by r300_emit_vertex_arrays_swtcl in
-     * r300_emit.c, R300_PACKET3_3D_LOAD_VBPNTR in r300_reg.h, and
-     * R300_VAP_TCL_BYPASS in r300_state.c; symbol discovery uses
-     * (rg --fixed-strings r300_emit_vertex_arrays_swtcl
+     * The direct-VB route emits LOAD_VBPNTR through r300_emit_vertex_arrays
+     * in r300_emit.c; r300_emit_vertex_arrays_swtcl is the separate SWTCL
+     * path.  The packet and TCL bypass symbols live in r300_reg.h and
+     * r300_state.c; symbol discovery uses
+     * (rg --fixed-strings r300_emit_vertex_arrays
      * src/gallium/drivers/r300/; rg --fixed-strings
+     * r300_emit_vertex_arrays_swtcl src/gallium/drivers/r300/; rg --fixed-strings
      * R300_PACKET3_3D_LOAD_VBPNTR src/gallium/drivers/r300/; rg
      * --fixed-strings R300_VAP_TCL_BYPASS src/gallium/drivers/r300/). */
     {
