@@ -21,7 +21,9 @@ mesa-gororoba-debug is now the active system Mesa (mesa-git packaging model).
 Its real files live under ${_debug_prefix} (debugoptimized, kept out of /usr);
 the stock /usr loader paths are package-managed symlinks into that tree:
   /usr/lib/libGL* /usr/lib/libEGL* /usr/lib/libgallium-*.so /usr/lib/libvulkan_r3v.so
-  /usr/lib/dri/*  /usr/share/vulkan/icd.d/*  /usr/share/glvnd/egl_vendor.d/*
+  /usr/lib/dri/*  /usr/share/vulkan/icd.d/ (Gallium and release ICDs)  /usr/share/glvnd/egl_vendor.d/*
+  The native r3v ICD manifests remain under ${_debug_prefix}/share/vulkan/icd.d
+  and are selected only by the scoped native launcher.
 Compatibility aliases (probes and build-infra scripts):
   /opt/local/mesa-gororoba-debug-optimized -> ${_debug_prefix}
   /opt/share/mesa-gororoba-debug-optimized -> ${_debug_prefix}
