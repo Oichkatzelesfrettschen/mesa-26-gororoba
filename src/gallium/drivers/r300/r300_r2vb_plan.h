@@ -661,10 +661,12 @@ struct r300_r2vb_auto_single_draw {
     /* Fixed-size point contract for a POINTS draw: the re-ingest transports
      * position (plus an admitted computed varying) only, so a per-vertex
      * point size (VS PSIZ writer or rasterizer point_size_per_vertex) or a
-     * sprite-coord/point-quad request would be silently dropped by delivery.
+     * sprite-coordinate/point-quad request would be silently dropped by
+     * delivery.
      * Each names its own decline. */
     bool vs_writes_point_size;
     bool sprite_coord_requested;
+    bool point_quad_rasterization;
     bool point_size_per_vertex;
     enum r300_r2vb_delivery_stream_status delivery_stream_status;
     enum r300_r2vb_producer_input_status producer_input_status;
