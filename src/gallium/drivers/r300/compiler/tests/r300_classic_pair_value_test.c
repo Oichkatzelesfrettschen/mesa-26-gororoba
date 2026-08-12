@@ -81,7 +81,29 @@ serialized_source_model_is(const char *json, const char *swizzle,
       return false;
 
    model_marker += strlen("\"source_read_model\":\"");
-   return strncmp(model_marker, model, strlen(model)) == 0;
+   const size_t model_length = strlen(model);
+   return strncmp(model_marker, model, model_length) == 0 &&
+          model_marker[model_length] == '"';
+}
+
+static void
+test_serialized_source_model_exact_match(void)
+{
+   const char *known_good =
+      "{\"sources\":[{\"swizzle\":\"x\","
+      "\"source_read_model\":\"rs48x-negative-predecessor\"}],"
+      "\"source_slots\":[]}";
+   const char *known_bad =
+      "{\"sources\":[{\"swizzle\":\"x\","
+      "\"source_read_model\":\"rs48x-negative-predecessor-suffix\"}],"
+      "\"source_slots\":[]}";
+
+   CHECK(serialized_source_model_is(
+            known_good, "x", "rs48x-negative-predecessor"),
+         "serializer: exact model accepts the known-good string");
+   CHECK(!serialized_source_model_is(
+            known_bad, "x", "rs48x-negative-predecessor"),
+         "serializer: exact model rejects a suffixed string");
 }
 
 /* hand-built pair corpus helpers
@@ -1974,7 +1996,8 @@ test_pair_eval_presub_source_bank_contract(void)
       1.0f - 2.0f * r300_us_source_read_f32(
                          -1.0f, R300_SOURCE_READ_RS48X_NEG_PREDECESSOR);
    CHECK(r300_pair_eval_program(&alpha_presub_eval, &fc.Base) &&
-            nearly_equal(alpha_presub_eval.temps[1][3], expected_presub),
+            f32_bits_of(alpha_presub_eval.temps[1][3]) ==
+               f32_bits_of(expected_presub),
          "presub cross-port: Alpha lane resolves RGB presub sources");
 
    rc_destroy(&fc.Base);
@@ -2115,6 +2138,7 @@ main(void)
    test_source_read_double_truncation_chain();
    test_source_read_model_boundaries();
    test_source_read_lattice_exhaustive();
+   test_serialized_source_model_exact_match();
    test_pair_eval_profile_and_schedule_artifact();
    test_pair_eval_unmodeled_constant_contract();
    test_pair_eval_alpha_port_contract();

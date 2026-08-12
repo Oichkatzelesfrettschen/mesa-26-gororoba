@@ -51,10 +51,14 @@ class_model(const struct r300_pair_eval_profile *p, rc_register_file file,
    }
 }
 
-/* rc_pair_get_src selects a source bank from the argument swizzle.  The
- * consuming lane therefore does not identify the read port: an Alpha
+/* Known from rc_pair_get_src: its source bank comes from the argument
+ * swizzle, so the consuming lane does not identify the read port.  An Alpha
  * argument can resolve through RGB.Src[], and an RGB argument can resolve
- * through Alpha.Src[]. */
+ * through Alpha.Src[].  Symbol discovery: (rg --fixed-strings
+ * 'rc_pair_get_src' src/) locates
+ * src/gallium/drivers/r300/compiler/radeon_program_pair.c:175, where the
+ * resolver selects RGB.Src[] for RC_SOURCE_RGB and Alpha.Src[] for
+ * RC_SOURCE_ALPHA. */
 static bool
 source_is_alpha_port(const struct rc_pair_instruction *pair,
                      const struct rc_pair_instruction_source *src)
