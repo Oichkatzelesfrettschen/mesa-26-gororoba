@@ -4694,8 +4694,27 @@ bool r300_r2vb_producer_bo_draw_validate(
         r2vb_bo_draw_validate_decline("slot_fetch_gate");
         return false;
     }
-    if (!plan || !vb || !ve || !layout || !slot_resource || !output_resource ||
-        !rs || !psc_state) {
+    /* The BO-fetch transaction is a delivery cell, so it consumes only the
+     * same READY/SINGLE/untyped one-input plan that
+     * r2vb_auto_single_cell_ok (rg --fixed-strings
+     * r2vb_auto_single_cell_ok src/gallium/drivers/r300/r300_r2vb.c) admits.
+     * A rejected plan can retain a valid source identity from an earlier
+     * scan; action and status remain the delivery authority. */
+    if (!plan || plan->status != R300_R2VB_PLAN_READY ||
+        plan->action != R300_R2VB_PLAN_SINGLE || plan->has_typed_source ||
+        plan->num_position_inputs != 1) {
+        r2vb_bo_draw_validate_decline("plan");
+        return false;
+    }
+    /* The measured plan key selects the coordinate contract used to build the
+     * producer.  A caller using another space would pair the transaction with
+     * a producer measured for different position semantics. */
+    if (plan->key.space != space) {
+        r2vb_bo_draw_validate_decline("plan_space");
+        return false;
+    }
+    if (!vb || !ve || !layout || !slot_resource || !output_resource || !rs ||
+        !psc_state) {
         r2vb_bo_draw_validate_decline("null_input");
         return false;
     }

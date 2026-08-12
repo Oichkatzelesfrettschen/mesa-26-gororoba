@@ -2226,6 +2226,9 @@ check_logical_binding(void)
    {
       struct r300_r2vb_producer_plan plan;
       memset(&plan, 0, sizeof(plan));
+      plan.status = R300_R2VB_PLAN_READY;
+      plan.action = R300_R2VB_PLAN_SINGLE;
+      plan.key.space = R300_R2VB_POSITION_WINDOW;
       plan.position_source.app_driver_location = 0;
       plan.position_source.location_rank = 0;
       plan.position_source.valid = true;
@@ -2450,6 +2453,33 @@ check_logical_binding(void)
 
       /* Failure edges: each fallible layer declines and leaves no
        * retained storage. */
+      struct r300_r2vb_producer_plan rejected_plan = plan;
+      rejected_plan.status = R300_R2VB_PLAN_SEMANTIC_REJECT;
+      rejected_plan.action = R300_R2VB_PLAN_REJECT;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &rejected_plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
+               !txn.model.resource && !txn.output_resource &&
+               txn.state == R300_R2VB_BO_DRAW_EMPTY,
+            "txn: a rejected plan declines before model materialization");
+      struct r300_r2vb_producer_plan typed_plan = plan;
+      typed_plan.has_typed_source = true;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &typed_plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
+               !txn.model.resource && !txn.output_resource &&
+               txn.state == R300_R2VB_BO_DRAW_EMPTY,
+            "txn: a typed plan declines before model materialization");
+      struct r300_r2vb_producer_plan wrong_space_plan = plan;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &wrong_space_plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_CLIP, NULL, &txn) &&
+               !txn.model.resource && !txn.output_resource &&
+               txn.state == R300_R2VB_BO_DRAW_EMPTY,
+            "txn: a caller space different from the plan key declines");
       struct r300_r2vb_producer_plan badplan = plan;
       badplan.position_source.valid = false;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
