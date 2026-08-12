@@ -5,6 +5,7 @@
 #include "r300_r2vb_telemetry.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,7 @@
 #include "r300_vs.h"
 
 static struct r300_r2vb_telemetry_counters counters;
+static uint32_t telemetry_temp_serial;
 
 /* Contexts sharing the process share the counters; the summary prints when
  * the last live context goes away, so a multi-context run reports one
@@ -163,26 +165,52 @@ file_matches_blob(const char *path, const uint8_t *data, size_t size)
     return match;
 }
 
+/* Create a same-directory O_EXCL temporary inode with the requested creation
+ * mode.  The process umask and directory policy determine the effective mode;
+ * the optional output reports that mode to the matching-file synchronizer. */
+static int
+telemetry_open_unique(const char *path, char *tmp, size_t tmp_size,
+                      mode_t *mode_out)
+{
+    for (unsigned attempt = 0; attempt < 16; attempt++) {
+        uint32_t serial = p_atomic_inc_return(&telemetry_temp_serial);
+        int need = snprintf(tmp, tmp_size, "%s.tmp.%d.%" PRIu32, path,
+                            (int)getpid(), serial);
+        if (need < 0 || (size_t)need >= tmp_size)
+            return -1;
+
+        int fd = open(tmp, O_CREAT | O_EXCL | O_WRONLY, 0644);
+        if (fd < 0) {
+            if (errno == EEXIST)
+                continue;
+            return -1;
+        }
+
+        if (mode_out) {
+            struct stat st;
+            if (fstat(fd, &st) != 0) {
+                close(fd);
+                unlink(tmp);
+                return -1;
+            }
+            *mode_out = st.st_mode & 0777;
+        }
+        return fd;
+    }
+    return -1;
+}
+
 /* Publish the blob at path through a same-directory temporary file and
- * rename, so the final pathname only ever names a complete blob.  mkstemp
- * gives concurrent contexts distinct temporary names, and every failure
- * unlinks the created file. */
+ * rename, so the final pathname only ever names a complete blob.  O_EXCL
+ * names use a process id and atomic serial, and every failure unlinks the
+ * created file. */
 static bool
 telemetry_publish(const char *path, const uint8_t *data, size_t size)
 {
     char tmp[1088];
-    int need = snprintf(tmp, sizeof(tmp), "%s.tmp.XXXXXX", path);
-    if (need < 0 || (size_t)need >= sizeof(tmp))
-        return false;
-
-    int fd = mkstemp(tmp);
+    int fd = telemetry_open_unique(path, tmp, sizeof(tmp), NULL);
     if (fd < 0)
         return false;
-    if (fchmod(fd, 0644) != 0) {
-        close(fd);
-        unlink(tmp);
-        return false;
-    }
 
     size_t off = 0;
     bool ok = true;
@@ -202,6 +230,33 @@ telemetry_publish(const char *path, const uint8_t *data, size_t size)
         ok = false;
     if (!ok)
         unlink(tmp);
+    return ok;
+}
+
+/* Apply the effective creation mode to an existing matching blob.  The probe
+ * inode lives beside the corpus file, so its mode includes the process umask
+ * and directory policy that govern new publications. */
+static bool
+telemetry_sync_existing_mode(const char *path)
+{
+    char probe[1088];
+    mode_t mode;
+    int probe_fd = telemetry_open_unique(path, probe, sizeof(probe), &mode);
+    if (probe_fd < 0)
+        return false;
+
+    bool ok = close(probe_fd) == 0;
+    if (unlink(probe) != 0)
+        ok = false;
+    if (!ok)
+        return false;
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return false;
+    ok = fchmod(fd, mode) == 0;
+    if (close(fd) != 0)
+        ok = false;
     return ok;
 }
 
@@ -239,7 +294,10 @@ telemetry_retain(const char *dir, const struct nir_shader *vs_nir)
 
     if (access(path, F_OK) == 0 &&
         file_matches_blob(path, blob.data, blob.size)) {
+        bool mode_ok = telemetry_sync_existing_mode(path);
         blob_finish(&blob);
+        if (!mode_ok)
+            p_atomic_inc(&counters.retain_failures);
         return;
     }
 
