@@ -1,6 +1,11 @@
-/* SPDX-License-Identifier: MIT */
+/*
+ * Copyright 2026 Mesa3D authors
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "r300_fragment_binary.h"
+
+#include "r300_reg.h"
 
 #include "util/mesa-blake3.h"
 
@@ -14,18 +19,23 @@
  */
 #define R300_FRAGMENT_BINARY_PKT_TYPE(header) ((header) >> 30)
 #define R300_FRAGMENT_BINARY_PKT_COUNT(header) ((((header) >> 16) & 0x3fff) + 1)
-#define R300_FRAGMENT_BINARY_PKT_REG(header) (((header) & 0xffff) << 2)
+#define R300_FRAGMENT_BINARY_PKT_REG(header) (((header) & 0x3fff) << 2)
+#define R300_FRAGMENT_BINARY_PKT_ONE_REG(header) \
+   (((header) & RADEON_ONE_REG_WR) != 0)
 
 /* The R300/R400 fragment program lives in the US/FG register block, its
- * immediate constants in the US constant file (R300_PFS_PARAM_0_X 0x4C00
- * through the last parameter word below RB3D at 0x4E00), and the R500
- * upload path streams instruction words through the GA US vector
- * index/data pair.
+ * immediate constants in the US constant file (R300_PFS_PARAM_0_X through
+ * R300_PFS_PARAM_31_W), and the R500 upload path streams instruction words
+ * through R500_GA_US_VECTOR_INDEX and R500_GA_US_VECTOR_DATA.  The data-port
+ * packet carries RADEON_ONE_REG_WR so every payload dword reaches one port.
+ * Symbol discovery uses `(rg --fixed-strings R300_PFS_PARAM_0_X
+ * src/gallium/drivers/r300/)` and `(rg --fixed-strings
+ * R500_GA_US_VECTOR_DATA src/gallium/drivers/r300/)`.
  */
-#define R300_FRAGMENT_BINARY_US_FG_FIRST 0x4600
-#define R300_FRAGMENT_BINARY_US_FG_END 0x4e00
-#define R300_FRAGMENT_BINARY_GA_US_VECTOR_INDEX 0x4054
-#define R300_FRAGMENT_BINARY_GA_US_VECTOR_DATA 0x4058
+#define R300_FRAGMENT_BINARY_US_FG_FIRST R300_US_CONFIG
+#define R300_FRAGMENT_BINARY_US_FG_END R300_RB3D_CCTL
+#define R300_FRAGMENT_BINARY_GA_US_VECTOR_INDEX R500_GA_US_VECTOR_INDEX
+#define R300_FRAGMENT_BINARY_GA_US_VECTOR_DATA R500_GA_US_VECTOR_DATA
 
 static bool
 r300_fragment_binary_register_valid(uint32_t reg)
@@ -57,12 +67,20 @@ r300_fragment_binary_stream_valid(const uint32_t *cb_code,
          return false;
       }
       uint32_t reg = R300_FRAGMENT_BINARY_PKT_REG(header);
+      const bool one_reg = R300_FRAGMENT_BINARY_PKT_ONE_REG(header);
       /* A multi-dword packet advances the register per dword unless the
        * write targets the GA US vector data port, which is a stream port at
        * one address.
        */
       if (reg == R300_FRAGMENT_BINARY_GA_US_VECTOR_DATA) {
-         /* Whole payload lands on the port. */
+         if (!one_reg) {
+            return false;
+         }
+      } else if (one_reg) {
+         return false;
+      } else if (reg == R300_FRAGMENT_BINARY_GA_US_VECTOR_INDEX &&
+                 count != 1) {
+         return false;
       } else {
          if (!r300_fragment_binary_register_valid(reg) ||
              !r300_fragment_binary_register_valid(reg + 4 * (count - 1))) {
