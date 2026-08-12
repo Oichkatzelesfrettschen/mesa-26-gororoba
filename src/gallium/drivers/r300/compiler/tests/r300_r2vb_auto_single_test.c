@@ -2238,6 +2238,12 @@ check_logical_binding(void)
                                                            &bad, &rb),
             "from_state: a model element without LAST_VEC declines");
       bad = psc;
+      /* Slot vector drifted from 0 to 1. */
+      bad.vap_prog_stream_cntl[0] = 0x26030103;
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
+                                                           &bad, &rb),
+            "from_state: a drifted slot destination vector declines");
+      bad = psc;
       /* Model vector drifted from 6 to 5. */
       bad.vap_prog_stream_cntl[0] = 0x25030003;
       CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
