@@ -4935,6 +4935,19 @@ r3v_multipass_scan_dispatch_replay(struct r3v_device *device,
       IDM_LOG("multipass early-return null-or-empty-binds");
       return false;
    }
+   const uint64_t invocations_y =
+      (uint64_t)dispatch->group_count_y *
+      (pl->local_size_y ? pl->local_size_y : 1u);
+   const uint64_t invocations_z =
+      (uint64_t)dispatch->group_count_z *
+      (pl->local_size_z ? pl->local_size_z : 1u);
+   if (!r300_compute_multipass_dispatch_shape_is_valid(
+          &pl->multipass_scan, invocations_y, invocations_z)) {
+      IDM_LOG("multipass early-return global-id-x requires 1d dispatch y=%llu z=%llu",
+              (unsigned long long)invocations_y,
+              (unsigned long long)invocations_z);
+      return false;
+   }
    if (!pl->vs_cso || !pl->fs_cso) {
       IDM_LOG("multipass early-return no-vs-or-fs-cso");
       return false;
