@@ -261,10 +261,10 @@ struct nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                                                    gl_varying_slot target,
                                                    enum r300_r2vb_position_space space);
 
-/* Identify the output location carried by a lowered store intrinsic.  Constant
- * single-slot store_output offsets become part of the target identity; dynamic
- * and multi-slot forms return false, keeping planner and live-restager
- * admission on the one-record delivery contract. */
+/* Identify the output location carried by a lowered store intrinsic.  A
+ * constant store_output offset within its declared slot range becomes part of
+ * the target identity; indirect offsets and out-of-range stores return false,
+ * keeping planner and live-restager admission on one delivery record. */
 bool r300_r2vb_output_store_location(const struct nir_intrinsic_instr *intr,
                                      gl_varying_slot *location);
 
