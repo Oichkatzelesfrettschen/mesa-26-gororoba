@@ -250,9 +250,22 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
     }
     /* Retain the measured source identity alongside the count, so the
      * BO-fetch route passes plan data -- never literals -- into the
-     * position-mapping contract.  A failed scan leaves the record
-     * invalid; the mapping then declines rather than assuming zero. */
-    r300_r2vb_position_source_scan(nir, &plan->position_source);
+     * position-mapping contract.  A semantic scan decline leaves the source
+     * record invalid for the later route-specific admission checks; a clone
+     * allocation failure remains transient and stays out of the cache. */
+    bool source_transient = false;
+    if (!r300_r2vb_position_source_scan_status(
+            nir, &plan->position_source, &source_transient)) {
+        if (source_transient) {
+            plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
+            if (transient_failure)
+                *transient_failure = true;
+        } else {
+            plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
+        }
+        if (source_transient)
+            return false;
+    }
     if (plan->num_position_inputs > R300_R2VB_MAX_PRODUCER_INPUTS) {
         plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
         return false;

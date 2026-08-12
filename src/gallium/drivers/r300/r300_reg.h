@@ -618,6 +618,7 @@
 #define R300_GB_TEX_REPLICATE	0 /* Replicate VAP source texture coordinates (S,T,[R,Q]). */
 #define R300_GB_TEX_ST		1 /* Stuff with source texture coordinates (S,T). */
 #define R300_GB_TEX_STR		2 /* Stuff with source texture coordinates (S,T,R). */
+#define R300_GB_TEX_SOURCE_MASK	3 /* Two-bit source selector field mask. */
 #	define R300_GB_TEX0_SOURCE_SHIFT	16
 #	define R300_GB_TEX1_SOURCE_SHIFT	18
 #	define R300_GB_TEX2_SOURCE_SHIFT	20
