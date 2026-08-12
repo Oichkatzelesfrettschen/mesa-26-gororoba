@@ -38,6 +38,7 @@
 
 #include "r300_context.h"
 #include "r300_fs.h"
+#include "r300_nir.h"
 #include "r300_nir_ssa_cut.h"
 #include "r300_r2vb_plan.h"
 #include "r300_screen.h"
@@ -375,11 +376,13 @@ run_space(enum r300_r2vb_position_space space)
       snprintf(label, sizeof(label), "over/%s halves rebuild", space_name);
       CHECK(pass_a && pass_b, label);
       if (pass_a) {
+         r300_optimize_nir(pass_a, &g_screen);
          snprintf(label, sizeof(label), "over/%s carry pass", space_name);
          check_identity(label, pass_a, &plan.pass_a_cost);
          ralloc_free(pass_a);
       }
       if (pass_b) {
+         r300_optimize_nir(pass_b, &g_screen);
          snprintf(label, sizeof(label), "over/%s position pass", space_name);
          check_identity(label, pass_b, &plan.pass_b_cost);
          ralloc_free(pass_b);

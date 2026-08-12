@@ -4084,25 +4084,9 @@ r300_r2vb_position_source_scan_list_status(
             *transient_failure = true;
         return 0;
     }
-    /* Strip every non-position store, DCE, and drop dead inputs: the
-     * survivors are exactly the inputs feeding gl_Position (the
+    /* The survivors are exactly the inputs feeding gl_Position (the
      * count_position_inputs reduction, retained here as an identity). */
-    nir_function_impl *impl = nir_shader_get_entrypoint(tmp);
-    nir_foreach_block(block, impl) {
-        nir_foreach_instr_safe(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-                continue;
-            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_store_deref)
-                continue;
-            nir_variable *o = nir_intrinsic_get_var(intr, 0);
-            if (o && (o->data.mode & nir_var_shader_out) &&
-                o->data.location != VARYING_SLOT_POS)
-                nir_instr_remove(instr);
-        }
-    }
-    nir_opt_dce(tmp);
-    nir_remove_dead_variables(tmp, nir_var_shader_in, NULL);
+    r300_r2vb_prune_position_only(tmp);
     unsigned count = 0;
     bool overflow = false;
     nir_foreach_variable_with_modes(var, tmp, nir_var_shader_in) {
@@ -6268,6 +6252,11 @@ static bool r300_vs_admits_producer(struct r300_context *r300,
     struct r300_vertex_shader *vs = r300_vs(r300);
     if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
         return false;
+    /* Refresh the plan key before consulting the route memo.  Window-space
+     * admission bakes viewport values, so a key replacement must invalidate
+     * an older FITS or REJECT byte first. */
+    if (!r300_r2vb_producer_plan_get(r300, allow_computed_varying, space))
+        return false;
     unsigned space_i = space == R300_R2VB_POSITION_WINDOW ? 1u : 0u;
     uint8_t *memo = &vs->r2vb_admission[allow_computed_varying ? 1 : 0]
                                        [space_i];
@@ -6282,6 +6271,8 @@ static bool r300_vs_admits_producer(struct r300_context *r300,
         progress |= nir_opt_constant_folding(clone);
         progress |= nir_opt_dce(clone);
     } while (progress);
+    if (!allow_computed_varying)
+        r300_r2vb_prune_position_only(clone);
     bool shape_transient = false;
     bool ok = r300_vs_nir_is_fragment_aluable(clone, allow_computed_varying,
                                               &shape_transient);

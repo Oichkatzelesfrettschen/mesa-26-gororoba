@@ -260,6 +260,11 @@ struct nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                                                    gl_varying_slot target,
                                                    enum r300_r2vb_position_space space);
 
+/* Reduce a caller-owned clone to the position producer before structural
+ * admission.  Non-position stores and the dead dependencies that feed them
+ * stay outside the cv=0 cell; the live restaged pass applies the same scope. */
+void r300_r2vb_prune_position_only(struct nir_shader *nir);
+
 /* Diagnostic typed-split gate value: exactly "1" opens; NULL, empty, and
  * every other value keep the route closed.  Pure over the string so the
  * calibration test drives every arm. */

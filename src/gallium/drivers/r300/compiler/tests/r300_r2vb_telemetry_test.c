@@ -398,6 +398,7 @@ main(void)
 
    nir_shader *fits = build_producer(8, "telemetry_fits");
    nir_shader *over = build_producer(90, "telemetry_over");
+   nir_shader *over_renamed = build_producer(90, "telemetry_over_renamed");
    nir_shader *cflow = build_control_flow();
    nir_shader *computed = build_computed_varying();
 
@@ -459,6 +460,10 @@ main(void)
    CHECK(c->retained == base.retained + 1 &&
             count_dir_files(retain_dir) == 1,
          "recurring shape deduplicates on the content hash");
+   plan_and_note("over/renamed", over_renamed, R300_R2VB_PLAN_SPLIT);
+   CHECK(c->retained == base.retained + 1 &&
+            count_dir_files(retain_dir) == 1,
+         "renamed structural twin deduplicates on the stripped hash");
 
    bind_vs(over);
    struct r300_r2vb_producer_plan dedup_plan;
@@ -749,6 +754,7 @@ main(void)
 
    ralloc_free(fits);
    ralloc_free(over);
+   ralloc_free(over_renamed);
    ralloc_free(cflow);
    ralloc_free(computed);
    rc_destroy_regalloc_state(&g_context.fs_regalloc_state);

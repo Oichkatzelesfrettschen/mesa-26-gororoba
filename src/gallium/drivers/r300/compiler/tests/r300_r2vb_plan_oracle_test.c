@@ -72,6 +72,10 @@ static const nir_shader_compiler_options vs_options = {
 static struct r300_screen g_screen;
 static struct r300_context g_context;
 
+extern bool r300_r2vb_admits_producer_for_test(
+   struct r300_context *r300, bool allow_computed_varying,
+   enum r300_r2vb_position_space space);
+
 /* The plan chain reads r300->screen (caps, fragment NIR options),
  * r300->fs_regalloc_state, a debug pointer, and -- window space -- the bound
  * viewport; everything else stays zeroed. */
@@ -279,6 +283,22 @@ build_unsupported_intrinsic(void)
    return end_vs(&v, nir_replicate(&v.b, sum, 4));
 }
 
+/* The unsupported system value feeds a varying only.  The cv=0 position
+ * producer drops that output before its structural scan; the cv=1 producer
+ * keeps the value and retains the intrinsic rejection. */
+static nir_shader *
+build_varying_only_unsupported_intrinsic(void)
+{
+   struct vs_build v = begin_vs("plan_varying_only_intrinsic", true);
+   nir_variable *out_color = nir_variable_create(
+      v.b.shader, nir_var_shader_out, glsl_vec4_type(), "vColor");
+   out_color->data.location = VARYING_SLOT_VAR0;
+   out_color->data.driver_location = 1;
+   nir_def *vid = nir_u2f32(&v.b, nir_load_vertex_id(&v.b));
+   nir_store_var(&v.b, out_color, nir_replicate(&v.b, vid, 4), 0xf);
+   return end_vs(&v, v.pos);
+}
+
 /* A single dependent chain long enough that no balanced cut leaves both
  * halves (plus their pack/unpack overhead) under the 64-slot ceiling: the
  * ranked candidates fail alternately on the carry half and the position
@@ -354,14 +374,16 @@ build_computed_and_passthrough_varyings(void)
       v.b.shader, nir_var_shader_in, glsl_vec4_type(), "in_attr");
    in_attr->data.location = VERT_ATTRIB_GENERIC1;
    in_attr->data.driver_location = 1;
-   nir_variable *out_color = nir_variable_create(
-      v.b.shader, nir_var_shader_out, glsl_vec4_type(), "vColor");
-   out_color->data.location = VARYING_SLOT_VAR0;
-   out_color->data.driver_location = 1;
    nir_variable *out_attr = nir_variable_create(
       v.b.shader, nir_var_shader_out, glsl_vec4_type(), "vAttr");
    out_attr->data.location = VARYING_SLOT_VAR1;
    out_attr->data.driver_location = 2;
+   /* The declaration order is intentionally different from the location
+    * order; the cv=1 source contract uses locations and ranks, not list order. */
+   nir_variable *out_color = nir_variable_create(
+      v.b.shader, nir_var_shader_out, glsl_vec4_type(), "vColor");
+   out_color->data.location = VARYING_SLOT_VAR0;
+   out_color->data.driver_location = 1;
 
    nir_store_var(&v.b, out_color,
                  nir_fmul_imm(&v.b, v.pos, 2.0), 0xf);
@@ -590,6 +612,41 @@ case_computed_varying_position_cell(struct r300_context *r300)
       r300_r2vb_plan_release(&plan);
       ralloc_free(vs);
    }
+}
+
+/* The cv=1 cell owns one computed and one passthrough varying.  The valid
+ * row declares the outputs in a different order from their locations, while
+ * the paired arity row keeps the known-bad second-position-input rejection. */
+static nir_shader *build_computed_varying_second_input_computes(void);
+
+static void
+case_computed_varying_single_cell(struct r300_context *r300)
+{
+   printf("computed-varying producer plans SINGLE at cv=1\n");
+   nir_shader *vs = build_computed_and_passthrough_varyings();
+   struct r300_r2vb_producer_plan plan;
+   bool ran = r300_r2vb_plan_producer(r300, vs, true,
+                                      R300_R2VB_POSITION_CLIP, &plan);
+   CHECK(ran, "cv=1 valid row runs");
+   CHECK(plan.action == R300_R2VB_PLAN_SINGLE &&
+            plan.status == R300_R2VB_PLAN_READY,
+         "cv=1 computed plus passthrough plans SINGLE");
+   CHECK(plan.varying_slot == VARYING_SLOT_VAR0 &&
+            plan.varying_source.valid,
+         "cv=1 varying source keeps the computed slot identity");
+   if (ran)
+      r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
+
+   vs = build_computed_varying_second_input_computes();
+   ran = r300_r2vb_plan_producer(r300, vs, true,
+                                 R300_R2VB_POSITION_CLIP, &plan);
+   CHECK(ran && plan.action == R300_R2VB_PLAN_REJECT &&
+            plan.primary_reason == R300_R2VB_PLAN_IO_SHAPE,
+         "cv=1 second position input remains a known-bad reject");
+   if (ran)
+      r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
 }
 
 /* The cell's typed class comes from its own producer: a typed computation
@@ -863,6 +920,36 @@ case_structural_rejects(struct r300_context *r300)
          "uniform-free producer plans SINGLE");
    r300_r2vb_plan_release(&plan);
    ralloc_free(vs);
+
+   vs = build_varying_only_unsupported_intrinsic();
+   CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan),
+         "varying-only intrinsic row runs");
+   CHECK(plan.action == R300_R2VB_PLAN_SINGLE &&
+            plan.primary_reason == R300_R2VB_PLAN_OK,
+         "cv=0 drops unsupported varying-only work");
+   r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
+
+   vs = build_varying_only_unsupported_intrinsic();
+   CHECK(r300_r2vb_plan_producer(r300, vs, true,
+                                 R300_R2VB_POSITION_CLIP, &plan),
+         "cv=1 varying-only intrinsic row runs");
+   CHECK(plan.action == R300_R2VB_PLAN_REJECT &&
+            plan.primary_reason == R300_R2VB_PLAN_INTRINSIC,
+         "cv=1 retains the varying intrinsic rejection");
+   r300_r2vb_plan_release(&plan);
+
+   static struct r300_vertex_shader fake_vs;
+   memset(&fake_vs, 0, sizeof(fake_vs));
+   fake_vs.state.type = PIPE_SHADER_IR_NIR;
+   fake_vs.state.ir.nir = vs;
+   r300->vs_state.state = &fake_vs;
+   CHECK(r300_r2vb_admits_producer_for_test(
+            r300, false, R300_R2VB_POSITION_CLIP),
+         "production cv=0 gate matches the position-only plan");
+   r300_r2vb_plan_cache_release(&fake_vs);
+   r300->vs_state.state = NULL;
+   ralloc_free(vs);
 }
 
 static void
@@ -1064,6 +1151,14 @@ case_cache_lifetime(struct r300_context *r300)
             win2->key.viewport_scale[0] != bits_before,
          "viewport bit change re-plans window space");
    CHECK(clip3 == clip1, "clip plan survives the viewport change");
+
+   fake_vs.r2vb_admission[0][1] = R300_R2VB_ADMIT_REJECT;
+   r300->viewport.scale[0] = 800.0f;
+   bool refreshed_window = r300_r2vb_admits_producer_for_test(
+      r300, false, R300_R2VB_POSITION_WINDOW);
+   CHECK(refreshed_window &&
+            fake_vs.r2vb_admission[0][1] == R300_R2VB_ADMIT_FITS,
+         "viewport key refreshes a stale window admission memo");
    r300->viewport.scale[0] = 320.0f;
 
    static struct r300_fragment_shader fake_fs;
@@ -1197,6 +1292,7 @@ main(void)
    case_float_single(r300);
    case_uniform_free_single(r300);
    case_computed_varying_position_cell(r300);
+   case_computed_varying_single_cell(r300);
    case_typed_varying_position_cell(r300);
    case_typed_computed_varying_reject(r300);
    case_typed_varying_integer_opcode_coverage(r300);

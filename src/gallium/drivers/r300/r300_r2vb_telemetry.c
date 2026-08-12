@@ -284,17 +284,17 @@ telemetry_sync_existing_mode(const char *path, const uint8_t *data,
 }
 
 /* Serialize the application VS into <dir>/r2vb-vs-<blake3>.nir.  The
- * filename carries the full content hash, so a shape that recurs across
- * draws, contexts, and processes lands once.  Atomic publication makes an
- * existing final name a complete blob; its bytes still verify against the
- * fresh serialization, and a mismatching file (foreign or damaged) is
- * republished in place. */
+ * stripped serialization carries structural identity without debug names,
+ * so a shape that recurs across differently named shaders, contexts, and
+ * processes lands once.  Atomic publication makes an existing final name a
+ * complete blob; its bytes still verify against the fresh serialization, and
+ * a mismatching file (foreign or damaged) is republished in place. */
 static void
 telemetry_retain(const char *dir, const struct nir_shader *vs_nir)
 {
     struct blob blob;
     blob_init(&blob);
-    nir_serialize(&blob, (nir_shader *)vs_nir, false);
+    nir_serialize(&blob, (nir_shader *)vs_nir, true);
     if (blob.out_of_memory) {
         blob_finish(&blob);
         p_atomic_inc(&counters.retain_failures);
@@ -340,10 +340,10 @@ telemetry_retain(const char *dir, const struct nir_shader *vs_nir)
     }
 }
 
-/* Content hash of the bound application VS as lowercase hex, computed once
- * per shader (one nir_serialize on the first event) and cached on the VS so
- * per-draw accounting never re-serializes.  Returns "-" when the shader is
- * unavailable or serialization fails. */
+/* Content hash of the stripped bound application VS as lowercase hex,
+ * computed once per shader (one nir_serialize on the first event) and cached
+ * on the VS so per-draw accounting never re-serializes.  Returns "-" when the
+ * shader is unavailable or serialization fails. */
 static const char *
 telemetry_vs_hex(struct r300_context *r300);
 
@@ -363,7 +363,7 @@ telemetry_vs_hex(struct r300_context *r300)
 
     struct blob blob;
     blob_init(&blob);
-    nir_serialize(&blob, (nir_shader *)vs->state.ir.nir, false);
+    nir_serialize(&blob, (nir_shader *)vs->state.ir.nir, true);
     if (blob.out_of_memory) {
         blob_finish(&blob);
         return "-";

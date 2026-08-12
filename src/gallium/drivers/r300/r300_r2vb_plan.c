@@ -63,6 +63,51 @@ plan_merge_typed_source_class(
     }
 }
 
+void
+r300_r2vb_prune_position_only(nir_shader *nir)
+{
+    if (!nir)
+        return;
+
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    if (!impl)
+        return;
+
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            bool remove = false;
+            switch (intr->intrinsic) {
+            case nir_intrinsic_store_deref: {
+                nir_variable *out = nir_intrinsic_get_var(intr, 0);
+                remove = out && (out->data.mode & nir_var_shader_out) &&
+                         out->data.location != VARYING_SLOT_POS;
+                break;
+            }
+            case nir_intrinsic_store_output:
+                remove = nir_intrinsic_io_semantics(intr).location !=
+                         VARYING_SLOT_POS;
+                break;
+            default:
+                break;
+            }
+            if (remove)
+                nir_instr_remove(instr);
+        }
+    }
+
+    bool progress;
+    do {
+        progress = nir_opt_dce(nir);
+    } while (progress);
+    nir_remove_dead_variables(nir, nir_var_shader_in | nir_var_shader_out |
+                                      nir_var_mem_push_const,
+                              NULL);
+}
+
 static void
 plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
 {
@@ -551,6 +596,9 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
         progress |= nir_opt_dce(folded);
     } while (progress);
 
+    if (!allow_computed_varying)
+        r300_r2vb_prune_position_only(folded);
+
     bool shape_transient = false;
     bool shape_ok = plan_scan_structure(folded, allow_computed_varying, plan,
                                         &shape_transient);
@@ -747,6 +795,10 @@ r300_r2vb_producer_plan_get(struct r300_context *r300,
         FREE(slot);
         vs->r2vb_plan[cv][sp] = NULL;
     }
+    /* The admission byte is valid only for the plan key that produced it.
+     * A window viewport change therefore reopens the cell before the route
+     * can consult a previous verdict. */
+    vs->r2vb_admission[cv][sp] = R300_R2VB_ADMIT_UNMEASURED;
 
     struct r300_r2vb_producer_plan *plan = CALLOC_STRUCT(r300_r2vb_producer_plan);
     if (!plan)
