@@ -13,6 +13,7 @@
 #include "r3v_memory.h"
 #include "r3v_identity_map.h"
 #include "r3v_queue_map_range.h"
+#include "r3v_submit_lifetime.h"
 #include "r3v_ubo_binding.h"
 
 #include "vk_queue.h"
@@ -3279,6 +3280,37 @@ r3v_drain_gpu(struct r3v_device *device, bool *gpu_pending)
    *gpu_pending = false;
 }
 
+struct r3v_submit_lifetime_context {
+   struct r3v_device *device;
+   struct util_dynarray *transient_vbs;
+   bool *gpu_pending;
+};
+
+static void
+r3v_submit_lifetime_drain(void *data)
+{
+   struct r3v_submit_lifetime_context *context = data;
+   r3v_drain_gpu(context->device, context->gpu_pending);
+}
+
+static void
+r3v_submit_lifetime_release(void *data)
+{
+   struct r3v_submit_lifetime_context *context = data;
+
+   /* The drain callback runs first when replay emitted GPU work, so every
+    * transient stream is retired before its owner reference is released. */
+   util_dynarray_foreach(context->transient_vbs,
+                         struct pipe_resource *, pres)
+      pipe_resource_reference(pres, NULL);
+   util_dynarray_fini(context->transient_vbs);
+}
+
+static const struct r3v_submit_lifetime_ops r3v_submit_lifetime_ops = {
+   .drain = r3v_submit_lifetime_drain,
+   .release = r3v_submit_lifetime_release,
+};
+
 struct r3v_replay_state {
    struct pipe_vertex_buffer vb_cache[R3V_MAX_VERTEX_BINDINGS];
    VkDeviceSize vb_sizes[R3V_MAX_VERTEX_BINDINGS];
@@ -3459,6 +3491,24 @@ r3v_render_pass_segment_tile_pass_count(const struct r3v_cmd_buffer *cmd,
    return pass_count;
 }
 
+static void
+r3v_mark_render_pass_clear_pending(
+   const struct r3v_cmd_begin_render_pass *begin_rp, bool *gpu_pending)
+{
+   bool color_clear = false;
+   for (uint32_t slot = 0; slot < begin_rp->color_count; slot++) {
+      if (begin_rp->load_op[slot] == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+         color_clear = true;
+         break;
+      }
+   }
+
+   if (r3v_submit_lifetime_render_pass_has_clear(
+          begin_rp->ds_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR,
+          color_clear))
+      *gpu_pending = true;
+}
+
 static VkResult
 r3v_replay_gpu_range(struct r3v_device *device,
                         const struct r3v_cmd_buffer *cmd,
@@ -3506,16 +3556,10 @@ r3v_replay_gpu_range(struct r3v_device *device,
                                          tile_origin_x, tile_origin_y,
                                          tile_width, tile_height);
          }
-         /* Only loadOp == CLEAR emits a GPU write at begin (a color-image
-          * clear on any attachment) that a later host copy-image-to-buffer
-          * could read; a LOAD pass emits nothing here, and its draws set
-          * gpu_pending themselves.  Gating avoids a needless drain before an
-          * in-order host transfer. */
-         for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++)
-            if (e->begin_rp.load_op[slot] == VK_ATTACHMENT_LOAD_OP_CLEAR) {
-               *gpu_pending = true;
-               break;
-            }
+         /* A loadOp == CLEAR on any color or depth/stencil attachment emits a
+          * GPU write before a draw.  Track both forms so a depth-only clear
+          * cannot bypass submit cleanup. */
+         r3v_mark_render_pass_clear_pending(&e->begin_rp, gpu_pending);
          break;
 
       case R3V_CMD_NEXT_SUBPASS:
@@ -3549,11 +3593,7 @@ r3v_replay_gpu_range(struct r3v_device *device,
                                          tile_origin_x, tile_origin_y,
                                          tile_width, tile_height);
          }
-         for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++)
-            if (e->begin_rp.load_op[slot] == VK_ATTACHMENT_LOAD_OP_CLEAR) {
-               *gpu_pending = true;
-               break;
-            }
+         r3v_mark_render_pass_clear_pending(&e->begin_rp, gpu_pending);
          break;
 
       case R3V_CMD_BIND_PIPELINE:
@@ -3676,6 +3716,10 @@ r3v_replay_gpu_range(struct r3v_device *device,
                pipe_buffer_unmap(pipe, ixfer);
                return result;
             }
+            /* Record each completed indirect draw immediately: a later
+             * synthesized draw can fail before the loop reaches its final
+             * pending-state update. */
+            *gpu_pending = true;
          }
          pipe_buffer_unmap(pipe, ixfer);
          *gpu_pending = true;
@@ -3743,6 +3787,9 @@ r3v_replay_gpu_range(struct r3v_device *device,
                pipe_buffer_unmap(pipe, ixfer);
                return result;
             }
+            /* Keep the pending state true when a later indirect draw fails
+             * after this draw has already entered the Gallium command stream. */
+            *gpu_pending = true;
          }
          pipe_buffer_unmap(pipe, ixfer);
          *gpu_pending = true;
@@ -4864,7 +4911,6 @@ r3v_queue_driver_submit(struct vk_queue *vkq,
    struct r3v_queue  *queue  = container_of(vkq, struct r3v_queue, vk);
    struct r3v_device *device = container_of(queue->vk.base.device,
                                                struct r3v_device, vk);
-   struct pipe_context  *pipe   = device->pipe;
    VkResult result =
       vk_sync_wait_many(&device->vk, submit->wait_count, submit->waits,
                         VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
@@ -4911,20 +4957,13 @@ r3v_queue_driver_submit(struct vk_queue *vkq,
          break;
    }
 
-   if (result == VK_SUCCESS) {
-      struct pipe_fence_handle *fence = NULL;
-      pipe->flush(pipe, &fence, 0);
-      if (fence) {
-         device->screen->fence_finish(device->screen, NULL, fence,
-                                      OS_TIMEOUT_INFINITE);
-         device->screen->fence_reference(device->screen, &fence, NULL);
-      }
-   }
-
-   /* GPU is done with the draws; release the synthetic VS-system-value streams. */
-   util_dynarray_foreach(&transient_vbs, struct pipe_resource *, pres)
-      pipe_resource_reference(pres, NULL);
-   util_dynarray_fini(&transient_vbs);
+   struct r3v_submit_lifetime_context lifetime = {
+      .device = device,
+      .transient_vbs = &transient_vbs,
+      .gpu_pending = &gpu_pending,
+   };
+   r3v_submit_lifetime_finish(gpu_pending, &r3v_submit_lifetime_ops,
+                              &lifetime);
 
    if (result != VK_SUCCESS)
       return result;
