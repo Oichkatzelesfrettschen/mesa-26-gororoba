@@ -455,6 +455,8 @@ if get_option('r3v-native-backend')
     install : false,
   )
 
+  devenv.append('VK_ICD_FILENAMES', _native_dev_icd.full_path())
+
   # Executable form of the boundaries doc's dependency/symbol audit: the
   # native library defines no Gallium or winsys entry symbol, in any binding.
   prog_nm_r3v = find_program('nm', required : false)
@@ -546,41 +548,6 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
-    # Source headers carry the license grant and the file's description.  The
-    # audit covers the complete native ownership surface -- the Vulkan lane,
-    # the shared r300 common code, the CPU gather, the Radeon DRM transport,
-    # and the native build-infra scripts.  Each fixture mutates one clean
-    # header so a rule that stopped reading its line fails its own calibration.
-    # Imported and upstream-verbatim source stays outside these roots; a file
-    # arriving with an upstream header joins REAL_COPYRIGHT_HOLDERS by review.
-    test(
-      'r3v-source-header-audit',
-      prog_python,
-      args : [files('tests/r3v_source_header_audit.py'),
-              meson.current_source_dir(),
-              meson.project_source_root() / 'src/amd/r300/common',
-              meson.project_source_root() / 'src/amd/r300/cpu',
-              meson.project_source_root() / 'src/amd/radeon/drm_vk',
-              meson.project_source_root() / 'build-infra/r3v'],
-      suite : ['r3v'],
-    )
-    test(
-      'r3v-source-header-audit-selftest',
-      prog_python,
-      args : [files('tests/r3v_source_header_audit.py'), '--selftest'],
-      suite : ['r3v'],
-    )
-    foreach header_defect : ['missing-spdx', 'invented-copyright',
-                             'ai-disclosure', 'missing-root']
-      test(
-        'r3v-source-header-audit-known-bad-@0@'.format(header_defect),
-        prog_python,
-        args : [files('tests/r3v_source_header_audit.py'),
-                '--fixture', header_defect],
-        should_fail : true,
-        suite : ['r3v'],
-      )
-    endforeach
     # Qualification test-inventory gate: a build that silently registered
     # fewer tests must fail a qualification run rather than return a smaller
     # green suite.  The ordinary registration reports the inventory; the
@@ -653,6 +620,40 @@ if get_option('r3v-native-backend')
     endforeach
   endif
 
+  # Source-header auditing uses Python source inspection and keeps its
+  # known-bad fixtures available when the optional nm-based symbol audit is
+  # unavailable.
+  if with_tests
+    test(
+      'r3v-source-header-audit',
+      prog_python,
+      args : [files('tests/r3v_source_header_audit.py'),
+              meson.current_source_dir(),
+              meson.project_source_root() / 'src/amd/r300/common',
+              meson.project_source_root() / 'src/amd/r300/cpu',
+              meson.project_source_root() / 'src/amd/radeon/drm_vk',
+              meson.project_source_root() / 'build-infra/r3v'],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-source-header-audit-selftest',
+      prog_python,
+      args : [files('tests/r3v_source_header_audit.py'), '--selftest'],
+      suite : ['r3v'],
+    )
+    foreach header_defect : ['missing-spdx', 'invented-copyright',
+                             'ai-disclosure', 'missing-root']
+      test(
+        'r3v-source-header-audit-known-bad-@0@'.format(header_defect),
+        prog_python,
+        args : [files('tests/r3v_source_header_audit.py'),
+                '--fixture', header_defect],
+        should_fail : true,
+        suite : ['r3v'],
+      )
+    endforeach
+  endif
+
   # Attended cell: performs a live DRM_RADEON_CS on RS482 silicon under the
   # authorization and procedure in
   # docs/hardware/r3v-native-attended-cell-procedure.md.  It drives the
@@ -691,6 +692,70 @@ if get_option('r3v-native-backend')
     build_by_default : true,
     install : false,
   )
+
+  if with_tests
+    # Pure arming checks compile without drm-shim or an X server. Keeping
+    # them at the native backend boundary preserves calibration in native
+    # builds that omit the optional runtime harnesses.
+    test(
+      'r3v-native-identity',
+      executable(
+        'r3v_native_identity_test',
+        files('r3v_native_identity.c', 'tests/r3v_native_identity_test.c'),
+        include_directories : [inc_include, inc_src,
+                               include_directories('.')],
+        dependencies : [idep_mesautil],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-arming',
+      executable(
+        'r3v_native_arming_test',
+        files('r3v_native_arming.c', 'tests/r3v_native_arming_test.c'),
+        include_directories : [inc_include, inc_src,
+                               include_directories('.')],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-arming-positive',
+      executable(
+        'r3v_native_arming_positive',
+        files('r3v_native_arming.c', 'tests/r3v_native_arming_positive.c'),
+        include_directories : [inc_include, inc_src,
+                               include_directories('.')],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+
+    # The runner emits the contract-prefixed reference cell and stops before
+    # any Vulkan or DRM operation. Its refusal calibration is independent of
+    # the optional shim harness.
+    r3v_native_arming_runner = executable(
+      'r3v_native_arming_runner',
+      files('r3v_native_arming.c', 'tests/r3v_native_arming_runner.c',
+            '../common/r300_first_draw_state.c',
+            '../common/r300_fragment_binary.c',
+            '../common/r300_pm4_builder.c',
+            '../common/r300_tcl_bypass_triangle.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-arming-runner-refuses-undeclared',
+      prog_python,
+      args : [
+        files('tests/r3v_native_arming_runner_check.py'),
+        r3v_native_arming_runner,
+      ],
+      suite : ['r3v'],
+    )
+  endif
 
   # Full-chain triangle-cell harness on the radeon noop drm-shim: the
   # closed-gate leg proves the fail-closed verdict and byte-identity of
@@ -940,77 +1005,6 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endif
-    # Arming-gate calibration: the complete fact set arms, and each
-    # single-factor defect refuses with its own verdict.  The evaluator is
-    # pure, so the test compiles it directly.
-    test(
-      'r3v-native-identity',
-      executable(
-        'r3v_native_identity_test',
-        files('r3v_native_identity.c', 'tests/r3v_native_identity_test.c'),
-        include_directories : [inc_include, inc_src,
-                               include_directories('.')],
-        dependencies : [idep_mesautil],
-        gnu_symbol_visibility : 'hidden',
-      ),
-      suite : ['r3v'],
-    )
-
-    test(
-      'r3v-native-arming',
-      executable(
-        'r3v_native_arming_test',
-        files('r3v_native_arming.c', 'tests/r3v_native_arming_test.c'),
-        include_directories : [inc_include, inc_src,
-                               include_directories('.')],
-        gnu_symbol_visibility : 'hidden',
-      ),
-      suite : ['r3v'],
-    )
-
-    # Positive ARMED calibration through the collection seam: a
-    # deterministic provider supplies every exact fact, the verdict is
-    # ARMED with exit status zero, and each single-fact mutation refuses
-    # through the same collect-then-evaluate path.  The binary links the
-    # arming translation unit alone, so no Vulkan object, DRM fd, ioctl,
-    # or attempt token can exist in the run.
-    test(
-      'r3v-native-arming-positive',
-      executable(
-        'r3v_native_arming_positive',
-        files('r3v_native_arming.c', 'tests/r3v_native_arming_positive.c'),
-        include_directories : [inc_include, inc_src,
-                               include_directories('.')],
-        gnu_symbol_visibility : 'hidden',
-      ),
-      suite : ['r3v'],
-    )
-
-    # Non-submitting arming runner: reports the cell digest and every
-    # arming factor, then stops at the authorization boundary.  The test
-    # leg runs it against a fresh directory with no declarations, so the
-    # expected verdict is a refusal.
-    r3v_native_arming_runner = executable(
-      'r3v_native_arming_runner',
-      files('r3v_native_arming.c', 'tests/r3v_native_arming_runner.c',
-            '../common/r300_first_draw_state.c',
-            '../common/r300_fragment_binary.c',
-            '../common/r300_pm4_builder.c',
-            '../common/r300_tcl_bypass_triangle.c'),
-      include_directories : [r3v_native_inc, include_directories('.')],
-      dependencies : [idep_mesautil],
-      gnu_symbol_visibility : 'hidden',
-    )
-    test(
-      'r3v-native-arming-runner-refuses-undeclared',
-      prog_python,
-      args : [
-        files('tests/r3v_native_arming_runner_check.py'),
-        r3v_native_arming_runner,
-      ],
-      suite : ['r3v'],
-    )
-
     # Loader-only application gate: the complete public sequence of an
     # external Vulkan program, linked against the installed loader alone
     # and reaching the ICD only through its manifest.  The check wrapper
