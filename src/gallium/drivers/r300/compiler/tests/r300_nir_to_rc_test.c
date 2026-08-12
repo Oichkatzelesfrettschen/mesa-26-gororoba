@@ -4,7 +4,7 @@
  * NIR-to-RC regression harness for r300 vertex shaders.
  *
  * The translator is shared by g3dvl shaders and the state-tracker path.  These
- * cases pin down three emission paths:
+ * cases pin down four emission paths:
  *
  * 1. Unsupported intrinsics must fail deterministically through Base.Error
  *    instead of printing and continuing with an uninitialized SSA temp.
@@ -12,11 +12,14 @@
  *    because the RC emitter walks only the loop body list.
  * 3. The special ALU lowering paths must keep emitting the RC opcode/srcmod
  *    patterns that the r300 RC backend expects.
+ * 4. A nested emitter stops at the first compiler error, and the vertex
+ *    translation callsite reports that error before missing-position handling.
  */
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nir.h"
@@ -97,6 +100,15 @@ vs_position_output(nir_builder *b)
    return pos;
 }
 
+static void
+store_vs_position(nir_builder *b, nir_variable *pos, nir_def *x)
+{
+   nir_store_var(b, pos,
+                 nir_vec4(b, x, nir_imm_float(b, 0.0f),
+                          nir_imm_float(b, 0.0f), nir_imm_float(b, 1.0f)),
+                 0xf);
+}
+
 static nir_shader *
 build_vs_with_fsub(void)
 {
@@ -146,10 +158,55 @@ build_vs_with_unsupported_intrinsic(void)
    nir_builder b = vs_builder("vs_load_vertex_id");
    nir_variable *pos = vs_position_output(&b);
    nir_def *x = nir_i2f32(&b, nir_load_vertex_id(&b));
-   nir_store_var(&b, pos,
-                 nir_vec4(&b, x, nir_imm_float(&b, 0.0f),
-                          nir_imm_float(&b, 0.0f), nir_imm_float(&b, 1.0f)),
-                 0xf);
+   store_vs_position(&b, pos, x);
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   return b.shader;
+}
+
+static nir_shader *
+build_vs_with_unsupported_intrinsic_in_if(bool error_in_else)
+{
+   nir_builder b = vs_builder("vs_nested_if_load_vertex_id");
+   nir_variable *in =
+      nir_variable_create(b.shader, nir_var_shader_in, glsl_vec4_type(), "in0");
+   nir_variable *pos = vs_position_output(&b);
+   in->data.location = VERT_ATTRIB_GENERIC0;
+
+   nir_def *condition =
+      nir_flt_imm(&b, nir_channel(&b, nir_load_var(&b, in), 0), 0.5f);
+   nir_def *zero = nir_imm_float(&b, 0.0f);
+   nir_if *if_stmt = nir_push_if(&b, condition);
+   if (error_in_else) {
+      store_vs_position(&b, pos, zero);
+   } else {
+      nir_def *x = nir_i2f32(&b, nir_load_vertex_id(&b));
+      store_vs_position(&b, pos, x);
+   }
+   nir_push_else(&b, if_stmt);
+   if (error_in_else) {
+      nir_def *x = nir_i2f32(&b, nir_load_vertex_id(&b));
+      store_vs_position(&b, pos, x);
+   } else {
+      store_vs_position(&b, pos, zero);
+   }
+   nir_pop_if(&b, if_stmt);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   return b.shader;
+}
+
+static nir_shader *
+build_vs_with_unsupported_intrinsic_in_loop(void)
+{
+   nir_builder b = vs_builder("vs_nested_loop_load_vertex_id");
+   nir_variable *pos = vs_position_output(&b);
+
+   nir_loop *loop = nir_push_loop(&b);
+   nir_def *x = nir_i2f32(&b, nir_load_vertex_id(&b));
+   store_vs_position(&b, pos, x);
+   nir_jump(&b, nir_jump_break);
+   nir_pop_loop(&b, loop);
+
    nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
    return b.shader;
 }
@@ -220,6 +277,18 @@ find_first_opcode(struct radeon_compiler *compiler, rc_opcode opcode)
    return NULL;
 }
 
+static unsigned
+count_opcode(struct radeon_compiler *compiler, rc_opcode opcode)
+{
+   unsigned count = 0;
+   for (struct rc_instruction *inst = compiler->Program.Instructions.Next;
+        inst != &compiler->Program.Instructions; inst = inst->Next) {
+      if (inst->Type == RC_INSTRUCTION_NORMAL && inst->U.I.Opcode == opcode)
+         count++;
+   }
+   return count;
+}
+
 static void
 case_unsupported_intrinsic_sets_error(void)
 {
@@ -238,6 +307,83 @@ case_unsupported_intrinsic_sets_error(void)
          "unsupported VS intrinsic records the translator error message");
 
    nir_to_rc_vs_test_destroy(&tc);
+}
+
+static void
+check_nested_if_stops_after_error(bool error_in_else)
+{
+   struct nir_to_rc_vs_test_compiler tc = {0};
+   nir_to_rc_vs_test_init(&tc);
+   union r300_shader_code rc = {.v = &tc.code};
+
+   nir_to_rc(build_vs_with_unsupported_intrinsic_in_if(error_in_else),
+             &tc.screen.screen,
+             (struct r300_fragment_program_external_state){0}, rc,
+             &tc.compiler.Base);
+
+   CHECK(tc.compiler.Base.Error,
+         "unsupported intrinsic in an if branch sets compiler.Base.Error");
+   CHECK(count_opcode(&tc.compiler.Base, RC_OPCODE_IF) == 1,
+         "nested if emits its opening control-flow instruction");
+   CHECK(count_opcode(&tc.compiler.Base, RC_OPCODE_ELSE) == error_in_else &&
+            count_opcode(&tc.compiler.Base, RC_OPCODE_ENDIF) == 0,
+         error_in_else ? "nested if stops before endif after the else error"
+                       : "nested if stops before else and endif after the then error");
+
+   nir_to_rc_vs_test_destroy(&tc);
+}
+
+static void
+case_nested_if_stops_after_error(void)
+{
+   check_nested_if_stops_after_error(false);
+   check_nested_if_stops_after_error(true);
+}
+
+static void
+case_nested_loop_stops_after_error(void)
+{
+   struct nir_to_rc_vs_test_compiler tc = {0};
+   nir_to_rc_vs_test_init(&tc);
+   union r300_shader_code rc = {.v = &tc.code};
+
+   nir_to_rc(build_vs_with_unsupported_intrinsic_in_loop(), &tc.screen.screen,
+             (struct r300_fragment_program_external_state){0}, rc,
+             &tc.compiler.Base);
+
+   CHECK(tc.compiler.Base.Error,
+         "unsupported intrinsic in a loop body sets compiler.Base.Error");
+   CHECK(count_opcode(&tc.compiler.Base, RC_OPCODE_BGNLOOP) == 1,
+         "nested loop emits its opening control-flow instruction");
+   CHECK(count_opcode(&tc.compiler.Base, RC_OPCODE_ENDLOOP) == 0,
+         "nested loop stops before endloop after the body error");
+
+   nir_to_rc_vs_test_destroy(&tc);
+}
+
+static void
+case_vertex_callsite_surfaces_error_before_missing_position(void)
+{
+   struct r300_context r300 = {0};
+   struct r300_screen screen = {0};
+   struct r300_vertex_shader shader = {0};
+   struct r300_vertex_shader_code code = {0};
+
+   r300.screen = &screen;
+   shader.state.ir.nir = build_vs_with_unsupported_intrinsic();
+   shader.shader = &code;
+   rc_init_regalloc_state(&r300.vs_regalloc_state, RC_VERTEX_PROGRAM);
+
+   r300_translate_vertex_shader(&r300, &shader);
+
+   CHECK(code.dummy,
+         "vertex translation marks the compiler-error shader as dummy");
+   CHECK(code.error && strstr(code.error, "unsupported NIR intrinsic") != NULL,
+         "vertex translation surfaces Base.Error before missing-position handling");
+
+   free(code.error);
+   ralloc_free(shader.state.ir.nir);
+   rc_destroy_regalloc_state(&r300.vs_regalloc_state);
 }
 
 static void
@@ -349,6 +495,9 @@ main(void)
 {
    printf("r300 nir_to_rc regression harness\n");
    case_unsupported_intrinsic_sets_error();
+   case_nested_if_stops_after_error();
+   case_nested_loop_stops_after_error();
+   case_vertex_callsite_surfaces_error_before_missing_position();
    check_narrow_iand_stops_before_int_to_float(8, 0);
    check_narrow_iand_stops_before_int_to_float(16, 0);
    check_narrow_iand_stops_before_int_to_float(8, UINT8_MAX);
