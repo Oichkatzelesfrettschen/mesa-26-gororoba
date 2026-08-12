@@ -287,6 +287,11 @@ check_policy_matrix(void)
    check_policy(&cp, &wp, &sprite, 1024,
                 R300_R2VB_AUTO_SINGLE_POINT_COORD_STATE,
                 "POINTS with sprite-coord state");
+   struct r300_r2vb_auto_single_draw point_quad = points;
+   point_quad.point_quad_rasterization = true;
+   check_policy(&cp, &wp, &point_quad, 1024,
+                R300_R2VB_AUTO_SINGLE_POINT_COORD_STATE,
+                "POINTS with quad rasterization state");
    struct r300_r2vb_auto_single_draw pv_size = points;
    pv_size.point_size_per_vertex = true;
    check_policy(&cp, &wp, &pv_size, 1024,

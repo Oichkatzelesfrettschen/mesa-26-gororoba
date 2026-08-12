@@ -5761,7 +5761,7 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
          * points silently. */
         if (d->vs_writes_point_size)
             return R300_R2VB_AUTO_SINGLE_POINT_SIZE_WRITER;
-        if (d->sprite_coord_requested)
+        if (d->sprite_coord_requested || d->point_quad_rasterization)
             return R300_R2VB_AUTO_SINGLE_POINT_COORD_STATE;
         if (d->point_size_per_vertex)
             return R300_R2VB_AUTO_SINGLE_POINT_VERTEX_SIZE;
@@ -6951,12 +6951,12 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
                 (((const nir_shader *)avs->state.ir.nir)
                      ->info.outputs_written &
                  VARYING_BIT_PSIZ) != 0,
-            /* GLES2 sets point_quad_rasterization on every rasterizer
-             * state, so the coord-replace mask alone is the decline axis:
-             * on this tgsi_texcoord=false screen an FS reading
-             * gl_PointCoord always arrives with an enable bit set. */
+            /* Point-quad coverage and sprite coordinates are both part of
+             * POINTS semantics; fixed-size delivery transports neither. */
             .sprite_coord_requested =
                 rs && rs->rs.sprite_coord_enable != 0,
+            .point_quad_rasterization =
+                rs && rs->rs.point_quad_rasterization,
             .point_size_per_vertex = rs && rs->rs.point_size_per_vertex,
             .route_reason =
                 r300_r2vb_auto_single_route_reason(route_verdict),
