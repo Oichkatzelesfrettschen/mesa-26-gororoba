@@ -109,7 +109,6 @@ plan_status_str(enum r300_r2vb_plan_status status)
    switch (status) {
    case R300_R2VB_PLAN_READY:             return "ready";
    case R300_R2VB_PLAN_SEMANTIC_REJECT:   return "semantic_reject";
-   case R300_R2VB_PLAN_POLICY_REJECT:     return "policy_reject";
    case R300_R2VB_PLAN_TRANSIENT_FAILURE: return "transient_failure";
    }
    return "unknown";
