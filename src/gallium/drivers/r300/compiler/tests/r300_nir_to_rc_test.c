@@ -14,6 +14,13 @@
  *    patterns that the r300 RC backend expects.
  * 4. A nested emitter stops at the first compiler error, and the vertex
  *    translation callsite reports that error before missing-position handling.
+ *
+ * Known: ntr_emit_if() and ntr_emit_loop() stop after nested child-list errors,
+ * and r300_translate_vertex_shader() checks compiler.Base.Error before
+ * missing-position classification.  Symbol discovery uses
+ * (rg --fixed-strings "ntr_emit_if" src/gallium/drivers/r300/compiler/nir_to_rc.c)
+ * and (rg --fixed-strings "r300_translate_vertex_shader"
+ * src/gallium/drivers/r300/r300_vs.c).
  */
 
 #include <stdbool.h>
