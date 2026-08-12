@@ -735,6 +735,13 @@ bool r300_r2vb_position_input_mapping_ok(unsigned num_position_inputs,
                                          bool buffer_bound,
                                          enum pipe_format format);
 
+/* The ALU12 discriminator reads the reciprocal denominator from the logical
+ * W lane.  Its source contract admits only R32G32B32 input, whose PSC tuple
+ * supplies W=1.0, and excludes the effective alpha-to-one lowering state so
+ * FRAG_RESULT_COLOR.W remains a discriminator lane. */
+bool r300_r2vb_alu12_contract_ok(enum pipe_format source_format,
+                                 bool alpha_to_one, bool msaa_enable);
+
 /* The producer's programmable-stream interface, derived mechanically
  * from the validated stream contract: both elements pack into the first
  * PROG_STREAM_CNTL/EXT register pair (two 16-bit elements per dword,
