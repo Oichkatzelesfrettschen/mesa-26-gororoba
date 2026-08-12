@@ -895,7 +895,7 @@ audit: source-root-check source-root-control-unit-test \
 				return 1; \
 			fi; \
 			if [ "$$remote_gxx_major" != "$$expected_major" ]; then \
-				fail "distcc volunteer G++ major mismatch: $$distcc_spec (client=$$expected_major remote=$$remote_gxx_major)"; \
+				echo "FAIL  distcc volunteer G++ major mismatch: $$distcc_spec (client=$$expected_major remote=$$remote_gxx_major)" >&2; \
 				return 1; \
 			fi; \
 			ok "distcc volunteer GCC major: $$distcc_spec ($$remote_gcc_major)"; \
