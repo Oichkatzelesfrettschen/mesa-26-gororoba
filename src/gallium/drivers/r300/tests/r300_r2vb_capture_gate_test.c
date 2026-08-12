@@ -104,6 +104,24 @@ check_flush_and_query_admission(void)
           "submitted query end retains its matching GPU write");
 }
 
+static void
+check_nested_probe_and_readback_guards(void)
+{
+   CHECK(r300_r2vb_probe_dispatch_allowed(false),
+         "outer flush admits probe dispatch");
+   CHECK(!r300_r2vb_probe_dispatch_allowed(true),
+         "nested flush suppresses probe dispatch");
+
+   CHECK(r300_r2vb_transform_verify_allowed(true, true, true),
+         "signalled submit admits transform verification");
+   CHECK(!r300_r2vb_transform_verify_allowed(true, true, false),
+         "unsignalled submit suppresses transform verification");
+   CHECK(!r300_r2vb_transform_verify_allowed(false, true, true),
+         "disabled transform suppresses verification");
+   CHECK(!r300_r2vb_transform_verify_allowed(true, false, true),
+         "non-submit mode suppresses verification");
+}
+
 int
 main(void)
 {
@@ -111,6 +129,7 @@ main(void)
    check_submit_consent();
    check_rs48x_capability();
    check_flush_and_query_admission();
+   check_nested_probe_and_readback_guards();
 
    if (failures) {
       fprintf(stderr, "r300_r2vb_capture_gate_test: %u failure(s)\n",

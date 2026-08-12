@@ -2788,7 +2788,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
         struct pipe_fence_handle *fence = NULL;
         int64_t t0, t1, t2, t3;
         bool signalled = false;
-        /* Three-way split to localise the per-submit cost.  The pipe flush hook
+        /* Three-way split to localize the per-submit cost.  The pipe flush hook
          * runs the driver's cleanup and re-arm path before it enqueues the IB;
          * cs_sync_flush blocks until the threaded-submit worker has issued the
          * DRM_RADEON_CS ioctl; fence_wait blocks until the GPU retires the fence
@@ -2843,7 +2843,8 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
      * res keeps the stage-1 data when stage 3 rendered into the separate observe
      * BO; without observe, stage 3 has overwritten res, so the comparison is only
      * meaningful with R300_R2VB_STAGE3_OBSERVE=1. */
-    if (cfg.xform && cfg.do_submit) {
+    if (r300_r2vb_transform_verify_allowed(cfg.xform, cfg.do_submit,
+                                           submit_signalled)) {
         if (r300_r2vb_divide_enabled()) {
             /* The transform fragment shader divides, so verify against the
              * window-space reference after the pure-CPU divide self-test. */

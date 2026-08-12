@@ -15,6 +15,7 @@
 #include "r300_cs.h"
 #include "r300_emit.h"
 #include "r300_r2vb.h"
+#include "r300_r2vb_capture_gate.h"
 
 
 static void r300_rearm_after_hardware_flush(struct r300_context *r300)
@@ -76,19 +77,33 @@ void r300_flush(struct pipe_context *pipe,
 {
     struct r300_context *r300 = r300_context(pipe);
 
-    /* RS482 Wiring-A (R2VB direct-VAP) hardware-handoff probe.  Fires once per
-     * process under the exact R300_HB_TCL=1 and R300_R2VB_TIMING transport
-     * gates, after a real draw has left its framebuffer and fragment program in
-     * this CS.  When the helper returns true it has consumed the CS, so flush
-     * returns without the normal dirty path. */
-    if (r300_emit_rs482_r2vb_capture_selftest(r300, true, flags, fence))
-        return;
+    /* R2VB probes can flush through this entry point while they are building or
+     * submitting their command stream.  Keep nested flushes on the normal
+     * cleanup path so a second probe cannot issue RADEON_FLUSH_NOOP against the
+     * active probe's command stream. */
+    bool probe_dispatch_active = r300->r2vb_probe_dispatch_active;
+    if (r300_r2vb_probe_dispatch_allowed(probe_dispatch_active)) {
+        r300->r2vb_probe_dispatch_active = true;
 
-    /* No-submit B0-B4 capture of the shipped producer BO-fetch draw.
-     * RADEON_FLUSH_NOOP internally, so it never advances this flush's
-     * fence; report consumption and fall through to the normal path so
-     * the caller's fence still resolves. */
-    r300_r2vb_bo_draw_capture_selftest(r300, true);
+        /* RS482 Wiring-A (R2VB direct-VAP) hardware-handoff probe.  Fires once
+         * per process under the exact R300_HB_TCL=1 and R300_R2VB_TIMING
+         * transport gates, after a real draw has left its framebuffer and
+         * fragment program in this CS.  When the helper returns true it has
+         * consumed the CS, so flush returns without the normal dirty path. */
+        bool consumed = r300_emit_rs482_r2vb_capture_selftest(
+            r300, true, flags, fence);
+        if (!consumed) {
+            /* No-submit B0-B4 capture of the shipped producer BO-fetch draw.
+             * RADEON_FLUSH_NOOP internally, so it never advances this flush's
+             * fence; report consumption and fall through to the normal path so
+             * the caller's fence still resolves. */
+            r300_r2vb_bo_draw_capture_selftest(r300, true);
+        }
+
+        r300->r2vb_probe_dispatch_active = false;
+        if (consumed)
+            return;
+    }
 
     if (r300->dirty_hw) {
         r300_flush_and_cleanup(r300, flags, fence);
