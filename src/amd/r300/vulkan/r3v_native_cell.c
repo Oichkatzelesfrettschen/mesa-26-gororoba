@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <radeon_drm.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -40,6 +41,52 @@ record_triangle_cell_tail(struct r3v_native_device *device,
                           struct r3v_native_cmd_buffer *cmd_buffer,
                           struct r3v_native_memory *vertex_memory,
                           struct r3v_native_memory *color_memory);
+
+/* The gather writes the first three logical vertices as a packed 48-byte
+ * carrier.  A caller may point records into the same mapped BO, so compute
+ * the exact physical source range before the first destination write.  The
+ * range arithmetic fails closed on overflow; the CPU gather remains the
+ * authority for semantic bounds and format validation.
+ */
+static bool
+stream_source_overlaps_carrier(
+   const struct r3v_native_vertex_stream_desc *stream,
+   const void *carrier, uint64_t carrier_bytes)
+{
+   const struct r300_vertex_format_semantics *format =
+      r300_vertex_format_semantics((enum r300_vertex_format_id)
+                                      stream->format_id);
+   if (format == NULL || stream->records == NULL)
+      return false;
+
+   const uint64_t vertex_count = R300_TRIANGLE_VERTEX_DWORDS / 4;
+   if (stream->stride < format->semantic_record_bytes)
+      return false;
+
+   const uint64_t first_offset =
+      (uint64_t)stream->first_vertex * stream->stride;
+   const uint64_t tail_offset = (vertex_count - 1) * stream->stride;
+   if (first_offset > UINT64_MAX - tail_offset)
+      return true;
+
+   const uint64_t source_offset = first_offset;
+   if (tail_offset > UINT64_MAX - format->semantic_record_bytes)
+      return true;
+   const uint64_t source_bytes =
+      tail_offset + format->semantic_record_bytes;
+
+   const uintptr_t source_base = (uintptr_t)stream->records;
+   const uintptr_t carrier_base = (uintptr_t)carrier;
+   if (source_offset > UINTPTR_MAX - source_base ||
+       source_bytes > UINTPTR_MAX - (source_base + source_offset) ||
+       carrier_bytes > UINTPTR_MAX - carrier_base)
+      return true;
+
+   const uintptr_t source_start = source_base + source_offset;
+   const uintptr_t source_end = source_start + source_bytes;
+   const uintptr_t carrier_end = carrier_base + carrier_bytes;
+   return source_start < carrier_end && carrier_base < source_end;
+}
 
 VkResult
 r3v_native_cell_vk_result_from_errno(int emit_result)
@@ -451,8 +498,11 @@ r3v_native_cmd_buffer_execute_deferred_draw(
 /* Carrier delivery: gathers the cell's three vertices from the caller's
  * stream through the CPU vertex executor, byte-defined end to end, into
  * the mapped GTT carrier, then records the same fixed cell through the
- * shared tail.  A refused gather -- unknown format, unproven bound,
- * undersized carrier -- reports before any BO write.
+ * shared tail.  The shared tail is established by
+ * (rg --fixed-strings "record_triangle_cell_tail"
+ * src/amd/r300/vulkan/r3v_native_cell.c).  A refused gather -- unknown
+ * format, unproven bound, undersized carrier, or overlapping source and
+ * carrier ranges -- reports before any BO write.
  */
 VkResult
 r3v_native_record_tcl_bypass_triangle_from_stream(
@@ -492,6 +542,9 @@ r3v_native_record_tcl_bypass_triangle_gathered(
                        R3V_TRIANGLE_COLOR_BYTES);
    }
 
+   if (stream == NULL || stream->records == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
    VkResult role_result = validate_triangle_memory_roles(
       device, vertex_memory, color_memory);
    if (role_result != VK_SUCCESS)
@@ -504,6 +557,16 @@ r3v_native_record_tcl_bypass_triangle_gathered(
       return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
                        "r3v-native: triangle vertex memory is not "
                        "CPU-mappable");
+   }
+   if (stream_source_overlaps_carrier(stream, vertex_memory->map,
+                                      R3V_TRIANGLE_VERTEX_BYTES)) {
+      if (owns_map) {
+         radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
+                                vertex_memory->map);
+         vertex_memory->map = NULL;
+      }
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: vertex source overlaps carrier");
    }
    const struct r300_cpu_vertex_stream source = {
       .data = stream->records,
