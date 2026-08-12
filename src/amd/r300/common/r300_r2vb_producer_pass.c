@@ -360,6 +360,7 @@ r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out)
     * and the maximum vertex index derive from the carrier geometry.
     */
    struct r300_first_draw_params draw_params = {
+      .chip_family = CHIP_RS480,
       .width = layout.width,
       .height = layout.height,
       .max_vtx_index = layout.count - 1,

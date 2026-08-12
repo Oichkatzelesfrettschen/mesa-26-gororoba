@@ -7,6 +7,7 @@ r300_format_contract_test_c_args = ['-Werror=unused-function']
 r300_format_contract_test_includes = [
   inc_src,
   inc_include,
+  inc_amd_common,
   inc_gallium,
   inc_gallium_aux,
   include_directories('../../../gallium/drivers/r300'),
