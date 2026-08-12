@@ -545,11 +545,9 @@ rc_programs_identical(struct radeon_compiler *a, struct radeon_compiler *b)
 }
 
 /* A float-only shader carries no f2i/f2u source, so the input-semantics helper
- * is a strict no-op and both modes must compile to byte-identical RC in the
- * same front end.  This is the regression proof that PR A cannot perturb the
- * already-green float R2VB route: if the two modes ever diverge here, the mode
- * leaked into a path it should not touch.  Compared per front end because the
- * two front ends legitimately number and order instructions differently. */
+ * leaves the program unchanged and both modes compile to byte-identical RC in
+ * each front end.  The comparison stays per front end because the two front
+ * ends legitimately number and order instructions differently. */
 static void
 mode_identity(const char *name, nir_shader *(*build)(void))
 {
@@ -608,15 +606,10 @@ mode_identity(const char *name, nir_shader *(*build)(void))
    ralloc_free(ctx);
 }
 
-/* Front-end-independence of the input-semantics contract: a typed (f2i)
- * fragment shader compiled under R300_FS_INPUT_INTERPOLATED carries the
- * epsilon multiplier in BOTH front ends, and under R300_FS_INPUT_R2VB_FLAT_VERTEX
- * carries it in NEITHER.  This is the regression gate for the defect where one
- * front end honors the mode and the other applies the epsilon unconditionally:
- * a flat producer taking the classic ladder would otherwise receive the
- * interpolated correction the shared helper now suppresses.  It also runs the
- * evaluator parity so the two front ends stay semantically equal within each
- * mode. */
+/* A typed fragment shader carries the epsilon multiplier in both front ends
+ * under R300_FS_INPUT_INTERPOLATED and in neither front end under
+ * R300_FS_INPUT_R2VB_FLAT_VERTEX.  The evaluator parity check keeps the two
+ * front ends semantically equal within each input-semantics mode. */
 static void
 mode_epsilon(const char *name, nir_shader *(*build)(void))
 {

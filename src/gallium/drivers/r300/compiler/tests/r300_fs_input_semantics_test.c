@@ -7,8 +7,8 @@
  * contract a fragment shader compiles under.  R300_FS_INPUT_INTERPOLATED nudges
  * every f2i32/f2u32 source toward its own sign by a factor of 1 + 2^-15 (the
  * FP24 plane-interpolation delivery correction); R300_FS_INPUT_R2VB_FLAT_VERTEX
- * omits the nudge, converting like the Draw vertex path.  This test pins the
- * helper directly, ahead of either front end, on two axes:
+ * omits the nudge, converting like the Draw vertex path.  This test isolates
+ * the helper ahead of either front end on two axes:
  *
  *   1. Shape: under INTERPOLATED the helper inserts exactly one fmul by the
  *      constant 0x3f800100 (1.000030517578125) on each f2i/f2u source; under

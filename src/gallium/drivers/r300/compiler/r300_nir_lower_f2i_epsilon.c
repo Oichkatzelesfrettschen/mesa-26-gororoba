@@ -73,7 +73,7 @@ r300_nir_apply_fs_input_semantics(nir_shader *s,
 
    /* Flat R2VB producer inputs do not use the empirical smooth-varying
     * interpolation correction; every other fragment shader does.  The switch
-    * is exhaustive so a future semantics value fails closed here rather than
+    * is exhaustive so an unsupported enum value fails closed here rather than
     * silently taking the less-conservative flat path. */
    switch (semantics) {
    case R300_FS_INPUT_INTERPOLATED:
