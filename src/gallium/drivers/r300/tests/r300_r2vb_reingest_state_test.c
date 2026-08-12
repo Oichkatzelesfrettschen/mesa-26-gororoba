@@ -1,4 +1,5 @@
 /*
+ * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  */
 
@@ -25,7 +26,7 @@ check_gate_matrix(void)
    CHECK(r300_r2vb_position_only_output_dwords(false, false) == 0,
          "closed gates reserve no output packet dwords");
    CHECK(r300_r2vb_position_only_assembly_dwords(false) == 0,
-         "closed C1c gate reserves no assembly packet dwords");
+         "closed vertex-assembly gate reserves no assembly packet dwords");
    CHECK(r300_r2vb_vte_w0_dwords(false) == 0,
          "closed C1b gate reserves no W0 packet dwords");
    CHECK(r300_r2vb_vte_restore_dwords(false) == 0,
@@ -37,21 +38,21 @@ check_gate_matrix(void)
          "C1b reserves a same-IB VTE restore packet");
 
    CHECK(r300_r2vb_position_only_output_enabled(true, false),
-         "C0 enables the position-only output packet");
+         "position-output gate enables the position-only output packet");
    CHECK(r300_r2vb_position_only_output_dwords(true, false) == 3,
-         "C0 reserves one output SEQ packet");
+         "position-output gate reserves one output SEQ packet");
    CHECK(r300_r2vb_position_only_assembly_dwords(false) == 0,
-         "C0 does not reserve the assembly packet");
+         "position-output gate does not reserve the assembly packet");
 
    CHECK(r300_r2vb_position_only_output_enabled(false, true),
-         "C1c enables the position-only output packet");
+         "vertex-assembly gate enables the position-only output packet");
    CHECK(r300_r2vb_position_only_output_dwords(false, true) == 3,
-         "C1c reserves one output SEQ packet");
+         "vertex-assembly gate reserves one output SEQ packet");
    CHECK(r300_r2vb_position_only_assembly_dwords(true) == 3,
-         "C1c reserves one assembly SEQ packet");
+         "vertex-assembly gate reserves one assembly SEQ packet");
 
    CHECK(r300_r2vb_position_only_output_dwords(true, true) == 3,
-         "C0 and C1c share one output SEQ packet");
+         "position-output and vertex-assembly gates share one output SEQ packet");
 }
 
 static void

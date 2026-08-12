@@ -1,4 +1,5 @@
 /*
+ * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  */
 
@@ -10,7 +11,8 @@
 
 #include "r300_reg.h"
 
-/* C0 and C1c share the position-only output-format packet. */
+/* The position-output-format and vertex-assembly gates share the
+ * position-only output-format packet. */
 static inline bool
 r300_r2vb_position_only_output_enabled(bool output_format_gate,
                                        bool assembly_gate)
