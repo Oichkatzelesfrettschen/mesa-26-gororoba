@@ -126,7 +126,13 @@ def selftest() -> int:
                 AUDIT_FORBIDDEN_SYMBOL,
                 "",
             ),
-            ("empty", nm, "", AUDIT_NM_FAILURE, ""),
+            (
+                "empty",
+                nm,
+                "",
+                AUDIT_NM_FAILURE,
+                "produced no symbols",
+            ),
             (
                 "nm-error-defined",
                 nm,
@@ -161,10 +167,15 @@ def selftest() -> int:
                     f"{expected_status}, got {status}"
                 )
                 return 1
-            if expected_diagnostic not in diagnostics.getvalue():
+            actual_diagnostic = diagnostics.getvalue()
+            if expected_diagnostic:
+                diagnostic_matches = expected_diagnostic in actual_diagnostic
+            else:
+                diagnostic_matches = actual_diagnostic == ""
+            if not diagnostic_matches:
                 print(
                     f"separation selftest {label}: expected diagnostic="
-                    f"{expected_diagnostic!r}, got {diagnostics.getvalue()!r}"
+                    f"{expected_diagnostic!r}, got {actual_diagnostic!r}"
                 )
                 return 1
 
