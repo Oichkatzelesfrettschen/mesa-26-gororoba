@@ -218,10 +218,16 @@ def main(argv=None):
         return selftest()
     if argv[:1] == ["--fixture"]:
         if argv[1] == "missing-root":
-            # The dropped-subtree calibration: one absent root beside a
-            # resolvable file must refuse through the same per-root check
-            # the real audit runs, never report a clean scan of the rest.
-            return main([__file__, "does-not-exist-root"])
+            # The dropped-subtree calibration supplies enough clean files to
+            # clear the aggregate floor.  The absent root therefore remains
+            # the sole refusal when the per-root existence check is active.
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp) / "source-root"
+                root.mkdir()
+                for index in range(20):
+                    (root / f"fixture_{index}.c").write_text(CLEAN_HEADER)
+                return main([str(root), str(Path(tmp) /
+                                             "does-not-exist-root")])
         defects = run_fixture(argv[1],
                               CLEAN_HEADER if argv[1] == "clean" else None)
         return 1 if defects else 0
