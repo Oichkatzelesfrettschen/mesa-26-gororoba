@@ -237,6 +237,47 @@ build_fp64(void)
 }
 
 static nir_shader *
+build_multipass_loop_form(bool double_unrelated)
+{
+   nir_builder b = cs_builder("cs_multipass_loop");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *offset = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_def *input = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), offset,
+                                  .align_mul = 4, .align_offset = 0);
+   nir_def *pass_count = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 2),
+                                       nir_imm_int(&b, 0), .align_mul = 4,
+                                       .align_offset = 0);
+   nir_variable *value = nir_local_variable_create(b.impl, glsl_uint_type(),
+                                                    "value");
+   nir_variable *counter = nir_local_variable_create(b.impl, glsl_uint_type(),
+                                                      "counter");
+   nir_store_var(&b, value, input, 1);
+   nir_store_var(&b, counter, nir_imm_int(&b, 0), 1);
+
+   nir_loop *loop = nir_push_loop(&b);
+   nir_def *counter_value = nir_load_var(&b, counter);
+   nir_break_if(&b, nir_uge(&b, counter_value, pass_count));
+
+   nir_def *value_value = nir_load_var(&b, value);
+   if (double_unrelated) {
+      nir_store_var(&b, value, nir_iadd(&b, value_value, nir_imm_int(&b, 1)),
+                    1);
+      nir_def *unrelated = nir_load_var(&b, counter);
+      nir_store_var(&b, counter, nir_iadd(&b, unrelated, unrelated), 1);
+   } else {
+      nir_store_var(&b, value, nir_iadd(&b, value_value, value_value), 1);
+      nir_store_var(&b, counter, nir_iadd(&b, counter_value,
+                                          nir_imm_int(&b, 1)), 1);
+   }
+   nir_pop_loop(&b, loop);
+
+   nir_store_ssbo(&b, nir_load_var(&b, value), nir_imm_int(&b, 1), offset,
+                  .write_mask = 1, .align_mul = 4, .align_offset = 0);
+   NIR_PASS(_, b.shader, nir_lower_vars_to_ssa);
+   return b.shader;
+}
+
+static nir_shader *
 build_fp64_operand_conversion(void)
 {
    nir_builder b = cs_builder("cs_fp64_operand_conversion");
@@ -1262,6 +1303,41 @@ case_reject_registry_calibration(void)
       r300_compute_reject_lookup(R300_COMPUTE_REJECT_UNKNOWN);
    CHECK(unknown->reason == R300_COMPUTE_REJECT_UNKNOWN,
          "explicit unknown enum keeps the unknown row");
+}
+
+static void
+case_multipass_metadata(void)
+{
+   printf("multipass loop-carried value\n");
+
+   {
+      nir_shader *nir = build_multipass_loop_form(false);
+      prepare_detect_shader(nir);
+      struct r300_compute_multipass_scan_pattern pattern = {0};
+      r300_nir_detect_multipass_scan_pattern(nir, &pattern);
+      CHECK(pattern.is_multipass_scan,
+            "loop-carried doubling admits");
+      CHECK(pattern.step_op == nir_op_iadd,
+            "loop-carried iadd keeps deterministic step diagnostic");
+      CHECK(pattern.input_ssbo_binding == 0,
+            "loop-carried input binding follows phi preheader load");
+      CHECK(pattern.output_ssbo_binding == 1,
+            "loop-carried output binding follows the single store");
+      ralloc_free(nir);
+   }
+
+   {
+      nir_shader *nir = build_multipass_loop_form(true);
+      prepare_detect_shader(nir);
+      struct r300_compute_multipass_scan_pattern pattern = {0};
+      r300_nir_detect_multipass_scan_pattern(nir, &pattern);
+      CHECK(!pattern.is_multipass_scan,
+            "unrelated accumulator doubling rejects");
+      CHECK(pattern.step_op == 0 && pattern.input_ssbo_binding == 0 &&
+               pattern.output_ssbo_binding == 0,
+            "rejected loop keeps deterministic zero diagnostics");
+      ralloc_free(nir);
+   }
 }
 
 static void
@@ -3993,6 +4069,7 @@ main(void)
    case_verdict(build_fp64_operand_conversion(), false, R300_COMPUTE_REJECT_FP64,
                 "fp64 source operand rejects");
    case_reject_registry_calibration();
+   case_multipass_metadata();
    case_identity_metadata();
    case_zpass_metadata();
    case_blend_acc_metadata();
