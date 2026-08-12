@@ -45,9 +45,12 @@ struct radeon_drm_vk_device {
     * stay under cache_event_mutex so map, BO handle, and sequence form one
     * coherent host-model witness. */
    _Atomic uint64_t cache_sync_count;
-   /* Snapshot taken immediately before the transport issues DRM_RADEON_CS.
-    * The submit caller reads this boundary witness separately from the
-    * completion sync count, so a sync moved after the ioctl cannot hide.
+   /* radeon_drm_vk_cs_submit (rg --fixed-strings "radeon_drm_vk_cs_submit"
+    * src/amd/radeon/drm_vk/radeon_drm_vk_cs.c) snapshots cache_sync_count
+    * immediately before DRM_RADEON_CS.  The r3v_native_triangle_cell_harness
+    * (rg --fixed-strings "submit_boundary_sync_count"
+    * src/amd/r300/vulkan/tests/r3v_native_triangle_cell_harness.c) compares
+    * this boundary count separately from the post-completion cache count.
     */
    _Atomic uint64_t submit_boundary_sync_count;
    uint64_t cache_event_sequence;
