@@ -14,6 +14,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nir.h"
@@ -236,12 +237,43 @@ build_fp64(void)
    return b.shader;
 }
 
+enum multipass_step_form {
+   MULTIPASS_STEP_IADD,
+   MULTIPASS_STEP_IMUL_VALUE_CONST,
+   MULTIPASS_STEP_IMUL_CONST_VALUE,
+   MULTIPASS_STEP_ISHL,
+   MULTIPASS_STEP_IADD_NON_DOUBLE,
+   MULTIPASS_STEP_IMUL_NON_DOUBLE,
+   MULTIPASS_STEP_ISHL_NON_DOUBLE,
+   MULTIPASS_STEP_UNRELATED_DOUBLE,
+};
+
+enum multipass_offset_form {
+   MULTIPASS_OFFSET_INVOCATION_X4,
+   MULTIPASS_OFFSET_UNIFORM,
+   MULTIPASS_OFFSET_WRONG_STRIDE,
+};
+
 static nir_shader *
-build_multipass_loop_form(bool double_unrelated)
+build_multipass_loop_form(enum multipass_step_form step_form,
+                          enum multipass_offset_form offset_form)
 {
    nir_builder b = cs_builder("cs_multipass_loop");
    nir_def *gid = nir_load_global_invocation_index(&b, 32);
-   nir_def *offset = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_def *offset;
+   switch (offset_form) {
+   case MULTIPASS_OFFSET_INVOCATION_X4:
+      offset = nir_imul(&b, gid, nir_imm_int(&b, 4));
+      break;
+   case MULTIPASS_OFFSET_UNIFORM:
+      offset = nir_imm_int(&b, 0);
+      break;
+   case MULTIPASS_OFFSET_WRONG_STRIDE:
+      offset = nir_imul(&b, gid, nir_imm_int(&b, 8));
+      break;
+   default:
+      abort();
+   }
    nir_def *input = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), offset,
                                   .align_mul = 4, .align_offset = 0);
    nir_def *pass_count = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 2),
@@ -259,16 +291,39 @@ build_multipass_loop_form(bool double_unrelated)
    nir_break_if(&b, nir_uge(&b, counter_value, pass_count));
 
    nir_def *value_value = nir_load_var(&b, value);
-   if (double_unrelated) {
-      nir_store_var(&b, value, nir_iadd(&b, value_value, nir_imm_int(&b, 1)),
-                    1);
-      nir_def *unrelated = nir_load_var(&b, counter);
-      nir_store_var(&b, counter, nir_iadd(&b, unrelated, unrelated), 1);
-   } else {
-      nir_store_var(&b, value, nir_iadd(&b, value_value, value_value), 1);
-      nir_store_var(&b, counter, nir_iadd(&b, counter_value,
-                                          nir_imm_int(&b, 1)), 1);
+   nir_def *next_value;
+   nir_def *next_counter = nir_iadd(&b, counter_value, nir_imm_int(&b, 1));
+   switch (step_form) {
+   case MULTIPASS_STEP_IADD:
+      next_value = nir_iadd(&b, value_value, value_value);
+      break;
+   case MULTIPASS_STEP_IMUL_VALUE_CONST:
+      next_value = nir_imul(&b, value_value, nir_imm_int(&b, 2));
+      break;
+   case MULTIPASS_STEP_IMUL_CONST_VALUE:
+      next_value = nir_imul(&b, nir_imm_int(&b, 2), value_value);
+      break;
+   case MULTIPASS_STEP_ISHL:
+      next_value = nir_ishl(&b, value_value, nir_imm_int(&b, 1));
+      break;
+   case MULTIPASS_STEP_IADD_NON_DOUBLE:
+      next_value = nir_iadd(&b, value_value, nir_imm_int(&b, 1));
+      break;
+   case MULTIPASS_STEP_IMUL_NON_DOUBLE:
+      next_value = nir_imul(&b, value_value, nir_imm_int(&b, 3));
+      break;
+   case MULTIPASS_STEP_ISHL_NON_DOUBLE:
+      next_value = nir_ishl(&b, value_value, nir_imm_int(&b, 2));
+      break;
+   case MULTIPASS_STEP_UNRELATED_DOUBLE:
+      next_value = nir_iadd(&b, value_value, nir_imm_int(&b, 1));
+      next_counter = nir_iadd(&b, counter_value, counter_value);
+      break;
+   default:
+      abort();
    }
+   nir_store_var(&b, value, next_value, 1);
+   nir_store_var(&b, counter, next_counter, 1);
    nir_pop_loop(&b, loop);
 
    nir_store_ssbo(&b, nir_load_var(&b, value), nir_imm_int(&b, 1), offset,
@@ -1306,38 +1361,76 @@ case_reject_registry_calibration(void)
 }
 
 static void
+check_multipass_accept(enum multipass_step_form step_form, uint16_t step_op,
+                       const char *label)
+{
+   nir_shader *nir =
+      build_multipass_loop_form(step_form, MULTIPASS_OFFSET_INVOCATION_X4);
+   prepare_detect_shader(nir);
+   struct r300_compute_multipass_scan_pattern pattern = {0};
+   r300_nir_detect_multipass_scan_pattern(nir, &pattern);
+   char check_name[128];
+   snprintf(check_name, sizeof(check_name), "%s admits", label);
+   CHECK(pattern.is_multipass_scan, check_name);
+   snprintf(check_name, sizeof(check_name), "%s preserves opcode", label);
+   CHECK(pattern.step_op == step_op, check_name);
+   snprintf(check_name, sizeof(check_name), "%s preserves input binding", label);
+   CHECK(pattern.input_ssbo_binding == 0, check_name);
+   snprintf(check_name, sizeof(check_name), "%s preserves output binding", label);
+   CHECK(pattern.output_ssbo_binding == 1, check_name);
+   ralloc_free(nir);
+}
+
+static void
+check_multipass_reject(enum multipass_step_form step_form,
+                       enum multipass_offset_form offset_form,
+                       const char *label)
+{
+   nir_shader *nir = build_multipass_loop_form(step_form, offset_form);
+   prepare_detect_shader(nir);
+   struct r300_compute_multipass_scan_pattern pattern = {0};
+   r300_nir_detect_multipass_scan_pattern(nir, &pattern);
+   char check_name[128];
+   snprintf(check_name, sizeof(check_name), "%s rejects", label);
+   CHECK(!pattern.is_multipass_scan, check_name);
+   snprintf(check_name, sizeof(check_name), "%s keeps zero diagnostics", label);
+   CHECK(pattern.step_op == 0 && pattern.input_ssbo_binding == 0 &&
+            pattern.output_ssbo_binding == 0,
+         check_name);
+   ralloc_free(nir);
+}
+
+static void
 case_multipass_metadata(void)
 {
    printf("multipass loop-carried value\n");
+   check_multipass_accept(MULTIPASS_STEP_IADD, nir_op_iadd,
+                          "loop-carried iadd");
+   check_multipass_accept(MULTIPASS_STEP_IMUL_VALUE_CONST, nir_op_imul,
+                          "loop-carried imul value-constant");
+   check_multipass_accept(MULTIPASS_STEP_IMUL_CONST_VALUE, nir_op_imul,
+                          "loop-carried imul constant-value");
+   check_multipass_accept(MULTIPASS_STEP_ISHL, nir_op_ishl,
+                          "loop-carried ishl");
 
-   {
-      nir_shader *nir = build_multipass_loop_form(false);
-      prepare_detect_shader(nir);
-      struct r300_compute_multipass_scan_pattern pattern = {0};
-      r300_nir_detect_multipass_scan_pattern(nir, &pattern);
-      CHECK(pattern.is_multipass_scan,
-            "loop-carried doubling admits");
-      CHECK(pattern.step_op == nir_op_iadd,
-            "loop-carried iadd keeps deterministic step diagnostic");
-      CHECK(pattern.input_ssbo_binding == 0,
-            "loop-carried input binding follows phi preheader load");
-      CHECK(pattern.output_ssbo_binding == 1,
-            "loop-carried output binding follows the single store");
-      ralloc_free(nir);
-   }
-
-   {
-      nir_shader *nir = build_multipass_loop_form(true);
-      prepare_detect_shader(nir);
-      struct r300_compute_multipass_scan_pattern pattern = {0};
-      r300_nir_detect_multipass_scan_pattern(nir, &pattern);
-      CHECK(!pattern.is_multipass_scan,
-            "unrelated accumulator doubling rejects");
-      CHECK(pattern.step_op == 0 && pattern.input_ssbo_binding == 0 &&
-               pattern.output_ssbo_binding == 0,
-            "rejected loop keeps deterministic zero diagnostics");
-      ralloc_free(nir);
-   }
+   check_multipass_reject(MULTIPASS_STEP_IADD_NON_DOUBLE,
+                          MULTIPASS_OFFSET_INVOCATION_X4,
+                          "non-doubling iadd");
+   check_multipass_reject(MULTIPASS_STEP_IMUL_NON_DOUBLE,
+                          MULTIPASS_OFFSET_INVOCATION_X4,
+                          "non-doubling imul");
+   check_multipass_reject(MULTIPASS_STEP_ISHL_NON_DOUBLE,
+                          MULTIPASS_OFFSET_INVOCATION_X4,
+                          "non-doubling ishl");
+   check_multipass_reject(MULTIPASS_STEP_UNRELATED_DOUBLE,
+                          MULTIPASS_OFFSET_INVOCATION_X4,
+                          "unrelated accumulator doubling");
+   check_multipass_reject(MULTIPASS_STEP_IADD,
+                          MULTIPASS_OFFSET_UNIFORM,
+                          "uniform input offset");
+   check_multipass_reject(MULTIPASS_STEP_IADD,
+                          MULTIPASS_OFFSET_WRONG_STRIDE,
+                          "unrelated invocation offset");
 }
 
 static void
