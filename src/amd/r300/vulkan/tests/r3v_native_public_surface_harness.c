@@ -128,6 +128,43 @@ r3v_native_binary_semaphore_is_signaled(VkSemaphore semaphore_handle)
    return signaled;
 }
 
+static void
+check_timeline_wait_consumption(void)
+{
+   struct vk_sync binary_sync = { 0 };
+   struct vk_sync timeline_sync = { .flags = VK_SYNC_IS_TIMELINE };
+   struct vk_sync_wait waits[] = {
+      { .sync = &binary_sync },
+      { .sync = &timeline_sync },
+      { .sync = &binary_sync },
+      { .sync = &binary_sync },
+      { .sync = &binary_sync },
+   };
+   struct vk_sync_timeline_point *wait_points[] = {
+      NULL, NULL, (struct vk_sync_timeline_point *)1, NULL, NULL,
+   };
+   struct vk_sync *wait_temps[] = { NULL, NULL, NULL, &binary_sync, NULL };
+   struct vk_sync_signal signals[] = { { .sync = &timeline_sync } };
+   struct vk_queue_submit submit = {
+      .wait_count = ARRAY_SIZE(waits),
+      .signal_count = ARRAY_SIZE(signals),
+      .waits = waits,
+      .signals = signals,
+      ._wait_points = wait_points,
+      ._wait_temps = wait_temps,
+   };
+
+   assert(r3v_native_queue_wait_is_permanent_binary(&submit, 0));
+   assert(!r3v_native_queue_wait_is_permanent_binary(&submit, 1));
+   assert(!r3v_native_queue_wait_is_permanent_binary(&submit, 2));
+   assert(!r3v_native_queue_wait_is_permanent_binary(&submit, 3));
+
+   signals[0].sync = &binary_sync;
+   assert(!r3v_native_queue_wait_is_permanent_binary(&submit, 4));
+   signals[0].sync = &timeline_sync;
+   assert(r3v_native_queue_wait_is_permanent_binary(&submit, 4));
+}
+
 #define DEVICE_COMMANDS(f)                                                 \
    f(vkAllocateMemory) f(vkFreeMemory) f(vkMapMemory) f(vkUnmapMemory)     \
    f(vkCreateBuffer) f(vkDestroyBuffer) f(vkGetBufferMemoryRequirements2KHR) \
@@ -431,6 +468,8 @@ check_image_usage_surface(
 int
 main(void)
 {
+   check_timeline_wait_consumption();
+
    /* The gate stays closed by construction: recording is submit-free
     * and this harness never opens the hazard environment.
     */

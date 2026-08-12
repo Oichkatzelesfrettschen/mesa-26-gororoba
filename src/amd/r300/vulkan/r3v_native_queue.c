@@ -435,17 +435,34 @@ r3v_native_submit_resignals_sync(const struct vk_queue_submit *submit,
    return false;
 }
 
+bool
+r3v_native_queue_wait_is_permanent_binary(const struct vk_queue_submit *submit,
+                                          uint32_t wait_index)
+{
+   const struct vk_sync *wait_sync = submit->waits[wait_index].sync;
+   return !(wait_sync->flags & VK_SYNC_IS_TIMELINE) &&
+          (submit->_wait_points == NULL ||
+           submit->_wait_points[wait_index] == NULL) &&
+          submit->_wait_temps[wait_index] == NULL &&
+          !r3v_native_submit_resignals_sync(submit, wait_sync);
+}
+
 static VkResult
 r3v_native_queue_consume_binary_waits(
    struct r3v_native_device *device, const struct vk_queue_submit *submit)
 {
    for (uint32_t w = 0; w < submit->wait_count; w++) {
-      struct vk_sync *wait_sync = submit->waits[w].sync;
-      if ((wait_sync->flags & VK_SYNC_IS_TIMELINE) ||
-          submit->_wait_temps[w] != NULL ||
-          r3v_native_submit_resignals_sync(submit, wait_sync))
+      /* vk_queue_submit_final (rg --fixed-strings
+       * "submit->_wait_points[i] = wait_point"
+       * src/vulkan/runtime/vk_queue.c) unwraps an emulated timeline wait
+       * into its binary point and keeps that point in _wait_points. The
+       * timeline owns the point until its value is collected, so resetting
+       * the binary payload here would make a completed value wait forever.
+       */
+      if (!r3v_native_queue_wait_is_permanent_binary(submit, w))
          continue;
 
+      struct vk_sync *wait_sync = submit->waits[w].sync;
       VkResult reset_result = vk_sync_reset(&device->vk, wait_sync);
       if (reset_result != VK_SUCCESS) {
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,

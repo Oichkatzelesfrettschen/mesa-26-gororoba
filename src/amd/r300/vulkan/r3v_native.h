@@ -337,6 +337,12 @@ void r3v_native_cmd_buffer_install_ib(
 VkResult r3v_native_queue_submit(struct vk_queue *queue,
                                  struct vk_queue_submit *submit);
 
+/* A permanent binary wait is reset after deferred execution.  Emulated
+ * timeline points, temporary payloads, and same-submit re-signals retain
+ * their sync state for the common queue runtime to collect or replace. */
+bool r3v_native_queue_wait_is_permanent_binary(
+   const struct vk_queue_submit *submit, uint32_t wait_index);
+
 /* Durable evidence writer shared by the queue's retained submit objects
  * and the attended runners' readback artifacts: temporary file, full
  * write, fsync, atomic rename, directory fsync.  Returns 0 or a negative
