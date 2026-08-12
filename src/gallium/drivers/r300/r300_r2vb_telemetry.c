@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "nir.h"
@@ -177,6 +178,11 @@ telemetry_publish(const char *path, const uint8_t *data, size_t size)
     int fd = mkstemp(tmp);
     if (fd < 0)
         return false;
+    if (fchmod(fd, 0644) != 0) {
+        close(fd);
+        unlink(tmp);
+        return false;
+    }
 
     size_t off = 0;
     bool ok = true;
