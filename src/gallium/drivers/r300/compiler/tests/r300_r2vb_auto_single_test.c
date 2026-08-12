@@ -1909,6 +1909,7 @@ check_position_source_rank(void)
    static const struct {
       unsigned num_inputs;
       unsigned locations[3];
+      unsigned location_fractions[3];
       unsigned driver_locations[3];
       unsigned position_index; /* which declared input feeds position */
       bool declare_reversed;
@@ -1916,13 +1917,20 @@ check_position_source_rank(void)
       unsigned want_driver_location;
       const char *name;
    } cases[] = {
-      { 1, { 0 }, { 0 }, 0, false, 0, 0, "single input at location 0" },
-      { 2, { 0, 3 }, { 0, 1 }, 1, false, 1, 1, "position at location 3 of {0,3}" },
-      { 3, { 1, 4, 7 }, { 0, 1, 2 }, 1, false, 1, 1, "position at location 4 of {1,4,7}" },
-      { 2, { 0, 3 }, { 0, 1 }, 1, true, 1, 1,
+      { 1, { 0 }, { 0 }, { 0 }, 0, false, 0, 0,
+        "single input at location 0" },
+      { 2, { 0, 3 }, { 0, 0 }, { 0, 1 }, 1, false, 1, 1,
+        "position at location 3 of {0,3}" },
+      { 3, { 1, 4, 7 }, { 0, 0, 0 }, { 0, 1, 2 }, 1, false, 1, 1,
+        "position at location 4 of {1,4,7}" },
+      { 2, { 0, 3 }, { 0, 0 }, { 0, 1 }, 1, true, 1, 1,
         "reversed declaration order keeps location rank" },
-      { 3, { 2, 5, 9 }, { 0, 1, 2 }, 2, false, 2, 2,
+      { 3, { 2, 5, 9 }, { 0, 0, 0 }, { 0, 1, 2 }, 2, false, 2, 2,
         "position at the highest sparse location" },
+      { 2, { 0, 0 }, { 0, 1 }, { 0, 1 }, 1, false, 1, 1,
+        "location fraction orders equal locations" },
+      { 2, { 0, 0 }, { 0, 0 }, { 0, 1 }, 0, true, 1, 0,
+        "declaration order breaks equal location fractions" },
    };
    for (unsigned c = 0; c < ARRAY_SIZE(cases); c++) {
       nir_builder b = nir_builder_init_simple_shader(
@@ -1936,6 +1944,7 @@ check_position_source_rank(void)
          vars[i] = nir_variable_create(b.shader, nir_var_shader_in,
                                        glsl_vec4_type(), "in");
          vars[i]->data.location = VERT_ATTRIB_GENERIC0 + cases[c].locations[i];
+         vars[i]->data.location_frac = cases[c].location_fractions[i];
          vars[i]->data.driver_location = cases[c].driver_locations[i];
       }
       nir_variable *out_pos = nir_variable_create(
@@ -2167,6 +2176,27 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_logical_binding_init(&src, &fs, &badrs, 0, 6,
                                                      &bind),
             "binding: the constructor declines a stale extra RS entry");
+      badrs = rs;
+      badrs.gb_enable = R300_GB_POINT_STUFF_ENABLE |
+                        (R300_GB_TEX_ST << R300_GB_TEX0_SOURCE_SHIFT);
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_GB_STATE,
+            "binding: GB texture stuffing reports GB_STATE");
+      CHECK(!r300_r2vb_producer_logical_binding_init(&src, &fs, &badrs, 0, 6,
+                                                     &bind),
+            "binding: the constructor declines GB texture stuffing");
+      badrs = rs;
+      uint32_t valid_prog_stream_cntl = it.prog_stream_cntl[0];
+      it.prog_stream_cntl[0] |= (1u << R300_SKIP_DWORDS_SHIFT);
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_SWIZZLE,
+            "binding: a stale slot skip count reports SWIZZLE");
+      it.prog_stream_cntl[0] = valid_prog_stream_cntl |
+                               (1u << (16 + R300_SKIP_DWORDS_SHIFT));
+      CHECK(r300_r2vb_producer_binding_check(&ft, &it, &bind, &badrs) &
+               R300_R2VB_BINDING_SWIZZLE,
+            "binding: a stale model skip count reports SWIZZLE");
+      it.prog_stream_cntl[0] = valid_prog_stream_cntl;
       CHECK(r300_r2vb_producer_logical_binding_init(&src, &fs, &rs, 0, 6,
                                                     &bind),
             "binding: the pristine block rebuilds after the negatives");

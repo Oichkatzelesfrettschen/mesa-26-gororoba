@@ -327,6 +327,9 @@ void r300_r2vb_test_fail_position_input_clone_once(void);
 /* Test calibration lets the first count succeed and the following clone fail,
  * matching a transient allocation failure after route preflight. */
 void r300_r2vb_test_fail_position_input_clone_after_one(void);
+/* Test calibration injects one transient failure in the source-identity scan
+ * after the position-input count succeeds. */
+void r300_r2vb_test_fail_position_source_clone_once(void);
 /* Test calibration injects one transient failure at the shadow recount. */
 void r300_r2vb_test_fail_shadow_recount_once(void);
 int r300_r2vb_first_computed_varying(struct nir_shader *vs_nir);
@@ -744,6 +747,9 @@ r300_r2vb_producer_streams_rebind(const struct r300_r2vb_producer_streams *orig,
 struct nir_shader;
 bool r300_r2vb_position_source_scan(struct nir_shader *vs_nir,
                                     struct r300_r2vb_position_source *out);
+bool r300_r2vb_position_source_scan_status(
+    struct nir_shader *vs_nir, struct r300_r2vb_position_source *out,
+    bool *transient_failure);
 
 /* Source identity of the one application input feeding the computed varying
  * at `slot`: strip every store except that varying's, DCE, and require
@@ -817,6 +823,7 @@ enum r300_r2vb_producer_binding_violation {
     R300_R2VB_BINDING_RS_COMPONENTS = 1u << 5,
     R300_R2VB_BINDING_FS_REGISTER = 1u << 6,
     R300_R2VB_BINDING_TAIL_STATE = 1u << 7,
+    R300_R2VB_BINDING_GB_STATE = 1u << 8,
 };
 
 /* Runtime binding constructor: derives the destination vectors from

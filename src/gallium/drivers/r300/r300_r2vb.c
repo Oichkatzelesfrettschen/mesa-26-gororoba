@@ -61,6 +61,7 @@ static bool r2vb_single_cs_enabled(void);
 
 static uint32_t r300_r2vb_fail_position_input_clone;
 static uint32_t r300_r2vb_skip_position_input_clone;
+static uint32_t r300_r2vb_fail_position_source_clone;
 static uint32_t r300_r2vb_fail_shadow_recount;
 
 static util_once_flag r300_r2vb_plan_debug_once = UTIL_ONCE_FLAG_INIT;
@@ -90,6 +91,12 @@ void
 r300_r2vb_test_fail_position_input_clone_after_one(void)
 {
     p_atomic_set(&r300_r2vb_skip_position_input_clone, 1);
+}
+
+void
+r300_r2vb_test_fail_position_source_clone_once(void)
+{
+    p_atomic_set(&r300_r2vb_fail_position_source_clone, 1);
 }
 
 void
@@ -3919,13 +3926,80 @@ bool r300_r2vb_producer_interface_init_gated(
     return true;
 }
 
-bool r300_r2vb_position_source_scan(nir_shader *vs_nir,
-                                    struct r300_r2vb_position_source *out)
+static int
+r300_r2vb_input_order_rank(nir_shader *vs_nir, const nir_variable *target)
 {
-    memset(out, 0, sizeof(*out));
-    nir_shader *tmp = nir_shader_clone(NULL, vs_nir);
-    if (!tmp)
+    if (!vs_nir || !target)
+        return -1;
+
+    unsigned target_index = 0;
+    unsigned index = 0;
+    bool found = false;
+    nir_foreach_variable_with_modes(var, vs_nir, nir_var_shader_in) {
+        if (var == target) {
+            target_index = index;
+            found = true;
+            break;
+        }
+        index++;
+    }
+    if (!found)
+        return -1;
+
+    unsigned rank = 0;
+    index = 0;
+    nir_foreach_variable_with_modes(var, vs_nir, nir_var_shader_in) {
+        if (var != target &&
+            (var->data.location < target->data.location ||
+             (var->data.location == target->data.location &&
+              (var->data.location_frac < target->data.location_frac ||
+               (var->data.location_frac == target->data.location_frac &&
+                index < target_index)))))
+            rank++;
+        index++;
+    }
+    return (int)rank;
+}
+
+static int
+r300_r2vb_input_order_rank_by_identity(nir_shader *vs_nir,
+                                       unsigned driver_location,
+                                       gl_varying_slot location,
+                                       unsigned location_frac)
+{
+    nir_variable *match = NULL;
+    nir_foreach_variable_with_modes(var, vs_nir, nir_var_shader_in) {
+        if (var->data.driver_location != driver_location ||
+            var->data.location != location ||
+            var->data.location_frac != location_frac)
+            continue;
+        if (match)
+            return -1;
+        match = var;
+    }
+    return match ? r300_r2vb_input_order_rank(vs_nir, match) : -1;
+}
+
+bool r300_r2vb_position_source_scan_status(
+    nir_shader *vs_nir, struct r300_r2vb_position_source *out,
+    bool *transient_failure)
+{
+    if (transient_failure)
+        *transient_failure = false;
+    if (!vs_nir || !out)
         return false;
+    memset(out, 0, sizeof(*out));
+    if (p_atomic_xchg(&r300_r2vb_fail_position_source_clone, 0)) {
+        if (transient_failure)
+            *transient_failure = true;
+        return false;
+    }
+    nir_shader *tmp = nir_shader_clone(NULL, vs_nir);
+    if (!tmp) {
+        if (transient_failure)
+            *transient_failure = true;
+        return false;
+    }
     /* Strip every non-position store, DCE, and drop dead inputs: the
      * survivors are exactly the inputs feeding gl_Position (the
      * count_position_inputs reduction, retained here as an identity). */
@@ -3947,30 +4021,35 @@ bool r300_r2vb_position_source_scan(nir_shader *vs_nir,
     nir_remove_dead_variables(tmp, nir_var_shader_in, NULL);
     unsigned n = 0;
     int surviving_location = -1;
+    unsigned surviving_fraction = 0;
     unsigned driver_location = 0;
     nir_foreach_variable_with_modes(var, tmp, nir_var_shader_in) {
         n++;
         surviving_location = var->data.location;
+        surviving_fraction = var->data.location_frac;
         driver_location = var->data.driver_location;
     }
     ralloc_free(tmp);
     if (n != 1)
         return false;
-    /* Rank among the ORIGINAL bound VS inputs in ascending location order:
-     * velem[k] feeds the k-th input in that order, so the rank -- not the
-     * driver location alone -- names the element.  The bound VS arrives in
-     * deref/variable form (r300_optimize_nir does not run nir_lower_io),
-     * matching r300_r2vb_input_velem_index. */
-    unsigned rank = 0;
-    nir_foreach_variable_with_modes(var, vs_nir, nir_var_shader_in)
-        if (var->data.location < surviving_location)
-            rank++;
-    if (driver_location > 255 || rank > 255)
+    /* Rank follows the re-stage total order: location, location fraction, and
+     * declaration order.  The cloned survivor retains driver_location, which
+     * identifies the corresponding original input even when locations tie. */
+    int rank = r300_r2vb_input_order_rank_by_identity(
+        vs_nir, driver_location, (gl_varying_slot)surviving_location,
+        surviving_fraction);
+    if (driver_location > 255 || rank < 0 || rank > 255)
         return false;
     out->app_driver_location = driver_location;
-    out->location_rank = rank;
+    out->location_rank = (uint8_t)rank;
     out->valid = true;
     return true;
+}
+
+bool r300_r2vb_position_source_scan(nir_shader *vs_nir,
+                                    struct r300_r2vb_position_source *out)
+{
+    return r300_r2vb_position_source_scan_status(vs_nir, out, NULL);
 }
 
 bool r300_r2vb_varying_source_scan(nir_shader *vs_nir, int slot,
@@ -4004,23 +4083,24 @@ bool r300_r2vb_varying_source_scan(nir_shader *vs_nir, int slot,
     nir_remove_dead_variables(tmp, nir_var_shader_in, NULL);
     unsigned n = 0;
     int surviving_location = -1;
+    unsigned surviving_fraction = 0;
     unsigned driver_location = 0;
     nir_foreach_variable_with_modes(var, tmp, nir_var_shader_in) {
         n++;
         surviving_location = var->data.location;
+        surviving_fraction = var->data.location_frac;
         driver_location = var->data.driver_location;
     }
     ralloc_free(tmp);
     if (n != 1)
         return false;
-    unsigned rank = 0;
-    nir_foreach_variable_with_modes(var, vs_nir, nir_var_shader_in)
-        if (var->data.location < surviving_location)
-            rank++;
-    if (driver_location > 255 || rank > 255)
+    int rank = r300_r2vb_input_order_rank_by_identity(
+        vs_nir, driver_location, (gl_varying_slot)surviving_location,
+        surviving_fraction);
+    if (driver_location > 255 || rank < 0 || rank > 255)
         return false;
     out->app_driver_location = driver_location;
-    out->location_rank = rank;
+    out->location_rank = (uint8_t)rank;
     out->valid = true;
     return true;
 }
@@ -4123,6 +4203,25 @@ static bool r2vb_rs_tail_zero(const struct r300_rs_block *rs)
     return true;
 }
 
+static bool r2vb_rs_gb_stuffing_ok(const struct r300_rs_block *rs)
+{
+    /* R2VB supplies the model texture coordinates from the validated VAP
+     * vector.  Point, line, or triangle stuffing and any non-replicating
+     * TEX source selector replace that vector in the raster pipe. */
+    const uint32_t stuffing_mask =
+        R300_GB_POINT_STUFF_ENABLE | R300_GB_LINE_STUFF_ENABLE |
+        R300_GB_TRIANGLE_STUFF_ENABLE |
+        (0x3u << R300_GB_TEX0_SOURCE_SHIFT) |
+        (0x3u << R300_GB_TEX1_SOURCE_SHIFT) |
+        (0x3u << R300_GB_TEX2_SOURCE_SHIFT) |
+        (0x3u << R300_GB_TEX3_SOURCE_SHIFT) |
+        (0x3u << R300_GB_TEX4_SOURCE_SHIFT) |
+        (0x3u << R300_GB_TEX5_SOURCE_SHIFT) |
+        (0x3u << R300_GB_TEX6_SOURCE_SHIFT) |
+        (0x3u << R300_GB_TEX7_SOURCE_SHIFT);
+    return !(rs->gb_enable & stuffing_mask);
+}
+
 bool r300_r2vb_producer_logical_binding_init(
     const struct r300_r2vb_position_source *source,
     const struct r300_shader_semantics *fs_inputs,
@@ -4163,7 +4262,7 @@ bool r300_r2vb_producer_logical_binding_init(
      * disagreeing RS would emit a draw whose FS reads a stale input. */
     if (!r2vb_rs_assembly_ok(rs) || !r2vb_rs_output_fmt_ok(rs) ||
         !r2vb_rs_tc0_components_ok(rs) || !r2vb_rs_writes_fs_reg(rs, hwreg) ||
-        !r2vb_rs_tail_zero(rs)) {
+        !r2vb_rs_tail_zero(rs) || !r2vb_rs_gb_stuffing_ok(rs)) {
         r2vb_bo_draw_validate_decline("binding_rs_calibration");
         if (getenv("R300_R2VB_EXEC_DEBUG"))
             fprintf(stderr,
@@ -4275,6 +4374,15 @@ static bool r2vb_psc_element_ok(uint32_t cntl, uint32_t ext, unsigned elem,
         return false;
     if ((c & 0xf) != (uint32_t)semantics->data_type)
         return false;
+    /* The producer emits no skipped dwords or reserved control bits.  A stale
+     * skip count changes the VAP record advance while preserving the visible
+     * data type, so the complete control word must stay within the calibrated
+     * DATA_TYPE, destination, and LAST_VEC fields. */
+    const uint32_t control_mask = 0xf |
+                                  (0x1f << R300_DST_VEC_LOC_SHIFT) |
+                                  R300_LAST_VEC;
+    if (c & ~control_mask)
+        return false;
     if (((c >> R300_DST_VEC_LOC_SHIFT) & 0x1f) != dst_vec_loc)
         return false;
     if (((c & R300_LAST_VEC) != 0) != want_last)
@@ -4327,6 +4435,8 @@ unsigned r300_r2vb_producer_binding_check(
             v |= R300_R2VB_BINDING_TAIL_STATE;
     if (!r2vb_rs_tail_zero(rs))
         v |= R300_R2VB_BINDING_TAIL_STATE;
+    if (!r2vb_rs_gb_stuffing_ok(rs))
+        v |= R300_R2VB_BINDING_GB_STATE;
     return v;
 }
 
@@ -6512,17 +6622,11 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
 /* r300_r2vb_reingest_kind / r300_r2vb_reingest_stream live in r300_r2vb.h so the host
  * layout unit can enumerate against the same types. */
 
-/* The app velem index feeding input var IN: its rank among the VS inputs in
- * ascending location order, because r300 binds velem[k] to the k-th input in that
- * order.  Location rank, not driver_location, because the bound VS arrives in
- * deref/variable form (r300_optimize_nir does not run nir_lower_io). */
+/* The app velem index feeding input var IN: the same total order as the
+ * re-staged producer, by location, location fraction, and declaration order. */
 static int r300_r2vb_input_velem_index(nir_shader *vs, const nir_variable *in)
 {
-    int rank = 0;
-    nir_foreach_variable_with_modes(v, vs, nir_var_shader_in)
-        if (v != in && v->data.location < in->data.location)
-            rank++;
-    return rank;
+    return r300_r2vb_input_order_rank(vs, in);
 }
 
 /* The rank oracle calls the mapper on named variables so the plan's

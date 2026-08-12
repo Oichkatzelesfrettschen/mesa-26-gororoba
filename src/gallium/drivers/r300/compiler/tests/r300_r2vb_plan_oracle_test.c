@@ -837,6 +837,25 @@ case_input_count_failure(struct r300_context *r300)
    r300_r2vb_plan_cache_release(&fake_vs);
    r300->vs_state.state = NULL;
    ralloc_free(vs);
+
+   vs = build_float_fits();
+   memset(&fake_vs, 0, sizeof(fake_vs));
+   fake_vs.state.type = PIPE_SHADER_IR_NIR;
+   fake_vs.state.ir.nir = vs;
+   r300->vs_state.state = &fake_vs;
+   r300_r2vb_test_fail_position_source_clone_once();
+   failed = r300_r2vb_producer_plan_get(
+      r300, false, R300_R2VB_POSITION_CLIP);
+   CHECK(!failed && !fake_vs.r2vb_plan[0][0],
+         "injected source-scan failure leaves the plan slot empty");
+   retry = r300_r2vb_producer_plan_get(
+      r300, false, R300_R2VB_POSITION_CLIP);
+   CHECK(retry && retry->status == R300_R2VB_PLAN_READY &&
+            retry->action == R300_R2VB_PLAN_SINGLE,
+         "the source-scan retry caches the known-good plan");
+   r300_r2vb_plan_cache_release(&fake_vs);
+   r300->vs_state.state = NULL;
+   ralloc_free(vs);
 }
 
 static void
