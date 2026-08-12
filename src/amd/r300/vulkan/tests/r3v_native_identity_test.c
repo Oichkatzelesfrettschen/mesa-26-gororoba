@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static void
 test_json_escape(void)
@@ -35,7 +36,7 @@ test_json_escape(void)
    const char malformed_utf8[] = {
       'p', 'a', 't', 'h', (char)0xff, (char)0xc3, 'x', '\0',
    };
-   const char malformed_expected[] = "path\\u00ff\\u00c3x";
+   const char malformed_expected[] = "path\\udcff\\udcc3x";
    assert(r3v_native_json_escape(output, sizeof(output), malformed_utf8) ==
           (int)strlen(malformed_expected));
    assert(strcmp(output, malformed_expected) == 0);
@@ -44,6 +45,34 @@ test_json_escape(void)
    assert(r3v_native_json_escape(output, sizeof(output), valid_utf8) ==
           (int)strlen(valid_utf8));
    assert(strcmp(output, valid_utf8) == 0);
+}
+
+static void
+test_metadata_identity(void)
+{
+   struct stat before = {0};
+   before.st_dev = 11;
+   before.st_ino = 22;
+   before.st_size = 33;
+   before.st_mtim.tv_sec = 44;
+   before.st_mtim.tv_nsec = 55;
+   before.st_ctim.tv_sec = 66;
+   before.st_ctim.tv_nsec = 77;
+
+   struct stat after = before;
+   assert(r3v_native_identity_metadata_unchanged(&before, &after));
+
+   after.st_size++;
+   assert(!r3v_native_identity_metadata_unchanged(&before, &after));
+   after = before;
+   after.st_mtim.tv_nsec++;
+   assert(!r3v_native_identity_metadata_unchanged(&before, &after));
+   after = before;
+   after.st_ctim.tv_nsec++;
+   assert(!r3v_native_identity_metadata_unchanged(&before, &after));
+   after = before;
+   after.st_ino++;
+   assert(!r3v_native_identity_metadata_unchanged(&before, &after));
 }
 
 static void
@@ -78,6 +107,7 @@ int
 main(void)
 {
    test_json_escape();
+   test_metadata_identity();
    test_mapped_identity();
    puts("r3v_native_identity_test: calibrated identity and JSON checks pass");
    return 0;

@@ -213,6 +213,41 @@ out:
    return result;
 }
 
+static int
+verify_final_mapping(const struct r3v_native_map_entry *initial,
+                     int file_fd, const struct stat *expected_status)
+{
+   struct stat file_status;
+   if (fstat(file_fd, &file_status) != 0)
+      return -errno;
+   if (!r3v_native_identity_metadata_unchanged(expected_status,
+                                               &file_status))
+      return -ESTALE;
+
+   struct r3v_native_map_entry final;
+   int result = find_anchor_mapping(&final);
+   if (result != 0)
+      return result;
+   if (strcmp(final.path, initial->path) != 0 ||
+       final.device != file_status.st_dev ||
+       final.inode != file_status.st_ino)
+      return -ESTALE;
+
+   int path_fd = open(final.path, O_RDONLY | O_CLOEXEC);
+   if (path_fd < 0)
+      return -errno;
+   struct stat path_status;
+   if (fstat(path_fd, &path_status) != 0) {
+      result = -errno;
+      close(path_fd);
+      return result;
+   }
+   if (!r3v_native_identity_metadata_unchanged(&file_status, &path_status))
+      result = -ESTALE;
+   close(path_fd);
+   return result;
+}
+
 int
 r3v_native_identity_collect(char *path_out, size_t path_size,
                             char *digest_out, size_t digest_size)
@@ -252,20 +287,27 @@ r3v_native_identity_collect(char *path_out, size_t path_size,
    if (result != 0)
       goto close_file;
 
+   struct stat final_status;
+   if (fstat(fd, &final_status) != 0) {
+      result = -errno;
+      goto close_file;
+   }
+   if (!r3v_native_identity_metadata_unchanged(&status, &final_status)) {
+      result = -ESTALE;
+      goto close_file;
+   }
+
    /* Revalidate the mapped bytes and file identity after hashing.  The
     * second hash also detects same-inode rewrites outside executable
     * segments, which mapping-byte comparison cannot observe. */
    result = verify_executable_mappings(&identity, fd, status.st_size);
    if (result != 0)
       goto close_file;
-   struct stat final_status;
    if (fstat(fd, &final_status) != 0) {
       result = -errno;
       goto close_file;
    }
-   if (final_status.st_dev != status.st_dev ||
-       final_status.st_ino != status.st_ino ||
-       final_status.st_size != status.st_size) {
+   if (!r3v_native_identity_metadata_unchanged(&status, &final_status)) {
       result = -ESTALE;
       goto close_file;
    }
@@ -276,9 +318,7 @@ r3v_native_identity_collect(char *path_out, size_t path_size,
       result = -errno;
       goto close_file;
    }
-   if (final_status.st_dev != status.st_dev ||
-       final_status.st_ino != status.st_ino ||
-       final_status.st_size != status.st_size) {
+   if (!r3v_native_identity_metadata_unchanged(&status, &final_status)) {
       result = -ESTALE;
       goto close_file;
    }
@@ -286,6 +326,9 @@ r3v_native_identity_collect(char *path_out, size_t path_size,
       result = -ESTALE;
       goto close_file;
    }
+   result = verify_final_mapping(&identity, fd, &final_status);
+   if (result != 0)
+      goto close_file;
    snprintf(digest_out, digest_size, "%s", final_digest);
    snprintf(path_out, path_size, "%s", identity.path);
 
@@ -318,7 +361,7 @@ valid_utf8_sequence_length(const unsigned char *bytes)
 {
    const unsigned char first = bytes[0];
 
-   if (first >= 0xc2 && first <= 0xdf &&
+   if (first >= 0xc2 && first <= 0xdf && bytes[1] != '\0' &&
        is_utf8_continuation(bytes[1]))
       return 2;
    if (first >= 0xe0 && first <= 0xef && bytes[1] != '\0' &&
@@ -400,12 +443,13 @@ r3v_native_json_escape(char *out, size_t out_size, const char *input)
                replacement_size = utf8_length;
                source += utf8_length - 1;
             } else {
-               /* Preserve malformed path bytes as reversible JSON byte
-                * escapes instead of emitting invalid UTF-8 text. */
+               /* Preserve malformed path bytes as Python surrogate-escape
+                * JSON sequences so os.fsencode recovers each original byte.
+                */
                escaped[0] = '\\';
                escaped[1] = 'u';
-               escaped[2] = '0';
-               escaped[3] = '0';
+               escaped[2] = 'd';
+               escaped[3] = 'c';
                escaped[4] = hex[*source >> 4];
                escaped[5] = hex[*source & 0xf];
                replacement = escaped;
