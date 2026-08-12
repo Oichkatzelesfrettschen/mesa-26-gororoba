@@ -2176,7 +2176,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * (0x2090/0x2094) explicitly on the re-ingest so PT_SIZE_PRESENT (bit 16 of
      * 0x2090) does not inherit from the upstream real SWTCL draw.  The only other
      * 0x2090 write site in the driver is r300_emit_vap_output_state, so without
-     * this cell the re-ingest runs with whatever PT_SIZE_PRESENT the trigger draw
+     * this override the re-ingest runs with whatever PT_SIZE_PRESENT the trigger draw
      * last left set.  When it is left set the GA expects a per-vertex psize output
      * vector that the single-FLOAT_4 re-ingest never produces; the output-vector
      * layout the GA reads stops matching what the producer wrote, position moves,
@@ -2192,7 +2192,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         ptsize_c0 = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
-    /* C1a cell gate (R300_PTSIZE_C1A=1): write identity values to
+    /* Viewport identity gate (R300_PTSIZE_C1A=1): write identity values to
      * SE_VPORT_X/Y/ZSCALE/OFFSET (0x1d98..0x1dac) on the re-ingest so the
      * VAP viewport state does not inherit non-identity values from previous
      * IBs.  The Stage 0.5 capture-class decode established that NEITHER the
@@ -2211,10 +2211,10 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * The direct-VB R2VB re-ingest path writes the same identity viewport
      * state before its VTE setup.
      * Gate-off keeps the path byte-identical. */
-    static int ptsize_c1a = -1;
-    if (ptsize_c1a < 0) {
+    static int viewport_identity_gate = -1;
+    if (viewport_identity_gate < 0) {
         const char *e = getenv("R300_PTSIZE_C1A");
-        ptsize_c1a = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        viewport_identity_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
     /* R300_R2VB_VTE_W0_FMT=1 writes VAP_VTE_CNTL explicitly on the
@@ -2234,7 +2234,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * keeps the path byte-identical. */
     static int r2vb_vte_w0_fmt = -1;
     if (r2vb_vte_w0_fmt < 0) {
-        /* R300_PTSIZE_C1B is the retired name for the same gate. */
+        /* R300_PTSIZE_C1B is the retired name for the VTE W0 gate. */
         const char *e = getenv("R300_R2VB_VTE_W0_FMT");
         if (!e)
             e = getenv("R300_PTSIZE_C1B");
@@ -2262,32 +2262,37 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         ptsize_c1c = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
-    /* C2/C3/C4 independently gate register classes the trigger IB leaves
-     * unwritten. Each writes a known-good identity or zero value.
-     *   C2: SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET (0x42A4..0x42B0) = 0
+    /* Polygon-offset, stream-control, and fog/stipple gates independently
+     * cover register classes the trigger IB leaves unwritten. Each writes a
+     * known-good identity or zero value.
+     *   Polygon-offset gate (R300_PTSIZE_C2=1):
+     *       SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET (0x42A4..0x42B0) = 0
      *       (clear inherited polygon-offset that shifts Z and indirectly XY)
-     *   C3: VAP_PROG_STREAM_CNTL_1..7 (0x2154..0x216C) = 0
+     *   Stream-control gate (R300_PTSIZE_C3=1):
+     *       VAP_PROG_STREAM_CNTL_1..7 (0x2154..0x216C) = 0
      *       (clear inherited multi-stream config that confuses the VAP)
-     *   C4: GA_FOG_SCALE (0x4294), GA_FOG_OFFSET (0x4298),
+     *   Fog/stipple gate (R300_PTSIZE_C4=1):
+     *       GA_FOG_SCALE (0x4294), GA_FOG_OFFSET (0x4298),
      *       GA_TRIANGLE_STIPPLE (0x4214) = 0
      *       (clear inherited fog state and stipple bias) */
-    static int ptsize_c2 = -1;
-    if (ptsize_c2 < 0) {
+    static int polygon_offset_gate = -1;
+    if (polygon_offset_gate < 0) {
         const char *e = getenv("R300_PTSIZE_C2");
-        ptsize_c2 = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        polygon_offset_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    static int ptsize_c3 = -1;
-    if (ptsize_c3 < 0) {
+    static int stream_control_gate = -1;
+    if (stream_control_gate < 0) {
         const char *e = getenv("R300_PTSIZE_C3");
-        ptsize_c3 = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        stream_control_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    static int ptsize_c4 = -1;
-    if (ptsize_c4 < 0) {
+    static int fog_stipple_gate = -1;
+    if (fog_stipple_gate < 0) {
         const char *e = getenv("R300_PTSIZE_C4");
-        ptsize_c4 = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        fog_stipple_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
-    /* C1d cell gate (R300_PTSIZE_C1D=1): re-assert the rasterizer interpolator
+    /* Rasterizer-interpolator gate (R300_PTSIZE_C1D=1): re-assert the
+     * rasterizer interpolator
      * block (GB_ENABLE + RS_IP/RS_COUNT/RS_INST) on the re-ingest so the
      * fragment-input routing does not inherit a stale routing from the trigger
      * draw.  Stage 0.5 observed the RS_IP/RS_INST/RS_COUNT atoms in the trigger
@@ -2302,37 +2307,47 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * the VAP_OUTPUT_VTX_FMT subset is owned by the position-output-format gate
      * and the VAP_VTX_STATE_CNTL/VSM_VTX_ASSM subset by the vertex-assembly gate.
      * Gate-off keeps the path byte-identical. */
-    static int ptsize_c1d = -1;
-    if (ptsize_c1d < 0) {
+    static int rasterizer_interpolator_gate = -1;
+    if (rasterizer_interpolator_gate < 0) {
         const char *e = getenv("R300_PTSIZE_C1D");
-        ptsize_c1d = (e && strcmp(e, "1") == 0) ? 1 : 0;
+        rasterizer_interpolator_gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    struct r300_rs_block *c1d_rs =
-        ptsize_c1d ? (struct r300_rs_block *)r300->rs_block_state.state : NULL;
+    struct r300_rs_block *rasterizer_interpolator_state =
+        rasterizer_interpolator_gate
+            ? (struct r300_rs_block *)r300->rs_block_state.state
+            : NULL;
     /* RS_IP and RS_INST tables share the same length (inst_count + 1). */
-    unsigned c1d_rs_count = c1d_rs ? (c1d_rs->inst_count & R300_RS_INST_COUNT_MASK) + 1 : 0;
+    unsigned rasterizer_interpolator_count =
+        rasterizer_interpolator_state
+            ? (rasterizer_interpolator_state->inst_count & R300_RS_INST_COUNT_MASK) + 1
+            : 0;
     const bool position_only_output =
         r300_r2vb_position_only_output_enabled(ptsize_c0, ptsize_c1c);
 
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
-     * optional observe redirect (stage3_color_bo) adds nine dwords.  Each C1/C
-     * cell adds an independently-gated count: the shared position-output-format
-     * packet is 3 (SEQ-of-2 + header), C1a 7, C1b W0 2 plus restore 2, the
-     * vertex-assembly packet 3, C2 5 (SEQ-of-4 + header), C3 8
-     * (SEQ-of-7 + header), C4 6 (3 single writes, non-contiguous), C1d 7
-     * + 2*rs_count (the rasterizer block, variable). */
+     * optional observe redirect (stage3_color_bo) adds nine dwords.  Each
+     * optional state gate adds an independently-gated count: the shared
+     * position-output-format packet is 3 (SEQ-of-2 + header), the viewport
+     * identity override is 7, the VTE W0 override is 2 plus restore 2, the
+     * vertex-assembly packet is 3, the polygon-offset gate is 5
+     * (SEQ-of-4 + header), the stream-control gate is 8 (SEQ-of-7 + header),
+     * the fog/stipple gate is 6 (3 single writes, non-contiguous), and the
+     * rasterizer-interpolator gate is 7 + 2*rs_count (variable). */
     BEGIN_CS((stage3_color_bo ? 26 : 17)
              + r300_r2vb_position_only_output_dwords(ptsize_c0, ptsize_c1c)
-             + (ptsize_c1a ? 7 : 0)
+             + (viewport_identity_gate ? 7 : 0)
              + r300_r2vb_vte_w0_dwords(r2vb_vte_w0_fmt)
              + r300_r2vb_vte_restore_dwords(r2vb_vte_w0_fmt)
              + r300_r2vb_position_only_assembly_dwords(ptsize_c1c)
-             + (ptsize_c2  ? 5 : 0)
-             + (ptsize_c3  ? 8 : 0)
-             + (ptsize_c4  ? 6 : 0)
-             /* C1d rasterizer block: GB_ENABLE(2) + RS_IP SEQ(1 header + count) +
-              * RS_COUNT(3) + RS_INST SEQ(1 header + count) = 7 + 2 * count. */
-             + (c1d_rs ? 7 + 2 * c1d_rs_count : 0));
+             + (polygon_offset_gate ? 5 : 0)
+             + (stream_control_gate ? 8 : 0)
+             + (fog_stipple_gate ? 6 : 0)
+             /* Rasterizer-interpolator block: GB_ENABLE(2) + RS_IP SEQ(1
+              * header + count) + RS_COUNT(3) + RS_INST SEQ(1 header + count)
+              * = 7 + 2 * count. */
+             + (rasterizer_interpolator_state
+                    ? 7 + 2 * rasterizer_interpolator_count
+                    : 0));
 
     /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
      * target and scissor to its extent so the re-ingested draw rasterizes there,
@@ -2360,7 +2375,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS(r300_r2vb_position_only_output_fmt1());
     }
 
-    if (ptsize_c1a) {
+    if (viewport_identity_gate) {
         /* The direct-VB R2VB re-ingest path programs an identity viewport:
          * scale = 1.0 and offset = 0.0 on X, Y, and Z through
          * SE_VPORT_XSCALE..SE_VPORT_ZOFFSET (0x1d98..0x1dac). */
@@ -2389,8 +2404,9 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS(r300_r2vb_position_only_vtx_assm());
     }
 
-    if (ptsize_c2) {
-        /* C2: SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET cleared.  SEQ-of-4
+    if (polygon_offset_gate) {
+        /* Polygon-offset state: SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET
+         * cleared. SEQ-of-4
          * starting at 0x42A4. */
         OUT_CS_REG_SEQ(R300_SU_POLY_OFFSET_FRONT_SCALE, 4);
         OUT_CS(0);
@@ -2399,8 +2415,9 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS(0);
     }
 
-    if (ptsize_c3) {
-        /* C3: VAP_PROG_STREAM_CNTL_1..7 cleared.  SEQ-of-7 starting at 0x2154. */
+    if (stream_control_gate) {
+        /* Stream-control state: VAP_PROG_STREAM_CNTL_1..7 cleared.  SEQ-of-7
+         * starting at 0x2154. */
         OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_1, 7);
         OUT_CS(0);
         OUT_CS(0);
@@ -2411,31 +2428,35 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS(0);
     }
 
-    if (ptsize_c4) {
-        /* C4: GA_TRIANGLE_STIPPLE + GA_FOG_SCALE + GA_FOG_OFFSET cleared.
+    if (fog_stipple_gate) {
+        /* Fog/stipple state: GA_TRIANGLE_STIPPLE + GA_FOG_SCALE +
+         * GA_FOG_OFFSET cleared.
          * Three separate writes because the registers are not contiguous. */
         OUT_CS_REG(R300_GA_TRIANGLE_STIPPLE, 0);
         OUT_CS_REG(R300_GA_FOG_SCALE, 0);
         OUT_CS_REG(R300_GA_FOG_OFFSET, 0);
     }
 
-    if (c1d_rs) {
-        /* C1d: re-assert GB_ENABLE + RS_IP/RS_COUNT/RS_INST from the derived
-         * rs_block_state, mirroring r300_emit_rs_block_state's rs-specific tail.
+    if (rasterizer_interpolator_state) {
+        /* Rasterizer-interpolator state: re-assert GB_ENABLE +
+         * RS_IP/RS_COUNT/RS_INST from the derived rs_block_state, mirroring
+         * r300_emit_rs_block_state's rs-specific tail.
          * RS482/RS480 is not r500, so the R300_RS_* register set applies.  The
          * VAP_OUTPUT_VTX_FMT (position-output-format gate) and
          * VAP_VTX_STATE_CNTL/VSM_VTX_ASSM (vertex-assembly gate) subsets of the
-         * atom are deliberately NOT re-emitted here to keep the cells
+         * atom are deliberately NOT re-emitted here to keep the state subsets
          * non-overlapping. */
         OUT_CS_REG_SEQ(R300_GB_ENABLE, 1);
-        OUT_CS(c1d_rs->gb_enable);
-        OUT_CS_REG_SEQ(R300_RS_IP_0, c1d_rs_count);
-        OUT_CS_TABLE(c1d_rs->ip, c1d_rs_count);
+        OUT_CS(rasterizer_interpolator_state->gb_enable);
+        OUT_CS_REG_SEQ(R300_RS_IP_0, rasterizer_interpolator_count);
+        OUT_CS_TABLE(rasterizer_interpolator_state->ip,
+                     rasterizer_interpolator_count);
         OUT_CS_REG_SEQ(R300_RS_COUNT, 2);
-        OUT_CS(c1d_rs->count);
-        OUT_CS(c1d_rs->inst_count);
-        OUT_CS_REG_SEQ(R300_RS_INST_0, c1d_rs_count);
-        OUT_CS_TABLE(c1d_rs->inst, c1d_rs_count);
+        OUT_CS(rasterizer_interpolator_state->count);
+        OUT_CS(rasterizer_interpolator_state->inst_count);
+        OUT_CS_REG_SEQ(R300_RS_INST_0, rasterizer_interpolator_count);
+        OUT_CS_TABLE(rasterizer_interpolator_state->inst,
+                     rasterizer_interpolator_count);
     }
 
     /* Stage 3 -- re-ingest the GTT buffer as the vertex array and draw it.

@@ -1,5 +1,4 @@
 /*
- * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  */
 
@@ -28,14 +27,14 @@ check_gate_matrix(void)
    CHECK(r300_r2vb_position_only_assembly_dwords(false) == 0,
          "closed vertex-assembly gate reserves no assembly packet dwords");
    CHECK(r300_r2vb_vte_w0_dwords(false) == 0,
-         "closed C1b gate reserves no W0 packet dwords");
+         "closed VTE W0 gate reserves no override packet dwords");
    CHECK(r300_r2vb_vte_restore_dwords(false) == 0,
-         "closed C1b gate reserves no VTE restore packet dwords");
+         "closed VTE W0 gate reserves no restore packet dwords");
 
    CHECK(r300_r2vb_vte_w0_dwords(true) == 2,
-         "C1b reserves the VTE W0 write packet");
+         "VTE W0 gate reserves the override packet");
    CHECK(r300_r2vb_vte_restore_dwords(true) == 2,
-         "C1b reserves a same-IB VTE restore packet");
+         "VTE W0 gate reserves a same-IB restore packet");
 
    CHECK(r300_r2vb_position_only_output_enabled(true, false),
          "position-output gate enables the position-only output packet");
