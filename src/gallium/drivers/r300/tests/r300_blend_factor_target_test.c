@@ -1,4 +1,4 @@
-/*
+/* Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  */
 
@@ -60,8 +60,8 @@ check_intensity_target(void)
    CHECK(r300_blend_factor_for_target(
             PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE, false,
             R300_BLEND_TARGET_INTENSITY) ==
-            PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE,
-         "intensity RGB SRC_ALPHA_SATURATE reads intensity");
+            PIPE_BLENDFACTOR_ZERO,
+         "intensity RGB SRC_ALPHA_SATURATE uses the carrier-safe zero");
    CHECK(r300_blend_factor_for_target(
             PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE, true,
             R300_BLEND_TARGET_INTENSITY) == PIPE_BLENDFACTOR_ONE,

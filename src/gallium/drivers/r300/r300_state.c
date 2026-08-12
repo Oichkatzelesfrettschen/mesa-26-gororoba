@@ -558,8 +558,12 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
             alpha_blend_control_noalpha_noclamp |= r300_translate_blend_function(eqA, false);
         }
 
-        /* Intensity variant: destination alpha is the stored intensity, while
-         * SRC_ALPHA_SATURATE still has ONE as its alpha-channel factor. */
+        /* The source record in vl_mc::init_pipe_state (rg --fixed-strings
+         * "init_pipe_state" src/gallium/auxiliary/vl/vl_mc.c) documents the
+         * measured RS480 one-component carrier: source alpha aliases source
+         * color and destination alpha aliases stored intensity.  Keep RGB
+         * SRC_ALPHA_SATURATE at ZERO and keep intensity destination factors
+         * on that carrier; the alpha-channel factor remains ONE. */
         blend_control_intensity =
             R300_ALPHA_BLEND_ENABLE |
             (r300_translate_blend_factor(srcRGB_intensity) << R300_SRC_BLEND_SHIFT) |
