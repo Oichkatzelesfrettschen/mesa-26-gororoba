@@ -1,4 +1,5 @@
 /*
+ * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  *
  * Host test for the owned fragment-binary descriptor: deep-copy ownership,
@@ -12,6 +13,8 @@
 
 #include "r300_fragment_binary.h"
 
+#include "r300_reg.h"
+
 #include <assert.h>
 #include <errno.h>
 #include <stdint.h>
@@ -20,13 +23,15 @@
 #include <string.h>
 
 #define PKT0(reg, count) ((((count) - 1) << 16) | ((reg) >> 2))
+#define PKT0_ONE_REG(reg, count) (PKT0(reg, count) | RADEON_ONE_REG_WR)
 
-#define US_CONFIG 0x4600
-#define US_PIXSIZE 0x4604
-#define US_CODE_ADDR_0 0x4610
-#define FG_DEPTH_SRC 0x4bd8
-#define PFS_PARAM_TAIL 0x4df0 /* last vec4 of the US constant file */
-#define GA_US_VECTOR_DATA 0x4058
+#define US_CONFIG R300_US_CONFIG
+#define US_PIXSIZE R300_US_PIXSIZE
+#define US_CODE_ADDR_0 R300_US_CODE_ADDR_0
+#define PFS_PARAM_FIRST R300_PFS_PARAM_0_X
+#define PFS_PARAM_TAIL R300_PFS_PARAM_31_X
+#define GA_US_VECTOR_INDEX R500_GA_US_VECTOR_INDEX
+#define GA_US_VECTOR_DATA R500_GA_US_VECTOR_DATA
 #define ZB_DEPTHOFFSET 0x4f20 /* outside the US/FG block */
 
 static uint32_t *
@@ -116,6 +121,30 @@ test_validator_rejects_known_bad(void)
    const uint32_t out_of_window[] = {PKT0(ZB_DEPTHOFFSET, 1), 0x0};
    assert(!r300_fragment_binary_stream_valid(out_of_window, 2));
 
+   /* The vector data port requires the one-register packet bit. */
+   const uint32_t vector_without_one_reg[] = {
+      PKT0(GA_US_VECTOR_DATA, 2), 1, 2,
+   };
+   assert(!r300_fragment_binary_stream_valid(
+      vector_without_one_reg,
+      sizeof(vector_without_one_reg) / sizeof(uint32_t)));
+
+   /* The one-register packet bit is specific to stream ports. */
+   const uint32_t one_reg_on_register_sequence[] = {
+      PKT0_ONE_REG(US_CONFIG, 2), 1, 2,
+   };
+   assert(!r300_fragment_binary_stream_valid(
+      one_reg_on_register_sequence,
+      sizeof(one_reg_on_register_sequence) / sizeof(uint32_t)));
+
+   /* The vector index selects one source before the data stream starts. */
+   const uint32_t vector_index_sequence[] = {
+      PKT0(GA_US_VECTOR_INDEX, 2), 1, 2,
+   };
+   assert(!r300_fragment_binary_stream_valid(
+      vector_index_sequence,
+      sizeof(vector_index_sequence) / sizeof(uint32_t)));
+
    /* A sequence that starts inside the block and runs past its end. */
    const uint32_t runs_out[] = {
       PKT0(PFS_PARAM_TAIL, 12), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -129,10 +158,19 @@ test_validator_rejects_known_bad(void)
 
    /* The GA US vector data port takes an arbitrarily long payload. */
    const uint32_t vector_stream[] = {
-      PKT0(GA_US_VECTOR_DATA, 6), 1, 2, 3, 4, 5, 6,
+      PKT0(GA_US_VECTOR_INDEX, 1), 0,
+      PKT0_ONE_REG(GA_US_VECTOR_DATA, 6), 1, 2, 3, 4, 5, 6,
    };
    assert(r300_fragment_binary_stream_valid(
       vector_stream, sizeof(vector_stream) / sizeof(uint32_t)));
+
+   /* Fragment parameters occupy the upper part of the US/FG block. */
+   const uint32_t parameter_stream[] = {
+      PKT0(PFS_PARAM_FIRST, 4), 1, 2, 3, 4,
+      PKT0(PFS_PARAM_TAIL, 4), 5, 6, 7, 8,
+   };
+   assert(r300_fragment_binary_stream_valid(
+      parameter_stream, sizeof(parameter_stream) / sizeof(uint32_t)));
 }
 
 int
