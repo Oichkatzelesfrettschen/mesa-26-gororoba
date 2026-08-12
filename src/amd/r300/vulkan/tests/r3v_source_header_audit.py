@@ -12,9 +12,9 @@ appears only for a holder who does.  The names a template supplies -- the
 local git identity, a model's default, an invented project collective --
 assert authorship that does not exist, and absent attribution is the correct
 state for a file with no such holder.  REAL_COPYRIGHT_HOLDERS is the reviewed
-list of holders whose lines this tree preserves verbatim; it is empty because
-every file under this root is written here, and a file arriving with an
-upstream header joins the list by review.
+list of holders whose lines this tree preserves verbatim.  The list names the
+Mesa3D authorship line used by the route-policy files; a file arriving with
+another upstream header joins the list by review.
 
 AI participation rides in commit trailers (Assisted-by, Generated-by), so a
 header naming a model or a generation tool states it in the wrong artifact.
@@ -34,9 +34,9 @@ from pathlib import Path
 SUFFIXES = (".c", ".h", ".py")
 
 # Lines a header may carry that name a holder.  Each entry is a holder this
-# tree preserves verbatim because they hold the copyright on a file that came
-# from elsewhere.
-REAL_COPYRIGHT_HOLDERS: tuple[str, ...] = ()
+# tree preserves verbatim because the project attribution is reviewed for
+# files in this lane.
+REAL_COPYRIGHT_HOLDERS: tuple[str, ...] = ("Mesa3D authors",)
 
 # The opening lines a header rule reads.  A license grant and a copyright line
 # sit at the top of a file; a match further down is prose or test data.

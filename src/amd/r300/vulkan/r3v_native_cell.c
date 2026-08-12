@@ -433,8 +433,9 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       }
       if (result == VK_SUCCESS && gathered != 0) {
          result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                            "r3v-native: vertex %s refused (%d)",
-                            r2vb_route ? "delivery" : "gather", gathered);
+                            "r3v-native: vertex %s refused (%d): %s",
+                            r2vb_route ? "delivery" : "gather", gathered,
+                            route_decision.reason);
       } else if (result == VK_SUCCESS) {
          /* The admitted vertex program passes its input to
           * gl_Position, so the CPU vertex node realizes the Vulkan
