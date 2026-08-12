@@ -131,15 +131,15 @@ void r300_translate_vertex_shader(struct r300_context *r300,
               external_state, code, &compiler.Base);
     vs->outputs.wpos = vs->outputs.num_total;
 
-    /* Nothing to do if the shader does not write gl_Position. */
-    if (vs->outputs.pos == ATTR_UNUSED) {
+    if (compiler.Base.Error) {
+        vs->error = strdup(compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg
+                                                  : "Cannot translate shader from NIR");
         vs->dummy = true;
         goto cleanup;
     }
 
-    if (compiler.Base.Error) {
-        vs->error = strdup(compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg
-                                                  : "Cannot translate shader from NIR");
+    /* Nothing to do if the shader does not write gl_Position. */
+    if (vs->outputs.pos == ATTR_UNUSED) {
         vs->dummy = true;
         goto cleanup;
     }

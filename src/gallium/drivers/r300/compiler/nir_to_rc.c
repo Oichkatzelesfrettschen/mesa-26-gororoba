@@ -1642,10 +1642,14 @@ ntr_emit_if(struct ntr_compile *c, nir_if *if_stmt)
    ntr_IF(c, c->if_cond);
 
    ntr_emit_cf_list(c, &if_stmt->then_list);
+   if (c->compiler->Error)
+      return;
 
    if (!nir_cf_list_is_empty_block(&if_stmt->else_list)) {
       ntr_ELSE(c);
       ntr_emit_cf_list(c, &if_stmt->else_list);
+      if (c->compiler->Error)
+         return;
    }
 
    ntr_ENDIF(c);
@@ -1661,6 +1665,8 @@ ntr_emit_loop(struct ntr_compile *c, nir_loop *loop)
    }
    ntr_BGNLOOP(c);
    ntr_emit_cf_list(c, &loop->body);
+   if (c->compiler->Error)
+      return;
    ntr_ENDLOOP(c);
 }
 
