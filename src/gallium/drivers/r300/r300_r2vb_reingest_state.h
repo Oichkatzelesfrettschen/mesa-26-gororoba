@@ -1,5 +1,4 @@
 /*
- * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  */
 
@@ -36,7 +35,7 @@ r300_r2vb_position_only_assembly_dwords(bool assembly_gate)
    return assembly_gate ? 3 : 0;
 }
 
-/* C1b emits one VTE override and one same-IB restore packet. */
+/* VTE W0 gate emits one VTE override and one same-IB restore packet. */
 static inline unsigned
 r300_r2vb_vte_w0_dwords(bool w0_gate)
 {
