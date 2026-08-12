@@ -38,6 +38,19 @@ SUFFIXES = (".c", ".h", ".py")
 # files in this lane.
 REAL_COPYRIGHT_HOLDERS: tuple[str, ...] = ("Mesa3D authors",)
 
+
+def normalize_holder(holder: str) -> str:
+    """Return the exact holder name after header punctuation and dates."""
+    value = " ".join(holder.split())
+    value = re.sub(r"^\(c\)\s*", "", value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"^(?:\d{4}(?:\s*-\s*\d{4})?(?:\s*,\s*\d{4})?\s*)+", "", value)
+    return value.casefold()
+
+
+REAL_COPYRIGHT_HOLDER_KEYS = frozenset(
+    normalize_holder(holder) for holder in REAL_COPYRIGHT_HOLDERS)
+
 # The opening lines a header rule reads.  A license grant and a copyright line
 # sit at the top of a file; a match further down is prose or test data.
 HEADER_LINES = 8
@@ -90,7 +103,7 @@ def audit_file(path: Path):
         match = COPYRIGHT.match(line.strip())
         if match is not None:
             holder = match.group("holder").strip()
-            if not any(real in holder for real in REAL_COPYRIGHT_HOLDERS):
+            if normalize_holder(holder) not in REAL_COPYRIGHT_HOLDER_KEYS:
                 defects.append(f"{path}: copyright line names an unreviewed "
                                f"holder: {line.strip()}")
         if AI_DISCLOSURE.search(line):
@@ -148,6 +161,10 @@ FIXTURES = {
         "/* SPDX-License-Identifier: MIT */",
         "/* SPDX-License-Identifier: MIT\n"
         " * Copyright (c) 2026 the example project\n */"),
+    "unreviewed-copyright-suffix": CLEAN_HEADER.replace(
+        "/* SPDX-License-Identifier: MIT */",
+        "/* SPDX-License-Identifier: MIT\n"
+        " * Copyright (c) 2026 Mesa3D authors and Example Corp\n */"),
     "ai-disclosure": CLEAN_HEADER.replace(
         "/* SPDX-License-Identifier: MIT */",
         "/* SPDX-License-Identifier: MIT\n"
@@ -173,6 +190,7 @@ FIXTURE_PREDICATES = {
     "spdx-colon-prose": "no SPDX-License-Identifier",
     "spdx-trailing-prose": "no SPDX-License-Identifier",
     "invented-copyright": "copyright line names an unreviewed holder",
+    "unreviewed-copyright-suffix": "copyright line names an unreviewed holder",
     "ai-disclosure": "AI disclosure belongs in a commit trailer",
     "ai-assisted-by-trailer": "AI disclosure belongs in a commit trailer",
     "ai-generated-by-trailer": "AI disclosure belongs in a commit trailer",
@@ -202,13 +220,20 @@ def selftest():
     clean_defects = run_fixture("clean", CLEAN_HEADER)
     if clean_defects:
         raise AssertionError(("clean", clean_defects))
+    reviewed_header = CLEAN_HEADER.replace(
+        "/* SPDX-License-Identifier: MIT */",
+        "/* SPDX-License-Identifier: MIT\n"
+        " * Copyright (c) 2026   Mesa3D authors\n */")
+    reviewed_defects = fixture_defects(reviewed_header)
+    if reviewed_defects:
+        raise AssertionError(("reviewed-copyright", reviewed_defects))
     for name in sorted(FIXTURES):
         defects = run_fixture(name)
         expected = FIXTURE_PREDICATES[name]
         if len(defects) != 1 or expected not in defects[0]:
             raise AssertionError((name, defects))
     print(f"r3v_source_header_audit selftest: {len(FIXTURES)} isolated "
-          f"defect legs and one clean leg OK")
+          "defect legs and two clean legs OK")
     return 0
 
 
