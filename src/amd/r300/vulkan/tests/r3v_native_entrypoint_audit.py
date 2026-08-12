@@ -206,6 +206,16 @@ MODEL_CENSUS = (
     (MODEL_SCOPE_DEVICE, 121),
 )
 
+# Selftest oracle kept independent from the production tuple.  A change to
+# MODEL_CENSUS must fail the known-good calibration instead of moving both the
+# input and expected value together.
+MODEL_SCOPE_CENSUS_KNOWN_GOOD = {
+    MODEL_SCOPE_GLOBAL: 4,
+    MODEL_SCOPE_INSTANCE: 2,
+    MODEL_SCOPE_PHYSICAL_DEVICE: 10,
+    MODEL_SCOPE_DEVICE: 121,
+}
+
 MODEL_FLOORS = (
     (MODEL_POPULATED_SLOTS, 100),
     (MODEL_COMMON_DEPENDENCIES, 50),
@@ -743,7 +753,7 @@ def selftest():
         if not selftest_check(f"lifecycle pair {fixture}", found, expected):
             return 1
 
-    model_counts = {name: expected for name, expected in MODEL_CENSUS}
+    model_counts = MODEL_SCOPE_CENSUS_KNOWN_GOOD.copy()
     if not selftest_check(
             "model floors",
             model_failures(
@@ -753,7 +763,11 @@ def selftest():
             ),
             []):
         return 1
-    model_scope_rejection_fixtures = MODEL_SCOPE_CENSUS_REJECTION_FIXTURES
+    model_scope_rejection_fixtures = (
+        MODEL_SCOPE_CENSUS_REJECTION_FIXTURES +
+        tuple((name, model_counts[name] + 1)
+              for name in model_counts)
+    )
     for name, invalid_count in model_scope_rejection_fixtures:
         bad_counts = model_counts.copy()
         bad_counts[name] = invalid_count
