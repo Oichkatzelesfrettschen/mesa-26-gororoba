@@ -50,7 +50,7 @@ COPYRIGHT = re.compile(r"^[^A-Za-z0-9]*Copyright\b(?P<holder>.*)$",
 # vk.xml by <script>" states a build mechanism and stays.
 AI_DISCLOSURE = re.compile(
     r"(?:\b(?:LLM[- ]assisted|AI[- ]assisted)\b"
-    r"|\b(?:assisted|generated)-by:\s*\S+"
+    r"|\b(?:assisted|generated)-by:"
     r"|\bgenerated\s+by\s+(?:claude|chatgpt|codex|copilot|gemini|"
     r"gpt(?:[-\w.]*)|coderabbit|an?\s+(?:AI|LLM))\b)",
     re.IGNORECASE)
@@ -118,9 +118,8 @@ CLEAN_HEADER = """\
 """
 
 
-def self_mutated_header() -> str:
-    """Return this auditor with its physical SPDX line removed."""
-    return "".join(Path(__file__).read_text().splitlines(keepends=True)[1:])
+SELF_MUTATED_HEADER = "".join(
+    Path(__file__).read_text().splitlines(keepends=True)[1:])
 
 
 FIXTURES = {
@@ -130,7 +129,7 @@ FIXTURES = {
         "/* SPDX-License-Identifier is required. */"),
     # The auditor's own docstring repeats the SPDX name, so deleting its first
     # line calibrates the opening-line boundary as well as the tag syntax.
-    "missing-spdx-self-mutation": self_mutated_header(),
+    "missing-spdx-self-mutation": SELF_MUTATED_HEADER,
     "malformed-spdx": CLEAN_HEADER.replace(
         "/* SPDX-License-Identifier: MIT */",
         "/* SPDX-License-Identifier: */"),
@@ -150,6 +149,10 @@ FIXTURES = {
         "/* SPDX-License-Identifier: MIT */",
         "/* SPDX-License-Identifier: MIT\n"
         " * Generated-by: ChatGPT Codex (5.x)\n */"),
+    "ai-empty-trailer": CLEAN_HEADER.replace(
+        "/* SPDX-License-Identifier: MIT */",
+        "/* SPDX-License-Identifier: MIT\n"
+        " * Generated-by:\n */"),
 }
 
 FIXTURE_PREDICATES = {
@@ -160,6 +163,7 @@ FIXTURE_PREDICATES = {
     "ai-disclosure": "AI disclosure belongs in a commit trailer",
     "ai-assisted-by-trailer": "AI disclosure belongs in a commit trailer",
     "ai-generated-by-trailer": "AI disclosure belongs in a commit trailer",
+    "ai-empty-trailer": "AI disclosure belongs in a commit trailer",
 }
 
 
@@ -168,7 +172,8 @@ def fixture_defects(contents: str) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "fixture.c"
         path.write_text(contents)
-        return audit_file(path)
+        return [defect.replace(f"{path}:", "fixture.c:", 1)
+                for defect in audit_file(path)]
 
 
 def run_fixture(name, contents=None):
@@ -177,17 +182,18 @@ def run_fixture(name, contents=None):
     print(f"header fixture {name}: {len(defects)} defects")
     for defect in defects:
         print(f"  {defect}")
-    return 1 if defects else 0
+    return defects
 
 
 def selftest():
-    assert run_fixture("clean", CLEAN_HEADER) == 0
+    clean_defects = run_fixture("clean", CLEAN_HEADER)
+    if clean_defects:
+        raise AssertionError(("clean", clean_defects))
     for name in sorted(FIXTURES):
-        assert run_fixture(name) == 1, name
-        defects = fixture_defects(FIXTURES[name])
+        defects = run_fixture(name)
         expected = FIXTURE_PREDICATES[name]
-        assert len(defects) == 1, (name, defects)
-        assert expected in defects[0], (name, defects)
+        if len(defects) != 1 or expected not in defects[0]:
+            raise AssertionError((name, defects))
     print(f"r3v_source_header_audit selftest: {len(FIXTURES)} isolated "
           f"defect legs and one clean leg OK")
     return 0
@@ -203,8 +209,9 @@ def main(argv=None):
             # resolvable file must refuse through the same per-root check
             # the real audit runs, never report a clean scan of the rest.
             return main([__file__, "does-not-exist-root"])
-        return run_fixture(argv[1],
-                           CLEAN_HEADER if argv[1] == "clean" else None)
+        defects = run_fixture(argv[1],
+                              CLEAN_HEADER if argv[1] == "clean" else None)
+        return 1 if defects else 0
 
     # A root that resolves to nothing reports a clean audit it never ran,
     # so every requested root must exist and contribute at least one file
