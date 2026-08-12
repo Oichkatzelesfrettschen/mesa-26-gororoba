@@ -29,6 +29,7 @@
 #include <string.h>
 
 #include "util/u_inlines.h"
+#include "util/simple_mtx.h"
 #include "util/u_atomic.h"
 #include "util/u_call_once.h"
 #include "util/format/u_format.h"
@@ -58,6 +59,29 @@
 /* Forward: CPU classify/edge maps and re-ingest run before these helpers. */
 static void r2vb_wait_bo(struct r300_context *r300, struct pipe_resource *res);
 static bool r2vb_single_cs_enabled(void);
+
+/* Route telemetry keeps its own cell ledger.  The admission memo belongs to
+ * the execution route, so an observation cannot write a reject into that
+ * memo.  The VS pointer identifies the owner while the content hash protects
+ * against allocator reuse after a shader is destroyed; the plan key separates
+ * computed-varying, position-space, and viewport cells. */
+struct r300_r2vb_telemetry_cell {
+    const struct r300_vertex_shader *vs;
+    char vs_hash[BLAKE3_HEX_LEN];
+    struct r300_r2vb_plan_key key;
+};
+
+static struct r300_r2vb_telemetry_cell *r300_r2vb_telemetry_cells;
+static unsigned r300_r2vb_telemetry_cell_count;
+static unsigned r300_r2vb_telemetry_cell_capacity;
+static simple_mtx_t r300_r2vb_telemetry_cell_mtx = SIMPLE_MTX_INITIALIZER;
+
+void r300_r2vb_telemetry_note_cell(
+    struct r300_context *r300,
+    const struct r300_r2vb_producer_plan *plan);
+bool r300_r2vb_telemetry_allow_computed_varying(
+    struct r300_context *r300, nir_shader *vs_nir);
+unsigned r300_r2vb_telemetry_format_dwords(enum pipe_format format);
 
 static uint32_t r300_r2vb_fail_position_input_clone;
 static uint32_t r300_r2vb_skip_position_input_clone;
@@ -5763,6 +5787,68 @@ r300_r2vb_typed_split_note(const struct r300_r2vb_producer_plan *plan,
     fprintf(stderr, "%s\n", line);
 }
 
+static bool
+r300_r2vb_telemetry_cell_first(struct r300_context *r300,
+                               const struct r300_r2vb_producer_plan *plan)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || !plan)
+        return false;
+
+    const char *vs_hash = r300_r2vb_telemetry_vs_content_hex(r300);
+    simple_mtx_lock(&r300_r2vb_telemetry_cell_mtx);
+    for (unsigned i = 0; i < r300_r2vb_telemetry_cell_count; i++) {
+        const struct r300_r2vb_telemetry_cell *cell =
+            &r300_r2vb_telemetry_cells[i];
+        if (cell->vs == vs &&
+            strcmp(cell->vs_hash, vs_hash) == 0 &&
+            memcmp(&cell->key, &plan->key, sizeof(cell->key)) == 0) {
+            simple_mtx_unlock(&r300_r2vb_telemetry_cell_mtx);
+            return false;
+        }
+    }
+
+    if (r300_r2vb_telemetry_cell_count ==
+        r300_r2vb_telemetry_cell_capacity) {
+        unsigned new_capacity = r300_r2vb_telemetry_cell_capacity
+                                     ? r300_r2vb_telemetry_cell_capacity * 2
+                                     : 64;
+        struct r300_r2vb_telemetry_cell *new_cells = realloc(
+            r300_r2vb_telemetry_cells,
+            (size_t)new_capacity * sizeof(*new_cells));
+        if (!new_cells) {
+            simple_mtx_unlock(&r300_r2vb_telemetry_cell_mtx);
+            return false;
+        }
+        r300_r2vb_telemetry_cells = new_cells;
+        r300_r2vb_telemetry_cell_capacity = new_capacity;
+    }
+
+    struct r300_r2vb_telemetry_cell *cell =
+        &r300_r2vb_telemetry_cells[r300_r2vb_telemetry_cell_count++];
+    cell->vs = vs;
+    snprintf(cell->vs_hash, sizeof(cell->vs_hash), "%s", vs_hash);
+    cell->key = plan->key;
+    simple_mtx_unlock(&r300_r2vb_telemetry_cell_mtx);
+    return true;
+}
+
+/* Record one plan cell without using the execution admission memo as
+ * observation state.  A failed ledger allocation drops only telemetry; route
+ * admission and rendering remain unchanged. */
+void
+r300_r2vb_telemetry_note_cell(
+    struct r300_context *r300,
+    const struct r300_r2vb_producer_plan *plan)
+{
+    if (!r300_r2vb_telemetry_observation_enabled()) {
+        r300_r2vb_telemetry_note(r300, plan);
+        return;
+    }
+    if (r300_r2vb_telemetry_cell_first(r300, plan))
+        r300_r2vb_telemetry_note(r300, plan);
+}
+
 enum r300_r2vb_admission_memo
 r300_r2vb_plan_effective_admission(const struct r300_r2vb_producer_plan *plan,
                                    enum r300_r2vb_memo_writer writer,
@@ -5805,9 +5891,9 @@ static void r300_r2vb_plan_shadow_check(struct r300_context *r300,
         r300_r2vb_producer_plan_get(r300, allow_computed_varying, space);
     if (!plan)
         return; /* infrastructure failure; a later call replans */
-    /* The memo decision point classifies each cell exactly once, so the
-     * standing-route telemetry records here. */
-    r300_r2vb_telemetry_note(r300, plan);
+    /* The cell ledger owns telemetry deduplication; the admission memo stays
+     * available to the execution route. */
+    r300_r2vb_telemetry_note_cell(r300, plan);
     /* Arm the clone failure only after route admission reaches this recount;
      * the status helper then carries the transient result to this gate. */
     if (p_atomic_xchg(&r300_r2vb_fail_shadow_recount, 0))
@@ -6081,6 +6167,81 @@ enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
     return R2VB_ROUTE_CANDIDATE;
 }
 
+bool
+r300_r2vb_telemetry_allow_computed_varying(struct r300_context *r300,
+                                           nir_shader *vs_nir)
+{
+    (void)r300;
+    if (!vs_nir || r300_r2vb_first_computed_varying(vs_nir) < 0)
+        return false;
+    const char *value = getenv("R300_R2VB_VARYING");
+    return value && strcmp(value, "1") == 0;
+}
+
+unsigned
+r300_r2vb_telemetry_format_dwords(enum pipe_format format)
+{
+    return align(util_format_get_blocksize(format), 4) / 4;
+}
+
+static void
+r300_r2vb_telemetry_record_inputs(
+    struct r300_context *r300,
+    const struct r300_r2vb_producer_plan *plan,
+    bool allow_computed_varying,
+    enum r300_r2vb_position_space space,
+    const struct pipe_draw_start_count_bias *draw)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR ||
+        !vs->state.ir.nir || !draw)
+        return;
+
+    unsigned input_count = plan && plan->num_position_inputs
+                               ? plan->num_position_inputs
+                               : r300_r2vb_count_position_inputs(vs->state.ir.nir);
+    if (!input_count)
+        return;
+
+    const char *hash = r300_r2vb_telemetry_vs_content_hex(r300);
+    bool cell_cv = plan ? plan->key.allow_computed_varying
+                        : allow_computed_varying;
+    enum r300_r2vb_position_space cell_space = plan ? plan->key.space : space;
+    for (unsigned input = 0; input < input_count; input++) {
+        const struct pipe_vertex_element *pe =
+            r300->velems && input < r300->velems->count
+                ? &r300->velems->velem[input]
+                : NULL;
+        const struct pipe_vertex_buffer *vb =
+            pe && pe->vertex_buffer_index < r300->nr_vertex_buffers
+                ? &r300->vertex_buffer[pe->vertex_buffer_index]
+                : NULL;
+        struct pipe_resource *res =
+            vb && !vb->is_user_buffer ? vb->buffer.resource : NULL;
+        uint64_t model_offset =
+            vb && pe ? (uint64_t)vb->buffer_offset + pe->src_offset +
+                           (uint64_t)draw->start * pe->src_stride
+                      : 0;
+        fprintf(stderr,
+                "r2vb_producer_input hash=%s input=%u cv=%d space=%s"
+                " format=%s format_dwords=%u stride_bytes=%u"
+                " buffer_bound=%d buffer_index=%u buffer_offset=%u"
+                " src_offset=%u draw_start=%u draw_count=%u"
+                " model_offset=%" PRIu64 " resource_width=%u"
+                " bo_materialized=%d\n",
+                hash, input, cell_cv,
+                cell_space == R300_R2VB_POSITION_WINDOW ? "window" : "clip",
+                pe ? util_format_short_name(pe->src_format) : "-",
+                pe ? r300_r2vb_telemetry_format_dwords(pe->src_format) : 0,
+                pe ? pe->src_stride : 0, vb &&
+                    (vb->is_user_buffer || vb->buffer.resource) ? 1 : 0,
+                pe ? pe->vertex_buffer_index : 0, vb ? vb->buffer_offset : 0,
+                pe ? pe->src_offset : 0, draw->start, draw->count,
+                model_offset, res ? res->width0 : 0,
+                res && r300_resource(res)->buf ? 1 : 0);
+    }
+}
+
 bool r300_r2vb_route_draw(struct r300_context *r300,
                           const struct pipe_draw_info *info,
                           const struct pipe_draw_start_count_bias *draw)
@@ -6118,55 +6279,21 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
         struct r300_vertex_shader *vs = r300_vs(r300);
         if (vs && vs->state.type == PIPE_SHADER_IR_NIR && vs->state.ir.nir) {
             enum r300_r2vb_position_space space = r2vb_env_space();
-            unsigned space_i =
-                space == R300_R2VB_POSITION_WINDOW ? 1u : 0u;
-            uint8_t *memo = &vs->r2vb_admission[0][space_i];
-            if (!enabled && *memo == R300_R2VB_ADMIT_UNMEASURED) {
-                const struct r300_r2vb_producer_plan *plan =
-                    r300_r2vb_producer_plan_get(r300, false, space);
-                if (plan) {
-                    r300_r2vb_telemetry_note(r300, plan);
-                    *memo = R300_R2VB_ADMIT_REJECT;
-                }
-                /* Observation-only input facts, once per cell measure: the
-                 * BO-fetch contract admits by element format, stride, and
-                 * resource extent, none of which the retained NIR carries,
-                 * so the record decides which format family the fetch path
-                 * implements next.  No routing, no GPU change. */
-                if (r300->velems && r300->velems->count > 0) {
-                    const struct pipe_vertex_element *pe =
-                        &r300->velems->velem[0];
-                    const struct pipe_vertex_buffer *vb =
-                        pe->vertex_buffer_index < r300->nr_vertex_buffers
-                            ? &r300->vertex_buffer[pe->vertex_buffer_index]
-                            : NULL;
-                    struct pipe_resource *res =
-                        !vb || vb->is_user_buffer ? NULL
-                                                 : vb->buffer.resource;
-                    fprintf(stderr,
-                            "r2vb_producer_input hash=%s input=0 format=%s"
-                            " format_dwords=%u stride_bytes=%u"
-                            " buffer_bound=%d"
-                            " buffer_offset=%u src_offset=%u draw_start=%u"
-                            " model_offset=%" PRIu64 " resource_width=%u"
-                            " bo_materialized=%d\n",
-                            r300_r2vb_telemetry_vs_content_hex(r300),
-                            util_format_short_name(pe->src_format),
-                            util_format_get_blocksize(pe->src_format) / 4,
-                            pe->src_stride, vb ? 1 : 0,
-                            vb ? vb->buffer_offset : 0,
-                            pe->src_offset, draw->start,
-                            (uint64_t)(vb ? vb->buffer_offset : 0) +
-                                pe->src_offset +
-                                (uint64_t)draw->start * pe->src_stride,
-                            res ? res->width0 : 0,
-                            res && r300_resource(res)->buf ? 1 : 0);
-                }
-            }
+            bool allow_computed_varying =
+                r300_r2vb_telemetry_allow_computed_varying(
+                    r300, vs->state.ir.nir);
             const struct r300_r2vb_producer_plan *plan =
-                r300_r2vb_producer_plan_get(r300, false, space);
-            if (plan)
+                r300_r2vb_producer_plan_get(r300, allow_computed_varying,
+                                            space);
+            if (plan) {
+                r300_r2vb_telemetry_note_cell(r300, plan);
+                r300_r2vb_telemetry_record_inputs(
+                    r300, plan, allow_computed_varying, space, draw);
                 r300_r2vb_telemetry_draw(r300, plan, info, draw);
+            } else {
+                r300_r2vb_telemetry_record_inputs(
+                    r300, NULL, allow_computed_varying, space, draw);
+            }
         }
     }
     if (!enabled)
