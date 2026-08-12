@@ -33,7 +33,7 @@ static uint32_t cell_height = R300_TRIANGLE_TARGET_HEIGHT;
  * r3v_native_queue_submit() path recomputes r300_triangle_ib_digest_hex()
  * from the installed IB.  The emission is identical, so the armed digest
  * names the bytes submitted by that path.  Symbol discovery uses
- * `rg --fixed-strings SYMBOL src/amd/r300/vulkan/` for
+ * `rg --fixed-strings SYMBOL src/amd/r300/` for
  * `r3v_native_record_tcl_bypass_triangle_carrier()`,
  * `r3v_native_cmd_buffer_install_ib()`, `r3v_native_queue_submit()`, and
  * `r300_triangle_ib_digest_hex()`.  The repository-relative search root
