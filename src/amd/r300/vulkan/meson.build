@@ -806,6 +806,13 @@ if get_option('r3v-native-backend')
     # skip rather than a missing test.
     prog_xvfb = find_program('Xvfb', required : false)
     r3v_xvfb_wrapper = files('tests/run_under_xvfb.sh')
+    test(
+      'r3v-xvfb-wrapper-signal-cleanup',
+      prog_python,
+      args : [files('tests/r3v_xvfb_wrapper_signal_cleanup.py'),
+              r3v_xvfb_wrapper],
+      suite : ['r3v'],
+    )
     if dep_xcb.found() and prog_xvfb.found()
       # The wrapper allocates the display through Xvfb -displayfd, returns
       # the wrapped binary's exact status, and reports infrastructure

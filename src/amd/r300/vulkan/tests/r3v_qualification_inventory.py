@@ -93,6 +93,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-lifecycle-pair-complete",
     "r3v-native-lifecycle-pair-missing-create",
     "r3v-native-lifecycle-pair-missing-destroy",
+    "r3v-xvfb-wrapper-signal-cleanup",
     "r3v-native-wsi-surface-contract",
     "r3v-native-wsi-surface-contract-known-bad-capabilities",
     "r3v-native-wsi-surface-contract-known-bad-capabilities-error",
