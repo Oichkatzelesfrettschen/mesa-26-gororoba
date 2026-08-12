@@ -781,6 +781,85 @@ r3v_ubo_interface_size(const nir_variable *ubo)
           ? glsl_get_explicit_size(ubo->interface_type, false) : 0;
 }
 
+/* Derive the constant span from static load_ubo accesses after the r3v lowering
+ * chain. A shader can declare a large block while reading only an early member;
+ * the r300 uploader needs the accessed vec4 slots, not the unused declaration
+ * tail. Dynamic offsets or non-block-zero accesses keep the declaration span,
+ * because their maximum read cannot be established at pipeline creation. */
+static uint32_t
+r3v_ubo_access_span(nir_shader *nir, uint32_t declared_size)
+{
+   uint64_t max_end = 0;
+   bool found = false;
+   bool unknown = false;
+
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_ubo &&
+                intr->intrinsic != nir_intrinsic_load_ubo_vec4)
+               continue;
+
+            if (!nir_src_is_const(intr->src[0]) ||
+                nir_src_as_uint(intr->src[0]) != 0 ||
+                !nir_src_is_const(intr->src[1])) {
+               unknown = true;
+               continue;
+            }
+
+            const uint64_t component =
+               nir_intrinsic_has_component(intr)
+                  ? nir_intrinsic_component(intr) : 0;
+            uint64_t byte_offset;
+            if (intr->intrinsic == nir_intrinsic_load_ubo_vec4) {
+               const uint64_t vec4_index =
+                  (nir_intrinsic_has_base(intr)
+                      ? (uint64_t)nir_intrinsic_base(intr) : 0) +
+                  nir_src_as_uint(intr->src[1]);
+               byte_offset = vec4_index * 16u +
+                             (uint64_t)nir_intrinsic_component(intr) * 4u;
+            } else {
+               byte_offset = nir_src_as_uint(intr->src[1]);
+               if (nir_intrinsic_has_base(intr))
+                  byte_offset += nir_intrinsic_base(intr);
+            }
+
+            if (intr->def.bit_size == 0 ||
+                intr->def.bit_size % 8u != 0) {
+               unknown = true;
+               continue;
+            }
+
+            const uint64_t component_bytes = intr->def.bit_size / 8u;
+            if (component_bytes * (component + intr->def.num_components) >
+                16u) {
+               unknown = true;
+               continue;
+            }
+            if (intr->intrinsic == nir_intrinsic_load_ubo)
+               byte_offset += component * component_bytes;
+            const uint64_t byte_size =
+               (uint64_t)intr->def.num_components * component_bytes;
+            if (byte_size == 0 || byte_offset > UINT32_MAX - byte_size) {
+               unknown = true;
+               continue;
+            }
+
+            max_end = MAX2(max_end, byte_offset + byte_size);
+            found = true;
+         }
+      }
+   }
+
+   if (unknown || !found)
+      return declared_size;
+   return (uint32_t)max_end;
+}
+
 static nir_variable *
 r3v_find_block0_ubo(nir_shader *nir)
 {
@@ -1344,24 +1423,28 @@ r3v_prepare_shader_nir(struct r3v_device *device,
     * (and dEQP-VK.ubo.link_by_binding reads two bindings of one buffer across
     * the stages); each is bound independently rather than forcing one buffer
     * onto both. */
+   const nir_variable *stage_ubo = NULL;
+   uint32_t stage_ubo_interface_size = 0;
    if (stage_has_ubo && pl) {
-      const nir_variable *ubo =
+      stage_ubo =
          r3v_find_ubo_descriptor(nir, stage_ubo_set, stage_ubo_binding);
+      stage_ubo_interface_size =
+         stage_ubo ? r3v_ubo_interface_size(stage_ubo) : 0;
       /* r300's constant emitter uploads complete vec4 slots.  Keep the
        * recorded span at that granularity so a partial final interface slot
-       * takes the zero-filled prefix path instead of the direct resource path. */
-      const uint32_t ubo_size =
-         ubo ? r3v_ubo_constant_span(r3v_ubo_interface_size(ubo)) : 0;
+       * takes the zero-filled prefix path instead of the direct resource path.
+       * The access span is computed after explicit I/O lowering below, when
+       * load_ubo_vec4 carries the static byte range visible to the uploader. */
       if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT) {
          pl->vs_has_ubo = true;
          pl->vs_ubo_set = stage_ubo_set;
          pl->vs_ubo_binding = stage_ubo_binding;
-         pl->vs_ubo_size = ubo_size;
+         pl->vs_ubo_size = 0;
       } else {
          pl->fs_has_ubo = true;
          pl->fs_ubo_set = stage_ubo_set;
          pl->fs_ubo_binding = stage_ubo_binding;
-         pl->fs_ubo_size = ubo_size;
+         pl->fs_ubo_size = 0;
       }
    }
 
@@ -1408,10 +1491,23 @@ r3v_prepare_shader_nir(struct r3v_device *device,
     * load_ubo_vec4 and applies the component shift).  Convert to load_ubo_vec4,
     * the same form r300g's GL uniforms-to-UBO path feeds nir_to_rc. */
    NIR_PASS(_, nir, nir_lower_ubo_vec4);
+   /* nir_lower_ubo_vec4 leaves constant offsets behind simple ALU SSA nodes;
+    * fold those nodes before the static access-span scan so a constant early
+    * member is distinguished from a genuinely dynamic offset. */
+   NIR_PASS(_, nir, nir_opt_constant_folding);
 
    /* The single supported UBO is bound at CONST[0]; pin every load_ubo[_vec4]
     * block index to a literal 0 for ntr_emit_load_ubo's index-0 assert. */
    r3v_nir_remap_single_ubo_to_index0(nir);
+
+   if (stage_ubo && pl) {
+      const uint32_t ubo_size = r3v_ubo_constant_span(
+         r3v_ubo_access_span(nir, stage_ubo_interface_size));
+      if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT)
+         pl->vs_ubo_size = ubo_size;
+      else
+         pl->fs_ubo_size = ubo_size;
+   }
 
    /* Reject a dynamic UBO offset for the FRAGMENT stage only.  The PFS constant
     * file is addressed by a static vec4 slot with no relative addressing, so a

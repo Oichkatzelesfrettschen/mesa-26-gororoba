@@ -1368,12 +1368,16 @@ r3v_try_bind_one_stage_ubo(struct r3v_device *device,
                               const struct r3v_cmd_bind_descriptor_sets *binds,
                               mesa_shader_stage stage,
                               uint32_t ubo_set, uint32_t ubo_binding,
-                              uint32_t required_size, uint8_t **scratch)
+                              uint32_t required_size, uint8_t **scratch,
+                              VkResult *error)
 {
    struct pipe_context *pipe = device->pipe;
+   *error = VK_SUCCESS;
    /* The pipeline records the explicit shader UBO span.  A missing or
     * unrepresentable span cannot establish a bound for r300g's FS upload, so
-    * the caller binds the zero UBO instead of reading an arbitrary range. */
+    * the caller binds the zero UBO.  Allocation and mapping failures set an
+    * error instead, and the replay aborts before a draw can consume fallback
+    * state. */
    if (required_size == 0 || required_size > sizeof(r3v_zero_ubo))
       return false;
 
@@ -1421,12 +1425,15 @@ r3v_try_bind_one_stage_ubo(struct r3v_device *device,
          if (effective.size < required_size) {
             if (!*scratch)
                *scratch = malloc(sizeof(r3v_zero_ubo));
-            if (!*scratch)
+            if (!*scratch) {
+               *error = VK_ERROR_OUT_OF_HOST_MEMORY;
                return false;
+            }
             if (!r3v_copy_ubo_prefix(device, buf, effective.offset,
                                      effective.size, required_size, *scratch)) {
                free(*scratch);
                *scratch = NULL;
+               *error = VK_ERROR_OUT_OF_DEVICE_MEMORY;
                return false;
             }
             cb.user_buffer = *scratch;
@@ -1470,34 +1477,41 @@ r3v_bind_one_stage_ubo(struct r3v_device *device,
                           const struct r3v_cmd_bind_descriptor_sets *binds,
                           mesa_shader_stage stage,
                           uint32_t ubo_set, uint32_t ubo_binding,
-                          uint32_t required_size, uint8_t **scratch)
+                          uint32_t required_size, uint8_t **scratch,
+                          VkResult *error)
 {
    if (!r3v_try_bind_one_stage_ubo(device, binds, stage,
-                                      ubo_set, ubo_binding, required_size,
-                                      scratch))
-      r3v_bind_missing_stage_ubo_zero(device, stage);
+                                   ubo_set, ubo_binding, required_size,
+                                   scratch, error)) {
+      if (*error == VK_SUCCESS)
+         r3v_bind_missing_stage_ubo_zero(device, stage);
+   }
 }
 
 /* r300 has separate vertex and fragment constant files, so bind each stage's
  * selected UBO independently.  The two stages may read different bindings -- even
  * two bindings of the same buffer (dEQP-VK.ubo.link_by_binding) -- so neither is
  * forced onto the other.  A stage that reads no UBO binds nothing. */
-static void
+static VkResult
 r3v_bind_descriptor_ubo(struct r3v_device *device,
                            const struct r3v_pipeline *pipeline,
                            const struct r3v_cmd_bind_descriptor_sets *binds,
                            uint8_t **vs_scratch, uint8_t **fs_scratch)
 {
    if (!binds || !pipeline)
-      return;
+      return VK_SUCCESS;
+   VkResult error = VK_SUCCESS;
    if (pipeline->vs_has_ubo)
       r3v_bind_one_stage_ubo(device, binds, MESA_SHADER_VERTEX,
                                 pipeline->vs_ubo_set, pipeline->vs_ubo_binding,
-                                pipeline->vs_ubo_size, vs_scratch);
+                                pipeline->vs_ubo_size, vs_scratch, &error);
+   if (error != VK_SUCCESS)
+      return error;
    if (pipeline->fs_has_ubo)
       r3v_bind_one_stage_ubo(device, binds, MESA_SHADER_FRAGMENT,
                                 pipeline->fs_ubo_set, pipeline->fs_ubo_binding,
-                                pipeline->fs_ubo_size, fs_scratch);
+                                pipeline->fs_ubo_size, fs_scratch, &error);
+   return error;
 }
 
 /* Bind the running push-constant window at CONST[0] for both stages -- the slot a
@@ -2342,7 +2356,7 @@ r3v_dyn_overlay_cleanup(struct r3v_device *device,
    }
 }
 
-static void
+static VkResult
 r3v_replay_draw(struct r3v_device *device,
                     const struct r3v_cmd_entry *e,
                     const struct r3v_pipeline *bound_pipeline,
@@ -2399,7 +2413,7 @@ r3v_replay_draw(struct r3v_device *device,
     * and r300_fs()->shader, so a no-fragment draw NULL-derefs in the RS block
     * (dEQP-VK.api.descriptor_set.descriptor_set_layout_lifetime.graphics). */
    if (!bound_pipeline || !bound_pipeline->vs_cso || !bound_pipeline->fs_cso)
-      return;
+      return VK_SUCCESS;
 
    /* Overlay the merged vkCmdSet* shadow onto this pipeline's rs/dsa state
     * before any draw-time binds. */
@@ -2518,7 +2532,7 @@ r3v_replay_draw(struct r3v_device *device,
       const struct r3v_cmd_draw_indexed *di = &e->draw_indexed;
       if (!di->index_buffer || !di->index_buffer->resource ||
           di->index_size == 0)
-         return;
+         return VK_SUCCESS;
       info.index_size       = di->index_size;
       info.index.resource   = di->index_buffer->resource;
       info.has_user_indices = false;
@@ -2534,7 +2548,7 @@ r3v_replay_draw(struct r3v_device *device,
          (di->index_offset + di->index_range) / di->index_size;
       const uint64_t usable = end_elem > start_elem ? end_elem - start_elem : 0;
       if (start_elem > UINT_MAX)
-         return;
+         return VK_SUCCESS;
       draw.start = (unsigned)start_elem;
       draw.count = synthetic_streams_ready
                    ? (di->index_count < usable ? di->index_count
@@ -2588,9 +2602,17 @@ r3v_replay_draw(struct r3v_device *device,
          r3v_bind_push_constants(device, push_const,
                                     bound_pipeline->push_const_int_word_mask,
                                     pc_scratch);
-      else
-         r3v_bind_descriptor_ubo(device, bound_pipeline, last_bind_dsets,
-                                  &vs_ubo_scratch, &fs_ubo_scratch);
+      else {
+         const VkResult bind_result =
+            r3v_bind_descriptor_ubo(device, bound_pipeline,
+                                     last_bind_dsets, &vs_ubo_scratch,
+                                     &fs_ubo_scratch);
+         if (bind_result != VK_SUCCESS) {
+            free(vs_ubo_scratch);
+            free(fs_ubo_scratch);
+            return bind_result;
+         }
+      }
 
       /* Bind fragment textures for this draw, then release them after: the
        * sampler views are transient (created over the descriptor's image at
@@ -2677,6 +2699,7 @@ r3v_replay_draw(struct r3v_device *device,
       free(vs_ubo_scratch);
       free(fs_ubo_scratch);
    }
+   return VK_SUCCESS;
 }
 
 static void
@@ -3448,6 +3471,7 @@ r3v_replay_gpu_range(struct r3v_device *device,
                         bool *gpu_pending)
 {
    struct pipe_context *pipe = device->pipe;
+   VkResult result = VK_SUCCESS;
    uint32_t tile_origin_x = 0;
    uint32_t tile_origin_y = 0;
    uint32_t tile_width = 0;
@@ -3573,21 +3597,20 @@ r3v_replay_gpu_range(struct r3v_device *device,
       case R3V_CMD_DRAW:
       case R3V_CMD_DRAW_INDEXED:
          if (skip_render_pass) break;
-         r3v_replay_draw(device, e, state->bound_pipeline,
-                            state->last_graphics_bind_dsets, state->replay_pc,
-                            state->vb_cache, state->vb_sizes,
-                            state->vb_max_used, &state->vb_dirty,
-                            tile_origin_x, tile_origin_y, tile_width,
-                            tile_height, transient_vbs, &state->dyn_ov,
-                            current_render_pass &&
-                            current_render_pass->begin_rp.ds_image,
-                            current_render_pass &&
-                            current_render_pass->begin_rp.ds_image &&
-                            util_format_has_stencil(util_format_description(
-                               current_render_pass->begin_rp.ds_format)),
-                            current_render_pass &&
-                            current_render_pass->begin_rp.input_self_dep,
-                            state->vb_strides, state->vb_strides_mask);
+         result = r3v_replay_draw(
+            device, e, state->bound_pipeline,
+            state->last_graphics_bind_dsets, state->replay_pc,
+            state->vb_cache, state->vb_sizes, state->vb_max_used,
+            &state->vb_dirty, tile_origin_x, tile_origin_y, tile_width,
+            tile_height, transient_vbs, &state->dyn_ov,
+            current_render_pass && current_render_pass->begin_rp.ds_image,
+            current_render_pass && current_render_pass->begin_rp.ds_image &&
+               util_format_has_stencil(util_format_description(
+                  current_render_pass->begin_rp.ds_format)),
+            current_render_pass && current_render_pass->begin_rp.input_self_dep,
+            state->vb_strides, state->vb_strides_mask);
+         if (result != VK_SUCCESS)
+            return result;
          *gpu_pending = true;
          break;
 
@@ -3637,21 +3660,22 @@ r3v_replay_gpu_range(struct r3v_device *device,
             synth.draw.first          = args->firstVertex;
             synth.draw.first_instance = args->firstInstance;
             synth.draw.topology       = di->topology;
-            r3v_replay_draw(device, &synth, state->bound_pipeline,
-                               state->last_graphics_bind_dsets, state->replay_pc,
-                               state->vb_cache, state->vb_sizes,
-                               state->vb_max_used, &state->vb_dirty,
-                               tile_origin_x, tile_origin_y, tile_width,
-                               tile_height, transient_vbs, &state->dyn_ov,
-                               current_render_pass &&
-                               current_render_pass->begin_rp.ds_image,
-                               current_render_pass &&
-                               current_render_pass->begin_rp.ds_image &&
-                               util_format_has_stencil(util_format_description(
-                                  current_render_pass->begin_rp.ds_format)),
-                               current_render_pass &&
-                               current_render_pass->begin_rp.input_self_dep,
-                               state->vb_strides, state->vb_strides_mask);
+            result = r3v_replay_draw(
+               device, &synth, state->bound_pipeline,
+               state->last_graphics_bind_dsets, state->replay_pc,
+               state->vb_cache, state->vb_sizes, state->vb_max_used,
+               &state->vb_dirty, tile_origin_x, tile_origin_y, tile_width,
+               tile_height, transient_vbs, &state->dyn_ov,
+               current_render_pass && current_render_pass->begin_rp.ds_image,
+               current_render_pass && current_render_pass->begin_rp.ds_image &&
+                  util_format_has_stencil(util_format_description(
+                     current_render_pass->begin_rp.ds_format)),
+               current_render_pass && current_render_pass->begin_rp.input_self_dep,
+               state->vb_strides, state->vb_strides_mask);
+            if (result != VK_SUCCESS) {
+               pipe_buffer_unmap(pipe, ixfer);
+               return result;
+            }
          }
          pipe_buffer_unmap(pipe, ixfer);
          *gpu_pending = true;
@@ -3703,21 +3727,22 @@ r3v_replay_gpu_range(struct r3v_device *device,
             synth.draw_indexed.instances      = args->instanceCount;
             synth.draw_indexed.first_instance = args->firstInstance;
             synth.draw_indexed.topology       = di->topology;
-            r3v_replay_draw(device, &synth, state->bound_pipeline,
-                               state->last_graphics_bind_dsets, state->replay_pc,
-                               state->vb_cache, state->vb_sizes,
-                               state->vb_max_used, &state->vb_dirty,
-                               tile_origin_x, tile_origin_y, tile_width,
-                               tile_height, transient_vbs, &state->dyn_ov,
-                               current_render_pass &&
-                               current_render_pass->begin_rp.ds_image,
-                               current_render_pass &&
-                               current_render_pass->begin_rp.ds_image &&
-                               util_format_has_stencil(util_format_description(
-                                  current_render_pass->begin_rp.ds_format)),
-                               current_render_pass &&
-                               current_render_pass->begin_rp.input_self_dep,
-                               state->vb_strides, state->vb_strides_mask);
+            result = r3v_replay_draw(
+               device, &synth, state->bound_pipeline,
+               state->last_graphics_bind_dsets, state->replay_pc,
+               state->vb_cache, state->vb_sizes, state->vb_max_used,
+               &state->vb_dirty, tile_origin_x, tile_origin_y, tile_width,
+               tile_height, transient_vbs, &state->dyn_ov,
+               current_render_pass && current_render_pass->begin_rp.ds_image,
+               current_render_pass && current_render_pass->begin_rp.ds_image &&
+                  util_format_has_stencil(util_format_description(
+                     current_render_pass->begin_rp.ds_format)),
+               current_render_pass && current_render_pass->begin_rp.input_self_dep,
+               state->vb_strides, state->vb_strides_mask);
+            if (result != VK_SUCCESS) {
+               pipe_buffer_unmap(pipe, ixfer);
+               return result;
+            }
          }
          pipe_buffer_unmap(pipe, ixfer);
          *gpu_pending = true;
