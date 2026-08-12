@@ -2028,6 +2028,58 @@ multipass_loop_for_header(nir_block *header)
    return NULL;
 }
 
+/* The multipass replay samples one element for each fragment.  The admitted
+ * input load therefore uses the scalar global invocation index scaled by the
+ * 32-bit element size.  A uniform offset or a different address expression
+ * would make the replay sample a different element than the compute shader. */
+static bool
+multipass_offset_is_invocation_index(nir_scalar offset, unsigned depth)
+{
+   if (depth > R300_COMPUTE_OFFSET_EQ_MAX_DEPTH)
+      return false;
+
+   offset = nir_scalar_chase_movs(offset);
+   if (nir_scalar_is_intrinsic(offset)) {
+      switch (nir_scalar_intrinsic_op(offset)) {
+      case nir_intrinsic_load_global_invocation_index:
+         return true;
+      case nir_intrinsic_load_global_invocation_id:
+         return offset.comp == 0;
+      default:
+         return false;
+      }
+   }
+
+   if (!nir_scalar_is_alu(offset))
+      return false;
+
+   const nir_alu_instr *alu = nir_scalar_as_alu(offset);
+   if (nir_op_infos[alu->op].num_inputs != 2)
+      return false;
+
+   nir_scalar a = nir_scalar_chase_alu_src(offset, 0);
+   nir_scalar b = nir_scalar_chase_alu_src(offset, 1);
+   switch (alu->op) {
+   case nir_op_imul:
+      if (nir_scalar_is_const(a) && nir_scalar_as_uint(a) == 4)
+         return multipass_offset_is_invocation_index(b, depth + 1);
+      if (nir_scalar_is_const(b) && nir_scalar_as_uint(b) == 4)
+         return multipass_offset_is_invocation_index(a, depth + 1);
+      return false;
+   case nir_op_ishl:
+      return nir_scalar_is_const(b) && nir_scalar_as_uint(b) == 2 &&
+             multipass_offset_is_invocation_index(a, depth + 1);
+   case nir_op_iadd:
+      if (nir_scalar_is_const(a) && nir_scalar_as_uint(a) == 0)
+         return multipass_offset_is_invocation_index(b, depth + 1);
+      if (nir_scalar_is_const(b) && nir_scalar_as_uint(b) == 0)
+         return multipass_offset_is_invocation_index(a, depth + 1);
+      return false;
+   default:
+      return false;
+   }
+}
+
 static bool
 multipass_phi_matches_loop(nir_phi_instr *phi, nir_loop *loop,
                            const nir_intrinsic_instr **input_load,
@@ -2064,7 +2116,12 @@ multipass_phi_matches_loop(nir_phi_instr *phi, nir_loop *loop,
       return false;
 
    nir_intrinsic_instr *load = nir_scalar_as_intrinsic(initial_value);
-   if (load->intrinsic != nir_intrinsic_load_ssbo)
+   if (load->intrinsic != nir_intrinsic_load_ssbo ||
+       load->def.bit_size != 32 || !load->src[1].ssa ||
+       load->src[1].ssa->num_components != 1 ||
+       load->src[1].ssa->bit_size != 32 ||
+       !multipass_offset_is_invocation_index(
+          nir_get_scalar(load->src[1].ssa, 0), 0))
       return false;
 
    nir_scalar update =
@@ -2097,6 +2154,8 @@ multipass_phi_matches_loop(nir_phi_instr *phi, nir_loop *loop,
  *      The phi has a per-element load_ssbo preheader source and one backedge
  *      update that doubles that same phi (x*2 / x<<1 / x+x).  An unrelated
  *      accumulator doubling therefore cannot trigger replay admission.
+ *   5. The input load offset resolves to the global invocation index scaled
+ *      by four bytes, so a uniform or unrelated address cannot select replay.
  *
  * step_op carries the per-iteration nir_op for diagnostics; the orchestrator
  * hard-codes the doubling, which is sound precisely because every admitted
