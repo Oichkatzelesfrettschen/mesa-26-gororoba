@@ -324,6 +324,33 @@ build_lowered_store_output(bool unsupported)
    return end_vs(&v, v.pos);
 }
 
+static nir_shader *
+build_lowered_store_output_contract(nir_intrinsic_instr **store_out,
+                                    bool multi_slot)
+{
+   struct vs_build v = begin_vs("plan_store_output_contract", false);
+   nir_def *components[] = {
+      nir_channel(&v.b, v.pos, 0),
+      nir_channel(&v.b, v.pos, 1),
+   };
+   nir_def *value = nir_vec(&v.b, components, ARRAY_SIZE(components));
+   nir_intrinsic_instr *store = nir_store_output(
+      &v.b, value, nir_imm_int(&v.b, 1),
+      .io_semantics = {
+         .location = VARYING_SLOT_VAR0,
+         .num_slots = 1,
+      });
+   nir_intrinsic_set_component(store, 2);
+   if (multi_slot) {
+      nir_io_semantics semantics = nir_intrinsic_io_semantics(store);
+      semantics.num_slots = 2;
+      nir_intrinsic_set_io_semantics(store, semantics);
+   }
+   if (store_out)
+      *store_out = store;
+   return end_vs(&v, v.pos);
+}
+
 static bool
 shader_has_intrinsic(nir_shader *nir, nir_intrinsic_op op)
 {
@@ -336,6 +363,20 @@ shader_has_intrinsic(nir_shader *nir, nir_intrinsic_op op)
       }
    }
    return false;
+}
+
+static nir_intrinsic_instr *
+shader_first_intrinsic(nir_shader *nir, nir_intrinsic_op op)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type == nir_instr_type_intrinsic &&
+             nir_instr_as_intrinsic(instr)->intrinsic == op)
+            return nir_instr_as_intrinsic(instr);
+      }
+   }
+   return NULL;
 }
 
 /* A single dependent chain long enough that no balanced cut leaves both
@@ -1029,6 +1070,49 @@ case_lowered_store_output_scope(struct r300_context *r300)
 }
 
 static void
+case_lowered_store_output_offset_component_contract(struct r300_context *r300)
+{
+   printf("lowered store_output offset and component contracts are preserved\n");
+
+   nir_intrinsic_instr *store = NULL;
+   nir_shader *vs = build_lowered_store_output_contract(&store, false);
+   gl_varying_slot location;
+   CHECK(store && r300_r2vb_output_store_location(store, &location) &&
+            location == VARYING_SLOT_VAR0 + 1,
+         "constant output offset selects the effective varying slot");
+
+   nir_shader *fs = r300_r2vb_build_restaged_fs_nir(
+      r300, vs, VARYING_SLOT_VAR0 + 1, R300_R2VB_POSITION_CLIP);
+   CHECK(fs != NULL, "offset output restager builds");
+   if (fs) {
+      nir_intrinsic_instr *restaged =
+         shader_first_intrinsic(fs, nir_intrinsic_store_output);
+      CHECK(restaged != NULL, "offset output survives target restaging");
+      if (restaged) {
+         nir_io_semantics semantics = nir_intrinsic_io_semantics(restaged);
+         CHECK(semantics.location == FRAG_RESULT_DATA0 &&
+                  semantics.num_slots == 1,
+               "restager maps the effective slot to one color record");
+         CHECK(nir_src_is_const(restaged->src[1]) &&
+                  nir_src_as_uint(restaged->src[1]) == 0,
+               "restager clears the lowered output offset");
+         CHECK(restaged->num_components == 4 &&
+                  nir_intrinsic_write_mask(restaged) == 0xf &&
+                  (!nir_intrinsic_has_component(restaged) ||
+                   nir_intrinsic_component(restaged) == 0),
+               "restager resets the component when padding the record");
+      }
+      ralloc_free(fs);
+   }
+   ralloc_free(vs);
+
+   vs = build_lowered_store_output_contract(&store, true);
+   CHECK(!r300_r2vb_output_store_location(store, &location),
+         "multi-slot lowered outputs are rejected by the planner contract");
+   ralloc_free(vs);
+}
+
+static void
 case_wide_frontier(struct r300_context *r300)
 {
    printf("wide frontier rejects with the crossing width observed\n");
@@ -1378,6 +1462,7 @@ main(void)
    case_typed_reject_rows(r300);
    case_structural_rejects(r300);
    case_lowered_store_output_scope(r300);
+   case_lowered_store_output_offset_component_contract(r300);
    case_typed_float_before_cut(r300);
    case_unsupported_intrinsic(r300);
    case_multi_candidate_failures(r300);

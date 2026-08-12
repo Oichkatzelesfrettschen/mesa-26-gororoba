@@ -78,9 +78,20 @@ r300_r2vb_output_store_location(const nir_intrinsic_instr *intr,
         *location = (gl_varying_slot)out->data.location;
         return true;
     }
-    case nir_intrinsic_store_output:
-        *location = (gl_varying_slot)nir_intrinsic_io_semantics(intr).location;
+    case nir_intrinsic_store_output: {
+        const nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+        if (semantics.num_slots != 1 || !nir_src_is_const(intr->src[1]))
+            return false;
+
+        const uint64_t base = semantics.location;
+        const uint64_t offset = nir_src_as_uint(intr->src[1]);
+        if (base >= VARYING_SLOT_MAX ||
+            offset >= VARYING_SLOT_MAX - base)
+            return false;
+
+        *location = (gl_varying_slot)(base + offset);
         return true;
+    }
     default:
         return false;
     }
@@ -235,12 +246,21 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
                 case nir_intrinsic_load_deref:
                 case nir_intrinsic_store_deref:
                 case nir_intrinsic_load_input:
-                case nir_intrinsic_store_output:
                 case nir_intrinsic_load_ubo:
                 case nir_intrinsic_load_ubo_vec4:
                 case nir_intrinsic_load_push_constant:
                 case nir_intrinsic_load_constant:
                     break;
+                case nir_intrinsic_store_output: {
+                    gl_varying_slot location;
+                    if (!r300_r2vb_output_store_location(
+                            nir_instr_as_intrinsic(instr), &location)) {
+                        plan_observe(plan, R300_R2VB_PLAN_IO_SHAPE);
+                        return false;
+                    }
+                    (void)location;
+                    break;
+                }
                 default:
                     plan_observe(plan, R300_R2VB_PLAN_INTRINSIC);
                     return false;
