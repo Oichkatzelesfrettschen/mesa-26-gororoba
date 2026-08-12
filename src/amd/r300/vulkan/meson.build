@@ -456,6 +456,7 @@ if get_option('r3v-native-backend')
   )
 
   devenv.append('VK_ICD_FILENAMES', _native_dev_icd.full_path())
+  devenv.append('VK_DRIVER_FILES', _native_dev_icd.full_path())
 
   # Executable form of the boundaries doc's dependency/symbol audit: the
   # native library defines no Gallium or winsys entry symbol, in any binding.

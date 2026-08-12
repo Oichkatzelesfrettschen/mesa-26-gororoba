@@ -100,7 +100,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-direct-write-arming-positive",
     "r3v-native-direct-write-authority-parity",
     "r3v-native-gallium-separation",
-    "r3v-native-gallium-separation-known-bad",
+    "r3v-native-gallium-separation-selftest",
     "r3v-native-lifecycle-pair-complete",
     "r3v-native-lifecycle-pair-missing-create",
     "r3v-native-lifecycle-pair-missing-destroy",

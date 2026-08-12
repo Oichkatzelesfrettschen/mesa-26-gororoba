@@ -10,6 +10,8 @@ reference.
 
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 FORBIDDEN_SYMBOLS = (
     "r300_screen_create",
@@ -48,21 +50,38 @@ def audit_library(nm: str, library: str) -> int:
 
 
 def selftest() -> int:
-    """Calibrate clean and forbidden symbol-table verdicts without nm."""
-    cases = (
-        ("native", "r3v_native_entrypoint\n", False),
-        ("gallium", "r300_screen_create\n", True),
-        ("winsys", "radeon_drm_winsys_create\n", True),
-    )
-    for label, table, expected_failure in cases:
-        failures = find_forbidden_symbols(table)
-        if bool(failures) != expected_failure:
-            print(
-                f"separation selftest {label}: expected "
-                f"failure={expected_failure}, got {failures}"
-            )
-            return 1
-    print("r3v_native_separation_audit: clean and forbidden fixtures calibrated")
+    """Calibrate clean and forbidden symbol-table verdicts through the audit."""
+    with tempfile.TemporaryDirectory(prefix="r3v-native-separation-") as tmp:
+        root = Path(tmp)
+        nm = root / "nm"
+        nm.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "last=\n"
+            "for argument in \"$@\"; do\n"
+            "    last=$argument\n"
+            "done\n"
+            "cat \"$last\"\n"
+        )
+        nm.chmod(0o755)
+
+        cases = (
+            ("native", "r3v_native_entrypoint\n", 0),
+            ("gallium", "r300_screen_create\n", 1),
+            ("winsys", "radeon_drm_winsys_create\n", 1),
+        )
+        for label, table, expected_status in cases:
+            library = root / f"{label}.symbols"
+            library.write_text(table)
+            status = audit_library(str(nm), str(library))
+            if status != expected_status:
+                print(
+                    f"separation selftest {label}: expected status="
+                    f"{expected_status}, got {status}"
+                )
+                return 1
+
+    print("r3v_native_separation_audit: clean and forbidden audit verdicts calibrated")
     return 0
 
 
