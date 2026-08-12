@@ -55,6 +55,8 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-arming-positive",
     "r3v-native-arming-runner-refuses-undeclared",
     "r3v-native-entrypoint-audit-selftest",
+    "r3v-native-entrypoint-audit-baseline",
+    "r3v-native-entrypoint-audit-baseline-known-bad-extra",
     "r3v-native-entrypoint-closure",
     "r3v-native-entrypoint-closure-known-bad-BindBufferMemory2",
     "r3v-native-entrypoint-closure-known-bad-CreateImage",

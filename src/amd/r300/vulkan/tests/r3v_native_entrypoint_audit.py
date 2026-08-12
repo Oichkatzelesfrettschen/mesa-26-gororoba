@@ -11,6 +11,11 @@ each common provider's dispatch dependencies from the vulkan runtime source,
 and walks the transitive closure: every dependency of a reachable
 Vulkan 1.0 device-scope slot must itself resolve to a populated slot.
 
+The unconditional BindImageMemory2 edge is in
+src/vulkan/runtime/vk_device.c: vk_common_BindImageMemory is at line 602 and
+the device->dispatch_table.BindImageMemory2 call is at line 616.  Discovery:
+rg --fixed-strings "vk_common_BindImageMemory" src/vulkan/runtime
+
 Closure is one of four verdicts the audit carries.  vkGetDeviceProcAddr
 returns a function pointer for every device-level command in the core version
 the instance requested, so completeness requires all 121 core 1.0 device-scope
@@ -30,6 +35,9 @@ Modes:
                registry-permitted refusal result, and every native core
                command classified, over inputs that clear the structural
                floors
+  --baseline NAMES
+               require the exact comma-separated open-slot set; an empty
+               value requires a closed table and unexpected slots fail
   --policy     emit the three-scope public-surface policy as TSV
   --drop NAME  remove NAME from the parsed native symbol set before the
                verdict; the known-bad fixtures use it to prove each verdict
@@ -42,6 +50,7 @@ Modes:
 import re
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -287,6 +296,11 @@ def canonical(name, alias):
     return name
 
 
+def canonical_set(names, alias):
+    """Canonicalize linked dispatch slots through the registry aliases."""
+    return {canonical(name, alias) for name in names}
+
+
 def linked_symbols(nm, library):
     """Text-section r3v_* and vk_common_* symbols of the final library."""
     out = subprocess.run([nm, library], check=True, capture_output=True,
@@ -307,6 +321,113 @@ def linked_symbols(nm, library):
 DEF_RE = re.compile(r"^(\w+)\s*\(", re.MULTILINE)
 DEP_RE = re.compile(r"(?:dispatch_table\.|disp->)(\w+)\s*\(")
 CALL_RE = re.compile(r"\b(\w+)\s*\(")
+IF_BLOCK_RE = re.compile(r"\bif\s*\((?P<condition>[^{}]*)\)\s*\{")
+GUARD_RE = re.compile(r"(?:dispatch_table\.|disp->)(\w+)")
+
+
+def strip_c_comments(text):
+    """Replace C comments with spaces while preserving source positions."""
+    chars = list(text)
+    state = "code"
+    index = 0
+    while index < len(chars):
+        if state == "code":
+            if chars[index] == "/" and index + 1 < len(chars):
+                if chars[index + 1] == "/":
+                    chars[index] = chars[index + 1] = " "
+                    state = "line-comment"
+                    index += 2
+                    continue
+                if chars[index + 1] == "*":
+                    chars[index] = chars[index + 1] = " "
+                    state = "block-comment"
+                    index += 2
+                    continue
+            if chars[index] == '"':
+                state = "string"
+            elif chars[index] == "'":
+                state = "character"
+            index += 1
+            continue
+
+        if state == "line-comment":
+            if chars[index] == "\n":
+                state = "code"
+            else:
+                chars[index] = " "
+            index += 1
+            continue
+
+        if state == "block-comment":
+            if chars[index] == "*" and index + 1 < len(chars) and \
+                    chars[index + 1] == "/":
+                chars[index] = chars[index + 1] = " "
+                state = "code"
+                index += 2
+            else:
+                if chars[index] != "\n":
+                    chars[index] = " "
+                index += 1
+            continue
+
+        if chars[index] == "\\":
+            index += 2
+        else:
+            if ((state == "string" and chars[index] == '"') or
+                    (state == "character" and chars[index] == "'")):
+                state = "code"
+            index += 1
+    return "".join(chars)
+
+
+def matching_brace(text, opening):
+    """Return the closing brace for an opening brace in comment-free C."""
+    depth = 0
+    state = "code"
+    index = opening
+    while index < len(text):
+        char = text[index]
+        if state == "code":
+            if char == '"':
+                state = "string"
+            elif char == "'":
+                state = "character"
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return index
+        else:
+            if char == "\\":
+                index += 1
+            elif ((state == "string" and char == '"') or
+                  (state == "character" and char == "'")):
+                state = "code"
+        index += 1
+    return len(text)
+
+
+def optional_ranges(text):
+    """Return ranges guarded by a dispatch-pointer condition."""
+    ranges = []
+    for match in IF_BLOCK_RE.finditer(text):
+        condition = match.group("condition")
+        if not GUARD_RE.search(condition):
+            continue
+        opening = match.end() - 1
+        closing = matching_brace(text, opening)
+        ranges.append((match.end(), closing))
+    return ranges
+
+
+def matches_in_ranges(regex, text, ranges):
+    """Return call names whose matches fall inside guarded ranges."""
+    found = set()
+    for match in regex.finditer(text):
+        if any(start <= match.start() < end for start, end in ranges):
+            found.add(match.group(1))
+    return found
 
 
 def scan_common_deps(runtime_dir: Path):
@@ -318,16 +439,28 @@ def scan_common_deps(runtime_dir: Path):
     column zero and unions dispatch calls transitively through local calls.
     """
     direct = {}
+    optional_direct = {}
     calls = {}
+    optional_calls = {}
     for source in sorted(runtime_dir.glob("*.c")):
-        text = source.read_text()
+        text = strip_c_comments(source.read_text())
         matches = list(DEF_RE.finditer(text))
         for i, m in enumerate(matches):
             end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
             body = text[m.start():end]
             name = m.group(1)
-            direct.setdefault(name, set()).update(DEP_RE.findall(body))
-            calls.setdefault(name, set()).update(CALL_RE.findall(body))
+            guarded = optional_ranges(body)
+            dispatches = set(DEP_RE.findall(body))
+            optional_dispatches = matches_in_ranges(DEP_RE, body, guarded)
+            direct.setdefault(name, set()).update(dispatches -
+                                                   optional_dispatches)
+            optional_direct.setdefault(name, set()).update(
+                optional_dispatches)
+            function_calls = set(CALL_RE.findall(body))
+            guarded_calls = matches_in_ranges(CALL_RE, body, guarded)
+            calls.setdefault(name, set()).update(function_calls -
+                                                  guarded_calls)
+            optional_calls.setdefault(name, set()).update(guarded_calls)
 
     resolved = {}
 
@@ -335,27 +468,59 @@ def scan_common_deps(runtime_dir: Path):
         if fn in resolved:
             return resolved[fn]
         if fn in trail:
-            return set()
-        trail.add(fn)
+            return set(), set()
+        next_trail = trail | {fn}
         found = set(direct.get(fn, ()))
+        optional_found = set(optional_direct.get(fn, ()))
         for callee in calls.get(fn, ()):
             if callee != fn and callee in direct:
-                found |= resolve(callee, trail)
-        resolved[fn] = found
-        return found
+                required, optional = resolve(callee, next_trail)
+                found |= required
+                optional_found |= optional
+        for callee in optional_calls.get(fn, ()):
+            if callee != fn and callee in direct:
+                required, optional = resolve(callee, next_trail)
+                optional_found |= required | optional
+        resolved[fn] = found, optional_found - found
+        return resolved[fn]
 
     deps = {}
+    optional_deps = {}
     for fn in direct:
         if fn.startswith("vk_common_"):
-            found = resolve(fn, set())
-            if found:
+            found, optional = resolve(fn, set())
+            if found or optional:
                 deps[fn[10:]] = found
+                optional_deps[fn[10:]] = optional
     for slot, extra in ANNOTATED_DEPS.items():
         deps.setdefault(slot, set()).update(extra)
-    return deps
+    return deps, optional_deps
 
 
-def closure_audit(native, common, deps, alias, reachable):
+def canonical_dependencies(deps, optional_deps, alias):
+    """Canonicalize provider keys and dependency names together."""
+    canonical_required = {}
+    canonical_optional = {}
+    for provider, dependencies in deps.items():
+        canonical_provider = canonical(provider, alias)
+        canonical_required.setdefault(canonical_provider, set()).update(
+            canonical_set(dependencies, alias))
+    for provider, dependencies in optional_deps.items():
+        canonical_provider = canonical(provider, alias)
+        canonical_optional.setdefault(canonical_provider, set()).update(
+            canonical_set(dependencies, alias))
+    for provider in set(canonical_required) | set(canonical_optional):
+        canonical_optional.setdefault(provider, set()).difference_update(
+            canonical_required.get(provider, set()))
+    canonical_optional = {
+        provider: dependencies
+        for provider, dependencies in canonical_optional.items()
+        if dependencies
+    }
+    return canonical_required, canonical_optional
+
+
+def closure_audit(native, common, deps, optional_deps, reachable):
     """Return open edges [(slot, missing dep)] over the transitive closure."""
     def populated(slot):
         return slot in native or slot in common
@@ -371,42 +536,130 @@ def closure_audit(native, common, deps, alias, reachable):
                 continue
             visited.add(provider)
             for dep in sorted(deps.get(provider, ())):
-                cdep = canonical(dep, alias)
+                cdep = dep
                 if not populated(cdep):
                     open_edges.append((slot, cdep))
                 elif cdep not in native and cdep in common:
                     stack.append(cdep)
+            for dep in sorted(optional_deps.get(provider, ())):
+                if populated(dep) and dep not in native and dep in common:
+                    stack.append(dep)
     return open_edges
 
 
+def baseline_failures(expected, observed):
+    """Return exact-set differences for the calibrated open-slot baseline."""
+    failures = []
+    missing = sorted(expected - observed)
+    unexpected = sorted(observed - expected)
+    if missing:
+        failures.append("missing baseline slots: " + ", ".join(missing))
+    if unexpected:
+        failures.append("unexpected baseline slots: " +
+                        ", ".join(unexpected))
+    return failures
+
+
+def selftest_check(label, actual, expected):
+    """Report one explicit selftest mismatch in every Python optimization mode."""
+    if actual == expected:
+        return True
+    print(f"selftest failure: {label}: expected {expected!r}, "
+          f"got {actual!r}", file=sys.stderr)
+    return False
+
+
 def selftest():
-    alias = {"A2KHR": "A2"}
+    alias = {"AEXT": "A", "A2KHR": "A2"}
     reachable = {"A"}
-    deps = {"A": {"A2KHR"}}
-    bad = closure_audit(set(), {"A"}, deps, alias, reachable)
-    assert bad == [("A", "A2")], bad
-    good = closure_audit({"A2"}, {"A"}, deps, alias, reachable)
-    assert good == [], good
+    native = canonical_set({"A2KHR"}, alias)
+    common = canonical_set({"AEXT"}, alias)
+    required, optional = canonical_dependencies(
+        {"AEXT": {"A2KHR"}}, {}, alias)
+    if not selftest_check("canonical provider set", common, {"A"}):
+        return 1
+    if not selftest_check("canonical dependency map", required,
+                          {"A": {"A2"}}):
+        return 1
+    if not selftest_check("canonical optional dependency map", optional, {}):
+        return 1
+    bad = closure_audit(set(), common, required, optional, reachable)
+    if not selftest_check("canonical alias-provider bad closure", bad,
+                          [("A", "A2")]):
+        return 1
+    good = closure_audit(native, common, required, optional, reachable)
+    if not selftest_check("canonical alias-provider good closure", good, []):
+        return 1
     # Deleting the one safe target reopens the edge.
-    reopened = closure_audit(set(), {"A"}, deps, alias, reachable)
-    assert reopened == [("A", "A2")], reopened
+    reopened = closure_audit(set(), common, required, optional, reachable)
+    if not selftest_check("canonical alias-provider reopened closure", reopened,
+                          [("A", "A2")]):
+        return 1
     # A common dependency recurses: A -> B (common) -> B2 (absent).
     chained = closure_audit(
         set(), {"A", "B"}, {"A": {"B"}, "B": {"B2"}}, {}, {"A"})
-    assert ("A", "B2") in chained, chained
+    if not selftest_check("transitive missing dependency", ("A", "B2") in
+                          chained, True):
+        return 1
+
+    # A comment that names a dispatch symbol carries no runtime dependency,
+    # while a null-checked dispatch call is optional until its target exists.
+    with tempfile.TemporaryDirectory() as temp_dir:
+        Path(temp_dir, "runtime.c").write_text(
+            "/* vk_common_CmdSetEvent() and disp->CommentOnly(); */\n"
+            "vk_common_Test(\n"
+            "{\n"
+            "   if (disp->Optional) {\n"
+            "      disp->Optional(...);\n"
+            "   }\n"
+            "   disp->Required(...);\n"
+            "}\n")
+        scanned, scanned_optional = scan_common_deps(Path(temp_dir))
+    if not selftest_check("comment stripping", scanned.get("Test", set()),
+                          {"Required"}):
+        return 1
+    if not selftest_check("guarded dispatch optional", scanned_optional.get(
+            "Test", set()), {"Optional"}):
+        return 1
+    optional_good = closure_audit(set(), {"A"}, {}, {"A": {"A2"}}, {"A"})
+    if not selftest_check("absent optional dependency", optional_good, []):
+        return 1
+    optional_nested = closure_audit(
+        set(), {"A", "A2"}, {"A2": {"B"}}, {"A": {"A2"}}, {"A"})
+    if not selftest_check("populated optional transitive dependency",
+                          optional_nested, [("A", "B")]):
+        return 1
+
+    if not selftest_check("empty baseline", baseline_failures(set(), set()),
+                          []):
+        return 1
+    if not selftest_check(
+            "unexpected baseline slot",
+            baseline_failures({"A"}, {"A", "B"}),
+            ["unexpected baseline slots: B"]):
+        return 1
+    if not selftest_check(
+            "missing baseline slot",
+            baseline_failures({"A", "B"}, {"A"}),
+            ["missing baseline slots: B"]):
+        return 1
 
     # A native command outside NATIVE_BEHAVIOR reads UNCLASSIFIED, which is
     # what makes a new entrypoint arrive with a classification decision; the
     # vkCmd* prefix resolves without a map entry, and the live draw subset
     # overrides the prefix.
-    assert behavior_class("CmdInvented", {"CmdInvented"}, set()) == \
-        "CORE_FAIL_CLOSED"
-    assert behavior_class("CmdDraw", {"CmdDraw"}, set()) == "NATIVE_LIVE"
-    assert behavior_class("CmdDrawIndexed", {"CmdDrawIndexed"}, set()) == \
-        "CORE_FAIL_CLOSED"
-    assert behavior_class("Invented", {"Invented"}, set()) == "UNCLASSIFIED"
-    assert behavior_class("MapMemory", {"MapMemory"}, set()) == "NATIVE_LIVE"
-    assert behavior_class("Bridged", set(), {"Bridged"}) == "COMMON_CLOSED"
+    behavior_legs = (
+        ("CmdInvented", {"CmdInvented"}, set(), "CORE_FAIL_CLOSED"),
+        ("CmdDraw", {"CmdDraw"}, set(), "NATIVE_LIVE"),
+        ("CmdDrawIndexed", {"CmdDrawIndexed"}, set(), "CORE_FAIL_CLOSED"),
+        ("Invented", {"Invented"}, set(), "UNCLASSIFIED"),
+        ("MapMemory", {"MapMemory"}, set(), "NATIVE_LIVE"),
+        ("Bridged", set(), {"Bridged"}, "COMMON_CLOSED"),
+    )
+    for name, native_surface, common_surface, expected in behavior_legs:
+        if not selftest_check(f"behavior class {name}", behavior_class(
+                name, native_surface, common_surface), expected):
+            return 1
 
     # The refusal intersection narrows as commands join it, and a command
     # that permits no shared result empties it.
@@ -415,17 +668,28 @@ def selftest():
                     "B": ("VkResult", ("VK_ERROR_UNKNOWN",)),
                     "C": ("VkResult", ("VK_ERROR_X",)),
                     "D": ("void", ())}, {})
-    assert permitted_refusal_results(reg, {"A"}) == \
-        {"VK_ERROR_UNKNOWN", "VK_ERROR_X"}
-    assert permitted_refusal_results(reg, {"A", "B"}) == {"VK_ERROR_UNKNOWN"}
-    assert permitted_refusal_results(reg, {"B", "C"}) == set()
+    refusal_legs = (
+        ({"A"}, {"VK_ERROR_UNKNOWN", "VK_ERROR_X"}),
+        ({"A", "B"}, {"VK_ERROR_UNKNOWN"}),
+        ({"B", "C"}, set()),
+    )
+    for refusing, expected in refusal_legs:
+        if not selftest_check(
+                f"refusal intersection {sorted(refusing)}",
+                permitted_refusal_results(reg, refusing), expected):
+            return 1
     # A void command carries no result set and leaves the intersection alone.
-    assert permitted_refusal_results(reg, {"B", "D"}) == {"VK_ERROR_UNKNOWN"}
+    if not selftest_check("void refusal intersection",
+                          permitted_refusal_results(reg, {"B", "D"}),
+                          {"VK_ERROR_UNKNOWN"}):
+        return 1
     # VK_ERROR_VALIDATION_FAILED spans every command and belongs to layers.
     layered = Registry({}, set(), set(), {},
                        {"A": ("VkResult", ("VK_ERROR_VALIDATION_FAILED",))},
                        {})
-    assert permitted_refusal_results(layered, {"A"}) == set()
+    if not selftest_check("layer-owned refusal intersection",
+                          permitted_refusal_results(layered, {"A"}), set()):
+        return 1
 
     # The pair verdict runs against synthetic surfaces, where the exact tuple
     # is checkable and no other verdict stands in front of it.
@@ -434,14 +698,17 @@ def selftest():
         core, populated, _ = PAIR_FIXTURES[fixture]
         found = pair_asymmetries(Registry({}, set(), core, {}, {}, {}),
                                  populated)
-        assert found == expected, (fixture, found, expected)
+        if not selftest_check(f"lifecycle pair {fixture}", found, expected):
+            return 1
 
     model_counts = {name: expected for name, expected in MODEL_CENSUS}
-    assert model_failures(
+    if not selftest_check("model floors",
+        model_failures(
         model_counts,
         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
-    ) == []
+        ), []):
+        return 1
     model_bad_fixtures = (
         (MODEL_SCOPE_DEVICE, model_counts[MODEL_SCOPE_DEVICE] - 1,
          MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
@@ -465,10 +732,12 @@ def selftest():
         bad_counts = model_counts.copy()
         bad_counts[MODEL_SCOPE_DEVICE] = core_device_count
         found = model_failures(bad_counts, populated_count, dependency_count)
-        if len(found) != 1:
-            raise AssertionError((name, found))
-        if any(marker not in found[0] for marker in expected_markers):
-            raise AssertionError((name, found))
+        if not selftest_check(f"model rejection count {name}", len(found), 1):
+            return 1
+        if not selftest_check(
+                f"model rejection marker {name}",
+                all(marker in found[0] for marker in expected_markers), True):
+            return 1
 
     missing_counts = model_counts.copy()
     del missing_counts[MODEL_SCOPE_INSTANCE]
@@ -477,15 +746,19 @@ def selftest():
         MODEL_FLOOR_COUNTS[MODEL_POPULATED_SLOTS],
         MODEL_FLOOR_COUNTS[MODEL_COMMON_DEPENDENCIES],
     )
-    if len(found) != 1:
-        raise AssertionError(found)
-    if MODEL_SCOPE_INSTANCE not in found[0]:
-        raise AssertionError(found)
-    if "missing" not in found[0]:
-        raise AssertionError(found)
+    if not selftest_check("missing model census count", len(found), 1):
+        return 1
+    if not selftest_check("missing model census marker",
+                          MODEL_SCOPE_INSTANCE in found[0], True):
+        return 1
+    if not selftest_check("missing model census wording", "missing" in
+                          found[0], True):
+        return 1
 
-    print("r3v_native_entrypoint_audit selftest: 15 closure and result legs "
-          f"OK, {len(model_bad_fixtures) + 1} model-shape rejection legs OK, "
+    print("r3v_native_entrypoint_audit selftest: canonical-provider, "
+          "comment-strip, optional-guard, and exact-baseline legs OK; "
+          "15 closure and result legs OK, "
+          f"{len(model_bad_fixtures) + 1} model-shape rejection legs OK, "
           f"{len(PAIR_FIXTURES)} lifecycle-pair legs OK")
     return 0
 
@@ -603,10 +876,11 @@ def behavior_class(name, native, common):
     return NATIVE_BEHAVIOR.get(name, "UNCLASSIFIED")
 
 
-def emit_policy(reg, native, common, deps):
+def emit_policy(reg, native, common, deps, optional_deps):
     """Emit one TSV row per Vulkan 1.0 command across all four scopes."""
     columns = ("command", "canonical", "scope", "owner", "returns",
-               "provider", "behavior", "dispatch-dependencies")
+               "provider", "behavior", "dispatch-dependencies",
+               "optional-dispatch-dependencies")
     print("\t".join(columns))
     for name in sorted(reg.core10):
         canon = canonical(name, reg.alias)
@@ -618,7 +892,8 @@ def emit_policy(reg, native, common, deps):
         print("\t".join((
             name, canon, scope, reg.owner.get(name, ""),
             reg.results.get(canon, ("void", ()))[0], provider, behavior,
-            ",".join(sorted(deps.get(canon, ()))) or "-")))
+            ",".join(sorted(deps.get(canon, ()))) or "-",
+            ",".join(sorted(optional_deps.get(canon, ()))) or "-")))
 
 
 SCOPE_ENUM = {"global": "R3V_SCOPE_GLOBAL",
@@ -737,17 +1012,22 @@ def main():
             tuple(result for result in results if result != REFUSAL_RESULT),
         )
         print(f"refusal-result fixture denies {REFUSAL_RESULT} for {command}")
-    native, common = linked_symbols(nm, library)
-    deps = scan_common_deps(Path(runtime_dir))
+    raw_native, raw_common = linked_symbols(nm, library)
+    raw_deps, raw_optional_deps = scan_common_deps(Path(runtime_dir))
+    native = canonical_set(raw_native, reg.alias)
+    common = canonical_set(raw_common, reg.alias)
+    deps, optional_deps = canonical_dependencies(
+        raw_deps, raw_optional_deps, reg.alias)
     # The known-bad fixtures remove one entrypoint from the parsed surface;
     # every verdict below must then fail, which is what makes a pass on the
     # real surface load-bearing.
+    dropped = canonical_set(dropped, reg.alias)
     native -= dropped
     common -= dropped
 
     populated = {s for s in reg.device_level if s in native or s in common}
     reachable = populated & reg.core10
-    open_edges = closure_audit(native, common, deps, reg.alias, reachable)
+    open_edges = closure_audit(native, common, deps, optional_deps, reachable)
     open_slots = sorted({slot for slot, _ in open_edges})
     core_device = reg.core10_device()
     absent = sorted(core_device - populated)
@@ -770,8 +1050,24 @@ def main():
     if model_defects:
         return 2
 
+    if mode == "--baseline":
+        if len(argv) < 2:
+            print("model failure: --baseline requires a comma-separated "
+                  "expected open-slot set")
+            return 2
+        expected = canonical_set(
+            {name for name in argv[1].split(",") if name}, reg.alias)
+        failures = baseline_failures(expected, set(open_slots))
+        print(f"baseline open slots: {','.join(open_slots) or '-'}")
+        for failure in failures:
+            print(f"calibration failure: {failure}")
+        if failures:
+            return 1
+        print(f"calibration: exact {len(expected)} baseline open slots")
+        return 0
+
     if mode == "--policy":
-        emit_policy(reg, native, common, deps)
+        emit_policy(reg, native, common, deps, optional_deps)
         return 0
 
     # Every refusing command's registry result set must permit the refusal
