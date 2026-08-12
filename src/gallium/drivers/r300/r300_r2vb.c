@@ -7360,7 +7360,8 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
     st_b.ir.nir = pass_b;
     void *pb_fs = r300_create_fs_state_internal(&r300->context, &st_b,
                                                 R300_FS_INPUT_R2VB_FLAT_VERTEX);
-    float (*bmodel)[4] = malloc((size_t)count * (num_in + 1) * sizeof(*bmodel));
+    float (*bmodel)[4] =
+        calloc((size_t)count, (size_t)(num_in + 1) * sizeof(*bmodel));
     if (!carry_bo || !pa_fs || !pb_fs || !bmodel)
         goto fail;
 

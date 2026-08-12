@@ -585,7 +585,7 @@ if with_tests
         include_directories('compiler'),
       ],
       link_with : [libr300],
-      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      dependencies : [dep_llvm, dep_m, idep_mesautil, idep_nir, idep_xmlconfig],
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r300'],
