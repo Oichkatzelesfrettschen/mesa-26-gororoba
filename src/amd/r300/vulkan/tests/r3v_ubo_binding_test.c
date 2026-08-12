@@ -1,5 +1,4 @@
 /*
- * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  *
  * Build-time guard for R3V dynamic UBO offsets and robust range clipping.
