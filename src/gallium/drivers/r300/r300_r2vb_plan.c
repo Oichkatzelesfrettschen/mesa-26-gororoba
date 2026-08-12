@@ -538,8 +538,11 @@ r300_r2vb_constant_source_scan(nir_shader *producer,
 /* Walk ranked cuts in the typed diagnostic plan.  The legacy admission and
  * execution path keeps its first transport-valid cut in r300_mp_find_vec4_cut;
  * this plan owns the later-candidate choice because typed execution rebuilds
- * the selected partition from the cached candidate.  The failure mask remains
- * exhaustive across every candidate. */
+ * the selected partition from the cached candidate.  The first transport-valid
+ * result stays in legacy_split_admitted, so a later fit does not widen the
+ * legacy memo.  Symbol discovery uses (rg --fixed-strings
+ * r300_mp_find_vec4_cut src/gallium/drivers/r300/).  The failure mask covers
+ * every candidate examined through the selected fit or final decline. */
 static bool
 plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
                            struct r300_r2vb_producer_plan *plan,
@@ -561,6 +564,7 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
             *transient_failure = true;
         return false;
     }
+    bool first_transport_candidate_seen = false;
     for (unsigned i = 0; i < n; i++) {
         if (cands[i].total_comps > 4) {
             plan_observe(plan, R300_R2VB_PLAN_CARRY_WIDTH);
@@ -586,6 +590,8 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
             continue;
         }
 
+        bool first_transport_candidate = !first_transport_candidate_seen;
+        first_transport_candidate_seen = true;
         nir_shader *pass_a = r300_mp_build_carry_pass_a(pos, &cands[i]);
         nir_shader *pass_b =
             r300_mp_build_pos_pass_b(pos, &cands[i],
@@ -609,6 +615,9 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
             r300, pass_a, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, &pass_a_cost);
         enum r300_fs_admission ab = r300_fs_measure_nir_admission(
             r300, pass_b, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, &pass_b_cost);
+        if (first_transport_candidate)
+            plan->legacy_split_admitted =
+                aa == R300_FS_ADMIT_FITS && ab == R300_FS_ADMIT_FITS;
         if (aa == R300_FS_ADMIT_FITS && ab == R300_FS_ADMIT_FITS) {
             plan->partition = cands[i];
             plan->pass_a_cost = pass_a_cost;
