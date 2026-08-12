@@ -4211,14 +4211,14 @@ static bool r2vb_rs_gb_stuffing_ok(const struct r300_rs_block *rs)
     const uint32_t stuffing_mask =
         R300_GB_POINT_STUFF_ENABLE | R300_GB_LINE_STUFF_ENABLE |
         R300_GB_TRIANGLE_STUFF_ENABLE |
-        (0x3u << R300_GB_TEX0_SOURCE_SHIFT) |
-        (0x3u << R300_GB_TEX1_SOURCE_SHIFT) |
-        (0x3u << R300_GB_TEX2_SOURCE_SHIFT) |
-        (0x3u << R300_GB_TEX3_SOURCE_SHIFT) |
-        (0x3u << R300_GB_TEX4_SOURCE_SHIFT) |
-        (0x3u << R300_GB_TEX5_SOURCE_SHIFT) |
-        (0x3u << R300_GB_TEX6_SOURCE_SHIFT) |
-        (0x3u << R300_GB_TEX7_SOURCE_SHIFT);
+        (R300_GB_TEX_SOURCE_MASK << R300_GB_TEX0_SOURCE_SHIFT) |
+        (R300_GB_TEX_SOURCE_MASK << R300_GB_TEX1_SOURCE_SHIFT) |
+        (R300_GB_TEX_SOURCE_MASK << R300_GB_TEX2_SOURCE_SHIFT) |
+        (R300_GB_TEX_SOURCE_MASK << R300_GB_TEX3_SOURCE_SHIFT) |
+        (R300_GB_TEX_SOURCE_MASK << R300_GB_TEX4_SOURCE_SHIFT) |
+        (R300_GB_TEX_SOURCE_MASK << R300_GB_TEX5_SOURCE_SHIFT) |
+        (R300_GB_TEX_SOURCE_MASK << R300_GB_TEX6_SOURCE_SHIFT) |
+        (R300_GB_TEX_SOURCE_MASK << R300_GB_TEX7_SOURCE_SHIFT);
     return !(rs->gb_enable & stuffing_mask);
 }
 
