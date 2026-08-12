@@ -30,6 +30,14 @@ if [ ! -x "${R3V_CS_TRACK_REPLAY_TOOL}" ]; then
     echo "replay tool ${R3V_CS_TRACK_REPLAY_TOOL} is not executable" >&2
     exit 1
 fi
+if ! command -v b3sum >/dev/null 2>&1; then
+    echo "b3sum unavailable; retained-file digest control not run" >&2
+    exit 77
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 unavailable; submit-manifest control not run" >&2
+    exit 77
+fi
 
 harness="$1"
 workdir=$(mktemp -d)
@@ -57,27 +65,37 @@ if [ -z "${cell_digest}" ] || [ "${cell_digest}" != "${submit_digest}" ]; then
 fi
 
 # The two manifests were computed from the same in-memory IB, so their
-# agreement alone does not identify the retained file; recompute BLAKE3
-# over ib.bin itself where an independent hasher is available, and prove
-# the comparison by refusing a mutated copy.
-if command -v b3sum >/dev/null 2>&1; then
-    file_digest=$(b3sum --no-names "${workdir}/ib.bin")
-    if [ "${file_digest}" != "${cell_digest}" ]; then
-        echo "retained ib.bin hashes to ${file_digest}, manifest declares" \
-             "${cell_digest}" >&2
+# agreement alone does not identify the retained file.  b3sum is a required
+# independent hasher for this control; a missing tool returns skip 77 above.
+file_digest=$(b3sum --no-names "${workdir}/ib.bin")
+if [ "${file_digest}" != "${cell_digest}" ]; then
+    echo "retained ib.bin hashes to ${file_digest}, manifest declares" \
+         "${cell_digest}" >&2
+    exit 1
+fi
+submit_reloc_digest=$(sed -n \
+    's/.*"submit_relocs_blake3": "\([0-9a-f]*\)".*/\1/p' \
+    "${workdir}/submit_manifest.json")
+file_reloc_digest=$(b3sum --no-names "${workdir}/submit_relocs.bin")
+if [ -z "${submit_reloc_digest}" ] || \
+   [ "${file_reloc_digest}" != "${submit_reloc_digest}" ]; then
+    echo "retained submit_relocs.bin hashes to ${file_reloc_digest}," \
+         "manifest declares ${submit_reloc_digest}" >&2
+    exit 1
+fi
+{
+    ib_bytes=$(wc -c < "${workdir}/ib.bin")
+    if [ "${ib_bytes}" -lt 4 ]; then
+        echo "retained ib.bin is too short for mutation" >&2
         exit 1
     fi
-    {
-        dd if="${workdir}/ib.bin" bs=4 count=31 2>/dev/null
-        printf '\377\377\377\377'
-    } > "${workdir}/mutated_ib.bin"
-    if [ "$(b3sum --no-names "${workdir}/mutated_ib.bin")" = \
-         "${cell_digest}" ]; then
-        echo "digest comparison failed to separate a mutated IB" >&2
-        exit 1
-    fi
-else
-    echo "b3sum absent; retained-file digest recomputation not run" >&2
+    head -c "$((ib_bytes - 4))" "${workdir}/ib.bin"
+    printf '\377\377\377\377'
+} > "${workdir}/mutated_ib.bin"
+if [ "$(b3sum --no-names "${workdir}/mutated_ib.bin")" = \
+     "${cell_digest}" ]; then
+    echo "digest comparison failed to separate a mutated IB" >&2
+    exit 1
 fi
 
 # The submit relocation chunk carries the color reference plus the
@@ -135,6 +153,170 @@ validate_relocs() {
     return 0
 }
 
+# The manifest fields mirror radeon_drm_vk_cs_build and
+# radeon_drm_vk_completion_init (rg --fixed-strings
+# radeon_drm_vk_cs_build src/ and rg --fixed-strings
+# radeon_drm_vk_completion_init src/).  Decode the JSON and the retained
+# relocation bytes together so the replay bundle cannot substitute a hand-
+# written BO size, role, handle, domain, flag, or chunk descriptor.
+validate_submit_manifest() {
+    manifest_path=$1
+    reloc_path=$2
+    bundle_path=${3:-}
+    python3 - "${manifest_path}" "${reloc_path}" "${workdir}/ib.bin" \
+        "${bundle_path}" <<'PY'
+import json
+import struct
+import sys
+
+
+manifest_path, reloc_path, ib_path, bundle_path = sys.argv[1:5]
+expected_color_size = 65536
+expected_completion_size = 4
+expected_reloc_count = 2
+expected_flags = [1, 0, 0]
+
+try:
+    with open(manifest_path, encoding="utf-8") as stream:
+        manifest = json.load(stream)
+    with open(reloc_path, "rb") as stream:
+        reloc_bytes = stream.read()
+    with open(ib_path, "rb") as stream:
+        ib_bytes = stream.read()
+except (OSError, json.JSONDecodeError) as error:
+    print(f"submit manifest read failed: {error}", file=sys.stderr)
+    raise SystemExit(1)
+
+if manifest.get("object") != "submit-object":
+    print("submit manifest object is not submit-object", file=sys.stderr)
+    raise SystemExit(1)
+if manifest.get("reloc_count") != expected_reloc_count:
+    print("submit manifest relocation count is not two", file=sys.stderr)
+    raise SystemExit(1)
+ib_dwords = manifest.get("ib_dwords")
+if not isinstance(ib_dwords, int) or ib_dwords <= 0 or \
+        len(ib_bytes) != ib_dwords * 4:
+    print("submit manifest IB length differs from ib.bin", file=sys.stderr)
+    raise SystemExit(1)
+if len(reloc_bytes) != expected_reloc_count * 16:
+    print("submit relocation bytes are not two drm_radeon_cs_reloc entries",
+          file=sys.stderr)
+    raise SystemExit(1)
+
+rows = manifest.get("bo_table")
+if not isinstance(rows, list) or len(rows) != expected_reloc_count:
+    print("submit manifest bo_table does not match relocation count",
+          file=sys.stderr)
+    raise SystemExit(1)
+expected_roles = [("command", expected_color_size),
+                  ("completion", expected_completion_size)]
+handles = []
+for index, (row, (role, size)) in enumerate(zip(rows, expected_roles)):
+    if not isinstance(row, dict) or row.get("reloc_index") != index:
+        print("submit manifest relocation indices are not final-list order",
+              file=sys.stderr)
+        raise SystemExit(1)
+    if row.get("role") != role or row.get("size") != size or \
+            row.get("read_domains") != 0 or row.get("write_domain") != 2:
+        print("submit manifest BO role, size, or domain differs from the "
+              "direct-write contract", file=sys.stderr)
+        raise SystemExit(1)
+    handles.append(row.get("handle"))
+
+if any(not isinstance(handle, int) or handle == 0 for handle in handles) or \
+        handles[0] == handles[1]:
+    print("submit manifest handles are not two distinct live objects",
+          file=sys.stderr)
+    raise SystemExit(1)
+
+for index, expected in enumerate(zip(handles, rows)):
+    offset = index * 16
+    handle, read_domains, write_domain, flags = struct.unpack_from(
+        "<4I", reloc_bytes, offset)
+    manifest_handle, _ = expected
+    if (handle, read_domains, write_domain, flags) != \
+            (manifest_handle, 0, 2, 0):
+        print("submit relocation bytes differ from the manifest BO table",
+              file=sys.stderr)
+        raise SystemExit(1)
+
+if manifest.get("cs_flags") != expected_flags:
+    print("submit manifest cs_flags differ from the GFX retained contract",
+          file=sys.stderr)
+    raise SystemExit(1)
+expected_chunks = [
+    {"id": 1, "length_dw": expected_reloc_count * 4},
+    {"id": 2, "length_dw": ib_dwords},
+    {"id": 3, "length_dw": 3},
+]
+if manifest.get("chunks") != expected_chunks:
+    print("submit manifest chunks differ from the three-chunk CS layout",
+          file=sys.stderr)
+    raise SystemExit(1)
+submit_relocs_digest = manifest.get("submit_relocs_blake3")
+if not isinstance(submit_relocs_digest, str) or \
+        len(submit_relocs_digest) != 64 or \
+        submit_relocs_digest.lower() != submit_relocs_digest:
+    print("submit manifest has no lowercase relocation BLAKE3", file=sys.stderr)
+    raise SystemExit(1)
+
+if bundle_path:
+    with open(bundle_path, "w", encoding="ascii") as bundle:
+        bundle.write("family rs480\n")
+        for index, row in enumerate(rows):
+            bundle.write(
+                f"bo {index} role={row['role']} size={row['size']} "
+                f"read_domains=0x{row['read_domains']:x} "
+                f"write_domain=0x{row['write_domain']:x}\n")
+PY
+}
+
+if ! validate_submit_manifest "${workdir}/submit_manifest.json" \
+        "${workdir}/submit_relocs.bin" "${workdir}/bundle.txt"; then
+    echo "submit manifest does not bind the retained submit object" >&2
+    exit 1
+fi
+
+# A swapped relocation artifact must fail the handle-to-role binding.
+{
+    dd if="${workdir}/submit_relocs.bin" bs=16 skip=1 count=1 2>/dev/null
+    dd if="${workdir}/submit_relocs.bin" bs=16 count=1 2>/dev/null
+} > "${workdir}/swapped_relocs.bin"
+if validate_submit_manifest "${workdir}/submit_manifest.json" \
+        "${workdir}/swapped_relocs.bin" 2>/dev/null; then
+    echo "manifest accepted swapped relocation roles" >&2
+    exit 1
+fi
+
+# A completion-size mutation must fail before the replay tool can ignore its
+# unconsumed relocation slot.
+sed 's/"size": 4, "role": "completion"/"size": 8, "role": "completion"/' \
+    "${workdir}/submit_manifest.json" > "${workdir}/bad_completion_manifest.json"
+if cmp -s "${workdir}/submit_manifest.json" \
+       "${workdir}/bad_completion_manifest.json"; then
+    echo "completion-size calibration did not mutate the manifest" >&2
+    exit 1
+fi
+if validate_submit_manifest "${workdir}/bad_completion_manifest.json" \
+        "${workdir}/submit_relocs.bin" 2>/dev/null; then
+    echo "manifest accepted a mismatched completion BO size" >&2
+    exit 1
+fi
+
+# A chunk descriptor mutation must fail before any parser verdict is trusted.
+sed 's/"id": 1/"id": 99/' \
+    "${workdir}/submit_manifest.json" > "${workdir}/bad_chunk_manifest.json"
+if cmp -s "${workdir}/submit_manifest.json" \
+       "${workdir}/bad_chunk_manifest.json"; then
+    echo "chunk-descriptor calibration did not mutate the manifest" >&2
+    exit 1
+fi
+if validate_submit_manifest "${workdir}/bad_chunk_manifest.json" \
+        "${workdir}/submit_relocs.bin" 2>/dev/null; then
+    echo "manifest accepted a malformed CS chunk descriptor" >&2
+    exit 1
+fi
+
 if ! validate_relocs "${workdir}/submit_relocs.bin"; then
     echo "retained submit relocation chunk failed validation" >&2
     exit 1
@@ -173,15 +355,6 @@ if validate_relocs "${workdir}/mutated_relocs.bin" 2>/dev/null; then
     echo "reloc validator accepted a zeroed write domain" >&2
     exit 1
 fi
-
-# The replay bundle mirrors the submit object's BO table: the 65536-byte
-# GTT color target the cell writes and the 4096-byte GTT completion
-# buffer the queue appends.
-cat > "${workdir}/bundle.txt" <<EOF
-family rs480
-bo 0 role=color size=65536 read_domains=0x0 write_domain=0x2
-bo 1 role=completion size=4096 read_domains=0x0 write_domain=0x2
-EOF
 
 # Known-good: the exact submitted dwords replay through the kernel
 # parser and tracker with the accept-no-draw verdict a 2D-only stream
