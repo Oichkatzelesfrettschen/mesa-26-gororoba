@@ -5,6 +5,8 @@
 #ifndef R300_R2VB_CAPTURE_GATE_H
 #define R300_R2VB_CAPTURE_GATE_H
 
+#include "amd/common/amd_family.h"
+
 #include <stdbool.h>
 #include <string.h>
 
@@ -18,6 +20,17 @@ static inline bool
 r300_r2vb_option_is(const char *value, const char *expected)
 {
    return value && strcmp(value, expected) == 0;
+}
+
+/* r300_parse_chipset maps the RS480, RS482, and RS485 PCI entries to
+ * CHIP_RS480.  The R2VB packet surface requires that family and the
+ * canonical software-TCL capability shape before either capture path emits
+ * command packets. */
+static inline bool
+r300_r2vb_rs480_capability_gate(enum radeon_family family, bool has_tcl,
+                                unsigned num_vert_fpus)
+{
+   return family == CHIP_RS480 && !has_tcl && num_vert_fpus == 0;
 }
 
 static inline bool

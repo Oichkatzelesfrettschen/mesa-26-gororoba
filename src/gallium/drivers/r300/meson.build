@@ -905,9 +905,10 @@ if with_tests
     'r300-r2vb-capture-gate',
     executable(
       'r300_r2vb_capture_gate_test',
-      files('tests/r300_r2vb_capture_gate_test.c'),
+      files('tests/r300_r2vb_capture_gate_test.c', 'r300_chipset.c'),
       c_args : r300_test_c_args,
-      include_directories : [inc_src, inc_include, include_directories('.')],
+      include_directories : [inc_src, inc_include, inc_gallium, inc_gallium_aux,
+                             include_directories('.')],
       dependencies : [idep_mesautilc11],
       gnu_symbol_visibility : 'hidden',
     ),

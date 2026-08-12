@@ -82,7 +82,11 @@ void r300_flush(struct pipe_context *pipe,
      * cleanup path so a second probe cannot issue RADEON_FLUSH_NOOP against the
      * active probe's command stream. */
     bool probe_dispatch_active = r300->r2vb_probe_dispatch_active;
-    if (r300_r2vb_probe_dispatch_allowed(probe_dispatch_active)) {
+    bool rs48x_r2vb_capable = r300_r2vb_rs480_capability_gate(
+        r300->screen->caps.family, r300->screen->caps.has_tcl,
+        r300->screen->caps.num_vert_fpus);
+    if (r300_r2vb_probe_dispatch_allowed(probe_dispatch_active) &&
+        rs48x_r2vb_capable) {
         r300->r2vb_probe_dispatch_active = true;
 
         /* RS482 Wiring-A (R2VB direct-VAP) hardware-handoff probe.  Fires once
