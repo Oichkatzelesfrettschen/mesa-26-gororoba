@@ -2405,16 +2405,16 @@ r3v_replay_draw(struct r3v_device *device,
       dyn_topology ? dyn->topology
                    : (indexed ? e->draw_indexed.topology : e->draw.topology);
 
-   /* A graphics pipeline with no fragment stage (rasterizer discard or a
-    * fragment-less pipeline) leaves fs_cso NULL -- a failed fragment compile
-    * would instead have failed pipeline creation, so NULL here means no
-    * fragment stage.  Such a draw produces no fragment output in r3v replay.
-    * It must be skipped rather than entered: on the RS482 SW-TCL path
-    * r300_update_derived_state
-    * compiles the hardware vertex shader only when caps.has_tcl is set (it is
-    * not), yet r300_update_rs_block unconditionally dereferences r300_vs()->shader
-    * and r300_fs()->shader, so a no-fragment draw NULL-derefs in the RS block
-    * (dEQP-VK.api.descriptor_set.descriptor_set_layout_lifetime.graphics). */
+   /* r3v_create_one_pipeline synthesizes a no-op fragment shader for a
+    * fragment-less pipeline so depth and stencil operations still execute.
+    * Only a pipeline with static rasterizer discard leaves fs_cso NULL, and
+    * that draw produces no fragment output.  The replay skips it because the
+    * RS482 SW-TCL path reaches r300_update_derived_state, whose
+    * caps.has_tcl branch does not compile a hardware vertex shader, while
+    * r300_update_rs_block unconditionally dereferences r300_vs()->shader and
+    * r300_fs()->shader.  Symbol discovery: (rg --fixed-strings
+    * "r300_update_derived_state" src/), (rg --fixed-strings "caps.has_tcl"
+    * src/), and (rg --fixed-strings "r300_update_rs_block" src/). */
    if (!bound_pipeline || !bound_pipeline->vs_cso || !bound_pipeline->fs_cso)
       return VK_SUCCESS;
 
