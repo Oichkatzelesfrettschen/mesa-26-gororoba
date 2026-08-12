@@ -797,10 +797,10 @@ bool r300_r2vb_producer_fs_input_hwreg(
     const struct r300_shader_semantics *inputs, unsigned *out_hwreg);
 
 /* One authoritative record binding the three producer index namespaces:
- * the application input location/rank feeding the position bytes, the
+ * the application input location/rank feeding the model bytes, the
  * VAP destination vector locations the fetched streams land in, and the
  * FS hardware input register the rasterizer routes the model vector to.
- * The constructor fails unless the plan-measured source, the compiled
+ * The constructor fails unless the selected measured source, the compiled
  * producer FS semantics, and the derived RS block all describe the same
  * binding. */
 struct r300_r2vb_producer_logical_binding {
@@ -849,13 +849,14 @@ enum r300_r2vb_producer_binding_violation {
 /* Runtime binding constructor: derives the destination vectors from
  * the DERIVED producer stream state (never caller literals), requires
  * them to match the calibrated locations, and builds the binding
- * against the plan-measured source, the compiled producer FS
- * semantics, and the exact RS contract.  This is the only constructor
- * a runtime path calls; the literal-argument form stays for the
- * calibration oracle. */
+ * against the selected model source, the compiled producer FS
+ * semantics, and the exact RS contract.  A null model source selects
+ * the plan's position source.  This is the only constructor a runtime
+ * path calls; the literal-argument form stays for the calibration oracle. */
 struct r300_vertex_stream_state;
 bool r300_r2vb_producer_logical_binding_from_state(
     const struct r300_r2vb_producer_plan *plan,
+    const struct r300_r2vb_position_source *model_source,
     const struct r300_shader_semantics *fs_inputs,
     const struct r300_rs_block *rs,
     const struct r300_vertex_stream_state *psc,

@@ -2085,10 +2085,17 @@ check_logical_binding(void)
                                                      &bind),
             "binding: an unmeasured source identity declines");
       badsrc = src;
+      badsrc.app_driver_location = 0;
       badsrc.location_rank = 1;
       CHECK(!r300_r2vb_producer_logical_binding_init(&badsrc, &fs, &rs, 0, 6,
                                                      &bind),
-            "binding: a nonzero source rank declines");
+            "binding: a source rank disagreeing with its driver location declines");
+      badsrc.app_driver_location = 1;
+      CHECK(r300_r2vb_producer_logical_binding_init(&badsrc, &fs, &rs, 0, 6,
+                                                    &bind) &&
+               bind.app_driver_location == 1 && bind.location_rank == 1 &&
+               bind.velem_index == 1,
+            "binding: a rank-one source identity reaches the logical binding");
       struct r300_rs_block badrs = rs;
       badrs.vap_vsm_vtx_assm = R300_INPUT_CNTL_POS;
       CHECK(!r300_r2vb_producer_logical_binding_init(&src, &fs, &badrs, 0, 6,
@@ -2238,44 +2245,53 @@ check_logical_binding(void)
       psc.vap_prog_stream_cntl[0] = 0x26030003;
       psc.vap_prog_stream_cntl_ext[0] = 0xf688f688;
       struct r300_r2vb_producer_logical_binding rb;
-      CHECK(r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
-                                                          &psc, &rb),
+      CHECK(r300_r2vb_producer_logical_binding_from_state(
+               &plan, NULL, &fs, &rs, &psc, &rb),
             "from_state: the calibrated derived word builds the binding");
       CHECK(rb.slot_dst_vec_loc == R300_R2VB_CAL_SLOT_DST_VEC_LOC &&
                rb.model_dst_vec_loc == R300_R2VB_CAL_MODEL_DST_VEC_LOC &&
-               rb.fs_hw_input_reg == 0,
-            "from_state: destinations decode to the calibrated locations");
+               rb.fs_hw_input_reg == 0 && rb.app_driver_location == 0 &&
+               rb.location_rank == 0 && rb.velem_index == 0,
+            "from_state: the position source identity stays at element zero");
+      struct r300_r2vb_position_source model_source = {
+         .app_driver_location = 1, .location_rank = 1, .valid = true
+      };
+      CHECK(r300_r2vb_producer_logical_binding_from_state(
+               &plan, &model_source, &fs, &rs, &psc, &rb) &&
+               rb.app_driver_location == 1 && rb.location_rank == 1 &&
+               rb.velem_index == 1,
+            "from_state: the selected model source identity reaches the binding");
       struct r300_vertex_stream_state bad = psc;
       bad.count = 2;
-      CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
-                                                           &bad, &rb),
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(
+               &plan, NULL, &fs, &rs, &bad, &rb),
             "from_state: a second register pair declines");
       bad = psc;
       bad.vap_prog_stream_cntl[0] &= ~((uint32_t)R300_LAST_VEC << 16);
-      CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
-                                                           &bad, &rb),
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(
+               &plan, NULL, &fs, &rs, &bad, &rb),
             "from_state: a model element without LAST_VEC declines");
       bad = psc;
       /* Slot vector drifted from 0 to 1. */
       bad.vap_prog_stream_cntl[0] = 0x26030103;
-      CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
-                                                           &bad, &rb),
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(
+               &plan, NULL, &fs, &rs, &bad, &rb),
             "from_state: a drifted slot destination vector declines");
       bad = psc;
       /* Model vector drifted from 6 to 5. */
       bad.vap_prog_stream_cntl[0] = 0x25030003;
-      CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
-                                                           &bad, &rb),
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(
+               &plan, NULL, &fs, &rs, &bad, &rb),
             "from_state: a drifted model destination vector declines");
       bad = psc;
       bad.vap_prog_stream_cntl[3] = 1;
-      CHECK(!r300_r2vb_producer_logical_binding_from_state(&plan, &fs, &rs,
-                                                           &bad, &rb),
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(
+               &plan, NULL, &fs, &rs, &bad, &rb),
             "from_state: a stale stream tail register declines");
       struct r300_r2vb_producer_plan noplan = plan;
       noplan.position_source.valid = false;
-      CHECK(!r300_r2vb_producer_logical_binding_from_state(&noplan, &fs, &rs,
-                                                           &psc, &rb),
+      CHECK(!r300_r2vb_producer_logical_binding_from_state(
+               &noplan, NULL, &fs, &rs, &psc, &rb),
             "from_state: an unmeasured plan source declines");
 
       /* The transaction receives the live PSC that the producer interface
