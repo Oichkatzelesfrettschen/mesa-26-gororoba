@@ -2920,23 +2920,33 @@ static void
 check_alu12_contract(void)
 {
    CHECK(r300_r2vb_alu12_contract_ok(
-            PIPE_FORMAT_R32G32B32_FLOAT, false, false),
+            PIPE_FORMAT_R32G32B32_FLOAT, R300_FS_INPUT_R2VB_FLAT_VERTEX,
+            false, false),
          "ALU12: float3 source with inactive alpha-to-one admits");
    CHECK(r300_r2vb_alu12_contract_ok(
-            PIPE_FORMAT_R32G32B32_FLOAT, false, true),
+            PIPE_FORMAT_R32G32B32_FLOAT, R300_FS_INPUT_R2VB_FLAT_VERTEX,
+            false, true),
          "ALU12: multisampling without alpha-to-one admits");
    CHECK(r300_r2vb_alu12_contract_ok(
-            PIPE_FORMAT_R32G32B32_FLOAT, true, false),
+            PIPE_FORMAT_R32G32B32_FLOAT, R300_FS_INPUT_R2VB_FLAT_VERTEX,
+            true, false),
          "ALU12: alpha-to-one without multisampling has no lowering");
    CHECK(!r300_r2vb_alu12_contract_ok(
-            PIPE_FORMAT_R32G32B32A32_FLOAT, false, false),
+            PIPE_FORMAT_R32G32B32A32_FLOAT, R300_FS_INPUT_R2VB_FLAT_VERTEX,
+            false, false),
          "ALU12: float4 source cannot supply a fixed reciprocal W");
    CHECK(!r300_r2vb_alu12_contract_ok(
-            PIPE_FORMAT_R32G32_FLOAT, false, false),
+            PIPE_FORMAT_R32G32_FLOAT, R300_FS_INPUT_R2VB_FLAT_VERTEX, false,
+            false),
          "ALU12: non-float3 source declines");
+   CHECK(r300_r2vb_alu12_contract_ok(
+            PIPE_FORMAT_R32G32B32_FLOAT, R300_FS_INPUT_R2VB_FLAT_VERTEX, true,
+            true),
+         "ALU12: R2VB producer neutralizes application alpha-to-one");
    CHECK(!r300_r2vb_alu12_contract_ok(
-            PIPE_FORMAT_R32G32B32_FLOAT, true, true),
-         "ALU12: effective alpha-to-one declines before producer output");
+            PIPE_FORMAT_R32G32B32_FLOAT, R300_FS_INPUT_INTERPOLATED, true,
+            true),
+         "ALU12: interpolated producer rejects effective alpha-to-one");
 }
 
 int

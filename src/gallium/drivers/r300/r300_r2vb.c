@@ -4083,15 +4083,20 @@ bool r300_r2vb_position_input_mapping_ok(unsigned num_position_inputs,
 
 bool
 r300_r2vb_alu12_contract_ok(enum pipe_format source_format,
+                            enum r300_fs_input_semantics input_semantics,
                             bool alpha_to_one, bool msaa_enable)
 {
-    /* The reciprocal discriminator consumes m.w.  R32G32B32 is the only
+    /* The reciprocal discriminator consumes m.w. R32G32B32 is the only
      * admitted source whose PSC swizzle synthesizes that lane as one; a
      * four-component source would expose application data in the denominator.
-     * r300 lowers alpha-to-one only when multisampling is active, and that
-     * lowering replaces the color output alpha lane with one. */
+     * r300 lowers alpha-to-one only when multisampling is active. The R2VB
+     * flat-vertex producer clears that state before selecting its fragment
+     * variant, so the effective state depends on input_semantics. */
+    const bool effective_alpha_to_one =
+        input_semantics != R300_FS_INPUT_R2VB_FLAT_VERTEX &&
+        alpha_to_one && msaa_enable;
     return source_format == PIPE_FORMAT_R32G32B32_FLOAT &&
-           !(alpha_to_one && msaa_enable);
+           !effective_alpha_to_one;
 }
 
 bool r300_r2vb_producer_interface_init(
@@ -4775,8 +4780,11 @@ bool r300_r2vb_producer_bo_draw_validate(
         return false;
     }
     /* The BO-fetch transaction accepts only a READY/SINGLE/untyped plan with
-     * one position input.  A rejected plan can retain a valid source identity
-     * from an earlier scan; action and status remain the delivery authority. */
+     * one position input, matching r2vb_auto_single_cell_ok
+     * (rg --fixed-strings r2vb_auto_single_cell_ok
+     * src/gallium/drivers/r300/r300_r2vb.c). A rejected plan can retain a
+     * valid source identity from an earlier scan; action and status remain the
+     * delivery authority. */
     if (!plan || plan->status != R300_R2VB_PLAN_READY ||
         plan->action != R300_R2VB_PLAN_SINGLE || plan->has_typed_source ||
         plan->num_position_inputs != 1) {
@@ -8155,7 +8163,7 @@ r2vb_bo_draw_action_name(enum r2vb_bo_draw_action action)
 }
 
 /* Twelve-lane arithmetic discriminator FS for the fragment-ALU sign
- * characterization: the window-space producer reads back every
+ * characterization: on RS482 the window-space producer reads back every
  * negative-product viewport-MAD lane one FP24 ULP toward zero while every
  * positive-product lane is bit-exact.  Each output channel isolates one
  * operation class over the logical vec4 m from an R32G32B32 source (XYZ1,
@@ -8481,12 +8489,12 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         }
     }
 
-    /* ALU12 reads the fetched W lane as the reciprocal denominator.  The
-     * diagnostic admits only a PSC-synthesized one and keeps alpha-to-one out
-     * of the effective color-output state while multisampling is active. */
+    /* ALU12 reads the fetched W lane as the reciprocal denominator. The
+     * diagnostic admits only a PSC-synthesized one and evaluates alpha-to-one
+     * after the producer variant has applied its state contract. */
     if (!why && r2vb_bo_draw_mode_is_alu12(mode) &&
-        !r300_r2vb_alu12_contract_ok(ve->src_format, r300->alpha_to_one,
-                                     r300->msaa_enable))
+        !r300_r2vb_alu12_contract_ok(ve->src_format, pfs->input_semantics,
+                                     r300->alpha_to_one, r300->msaa_enable))
         why = "alu12_contract";
 
     /* The transaction PSC is the BO-fetch interface built from the real
