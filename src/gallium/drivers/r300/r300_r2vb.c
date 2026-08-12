@@ -7215,9 +7215,12 @@ int r300_r2vb_input_velem_index_for_test(nir_shader *vs,
     return r300_r2vb_input_velem_index(vs, in);
 }
 
-/* Lowered load_input uses the same driver-location base that the vertex
- * element array uses.  Dereference loads retain the source variable, while
- * nonzero input offsets describe an array element without one fixed velem. */
+/* NIR load_input uses a base-plus-offset pair: nir_intrinsic_base() names the
+ * first vertex element and a constant offset selects the indexed element
+ * (src/compiler/nir/nir_intrinsics.py, the load-operation base+offset contract;
+ * rg --fixed-strings 'load operations take a base+offset pair'
+ * src/compiler/nir/nir_intrinsics.py).  The vertex-element array uses that
+ * same driver-location index.  Dereference loads retain the source variable. */
 static int
 r300_r2vb_reingest_source_velem(nir_shader *vs,
                                 nir_intrinsic_instr *load)

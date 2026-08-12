@@ -51,8 +51,10 @@ class_model(const struct r300_pair_eval_profile *p, rc_register_file file,
    }
 }
 
-/* Map the source pointer selected by rc_pair_get_src to the profile's read
- * port. The resolver contract and its discovery record live at eval_arg_reg. */
+/* Map every source pointer in pair->RGB.Src[] or pair->Alpha.Src[] to the
+ * profile's read port. rc_pair_get_src supplies ordinary arguments, and
+ * resolve_presub_reg supplies direct presubtract operands. Symbol discovery
+ * uses (rg --fixed-strings 'resolve_presub_reg' src/gallium/drivers/r300/). */
 static bool
 source_is_alpha_port(const struct rc_pair_instruction *pair,
                      const struct rc_pair_instruction_source *src)
