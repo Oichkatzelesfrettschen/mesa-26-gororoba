@@ -478,9 +478,10 @@ if with_tests
   # R300_R2VB_RETAINED_CORPUS) through r300_r2vb_plan_producer under both
   # computed-varying keys and both position spaces, one census row per
   # (specimen, cv, space).  Each file hash-verifies against its content-hash
-  # filename and decodes in a forked child, the corpus manifest's producer
-  # SHA must match this build (git_sha1.h), and without a corpus directory
-  # the run exits 77 so meson reports SKIP.
+  # filename and decodes in a forked child; for a nonempty corpus, the
+  # producer SHA in its manifest must match this build (git_sha1.h).  Without
+  # a corpus directory or matching entries, the run exits 77 so meson reports
+  # SKIP.
   test(
     'r300-r2vb-retained-corpus-census',
     executable(
@@ -498,6 +499,10 @@ if with_tests
       dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
       gnu_symbol_visibility : 'hidden',
     ),
+    # A retained corpus runs four planner keys per specimen and may contain
+    # many serialized shaders; reserve a corpus-sized window instead of the
+    # 30-second Meson default.
+    timeout : 300,
     suite : ['r300'],
   )
 
