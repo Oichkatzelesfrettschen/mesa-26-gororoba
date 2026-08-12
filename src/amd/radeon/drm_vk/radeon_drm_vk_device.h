@@ -45,6 +45,11 @@ struct radeon_drm_vk_device {
     * stay under cache_event_mutex so map, BO handle, and sequence form one
     * coherent host-model witness. */
    _Atomic uint64_t cache_sync_count;
+   /* Snapshot taken immediately before the transport issues DRM_RADEON_CS.
+    * The submit caller reads this boundary witness separately from the
+    * completion sync count, so a sync moved after the ioctl cannot hide.
+    */
+   _Atomic uint64_t submit_boundary_sync_count;
    uint64_t cache_event_sequence;
    struct radeon_drm_vk_cache_event cache_sync_last;
    struct radeon_drm_vk_close_event bo_close_last;

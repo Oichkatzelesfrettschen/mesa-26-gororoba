@@ -16,6 +16,7 @@ radeon_drm_vk_device_init(struct radeon_drm_vk_device *device, int fd,
    device->fd = fd;
    device->ops = ops != NULL ? ops : &radeon_drm_vk_ioctl_ops_drm;
    atomic_init(&device->cache_sync_count, 0);
+   atomic_init(&device->submit_boundary_sync_count, 0);
    device->cache_event_sequence = 0;
    device->cache_sync_last = (struct radeon_drm_vk_cache_event){ 0 };
    device->bo_close_last = (struct radeon_drm_vk_close_event){ 0 };

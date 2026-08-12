@@ -9,6 +9,7 @@
  */
 #undef NDEBUG
 
+#include "radeon_drm_vk_bo.h"
 #include "radeon_drm_vk_cs.h"
 #include "radeon_drm_vk_device.h"
 #include "radeon_drm_vk_reloc.h"
@@ -17,6 +18,23 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+
+static struct radeon_drm_vk_device *boundary_sync_device;
+static char boundary_sync_range[256];
+
+static int
+boundary_sync_mock_command_write_read(int fd, unsigned long request,
+                                       void *data, unsigned size)
+{
+   int result = radeon_drm_vk_mock_command_write_read(fd, request, data,
+                                                      size);
+   if (result == 0 && request == DRM_RADEON_CS) {
+      radeon_drm_vk_bo_cache_sync(boundary_sync_device,
+                                  boundary_sync_range,
+                                  sizeof(boundary_sync_range));
+   }
+   return result;
+}
 
 static void
 test_build_constructs_three_chunks(void)
@@ -97,6 +115,41 @@ test_submit_passes_exact_bytes(void)
 }
 
 static void
+test_submit_snapshots_boundary_before_ioctl(void)
+{
+   radeon_drm_vk_mock_reset();
+   struct radeon_drm_vk_ioctl_ops boundary_ops = radeon_drm_vk_mock_ops;
+   boundary_ops.command_write_read = boundary_sync_mock_command_write_read;
+
+   struct radeon_drm_vk_device device;
+   assert(radeon_drm_vk_device_init(&device, 42, &boundary_ops) == 0);
+   boundary_sync_device = &device;
+
+   radeon_drm_vk_bo_cache_sync(&device, boundary_sync_range,
+                               sizeof(boundary_sync_range));
+   radeon_drm_vk_bo_cache_sync(&device, boundary_sync_range,
+                               sizeof(boundary_sync_range));
+   assert(device.cache_sync_count == 2);
+
+   struct radeon_drm_vk_reloc_list relocs;
+   radeon_drm_vk_reloc_list_init(&relocs);
+   uint32_t ib[2] = {0x80000000, 0};
+   struct radeon_drm_vk_cs cs;
+   radeon_drm_vk_cs_build(&cs, ib, 2, &relocs, 0, false);
+   assert(radeon_drm_vk_cs_submit(&device, &cs) == 0);
+
+   /* The mock adds a sync inside the ioctl callback.  A boundary snapshot
+    * placed after that callback would observe three instead of two.
+    */
+   assert(device.submit_boundary_sync_count == 2);
+   assert(device.cache_sync_count == 3);
+
+   radeon_drm_vk_reloc_list_finish(&relocs);
+   boundary_sync_device = NULL;
+   radeon_drm_vk_device_finish(&device);
+}
+
+static void
 test_empty_reloc_list_builds_zero_length_chunk(void)
 {
    struct radeon_drm_vk_reloc_list relocs;
@@ -117,6 +170,7 @@ main(void)
 {
    test_build_constructs_three_chunks();
    test_submit_passes_exact_bytes();
+   test_submit_snapshots_boundary_before_ioctl();
    test_empty_reloc_list_builds_zero_length_chunk();
    printf("radeon_drm_vk_cs_test: all checks passed\n");
    return 0;

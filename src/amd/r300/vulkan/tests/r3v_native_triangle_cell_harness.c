@@ -592,10 +592,14 @@ main(int argc, char **argv)
          pre_submit_sync_count + R300_TRIANGLE_SLOT_COUNT;
       const uint64_t expected_completion_sync_count =
          expected_submit_sync_count + R300_TRIANGLE_SLOT_COUNT;
+      CHECK(native_device->drm.submit_boundary_sync_count ==
+               expected_submit_sync_count,
+            "DRM_RADEON_CS boundary sees %" PRIu64 " cache syncs",
+            native_device->drm.submit_boundary_sync_count);
       CHECK(native_device->drm.cache_sync_count ==
                expected_completion_sync_count,
-            "queue pre-submit and completion sync counts reach %" PRIu64
-            " (submit stage %" PRIu64 ")",
+            "post-completion cache sync count reaches %" PRIu64
+            " after boundary stage %" PRIu64,
             native_device->drm.cache_sync_count,
             expected_submit_sync_count);
 
