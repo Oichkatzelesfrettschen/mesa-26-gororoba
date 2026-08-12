@@ -24,6 +24,25 @@ def fail(message, *outputs):
     return 1
 
 
+def has_recorder_call(source, symbol):
+    """Match an executable recorder call, not a forward declaration."""
+    source = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.DOTALL)
+    pattern = re.compile(
+        rf"^[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*|return[ \t]+)?"
+        rf"{re.escape(symbol)}[ \t]*\(",
+        re.MULTILINE,
+    )
+    return pattern.search(source) is not None
+
+
+def calibrate_recorder_call_predicate():
+    """Reject declaration-only fixtures before checking attended sources."""
+    good = "VkResult record(VkCommandBuffer command);\nresult = record(cmd);\n"
+    declaration_only = "VkResult record(VkCommandBuffer command);\n"
+    return (has_recorder_call(good, "record") and
+            not has_recorder_call(declaration_only, "record"))
+
+
 def main():
     if len(sys.argv) != 6:
         print("usage: r3v_native_direct_write_authority_parity.py "
@@ -32,6 +51,9 @@ def main():
               file=sys.stderr)
         return 2
     writer, runner, harness, dw_source, triangle_source = sys.argv[1:6]
+
+    if not calibrate_recorder_call_predicate():
+        return fail("recorder call-site predicate calibration failed")
 
     environment = dict(os.environ)
     for declaration in (
@@ -129,16 +151,17 @@ def main():
             dw_text = source.read()
         with open(triangle_source) as source:
             triangle_text = source.read()
-        if "r3v_native_record_direct_write(" not in dw_text:
+        if not has_recorder_call(dw_text, "r3v_native_record_direct_write"):
             return fail("attended direct-write runner does not call the "
-                        "direct-write recorder")
-        if "r3v_native_record_tcl_bypass_triangle" in dw_text:
+                         "direct-write recorder")
+        if has_recorder_call(dw_text, "r3v_native_record_tcl_bypass_triangle"):
             return fail("attended direct-write runner names the triangle "
                         "recorder")
-        if "r3v_native_record_tcl_bypass_triangle(" not in triangle_text:
+        if not has_recorder_call(
+                triangle_text, "r3v_native_record_tcl_bypass_triangle"):
             return fail("attended triangle runner does not call the "
                         "triangle recorder")
-        if "r3v_native_record_direct_write" in triangle_text:
+        if has_recorder_call(triangle_text, "r3v_native_record_direct_write"):
             return fail("attended triangle runner names the direct-write "
                         "recorder")
 
