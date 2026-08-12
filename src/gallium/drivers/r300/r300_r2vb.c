@@ -3301,7 +3301,9 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
         return false;
 
     /* Uniform/UBO sources are optional: passthrough and transform-only
-     * producers share the planner's position-output shape. */
+     * producers share the planner's position-output shape
+     * (rg --fixed-strings "r300_r2vb_plan_producer"
+     *  src/gallium/drivers/r300/: r300_r2vb_plan.c:567). */
     bool has_pos_out = false;
     nir_foreach_variable_in_shader(var, nir) {
         if ((var->data.mode & nir_var_shader_out) &&
