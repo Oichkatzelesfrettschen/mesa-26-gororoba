@@ -25,10 +25,10 @@
  * on x86, x86-64, and PowerPC hosts with no swap logic, and NaN
  * payloads, denormals, and negative zero survive unchanged.
  *
- * Tuning is a separate property from the contract.  General code speed
- * rides each build profile's compiler flags; an explicit SIMD path is a
- * second implementation to qualify and exists only where a measurement
- * on the target host justifies it.  The tuned candidates are SSE2 and
+ * Performance selection is separate from the contract.  General code speed
+ * rides each build profile's compiler flags; the explicit SIMD path is an
+ * unmeasured correctness-qualified specialization until a target timing
+ * run establishes a dispatch policy.  The SIMD candidates are SSE2 and
  * SSE3 -- the K8 primary target's CPUID ceiling is k8-sse3, so SSE3 is
  * the last vector extension the target implements -- and both are
  * correctness-qualified by the oracle.  r300_cpu_vertex_gather selects
@@ -39,7 +39,8 @@
 
 /* One bound attribute stream: data points at the first record of the
  * first vertex (binding base plus attribute offset already applied),
- * stride is the byte distance between records, and size_bytes bounds
+ * stride is the byte distance between records (zero repeats the first
+ * record for every vertex), and size_bytes bounds
  * the readable range from data.  The gather validates every requested
  * record against the bound in 64-bit arithmetic and refuses a range it
  * cannot prove readable, so a malformed binding rejects instead of
@@ -63,7 +64,7 @@ int r300_cpu_vertex_gather(int format_id,
                            uint32_t first_vertex, uint32_t vertex_count,
                            uint32_t *carrier, uint32_t carrier_dwords);
 
-/* The portable byte-copy baseline the tuned paths qualify against; the
+/* The portable byte-copy baseline the SIMD paths qualify against; the
  * same contract as r300_cpu_vertex_gather.
  */
 int r300_cpu_vertex_gather_baseline(
@@ -71,10 +72,10 @@ int r300_cpu_vertex_gather_baseline(
    uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
    uint32_t carrier_dwords);
 
-/* The named tuned candidates, for the oracle and the timing bench.
+/* The named SIMD candidates, for the oracle and the timing bench.
  * Each returns -ENOSYS on a build without its instruction set and
  * -EINVAL when the vocabulary row deviates from the identity selector
- * pattern the tuned kernels encode, so a bench lane never silently
+ * pattern the SIMD kernels encode, so a bench lane never silently
  * times a different implementation than its label names.
  */
 int r300_cpu_vertex_gather_sse2(

@@ -1,5 +1,4 @@
 /*
- * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  *
  * Gallium buffer-map range representability for R3V replay.

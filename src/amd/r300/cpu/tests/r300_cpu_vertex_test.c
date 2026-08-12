@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Qualification oracle for the CPU vertex executor: an independent
- * reference model, bit-pattern preservation, baseline/tuned-path
+ * reference model, bit-pattern preservation, baseline/SIMD-path
  * identity, refusal legs, and known-bad calibration.
  */
 
@@ -128,29 +128,59 @@ check_format(int format_id, uint32_t stride_extra, uint32_t first_vertex,
       assert(dispatch_out[i] == CANARY);
    }
 
-   /* The named tuned candidates qualify against the same reference on
+   /* The named SIMD candidates qualify against the same reference on
     * every build that carries their instruction set; a build without
     * one reports -ENOSYS and the identity claim stays scoped to the
     * builds that ran it.
     */
-   int (*const tuned[])(int, const struct r300_cpu_vertex_stream *,
-                        uint32_t, uint32_t, uint32_t *, uint32_t) = {
+   int (*const simd[])(int, const struct r300_cpu_vertex_stream *,
+                       uint32_t, uint32_t, uint32_t *, uint32_t) = {
       r300_cpu_vertex_gather_sse2,
       r300_cpu_vertex_gather_sse3,
    };
    for (unsigned t = 0; t < 2; t++) {
-      uint32_t tuned_out[CARRIER_DWORDS + 1];
+      uint32_t simd_out[CARRIER_DWORDS + 1];
       for (uint32_t i = 0; i < CARRIER_DWORDS + 1; i++)
-         tuned_out[i] = CANARY;
-      int rc = tuned[t](format_id, &stream, first_vertex, vertex_count,
-                        tuned_out, CARRIER_DWORDS);
+         simd_out[i] = CANARY;
+      int rc = simd[t](format_id, &stream, first_vertex, vertex_count,
+                       simd_out, CARRIER_DWORDS);
       if (rc == -ENOSYS)
          continue;
       assert(rc == 0);
-      assert(memcmp(tuned_out, expected, vertex_count * 16) == 0);
+      assert(memcmp(simd_out, expected, vertex_count * 16) == 0);
       for (uint32_t i = vertex_count * 4; i < CARRIER_DWORDS + 1; i++)
-         assert(tuned_out[i] == CANARY);
+         assert(simd_out[i] == CANARY);
    }
+}
+
+static void
+check_zero_stride(void)
+{
+   uint8_t data[16];
+   uint32_t expected[12];
+   uint32_t output[12];
+   fill_records(data, sizeof(data), 0x5eed0001u);
+   const struct r300_cpu_vertex_stream stream = {
+      .data = data,
+      .stride = 0,
+      .size_bytes = sizeof(data),
+   };
+
+   reference_gather(R300_VERTEX_FORMAT_F32_4, data, 0, 7, 3, expected);
+   assert(r300_cpu_vertex_gather_baseline(
+             R300_VERTEX_FORMAT_F32_4, &stream, 7, 3, output, 12) == 0);
+   assert(memcmp(output, expected, sizeof(expected)) == 0);
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &stream, 7, 3,
+                                 output, 12) == 0);
+   assert(memcmp(output, expected, sizeof(expected)) == 0);
+
+   const struct r300_cpu_vertex_stream short_record = {
+      .data = data,
+      .stride = 0,
+      .size_bytes = sizeof(data) - 1,
+   };
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &short_record,
+                                 0, 1, output, 4) == -EINVAL);
 }
 
 int
@@ -175,6 +205,7 @@ main(void)
 
    /* Zero vertices writes nothing. */
    check_format(R300_VERTEX_FORMAT_F32_4, 0, 0, 0);
+   check_zero_stride();
 
    /* Refusals: unknown format, NULL stream data, overlapping stride,
     * and a carrier too small for the count.

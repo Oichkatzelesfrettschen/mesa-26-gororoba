@@ -1,5 +1,4 @@
 /*
- * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  *
  * Capacity-checked PM4 writer for the fixed R300 cells.

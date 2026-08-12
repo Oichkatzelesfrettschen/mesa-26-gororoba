@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 
 # Portable CPU vertex execution: the byte-defined baseline and the SSE2
-# tuned path behind one gather contract.  Host-only code; the
-# native R3V layer links it, and the qualification oracle proves the
+# SIMD path behind one gather contract.  Host-only code; the native R3V
+# implementation compiles this source into its own static implementation,
+# while the CPU test links libr300_cpu.  The qualification oracle proves the
 # implementations bit-identical against an independent reference model.
 libr300_cpu = static_library(
   'r300_cpu',
