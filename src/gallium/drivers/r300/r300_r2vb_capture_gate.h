@@ -28,6 +28,26 @@ r300_r2vb_selftest_armed(const char *hb_tcl, bool rs48x_capable,
           r300_r2vb_option_is(hb_tcl, "1");
 }
 
+/* A nested pipe flush belongs to the active probe's cleanup and submission
+ * path.  It uses the normal flush implementation without dispatching another
+ * probe, so a no-submit capture cannot reset the active probe's command stream.
+ */
+static inline bool
+r300_r2vb_probe_dispatch_allowed(bool probe_dispatch_active)
+{
+   return !probe_dispatch_active;
+}
+
+/* Readback maps the output BO without synchronization.  The transform oracle
+ * therefore runs only after the requested submit completed and its fence
+ * signalled. */
+static inline bool
+r300_r2vb_transform_verify_allowed(bool xform, bool do_submit,
+                                   bool submit_signalled)
+{
+   return xform && do_submit && submit_signalled;
+}
+
 /* Select the transport before allocation, command emission, or query
  * finalization.  RADEON_FLUSH_NOOP discards the capture IB before
  * DRM_RADEON_CS, so capture declines an active query rather than advancing

@@ -725,6 +725,9 @@ struct r300_context {
      * draw-completion wait; consumed by the wait-before-US-reprogram
      * diagnostic gate. */
     bool draw_emitted_this_cs;
+    /* The outermost R2VB self-test owns probe dispatch. Nested pipe flushes
+     * perform normal cleanup and submission without starting another probe. */
+    bool r2vb_probe_dispatch_active;
 
     /* const tracking for VS */
     int vs_const_base;
