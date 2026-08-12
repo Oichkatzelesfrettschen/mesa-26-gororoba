@@ -878,6 +878,9 @@ case_float_split(struct r300_context *r300)
       CHECK(plan_row(r300, vs, space, &plan), "planner runs");
       CHECK(plan.action == R300_R2VB_PLAN_SPLIT,
             sp ? "action split (window)" : "action split (clip)");
+      CHECK(plan.legacy_split_admitted,
+            sp ? "first window cut stays in legacy memo"
+               : "first clip cut stays in legacy memo");
       if (plan.action == R300_R2VB_PLAN_SPLIT) {
          char sig[R300_MP_MAX_CARRY_COMPS + 1];
          carry_sig(&plan, sig, sizeof(sig));
@@ -903,6 +906,8 @@ case_typed_split_rows(struct r300_context *r300)
    struct r300_r2vb_producer_plan plan;
    CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan), "bool row runs");
    CHECK(plan.action == R300_R2VB_PLAN_SPLIT, "bool carry splits");
+   CHECK(plan.legacy_split_admitted,
+         "first bool cut stays in legacy memo");
    CHECK(plan.has_typed_source &&
             plan.typed_source_class == R300_R2VB_TYPED_SOURCE_BOOL,
          "bool typed-source class");
@@ -918,6 +923,8 @@ case_typed_split_rows(struct r300_context *r300)
    vs = build_int_carry(false, 1000, 90);
    CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan), "sint row runs");
    CHECK(plan.action == R300_R2VB_PLAN_SPLIT, "bounded sint carry splits");
+   CHECK(plan.legacy_split_admitted,
+         "first sint cut stays in legacy memo");
    CHECK(plan.has_typed_source &&
             plan.typed_source_class == R300_R2VB_TYPED_SOURCE_SINT,
          "sint typed-source class");
@@ -933,6 +940,8 @@ case_typed_split_rows(struct r300_context *r300)
    vs = build_int_carry(true, 1000, 90);
    CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan), "uint row runs");
    CHECK(plan.action == R300_R2VB_PLAN_SPLIT, "bounded uint carry splits");
+   CHECK(plan.legacy_split_admitted,
+         "first uint cut stays in legacy memo");
    if (plan.action == R300_R2VB_PLAN_SPLIT) {
       char sig[R300_MP_MAX_CARRY_COMPS + 1];
       carry_sig(&plan, sig, sizeof(sig));

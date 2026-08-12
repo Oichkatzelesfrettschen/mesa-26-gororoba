@@ -203,6 +203,11 @@ struct r300_r2vb_producer_plan {
     struct r300_fs_admission_cost pass_a_cost;
     struct r300_fs_admission_cost pass_b_cost;
 
+    /* The first transport-valid cut is the legacy writer's split contract.
+     * Later compiling cuts belong to the typed writer and do not widen the
+     * legacy admission memo. */
+    bool legacy_split_admitted;
+
     /* Selected cut on SPLIT: the full partition, whose base pointers refer
      * into the owned candidate NIR below and stay valid for the plan's
      * lifetime. */

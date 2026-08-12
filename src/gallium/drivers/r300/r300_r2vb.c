@@ -6242,15 +6242,16 @@ r300_r2vb_plan_effective_admission(const struct r300_r2vb_producer_plan *plan,
                                               space, num_position_inputs)
                    ? R300_R2VB_ADMIT_REJECT
                    : R300_R2VB_ADMIT_SPLIT;
-    /* Legacy float writer: a SPLIT plan is effective only under the spill1
-     * budget-escape gate; ungated it collapses to the same reject the memo
-     * records. */
+    /* Legacy float writer: only the first transport-valid cut participates in
+     * the spill1 budget-escape gate.  A later compiling cut is typed-writer
+     * state and leaves the legacy memo at reject. */
     switch (plan->action) {
     case R300_R2VB_PLAN_SINGLE:
         return R300_R2VB_ADMIT_FITS;
     case R300_R2VB_PLAN_SPLIT:
-        return budget_escape_enabled ? R300_R2VB_ADMIT_SPLIT
-                                     : R300_R2VB_ADMIT_REJECT;
+        return budget_escape_enabled && plan->legacy_split_admitted
+                   ? R300_R2VB_ADMIT_SPLIT
+                   : R300_R2VB_ADMIT_REJECT;
     default:
         return R300_R2VB_ADMIT_REJECT;
     }

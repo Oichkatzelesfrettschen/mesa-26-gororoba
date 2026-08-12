@@ -106,6 +106,7 @@ admit_template(void)
    plan.partition.num_bases = 1;
    plan.partition.r2vb_transport[0] = R300_MP_R2VB_SINT;
    plan.candidate = (struct nir_shader *)&plan;
+   plan.legacy_split_admitted = true;
    return plan;
 }
 
@@ -246,8 +247,8 @@ main(void)
 
    /* Memo-writer effective-admission matrix: the typed writer records
     * exactly what its contract admits (spill1 never overrides a typed
-    * decline), and the legacy writer keys a SPLIT on spill1 alone (the
-    * typed gate never widens the legacy mapping). */
+    * decline), and the legacy writer keys a SPLIT on spill1 plus the first
+    * transport-valid cut (the typed gate never widens the legacy mapping). */
    plan = admit_template();
    CHECK(r300_r2vb_plan_effective_admission(
             &plan, R300_R2VB_MEMO_WRITER_TYPED_DIAGNOSTIC, false, false,
@@ -261,6 +262,16 @@ main(void)
             &plan, R300_R2VB_MEMO_WRITER_LEGACY_FLOAT, false, false,
             R300_R2VB_POSITION_CLIP, 1) == R300_R2VB_ADMIT_REJECT,
          "matrix: legacy writer, split plan, spill1 off -> reject");
+
+   plan.legacy_split_admitted = false;
+   CHECK(r300_r2vb_plan_effective_admission(
+            &plan, R300_R2VB_MEMO_WRITER_LEGACY_FLOAT, true, false,
+            R300_R2VB_POSITION_CLIP, 1) == R300_R2VB_ADMIT_REJECT,
+         "matrix: later typed cut leaves legacy writer at reject");
+   CHECK(r300_r2vb_plan_effective_admission(
+            &plan, R300_R2VB_MEMO_WRITER_TYPED_DIAGNOSTIC, false, false,
+            R300_R2VB_POSITION_CLIP, 1) == R300_R2VB_ADMIT_SPLIT,
+         "matrix: later typed cut stays available to typed writer");
 
    /* The pinned both-gates row: a typed-arm cell the contract declines
     * (typed source absent after restage) stays a reject with spill1 armed,
