@@ -36,11 +36,33 @@ plan_primary_reason(uint64_t mask)
 
 /* Typed-source scan over one restaged producer candidate.  The position
  * candidate owns the cv=0 typed class; a cv=1 varying candidate is scanned
- * separately before its single-pass verdict is admitted.  Signed markers
- * dominate unsigned, and either dominates boolean, so the class reads the
- * strictest admission constraint present.  Equality compares and boolean
- * logic mark the bool class; their integer operands mark their own class at
- * the producing op. */
+ * separately before its single-pass verdict is admitted.  The integer cases
+ * follow nir_lower_int_to_float, located with `rg --fixed-strings
+ * nir_lower_int_to_float src/compiler/nir/`.  Signed markers dominate
+ * unsigned, and either dominates boolean, so the class reads the strictest
+ * admission constraint present.  Equality compares and boolean logic mark
+ * the bool class; their integer operands mark their own class at the
+ * producing op. */
+static void
+plan_merge_typed_source_class(
+    struct r300_r2vb_producer_plan *plan,
+    enum r300_r2vb_typed_source_class source_class)
+{
+    if (source_class == R300_R2VB_TYPED_SOURCE_NONE)
+        return;
+
+    plan->has_typed_source = true;
+    if (plan->typed_source_class == R300_R2VB_TYPED_SOURCE_SINT ||
+        source_class == R300_R2VB_TYPED_SOURCE_SINT) {
+        plan->typed_source_class = R300_R2VB_TYPED_SOURCE_SINT;
+    } else if (plan->typed_source_class == R300_R2VB_TYPED_SOURCE_UINT ||
+               source_class == R300_R2VB_TYPED_SOURCE_UINT) {
+        plan->typed_source_class = R300_R2VB_TYPED_SOURCE_UINT;
+    } else {
+        plan->typed_source_class = R300_R2VB_TYPED_SOURCE_BOOL;
+    }
+}
+
 static void
 plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
 {
@@ -55,12 +77,15 @@ plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
             case nir_op_imin: case nir_op_imax:
             case nir_op_ineg: case nir_op_iabs:
             case nir_op_iadd: case nir_op_isub: case nir_op_imul:
+            case nir_op_idiv: case nir_op_irem: case nir_op_imod:
             case nir_op_ishl: case nir_op_ishr:
             case nir_op_ilt: case nir_op_ige:
+            case nir_op_i32csel_gt: case nir_op_i32csel_ge:
                 sint = true;
                 break;
             case nir_op_f2u32: case nir_op_u2f32:
             case nir_op_umin: case nir_op_umax:
+            case nir_op_udiv: case nir_op_umod:
             case nir_op_ushr:
             case nir_op_ult: case nir_op_uge:
                 uns = true;
@@ -72,6 +97,10 @@ plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
             case nir_op_bcsel:
             case nir_op_inot: case nir_op_iand:
             case nir_op_ior: case nir_op_ixor:
+            case nir_op_ball_iequal2: case nir_op_ball_iequal3:
+            case nir_op_ball_iequal4:
+            case nir_op_bany_inequal2: case nir_op_bany_inequal3:
+            case nir_op_bany_inequal4:
                 boolean = true;
                 break;
             default:
@@ -79,11 +108,14 @@ plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
             }
         }
     }
-    plan->has_typed_source = sint || uns || boolean;
-    plan->typed_source_class =
-        sint ? R300_R2VB_TYPED_SOURCE_SINT :
-        uns ? R300_R2VB_TYPED_SOURCE_UINT :
-        boolean ? R300_R2VB_TYPED_SOURCE_BOOL : R300_R2VB_TYPED_SOURCE_NONE;
+    plan->has_typed_source = false;
+    plan->typed_source_class = R300_R2VB_TYPED_SOURCE_NONE;
+    if (sint)
+        plan_merge_typed_source_class(plan, R300_R2VB_TYPED_SOURCE_SINT);
+    if (uns)
+        plan_merge_typed_source_class(plan, R300_R2VB_TYPED_SOURCE_UINT);
+    if (boolean)
+        plan_merge_typed_source_class(plan, R300_R2VB_TYPED_SOURCE_BOOL);
 }
 
 /* Pre-lowering shape validation: only the structural facts that survive the
@@ -579,11 +611,17 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
                 }
                 /* The cv=1 varying producer is a separately admitted
                  * fragment pass.  Scan its optimized NIR before accepting a
-                 * fitting result, because dead-code elimination in the
-                 * position candidate can remove the only typed producer. */
+                 * fitting result, because
+                 * r300_r2vb_build_restaged_fs_nir, found with
+                 * `rg --fixed-strings r300_r2vb_build_restaged_fs_nir
+                 * src/gallium/drivers/r300/`, runs restaging DCE and drops
+                 * non-target stores, which can remove the only typed
+                 * producer from the position candidate. */
                 struct r300_r2vb_producer_plan varying_scan = {0};
                 plan_scan_typed_source(vfs, &varying_scan);
                 if (varying_scan.has_typed_source) {
+                    plan_merge_typed_source_class(
+                        plan, varying_scan.typed_source_class);
                     plan_observe(plan,
                                  R300_R2VB_PLAN_TYPED_SINGLE_PASS_UNPROVEN);
                     varying_typed_source = true;

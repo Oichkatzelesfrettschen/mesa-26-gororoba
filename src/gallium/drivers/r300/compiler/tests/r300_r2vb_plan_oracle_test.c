@@ -65,6 +65,7 @@ static unsigned g_failures;
 static const nir_shader_compiler_options vs_options = {
    .float_mul_add32 =
       nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+   .lower_fdiv = true,
    .lower_flrp32 = true,
 };
 
@@ -396,6 +397,33 @@ build_typed_varying_float_position(void)
    return end_vs(&v, nir_replicate(&v.b, c, 4));
 }
 
+static nir_shader *
+build_typed_varying_opcode(nir_op op, bool is_unsigned, const char *name)
+{
+   struct vs_build v = begin_vs(name, true);
+   nir_variable *in_attr = nir_variable_create(
+      v.b.shader, nir_var_shader_in, glsl_vec4_type(), "in_attr");
+   in_attr->data.location = VERT_ATTRIB_GENERIC1;
+   in_attr->data.driver_location = 1;
+   nir_variable *out_color = nir_variable_create(
+      v.b.shader, nir_var_shader_out, glsl_vec4_type(), "vColor");
+   out_color->data.location = VARYING_SLOT_VAR0;
+   out_color->data.driver_location = 1;
+
+   nir_def *input = nir_load_var(&v.b, in_attr);
+   nir_def *x = nir_channel(&v.b, input, 0);
+   nir_def *y = nir_channel(&v.b, input, 1);
+   nir_def *lhs = is_unsigned ? nir_f2u32(&v.b, x) : nir_f2i32(&v.b, x);
+   nir_def *rhs = is_unsigned ? nir_f2u32(&v.b, y) : nir_f2i32(&v.b, y);
+   nir_def *typed = nir_build_alu2(&v.b, op, lhs, rhs);
+   nir_def *output = is_unsigned ? nir_u2f32(&v.b, typed)
+                                  : nir_i2f32(&v.b, typed);
+   nir_store_var(&v.b, out_color, nir_replicate(&v.b, output, 4), 0xf);
+
+   nir_def *c = fmad_chain(&v.b, nir_channel(&v.b, v.pos, 0), 8);
+   return end_vs(&v, nir_replicate(&v.b, c, 4));
+}
+
 /* A computed varying plus a second input feeding the position computation:
  * the production arity rule (r300_vs_nir_is_fragment_aluable) rejects this
  * at cv=1, because with a computed varying present every non-first input
@@ -610,9 +638,58 @@ case_typed_computed_varying_reject(struct r300_context *r300)
    CHECK(plan.action == R300_R2VB_PLAN_REJECT, "action reject");
    CHECK(plan.primary_reason == R300_R2VB_PLAN_TYPED_SINGLE_PASS_UNPROVEN,
          "reason typed single pass unproven");
+   CHECK(plan.has_typed_source, "cv=1 typed source persists in plan");
+   CHECK(plan.typed_source_class == R300_R2VB_TYPED_SOURCE_SINT,
+         "cv=1 typed source class persists in plan");
    if (ran)
       r300_r2vb_plan_release(&plan);
    ralloc_free(vs);
+}
+
+/* nir_lower_int_to_float handles each division and remainder opcode through
+ * the r300 fragment backend.  Keep one live cv=1 producer per opcode so the
+ * planner scan sees the source before the lowering pass rewrites it. */
+static void
+case_typed_varying_integer_opcode_coverage(struct r300_context *r300)
+{
+   static const struct {
+      nir_op op;
+      bool is_unsigned;
+      enum r300_r2vb_typed_source_class source_class;
+      const char *name;
+   } cases[] = {
+      { nir_op_idiv, false, R300_R2VB_TYPED_SOURCE_SINT,
+        "plan_typed_varying_idiv" },
+      { nir_op_udiv, true, R300_R2VB_TYPED_SOURCE_UINT,
+        "plan_typed_varying_udiv" },
+      { nir_op_irem, false, R300_R2VB_TYPED_SOURCE_SINT,
+        "plan_typed_varying_irem" },
+      { nir_op_imod, false, R300_R2VB_TYPED_SOURCE_SINT,
+        "plan_typed_varying_imod" },
+      { nir_op_umod, true, R300_R2VB_TYPED_SOURCE_UINT,
+        "plan_typed_varying_umod" },
+   };
+
+   printf("typed computed varying classifies every integer div/rem opcode\n");
+   for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+      nir_shader *vs = build_typed_varying_opcode(cases[i].op,
+                                                  cases[i].is_unsigned,
+                                                  cases[i].name);
+      struct r300_r2vb_producer_plan plan;
+      bool ran = r300_r2vb_plan_producer(r300, vs, true,
+                                         R300_R2VB_POSITION_CLIP, &plan);
+      CHECK(ran, "opcode planner runs");
+      CHECK(plan.action == R300_R2VB_PLAN_REJECT,
+            "opcode remains rejected at cv=1");
+      CHECK(plan.primary_reason == R300_R2VB_PLAN_TYPED_SINGLE_PASS_UNPROVEN,
+            "opcode records typed rejection");
+      CHECK(plan.has_typed_source, "opcode typed source persists");
+      CHECK(plan.typed_source_class == cases[i].source_class,
+            "opcode typed class persists");
+      if (ran)
+         r300_r2vb_plan_release(&plan);
+      ralloc_free(vs);
+   }
 }
 
 /* cv=1 keeps the production arity rule: a computed varying pins every
@@ -1122,6 +1199,7 @@ main(void)
    case_computed_varying_position_cell(r300);
    case_typed_varying_position_cell(r300);
    case_typed_computed_varying_reject(r300);
+   case_typed_varying_integer_opcode_coverage(r300);
    case_computed_varying_arity_reject(r300);
    case_float_split(r300);
    case_typed_split_rows(r300);
