@@ -56,8 +56,10 @@ r3v_native_queue_status_from_transport(bool ioctl_accepted,
 }
 
 /* A submit with no executable IB finishes without a transport boundary.
- * Preserve a status from an executable buffer in the same submit, so a
- * zero-IB buffer cannot make the result depend on command-buffer order.
+ * r3v_native_queue_submit (rg --fixed-strings "r3v_native_queue_submit"
+ * src/amd/r300/vulkan/r3v_native_queue.c) records executable-buffer presence
+ * across the submit before finalization, so a zero-IB buffer cannot make the
+ * result depend on command-buffer order.
  */
 static inline enum r3v_native_queue_status
 r3v_native_queue_status_finalize_submit(
