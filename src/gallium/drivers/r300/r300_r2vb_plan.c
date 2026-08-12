@@ -506,11 +506,11 @@ r300_r2vb_constant_source_scan(nir_shader *producer,
     return R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64;
 }
 
-/* Mirror the live r300_mp_find_vec4_cut route: walk ranked cuts until the
- * first transport-valid single-vec4 partition, then evaluate only that
- * partition.  The legacy emitter still rebuilds this first candidate, so a
- * shadow plan that selects a later compiling candidate would describe a
- * different program and make the admission memo diverge from execution. */
+/* Walk ranked cuts in the typed diagnostic plan.  The legacy admission and
+ * execution path keeps its first transport-valid cut in r300_mp_find_vec4_cut;
+ * this plan owns the later-candidate choice because typed execution rebuilds
+ * the selected partition from the cached candidate.  The failure mask remains
+ * exhaustive across every candidate. */
 static bool
 plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
                            struct r300_r2vb_producer_plan *plan,
@@ -567,9 +567,9 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
                 ralloc_free(pass_a);
             if (pass_b)
                 ralloc_free(pass_b);
-            _mesa_hash_table_destroy(range_ht, NULL);
             if (transient_failure)
                 *transient_failure = true;
+            _mesa_hash_table_destroy(range_ht, NULL);
             return false;
         }
         r300_optimize_nir(pass_a, r300->screen);
@@ -595,8 +595,10 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
             plan_observe(plan, R300_R2VB_PLAN_PASS_B);
         ralloc_free(pass_a);
         ralloc_free(pass_b);
-        _mesa_hash_table_destroy(range_ht, NULL);
-        return false;
+        /* A viable transport cut can fail one fragment admission half while a
+         * later ranked cut fits.  Keep walking so typed execution retains the
+         * later plan and the diagnostic mask records every observed class. */
+        continue;
     }
     _mesa_hash_table_destroy(range_ht, NULL);
     return false;
