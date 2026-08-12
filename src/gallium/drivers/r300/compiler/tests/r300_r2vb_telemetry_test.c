@@ -347,6 +347,13 @@ main(void)
    CHECK(c->retained == base.retained && count_dir_files(retain_dir) == 0,
          "closed gate retains nothing");
 
+   /* A zero-valued gate stays closed instead of becoming a relative output
+    * directory named "0". */
+   setenv("R300_R2VB_TELEMETRY_RETAIN", "0", 1);
+   plan_and_note("over/zero", over, R300_R2VB_PLAN_SPLIT);
+   CHECK(c->retained == base.retained && count_dir_files(retain_dir) == 0,
+         "zero gate retains nothing");
+
    /* Retention open: the split plan writes one content-hash file, and a
     * repeat of the same shape deduplicates on the existing file. */
    setenv("R300_R2VB_TELEMETRY_RETAIN", retain_dir, 1);

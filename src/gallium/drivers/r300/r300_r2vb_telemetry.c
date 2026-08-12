@@ -50,7 +50,7 @@ static const char *
 telemetry_retain_dir(void)
 {
     const char *dir = getenv("R300_R2VB_TELEMETRY_RETAIN");
-    return (dir && dir[0]) ? dir : NULL;
+    return (dir && dir[0] && strcmp(dir, "0") != 0) ? dir : NULL;
 }
 
 enum r300_r2vb_telemetry_retain_scope
