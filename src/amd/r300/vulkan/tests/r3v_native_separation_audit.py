@@ -28,15 +28,33 @@ def find_forbidden_symbols(table: str) -> list[str]:
 
 def audit_library(nm: str, library: str) -> int:
     """Run the symbol audit against one native library."""
-    output = subprocess.run(
-        [nm, "--defined-only", library],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    full = subprocess.run(
-        [nm, library], check=False, capture_output=True, text=True
-    )
+    try:
+        output = subprocess.run(
+            [nm, "--defined-only", library],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        full = subprocess.run(
+            [nm, library], check=False, capture_output=True, text=True
+        )
+    except OSError as error:
+        print(f"nm command failed for {library}: {error}", file=sys.stderr)
+        return 1
+    for label, result in (("defined-only", output), ("full", full)):
+        if result.returncode != 0:
+            print(
+                f"nm {label} command failed for {library}: "
+                f"status {result.returncode}",
+                file=sys.stderr,
+            )
+            return 1
+        if not result.stdout.strip():
+            print(
+                f"nm {label} command produced no symbols for {library}",
+                file=sys.stderr,
+            )
+            return 1
     table = output.stdout + full.stdout
     failures = find_forbidden_symbols(table)
     if failures:
@@ -61,6 +79,9 @@ def selftest() -> int:
             "for argument in \"$@\"; do\n"
             "    last=$argument\n"
             "done\n"
+            "case \"$last\" in\n"
+            "    *nm-error.symbols) exit 2 ;;\n"
+            "esac\n"
             "cat \"$last\"\n"
         )
         nm.chmod(0o755)
@@ -69,6 +90,8 @@ def selftest() -> int:
             ("native", "r3v_native_entrypoint\n", 0),
             ("gallium", "r300_screen_create\n", 1),
             ("winsys", "radeon_drm_winsys_create\n", 1),
+            ("empty", "", 1),
+            ("nm-error", "r3v_native_entrypoint\n", 1),
         )
         for label, table, expected_status in cases:
             library = root / f"{label}.symbols"
@@ -81,7 +104,10 @@ def selftest() -> int:
                 )
                 return 1
 
-    print("r3v_native_separation_audit: clean and forbidden audit verdicts calibrated")
+    print(
+        "r3v_native_separation_audit: clean, forbidden, empty-output, and "
+        "nm-error verdicts calibrated"
+    )
     return 0
 
 

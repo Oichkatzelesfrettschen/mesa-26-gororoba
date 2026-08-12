@@ -13,6 +13,10 @@ A build once registered zero native tests because the native backend and the
 drm-shim tool were both missing, and the suite reported green; that build is
 the permanent known-bad calibration, reproduced by the zero-native fixture.
 
+A Gallium-enabled qualification also requires the real-nm known-bad separation
+leg.  Native-only qualification keeps the synthetic separation selftest while
+the Gallium DSO leg remains unavailable.
+
 Modes:
   <builddir>                  inventory report, exit 0 when readable
   <builddir> --qualification  report plus fatal verdict on any absence
@@ -126,6 +130,13 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "radeon-noop-drm-shim-default",
 )
 
+# The real Gallium DSO exists only when the optional backend is enabled.  Its
+# required status follows the Meson option so native-only qualification does
+# not silently claim a test that cannot register.
+GALLIUM_REQUIRED_TESTS: tuple[str, ...] = (
+    "r3v-native-gallium-separation-known-bad",
+)
+
 # Suites whose entries the zero-native fixture removes: the historic build
 # lost exactly the native backend's registrations.
 NATIVE_SUITES = ("r3v", "radeon-drm-vk", "drm-shim")
@@ -146,6 +157,13 @@ def load_options(builddir: Path) -> dict[str, object]:
 def suite_names(entry: dict) -> list[str]:
     # Meson prefixes suites with the project name ("mesa:r3v").
     return [s.split(":", 1)[-1] for s in entry.get("suite", [])]
+
+
+def required_tests(options: dict[str, object]) -> tuple[str, ...]:
+    gallium_backend = options.get("r3v-gallium-backend")
+    if str(gallium_backend) in ("enabled", "auto", "True", "true"):
+        return REQUIRED_TESTS + GALLIUM_REQUIRED_TESTS
+    return REQUIRED_TESTS
 
 
 def tool_row(name: str) -> tuple[str, bool]:
@@ -373,6 +391,8 @@ def evaluate(registered: set[str], options: dict[str, object],
 
     gallium = options.get("gallium-drivers")
     print(f"option gallium-drivers: {gallium}")
+    gallium_backend = options.get("r3v-gallium-backend")
+    print(f"option r3v-gallium-backend: {gallium_backend}")
 
     for name in ("nm", "Xvfb", "b3sum"):
         present = probes.tool_present(name)
@@ -410,9 +430,10 @@ def evaluate(registered: set[str], options: dict[str, object],
     for suite, count in by_suite.items():
         print(f"suite {suite}: {count} registered")
 
-    missing = [name for name in REQUIRED_TESTS if name not in registered]
-    print(f"required tests: {len(REQUIRED_TESTS) - len(missing)}"
-          f"/{len(REQUIRED_TESTS)} registered")
+    expected_tests = required_tests(options)
+    missing = [name for name in expected_tests if name not in registered]
+    print(f"required tests: {len(expected_tests) - len(missing)}"
+          f"/{len(expected_tests)} registered")
     for name in missing:
         print(f"missing required test: {name}")
         failures.append(f"required test {name} not registered")
@@ -443,11 +464,11 @@ def collect(entries: list[dict]) -> set[str]:
     return names
 
 
-def synthetic_complete() -> list[dict]:
+def synthetic_complete(options: dict[str, object] | None = None) -> list[dict]:
     """A test list carrying every required name under its home suite, which
     calibrates the passing direction of the same evaluation."""
     entries = []
-    for name in REQUIRED_TESTS:
+    for name in required_tests(options or {}):
         if name.startswith("r300-"):
             suite = "r300"
         elif name.startswith("r3v-"):
@@ -466,13 +487,18 @@ def zero_native(entries: list[dict]) -> list[dict]:
 
 
 QUALIFYING_OPTIONS = {"r3v-native-backend": "enabled", "build-tests": True,
-                      "gallium-drivers": ["r300"]}
+                      "gallium-drivers": ["r300"],
+                      "r3v-gallium-backend": True}
+
+NATIVE_ONLY_OPTIONS = dict(QUALIFYING_OPTIONS)
+NATIVE_ONLY_OPTIONS["gallium-drivers"] = []
+NATIVE_ONLY_OPTIONS["r3v-gallium-backend"] = False
 
 
 def run_fixture() -> int:
     # Good probes isolate the mutation: the fixture's refusal comes from the
     # removed native registrations alone, not from this host's environment.
-    entries = zero_native(synthetic_complete())
+    entries = zero_native(synthetic_complete(QUALIFYING_OPTIONS))
     return evaluate(collect(entries), QUALIFYING_OPTIONS, qualification=True,
                     probes=GoodProbes())
 
@@ -481,31 +507,50 @@ def run_selftest() -> int:
     if replay_provenance_selftest() != 0:
         return 1
     probes = GoodProbes()
-    bad = evaluate(collect(zero_native(synthetic_complete())),
+    complete_entries = synthetic_complete(QUALIFYING_OPTIONS)
+    bad = evaluate(collect(zero_native(complete_entries)),
                    QUALIFYING_OPTIONS, qualification=True, probes=probes)
     if bad == 0:
         print("selftest: zero-native fixture passed the gate", file=sys.stderr)
         return 1
     missing_kernel_replay = evaluate(
-        collect(synthetic_complete()), QUALIFYING_OPTIONS, qualification=True,
+        collect(complete_entries), QUALIFYING_OPTIONS, qualification=True,
         probes=MissingKernelReplayProbes())
     if missing_kernel_replay == 0:
         print("selftest: missing kernel replay passed the gate",
               file=sys.stderr)
         return 1
-    good = evaluate(collect(synthetic_complete()), QUALIFYING_OPTIONS,
+    good = evaluate(collect(complete_entries), QUALIFYING_OPTIONS,
                     qualification=True, probes=probes)
     if good != 0:
         print("selftest: complete set failed the gate", file=sys.stderr)
         return 1
-    missing_b3sum = evaluate(collect(synthetic_complete()),
+    native_only = evaluate(collect(synthetic_complete(NATIVE_ONLY_OPTIONS)),
+                           NATIVE_ONLY_OPTIONS, qualification=True,
+                           probes=probes)
+    if native_only != 0:
+        print("selftest: native-only set failed the gate", file=sys.stderr)
+        return 1
+    missing_gallium_known_bad = [
+        entry for entry in complete_entries
+        if entry["name"] != GALLIUM_REQUIRED_TESTS[0]
+    ]
+    missing_known_bad = evaluate(collect(missing_gallium_known_bad),
+                                 QUALIFYING_OPTIONS, qualification=True,
+                                 probes=probes)
+    if missing_known_bad == 0:
+        print("selftest: missing Gallium known-bad leg passed the gate",
+              file=sys.stderr)
+        return 1
+    missing_b3sum = evaluate(collect(complete_entries),
                              QUALIFYING_OPTIONS, qualification=True,
                              probes=MissingB3sumProbes())
     if missing_b3sum == 0:
         print("selftest: missing b3sum passed the gate", file=sys.stderr)
         return 1
-    print("selftest: gate refuses zero-native, missing kernel replay, and "
-          "missing b3sum, and admits the complete set")
+    print("selftest: gate refuses zero-native, missing kernel replay, missing "
+          "Gallium known-bad, and missing b3sum; admits dual-backend and "
+          "native-only sets")
     return 0
 
 
