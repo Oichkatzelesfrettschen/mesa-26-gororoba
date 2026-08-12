@@ -1364,12 +1364,18 @@ void r300_emit_us_resync(struct r300_context *r300)
         END_CS;
     }
 
-    /* Known: r300->fs.size and the companion atom size fields retain their
-     * previous nonzero emitted-dword counts across an FS unbind, while
-     * r300_fs() follows r300->fs.state.  Symbol discovery uses
+    /* Known: r300_mark_fs_code_dirty assigns r300->fs.size and the companion
+     * atom sizes from shader code and constant counts.  These values reserve
+     * the upper bound for an emitter: r300_emit_fs_constants and
+     * r300_emit_fs_rc_constant_state return when their shader count is zero,
+     * while r300_fs() follows r300->fs.state.  Symbol discovery uses
      * (rg --fixed-strings "r300_fs(" src/gallium/drivers/r300/r300_context.h),
      * (rg --fixed-strings "r300->fs.state"
      * src/gallium/drivers/r300/r300_state.c), and
+     * (rg --fixed-strings "r300_mark_fs_code_dirty"
+     * src/gallium/drivers/r300/r300_state.c),
+     * (rg --fixed-strings "r300_emit_fs_constants"
+     * src/gallium/drivers/r300/r300_emit.c), and
      * (rg --fixed-strings "r300_emit_us_resync"
      * src/gallium/drivers/r300/r300_emit.c).  A live binding therefore guards
      * the re-upload. */
