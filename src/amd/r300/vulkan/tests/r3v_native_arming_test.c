@@ -138,7 +138,14 @@ test_each_factor_refuses(void)
 static void
 test_disarm_is_one_shot(void)
 {
-   char dir[] = "/tmp/r3v-arming-XXXXXX";
+   const char *temp_root = getenv("TMPDIR");
+   if (!temp_root || !temp_root[0])
+      temp_root = ".";
+
+   char dir[1024];
+   int dir_length = snprintf(dir, sizeof(dir), "%s/r3v-arming-XXXXXX",
+                             temp_root);
+   assert(dir_length > 0 && (size_t)dir_length < sizeof(dir));
    assert(mkdtemp(dir) != NULL);
 
    char kernel[128];
