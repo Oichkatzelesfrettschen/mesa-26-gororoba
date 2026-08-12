@@ -492,11 +492,11 @@ if get_option('r3v-native-backend')
         prog_python,
         args : [
           files('tests/r3v_native_separation_audit.py'),
+          '--expect-status', '1',
           prog_nm_r3v.full_path(),
           libvulkan_r3v.full_path(),
         ],
         depends : libvulkan_r3v,
-        should_fail : true,
         suite : ['r3v'],
       )
     endif
