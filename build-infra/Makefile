@@ -16,6 +16,7 @@
 # Canonical profiles:
 #   4_r300_full_release_x86_64v1-clang22-distcc-cache  r300 + ati_r300 release (vostro)
 #   3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache    r300 + ati_r300 debug (vostro)
+#   5_r300_full_release_x86_64v1-gcc-distcc-cache  r300 + zink + ati_r300 GCC diagnostic gate (vostro)
 #   3_terakan_full_release_x86_64v1-clang22-distcc-cache  r600 + terascale release + Rusticl (x130e)
 #   4_terakan_full_debug_x86_64v1-clang22-distcc-cache    r600 + terascale debug + Rusticl (x130e)
 #   5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache  r600 + terascale release, no Rusticl
@@ -609,6 +610,63 @@ audit: source-root-check source-root-control-unit-test \
 			*) return 1 ;; \
 		esac; \
 	}; \
+	gcc_version_major() { \
+		"$$1" -dumpversion 2>/dev/null | sed 's/[.].*//;q'; \
+	}; \
+	find_versioned_gcc_tool() { \
+		tool="$$1"; version="$$2"; \
+		for candidate in "$$tool-$$version" "$$tool$$version"; do \
+			if command -v "$$candidate" >/dev/null 2>&1 && \
+			   [ "$$(gcc_version_major "$$candidate")" = "$$version" ]; then \
+				printf '%s\n' "$$candidate"; return 0; \
+			fi; \
+		done; \
+		return 1; \
+	}; \
+	find_audit_gcc_tool() { \
+		tool="$$1"; requested="$$2"; \
+		if [ -n "$$requested" ]; then \
+			find_versioned_gcc_tool "$$tool" "$$requested"; \
+		else \
+			command -v "$$tool" >/dev/null 2>&1 || return 1; \
+			printf '%s\n' "$$tool"; \
+		fi; \
+	}; \
+	need_gnu_family() { \
+		grep -Eq "^[[:space:]]*llvm[[:space:]]*=[[:space:]]*'disabled'" "$(CONFIG)" || { \
+			fail "COMPILER_FAMILY=gnu requires a profile with llvm='disabled'; $(CONFIG) enables LLVM"; \
+			return; \
+		}; \
+		requested_gcc="$${GOROROBA_GCC_VERSION:-}"; \
+		audit_gcc_tool="$$(find_audit_gcc_tool gcc "$$requested_gcc")" || { \
+			if [ -n "$$requested_gcc" ]; then \
+				fail "requested GCC major $$requested_gcc lacks matching gcc-$$requested_gcc"; \
+			else \
+				fail "missing gcc on PATH"; \
+			fi; \
+			return; \
+		}; \
+		audit_gxx_tool="$$(find_audit_gcc_tool g++ "$$requested_gcc")" || { \
+			if [ -n "$$requested_gcc" ]; then \
+				fail "requested GCC major $$requested_gcc lacks matching g++-$$requested_gcc"; \
+			else \
+				fail "missing g++ on PATH"; \
+			fi; \
+			return; \
+		}; \
+		gcc_major="$$(gcc_version_major "$$audit_gcc_tool")"; \
+		gxx_major="$$(gcc_version_major "$$audit_gxx_tool")"; \
+		if [ -z "$$gcc_major" ] || [ "$$gcc_major" != "$$gxx_major" ]; then \
+			fail "GCC compiler pair has mismatched majors: gcc=$${gcc_major:-unresolved}, g++=$${gxx_major:-unresolved}"; \
+			return; \
+		fi; \
+		audit_compiler_tool="$$audit_gcc_tool"; \
+		if [ -n "$$requested_gcc" ]; then \
+			ok "GNU family $$gcc_major with pinned gcc/g++"; \
+		else \
+			ok "GNU family $$gcc_major with PATH gcc/g++"; \
+		fi; \
+	}; \
 	llvm_compiler_requirement() { \
 		case "$(COMPILER_CHAIN)" in \
 			ccache|distcc) printf '%s\n' "version-suffixed clang/clang++" ;; \
@@ -647,7 +705,7 @@ audit: source-root-check source-root-control-unit-test \
 			done; \
 		fi; \
 		if [ -n "$$selected" ]; then \
-			audit_clang_tool="$$(find_audit_compiler_tool clang "$$selected")"; \
+			audit_compiler_tool="$$(find_audit_compiler_tool clang "$$selected")"; \
 			if [ "$$need_config" -eq 1 ]; then ok "LLVM family $$selected with $$compiler_requirement/llvm-config"; else ok "LLVM compiler family $$selected with $$compiler_requirement"; fi; \
 		else fail "missing coherent LLVM compiler family"; fi; \
 	}; \
@@ -675,7 +733,11 @@ audit: source-root-check source-root-control-unit-test \
 		direct) distcc_active=0 ;; \
 		*) fail "unknown COMPILER_CHAIN=$(COMPILER_CHAIN)"; distcc_active=0 ;; \
 	esac; \
-	need_llvm_family "$$needs_llvm_config"; \
+	case "$(COMPILER_FAMILY)" in \
+		llvm) need_llvm_family "$$needs_llvm_config" ;; \
+		gnu) need_gnu_family ;; \
+		*) fail "unknown COMPILER_FAMILY=$(COMPILER_FAMILY)" ;; \
+	esac; \
 	if [ "$$rusticl_enabled" -eq 1 ]; then need_command sccache; need_command rustc; \
 	else \
 		if command -v sccache >/dev/null 2>&1; then ok "optional command sccache"; else warn "optional sccache missing; required only for Rusticl recovery profiles"; fi; \
@@ -722,14 +784,14 @@ audit: source-root-check source-root-control-unit-test \
 			fi; \
 			if $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
 				printf '%s\n' 'int gororoba_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; \
-				if [ -n "$${audit_clang_tool:-}" ] && \
+				if [ -n "$${audit_compiler_tool:-}" ] && \
 				   DISTCC_HOSTS="$$remote_distcc_spec" DISTCC_FALLBACK=0 \
-				   distcc "$$audit_clang_tool" -Wall -Wextra -Werror \
+				   distcc "$$audit_compiler_tool" -Wall -Wextra -Werror \
 				      -c "$$probe_dir/probe.c" -o "$$probe_dir/probe.o" \
 				      >/dev/null 2>"$$probe_dir/probe.err"; then \
-					ok "distcc remote Clang dispatch: $$remote_distcc_host ($$audit_clang_tool)"; \
+					ok "distcc remote $(COMPILER_FAMILY) dispatch: $$remote_distcc_host ($$audit_compiler_tool)"; \
 				else \
-					fail "distcc remote Clang dispatch failed: $$remote_distcc_host ($${audit_clang_tool:-unresolved})"; \
+					fail "distcc remote $(COMPILER_FAMILY) dispatch failed: $$remote_distcc_host ($${audit_compiler_tool:-unresolved})"; \
 					sed -n '1,12p' "$$probe_dir/probe.err" >&2; \
 				fi; \
 				if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err"; then \
@@ -802,6 +864,19 @@ configure: source-root-check vostro-prefix-check
 		done; \
 		return 1; \
 	}; \
+	gcc_version_major() { \
+		"$$1" -dumpversion 2>/dev/null | sed 's/[.].*//;q'; \
+	}; \
+	find_versioned_gcc_tool() { \
+		tool="$$1"; version="$$2"; \
+		for candidate in "$$tool-$$version" "$$tool$$version"; do \
+			if command -v "$$candidate" >/dev/null 2>&1 && \
+			   [ "$$(gcc_version_major "$$candidate")" = "$$version" ]; then \
+				printf '%s\n' "$$candidate"; return 0; \
+			fi; \
+		done; \
+		return 1; \
+	}; \
 	find_compiler_tool() { \
 		case "$(COMPILER_CHAIN)" in \
 			ccache|distcc) find_versioned_tool "$$1" "$$2" ;; \
@@ -825,14 +900,22 @@ configure: source-root-check vostro-prefix-check
 			echo "COMPILER_FAMILY=gnu requires a profile with llvm='disabled'; $(CONFIG) enables LLVM" >&2; exit 1; }; \
 		requested_gcc="$${GOROROBA_GCC_VERSION:-}"; \
 		if [ -n "$$requested_gcc" ]; then \
-			cc_cmd="$$(find_versioned_tool gcc "$$requested_gcc")" || { \
+			cc_cmd="$$(find_versioned_gcc_tool gcc "$$requested_gcc")" || { \
 				echo "requested GCC major $$requested_gcc lacks gcc-$$requested_gcc" >&2; exit 1; }; \
-			cxx_cmd="$$(find_versioned_tool g++ "$$requested_gcc")" || { \
+			cxx_cmd="$$(find_versioned_gcc_tool g++ "$$requested_gcc")" || { \
 				echo "requested GCC major $$requested_gcc lacks g++-$$requested_gcc" >&2; exit 1; }; \
 		else \
 			command -v gcc >/dev/null 2>&1 || { echo "no gcc on PATH" >&2; exit 1; }; \
 			command -v g++ >/dev/null 2>&1 || { echo "no g++ on PATH" >&2; exit 1; }; \
 			cc_cmd=gcc; cxx_cmd=g++; \
+		fi; \
+		gcc_major="$$(gcc_version_major "$$cc_cmd")"; \
+		gxx_major="$$(gcc_version_major "$$cxx_cmd")"; \
+		if [ -z "$$gcc_major" ] || [ -z "$$gxx_major" ] || [ "$$gcc_major" != "$$gxx_major" ]; then \
+			echo "mismatched GCC compiler majors: gcc=$${gcc_major:-unresolved}, g++=$${gxx_major:-unresolved}" >&2; exit 1; \
+		fi; \
+		if [ -n "$$requested_gcc" ] && [ "$$gcc_major" != "$$requested_gcc" ]; then \
+			echo "requested GCC major $$requested_gcc resolved to gcc major $$gcc_major" >&2; exit 1; \
 		fi; \
 		cc_direct_cmd="$$(command -v "$$cc_cmd")"; \
 		cxx_direct_cmd="$$(command -v "$$cxx_cmd")"; \

@@ -461,18 +461,32 @@ not state: profile `3_r300_full_debug_optimized_*` is the default
 (maximal r300 plus the `ati_r300` ICD, debugoptimized, vostro); profile
 `4_r300_full_release_*` is the conformance baseline -- GL/GLES/Piglit
 and silicon-evidence runs use it because an assertions-live debug build
-can abort a case release would pass; the `terakan_full` release/debug
-pair serves x130e with `terakan_norusticl` variants as fallbacks; and
+can abort a case release would pass; profile
+`5_r300_full_release_x86_64v1-gcc-distcc-cache` is the GCC diagnostic
+profile and pairs with the GCC Vostro env plus `COMPILER_FAMILY=gnu`. Configure
+it with:
+
+```sh
+make configure PROFILE=5_r300_full_release_x86_64v1-gcc-distcc-cache \
+  HOSTENV=vostro1000-x86-64-v1-gcc-ccache-distcc COMPILER_FAMILY=gnu
+```
+
+The `terakan_full` release/debug pair serves x130e with
+`terakan_norusticl` variants as fallbacks; and
 `r300_h264dec_full_debug_*` is a development surface.
 
 Active host envs live in `build-infra/env/`:
-`vostro1000-x86-64-v1-clang22-ccache-distcc.env` for the numbered profiles,
-and `generic-x86-64-os.env` for ad hoc portable builds. Historical btver1,
-sapphire, zen4, and distcc-pump envs live under `build-infra/env/Archive/` and
-are not active Make `HOSTENV` values. Active envs set lane-specific
-distcc/cache policy, host CFLAGS, `-fno-emulated-tls`, and centralized
-`CCACHE_DIR`/`SCCACHE_DIR`. The validated clang lane on Linux x86_64 requires
-`-fno-emulated-tls` to avoid a libglapi link failure.
+`vostro1000-x86-64-v1-clang22-ccache-distcc.env` for the numbered clang
+profiles, `vostro1000-x86-64-v1-gcc-ccache-distcc.env` for the GCC profile,
+and `generic-x86-64-os.env` for ad hoc portable builds. The GCC profile uses
+`COMPILER_FAMILY=gnu`, `COMPILER_CHAIN=ccache`, and a generated gcc/g++
+toolchain overlay; its client and distcc volunteers use one matching GCC
+major, or `GOROROBA_GCC_VERSION` pins the major on every endpoint. Historical
+btver1, sapphire, zen4, and distcc-pump envs live under
+`build-infra/env/Archive/` and are not active Make `HOSTENV` values. Active
+envs set lane-specific distcc/cache policy, host CFLAGS, `-fno-emulated-tls`,
+and centralized `CCACHE_DIR`/`SCCACHE_DIR`. The validated clang lane on Linux
+x86_64 requires `-fno-emulated-tls` to avoid a libglapi link failure.
 
 ### Build directories and install prefixes
 
