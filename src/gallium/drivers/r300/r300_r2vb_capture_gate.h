@@ -32,7 +32,7 @@ r300_r2vb_selftest_armed(const char *hb_tcl, bool rs48x_capable,
  * path.  It uses the normal flush implementation without dispatching another
  * probe, so a no-submit capture cannot reset the active probe's command stream.
  * The call graph is reproducible with `(rg --fixed-strings
- * r300_r2vb_probe_dispatch_active src/gallium/drivers/r300/)`.
+ * r2vb_probe_dispatch_active src/gallium/drivers/r300/)`.
  */
 static inline bool
 r300_r2vb_probe_dispatch_allowed(bool probe_dispatch_active)
@@ -40,9 +40,11 @@ r300_r2vb_probe_dispatch_allowed(bool probe_dispatch_active)
    return !probe_dispatch_active;
 }
 
-/* Readback maps the output BO with synchronized PIPE_MAP_READ semantics.  The
- * explicit fence gate therefore keeps the transform oracle away from a failed
- * submit before the mapping path can wait on the resource. */
+/* The transform readback requests PIPE_MAP_READ, and
+ * r300_buffer_transfer_map adds PIPE_MAP_UNSYNCHRONIZED to read-only maps
+ * (`rg --fixed-strings r300_buffer_transfer_map
+ * src/gallium/drivers/r300/`).  The explicit fence gate therefore supplies
+ * ordering before the transform oracle reads the output BO. */
 static inline bool
 r300_r2vb_transform_verify_allowed(bool xform, bool do_submit,
                                    bool submit_signalled)
