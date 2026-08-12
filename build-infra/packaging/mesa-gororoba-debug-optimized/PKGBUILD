@@ -96,9 +96,11 @@ install="${pkgname}.install"
 # Only the loader-helper scripts are package sources; the binaries come from the
 # prebuilt build-infra builddir (see _builddir), not from a git checkout.
 source=('mesa-gororoba-debug-optimized-env.sh'
-        'mesa-gororoba-debug-optimized-run')
+        'mesa-gororoba-debug-optimized-run'
+        'mesa-gororoba-debug-optimized-native-run')
 sha256sums=('91fde174cd155c2e0062f98b1443a9eaf18f8f7a04ba74c6d5617de65a5d857a'
-            '7c279f5d678dc077525c3af11db649bdc252e7031166ed8f805fb4a2e0dc0fcf')
+            '7c279f5d678dc077525c3af11db649bdc252e7031166ed8f805fb4a2e0dc0fcf'
+            '9cd21a505b5638154168d5b3adfa570fe04b9cb01d5b6005bdfae0e55e6a3f25')
 
 _prefix=/opt/mesa-gororoba-debug-optimized
 # The canonical build-infra builddir to repack, and the source root for the
@@ -209,6 +211,8 @@ PYGATE
 
   install -Dm755 "${srcdir}/mesa-gororoba-debug-optimized-run" \
     "${pkgdir}/usr/bin/mesa-gororoba-debug-optimized-run"
+  install -Dm755 "${srcdir}/mesa-gororoba-debug-optimized-native-run" \
+    "${pkgdir}/usr/bin/mesa-gororoba-debug-optimized-native-run"
   install -Dm644 "${srcdir}/mesa-gororoba-debug-optimized-env.sh" \
     "${pkgdir}/etc/opt/mesa-gororoba-debug-optimized/mesa-gororoba-debug-optimized-env.sh"
 

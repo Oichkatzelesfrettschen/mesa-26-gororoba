@@ -34,6 +34,8 @@ mesa-gororoba.  Revert the system driver with:
   pacman -U mesa-gororoba        # back to the release /usr build
 For a one-command scoped probe without changing the default, use:
   mesa-gororoba-debug-optimized-run vulkaninfo --summary
+For the native r3v ICD retained under /opt, use:
+  mesa-gororoba-debug-optimized-native-run vulkaninfo --summary
 MSG
 }
 
