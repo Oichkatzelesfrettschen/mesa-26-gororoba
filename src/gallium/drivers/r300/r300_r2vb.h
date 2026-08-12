@@ -251,11 +251,14 @@ r300_r2vb_diagnostic_once(unsigned *reported)
    return p_atomic_cmpxchg(reported, 0u, 1u) == 0u;
 }
 
-/* A process-scoped producer_submit3 state permits one PM4 candidate.  The
- * submitted state consumes each qualifying draw without staging or emission,
- * so the route cannot fall through to a second gallivm submission. */
+/* The producer-submit3 protocol is process-scoped and atomic, per
+ * (rg --fixed-strings producer_submit3_state src/gallium/drivers/r300/).
+ * AVAILABLE admits one reservation, IN_PROGRESS serializes PM4 construction,
+ * and SUBMITTED retires each qualifying draw at the state gate, preserving the
+ * sole PM4 candidate. */
 enum r300_r2vb_submit3_state {
    R300_R2VB_SUBMIT3_AVAILABLE = 0,
+   R300_R2VB_SUBMIT3_IN_PROGRESS,
    R300_R2VB_SUBMIT3_SUBMITTED,
 };
 
@@ -272,10 +275,28 @@ r300_r2vb_submit3_action_for_state(unsigned state)
              : R300_R2VB_SUBMIT3_CONSUME;
 }
 
-static inline void
+static inline bool
+r300_r2vb_submit3_try_reserve(unsigned *state)
+{
+   return p_atomic_cmpxchg(state, R300_R2VB_SUBMIT3_AVAILABLE,
+                           R300_R2VB_SUBMIT3_IN_PROGRESS) ==
+          R300_R2VB_SUBMIT3_AVAILABLE;
+}
+
+static inline bool
+r300_r2vb_submit3_rollback(unsigned *state)
+{
+   return p_atomic_cmpxchg(state, R300_R2VB_SUBMIT3_IN_PROGRESS,
+                           R300_R2VB_SUBMIT3_AVAILABLE) ==
+          R300_R2VB_SUBMIT3_IN_PROGRESS;
+}
+
+static inline bool
 r300_r2vb_submit3_mark_submitted(unsigned *state)
 {
-   p_atomic_set(state, R300_R2VB_SUBMIT3_SUBMITTED);
+   return p_atomic_cmpxchg(state, R300_R2VB_SUBMIT3_IN_PROGRESS,
+                           R300_R2VB_SUBMIT3_SUBMITTED) ==
+          R300_R2VB_SUBMIT3_IN_PROGRESS;
 }
 
 /* Gated self-test for the RS482 R2VB packet surface, fired once from r300_flush
