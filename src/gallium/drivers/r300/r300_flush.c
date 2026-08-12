@@ -18,7 +18,7 @@
 #include "r300_r2vb_capture_gate.h"
 
 
-static void r300_rearm_after_hardware_flush(struct r300_context *r300)
+void r300_rearm_after_hardware_flush(struct r300_context *r300)
 {
     struct r300_atom *atom;
 

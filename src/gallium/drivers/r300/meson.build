@@ -929,6 +929,7 @@ if with_tests
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('.'),
       ],
+      link_with : [libr300, libgallium],
       dependencies : [idep_mesautil],
       gnu_symbol_visibility : 'hidden',
     ),
