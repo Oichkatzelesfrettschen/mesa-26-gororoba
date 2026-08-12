@@ -460,6 +460,14 @@ if get_option('r3v-native-backend')
   # Executable form of the boundaries doc's dependency/symbol audit: the
   # native library defines no Gallium or winsys entry symbol, in any binding.
   prog_nm_r3v = find_program('nm', required : false)
+  if with_tests
+    test(
+      'r3v-native-gallium-separation-selftest',
+      prog_python,
+      args : [files('tests/r3v_native_separation_audit.py'), '--selftest'],
+      suite : ['r3v'],
+    )
+  endif
   if with_tests and prog_nm_r3v.found()
     test(
       'r3v-native-gallium-separation',
