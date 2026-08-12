@@ -171,6 +171,10 @@ r3v_native_copy_slot(VkCommandBuffer commandBuffer)
    /* EndRenderPass clears pass_target while the load-op clear remains in
     * deferred_draw until submission.  Refuse transfers while that record
     * is pending so the clear and copies keep separate command buffers.
+    * Symbol discovery uses (rg --fixed-strings r3v_CmdEndRenderPass
+    * src/amd/r300/vulkan/; rg --fixed-strings pass_target
+    * src/amd/r300/vulkan/; rg --fixed-strings deferred_draw.pending
+    * src/amd/r300/vulkan/).
     */
    if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
        cmd_buffer->deferred_draw.pending) {
