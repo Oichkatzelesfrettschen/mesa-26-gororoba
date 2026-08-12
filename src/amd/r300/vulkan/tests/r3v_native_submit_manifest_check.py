@@ -24,14 +24,27 @@ def read_bytes(path):
         return artifact.read()
 
 
-def submit_identity_error(manifest, reloc_bytes):
-    entry_size = 16
-    if len(reloc_bytes) % entry_size != 0:
-        return "submit relocation bytes are not whole entries"
-    relocations = [
-        struct.unpack_from("<4I", reloc_bytes, offset)
-        for offset in range(0, len(reloc_bytes), entry_size)
-    ]
+def relocation_struct(byte_order=None):
+    if byte_order is None:
+        byte_order = sys.byteorder
+    if byte_order not in ("little", "big"):
+        raise ValueError("unsupported byte order")
+    prefix = "<" if byte_order == "little" else ">"
+    return struct.Struct(prefix + "4I")
+
+
+def decode_relocations(reloc_bytes, byte_order=None):
+    decoder = relocation_struct(byte_order)
+    if len(reloc_bytes) % decoder.size != 0:
+        raise ValueError("submit relocation bytes are not whole entries")
+    return list(decoder.iter_unpack(reloc_bytes))
+
+
+def submit_identity_error(manifest, reloc_bytes, byte_order=None):
+    try:
+        relocations = decode_relocations(reloc_bytes, byte_order)
+    except ValueError as error:
+        return str(error)
     rows = manifest.get("bo_table")
     if not isinstance(rows, list) or len(rows) != len(relocations):
         return "bo_table length differs from submit relocation count"
@@ -55,6 +68,19 @@ def submit_identity_error(manifest, reloc_bytes):
             return "bo_table row has no recognized role"
     if completion_rows != 1:
         return "bo_table does not identify one completion relocation"
+    return None
+
+
+def native_relocation_calibration_error():
+    words = (0x01020304, 0x10203040, 0x55667788, 0x99AABBCC)
+    for byte_order in ("little", "big"):
+        decoder = relocation_struct(byte_order)
+        fixture = decoder.pack(*words)
+        if decode_relocations(fixture, byte_order) != [words]:
+            return "native relocation fixture did not decode"
+        opposite_order = "big" if byte_order == "little" else "little"
+        if decode_relocations(fixture, opposite_order) == [words]:
+            return "byte-swapped relocation fixture was accepted"
     return None
 
 
@@ -94,7 +120,8 @@ def duplicate_relocation_model_error():
         for index, relocation in enumerate(relocations)
     ]
     manifest = {"reloc_count": len(relocations), "bo_table": rows}
-    reloc_bytes = b"".join(struct.pack("<4I", *relocation)
+    native_decoder = relocation_struct()
+    reloc_bytes = b"".join(native_decoder.pack(*relocation)
                              for relocation in relocations)
     error = submit_identity_error(manifest, reloc_bytes)
     if error is not None:
@@ -117,6 +144,10 @@ def main():
     triangle_harness = os.path.join(
         os.path.dirname(harness), "r3v_native_triangle_cell_harness")
     environment = dict(os.environ)
+
+    endian_error = native_relocation_calibration_error()
+    if endian_error is not None:
+        return fail("native relocation calibration failed", endian_error)
 
     model_error = duplicate_relocation_model_error()
     if model_error is not None:

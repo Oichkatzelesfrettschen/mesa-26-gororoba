@@ -176,6 +176,41 @@ expected_completion_size = 4
 expected_reloc_count = 2
 expected_flags = [1, 0, 0]
 
+
+def relocation_struct(byte_order=None):
+    if byte_order is None:
+        byte_order = sys.byteorder
+    if byte_order not in ("little", "big"):
+        raise ValueError("unsupported byte order")
+    prefix = "<" if byte_order == "little" else ">"
+    return struct.Struct(prefix + "4I")
+
+
+def decode_relocations(reloc_bytes, byte_order=None):
+    decoder = relocation_struct(byte_order)
+    if len(reloc_bytes) % decoder.size != 0:
+        raise ValueError("relocation bytes are not whole entries")
+    return list(decoder.iter_unpack(reloc_bytes))
+
+
+# Calibrate both fixed-width native byte orders so the replay contract
+# rejects a byte-swapped retained struct instead of relying on a little-endian
+# host to exercise only one branch.
+calibration_words = (0x01020304, 0x10203040, 0x55667788, 0x99AABBCC)
+for calibration_order in ("little", "big"):
+    calibration_struct = relocation_struct(calibration_order)
+    calibration_bytes = calibration_struct.pack(*calibration_words)
+    if decode_relocations(calibration_bytes, calibration_order) != [
+            calibration_words]:
+        print("native relocation calibration failed", file=sys.stderr)
+        raise SystemExit(1)
+    opposite_order = "big" if calibration_order == "little" else "little"
+    if decode_relocations(calibration_bytes, opposite_order) == [
+            calibration_words]:
+        print("byte-swapped relocation calibration was accepted",
+              file=sys.stderr)
+        raise SystemExit(1)
+
 try:
     with open(manifest_path, encoding="utf-8") as stream:
         manifest = json.load(stream)
@@ -229,10 +264,14 @@ if any(not isinstance(handle, int) or handle == 0 for handle in handles) or \
           file=sys.stderr)
     raise SystemExit(1)
 
+try:
+    relocations = decode_relocations(reloc_bytes)
+except ValueError as error:
+    print(f"submit relocation decode failed: {error}", file=sys.stderr)
+    raise SystemExit(1)
+
 for index, expected in enumerate(zip(handles, rows)):
-    offset = index * 16
-    handle, read_domains, write_domain, flags = struct.unpack_from(
-        "<4I", reloc_bytes, offset)
+    handle, read_domains, write_domain, flags = relocations[index]
     manifest_handle, _ = expected
     if (handle, read_domains, write_domain, flags) != \
             (manifest_handle, 0, 2, 0):
