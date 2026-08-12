@@ -210,7 +210,7 @@ def cleanup_isolated_worktree(
     if worktree_registered:
         remove = subprocess.run(
             ["git", "-C", str(source_root), "worktree", "remove", "--force",
-             str(worktree)],
+             "--force", str(worktree)],
             capture_output=True,
             text=True,
         )
@@ -556,7 +556,7 @@ def selftest() -> int:
         subprocess.run([
             "git", "-C", str(root), "-c", "user.name=Replay Selftest",
             "-c", "user.email=replay-selftest@example.invalid", "commit",
-            "--quiet", "-m", "fixture",
+            "--quiet", "--no-gpg-sign", "-m", "fixture",
         ], check=True)
         isolation_tmp = tempfile.TemporaryDirectory(
             prefix="r3v-replay-cleanup-worktree-")
