@@ -1712,8 +1712,10 @@ static bool r2vb_sed_oracle_selftest(void)
  * register keeps the record machine-reducible into the
  * producer-immediate-logical-state calibration artifact.  Source discovery
  * uses rg --fixed-strings r300_r2vb_dump_immd_state
- * src/gallium/drivers/r300/ and follows the R300_VAP_PROG_STREAM_CNTL,
- * R300_RS_IP_0, and r300_emit_vertex_arrays_swtcl definitions. */
+ * src/gallium/drivers/r300/; the register and emitter definitions resolve with
+ * rg --fixed-strings R300_VAP_PROG_STREAM_CNTL_0 src/gallium/drivers/r300/;
+ * rg --fixed-strings R300_RS_IP_0 src/gallium/drivers/r300/; and
+ * rg --fixed-strings r300_emit_vertex_arrays_swtcl src/gallium/drivers/r300/. */
 static void
 r300_r2vb_dump_immd_state(struct r300_context *r300, uint32_t num_vertices,
                           unsigned num_attrs, uint32_t vtx_dwords,
