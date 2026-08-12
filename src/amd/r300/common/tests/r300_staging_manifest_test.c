@@ -88,7 +88,7 @@ test_helper_matches_an_independent_hash(void)
 
    /* The digest the arming gate is authorized against. */
    assert(strcmp(shared,
-                 "b082188deb8968c53e6e3e59e40448b43ae03cedf8c8ebeb9a06e9df9b81c9a2") == 0);
+                 "7d9186e4d8097343c37502ae941badc7ea4f302c27bff0585ea44d83704616f4") == 0);
 
    r300_tcl_bypass_triangle_release(&cell);
 }

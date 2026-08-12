@@ -197,11 +197,20 @@ uint32_t r300_triangle_draw_dword(
  */
 uint32_t r300_rb3d_colorpitch0_pack_argb8888(uint32_t pitch_pixels);
 
-/* The compiled fragment program writes opaque green; this is that color as
- * one ARGB8888 dword, the value the output oracle demands from interior
- * pixels.  The attended run is the falsifier for the byte order.
+/* The compiled fragment program writes (0.125, 0.375, 0.625, 0.875).
+ * The linear ARGB8888 target stores those normalized components as distinct
+ * little-endian bytes [R, G, B, A], so red/blue or any other lane swap changes
+ * the dword and the output oracle rejects it.
  */
-#define R300_TRIANGLE_DRAW_COLOR_ARGB8888 0xff00ff00u
+#define R300_TRIANGLE_DRAW_COLOR_RED 0x20u
+#define R300_TRIANGLE_DRAW_COLOR_GREEN 0x60u
+#define R300_TRIANGLE_DRAW_COLOR_BLUE 0x9fu
+#define R300_TRIANGLE_DRAW_COLOR_ALPHA 0xdfu
+#define R300_TRIANGLE_DRAW_COLOR_ARGB8888 \
+   (R300_TRIANGLE_DRAW_COLOR_RED | \
+    (R300_TRIANGLE_DRAW_COLOR_GREEN << 8) | \
+    (R300_TRIANGLE_DRAW_COLOR_BLUE << 16) | \
+    (R300_TRIANGLE_DRAW_COLOR_ALPHA << 24))
 
 /* Deterministic pre-draw fill for the color target; it differs from the
  * draw color in every byte lane, so any device write is detectable.
