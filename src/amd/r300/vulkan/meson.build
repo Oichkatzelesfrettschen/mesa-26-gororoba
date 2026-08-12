@@ -506,6 +506,26 @@ if get_option('r3v-native-backend')
       args : [files('tests/r3v_native_entrypoint_audit.py'), '--selftest'],
       suite : ['r3v'],
     )
+    # The merged native table is closed, so the calibrated baseline is the
+    # exact empty open-slot set.  The known-bad leg expects one slot but opens
+    # two, proving that unexpected additions fail the baseline comparator.
+    test(
+      'r3v-native-entrypoint-audit-baseline',
+      prog_python,
+      args : [r3v_native_entrypoint_audit_args, '--baseline', ''],
+      depends : libvulkan_r3v_native,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-entrypoint-audit-baseline-known-bad-extra',
+      prog_python,
+      args : [r3v_native_entrypoint_audit_args, '--baseline',
+              'BindBufferMemory', '--drop', 'BindBufferMemory2',
+              '--drop', 'CreateRenderPass2'],
+      depends : libvulkan_r3v_native,
+      should_fail : true,
+      suite : ['r3v'],
+    )
     # Lifecycle-pair calibration on synthetic surfaces.  A --drop fixture
     # cannot reach this verdict: the dropped command fails the completeness
     # verdict in the same run, so a pair analysis that had stopped running
