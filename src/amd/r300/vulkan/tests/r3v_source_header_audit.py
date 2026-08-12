@@ -42,9 +42,11 @@ REAL_COPYRIGHT_HOLDERS: tuple[str, ...] = ("Mesa3D authors",)
 def normalize_holder(holder: str) -> str:
     """Return the exact holder name after header punctuation and dates."""
     value = " ".join(holder.split())
-    value = re.sub(r"^\(c\)\s*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"^(?:\(c\)|\u00a9)\s*", "", value,
+                   flags=re.IGNORECASE)
     value = re.sub(
-        r"^(?:\d{4}(?:\s*-\s*\d{4})?(?:\s*,\s*\d{4})?\s*)+", "", value)
+        r"^(?:\d{4}(?:\s*-\s*\d{4})?(?:\s*,\s*\d{4})?\s*,?\s*)+",
+        "", value)
     return value.casefold()
 
 
@@ -220,20 +222,25 @@ def selftest():
     clean_defects = run_fixture("clean", CLEAN_HEADER)
     if clean_defects:
         raise AssertionError(("clean", clean_defects))
-    reviewed_header = CLEAN_HEADER.replace(
-        "/* SPDX-License-Identifier: MIT */",
-        "/* SPDX-License-Identifier: MIT\n"
-        " * Copyright (c) 2026   Mesa3D authors\n */")
-    reviewed_defects = fixture_defects(reviewed_header)
-    if reviewed_defects:
-        raise AssertionError(("reviewed-copyright", reviewed_defects))
+    reviewed_headers = {
+        "reviewed-copyright": "Copyright (c) 2026   Mesa3D authors",
+        "reviewed-copyright-sign": "Copyright \u00a9 2026 Mesa3D authors",
+        "reviewed-copyright-comma": "Copyright (c) 2026, Mesa3D authors",
+    }
+    for name, line in reviewed_headers.items():
+        reviewed_header = CLEAN_HEADER.replace(
+            "/* SPDX-License-Identifier: MIT */",
+            "/* SPDX-License-Identifier: MIT\n * " + line + "\n */")
+        reviewed_defects = fixture_defects(reviewed_header)
+        if reviewed_defects:
+            raise AssertionError((name, reviewed_defects))
     for name in sorted(FIXTURES):
         defects = run_fixture(name)
         expected = FIXTURE_PREDICATES[name]
         if len(defects) != 1 or expected not in defects[0]:
             raise AssertionError((name, defects))
     print(f"r3v_source_header_audit selftest: {len(FIXTURES)} isolated "
-          "defect legs and two clean legs OK")
+          f"defect legs and {len(reviewed_headers) + 1} clean legs OK")
     return 0
 
 
