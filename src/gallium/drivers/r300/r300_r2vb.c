@@ -2136,7 +2136,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
             vertex_attrs, 1, &layout, transform_mode))
         return;
 
-    /* C0 baseline cell gate (R300_PTSIZE_C0=1): request VAP_OUTPUT_VTX_FMT_0/1
+    /* Position-output-format gate (R300_PTSIZE_C0=1): request VAP_OUTPUT_VTX_FMT_0/1
      * (0x2090/0x2094) explicitly on the re-ingest so PT_SIZE_PRESENT (bit 16 of
      * 0x2090) does not inherit from the upstream real SWTCL draw.  The only other
      * 0x2090 write site in the driver is r300_emit_vap_output_state, so without
@@ -2145,11 +2145,11 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * vector that the single-FLOAT_4 re-ingest never produces; the output-vector
      * layout the GA reads stops matching what the producer wrote, position moves,
      * and a 16-point readback bbox spills to the origin (~110 texels, not 16
-     * single texels).  C0 holds position-only output with PT_SIZE_PRESENT and the
-     * color/texcoord components cleared, so the GA falls back to GA_POINT_SIZE for
-     * the rasterized size.  C1c requests the same position-only packet because
-     * its assembly reset must describe the same VAP tuple.  Gate-off keeps the
-     * path byte-identical. */
+     * single texels).  The position-output-format gate holds position-only output
+     * with PT_SIZE_PRESENT and the color/texcoord components cleared, so the GA
+     * falls back to GA_POINT_SIZE for the rasterized size.  The vertex-assembly
+     * gate requests the same position-only packet because its assembly reset must
+     * describe the same VAP tuple.  Gate-off keeps the path byte-identical. */
     static int ptsize_c0 = -1;
     if (ptsize_c0 < 0) {
         const char *e = getenv("R300_PTSIZE_C0");
@@ -2205,7 +2205,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         r2vb_vte_w0_fmt = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
-    /* C1c cell gate (R300_PTSIZE_C1C=1): request the position-only
+    /* Vertex-assembly gate (R300_PTSIZE_C1C=1): request the position-only
      * VAP_OUTPUT_VTX_FMT_0/1 packet together with the VAP_VTX_STATE_CNTL +
      * VAP_VSM_VTX_ASSM atom (0x2180..0x2184) with values that match the
      * re-ingest's single-FLOAT_4 position-only input stream, instead of
@@ -2214,7 +2214,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * and VSM_VTX_ASSM = 0x00000401 (POS | TC0) inherited from the
      * application's "position + tex0" layout; the re-ingest has no tex0,
      * so the inherited TC0 bit causes the GA to expect a texcoord output
-     * vector that the FLOAT_4-only PSC does not produce.  C1c requests:
+     * vector that the FLOAT_4-only PSC does not produce.  The vertex-assembly
+     * gate requests:
      *   OUTPUT_VTX_FMT_0 = POS_PRESENT, OUTPUT_VTX_FMT_1 = 0
      *   VTX_STATE_CNTL = 0 (default)
      *   VSM_VTX_ASSM   = R300_INPUT_CNTL_POS (POS only)
@@ -2262,8 +2263,9 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * Heisenbug, carrier not a writable register -- silicon-measured); the readback
      * oracle counts coverage, so a wrong-routed color still counts.  The
      * re-emit is the genuinely-rs-specific subset of r300_emit_rs_block_state;
-     * the VAP_OUTPUT_VTX_FMT subset is owned by C0 and the VAP_VTX_STATE_CNTL/
-     * VSM_VTX_ASSM subset by C1c.  Gate-off keeps the path byte-identical. */
+     * the VAP_OUTPUT_VTX_FMT subset is owned by the position-output-format gate
+     * and the VAP_VTX_STATE_CNTL/VSM_VTX_ASSM subset by the vertex-assembly gate.
+     * Gate-off keeps the path byte-identical. */
     static int ptsize_c1d = -1;
     if (ptsize_c1d < 0) {
         const char *e = getenv("R300_PTSIZE_C1D");
@@ -2278,11 +2280,11 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
 
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
      * optional observe redirect (stage3_color_bo) adds nine dwords.  Each C1/C
-     * cell adds an independently-gated count: the shared C0/C1c output packet
-     * is 3 (SEQ-of-2 + header), C1a 7, C1b W0 2 plus restore 2, C1c assembly
-     * 3, C2 5 (SEQ-of-4 + header), C3 8 (SEQ-of-7 + header), C4 6 (3 single
-     * writes, non-contiguous), C1d 7 + 2*rs_count (the rasterizer block,
-     * variable). */
+     * cell adds an independently-gated count: the shared position-output-format
+     * packet is 3 (SEQ-of-2 + header), C1a 7, C1b W0 2 plus restore 2, the
+     * vertex-assembly packet 3, C2 5 (SEQ-of-4 + header), C3 8
+     * (SEQ-of-7 + header), C4 6 (3 single writes, non-contiguous), C1d 7
+     * + 2*rs_count (the rasterizer block, variable). */
     BEGIN_CS((stage3_color_bo ? 26 : 17)
              + r300_r2vb_position_only_output_dwords(ptsize_c0, ptsize_c1c)
              + (ptsize_c1a ? 7 : 0)
@@ -2385,9 +2387,10 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         /* C1d: re-assert GB_ENABLE + RS_IP/RS_COUNT/RS_INST from the derived
          * rs_block_state, mirroring r300_emit_rs_block_state's rs-specific tail.
          * RS482/RS480 is not r500, so the R300_RS_* register set applies.  The
-         * VAP_OUTPUT_VTX_FMT (C0) and VAP_VTX_STATE_CNTL/VSM_VTX_ASSM (C1c)
-         * subsets of the atom are deliberately NOT re-emitted here to keep the
-         * cells non-overlapping. */
+         * VAP_OUTPUT_VTX_FMT (position-output-format gate) and
+         * VAP_VTX_STATE_CNTL/VSM_VTX_ASSM (vertex-assembly gate) subsets of the
+         * atom are deliberately NOT re-emitted here to keep the cells
+         * non-overlapping. */
         OUT_CS_REG_SEQ(R300_GB_ENABLE, 1);
         OUT_CS(c1d_rs->gb_enable);
         OUT_CS_REG_SEQ(R300_RS_IP_0, c1d_rs_count);
@@ -2456,9 +2459,10 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
            R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST);
 
     if (r2vb_vte_w0_fmt) {
-        /* Restore the application VTE selection after the re-ingest draw.  The
-         * packet is in the same command stream so a capture return cannot leave
-         * W0_FMT active in the hardware register file. */
+        /* Restore the application VTE selection after the re-ingest draw.  On a
+         * live submit, this same-IB packet leaves the hardware register at the
+         * application's value before subsequent draws.  Capture mode uses
+         * RADEON_FLUSH_NOOP and never reaches DRM_RADEON_CS. */
         OUT_CS_REG(R300_VAP_VTE_CNTL, saved_vte_control);
     }
 
