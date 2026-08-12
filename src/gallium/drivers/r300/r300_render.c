@@ -22,6 +22,7 @@
 #include "util/os_misc.h"
 #include "util/u_upload_mgr.h"
 #include "util/u_prim.h"
+#include "util/log.h"
 
 #include "r300_cs.h"
 #include "r300_context.h"
@@ -479,8 +480,8 @@ static void r300_emit_draw_arrays(struct r300_context *r300,
     CS_LOCALS(r300);
 
     if (count >= (1 << 24)) {
-        debug_printf("r300: Got a huge number of vertices: %i, "
-                     "refusing to render.\n", count);
+        mesa_logw("r300: Got a huge number of vertices: %u, "
+                  "refusing to render.", count);
         return;
     }
 
@@ -512,9 +513,8 @@ static void r300_emit_draw_elements(struct r300_context *r300,
     CS_LOCALS(r300);
 
     if (count >= (1 << 24)) {
-        debug_printf("r300: Got a huge number of vertices: %i, "
-                     "refusing to render (max_index: %i).\n", count,
-                     max_index);
+        mesa_logw("r300: Got a huge number of vertices: %u, "
+                  "refusing to render (max_index: %u).", count, max_index);
         return;
     }
 
