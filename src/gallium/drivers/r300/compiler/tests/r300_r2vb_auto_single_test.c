@@ -1382,6 +1382,9 @@ check_producer_fetch(void)
    forged = s; forged.stream[0].offset_bytes = 16;
    CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
          "fetch: nonzero slot offset rejects");
+   forged = s; forged.stream[0].stride_dwords = 8;
+   CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
+         "fetch: forged slot stride 8 rejects");
    forged = s; forged.stream[0].stride_dwords = 3;
    CHECK(!r300_r2vb_producer_fetch_init(&forged, 4, 1 << 20, 1 << 20, &f),
          "fetch: slot stride under the slot record rejects");
@@ -1649,6 +1652,18 @@ check_upload_integration(void)
                                          PIPE_FORMAT_R32G32B32_FLOAT, START,
                                          &s),
          "upload: packed stream contract builds");
+   struct u_upload_mgr *saved_uploader = g_context.uploader;
+   struct r300_r2vb_model_fetch no_uploader;
+   r300_r2vb_model_fetch_init(&no_uploader);
+   g_context.uploader = NULL;
+   CHECK(!r300_r2vb_materialize_model_fetch_for_test(
+            &g_context, &vb, &ve, START, COUNT, &s.stream[1],
+            &no_uploader) &&
+            no_uploader.kind == R300_R2VB_MODEL_UNSUPPORTED &&
+            !no_uploader.resource,
+         "upload: missing uploader declines CPU-shadow materialization");
+   g_context.uploader = saved_uploader;
+   r300_r2vb_model_fetch_fini(&no_uploader);
    struct r300_r2vb_model_fetch mf;
    r300_r2vb_model_fetch_init(&mf);
    bool ok = r300_r2vb_materialize_model_fetch_for_test(
