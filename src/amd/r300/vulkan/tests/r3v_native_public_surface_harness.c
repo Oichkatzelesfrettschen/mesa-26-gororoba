@@ -20,7 +20,10 @@
 #define VK_NO_PROTOTYPES
 
 #include "r3v_native.h"
+#include "r3v_cpu_sync.h"
 #include "r3v_native_reference_spirv.h"
+
+#include "vk_semaphore.h"
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "util/u_math.h"
@@ -111,6 +114,18 @@ static bool
 r3v_native_memory_type_bits_are_type_zero_only(uint32_t memory_type_bits)
 {
    return memory_type_bits == 0x1u;
+}
+
+static bool
+r3v_native_binary_semaphore_is_signaled(VkSemaphore semaphore_handle)
+{
+   VK_FROM_HANDLE(vk_semaphore, semaphore, semaphore_handle);
+   struct r3v_cpu_sync *sync = r3v_cpu_sync_from_vk(
+      vk_semaphore_get_active_sync(semaphore));
+   mtx_lock(&sync->lock);
+   bool signaled = sync->signaled;
+   mtx_unlock(&sync->lock);
+   return signaled;
 }
 
 #define DEVICE_COMMANDS(f)                                                 \
@@ -1622,11 +1637,15 @@ main(void)
                      &wrap_extent);
       assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
 
-      /* Synchronization vocabulary over the copy path: a fence
-       * signals at the synchronous submit's completion, a semaphore
-       * chains two submissions, and a second buffer copy executes after
-       * the wait.  The image command's layout transitions remain tied to
-       * its first execution, so the chained operation carries no image.
+      /* Known from r3v_native_queue_submit (rg --fixed-strings
+       * "r3v_native_queue_submit"
+       * src/amd/r300/vulkan/r3v_native_queue.c) and r3v_cpu_sync_wait
+       * (rg --fixed-strings "r3v_cpu_sync_wait"
+       * src/amd/r300/vulkan/r3v_cpu_sync.c): the native queue waits each
+       * binary dependency before replaying deferred copies, consumes the
+       * waited binary state after replay, and signals its completion set.
+       * This harness mutates the source and readback regions before a
+       * second submit, then checks the semaphore payload under its mutex.
        */
       {
          VkFence fence = VK_NULL_HANDLE;
@@ -1645,6 +1664,14 @@ main(void)
                    },
                    NULL, &chain) == VK_SUCCESS);
 
+         assert(vkMapMemory(device, staging_mem, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&staging_map) == VK_SUCCESS);
+         for (uint32_t t = 0; t < copy_w * copy_h; t++)
+            staging_map[t] = 0x50000000u | t;
+         for (uint32_t t = 0; t < copy_w * copy_h; t++)
+            staging_map[t + 512] = 0xfeedc0deu;
+         vkUnmapMemory(device, staging_mem);
+
          VkCommandBuffer sync_cmd = fresh_cmd();
          vkCmdCopyBuffer(sync_cmd, staging, staging, 1, &buffer_copy);
          assert(vkEndCommandBuffer(sync_cmd) == VK_SUCCESS);
@@ -1660,6 +1687,7 @@ main(void)
                               fence) == VK_SUCCESS);
          assert(vkWaitForFences(device, 1, &fence, VK_TRUE,
                                 UINT64_MAX) == VK_SUCCESS);
+         assert(r3v_native_binary_semaphore_is_signaled(chain));
 
          const VkPipelineStageFlags chain_stage =
             VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -1673,11 +1701,12 @@ main(void)
                                  .pCommandBuffers = &sync_cmd,
                               },
                               VK_NULL_HANDLE) == VK_SUCCESS);
+         assert(!r3v_native_binary_semaphore_is_signaled(chain));
 
          assert(vkMapMemory(device, staging_mem, 0, VK_WHOLE_SIZE, 0,
                             (void **)&staging_map) == VK_SUCCESS);
          for (uint32_t t = 0; t < copy_w * copy_h; t++)
-            assert(staging_map[t + 512] == (0x40000000u | t));
+            assert(staging_map[t + 512] == (0x50000000u | t));
          vkUnmapMemory(device, staging_mem);
 
          vkDestroySemaphore(device, chain, NULL);
