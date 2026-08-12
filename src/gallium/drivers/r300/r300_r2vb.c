@@ -4424,10 +4424,12 @@ bool r300_r2vb_producer_logical_binding_init(
         r2vb_bo_draw_validate_decline("binding_null");
         return false;
     }
-    /* The measured source identity, under the canary's executable
-     * restriction: location zero, rank zero, so velem[0] is the element. */
-    if (!source->valid || source->app_driver_location != 0 ||
-        source->location_rank != 0) {
+    /* The model-source preflight maps the source rank to velem[rank] and
+     * requires that rank to equal the measured driver location.  Preserve
+     * that identity in the binding so a varying source cannot be reported as
+     * the position element. */
+    if (!source->valid ||
+        source->app_driver_location != source->location_rank) {
         r2vb_bo_draw_validate_decline("binding_source_rank");
         return false;
     }
@@ -4476,7 +4478,7 @@ bool r300_r2vb_producer_logical_binding_init(
     memset(out, 0, sizeof(*out));
     out->app_driver_location = source->app_driver_location;
     out->location_rank = source->location_rank;
-    out->velem_index = 0;
+    out->velem_index = source->location_rank;
     out->slot_dst_vec_loc = slot_dst_vec_loc;
     out->model_dst_vec_loc = model_dst_vec_loc;
     out->fs_hw_input_reg = hwreg;
@@ -4485,6 +4487,7 @@ bool r300_r2vb_producer_logical_binding_init(
 
 bool r300_r2vb_producer_logical_binding_from_state(
     const struct r300_r2vb_producer_plan *plan,
+    const struct r300_r2vb_position_source *model_source,
     const struct r300_shader_semantics *fs_inputs,
     const struct r300_rs_block *rs,
     const struct r300_vertex_stream_state *psc,
@@ -4542,8 +4545,10 @@ bool r300_r2vb_producer_logical_binding_from_state(
         r2vb_bo_draw_validate_decline("psc_vec_loc");
         return false;
     }
+    const struct r300_r2vb_position_source *source =
+        model_source ? model_source : &plan->position_source;
     return r300_r2vb_producer_logical_binding_init(
-        &plan->position_source, fs_inputs, rs, slot_loc, model_loc, out);
+        source, fs_inputs, rs, slot_loc, model_loc, out);
 }
 
 /* Decode one packed PSC element pair field-by-field for its MEANING:
@@ -4769,9 +4774,8 @@ bool r300_r2vb_producer_bo_draw_validate(
         r2vb_bo_draw_validate_decline("streams_rebind");
         goto fail;
     }
-    if (!r300_r2vb_producer_logical_binding_from_state(plan, fs_inputs, rs,
-                                                       psc_state,
-                                                       &out->logical)) {
+    if (!r300_r2vb_producer_logical_binding_from_state(
+            plan, src, fs_inputs, rs, psc_state, &out->logical)) {
         r2vb_bo_draw_validate_decline("logical_binding");
         goto fail;
     }
