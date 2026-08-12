@@ -26,8 +26,17 @@ write_file(const char *dir, const char *name, const void *data, size_t size)
       return 1;
    }
    size_t written = fwrite(data, 1, size, f);
-   fclose(f);
-   return written == size ? 0 : 1;
+   const int close_rc = fclose(f);
+   if (written != size) {
+      fprintf(stderr, "write %s: short write (%zu/%zu)\n", path, written,
+              size);
+      return 1;
+   }
+   if (close_rc != 0) {
+      fprintf(stderr, "close %s: %s\n", path, strerror(errno));
+      return 1;
+   }
+   return 0;
 }
 
 int
@@ -111,10 +120,12 @@ main(int argc, char **argv)
       "  \"ib_blake3\": \"%s\",\n"
       "  \"reloc_sites\": [%s],\n"
       "  \"vertex_count\": %u,\n"
-      "  \"carrier_pitch_pixels\": %u\n"
+      "  \"carrier_pitch_pixels\": %u,\n"
+      "  \"carrier_height\": %u,\n"
+      "  \"carrier_cpp_bytes\": 16\n"
       "}\n",
       pass.ib_size_dwords, ib_blake3_hex, sites, layout.count,
-      layout.pitch_pixels);
+      layout.pitch_pixels, layout.height);
    rc |= write_file(dir, "manifest.json", manifest, (size_t)manifest_len);
 
    r300_r2vb_producer_pass_release(&pass);

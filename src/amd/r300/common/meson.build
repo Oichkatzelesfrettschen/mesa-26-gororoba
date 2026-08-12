@@ -103,6 +103,18 @@ test(
   suite : ['r300'],
 )
 
+# The producer writer's artifacts are checked against each other and against
+# the emitted VAP tuple.  Calibration mutants keep a malformed retained
+# manifest from becoming a green replay-only result.
+test(
+  'r300-r2vb-producer-manifest-integration',
+  prog_python,
+  args : [files('tests/r300_r2vb_producer_manifest_check.py'),
+          r300_r2vb_producer_manifest.full_path()],
+  depends : [r300_r2vb_producer_manifest],
+  suite : ['r300'],
+)
+
 r300_fragment_binary_test = executable(
   'r300_fragment_binary_test',
   files('r300_fragment_binary.c', 'tests/r300_fragment_binary_test.c'),
