@@ -121,6 +121,40 @@ check_block0_ubo_declaration(void)
 }
 
 static nir_shader *
+ubo_access_span_shader(bool dynamic_offset)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &options,
+                                     "r3v UBO access span");
+   nir_def *offset = dynamic_offset
+                        ? nir_undef(&b, 1, 32) : nir_imm_int(&b, 0);
+   nir_load_ubo_vec4(&b, 1, 32, nir_imm_int(&b, 0), offset,
+                     .base = 2, .component = 1);
+   if (!dynamic_offset)
+      nir_load_ubo(&b, 2, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 20),
+                   .align_mul = 4, .align_offset = 0, .range = 128);
+   return b.shader;
+}
+
+static void
+check_ubo_access_span(void)
+{
+   nir_shader *static_shader = ubo_access_span_shader(false);
+   nir_lower_ubo_vec4(static_shader);
+   nir_opt_constant_folding(static_shader);
+   const unsigned static_span = r3v_ubo_access_span(static_shader, 128);
+   CHECK(static_span == 48,
+         "static UBO loads report their rounded constant span");
+   ralloc_free(static_shader);
+
+   nir_shader *dynamic_shader = ubo_access_span_shader(true);
+   CHECK(r3v_ubo_access_span(dynamic_shader, 128) == 128,
+         "dynamic UBO offsets retain the declared span");
+   ralloc_free(dynamic_shader);
+}
+
+static nir_shader *
 vertex_texture_shader(bool live_texture)
 {
    static const nir_shader_compiler_options options = {0};
@@ -232,6 +266,7 @@ main(void)
                     "vec2 push load at final slot component is rejected");
    check_straddle_flag_is_explicit();
    check_block0_ubo_declaration();
+   check_ubo_access_span();
    check_vertex_texture_gate();
    check_vs_input_span();
 
