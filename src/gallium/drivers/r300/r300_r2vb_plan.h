@@ -399,6 +399,7 @@ enum r300_r2vb_auto_single_reason {
     R300_R2VB_AUTO_SINGLE_OUTPUT_STREAMS,
     R300_R2VB_AUTO_SINGLE_DELIVERY_CELL,
     R300_R2VB_AUTO_SINGLE_BELOW_VERTEX_FLOOR,
+    R300_R2VB_AUTO_SINGLE_MIXED_POLYGON_MODE,
     R300_R2VB_AUTO_SINGLE_POINT_SIZE_WRITER,
     R300_R2VB_AUTO_SINGLE_POINT_COORD_STATE,
     R300_R2VB_AUTO_SINGLE_POINT_QUAD_RASTERIZATION,
@@ -663,9 +664,12 @@ struct r300_r2vb_auto_single_draw {
      * admitted computed varying) only, so a per-vertex point size (VS PSIZ
      * writer or rasterizer point_size_per_vertex) or a sprite-coordinate /
      * point-quad request would be silently dropped by delivery. The effective
-     * rasterized-point classification includes polygon-mode POINT triangles.
-     * Each names its own decline. */
+     * rasterized-point classification includes polygon-mode POINT triangles;
+     * rasterizer_has_point_faces also marks a mixed point/fill mode, which
+     * declines before point semantics are considered. Each names its own
+     * decline. */
     bool rasterizer_emits_points;
+    bool rasterizer_has_point_faces;
     bool vs_writes_point_size;
     bool sprite_coord_requested;
     bool point_quad_rasterization;

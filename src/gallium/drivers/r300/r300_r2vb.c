@@ -5625,6 +5625,7 @@ r300_r2vb_auto_single_reason_str(enum r300_r2vb_auto_single_reason reason)
         "output_streams",
         "delivery_cell",
         "below_vertex_floor",
+        "mixed_polygon_mode",
         "point_size_writer",
         "point_coord_state",
         "point_quad_rasterization",
@@ -5761,7 +5762,9 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
         return R300_R2VB_AUTO_SINGLE_INDEXED;
     if (d->instance_count != 1)
         return R300_R2VB_AUTO_SINGLE_INSTANCED;
-    if (d->rasterizer_emits_points) {
+    if (d->rasterizer_has_point_faces) {
+        if (!d->rasterizer_emits_points)
+            return R300_R2VB_AUTO_SINGLE_MIXED_POLYGON_MODE;
         /* Fixed-size point contract: delivery transports position (plus an
          * admitted computed varying) only, and the re-ingest rasterizes at
          * GA_POINT_SIZE with PT_SIZE_PRESENT clear. A draw whose semantics
@@ -6958,6 +6961,8 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
             .query_active = r300->query_current != NULL,
             .rasterizer_emits_points =
                 r300_rasterizer_emits_points(r300, info->mode),
+            .rasterizer_has_point_faces =
+                r300_rasterizer_has_point_faces(r300, info->mode),
             .vs_writes_point_size =
                 candidate_nir &&
                 (((const nir_shader *)avs->state.ir.nir)

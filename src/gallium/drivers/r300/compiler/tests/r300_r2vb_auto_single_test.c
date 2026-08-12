@@ -276,6 +276,7 @@ check_policy_matrix(void)
    points.mode = MESA_PRIM_POINTS;
    points.count = 4093; /* points carry no whole-triangle count rule */
    points.rasterizer_emits_points = true;
+   points.rasterizer_has_point_faces = true;
    check_policy(&cp, &wp, &points, 1024, R300_R2VB_AUTO_SINGLE_OK,
                 "fixed-size POINTS draw");
    struct r300_r2vb_auto_single_draw psiz_writer = points;
@@ -300,10 +301,16 @@ check_policy_matrix(void)
                 "filled TRIANGLES ignore point-quad state");
    struct r300_r2vb_auto_single_draw polygon_point_quad = fits;
    polygon_point_quad.rasterizer_emits_points = true;
+   polygon_point_quad.rasterizer_has_point_faces = true;
    polygon_point_quad.point_quad_rasterization = true;
    check_policy(&cp, &wp, &polygon_point_quad, 1024,
                 R300_R2VB_AUTO_SINGLE_POINT_QUAD_RASTERIZATION,
                 "polygon-mode POINT triangles use point-quad reason");
+   struct r300_r2vb_auto_single_draw mixed_point_fill = fits;
+   mixed_point_fill.rasterizer_has_point_faces = true;
+   check_policy(&cp, &wp, &mixed_point_fill, 1024,
+                R300_R2VB_AUTO_SINGLE_MIXED_POLYGON_MODE,
+                "mixed point-fill faces decline before point semantics");
    struct r300_r2vb_auto_single_draw pv_size = points;
    pv_size.point_size_per_vertex = true;
    check_policy(&cp, &wp, &pv_size, 1024,
@@ -470,6 +477,42 @@ check_policy_matrix(void)
                 "rejected window cell");
    check_policy(&cp, NULL, &fits, 1024, R300_R2VB_AUTO_SINGLE_DELIVERY_CELL,
                 "missing window plan");
+}
+
+static void
+check_point_mode_classification(void)
+{
+   struct r300_rs_state rs;
+   void *saved_state = g_context.rs_state.state;
+   memset(&rs, 0, sizeof(rs));
+   g_context.rs_state.state = &rs;
+
+   rs.rs.fill_front = PIPE_POLYGON_MODE_FILL;
+   rs.rs.fill_back = PIPE_POLYGON_MODE_FILL;
+   CHECK(!r300_rasterizer_emits_points(&g_context, MESA_PRIM_TRIANGLES) &&
+            !r300_rasterizer_has_point_faces(&g_context, MESA_PRIM_TRIANGLES),
+         "point modes: filled faces have no point classification");
+
+   rs.rs.fill_front = PIPE_POLYGON_MODE_POINT;
+   CHECK(!r300_rasterizer_emits_points(&g_context, MESA_PRIM_TRIANGLES) &&
+            r300_rasterizer_has_point_faces(&g_context, MESA_PRIM_TRIANGLES),
+         "point modes: mixed front point and back fill expose point faces");
+
+   rs.rs.fill_back = PIPE_POLYGON_MODE_POINT;
+   CHECK(r300_rasterizer_emits_points(&g_context, MESA_PRIM_TRIANGLES) &&
+            r300_rasterizer_has_point_faces(&g_context, MESA_PRIM_TRIANGLES),
+         "point modes: both active faces emit points");
+
+   rs.rs.fill_front = PIPE_POLYGON_MODE_FILL;
+   CHECK(!r300_rasterizer_emits_points(&g_context, MESA_PRIM_TRIANGLES) &&
+            r300_rasterizer_has_point_faces(&g_context, MESA_PRIM_TRIANGLES),
+         "point modes: mixed back point and front fill expose point faces");
+
+   rs.rs.cull_face = PIPE_FACE_BACK;
+   CHECK(!r300_rasterizer_has_point_faces(&g_context, MESA_PRIM_TRIANGLES),
+         "point modes: culling the point face removes point classification");
+
+   g_context.rs_state.state = saved_state;
 }
 
 static void
@@ -2903,6 +2946,8 @@ main(void)
    check_mode_compatibility();
    printf("auto-single policy matrix:\n");
    check_policy_matrix();
+   printf("auto-single point-face classification:\n");
+   check_point_mode_classification();
    printf("auto-single producer input preflight:\n");
    check_producer_input_preflight();
    check_source_domain_matrix();
