@@ -1284,7 +1284,7 @@ void r300_emit_pvs_flush(struct r300_context* r300, unsigned size, void* state)
     /* Modes 2 and 3 drain the pipe before the flush; mode 3 additionally
      * pushes the color/Z caches out first, mirroring the R2VB producer
      * publication tail. */
-    if (mode >= 3) {
+    if (mode == 3) {
         OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT,
                    R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
                    R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
