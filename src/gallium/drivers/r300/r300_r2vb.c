@@ -4749,8 +4749,11 @@ bool r300_r2vb_producer_bo_draw_validate(
         return false;
     }
     /* The BO-fetch transaction accepts only a READY/SINGLE/untyped plan with
-     * one position input.  A rejected plan can retain a valid source identity
-     * from an earlier scan; action and status remain the delivery authority. */
+     * one position input, matching r2vb_auto_single_cell_ok
+     * (rg --fixed-strings r2vb_auto_single_cell_ok
+     * src/gallium/drivers/r300/r300_r2vb.c).  A rejected plan can retain a
+     * valid source identity from an earlier scan; action and status remain the
+     * delivery authority. */
     if (!plan || plan->status != R300_R2VB_PLAN_READY ||
         plan->action != R300_R2VB_PLAN_SINGLE || plan->has_typed_source ||
         plan->num_position_inputs != 1) {
