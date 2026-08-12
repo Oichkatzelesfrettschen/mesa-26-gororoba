@@ -268,8 +268,9 @@ struct nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
 bool r300_r2vb_output_store_location(const struct nir_intrinsic_instr *intr,
                                      gl_varying_slot *location);
 
-/* Identify an output store whose value is a direct shader-input load.  Both
- * dereference stores and lowered store_output forms use this classification
+/* This helper identifies an output store whose value is a direct
+ * shader-input load.  Dereference stores and lowered store_output forms use
+ * this classification
  * when the producer distinguishes passthrough varyings from computed ones. */
 bool r300_r2vb_output_store_is_input_passthrough(
     const struct nir_intrinsic_instr *intr);

@@ -216,6 +216,61 @@ test_computed_varying_mapping(void)
    ralloc_free(b.shader);
 }
 
+/* Lowered output stores carry their destination slot in IO semantics plus a
+ * constant offset, their value in src[0], and their component mask relative
+ * to the value.  The re-ingest layout resolves all three fields before it
+ * classifies the stream. */
+static void
+test_lowered_store_output_mapping(void)
+{
+   struct vs_io io;
+   nir_builder b = vs_shell(&io, false, "lowered_store_output");
+   nir_store_var(&b, io.out_pos, nir_load_var(&b, io.in_pos), 0xf);
+
+   nir_def *input = nir_load_input(
+      &b, 4, 32, nir_imm_int(&b, 0),
+      .base = 1,
+      .io_semantics.location = VERT_ATTRIB_GENERIC0);
+   nir_store_output(&b, input, nir_imm_int(&b, 0),
+                    .io_semantics = {
+                       .location = VARYING_SLOT_VAR0,
+                       .num_slots = 1,
+                    });
+
+   nir_def *components[] = {
+      nir_channel(&b, nir_load_var(&b, io.in_pos), 0),
+      nir_channel(&b, nir_load_var(&b, io.in_pos), 1),
+   };
+   nir_intrinsic_instr *computed = nir_store_output(
+      &b, nir_vec(&b, components, ARRAY_SIZE(components)), nir_imm_int(&b, 1),
+      .io_semantics = {
+         .location = VARYING_SLOT_VAR0,
+         .num_slots = 2,
+      });
+   nir_intrinsic_set_component(computed, 1);
+   nir_intrinsic_set_write_mask(computed, 0x3);
+
+   struct r300_r2vb_reingest_stream streams[8];
+   int n = r300_r2vb_reingest_stream_layout(
+      b.shader, VARYING_SLOT_VAR1, streams, ARRAY_SIZE(streams));
+   CHECK(n == 3, "lowered store_output stream count");
+   if (n == 3) {
+      CHECK(streams[0].kind == R2VB_STREAM_POS &&
+               streams[0].slot == VARYING_SLOT_POS,
+            "lowered store_output position remains first");
+      CHECK(streams[1].kind == R2VB_STREAM_PASSTHROUGH &&
+               streams[1].slot == VARYING_SLOT_VAR0 &&
+               streams[1].src_velem == 1 && streams[1].components == 4 &&
+               streams[1].write_mask == 0xf,
+            "lowered store_output value maps to its input velem");
+      CHECK(streams[2].kind == R2VB_STREAM_COMPUTED &&
+               streams[2].slot == VARYING_SLOT_VAR1 &&
+               streams[2].components == 2 && streams[2].write_mask == 0x6,
+            "lowered store_output offset and component mask map to the computed slot");
+   }
+   ralloc_free(b.shader);
+}
+
 /* Stores encountered in non-PSC order sort into PSC/VAP output-vector order:
  * stream i must drive VAP output vector i whatever order the VS wrote them. */
 static void
@@ -356,6 +411,7 @@ main(void)
    test_component_packed_source_outputs();
    test_distinct_source_outputs();
    test_computed_varying_mapping();
+   test_lowered_store_output_mapping();
    test_store_order_independence();
    test_unmappable_varying_refused();
    test_scalar_point_size_refused();
