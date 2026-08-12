@@ -296,6 +296,23 @@ struct telemetry_workload_entry {
     struct r300_r2vb_workload_stats stats;
 };
 
+/* Workload summaries use one code per route action.  The action names for
+ * SINGLE and SPLIT share an initial, so storing the first name character
+ * would merge distinct route policies in the retained summary. */
+static char
+telemetry_workload_action_code(enum r300_r2vb_plan_action action)
+{
+    switch (action) {
+    case R300_R2VB_PLAN_REJECT:
+        return 'R';
+    case R300_R2VB_PLAN_SINGLE:
+        return 'N';
+    case R300_R2VB_PLAN_SPLIT:
+        return 'P';
+    }
+    return '?';
+}
+
 static simple_mtx_t workload_mtx = SIMPLE_MTX_INITIALIZER;
 static struct hash_table *workload_table;
 
@@ -362,7 +379,7 @@ r300_r2vb_telemetry_draw(struct r300_context *r300,
             e = calloc(1, sizeof(*e));
             if (e) {
                 memcpy(e->hex, hex, sizeof(e->hex));
-                e->action = r300_r2vb_plan_action_str(plan->action)[0];
+                e->action = telemetry_workload_action_code(plan->action);
                 e->stats.action = e->action;
                 e->stats.draw_min = UINT32_MAX;
                 _mesa_hash_table_insert(workload_table, e->hex, e);

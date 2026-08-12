@@ -377,6 +377,19 @@ main(void)
       r300_r2vb_telemetry_note_cell(&g_context, &dedup_plan);
       CHECK(c->by_action[R300_R2VB_PLAN_SPLIT] == before + 1,
             "destroyed shader identity can publish a new telemetry cell");
+
+      struct pipe_draw_info split_info = { 0 };
+      struct pipe_draw_start_count_bias split_draw = { 0 };
+      split_info.mode = MESA_PRIM_TRIANGLES;
+      split_info.instance_count = 1;
+      split_draw.count = 3;
+      r300_r2vb_telemetry_draw(&g_context, &dedup_plan, &split_info,
+                               &split_draw);
+      struct r300_r2vb_workload_stats split_stats;
+      CHECK(r300_r2vb_telemetry_workload_stats(
+               g_vs.r2vb_content_hex, &split_stats) &&
+               split_stats.action == 'P',
+            "workload: split action uses a distinct code");
       r300_r2vb_plan_release(&dedup_plan);
    }
 
@@ -533,6 +546,7 @@ main(void)
          CHECK(st.draws == 2 && st.vertices == 3 + 300 * 2 &&
                   st.instances == 3 && st.draw_min == 3 &&
                   st.draw_max == 300 && st.indexed_draws == 1 &&
+                  st.action == 'N' &&
                   st.topology_mask ==
                      ((1u << MESA_PRIM_TRIANGLES) |
                       (1u << MESA_PRIM_TRIANGLE_STRIP)),
