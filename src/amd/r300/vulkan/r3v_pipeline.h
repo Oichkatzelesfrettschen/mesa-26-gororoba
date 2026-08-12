@@ -324,8 +324,10 @@ struct r3v_pipeline {
    struct r300_compute_blend_acc_reduction_pattern blend_acc_reduction;
 
    /* ZPASS coverage-count reduction kernel detected at pipeline-create time.
-    * Recognized shape:
-    *   if (in_data[gid] >= THRESHOLD) atomicAdd(count_out, 1u);
+    * The recognized shape and dispatch contract live in
+    * r300_compute_admission.h.  A gid from gl_GlobalInvocationID.x requires
+    * one invocation in the Y and Z dispatch axes; a flat
+    * global-invocation-index source has no such guard.
     * Orchestrator lowers to N point-primitive draws into a 1xN RT with the
     * per-vertex-baked predicate gating fragment KILL; the ZB ZPASS counter
     * (ZB_ZPASS_DATA / ZB_ZPASS_ADDR) accumulates

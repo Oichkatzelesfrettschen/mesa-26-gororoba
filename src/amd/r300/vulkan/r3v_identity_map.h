@@ -348,10 +348,9 @@ r3v_blend_acc_reduction_dispatch_replay(struct r3v_device *device,
  * stencil unit's ZPASS counter pair (ZB_ZPASS_DATA / ZB_ZPASS_ADDR);
  * pipe_query exposes the sum as a uint64 that the orchestrator truncates to
  * uint32 and writes to count_out[0].  The
- * kernel-shape pattern is `if (in_data[gid] != 0u) atomicAdd(count_out, 1u)`
- * (the orchestrator and probe share a compare-to-zero predicate contract;
- * the detector recognizes the shape but does not extract the comparison RHS,
- * so the contract is enforced on the orchestrator side).  Returns false on
+ * r300_compute_admission.h owns the kernel-shape and dispatch contract.  The
+ * detector validates the zero RHS and the orchestrator applies the
+ * dispatch-shape guard for a gl_GlobalInvocationID.x source.  Returns false on
  * resource creation failure, descriptor walk miss, or query-result wait
  * failure; the queue's caller then falls through to the no-op compute
  * lifecycle and the dispatch still signals the fence so the object lifecycle

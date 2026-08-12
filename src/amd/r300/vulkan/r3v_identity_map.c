@@ -4701,6 +4701,19 @@ r3v_zpass_reduction_dispatch_replay(struct r3v_device *device,
    }
    uint64_t total_invocations = 0;
    unsigned width = 0, height = 0;
+   const uint64_t invocations_y =
+      (uint64_t)dispatch->group_count_y *
+      (pl->local_size_y ? pl->local_size_y : 1u);
+   const uint64_t invocations_z =
+      (uint64_t)dispatch->group_count_z *
+      (pl->local_size_z ? pl->local_size_z : 1u);
+   if (!r300_compute_zpass_dispatch_shape_is_valid(
+          &pl->zpass_reduction, invocations_y, invocations_z)) {
+      IDM_LOG("zpass early-return global-id-x requires 1d dispatch y=%llu z=%llu",
+              (unsigned long long)invocations_y,
+              (unsigned long long)invocations_z);
+      return false;
+   }
    if (!r3v_idm_compute_raster_grid(device, dispatch, pl, &total_invocations,
                                        &width, &height))
       return false;

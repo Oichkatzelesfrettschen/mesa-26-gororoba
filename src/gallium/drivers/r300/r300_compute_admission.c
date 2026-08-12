@@ -1801,7 +1801,8 @@ def_derives_from(const nir_def *def, const nir_def *root, unsigned depth)
    return false;
 }
 
-static bool zpass_load_offset_matches_replay(const nir_def *def);
+static bool zpass_load_offset_matches_replay(const nir_def *def,
+                                             bool *uses_global_id_x);
 static bool zpass_atomic_offset_is_zero(const nir_def *def);
 
 static bool
@@ -1879,6 +1880,7 @@ r300_nir_detect_zpass_reduction(const nir_shader *s,
    out->output_ssbo_binding = 0;
    out->value_ssbo_binding_valid  = false;
    out->output_ssbo_binding_valid = false;
+   out->load_uses_global_invocation_id_x = false;
    out->alu_op              = 0;
 
    const nir_intrinsic_instr *atomic = NULL;
@@ -1932,7 +1934,8 @@ r300_nir_detect_zpass_reduction(const nir_shader *s,
 
    if (!atomic->src[1].ssa || !zpass_atomic_offset_is_zero(atomic->src[1].ssa) ||
        !load->src[1].ssa ||
-       !zpass_load_offset_matches_replay(load->src[1].ssa))
+       !zpass_load_offset_matches_replay(
+          load->src[1].ssa, &out->load_uses_global_invocation_id_x))
       return;
 
    /* The atomic must be a direct child of the if-then branch.  The replay
@@ -2539,6 +2542,8 @@ dp4_op_admitted(uint16_t op, uint8_t *components)
 struct dp4_offset_affine {
    uint64_t ax, ay, az, b;
    bool has_base;
+   bool uses_global_invocation_id_x;
+   bool uses_global_invocation_index;
 };
 
 static bool dp4_offset_resolve(const nir_def *def, unsigned channel,
@@ -2561,10 +2566,16 @@ dp4_offset_resolve_intrinsic(const nir_intrinsic_instr *intr, unsigned channel,
    case nir_intrinsic_load_base_workgroup_id:
       return true;
    case nir_intrinsic_load_global_invocation_id:
+      out->uses_global_invocation_id_x = channel == 0;
+      out->ax = channel == 0;
+      out->ay = channel == 1;
+      out->az = channel >= 2;
+      return true;
    case nir_intrinsic_load_global_invocation_index:
       out->ax = channel == 0;
       out->ay = channel == 1;
       out->az = channel >= 2;
+      out->uses_global_invocation_index = true;
       return true;
    case nir_intrinsic_load_vulkan_descriptor:
       out->has_base = true;
@@ -2592,6 +2603,10 @@ dp4_offset_resolve_add(const nir_alu_instr *alu, unsigned channel,
    out->az = a.az + b.az;
    out->b = a.b + b.b;
    out->has_base = a.has_base || b.has_base;
+   out->uses_global_invocation_id_x =
+      a.uses_global_invocation_id_x || b.uses_global_invocation_id_x;
+   out->uses_global_invocation_index =
+      a.uses_global_invocation_index || b.uses_global_invocation_index;
    return dp4_offset_in_range(out);
 }
 
@@ -2621,6 +2636,8 @@ dp4_offset_resolve_mul(const nir_alu_instr *alu, unsigned channel,
    out->ay = a.ay * (uint64_t)cv;
    out->az = a.az * (uint64_t)cv;
    out->b = a.b * (uint64_t)cv;
+   out->uses_global_invocation_id_x = a.uses_global_invocation_id_x;
+   out->uses_global_invocation_index = a.uses_global_invocation_index;
    return dp4_offset_in_range(out);
 }
 
@@ -2643,6 +2660,8 @@ dp4_offset_resolve_shift(const nir_alu_instr *alu, unsigned channel,
    out->ay = a.ay << shift;
    out->az = a.az << shift;
    out->b = a.b << shift;
+   out->uses_global_invocation_id_x = a.uses_global_invocation_id_x;
+   out->uses_global_invocation_index = a.uses_global_invocation_index;
    return dp4_offset_in_range(out);
 }
 
@@ -2702,6 +2721,8 @@ dp4_offset_to_element_index(const nir_def *def, unsigned element_stride,
    out->az = byte_offset.az / element_stride;
    out->b = byte_offset.b / element_stride;
    out->has_base = false;
+   out->uses_global_invocation_id_x = byte_offset.uses_global_invocation_id_x;
+   out->uses_global_invocation_index = byte_offset.uses_global_invocation_index;
    return true;
 }
 
@@ -2712,11 +2733,26 @@ dp4_offset_is_contiguous_invocation_stream(const struct dp4_offset_affine *e)
 }
 
 static bool
-zpass_load_offset_matches_replay(const nir_def *def)
+zpass_load_offset_matches_replay(const nir_def *def, bool *uses_global_id_x)
 {
    struct dp4_offset_affine element_offset;
-   return dp4_offset_to_element_index(def, 4, &element_offset) &&
-          dp4_offset_is_contiguous_invocation_stream(&element_offset);
+   if (!dp4_offset_to_element_index(def, 4, &element_offset) ||
+       !dp4_offset_is_contiguous_invocation_stream(&element_offset) ||
+       (!element_offset.uses_global_invocation_id_x &&
+        !element_offset.uses_global_invocation_index))
+      return false;
+
+   *uses_global_id_x = element_offset.uses_global_invocation_id_x;
+   return true;
+}
+
+bool
+r300_compute_zpass_dispatch_shape_is_valid(
+   const struct r300_compute_zpass_reduction_pattern *pattern,
+   uint64_t invocations_y, uint64_t invocations_z)
+{
+   return pattern && (!pattern->load_uses_global_invocation_id_x ||
+                       (invocations_y == 1 && invocations_z == 1));
 }
 
 static bool

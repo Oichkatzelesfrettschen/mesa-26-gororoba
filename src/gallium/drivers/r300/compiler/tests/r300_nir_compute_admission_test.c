@@ -98,6 +98,8 @@ build_general_atomic(void)
 
 enum zpass_test_shape {
    ZPASS_TEST_CANONICAL,
+   ZPASS_TEST_GLOBAL_ID_X,
+   ZPASS_TEST_GLOBAL_ID_Y,
    ZPASS_TEST_EQUAL_ZERO,
    ZPASS_TEST_THRESHOLD,
    ZPASS_TEST_LOAD_ZERO_OFFSET,
@@ -128,7 +130,18 @@ static nir_shader *
 build_zpass_reduction_form(enum zpass_test_shape shape)
 {
    nir_builder b = cs_builder("cs_zpass_reduction");
-   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *gid = NULL;
+   switch (shape) {
+   case ZPASS_TEST_GLOBAL_ID_X:
+      gid = nir_channel(&b, nir_load_global_invocation_id(&b, 32), 0);
+      break;
+   case ZPASS_TEST_GLOBAL_ID_Y:
+      gid = nir_channel(&b, nir_load_global_invocation_id(&b, 32), 1);
+      break;
+   default:
+      gid = nir_load_global_invocation_index(&b, 32);
+      break;
+   }
    nir_def *load_offset = NULL;
    switch (shape) {
    case ZPASS_TEST_LOAD_ZERO_OFFSET:
@@ -1259,15 +1272,36 @@ case_zpass_metadata(void)
    CHECK(pattern.output_ssbo_binding_valid && pattern.output_ssbo_binding == 1,
          "zpass metadata preserves counter binding one");
    CHECK(pattern.alu_op == nir_op_iadd, "zpass metadata records iadd");
+   CHECK(!pattern.load_uses_global_invocation_id_x,
+         "flat invocation index has no one-dimensional guard");
+   CHECK(r300_compute_zpass_dispatch_shape_is_valid(&pattern, 7, 9),
+         "flat invocation index accepts multidimensional dispatch");
    struct r300_compute_admission admission;
    r300_nir_classify_compute(canonical, &admission);
    CHECK(admission.admissible, "canonical zpass shape admits classification");
    ralloc_free(canonical);
 
+   nir_shader *global_id_x = build_zpass_reduction_form(ZPASS_TEST_GLOBAL_ID_X);
+   struct r300_compute_zpass_reduction_pattern id_pattern = {0};
+   prepare_detect_shader(global_id_x);
+   r300_nir_detect_zpass_reduction(global_id_x, &id_pattern);
+   CHECK(id_pattern.is_zpass_reduction,
+         "global invocation ID X zpass shape remains detectable");
+   CHECK(id_pattern.load_uses_global_invocation_id_x,
+         "global invocation ID X records one-dimensional guard");
+   CHECK(r300_compute_zpass_dispatch_shape_is_valid(&id_pattern, 1, 1),
+         "global invocation ID X accepts one-dimensional dispatch");
+   CHECK(!r300_compute_zpass_dispatch_shape_is_valid(&id_pattern, 2, 1),
+         "global invocation ID X rejects Y-multidimensional dispatch");
+   CHECK(!r300_compute_zpass_dispatch_shape_is_valid(&id_pattern, 1, 2),
+         "global invocation ID X rejects Z-multidimensional dispatch");
+   ralloc_free(global_id_x);
+
    const struct {
       enum zpass_test_shape shape;
       const char *label;
    } known_bad[] = {
+      { ZPASS_TEST_GLOBAL_ID_Y, "global invocation ID Y offset rejects" },
       { ZPASS_TEST_EQUAL_ZERO, "equality-to-zero predicate rejects" },
       { ZPASS_TEST_THRESHOLD, "threshold predicate rejects" },
       { ZPASS_TEST_LOAD_ZERO_OFFSET, "constant load offset rejects" },
