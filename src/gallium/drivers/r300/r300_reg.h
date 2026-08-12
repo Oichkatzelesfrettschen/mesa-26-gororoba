@@ -3534,11 +3534,10 @@ enum {
     (RADEON_CP_PACKET3 | (op) | ((count) << 16))
 
 
-/* RS480 0x4xxx fragment/pixel-pipe registers found by live hardware read and
- * write-verify-restore on real RS480 silicon; documented by no register source
- * (AMD R3xx-Evergreen datasheets, Linux radeon, Mesa), so each name below is
- * built from the offset it was found at.  Each is full-32-bit writable
- * storage that the driver leaves unprogrammed.  The survey excludes the
+/* RS480 0x4xxx fragment/pixel-pipe registers identified by the live RS480
+ * write-verify-restore survey and named from the verified offsets.  The
+ * survey establishes full-32-bit writable storage that the driver leaves
+ * unprogrammed.  The survey excludes the
  * 0x4ff8 block edge and the 0x2200-0x2504 vertex engine as
  * non-completing-read hazards. */
 #define R300_GB_UNDOC_400C     0x400c
