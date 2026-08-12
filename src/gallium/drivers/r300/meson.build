@@ -443,7 +443,7 @@ if with_tests
       ],
       # The real state vtable reaches r300_video.c, whose codec constructors
       # resolve from the video auxiliary library.
-      link_with : [libr300, libgallium, libgalliumvl],
+      link_with : [libr300, libgalliumvl, libgallium],
       dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
       gnu_symbol_visibility : 'hidden',
     ),
