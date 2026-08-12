@@ -323,21 +323,29 @@ wait_for_child(pid_t child, int *status)
    }
 }
 
-/* true == the child returned (no abort). */
-static bool
+enum ushr_survival_result {
+   USHR_ABORTED = 0,
+   USHR_SURVIVED = 1,
+   USHR_HARNESS_ERROR = 2,
+};
+
+/* Distinguish a child abort from a harness failure in fork or wait. */
+static enum ushr_survival_result
 ushr_survives(enum shift_kind kind, bool with_prepass)
 {
    pid_t pid = fork();
    if (pid < 0)
-      return false;
+      return USHR_HARNESS_ERROR;
    if (pid == 0) {
       run_ushr_lowering(kind, with_prepass);
       _exit(0);
    }
    int status = 0;
    if (!wait_for_child(pid, &status))
-      return false;
-   return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+      return USHR_HARNESS_ERROR;
+   if (!WIFEXITED(status))
+      return USHR_ABORTED;
+   return WEXITSTATUS(status) == 0 ? USHR_SURVIVED : USHR_ABORTED;
 }
 
 /* Run the production sequence (prepass, int_to_float, sysval-index encode) in a
@@ -374,10 +382,21 @@ main(void)
    printf("r300 SW-TCL VS integer lowering (ushr prepass + sysval-index encode):\n");
 
    /* 1. The prepass sequence lowers ushr without aborting, both amounts. */
-   CHECK(ushr_survives(SHIFT_CONST, true), "const ushr survives prepass+int_to_float");
-   CHECK(ushr_survives(SHIFT_VARIABLE, true), "variable ushr survives prepass+int_to_float");
-   printf("  info - const ushr, no prepass: %s\n",
-          ushr_survives(SHIFT_CONST, false) ? "survived" : "aborted (prepass is load-bearing)");
+   CHECK(ushr_survives(SHIFT_CONST, true) == USHR_SURVIVED,
+         "const ushr survives prepass+int_to_float");
+   CHECK(ushr_survives(SHIFT_VARIABLE, true) == USHR_SURVIVED,
+         "variable ushr survives prepass+int_to_float");
+   enum ushr_survival_result no_prepass =
+      ushr_survives(SHIFT_CONST, false);
+   if (no_prepass == USHR_HARNESS_ERROR) {
+      printf("  FAIL - const ushr no-prepass probe could not run\n");
+      g_failures++;
+   } else {
+      printf("  info - const ushr, no prepass: %s\n",
+             no_prepass == USHR_SURVIVED
+                ? "survived"
+                : "aborted (prepass is load-bearing)");
+   }
 
    /* 2. The sysval-index encode fires for a numeric index use and leaves a
     *    raw-bit equality-only use alone (the #942 contract). */
