@@ -14,12 +14,13 @@
 #include <string.h>
 
 /* r300g bakes the fragment program as CP_PACKET0 register writes: header
- * bits 31:30 are zero, bits 29:16 carry payload count minus one, and bits
- * 15:0 carry the register byte offset divided by four.
+ * bits 31:30 are zero, bits 29:16 carry payload count minus one, bit 15
+ * selects one-register writes, and bits 14:0 carry the register byte offset
+ * divided by four.
  */
 #define R300_FRAGMENT_BINARY_PKT_TYPE(header) ((header) >> 30)
 #define R300_FRAGMENT_BINARY_PKT_COUNT(header) ((((header) >> 16) & 0x3fff) + 1)
-#define R300_FRAGMENT_BINARY_PKT_REG(header) (((header) & 0x3fff) << 2)
+#define R300_FRAGMENT_BINARY_PKT_REG(header) (((header) & 0x7fff) << 2)
 #define R300_FRAGMENT_BINARY_PKT_ONE_REG(header) \
    (((header) & RADEON_ONE_REG_WR) != 0)
 
@@ -57,6 +58,7 @@ r300_fragment_binary_stream_valid(const uint32_t *cb_code,
    }
 
    uint32_t i = 0;
+   bool vector_index_selected = false;
    while (i < cb_code_size) {
       uint32_t header = cb_code[i];
       if (R300_FRAGMENT_BINARY_PKT_TYPE(header) != 0) {
@@ -73,7 +75,7 @@ r300_fragment_binary_stream_valid(const uint32_t *cb_code,
        * one address.
        */
       if (reg == R300_FRAGMENT_BINARY_GA_US_VECTOR_DATA) {
-         if (!one_reg) {
+         if (!one_reg || !vector_index_selected) {
             return false;
          }
       } else if (one_reg) {
@@ -87,6 +89,8 @@ r300_fragment_binary_stream_valid(const uint32_t *cb_code,
             return false;
          }
       }
+      if (reg == R300_FRAGMENT_BINARY_GA_US_VECTOR_INDEX)
+         vector_index_selected = true;
       i += 1 + count;
    }
    return i == cb_code_size;
