@@ -504,7 +504,8 @@ main(int argc, char **argv)
          uint8_t *reference_bytes =
             malloc(reference.ib_size_dwords * sizeof(uint32_t));
          CHECK(reference_bytes != NULL, "reference serialization buffer");
-         if (reference_bytes != NULL) {
+         if (reference_bytes != NULL &&
+             ib_size == reference.ib_size_dwords * sizeof(uint32_t)) {
             r300_triangle_ib_serialize(reference.ib,
                                        reference.ib_size_dwords,
                                        reference_bytes);
