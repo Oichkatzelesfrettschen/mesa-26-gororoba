@@ -65,6 +65,25 @@ nearly_equal(float a, float b)
    return fabsf(a - b) <= 1e-4f;
 }
 
+static bool
+serialized_source_model_is(const char *json, const char *swizzle,
+                           const char *model)
+{
+   char marker[64];
+   snprintf(marker, sizeof(marker), "\"swizzle\":\"%s\"", swizzle);
+   const char *source = strstr(json, marker);
+   if (!source)
+      return false;
+
+   const char *model_marker = strstr(source, "\"source_read_model\":\"");
+   const char *source_slots = strstr(source, "],\"source_slots\"");
+   if (!model_marker || (source_slots && model_marker > source_slots))
+      return false;
+
+   model_marker += strlen("\"source_read_model\":\"");
+   return strncmp(model_marker, model, strlen(model)) == 0;
+}
+
 /* hand-built pair corpus helpers
  *
  * These shapes engineer one scheduler mechanism at a time (a genuine RAW
@@ -1823,6 +1842,189 @@ test_pair_eval_alpha_port_contract(void)
 }
 
 static void
+test_pair_eval_resolved_source_bank_contract(void)
+{
+   const struct r300_pair_eval_profile measured =
+      r300_pair_eval_profile_rs48x_measured();
+
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   struct rc_pair_instruction alpha_reads_rgb;
+   memset(&alpha_reads_rgb, 0, sizeof(alpha_reads_rgb));
+   alpha_reads_rgb.RGB.Opcode = RC_OPCODE_NOP;
+   alpha_reads_rgb.Alpha.Opcode = RC_OPCODE_MIN;
+   alpha_reads_rgb.Alpha.WriteMask = RC_MASK_W;
+   alpha_reads_rgb.Alpha.DestIndex = 1;
+   alpha_reads_rgb.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   alpha_reads_rgb.Alpha.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XXXX};
+   alpha_reads_rgb.Alpha.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 1, .Swizzle = RC_SWIZZLE_0000};
+   append_pair(&fc.Base, &fc.Base.Program.Instructions, &alpha_reads_rgb);
+
+   struct r300_pair_eval alpha_eval;
+   memset(&alpha_eval, 0, sizeof(alpha_eval));
+   alpha_eval.consts = &fc.Base.Program.Constants;
+   alpha_eval.inputs[0][0] = -1.0f;
+   alpha_eval.profile = measured;
+   const float expected_alpha = r300_us_source_read_f32(
+      -1.0f, R300_SOURCE_READ_RS48X_NEG_PREDECESSOR);
+   CHECK(r300_pair_eval_program(&alpha_eval, &fc.Base) &&
+            f32_bits_of(alpha_eval.temps[1][3]) == f32_bits_of(expected_alpha),
+         "cross-port: Alpha lane reads RGB bank with the RGB model");
+
+   char *alpha_json = NULL;
+   size_t alpha_json_length = 0;
+   FILE *alpha_stream = open_memstream(&alpha_json, &alpha_json_length);
+   CHECK(alpha_stream != NULL, "cross-port: Alpha serializer opens memory stream");
+   if (alpha_stream) {
+      r300_pair_schedule_serialize(alpha_stream, &fc.Base, &measured);
+      fclose(alpha_stream);
+      CHECK(serialized_source_model_is(
+               alpha_json, "x", "rs48x-negative-predecessor"),
+            "cross-port: Alpha serializer records the resolved RGB model");
+      free(alpha_json);
+   }
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+
+   fs_compiler_init(&fc, &rs);
+
+   struct rc_pair_instruction rgb_reads_alpha;
+   memset(&rgb_reads_alpha, 0, sizeof(rgb_reads_alpha));
+   rgb_reads_alpha.RGB.Opcode = RC_OPCODE_MIN;
+   rgb_reads_alpha.RGB.WriteMask = RC_MASK_XYZ;
+   rgb_reads_alpha.RGB.DestIndex = 1;
+   rgb_reads_alpha.Alpha.Opcode = RC_OPCODE_NOP;
+   rgb_reads_alpha.Alpha.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   rgb_reads_alpha.RGB.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_WWWW};
+   rgb_reads_alpha.RGB.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 1, .Swizzle = RC_SWIZZLE_0000};
+   append_pair(&fc.Base, &fc.Base.Program.Instructions, &rgb_reads_alpha);
+
+   struct r300_pair_eval rgb_eval;
+   memset(&rgb_eval, 0, sizeof(rgb_eval));
+   rgb_eval.consts = &fc.Base.Program.Constants;
+   rgb_eval.inputs[0][3] = -1.0f;
+   rgb_eval.profile = measured;
+   CHECK(!r300_pair_eval_program(&rgb_eval, &fc.Base) && rgb_eval.error != NULL,
+         "cross-port: RGB lane reading Alpha bank stays fail-closed");
+
+   char *rgb_json = NULL;
+   size_t rgb_json_length = 0;
+   FILE *rgb_stream = open_memstream(&rgb_json, &rgb_json_length);
+   CHECK(rgb_stream != NULL, "cross-port: RGB serializer opens memory stream");
+   if (rgb_stream) {
+      r300_pair_schedule_serialize(rgb_stream, &fc.Base, &measured);
+      fclose(rgb_stream);
+      CHECK(serialized_source_model_is(rgb_json, "www", "unmodeled"),
+            "cross-port: RGB serializer records the resolved Alpha model");
+      free(rgb_json);
+   }
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
+static void
+test_pair_eval_presub_source_bank_contract(void)
+{
+   const struct r300_pair_eval_profile measured =
+      r300_pair_eval_profile_rs48x_measured();
+
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   struct rc_pair_instruction alpha_reads_rgb_presub;
+   memset(&alpha_reads_rgb_presub, 0, sizeof(alpha_reads_rgb_presub));
+   alpha_reads_rgb_presub.RGB.Opcode = RC_OPCODE_NOP;
+   alpha_reads_rgb_presub.Alpha.Opcode = RC_OPCODE_MAX;
+   alpha_reads_rgb_presub.Alpha.WriteMask = RC_MASK_W;
+   alpha_reads_rgb_presub.Alpha.DestIndex = 1;
+   alpha_reads_rgb_presub.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   alpha_reads_rgb_presub.Alpha.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 1};
+   alpha_reads_rgb_presub.RGB.Src[RC_PAIR_PRESUB_SRC] =
+      (struct rc_pair_instruction_source){
+         .Used = 1, .File = RC_FILE_PRESUB, .Index = RC_PRESUB_BIAS};
+   alpha_reads_rgb_presub.Alpha.Arg[0] =
+      (struct rc_pair_instruction_arg){
+         .Source = RC_PAIR_PRESUB_SRC, .Swizzle = RC_SWIZZLE_XXXX};
+   alpha_reads_rgb_presub.Alpha.Arg[1] =
+      (struct rc_pair_instruction_arg){
+         .Source = 1, .Swizzle = RC_SWIZZLE_0000};
+   append_pair(&fc.Base, &fc.Base.Program.Instructions,
+               &alpha_reads_rgb_presub);
+
+   struct r300_pair_eval alpha_presub_eval;
+   memset(&alpha_presub_eval, 0, sizeof(alpha_presub_eval));
+   alpha_presub_eval.consts = &fc.Base.Program.Constants;
+   alpha_presub_eval.inputs[0][0] = -1.0f;
+   alpha_presub_eval.inputs[1][0] = 1.0f;
+   alpha_presub_eval.profile = measured;
+   const float expected_presub =
+      1.0f - 2.0f * r300_us_source_read_f32(
+                         -1.0f, R300_SOURCE_READ_RS48X_NEG_PREDECESSOR);
+   CHECK(r300_pair_eval_program(&alpha_presub_eval, &fc.Base) &&
+            nearly_equal(alpha_presub_eval.temps[1][3], expected_presub),
+         "presub cross-port: Alpha lane resolves RGB presub sources");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+
+   fs_compiler_init(&fc, &rs);
+
+   struct rc_pair_instruction rgb_reads_alpha_presub;
+   memset(&rgb_reads_alpha_presub, 0, sizeof(rgb_reads_alpha_presub));
+   rgb_reads_alpha_presub.RGB.Opcode = RC_OPCODE_MAX;
+   rgb_reads_alpha_presub.RGB.WriteMask = RC_MASK_XYZ;
+   rgb_reads_alpha_presub.RGB.DestIndex = 1;
+   rgb_reads_alpha_presub.Alpha.Opcode = RC_OPCODE_NOP;
+   rgb_reads_alpha_presub.Alpha.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   rgb_reads_alpha_presub.Alpha.Src[1] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 1};
+   rgb_reads_alpha_presub.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 2};
+   rgb_reads_alpha_presub.RGB.Src[1] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 3};
+   rgb_reads_alpha_presub.Alpha.Src[RC_PAIR_PRESUB_SRC] =
+      (struct rc_pair_instruction_source){
+         .Used = 1, .File = RC_FILE_PRESUB, .Index = RC_PRESUB_ADD};
+   rgb_reads_alpha_presub.RGB.Arg[0] =
+      (struct rc_pair_instruction_arg){
+         .Source = RC_PAIR_PRESUB_SRC, .Swizzle = RC_SWIZZLE_WWWW};
+   rgb_reads_alpha_presub.RGB.Arg[1] =
+      (struct rc_pair_instruction_arg){
+         .Source = 1, .Swizzle = RC_SWIZZLE_0000};
+   append_pair(&fc.Base, &fc.Base.Program.Instructions,
+               &rgb_reads_alpha_presub);
+
+   struct r300_pair_eval rgb_presub_eval;
+   memset(&rgb_presub_eval, 0, sizeof(rgb_presub_eval));
+   rgb_presub_eval.consts = &fc.Base.Program.Constants;
+   rgb_presub_eval.inputs[0][3] = -1.0f;
+   rgb_presub_eval.inputs[1][3] = 0.0f;
+   rgb_presub_eval.inputs[2][3] = 1.0f;
+   rgb_presub_eval.inputs[3][3] = 1.0f;
+   rgb_presub_eval.profile = measured;
+   CHECK(!r300_pair_eval_program(&rgb_presub_eval, &fc.Base) &&
+            rgb_presub_eval.error != NULL,
+         "presub cross-port: RGB lane classifies Alpha presub sources");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
+static void
 test_pair_eval_presubtract_contract(void)
 {
    struct r300_fragment_program_compiler fc;
@@ -1916,6 +2118,8 @@ main(void)
    test_pair_eval_profile_and_schedule_artifact();
    test_pair_eval_unmodeled_constant_contract();
    test_pair_eval_alpha_port_contract();
+   test_pair_eval_resolved_source_bank_contract();
+   test_pair_eval_presub_source_bank_contract();
    test_pair_eval_presubtract_contract();
 
    glsl_type_singleton_decref();
