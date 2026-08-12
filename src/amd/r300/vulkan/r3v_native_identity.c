@@ -245,9 +245,49 @@ r3v_native_identity_collect(char *path_out, size_t path_size,
    result = verify_executable_mappings(&identity, fd, status.st_size);
    if (result != 0)
       goto close_file;
-   result = hash_file(fd, digest_out);
-   if (result == 0)
-      snprintf(path_out, path_size, "%s", identity.path);
+
+   char initial_digest[BLAKE3_OUT_LEN * 2 + 1];
+   char final_digest[BLAKE3_OUT_LEN * 2 + 1];
+   result = hash_file(fd, initial_digest);
+   if (result != 0)
+      goto close_file;
+
+   /* Revalidate the mapped bytes and file identity after hashing.  The
+    * second hash also detects same-inode rewrites outside executable
+    * segments, which mapping-byte comparison cannot observe. */
+   result = verify_executable_mappings(&identity, fd, status.st_size);
+   if (result != 0)
+      goto close_file;
+   struct stat final_status;
+   if (fstat(fd, &final_status) != 0) {
+      result = -errno;
+      goto close_file;
+   }
+   if (final_status.st_dev != status.st_dev ||
+       final_status.st_ino != status.st_ino ||
+       final_status.st_size != status.st_size) {
+      result = -ESTALE;
+      goto close_file;
+   }
+   result = hash_file(fd, final_digest);
+   if (result != 0)
+      goto close_file;
+   if (fstat(fd, &final_status) != 0) {
+      result = -errno;
+      goto close_file;
+   }
+   if (final_status.st_dev != status.st_dev ||
+       final_status.st_ino != status.st_ino ||
+       final_status.st_size != status.st_size) {
+      result = -ESTALE;
+      goto close_file;
+   }
+   if (strcmp(initial_digest, final_digest) != 0) {
+      result = -ESTALE;
+      goto close_file;
+   }
+   snprintf(digest_out, digest_size, "%s", final_digest);
+   snprintf(path_out, path_size, "%s", identity.path);
 
 close_file:
    close(fd);
@@ -264,6 +304,39 @@ append_json_bytes(char **cursor, size_t *remaining, const char *bytes,
    *cursor += count;
    *remaining -= count;
    **cursor = '\0';
+   return 0;
+}
+
+static bool
+is_utf8_continuation(unsigned char byte)
+{
+   return byte >= 0x80 && byte <= 0xbf;
+}
+
+static size_t
+valid_utf8_sequence_length(const unsigned char *bytes)
+{
+   const unsigned char first = bytes[0];
+
+   if (first >= 0xc2 && first <= 0xdf &&
+       is_utf8_continuation(bytes[1]))
+      return 2;
+   if (first >= 0xe0 && first <= 0xef && bytes[1] != '\0' &&
+       bytes[2] != '\0' &&
+       ((first == 0xe0 && bytes[1] >= 0xa0 && bytes[1] <= 0xbf) ||
+        (first == 0xed && bytes[1] >= 0x80 && bytes[1] <= 0x9f) ||
+        (first != 0xe0 && first != 0xed &&
+         is_utf8_continuation(bytes[1]))) &&
+       is_utf8_continuation(bytes[2]))
+      return 3;
+   if (first >= 0xf0 && first <= 0xf4 && bytes[1] != '\0' &&
+       bytes[2] != '\0' && bytes[3] != '\0' &&
+       ((first == 0xf0 && bytes[1] >= 0x90 && bytes[1] <= 0xbf) ||
+        (first == 0xf4 && bytes[1] >= 0x80 && bytes[1] <= 0x8f) ||
+        (first != 0xf0 && first != 0xf4 &&
+         is_utf8_continuation(bytes[1]))) &&
+       is_utf8_continuation(bytes[2]) && is_utf8_continuation(bytes[3]))
+      return 4;
    return 0;
 }
 
@@ -320,6 +393,24 @@ r3v_native_json_escape(char *out, size_t out_size, const char *input)
             escaped[5] = hex[*source & 0xf];
             replacement = escaped;
             replacement_size = sizeof(escaped);
+         } else if (*source >= 0x80) {
+            size_t utf8_length = valid_utf8_sequence_length(source);
+            if (utf8_length != 0) {
+               replacement = (const char *)source;
+               replacement_size = utf8_length;
+               source += utf8_length - 1;
+            } else {
+               /* Preserve malformed path bytes as reversible JSON byte
+                * escapes instead of emitting invalid UTF-8 text. */
+               escaped[0] = '\\';
+               escaped[1] = 'u';
+               escaped[2] = '0';
+               escaped[3] = '0';
+               escaped[4] = hex[*source >> 4];
+               escaped[5] = hex[*source & 0xf];
+               replacement = escaped;
+               replacement_size = sizeof(escaped);
+            }
          } else {
             escaped[0] = (char)*source;
             replacement = escaped;
