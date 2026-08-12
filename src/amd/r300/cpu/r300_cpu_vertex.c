@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Portable CPU vertex executor: byte-copy baseline and the SSE2/SSE3
- * tuned candidates.
+ * SIMD candidates.
  */
 
 #include "r300_cpu_vertex.h"
@@ -36,10 +36,12 @@ validate(const struct r300_vertex_format_semantics **format_out,
       r300_vertex_format_semantics((enum r300_vertex_format_id)format_id);
    if (format == NULL || stream == NULL || stream->data == NULL)
       return -EINVAL;
-   /* A stride below the record size makes successive records overlap,
-    * which no API binding describes.
+   /* A nonzero stride below the record size makes successive records
+    * overlap.  Zero stride is the Vulkan constant-binding form: every
+    * gathered vertex reads the same record.
     */
-   if (stream->stride < format->semantic_record_bytes)
+   if (stream->stride != 0 &&
+       stream->stride < format->semantic_record_bytes)
       return -EINVAL;
    if (vertex_count != 0) {
       if (carrier == NULL)
@@ -52,10 +54,12 @@ validate(const struct r300_vertex_format_semantics **format_out,
        */
       if (stream->size_bytes < format->semantic_record_bytes)
          return -EINVAL;
-      uint64_t last_index = (uint64_t)first_vertex + vertex_count - 1;
-      if (last_index > (stream->size_bytes -
-                        format->semantic_record_bytes) / stream->stride)
-         return -EINVAL;
+      if (stream->stride != 0) {
+         uint64_t last_index = (uint64_t)first_vertex + vertex_count - 1;
+         if (last_index > (stream->size_bytes -
+                           format->semantic_record_bytes) / stream->stride)
+            return -EINVAL;
+      }
    }
    if (vertex_count > carrier_dwords / 4)
       return -ENOSPC;
@@ -233,7 +237,7 @@ gather_sse3(const struct r300_vertex_format_semantics *format,
 
 #endif /* __SSE3__ */
 
-/* The named tuned entry points refuse rather than substitute: a build
+/* The named SIMD entry points refuse rather than substitute: a build
  * without the instruction set reports -ENOSYS, and a vocabulary row
  * outside the encoded identity patterns reports -EINVAL, so a bench
  * lane's label always names the kernels it timed.

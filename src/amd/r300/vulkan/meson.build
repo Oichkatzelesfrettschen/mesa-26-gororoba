@@ -548,17 +548,18 @@ if get_option('r3v-native-backend')
     endforeach
     # Source headers carry the license grant and the file's description.  The
     # audit covers the complete native ownership surface -- the Vulkan lane,
-    # the shared r300 common code, the Radeon DRM transport, and the native
-    # build-infra scripts -- and each fixture mutates one clean header so a
-    # rule that stopped reading its line fails its own calibration.  Imported
-    # and upstream-verbatim source stays outside these roots; a file arriving
-    # with an upstream header joins REAL_COPYRIGHT_HOLDERS by review.
+    # the shared r300 common code, the CPU gather, the Radeon DRM transport,
+    # and the native build-infra scripts.  Each fixture mutates one clean
+    # header so a rule that stopped reading its line fails its own calibration.
+    # Imported and upstream-verbatim source stays outside these roots; a file
+    # arriving with an upstream header joins REAL_COPYRIGHT_HOLDERS by review.
     test(
       'r3v-source-header-audit',
       prog_python,
       args : [files('tests/r3v_source_header_audit.py'),
               meson.current_source_dir(),
               meson.project_source_root() / 'src/amd/r300/common',
+              meson.project_source_root() / 'src/amd/r300/cpu',
               meson.project_source_root() / 'src/amd/radeon/drm_vk',
               meson.project_source_root() / 'build-infra/r3v'],
       suite : ['r3v'],
