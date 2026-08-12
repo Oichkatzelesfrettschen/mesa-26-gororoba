@@ -82,6 +82,13 @@ test_domain_catalog(void)
    CHECK(u8_offgrid->exact_int_bound == 131072,
          "catalog: U8 offgrid exact subset covers the FP24 integer window");
 
+   CHECK(!r300_vop_status_is_carrier_pending(R300_VOP_HW_CONFIRMED),
+         "catalog status: HW_CONFIRMED does not mark carrier pending");
+   CHECK(r300_vop_status_is_carrier_pending(R300_VOP_CARRIER_PENDING),
+         "catalog status: CARRIER_PENDING blocks production carrier use");
+   CHECK(r300_vop_status_is_carrier_pending(R300_VOP_HW_CONFIRMED_CARRIER_PENDING),
+         "catalog status: HW_CONFIRMED_CARRIER_PENDING blocks production carrier use");
+
    const struct r300_virtual_op_info *multilimb = NULL;
    const struct r300_virtual_op_info *signed_dp4 = NULL;
    const struct r300_virtual_op_info *quad_disc = NULL;
@@ -122,15 +129,19 @@ test_domain_catalog(void)
          "catalog: quadratic discriminant lives in the FP24 RTZ root domain");
    CHECK(quad_disc != NULL && quad_disc->mesa_hook == NULL,
          "catalog: quadratic discriminant has no Mesa hook (glamor-emitted, not a Mesa pass)");
-   CHECK(q16_add != NULL && q16_add->status == R300_VOP_CARRIER_PENDING,
+   CHECK(q16_add != NULL && q16_add->status == R300_VOP_CARRIER_PENDING &&
+            r300_vop_status_is_carrier_pending(q16_add->status),
          "catalog: Q16.16 ADD remains carrier-pending after shape detection");
    CHECK(q16_add != NULL && q16_add->mesa_hook == NULL,
          "catalog: Q16.16 ADD detector is test-only, no production hook");
-   CHECK(q16_mul != NULL && q16_mul->status == R300_VOP_CARRIER_PENDING,
+   CHECK(q16_mul != NULL && q16_mul->status == R300_VOP_CARRIER_PENDING &&
+            r300_vop_status_is_carrier_pending(q16_mul->status),
          "catalog: Q16.16 MUL remains carrier-pending");
    CHECK(q16_mul != NULL && q16_mul->mesa_hook == NULL,
          "catalog: Q16.16 MUL has no detector");
-   CHECK(q16_mac != NULL && q16_mac->status == R300_VOP_HW_CONFIRMED_CARRIER_PENDING,
+   CHECK(q16_mac != NULL &&
+            q16_mac->status == R300_VOP_HW_CONFIRMED_CARRIER_PENDING &&
+            r300_vop_status_is_carrier_pending(q16_mac->status),
          "catalog: Q16.16 MAC is HW-confirmed with the production carrier pending");
    CHECK(q16_mac != NULL && q16_mac->mesa_hook == NULL,
          "catalog: Q16.16 MAC has no production detector");
