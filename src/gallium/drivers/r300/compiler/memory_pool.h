@@ -53,8 +53,9 @@ void *memory_pool_malloc(struct memory_pool *pool, unsigned int bytes);
          if (newreserve < _num)                                            \
             newreserve = 4 * _num; /* arbitrary heuristic */               \
          newarray = memory_pool_malloc((pool), newreserve * sizeof(type)); \
-         /* A fresh array is NULL, and memcpy requires non-null pointers   \
-          * even for a zero-byte copy. */                                  \
+         /* C17 7.1.4 requires valid pointer arguments for library calls;   \
+          * the size check gives memcpy an initialized destination and      \
+          * source whenever it copies bytes. */                             \
          if ((size))                                                       \
             memcpy(newarray, (array), (size) * sizeof(type));              \
          (array) = newarray;                                               \

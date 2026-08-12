@@ -63,9 +63,9 @@ memory_pool_malloc(struct memory_pool *pool, unsigned int bytes)
    if (bytes < POOL_LARGE_ALLOC) {
       void *ptr;
 
-      /* A fresh pool has head == end == NULL, and forming head + bytes on a
-       * null pointer is undefined, so test the remaining span only once a
-       * block exists. */
+      /* C17 6.5.6p8 defines pointer addition within an array object or its
+       * one-past position.  Test the remaining span after a pool block exists
+       * so the subtraction names that array object. */
       if (!pool->head || pool->end - pool->head < (ptrdiff_t)bytes)
          refill_pool(pool);
 
