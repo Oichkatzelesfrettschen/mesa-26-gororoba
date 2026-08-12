@@ -1364,8 +1364,13 @@ void r300_emit_us_resync(struct r300_context *r300)
         END_CS;
     }
 
-    /* The atom sizes survive an FS unbind, while r300_fs() follows fs.state.
-     * A live binding is therefore the lifetime guard for the re-upload. */
+    /* Known: r300->fs.size and the companion atom sizes remain allocated
+     * across an FS unbind, while r300_fs() follows r300->fs.state.  Symbol
+     * discovery uses (rg --fixed-strings "r300->fs.state"
+     * src/gallium/drivers/r300/r300_state.c) and
+     * (rg --fixed-strings "r300_emit_us_resync"
+     * src/gallium/drivers/r300/r300_emit.c).  A live binding therefore guards
+     * the re-upload. */
     if (mode >= 2 && r300->fs.state) {
         if (r300->fs.size)
             r300->fs.emit(r300, r300->fs.size, r300->fs.state);
