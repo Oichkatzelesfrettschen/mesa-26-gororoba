@@ -33,9 +33,19 @@ The release profile uses `buildtype = 'release'`, `b_ndebug = 'true'`, `-O2`,
 and `build-tests = true` for the Vostro runtime lane.  The canonical
 `rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache` target configures and
 builds this profile, then runs the registered in-tree unit tests through the
-locked `make test` target.  A separate `make test` invocation reruns the tests
-without rebuilding.  Those results are build/test evidence and do not establish
-hardware behavior or CTS/Piglit/dEQP conformance.
+locked release `make test` target.  Rerun those tests without rebuilding with
+the same release selectors:
+
+```sh
+make -C build-infra test \
+  PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache \
+  HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc \
+  COMPILER_CHAIN=ccache \
+  PREFIX=/opt/local/mesa-26-gororoba
+```
+
+Those results are build/test evidence and do not establish hardware behavior
+or CTS/Piglit/dEQP conformance.
 
 The debug profile uses `buildtype = 'debugoptimized'`, `b_ndebug = 'false'`, and
 the same x86-64-v1 ISA/linker policy with frame pointers for RCA.  It also sets
