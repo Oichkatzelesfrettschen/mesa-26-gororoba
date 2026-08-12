@@ -96,6 +96,35 @@ build_general_atomic(void)
    return b.shader;
 }
 
+enum blend_acc_test_shape {
+   BLEND_ACC_TEST_CANONICAL,
+   BLEND_ACC_TEST_SAME_BUFFER,
+   BLEND_ACC_TEST_DERIVED_VALUE,
+};
+
+static nir_shader *
+build_blend_acc_reduction_form(enum blend_acc_test_shape shape)
+{
+   nir_builder b = cs_builder("cs_blend_acc_reduction");
+   nir_def *value = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0),
+                                  nir_imm_int(&b, 0), .align_mul = 4,
+                                  .align_offset = 0);
+   if (shape == BLEND_ACC_TEST_DERIVED_VALUE)
+      value = nir_iadd(&b, value, nir_imm_int(&b, 1));
+
+   nir_intrinsic_instr *atomic =
+      nir_intrinsic_instr_create(b.shader, nir_intrinsic_ssbo_atomic);
+   atomic->num_components = 1;
+   nir_def_init(&atomic->instr, &atomic->def, 1, 32);
+   nir_intrinsic_set_atomic_op(atomic, nir_atomic_op_iadd);
+   atomic->src[0] = nir_src_for_ssa(nir_imm_int(
+      &b, shape == BLEND_ACC_TEST_SAME_BUFFER ? 0 : 1));
+   atomic->src[1] = nir_src_for_ssa(nir_imm_int(&b, 0));
+   atomic->src[2] = nir_src_for_ssa(value);
+   nir_builder_instr_insert(&b, &atomic->instr);
+   return b.shader;
+}
+
 enum zpass_test_shape {
    ZPASS_TEST_CANONICAL,
    ZPASS_TEST_GLOBAL_ID_X,
@@ -1317,6 +1346,51 @@ case_zpass_metadata(void)
       prepare_detect_shader(nir);
       r300_nir_detect_zpass_reduction(nir, &bad);
       CHECK(!bad.is_zpass_reduction, known_bad[i].label);
+      ralloc_free(nir);
+   }
+}
+
+static void
+case_blend_acc_metadata(void)
+{
+   printf("blend-acc admission contract\n");
+
+   nir_shader *canonical =
+      build_blend_acc_reduction_form(BLEND_ACC_TEST_CANONICAL);
+   struct r300_compute_blend_acc_reduction_pattern pattern = {0};
+   prepare_detect_shader(canonical);
+   r300_nir_detect_blend_acc_reduction(canonical, &pattern);
+   CHECK(pattern.is_blend_acc_reduction,
+         "load value into distinct output atomic admits");
+   CHECK(pattern.value_ssbo_binding_valid && pattern.value_ssbo_binding == 0,
+         "blend-acc metadata preserves input binding zero");
+   CHECK(pattern.output_ssbo_binding_valid && pattern.output_ssbo_binding == 1,
+         "blend-acc metadata preserves output binding one");
+   CHECK(pattern.alu_op == nir_op_iadd,
+         "blend-acc metadata records integer-add operation");
+   struct r300_compute_admission admission;
+   r300_nir_classify_compute(canonical, &admission);
+   CHECK(admission.admissible, "canonical blend-acc shape admits classification");
+   ralloc_free(canonical);
+
+   const enum blend_acc_test_shape known_bad[] = {
+      BLEND_ACC_TEST_SAME_BUFFER,
+      BLEND_ACC_TEST_DERIVED_VALUE,
+   };
+   const char *const labels[] = {
+      "same-buffer atomic target rejects",
+      "derived atomic value rejects",
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(known_bad); i++) {
+      nir_shader *nir = build_blend_acc_reduction_form(known_bad[i]);
+      struct r300_compute_blend_acc_reduction_pattern bad = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_blend_acc_reduction(nir, &bad);
+      CHECK(!bad.is_blend_acc_reduction, labels[i]);
+      r300_nir_classify_compute(nir, &admission);
+      CHECK(!admission.admissible &&
+            admission.reason == R300_COMPUTE_REJECT_GENERAL_ATOMIC,
+            "blend-acc near miss remains a general-atomic reject");
       ralloc_free(nir);
    }
 }
@@ -3921,6 +3995,7 @@ main(void)
    case_reject_registry_calibration();
    case_identity_metadata();
    case_zpass_metadata();
+   case_blend_acc_metadata();
    case_binary_metadata();
    case_binding_provenance_metadata();
    case_binary_map_isub_ba_operand_order();
