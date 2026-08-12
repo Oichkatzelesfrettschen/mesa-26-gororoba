@@ -2051,7 +2051,8 @@ multipass_offset_alu_inputs_are_scalar(const nir_alu_instr *alu)
 
 static bool
 multipass_offset_is_invocation_index(nir_scalar offset, unsigned depth,
-                                     bool has_byte_scale)
+                                     bool has_byte_scale,
+                                     bool *uses_global_invocation_id_x)
 {
    if (depth > R300_COMPUTE_OFFSET_EQ_MAX_DEPTH)
       return false;
@@ -2062,11 +2063,10 @@ multipass_offset_is_invocation_index(nir_scalar offset, unsigned depth,
       case nir_intrinsic_load_global_invocation_index:
          return has_byte_scale;
       case nir_intrinsic_load_global_invocation_id:
-         /* The replay enumerates one flat element stream.  An X-only
-          * global-id load aliases elements when Y or Z has more than one
-          * invocation, so only the flattened invocation-index intrinsic is
-          * an admitted root. */
-         return false;
+         if (offset.comp != 0 || !has_byte_scale)
+            return false;
+         *uses_global_invocation_id_x = true;
+         return true;
       default:
          return false;
       }
@@ -2097,22 +2097,27 @@ multipass_offset_is_invocation_index(nir_scalar offset, unsigned depth,
    case nir_op_imul:
       if (nir_scalar_is_const(a) && nir_scalar_as_uint(a) == 4)
          return !has_byte_scale &&
-                multipass_offset_is_invocation_index(b, depth + 1, true);
+                multipass_offset_is_invocation_index(
+                   b, depth + 1, true, uses_global_invocation_id_x);
       if (nir_scalar_is_const(b) && nir_scalar_as_uint(b) == 4)
          return !has_byte_scale &&
-                multipass_offset_is_invocation_index(a, depth + 1, true);
+                multipass_offset_is_invocation_index(
+                   a, depth + 1, true, uses_global_invocation_id_x);
       return false;
    case nir_op_ishl:
       return !has_byte_scale && nir_scalar_is_const(b) &&
              nir_scalar_as_uint(b) == 2 &&
-             multipass_offset_is_invocation_index(a, depth + 1, true);
+             multipass_offset_is_invocation_index(
+                a, depth + 1, true, uses_global_invocation_id_x);
    case nir_op_iadd:
       if (nir_scalar_is_const(a) && nir_scalar_as_uint(a) == 0)
          return multipass_offset_is_invocation_index(b, depth + 1,
-                                                     has_byte_scale);
+                                                     has_byte_scale,
+                                                     uses_global_invocation_id_x);
       if (nir_scalar_is_const(b) && nir_scalar_as_uint(b) == 0)
          return multipass_offset_is_invocation_index(a, depth + 1,
-                                                     has_byte_scale);
+                                                     has_byte_scale,
+                                                     uses_global_invocation_id_x);
       return false;
    default:
       return false;
@@ -2122,7 +2127,8 @@ multipass_offset_is_invocation_index(nir_scalar offset, unsigned depth,
 static bool
 multipass_phi_matches_loop(nir_phi_instr *phi, nir_loop *loop,
                            const nir_intrinsic_instr **input_load,
-                           uint16_t *step_op)
+                           uint16_t *step_op,
+                           bool *uses_global_invocation_id_x)
 {
    if (phi->def.num_components != 1 || phi->def.bit_size != 32)
       return false;
@@ -2160,7 +2166,8 @@ multipass_phi_matches_loop(nir_phi_instr *phi, nir_loop *loop,
        load->src[1].ssa->num_components != 1 ||
        load->src[1].ssa->bit_size != 32 ||
        !multipass_offset_is_invocation_index(
-          nir_get_scalar(load->src[1].ssa, 0), 0, false))
+          nir_get_scalar(load->src[1].ssa, 0), 0, false,
+          uses_global_invocation_id_x))
       return false;
 
    nir_scalar update =
@@ -2195,6 +2202,9 @@ multipass_phi_matches_loop(nir_phi_instr *phi, nir_loop *loop,
  *      accumulator doubling therefore cannot trigger replay admission.
  *   5. The input load offset resolves to the global invocation index scaled
  *      by four bytes, so a uniform or unrelated address cannot select replay.
+ *      A load of gl_GlobalInvocationID.x carries a one-dimensional dispatch
+ *      guard because replay flattens all invocations; the flat invocation
+ *      index intrinsic has no additional guard.
  *
  * step_op carries the per-iteration nir_op for diagnostics; the orchestrator
  * hard-codes the doubling, which is sound precisely because every admitted
@@ -2208,6 +2218,7 @@ r300_nir_detect_multipass_scan_pattern(const nir_shader *s,
    out->is_multipass_scan   = false;
    out->input_ssbo_binding  = 0;
    out->output_ssbo_binding = 0;
+   out->load_uses_global_invocation_id_x = false;
    out->step_op             = 0;
 
    const nir_intrinsic_instr *store = NULL;
@@ -2255,10 +2266,13 @@ r300_nir_detect_multipass_scan_pattern(const nir_shader *s,
 
    const nir_intrinsic_instr *input_load = NULL;
    uint16_t step_op = 0;
-   if (!multipass_phi_matches_loop(value_phi, loop, &input_load, &step_op))
+   bool uses_global_invocation_id_x = false;
+   if (!multipass_phi_matches_loop(value_phi, loop, &input_load, &step_op,
+                                   &uses_global_invocation_id_x))
       return;
 
    out->is_multipass_scan = true;
+   out->load_uses_global_invocation_id_x = uses_global_invocation_id_x;
    out->step_op = step_op;
    if (input_load && nir_src_is_const(input_load->src[0]))
       out->input_ssbo_binding = nir_src_as_uint(input_load->src[0]);
@@ -2922,6 +2936,15 @@ r300_compute_zpass_dispatch_shape_is_valid(
 {
    return pattern && (!pattern->load_uses_global_invocation_id_x ||
                        (invocations_y == 1 && invocations_z == 1));
+}
+
+bool
+r300_compute_multipass_dispatch_shape_is_valid(
+   const struct r300_compute_multipass_scan_pattern *pattern,
+   uint64_t invocations_y, uint64_t invocations_z)
+{
+   return pattern && (!pattern->load_uses_global_invocation_id_x ||
+                      (invocations_y == 1 && invocations_z == 1));
 }
 
 static bool

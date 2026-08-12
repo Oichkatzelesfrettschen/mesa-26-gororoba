@@ -475,16 +475,23 @@ bool r300_compute_zpass_dispatch_shape_is_valid(
  * step_op holds the per-iteration nir_op (nir_op_imul for the doubling first
  * cut).  Bindings stay 0 when the post-explicit_io binding sources are not
  * constants (the orchestrator's positional fallback: binding 0 = input,
- * 1 = output, 2 = params). */
+ * 1 = output, 2 = params).  A load of gl_GlobalInvocationID.x carries a
+ * one-dimensional dispatch guard because the replay flattens all invocations;
+ * a flat global-invocation-index source has no such guard. */
 struct r300_compute_multipass_scan_pattern {
    bool       is_multipass_scan;
    uint32_t   input_ssbo_binding;     /* binding of the per-element data load */
    uint32_t   output_ssbo_binding;    /* binding of the store dest */
+   bool       load_uses_global_invocation_id_x;
    uint16_t   step_op;                /* per-iteration nir_op (imul for doubling) */
 };
 
 void r300_nir_detect_multipass_scan_pattern(const struct nir_shader *s,
                                             struct r300_compute_multipass_scan_pattern *out);
+
+bool r300_compute_multipass_dispatch_shape_is_valid(
+   const struct r300_compute_multipass_scan_pattern *pattern,
+   uint64_t invocations_y, uint64_t invocations_z);
 
 /* Predicated masked-store pattern recognized at compute-pipeline-create time.
  * The shape is the per-element conditional store

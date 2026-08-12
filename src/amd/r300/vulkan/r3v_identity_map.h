@@ -363,7 +363,9 @@ r3v_blend_acc_reduction_dispatch_replay(struct r3v_device *device,
  * texture to the output buffer.  The unique discriminator from the
  * single-pass identity-map, binary-map, blend-acc-reduction, and
  * ZPASS-reduction kernels is the presence of a nir_loop in the admitted
- * NIR shader.  Returns false on resource creation failure, descriptor walk
+ * NIR shader.  A global-invocation-ID X source is replayed only when the
+ * dispatch has one invocation in each Y and Z axis.  Returns false on
+ * resource creation failure, descriptor walk
  * miss, or a pass_count above the per-byte UNORM8 envelope; the queue's
  * caller then falls through to the no-op compute lifecycle. */
 bool

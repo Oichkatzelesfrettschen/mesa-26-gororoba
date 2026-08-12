@@ -347,6 +347,8 @@ struct r3v_pipeline {
     * the single-pass kernel classes (identity-map, binary-map,
     * blend-acc-reduction, ZPASS-reduction) is the presence of a nir_loop
     * in the admitted NIR shader. */
+   /* A global-invocation-ID X source carries a one-dimensional dispatch
+    * guard; a flat global-invocation-index source is valid for every shape. */
    struct r300_compute_multipass_scan_pattern multipass_scan;
 
    /* Predicated masked-store pattern detected at pipeline-create time.

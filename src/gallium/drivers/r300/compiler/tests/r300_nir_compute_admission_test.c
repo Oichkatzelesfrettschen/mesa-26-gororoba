@@ -254,6 +254,8 @@ enum multipass_offset_form {
    MULTIPASS_OFFSET_BARE_INVOCATION_INDEX,
    MULTIPASS_OFFSET_REPEATED_SCALE,
    MULTIPASS_OFFSET_GLOBAL_ID_X,
+   MULTIPASS_OFFSET_GLOBAL_ID_X_UNSCALED,
+   MULTIPASS_OFFSET_GLOBAL_ID_Y,
    MULTIPASS_OFFSET_UNSUPPORTED_ALU,
    MULTIPASS_OFFSET_UNIFORM,
    MULTIPASS_OFFSET_WRONG_STRIDE,
@@ -281,13 +283,24 @@ build_multipass_loop_form(enum multipass_step_form step_form,
                         nir_imm_int(&b, 4));
       break;
    case MULTIPASS_OFFSET_GLOBAL_ID_X: {
-      /* The X component is not the flat invocation index when the dispatch
-       * has multiple Y or Z invocations. */
+      /* The X component equals the flat invocation index for a 1D dispatch. */
       b.shader->info.workgroup_size[0] = 8;
-      b.shader->info.workgroup_size[1] = 2;
-      b.shader->info.workgroup_size[2] = 2;
+      b.shader->info.workgroup_size[1] = 1;
+      b.shader->info.workgroup_size[2] = 1;
+      nir_def *global_id = nir_load_global_invocation_id(&b, 32);
+      offset = nir_imul(&b, nir_channel(&b, global_id, 0),
+                        nir_imm_int(&b, 4));
+      break;
+   }
+   case MULTIPASS_OFFSET_GLOBAL_ID_X_UNSCALED: {
       nir_def *global_id = nir_load_global_invocation_id(&b, 32);
       offset = nir_channel(&b, global_id, 0);
+      break;
+   }
+   case MULTIPASS_OFFSET_GLOBAL_ID_Y: {
+      nir_def *global_id = nir_load_global_invocation_id(&b, 32);
+      offset = nir_imul(&b, nir_channel(&b, global_id, 1),
+                        nir_imm_int(&b, 4));
       break;
    }
    case MULTIPASS_OFFSET_UNSUPPORTED_ALU: {
@@ -1434,6 +1447,39 @@ check_multipass_reject(enum multipass_step_form step_form,
 }
 
 static void
+check_multipass_global_id_x_guard(void)
+{
+   nir_shader *nir = build_multipass_loop_form(
+      MULTIPASS_STEP_IADD, MULTIPASS_OFFSET_GLOBAL_ID_X);
+   prepare_detect_shader(nir);
+   struct r300_compute_multipass_scan_pattern pattern = {0};
+   r300_nir_detect_multipass_scan_pattern(nir, &pattern);
+   CHECK(pattern.is_multipass_scan,
+         "global invocation ID X multipass shape remains detectable");
+   CHECK(pattern.load_uses_global_invocation_id_x,
+         "global invocation ID X records one-dimensional guard");
+   CHECK(r300_compute_multipass_dispatch_shape_is_valid(&pattern, 1, 1),
+         "global invocation ID X accepts one-dimensional dispatch");
+   CHECK(!r300_compute_multipass_dispatch_shape_is_valid(&pattern, 2, 1),
+         "global invocation ID X rejects Y-multidimensional dispatch");
+   CHECK(!r300_compute_multipass_dispatch_shape_is_valid(&pattern, 1, 2),
+         "global invocation ID X rejects Z-multidimensional dispatch");
+   ralloc_free(nir);
+
+   nir = build_multipass_loop_form(MULTIPASS_STEP_IADD,
+                                   MULTIPASS_OFFSET_INVOCATION_X4);
+   prepare_detect_shader(nir);
+   memset(&pattern, 0, sizeof(pattern));
+   r300_nir_detect_multipass_scan_pattern(nir, &pattern);
+   CHECK(pattern.is_multipass_scan &&
+         !pattern.load_uses_global_invocation_id_x,
+         "flat invocation index keeps multidimensional replay contract");
+   CHECK(r300_compute_multipass_dispatch_shape_is_valid(&pattern, 2, 3),
+         "flat invocation index accepts multidimensional dispatch");
+   ralloc_free(nir);
+}
+
+static void
 case_multipass_metadata(void)
 {
    printf("multipass loop-carried value\n");
@@ -1471,9 +1517,13 @@ case_multipass_metadata(void)
    check_multipass_reject(MULTIPASS_STEP_IADD,
                           MULTIPASS_OFFSET_REPEATED_SCALE,
                           "repeated invocation scale");
+   check_multipass_global_id_x_guard();
    check_multipass_reject(MULTIPASS_STEP_IADD,
-                          MULTIPASS_OFFSET_GLOBAL_ID_X,
-                          "multidimensional global-id.x offset");
+                          MULTIPASS_OFFSET_GLOBAL_ID_X_UNSCALED,
+                          "unscaled global-id.x offset");
+   check_multipass_reject(MULTIPASS_STEP_IADD,
+                          MULTIPASS_OFFSET_GLOBAL_ID_Y,
+                          "global-id.y offset");
    check_multipass_reject(MULTIPASS_STEP_IADD,
                           MULTIPASS_OFFSET_UNSUPPORTED_ALU,
                           "unsupported vector ALU offset");
