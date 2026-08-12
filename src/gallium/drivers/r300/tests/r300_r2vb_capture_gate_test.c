@@ -21,7 +21,7 @@ select_action(const char *hb_tcl, const char *timing,
               const char *raw_submit_accepted, bool query_active)
 {
    return r300_r2vb_select_selftest_action(
-      hb_tcl, timing, raw_submit_accepted, true, false, query_active);
+      hb_tcl, timing, raw_submit_accepted, true, true, false, query_active);
 }
 
 static void
@@ -46,7 +46,7 @@ check_exact_transport_values(void)
           "zero timing declines");
    CHECK(select_action("1", "captureX", NULL, false) ==
              R300_R2VB_SELFTEST_DECLINE,
-          "non-exact timing declines");
+          "invalid timing declines with a diagnostic");
    CHECK(select_action("1", "capture", NULL, false) ==
              R300_R2VB_SELFTEST_CAPTURE,
           "exact capture gates admit no-submit capture");
@@ -73,14 +73,27 @@ check_submit_consent(void)
 }
 
 static void
+check_rs48x_capability(void)
+{
+   CHECK(r300_r2vb_select_selftest_action(
+             "1", "capture", NULL, true, true, false, false) ==
+             R300_R2VB_SELFTEST_CAPTURE,
+          "RS48x capability keeps HB_TCL capture reachable");
+   CHECK(r300_r2vb_select_selftest_action(
+             "1", "capture", NULL, false, true, false, false) ==
+             R300_R2VB_SELFTEST_DECLINE,
+          "non-RS48x capability declines the self-test");
+}
+
+static void
 check_flush_and_query_admission(void)
 {
    CHECK(r300_r2vb_select_selftest_action(
-             "1", "capture", NULL, false, false, false) ==
+             "1", "capture", NULL, true, false, false, false) ==
              R300_R2VB_SELFTEST_DECLINE,
           "non-flush entry declines");
    CHECK(r300_r2vb_select_selftest_action(
-             "1", "capture", NULL, true, true, false) ==
+             "1", "capture", NULL, true, true, true, false) ==
              R300_R2VB_SELFTEST_DECLINE,
           "capture fires once");
    CHECK(select_action("1", "capture", NULL, true) ==
@@ -96,6 +109,7 @@ main(void)
 {
    check_exact_transport_values();
    check_submit_consent();
+   check_rs48x_capability();
    check_flush_and_query_admission();
 
    if (failures) {
