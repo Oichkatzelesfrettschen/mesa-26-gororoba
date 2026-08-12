@@ -25,11 +25,22 @@
 #include "nir_builder.h"
 
 #include "r300_context.h"
+#include "r300_fs.h"
+#include "r300_r2vb.h"
 #include "r300_r2vb_plan.h"
 #include "r300_r2vb_telemetry.h"
 #include "r300_screen.h"
 #include "r300_vs.h"
 #include "radeon_regalloc.h"
+
+/* The route owns these helpers in r300_r2vb.c.  Keep their declarations local
+ * to this calibration so the production header surface stays unchanged. */
+extern void r300_r2vb_telemetry_note_cell(
+   struct r300_context *r300,
+   const struct r300_r2vb_producer_plan *plan);
+extern bool r300_r2vb_telemetry_allow_computed_varying(
+   struct r300_context *r300, nir_shader *vs_nir);
+extern unsigned r300_r2vb_telemetry_format_dwords(enum pipe_format format);
 
 static unsigned g_failures;
 
@@ -81,6 +92,7 @@ bind_vs(nir_shader *nir)
 struct vs_build {
    nir_builder b;
    nir_def *pos;
+   nir_variable *in_pos;
    nir_variable *out_pos;
 };
 
@@ -91,15 +103,15 @@ begin_vs(const char *name)
    v.b = nir_builder_init_simple_shader(
       MESA_SHADER_VERTEX, g_screen.screen.nir_options[MESA_SHADER_VERTEX],
       "%s", name);
-   nir_variable *in_pos = nir_variable_create(
+   v.in_pos = nir_variable_create(
       v.b.shader, nir_var_shader_in, glsl_vec4_type(), "in_pos");
-   in_pos->data.location = VERT_ATTRIB_GENERIC0;
-   in_pos->data.driver_location = 0;
+   v.in_pos->data.location = VERT_ATTRIB_GENERIC0;
+   v.in_pos->data.driver_location = 0;
    v.out_pos = nir_variable_create(v.b.shader, nir_var_shader_out,
                                    glsl_vec4_type(), "gl_Position");
    v.out_pos->data.location = VARYING_SLOT_POS;
    v.out_pos->data.driver_location = 0;
-   v.pos = nir_load_var(&v.b, in_pos);
+   v.pos = nir_load_var(&v.b, v.in_pos);
    return v;
 }
 
@@ -127,6 +139,18 @@ build_producer(unsigned chain_length, const char *name)
    struct vs_build v = begin_vs(name);
    nir_def *c = fmad_chain(&v.b, nir_channel(&v.b, v.pos, 0), chain_length);
    return end_vs(&v, nir_replicate(&v.b, c, 4));
+}
+
+static nir_shader *
+build_computed_varying(void)
+{
+   struct vs_build v = begin_vs("telemetry_computed_varying");
+   nir_variable *out_varying = nir_variable_create(
+      v.b.shader, nir_var_shader_out, glsl_vec4_type(), "computed_varying");
+   out_varying->data.location = VARYING_SLOT_VAR0;
+   nir_def *x = nir_fmul_imm(&v.b, v.pos, 2.0f);
+   nir_store_var(&v.b, out_varying, x, 0xf);
+   return end_vs(&v, v.pos);
 }
 
 /* A branch on a non-constant input survives every folding pass, so the plan
@@ -209,7 +233,10 @@ plan_and_note(const char *label, nir_shader *vs,
             r300_r2vb_plan_action_str(expected_action));
    CHECK(ran && plan.action == expected_action, name);
    if (ran) {
-      r300_r2vb_telemetry_note(&g_context, &plan);
+      g_vs.r2vb_admission[0][0] = R300_R2VB_ADMIT_FITS;
+      r300_r2vb_telemetry_note_cell(&g_context, &plan);
+      CHECK(g_vs.r2vb_admission[0][0] == R300_R2VB_ADMIT_FITS,
+            "cell note leaves route memo unchanged");
       r300_r2vb_plan_release(&plan);
    }
 }
@@ -226,6 +253,25 @@ main(void)
    nir_shader *fits = build_producer(8, "telemetry_fits");
    nir_shader *over = build_producer(90, "telemetry_over");
    nir_shader *cflow = build_control_flow();
+   nir_shader *computed = build_computed_varying();
+
+   CHECK(r300_r2vb_telemetry_format_dwords(PIPE_FORMAT_R8_UNORM) == 1,
+         "format dwords rounds one-byte blocks up");
+   CHECK(r300_r2vb_telemetry_format_dwords(PIPE_FORMAT_R16G16_FLOAT) == 1,
+         "format dwords preserves four-byte blocks");
+   CHECK(r300_r2vb_telemetry_format_dwords(PIPE_FORMAT_R32G32_FLOAT) == 2,
+         "format dwords preserves eight-byte blocks");
+
+   unsetenv("R300_R2VB_VARYING");
+   CHECK(!r300_r2vb_telemetry_allow_computed_varying(&g_context, computed),
+         "computed-varying cell stays closed by default");
+   setenv("R300_R2VB_VARYING", "1", 1);
+   CHECK(r300_r2vb_telemetry_allow_computed_varying(&g_context, computed),
+         "computed-varying cell follows the exact route gate");
+   setenv("R300_R2VB_VARYING", "0", 1);
+   CHECK(!r300_r2vb_telemetry_allow_computed_varying(&g_context, computed),
+         "computed-varying near miss stays closed");
+   unsetenv("R300_R2VB_VARYING");
 
    const struct r300_r2vb_telemetry_counters *c =
       r300_r2vb_telemetry_get();
@@ -277,6 +323,18 @@ main(void)
             "damaged the retained file in place");
    }
    plan_and_note("over/republish", over, R300_R2VB_PLAN_SPLIT);
+   /* Cell observation deduplicates route facts, while retention still
+    * verifies an existing file when the caller explicitly records the
+    * specimen again. */
+   bind_vs(over);
+   struct r300_r2vb_producer_plan republish_plan;
+   bool republish_ran = r300_r2vb_plan_producer(
+      &g_context, over, false, R300_R2VB_POSITION_CLIP, &republish_plan);
+   CHECK(republish_ran, "republish plan remains available");
+   if (republish_ran) {
+      r300_r2vb_telemetry_note(&g_context, &republish_plan);
+      r300_r2vb_plan_release(&republish_plan);
+   }
    CHECK(c->retained == base.retained + 2 &&
             count_dir_files(retain_dir) == 1 &&
             have_file && file_size(retained_path) == good_size,
@@ -421,6 +479,7 @@ main(void)
    ralloc_free(fits);
    ralloc_free(over);
    ralloc_free(cflow);
+   ralloc_free(computed);
    rc_destroy_regalloc_state(&g_context.fs_regalloc_state);
    glsl_type_singleton_decref();
    printf(g_failures ? "FAILED (%u)\n" : "PASSED\n", g_failures);
