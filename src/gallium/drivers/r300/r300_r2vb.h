@@ -24,8 +24,17 @@ struct nir_shader;
 
 /* Classify the effective rasterized primitive used by the Draw and R2VB
  * routes. Polygon-mode POINT triangles enter the point path alongside POINTS.
+ * r300_draw_vbo and r300_swtcl_draw_vbo in r300_render.c and
+ * r300_r2vb_route_mvp in r300_r2vb.c call the all-face classifier.
+ * Call-site discovery uses (rg --fixed-strings
+ * r300_rasterizer_emits_points src/gallium/drivers/r300/).
  */
 bool r300_rasterizer_emits_points(struct r300_context *r300, unsigned prim);
+
+/* Return true when any active polygon face uses PIPE_POLYGON_MODE_POINT.
+ * Mixed point/fill modes remain distinct from the all-point Draw path so the
+ * R2VB policy can decline point semantics that fixed-size delivery omits. */
+bool r300_rasterizer_has_point_faces(struct r300_context *r300, unsigned prim);
 
 /* Runtime source authority for a vertex-buffer record.  A real winsys BO
  * fetches in place.  A CPU-shadow resource uploads its exact fetched span.

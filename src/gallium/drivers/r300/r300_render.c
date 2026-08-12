@@ -894,13 +894,12 @@ r300_update_clip_discard_distance(struct r300_context *r300, unsigned prim)
     }
 }
 
-bool
-r300_rasterizer_emits_points(struct r300_context *r300, unsigned prim)
+static bool
+r300_rasterizer_active_faces(struct r300_context *r300, unsigned prim,
+                             bool *front_rasterized, bool *back_rasterized)
 {
-    struct r300_rs_state *rs = (struct r300_rs_state*)r300->rs_state.state;
-
-    if (prim == MESA_PRIM_POINTS)
-        return true;
+    *front_rasterized = false;
+    *back_rasterized = false;
 
     switch (prim) {
     case MESA_PRIM_TRIANGLES:
@@ -914,11 +913,30 @@ r300_rasterizer_emits_points(struct r300_context *r300, unsigned prim)
         return false;
     }
 
+    const struct r300_rs_state *rs =
+        (const struct r300_rs_state *)r300->rs_state.state;
     if (!rs)
         return false;
 
-    bool front_rasterized = !(rs->rs.cull_face & PIPE_FACE_FRONT);
-    bool back_rasterized = !(rs->rs.cull_face & PIPE_FACE_BACK);
+    *front_rasterized = !(rs->rs.cull_face & PIPE_FACE_FRONT);
+    *back_rasterized = !(rs->rs.cull_face & PIPE_FACE_BACK);
+    return *front_rasterized || *back_rasterized;
+}
+
+bool
+r300_rasterizer_emits_points(struct r300_context *r300, unsigned prim)
+{
+    if (prim == MESA_PRIM_POINTS)
+        return true;
+
+    bool front_rasterized;
+    bool back_rasterized;
+    if (!r300_rasterizer_active_faces(r300, prim, &front_rasterized,
+                                      &back_rasterized))
+        return false;
+
+    const struct r300_rs_state *rs =
+        (const struct r300_rs_state *)r300->rs_state.state;
 
     if (front_rasterized && rs->rs.fill_front != PIPE_POLYGON_MODE_POINT)
         return false;
@@ -926,6 +944,26 @@ r300_rasterizer_emits_points(struct r300_context *r300, unsigned prim)
         return false;
 
     return front_rasterized || back_rasterized;
+}
+
+bool
+r300_rasterizer_has_point_faces(struct r300_context *r300, unsigned prim)
+{
+    if (prim == MESA_PRIM_POINTS)
+        return true;
+
+    bool front_rasterized;
+    bool back_rasterized;
+    if (!r300_rasterizer_active_faces(r300, prim, &front_rasterized,
+                                      &back_rasterized))
+        return false;
+
+    const struct r300_rs_state *rs =
+        (const struct r300_rs_state *)r300->rs_state.state;
+    return (front_rasterized &&
+            rs->rs.fill_front == PIPE_POLYGON_MODE_POINT) ||
+           (back_rasterized &&
+            rs->rs.fill_back == PIPE_POLYGON_MODE_POINT);
 }
 
 /* Multipass state-lifetime snapshot (R300_MP_SNAPSHOT=1): the pass A and
