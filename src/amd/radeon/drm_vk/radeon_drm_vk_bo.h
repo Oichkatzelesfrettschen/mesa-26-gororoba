@@ -47,7 +47,10 @@ void radeon_drm_vk_bo_unmap(struct radeon_drm_vk_device *device,
  * driver keeps the coherency promise itself: it publishes host writes
  * before command submission and invalidates before host reads of device
  * output.  CLFLUSH both writes back and invalidates, so one primitive
- * serves both directions.  A null or empty range is a no-op.
+ * serves both directions.  A null or empty range is a no-op.  The kernel
+ * symbol and call-site paths are reproducible with `rg --fixed-strings
+ * rs400_gart_enable drivers/gpu/drm/radeon/` and `rg --fixed-strings
+ * radeon_bo_create drivers/gpu/drm/radeon/` in the Linux kernel source.
  */
 void radeon_drm_vk_bo_cache_sync(struct radeon_drm_vk_device *device,
                                  const void *map, uint64_t size);
