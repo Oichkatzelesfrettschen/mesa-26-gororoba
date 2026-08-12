@@ -2690,10 +2690,9 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
                                            struct pipe_fence_handle **out_fence)
 {
     static bool fired = false;
-    const bool rs48x_r2vb_capable =
-        r300->screen->caps.family == CHIP_RS480 &&
-        !r300->screen->caps.has_tcl &&
-        r300->screen->caps.num_vert_fpus == 0;
+    const bool rs48x_r2vb_capable = r300_r2vb_rs480_capability_gate(
+        r300->screen->caps.family, r300->screen->caps.has_tcl,
+        r300->screen->caps.num_vert_fpus);
 
     /* The compute loop emits the RS482 TCL_BYPASS contract and asserts the
      * no-TCL, zero-vertex-FPU capability shape.  HB_TCL reserves this exact

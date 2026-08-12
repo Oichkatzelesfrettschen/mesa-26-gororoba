@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "c11/threads.h"
+#include "r300_chipset.h"
 #include "r300_r2vb.h"
 #include "r300_r2vb_capture_gate.h"
 
@@ -77,6 +78,17 @@ check_submit_consent(void)
 static void
 check_rs48x_capability(void)
 {
+   CHECK(r300_r2vb_rs480_capability_gate(CHIP_RS480, false, 0),
+         "RS480 PCI-derived family and SWTCL shape admit the self-test");
+   CHECK(!r300_r2vb_rs480_capability_gate(CHIP_RS400, false, 0),
+         "RS400 PCI-derived family declines the self-test");
+   CHECK(!r300_r2vb_rs480_capability_gate(CHIP_RC410, false, 0),
+         "RC410 PCI-derived family declines the self-test");
+   CHECK(!r300_r2vb_rs480_capability_gate(CHIP_RS480, true, 0),
+         "debug-forced HWTCL shape declines the self-test");
+   CHECK(!r300_r2vb_rs480_capability_gate(CHIP_RS480, false, 1),
+         "nonzero vertex-FPU shape declines the self-test");
+
    CHECK(r300_r2vb_select_selftest_action(
              "1", "capture", NULL, true, true, false, false) ==
              R300_R2VB_SELFTEST_CAPTURE,
@@ -85,6 +97,26 @@ check_rs48x_capability(void)
              "1", "capture", NULL, false, true, false, false) ==
              R300_R2VB_SELFTEST_DECLINE,
           "non-RS48x capability declines the self-test");
+}
+
+static void
+check_pci_family_mapping(void)
+{
+   static const uint32_t rs48x_pci_ids[] = {
+      0x5954, /* RS480 */
+      0x5955, /* RS480 */
+      0x5974, /* RS482 */
+      0x5975, /* RS485-marketed */
+   };
+
+   for (unsigned i = 0;
+        i < sizeof(rs48x_pci_ids) / sizeof(rs48x_pci_ids[0]); i++) {
+      struct r300_capabilities caps = {0};
+      r300_parse_chipset(rs48x_pci_ids[i], &caps);
+      CHECK(r300_r2vb_rs480_capability_gate(caps.family, caps.has_tcl,
+                                             caps.num_vert_fpus),
+            "RS480-family PCI mapping admits the calibrated SWTCL shape");
+   }
 }
 
 static void
@@ -175,6 +207,7 @@ main(void)
    check_exact_transport_values();
    check_submit_consent();
    check_rs48x_capability();
+   check_pci_family_mapping();
    check_flush_and_query_admission();
    check_nested_probe_and_readback_guards();
    check_concurrent_diagnostic_guard();
