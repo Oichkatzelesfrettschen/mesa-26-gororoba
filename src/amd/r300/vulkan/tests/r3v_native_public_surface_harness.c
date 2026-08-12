@@ -23,6 +23,7 @@
 #include "r3v_native_reference_spirv.h"
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "util/u_math.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -1464,7 +1465,7 @@ main(void)
          for (uint32_t row = 0; row < 5; row++) {
             for (uint32_t x = 0; x < 3; x++)
                assert(clear_map[transfer_image_base_word + row * 16 + x] ==
-                      0xffff8000u);
+                      util_cpu_to_le32(0xffff8000u));
             assert(clear_map[transfer_image_base_word + row * 16 + 3] ==
                    R300_TRIANGLE_COLOR_SENTINEL);
          }
@@ -1492,7 +1493,8 @@ main(void)
          assert(vkMapMemory(device, mem_c, 0, VK_WHOLE_SIZE, 0,
                             (void **)&clear_map) == VK_SUCCESS);
          assert(clear_map[0] == R300_TRIANGLE_COLOR_SENTINEL);
-         assert(clear_map[transfer_image_base_word] == 0xffff0000u);
+         assert(clear_map[transfer_image_base_word] ==
+                util_cpu_to_le32(0xffff0000u));
          vkUnmapMemory(device, mem_c);
 
          /* A clear on a render-family image poisons: the family
