@@ -432,9 +432,13 @@ r3v_native_cmd_buffer_execute_deferred_draw(
             R300_TRIANGLE_VERTEX_DWORDS);
       }
       if (result == VK_SUCCESS && gathered != 0) {
+         const char *operation = r2vb_route ? "R2VB delivery" : "CPU gather";
+         const char *errno_text = gathered < 0 ? strerror(-gathered)
+                                               : "non-errno refusal";
          result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                            "r3v-native: vertex %s refused (%d): %s",
-                            r2vb_route ? "delivery" : "gather", gathered,
+                            "r3v-native: %s refused (%d): %s; route "
+                            "context: %s",
+                            operation, gathered, errno_text,
                             route_decision.reason);
       } else if (result == VK_SUCCESS) {
          /* The admitted vertex program passes its input to
