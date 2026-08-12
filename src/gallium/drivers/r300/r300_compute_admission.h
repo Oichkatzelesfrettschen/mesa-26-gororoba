@@ -51,7 +51,8 @@ struct r300_compute_admission {
 };
 
 /* Classify a MESA_SHADER_COMPUTE nir_shader against the RS482 substrate.
- * Pure read-only analysis: walks the shader once, fills *out, mutates nothing.
+ * Pure read-only analysis: runs bounded shape prechecks and one classifier
+ * walk, fills *out, and mutates nothing.
  * out->admissible is true with reason R300_COMPUTE_ADMIT when no unsupported
  * construct is present; otherwise the first unsupported construct sets the
  * reason and a static detail string. */
