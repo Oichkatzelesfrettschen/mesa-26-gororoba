@@ -23,6 +23,7 @@
 
 #include <assert.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7205,6 +7206,36 @@ int r300_r2vb_input_velem_index_for_test(nir_shader *vs,
     return r300_r2vb_input_velem_index(vs, in);
 }
 
+/* Lowered load_input uses the same driver-location base that the vertex
+ * element array uses.  Dereference loads retain the source variable, while
+ * nonzero input offsets describe an array element without one fixed velem. */
+static int
+r300_r2vb_reingest_source_velem(nir_shader *vs,
+                                nir_intrinsic_instr *load)
+{
+    if (!load)
+        return -1;
+
+    if (load->intrinsic == nir_intrinsic_load_input) {
+        if (!nir_src_is_const(load->src[0]))
+            return -1;
+        uint64_t offset = nir_src_as_uint(load->src[0]);
+        uint64_t base = nir_intrinsic_base(load);
+        if (base + offset > INT_MAX)
+            return -1;
+        return (int)(base + offset);
+    }
+
+    if (load->intrinsic != nir_intrinsic_load_deref)
+        return -1;
+    nir_deref_instr *src_deref = nir_src_as_deref(load->src[0]);
+    nir_variable *src = nir_intrinsic_get_var(load, 0);
+    if (!src_deref || src_deref->deref_type != nir_deref_type_var ||
+        !src || !(src->data.mode & nir_var_shader_in))
+        return -1;
+    return r300_r2vb_input_velem_index(vs, src);
+}
+
 /* PSC/VAP output-vector rank for a gl_varying_slot: mirrors
  * r300_draw_emit_all_attribs / r300_draw_fill_vs_outputs (POS, PSIZ, COL*,
  * BFC*, GENERIC*, FOG).  Numeric gl_varying_slot order places PSIZ after
@@ -7249,15 +7280,35 @@ int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
             if (instr->type != nir_instr_type_intrinsic)
                 continue;
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_store_deref)
+            gl_varying_slot location;
+            const nir_src *value;
+            unsigned component = 0;
+            if (intr->intrinsic == nir_intrinsic_store_deref) {
+                nir_deref_instr *dst_deref = nir_src_as_deref(intr->src[0]);
+                nir_variable *o = nir_intrinsic_get_var(intr, 0);
+                if (!o || !(o->data.mode & nir_var_shader_out))
+                    continue;
+                if (!dst_deref || dst_deref->deref_type != nir_deref_type_var)
+                    return -1;
+                location = (gl_varying_slot)o->data.location;
+                value = &intr->src[1];
+            } else if (intr->intrinsic == nir_intrinsic_store_output) {
+                if (!r300_r2vb_output_store_location(intr, &location))
+                    return -1;
+                value = &intr->src[0];
+                if (nir_intrinsic_has_component(intr))
+                    component = nir_intrinsic_component(intr);
+            } else {
                 continue;
-            nir_deref_instr *dst_deref = nir_src_as_deref(intr->src[0]);
-            nir_variable *o = nir_intrinsic_get_var(intr, 0);
-            if (!o || !(o->data.mode & nir_var_shader_out))
-                continue;
-            const unsigned components = nir_src_num_components(intr->src[1]);
-            const unsigned bit_size = nir_src_bit_size(intr->src[1]);
-            const unsigned write_mask = nir_intrinsic_write_mask(intr);
+            }
+            const unsigned components = nir_src_num_components(*value);
+            const unsigned bit_size = nir_src_bit_size(*value);
+            const unsigned raw_write_mask = nir_intrinsic_write_mask(intr);
+            if (components < 1 || components > 4 || component > 3 ||
+                component + components > 4 || raw_write_mask > 0xf ||
+                (raw_write_mask << component) > 0xf)
+                return -1;
+            const unsigned write_mask = raw_write_mask << component;
             /* The computed stream tolerates a partial store (a scalar
              * lighting varying is the dominant-workload shape): the varying
              * producer pads the record to FP32x4 with zeros, so the
@@ -7265,57 +7316,49 @@ int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
              * consumes the components the GLSL varying defines.  Position
              * and passthrough keep the full-vector rule. */
             bool partial_computed_ok =
-                (int)o->data.location == computed_slot &&
-                components >= 1 && components <= 4 &&
-                write_mask == (unsigned)((1u << components) - 1);
-            if (!dst_deref || dst_deref->deref_type != nir_deref_type_var ||
-                (components != 4 && !partial_computed_ok) ||
+                (int)location == computed_slot &&
+                write_mask == ((1u << components) - 1) << component;
+            if ((components != 4 && !partial_computed_ok) ||
                 bit_size != 32 ||
                 (write_mask != 0xf && !partial_computed_ok) ||
-                o->data.location == VARYING_SLOT_PSIZ) {
+                location == VARYING_SLOT_PSIZ) {
                 if (r2vb_exec_debug_enabled())
                     fprintf(stderr,
                             "r2vb_stream_layout decline slot=%d comps=%u "
                             "bits=%u mask=0x%x\n",
-                            o->data.location, components, bit_size,
+                            location, components, bit_size,
                             write_mask);
                 return -1;
             }
             for (unsigned i = 0; i < n; i++)
-                if (out[i].slot == o->data.location) {
+                if (out[i].slot == location) {
                     if (r2vb_exec_debug_enabled())
                         fprintf(stderr,
                                 "r2vb_stream_layout decline slot=%d "
                                 "duplicate_store\n",
-                                o->data.location);
+                                location);
                     return -1;
                 }
             if (n >= max)
                 return -1;
             struct r300_r2vb_reingest_stream *s = &out[n++];
-            s->slot = (gl_varying_slot)o->data.location;
+            s->slot = location;
             s->src_velem = -1;
             s->components = components;
             s->bit_size = bit_size;
             s->write_mask = write_mask;
-            if (o->data.location == VARYING_SLOT_POS) {
+            if (location == VARYING_SLOT_POS) {
                 s->kind = R2VB_STREAM_POS;
-            } else if ((int)o->data.location == computed_slot) {
+            } else if ((int)location == computed_slot) {
                 s->kind = R2VB_STREAM_COMPUTED;
             } else {
-                nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
-                nir_deref_instr *src_deref =
-                    val && val->intrinsic == nir_intrinsic_load_deref
-                        ? nir_src_as_deref(val->src[0])
-                        : NULL;
-                nir_variable *src = (val && val->intrinsic == nir_intrinsic_load_deref)
-                                        ? nir_intrinsic_get_var(val, 0) : NULL;
-                if (!src_deref ||
-                    src_deref->deref_type != nir_deref_type_var ||
-                    !src || !(src->data.mode & nir_var_shader_in))
+                nir_intrinsic_instr *val = nir_src_as_intrinsic(*value);
+                if (!r300_r2vb_output_store_is_input_passthrough(intr))
                     return -1; /* neither computed nor a clean input passthrough */
                 s->kind = R2VB_STREAM_PASSTHROUGH;
-                s->src_velem = r300_r2vb_input_velem_index(vs, src);
+                s->src_velem = r300_r2vb_reingest_source_velem(vs, val);
+                if (s->src_velem < 0)
+                    return -1;
             }
         }
     }
