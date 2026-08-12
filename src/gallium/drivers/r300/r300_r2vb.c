@@ -60,6 +60,8 @@ static void r2vb_wait_bo(struct r300_context *r300, struct pipe_resource *res);
 static bool r2vb_single_cs_enabled(void);
 
 static uint32_t r300_r2vb_fail_position_input_clone;
+static uint32_t r300_r2vb_skip_position_input_clone;
+static uint32_t r300_r2vb_fail_shadow_recount;
 
 static util_once_flag r300_r2vb_plan_debug_once = UTIL_ONCE_FLAG_INIT;
 static bool r300_r2vb_plan_debug;
@@ -82,6 +84,18 @@ void
 r300_r2vb_test_fail_position_input_clone_once(void)
 {
     p_atomic_set(&r300_r2vb_fail_position_input_clone, 1);
+}
+
+void
+r300_r2vb_test_fail_position_input_clone_after_one(void)
+{
+    p_atomic_set(&r300_r2vb_skip_position_input_clone, 1);
+}
+
+void
+r300_r2vb_test_fail_shadow_recount_once(void)
+{
+    p_atomic_set(&r300_r2vb_fail_shadow_recount, 1);
 }
 
 /* Active hardwired clip planes for the oracle: XY always; NEAR/FAR only when
@@ -888,15 +902,29 @@ int r300_r2vb_first_computed_varying(nir_shader *vs_nir)
  * VS returns 1 even when the application declares extra (varying-only) inputs.
  * Zero is reserved for a missing shader or failed clone; no valid producer has
  * zero position inputs, so callers use it as a transient fail-closed result. */
-unsigned r300_r2vb_count_position_inputs(nir_shader *vs_nir)
+static unsigned
+r300_r2vb_count_position_inputs_status(nir_shader *vs_nir,
+                                       bool *transient_failure)
 {
+    if (transient_failure)
+        *transient_failure = false;
     if (!vs_nir)
         return 0;
-    if (p_atomic_xchg(&r300_r2vb_fail_position_input_clone, 0))
+    /* The skip exchange grants one successful clone, then arms the atomic
+     * failure flag for the following count. */
+    if (p_atomic_xchg(&r300_r2vb_skip_position_input_clone, 0)) {
+        p_atomic_set(&r300_r2vb_fail_position_input_clone, 1);
+    } else if (p_atomic_xchg(&r300_r2vb_fail_position_input_clone, 0)) {
+        if (transient_failure)
+            *transient_failure = true;
         return 0;
+    }
     nir_shader *tmp = nir_shader_clone(NULL, vs_nir);
-    if (!tmp)
+    if (!tmp) {
+        if (transient_failure)
+            *transient_failure = true;
         return 0;
+    }
     nir_function_impl *impl = nir_shader_get_entrypoint(tmp);
     nir_foreach_block(block, impl) {
         nir_foreach_instr_safe(instr, block) {
@@ -918,6 +946,12 @@ unsigned r300_r2vb_count_position_inputs(nir_shader *vs_nir)
         n++;
     ralloc_free(tmp);
     return n < 1 ? 1 : n;
+}
+
+unsigned
+r300_r2vb_count_position_inputs(nir_shader *vs_nir)
+{
+    return r300_r2vb_count_position_inputs_status(vs_nir, NULL);
 }
 
 /* Data-independent producer position stream: one window-space point per output
@@ -3190,8 +3224,11 @@ static bool r300_nir_op_is_fragment_aluable(nir_op op)
  * position attribute still needs the multi-input producer and is rejected here
  * (the draw falls back to gallivm). */
 static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
-                                            bool allow_computed_varying)
+                                            bool allow_computed_varying,
+                                            bool *transient_failure)
 {
+    if (transient_failure)
+        *transient_failure = false;
     nir_function_impl *impl = nir_shader_get_entrypoint(nir);
     if (!impl)
         return false;
@@ -3309,8 +3346,14 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
                 n_computed++;
             }
         }
-        unsigned num_position_inputs =
-            r300_r2vb_count_position_inputs(nir);
+        bool count_transient = false;
+        unsigned num_position_inputs = r300_r2vb_count_position_inputs_status(
+            nir, &count_transient);
+        if (count_transient) {
+            if (transient_failure)
+                *transient_failure = true;
+            return false;
+        }
         struct r300_r2vb_position_source vsrc;
         return num_position_inputs != 0 && n_computed == 1 &&
                num_position_inputs == 1 &&
@@ -3319,7 +3362,14 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
 
     /* Multi-input position (no computed varying): bound the inputs feeding position
      * to what the producer's embedded vertex and the VAP output vectors carry. */
-    unsigned num_position_inputs = r300_r2vb_count_position_inputs(nir);
+    bool count_transient = false;
+    unsigned num_position_inputs =
+        r300_r2vb_count_position_inputs_status(nir, &count_transient);
+    if (count_transient) {
+        if (transient_failure)
+            *transient_failure = true;
+        return false;
+    }
     if (!num_position_inputs ||
         num_position_inputs > R300_R2VB_MAX_PRODUCER_INPUTS)
         return false;
@@ -5629,10 +5679,19 @@ static void r300_r2vb_plan_shadow_check(struct r300_context *r300,
     /* The memo decision point classifies each cell exactly once, so the
      * standing-route telemetry records here. */
     r300_r2vb_telemetry_note(r300, plan);
+    /* Arm the clone failure only after route admission reaches this recount;
+     * the status helper then carries the transient result to this gate. */
+    if (p_atomic_xchg(&r300_r2vb_fail_shadow_recount, 0))
+        p_atomic_set(&r300_r2vb_fail_position_input_clone, 1);
+    bool count_transient = false;
+    unsigned num_position_inputs = r300_r2vb_count_position_inputs_status(
+        r300_vs(r300)->state.ir.nir, &count_transient);
+    if (count_transient || !num_position_inputs)
+        return;
     uint8_t effective = r300_r2vb_plan_effective_admission(
         plan, writer, r300_r2vb_budget_escape_enabled(),
         allow_computed_varying, space,
-        r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir));
+        num_position_inputs);
     if (effective != memo) {
         /* A divergence is a planner defect finding. Assertion builds stop at
          * the inconsistent decision; release builds keep the memo
@@ -5807,8 +5866,12 @@ static bool r300_vs_admits_producer(struct r300_context *r300,
         progress |= nir_opt_constant_folding(clone);
         progress |= nir_opt_dce(clone);
     } while (progress);
-    bool ok = r300_vs_nir_is_fragment_aluable(clone, allow_computed_varying);
+    bool shape_transient = false;
+    bool ok = r300_vs_nir_is_fragment_aluable(clone, allow_computed_varying,
+                                              &shape_transient);
     ralloc_free(clone);
+    if (shape_transient)
+        return false;
     /* Structure admitted; the budget verdict comes from the emitted-slot
      * oracle on the derived producer FS, memoized per VS and position space. */
     if (ok)
