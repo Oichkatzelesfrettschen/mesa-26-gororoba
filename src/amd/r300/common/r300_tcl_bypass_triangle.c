@@ -287,6 +287,7 @@ r300_tcl_bypass_triangle_reference_contract(
     * the published target geometry.
     */
    struct r300_first_draw_params params = {
+      .chip_family = CHIP_RS480,
       .width = R300_TRIANGLE_TARGET_WIDTH,
       .height = R300_TRIANGLE_TARGET_HEIGHT,
       .max_vtx_index = 2,
@@ -314,6 +315,7 @@ r300_tcl_bypass_triangle_extent_emit(
     * layout and every other register class are the qualified bytes.
     */
    struct r300_first_draw_params draw_params = {
+      .chip_family = CHIP_RS480,
       .width = width,
       .height = height,
       .max_vtx_index = 2,

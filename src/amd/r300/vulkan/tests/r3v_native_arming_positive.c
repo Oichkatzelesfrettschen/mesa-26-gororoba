@@ -22,7 +22,7 @@
  * keeps the fixture concrete.
  */
 #define FIXTURE_DIGEST \
-   "55a2103c391a59896fd1294ac93459e11f26ce5e5b2a75a4c573ed910d8487d0"
+   "b082188deb8968c53e6e3e59e40448b43ae03cedf8c8ebeb9a06e9df9b81c9a2"
 #define FIXTURE_KERNEL "6.16.0-fixture"
 #define FIXTURE_SRCVERSION "FIXTURESRCVERSION0000000"
 #define FIXTURE_EVIDENCE_DIR "/fixture-evidence"
@@ -158,8 +158,8 @@ main(void)
    f = armed_fixture;
    assert(evaluate_fixture(&f, R3V_NATIVE_ARMING_PCI_VENDOR,
                            R3V_NATIVE_ARMING_PCI_DEVICE,
-                           "55a2103c391a59896fd1294ac93459e11f26ce5e5b2a75"
-                           "a4c573ed910d8487d1") ==
+                           "b082188deb8968c53e6e3e59e40448b43ae03cedf8c8ebeb"
+                           "9a06e9df9b81c9a1") ==
           R3V_NATIVE_ARMING_BUNDLE_MISMATCH);
 
    f = armed_fixture;

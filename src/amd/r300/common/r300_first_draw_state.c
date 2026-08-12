@@ -34,21 +34,17 @@ scissor_word(uint32_t x, uint32_t y)
 #define E(reg_, value_, disp_) \
    {reg_, value_, R300_FDS_##disp_, #reg_}
 static const struct r300_first_draw_contract_entry r300_fds_table[] = {
-   /* 1: pre-draw ordering and cache domain: the 3D engine idles clean and
-    * both destination caches flush before new state lands.
+   /* 1: pre-draw cache domain: destination and Z cache flush requests precede
+    * the idle wait, so the wait retires both requests before new state lands.
     */
-   E(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN, ORDERING_BARRIER),
    E(R300_RB3D_DSTCACHE_CTLSTAT, 0x0000000a, ORDERING_BARRIER),
    E(R300_ZB_ZCACHE_CTLSTAT, 0x00000003, ORDERING_BARRIER),
+   E(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN, ORDERING_BARRIER),
 
-   /* 2: unpipelined geometry-block and AA state. GB_MSPOS0/1 place the
-    * sample positions; a zeroed pair samples every pixel at one corner.
-    */
+   /* 2: unpipelined geometry-block and AA state. */
    E(R300_GB_ENABLE, 0x00000000, REQUIRED_INVARIANT),
    E(R300_GB_SELECT, 0x00000000, REQUIRED_INVARIANT),
    E(R300_GB_AA_CONFIG, 0x00000000, EXPLICIT_DISABLE),
-   E(R300_GB_MSPOS0, 0x66666666, REQUIRED_INVARIANT),
-   E(R300_GB_MSPOS1, 0x06666666, REQUIRED_INVARIANT),
    E(R300_GB_Z_PEQ_CONFIG, 0x00000000, EXPLICIT_DISABLE),
    E(R300_RB3D_AARESOLVE_CTL, 0x00000000, EXPLICIT_DISABLE),
 
@@ -137,14 +133,17 @@ static const struct r300_first_draw_contract_entry r300_fds_table[] = {
    E(R300_RS_INST_COUNT, 0x00000000, REQUIRED_INVARIANT),
    E(R300_RS_INST_0, 0x00000000, REQUIRED_INVARIANT),
 
-   /* 7: pipelined US output format: FMT_0 is a proven gate whose UNUSED
-    * value drops every fragment; FMT_1..3 are written UNUSED because the
-    * program drives one output.
+   /* 7: pipelined framebuffer state follows the unpipelined registers.
+    * FMT_0 is a proven gate whose UNUSED value drops every fragment; FMT_1..3
+    * are written UNUSED because the program drives one output. GB_MSPOS0/1
+    * carry the pipelined sample positions after that unpipelined state.
     */
    E(R300_US_OUT_FMT_0, 0x00003900, PROVEN_GATE),
    E(R300_US_OUT_FMT_0 + 4, 0x0000000f, EXPLICIT_DISABLE),
    E(R300_US_OUT_FMT_0 + 8, 0x0000000f, EXPLICIT_DISABLE),
    E(R300_US_OUT_FMT_0 + 12, 0x0000000f, EXPLICIT_DISABLE),
+   E(R300_GB_MSPOS0, 0x66666666, REQUIRED_INVARIANT),
+   E(R300_GB_MSPOS1, 0x06666666, REQUIRED_INVARIANT),
 
    /* 8: texture disable. The r300g reference enables one dummy texture
     * for its non-R500 texkill policy; the neutral draw binds no texture,
@@ -181,6 +180,9 @@ int
 r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
                                  struct r300_first_draw_contract *out)
 {
+   if (params->chip_family != CHIP_RS480)
+      return -ENOTSUP;
+
    /* Bound before subtracting and adding the bias so unsigned scissor
     * arithmetic cannot wrap into the accepted range.
     */
@@ -236,6 +238,26 @@ r300_first_draw_state_emit(const struct r300_first_draw_contract *contract,
    return (int)n;
 }
 
+static bool
+is_draw_packet(uint32_t header)
+{
+   if ((header >> 30) != 3)
+      return false;
+
+   switch (header & 0xff00) {
+   case R300_PACKET3_3D_DRAW_VBUF:
+   case R300_PACKET3_3D_DRAW_IMMD:
+   case R300_PACKET3_3D_DRAW_INDX:
+   case R300_PACKET3_3D_DRAW_VBUF_2:
+   case R300_PACKET3_3D_DRAW_IMMD_2:
+   case R300_PACKET3_3D_DRAW_INDX_2:
+   case R300_PACKET3_3D_DRAW_128:
+      return true;
+   default:
+      return false;
+   }
+}
+
 uint32_t
 r300_first_draw_state_check(const struct r300_first_draw_contract *contract,
                             const uint32_t *ib, uint32_t ib_dwords,
@@ -244,17 +266,19 @@ r300_first_draw_state_check(const struct r300_first_draw_contract *contract,
 {
    uint32_t state[96];
    bool written[96];
+   bool pre_draw[96];
    for (uint32_t i = 0; i < contract->count; i++) {
       state[i] = poison;
       written[i] = false;
+      pre_draw[i] = false;
    }
 
-   /* Replay every PACKET0 write over the poisoned seed. Unknown packet
-    * kinds advance by one dword, so a draw or relocation NOP does not
-    * derail the walk; a PACKET0 claiming payload past the end is the pad
-    * and ends it.
+   /* Replay every PACKET0 write over the poisoned seed. Type-3 packets
+    * advance over their payload, while unknown packet kinds advance by one
+    * dword. A PACKET0 claiming payload past the end is the pad and ends it.
     */
    uint32_t i = 0;
+   bool draw_seen = false;
    while (i < ib_dwords) {
       uint32_t header = ib[i];
       uint32_t kind = header >> 30;
@@ -265,18 +289,25 @@ r300_first_draw_state_check(const struct r300_first_draw_contract *contract,
          }
       }
       if (kind == 0) {
-         uint32_t base = (header & 0x1FFF) * 4;
+         const uint32_t base = (header & 0x3FFF) * 4;
+         const bool one_reg = (header & RADEON_ONE_REG_WR) != 0;
          for (uint32_t k = 0; k < count; k++) {
-            uint32_t reg = base + 4 * k;
+            const uint32_t reg = base + (one_reg ? 0 : 4 * k);
             for (uint32_t e = 0; e < contract->count; e++) {
                if (contract->entries[e].reg == reg) {
                   state[e] = ib[i + 1 + k];
                   written[e] = true;
+                  if (!draw_seen &&
+                      contract->entries[e].disposition ==
+                         R300_FDS_ORDERING_BARRIER)
+                     pre_draw[e] = true;
                }
             }
          }
          i += 1 + count;
       } else if (kind == 3) {
+         if (is_draw_packet(header))
+            draw_seen = true;
          i += 1 + count;
       } else {
          i += 1;
@@ -290,7 +321,9 @@ r300_first_draw_state_check(const struct r300_first_draw_contract *contract,
     * every value itself, independent of predecessor state.
     */
    for (uint32_t e = 0; e < contract->count; e++) {
-      if (!written[e] || state[e] != contract->entries[e].value) {
+      if (!written[e] || state[e] != contract->entries[e].value ||
+          (contract->entries[e].disposition == R300_FDS_ORDERING_BARRIER &&
+           !pre_draw[e])) {
          report->unsatisfied[report->unsatisfied_count++] = e;
       }
    }

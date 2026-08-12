@@ -7,6 +7,8 @@
 #ifndef R300_FIRST_DRAW_STATE_H
 #define R300_FIRST_DRAW_STATE_H
 
+#include "amd_family.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -54,6 +56,10 @@ struct r300_first_draw_contract_entry {
 };
 
 struct r300_first_draw_params {
+   /* Mesa chip family. The contract accepts CHIP_RS480, which identifies the
+    * RS482/RS485 TCL-bypass path that owns these register values.
+    */
+   enum radeon_family chip_family;
    /* Render-target extent in pixels; scissor and clip derive from it. */
    uint32_t width;
    uint32_t height;
@@ -76,7 +82,8 @@ struct r300_first_draw_contract {
 /* Resolves the contract for the given parameters. Entries carry final
  * register values; parameter-derived entries (scissor, clip, max index)
  * are computed here so the emitter and the checker share one authority.
- * Returns 0 or a negative errno for out-of-range parameters.
+ * Returns 0, -ENOTSUP for a chip family outside CHIP_RS480, or a negative
+ * errno for out-of-range parameters.
  */
 int r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
                                      struct r300_first_draw_contract *out);
@@ -104,7 +111,8 @@ r300_first_draw_state_dwords(const struct r300_first_draw_contract *contract)
 
 /* Poison-model checker: applies the command stream over an arbitrary
  * predecessor register state and reports every contract clause the final
- * state leaves unsatisfied. The report is the complete set because the
+ * state leaves unsatisfied. Ordering-barrier clauses require their writes
+ * before a recognized draw packet. The report is the complete set because the
  * open gates are indistinguishable on silicon -- US_OUT_FMT_0 UNUSED, a
  * zero color channel mask, and a zero screendoor each alone produce the
  * same byte-identical unwritten target -- so only the full set tells the

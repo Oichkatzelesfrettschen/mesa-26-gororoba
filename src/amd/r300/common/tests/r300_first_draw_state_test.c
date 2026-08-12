@@ -19,6 +19,7 @@
 #include "r300_reg.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,6 +36,173 @@ static const uint32_t poison_vectors[] = {
    0x55555555, /* alternating bits, inverted phase */
    0x00000f00, /* US_OUT_FMT UNUSED-shaped residue */
 };
+
+/* Hand-authored RS480 64x64 state. This stream is independent of the
+ * resolver table, so a copied table mistake cannot make both sides green.
+ */
+struct known_good_first_draw_write {
+   uint16_t reg;
+   uint32_t value;
+};
+
+static const struct known_good_first_draw_write known_good_writes[] = {
+   { R300_RB3D_DSTCACHE_CTLSTAT, 0x0000000a },
+   { R300_ZB_ZCACHE_CTLSTAT, 0x00000003 },
+   { RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN },
+   { R300_GB_ENABLE, 0x00000000 },
+   { R300_GB_SELECT, 0x00000000 },
+   { R300_GB_AA_CONFIG, 0x00000000 },
+   { R300_GB_Z_PEQ_CONFIG, 0x00000000 },
+   { R300_RB3D_AARESOLVE_CTL, 0x00000000 },
+   { R300_ZB_ZSTENCILCNTL, 0x00000000 },
+   { R300_ZB_STENCILREFMASK, 0x00000000 },
+   { R300_ZB_BW_CNTL, 0x00000000 },
+   { R300_ZB_ZTOP, 0x00000001 },
+   { R300_SC_HYPERZ, 0x0000001c },
+   { R300_FG_ALPHA_FUNC, 0x00000000 },
+   { R300_FG_FOG_BLEND, 0x00000000 },
+   { R300_RB3D_ROPCNTL, 0x00000000 },
+   { R300_RB3D_CBLEND, 0x00000000 },
+   { R300_RB3D_ABLEND, 0x00000000 },
+   { RB3D_COLOR_CHANNEL_MASK, 0x0000000f },
+   { R300_RB3D_BLEND_COLOR, 0x00000000 },
+   { R300_RB3D_DITHER_CTL, 0x00000000 },
+   { R500_RB3D_DISCARD_SRC_PIXEL_LTE_THRESHOLD, 0x01010101 },
+   { R500_RB3D_DISCARD_SRC_PIXEL_GTE_THRESHOLD, 0xfefefefe },
+   { R300_SC_SCISSORS_TL, 0x00b405a0 },
+   { R300_SC_SCISSORS_BR, 0x00bbe5df },
+   { R300_SC_CLIPRECT_TL_0, 0x00b405a0 },
+   { R300_SC_CLIPRECT_BR_0, 0x00bbe5df },
+   { R300_SC_CLIP_RULE, 0x0000aaaa },
+   { R300_SC_SCREENDOOR, 0x00ffffff },
+   { R300_SC_EDGERULE, 0x2da49525 },
+   { R300_VAP_CNTL, 0x0014025a },
+   { R300_VAP_VTE_CNTL, 0x00000300 },
+   { R300_VAP_VTX_STATE_CNTL, 0x00005555 },
+   { R300_VAP_VSM_VTX_ASSM, 0x00000001 },
+   { R300_VAP_PSC_SGN_NORM_CNTL, 0xaaaaaaaa },
+   { R300_VAP_CLIP_CNTL, 0x00010000 },
+   { R300_VAP_GB_VERT_CLIP_ADJ, 0x3f800000 },
+   { R300_VAP_GB_VERT_DISC_ADJ, 0x3f800000 },
+   { R300_VAP_GB_HORZ_CLIP_ADJ, 0x3f800000 },
+   { R300_VAP_GB_HORZ_DISC_ADJ, 0x3f800000 },
+   { R300_VAP_PVS_STATE_FLUSH_REG, 0x00000000 },
+   { VAP_PVS_VTX_TIMEOUT_REG, 0x0000ffff },
+   { R300_VAP_VF_MAX_VTX_INDX, 2 },
+   { R300_SE_VPORT_XSCALE, 0x00000000 },
+   { R300_SE_VPORT_XOFFSET, 0x00000000 },
+   { R300_SE_VPORT_YSCALE, 0x00000000 },
+   { R300_SE_VPORT_YOFFSET, 0x00000000 },
+   { R300_SE_VPORT_ZSCALE, 0x00000000 },
+   { R300_SE_VPORT_ZOFFSET, 0x00000000 },
+   { R300_GA_POINT_S0, 0x00000000 },
+   { R300_GA_POINT_T0, 0x00000000 },
+   { R300_GA_POINT_S1, 0x3f800000 },
+   { R300_GA_POINT_T1, 0x00000000 },
+   { R300_GA_POINT_SIZE, 0x00060006 },
+   { R300_GA_POINT_MINMAX, 0x00060006 },
+   { R300_GA_LINE_CNTL, 0x00020006 },
+   { R300_GA_LINE_STIPPLE_CONFIG, 0x00000000 },
+   { R300_GA_LINE_STIPPLE_VALUE, 0x00000000 },
+   { R300_GA_POLY_MODE, 0x00000000 },
+   { R300_GA_ROUND_MODE, 0x00000005 },
+   { R300_GA_OFFSET, 0x00000000 },
+   { R300_GA_COLOR_CONTROL, 0x0003aaaa },
+   { R300_SU_TEX_WRAP, 0x00000000 },
+   { R300_SU_DEPTH_SCALE, 0x4b7fffff },
+   { R300_SU_DEPTH_OFFSET, 0x00000000 },
+   { R300_SU_POLY_OFFSET_ENABLE, 0x00000000 },
+   { R300_SU_CULL_MODE, 0x00000004 },
+   { R300_RS_IP_0, 0x00000c00 },
+   { R300_RS_COUNT, 0x00040080 },
+   { R300_RS_INST_COUNT, 0x00000000 },
+   { R300_RS_INST_0, 0x00000000 },
+   { R300_US_OUT_FMT_0, 0x00003900 },
+   { R300_US_OUT_FMT_0 + 4, 0x0000000f },
+   { R300_US_OUT_FMT_0 + 8, 0x0000000f },
+   { R300_US_OUT_FMT_0 + 12, 0x0000000f },
+   { R300_GB_MSPOS0, 0x66666666 },
+   { R300_GB_MSPOS1, 0x06666666 },
+   { R300_TX_INVALTAGS, 0x00000000 },
+   { R300_TX_ENABLE, 0x00000000 },
+};
+
+#define KNOWN_GOOD_WRITE_COUNT \
+   (sizeof(known_good_writes) / sizeof(known_good_writes[0]))
+
+static uint32_t
+known_good_stream(uint32_t *ib)
+{
+   for (uint32_t i = 0; i < sizeof(known_good_writes) /
+                                sizeof(known_good_writes[0]); i++) {
+      ib[2 * i] = CP_PACKET0(known_good_writes[i].reg, 0);
+      ib[2 * i + 1] = known_good_writes[i].value;
+   }
+   return (uint32_t)(2 * (sizeof(known_good_writes) /
+                           sizeof(known_good_writes[0])));
+}
+
+static bool
+is_ordering_barrier_reg(uint16_t reg)
+{
+   switch (reg) {
+   case R300_RB3D_DSTCACHE_CTLSTAT:
+   case R300_ZB_ZCACHE_CTLSTAT:
+   case RADEON_WAIT_UNTIL:
+   case R300_VAP_PVS_STATE_FLUSH_REG:
+   case R300_TX_INVALTAGS:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static uint32_t
+known_good_one_reg_mspos_stream(uint32_t *ib)
+{
+   uint32_t n = 0;
+   const uint32_t write_count = sizeof(known_good_writes) /
+                                sizeof(known_good_writes[0]);
+   for (uint32_t i = 0; i < write_count; i++) {
+      const struct known_good_first_draw_write *write = &known_good_writes[i];
+      if (write->reg == R300_GB_MSPOS0) {
+         assert(i + 1 < write_count);
+         assert(known_good_writes[i + 1].reg == R300_GB_MSPOS1);
+         ib[n++] = CP_PACKET0(R300_GB_MSPOS0, 0) | RADEON_ONE_REG_WR;
+         ib[n++] = write->value;
+         i++;
+      } else {
+         ib[n++] = CP_PACKET0(write->reg, 0);
+         ib[n++] = write->value;
+      }
+   }
+   return n;
+}
+
+static uint32_t
+known_good_late_barrier_stream(uint32_t *ib)
+{
+   uint32_t n = 0;
+   const uint32_t write_count = sizeof(known_good_writes) /
+                                sizeof(known_good_writes[0]);
+   for (uint32_t i = 0; i < write_count; i++) {
+      if (is_ordering_barrier_reg(known_good_writes[i].reg))
+         continue;
+      ib[n++] = CP_PACKET0(known_good_writes[i].reg, 0);
+      ib[n++] = known_good_writes[i].value;
+   }
+
+   ib[n++] = CP_PACKET3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
+   ib[n++] = R300_VAP_VF_CNTL__PRIM_TRIANGLES;
+
+   for (uint32_t i = 0; i < write_count; i++) {
+      if (!is_ordering_barrier_reg(known_good_writes[i].reg))
+         continue;
+      ib[n++] = CP_PACKET0(known_good_writes[i].reg, 0);
+      ib[n++] = known_good_writes[i].value;
+   }
+   return n;
+}
 
 static uint32_t
 find_entry(const struct r300_first_draw_contract *contract, uint16_t reg)
@@ -64,6 +232,7 @@ int
 main(void)
 {
    struct r300_first_draw_params params = {
+      .chip_family = CHIP_RS480,
       .width = 64,
       .height = 64,
       .max_vtx_index = 2,
@@ -72,6 +241,11 @@ main(void)
    struct r300_first_draw_contract contract;
    assert(r300_first_draw_contract_resolve(&params, &contract) == 0);
    assert(contract.count >= 75);
+
+   struct r300_first_draw_params wrong_chip = params;
+   wrong_chip.chip_family = CHIP_R300;
+   struct r300_first_draw_contract scratch;
+   assert(r300_first_draw_contract_resolve(&wrong_chip, &scratch) == -ENOTSUP);
 
    /* Parameter derivation: the scissor spans the full 64x64 target with
     * the non-R500 1440 bias, matching the traced reference values.
@@ -83,10 +257,16 @@ main(void)
    assert(contract.entries[find_entry(&contract,
                                       R300_VAP_VF_MAX_VTX_INDX)].value == 2);
 
+   const uint32_t known_good_count = KNOWN_GOOD_WRITE_COUNT;
+   assert(contract.count == known_good_count);
+   for (uint32_t i = 0; i < known_good_count; i++) {
+      assert(contract.entries[i].reg == known_good_writes[i].reg);
+      assert(contract.entries[i].value == known_good_writes[i].value);
+   }
+
    /* Out-of-range extents refuse. */
    struct r300_first_draw_params bad = params;
    bad.width = 0;
-   struct r300_first_draw_contract scratch;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
    /* 4095 - 1440 + 1 is the largest extent whose high coordinate fits. */
    const uint32_t max_extent = 2656;
@@ -129,6 +309,14 @@ main(void)
    assert(r300_tcl_bypass_triangle_emit(&cell_params, &cell) == 0);
 
    struct r300_first_draw_check_report report;
+   uint32_t known_good_ib[KNOWN_GOOD_WRITE_COUNT * 2];
+   const uint32_t known_good_dwords = known_good_stream(known_good_ib);
+   assert(known_good_dwords == known_good_count * 2);
+   for (unsigned v = 0; v < sizeof(poison_vectors) / 4; v++)
+      assert(r300_first_draw_state_check(&contract, known_good_ib,
+                                         known_good_dwords, poison_vectors[v],
+                                         &report) == 0);
+
    uint32_t cell_failures = r300_first_draw_state_check(
       &contract, cell.ib, cell.ib_size_dwords, 0x00000000, &report);
    assert(cell_failures >= 70);
@@ -147,6 +335,29 @@ main(void)
    uint32_t state_ib[256];
    int state_dwords = r300_first_draw_state_emit(&contract, state_ib, 256);
    assert(state_dwords > 0);
+   assert((uint32_t)state_dwords == known_good_dwords);
+   assert(memcmp(state_ib, known_good_ib, known_good_dwords * 4) == 0);
+
+   uint32_t one_reg_ib[KNOWN_GOOD_WRITE_COUNT * 2];
+   uint32_t one_reg_dwords = known_good_one_reg_mspos_stream(one_reg_ib);
+   assert(one_reg_dwords == known_good_dwords - 2);
+   assert(r300_first_draw_state_check(&contract, one_reg_ib, one_reg_dwords,
+                                      0x12345678, &report) == 1);
+   assert(report_names(&contract, &report, R300_GB_MSPOS1));
+
+   uint32_t late_barrier_ib[KNOWN_GOOD_WRITE_COUNT * 2 + 2];
+   uint32_t late_barrier_dwords =
+      known_good_late_barrier_stream(late_barrier_ib);
+   uint32_t ordering_barrier_count = 0;
+   for (uint32_t i = 0; i < known_good_count; i++)
+      ordering_barrier_count += is_ordering_barrier_reg(known_good_writes[i].reg);
+   assert(r300_first_draw_state_check(&contract, late_barrier_ib,
+                                      late_barrier_dwords, 0x12345678,
+                                      &report) == ordering_barrier_count);
+   for (uint32_t i = 0; i < known_good_count; i++) {
+      if (is_ordering_barrier_reg(known_good_writes[i].reg))
+         assert(report_names(&contract, &report, known_good_writes[i].reg));
+   }
 
    uint32_t prefixed[1024];
    memcpy(prefixed, state_ib, (size_t)state_dwords * 4);
@@ -220,16 +431,23 @@ main(void)
    }
    r300_tcl_bypass_triangle_release(&integrated);
 
-   /* Write-order control: emission is deterministic, and the ordering
-    * fragments precede the pipelined state -- the cache flush pair lands
-    * before any RB3D backend write.
+   /* Write-order control: emission is deterministic, the cache flush requests
+    * precede the idle wait, and pipelined sample positions follow unpipelined
+    * state.
     */
    uint32_t state_ib2[256];
    assert(r300_first_draw_state_emit(&contract, state_ib2, 256) ==
           state_dwords);
    assert(memcmp(state_ib, state_ib2, (size_t)state_dwords * 4) == 0);
-   assert(state_ib[0] == CP_PACKET0(RADEON_WAIT_UNTIL, 0));
-   assert(state_ib[2] == CP_PACKET0(R300_RB3D_DSTCACHE_CTLSTAT, 0));
+   assert(state_ib[0] == CP_PACKET0(R300_RB3D_DSTCACHE_CTLSTAT, 0));
+   assert(state_ib[2] == CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0));
+   assert(state_ib[4] == CP_PACKET0(RADEON_WAIT_UNTIL, 0));
+   const uint32_t vap_index = find_entry(&contract, R300_VAP_CNTL);
+   const uint32_t us_index = find_entry(&contract, R300_US_OUT_FMT_0);
+   const uint32_t mspos0_index = find_entry(&contract, R300_GB_MSPOS0);
+   const uint32_t mspos1_index = find_entry(&contract, R300_GB_MSPOS1);
+   assert(mspos0_index > vap_index && mspos0_index > us_index);
+   assert(mspos1_index == mspos0_index + 1);
    int short_room = r300_first_draw_state_emit(&contract, state_ib2, 4);
    assert(short_room == -28);
 

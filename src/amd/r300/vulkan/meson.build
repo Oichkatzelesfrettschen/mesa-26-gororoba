@@ -369,6 +369,7 @@ if get_option('r3v-native-backend')
   r3v_native_inc = [
     inc_include,
     inc_src,
+    inc_amd_common,
     inc_gallium,
     # r300_reg.h for the fixed-cell emitter.
     include_directories('../../../gallium/drivers/r300'),
