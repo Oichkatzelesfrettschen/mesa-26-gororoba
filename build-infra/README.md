@@ -303,9 +303,12 @@ make audit PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
            HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc
 ```
 
-For a distcc lane, the audit resolves the first remote compiler hostname and
-compiles a warning-clean C probe there with fallback disabled.  A syntactically
-valid host allocation cannot pass while every compile runs on the client.
+For a distcc lane, the audit resolves every remote compiler hostname and
+compiles a warning-clean C probe on each volunteer with fallback disabled.  GNU
+lanes read the GCC major from each remote-produced object's `.comment` section
+and fail closed when any identity is missing or differs from the client major.
+A syntactically valid host allocation cannot pass while every compile runs on
+the client or while one configured volunteer uses a different GCC major.
 
 r300 DEBUG build (vostro, **default install target** -- assertions live,
 gallium-xa XA tracker, valgrind/libunwind/perfetto instrumentation):
