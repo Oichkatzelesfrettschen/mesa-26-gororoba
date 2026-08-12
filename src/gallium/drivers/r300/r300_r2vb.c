@@ -5603,7 +5603,6 @@ r300_r2vb_typed_split_note_format(const struct r300_r2vb_producer_plan *plan,
              !plan                                            ? "transient"
              : plan->status == R300_R2VB_PLAN_READY           ? "ready"
              : plan->status == R300_R2VB_PLAN_SEMANTIC_REJECT ? "semantic_reject"
-             : plan->status == R300_R2VB_PLAN_POLICY_REJECT   ? "policy_reject"
                                                               : "transient_failure",
              plan ? r300_r2vb_plan_action_str(plan->action) : "-",
              space == R300_R2VB_POSITION_WINDOW ? "window" : "clip",

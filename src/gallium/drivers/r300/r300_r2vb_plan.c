@@ -379,46 +379,11 @@ r300_r2vb_constant_source_scan(nir_shader *producer,
     return R300_R2VB_CONSTANT_SOURCE_UBO0_PREFIX64;
 }
 
-/* One evaluated split candidate: the partition plus both admitted halves'
- * resource vectors. */
-struct plan_split_result {
-    struct r300_mp_partition part;
-    struct r300_fs_admission_cost a;
-    struct r300_fs_admission_cost b;
-};
-
-/* Deterministic success ordering: fewer carry components, then the lower
- * bottleneck half (max of the two ALU counts), then total ALU, then the
- * temporary high-water, then constant pressure, then the earlier cut index.
- * Every criterion is a measured or structural fact, so the selection is
- * stable across runs. */
-static bool
-plan_split_better(const struct plan_split_result *n,
-                  const struct plan_split_result *best)
-{
-    if (n->part.total_comps != best->part.total_comps)
-        return n->part.total_comps < best->part.total_comps;
-    unsigned n_max = MAX2(n->a.alu, n->b.alu);
-    unsigned b_max = MAX2(best->a.alu, best->b.alu);
-    if (n_max != b_max)
-        return n_max < b_max;
-    if (n->a.alu + n->b.alu != best->a.alu + best->b.alu)
-        return n->a.alu + n->b.alu < best->a.alu + best->b.alu;
-    unsigned n_tmp = MAX2(n->a.temps, n->b.temps);
-    unsigned b_tmp = MAX2(best->a.temps, best->b.temps);
-    if (n_tmp != b_tmp)
-        return n_tmp < b_tmp;
-    unsigned n_cst = MAX2(n->a.consts, n->b.consts);
-    unsigned b_cst = MAX2(best->a.consts, best->b.consts);
-    if (n_cst != b_cst)
-        return n_cst < b_cst;
-    return n->part.cut_index < best->part.cut_index;
-}
-
-/* Walk every ranked cut candidate of the optimized position producer,
- * evaluate each fully, and select the best success by the deterministic
- * ordering above.  Every failure class seen along the walk lands in the
- * reason mask. */
+/* Mirror the live r300_mp_find_vec4_cut route: walk ranked cuts until the
+ * first transport-valid single-vec4 partition, then evaluate only that
+ * partition.  The legacy emitter still rebuilds this first candidate, so a
+ * shadow plan that selects a later compiling candidate would describe a
+ * different program and make the admission memo diverge from execution. */
 static bool
 plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
                            struct r300_r2vb_producer_plan *plan,
@@ -440,8 +405,6 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
             *transient_failure = true;
         return false;
     }
-    struct plan_split_result best;
-    bool have_best = false;
     for (unsigned i = 0; i < n; i++) {
         if (cands[i].total_comps > 4) {
             plan_observe(plan, R300_R2VB_PLAN_CARRY_WIDTH);
@@ -484,33 +447,32 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
         }
         r300_optimize_nir(pass_a, r300->screen);
         r300_optimize_nir(pass_b, r300->screen);
-        struct plan_split_result res = { .part = cands[i] };
+        struct r300_fs_admission_cost pass_a_cost;
+        struct r300_fs_admission_cost pass_b_cost;
         enum r300_fs_admission aa = r300_fs_measure_nir_admission(
-            r300, pass_a, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, &res.a);
+            r300, pass_a, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, &pass_a_cost);
         enum r300_fs_admission ab = r300_fs_measure_nir_admission(
-            r300, pass_b, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, &res.b);
+            r300, pass_b, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, &pass_b_cost);
         if (aa == R300_FS_ADMIT_FITS && ab == R300_FS_ADMIT_FITS) {
-            if (!have_best || plan_split_better(&res, &best)) {
-                best = res;
-                have_best = true;
-            }
-        } else {
-            if (aa != R300_FS_ADMIT_FITS)
-                plan_observe(plan, R300_R2VB_PLAN_PASS_A);
-            if (ab != R300_FS_ADMIT_FITS)
-                plan_observe(plan, R300_R2VB_PLAN_PASS_B);
+            plan->partition = cands[i];
+            plan->pass_a_cost = pass_a_cost;
+            plan->pass_b_cost = pass_b_cost;
+            ralloc_free(pass_a);
+            ralloc_free(pass_b);
+            _mesa_hash_table_destroy(range_ht, NULL);
+            return true;
         }
+        if (aa != R300_FS_ADMIT_FITS)
+            plan_observe(plan, R300_R2VB_PLAN_PASS_A);
+        if (ab != R300_FS_ADMIT_FITS)
+            plan_observe(plan, R300_R2VB_PLAN_PASS_B);
         ralloc_free(pass_a);
         ralloc_free(pass_b);
+        _mesa_hash_table_destroy(range_ht, NULL);
+        return false;
     }
     _mesa_hash_table_destroy(range_ht, NULL);
-
-    if (have_best) {
-        plan->partition = best.part;
-        plan->pass_a_cost = best.a;
-        plan->pass_b_cost = best.b;
-    }
-    return have_best;
+    return false;
 }
 
 bool
@@ -773,7 +735,6 @@ r300_r2vb_plan_action_str(enum r300_r2vb_plan_action action)
     switch (action) {
     case R300_R2VB_PLAN_REJECT:    return "reject";
     case R300_R2VB_PLAN_SINGLE:    return "single";
-    case R300_R2VB_PLAN_COMPACTED: return "compacted";
     case R300_R2VB_PLAN_SPLIT:     return "split";
     }
     return "invalid";

@@ -53,29 +53,24 @@ struct nir_shader;
  * reachability stays with the existing float-route admission until the typed
  * diagnostic gate consumes the plan directly. */
 
-/* Plan validity is separate from rejection cause: only stable outcomes
- * (READY and the two reject classes) are cacheable, and a TRANSIENT_FAILURE
- * (allocation) is retried on the next request instead of pinning a permanent
- * gallivm fallback. */
+/* Plan validity is separate from rejection cause: READY and
+ * SEMANTIC_REJECT are cacheable, and a TRANSIENT_FAILURE (allocation) is
+ * retried on the next request instead of pinning a permanent gallivm
+ * fallback.  Numeric values retain the archived census encoding. */
 enum r300_r2vb_plan_status {
     R300_R2VB_PLAN_READY = 0,
-    R300_R2VB_PLAN_SEMANTIC_REJECT,   /* a property of the workload */
-    R300_R2VB_PLAN_POLICY_REJECT,     /* a gate held the route closed; the
-                                       * typed diagnostic gate produces this */
-    R300_R2VB_PLAN_TRANSIENT_FAILURE, /* infrastructure; never cached */
+    R300_R2VB_PLAN_SEMANTIC_REJECT = 1, /* a property of the workload */
+    R300_R2VB_PLAN_TRANSIENT_FAILURE = 3, /* infrastructure; never cached */
 };
 
 enum r300_r2vb_plan_action {
     R300_R2VB_PLAN_REJECT = 0,
-    R300_R2VB_PLAN_SINGLE,    /* position pass (and varying pass, when
-                               * admitted) compiles under the 64-slot emit
-                               * ceiling */
-    R300_R2VB_PLAN_COMPACTED, /* reserved for the algebraic-compaction pass:
-                               * a rewritten candidate that fits or splits
-                               * where the baseline did not */
-    R300_R2VB_PLAN_SPLIT,     /* over-budget position pass with an admitted
-                               * single-vec4 carry-BO cut: both halves
-                               * compile */
+    R300_R2VB_PLAN_SINGLE = 1, /* position pass (and varying pass, when
+                                * admitted) compiles under the 64-slot emit
+                                * ceiling */
+    R300_R2VB_PLAN_SPLIT = 3, /* over-budget position pass with an admitted
+                              * single-vec4 carry-BO cut: both halves
+                              * compile */
 };
 
 /* Failure classes, one bit per reason in observed_reason_mask.  Declaration
@@ -143,10 +138,8 @@ enum r300_r2vb_typed_source_class {
 /* Every NIR-specializing input of the producer build, explicit and
  * bit-compared: the window producer bakes the viewport scale/translate as
  * immediates, so those travel as float bit patterns, never numeric compares.
- * clip_halfz feeds the CPU clip classifier, not the restaged producer NIR,
- * so it joins the key when the clip-route plan integration makes it
- * specializing.  The vertex shader itself is the cache owner (the key lives
- * per-VS), so it is not a field. */
+ * The vertex shader itself is the cache owner (the key lives per-VS), so it is
+ * not a field. */
 struct r300_r2vb_plan_key {
     bool allow_computed_varying;
     enum r300_r2vb_position_space space;
