@@ -746,6 +746,57 @@ main(void)
          },
    };
 
+   /* The public Vulkan path admits a zero-stride binding as a constant
+    * stream.  The deferred draw must repeat the first record in every
+    * carrier vertex, which proves pipeline admission and execution reach the
+    * same CPU gather contract as the direct harness.
+    */
+   VkPipeline constant_pipeline = VK_NULL_HANDLE;
+   const struct pipeline_shape constant_shape = {
+      .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+      .stride = 0,
+      .blend_enable = VK_FALSE,
+      .fragment_words = r3v_reference_fragment_spirv,
+      .fragment_bytes = sizeof(r3v_reference_fragment_spirv),
+   };
+   assert(make_pipeline(&constant_shape, pass, layout, &constant_pipeline) ==
+             VK_SUCCESS &&
+          constant_pipeline != VK_NULL_HANDLE);
+   VkCommandBuffer constant_cmd = fresh_cmd();
+   vkCmdBeginRenderPass(constant_cmd, &begin_pass,
+                        VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdBindPipeline(constant_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                     constant_pipeline);
+   vkCmdBindVertexBuffers(constant_cmd, 0, 1, &vertex_buffer,
+                          &(VkDeviceSize){ 0 });
+   vkCmdDraw(constant_cmd, 3, 1, 0, 0);
+   vkCmdEndRenderPass(constant_cmd);
+   assert(vkEndCommandBuffer(constant_cmd) == VK_SUCCESS);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_constant, constant_cmd);
+   VK_FROM_HANDLE(r3v_native_device, constant_device, device);
+   assert(r3v_native_cmd_buffer_execute_deferred_draw(
+             constant_device, native_constant) == VK_SUCCESS);
+   void *constant_carrier_map = NULL;
+   assert(radeon_drm_vk_bo_map(&constant_device->drm,
+                               &native_constant->owned_carrier->bo,
+                               &constant_carrier_map) == 0);
+   static const float expected_constant[4] = { 8.0f, 8.0f, 0.0f, 1.0f };
+   for (unsigned vertex = 0; vertex < 3; vertex++)
+      assert(memcmp((const uint8_t *)constant_carrier_map + vertex * 16,
+                    expected_constant, sizeof(expected_constant)) == 0);
+   radeon_drm_vk_bo_unmap(&constant_device->drm,
+                          &native_constant->owned_carrier->bo,
+                          constant_carrier_map);
+   uint32_t *constant_color_map = NULL;
+   assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&constant_color_map) == VK_SUCCESS);
+   for (unsigned i = 0;
+        i < (R3V_NATIVE_TARGET_MEMORY_BYTES + 4096) / sizeof(uint32_t);
+        i++)
+      constant_color_map[i] = COLOR_SEED;
+   vkUnmapMemory(device, color_memory);
+   vkDestroyPipeline(device, constant_pipeline, NULL);
+
    /* A render pass applies LOAD_OP_CLEAR even when its subpass records no
     * draw.  The host model must accept the empty pass, retain clear work on
     * its zero-IB command buffer, and execute that work at submission.

@@ -58,11 +58,12 @@ r300_r2vb_identity_deliver(
       r300_vertex_format_semantics((enum r300_vertex_format_id)format_id);
    if (format == NULL || stream == NULL || stream->data == NULL)
       return -EINVAL;
-   /* A stride below the record size makes successive records overlap,
-    * which no API binding describes; the gather refuses it and the
-    * delivery holds the same contract.
+   /* A nonzero stride below the record size makes successive records
+    * overlap.  Zero stride is the Vulkan constant-binding form: every
+    * delivered vertex reads the same record.
     */
-   if (stream->stride < format->semantic_record_bytes)
+   if (stream->stride != 0 &&
+       stream->stride < format->semantic_record_bytes)
       return -EINVAL;
    /* An empty delivery needs no carrier, the gather's own contract. */
    if (vertex_count == 0)
@@ -78,10 +79,13 @@ r300_r2vb_identity_deliver(
     */
    if (stream->size_bytes < format->semantic_record_bytes)
       return -EINVAL;
-   const uint64_t last_index = (uint64_t)first_vertex + vertex_count - 1;
-   if (last_index > (stream->size_bytes -
-                     format->semantic_record_bytes) / stream->stride)
-      return -EINVAL;
+   if (stream->stride != 0) {
+      const uint64_t last_index =
+         (uint64_t)first_vertex + vertex_count - 1;
+      if (last_index > (stream->size_bytes -
+                        format->semantic_record_bytes) / stream->stride)
+         return -EINVAL;
+   }
    if ((uint64_t)vertex_count * 4 > carrier_dwords)
       return -ENOSPC;
 

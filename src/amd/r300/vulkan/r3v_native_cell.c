@@ -60,7 +60,12 @@ stream_source_overlaps_carrier(
       return false;
 
    const uint64_t vertex_count = R300_TRIANGLE_VERTEX_DWORDS / 4;
-   if (stream->stride < format->semantic_record_bytes)
+   /* Zero stride is the Vulkan constant-binding form: all requested
+    * vertices read the one record at the stream base, so the source range
+    * below remains one record wide and still rejects an aliased carrier.
+    */
+   if (stream->stride != 0 &&
+       stream->stride < format->semantic_record_bytes)
       return false;
 
    const uint64_t first_offset =
