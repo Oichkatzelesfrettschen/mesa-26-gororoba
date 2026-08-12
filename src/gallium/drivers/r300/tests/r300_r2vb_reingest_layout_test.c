@@ -233,7 +233,7 @@ test_lowered_store_output_mapping(void)
    nir_def *input = nir_load_input(
       &b, 4, 32, nir_imm_int(&b, 1),
       .base = 1,
-      .io_semantics.location = VERT_ATTRIB_GENERIC1);
+      .io_semantics.location = VERT_ATTRIB_GENERIC0);
    nir_store_output(&b, input, nir_imm_int(&b, 0),
                     .io_semantics = {
                        .location = VARYING_SLOT_VAR0,
