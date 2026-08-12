@@ -24,6 +24,7 @@ extern "C" {
 
 struct r300_context;
 struct nir_shader;
+struct nir_intrinsic_instr;
 
 /* Producer input ceiling: the split pass-B draw feeds every model attribute
  * plus one carry input.  The register authority is
@@ -260,9 +261,20 @@ struct nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                                                    gl_varying_slot target,
                                                    enum r300_r2vb_position_space space);
 
+/* Identify the output location carried by a lowered store intrinsic.  The
+ * planner and live restager share this target identity so store_deref and
+ * store_output reductions keep the same survivor set. */
+bool r300_r2vb_output_store_location(const struct nir_intrinsic_instr *intr,
+                                     gl_varying_slot *location);
+
+/* Remove output stores outside target from a caller-owned clone.  The planner
+ * and live restager call this same target reduction before DCE and emission. */
+void r300_r2vb_prune_output_stores(struct nir_shader *nir,
+                                   gl_varying_slot target);
+
 /* Reduce a caller-owned clone to the position producer before structural
  * admission.  Non-position stores and the dead dependencies that feed them
- * stay outside the cv=0 cell; the live restaged pass applies the same scope. */
+ * stay outside the cv=0 cell. */
 void r300_r2vb_prune_position_only(struct nir_shader *nir);
 
 /* Diagnostic typed-split gate value: exactly "1" opens; NULL, empty, and
