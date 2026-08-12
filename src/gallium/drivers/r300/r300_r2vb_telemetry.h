@@ -25,7 +25,8 @@ struct r300_context;
  * retention writes the application VS NIR of each plan whose split, range,
  * or budget machinery engaged into the directory named by
  * R300_R2VB_TELEMETRY_RETAIN, one nir_serialize blob per content hash
- * (r2vb-vs-<full-blake3>.nir).  Publication is atomic -- a same-directory
+ * (r2vb-vs-<full-blake3>.nir).  The exact value "0" disables retention and
+ * keeps the observation gate closed.  Publication is atomic -- a same-directory
  * temp file renamed into place -- so the final name only ever holds a
  * complete blob, and an existing file verifies byte-for-byte against the
  * fresh serialization before it deduplicates.  Recurring over-budget shapes
