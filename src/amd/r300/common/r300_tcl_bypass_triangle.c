@@ -98,6 +98,20 @@ r300_tcl_bypass_triangle_emit_into(
       }
    }
 
+   /* The bare cell has no first-draw prefix, so establish the three state
+    * values that control the fixed window-space triangle before its draw:
+    * VTE selects pretransformed XY/Z, the MRT0 channel mask enables every
+    * color lane, and the vertex-list bound admits all three vertices. */
+   if (params->first_draw_contract == NULL && b.error == 0) {
+      r300_pm4_reg(&b, R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+      r300_pm4_reg(&b, RB3D_COLOR_CHANNEL_MASK,
+                   RB3D_COLOR_CHANNEL_MASK_BLUE_MASK0 |
+                      RB3D_COLOR_CHANNEL_MASK_GREEN_MASK0 |
+                      RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
+                      RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0);
+      r300_pm4_reg(&b, R300_VAP_VF_MAX_VTX_INDX, 2);
+   }
+
    /* Vertex path: pretransformed positions bypass the TCL block, one
     * FLOAT_4 stream lands whole in output vector zero, and every PSC
     * extended selector stays identity, so the kernel's vertex-output check

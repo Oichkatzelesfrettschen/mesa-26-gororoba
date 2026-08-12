@@ -34,9 +34,10 @@ struct r300_tcl_bypass_triangle_params {
    /* When set, the emission opens with the neutral first-draw state
     * contract, so the stream establishes every register the draw depends
     * on and renders independent of predecessor context.  A NULL contract
-    * emits the bare cell, whose output rides inherited state; the
-    * poison-model calibration in r300_first_draw_state_test consumes that
-    * form as its known-bad input.
+    * emits the bare cell, which establishes VTE coordinate mode, the color
+    * write mask, and the three-vertex index bound while retaining the
+    * remaining inherited state; the poison-model calibration in
+    * r300_first_draw_state_test consumes that form as its known-bad input.
     */
    const struct r300_first_draw_contract *first_draw_contract;
 };
