@@ -861,11 +861,13 @@ if get_option('r3v-native-backend')
         timeout : 120,
         suite : ['r3v'],
       )
-      # Query-verdict calibration: the fixture replaces one loaded query
-      # pointer with a stub that reports an error, and the run then reaches
-      # the same result checks as the ordinary one.  A check that stopped
-      # judging its result passes both, which is what these three catch.
-      foreach wsi_query : ['capabilities', 'formats', 'modes']
+      # Query-verdict calibration: each fixture replaces one loaded query
+      # pointer and leaves every other query on the implementation path.
+      # Direct query-error legs calibrate result checks, while the full-array
+      # and short-array legs each make only their named count contract fail.
+      foreach wsi_query : ['capabilities', 'capabilities-error',
+                           'formats-full', 'formats-short', 'formats-error',
+                           'modes-full', 'modes-short', 'modes-error']
         # --expect-status 1 turns the leg into a plain test only the
         # fixture's own failing verdict satisfies; an Xvfb infrastructure
         # failure surfaces as 125 instead of standing in for it.
