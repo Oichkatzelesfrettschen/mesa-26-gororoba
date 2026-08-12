@@ -579,6 +579,12 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             device->pdevice->pci_device_id, ib_digest,
             device->manifest_dir, kernel_release, sizeof(kernel_release),
             module_srcversion, sizeof(module_srcversion));
+         facts.nonmaximum_extent =
+            cmd_buffer->deferred_draw.pending &&
+            (cmd_buffer->deferred_draw.target_width !=
+                R3V_NATIVE_TARGET_WIDTH ||
+             cmd_buffer->deferred_draw.target_height !=
+                R3V_NATIVE_TARGET_HEIGHT);
 
          if (facts.attempt_token_present) {
             free(reference_indices);
