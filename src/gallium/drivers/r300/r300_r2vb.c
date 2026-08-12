@@ -4023,25 +4023,32 @@ r300_r2vb_input_order_rank_by_identity(nir_shader *vs_nir,
     return match ? r300_r2vb_input_order_rank(vs_nir, match) : -1;
 }
 
-bool r300_r2vb_position_source_scan_status(
+/* The producer restage owns the survivor set: r300_r2vb_build_restaged_fs_nir
+ * removes non-position stores, runs DCE, and compacts the inputs before the
+ * fragment pass is compiled.  The symbol was located with
+ * (rg --fixed-strings r300_r2vb_build_restaged_fs_nir
+ * src/gallium/drivers/r300/).  Telemetry uses the same clone reduction so every
+ * physical application input feeding gl_Position keeps its measured identity. */
+static unsigned
+r300_r2vb_position_source_scan_list_status(
     nir_shader *vs_nir, struct r300_r2vb_position_source *out,
-    bool *transient_failure)
+    unsigned max_sources, bool *transient_failure)
 {
     if (transient_failure)
         *transient_failure = false;
-    if (!vs_nir || !out)
-        return false;
-    memset(out, 0, sizeof(*out));
+    if (!vs_nir || !out || max_sources == 0)
+        return 0;
+    memset(out, 0, (size_t)max_sources * sizeof(*out));
     if (p_atomic_xchg(&r300_r2vb_fail_position_source_clone, 0)) {
         if (transient_failure)
             *transient_failure = true;
-        return false;
+        return 0;
     }
     nir_shader *tmp = nir_shader_clone(NULL, vs_nir);
     if (!tmp) {
         if (transient_failure)
             *transient_failure = true;
-        return false;
+        return 0;
     }
     /* Strip every non-position store, DCE, and drop dead inputs: the
      * survivors are exactly the inputs feeding gl_Position (the
@@ -4062,31 +4069,57 @@ bool r300_r2vb_position_source_scan_status(
     }
     nir_opt_dce(tmp);
     nir_remove_dead_variables(tmp, nir_var_shader_in, NULL);
-    unsigned n = 0;
-    int surviving_location = -1;
-    unsigned surviving_fraction = 0;
-    unsigned driver_location = 0;
+    unsigned count = 0;
+    bool overflow = false;
     nir_foreach_variable_with_modes(var, tmp, nir_var_shader_in) {
-        n++;
-        surviving_location = var->data.location;
-        surviving_fraction = var->data.location_frac;
-        driver_location = var->data.driver_location;
+        if (count == max_sources) {
+            overflow = true;
+            break;
+        }
+        int rank = r300_r2vb_input_order_rank_by_identity(
+            vs_nir, var->data.driver_location, var->data.location,
+            var->data.location_frac);
+        if (var->data.driver_location > 255 || rank < 0 || rank > 255) {
+            ralloc_free(tmp);
+            return 0;
+        }
+        out[count++] = (struct r300_r2vb_position_source) {
+            .app_driver_location = var->data.driver_location,
+            .location_rank = (uint8_t)rank,
+            .valid = true,
+        };
     }
     ralloc_free(tmp);
-    if (n != 1)
+    if (overflow)
+        return 0;
+
+    /* The producer feeds VAR0+a in rank order.  Keep telemetry in the same
+     * order so each record names the element consumed by that producer slot. */
+    for (unsigned i = 1; i < count; i++) {
+        struct r300_r2vb_position_source value = out[i];
+        unsigned j = i;
+        while (j > 0 && out[j - 1].location_rank > value.location_rank) {
+            out[j] = out[j - 1];
+            j--;
+        }
+        out[j] = value;
+    }
+    return count;
+}
+
+bool r300_r2vb_position_source_scan_status(
+    nir_shader *vs_nir, struct r300_r2vb_position_source *out,
+    bool *transient_failure)
+{
+    if (out)
+        memset(out, 0, sizeof(*out));
+    if (!out)
         return false;
-    /* Rank follows the re-stage total order: location, location fraction, and
-     * declaration order.  The cloned survivor retains driver_location, which
-     * identifies the corresponding original input even when locations tie. */
-    int rank = r300_r2vb_input_order_rank_by_identity(
-        vs_nir, driver_location, (gl_varying_slot)surviving_location,
-        surviving_fraction);
-    if (driver_location > 255 || rank < 0 || rank > 255)
-        return false;
-    out->app_driver_location = driver_location;
-    out->location_rank = (uint8_t)rank;
-    out->valid = true;
-    return true;
+    unsigned count = r300_r2vb_position_source_scan_list_status(
+        vs_nir, out, 1, transient_failure);
+    if (count != 1)
+        memset(out, 0, sizeof(*out));
+    return count == 1;
 }
 
 bool r300_r2vb_position_source_scan(nir_shader *vs_nir,
@@ -5795,17 +5828,42 @@ struct r300_r2vb_telemetry_input_source {
 static unsigned
 r300_r2vb_telemetry_input_sources(
     const struct r300_r2vb_producer_plan *plan, bool include_varying,
+    const struct r300_r2vb_position_source *position_sources,
+    unsigned position_source_count,
     struct r300_r2vb_telemetry_input_source *out, unsigned max_sources)
 {
-    if (!plan || !out || max_sources == 0)
+    if (!out || max_sources == 0)
         return 0;
 
     unsigned count = 0;
-    if (plan->position_source.valid && count < max_sources) {
+    if (plan && plan->num_position_inputs > 1) {
+        if (!position_sources ||
+            position_source_count != plan->num_position_inputs)
+            return 0;
+        for (unsigned i = 0; i < position_source_count &&
+                              count < max_sources; i++) {
+            if (!position_sources[i].valid)
+                return 0;
+            out[count++] = (struct r300_r2vb_telemetry_input_source){
+                &position_sources[i], "position"};
+        }
+        if (count != position_source_count)
+            return 0;
+    } else if (plan && plan->position_source.valid) {
         out[count++] = (struct r300_r2vb_telemetry_input_source){
             &plan->position_source, "position"};
+    } else if (!plan && position_sources) {
+        for (unsigned i = 0; i < position_source_count &&
+                              count < max_sources; i++) {
+            if (!position_sources[i].valid)
+                return 0;
+            out[count++] = (struct r300_r2vb_telemetry_input_source){
+                &position_sources[i], "position"};
+        }
+        if (count != position_source_count)
+            return 0;
     }
-    if (include_varying && plan->varying_source.valid &&
+    if (include_varying && plan && plan->varying_source.valid &&
         count < max_sources) {
         out[count++] = (struct r300_r2vb_telemetry_input_source){
             &plan->varying_source, "varying"};
@@ -5823,11 +5881,38 @@ r300_r2vb_telemetry_source_ranks_for_test(
 
     struct r300_r2vb_telemetry_input_source sources[2];
     unsigned count = r300_r2vb_telemetry_input_sources(
-        plan, include_varying, sources, ARRAY_SIZE(sources));
+        plan, include_varying, NULL, 0, sources, ARRAY_SIZE(sources));
     if (count > max_ranks)
         count = max_ranks;
     for (unsigned i = 0; i < count; i++)
         out_ranks[i] = sources[i].source->location_rank;
+    return count;
+}
+
+unsigned
+r300_r2vb_telemetry_position_sources_for_test(
+    const struct r300_r2vb_producer_plan *plan, nir_shader *vs_nir,
+    uint8_t *out_driver_locations,
+    uint8_t *out_location_ranks, unsigned max_sources)
+{
+    if (!out_driver_locations || !out_location_ranks || max_sources == 0)
+        return 0;
+
+    struct r300_r2vb_position_source position_sources[
+        R300_R2VB_MAX_PRODUCER_INPUTS];
+    unsigned position_source_count = r300_r2vb_position_source_scan_list_status(
+        vs_nir, position_sources, ARRAY_SIZE(position_sources), NULL);
+    struct r300_r2vb_telemetry_input_source sources[
+        R300_R2VB_MAX_PRODUCER_INPUTS + 1];
+    unsigned count = r300_r2vb_telemetry_input_sources(
+        plan, false, position_sources, position_source_count, sources,
+        ARRAY_SIZE(sources));
+    if (count > max_sources)
+        count = max_sources;
+    for (unsigned i = 0; i < count; i++) {
+        out_driver_locations[i] = sources[i].source->app_driver_location;
+        out_location_ranks[i] = sources[i].source->location_rank;
+    }
     return count;
 }
 
@@ -6261,17 +6346,19 @@ r300_r2vb_telemetry_record_inputs(
         !vs->state.ir.nir || !draw)
         return;
 
-    struct r300_r2vb_telemetry_input_source sources[2];
+    struct r300_r2vb_position_source position_sources[
+        R300_R2VB_MAX_PRODUCER_INPUTS];
+    unsigned position_source_count = 0;
+    if (!plan || plan->num_position_inputs > 1)
+        position_source_count = r300_r2vb_position_source_scan_list_status(
+            vs->state.ir.nir, position_sources, ARRAY_SIZE(position_sources),
+            NULL);
+
+    struct r300_r2vb_telemetry_input_source sources[
+        R300_R2VB_MAX_PRODUCER_INPUTS + 1];
     unsigned source_count = r300_r2vb_telemetry_input_sources(
-        plan, allow_computed_varying, sources, ARRAY_SIZE(sources));
-    struct r300_r2vb_position_source fallback_source;
-    if (!source_count && !plan &&
-        r300_r2vb_position_source_scan(vs->state.ir.nir, &fallback_source) &&
-        fallback_source.valid) {
-        sources[0] = (struct r300_r2vb_telemetry_input_source){
-            &fallback_source, "position"};
-        source_count = 1;
-    }
+        plan, allow_computed_varying, position_sources, position_source_count,
+        sources, ARRAY_SIZE(sources));
     if (!source_count)
         return;
 
@@ -6282,9 +6369,10 @@ r300_r2vb_telemetry_record_inputs(
     for (unsigned input = 0; input < source_count; input++) {
         const struct r300_r2vb_position_source *source = sources[input].source;
         unsigned input_rank = source->location_rank;
+        unsigned app_driver_location = source->app_driver_location;
         const struct pipe_vertex_element *pe =
-            r300->velems && input_rank < r300->velems->count
-                ? &r300->velems->velem[input_rank]
+            r300->velems && app_driver_location < r300->velems->count
+                ? &r300->velems->velem[app_driver_location]
                 : NULL;
         const struct pipe_vertex_buffer *vb =
             pe && pe->vertex_buffer_index < r300->nr_vertex_buffers
@@ -6298,13 +6386,14 @@ r300_r2vb_telemetry_record_inputs(
                       : 0;
         fprintf(stderr,
                 "r2vb_producer_input hash=%s source=%s input_rank=%u cv=%d space=%s"
-                " format=%s format_dwords=%u stride_bytes=%u"
+                " app_driver_location=%u format=%s format_dwords=%u stride_bytes=%u"
                 " buffer_bound=%d buffer_index=%u buffer_offset=%u"
                 " src_offset=%u draw_start=%u draw_count=%u"
                 " model_offset=%" PRIu64 " resource_width=%u"
                 " bo_materialized=%d\n",
                 hash, sources[input].role, input_rank, cell_cv,
                 cell_space == R300_R2VB_POSITION_WINDOW ? "window" : "clip",
+                app_driver_location,
                 pe ? util_format_short_name(pe->src_format) : "-",
                 pe ? r300_r2vb_telemetry_format_dwords(pe->src_format) : 0,
                 pe ? pe->src_stride : 0, vb &&

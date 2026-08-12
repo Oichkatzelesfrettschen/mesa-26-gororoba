@@ -153,6 +153,14 @@ unsigned r300_r2vb_telemetry_source_ranks_for_test(
     const struct r300_r2vb_producer_plan *plan, bool include_varying,
     uint8_t *out_ranks, unsigned max_ranks);
 
+/* Test oracle for the DCE/re-stage survivor list feeding position telemetry.
+ * Each result carries the physical application element and its semantic rank;
+ * the output is ordered by the producer's VAR0 input order. */
+unsigned r300_r2vb_telemetry_position_sources_for_test(
+    const struct r300_r2vb_producer_plan *plan, struct nir_shader *vs_nir,
+    uint8_t *out_driver_locations,
+    uint8_t *out_location_ranks, unsigned max_sources);
+
 /* The passthrough direct-VB re-ingest (defined in r300_render.c): re-ingest the
  * bound velems/vertex_buffers at TCL_BYPASS with the application FS and the HW
  * viewport transform.  The MVP route reuses it for the re-ingest by redirecting
