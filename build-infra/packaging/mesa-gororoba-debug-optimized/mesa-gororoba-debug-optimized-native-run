@@ -1,9 +1,10 @@
 #!/bin/sh
+# Copyright 2026 Mesa3D authors
+# SPDX-License-Identifier: MIT
+
 set -eu
 
-prefix=${GOROROBA_MESA_PREFIX:-/opt/mesa-gororoba-debug-optimized}
 env_file=${GOROROBA_MESA_ENV:-/etc/opt/mesa-gororoba-debug-optimized/mesa-gororoba-debug-optimized-env.sh}
-native_icd="${prefix}/share/vulkan/icd.d/r3v_native_icd.x86_64.json"
 
 if [ "$#" -eq 0 ]; then
   cat >&2 <<'EOF'
@@ -15,13 +16,16 @@ EOF
   exit 2
 fi
 
+# shellcheck disable=SC1090
+. "$env_file"
+prefix=${GOROROBA_MESA_PREFIX:-/opt/mesa-gororoba-debug-optimized}
+native_icd="${prefix}/share/vulkan/icd.d/r3v_native_icd.x86_64.json"
+
 if [ ! -r "$native_icd" ]; then
   printf '%s\n' "native r3v ICD manifest is unavailable: $native_icd" >&2
   exit 1
 fi
 
-# shellcheck disable=SC1090
-. "$env_file"
 export VK_DRIVER_FILES="$native_icd"
 export VK_ICD_FILENAMES="$native_icd"
 exec "$@"
