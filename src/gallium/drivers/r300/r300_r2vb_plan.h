@@ -401,6 +401,7 @@ enum r300_r2vb_auto_single_reason {
     R300_R2VB_AUTO_SINGLE_BELOW_VERTEX_FLOOR,
     R300_R2VB_AUTO_SINGLE_POINT_SIZE_WRITER,
     R300_R2VB_AUTO_SINGLE_POINT_COORD_STATE,
+    R300_R2VB_AUTO_SINGLE_POINT_QUAD_RASTERIZATION,
     R300_R2VB_AUTO_SINGLE_POINT_VERTEX_SIZE,
     R300_R2VB_AUTO_SINGLE_REASON_COUNT,
 };
@@ -658,12 +659,13 @@ struct r300_r2vb_auto_single_draw {
     bool bo_delivery_ordering_compatible;
     bool route_mode_compatible;
     bool query_active;
-    /* Fixed-size point contract for a POINTS draw: the re-ingest transports
-     * position (plus an admitted computed varying) only, so a per-vertex
-     * point size (VS PSIZ writer or rasterizer point_size_per_vertex) or a
-     * sprite-coordinate/point-quad request would be silently dropped by
-     * delivery.
+    /* Fixed-size point contract: the re-ingest transports position (plus an
+     * admitted computed varying) only, so a per-vertex point size (VS PSIZ
+     * writer or rasterizer point_size_per_vertex) or a sprite-coordinate /
+     * point-quad request would be silently dropped by delivery. The effective
+     * rasterized-point classification includes polygon-mode POINT triangles.
      * Each names its own decline. */
+    bool rasterizer_emits_points;
     bool vs_writes_point_size;
     bool sprite_coord_requested;
     bool point_quad_rasterization;

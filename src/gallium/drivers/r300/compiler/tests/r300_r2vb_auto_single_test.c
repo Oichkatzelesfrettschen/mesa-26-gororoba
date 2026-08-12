@@ -275,6 +275,7 @@ check_policy_matrix(void)
    struct r300_r2vb_auto_single_draw points = fits;
    points.mode = MESA_PRIM_POINTS;
    points.count = 4093; /* points carry no whole-triangle count rule */
+   points.rasterizer_emits_points = true;
    check_policy(&cp, &wp, &points, 1024, R300_R2VB_AUTO_SINGLE_OK,
                 "fixed-size POINTS draw");
    struct r300_r2vb_auto_single_draw psiz_writer = points;
@@ -290,8 +291,19 @@ check_policy_matrix(void)
    struct r300_r2vb_auto_single_draw point_quad = points;
    point_quad.point_quad_rasterization = true;
    check_policy(&cp, &wp, &point_quad, 1024,
-                R300_R2VB_AUTO_SINGLE_POINT_COORD_STATE,
+                R300_R2VB_AUTO_SINGLE_POINT_QUAD_RASTERIZATION,
                 "POINTS with quad rasterization state");
+   struct r300_r2vb_auto_single_draw triangle_quad_state = fits;
+   triangle_quad_state.point_quad_rasterization = true;
+   check_policy(&cp, &wp, &triangle_quad_state, 1024,
+                R300_R2VB_AUTO_SINGLE_OK,
+                "filled TRIANGLES ignore point-quad state");
+   struct r300_r2vb_auto_single_draw polygon_point_quad = fits;
+   polygon_point_quad.rasterizer_emits_points = true;
+   polygon_point_quad.point_quad_rasterization = true;
+   check_policy(&cp, &wp, &polygon_point_quad, 1024,
+                R300_R2VB_AUTO_SINGLE_POINT_QUAD_RASTERIZATION,
+                "polygon-mode POINT triangles use point-quad reason");
    struct r300_r2vb_auto_single_draw pv_size = points;
    pv_size.point_size_per_vertex = true;
    check_policy(&cp, &wp, &pv_size, 1024,
@@ -651,10 +663,10 @@ check_source_domain_matrix(void)
    resource.b.width0 = INPUT_COUNT * 16;
    for (enum pipe_format format = PIPE_FORMAT_NONE;
         format < PIPE_FORMAT_COUNT; format++) {
-      enum r300_vertex_format_id format_id = R300_VERTEX_FORMAT_INVALID;
-      bool expected =
-         r300_vertex_format_from_pipe(format, &format_id) &&
-         r300_r2vb_source_format_admitted(format_id, false);
+      /* Keep this oracle independent from the production mapper and
+       * admission table: the contract names exactly two accepted formats. */
+      bool expected = format == PIPE_FORMAT_R32G32B32_FLOAT ||
+                      format == PIPE_FORMAT_R32G32B32A32_FLOAT;
       unsigned blocksize = util_format_get_blocksize(format);
       unsigned stride = blocksize && blocksize <= 16 ? blocksize : 16;
       struct pipe_vertex_element element = {

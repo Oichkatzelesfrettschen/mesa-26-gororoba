@@ -5627,6 +5627,7 @@ r300_r2vb_auto_single_reason_str(enum r300_r2vb_auto_single_reason reason)
         "below_vertex_floor",
         "point_size_writer",
         "point_coord_state",
+        "point_quad_rasterization",
         "point_vertex_size",
     };
     return reason < R300_R2VB_AUTO_SINGLE_REASON_COUNT ? names[reason]
@@ -5760,16 +5761,18 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
         return R300_R2VB_AUTO_SINGLE_INDEXED;
     if (d->instance_count != 1)
         return R300_R2VB_AUTO_SINGLE_INSTANCED;
-    if (d->mode == MESA_PRIM_POINTS) {
+    if (d->rasterizer_emits_points) {
         /* Fixed-size point contract: delivery transports position (plus an
          * admitted computed varying) only, and the re-ingest rasterizes at
-         * GA_POINT_SIZE with PT_SIZE_PRESENT clear.  A draw whose semantics
+         * GA_POINT_SIZE with PT_SIZE_PRESENT clear. A draw whose semantics
          * need more than that declines by name rather than render fixed-size
          * points silently. */
         if (d->vs_writes_point_size)
             return R300_R2VB_AUTO_SINGLE_POINT_SIZE_WRITER;
-        if (d->sprite_coord_requested || d->point_quad_rasterization)
+        if (d->sprite_coord_requested)
             return R300_R2VB_AUTO_SINGLE_POINT_COORD_STATE;
+        if (d->point_quad_rasterization)
+            return R300_R2VB_AUTO_SINGLE_POINT_QUAD_RASTERIZATION;
         if (d->point_size_per_vertex)
             return R300_R2VB_AUTO_SINGLE_POINT_VERTEX_SIZE;
     } else if (d->mode != MESA_PRIM_TRIANGLES || d->count % 3 != 0) {
@@ -6953,6 +6956,8 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
             .route_mode_compatible =
                 r300_r2vb_auto_single_mode_values_compatible(&mode_values),
             .query_active = r300->query_current != NULL,
+            .rasterizer_emits_points =
+                r300_rasterizer_emits_points(r300, info->mode),
             .vs_writes_point_size =
                 candidate_nir &&
                 (((const nir_shader *)avs->state.ir.nir)
