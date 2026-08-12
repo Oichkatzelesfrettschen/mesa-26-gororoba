@@ -479,8 +479,8 @@ static void r300_emit_draw_arrays(struct r300_context *r300,
     CS_LOCALS(r300);
 
     if (count >= (1 << 24)) {
-        fprintf(stderr, "r300: Got a huge number of vertices: %i, "
-                "refusing to render.\n", count);
+        debug_printf("r300: Got a huge number of vertices: %i, "
+                     "refusing to render.\n", count);
         return;
     }
 
@@ -512,8 +512,9 @@ static void r300_emit_draw_elements(struct r300_context *r300,
     CS_LOCALS(r300);
 
     if (count >= (1 << 24)) {
-        fprintf(stderr, "r300: Got a huge number of vertices: %i, "
-                "refusing to render (max_index: %i).\n", count, max_index);
+        debug_printf("r300: Got a huge number of vertices: %i, "
+                     "refusing to render (max_index: %i).\n", count,
+                     max_index);
         return;
     }
 
