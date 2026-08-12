@@ -1793,6 +1793,18 @@ static bool r2vb_sed_oracle_selftest(void)
  * the route-exec MVP path can run it under the normal draw flow (where
  * prepare_for_rendering has emitted the transform-FS state) and then re-ingest
  * with a different (application) FS, rather than the single-FS combined loop. */
+static uint32_t
+r2vb_point_size_sixths(void)
+{
+    static int point_size_px = -1;
+    if (point_size_px < 0) {
+        const char *value = getenv("R300_R2VB_POINT_SIZE");
+        long pixels = value ? strtol(value, NULL, 0) : 1;
+        point_size_px = (pixels > 0 && pixels <= 65535 / 6) ? (int)pixels : 1;
+    }
+    return (uint32_t)point_size_px * 6;
+}
+
 /* Calibration decode of the immediate producer's draw-adjacent logical
  * state, gated on R300_R2VB_IMMD_STATE=1.  The IMMD draw interprets its
  * embedded vertices through the INHERITED programmable-stream and RS
@@ -1820,6 +1832,9 @@ r300_r2vb_dump_immd_state(struct r300_context *r300, uint32_t num_vertices,
         (struct r300_rs_block *)r300->rs_block_state.state;
     struct r300_viewport_state *vp =
         (struct r300_viewport_state *)r300->viewport_state.state;
+    struct r300_fragment_shader *r2vb_fs = r300_fs(r300);
+    const struct rc_constant_list *r2vb_consts =
+        r2vb_fs && r2vb_fs->shader ? &r2vb_fs->shader->code.constants : NULL;
     fprintf(stderr,
             "r2vb_immd_state begin num_vertices=%u num_attrs=%u "
             "transform_mode=%u vap_vtx_size=%u vf_max=%u "
@@ -1856,6 +1871,34 @@ r300_r2vb_dump_immd_state(struct r300_context *r300, uint32_t num_vertices,
                 "vport_zoffset=%a inherited_vte_control=0x%08x\n",
                 vp->xscale, vp->xoffset, vp->yscale, vp->yoffset, vp->zscale,
                 vp->zoffset, vp->vte_control);
+    if (r2vb_consts) {
+        for (unsigned i = 0; i < r2vb_consts->Count; i++) {
+            const struct rc_constant *c = &r2vb_consts->Constants[i];
+            float value;
+            if (c->Type != RC_CONSTANT_STATE)
+                continue;
+            if (c->u.State[0] == RC_STATE_R300_VIEWPORT_SCALE)
+                value = 1.0f;
+            else if (c->u.State[0] == RC_STATE_R300_VIEWPORT_OFFSET)
+                value = 0.0f;
+            else
+                continue;
+            fprintf(stderr,
+                    "r2vb_immd_state emitted_pfs_param_%u_state=%u "
+                    "values=%a,%a,%a,%a\n",
+                    i, c->u.State[0], value, value, value, value);
+        }
+    }
+    const uint32_t point_size_sixths = layout->count == 1
+                                           ? r2vb_point_size_sixths()
+                                           : 6;
+    fprintf(stderr,
+            "r2vb_immd_state emitted_ga_point_size=0x%08x "
+            "emitted_ga_point_minmax=0x%08x\n",
+            (point_size_sixths << R300_POINTSIZE_Y_SHIFT) |
+               (point_size_sixths << R300_POINTSIZE_X_SHIFT),
+            (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
+               (point_size_sixths << R300_GA_POINT_MINMAX_MAX_SHIFT));
     /* Registers this emit path writes directly, restated as data so the
      * artifact stands without the source open. */
     fprintf(stderr,
@@ -1989,15 +2032,7 @@ static void r2vb_emit_producer_target_prologue(struct r300_context *r300,
      * GA_POINT_SIZE would rasterize each vertex as a large splat instead of
      * a 1-px sample.  Unset (default 1) emits 6/6. */
     {
-        static int r2vb_point_px = -1;
-        if (r2vb_point_px < 0) {
-            const char *e = getenv("R300_R2VB_POINT_SIZE");
-            long px = e ? strtol(e, NULL, 0) : 1;
-            /* ps6 = px*6 is packed into a 16-bit GA_POINT_SIZE field per axis. */
-            r2vb_point_px = (px > 0 && px <= 65535 / 6) ? (int)px : 1;
-        }
-        int px = (layout->count == 1) ? r2vb_point_px : 1;
-        uint32_t ps6 = (uint32_t)px * 6;
+        uint32_t ps6 = layout->count == 1 ? r2vb_point_size_sixths() : 6;
         OUT_CS_REG(R300_GA_POINT_SIZE, (ps6 << R300_POINTSIZE_Y_SHIFT) |
                                            (ps6 << R300_POINTSIZE_X_SHIFT));
         OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
