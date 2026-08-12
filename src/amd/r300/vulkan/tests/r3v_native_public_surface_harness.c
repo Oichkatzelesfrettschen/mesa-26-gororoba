@@ -878,6 +878,8 @@ main(void)
                 .pCommandBuffers = &empty_cmd,
              },
              VK_NULL_HANDLE) == VK_SUCCESS);
+   assert(r3v_native_queue_submission_status(device) ==
+          R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION);
    assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                       (void **)&empty_color_map) == VK_SUCCESS);
    assert(empty_color_map[0] == R300_TRIANGLE_COLOR_SENTINEL);

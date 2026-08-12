@@ -53,6 +53,20 @@ r3v_native_queue_status_from_transport(bool ioctl_accepted,
                                : R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE;
 }
 
+/* A submit with no executable IB finishes without a transport boundary.
+ * Preserve a status from an executable buffer in the same submit, so a
+ * zero-IB buffer cannot make the result depend on command-buffer order.
+ */
+static inline enum r3v_native_queue_status
+r3v_native_queue_status_finalize_submit(
+   enum r3v_native_queue_status status, bool has_executable_ib)
+{
+   if (!has_executable_ib &&
+       status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED)
+      return R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION;
+   return status;
+}
+
 static inline const char *
 r3v_native_queue_status_name(enum r3v_native_queue_status status)
 {
