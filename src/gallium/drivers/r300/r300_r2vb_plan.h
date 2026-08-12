@@ -326,6 +326,11 @@ unsigned r300_r2vb_count_position_inputs(struct nir_shader *vs_nir);
 /* Test calibration injects one failed position-input clone.  Normal driver
  * execution leaves this flag clear. */
 void r300_r2vb_test_fail_position_input_clone_once(void);
+/* Test calibration lets the first count succeed and the following clone fail,
+ * matching a transient allocation failure after route preflight. */
+void r300_r2vb_test_fail_position_input_clone_after_one(void);
+/* Test calibration injects one transient failure at the shadow recount. */
+void r300_r2vb_test_fail_shadow_recount_once(void);
 int r300_r2vb_first_computed_varying(struct nir_shader *vs_nir);
 
 /* AUTO_SINGLE canary: automatic route selection for the untyped fitting

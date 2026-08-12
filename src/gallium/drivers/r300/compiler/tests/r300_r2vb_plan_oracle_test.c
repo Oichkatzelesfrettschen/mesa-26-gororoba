@@ -22,8 +22,10 @@
  * without a uniform interface rejects IO_SHAPE; a wide frontier whose every
  * cut crosses more than one vec4 rejects with CARRY_WIDTH observed; one
  * injected position-input clone failure leaves no cached plan before the next
- * request retries successfully; and planning is deterministic across repeated
- * runs and across clip and window spaces.
+ * request retries successfully; a classifier-side transient failure bypasses
+ * the typed rejection memo; a shadow recount failure preserves the known-good
+ * memo; and planning is deterministic across repeated runs and across clip and
+ * window spaces.
  */
 
 #include <inttypes.h>
@@ -959,19 +961,33 @@ case_cache_lifetime(struct r300_context *r300)
    unsetenv("R300_R2VB_DIVIDE");
    unsetenv("R300_R2VB_FORCE_SPLIT");
    unsetenv("R300_R2VB_PLAN_DEBUG");
-   unsetenv("R300_R2VB_TYPED_SPLIT");
+   setenv("R300_R2VB_TYPED_SPLIT", "1", 1);
    unsetenv("R300_R2VB_VARYING");
    unsetenv("R300_R2VB_TELEMETRY");
    unsetenv("R300_R2VB_TELEMETRY_RETAIN");
    unsetenv("R300_R2VB_TELEMETRY_RETAIN_SCOPE");
    setenv("R300_R2VB_MVP_EXEC", "1", 1);
    setenv("R300_R2VB_RESTAGE", "1", 1);
+   r300_r2vb_test_fail_position_input_clone_after_one();
+   bool transient_route = r300_r2vb_route_mvp(r300, &info, &draw);
+   CHECK(!transient_route &&
+            fake_vs.r2vb_admission[0][0] == R300_R2VB_ADMIT_UNMEASURED,
+         "classifier allocation failure bypasses the typed rejection memo");
    bool route_ok = r300_r2vb_route_mvp(r300, &info, &draw);
    CHECK(route_ok, "admission memo path accepts the known-good producer");
    CHECK(fake_vs.r2vb_admission[0][0] == R300_R2VB_ADMIT_FITS,
          "known-good route records the FITS memo");
    CHECK(r300_r2vb_plan_shadow_divergences() == 0,
          "known-good shadow check records no divergence");
+
+   fake_vs.r2vb_admission[0][0] = R300_R2VB_ADMIT_UNMEASURED;
+   r300_r2vb_test_fail_shadow_recount_once();
+   bool shadow_retry = r300_r2vb_route_mvp(r300, &info, &draw);
+   CHECK(shadow_retry &&
+            fake_vs.r2vb_admission[0][0] == R300_R2VB_ADMIT_FITS,
+         "shadow recount failure preserves the known-good memo");
+   CHECK(r300_r2vb_plan_shadow_divergences() == 0,
+         "transient shadow recount records no divergence");
 
    /* The mismatch witness runs in a child because assertion builds terminate
     * at the shadow boundary.  Release builds keep the memo authoritative and
@@ -1008,6 +1024,7 @@ case_cache_lifetime(struct r300_context *r300)
          "controlled shadow mismatch reaches its failure contract");
    unsetenv("R300_R2VB_MVP_EXEC");
    unsetenv("R300_R2VB_RESTAGE");
+   unsetenv("R300_R2VB_TYPED_SPLIT");
    r300->fs.state = NULL;
 
    r300_r2vb_plan_cache_release(&fake_vs);
