@@ -20,6 +20,7 @@
 #include "nir.h"
 #include "nir_builder.h"
 
+#include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_upload_mgr.h"
 #include "r300_context.h"
@@ -29,6 +30,7 @@
 #include "r300_reg.h"
 #include "r300_screen.h"
 #include "r300_shader_semantics.h"
+#include "r300_vertex_format_pipe.h"
 #include "radeon_regalloc.h"
 
 static unsigned g_failures;
@@ -639,6 +641,28 @@ check_source_domain_matrix(void)
       CHECK(r300_r2vb_delivery_element_preflight(&element) ==
                outputs[i].expect,
             label);
+   }
+
+   resource.b.width0 = INPUT_COUNT * 16;
+   for (enum pipe_format format = PIPE_FORMAT_NONE;
+        format < PIPE_FORMAT_COUNT; format++) {
+      enum r300_vertex_format_id format_id = R300_VERTEX_FORMAT_INVALID;
+      bool expected =
+         r300_vertex_format_from_pipe(format, &format_id) &&
+         r300_r2vb_source_format_admitted(format_id, false);
+      unsigned blocksize = util_format_get_blocksize(format);
+      unsigned stride = blocksize && blocksize <= 16 ? blocksize : 16;
+      struct pipe_vertex_element element = {
+         .src_stride = stride,
+         .src_format = format,
+      };
+      enum r300_r2vb_producer_input_status actual =
+         r300_r2vb_producer_input_preflight(
+            &plan, &element, 1, &vb, 1, 0, INPUT_COUNT);
+      char label[160];
+      snprintf(label, sizeof(label), "complete input format domain: %s -> %s",
+               util_format_short_name(format), expected ? "admitted" : "declined");
+      CHECK((actual == R300_R2VB_PRODUCER_INPUT_OK) == expected, label);
    }
 }
 
