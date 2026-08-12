@@ -183,6 +183,16 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
     suite : ['r3v'],
   )
   test(
+    'r3v-submit-lifetime',
+    executable(
+      'r3v_submit_lifetime_test',
+      files('tests/r3v_submit_lifetime_test.c'),
+      include_directories : [include_directories('.')],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+  test(
     'r3v-ubo-binding',
     executable(
       'r3v_ubo_binding_test',
