@@ -636,12 +636,12 @@ distcc-gcc-major-probe-test:
 	}; \
 	gcc_object_major() { \
 		LC_ALL=C readelf --string-dump=.comment "$$1" 2>/dev/null | \
-			sed -n 's/^[[:space:]]*.*GCC: (GNU) \([0-9][0-9]*\).*/\1/p' | \
+				sed -n 's/^[[:space:]]*.*GCC: ([^)]*) \([0-9][0-9]*\).*/\1/p' | \
 			sed -n '1p'; \
 	}; \
 	probe_distcc_host() { \
 		distcc_spec="$$1"; expected_major="$$2"; compiler_tool="$$3"; \
-		compiler_family="$$4"; probe_dir="$$5"; \
+		compiler_family="$$4"; probe_dir="$$5"; compiler_cxx_tool="$${6:-}"; \
 		remote_distcc_host="$$(distcc_host_name "$$distcc_spec")"; \
 		if ! getent ahostsv4 "$$remote_distcc_host" >/dev/null 2>&1; then \
 			echo "FAIL  distcc volunteer hostname does not resolve: $$distcc_spec" >&2; \
@@ -661,6 +661,10 @@ distcc-gcc-major-probe-test:
 			return 1; \
 		fi; \
 		if [ "$$compiler_family" = gnu ]; then \
+			if [ -z "$$compiler_cxx_tool" ]; then \
+				echo "FAIL  GNU distcc volunteer has no verified C++ compiler: $$distcc_spec" >&2; \
+				return 1; \
+			fi; \
 			remote_gcc_major="$$(gcc_object_major "$$probe_dir/probe.o")"; \
 			if [ -z "$$remote_gcc_major" ]; then \
 				echo "FAIL  distcc volunteer object has no GCC identity: $$distcc_spec" >&2; \
@@ -670,20 +674,43 @@ distcc-gcc-major-probe-test:
 				echo "FAIL  distcc volunteer GCC major mismatch: $$distcc_spec (client=$$expected_major remote=$$remote_gcc_major)" >&2; \
 				return 1; \
 			fi; \
+			if ! rm -f -- "$$probe_dir/probe.cpp" "$$probe_dir/probe.cpp.o" "$$probe_dir/probe.cpp.err" || \
+				! printf '%s\n' 'int gororoba_distcc_probe_cpp() { return 23; }' > "$$probe_dir/probe.cpp"; then \
+				echo "FAIL  cannot prepare distcc volunteer C++ probe: $$distcc_spec" >&2; \
+				return 1; \
+			fi; \
+			if ! DISTCC_HOSTS="$$distcc_spec" DISTCC_FALLBACK=0 \
+				distcc "$$compiler_cxx_tool" -Wall -Wextra -Werror \
+				-c "$$probe_dir/probe.cpp" -o "$$probe_dir/probe.cpp.o" \
+				>/dev/null 2>"$$probe_dir/probe.cpp.err"; then \
+				echo "FAIL  distcc volunteer C++ dispatch failed: $$distcc_spec ($$compiler_cxx_tool)" >&2; \
+				sed -n '1,12p' "$$probe_dir/probe.cpp.err" >&2; \
+				return 1; \
+			fi; \
+			remote_gxx_major="$$(gcc_object_major "$$probe_dir/probe.cpp.o")"; \
+			if [ -z "$$remote_gxx_major" ]; then \
+				echo "FAIL  distcc volunteer C++ object has no GCC identity: $$distcc_spec" >&2; \
+				return 1; \
+			fi; \
+			if [ "$$remote_gxx_major" != "$$expected_major" ]; then \
+				echo "FAIL  distcc volunteer G++ major mismatch: $$distcc_spec (client=$$expected_major remote=$$remote_gxx_major)" >&2; \
+				return 1; \
+			fi; \
 			echo "OK    distcc volunteer GCC major: $$distcc_spec ($$remote_gcc_major)"; \
+			echo "OK    distcc volunteer G++ major: $$distcc_spec ($$remote_gxx_major)"; \
 		else \
 			echo "OK    distcc volunteer dispatch: $$distcc_spec ($$compiler_tool)"; \
 		fi; \
 	}; \
 	probe_all_distcc_hosts() { \
-		expected_major="$$1"; compiler_tool="$$2"; compiler_family="$$3"; probe_dir="$$4"; \
+		expected_major="$$1"; compiler_tool="$$2"; compiler_family="$$3"; probe_dir="$$4"; compiler_cxx_tool="$${5:-}"; \
 		remote_distcc_count=0; remote_distcc_failures=0; \
 		for distcc_spec in $${DISTCC_HOSTS:-}; do \
 			case "$$distcc_spec" in --*) continue ;; esac; \
 			remote_distcc_host="$$(distcc_host_name "$$distcc_spec")"; \
 			case "$$remote_distcc_host" in ""|localhost|localhost.localdomain) continue ;; esac; \
 			remote_distcc_count=$$((remote_distcc_count + 1)); \
-			if ! probe_distcc_host "$$distcc_spec" "$$expected_major" "$$compiler_tool" "$$compiler_family" "$$probe_dir"; then \
+			if ! probe_distcc_host "$$distcc_spec" "$$expected_major" "$$compiler_tool" "$$compiler_family" "$$probe_dir" "$$compiler_cxx_tool"; then \
 				remote_distcc_failures=$$((remote_distcc_failures + 1)); \
 			fi; \
 		done; \
@@ -702,7 +729,11 @@ distcc-gcc-major-probe-test:
 	}; \
 	readelf() { \
 		case "$$fake_probe_spec" in \
+			volunteer-gxx-mismatch/1) \
+				case "$$2" in *probe.cpp.o) printf '%s\n' 'String dump of section .comment: GCC: (GNU) 15.4.0' ;; \
+				*) printf '%s\n' 'String dump of section .comment: GCC: (GNU) 16.1.1' ;; esac ;; \
 			volunteer-a/1|volunteer-b/1) printf '%s\n' 'String dump of section .comment: GCC: (GNU) 16.1.1' ;; \
+			volunteer-vendor/1) printf '%s\n' 'String dump of section .comment: GCC: (Ubuntu 16.1.1-1ubuntu1) 16.1.1' ;; \
 			volunteer-mismatch/1) printf '%s\n' 'String dump of section .comment: GCC: (GNU) 15.4.0' ;; \
 			volunteer-missing/1|*) return 1 ;; \
 			esac; \
@@ -714,22 +745,30 @@ distcc-gcc-major-probe-test:
 		echo "FAIL  distcc host parser did not preserve localhost classification" >&2; exit 1; \
 	}; \
 	echo "OK    distcc host parser handles user, port, and option syntax"; \
-	DISTCC_HOSTS='localhost/2 volunteer-a/1 volunteer-b/1'; \
-	if ! probe_all_distcc_hosts 16 gcc gnu "$$probe_dir"; then \
+	DISTCC_HOSTS='localhost/2 volunteer-a/1 volunteer-vendor/1 volunteer-b/1'; \
+	if ! probe_all_distcc_hosts 16 gcc gnu "$$probe_dir" g++; then \
 		echo "FAIL  matching GCC majors for every volunteer were rejected" >&2; exit 1; \
 	fi; \
-	test "$$remote_distcc_count" -eq 2 || { echo "FAIL  expected two remote volunteer probes" >&2; exit 1; }; \
-	echo "OK    matching GCC major identities pass for every remote volunteer"; \
+	test "$$remote_distcc_count" -eq 3 || { echo "FAIL  expected three remote volunteer probes" >&2; exit 1; }; \
+	echo "OK    matching GCC and G++ major identities pass for every remote volunteer"; \
 	DISTCC_HOSTS='volunteer-a/1 volunteer-mismatch/1'; \
-	if probe_all_distcc_hosts 16 gcc gnu "$$probe_dir"; then \
+	if probe_all_distcc_hosts 16 gcc gnu "$$probe_dir" g++; then \
 		echo "FAIL  mismatched remote GCC major passed" >&2; exit 1; \
 	fi; \
 	test "$$remote_distcc_count" -eq 2 && test "$$remote_distcc_failures" -eq 1 || { \
 		echo "FAIL  mismatched volunteer did not produce one failed probe" >&2; exit 1; \
 	}; \
 	echo "OK    mismatched GCC major is rejected"; \
+	DISTCC_HOSTS='volunteer-gxx-mismatch/1'; \
+	if probe_all_distcc_hosts 16 gcc gnu "$$probe_dir" g++; then \
+		echo "FAIL  mismatched remote G++ major passed" >&2; exit 1; \
+	fi; \
+	test "$$remote_distcc_count" -eq 1 && test "$$remote_distcc_failures" -eq 1 || { \
+		echo "FAIL  mismatched G++ major did not produce one failed probe" >&2; exit 1; \
+	}; \
+	echo "OK    mismatched G++ major is rejected"; \
 	DISTCC_HOSTS='volunteer-missing/1'; \
-	if probe_all_distcc_hosts 16 gcc gnu "$$probe_dir"; then \
+	if probe_all_distcc_hosts 16 gcc gnu "$$probe_dir" g++; then \
 		echo "FAIL  missing remote GCC identity passed" >&2; exit 1; \
 	fi; \
 	test "$$remote_distcc_count" -eq 1 && test "$$remote_distcc_failures" -eq 1 || { \
@@ -799,12 +838,12 @@ audit: source-root-check source-root-control-unit-test \
 	}; \
 	gcc_object_major() { \
 		LC_ALL=C readelf --string-dump=.comment "$$1" 2>/dev/null | \
-			sed -n 's/^[[:space:]]*.*GCC: (GNU) \([0-9][0-9]*\).*/\1/p' | \
+				sed -n 's/^[[:space:]]*.*GCC: ([^)]*) \([0-9][0-9]*\).*/\1/p' | \
 			sed -n '1p'; \
 	}; \
 	probe_distcc_host() { \
 		distcc_spec="$$1"; expected_major="$$2"; compiler_tool="$$3"; \
-		compiler_family="$$4"; probe_dir="$$5"; \
+		compiler_family="$$4"; probe_dir="$$5"; compiler_cxx_tool="$${6:-}"; \
 		remote_distcc_host="$$(distcc_host_name "$$distcc_spec")"; \
 		if ! getent ahostsv4 "$$remote_distcc_host" >/dev/null 2>&1; then \
 			echo "FAIL  distcc volunteer hostname does not resolve: $$distcc_spec" >&2; \
@@ -824,6 +863,10 @@ audit: source-root-check source-root-control-unit-test \
 			return 1; \
 		fi; \
 		if [ "$$compiler_family" = gnu ]; then \
+			if [ -z "$$compiler_cxx_tool" ]; then \
+				fail "GNU distcc volunteer has no verified C++ compiler: $$distcc_spec"; \
+				return 1; \
+			fi; \
 			remote_gcc_major="$$(gcc_object_major "$$probe_dir/probe.o")"; \
 			if [ -z "$$remote_gcc_major" ]; then \
 				echo "FAIL  distcc volunteer object has no GCC identity: $$distcc_spec" >&2; \
@@ -833,7 +876,30 @@ audit: source-root-check source-root-control-unit-test \
 				echo "FAIL  distcc volunteer GCC major mismatch: $$distcc_spec (client=$$expected_major remote=$$remote_gcc_major)" >&2; \
 				return 1; \
 			fi; \
+			if ! rm -f -- "$$probe_dir/probe.cpp" "$$probe_dir/probe.cpp.o" "$$probe_dir/probe.cpp.err" || \
+				! printf '%s\n' 'int gororoba_distcc_probe_cpp() { return 23; }' > "$$probe_dir/probe.cpp"; then \
+				fail "cannot prepare distcc volunteer C++ probe: $$distcc_spec"; \
+				return 1; \
+			fi; \
+			if ! DISTCC_HOSTS="$$distcc_spec" DISTCC_FALLBACK=0 \
+				distcc "$$compiler_cxx_tool" -Wall -Wextra -Werror \
+				-c "$$probe_dir/probe.cpp" -o "$$probe_dir/probe.cpp.o" \
+				>/dev/null 2>"$$probe_dir/probe.cpp.err"; then \
+				fail "distcc volunteer C++ dispatch failed: $$distcc_spec ($$compiler_cxx_tool)"; \
+				sed -n '1,12p' "$$probe_dir/probe.cpp.err" >&2; \
+				return 1; \
+			fi; \
+			remote_gxx_major="$$(gcc_object_major "$$probe_dir/probe.cpp.o")"; \
+			if [ -z "$$remote_gxx_major" ]; then \
+				fail "distcc volunteer C++ object has no GCC identity: $$distcc_spec"; \
+				return 1; \
+			fi; \
+			if [ "$$remote_gxx_major" != "$$expected_major" ]; then \
+				fail "distcc volunteer G++ major mismatch: $$distcc_spec (client=$$expected_major remote=$$remote_gxx_major)"; \
+				return 1; \
+			fi; \
 			ok "distcc volunteer GCC major: $$distcc_spec ($$remote_gcc_major)"; \
+			ok "distcc volunteer G++ major: $$distcc_spec ($$remote_gxx_major)"; \
 		else \
 			ok "distcc volunteer dispatch: $$distcc_spec ($$compiler_tool)"; \
 		fi; \
@@ -1000,7 +1066,7 @@ audit: source-root-check source-root-control-unit-test \
 				case "$$remote_distcc_host" in ""|localhost|localhost.localdomain) continue ;; esac; \
 				remote_distcc_count=$$((remote_distcc_count + 1)); \
 				if [ -n "$${audit_compiler_tool:-}" ] && \
-				   probe_distcc_host "$$distcc_spec" "$$gcc_major" "$$audit_compiler_tool" "$(COMPILER_FAMILY)" "$$probe_dir"; then \
+				   probe_distcc_host "$$distcc_spec" "$$gcc_major" "$$audit_compiler_tool" "$(COMPILER_FAMILY)" "$$probe_dir" "$${audit_gxx_tool:-}"; then \
 					:; \
 				else \
 					remote_distcc_failures=$$((remote_distcc_failures + 1)); \
@@ -1013,7 +1079,8 @@ audit: source-root-check source-root-control-unit-test \
 			else \
 				ok "distcc volunteer verification passed for $$remote_distcc_count remote compiler(s)"; \
 			fi; \
-			if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err"; then \
+			if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err" \
+				"$$probe_dir/probe.cpp" "$$probe_dir/probe.cpp.o" "$$probe_dir/probe.cpp.err"; then \
 				fail "cannot remove distcc remote probe files: $$probe_dir"; \
 			elif ! rmdir -- "$$probe_dir"; then \
 				fail "cannot remove distcc remote probe directory: $$probe_dir"; \
