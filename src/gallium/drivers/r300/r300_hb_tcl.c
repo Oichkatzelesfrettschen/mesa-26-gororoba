@@ -79,6 +79,10 @@ r300_hb_tcl_init(struct r300_screen *screen)
 
    /* The R2VB self-test emits the RS482 TCL_BYPASS packet sequence, whose
     * producer contract requires the no-TCL, zero-vertex-FPU capability shape.
+    * The producer and capture call sites are reproducible with
+    * `(rg --fixed-strings r300_emit_rs482_r2vb_compute_loop
+    * src/gallium/drivers/r300/)` and `(rg --fixed-strings
+    * r300_emit_rs482_r2vb_capture_selftest src/gallium/drivers/r300/)`.
     * Reserve that shape when the transport selector is present; the self-test
     * then owns the exact capture or submit experiment, while the HB_TCL route
     * remains available when no R2VB transport is requested. */

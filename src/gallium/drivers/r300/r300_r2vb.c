@@ -2601,7 +2601,7 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg,
                                      bool from_flush, bool already_fired,
                                      bool query_active, bool rs48x_capable)
 {
-   static bool diagnostics_reported;
+   static unsigned diagnostics_reported;
     const char *hb_tcl = getenv("R300_HB_TCL");
     const char *mode = getenv("R300_R2VB_TIMING");
     const char *raw_submit_accepted = getenv("R300_RAW_SUBMIT_ACCEPTED");
@@ -2616,14 +2616,14 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg,
         if (selftest_armed && mode != NULL &&
             !r300_r2vb_option_is(mode, "capture") &&
             !r300_r2vb_option_is(mode, "submit") &&
-            r300_r2vb_diagnostic_allowed(&diagnostics_reported))
+            r300_r2vb_diagnostic_once(&diagnostics_reported))
             fprintf(stderr,
                     "r2vb selftest: ignoring unknown R300_R2VB_TIMING=%s; "
                     "use capture or submit\n",
                     mode);
         if (selftest_armed && r300_r2vb_option_is(mode, "submit") &&
             !r300_r2vb_option_is(raw_submit_accepted, "1") &&
-            r300_r2vb_diagnostic_allowed(&diagnostics_reported))
+            r300_r2vb_diagnostic_once(&diagnostics_reported))
             fprintf(stderr,
                     "r2vb selftest: submit mode needs "
                     "R300_RAW_SUBMIT_ACCEPTED=1\n");
