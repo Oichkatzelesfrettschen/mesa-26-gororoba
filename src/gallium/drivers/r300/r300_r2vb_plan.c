@@ -589,6 +589,7 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
                     &varying_transient);
                 if (varying_transient) {
                     ralloc_free(vfs);
+                    ralloc_free(pos);
                     plan_observe(plan, R300_R2VB_PLAN_OUT_OF_MEMORY);
                     plan->primary_reason = R300_R2VB_PLAN_OUT_OF_MEMORY;
                     plan->status = R300_R2VB_PLAN_TRANSIENT_FAILURE;
