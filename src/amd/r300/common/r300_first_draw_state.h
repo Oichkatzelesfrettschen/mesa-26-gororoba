@@ -12,15 +12,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* A first draw on a fresh context inherits whatever register values the
- * previous client left behind. On RS482, US_OUT_FMT_0 = UNUSED,
- * RB3D_COLOR_CHANNEL_MASK = 0, and SC_SCREENDOOR = 0 each alone suppress
- * every color write and produce byte-identical unwritten targets, so a
- * command stream that does not establish this state itself renders only by
- * inheritance. The contract enumerates the registers a verified-rendering
- * r300g triangle establishes before its draw, assigns each a semantic
- * disposition, and emits the subset a self-contained draw must own in
- * pipeline order.
+/* A first draw on a fresh context inherits register values from the
+ * previous client. The contract enumerates the registers a verified
+ * rendering r300g triangle establishes before its draw, assigns each a
+ * semantic disposition, and emits the subset a self-contained draw must
+ * own in pipeline order.
  */
 
 /* Why each register is, or is not, part of the emitted contract. */

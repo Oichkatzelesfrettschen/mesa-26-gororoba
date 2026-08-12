@@ -305,6 +305,8 @@ main(void)
    bad.width = UINT32_MAX;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
    bad = params;
+   bad.height = 0;
+   assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
    bad.height = max_extent;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == 0);
    bad.height++;
