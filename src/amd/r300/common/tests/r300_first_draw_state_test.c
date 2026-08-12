@@ -454,22 +454,47 @@ main(void)
    }
 
    /* Integrated emission: the emitter's contract path produces the exact
-    * contract-prefixed stream. The bare cell's three standalone state writes
-    * are replaced by the complete contract entries, so every pre-hardware
-    * consumer builds one byte-identical IB.
+    * triangle-contract-prefixed stream. The bare cell's three standalone
+    * state writes are replaced by the complete contract entries. The triangle
+    * contract specializes the output selector for the B8G8R8A8 target; the
+    * neutral resolver keeps its generic selector as a separate witness.
     */
    struct r300_first_draw_contract reference;
    assert(r300_tcl_bypass_triangle_reference_contract(&reference) == 0);
    assert(reference.count == contract.count);
-   assert(memcmp(reference.entries, contract.entries,
-                 contract.count * sizeof(contract.entries[0])) == 0);
+   for (uint32_t i = 0; i < contract.count; i++) {
+      if (reference.entries[i].reg == R300_US_OUT_FMT_0) {
+         assert(contract.entries[i].reg == R300_US_OUT_FMT_0);
+         assert(reference.entries[i].value ==
+                (R300_US_OUT_FMT_C4_8 | R300_C0_SEL_B | R300_C1_SEL_G |
+                 R300_C2_SEL_R | R300_C3_SEL_A));
+      } else {
+         assert(memcmp(&reference.entries[i], &contract.entries[i],
+                       sizeof(reference.entries[i])) == 0);
+      }
+   }
+
+   uint32_t reference_state_ib[256];
+   int reference_state_dwords =
+      r300_first_draw_state_emit(&reference, reference_state_ib, 256);
+   assert(reference_state_dwords == state_dwords);
+   uint32_t reference_prefixed[1024];
+   memcpy(reference_prefixed, reference_state_ib,
+          (size_t)reference_state_dwords * 4);
+   memcpy(reference_prefixed + reference_state_dwords,
+          cell.ib + bare_state_dwords,
+          (cell.ib_size_dwords - bare_state_dwords) * 4);
+   uint32_t reference_prefixed_dwords =
+      (uint32_t)reference_state_dwords + cell.ib_size_dwords -
+      bare_state_dwords;
 
    struct r300_tcl_bypass_triangle_params prefixed_params = cell_params;
    prefixed_params.first_draw_contract = &reference;
    struct r300_tcl_bypass_triangle_ib integrated;
    assert(r300_tcl_bypass_triangle_emit(&prefixed_params, &integrated) == 0);
-   assert(integrated.ib_size_dwords == prefixed_dwords);
-   assert(memcmp(integrated.ib, prefixed, prefixed_dwords * 4) == 0);
+   assert(integrated.ib_size_dwords == reference_prefixed_dwords);
+   assert(memcmp(integrated.ib, reference_prefixed,
+                 reference_prefixed_dwords * 4) == 0);
    /* The prefix shifts every relocation site by its dword count; each
     * site still names its slot payload behind a reloc NOP header.
     */
