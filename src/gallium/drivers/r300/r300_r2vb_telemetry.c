@@ -276,7 +276,7 @@ telemetry_sync_existing_mode(const char *path, const uint8_t *data,
         close(fd);
         return TELEMETRY_EXISTING_ERROR;
     }
-    if ((st.st_mode & 0777) != mode)
+    if ((st.st_mode & 07777) != mode)
         ok = fchmod(fd, mode) == 0;
     if (close(fd) != 0)
         ok = false;
