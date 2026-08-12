@@ -49,8 +49,8 @@ allocate_identity_inputs(struct r300_fragment_program_compiler *c,
       allocate(mydata, i, i);
 }
 
-/* The draw color is the oracle constant: an opaque-green ARGB8888 dword,
- * (0, 1, 0, 1) in float components.
+/* The draw color is the byte-order oracle constant: four distinct normalized
+ * components produce four distinct ARGB8888 bytes in the color target.
  */
 static nir_shader *
 build_constant_color_shader(void)
@@ -66,7 +66,8 @@ build_constant_color_shader(void)
                                            glsl_vec4_type(), "gl_FragColor");
    out->data.location = FRAG_RESULT_COLOR;
    out->data.driver_location = 0;
-   nir_store_var(&b, out, nir_imm_vec4(&b, 0.0f, 1.0f, 0.0f, 1.0f), 0xf);
+   nir_store_var(&b, out,
+                 nir_imm_vec4(&b, 0.125f, 0.375f, 0.625f, 0.875f), 0xf);
    return b.shader;
 }
 

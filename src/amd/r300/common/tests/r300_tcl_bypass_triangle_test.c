@@ -335,11 +335,19 @@ test_output_oracle(void)
    r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
    assert(verdict.executed && verdict.interior_pass);
 
-   /* Wrong interior color fails the interior check; the corrupted
-    * pixel is the analytic centroid, a sample at every extent whose
-    * triangle carries the fill-rule margin.
+   /* A red/blue byte swap fails the interior check; the corrupted pixel is
+    * the analytic centroid, a sample at every extent whose triangle carries
+    * the fill-rule margin.  The expected dword has distinct bytes, so this
+    * mutation proves the oracle observes channel order rather than merely a
+    * non-sentinel write.
     */
-   target[24 * 64 + 32] = 0xffff0000u;
+   const uint32_t red_blue_swapped =
+      (R300_TRIANGLE_DRAW_COLOR_ARGB8888 & 0xff000000u) |
+      (R300_TRIANGLE_DRAW_COLOR_ARGB8888 & 0x0000ff00u) |
+      ((R300_TRIANGLE_DRAW_COLOR_ARGB8888 & 0x000000ffu) << 16) |
+      ((R300_TRIANGLE_DRAW_COLOR_ARGB8888 & 0x00ff0000u) >> 16);
+   assert(red_blue_swapped != R300_TRIANGLE_DRAW_COLOR_ARGB8888);
+   target[24 * 64 + 32] = red_blue_swapped;
    r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
    assert(!verdict.interior_pass);
    target[24 * 64 + 32] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
@@ -353,6 +361,29 @@ test_output_oracle(void)
    target[64 * 64 + 5] = 0x00000001u;
    r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
    assert(!verdict.canary_pass);
+}
+
+/* A rectangle covering the triangle's full vertex bounding box paints every
+ * existing interior sample and leaves the extent boundary and canary clean.
+ * Bounding-box exterior samples make that overdraw a known-bad verdict.
+ */
+static void
+test_output_oracle_rejects_bounding_box_overdraw(void)
+{
+   enum { PIXELS = 64 * 65 };
+   static uint32_t target[PIXELS];
+   struct r300_triangle_oracle_verdict verdict;
+
+   for (unsigned i = 0; i < PIXELS; i++)
+      target[i] = R300_TRIANGLE_COLOR_SENTINEL;
+   for (unsigned y = 8; y <= 56; y++)
+      for (unsigned x = 8; x <= 56; x++)
+         target[y * 64 + x] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+
+   r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
+   assert(verdict.executed && verdict.interior_pass);
+   assert(!verdict.exterior_pass && verdict.exterior_samples >= 4);
+   assert(verdict.canary_pass);
 }
 
 /* The extent oracle's calibration: a synthesized correct 48x20 witness
@@ -512,7 +543,7 @@ test_reference_emit_is_the_single_authority(void)
  * rather than as a silently different cell.  The digest is the one the
  * staging manifest and the arming gate carry.
  */
-#define R300_TRIANGLE_CONTRACT_CELL_DWORDS 234
+#define R300_TRIANGLE_CONTRACT_CELL_DWORDS 229
 
 static void
 test_contract_cell_size_and_digest_are_pinned(void)
@@ -526,10 +557,10 @@ test_contract_cell_size_and_digest_are_pinned(void)
     * hash keeps the pinned identity independent of host byte order.
     */
    static const uint8_t expected[BLAKE3_OUT_LEN] = {
-      0xb0, 0x82, 0x18, 0x8d, 0xeb, 0x89, 0x68, 0xc5,
-      0x3e, 0x6e, 0x3e, 0x59, 0xe4, 0x04, 0x48, 0xb4,
-      0x3a, 0xe0, 0x3c, 0xed, 0xf8, 0xc8, 0xeb, 0xeb,
-      0x9a, 0x06, 0xe9, 0xdf, 0x9b, 0x81, 0xc9, 0xa2,
+      0x7d, 0x91, 0x86, 0xe4, 0xd8, 0x09, 0x73, 0x43,
+      0xc3, 0x75, 0x02, 0xae, 0x94, 0x1b, 0xad, 0xc7,
+      0xea, 0x4f, 0x30, 0x2c, 0x27, 0xbf, 0xf0, 0x58,
+      0x5e, 0xa4, 0x4d, 0x83, 0x70, 0x46, 0x16, 0xf4,
    };
    uint8_t serialized[R300_TRIANGLE_CONTRACT_CELL_DWORDS * sizeof(uint32_t)];
    r300_triangle_ib_serialize(ref.ib, ref.ib_size_dwords, serialized);
@@ -790,6 +821,7 @@ main(void)
    test_emit_rejects_unvalidated_binary();
    test_colorpitch0_pack();
    test_output_oracle();
+   test_output_oracle_rejects_bounding_box_overdraw();
    test_extent_oracle_calibration();
    test_extent_emit_deviates_in_scissor_words_alone();
    printf("r300_tcl_bypass_triangle_test: all checks passed\n");

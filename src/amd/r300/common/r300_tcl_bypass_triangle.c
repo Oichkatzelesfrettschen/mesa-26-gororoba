@@ -527,15 +527,22 @@ r300_tcl_bypass_triangle_extent_oracle(
       verdict->interior_pass = false;
 
    /* Exterior candidates: the extent's corners and edge midpoints,
-    * qualified by the same margin outside the triangle.
+    * qualified by the same margin outside the triangle.  The final four
+    * candidates remain inside the triangle's vertex bounding box while
+    * sitting outside its sloped edges, so a rectangle fill overdraw is
+    * observable even when it leaves the extent boundary untouched.
     */
    const float last_x = (float)(width - 1), last_y = (float)(height - 1);
-   const float exterior_candidates[16] = {
+   const float bbox_mid_y = (g.v[1] + g.v[5]) / 2.0f;
+   const float bbox_lower_y = g.v[5] - 4.0f;
+   const float exterior_candidates[24] = {
       0.0f, 0.0f, last_x, 0.0f, 0.0f, last_y, last_x, last_y,
       last_x / 2.0f, 0.0f, last_x / 2.0f, last_y,
       0.0f, last_y / 2.0f, last_x, last_y / 2.0f,
+      g.v[0] + 4.0f, bbox_mid_y, g.v[2] - 4.0f, bbox_mid_y,
+      g.v[0] + 4.0f, bbox_lower_y, g.v[2] - 4.0f, bbox_lower_y,
    };
-   for (unsigned i = 0; i < 8; i++) {
+   for (unsigned i = 0; i < 12; i++) {
       const uint32_t x = (uint32_t)exterior_candidates[i * 2 + 0];
       const uint32_t y = (uint32_t)exterior_candidates[i * 2 + 1];
       if (x >= width || y >= height ||
