@@ -79,12 +79,10 @@ def main():
             print(gated.stdout, file=sys.stderr)
             return 1
 
-        # The retained bare-cell digest -- the 76-dword IB the first
-        # attended run submitted, before the first-draw contract prefix
-        # -- is the stale-authorization negative control: the runner's
-        # own digest names the contract-prefixed successor, and an
-        # authorization still declaring the bare cell refuses as a
-        # digest mismatch instead of arming.
+        # The contract-free 76-dword IB is the stale-authorization negative
+        # control: the runner's own digest names the contract-prefixed
+        # successor, and an authorization still declaring the bare cell
+        # refuses as a digest mismatch instead of arming.
         bare_cell_digest = ("855a8c2f5926dbb685ff0710caa2101e"
                             "5be39269f6e1d075379fa0a02bf80ebf")
         if digest.group(1) == bare_cell_digest:
