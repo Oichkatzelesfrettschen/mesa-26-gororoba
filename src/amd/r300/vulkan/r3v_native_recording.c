@@ -155,21 +155,25 @@ r3v_native_image_barrier_layouts_ok(const VkImageMemoryBarrier *barrier)
 }
 
 /* Transfer-copy recording over the linear families.  A copy records
- * outside the render pass into a command buffer carrying no draw --
- * the buffer holds either the qualified pass or copies, so execution
- * order between the two never arises -- and each region admits at
- * record time: the color aspect's single mip and layer, offsets and
- * extents inside the image, the buffer byte footprint inside the
- * buffer's created size, and the usage bit of each direction.  A
- * refused region, an overflowing op list, or a mixed buffer poisons
- * the recording.
+ * only into a command buffer with no render-pass record -- the buffer
+ * holds either the qualified pass or copies, so execution order between
+ * the two never arises -- and each region admits at record time: the
+ * color aspect's single mip and layer, offsets and extents inside the
+ * image, the buffer byte footprint inside the buffer's created size, and
+ * the usage bit of each direction.  A refused region, an overflowing op
+ * list, or a mixed buffer poisons the recording.
  */
 static struct r3v_native_deferred_copy *
 r3v_native_copy_slot(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
-   if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded) {
+   /* EndRenderPass clears pass_target while the load-op clear remains in
+    * deferred_draw until submission.  Refuse transfers while that record
+    * is pending so the clear and copies keep separate command buffers.
+    */
+   if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
+       cmd_buffer->deferred_draw.pending) {
       r3v_native_cmd_poison(commandBuffer);
       return NULL;
    }

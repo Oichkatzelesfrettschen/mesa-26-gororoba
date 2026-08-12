@@ -988,6 +988,24 @@ main(void)
          .dstOffset = 1024,
          .size = copy_w * copy_h * sizeof(uint32_t),
       };
+
+      /* An empty render pass retains its load-op clear after EndRenderPass.
+       * A transfer recorded after that pass would execute before the clear
+       * on the zero-IB queue path, so recording refuses the mixed buffer.
+       */
+      VkCommandBuffer empty_pass_copy_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(empty_pass_copy_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_empty_pass_copy,
+                     empty_pass_copy_cmd);
+      vkCmdEndRenderPass(empty_pass_copy_cmd);
+      vkCmdCopyBuffer(empty_pass_copy_cmd, staging, staging, 1,
+                      &buffer_copy);
+      assert(native_empty_pass_copy->deferred_draw.pending);
+      assert(native_empty_pass_copy->deferred_copy_count == 0);
+      assert(vkEndCommandBuffer(empty_pass_copy_cmd) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+
       vkCmdCopyBuffer(copy_cmd, staging, staging, 1, &buffer_copy);
       const VkBufferImageCopy upload = {
          .bufferOffset = 0,
