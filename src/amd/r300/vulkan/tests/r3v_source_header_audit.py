@@ -48,15 +48,22 @@ COPYRIGHT = re.compile(r"^[^A-Za-z0-9]*Copyright\b(?P<holder>.*)$",
 # Disclosure that belongs in a commit trailer.  The pattern matches the tool
 # naming that reaches a header, not the words themselves: "generated from
 # vk.xml by <script>" states a build mechanism and stays.
+AI_TOOL = (r"(?:claude|chatgpt|codex|copilot|gemini|mistral|ollama|"
+           r"deepseek|gpt(?:[-\w.]*)|coderabbit|an?\s+(?:AI|LLM))")
 AI_DISCLOSURE = re.compile(
     r"(?:\b(?:LLM[- ]assisted|AI[- ]assisted)\b"
-    r"|\b(?:assisted|generated)-by:"
-    r"|\bgenerated\s+by\s+(?:claude|chatgpt|codex|copilot|gemini|"
-    r"gpt(?:[-\w.]*)|coderabbit|an?\s+(?:AI|LLM))\b)",
+    rf"|\bgenerated\s+by\s+{AI_TOOL}\b"
+    rf"|\b(?:assisted|generated)-by:(?:\s*$|\s+{AI_TOOL}\b|"
+    r"\s*\*/\s*$))",
     re.IGNORECASE)
 
 SPDX_IDENTIFIER = re.compile(
-    r"\bSPDX-License-Identifier:(?P<value>.*)$")
+    r"^\s*(?:"
+    r"(?:#|//)\s*SPDX-License-Identifier:\s*"
+    r"(?P<line_value>\S(?:.*\S)?)"
+    r"|(?:/\*|\*)\s*SPDX-License-Identifier:\s*"
+    r"(?P<block_value>[^*/]*?)(?:\s*\*/)?"
+    r")\s*$")
 
 
 def has_spdx_identifier(line: str) -> bool:
@@ -64,10 +71,8 @@ def has_spdx_identifier(line: str) -> bool:
     match = SPDX_IDENTIFIER.search(line)
     if match is None:
         return False
-    value = match.group("value").strip()
-    if value.endswith("*/"):
-        value = value[:-2].rstrip()
-    return bool(value)
+    value = match.group("line_value") or match.group("block_value")
+    return bool(value and value.strip())
 
 
 def audit_file(path: Path):
@@ -133,6 +138,12 @@ FIXTURES = {
     "malformed-spdx": CLEAN_HEADER.replace(
         "/* SPDX-License-Identifier: MIT */",
         "/* SPDX-License-Identifier: */"),
+    "spdx-colon-prose": CLEAN_HEADER.replace(
+        "/* SPDX-License-Identifier: MIT */",
+        "/* The SPDX-License-Identifier: field is required */"),
+    "spdx-trailing-prose": CLEAN_HEADER.replace(
+        "/* SPDX-License-Identifier: MIT */",
+        "/* SPDX-License-Identifier: MIT */ trailing prose"),
     "invented-copyright": CLEAN_HEADER.replace(
         "/* SPDX-License-Identifier: MIT */",
         "/* SPDX-License-Identifier: MIT\n"
@@ -159,6 +170,8 @@ FIXTURE_PREDICATES = {
     "missing-spdx": "no SPDX-License-Identifier",
     "missing-spdx-self-mutation": "no SPDX-License-Identifier",
     "malformed-spdx": "no SPDX-License-Identifier",
+    "spdx-colon-prose": "no SPDX-License-Identifier",
+    "spdx-trailing-prose": "no SPDX-License-Identifier",
     "invented-copyright": "copyright line names an unreviewed holder",
     "ai-disclosure": "AI disclosure belongs in a commit trailer",
     "ai-assisted-by-trailer": "AI disclosure belongs in a commit trailer",
