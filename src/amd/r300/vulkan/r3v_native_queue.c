@@ -424,6 +424,40 @@ submit_manifest_cleanup:
    return result;
 }
 
+static bool
+r3v_native_submit_resignals_sync(const struct vk_queue_submit *submit,
+                                 const struct vk_sync *sync)
+{
+   for (uint32_t i = 0; i < submit->signal_count; i++) {
+      if (submit->signals[i].sync == sync)
+         return true;
+   }
+   return false;
+}
+
+static VkResult
+r3v_native_queue_consume_binary_waits(
+   struct r3v_native_device *device, const struct vk_queue_submit *submit)
+{
+   for (uint32_t w = 0; w < submit->wait_count; w++) {
+      struct vk_sync *wait_sync = submit->waits[w].sync;
+      if ((wait_sync->flags & VK_SYNC_IS_TIMELINE) ||
+          submit->_wait_temps[w] != NULL ||
+          r3v_native_submit_resignals_sync(submit, wait_sync))
+         continue;
+
+      VkResult reset_result = vk_sync_reset(&device->vk, wait_sync);
+      if (reset_result != VK_SUCCESS) {
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: binary semaphore wait %u reset "
+                          "failed: %d",
+                          w, reset_result);
+      }
+   }
+
+   return VK_SUCCESS;
+}
+
 VkResult
 r3v_native_queue_submit(struct vk_queue *queue_base,
                         struct vk_queue_submit *submit)
@@ -453,11 +487,12 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
-   /* Declared dependencies order the deferred CPU execution below: each
-    * wait completes before any gather or clear runs, so a producer that
-    * supplies the vertex data through a semaphore is honored.  The
-    * synchronous submit model signals every sync at completion, so a
-    * same-queue wait is already satisfied and completes immediately.
+   /* r3v_cpu_sync_wait (rg --fixed-strings "r3v_cpu_sync_wait"
+    * src/amd/r300/vulkan/r3v_cpu_sync.c) completes each declared dependency
+    * before deferred CPU execution below.  The queue path
+    * r3v_native_queue_submit (rg --fixed-strings "r3v_native_queue_submit"
+    * src/amd/r300/vulkan/r3v_native_queue.c) consumes a permanent binary
+    * wait after execution and signals the submit's completion set afterward.
     */
    for (uint32_t w = 0; w < submit->wait_count; w++) {
       VkResult wait_result =
@@ -768,10 +803,15 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
-   /* The bounded completion wait above retired every buffer, so the
-    * submit's signal set fires here and a dependent submit's wait
-    * completes immediately.
+   /* The bounded completion wait above retired every buffer.  Consuming
+    * permanent binary waits before signaling keeps the semaphore state ready
+    * for its next Vulkan signal operation; a same-submit signal remains live.
     */
+   VkResult consume_result =
+      r3v_native_queue_consume_binary_waits(device, submit);
+   if (consume_result != VK_SUCCESS)
+      return consume_result;
+
    return vk_sync_signal_many(&device->vk, submit->signal_count,
                               submit->signals);
 }
