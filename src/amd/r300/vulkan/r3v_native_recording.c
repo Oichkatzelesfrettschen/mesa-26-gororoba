@@ -9,6 +9,7 @@
 
 #include "r3v_entrypoints.h"
 
+#include "util/u_math.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
 
@@ -377,13 +378,12 @@ r3v_CmdClearColorImage(
     * every admitted range names the whole image and the fill covers the
     * full extent.  The Vulkan format registry defines
     * VK_FORMAT_B8G8R8A8_UNORM as four 8-bit components in B, G, R, A
-    * order.  This path stores packed dwords through a little-endian
-    * uint32_t mapping, so the RGBA clear lanes map to byte positions
-    * {2, 1, 0, 3}; lane_byte encodes that mapping.  A NaN component
-    * converts as zero -- every ordered comparison on NaN is false, so it
-    * slips both clamp arms, and the float-to-integer cast of NaN has no
-    * defined value.  The render-family readback remains experiment
-    * provenance rather than format authority.
+    * order.  lane_byte maps the RGBA lanes to those component positions,
+    * and util_cpu_to_le32 converts the packed value before the transfer
+    * executor stores it through a native uint32_t, so mapped memory holds
+    * B, G, R, A bytes on every supported host.  A NaN component converts
+    * as zero -- every ordered comparison on NaN is false, so it slips both
+    * clamp arms, and the float-to-integer cast of NaN has no defined value.
     */
    for (uint32_t r = 0; r < rangeCount; r++) {
       const VkImageSubresourceRange *range = &pRanges[r];
@@ -418,7 +418,7 @@ r3v_CmdClearColorImage(
          .dst_image = image,
          .width = image->width,
          .height = image->height,
-         .clear_dword = packed,
+         .clear_dword = util_cpu_to_le32(packed),
       };
       cmd_buffer->deferred_copy_count++;
    }
