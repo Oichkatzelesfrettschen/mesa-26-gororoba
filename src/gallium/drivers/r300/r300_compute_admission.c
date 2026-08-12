@@ -2029,11 +2029,29 @@ multipass_loop_for_header(nir_block *header)
 }
 
 /* The multipass replay samples one element for each fragment.  The admitted
- * input load therefore uses the scalar global invocation index scaled by the
- * 32-bit element size.  A uniform offset or a different address expression
- * would make the replay sample a different element than the compute shader. */
+ * input load therefore uses the scalar global invocation index scaled once by
+ * the 32-bit element size.  A uniform offset, a second scale, or a different
+ * address expression would make the replay sample a different element than
+ * the compute shader. */
 static bool
-multipass_offset_is_invocation_index(nir_scalar offset, unsigned depth)
+multipass_offset_alu_inputs_are_scalar(const nir_alu_instr *alu)
+{
+   const unsigned num_inputs = nir_op_infos[alu->op].num_inputs;
+   if (num_inputs != 2)
+      return false;
+
+   for (unsigned i = 0; i < num_inputs; i++) {
+      if (!alu->src[i].src.ssa ||
+          nir_ssa_alu_instr_src_components(alu, i) != 1)
+         return false;
+   }
+
+   return true;
+}
+
+static bool
+multipass_offset_is_invocation_index(nir_scalar offset, unsigned depth,
+                                     bool has_byte_scale)
 {
    if (depth > R300_COMPUTE_OFFSET_EQ_MAX_DEPTH)
       return false;
@@ -2042,9 +2060,13 @@ multipass_offset_is_invocation_index(nir_scalar offset, unsigned depth)
    if (nir_scalar_is_intrinsic(offset)) {
       switch (nir_scalar_intrinsic_op(offset)) {
       case nir_intrinsic_load_global_invocation_index:
-         return true;
+         return has_byte_scale;
       case nir_intrinsic_load_global_invocation_id:
-         return offset.comp == 0;
+         /* The replay enumerates one flat element stream.  An X-only
+          * global-id load aliases elements when Y or Z has more than one
+          * invocation, so only the flattened invocation-index intrinsic is
+          * an admitted root. */
+         return false;
       default:
          return false;
       }
@@ -2054,7 +2076,19 @@ multipass_offset_is_invocation_index(nir_scalar offset, unsigned depth)
       return false;
 
    const nir_alu_instr *alu = nir_scalar_as_alu(offset);
-   if (nir_op_infos[alu->op].num_inputs != 2)
+   switch (alu->op) {
+   case nir_op_imul:
+   case nir_op_ishl:
+   case nir_op_iadd:
+      break;
+   default:
+      return false;
+   }
+
+   /* Check the opcode and source shape before chasing either source.  The
+    * scalar chase asserts for sized vector inputs, while unsupported ALU
+    * operations must fail closed without reaching that helper. */
+   if (!multipass_offset_alu_inputs_are_scalar(alu))
       return false;
 
    nir_scalar a = nir_scalar_chase_alu_src(offset, 0);
@@ -2062,18 +2096,23 @@ multipass_offset_is_invocation_index(nir_scalar offset, unsigned depth)
    switch (alu->op) {
    case nir_op_imul:
       if (nir_scalar_is_const(a) && nir_scalar_as_uint(a) == 4)
-         return multipass_offset_is_invocation_index(b, depth + 1);
+         return !has_byte_scale &&
+                multipass_offset_is_invocation_index(b, depth + 1, true);
       if (nir_scalar_is_const(b) && nir_scalar_as_uint(b) == 4)
-         return multipass_offset_is_invocation_index(a, depth + 1);
+         return !has_byte_scale &&
+                multipass_offset_is_invocation_index(a, depth + 1, true);
       return false;
    case nir_op_ishl:
-      return nir_scalar_is_const(b) && nir_scalar_as_uint(b) == 2 &&
-             multipass_offset_is_invocation_index(a, depth + 1);
+      return !has_byte_scale && nir_scalar_is_const(b) &&
+             nir_scalar_as_uint(b) == 2 &&
+             multipass_offset_is_invocation_index(a, depth + 1, true);
    case nir_op_iadd:
       if (nir_scalar_is_const(a) && nir_scalar_as_uint(a) == 0)
-         return multipass_offset_is_invocation_index(b, depth + 1);
+         return multipass_offset_is_invocation_index(b, depth + 1,
+                                                     has_byte_scale);
       if (nir_scalar_is_const(b) && nir_scalar_as_uint(b) == 0)
-         return multipass_offset_is_invocation_index(a, depth + 1);
+         return multipass_offset_is_invocation_index(a, depth + 1,
+                                                     has_byte_scale);
       return false;
    default:
       return false;
@@ -2121,7 +2160,7 @@ multipass_phi_matches_loop(nir_phi_instr *phi, nir_loop *loop,
        load->src[1].ssa->num_components != 1 ||
        load->src[1].ssa->bit_size != 32 ||
        !multipass_offset_is_invocation_index(
-          nir_get_scalar(load->src[1].ssa, 0), 0))
+          nir_get_scalar(load->src[1].ssa, 0), 0, false))
       return false;
 
    nir_scalar update =
