@@ -639,8 +639,8 @@ main(void)
       .pNext = &device_dedicated,
    };
 
-   /* Calibrate the exact-mask verdict with the missing-type and extra-bit
-    * host mutations before checking the live device query.
+   /* Calibrate the exact-mask verdict by accepting only 0x1 and rejecting
+    * the empty and extra-bit masks before checking the device query.
     */
    assert(r3v_native_memory_type_bits_are_type_zero_only(0x1u));
    assert(!r3v_native_memory_type_bits_are_type_zero_only(0x0u));
