@@ -496,6 +496,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
     * its queue-phase meaning for the attended control.
     */
    device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED;
+   bool submit_has_executable_ib = false;
 
    /* An authorization declares one IB digest and its evidence directory
     * disarms after one attempt, so an open gate admits exactly one
@@ -590,9 +591,10 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                return vk_error(device, VK_ERROR_DEVICE_LOST);
             return deferred;
          }
-         device->queue_status = R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION;
          continue;
       }
+
+      submit_has_executable_ib = true;
 
       struct radeon_drm_vk_reloc_list relocs;
       radeon_drm_vk_reloc_list_init(&relocs);
@@ -842,6 +844,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       device->queue_status =
          r3v_native_queue_status_from_transport(ioctl_accepted, true);
    }
+
+   device->queue_status = r3v_native_queue_status_finalize_submit(
+      device->queue_status, submit_has_executable_ib);
 
    /* The bounded completion wait above retired every buffer.  Consuming
     * permanent binary waits before signaling keeps the semaphore state ready
