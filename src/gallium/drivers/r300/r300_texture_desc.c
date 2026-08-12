@@ -266,11 +266,13 @@ static void r300_setup_miptree(struct r300_screen *screen,
         if (base->target == PIPE_TEXTURE_CUBE)
             size = layer_size * 6;
         else if (base->target == PIPE_TEXTURE_1D_ARRAY ||
-                 base->target == PIPE_TEXTURE_2D_ARRAY)
+                 base->target == PIPE_TEXTURE_2D_ARRAY ||
+                 base->target == PIPE_TEXTURE_CUBE_ARRAY)
             /* Array layers are counted by array_size, not depth0 (which is 1 for
-             * a 2D array).  The g3dvl MPEG decoder allocates a 2D-array video
-             * surface (array_size=2 for interlaced fields), so the texture must
-             * cover every layer or the per-layer offset below points past the
+             * a 2D array and a cube-array face count is carried by array_size).
+             * The g3dvl MPEG decoder allocates a 2D-array video surface
+             * (array_size=2 for interlaced fields), so the texture must cover
+             * every layer or the per-layer offset below points past the
              * allocation. */
             size = layer_size * base->array_size;
         else
