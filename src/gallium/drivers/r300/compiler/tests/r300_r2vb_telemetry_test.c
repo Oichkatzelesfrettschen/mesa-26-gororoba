@@ -218,6 +218,13 @@ file_size(const char *path)
    return stat(path, &st) == 0 ? (long)st.st_size : -1;
 }
 
+static mode_t
+file_mode(const char *path)
+{
+   struct stat st;
+   return stat(path, &st) == 0 ? st.st_mode & 0777 : 0;
+}
+
 /* Plan one specimen, assert the expected action (calibrating the specimen
  * itself against the planner), record it in telemetry, release it. */
 static void
@@ -403,6 +410,8 @@ main(void)
    CHECK(have_file && retained_name_len == strlen("r2vb-vs-") + 64 +
                                               strlen(".nir"),
          "retained filename carries the full content hash");
+   CHECK(have_file && file_mode(retained_path) == 0644,
+         "retained blob is readable by shared corpus consumers");
 
    /* Known-bad file at the final name: dedup verifies bytes, so a damaged
     * entry is republished with the correct content. */
