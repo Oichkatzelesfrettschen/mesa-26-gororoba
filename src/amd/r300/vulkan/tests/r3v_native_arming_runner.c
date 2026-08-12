@@ -28,19 +28,11 @@ static uint32_t cell_height = R300_TRIANGLE_TARGET_HEIGHT;
 /* Builds the cell at the selected extent and returns its IB digest,
  * the content an authorization declares through
  * R3V_NATIVE_AUTHORIZED_IB_BLAKE3.  The recorder's
- * r3v_native_record_tcl_bypass_triangle_carrier() at
- * src/amd/r300/vulkan/r3v_native_cell.c:312 calls
- * r3v_native_cmd_buffer_install_ib() at
- * src/amd/r300/vulkan/r3v_native_cmd.c:53; the queue's
- * r3v_native_queue_submit() at src/amd/r300/vulkan/r3v_native_queue.c:428
- * recomputes r300_triangle_ib_digest_hex() at line 572 from the installed
- * IB.  The emission is the same construction, so the armed digest names
- * the submitted bytes.  Symbol discovery uses
- * (rg --fixed-strings r3v_native_record_tcl_bypass_triangle_carrier
- * src/amd/r300/vulkan/; rg --fixed-strings r3v_native_cmd_buffer_install_ib
- * src/amd/r300/vulkan/; rg --fixed-strings r3v_native_queue_submit
- * src/amd/r300/vulkan/; rg --fixed-strings r300_triangle_ib_digest_hex
- * src/amd/r300/vulkan/).
+ * r3v_native_record_tcl_bypass_triangle_carrier() installs the same
+ * emitted IB through r3v_native_cmd_buffer_install_ib(), and the
+ * r3v_native_queue_submit() path recomputes r300_triangle_ib_digest_hex()
+ * from the installed IB.  The emission is identical, so the armed digest
+ * names the bytes submitted by that path.
  */
 static int
 cell_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
