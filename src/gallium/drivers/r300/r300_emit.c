@@ -8,6 +8,7 @@
 
 #include "util/format/u_format.h"
 #include "util/u_math.h"
+#include "util/u_call_once.h"
 
 #include "r300_context.h"
 #include "r300_cb.h"
@@ -19,6 +20,22 @@
 #include "r300_vs.h"
 
 #include <stdlib.h>
+
+static util_once_flag r300_fs_emit_debug_once = UTIL_ONCE_FLAG_INIT;
+static bool r300_fs_emit_debug;
+
+static void
+r300_init_fs_emit_debug(void)
+{
+    r300_fs_emit_debug = getenv("R300_FS_EMIT_DEBUG") != NULL;
+}
+
+static bool
+r300_fs_emit_debug_enabled(void)
+{
+    util_call_once(&r300_fs_emit_debug_once, r300_init_fs_emit_debug);
+    return r300_fs_emit_debug;
+}
 
 static bool
 r300_r2vb_va_dump_enabled(void)
@@ -258,10 +275,7 @@ void r300_emit_fs(struct r300_context* r300, unsigned size, void *state)
     struct r300_fragment_shader *fs = r300_fs(r300);
     CS_LOCALS(r300);
 
-    static int emit_debug = -1;
-    if (emit_debug < 0)
-        emit_debug = getenv("R300_FS_EMIT_DEBUG") != NULL;
-    if (emit_debug)
+    if (r300_fs_emit_debug_enabled())
         fprintf(stderr, "r300 fs emit: fs=%p cb_code_size=%u\n",
                 (void *)fs, fs->shader->cb_code_size);
 
@@ -276,10 +290,7 @@ void r300_emit_fs_constants(struct r300_context* r300, unsigned size, void *stat
     unsigned i, j;
     CS_LOCALS(r300);
 
-    static int emit_debug = -1;
-    if (emit_debug < 0)
-        emit_debug = getenv("R300_FS_EMIT_DEBUG") != NULL;
-    if (emit_debug)
+    if (r300_fs_emit_debug_enabled())
         fprintf(stderr, "r300 fs_constants emit: fs=%p count=%u remap=%p "
                 "ptr=%p c0=%.3f,%.3f,%.3f,%.3f\n",
                 (void *)fs, count, (void *)buf->remap_table, (void *)buf->ptr,
