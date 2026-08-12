@@ -18,8 +18,8 @@
  * producers plan SPLIT with {f,b}/{f,i}/{f,u} carries; out-of-window signed
  * and unsigned carries and a mixed-signedness carry reject with their range
  * class as the primary reason; an under-budget typed producer rejects
- * TYPED_SINGLE_PASS_UNPROVEN; control flow rejects CONTROL_FLOW; a shader
- * without a uniform interface rejects IO_SHAPE; a wide frontier whose every
+ * TYPED_SINGLE_PASS_UNPROVEN; control flow rejects CONTROL_FLOW; a uniform-free
+ * producer plans SINGLE; a wide frontier whose every
  * cut crosses more than one vec4 rejects with CARRY_WIDTH observed; one
  * injected position-input clone failure leaves no cached plan before the next
  * request retries successfully; a classifier-side transient failure bypasses
@@ -97,9 +97,9 @@ fake_r300_context(void)
    return &g_context;
 }
 
-/* Application-VS skeleton: in_pos at GENERIC0, gl_Position out, and a
- * declared UBO interface (the shape validation requires a uniform interface;
- * the arithmetic below stays input-fed so the emitted length is the chain's). */
+/* Application-VS skeleton: in_pos at GENERIC0, gl_Position out, and an
+ * optional UBO interface.  The arithmetic stays input-fed so the emitted
+ * length is the chain's. */
 struct vs_build {
    nir_builder b;
    nir_def *pos;

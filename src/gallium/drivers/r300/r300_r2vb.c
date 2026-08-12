@@ -3300,16 +3300,15 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
     if (!exec_list_is_singular(&impl->body))
         return false;
 
-    bool has_uniform = false, has_pos_out = false;
+    /* Uniform/UBO sources are optional: passthrough and transform-only
+     * producers share the planner's position-output shape. */
+    bool has_pos_out = false;
     nir_foreach_variable_in_shader(var, nir) {
-        if (var->data.mode &
-            (nir_var_mem_ubo | nir_var_mem_push_const | nir_var_uniform))
-            has_uniform = true;
         if ((var->data.mode & nir_var_shader_out) &&
             var->data.location == VARYING_SLOT_POS)
             has_pos_out = true;
     }
-    if (!has_uniform || !has_pos_out)
+    if (!has_pos_out)
         return false;
 
     /* Structural admissibility only: op set, intrinsic set, output shape.  The
