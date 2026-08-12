@@ -2405,11 +2405,12 @@ r3v_replay_draw(struct r3v_device *device,
       dyn_topology ? dyn->topology
                    : (indexed ? e->draw_indexed.topology : e->draw.topology);
 
-   /* A graphics pipeline with no fragment stage (rasterizer discard or
-    * depth-only) leaves fs_cso NULL -- a failed fragment compile would instead
-    * have failed pipeline creation, so NULL here means no fragment stage.  Such
-    * a draw produces no color in r3v's color-attachment model.  It must be
-    * skipped rather than entered: on the RS482 SW-TCL path r300_update_derived_state
+   /* A graphics pipeline with no fragment stage (rasterizer discard or a
+    * fragment-less pipeline) leaves fs_cso NULL -- a failed fragment compile
+    * would instead have failed pipeline creation, so NULL here means no
+    * fragment stage.  Such a draw produces no fragment output in r3v replay.
+    * It must be skipped rather than entered: on the RS482 SW-TCL path
+    * r300_update_derived_state
     * compiles the hardware vertex shader only when caps.has_tcl is set (it is
     * not), yet r300_update_rs_block unconditionally dereferences r300_vs()->shader
     * and r300_fs()->shader, so a no-fragment draw NULL-derefs in the RS block
@@ -2428,7 +2429,7 @@ r3v_replay_draw(struct r3v_device *device,
     * bind-time strides patched in (the dynamic-stride state makes them
     * authoritative).  Synthetic VS-system-value bindings sit on reserved
     * driver bindings no app bind reaches, so they never patch. */
-   if (dyn && bound_pipeline && bound_pipeline->velems_count) {
+   if (dyn && bound_pipeline->velems_count) {
       bool patch = false;
       for (uint32_t i = 0; i < bound_pipeline->velems_count; i++) {
          const uint8_t b = bound_pipeline->velems_template[i].vertex_buffer_index;
@@ -2469,14 +2470,14 @@ r3v_replay_draw(struct r3v_device *device,
    }
 
    /* Resolve pipeline-static viewport/scissor before the draw. */
-   if (bound_pipeline && bound_pipeline->has_static_viewport) {
+   if (bound_pipeline->has_static_viewport) {
       struct pipe_viewport_state pv;
       viewport_vk_to_gallium(&bound_pipeline->static_viewport,
                              (float)tile_origin_x, (float)tile_origin_y,
                              &pv);
       pipe->set_viewport_states(pipe, 0, 1, &pv);
    }
-   if (bound_pipeline && bound_pipeline->has_static_scissor) {
+   if (bound_pipeline->has_static_scissor) {
       struct pipe_scissor_state sc;
       r3v_scissor_vk_to_tile(&bound_pipeline->static_scissor,
                                 tile_origin_x, tile_origin_y,
