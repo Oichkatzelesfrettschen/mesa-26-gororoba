@@ -105,13 +105,9 @@ gallium-xa = true
 # Warnings are defects in every configured lane.
 werror = true
 
-# The in-tree unit tests.  meson.options defaults build-tests to false, and
-# every `if with_tests` block that registers a test() reads that one boolean, so
-# omitting the key leaves `meson test` reporting no tests defined.  This profile
-# is the conformance and silicon-evidence baseline, so it runs the r300, NIR,
-# GLSL, util, and gallium-auxiliary suites its debugoptimized and gcc siblings
-# already run.  The suites pass under b_ndebug='true': the gcc release profile
-# builds them with assertions compiled out and reports 100 pass, 1 skip, 0 fail,
-# where the skip is the retained-corpus census returning the meson skip code 77
-# for an absent corpus directory.
+# The release unit-test contract is canonical in
+# build-infra/docs/r300-full-profile-options.md.  Keep build-tests enabled so
+# Meson registers the in-tree unit-test graph; the canonical rebuild target
+# executes it through the locked `make test` target after a successful build.
+# Its result is build/test evidence, not hardware or CTS/Piglit/dEQP evidence.
 build-tests = true
