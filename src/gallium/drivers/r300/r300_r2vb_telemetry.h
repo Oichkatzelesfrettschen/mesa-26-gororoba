@@ -94,6 +94,14 @@ const char *r300_r2vb_telemetry_vs_content_hex(struct r300_context *r300);
 void r300_r2vb_telemetry_note(struct r300_context *r300,
                               const struct r300_r2vb_producer_plan *plan);
 
+/* Record the cached structural plan when producer admission rejects the VS
+ * before the budget shadow check.  The caller supplies the same cell key as
+ * admission; the plan cache supplies the reason and the cell ledger owns
+ * observation deduplication. */
+bool r300_r2vb_telemetry_note_structural_admission_reject(
+    struct r300_context *r300, bool allow_computed_varying,
+    enum r300_r2vb_position_space space);
+
 /* Dynamic workload weight, accumulated per candidate draw after the plan is
  * cached -- no compiles, no serialization past the first hash: draws,
  * vertices, instances, draw-size extrema, a topology bit mask, and the

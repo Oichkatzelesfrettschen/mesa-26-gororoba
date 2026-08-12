@@ -41,6 +41,9 @@ extern void r300_r2vb_telemetry_note_cell(
 extern bool r300_r2vb_telemetry_allow_computed_varying(
    struct r300_context *r300, nir_shader *vs_nir);
 extern unsigned r300_r2vb_telemetry_format_dwords(enum pipe_format format);
+extern bool r300_r2vb_admits_producer_for_test(
+   struct r300_context *r300, bool allow_computed_varying,
+   enum r300_r2vb_position_space space);
 
 static unsigned g_failures;
 
@@ -249,6 +252,48 @@ plan_and_note(const char *label, nir_shader *vs,
 }
 
 static void
+note_structural_admission_reject(const char *label, nir_shader *vs,
+                                 enum r300_r2vb_plan_reason reason)
+{
+   bind_vs(vs);
+   r300_r2vb_telemetry_cell_remove(&g_vs);
+   const struct r300_r2vb_telemetry_counters *c =
+      r300_r2vb_telemetry_get();
+   unsigned before = c->by_reason[reason];
+   bool admitted = r300_r2vb_admits_producer_for_test(
+      &g_context, false, R300_R2VB_POSITION_CLIP);
+   char name[96];
+   snprintf(name, sizeof(name), "%s remains rejected by production admission",
+            label);
+   CHECK(!admitted, name);
+   snprintf(name, sizeof(name), "%s records the production reject reason",
+            label);
+   CHECK(c->by_reason[reason] == before + 1, name);
+   unsigned after = c->by_reason[reason];
+   admitted = r300_r2vb_admits_producer_for_test(
+      &g_context, false, R300_R2VB_POSITION_CLIP);
+   snprintf(name, sizeof(name), "%s remains rejected on repeat", label);
+   CHECK(!admitted, name);
+   snprintf(name, sizeof(name), "%s records one cell on repeat", label);
+   CHECK(c->by_reason[reason] == after, name);
+}
+
+static void
+note_structural_admission_good_plan(const char *label, nir_shader *vs)
+{
+   bind_vs(vs);
+   r300_r2vb_telemetry_cell_remove(&g_vs);
+   const struct r300_r2vb_telemetry_counters *c =
+      r300_r2vb_telemetry_get();
+   struct r300_r2vb_telemetry_counters before = *c;
+   r300_r2vb_telemetry_note_structural_admission_reject(
+      &g_context, false, R300_R2VB_POSITION_CLIP);
+   char name[96];
+   snprintf(name, sizeof(name), "%s leaves the cached plan unchanged", label);
+   CHECK(memcmp(c, &before, sizeof(before)) == 0, name);
+}
+
+static void
 case_sparse_telemetry_input_ranks(void)
 {
    struct r300_r2vb_producer_plan plan = {0};
@@ -448,6 +493,13 @@ main(void)
          "structural reject retains nothing");
    CHECK(c->retain_failures == base.retain_failures,
          "no retention failures");
+
+   /* The route admission path reaches this helper only after the structural
+    * fragment-ALU check rejects the VS.  A fitting plan is a negative control:
+    * the bridge records no event when the cached plan is not a reject. */
+   note_structural_admission_reject(
+      "control-flow admission", cflow, R300_R2VB_PLAN_CONTROL_FLOW);
+   note_structural_admission_good_plan("fitting admission", fits);
 
    case_sparse_telemetry_input_ranks();
    case_multi_position_telemetry_sources();
