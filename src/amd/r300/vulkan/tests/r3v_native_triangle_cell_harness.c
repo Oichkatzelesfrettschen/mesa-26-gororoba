@@ -223,10 +223,14 @@ main(int argc, char **argv)
          manifest_template, sizeof(manifest_template), "%s%s%s",
          tmp_dir, tmp_dir[tmp_dir_length - 1] == '/' ? "" : "/",
          "r3v-native-cell-XXXXXX");
+      const char *manifest_name = "submit_manifest.json";
+      const char *temporary_suffix = ".XXXXXX";
+      size_t temporary_artifact_path_length =
+         template_length < 0 ? SIZE_MAX : (size_t)template_length +
+         strlen("/.") + strlen(manifest_name) + strlen(temporary_suffix);
       if (template_length < 0 ||
           (size_t)template_length >= sizeof(manifest_template) ||
-          (size_t)template_length + 1 +
-             strlen("submit_manifest.json") >= 1024) {
+          temporary_artifact_path_length >= 1024) {
          fprintf(stderr, "manifest template path is too long\n");
          return 2;
       }
