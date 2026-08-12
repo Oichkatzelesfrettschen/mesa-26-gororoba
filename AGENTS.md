@@ -467,7 +467,7 @@ profile and pairs with the GCC Vostro env plus `COMPILER_FAMILY=gnu`. Configure
 it with:
 
 ```sh
-make configure PROFILE=5_r300_full_release_x86_64v1-gcc-distcc-cache \
+make -C build-infra configure PROFILE=5_r300_full_release_x86_64v1-gcc-distcc-cache \
   HOSTENV=vostro1000-x86-64-v1-gcc-ccache-distcc COMPILER_FAMILY=gnu
 ```
 
