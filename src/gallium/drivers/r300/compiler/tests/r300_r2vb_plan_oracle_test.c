@@ -985,7 +985,11 @@ case_cache_lifetime(struct r300_context *r300)
       pid_t child = fork();
       if (child == 0) {
          bool admitted = r300_r2vb_route_mvp(r300, &info, &draw);
+#ifdef NDEBUG
+         _exit(admitted && r300_r2vb_plan_shadow_divergences() > 0 ? 0 : 1);
+#else
          _exit(admitted ? 0 : 1);
+#endif
       } else if (child > 0) {
          int status = 0;
          child_witness = waitpid(child, &status, 0) == child;
