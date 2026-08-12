@@ -326,7 +326,8 @@ build_lowered_store_output(bool unsupported)
 
 static nir_shader *
 build_lowered_store_output_contract(nir_intrinsic_instr **store_out,
-                                    unsigned offset, unsigned num_slots)
+                                    unsigned offset, unsigned num_slots,
+                                    unsigned write_mask)
 {
    struct vs_build v = begin_vs("plan_store_output_contract", false);
    nir_def *components[] = {
@@ -340,6 +341,7 @@ build_lowered_store_output_contract(nir_intrinsic_instr **store_out,
          .location = VARYING_SLOT_VAR0,
          .num_slots = num_slots,
       });
+   nir_intrinsic_set_write_mask(store, write_mask);
    nir_intrinsic_set_component(store, 2);
    if (store_out)
       *store_out = store;
@@ -1086,7 +1088,7 @@ case_lowered_store_output_offset_component_contract(struct r300_context *r300)
    printf("lowered store_output offset and component contracts are preserved\n");
 
    nir_intrinsic_instr *store = NULL;
-   nir_shader *vs = build_lowered_store_output_contract(&store, 1, 2);
+   nir_shader *vs = build_lowered_store_output_contract(&store, 1, 2, 0x3);
    gl_varying_slot location;
    CHECK(store && r300_r2vb_output_store_location(store, &location) &&
             location == VARYING_SLOT_VAR0 + 1,
@@ -1128,7 +1130,26 @@ case_lowered_store_output_offset_component_contract(struct r300_context *r300)
    }
    ralloc_free(vs);
 
-   vs = build_lowered_store_output_contract(&store, 2, 2);
+   vs = build_lowered_store_output_contract(&store, 1, 2, 0x1);
+   fs = r300_r2vb_build_restaged_fs_nir(
+      r300, vs, VARYING_SLOT_VAR0 + 1, R300_R2VB_POSITION_CLIP);
+   CHECK(fs != NULL, "masked output restager builds");
+   if (fs) {
+      nir_intrinsic_instr *restaged =
+         shader_first_intrinsic(fs, nir_intrinsic_store_output);
+      nir_alu_instr *padded = restaged
+         ? shader_def_alu(fs, restaged->src[0].ssa)
+         : NULL;
+      CHECK(padded && padded->op == nir_op_vec4 &&
+               nir_src_is_const(padded->src[3].src) &&
+               nir_const_value_as_float(
+                  *nir_src_as_const_value(padded->src[3].src), 32) == 0.0f,
+            "padding preserves an inactive source lane as zero");
+      ralloc_free(fs);
+   }
+   ralloc_free(vs);
+
+   vs = build_lowered_store_output_contract(&store, 2, 2, 0x3);
    CHECK(!r300_r2vb_output_store_location(store, &location),
          "out-of-range lowered output offsets are rejected");
    ralloc_free(vs);
