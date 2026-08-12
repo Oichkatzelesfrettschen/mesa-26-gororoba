@@ -2412,7 +2412,9 @@ check_logical_binding(void)
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
+               !txn.slot_resource &&
                !txn.model.resource &&
+               !txn.output_resource &&
                txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: gate off declines before any upload");
       setenv("R300_R2VB_SLOT_FETCH", "1", 1);
@@ -2523,23 +2525,46 @@ check_logical_binding(void)
                &g_context, &rejected_plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
+               !txn.slot_resource &&
                !txn.model.resource && !txn.output_resource &&
                txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: a rejected plan declines before model materialization");
+      struct r300_r2vb_producer_plan non_single_plan = plan;
+      non_single_plan.action = R300_R2VB_PLAN_SPLIT;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &non_single_plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource &&
+               txn.state == R300_R2VB_BO_DRAW_EMPTY,
+            "txn: a READY non-SINGLE plan declines before model materialization");
       struct r300_r2vb_producer_plan typed_plan = plan;
       typed_plan.has_typed_source = true;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &typed_plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
+               !txn.slot_resource &&
                !txn.model.resource && !txn.output_resource &&
                txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: a typed plan declines before model materialization");
+      struct r300_r2vb_producer_plan multi_input_plan = plan;
+      multi_input_plan.num_position_inputs = 2;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &multi_input_plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource &&
+               txn.state == R300_R2VB_BO_DRAW_EMPTY,
+            "txn: a READY/SINGLE multi-input plan declines before model materialization");
       struct r300_r2vb_producer_plan wrong_space_plan = plan;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &wrong_space_plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_CLIP, NULL, &txn) &&
+               !txn.slot_resource &&
                !txn.model.resource && !txn.output_resource &&
                txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: a caller space different from the plan key declines");
@@ -2549,14 +2574,17 @@ check_logical_binding(void)
                &g_context, &badplan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
-               !txn.model.resource,
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: an unmeasured source declines with nothing retained");
       struct pipe_vertex_element badve = ve;
       badve.src_format = PIPE_FORMAT_R32G32_FLOAT;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &badve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
-               R300_R2VB_POSITION_WINDOW, NULL, &txn),
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: an inadmissible element format declines");
       struct fake_buffer *tiny = (struct fake_buffer *)fake_resource_create(
          &g_screen.screen, &(struct pipe_resource){ .width0 = 16 });
@@ -2564,7 +2592,8 @@ check_logical_binding(void)
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &tiny->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
-               !txn.model.resource,
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: an undersized slot BO declines and releases the model");
       struct r300_vertex_stream_state badpsc = psc;
       badpsc.vap_prog_stream_cntl[0] = 0x25030003;
@@ -2572,7 +2601,8 @@ check_logical_binding(void)
                &g_context, &plan, &fs, &rs, &badpsc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
-               !txn.model.resource,
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: a drifted derived binding declines after materialization");
       badpsc = psc;
       badpsc.vap_prog_stream_cntl[0] |= 1u << R300_SKIP_DWORDS_SHIFT;
@@ -2580,7 +2610,8 @@ check_logical_binding(void)
                &g_context, &plan, &fs, &rs, &badpsc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
-               !txn.model.resource,
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: a live PSC skip count declines after reconstruction");
       badpsc = psc;
       badpsc.vap_prog_stream_cntl_ext[0] ^=
@@ -2589,7 +2620,8 @@ check_logical_binding(void)
                &g_context, &plan, &fs, &rs, &badpsc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
-               !txn.model.resource,
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: a live PSC EXT mismatch declines after reconstruction");
       /* Output-authority negatives: framebuffer identity, extent, and
        * format each decline after materialization with nothing retained. */
@@ -2598,7 +2630,8 @@ check_logical_binding(void)
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
-               !txn.model.resource && !txn.output_resource,
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: an output that is not the bound color target declines");
       tfb.cbufs[0].texture = &outshadow.b;
       tfb.width = txn_layout.width - 1;
@@ -2606,7 +2639,8 @@ check_logical_binding(void)
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
-               !txn.model.resource,
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: a one-pixel-short framebuffer extent declines");
       tfb.width = txn_layout.width;
       outshadow.b.width0 = (uint32_t)txn_layout.storage_bytes - 1;
@@ -2614,7 +2648,8 @@ check_logical_binding(void)
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
-               !txn.model.resource,
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: one byte short of the physical storage declines");
       outshadow.b.width0 = (uint32_t)txn_layout.storage_bytes;
       outshadow.b.format = PIPE_FORMAT_R8G8B8A8_UNORM;
@@ -2622,7 +2657,8 @@ check_logical_binding(void)
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
-               !txn.model.resource,
+               !txn.slot_resource && !txn.model.resource &&
+               !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: an output format outside FP32x4 declines");
       outshadow.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
 

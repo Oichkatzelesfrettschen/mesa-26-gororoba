@@ -4748,12 +4748,9 @@ bool r300_r2vb_producer_bo_draw_validate(
         r2vb_bo_draw_validate_decline("slot_fetch_gate");
         return false;
     }
-    /* The BO-fetch transaction is a delivery cell, so it consumes only the
-     * same READY/SINGLE/untyped one-input plan that
-     * r2vb_auto_single_cell_ok (rg --fixed-strings
-     * r2vb_auto_single_cell_ok src/gallium/drivers/r300/r300_r2vb.c) admits.
-     * A rejected plan can retain a valid source identity from an earlier
-     * scan; action and status remain the delivery authority. */
+    /* The BO-fetch transaction accepts only a READY/SINGLE/untyped plan with
+     * one position input.  A rejected plan can retain a valid source identity
+     * from an earlier scan; action and status remain the delivery authority. */
     if (!plan || plan->status != R300_R2VB_PLAN_READY ||
         plan->action != R300_R2VB_PLAN_SINGLE || plan->has_typed_source ||
         plan->num_position_inputs != 1) {
@@ -5118,6 +5115,10 @@ bool r300_r2vb_bo_draw_capture_selftest(struct r300_context *r300,
 
     struct r300_r2vb_producer_plan plan;
     memset(&plan, 0, sizeof(plan));
+    plan.status = R300_R2VB_PLAN_READY;
+    plan.action = R300_R2VB_PLAN_SINGLE;
+    plan.key.space = R300_R2VB_POSITION_WINDOW;
+    plan.has_typed_source = false;
     plan.num_position_inputs = 1;
     plan.position_source.app_driver_location = 0;
     plan.position_source.location_rank = 0;
