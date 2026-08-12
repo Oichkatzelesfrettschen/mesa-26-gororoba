@@ -31,6 +31,7 @@ files_r300 = files(
   'r300_r2vb.c',
   'r300_r2vb_plan.c',
   'r300_r2vb_plan.h',
+  'r300_r2vb_reingest_state.h',
   'r300_r2vb_telemetry.c',
   'r300_r2vb_telemetry.h',
   'r300_reg.h',
@@ -910,6 +911,25 @@ if with_tests
       include_directories : [inc_src, inc_include, inc_gallium, inc_gallium_aux,
                              include_directories('.')],
       dependencies : [idep_mesautilc11],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # Host calibration for the C1b VTE restore and the position-only C1c VAP
+  # state packet.  The matrix covers closed gates, known-good state, and
+  # inherited point-size or texcoord declarations that must be rejected.
+  test(
+    'r300-r2vb-reingest-state',
+    executable(
+      'r300_r2vb_reingest_state_test',
+      files('tests/r300_r2vb_reingest_state_test.c'),
+      c_args : r300_test_c_args,
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('.'),
+      ],
+      dependencies : [idep_mesautil],
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r300'],

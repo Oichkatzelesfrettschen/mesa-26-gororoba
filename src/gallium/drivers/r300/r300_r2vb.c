@@ -52,6 +52,7 @@
 #include "r300_r2vb.h"
 #include "r300_r2vb_capture_gate.h"
 #include "r300_r2vb_plan.h"
+#include "r300_r2vb_reingest_state.h"
 #include "r300_r2vb_telemetry.h"
 #include "r300_reg.h"
 #include "r300_vs.h"
@@ -2084,6 +2085,12 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
 {
     CS_LOCALS(r300);
 
+    const struct r300_viewport_state *viewport_state =
+        (const struct r300_viewport_state *)r300->viewport_state.state;
+    const uint32_t saved_vte_control =
+        viewport_state ? viewport_state->vte_control
+                       : (R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+
     assert(num_vertices > 0 && num_vertices <= 65535);
     assert(vertex_attrs != NULL);
     assert(r300->screen->caps.num_vert_fpus == 0);
@@ -2129,7 +2136,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
             vertex_attrs, 1, &layout, transform_mode))
         return;
 
-    /* C0 baseline cell gate (R300_PTSIZE_C0=1): write VAP_OUTPUT_VTX_FMT_0/1
+    /* C0 baseline cell gate (R300_PTSIZE_C0=1): request VAP_OUTPUT_VTX_FMT_0/1
      * (0x2090/0x2094) explicitly on the re-ingest so PT_SIZE_PRESENT (bit 16 of
      * 0x2090) does not inherit from the upstream real SWTCL draw.  The only other
      * 0x2090 write site in the driver is r300_emit_vap_output_state, so without
@@ -2140,9 +2147,9 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * and a 16-point readback bbox spills to the origin (~110 texels, not 16
      * single texels).  C0 holds position-only output with PT_SIZE_PRESENT and the
      * color/texcoord components cleared, so the GA falls back to GA_POINT_SIZE for
-     * the rasterized size.  C0 owns the VAP_OUTPUT_VTX_FMT subset that C1c and C1d
-     * deliberately leave alone, keeping the cells non-overlapping.  Gate-off keeps
-     * the path byte-identical. */
+     * the rasterized size.  C1c requests the same position-only packet because
+     * its assembly reset must describe the same VAP tuple.  Gate-off keeps the
+     * path byte-identical. */
     static int ptsize_c0 = -1;
     if (ptsize_c0 < 0) {
         const char *e = getenv("R300_PTSIZE_C0");
@@ -2198,7 +2205,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         r2vb_vte_w0_fmt = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
-    /* C1c cell gate (R300_PTSIZE_C1C=1): re-emit the VAP_VTX_STATE_CNTL +
+    /* C1c cell gate (R300_PTSIZE_C1C=1): request the position-only
+     * VAP_OUTPUT_VTX_FMT_0/1 packet together with the VAP_VTX_STATE_CNTL +
      * VAP_VSM_VTX_ASSM atom (0x2180..0x2184) with values that match the
      * re-ingest's single-FLOAT_4 position-only input stream, instead of
      * inheriting from the application's prior VS state-emit at
@@ -2206,7 +2214,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * and VSM_VTX_ASSM = 0x00000401 (POS | TC0) inherited from the
      * application's "position + tex0" layout; the re-ingest has no tex0,
      * so the inherited TC0 bit causes the GA to expect a texcoord output
-     * vector that the FLOAT_4-only PSC does not produce.  C1c writes:
+     * vector that the FLOAT_4-only PSC does not produce.  C1c requests:
+     *   OUTPUT_VTX_FMT_0 = POS_PRESENT, OUTPUT_VTX_FMT_1 = 0
      *   VTX_STATE_CNTL = 0 (default)
      *   VSM_VTX_ASSM   = R300_INPUT_CNTL_POS (POS only)
      * Gate-off keeps the path byte-identical. */
@@ -2264,18 +2273,22 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         ptsize_c1d ? (struct r300_rs_block *)r300->rs_block_state.state : NULL;
     /* RS_IP and RS_INST tables share the same length (inst_count + 1). */
     unsigned c1d_rs_count = c1d_rs ? (c1d_rs->inst_count & R300_RS_INST_COUNT_MASK) + 1 : 0;
+    const bool position_only_output =
+        r300_r2vb_position_only_output_enabled(ptsize_c0, ptsize_c1c);
 
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
      * optional observe redirect (stage3_color_bo) adds nine dwords.  Each C1/C
-     * cell adds an independently-gated count: C0 3 (SEQ-of-2 + header), C1a 7,
-     * C1b 2, C1c 3, C2 5 (SEQ-of-4 + header), C3 8 (SEQ-of-7 + header), C4 6 (3
-     * single writes, non-contiguous), C1d 7 + 2*rs_count (the rasterizer block,
+     * cell adds an independently-gated count: the shared C0/C1c output packet
+     * is 3 (SEQ-of-2 + header), C1a 7, C1b W0 2 plus restore 2, C1c assembly
+     * 3, C2 5 (SEQ-of-4 + header), C3 8 (SEQ-of-7 + header), C4 6 (3 single
+     * writes, non-contiguous), C1d 7 + 2*rs_count (the rasterizer block,
      * variable). */
     BEGIN_CS((stage3_color_bo ? 26 : 17)
-             + (ptsize_c0  ? 3 : 0)
+             + r300_r2vb_position_only_output_dwords(ptsize_c0, ptsize_c1c)
              + (ptsize_c1a ? 7 : 0)
-             + (r2vb_vte_w0_fmt ? 2 : 0)
-             + (ptsize_c1c ? 3 : 0)
+             + r300_r2vb_vte_w0_dwords(r2vb_vte_w0_fmt)
+             + r300_r2vb_vte_restore_dwords(r2vb_vte_w0_fmt)
+             + r300_r2vb_position_only_assembly_dwords(ptsize_c1c)
              + (ptsize_c2  ? 5 : 0)
              + (ptsize_c3  ? 8 : 0)
              + (ptsize_c4  ? 6 : 0)
@@ -2299,14 +2312,14 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                ((stage3_height + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
     }
 
-    if (ptsize_c0) {
+    if (position_only_output) {
         /* Explicit position-only output vector format.  POS_PRESENT (bit 0) set;
          * PT_SIZE_PRESENT (bit 16) and every COLOR_*_PRESENT bit cleared in 0x2090;
          * VAP_OUTPUT_VTX_FMT_1 (0x2094) cleared so no texcoord components either.
          * Same SEQ-of-2 form r300_emit_vap_output_state uses. */
         OUT_CS_REG_SEQ(R300_VAP_OUTPUT_VTX_FMT_0, 2);
-        OUT_CS(R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
-        OUT_CS(0);
+        OUT_CS(r300_r2vb_position_only_output_fmt0());
+        OUT_CS(r300_r2vb_position_only_output_fmt1());
     }
 
     if (ptsize_c1a) {
@@ -2334,8 +2347,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         /* Clean VAP_VTX_STATE_CNTL + VAP_VSM_VTX_ASSM for a position-only
          * single-stream re-ingest.  Same SEQ-of-2 form as r300_emit.c:903. */
         OUT_CS_REG_SEQ(R300_VAP_VTX_STATE_CNTL, 2);
-        OUT_CS(0);
-        OUT_CS(R300_INPUT_CNTL_POS);
+        OUT_CS(r300_r2vb_position_only_vtx_state_cntl());
+        OUT_CS(r300_r2vb_position_only_vtx_assm());
     }
 
     if (ptsize_c2) {
@@ -2441,6 +2454,13 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     OUT_CS_PKT3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
     OUT_CS((num_vertices << R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) | reingest_vf_prim |
            R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST);
+
+    if (r2vb_vte_w0_fmt) {
+        /* Restore the application VTE selection after the re-ingest draw.  The
+         * packet is in the same command stream so a capture return cannot leave
+         * W0_FMT active in the hardware register file. */
+        OUT_CS_REG(R300_VAP_VTE_CNTL, saved_vte_control);
+    }
 
     END_CS;
 }
