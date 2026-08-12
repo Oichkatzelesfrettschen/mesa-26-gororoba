@@ -1485,9 +1485,10 @@ util_make_fs_clear_color_nir(struct pipe_context *pipe, bool write_all_cbufs,
                                         : FRAG_RESULT_DATA0;
    nir_def *value;
    if (use_const_buf) {
-      /* Declare the sized block-0 UBO interface for the clear color.  A
-       * backend that sizes its constant file from the nir_var_mem_ubo
-       * declaration (r300's nir_to_rc const-file setup) sees a raw
+      /* Declare the sized block-0 UBO interface for the clear color.  The
+       * r300 nir_to_rc backend sizes its constant file from the
+       * nir_var_mem_ubo declaration in ntr_setup_uniforms
+       * (rg --fixed-strings ntr_setup_uniforms src/), so a raw
        * load_ubo with only info.num_ubos set as a zero-sized const file,
        * drops the set_constant_buffer upload, and the clear paints
        * whatever the constant file already holds. */
