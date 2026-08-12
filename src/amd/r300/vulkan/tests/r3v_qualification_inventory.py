@@ -57,6 +57,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-tcl-bypass-offline-replay",
     "r300-cs-track-replay",
     "r300-staging-manifest",
+    "r300-staging-manifest-runner-selftest",
     "r300-triangle-manifest-integration",
     # r3v native: arming, dispatch, recording, submit, lifecycle, WSI.
     "r3v-native-arming",

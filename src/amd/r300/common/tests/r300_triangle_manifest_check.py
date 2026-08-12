@@ -20,7 +20,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 # R300_TRIANGLE_SLOT_COLOR then R300_TRIANGLE_SLOT_VERTEX, the emitter's
 # fixed command-stream order.  The enum values come from
 # `r300_tcl_bypass_triangle.h` (rg --fixed-strings
@@ -38,12 +37,13 @@ EXPECTED_RELOC_SLOTS = (1, 0)
 # src/amd/r300/common/r300_pm4_builder.h).  The payload dword follows
 # this header in ib.bin.
 RELOC_NOP_HEADER = 0xC0001000
+EXPECTED_BO_SIZES = {"vertex": 4096, "color": 65536}
 
 
 def validate_bo_table(table: object) -> None:
     """Validate the transport slot-to-role mapping published by the writer."""
     if not isinstance(table, dict):
-        raise ValueError(f"bo_table is not an object: {table}")
+        raise TypeError(f"bo_table is not an object: {table}")
     slots = table.get("slots")
     if not isinstance(slots, list) or len(slots) != 2:
         raise ValueError(f"bo_table slots malformed: {slots}")
@@ -53,7 +53,7 @@ def validate_bo_table(table: object) -> None:
     expected = ((0, "vertex"), (1, "color"))
     for entry, (expected_slot, expected_role) in zip(slots, expected):
         if not isinstance(entry, dict):
-            raise ValueError(f"bo_table slot is not an object: {entry}")
+            raise TypeError(f"bo_table slot is not an object: {entry}")
         if entry.get("slot") != expected_slot:
             raise ValueError(
                 f"bo_table slot {entry.get('slot')} != {expected_slot}"
@@ -68,10 +68,12 @@ def validate_bo_table(table: object) -> None:
                 f"{entry.get('domain')!r}"
             )
         size = entry.get("size")
+        expected_size = EXPECTED_BO_SIZES[expected_role]
         if (not isinstance(size, int) or isinstance(size, bool) or
-                size <= 0):
+                size != expected_size):
             raise ValueError(
-                f"bo_table {expected_role} size is invalid: {size!r}"
+                f"bo_table {expected_role} size {size!r} != "
+                f"required {expected_size}"
             )
 
 
@@ -90,7 +92,7 @@ def validate_reloc_sites(sites: object, ib: bytes) -> None:
     for position, expected_slot in enumerate(EXPECTED_RELOC_SLOTS):
         site = sites[position]
         if not isinstance(site, dict):
-            raise ValueError(f"reloc site {position} is not an object: {site}")
+            raise TypeError(f"reloc site {position} is not an object: {site}")
         if site.get("slot") != expected_slot:
             raise ValueError(
                 f"reloc site {position} slot {site.get('slot')} != "
@@ -140,7 +142,7 @@ def main() -> int:
             fail(f"bo_table.json unusable: {e}")
         try:
             validate_bo_table(bo_table)
-        except ValueError as e:
+        except (TypeError, ValueError) as e:
             fail(str(e))
 
         if len(ib) == 0 or len(ib) % 4 != 0:
@@ -172,7 +174,7 @@ def main() -> int:
             swapped_sites[1]["slot"], swapped_sites[0]["slot"])
         try:
             validate_reloc_sites(swapped_sites, ib)
-        except ValueError:
+        except (TypeError, ValueError):
             pass
         else:
             fail("known-bad swapped-slot calibration passed")
@@ -183,10 +185,21 @@ def main() -> int:
         }
         try:
             validate_bo_table(swapped_bo_table)
-        except ValueError:
+        except (TypeError, ValueError):
             pass
         else:
             fail("known-bad swapped-BO-table calibration passed")
+
+        undersized_bo_table = {
+            "slots": [dict(entry) for entry in bo_table["slots"]]
+        }
+        undersized_bo_table["slots"][0]["size"] = 1
+        try:
+            validate_bo_table(undersized_bo_table)
+        except ValueError:
+            pass
+        else:
+            fail("known-bad undersized-BO-table calibration passed")
 
         def expect_bad_ib(label: str, index: int, value: int) -> None:
             mutated = bytearray(ib)
