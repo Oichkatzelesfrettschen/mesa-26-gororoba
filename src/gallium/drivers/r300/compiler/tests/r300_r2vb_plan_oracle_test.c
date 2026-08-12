@@ -590,6 +590,31 @@ case_typed_varying_position_cell(struct r300_context *r300)
    }
 }
 
+/* The cv=1 varying producer owns the computed output, so its optimized
+ * candidate carries typed operations even when the position candidate is
+ * float-only.  The plan keeps the cv=1 single-pass domain unproven rather
+ * than admitting the position cell as a complete producer. */
+static void
+case_typed_computed_varying_reject(struct r300_context *r300)
+{
+   printf("typed computed varying rejects an unproven cv=1 single pass\n");
+   nir_shader *vs = build_typed_varying_float_position();
+   struct r300_r2vb_producer_plan plan;
+   bool ran = r300_r2vb_plan_producer(r300, vs, true,
+                                      R300_R2VB_POSITION_CLIP, &plan);
+   printf("    plan action=%s primary=%s mask=0x%" PRIx64 "\n",
+          r300_r2vb_plan_action_str(plan.action),
+          r300_r2vb_plan_reason_str(plan.primary_reason),
+          plan.observed_reason_mask);
+   CHECK(ran, "planner runs");
+   CHECK(plan.action == R300_R2VB_PLAN_REJECT, "action reject");
+   CHECK(plan.primary_reason == R300_R2VB_PLAN_TYPED_SINGLE_PASS_UNPROVEN,
+         "reason typed single pass unproven");
+   if (ran)
+      r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
+}
+
 /* cv=1 keeps the production arity rule: a computed varying pins every
  * non-first input to passthrough-varying use only, so a second input feeding
  * the position computation rejects with IO_SHAPE, matching
@@ -1096,6 +1121,7 @@ main(void)
    case_uniform_free_single(r300);
    case_computed_varying_position_cell(r300);
    case_typed_varying_position_cell(r300);
+   case_typed_computed_varying_reject(r300);
    case_computed_varying_arity_reject(r300);
    case_float_split(r300);
    case_typed_split_rows(r300);

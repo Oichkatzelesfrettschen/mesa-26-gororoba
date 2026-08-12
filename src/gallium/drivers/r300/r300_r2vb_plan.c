@@ -34,14 +34,13 @@ plan_primary_reason(uint64_t mask)
     return R300_R2VB_PLAN_OK;
 }
 
-/* Typed-source scan over the restaged position candidate: the cell's typed
- * class describes the producer the cell plans, so a typed computation that
- * feeds only a non-position output (absent from the candidate after the
- * restage's dead-code elimination) leaves the position cell untouched.
- * Signed markers dominate unsigned, and either dominates boolean, so the
- * class reads the strictest admission constraint present.  Equality
- * compares and boolean logic mark the bool class; their integer operands
- * mark their own class at the producing op. */
+/* Typed-source scan over one restaged producer candidate.  The position
+ * candidate owns the cv=0 typed class; a cv=1 varying candidate is scanned
+ * separately before its single-pass verdict is admitted.  Signed markers
+ * dominate unsigned, and either dominates boolean, so the class reads the
+ * strictest admission constraint present.  Equality compares and boolean
+ * logic mark the bool class; their integer operands mark their own class at
+ * the producing op. */
 static void
 plan_scan_typed_source(nir_shader *nir, struct r300_r2vb_producer_plan *plan)
 {
@@ -551,6 +550,7 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
     plan->constant_source =
         r300_r2vb_constant_source_scan(pos, &plan->constant_bytes);
 
+    bool varying_typed_source = false;
     switch (adm) {
     case R300_FS_ADMIT_FITS:
         if (allow_computed_varying) {
@@ -577,6 +577,17 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
                                      : R300_R2VB_PLAN_BACKEND);
                     break;
                 }
+                /* The cv=1 varying producer is a separately admitted
+                 * fragment pass.  Scan its optimized NIR before accepting a
+                 * fitting result, because dead-code elimination in the
+                 * position candidate can remove the only typed producer. */
+                struct r300_r2vb_producer_plan varying_scan = {0};
+                plan_scan_typed_source(vfs, &varying_scan);
+                if (varying_scan.has_typed_source) {
+                    plan_observe(plan,
+                                 R300_R2VB_PLAN_TYPED_SINGLE_PASS_UNPROVEN);
+                    varying_typed_source = true;
+                }
                 /* The varying pass carries its own admission record: the
                  * single application input feeding it and the UBO0 prefix
                  * its restaged producer reads, both consumed by the
@@ -593,6 +604,8 @@ r300_r2vb_plan_producer(struct r300_context *r300, struct nir_shader *vs_nir,
                 ralloc_free(vfs);
             }
         }
+        if (varying_typed_source)
+            break;
         if (plan->has_typed_source) {
             /* A fitting typed producer would run single-pass without ever
              * passing the carry range/signedness checks, admitting an
