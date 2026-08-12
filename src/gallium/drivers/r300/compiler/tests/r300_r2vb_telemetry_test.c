@@ -399,11 +399,15 @@ main(void)
    CHECK(c->retained == base.retained && count_dir_files(retain_dir) == 0,
          "closed gate retains nothing");
 
-   /* A zero-valued gate stays closed instead of becoming a relative output
-    * directory named "0". */
+   /* The exact value "0" disables the retention directory. */
    setenv("R300_R2VB_TELEMETRY_RETAIN", "0", 1);
+   struct r300_r2vb_telemetry_counters zero_base = *c;
+   CHECK(!r300_r2vb_telemetry_observation_enabled(),
+         "zero gate disables retention observation");
    plan_and_note("over/zero", over, R300_R2VB_PLAN_SPLIT);
-   CHECK(c->retained == base.retained && count_dir_files(retain_dir) == 0,
+   CHECK(c->retained == zero_base.retained &&
+            c->retain_failures == zero_base.retain_failures &&
+            count_dir_files(retain_dir) == 0,
          "zero gate retains nothing");
 
    /* Retention open: the split plan writes one content-hash file, and a

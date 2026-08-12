@@ -89,7 +89,8 @@ Two measurement instruments feed the compaction research from this stack:
   printing under `R300_R2VB_TELEMETRY=1`, and retention of engaged
   producers -- SPLIT plans and non-structural rejects -- as
   `nir_serialize` blobs named by their full BLAKE3 content hash under
-  `R300_R2VB_TELEMETRY_RETAIN=<dir>`.  Publication is atomic (same-directory
+  `R300_R2VB_TELEMETRY_RETAIN=<dir>`.  The exact value `0` disables retention
+  and keeps the observation gate closed.  Publication is atomic (same-directory
   temp file, `O_EXCL`, rename; unlink on failure), an existing file
   verifies byte-for-byte before deduplicating, and the summary prints once
   per context epoch through atomic counter loads.
