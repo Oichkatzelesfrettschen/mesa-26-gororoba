@@ -104,6 +104,7 @@ The run proceeds only when all of the following hold.
 
   ```sh
   R3V_SUITE_REPORT="$R3V_NATIVE_MANIFEST_DIR/preflight-suites.txt"
+  R3V_KERNEL_REPLAY_TOOL=<path to replay_r300_cs_track> \
   meson test -C "$R3V_BUILD_DIR" --no-rebuild --print-errorlogs \
     --suite r300 --suite r3v --suite radeon-drm-vk --suite drm-shim \
     >"$R3V_SUITE_REPORT" 2>&1
