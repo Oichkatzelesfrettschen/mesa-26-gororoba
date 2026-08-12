@@ -210,6 +210,7 @@ test_classification(void)
 
 /* Suite 3: 2-limb base-64 significand multiply with RNE rounding. */
 
+#if !defined(__clang__) || !defined(__ARM_FP16_FORMAT_IEEE)
 /* Decode the biased exponent and significand from a normal FP16 value.
  * Returns false if bits is not a normal (exp in [1..30]). */
 static bool
@@ -243,6 +244,7 @@ fp16_subnormal_decode(uint16_t bits, int *out_biased_exp, uint32_t *out_sig)
    *out_sig        = mant & 0x7ff;
    return true;
 }
+#endif /* software FP16 reference path */
 
 /* Reference multiply: convert FP16 bits to double, multiply, convert result
  * back to FP16 using RNE rounding via the C compiler's float16 emulation.
