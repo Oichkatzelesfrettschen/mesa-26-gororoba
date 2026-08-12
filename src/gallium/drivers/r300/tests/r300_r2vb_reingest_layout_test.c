@@ -216,10 +216,11 @@ test_computed_varying_mapping(void)
    ralloc_free(b.shader);
 }
 
-/* Lowered output stores carry their destination slot in IO semantics plus a
- * constant offset, their value in src[0], and their component mask relative
- * to the value.  The re-ingest layout resolves all three fields before it
- * classifies the stream. */
+/* NIR's store_output form carries the destination slot in IO semantics plus a
+ * constant offset, the value in src[0], and the component mask in intrinsic
+ * indices (src/compiler/nir/nir_intrinsics.py; rg --fixed-strings
+ * 'store("output"' src/compiler/nir/nir_intrinsics.py).  The re-ingest layout
+ * resolves these fields before it classifies the stream. */
 static void
 test_lowered_store_output_mapping(void)
 {
@@ -228,7 +229,7 @@ test_lowered_store_output_mapping(void)
    nir_store_var(&b, io.out_pos, nir_load_var(&b, io.in_pos), 0xf);
 
    nir_def *input = nir_load_input(
-      &b, 4, 32, nir_imm_int(&b, 0),
+      &b, 4, 32, nir_imm_int(&b, 1),
       .base = 1,
       .io_semantics.location = VERT_ATTRIB_GENERIC0);
    nir_store_output(&b, input, nir_imm_int(&b, 0),
@@ -260,7 +261,7 @@ test_lowered_store_output_mapping(void)
             "lowered store_output position remains first");
       CHECK(streams[1].kind == R2VB_STREAM_PASSTHROUGH &&
                streams[1].slot == VARYING_SLOT_VAR0 &&
-               streams[1].src_velem == 1 && streams[1].components == 4 &&
+               streams[1].src_velem == 2 && streams[1].components == 4 &&
                streams[1].write_mask == 0xf,
             "lowered store_output value maps to its input velem");
       CHECK(streams[2].kind == R2VB_STREAM_COMPUTED &&
