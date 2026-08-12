@@ -1364,10 +1364,12 @@ void r300_emit_us_resync(struct r300_context *r300)
         END_CS;
     }
 
-    /* Known: r300->fs.size and the companion atom sizes remain allocated
-     * across an FS unbind, while r300_fs() follows r300->fs.state.  Symbol
-     * discovery uses (rg --fixed-strings "r300->fs.state"
-     * src/gallium/drivers/r300/r300_state.c) and
+    /* Known: r300->fs.size and the companion atom size fields retain their
+     * previous nonzero emitted-dword counts across an FS unbind, while
+     * r300_fs() follows r300->fs.state.  Symbol discovery uses
+     * (rg --fixed-strings "r300_fs(" src/gallium/drivers/r300/r300_context.h),
+     * (rg --fixed-strings "r300->fs.state"
+     * src/gallium/drivers/r300/r300_state.c), and
      * (rg --fixed-strings "r300_emit_us_resync"
      * src/gallium/drivers/r300/r300_emit.c).  A live binding therefore guards
      * the re-upload. */

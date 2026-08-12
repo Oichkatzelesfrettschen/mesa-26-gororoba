@@ -2409,12 +2409,14 @@ r3v_replay_draw(struct r3v_device *device,
     * fragment-less pipeline so depth and stencil operations still execute.
     * Only a pipeline with static rasterizer discard leaves fs_cso NULL, and
     * that draw produces no fragment output.  The replay skips it because the
-    * RS482 SW-TCL path reaches r300_update_derived_state, whose
-    * caps.has_tcl branch does not compile a hardware vertex shader, while
-    * r300_update_rs_block unconditionally dereferences r300_vs()->shader and
-    * r300_fs()->shader.  Symbol discovery: (rg --fixed-strings
-    * "r300_update_derived_state" src/), (rg --fixed-strings "caps.has_tcl"
-    * src/), and (rg --fixed-strings "r300_update_rs_block" src/). */
+    * RS482 SW-TCL path reaches r300_update_derived_state.  Its caps.has_tcl
+    * branch calls r300_pick_vertex_shader; RS482 has_tcl is false, so that
+    * branch is skipped before r300_update_rs_block unconditionally
+    * dereferences r300_vs()->shader and r300_fs()->shader.  Symbol discovery:
+    * (rg --fixed-strings "r3v_create_one_pipeline" src/),
+    * (rg --fixed-strings "r300_update_derived_state" src/),
+    * (rg --fixed-strings "caps.has_tcl" src/), and (rg --fixed-strings
+    * "r300_update_rs_block" src/). */
    if (!bound_pipeline || !bound_pipeline->vs_cso || !bound_pipeline->fs_cso)
       return VK_SUCCESS;
 
