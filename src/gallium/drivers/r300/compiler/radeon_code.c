@@ -50,8 +50,9 @@ rc_constants_add(struct rc_constant_list *c, struct rc_constant *constant)
          c->_Reserved = 16;
 
       newlist = malloc(sizeof(struct rc_constant) * c->_Reserved);
-      /* A fresh list has Constants == NULL until the first add, and memcpy
-       * requires non-null pointers even for a zero-byte copy. */
+      /* C17 7.1.4 requires valid pointer arguments for library calls; the
+       * count check gives memcpy an initialized destination and source when
+       * it copies constants. */
       if (c->Count)
          memcpy(newlist, c->Constants, sizeof(struct rc_constant) * c->Count);
 
