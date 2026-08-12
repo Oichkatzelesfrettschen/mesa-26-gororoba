@@ -61,7 +61,8 @@ enum r300_vop_status {
    /* silicon measurement matches theorem; production carrier absent */
    R300_VOP_HW_CONFIRMED_CARRIER_PENDING,
    R300_VOP_BOUNDARY,         /* confirmed with documented precision limit */
-   R300_VOP_CARRIER_PENDING,  /* arithmetic known; production carrier pending */
+   R300_VOP_CARRIER_PENDING,  /* arithmetic known; production admission,
+                               * carrier, and dispatch work remain pending */
    R300_VOP_REJECTED,         /* falsified by silicon measurement */
 };
 

@@ -50,6 +50,24 @@ radeon_ioctl_noop(int fd, unsigned long request, void *arg)
 }
 
 static int
+radeon_ioctl_cs(int fd, unsigned long request, void *arg)
+{
+   const char *failure = getenv("R3V_NATIVE_SHIM_CS_REFUSE");
+   if (failure != NULL && strcmp(failure, "1") == 0)
+      return -EINVAL;
+   return 0;
+}
+
+static int
+radeon_ioctl_gem_wait_idle(int fd, unsigned long request, void *arg)
+{
+   const char *failure = getenv("R3V_NATIVE_SHIM_COMPLETION_FAIL");
+   if (failure != NULL && strcmp(failure, "1") == 0)
+      return -EINVAL;
+   return 0;
+}
+
+static int
 radeon_ioctl_info(int fd, unsigned long request, void *arg)
 {
    struct drm_radeon_info *info = arg;
@@ -228,11 +246,11 @@ radeon_ioctl_gem_busy(int fd, unsigned long request, void *arg)
 }
 
 static ioctl_fn_t driver_ioctls[] = {
-   [DRM_RADEON_CS] = radeon_ioctl_noop,
+   [DRM_RADEON_CS] = radeon_ioctl_cs,
    [DRM_RADEON_INFO] = radeon_ioctl_info,
    [DRM_RADEON_GEM_SET_DOMAIN] = radeon_ioctl_noop,
    [DRM_RADEON_GEM_SET_TILING] = radeon_ioctl_noop,
-   [DRM_RADEON_GEM_WAIT_IDLE] = radeon_ioctl_noop,
+   [DRM_RADEON_GEM_WAIT_IDLE] = radeon_ioctl_gem_wait_idle,
    [DRM_RADEON_GEM_INFO] = radeon_ioctl_gem_info,
    [DRM_RADEON_GEM_CREATE] = radeon_ioctl_gem_create,
    [DRM_RADEON_GEM_MMAP] = radeon_ioctl_gem_mmap,

@@ -730,15 +730,16 @@ if get_option('r3v-native-backend')
       ),
       suite : ['r3v'],
     )
+    r3v_native_queue_status_test = executable(
+      'r3v_native_queue_status_test',
+      files('tests/r3v_native_queue_status_test.c'),
+      include_directories : r3v_native_inc,
+      dependencies : r3v_native_deps,
+      gnu_symbol_visibility : 'hidden',
+    )
     test(
       'r3v-native-queue-status',
-      executable(
-        'r3v_native_queue_status_test',
-        files('tests/r3v_native_queue_status_test.c'),
-        include_directories : r3v_native_inc,
-        dependencies : r3v_native_deps,
-        gnu_symbol_visibility : 'hidden',
-      ),
+      r3v_native_queue_status_test,
       suite : ['r3v'],
     )
     test(
@@ -852,6 +853,15 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+    test(
+      'r3v-native-queue-transport-status',
+      r3v_native_queue_status_test,
+      args : [r3v_native_direct_write_harness],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim, r3v_native_direct_write_harness],
+      timeout : 180,
+      suite : ['r3v'],
+    )
     test(
       'r3v-native-submit-manifest',
       prog_python,
