@@ -3906,6 +3906,10 @@ r300_r2vb_materialize_model_fetch(struct r300_context *r300,
         return true;
     }
 
+    /* CPU-shadow records need the uploader before u_upload_data_ref. */
+    if (!r300->uploader)
+        return false;
+
     unsigned upload_offset = 0;
     struct pipe_resource *uploaded = NULL;
     u_upload_data_ref(r300->uploader, 0,
@@ -5129,12 +5133,12 @@ bool r300_r2vb_producer_fetch_init_gated(
     const struct r300_r2vb_producer_stream *model = &s->stream[1];
     /* The emission object is self-authenticating: it re-proves the whole
      * tuple instead of trusting that the normal builder produced it.  The
-     * slot stream is the fixed FP32x4 form at offset zero; the model
-     * stream is one of the two admitted physical families; and the fetch
-     * total derives from the record widths rather than being copied from
-     * a redundant field. */
+     * slot stream is the fixed FP32x4 form at offset zero with a dense
+     * 16-byte stride; the model stream is one of the two admitted physical
+     * families; and the fetch total derives from the record widths rather
+     * than being copied from a redundant field. */
     if (slot->offset_bytes != 0 || slot->size_dwords != 4 ||
-        slot->stride_dwords < slot->size_dwords ||
+        slot->stride_dwords != 4 ||
         slot->logical_components != 4)
         return false;
     {
