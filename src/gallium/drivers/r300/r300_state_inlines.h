@@ -38,7 +38,8 @@ r300_blend_factor_for_target(enum pipe_blendfactor factor, bool alpha,
         /* The alpha-channel factor for SRC_ALPHA_SATURATE is ONE. */
         if (alpha)
             return PIPE_BLENDFACTOR_ONE;
-        return target == R300_BLEND_TARGET_NO_ALPHA ?
+        return target == R300_BLEND_TARGET_NO_ALPHA ||
+               target == R300_BLEND_TARGET_INTENSITY ?
                PIPE_BLENDFACTOR_ZERO : factor;
     case PIPE_BLENDFACTOR_DST_ALPHA:
         return target == R300_BLEND_TARGET_NO_ALPHA ?
