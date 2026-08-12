@@ -321,10 +321,10 @@ main(void)
       assert(contract.entries[i].disposition != R300_FDS_REFERENCE_ARTIFACT);
    }
 
-   /* Known-bad calibration: the current fixed cell leaves the contract
+   /* Known-bad calibration: the bare cell leaves the contract
     * unsatisfied for multiple named reasons, and under all-zero poison the
-    * three silicon-proven gates are among them. A checker reporting only
-    * its first failure would hide two open gates behind the third.
+    * remaining silicon-proven gates are among them. A checker reporting only
+    * its first failure would hide open gates behind the first one.
     */
    struct r300_fragment_binary fs;
    assert(r300_tcl_bypass_triangle_reference_fs(&fs) == 0);
@@ -349,7 +349,6 @@ main(void)
       &contract, cell.ib, cell.ib_size_dwords, 0x00000000, &report);
    assert(cell_failures >= 70);
    assert(report_names(&contract, &report, R300_US_OUT_FMT_0));
-   assert(report_names(&contract, &report, RB3D_COLOR_CHANNEL_MASK));
    assert(report_names(&contract, &report, R300_SC_SCREENDOOR));
    printf("known-bad: fixed cell leaves %u of %u clauses unsatisfied\n",
           cell_failures, contract.count);
@@ -404,10 +403,14 @@ main(void)
          assert(report_names(&contract, &report, known_good_writes[i].reg));
    }
 
+   enum { bare_state_dwords = 3 * 2 };
+   assert(cell.ib_size_dwords > bare_state_dwords);
    uint32_t prefixed[1024];
    memcpy(prefixed, state_ib, (size_t)state_dwords * 4);
-   memcpy(prefixed + state_dwords, cell.ib, cell.ib_size_dwords * 4);
-   uint32_t prefixed_dwords = (uint32_t)state_dwords + cell.ib_size_dwords;
+   memcpy(prefixed + state_dwords, cell.ib + bare_state_dwords,
+          (cell.ib_size_dwords - bare_state_dwords) * 4);
+   uint32_t prefixed_dwords =
+      (uint32_t)state_dwords + cell.ib_size_dwords - bare_state_dwords;
 
    for (unsigned v = 0; v < sizeof(poison_vectors) / 4; v++) {
       assert(r300_first_draw_state_check(&contract, state_ib,
@@ -449,9 +452,9 @@ main(void)
    }
 
    /* Integrated emission: the emitter's contract path produces the exact
-    * contract-prefixed stream -- the contract prefix followed by the bare cell --
-    * and the shared reference contract resolves to this test's parameters,
-    * so every pre-hardware consumer builds one byte-identical IB.
+    * contract-prefixed stream. The bare cell's three standalone state writes
+    * are replaced by the complete contract entries, so every pre-hardware
+    * consumer builds one byte-identical IB.
     */
    struct r300_first_draw_contract reference;
    assert(r300_tcl_bypass_triangle_reference_contract(&reference) == 0);
@@ -471,7 +474,8 @@ main(void)
    assert(integrated.reloc_site_count == cell.reloc_site_count);
    for (unsigned i = 0; i < integrated.reloc_site_count; i++) {
       assert(integrated.reloc_sites[i].ib_index ==
-             cell.reloc_sites[i].ib_index + (uint32_t)state_dwords);
+             cell.reloc_sites[i].ib_index - bare_state_dwords +
+                (uint32_t)state_dwords);
       assert(integrated.reloc_sites[i].slot == cell.reloc_sites[i].slot);
    }
    r300_tcl_bypass_triangle_release(&integrated);

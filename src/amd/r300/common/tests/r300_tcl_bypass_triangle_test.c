@@ -32,6 +32,8 @@
 struct tracker {
    uint32_t fmt0, fmt1, vtx_size, cntl_status;
    bool fmt0_seen, fmt1_seen, vtx_size_seen, cntl_status_seen;
+   uint32_t vte_cntl, color_channel_mask, max_vtx_index;
+   bool vte_cntl_seen, color_channel_mask_seen, max_vtx_index_seen;
    uint8_t ext_seen_mask;
    bool ext_nonidentity;
    uint32_t draw_vf_cntl;
@@ -64,6 +66,15 @@ track(struct tracker *t, const uint32_t *ib, uint32_t count)
             } else if (r == 0x2140) {
                t->cntl_status = value;
                t->cntl_status_seen = true;
+            } else if (r == R300_VAP_VTE_CNTL) {
+               t->vte_cntl = value;
+               t->vte_cntl_seen = true;
+            } else if (r == RB3D_COLOR_CHANNEL_MASK) {
+               t->color_channel_mask = value;
+               t->color_channel_mask_seen = true;
+            } else if (r == R300_VAP_VF_MAX_VTX_INDX) {
+               t->max_vtx_index = value;
+               t->max_vtx_index_seen = true;
             } else if (r >= 0x21E0 && r <= 0x21FC) {
                if (value != 0xF688F688u)
                   t->ext_nonidentity = true;
@@ -126,6 +137,14 @@ test_stream_satisfies_kernel_contract(void)
    assert(t.fmt0_seen && t.fmt0 == 0x1);
    assert(t.fmt1_seen && t.fmt1 == 0);
    assert(t.vtx_size_seen && t.vtx_size == 4);
+   assert(t.vte_cntl_seen && t.vte_cntl == (R300_VTX_XY_FMT | R300_VTX_Z_FMT));
+   assert(t.color_channel_mask_seen &&
+          t.color_channel_mask ==
+             (RB3D_COLOR_CHANNEL_MASK_BLUE_MASK0 |
+              RB3D_COLOR_CHANNEL_MASK_GREEN_MASK0 |
+              RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
+              RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0));
+   assert(t.max_vtx_index_seen && t.max_vtx_index == 2);
    assert(t.ext_seen_mask == 0xff && !t.ext_nonidentity);
    assert(t.draw_count == 1);
    assert(((t.draw_vf_cntl >> 4) & 0x3) == 2);

@@ -195,8 +195,12 @@ test_published_clause_count_matches_the_contract(void)
    params.first_draw_contract = &contract;
    assert(r300_tcl_bypass_triangle_emit(&params, &full) == 0);
 
-   /* Each clause is a one-register PACKET0: a header and a payload. */
-   assert(full.ib_size_dwords - bare.ib_size_dwords == contract.count * 2);
+   /* Each clause is a one-register PACKET0: a header and a payload. The bare
+    * stream owns three state registers, so the prefixed form adds the
+    * contract clauses after accounting for those six dwords. */
+   enum { bare_state_dwords = 3 * 2 };
+   assert(full.ib_size_dwords - bare.ib_size_dwords ==
+          contract.count * 2 - bare_state_dwords);
 
    r300_tcl_bypass_triangle_release(&bare);
    r300_tcl_bypass_triangle_release(&full);
