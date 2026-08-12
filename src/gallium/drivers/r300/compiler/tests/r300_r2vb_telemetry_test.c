@@ -225,7 +225,7 @@ static mode_t
 file_mode(const char *path)
 {
    struct stat st;
-   return stat(path, &st) == 0 ? st.st_mode & 0777 : 0;
+   return stat(path, &st) == 0 ? st.st_mode & 07777 : 0;
 }
 
 static bool
@@ -535,6 +535,27 @@ main(void)
                file_mode(retained_path) == 0644,
             "matching mode skips the ownership-changing operation");
       r300_r2vb_plan_release(&matching_mode_plan);
+   }
+
+   /* Special permission bits are part of the inode mode.  A matching blob
+    * clears them to the effective publication mode instead of accepting a
+    * mode that a fresh publication cannot retain. */
+   mode_t special_mode = 0644 | S_ISUID | S_ISGID | S_ISVTX;
+   CHECK(have_file && chmod(retained_path, special_mode) == 0 &&
+               file_mode(retained_path) == special_mode,
+         "dedup setup adds special permission bits");
+   unsigned special_mode_failures = c->retain_failures;
+   bind_vs(over);
+   struct r300_r2vb_producer_plan special_mode_plan;
+   bool special_mode_plan_ran = r300_r2vb_plan_producer(
+      &g_context, over, false, R300_R2VB_POSITION_CLIP, &special_mode_plan);
+   CHECK(special_mode_plan_ran, "special mode plan remains available");
+   if (special_mode_plan_ran) {
+      r300_r2vb_telemetry_note(&g_context, &special_mode_plan);
+      CHECK(c->retain_failures == special_mode_failures &&
+               file_mode(retained_path) == 0644,
+            "matching blob clears special permission bits");
+      r300_r2vb_plan_release(&special_mode_plan);
    }
 
    /* Known-bad file at the final name: dedup verifies bytes, so a damaged
