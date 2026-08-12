@@ -260,6 +260,43 @@ case_sparse_telemetry_input_ranks(void)
          "position-only telemetry omits varying rank");
 }
 
+static void
+case_multi_position_telemetry_sources(void)
+{
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_VERTEX,
+      g_screen.screen.nir_options[MESA_SHADER_VERTEX], "telemetry_multi_position");
+   nir_variable *late = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "late");
+   late->data.location = VERT_ATTRIB_GENERIC0 + 3;
+   late->data.driver_location = 7;
+   nir_variable *early = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "early");
+   early->data.location = VERT_ATTRIB_GENERIC0 + 1;
+   early->data.driver_location = 2;
+   nir_variable *out_pos = nir_variable_create(
+      b.shader, nir_var_shader_out, glsl_vec4_type(), "gl_Position");
+   out_pos->data.location = VARYING_SLOT_POS;
+   nir_store_var(&b, out_pos,
+                 nir_fadd(&b, nir_load_var(&b, late),
+                          nir_load_var(&b, early)), 0xf);
+   nir_validate_shader(b.shader, "multi position telemetry VS");
+
+   struct r300_r2vb_producer_plan plan = {0};
+   plan.num_position_inputs = 2;
+   uint8_t drivers[2] = {0, 0};
+   uint8_t ranks[2] = {0, 0};
+   unsigned count = r300_r2vb_telemetry_position_sources_for_test(
+      &plan, b.shader, drivers, ranks, ARRAY_SIZE(drivers));
+   CHECK(count == 2 && drivers[0] == 2 && drivers[1] == 7 &&
+            ranks[0] == 0 && ranks[1] == 1,
+         "multi-input telemetry keeps every measured physical source");
+   CHECK(r300_r2vb_input_velem_index_for_test(b.shader, late) == 7 &&
+            r300_r2vb_input_velem_index_for_test(b.shader, early) == 2,
+         "telemetry source identity maps velems by driver location");
+   ralloc_free(b.shader);
+}
+
 int
 main(void)
 {
@@ -384,6 +421,7 @@ main(void)
          "no retention failures");
 
    case_sparse_telemetry_input_ranks();
+   case_multi_position_telemetry_sources();
 
    /* Retention-scope parser: unset, empty, budget, and every unrecognized
     * value keep the established budget-only policy; single, structural,

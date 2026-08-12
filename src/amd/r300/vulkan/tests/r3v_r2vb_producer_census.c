@@ -377,12 +377,21 @@ carry_sig(const struct r300_r2vb_producer_plan *plan, char *buf, size_t len)
 {
    unsigned n = 0;
    for (unsigned i = 0; i < plan->partition.num_bases && n + 1 < len; i++) {
+      /* Keep the carry schema component-sized: a vector base contributes one
+       * transport letter for every scalar lane, matching the retained-corpus
+       * census formatter. */
+      char type;
       switch (plan->partition.r2vb_transport[i]) {
-      case R300_MP_R2VB_SINT:   buf[n++] = 'i'; break;
-      case R300_MP_R2VB_UINT:   buf[n++] = 'u'; break;
+      case R300_MP_R2VB_SINT:   type = 'i'; break;
+      case R300_MP_R2VB_UINT:   type = 'u'; break;
       case R300_MP_R2VB_BOOL1:
-      case R300_MP_R2VB_BOOL32: buf[n++] = 'b'; break;
-      default:                  buf[n++] = 'f'; break;
+      case R300_MP_R2VB_BOOL32: type = 'b'; break;
+      default:                  type = 'f'; break;
+      }
+      unsigned width = plan->partition.bases[i]->num_components;
+      for (unsigned component = 0;
+           component < width && n + 1 < len; component++) {
+         buf[n++] = type;
       }
    }
    buf[n] = '\0';
@@ -614,6 +623,28 @@ check_fragment_pipeline_layout_guard(void)
          "fragment preparation rejects a missing pipeline layout");
 }
 
+static void
+check_carry_signature_component_width(void)
+{
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT,
+      g_screen.screen.nir_options[MESA_SHADER_FRAGMENT],
+      "r2vb_census_carry_signature");
+   struct r300_r2vb_producer_plan plan = {0};
+   plan.partition.num_bases = 2;
+   plan.partition.bases[0] = nir_undef(&b, 3, 32);
+   plan.partition.bases[1] = nir_undef(&b, 1, 32);
+   plan.partition.r2vb_transport[0] = R300_MP_R2VB_FLOAT;
+   plan.partition.r2vb_transport[1] = R300_MP_R2VB_SINT;
+   char signature[R300_MP_MAX_CARRY_COMPS + 1];
+   carry_sig(&plan, signature, sizeof(signature));
+   CHECK(strcmp(signature, "fffi") == 0,
+         "census carry signature repeats transport per vector component");
+   CHECK(strcmp(signature, "fi") != 0,
+         "census carry signature rejects the per-base schema");
+   ralloc_free(b.shader);
+}
+
 int
 main(void)
 {
@@ -621,6 +652,7 @@ main(void)
    fake_stack_init();
 
    check_fragment_pipeline_layout_guard();
+   check_carry_signature_component_width();
 
    for (unsigned i = 0; i < ARRAY_SIZE(rows); i++) {
       run_row(&rows[i], R300_R2VB_POSITION_CLIP);
