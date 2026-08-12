@@ -51,14 +51,8 @@ class_model(const struct r300_pair_eval_profile *p, rc_register_file file,
    }
 }
 
-/* Known from rc_pair_get_src: its source bank comes from the argument
- * swizzle, so the consuming lane does not identify the read port.  An Alpha
- * argument can resolve through RGB.Src[], and an RGB argument can resolve
- * through Alpha.Src[].  Symbol discovery: (rg --fixed-strings
- * 'rc_pair_get_src' src/) locates
- * src/gallium/drivers/r300/compiler/radeon_program_pair.c:175, where the
- * resolver selects RGB.Src[] for RC_SOURCE_RGB and Alpha.Src[] for
- * RC_SOURCE_ALPHA. */
+/* Map the source pointer selected by rc_pair_get_src to the profile's read
+ * port. The resolver contract and its discovery record live at eval_arg_reg. */
 static bool
 source_is_alpha_port(const struct rc_pair_instruction *pair,
                      const struct rc_pair_instruction_source *src)
@@ -205,16 +199,15 @@ r300_pair_decode_channel(const float *reg, unsigned swz)
    }
 }
 
-/* Resolve one Arg's source register.  rc_pair_get_src (radeon_program_pair.c)
- * is the canonical resolver: it picks pair->RGB.Src[] or pair->Alpha.Src[]
- * by walking the ARG'S OWN swizzle (rc_source_type_swz), not by which lane
- * owns the Arg -- a single instruction's RGB.Arg and Alpha.Arg can each
- * resolve into either Src[] array depending on whether their swizzle selects
- * an X/Y/Z-range channel or the W channel, since radeon_pair_translate.c's
- * set_pair_instruction shares source-slot allocation across both lanes for a
- * value one lane reads through the other pipe's read port.  A NULL return
- * means the swizzle only ever selects ZERO/ONE/HALF/UNUSED, so there is no
- * register to fetch at all. */
+/* Resolve one Arg's source register. Known from rc_pair_get_src
+ * (radeon_program_pair.c): it picks pair->RGB.Src[] or pair->Alpha.Src[] by
+ * walking the ARG'S OWN swizzle (rc_source_type_swz), so the consuming lane
+ * does not identify the read port. An Alpha argument can resolve through
+ * RGB.Src[], and an RGB argument can resolve through Alpha.Src[]. A NULL
+ * return means the swizzle only selects ZERO/ONE/HALF/UNUSED, so no register
+ * is fetched. Symbol discovery: (rg --fixed-strings 'rc_pair_get_src' src/)
+ * locates src/gallium/drivers/r300/compiler/radeon_program_pair.c:175, where
+ * RC_SOURCE_RGB selects RGB.Src[] and RC_SOURCE_ALPHA selects Alpha.Src[]. */
 static bool
 eval_arg_reg(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
              struct rc_pair_instruction_arg *arg, float reg[4],
