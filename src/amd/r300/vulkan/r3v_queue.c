@@ -747,6 +747,7 @@ r3v_replay_bind_descriptor_sets(struct r3v_cmd_bind_descriptor_sets *accum,
    const struct r3v_cmd_bind_descriptor_sets *b = &e->bind_dsets;
    uint32_t dynamic_cursor = 0;
    accum->bind_point      = b->bind_point;
+   accum->stage_flags     = b->stage_flags;
    accum->pipeline_layout = b->pipeline_layout;
    for (uint32_t i = 0; i < b->set_count; i++) {
       const uint32_t abs_set = b->first_set + i;
@@ -3847,15 +3848,19 @@ r3v_replay_gpu_range(struct r3v_device *device,
             device->ia_snapshot_stale = true;
          break;
 
-      case R3V_CMD_BIND_DESCRIPTOR_SETS:
-         if (e->bind_dsets.bind_point == VK_PIPELINE_BIND_POINT_COMPUTE) {
-            r3v_replay_bind_descriptor_sets(&state->compute_dsets, e);
-            state->last_compute_bind_dsets = &state->compute_dsets;
-         } else {
+      case R3V_CMD_BIND_DESCRIPTOR_SETS: {
+         const uint32_t bind_targets =
+            r3v_descriptor_bind_targets(e->bind_dsets.stage_flags);
+         if (bind_targets & R3V_DESCRIPTOR_BIND_GRAPHICS) {
             r3v_replay_bind_descriptor_sets(&state->graphics_dsets, e);
             state->last_graphics_bind_dsets = &state->graphics_dsets;
          }
+         if (bind_targets & R3V_DESCRIPTOR_BIND_COMPUTE) {
+            r3v_replay_bind_descriptor_sets(&state->compute_dsets, e);
+            state->last_compute_bind_dsets = &state->compute_dsets;
+         }
          break;
+      }
 
       case R3V_CMD_DISPATCH: {
          if (current_render_pass)

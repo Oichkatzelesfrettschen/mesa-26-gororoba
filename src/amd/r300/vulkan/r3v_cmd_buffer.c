@@ -1083,23 +1083,28 @@ r3v_CmdBindDescriptorSets2KHR(VkCommandBuffer commandBuffer,
       return;
    }
 
+   /* The legacy shim emits one bind-point stage mask, while the 2KHR entrypoint
+    * can name graphics and compute stages together.  Replay records the mask
+    * and applies the descriptor update to every named bind-point state. */
+   const uint32_t targets = r3v_descriptor_bind_targets(info->stageFlags);
+   if (targets == 0) {
+      vk_command_buffer_set_error(&cmd->base, VK_ERROR_FEATURE_NOT_PRESENT);
+      return;
+   }
+   const VkPipelineBindPoint bp =
+      (targets & R3V_DESCRIPTOR_BIND_COMPUTE) &&
+      !(targets & R3V_DESCRIPTOR_BIND_GRAPHICS)
+      ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+
    struct r3v_cmd_entry *e = r3v_cmd_append(cmd);
    if (!e) return;
-
-   /* Derive the bind point from stageFlags.  vk_common's legacy shim sets
-    * stageFlags from a single VkPipelineBindPoint via
-    * vk_shader_stages_from_bind_point, so a single bit set is the common case;
-    * choose compute when only compute stages are present, graphics otherwise. */
-   VkPipelineBindPoint bp = VK_PIPELINE_BIND_POINT_GRAPHICS;
-   if ((info->stageFlags & ~(VkShaderStageFlags)VK_SHADER_STAGE_COMPUTE_BIT) == 0 &&
-       (info->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT) != 0)
-      bp = VK_PIPELINE_BIND_POINT_COMPUTE;
 
    uint32_t sets_n = info->descriptorSetCount;
    uint32_t doff_n = info->dynamicOffsetCount;
 
    e->type                          = R3V_CMD_BIND_DESCRIPTOR_SETS;
    e->bind_dsets.bind_point         = bp;
+   e->bind_dsets.stage_flags        = info->stageFlags;
    e->bind_dsets.pipeline_layout    = info->layout;
    e->bind_dsets.first_set          = info->firstSet;
    e->bind_dsets.set_count          = sets_n;

@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "../r3v_cmd_buffer.h"
 #include "../r3v_ubo_binding.h"
 
 static unsigned failures;
@@ -97,6 +98,26 @@ check_constant_span_rounding(void)
          "a complete UBO slot keeps its vec4 span");
 }
 
+static void
+check_descriptor_bind_targets(void)
+{
+   const VkShaderStageFlags graphics = VK_SHADER_STAGE_VERTEX_BIT |
+                                       VK_SHADER_STAGE_FRAGMENT_BIT;
+
+   CHECK(r3v_descriptor_bind_targets(graphics) ==
+            R3V_DESCRIPTOR_BIND_GRAPHICS,
+         "graphics stages select graphics descriptor state");
+   CHECK(r3v_descriptor_bind_targets(VK_SHADER_STAGE_COMPUTE_BIT) ==
+            R3V_DESCRIPTOR_BIND_COMPUTE,
+         "compute stage selects compute descriptor state");
+   CHECK(r3v_descriptor_bind_targets(
+            graphics | VK_SHADER_STAGE_COMPUTE_BIT) ==
+            (R3V_DESCRIPTOR_BIND_GRAPHICS | R3V_DESCRIPTOR_BIND_COMPUTE),
+         "mixed stages update both descriptor states");
+   CHECK(r3v_descriptor_bind_targets(0) == 0,
+         "an empty stage mask selects no descriptor state");
+}
+
 int
 main(void)
 {
@@ -104,6 +125,7 @@ main(void)
    check_effective_ranges();
    check_scratch_copy_bounds();
    check_constant_span_rounding();
+   check_descriptor_bind_targets();
 
    if (failures) {
       printf("FAILED: %u check(s)\n", failures);
