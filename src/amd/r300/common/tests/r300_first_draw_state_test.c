@@ -205,6 +205,34 @@ known_good_late_barrier_stream(uint32_t *ib)
 }
 
 static uint32_t
+known_bad_barrier_boundary_value_stream(uint32_t *ib)
+{
+   uint32_t n = 0;
+   const uint32_t write_count = sizeof(known_good_writes) /
+                                sizeof(known_good_writes[0]);
+   for (uint32_t i = 0; i < write_count; i++) {
+      const struct known_good_first_draw_write *write = &known_good_writes[i];
+      uint32_t value = write->value;
+      if (is_ordering_barrier_reg(write->reg))
+         value ^= 1;
+      ib[n++] = CP_PACKET0(write->reg, 0);
+      ib[n++] = value;
+   }
+
+   ib[n++] = CP_PACKET3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
+   ib[n++] = R300_VAP_VF_CNTL__PRIM_TRIANGLES;
+
+   for (uint32_t i = 0; i < write_count; i++) {
+      const struct known_good_first_draw_write *write = &known_good_writes[i];
+      if (!is_ordering_barrier_reg(write->reg))
+         continue;
+      ib[n++] = CP_PACKET0(write->reg, 0);
+      ib[n++] = write->value;
+   }
+   return n;
+}
+
+static uint32_t
 find_entry(const struct r300_first_draw_contract *contract, uint16_t reg)
 {
    for (uint32_t i = 0; i < contract->count; i++) {
@@ -353,6 +381,23 @@ main(void)
       ordering_barrier_count += is_ordering_barrier_reg(known_good_writes[i].reg);
    assert(r300_first_draw_state_check(&contract, late_barrier_ib,
                                       late_barrier_dwords, 0x12345678,
+                                      &report) == ordering_barrier_count);
+   for (uint32_t i = 0; i < known_good_count; i++) {
+      if (is_ordering_barrier_reg(known_good_writes[i].reg))
+         assert(report_names(&contract, &report, known_good_writes[i].reg));
+   }
+
+   /* Boundary-value calibration: wrong barrier values before the draw remain
+    * unsatisfied even when matching writes follow the draw. A post-draw write
+    * cannot make a cache or idle operation effective at the first draw.
+    */
+   uint32_t wrong_barrier_ib[KNOWN_GOOD_WRITE_COUNT * 4 + 2];
+   uint32_t wrong_barrier_dwords =
+      known_bad_barrier_boundary_value_stream(wrong_barrier_ib);
+   assert(wrong_barrier_dwords ==
+          known_good_dwords + 2 + 2 * ordering_barrier_count);
+   assert(r300_first_draw_state_check(&contract, wrong_barrier_ib,
+                                      wrong_barrier_dwords, 0x12345678,
                                       &report) == ordering_barrier_count);
    for (uint32_t i = 0; i < known_good_count; i++) {
       if (is_ordering_barrier_reg(known_good_writes[i].reg))

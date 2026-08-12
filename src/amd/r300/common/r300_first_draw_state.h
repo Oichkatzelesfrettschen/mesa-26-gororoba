@@ -111,8 +111,9 @@ r300_first_draw_state_dwords(const struct r300_first_draw_contract *contract)
 
 /* Poison-model checker: applies the command stream over an arbitrary
  * predecessor register state and reports every contract clause the final
- * state leaves unsatisfied. Ordering-barrier clauses require their writes
- * before a recognized draw packet. The report is the complete set because the
+ * state leaves unsatisfied. Ordering-barrier clauses require their contract
+ * value immediately before a recognized draw packet, so a post-draw write
+ * cannot repair a wrong pre-draw barrier. The report is complete because the
  * open gates are indistinguishable on silicon -- US_OUT_FMT_0 UNUSED, a
  * zero color channel mask, and a zero screendoor each alone produce the
  * same byte-identical unwritten target -- so only the full set tells the
@@ -126,7 +127,8 @@ struct r300_first_draw_check_report {
 
 /* Seeds every contract register with `poison`, replays the PACKET0 writes
  * of ib over the seed, and records each contract entry whose final value
- * differs from the contract. Returns the unsatisfied count.
+ * differs from the contract or whose ordering-barrier value is wrong at the
+ * first draw boundary. Returns the unsatisfied count.
  */
 uint32_t
 r300_first_draw_state_check(const struct r300_first_draw_contract *contract,
