@@ -25,6 +25,9 @@ def fail(message, *outputs):
 
 
 _UNKNOWN = object()
+_SIGNED_MIN = -(1 << 63)
+_SIGNED_MAX = (1 << 63) - 1
+_UNSIGNED_MASK = (1 << 64) - 1
 _PREPROCESSOR_TOKEN = re.compile(
     r"\s*(?:(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|0[0-7]*|[1-9][0-9]*)"
     r"[uUlL]*|[A-Za-z_]\w*|\|\||&&|==|!=|<=|>=|<<|>>|"
@@ -36,6 +39,46 @@ _PREPROCESSOR_PRECEDENCE = {
     "<<": 8, ">>": 8, "+": 9, "-": 9, "*": 10, "/": 10,
     "%": 10,
 }
+
+
+class _PreprocessorInteger:
+    """Carry the value and unsigned type used by preprocessor arithmetic."""
+
+    def __init__(self, value, unsigned=False):
+        self.unsigned = unsigned
+        self.value = value & _UNSIGNED_MASK if unsigned else value
+
+    def truthy(self):
+        return self.value != 0
+
+    def __eq__(self, other):
+        return (isinstance(other, _PreprocessorInteger) and
+                self.value == other.value and self.unsigned == other.unsigned)
+
+
+def _preprocessor_result(value, unsigned=False):
+    if unsigned:
+        return _PreprocessorInteger(value, True)
+    if value < _SIGNED_MIN or value > _SIGNED_MAX:
+        return _UNKNOWN
+    return _PreprocessorInteger(value)
+
+
+def _preprocessor_common_type(left, right):
+    unsigned = left.unsigned or right.unsigned
+    if unsigned:
+        return (left.value & _UNSIGNED_MASK, right.value & _UNSIGNED_MASK,
+                True)
+    return left.value, right.value, False
+
+
+def _preprocessor_division(left, right):
+    if right == 0:
+        return _UNKNOWN
+    quotient = abs(left) // abs(right)
+    if (left < 0) != (right < 0):
+        quotient = -quotient
+    return quotient
 
 
 def _preprocessor_tokens(expression):
@@ -51,67 +94,88 @@ def _preprocessor_tokens(expression):
 
 
 def _preprocessor_integer(token):
-    core = re.sub(r"[uUlL]+$", "", token)
+    suffix_match = re.search(r"[uUlL]+$", token)
+    suffix = suffix_match.group(0) if suffix_match is not None else ""
+    core = token[:-len(suffix)] if suffix else token
     try:
         if core.lower().startswith("0x"):
-            return int(core[2:], 16)
-        if core.lower().startswith("0b"):
-            return int(core[2:], 2)
-        if len(core) > 1 and core.startswith("0"):
-            return int(core, 8)
-        return int(core, 10)
+            value = int(core[2:], 16)
+        elif core.lower().startswith("0b"):
+            value = int(core[2:], 2)
+        elif len(core) > 1 and core.startswith("0"):
+            value = int(core, 8)
+        else:
+            value = int(core, 10)
     except ValueError:
         return _UNKNOWN
+    unsigned = "u" in suffix.lower() or value > _SIGNED_MAX
+    return _preprocessor_result(value, unsigned)
 
 
 def _preprocessor_binary(left, right, operator):
     if left is _UNKNOWN or right is _UNKNOWN:
         if operator == "&&" and (
-                left is not _UNKNOWN and left == 0 or
-                right is not _UNKNOWN and right == 0):
-            return 0
+                left is not _UNKNOWN and not left.truthy() or
+                right is not _UNKNOWN and not right.truthy()):
+            return _PreprocessorInteger(0)
         if operator == "||" and (
-                left is not _UNKNOWN and left != 0 or
-                right is not _UNKNOWN and right != 0):
-            return 1
+                left is not _UNKNOWN and left.truthy() or
+                right is not _UNKNOWN and right.truthy()):
+            return _PreprocessorInteger(1)
         return _UNKNOWN
+    left_value, right_value, unsigned = _preprocessor_common_type(left, right)
     try:
         if operator == "||":
-            return int(left != 0 or right != 0)
+            return _PreprocessorInteger(
+                int(left_value != 0 or right_value != 0))
         if operator == "&&":
-            return int(left != 0 and right != 0)
+            return _PreprocessorInteger(
+                int(left_value != 0 and right_value != 0))
         if operator == "|":
-            return left | right
+            return _preprocessor_result(left_value | right_value, unsigned)
         if operator == "^":
-            return left ^ right
+            return _preprocessor_result(left_value ^ right_value, unsigned)
         if operator == "&":
-            return left & right
+            return _preprocessor_result(left_value & right_value, unsigned)
         if operator == "==":
-            return int(left == right)
+            return _PreprocessorInteger(int(left_value == right_value))
         if operator == "!=":
-            return int(left != right)
+            return _PreprocessorInteger(int(left_value != right_value))
         if operator == "<":
-            return int(left < right)
+            return _PreprocessorInteger(int(left_value < right_value))
         if operator == "<=":
-            return int(left <= right)
+            return _PreprocessorInteger(int(left_value <= right_value))
         if operator == ">":
-            return int(left > right)
+            return _PreprocessorInteger(int(left_value > right_value))
         if operator == ">=":
-            return int(left >= right)
+            return _PreprocessorInteger(int(left_value >= right_value))
         if operator == "<<" or operator == ">>":
-            if right < 0:
+            if right_value < 0 or right_value >= 64:
                 return _UNKNOWN
-            return left << right if operator == "<<" else left >> right
+            if operator == "<<":
+                value = left_value << right_value
+                if not unsigned and value > _SIGNED_MAX:
+                    return _UNKNOWN
+            else:
+                value = left_value >> right_value
+            return _preprocessor_result(value, unsigned)
         if operator == "+":
-            return left + right
+            return _preprocessor_result(left_value + right_value, unsigned)
         if operator == "-":
-            return left - right
+            return _preprocessor_result(left_value - right_value, unsigned)
         if operator == "*":
-            return left * right
+            return _preprocessor_result(left_value * right_value, unsigned)
         if operator == "/":
-            return left // right if right != 0 else _UNKNOWN
+            quotient = _preprocessor_division(left_value, right_value)
+            if quotient is _UNKNOWN:
+                return _UNKNOWN
+            return _preprocessor_result(quotient, unsigned)
         if operator == "%":
-            return left % right if right != 0 else _UNKNOWN
+            quotient = _preprocessor_division(left_value, right_value)
+            if quotient is _UNKNOWN:
+                return _UNKNOWN
+            return _preprocessor_result(left_value - quotient * right_value,
+                                        unsigned)
     except (OverflowError, ValueError, ZeroDivisionError):
         return _UNKNOWN
     return _UNKNOWN
@@ -152,7 +216,7 @@ class _PreprocessorExpressionParser:
         when_false = self._conditional()
         if condition is _UNKNOWN:
             return when_true if when_true == when_false else _UNKNOWN
-        return when_true if condition != 0 else when_false
+        return when_true if condition.truthy() else when_false
 
     def _expression(self, minimum_precedence):
         left = self._unary()
@@ -172,10 +236,12 @@ class _PreprocessorExpressionParser:
             if value is _UNKNOWN:
                 return _UNKNOWN
             if operator == "!":
-                return int(value == 0)
+                return _PreprocessorInteger(int(not value.truthy()))
             if operator == "~":
-                return ~value
-            return value if operator == "+" else -value
+                return _preprocessor_result(~value.value, value.unsigned)
+            if operator == "+":
+                return value
+            return _preprocessor_result(-value.value, value.unsigned)
         token = self.take()
         if token is None:
             return _UNKNOWN
@@ -198,9 +264,9 @@ class _PreprocessorExpressionParser:
 
 
 def _constant_preprocessor_condition(expression):
-    """Keep unknown expressions active and mask only proven-false branches."""
+    """Return the preprocessor truth value, retaining unknown conditions."""
     value = _PreprocessorExpressionParser(expression.strip()).parse()
-    return value is _UNKNOWN or value != 0
+    return _UNKNOWN if value is _UNKNOWN else value.truthy()
 
 
 def _strip_non_code_literals_and_comments(source):
@@ -260,8 +326,26 @@ def _strip_non_code_literals_and_comments(source):
     return "".join(output)
 
 
+def _splice_preprocessor_lines(source):
+    """Apply C line splicing before directives and literals are parsed."""
+    return re.sub(r"\\\r?\n", "  ", source)
+
+
+def _condition_may_be_true(condition):
+    return condition is _UNKNOWN or condition
+
+
+def _condition_or(left, right):
+    if left is True or right is True:
+        return True
+    if left is False and right is False:
+        return False
+    return _UNKNOWN
+
+
 def mask_inactive_preprocessor(source):
-    """Blank literal-disabled preprocessor branches while keeping line spans."""
+    """Blank only branches proven inactive by preprocessor evaluation."""
+    source = _splice_preprocessor_lines(source)
     source = _strip_non_code_literals_and_comments(source)
     active = True
     frames = []
@@ -272,25 +356,28 @@ def mask_inactive_preprocessor(source):
         match = directive_re.match(line)
         if match is not None:
             directive, expression = match.group(2), match.group(3)
-            if directive == "if" or directive == "ifdef" or directive == "ifndef":
-                condition = (directive == "ifdef" or directive == "ifndef" or
-                             _constant_preprocessor_condition(expression))
+            if directive in {"if", "ifdef", "ifndef"}:
+                condition = (_UNKNOWN if directive in {"ifdef", "ifndef"}
+                             else _constant_preprocessor_condition(expression))
                 frames.append({"parent": active, "taken": condition})
-                active = active and condition
+                active = active and _condition_may_be_true(condition)
             elif directive == "elif":
                 if not frames:
                     active = True
                 else:
                     frame = frames[-1]
                     condition = _constant_preprocessor_condition(expression)
-                    active = frame["parent"] and not frame["taken"] and condition
-                    frame["taken"] = frame["taken"] or condition
+                    active = (
+                        frame["parent"] and
+                        frame["taken"] is not True and
+                        _condition_may_be_true(condition))
+                    frame["taken"] = _condition_or(frame["taken"], condition)
             elif directive == "else":
                 if not frames:
                     active = True
                 else:
                     frame = frames[-1]
-                    active = frame["parent"] and not frame["taken"]
+                    active = frame["parent"] and frame["taken"] is not True
                     frame["taken"] = True
             elif directive == "endif":
                 if frames:
@@ -299,8 +386,8 @@ def mask_inactive_preprocessor(source):
         elif active:
             masked.append(line)
         else:
-            masked.append("".join("\n" if char == "\n" else " "
-                                 for char in line))
+            masked.append("".join(
+                "\n" if char == "\n" else " " for char in line))
     return "".join(masked)
 
 
@@ -322,6 +409,25 @@ def has_recorder_call(source, symbol):
                for match in pattern.finditer(source))
 
 
+def _indirect_call_is_declaration(source, match):
+    """Exclude function-pointer declarations from indirect call matches."""
+    if not match.group(0).lstrip().startswith("("):
+        return False
+    line_start = source.rfind("\n", 0, match.start()) + 1
+    prefix = source[line_start:match.start()]
+    prefix = prefix.rstrip()
+    if re.search(r"(?:^|[ \t])(return|if|while|for|switch|sizeof)$",
+                 prefix):
+        return False
+    if re.search(r"[=,:;{}]", prefix):
+        return False
+    if not re.fullmatch(r"[ \t]*[A-Za-z_]\w*(?:[ \t]+[A-Za-z_]\w*)*[ \t]*",
+                        prefix):
+        return False
+    close = source.find(")", match.end())
+    return close >= 0 and re.match(r"[ \t]*;", source[close + 1:])
+
+
 def has_indirect_recorder_call(source, symbol):
     """Match a call through a function pointer assigned to the recorder."""
     source = mask_inactive_preprocessor(source)
@@ -332,7 +438,8 @@ def has_indirect_recorder_call(source, symbol):
         call_pattern = re.compile(
             rf"(?:\b{re.escape(alias)}\b|\(\s*\*\s*"
             rf"{re.escape(alias)}\s*\))[ \t]*\(")
-        if call_pattern.search(source) is not None:
+        if any(not _indirect_call_is_declaration(source, match)
+               for match in call_pattern.finditer(source)):
             return True
     return False
 
@@ -344,7 +451,7 @@ def has_recorder_use(source, symbol):
 
 
 def calibrate_recorder_call_predicate():
-    """Calibrate executable calls, branches, aliases, and literals."""
+    """Calibrate executable calls, expressions, aliases, and literals."""
     good = ("VkResult record(VkCommandBuffer command);\n"
             "VkResult result = record(cmd);\n"
             "if (record(cmd) != VK_SUCCESS) return 1;\n")
@@ -356,6 +463,19 @@ def calibrate_recorder_call_predicate():
     active_expression = "#if 0 + 1\nrecord(cmd);\n#endif\n"
     active_unknown_expression = (
         "#if 0 || ENABLE_CELL\nrecord(cmd);\n#endif\n")
+    unknown_alternate = ("#if ENABLE_CELL\nreturn 0;\n#else\n"
+                         "record(cmd);\n#endif\n")
+    ifdef_alternate = ("#ifdef ENABLE_CELL\nreturn 0;\n#else\n"
+                       "record(cmd);\n#endif\n")
+    unsigned_expression = "#if -1 > 1U\nrecord(cmd);\n#endif\n"
+    negative_division = "#if -3 / 2 == -1\nrecord(cmd);\n#endif\n"
+    negative_remainder = "#if -3 % 2 == -1\nrecord(cmd);\n#endif\n"
+    dereference_declaration = (
+        "extern VkResult (*record_cell)(VkCommandBuffer);\n"
+        "record_cell = record;\n")
+    continued_inactive = ("#if 0 \\\n"
+                          " || 0\nrecord(cmd);\n#else\n"
+                          "return 0;\n#endif\n")
     inactive = "#if 0 + 0\nrecord(cmd);\n#endif\n"
     string_literal = 'fprintf(stderr, "record(");\n'
     character_literal = "const int marker = 'record(';\n"
@@ -365,6 +485,13 @@ def calibrate_recorder_call_predicate():
             has_recorder_use(dereferenced, "record") and
             has_recorder_use(active_expression, "record") and
             has_recorder_use(active_unknown_expression, "record") and
+            has_recorder_use(unknown_alternate, "record") and
+            has_recorder_use(ifdef_alternate, "record") and
+            has_recorder_use(unsigned_expression, "record") and
+            has_recorder_use(negative_division, "record") and
+            has_recorder_use(negative_remainder, "record") and
+            not has_recorder_use(dereference_declaration, "record") and
+            not has_recorder_use(continued_inactive, "record") and
             not has_recorder_use(string_literal, "record") and
             not has_recorder_use(character_literal, "record") and
             not has_recorder_use(inactive, "record"))
@@ -480,7 +607,7 @@ def main():
             triangle_text = source.read()
         if not has_recorder_use(dw_text, "r3v_native_record_direct_write"):
             return fail("attended direct-write runner does not call the "
-                         "direct-write recorder")
+                        "direct-write recorder")
         if has_recorder_use(dw_text, "r3v_native_record_tcl_bypass_triangle"):
             return fail("attended direct-write runner names the triangle "
                         "recorder")
