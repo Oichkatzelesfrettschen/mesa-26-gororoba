@@ -65,6 +65,29 @@ enum r3v_cmd_type {
 
 struct r3v_query_pool;
 
+enum r3v_descriptor_bind_target {
+   R3V_DESCRIPTOR_BIND_GRAPHICS = 1u << 0,
+   R3V_DESCRIPTOR_BIND_COMPUTE = 1u << 1,
+};
+
+/* VkBindDescriptorSetsInfo stageFlags can name both graphics and compute
+ * stages.  Keep the target decision in one small helper so recording and
+ * replay cannot collapse a mixed bind onto one pipeline bind point. */
+static inline uint32_t
+r3v_descriptor_bind_targets(VkShaderStageFlags stage_flags)
+{
+   const VkShaderStageFlags graphics_stages =
+      VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_TASK_BIT_EXT |
+      VK_SHADER_STAGE_MESH_BIT_EXT;
+   uint32_t targets = 0;
+
+   if (stage_flags & graphics_stages)
+      targets |= R3V_DESCRIPTOR_BIND_GRAPHICS;
+   if (stage_flags & VK_SHADER_STAGE_COMPUTE_BIT)
+      targets |= R3V_DESCRIPTOR_BIND_COMPUTE;
+   return targets;
+}
+
 struct r3v_cmd_begin_render_pass {
    /* Up to PIPE_MAX_COLOR_BUFS color attachments, indexed by attachment slot
     * so a fragment-shader output at location i targets color_image[i] (the
@@ -332,7 +355,8 @@ struct r3v_cmd_dispatch {
  * inline.  The replay stage maps the bound sets to pipe_context
  * sampler_views / shader_buffers / shader_images / constant_buffers. */
 struct r3v_cmd_bind_descriptor_sets {
-   VkPipelineBindPoint           bind_point;
+   VkPipelineBindPoint           bind_point; /* single-target diagnostic */
+   VkShaderStageFlags            stage_flags; /* authoritative replay mask */
    VkPipelineLayout              pipeline_layout;
    uint32_t                      first_set;
    uint32_t                      set_count;
