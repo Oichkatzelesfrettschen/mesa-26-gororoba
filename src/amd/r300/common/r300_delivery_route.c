@@ -1,4 +1,7 @@
-/* SPDX-License-Identifier: MIT */
+/*
+ * Copyright 2026 Mesa3D authors
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "r300_delivery_route.h"
 #include "r300_vertex_format.h"

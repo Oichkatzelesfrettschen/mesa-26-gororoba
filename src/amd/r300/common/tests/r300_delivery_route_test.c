@@ -1,4 +1,5 @@
 /*
+ * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  *
  * Calibration of the delivery route resolver: the gate opens on the
