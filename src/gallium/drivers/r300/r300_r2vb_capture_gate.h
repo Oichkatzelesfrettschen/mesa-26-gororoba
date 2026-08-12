@@ -20,19 +20,31 @@ r300_r2vb_option_is(const char *value, const char *expected)
    return value && strcmp(value, expected) == 0;
 }
 
+static inline bool
+r300_r2vb_selftest_armed(const char *hb_tcl, bool rs48x_capable,
+                         bool from_flush, bool already_fired)
+{
+   return rs48x_capable && from_flush && !already_fired &&
+          r300_r2vb_option_is(hb_tcl, "1");
+}
+
 /* Select the transport before allocation, command emission, or query
  * finalization.  RADEON_FLUSH_NOOP discards the capture IB before
  * DRM_RADEON_CS, so capture declines an active query rather than advancing
  * r300_emit_query_end's CPU bookkeeping without the matching GPU write.  An
  * active query is admitted only for submit, which carries the query-end packet
- * and additionally requires exact raw submission consent. */
+ * and additionally requires exact raw submission consent.  The RS48x family
+ * predicate is independent from caps.has_tcl and num_vert_fpus because the
+ * R300_HB_TCL opt-in sets both fields before this self-test runs. */
 static inline enum r300_r2vb_selftest_action
 r300_r2vb_select_selftest_action(const char *hb_tcl, const char *timing,
                                  const char *raw_submit_accepted,
+                                 bool rs48x_capable,
                                  bool from_flush, bool already_fired,
                                  bool query_active)
 {
-   if (!from_flush || already_fired || !r300_r2vb_option_is(hb_tcl, "1"))
+   if (!r300_r2vb_selftest_armed(hb_tcl, rs48x_capable, from_flush,
+                                 already_fired))
       return R300_R2VB_SELFTEST_DECLINE;
 
    if (r300_r2vb_option_is(timing, "capture"))
