@@ -998,6 +998,8 @@ int r300_swtcl_us_resync_mode(void);
 int r300_swtcl_wait_before_us_reprogram(void);
 
 /* r300_flush.c */
+/* Re-arm tracked state after a command stream flush or no-submit discard. */
+void r300_rearm_after_hardware_flush(struct r300_context *r300);
 void r300_flush(struct pipe_context *pipe,
                 unsigned flags,
                 struct pipe_fence_handle **fence);

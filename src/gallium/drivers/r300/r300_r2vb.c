@@ -8636,6 +8636,7 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         /* Discard the producer IB before DRM_RADEON_CS; R300_TRACE has
          * already retained it for the full-path decode. */
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
+        r300_rearm_after_hardware_flush(r300);
         fprintf(stderr, "r2vb_bo_draw_producer3 decision=capture "
                         "(no-submit; RADEON_FLUSH_NOOP)\n");
         result = R300_R2VB_BO3_CAPTURED;

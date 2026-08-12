@@ -4,7 +4,9 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 
+#include "r300_context.h"
 #include "r300_r2vb_reingest_state.h"
 
 static unsigned failures;
@@ -75,11 +77,60 @@ check_position_only_state(void)
          "inherited texcoord output is a known-bad tuple");
 }
 
+static void
+check_full_flush_rearm(bool has_tcl)
+{
+   static struct r300_context context;
+   static struct r300_screen screen;
+   struct r300_context *r300 = &context;
+   struct r300_atom *atom;
+   unsigned atom_index = 0;
+
+   memset(&context, 0, sizeof(context));
+   memset(&screen, 0, sizeof(screen));
+   context.screen = &screen;
+   context.dirty_hw = 7;
+   screen.caps.has_tcl = has_tcl;
+
+   foreach_atom(r300, atom) {
+      atom->state = atom_index % 3 == 0 ? atom : NULL;
+      atom->allow_null_state = atom_index % 3 == 1;
+      atom->dirty = false;
+      atom_index++;
+   }
+   context.vs_state.state = &context.vs_state;
+   context.vs_constants.state = &context.vs_constants;
+   context.clip_state.state = &context.clip_state;
+
+   r300_rearm_after_hardware_flush(&context);
+
+   CHECK(context.dirty_hw == 0,
+         "full rearm clears the hardware-dirty counter");
+   CHECK(context.vertex_arrays_dirty,
+         "full rearm dirties vertex arrays");
+
+   foreach_atom(r300, atom) {
+      bool expected = atom->state || atom->allow_null_state;
+      if (!has_tcl && (atom == &context.vs_state ||
+                       atom == &context.vs_constants ||
+                       atom == &context.clip_state))
+         expected = false;
+      CHECK(atom->dirty == expected,
+            "full rearm dirties every eligible atom exactly once");
+   }
+   CHECK(context.first_dirty == &context.gpu_flush,
+         "full rearm starts the dirty span at the first atom");
+   CHECK(context.last_dirty == &context.query_start + 1,
+         "full rearm ends the dirty span at the last atom");
+}
+
 int
 main(void)
 {
    check_gate_matrix();
    check_position_only_state();
+   check_full_flush_rearm(true);
+   check_full_flush_rearm(false);
 
    if (failures) {
       fprintf(stderr, "r300_r2vb_reingest_state_test: %u failure(s)\n",
