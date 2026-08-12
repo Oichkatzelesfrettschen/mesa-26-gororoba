@@ -105,8 +105,11 @@ void r300_flush(struct pipe_context *pipe,
         }
 
         r300->r2vb_probe_dispatch_active = false;
-        if (consumed)
+        if (consumed) {
+            /* A no-submit probe discards this CS without the normal cleanup. */
+            r300->draw_emitted_this_cs = false;
             return;
+        }
     }
 
     if (r300->dirty_hw) {
