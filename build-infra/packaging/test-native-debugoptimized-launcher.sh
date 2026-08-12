@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # SPDX-License-Identifier: MIT
-# Exercise both the refusal and successful environment-selection paths of the
-# packaged native launcher without requiring a Mesa build or a Vulkan device.
+# The CPU-only fixture exercises the packaged native launcher's refusal and
+# successful environment-selection paths with a synthetic readable manifest.
 set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
