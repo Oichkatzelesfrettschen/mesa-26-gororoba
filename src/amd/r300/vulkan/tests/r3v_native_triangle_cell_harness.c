@@ -146,7 +146,9 @@ read_whole_file(const char *dir, const char *name, void **data_out,
                 size_t *size_out)
 {
    char path[1024];
-   snprintf(path, sizeof(path), "%s/%s", dir, name);
+   int path_length = snprintf(path, sizeof(path), "%s/%s", dir, name);
+   if (path_length < 0 || (size_t)path_length >= sizeof(path))
+      return 1;
    FILE *f = fopen(path, "rb");
    if (f == NULL)
       return 1;
@@ -222,7 +224,9 @@ main(int argc, char **argv)
          tmp_dir, tmp_dir[tmp_dir_length - 1] == '/' ? "" : "/",
          "r3v-native-cell-XXXXXX");
       if (template_length < 0 ||
-          (size_t)template_length >= sizeof(manifest_template)) {
+          (size_t)template_length >= sizeof(manifest_template) ||
+          (size_t)template_length + 1 +
+             strlen("submit_manifest.json") >= 1024) {
          fprintf(stderr, "manifest template path is too long\n");
          return 2;
       }
