@@ -266,16 +266,21 @@ r300_first_draw_state_check(const struct r300_first_draw_contract *contract,
 {
    uint32_t state[96];
    bool written[96];
-   bool pre_draw[96];
+   uint32_t pre_draw_value[96];
+   bool pre_draw_written[96];
    for (uint32_t i = 0; i < contract->count; i++) {
       state[i] = poison;
       written[i] = false;
-      pre_draw[i] = false;
+      pre_draw_value[i] = poison;
+      pre_draw_written[i] = false;
    }
 
    /* Replay every PACKET0 write over the poisoned seed. Type-3 packets
     * advance over their payload, while unknown packet kinds advance by one
     * dword. A PACKET0 claiming payload past the end is the pad and ends it.
+    * Ordering barriers retain the last value written before the first draw,
+    * because a later write cannot make an earlier cache or idle operation
+    * effective at that draw boundary.
     */
    uint32_t i = 0;
    bool draw_seen = false;
@@ -299,8 +304,10 @@ r300_first_draw_state_check(const struct r300_first_draw_contract *contract,
                   written[e] = true;
                   if (!draw_seen &&
                       contract->entries[e].disposition ==
-                         R300_FDS_ORDERING_BARRIER)
-                     pre_draw[e] = true;
+                         R300_FDS_ORDERING_BARRIER) {
+                        pre_draw_value[e] = ib[i + 1 + k];
+                        pre_draw_written[e] = true;
+                     }
                }
             }
          }
@@ -318,12 +325,15 @@ r300_first_draw_state_check(const struct r300_first_draw_contract *contract,
    /* A clause is satisfied only by a write in the stream that reaches the
     * contract value. A seed equal to the value leaves an unwritten
     * register unsatisfied, so a stream passes only when it establishes
-    * every value itself, independent of predecessor state.
+    * every value itself, independent of predecessor state. An ordering
+    * barrier additionally requires its contract value at the first draw
+    * boundary; a post-draw write cannot repair a pre-draw value.
     */
    for (uint32_t e = 0; e < contract->count; e++) {
       if (!written[e] || state[e] != contract->entries[e].value ||
           (contract->entries[e].disposition == R300_FDS_ORDERING_BARRIER &&
-           !pre_draw[e])) {
+           (!pre_draw_written[e] ||
+            pre_draw_value[e] != contract->entries[e].value))) {
          report->unsatisfied[report->unsatisfied_count++] = e;
       }
    }
