@@ -62,16 +62,16 @@ bool r300_pair_eval_program(struct r300_pair_eval *e,
 
 /* Deterministic ASCII JSON serialization of a scheduled pair program:
  * stable instruction order, stable RGB-then-Alpha lane order, stable
- * source-slot order, explicit unused fields, hexadecimal float bit
- * patterns, no pointer values, schema version 1.  The profile stamps each
- * register-file class's read model into the source records. */
+ * source-slot order, explicit unused fields, no pointer values, schema
+ * version 2.  The profile stamps each register-file class's read model into
+ * the source records. */
 void r300_pair_schedule_serialize(FILE *out, struct radeon_compiler *c,
                                   const struct r300_pair_eval_profile *p);
 
 /* FNV-1a 64-bit digests.  The semantic hash covers the serialized schedule
- * bytes; the constant hash covers the immediate constant bit patterns in
- * list order; the program hash covers caller-supplied hardware code words
- * (the compiled r300_fragment_program_code stream). */
+ * bytes; the constant hash covers each entry's type, use mask, and active
+ * union payload in list order; the program hash covers caller-supplied
+ * hardware code words (the compiled r300_fragment_program_code stream). */
 uint64_t r300_pair_schedule_semantic_hash(struct radeon_compiler *c,
                                           const struct r300_pair_eval_profile *p);
 uint64_t r300_pair_constant_list_hash(const struct rc_constant_list *consts);
