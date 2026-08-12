@@ -21,6 +21,8 @@
 # Once Xvfb accepts connections, the wrapper's exit status is exactly the
 # wrapped command's exit status. A failure while stopping Xvfb afterward is
 # reported on stderr and does not change that status.
+# The wrapped command runs as a child so signal traps run while it is active;
+# the trap stops that child and Xvfb before removing the displayfd directory.
 
 set -u
 
@@ -58,6 +60,62 @@ cleanup_dir() {
     rm -rf "$displayfd_dir"
 }
 
+xvfb_pid=""
+command_pid=""
+
+stop_command() {
+    if [ -z "$command_pid" ]; then
+        return
+    fi
+
+    kill -TERM "$command_pid" 2>/dev/null || true
+    command_wait_count=0
+    while kill -0 "$command_pid" 2>/dev/null; do
+        if [ "$command_wait_count" -ge 50 ]; then
+            kill -KILL "$command_pid" 2>/dev/null || true
+            break
+        fi
+        command_wait_count=$((command_wait_count + 1))
+        sleep 0.1
+    done
+    wait "$command_pid" 2>/dev/null || true
+    command_pid=""
+}
+
+cleanup_xvfb() {
+    if [ -z "$xvfb_pid" ]; then
+        return
+    fi
+
+    kill -TERM "$xvfb_pid" 2>/dev/null || true
+    wait_count=0
+    while kill -0 "$xvfb_pid" 2>/dev/null; do
+        if [ "$wait_count" -ge 50 ]; then
+            echo "run_under_xvfb.sh: Xvfb did not exit after TERM, sending KILL" >&2
+            kill -KILL "$xvfb_pid" 2>/dev/null || true
+            break
+        fi
+        wait_count=$((wait_count + 1))
+        sleep 0.1
+    done
+    wait "$xvfb_pid" 2>/dev/null
+    xvfb_wait_status=$?
+    if [ "$xvfb_wait_status" -ne 0 ] && [ "$xvfb_wait_status" -ne 143 ]; then
+        echo "run_under_xvfb.sh: Xvfb cleanup exited with status $xvfb_wait_status" >&2
+    fi
+    xvfb_pid=""
+}
+
+abort_wrapper() {
+    abort_status=$1
+    trap - INT TERM HUP
+    stop_command
+    cleanup_xvfb
+    exec 8<&- 2>/dev/null || true
+    cleanup_dir
+    exit "$abort_status"
+}
+
 if ! mkfifo -m 600 "$displayfd_pipe" 2>/dev/null; then
     echo "run_under_xvfb.sh: mkfifo failed" >&2
     cleanup_dir
@@ -69,6 +127,9 @@ fi
 # it once (and only once) it is ready to accept connections.
 "$xvfb_bin" -displayfd 9 9>"$displayfd_pipe" &
 xvfb_pid=$!
+trap 'abort_wrapper 130' INT
+trap 'abort_wrapper 143' TERM
+trap 'abort_wrapper 129' HUP
 
 display_num=""
 exec 8<"$displayfd_pipe"
@@ -81,8 +142,7 @@ exec 8<"$displayfd_pipe"
 # unbounded read.
 if ! command -v timeout >/dev/null 2>&1; then
     echo "run_under_xvfb.sh: timeout utility not found" >&2
-    kill "$xvfb_pid" 2>/dev/null
-    wait "$xvfb_pid" 2>/dev/null
+    cleanup_xvfb
     exec 8<&-
     cleanup_dir
     exit 125
@@ -94,14 +154,14 @@ exec 8<&-
 
 if [ "$read_status" -ne 0 ] || [ -z "$display_num" ]; then
     echo "run_under_xvfb.sh: Xvfb did not report a display on displayfd" >&2
-    kill "$xvfb_pid" 2>/dev/null
-    wait "$xvfb_pid" 2>/dev/null
+    cleanup_xvfb
     cleanup_dir
     exit 125
 fi
 
 if ! kill -0 "$xvfb_pid" 2>/dev/null; then
     echo "run_under_xvfb.sh: Xvfb exited before startup completed" >&2
+    cleanup_xvfb
     cleanup_dir
     exit 125
 fi
@@ -109,26 +169,14 @@ fi
 DISPLAY=":$display_num"
 export DISPLAY
 
-"$@"
+"$@" &
+command_pid=$!
+wait "$command_pid"
 cmd_status=$?
+command_pid=""
 
-kill -TERM "$xvfb_pid" 2>/dev/null
-wait_count=0
-while kill -0 "$xvfb_pid" 2>/dev/null; do
-    if [ "$wait_count" -ge 50 ]; then
-        echo "run_under_xvfb.sh: Xvfb did not exit after TERM, sending KILL" >&2
-        kill -KILL "$xvfb_pid" 2>/dev/null
-        break
-    fi
-    wait_count=$((wait_count + 1))
-    sleep 0.1
-done
-wait "$xvfb_pid" 2>/dev/null
-xvfb_wait_status=$?
-if [ "$xvfb_wait_status" -ne 0 ] && [ "$xvfb_wait_status" -ne 143 ]; then
-    echo "run_under_xvfb.sh: Xvfb cleanup exited with status $xvfb_wait_status" >&2
-fi
-
+trap - INT TERM HUP
+cleanup_xvfb
 cleanup_dir
 
 if [ -n "$expect_status" ]; then
