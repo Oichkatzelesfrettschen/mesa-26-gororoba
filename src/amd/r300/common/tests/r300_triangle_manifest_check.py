@@ -9,8 +9,8 @@ digest, records wrong relocation sites, or emits malformed JSON fails here
 even while every unit assertion passes.
 
 The BLAKE3 comparison recomputes the digest with the host b3sum utility, an
-implementation independent of the in-tree hasher; where b3sum is absent the
-leg reports not run and the structural checks still decide.
+implementation independent of the in-tree hasher.  b3sum is a required
+dependency because the integration verdict includes this independent oracle.
 """
 
 import json
@@ -22,11 +22,57 @@ from pathlib import Path
 
 
 # R300_TRIANGLE_SLOT_COLOR then R300_TRIANGLE_SLOT_VERTEX, the emitter's
-# fixed command-stream order.
+# fixed command-stream order.  The enum values come from
+# `r300_tcl_bypass_triangle.h` (rg --fixed-strings
+# "R300_TRIANGLE_SLOT_COLOR"
+# src/amd/r300/common/r300_tcl_bypass_triangle.h), and the order mirrors
+# `expected_slots` in `r300_tcl_bypass_triangle_validate_reloc_sites`
+# (rg --fixed-strings "expected_slots"
+# src/amd/r300/common/r300_tcl_bypass_triangle.c).
 EXPECTED_RELOC_SLOTS = (1, 0)
-# CP_PACKET3(R300_PM4_PACKET3_NOP, 0), as defined by r300_reg.h and
-# r300_pm4_builder.h.  The payload dword follows this header in ib.bin.
+# CP_PACKET3(R300_PM4_PACKET3_NOP, 0), as emitted by `r300_pm4_reloc_nop`
+# (rg --fixed-strings "r300_pm4_reloc_nop"
+# src/amd/r300/common/r300_pm4_builder.c) and defined by
+# `r300_pm4_builder.h`
+# (rg --fixed-strings "R300_PM4_PACKET3_NOP"
+# src/amd/r300/common/r300_pm4_builder.h).  The payload dword follows
+# this header in ib.bin.
 RELOC_NOP_HEADER = 0xC0001000
+
+
+def validate_bo_table(table: object) -> None:
+    """Validate the transport slot-to-role mapping published by the writer."""
+    if not isinstance(table, dict):
+        raise ValueError(f"bo_table is not an object: {table}")
+    slots = table.get("slots")
+    if not isinstance(slots, list) or len(slots) != 2:
+        raise ValueError(f"bo_table slots malformed: {slots}")
+    # The role strings mirror the writer's bo_table entries (rg
+    # --fixed-strings '"role": "vertex"'
+    # src/amd/r300/common/r300_triangle_manifest.c).
+    expected = ((0, "vertex"), (1, "color"))
+    for entry, (expected_slot, expected_role) in zip(slots, expected):
+        if not isinstance(entry, dict):
+            raise ValueError(f"bo_table slot is not an object: {entry}")
+        if entry.get("slot") != expected_slot:
+            raise ValueError(
+                f"bo_table slot {entry.get('slot')} != {expected_slot}"
+            )
+        if entry.get("role") != expected_role:
+            raise ValueError(
+                f"bo_table role {entry.get('role')!r} != {expected_role!r}"
+            )
+        if entry.get("domain") != "GTT":
+            raise ValueError(
+                f"bo_table {expected_role} domain is not GTT: "
+                f"{entry.get('domain')!r}"
+            )
+        size = entry.get("size")
+        if (not isinstance(size, int) or isinstance(size, bool) or
+                size <= 0):
+            raise ValueError(
+                f"bo_table {expected_role} size is invalid: {size!r}"
+            )
 
 
 def fail(message: str) -> None:
@@ -76,7 +122,9 @@ def main() -> int:
     tool = sys.argv[1]
 
     with tempfile.TemporaryDirectory(prefix="r300-manifest-check-") as tmp:
-        run = subprocess.run([tool, tmp], capture_output=True, text=True)
+        run = subprocess.run(
+            [tool, tmp], capture_output=True, text=True, check=False
+        )
         if run.returncode != 0:
             fail(f"manifest tool exited {run.returncode}: {run.stderr}")
 
@@ -87,9 +135,13 @@ def main() -> int:
             fail(f"manifest.json unusable: {e}")
         ib = (outdir / "ib.bin").read_bytes()
         try:
-            json.loads((outdir / "bo_table.json").read_text())
+            bo_table = json.loads((outdir / "bo_table.json").read_text())
         except (OSError, json.JSONDecodeError) as e:
             fail(f"bo_table.json unusable: {e}")
+        try:
+            validate_bo_table(bo_table)
+        except ValueError as e:
+            fail(str(e))
 
         if len(ib) == 0 or len(ib) % 4 != 0:
             fail(f"ib.bin carries {len(ib)} bytes, not whole dwords")
@@ -125,20 +177,46 @@ def main() -> int:
         else:
             fail("known-bad swapped-slot calibration passed")
 
+        swapped_bo_table = {
+            "slots": [dict(bo_table["slots"][1]),
+                      dict(bo_table["slots"][0])]
+        }
+        try:
+            validate_bo_table(swapped_bo_table)
+        except ValueError:
+            pass
+        else:
+            fail("known-bad swapped-BO-table calibration passed")
+
+        def expect_bad_ib(label: str, index: int, value: int) -> None:
+            mutated = bytearray(ib)
+            mutated[index * 4:index * 4 + 4] = value.to_bytes(4, "little")
+            try:
+                validate_reloc_sites(sites, bytes(mutated))
+            except ValueError:
+                return
+            fail(f"known-bad {label} calibration passed")
+
+        first_site = sites[0]["ib_index"]
+        expect_bad_ib("relocation NOP header", first_site - 1,
+                      RELOC_NOP_HEADER ^ 1)
+        expect_bad_ib("relocation payload", first_site,
+                      EXPECTED_RELOC_SLOTS[0] * 4 ^ 1)
+
         declared = manifest.get("ib_blake3", "")
         if len(declared) != 64:
             fail(f"ib_blake3 is not a 64-hex digest: {declared!r}")
-        if shutil.which("b3sum"):
-            recomputed = subprocess.run(
-                ["b3sum", "--no-names", str(outdir / "ib.bin")],
-                capture_output=True, text=True, check=True,
-            ).stdout.strip()
-            if recomputed != declared:
-                fail(f"ib_blake3 {declared} != independent b3sum "
-                     f"{recomputed}")
-            blake3_leg = "independently verified"
-        else:
-            blake3_leg = "not run (b3sum absent)"
+        b3sum = shutil.which("b3sum")
+        if b3sum is None:
+            fail("b3sum is required for independent ib_blake3 verification")
+        recomputed = subprocess.run(
+            [b3sum, "--no-names", str(outdir / "ib.bin")],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if recomputed != declared:
+            fail(f"ib_blake3 {declared} != independent b3sum "
+                 f"{recomputed}")
+        blake3_leg = "independently verified"
 
     print(f"manifest artifacts consistent; relocation mapping calibrated; "
           f"blake3: {blake3_leg}")

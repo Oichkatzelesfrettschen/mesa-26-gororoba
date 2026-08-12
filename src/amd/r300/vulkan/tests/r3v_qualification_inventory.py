@@ -6,7 +6,8 @@ registered fewer tests must fail the run rather than return a smaller green
 suite.  This tool reads Meson's introspection records from a build directory,
 reports every dependency the qualification profile relies on, and in
 qualification mode exits nonzero when any required test or dependency is
-absent.
+absent.  The triangle manifest integration test requires b3sum for its
+independent digest oracle, so qualification also requires that host utility.
 
 A build once registered zero native tests because the native backend and the
 drm-shim tool were both missing, and the suite reported green; that build is
@@ -222,6 +223,13 @@ class GoodProbes(HostProbes):
         return ("verified", True)
 
 
+class MissingB3sumProbes(GoodProbes):
+    """Known-bad host calibration for the required digest utility."""
+
+    def tool_present(self, name: str) -> bool:
+        return name != "b3sum"
+
+
 def evaluate(registered: set[str], options: dict[str, object],
              qualification: bool,
              probes: HostProbes | None = None) -> int:
@@ -246,7 +254,7 @@ def evaluate(registered: set[str], options: dict[str, object],
     gallium = options.get("gallium-drivers")
     print(f"option gallium-drivers: {gallium}")
 
-    for name in ("nm", "Xvfb"):
+    for name in ("nm", "Xvfb", "b3sum"):
         present = probes.tool_present(name)
         print(f"tool {name}: {'present' if present else 'absent'}")
         if not present:
@@ -360,7 +368,14 @@ def run_selftest() -> int:
     if good != 0:
         print("selftest: complete set failed the gate", file=sys.stderr)
         return 1
-    print("selftest: gate refuses zero-native and admits the complete set")
+    missing_b3sum = evaluate(collect(synthetic_complete()),
+                             QUALIFYING_OPTIONS, qualification=True,
+                             probes=MissingB3sumProbes())
+    if missing_b3sum == 0:
+        print("selftest: missing b3sum passed the gate", file=sys.stderr)
+        return 1
+    print("selftest: gate refuses zero-native and missing b3sum, "
+          "and admits the complete set")
     return 0
 
 

@@ -209,6 +209,12 @@ test(
   depends : [r300_staging_manifest_test, r300_triangle_manifest],
   suite : ['r300'],
 )
+test(
+  'r300-staging-manifest-runner-selftest',
+  prog_python,
+  args : [files('tests/r300_staging_manifest_runner.py'), '--selftest'],
+  suite : ['r300'],
+)
 
 # Offline kernel-parser replay, gated on R3V_KERNEL_REPLAY_TOOL pointing at
 # the replay binary built in the Linux radeon source tree.  The script exits
