@@ -30,6 +30,47 @@
  */
 #define R3V_NATIVE_REFUSAL_RESULT VK_ERROR_UNKNOWN
 
+/* The common Vulkan queue runtime maps every driver-submit error to
+ * VK_ERROR_DEVICE_LOST.  The native queue keeps the transport boundary as a
+ * sideband status so an attended control can distinguish refusal before the
+ * ioctl from a failed completion wait after an accepted ioctl.
+ */
+enum r3v_native_queue_status {
+   R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION,
+   R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED,
+   R3V_NATIVE_QUEUE_STATUS_SUBMITTED,
+   R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE,
+   R3V_NATIVE_QUEUE_STATUS_COMPLETED,
+};
+
+static inline enum r3v_native_queue_status
+r3v_native_queue_status_from_transport(bool ioctl_accepted,
+                                        bool completion_succeeded)
+{
+   if (!ioctl_accepted)
+      return R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED;
+   return completion_succeeded ? R3V_NATIVE_QUEUE_STATUS_COMPLETED
+                               : R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE;
+}
+
+static inline const char *
+r3v_native_queue_status_name(enum r3v_native_queue_status status)
+{
+   switch (status) {
+   case R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION:
+      return "NO_SUBMISSION";
+   case R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED:
+      return "SUBMISSION_REFUSED";
+   case R3V_NATIVE_QUEUE_STATUS_SUBMITTED:
+      return "SUBMITTED";
+   case R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE:
+      return "COMPLETION_FAILURE";
+   case R3V_NATIVE_QUEUE_STATUS_COMPLETED:
+      return "COMPLETED";
+   }
+   return "UNKNOWN";
+}
+
 /* One recorded BO reference of a native command buffer.  The IB names the
  * reference by its index in this array; the queue folds the array into the
  * submission relocation list.
@@ -177,6 +218,7 @@ struct r3v_native_device {
    struct r3v_native_queue queue;
    bool submit_hazard_accepted;
    const char *manifest_dir;
+   enum r3v_native_queue_status queue_status;
    /* The production path leaves this NULL and collects host facts.  The
     * drm-shim harness installs an explicit host-model provider so a missing
     * radeon module cannot become a matchable live identity. */
@@ -336,6 +378,13 @@ void r3v_native_cmd_buffer_install_ib(
 
 VkResult r3v_native_queue_submit(struct vk_queue *queue,
                                  struct vk_queue_submit *submit);
+
+/* Reads the last native queue boundary status for an attended control.  The
+ * Vulkan result remains the API error contract; this sideband status preserves
+ * whether the command reached the ioctl and whether its completion retired.
+ */
+enum r3v_native_queue_status
+r3v_native_queue_submission_status(VkDevice device);
 
 /* A permanent binary wait is reset after deferred execution.  Emulated
  * timeline points, temporary payloads, and same-submit re-signals retain

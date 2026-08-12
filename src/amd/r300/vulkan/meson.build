@@ -731,6 +731,17 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
     test(
+      'r3v-native-queue-status',
+      executable(
+        'r3v_native_queue_status_test',
+        files('tests/r3v_native_queue_status_test.c'),
+        include_directories : r3v_native_inc,
+        dependencies : r3v_native_deps,
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+    test(
       'r3v-native-arming',
       executable(
         'r3v_native_arming_test',
