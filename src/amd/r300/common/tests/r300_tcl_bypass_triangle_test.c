@@ -502,8 +502,9 @@ test_contract_cell_size_and_digest_are_pinned(void)
    assert(r300_tcl_bypass_triangle_reference_emit(&ref) == 0);
    assert(ref.ib_size_dwords == R300_TRIANGLE_CONTRACT_CELL_DWORDS);
 
-   /* The reference cell hashed as the little-endian dword stream the
-    * manifest writes and the kernel parser reads.
+   /* The reference cell hashes as the little-endian dword stream the manifest
+    * writes and the kernel parser reads.  Serializing each dword before the
+    * hash keeps the pinned identity independent of host byte order.
     */
    static const uint8_t expected[BLAKE3_OUT_LEN] = {
       0xb0, 0x82, 0x18, 0x8d, 0xeb, 0x89, 0x68, 0xc5,
@@ -511,10 +512,13 @@ test_contract_cell_size_and_digest_are_pinned(void)
       0x3a, 0xe0, 0x3c, 0xed, 0xf8, 0xc8, 0xeb, 0xeb,
       0x9a, 0x06, 0xe9, 0xdf, 0x9b, 0x81, 0xc9, 0xa2,
    };
+   uint8_t serialized[R300_TRIANGLE_CONTRACT_CELL_DWORDS * sizeof(uint32_t)];
+   r300_triangle_ib_serialize(ref.ib, ref.ib_size_dwords, serialized);
+
    blake3_hash digest;
    struct mesa_blake3 ctx;
    _mesa_blake3_init(&ctx);
-   _mesa_blake3_update(&ctx, ref.ib,
+   _mesa_blake3_update(&ctx, serialized,
                        ref.ib_size_dwords * sizeof(uint32_t));
    _mesa_blake3_final(&ctx, digest);
    assert(memcmp(digest, expected, sizeof(expected)) == 0);
@@ -545,10 +549,12 @@ test_emit_into_holds_its_capacity(void)
    enum { SLACK = 4 };
    static uint32_t storage[1 + R300_TRIANGLE_CONTRACT_CELL_DWORDS + SLACK + 1];
    uint32_t *const words = &storage[1];
+   const uint32_t word_count = ARRAY_SIZE(storage) - 2;
 
    for (uint32_t capacity = 0;
         capacity <= R300_TRIANGLE_CONTRACT_CELL_DWORDS + SLACK; capacity++) {
-      memset(storage, 0, sizeof(storage));
+      for (uint32_t i = 0; i < ARRAY_SIZE(storage); i++)
+         storage[i] = 0xdeadbeefu;
       storage[0] = 0xdeadbeefu;
       storage[ARRAY_SIZE(storage) - 1] = 0xdeadbeefu;
 
@@ -568,12 +574,12 @@ test_emit_into_holds_its_capacity(void)
 
       assert(storage[0] == 0xdeadbeefu);
       assert(storage[ARRAY_SIZE(storage) - 1] == 0xdeadbeefu);
-      /* The dwords past the cell stay untouched at every capacity, so a
-       * refusal short of the end wrote nothing beyond what it reported.
+      /* The dwords beginning at the requested capacity stay untouched.  A
+       * refusal that writes past its requested destination changes this guard
+       * range even when the write stops before the complete cell size.
        */
-      for (uint32_t i = R300_TRIANGLE_CONTRACT_CELL_DWORDS;
-           i < R300_TRIANGLE_CONTRACT_CELL_DWORDS + SLACK; i++)
-         assert(words[i] == 0);
+      for (uint32_t i = capacity; i < word_count; i++)
+         assert(words[i] == 0xdeadbeefu);
    }
 
    r300_fragment_binary_finish(&fs);
