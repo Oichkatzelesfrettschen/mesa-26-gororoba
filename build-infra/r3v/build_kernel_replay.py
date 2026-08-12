@@ -15,7 +15,9 @@ argv.  The correspondence gate
 (scripts/run_r300_cs_grammar_correspondence.sh) is the replay's fidelity
 check against the kernel's own r300_packet0_check grammar; a nonzero exit
 from that gate refuses the build, the same way a dirty tree or a commit
-mismatch does.
+mismatch does.  The builder also requires the deployed Radeon subtree and
+module srcversion, and checks them against the pinned source tree, the loaded
+module, and the installed module metadata before it publishes provenance.
 """
 
 import argparse
@@ -37,6 +39,12 @@ REG_SAFE_HEADER_NAME = "r300_reg_safe.h"
 PROVENANCE_SCHEMA = "r3v-cs-track-replay-provenance/v1"
 PROVENANCE_BUILDER = "build-infra/r3v/build_kernel_replay.py"
 REPLAY_ARTIFACT = "replay_r300_cs_track"
+MODULE_NAME = "radeon"
+MODULE_SYSFS_SRCVERSION = Path("/sys/module/radeon/srcversion")
+MODULE_DRIVER_TREE_FIELD = "gororoba_driver_tree"
+OBJECT_ID_RE = re.compile(r"^[0-9a-f]{40}$")
+IDENTITY_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
+MODULE_SRCVERSION_RE = re.compile(r"^[A-Za-z0-9]+$")
 
 # The replay source and run_r300_cs_grammar_correspondence.sh both build it
 # with -O2 -Wall -Wextra -Werror; matching that flag set keeps this build the
@@ -69,6 +77,156 @@ def run_git(kernel_root: Path, *args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
     )
+
+
+def require_identity(value: str, label: str, pattern=IDENTITY_RE) -> str:
+    if not isinstance(value, str) or not pattern.fullmatch(value):
+        fail(f"{label} is missing or malformed: {value!r}")
+    return value
+
+
+def read_identity_file(path: Path, label: str, pattern=IDENTITY_RE) -> str:
+    try:
+        value = path.read_text().strip()
+    except OSError as error:
+        fail(f"cannot read {label} from {path}: {error}")
+    return require_identity(value, label, pattern)
+
+
+def read_modinfo_field(field: str, pattern=IDENTITY_RE) -> str:
+    try:
+        result = subprocess.run(
+            ["modinfo", "-F", field, MODULE_NAME],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        fail(f"cannot execute modinfo for {MODULE_NAME}: {error}")
+    if result.returncode != 0:
+        fail(f"modinfo cannot read {field} for {MODULE_NAME}: "
+             f"{result.stderr.strip()}")
+    return require_identity(result.stdout.strip(), f"modinfo {field}", pattern)
+
+
+def resolve_driver_tree(kernel_root: Path, resolved_commit: str) -> str:
+    result = run_git(
+        kernel_root, "rev-parse", f"{resolved_commit}:{RADEON_DIR_RELPATH}")
+    if result.returncode != 0:
+        fail(f"git cannot resolve the Radeon driver tree at {resolved_commit}: "
+             f"{result.stderr.strip()}")
+    return require_identity(
+        result.stdout.strip(),
+        f"{RADEON_DIR_RELPATH} tree",
+        OBJECT_ID_RE,
+    )
+
+
+def validate_authority_values(
+    declared_driver_tree: str,
+    source_driver_tree: str,
+    declared_srcversion: str,
+    running_srcversion: str,
+    installed_driver_tree: str,
+    installed_srcversion: str,
+) -> None:
+    """Require one source and runtime identity chain for qualification."""
+    require_identity(declared_driver_tree, "deployed driver tree", OBJECT_ID_RE)
+    require_identity(source_driver_tree, "source driver tree", OBJECT_ID_RE)
+    require_identity(declared_srcversion, "running module srcversion",
+                     MODULE_SRCVERSION_RE)
+    require_identity(running_srcversion, "observed module srcversion",
+                     MODULE_SRCVERSION_RE)
+    require_identity(installed_driver_tree, "installed driver tree", OBJECT_ID_RE)
+    require_identity(installed_srcversion, "installed module srcversion",
+                     MODULE_SRCVERSION_RE)
+
+    if declared_driver_tree != source_driver_tree:
+        fail("deployed driver tree does not match the pinned source tree: "
+             f"{declared_driver_tree} != {source_driver_tree}")
+    if installed_driver_tree != declared_driver_tree:
+        fail("installed driver tree does not match the declared deployment: "
+             f"{installed_driver_tree} != {declared_driver_tree}")
+    if declared_srcversion != running_srcversion:
+        fail("running module srcversion does not match the declared "
+             f"deployment: {running_srcversion} != {declared_srcversion}")
+    if installed_srcversion != declared_srcversion:
+        fail("installed module srcversion does not match the declared "
+             f"deployment: {installed_srcversion} != {declared_srcversion}")
+
+
+def verify_deployed_driver_authority(
+    source_root: Path,
+    resolved_commit: str,
+    declared_driver_tree: str,
+    declared_srcversion: str,
+) -> str:
+    require_identity(declared_driver_tree, "deployed driver tree", OBJECT_ID_RE)
+    require_identity(declared_srcversion, "running module srcversion",
+                     MODULE_SRCVERSION_RE)
+    source_driver_tree = resolve_driver_tree(source_root, resolved_commit)
+    running_srcversion = read_identity_file(
+        MODULE_SYSFS_SRCVERSION, "running module srcversion",
+        MODULE_SRCVERSION_RE)
+    installed_driver_tree = read_modinfo_field(MODULE_DRIVER_TREE_FIELD)
+    installed_srcversion = read_modinfo_field("srcversion",
+                                              MODULE_SRCVERSION_RE)
+    validate_authority_values(
+        declared_driver_tree=declared_driver_tree,
+        source_driver_tree=source_driver_tree,
+        declared_srcversion=declared_srcversion,
+        running_srcversion=running_srcversion,
+        installed_driver_tree=installed_driver_tree,
+        installed_srcversion=installed_srcversion,
+    )
+    return source_driver_tree
+
+
+def require_artifact_destinations_outside(
+    source_root: Path, output: Path, provenance_path: Path
+) -> None:
+    if output == provenance_path:
+        fail("--output and --provenance resolve to the same path")
+    for destination in (output, provenance_path):
+        if destination.is_relative_to(source_root):
+            fail(f"artifact destination {destination} lies inside the "
+                 "source checkout")
+
+
+def worktree_is_registered(source_root: Path, worktree: Path) -> bool:
+    listed = run_git(source_root, "worktree", "list", "--porcelain")
+    if listed.returncode != 0:
+        return True
+    return f"worktree {worktree}" in listed.stdout.splitlines()
+
+
+def cleanup_isolated_worktree(
+    source_root: Path,
+    worktree: Path,
+    isolation_tmp: tempfile.TemporaryDirectory,
+    worktree_registered: bool,
+) -> str | None:
+    """Unregister the detached checkout before its temporary directory goes."""
+    errors: list[str] = []
+    if worktree_registered:
+        remove = subprocess.run(
+            ["git", "-C", str(source_root), "worktree", "remove", "--force",
+             str(worktree)],
+            capture_output=True,
+            text=True,
+        )
+        if remove.returncode != 0:
+            errors.append(f"git worktree remove failed: {remove.stderr.strip()}")
+
+    prune = subprocess.run(
+        ["git", "-C", str(source_root), "worktree", "prune"],
+        capture_output=True,
+        text=True,
+    )
+    if prune.returncode != 0:
+        errors.append(f"git worktree prune failed: {prune.stderr.strip()}")
+
+    isolation_tmp.cleanup()
+    return "; ".join(errors) if errors else None
 
 
 def resolve_pinned_commit(kernel_root: Path, kernel_commit: str) -> str:
@@ -231,6 +389,9 @@ def build_provenance(
     output_sha256: str,
     correspondence_gate: str,
     isolated_worktree: bool,
+    kernel_driver_tree: str,
+    deployed_driver_tree: str,
+    running_module_srcversion: str,
 ) -> dict:
     replay_src = kernel_root / REPLAY_SOURCE_RELPATH
     radeon_dir = kernel_root / RADEON_DIR_RELPATH
@@ -272,6 +433,10 @@ def build_provenance(
         # under test splits here rather than silently.
         "kernel_tool_source_sha": resolved_commit,
         "kernel_driver_logic_sha": resolved_commit,
+        "kernel_driver_logic_tree": kernel_driver_tree,
+        "deployed_driver_tree": deployed_driver_tree,
+        "running_module_srcversion": running_module_srcversion,
+        "deployed_driver_authority_verified": True,
         "kernel_root": str(kernel_root),
         "sources": sources,
         "compiler": compiler_identity(cc),
@@ -306,20 +471,116 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="accepted for compatibility; every build uses "
                              "a fresh detached git worktree at the pinned "
                              "commit")
-    parser.add_argument("--deployed-driver-tree", default=None,
+    parser.add_argument("--deployed-driver-tree", required=True,
                         help="driver-tree object of the deployed module "
-                             "source, recorded verbatim so the provenance "
-                             "separates the tool-source authority from the "
-                             "deployed driver logic")
-    parser.add_argument("--running-module-srcversion", default=None,
+                             "source; it must match the pinned Radeon "
+                             "subtree and installed module metadata")
+    parser.add_argument("--running-module-srcversion", required=True,
                         help="srcversion of the module on the target, "
-                             "recorded verbatim as the running-kernel "
-                             "authority the replay verdicts are compared "
-                             "against")
+                             "which must match both the loaded sysfs "
+                             "identity and installed module metadata")
     return parser.parse_args(argv)
 
 
+def selftest_check(label: str, callback, expected: str | None = None) -> bool:
+    try:
+        callback()
+    except SystemExit as error:
+        if error.code == 1:
+            return True
+        print(f"selftest failure: {label}: unexpected exit {error.code}",
+              file=sys.stderr)
+        return False
+    if expected is None:
+        print(f"selftest failure: {label}: expected refusal", file=sys.stderr)
+    else:
+        print(f"selftest failure: {label}: expected {expected!r}",
+              file=sys.stderr)
+    return False
+
+
+def selftest() -> int:
+    driver_tree = "a" * 40
+    srcversion = "A" * 24
+    checks = [
+        ("authority good", lambda: validate_authority_values(
+            driver_tree, driver_tree, srcversion, srcversion,
+            driver_tree, srcversion), False),
+        ("authority source tree mismatch", lambda: validate_authority_values(
+            driver_tree, "b" * 40, srcversion, srcversion,
+            driver_tree, srcversion), True),
+        ("authority installed tree mismatch", lambda: validate_authority_values(
+            driver_tree, driver_tree, srcversion, srcversion,
+            "b" * 40, srcversion), True),
+        ("authority running srcversion mismatch", lambda: validate_authority_values(
+            driver_tree, driver_tree, srcversion, "B" * 24,
+            driver_tree, srcversion), True),
+        ("authority installed srcversion mismatch", lambda: validate_authority_values(
+            driver_tree, driver_tree, srcversion, srcversion,
+            driver_tree, "B" * 24), True),
+    ]
+    passed = 0
+    for label, callback, refusal in checks:
+        if refusal:
+            passed += selftest_check(label, callback)
+        else:
+            try:
+                callback()
+            except SystemExit as error:
+                print(f"selftest failure: {label}: unexpected exit {error.code}",
+                      file=sys.stderr)
+                return 1
+            passed += 1
+
+    with tempfile.TemporaryDirectory(prefix="r3v-replay-selftest-") as tmp:
+        root = Path(tmp) / "kernel"
+        outside = Path(tmp) / "artifacts"
+        outside.mkdir()
+        require_artifact_destinations_outside(
+            root, outside / REPLAY_ARTIFACT, outside / "provenance.json")
+        if not selftest_check(
+                "artifact inside source checkout",
+                lambda: require_artifact_destinations_outside(
+                    root, root / REPLAY_ARTIFACT, outside / "provenance.json")):
+            return 1
+        passed += 1
+
+    with tempfile.TemporaryDirectory(prefix="r3v-replay-cleanup-") as tmp:
+        root = Path(tmp) / "source"
+        root.mkdir()
+        subprocess.run(["git", "-C", str(root), "init", "--quiet"],
+                       check=True)
+        (root / "README").write_text("replay cleanup fixture\n")
+        subprocess.run(["git", "-C", str(root), "add", "README"],
+                       check=True)
+        subprocess.run([
+            "git", "-C", str(root), "-c", "user.name=Replay Selftest",
+            "-c", "user.email=replay-selftest@example.invalid", "commit",
+            "--quiet", "-m", "fixture",
+        ], check=True)
+        isolation_tmp = tempfile.TemporaryDirectory(
+            prefix="r3v-replay-cleanup-worktree-")
+        worktree = Path(isolation_tmp.name) / "tree"
+        subprocess.run([
+            "git", "-C", str(root), "worktree", "add", "--quiet",
+            "--detach", str(worktree), "HEAD",
+        ], check=True)
+        cleanup_error = cleanup_isolated_worktree(
+            root, worktree, isolation_tmp, True)
+        if cleanup_error or worktree_is_registered(root, worktree):
+            print("selftest failure: isolated worktree cleanup left a "
+                  "registered worktree", file=sys.stderr)
+            return 1
+        passed += 1
+
+    print(f"build_kernel_replay selftest: {passed} calibrated legs OK")
+    return 0
+
+
 def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv == ["--selftest"]:
+        return selftest()
     args = parse_args(argv)
     source_root = args.kernel_root.resolve()
     output = args.output.resolve()
@@ -333,12 +594,15 @@ def main(argv=None) -> int:
     # The ELF and the provenance are two artifacts: one destination would
     # overwrite the digested ELF with JSON, and a destination inside the
     # kernel root would dirty the pinned tree the build just proved clean.
-    if output == provenance_path:
-        fail("--output and --provenance resolve to the same path")
-    for destination in (output, provenance_path):
-        if destination.is_relative_to(source_root):
-            fail(f"artifact destination {destination} lies inside the "
-                 "source checkout")
+    require_artifact_destinations_outside(
+        source_root, output, provenance_path)
+
+    kernel_driver_tree = verify_deployed_driver_authority(
+        source_root,
+        resolved_commit,
+        args.deployed_driver_tree,
+        args.running_module_srcversion,
+    )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     provenance_path.parent.mkdir(parents=True, exist_ok=True)
@@ -346,15 +610,17 @@ def main(argv=None) -> int:
     isolation_tmp = tempfile.TemporaryDirectory(
         prefix="r300-cs-replay-worktree-")
     kernel_root = Path(isolation_tmp.name) / "tree"
-    worktree_added = False
+    worktree_registered = False
     try:
         add = subprocess.run(
             ["git", "-C", str(source_root), "worktree", "add", "--detach",
              str(kernel_root), resolved_commit],
             capture_output=True, text=True)
+        worktree_registered = (
+            add.returncode == 0 or
+            worktree_is_registered(source_root, kernel_root))
         if add.returncode != 0:
             fail(f"git worktree add failed: {add.stderr.strip()}")
-        worktree_added = True
 
         for destination in (output, provenance_path):
             if destination.is_relative_to(kernel_root):
@@ -387,6 +653,9 @@ def main(argv=None) -> int:
                 output_sha256=output_sha256,
                 correspondence_gate=correspondence_gate,
                 isolated_worktree=True,
+                kernel_driver_tree=kernel_driver_tree,
+                deployed_driver_tree=args.deployed_driver_tree,
+                running_module_srcversion=args.running_module_srcversion,
             )
 
         # The clean-tree proof covers every source and generated input used by
@@ -394,20 +663,17 @@ def main(argv=None) -> int:
         # until the detached snapshot remains exactly at the pinned commit.
         require_clean_pinned_tree(kernel_root, resolved_commit)
 
-        provenance["deployed_driver_tree"] = args.deployed_driver_tree
-        provenance["running_module_srcversion"] = args.running_module_srcversion
     finally:
-        if worktree_added:
-            remove = subprocess.run(
-                ["git", "-C", str(source_root), "worktree", "remove",
-                 "--force", str(kernel_root)],
-                capture_output=True, text=True)
-            if remove.returncode != 0:
-                fail(f"git worktree remove failed: {remove.stderr.strip()}")
-        subprocess.run(
-            ["git", "-C", str(source_root), "worktree", "prune"],
-            capture_output=True, text=True)
-        isolation_tmp.cleanup()
+        cleanup_error = cleanup_isolated_worktree(
+            source_root,
+            kernel_root,
+            isolation_tmp,
+            worktree_registered,
+        )
+        if cleanup_error:
+            print(f"build_kernel_replay: {cleanup_error}", file=sys.stderr)
+            if sys.exc_info()[0] is None:
+                raise SystemExit(1)
 
     provenance_path.write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n")

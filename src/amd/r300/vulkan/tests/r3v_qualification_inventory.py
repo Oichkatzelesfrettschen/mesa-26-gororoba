@@ -17,6 +17,10 @@ A Gallium-enabled qualification also requires the real-nm known-bad separation
 leg.  Native-only qualification keeps the synthetic separation selftest while
 the Gallium DSO leg remains unavailable.
 
+Replay qualification reads the loaded Radeon module srcversion and installed
+driver-tree metadata, then compares both identities to the replay provenance.
+Missing or changing deployment identity keeps the qualification gate closed.
+
 Modes:
   <builddir>                  inventory report, exit 0 when readable
   <builddir> --qualification  report plus fatal verdict on any absence
@@ -34,6 +38,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -42,6 +47,11 @@ REPLAY_PROVENANCE_SCHEMA = "r3v-cs-track-replay-provenance/v1"
 REPLAY_PROVENANCE_BUILDER = "build-infra/r3v/build_kernel_replay.py"
 REPLAY_ARTIFACT = "replay_r300_cs_track"
 FULL_SHA256 = set("0123456789abcdef")
+MODULE_NAME = "radeon"
+MODULE_SYSFS_SRCVERSION = Path("/sys/module/radeon/srcversion")
+MODULE_DRIVER_TREE_FIELD = "gororoba_driver_tree"
+MODULE_SRCVERSION_CHARS = set(
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
 
 # The qualification-critical tests.  A name here is load-bearing evidence for
 # the qualification verdict: transport admission, arming, dispatch closure,
@@ -170,11 +180,51 @@ def tool_row(name: str) -> tuple[str, bool]:
     return (name, shutil.which(name) is not None)
 
 
-def validate_replay_provenance(tool: str, record: str) -> tuple[str, bool]:
+def read_runtime_authority() -> tuple[str, str] | None:
+    try:
+        running_srcversion = MODULE_SYSFS_SRCVERSION.read_text().strip()
+    except OSError:
+        return None
+    if (not running_srcversion or
+            any(char not in MODULE_SRCVERSION_CHARS
+                for char in running_srcversion)):
+        return None
+    installed_values: dict[str, str] = {}
+    for field in (MODULE_DRIVER_TREE_FIELD, "srcversion"):
+        try:
+            result = subprocess.run(
+                ["modinfo", "-F", field, MODULE_NAME],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return None
+        if result.returncode != 0:
+            return None
+        installed_values[field] = result.stdout.strip()
+    installed_driver_tree = installed_values[MODULE_DRIVER_TREE_FIELD]
+    installed_srcversion = installed_values["srcversion"]
+    if (len(installed_driver_tree) != 40 or
+            any(char not in FULL_SHA256 for char in installed_driver_tree) or
+            not installed_srcversion or
+            any(char not in MODULE_SRCVERSION_CHARS
+                for char in installed_srcversion) or
+            installed_srcversion != running_srcversion):
+        return None
+    return installed_driver_tree, running_srcversion
+
+
+def validate_replay_provenance(
+    tool: str,
+    record: str,
+    runtime_authority: tuple[str, str] | None = None,
+) -> tuple[str, bool]:
     """The replay tool qualifies only through its provenance record: the
     record parses, its correspondence gate passed rather than being skipped,
     the artifact identifies the in-tree builder and isolated snapshot, and
-    its ELF SHA-256 matches the tool on disk."""
+    its ELF SHA-256 matches the tool on disk, and the retained driver tree and
+    module srcversion match the live deployed module."""
     if not record:
         return ("unset", False)
     tool_path = Path(tool)
@@ -205,6 +255,31 @@ def validate_replay_provenance(tool: str, record: str) -> tuple[str, bool]:
     if (provenance.get("kernel_tool_source_sha") != kernel_commit or
             provenance.get("kernel_driver_logic_sha") != kernel_commit):
         return ("kernel-authority-mismatch", False)
+    source_driver_tree = provenance.get("kernel_driver_logic_tree")
+    deployed_driver_tree = provenance.get("deployed_driver_tree")
+    running_srcversion = provenance.get("running_module_srcversion")
+    if (not isinstance(source_driver_tree, str) or
+            len(source_driver_tree) != 40 or
+            any(char not in FULL_SHA256 for char in source_driver_tree) or
+            not isinstance(deployed_driver_tree, str) or
+            len(deployed_driver_tree) != 40 or
+            any(char not in FULL_SHA256 for char in deployed_driver_tree)):
+        return ("driver-authority-missing", False)
+    if deployed_driver_tree != source_driver_tree:
+        return ("driver-authority-mismatch", False)
+    if (not isinstance(running_srcversion, str) or not running_srcversion or
+            any(char not in MODULE_SRCVERSION_CHARS
+                for char in running_srcversion)):
+        return ("module-srcversion-missing", False)
+    if provenance.get("deployed_driver_authority_verified") is not True:
+        return ("driver-authority-unverified", False)
+    if runtime_authority is None:
+        return ("runtime-authority-unavailable", False)
+    runtime_driver_tree, runtime_srcversion = runtime_authority
+    if deployed_driver_tree != runtime_driver_tree:
+        return ("deployed-driver-tree-runtime-mismatch", False)
+    if running_srcversion != runtime_srcversion:
+        return ("module-srcversion-runtime-mismatch", False)
     if (not isinstance(provenance.get("sources"), dict) or
             not provenance["sources"]):
         return ("source-provenance-missing", False)
@@ -233,9 +308,11 @@ def validate_replay_provenance(tool: str, record: str) -> tuple[str, bool]:
 
 
 def replay_provenance_state() -> tuple[str, bool]:
+    runtime_authority = read_runtime_authority()
     return validate_replay_provenance(
         os.environ.get("R3V_CS_TRACK_REPLAY_TOOL", ""),
         os.environ.get("R3V_CS_TRACK_REPLAY_PROVENANCE", ""),
+        runtime_authority,
     )
 
 
@@ -255,6 +332,10 @@ def replay_provenance_selftest() -> int:
             "kernel_commit": kernel_commit,
             "kernel_tool_source_sha": kernel_commit,
             "kernel_driver_logic_sha": kernel_commit,
+            "kernel_driver_logic_tree": "c" * 40,
+            "deployed_driver_tree": "c" * 40,
+            "running_module_srcversion": "FIXTURESRCVERSION0000000",
+            "deployed_driver_authority_verified": True,
             "sources": {"scripts/replay_r300_cs_track.c": {
                 "sha256": "b" * 64,
             }},
@@ -269,8 +350,10 @@ def replay_provenance_selftest() -> int:
 
         def check(expected: str, candidate: dict) -> bool:
             record_path.write_text(json.dumps(candidate))
-            state, ok = validate_replay_provenance(str(tool),
-                                                    str(record_path))
+            state, ok = validate_replay_provenance(
+                str(tool), str(record_path),
+                ("c" * 40, "FIXTURESRCVERSION0000000"),
+            )
             if ok or state != expected:
                 print(f"replay provenance selftest expected {expected}, "
                       f"got {state}", file=sys.stderr)
@@ -278,7 +361,10 @@ def replay_provenance_selftest() -> int:
             return True
 
         record_path.write_text(json.dumps(record))
-        state, ok = validate_replay_provenance(str(tool), str(record_path))
+        state, ok = validate_replay_provenance(
+            str(tool), str(record_path),
+            ("c" * 40, "FIXTURESRCVERSION0000000"),
+        )
         if state != "verified" or not ok:
             print(f"replay provenance selftest valid record: {state}",
                   file=sys.stderr)
@@ -289,6 +375,11 @@ def replay_provenance_selftest() -> int:
             ("non-isolated-build", {"isolated_worktree": False}),
             ("builder-mismatch", {"builder": "operator-supplied"}),
             ("unpinned-kernel-commit", {"kernel_commit": "deadbeef"}),
+            ("driver-authority-missing", {"deployed_driver_tree": None}),
+            ("driver-authority-mismatch", {"deployed_driver_tree": "d" * 40}),
+            ("module-srcversion-missing", {"running_module_srcversion": ""}),
+            ("driver-authority-unverified", {
+                "deployed_driver_authority_verified": False}),
             ("digest-mismatch", {"output_sha256": "0" * 64}),
         ]
         for expected, mutation in mutations:
@@ -296,6 +387,29 @@ def replay_provenance_selftest() -> int:
             candidate.update(mutation)
             if not check(expected, candidate):
                 return 1
+        candidate = dict(record)
+        candidate["kernel_driver_logic_tree"] = "d" * 40
+        candidate["deployed_driver_tree"] = "d" * 40
+        record_path.write_text(json.dumps(candidate))
+        state, ok = validate_replay_provenance(
+            str(tool), str(record_path),
+            ("c" * 40, "FIXTURESRCVERSION0000000"),
+        )
+        if ok or state != "deployed-driver-tree-runtime-mismatch":
+            print("replay provenance selftest expected runtime driver-tree "
+                  f"refusal, got {state}", file=sys.stderr)
+            return 1
+        candidate = dict(record)
+        candidate["running_module_srcversion"] = "OTHER"
+        record_path.write_text(json.dumps(candidate))
+        state, ok = validate_replay_provenance(
+            str(tool), str(record_path),
+            ("c" * 40, "FIXTURESRCVERSION0000000"),
+        )
+        if ok or state != "module-srcversion-runtime-mismatch":
+            print("replay provenance selftest expected runtime srcversion "
+                  f"refusal, got {state}", file=sys.stderr)
+            return 1
     print(f"replay provenance selftest: {len(mutations)} refusal legs and "
           "one verified leg OK")
     return 0
