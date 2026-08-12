@@ -37,7 +37,7 @@ EXPECTED_RELOC_SLOTS = (1, 0)
 # src/amd/r300/common/r300_pm4_builder.h).  The payload dword follows
 # this header in ib.bin.
 RELOC_NOP_HEADER = 0xC0001000
-EXPECTED_BO_SIZES = {"vertex": 4096, "color": 65536}
+EXPECTED_BO_SIZES = {"vertex": 4096, "color": 16640}
 
 
 def validate_bo_table(table: object) -> None:

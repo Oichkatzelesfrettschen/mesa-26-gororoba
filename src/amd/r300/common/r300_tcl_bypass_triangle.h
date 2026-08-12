@@ -154,6 +154,8 @@ int r300_tcl_bypass_triangle_extent_emit(
 #define R300_TRIANGLE_TARGET_HEIGHT 64u
 #define R300_TRIANGLE_TARGET_PITCH_PIXELS 64u
 #define R300_TRIANGLE_ALLOCATION_ROWS 65u
+#define R300_TRIANGLE_COLOR_BYTES \
+   (R300_TRIANGLE_TARGET_PITCH_PIXELS * R300_TRIANGLE_ALLOCATION_ROWS * 4u)
 
 /* The canonical IB artifact encoding is little-endian uint32_t dwords: dword
  * i occupies bytes [4i, 4i+4) as (byte0 = dword & 0xff, byte1 = dword >> 8,

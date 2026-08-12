@@ -90,11 +90,11 @@ main(int argc, char **argv)
       "    {\"slot\": %u, \"role\": \"vertex\", \"domain\": \"GTT\","
       " \"size\": 4096},\n"
       "    {\"slot\": %u, \"role\": \"color\", \"domain\": \"GTT\","
-      " \"size\": 65536}\n"
+      " \"size\": %u}\n"
       "  ]\n"
       "}\n",
       (unsigned)R300_TRIANGLE_SLOT_VERTEX,
-      (unsigned)R300_TRIANGLE_SLOT_COLOR);
+      (unsigned)R300_TRIANGLE_SLOT_COLOR, (unsigned)R300_TRIANGLE_COLOR_BYTES);
    rc |= write_file(dir, "bo_table.json", bo_table, (size_t)bo_table_len);
 
    char hash_hex[2 * R300_FRAGMENT_BINARY_HASH_SIZE + 1];
