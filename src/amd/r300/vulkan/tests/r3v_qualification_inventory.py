@@ -180,9 +180,12 @@ def tool_row(name: str) -> tuple[str, bool]:
     return (name, shutil.which(name) is not None)
 
 
-def read_runtime_authority() -> tuple[str, str] | None:
+def read_runtime_authority(
+    sysfs_path: Path = MODULE_SYSFS_SRCVERSION,
+    run_command=subprocess.run,
+) -> tuple[str, str] | None:
     try:
-        running_srcversion = MODULE_SYSFS_SRCVERSION.read_text().strip()
+        running_srcversion = sysfs_path.read_text().strip()
     except OSError:
         return None
     if (not running_srcversion or
@@ -192,7 +195,7 @@ def read_runtime_authority() -> tuple[str, str] | None:
     installed_values: dict[str, str] = {}
     for field in (MODULE_DRIVER_TREE_FIELD, "srcversion"):
         try:
-            result = subprocess.run(
+            result = run_command(
                 ["modinfo", "-F", field, MODULE_NAME],
                 capture_output=True,
                 text=True,
@@ -410,8 +413,46 @@ def replay_provenance_selftest() -> int:
             print("replay provenance selftest expected runtime srcversion "
                   f"refusal, got {state}", file=sys.stderr)
             return 1
+
+    with tempfile.TemporaryDirectory(prefix="r3v-runtime-authority-") as tmp:
+        sysfs_path = Path(tmp) / "srcversion"
+        sysfs_path.write_text("FIXTURESRCVERSION0000000\n")
+        driver_tree = "d" * 40
+
+        def good_modinfo(command, **kwargs):
+            field = command[2]
+            value = (driver_tree if field == MODULE_DRIVER_TREE_FIELD else
+                     "FIXTURESRCVERSION0000000")
+            return subprocess.CompletedProcess(
+                command, 0, stdout=value + "\n", stderr="")
+
+        authority = read_runtime_authority(sysfs_path, good_modinfo)
+        if authority != (driver_tree, "FIXTURESRCVERSION0000000"):
+            print("runtime authority selftest expected valid tuple, "
+                  f"got {authority}", file=sys.stderr)
+            return 1
+
+        def missing_modinfo(command, **kwargs):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="missing")
+
+        if read_runtime_authority(sysfs_path, missing_modinfo) is not None:
+            print("runtime authority selftest accepted modinfo failure",
+                  file=sys.stderr)
+            return 1
+
+        def mismatched_modinfo(command, **kwargs):
+            field = command[2]
+            value = (driver_tree if field == MODULE_DRIVER_TREE_FIELD else
+                     "OTHER")
+            return subprocess.CompletedProcess(
+                command, 0, stdout=value + "\n", stderr="")
+
+        if read_runtime_authority(sysfs_path, mismatched_modinfo) is not None:
+            print("runtime authority selftest accepted srcversion mismatch",
+                  file=sys.stderr)
+            return 1
     print(f"replay provenance selftest: {len(mutations)} refusal legs and "
-          "one verified leg OK")
+          "one verified leg and runtime-authority legs OK")
     return 0
 
 
