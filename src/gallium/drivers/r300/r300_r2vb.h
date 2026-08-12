@@ -251,6 +251,33 @@ r300_r2vb_diagnostic_once(unsigned *reported)
    return p_atomic_cmpxchg(reported, 0u, 1u) == 0u;
 }
 
+/* A process-scoped producer_submit3 state permits one PM4 candidate.  The
+ * submitted state consumes each qualifying draw without staging or emission,
+ * so the route cannot fall through to a second gallivm submission. */
+enum r300_r2vb_submit3_state {
+   R300_R2VB_SUBMIT3_AVAILABLE = 0,
+   R300_R2VB_SUBMIT3_SUBMITTED,
+};
+
+enum r300_r2vb_submit3_action {
+   R300_R2VB_SUBMIT3_EMIT = 0,
+   R300_R2VB_SUBMIT3_CONSUME,
+};
+
+static inline enum r300_r2vb_submit3_action
+r300_r2vb_submit3_action_for_state(unsigned state)
+{
+   return state == R300_R2VB_SUBMIT3_AVAILABLE
+             ? R300_R2VB_SUBMIT3_EMIT
+             : R300_R2VB_SUBMIT3_CONSUME;
+}
+
+static inline void
+r300_r2vb_submit3_mark_submitted(unsigned *state)
+{
+   p_atomic_set(state, R300_R2VB_SUBMIT3_SUBMITTED);
+}
+
 /* Gated self-test for the RS482 R2VB packet surface, fired once from r300_flush
  * with from_flush=true so the loop appends to a CS a real draw has populated.
  * R300_HB_TCL=1 plus any present R300_R2VB_TIMING value reserves the no-TCL

@@ -935,6 +935,23 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Producer-submit state calibration: an available state emits one
+  # candidate, a submitted state consumes repeated qualifying draws, and an
+  # unknown state fails closed without another emission.
+  test(
+    'r300-r2vb-submit3-state',
+    executable(
+      'r300_r2vb_submit3_state_test',
+      files('compiler/tests/r300_r2vb_submit3_state_test.c'),
+      c_args : r300_test_c_args,
+      include_directories : [inc_src, inc_include, inc_gallium, inc_gallium_aux,
+                             include_directories('.')],
+      dependencies : [idep_mesautilc11],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   # Host calibration for the blend-factor target remapper.  RGB and alpha
   # SRC_ALPHA_SATURATE factors have different contracts, and intensity
   # targets retain their replicated destination alpha instead of using the
