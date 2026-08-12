@@ -224,8 +224,7 @@ def validate_replay_provenance(
     record parses, its correspondence gate passed rather than being skipped,
     the artifact identifies the in-tree builder and isolated snapshot, and
     its ELF SHA-256 matches the tool on disk, and the retained driver tree and
-    module srcversion match the live deployed module when runtime_authority is
-    supplied."""
+    module srcversion match the live deployed module."""
     if not record:
         return ("unset", False)
     tool_path = Path(tool)
