@@ -425,6 +425,23 @@ case_stats_begin_tex_adds_penalty_for_texture_block(void)
 }
 
 static void
+case_stats_tex_without_begintex_keeps_base_cost(void)
+{
+   struct corpus_compiler cc;
+   corpus_fs_init(&cc);
+
+   corpus_append_alu(&cc.base, RC_OPCODE_TEX);
+   struct rc_program_stats stats = corpus_get_stats(&cc.base);
+
+   CHECK(stats.num_tex_insts == 1,
+         "a lone TEX counts one texture instruction without BEGIN_TEX");
+   CHECK(stats.num_cycles == 1,
+         "a lone TEX keeps its one-cycle base cost without the BEGIN_TEX penalty");
+
+   corpus_fs_destroy(&cc);
+}
+
+static void
 case_stats_kil_only_texblock_skips_penalty(void)
 {
    struct corpus_compiler cc;
@@ -502,6 +519,7 @@ main(void)
 
    printf("r300 compiler correctness corpus: rc_get_stats\n");
    case_stats_begin_tex_adds_penalty_for_texture_block();
+   case_stats_tex_without_begintex_keeps_base_cost();
    case_stats_kil_only_texblock_skips_penalty();
    case_stats_mad_three_temp_sources_adds_cycle();
    case_stats_r300_semwait_credit_stays_disabled();
