@@ -22,6 +22,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nir.h"
@@ -72,6 +73,18 @@ static const nir_shader_compiler_options fs_options = {
 };
 
 static void count_insts(struct radeon_compiler *c, unsigned *alu, unsigned *tex);
+
+/* The full backend copies constants and allocates the packed fragment code
+ * into the output object.  This test keeps that object on the stack, so it
+ * releases every heap-owned field before the stack lifetime ends. */
+static void
+destroy_fs_code(struct r300_fragment_shader_code *fs_code)
+{
+   free(fs_code->code.constants_remap_table);
+   rc_constants_destroy(&fs_code->code.constants);
+   free(fs_code->cb_code);
+   free(fs_code->error);
+}
 
 /* An is_r500=false screen so the lowering takes the R300-class fragment path. */
 static struct pipe_screen *
@@ -162,6 +175,7 @@ run_fs(struct r300_fragment_program_compiler *c, struct rc_regalloc_state *rs,
       if (!c->Base.Error)
          *sched_alu = fs_code.code.code.r300.alu.length;
    }
+   destroy_fs_code(&fs_code);
 }
 
 static void
