@@ -335,6 +335,9 @@ _dev_icd = custom_target(
 )
 
 devenv.append('VK_ICD_FILENAMES', _dev_icd.full_path())
+if get_option('r3v-gallium-backend') and with_gallium_r300
+  devenv.append('VK_DRIVER_FILES', _dev_icd.full_path())
+endif
 
 # Native ICD identity: libvulkan_r3v_native builds the loader-base files over
 # the generic Radeon DRM transport with no Gallium runtime ownership.  The
