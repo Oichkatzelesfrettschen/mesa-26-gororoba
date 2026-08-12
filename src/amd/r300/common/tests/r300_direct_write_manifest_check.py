@@ -8,16 +8,15 @@ so a writer that omits ib_blake3, publishes a stale digest, records
 wrong relocation sites, or emits malformed JSON fails here even while
 every unit assertion passes.
 
-The check calibrates itself: after the writer's real output passes, four
+The check calibrates itself: after the writer's real output passes, five
 mutated copies -- truncated IB, zeroed relocation site, undersized BO,
-out-of-range pixel -- must each fail through validation, and with b3sum
-present a digest-mutated copy must fail the recomputation. A validation
-pass that cannot reject its own mutants proves nothing.
+out-of-range pixel, and changed digest -- must each fail through validation.
+A validation pass that cannot reject its own mutants proves nothing.
 
 The BLAKE3 comparison recomputes the digest with the host b3sum utility,
-an implementation independent of the in-tree hasher; where b3sum is
-absent that leg and its mutant report not run and the structural checks
-still decide.
+an implementation independent of the in-tree hasher. The verifier is a
+required test dependency, so an environment without b3sum fails the test
+instead of skipping the digest leg.
 """
 
 import json
@@ -32,7 +31,7 @@ class CheckFailure(Exception):
     pass
 
 
-def validate(outdir: Path, have_b3sum: bool) -> None:
+def validate(outdir: Path, b3sum: str) -> None:
     try:
         manifest = json.loads((outdir / "manifest.json").read_text())
     except (OSError, json.JSONDecodeError) as e:
@@ -90,15 +89,14 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
     declared = manifest.get("ib_blake3", "")
     if len(declared) != 64:
         raise CheckFailure(f"ib_blake3 is not a 64-hex digest: {declared!r}")
-    if have_b3sum:
-        recomputed = subprocess.run(
-            ["b3sum", "--no-names", str(outdir / "ib.bin")],
-            capture_output=True, text=True)
-        if recomputed.returncode != 0:
-            raise CheckFailure(f"b3sum failed: {recomputed.stderr}")
-        if recomputed.stdout.strip() != declared:
-            raise CheckFailure(f"ib_blake3 {declared} != b3sum "
-                               f"{recomputed.stdout.strip()}")
+    recomputed = subprocess.run(
+        [b3sum, "--no-names", str(outdir / "ib.bin")],
+        capture_output=True, text=True, check=False)
+    if recomputed.returncode != 0:
+        raise CheckFailure(f"b3sum failed: {recomputed.stderr}")
+    if recomputed.stdout.strip() != declared:
+        raise CheckFailure(f"ib_blake3 {declared} != b3sum "
+                           f"{recomputed.stdout.strip()}")
 
 
 def fail(message: str) -> None:
@@ -112,9 +110,9 @@ def clone(src: Path, dst: Path) -> None:
         shutil.copy(src / name, dst / name)
 
 
-def expect_reject(outdir: Path, have_b3sum: bool, label: str) -> None:
+def expect_reject(outdir: Path, b3sum: str, label: str) -> None:
     try:
-        validate(outdir, have_b3sum)
+        validate(outdir, b3sum)
     except CheckFailure:
         return
     fail(f"calibration mutant '{label}' passed validation")
@@ -124,7 +122,9 @@ def main() -> int:
     if len(sys.argv) != 2:
         fail("usage: r300_direct_write_manifest_check.py <manifest-tool>")
     tool = sys.argv[1]
-    have_b3sum = shutil.which("b3sum") is not None
+    b3sum = shutil.which("b3sum")
+    if b3sum is None:
+        fail("required independent verifier b3sum is unavailable")
 
     with tempfile.TemporaryDirectory(prefix="r300-dw-manifest-") as tmp:
         good = Path(tmp) / "good"
@@ -133,7 +133,7 @@ def main() -> int:
         if run.returncode != 0:
             fail(f"manifest tool exited {run.returncode}: {run.stderr}")
         try:
-            validate(good, have_b3sum)
+            validate(good, b3sum)
         except CheckFailure as e:
             fail(str(e))
 
@@ -143,40 +143,36 @@ def main() -> int:
         clone(good, m)
         ib = (good / "ib.bin").read_bytes()
         (m / "ib.bin").write_bytes(ib[:len(ib) - 8])
-        expect_reject(m, have_b3sum, "truncated-ib")
+        expect_reject(m, b3sum, "truncated-ib")
 
         m = Path(tmp) / "zeroed-site"
         clone(good, m)
         mut = dict(manifest)
         mut["reloc_sites"] = [{"slot": 0, "ib_index": 0}]
         (m / "manifest.json").write_text(json.dumps(mut))
-        expect_reject(m, have_b3sum, "zeroed-site")
+        expect_reject(m, b3sum, "zeroed-site")
 
         m = Path(tmp) / "undersized-bo"
         clone(good, m)
         bo = json.loads((good / "bo_table.json").read_text())
         bo["slots"][0]["size"] = 4096
         (m / "bo_table.json").write_text(json.dumps(bo))
-        expect_reject(m, have_b3sum, "undersized-bo")
+        expect_reject(m, b3sum, "undersized-bo")
 
         m = Path(tmp) / "pixel-out-of-range"
         clone(good, m)
         mut = dict(manifest)
         mut["pixel_b"] = dict(manifest["pixel_b"], x=manifest["target_width"])
         (m / "manifest.json").write_text(json.dumps(mut))
-        expect_reject(m, have_b3sum, "pixel-out-of-range")
+        expect_reject(m, b3sum, "pixel-out-of-range")
 
-        if have_b3sum:
-            m = Path(tmp) / "mutated-digest"
-            clone(good, m)
-            d = manifest["ib_blake3"]
-            mut = dict(manifest)
-            mut["ib_blake3"] = ("0" if d[0] != "0" else "1") + d[1:]
-            (m / "manifest.json").write_text(json.dumps(mut))
-            expect_reject(m, have_b3sum, "mutated-digest")
-        else:
-            print("b3sum absent; BLAKE3 recomputation and its mutant not run",
-                  file=sys.stderr)
+        m = Path(tmp) / "mutated-digest"
+        clone(good, m)
+        d = manifest["ib_blake3"]
+        mut = dict(manifest)
+        mut["ib_blake3"] = ("0" if d[0] != "0" else "1") + d[1:]
+        (m / "manifest.json").write_text(json.dumps(mut))
+        expect_reject(m, b3sum, "mutated-digest")
 
     print("direct-write manifest artifacts are mutually consistent and the "
           "checker rejects its calibration mutants")
