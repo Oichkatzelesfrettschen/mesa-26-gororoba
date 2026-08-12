@@ -439,7 +439,7 @@ main(void)
                                &split_draw);
       struct r300_r2vb_workload_stats split_stats;
       CHECK(r300_r2vb_telemetry_workload_stats(
-               g_vs.r2vb_content_hex, &split_stats) &&
+               g_vs.r2vb_content_hex, R300_R2VB_PLAN_SPLIT, &split_stats) &&
                split_stats.action == 'P',
             "workload: split action uses a distinct code");
       r300_r2vb_plan_release(&dedup_plan);
@@ -602,7 +602,8 @@ main(void)
                "workload: full BLAKE3 cached on the VS");
 
          struct r300_r2vb_workload_stats st;
-         CHECK(r300_r2vb_telemetry_workload_stats(hex, &st),
+         CHECK(r300_r2vb_telemetry_workload_stats(
+                  hex, R300_R2VB_PLAN_SINGLE, &st),
                "workload: stats found by hash");
          CHECK(st.draws == 2 && st.vertices == 3 + 300 * 2 &&
                   st.instances == 3 && st.draw_min == 3 &&
@@ -614,7 +615,7 @@ main(void)
                "workload: draws/vertices/extrema/topology/indexed sum");
          CHECK(!r300_r2vb_telemetry_workload_stats(
                   "0000000000000000000000000000000000000000000000000000000000000000",
-                  &st),
+                  R300_R2VB_PLAN_SINGLE, &st),
                "workload: unseen hash reports absent");
          r300_r2vb_plan_release(&plan);
       }

@@ -105,10 +105,11 @@ bool r300_r2vb_telemetry_note_structural_admission_reject(
 /* Dynamic workload weight, accumulated per candidate draw after the plan is
  * cached -- no compiles, no serialization past the first hash: draws,
  * vertices, instances, draw-size extrema, a topology bit mask, and the
- * indexed-draw count, keyed by the VS content hash.  The teardown summary
- * prints one workload line per key, turning cell incidence into the
- * evidence a route-on policy needs (a six-slot producer amortizes its fixed
- * route cost only above a measured vertex-count crossover). */
+ * indexed-draw count, keyed by the VS content hash and plan action.  The
+ * teardown summary prints one workload line per (hash, action) key, turning
+ * cell incidence into the evidence a route-on policy needs (a six-slot
+ * producer amortizes its fixed route cost only above a measured vertex-count
+ * crossover). */
 struct r300_r2vb_workload_stats {
     char action;             /* R=reject, N=single, P=split */
     uint64_t draws;
@@ -127,10 +128,11 @@ void r300_r2vb_telemetry_draw(struct r300_context *r300,
                               const struct pipe_draw_info *info,
                               const struct pipe_draw_start_count_bias *draw);
 
-/* Stats snapshot by VS content hash for the calibration test;
- * single-threaded reads only.  Returns false for an unseen hash. */
-bool r300_r2vb_telemetry_workload_stats(const char *hex,
-                                        struct r300_r2vb_workload_stats *out);
+/* Stats snapshot by VS content hash and plan action for the calibration test;
+ * single-threaded reads only.  Returns false for an unseen pair. */
+bool r300_r2vb_telemetry_workload_stats(
+   const char *hex, enum r300_r2vb_plan_action action,
+   struct r300_r2vb_workload_stats *out);
 
 /* Counter snapshot for the calibration test; single-threaded reads only.
  * Concurrent readers snapshot through r300_r2vb_telemetry_print_summary,

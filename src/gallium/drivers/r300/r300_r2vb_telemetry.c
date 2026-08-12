@@ -293,18 +293,21 @@ telemetry_vs_hex(struct r300_context *r300)
     return vs->r2vb_content_hex;
 }
 
-/* Dynamic workload weight per VS content hash: contexts share the table
- * (like the counters), a mutex guards it, and the teardown summary flushes
- * one line per entry.  The table's keys are the entries' own hex copies. */
+/* Dynamic workload weight per (VS content hash, plan action): contexts share
+ * the table (like the counters), a mutex guards it, and the teardown summary
+ * flushes one line per entry.  The table's keys are the entries' own copies. */
 struct telemetry_workload_entry {
+    char key[68];
     char hex[65];
     char action;
     struct r300_r2vb_workload_stats stats;
 };
 
 /* Workload summaries use one code per route action.  The action names for
- * SINGLE and SPLIT share an initial, so storing the first name character
- * would merge distinct route policies in the retained summary. */
+ * SINGLE and SPLIT share an initial (per
+ * (rg --fixed-strings r300_r2vb_plan_action_str src/gallium/drivers/r300)),
+ * so storing the first name character would merge distinct route policies in
+ * the retained summary. */
 static char
 telemetry_workload_action_code(enum r300_r2vb_plan_action action)
 {
@@ -377,18 +380,23 @@ r300_r2vb_telemetry_draw(struct r300_context *r300,
                                                  _mesa_key_string_equal);
     struct telemetry_workload_entry *e = NULL;
     if (workload_table) {
-        struct hash_entry *he =
-            _mesa_hash_table_search(workload_table, hex);
+        char key[68];
+        char action = telemetry_workload_action_code(plan->action);
+        int key_length = snprintf(key, sizeof(key), "%s/%c", hex, action);
+        struct hash_entry *he = key_length < 0 ||
+                                        (size_t)key_length >= sizeof(key) ?
+            NULL : _mesa_hash_table_search(workload_table, key);
         if (he) {
             e = he->data;
-        } else {
+        } else if (key_length >= 0 && (size_t)key_length < sizeof(key)) {
             e = calloc(1, sizeof(*e));
             if (e) {
+                memcpy(e->key, key, (size_t)key_length + 1);
                 memcpy(e->hex, hex, sizeof(e->hex));
-                e->action = telemetry_workload_action_code(plan->action);
+                e->action = action;
                 e->stats.action = e->action;
                 e->stats.draw_min = UINT32_MAX;
-                _mesa_hash_table_insert(workload_table, e->hex, e);
+                _mesa_hash_table_insert(workload_table, e->key, e);
             }
         }
     }
@@ -409,17 +417,24 @@ r300_r2vb_telemetry_draw(struct r300_context *r300,
 }
 
 bool
-r300_r2vb_telemetry_workload_stats(const char *hex,
-                                   struct r300_r2vb_workload_stats *out)
+r300_r2vb_telemetry_workload_stats(
+    const char *hex, enum r300_r2vb_plan_action action,
+    struct r300_r2vb_workload_stats *out)
 {
     bool found = false;
     simple_mtx_lock(&workload_mtx);
     if (workload_table) {
-        struct hash_entry *he =
-            _mesa_hash_table_search(workload_table, hex);
-        if (he) {
-            *out = ((struct telemetry_workload_entry *)he->data)->stats;
-            found = true;
+        char key[68];
+        char action_code = telemetry_workload_action_code(action);
+        int key_length = snprintf(key, sizeof(key), "%s/%c", hex,
+                                  action_code);
+        if (key_length >= 0 && (size_t)key_length < sizeof(key)) {
+            struct hash_entry *he =
+                _mesa_hash_table_search(workload_table, key);
+            if (he) {
+                *out = ((struct telemetry_workload_entry *)he->data)->stats;
+                found = true;
+            }
         }
     }
     simple_mtx_unlock(&workload_mtx);
