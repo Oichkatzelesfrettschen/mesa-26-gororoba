@@ -290,14 +290,29 @@ void r300_emit_fs_constants(struct r300_context* r300, unsigned size, void *stat
     unsigned i, j;
     CS_LOCALS(r300);
 
-    if (r300_fs_emit_debug_enabled())
+    if (r300_fs_emit_debug_enabled()) {
+        float c0[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
+        if (count && buf->ptr) {
+            for (unsigned chan = 0; chan < 4; chan++) {
+                int index = (int)chan;
+                unsigned swz = chan;
+                if (buf->remap_table) {
+                    index = buf->remap_table[0].index[chan];
+                    swz = buf->remap_table[0].swizzle[chan];
+                }
+                if (index < 0 || swz >= 4)
+                    continue;
+                uint64_t end =
+                    ((uint64_t)index * 4 + swz + 1) * sizeof(float);
+                if (end <= buf->buffer_size)
+                    c0[chan] = ((float *)buf->ptr)[index * 4 + swz];
+            }
+        }
         fprintf(stderr, "r300 fs_constants emit: fs=%p count=%u remap=%p "
                 "ptr=%p c0=%.3f,%.3f,%.3f,%.3f\n",
                 (void *)fs, count, (void *)buf->remap_table, (void *)buf->ptr,
-                count && buf->ptr ? ((float *)buf->ptr)[0] : -1.0f,
-                count && buf->ptr ? ((float *)buf->ptr)[1] : -1.0f,
-                count && buf->ptr ? ((float *)buf->ptr)[2] : -1.0f,
-                count && buf->ptr ? ((float *)buf->ptr)[3] : -1.0f);
+                c0[0], c0[1], c0[2], c0[3]);
+    }
 
     if (count == 0)
         return;
