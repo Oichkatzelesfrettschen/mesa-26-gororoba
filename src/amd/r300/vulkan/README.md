@@ -147,7 +147,9 @@ pipeline or no-op dispatch in the current experimental implementation. That is
 a semantic defect. Unsupported work must ultimately fail at a documented API
 boundary; successful no-op commands never count as Vulkan support.
 
-No queue family advertises `VK_QUEUE_COMPUTE_BIT`.
+No queue family advertises `VK_QUEUE_COMPUTE_BIT` unless the exact
+`R3V_HYBRID_COMPUTE_EXPERIMENTAL=1` opt-in enables the gated hybrid-compute
+experiment. That queue exposure remains experimental and nonconformant.
 
 ## R2VB source-format work
 
