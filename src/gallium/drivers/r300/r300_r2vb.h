@@ -241,13 +241,13 @@ void r300_r2vb_reserve_bo_draw_cs(struct r300_context *r300,
 void r300_r2vb_report_bo_identity(struct r300_context *r300, const char *tag,
                                   struct pipe_resource *pr);
 
-/* Gated self-test for the RS482 HB_TCL umbrella, fired once from r300_flush with
- * from_flush=true so the loop appends to a CS a real draw has populated.  The
- * exact pair R300_HB_TCL=1 and R300_R2VB_TIMING=capture|submit selects the
- * transport.  Capture NOOP-flushes the IB without a DRM submit and declines an
- * active query.  Submit times a real flush and additionally requires
- * R300_RAW_SUBMIT_ACCEPTED=1.  Returns true when it consumed the CS; no-op
- * returning false when admission fails. */
+/* Gated self-test for the RS482 R2VB packet surface, fired once from r300_flush
+ * with from_flush=true so the loop appends to a CS a real draw has populated.
+ * The exact pair R300_HB_TCL=1 and R300_R2VB_TIMING=capture|submit reserves the
+ * no-TCL capability shape and selects the transport.  Capture NOOP-flushes the
+ * IB without a DRM submit and declines an active query.  Submit times a real
+ * flush and additionally requires R300_RAW_SUBMIT_ACCEPTED=1.  Returns true
+ * when it consumed the CS; returns false when admission fails. */
 bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
                                            bool from_flush,
                                            unsigned flush_flags,

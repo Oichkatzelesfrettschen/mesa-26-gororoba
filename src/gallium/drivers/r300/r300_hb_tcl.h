@@ -21,8 +21,9 @@ struct r300_screen;
  * reach the register.  The default config reproduces the historical bypass
  * word 0x0014025a exactly.
  *
- * When R300_HB_TCL=1 takes effect on an RS48x HB part, r300_hb_tcl_init forces
- * caps.has_tcl = true and caps.num_vert_fpus = vert_fpu: the driver then takes
+ * When R300_HB_TCL=1 takes effect on an RS48x HB part without
+ * R300_R2VB_TIMING, r300_hb_tcl_init forces caps.has_tcl = true and
+ * caps.num_vert_fpus = vert_fpu: the driver then takes
  * the hardware-TCL route (no Gallium draw, r300 VS compiler, PVS upload,
  * TCL_BYPASS cleared) so the PVS upload and draw path become reachable.  A
  * live draw-correlation oracle on measured RS482 reached that path and timed
@@ -57,10 +58,12 @@ struct r300_hb_tcl_config {
 
 /*
  * Populate screen->hb_tcl with the default bypass allocation, then, when
- * R300_HB_TCL=1 on an RC410/RS480 part without hardware TCL, mark it enabled
- * and fold in a validated R300_HB_VERT_FPU probe.  Reads getenv once at screen
- * create.  Safe to call on any screen: a part with hardware TCL keeps the
- * default config and the bypass word is never emitted.
+ * R300_HB_TCL=1 on an RC410/RS480 part without hardware TCL and
+ * R300_R2VB_TIMING is unset, mark it enabled and fold in a validated
+ * R300_HB_VERT_FPU probe.  R300_R2VB_TIMING reserves the no-TCL shape for the
+ * R2VB packet self-test.  Reads getenv once at screen create.  Safe to call on
+ * any screen: a part with hardware TCL keeps the default config and the
+ * bypass word is never emitted.
  */
 void r300_hb_tcl_init(struct r300_screen *screen);
 

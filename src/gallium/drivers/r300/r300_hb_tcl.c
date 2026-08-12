@@ -77,6 +77,14 @@ r300_hb_tcl_init(struct r300_screen *screen)
        !hb_tcl || strcmp(hb_tcl, "1") != 0)
       return;
 
+   /* The R2VB self-test emits the RS482 TCL_BYPASS packet sequence, whose
+    * producer contract requires the no-TCL, zero-vertex-FPU capability shape.
+    * Reserve that shape when the transport selector is present; the self-test
+    * then owns the exact capture or submit experiment, while the HB_TCL route
+    * remains available when no R2VB transport is requested. */
+   if (getenv("R300_R2VB_TIMING") != NULL)
+      return;
+
    cfg->enabled = true;
    cfg->vert_fpu = r300_hb_tcl_parse_vert_fpu();
 

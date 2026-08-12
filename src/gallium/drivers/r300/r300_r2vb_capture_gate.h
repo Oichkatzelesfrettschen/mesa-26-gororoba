@@ -48,6 +48,15 @@ r300_r2vb_transform_verify_allowed(bool xform, bool do_submit,
    return xform && do_submit && submit_signalled;
 }
 
+static inline bool
+r300_r2vb_diagnostic_allowed(bool *reported)
+{
+   if (*reported)
+      return false;
+   *reported = true;
+   return true;
+}
+
 /* Select the transport before allocation, command emission, or query
  * finalization.  RADEON_FLUSH_NOOP discards the capture IB before
  * DRM_RADEON_CS, so capture declines an active query rather than advancing
