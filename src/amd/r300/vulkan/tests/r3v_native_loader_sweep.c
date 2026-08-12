@@ -40,16 +40,57 @@ static PFN_vkGetDeviceProcAddr gdpa;
 
 /* Run one invocation in a child so a null call, an abort, or a sanitizer
  * report lands as an exit status the parent reads instead of ending the
- * sweep.  The child's verdict is its exit code, and the parent adds the
- * signal that killed it.
+ * sweep.  The child verdict is normalized to zero or one before _exit(), so
+ * every nonzero body result remains visible in the low exit-status byte.
  */
+static int
+child_exit_status(int body_status)
+{
+   return body_status == 0 ? 0 : 1;
+}
+
+static bool
+mapped_range_setup_ready(VkResult allocation_result, VkResult map_result,
+                         const void *live_map)
+{
+   return allocation_result == VK_SUCCESS && map_result == VK_SUCCESS &&
+          live_map != NULL;
+}
+
+/* Host calibration keeps the setup gate and child status boundary explicit:
+ * a successful allocation and mapping is the known-good shape, a failed
+ * setup is the known-bad shape, and a high-bit body result remains a child
+ * failure after normalization.
+ */
+static void
+check_loader_sweep_calibration(void)
+{
+   static const char setup_marker;
+
+   CHECK(mapped_range_setup_ready(VK_SUCCESS, VK_SUCCESS, &setup_marker),
+         "successful allocation and mapping enable range validation");
+   CHECK(!mapped_range_setup_ready(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_SUCCESS,
+                                   &setup_marker),
+         "allocation failure disables range validation");
+   CHECK(!mapped_range_setup_ready(VK_SUCCESS, VK_ERROR_MEMORY_MAP_FAILED,
+                                   &setup_marker),
+         "mapping failure disables range validation");
+   CHECK(!mapped_range_setup_ready(VK_SUCCESS, VK_SUCCESS, NULL),
+         "a NULL mapping disables range validation");
+   CHECK(child_exit_status(0) == 0, "zero child result stays successful");
+   CHECK(child_exit_status(1 << 8) == 1,
+         "a high-bit child result stays visible as failure");
+}
+
 static void
 in_child(const char *label, int (*body)(void))
 {
    fflush(NULL);
    pid_t pid = fork();
-   if (pid == 0)
-      _exit(body());
+   if (pid == 0) {
+      const int body_status = body();
+      _exit(child_exit_status(body_status));
+   }
    if (pid < 0) {
       failures++;
       fprintf(stderr, "FAIL: %s: fork failed\n", label);
@@ -234,24 +275,29 @@ call_flush_empty(void)
    return vkInvalidateMappedMemoryRanges(device, 0, NULL) != VK_SUCCESS;
 }
 
-/* The one live allocation the mapped-range legs validate against, mapped for
- * the whole sweep because vkFlushMappedMemoryRanges and
- * vkInvalidateMappedMemoryRanges name a currently mapped allocation.  The
- * parent allocates and maps it, and each child inherits the handle: the
- * drm-shim keeps its buffer-object state per process, so a GEM create in a
- * forked child refuses.  That inheritance is a property of this harness and
- * the shim under it, and the range checks under test read the allocation size
- * rather than the kernel.  A child that creates its own instance and device
- * through exec is what a harness measuring object lifetime across processes
- * would need.
+/* The parent allocates and maps this VkDeviceMemory before in_child() forks,
+ * so every range child inherits a live handle and mapping and issues no GEM
+ * create of its own.  The shim's test_fork_child_close_preserves_parent_bo
+ * calibration preserves a parent BO across child activity, while
+ * drm_shim_atfork_child resets child synchronization
+ * (rg --fixed-strings test_fork_child_close_preserves_parent_bo
+ * src/amd/drm-shim/radeon_noop_drm_shim.c; rg --fixed-strings
+ * drm_shim_atfork_child src/drm-shim/drm_shim.c).  The range verdict therefore
+ * comes from r3v_FlushMappedMemoryRanges and
+ * r3v_InvalidateMappedMemoryRanges, not a child allocation path
+ * (rg --fixed-strings r3v_FlushMappedMemoryRanges src/amd/r300/vulkan/).
  */
 static VkDeviceMemory live_memory = VK_NULL_HANDLE;
 static VkDeviceSize live_size;
 static VkDeviceSize atom_size = 1;
 
-/* VkDeviceMemory is real, so the mapped-range commands run their validation
- * against a live mapped allocation.  Each leg sets one bit, so a single exit
- * status names which range the validator judged wrongly.
+/* VkMappedMemoryRange.memory must be currently host mapped under
+ * VUID-VkMappedMemoryRange-memory-00684 in the Vulkan 1.4 Device Memory
+ * chapter.  The native flush and invalidate entrypoints dispatch to
+ * r3v_native_validate_mapped_ranges, and each child leg reports one aggregate
+ * nonzero verdict when that validation disagrees
+ * (rg --fixed-strings r3v_native_validate_mapped_ranges
+ * src/amd/r300/vulkan/).
  */
 static int
 call_memory_range_validation(void)
@@ -260,11 +306,17 @@ call_memory_range_validation(void)
       .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
       .memory = live_memory,
    };
-   /* An offset and a size a flush names are multiples of nonCoherentAtomSize,
-    * so each range below is built from that granularity.  The first three are
-    * ranges an application forms; the last four lie outside the allocation,
-    * which the specification forbids and the validator answers by refusing
-    * rather than by reading past the bound it was given.
+   /* VUID-VkMappedMemoryRange-offset-00687 requires offset alignment to
+    * nonCoherentAtomSize; VUID-VkMappedMemoryRange-size-00685 and
+    * VUID-VkMappedMemoryRange-size-00686 require each range to remain inside
+    * the mapped allocation.  The native bound implementation is
+    * r3v_native_validate_mapped_ranges (rg --fixed-strings
+    * r3v_native_validate_mapped_ranges src/amd/r300/vulkan/), so the first
+    * three cases exercise valid ranges and the remaining cases exercise its
+    * refusal boundaries.
+    *
+    * The range table stays atom-aligned so each case tests bounds rather than
+    * an unrelated alignment failure.
     */
    const struct {
       VkDeviceSize offset, size;
@@ -299,21 +351,33 @@ call_memory_range_validation(void)
       }
    }
 
-   /* Zero ranges name no allocation and succeed. */
+   /* The native validator loops over zero entries and returns VK_SUCCESS for
+    * this implementation edge (rg --fixed-strings
+    * r3v_native_validate_mapped_ranges src/amd/r300/vulkan/).  The Vulkan
+    * memoryRangeCount > 0 rule in
+    * VUID-vkFlushMappedMemoryRanges-memoryRangeCount-arraylength and
+    * VUID-vkInvalidateMappedMemoryRanges-memoryRangeCount-arraylength remains
+    * a separate contract from this loader-sweep boundary.
+    */
    if (vkFlushMappedMemoryRanges(device, 0, NULL) != VK_SUCCESS ||
        vkInvalidateMappedMemoryRanges(device, 0, NULL) != VK_SUCCESS)
       rc |= 1 << ARRAY_SIZE(cases);
 
-   /* The commitment query describes memory carrying
-    * VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, and the native device
-    * advertises no such memory type, so the query reports zero.
+   /* vkGetDeviceMemoryCommitment reports commitment for a memory type with
+    * VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT (Vulkan 1.4 Device Memory,
+    * vkGetDeviceMemoryCommitment reference page).  The native memory table
+    * advertises host-visible and device-local types without that flag, and
+    * r3v_GetDeviceMemoryCommitment writes zero
+    * (rg --fixed-strings r3v_GetPhysicalDeviceMemoryProperties2
+    * src/amd/r300/vulkan/; rg --fixed-strings
+    * r3v_GetDeviceMemoryCommitment src/amd/r300/vulkan/).
     */
    VkDeviceSize committed = 1;
    vkGetDeviceMemoryCommitment(device, live_memory, &committed);
    if (committed != 0)
       rc |= 1 << (ARRAY_SIZE(cases) + 1);
 
-   return rc;
+   return rc != 0;
 }
 
 /* Device-scope names the loader answers from its own table for a Vulkan 1.0
@@ -435,6 +499,7 @@ main(void)
     * below can reach DRM_RADEON_CS even if one recorded a command buffer.
     */
    unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+   check_loader_sweep_calibration();
 
    const char *const instance_extensions[] = {
       VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
@@ -565,9 +630,12 @@ main(void)
           "no, it answers every higher-core name and carries no driver "
           "verdict");
 
-   /* nonCoherentAtomSize is the granularity a flush range is built from, so
-    * the allocation is sized to a whole number of atoms and every offset the
-    * mapped-range legs name is a multiple of one.
+   /* Vulkan 1.4 Device Memory uses nonCoherentAtomSize for
+    * VUID-VkMappedMemoryRange-offset-00687 range alignment.  The allocation
+    * is four whole atoms, so every offset the mapped-range legs name satisfies
+    * that rule and the cases isolate range bounds
+    * (rg --fixed-strings r3v_native_validate_mapped_ranges
+    * src/amd/r300/vulkan/).
     */
    VkPhysicalDeviceProperties props;
    vkGetPhysicalDeviceProperties(pdev, &props);
@@ -579,27 +647,35 @@ main(void)
       atom_size = 1;
    live_size = atom_size * 4;
 
-   result = vkAllocateMemory(
+   const VkResult allocation_result = vkAllocateMemory(
       device, &(VkMemoryAllocateInfo){
                  .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                  .allocationSize = live_size,
                  .memoryTypeIndex = 0,
               },
       NULL, &live_memory);
-   CHECK(result == VK_SUCCESS, "vkAllocateMemory through the loader: %d",
-         result);
+   CHECK(allocation_result == VK_SUCCESS,
+         "vkAllocateMemory through the loader: %d", allocation_result);
 
-   /* Both mapped-range commands name a currently mapped allocation, so the
-    * map is what makes those legs valid use rather than a call the
-    * specification leaves undefined.
+   /* Vulkan 1.4 Device Memory requires VkMappedMemoryRange.memory to be
+    * currently host mapped (VUID-VkMappedMemoryRange-memory-00684), so map
+    * success and a non-NULL pointer gate call_memory_range_validation.  The
+    * native implementation's r3v_MapMemory and
+    * r3v_native_validate_mapped_ranges symbols carry this setup contract
+    * (rg --fixed-strings r3v_MapMemory src/amd/r300/vulkan/; rg
+    * --fixed-strings r3v_native_validate_mapped_ranges src/amd/r300/vulkan/).
     */
    void *live_map = NULL;
-   if (result == VK_SUCCESS) {
-      result = vkMapMemory(device, live_memory, 0, VK_WHOLE_SIZE, 0,
-                           &live_map);
-      CHECK(result == VK_SUCCESS && live_map != NULL,
-            "vkMapMemory over the live allocation: %d", result);
+   VkResult map_result = VK_ERROR_INITIALIZATION_FAILED;
+   if (allocation_result == VK_SUCCESS) {
+      map_result = vkMapMemory(device, live_memory, 0, VK_WHOLE_SIZE, 0,
+                               &live_map);
+      CHECK(map_result == VK_SUCCESS && live_map != NULL,
+            "vkMapMemory over the live allocation: %d", map_result);
    }
+
+   const bool live_memory_ready =
+      mapped_range_setup_ready(allocation_result, map_result, live_map);
 
    in_child("vkCreateImage refuses", call_create_image);
    in_child("vkCreateEvent refuses", call_create_event);
@@ -614,12 +690,26 @@ main(void)
    in_child("vkUpdateDescriptorSets over zero writes",
             call_update_descriptor_sets_empty);
    in_child("mapped-range commands over zero ranges", call_flush_empty);
-   in_child("mapped-range validation over a live allocation",
-            call_memory_range_validation);
+   if (live_memory_ready) {
+      in_child("mapped-range validation over a live allocation",
+               call_memory_range_validation);
+   } else if (allocation_result != VK_SUCCESS) {
+      fprintf(stderr,
+              "NOT RUN: mapped-range validation: allocation returned %d\n",
+              allocation_result);
+   } else if (map_result != VK_SUCCESS) {
+      fprintf(stderr,
+              "NOT RUN: mapped-range validation: map returned %d\n",
+              map_result);
+   } else {
+      fprintf(stderr,
+              "NOT RUN: mapped-range validation: map returned NULL\n");
+   }
 
    if (live_map != NULL)
       vkUnmapMemory(device, live_memory);
-   vkFreeMemory(device, live_memory, NULL);
+   if (live_memory != VK_NULL_HANDLE)
+      vkFreeMemory(device, live_memory, NULL);
    vkDestroyDevice(device, NULL);
    vkDestroyInstance(instance, NULL);
 
