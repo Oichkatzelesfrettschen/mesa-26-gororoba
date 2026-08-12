@@ -27,7 +27,7 @@ syntax and never receive untrusted text.
 
 ## Canonical profiles
 
-The default profile sits at the top of `build-infra/configs/`; the other five
+The default profile sits at the top of `build-infra/configs/`; the other six
 live in `build-infra/configs/alternates/` and are selected by passing
 `PROFILE=` explicitly.  The Makefile resolves a bare profile name against both
 directories, so the per-profile `rebuild-`/`install-` targets need no path
@@ -50,8 +50,11 @@ sibling of profile 4_: it pairs with
 it builds the wider r300 surface -- zink as a loader override, the h264dec
 codec, the in-tree tools, the Vulkan layers, and `build-tests` -- because gcc's
 warnings-as-errors set reads defect classes clang's does not.  It is a
-diagnostic gate; conformance and silicon evidence stay on profile 4_.  Conformance and silicon-evidence runs use the release
-profile
+diagnostic gate; conformance and silicon evidence stay on profile 4_.  A zink
+attribution probe sets `VK_ICD_FILENAMES` to the generated `r3v_icd.<cpu>.json`
+from the profile install prefix before setting
+`MESA_LOADER_DRIVER_OVERRIDE=zink`, so the Vulkan loader selects the `ati_r300`
+ICD built by the profile.  Conformance and silicon-evidence runs use profile 4_
 (`4_r300_full_release`, now under `alternates/`) because an asserts-live debug
 build can abort a CTS/Piglit case that release would pass.  `make install
 PROFILE=...` lands in the isolated per-profile prefix `/opt/local/mesa-<profile>`

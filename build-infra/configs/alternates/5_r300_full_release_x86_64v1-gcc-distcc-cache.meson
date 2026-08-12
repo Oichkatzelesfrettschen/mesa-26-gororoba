@@ -1,3 +1,4 @@
+# Copyright 2026 Mesa3D authors
 # 5_r300_full_release_x86_64v1-gcc-distcc-cache: the GCC sibling of profile
 # 4_r300_full_release_x86_64v1-clang22-distcc-cache.  Same r300 surface, same
 # release buildtype, same x86-64-v1 baseline ISA, built by gcc instead of clang.
@@ -40,9 +41,12 @@ cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relr
 [project options]
 platforms = ['x11', 'wayland']
 # r300 is the driver the hardware selects; zink is built alongside it as an
-# override a probe asks for by name through MESA_LOADER_DRIVER_OVERRIDE.  Zink
-# rides the ati_r300 ICD, so the override reaches the same silicon through
-# Vulkan rather than through a software rasterizer.
+# override a probe asks for by name through MESA_LOADER_DRIVER_OVERRIDE.  A
+# zink attribution probe exports
+# VK_ICD_FILENAMES="$mesa_prefix/share/vulkan/icd.d/r3v_icd.<cpu>.json"
+# from the profile install prefix before applying the override. The Vulkan
+# loader then exposes the ati_r300 ICD selected by this profile rather than
+# another installed device.
 gallium-drivers = ['r300', 'zink']
 vulkan-drivers = ['ati_r300']
 r3v-gallium-backend = true
