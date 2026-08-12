@@ -10,6 +10,7 @@ checks the complete VAP tuple, and proves that malformed copies are refused.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -129,6 +130,39 @@ def mutate_register(path: Path, register: int, value: int) -> None:
     write_words(path, words)
 
 
+def remove_sequential_register(path: Path, register: int) -> None:
+    """Remove one dword from a sequential packet and keep its header valid."""
+    words = read_words(path)
+    index = 0
+    while index < len(words):
+        header = words[index]
+        packet_type = header >> 30
+        raw_count = (header >> 16) & 0x3FFF
+        payload_count = raw_count + 1
+        end = index + 1 + payload_count
+        if end > len(words):
+            raise CheckFailure("cannot remove a register from a truncated stream")
+        if packet_type == 0 and not ((header >> 15) & 1):
+            packet_register = (header & 0x1FFF) << 2
+            offset = register - packet_register
+            if offset >= 0 and offset % 4 == 0:
+                payload_index = offset // 4
+                if payload_index < payload_count:
+                    payload = words[index + 1:end]
+                    del payload[payload_index]
+                    if not payload:
+                        del words[index:end]
+                    else:
+                        words[index] = (header & ~(0x3FFF << 16)) | \
+                                       ((len(payload) - 1) << 16)
+                        words[index + 1:index + 1 + len(payload)] = payload
+                        del words[index + 1 + len(payload):end]
+                    write_words(path, words)
+                    return
+        index = end
+    raise CheckFailure(f"register 0x{register:04x} absent from a sequential packet")
+
+
 def validate(outdir: Path, have_b3sum: bool) -> None:
     manifest = read_json(outdir / "manifest.json")
     bo_table = read_json(outdir / "bo_table.json")
@@ -179,9 +213,11 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
     if registers.get(R300_VAP_PROG_STREAM_CNTL_EXT_0) != R300_R2VB_REFERENCE_PSC_EXT:
         raise CheckFailure("PSC EXT pair does not carry identity XYZW swizzles")
     for offset in range(1, R300_VAP_PROG_STREAM_TAIL_COUNT):
-        if registers.get(R300_VAP_PROG_STREAM_CNTL_0 + offset * 4, 0) != 0:
+        tail_register = R300_VAP_PROG_STREAM_CNTL_0 + offset * 4
+        if tail_register not in registers or registers[tail_register] != 0:
             raise CheckFailure("PSC control tail is not zero")
-        if registers.get(R300_VAP_PROG_STREAM_CNTL_EXT_0 + offset * 4, 0) != 0:
+        ext_tail_register = R300_VAP_PROG_STREAM_CNTL_EXT_0 + offset * 4
+        if ext_tail_register not in registers or registers[ext_tail_register] != 0:
             raise CheckFailure("PSC EXT tail is not zero")
     if registers.get(R300_VAP_VTX_SIZE) != R300_R2VB_REFERENCE_VTX_DWORDS:
         raise CheckFailure("VAP_VTX_SIZE does not match two FP32x4 inputs")
@@ -207,7 +243,8 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
         raise CheckFailure(f"unexpected embedded VF control 0x{vf_cntl:08x}")
 
     declared_digest = manifest.get("ib_blake3")
-    if not isinstance(declared_digest, str) or len(declared_digest) != 64:
+    if (not isinstance(declared_digest, str) or
+            re.fullmatch(r"[0-9a-fA-F]{64}", declared_digest) is None):
         raise CheckFailure("ib_blake3 is not a 64-hex digest")
     if have_b3sum:
         recomputed = subprocess.run(
@@ -242,7 +279,8 @@ def main() -> int:
         root = Path(tmp)
         good = root / "good"
         good.mkdir()
-        run = subprocess.run([tool, str(good)], capture_output=True, text=True)
+        run = subprocess.run([tool, str(good)], capture_output=True, text=True,
+                             check=False)
         if run.returncode != 0:
             fail(f"manifest tool exited {run.returncode}: {run.stderr}")
         try:
@@ -298,6 +336,27 @@ def main() -> int:
         mutate_register(mutant / "ib.bin", R300_VAP_OUTPUT_VTX_FMT_1, 0)
         expect_reject(mutant, have_b3sum, "stale-output-format")
 
+        mutant = root / "omitted-psc-tail"
+        clone(good, mutant)
+        remove_sequential_register(
+            mutant / "ib.bin", R300_VAP_PROG_STREAM_CNTL_0 + 4)
+        changed = dict(read_json(mutant / "manifest.json"))
+        changed["ib_dwords"] = len(read_words(mutant / "ib.bin"))
+        if have_b3sum:
+            changed["ib_blake3"] = subprocess.run(
+                ["b3sum", "--no-names", str(mutant / "ib.bin")],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+        (mutant / "manifest.json").write_text(json.dumps(changed))
+        expect_reject(mutant, have_b3sum, "omitted-psc-tail")
+
+        mutant = root / "non-hex-digest"
+        clone(good, mutant)
+        changed = dict(manifest)
+        changed["ib_blake3"] = "g" * 64
+        (mutant / "manifest.json").write_text(json.dumps(changed))
+        expect_reject(mutant, have_b3sum, "non-hex-digest")
+
         if have_b3sum:
             mutant = root / "stale-digest"
             clone(good, mutant)
@@ -307,7 +366,7 @@ def main() -> int:
             (mutant / "manifest.json").write_text(json.dumps(changed))
             expect_reject(mutant, have_b3sum, "stale-digest")
         else:
-            print("b3sum absent; digest recomputation mutant not run",
+            print("b3sum absent; stale digest recomputation mutant not run",
                   file=sys.stderr)
 
     print("producer manifest artifacts are consistent and reject calibrated mutants")

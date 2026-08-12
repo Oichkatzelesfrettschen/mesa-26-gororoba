@@ -28,10 +28,12 @@
 /* Slot position plus one pre-swizzled record, each FP32x4. */
 #define R300_R2VB_PRODUCER_VTX_DWORDS 8u
 
-/* The immediate producer's calibrated input tuple places the slot position
- * in VAP vector 0 and the model varying in vector 6.  The lower and upper
- * halves share one PROG_STREAM_CNTL word; the model element terminates the
- * fetch. */
+/* The immediate producer's retained input tuple places the slot position in
+ * VAP vector 0 and the model varying in vector 6.  The packet uses
+ * R300_DATA_TYPE_FLOAT_4, R300_DST_VEC_LOC_SHIFT, and R300_LAST_VEC from
+ * r300_reg.h (rg --fixed-strings R300_DST_VEC_LOC_SHIFT src/); the lower and
+ * upper halves share one PROG_STREAM_CNTL word, and the model element
+ * terminates the fetch.  The producer-manifest oracle checks this tuple. */
 #define R300_R2VB_PRODUCER_PSC_SLOT_VEC 0u
 #define R300_R2VB_PRODUCER_PSC_MODEL_VEC 6u
 
