@@ -5,7 +5,6 @@
 #include "r300_r2vb_telemetry.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -164,18 +163,18 @@ file_matches_blob(const char *path, const uint8_t *data, size_t size)
 }
 
 /* Publish the blob at path through a same-directory temporary file and
- * rename, so the final pathname only ever names a complete blob.  The
- * temporary name carries the pid and opens with O_EXCL, and every failure
- * unlinks it. */
+ * rename, so the final pathname only ever names a complete blob.  mkstemp
+ * gives concurrent contexts distinct temporary names, and every failure
+ * unlinks the created file. */
 static bool
 telemetry_publish(const char *path, const uint8_t *data, size_t size)
 {
     char tmp[1088];
-    int need = snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid());
+    int need = snprintf(tmp, sizeof(tmp), "%s.tmp.XXXXXX", path);
     if (need < 0 || (size_t)need >= sizeof(tmp))
         return false;
 
-    int fd = open(tmp, O_CREAT | O_EXCL | O_WRONLY, 0644);
+    int fd = mkstemp(tmp);
     if (fd < 0)
         return false;
 
