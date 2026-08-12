@@ -118,7 +118,7 @@ int r300_tcl_bypass_triangle_reference_contract(
 
 /* Emits the complete reference cell -- reference fragment binary,
  * reference first-draw contract, vertex offset zero, linear 64-pixel
- * ARGB8888 pitch -- so every fixed-cell authority (native recorder,
+ * B8G8R8A8 pitch -- so every fixed-cell authority (native recorder,
  * arming runner, manifest tool, harness reference) produces one
  * byte-identical IB from one construction.  Returns 0 or a negative
  * errno; the caller owns the returned IB allocation.
@@ -190,26 +190,26 @@ void r300_triangle_ib_digest_hex(const uint32_t *ib, uint32_t ib_size_dwords,
 uint32_t r300_triangle_draw_dword(
    const struct r300_tcl_bypass_triangle_ib *ib);
 
-/* Packs RB3D_COLORPITCH0 for a linear little-endian ARGB8888 target the
- * way r300_texture.c derives surf->pitch: the pitch in pixels ORed with
- * the ARGB8888 color-format field, tiling and endian fields zero.  Returns
- * 0 when the pitch is odd or exceeds the register's pitch field.
+/* Packs RB3D_COLORPITCH0 for the cell's linear little-endian B8G8R8A8 target
+ * the way r300_texture.c derives surf->pitch: the pitch in pixels ORed with
+ * the register's ARGB8888 color-format field, tiling and endian fields zero.
+ * Returns 0 when the pitch is odd or exceeds the register's pitch field.
  */
 uint32_t r300_rb3d_colorpitch0_pack_argb8888(uint32_t pitch_pixels);
 
 /* The compiled fragment program writes (0.125, 0.375, 0.625, 0.875).
- * The linear ARGB8888 target stores those normalized components as distinct
- * little-endian bytes [R, G, B, A], so red/blue or any other lane swap changes
- * the dword and the output oracle rejects it.
+ * The Vulkan B8G8R8A8_UNORM target stores those normalized components as
+ * little-endian bytes [B, G, R, A], so the output dword is 0xdf20609f and
+ * red/blue or any other lane swap changes the oracle verdict.
  */
 #define R300_TRIANGLE_DRAW_COLOR_RED 0x20u
 #define R300_TRIANGLE_DRAW_COLOR_GREEN 0x60u
 #define R300_TRIANGLE_DRAW_COLOR_BLUE 0x9fu
 #define R300_TRIANGLE_DRAW_COLOR_ALPHA 0xdfu
-#define R300_TRIANGLE_DRAW_COLOR_ARGB8888 \
-   (R300_TRIANGLE_DRAW_COLOR_RED | \
+#define R300_TRIANGLE_DRAW_COLOR_B8G8R8A8 \
+   (R300_TRIANGLE_DRAW_COLOR_BLUE | \
     (R300_TRIANGLE_DRAW_COLOR_GREEN << 8) | \
-    (R300_TRIANGLE_DRAW_COLOR_BLUE << 16) | \
+    (R300_TRIANGLE_DRAW_COLOR_RED << 16) | \
     (R300_TRIANGLE_DRAW_COLOR_ALPHA << 24))
 
 /* Deterministic pre-draw fill for the color target; it differs from the
@@ -218,7 +218,7 @@ uint32_t r300_rb3d_colorpitch0_pack_argb8888(uint32_t pitch_pixels);
 #define R300_TRIANGLE_COLOR_SENTINEL 0xa5a5a5a5u
 
 /* Output-oracle verdict over a sentinel-initialized 64-pixel-pitch
- * ARGB8888 target.  executed reports any deviation from the sentinel;
+ * B8G8R8A8 target.  executed reports any deviation from the sentinel;
  * interior demands the draw color at margin-checked sample points
  * inside the analytic triangle; exterior demands the sentinel at
  * in-extent points outside it; canary demands the sentinel in the

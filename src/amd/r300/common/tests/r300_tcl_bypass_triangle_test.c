@@ -319,6 +319,8 @@ test_output_oracle(void)
    static uint32_t target[PIXELS];
    struct r300_triangle_oracle_verdict verdict;
 
+   assert(R300_TRIANGLE_DRAW_COLOR_B8G8R8A8 == 0xdf20609fu);
+
    /* Untouched sentinel target: no execution evidence, boundaries hold. */
    for (unsigned i = 0; i < PIXELS; i++)
       target[i] = R300_TRIANGLE_COLOR_SENTINEL;
@@ -331,7 +333,7 @@ test_output_oracle(void)
     */
    for (unsigned y = 9; y < 55; y++)
       for (unsigned x = 10; x < 54; x++)
-         target[y * 64 + x] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+         target[y * 64 + x] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
    r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
    assert(verdict.executed && verdict.interior_pass);
 
@@ -342,18 +344,18 @@ test_output_oracle(void)
     * non-sentinel write.
     */
    const uint32_t red_blue_swapped =
-      (R300_TRIANGLE_DRAW_COLOR_ARGB8888 & 0xff000000u) |
-      (R300_TRIANGLE_DRAW_COLOR_ARGB8888 & 0x0000ff00u) |
-      ((R300_TRIANGLE_DRAW_COLOR_ARGB8888 & 0x000000ffu) << 16) |
-      ((R300_TRIANGLE_DRAW_COLOR_ARGB8888 & 0x00ff0000u) >> 16);
-   assert(red_blue_swapped != R300_TRIANGLE_DRAW_COLOR_ARGB8888);
+      (R300_TRIANGLE_DRAW_COLOR_B8G8R8A8 & 0xff000000u) |
+      (R300_TRIANGLE_DRAW_COLOR_B8G8R8A8 & 0x0000ff00u) |
+      ((R300_TRIANGLE_DRAW_COLOR_B8G8R8A8 & 0x000000ffu) << 16) |
+      ((R300_TRIANGLE_DRAW_COLOR_B8G8R8A8 & 0x00ff0000u) >> 16);
+   assert(red_blue_swapped != R300_TRIANGLE_DRAW_COLOR_B8G8R8A8);
    target[24 * 64 + 32] = red_blue_swapped;
    r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
    assert(!verdict.interior_pass);
-   target[24 * 64 + 32] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+   target[24 * 64 + 32] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
 
    /* A stray exterior write and a canary-row write each fail closed. */
-   target[0] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+   target[0] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
    r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
    assert(!verdict.exterior_pass);
    target[0] = R300_TRIANGLE_COLOR_SENTINEL;
@@ -363,9 +365,10 @@ test_output_oracle(void)
    assert(!verdict.canary_pass);
 }
 
-/* A rectangle covering the triangle's full vertex bounding box paints every
- * existing interior sample and leaves the extent boundary and canary clean.
- * Bounding-box exterior samples make that overdraw a known-bad verdict.
+/* Each rectangle covers the triangle's full vertex bounding box, paints every
+ * existing interior sample, and leaves the extent boundary and canary clean.
+ * The parameterized extents calibrate the bounding-box exterior samples at
+ * both the reference size and a small valid extent.
  */
 static void
 test_output_oracle_rejects_bounding_box_overdraw(void)
@@ -373,17 +376,32 @@ test_output_oracle_rejects_bounding_box_overdraw(void)
    enum { PIXELS = 64 * 65 };
    static uint32_t target[PIXELS];
    struct r300_triangle_oracle_verdict verdict;
+   static const struct {
+      uint32_t width, height;
+      uint32_t min_x, max_x, min_y, max_y;
+   } cases[] = {
+      {64, 64, 8, 56, 8, 56},
+      {9, 10, 1, 7, 1, 8},
+   };
 
-   for (unsigned i = 0; i < PIXELS; i++)
-      target[i] = R300_TRIANGLE_COLOR_SENTINEL;
-   for (unsigned y = 8; y <= 56; y++)
-      for (unsigned x = 8; x <= 56; x++)
-         target[y * 64 + x] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+   for (unsigned case_index = 0; case_index < ARRAY_SIZE(cases);
+        case_index++) {
+      for (unsigned i = 0; i < PIXELS; i++)
+         target[i] = R300_TRIANGLE_COLOR_SENTINEL;
+      for (uint32_t y = cases[case_index].min_y;
+           y <= cases[case_index].max_y; y++) {
+         for (uint32_t x = cases[case_index].min_x;
+              x <= cases[case_index].max_x; x++)
+            target[y * 64 + x] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
+      }
 
-   r300_tcl_bypass_triangle_oracle(target, sizeof(target), &verdict);
-   assert(verdict.executed && verdict.interior_pass);
-   assert(!verdict.exterior_pass && verdict.exterior_samples >= 4);
-   assert(verdict.canary_pass);
+      r300_tcl_bypass_triangle_extent_oracle(
+         cases[case_index].width, cases[case_index].height, target,
+         sizeof(target), &verdict);
+      assert(verdict.executed && verdict.interior_pass);
+      assert(!verdict.exterior_pass && verdict.exterior_samples >= 2);
+      assert(verdict.canary_pass);
+   }
 }
 
 /* The extent oracle's calibration: a synthesized correct 48x20 witness
@@ -415,7 +433,7 @@ test_extent_oracle_calibration(void)
          const float e2 = (v[0] - v[4]) * (py - v[5]) -
                           (v[1] - v[5]) * (px - v[4]);
          if (e0 > 0.0f && e1 > 0.0f && e2 > 0.0f)
-            target[y * PITCH + x] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+            target[y * PITCH + x] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
       }
    }
    r300_tcl_bypass_triangle_extent_oracle(width, height, target,
@@ -446,7 +464,7 @@ test_extent_oracle_calibration(void)
           verdict.interior_samples == 0);
 
    /* A write in the sub-pitch padding band fails the canary. */
-   target[5 * PITCH + 50] = R300_TRIANGLE_DRAW_COLOR_ARGB8888;
+   target[5 * PITCH + 50] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
    r300_tcl_bypass_triangle_extent_oracle(width, height, target,
                                           sizeof(target), &verdict);
    assert(!verdict.canary_pass);
@@ -510,6 +528,17 @@ test_reference_emit_is_the_single_authority(void)
    assert(r300_tcl_bypass_triangle_reference_fs(&fs) == 0);
    struct r300_first_draw_contract contract;
    assert(r300_tcl_bypass_triangle_reference_contract(&contract) == 0);
+   bool format_seen = false;
+   for (uint32_t i = 0; i < contract.count; i++) {
+      if (contract.entries[i].reg == R300_US_OUT_FMT_0) {
+         assert(!format_seen);
+         assert(contract.entries[i].value ==
+                (R300_US_OUT_FMT_C4_8 | R300_C0_SEL_B | R300_C1_SEL_G |
+                 R300_C2_SEL_R | R300_C3_SEL_A));
+         format_seen = true;
+      }
+   }
+   assert(format_seen);
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
       .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
@@ -557,10 +586,10 @@ test_contract_cell_size_and_digest_are_pinned(void)
     * hash keeps the pinned identity independent of host byte order.
     */
    static const uint8_t expected[BLAKE3_OUT_LEN] = {
-      0x7d, 0x91, 0x86, 0xe4, 0xd8, 0x09, 0x73, 0x43,
-      0xc3, 0x75, 0x02, 0xae, 0x94, 0x1b, 0xad, 0xc7,
-      0xea, 0x4f, 0x30, 0x2c, 0x27, 0xbf, 0xf0, 0x58,
-      0x5e, 0xa4, 0x4d, 0x83, 0x70, 0x46, 0x16, 0xf4,
+      0xff, 0xfb, 0x88, 0x87, 0x20, 0xed, 0x01, 0x8d,
+      0x0b, 0xb7, 0x31, 0xcf, 0x27, 0x65, 0xf4, 0xca,
+      0x27, 0xb1, 0xfb, 0x99, 0x83, 0x24, 0xf5, 0xc0,
+      0x4a, 0x0d, 0x80, 0x61, 0x94, 0xb2, 0xfd, 0xa6,
    };
    uint8_t serialized[R300_TRIANGLE_CONTRACT_CELL_DWORDS * sizeof(uint32_t)];
    r300_triangle_ib_serialize(ref.ib, ref.ib_size_dwords, serialized);

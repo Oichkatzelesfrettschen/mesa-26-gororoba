@@ -298,6 +298,24 @@ r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs)
       "r300-tcl-bypass-triangle-compiled");
 }
 
+static int
+r300_tcl_bypass_triangle_set_target_format(
+   struct r300_first_draw_contract *contract)
+{
+   bool found = false;
+   for (uint32_t i = 0; i < contract->count; i++) {
+      if (contract->entries[i].reg != R300_US_OUT_FMT_0)
+         continue;
+      if (found)
+         return -EINVAL;
+      contract->entries[i].value =
+         R300_US_OUT_FMT_C4_8 | R300_C0_SEL_B | R300_C1_SEL_G |
+         R300_C2_SEL_R | R300_C3_SEL_A;
+      found = true;
+   }
+   return found ? 0 : -EINVAL;
+}
+
 int
 r300_tcl_bypass_triangle_reference_contract(
    struct r300_first_draw_contract *out)
@@ -313,7 +331,10 @@ r300_tcl_bypass_triangle_reference_contract(
       .max_vtx_index = 2,
       .texture_enabled = false,
    };
-   return r300_first_draw_contract_resolve(&params, out);
+   int rc = r300_first_draw_contract_resolve(&params, out);
+   if (rc != 0)
+      return rc;
+   return r300_tcl_bypass_triangle_set_target_format(out);
 }
 
 int
@@ -343,6 +364,11 @@ r300_tcl_bypass_triangle_extent_emit(
    };
    struct r300_first_draw_contract contract;
    rc = r300_first_draw_contract_resolve(&draw_params, &contract);
+   if (rc != 0) {
+      r300_fragment_binary_finish(&fs);
+      return rc;
+   }
+   rc = r300_tcl_bypass_triangle_set_target_format(&contract);
    if (rc != 0) {
       r300_fragment_binary_finish(&fs);
       return rc;
@@ -449,6 +475,25 @@ triangle_signed_margin(const struct triangle_geometry *g, float px,
 
 #define R300_TRIANGLE_ORACLE_MARGIN 2.0f
 
+static bool
+triangle_pixel_candidate(float candidate_x, float candidate_y,
+                         uint32_t width, uint32_t height, uint32_t *x,
+                         uint32_t *y)
+{
+   /* Check the floating-point domain before conversion.  A negative or
+    * non-finite coordinate has no defined conversion to uint32_t, and a
+    * candidate outside the extent cannot witness either oracle pass.
+    */
+   if (!isfinite(candidate_x) || !isfinite(candidate_y) ||
+       candidate_x < 0.0f || candidate_y < 0.0f ||
+       candidate_x >= (float)width || candidate_y >= (float)height)
+      return false;
+
+   *x = (uint32_t)candidate_x;
+   *y = (uint32_t)candidate_y;
+   return *x < width && *y < height;
+}
+
 void
 r300_tcl_bypass_triangle_extent_oracle(
    uint32_t width, uint32_t height, const uint32_t *pixels,
@@ -511,16 +556,17 @@ r300_tcl_bypass_triangle_extent_oracle(
       (cx + g.v[4]) / 2.0f, (cy + g.v[5]) / 2.0f,
    };
    for (unsigned i = 0; i < 4; i++) {
-      const uint32_t x = (uint32_t)interior_candidates[i * 2 + 0];
-      const uint32_t y = (uint32_t)interior_candidates[i * 2 + 1];
-      if (x >= width || y >= height ||
+      uint32_t x, y;
+      if (!triangle_pixel_candidate(interior_candidates[i * 2 + 0],
+                                     interior_candidates[i * 2 + 1], width,
+                                     height, &x, &y) ||
           triangle_signed_margin(&g, (float)x + 0.5f, (float)y + 0.5f) <
              R300_TRIANGLE_ORACLE_MARGIN)
          continue;
       verdict->interior_samples++;
       const uint32_t index = y * R300_TRIANGLE_TARGET_PITCH_PIXELS + x;
       if (index >= pixel_count ||
-          pixels[index] != R300_TRIANGLE_DRAW_COLOR_ARGB8888)
+          pixels[index] != R300_TRIANGLE_DRAW_COLOR_B8G8R8A8)
          verdict->interior_pass = false;
    }
    if (verdict->interior_samples == 0)
@@ -534,18 +580,21 @@ r300_tcl_bypass_triangle_extent_oracle(
     */
    const float last_x = (float)(width - 1), last_y = (float)(height - 1);
    const float bbox_mid_y = (g.v[1] + g.v[5]) / 2.0f;
-   const float bbox_lower_y = g.v[5] - 4.0f;
+   const float bbox_inset =
+      fminf(4.0f, fminf((float)width, (float)height) / 16.0f);
+   const float bbox_lower_y = g.v[5] - bbox_inset;
    const float exterior_candidates[24] = {
       0.0f, 0.0f, last_x, 0.0f, 0.0f, last_y, last_x, last_y,
       last_x / 2.0f, 0.0f, last_x / 2.0f, last_y,
       0.0f, last_y / 2.0f, last_x, last_y / 2.0f,
-      g.v[0] + 4.0f, bbox_mid_y, g.v[2] - 4.0f, bbox_mid_y,
-      g.v[0] + 4.0f, bbox_lower_y, g.v[2] - 4.0f, bbox_lower_y,
+      g.v[0] + bbox_inset, bbox_mid_y, g.v[2] - bbox_inset, bbox_mid_y,
+      g.v[0] + bbox_inset, bbox_lower_y, g.v[2] - bbox_inset, bbox_lower_y,
    };
    for (unsigned i = 0; i < 12; i++) {
-      const uint32_t x = (uint32_t)exterior_candidates[i * 2 + 0];
-      const uint32_t y = (uint32_t)exterior_candidates[i * 2 + 1];
-      if (x >= width || y >= height ||
+      uint32_t x, y;
+      if (!triangle_pixel_candidate(exterior_candidates[i * 2 + 0],
+                                    exterior_candidates[i * 2 + 1], width,
+                                    height, &x, &y) ||
           triangle_signed_margin(&g, (float)x + 0.5f, (float)y + 0.5f) >
              -R300_TRIANGLE_ORACLE_MARGIN)
          continue;
