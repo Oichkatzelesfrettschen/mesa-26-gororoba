@@ -8,6 +8,8 @@ linked Gallium object with hidden visibility fails the same as a dynamic
 reference.
 """
 
+import contextlib
+import io
 import subprocess
 import sys
 import tempfile
@@ -31,42 +33,48 @@ def find_forbidden_symbols(table: str) -> list[str]:
     return [name for name in FORBIDDEN_SYMBOLS if name in table]
 
 
-def audit_library(nm: str, library: str) -> int:
-    """Run the symbol audit against one native library."""
+def run_nm(nm: str, options: list[str], library: str) -> str | None:
+    """Return one nm symbol table, or refuse the audit on tool failure."""
+    label = "defined-only" if options else "full"
     try:
-        output = subprocess.run(
-            [nm, "--defined-only", library],
+        result = subprocess.run(
+            [nm, *options, library],
             check=False,
             capture_output=True,
             text=True,
         )
-        full = subprocess.run(
-            [nm, library], check=False, capture_output=True, text=True
+    except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+        print(f"nm {label} command failed for {library}: {error}", file=sys.stderr)
+        return None
+
+    if result.returncode != 0:
+        diagnostic = result.stderr.strip()
+        message = f"nm {label} command failed for {library}: status {result.returncode}"
+        if diagnostic:
+            message += f": {diagnostic}"
+        print(message, file=sys.stderr)
+        return None
+    if not result.stdout.strip():
+        print(
+            f"nm {label} command produced no symbols for {library}",
+            file=sys.stderr,
         )
-    except OSError as error:
-        print(f"nm command failed for {library}: {error}", file=sys.stderr)
+        return None
+    return result.stdout
+
+
+def audit_library(nm: str, library: str) -> int:
+    """Run the symbol audit against one native library."""
+    defined = run_nm(nm, ["--defined-only"], library)
+    if defined is None:
         return AUDIT_NM_FAILURE
-    for label, result in (("defined-only", output), ("full", full)):
-        if result.returncode != 0:
-            print(
-                f"nm {label} command failed for {library}: "
-                f"status {result.returncode}",
-                file=sys.stderr,
-            )
-            return AUDIT_NM_FAILURE
-        if not result.stdout.strip():
-            print(
-                f"nm {label} command produced no symbols for {library}",
-                file=sys.stderr,
-            )
-            return AUDIT_NM_FAILURE
-    table = output.stdout + full.stdout
+    full = run_nm(nm, [], library)
+    if full is None:
+        return AUDIT_NM_FAILURE
+    table = defined + full
     failures = find_forbidden_symbols(table)
     if failures:
-        print(
-            "native ICD carries Gallium/winsys symbols: "
-            + ", ".join(failures)
-        )
+        print("native ICD carries Gallium/winsys symbols: " + ", ".join(failures))
         return AUDIT_FORBIDDEN_SYMBOL
     print("r3v_native_separation_audit: no Gallium or winsys symbol present")
     return AUDIT_OK
@@ -81,37 +89,89 @@ def selftest() -> int:
             "#!/bin/sh\n"
             "set -eu\n"
             "last=\n"
-            "for argument in \"$@\"; do\n"
+            'for argument in "$@"; do\n'
             "    last=$argument\n"
             "done\n"
-            "case \"$last\" in\n"
-            "    *nm-error.symbols) exit 2 ;;\n"
+            'case "$last" in\n'
+            "    *nm-error-defined.symbols)\n"
+            '        if [ "${1:-}" = "--defined-only" ]; then\n'
+            "            echo 'defined-only diagnostic' >&2\n"
+            "            exit 2\n"
+            "        fi\n"
+            "        ;;\n"
+            "    *nm-error-full.symbols)\n"
+            '        if [ "${1:-}" != "--defined-only" ]; then\n'
+            "            echo 'full diagnostic' >&2\n"
+            "            exit 3\n"
+            "        fi\n"
+            "        ;;\n"
             "esac\n"
-            "cat \"$last\"\n"
+            'cat "$last"\n'
         )
         nm.chmod(0o755)
 
         cases = (
-            ("native", "r3v_native_entrypoint\n", AUDIT_OK),
-            ("gallium", "r300_screen_create\n", AUDIT_FORBIDDEN_SYMBOL),
-            ("winsys", "radeon_drm_winsys_create\n", AUDIT_FORBIDDEN_SYMBOL),
-            ("empty", "", AUDIT_NM_FAILURE),
-            ("nm-error", "r3v_native_entrypoint\n", AUDIT_NM_FAILURE),
+            ("native", nm, "r3v_native_entrypoint\n", AUDIT_OK, ""),
+            (
+                "gallium",
+                nm,
+                "r300_screen_create\n",
+                AUDIT_FORBIDDEN_SYMBOL,
+                "",
+            ),
+            (
+                "winsys",
+                nm,
+                "radeon_drm_winsys_create\n",
+                AUDIT_FORBIDDEN_SYMBOL,
+                "",
+            ),
+            ("empty", nm, "", AUDIT_NM_FAILURE, ""),
+            (
+                "nm-error-defined",
+                nm,
+                "r3v_native_entrypoint\n",
+                AUDIT_NM_FAILURE,
+                "defined-only diagnostic",
+            ),
+            (
+                "nm-error-full",
+                nm,
+                "r3v_native_entrypoint\n",
+                AUDIT_NM_FAILURE,
+                "full diagnostic",
+            ),
+            (
+                "nm-missing",
+                root / "missing-nm",
+                "r3v_native_entrypoint\n",
+                AUDIT_NM_FAILURE,
+                "nm defined-only command failed",
+            ),
         )
-        for label, table, expected_status in cases:
+        for label, nm_path, table, expected_status, expected_diagnostic in cases:
             library = root / f"{label}.symbols"
             library.write_text(table)
-            status = audit_library(str(nm), str(library))
+            diagnostics = io.StringIO()
+            with contextlib.redirect_stderr(diagnostics):
+                status = audit_library(str(nm_path), str(library))
             if status != expected_status:
                 print(
                     f"separation selftest {label}: expected status="
                     f"{expected_status}, got {status}"
                 )
                 return 1
+            if expected_diagnostic not in diagnostics.getvalue():
+                print(
+                    f"separation selftest {label}: expected diagnostic="
+                    f"{expected_diagnostic!r}, got {diagnostics.getvalue()!r}"
+                )
+                return 1
 
     print(
-        "r3v_native_separation_audit: clean, forbidden, empty-output, and "
-        "nm-error verdicts calibrated"
+        "r3v_native_separation_audit: clean, forbidden, empty-output, "
+        "first-call error, second-call error, and missing-nm verdicts "
+        "calibrated"
     )
     return 0
 
@@ -133,10 +193,7 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        print(
-            f"r3v_native_separation_audit: exact status {actual_status} "
-            "matched"
-        )
+        print(f"r3v_native_separation_audit: exact status {actual_status} matched")
         return AUDIT_OK
     if len(sys.argv) != 3:
         print("usage: r3v_native_separation_audit.py <nm> <library>")
