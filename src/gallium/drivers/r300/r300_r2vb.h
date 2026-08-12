@@ -22,6 +22,11 @@ struct pipe_resource;
 struct pipe_vertex_element;
 struct nir_shader;
 
+/* Classify the effective rasterized primitive used by the Draw and R2VB
+ * routes. Polygon-mode POINT triangles enter the point path alongside POINTS.
+ */
+bool r300_rasterizer_emits_points(struct r300_context *r300, unsigned prim);
+
 /* Runtime source authority for a vertex-buffer record.  A real winsys BO
  * fetches in place.  A CPU-shadow resource uploads its exact fetched span.
  * User pointers and resources with zero or two backing authorities decline. */

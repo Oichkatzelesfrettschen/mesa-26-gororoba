@@ -894,7 +894,7 @@ r300_update_clip_discard_distance(struct r300_context *r300, unsigned prim)
     }
 }
 
-static bool
+bool
 r300_rasterizer_emits_points(struct r300_context *r300, unsigned prim)
 {
     struct r300_rs_state *rs = (struct r300_rs_state*)r300->rs_state.state;
