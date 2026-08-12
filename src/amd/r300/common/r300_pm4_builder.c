@@ -124,6 +124,12 @@ r300_pm4_block(struct r300_pm4_builder *b, const uint32_t *words,
 uint32_t
 r300_pm4_reloc_nop(struct r300_pm4_builder *b, uint32_t payload)
 {
+   /* Linux radeon consumes this BO reference through
+    * radeon_cs_packet_next_reloc(), which parses a type-3 NOP and reads its
+    * payload as a relocation-chunk dword index.  Symbol discovery uses
+    * `rg --fixed-strings radeon_cs_packet_next_reloc
+    * drivers/gpu/drm/radeon/` in the Linux kernel source tree.
+    */
    if (!r300_pm4_builder_reserve(b, 2))
       return R300_PM4_NO_INDEX;
 
