@@ -29,14 +29,20 @@ Zink is a deliberate debug-profile exception, not a shared exclusion:
   `ati_r300` ICD as the zink-upon-r3v GL-on-Vulkan experiment lane
 - release config: `gallium-drivers = ['r300']` with no zink
 
-The release profile uses `buildtype = 'release'`, `b_ndebug = 'true'`, and
-`-O2` for the Vostro runtime lane.  The debug profile uses
-`buildtype = 'debugoptimized'`, `b_ndebug = 'false'`, and the same x86-64-v1
-ISA/linker policy with frame pointers for RCA.  The debug profile adds
-debug-only instrumentation and tooling: Valgrind annotations, libunwind,
-Perfetto CPU-side timeline hooks, standalone compiler tools, in-tree tests, and
-the mesa overlay/device-select Vulkan layers.  The release profile keeps those
-out of the artifact.
+The release profile uses `buildtype = 'release'`, `b_ndebug = 'true'`, `-O2`,
+and `build-tests = true` for the Vostro runtime lane.  The canonical
+`rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache` target configures and
+builds this profile, then runs the registered in-tree unit tests through the
+locked `make test` target.  A separate `make test` invocation reruns the tests
+without rebuilding.  Those results are build/test evidence and do not establish
+hardware behavior or CTS/Piglit/dEQP conformance.
+
+The debug profile uses `buildtype = 'debugoptimized'`, `b_ndebug = 'false'`, and
+the same x86-64-v1 ISA/linker policy with frame pointers for RCA.  It also sets
+`build-tests = true`; debug-only instrumentation and tooling include Valgrind
+annotations, libunwind, Perfetto CPU-side timeline hooks, standalone compiler
+tools, and the mesa overlay/device-select Vulkan layers.  The release profile
+keeps those debug-only surfaces out of the artifact.
 
 The release and debug profiles intentionally keep `llvm = 'disabled'` and
 `draw-use-llvm = false` until the no-LLVM RS482 SW-TCL baseline has a retained

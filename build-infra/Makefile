@@ -402,6 +402,7 @@ endef
         install-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache \
         rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
         install-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
+        r300-release-profile-contract-test \
         rebuild-all-tiers audit-werror driver-root-audit \
         build-lease-test build-job-policy-test \
         pkg-mesa-gororoba deploy-mesa-gororoba \
@@ -412,6 +413,59 @@ endef
 .PHONY: profile-audit
 profile-audit:
 	python3 $(CURDIR)/scripts/profile_audit.py --repo-root $(CURDIR)/..
+
+# Keep the release profile, its canonical documentation, and the named rebuild
+# target as one contract.  This is a static gate: it proves test registration
+# and execution wiring, while the locked `make test` target supplies the actual
+# test verdict after a build.
+.PHONY: r300-release-profile-contract-test
+r300-release-profile-contract-test:
+	@set -euo pipefail; \
+	profile='4_r300_full_release_x86_64v1-clang22-distcc-cache'; \
+	config="$(CURDIR)/configs/alternates/$$profile.meson"; \
+	docs="$(CURDIR)/docs/r300-full-profile-options.md"; \
+	makefile="$(BUILD_INFRA_MAKEFILE)"; \
+	fail() { echo "FAIL  r300 release profile contract: $$*" >&2; exit 1; }; \
+	check_contract() { \
+		contract_config="$$1"; contract_docs="$$2"; contract_makefile="$$3"; \
+		[ -f "$$contract_config" ] || return 1; \
+		[ -f "$$contract_docs" ] || return 1; \
+		option_count="$$(grep -Ec '^[[:space:]]*build-tests[[:space:]]*=' "$$contract_config" || true)"; \
+		true_count="$$(grep -Ec '^[[:space:]]*build-tests[[:space:]]*=[[:space:]]*true[[:space:]]*$$' "$$contract_config" || true)"; \
+		[ "$$option_count" -eq 1 ] || return 1; \
+		[ "$$true_count" -eq 1 ] || return 1; \
+		grep -F -- 'build-tests = true' "$$contract_docs" >/dev/null || return 1; \
+		grep -F -- 'Those results are build/test evidence and do not establish' "$$contract_docs" >/dev/null || return 1; \
+		rebuild_body="$$(awk '$$0 == "rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache:" { in_target=1; next } in_target && $$0 !~ /^[[:space:]]/ { exit } in_target { print }' "$$contract_makefile")"; \
+		build_line="$$(printf '%s\n' "$$rebuild_body" | grep -n -F -- '$$(MAKE) build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba' | cut -d: -f1 || true)"; \
+		test_line="$$(printf '%s\n' "$$rebuild_body" | grep -n -F -- '$$(MAKE) test PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba' | cut -d: -f1 || true)"; \
+		[ -n "$$build_line" ] || return 1; \
+		[ -n "$$test_line" ] || return 1; \
+		[ "$$build_line" -lt "$$test_line" ] || return 1; \
+		grep -F -- '$$(MESON) test -C "$$(BUILDDIR)"' "$$contract_makefile" >/dev/null || return 1; \
+	}; \
+	check_contract "$$config" "$$docs" "$$makefile" || fail "canonical files disagree"; \
+	echo "OK    r300 release profile contract accepts the canonical files"; \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf -- "$$tmpdir"' EXIT HUP INT TERM; \
+	bad_config="$$tmpdir/profile.meson"; \
+	sed 's/^build-tests = true$$/build-tests = false/' "$$config" > "$$bad_config"; \
+	if check_contract "$$bad_config" "$$docs" "$$makefile"; then \
+		fail "known-bad build-tests=false profile passed"; \
+	fi; \
+	echo "OK    r300 release profile contract rejects build-tests=false"; \
+	bad_docs="$$tmpdir/profile.md"; \
+	sed '/Those results are build\/test evidence and do not establish/d' "$$docs" > "$$bad_docs"; \
+	if check_contract "$$config" "$$bad_docs" "$$makefile"; then \
+		fail "known-bad evidence-boundary doc passed"; \
+	fi; \
+	echo "OK    r300 release profile contract rejects an unbounded evidence doc"; \
+	bad_makefile="$$tmpdir/Makefile"; \
+	grep -F -v -- '$$(MAKE) test PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba' "$$makefile" > "$$bad_makefile"; \
+	if check_contract "$$config" "$$docs" "$$bad_makefile"; then \
+		fail "known-bad rebuild target without test passed"; \
+	fi; \
+	echo "OK    r300 release profile contract rejects build-only rebuild wiring"
 
 source-root-check:
 	@$(CHECK_SOURCE_ROOT)
@@ -454,7 +508,7 @@ help:
 	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
 	@echo "  build-lease-test  verify mutation leases and path-safety guards"
 	@echo "  build-job-policy-test verify nproc local jobs and the six-job distcc ceiling"
-	@echo "  rebuild-<profile> clean + configure + build for that profile"
+	@echo "  rebuild-<profile> clean + configure + build; r300 release also runs unit tests"
 	@echo "  list              show available PROFILEs and HOSTENVs"
 	@echo ""
 	@echo "profile:   $(PROFILE)"
@@ -567,7 +621,8 @@ distcc-probe-directory-test:
 audit: source-root-check source-root-control-unit-test \
        source-root-selection-test \
        distcc-probe-directory-test \
-       vostro-prefix-check audit-werror profile-audit driver-root-audit
+       vostro-prefix-check audit-werror profile-audit \
+       r300-release-profile-contract-test driver-root-audit
 	@failures=0; warnings=0; \
 	fail() { echo "FAIL  $$*" >&2; failures=$$((failures + 1)); }; \
 	warn() { echo "WARN  $$*" >&2; warnings=$$((warnings + 1)); }; \
@@ -2943,11 +2998,14 @@ define INSTALL_PAIR
 endef
 
 # Canonical full-feature r300 RELEASE build: maximal GL/GLES surface plus the
-# ati_r300 ICD in one artifact (profile 4_).  Installs to the release prefix.
+# ati_r300 ICD in one artifact (profile 4_).  The registered in-tree unit tests
+# run after the build through the locked `make test` target; their result is
+# build/test evidence, not hardware or CTS/Piglit/dEQP evidence.
 rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache:
 	$(MAKE) clean PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 	$(MAKE) configure PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 	$(MAKE) build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) test PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
 install-4_r300_full_release_x86_64v1-clang22-distcc-cache:
 	$(MAKE) install PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
