@@ -24,18 +24,245 @@ def fail(message, *outputs):
     return 1
 
 
+_UNKNOWN = object()
+_PREPROCESSOR_TOKEN = re.compile(
+    r"\s*(?:(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|0[0-7]*|[1-9][0-9]*)"
+    r"[uUlL]*|[A-Za-z_]\w*|\|\||&&|==|!=|<=|>=|<<|>>|"
+    r"[()?:~!%^&|*/+\-<>])"
+)
+_PREPROCESSOR_PRECEDENCE = {
+    "||": 1, "&&": 2, "|": 3, "^": 4, "&": 5,
+    "==": 6, "!=": 6, "<": 7, "<=": 7, ">": 7, ">=": 7,
+    "<<": 8, ">>": 8, "+": 9, "-": 9, "*": 10, "/": 10,
+    "%": 10,
+}
+
+
+def _preprocessor_tokens(expression):
+    tokens = []
+    position = 0
+    while position < len(expression):
+        match = _PREPROCESSOR_TOKEN.match(expression, position)
+        if match is None:
+            return None
+        tokens.append(match.group(0).strip())
+        position = match.end()
+    return tokens
+
+
+def _preprocessor_integer(token):
+    core = re.sub(r"[uUlL]+$", "", token)
+    try:
+        if core.lower().startswith("0x"):
+            return int(core[2:], 16)
+        if core.lower().startswith("0b"):
+            return int(core[2:], 2)
+        if len(core) > 1 and core.startswith("0"):
+            return int(core, 8)
+        return int(core, 10)
+    except ValueError:
+        return _UNKNOWN
+
+
+def _preprocessor_binary(left, right, operator):
+    if left is _UNKNOWN or right is _UNKNOWN:
+        if operator == "&&" and (
+                left is not _UNKNOWN and left == 0 or
+                right is not _UNKNOWN and right == 0):
+            return 0
+        if operator == "||" and (
+                left is not _UNKNOWN and left != 0 or
+                right is not _UNKNOWN and right != 0):
+            return 1
+        return _UNKNOWN
+    try:
+        if operator == "||":
+            return int(left != 0 or right != 0)
+        if operator == "&&":
+            return int(left != 0 and right != 0)
+        if operator == "|":
+            return left | right
+        if operator == "^":
+            return left ^ right
+        if operator == "&":
+            return left & right
+        if operator == "==":
+            return int(left == right)
+        if operator == "!=":
+            return int(left != right)
+        if operator == "<":
+            return int(left < right)
+        if operator == "<=":
+            return int(left <= right)
+        if operator == ">":
+            return int(left > right)
+        if operator == ">=":
+            return int(left >= right)
+        if operator == "<<" or operator == ">>":
+            if right < 0:
+                return _UNKNOWN
+            return left << right if operator == "<<" else left >> right
+        if operator == "+":
+            return left + right
+        if operator == "-":
+            return left - right
+        if operator == "*":
+            return left * right
+        if operator == "/":
+            return left // right if right != 0 else _UNKNOWN
+        if operator == "%":
+            return left % right if right != 0 else _UNKNOWN
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return _UNKNOWN
+    return _UNKNOWN
+
+
+class _PreprocessorExpressionParser:
+    """Evaluate constant parts of a preprocessor expression conservatively."""
+
+    def __init__(self, expression):
+        self.tokens = _preprocessor_tokens(expression)
+        self.position = 0
+
+    def peek(self):
+        if self.tokens is None or self.position == len(self.tokens):
+            return None
+        return self.tokens[self.position]
+
+    def take(self, token=None):
+        value = self.peek()
+        if value is None or (token is not None and value != token):
+            return None
+        self.position += 1
+        return value
+
+    def parse(self):
+        if self.tokens is None:
+            return _UNKNOWN
+        value = self._conditional()
+        return value if self.position == len(self.tokens) else _UNKNOWN
+
+    def _conditional(self):
+        condition = self._expression(0)
+        if self.take("?") is None:
+            return condition
+        when_true = self._conditional()
+        if self.take(":") is None:
+            return _UNKNOWN
+        when_false = self._conditional()
+        if condition is _UNKNOWN:
+            return when_true if when_true == when_false else _UNKNOWN
+        return when_true if condition != 0 else when_false
+
+    def _expression(self, minimum_precedence):
+        left = self._unary()
+        while True:
+            operator = self.peek()
+            precedence = _PREPROCESSOR_PRECEDENCE.get(operator, -1)
+            if precedence < minimum_precedence:
+                return left
+            self.take()
+            right = self._expression(precedence + 1)
+            left = _preprocessor_binary(left, right, operator)
+
+    def _unary(self):
+        if self.peek() in {"!", "~", "+", "-"}:
+            operator = self.take()
+            value = self._unary()
+            if value is _UNKNOWN:
+                return _UNKNOWN
+            if operator == "!":
+                return int(value == 0)
+            if operator == "~":
+                return ~value
+            return value if operator == "+" else -value
+        token = self.take()
+        if token is None:
+            return _UNKNOWN
+        if token == "(":
+            value = self._conditional()
+            return value if self.take(")") is not None else _UNKNOWN
+        if token == "defined":
+            if self.take("(") is not None:
+                self.take()
+                if self.take(")") is None:
+                    return _UNKNOWN
+            else:
+                self.take()
+            return _UNKNOWN
+        if re.fullmatch(
+                r"(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|0[0-7]*|[1-9][0-9]*)"
+                r"[uUlL]*", token):
+            return _preprocessor_integer(token)
+        return _UNKNOWN
+
+
 def _constant_preprocessor_condition(expression):
-    """Evaluate the literal preprocessor conditions used by fixtures."""
-    value = expression.strip().split(None, 1)[0] if expression.strip() else ""
-    if value in {"0", "0L", "0U", "0UL"}:
-        return False
-    if value in {"1", "1L", "1U", "1UL"}:
-        return True
-    return True
+    """Keep unknown expressions active and mask only proven-false branches."""
+    value = _PreprocessorExpressionParser(expression.strip()).parse()
+    return value is _UNKNOWN or value != 0
+
+
+def _strip_non_code_literals_and_comments(source):
+    """Blank comments and literals while preserving source line spans."""
+    output = []
+    state = "code"
+    position = 0
+    while position < len(source):
+        character = source[position]
+        following = source[position + 1] if position + 1 < len(source) else ""
+        if state == "code":
+            if character == "/" and following == "/":
+                output.extend((" ", " "))
+                position += 2
+                state = "line-comment"
+            elif character == "/" and following == "*":
+                output.extend((" ", " "))
+                position += 2
+                state = "block-comment"
+            elif character == '"' or character == "'":
+                output.append(" ")
+                position += 1
+                state = character
+            else:
+                output.append(character)
+                position += 1
+        elif state == "line-comment":
+            if character == "\n":
+                output.append("\n")
+                position += 1
+                state = "code"
+            else:
+                output.append(" ")
+                position += 1
+        elif state == "block-comment":
+            if character == "*" and following == "/":
+                output.extend((" ", " "))
+                position += 2
+                state = "code"
+            else:
+                output.append("\n" if character == "\n" else " ")
+                position += 1
+        else:
+            if character == "\\" and position + 1 < len(source):
+                output.append(" ")
+                position += 1
+                escaped = source[position]
+                output.append("\n" if escaped == "\n" else " ")
+                position += 1
+            elif character == state:
+                output.append(" ")
+                position += 1
+                state = "code"
+            else:
+                output.append("\n" if character == "\n" else " ")
+                position += 1
+    return "".join(output)
 
 
 def mask_inactive_preprocessor(source):
     """Blank literal-disabled preprocessor branches while keeping line spans."""
+    source = _strip_non_code_literals_and_comments(source)
     active = True
     frames = []
     masked = []
@@ -89,8 +316,7 @@ def _call_is_declaration(source, match):
 
 def has_recorder_call(source, symbol):
     """Match an executable recorder call, not a forward declaration."""
-    source = mask_inactive_preprocessor(
-        re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.DOTALL))
+    source = mask_inactive_preprocessor(source)
     pattern = re.compile(rf"\b{re.escape(symbol)}[ \t]*\(")
     return any(not _call_is_declaration(source, match)
                for match in pattern.finditer(source))
@@ -98,13 +324,17 @@ def has_recorder_call(source, symbol):
 
 def has_indirect_recorder_call(source, symbol):
     """Match a call through a function pointer assigned to the recorder."""
-    source = mask_inactive_preprocessor(
-        re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.DOTALL))
+    source = mask_inactive_preprocessor(source)
     aliases = re.findall(
         rf"\b([A-Za-z_]\w*)[ \t]*=[ \t]*&?[ \t]*"
         rf"{re.escape(symbol)}\b", source)
-    return any(re.search(rf"\b{re.escape(alias)}[ \t]*\(", source)
-               for alias in aliases)
+    for alias in aliases:
+        call_pattern = re.compile(
+            rf"(?:\b{re.escape(alias)}\b|\(\s*\*\s*"
+            rf"{re.escape(alias)}\s*\))[ \t]*\(")
+        if call_pattern.search(source) is not None:
+            return True
+    return False
 
 
 def has_recorder_use(source, symbol):
@@ -114,17 +344,29 @@ def has_recorder_use(source, symbol):
 
 
 def calibrate_recorder_call_predicate():
-    """Calibrate direct, indirect, conditional, and inactive call forms."""
+    """Calibrate executable calls, branches, aliases, and literals."""
     good = ("VkResult record(VkCommandBuffer command);\n"
             "VkResult result = record(cmd);\n"
             "if (record(cmd) != VK_SUCCESS) return 1;\n")
     declaration_only = "VkResult record(VkCommandBuffer command);\n"
     indirect = ("record_fn record_cell = record;\n"
                 "return record_cell(cmd);\n")
-    inactive = "#if 0\nrecord(cmd);\n#endif\n"
+    dereferenced = ("record_fn record_cell = record;\n"
+                    "return (*record_cell)(cmd);\n")
+    active_expression = "#if 0 + 1\nrecord(cmd);\n#endif\n"
+    active_unknown_expression = (
+        "#if 0 || ENABLE_CELL\nrecord(cmd);\n#endif\n")
+    inactive = "#if 0 + 0\nrecord(cmd);\n#endif\n"
+    string_literal = 'fprintf(stderr, "record(");\n'
+    character_literal = "const int marker = 'record(';\n"
     return (has_recorder_use(good, "record") and
             not has_recorder_use(declaration_only, "record") and
             has_recorder_use(indirect, "record") and
+            has_recorder_use(dereferenced, "record") and
+            has_recorder_use(active_expression, "record") and
+            has_recorder_use(active_unknown_expression, "record") and
+            not has_recorder_use(string_literal, "record") and
+            not has_recorder_use(character_literal, "record") and
             not has_recorder_use(inactive, "record"))
 
 
