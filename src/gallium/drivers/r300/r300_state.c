@@ -2760,6 +2760,7 @@ static void r300_set_constant_buffer(struct pipe_context *pipe,
             if (r300->screen->caps.has_tcl) {
                 cbuf = (struct r300_constant_buffer *)r300->vs_constants.state;
                 cbuf->ptr = NULL;
+                cbuf->buffer_size = 0;
                 r300_mark_atom_dirty(r300, &r300->vs_constants);
             } else if (r300->draw) {
                 draw_set_mapped_constant_buffer(r300->draw, MESA_SHADER_VERTEX,
@@ -2773,6 +2774,7 @@ static void r300_set_constant_buffer(struct pipe_context *pipe,
         case MESA_SHADER_FRAGMENT:
             cbuf = (struct r300_constant_buffer *)r300->fs_constants.state;
             cbuf->ptr = NULL;
+            cbuf->buffer_size = 0;
             r300_mark_atom_dirty(r300, &r300->fs_constants);
             break;
         default:
@@ -2807,6 +2809,7 @@ static void r300_set_constant_buffer(struct pipe_context *pipe,
     if (shader == MESA_SHADER_FRAGMENT ||
         (shader == MESA_SHADER_VERTEX && r300->screen->caps.has_tcl)) {
         cbuf->ptr = mapped;
+        cbuf->buffer_size = cb->buffer_size;
     }
 
     if (shader == MESA_SHADER_VERTEX) {

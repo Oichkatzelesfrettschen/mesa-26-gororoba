@@ -282,6 +282,8 @@ struct r300_ztop_state {
 struct r300_constant_buffer {
     /* Buffer of constants */
     uint32_t *ptr;
+    /* Bytes available from ptr, as supplied by the constant-buffer binding. */
+    unsigned buffer_size;
     /* Remapping table. */
     struct const_remap *remap_table;
     /* const buffer base */
