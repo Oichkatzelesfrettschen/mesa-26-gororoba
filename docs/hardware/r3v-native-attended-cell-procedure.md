@@ -60,6 +60,35 @@ The run proceeds only when all of the following hold.
   executable as the issuer. The drm-shim harness
   `r3v_native_triangle_cell_harness` is a host-model test and is not the
   live submitter.
+- The executable comes from the release conformance profile, not the
+  assertions-live debug profile. Build that profile through the checked-in
+  build entry point:
+
+  ```sh
+  make -C build-infra rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache
+  ```
+
+  Set `R3V_BUILD_DIR` to the resulting
+  `mesa-4_r300_full_release_x86_64v1-clang22-distcc-cache` build directory and
+  set `R3V_NATIVE_MANIFEST_DIR` to a fresh evidence directory before retaining
+  the Meson options:
+
+  ```sh
+  meson configure "$R3V_BUILD_DIR" \
+    >"$R3V_NATIVE_MANIFEST_DIR/build-options.txt"
+  grep -Eq 'buildtype.*release' \
+    "$R3V_NATIVE_MANIFEST_DIR/build-options.txt"
+  grep -Eq 'b_ndebug.*true' \
+    "$R3V_NATIVE_MANIFEST_DIR/build-options.txt"
+  sha256sum \
+    "$R3V_BUILD_DIR/src/amd/r300/vulkan/r3v_native_attended_cell" \
+    "$R3V_BUILD_DIR/src/amd/r300/vulkan/libvulkan_r3v_native.so" \
+    >"$R3V_NATIVE_MANIFEST_DIR/build-artifacts.sha256"
+  ```
+
+  A debugoptimized or debug option set blocks the run. The retained options
+  and artifact digests bind the live executable and native DSO to the release
+  build that the preflight suite qualified.
 - `r300-tcl-bypass-offline-replay` and
   `r3v-native-submit-object-replay` pass on the RS482 host itself. The
   replay binary is a build output, not an operator-supplied binary:
@@ -70,28 +99,104 @@ The run proceeds only when all of the following hold.
   `r300_packet0_check`, and writes a provenance record binding the
   output ELF to the exact kernel commit, per-file source hashes,
   compiler identity, and compile argv.
-- The suite run on the RS482 host reproduces its recorded vector:
+- The four-suite preflight runs from that same release build without a
+  rebuild, and its complete output becomes the recorded vector:
 
   ```sh
-  meson test -C <builddir> --suite r300 --suite r3v \
-    --suite radeon-drm-vk --suite drm-shim
+  R3V_SUITE_REPORT="$R3V_NATIVE_MANIFEST_DIR/preflight-suites.txt"
+  meson test -C "$R3V_BUILD_DIR" --no-rebuild --print-errorlogs \
+    --suite r300 --suite r3v --suite radeon-drm-vk --suite drm-shim \
+    >"$R3V_SUITE_REPORT" 2>&1
+  cat "$R3V_SUITE_REPORT"
   ```
 
-  and the qualification inventory gate confirms the required test set
-  is complete and the replay tool's provenance is current:
+  A nonzero suite status blocks the run. The qualification inventory gate
+  then confirms the required test set is complete and the replay tool's
+  provenance is current; retain its complete output as well:
 
   ```sh
+  R3V_QUALIFICATION_REPORT="$R3V_NATIVE_MANIFEST_DIR/qualification-inventory.txt"
   R3V_CS_TRACK_REPLAY_TOOL=<path to replay_r300_cs_track> \
   R3V_CS_TRACK_CONTROLS=<path to its controls fixture> \
   R3V_CS_TRACK_REPLAY_PROVENANCE=<path to the provenance record> \
   python3 src/amd/r300/vulkan/tests/r3v_qualification_inventory.py \
-    <builddir> --qualification
+    "$R3V_BUILD_DIR" --qualification \
+    >"$R3V_QUALIFICATION_REPORT" 2>&1
+  cat "$R3V_QUALIFICATION_REPORT"
   ```
 
   The inventory verifies the replay tool against its provenance record
   -- the correspondence gate passed and the ELF's SHA-256 matches the
   recorded hash -- rather than trusting a binary handed to it by name
   alone. Any drm-shim residue matches the calibrated signature.
+- The RS482 recovery stack is registered before the hazard gate opens. The
+  Radeon module is the deployed `radeon-unified-dkms` build, the SB600 TCO
+  module is registered as `sp5100_tco`, the watchdog device and
+  `sb600-guard` are present, and the wedge-recovery sysctls are loaded. Read
+  and retain these facts before setting
+  `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1`:
+
+  ```sh
+  R3V_RECOVERY_REPORT="$R3V_NATIVE_MANIFEST_DIR/recovery-preflight.txt"
+  {
+    printf 'kernel.release='
+    uname -r
+    printf 'radeon.package='
+    pacman -Q radeon-unified-dkms
+    printf 'radeon.policy_package='
+    pacman -Q radeon-rs482-policy
+    printf 'watchdog.package='
+    pacman -Q sp5100-tco-ioapic-dkms
+    printf 'recovery.package='
+    pacman -Q vostro1000-wedge-recovery
+    printf 'radeon.srcversion='
+    cat /sys/module/radeon/srcversion
+    printf 'radeon.modinfo_srcversion='
+    modinfo -F srcversion radeon
+    printf 'radeon.lockup_timeout='
+    cat /sys/module/radeon/parameters/lockup_timeout
+    printf 'sp5100_tco.loaded='
+    test -d /sys/module/sp5100_tco && echo yes || echo no
+    printf 'watchdog.device='
+    test -e /dev/watchdog0 && echo /dev/watchdog0 || \
+      test -e /dev/watchdog && echo /dev/watchdog || echo missing
+    printf 'sb600_guard='
+    command -v sb600-guard || true
+    for setting in kernel.panic kernel.panic_on_oops \
+      kernel.nmi_watchdog kernel.hardlockup_panic \
+      kernel.softlockup_panic kernel.hung_task_panic \
+      kernel.hung_task_timeout_secs; do
+      printf '%s=' "$setting"
+      sysctl -n "$setting"
+    done
+  } >"$R3V_RECOVERY_REPORT" 2>&1
+  cat "$R3V_RECOVERY_REPORT"
+  pacman -Q radeon-unified-dkms >/dev/null
+  pacman -Q radeon-rs482-policy >/dev/null
+  pacman -Q sp5100-tco-ioapic-dkms >/dev/null
+  pacman -Q vostro1000-wedge-recovery >/dev/null
+  test -d /sys/module/radeon
+  test -e /sys/module/radeon/srcversion
+  test "$(cat /sys/module/radeon/srcversion)" = "$(modinfo -F srcversion radeon)"
+  test -e /sys/module/radeon/parameters/lockup_timeout
+  test "$(cat /sys/module/radeon/parameters/lockup_timeout)" = 0
+  test -d /sys/module/sp5100_tco
+  test -e /dev/watchdog0 || test -e /dev/watchdog
+  test -x "$(command -v sb600-guard)"
+  test "$(sysctl -n kernel.panic)" = 10
+  test "$(sysctl -n kernel.panic_on_oops)" = 1
+  test "$(sysctl -n kernel.nmi_watchdog)" = 1
+  test "$(sysctl -n kernel.hardlockup_panic)" = 1
+  test "$(sysctl -n kernel.softlockup_panic)" = 1
+  test "$(sysctl -n kernel.hung_task_panic)" = 1
+  test "$(sysctl -n kernel.hung_task_timeout_secs)" = 120
+  ```
+
+  A loaded module, watchdog node, and sysctl posture prove deployment and
+  registration only; they do not prove GPU reset or silicon recovery.
+  `sb600-guard` remains an attended recovery backstop and is not invoked by
+  this preflight. A missing identity, a nonzero `radeon.lockup_timeout`, or a
+  missing watchdog/recovery setting blocks the run.
 - `r3v_native_arming_runner` reports `armed` for the exact evidence
   directory the run will use.
 - The host has an off-box log path (netconsole or serial), because a
@@ -126,8 +231,24 @@ operator and matched by the driver, and no factor has a bypass.
    - `R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION=<contents of
      /sys/module/radeon/srcversion>`
    - `R3V_NATIVE_MANIFEST_DIR=<fresh directory>`
-3. Run `r3v_native_arming_runner <evidence-dir>` and require the
-   `armed` verdict. The runner creates no device and issues no ioctl.
+3. Run `r3v_native_arming_runner <evidence-dir>`, retain its complete
+   report before submission, and require the `armed` verdict:
+
+   ```sh
+   R3V_NATIVE_ARMING_REPORT="$R3V_NATIVE_MANIFEST_DIR/arming-report.txt"
+   if r3v_native_arming_runner "$R3V_NATIVE_MANIFEST_DIR" \
+     >"$R3V_NATIVE_ARMING_REPORT" 2>&1; then
+     arming_status=0
+   else
+     arming_status=$?
+   fi
+   cat "$R3V_NATIVE_ARMING_REPORT"
+   test "$arming_status" -eq 0
+   grep -F 'verdict: armed' "$R3V_NATIVE_ARMING_REPORT"
+   ```
+
+   The runner creates no device and issues no ioctl. A refusal retains its
+   report and keeps the submission closed.
 4. The submitting run may proceed only after step 3 reports `armed`.
 
 Reaching the ioctl writes `attempt.token` into the evidence directory by
@@ -157,10 +278,14 @@ Recorded before the run; the observation stands as made.
 Any of these ends the run; the observation is the finding, and the
 prediction is not revised after the fact.
 
-- The ioctl returns nonzero: the kernel CS parser rejected an object the
-  offline replay accepted, which means the offline decision code and the
-  running kernel disagree. Capture the errno and the retained submit
-  object; open an RCA on the divergence.
+- The ioctl returns nonzero: classify the live failure from the errno,
+  kernel trace, and failing stage before naming its cause. A CS packet,
+  relocation, or parser signature supports a parser-divergence RCA against
+  the offline replay. A transport, BO allocation or pinning, address
+  mapping, scheduling, or completion failure is a separate live-path
+  finding; the offline parser does not exercise those paths. Retain the
+  numeric errno and string, stage, dmesg delta, and submit object, and open
+  the corresponding RCA.
 - `GEM_WAIT_IDLE` reaches its bound: the submission did not retire.
   Treat as a hang; do not resubmit.
 - The oracle reports `executed` false: the command processor wrote
@@ -174,10 +299,15 @@ prediction is not revised after the fact.
   0xff and the red/blue pair carries zero, and separates neither pair
   internally; full channel-order identity requires a later asymmetric
   3D color witness.
-- The oracle reports `exterior_pass` or `canary_pass` false: the write
-  landed outside the intended extent, which implicates the pitch word or
-  the color-target binding and is the most dangerous outcome because it
-  means the GPU wrote memory the cell did not describe.
+- The oracle reports `exterior_pass` false while `canary_pass` remains true:
+  an in-extent sample outside the analytic triangle changed from its
+  sentinel. This is a coverage, scissor, viewport, or triangle-setup finding
+  and does not by itself show an out-of-extent write.
+- The oracle reports `canary_pass` false: a pixel in the sub-pitch padding
+  band or a row past the 64-row render extent changed from its sentinel.
+  This is the extent, pitch, or color-target binding containment finding and
+  is the dangerous outcome because the GPU wrote memory the cell did not
+  describe.
 - `dmesg` gains a radeon CS validation error, a reset, or a lockup line.
 - The host stops responding.
 
@@ -209,6 +339,9 @@ evidence repository:
   instant the directory was disarmed, written by exclusive creation and
   fsynced durably before the ioctl, so a power failure past the ioctl
   cannot leave the directory apparently unused;
+- `build-options.txt`, `build-artifacts.sha256`, `preflight-suites.txt`,
+  `qualification-inventory.txt`, `recovery-preflight.txt`, and
+  `arming-report.txt`, all captured before the ioctl;
 - the arming runner's full report, including every declared and observed
   factor;
 - the color target's bytes and the oracle verdict;
