@@ -42,6 +42,7 @@ class_model(const struct r300_pair_eval_profile *p, rc_register_file file)
    case RC_FILE_INPUT:     return p->input;
    case RC_FILE_TEMPORARY: return p->temporary;
    case RC_FILE_CONSTANT:  return p->constant;
+   case RC_FILE_PRESUB:    return p->presubtract;
    default:                return R300_SOURCE_READ_IDENTITY;
    }
 }
@@ -77,6 +78,78 @@ resolve_pair_reg(struct r300_pair_eval *e, rc_register_file file,
    }
 }
 
+static bool
+apply_source_read(struct r300_pair_eval *e, rc_register_file file,
+                  float reg[4], unsigned consumed_mask)
+{
+   const enum r300_source_read_model m = class_model(&e->profile, file);
+   if (m == R300_SOURCE_READ_UNMODELED) {
+      for (unsigned ch = 0; ch < 4; ch++) {
+         if ((consumed_mask & (1u << ch)) && signbit(reg[ch])) {
+            e->error = "unmodeled negative source read (indeterminate)";
+            return false;
+         }
+      }
+   } else if (m == R300_SOURCE_READ_RS48X_NEG_PREDECESSOR) {
+      for (unsigned ch = 0; ch < 4; ch++) {
+         if (consumed_mask & (1u << ch))
+            reg[ch] = r300_us_source_read_f32(reg[ch], m);
+      }
+   }
+   return true;
+}
+
+static bool
+resolve_presub_reg(struct r300_pair_eval *e,
+                   const struct rc_pair_sub_instruction *lane,
+                   unsigned presub_opcode, float reg[4],
+                   unsigned consumed_mask)
+{
+   const unsigned source_count =
+      rc_presubtract_src_reg_count(presub_opcode);
+   if (!source_count) {
+      e->error = "invalid presubtract opcode";
+      return false;
+   }
+
+   memset(reg, 0, sizeof(float[4]));
+   for (unsigned ch = 0; ch < 4; ch++) {
+      if (!(consumed_mask & (1u << ch)))
+         continue;
+
+      float source_value[2] = {0.0f, 0.0f};
+      for (unsigned source = 0; source < source_count; source++) {
+         const struct rc_pair_instruction_source *src = &lane->Src[source];
+         float source_reg[4];
+         if (!src->Used || !resolve_pair_reg(e, src->File, src->Index,
+                                             source_reg) ||
+             !apply_source_read(e, src->File, source_reg, 1u << ch))
+            return false;
+         source_value[source] = source_reg[ch];
+      }
+
+      switch (presub_opcode) {
+      case RC_PRESUB_BIAS:
+         reg[ch] = 1.0f - 2.0f * source_value[0];
+         break;
+      case RC_PRESUB_SUB:
+         reg[ch] = source_value[1] - source_value[0];
+         break;
+      case RC_PRESUB_ADD:
+         reg[ch] = source_value[1] + source_value[0];
+         break;
+      case RC_PRESUB_INV:
+         reg[ch] = 1.0f - source_value[0];
+         break;
+      default:
+         e->error = "invalid presubtract opcode";
+         return false;
+      }
+   }
+
+   return apply_source_read(e, RC_FILE_PRESUB, reg, consumed_mask);
+}
+
 float
 r300_pair_decode_channel(const float *reg, unsigned swz)
 {
@@ -104,36 +177,21 @@ r300_pair_decode_channel(const float *reg, unsigned swz)
  * register to fetch at all. */
 static bool
 eval_arg_reg(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
-             struct rc_pair_instruction_arg *arg, float reg[4])
+             struct rc_pair_instruction_arg *arg, float reg[4],
+             unsigned consumed_mask)
 {
    memset(reg, 0, sizeof(float[4]));
    struct rc_pair_instruction_source *src = rc_pair_get_src(pair, arg);
    if (!src || !src->Used)
       return true;
-   if (!resolve_pair_reg(e, src->File, src->Index, reg))
-      return false;
-   /* The read transform lands between register resolution and the ABS/NEG
-    * modifiers -- the ordering the sign-flip cell proved (NEG on an exact
-    * positive exports exactly; a stored negative is already one ULP low
-    * before its modifier applies).  Transforming the whole fetched register
-    * equals transforming each swizzle-selected channel; ZERO/ONE/HALF
-    * swizzle constants come from the swizzle hardware, not a register read,
-    * and pass through untouched.  An unmodeled class delivering a negative
-    * value (sign bit set, negative zero included) makes the whole verdict
-    * indeterminate: all models agree on nonnegative values, so only a
-    * negative read distinguishes conjecture from measurement. */
-   const enum r300_source_read_model m = class_model(&e->profile, src->File);
-   if (m == R300_SOURCE_READ_UNMODELED) {
-      for (unsigned ch = 0; ch < 4; ch++)
-         if (signbit(reg[ch])) {
-            e->error = "unmodeled negative source read (indeterminate)";
-            return false;
-         }
-   } else if (m == R300_SOURCE_READ_RS48X_NEG_PREDECESSOR) {
-      for (unsigned ch = 0; ch < 4; ch++)
-         reg[ch] = r300_us_source_read_f32(reg[ch], m);
+   if (src->File == RC_FILE_PRESUB) {
+      const struct rc_pair_sub_instruction *lane =
+         src == &pair->Alpha.Src[arg->Source] ? &pair->Alpha : &pair->RGB;
+      return resolve_presub_reg(e, lane, src->Index, reg, consumed_mask);
    }
-   return true;
+
+   return resolve_pair_reg(e, src->File, src->Index, reg) &&
+          apply_source_read(e, src->File, reg, consumed_mask);
 }
 
 /* Resolve one RGB-lane argument's three channels.  DP3/DP4's fourth term
@@ -147,11 +205,20 @@ eval_arg_reg(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
 static bool
 eval_rgb_arg(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
              struct rc_pair_sub_instruction *sub, unsigned arg_index,
-             float out[4])
+             bool include_w, float out[4])
 {
    struct rc_pair_instruction_arg *arg = &sub->Arg[arg_index];
+   unsigned consumed_mask = 0;
+   for (unsigned ch = 0; ch < 3; ch++) {
+      const unsigned swz = GET_SWZ(arg->Swizzle, ch);
+      if (swz <= RC_SWIZZLE_W)
+         consumed_mask |= 1u << swz;
+   }
+   if (include_w)
+      consumed_mask |= 1u << 3;
+
    float reg[4];
-   if (!eval_arg_reg(e, pair, arg, reg))
+   if (!eval_arg_reg(e, pair, arg, reg, consumed_mask))
       return false;
    for (unsigned ch = 0; ch < 3; ch++) {
       float v = r300_pair_decode_channel(reg, GET_SWZ(arg->Swizzle, ch));
@@ -176,8 +243,10 @@ eval_alpha_arg(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
                float *out_scalar)
 {
    struct rc_pair_instruction_arg *arg = &sub->Arg[arg_index];
+   const unsigned swz = GET_SWZ(arg->Swizzle, 0);
+   const unsigned consumed_mask = swz <= RC_SWIZZLE_W ? 1u << swz : 0;
    float reg[4];
-   if (!eval_arg_reg(e, pair, arg, reg))
+   if (!eval_arg_reg(e, pair, arg, reg, consumed_mask))
       return false;
    float v = r300_pair_decode_channel(reg, GET_SWZ(arg->Swizzle, 0));
    if (arg->Abs)
@@ -195,38 +264,38 @@ eval_rgb_op(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
    float s0[4], s1[4], s2[4];
    switch (sub->Opcode) {
    case RC_OPCODE_MAX:
-      if (!eval_rgb_arg(e, pair, sub, 0, s0) ||
-          !eval_rgb_arg(e, pair, sub, 1, s1))
+      if (!eval_rgb_arg(e, pair, sub, 0, false, s0) ||
+          !eval_rgb_arg(e, pair, sub, 1, false, s1))
          return false;
       for (unsigned ch = 0; ch < 3; ch++)
          result[ch] = fmaxf(s0[ch], s1[ch]);
       return true;
    case RC_OPCODE_MIN:
-      if (!eval_rgb_arg(e, pair, sub, 0, s0) ||
-          !eval_rgb_arg(e, pair, sub, 1, s1))
+      if (!eval_rgb_arg(e, pair, sub, 0, false, s0) ||
+          !eval_rgb_arg(e, pair, sub, 1, false, s1))
          return false;
       for (unsigned ch = 0; ch < 3; ch++)
          result[ch] = fminf(s0[ch], s1[ch]);
       return true;
    case RC_OPCODE_MAD:
-      if (!eval_rgb_arg(e, pair, sub, 0, s0) ||
-          !eval_rgb_arg(e, pair, sub, 1, s1) ||
-          !eval_rgb_arg(e, pair, sub, 2, s2))
+      if (!eval_rgb_arg(e, pair, sub, 0, false, s0) ||
+          !eval_rgb_arg(e, pair, sub, 1, false, s1) ||
+          !eval_rgb_arg(e, pair, sub, 2, false, s2))
          return false;
       for (unsigned ch = 0; ch < 3; ch++)
          result[ch] = s0[ch] * s1[ch] + s2[ch];
       return true;
    case RC_OPCODE_DP3: {
-      if (!eval_rgb_arg(e, pair, sub, 0, s0) ||
-          !eval_rgb_arg(e, pair, sub, 1, s1))
+      if (!eval_rgb_arg(e, pair, sub, 0, false, s0) ||
+          !eval_rgb_arg(e, pair, sub, 1, false, s1))
          return false;
       const float d = s0[0] * s1[0] + s0[1] * s1[1] + s0[2] * s1[2];
       result[0] = result[1] = result[2] = d;
       return true;
    }
    case RC_OPCODE_DP4: {
-      if (!eval_rgb_arg(e, pair, sub, 0, s0) ||
-          !eval_rgb_arg(e, pair, sub, 1, s1))
+      if (!eval_rgb_arg(e, pair, sub, 0, true, s0) ||
+          !eval_rgb_arg(e, pair, sub, 1, true, s1))
          return false;
       const float d =
          s0[0] * s1[0] + s0[1] * s1[1] + s0[2] * s1[2] + s0[3] * s1[3];
@@ -234,7 +303,7 @@ eval_rgb_op(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
       return true;
    }
    case RC_OPCODE_FRC:
-      if (!eval_rgb_arg(e, pair, sub, 0, s0))
+      if (!eval_rgb_arg(e, pair, sub, 0, false, s0))
          return false;
       for (unsigned ch = 0; ch < 3; ch++)
          result[ch] = s0[ch] - floorf(s0[ch]);
@@ -358,7 +427,12 @@ file_name(rc_register_file file)
    switch (file) {
    case RC_FILE_TEMPORARY: return "temporary";
    case RC_FILE_INPUT:     return "input";
+   case RC_FILE_OUTPUT:    return "output";
+   case RC_FILE_ADDRESS:   return "address";
    case RC_FILE_CONSTANT:  return "constant";
+   case RC_FILE_SPECIAL:   return "special";
+   case RC_FILE_PRESUB:    return "presub";
+   case RC_FILE_INLINE:    return "inline";
    case RC_FILE_NONE:      return "none";
    default:                return "other";
    }
@@ -383,9 +457,11 @@ serialize_lane(FILE *out, struct rc_pair_instruction *pair,
    fprintf(out,
            "    {\"lane\":\"%s\",\"opcode\":\"%s\",\"saturate\":%u,"
            "\"write_mask\":%u,\"dest_index\":%u,\"output_write_mask\":%u,"
-           "\"target\":%u,\"sources\":[",
+           "\"depth_write_mask\":%u,\"target\":%u,\"omod\":%u,"
+           "\"sources\":[",
            lane, rc_get_opcode_info(sub->Opcode)->Name, sub->Saturate,
-           sub->WriteMask, sub->DestIndex, sub->OutputWriteMask, sub->Target);
+           sub->WriteMask, sub->DestIndex, sub->OutputWriteMask,
+           sub->DepthWriteMask, sub->Target, sub->Omod);
    const unsigned nargs =
       rc_get_opcode_info(sub->Opcode)->NumSrcRegs;
    for (unsigned a = 0; a < 3; a++) {
@@ -395,21 +471,30 @@ serialize_lane(FILE *out, struct rc_pair_instruction *pair,
       char swz[5];
       swizzle_string(arg->Swizzle, channels, swz);
       fprintf(out,
-              "%s{\"slot\":%u,\"used\":%u,\"file\":\"%s\",\"index\":%u,"
+              "%s{\"slot\":%u,\"source_slot\":%u,\"used\":%u,"
+              "\"file\":\"%s\",\"index\":%u,"
               "\"swizzle\":\"%s\",\"absolute\":%u,\"negate\":%u,"
               "\"source_read_model\":\"%s\"}",
-              a ? "," : "", a, src && src->Used ? 1u : 0u,
+              a ? "," : "", a, a < nargs ? arg->Source : 0u,
+              src && src->Used ? 1u : 0u,
               src && src->Used ? file_name(src->File) : "none",
               src && src->Used ? src->Index : 0u,
               a < nargs ? swz : "",
               a < nargs ? (unsigned)arg->Abs : 0u,
               a < nargs ? (unsigned)arg->Negate : 0u,
               src && src->Used
-                 ? model_name(src->File == RC_FILE_INPUT ? p->input
-                              : src->File == RC_FILE_TEMPORARY ? p->temporary
-                              : src->File == RC_FILE_CONSTANT ? p->constant
-                              : R300_SOURCE_READ_IDENTITY)
+                 ? model_name(class_model(p, src->File))
                  : "identity");
+   }
+   fprintf(out, "],\"source_slots\":[");
+   for (unsigned slot = 0; slot < 4; slot++) {
+      const struct rc_pair_instruction_source *src = &sub->Src[slot];
+      fprintf(out,
+              "%s{\"slot\":%u,\"used\":%u,\"file\":\"%s\","
+              "\"index\":%u,\"source_read_model\":\"%s\"}",
+              slot ? "," : "", slot, src->Used,
+              src->Used ? file_name(src->File) : "none", src->Used ? src->Index : 0u,
+              src->Used ? model_name(class_model(p, src->File)) : "identity");
    }
    fprintf(out, "]}");
 }
@@ -418,15 +503,19 @@ void
 r300_pair_schedule_serialize(FILE *out, struct radeon_compiler *c,
                              const struct r300_pair_eval_profile *p)
 {
-   fprintf(out, "{\"schema\":1,\"instructions\":[\n");
+   fprintf(out, "{\"schema\":2,\"instructions\":[\n");
    unsigned ordinal = 0;
    for (struct rc_instruction *i = c->Program.Instructions.Next;
         i != &c->Program.Instructions; i = i->Next) {
       if (i->Type != RC_INSTRUCTION_PAIR)
          continue;
       struct rc_pair_instruction *pair = &i->U.P;
-      fprintf(out, "%s  {\"ordinal\":%u,\"lanes\":[\n",
-              ordinal ? ",\n" : "", ordinal);
+      fprintf(out,
+              "%s  {\"ordinal\":%u,\"write_alu_result\":%u,"
+              "\"alu_result_compare\":%u,\"nop\":%u,\"sem_wait\":%u,"
+              "\"lanes\":[\n",
+              ordinal ? ",\n" : "", ordinal, pair->WriteALUResult,
+              pair->ALUResultCompare, pair->Nop, pair->SemWait);
       serialize_lane(out, pair, &pair->RGB, "rgb", 3, p);
       fprintf(out, ",\n");
       serialize_lane(out, pair, &pair->Alpha, "alpha", 1, p);
@@ -470,12 +559,31 @@ uint64_t
 r300_pair_constant_list_hash(const struct rc_constant_list *consts)
 {
    uint64_t h = FNV1A64_BASIS;
+   const uint32_t count = consts->Count;
+   h = fnv1a64(h, &count, sizeof(count));
    for (unsigned i = 0; i < consts->Count; i++) {
       const struct rc_constant *k = &consts->Constants[i];
       const uint32_t type = k->Type;
+      const uint32_t use_mask = k->UseMask;
       h = fnv1a64(h, &type, sizeof(type));
-      if (k->Type == RC_CONSTANT_IMMEDIATE)
-         h = fnv1a64(h, k->u.Immediate, sizeof(k->u.Immediate));
+      h = fnv1a64(h, &use_mask, sizeof(use_mask));
+      switch (k->Type) {
+      case RC_CONSTANT_EXTERNAL:
+         h = fnv1a64(h, &k->u.External, sizeof(k->u.External));
+         break;
+      case RC_CONSTANT_IMMEDIATE:
+         for (unsigned channel = 0; channel < 4; channel++) {
+            const uint32_t bits = r300_f32_to_bits(k->u.Immediate[channel]);
+            h = fnv1a64(h, &bits, sizeof(bits));
+         }
+         break;
+      case RC_CONSTANT_STATE:
+         h = fnv1a64(h, k->u.State, sizeof(k->u.State));
+         break;
+      default:
+         /* The type and use mask still identify a malformed entry. */
+         break;
+      }
    }
    return h;
 }

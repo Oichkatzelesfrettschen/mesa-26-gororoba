@@ -4,6 +4,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nir.h"
@@ -1512,11 +1513,99 @@ test_pair_eval_profile_and_schedule_artifact(void)
    CHECK(h1 != 0 && h1 == h2, "artifact: semantic hash is deterministic");
    CHECK(h1 != h3, "artifact: the read-model profile changes the identity");
 
+   char *schedule_json = NULL;
+   size_t schedule_json_length = 0;
+   FILE *schedule_stream =
+      open_memstream(&schedule_json, &schedule_json_length);
+   CHECK(schedule_stream != NULL, "artifact: schedule serializer opens memory stream");
+   if (schedule_stream) {
+      r300_pair_schedule_serialize(schedule_stream, &fc.Base, &ident);
+      fclose(schedule_stream);
+      CHECK(schedule_json_length > 0 &&
+            strstr(schedule_json, "\"schema\":2") != NULL &&
+            strstr(schedule_json, "\"omod\":") != NULL &&
+            strstr(schedule_json, "\"write_alu_result\":") != NULL &&
+            strstr(schedule_json, "\"source_slots\":") != NULL,
+            "artifact: schedule JSON declares schema 2 and semantic fields");
+      free(schedule_json);
+   }
+
+   /* Every pair-level and lane-level field that reaches the emitter belongs
+    * to the schedule identity.  Each mutation is isolated so a serializer
+    * that accidentally omits one field cannot pass through an unrelated
+    * field's digest change. */
+   struct rc_pair_instruction *serialized_pair =
+      &fc.Base.Program.Instructions.Next->U.P;
+   serialized_pair->RGB.Omod = RC_OMOD_MUL_2;
+   CHECK(r300_pair_schedule_semantic_hash(&fc.Base, &ident) != h1,
+         "artifact: RGB Omod changes the semantic hash");
+   serialized_pair->RGB.Omod = RC_OMOD_MUL_1;
+   serialized_pair->RGB.DepthWriteMask = 1;
+   CHECK(r300_pair_schedule_semantic_hash(&fc.Base, &ident) != h1,
+         "artifact: RGB depth write mask changes the semantic hash");
+   serialized_pair->RGB.DepthWriteMask = 0;
+   serialized_pair->Alpha.Omod = RC_OMOD_MUL_4;
+   CHECK(r300_pair_schedule_semantic_hash(&fc.Base, &ident) != h1,
+         "artifact: Alpha Omod changes the semantic hash");
+   serialized_pair->Alpha.Omod = RC_OMOD_MUL_1;
+   serialized_pair->Alpha.DepthWriteMask = 1;
+   CHECK(r300_pair_schedule_semantic_hash(&fc.Base, &ident) != h1,
+         "artifact: Alpha depth write mask changes the semantic hash");
+   serialized_pair->Alpha.DepthWriteMask = 0;
+   serialized_pair->WriteALUResult = RC_ALURESULT_X;
+   CHECK(r300_pair_schedule_semantic_hash(&fc.Base, &ident) != h1,
+         "artifact: ALU-result write changes the semantic hash");
+   serialized_pair->WriteALUResult = RC_ALURESULT_NONE;
+   serialized_pair->ALUResultCompare = RC_COMPARE_FUNC_GREATER;
+   CHECK(r300_pair_schedule_semantic_hash(&fc.Base, &ident) != h1,
+         "artifact: ALU-result compare changes the semantic hash");
+   serialized_pair->ALUResultCompare = RC_COMPARE_FUNC_NEVER;
+   serialized_pair->Nop = 1;
+   CHECK(r300_pair_schedule_semantic_hash(&fc.Base, &ident) != h1,
+         "artifact: pair Nop changes the semantic hash");
+   serialized_pair->Nop = 0;
+   serialized_pair->SemWait = 1;
+   CHECK(r300_pair_schedule_semantic_hash(&fc.Base, &ident) != h1,
+         "artifact: pair semaphore wait changes the semantic hash");
+   serialized_pair->SemWait = 0;
+
    /* Constant-list digest tracks content. */
    const uint64_t k1 = r300_pair_constant_list_hash(&fc.Base.Program.Constants);
    add_const(&fc, 9.0f, 0.0f, 0.0f, 0.0f);
    const uint64_t k2 = r300_pair_constant_list_hash(&fc.Base.Program.Constants);
    CHECK(k1 != k2, "artifact: constant-list hash tracks content");
+
+   struct rc_constant_list typed_constants;
+   rc_constants_init(&typed_constants);
+   struct rc_constant typed_constant = {
+      .Type = RC_CONSTANT_EXTERNAL,
+      .UseMask = RC_MASK_X,
+      .u.External = 7,
+   };
+   rc_constants_add(&typed_constants, &typed_constant);
+   const uint64_t external_hash =
+      r300_pair_constant_list_hash(&typed_constants);
+   typed_constants.Constants[0].u.External = 8;
+   CHECK(r300_pair_constant_list_hash(&typed_constants) != external_hash,
+         "artifact: external constant payload changes the hash");
+   typed_constants.Constants[0].u.External = 7;
+   typed_constants.Constants[0].UseMask = RC_MASK_Y;
+   CHECK(r300_pair_constant_list_hash(&typed_constants) != external_hash,
+         "artifact: constant use mask changes the hash");
+   typed_constants.Constants[0].Type = RC_CONSTANT_STATE;
+   typed_constants.Constants[0].UseMask = RC_MASK_XYZW;
+   typed_constants.Constants[0].u.State[0] = 1;
+   typed_constants.Constants[0].u.State[1] = 2;
+   const uint64_t state_hash =
+      r300_pair_constant_list_hash(&typed_constants);
+   typed_constants.Constants[0].u.State[1] = 3;
+   CHECK(r300_pair_constant_list_hash(&typed_constants) != state_hash,
+         "artifact: state constant payload changes the hash");
+   typed_constants.Constants[0].u.State[1] = 2;
+   typed_constants.Constants[0].UseMask = RC_MASK_X;
+   CHECK(r300_pair_constant_list_hash(&typed_constants) != state_hash,
+         "artifact: state constant use mask changes the hash");
+   rc_constants_destroy(&typed_constants);
 
    /* The measured profile refuses the negative constant read; the identity
     * profile evaluates the same program. */
@@ -1539,6 +1628,121 @@ test_pair_eval_profile_and_schedule_artifact(void)
          "artifact: identity profile evaluates the same program");
    CHECK(nearly_equal(ident_eval.temps[1][0], -1.5f),
          "artifact: identity evaluation delivers -2*1+0.5");
+
+   /* DP3 consumes xyz and leaves W outside the read contract; DP4 consumes
+    * the natural W component as its fourth dot-product term. */
+   serialized_pair->RGB.Arg[0].Swizzle = RC_SWIZZLE_XYZW;
+   fc.Base.Program.Constants.Constants[c0].u.Immediate[0] = 2.0f;
+   fc.Base.Program.Constants.Constants[c0].u.Immediate[3] = -2.0f;
+   serialized_pair->RGB.Opcode = RC_OPCODE_DP3;
+   struct r300_pair_eval dp3_selected_channel;
+   memset(&dp3_selected_channel, 0, sizeof(dp3_selected_channel));
+   dp3_selected_channel.consts = &fc.Base.Program.Constants;
+   dp3_selected_channel.inputs[0][0] = 1.0f;
+   dp3_selected_channel.inputs[0][1] = 1.0f;
+   dp3_selected_channel.inputs[0][2] = 1.0f;
+   dp3_selected_channel.profile = rs48x;
+   CHECK(r300_pair_eval_program(&dp3_selected_channel, &fc.Base),
+         "artifact: DP3 accepts an unmodeled negative W outside its read");
+   serialized_pair->RGB.Opcode = RC_OPCODE_DP4;
+   struct r300_pair_eval dp4_selected_channel;
+   memset(&dp4_selected_channel, 0, sizeof(dp4_selected_channel));
+   dp4_selected_channel.consts = &fc.Base.Program.Constants;
+   dp4_selected_channel.inputs[0][0] = 1.0f;
+   dp4_selected_channel.inputs[0][1] = 1.0f;
+   dp4_selected_channel.inputs[0][2] = 1.0f;
+   dp4_selected_channel.profile = rs48x;
+   CHECK(!r300_pair_eval_program(&dp4_selected_channel, &fc.Base) &&
+         dp4_selected_channel.error != NULL,
+         "artifact: DP4 refuses an unmodeled negative W it consumes");
+   serialized_pair->RGB.Opcode = RC_OPCODE_MAD;
+   fc.Base.Program.Constants.Constants[c0].u.Immediate[0] = -2.0f;
+   fc.Base.Program.Constants.Constants[c0].u.Immediate[3] = 0.0f;
+
+   /* The unmodeled verdict inspects only channels consumed by the swizzle.
+    * The constant's negative X remains outside a yyyy read, so a profile that
+    * scans the whole fetched register fails this known-good control. */
+   serialized_pair->RGB.Arg[0].Swizzle = RC_SWIZZLE_YYYY;
+   struct r300_pair_eval selected_channel_eval;
+   memset(&selected_channel_eval, 0, sizeof(selected_channel_eval));
+   selected_channel_eval.consts = &fc.Base.Program.Constants;
+   selected_channel_eval.inputs[0][0] = 1.0f;
+   selected_channel_eval.inputs[1][0] = 0.5f;
+   selected_channel_eval.profile = rs48x;
+   CHECK(r300_pair_eval_program(&selected_channel_eval, &fc.Base),
+         "artifact: unmodeled negative in an unselected channel is accepted");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
+static void
+test_pair_eval_presubtract_contract(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   struct rc_pair_instruction presub;
+   memset(&presub, 0, sizeof(presub));
+   presub.RGB.Opcode = RC_OPCODE_MAD;
+   presub.RGB.WriteMask = RC_MASK_XYZ;
+   presub.RGB.DestIndex = 1;
+   presub.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   presub.RGB.Src[1] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 1};
+   presub.RGB.Src[RC_PAIR_PRESUB_SRC] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_PRESUB, .Index = RC_PRESUB_ADD};
+   presub.RGB.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = RC_PAIR_PRESUB_SRC, .Swizzle = RC_SWIZZLE_XYZW};
+   presub.RGB.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_1111};
+   presub.RGB.Arg[2] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_0000};
+   presub.Alpha.Opcode = RC_OPCODE_NOP;
+   append_pair(&fc.Base, &fc.Base.Program.Instructions, &presub);
+
+   const struct {
+      rc_presubtract_op opcode;
+      float expected;
+   } cases[] = {
+      {RC_PRESUB_BIAS, 0.5f},
+      {RC_PRESUB_SUB, 0.5f},
+      {RC_PRESUB_ADD, 1.0f},
+      {RC_PRESUB_INV, 0.75f},
+   };
+   const struct r300_pair_eval_profile identity =
+      r300_pair_eval_profile_identity();
+   struct rc_pair_instruction *pair =
+      &fc.Base.Program.Instructions.Next->U.P;
+   for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+      pair->RGB.Src[RC_PAIR_PRESUB_SRC].Index = cases[i].opcode;
+      struct r300_pair_eval e;
+      memset(&e, 0, sizeof(e));
+      e.consts = &fc.Base.Program.Constants;
+      e.inputs[0][0] = 0.25f;
+      e.inputs[1][0] = 0.75f;
+      e.profile = identity;
+      CHECK(r300_pair_eval_program(&e, &fc.Base),
+            "artifact: presubtract opcode evaluates");
+      CHECK(nearly_equal(e.temps[1][0], cases[i].expected),
+            "artifact: presubtract opcode produces its defined value");
+   }
+
+   /* The RS48x profile models input reads, then fails closed when the
+    * resulting presubtract value is negative and presubtract delivery is
+    * unmodeled. */
+   pair->RGB.Src[RC_PAIR_PRESUB_SRC].Index = RC_PRESUB_ADD;
+   struct r300_pair_eval unmodeled_presub;
+   memset(&unmodeled_presub, 0, sizeof(unmodeled_presub));
+   unmodeled_presub.consts = &fc.Base.Program.Constants;
+   unmodeled_presub.inputs[0][0] = -2.0f;
+   unmodeled_presub.inputs[1][0] = 0.0f;
+   unmodeled_presub.profile = r300_pair_eval_profile_rs48x_measured();
+   CHECK(!r300_pair_eval_program(&unmodeled_presub, &fc.Base) &&
+         unmodeled_presub.error != NULL,
+         "artifact: negative unmodeled presubtract read is indeterminate");
 
    rc_destroy(&fc.Base);
    rc_destroy_regalloc_state(&rs);
@@ -1564,6 +1768,7 @@ main(void)
    test_source_read_model_boundaries();
    test_source_read_lattice_exhaustive();
    test_pair_eval_profile_and_schedule_artifact();
+   test_pair_eval_presubtract_contract();
 
    glsl_type_singleton_decref();
    if (failures) {
