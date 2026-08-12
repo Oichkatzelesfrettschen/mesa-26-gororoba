@@ -1493,7 +1493,8 @@ fake_resource_create(struct pipe_screen *screen,
    fb->r.b = *templ;
    pipe_reference_init(&fb->r.b.reference, 1);
    fb->r.b.screen = screen;
-   fb->data = calloc(1, templ->width0);
+   fb->data = malloc(templ->width0);
+   memset(fb->data, 0xCC, templ->width0);
    fb->r.buf = (struct pb_buffer_lean *)fb->data;
    fb->r.domain = RADEON_DOMAIN_GTT;
    return &fb->r.b;
@@ -1871,10 +1872,8 @@ check_upload_integration(void)
       unsigned prime_off = 0;
       struct pipe_resource *prime = NULL;
       uint8_t prime_src[64];
-      uint8_t tail_src[64];
       for (unsigned i = 0; i < sizeof(prime_src); i++) {
          prime_src[i] = (uint8_t)(0x5A + i);
-         tail_src[i] = (uint8_t)(0xA5 - i);
       }
       u_upload_data_ref(g_context.uploader, 0, sizeof(prime_src), 4,
                         prime_src, &prime_off, &prime);
@@ -1892,18 +1891,13 @@ check_upload_integration(void)
          CHECK(mo.gpu_offset >= prime_off + sizeof(prime_src) &&
                   memcmp(up + prime_off, prime_src, sizeof(prime_src)) == 0,
                "upload: the full priming guard span stays untouched");
-         unsigned tail_off = 0;
-         struct pipe_resource *tail = NULL;
-         u_upload_data_ref(g_context.uploader, 0, sizeof(tail_src), 4,
-                           tail_src, &tail_off, &tail);
-         CHECK(tail == mo.resource && tail_off >= mo.gpu_offset + mo.span_bytes,
-               "upload: post-span sentinel stays after the target range");
-         if (tail == mo.resource &&
-             tail_off >= mo.gpu_offset + mo.span_bytes) {
-            CHECK(memcmp(up + tail_off, tail_src, sizeof(tail_src)) == 0,
-                  "upload: the full post-span sentinel stays untouched");
-         }
-         pipe_resource_reference(&tail, NULL);
+         const uint64_t sentinel_offset = mo.gpu_offset + mo.span_bytes;
+         bool sentinel_intact = sentinel_offset + sizeof(prime_src) <=
+                                   mo.resource->width0;
+         for (unsigned i = 0; sentinel_intact && i < sizeof(prime_src); i++)
+            sentinel_intact = up[sentinel_offset + i] == 0xCC;
+         CHECK(sentinel_intact,
+               "upload: pre-seeded post-span sentinel stays untouched");
          struct r300_r2vb_producer_fetch fo;
          CHECK(r300_r2vb_producer_streams_rebind(&st, &mo,
                                                  (uint64_t)TCOUNT * 16,
