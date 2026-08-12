@@ -5787,6 +5787,70 @@ r300_r2vb_typed_split_note(const struct r300_r2vb_producer_plan *plan,
     fprintf(stderr, "%s\n", line);
 }
 
+struct r300_r2vb_telemetry_input_source {
+    const struct r300_r2vb_position_source *source;
+    const char *role;
+};
+
+static unsigned
+r300_r2vb_telemetry_input_sources(
+    const struct r300_r2vb_producer_plan *plan, bool include_varying,
+    struct r300_r2vb_telemetry_input_source *out, unsigned max_sources)
+{
+    if (!plan || !out || max_sources == 0)
+        return 0;
+
+    unsigned count = 0;
+    if (plan->position_source.valid && count < max_sources) {
+        out[count++] = (struct r300_r2vb_telemetry_input_source){
+            &plan->position_source, "position"};
+    }
+    if (include_varying && plan->varying_source.valid &&
+        count < max_sources) {
+        out[count++] = (struct r300_r2vb_telemetry_input_source){
+            &plan->varying_source, "varying"};
+    }
+    return count;
+}
+
+unsigned
+r300_r2vb_telemetry_source_ranks_for_test(
+    const struct r300_r2vb_producer_plan *plan, bool include_varying,
+    uint8_t *out_ranks, unsigned max_ranks)
+{
+    if (!out_ranks || max_ranks == 0)
+        return 0;
+
+    struct r300_r2vb_telemetry_input_source sources[2];
+    unsigned count = r300_r2vb_telemetry_input_sources(
+        plan, include_varying, sources, ARRAY_SIZE(sources));
+    if (count > max_ranks)
+        count = max_ranks;
+    for (unsigned i = 0; i < count; i++)
+        out_ranks[i] = sources[i].source->location_rank;
+    return count;
+}
+
+void
+r300_r2vb_telemetry_cell_remove(const struct r300_vertex_shader *vs)
+{
+    if (!vs)
+        return;
+
+    simple_mtx_lock(&r300_r2vb_telemetry_cell_mtx);
+    unsigned retained = 0;
+    for (unsigned i = 0; i < r300_r2vb_telemetry_cell_count; i++) {
+        if (r300_r2vb_telemetry_cells[i].vs == vs)
+            continue;
+        if (retained != i)
+            r300_r2vb_telemetry_cells[retained] =
+                r300_r2vb_telemetry_cells[i];
+        retained++;
+    }
+    r300_r2vb_telemetry_cell_count = retained;
+    simple_mtx_unlock(&r300_r2vb_telemetry_cell_mtx);
+}
+
 static bool
 r300_r2vb_telemetry_cell_first(struct r300_context *r300,
                                const struct r300_r2vb_producer_plan *plan)
@@ -6197,20 +6261,30 @@ r300_r2vb_telemetry_record_inputs(
         !vs->state.ir.nir || !draw)
         return;
 
-    unsigned input_count = plan && plan->num_position_inputs
-                               ? plan->num_position_inputs
-                               : r300_r2vb_count_position_inputs(vs->state.ir.nir);
-    if (!input_count)
+    struct r300_r2vb_telemetry_input_source sources[2];
+    unsigned source_count = r300_r2vb_telemetry_input_sources(
+        plan, allow_computed_varying, sources, ARRAY_SIZE(sources));
+    struct r300_r2vb_position_source fallback_source;
+    if (!source_count && !plan &&
+        r300_r2vb_position_source_scan(vs->state.ir.nir, &fallback_source) &&
+        fallback_source.valid) {
+        sources[0] = (struct r300_r2vb_telemetry_input_source){
+            &fallback_source, "position"};
+        source_count = 1;
+    }
+    if (!source_count)
         return;
 
     const char *hash = r300_r2vb_telemetry_vs_content_hex(r300);
     bool cell_cv = plan ? plan->key.allow_computed_varying
                         : allow_computed_varying;
     enum r300_r2vb_position_space cell_space = plan ? plan->key.space : space;
-    for (unsigned input = 0; input < input_count; input++) {
+    for (unsigned input = 0; input < source_count; input++) {
+        const struct r300_r2vb_position_source *source = sources[input].source;
+        unsigned input_rank = source->location_rank;
         const struct pipe_vertex_element *pe =
-            r300->velems && input < r300->velems->count
-                ? &r300->velems->velem[input]
+            r300->velems && input_rank < r300->velems->count
+                ? &r300->velems->velem[input_rank]
                 : NULL;
         const struct pipe_vertex_buffer *vb =
             pe && pe->vertex_buffer_index < r300->nr_vertex_buffers
@@ -6223,13 +6297,13 @@ r300_r2vb_telemetry_record_inputs(
                            (uint64_t)draw->start * pe->src_stride
                       : 0;
         fprintf(stderr,
-                "r2vb_producer_input hash=%s input=%u cv=%d space=%s"
+                "r2vb_producer_input hash=%s source=%s input_rank=%u cv=%d space=%s"
                 " format=%s format_dwords=%u stride_bytes=%u"
                 " buffer_bound=%d buffer_index=%u buffer_offset=%u"
                 " src_offset=%u draw_start=%u draw_count=%u"
                 " model_offset=%" PRIu64 " resource_width=%u"
                 " bo_materialized=%d\n",
-                hash, input, cell_cv,
+                hash, sources[input].role, input_rank, cell_cv,
                 cell_space == R300_R2VB_POSITION_WINDOW ? "window" : "clip",
                 pe ? util_format_short_name(pe->src_format) : "-",
                 pe ? r300_r2vb_telemetry_format_dwords(pe->src_format) : 0,

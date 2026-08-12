@@ -241,6 +241,25 @@ plan_and_note(const char *label, nir_shader *vs,
    }
 }
 
+static void
+case_sparse_telemetry_input_ranks(void)
+{
+   struct r300_r2vb_producer_plan plan = {0};
+   plan.position_source.valid = true;
+   plan.position_source.location_rank = 1;
+   plan.varying_source.valid = true;
+   plan.varying_source.location_rank = 2;
+   uint8_t ranks[2] = {0, 0};
+   unsigned count = r300_r2vb_telemetry_source_ranks_for_test(
+      &plan, true, ranks, 2);
+   CHECK(count == 2 && ranks[0] == 1 && ranks[1] == 2,
+         "telemetry follows measured sparse input ranks");
+   count = r300_r2vb_telemetry_source_ranks_for_test(
+      &plan, false, ranks, 2);
+   CHECK(count == 1 && ranks[0] == 1,
+         "position-only telemetry omits varying rank");
+}
+
 int
 main(void)
 {
@@ -303,6 +322,20 @@ main(void)
             count_dir_files(retain_dir) == 1,
          "recurring shape deduplicates on the content hash");
 
+   bind_vs(over);
+   struct r300_r2vb_producer_plan dedup_plan;
+   bool dedup_ran = r300_r2vb_plan_producer(
+      &g_context, over, false, R300_R2VB_POSITION_CLIP, &dedup_plan);
+   CHECK(dedup_ran, "dedup plan remains available");
+   if (dedup_ran) {
+      unsigned before = c->by_action[R300_R2VB_PLAN_SPLIT];
+      r300_r2vb_telemetry_cell_remove(&g_vs);
+      r300_r2vb_telemetry_note_cell(&g_context, &dedup_plan);
+      CHECK(c->by_action[R300_R2VB_PLAN_SPLIT] == before + 1,
+            "destroyed shader identity can publish a new telemetry cell");
+      r300_r2vb_plan_release(&dedup_plan);
+   }
+
    /* The filename carries the full BLAKE3 hex digest:
     * "r2vb-vs-" + 64 hex + ".nir". */
    char retained_path[512];
@@ -349,6 +382,8 @@ main(void)
          "structural reject retains nothing");
    CHECK(c->retain_failures == base.retain_failures,
          "no retention failures");
+
+   case_sparse_telemetry_input_ranks();
 
    /* Retention-scope parser: unset, empty, budget, and every unrecognized
     * value keep the established budget-only policy; single, structural,

@@ -12,6 +12,8 @@
 
 struct r300_context;
 struct r300_resource;
+struct r300_r2vb_producer_plan;
+struct r300_vertex_shader;
 struct pipe_fence_handle;
 struct pipe_draw_info;
 struct pipe_draw_start_count_bias;
@@ -139,6 +141,17 @@ void r300_r2vb_auto_single_note_outcome(
     const struct pipe_draw_info *info,
     const struct pipe_draw_start_count_bias *draw,
     bool route_executed);
+
+/* Remove telemetry cells owned by a vertex shader before its storage is
+ * released.  The ledger deduplicates by shader identity and remains global
+ * across contexts, so teardown must retire the pointer identity explicitly. */
+void r300_r2vb_telemetry_cell_remove(const struct r300_vertex_shader *vs);
+
+/* Test oracle for the measured application-input ranks used by telemetry.
+ * The output order is position source followed by computed-varying source. */
+unsigned r300_r2vb_telemetry_source_ranks_for_test(
+    const struct r300_r2vb_producer_plan *plan, bool include_varying,
+    uint8_t *out_ranks, unsigned max_ranks);
 
 /* The passthrough direct-VB re-ingest (defined in r300_render.c): re-ingest the
  * bound velems/vertex_buffers at TCL_BYPASS with the application FS and the HW
