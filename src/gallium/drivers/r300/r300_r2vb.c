@@ -789,12 +789,17 @@ nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                 continue;
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
             if (intr->intrinsic == nir_intrinsic_store_output) {
-                nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
-                if (semantics.location != target)
+                gl_varying_slot store_location;
+                if (!r300_r2vb_output_store_location(intr,
+                                                     &store_location) ||
+                    store_location != target)
                     continue;
+                nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
                 semantics.location = FRAG_RESULT_DATA0;
                 semantics.num_slots = 1;
                 nir_intrinsic_set_io_semantics(intr, semantics);
+                nir_builder rb = nir_builder_at(nir_before_instr(instr));
+                nir_src_rewrite(&intr->src[1], nir_imm_int(&rb, 0));
                 if (target != VARYING_SLOT_POS &&
                     intr->src[0].ssa->num_components < 4) {
                     /* A partial varying store pads to FP32x4 with zeros so
@@ -811,6 +816,8 @@ nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                     nir_src_rewrite(&intr->src[0], padded);
                     intr->num_components = 4;
                     nir_intrinsic_set_write_mask(intr, 0xf);
+                    if (nir_intrinsic_has_component(intr))
+                        nir_intrinsic_set_component(intr, 0);
                 } else if (target == VARYING_SLOT_POS &&
                            intr->src[0].ssa->num_components == 4) {
                     /* Position output follows the same divide and viewport
