@@ -6,6 +6,11 @@
  * lands on the CPU route with a naming reason.
  */
 
+/* The route and reason assertions are the calibration verdicts, so they stay
+ * live in release builds.
+ */
+#undef NDEBUG
+
 #include "r300_delivery_route.h"
 #include "r300_vertex_format.h"
 
