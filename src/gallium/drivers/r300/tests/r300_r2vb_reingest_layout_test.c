@@ -14,7 +14,9 @@
  * element -- under-feeds the advertised tuple, and the GA stalls waiting for
  * vertex dwords that never arrive.  This unit pins the output-driven
  * enumeration: two outputs sourced from one input produce two streams carrying
- * the same src_velem; distinct sources keep distinct src_velem ranks; the
+ * the same src_velem; component-packed inputs share their driver_location and
+ * therefore their physical src_velem; distinct sources keep distinct
+ * src_velem values; the
  * computed varying maps by slot; streams sort into r300 PSC/VAP output-vector
  * order regardless of store order; every delivered output is one full FP32x4
  * vector; and a varying that is neither the computed slot nor a direct input
@@ -73,14 +75,17 @@ vs_shell(struct vs_io *io, bool second_attr, const char *name)
    io->in_pos = nir_variable_create(b.shader, nir_var_shader_in,
                                     glsl_vec4_type(), "inPos");
    io->in_pos->data.location = VERT_ATTRIB_POS;
+   io->in_pos->data.driver_location = 0;
    io->in_attr0 = nir_variable_create(b.shader, nir_var_shader_in,
                                       glsl_vec4_type(), "inAttr0");
    io->in_attr0->data.location = VERT_ATTRIB_GENERIC0;
+   io->in_attr0->data.driver_location = 1;
    io->in_attr1 = NULL;
    if (second_attr) {
       io->in_attr1 = nir_variable_create(b.shader, nir_var_shader_in,
                                          glsl_vec4_type(), "inAttr1");
       io->in_attr1->data.location = VERT_ATTRIB_GENERIC1;
+      io->in_attr1->data.driver_location = 2;
    }
    io->out_pos = nir_variable_create(b.shader, nir_var_shader_out,
                                      glsl_vec4_type(), "outPos");
@@ -126,6 +131,36 @@ test_duplicate_source_outputs(void)
        * OUTPUT_VTX_FMT tuple (position + two 4-component texcoords)
        * requires. */
       CHECK(n * 4 == 12, "dup-source FP32x4 fetch dword sum is 12");
+   }
+   ralloc_free(b.shader);
+}
+
+/* Component-packed inputs occupy one application vertex element even though
+ * their location fractions distinguish the semantic lanes.  The layout must
+ * carry that shared physical element to every passthrough output. */
+static void
+test_component_packed_source_outputs(void)
+{
+   struct vs_io io;
+   nir_builder b = vs_shell(&io, true, "component_packed_source");
+   io.in_attr1->data.location = VERT_ATTRIB_GENERIC0;
+   io.in_attr0->data.location_frac = 0;
+   io.in_attr1->data.location_frac = 1;
+   io.in_attr1->data.driver_location = io.in_attr0->data.driver_location;
+
+   nir_store_var(&b, io.out_pos, nir_load_var(&b, io.in_pos), 0xf);
+   nir_store_var(&b, io.out_var0, nir_load_var(&b, io.in_attr0), 0xf);
+   nir_store_var(&b, io.out_var1, nir_load_var(&b, io.in_attr1), 0xf);
+
+   struct r300_r2vb_reingest_stream s[8];
+   int n = r300_r2vb_reingest_stream_layout(b.shader, -1, s, 8);
+   CHECK(n == 3, "component-packed stream count");
+   if (n == 3) {
+      CHECK(s[1].kind == R2VB_STREAM_PASSTHROUGH &&
+               s[2].kind == R2VB_STREAM_PASSTHROUGH,
+            "component-packed streams are passthroughs");
+      CHECK(s[1].src_velem == 1 && s[2].src_velem == 1,
+            "component-packed streams share their physical app velem");
    }
    ralloc_free(b.shader);
 }
@@ -318,6 +353,7 @@ main(void)
    glsl_type_singleton_init_or_ref();
 
    test_duplicate_source_outputs();
+   test_component_packed_source_outputs();
    test_distinct_source_outputs();
    test_computed_varying_mapping();
    test_store_order_independence();
