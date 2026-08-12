@@ -908,7 +908,7 @@ if with_tests
       files('tests/r300_r2vb_capture_gate_test.c'),
       c_args : r300_test_c_args,
       include_directories : [inc_src, inc_include, include_directories('.')],
-      dependencies : [dep_thread],
+      dependencies : [idep_mesautilc11],
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r300'],
