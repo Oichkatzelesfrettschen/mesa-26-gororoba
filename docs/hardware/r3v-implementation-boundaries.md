@@ -1340,7 +1340,7 @@ a narrow source never implies narrow final-delivery support.
 | Repository | Authority |
 |---|---|
 | `mesa-26-gororoba` | Gallium-backed and native R3V userspace, compilers, state packs, R2VB, WSI, and tests |
-| `steinmarder-r300` | RS480 frontier, probes, falsifiers, findings, manifests, and target result bundles |
+| `steinmarder-r300` (separate repository; `src/re/r300/` and root `results/`) | RS480 frontier, probes, falsifiers, findings, manifests, and target result bundles |
 | `vostro1000-re` | K8 and platform behavior plus CPU-executor qualification |
 | `linux-radeon-gororoba` | Radeon parser, GEM, GART, faults, completion, recovery, and containment |
 | `radeon-custom` | source pin, package construction, deployment transition, rollback, and installed runtime identity |
