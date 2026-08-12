@@ -232,6 +232,13 @@ r300_numeric_domain_info(enum r300_numeric_domain domain)
    return &r300_numeric_domain_table[(unsigned)domain];
 }
 
+bool
+r300_vop_status_is_carrier_pending(enum r300_vop_status status)
+{
+   return status == R300_VOP_CARRIER_PENDING ||
+          status == R300_VOP_HW_CONFIRMED_CARRIER_PENDING;
+}
+
 /* Virtual op catalog for the RS482 compute-as-raster substrate.
  *
  * Each row records one named virtual op: domain, status, theorem, and Mesa

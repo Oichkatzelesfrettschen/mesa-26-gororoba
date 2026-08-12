@@ -61,7 +61,7 @@ enum r300_vop_status {
    /* silicon measurement matches theorem; production carrier absent */
    R300_VOP_HW_CONFIRMED_CARRIER_PENDING,
    R300_VOP_BOUNDARY,         /* confirmed with documented precision limit */
-   R300_VOP_CARRIER_PENDING,  /* arithmetic known; Mesa carrier contract absent */
+   R300_VOP_CARRIER_PENDING,  /* arithmetic known; production carrier pending */
    R300_VOP_REJECTED,         /* falsified by silicon measurement */
 };
 
@@ -205,6 +205,10 @@ struct r300_numeric_domain_info {
  * return value. */
 const struct r300_numeric_domain_info *
 r300_numeric_domain_info(enum r300_numeric_domain domain);
+
+/* Return true when production admission, carrier, and dispatch work remains
+ * pending. */
+bool r300_vop_status_is_carrier_pending(enum r300_vop_status status);
 
 /* Virtual operation descriptor: one row per named virtual op in the
  * RS482 compute-as-raster substrate catalog.  Each op lives in a specific
