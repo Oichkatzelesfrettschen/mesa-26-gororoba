@@ -121,6 +121,15 @@ test_validator_rejects_known_bad(void)
    const uint32_t out_of_window[] = {PKT0(ZB_DEPTHOFFSET, 1), 0x0};
    assert(!r300_fragment_binary_stream_valid(out_of_window, 2));
 
+   /* Packet0 bit 14 belongs to the register field.  It cannot be discarded
+    * as part of the one-register flag because the resulting address is
+    * outside the admitted register domain.
+    */
+   const uint32_t register_bit_fourteen[] = {
+      PKT0(US_CONFIG, 1) | (1u << 14), 0x0,
+   };
+   assert(!r300_fragment_binary_stream_valid(register_bit_fourteen, 2));
+
    /* The vector data port requires the one-register packet bit. */
    const uint32_t vector_without_one_reg[] = {
       PKT0(GA_US_VECTOR_DATA, 2), 1, 2,
@@ -128,6 +137,16 @@ test_validator_rejects_known_bad(void)
    assert(!r300_fragment_binary_stream_valid(
       vector_without_one_reg,
       sizeof(vector_without_one_reg) / sizeof(uint32_t)));
+
+   /* Vector data is stateful: an owned stream selects its starting index
+    * before the autoincrementing data port consumes payload dwords.
+    */
+   const uint32_t vector_without_index[] = {
+      PKT0_ONE_REG(GA_US_VECTOR_DATA, 2), 1, 2,
+   };
+   assert(!r300_fragment_binary_stream_valid(
+      vector_without_index,
+      sizeof(vector_without_index) / sizeof(uint32_t)));
 
    /* The one-register packet bit is specific to stream ports. */
    const uint32_t one_reg_on_register_sequence[] = {
