@@ -53,9 +53,10 @@ void *memory_pool_malloc(struct memory_pool *pool, unsigned int bytes);
          if (newreserve < _num)                                            \
             newreserve = 4 * _num; /* arbitrary heuristic */               \
          newarray = memory_pool_malloc((pool), newreserve * sizeof(type)); \
-         /* C17 7.1.4 requires valid pointer arguments for library calls;   \
-          * the size check gives memcpy an initialized destination and      \
-          * source whenever it copies bytes. */                             \
+         /* memcpy requires valid pointer arguments for its copy operation;  \
+          * C17 7.1.4 supplies the general library argument constraint.  The \
+          * size check gives memcpy an initialized destination and source      \
+          * whenever it copies bytes. */                                     \
          if ((size))                                                       \
             memcpy(newarray, (array), (size) * sizeof(type));              \
          (array) = newarray;                                               \

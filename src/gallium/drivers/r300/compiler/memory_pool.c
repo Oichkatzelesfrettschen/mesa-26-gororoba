@@ -63,8 +63,8 @@ memory_pool_malloc(struct memory_pool *pool, unsigned int bytes)
    if (bytes < POOL_LARGE_ALLOC) {
       void *ptr;
 
-      /* C17 6.5.6p8 defines pointer addition within an array object or its
-       * one-past position.  Test the remaining span after a pool block exists
+      /* C17 6.5.6p9 requires pointer subtraction operands to refer to the
+       * same array object.  Test the remaining span after a pool block exists
        * so the subtraction names that array object. */
       if (!pool->head || pool->end - pool->head < (ptrdiff_t)bytes)
          refill_pool(pool);

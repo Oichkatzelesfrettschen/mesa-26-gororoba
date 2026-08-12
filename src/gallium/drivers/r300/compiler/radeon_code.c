@@ -50,9 +50,10 @@ rc_constants_add(struct rc_constant_list *c, struct rc_constant *constant)
          c->_Reserved = 16;
 
       newlist = malloc(sizeof(struct rc_constant) * c->_Reserved);
-      /* C17 7.1.4 requires valid pointer arguments for library calls; the
-       * count check gives memcpy an initialized destination and source when
-       * it copies constants. */
+      /* memcpy requires valid pointer arguments for its copy operation; C17
+       * 7.1.4 supplies the general library argument constraint.  The count
+       * check gives memcpy an initialized destination and source whenever it
+       * copies constants. */
       if (c->Count)
          memcpy(newlist, c->Constants, sizeof(struct rc_constant) * c->Count);
 
