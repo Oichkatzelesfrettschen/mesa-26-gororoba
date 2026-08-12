@@ -851,16 +851,18 @@ static uint32_t r300_translate_colormask_swizzle(enum pipe_format format)
     case PIPE_FORMAT_A32_FLOAT:
         return COLORMASK_AAAA;
 
-    case PIPE_FORMAT_I8_UNORM:
-    case PIPE_FORMAT_I8_SNORM:
     case PIPE_FORMAT_L8_UNORM:
     case PIPE_FORMAT_L8_SNORM:
     case PIPE_FORMAT_R8_UNORM:
     case PIPE_FORMAT_R8_SNORM:
     case PIPE_FORMAT_R32_FLOAT:
     case PIPE_FORMAT_L32_FLOAT:
-    case PIPE_FORMAT_I32_FLOAT:
         return COLORMASK_RRRR;
+
+    case PIPE_FORMAT_I8_UNORM:
+    case PIPE_FORMAT_I8_SNORM:
+    case PIPE_FORMAT_I32_FLOAT:
+        return COLORMASK_IIII;
 
     case PIPE_FORMAT_L8A8_SNORM:
     case PIPE_FORMAT_L8A8_UNORM:
