@@ -32,7 +32,6 @@
  * oracle's canary, and the whole allocation is sentinel-filled before
  * submission so any device write is detectable.
  */
-#define R3V_TRIANGLE_COLOR_BYTES (64 * 65 * 4)
 #define R3V_TRIANGLE_VERTEX_BYTES \
    (R300_TRIANGLE_VERTEX_DWORDS * sizeof(float))
 
@@ -142,12 +141,12 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
 
    if (vertex_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
-       color_memory->bo.size < R3V_TRIANGLE_COLOR_BYTES) {
+       color_memory->bo.size < R300_TRIANGLE_COLOR_BYTES) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: triangle cell needs %zu vertex bytes "
                        "and %u color bytes",
                        (size_t)R3V_TRIANGLE_VERTEX_BYTES,
-                       R3V_TRIANGLE_COLOR_BYTES);
+                       R300_TRIANGLE_COLOR_BYTES);
    }
 
    VkResult role_result = validate_triangle_memory_roles(
@@ -539,12 +538,12 @@ r3v_native_record_tcl_bypass_triangle_gathered(
    const struct r3v_native_vertex_stream_desc *stream)
 {
    if (vertex_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
-       color_memory->bo.size < R3V_TRIANGLE_COLOR_BYTES) {
+       color_memory->bo.size < R300_TRIANGLE_COLOR_BYTES) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: triangle cell needs %zu vertex bytes "
                        "and %u color bytes",
                        (size_t)R3V_TRIANGLE_VERTEX_BYTES,
-                       R3V_TRIANGLE_COLOR_BYTES);
+                       R300_TRIANGLE_COLOR_BYTES);
    }
 
    if (stream == NULL || stream->records == NULL)
@@ -621,10 +620,10 @@ r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
 
-   if (color_memory->bo.size < R3V_TRIANGLE_COLOR_BYTES) {
+   if (color_memory->bo.size < R300_TRIANGLE_COLOR_BYTES) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: direct-write cell needs %u color bytes",
-                       R3V_TRIANGLE_COLOR_BYTES);
+                       R300_TRIANGLE_COLOR_BYTES);
    }
 
    /* Sentinel-fill the whole color allocation and publish it, so the

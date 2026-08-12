@@ -344,7 +344,7 @@ main(int argc, char **argv)
    result = vkAllocateMemory(device, &alloc_info, NULL, &vertex_memory);
    CHECK(result == VK_SUCCESS, "vertex vkAllocateMemory: %d", result);
 
-   alloc_info.allocationSize = 64 * 65 * 4;
+   alloc_info.allocationSize = R300_TRIANGLE_COLOR_BYTES;
    VkDeviceMemory color_memory = VK_NULL_HANDLE;
    VkDeviceMemory aliased_memory = VK_NULL_HANDLE;
    result = vkAllocateMemory(device, &alloc_info, NULL, &color_memory);
@@ -440,7 +440,7 @@ main(int argc, char **argv)
     * role, so the command buffer remains empty and no duplicate-handle
     * reference list reaches the queue.
     */
-   alloc_info.allocationSize = 64 * 65 * 4;
+   alloc_info.allocationSize = R300_TRIANGLE_COLOR_BYTES;
    result = vkAllocateMemory(device, &alloc_info, NULL, &aliased_memory);
    CHECK(result == VK_SUCCESS, "aliased vkAllocateMemory: %d", result);
    if (aliased_memory != VK_NULL_HANDLE) {
@@ -584,7 +584,8 @@ main(int argc, char **argv)
        * evidence, exterior and canary untouched.
        */
       struct r300_triangle_oracle_verdict oracle;
-      r300_tcl_bypass_triangle_oracle(color_map, 64 * 65 * 4, &oracle);
+      r300_tcl_bypass_triangle_oracle(color_map, R300_TRIANGLE_COLOR_BYTES,
+                                      &oracle);
       CHECK(!oracle.executed && !oracle.interior_pass &&
                oracle.exterior_pass && oracle.canary_pass,
             "shim run leaves the sentinel intact (executed %d interior %d "
