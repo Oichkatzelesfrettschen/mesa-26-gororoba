@@ -63,8 +63,31 @@ plan_merge_typed_source_class(
     }
 }
 
+bool
+r300_r2vb_output_store_location(const nir_intrinsic_instr *intr,
+                                gl_varying_slot *location)
+{
+    if (!intr || !location)
+        return false;
+
+    switch (intr->intrinsic) {
+    case nir_intrinsic_store_deref: {
+        nir_variable *out = nir_intrinsic_get_var(intr, 0);
+        if (!out || !(out->data.mode & nir_var_shader_out))
+            return false;
+        *location = (gl_varying_slot)out->data.location;
+        return true;
+    }
+    case nir_intrinsic_store_output:
+        *location = (gl_varying_slot)nir_intrinsic_io_semantics(intr).location;
+        return true;
+    default:
+        return false;
+    }
+}
+
 void
-r300_r2vb_prune_position_only(nir_shader *nir)
+r300_r2vb_prune_output_stores(nir_shader *nir, gl_varying_slot target)
 {
     if (!nir)
         return;
@@ -79,25 +102,21 @@ r300_r2vb_prune_position_only(nir_shader *nir)
                 continue;
 
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            bool remove = false;
-            switch (intr->intrinsic) {
-            case nir_intrinsic_store_deref: {
-                nir_variable *out = nir_intrinsic_get_var(intr, 0);
-                remove = out && (out->data.mode & nir_var_shader_out) &&
-                         out->data.location != VARYING_SLOT_POS;
-                break;
-            }
-            case nir_intrinsic_store_output:
-                remove = nir_intrinsic_io_semantics(intr).location !=
-                         VARYING_SLOT_POS;
-                break;
-            default:
-                break;
-            }
-            if (remove)
+            gl_varying_slot location;
+            if (r300_r2vb_output_store_location(intr, &location) &&
+                location != target)
                 nir_instr_remove(instr);
         }
     }
+}
+
+void
+r300_r2vb_prune_position_only(nir_shader *nir)
+{
+    if (!nir)
+        return;
+
+    r300_r2vb_prune_output_stores(nir, VARYING_SLOT_POS);
 
     bool progress;
     do {

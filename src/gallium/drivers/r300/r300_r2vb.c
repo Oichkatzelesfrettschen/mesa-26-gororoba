@@ -764,6 +764,10 @@ nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
      * Computed-varying pass: target = that varying's slot, and the now-unstored
      * position transform drops in DCE below, leaving just the varying arithmetic. */
     nir_function_impl *impl = nir_shader_get_entrypoint(fs);
+    /* The planner removes both store_deref and lowered store_output forms;
+     * share that target reduction so the compiled producer has the same
+     * survivor set as the admission candidate. */
+    r300_r2vb_prune_output_stores(fs, target);
 
     /* The cloned VS carries multiply-add as ffma/ffma_weak (the gallivm VS
      * compiler options keep them fused-weak), but nir_to_rc translates only
@@ -784,16 +788,48 @@ nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
             if (instr->type != nir_instr_type_intrinsic)
                 continue;
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_output) {
+                nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+                if (semantics.location != target)
+                    continue;
+                semantics.location = FRAG_RESULT_DATA0;
+                semantics.num_slots = 1;
+                nir_intrinsic_set_io_semantics(intr, semantics);
+                if (target != VARYING_SLOT_POS &&
+                    intr->src[0].ssa->num_components < 4) {
+                    /* A partial varying store pads to FP32x4 with zeros so
+                     * the producer writes the complete delivery record. */
+                    nir_builder pb = nir_builder_at(nir_before_instr(instr));
+                    nir_def *src = intr->src[0].ssa;
+                    nir_def *zero = nir_imm_float(&pb, 0.0f);
+                    nir_def *comp[4];
+                    for (unsigned k = 0; k < 4; k++)
+                        comp[k] = k < src->num_components
+                                      ? nir_channel(&pb, src, k)
+                                      : zero;
+                    nir_def *padded = nir_vec(&pb, comp, 4);
+                    nir_src_rewrite(&intr->src[0], padded);
+                    intr->num_components = 4;
+                    nir_intrinsic_set_write_mask(intr, 0xf);
+                } else if (target == VARYING_SLOT_POS &&
+                           intr->src[0].ssa->num_components == 4) {
+                    /* Position output follows the same divide and viewport
+                     * contract as the store_deref producer form. */
+                    nir_builder wb = nir_builder_at(nir_before_instr(instr));
+                    nir_def *win = r2vb_divide_position(
+                        &wb, intr->src[0].ssa, r300, space);
+                    if (win != intr->src[0].ssa)
+                        nir_src_rewrite(&intr->src[0], win);
+                }
+                continue;
+            }
             if (intr->intrinsic != nir_intrinsic_store_deref)
                 continue;
             nir_variable *out = nir_intrinsic_get_var(intr, 0);
             if (out && (out->data.mode & nir_var_shader_out) &&
-                out->data.location != target) {
-                nir_instr_remove(instr);
-            } else if (out && (out->data.mode & nir_var_shader_out) &&
-                       out->data.location == target &&
-                       target != VARYING_SLOT_POS &&
-                       intr->src[1].ssa->num_components < 4) {
+                out->data.location == target &&
+                target != VARYING_SLOT_POS &&
+                intr->src[1].ssa->num_components < 4) {
                 /* A partial varying store (a scalar lighting varying is the
                  * dominant shape) pads to FP32x4 with zeros so the producer
                  * writes the complete BO record the FLOAT_4 delivery fetch

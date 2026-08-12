@@ -299,6 +299,45 @@ build_varying_only_unsupported_intrinsic(void)
    return end_vs(&v, v.pos);
 }
 
+/* Lowered store_output form of the same scope split: cv=0 removes the
+ * varying-only system-value work, while cv=1 keeps it as a known-bad
+ * intrinsic.  The live restager must remove the lowered store before DCE so
+ * its producer matches the cv=0 admission candidate. */
+static nir_shader *
+build_lowered_store_output(bool unsupported)
+{
+   struct vs_build v = begin_vs(unsupported ? "plan_store_output_bad"
+                                            : "plan_store_output_good",
+                                true);
+   nir_def *value;
+   if (unsupported) {
+      nir_def *vertex_id = nir_u2f32(&v.b, nir_load_vertex_id(&v.b));
+      value = nir_replicate(&v.b, vertex_id, 4);
+   } else {
+      value = v.pos;
+   }
+   nir_store_output(&v.b, value, nir_imm_int(&v.b, 0),
+                    .io_semantics = {
+                       .location = VARYING_SLOT_VAR0,
+                       .num_slots = 1,
+                    });
+   return end_vs(&v, v.pos);
+}
+
+static bool
+shader_has_intrinsic(nir_shader *nir, nir_intrinsic_op op)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type == nir_instr_type_intrinsic &&
+             nir_instr_as_intrinsic(instr)->intrinsic == op)
+            return true;
+      }
+   }
+   return false;
+}
+
 /* A single dependent chain long enough that no balanced cut leaves both
  * halves (plus their pack/unpack overhead) under the 64-slot ceiling: the
  * ranked candidates fail alternately on the carry half and the position
@@ -953,6 +992,43 @@ case_structural_rejects(struct r300_context *r300)
 }
 
 static void
+case_lowered_store_output_scope(struct r300_context *r300)
+{
+   printf("lowered store_output scope matches planner and restager\n");
+   nir_shader *vs = build_lowered_store_output(true);
+   struct r300_r2vb_producer_plan plan;
+   CHECK(plan_row(r300, vs, R300_R2VB_POSITION_CLIP, &plan),
+         "lowered store_output cv=0 row runs");
+   CHECK(plan.action == R300_R2VB_PLAN_SINGLE &&
+            plan.status == R300_R2VB_PLAN_READY,
+         "cv=0 removes unsupported varying-only store_output work");
+   if (plan.status == R300_R2VB_PLAN_READY) {
+      nir_shader *fs = r300_r2vb_build_restaged_fs_nir(
+         r300, vs, VARYING_SLOT_POS, R300_R2VB_POSITION_CLIP);
+      CHECK(fs != NULL, "live restager builds the cv=0 candidate");
+      if (fs) {
+         CHECK(!shader_has_intrinsic(fs, nir_intrinsic_load_vertex_id),
+               "live restager DCE removes the unsupported store_output source");
+         CHECK(!shader_has_intrinsic(fs, nir_intrinsic_store_output),
+               "live restager removes the non-target store_output");
+         ralloc_free(fs);
+      }
+   }
+   r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
+
+   vs = build_lowered_store_output(true);
+   bool ran = r300_r2vb_plan_producer(r300, vs, true,
+                                      R300_R2VB_POSITION_CLIP, &plan);
+   CHECK(ran, "lowered store_output cv=1 row runs");
+   CHECK(plan.action == R300_R2VB_PLAN_REJECT &&
+            plan.primary_reason == R300_R2VB_PLAN_INTRINSIC,
+         "cv=1 retains the unsupported store_output source as a reject");
+   r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
+}
+
+static void
 case_wide_frontier(struct r300_context *r300)
 {
    printf("wide frontier rejects with the crossing width observed\n");
@@ -1301,6 +1377,7 @@ main(void)
    case_typed_split_rows(r300);
    case_typed_reject_rows(r300);
    case_structural_rejects(r300);
+   case_lowered_store_output_scope(r300);
    case_typed_float_before_cut(r300);
    case_unsupported_intrinsic(r300);
    case_multi_candidate_failures(r300);
