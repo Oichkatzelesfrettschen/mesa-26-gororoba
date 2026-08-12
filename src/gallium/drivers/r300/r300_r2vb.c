@@ -8300,7 +8300,7 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
      * the raster-stop discriminators 3072, 4032, and 4016. Hypothesis: the
      * one-row 4096-width path yields a 4016-record stop boundary; these
      * counts compare an absolute stop column against a width-relative stop
-     * and do not establish a silicon result.
+     * and remain diagnostic inputs pending direct silicon observation.
      * every other diagnostic mode keeps the proven three-vertex cell.
      * Production delivery accepts the full validated layout domain. */
     else if (action != R2VB_BO_DRAW_ACTION_DELIVER &&
