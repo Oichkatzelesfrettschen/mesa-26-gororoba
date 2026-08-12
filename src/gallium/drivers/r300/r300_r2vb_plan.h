@@ -469,8 +469,9 @@ bool r300_r2vb_bo_draw_delivery_mode_value(const char *value);
  * attribute fetched from its own buffer, so the producer draw carries no
  * count-scaled immediate payload.  The load-bearing invariant is the VAP
  * tuple: the summed fetch dwords equal the producer VAP_VTX_SIZE and the
- * declared PSC input tuple (the GA front-end stalls on a mismatch).  The
- * first contract is deliberately narrow: one R32G32B32A32_FLOAT model
+ * declared PSC input tuple.  A GA front-end stall is the failure hypothesis
+ * for a mismatch; the tuple contract itself remains the admission invariant.
+ * The first contract is deliberately narrow: one R32G32B32A32_FLOAT model
  * input with a dword-multiple stride; widening runs one format family at
  * a time against silicon. */
 struct r300_r2vb_producer_stream {
