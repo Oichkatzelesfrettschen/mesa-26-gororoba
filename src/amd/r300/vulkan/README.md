@@ -99,10 +99,11 @@ module srcversion, and an evidence directory that exists and carries no
 attempt token. Reaching the ioctl writes that token by exclusive
 creation, so the directory admits one attempt, and an armed submit
 carries one command buffer. Any closed factor fails closed with
-`VK_ERROR_DEVICE_LOST` and names itself. The closed gate still retains
-the semantic cell and the exact submit object under
-`R3V_NATIVE_MANIFEST_DIR`, each bound by digest in its manifest, and a
-retention failure refuses before the ioctl.
+`VK_ERROR_DEVICE_LOST` and names itself. The closed gate retains the semantic
+cell under `R3V_NATIVE_MANIFEST_DIR`; an open gate additionally retains the
+exact submit object after completion relocation is folded into the CS. Each
+retained artifact is bound by digest in its manifest, and a retention failure
+refuses before the ioctl.
 `r3v_native_arming_runner` reports every factor and stops at the
 authorization boundary without creating a device; the attended run it
 precedes follows
