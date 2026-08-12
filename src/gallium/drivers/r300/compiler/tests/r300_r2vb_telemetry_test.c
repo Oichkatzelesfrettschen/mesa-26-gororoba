@@ -352,8 +352,11 @@ case_multi_position_telemetry_sources(void)
 int
 main(void)
 {
+   /* The retention calibration owns the print-gate state. */
+   setenv("R300_R2VB_TELEMETRY", "0", 1);
    glsl_type_singleton_init_or_ref();
    fake_stack_init();
+   mode_t saved_umask = umask(022);
 
    char retain_dir[] = "r2vb-telemetry-retain-XXXXXX";
    CHECK(mkdtemp(retain_dir) != NULL, "retain directory created");
@@ -462,6 +465,22 @@ main(void)
    CHECK(have_file && file_mode(retained_path) == 0644,
          "retained blob is readable by shared corpus consumers");
 
+   /* Matching blobs receive the effective mode for the current publisher. */
+   CHECK(have_file && chmod(retained_path, 0600) == 0,
+         "dedup setup restricts the retained blob");
+   bind_vs(over);
+   struct r300_r2vb_producer_plan mode_plan;
+   bool mode_plan_ran = r300_r2vb_plan_producer(
+      &g_context, over, false, R300_R2VB_POSITION_CLIP, &mode_plan);
+   CHECK(mode_plan_ran, "dedup mode plan remains available");
+   if (mode_plan_ran) {
+      r300_r2vb_telemetry_note(&g_context, &mode_plan);
+      CHECK(c->retain_failures == base.retain_failures &&
+               file_mode(retained_path) == 0644,
+            "matching blob receives the effective sharing mode");
+      r300_r2vb_plan_release(&mode_plan);
+   }
+
    /* Known-bad file at the final name: dedup verifies bytes, so a damaged
     * entry is republished with the correct content. */
    long good_size = have_file ? file_size(retained_path) : -1;
@@ -480,13 +499,16 @@ main(void)
       &g_context, over, false, R300_R2VB_POSITION_CLIP, &republish_plan);
    CHECK(republish_ran, "republish plan remains available");
    if (republish_ran) {
+      mode_t old_umask = umask(077);
       r300_r2vb_telemetry_note(&g_context, &republish_plan);
+      umask(old_umask);
       r300_r2vb_plan_release(&republish_plan);
    }
    CHECK(c->retained == base.retained + 2 &&
             count_dir_files(retain_dir) == 1 &&
-            have_file && file_size(retained_path) == good_size,
-         "mismatching existing file republishes atomically");
+            have_file && file_size(retained_path) == good_size &&
+            file_mode(retained_path) == 0600,
+         "mismatching existing file republishes atomically with umask");
 
    /* Structural reject: control flow carries no budget signal. */
    plan_and_note("control-flow", cflow, R300_R2VB_PLAN_REJECT);
@@ -641,6 +663,7 @@ main(void)
    ralloc_free(cflow);
    ralloc_free(computed);
    rc_destroy_regalloc_state(&g_context.fs_regalloc_state);
+   umask(saved_umask);
    glsl_type_singleton_decref();
    printf(g_failures ? "FAILED (%u)\n" : "PASSED\n", g_failures);
    return g_failures ? 1 : 0;
