@@ -4469,7 +4469,10 @@ bool r300_r2vb_producer_logical_binding_init(
     /* The model-source preflight maps the source rank to velem[rank] and
      * requires that rank to equal the measured driver location.  Preserve
      * that identity in the binding so a varying source cannot be reported as
-     * the position element. */
+     * the position element. The authority is
+     * r300_r2vb_position_input_mapping_ok (rg --fixed-strings
+     * r300_r2vb_position_input_mapping_ok
+     * src/gallium/drivers/r300/). */
     if (!source->valid ||
         source->app_driver_location != source->location_rank) {
         r2vb_bo_draw_validate_decline("binding_source_rank");
@@ -8335,8 +8338,9 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
      * and 21516 (2048x11 with a 1012-slot poisonable final-row tail), and
      * the raster-stop discriminators 3072, 4032, and 4016. Hypothesis: the
      * one-row 4096-width path yields a 4016-record stop boundary; these
-     * counts compare an absolute stop column against a width-relative stop
-     * and remain diagnostic inputs pending direct silicon observation.
+     * counts compare an absolute stop column against a width-relative stop.
+     * The counts characterize that arithmetic boundary; a silicon result
+     * requires direct hardware observation.
      * every other diagnostic mode keeps the proven three-vertex cell.
      * Production delivery accepts the full validated layout domain. */
     else if (action != R2VB_BO_DRAW_ACTION_DELIVER &&

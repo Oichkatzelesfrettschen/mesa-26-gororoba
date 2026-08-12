@@ -58,11 +58,16 @@ static void r300_blitter_begin(struct r300_context* r300, enum r300_blitter_op o
     util_blitter_save_vertex_elements(r300->blitter, r300->velems);
 
     struct pipe_constant_buffer cb = {
-       /* r300 doesn't use the size for FS at all. The shader determines it.
-        * Set something for blitter.
-        */
-       .buffer_size = 4,
-       .user_buffer = ((struct r300_constant_buffer*)r300->fs_constants.state)->ptr,
+       .buffer = r300->fs_const0_app.valid ? r300->fs_const0_app.buffer : NULL,
+       .buffer_offset = r300->fs_const0_app.valid
+                           ? r300->fs_const0_app.buffer_offset
+                           : 0,
+       .buffer_size = r300->fs_const0_app.valid
+                         ? r300->fs_const0_app.buffer_size
+                         : 0,
+       .user_buffer = r300->fs_const0_app.valid
+                         ? r300->fs_const0_app.user_buffer
+                         : NULL,
     };
     util_blitter_save_fragment_constant_buffer_slot(r300->blitter, &cb);
 

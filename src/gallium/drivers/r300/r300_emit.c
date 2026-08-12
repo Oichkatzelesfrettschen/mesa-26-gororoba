@@ -294,7 +294,7 @@ void r300_emit_fs_constants(struct r300_context* r300, unsigned size, void *stat
         float c0[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
         if (count && buf->ptr) {
             for (unsigned chan = 0; chan < 4; chan++) {
-                int index = (int)chan;
+                int index = 0;
                 unsigned swz = chan;
                 if (buf->remap_table) {
                     index = buf->remap_table[0].index[chan];
