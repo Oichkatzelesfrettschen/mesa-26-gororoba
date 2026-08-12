@@ -78,6 +78,11 @@ test_each_factor_refuses(void)
    assert(r3v_native_arming_evaluate(&facts) ==
           R3V_NATIVE_ARMING_BUNDLE_MISMATCH);
 
+   facts = armed_facts();
+   facts.nonmaximum_extent = true;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT);
+
    /* RS485-marketed 0x5975 is a supported r3v identity but not the
     * authorized attended-run chip.
     */

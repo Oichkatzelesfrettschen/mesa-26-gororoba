@@ -21,6 +21,7 @@ enum r3v_native_arming_verdict {
    R3V_NATIVE_ARMING_HAZARD_GATE_CLOSED,
    R3V_NATIVE_ARMING_BUNDLE_UNDECLARED,
    R3V_NATIVE_ARMING_BUNDLE_MISMATCH,
+   R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT,
    R3V_NATIVE_ARMING_CHIP_MISMATCH,
    R3V_NATIVE_ARMING_KERNEL_UNDECLARED,
    R3V_NATIVE_ARMING_KERNEL_MISMATCH,
@@ -42,6 +43,8 @@ struct r3v_native_arming_facts {
     */
    const char *authorized_ib_blake3;
    const char *actual_ib_blake3;
+   /* A non-maximum public render extent has no attended-run identity. */
+   bool nonmaximum_extent;
    /* The enumerated chip, checked against the authorized RS480-family
     * identity rather than any supported identity.
     */

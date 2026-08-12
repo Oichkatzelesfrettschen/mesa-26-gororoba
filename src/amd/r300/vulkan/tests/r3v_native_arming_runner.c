@@ -19,13 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The cell extent the report names; the default is the maximum, the
- * silicon-witnessed reference cell and the one target the checked-in
- * attended submitter records.  --extent selects another member of the
- * host-model family as a no-submit digest and IB-generation facility:
- * it names the IB the recorder installs for that target, but no
- * checked-in submitter records a non-maximum target, so such a digest
- * arms nothing until a parameterized public-route runner exists.
+/* --extent selects bounded cell dimensions for extent-specific emission and
+ * the resulting IB digest.
  */
 static uint32_t cell_width = R300_TRIANGLE_TARGET_WIDTH;
 static uint32_t cell_height = R300_TRIANGLE_TARGET_HEIGHT;
@@ -114,9 +109,9 @@ main(int argc, char **argv)
       unsigned long parsed[2];
       for (int axis = 0; axis < 2; axis++) {
          const char *text = argv[argi + 1 + axis];
-         /* Decimal digits only: strtoul itself admits signs and
-          * leading whitespace, so the token is vetted before the
-          * numeric parse.
+         /* C23 and POSIX.1-2024 strtoul(3) accept leading white space
+          * and an optional sign, so the decimal token is vetted before
+          * the numeric parse.
           */
          bool digits_only = text[0] != '\0';
          for (const char *c = text; *c != '\0'; c++) {
@@ -149,6 +144,14 @@ main(int argc, char **argv)
 
    if (argc == argi + 2 && strcmp(argv[argi], "--emit-ib") == 0)
       return emit_reference_ib(argv[argi + 1]);
+
+   if (cell_width != R300_TRIANGLE_TARGET_WIDTH ||
+       cell_height != R300_TRIANGLE_TARGET_HEIGHT) {
+      fprintf(stderr,
+              "non-maximum extent is available only with --emit-ib; "
+              "arming reports use the 64x64 reference cell\n");
+      return 2;
+   }
 
    /* The runner takes the evidence directory an attended run would use;
     * its freshness is itself an arming factor.

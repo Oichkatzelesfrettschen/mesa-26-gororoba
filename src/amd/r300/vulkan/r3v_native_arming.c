@@ -38,6 +38,8 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    if (!declared(facts->actual_ib_blake3) ||
        strcmp(facts->authorized_ib_blake3, facts->actual_ib_blake3) != 0)
       return R3V_NATIVE_ARMING_BUNDLE_MISMATCH;
+   if (facts->nonmaximum_extent)
+      return R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT;
 
    if (facts->pci_vendor_id != R3V_NATIVE_ARMING_PCI_VENDOR ||
        facts->pci_device_id != R3V_NATIVE_ARMING_PCI_DEVICE)
@@ -78,6 +80,8 @@ r3v_native_arming_verdict_name(enum r3v_native_arming_verdict verdict)
              "(R3V_NATIVE_AUTHORIZED_IB_BLAKE3)";
    case R3V_NATIVE_ARMING_BUNDLE_MISMATCH:
       return "submitted IB differs from the authorized bundle digest";
+   case R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT:
+      return "non-maximum extent has no attended-run authorization";
    case R3V_NATIVE_ARMING_CHIP_MISMATCH:
       return "enumerated chip is not the authorized RS482 identity";
    case R3V_NATIVE_ARMING_KERNEL_UNDECLARED:

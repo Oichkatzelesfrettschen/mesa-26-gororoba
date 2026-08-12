@@ -28,6 +28,26 @@ def main():
         environment.pop(declaration, None)
 
     with tempfile.TemporaryDirectory() as evidence_dir:
+        nonmax_ib = os.path.join(evidence_dir, "nonmax-ib.bin")
+        nonmax_emit = subprocess.run(
+            [runner, "--extent", "48", "20", "--emit-ib", nonmax_ib],
+            env=environment, capture_output=True, text=True)
+        if nonmax_emit.returncode != 0 or not os.path.isfile(nonmax_ib):
+            print("FAIL: non-maximum --emit-ib calibration failed",
+                  file=sys.stderr)
+            print(nonmax_emit.stdout, nonmax_emit.stderr, file=sys.stderr)
+            return 1
+
+        nonmax_arm = subprocess.run(
+            [runner, "--extent", "48", "20", evidence_dir],
+            env=environment, capture_output=True, text=True)
+        if nonmax_arm.returncode != 2 or \
+                "non-maximum extent" not in nonmax_arm.stderr:
+            print("FAIL: non-maximum arming report was not refused",
+                  file=sys.stderr)
+            print(nonmax_arm.stdout, nonmax_arm.stderr, file=sys.stderr)
+            return 1
+
         undeclared = subprocess.run([runner, evidence_dir], env=environment,
                                     capture_output=True, text=True)
         if undeclared.returncode == 0:
