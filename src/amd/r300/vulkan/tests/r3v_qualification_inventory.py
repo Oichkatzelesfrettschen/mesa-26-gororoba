@@ -31,7 +31,13 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
+
+REPLAY_PROVENANCE_SCHEMA = "r3v-cs-track-replay-provenance/v1"
+REPLAY_PROVENANCE_BUILDER = "build-infra/r3v/build_kernel_replay.py"
+REPLAY_ARTIFACT = "replay_r300_cs_track"
+FULL_SHA256 = set("0123456789abcdef")
 
 # The qualification-critical tests.  A name here is load-bearing evidence for
 # the qualification verdict: transport admission, arming, dispatch closure,
@@ -145,29 +151,135 @@ def tool_row(name: str) -> tuple[str, bool]:
     return (name, shutil.which(name) is not None)
 
 
-def replay_provenance_state() -> tuple[str, bool]:
+def validate_replay_provenance(tool: str, record: str) -> tuple[str, bool]:
     """The replay tool qualifies only through its provenance record: the
     record parses, its correspondence gate passed rather than being skipped,
-    and its ELF SHA-256 matches the tool on disk, which binds the running
-    replay to the pinned kernel tree build_kernel_replay.py proved."""
-    tool = os.environ.get("R3V_CS_TRACK_REPLAY_TOOL", "")
-    record = os.environ.get("R3V_CS_TRACK_REPLAY_PROVENANCE", "")
+    the artifact identifies the in-tree builder and isolated snapshot, and
+    its ELF SHA-256 matches the tool on disk."""
     if not record:
         return ("unset", False)
+    tool_path = Path(tool)
+    if not tool_path.is_file() or not os.access(tool_path, os.X_OK):
+        return ("tool-not-executable", False)
     try:
         with open(record) as f:
             provenance = json.load(f)
     except (OSError, json.JSONDecodeError):
         return ("unreadable", False)
+    if not isinstance(provenance, dict):
+        return ("malformed", False)
     if provenance.get("correspondence_gate") != "pass":
         return ("correspondence-gate-not-passed", False)
+    if provenance.get("schema") != REPLAY_PROVENANCE_SCHEMA:
+        return ("schema-mismatch", False)
+    if provenance.get("builder") != REPLAY_PROVENANCE_BUILDER:
+        return ("builder-mismatch", False)
+    if provenance.get("artifact") != REPLAY_ARTIFACT:
+        return ("artifact-mismatch", False)
+    if provenance.get("isolated_worktree") is not True:
+        return ("non-isolated-build", False)
+
+    kernel_commit = provenance.get("kernel_commit")
+    if (not isinstance(kernel_commit, str) or len(kernel_commit) != 40 or
+            any(char not in FULL_SHA256 for char in kernel_commit)):
+        return ("unpinned-kernel-commit", False)
+    if (provenance.get("kernel_tool_source_sha") != kernel_commit or
+            provenance.get("kernel_driver_logic_sha") != kernel_commit):
+        return ("kernel-authority-mismatch", False)
+    if (not isinstance(provenance.get("sources"), dict) or
+            not provenance["sources"]):
+        return ("source-provenance-missing", False)
+    if not isinstance(provenance.get("compile_argv"), list):
+        return ("compile-provenance-missing", False)
+    if not isinstance(provenance.get("compiler"), str):
+        return ("compiler-provenance-missing", False)
+
+    recorded_output = provenance.get("output")
+    if not isinstance(recorded_output, str):
+        return ("output-provenance-missing", False)
+    if Path(recorded_output).resolve() != tool_path.resolve():
+        return ("output-path-mismatch", False)
+
+    expected_digest = provenance.get("output_sha256")
+    if (not isinstance(expected_digest, str) or len(expected_digest) != 64 or
+            any(char not in FULL_SHA256 for char in expected_digest)):
+        return ("output-digest-malformed", False)
     try:
-        digest = hashlib.sha256(Path(tool).read_bytes()).hexdigest()
+        digest = hashlib.sha256(tool_path.read_bytes()).hexdigest()
     except OSError:
         return ("tool-unreadable", False)
-    if digest != provenance.get("output_sha256"):
+    if digest != expected_digest:
         return ("digest-mismatch", False)
     return ("verified", True)
+
+
+def replay_provenance_state() -> tuple[str, bool]:
+    return validate_replay_provenance(
+        os.environ.get("R3V_CS_TRACK_REPLAY_TOOL", ""),
+        os.environ.get("R3V_CS_TRACK_REPLAY_PROVENANCE", ""),
+    )
+
+
+def replay_provenance_selftest() -> int:
+    """Exercise one valid record and independent pinned-artifact refusals."""
+    with tempfile.TemporaryDirectory(prefix="r3v-replay-provenance-") as tmp:
+        root = Path(tmp)
+        tool = root / REPLAY_ARTIFACT
+        tool.write_bytes(b"qualified replay artifact")
+        tool.chmod(0o755)
+        digest = hashlib.sha256(tool.read_bytes()).hexdigest()
+        kernel_commit = "a" * 40
+        record = {
+            "schema": REPLAY_PROVENANCE_SCHEMA,
+            "builder": REPLAY_PROVENANCE_BUILDER,
+            "artifact": REPLAY_ARTIFACT,
+            "kernel_commit": kernel_commit,
+            "kernel_tool_source_sha": kernel_commit,
+            "kernel_driver_logic_sha": kernel_commit,
+            "sources": {"scripts/replay_r300_cs_track.c": {
+                "sha256": "b" * 64,
+            }},
+            "compiler": "cc",
+            "compile_argv": ["cc", "-Werror"],
+            "output": str(tool),
+            "output_sha256": digest,
+            "correspondence_gate": "pass",
+            "isolated_worktree": True,
+        }
+        record_path = root / "provenance.json"
+
+        def check(expected: str, candidate: dict) -> bool:
+            record_path.write_text(json.dumps(candidate))
+            state, ok = validate_replay_provenance(str(tool),
+                                                    str(record_path))
+            if ok or state != expected:
+                print(f"replay provenance selftest expected {expected}, "
+                      f"got {state}", file=sys.stderr)
+                return False
+            return True
+
+        record_path.write_text(json.dumps(record))
+        state, ok = validate_replay_provenance(str(tool), str(record_path))
+        if state != "verified" or not ok:
+            print(f"replay provenance selftest valid record: {state}",
+                  file=sys.stderr)
+            return 1
+        mutations = [
+            ("correspondence-gate-not-passed", {"correspondence_gate":
+                                                "skipped"}),
+            ("non-isolated-build", {"isolated_worktree": False}),
+            ("builder-mismatch", {"builder": "operator-supplied"}),
+            ("unpinned-kernel-commit", {"kernel_commit": "deadbeef"}),
+            ("digest-mismatch", {"output_sha256": "0" * 64}),
+        ]
+        for expected, mutation in mutations:
+            candidate = dict(record)
+            candidate.update(mutation)
+            if not check(expected, candidate):
+                return 1
+    print(f"replay provenance selftest: {len(mutations)} refusal legs and "
+          "one verified leg OK")
+    return 0
 
 
 def env_tool_row(var: str) -> tuple[str, str, bool]:
@@ -230,6 +342,13 @@ class MissingB3sumProbes(GoodProbes):
         return name != "b3sum"
 
 
+class MissingKernelReplayProbes(GoodProbes):
+    def env_tool(self, var: str) -> tuple[str, bool]:
+        if var == "R3V_KERNEL_REPLAY_TOOL":
+            return ("unset", False)
+        return super().env_tool(var)
+
+
 def evaluate(registered: set[str], options: dict[str, object],
              qualification: bool,
              probes: HostProbes | None = None) -> int:
@@ -271,7 +390,8 @@ def evaluate(registered: set[str], options: dict[str, object],
     if glibc != "glibc":
         failures.append("non-glibc host; drm-shim preload unavailable")
 
-    for var in ("R3V_CS_TRACK_REPLAY_TOOL", "R3V_CS_TRACK_CONTROLS"):
+    for var in ("R3V_CS_TRACK_REPLAY_TOOL", "R3V_CS_TRACK_CONTROLS",
+                "R3V_KERNEL_REPLAY_TOOL"):
         state, ok = probes.env_tool(var)
         print(f"env {var}: {state}")
         if not ok:
@@ -357,11 +477,20 @@ def run_fixture() -> int:
 
 
 def run_selftest() -> int:
+    if replay_provenance_selftest() != 0:
+        return 1
     probes = GoodProbes()
     bad = evaluate(collect(zero_native(synthetic_complete())),
                    QUALIFYING_OPTIONS, qualification=True, probes=probes)
     if bad == 0:
         print("selftest: zero-native fixture passed the gate", file=sys.stderr)
+        return 1
+    missing_kernel_replay = evaluate(
+        collect(synthetic_complete()), QUALIFYING_OPTIONS, qualification=True,
+        probes=MissingKernelReplayProbes())
+    if missing_kernel_replay == 0:
+        print("selftest: missing kernel replay passed the gate",
+              file=sys.stderr)
         return 1
     good = evaluate(collect(synthetic_complete()), QUALIFYING_OPTIONS,
                     qualification=True, probes=probes)
@@ -374,8 +503,8 @@ def run_selftest() -> int:
     if missing_b3sum == 0:
         print("selftest: missing b3sum passed the gate", file=sys.stderr)
         return 1
-    print("selftest: gate refuses zero-native and missing b3sum, "
-          "and admits the complete set")
+    print("selftest: gate refuses zero-native, missing kernel replay, and "
+          "missing b3sum, and admits the complete set")
     return 0
 
 
