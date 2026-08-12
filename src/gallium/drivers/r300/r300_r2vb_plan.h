@@ -268,6 +268,12 @@ struct nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
 bool r300_r2vb_output_store_location(const struct nir_intrinsic_instr *intr,
                                      gl_varying_slot *location);
 
+/* Identify an output store whose value is a direct shader-input load.  Both
+ * dereference stores and lowered store_output forms use this classification
+ * when the producer distinguishes passthrough varyings from computed ones. */
+bool r300_r2vb_output_store_is_input_passthrough(
+    const struct nir_intrinsic_instr *intr);
+
 /* Remove output stores outside target from a caller-owned clone.  The planner
  * and live restager call this same target reduction before DCE and emission. */
 void r300_r2vb_prune_output_stores(struct nir_shader *nir,

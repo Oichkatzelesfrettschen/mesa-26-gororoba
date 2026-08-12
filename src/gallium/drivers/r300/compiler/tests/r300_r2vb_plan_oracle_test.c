@@ -1464,6 +1464,44 @@ case_cache_lifetime(struct r300_context *r300)
 }
 
 static void
+case_lowered_store_output_computed_varying(struct r300_context *r300)
+{
+   printf("multi-slot store_output computed-varying scans use the effective slot\n");
+
+   struct vs_build v = begin_vs("plan_store_output_computed", true);
+   nir_def *value = nir_fadd(&v.b, nir_channel(&v.b, v.pos, 0),
+                              nir_imm_float(&v.b, 1.0f));
+   nir_store_output(&v.b, nir_replicate(&v.b, value, 4), nir_imm_int(&v.b, 1),
+                    .io_semantics = {
+                       .location = VARYING_SLOT_VAR0,
+                       .num_slots = 2,
+                    });
+   nir_shader *vs = end_vs(&v, v.pos);
+
+   const gl_varying_slot computed_slot = VARYING_SLOT_VAR0 + 1;
+   CHECK(r300_r2vb_first_computed_varying(vs) == computed_slot,
+         "first computed varying follows the lowered output offset");
+
+   struct r300_r2vb_position_source source;
+   CHECK(r300_r2vb_varying_source_scan(vs, computed_slot, &source) &&
+            source.valid && source.location_rank == 0,
+         "varying source scan retains the lowered output survivor");
+
+   struct r300_r2vb_producer_plan plan;
+   bool ran = r300_r2vb_plan_producer(r300, vs, true,
+                                      R300_R2VB_POSITION_CLIP, &plan);
+   CHECK(ran, "multi-slot computed-varying plan runs");
+   CHECK(plan.action == R300_R2VB_PLAN_SINGLE &&
+            plan.status == R300_R2VB_PLAN_READY &&
+            plan.varying_slot == computed_slot &&
+            plan.varying_source.valid,
+         "plan admits the effective computed varying once");
+   if (ran)
+      r300_r2vb_plan_release(&plan);
+   ralloc_free(vs);
+}
+
+static void
 case_deterministic(struct r300_context *r300)
 {
    printf("repeated planning is deterministic\n");
@@ -1506,6 +1544,7 @@ main(void)
    case_structural_rejects(r300);
    case_lowered_store_output_scope(r300);
    case_lowered_store_output_offset_component_contract(r300);
+   case_lowered_store_output_computed_varying(r300);
    case_typed_float_before_cut(r300);
    case_unsupported_intrinsic(r300);
    case_multi_candidate_failures(r300);

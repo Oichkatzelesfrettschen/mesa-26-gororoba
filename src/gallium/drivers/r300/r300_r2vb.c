@@ -971,19 +971,16 @@ int r300_r2vb_first_computed_varying(nir_shader *vs_nir)
             if (instr->type != nir_instr_type_intrinsic)
                 continue;
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_store_deref)
+            if (intr->intrinsic != nir_intrinsic_store_deref &&
+                intr->intrinsic != nir_intrinsic_store_output)
                 continue;
-            nir_variable *out = nir_intrinsic_get_var(intr, 0);
-            if (!out || !(out->data.mode & nir_var_shader_out) ||
-                out->data.location == VARYING_SLOT_POS)
+            gl_varying_slot location;
+            if (!r300_r2vb_output_store_location(intr, &location) ||
+                location == VARYING_SLOT_POS)
                 continue;
-            nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
-            if (val && val->intrinsic == nir_intrinsic_load_deref) {
-                nir_variable *src = nir_intrinsic_get_var(val, 0);
-                if (src && (src->data.mode & nir_var_shader_in))
-                    continue; /* passthrough -- the re-ingest reads the app buffer */
-            }
-            return out->data.location;
+            if (r300_r2vb_output_store_is_input_passthrough(intr))
+                continue; /* passthrough -- re-ingest reads the app buffer */
+            return location;
         }
     }
     return -1;
@@ -1026,11 +1023,12 @@ r300_r2vb_count_position_inputs_status(nir_shader *vs_nir,
             if (instr->type != nir_instr_type_intrinsic)
                 continue;
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_store_deref)
+            if (intr->intrinsic != nir_intrinsic_store_deref &&
+                intr->intrinsic != nir_intrinsic_store_output)
                 continue;
-            nir_variable *out = nir_intrinsic_get_var(intr, 0);
-            if (out && (out->data.mode & nir_var_shader_out) &&
-                out->data.location != VARYING_SLOT_POS)
+            gl_varying_slot location;
+            if (r300_r2vb_output_store_location(intr, &location) &&
+                location != VARYING_SLOT_POS)
                 nir_instr_remove(instr);
         }
     }
@@ -3498,12 +3496,20 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
             if (instr->type != nir_instr_type_intrinsic)
                 continue;
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_store_deref)
+            if (intr->intrinsic != nir_intrinsic_store_deref &&
+                intr->intrinsic != nir_intrinsic_store_output)
                 continue;
-            nir_variable *out = nir_intrinsic_get_var(intr, 0);
-            if (!out || !(out->data.mode & nir_var_shader_out) ||
-                out->data.location == VARYING_SLOT_POS)
+            gl_varying_slot location;
+            if (!r300_r2vb_output_store_location(intr, &location) ||
+                location == VARYING_SLOT_POS)
                 continue;
+            if (intr->intrinsic == nir_intrinsic_store_output) {
+                if (r300_r2vb_output_store_is_input_passthrough(intr))
+                    continue;
+                if (allow_computed_varying)
+                    continue; /* the multi-pass producer renders this varying */
+                return false;
+            }
             nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
             if (!val || val->intrinsic != nir_intrinsic_load_deref) {
                 if (allow_computed_varying)
@@ -3533,18 +3539,14 @@ static bool r300_vs_nir_is_fragment_aluable(nir_shader *nir,
                 if (instr->type != nir_instr_type_intrinsic)
                     continue;
                 nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-                if (intr->intrinsic != nir_intrinsic_store_deref)
+                if (intr->intrinsic != nir_intrinsic_store_deref &&
+                    intr->intrinsic != nir_intrinsic_store_output)
                     continue;
-                nir_variable *o = nir_intrinsic_get_var(intr, 0);
-                if (!o || !(o->data.mode & nir_var_shader_out) ||
-                    o->data.location == VARYING_SLOT_POS)
+                gl_varying_slot location;
+                if (!r300_r2vb_output_store_location(intr, &location) ||
+                    location == VARYING_SLOT_POS)
                     continue;
-                nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
-                nir_variable *src =
-                    (val && val->intrinsic == nir_intrinsic_load_deref)
-                        ? nir_intrinsic_get_var(val, 0)
-                        : NULL;
-                if (src && (src->data.mode & nir_var_shader_in))
+                if (r300_r2vb_output_store_is_input_passthrough(intr))
                     continue; /* passthrough */
                 n_computed++;
             }
@@ -4310,11 +4312,12 @@ bool r300_r2vb_varying_source_scan(nir_shader *vs_nir, int slot,
             if (instr->type != nir_instr_type_intrinsic)
                 continue;
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_store_deref)
+            if (intr->intrinsic != nir_intrinsic_store_deref &&
+                intr->intrinsic != nir_intrinsic_store_output)
                 continue;
-            nir_variable *o = nir_intrinsic_get_var(intr, 0);
-            if (o && (o->data.mode & nir_var_shader_out) &&
-                (int)o->data.location != slot)
+            gl_varying_slot location;
+            if (r300_r2vb_output_store_location(intr, &location) &&
+                (int)location != slot)
                 nir_instr_remove(instr);
         }
     }
