@@ -179,10 +179,6 @@ main(void)
     * pass-through identity.
     */
    const float *ref = r300_tcl_bypass_triangle_vertices;
-   for (unsigned v = 0; v < 3; v++) {
-      assert(ref[v * 4 + 2] == 0.0f);
-      assert(ref[v * 4 + 3] == 1.0f);
-   }
 
    check_delivery(&(struct r3v_native_vertex_stream_desc){
                      .records = ref,
@@ -191,6 +187,26 @@ main(void)
                      .format_id = R300_VERTEX_FORMAT_F32_4,
                   },
                   ref, 48);
+
+   /* The VAP fetch contract consumes little-endian component bytes.  This
+    * independent packed leg exercises that representation directly instead
+    * of relying on the host float object representation.
+    */
+   static const uint8_t byte_defined_ref[48] = {
+      0x00, 0x00, 0x00, 0x41, 0x00, 0x00, 0x00, 0x41,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f,
+      0x00, 0x00, 0x60, 0x42, 0x00, 0x00, 0x00, 0x41,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f,
+      0x00, 0x00, 0x00, 0x42, 0x00, 0x00, 0x60, 0x42,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f,
+   };
+   check_delivery(&(struct r3v_native_vertex_stream_desc){
+                     .records = byte_defined_ref,
+                     .size_bytes = sizeof(byte_defined_ref),
+                     .stride = 16,
+                     .format_id = R300_VERTEX_FORMAT_F32_4,
+                  },
+                  byte_defined_ref, sizeof(byte_defined_ref));
 
    float xyz[9];
    float xy[6];
@@ -280,6 +296,28 @@ main(void)
              VK_SUCCESS &&
           map != NULL);
    assert(memcmp(map, mutated, sizeof(mutated)) == 0);
+   unmap_memory(device, vertex_memory);
+
+   /* A source range inside the carrier is a rejected alias, not an
+    * in-place gather.  The snapshot catches a future implementation that
+    * writes one output vertex before noticing the overlap.
+    */
+   assert(map_memory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
+             VK_SUCCESS &&
+          map != NULL);
+   memset(map, 0xa5, VERTEX_BYTES);
+   uint8_t overlap_before[VERTEX_BYTES];
+   memcpy(overlap_before, map, sizeof(overlap_before));
+   cmd = fresh_cmd();
+   assert(r3v_native_record_tcl_bypass_triangle_from_stream(
+             cmd, vertex_memory, color_memory,
+             &(struct r3v_native_vertex_stream_desc){
+                .records = map,
+                .size_bytes = 24,
+                .stride = 8,
+                .format_id = R300_VERTEX_FORMAT_F32_2,
+             }) == VK_ERROR_INITIALIZATION_FAILED);
+   assert(memcmp(map, overlap_before, sizeof(overlap_before)) == 0);
    unmap_memory(device, vertex_memory);
 
    printf("r3v_native_vertex_carrier: every delivery shape reproduces the "
