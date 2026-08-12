@@ -206,15 +206,10 @@ MODEL_CENSUS = (
     (MODEL_SCOPE_DEVICE, 121),
 )
 
-# Selftest oracle kept independent from the production tuple.  A change to
-# MODEL_CENSUS must fail the known-good calibration instead of moving both the
-# input and expected value together.
-MODEL_SCOPE_CENSUS_KNOWN_GOOD = {
-    MODEL_SCOPE_GLOBAL: 4,
-    MODEL_SCOPE_INSTANCE: 2,
-    MODEL_SCOPE_PHYSICAL_DEVICE: 10,
-    MODEL_SCOPE_DEVICE: 121,
-}
+# The selftest oracle derives scope counts from the core-command membership in
+# the checked-in Vulkan registry.  MODEL_CENSUS remains the independent policy
+# expectation, so changing either the registry membership or the expected
+# count exercises a distinct calibration path.
 
 MODEL_FLOORS = (
     (MODEL_POPULATED_SLOTS, 100),
@@ -305,6 +300,23 @@ def parse_registry(vk_xml: Path):
         for req in ext.findall("require/command"):
             owner.setdefault(req.get("name")[2:], ext.get("name"))
     return Registry(alias, device_level, core10, scope, results, owner)
+
+
+def model_scope_census_known_good():
+    """Count core Vulkan 1.0 commands by their registry dispatch scope."""
+    registry_path = Path(__file__).resolve().parents[4] / "vulkan/registry/vk.xml"
+    registry = parse_registry(registry_path)
+    core = registry.core10 & set(registry.scope)
+    labels = {
+        "global": MODEL_SCOPE_GLOBAL,
+        "instance": MODEL_SCOPE_INSTANCE,
+        "physical-device": MODEL_SCOPE_PHYSICAL_DEVICE,
+        "device": MODEL_SCOPE_DEVICE,
+    }
+    return {
+        labels[scope]: sum(registry.scope[name] == scope for name in core)
+        for scope in labels
+    }
 
 
 def canonical(name, alias):
@@ -753,7 +765,7 @@ def selftest():
         if not selftest_check(f"lifecycle pair {fixture}", found, expected):
             return 1
 
-    model_counts = MODEL_SCOPE_CENSUS_KNOWN_GOOD.copy()
+    model_counts = model_scope_census_known_good()
     if not selftest_check(
             "model floors",
             model_failures(
