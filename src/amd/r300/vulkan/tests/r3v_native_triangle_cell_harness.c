@@ -325,6 +325,8 @@ main(int argc, char **argv)
 
    LOAD_DEVICE(vkAllocateMemory);
    LOAD_DEVICE(vkFreeMemory);
+   LOAD_DEVICE(vkMapMemory);
+   LOAD_DEVICE(vkUnmapMemory);
    LOAD_DEVICE(vkGetDeviceQueue);
    LOAD_DEVICE(vkCreateCommandPool);
    LOAD_DEVICE(vkDestroyCommandPool);
@@ -345,11 +347,13 @@ main(int argc, char **argv)
       .memoryTypeIndex = 0,
    };
    VkDeviceMemory vertex_memory = VK_NULL_HANDLE;
+   void *vertex_map = NULL;
    result = vkAllocateMemory(device, &alloc_info, NULL, &vertex_memory);
    CHECK(result == VK_SUCCESS, "vertex vkAllocateMemory: %d", result);
 
    alloc_info.allocationSize = R300_TRIANGLE_COLOR_BYTES;
    VkDeviceMemory color_memory = VK_NULL_HANDLE;
+   void *color_map = NULL;
    VkDeviceMemory aliased_memory = VK_NULL_HANDLE;
    result = vkAllocateMemory(device, &alloc_info, NULL, &color_memory);
    CHECK(result == VK_SUCCESS, "color vkAllocateMemory: %d", result);
@@ -520,12 +524,48 @@ main(int argc, char **argv)
       goto done;
    }
 
-   /* The recorder published the vertex write while its mapping was live;
-    * exactly one cache sync has run before any submission.
-    */
-   CHECK(native_device->drm.cache_sync_count == 2,
+   const uint64_t recorder_sync_count = native_device->drm.cache_sync_count;
+   CHECK(recorder_sync_count == 2,
          "recorder published the vertex and sentinel writes: %" PRIu64,
+         recorder_sync_count);
+
+   /* Keep both referenced mappings live through the open-gate submit.  The
+    * queue's cache maintenance only sees references whose owning memory still
+    * carries a map, so map establishment supplies one sync for each BO before
+    * the queue reaches its pre-submit loop.
+    */
+   const bool live_mapping_mode = open_gate && !empty_manifest_mode;
+   if (live_mapping_mode) {
+      result = vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                           &vertex_map);
+      CHECK(result == VK_SUCCESS && vertex_map != NULL,
+            "vertex memory maps before submission: %d", result);
+      if (result != VK_SUCCESS || vertex_map == NULL)
+         goto done;
+
+      result = vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                           &color_map);
+      CHECK(result == VK_SUCCESS && color_map != NULL,
+            "color memory maps before submission: %d", result);
+      if (result != VK_SUCCESS || color_map == NULL)
+         goto done;
+
+      CHECK(native_device->drm.cache_sync_count ==
+               recorder_sync_count + R300_TRIANGLE_SLOT_COUNT,
+            "map establishment syncs both referenced BOs: %" PRIu64,
+            native_device->drm.cache_sync_count);
+   }
+
+   /* Open-gate mode starts the queue with four syncs: two recorder
+    * publications and two map-establishment syncs for the live references.
+    */
+   const uint64_t expected_pre_submit_sync_count =
+      live_mapping_mode ? recorder_sync_count + R300_TRIANGLE_SLOT_COUNT
+                         : recorder_sync_count;
+   CHECK(native_device->drm.cache_sync_count == expected_pre_submit_sync_count,
+         "pre-submit cache sync count is %" PRIu64,
          native_device->drm.cache_sync_count);
+   const uint64_t pre_submit_sync_count = native_device->drm.cache_sync_count;
 
    result = vkQueueSubmit(queue, 1,
                           &(VkSubmitInfo){
@@ -543,6 +583,17 @@ main(int argc, char **argv)
    if (open_gate) {
       CHECK(result == VK_SUCCESS,
             "open-gate submission through the shim: %d", result);
+
+      const uint64_t expected_submit_sync_count =
+         pre_submit_sync_count + R300_TRIANGLE_SLOT_COUNT;
+      const uint64_t expected_completion_sync_count =
+         expected_submit_sync_count + R300_TRIANGLE_SLOT_COUNT;
+      CHECK(native_device->drm.cache_sync_count ==
+               expected_completion_sync_count,
+            "queue pre-submit and completion sync counts reach %" PRIu64
+            " (submit stage %" PRIu64 ")",
+            native_device->drm.cache_sync_count,
+            expected_submit_sync_count);
 
       /* The retained submit object is distinct from the semantic cell:
        * its relocation list folds the completion reference in as a third
@@ -569,19 +620,6 @@ main(int argc, char **argv)
                       "\"submit-object\"", 15) != NULL,
             "submit_manifest.json names the submit object");
       free(submit_manifest);
-
-      /* Mapping the color target after completion invalidates its stale
-       * cache lines through the map-establishment sync.
-       */
-      LOAD_DEVICE(vkMapMemory);
-      void *color_map = NULL;
-      CHECK(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
-                        &color_map) == VK_SUCCESS &&
-               color_map != NULL,
-            "color memory maps after completion");
-      CHECK(native_device->drm.cache_sync_count == 3,
-            "map establishment invalidated the color target: %" PRIu64,
-            native_device->drm.cache_sync_count);
 
       /* The shim absorbs the submission without executing it, so the
        * honest oracle verdict is a sentinel-intact target: no execution
@@ -655,6 +693,10 @@ main(int argc, char **argv)
 
 done:
    vkDestroyCommandPool(device, pool, NULL);
+   if (vertex_map != NULL)
+      vkUnmapMemory(device, vertex_memory);
+   if (color_map != NULL)
+      vkUnmapMemory(device, color_memory);
    vkFreeMemory(device, vertex_memory, NULL);
    vkFreeMemory(device, color_memory, NULL);
    vkFreeMemory(device, aliased_memory, NULL);
