@@ -76,8 +76,8 @@ check_submit3_state_transitions(void)
    CHECK(r300_r2vb_submit3_try_reserve(&state),
          "available state reserves atomically");
    CHECK(r300_r2vb_submit3_action_for_state(state) ==
-            R300_R2VB_SUBMIT3_CONSUME,
-         "in-progress state consumes concurrent draws");
+            R300_R2VB_SUBMIT3_WAIT,
+         "in-progress state waits for the owner");
    CHECK(r300_r2vb_submit3_mark_submitted(&state),
          "in-progress state commits after emission");
    CHECK(r300_r2vb_submit3_action_for_state(state) ==
@@ -88,8 +88,8 @@ check_submit3_state_transitions(void)
    CHECK(!r300_r2vb_submit3_rollback(&state),
          "submitted state rejects rollback");
    CHECK(r300_r2vb_submit3_action_for_state(UINT_MAX) ==
-            R300_R2VB_SUBMIT3_CONSUME,
-         "unknown state consumes fail closed");
+            R300_R2VB_SUBMIT3_FALLBACK,
+         "unknown state falls back fail closed");
 
    state = R300_R2VB_SUBMIT3_AVAILABLE;
    CHECK(r300_r2vb_submit3_try_reserve(&state),
@@ -101,11 +101,35 @@ check_submit3_state_transitions(void)
          "rollback reopens emission for the next candidate");
 }
 
+static void
+check_owner_failure_loser_retry(void)
+{
+   unsigned state = R300_R2VB_SUBMIT3_AVAILABLE;
+   CHECK(r300_r2vb_submit3_try_reserve(&state),
+         "owner reserves before the loser arrives");
+   CHECK(r300_r2vb_submit3_action_for_atomic_state(&state) ==
+            R300_R2VB_SUBMIT3_WAIT,
+         "loser waits while owner validates");
+   CHECK(r300_r2vb_submit3_rollback(&state),
+         "owner failure publishes rollback");
+   CHECK(r300_r2vb_submit3_action_for_atomic_state(&state) ==
+            R300_R2VB_SUBMIT3_EMIT,
+         "loser retries after owner rollback");
+   CHECK(r300_r2vb_submit3_try_reserve(&state),
+         "loser claims the reopened reservation");
+   CHECK(r300_r2vb_submit3_action_for_atomic_state(&state) ==
+            R300_R2VB_SUBMIT3_WAIT,
+         "retry owner remains the sole PM4 candidate");
+   CHECK(r300_r2vb_submit3_rollback(&state),
+         "retry owner failure restores availability");
+}
+
 int
 main(void)
 {
    check_atomic_reservation();
    check_submit3_state_transitions();
+   check_owner_failure_loser_retry();
 
    if (failures) {
       fprintf(stderr, "r300_r2vb_submit3_state_test: %u failure(s)\n",

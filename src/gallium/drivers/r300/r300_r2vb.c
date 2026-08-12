@@ -8170,19 +8170,40 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
     static unsigned producer_submit3_state = R300_R2VB_SUBMIT3_AVAILABLE;
 
     bool submit3_reserved = false;
-    /* IN_PROGRESS and SUBMITTED retire qualifying draws at this gate.  The
-     * reservation owns the sole PM4 candidate until emission commits it. */
-    if (action == R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME &&
-        !r300_r2vb_submit3_try_reserve(&producer_submit3_state)) {
-        fprintf(stderr,
-                "r2vb_bo_draw_producer3 decision=consume "
-                "reason=submit3_reserved\n");
-        r2vb_accrue_app_state_restore(r300);
-        r300->vertex_arrays_dirty = true;
-        r300_r2vb_producer_bo_draw_fini(&txn);
-        return R300_R2VB_BO3_CONSUMED_AFTER_SUBMIT;
+    /* AVAILABLE reserves the sole PM4 candidate.  IN_PROGRESS waits for the
+     * owner to commit or roll back, SUBMITTED consumes the visible draw, and
+     * an unknown state falls back to the ordinary renderer. */
+    if (action == R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME) {
+        for (;;) {
+            enum r300_r2vb_submit3_action submit3_action =
+                r300_r2vb_submit3_action_for_atomic_state(
+                    &producer_submit3_state);
+            if (submit3_action == R300_R2VB_SUBMIT3_EMIT) {
+                if (r300_r2vb_submit3_try_reserve(&producer_submit3_state)) {
+                    submit3_reserved = true;
+                    break;
+                }
+            } else if (submit3_action == R300_R2VB_SUBMIT3_WAIT) {
+                os_time_sleep(1);
+            } else if (submit3_action == R300_R2VB_SUBMIT3_CONSUME) {
+                fprintf(stderr,
+                        "r2vb_bo_draw_producer3 decision=consume "
+                        "reason=submit3_committed\n");
+                r2vb_accrue_app_state_restore(r300);
+                r300->vertex_arrays_dirty = true;
+                r300_r2vb_producer_bo_draw_fini(&txn);
+                return R300_R2VB_BO3_CONSUMED_AFTER_SUBMIT;
+            } else {
+                fprintf(stderr,
+                        "r2vb_bo_draw_producer3 decision=declined "
+                        "reason=submit3_unknown_state\n");
+                r2vb_accrue_app_state_restore(r300);
+                r300->vertex_arrays_dirty = true;
+                r300_r2vb_producer_bo_draw_fini(&txn);
+                return R300_R2VB_BO3_DECLINED;
+            }
+        }
     }
-    submit3_reserved = action == R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME;
 
     /* The varying pass supplies its allow_computed_varying plan cell and its
      * own measured model source; the position pass keeps the cv=0 cell and
