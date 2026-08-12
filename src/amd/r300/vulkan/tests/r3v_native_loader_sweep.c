@@ -49,6 +49,56 @@ child_exit_status(int body_status)
    return body_status == 0 ? 0 : 1;
 }
 
+static int
+calibration_child_success(void)
+{
+   return 0;
+}
+
+static int
+calibration_child_high_bit_failure(void)
+{
+   return 1 << 8;
+}
+
+/* Run the complete child verdict boundary shared by calibration and sweep
+ * legs: fork, normalize the body result before _exit(), wait for the child,
+ * and decode WEXITSTATUS in the parent.  A signaled child has no exit byte,
+ * so the caller receives false and keeps that distinction in its verdict.
+ */
+static bool
+run_child(const char *label, int (*body)(void), int *exit_status)
+{
+   fflush(NULL);
+   pid_t pid = fork();
+   if (pid == 0) {
+      const int body_status = body();
+      _exit(child_exit_status(body_status));
+   }
+   if (pid < 0) {
+      fprintf(stderr, "FAIL: %s: fork failed\n", label);
+      return false;
+   }
+
+   int status = 0;
+   if (waitpid(pid, &status, 0) != pid) {
+      fprintf(stderr, "FAIL: %s: waitpid failed\n", label);
+      return false;
+   }
+   if (WIFSIGNALED(status)) {
+      fprintf(stderr, "FAIL: %s: killed by signal %d\n", label,
+              WTERMSIG(status));
+      return false;
+   }
+   if (!WIFEXITED(status)) {
+      fprintf(stderr, "FAIL: %s: child did not exit\n", label);
+      return false;
+   }
+
+   *exit_status = WEXITSTATUS(status);
+   return true;
+}
+
 static bool
 mapped_range_setup_ready(VkResult allocation_result, VkResult map_result,
                          const void *live_map)
@@ -59,8 +109,8 @@ mapped_range_setup_ready(VkResult allocation_result, VkResult map_result,
 
 /* Host calibration keeps the setup gate and child status boundary explicit:
  * a successful allocation and mapping is the known-good shape, a failed
- * setup is the known-bad shape, and a high-bit body result remains a child
- * failure after normalization.
+ * setup is the known-bad shape, and the high-bit body runs through the same
+ * fork, _exit(), waitpid(), and WEXITSTATUS path as every sweep leg.
  */
 static void
 check_loader_sweep_calibration(void)
@@ -77,36 +127,28 @@ check_loader_sweep_calibration(void)
          "mapping failure disables range validation");
    CHECK(!mapped_range_setup_ready(VK_SUCCESS, VK_SUCCESS, NULL),
          "a NULL mapping disables range validation");
-   CHECK(child_exit_status(0) == 0, "zero child result stays successful");
-   CHECK(child_exit_status(1 << 8) == 1,
-         "a high-bit child result stays visible as failure");
+
+   int exit_status = -1;
+   CHECK(run_child("known-good child verdict", calibration_child_success,
+                   &exit_status) &&
+            exit_status == 0,
+         "known-good child result is %d, expected 0", exit_status);
+   exit_status = -1;
+   CHECK(run_child("known-bad high-bit child verdict",
+                   calibration_child_high_bit_failure, &exit_status) &&
+            exit_status == 1,
+         "known-bad high-bit child result is %d, expected 1", exit_status);
 }
 
 static void
 in_child(const char *label, int (*body)(void))
 {
-   fflush(NULL);
-   pid_t pid = fork();
-   if (pid == 0) {
-      const int body_status = body();
-      _exit(child_exit_status(body_status));
-   }
-   if (pid < 0) {
+   int exit_status = -1;
+   if (!run_child(label, body, &exit_status)) {
       failures++;
-      fprintf(stderr, "FAIL: %s: fork failed\n", label);
       return;
    }
-
-   int status = 0;
-   waitpid(pid, &status, 0);
-   if (WIFSIGNALED(status)) {
-      failures++;
-      fprintf(stderr, "FAIL: %s: killed by signal %d\n", label,
-              WTERMSIG(status));
-      return;
-   }
-   CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-         "%s: exit status %d", label, WEXITSTATUS(status));
+   CHECK(exit_status == 0, "%s: exit status %d", label, exit_status);
 }
 
 /* Creation of an unsupported type refuses and hands back no handle. */
@@ -306,17 +348,20 @@ call_memory_range_validation(void)
       .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
       .memory = live_memory,
    };
-   /* VUID-VkMappedMemoryRange-offset-00687 requires offset alignment to
-    * nonCoherentAtomSize; VUID-VkMappedMemoryRange-size-00685 and
-    * VUID-VkMappedMemoryRange-size-00686 require each range to remain inside
-    * the mapped allocation.  The native bound implementation is
+   /* VUID-VkMappedMemoryRange-size-00685 and
+    * VUID-VkMappedMemoryRange-size-00686 keep each range inside the mapped
+    * allocation.  The native bound implementation is
     * r3v_native_validate_mapped_ranges (rg --fixed-strings
     * r3v_native_validate_mapped_ranges src/amd/r300/vulkan/), so the first
     * three cases exercise valid ranges and the remaining cases exercise its
-    * refusal boundaries.
-    *
-    * The range table stays atom-aligned so each case tests bounds rather than
-    * an unrelated alignment failure.
+    * refusal boundaries.  The native memory table marks memoryTypeIndex 0
+    * VK_MEMORY_PROPERTY_HOST_COHERENT_BIT through
+    * r3v_GetPhysicalDeviceMemoryProperties2 (rg --fixed-strings
+    * r3v_GetPhysicalDeviceMemoryProperties2 src/amd/r300/vulkan/), so the
+    * conditional VUID-VkMappedMemoryRange-offset-00687 alignment rule is not
+    * a verdict for this allocation.  The ordinary offsets and sizes use
+    * nonCoherentAtomSize multiples as test-table geometry; VK_WHOLE_SIZE and
+    * the overflowing size remain explicit whole-range and bounds cases.
     */
    const struct {
       VkDeviceSize offset, size;
@@ -630,12 +675,13 @@ main(void)
           "no, it answers every higher-core name and carries no driver "
           "verdict");
 
-   /* Vulkan 1.4 Device Memory uses nonCoherentAtomSize for
-    * VUID-VkMappedMemoryRange-offset-00687 range alignment.  The allocation
-    * is four whole atoms, so every offset the mapped-range legs name satisfies
-    * that rule and the cases isolate range bounds
-    * (rg --fixed-strings r3v_native_validate_mapped_ranges
-    * src/amd/r300/vulkan/).
+   /* The allocation uses four nonCoherentAtomSize multiples as deterministic
+    * test-table geometry for the mapped-range bounds cases.  The native
+    * memory table marks memoryTypeIndex 0 HOST_COHERENT, so this allocation
+    * does not claim the conditional offset-alignment VUID
+    * (rg --fixed-strings r3v_GetPhysicalDeviceMemoryProperties2
+    * src/amd/r300/vulkan/; rg --fixed-strings
+    * r3v_native_validate_mapped_ranges src/amd/r300/vulkan/).
     */
    VkPhysicalDeviceProperties props;
    vkGetPhysicalDeviceProperties(pdev, &props);
