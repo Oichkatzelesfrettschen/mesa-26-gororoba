@@ -102,7 +102,7 @@ void r300_r2vb_telemetry_note(struct r300_context *r300,
  * evidence a route-on policy needs (a six-slot producer amortizes its fixed
  * route cost only above a measured vertex-count crossover). */
 struct r300_r2vb_workload_stats {
-    char action;             /* first letter: r/s/c/p (reject..split) */
+    char action;             /* R=reject, N=single, P=split */
     uint64_t draws;
     uint64_t vertices;
     uint64_t instances;
