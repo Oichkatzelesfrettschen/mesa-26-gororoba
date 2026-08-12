@@ -8260,9 +8260,10 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
      * ceiling and the row half of the layout-boundary comparison against
      * 2048x2), the 2048-wide grid ladder 6144 (2048x3), 8192 (2048x4),
      * and 21516 (2048x11 with a 1012-slot poisonable final-row tail), and
-     * the raster-stop discriminators 3072, 4032, and 4016 (the one-row
-     * 4096 cell delivers exactly 4016 records; these widths decide an
-     * absolute stop column against a width-relative stop);
+     * the raster-stop discriminators 3072, 4032, and 4016. Hypothesis: the
+     * one-row 4096-width path yields a 4016-record stop boundary; these
+     * counts compare an absolute stop column against a width-relative stop
+     * and do not establish a silicon result.
      * every other diagnostic mode keeps the proven three-vertex cell.
      * Production delivery accepts the full validated layout domain. */
     else if (action != R2VB_BO_DRAW_ACTION_DELIVER &&
