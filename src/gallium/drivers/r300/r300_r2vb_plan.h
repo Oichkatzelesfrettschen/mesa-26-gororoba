@@ -31,7 +31,12 @@ struct nir_shader;
  * definitions, and r300_context.h exposes eight VAP_PROG_STREAM_CNTL and
  * VAP_PROG_STREAM_CNTL_EXT entries plus eight IP and INST entries; state
  * derivation limits VAP_OUTPUT_VTX_FMT_1 and rasterizer texcoord allocation
- * to eight slots (r300_state_derived.c).  The RS482 register-table notes in
+ * to eight slots (r300_state_derived.c).  Symbol discovery uses
+ * (rg --fixed-strings R300_VAP_PROG_STREAM_CNTL_0 src/gallium/drivers/r300/;
+ * rg --fixed-strings R300_VAP_OUTPUT_VTX_FMT_1 src/gallium/drivers/r300/;
+ * rg --fixed-strings R300_RS_IP_0 src/gallium/drivers/r300/;
+ * rg --fixed-strings R300_R2VB_MAX_PRODUCER_INPUTS src/gallium/drivers/r300/).
+ * The RS482 register-table notes in
  * docs/hardware/rs482-hybrid-vertex-tcl-design.md and the retained VAP/RS
  * captures are calibration evidence for that 0..7 surface, not primary
  * hardware authority.  Pass-B admission requires num_in + 1 <= 8.  A
