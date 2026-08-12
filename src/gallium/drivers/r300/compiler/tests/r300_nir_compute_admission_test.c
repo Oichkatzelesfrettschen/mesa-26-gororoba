@@ -250,6 +250,11 @@ enum multipass_step_form {
 
 enum multipass_offset_form {
    MULTIPASS_OFFSET_INVOCATION_X4,
+   MULTIPASS_OFFSET_INVOCATION_SHIFT,
+   MULTIPASS_OFFSET_BARE_INVOCATION_INDEX,
+   MULTIPASS_OFFSET_REPEATED_SCALE,
+   MULTIPASS_OFFSET_GLOBAL_ID_X,
+   MULTIPASS_OFFSET_UNSUPPORTED_ALU,
    MULTIPASS_OFFSET_UNIFORM,
    MULTIPASS_OFFSET_WRONG_STRIDE,
 };
@@ -265,6 +270,33 @@ build_multipass_loop_form(enum multipass_step_form step_form,
    case MULTIPASS_OFFSET_INVOCATION_X4:
       offset = nir_imul(&b, gid, nir_imm_int(&b, 4));
       break;
+   case MULTIPASS_OFFSET_INVOCATION_SHIFT:
+      offset = nir_ishl(&b, gid, nir_imm_int(&b, 2));
+      break;
+   case MULTIPASS_OFFSET_BARE_INVOCATION_INDEX:
+      offset = gid;
+      break;
+   case MULTIPASS_OFFSET_REPEATED_SCALE:
+      offset = nir_imul(&b, nir_imul(&b, gid, nir_imm_int(&b, 4)),
+                        nir_imm_int(&b, 4));
+      break;
+   case MULTIPASS_OFFSET_GLOBAL_ID_X: {
+      /* The X component is not the flat invocation index when the dispatch
+       * has multiple Y or Z invocations. */
+      b.shader->info.workgroup_size[0] = 8;
+      b.shader->info.workgroup_size[1] = 2;
+      b.shader->info.workgroup_size[2] = 2;
+      nir_def *global_id = nir_load_global_invocation_id(&b, 32);
+      offset = nir_channel(&b, global_id, 0);
+      break;
+   }
+   case MULTIPASS_OFFSET_UNSUPPORTED_ALU: {
+      nir_def *vector = nir_load_ssbo(&b, 2, 32, nir_imm_int(&b, 3),
+                                      nir_imm_int(&b, 0), .align_mul = 8,
+                                      .align_offset = 0);
+      offset = nir_fdot2(&b, vector, vector);
+      break;
+   }
    case MULTIPASS_OFFSET_UNIFORM:
       offset = nir_imm_int(&b, 0);
       break;
@@ -1361,11 +1393,12 @@ case_reject_registry_calibration(void)
 }
 
 static void
-check_multipass_accept(enum multipass_step_form step_form, uint16_t step_op,
-                       const char *label)
+check_multipass_accept(enum multipass_step_form step_form,
+                       enum multipass_offset_form offset_form,
+                       uint16_t step_op, const char *label)
 {
    nir_shader *nir =
-      build_multipass_loop_form(step_form, MULTIPASS_OFFSET_INVOCATION_X4);
+      build_multipass_loop_form(step_form, offset_form);
    prepare_detect_shader(nir);
    struct r300_compute_multipass_scan_pattern pattern = {0};
    r300_nir_detect_multipass_scan_pattern(nir, &pattern);
@@ -1404,14 +1437,21 @@ static void
 case_multipass_metadata(void)
 {
    printf("multipass loop-carried value\n");
-   check_multipass_accept(MULTIPASS_STEP_IADD, nir_op_iadd,
+   check_multipass_accept(MULTIPASS_STEP_IADD, MULTIPASS_OFFSET_INVOCATION_X4,
+                          nir_op_iadd,
                           "loop-carried iadd");
-   check_multipass_accept(MULTIPASS_STEP_IMUL_VALUE_CONST, nir_op_imul,
+   check_multipass_accept(MULTIPASS_STEP_IMUL_VALUE_CONST,
+                          MULTIPASS_OFFSET_INVOCATION_X4, nir_op_imul,
                           "loop-carried imul value-constant");
-   check_multipass_accept(MULTIPASS_STEP_IMUL_CONST_VALUE, nir_op_imul,
+   check_multipass_accept(MULTIPASS_STEP_IMUL_CONST_VALUE,
+                          MULTIPASS_OFFSET_INVOCATION_X4, nir_op_imul,
                           "loop-carried imul constant-value");
-   check_multipass_accept(MULTIPASS_STEP_ISHL, nir_op_ishl,
+   check_multipass_accept(MULTIPASS_STEP_ISHL, MULTIPASS_OFFSET_INVOCATION_X4,
+                          nir_op_ishl,
                           "loop-carried ishl");
+   check_multipass_accept(MULTIPASS_STEP_IADD,
+                          MULTIPASS_OFFSET_INVOCATION_SHIFT, nir_op_iadd,
+                          "loop-carried shifted invocation offset");
 
    check_multipass_reject(MULTIPASS_STEP_IADD_NON_DOUBLE,
                           MULTIPASS_OFFSET_INVOCATION_X4,
@@ -1425,6 +1465,18 @@ case_multipass_metadata(void)
    check_multipass_reject(MULTIPASS_STEP_UNRELATED_DOUBLE,
                           MULTIPASS_OFFSET_INVOCATION_X4,
                           "unrelated accumulator doubling");
+   check_multipass_reject(MULTIPASS_STEP_IADD,
+                          MULTIPASS_OFFSET_BARE_INVOCATION_INDEX,
+                          "bare invocation index offset");
+   check_multipass_reject(MULTIPASS_STEP_IADD,
+                          MULTIPASS_OFFSET_REPEATED_SCALE,
+                          "repeated invocation scale");
+   check_multipass_reject(MULTIPASS_STEP_IADD,
+                          MULTIPASS_OFFSET_GLOBAL_ID_X,
+                          "multidimensional global-id.x offset");
+   check_multipass_reject(MULTIPASS_STEP_IADD,
+                          MULTIPASS_OFFSET_UNSUPPORTED_ALU,
+                          "unsupported vector ALU offset");
    check_multipass_reject(MULTIPASS_STEP_IADD,
                           MULTIPASS_OFFSET_UNIFORM,
                           "uniform input offset");
