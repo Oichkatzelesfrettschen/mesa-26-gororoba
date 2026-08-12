@@ -1318,10 +1318,10 @@ void r300_emit_pvs_flush(struct r300_context* r300, unsigned size, void* state)
  * RS482 silicon verdict: every mode leaves the first draw of the CS on the
  * stale program with engagement proven in the patched IBs (mode 1 doubles
  * the WAIT_UNTIL count, mode 3 doubles the US_CODE_ADDR uploads).  In-CS
- * ordering around the upload does not reprogram the US across a CS
- * boundary, so the defect sits below the command stream -- ring-level or
- * kernel inter-IB state -- and the gate stands as the banked refutation
- * matrix for upload-adjacent fencing. */
+ * ordering around the upload does not reprogram the US across a CS boundary.
+ * Hypothesis: the remaining defect mechanism lies below the command stream,
+ * such as ring-level or kernel inter-IB state.  The gate stands as the banked
+ * refutation matrix for upload-adjacent fencing. */
 int r300_swtcl_us_resync_mode(void)
 {
     static int cached = -1;
@@ -1330,6 +1330,53 @@ int r300_swtcl_us_resync_mode(void)
         cached = (e && e[0] >= '1' && e[0] <= '3' && !e[1]) ? e[0] - '0' : 0;
     }
     return cached;
+}
+
+unsigned r300_get_us_resync_dwords(struct r300_context *r300)
+{
+    int mode = r300_swtcl_us_resync_mode();
+    unsigned dwords = 0;
+
+    if (!mode)
+        return 0;
+
+    if (mode <= 2)
+        dwords += 2;
+
+    if (mode >= 2 && r300->fs.state)
+        dwords += r300->fs.size + r300->fs_rc_constant_state.size +
+                  r300->fs_constants.size;
+
+    return dwords;
+}
+
+void r300_emit_us_resync(struct r300_context *r300)
+{
+    int mode = r300_swtcl_us_resync_mode();
+
+    if (!mode)
+        return;
+
+    CS_LOCALS(r300);
+    if (mode <= 2) {
+        BEGIN_CS(2);
+        OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+        END_CS;
+    }
+
+    /* The atom sizes survive an FS unbind, while r300_fs() follows fs.state.
+     * A live binding is therefore the lifetime guard for the re-upload. */
+    if (mode >= 2 && r300->fs.state) {
+        if (r300->fs.size)
+            r300->fs.emit(r300, r300->fs.size, r300->fs.state);
+        if (r300->fs_rc_constant_state.size)
+            r300->fs_rc_constant_state.emit(r300,
+                r300->fs_rc_constant_state.size,
+                r300->fs_rc_constant_state.state);
+        if (r300->fs_constants.size)
+            r300->fs_constants.emit(r300, r300->fs_constants.size,
+                                    r300->fs_constants.state);
+    }
 }
 
 /* Hypothesis: RS482 first-CS clear/A constant aliasing lets the u_blitter
@@ -1741,4 +1788,5 @@ void r300_emit_dirty_state(struct r300_context* r300)
     r300->first_dirty = NULL;
     r300->last_dirty = NULL;
     r300->dirty_hw++;
+    r300_emit_us_resync(r300);
 }

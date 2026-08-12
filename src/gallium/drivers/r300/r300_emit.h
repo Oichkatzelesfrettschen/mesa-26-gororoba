@@ -108,6 +108,10 @@ void r300_emit_cmask_clear(struct r300_context *r300, unsigned size, void *state
 
 unsigned r300_get_num_dirty_dwords(struct r300_context *r300);
 unsigned r300_get_num_cs_end_dwords(struct r300_context *r300);
+unsigned r300_get_us_resync_dwords(struct r300_context *r300);
+
+/* Emit the diagnostic US resync sequence after dirty state. */
+void r300_emit_us_resync(struct r300_context *r300);
 
 /* Emit all dirty state. */
 void r300_emit_dirty_state(struct r300_context* r300);
