@@ -59,6 +59,10 @@ radeon_drm_vk_cs_submit(struct radeon_drm_vk_device *device,
     * kernel schedules the GPU read.
     */
    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+   atomic_store_explicit(
+      &device->submit_boundary_sync_count,
+      atomic_load_explicit(&device->cache_sync_count, memory_order_acquire),
+      memory_order_release);
 
    return device->ops->command_write_read(device->fd, DRM_RADEON_CS,
                                           &cs->args, sizeof(cs->args));
