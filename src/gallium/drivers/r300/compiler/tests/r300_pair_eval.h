@@ -17,15 +17,17 @@
 #include "radeon_program_pair.h"
 #include "r300_us_source_read.h"
 
-/* One read model per source-operand class.  The sign-flip discriminator
- * measured the input and temporary classes; the constant, texture, and
- * presubtract classes stay R300_SOURCE_READ_UNMODELED until a silicon cell
- * measures them, and an unmodeled class delivering a negative value makes
- * the evaluator return an indeterminate verdict instead of silently
- * evaluating identity. */
+/* One read model per source-operand class and read port.  The sign-flip
+ * discriminator measured RGB-port input and temporary classes; the
+ * RGB-versus-Alpha read-port distinction, constant, texture, and presubtract
+ * classes stay R300_SOURCE_READ_UNMODELED until a silicon cell measures them.
+ * An unmodeled class delivering a negative value makes the evaluator return
+ * an indeterminate verdict instead of silently evaluating identity. */
 struct r300_pair_eval_profile {
    enum r300_source_read_model input;
    enum r300_source_read_model temporary;
+   enum r300_source_read_model input_alpha;
+   enum r300_source_read_model temporary_alpha;
    enum r300_source_read_model constant;
    enum r300_source_read_model texture;
    enum r300_source_read_model presubtract;
@@ -45,9 +47,9 @@ struct r300_pair_eval {
  * evaluator carries it by default). */
 struct r300_pair_eval_profile r300_pair_eval_profile_identity(void);
 
-/* The measured RS482 US profile: input and temporary reads apply the
- * negative-predecessor transform; constant, texture, and presubtract stay
- * unmodeled and fail closed on negative values. */
+/* The measured RS482 US profile: RGB-port input and temporary reads apply the
+ * negative-predecessor transform. Alpha-port reads, constant, texture, and
+ * presubtract stay unmodeled and fail closed on negative values. */
 struct r300_pair_eval_profile r300_pair_eval_profile_rs48x_measured(void);
 
 /* Decode one channel of a resolved register through a pair swizzle,
