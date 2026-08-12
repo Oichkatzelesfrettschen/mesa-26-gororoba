@@ -6,6 +6,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,10 +40,11 @@ static unsigned failures;
    PFN_##name name = (PFN_##name)vk_icdGetInstanceProcAddr(instance, #name)
 
 /* Calibration for the query verdicts: R3V_WSI_FIXTURE_QUERY_ERROR names one
- * of the three queries, and the stub below replaces the loaded pointer for
- * that query alone.  The substitution lands after entrypoint loading and
- * before the first call, so the fixture run reaches the same result checks as
- * the ordinary run and a check that stopped judging its result passes both.
+ * query and replaces only that loaded pointer.  The capabilities, formats,
+ * and modes values target the minimum-count and array verdicts used by the
+ * Meson tests; the -error suffixes retain direct query-error fixtures for the
+ * result checks.  Each substitution lands after entrypoint loading and before
+ * the first call, so the fixture reaches its target branch independently.
  */
 static bool
 fixture_selects(const char *query)
@@ -51,25 +53,101 @@ fixture_selects(const char *query)
    return selected != NULL && strcmp(selected, query) == 0;
 }
 
+static bool
+allocation_size_overflows(uint32_t count, size_t element_size)
+{
+   size_t count_size = count;
+   return element_size != 0 && count_size > SIZE_MAX / element_size;
+}
+
 static VKAPI_ATTR VkResult VKAPI_CALL
 fixture_capabilities_error(VkPhysicalDevice pdev, VkSurfaceKHR surface,
                            VkSurfaceCapabilitiesKHR *pCaps)
 {
+   (void)pdev;
+   (void)surface;
+   (void)pCaps;
    return VK_ERROR_SURFACE_LOST_KHR;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+fixture_capabilities_min_count(VkPhysicalDevice pdev, VkSurfaceKHR surface,
+                               VkSurfaceCapabilitiesKHR *pCaps)
+{
+   (void)pdev;
+   (void)surface;
+   *pCaps = (VkSurfaceCapabilitiesKHR){
+      .minImageCount = 0,
+   };
+   return VK_SUCCESS;
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL
 fixture_formats_error(VkPhysicalDevice pdev, VkSurfaceKHR surface,
                       uint32_t *pCount, VkSurfaceFormatKHR *pFormats)
 {
+   (void)pdev;
+   (void)surface;
+   (void)pFormats;
    *pCount = 0;
    return VK_ERROR_SURFACE_LOST_KHR;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+fixture_formats_array(VkPhysicalDevice pdev, VkSurfaceKHR surface,
+                      uint32_t *pCount, VkSurfaceFormatKHR *pFormats)
+{
+   (void)pdev;
+   (void)surface;
+
+   /* The count call must succeed so both array verdicts execute.  The full
+    * array call reports too few elements, and the short array call reports
+    * success, so each expected result is independently wrong.
+    */
+   if (pFormats == NULL) {
+      *pCount = 2;
+      return VK_SUCCESS;
+   }
+
+   if (*pCount > 1) {
+      *pCount = 1;
+      return VK_INCOMPLETE;
+   }
+
+   return VK_SUCCESS;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+fixture_modes_array(VkPhysicalDevice pdev, VkSurfaceKHR surface,
+                    uint32_t *pCount, VkPresentModeKHR *pModes)
+{
+   (void)pdev;
+   (void)surface;
+
+   /* Keep the count query successful so the full and short array verdicts
+    * both run.  The full array call returns VK_INCOMPLETE, while the short
+    * array call returns VK_SUCCESS.
+    */
+   if (pModes == NULL) {
+      *pCount = 2;
+      return VK_SUCCESS;
+   }
+
+   if (*pCount > 1) {
+      *pCount = 1;
+      return VK_INCOMPLETE;
+   }
+
+   return VK_SUCCESS;
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL
 fixture_modes_error(VkPhysicalDevice pdev, VkSurfaceKHR surface,
                     uint32_t *pCount, VkPresentModeKHR *pModes)
 {
+   (void)pdev;
+   (void)surface;
+   (void)pModes;
    *pCount = 0;
    return VK_ERROR_SURFACE_LOST_KHR;
 }
@@ -99,6 +177,10 @@ main(void)
    PFN_vkCreateInstance create_instance =
       (PFN_vkCreateInstance)vk_icdGetInstanceProcAddr(NULL,
                                                       "vkCreateInstance");
+   CHECK(create_instance != NULL, "vkCreateInstance resolves");
+   if (create_instance == NULL)
+      goto out_window;
+
    static const char *const instance_extensions[] = {
       VK_KHR_SURFACE_EXTENSION_NAME,
       VK_KHR_XCB_SURFACE_EXTENSION_NAME,
@@ -133,20 +215,31 @@ main(void)
             vkGetPhysicalDeviceSurfaceSupportKHR &&
             vkGetPhysicalDeviceSurfaceCapabilitiesKHR &&
             vkGetPhysicalDeviceSurfaceFormatsKHR &&
-            vkGetPhysicalDeviceSurfacePresentModesKHR,
-         "the enabled surface extension resolves its entrypoints");
+            vkGetPhysicalDeviceSurfacePresentModesKHR &&
+            vkEnumeratePhysicalDevices &&
+            vkGetPhysicalDeviceQueueFamilyProperties && vkDestroyInstance,
+         "the WSI and instance entrypoints resolve");
    if (!vkCreateXcbSurfaceKHR || !vkDestroySurfaceKHR ||
        !vkGetPhysicalDeviceSurfaceSupportKHR ||
        !vkGetPhysicalDeviceSurfaceCapabilitiesKHR ||
        !vkGetPhysicalDeviceSurfaceFormatsKHR ||
-       !vkGetPhysicalDeviceSurfacePresentModesKHR)
+       !vkGetPhysicalDeviceSurfacePresentModesKHR ||
+       !vkEnumeratePhysicalDevices ||
+       !vkGetPhysicalDeviceQueueFamilyProperties || !vkDestroyInstance)
       goto out_instance;
 
    if (fixture_selects("capabilities"))
+      vkGetPhysicalDeviceSurfaceCapabilitiesKHR =
+         fixture_capabilities_min_count;
+   else if (fixture_selects("capabilities-error"))
       vkGetPhysicalDeviceSurfaceCapabilitiesKHR = fixture_capabilities_error;
    if (fixture_selects("formats"))
+      vkGetPhysicalDeviceSurfaceFormatsKHR = fixture_formats_array;
+   else if (fixture_selects("formats-error"))
       vkGetPhysicalDeviceSurfaceFormatsKHR = fixture_formats_error;
    if (fixture_selects("modes"))
+      vkGetPhysicalDeviceSurfacePresentModesKHR = fixture_modes_array;
+   else if (fixture_selects("modes-error"))
       vkGetPhysicalDeviceSurfacePresentModesKHR = fixture_modes_error;
 
    uint32_t pdev_count = 1;
@@ -168,7 +261,7 @@ main(void)
       NULL, &surface);
    CHECK(result == VK_SUCCESS && surface != VK_NULL_HANDLE,
          "vkCreateXcbSurfaceKHR: %d", result);
-   if (surface == VK_NULL_HANDLE)
+   if (result != VK_SUCCESS || surface == VK_NULL_HANDLE)
       goto out_instance;
 
    /* The surface exists and answers queries; presentation is what the native
@@ -200,7 +293,9 @@ main(void)
    result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(pdev, surface, &caps);
    CHECK(result == VK_SUCCESS,
          "vkGetPhysicalDeviceSurfaceCapabilitiesKHR: %d", result);
-   /* maxImageCount is zero when the surface sets no upper bound, so
+   /* Per the Vulkan VkSurfaceCapabilitiesKHR refpage
+    * (https://docs.vulkan.org/refpages/latest/refpages/source/VkSurfaceCapabilitiesKHR.html),
+    * maxImageCount is zero when the surface sets no upper bound, so
     * minImageCount is the floor that fixes a usable image count.
     */
    CHECK(result != VK_SUCCESS || caps.minImageCount >= 1,
@@ -218,8 +313,18 @@ main(void)
    printf("surface formats query: %d, %u formats\n", result, format_count);
 
    if (format_count > 0) {
+      if (allocation_size_overflows(format_count,
+                                    sizeof(VkSurfaceFormatKHR))) {
+         CHECK(false, "the format count fits the allocation size");
+         goto out_surface;
+      }
+
       VkSurfaceFormatKHR *formats =
          malloc(format_count * sizeof(*formats));
+      CHECK(formats != NULL, "the format array allocation succeeds");
+      if (formats == NULL)
+         goto out_surface;
+
       uint32_t written = format_count;
       result = vkGetPhysicalDeviceSurfaceFormatsKHR(pdev, surface, &written,
                                                     formats);
@@ -227,8 +332,11 @@ main(void)
             "the format array query is %d and writes %u of %u", result,
             written, format_count);
 
-      /* The two-call idiom clamps to the capacity the caller offers and
-       * reports VK_INCOMPLETE, so a short array is what proves the
+      /* The Vulkan refpage for
+       * vkGetPhysicalDeviceSurfaceFormatsKHR
+       * (https://docs.vulkan.org/refpages/latest/refpages/source/vkGetPhysicalDeviceSurfaceFormatsKHR.html)
+       * requires VK_INCOMPLETE when the offered array is shorter than the
+       * available list.  The two-call idiom therefore proves that the
        * enumeration honors its count parameter rather than writing past it.
        */
       if (format_count > 1) {
@@ -252,7 +360,16 @@ main(void)
    printf("surface present modes query: %d, %u modes\n", result, mode_count);
 
    if (mode_count > 0) {
+      if (allocation_size_overflows(mode_count, sizeof(VkPresentModeKHR))) {
+         CHECK(false, "the present-mode count fits the allocation size");
+         goto out_surface;
+      }
+
       VkPresentModeKHR *modes = malloc(mode_count * sizeof(*modes));
+      CHECK(modes != NULL, "the present-mode array allocation succeeds");
+      if (modes == NULL)
+         goto out_surface;
+
       uint32_t written = mode_count;
       result = vkGetPhysicalDeviceSurfacePresentModesKHR(pdev, surface,
                                                          &written, modes);
@@ -260,6 +377,11 @@ main(void)
             "the present-mode array query is %d and writes %u of %u", result,
             written, mode_count);
 
+      /* The Vulkan refpage for
+       * vkGetPhysicalDeviceSurfacePresentModesKHR
+       * (https://docs.vulkan.org/refpages/latest/refpages/source/vkGetPhysicalDeviceSurfacePresentModesKHR.html)
+       * gives the same VK_INCOMPLETE contract for a short present-mode array.
+       */
       if (mode_count > 1) {
          written = mode_count - 1;
          result = vkGetPhysicalDeviceSurfacePresentModesKHR(pdev, surface,
@@ -271,6 +393,7 @@ main(void)
       free(modes);
    }
 
+out_surface:
    vkDestroySurfaceKHR(instance, surface, NULL);
 out_instance:
    if (vkDestroyInstance != NULL)
