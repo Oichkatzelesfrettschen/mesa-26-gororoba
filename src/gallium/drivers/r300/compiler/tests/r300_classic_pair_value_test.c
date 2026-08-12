@@ -1677,6 +1677,152 @@ test_pair_eval_profile_and_schedule_artifact(void)
 }
 
 static void
+test_pair_eval_unmodeled_constant_contract(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   const unsigned negative = add_const(&fc, -2.0f, -2.0f, -2.0f, -2.0f);
+   const unsigned positive = add_const(&fc, 2.0f, 2.0f, 2.0f, 2.0f);
+   struct rc_pair_instruction pair;
+   memset(&pair, 0, sizeof(pair));
+   pair.RGB.Opcode = RC_OPCODE_MAX;
+   pair.RGB.WriteMask = RC_MASK_XYZ;
+   pair.RGB.DestIndex = 1;
+   pair.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_CONSTANT, .Index = negative};
+   pair.RGB.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XYZW};
+   pair.RGB.Src[1] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_NONE};
+   pair.RGB.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 1, .Swizzle = RC_SWIZZLE_0000};
+   pair.Alpha.Opcode = RC_OPCODE_NOP;
+   append_pair(&fc.Base, &fc.Base.Program.Instructions, &pair);
+
+   struct r300_pair_eval e;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.profile = r300_pair_eval_profile_rs48x_measured();
+   CHECK(!r300_pair_eval_program(&e, &fc.Base) && e.error != NULL,
+         "constant-read: negative RGB immediate is indeterminate");
+
+   struct rc_pair_instruction *scheduled_pair =
+      &fc.Base.Program.Instructions.Next->U.P;
+   scheduled_pair->RGB.Src[0].Index = positive;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.profile = r300_pair_eval_profile_rs48x_measured();
+   CHECK(r300_pair_eval_program(&e, &fc.Base) &&
+            nearly_equal(e.temps[1][0], 2.0f),
+         "constant-read: positive RGB immediate remains evaluable");
+
+   scheduled_pair->RGB.Opcode = RC_OPCODE_NOP;
+   scheduled_pair->Alpha.Opcode = RC_OPCODE_MAX;
+   scheduled_pair->Alpha.WriteMask = RC_MASK_W;
+   scheduled_pair->Alpha.DestIndex = 2;
+   scheduled_pair->Alpha.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_CONSTANT, .Index = negative};
+   scheduled_pair->Alpha.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_WWWW};
+   scheduled_pair->Alpha.Src[1] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_NONE};
+   scheduled_pair->Alpha.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 1, .Swizzle = RC_SWIZZLE_0000};
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.profile = r300_pair_eval_profile_rs48x_measured();
+   CHECK(!r300_pair_eval_program(&e, &fc.Base) && e.error != NULL,
+         "constant-read: negative Alpha immediate is indeterminate");
+
+   scheduled_pair->Alpha.Src[0].Index = positive;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.profile = r300_pair_eval_profile_rs48x_measured();
+   CHECK(r300_pair_eval_program(&e, &fc.Base) &&
+            nearly_equal(e.temps[2][3], 2.0f),
+         "constant-read: positive Alpha immediate remains evaluable");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
+static void
+test_pair_eval_alpha_port_contract(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   struct rc_pair_instruction alpha_write;
+   memset(&alpha_write, 0, sizeof(alpha_write));
+   alpha_write.RGB.Opcode = RC_OPCODE_NOP;
+   alpha_write.Alpha.Opcode = RC_OPCODE_MAX;
+   alpha_write.Alpha.WriteMask = RC_MASK_W;
+   alpha_write.Alpha.DestIndex = 1;
+   alpha_write.Alpha.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   alpha_write.Alpha.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_WWWW};
+   alpha_write.Alpha.Src[1] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_NONE};
+   alpha_write.Alpha.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 1, .Swizzle = RC_SWIZZLE_0000};
+
+   struct rc_pair_instruction alpha_read;
+   memset(&alpha_read, 0, sizeof(alpha_read));
+   alpha_read.RGB.Opcode = RC_OPCODE_NOP;
+   alpha_read.Alpha.Opcode = RC_OPCODE_MAX;
+   alpha_read.Alpha.WriteMask = RC_MASK_W;
+   alpha_read.Alpha.DestIndex = 2;
+   alpha_read.Alpha.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_TEMPORARY, .Index = 1};
+   alpha_read.Alpha.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_WWWW};
+   alpha_read.Alpha.Src[1] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_NONE};
+   alpha_read.Alpha.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 1, .Swizzle = RC_SWIZZLE_0000};
+
+   struct rc_instruction *tail =
+      append_pair(&fc.Base, &fc.Base.Program.Instructions, &alpha_write);
+   append_pair(&fc.Base, tail, &alpha_read);
+   struct rc_pair_instruction *writer =
+      &fc.Base.Program.Instructions.Next->U.P;
+
+   struct r300_pair_eval e;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.inputs[0][3] = -1.0f;
+   e.profile = r300_pair_eval_profile_rs48x_measured();
+   CHECK(!r300_pair_eval_program(&e, &fc.Base) && e.error != NULL,
+         "alpha-read: negative input-port value is indeterminate");
+
+   writer->Alpha.Opcode = RC_OPCODE_MIN;
+   writer->Alpha.Arg[0].Negate = 1;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.inputs[0][3] = 1.0f;
+   e.profile = r300_pair_eval_profile_rs48x_measured();
+   CHECK(!r300_pair_eval_program(&e, &fc.Base) && e.error != NULL,
+         "alpha-read: negative temporary-port value is indeterminate");
+
+   writer->Alpha.Opcode = RC_OPCODE_MAX;
+   writer->Alpha.Arg[0].Negate = 0;
+   memset(&e, 0, sizeof(e));
+   e.consts = &fc.Base.Program.Constants;
+   e.inputs[0][3] = 1.0f;
+   e.profile = r300_pair_eval_profile_rs48x_measured();
+   CHECK(r300_pair_eval_program(&e, &fc.Base) &&
+            nearly_equal(e.temps[2][3], 1.0f),
+         "alpha-read: nonnegative Alpha-port values remain evaluable");
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
+static void
 test_pair_eval_presubtract_contract(void)
 {
    struct r300_fragment_program_compiler fc;
@@ -1768,6 +1914,8 @@ main(void)
    test_source_read_model_boundaries();
    test_source_read_lattice_exhaustive();
    test_pair_eval_profile_and_schedule_artifact();
+   test_pair_eval_unmodeled_constant_contract();
+   test_pair_eval_alpha_port_contract();
    test_pair_eval_presubtract_contract();
 
    glsl_type_singleton_decref();
