@@ -65,6 +65,20 @@ check_cell_emitter_error_mapping(void)
    CHECK(r3v_native_cell_vk_result_from_errno(-EINVAL) ==
             VK_ERROR_INITIALIZATION_FAILED,
          "structural emitter errors map to initialization failure");
+
+   /* Calibrate the status classifier with one accepted completion and the
+    * two negative transport boundaries.  These cases stay independent of
+    * the shim so a future result-code normalization cannot erase the split.
+    */
+   CHECK(r3v_native_queue_status_from_transport(true, true) ==
+            R3V_NATIVE_QUEUE_STATUS_COMPLETED,
+         "accepted ioctl and retired wait classify as completed");
+   CHECK(r3v_native_queue_status_from_transport(false, false) ==
+            R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED,
+         "rejected ioctl classifies as submission refusal");
+   CHECK(r3v_native_queue_status_from_transport(true, false) ==
+            R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE,
+         "accepted ioctl and failed wait classify as completion failure");
 }
 
 static bool
@@ -368,9 +382,14 @@ main(int argc, char **argv)
                              .pCommandBuffers = &cmd,
                           },
                           VK_NULL_HANDLE);
+   enum r3v_native_queue_status queue_status =
+      r3v_native_queue_submission_status(device);
    if (open_gate) {
       CHECK(result == VK_SUCCESS,
             "open-gate submission through the shim: %d", result);
+      CHECK(queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
+            "open-gate shim submission retires: %s",
+            r3v_native_queue_status_name(queue_status));
 
       /* The retained submit object folds the completion reference in as
        * a second relocation entry beside the color reference.
@@ -481,6 +500,9 @@ main(int argc, char **argv)
    } else {
       CHECK(result == VK_ERROR_DEVICE_LOST,
             "closed gate fails closed: %d", result);
+      CHECK(queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED,
+            "closed gate reports refusal before the ioctl: %s",
+            r3v_native_queue_status_name(queue_status));
 
       /* The retained IB equals the direct emitter's stream byte for
        * byte, and the relocation chunk carries exactly the one color

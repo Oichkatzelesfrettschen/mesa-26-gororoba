@@ -475,12 +475,27 @@ r3v_native_queue_consume_binary_waits(
    return VK_SUCCESS;
 }
 
+enum r3v_native_queue_status
+r3v_native_queue_submission_status(VkDevice _device)
+{
+   VK_FROM_HANDLE(r3v_native_device, device, _device);
+   return device != NULL ? device->queue_status
+                         : R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION;
+}
+
 VkResult
 r3v_native_queue_submit(struct vk_queue *queue_base,
                         struct vk_queue_submit *submit)
 {
    struct r3v_native_device *device =
       container_of(queue_base->base.device, struct r3v_native_device, vk);
+
+   /* Every non-success return below is a refusal until the CS ioctl accepts
+    * the command.  The completed and completion-failure states are installed
+    * only at the transport boundary, so an API-level device-loss result keeps
+    * its queue-phase meaning for the attended control.
+    */
+   device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED;
 
    /* An authorization declares one IB digest and its evidence directory
     * disarms after one attempt, so an open gate admits exactly one
@@ -575,6 +590,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                return vk_error(device, VK_ERROR_DEVICE_LOST);
             return deferred;
          }
+         device->queue_status = R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION;
          continue;
       }
 
@@ -793,8 +809,11 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
 
       int result = radeon_drm_vk_cs_submit(&device->drm, &cs);
-      if (result == 0)
+      const bool ioctl_accepted = result == 0;
+      if (ioctl_accepted) {
+         device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
          result = radeon_drm_vk_completion_await(&device->drm, &completion);
+      }
       if (result == 0) {
          /* Device writes landed in memory past the cache; drop every
           * stale line over the live mappings before the host reads them.
@@ -814,10 +833,14 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       radeon_drm_vk_completion_finish(&device->drm, &completion);
       radeon_drm_vk_reloc_list_finish(&relocs);
       if (result != 0) {
+         device->queue_status =
+            r3v_native_queue_status_from_transport(ioctl_accepted, false);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                           "r3v-native: submission or completion wait "
                           "failed: %d", result);
       }
+      device->queue_status =
+         r3v_native_queue_status_from_transport(ioctl_accepted, true);
    }
 
    /* The bounded completion wait above retired every buffer.  Consuming

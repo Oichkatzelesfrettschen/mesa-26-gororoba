@@ -295,7 +295,10 @@ main(int argc, char **argv)
                        .pCommandBuffers = &cmd,
                     },
                     VK_NULL_HANDLE);
-   printf("[submit] vkQueueSubmit returned %d\n", submit_result);
+   enum r3v_native_queue_status queue_status =
+      r3v_native_queue_submission_status(device);
+   printf("[submit] vkQueueSubmit returned %d status=%s\n", submit_result,
+          r3v_native_queue_status_name(queue_status));
    fflush(stdout);
 
    /* Readback and retention run for every submit result: a refused or
@@ -360,11 +363,13 @@ main(int argc, char **argv)
    enum outcome outcome;
    if (!verdict.canary_pass || disturbed_tail != 0)
       outcome = OUTCOME_CONTAINMENT_FAILURE;
-   else if (submit_result == VK_ERROR_DEVICE_LOST)
+   else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE)
       outcome = OUTCOME_COMPLETION_FAILURE;
-   else if (submit_result != VK_SUCCESS)
+   else if (queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED ||
+            submit_result != VK_SUCCESS)
       outcome = OUTCOME_SUBMISSION_REFUSED;
-   else if (verdict.executed && verdict.value_a_pass &&
+   else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED &&
+            verdict.executed && verdict.value_a_pass &&
             verdict.value_b_pass && verdict.sentinel_pass)
       outcome = OUTCOME_CONTROL_PASS;
    else
@@ -374,9 +379,10 @@ main(int argc, char **argv)
    int length = snprintf(
       outcome_json, sizeof(outcome_json),
       "{\n"
-      "  \"schema\": \"r3v-native-direct-write-outcome/1\",\n"
+      "  \"schema\": \"r3v-native-direct-write-outcome/2\",\n"
       "  \"verdict\": \"%s\",\n"
       "  \"submit_result\": %d,\n"
+      "  \"queue_status\": \"%s\",\n"
       "  \"executed\": %s,\n"
       "  \"value_a_pass\": %s,\n"
       "  \"value_b_pass\": %s,\n"
@@ -387,6 +393,7 @@ main(int argc, char **argv)
       "  \"pixel_b_observed\": \"0x%08x\"\n"
       "}\n",
       outcome_names[outcome], submit_result,
+      r3v_native_queue_status_name(queue_status),
       verdict.executed ? "true" : "false",
       verdict.value_a_pass ? "true" : "false",
       verdict.value_b_pass ? "true" : "false",
