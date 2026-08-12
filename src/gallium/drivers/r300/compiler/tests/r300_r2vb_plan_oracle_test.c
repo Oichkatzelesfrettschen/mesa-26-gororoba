@@ -326,7 +326,7 @@ build_lowered_store_output(bool unsupported)
 
 static nir_shader *
 build_lowered_store_output_contract(nir_intrinsic_instr **store_out,
-                                    bool multi_slot)
+                                    unsigned offset, unsigned num_slots)
 {
    struct vs_build v = begin_vs("plan_store_output_contract", false);
    nir_def *components[] = {
@@ -335,17 +335,12 @@ build_lowered_store_output_contract(nir_intrinsic_instr **store_out,
    };
    nir_def *value = nir_vec(&v.b, components, ARRAY_SIZE(components));
    nir_intrinsic_instr *store = nir_store_output(
-      &v.b, value, nir_imm_int(&v.b, 1),
+      &v.b, value, nir_imm_int(&v.b, offset),
       .io_semantics = {
          .location = VARYING_SLOT_VAR0,
-         .num_slots = 1,
+         .num_slots = num_slots,
       });
    nir_intrinsic_set_component(store, 2);
-   if (multi_slot) {
-      nir_io_semantics semantics = nir_intrinsic_io_semantics(store);
-      semantics.num_slots = 2;
-      nir_intrinsic_set_io_semantics(store, semantics);
-   }
    if (store_out)
       *store_out = store;
    return end_vs(&v, v.pos);
@@ -374,6 +369,22 @@ shader_first_intrinsic(nir_shader *nir, nir_intrinsic_op op)
          if (instr->type == nir_instr_type_intrinsic &&
              nir_instr_as_intrinsic(instr)->intrinsic == op)
             return nir_instr_as_intrinsic(instr);
+      }
+   }
+   return NULL;
+}
+
+static nir_alu_instr *
+shader_def_alu(nir_shader *nir, nir_def *def)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_alu)
+            continue;
+         nir_alu_instr *alu = nir_instr_as_alu(instr);
+         if (&alu->def == def)
+            return alu;
       }
    }
    return NULL;
@@ -1075,11 +1086,11 @@ case_lowered_store_output_offset_component_contract(struct r300_context *r300)
    printf("lowered store_output offset and component contracts are preserved\n");
 
    nir_intrinsic_instr *store = NULL;
-   nir_shader *vs = build_lowered_store_output_contract(&store, false);
+   nir_shader *vs = build_lowered_store_output_contract(&store, 1, 2);
    gl_varying_slot location;
    CHECK(store && r300_r2vb_output_store_location(store, &location) &&
             location == VARYING_SLOT_VAR0 + 1,
-         "constant output offset selects the effective varying slot");
+         "constant offset within a multi-slot declaration selects the slot");
 
    nir_shader *fs = r300_r2vb_build_restaged_fs_nir(
       r300, vs, VARYING_SLOT_VAR0 + 1, R300_R2VB_POSITION_CLIP);
@@ -1101,14 +1112,25 @@ case_lowered_store_output_offset_component_contract(struct r300_context *r300)
                   (!nir_intrinsic_has_component(restaged) ||
                    nir_intrinsic_component(restaged) == 0),
                "restager resets the component when padding the record");
+         nir_alu_instr *padded = shader_def_alu(fs, restaged->src[0].ssa);
+         bool preserves_component_lanes =
+            padded && padded->op == nir_op_vec4 &&
+            nir_src_is_const(padded->src[0].src) &&
+            nir_src_is_const(padded->src[1].src) &&
+            nir_const_value_as_float(
+               *nir_src_as_const_value(padded->src[0].src), 32) == 0.0f &&
+            nir_const_value_as_float(
+               *nir_src_as_const_value(padded->src[1].src), 32) == 0.0f;
+         CHECK(preserves_component_lanes,
+               "padding keeps component-qualified values in their lanes");
       }
       ralloc_free(fs);
    }
    ralloc_free(vs);
 
-   vs = build_lowered_store_output_contract(&store, true);
+   vs = build_lowered_store_output_contract(&store, 2, 2);
    CHECK(!r300_r2vb_output_store_location(store, &location),
-         "multi-slot lowered outputs are rejected by the planner contract");
+         "out-of-range lowered output offsets are rejected");
    ralloc_free(vs);
 }
 

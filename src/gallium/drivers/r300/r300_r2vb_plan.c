@@ -80,12 +80,12 @@ r300_r2vb_output_store_location(const nir_intrinsic_instr *intr,
     }
     case nir_intrinsic_store_output: {
         const nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
-        if (semantics.num_slots != 1 || !nir_src_is_const(intr->src[1]))
+        if (!semantics.num_slots || !nir_src_is_const(intr->src[1]))
             return false;
 
         const uint64_t base = semantics.location;
         const uint64_t offset = nir_src_as_uint(intr->src[1]);
-        if (base >= VARYING_SLOT_MAX ||
+        if (offset >= semantics.num_slots || base >= VARYING_SLOT_MAX ||
             offset >= VARYING_SLOT_MAX - base)
             return false;
 
