@@ -8129,21 +8129,20 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
     r300_r2vb_producer_bo_draw_init(&txn);
     static unsigned producer_submit3_state = R300_R2VB_SUBMIT3_AVAILABLE;
 
-    /* A submitted producer owns the process's remaining GPU work.  Consume a
-     * qualifying draw before any transaction work so the draw cannot reach
-     * gallivm after the live candidate. */
+    bool submit3_reserved = false;
+    /* IN_PROGRESS and SUBMITTED retire qualifying draws at this gate.  The
+     * reservation owns the sole PM4 candidate until emission commits it. */
     if (action == R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME &&
-        r300_r2vb_submit3_action_for_state(
-            p_atomic_read(&producer_submit3_state)) ==
-            R300_R2VB_SUBMIT3_CONSUME) {
+        !r300_r2vb_submit3_try_reserve(&producer_submit3_state)) {
         fprintf(stderr,
                 "r2vb_bo_draw_producer3 decision=consume "
-                "reason=already_submitted\n");
+                "reason=submit3_reserved\n");
         r2vb_accrue_app_state_restore(r300);
         r300->vertex_arrays_dirty = true;
         r300_r2vb_producer_bo_draw_fini(&txn);
         return R300_R2VB_BO3_CONSUMED_AFTER_SUBMIT;
     }
+    submit3_reserved = action == R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME;
 
     /* The varying pass supplies its allow_computed_varying plan cell and its
      * own measured model source; the position pass keeps the cv=0 cell and
@@ -8347,12 +8346,15 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
             why = "emit";
         } else {
             r2vb_emit_producer_order_tail(r300);
-            if (action == R2VB_BO_DRAW_ACTION_SUBMIT_CONSUME)
+            if (submit3_reserved)
                 r300_r2vb_submit3_mark_submitted(&producer_submit3_state);
             fprintf(stderr, "r2vb_bo_draw_producer3 decision=emitted\n");
             ok = true;
         }
     }
+
+    if (submit3_reserved && !ok)
+        r300_r2vb_submit3_rollback(&producer_submit3_state);
 
     fprintf(stderr,
             "r2vb_bo_draw_producer3 mode=%s ok=%d why=%s count=%u start=%u "
