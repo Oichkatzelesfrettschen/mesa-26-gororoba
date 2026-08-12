@@ -78,14 +78,16 @@ esac
 bad=$("${R3V_KERNEL_REPLAY_TOOL}" --set-vtx-size 3 "${workdir}/ib.bin")
 echo "${bad}"
 case "${bad}" in
-    *"reject=0"*)
-        echo "mutated submit object was not rejected" >&2
+    *"reject=1"*) ;;
+    *)
+        echo "mutated submit object did not produce reject=1" >&2
         exit 1
         ;;
 esac
 
 # Known-bad: a truncated stream must fail decode, and never pass.
-head -c 32 "${workdir}/ib.bin" > "${workdir}/truncated.bin"
+dd if="${workdir}/ib.bin" of="${workdir}/truncated.bin" bs=32 count=1 \
+    2>/dev/null
 if "${R3V_KERNEL_REPLAY_TOOL}" "${workdir}/truncated.bin"; then
     echo "truncated submit object replayed successfully" >&2
     exit 1
