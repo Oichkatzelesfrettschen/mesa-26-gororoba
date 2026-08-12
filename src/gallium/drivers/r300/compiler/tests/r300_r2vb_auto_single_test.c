@@ -2916,11 +2916,36 @@ check_position_mapping_and_interface(void)
          "interface: unsupported model record rejects");
 }
 
+static void
+check_alu12_contract(void)
+{
+   CHECK(r300_r2vb_alu12_contract_ok(
+            PIPE_FORMAT_R32G32B32_FLOAT, false, false),
+         "ALU12: float3 source with inactive alpha-to-one admits");
+   CHECK(r300_r2vb_alu12_contract_ok(
+            PIPE_FORMAT_R32G32B32_FLOAT, false, true),
+         "ALU12: multisampling without alpha-to-one admits");
+   CHECK(r300_r2vb_alu12_contract_ok(
+            PIPE_FORMAT_R32G32B32_FLOAT, true, false),
+         "ALU12: alpha-to-one without multisampling has no lowering");
+   CHECK(!r300_r2vb_alu12_contract_ok(
+            PIPE_FORMAT_R32G32B32A32_FLOAT, false, false),
+         "ALU12: float4 source cannot supply a fixed reciprocal W");
+   CHECK(!r300_r2vb_alu12_contract_ok(
+            PIPE_FORMAT_R32G32_FLOAT, false, false),
+         "ALU12: non-float3 source declines");
+   CHECK(!r300_r2vb_alu12_contract_ok(
+            PIPE_FORMAT_R32G32B32_FLOAT, true, true),
+         "ALU12: effective alpha-to-one declines before producer output");
+}
+
 int
 main(void)
 {
    fake_stack_init();
 
+   printf("ALU12 diagnostic contract:\n");
+   check_alu12_contract();
    printf("position mapping + producer interface:\n");
    check_position_mapping_and_interface();
    printf("producer logical binding:\n");
