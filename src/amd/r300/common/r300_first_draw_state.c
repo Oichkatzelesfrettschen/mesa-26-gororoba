@@ -183,8 +183,9 @@ r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
    if (params->chip_family != CHIP_RS480)
       return -ENOTSUP;
 
-   /* Bound before subtracting and adding the bias so unsigned scissor
-    * arithmetic cannot wrap into the accepted range.
+   /* The resolver bounds each extent with R300_FDS_MAX_EXTENT before
+    * computing the biased high coordinate, so unsigned scissor arithmetic
+    * cannot wrap into the accepted range.
     */
    if (params->width == 0 || params->height == 0 ||
        params->width > R300_FDS_MAX_EXTENT ||
