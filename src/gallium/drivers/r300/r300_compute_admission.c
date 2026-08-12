@@ -2206,6 +2206,13 @@ multipass_phi_matches_loop(nir_phi_instr *phi, nir_loop *loop,
  *      guard because replay flattens all invocations; the flat invocation
  *      index intrinsic has no additional guard.
  *
+ * The detector is r300_nir_detect_multipass_scan_pattern, the offset proof is
+ * multipass_offset_is_invocation_index, and the dispatch guard is
+ * r300_compute_multipass_dispatch_shape_is_valid. Source discovery uses
+ * `rg --fixed-strings multipass_offset_is_invocation_index
+ * src/gallium/drivers/r300/r300_compute_admission.c` and the corresponding
+ * public symbol names in r300_compute_admission.h.
+ *
  * step_op carries the per-iteration nir_op for diagnostics; the orchestrator
  * hard-codes the doubling, which is sound precisely because every admitted
  * step is a doubling.  Bindings stay 0 when the post-explicit_io binding
