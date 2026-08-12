@@ -228,6 +228,13 @@ file_mode(const char *path)
    return stat(path, &st) == 0 ? st.st_mode & 0777 : 0;
 }
 
+static bool
+file_is_regular_nofollow(const char *path)
+{
+   struct stat st;
+   return lstat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 /* Plan one specimen, assert the expected action (calibrating the specimen
  * itself against the planner), record it in telemetry, release it. */
 static void
@@ -509,6 +516,22 @@ main(void)
       r300_r2vb_plan_release(&mode_plan);
    }
 
+   /* A matching effective mode keeps the descriptor-bound deduplication path
+    * free of an ownership-changing fchmod operation. */
+   unsigned matching_mode_failures = c->retain_failures;
+   bind_vs(over);
+   struct r300_r2vb_producer_plan matching_mode_plan;
+   bool matching_mode_ran = r300_r2vb_plan_producer(
+      &g_context, over, false, R300_R2VB_POSITION_CLIP, &matching_mode_plan);
+   CHECK(matching_mode_ran, "matching mode plan remains available");
+   if (matching_mode_ran) {
+      r300_r2vb_telemetry_note(&g_context, &matching_mode_plan);
+      CHECK(c->retain_failures == matching_mode_failures &&
+               file_mode(retained_path) == 0644,
+            "matching mode skips the ownership-changing operation");
+      r300_r2vb_plan_release(&matching_mode_plan);
+   }
+
    /* Known-bad file at the final name: dedup verifies bytes, so a damaged
     * entry is republished with the correct content. */
    long good_size = have_file ? file_size(retained_path) : -1;
@@ -537,6 +560,43 @@ main(void)
             have_file && file_size(retained_path) == good_size &&
             file_mode(retained_path) == 0600,
          "mismatching existing file republishes atomically with umask");
+
+   /* A final-name symlink enters publication through O_NOFOLLOW.  The
+    * unrelated target keeps its bytes and mode while rename replaces the
+    * symlink with the validated blob. */
+   char symlink_target[512];
+   int target_need = snprintf(symlink_target, sizeof(symlink_target),
+                              "%s/unrelated-target", retain_dir);
+   CHECK(target_need >= 0 && (size_t)target_need < sizeof(symlink_target),
+         "symlink target path fits");
+   if (target_need >= 0 && (size_t)target_need < sizeof(symlink_target)) {
+      FILE *target = fopen(symlink_target, "wb");
+      CHECK(target && fputs("unrelated", target) >= 0 && fclose(target) == 0,
+            "unrelated target is created");
+      CHECK(chmod(symlink_target, 0600) == 0,
+            "unrelated target mode is restricted");
+      CHECK(unlink(retained_path) == 0 &&
+               symlink("unrelated-target", retained_path) == 0,
+            "retained name becomes a symlink to the unrelated target");
+      unsigned symlink_failures = c->retain_failures;
+      plan_and_note("over/symlink", over, R300_R2VB_PLAN_SPLIT);
+      bind_vs(over);
+      struct r300_r2vb_producer_plan symlink_plan;
+      bool symlink_plan_ran = r300_r2vb_plan_producer(
+         &g_context, over, false, R300_R2VB_POSITION_CLIP, &symlink_plan);
+      CHECK(symlink_plan_ran, "symlink publication plan remains available");
+      if (symlink_plan_ran) {
+         r300_r2vb_telemetry_note(&g_context, &symlink_plan);
+         CHECK(c->retain_failures == symlink_failures &&
+                  file_size(symlink_target) == (long)strlen("unrelated") &&
+                  file_mode(symlink_target) == 0600 &&
+                  file_size(retained_path) == good_size &&
+                  file_is_regular_nofollow(retained_path),
+               "symlink target stays untouched during publication");
+         r300_r2vb_plan_release(&symlink_plan);
+      }
+      unlink(symlink_target);
+   }
 
    /* Structural reject: control flow carries no budget signal. */
    plan_and_note("control-flow", cflow, R300_R2VB_PLAN_REJECT);

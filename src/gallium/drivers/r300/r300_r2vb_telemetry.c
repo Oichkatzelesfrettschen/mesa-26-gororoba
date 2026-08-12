@@ -142,27 +142,27 @@ telemetry_retain_eligible(const struct r300_r2vb_producer_plan *plan)
         plan, telemetry_retain_scope());
 }
 
-/* Compare a published file byte-for-byte against the serialized blob. */
+/* Compare an opened regular file byte-for-byte against the serialized blob. */
 static bool
-file_matches_blob(const char *path, const uint8_t *data, size_t size)
+file_matches_blob_fd(int fd, const uint8_t *data, size_t size)
 {
-    FILE *f = fopen(path, "rb");
-    if (!f)
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        lseek(fd, 0, SEEK_SET) < 0)
         return false;
+
     uint8_t buf[4096];
     size_t off = 0;
-    size_t got;
+    ssize_t got;
     bool match = true;
-    while (match && (got = fread(buf, 1, sizeof(buf), f)) > 0) {
-        if (got > size - off || memcmp(buf, data + off, got) != 0)
+    while (match && (got = read(fd, buf, sizeof(buf))) > 0) {
+        if ((size_t)got > size - off ||
+            memcmp(buf, data + off, (size_t)got) != 0)
             match = false;
         else
-            off += got;
+            off += (size_t)got;
     }
-    if (match)
-        match = (off == size) && !ferror(f);
-    fclose(f);
-    return match;
+    return match && off == size && got == 0;
 }
 
 /* Create a same-directory O_EXCL temporary inode with the requested creation
@@ -233,31 +233,54 @@ telemetry_publish(const char *path, const uint8_t *data, size_t size)
     return ok;
 }
 
-/* Apply the effective creation mode to an existing matching blob.  The probe
- * inode lives beside the corpus file, so its mode includes the process umask
- * and directory policy that govern new publications. */
-static bool
-telemetry_sync_existing_mode(const char *path)
+enum telemetry_existing_blob_result {
+    TELEMETRY_EXISTING_NOT_MATCHING,
+    TELEMETRY_EXISTING_MATCHED,
+    TELEMETRY_EXISTING_ERROR,
+};
+
+/* Validate and synchronize one existing blob through its opened descriptor.
+ * O_NOFOLLOW binds the validation to a regular inode, and fchmod applies the
+ * effective creation mode to that same inode. */
+static enum telemetry_existing_blob_result
+telemetry_sync_existing_mode(const char *path, const uint8_t *data,
+                             size_t size)
 {
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0)
+        return TELEMETRY_EXISTING_NOT_MATCHING;
+
+    if (!file_matches_blob_fd(fd, data, size)) {
+        close(fd);
+        return TELEMETRY_EXISTING_NOT_MATCHING;
+    }
+
     char probe[1088];
     mode_t mode;
     int probe_fd = telemetry_open_unique(path, probe, sizeof(probe), &mode);
-    if (probe_fd < 0)
-        return false;
+    if (probe_fd < 0) {
+        close(fd);
+        return TELEMETRY_EXISTING_ERROR;
+    }
 
     bool ok = close(probe_fd) == 0;
     if (unlink(probe) != 0)
         ok = false;
-    if (!ok)
-        return false;
+    if (!ok) {
+        close(fd);
+        return TELEMETRY_EXISTING_ERROR;
+    }
 
-    int fd = open(path, O_RDONLY);
-    if (fd < 0)
-        return false;
-    ok = fchmod(fd, mode) == 0;
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        close(fd);
+        return TELEMETRY_EXISTING_ERROR;
+    }
+    if ((st.st_mode & 0777) != mode)
+        ok = fchmod(fd, mode) == 0;
     if (close(fd) != 0)
         ok = false;
-    return ok;
+    return ok ? TELEMETRY_EXISTING_MATCHED : TELEMETRY_EXISTING_ERROR;
 }
 
 /* Serialize the application VS into <dir>/r2vb-vs-<blake3>.nir.  The
@@ -292,12 +315,15 @@ telemetry_retain(const char *dir, const struct nir_shader *vs_nir)
         return;
     }
 
-    if (access(path, F_OK) == 0 &&
-        file_matches_blob(path, blob.data, blob.size)) {
-        bool mode_ok = telemetry_sync_existing_mode(path);
+    enum telemetry_existing_blob_result existing =
+        telemetry_sync_existing_mode(path, blob.data, blob.size);
+    if (existing == TELEMETRY_EXISTING_MATCHED) {
         blob_finish(&blob);
-        if (!mode_ok)
-            p_atomic_inc(&counters.retain_failures);
+        return;
+    }
+    if (existing == TELEMETRY_EXISTING_ERROR) {
+        blob_finish(&blob);
+        p_atomic_inc(&counters.retain_failures);
         return;
     }
 
