@@ -416,7 +416,10 @@ void r300_nir_detect_blend_acc_reduction(const struct nir_shader *s,
  *              atomic's value source is the CONSTANT 1 (NOT the load's def),
  *              its offset is zero, and the load uses the gid * 4 stream; the
  *              load feeds a direct `load != 0` nir_if condition in the then
- *              branch, outside loops.
+ *              branch, outside loops.  A load based on
+ *              gl_GlobalInvocationID.x carries a one-dimensional dispatch
+ *              guard because the replay flattens all invocations; a
+ *              load_global_invocation_index source is already flat.
  *
  * value_ssbo_binding is the binding of the predicate load_ssbo;
  * output_ssbo_binding is the binding of the single-element counter
@@ -429,11 +432,18 @@ struct r300_compute_zpass_reduction_pattern {
    uint32_t   output_ssbo_binding;    /* binding of the single-element counter */
    bool       value_ssbo_binding_valid;
    bool       output_ssbo_binding_valid;
+   bool       load_uses_global_invocation_id_x;
    uint16_t   alu_op;                 /* nir_op_iadd for the first cut */
 };
 
 void r300_nir_detect_zpass_reduction(const struct nir_shader *s,
                                      struct r300_compute_zpass_reduction_pattern *out);
+
+/* A global-invocation-ID X source is equivalent to a flat invocation index
+ * only when the dispatch has one invocation in each of its Y and Z axes. */
+bool r300_compute_zpass_dispatch_shape_is_valid(
+   const struct r300_compute_zpass_reduction_pattern *pattern,
+   uint64_t invocations_y, uint64_t invocations_z);
 
 /* Multipass FBO ping-pong scan kernel pattern.  Recognises the per-element
  * self-iterated shape:
