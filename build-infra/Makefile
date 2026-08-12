@@ -384,6 +384,7 @@ endef
 
 .PHONY: list source-root-check source-root-control-unit-test \
         source-root-selection-test distcc-probe-directory-test \
+        distcc-gcc-major-probe-test \
         vostro-prefix-check audit configure build clean clean-all distclean install \
         artifact-check test \
         rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache \
@@ -503,6 +504,7 @@ help:
 	@echo "  source-root-control-unit-test exercise path and identity invariants"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
 	@echo "  distcc-probe-directory-test calibrates host-audit probe directory creation"
+	@echo "  distcc-gcc-major-probe-test calibrates every remote GNU distcc compiler identity"
 	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
 	@echo "  artifact-check    list installed Terakan/r600/r3v artifacts under \$$(PREFIX); warn on stale r300 ICDs"
 	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
@@ -618,9 +620,127 @@ distcc-probe-directory-test:
 	rmdir -- "$$probe_dir"; \
 	echo "OK    distcc probe directory accepts TMPDIR paths with spaces"
 
+distcc-gcc-major-probe-test:
+	@set -euo pipefail; \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf -- "$$tmpdir"' EXIT HUP INT TERM; \
+	probe_dir="$$tmpdir/probe"; mkdir -- "$$probe_dir"; \
+	distcc_host_name() { \
+		host_spec="$$1"; host_spec="$${host_spec%%/*}"; host_spec="$${host_spec%%,*}"; \
+		host_spec="$${host_spec#@}"; host_spec="$${host_spec#*@}"; \
+		case "$$host_spec" in \
+			\[*\]:*) host_spec="$${host_spec%%]*}"; host_spec="$${host_spec#\[}" ;; \
+			*:*) host_spec="$${host_spec%%:*}" ;; \
+		esac; \
+		printf '%s\n' "$$host_spec"; \
+	}; \
+	gcc_object_major() { \
+		LC_ALL=C readelf --string-dump=.comment "$$1" 2>/dev/null | \
+			sed -n 's/^[[:space:]]*.*GCC: (GNU) \([0-9][0-9]*\).*/\1/p' | \
+			sed -n '1p'; \
+	}; \
+	probe_distcc_host() { \
+		distcc_spec="$$1"; expected_major="$$2"; compiler_tool="$$3"; \
+		compiler_family="$$4"; probe_dir="$$5"; \
+		remote_distcc_host="$$(distcc_host_name "$$distcc_spec")"; \
+		if ! getent ahostsv4 "$$remote_distcc_host" >/dev/null 2>&1; then \
+			echo "FAIL  distcc volunteer hostname does not resolve: $$distcc_spec" >&2; \
+			return 1; \
+		fi; \
+		if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err" || \
+			! printf '%s\n' 'int gororoba_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; then \
+			echo "FAIL  cannot prepare distcc volunteer probe: $$distcc_spec" >&2; \
+			return 1; \
+		fi; \
+		if ! DISTCC_HOSTS="$$distcc_spec" DISTCC_FALLBACK=0 \
+			distcc "$$compiler_tool" -Wall -Wextra -Werror \
+			-c "$$probe_dir/probe.c" -o "$$probe_dir/probe.o" \
+			>/dev/null 2>"$$probe_dir/probe.err"; then \
+			echo "FAIL  distcc volunteer dispatch failed: $$distcc_spec ($$compiler_tool)" >&2; \
+			sed -n '1,12p' "$$probe_dir/probe.err" >&2; \
+			return 1; \
+		fi; \
+		if [ "$$compiler_family" = gnu ]; then \
+			remote_gcc_major="$$(gcc_object_major "$$probe_dir/probe.o")"; \
+			if [ -z "$$remote_gcc_major" ]; then \
+				echo "FAIL  distcc volunteer object has no GCC identity: $$distcc_spec" >&2; \
+				return 1; \
+			fi; \
+			if [ "$$remote_gcc_major" != "$$expected_major" ]; then \
+				echo "FAIL  distcc volunteer GCC major mismatch: $$distcc_spec (client=$$expected_major remote=$$remote_gcc_major)" >&2; \
+				return 1; \
+			fi; \
+			echo "OK    distcc volunteer GCC major: $$distcc_spec ($$remote_gcc_major)"; \
+		else \
+			echo "OK    distcc volunteer dispatch: $$distcc_spec ($$compiler_tool)"; \
+		fi; \
+	}; \
+	probe_all_distcc_hosts() { \
+		expected_major="$$1"; compiler_tool="$$2"; compiler_family="$$3"; probe_dir="$$4"; \
+		remote_distcc_count=0; remote_distcc_failures=0; \
+		for distcc_spec in $${DISTCC_HOSTS:-}; do \
+			case "$$distcc_spec" in --*) continue ;; esac; \
+			remote_distcc_host="$$(distcc_host_name "$$distcc_spec")"; \
+			case "$$remote_distcc_host" in ""|localhost|localhost.localdomain) continue ;; esac; \
+			remote_distcc_count=$$((remote_distcc_count + 1)); \
+			if ! probe_distcc_host "$$distcc_spec" "$$expected_major" "$$compiler_tool" "$$compiler_family" "$$probe_dir"; then \
+				remote_distcc_failures=$$((remote_distcc_failures + 1)); \
+			fi; \
+		done; \
+		[ "$$remote_distcc_count" -gt 0 ] && [ "$$remote_distcc_failures" -eq 0 ]; \
+	}; \
+	getent() { return 0; }; \
+	fake_probe_spec=""; \
+	distcc() { \
+		fake_probe_spec="$${DISTCC_HOSTS:-}"; output=""; \
+		while [ "$$#" -gt 0 ]; do \
+			if [ "$$1" = -o ]; then shift; output="$$1"; fi; \
+			shift; \
+		done; \
+		[ -n "$$output" ] || return 1; \
+		: > "$$output"; \
+	}; \
+	readelf() { \
+		case "$$fake_probe_spec" in \
+			volunteer-a/1|volunteer-b/1) printf '%s\n' 'String dump of section .comment: GCC: (GNU) 16.1.1' ;; \
+			volunteer-mismatch/1) printf '%s\n' 'String dump of section .comment: GCC: (GNU) 15.4.0' ;; \
+			volunteer-missing/1|*) return 1 ;; \
+			esac; \
+	}; \
+	test "$$(distcc_host_name 'USER@volunteer-a:3632/4,lzo')" = volunteer-a || { \
+		echo "FAIL  distcc host parser did not isolate a volunteer hostname" >&2; exit 1; \
+	}; \
+	test "$$(distcc_host_name 'localhost,lzo/2')" = localhost || { \
+		echo "FAIL  distcc host parser did not preserve localhost classification" >&2; exit 1; \
+	}; \
+	echo "OK    distcc host parser handles user, port, and option syntax"; \
+	DISTCC_HOSTS='localhost/2 volunteer-a/1 volunteer-b/1'; \
+	if ! probe_all_distcc_hosts 16 gcc gnu "$$probe_dir"; then \
+		echo "FAIL  matching GCC majors for every volunteer were rejected" >&2; exit 1; \
+	fi; \
+	test "$$remote_distcc_count" -eq 2 || { echo "FAIL  expected two remote volunteer probes" >&2; exit 1; }; \
+	echo "OK    matching GCC major identities pass for every remote volunteer"; \
+	DISTCC_HOSTS='volunteer-a/1 volunteer-mismatch/1'; \
+	if probe_all_distcc_hosts 16 gcc gnu "$$probe_dir"; then \
+		echo "FAIL  mismatched remote GCC major passed" >&2; exit 1; \
+	fi; \
+	test "$$remote_distcc_count" -eq 2 && test "$$remote_distcc_failures" -eq 1 || { \
+		echo "FAIL  mismatched volunteer did not produce one failed probe" >&2; exit 1; \
+	}; \
+	echo "OK    mismatched GCC major is rejected"; \
+	DISTCC_HOSTS='volunteer-missing/1'; \
+	if probe_all_distcc_hosts 16 gcc gnu "$$probe_dir"; then \
+		echo "FAIL  missing remote GCC identity passed" >&2; exit 1; \
+	fi; \
+	test "$$remote_distcc_count" -eq 1 && test "$$remote_distcc_failures" -eq 1 || { \
+		echo "FAIL  missing volunteer identity did not fail closed" >&2; exit 1; \
+	}; \
+	echo "OK    missing GCC identity fails closed"
+
 audit: source-root-check source-root-control-unit-test \
        source-root-selection-test \
        distcc-probe-directory-test \
+       distcc-gcc-major-probe-test \
        vostro-prefix-check audit-werror profile-audit \
        r300-release-profile-contract-test driver-root-audit
 	@failures=0; warnings=0; \
@@ -667,6 +787,56 @@ audit: source-root-check source-root-control-unit-test \
 	}; \
 	gcc_version_major() { \
 		"$$1" -dumpversion 2>/dev/null | sed 's/[.].*//;q'; \
+	}; \
+	distcc_host_name() { \
+		host_spec="$$1"; host_spec="$${host_spec%%/*}"; host_spec="$${host_spec%%,*}"; \
+		host_spec="$${host_spec#@}"; host_spec="$${host_spec#*@}"; \
+		case "$$host_spec" in \
+			\[*\]:*) host_spec="$${host_spec%%]*}"; host_spec="$${host_spec#\[}" ;; \
+			*:*) host_spec="$${host_spec%%:*}" ;; \
+		esac; \
+		printf '%s\n' "$$host_spec"; \
+	}; \
+	gcc_object_major() { \
+		LC_ALL=C readelf --string-dump=.comment "$$1" 2>/dev/null | \
+			sed -n 's/^[[:space:]]*.*GCC: (GNU) \([0-9][0-9]*\).*/\1/p' | \
+			sed -n '1p'; \
+	}; \
+	probe_distcc_host() { \
+		distcc_spec="$$1"; expected_major="$$2"; compiler_tool="$$3"; \
+		compiler_family="$$4"; probe_dir="$$5"; \
+		remote_distcc_host="$$(distcc_host_name "$$distcc_spec")"; \
+		if ! getent ahostsv4 "$$remote_distcc_host" >/dev/null 2>&1; then \
+			echo "FAIL  distcc volunteer hostname does not resolve: $$distcc_spec" >&2; \
+			return 1; \
+		fi; \
+		if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err" || \
+			! printf '%s\n' 'int gororoba_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; then \
+			echo "FAIL  cannot prepare distcc volunteer probe: $$distcc_spec" >&2; \
+			return 1; \
+		fi; \
+		if ! DISTCC_HOSTS="$$distcc_spec" DISTCC_FALLBACK=0 \
+			distcc "$$compiler_tool" -Wall -Wextra -Werror \
+			-c "$$probe_dir/probe.c" -o "$$probe_dir/probe.o" \
+			>/dev/null 2>"$$probe_dir/probe.err"; then \
+			echo "FAIL  distcc volunteer dispatch failed: $$distcc_spec ($$compiler_tool)" >&2; \
+			sed -n '1,12p' "$$probe_dir/probe.err" >&2; \
+			return 1; \
+		fi; \
+		if [ "$$compiler_family" = gnu ]; then \
+			remote_gcc_major="$$(gcc_object_major "$$probe_dir/probe.o")"; \
+			if [ -z "$$remote_gcc_major" ]; then \
+				echo "FAIL  distcc volunteer object has no GCC identity: $$distcc_spec" >&2; \
+				return 1; \
+			fi; \
+			if [ "$$remote_gcc_major" != "$$expected_major" ]; then \
+				echo "FAIL  distcc volunteer GCC major mismatch: $$distcc_spec (client=$$expected_major remote=$$remote_gcc_major)" >&2; \
+				return 1; \
+			fi; \
+			ok "distcc volunteer GCC major: $$distcc_spec ($$remote_gcc_major)"; \
+		else \
+			ok "distcc volunteer dispatch: $$distcc_spec ($$compiler_tool)"; \
+		fi; \
 	}; \
 	find_versioned_gcc_tool() { \
 		tool="$$1"; version="$$2"; \
@@ -821,42 +991,35 @@ audit: source-root-check source-root-control-unit-test \
 		else \
 			fail "distcc host allocation totals $$distcc_slots slots; expected $(DISTCC_JOBS)"; \
 		fi; \
-		remote_distcc_spec=""; \
-		for distcc_spec in $${DISTCC_HOSTS:-}; do \
-			case "$$distcc_spec" in --*|localhost|localhost/*|localhost,*) continue ;; esac; \
-			remote_distcc_spec="$$distcc_spec"; \
-			break; \
-		done; \
-		if [ -z "$$remote_distcc_spec" ]; then \
-			fail "distcc host allocation has no remote compiler"; \
-		else \
-			remote_distcc_host="$${remote_distcc_spec%%/*}"; \
-			remote_distcc_host="$${remote_distcc_host%%,*}"; \
-			if getent ahostsv4 "$$remote_distcc_host" >/dev/null 2>&1; then \
-				ok "distcc remote hostname resolves: $$remote_distcc_host"; \
-			else \
-				fail "distcc remote hostname does not resolve: $$remote_distcc_host"; \
-			fi; \
-			if $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
-				printf '%s\n' 'int gororoba_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; \
+		if [ "$(COMPILER_FAMILY)" = gnu ]; then need_command readelf; fi; \
+		if $(CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY); then \
+			remote_distcc_count=0; remote_distcc_failures=0; \
+			for distcc_spec in $${DISTCC_HOSTS:-}; do \
+				case "$$distcc_spec" in --*) continue ;; esac; \
+				remote_distcc_host="$$(distcc_host_name "$$distcc_spec")"; \
+				case "$$remote_distcc_host" in ""|localhost|localhost.localdomain) continue ;; esac; \
+				remote_distcc_count=$$((remote_distcc_count + 1)); \
 				if [ -n "$${audit_compiler_tool:-}" ] && \
-				   DISTCC_HOSTS="$$remote_distcc_spec" DISTCC_FALLBACK=0 \
-				   distcc "$$audit_compiler_tool" -Wall -Wextra -Werror \
-				      -c "$$probe_dir/probe.c" -o "$$probe_dir/probe.o" \
-				      >/dev/null 2>"$$probe_dir/probe.err"; then \
-					ok "distcc remote $(COMPILER_FAMILY) dispatch: $$remote_distcc_host ($$audit_compiler_tool)"; \
+				   probe_distcc_host "$$distcc_spec" "$$gcc_major" "$$audit_compiler_tool" "$(COMPILER_FAMILY)" "$$probe_dir"; then \
+					:; \
 				else \
-					fail "distcc remote $(COMPILER_FAMILY) dispatch failed: $$remote_distcc_host ($${audit_compiler_tool:-unresolved})"; \
-					sed -n '1,12p' "$$probe_dir/probe.err" >&2; \
+					remote_distcc_failures=$$((remote_distcc_failures + 1)); \
 				fi; \
-				if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err"; then \
-					fail "cannot remove distcc remote probe files: $$probe_dir"; \
-				elif ! rmdir -- "$$probe_dir"; then \
-					fail "cannot remove distcc remote probe directory: $$probe_dir"; \
-				fi; \
+			done; \
+			if [ "$$remote_distcc_count" -eq 0 ]; then \
+				fail "distcc host allocation has no remote compiler"; \
+			elif [ "$$remote_distcc_failures" -gt 0 ]; then \
+				fail "distcc volunteer verification failed for $$remote_distcc_failures of $$remote_distcc_count remote compiler(s)"; \
 			else \
-				fail "cannot create distcc remote probe directory"; \
+				ok "distcc volunteer verification passed for $$remote_distcc_count remote compiler(s)"; \
 			fi; \
+			if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err"; then \
+				fail "cannot remove distcc remote probe files: $$probe_dir"; \
+			elif ! rmdir -- "$$probe_dir"; then \
+				fail "cannot remove distcc remote probe directory: $$probe_dir"; \
+			fi; \
+		else \
+			fail "cannot create distcc remote probe directory"; \
 		fi; \
 	else ok "distcc not in active compiler chain; skipping host policy check"; fi; \
 		if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then \
@@ -873,7 +1036,7 @@ audit: source-root-check source-root-control-unit-test \
 		echo; echo "Rusticl recovery lane checks"; need_command bindgen; need_command rustfmt; \
 	else ok "profile disables Rusticl for Terakan daily lane"; fi; \
 	echo; echo "Debian package hints for missing daily-lane tools:"; \
-	echo "  meson ninja-build clang pkg-config ccache distcc sccache"; \
+		echo "  meson ninja-build clang binutils pkg-config ccache distcc sccache"; \
 	echo "  libdrm-dev libxcb-dri3-dev libxcb-present-dev libxshmfence-dev"; \
 	echo "  libx11-xcb-dev libxrandr-dev libxcb-randr0-dev libxcb-sync-dev"; \
 	echo "  libxcb-xfixes0-dev libwayland-dev wayland-protocols python3-mako"; \
