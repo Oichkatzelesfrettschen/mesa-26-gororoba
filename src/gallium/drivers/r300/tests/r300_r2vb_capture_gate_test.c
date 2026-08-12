@@ -120,6 +120,12 @@ check_nested_probe_and_readback_guards(void)
          "disabled transform suppresses verification");
    CHECK(!r300_r2vb_transform_verify_allowed(true, false, true),
          "non-submit mode suppresses verification");
+
+   bool reported = false;
+   CHECK(r300_r2vb_diagnostic_allowed(&reported),
+         "first invalid-gate diagnostic is emitted");
+   CHECK(!r300_r2vb_diagnostic_allowed(&reported),
+         "repeated invalid-gate diagnostic is suppressed");
 }
 
 int

@@ -2438,9 +2438,9 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     END_CS;
 }
 
-/* Gated self-test for the RS482 HB_TCL umbrella.  R300_HB_TCL=1 names the
- * hybrid-TCL experiment surface; an exact R300_R2VB_TIMING value picks the
- * transport mode.  Both variables are required:
+/* Gated self-test for the RS482 R2VB packet surface.  R300_HB_TCL=1 names the
+ * explicit experiment family; R300_R2VB_TIMING reserves the no-TCL capability
+ * shape and selects the transport mode.  Both variables are required:
  *   capture -- emit the loop and flush with RADEON_FLUSH_NOOP, so the IB is
  *              captured by R300_TRACE and never reaches DRM_RADEON_CS.  The
  *              packets can be decoded and verified with zero hardware risk.
@@ -2601,6 +2601,7 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg,
                                      bool from_flush, bool already_fired,
                                      bool query_active, bool rs48x_capable)
 {
+   static bool diagnostics_reported;
     const char *hb_tcl = getenv("R300_HB_TCL");
     const char *mode = getenv("R300_R2VB_TIMING");
     const char *raw_submit_accepted = getenv("R300_RAW_SUBMIT_ACCEPTED");
@@ -2614,13 +2615,15 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg,
             hb_tcl, rs48x_capable, from_flush, already_fired);
         if (selftest_armed && mode != NULL &&
             !r300_r2vb_option_is(mode, "capture") &&
-            !r300_r2vb_option_is(mode, "submit"))
+            !r300_r2vb_option_is(mode, "submit") &&
+            r300_r2vb_diagnostic_allowed(&diagnostics_reported))
             fprintf(stderr,
                     "r2vb selftest: ignoring unknown R300_R2VB_TIMING=%s; "
                     "use capture or submit\n",
                     mode);
         if (selftest_armed && r300_r2vb_option_is(mode, "submit") &&
-            !r300_r2vb_option_is(raw_submit_accepted, "1"))
+            !r300_r2vb_option_is(raw_submit_accepted, "1") &&
+            r300_r2vb_diagnostic_allowed(&diagnostics_reported))
             fprintf(stderr,
                     "r2vb selftest: submit mode needs "
                     "R300_RAW_SUBMIT_ACCEPTED=1\n");
@@ -2670,15 +2673,39 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg,
     }
 }
 
+static void
+r2vb_restore_transform_fs(struct r300_context *r300, void *saved_fs,
+                          bool transform_mode)
+{
+   if (!transform_mode || !saved_fs)
+      return;
+
+   r300->context.bind_fs_state(&r300->context, saved_fs);
+   r300_r2vb_restore_app_fs_consts(r300);
+   r300_update_derived_state(r300);
+}
+
 bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_flush,
                                            unsigned flush_flags,
                                            struct pipe_fence_handle **out_fence)
 {
     static bool fired = false;
+    const bool rs48x_r2vb_capable =
+        r300->screen->caps.family == CHIP_RS480 &&
+        !r300->screen->caps.has_tcl &&
+        r300->screen->caps.num_vert_fpus == 0;
+
+    /* The compute loop emits the RS482 TCL_BYPASS contract and asserts the
+     * no-TCL, zero-vertex-FPU capability shape.  HB_TCL reserves this exact
+     * route when R300_R2VB_TIMING is present; a standalone HB_TCL route stays
+     * outside this self-test until a native hardware-TCL producer exists. */
+    if (!rs48x_r2vb_capable)
+        return false;
+
     struct r2vb_selftest_config cfg;
     r2vb_get_selftest_config(&cfg, from_flush, fired,
                              r300->query_current != NULL,
-                             r300->screen->caps.family == CHIP_RS480);
+                             rs48x_r2vb_capable);
 
     if (cfg.action == R300_R2VB_SELFTEST_DECLINE)
         return false;
@@ -2808,6 +2835,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
                 "(GPU completion timed by app vkWaitForFences) hb_vert_fpu=%u\n",
                 cfg.num_vertices, out_fence && *out_fence ? 1 : 0,
                 r300->screen->caps.num_vert_fpus);
+        r2vb_restore_transform_fs(r300, saved_fs, cfg.xform);
         free(heap_attrs);
         pipe_resource_reference(&stage3, NULL);
         pipe_resource_reference(&res, NULL);
@@ -2816,7 +2844,9 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
 
     bool submit_signalled = !cfg.do_submit;
     if (cfg.do_submit) {
-        struct pipe_fence_handle *fence = NULL;
+        struct pipe_fence_handle *submit_fence = NULL;
+        struct pipe_fence_handle **submit_out_fence =
+            out_fence ? out_fence : &submit_fence;
         int64_t t0, t1, t2, t3;
         bool signalled = false;
         /* Three-way split to localize the per-submit cost.  The pipe flush hook
@@ -2827,13 +2857,16 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
          * submit_ms is the kernel submit plus BO pin, and gpu_ms is the actual
          * GPU execution -- the number that should scale with vertex work. */
         t0 = os_time_get_nano();
-        r300->context.flush(&r300->context, &fence, 0);
+        r300->context.flush(&r300->context, submit_out_fence, flush_flags);
         t1 = os_time_get_nano();
         r300->rws->cs_sync_flush(&r300->cs);
         t2 = os_time_get_nano();
-        if (fence) {
-            signalled = r300->rws->fence_wait(r300->rws, fence, (uint64_t)5 * 1000 * 1000 * 1000);
-            r300->rws->fence_reference(r300->rws, &fence, NULL);
+        if (*submit_out_fence) {
+            signalled = r300->rws->fence_wait(
+                r300->rws, *submit_out_fence,
+                (uint64_t)5 * 1000 * 1000 * 1000);
+            if (!out_fence)
+                r300->rws->fence_reference(r300->rws, &submit_fence, NULL);
         }
         submit_signalled = signalled;
         t3 = os_time_get_nano();
@@ -2890,11 +2923,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
 
     /* Restore the application fragment shader and its const0 binding the
      * transform producer displaced. */
-    if (cfg.xform && saved_fs) {
-        r300->context.bind_fs_state(&r300->context, saved_fs);
-        r300_r2vb_restore_app_fs_consts(r300);
-        r300_update_derived_state(r300);
-    }
+    r2vb_restore_transform_fs(r300, saved_fs, cfg.xform);
 
     pipe_resource_reference(&stage3, NULL);
     pipe_resource_reference(&res, NULL);
