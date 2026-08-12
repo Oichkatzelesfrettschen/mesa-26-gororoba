@@ -216,22 +216,24 @@ test_computed_varying_mapping(void)
    ralloc_free(b.shader);
 }
 
-/* NIR's store_output form carries the destination slot in IO semantics plus a
- * constant offset, the value in src[0], and the component mask in intrinsic
- * indices (src/compiler/nir/nir_intrinsics.py; rg --fixed-strings
- * 'store("output"' src/compiler/nir/nir_intrinsics.py).  The re-ingest layout
- * resolves these fields before it classifies the stream. */
+/* NIR's nir_intrinsic_store_output carries the destination slot in IO
+ * semantics plus a constant offset, the value in src[0], and the component
+ * mask in intrinsic indices (global -r nir_intrinsic_store_output).  The
+ * re-ingest layout resolves these fields before it classifies the stream. */
 static void
 test_lowered_store_output_mapping(void)
 {
    struct vs_io io;
-   nir_builder b = vs_shell(&io, false, "lowered_store_output");
+   nir_builder b = vs_shell(&io, true, "lowered_store_output");
    nir_store_var(&b, io.out_pos, nir_load_var(&b, io.in_pos), 0xf);
+
+   CHECK(io.in_attr1 && io.in_attr1->data.driver_location == 2,
+         "nonzero load_input offset has a declared vertex element");
 
    nir_def *input = nir_load_input(
       &b, 4, 32, nir_imm_int(&b, 1),
       .base = 1,
-      .io_semantics.location = VERT_ATTRIB_GENERIC0);
+      .io_semantics.location = VERT_ATTRIB_GENERIC1);
    nir_store_output(&b, input, nir_imm_int(&b, 0),
                     .io_semantics = {
                        .location = VARYING_SLOT_VAR0,
