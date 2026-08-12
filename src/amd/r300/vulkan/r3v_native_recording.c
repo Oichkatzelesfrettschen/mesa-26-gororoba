@@ -375,12 +375,15 @@ r3v_CmdClearColorImage(
 
    /* The one-mip one-layer image has one clearable subresource, so
     * every admitted range names the whole image and the fill covers the
-    * full extent.  The float clear value converts to B8G8R8A8_UNORM by
-    * clamp then round-to-nearest, packed in the little-endian texel
-    * order the render family's readback proved on silicon: B in byte
-    * 0, G, R, then A.  A NaN component converts as zero -- every
-    * ordered comparison on NaN is false, so it slips both clamp arms,
-    * and the float-to-integer cast of NaN has no defined value.
+    * full extent.  The Vulkan format registry defines
+    * VK_FORMAT_B8G8R8A8_UNORM as four 8-bit components in B, G, R, A
+    * order.  This path stores packed dwords through a little-endian
+    * uint32_t mapping, so the RGBA clear lanes map to byte positions
+    * {2, 1, 0, 3}; lane_byte encodes that mapping.  A NaN component
+    * converts as zero -- every ordered comparison on NaN is false, so it
+    * slips both clamp arms, and the float-to-integer cast of NaN has no
+    * defined value.  The render-family readback remains experiment
+    * provenance rather than format authority.
     */
    for (uint32_t r = 0; r < rangeCount; r++) {
       const VkImageSubresourceRange *range = &pRanges[r];
