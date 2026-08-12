@@ -49,6 +49,12 @@ if [ ! -s "${workdir}/ib.bin" ]; then
     echo "manifest wrote no ib.bin" >&2
     exit 1
 fi
+for artifact in bo_table.json manifest.json; do
+    if [ ! -s "${workdir}/${artifact}" ]; then
+        echo "manifest wrote no ${artifact}" >&2
+        exit 1
+    fi
+done
 
 # One buffer object: the carrier, written through the color backend and
 # read back as the vertex stream, so both domains are GTT and the entry
@@ -62,9 +68,10 @@ good=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
     "${workdir}/ib.bin")
 echo "${good}"
 case "${good}" in
-    *ACCEPT*) ;;
+    "replay dwords="*" relocs=1 draws=1 passed="*" verdict=ACCEPT") ;;
     *)
-        echo "producer pass did not replay as accepted" >&2
+        echo "producer pass did not replay as one accepted draw with one" \
+             "relocation" >&2
         exit 1
         ;;
 esac

@@ -28,6 +28,43 @@
 /* Slot position plus one pre-swizzled record, each FP32x4. */
 #define R300_R2VB_PRODUCER_VTX_DWORDS 8u
 
+/* The immediate producer's calibrated input tuple places the slot position
+ * in VAP vector 0 and the model varying in vector 6.  The lower and upper
+ * halves share one PROG_STREAM_CNTL word; the model element terminates the
+ * fetch. */
+#define R300_R2VB_PRODUCER_PSC_SLOT_VEC 0u
+#define R300_R2VB_PRODUCER_PSC_MODEL_VEC 6u
+
+/* The standalone producer has no inherited vertex-array state.  Keep the
+ * complete two-element PSC tuple and its zero tail in the stream, with the
+ * identity XYZW swizzle for both FP32x4 elements. */
+static const uint32_t r300_r2vb_producer_psc[8] = {
+   (R300_DATA_TYPE_FLOAT_4 |
+    (R300_R2VB_PRODUCER_PSC_SLOT_VEC << R300_DST_VEC_LOC_SHIFT)) |
+      ((R300_DATA_TYPE_FLOAT_4 |
+        (R300_R2VB_PRODUCER_PSC_MODEL_VEC << R300_DST_VEC_LOC_SHIFT) |
+        R300_LAST_VEC)
+       << 16),
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+};
+
+static const uint32_t r300_r2vb_producer_psc_ext[8] = {
+   R300_VAP_SWIZZLE_XYZW | (R300_VAP_SWIZZLE_XYZW << 16),
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+};
+
 /* The draw header below is written as a raw dword.  Keep the shared 1024
  * admission inside the packet's 14-bit payload-count encoding; the bound in
  * the public header also leaves room for the surrounding state in one IB.
@@ -231,11 +268,32 @@ r300_r2vb_producer_pass_emit_into(
    r300_pm4_reg(&b, R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
    r300_pm4_reg(&b, R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
 
+   /* Complete VAP input and output tuple: two FP32x4 inputs (slot position
+    * and model varying), a position plus one four-component TEX0 output,
+    * and the eight-dword fetch size.  The zero tail prevents an inherited
+    * stream from adding a phantom fetch to the embedded body.
+    */
+   r300_pm4_packet0(&b, R300_VAP_PROG_STREAM_CNTL_0,
+                    r300_r2vb_producer_psc,
+                    ARRAY_SIZE(r300_r2vb_producer_psc));
+   r300_pm4_packet0(&b, R300_VAP_PROG_STREAM_CNTL_EXT_0,
+                    r300_r2vb_producer_psc_ext,
+                    ARRAY_SIZE(r300_r2vb_producer_psc_ext));
+   r300_pm4_reg(&b, R300_VAP_VTX_SIZE, R300_R2VB_PRODUCER_VTX_DWORDS);
+   r300_pm4_reg(&b, R300_VAP_VTX_STATE_CNTL, 0x5555);
+   r300_pm4_reg(&b, R300_VAP_VSM_VTX_ASSM,
+                R300_INPUT_CNTL_POS | R300_INPUT_CNTL_TC0);
+   const uint32_t vap_output_fmt[2] = {
+      R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT,
+      R300_VAP_OUTPUT_VTX_FMT_1__4_COMPONENTS,
+   };
+   r300_pm4_packet0(&b, R300_VAP_OUTPUT_VTX_FMT_0, vap_output_fmt,
+                    ARRAY_SIZE(vap_output_fmt));
+
    /* Embedded POINTS draw: the packet carries VAP_VF_CNTL and then
     * count * 8 dwords, one slot position plus one pre-swizzled record
     * per vertex.
     */
-   r300_pm4_reg(&b, R300_VAP_VTX_SIZE, R300_R2VB_PRODUCER_VTX_DWORDS);
    r300_pm4_reg(&b, R300_VAP_VF_MAX_VTX_INDX, layout->count - 1);
 
    const uint32_t body_dwords =
