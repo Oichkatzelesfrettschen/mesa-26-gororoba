@@ -84,6 +84,23 @@ def native_relocation_calibration_error():
     return None
 
 
+def native_identity_path_calibration_error():
+    malformed = json.loads(
+        '{"driver_elf_path":"path\\udcff\\udcc3x"}')
+    malformed_path = malformed.get("driver_elf_path")
+    try:
+        malformed_bytes = os.fsencode(malformed_path)
+    except UnicodeEncodeError as error:
+        return "surrogate path encoding failed: " + str(error)
+    if malformed_bytes != b"path\xff\xc3x":
+        return "surrogate path bytes changed during os.fsencode"
+
+    utf8 = json.loads('{"driver_elf_path":"path\\u00ffx"}')
+    if os.fsencode(utf8["driver_elf_path"]) != b"path\xc3\xbfx":
+        return "UTF-8 path bytes changed during os.fsencode"
+    return None
+
+
 def duplicate_relocation_model_error():
     references = [
         (31, 0x1, 0),
@@ -149,6 +166,11 @@ def main():
     if endian_error is not None:
         return fail("native relocation calibration failed", endian_error)
 
+    identity_path_error = native_identity_path_calibration_error()
+    if identity_path_error is not None:
+        return fail("native identity path calibration failed",
+                    identity_path_error)
+
     model_error = duplicate_relocation_model_error()
     if model_error is not None:
         return fail("duplicate relocation calibration failed", model_error)
@@ -174,10 +196,18 @@ def main():
         elf_path = manifest.get("driver_elf_path")
         if not isinstance(elf_path, str) or not os.path.isabs(elf_path):
             return fail("manifest carries no absolute issuer path", elf_path)
+        try:
+            elf_path_bytes = os.fsencode(elf_path)
+            harness_bytes = os.fsencode(harness)
+        except UnicodeEncodeError as error:
+            return fail("manifest issuer path cannot be filesystem-encoded",
+                        error)
+        if not os.path.isabs(elf_path_bytes):
+            return fail("manifest issuer path is not absolute", elf_path)
         if elf_path == "unresolved":
             return fail("manifest carries unresolved issuer identity")
         try:
-            same_issuer = os.path.samefile(elf_path, harness)
+            same_issuer = os.path.samefile(elf_path_bytes, harness_bytes)
         except OSError as error:
             return fail("manifest issuer path is not present", error)
         if not same_issuer:
