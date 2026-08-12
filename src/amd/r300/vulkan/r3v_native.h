@@ -31,9 +31,11 @@
 #define R3V_NATIVE_REFUSAL_RESULT VK_ERROR_UNKNOWN
 
 /* The common Vulkan queue runtime maps every driver-submit error to
- * VK_ERROR_DEVICE_LOST.  The native queue keeps the transport boundary as a
- * sideband status so an attended control can distinguish refusal before the
- * ioctl from a failed completion wait after an accepted ioctl.
+ * VK_ERROR_DEVICE_LOST in vk_queue_flush()
+ * (rg --fixed-strings "vk_queue_flush" src/vulkan/runtime/vk_queue.c).
+ * The native queue keeps the transport boundary as a sideband status so an
+ * attended control can distinguish refusal before the ioctl from a failed
+ * completion wait after an accepted ioctl.
  */
 enum r3v_native_queue_status {
    R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION,

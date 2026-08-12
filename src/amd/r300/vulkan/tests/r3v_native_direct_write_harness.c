@@ -67,8 +67,8 @@ check_cell_emitter_error_mapping(void)
          "structural emitter errors map to initialization failure");
 
    /* Calibrate the status classifier with one accepted completion and the
-    * two negative transport boundaries.  These cases stay independent of
-    * the shim so a future result-code normalization cannot erase the split.
+    * two negative transport boundaries.  The sideband status preserves this
+    * split when runtime result normalization maps each failure to device loss.
     */
    CHECK(r3v_native_queue_status_from_transport(true, true) ==
             R3V_NATIVE_QUEUE_STATUS_COMPLETED,
@@ -180,14 +180,29 @@ int
 main(int argc, char **argv)
 {
    if (argc != 2 ||
-       (strcmp(argv[1], "closed") != 0 && strcmp(argv[1], "open") != 0)) {
-      fprintf(stderr, "usage: %s closed|open\n", argv[0]);
+       (strcmp(argv[1], "closed") != 0 && strcmp(argv[1], "open") != 0 &&
+        strcmp(argv[1], "reject") != 0 &&
+        strcmp(argv[1], "completion-failure") != 0 &&
+        strcmp(argv[1], "mixed") != 0)) {
+      fprintf(stderr,
+              "usage: %s closed|open|reject|completion-failure|mixed\n",
+              argv[0]);
       return 2;
    }
 
    check_cell_emitter_error_mapping();
 
-   const bool open_gate = strcmp(argv[1], "open") == 0;
+   const bool transport_reject = strcmp(argv[1], "reject") == 0;
+   const bool completion_failure = strcmp(argv[1], "completion-failure") == 0;
+   const bool mixed_submit = strcmp(argv[1], "mixed") == 0;
+   const bool open_gate = strcmp(argv[1], "closed") != 0;
+
+   unsetenv("R3V_NATIVE_SHIM_CS_REFUSE");
+   unsetenv("R3V_NATIVE_SHIM_COMPLETION_FAIL");
+   if (transport_reject)
+      setenv("R3V_NATIVE_SHIM_CS_REFUSE", "1", 1);
+   if (completion_failure)
+      setenv("R3V_NATIVE_SHIM_COMPLETION_FAIL", "1", 1);
 
    if (attest_shim_provider() != 0)
       return 3;
@@ -333,19 +348,22 @@ main(int argc, char **argv)
    if (result != VK_SUCCESS || pool == VK_NULL_HANDLE)
       return 1;
 
-   VkCommandBuffer cmd = VK_NULL_HANDLE;
+   VkCommandBuffer commands[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
    result = vkAllocateCommandBuffers(
       device,
       &(VkCommandBufferAllocateInfo){
          .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
          .commandPool = pool,
          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-         .commandBufferCount = 1,
+         .commandBufferCount = mixed_submit ? 2 : 1,
       },
-      &cmd);
+      commands);
    CHECK(result == VK_SUCCESS, "vkAllocateCommandBuffers: %d", result);
-   if (result != VK_SUCCESS || cmd == VK_NULL_HANDLE)
+   if (result != VK_SUCCESS || commands[0] == VK_NULL_HANDLE ||
+       (mixed_submit && commands[1] == VK_NULL_HANDLE))
       return 1;
+
+   VkCommandBuffer cmd = commands[0];
 
    result = vkBeginCommandBuffer(
       cmd, &(VkCommandBufferBeginInfo){
@@ -365,6 +383,21 @@ main(int argc, char **argv)
    result = vkEndCommandBuffer(cmd);
    CHECK(result == VK_SUCCESS, "vkEndCommandBuffer: %d", result);
 
+   if (mixed_submit) {
+      result = vkBeginCommandBuffer(
+         commands[1], &(VkCommandBufferBeginInfo){
+                         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                      });
+      CHECK(result == VK_SUCCESS, "empty vkBeginCommandBuffer: %d", result);
+      if (result != VK_SUCCESS)
+         return 1;
+
+      result = vkEndCommandBuffer(commands[1]);
+      CHECK(result == VK_SUCCESS, "empty vkEndCommandBuffer: %d", result);
+      if (result != VK_SUCCESS)
+         return 1;
+   }
+
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
 
@@ -375,16 +408,29 @@ main(int argc, char **argv)
          "recorder published the sentinel fill: %" PRIu64,
          native_device->drm.cache_sync_count);
 
+   VkCommandBuffer submit_commands[2] = {cmd, commands[1]};
    result = vkQueueSubmit(queue, 1,
                           &(VkSubmitInfo){
                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                             .commandBufferCount = 1,
-                             .pCommandBuffers = &cmd,
+                             .commandBufferCount = mixed_submit ? 2 : 1,
+                             .pCommandBuffers = submit_commands,
                           },
                           VK_NULL_HANDLE);
    enum r3v_native_queue_status queue_status =
       r3v_native_queue_submission_status(device);
-   if (open_gate) {
+   if (transport_reject) {
+      CHECK(result == VK_ERROR_DEVICE_LOST,
+            "shim CS refusal reports device loss: %d", result);
+      CHECK(queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED,
+            "shim CS refusal preserves submission refusal: %s",
+            r3v_native_queue_status_name(queue_status));
+   } else if (completion_failure) {
+      CHECK(result == VK_ERROR_DEVICE_LOST,
+            "shim completion failure reports device loss: %d", result);
+      CHECK(queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE,
+            "shim completion failure preserves completion status: %s",
+            r3v_native_queue_status_name(queue_status));
+   } else if (open_gate) {
       CHECK(result == VK_SUCCESS,
             "open-gate submission through the shim: %d", result);
       CHECK(queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,

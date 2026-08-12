@@ -1,9 +1,9 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Calibrates the native queue status boundary independently of Vulkan
- * transport.  The accepted-completion case is known-good; rejected-ioctl and
- * accepted-but-unretired cases are known-bad controls for the classifier.
+ * Calibrates the native queue status classifier and, when given the native
+ * direct-write harness, drives CS refusal, completion-wait failure, and
+ * zero-IB ordering through the controlled transport path.
  */
 
 #undef NDEBUG
@@ -11,12 +11,38 @@
 #include "r3v_native.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static int
+run_harness_case(const char *harness, const char *mode)
+{
+   pid_t child = fork();
+   if (child == -1)
+      return errno;
+   if (child == 0) {
+      execl(harness, harness, mode, (char *)NULL);
+      _exit(127);
+   }
+
+   int status = 0;
+   while (waitpid(child, &status, 0) == -1) {
+      if (errno != EINTR)
+         return errno;
+   }
+   if (!WIFEXITED(status))
+      return 128;
+   return WEXITSTATUS(status);
+}
 
 int
-main(void)
+main(int argc, char **argv)
 {
+   assert(argc == 1 || argc == 2);
    assert(r3v_native_queue_status_from_transport(true, true) ==
           R3V_NATIVE_QUEUE_STATUS_COMPLETED);
    assert(r3v_native_queue_status_from_transport(false, false) ==
@@ -48,6 +74,12 @@ main(void)
    assert(strcmp(r3v_native_queue_status_name(
                    R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED),
                  "SUBMISSION_REFUSED") == 0);
-   puts("r3v_native_queue_status_test: known-good and known-bad cases pass");
+   if (argc == 2) {
+      const char *cases[] = {"reject", "completion-failure", "mixed"};
+      for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+         assert(run_harness_case(argv[1], cases[i]) == 0);
+   }
+
+   puts("r3v_native_queue_status_test: calibrated cases pass");
    return 0;
 }
