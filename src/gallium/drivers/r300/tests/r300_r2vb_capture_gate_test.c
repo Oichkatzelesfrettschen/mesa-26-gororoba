@@ -4,18 +4,11 @@
 
 #include <stdio.h>
 
-#include <threads.h>
+#include "c11/threads.h"
+#include "r300_r2vb.h"
 #include "r300_r2vb_capture_gate.h"
 
 static unsigned failures;
-
-static bool
-diagnostic_once(unsigned *reported)
-{
-   unsigned expected = 0;
-   return __atomic_compare_exchange_n(reported, &expected, 1u, false,
-                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-}
 
 #define CHECK(condition, name)                                                \
    do {                                                                      \
@@ -131,9 +124,9 @@ check_nested_probe_and_readback_guards(void)
          "non-submit mode suppresses verification");
 
    unsigned reported = 0;
-   CHECK(diagnostic_once(&reported),
+   CHECK(r300_r2vb_diagnostic_once(&reported),
          "first invalid-gate diagnostic is emitted");
-   CHECK(!diagnostic_once(&reported),
+   CHECK(!r300_r2vb_diagnostic_once(&reported),
          "repeated invalid-gate diagnostic is suppressed");
 }
 
@@ -145,7 +138,7 @@ static int
 diagnostic_thread(void *data)
 {
    struct diagnostic_thread_args *args = data;
-   return diagnostic_once(args->reported) ? 1 : 0;
+   return r300_r2vb_diagnostic_once(args->reported) ? 1 : 0;
 }
 
 static void
