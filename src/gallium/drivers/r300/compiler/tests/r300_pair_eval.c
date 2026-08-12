@@ -51,6 +51,31 @@ class_model(const struct r300_pair_eval_profile *p, rc_register_file file,
    }
 }
 
+/* rc_pair_get_src selects a source bank from the argument swizzle.  The
+ * consuming lane therefore does not identify the read port: an Alpha
+ * argument can resolve through RGB.Src[], and an RGB argument can resolve
+ * through Alpha.Src[]. */
+static bool
+source_is_alpha_port(const struct rc_pair_instruction *pair,
+                     const struct rc_pair_instruction_source *src)
+{
+   for (unsigned slot = 0; slot < 4; slot++) {
+      if (src == &pair->Alpha.Src[slot])
+         return true;
+      if (src == &pair->RGB.Src[slot])
+         return false;
+   }
+   return false;
+}
+
+static enum r300_source_read_model
+resolved_source_model(const struct r300_pair_eval_profile *profile,
+                      const struct rc_pair_instruction *pair,
+                      const struct rc_pair_instruction_source *src)
+{
+   return class_model(profile, src->File, source_is_alpha_port(pair, src));
+}
+
 static bool
 resolve_pair_reg(struct r300_pair_eval *e, rc_register_file file,
                  unsigned index, float *reg)
@@ -105,9 +130,11 @@ apply_source_read(struct r300_pair_eval *e,
 
 static bool
 resolve_presub_reg(struct r300_pair_eval *e,
+                   const struct rc_pair_instruction *pair,
+                   const struct rc_pair_instruction_source *presub_src,
                    const struct rc_pair_sub_instruction *lane,
                    unsigned presub_opcode, float reg[4],
-                   unsigned consumed_mask, bool alpha_port)
+                   unsigned consumed_mask)
 {
    const unsigned source_count =
       rc_presubtract_src_reg_count(presub_opcode);
@@ -127,8 +154,8 @@ resolve_presub_reg(struct r300_pair_eval *e,
          float source_reg[4];
          if (!src->Used || !resolve_pair_reg(e, src->File, src->Index,
                                              source_reg) ||
-             !apply_source_read(e, class_model(&e->profile, src->File,
-                                               alpha_port),
+             !apply_source_read(e, resolved_source_model(&e->profile, pair,
+                                                         src),
                                 source_reg, 1u << ch))
             return false;
          source_value[source] = source_reg[ch];
@@ -154,8 +181,8 @@ resolve_presub_reg(struct r300_pair_eval *e,
    }
 
    return apply_source_read(e,
-                            class_model(&e->profile, RC_FILE_PRESUB,
-                                        alpha_port),
+                            resolved_source_model(&e->profile, pair,
+                                                  presub_src),
                             reg, consumed_mask);
 }
 
@@ -187,22 +214,22 @@ r300_pair_decode_channel(const float *reg, unsigned swz)
 static bool
 eval_arg_reg(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
              struct rc_pair_instruction_arg *arg, float reg[4],
-             unsigned consumed_mask, bool alpha_port)
+             unsigned consumed_mask)
 {
    memset(reg, 0, sizeof(float[4]));
    struct rc_pair_instruction_source *src = rc_pair_get_src(pair, arg);
    if (!src || !src->Used)
       return true;
    if (src->File == RC_FILE_PRESUB) {
+      const bool alpha_port = source_is_alpha_port(pair, src);
       const struct rc_pair_sub_instruction *lane =
          alpha_port ? &pair->Alpha : &pair->RGB;
-      return resolve_presub_reg(e, lane, src->Index, reg, consumed_mask,
-                                alpha_port);
+      return resolve_presub_reg(e, pair, src, lane, src->Index, reg,
+                                consumed_mask);
    }
 
    return resolve_pair_reg(e, src->File, src->Index, reg) &&
-          apply_source_read(e, class_model(&e->profile, src->File,
-                                           alpha_port),
+          apply_source_read(e, resolved_source_model(&e->profile, pair, src),
                             reg, consumed_mask);
 }
 
@@ -230,7 +257,7 @@ eval_rgb_arg(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
       consumed_mask |= 1u << 3;
 
    float reg[4];
-   if (!eval_arg_reg(e, pair, arg, reg, consumed_mask, false))
+   if (!eval_arg_reg(e, pair, arg, reg, consumed_mask))
       return false;
    for (unsigned ch = 0; ch < 3; ch++) {
       float v = r300_pair_decode_channel(reg, GET_SWZ(arg->Swizzle, ch));
@@ -258,7 +285,7 @@ eval_alpha_arg(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
    const unsigned swz = GET_SWZ(arg->Swizzle, 0);
    const unsigned consumed_mask = swz <= RC_SWIZZLE_W ? 1u << swz : 0;
    float reg[4];
-   if (!eval_arg_reg(e, pair, arg, reg, consumed_mask, true))
+   if (!eval_arg_reg(e, pair, arg, reg, consumed_mask))
       return false;
    float v = r300_pair_decode_channel(reg, GET_SWZ(arg->Swizzle, 0));
    if (arg->Abs)
@@ -464,7 +491,7 @@ swizzle_string(unsigned swizzle, unsigned channels, char out[5])
 static void
 serialize_lane(FILE *out, struct rc_pair_instruction *pair,
                struct rc_pair_sub_instruction *sub, const char *lane,
-               unsigned channels, bool alpha_port,
+               unsigned channels,
                const struct r300_pair_eval_profile *p)
 {
    fprintf(out,
@@ -496,7 +523,7 @@ serialize_lane(FILE *out, struct rc_pair_instruction *pair,
               a < nargs ? (unsigned)arg->Abs : 0u,
               a < nargs ? (unsigned)arg->Negate : 0u,
               src && src->Used
-                 ? model_name(class_model(p, src->File, alpha_port))
+                 ? model_name(resolved_source_model(p, pair, src))
                  : "identity");
    }
    fprintf(out, "],\"source_slots\":[");
@@ -507,7 +534,7 @@ serialize_lane(FILE *out, struct rc_pair_instruction *pair,
               "\"index\":%u,\"source_read_model\":\"%s\"}",
               slot ? "," : "", slot, src->Used,
               src->Used ? file_name(src->File) : "none", src->Used ? src->Index : 0u,
-              src->Used ? model_name(class_model(p, src->File, alpha_port))
+              src->Used ? model_name(resolved_source_model(p, pair, src))
                         : "identity");
    }
    fprintf(out, "]}");
@@ -530,9 +557,9 @@ r300_pair_schedule_serialize(FILE *out, struct radeon_compiler *c,
               "\"lanes\":[\n",
               ordinal ? ",\n" : "", ordinal, pair->WriteALUResult,
               pair->ALUResultCompare, pair->Nop, pair->SemWait);
-      serialize_lane(out, pair, &pair->RGB, "rgb", 3, false, p);
+      serialize_lane(out, pair, &pair->RGB, "rgb", 3, p);
       fprintf(out, ",\n");
-      serialize_lane(out, pair, &pair->Alpha, "alpha", 1, true, p);
+      serialize_lane(out, pair, &pair->Alpha, "alpha", 1, p);
       fprintf(out, "\n  ],\"alpha_depth_write\":%u}",
               pair->Alpha.DepthWriteMask);
       ordinal++;
