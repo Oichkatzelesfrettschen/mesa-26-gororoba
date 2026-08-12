@@ -150,10 +150,11 @@ struct r300_r2vb_plan_key {
 
 /* The application source identity of the plan's position input, measured
  * on the bound VS at plan-build time: the surviving input variable's
- * driver location and its rank among the VS inputs in ascending location
- * order (r300 binds velem[k] to the k-th input in that order).  The
- * mapping contract consumes these measured values; a caller passing
- * literals asserts an identity the plan never proved. */
+ * driver location and its semantic rank among the VS inputs in ascending
+ * location order.  The producer mapping contract consumes these measured
+ * values; a caller passing literals asserts an identity the plan never
+ * proved.  Re-ingest maps passthrough outputs by driver location because
+ * component-packed variables share one physical vertex element. */
 struct r300_r2vb_position_source {
     uint8_t app_driver_location;
     uint8_t location_rank;

@@ -3926,6 +3926,25 @@ bool r300_r2vb_producer_interface_init_gated(
     return true;
 }
 
+/* The live derived PSC is the state that the emitter snapshots.  Decoding a
+ * few selected fields is insufficient: a reserved or skip control bit and a
+ * stale EXT swizzle preserve the visible destination fields while changing
+ * the VAP fetch contract.  Compare every emitted pair against the
+ * reconstructed interface before the transaction retains the live state. */
+static bool
+r300_r2vb_producer_psc_matches_interface(
+    const struct r300_vertex_stream_state *state,
+    const struct r300_r2vb_producer_interface *interface)
+{
+    if (!state || !interface || state->count != 1)
+        return false;
+    return memcmp(state->vap_prog_stream_cntl, interface->prog_stream_cntl,
+                  sizeof(state->vap_prog_stream_cntl)) == 0 &&
+           memcmp(state->vap_prog_stream_cntl_ext,
+                  interface->prog_stream_cntl_ext,
+                  sizeof(state->vap_prog_stream_cntl_ext)) == 0;
+}
+
 static int
 r300_r2vb_input_order_rank(nir_shader *vs_nir, const nir_variable *target)
 {
@@ -4570,6 +4589,10 @@ bool r300_r2vb_producer_bo_draw_validate(
                                            out->logical.model_dst_vec_loc,
                                            &out->psc)) {
         r2vb_bo_draw_validate_decline("interface_init");
+        goto fail;
+    }
+    if (!r300_r2vb_producer_psc_matches_interface(psc_state, &out->psc)) {
+        r2vb_bo_draw_validate_decline("psc_reconstructed");
         goto fail;
     }
     if (r300_r2vb_producer_binding_check(&out->fetch, &out->psc,
@@ -6622,15 +6645,18 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
 /* r300_r2vb_reingest_kind / r300_r2vb_reingest_stream live in r300_r2vb.h so the host
  * layout unit can enumerate against the same types. */
 
-/* The app velem index feeding input var IN: the same total order as the
- * re-staged producer, by location, location fraction, and declaration order. */
+/* The physical app velem index feeding input var IN is its driver location.
+ * Component-packed variables share that location even when their semantic
+ * location fractions give them different ranks in the declaration order. */
 static int r300_r2vb_input_velem_index(nir_shader *vs, const nir_variable *in)
 {
-    return r300_r2vb_input_order_rank(vs, in);
+    if (!vs || !in)
+        return -1;
+    return (int)in->data.driver_location;
 }
 
-/* The rank oracle calls the mapper on named variables so the plan's
- * retained position_source and the element mapper stay one convention. */
+/* The identity oracle calls the mapper on named variables so the measured
+ * driver location and the physical element mapper stay one convention. */
 int r300_r2vb_input_velem_index_for_test(nir_shader *vs,
                                          const nir_variable *in)
 {

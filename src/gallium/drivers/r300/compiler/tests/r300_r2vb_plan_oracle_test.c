@@ -798,6 +798,9 @@ case_input_ceiling(struct r300_context *r300)
                "seven model inputs plus carry split");
          CHECK(plan.pass_b_cost.alu > 0 && plan.pass_b_cost.alu <= 64,
                "seven-input pass B fits the ALU budget");
+         CHECK(!(plan.observed_reason_mask &
+                 (1ull << R300_R2VB_PLAN_IO_SHAPE)),
+               "seven-input source identity decline stays route-optional");
       } else {
          CHECK(plan.action == R300_R2VB_PLAN_REJECT &&
                   plan.primary_reason == R300_R2VB_PLAN_IO_SHAPE,

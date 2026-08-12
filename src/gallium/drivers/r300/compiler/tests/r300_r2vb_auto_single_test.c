@@ -693,9 +693,11 @@ check_output_stream_preflight(void)
    nir_variable *input_position = nir_variable_create(
       builder.shader, nir_var_shader_in, glsl_vec4_type(), "in_position");
    input_position->data.location = VERT_ATTRIB_POS;
+   input_position->data.driver_location = 0;
    nir_variable *input_attribute = nir_variable_create(
       builder.shader, nir_var_shader_in, glsl_vec4_type(), "in_attribute");
    input_attribute->data.location = VERT_ATTRIB_GENERIC0;
+   input_attribute->data.driver_location = 1;
    nir_variable *output_position = nir_variable_create(
       builder.shader, nir_var_shader_out, glsl_vec4_type(), "gl_Position");
    output_position->data.location = VARYING_SLOT_POS;
@@ -1901,11 +1903,11 @@ check_upload_integration(void)
 static void
 check_position_source_rank(void)
 {
-   /* Table-driven cross-oracle: the scan's location rank and the delivery
-    * route's input-to-velem mapper must be one convention.  Each case
-    * builds a VS with inputs at the named locations, feeds gl_Position
-    * from one of them, and requires scan rank == mapper index for the
-    * position variable, independent of declaration order. */
+   /* Table-driven identity oracle: the source scan records semantic rank and
+    * driver location separately, while the delivery mapper resolves the
+    * physical velem from driver location.  Each case builds a VS with inputs
+    * at the named locations, feeds gl_Position from one of them, and checks
+    * both identities independent of declaration order. */
    static const struct {
       unsigned num_inputs;
       unsigned locations[3];
@@ -1915,21 +1917,22 @@ check_position_source_rank(void)
       bool declare_reversed;
       unsigned want_rank;
       unsigned want_driver_location;
+      unsigned want_velem;
       const char *name;
    } cases[] = {
-      { 1, { 0 }, { 0 }, { 0 }, 0, false, 0, 0,
+      { 1, { 0 }, { 0 }, { 0 }, 0, false, 0, 0, 0,
         "single input at location 0" },
-      { 2, { 0, 3 }, { 0, 0 }, { 0, 1 }, 1, false, 1, 1,
+      { 2, { 0, 3 }, { 0, 0 }, { 0, 1 }, 1, false, 1, 1, 1,
         "position at location 3 of {0,3}" },
-      { 3, { 1, 4, 7 }, { 0, 0, 0 }, { 0, 1, 2 }, 1, false, 1, 1,
+      { 3, { 1, 4, 7 }, { 0, 0, 0 }, { 0, 1, 2 }, 1, false, 1, 1, 1,
         "position at location 4 of {1,4,7}" },
-      { 2, { 0, 3 }, { 0, 0 }, { 0, 1 }, 1, true, 1, 1,
+      { 2, { 0, 3 }, { 0, 0 }, { 0, 1 }, 1, true, 1, 1, 1,
         "reversed declaration order keeps location rank" },
-      { 3, { 2, 5, 9 }, { 0, 0, 0 }, { 0, 1, 2 }, 2, false, 2, 2,
+      { 3, { 2, 5, 9 }, { 0, 0, 0 }, { 0, 1, 2 }, 2, false, 2, 2, 2,
         "position at the highest sparse location" },
-      { 2, { 0, 0 }, { 0, 1 }, { 0, 1 }, 1, false, 1, 1,
-        "location fraction orders equal locations" },
-      { 2, { 0, 0 }, { 0, 0 }, { 0, 1 }, 0, true, 1, 0,
+      { 2, { 0, 0 }, { 0, 1 }, { 0, 0 }, 1, false, 1, 0, 0,
+        "component-packed fractions share one physical velem" },
+      { 2, { 0, 0 }, { 0, 0 }, { 0, 1 }, 0, true, 1, 0, 0,
         "declaration order breaks equal location fractions" },
    };
    for (unsigned c = 0; c < ARRAY_SIZE(cases); c++) {
@@ -1969,10 +1972,10 @@ check_position_source_rank(void)
       CHECK(src.location_rank == cases[c].want_rank &&
                src.app_driver_location == cases[c].want_driver_location,
             "rank case: scan records the expected rank and location");
-      CHECK((int)src.location_rank ==
-               r300_r2vb_input_velem_index_for_test(
+      CHECK(cases[c].want_velem ==
+               (unsigned)r300_r2vb_input_velem_index_for_test(
                   b.shader, vars[cases[c].position_index]),
-            "rank case: scan rank equals the element-mapper index");
+            "rank case: mapper resolves the physical velem");
       ralloc_free(b.shader);
    }
    /* Two inputs feeding position leave no single survivor. */
@@ -2251,6 +2254,12 @@ check_logical_binding(void)
                                                            &psc, &rb),
             "from_state: an unmeasured plan source declines");
 
+      /* The transaction receives the live PSC that the producer interface
+       * reconstructs for the FLOAT_3 model stream.  The calibrated decode
+       * fixture above remains a separate extraction test. */
+      psc.vap_prog_stream_cntl[0] = 0x26020003;
+      psc.vap_prog_stream_cntl_ext[0] = 0xfa88f688;
+
       /* The all-fallible transaction over the same authorities: a
        * CPU-shadow model source, a slot BO sized for the layout, and
        * the derived-state binding, through the real validate phase. */
@@ -2451,6 +2460,23 @@ check_logical_binding(void)
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.model.resource,
             "txn: a drifted derived binding declines after materialization");
+      badpsc = psc;
+      badpsc.vap_prog_stream_cntl[0] |= 1u << R300_SKIP_DWORDS_SHIFT;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &badpsc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
+               !txn.model.resource,
+            "txn: a live PSC skip count declines after reconstruction");
+      badpsc = psc;
+      badpsc.vap_prog_stream_cntl_ext[0] ^=
+         1u << R300_SWIZZLE_SELECT_X_SHIFT;
+      CHECK(!r300_r2vb_producer_bo_draw_validate(
+               &g_context, &plan, &fs, &rs, &badpsc, &vb, &ve, 1, 1,
+               &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
+               R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
+               !txn.model.resource,
+            "txn: a live PSC EXT mismatch declines after reconstruction");
       /* Output-authority negatives: framebuffer identity, extent, and
        * format each decline after materialization with nothing retained. */
       tfb.cbufs[0].texture = &slotfb->r.b;
