@@ -807,6 +807,8 @@ nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                     nir_builder pb = nir_builder_at(nir_before_instr(instr));
                     nir_def *src = intr->src[0].ssa;
                     nir_def *zero = nir_imm_float(&pb, 0.0f);
+                    const unsigned original_write_mask =
+                        nir_intrinsic_write_mask(intr);
                     unsigned component = nir_intrinsic_has_component(intr)
                                             ? nir_intrinsic_component(intr)
                                             : 0;
@@ -815,7 +817,11 @@ nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                         unsigned source_component = k >= component
                                                        ? k - component
                                                        : src->num_components;
-                        comp[k] = source_component < src->num_components
+                        bool source_written =
+                            source_component < src->num_components &&
+                            (original_write_mask &
+                             BITFIELD_BIT(source_component));
+                        comp[k] = source_written
                                       ? nir_channel(&pb, src, source_component)
                                       : zero;
                     }
