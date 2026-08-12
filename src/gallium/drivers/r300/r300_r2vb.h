@@ -253,7 +253,7 @@ r300_r2vb_diagnostic_once(unsigned *reported)
 
 /* The producer-submit3 protocol is process-scoped and atomic, per
  * (rg --fixed-strings producer_submit3_state src/gallium/drivers/r300/).
- * AVAILABLE admits one reservation, IN_PROGRESS serializes PM4 construction,
+ * AVAILABLE admits one reservation, IN_PROGRESS waits on the owner outcome,
  * and SUBMITTED retires each qualifying draw at the state gate, preserving the
  * sole PM4 candidate. */
 enum r300_r2vb_submit3_state {
@@ -264,15 +264,30 @@ enum r300_r2vb_submit3_state {
 
 enum r300_r2vb_submit3_action {
    R300_R2VB_SUBMIT3_EMIT = 0,
+   R300_R2VB_SUBMIT3_WAIT,
    R300_R2VB_SUBMIT3_CONSUME,
+   R300_R2VB_SUBMIT3_FALLBACK,
 };
 
 static inline enum r300_r2vb_submit3_action
 r300_r2vb_submit3_action_for_state(unsigned state)
 {
-   return state == R300_R2VB_SUBMIT3_AVAILABLE
-             ? R300_R2VB_SUBMIT3_EMIT
-             : R300_R2VB_SUBMIT3_CONSUME;
+   switch (state) {
+   case R300_R2VB_SUBMIT3_AVAILABLE:
+      return R300_R2VB_SUBMIT3_EMIT;
+   case R300_R2VB_SUBMIT3_IN_PROGRESS:
+      return R300_R2VB_SUBMIT3_WAIT;
+   case R300_R2VB_SUBMIT3_SUBMITTED:
+      return R300_R2VB_SUBMIT3_CONSUME;
+   default:
+      return R300_R2VB_SUBMIT3_FALLBACK;
+   }
+}
+
+static inline enum r300_r2vb_submit3_action
+r300_r2vb_submit3_action_for_atomic_state(const unsigned *state)
+{
+   return r300_r2vb_submit3_action_for_state(p_atomic_read(state));
 }
 
 static inline bool
