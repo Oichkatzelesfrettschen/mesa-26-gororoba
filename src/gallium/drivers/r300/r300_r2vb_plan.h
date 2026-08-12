@@ -267,12 +267,12 @@ struct nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                                                    enum r300_r2vb_position_space space);
 
 /* Identify the output location carried by a lowered store intrinsic.  NIR's
- * store_output form places the value in src[0], the location offset in src[1],
- * and the component mask in intrinsic indices (src/compiler/nir/nir_intrinsics.py;
- * rg --fixed-strings 'store("output"' src/compiler/nir/nir_intrinsics.py).
- * A constant offset within its declared slot range becomes part of the target
- * identity; indirect offsets and out-of-range stores return false, keeping
- * planner and live-restager admission on one delivery record. */
+ * nir_intrinsic_store_output places the value in src[0], the location offset
+ * in src[1], and the component mask in intrinsic indices (global -r
+ * nir_intrinsic_store_output).  A constant offset within its declared slot
+ * range becomes part of the target identity; indirect offsets and out-of-range
+ * stores return false, keeping planner and live-restager admission on one
+ * delivery record. */
 bool r300_r2vb_output_store_location(const struct nir_intrinsic_instr *intr,
                                      gl_varying_slot *location);
 
