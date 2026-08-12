@@ -31,6 +31,19 @@ test_json_escape(void)
    char too_small[4];
    assert(r3v_native_json_escape(too_small, sizeof(too_small), input) ==
           -ENOSPC);
+
+   const char malformed_utf8[] = {
+      'p', 'a', 't', 'h', (char)0xff, (char)0xc3, 'x', '\0',
+   };
+   const char malformed_expected[] = "path\\u00ff\\u00c3x";
+   assert(r3v_native_json_escape(output, sizeof(output), malformed_utf8) ==
+          (int)strlen(malformed_expected));
+   assert(strcmp(output, malformed_expected) == 0);
+
+   const char valid_utf8[] = "caf\xc3\xa9";
+   assert(r3v_native_json_escape(output, sizeof(output), valid_utf8) ==
+          (int)strlen(valid_utf8));
+   assert(strcmp(output, valid_utf8) == 0);
 }
 
 static void
