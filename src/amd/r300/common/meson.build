@@ -189,7 +189,12 @@ r300_staging_manifest_test = executable(
 )
 test(
   'r300-staging-manifest',
-  r300_staging_manifest_test,
+  prog_python,
+  args : [files('tests/r300_staging_manifest_runner.py'),
+          r300_staging_manifest_test,
+          files('tests/r300_triangle_manifest_check.py'),
+          r300_triangle_manifest.full_path()],
+  depends : [r300_staging_manifest_test, r300_triangle_manifest],
   suite : ['r300'],
 )
 
