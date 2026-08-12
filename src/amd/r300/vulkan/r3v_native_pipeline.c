@@ -204,8 +204,9 @@ create_pipeline(struct r3v_native_device *device,
       r300_vertex_format_semantics(format_id);
    uint32_t target_width = 0, target_height = 0;
    if (format == NULL || info->flags != 0 ||
-       vi->pVertexBindingDescriptions[0].stride <
-          format->semantic_record_bytes ||
+       (vi->pVertexBindingDescriptions[0].stride != 0 &&
+        vi->pVertexBindingDescriptions[0].stride <
+           format->semantic_record_bytes) ||
        !stages_match_reference(info) ||
        !fixed_state_matches_cell(info, &target_width, &target_height) ||
        layout == NULL || layout->set_count != 0 ||

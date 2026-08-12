@@ -320,6 +320,27 @@ main(void)
    assert(memcmp(map, overlap_before, sizeof(overlap_before)) == 0);
    unmap_memory(device, vertex_memory);
 
+   /* A constant stream still aliases the carrier when its one record starts
+    * inside the destination BO.  The overlap guard uses that one-record
+    * source range before the gather can write any repeated output vertex.
+    */
+   assert(map_memory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
+             VK_SUCCESS &&
+          map != NULL);
+   memset(map, 0x5a, VERTEX_BYTES);
+   memcpy(overlap_before, map, sizeof(overlap_before));
+   cmd = fresh_cmd();
+   assert(r3v_native_record_tcl_bypass_triangle_from_stream(
+             cmd, vertex_memory, color_memory,
+             &(struct r3v_native_vertex_stream_desc){
+                .records = map,
+                .size_bytes = 16,
+                .stride = 0,
+                .format_id = R300_VERTEX_FORMAT_F32_4,
+             }) == VK_ERROR_INITIALIZATION_FAILED);
+   assert(memcmp(map, overlap_before, sizeof(overlap_before)) == 0);
+   unmap_memory(device, vertex_memory);
+
    printf("r3v_native_vertex_carrier: every delivery shape reproduces the "
           "frozen carrier and cell\n");
    return 0;

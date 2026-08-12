@@ -126,6 +126,55 @@ test_three_way_identity(void)
           dispatched[VERTS * 4] == CANARY);
 }
 
+/* Zero stride is the Vulkan constant-binding form: the first record is
+ * reused for every requested vertex, including when first_vertex is
+ * nonzero.  The R2VB model and both CPU references must retain that byte
+ * identity over the admitted FP24 domain.
+ */
+static void
+test_zero_stride_identity(void)
+{
+   enum { VERTS = 3 };
+   static const enum r300_vertex_format_id formats[] = {
+      R300_VERTEX_FORMAT_F32_4,
+      R300_VERTEX_FORMAT_F32_3,
+      R300_VERTEX_FORMAT_F32_2,
+   };
+   static const unsigned record_bytes[] = { 16, 12, 8 };
+
+   for (unsigned format_index = 0; format_index < sizeof(formats) / sizeof(formats[0]);
+        format_index++) {
+      const enum r300_vertex_format_id format = formats[format_index];
+      const unsigned record_size = record_bytes[format_index];
+      uint8_t data[16];
+      for (unsigned lane = 0; lane < record_size / 4; lane++)
+         store_le32(data + lane * 4, admitted_bits[lane]);
+
+      const struct r300_cpu_vertex_stream stream = {
+         .data = data,
+         .stride = 0,
+         .size_bytes = record_size,
+      };
+      uint32_t delivered[VERTS * 4 + 1];
+      uint32_t baseline[VERTS * 4 + 1];
+      uint32_t dispatched[VERTS * 4 + 1];
+      for (unsigned i = 0; i < VERTS * 4 + 1; i++)
+         delivered[i] = baseline[i] = dispatched[i] = CANARY;
+
+      assert(r300_r2vb_identity_deliver(format, &stream, 9, VERTS,
+                                        delivered, VERTS * 4) == 0);
+      assert(r300_cpu_vertex_gather_baseline(
+                format, &stream, 9, VERTS, baseline, VERTS * 4) == 0);
+      assert(r300_cpu_vertex_gather(format, &stream, 9, VERTS, dispatched,
+                                    VERTS * 4) == 0);
+      assert(memcmp(delivered, baseline, VERTS * 16) == 0);
+      assert(memcmp(delivered, dispatched, VERTS * 16) == 0);
+      assert(delivered[VERTS * 4] == CANARY &&
+             baseline[VERTS * 4] == CANARY &&
+             dispatched[VERTS * 4] == CANARY);
+   }
+}
+
 /* Refusals: format, bounds, capacity, and -- the R2VB-specific class --
  * the FP24 domain.  A domain refusal writes nothing, so the CPU route
  * receives an untouched carrier; the CPU gather itself still carries
@@ -303,6 +352,7 @@ main(void)
 {
    test_admission_predicate();
    test_three_way_identity();
+   test_zero_stride_identity();
    test_synthesized_identity();
    test_refusals();
    printf("r300_r2vb_carrier_delivery_test: all checks passed\n");
