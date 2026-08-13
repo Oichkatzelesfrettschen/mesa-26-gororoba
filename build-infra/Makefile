@@ -1113,7 +1113,11 @@ audit: source-root-check source-root-control-unit-test \
 	echo; echo "Terakan host audit passed with $$warnings warning(s)."
 
 configure: source-root-check vostro-prefix-check
-	@$(call CHECK_LAYOUT,configure); \
+	@case "$(COMPILER_FAMILY)" in \
+		llvm|gnu) ;; \
+		*) echo "unknown COMPILER_FAMILY=$(COMPILER_FAMILY); expected llvm or gnu" >&2; exit 2 ;; \
+	esac; \
+	$(call CHECK_LAYOUT,configure); \
 	$(ACQUIRE_BUILD_LOCK) \
 	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(PREPARE_SOURCE_IDENTITY); \
