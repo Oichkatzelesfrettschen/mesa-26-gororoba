@@ -107,7 +107,7 @@ r300_tcl_bypass_triangle_emit_into(
     * `(rg --fixed-strings "R300_VAP_VF_MAX_VTX_INDX"
     * src/gallium/drivers/r300)`, while the register definitions resolve with
     * `(rg --fixed-strings "RB3D_COLOR_CHANNEL_MASK"
-    * src/gallium/drivers/r300/r300_reg.h)`. */
+    * src/amd/r300/common/r300_reg.h)`. */
    if (params->first_draw_contract == NULL && b.error == 0) {
       r300_pm4_reg(&b, R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
       r300_pm4_reg(&b, RB3D_COLOR_CHANNEL_MASK,

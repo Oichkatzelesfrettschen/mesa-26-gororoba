@@ -1,6 +1,8 @@
 # Copyright © 2017 Intel Corporation
 # SPDX-License-Identifier: MIT
 
+inc_amd_r300_common = include_directories('../../../amd/r300/common')
+
 files_r300 = files(
   'r300_blit.c',
   'r300_cb.h',
@@ -34,7 +36,6 @@ files_r300 = files(
   'r300_r2vb_reingest_state.h',
   'r300_r2vb_telemetry.c',
   'r300_r2vb_telemetry.h',
-  'r300_reg.h',
   'r300_render.c',
   'r300_render_stencilref.c',
   'r300_render_translate.c',
@@ -150,6 +151,7 @@ libr300 = static_library(
   files_r300, r300_nir_algebraic_c,
   include_directories : [
     inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+    inc_amd_r300_common,
   ],
   gnu_symbol_visibility : 'hidden',
   dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
@@ -176,6 +178,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -196,6 +199,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       # libgallium supplies the ureg_*/tgsi_* symbols referenced from the
@@ -215,6 +219,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300, libgallium],
@@ -236,6 +241,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300, libgallium],
@@ -257,6 +263,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300, libgallium],
@@ -278,6 +285,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300, libgallium],
@@ -298,6 +306,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300, libgallium],
@@ -318,6 +327,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
       ],
       gnu_symbol_visibility : 'hidden',
     ),
@@ -337,6 +347,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300, libgalliumvl, libgallium],
@@ -356,6 +367,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('.'),
       ],
       dependencies : [idep_mesautil],
@@ -375,6 +387,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300, libgallium],
@@ -397,6 +410,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300, libgallium],
@@ -419,6 +433,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300, libgallium],
@@ -440,6 +455,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       # The real state vtable reaches r300_video.c, whose codec constructors
@@ -463,6 +479,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       # The context object carries the teardown summary hook, and its video
@@ -491,6 +508,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       # r300_screen_init_nir_options pulls r300_screen.c.o, whose screen
@@ -521,6 +539,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       # The policy lives in r300_r2vb.c, whose context object reaches the
@@ -545,6 +564,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       # The contract lives in r300_r2vb.c, whose context object reaches the
@@ -567,6 +587,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300, libgallium],
@@ -588,6 +609,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -605,6 +627,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -624,6 +647,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -643,6 +667,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -665,6 +690,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -686,6 +712,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -707,6 +734,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -731,6 +759,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -750,6 +779,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -768,6 +798,7 @@ if with_tests
     c_args : r300_test_c_args,
     include_directories : [
       inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+      inc_amd_r300_common,
       include_directories('compiler'),
     ],
     link_with : [libr300, libgallium],
@@ -791,6 +822,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -810,6 +842,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -829,6 +862,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -850,6 +884,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('compiler'),
       ],
       link_with : [libr300],
@@ -870,6 +905,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('.'),
       ],
       dependencies : [dep_m, dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
@@ -890,6 +926,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('.'),
       ],
       link_with : [libr300, libgallium],
@@ -909,7 +946,7 @@ if with_tests
       files('tests/r300_r2vb_capture_gate_test.c', 'r300_chipset.c'),
       c_args : r300_test_c_args,
       include_directories : [inc_src, inc_include, inc_gallium, inc_gallium_aux,
-                             include_directories('.')],
+                             inc_amd_r300_common, include_directories('.')],
       dependencies : [idep_mesautilc11],
       gnu_symbol_visibility : 'hidden',
     ),
@@ -927,6 +964,7 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
         include_directories('.'),
       ],
       link_with : [libr300, libgallium],
@@ -946,7 +984,7 @@ if with_tests
       files('compiler/tests/r300_r2vb_submit3_state_test.c'),
       c_args : r300_test_c_args,
       include_directories : [inc_src, inc_include, inc_gallium, inc_gallium_aux,
-                             include_directories('.')],
+                             inc_amd_r300_common, include_directories('.')],
       dependencies : [idep_mesautilc11],
       gnu_symbol_visibility : 'hidden',
     ),
@@ -965,7 +1003,42 @@ if with_tests
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux,
-        inc_gallium_drivers, include_directories('.'),
+        inc_gallium_drivers, inc_amd_r300_common, include_directories('.'),
+      ],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+  # Gallium adapter contracts over the API-neutral common vocabulary: the
+  # pipe_format vertex-format adapter and the R2VB source contract.  Both
+  # exercise Gallium-side headers, so they build here rather than under
+  # src/amd/r300/common.
+  test(
+    'r300-vertex-format-pipe',
+    executable(
+      'r300_vertex_format_pipe_test',
+      files('compiler/tests/r300_vertex_format_pipe_test.c'),
+      c_args : r300_test_c_args,
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux,
+        inc_amd_r300_common, include_directories('.'),
+      ],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  test(
+    'r300-r2vb-source-contract',
+    executable(
+      'r300_r2vb_source_contract_test',
+      files('compiler/tests/r300_r2vb_source_contract_test.c'),
+      c_args : r300_test_c_args,
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux,
+        inc_amd_r300_common, include_directories('.'),
       ],
       dependencies : [idep_mesautil],
       gnu_symbol_visibility : 'hidden',

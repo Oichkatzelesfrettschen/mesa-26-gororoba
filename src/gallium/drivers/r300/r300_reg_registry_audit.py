@@ -43,7 +43,8 @@ def main() -> int:
     if not audit.exists():
         print(f"r300 register audit skipped: {audit} not found")
         return 0
-    driver_root = Path(__file__).resolve().parent
+    repo_src = Path(__file__).resolve().parents[3]
+    driver_root = repo_src / "amd" / "r300" / "common"
     return subprocess.call(
         [sys.executable, str(audit), "--mesa-root", str(driver_root)]
     )

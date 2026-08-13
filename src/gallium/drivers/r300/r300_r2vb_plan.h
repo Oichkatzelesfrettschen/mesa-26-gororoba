@@ -28,7 +28,7 @@ struct nir_intrinsic_instr;
 
 /* Producer input ceiling: the split pass-B draw feeds every model attribute
  * plus one carry input.  The register authority is
- * src/gallium/drivers/r300/r300_reg.h for the VAP stream and RS register
+ * src/amd/r300/common/r300_reg.h for the VAP stream and RS register
  * definitions, and r300_context.h exposes eight VAP_PROG_STREAM_CNTL and
  * VAP_PROG_STREAM_CNTL_EXT entries plus eight IP and INST entries; state
  * derivation limits VAP_OUTPUT_VTX_FMT_1 and rasterizer texcoord allocation

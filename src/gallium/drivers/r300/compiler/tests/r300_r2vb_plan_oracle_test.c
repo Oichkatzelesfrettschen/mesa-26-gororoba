@@ -399,7 +399,7 @@ shader_def_alu(nir_shader *nir, nir_def *def)
  * host-calibrated admission witness, not a silicon result; reproduce it with
  * `meson test -C build r300-r2vb-plan-oracle`.  The register/source
  * authority for the separate eight-stream boundary is
- * `src/gallium/drivers/r300/r300_reg.h` and `r300_context.h`; the RS482
+ * `src/amd/r300/common/r300_reg.h` and `r300_context.h`; the RS482
  * register-table notes in `docs/hardware/rs482-hybrid-vertex-tcl-design.md`
  * and this nine-input calibration row are retained evidence, not primary
  * hardware authority.  A nine-input pass-B capture that executes without
