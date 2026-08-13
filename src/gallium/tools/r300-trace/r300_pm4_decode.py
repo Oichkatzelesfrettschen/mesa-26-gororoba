@@ -104,7 +104,7 @@ def read_ib(path):
 
 def load_register_names(mesa_root):
     names = {}
-    reg_path = mesa_root / "src/gallium/drivers/r300/r300_reg.h"
+    reg_path = mesa_root / "src/amd/r300/common/r300_reg.h"
     if not reg_path.exists():
         return names
 
@@ -236,7 +236,7 @@ def print_text(header, decoded, view):
 
 def find_mesa_root(script_path):
     for parent in script_path.resolve().parents:
-        if (parent / "src/gallium/drivers/r300/r300_reg.h").exists():
+        if (parent / "src/amd/r300/common/r300_reg.h").exists():
             return parent
     return Path.cwd()
 

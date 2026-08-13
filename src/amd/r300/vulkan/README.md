@@ -108,11 +108,12 @@ refuses before the ioctl.
 authorization boundary without creating a device; the attended run it
 precedes follows
 `docs/hardware/r3v-native-attended-cell-procedure.md`.
-The fixed TCL-bypass triangle is lowered
-into a native command buffer by the private entry
-`r3v_native_record_tcl_bypass_triangle`; public `vkBeginCommandBuffer` and
-`vkEndCommandBuffer` record nothing themselves, and graphics pipelines,
-images, descriptors, transfers, and WSI remain outside the native surface.
+The public draw surface in `r3v_native_draw.c` lowers the qualified
+render-pass begin/end, pipeline and vertex-buffer binds, and draw into
+the fixed TCL-bypass cell; `r3v_native_recording.c` fail-closes every
+other core 1.0 `vkCmd*` entrypoint by poisoning the command buffer, so
+images, descriptors, transfers, and WSI remain outside the native
+surface.
 The drm-shim harness and offline kernel-parser replay carry the
 pre-hardware evidence; the attended-cell runner has carried one armed
 `DRM_RADEON_CS` submission on RS482 that the kernel accepted and retired
@@ -129,7 +130,12 @@ cell therefore now opens with the neutral first-draw state contract
 are emitted in pipeline order ahead of the cell, the poison-model checker
 proves the stream establishes every clause itself, and the recorder,
 manifest tool, and harness reference all build the one byte-identical
-successor IB. The successor cell awaits its own attended silicon run.
+successor IB. The successor cell has rendered its predicted interior on
+RS482 with the exterior and canary rows clean (retained bundle
+`results/rs482_native_triangle_first_correct_pixel_witness_20260808T070427Z/`
+in the steinmarder-r300 evidence tree;
+`docs/hardware/r3v-implementation-boundaries.md` carries the
+classification).
 
 In the Gallium-backed library, `R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1`
 records consent only; that library's submission executes the Gallium replay
