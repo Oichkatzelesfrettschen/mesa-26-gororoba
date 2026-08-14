@@ -1,16 +1,23 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Compiles the TCL-bypass triangle cell's constant-color fragment
- * program through the classic ladder and the production cb_code baker,
- * so the cell's US block is compiler output instead of a hand-built
- * placeholder.  --emit prints the golden header; --check recompiles and
- * byte-compares against the checked-in golden, so the meson test proves
- * the checked-in block regenerates from source.
+ * Compiles the native cells' fragment programs through the classic
+ * ladder and the production cb_code baker, so each cell's US block is
+ * compiler output instead of a hand-built placeholder.  The constant-color
+ * program shades the TCL-bypass triangle cell; the varying-passthrough
+ * program routes interpolator 0 to the color output, the shape the R2VB
+ * producer pass needs to store its embedded record into the carrier.
+ * --emit prints a golden header; --check recompiles and byte-compares
+ * against the checked-in golden, so the meson test proves the checked-in
+ * block regenerates from source.
  */
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "util/macros.h"
 
 #include "nir.h"
 #include "nir_builder.h"
@@ -26,6 +33,7 @@
 #include "radeon_compiler.h"
 #include "radeon_regalloc.h"
 
+#include "amd/r300/common/r300_r2vb_producer_fs_block.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle_fs_block.h"
 
 static struct pipe_screen *
@@ -71,15 +79,46 @@ build_constant_color_shader(void)
    return b.shader;
 }
 
+/* The producer pass stores one interpolated FP32x4 record per rasterized
+ * slot pixel, so its program reads texture coordinate set 0 and writes it
+ * to the color output unchanged.  The varying reaches the US through
+ * interpolator 0, the destination RS_INST_0's TEX_ADDR names.
+ */
+static nir_shader *
+build_varying_passthrough_shader(void)
+{
+   static const nir_shader_compiler_options options = {
+      .float_mul_add32 =
+         nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+      .lower_flrp32 = true,
+   };
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &options, "r2vb_varying_passthrough");
+   nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                          glsl_vec4_type(), "record");
+   in->data.location = VARYING_SLOT_TEX0;
+   in->data.driver_location = 0;
+   in->data.interpolation = INTERP_MODE_NONE;
+   b.shader->info.inputs_read = BITFIELD64_BIT(VARYING_SLOT_TEX0);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+   nir_store_var(&b, out, nir_load_var(&b, in), 0xf);
+   return b.shader;
+}
+
 /* Runs the classic ladder plus the backend pass chain and bakes cb_code
  * through the driver's own r300_emit_fs_code_to_buffer.  Returns the baked
  * shader in *shader (cb_code owned by the caller) or nonzero on failure.
  */
 static int
-compile_block(struct r300_fragment_shader_code *shader)
+compile_block(struct r300_fragment_shader_code *shader,
+              nir_shader *(*build)(void))
 {
    void *ctx = ralloc_context(NULL);
-   nir_shader *s = build_constant_color_shader();
+   nir_shader *s = build();
 
    static struct r300_screen screen;
    struct pipe_screen *ps = fake_r300_screen(&screen);
@@ -157,69 +196,151 @@ compile_block(struct r300_fragment_shader_code *shader)
    return result;
 }
 
+/* One compiled cell program: the NIR builder that produces it, the header
+ * it bakes into, and the golden block --check compares against.
+ */
+struct fs_program {
+   const char *option;
+   const char *description;
+   const char *guard;
+   const char *macro_prefix;
+   const char *symbol;
+   nir_shader *(*build)(void);
+   const uint32_t *golden;
+   unsigned golden_size;
+   uint32_t golden_fg_depth_src;
+   uint32_t golden_us_out_w;
+};
+
+static const struct fs_program fs_programs[] = {
+   {
+      .option = "triangle",
+      .description = "Constant-color US block for the TCL-bypass triangle "
+                     "cell",
+      .guard = "R300_TCL_BYPASS_TRIANGLE_FS_BLOCK_H",
+      .macro_prefix = "R300_TCL_BYPASS_TRIANGLE_FS",
+      .symbol = "r300_tcl_bypass_triangle_fs_block",
+      .build = build_constant_color_shader,
+      .golden = r300_tcl_bypass_triangle_fs_block,
+      .golden_size = ARRAY_SIZE(r300_tcl_bypass_triangle_fs_block),
+      .golden_fg_depth_src = R300_TCL_BYPASS_TRIANGLE_FS_FG_DEPTH_SRC,
+      .golden_us_out_w = R300_TCL_BYPASS_TRIANGLE_FS_US_OUT_W,
+   },
+   {
+      .option = "r2vb-producer",
+      .description = "Varying-passthrough US block for the R2VB producer "
+                     "pass",
+      .guard = "R300_R2VB_PRODUCER_FS_BLOCK_H",
+      .macro_prefix = "R300_R2VB_PRODUCER_FS",
+      .symbol = "r300_r2vb_producer_fs_block",
+      .build = build_varying_passthrough_shader,
+      .golden = r300_r2vb_producer_fs_block,
+      .golden_size = ARRAY_SIZE(r300_r2vb_producer_fs_block),
+      .golden_fg_depth_src = R300_R2VB_PRODUCER_FS_FG_DEPTH_SRC,
+      .golden_us_out_w = R300_R2VB_PRODUCER_FS_US_OUT_W,
+   },
+};
+
 static void
-emit_header(const struct r300_fragment_shader_code *shader)
+emit_header(const struct fs_program *program,
+            const struct r300_fragment_shader_code *shader)
 {
    printf("/*\n"
           " * SPDX-License-Identifier: MIT\n"
           " *\n"
-          " * Constant-color US block for the TCL-bypass triangle cell,\n"
-          " * baked by r300_tcl_bypass_fs_tool --emit; the paired --check\n"
-          " * meson test proves this file regenerates from source.\n"
-          " */\n\n");
-   printf("#ifndef R300_TCL_BYPASS_TRIANGLE_FS_BLOCK_H\n");
-   printf("#define R300_TCL_BYPASS_TRIANGLE_FS_BLOCK_H\n\n");
+          " * %s,\n"
+          " * baked by r300_tcl_bypass_fs_tool --emit=%s; the paired\n"
+          " * --check=%s meson test proves this file regenerates from\n"
+          " * source.\n"
+          " */\n\n",
+          program->description, program->option, program->option);
+   printf("#ifndef %s\n", program->guard);
+   printf("#define %s\n\n", program->guard);
    printf("#include <stdint.h>\n\n");
-   printf("#define R300_TCL_BYPASS_TRIANGLE_FS_FG_DEPTH_SRC 0x%08xu\n",
+   printf("#define %s_FG_DEPTH_SRC 0x%08xu\n", program->macro_prefix,
           shader->fg_depth_src);
-   printf("#define R300_TCL_BYPASS_TRIANGLE_FS_US_OUT_W 0x%08xu\n\n",
+   printf("#define %s_US_OUT_W 0x%08xu\n\n", program->macro_prefix,
           shader->us_out_w);
-   printf("static const uint32_t r300_tcl_bypass_triangle_fs_block[] = {\n");
+   printf("static const uint32_t %s[] = {\n", program->symbol);
    for (unsigned i = 0; i < shader->cb_code_size; i++) {
       printf("%s0x%08x,%s", i % 4 == 0 ? "   " : " ",
              shader->cb_code[i], i % 4 == 3 ? "\n" : "");
    }
    if (shader->cb_code_size % 4 != 0)
       printf("\n");
-   printf("};\n\n#endif /* R300_TCL_BYPASS_TRIANGLE_FS_BLOCK_H */\n");
+   printf("};\n\n#endif /* %s */\n", program->guard);
+}
+
+/* Accepts the bare form for the triangle cell and the suffixed form for
+ * either program, so the checked-in test invocations name their block.
+ */
+static const struct fs_program *
+select_program(const char *argument, const char *verb, bool *selected)
+{
+   const size_t verb_length = strlen(verb);
+   if (strncmp(argument, verb, verb_length) != 0)
+      return NULL;
+   if (argument[verb_length] == '\0') {
+      *selected = true;
+      return &fs_programs[0];
+   }
+   if (argument[verb_length] != '=')
+      return NULL;
+   const char *name = &argument[verb_length + 1];
+   for (unsigned i = 0; i < ARRAY_SIZE(fs_programs); i++) {
+      if (strcmp(fs_programs[i].option, name) == 0) {
+         *selected = true;
+         return &fs_programs[i];
+      }
+   }
+   return NULL;
 }
 
 int
 main(int argc, char **argv)
 {
-   const bool check = argc == 2 && strcmp(argv[1], "--check") == 0;
-   const bool emit = argc == 2 && strcmp(argv[1], "--emit") == 0;
-   if (!check && !emit) {
-      fprintf(stderr, "usage: %s --emit|--check\n", argv[0]);
+   bool emit = false;
+   bool check = false;
+   const struct fs_program *program = NULL;
+   if (argc == 2) {
+      program = select_program(argv[1], "--emit", &emit);
+      if (program == NULL)
+         program = select_program(argv[1], "--check", &check);
+   }
+   if (program == NULL) {
+      fprintf(stderr, "usage: %s --emit[=PROGRAM]|--check[=PROGRAM]\n",
+              argv[0]);
+      for (unsigned i = 0; i < ARRAY_SIZE(fs_programs); i++)
+         fprintf(stderr, "  PROGRAM %s\n", fs_programs[i].option);
       return 2;
    }
 
    struct r300_fragment_shader_code shader;
-   if (compile_block(&shader) != 0)
+   if (compile_block(&shader, program->build) != 0)
       return 1;
 
    if (emit) {
-      emit_header(&shader);
+      emit_header(program, &shader);
       return 0;
    }
 
-   const unsigned golden_size =
-      sizeof(r300_tcl_bypass_triangle_fs_block) /
-      sizeof(r300_tcl_bypass_triangle_fs_block[0]);
-   if (shader.cb_code_size != golden_size ||
-       memcmp(shader.cb_code, r300_tcl_bypass_triangle_fs_block,
-              golden_size * sizeof(uint32_t)) != 0) {
+   if (shader.cb_code_size != program->golden_size ||
+       memcmp(shader.cb_code, program->golden,
+              program->golden_size * sizeof(uint32_t)) != 0) {
       fprintf(stderr,
-              "FAIL: regenerated block (%u dwords) differs from the "
-              "checked-in golden (%u dwords); rerun --emit and review\n",
-              shader.cb_code_size, golden_size);
+              "FAIL: regenerated %s block (%u dwords) differs from the "
+              "checked-in golden (%u dwords); rerun --emit=%s and review\n",
+              program->option, shader.cb_code_size, program->golden_size,
+              program->option);
       return 1;
    }
-   if (shader.fg_depth_src != R300_TCL_BYPASS_TRIANGLE_FS_FG_DEPTH_SRC ||
-       shader.us_out_w != R300_TCL_BYPASS_TRIANGLE_FS_US_OUT_W) {
-      fprintf(stderr, "FAIL: depth-output metadata differs\n");
+   if (shader.fg_depth_src != program->golden_fg_depth_src ||
+       shader.us_out_w != program->golden_us_out_w) {
+      fprintf(stderr, "FAIL: %s depth-output metadata differs\n",
+              program->option);
       return 1;
    }
-   printf("r300_tcl_bypass_fs_tool --check: golden block regenerates\n");
+   printf("r300_tcl_bypass_fs_tool --check=%s: golden block regenerates\n",
+          program->option);
    return 0;
 }

@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 struct r300_first_draw_contract;
+struct r300_fragment_binary;
 
 /* The producer pass renders one point per vertex into an ARGB32323232
  * (C4_32_FP) color target, so each rasterized pixel stores one FP32x4
@@ -52,6 +53,18 @@ struct r300_r2vb_producer_layout {
    uint32_t pitch_pixels;
 };
 
+/* One C4_32_FP texel holds four binary32 components, so a slot occupies
+ * sixteen carrier bytes.
+ */
+#define R300_R2VB_PRODUCER_CPP_BYTES 16u
+
+/* The value a carrier is filled with before the pass runs.  A read-back
+ * dword still holding it names a slot the pass left unwritten, so the
+ * pattern stays disjoint from every dword the delivery identity produces
+ * and a carrier check has a decidable negative side.
+ */
+#define R300_R2VB_PRODUCER_POISON_DWORD 0xdeadbeefu
+
 /* The complete immediate pass includes the fixed producer state and
  * publication tail around the embedded draw.  The shared one-input producer
  * admission keeps that whole IB at the established 1024-vertex ceiling; the
@@ -71,6 +84,14 @@ struct r300_r2vb_producer_params {
    struct r300_r2vb_producer_layout layout;
    /* layout.count source records, each (x, y, z, w) binary32. */
    const float (*records)[4];
+   /* The US program the rasterized slot pixels shade through: a
+    * varying-passthrough binary that moves interpolator 0 to the color
+    * output, so the carrier receives the embedded record.  A pass without
+    * its own program executes whatever US code the previous client left
+    * resident, so the emission refuses a missing or unvalidated binary
+    * with -EINVAL.
+    */
+   const struct r300_fragment_binary *fragment_binary;
    /* When set, the emission opens with the neutral first-draw state
     * contract, so the pass establishes every register it depends on and
     * parses standalone: the kernel tracker reads texture, blend, and
@@ -105,20 +126,12 @@ struct r300_r2vb_producer_ib {
  * pre-swizzled record per vertex), and the publication tail (color-cache
  * flush, 3D idle-clean wait, VAP_PVS_STATE_FLUSH_REG = 0, the engine
  * sync that keeps a later vertex fetch of the same BO from reading stale
- * vertex-cache content).  The producer fragment program and its
- * rasterizer-to-US routing stay outside this emission.
- *
- * TODO: missing work --
- *          the producer US program block and the RS_COUNT / RS_IP /
- *          RS_INST varying routing that feed it, the registers a live
- *          producer draw shades through.
- *      reason --
- *          the native lane owns no compiled producer fragment binary;
- *          the passthrough US program exists only inside the Gallium
- *          producer's shader cache.
- *      tracking-artifact --
- *          r300_r2vb_producer_pass_emit and the Gallium reference
- *          r300_r2vb_get_transform_fs.
+ * vertex-cache content).  The varying routing and the US program land
+ * between the VAP tuple and the draw: RS_COUNT declares the four
+ * interpolated components, RS_IP_0 routes the TEX0 varying's four
+ * channels, RS_INST_0 delivers them to US input register zero, and the
+ * params' fragment binary supplies the US code that moves that register
+ * to the color output.
  *
  * Returns 0 or a negative errno; -EDOM names a record outside the FP24
  * fixed-point domain.  The caller owns the returned IB allocation.
@@ -146,12 +159,18 @@ void r300_r2vb_producer_pass_release(struct r300_r2vb_producer_ib *ib);
 int r300_r2vb_producer_pass_validate_reloc_sites(
    const struct r300_r2vb_producer_ib *ib);
 
+/* Initializes the reference producer fragment binary from the compiled
+ * varying-passthrough block.  The caller finishes it with
+ * r300_fragment_binary_finish.  Returns 0 or a negative errno.
+ */
+int r300_r2vb_producer_reference_fs(struct r300_fragment_binary *fs);
+
 /* Emits the reference producer pass: the fixed triangle's three vertex
  * records (r300_tcl_bypass_triangle_vertices) through the single-row
- * layout with the first-draw contract prefix, carrier offset zero.  Every
- * pre-hardware consumer takes the pass from here so their IBs stay
- * byte-identical.  Returns 0 or a negative errno; the caller owns the
- * returned IB allocation.
+ * layout with the first-draw contract prefix and the reference fragment
+ * binary, carrier offset zero.  Every pre-hardware consumer takes the
+ * pass from here so their IBs stay byte-identical.  Returns 0 or a
+ * negative errno; the caller owns the returned IB allocation.
  */
 int r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out);
 

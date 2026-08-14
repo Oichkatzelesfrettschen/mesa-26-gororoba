@@ -44,6 +44,22 @@ R300_R2VB_REFERENCE_VSM_ASSM = 0x401
 R300_R2VB_REFERENCE_OUTPUT_0 = 0x1
 R300_R2VB_REFERENCE_OUTPUT_1 = 4
 R300_PACKET3_NOP = 0xC0001000
+RADEON_GEM_DOMAIN_GTT = 0x2
+R300_RS_COUNT = 0x4300
+R300_RS_INST_COUNT = 0x4304
+R300_RS_IP_0 = 0x4310
+R300_RS_INST_0 = 0x4330
+# RS_COUNT: IT_COUNT=4 interpolated components, IC_COUNT=0, HIRES_EN.
+R300_R2VB_REFERENCE_RS_COUNT = 0x40004
+# RS_IP_0: TEX_PTR 0 with S/T/R/Q selecting components 0..3.
+R300_R2VB_REFERENCE_RS_IP_0 = (1 << 16) | (2 << 19) | (3 << 22)
+# RS_INST_0: texture 0 written to US input register 0.
+R300_R2VB_REFERENCE_RS_INST_0 = 1 << 3
+# The US block writes the US/FG register range; a stream carrying the
+# producer program touches R300_US_CODE_ADDR_0 and R300_US_ALU_RGB_INST_0.
+R300_US_CONFIG = 0x4600
+R300_US_CODE_ADDR_0 = 0x4610
+R300_US_ALU_RGB_INST_0 = 0x48C0
 
 
 def fail(message: str) -> None:
@@ -163,6 +179,35 @@ def remove_sequential_register(path: Path, register: int) -> None:
     raise CheckFailure(f"register 0x{register:04x} absent from a sequential packet")
 
 
+def remove_us_program(path: Path) -> None:
+    """Retire every US-program packet by turning its header into a NOP.
+
+    A producer stream without its own US block runs whatever program the
+    previous client left resident, which is what the checker refuses.  The
+    rewrite keeps every dword in place, so the relocation site and the
+    dword count stay valid and the refusal comes from the missing program.
+    """
+    words = read_words(path)
+    index = 0
+    removed = False
+    while index < len(words):
+        header = words[index]
+        packet_type = header >> 30
+        payload_count = ((header >> 16) & 0x3FFF) + 1
+        end = index + 1 + payload_count
+        if end > len(words):
+            raise CheckFailure("cannot rewrite a truncated stream")
+        if packet_type == 0:
+            register = (header & 0x1FFF) << 2
+            if R300_US_CONFIG <= register <= R300_US_ALU_RGB_INST_0:
+                words[index] = R300_PACKET3_NOP | ((payload_count - 1) << 16)
+                removed = True
+        index = end
+    if not removed:
+        raise CheckFailure("ib.bin carries no US program packet to retire")
+    write_words(path, words)
+
+
 def validate(outdir: Path, have_b3sum: bool) -> None:
     manifest = read_json(outdir / "manifest.json")
     bo_table = read_json(outdir / "bo_table.json")
@@ -186,6 +231,48 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
     if manifest.get("carrier_cpp_bytes") != R300_R2VB_REFERENCE_CPP:
         raise CheckFailure("carrier cpp does not describe C4_32_FP")
 
+    carrier_size = (R300_R2VB_REFERENCE_PITCH * R300_R2VB_REFERENCE_HEIGHT *
+                    R300_R2VB_REFERENCE_CPP)
+    if manifest.get("carrier_size_bytes") != carrier_size:
+        raise CheckFailure("carrier size does not derive from pitch * height * cpp")
+
+    expected = manifest.get("expected_carrier_dwords")
+    if (not isinstance(expected, list) or
+            len(expected) != R300_R2VB_REFERENCE_COUNT * 4):
+        raise CheckFailure("expected carrier content does not cover the written slots")
+    try:
+        expected_words = [int(word, 16) for word in expected]
+    except (TypeError, ValueError) as error:
+        raise CheckFailure(f"expected carrier dword is not hex: {error}") from error
+
+    # The embedded records reach the carrier through the pass, so the
+    # expected content is the same little-endian FLOAT_4 bytes the draw
+    # body carries, pre-swizzle.
+    body_index = None
+    for draw_index, _ in decode_stream(words)[1]:
+        body_index = draw_index + 2
+    if body_index is None:
+        raise CheckFailure("no immediate draw carries the records")
+    for vertex in range(R300_R2VB_REFERENCE_COUNT):
+        slot = words[body_index + vertex * R300_R2VB_REFERENCE_VTX_DWORDS + 4:
+                     body_index + vertex * R300_R2VB_REFERENCE_VTX_DWORDS + 8]
+        record = [slot[2], slot[1], slot[0], slot[3]]
+        if record != expected_words[vertex * 4:vertex * 4 + 4]:
+            raise CheckFailure(f"expected carrier slot {vertex} differs from the "
+                               "embedded record")
+
+    poison = manifest.get("carrier_poison_dword")
+    if not isinstance(poison, str):
+        raise CheckFailure("carrier poison pattern is absent")
+    try:
+        poison_word = int(poison, 16)
+    except ValueError as error:
+        raise CheckFailure(f"carrier poison pattern is not hex: {error}") from error
+    # Anti-vacuity: a poison value the pass also writes would let an
+    # unwritten slot read as delivered content.
+    if poison_word in expected_words:
+        raise CheckFailure("carrier poison pattern collides with expected content")
+
     slots = bo_table.get("slots")
     if (not isinstance(slots, list) or len(slots) != 1 or
             not isinstance(slots[0], dict) or slots[0].get("slot") != 0 or
@@ -196,6 +283,11 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
                     R300_R2VB_REFERENCE_HEIGHT * R300_R2VB_REFERENCE_CPP)
     if not isinstance(slots[0].get("size"), int) or slots[0]["size"] < minimum_size:
         raise CheckFailure(f"carrier BO is below {minimum_size} bytes")
+    # The color backend writes the carrier and the consuming draw fetches
+    # it, so the relocation carries GTT in both domains.
+    if (slots[0].get("read_domains") != RADEON_GEM_DOMAIN_GTT or
+            slots[0].get("write_domain") != RADEON_GEM_DOMAIN_GTT):
+        raise CheckFailure(f"carrier BO domains are not read-write GTT: {slots[0]}")
 
     sites = manifest.get("reloc_sites")
     if (not isinstance(sites, list) or len(sites) != 1 or
@@ -229,6 +321,22 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
         raise CheckFailure("VAP_OUTPUT_VTX_FMT_0 is not position-only")
     if registers.get(R300_VAP_OUTPUT_VTX_FMT_1) != R300_R2VB_REFERENCE_OUTPUT_1:
         raise CheckFailure("VAP_OUTPUT_VTX_FMT_1 is not one four-component varying")
+    # The US program the slot pixels shade through travels in the stream:
+    # the US code registers carry the compiled block, and the RS routing
+    # delivers the TEX0 varying to US input register 0.
+    for us_register in (R300_US_CONFIG, R300_US_CODE_ADDR_0,
+                        R300_US_ALU_RGB_INST_0):
+        if us_register not in registers:
+            raise CheckFailure(f"US program register 0x{us_register:04x} absent; "
+                               "the pass would shade through the resident program")
+    if registers.get(R300_RS_COUNT) != R300_R2VB_REFERENCE_RS_COUNT:
+        raise CheckFailure("RS_COUNT does not declare four interpolated components")
+    if registers.get(R300_RS_INST_COUNT) != 0:
+        raise CheckFailure("RS_INST_COUNT does not bound routing to instruction 0")
+    if registers.get(R300_RS_IP_0) != R300_R2VB_REFERENCE_RS_IP_0:
+        raise CheckFailure("RS_IP_0 does not route the TEX0 varying in order")
+    if registers.get(R300_RS_INST_0) != R300_R2VB_REFERENCE_RS_INST_0:
+        raise CheckFailure("RS_INST_0 does not write US input register 0")
     if registers.get(R300_VAP_VF_MAX_VTX_INDX) != R300_R2VB_REFERENCE_COUNT - 1:
         raise CheckFailure("VAP_VF_MAX_VTX_INDX does not match the reference count")
     if len(draws) != 1:
@@ -349,6 +457,26 @@ def main() -> int:
             ).stdout.strip()
         (mutant / "manifest.json").write_text(json.dumps(changed))
         expect_reject(mutant, have_b3sum, "omitted-psc-tail")
+
+        mutant = root / "omitted-us-program"
+        clone(good, mutant)
+        remove_us_program(mutant / "ib.bin")
+        changed = dict(read_json(mutant / "manifest.json"))
+        changed["ib_dwords"] = len(read_words(mutant / "ib.bin"))
+        if have_b3sum:
+            changed["ib_blake3"] = subprocess.run(
+                ["b3sum", "--no-names", str(mutant / "ib.bin")],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+        (mutant / "manifest.json").write_text(json.dumps(changed))
+        expect_reject(mutant, have_b3sum, "omitted-us-program")
+
+        mutant = root / "collided-poison"
+        clone(good, mutant)
+        changed = dict(manifest)
+        changed["carrier_poison_dword"] = changed["expected_carrier_dwords"][0]
+        (mutant / "manifest.json").write_text(json.dumps(changed))
+        expect_reject(mutant, have_b3sum, "collided-poison")
 
         mutant = root / "non-hex-digest"
         clone(good, mutant)

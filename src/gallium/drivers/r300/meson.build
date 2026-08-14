@@ -789,9 +789,9 @@ if with_tests
     suite : ['r300'],
   )
 
-  # Constant-color US block for the TCL-bypass triangle cell: --check proves
-  # the checked-in golden header regenerates from the classic ladder and the
-  # production cb_code baker; --emit rewrites it.
+  # Compiled US blocks for the native cells: --check proves a checked-in
+  # golden header regenerates from the classic ladder and the production
+  # cb_code baker; --emit rewrites it.
   r300_tcl_bypass_fs_tool = executable(
     'r300_tcl_bypass_fs_tool',
     files('compiler/tests/r300_tcl_bypass_fs_tool.c'),
@@ -808,7 +808,13 @@ if with_tests
   test(
     'r300-tcl-bypass-fs-block-regeneration',
     r300_tcl_bypass_fs_tool,
-    args : ['--check'],
+    args : ['--check=triangle'],
+    suite : ['r300'],
+  )
+  test(
+    'r300-r2vb-producer-fs-block-regeneration',
+    r300_tcl_bypass_fs_tool,
+    args : ['--check=r2vb-producer'],
     suite : ['r300'],
   )
 
