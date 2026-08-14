@@ -104,7 +104,7 @@ test_carrier_oracle_poison_contract(void)
              expected, expected_dwords, R300_R2VB_PRODUCER_POISON_DWORD,
              carrier, carrier_bytes, &verdict) == 0);
    assert(verdict.expected_pass && verdict.tail_poison_pass);
-   assert(verdict.mismatched_dwords == 0 &&
+   assert(verdict.mismatched_dwords == 0 && verdict.poison_dwords == 0 &&
           verdict.disturbed_tail_dwords == 0);
 
    /* An unwritten carrier fails on both sides, so the check has a
@@ -117,6 +117,18 @@ test_carrier_oracle_poison_contract(void)
              carrier, carrier_bytes, &verdict) == 0);
    assert(!verdict.expected_pass);
    assert(verdict.mismatched_dwords == expected_dwords);
+   assert(verdict.poison_dwords == expected_dwords);
+
+   /* A carrier written to a wrong value keeps poison_dwords below the
+    * extent, so delivered-but-wrong separates from never-written.
+    */
+   memcpy(carrier, expected, sizeof(expected));
+   carrier[0] ^= 0x00400000u;
+   assert(r300_r2vb_producer_carrier_check(
+             expected, expected_dwords, R300_R2VB_PRODUCER_POISON_DWORD,
+             carrier, carrier_bytes, &verdict) == 0);
+   assert(!verdict.expected_pass);
+   assert(verdict.mismatched_dwords == 1 && verdict.poison_dwords == 0);
 
    /* A disturbed tail dword is an out-of-extent device write. */
    memcpy(carrier, expected, sizeof(expected));

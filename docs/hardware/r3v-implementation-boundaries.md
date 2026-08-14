@@ -1390,12 +1390,22 @@ does not promote another.
     RS482 (2026-08-14, main `cb3d078ed41`, 313-dword IB, blake3 `680dfd6f`,
     expected extent byte-exact, tail poison intact, empty dmesg delta;
     procedure in `docs/hardware/r3v-native-attended-producer-procedure.md`).
-    The remaining silicon ladder, in order: the FP24 boundary sweep over the
-    delivery-admission window edges (staged: the `fp24-sweep` selector on
-    the producer runners), the same-IB producer-plus-re-ingest cell
-    (staged: `r3v_native_attended_reingest`, procedure in
-    `docs/hardware/r3v-native-attended-reingest-procedure.md`), the
-    twelve-dword `FLOAT_4 + FLOAT_2` tuple cell (blocked on the
+    The FP24 boundary sweep ran on RS482 (2026-08-14, main `cd28064499a`,
+    `fp24-sweep` selector, blake3 `5e1cf1dc`): nine of twelve lattice lanes
+    delivered byte-exact and the three top-exponent lanes delivered with
+    the exponent one below expectation, so the
+    `R300_FP24_MAX_FINITE_F32_BITS` ceiling in the host admission model is
+    falsified at its top bin and a bisection sweep between `0x4479c000`
+    and `0x60000000` remains open (executed-run record in
+    `docs/hardware/r3v-native-attended-producer-procedure.md`).  The
+    same-IB producer-plus-re-ingest cell ran on the same day and stream
+    head (blake3 `553bb0ce`, 542 dwords) and returned `REINGEST_RENDERED`
+    -- carrier byte-exact and the triangle rendered from GPU-written
+    vertices -- so the GPU-write to vertex-fetch ordering holds on one
+    submission (procedure and record in
+    `docs/hardware/r3v-native-attended-reingest-procedure.md`).  The
+    remaining silicon ladder, in order: the FP24 upper-ceiling bisection
+    sweep, the twelve-dword `FLOAT_4 + FLOAT_2` tuple cell (blocked on the
     synthesized-lane validator extension recorded in
     `docs/hardware/r300-r2vb-float2-source-contract.md`, whose kernel
     counterpart lands in the radeon kernel source repository), and only

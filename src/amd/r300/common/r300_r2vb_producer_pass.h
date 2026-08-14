@@ -231,6 +231,11 @@ struct r300_r2vb_producer_carrier_verdict {
    bool expected_pass;
    bool tail_poison_pass;
    uint32_t mismatched_dwords;
+   /* Mismatched dwords still holding the poison value: poison_dwords
+    * equal to the expected extent names a carrier the pass never wrote,
+    * and a smaller count names delivered-but-wrong values.
+    */
+   uint32_t poison_dwords;
    uint32_t disturbed_tail_dwords;
 };
 
