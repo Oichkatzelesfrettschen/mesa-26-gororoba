@@ -15,13 +15,19 @@
 # rejection.  An unset variable is an absent configuration and skips.
 #
 # Usage: run_r2vb_producer_replay.sh <r300_r2vb_producer_manifest-binary>
+#        [fp24-sweep]
+#
+# The optional selector replays the FP24 boundary-sweep stream: the same
+# layout, relocation, and bounds under different embedded records, so
+# every arm and its expected verdict carry over unchanged.
 
 set -eu
 
-if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <r300_r2vb_producer_manifest-binary>" >&2
+if [ "$#" -ne 1 ] && [ "$#" -ne 2 ]; then
+    echo "usage: $0 <r300_r2vb_producer_manifest-binary> [fp24-sweep]" >&2
     exit 1
 fi
+stream="${2:-}"
 
 if [ -z "${R3V_CS_TRACK_REPLAY_TOOL:-}" ]; then
     echo "R3V_CS_TRACK_REPLAY_TOOL unset; producer replay not run" >&2
@@ -41,7 +47,7 @@ fi
 workdir=$(mktemp -d)
 trap 'rm -rf "${workdir}"' EXIT
 
-if ! "${manifest_tool}" "${workdir}" >/dev/null; then
+if ! "${manifest_tool}" "${workdir}" ${stream:+"${stream}"} >/dev/null; then
     echo "manifest tool failed" >&2
     exit 1
 fi

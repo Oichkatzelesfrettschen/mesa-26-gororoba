@@ -13,8 +13,8 @@ import sys
 import tempfile
 
 
-def run(runner, evidence_dir, environment):
-    return subprocess.run([runner, evidence_dir], env=environment,
+def run(runner, evidence_dir, environment, *extra):
+    return subprocess.run([runner, evidence_dir, *extra], env=environment,
                           capture_output=True, text=True)
 
 
@@ -110,8 +110,46 @@ def main():
             print(wrong_chip.stdout, file=sys.stderr)
             return 1
 
+        # The FP24 boundary-sweep stream: its report names the stream,
+        # its digest differs from the reference stream's, and the
+        # reference digest declared against the sweep refuses as a
+        # digest mismatch -- one authorization never covers both.
+        environment.pop("R3V_NATIVE_RUNNER_PCI_DEVICE", None)
+        environment.pop("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", None)
+        environment.pop("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", None)
+        sweep = run(runner, evidence_dir, environment, "fp24-sweep")
+        if sweep.returncode == 0:
+            print("FAIL: undeclared sweep run reported an armed verdict",
+                  file=sys.stderr)
+            return 1
+        if "stream=fp24-sweep" not in sweep.stdout:
+            print("FAIL: sweep report does not name its stream",
+                  file=sys.stderr)
+            print(sweep.stdout, file=sys.stderr)
+            return 1
+        sweep_digest = re.search(r"^ib_blake3=([0-9a-f]{64})$", sweep.stdout,
+                                 re.MULTILINE)
+        if sweep_digest is None or sweep_digest.group(1) == digest.group(1):
+            print("FAIL: sweep stream does not carry its own digest",
+                  file=sys.stderr)
+            return 1
+        environment["R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED"] = "1"
+        environment["R3V_NATIVE_AUTHORIZED_IB_BLAKE3"] = digest.group(1)
+        cross = run(runner, evidence_dir, environment, "fp24-sweep")
+        if cross.returncode == 0 or "MISMATCH" not in cross.stdout:
+            print("FAIL: reference digest declared against the sweep "
+                  "stream did not refuse", file=sys.stderr)
+            print(cross.stdout, file=sys.stderr)
+            return 1
+        bad_selector = run(runner, evidence_dir, environment, "fp25-sweep")
+        if bad_selector.returncode != 2:
+            print("FAIL: unknown stream selector did not refuse usage",
+                  file=sys.stderr)
+            return 1
+
         # No run may claim a submission happened.
-        for result in (undeclared, wrong_cell, stale_run, wrong_chip):
+        for result in (undeclared, wrong_cell, stale_run, wrong_chip,
+                       sweep, cross):
             if "no submission attempted" not in result.stdout:
                 print("FAIL: report omits the no-submission statement",
                       file=sys.stderr)

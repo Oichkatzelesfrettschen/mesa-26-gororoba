@@ -47,14 +47,29 @@ write_file(const char *dir, const char *name, const void *data, size_t size)
 int
 main(int argc, char **argv)
 {
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <output-directory>\n", argv[0]);
+   if (argc != 2 && argc != 3) {
+      fprintf(stderr, "usage: %s <output-directory> [fp24-sweep]\n",
+              argv[0]);
       return 2;
    }
    const char *dir = argv[1];
+   /* The optional stream selector mirrors the attended runners': the
+    * sweep embeds the FP24 boundary records under the same layout, so
+    * the manifest differs only in the IB bytes and the expected dwords.
+    */
+   int fp24_sweep = 0;
+   if (argc == 3) {
+      if (strcmp(argv[2], "fp24-sweep") != 0) {
+         fprintf(stderr, "unknown stream selector %s\n", argv[2]);
+         return 2;
+      }
+      fp24_sweep = 1;
+   }
 
    struct r300_r2vb_producer_ib pass;
-   if (r300_r2vb_producer_reference_emit(&pass) != 0) {
+   int emit_rc = fp24_sweep ? r300_r2vb_producer_fp24_sweep_emit(&pass)
+                            : r300_r2vb_producer_reference_emit(&pass);
+   if (emit_rc != 0) {
       fprintf(stderr, "producer-pass emission failed\n");
       return 1;
    }
@@ -127,13 +142,18 @@ main(int argc, char **argv)
    }
 
    /* Expected carrier content: the delivery identity over the same three
-    * FLOAT_4 records the reference emission embeds.  The pass writes one
+    * FLOAT_4 records the selected emission embeds.  The pass writes one
     * slot per vertex, so the expected extent covers layout.count slots
     * and the odd row's padding slot stays outside it.
     */
    uint32_t expected[R300_R2VB_PRODUCER_REFERENCE_COUNT * 4];
-   if (r300_r2vb_producer_reference_expected(
-          expected, (uint32_t)ARRAY_SIZE(expected)) != 0) {
+   int expected_rc =
+      fp24_sweep
+         ? r300_r2vb_producer_fp24_sweep_expected(
+              expected, (uint32_t)ARRAY_SIZE(expected))
+         : r300_r2vb_producer_reference_expected(
+              expected, (uint32_t)ARRAY_SIZE(expected));
+   if (expected_rc != 0) {
       fprintf(stderr, "carrier identity delivery failed\n");
       r300_r2vb_producer_pass_release(&pass);
       return 1;
@@ -154,6 +174,7 @@ main(int argc, char **argv)
       "{\n"
       "  \"schema\": \"r300-r2vb-producer-pass/1\",\n"
       "  \"emitter\": \"r300_r2vb_producer_pass\",\n"
+      "  \"stream\": \"%s\",\n"
       "  \"ib_dwords\": %u,\n"
       "  \"ib_blake3\": \"%s\",\n"
       "  \"reloc_sites\": [%s],\n"
@@ -165,6 +186,7 @@ main(int argc, char **argv)
       "  \"carrier_poison_dword\": \"0x%08x\",\n"
       "  \"expected_carrier_dwords\": [%s]\n"
       "}\n",
+      fp24_sweep ? "fp24-sweep" : "reference",
       pass.ib_size_dwords, ib_blake3_hex, sites, layout.count,
       layout.pitch_pixels, layout.height, R300_R2VB_PRODUCER_CPP_BYTES,
       carrier_size_bytes, R300_R2VB_PRODUCER_POISON_DWORD, carrier);

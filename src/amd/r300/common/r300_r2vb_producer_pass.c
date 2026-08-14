@@ -456,14 +456,20 @@ r300_r2vb_producer_reference_fs(struct r300_fragment_binary *fs)
       "r300-r2vb-producer-compiled");
 }
 
-int
-r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out)
+/* Shared construction for the fixed producer streams: count records
+ * through the single-row layout, the first-draw contract prefix, and the
+ * reference fragment binary at carrier offset zero.  The reference and
+ * sweep emissions differ only in the records they embed, so both stay
+ * byte-comparable against the same layout and contract.
+ */
+static int
+producer_fixed_stream_emit(const float (*records)[4], uint32_t count,
+                           struct r300_r2vb_producer_ib *out)
 {
    memset(out, 0, sizeof(*out));
 
    struct r300_r2vb_producer_layout layout;
-   int rc = r300_r2vb_producer_layout_single_row(
-      R300_R2VB_PRODUCER_REFERENCE_COUNT, &layout);
+   int rc = r300_r2vb_producer_layout_single_row(count, &layout);
    if (rc != 0)
       return rc;
 
@@ -482,10 +488,6 @@ r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out)
    if (rc != 0)
       return rc;
 
-   /* The reference records are the fixed triangle's three FLOAT_4
-    * vertices, the same bytes the CPU gather and the delivery identity
-    * control carry.
-    */
    struct r300_fragment_binary fs;
    rc = r300_r2vb_producer_reference_fs(&fs);
    if (rc != 0)
@@ -493,13 +495,75 @@ r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out)
    struct r300_r2vb_producer_params params = {
       .carrier_offset = 0,
       .layout = layout,
-      .records = (const float(*)[4])r300_tcl_bypass_triangle_vertices,
+      .records = records,
       .first_draw_contract = &contract,
       .fragment_binary = &fs,
    };
    rc = r300_r2vb_producer_pass_emit(&params, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+int
+r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out)
+{
+   /* The reference records are the fixed triangle's three FLOAT_4
+    * vertices, the same bytes the CPU gather and the delivery identity
+    * control carry.
+    */
+   return producer_fixed_stream_emit(
+      (const float(*)[4])r300_tcl_bypass_triangle_vertices,
+      R300_R2VB_PRODUCER_REFERENCE_COUNT, out);
+}
+
+/* Hexadecimal float literals carry the exact bit patterns; the unit test
+ * pins each component to its binary32 encoding, so a literal drifting
+ * off the lattice fails calibration rather than shifting the sweep.
+ */
+const float r300_r2vb_producer_fp24_sweep_records
+   [R300_R2VB_PRODUCER_FP24_SWEEP_COUNT][4] = {
+   /* +0, the minimum normal lattice magnitude (0x21000000), its first
+    * mantissa step (0x21000080), and the next exponent (0x21800000).
+    */
+   { 0.0f, 0x1.0p-61f, 0x1.0001p-61f, 0x1.0p-60f },
+   /* The 1.0 neighborhood: 1.0, the smallest step above it
+    * (0x3f800080), the largest mantissa at that exponent (0x3fffff80),
+    * and the exponent-carry neighbor 2.0.
+    */
+   { 1.0f, 0x1.0001p+0f, 0x1.ffffp+0f, 2.0f },
+   /* A mid-range multi-bit mantissa (999.0 = 0x4479c000) and the
+    * maximum-exponent magnitudes up to the largest finite lattice value
+    * (0x60000000, 0x607fff00, 0x607fff80).
+    */
+   { 999.0f, 0x1.0p+65f, 0x1.fffep+65f, 0x1.ffffp+65f },
+};
+
+int
+r300_r2vb_producer_fp24_sweep_emit(struct r300_r2vb_producer_ib *out)
+{
+   return producer_fixed_stream_emit(r300_r2vb_producer_fp24_sweep_records,
+                                     R300_R2VB_PRODUCER_FP24_SWEEP_COUNT,
+                                     out);
+}
+
+int
+r300_r2vb_producer_fp24_sweep_expected(uint32_t *expected,
+                                       uint32_t expected_dwords)
+{
+   if (expected == NULL)
+      return -EINVAL;
+   if (expected_dwords < R300_R2VB_PRODUCER_FP24_SWEEP_COUNT * 4)
+      return -ENOSPC;
+
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)r300_r2vb_producer_fp24_sweep_records,
+      .stride = 4 * sizeof(float),
+      .size_bytes = (uint64_t)R300_R2VB_PRODUCER_FP24_SWEEP_COUNT * 4 *
+                    sizeof(float),
+   };
+   return r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4, &stream, 0,
+                                     R300_R2VB_PRODUCER_FP24_SWEEP_COUNT,
+                                     expected, expected_dwords);
 }
 
 int

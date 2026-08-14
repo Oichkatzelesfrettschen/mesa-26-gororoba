@@ -526,6 +526,15 @@ VkResult r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
 VkResult r3v_native_record_r2vb_producer(VkCommandBuffer commandBuffer,
                                          VkDeviceMemory carrierMemory);
 
+/* The FP24 boundary-sweep variant: the same recording contract with the
+ * sweep records (r300_r2vb_producer_fp24_sweep_records) in place of the
+ * reference triangle's.  The sweep count equals the reference count, so
+ * the carrier geometry, cell kind, and arming predicate stay frozen and
+ * the IB digest alone separates the streams.
+ */
+VkResult r3v_native_record_r2vb_producer_fp24_sweep(
+   VkCommandBuffer commandBuffer, VkDeviceMemory carrierMemory);
+
 /* The producer cell's carrier allocation: the reference layout's slot row
  * (pitch pixels of one FP32x4 texel, one row), the same product the
  * manifest publishes as carrier_size_bytes.  Returns 0 or a negative
@@ -539,6 +548,10 @@ int r3v_native_producer_carrier_bytes(uint32_t *out);
  * or a negative errno.
  */
 int r3v_native_producer_cell_install(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory);
+
+int r3v_native_producer_fp24_sweep_cell_install(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory);
 
