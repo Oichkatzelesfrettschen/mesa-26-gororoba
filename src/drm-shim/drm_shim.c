@@ -308,6 +308,7 @@ static thread_local int atfork_cancel_state;
 #ifdef DRM_SHIM_TEST
 static int force_reaper_close_range_error;
 static bool force_reaper_getdents_eintr_once;
+static int force_absolute_path_error;
 static int path_snapshot_barrier_armed;
 static int path_snapshot_ready_fd = -1;
 static int path_snapshot_release_fd = -1;
@@ -322,6 +323,12 @@ void
 drm_shim_test_force_reaper_getdents_eintr_once(bool force)
 {
    force_reaper_getdents_eintr_once = force;
+}
+
+void
+drm_shim_test_force_absolute_path_error(int error)
+{
+   force_absolute_path_error = error;
 }
 
 void
@@ -753,6 +760,12 @@ path_base_at_alloc(int dirfd)
 static char *
 absolute_path_at_alloc(int dirfd, const char *path)
 {
+#ifdef DRM_SHIM_TEST
+   if (force_absolute_path_error) {
+      errno = force_absolute_path_error;
+      return NULL;
+   }
+#endif
    if (!path) {
       errno = EFAULT;
       return NULL;
@@ -1398,6 +1411,27 @@ path_is_in_synthetic_root(const char *path)
    return synthetic_root_fd >= 0 && path_has_prefix(path, synthetic_root_path);
 }
 
+/* The shim claims the /dev/dri render-node directory, the
+ * /sys/dev/char/<DRM_MAJOR>:<minor> character-device tree, the PCI device
+ * directory it registers as a synthetic authority, and its own backing root.
+ * The classifier compares strings only, so it still answers after the
+ * allocation or fd acquisition a mapping attempt needs has failed, and a
+ * failure inside a claimed root becomes ENOENT instead of a miss that reads
+ * the host's real DRM node behind the shim.
+ */
+static bool
+path_is_in_claimed_namespace(const char *path)
+{
+   for (int i = 0; i < synthetic_authorities_count; i++) {
+      if (path_has_prefix(path, synthetic_authorities[i]))
+         return true;
+   }
+   return path_has_prefix(path, char_device_path) ||
+          path_has_prefix(path, device_path) ||
+          path_has_prefix(path, render_node_path) ||
+          path_has_prefix(path, synthetic_root_path);
+}
+
 static char *
 join_paths_alloc(const char *base, const char *path)
 {
@@ -1676,8 +1710,17 @@ direct_synthetic_path_map_at(int dirfd, const char *path,
 {
    *mapped_path = NULL;
    char *absolute = absolute_path_at_alloc(dirfd, path);
-   if (!absolute)
+   if (!absolute) {
+      /* The classifier reads the path as written, since the absolute form it
+       * would prefer is what just failed. An absolute path inside a claimed
+       * root takes the error with the errno absolute_path_at_alloc set; every
+       * other path keeps the miss and reaches the real filesystem, which a
+       * relative path resolved through dirfd needs to stay openable.
+       */
+      if (path[0] == '/' && path_is_in_claimed_namespace(path))
+         return SYNTHETIC_PATH_ERROR;
       return SYNTHETIC_PATH_MISS;
+   }
    strip_proc_root_alias(absolute);
 
    if (path_is_in_synthetic_root(absolute)) {
@@ -1743,10 +1786,19 @@ direct_synthetic_path_map_at(int dirfd, const char *path,
       return result;
    }
 
+   /* No component named an override or an authority. Inside a claimed root
+    * that means the entry table lost the path the shim publishes, so the
+    * caller takes ENOENT rather than the host device the path also names.
+    */
+   enum synthetic_path_result result =
+      path_is_in_claimed_namespace(absolute) ? SYNTHETIC_PATH_ERROR
+                                             : SYNTHETIC_PATH_MISS;
    free(component_offsets);
    free(logical);
    free(absolute);
-   return SYNTHETIC_PATH_MISS;
+   if (result == SYNTHETIC_PATH_ERROR)
+      errno = ENOENT;
+   return result;
 }
 
 static char *
@@ -1806,11 +1858,23 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
    } else {
       current_fd = open_path_directory(dirfd);
    }
-   if (current_fd < 0)
+   /* The walk needs one descriptor of its own. Losing it under fd pressure
+    * says nothing about whether the path crosses into the synthetic
+    * namespace, so it reports the error instead of the miss that would send
+    * a shim-owned path to the real filesystem. Every internal failure below
+    * -- allocation, fstat on an O_PATH descriptor, link readback -- reports
+    * the same way; the walk keeps the miss for what the real filesystem
+    * itself resolves, so a path that ends at a missing component still
+    * reaches open(O_CREAT).
+    */
+   if (current_fd < 0) {
+      *synthetic_error = true;
       return NULL;
+   }
 
    char *remaining = strdup(input);
    if (!remaining) {
+      *synthetic_error = true;
       real_close(current_fd);
       return NULL;
    }
@@ -1828,6 +1892,7 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
       char *component = strndup(cursor, component_length);
       char *rest = strdup(separator ? separator + 1 : "");
       if (!component || !rest) {
+         *synthetic_error = true;
          free(component);
          free(rest);
          free(remaining);
@@ -1853,6 +1918,7 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
 
       struct stat status;
       if (syscall(SYS_fstat, next_fd, &status) < 0) {
+         *synthetic_error = true;
          free(component);
          free(remaining);
          real_close(next_fd);
@@ -1874,6 +1940,7 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
          real_close(next_fd);
          free(component);
          if (!target) {
+            *synthetic_error = true;
             free(remaining);
             real_close(current_fd);
             return NULL;
@@ -1890,6 +1957,7 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
          char *target_and_rest = join_paths_alloc(target, remaining);
          free(remaining);
          if (!target_and_rest) {
+            *synthetic_error = true;
             free(target);
             real_close(current_fd);
             return NULL;
@@ -1898,6 +1966,7 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
             free(target_and_rest);
             target_and_rest = strdup("/");
             if (!target_and_rest) {
+               *synthetic_error = true;
                free(target);
                real_close(current_fd);
                return NULL;
@@ -1909,6 +1978,7 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
                char *with_slash =
                   realloc(target_and_rest, target_length + 2);
                if (!with_slash) {
+                  *synthetic_error = true;
                   free(target);
                   free(target_and_rest);
                   real_close(current_fd);
@@ -1942,6 +2012,7 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
             current_fd =
                real_open("/", O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
             if (current_fd < 0) {
+               *synthetic_error = true;
                free(target);
                free(target_and_rest);
                return NULL;
@@ -1956,6 +2027,7 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
          }
          free(target);
          if (!remaining) {
+            *synthetic_error = true;
             real_close(current_fd);
             return NULL;
          }
@@ -1976,13 +2048,31 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
       real_close(current_fd);
       current_fd = next_fd;
 
+      /* The kernel names an open directory through /proc/thread-self/fd, and
+       * that readback caps at PATH_MAX. A directory deeper than the cap is
+       * longer than every claimed root, so the walk carries on past it; any
+       * other naming failure leaves the component unclassified and reports
+       * the error.
+       */
       char *current_path = path_base_at_alloc(current_fd);
-      if (!current_path)
-         continue;
+      if (!current_path) {
+         if (errno == ENAMETOOLONG)
+            continue;
+         *synthetic_error = true;
+         free(remaining);
+         real_close(current_fd);
+         return NULL;
+      }
       char *candidate = join_paths_alloc(current_path, remaining);
       free(current_path);
-      if (!candidate)
-         continue;
+      if (!candidate) {
+         if (errno == ENAMETOOLONG)
+            continue;
+         *synthetic_error = true;
+         free(remaining);
+         real_close(current_fd);
+         return NULL;
+      }
       char *mapped_candidate = NULL;
       enum synthetic_path_result candidate_mapping =
          direct_synthetic_path_map_at(AT_FDCWD, candidate,

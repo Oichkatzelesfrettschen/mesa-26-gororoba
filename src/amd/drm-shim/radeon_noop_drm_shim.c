@@ -6180,9 +6180,60 @@ test_reaper_close_sweep(void)
    return result;
 }
 
+/* A mapping attempt that loses its allocation or its descriptor knows nothing
+ * about whether the path belongs to the shim, and /sys/dev/char/226:128 also
+ * names the host's own DRM node. The claimed namespace therefore answers
+ * ENOENT while the resolver is failing, and an unclaimed path keeps reaching
+ * the real filesystem. Forcing the failure pins both halves without fd or
+ * memory pressure.
+ */
+static int
+test_claimed_namespace_map_miss(void)
+{
+   if (setenv("RADEON_GPU_ID", "0x5974", 1) < 0)
+      return 1;
+
+   int render_fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+   TEST_CHECK(render_fd >= 0, "fake render node open failed with errno %d",
+              errno);
+   if (render_fd < 0)
+      return 1;
+
+   FILE *vendor =
+      fopen("/sys/dev/char/226:128/device/vendor", "r");
+   TEST_CHECK(vendor != NULL,
+              "claimed vendor file failed to open with errno %d", errno);
+   if (vendor)
+      fclose(vendor);
+
+   drm_shim_test_force_absolute_path_error(ENOMEM);
+
+   errno = 0;
+   FILE *forced =
+      fopen("/sys/dev/char/226:128/device/vendor", "r");
+   TEST_CHECK(forced == NULL && errno == ENOMEM,
+              "claimed vendor file fell through to the real filesystem: "
+              "file %p errno %d", (void *)forced, errno);
+   if (forced)
+      fclose(forced);
+
+   errno = 0;
+   FILE *unclaimed = fopen("/proc/self/cmdline", "r");
+   TEST_CHECK(unclaimed != NULL,
+              "unclaimed path lost its passthrough with errno %d", errno);
+   if (unclaimed)
+      fclose(unclaimed);
+
+   drm_shim_test_force_absolute_path_error(0);
+   close(render_fd);
+   return test_failures ? 1 : 0;
+}
+
 int
 main(int argc, char **argv)
 {
+   if (argc == 2 && strcmp(argv[1], "claimed-namespace-map-miss") == 0)
+      return test_claimed_namespace_map_miss();
    if (argc == 2 && strcmp(argv[1], "fork-parent-exit-first") == 0)
       return test_fork_parent_exit_first();
    if (argc == 2 && strcmp(argv[1], "reaper-close-sweep") == 0)

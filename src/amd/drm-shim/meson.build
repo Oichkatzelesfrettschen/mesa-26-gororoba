@@ -97,6 +97,13 @@ if with_tests
     suite: ['amd', 'drm-shim'],
   )
   test(
+    'radeon-noop-drm-shim-claimed-namespace-map-miss',
+    radeon_noop_drm_shim_test,
+    args: ['claimed-namespace-map-miss'],
+    timeout: 30,
+    suite: ['amd', 'drm-shim'],
+  )
+  test(
     'radeon-noop-drm-shim-reaper-close-sweep',
     radeon_noop_drm_shim_test,
     args: ['reaper-close-sweep'],
