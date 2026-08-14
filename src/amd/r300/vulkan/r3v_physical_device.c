@@ -5,6 +5,7 @@
 #include "r3v_physical_device.h"
 #include "r3v_format.h"
 #include "r3v_cpu_sync.h"
+#include "r3v_memory_properties_contract.h"
 
 #include "r3v_entrypoints.h"
 #include "r3v_instance.h"
@@ -1458,22 +1459,10 @@ r3v_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
    VkPhysicalDeviceMemoryProperties *const m = &pMemoryProperties->memoryProperties;
 
 #ifdef R3V_NATIVE_BACKEND
-   /* RS480-family UMA: the GART aperture and the BIOS shared-VRAM carve-out
-    * both draw from system memory, so the native report is one budget --
-    * a single DEVICE_LOCAL heap sized by DRM_RADEON_GEM_INFO's gart_size +
-    * vram_size, the two kernel pools every native GEM allocation lands in.
-    * Type 0 is the host-visible GTT|CPU_ACCESS placement and type 1 the
-    * VRAM|GTT NO_CPU_ACCESS placement, matching
-    * r3v_native_memory_type_policy.  The mapping is CPU-cached and the
-    * aperture is unsnooped: radeon_bo_create strips RADEON_GEM_GTT_WC/UC
-    * on every non-PCIE device, so the GTT mmap is always ttm_cached, and
-    * rs400_gart_enable programs RS480_AGP_MODE_CNTL with
-    * REQ_TYPE_SNOOP_DIS.  HOST_CACHED reports the mapping attribute;
-    * HOST_COHERENT holds because the driver performs the maintenance
-    * itself with radeon_drm_vk_bo_cache_sync -- publish at the vertex
-    * write and over live mappings before the submission ioctl, invalidate
-    * after completion and at map establishment -- at the only
-    * device-access window the synchronous submit model has.
+   /* DRM_RADEON_GEM_INFO reports gart_size and vram_size, the two kernel
+    * pools every native GEM allocation lands in; their sum sizes the one
+    * native heap, and r3v_native_memory_properties_fill clamps it to the
+    * platform ceiling and lays out the types.
     */
    VK_FROM_HANDLE(r3v_physical_device, pdev, physicalDevice);
    uint64_t heap_bytes =
@@ -1484,23 +1473,7 @@ r3v_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
        gem_info.gart_size + gem_info.vram_size > 0)
       heap_bytes = gem_info.gart_size + gem_info.vram_size;
 
-   m->memoryHeapCount = 1;
-   m->memoryHeaps[0] = (VkMemoryHeap){
-      .size = heap_bytes,
-      .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
-   };
-   m->memoryTypeCount = 2;
-   m->memoryTypes[0] = (VkMemoryType){
-      .propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
-                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-      .heapIndex = 0,
-   };
-   m->memoryTypes[1] = (VkMemoryType){
-      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-      .heapIndex = 0,
-   };
+   r3v_native_memory_properties_fill(m, heap_bytes);
    return;
 #else
    /* Report the real GART and shared-VRAM sizes when a Gallium r300g oracle is

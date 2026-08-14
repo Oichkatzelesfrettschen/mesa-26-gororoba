@@ -128,6 +128,23 @@ libvulkan_r3v = shared_library(
   install : true,
 )
 
+# Memory-property contract: the native heap stays under the RS48x platform
+# ceiling and every advertised property keeps its heap and host-mapping
+# backing.  The checker is a pure function over the reported table, so this
+# test runs in every configuration and calibrates on known-bad tables.
+if with_tests
+  test(
+    'r3v-memory-properties-contract',
+    executable(
+      'r3v_memory_properties_contract_test',
+      files('tests/r3v_memory_properties_contract_test.c'),
+      include_directories : [inc_include, include_directories('.')],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+endif
+
 # Build-time guard for the DP4 compute-as-raster fragment shader shape: the FS
 # NIR builder must give the 2D sampler a 2-component coordinate (a vec4 coord
 # trips nir_build_tex_struct's assert and aborted every DP4 compute pipeline
