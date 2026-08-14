@@ -613,8 +613,11 @@ r300_r2vb_producer_carrier_check(
    memset(out, 0, sizeof(*out));
    const uint32_t *dwords = carrier;
    for (uint32_t i = 0; i < expected_dwords; i++) {
-      if (dwords[i] != expected[i])
+      if (dwords[i] != expected[i]) {
          out->mismatched_dwords++;
+         if (dwords[i] == poison)
+            out->poison_dwords++;
+      }
    }
    for (uint32_t i = expected_dwords; i < carrier_dwords; i++) {
       if (dwords[i] != poison)

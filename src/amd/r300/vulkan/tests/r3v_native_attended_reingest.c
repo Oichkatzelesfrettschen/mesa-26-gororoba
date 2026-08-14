@@ -38,6 +38,7 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
 enum outcome {
    OUTCOME_REINGEST_RENDERED,
    OUTCOME_CARRIER_ONLY,
+   OUTCOME_CARRIER_MISMATCH,
    OUTCOME_CARRIER_UNWRITTEN,
    OUTCOME_CONTAINMENT_FAILURE,
    OUTCOME_SUBMISSION_REFUSED,
@@ -48,6 +49,7 @@ enum outcome {
 static const char *const outcome_names[] = {
    [OUTCOME_REINGEST_RENDERED] = "REINGEST_RENDERED",
    [OUTCOME_CARRIER_ONLY] = "CARRIER_ONLY",
+   [OUTCOME_CARRIER_MISMATCH] = "CARRIER_MISMATCH",
    [OUTCOME_CARRIER_UNWRITTEN] = "CARRIER_UNWRITTEN",
    [OUTCOME_CONTAINMENT_FAILURE] = "CONTAINMENT_FAILURE",
    [OUTCOME_SUBMISSION_REFUSED] = "SUBMISSION_REFUSED",
@@ -362,9 +364,10 @@ main(int argc, char **argv)
    /* Classification order: containment first -- a write past either
     * allocation's declared extent stops the sequence whatever else
     * passed -- then the transport's own failures, then the two stages in
-    * dependency order: an unwritten carrier names the producer stage,
-    * and a delivered carrier under a failed render names the re-ingest
-    * fetch or draw.
+    * dependency order: a carrier still poison throughout names an
+    * unwritten producer stage, a carrier written to wrong values names
+    * the producer's delivery, and a delivered carrier under a failed
+    * render names the re-ingest fetch or draw.
     */
    const bool render_pass = target_verdict.executed &&
                             target_verdict.interior_pass &&
@@ -381,7 +384,9 @@ main(int argc, char **argv)
    else if (queue_status != R3V_NATIVE_QUEUE_STATUS_COMPLETED)
       outcome = OUTCOME_COMPLETION_FAILURE;
    else if (!carrier_verdict.expected_pass)
-      outcome = OUTCOME_CARRIER_UNWRITTEN;
+      outcome = carrier_verdict.poison_dwords == expected_dwords
+                   ? OUTCOME_CARRIER_UNWRITTEN
+                   : OUTCOME_CARRIER_MISMATCH;
    else if (!render_pass)
       outcome = OUTCOME_CARRIER_ONLY;
    else

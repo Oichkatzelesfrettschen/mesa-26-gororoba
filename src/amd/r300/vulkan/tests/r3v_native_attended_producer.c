@@ -36,6 +36,7 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
  */
 enum outcome {
    OUTCOME_CARRIER_DELIVERED,
+   OUTCOME_CARRIER_MISMATCH,
    OUTCOME_CARRIER_UNWRITTEN,
    OUTCOME_CONTAINMENT_FAILURE,
    OUTCOME_SUBMISSION_REFUSED,
@@ -45,6 +46,7 @@ enum outcome {
 
 static const char *const outcome_names[] = {
    [OUTCOME_CARRIER_DELIVERED] = "CARRIER_DELIVERED",
+   [OUTCOME_CARRIER_MISMATCH] = "CARRIER_MISMATCH",
    [OUTCOME_CARRIER_UNWRITTEN] = "CARRIER_UNWRITTEN",
    [OUTCOME_CONTAINMENT_FAILURE] = "CONTAINMENT_FAILURE",
    [OUTCOME_SUBMISSION_REFUSED] = "SUBMISSION_REFUSED",
@@ -371,8 +373,10 @@ main(int argc, char **argv)
 
    /* Classification order: a write past the delivered extent stops the
     * sequence whatever else passed; then the transport's own failures;
-    * then the carrier verdict.  A carrier still holding poison names an
-    * unwritten carrier, not a delivery hypothesis.
+    * then the carrier verdict.  An expected extent still holding poison
+    * throughout names an unwritten carrier; any dword written to a value
+    * other than its expectation names a delivered-but-wrong carrier, the
+    * class a boundary sweep exists to surface.
     */
    enum outcome outcome;
    if (!verdict.tail_poison_pass)
@@ -385,8 +389,10 @@ main(int argc, char **argv)
    else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED &&
             verdict.expected_pass)
       outcome = OUTCOME_CARRIER_DELIVERED;
-   else
+   else if (verdict.poison_dwords == expected_dwords)
       outcome = OUTCOME_CARRIER_UNWRITTEN;
+   else
+      outcome = OUTCOME_CARRIER_MISMATCH;
 
    char outcome_json[1024];
    int length = snprintf(
@@ -401,13 +407,14 @@ main(int argc, char **argv)
       "  \"expected_pass\": %s,\n"
       "  \"tail_poison_pass\": %s,\n"
       "  \"mismatched_dwords\": %u,\n"
+      "  \"poison_dwords\": %u,\n"
       "  \"disturbed_tail_dwords\": %u\n"
       "}\n",
       outcome_names[outcome], submit_result,
       r3v_native_queue_status_name(queue_status), carrier_bytes,
       expected_dwords, verdict.expected_pass ? "true" : "false",
       verdict.tail_poison_pass ? "true" : "false", verdict.mismatched_dwords,
-      verdict.disturbed_tail_dwords);
+      verdict.poison_dwords, verdict.disturbed_tail_dwords);
    if (length <= 0 || (size_t)length >= sizeof(outcome_json) ||
        r3v_native_evidence_write_file(evidence_dir,
                                       "producer_outcome.json", outcome_json,

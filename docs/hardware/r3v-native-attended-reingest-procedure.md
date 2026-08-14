@@ -76,3 +76,15 @@ Recorded before the run; deviation is the finding.
 `REINGEST_RENDERED` -- both verdicts passing under a completed fence --
 exits zero. The retained record adds `color.bin` and
 `reingest_outcome.json` beside the producer record's artifacts.
+
+## Executed run
+
+The cell ran on RS482 on 2026-08-14 from main `cd28064499a` (IB blake3
+`553bb0cedacffeca85bc7e4a8bfabc9d02b0120e074a7f81bd2ccfd780c964df`,
+542 dwords) and returned `REINGEST_RENDERED`: carrier
+`expected_pass=1 tail_poison_pass=1 mismatched=0 tail_disturbed=0`,
+target `executed=1 interior=1 exterior=1 canary=1`, empty dmesg delta,
+fence retired. The GPU-write to vertex-fetch ordering holds on one
+submission through the publication tail. The retained record lives on
+the target host at `/var/tmp/r3v-reingest-arm-20260814a/`; its durable
+home is a `steinmarder-r300` results bundle.
