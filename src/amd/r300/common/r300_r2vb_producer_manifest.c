@@ -132,16 +132,8 @@ main(int argc, char **argv)
     * and the odd row's padding slot stays outside it.
     */
    uint32_t expected[R300_R2VB_PRODUCER_REFERENCE_COUNT * 4];
-   const struct r300_cpu_vertex_stream stream = {
-      .data = (const uint8_t *)r300_tcl_bypass_triangle_vertices,
-      .stride = 4 * sizeof(float),
-      .size_bytes = (uint64_t)R300_R2VB_PRODUCER_REFERENCE_COUNT * 4 *
-                    sizeof(float),
-   };
-   if (r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4, &stream, 0,
-                                  R300_R2VB_PRODUCER_REFERENCE_COUNT,
-                                  expected,
-                                  (uint32_t)ARRAY_SIZE(expected)) != 0) {
+   if (r300_r2vb_producer_reference_expected(
+          expected, (uint32_t)ARRAY_SIZE(expected)) != 0) {
       fprintf(stderr, "carrier identity delivery failed\n");
       r300_r2vb_producer_pass_release(&pass);
       return 1;

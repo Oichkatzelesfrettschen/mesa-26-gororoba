@@ -19,6 +19,7 @@ r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
 {
    free(cmd_buffer->ib);
    free(cmd_buffer->references);
+   cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
    cmd_buffer->ib = NULL;
    cmd_buffer->ib_size_dwords = 0;
    cmd_buffer->references = NULL;
@@ -51,11 +52,13 @@ r3v_native_cmd_buffer_release_recording(
 
 void
 r3v_native_cmd_buffer_install_ib(struct r3v_native_cmd_buffer *cmd_buffer,
+                                 enum r3v_native_cell_kind kind,
                                  uint32_t *ib, uint32_t ib_size_dwords,
                                  struct r3v_native_bo_reference *references,
                                  uint32_t reference_count)
 {
    r3v_native_cmd_buffer_release_ib(cmd_buffer);
+   cmd_buffer->cell_kind = kind;
    cmd_buffer->ib = ib;
    cmd_buffer->ib_size_dwords = ib_size_dwords;
    cmd_buffer->references = references;

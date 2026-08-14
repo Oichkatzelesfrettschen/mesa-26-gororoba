@@ -180,4 +180,39 @@ int r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out);
  */
 #define R300_R2VB_PRODUCER_REFERENCE_COUNT 3u
 
+/* Writes the carrier content the reference pass is expected to deliver:
+ * the delivery identity over the same three FLOAT_4 records the
+ * reference emission embeds, four dwords per slot.  The manifest
+ * publishes these dwords from this one source, so a read-back check and
+ * the published oracle cannot diverge.  Returns 0 or a negative errno;
+ * -ENOSPC names storage shorter than the reference extent.
+ */
+int r300_r2vb_producer_reference_expected(uint32_t *expected,
+                                          uint32_t expected_dwords);
+
+/* The read-back verdict over one carrier allocation.  expected_pass
+ * covers the slots the pass writes; tail_poison_pass covers every dword
+ * past that extent, where the padding slot of an odd count and any
+ * allocation headroom must still hold the poison the prefill left.
+ */
+struct r300_r2vb_producer_carrier_verdict {
+   bool expected_pass;
+   bool tail_poison_pass;
+   uint32_t mismatched_dwords;
+   uint32_t disturbed_tail_dwords;
+};
+
+/* Compares a mapped carrier against the expected dwords and the poison
+ * contract.  An expected dword equal to the poison value makes the
+ * negative side undecidable -- a slot the pass never wrote would read as
+ * delivered -- so the check refuses that pairing with -EINVAL before
+ * reading the carrier.  -EINVAL also names a carrier shorter than the
+ * expected extent or a byte size outside whole dwords.  Returns 0 with
+ * the verdict filled, or a negative errno.
+ */
+int r300_r2vb_producer_carrier_check(
+   const uint32_t *expected, uint32_t expected_dwords, uint32_t poison,
+   const void *carrier, uint32_t carrier_bytes,
+   struct r300_r2vb_producer_carrier_verdict *out);
+
 #endif /* R300_R2VB_PRODUCER_PASS_H */

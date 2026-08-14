@@ -10,6 +10,7 @@
 #include "r3v_native_identity.h"
 #include "r3v_physical_device.h"
 
+#include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_cs.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
@@ -19,6 +20,7 @@
 
 #include "util/mesa-blake3.h"
 
+#include <radeon_drm.h>
 #include <stdint.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -126,6 +128,48 @@ r3v_native_evidence_require_fresh(const char *dir,
          return -errno;
    }
    return 0;
+}
+
+/* The geometry fact the arming gate reads, resolved per cell kind.  The
+ * triangle and direct-write cells render the public target family, so
+ * their attended identity is the maximum 64x64 extent.  The producer
+ * cell renders into the carrier, so its geometry is the reference
+ * layout's slot row: the bound allocation measures exactly pitch times
+ * height times the 16-byte texel -- radeon_drm_vk_bo_create stores the
+ * requested size, so the comparison is against the caller's declared
+ * footprint -- and the one relocation carries the GTT domain in both
+ * directions, since the color backend writes the row and the consuming
+ * vertex fetch reads it.  A kind outside the set reports unfrozen, and
+ * the gate's own kind check names it first.
+ */
+static bool
+cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   switch (cmd_buffer->cell_kind) {
+   case R3V_NATIVE_CELL_KIND_TRIANGLE:
+   case R3V_NATIVE_CELL_KIND_DIRECT_WRITE:
+      return cmd_buffer->deferred_draw.pending &&
+             (cmd_buffer->deferred_draw.target_width !=
+                 R3V_NATIVE_TARGET_WIDTH ||
+              cmd_buffer->deferred_draw.target_height !=
+                 R3V_NATIVE_TARGET_HEIGHT);
+   case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER: {
+      uint32_t carrier_bytes;
+      if (r3v_native_producer_carrier_bytes(&carrier_bytes) != 0)
+         return true;
+      if (cmd_buffer->reference_count != R300_R2VB_PRODUCER_SLOT_COUNT)
+         return true;
+      const struct r3v_native_bo_reference *slot =
+         &cmd_buffer->references[R300_R2VB_PRODUCER_SLOT_CARRIER];
+      if (slot->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          slot->write_domain != RADEON_GEM_DOMAIN_GTT)
+         return true;
+      return slot->memory == NULL || slot->memory->bo.size != carrier_bytes;
+   }
+   case R3V_NATIVE_CELL_KIND_UNDECLARED:
+   default:
+      return true;
+   }
 }
 
 static void
@@ -646,15 +690,11 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                ? device->arming_provider
                : r3v_native_arming_host_provider(),
             &facts, device->pdevice->pci_vendor_id,
-            device->pdevice->pci_device_id, ib_digest,
-            device->manifest_dir, kernel_release, sizeof(kernel_release),
-            module_srcversion, sizeof(module_srcversion));
-         facts.nonmaximum_extent =
-            cmd_buffer->deferred_draw.pending &&
-            (cmd_buffer->deferred_draw.target_width !=
-                R3V_NATIVE_TARGET_WIDTH ||
-             cmd_buffer->deferred_draw.target_height !=
-                R3V_NATIVE_TARGET_HEIGHT);
+            device->pdevice->pci_device_id, cmd_buffer->cell_kind,
+            ib_digest, device->manifest_dir, kernel_release,
+            sizeof(kernel_release), module_srcversion,
+            sizeof(module_srcversion));
+         facts.nonmaximum_extent = cell_geometry_unfrozen(cmd_buffer);
 
          if (facts.attempt_token_present) {
             free(reference_indices);

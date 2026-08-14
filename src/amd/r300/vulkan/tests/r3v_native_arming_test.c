@@ -26,6 +26,7 @@ armed_facts(void)
 {
    return (struct r3v_native_arming_facts){
       .hazard_gate = "1",
+      .cell_kind = R3V_NATIVE_CELL_KIND_TRIANGLE,
       .authorized_ib_blake3 = authorized_digest,
       .actual_ib_blake3 = authorized_digest,
       .pci_vendor_id = R3V_NATIVE_ARMING_PCI_VENDOR,
@@ -82,6 +83,34 @@ test_each_factor_refuses(void)
    facts.nonmaximum_extent = true;
    assert(r3v_native_arming_evaluate(&facts) ==
           R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT);
+
+   /* Each recorded kind carries its own frozen geometry and arms; an
+    * undeclared or out-of-set kind has none and refuses ahead of the
+    * extent factor, so an unrecognized cell cannot ride a false extent
+    * fact into the ioctl.
+    */
+   const enum r3v_native_cell_kind kinds[] = {
+      R3V_NATIVE_CELL_KIND_TRIANGLE,
+      R3V_NATIVE_CELL_KIND_DIRECT_WRITE,
+      R3V_NATIVE_CELL_KIND_R2VB_PRODUCER,
+   };
+   for (unsigned i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+      facts = armed_facts();
+      facts.cell_kind = kinds[i];
+      assert(r3v_native_arming_evaluate(&facts) == R3V_NATIVE_ARMING_ARMED);
+   }
+   facts = armed_facts();
+   facts.cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_UNKNOWN_CELL_KIND);
+   /* The kind check precedes the extent factor, so an undeclared kind
+    * refuses by kind even while the extent fact reads unfrozen.
+    */
+   facts = armed_facts();
+   facts.cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
+   facts.nonmaximum_extent = true;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_UNKNOWN_CELL_KIND);
 
    /* RS485-marketed 0x5975 is a supported r3v identity but not the
     * authorized attended-run chip.
@@ -153,6 +182,7 @@ test_disarm_is_one_shot(void)
    struct r3v_native_arming_facts facts;
    r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PCI_VENDOR,
                              R3V_NATIVE_ARMING_PCI_DEVICE,
+                             R3V_NATIVE_CELL_KIND_TRIANGLE,
                              authorized_digest, dir, kernel, sizeof(kernel),
                              module, sizeof(module));
    assert(facts.evidence_dir_present);
@@ -183,6 +213,7 @@ test_disarm_is_one_shot(void)
 
    r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PCI_VENDOR,
                              R3V_NATIVE_ARMING_PCI_DEVICE,
+                             R3V_NATIVE_CELL_KIND_TRIANGLE,
                              authorized_digest, dir, kernel, sizeof(kernel),
                              module, sizeof(module));
    assert(facts.attempt_token_present);
@@ -198,6 +229,7 @@ test_disarm_is_one_shot(void)
    /* A directory that no longer exists refuses on the evidence factor. */
    r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PCI_VENDOR,
                              R3V_NATIVE_ARMING_PCI_DEVICE,
+                             R3V_NATIVE_CELL_KIND_TRIANGLE,
                              authorized_digest, dir, kernel, sizeof(kernel),
                              module, sizeof(module));
    assert(!facts.evidence_dir_present);

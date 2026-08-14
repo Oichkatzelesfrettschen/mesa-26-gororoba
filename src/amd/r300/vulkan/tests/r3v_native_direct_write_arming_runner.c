@@ -89,7 +89,8 @@ main(int argc, char **argv)
    char kernel[128];
    char module[128];
    struct r3v_native_arming_facts facts;
-   r3v_native_arming_collect(&facts, vendor_id, device_id, digest,
+   r3v_native_arming_collect(&facts, vendor_id, device_id,
+                             R3V_NATIVE_CELL_KIND_DIRECT_WRITE, digest,
                              evidence_dir, kernel, sizeof(kernel), module,
                              sizeof(module));
 
