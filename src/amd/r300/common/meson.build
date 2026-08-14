@@ -91,6 +91,48 @@ test(
   suite : ['r300'],
 )
 
+r300_r2vb_reingest_pass_test = executable(
+  'r300_r2vb_reingest_pass_test',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
+        'r300_r2vb_producer_pass.c', 'r300_r2vb_reingest_pass.c',
+        'r300_tcl_bypass_triangle.c',
+        'tests/r300_r2vb_reingest_pass_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-r2vb-reingest-pass',
+  r300_r2vb_reingest_pass_test,
+  suite : ['r300'],
+)
+
+# Manifest writer for the re-ingest stream; the offline replay drives it.
+r300_r2vb_reingest_manifest = executable(
+  'r300_r2vb_reingest_manifest',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
+        'r300_r2vb_producer_pass.c', 'r300_r2vb_reingest_manifest.c',
+        'r300_r2vb_reingest_pass.c', 'r300_tcl_bypass_triangle.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+
+# Offline kernel replay of the re-ingest stream, gated on
+# R3V_CS_TRACK_REPLAY_TOOL; absent tool exits 77 (meson SKIP).
+test(
+  'r300-r2vb-reingest-replay',
+  files('tests/run_r2vb_reingest_replay.sh')[0],
+  args : [r300_r2vb_reingest_manifest],
+  suite : ['r300'],
+)
+
 # The FP24 boundary-sweep stream replays through the same script: the
 # layout, relocation, and color-buffer bound are unchanged, so the
 # known-good and known-bad arms and their verdicts carry over.

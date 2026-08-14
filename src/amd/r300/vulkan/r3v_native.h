@@ -535,6 +535,18 @@ VkResult r3v_native_record_r2vb_producer(VkCommandBuffer commandBuffer,
 VkResult r3v_native_record_r2vb_producer_fp24_sweep(
    VkCommandBuffer commandBuffer, VkDeviceMemory carrierMemory);
 
+/* Records the producer-plus-re-ingest cell: one IB carrying the
+ * reference producer pass into the carrier followed by the reference
+ * triangle draw fetching that carrier as its vertex stream
+ * (r300_r2vb_reingest_reference_emit), so a completed run proves the
+ * GPU-write to vertex-fetch ordering on one submission.  The carrier is
+ * poisoned and the color target sentinel-filled at record, so the
+ * producer stage and the consuming draw each keep a decidable verdict.
+ */
+VkResult r3v_native_record_r2vb_reingest(VkCommandBuffer commandBuffer,
+                                         VkDeviceMemory carrierMemory,
+                                         VkDeviceMemory colorMemory);
+
 /* The producer cell's carrier allocation: the reference layout's slot row
  * (pitch pixels of one FP32x4 texel, one row), the same product the
  * manifest publishes as carrier_size_bytes.  Returns 0 or a negative
@@ -554,5 +566,10 @@ int r3v_native_producer_cell_install(
 int r3v_native_producer_fp24_sweep_cell_install(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory);
+
+int r3v_native_reingest_cell_install(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory,
+   struct r3v_native_memory *color_memory);
 
 #endif /* R3V_NATIVE_H */
