@@ -109,6 +109,21 @@ exact/wrong pattern) falsifies the exponent-window hypothesis itself.
 The verdict for a partial delivery is `CARRIER_MISMATCH`; the retained
 carrier bytes carry the per-lane result.
 
+## Executed bisection run
+
+The `fp24-bisect` stream ran on RS482 on 2026-08-14 from main
+`3bd7c9fc002` (IB blake3
+`6df52da2e124dcf709d1eca12034087857f0ada3810f0616f00d2c0211126040`,
+313 dwords) and returned `CARRIER_DELIVERED`: all twelve lanes through
+`0x5fffff80` byte-exact, tail poison intact, empty dmesg delta, fence
+retired. Combined with the sweep's halved `0x60000000` lane, the
+identity-delivery ceiling is `0x5fffff80` exactly: the US FP24 format
+resolves as s1e7m16 with bias 62 and the top exponent field reserved,
+so `R300_FP24_MAX_FINITE_F32_BITS` carries `0x5FFFFF80`, and the sweep
+table's maximum-exponent lanes sit at the corrected lattice edge. The
+retained record lives in the `steinmarder-r300` bundle
+`results/r3v-native-fp24-bisect-ceiling-rs482/`.
+
 ## Executed run
 
 The cell ran on RS482 on 2026-08-14 from main `cb3d078ed41` (IB blake3
