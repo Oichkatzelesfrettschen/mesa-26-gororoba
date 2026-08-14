@@ -21,10 +21,35 @@ import subprocess
 import sys
 
 
+# test_text_equals (radeon_noop_drm_shim.c) is the shim's only caller for
+# comparing a sysfs override's content -- vendor, device, subsystem_vendor,
+# modalias -- against the identity RADEON_GPU_ID selected. That comparison
+# is a hardware-identity claim, and digit-run normalization on its FAIL
+# line let two different vendor strings collapse to one signature line: a
+# claimed-namespace mapping that lost its allocation fell through to the
+# real filesystem, /sys/dev/char/226:128 named the host's own DRM node,
+# and its foreign vendor read passed because "0x1002" and "0x10de" both
+# normalized away their digits. Every other FAIL: shape carries a value
+# that varies by construction -- pid, tid, fd, memfd payload byte, mmap
+# offset -- and keeps the normalization that absorbs that variance.
+IDENTITY_MISMATCH = re.compile(
+    r'^FAIL: override (?P<path>\S+) contains "(?P<observed>[^"]*)" '
+    r'instead of "(?P<expected>[^"]*)"$')
+
+
 def normalize(line):
     """Drops volatile numbers so the signature names the defect, not a
-    particular pid, descriptor number, or address."""
-    return re.sub(r"[0-9]+", "N", line).strip()
+    particular pid, descriptor number, or address. A hardware-identity
+    override mismatch (IDENTITY_MISMATCH) keeps its quoted content exact;
+    only the path, which still carries a numbered PCI domain or
+    char-device pair, takes the digit-run normalization."""
+    stripped = line.strip()
+    identity = IDENTITY_MISMATCH.match(stripped)
+    if identity:
+        return 'FAIL: override {} contains "{}" instead of "{}"'.format(
+            re.sub(r"[0-9]+", "N", identity.group("path")),
+            identity.group("observed"), identity.group("expected"))
+    return re.sub(r"[0-9]+", "N", stripped)
 
 
 def main():
