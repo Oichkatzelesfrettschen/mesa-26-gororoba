@@ -8,7 +8,9 @@
  */
 
 #include "r300_first_draw_state.h"
+#include "r300_fragment_binary.h"
 #include "r300_pm4_builder.h"
+#include "r300_r2vb_producer_fs_block.h"
 #include "r300_r2vb_producer_pass.h"
 #include "r300_tcl_bypass_triangle.h"
 
@@ -42,8 +44,8 @@ static int failures;
  * the assertions read observed state rather than fixed offsets.
  */
 struct walk_state {
-   uint32_t reg_value[16];
-   bool reg_seen[16];
+   uint32_t reg_value[24];
+   bool reg_seen[24];
    uint32_t draw_header_index;
    uint32_t draw_count;
    uint32_t nop_count;
@@ -57,8 +59,31 @@ static const uint32_t tracked_regs[] = {
    R300_VAP_VTX_SIZE,      R300_VAP_VF_MAX_VTX_INDX,
    R300_VAP_CNTL_STATUS,   R300_GA_POINT_SIZE,
    R300_VAP_PVS_STATE_FLUSH_REG, R300_SC_SCISSORS_TL,
-   R300_SC_SCISSORS_BR,
+   R300_SC_SCISSORS_BR,      R300_RS_COUNT,
+   R300_RS_INST_COUNT,       R300_RS_IP_0,
+   R300_RS_INST_0,
 };
+
+/* Locates the compiled US block inside the stream: the emission copies
+ * the fragment binary's cb_code verbatim, so the block is a contiguous
+ * run equal to the golden header.  Returns the first index or the stream
+ * length when the run is absent.
+ */
+static uint32_t
+find_us_block(const uint32_t *ib, uint32_t count)
+{
+   const uint32_t block_dwords =
+      sizeof(r300_r2vb_producer_fs_block) /
+      sizeof(r300_r2vb_producer_fs_block[0]);
+   if (count < block_dwords)
+      return count;
+   for (uint32_t i = 0; i + block_dwords <= count; i++) {
+      if (memcmp(&ib[i], r300_r2vb_producer_fs_block,
+                 block_dwords * sizeof(uint32_t)) == 0)
+         return i;
+   }
+   return count;
+}
 
 static int
 tracked_index(uint32_t reg)
@@ -150,6 +175,35 @@ test_reference_structure(void)
    CHECK(st.reg_value[tracked_index(R300_US_OUT_FMT_0)] ==
          (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
           R300_C2_SEL_R | R300_C3_SEL_A));
+
+   /* The US program travels inside the stream, ahead of the draw it
+    * shades, so the slot pixels run this program rather than whatever the
+    * previous client left resident.
+    */
+   const uint32_t us_block_index =
+      find_us_block(pass.ib, pass.ib_size_dwords);
+   CHECK(us_block_index < pass.ib_size_dwords);
+   CHECK(us_block_index < st.draw_header_index);
+
+   /* Varying routing into that program: four interpolated components, no
+    * rasterized colors, TEX0's four channels in order, delivered to US
+    * input register zero by instruction 0 alone.
+    */
+   CHECK(st.reg_seen[tracked_index(R300_RS_COUNT)]);
+   CHECK(st.reg_value[tracked_index(R300_RS_COUNT)] ==
+         (R300_IT_COUNT(4) | R300_IC_COUNT(0) | R300_HIRES_EN));
+   CHECK(st.reg_seen[tracked_index(R300_RS_INST_COUNT)]);
+   CHECK(st.reg_value[tracked_index(R300_RS_INST_COUNT)] == 0);
+   CHECK(st.reg_seen[tracked_index(R300_RS_IP_0)]);
+   CHECK(st.reg_value[tracked_index(R300_RS_IP_0)] ==
+         (R300_RS_TEX_PTR(0) | R300_RS_SEL_S(R300_RS_SEL_C0) |
+          R300_RS_SEL_T(R300_RS_SEL_C1) |
+          R300_RS_SEL_R(R300_RS_SEL_C2) |
+          R300_RS_SEL_Q(R300_RS_SEL_C3)));
+   CHECK(st.reg_seen[tracked_index(R300_RS_INST_0)]);
+   CHECK(st.reg_value[tracked_index(R300_RS_INST_0)] ==
+         (R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
+          R300_RS_INST_TEX_ADDR(0)));
 
    /* Embedded draw framing: eight dwords per vertex, three vertices,
     * POINTS through the embedded walk.
@@ -263,21 +317,27 @@ test_immediate_count_ceiling(void)
       .height = 1,
       .pitch_pixels = 1024,
    };
+   struct r300_fragment_binary fs;
+   CHECK(r300_r2vb_producer_reference_fs(&fs) == 0);
    struct r300_r2vb_producer_params params = {
       .carrier_offset = 0,
       .layout = layout,
       .records = records,
       .first_draw_contract = NULL,
+      .fragment_binary = &fs,
    };
    struct r300_r2vb_producer_ib pass = { 0 };
    const int emit_rc = r300_r2vb_producer_pass_emit(&params, &pass);
    CHECK(emit_rc == 0);
-   if (emit_rc != 0)
+   if (emit_rc != 0) {
+      r300_fragment_binary_finish(&fs);
       return;
+   }
    const int validate_rc = r300_r2vb_producer_pass_validate_reloc_sites(&pass);
    CHECK(validate_rc == 0);
    if (validate_rc != 0) {
       r300_r2vb_producer_pass_release(&pass);
+      r300_fragment_binary_finish(&fs);
       return;
    }
    struct walk_state st;
@@ -285,6 +345,7 @@ test_immediate_count_ceiling(void)
    CHECK(walk_rc == 0);
    if (walk_rc != 0) {
       r300_r2vb_producer_pass_release(&pass);
+      r300_fragment_binary_finish(&fs);
       return;
    }
    CHECK(st.draw_count == 1);
@@ -301,6 +362,7 @@ test_immediate_count_ceiling(void)
       CHECK(r300_r2vb_producer_pass_emit(&params, &pass) == -EINVAL);
       CHECK(pass.ib == NULL && pass.ib_size_dwords == 0);
    }
+   r300_fragment_binary_finish(&fs);
 }
 
 static void
@@ -315,18 +377,33 @@ test_refusals(void)
       { 56.0f, 0.5f, 0.25f, 1.0f },
    };
 
+   struct r300_fragment_binary fs;
+   CHECK(r300_r2vb_producer_reference_fs(&fs) == 0);
+
    /* Null records refuse. */
    struct r300_r2vb_producer_params params = {
       .carrier_offset = 0,
       .layout = layout,
       .records = NULL,
       .first_draw_contract = NULL,
+      .fragment_binary = &fs,
    };
    struct r300_r2vb_producer_ib pass;
    CHECK(r300_r2vb_producer_pass_emit(&params, &pass) == -EINVAL);
 
-   /* A malformed layout refuses: odd pitch cannot encode. */
+   /* A pass without its own US program refuses: the slot pixels would
+    * shade through the resident program of the previous client.
+    */
    params.records = records;
+   params.fragment_binary = NULL;
+   CHECK(r300_r2vb_producer_pass_emit(&params, &pass) == -EINVAL);
+   struct r300_fragment_binary unvalidated;
+   memset(&unvalidated, 0, sizeof(unvalidated));
+   params.fragment_binary = &unvalidated;
+   CHECK(r300_r2vb_producer_pass_emit(&params, &pass) == -EINVAL);
+   params.fragment_binary = &fs;
+
+   /* A malformed layout refuses: odd pitch cannot encode. */
    params.layout.pitch_pixels = 3;
    params.layout.width = 3;
    CHECK(r300_r2vb_producer_pass_emit(&params, &pass) == -EINVAL);
@@ -375,7 +452,9 @@ test_refusals(void)
    struct walk_state st;
    CHECK(walk_stream(pass.ib, pass.ib_size_dwords, &st) == 0);
    CHECK(st.draw_count == 1);
+   CHECK(find_us_block(pass.ib, pass.ib_size_dwords) < st.draw_header_index);
    r300_r2vb_producer_pass_release(&pass);
+   r300_fragment_binary_finish(&fs);
 }
 
 int

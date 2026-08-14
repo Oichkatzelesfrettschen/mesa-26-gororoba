@@ -6,8 +6,13 @@
  */
 
 #include "r300_first_draw_state.h"
+#include "r300_r2vb_carrier_delivery.h"
 #include "r300_r2vb_producer_pass.h"
 #include "r300_tcl_bypass_triangle.h"
+#include "r300_vertex_format.h"
+
+#include "drm-uapi/radeon_drm.h"
+#include "util/macros.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -74,19 +79,37 @@ main(int argc, char **argv)
                        pass.ib_size_dwords * sizeof(uint32_t));
    free(ib_bytes);
 
-   /* One carrier BO, read-write: the pass writes it through the color
-    * backend and the consuming draw fetches it as the vertex stream.
+   struct r300_r2vb_producer_layout layout;
+   if (r300_r2vb_producer_layout_single_row(
+          R300_R2VB_PRODUCER_REFERENCE_COUNT, &layout) != 0) {
+      r300_r2vb_producer_pass_release(&pass);
+      return 1;
+   }
+
+   /* The carrier holds exactly the slot row the pass scissors and
+    * retargets: pitch pixels of one FP32x4 texel each, one row high.
+    * The kernel's color-buffer bound reads the same product, so the BO
+    * size derives from the layout rather than from an allocation
+    * granularity.
     */
-   char bo_table[256];
+   const uint32_t carrier_size_bytes =
+      layout.pitch_pixels * layout.height * R300_R2VB_PRODUCER_CPP_BYTES;
+
+   /* One carrier BO, read-write in the GTT: the pass writes it through
+    * the color backend and the consuming draw fetches it as the vertex
+    * stream, so both relocation domains are RADEON_GEM_DOMAIN_GTT.
+    */
+   char bo_table[512];
    int bo_table_len = snprintf(
       bo_table, sizeof(bo_table),
       "{\n"
       "  \"slots\": [\n"
       "    {\"slot\": %u, \"role\": \"carrier\", \"domain\": \"GTT\","
-      " \"size\": 4096}\n"
+      " \"read_domains\": %u, \"write_domain\": %u, \"size\": %u}\n"
       "  ]\n"
       "}\n",
-      (unsigned)R300_R2VB_PRODUCER_SLOT_CARRIER);
+      (unsigned)R300_R2VB_PRODUCER_SLOT_CARRIER, RADEON_GEM_DOMAIN_GTT,
+      RADEON_GEM_DOMAIN_GTT, carrier_size_bytes);
    rc |= write_file(dir, "bo_table.json", bo_table, (size_t)bo_table_len);
 
    char ib_blake3_hex[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
@@ -103,14 +126,37 @@ main(int argc, char **argv)
                             pass.reloc_sites[i].ib_index);
    }
 
-   struct r300_r2vb_producer_layout layout;
-   if (r300_r2vb_producer_layout_single_row(
-          R300_R2VB_PRODUCER_REFERENCE_COUNT, &layout) != 0) {
+   /* Expected carrier content: the delivery identity over the same three
+    * FLOAT_4 records the reference emission embeds.  The pass writes one
+    * slot per vertex, so the expected extent covers layout.count slots
+    * and the odd row's padding slot stays outside it.
+    */
+   uint32_t expected[R300_R2VB_PRODUCER_REFERENCE_COUNT * 4];
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)r300_tcl_bypass_triangle_vertices,
+      .stride = 4 * sizeof(float),
+      .size_bytes = (uint64_t)R300_R2VB_PRODUCER_REFERENCE_COUNT * 4 *
+                    sizeof(float),
+   };
+   if (r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4, &stream, 0,
+                                  R300_R2VB_PRODUCER_REFERENCE_COUNT,
+                                  expected,
+                                  (uint32_t)ARRAY_SIZE(expected)) != 0) {
+      fprintf(stderr, "carrier identity delivery failed\n");
       r300_r2vb_producer_pass_release(&pass);
       return 1;
    }
 
-   char manifest[1024];
+   char carrier[512];
+   int carrier_len = 0;
+   for (unsigned i = 0; i < ARRAY_SIZE(expected); i++) {
+      carrier_len += snprintf(&carrier[carrier_len],
+                              sizeof(carrier) - (size_t)carrier_len,
+                              "%s\"0x%08x\"", i == 0 ? "" : ", ",
+                              expected[i]);
+   }
+
+   char manifest[2048];
    int manifest_len = snprintf(
       manifest, sizeof(manifest),
       "{\n"
@@ -122,10 +168,14 @@ main(int argc, char **argv)
       "  \"vertex_count\": %u,\n"
       "  \"carrier_pitch_pixels\": %u,\n"
       "  \"carrier_height\": %u,\n"
-      "  \"carrier_cpp_bytes\": 16\n"
+      "  \"carrier_cpp_bytes\": %u,\n"
+      "  \"carrier_size_bytes\": %u,\n"
+      "  \"carrier_poison_dword\": \"0x%08x\",\n"
+      "  \"expected_carrier_dwords\": [%s]\n"
       "}\n",
       pass.ib_size_dwords, ib_blake3_hex, sites, layout.count,
-      layout.pitch_pixels, layout.height);
+      layout.pitch_pixels, layout.height, R300_R2VB_PRODUCER_CPP_BYTES,
+      carrier_size_bytes, R300_R2VB_PRODUCER_POISON_DWORD, carrier);
    rc |= write_file(dir, "manifest.json", manifest, (size_t)manifest_len);
 
    r300_r2vb_producer_pass_release(&pass);

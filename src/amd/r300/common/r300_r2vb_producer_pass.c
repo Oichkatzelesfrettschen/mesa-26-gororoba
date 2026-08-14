@@ -2,8 +2,10 @@
 
 #include "r300_r2vb_producer_pass.h"
 #include "r300_first_draw_state.h"
+#include "r300_fragment_binary.h"
 #include "r300_pm4_builder.h"
 #include "r300_r2vb_carrier_delivery.h"
+#include "r300_r2vb_producer_fs_block.h"
 #include "r300_tcl_bypass_triangle.h"
 
 #include "r300_reg.h"
@@ -19,11 +21,11 @@
  */
 #define R300_R2VB_PRODUCER_RELOC_PAYLOAD(slot) ((slot) * 4)
 
-/* Prologue, draw framing, and publication tail outside the per-vertex
- * body; the emission bound adds the contract prefix and the embedded
- * records on top.
+/* Prologue, varying routing, draw framing, and publication tail outside
+ * the per-vertex body; the emission bound adds the contract prefix, the
+ * fragment binary's US block, and the embedded records on top.
  */
-#define R300_R2VB_PRODUCER_FIXED_MAX_DWORDS 96u
+#define R300_R2VB_PRODUCER_FIXED_MAX_DWORDS 112u
 
 /* Slot position plus one pre-swizzled record, each FP32x4. */
 #define R300_R2VB_PRODUCER_VTX_DWORDS 8u
@@ -138,9 +140,12 @@ r300_r2vb_producer_pass_emit_into(
    uint32_t capacity, struct r300_r2vb_producer_ib *out)
 {
    const struct r300_r2vb_producer_layout *layout = &params->layout;
+   const struct r300_fragment_binary *fs = params->fragment_binary;
 
    memset(out, 0, sizeof(*out));
    if (params->records == NULL || !layout_valid(layout))
+      return -EINVAL;
+   if (fs == NULL || !fs->validated)
       return -EINVAL;
 
    /* All-or-nothing FP24 domain scan: the US datapath narrows every
@@ -292,6 +297,36 @@ r300_r2vb_producer_pass_emit_into(
    r300_pm4_packet0(&b, R300_VAP_OUTPUT_VTX_FMT_0, vap_output_fmt,
                     ARRAY_SIZE(vap_output_fmt));
 
+   /* Varying routing: the VAP writes position plus one four-component
+    * TEX0 varying, so RS_COUNT declares four interpolated components with
+    * no rasterized colors, RS_IP_0 reads texture pointer zero and selects
+    * its four channels in order, and RS_INST_0 writes the result to US
+    * input register zero.  RS_INST_COUNT of zero runs instruction 0
+    * alone, so an inherited RS_IP_1..7 residue stays out of the shaded
+    * value.
+    */
+   r300_pm4_reg(&b, R300_RS_COUNT,
+                R300_IT_COUNT(4) | R300_IC_COUNT(0) | R300_HIRES_EN);
+   r300_pm4_reg(&b, R300_RS_INST_COUNT, 0);
+   r300_pm4_reg(&b, R300_RS_IP_0,
+                R300_RS_TEX_PTR(0) | R300_RS_SEL_S(R300_RS_SEL_C0) |
+                   R300_RS_SEL_T(R300_RS_SEL_C1) |
+                   R300_RS_SEL_R(R300_RS_SEL_C2) |
+                   R300_RS_SEL_Q(R300_RS_SEL_C3));
+   r300_pm4_reg(&b, R300_RS_INST_0,
+                R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
+                   R300_RS_INST_TEX_ADDR(0));
+
+   /* Fragment program: the owned binary's US/FG block verbatim, then the
+    * two register values the descriptor keeps outside the sequence.  The
+    * block establishes the US code the slot pixels shade through, so the
+    * carrier receives the interpolated record rather than whatever
+    * program the previous client left resident.
+    */
+   r300_pm4_block(&b, fs->cb_code, fs->cb_code_size);
+   r300_pm4_reg(&b, R300_FG_DEPTH_SRC, fs->fg_depth_src);
+   r300_pm4_reg(&b, R300_US_W_FMT, fs->us_out_w);
+
    /* Embedded POINTS draw: the packet carries VAP_VF_CNTL and then
     * count * 8 dwords, one slot position plus one pre-swizzled record
     * per vertex.
@@ -348,11 +383,16 @@ int
 r300_r2vb_producer_pass_emit(const struct r300_r2vb_producer_params *params,
                              struct r300_r2vb_producer_ib *out)
 {
+   const struct r300_fragment_binary *fs = params->fragment_binary;
+
    memset(out, 0, sizeof(*out));
    if (params->records == NULL || !layout_valid(&params->layout))
       return -EINVAL;
+   if (fs == NULL || !fs->validated)
+      return -EINVAL;
 
    uint32_t capacity = R300_R2VB_PRODUCER_FIXED_MAX_DWORDS +
+                       fs->cb_code_size +
                        params->layout.count * R300_R2VB_PRODUCER_VTX_DWORDS;
    if (params->first_draw_contract != NULL)
       capacity +=
@@ -406,6 +446,16 @@ r300_r2vb_producer_pass_validate_reloc_sites(
 }
 
 int
+r300_r2vb_producer_reference_fs(struct r300_fragment_binary *fs)
+{
+   return r300_fragment_binary_init(
+      fs, r300_r2vb_producer_fs_block,
+      ARRAY_SIZE(r300_r2vb_producer_fs_block),
+      R300_R2VB_PRODUCER_FS_FG_DEPTH_SRC, R300_R2VB_PRODUCER_FS_US_OUT_W,
+      "r300-r2vb-producer-compiled");
+}
+
+int
 r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out)
 {
    memset(out, 0, sizeof(*out));
@@ -435,11 +485,18 @@ r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out)
     * vertices, the same bytes the CPU gather and the delivery identity
     * control carry.
     */
+   struct r300_fragment_binary fs;
+   rc = r300_r2vb_producer_reference_fs(&fs);
+   if (rc != 0)
+      return rc;
    struct r300_r2vb_producer_params params = {
       .carrier_offset = 0,
       .layout = layout,
       .records = (const float(*)[4])r300_tcl_bypass_triangle_vertices,
       .first_draw_contract = &contract,
+      .fragment_binary = &fs,
    };
-   return r300_r2vb_producer_pass_emit(&params, out);
+   rc = r300_r2vb_producer_pass_emit(&params, out);
+   r300_fragment_binary_finish(&fs);
+   return rc;
 }
