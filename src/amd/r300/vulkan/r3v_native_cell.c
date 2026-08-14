@@ -440,8 +440,14 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                             "context: %s",
                             operation, gathered, errno_text,
                             route_decision.reason);
-      } else if (result == VK_SUCCESS) {
-         /* The admitted vertex program passes its input to
+      } else if (result == VK_SUCCESS &&
+                 route_decision.position_space ==
+                    R300_CARRIER_POSITION_CLIP) {
+         /* The route declares a clip-space carrier, so the one
+          * viewport transform happens here; a WINDOW declaration
+          * means the producer already transformed on the device and
+          * the carrier binds untransformed.  The admitted vertex
+          * program passes its input to
           * gl_Position, so the CPU vertex node realizes the Vulkan
           * viewport transform here: x and y map from NDC to window
           * coordinates over the pass target's extent, z passes
@@ -473,12 +479,16 @@ r3v_native_cmd_buffer_execute_deferred_draw(
             pos[0] = (pos[0] + 1.0f) * ((float)draw->target_width / 2.0f);
             pos[1] = (pos[1] + 1.0f) * ((float)draw->target_height / 2.0f);
          }
-         if (result == VK_SUCCESS) {
+         if (result == VK_SUCCESS)
             memcpy(carrier->map, positions, sizeof(positions));
-            radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
-                                        R3V_TRIANGLE_VERTEX_BYTES);
-         }
       }
+      /* Publication is delivery-unconditional: a WINDOW-space carrier
+       * skips the transform branch above yet its bytes still cross to
+       * the device through this one sync.
+       */
+      if (result == VK_SUCCESS)
+         radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
+                                     R3V_TRIANGLE_VERTEX_BYTES);
       if (owns_carrier_map) {
          radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
          carrier->map = NULL;

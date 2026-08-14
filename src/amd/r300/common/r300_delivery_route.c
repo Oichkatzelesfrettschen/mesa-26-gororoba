@@ -12,6 +12,11 @@ void
 r300_delivery_route_resolve(const char *gate_value, int format_id,
                             struct r300_delivery_route_decision *out)
 {
+   /* Every present route copies application values into the carrier,
+    * so the decision declares clip space once here; a device-side
+    * producer route sets WINDOW at its own selection clause.
+    */
+   out->position_space = R300_CARRIER_POSITION_CLIP;
    if (gate_value == NULL || strcmp(gate_value, "1") != 0) {
       out->route = R300_DELIVERY_ROUTE_CPU;
       out->reason = "CPU gather default; the R2VB gate takes the exact "
