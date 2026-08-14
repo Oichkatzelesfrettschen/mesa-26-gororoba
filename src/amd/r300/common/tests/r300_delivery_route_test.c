@@ -38,6 +38,7 @@ main(void)
       r300_delivery_route_resolve(closed_gates[i],
                                   R300_VERTEX_FORMAT_F32_4, &d);
       assert(d.route == R300_DELIVERY_ROUTE_CPU);
+      assert(d.position_space == R300_CARRIER_POSITION_CLIP);
       assert(d.reason != NULL && strstr(d.reason, "exact value") != NULL);
    }
 
@@ -48,6 +49,11 @@ main(void)
    for (unsigned i = 0; i < 3; i++) {
       r300_delivery_route_resolve("1", delivered[i], &d);
       assert(d.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL);
+      /* Every host-side route copies application values, so the
+       * decision declares a clip-space carrier and the consumer owns
+       * the single viewport transform.
+       */
+      assert(d.position_space == R300_CARRIER_POSITION_CLIP);
       assert(d.reason != NULL && strstr(d.reason, "opt-in") != NULL);
    }
 
@@ -60,6 +66,7 @@ main(void)
         i++) {
       r300_delivery_route_resolve("1", cpu_formats[i], &d);
       assert(d.route == R300_DELIVERY_ROUTE_CPU);
+      assert(d.position_space == R300_CARRIER_POSITION_CLIP);
       assert(d.reason != NULL && strstr(d.reason, "F32_4") != NULL);
    }
 

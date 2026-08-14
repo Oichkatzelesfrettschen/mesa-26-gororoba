@@ -25,8 +25,22 @@ enum r300_delivery_route {
    R300_DELIVERY_ROUTE_R2VB_HOST_MODEL = 1,
 };
 
+/* The coordinate space the selected route leaves in the carrier.  Both
+ * present routes copy application values, so the carrier holds
+ * clip-volume positions and the consumer owns the one viewport
+ * transform.  A route whose producer transforms on the device declares
+ * WINDOW, and the consumer then binds the carrier untransformed; the
+ * declaration is what keeps the transform single when both kinds of
+ * route exist.
+ */
+enum r300_carrier_position_space {
+   R300_CARRIER_POSITION_CLIP = 0,
+   R300_CARRIER_POSITION_WINDOW = 1,
+};
+
 struct r300_delivery_route_decision {
    enum r300_delivery_route route;
+   enum r300_carrier_position_space position_space;
    /* The clause that selected the route, for refusal reports and
     * evidence records.
     */
