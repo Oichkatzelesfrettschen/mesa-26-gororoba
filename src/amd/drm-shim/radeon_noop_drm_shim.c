@@ -774,6 +774,7 @@ static bool
 test_read_text(const char *path, char *buffer, size_t buffer_size)
 {
    buffer[0] = '\0';
+   errno = 0;
    FILE *file = fopen(path, "r");
    if (!file)
       return false;
@@ -790,7 +791,7 @@ test_text_equals(const char *path, const char *expected)
 {
    char contents[1024];
    TEST_CHECK(test_read_text(path, contents, sizeof(contents)),
-              "override is unreadable: %s", path);
+              "override is unreadable with errno %d: %s", errno, path);
    TEST_CHECK(strcmp(contents, expected) == 0,
               "override %s contains \"%s\" instead of \"%s\"", path,
               contents, expected);
