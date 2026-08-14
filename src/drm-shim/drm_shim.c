@@ -269,6 +269,9 @@ REAL_FUNCTION_POINTER(fstat64);
 #define STRINGIZE2(x) #x
 #define STRINGIZE(x) STRINGIZE2(x)
 
+/* Attempts an openat2 resolution takes before EAGAIN reaches the caller. */
+#define OPENAT2_RESOLVE_RETRIES 64
+
 static char render_node_dir[] = "/dev/dri/";
 static const char *render_node_path = "/dev/dri/renderD128";
 static const char *render_node_dirent_name = "renderD128";
@@ -1625,9 +1628,21 @@ synthetic_resolve_logical_path(const char *logical, bool follow_final,
       errno = ENOSYS;
    } else
 #endif
-      path_fd =
-         syscall(SYS_openat2, synthetic_root_fd, relative,
-                 &how, sizeof(how));
+   {
+      /* A scoped resolve samples the rename sequence, which counts renames
+       * anywhere on the system, so a parallel workload touching unrelated
+       * directories makes the kernel abort this walk with EAGAIN. openat2(2)
+       * defines EAGAIN as the retryable outcome, and the retry sees the
+       * synthetic root exactly as the previous attempt left it.
+       */
+      unsigned attempts = 0;
+      do {
+         path_fd =
+            syscall(SYS_openat2, synthetic_root_fd, relative,
+                    &how, sizeof(how));
+      } while (path_fd < 0 && errno == EAGAIN &&
+               ++attempts < OPENAT2_RESOLVE_RETRIES);
+   }
    if (path_fd < 0 && errno == ENOSYS)
       return synthetic_resolve_logical_path_fallback(
          logical, follow_final, mapped_path);
@@ -4545,14 +4560,26 @@ copy_open_how_argument(const struct open_how *how, size_t how_size,
 static int
 bootstrap_openat2(int dirfd, const char *path, const struct open_how *how)
 {
-   if (real_openat2)
-      return real_openat2(dirfd, path, how, sizeof(*how));
+   /* The shim re-drives the caller's openat2 here, so a scoped resolve takes
+    * the same EAGAIN retry the synthetic resolver takes; the caller then sees
+    * the resolution the kernel reaches rather than a concurrent rename.
+    */
+   unsigned attempts = 0;
+   int fd;
+   do {
+      if (real_openat2)
+         fd = real_openat2(dirfd, path, how, sizeof(*how));
+      else
 #ifdef SYS_openat2
-   return syscall(SYS_openat2, dirfd, path, how, sizeof(*how));
+         fd = syscall(SYS_openat2, dirfd, path, how, sizeof(*how));
 #else
-   errno = ENOSYS;
-   return -1;
+      {
+         errno = ENOSYS;
+         fd = -1;
+      }
 #endif
+   } while (fd < 0 && errno == EAGAIN && ++attempts < OPENAT2_RESOLVE_RETRIES);
+   return fd;
 }
 
 static bool
