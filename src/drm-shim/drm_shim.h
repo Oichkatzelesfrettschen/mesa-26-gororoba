@@ -198,6 +198,11 @@ void drm_shim_test_force_process_vm_writev_error(int error);
 void drm_shim_test_force_proc_mem_error(int error);
 void drm_shim_test_force_statx_symbol_absent(bool force);
 void drm_shim_test_force_reaper_close_range_error(int error);
+/* Forces absolute_path_at_alloc() to fail with the given errno, so the
+ * claimed-namespace fallthrough can be exercised without fd or memory
+ * pressure. Zero restores resolution.
+ */
+void drm_shim_test_force_absolute_path_error(int error);
 void drm_shim_test_force_reaper_getdents_eintr_once(bool force);
 void drm_shim_test_force_fd_identity_errors(int duplicate_query_error,
                                             int kcmp_error);
