@@ -4293,7 +4293,19 @@ test_fd_identity_fallback(int fd, uint16_t expected_device_id)
               "fd identity application unlock returned %d errno %d",
               ret, errno);
 
-   int null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+   /* lockf and F_SETLK key a record lock on (process, device, inode), and
+    * F_OFD_SETLK keys one on (open file description, device, inode); a
+    * lock of either kind still conflicts with a lock of the other kind
+    * over the same inode range, per fcntl(2).  A lockf64 call through
+    * /dev/null therefore keyed this calibration to the one inode every
+    * process on the host shares, and concurrent shim-test processes raced
+    * that real lock: the loser's non-blocking acquire observed EAGAIN
+    * instead of the exclusivity the calibration means to prove.
+    * O_TMPFILE opens an unnamed inode private to this file description,
+    * so no concurrent process can ever name it and no lock request can
+    * ever contend with this one.
+    */
+   int null_fd = open("/tmp", O_TMPFILE | O_RDWR | O_CLOEXEC, 0600);
    TEST_CHECK(null_fd >= 0,
               "lockf character calibration open failed with errno %d",
               errno);
