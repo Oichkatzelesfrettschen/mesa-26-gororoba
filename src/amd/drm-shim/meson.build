@@ -30,6 +30,19 @@ if with_tests
     'tests/state_token_residue_full_selector.signature',
   )[0]
 
+  # Calibrates the checker itself against known-good and known-bad
+  # inputs: the recorded signature replayed verbatim passes, a foreign
+  # vendor id (0x10de) reported through the shim's identity-override
+  # comparison fails even though digit-run normalization alone would
+  # collapse it onto the shim's own vendor (0x1002), and a decimal-only
+  # value elsewhere in the failure set keeps its normalization.
+  test(
+    'radeon-noop-drm-shim-residue-check-identity-calibration',
+    prog_python,
+    args: [files('tests/radeon_noop_drm_shim_residue_check_selftest.py')],
+    suite: ['amd', 'drm-shim'],
+  )
+
   foreach selector_test : [
     ['default', 'DEFAULT', '0x7140', 'RV515', 'identity'],
     ['rs482_name', 'RS482_5974', '0x5974', 'RS480', 'identity'],
