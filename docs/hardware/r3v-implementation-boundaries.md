@@ -1391,9 +1391,16 @@ does not promote another.
     expected extent byte-exact, tail poison intact, empty dmesg delta;
     procedure in `docs/hardware/r3v-native-attended-producer-procedure.md`).
     The remaining silicon ladder, in order: the FP24 boundary sweep over the
-    delivery-admission window edges, the same-IB producer-plus-re-ingest
-    cell, the twelve-dword `FLOAT_4 + FLOAT_2` tuple cell, and only then the
-    GPU value in `r300_delivery_route_resolve`.
+    delivery-admission window edges (staged: the `fp24-sweep` selector on
+    the producer runners), the same-IB producer-plus-re-ingest cell
+    (staged: `r3v_native_attended_reingest`, procedure in
+    `docs/hardware/r3v-native-attended-reingest-procedure.md`), the
+    twelve-dword `FLOAT_4 + FLOAT_2` tuple cell (blocked on the
+    synthesized-lane validator extension recorded in
+    `docs/hardware/r300-r2vb-float2-source-contract.md`, whose kernel
+    counterpart lands in the radeon kernel source repository), and only
+    then the GPU value in `r300_delivery_route_resolve`.  Each staged cell
+    runs under its own operator-armed digest.
 12. Extend native image, transfer, and resource-scoped synchronization
     semantics; the bounded linear transfer family and its host-order barrier
     contract are landed, while broader GPU-backed transfer semantics remain
