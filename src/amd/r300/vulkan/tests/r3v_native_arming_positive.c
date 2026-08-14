@@ -115,6 +115,7 @@ evaluate_fixture(const struct fixture *f, uint32_t vendor, uint32_t device,
    char kernel_storage[128];
    char module_storage[128];
    r3v_native_arming_collect_from(&provider, &facts, vendor, device,
+                                  R3V_NATIVE_CELL_KIND_TRIANGLE,
                                   actual_digest, FIXTURE_EVIDENCE_DIR,
                                   kernel_storage, sizeof(kernel_storage),
                                   module_storage, sizeof(module_storage));

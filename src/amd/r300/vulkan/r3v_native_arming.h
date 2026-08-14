@@ -21,6 +21,7 @@ enum r3v_native_arming_verdict {
    R3V_NATIVE_ARMING_HAZARD_GATE_CLOSED,
    R3V_NATIVE_ARMING_BUNDLE_UNDECLARED,
    R3V_NATIVE_ARMING_BUNDLE_MISMATCH,
+   R3V_NATIVE_ARMING_UNKNOWN_CELL_KIND,
    R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT,
    R3V_NATIVE_ARMING_CHIP_MISMATCH,
    R3V_NATIVE_ARMING_KERNEL_UNDECLARED,
@@ -29,6 +30,21 @@ enum r3v_native_arming_verdict {
    R3V_NATIVE_ARMING_MODULE_MISMATCH,
    R3V_NATIVE_ARMING_EVIDENCE_ABSENT,
    R3V_NATIVE_ARMING_ALREADY_ATTEMPTED,
+};
+
+/* The recorded cell's kind.  Each kind freezes its own render geometry,
+ * and the gate applies that kind's predicate: the triangle and
+ * direct-write cells render the maximum public extent, while the
+ * producer cell's target is the carrier row the reference layout
+ * declares.  A kind outside this set carries no geometry contract and
+ * refuses.  UNDECLARED is the zero value a fresh or reset command buffer
+ * holds, so a stream installed without a kind cannot arm.
+ */
+enum r3v_native_cell_kind {
+   R3V_NATIVE_CELL_KIND_UNDECLARED = 0,
+   R3V_NATIVE_CELL_KIND_TRIANGLE,
+   R3V_NATIVE_CELL_KIND_DIRECT_WRITE,
+   R3V_NATIVE_CELL_KIND_R2VB_PRODUCER,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the
@@ -43,7 +59,13 @@ struct r3v_native_arming_facts {
     */
    const char *authorized_ib_blake3;
    const char *actual_ib_blake3;
-   /* A non-maximum public render extent has no attended-run identity. */
+   /* The recorded cell kind, naming which geometry contract the extent
+    * fact was computed against.
+    */
+   enum r3v_native_cell_kind cell_kind;
+   /* The recorded geometry differs from the cell kind's frozen geometry,
+    * so the run has no attended-run identity.
+    */
    bool nonmaximum_extent;
    /* The enumerated chip, checked against the authorized RS480-family
     * identity rather than any supported identity.
@@ -105,9 +127,10 @@ const struct r3v_native_arming_provider *r3v_native_arming_host_provider(void);
 void r3v_native_arming_collect_from(
    const struct r3v_native_arming_provider *provider,
    struct r3v_native_arming_facts *facts, uint32_t pci_vendor_id,
-   uint32_t pci_device_id, const char *actual_ib_blake3,
-   const char *evidence_dir, char *kernel_storage, size_t kernel_size,
-   char *module_storage, size_t module_size);
+   uint32_t pci_device_id, enum r3v_native_cell_kind cell_kind,
+   const char *actual_ib_blake3, const char *evidence_dir,
+   char *kernel_storage, size_t kernel_size, char *module_storage,
+   size_t module_size);
 
 /* Collects the live facts: environment values, the running kernel
  * release from uname, and the radeon module srcversion from sysfs.  The
@@ -118,6 +141,7 @@ void r3v_native_arming_collect_from(
  */
 void r3v_native_arming_collect(struct r3v_native_arming_facts *facts,
                                uint32_t pci_vendor_id, uint32_t pci_device_id,
+                               enum r3v_native_cell_kind cell_kind,
                                const char *actual_ib_blake3,
                                const char *evidence_dir,
                                char *kernel_storage, size_t kernel_size,

@@ -38,6 +38,19 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    if (!declared(facts->actual_ib_blake3) ||
        strcmp(facts->authorized_ib_blake3, facts->actual_ib_blake3) != 0)
       return R3V_NATIVE_ARMING_BUNDLE_MISMATCH;
+   /* The kind selects the geometry predicate, so a kind outside the set
+    * refuses before the extent fact is read: an unrecognized cell has no
+    * frozen geometry the fact could describe.
+    */
+   switch (facts->cell_kind) {
+   case R3V_NATIVE_CELL_KIND_TRIANGLE:
+   case R3V_NATIVE_CELL_KIND_DIRECT_WRITE:
+   case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER:
+      break;
+   case R3V_NATIVE_CELL_KIND_UNDECLARED:
+   default:
+      return R3V_NATIVE_ARMING_UNKNOWN_CELL_KIND;
+   }
    if (facts->nonmaximum_extent)
       return R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT;
 
@@ -80,8 +93,10 @@ r3v_native_arming_verdict_name(enum r3v_native_arming_verdict verdict)
              "(R3V_NATIVE_AUTHORIZED_IB_BLAKE3)";
    case R3V_NATIVE_ARMING_BUNDLE_MISMATCH:
       return "submitted IB differs from the authorized bundle digest";
+   case R3V_NATIVE_ARMING_UNKNOWN_CELL_KIND:
+      return "recorded cell kind carries no frozen geometry contract";
    case R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT:
-      return "non-maximum extent has no attended-run authorization";
+      return "extent differs from the cell kind's frozen geometry";
    case R3V_NATIVE_ARMING_CHIP_MISMATCH:
       return "enumerated chip is not the authorized RS482 identity";
    case R3V_NATIVE_ARMING_KERNEL_UNDECLARED:
@@ -185,11 +200,14 @@ void
 r3v_native_arming_collect_from(
    const struct r3v_native_arming_provider *provider,
    struct r3v_native_arming_facts *facts, uint32_t pci_vendor_id,
-   uint32_t pci_device_id, const char *actual_ib_blake3,
-   const char *evidence_dir, char *kernel_storage, size_t kernel_size,
-   char *module_storage, size_t module_size)
+   uint32_t pci_device_id, enum r3v_native_cell_kind cell_kind,
+   const char *actual_ib_blake3, const char *evidence_dir,
+   char *kernel_storage, size_t kernel_size, char *module_storage,
+   size_t module_size)
 {
    memset(facts, 0, sizeof(*facts));
+
+   facts->cell_kind = cell_kind;
 
    facts->hazard_gate =
       provider->read_env(provider->ctx, "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
@@ -240,14 +258,16 @@ r3v_native_arming_collect_from(
 void
 r3v_native_arming_collect(struct r3v_native_arming_facts *facts,
                           uint32_t pci_vendor_id, uint32_t pci_device_id,
+                          enum r3v_native_cell_kind cell_kind,
                           const char *actual_ib_blake3,
                           const char *evidence_dir, char *kernel_storage,
                           size_t kernel_size, char *module_storage,
                           size_t module_size)
 {
    r3v_native_arming_collect_from(&host_provider, facts, pci_vendor_id,
-                                  pci_device_id, actual_ib_blake3,
-                                  evidence_dir, kernel_storage, kernel_size,
+                                  pci_device_id, cell_kind,
+                                  actual_ib_blake3, evidence_dir,
+                                  kernel_storage, kernel_size,
                                   module_storage, module_size);
 }
 

@@ -103,6 +103,7 @@ evaluate_fixture(const struct fixture *f, const char *actual_digest)
    r3v_native_arming_collect_from(&provider, &facts,
                                   R3V_NATIVE_ARMING_PCI_VENDOR,
                                   R3V_NATIVE_ARMING_PCI_DEVICE,
+                                  R3V_NATIVE_CELL_KIND_DIRECT_WRITE,
                                   actual_digest, FIXTURE_EVIDENCE_DIR,
                                   kernel_storage, sizeof(kernel_storage),
                                   module_storage, sizeof(module_storage));

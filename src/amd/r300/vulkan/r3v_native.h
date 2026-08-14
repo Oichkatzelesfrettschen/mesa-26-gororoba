@@ -7,6 +7,8 @@
 #ifndef R3V_NATIVE_H
 #define R3V_NATIVE_H
 
+#include "r3v_native_arming.h"
+
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_completion.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_device.h"
@@ -192,6 +194,7 @@ struct r3v_native_deferred_draw {
  */
 struct r3v_native_cmd_buffer {
    struct vk_command_buffer vk;
+   enum r3v_native_cell_kind cell_kind;
    uint32_t *ib;
    uint32_t ib_size_dwords;
    struct r3v_native_bo_reference *references;
@@ -387,12 +390,14 @@ void r3v_native_cmd_buffer_release_recording(
 
 /* Installs a complete IB and reference list into a native command buffer,
  * taking ownership of both allocations.  The fixed-cell emitters are the
- * only writers.
+ * only writers.  The kind travels with the installation, so every
+ * installed stream carries the geometry contract the arming gate applies
+ * to it.
  */
 void r3v_native_cmd_buffer_install_ib(
-   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t *ib,
-   uint32_t ib_size_dwords, struct r3v_native_bo_reference *references,
-   uint32_t reference_count);
+   struct r3v_native_cmd_buffer *cmd_buffer, enum r3v_native_cell_kind kind,
+   uint32_t *ib, uint32_t ib_size_dwords,
+   struct r3v_native_bo_reference *references, uint32_t reference_count);
 
 VkResult r3v_native_queue_submit(struct vk_queue *queue,
                                  struct vk_queue_submit *submit);
@@ -507,5 +512,34 @@ VkResult r3v_native_cell_vk_result_from_errno(int emit_result);
  */
 VkResult r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
                                         VkDeviceMemory colorMemory);
+
+/* Producer-only recorder: poisons the whole carrier allocation, emits the
+ * reference R2VB producer pass
+ * (src/amd/r300/common/r300_r2vb_producer_pass.h), and installs it with
+ * the carrier as the single relocation slot, read-write in the GTT --
+ * the color backend writes it and the consuming vertex fetch reads it.
+ * The cell renders no visible target and re-ingests nothing, so the
+ * carrier bytes are the whole result and the CPU read-back is the
+ * verdict.  Recording is submit-free; the queue's hazard gate guards
+ * execution.
+ */
+VkResult r3v_native_record_r2vb_producer(VkCommandBuffer commandBuffer,
+                                         VkDeviceMemory carrierMemory);
+
+/* The producer cell's carrier allocation: the reference layout's slot row
+ * (pitch pixels of one FP32x4 texel, one row), the same product the
+ * manifest publishes as carrier_size_bytes.  Returns 0 or a negative
+ * errno.
+ */
+int r3v_native_producer_carrier_bytes(uint32_t *out);
+
+/* Emits the producer cell and installs it against the carrier memory with
+ * no memory writes, so the recorded digest depends on the BO handle
+ * alone.  The poison prefill is the recorder's separate step.  Returns 0
+ * or a negative errno.
+ */
+int r3v_native_producer_cell_install(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory);
 
 #endif /* R3V_NATIVE_H */

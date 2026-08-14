@@ -7,6 +7,7 @@
 #include "r300_r2vb_carrier_delivery.h"
 #include "r300_r2vb_producer_fs_block.h"
 #include "r300_tcl_bypass_triangle.h"
+#include "r300_vertex_format.h"
 
 #include "r300_reg.h"
 #include "util/macros.h"
@@ -499,4 +500,63 @@ r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out)
    rc = r300_r2vb_producer_pass_emit(&params, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+int
+r300_r2vb_producer_reference_expected(uint32_t *expected,
+                                      uint32_t expected_dwords)
+{
+   if (expected == NULL)
+      return -EINVAL;
+   if (expected_dwords < R300_R2VB_PRODUCER_REFERENCE_COUNT * 4)
+      return -ENOSPC;
+
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)r300_tcl_bypass_triangle_vertices,
+      .stride = 4 * sizeof(float),
+      .size_bytes = (uint64_t)R300_R2VB_PRODUCER_REFERENCE_COUNT * 4 *
+                    sizeof(float),
+   };
+   return r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4, &stream, 0,
+                                     R300_R2VB_PRODUCER_REFERENCE_COUNT,
+                                     expected, expected_dwords);
+}
+
+int
+r300_r2vb_producer_carrier_check(
+   const uint32_t *expected, uint32_t expected_dwords, uint32_t poison,
+   const void *carrier, uint32_t carrier_bytes,
+   struct r300_r2vb_producer_carrier_verdict *out)
+{
+   if (expected == NULL || carrier == NULL || out == NULL ||
+       expected_dwords == 0)
+      return -EINVAL;
+   if (carrier_bytes % sizeof(uint32_t) != 0)
+      return -EINVAL;
+   const uint32_t carrier_dwords = carrier_bytes / sizeof(uint32_t);
+   if (carrier_dwords < expected_dwords)
+      return -EINVAL;
+
+   /* The poison names a dword the pass left unwritten, so a delivered
+    * value equal to it leaves the negative side undecidable and the
+    * check refuses the pairing before reading the carrier.
+    */
+   for (uint32_t i = 0; i < expected_dwords; i++) {
+      if (expected[i] == poison)
+         return -EINVAL;
+   }
+
+   memset(out, 0, sizeof(*out));
+   const uint32_t *dwords = carrier;
+   for (uint32_t i = 0; i < expected_dwords; i++) {
+      if (dwords[i] != expected[i])
+         out->mismatched_dwords++;
+   }
+   for (uint32_t i = expected_dwords; i < carrier_dwords; i++) {
+      if (dwords[i] != poison)
+         out->disturbed_tail_dwords++;
+   }
+   out->expected_pass = out->mismatched_dwords == 0;
+   out->tail_poison_pass = out->disturbed_tail_dwords == 0;
+   return 0;
 }

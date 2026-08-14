@@ -366,6 +366,7 @@ if get_option('r3v-native-backend')
     '../common/r300_pm4_builder.c',
     '../common/r300_delivery_route.c',
     '../common/r300_r2vb_carrier_delivery.c',
+    '../common/r300_r2vb_producer_pass.c',
     '../common/r300_tcl_bypass_triangle.c',
   )
 
@@ -716,6 +717,25 @@ if get_option('r3v-native-backend')
     install : false,
   )
 
+  # Attended producer-only cell: performs a live DRM_RADEON_CS on RS482
+  # silicon, writing the vertex carrier alone -- no visible target and no
+  # re-ingest -- so the CPU read-back of the carrier against the delivery
+  # identity, with the poison retained past the delivered extent, is the
+  # whole verdict.  Built and never registered as a test, because running
+  # it is a hardware authorization rather than a build-graph result.
+  r3v_native_attended_producer = executable(
+    'r3v_native_attended_producer',
+    files('tests/r3v_native_attended_producer.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+    build_by_default : true,
+    install : false,
+  )
+
   if with_tests
     # Pure arming checks compile without drm-shim or an X server. Keeping
     # them at the native backend boundary preserves calibration in native
@@ -728,6 +748,25 @@ if get_option('r3v-native-backend')
         include_directories : [inc_include, inc_src,
                                include_directories('.')],
         dependencies : [idep_mesautil],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+    # The producer cell's recording contract on the host: the installed
+    # stream, the carrier relocation's two GTT domains, the poison
+    # contract's positive and negative sides, and the arming gate's cell
+    # kind.  Installation and emission touch no device, so the checks run
+    # with no DRM node present.
+    test(
+      'r3v-native-producer-cell',
+      executable(
+        'r3v_native_producer_cell_test',
+        files('tests/r3v_native_producer_cell_test.c'),
+        include_directories : [r3v_native_inc, include_directories('.')],
+        dependencies : r3v_native_deps,
+        link_whole : [libr3v_native_impl],
+        link_with : [libradeon_drm_vk],
+        c_args : [no_override_init_args],
         gnu_symbol_visibility : 'hidden',
       ),
       suite : ['r3v'],
