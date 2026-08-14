@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "../r3v_cmd_buffer.h"
 #include "../r3v_ubo_binding.h"
@@ -25,35 +26,51 @@ static unsigned failures;
 static void
 check_dynamic_offset_order(void)
 {
-   struct {
-      struct r3v_descriptor_set_layout layout;
-      struct r3v_dsl_binding bindings[4];
-   } fixture = {
-      .layout = { .binding_count = 4 },
-      .bindings = {
-         { .binding = 0, .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-           .count = 1 },
-         { .binding = 2, .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-           .count = 1 },
-         { .binding = 4, .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-           .count = 2 },
-         { .binding = 7, .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-           .count = 1 },
-      },
+   const uint32_t binding_count = 4;
+   const size_t layout_size = sizeof(struct r3v_descriptor_set_layout) +
+                              binding_count * sizeof(struct r3v_dsl_binding);
+   struct r3v_descriptor_set_layout *layout = calloc(1, layout_size);
+
+   CHECK(layout != NULL, "descriptor layout storage is allocated");
+   if (!layout)
+      return;
+
+   layout->binding_count = binding_count;
+   layout->bindings[0] = (struct r3v_dsl_binding) {
+      .binding = 0,
+      .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+      .count = 1,
+   };
+   layout->bindings[1] = (struct r3v_dsl_binding) {
+      .binding = 2,
+      .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+      .count = 1,
+   };
+   layout->bindings[2] = (struct r3v_dsl_binding) {
+      .binding = 4,
+      .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+      .count = 2,
+   };
+   layout->bindings[3] = (struct r3v_dsl_binding) {
+      .binding = 7,
+      .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+      .count = 1,
    };
 
-   CHECK(r3v_ubo_dynamic_offset_index(&fixture.layout, 2, 0) == 0,
+   CHECK(r3v_ubo_dynamic_offset_index(layout, 2, 0) == 0,
          "storage dynamic descriptors consume their offset slot");
-   CHECK(r3v_ubo_dynamic_offset_index(&fixture.layout, 4, 0) == 1,
+   CHECK(r3v_ubo_dynamic_offset_index(layout, 4, 0) == 1,
          "dynamic UBO follows every earlier dynamic descriptor");
-   CHECK(r3v_ubo_dynamic_offset_index(&fixture.layout, 4, 1) == 2,
+   CHECK(r3v_ubo_dynamic_offset_index(layout, 4, 1) == 2,
          "dynamic UBO arrays consume consecutive offsets");
-   CHECK(r3v_ubo_dynamic_offset_index(&fixture.layout, 7, 0) == 3,
+   CHECK(r3v_ubo_dynamic_offset_index(layout, 7, 0) == 3,
          "later dynamic bindings follow earlier arrays");
-   CHECK(r3v_ubo_dynamic_offset_index(&fixture.layout, 0, 0) == UINT32_MAX,
+   CHECK(r3v_ubo_dynamic_offset_index(layout, 0, 0) == UINT32_MAX,
          "static UBO has no dynamic offset");
-   CHECK(r3v_ubo_dynamic_offset_index(&fixture.layout, 7, 1) == UINT32_MAX,
+   CHECK(r3v_ubo_dynamic_offset_index(layout, 7, 1) == UINT32_MAX,
          "dynamic array overflow is rejected");
+
+   free(layout);
 }
 
 static void
