@@ -369,13 +369,15 @@ if get_option('r3v-native-backend')
     '../common/r300_tcl_bypass_triangle.c',
   )
 
+  # inc_gallium serves header-only pipe enums (PIPE_FORMAT_*, PIPE_BIND_*)
+  # in the shared loader-base files; the native sources themselves include
+  # no Gallium header, and the separation-audit test proves the linked
+  # library carries no Gallium entry symbol.
   r3v_native_inc = [
     inc_include,
     inc_src,
     inc_amd_common,
     inc_gallium,
-    # r300_reg.h for the fixed-cell emitter.
-    include_directories('../../../gallium/drivers/r300'),
   ]
   r3v_native_deps = [
     dep_libdrm,

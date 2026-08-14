@@ -36,7 +36,12 @@ SUFFIXES = (".c", ".h", ".py")
 # Lines a header may carry that name a holder.  Each entry is a holder this
 # tree preserves verbatim because the project attribution is reviewed for
 # files in this lane.
-REAL_COPYRIGHT_HOLDERS: tuple[str, ...] = ("Mesa3D authors",)
+REAL_COPYRIGHT_HOLDERS: tuple[str, ...] = (
+    "Mesa3D authors",
+    # r300_reg.h carries its upstream register-header attribution verbatim
+    # through the move into src/amd/r300/common.
+    "Nicolai Haehnle et al.",
+)
 
 
 def normalize_holder(holder: str) -> str:
