@@ -1323,6 +1323,35 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
 
+    # Non-submitting producer-cell arming runner: reports the reference
+    # producer pass's digest and every arming factor, then stops at the
+    # authorization boundary.  The check drives the refusal legs and the
+    # wrong-cell negative against the triangle runner's digest.
+    r3v_native_producer_arming_runner = executable(
+      'r3v_native_producer_arming_runner',
+      files('r3v_native_arming.c',
+            'tests/r3v_native_producer_arming_runner.c',
+            '../common/r300_first_draw_state.c',
+            '../common/r300_fragment_binary.c',
+            '../common/r300_pm4_builder.c',
+            '../common/r300_r2vb_carrier_delivery.c',
+            '../common/r300_r2vb_producer_pass.c',
+            '../common/r300_tcl_bypass_triangle.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-producer-arming-runner',
+      prog_python,
+      args : [
+        files('tests/r3v_native_producer_arming_runner_check.py'),
+        r3v_native_producer_arming_runner,
+        r3v_native_arming_runner,
+      ],
+      suite : ['r3v'],
+    )
+
     # Positive ARMED calibration under the direct-write control's own
     # digest, through the collection seam; each single-fact mutation
     # refuses, and the triangle digest refuses as the wrong cell.

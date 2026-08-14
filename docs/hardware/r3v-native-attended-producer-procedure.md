@@ -20,6 +20,11 @@ this document adds only what the producer cell changes.
 - Recorder: `r3v_native_record_r2vb_producer`; the installed IB is
   byte-identical to `r300_r2vb_producer_reference_emit`, and the arming
   digest binds to it.
+- Arming digest source: `r3v_native_producer_arming_runner` builds the
+  reference pass without submitting and reports the `ib_blake3` an
+  authorization declares; the same runner evaluates the full conjunction
+  for the producer cell kind, so its `armed` verdict replaces the
+  triangle runner's in the shared procedure's arming step.
 - Cell kind: `R3V_NATIVE_CELL_KIND_R2VB_PRODUCER`. The arming gate's
   geometry predicate for this kind requires the carrier allocation to
   equal the reference layout footprint exactly and the one relocation
