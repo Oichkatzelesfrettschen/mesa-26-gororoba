@@ -11,6 +11,7 @@
 #include "r3v_physical_device.h"
 
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
+#include "amd/r300/common/r300_r2vb_reingest_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_cs.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
@@ -165,6 +166,34 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
           slot->write_domain != RADEON_GEM_DOMAIN_GTT)
          return true;
       return slot->memory == NULL || slot->memory->bo.size != carrier_bytes;
+   }
+   case R3V_NATIVE_CELL_KIND_R2VB_REINGEST: {
+      /* The re-ingest cell binds the producer's carrier row and the
+       * triangle's target: the carrier crosses both engines, so its
+       * relocation carries the GTT domain in both directions, and the
+       * color slot is the triangle target family's retained footprint,
+       * written through the color backend alone.
+       */
+      uint32_t carrier_bytes;
+      if (r3v_native_producer_carrier_bytes(&carrier_bytes) != 0)
+         return true;
+      if (cmd_buffer->reference_count != R300_R2VB_REINGEST_SLOT_COUNT)
+         return true;
+      const struct r3v_native_bo_reference *carrier =
+         &cmd_buffer->references[R300_R2VB_REINGEST_SLOT_CARRIER];
+      const struct r3v_native_bo_reference *color =
+         &cmd_buffer->references[R300_R2VB_REINGEST_SLOT_COLOR];
+      if (carrier->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          carrier->write_domain != RADEON_GEM_DOMAIN_GTT)
+         return true;
+      if (carrier->memory == NULL ||
+          carrier->memory->bo.size != carrier_bytes)
+         return true;
+      if (color->read_domains != 0 ||
+          color->write_domain != RADEON_GEM_DOMAIN_GTT)
+         return true;
+      return color->memory == NULL ||
+             color->memory->bo.size != R3V_NATIVE_TARGET_MEMORY_BYTES;
    }
    case R3V_NATIVE_CELL_KIND_UNDECLARED:
    default:

@@ -384,6 +384,7 @@ if get_option('r3v-native-backend')
     '../common/r300_delivery_route.c',
     '../common/r300_r2vb_carrier_delivery.c',
     '../common/r300_r2vb_producer_pass.c',
+    '../common/r300_r2vb_reingest_pass.c',
     '../common/r300_tcl_bypass_triangle.c',
   )
 
@@ -743,6 +744,19 @@ if get_option('r3v-native-backend')
   r3v_native_attended_producer = executable(
     'r3v_native_attended_producer',
     files('tests/r3v_native_attended_producer.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+    build_by_default : true,
+    install : false,
+  )
+
+  r3v_native_attended_reingest = executable(
+    'r3v_native_attended_reingest',
+    files('tests/r3v_native_attended_reingest.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : r3v_native_deps,
     link_whole : [libr3v_native_impl],
@@ -1348,6 +1362,32 @@ if get_option('r3v-native-backend')
         files('tests/r3v_native_producer_arming_runner_check.py'),
         r3v_native_producer_arming_runner,
         r3v_native_arming_runner,
+      ],
+      suite : ['r3v'],
+    )
+
+    r3v_native_reingest_arming_runner = executable(
+      'r3v_native_reingest_arming_runner',
+      files('r3v_native_arming.c',
+            'tests/r3v_native_reingest_arming_runner.c',
+            '../common/r300_first_draw_state.c',
+            '../common/r300_fragment_binary.c',
+            '../common/r300_pm4_builder.c',
+            '../common/r300_r2vb_carrier_delivery.c',
+            '../common/r300_r2vb_producer_pass.c',
+            '../common/r300_r2vb_reingest_pass.c',
+            '../common/r300_tcl_bypass_triangle.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-reingest-arming-runner',
+      prog_python,
+      args : [
+        files('tests/r3v_native_reingest_arming_runner_check.py'),
+        r3v_native_reingest_arming_runner,
+        r3v_native_producer_arming_runner,
       ],
       suite : ['r3v'],
     )

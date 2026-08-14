@@ -13,6 +13,7 @@
 #include "amd/r300/common/r300_delivery_route.h"
 #include "amd/r300/common/r300_r2vb_carrier_delivery.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
+#include "amd/r300/common/r300_r2vb_reingest_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/cpu/r300_cpu_vertex.h"
@@ -889,4 +890,130 @@ r3v_native_record_r2vb_producer_fp24_sweep(VkCommandBuffer commandBuffer,
    return record_r2vb_producer_stream(
       commandBuffer, carrierMemory,
       r3v_native_producer_fp24_sweep_cell_install);
+}
+
+int
+r3v_native_reingest_cell_install(struct r3v_native_cmd_buffer *cmd_buffer,
+                                 struct r3v_native_memory *carrier_memory,
+                                 struct r3v_native_memory *color_memory)
+{
+   struct r300_r2vb_reingest_ib cell;
+   int emit_result = r300_r2vb_reingest_reference_emit(&cell);
+   if (emit_result != 0)
+      return emit_result;
+   emit_result = r300_r2vb_reingest_validate_reloc_sites(&cell);
+   if (emit_result != 0) {
+      r300_r2vb_reingest_pass_release(&cell);
+      return emit_result;
+   }
+
+   struct r3v_native_bo_reference *references =
+      calloc(R300_R2VB_REINGEST_SLOT_COUNT, sizeof(*references));
+   if (references == NULL) {
+      r300_r2vb_reingest_pass_release(&cell);
+      return -ENOMEM;
+   }
+   /* The carrier crosses both engines inside one submission -- the
+    * producer's color backend writes the slot row and the consumer's
+    * vertex fetch reads it back -- so its one relocation entry carries
+    * the GTT domain in both directions; the color target holds the
+    * consuming draw alone.
+    */
+   references[R300_R2VB_REINGEST_SLOT_CARRIER] =
+      (struct r3v_native_bo_reference){
+         .handle = carrier_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = carrier_memory,
+      };
+   references[R300_R2VB_REINGEST_SLOT_COLOR] =
+      (struct r3v_native_bo_reference){
+         .handle = color_memory->bo.handle,
+         .read_domains = 0,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = color_memory,
+      };
+
+   r3v_native_cmd_buffer_install_ib(cmd_buffer,
+                                    R3V_NATIVE_CELL_KIND_R2VB_REINGEST,
+                                    cell.ib, cell.ib_size_dwords, references,
+                                    R300_R2VB_REINGEST_SLOT_COUNT);
+   /* install_ib took ownership of cell.ib; only the descriptor resets. */
+   cell.ib = NULL;
+   r300_r2vb_reingest_pass_release(&cell);
+   return 0;
+}
+
+/* Records the re-ingest cell: poisons the carrier allocation, sentinel-
+ * fills the color target's declared footprint, publishes both for the
+ * unsnooped GART, and installs the concatenated reference stream against
+ * the two BOs.  The carrier poison keeps the producer stage decidable
+ * and the target sentinel keeps the consuming draw decidable, so a
+ * failure classifies to its stage from the retained bytes alone.
+ */
+VkResult
+r3v_native_record_r2vb_reingest(VkCommandBuffer commandBuffer,
+                                VkDeviceMemory carrierMemory,
+                                VkDeviceMemory colorMemory)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, carrier_memory, carrierMemory);
+   VK_FROM_HANDLE(r3v_native_memory, color_memory, colorMemory);
+
+   if (cmd_buffer == NULL || carrier_memory == NULL || color_memory == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   if (carrier_memory == color_memory) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: the carrier and the color target are "
+                       "distinct allocations");
+   }
+
+   uint32_t carrier_bytes;
+   if (r3v_native_producer_carrier_bytes(&carrier_bytes) != 0)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   if (carrier_memory->bo.size != carrier_bytes) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: re-ingest cell takes a %u-byte carrier",
+                       carrier_bytes);
+   }
+   if (color_memory->bo.size != R3V_NATIVE_TARGET_MEMORY_BYTES) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: re-ingest cell takes a %u-byte color "
+                       "target",
+                       (unsigned)R3V_NATIVE_TARGET_MEMORY_BYTES);
+   }
+
+   bool owns_map = carrier_memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &carrier_memory->bo,
+                            &carrier_memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: re-ingest carrier memory is not "
+                       "CPU-mappable");
+   }
+   uint32_t *carrier_dwords = carrier_memory->map;
+   for (uint64_t i = 0; i < carrier_memory->bo.size / 4; i++)
+      carrier_dwords[i] = R300_R2VB_PRODUCER_POISON_DWORD;
+   radeon_drm_vk_bo_cache_sync(&device->drm, carrier_memory->map,
+                               carrier_memory->bo.size);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &carrier_memory->bo,
+                             carrier_memory->map);
+      carrier_memory->map = NULL;
+   }
+
+   VkResult fill_result = sentinel_fill_color(device, color_memory,
+                                              color_memory->bo.size);
+   if (fill_result != VK_SUCCESS)
+      return fill_result;
+
+   int install_result = r3v_native_reingest_cell_install(
+      cmd_buffer, carrier_memory, color_memory);
+   if (install_result != 0)
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(install_result));
+   return VK_SUCCESS;
 }
