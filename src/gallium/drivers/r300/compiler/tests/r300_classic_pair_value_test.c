@@ -1440,8 +1440,9 @@ test_source_read_model_boundaries(void)
 
 /* Exhaustive sweep of every positive normal FP24 lattice magnitude in its
  * FP32-expanded encoding: exponent bytes 0x42 (min normal 2^-61) through
- * 0xC0 (max-finite binade), mantissa steps of 0x80 (127 binades x 65536
- * significands).  Proves mechanically that storage quantization is
+ * 0xBF (max-finite binade; 0xC0 opens the 2^65 bin the silicon delivers
+ * with a decremented exponent), mantissa steps of 0x80 (126 binades x
+ * 65536 significands).  Proves mechanically that storage quantization is
  * idempotent on the lattice, the predecessor is strictly smaller and
  * borrows across every power-of-two binade boundary, pred(min normal)
  * is zero, the source-read model is identity on positive magnitudes and
@@ -1457,7 +1458,7 @@ test_source_read_lattice_exhaustive(void)
    unsigned long checked = 0;
    uint32_t bad = 0;
 
-   for (uint32_t exponent_byte = 0x42; exponent_byte <= 0xC0 && !bad;
+   for (uint32_t exponent_byte = 0x42; exponent_byte <= 0xBF && !bad;
         exponent_byte++) {
       for (uint32_t mantissa = 0; mantissa <= 0x7FFF80u; mantissa += 0x80u) {
          const uint32_t magnitude = (exponent_byte << 23) | mantissa;
@@ -1504,7 +1505,7 @@ test_source_read_lattice_exhaustive(void)
          checked++;
       }
    }
-   CHECK(bad == 0 && checked == 127ul * 65536ul,
+   CHECK(bad == 0 && checked == 126ul * 65536ul,
          "lattice exhaustive: all positive normal FP24 magnitudes hold "
          "quantize/pred/source-read/NEG/IDENTITY invariants");
    if (bad)
