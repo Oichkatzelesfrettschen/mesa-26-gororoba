@@ -143,6 +143,13 @@ test(
   suite : ['r300'],
 )
 
+test(
+  'r300-r2vb-producer-fp24-bisect-replay',
+  files('tests/run_r2vb_producer_replay.sh')[0],
+  args : [r300_r2vb_producer_manifest, 'fp24-bisect'],
+  suite : ['r300'],
+)
+
 # The producer writer's artifacts are checked against each other and against
 # the emitted VAP tuple.  Calibration mutants keep a malformed retained
 # manifest from becoming a green replay-only result.

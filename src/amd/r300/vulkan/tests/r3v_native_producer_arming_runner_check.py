@@ -147,9 +147,42 @@ def main():
                   file=sys.stderr)
             return 1
 
+        # The FP24 upper-ceiling bisection stream: the same contract as
+        # the sweep -- named stream, distinct digest, and refusal when a
+        # sibling stream's digest is declared against it.
+        environment.pop("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", None)
+        environment.pop("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", None)
+        bisect = run(runner, evidence_dir, environment, "fp24-bisect")
+        if bisect.returncode == 0:
+            print("FAIL: undeclared bisect run reported an armed verdict",
+                  file=sys.stderr)
+            return 1
+        if "stream=fp24-bisect" not in bisect.stdout:
+            print("FAIL: bisect report does not name its stream",
+                  file=sys.stderr)
+            print(bisect.stdout, file=sys.stderr)
+            return 1
+        bisect_digest = re.search(r"^ib_blake3=([0-9a-f]{64})$",
+                                  bisect.stdout, re.MULTILINE)
+        if bisect_digest is None or bisect_digest.group(1) in (
+                digest.group(1), sweep_digest.group(1)):
+            print("FAIL: bisect stream does not carry its own digest",
+                  file=sys.stderr)
+            return 1
+        environment["R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED"] = "1"
+        environment["R3V_NATIVE_AUTHORIZED_IB_BLAKE3"] = \
+            sweep_digest.group(1)
+        bisect_cross = run(runner, evidence_dir, environment, "fp24-bisect")
+        if bisect_cross.returncode == 0 or \
+                "MISMATCH" not in bisect_cross.stdout:
+            print("FAIL: sweep digest declared against the bisect stream "
+                  "did not refuse", file=sys.stderr)
+            print(bisect_cross.stdout, file=sys.stderr)
+            return 1
+
         # No run may claim a submission happened.
         for result in (undeclared, wrong_cell, stale_run, wrong_chip,
-                       sweep, cross):
+                       sweep, cross, bisect, bisect_cross):
             if "no submission attempted" not in result.stdout:
                 print("FAIL: report omits the no-submission statement",
                       file=sys.stderr)

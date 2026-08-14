@@ -535,6 +535,16 @@ VkResult r3v_native_record_r2vb_producer(VkCommandBuffer commandBuffer,
 VkResult r3v_native_record_r2vb_producer_fp24_sweep(
    VkCommandBuffer commandBuffer, VkDeviceMemory carrierMemory);
 
+/* The FP24 upper-ceiling bisection variant: the same recording contract
+ * with the bisection records (r300_r2vb_producer_fp24_bisect_records),
+ * whose lanes bracket the silicon's identity-delivery ceiling between
+ * the sweep's largest exact delivery and its smallest deviating
+ * magnitude.  Count parity keeps the frozen geometry; the IB digest
+ * alone separates the streams.
+ */
+VkResult r3v_native_record_r2vb_producer_fp24_bisect(
+   VkCommandBuffer commandBuffer, VkDeviceMemory carrierMemory);
+
 /* Records the producer-plus-re-ingest cell: one IB carrying the
  * reference producer pass into the carrier followed by the reference
  * triangle draw fetching that carrier as its vertex stream
@@ -564,6 +574,10 @@ int r3v_native_producer_cell_install(
    struct r3v_native_memory *carrier_memory);
 
 int r3v_native_producer_fp24_sweep_cell_install(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory);
+
+int r3v_native_producer_fp24_bisect_cell_install(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory);
 

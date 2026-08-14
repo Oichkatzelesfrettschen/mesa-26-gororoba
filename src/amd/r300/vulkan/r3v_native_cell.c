@@ -805,6 +805,20 @@ r3v_native_producer_fp24_sweep_cell_install(
                                        r300_r2vb_producer_fp24_sweep_emit);
 }
 
+_Static_assert(R300_R2VB_PRODUCER_FP24_BISECT_COUNT ==
+                  R300_R2VB_PRODUCER_REFERENCE_COUNT,
+               "the bisection stream must keep the producer cell's frozen "
+               "carrier geometry");
+
+int
+r3v_native_producer_fp24_bisect_cell_install(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory)
+{
+   return producer_cell_install_stream(cmd_buffer, carrier_memory,
+                                       r300_r2vb_producer_fp24_bisect_emit);
+}
+
 /* Records the producer-only cell: fills the carrier allocation with the
  * manifest poison, publishes it for the unsnooped GART, and installs the
  * reference producer pass against that one BO.  The poison is what makes
@@ -890,6 +904,15 @@ r3v_native_record_r2vb_producer_fp24_sweep(VkCommandBuffer commandBuffer,
    return record_r2vb_producer_stream(
       commandBuffer, carrierMemory,
       r3v_native_producer_fp24_sweep_cell_install);
+}
+
+VkResult
+r3v_native_record_r2vb_producer_fp24_bisect(VkCommandBuffer commandBuffer,
+                                            VkDeviceMemory carrierMemory)
+{
+   return record_r2vb_producer_stream(
+      commandBuffer, carrierMemory,
+      r3v_native_producer_fp24_bisect_cell_install);
 }
 
 int

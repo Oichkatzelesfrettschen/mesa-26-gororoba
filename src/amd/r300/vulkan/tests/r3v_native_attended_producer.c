@@ -90,26 +90,22 @@ int
 main(int argc, char **argv)
 {
    if (argc != 2 && argc != 3) {
-      fprintf(stderr, "usage: %s <evidence-directory> [fp24-sweep]\n",
-              argv[0]);
+      fprintf(stderr, "usage: %s <evidence-directory> [stream]\n", argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
-   /* The optional stream selector: the sweep embeds the FP24
-    * boundary records in place of the reference triangle's under the
-    * same cell kind and carrier geometry, so its authorization differs
-    * only in the digest it declares.  A selector outside the set
-    * refuses before any Vulkan call.
+   /* The optional stream selector: every stream embeds its own records
+    * under the same cell kind and carrier geometry, so an authorization
+    * differs only in the digest it declares.  A selector outside the
+    * named set refuses before any Vulkan call.
     */
-   bool fp24_sweep = false;
-   if (argc == 3) {
-      if (strcmp(argv[2], "fp24-sweep") != 0) {
-         fprintf(stderr, "unknown stream selector %s\n", argv[2]);
-         return 2;
-      }
-      fp24_sweep = true;
+   const struct r300_r2vb_producer_stream_ops *stream =
+      r300_r2vb_producer_stream_find(argc == 3 ? argv[2] : "reference");
+   if (stream == NULL) {
+      fprintf(stderr, "unknown stream selector %s\n", argv[2]);
+      return 2;
    }
-   printf("stream=%s\n", fp24_sweep ? "fp24-sweep" : "reference");
+   printf("stream=%s\n", stream->name);
    fflush(stdout);
 
    /* A silicon result binds to the real libc entry points.  A preloaded
@@ -150,10 +146,7 @@ main(int argc, char **argv)
    uint32_t expected[R300_R2VB_PRODUCER_REFERENCE_COUNT * 4];
    const uint32_t expected_dwords =
       (uint32_t)(sizeof(expected) / sizeof(expected[0]));
-   int expected_rc =
-      fp24_sweep
-         ? r300_r2vb_producer_fp24_sweep_expected(expected, expected_dwords)
-         : r300_r2vb_producer_reference_expected(expected, expected_dwords);
+   int expected_rc = stream->expected(expected, expected_dwords);
    if (expected_rc != 0) {
       fprintf(stderr, "carrier identity delivery failed\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
@@ -295,9 +288,12 @@ main(int argc, char **argv)
       fprintf(stderr, "vkBeginCommandBuffer: %d\n", result);
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
-   result = fp24_sweep
+   result = strcmp(stream->name, "fp24-sweep") == 0
                ? r3v_native_record_r2vb_producer_fp24_sweep(cmd,
                                                             carrier_memory)
+            : strcmp(stream->name, "fp24-bisect") == 0
+               ? r3v_native_record_r2vb_producer_fp24_bisect(cmd,
+                                                             carrier_memory)
                : r3v_native_record_r2vb_producer(cmd, carrier_memory);
    if (result != VK_SUCCESS) {
       fprintf(stderr, "cell recording failed: %d\n", result);

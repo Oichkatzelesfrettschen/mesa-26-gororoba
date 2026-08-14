@@ -29,12 +29,11 @@
  * recomputes, so the armed digest names the submitted bytes.
  */
 static int
-cell_digest(bool fp24_sweep, char out[BLAKE3_OUT_LEN * 2 + 1],
-            uint32_t *ib_dwords)
+cell_digest(const struct r300_r2vb_producer_stream_ops *stream,
+            char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
 {
    struct r300_r2vb_producer_ib cell;
-   int rc = fp24_sweep ? r300_r2vb_producer_fp24_sweep_emit(&cell)
-                       : r300_r2vb_producer_reference_emit(&cell);
+   int rc = stream->emit(&cell);
    if (rc != 0)
       return 1;
 
@@ -66,23 +65,20 @@ main(int argc, char **argv)
     * its own digest under the same cell kind and geometry.
     */
    if (argc != 2 && argc != 3) {
-      fprintf(stderr, "usage: %s <evidence-directory> [fp24-sweep]\n",
-              argv[0]);
+      fprintf(stderr, "usage: %s <evidence-directory> [stream]\n", argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
-   bool fp24_sweep = false;
-   if (argc == 3) {
-      if (strcmp(argv[2], "fp24-sweep") != 0) {
-         fprintf(stderr, "unknown stream selector %s\n", argv[2]);
-         return 2;
-      }
-      fp24_sweep = true;
+   const struct r300_r2vb_producer_stream_ops *stream =
+      r300_r2vb_producer_stream_find(argc == 3 ? argv[2] : "reference");
+   if (stream == NULL) {
+      fprintf(stderr, "unknown stream selector %s\n", argv[2]);
+      return 2;
    }
 
    char digest[BLAKE3_OUT_LEN * 2 + 1];
    uint32_t ib_dwords = 0;
-   if (cell_digest(fp24_sweep, digest, &ib_dwords) != 0) {
+   if (cell_digest(stream, digest, &ib_dwords) != 0) {
       fprintf(stderr, "cell construction failed\n");
       return 2;
    }
@@ -109,7 +105,7 @@ main(int argc, char **argv)
 
    printf("r3v native r2vb-producer arming report\n");
    printf("cell_kind=r2vb-producer\n");
-   printf("stream=%s\n", fp24_sweep ? "fp24-sweep" : "reference");
+   printf("stream=%s\n", stream->name);
    printf("ib_dwords=%u\n", ib_dwords);
    printf("ib_blake3=%s\n", digest);
    printf("  %-22s declared=%-34s observed=%-34s %s\n", "hazard gate",
