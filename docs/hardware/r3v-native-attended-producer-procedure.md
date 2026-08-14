@@ -99,9 +99,9 @@ The cell ran on RS482 on 2026-08-14 from main `cb3d078ed41` (IB blake3
 313 dwords) and returned `CARRIER_DELIVERED`: all three predictions
 held (`expected_pass=1 tail_poison_pass=1 mismatched=0
 tail_disturbed=0`, slot 0 byte-exact to the delivery identity, empty
-dmesg delta, fence retired). The retained record lives on the target
-host at `/var/tmp/r3v-producer-arm-20260814a/`; its durable home is a
-`steinmarder-r300` results bundle.
+dmesg delta, fence retired). The retained record lives in the
+`steinmarder-r300` bundle
+`results/r3v-native-producer-carrier-delivery-rs482/`.
 
 ## Executed sweep run
 
@@ -121,7 +121,8 @@ Hypothesized: the US source-read exponent window ends one bin below
 the modeled bound; a bisection sweep between `0x4479c000` (999.0,
 delivered exact) and `0x60000000` locates the true ceiling. The run
 predated the delivered-but-wrong outcome class, so the retained
-verdict string reads `CARRIER_UNWRITTEN`; the retained bytes at
-`/var/tmp/r3v-fp24-sweep-arm-20260814a/` on the target host carry the
+verdict string reads `CARRIER_UNWRITTEN`; the retained bytes in the
+`steinmarder-r300` bundle
+`results/r3v-native-fp24-sweep-top-bin-halving-rs482/` carry the
 mismatch evidence, and `CARRIER_MISMATCH` names this class in later
 runs.
