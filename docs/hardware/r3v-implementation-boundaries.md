@@ -1386,7 +1386,14 @@ does not promote another.
     candidate the auto dispatch keeps).
 11. Migrate native R2VB producer and live delivery (`F32_3`, then `F32_2`);
     the identity-delivery host model and no-submit producer emitter are
-    landed, while live producer submission and re-ingest evidence remain open.
+    landed, and the attended producer-only cell delivered its carrier on
+    RS482 (2026-08-14, main `cb3d078ed41`, 313-dword IB, blake3 `680dfd6f`,
+    expected extent byte-exact, tail poison intact, empty dmesg delta;
+    procedure in `docs/hardware/r3v-native-attended-producer-procedure.md`).
+    The remaining silicon ladder, in order: the FP24 boundary sweep over the
+    delivery-admission window edges, the same-IB producer-plus-re-ingest
+    cell, the twelve-dword `FLOAT_4 + FLOAT_2` tuple cell, and only then the
+    GPU value in `r300_delivery_route_resolve`.
 12. Extend native image, transfer, and resource-scoped synchronization
     semantics; the bounded linear transfer family and its host-order barrier
     contract are landed, while broader GPU-backed transfer semantics remain

@@ -70,3 +70,35 @@ carrier: expected-extent compare, tail poison retention, and refusal of
 a poison value colliding with any expected dword, since that pairing
 leaves the unwritten case undecidable. A parser acceptance or a retired
 fence alone proves transport; only the carrier bytes prove production.
+
+## FP24 boundary-sweep stream
+
+The sweep is the producer cell re-armed with
+`r300_r2vb_producer_fp24_sweep_records` in place of the reference
+triangle's records: twelve components on the edges of the
+delivery-admission lattice (+0, the minimum normal magnitude and its
+first step, the 1.0 neighborhood's mantissa extremes and exponent-carry
+neighbor, a mid-range multi-bit mantissa, and the maximum-exponent
+magnitudes up to the largest finite value). The count equals the
+reference count, so the cell kind, carrier geometry, poison contract,
+outcome classes, and every arming factor except the digest carry over.
+Both runners take the selector `fp24-sweep` as a second argument --
+`r3v_native_producer_arming_runner <dir> fp24-sweep` reports the sweep
+digest an authorization declares, and
+`r3v_native_attended_producer <dir> fp24-sweep` submits it -- and each
+stream's digest authorizes only its own bytes. The predictions
+specialize: a mismatch confined to specific lanes falsifies the
+admission window at that edge (interpolator or US narrowing off the
+modeled lattice) rather than the transport, and the mismatching lane's
+byte pattern against its expected dword localizes the stage.
+
+## Executed run
+
+The cell ran on RS482 on 2026-08-14 from main `cb3d078ed41` (IB blake3
+`680dfd6f73fe336a87669cfe4da601e0e5f29b25f78b600de64f91f2f35612dc`,
+313 dwords) and returned `CARRIER_DELIVERED`: all three predictions
+held (`expected_pass=1 tail_poison_pass=1 mismatched=0
+tail_disturbed=0`, slot 0 byte-exact to the delivery identity, empty
+dmesg delta, fence retired). The retained record lives on the target
+host at `/var/tmp/r3v-producer-arm-20260814a/`; its durable home is a
+`steinmarder-r300` results bundle.

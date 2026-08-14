@@ -285,6 +285,70 @@ test_reference_structure(void)
    r300_r2vb_producer_pass_release(&pass);
 }
 
+/* The FP24 boundary sweep: every component is pinned to its binary32
+ * encoding on the admission lattice, the emission accepts the whole
+ * table, its expected dwords are the identity over it, and its stream
+ * differs from the reference stream only in the twelve embedded record
+ * dwords -- the frozen geometry, contract, and program bytes stay equal.
+ */
+static void
+test_fp24_sweep_stream(void)
+{
+   /* The literals in the sweep table carry these exact encodings; a
+    * literal drifting off the lattice fails here before any emission.
+    */
+   static const uint32_t sweep_bits[R300_R2VB_PRODUCER_FP24_SWEEP_COUNT][4] = {
+      { 0x00000000u, 0x21000000u, 0x21000080u, 0x21800000u },
+      { 0x3f800000u, 0x3f800080u, 0x3fffff80u, 0x40000000u },
+      { 0x4479c000u, 0x60000000u, 0x607fff00u, 0x607fff80u },
+   };
+   uint32_t table_bits[R300_R2VB_PRODUCER_FP24_SWEEP_COUNT][4];
+   memcpy(table_bits, r300_r2vb_producer_fp24_sweep_records,
+          sizeof(table_bits));
+   CHECK(memcmp(table_bits, sweep_bits, sizeof(sweep_bits)) == 0);
+
+   struct r300_r2vb_producer_ib sweep;
+   CHECK(r300_r2vb_producer_fp24_sweep_emit(&sweep) == 0);
+   CHECK(r300_r2vb_producer_pass_validate_reloc_sites(&sweep) == 0);
+
+   /* The expected carrier is the identity over the table: F32_4 keeps
+    * all four source lanes.
+    */
+   uint32_t expected[R300_R2VB_PRODUCER_FP24_SWEEP_COUNT * 4];
+   CHECK(r300_r2vb_producer_fp24_sweep_expected(
+            expected, R300_R2VB_PRODUCER_FP24_SWEEP_COUNT * 4) == 0);
+   CHECK(memcmp(expected, sweep_bits, sizeof(sweep_bits)) == 0);
+   CHECK(r300_r2vb_producer_fp24_sweep_expected(expected, 11) == -ENOSPC);
+
+   /* Same construction, different records: the streams are equal-length
+    * and diverge only inside the embedded draw's record dwords, so one
+    * arming digest never authorizes the other stream.
+    */
+   struct r300_r2vb_producer_ib reference;
+   CHECK(r300_r2vb_producer_reference_emit(&reference) == 0);
+   CHECK(sweep.ib_size_dwords == reference.ib_size_dwords);
+   CHECK(memcmp(sweep.ib, reference.ib,
+                sweep.ib_size_dwords * sizeof(uint32_t)) != 0);
+   struct walk_state st;
+   CHECK(walk_stream(sweep.ib, sweep.ib_size_dwords, &st) == 0);
+   uint32_t divergent = 0;
+   for (uint32_t i = 0; i < sweep.ib_size_dwords; i++) {
+      if (sweep.ib[i] == reference.ib[i])
+         continue;
+      divergent++;
+      /* Vertex v occupies eight dwords after the two draw header
+       * dwords; its record rides dwords 4..7 of that span.
+       */
+      CHECK(i > st.draw_header_index + 1);
+      const uint32_t body_offset = i - (st.draw_header_index + 2);
+      CHECK(body_offset < 3 * 8);
+      CHECK(body_offset % 8 >= 4);
+   }
+   CHECK(divergent > 0 && divergent <= 12);
+   r300_r2vb_producer_pass_release(&reference);
+   r300_r2vb_producer_pass_release(&sweep);
+}
+
 static void
 test_layout_domain(void)
 {
@@ -461,6 +525,7 @@ int
 main(void)
 {
    test_reference_structure();
+   test_fp24_sweep_stream();
    test_layout_domain();
    test_immediate_count_ceiling();
    test_refusals();

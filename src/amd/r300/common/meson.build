@@ -91,6 +91,16 @@ test(
   suite : ['r300'],
 )
 
+# The FP24 boundary-sweep stream replays through the same script: the
+# layout, relocation, and color-buffer bound are unchanged, so the
+# known-good and known-bad arms and their verdicts carry over.
+test(
+  'r300-r2vb-producer-fp24-sweep-replay',
+  files('tests/run_r2vb_producer_replay.sh')[0],
+  args : [r300_r2vb_producer_manifest, 'fp24-sweep'],
+  suite : ['r300'],
+)
+
 # The producer writer's artifacts are checked against each other and against
 # the emitted VAP tuple.  Calibration mutants keep a malformed retained
 # manifest from becoming a green replay-only result.

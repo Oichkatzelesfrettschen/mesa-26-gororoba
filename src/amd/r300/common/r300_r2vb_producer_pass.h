@@ -190,6 +190,38 @@ int r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out);
 int r300_r2vb_producer_reference_expected(uint32_t *expected,
                                           uint32_t expected_dwords);
 
+/* FP24 boundary sweep records: twelve components covering the edges of
+ * the delivery-admission domain -- +0, the minimum normal lattice
+ * magnitude and its first step, the 1.0 neighborhood's smallest and
+ * largest mantissa steps, the exponent-carry neighbor, a mid-range
+ * multi-bit mantissa, and the maximum-exponent magnitudes up to the
+ * largest finite lattice value.  Every component is a fixed point of
+ * r300_fp24_quantize_bits with the sign bit clear, so the delivery
+ * identity predicts the carrier byte-exact; a silicon mismatch on any
+ * lane falsifies the admission window at that edge rather than the
+ * transport.  The count equals the reference pass count, so the sweep
+ * rides the producer cell's frozen carrier geometry and only the IB
+ * digest separates the two streams.
+ */
+#define R300_R2VB_PRODUCER_FP24_SWEEP_COUNT 3u
+
+extern const float r300_r2vb_producer_fp24_sweep_records
+   [R300_R2VB_PRODUCER_FP24_SWEEP_COUNT][4];
+
+/* Emits the sweep pass: the sweep records through the same single-row
+ * layout, first-draw contract prefix, and reference fragment binary as
+ * the reference emission, carrier offset zero.  Returns 0 or a negative
+ * errno; the caller owns the returned IB allocation.
+ */
+int r300_r2vb_producer_fp24_sweep_emit(struct r300_r2vb_producer_ib *out);
+
+/* Writes the carrier content the sweep pass is expected to deliver: the
+ * delivery identity over the sweep records.  Returns 0 or a negative
+ * errno; -ENOSPC names storage shorter than the sweep extent.
+ */
+int r300_r2vb_producer_fp24_sweep_expected(uint32_t *expected,
+                                           uint32_t expected_dwords);
+
 /* The read-back verdict over one carrier allocation.  expected_pass
  * covers the slots the pass writes; tail_poison_pass covers every dword
  * past that extent, where the padding slot of an odd count and any

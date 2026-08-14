@@ -731,12 +731,17 @@ r3v_native_producer_carrier_bytes(uint32_t *out)
    return 0;
 }
 
-int
-r3v_native_producer_cell_install(struct r3v_native_cmd_buffer *cmd_buffer,
-                                 struct r3v_native_memory *carrier_memory)
+/* Installs one fixed producer stream against the carrier BO.  The
+ * reference and sweep emissions share the layout and slot contract, so
+ * the install differs only in the emitter that supplies the IB.
+ */
+static int
+producer_cell_install_stream(struct r3v_native_cmd_buffer *cmd_buffer,
+                             struct r3v_native_memory *carrier_memory,
+                             int (*emit)(struct r300_r2vb_producer_ib *))
 {
    struct r300_r2vb_producer_ib cell;
-   int emit_result = r300_r2vb_producer_reference_emit(&cell);
+   int emit_result = emit(&cell);
    if (emit_result != 0)
       return emit_result;
    emit_result = r300_r2vb_producer_pass_validate_reloc_sites(&cell);
@@ -773,6 +778,32 @@ r3v_native_producer_cell_install(struct r3v_native_cmd_buffer *cmd_buffer,
    return 0;
 }
 
+int
+r3v_native_producer_cell_install(struct r3v_native_cmd_buffer *cmd_buffer,
+                                 struct r3v_native_memory *carrier_memory)
+{
+   return producer_cell_install_stream(cmd_buffer, carrier_memory,
+                                       r300_r2vb_producer_reference_emit);
+}
+
+/* The arming gate freezes one carrier footprint per producer-kind cell,
+ * so the sweep rides the same geometry contract only while its count
+ * equals the reference count.
+ */
+_Static_assert(R300_R2VB_PRODUCER_FP24_SWEEP_COUNT ==
+                  R300_R2VB_PRODUCER_REFERENCE_COUNT,
+               "the sweep stream must keep the producer cell's frozen "
+               "carrier geometry");
+
+int
+r3v_native_producer_fp24_sweep_cell_install(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory)
+{
+   return producer_cell_install_stream(cmd_buffer, carrier_memory,
+                                       r300_r2vb_producer_fp24_sweep_emit);
+}
+
 /* Records the producer-only cell: fills the carrier allocation with the
  * manifest poison, publishes it for the unsnooped GART, and installs the
  * reference producer pass against that one BO.  The poison is what makes
@@ -780,9 +811,11 @@ r3v_native_producer_cell_install(struct r3v_native_cmd_buffer *cmd_buffer,
  * left unwritten -- so the prefill covers the whole allocation while the
  * expected extent covers the written slots alone.
  */
-VkResult
-r3v_native_record_r2vb_producer(VkCommandBuffer commandBuffer,
-                                VkDeviceMemory carrierMemory)
+static VkResult
+record_r2vb_producer_stream(VkCommandBuffer commandBuffer,
+                            VkDeviceMemory carrierMemory,
+                            int (*install)(struct r3v_native_cmd_buffer *,
+                                           struct r3v_native_memory *))
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
    VK_FROM_HANDLE(r3v_native_memory, carrier_memory, carrierMemory);
@@ -834,10 +867,26 @@ r3v_native_record_r2vb_producer(VkCommandBuffer commandBuffer,
       carrier_memory->map = NULL;
    }
 
-   int install_result =
-      r3v_native_producer_cell_install(cmd_buffer, carrier_memory);
+   int install_result = install(cmd_buffer, carrier_memory);
    if (install_result != 0)
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(install_result));
    return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_record_r2vb_producer(VkCommandBuffer commandBuffer,
+                                VkDeviceMemory carrierMemory)
+{
+   return record_r2vb_producer_stream(commandBuffer, carrierMemory,
+                                      r3v_native_producer_cell_install);
+}
+
+VkResult
+r3v_native_record_r2vb_producer_fp24_sweep(VkCommandBuffer commandBuffer,
+                                           VkDeviceMemory carrierMemory)
+{
+   return record_r2vb_producer_stream(
+      commandBuffer, carrierMemory,
+      r3v_native_producer_fp24_sweep_cell_install);
 }
