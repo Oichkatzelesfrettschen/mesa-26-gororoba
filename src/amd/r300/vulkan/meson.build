@@ -887,6 +887,35 @@ if get_option('r3v-native-backend')
       )
     endforeach
 
+    # Producer-cell harness on the same shim fixture: the R2VB producer
+    # pass through the same recorder/queue/retention path.  The shim
+    # absorbs DRM_RADEON_CS and executes nothing, so the open leg holds an
+    # accepted transport beside a carrier that still carries the
+    # recorder's poison; the geometry leg binds a carrier outside the
+    # frozen layout so the producer kind's geometry predicate is the one
+    # arming factor that refuses.
+    r3v_native_producer_cell_harness = executable(
+      'r3v_native_producer_cell_harness',
+      files('tests/r3v_native_producer_cell_harness.c'),
+      include_directories : r3v_native_inc,
+      dependencies : [r3v_native_deps, dep_dl],
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    )
+    foreach cell_mode : ['closed', 'open', 'geometry']
+      test(
+        'r3v-native-producer-cell-@0@'.format(cell_mode),
+        r3v_native_producer_cell_harness,
+        args : [cell_mode],
+        env : r3v_native_cell_env,
+        depends : [libradeon_noop_drm_shim],
+        timeout : 60,
+        suite : ['r3v'],
+      )
+    endforeach
+
     # Direct-write control harness on the same shim fixture: the 2D
     # solid-fill cell through the same recorder/queue/retention path,
     # armed by the control's own digest in the open leg.
