@@ -160,10 +160,11 @@ if with_tests and cc.get_define(
   )
   # The preload runs carry the same state-token residue from the other
   # side: the exec-inherited child aborts.  They stay uncalibrated while
-  # the OFD-lock alias registration in drm_shim_register_identity_aliases
-  # intermittently exhausts its offset search and reports EAGAIN on a
-  # synthetic sysfs open under parallel test load, which would make an
-  # exact-signature check flaky.
+  # a synthetic sysfs open under parallel test load intermittently
+  # reports EAGAIN (observed on /sys/dev/char/226:128/device/vendor in
+  # the loaded-modern leg), which would make an exact-signature check
+  # flaky.  The fd-alias adoption path is drm_shim_fd_adopt_raw_aliases;
+  # the EAGAIN source under load is unattributed.
   test(
     'radeon-noop-drm-shim-preload-modern',
     radeon_noop_drm_shim_preload_test,
