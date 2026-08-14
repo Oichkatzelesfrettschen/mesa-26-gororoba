@@ -64,6 +64,7 @@ static const uint32_t refused_bits[] = {
    0x3dcccccdu, /* 0.1: low mantissa bits set */
    0x3f800001u, /* 1.0 + one binary32 ulp */
    0x20800000u, /* 2^-62, below the FP24 normal range */
+   0x60000000u, /* 2^65: RS482 delivers the exponent field decremented */
    0x61000000u, /* above the FP24 finite maximum */
 };
 

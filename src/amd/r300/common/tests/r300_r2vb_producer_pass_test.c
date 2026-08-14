@@ -300,7 +300,7 @@ test_fp24_sweep_stream(void)
    static const uint32_t sweep_bits[R300_R2VB_PRODUCER_FP24_SWEEP_COUNT][4] = {
       { 0x00000000u, 0x21000000u, 0x21000080u, 0x21800000u },
       { 0x3f800000u, 0x3f800080u, 0x3fffff80u, 0x40000000u },
-      { 0x4479c000u, 0x60000000u, 0x607fff00u, 0x607fff80u },
+      { 0x4479c000u, 0x5f800000u, 0x5fffff00u, 0x5fffff80u },
    };
    uint32_t table_bits[R300_R2VB_PRODUCER_FP24_SWEEP_COUNT][4];
    memcpy(table_bits, r300_r2vb_producer_fp24_sweep_records,

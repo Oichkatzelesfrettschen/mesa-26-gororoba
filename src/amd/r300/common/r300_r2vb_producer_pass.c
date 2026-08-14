@@ -533,9 +533,9 @@ const float r300_r2vb_producer_fp24_sweep_records
    { 1.0f, 0x1.0001p+0f, 0x1.ffffp+0f, 2.0f },
    /* A mid-range multi-bit mantissa (999.0 = 0x4479c000) and the
     * maximum-exponent magnitudes up to the largest finite lattice value
-    * (0x60000000, 0x607fff00, 0x607fff80).
+    * (0x5f800000, 0x5fffff00, 0x5fffff80).
     */
-   { 999.0f, 0x1.0p+65f, 0x1.fffep+65f, 0x1.ffffp+65f },
+   { 999.0f, 0x1.0p+64f, 0x1.fffep+64f, 0x1.ffffp+64f },
 };
 
 int
