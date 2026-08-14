@@ -222,6 +222,55 @@ int r300_r2vb_producer_fp24_sweep_emit(struct r300_r2vb_producer_ib *out);
 int r300_r2vb_producer_fp24_sweep_expected(uint32_t *expected,
                                            uint32_t expected_dwords);
 
+/* FP24 upper-ceiling bisection records: twelve magnitudes between the
+ * sweep's largest exact delivery (999.0) and the smallest magnitude
+ * observed to deliver with a decremented exponent (0x60000000) -- wide
+ * steps from 2^32 through 2^56, then every exponent from 2^58 through
+ * 2^64 with the maximum mantissa at 2^63 and 2^64.  Every component is
+ * a fixed point of r300_fp24_quantize_bits with the sign bit clear, so
+ * the delivery identity predicts the carrier byte-exact; the highest
+ * lane delivering exact and the lowest lane delivering wrong bracket
+ * the silicon's identity-delivery ceiling.  The count equals the
+ * reference pass count, so the bisection rides the producer cell's
+ * frozen carrier geometry and only the IB digest separates the streams.
+ */
+#define R300_R2VB_PRODUCER_FP24_BISECT_COUNT 3u
+
+extern const float r300_r2vb_producer_fp24_bisect_records
+   [R300_R2VB_PRODUCER_FP24_BISECT_COUNT][4];
+
+/* Emits the bisection pass through the same single-row layout,
+ * first-draw contract prefix, and reference fragment binary as the
+ * reference emission, carrier offset zero.  Returns 0 or a negative
+ * errno; the caller owns the returned IB allocation.
+ */
+int r300_r2vb_producer_fp24_bisect_emit(struct r300_r2vb_producer_ib *out);
+
+/* Writes the carrier content the bisection pass is expected to deliver:
+ * the delivery identity over the bisection records.  Returns 0 or a
+ * negative errno; -ENOSPC names storage shorter than the extent.
+ */
+int r300_r2vb_producer_fp24_bisect_expected(uint32_t *expected,
+                                            uint32_t expected_dwords);
+
+/* One producer stream by durable name: the emission and its expected
+ * carrier resolve together, so a tool selecting a stream cannot pair
+ * one stream's bytes with another's oracle.  Every stream shares the
+ * reference record count and therefore the frozen producer cell
+ * geometry; only the IB digest separates them.
+ */
+struct r300_r2vb_producer_stream_ops {
+   const char *name;
+   int (*emit)(struct r300_r2vb_producer_ib *out);
+   int (*expected)(uint32_t *expected, uint32_t expected_dwords);
+};
+
+/* Returns the stream named by the selector, or NULL for an unknown
+ * name; "reference", "fp24-sweep", and "fp24-bisect" resolve.
+ */
+const struct r300_r2vb_producer_stream_ops *
+r300_r2vb_producer_stream_find(const char *name);
+
 /* The read-back verdict over one carrier allocation.  expected_pass
  * covers the slots the pass writes; tail_poison_pass covers every dword
  * past that extent, where the padding slot of an odd count and any

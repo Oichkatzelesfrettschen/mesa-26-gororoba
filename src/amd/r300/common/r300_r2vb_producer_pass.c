@@ -566,6 +566,72 @@ r300_r2vb_producer_fp24_sweep_expected(uint32_t *expected,
                                      expected, expected_dwords);
 }
 
+const float r300_r2vb_producer_fp24_bisect_records
+   [R300_R2VB_PRODUCER_FP24_BISECT_COUNT][4] = {
+   /* Wide steps across the unprobed middle: 2^32 (0x4f800000),
+    * 2^48 (0x57800000), 2^56 (0x5b800000), 2^58 (0x5c800000).
+    */
+   { 0x1.0p+32f, 0x1.0p+48f, 0x1.0p+56f, 0x1.0p+58f },
+   /* Every exponent approaching the observed deviation: 2^59
+    * (0x5d000000) through 2^62 (0x5e800000).
+    */
+   { 0x1.0p+59f, 0x1.0p+60f, 0x1.0p+61f, 0x1.0p+62f },
+   /* The top candidates: 2^63 (0x5f000000), its maximum mantissa
+    * (0x5f7fff80), 2^64 (0x5f800000), and its maximum mantissa
+    * (0x5fffff80) -- the largest magnitude the executed sweep observed
+    * the hardware emit.
+    */
+   { 0x1.0p+63f, 0x1.ffffp+63f, 0x1.0p+64f, 0x1.ffffp+64f },
+};
+
+int
+r300_r2vb_producer_fp24_bisect_emit(struct r300_r2vb_producer_ib *out)
+{
+   return producer_fixed_stream_emit(r300_r2vb_producer_fp24_bisect_records,
+                                     R300_R2VB_PRODUCER_FP24_BISECT_COUNT,
+                                     out);
+}
+
+int
+r300_r2vb_producer_fp24_bisect_expected(uint32_t *expected,
+                                        uint32_t expected_dwords)
+{
+   if (expected == NULL)
+      return -EINVAL;
+   if (expected_dwords < R300_R2VB_PRODUCER_FP24_BISECT_COUNT * 4)
+      return -ENOSPC;
+
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)r300_r2vb_producer_fp24_bisect_records,
+      .stride = 4 * sizeof(float),
+      .size_bytes = (uint64_t)R300_R2VB_PRODUCER_FP24_BISECT_COUNT * 4 *
+                    sizeof(float),
+   };
+   return r300_r2vb_identity_deliver(R300_VERTEX_FORMAT_F32_4, &stream, 0,
+                                     R300_R2VB_PRODUCER_FP24_BISECT_COUNT,
+                                     expected, expected_dwords);
+}
+
+const struct r300_r2vb_producer_stream_ops *
+r300_r2vb_producer_stream_find(const char *name)
+{
+   static const struct r300_r2vb_producer_stream_ops streams[] = {
+      { "reference", r300_r2vb_producer_reference_emit,
+        r300_r2vb_producer_reference_expected },
+      { "fp24-sweep", r300_r2vb_producer_fp24_sweep_emit,
+        r300_r2vb_producer_fp24_sweep_expected },
+      { "fp24-bisect", r300_r2vb_producer_fp24_bisect_emit,
+        r300_r2vb_producer_fp24_bisect_expected },
+   };
+   if (name == NULL)
+      return NULL;
+   for (size_t i = 0; i < ARRAY_SIZE(streams); i++) {
+      if (strcmp(streams[i].name, name) == 0)
+         return &streams[i];
+   }
+   return NULL;
+}
+
 int
 r300_r2vb_producer_reference_expected(uint32_t *expected,
                                       uint32_t expected_dwords)

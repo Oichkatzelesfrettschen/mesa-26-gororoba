@@ -92,6 +92,23 @@ admission window at that edge (interpolator or US narrowing off the
 modeled lattice) rather than the transport, and the mismatching lane's
 byte pattern against its expected dword localizes the stage.
 
+## FP24 upper-ceiling bisection stream
+
+The executed sweep left the identity-delivery ceiling bracketed between
+999.0 (delivered exact) and 2^65 (delivered with the exponent
+decremented). The `fp24-bisect` selector re-arms the cell with
+`r300_r2vb_producer_fp24_bisect_records`: 2^32, 2^48, 2^56, then every
+exponent from 2^58 through 2^64, with the maximum mantissa at 2^63
+(`0x5f7fff80`) and 2^64 (`0x5fffff80`). Prediction, recorded before the
+run: lanes at or below the silicon ceiling deliver byte-exact and lanes
+above it deliver with the exponent field decremented, so one run brackets
+the ceiling to within a lane pair; twelve exact lanes name `0x5fffff80`
+as the smallest viable ceiling and move the bracket above it, and a
+deviation of any other shape (a wrong mantissa, a non-monotone
+exact/wrong pattern) falsifies the exponent-window hypothesis itself.
+The verdict for a partial delivery is `CARRIER_MISMATCH`; the retained
+carrier bytes carry the per-lane result.
+
 ## Executed run
 
 The cell ran on RS482 on 2026-08-14 from main `cb3d078ed41` (IB blake3

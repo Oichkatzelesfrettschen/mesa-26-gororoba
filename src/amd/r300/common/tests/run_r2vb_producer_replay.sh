@@ -15,16 +15,17 @@
 # rejection.  An unset variable is an absent configuration and skips.
 #
 # Usage: run_r2vb_producer_replay.sh <r300_r2vb_producer_manifest-binary>
-#        [fp24-sweep]
+#        [stream]
 #
-# The optional selector replays the FP24 boundary-sweep stream: the same
-# layout, relocation, and bounds under different embedded records, so
-# every arm and its expected verdict carry over unchanged.
+# The optional selector replays a named producer stream (fp24-sweep,
+# fp24-bisect): the same layout, relocation, and bounds under different
+# embedded records, so every arm and its expected verdict carry over
+# unchanged.
 
 set -eu
 
 if [ "$#" -ne 1 ] && [ "$#" -ne 2 ]; then
-    echo "usage: $0 <r300_r2vb_producer_manifest-binary> [fp24-sweep]" >&2
+    echo "usage: $0 <r300_r2vb_producer_manifest-binary> [stream]" >&2
     exit 1
 fi
 stream="${2:-}"

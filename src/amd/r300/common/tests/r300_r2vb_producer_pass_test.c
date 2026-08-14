@@ -350,6 +350,65 @@ test_fp24_sweep_stream(void)
 }
 
 static void
+test_fp24_bisect_stream(void)
+{
+   /* The literals in the bisection table carry these exact encodings:
+    * 2^32 through 2^58, every exponent 2^59 through 2^62, and the top
+    * candidates 2^63, its maximum mantissa, 2^64, and its maximum
+    * mantissa.
+    */
+   static const uint32_t bisect_bits
+      [R300_R2VB_PRODUCER_FP24_BISECT_COUNT][4] = {
+      { 0x4f800000u, 0x57800000u, 0x5b800000u, 0x5c800000u },
+      { 0x5d000000u, 0x5d800000u, 0x5e000000u, 0x5e800000u },
+      { 0x5f000000u, 0x5f7fff80u, 0x5f800000u, 0x5fffff80u },
+   };
+   uint32_t table_bits[R300_R2VB_PRODUCER_FP24_BISECT_COUNT][4];
+   memcpy(table_bits, r300_r2vb_producer_fp24_bisect_records,
+          sizeof(table_bits));
+   CHECK(memcmp(table_bits, bisect_bits, sizeof(bisect_bits)) == 0);
+
+   struct r300_r2vb_producer_ib bisect;
+   CHECK(r300_r2vb_producer_fp24_bisect_emit(&bisect) == 0);
+   CHECK(r300_r2vb_producer_pass_validate_reloc_sites(&bisect) == 0);
+
+   /* Every lane sits inside the admission window, so the expected
+    * carrier is the identity over the table.
+    */
+   uint32_t expected[R300_R2VB_PRODUCER_FP24_BISECT_COUNT * 4];
+   CHECK(r300_r2vb_producer_fp24_bisect_expected(
+            expected, R300_R2VB_PRODUCER_FP24_BISECT_COUNT * 4) == 0);
+   CHECK(memcmp(expected, bisect_bits, sizeof(bisect_bits)) == 0);
+   CHECK(r300_r2vb_producer_fp24_bisect_expected(expected, 11) == -ENOSPC);
+
+   /* Equal-length streams diverging only in the embedded records: one
+    * arming digest never authorizes another stream.
+    */
+   struct r300_r2vb_producer_ib sweep;
+   CHECK(r300_r2vb_producer_fp24_sweep_emit(&sweep) == 0);
+   CHECK(bisect.ib_size_dwords == sweep.ib_size_dwords);
+   CHECK(memcmp(bisect.ib, sweep.ib,
+                bisect.ib_size_dwords * sizeof(uint32_t)) != 0);
+   r300_r2vb_producer_pass_release(&sweep);
+   r300_r2vb_producer_pass_release(&bisect);
+
+   /* The stream finder pairs each emission with its own oracle and
+    * refuses unknown names, so a tool cannot mix streams.
+    */
+   const struct r300_r2vb_producer_stream_ops *ops =
+      r300_r2vb_producer_stream_find("fp24-bisect");
+   CHECK(ops != NULL &&
+         ops->emit == r300_r2vb_producer_fp24_bisect_emit &&
+         ops->expected == r300_r2vb_producer_fp24_bisect_expected);
+   ops = r300_r2vb_producer_stream_find("reference");
+   CHECK(ops != NULL && ops->emit == r300_r2vb_producer_reference_emit);
+   ops = r300_r2vb_producer_stream_find("fp24-sweep");
+   CHECK(ops != NULL && ops->emit == r300_r2vb_producer_fp24_sweep_emit);
+   CHECK(r300_r2vb_producer_stream_find("fp24") == NULL);
+   CHECK(r300_r2vb_producer_stream_find(NULL) == NULL);
+}
+
+static void
 test_layout_domain(void)
 {
    struct r300_r2vb_producer_layout layout;
@@ -526,6 +585,7 @@ main(void)
 {
    test_reference_structure();
    test_fp24_sweep_stream();
+   test_fp24_bisect_stream();
    test_layout_domain();
    test_immediate_count_ceiling();
    test_refusals();

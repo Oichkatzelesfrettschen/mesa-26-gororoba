@@ -48,27 +48,23 @@ int
 main(int argc, char **argv)
 {
    if (argc != 2 && argc != 3) {
-      fprintf(stderr, "usage: %s <output-directory> [fp24-sweep]\n",
-              argv[0]);
+      fprintf(stderr, "usage: %s <output-directory> [stream]\n", argv[0]);
       return 2;
    }
    const char *dir = argv[1];
-   /* The optional stream selector mirrors the attended runners': the
-    * sweep embeds the FP24 boundary records under the same layout, so
-    * the manifest differs only in the IB bytes and the expected dwords.
+   /* The optional stream selector mirrors the attended runners': every
+    * stream embeds its records under the same layout, so the manifest
+    * differs only in the IB bytes and the expected dwords.
     */
-   int fp24_sweep = 0;
-   if (argc == 3) {
-      if (strcmp(argv[2], "fp24-sweep") != 0) {
-         fprintf(stderr, "unknown stream selector %s\n", argv[2]);
-         return 2;
-      }
-      fp24_sweep = 1;
+   const struct r300_r2vb_producer_stream_ops *stream =
+      r300_r2vb_producer_stream_find(argc == 3 ? argv[2] : "reference");
+   if (stream == NULL) {
+      fprintf(stderr, "unknown stream selector %s\n", argv[2]);
+      return 2;
    }
 
    struct r300_r2vb_producer_ib pass;
-   int emit_rc = fp24_sweep ? r300_r2vb_producer_fp24_sweep_emit(&pass)
-                            : r300_r2vb_producer_reference_emit(&pass);
+   int emit_rc = stream->emit(&pass);
    if (emit_rc != 0) {
       fprintf(stderr, "producer-pass emission failed\n");
       return 1;
@@ -148,11 +144,7 @@ main(int argc, char **argv)
     */
    uint32_t expected[R300_R2VB_PRODUCER_REFERENCE_COUNT * 4];
    int expected_rc =
-      fp24_sweep
-         ? r300_r2vb_producer_fp24_sweep_expected(
-              expected, (uint32_t)ARRAY_SIZE(expected))
-         : r300_r2vb_producer_reference_expected(
-              expected, (uint32_t)ARRAY_SIZE(expected));
+      stream->expected(expected, (uint32_t)ARRAY_SIZE(expected));
    if (expected_rc != 0) {
       fprintf(stderr, "carrier identity delivery failed\n");
       r300_r2vb_producer_pass_release(&pass);
@@ -186,8 +178,7 @@ main(int argc, char **argv)
       "  \"carrier_poison_dword\": \"0x%08x\",\n"
       "  \"expected_carrier_dwords\": [%s]\n"
       "}\n",
-      fp24_sweep ? "fp24-sweep" : "reference",
-      pass.ib_size_dwords, ib_blake3_hex, sites, layout.count,
+      stream->name, pass.ib_size_dwords, ib_blake3_hex, sites, layout.count,
       layout.pitch_pixels, layout.height, R300_R2VB_PRODUCER_CPP_BYTES,
       carrier_size_bytes, R300_R2VB_PRODUCER_POISON_DWORD, carrier);
    rc |= write_file(dir, "manifest.json", manifest, (size_t)manifest_len);
