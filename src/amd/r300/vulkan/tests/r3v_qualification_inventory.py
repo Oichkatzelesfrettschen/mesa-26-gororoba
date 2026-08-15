@@ -53,6 +53,23 @@ MODULE_DRIVER_TREE_FIELD = "gororoba_driver_tree"
 MODULE_SRCVERSION_CHARS = set(
     "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
 
+R300_FLOAT2_TUPLE_REQUIRED_TESTS: tuple[str, ...] = (
+    "r300-r2vb-float2-tuple-pass",
+    "r300-r2vb-float2-tuple-replay",
+)
+
+R3V_FLOAT2_TUPLE_REQUIRED_TESTS: tuple[str, ...] = (
+    "r3v-native-float2-tuple-cell",
+    "r3v-native-float2-tuple-arming-runner",
+    "r3v-native-float2-tuple-cell-closed",
+    "r3v-native-float2-tuple-cell-open",
+    "r3v-native-float2-tuple-cell-geometry",
+    "r3v-native-float2-tuple-cell-external-manifest-ignored",
+)
+
+FLOAT2_TUPLE_REQUIRED_TESTS = (
+    R300_FLOAT2_TUPLE_REQUIRED_TESTS + R3V_FLOAT2_TUPLE_REQUIRED_TESTS)
+
 # The qualification-critical tests.  A name here is load-bearing evidence for
 # the qualification verdict: transport admission, arming, dispatch closure,
 # parser replay, or a known-bad calibration whose absence would let a broken
@@ -69,8 +86,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-r2vb-producer-replay",
     "r300-r2vb-producer-fp24-sweep-replay",
     "r300-r2vb-producer-fp24-bisect-replay",
-    "r300-r2vb-float2-tuple-pass",
-    "r300-r2vb-float2-tuple-replay",
+    *R300_FLOAT2_TUPLE_REQUIRED_TESTS,
     "r300-r2vb-reingest-pass",
     "r300-r2vb-reingest-replay",
     "r300-tcl-bypass-fs-block-regeneration",
@@ -83,6 +99,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-arming",
     "r3v-native-arming-positive",
     "r3v-native-arming-runner-refuses-undeclared",
+    *R3V_FLOAT2_TUPLE_REQUIRED_TESTS,
     "r3v-native-entrypoint-audit-selftest",
     "r3v-native-entrypoint-audit-baseline",
     "r3v-native-entrypoint-audit-baseline-known-bad-extra",
@@ -173,6 +190,18 @@ def load_options(builddir: Path) -> dict[str, object]:
 def suite_names(entry: dict) -> list[str]:
     # Meson prefixes suites with the project name ("mesa:r3v").
     return [s.split(":", 1)[-1] for s in entry.get("suite", [])]
+
+
+def required_test_suite(name: str) -> str:
+    if name.startswith("r300-"):
+        return "r300"
+    if name.startswith("r3v-"):
+        return "r3v"
+    if name.startswith("radeon-drm-vk"):
+        return "radeon-drm-vk"
+    if name.startswith("radeon-noop-drm-shim"):
+        return "drm-shim"
+    raise ValueError(f"required test has no declared home suite: {name}")
 
 
 def required_tests(options: dict[str, object]) -> tuple[str, ...]:
@@ -592,12 +621,25 @@ def evaluate(registered: set[str], options: dict[str, object],
         print(f"suite {suite}: {count} registered")
 
     expected_tests = required_tests(options)
-    missing = [name for name in expected_tests if name not in registered]
+    missing = [
+        (name, required_test_suite(name))
+        for name in expected_tests
+        if name not in registered_by_suite.get(required_test_suite(name), ())
+    ]
     print(f"required tests: {len(expected_tests) - len(missing)}"
           f"/{len(expected_tests)} registered")
-    for name in missing:
-        print(f"missing required test: {name}")
-        failures.append(f"required test {name} not registered")
+    for name, suite in missing:
+        registered_suites = sorted(
+            registered_suite
+            for registered_suite, names in registered_by_suite.items()
+            if name in names
+        )
+        if name in registered:
+            print(f"missing required test: {name} from suite {suite}; "
+                  f"registered under {','.join(registered_suites)}")
+        else:
+            print(f"missing required test: {name} from suite {suite}")
+        failures.append(f"required test {name} not registered in suite {suite}")
 
     if not qualification:
         print("verdict: inventory (qualification gate not requested)")
@@ -630,14 +672,7 @@ def synthetic_complete(options: dict[str, object] | None = None) -> list[dict]:
     calibrates the passing direction of the same evaluation."""
     entries = []
     for name in required_tests(options or {}):
-        if name.startswith("r300-"):
-            suite = "r300"
-        elif name.startswith("r3v-"):
-            suite = "r3v"
-        elif name.startswith("radeon-drm-vk"):
-            suite = "radeon-drm-vk"
-        else:
-            suite = "drm-shim"
+        suite = required_test_suite(name)
         entries.append({"name": name, "suite": [f"mesa:{suite}"]})
     return entries
 
@@ -686,6 +721,32 @@ def run_selftest() -> int:
     if good != 0:
         print("selftest: complete set failed the gate", file=sys.stderr)
         return 1
+    for missing_test in FLOAT2_TUPLE_REQUIRED_TESTS:
+        missing_tuple_test = [
+            entry for entry in complete_entries
+            if entry["name"] != missing_test
+        ]
+        missing_tuple = evaluate(
+            collect(missing_tuple_test), QUALIFYING_OPTIONS,
+            qualification=True, probes=probes)
+        if missing_tuple == 0:
+            print("selftest: missing FLOAT_2 tuple test passed the gate: " +
+                  missing_test, file=sys.stderr)
+            return 1
+        home_suite = required_test_suite(missing_test)
+        wrong_suite = "r3v" if home_suite == "r300" else "r300"
+        misplaced_tuple_test = [
+            ({**entry, "suite": [f"mesa:{wrong_suite}"]}
+             if entry["name"] == missing_test else entry)
+            for entry in complete_entries
+        ]
+        misplaced_tuple = evaluate(
+            collect(misplaced_tuple_test), QUALIFYING_OPTIONS,
+            qualification=True, probes=probes)
+        if misplaced_tuple == 0:
+            print("selftest: misplaced FLOAT_2 tuple test passed the gate: " +
+                  missing_test, file=sys.stderr)
+            return 1
     native_only = evaluate(collect(synthetic_complete(NATIVE_ONLY_OPTIONS)),
                            NATIVE_ONLY_OPTIONS, qualification=True,
                            probes=probes)
@@ -709,9 +770,10 @@ def run_selftest() -> int:
     if missing_b3sum == 0:
         print("selftest: missing b3sum passed the gate", file=sys.stderr)
         return 1
-    print("selftest: gate refuses zero-native, missing kernel replay, missing "
-          "Gallium known-bad, and missing b3sum; admits dual-backend and "
-          "native-only sets")
+    print("selftest: gate refuses zero-native, each missing or misplaced "
+          "FLOAT_2 tuple test, missing kernel replay, missing Gallium "
+          "known-bad, and missing b3sum; admits dual-backend and native-only "
+          "sets")
     return 0
 
 
