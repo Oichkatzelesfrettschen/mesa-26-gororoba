@@ -968,6 +968,34 @@ if get_option('r3v-native-backend')
       )
     endforeach
 
+    # FLOAT_4 + FLOAT_2 tuple harness on the same shim fixture: two
+    # command relocations plus completion cross the recorder/queue path.
+    # The shim absorbs DRM_RADEON_CS, so the open leg pairs completed
+    # transport with an unchanged poison carrier and byte-identical
+    # read-only vertex source.  The geometry leg isolates the tuple
+    # vertex-allocation extent factor.
+    r3v_native_float2_tuple_cell_harness = executable(
+      'r3v_native_float2_tuple_cell_harness',
+      files('tests/r3v_native_float2_tuple_cell_harness.c'),
+      include_directories : r3v_native_inc,
+      dependencies : [r3v_native_deps, dep_dl],
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    )
+    foreach cell_mode : ['closed', 'open', 'geometry']
+      test(
+        'r3v-native-float2-tuple-cell-@0@'.format(cell_mode),
+        r3v_native_float2_tuple_cell_harness,
+        args : [cell_mode],
+        env : r3v_native_cell_env,
+        depends : [libradeon_noop_drm_shim],
+        timeout : 60,
+        suite : ['r3v'],
+      )
+    endforeach
+
     # Direct-write control harness on the same shim fixture: the 2D
     # solid-fill cell through the same recorder/queue/retention path,
     # armed by the control's own digest in the open leg.
