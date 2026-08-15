@@ -115,7 +115,7 @@ r300_tcl_bypass_triangle_emit_into(
                       RB3D_COLOR_CHANNEL_MASK_GREEN_MASK0 |
                       RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
                       RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0);
-      r300_pm4_reg(&b, R300_VAP_VF_MAX_VTX_INDX, 2);
+      r300_pm4_emit_vertex_index_range(&b, 0, 2);
    }
 
    /* Vertex path: pretransformed positions bypass the TCL block, one
@@ -328,6 +328,7 @@ r300_tcl_bypass_triangle_reference_contract(
       .chip_family = CHIP_RS480,
       .width = R300_TRIANGLE_TARGET_WIDTH,
       .height = R300_TRIANGLE_TARGET_HEIGHT,
+      .min_vtx_index = 0,
       .max_vtx_index = 2,
       .texture_enabled = false,
    };
@@ -359,6 +360,7 @@ r300_tcl_bypass_triangle_extent_emit(
       .chip_family = CHIP_RS480,
       .width = width,
       .height = height,
+      .min_vtx_index = 0,
       .max_vtx_index = 2,
       .texture_enabled = false,
    };

@@ -2127,10 +2127,14 @@ static bool r300_r2vb_emit_producer(struct r300_context *r300,
                                        output_gart_bo_offset, layout,
                                        transform_mode);
 
-    /* VTX_SIZE + VF_MAX + the DRAW_IMMD header pair, then the embedded body. */
-    BEGIN_CS(6 + (int)num_vertices * (int)vtx_dwords);
+    /* VTX_SIZE + the VF_MAX/VF_MIN pair + the DRAW_IMMD header pair, then
+     * the embedded body. Both index registers clamp every fetched index, so
+     * the pair keeps a stale inherited minimum from folding low indices. */
+    BEGIN_CS(7 + (int)num_vertices * (int)vtx_dwords);
     OUT_CS_REG(R300_VAP_VTX_SIZE, vtx_dwords);
-    OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
+    OUT_CS_REG_SEQ(R300_VAP_VF_MAX_VTX_INDX, 2);
+    OUT_CS(num_vertices - 1);
+    OUT_CS(0);
     OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, num_vertices * vtx_dwords);
     OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (num_vertices << 16) |
            R300_VAP_VF_CNTL__PRIM_POINTS);
@@ -2388,7 +2392,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * (SEQ-of-4 + header), the stream-control gate is 8 (SEQ-of-7 + header),
      * the fog/stipple gate is 6 (3 single writes, non-contiguous), and the
      * rasterizer-interpolator gate is 7 + 2*rs_count (variable). */
-    BEGIN_CS((stage3_color_bo ? 26 : 17)
+    BEGIN_CS((stage3_color_bo ? 27 : 18)
              + r300_r2vb_position_only_output_dwords(ptsize_c0, ptsize_c1c)
              + (viewport_identity_gate ? 7 : 0)
              + r300_r2vb_vte_w0_dwords(r2vb_vte_w0_fmt)
@@ -2557,8 +2561,12 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * INDX clamps every fetched index; a stale lower bound (from an inherited
      * draw or a smaller producer) would fold high-index vertices onto a low one
      * and rasterize a degenerate set.  The re-ingest draws all num_vertices GTT
-     * rows, so bound it to the actual highest index. */
-    OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
+     * rows, so bound the pair to [0, num_vertices - 1]; the adjacent
+     * VAP_VF_MIN_VTX_INDX write keeps an inherited nonzero minimum from
+     * clamping the low rows. */
+    OUT_CS_REG_SEQ(R300_VAP_VF_MAX_VTX_INDX, 2);
+    OUT_CS(num_vertices - 1);
+    OUT_CS(0);
     OUT_CS_PKT3(R300_PACKET3_3D_LOAD_VBPNTR, 3);
     OUT_CS(1 | R300_VC_FORCE_PREFETCH);
     OUT_CS(4 | (4 << 8));

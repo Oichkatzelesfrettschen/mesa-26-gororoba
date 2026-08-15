@@ -99,6 +99,7 @@ static const struct r300_first_draw_contract_entry r300_fds_table[] = {
    E(R300_VAP_PVS_STATE_FLUSH_REG, 0x00000000, ORDERING_BARRIER),
    E(VAP_PVS_VTX_TIMEOUT_REG, 0x0000ffff, REQUIRED_INVARIANT),
    E(R300_VAP_VF_MAX_VTX_INDX, 0, GEOMETRY_PARAMETER),
+   E(R300_VAP_VF_MIN_VTX_INDX, 0, GEOMETRY_PARAMETER),
    E(R300_SE_VPORT_XSCALE, 0x00000000, REQUIRED_INVARIANT),
    E(R300_SE_VPORT_XOFFSET, 0x00000000, REQUIRED_INVARIANT),
    E(R300_SE_VPORT_YSCALE, 0x00000000, REQUIRED_INVARIANT),
@@ -193,6 +194,14 @@ r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
       return -EINVAL;
    }
 
+   /* The VAP_VF index registers hold 16-bit indices, and an inverted pair
+    * would clamp every fetch into an empty range.
+    */
+   if (params->min_vtx_index > params->max_vtx_index ||
+       params->max_vtx_index > 0xffff) {
+      return -EINVAL;
+   }
+
    memset(out, 0, sizeof(*out));
    for (uint32_t i = 0; i < R300_FDS_TABLE_COUNT; i++) {
       struct r300_first_draw_contract_entry entry = r300_fds_table[i];
@@ -215,6 +224,9 @@ r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
          break;
       case R300_VAP_VF_MAX_VTX_INDX:
          entry.value = params->max_vtx_index;
+         break;
+      case R300_VAP_VF_MIN_VTX_INDX:
+         entry.value = params->min_vtx_index;
          break;
       default:
          break;

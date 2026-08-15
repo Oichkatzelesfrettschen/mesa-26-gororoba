@@ -32,8 +32,9 @@
 struct tracker {
    uint32_t fmt0, fmt1, vtx_size, cntl_status;
    bool fmt0_seen, fmt1_seen, vtx_size_seen, cntl_status_seen;
-   uint32_t vte_cntl, color_channel_mask, max_vtx_index;
-   bool vte_cntl_seen, color_channel_mask_seen, max_vtx_index_seen;
+   uint32_t vte_cntl, color_channel_mask, max_vtx_index, min_vtx_index;
+   bool vte_cntl_seen, color_channel_mask_seen, max_vtx_index_seen,
+      min_vtx_index_seen;
    uint8_t ext_seen_mask;
    bool ext_nonidentity;
    uint32_t draw_vf_cntl;
@@ -75,6 +76,9 @@ track(struct tracker *t, const uint32_t *ib, uint32_t count)
             } else if (r == R300_VAP_VF_MAX_VTX_INDX) {
                t->max_vtx_index = value;
                t->max_vtx_index_seen = true;
+            } else if (r == R300_VAP_VF_MIN_VTX_INDX) {
+               t->min_vtx_index = value;
+               t->min_vtx_index_seen = true;
             } else if (r >= 0x21E0 && r <= 0x21FC) {
                if (value != 0xF688F688u)
                   t->ext_nonidentity = true;
@@ -145,6 +149,7 @@ test_stream_satisfies_kernel_contract(void)
               RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
               RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0));
    assert(t.max_vtx_index_seen && t.max_vtx_index == 2);
+   assert(t.min_vtx_index_seen && t.min_vtx_index == 0);
    assert(t.ext_seen_mask == 0xff && !t.ext_nonidentity);
    assert(t.draw_count == 1);
    assert(((t.draw_vf_cntl >> 4) & 0x3) == 2);
@@ -572,7 +577,7 @@ test_reference_emit_is_the_single_authority(void)
  * rather than as a silently different cell.  The digest is the one the
  * staging manifest and the arming gate carry.
  */
-#define R300_TRIANGLE_CONTRACT_CELL_DWORDS 229
+#define R300_TRIANGLE_CONTRACT_CELL_DWORDS 231
 
 static void
 test_contract_cell_size_and_digest_are_pinned(void)
@@ -586,10 +591,10 @@ test_contract_cell_size_and_digest_are_pinned(void)
     * hash keeps the pinned identity independent of host byte order.
     */
    static const uint8_t expected[BLAKE3_OUT_LEN] = {
-      0xff, 0xfb, 0x88, 0x87, 0x20, 0xed, 0x01, 0x8d,
-      0x0b, 0xb7, 0x31, 0xcf, 0x27, 0x65, 0xf4, 0xca,
-      0x27, 0xb1, 0xfb, 0x99, 0x83, 0x24, 0xf5, 0xc0,
-      0x4a, 0x0d, 0x80, 0x61, 0x94, 0xb2, 0xfd, 0xa6,
+      0xdd, 0xbb, 0x5e, 0x9e, 0x38, 0x25, 0x79, 0x94,
+      0xa5, 0x43, 0x3a, 0x3e, 0x0a, 0xf1, 0xcf, 0x0d,
+      0xa0, 0x94, 0xac, 0xb8, 0xfd, 0x6c, 0x1b, 0x7d,
+      0x7f, 0x09, 0x91, 0x6f, 0xa3, 0xd4, 0x18, 0x21,
    };
    uint8_t serialized[R300_TRIANGLE_CONTRACT_CELL_DWORDS * sizeof(uint32_t)];
    r300_triangle_ib_serialize(ref.ib, ref.ib_size_dwords, serialized);

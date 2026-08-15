@@ -83,6 +83,21 @@ void r300_pm4_block(struct r300_pm4_builder *b, const uint32_t *words,
  */
 uint32_t r300_pm4_reloc_nop(struct r300_pm4_builder *b, uint32_t payload);
 
+/* The vertex-fetch index bound registers hold 16-bit indices. */
+#define R300_PM4_VTX_INDX_LIMIT 0xffffu
+
+/* One PACKET0 run over the adjacent VAP_VF_MAX_VTX_INDX (0x2134) and
+ * VAP_VF_MIN_VTX_INDX (0x2138) pair, maximum first.  Both registers clamp
+ * every fetched vertex index, so a draw that writes only the maximum
+ * inherits the previous client's minimum and folds low indices onto it;
+ * the pair establishes the complete bound.  min_index > max_index or an
+ * index above R300_PM4_VTX_INDX_LIMIT is -EINVAL, recorded without
+ * writing any dword.
+ */
+void r300_pm4_emit_vertex_index_range(struct r300_pm4_builder *b,
+                                      uint32_t min_index,
+                                      uint32_t max_index);
+
 /* Publishes the dword count on success alone.  A builder that refused any
  * operation reports its first error and writes zero, so no caller reads a
  * partially written stream as a complete one.

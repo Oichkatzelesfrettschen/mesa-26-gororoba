@@ -158,3 +158,14 @@ verdict string reads `CARRIER_UNWRITTEN`; the retained bytes in the
 `results/r3v-native-fp24-sweep-top-bin-halving-rs482/` carry the
 mismatch evidence, and `CARRIER_MISMATCH` names this class in later
 runs.
+
+## Pending requalification
+
+The tree now programs the VAP_VF_MAX_VTX_INDX/VAP_VF_MIN_VTX_INDX pair
+in one PACKET0 run, so the first-draw contract and the bare prefix each
+grew and the cell's IB digest changed: the current emission is
+316 dwords with IB blake3
+`2c6ad55886a648ccd0bbf98939503c6674e2a72837d9913e854021c9921f915a`.
+The executed-run record above remains the retained evidence for its own
+byte stream; the paired-index emission is requalified by a fresh
+attended cell armed on the new digest.
