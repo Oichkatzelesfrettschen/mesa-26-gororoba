@@ -383,6 +383,7 @@ if get_option('r3v-native-backend')
     '../common/r300_pm4_builder.c',
     '../common/r300_delivery_route.c',
     '../common/r300_r2vb_carrier_delivery.c',
+    '../common/r300_r2vb_float2_tuple_pass.c',
     '../common/r300_r2vb_producer_pass.c',
     '../common/r300_r2vb_reingest_pass.c',
     '../common/r300_tcl_bypass_triangle.c',
@@ -767,6 +768,25 @@ if get_option('r3v-native-backend')
     install : false,
   )
 
+  # Attended FLOAT_4 + FLOAT_2 tuple cell: performs a live DRM_RADEON_CS
+  # on RS482 silicon, fetching the two-array vertex stream through the
+  # PSC XY01 selector into the carrier -- the read-back judges the
+  # silicon's expansion of each two-dword record to (x, y, 0, 1).  Built
+  # and never registered as a test, because running it is a hardware
+  # authorization rather than a build-graph result.
+  r3v_native_attended_float2_tuple = executable(
+    'r3v_native_attended_float2_tuple',
+    files('tests/r3v_native_attended_float2_tuple.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+    build_by_default : true,
+    install : false,
+  )
+
   if with_tests
     # Pure arming checks compile without drm-shim or an X server. Keeping
     # them at the native backend boundary preserves calibration in native
@@ -793,6 +813,24 @@ if get_option('r3v-native-backend')
       executable(
         'r3v_native_producer_cell_test',
         files('tests/r3v_native_producer_cell_test.c'),
+        include_directories : [r3v_native_inc, include_directories('.')],
+        dependencies : r3v_native_deps,
+        link_whole : [libr3v_native_impl],
+        link_with : [libradeon_drm_vk],
+        c_args : [no_override_init_args],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+    # The tuple cell's recording contract on the host: the installed
+    # stream, the carrier's two GTT domains beside the read-only vertex
+    # relocation, the arming gate's tuple kind, and the vertex-stream
+    # capacity boundary the recorder's allocation gate mirrors.
+    test(
+      'r3v-native-float2-tuple-cell',
+      executable(
+        'r3v_native_float2_tuple_cell_test',
+        files('tests/r3v_native_float2_tuple_cell_test.c'),
         include_directories : [r3v_native_inc, include_directories('.')],
         dependencies : r3v_native_deps,
         link_whole : [libr3v_native_impl],
@@ -1387,6 +1425,32 @@ if get_option('r3v-native-backend')
       args : [
         files('tests/r3v_native_reingest_arming_runner_check.py'),
         r3v_native_reingest_arming_runner,
+        r3v_native_producer_arming_runner,
+      ],
+      suite : ['r3v'],
+    )
+
+    r3v_native_float2_tuple_arming_runner = executable(
+      'r3v_native_float2_tuple_arming_runner',
+      files('r3v_native_arming.c',
+            'tests/r3v_native_float2_tuple_arming_runner.c',
+            '../common/r300_first_draw_state.c',
+            '../common/r300_fragment_binary.c',
+            '../common/r300_pm4_builder.c',
+            '../common/r300_r2vb_carrier_delivery.c',
+            '../common/r300_r2vb_float2_tuple_pass.c',
+            '../common/r300_r2vb_producer_pass.c',
+            '../common/r300_tcl_bypass_triangle.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-float2-tuple-arming-runner',
+      prog_python,
+      args : [
+        files('tests/r3v_native_float2_tuple_arming_runner_check.py'),
+        r3v_native_float2_tuple_arming_runner,
         r3v_native_producer_arming_runner,
       ],
       suite : ['r3v'],

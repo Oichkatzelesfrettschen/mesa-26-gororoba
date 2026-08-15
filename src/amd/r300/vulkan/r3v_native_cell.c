@@ -12,6 +12,7 @@
 #include "amd/r300/common/r300_direct_write.h"
 #include "amd/r300/common/r300_delivery_route.h"
 #include "amd/r300/common/r300_r2vb_carrier_delivery.h"
+#include "amd/r300/common/r300_r2vb_float2_tuple_pass.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_r2vb_reingest_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
@@ -1052,6 +1053,162 @@ r3v_native_record_r2vb_reingest(VkCommandBuffer commandBuffer,
 
    int install_result = r3v_native_reingest_cell_install(
       cmd_buffer, carrier_memory, color_memory);
+   if (install_result != 0)
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(install_result));
+   return VK_SUCCESS;
+}
+
+/* The vertex allocation the tuple cell fetches: the FLOAT_4 slot-position
+ * array followed by the FLOAT_2 model records over the reference count.
+ */
+#define R3V_NATIVE_FLOAT2_TUPLE_VERTEX_BYTES               \
+   (R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *               \
+    (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +            \
+     R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES))
+
+int
+r3v_native_float2_tuple_cell_install(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory,
+   struct r3v_native_memory *vertex_memory)
+{
+   struct r300_r2vb_float2_tuple_ib cell;
+   int emit_result = r300_r2vb_float2_tuple_reference_emit(&cell);
+   if (emit_result != 0)
+      return emit_result;
+   emit_result = r300_r2vb_float2_tuple_pass_validate_reloc_sites(&cell);
+   if (emit_result != 0) {
+      r300_r2vb_float2_tuple_pass_release(&cell);
+      return emit_result;
+   }
+
+   struct r3v_native_bo_reference *references =
+      calloc(R300_R2VB_FLOAT2_TUPLE_SLOT_COUNT, sizeof(*references));
+   if (references == NULL) {
+      r300_r2vb_float2_tuple_pass_release(&cell);
+      return -ENOMEM;
+   }
+   /* The carrier's relocation carries the GTT domain in both directions:
+    * the color backend writes the slot row here and a consuming vertex
+    * fetch reads it in the delivery contract, the same pairing the
+    * retained no-submit manifest's BO table declares.  The vertex BO
+    * feeds the two LOAD_VBPNTR arrays and is device-read alone.
+    */
+   references[R300_R2VB_FLOAT2_TUPLE_SLOT_CARRIER] =
+      (struct r3v_native_bo_reference){
+         .handle = carrier_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = carrier_memory,
+      };
+   references[R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX] =
+      (struct r3v_native_bo_reference){
+         .handle = vertex_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = 0,
+         .memory = vertex_memory,
+      };
+
+   r3v_native_cmd_buffer_install_ib(cmd_buffer,
+                                    R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE,
+                                    cell.ib, cell.ib_size_dwords, references,
+                                    R300_R2VB_FLOAT2_TUPLE_SLOT_COUNT);
+   /* install_ib took ownership of cell.ib; only the descriptor resets. */
+   cell.ib = NULL;
+   r300_r2vb_float2_tuple_pass_release(&cell);
+   return 0;
+}
+
+/* Records the fetched tuple cell: poisons the carrier allocation, writes
+ * the reference vertex stream into the vertex allocation, publishes both
+ * for the unsnooped GART, and installs the reference tuple pass against
+ * the two BOs.  The carrier poison keeps the delivery decidable, and the
+ * host-written vertex bytes are the fetch's ground truth: a post-run
+ * comparison against the same serialization detects any device write
+ * into the fetch source.
+ */
+VkResult
+r3v_native_record_r2vb_float2_tuple(VkCommandBuffer commandBuffer,
+                                    VkDeviceMemory carrierMemory,
+                                    VkDeviceMemory vertexMemory)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, carrier_memory, carrierMemory);
+   VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
+
+   if (cmd_buffer == NULL || carrier_memory == NULL || vertex_memory == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   if (carrier_memory == vertex_memory) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: the carrier and the vertex stream are "
+                       "distinct allocations");
+   }
+
+   uint32_t carrier_bytes;
+   if (r3v_native_producer_carrier_bytes(&carrier_bytes) != 0)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   if (carrier_memory->bo.size != carrier_bytes) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: tuple cell takes a %u-byte carrier",
+                       carrier_bytes);
+   }
+   if (vertex_memory->bo.size != R3V_NATIVE_FLOAT2_TUPLE_VERTEX_BYTES) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: tuple cell takes a %u-byte vertex "
+                       "stream",
+                       (unsigned)R3V_NATIVE_FLOAT2_TUPLE_VERTEX_BYTES);
+   }
+
+   bool owns_map = carrier_memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &carrier_memory->bo,
+                            &carrier_memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: tuple carrier memory is not "
+                       "CPU-mappable");
+   }
+   uint32_t *carrier_dwords = carrier_memory->map;
+   for (uint64_t i = 0; i < carrier_memory->bo.size / 4; i++)
+      carrier_dwords[i] = R300_R2VB_PRODUCER_POISON_DWORD;
+   radeon_drm_vk_bo_cache_sync(&device->drm, carrier_memory->map,
+                               carrier_memory->bo.size);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &carrier_memory->bo,
+                             carrier_memory->map);
+      carrier_memory->map = NULL;
+   }
+
+   bool owns_vertex_map = vertex_memory->map == NULL;
+   if (owns_vertex_map &&
+       radeon_drm_vk_bo_map(&device->drm, &vertex_memory->bo,
+                            &vertex_memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: tuple vertex memory is not "
+                       "CPU-mappable");
+   }
+   int stream_result = r300_r2vb_float2_tuple_vertex_stream(
+      r300_r2vb_float2_tuple_reference_records,
+      R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, vertex_memory->map,
+      R3V_NATIVE_FLOAT2_TUPLE_VERTEX_BYTES);
+   if (stream_result == 0) {
+      radeon_drm_vk_bo_cache_sync(&device->drm, vertex_memory->map,
+                                  vertex_memory->bo.size);
+   }
+   if (owns_vertex_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
+                             vertex_memory->map);
+      vertex_memory->map = NULL;
+   }
+   if (stream_result != 0)
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(stream_result));
+
+   int install_result = r3v_native_float2_tuple_cell_install(
+      cmd_buffer, carrier_memory, vertex_memory);
    if (install_result != 0)
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(install_result));

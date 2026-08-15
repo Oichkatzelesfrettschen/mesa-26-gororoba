@@ -46,6 +46,7 @@ enum r3v_native_cell_kind {
    R3V_NATIVE_CELL_KIND_DIRECT_WRITE,
    R3V_NATIVE_CELL_KIND_R2VB_PRODUCER,
    R3V_NATIVE_CELL_KIND_R2VB_REINGEST,
+   R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

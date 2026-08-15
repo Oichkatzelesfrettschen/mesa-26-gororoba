@@ -47,6 +47,7 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    case R3V_NATIVE_CELL_KIND_DIRECT_WRITE:
    case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER:
    case R3V_NATIVE_CELL_KIND_R2VB_REINGEST:
+   case R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE:
       break;
    case R3V_NATIVE_CELL_KIND_UNDECLARED:
    default:

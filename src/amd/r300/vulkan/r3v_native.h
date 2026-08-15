@@ -557,6 +557,19 @@ VkResult r3v_native_record_r2vb_reingest(VkCommandBuffer commandBuffer,
                                          VkDeviceMemory carrierMemory,
                                          VkDeviceMemory colorMemory);
 
+/* Records the fetched FLOAT_4 + FLOAT_2 tuple cell: poisons the carrier,
+ * writes the reference vertex stream -- the slot-position array followed
+ * by the FLOAT_2 model records -- into the vertex allocation, publishes
+ * both for the unsnooped GART, and installs the reference tuple pass
+ * (r300_r2vb_float2_tuple_reference_emit) against the two BOs.  The
+ * vertex data travels through 3D_LOAD_VBPNTR under the PSC XY01
+ * selector, so the carrier read-back judges the silicon's expansion of
+ * each two-dword record to (x, y, 0, 1).
+ */
+VkResult r3v_native_record_r2vb_float2_tuple(VkCommandBuffer commandBuffer,
+                                             VkDeviceMemory carrierMemory,
+                                             VkDeviceMemory vertexMemory);
+
 /* The producer cell's carrier allocation: the reference layout's slot row
  * (pitch pixels of one FP32x4 texel, one row), the same product the
  * manifest publishes as carrier_size_bytes.  Returns 0 or a negative
@@ -585,5 +598,10 @@ int r3v_native_reingest_cell_install(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_memory *color_memory);
+
+int r3v_native_float2_tuple_cell_install(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_memory *carrier_memory,
+   struct r3v_native_memory *vertex_memory);
 
 #endif /* R3V_NATIVE_H */
