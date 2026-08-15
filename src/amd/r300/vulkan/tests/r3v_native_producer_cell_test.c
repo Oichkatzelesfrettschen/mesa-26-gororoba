@@ -10,6 +10,8 @@
  * DRM node present.
  */
 
+#undef NDEBUG
+
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 

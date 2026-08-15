@@ -5,6 +5,8 @@
  * tables, then holds the native report to it.
  */
 
+#undef NDEBUG
+
 #include "r3v_memory_properties_contract.h"
 
 #include <assert.h>
