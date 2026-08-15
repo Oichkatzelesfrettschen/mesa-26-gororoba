@@ -320,7 +320,7 @@ r300_r2vb_float2_tuple_pass_emit(
    r300_pm4_reg(&b, R300_FG_DEPTH_SRC, fs->fg_depth_src);
    r300_pm4_reg(&b, R300_US_W_FMT, fs->us_out_w);
 
-   r300_pm4_reg(&b, R300_VAP_VF_MAX_VTX_INDX, layout.count - 1);
+   r300_pm4_emit_vertex_index_range(&b, 0, layout.count - 1);
 
    /* Two-array vertex fetch: the FLOAT_4 slot array at the vertex
     * offset, the FLOAT_2 model array behind it, one relocation per
@@ -433,6 +433,7 @@ r300_r2vb_float2_tuple_reference_emit(struct r300_r2vb_float2_tuple_ib *out)
       .chip_family = CHIP_RS480,
       .width = layout.width,
       .height = layout.height,
+      .min_vtx_index = 0,
       .max_vtx_index = layout.count - 1,
       .texture_enabled = false,
    };

@@ -89,6 +89,7 @@ static const struct known_good_first_draw_write known_good_writes[] = {
    { R300_VAP_PVS_STATE_FLUSH_REG, 0x00000000 },
    { VAP_PVS_VTX_TIMEOUT_REG, 0x0000ffff },
    { R300_VAP_VF_MAX_VTX_INDX, 2 },
+   { R300_VAP_VF_MIN_VTX_INDX, 0 },
    { R300_SE_VPORT_XSCALE, 0x00000000 },
    { R300_SE_VPORT_XOFFSET, 0x00000000 },
    { R300_SE_VPORT_YSCALE, 0x00000000 },
@@ -263,6 +264,7 @@ main(void)
       .chip_family = CHIP_RS480,
       .width = 64,
       .height = 64,
+      .min_vtx_index = 0,
       .max_vtx_index = 2,
       .texture_enabled = false,
    };
@@ -284,6 +286,15 @@ main(void)
           0x00bbe5df);
    assert(contract.entries[find_entry(&contract,
                                       R300_VAP_VF_MAX_VTX_INDX)].value == 2);
+   /* Both VAP_VF index bounds resolve: the minimum entry directly follows
+    * the maximum and carries the parameter value.
+    */
+   const uint32_t max_indx_entry = find_entry(&contract,
+                                              R300_VAP_VF_MAX_VTX_INDX);
+   const uint32_t min_indx_entry = find_entry(&contract,
+                                              R300_VAP_VF_MIN_VTX_INDX);
+   assert(min_indx_entry == max_indx_entry + 1);
+   assert(contract.entries[min_indx_entry].value == 0);
 
    const uint32_t known_good_count = KNOWN_GOOD_WRITE_COUNT;
    assert(contract.count == known_good_count);
@@ -313,6 +324,20 @@ main(void)
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
    bad.height = UINT32_MAX;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
+
+   /* An inverted index pair or an index past the registers' 16-bit width
+    * refuses; the full 16-bit bound resolves.
+    */
+   bad = params;
+   bad.min_vtx_index = 3;
+   bad.max_vtx_index = 2;
+   assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
+   bad = params;
+   bad.max_vtx_index = 0x10000;
+   assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
+   bad.min_vtx_index = 0xffff;
+   bad.max_vtx_index = 0xffff;
+   assert(r300_first_draw_contract_resolve(&bad, &scratch) == 0);
 
    /* The reference artifacts stay out: no depth-resource or dummy-texture
     * descriptor word is emitted for a draw that binds neither.
@@ -405,7 +430,10 @@ main(void)
          assert(report_names(&contract, &report, known_good_writes[i].reg));
    }
 
-   enum { bare_state_dwords = 3 * 2 };
+   /* The bare cell's standalone prefix: VTE_CNTL (2) + CHANNEL_MASK (2) +
+    * the VF_MAX/VF_MIN index-range run (3).
+    */
+   enum { bare_state_dwords = 2 + 2 + 3 };
    assert(cell.ib_size_dwords > bare_state_dwords);
    uint32_t prefixed[1024];
    memcpy(prefixed, state_ib, (size_t)state_dwords * 4);

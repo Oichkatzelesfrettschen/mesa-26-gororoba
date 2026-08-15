@@ -59,7 +59,13 @@ struct r300_first_draw_params {
    /* Render-target extent in pixels; scissor and clip derive from it. */
    uint32_t width;
    uint32_t height;
-   /* Highest vertex index the draw fetches. */
+   /* Vertex-index bound pair. Both VAP_VF registers clamp every fetched
+    * index, so the contract establishes minimum and maximum together; a
+    * draw that writes only the maximum inherits the previous client's
+    * minimum and folds low indices onto it. min_vtx_index <= max_vtx_index
+    * <= 0xffff, the registers' 16-bit index width.
+    */
+   uint32_t min_vtx_index;
    uint32_t max_vtx_index;
    /* The draw binds no texture, so the TX block is explicitly disabled;
     * a texturing caller owns its own TX state on top of the contract.

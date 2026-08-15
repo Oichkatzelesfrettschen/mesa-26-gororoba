@@ -27,6 +27,7 @@ R300_VAP_OUTPUT_VTX_FMT_0 = 0x2090
 R300_VAP_OUTPUT_VTX_FMT_1 = 0x2094
 R300_VAP_VTX_SIZE = 0x20B4
 R300_VAP_VF_MAX_VTX_INDX = 0x2134
+R300_VAP_VF_MIN_VTX_INDX = 0x2138
 R300_VAP_VTX_STATE_CNTL = 0x2180
 R300_VAP_VSM_VTX_ASSM = 0x2184
 R300_VAP_PROG_STREAM_CNTL_0 = 0x2150
@@ -339,6 +340,9 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
         raise CheckFailure("RS_INST_0 does not write US input register 0")
     if registers.get(R300_VAP_VF_MAX_VTX_INDX) != R300_R2VB_REFERENCE_COUNT - 1:
         raise CheckFailure("VAP_VF_MAX_VTX_INDX does not match the reference count")
+    if registers.get(R300_VAP_VF_MIN_VTX_INDX) != 0:
+        raise CheckFailure("VAP_VF_MIN_VTX_INDX is not the zero lower bound; an "
+                           "inherited minimum would fold low indices onto it")
     if len(draws) != 1:
         raise CheckFailure(f"expected one immediate draw, got {len(draws)}")
     draw_index, raw_draw_count = draws[0]

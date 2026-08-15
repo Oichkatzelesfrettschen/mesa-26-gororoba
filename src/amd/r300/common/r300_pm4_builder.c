@@ -134,6 +134,21 @@ r300_pm4_reloc_nop(struct r300_pm4_builder *b, uint32_t payload)
    return index;
 }
 
+void
+r300_pm4_emit_vertex_index_range(struct r300_pm4_builder *b,
+                                 uint32_t min_index, uint32_t max_index)
+{
+   if (b->error != 0)
+      return;
+   if (min_index > max_index || max_index > R300_PM4_VTX_INDX_LIMIT) {
+      b->error = -EINVAL;
+      return;
+   }
+   /* The run starts at the maximum register because 0x2134 precedes 0x2138. */
+   const uint32_t payload[2] = {max_index, min_index};
+   r300_pm4_packet0(b, R300_VAP_VF_MAX_VTX_INDX, payload, 2);
+}
+
 int
 r300_pm4_builder_finish(const struct r300_pm4_builder *b, uint32_t *out_count)
 {

@@ -106,3 +106,14 @@ producer-cell host test's NDEBUG assert-erasure segfault, fixed in
 `cbe9d2597cd` before arming.  The retained record lives in the
 `steinmarder-r300` bundle
 `results/r3v-native-float2-tuple-xy01-delivery-rs482/`.
+
+## Pending requalification
+
+The tree now programs the VAP_VF_MAX_VTX_INDX/VAP_VF_MIN_VTX_INDX pair
+in one PACKET0 run, so the first-draw contract and the bare prefix each
+grew and the cell's IB digest changed: the current emission is
+301 dwords with IB blake3
+`0ff78b5ebceca983184d845e2014387778d51f6722755d08c6e40ba121ab0258`.
+The executed-run record above remains the retained evidence for its own
+byte stream; the paired-index emission is requalified by a fresh
+attended cell armed on the new digest.

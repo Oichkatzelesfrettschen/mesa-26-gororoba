@@ -57,6 +57,7 @@ struct walk_state {
 static const uint32_t tracked_regs[] = {
    R300_RB3D_COLOROFFSET0, R300_RB3D_COLORPITCH0, R300_US_OUT_FMT_0,
    R300_VAP_VTX_SIZE,      R300_VAP_VF_MAX_VTX_INDX,
+   R300_VAP_VF_MIN_VTX_INDX,
    R300_VAP_CNTL_STATUS,   R300_GA_POINT_SIZE,
    R300_VAP_PVS_STATE_FLUSH_REG, R300_SC_SCISSORS_TL,
    R300_SC_SCISSORS_BR,      R300_RS_COUNT,
@@ -210,6 +211,8 @@ test_reference_structure(void)
     */
    CHECK(st.reg_value[tracked_index(R300_VAP_VTX_SIZE)] == 8);
    CHECK(st.reg_value[tracked_index(R300_VAP_VF_MAX_VTX_INDX)] == 2);
+   CHECK(st.reg_seen[tracked_index(R300_VAP_VF_MIN_VTX_INDX)]);
+   CHECK(st.reg_value[tracked_index(R300_VAP_VF_MIN_VTX_INDX)] == 0);
    CHECK(st.reg_value[tracked_index(R300_VAP_CNTL_STATUS)] ==
          R300_VAP_TCL_BYPASS);
    const uint32_t draw_header = pass.ib[st.draw_header_index];

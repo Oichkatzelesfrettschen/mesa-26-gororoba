@@ -88,7 +88,7 @@ test_helper_matches_an_independent_hash(void)
 
    /* The digest the arming gate is authorized against. */
    assert(strcmp(shared,
-                 "fffb888720ed018d0bb731cf2765f4ca27b1fb998324f5c04a0d806194b2fda6") == 0);
+                 "ddbb5e9e38257994a5433a3e0af1cf0da094acb8fd6c1b7d7f09916fa3d41821") == 0);
 
    r300_tcl_bypass_triangle_release(&cell);
 }
@@ -179,7 +179,7 @@ test_published_clause_count_matches_the_contract(void)
 {
    struct r300_first_draw_contract contract;
    assert(r300_tcl_bypass_triangle_reference_contract(&contract) == 0);
-   assert(contract.count == 79);
+   assert(contract.count == 80);
 
    struct r300_tcl_bypass_triangle_ib bare, full;
    struct r300_fragment_binary fs;
@@ -196,9 +196,10 @@ test_published_clause_count_matches_the_contract(void)
    assert(r300_tcl_bypass_triangle_emit(&params, &full) == 0);
 
    /* Each clause is a one-register PACKET0: a header and a payload. The bare
-    * stream owns three state registers, so the prefixed form adds the
-    * contract clauses after accounting for those six dwords. */
-   enum { bare_state_dwords = 3 * 2 };
+    * stream owns VTE_CNTL (2), CHANNEL_MASK (2), and the VF_MAX/VF_MIN
+    * index-range run (3), so the prefixed form adds the contract clauses
+    * after accounting for those seven dwords. */
+   enum { bare_state_dwords = 2 + 2 + 3 };
    assert(full.ib_size_dwords - bare.ib_size_dwords ==
           contract.count * 2 - bare_state_dwords);
 

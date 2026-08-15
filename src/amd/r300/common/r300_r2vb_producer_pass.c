@@ -332,7 +332,7 @@ r300_r2vb_producer_pass_emit_into(
     * count * 8 dwords, one slot position plus one pre-swizzled record
     * per vertex.
     */
-   r300_pm4_reg(&b, R300_VAP_VF_MAX_VTX_INDX, layout->count - 1);
+   r300_pm4_emit_vertex_index_range(&b, 0, layout->count - 1);
 
    const uint32_t body_dwords =
       1 + layout->count * R300_R2VB_PRODUCER_VTX_DWORDS;
@@ -480,6 +480,7 @@ producer_fixed_stream_emit(const float (*records)[4], uint32_t count,
       .chip_family = CHIP_RS480,
       .width = layout.width,
       .height = layout.height,
+      .min_vtx_index = 0,
       .max_vtx_index = layout.count - 1,
       .texture_enabled = false,
    };

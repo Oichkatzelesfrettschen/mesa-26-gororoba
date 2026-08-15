@@ -313,9 +313,80 @@ test_null_destination(void)
    assert(b.error == -EINVAL);
 }
 
+/* The vertex-index-range write is one PACKET0 run over the adjacent
+ * VAP_VF_MAX_VTX_INDX/VAP_VF_MIN_VTX_INDX pair, maximum first, so the
+ * stream is header, max, min.  An inverted pair or an index past the
+ * registers' 16-bit width is -EINVAL before any reservation; a
+ * destination one dword short takes none of the run.
+ */
+static void
+test_vertex_index_range(void)
+{
+   struct guarded g;
+   guarded_init(&g);
+   struct r300_pm4_builder b;
+
+   /* min=0, max=2: the exact three-dword stream. */
+   r300_pm4_builder_init(&b, g.words, 3);
+   r300_pm4_emit_vertex_index_range(&b, 0, 2);
+   assert(b.error == 0);
+   assert(b.count == 3);
+   assert(g.words[0] == CP_PACKET0(R300_VAP_VF_MAX_VTX_INDX, 1));
+   assert(g.words[1] == 2);
+   assert(g.words[2] == 0);
+   guards_hold(&g);
+
+   /* min=max=0 and the largest accepted maximum both encode. */
+   r300_pm4_builder_init(&b, g.words, 3);
+   r300_pm4_emit_vertex_index_range(&b, 0, 0);
+   assert(b.error == 0 && b.count == 3);
+   assert(g.words[1] == 0 && g.words[2] == 0);
+
+   r300_pm4_builder_init(&b, g.words, 3);
+   r300_pm4_emit_vertex_index_range(&b, R300_PM4_VTX_INDX_LIMIT,
+                                    R300_PM4_VTX_INDX_LIMIT);
+   assert(b.error == 0 && b.count == 3);
+   assert(g.words[1] == R300_PM4_VTX_INDX_LIMIT);
+   assert(g.words[2] == R300_PM4_VTX_INDX_LIMIT);
+
+   /* An inverted pair refuses without writing. */
+   guarded_init(&g);
+   r300_pm4_builder_init(&b, g.words, 3);
+   r300_pm4_emit_vertex_index_range(&b, 3, 2);
+   assert(b.error == -EINVAL);
+   assert(b.count == 0);
+   assert(g.words[0] == 0);
+
+   /* An index past the 16-bit register width refuses. */
+   r300_pm4_builder_init(&b, g.words, 3);
+   r300_pm4_emit_vertex_index_range(&b, 0, R300_PM4_VTX_INDX_LIMIT + 1);
+   assert(b.error == -EINVAL);
+   assert(b.count == 0);
+
+   /* One dword short takes none of the run. */
+   guarded_init(&g);
+   r300_pm4_builder_init(&b, g.words, 2);
+   r300_pm4_emit_vertex_index_range(&b, 0, 2);
+   assert(b.error == -ENOSPC);
+   assert(b.count == 0);
+   assert(g.words[0] == 0 && g.words[1] == 0);
+   guards_hold(&g);
+
+   /* An error-latched builder stays a no-op, and a later malformed range
+    * does not overwrite the recorded cause.
+    */
+   r300_pm4_builder_init(&b, g.words, 0);
+   r300_pm4_dword(&b, 0xaa);
+   assert(b.error == -ENOSPC);
+   r300_pm4_emit_vertex_index_range(&b, 3, 2);
+   assert(b.error == -ENOSPC);
+   assert(b.count == 0);
+}
+
 int
 main(void)
 {
+   test_vertex_index_range();
    test_zero_capacity_refuses();
    test_reserve_is_exact();
    test_reserve_refuses_overflow();
