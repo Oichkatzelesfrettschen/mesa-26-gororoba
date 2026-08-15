@@ -20,6 +20,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <unistd.h>
 
 #include <radeon_drm.h>
 #include <vulkan/vulkan.h>
@@ -236,36 +237,15 @@ main(int argc, char **argv)
    if (attest_shim_provider() != 0)
       return 3;
 
-   char manifest_path[PATH_MAX];
-   const char *manifest_env = getenv("R3V_NATIVE_MANIFEST_DIR");
-   if (manifest_env == NULL || manifest_env[0] == '\0') {
-      const char *temporary_dir = getenv("TMPDIR");
-      if (temporary_dir == NULL || temporary_dir[0] == '\0')
-         temporary_dir = getenv("MESON_BUILD_ROOT");
-      if (temporary_dir == NULL || temporary_dir[0] == '\0')
-         temporary_dir = ".";
-
-      size_t temporary_dir_length = strlen(temporary_dir);
-      int template_length = snprintf(
-         manifest_path, sizeof(manifest_path), "%s%s%s",
-         temporary_dir,
-         temporary_dir[temporary_dir_length - 1] == '/' ? "" : "/",
-         "r3v-native-float2-tuple-XXXXXX");
-      if (template_length < 0 ||
-          (size_t)template_length >= sizeof(manifest_path) ||
-          mkdtemp(manifest_path) == NULL) {
-         fprintf(stderr, "manifest directory creation failed\n");
-         return 2;
-      }
-      setenv("R3V_NATIVE_MANIFEST_DIR", manifest_path, 1);
-   } else {
-      int manifest_length =
-         snprintf(manifest_path, sizeof(manifest_path), "%s", manifest_env);
-      if (manifest_length < 0 ||
-          (size_t)manifest_length >= sizeof(manifest_path)) {
-         fprintf(stderr, "manifest directory path is too long\n");
-         return 2;
-      }
+   char manifest_path[] = "/tmp/r3v-native-float2-tuple-XXXXXX";
+   if (mkdtemp(manifest_path) == NULL) {
+      fprintf(stderr, "manifest directory creation failed\n");
+      return 2;
+   }
+   if (setenv("R3V_NATIVE_MANIFEST_DIR", manifest_path, 1) != 0) {
+      fprintf(stderr, "manifest directory export failed\n");
+      rmdir(manifest_path);
+      return 2;
    }
    const char *manifest_dir = manifest_path;
 

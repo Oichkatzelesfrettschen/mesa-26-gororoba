@@ -995,6 +995,19 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+    # The harness owns a fresh manifest directory, so inherited evidence
+    # paths cannot supply stale fixed-name artifacts to its verdict.
+    test(
+      'r3v-native-float2-tuple-cell-external-manifest-ignored',
+      r3v_native_float2_tuple_cell_harness,
+      args : ['closed'],
+      env : environment(r3v_native_cell_vars + {
+        'R3V_NATIVE_MANIFEST_DIR' : meson.current_build_dir(),
+      }),
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
 
     # Direct-write control harness on the same shim fixture: the 2D
     # solid-fill cell through the same recorder/queue/retention path,

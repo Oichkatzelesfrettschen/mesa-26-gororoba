@@ -64,6 +64,7 @@ R3V_FLOAT2_TUPLE_REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-float2-tuple-cell-closed",
     "r3v-native-float2-tuple-cell-open",
     "r3v-native-float2-tuple-cell-geometry",
+    "r3v-native-float2-tuple-cell-external-manifest-ignored",
 )
 
 FLOAT2_TUPLE_REQUIRED_TESTS = (
