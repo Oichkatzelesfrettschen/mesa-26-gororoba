@@ -88,3 +88,20 @@ vertex stream judges containment on the fetch source; only
 vertex intact, fence completed -- exits zero.  The retained record adds
 `vertex.bin` and `float2_tuple_outcome.json` beside the producer
 record's artifacts.
+
+## Executed run
+
+The cell ran on RS482 on 2026-08-15 from main `cbe9d2597cd` (IB blake3
+`320b2a819e6f46c5de824c4f4e09829a0861d36787a2799fec9bde6c540694a7`,
+298 dwords, digest identical across the dev host and the box) and
+returned `CARRIER_DELIVERED`: all three slots hold the XY01 expansion
+byte-exact -- (8.0, 0.75, 0.0, 1.0), (56.0, 1.0, 0.0, 1.0),
+(999.0, 2.0, 0.0, 1.0) -- with `expected_pass=1 tail_poison_pass=1
+vertex_intact=1 mismatched=0`, empty dmesg delta, fence retired.  The
+PSC synthesized-lane expansion of a fetched FLOAT_2 element holds on
+silicon; compact vertex formats under the XY01 selector are usable on
+this chip.  The release-build preflight for this run surfaced the
+producer-cell host test's NDEBUG assert-erasure segfault, fixed in
+`cbe9d2597cd` before arming.  The retained record lives in the
+`steinmarder-r300` bundle
+`results/r3v-native-float2-tuple-xy01-delivery-rs482/`.
