@@ -119,7 +119,27 @@ The parent workspace has two durable source roots.
 - `mesa-26-gororoba/` owns Mesa source: Terakan, r300g, r600g, NIR/compiler code, and Meson/build/install infrastructure.
 - `steinmarder/` owns reverse-engineering runners, retained evidence, findings, manifests, host kits, safety policy, and cross-repo orchestration.
 
-`mesa-26-gororoba-*` directories are temporary Git worktrees of `mesa-26-gororoba/`, not separate projects. Worktree changes land through a branch, review, and merge to `main`. Remove a temporary worktree after its branch is merged or superseded, and remove it through `git worktree remove` plus `git worktree prune` so the admin entry dies with the checkout. Teardown covers the worktree's whole footprint: the out-of-tree Meson build directory named after it, any preservation copies or patch snapshots taken from it, and its scratch logs. Before removal, verify the checkout is clean and its HEAD is reachable from a pushed ref; a dirty or unreachable state gets committed to a mechanism-named branch or retained in the steinmarder preservation corpus first. A worktree of another repository dies the same way from its own parent repository; a parent repository that moves on disk orphans its worktrees, so `git worktree repair` runs after any repository move.
+`mesa-26-gororoba-*` directories are temporary Git worktrees of
+`mesa-26-gororoba/`, not separate projects. Worktree changes land through a
+branch, review, and merge to `main`. A temporary worktree leaves service after
+its branch is merged or superseded. Teardown follows this order:
+
+- Verify that the checkout is clean and its HEAD is reachable from a pushed
+  ref. Commit dirty or unreachable state to a branch named for its mechanism,
+  or retain it as evidence in the `steinmarder` preservation corpus.
+- Run `git worktree remove <path>` from the worktree's parent repository and
+  confirm that the named checkout leaves `git worktree list --porcelain`.
+- Remove the out-of-tree Meson build directory named after the checkout,
+  transient patch snapshots or recovery copies, and scratch logs. Durable
+  evidence in the `steinmarder` preservation corpus remains under its
+  retention contract.
+
+`git worktree prune` is repository-wide maintenance. Start with
+`git worktree prune --dry-run --verbose`, classify every candidate, and prune
+only after every reported administrative entry is approved for removal. A
+worktree of another repository leaves service through its own parent
+repository. A parent repository move orphans absolute worktree pointers, so
+`git worktree repair` runs after the move.
 
 Repo contents keep their home roots: steinmarder evidence bundles and findings live in `steinmarder/`, and Mesa driver changes live in Mesa. A Mesa fix may use steinmarder evidence, but the code lands in Mesa. Cross-repo work travels through sibling checkouts and PRs; every file keeps its home repository.
 
