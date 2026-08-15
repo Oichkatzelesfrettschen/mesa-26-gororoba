@@ -155,6 +155,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-source-header-audit-selftest",
     "r3v-source-header-audit-known-bad-missing-spdx",
     "r3v-source-header-audit-known-bad-invented-copyright",
+    "r3v-source-header-audit-known-bad-invented-project-collective-copyright",
     "r3v-source-header-audit-known-bad-ai-disclosure",
     # Radeon DRM transport and shim admission.
     "radeon-drm-vk-bo",

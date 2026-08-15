@@ -12,9 +12,8 @@ appears only for a holder who does.  The names a template supplies -- the
 local git identity, a model's default, an invented project collective --
 assert authorship that does not exist, and absent attribution is the correct
 state for a file with no such holder.  REAL_COPYRIGHT_HOLDERS is the reviewed
-list of holders whose lines this tree preserves verbatim.  The list names the
-Mesa3D authorship line used by the route-policy files; a file arriving with
-another upstream header joins the list by review.
+list of upstream holders whose lines this tree preserves verbatim.  A file
+arriving with another upstream header joins the list by review.
 
 AI participation rides in commit trailers (Assisted-by, Generated-by), so a
 header naming a model or a generation tool states it in the wrong artifact.
@@ -34,10 +33,9 @@ from pathlib import Path
 SUFFIXES = (".c", ".h", ".py")
 
 # Lines a header may carry that name a holder.  Each entry is a holder this
-# tree preserves verbatim because the project attribution is reviewed for
+# tree preserves verbatim because the upstream attribution is reviewed for
 # files in this lane.
 REAL_COPYRIGHT_HOLDERS: tuple[str, ...] = (
-    "Mesa3D authors",
     # r300_reg.h carries its upstream register-header attribution verbatim
     # through the move into src/amd/r300/common.
     "Nicolai Haehnle et al.",
@@ -168,6 +166,10 @@ FIXTURES = {
         "/* SPDX-License-Identifier: MIT */",
         "/* SPDX-License-Identifier: MIT\n"
         " * Copyright (c) 2026 the example project\n */"),
+    "invented-project-collective-copyright": CLEAN_HEADER.replace(
+        "/* SPDX-License-Identifier: MIT */",
+        "/* SPDX-License-Identifier: MIT\n"
+        " * Copyright 2026 " "Mesa3D authors\n */"),
     "unreviewed-copyright-suffix": CLEAN_HEADER.replace(
         "/* SPDX-License-Identifier: MIT */",
         "/* SPDX-License-Identifier: MIT\n"
@@ -197,6 +199,8 @@ FIXTURE_PREDICATES = {
     "spdx-colon-prose": "no SPDX-License-Identifier",
     "spdx-trailing-prose": "no SPDX-License-Identifier",
     "invented-copyright": "copyright line names an unreviewed holder",
+    "invented-project-collective-copyright":
+        "copyright line names an unreviewed holder",
     "unreviewed-copyright-suffix": "copyright line names an unreviewed holder",
     "ai-disclosure": "AI disclosure belongs in a commit trailer",
     "ai-assisted-by-trailer": "AI disclosure belongs in a commit trailer",
@@ -228,9 +232,9 @@ def selftest():
     if clean_defects:
         raise AssertionError(("clean", clean_defects))
     reviewed_headers = {
-        "reviewed-copyright": "Copyright (c) 2026   Mesa3D authors",
-        "reviewed-copyright-sign": "Copyright \u00a9 2026 Mesa3D authors",
-        "reviewed-copyright-comma": "Copyright (c) 2026, Mesa3D authors",
+        "reviewed-copyright": "Copyright (c) 2008   Nicolai Haehnle et al.",
+        "reviewed-copyright-sign": "Copyright \u00a9 2008 Nicolai Haehnle et al.",
+        "reviewed-copyright-comma": "Copyright (c) 2008, Nicolai Haehnle et al.",
     }
     for name, line in reviewed_headers.items():
         reviewed_header = CLEAN_HEADER.replace(

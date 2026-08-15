@@ -1,4 +1,3 @@
-# Copyright 2026 Mesa3D authors
 # SPDX-License-Identifier: MIT
 """Validate the Terakan soft-fp64 construction and teardown contract.
 

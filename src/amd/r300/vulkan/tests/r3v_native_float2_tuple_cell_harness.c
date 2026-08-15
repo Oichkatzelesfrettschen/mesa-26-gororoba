@@ -1,5 +1,4 @@
 /*
- * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  *
  * Drives the fetched FLOAT_4 + FLOAT_2 tuple cell through the native ICD

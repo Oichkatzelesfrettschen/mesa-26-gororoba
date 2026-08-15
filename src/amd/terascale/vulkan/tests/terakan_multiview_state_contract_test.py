@@ -1,4 +1,3 @@
-# Copyright 2026 Mesa3D authors
 # SPDX-License-Identifier: MIT
 """Validate the single-view view-index state contract in the draw paths.
 

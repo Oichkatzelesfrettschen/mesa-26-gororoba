@@ -1,5 +1,4 @@
 /*
- * Copyright 2026 Mesa3D authors
  * SPDX-License-Identifier: MIT
  *
  * Six-dword FLOAT_4 + FLOAT_2 producer tuple, captured without submit
