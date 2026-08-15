@@ -10,6 +10,7 @@
 #include "r3v_native_identity.h"
 #include "r3v_physical_device.h"
 
+#include "amd/r300/common/r300_r2vb_float2_tuple_pass.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_r2vb_reingest_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
@@ -194,6 +195,37 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
          return true;
       return color->memory == NULL ||
              color->memory->bo.size != R3V_NATIVE_TARGET_MEMORY_BYTES;
+   }
+   case R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE: {
+      /* The tuple cell binds the producer's carrier row and the fetched
+       * vertex BO: the carrier crosses the color backend and the frozen
+       * fetch declaration, so its relocation carries the GTT domain in
+       * both directions, and the vertex BO is device-read alone, sized
+       * to the reference records' two fetch arrays.
+       */
+      uint32_t carrier_bytes;
+      if (r3v_native_producer_carrier_bytes(&carrier_bytes) != 0)
+         return true;
+      if (cmd_buffer->reference_count != R300_R2VB_FLOAT2_TUPLE_SLOT_COUNT)
+         return true;
+      const struct r3v_native_bo_reference *carrier =
+         &cmd_buffer->references[R300_R2VB_FLOAT2_TUPLE_SLOT_CARRIER];
+      const struct r3v_native_bo_reference *vertex =
+         &cmd_buffer->references[R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX];
+      if (carrier->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          carrier->write_domain != RADEON_GEM_DOMAIN_GTT)
+         return true;
+      if (carrier->memory == NULL ||
+          carrier->memory->bo.size != carrier_bytes)
+         return true;
+      if (vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          vertex->write_domain != 0)
+         return true;
+      return vertex->memory == NULL ||
+             vertex->memory->bo.size !=
+                R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *
+                   (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
+                    R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES);
    }
    case R3V_NATIVE_CELL_KIND_UNDECLARED:
    default:

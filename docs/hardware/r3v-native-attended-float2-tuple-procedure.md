@@ -1,0 +1,90 @@
+# R3V native attended FLOAT_4 + FLOAT_2 tuple cell procedure
+
+The fetched tuple cell is the hardware-ladder step that proves the PSC
+synthesized-lane expansion on silicon: the vertex data arrives through a
+two-array `3D_LOAD_VBPNTR` -- a FLOAT_4 slot-position array and a
+FLOAT_2 model array, six fetched dwords per vertex -- and the model
+element's XY01 selector asks the hardware to expand each two-dword
+record to the logical input (x, y, 0, 1) before the RS routes it to the
+US and the color backend stores it into the poisoned carrier.  The
+producer cell proved the carrier write from an embedded draw body and
+the re-ingest cell proved the fetch of GPU-written FLOAT_4 data; this
+cell changes exactly one mechanism, the fetch declaration, so the one
+open question is the silicon's expansion of a synthesized-lane FLOAT_2
+element.
+
+The offline kernel-parser replay accepts the stream under the
+synthesized-lane width validator (`VAP_VTX_SIZE` equals the summed
+fetch widths, six dwords), and the deployed module's parser leaves the
+PSC registers unchecked, so kernel acceptance follows a fortiori; the
+carrier bytes decide the silicon question the validators cannot.
+
+`docs/hardware/r3v-native-attended-cell-procedure.md` carries the
+boundary statement, the host preconditions, the identity freeze, the
+arming conjunction, the rollback rules, and the retained-record layout;
+this document adds only what the tuple cell changes.
+
+## Cell identity
+
+- Runner: `r3v_native_attended_float2_tuple` (native backend build).
+- Recorder: `r3v_native_record_r2vb_float2_tuple`; the installed IB is
+  byte-identical to `r300_r2vb_float2_tuple_reference_emit`, and the
+  arming digest binds to that stream.
+- Arming digest source: `r3v_native_float2_tuple_arming_runner` builds
+  the stream without submitting, reports the `ib_blake3` an
+  authorization declares, and evaluates the full conjunction for the
+  tuple cell kind.
+- Cell kind: `R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE`.  The arming
+  gate's geometry predicate requires two references: the carrier equal
+  to the producer reference layout footprint with the GTT domain in
+  both directions, and the vertex BO device-read alone, sized to the
+  reference records' two fetch arrays (three slot positions at sixteen
+  bytes plus three model records at eight).
+- Buffers: the carrier at relocation entry 0, prefilled with
+  `R300_R2VB_PRODUCER_POISON_DWORD`; the vertex stream at entry 1,
+  host-written by the recorder through
+  `r300_r2vb_float2_tuple_vertex_stream`; both cache-published before
+  submission.
+
+## Predictions
+
+Recorded before the run; deviation is the finding.
+
+1. The kernel CS parser accepts the stream (the offline replay reports
+   `relocs=2 draws=1 verdict=ACCEPT`, and the width-predicate census
+   reports `draws=1 pass=1 reject=0 decline=0`), the fence retires, and
+   dmesg carries no radeon validation delta.
+2. The carrier's expected extent holds the XY01 expansion of each model
+   record byte-exact -- slot v reads (x_v, y_v, 0x00000000, 0x3f800000)
+   -- and every dword past it keeps poison.  Slot 0 is
+   `41000000 3f400000 00000000 3f800000` (8.0, 0.75, +0.0, 1.0).
+3. The vertex allocation reads back byte-identical to the serialized
+   stream: the fetch source takes no device write.
+
+## Falsifiers
+
+- Carrier poison across the expected extent: the fetched pass did not
+  execute or the fetch declaration kept the draw from running
+  (`CARRIER_UNWRITTEN`); the retained submit object and dmesg pair
+  decide which boundary stopped it.
+- Carrier delivered with wrong lane content (`CARRIER_MISMATCH`): the
+  XY01 expansion itself is the finding -- z not +0.0 or w not 1.0
+  names the synthesized lanes, x or y wrong names the FLOAT_2 fetch or
+  the stride walk, and a slot holding another record's values names
+  the per-vertex addressing.  This is the class the cell exists to
+  decide, and the retained carrier bytes carry the whole signature.
+- Poison disturbed past the carrier extent or any changed vertex byte:
+  containment failure; the run stops until the overrun is explained.
+- A dmesg validation delta or an unretired fence: kernel-boundary
+  finding; the wedged state is preserved and the host is
+  cold-power-cycled rather than resubmitted.
+
+## Verdict
+
+`r300_r2vb_producer_carrier_check` judges the carrier against the XY01
+delivery identity, and the byte comparison against the re-serialized
+vertex stream judges containment on the fetch source; only
+`CARRIER_DELIVERED` -- expected extent exact, tail poison intact,
+vertex intact, fence completed -- exits zero.  The retained record adds
+`vertex.bin` and `float2_tuple_outcome.json` beside the producer
+record's artifacts.
