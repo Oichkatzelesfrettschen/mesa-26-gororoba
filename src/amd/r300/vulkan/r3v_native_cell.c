@@ -406,11 +406,28 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       struct r300_delivery_route_decision route_decision;
       r300_delivery_route_resolve(
          getenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL"),
+         getenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL"),
          stream.format_id, &route_decision);
+      /* The GPU producer route names a device-side delivery this
+       * deferred draw cannot execute: live producer submission routes
+       * only through the operator-armed attended surface.  The exact
+       * double opt-in therefore refuses the draw by name instead of
+       * downgrading to a host copy the caller did not select.
+       */
+      if (route_decision.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER) {
+         result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                            "r3v-native: %s; live producer submission "
+                            "routes through the attended cell surface",
+                            route_decision.reason);
+      }
       const bool r2vb_route =
          route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL;
-      int gathered;
-      if (r2vb_route) {
+      int gathered = 0;
+      if (result != VK_SUCCESS) {
+         /* The refused route delivers nothing; the shared unmap and
+          * error paths below still run.
+          */
+      } else if (r2vb_route) {
          gathered = r300_r2vb_identity_deliver(
             stream.format_id, &source, stream.first_vertex,
             R300_TRIANGLE_VERTEX_DWORDS / 4, carrier->map,

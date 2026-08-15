@@ -80,15 +80,27 @@ The current live path:
 - keeps final delivery at FP32x4;
 - has no kernel validation claim for synthesized `XY01` lanes.
 
-## Next integration step
+## Validator agreement
 
-Extend the userspace and kernel synthesized-lane validators from
-identity-only PSC to the explicit per-format selector contract
-(`FLOAT_2 -> X, Y, ZERO, ONE`), keeping `semantic_end` and `hardware_end`
-distinct. The kernel counterpart (VAP_PROG_STREAM_CNTL(_EXT), VAP_VTX_SIZE,
-and LOAD_VBPNTR acceptance of the `FLOAT_2 + XY01 + vtx_size 6` tuple) lands
-in the Radeon kernel source repository.
+The kernel synthesized-lane validator decodes the PSC element list in
+`r300_tcl_bypass_vtx_check.h` (linux-radeon-gororoba): VAP_PROG_STREAM_CNTL
+words are tracked per register, elements walk through `LAST_VEC`, the
+identity selector keeps the anchored VTX_SIZE-as-delivered arithmetic, and
+a `FLOAT_2 + XY01` element requires VAP_VTX_SIZE to equal the summed fetch
+widths -- six for the `FLOAT_4 + FLOAT_2` tuple -- with delivery counted
+as full four-lane vectors.
 
-Automatic live promotion remains disabled until userspace and kernel validators
-agree on the synthesized-lane contract and a bounded RS480-family silicon
-ladder supplies source, output, and kernel-window evidence.
+The userspace counterpart is the fetched tuple pass
+(`r300_r2vb_float2_tuple_pass.c`): a two-array `3D_LOAD_VBPNTR` fetch (the
+FLOAT_4 slot array and the FLOAT_2 model array), the two-element PSC tuple
+with the XY01 selector, VAP_VTX_SIZE 6, and a vertex-list POINTS draw into
+the producer carrier through the straight RGBA C4_32_FP select, so the
+expected carrier slot is the XY01 expansion `(x, y, 0.0, 1.0)` per record.
+`r300-r2vb-float2-tuple-replay` proves the agreement offline: the kernel
+replay accepts the stream with its three relocations, the width predicate
+passes the tuple, and the undersized-VTX_SIZE arm rejects through the same
+predicate.
+
+Automatic live promotion remains disabled until a bounded RS480-family
+silicon ladder supplies source, output, and kernel-window evidence; the
+attended tuple cell is that ladder's next step.

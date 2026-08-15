@@ -150,6 +150,52 @@ test(
   suite : ['r300'],
 )
 
+r300_r2vb_float2_tuple_pass_test = executable(
+  'r300_r2vb_float2_tuple_pass_test',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
+        'r300_r2vb_float2_tuple_pass.c', 'r300_r2vb_producer_pass.c',
+        'r300_tcl_bypass_triangle.c',
+        'tests/r300_r2vb_float2_tuple_pass_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-r2vb-float2-tuple-pass',
+  r300_r2vb_float2_tuple_pass_test,
+  suite : ['r300'],
+)
+
+# Manifest writer for the FLOAT_4 + FLOAT_2 tuple pass; the offline
+# replay drives it.
+r300_r2vb_float2_tuple_manifest = executable(
+  'r300_r2vb_float2_tuple_manifest',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
+        'r300_r2vb_float2_tuple_manifest.c',
+        'r300_r2vb_float2_tuple_pass.c', 'r300_r2vb_producer_pass.c',
+        'r300_tcl_bypass_triangle.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+
+# Offline kernel replay of the tuple pass, gated on
+# R3V_CS_TRACK_REPLAY_TOOL; R3V_KERNEL_REPLAY_TOOL adds the TCL-bypass
+# width predicate, which must PASS the fetched FLOAT_2 + XY01 +
+# vtx_size 6 tuple -- the userspace/kernel validator agreement point.
+test(
+  'r300-r2vb-float2-tuple-replay',
+  files('tests/run_r2vb_float2_tuple_replay.sh')[0],
+  args : [r300_r2vb_float2_tuple_manifest],
+  suite : ['r300'],
+)
+
 # The producer writer's artifacts are checked against each other and against
 # the emitted VAP tuple.  Calibration mutants keep a malformed retained
 # manifest from becoming a green replay-only result.

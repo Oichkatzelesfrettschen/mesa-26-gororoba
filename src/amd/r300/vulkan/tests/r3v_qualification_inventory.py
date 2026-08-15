@@ -69,6 +69,8 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-r2vb-producer-replay",
     "r300-r2vb-producer-fp24-sweep-replay",
     "r300-r2vb-producer-fp24-bisect-replay",
+    "r300-r2vb-float2-tuple-pass",
+    "r300-r2vb-float2-tuple-replay",
     "r300-r2vb-reingest-pass",
     "r300-r2vb-reingest-replay",
     "r300-tcl-bypass-fs-block-regeneration",
