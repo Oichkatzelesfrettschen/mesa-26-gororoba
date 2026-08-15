@@ -9,12 +9,14 @@
 #include <string.h>
 
 void
-r300_delivery_route_resolve(const char *gate_value, int format_id,
+r300_delivery_route_resolve(const char *gate_value,
+                            const char *gpu_gate_value, int format_id,
                             struct r300_delivery_route_decision *out)
 {
-   /* Every present route copies application values into the carrier,
-    * so the decision declares clip space once here; a device-side
-    * producer route sets WINDOW at its own selection clause.
+   /* The host-side routes copy application values into the carrier, so
+    * the decision declares clip space here; the GPU producer clause
+    * declares WINDOW because the device pass rasterizes transformed
+    * slot positions and the consumer binds the carrier untransformed.
     */
    out->position_space = R300_CARRIER_POSITION_CLIP;
    if (gate_value == NULL || strcmp(gate_value, "1") != 0) {
@@ -29,6 +31,14 @@ r300_delivery_route_resolve(const char *gate_value, int format_id,
       out->route = R300_DELIVERY_ROUTE_CPU;
       out->reason = "CPU gather; the R2VB host model delivers F32_4, "
                     "F32_3, and F32_2 alone";
+      return;
+   }
+   if (gpu_gate_value != NULL && strcmp(gpu_gate_value, "1") == 0 &&
+       format_id == R300_VERTEX_FORMAT_F32_4) {
+      out->route = R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER;
+      out->position_space = R300_CARRIER_POSITION_WINDOW;
+      out->reason = "R2VB GPU producer by exact experimental opt-in; "
+                    "F32_4 identity delivery holds on RS482 silicon";
       return;
    }
    out->route = R300_DELIVERY_ROUTE_R2VB_HOST_MODEL;

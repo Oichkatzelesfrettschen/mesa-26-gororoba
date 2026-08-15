@@ -1,0 +1,468 @@
+/* SPDX-License-Identifier: MIT */
+
+#include "r300_r2vb_float2_tuple_pass.h"
+#include "r300_first_draw_state.h"
+#include "r300_fragment_binary.h"
+#include "r300_pm4_builder.h"
+#include "r300_r2vb_carrier_delivery.h"
+#include "r300_r2vb_producer_pass.h"
+
+#include "r300_reg.h"
+#include "util/macros.h"
+
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Four dwords per drm_radeon_cs_reloc entry, so a slot's payload indexes
+ * the relocation chunk at four times the slot.
+ */
+#define TUPLE_RELOC_PAYLOAD(slot) ((slot) * 4)
+
+/* Prologue, varying routing, fetch and draw framing, and publication
+ * tail; the emission bound adds the contract prefix and the fragment
+ * binary's US block on top.  The fetched draw embeds no vertex body.
+ */
+#define TUPLE_FIXED_MAX_DWORDS 120u
+
+/* The fetched input tuple places the FLOAT_4 slot position in VAP vector
+ * 0 and the FLOAT_2 model element in vector 6, terminating the fetch.
+ * The XY01 selector expands the model fetch to (x, y, 0, 1); the slot
+ * element keeps the identity swizzle.
+ */
+#define TUPLE_PSC_SLOT_VEC 0u
+#define TUPLE_PSC_MODEL_VEC 6u
+
+static const uint32_t tuple_psc[8] = {
+   (R300_DATA_TYPE_FLOAT_4 | (TUPLE_PSC_SLOT_VEC << R300_DST_VEC_LOC_SHIFT)) |
+      ((R300_DATA_TYPE_FLOAT_2 |
+        (TUPLE_PSC_MODEL_VEC << R300_DST_VEC_LOC_SHIFT) | R300_LAST_VEC)
+       << 16),
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+};
+
+static const uint32_t tuple_psc_ext[8] = {
+   R300_VAP_SWIZZLE_XYZW | (R300_VAP_SWIZZLE_XY01 << 16),
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+};
+
+static uint32_t
+float_bits(float f)
+{
+   uint32_t bits;
+   memcpy(&bits, &f, sizeof(bits));
+   return bits;
+}
+
+static void
+write_reloc(struct r300_pm4_builder *b,
+            struct r300_r2vb_float2_tuple_ib *out, uint32_t slot)
+{
+   if (b->error != 0)
+      return;
+   if (slot >= R300_R2VB_FLOAT2_TUPLE_SLOT_COUNT ||
+       out->reloc_site_count >= R300_R2VB_FLOAT2_TUPLE_RELOC_SITES) {
+      b->error = -EINVAL;
+      return;
+   }
+
+   const uint32_t index =
+      r300_pm4_reloc_nop(b, TUPLE_RELOC_PAYLOAD(slot));
+   if (index == R300_PM4_NO_INDEX)
+      return;
+
+   out->reloc_sites[out->reloc_site_count++] =
+      (struct r300_r2vb_float2_tuple_reloc_site){
+         .ib_index = index,
+         .slot = slot,
+      };
+}
+
+int
+r300_r2vb_float2_tuple_vertex_stream(const float (*records)[2],
+                                     uint32_t count, uint8_t *vertex_bytes,
+                                     uint32_t vertex_capacity_bytes)
+{
+   if (records == NULL || vertex_bytes == NULL || count < 1 ||
+       count > R300_R2VB_PRODUCER_MAX_COUNT)
+      return -EINVAL;
+   const uint32_t needed =
+      count * (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
+               R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES);
+   if (vertex_capacity_bytes < needed)
+      return -ENOSPC;
+
+   uint8_t *p = vertex_bytes;
+   for (uint32_t v = 0; v < count; v++) {
+      const uint32_t slot[4] = {
+         float_bits((float)v + 0.5f),
+         float_bits(0.5f),
+         float_bits(0.0f),
+         float_bits(1.0f),
+      };
+      for (uint32_t c = 0; c < 4; c++) {
+         p[0] = (uint8_t)slot[c];
+         p[1] = (uint8_t)(slot[c] >> 8);
+         p[2] = (uint8_t)(slot[c] >> 16);
+         p[3] = (uint8_t)(slot[c] >> 24);
+         p += 4;
+      }
+   }
+   for (uint32_t v = 0; v < count; v++) {
+      for (uint32_t c = 0; c < 2; c++) {
+         const uint32_t bits = float_bits(records[v][c]);
+         p[0] = (uint8_t)bits;
+         p[1] = (uint8_t)(bits >> 8);
+         p[2] = (uint8_t)(bits >> 16);
+         p[3] = (uint8_t)(bits >> 24);
+         p += 4;
+      }
+   }
+   return 0;
+}
+
+int
+r300_r2vb_float2_tuple_expected(const float (*records)[2], uint32_t count,
+                                uint32_t *expected,
+                                uint32_t expected_dwords)
+{
+   if (records == NULL || expected == NULL || count < 1 ||
+       count > R300_R2VB_PRODUCER_MAX_COUNT)
+      return -EINVAL;
+   if (expected_dwords < count * 4)
+      return -ENOSPC;
+   for (uint32_t v = 0; v < count; v++) {
+      for (uint32_t c = 0; c < 2; c++) {
+         const uint32_t bits = float_bits(records[v][c]);
+         if (!r300_r2vb_fp24_identity_admits(bits))
+            return -EDOM;
+         expected[v * 4 + c] = bits;
+      }
+      expected[v * 4 + 2] = 0;
+      expected[v * 4 + 3] = float_bits(1.0f);
+   }
+   return 0;
+}
+
+int
+r300_r2vb_float2_tuple_pass_emit(
+   const struct r300_r2vb_float2_tuple_params *params,
+   struct r300_r2vb_float2_tuple_ib *out)
+{
+   const struct r300_fragment_binary *fs = params->fragment_binary;
+
+   memset(out, 0, sizeof(*out));
+   if (params->records == NULL || params->count < 1 ||
+       params->count > R300_R2VB_PRODUCER_MAX_COUNT)
+      return -EINVAL;
+   if (fs == NULL || !fs->validated)
+      return -EINVAL;
+
+   struct r300_r2vb_producer_layout layout;
+   int rc = r300_r2vb_producer_layout_single_row(params->count, &layout);
+   if (rc != 0)
+      return rc;
+
+   /* All-or-nothing FP24 domain scan over the model components; the
+    * synthesized 0.0 and 1.0 lanes are fixed points by construction.
+    */
+   for (uint32_t v = 0; v < params->count; v++) {
+      for (uint32_t c = 0; c < 2; c++) {
+         if (!r300_r2vb_fp24_identity_admits(
+                float_bits(params->records[v][c])))
+            return -EDOM;
+      }
+   }
+
+   uint32_t capacity = TUPLE_FIXED_MAX_DWORDS + fs->cb_code_size;
+   if (params->first_draw_contract != NULL)
+      capacity +=
+         r300_first_draw_state_dwords(params->first_draw_contract);
+
+   uint32_t *words = calloc(capacity, sizeof(uint32_t));
+   if (words == NULL)
+      return -ENOMEM;
+
+   struct r300_pm4_builder b;
+   r300_pm4_builder_init(&b, words, capacity);
+
+   if (params->first_draw_contract != NULL && b.error == 0) {
+      const uint32_t state_dwords =
+         r300_first_draw_state_dwords(params->first_draw_contract);
+      if (r300_pm4_builder_reserve(&b, state_dwords)) {
+         const int emitted = r300_first_draw_state_emit(
+            params->first_draw_contract, &b.words[b.count], state_dwords);
+         if (emitted < 0)
+            b.error = emitted;
+         else if ((uint32_t)emitted != state_dwords)
+            b.error = -EINVAL;
+         else
+            b.count += state_dwords;
+      }
+   }
+
+   /* Target prologue, carrier retarget, and color backend exactly as the
+    * immediate producer emits them, except the output select: the model
+    * varying arrives in source order (x, y, 0, 1) from the PSC
+    * expansion, so the straight RGBA select stores it unchanged.
+    */
+   r300_pm4_reg(&b, R300_ZB_CNTL, 0);
+   static const uint32_t mspos[2] = { 0x66666666, 0x06666666 };
+   r300_pm4_packet0(&b, R300_GB_MSPOS0, mspos, ARRAY_SIZE(mspos));
+   r300_pm4_reg(&b, R300_GB_AA_CONFIG, R300_GB_AA_CONFIG_AA_DISABLE);
+   r300_pm4_reg(&b, R300_RB3D_AARESOLVE_CTL, 0);
+   r300_pm4_reg(&b, R300_SC_SCREENDOOR, 0x00ffffff);
+   const uint32_t scissors[2] = {
+      (1440u << R300_SCISSORS_X_SHIFT) | (1440u << R300_SCISSORS_Y_SHIFT),
+      ((layout.width + 1440u - 1u) << R300_SCISSORS_X_SHIFT) |
+         ((layout.height + 1440u - 1u) << R300_SCISSORS_Y_SHIFT),
+   };
+   r300_pm4_packet0(&b, R300_SC_SCISSORS_TL, scissors,
+                    ARRAY_SIZE(scissors));
+
+   r300_pm4_reg(&b, R300_ZB_ZCACHE_CTLSTAT,
+                R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                   R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+   r300_pm4_reg(&b, R300_RB3D_DSTCACHE_CTLSTAT,
+                R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+   r300_pm4_reg(&b, RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+
+   r300_pm4_reg(&b, R300_RB3D_CCTL, 0);
+   r300_pm4_reg(&b, R300_RB3D_COLOROFFSET0, params->carrier_offset);
+   write_reloc(&b, out, R300_R2VB_FLOAT2_TUPLE_SLOT_CARRIER);
+   r300_pm4_reg(&b, R300_RB3D_COLORPITCH0,
+                layout.pitch_pixels | R300_COLOR_FORMAT_ARGB32323232);
+
+   const uint32_t us_out_fmt[4] = {
+      R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_R | R300_C1_SEL_G |
+         R300_C2_SEL_B | R300_C3_SEL_A,
+      R300_US_OUT_FMT_UNUSED,
+      R300_US_OUT_FMT_UNUSED,
+      R300_US_OUT_FMT_UNUSED,
+   };
+   r300_pm4_packet0(&b, R300_US_OUT_FMT_0, us_out_fmt,
+                    ARRAY_SIZE(us_out_fmt));
+
+   r300_pm4_reg(&b, R300_RB3D_ROPCNTL, 0);
+   const uint32_t cblend[3] = {
+      0,
+      0,
+      RB3D_COLOR_CHANNEL_MASK_BLUE_MASK0 |
+         RB3D_COLOR_CHANNEL_MASK_GREEN_MASK0 |
+         RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
+         RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0,
+   };
+   r300_pm4_packet0(&b, R300_RB3D_CBLEND, cblend, ARRAY_SIZE(cblend));
+   r300_pm4_reg(&b, R300_RB3D_DITHER_CTL, 0);
+   r300_pm4_reg(&b, R300_FG_ALPHA_FUNC, R300_FG_ALPHA_FUNC_DISABLE);
+
+   r300_pm4_reg(&b, R300_SU_CULL_MODE, 0);
+   r300_pm4_reg(&b, R300_SC_CLIP_RULE, 0xFFFF);
+
+   r300_pm4_reg(&b, R300_GA_POINT_SIZE,
+                (6u << R300_POINTSIZE_Y_SHIFT) |
+                   (6u << R300_POINTSIZE_X_SHIFT));
+   r300_pm4_reg(&b, R300_GA_POINT_MINMAX,
+                (6u << R300_GA_POINT_MINMAX_MIN_SHIFT) |
+                   (6u << R300_GA_POINT_MINMAX_MAX_SHIFT));
+
+   r300_pm4_reg(&b, R300_VAP_CNTL_STATUS, R300_VAP_TCL_BYPASS);
+   r300_pm4_reg(&b, R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
+   r300_pm4_reg(&b, R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+
+   /* The two-element fetch tuple: FLOAT_4 identity plus FLOAT_2 XY01,
+    * six fetched dwords per vertex, position plus one four-component
+    * TEX0 output.  The zero tail keeps inherited elements out of the
+    * fetch; the kernel width check reads the same declaration.
+    */
+   r300_pm4_packet0(&b, R300_VAP_PROG_STREAM_CNTL_0, tuple_psc,
+                    ARRAY_SIZE(tuple_psc));
+   r300_pm4_packet0(&b, R300_VAP_PROG_STREAM_CNTL_EXT_0, tuple_psc_ext,
+                    ARRAY_SIZE(tuple_psc_ext));
+   r300_pm4_reg(&b, R300_VAP_VTX_SIZE,
+                R300_R2VB_FLOAT2_TUPLE_VTX_SIZE_DWORDS);
+   r300_pm4_reg(&b, R300_VAP_VTX_STATE_CNTL, 0x5555);
+   r300_pm4_reg(&b, R300_VAP_VSM_VTX_ASSM,
+                R300_INPUT_CNTL_POS | R300_INPUT_CNTL_TC0);
+   const uint32_t vap_output_fmt[2] = {
+      R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT,
+      R300_VAP_OUTPUT_VTX_FMT_1__4_COMPONENTS,
+   };
+   r300_pm4_packet0(&b, R300_VAP_OUTPUT_VTX_FMT_0, vap_output_fmt,
+                    ARRAY_SIZE(vap_output_fmt));
+
+   r300_pm4_reg(&b, R300_RS_COUNT,
+                R300_IT_COUNT(4) | R300_IC_COUNT(0) | R300_HIRES_EN);
+   r300_pm4_reg(&b, R300_RS_INST_COUNT, 0);
+   r300_pm4_reg(&b, R300_RS_IP_0,
+                R300_RS_TEX_PTR(0) | R300_RS_SEL_S(R300_RS_SEL_C0) |
+                   R300_RS_SEL_T(R300_RS_SEL_C1) |
+                   R300_RS_SEL_R(R300_RS_SEL_C2) |
+                   R300_RS_SEL_Q(R300_RS_SEL_C3));
+   r300_pm4_reg(&b, R300_RS_INST_0,
+                R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
+                   R300_RS_INST_TEX_ADDR(0));
+
+   r300_pm4_block(&b, fs->cb_code, fs->cb_code_size);
+   r300_pm4_reg(&b, R300_FG_DEPTH_SRC, fs->fg_depth_src);
+   r300_pm4_reg(&b, R300_US_W_FMT, fs->us_out_w);
+
+   r300_pm4_reg(&b, R300_VAP_VF_MAX_VTX_INDX, layout.count - 1);
+
+   /* Two-array vertex fetch: the FLOAT_4 slot array at the vertex
+    * offset, the FLOAT_2 model array behind it, one relocation per
+    * pointer, both resolving to the vertex BO.
+    */
+   const uint32_t model_offset =
+      params->vertex_offset +
+      params->count * R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES;
+   const uint32_t vbpntr[4] = {
+      2 | R300_VC_FORCE_PREFETCH,
+      R300_VBPNTR_SIZE0(R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES) |
+         R300_VBPNTR_STRIDE0(R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES) |
+         R300_VBPNTR_SIZE1(R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES) |
+         R300_VBPNTR_STRIDE1(R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES),
+      params->vertex_offset,
+      model_offset,
+   };
+   r300_pm4_packet3(&b, R300_PACKET3_3D_LOAD_VBPNTR, vbpntr,
+                    ARRAY_SIZE(vbpntr));
+   write_reloc(&b, out, R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX);
+   write_reloc(&b, out, R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX);
+
+   /* One vertex-list POINTS draw; the draw packet carries VAP_VF_CNTL. */
+   const uint32_t draw = R300_VAP_VF_CNTL__PRIM_POINTS |
+                         R300_PRIM_WALK_LIST |
+                         (layout.count << 16);
+   r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, &draw, 1);
+
+   /* Producer publication tail: color caches flushed, 3D idle-clean,
+    * VAP synchronized before any later fetch of the carrier.
+    */
+   r300_pm4_reg(&b, R300_ZB_ZCACHE_CTLSTAT,
+                R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                   R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+   r300_pm4_reg(&b, R300_RB3D_DSTCACHE_CTLSTAT,
+                R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+   r300_pm4_reg(&b, RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+   r300_pm4_reg(&b, R300_VAP_PVS_STATE_FLUSH_REG, 0);
+
+   rc = r300_pm4_builder_finish(&b, &out->ib_size_dwords);
+   if (rc != 0) {
+      free(words);
+      memset(out, 0, sizeof(*out));
+      return rc;
+   }
+   out->ib = words;
+   out->owns_ib = true;
+   return 0;
+}
+
+void
+r300_r2vb_float2_tuple_pass_release(struct r300_r2vb_float2_tuple_ib *ib)
+{
+   if (ib->owns_ib)
+      free(ib->ib);
+   memset(ib, 0, sizeof(*ib));
+}
+
+int
+r300_r2vb_float2_tuple_pass_validate_reloc_sites(
+   const struct r300_r2vb_float2_tuple_ib *ib)
+{
+   static const uint32_t expected_slots[R300_R2VB_FLOAT2_TUPLE_RELOC_SITES] = {
+      R300_R2VB_FLOAT2_TUPLE_SLOT_CARRIER,
+      R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX,
+      R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX,
+   };
+
+   if (ib->reloc_site_count != R300_R2VB_FLOAT2_TUPLE_RELOC_SITES)
+      return -EINVAL;
+
+   for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
+      const struct r300_r2vb_float2_tuple_reloc_site *site =
+         &ib->reloc_sites[i];
+      if (site->slot != expected_slots[i])
+         return -EINVAL;
+      if (site->ib_index == 0 || site->ib_index >= ib->ib_size_dwords)
+         return -ERANGE;
+      if (ib->ib[site->ib_index - 1] != CP_PACKET3(R300_PM4_PACKET3_NOP, 0))
+         return -EINVAL;
+      if (ib->ib[site->ib_index] != TUPLE_RELOC_PAYLOAD(site->slot))
+         return -EINVAL;
+   }
+   return 0;
+}
+
+/* The unit test pins each component to its binary32 encoding, so a
+ * literal drifting off the lattice fails calibration.
+ */
+const float r300_r2vb_float2_tuple_reference_records
+   [R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT][2] = {
+   { 8.0f, 0.75f },
+   { 56.0f, 1.0f },
+   { 999.0f, 2.0f },
+};
+
+int
+r300_r2vb_float2_tuple_reference_emit(struct r300_r2vb_float2_tuple_ib *out)
+{
+   memset(out, 0, sizeof(*out));
+
+   struct r300_r2vb_producer_layout layout;
+   int rc = r300_r2vb_producer_layout_single_row(
+      R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, &layout);
+   if (rc != 0)
+      return rc;
+
+   struct r300_first_draw_params draw_params = {
+      .chip_family = CHIP_RS480,
+      .width = layout.width,
+      .height = layout.height,
+      .max_vtx_index = layout.count - 1,
+      .texture_enabled = false,
+   };
+   struct r300_first_draw_contract contract;
+   rc = r300_first_draw_contract_resolve(&draw_params, &contract);
+   if (rc != 0)
+      return rc;
+
+   struct r300_fragment_binary fs;
+   rc = r300_r2vb_producer_reference_fs(&fs);
+   if (rc != 0)
+      return rc;
+   struct r300_r2vb_float2_tuple_params params = {
+      .carrier_offset = 0,
+      .vertex_offset = 0,
+      .count = R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT,
+      .records = r300_r2vb_float2_tuple_reference_records,
+      .first_draw_contract = &contract,
+      .fragment_binary = &fs,
+   };
+   rc = r300_r2vb_float2_tuple_pass_emit(&params, out);
+   r300_fragment_binary_finish(&fs);
+   return rc;
+}
+
+int
+r300_r2vb_float2_tuple_reference_expected(uint32_t *expected,
+                                          uint32_t expected_dwords)
+{
+   return r300_r2vb_float2_tuple_expected(
+      r300_r2vb_float2_tuple_reference_records,
+      R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, expected, expected_dwords);
+}

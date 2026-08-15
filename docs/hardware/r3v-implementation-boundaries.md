@@ -1410,13 +1410,19 @@ does not promote another.
     vertices -- so the GPU-write to vertex-fetch ordering holds on one
     submission (procedure and record in
     `docs/hardware/r3v-native-attended-reingest-procedure.md`).  The
-    remaining silicon ladder, in order: the twelve-dword
-    `FLOAT_4 + FLOAT_2` tuple cell (blocked on the
-    synthesized-lane validator extension recorded in
-    `docs/hardware/r300-r2vb-float2-source-contract.md`, whose kernel
-    counterpart lands in the radeon kernel source repository), and only
-    then the GPU value in `r300_delivery_route_resolve`.  Each staged cell
-    runs under its own operator-armed digest.
+    remaining silicon ladder, in order: the attended `FLOAT_4 + FLOAT_2`
+    tuple cell, then live GPU-route dispatch.  The offline halves are
+    landed: the kernel synthesized-lane validator decodes the PSC element
+    list and accepts the `FLOAT_2 + XY01 + vtx_size 6` tuple
+    (linux-radeon-gororoba `r300_tcl_bypass_vtx_check.h`), the fetched
+    tuple pass and its manifest replay prove the userspace/kernel
+    agreement offline (`r300-r2vb-float2-tuple-replay`, per
+    `docs/hardware/r300-r2vb-float2-source-contract.md`), and
+    `r300_delivery_route_resolve` carries the
+    `R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER` value behind the exact
+    double opt-in -- the deferred draw refuses it by name until live
+    producer submission joins the landed surface.  Each staged cell runs
+    under its own operator-armed digest.
 12. Extend native image, transfer, and resource-scoped synchronization
     semantics; the bounded linear transfer family and its host-order barrier
     contract are landed, while broader GPU-backed transfer semantics remain

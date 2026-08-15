@@ -470,10 +470,14 @@ main(void)
 {
    check_timeline_wait_consumption();
 
-   /* The gate stays closed by construction: recording is submit-free
-    * and this harness never opens the hazard environment.
+   /* The gates stay closed by construction: recording is submit-free,
+    * this harness never opens the hazard environment, and the delivery
+    * legs below open and close the R2VB gates around their own
+    * assertions, so an ambient value cannot reroute a leg.
     */
    unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+   unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
+   unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
 
    PFN_vkVoidFunction (*gipa)(VkInstance, const char *) =
       vk_icdGetInstanceProcAddr;
@@ -829,6 +833,20 @@ main(void)
    assert(vkEndCommandBuffer(constant_cmd) == VK_SUCCESS);
    VK_FROM_HANDLE(r3v_native_cmd_buffer, native_constant, constant_cmd);
    VK_FROM_HANDLE(r3v_native_device, constant_device, device);
+
+   /* The GPU producer route selected by the exact double opt-in names a
+    * delivery this deferred draw cannot execute, so it refuses by name
+    * instead of downgrading to a host copy; closing the gates restores
+    * the CPU route on the same recording.
+    */
+   assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+   assert(setenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+   assert(r3v_native_cmd_buffer_execute_deferred_draw(
+             constant_device, native_constant) ==
+          VK_ERROR_INITIALIZATION_FAILED);
+   assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+   assert(unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL") == 0);
+
    assert(r3v_native_cmd_buffer_execute_deferred_draw(
              constant_device, native_constant) == VK_SUCCESS);
    void *constant_carrier_map = NULL;
