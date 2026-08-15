@@ -1,15 +1,13 @@
 # R3V native attended re-ingest cell procedure
 
-The producer-plus-re-ingest cell is the hardware-ladder step that proves
-the GPU-write to vertex-fetch ordering on one submission: the reference
-producer pass writes the fixed triangle's three FLOAT_4 vertices into a
-poisoned GTT carrier, the publication tail retires the color write and
-syncs the engines, and the reference triangle draw re-binds that carrier
-through `3D_LOAD_VBPNTR` and renders into a sentinel-filled 64x64
-target. The producer cell proved the carrier write and the triangle cell
-proved the draw from a CPU-written vertex BO; this cell composes the two
-proven streams verbatim, so the one open mechanism is the fetch of
-GPU-written bytes.
+The producer-plus-re-ingest cell isolates GPU-write to vertex-fetch ordering
+on one submission: the reference producer pass writes the fixed triangle's
+three FLOAT_4 vertices into a poisoned GTT carrier, the publication tail
+retires the color write and syncs the engines, and the reference triangle
+draw re-binds that carrier through `3D_LOAD_VBPNTR` and renders into a
+sentinel-filled 64x64 target. The executed run below establishes this ordering
+for its recorded RS482 identity and exact concatenated stream. Public-route
+composition remains a separate mechanism.
 
 `docs/hardware/r3v-native-attended-cell-procedure.md` carries the
 boundary statement, the host preconditions, the identity freeze, the

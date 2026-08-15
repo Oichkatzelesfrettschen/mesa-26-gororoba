@@ -15,9 +15,11 @@ program. Submission sits behind a multi-factor arming conjunction with
 one-shot disarm, and both the semantic cell and the exact submit object
 retain as digest-bound evidence. Its evidence stands at the host-unit,
 build/link, no-submit PM4, offline kernel-parser, drm-shim host-model, and
-one-shot silicon classes: three attended armed records on RS482 exist. The
-first submitted the bare inherited-state cell and left the target at its
-sentinel fill; its kernel acceptance, retirement, and oracle are
+one-shot silicon classes. Foundational native-cell records and the
+procedure-linked R2VB records exist for their declared RS482 identities. The
+first foundational cell submitted the bare inherited-state stream and left
+the target at its sentinel fill; its kernel acceptance, retirement, and
+oracle are
 operator-observed because the runner output is not retained. The
 direct-write 2D control's retained outcome proves the transport carries
 device writes byte-exact through the same BO, cache, relocation, and
@@ -1002,10 +1004,10 @@ The landed mechanisms are:
   modeled formats, every refused input landing on the CPU route with a
   naming reason.  A production R2VB promotion is a measurement decision
   the resolver holds closed: it requires total draw latency measured on
-  silicon with live delivery -- producer submission, cache publication,
-  and the re-ingest stall included, gather time alone deciding nothing
-  -- and no such measurement exists while live R2VB submission remains
-  outside the landed surface.
+  silicon with public-route live delivery -- producer submission, cache
+  publication, and the re-ingest stall included, gather time alone deciding
+  nothing -- and no such measurement exists while public R2VB submission
+  remains outside the landed surface.
 - the R2VB producer-pass PM4 emitter (`r300_r2vb_producer_pass`): the
   raster pass that writes an F32_4 carrier through the color backend --
   first-draw contract prefix, target prologue (destination-cache barrier,
@@ -1028,10 +1030,11 @@ Compute pipelines, descriptors, transfer images and copies beyond the
 bounded linear `B8G8R8A8_UNORM` family, native WSI presentation and
 external-memory handles, formats outside the accepted render and transfer
 families, silicon witnesses for non-maximum render extents or any native
-transfer operation, the producer US program and its RS varying routing,
-and live R2VB delivery remain outside the landed surface. Live
-`DRM_RADEON_CS` evidence has three attended records. The first-submission
-record carries the bare inherited-state cell and its all-sentinel target;
+transfer operation, and public deferred-draw R2VB producer dispatch remain
+outside the landed surface. Live `DRM_RADEON_CS` evidence is split between
+the foundational records below and the R2VB records linked from their
+procedure documents. The first-submission record carries the bare
+inherited-state cell and its all-sentinel target;
 its kernel acceptance, retirement, and oracle are operator-observed because
 the runner output is not retained. The direct-write 2D control retains its
 byte-exact probe result, and the contract-prefixed successor retains its
@@ -1312,8 +1315,9 @@ F32_4 -> 4 physical dwords -> XYZW logical vec4
 The live automatic Gallium R2VB producer admits `F32_3` and `F32_4`, and its
 live automatic Gallium final delivery admits FP32x4 only. The native
 identity-delivery host model covers `F32_4`, `F32_3`, and `F32_2` under its
-exact opt-in, but live producer submission and re-ingest remain outside the
-native route.
+exact opt-in. Operator-armed producer, re-ingest, and exact F32
+`FLOAT_2 + XY01` cells hold on RS482; public deferred-draw producer dispatch
+remains outside the native route.
 
 The integration order separates landed no-submit source transactions from
 remaining validator, live-delivery, and silicon work:
@@ -1328,8 +1332,9 @@ remaining validator, live-delivery, and silicon work:
 4. capture the six-dword `FLOAT_4 + FLOAT_2` producer tuple without submit
    (landed; pinned by `r300_r2vb_float2_tuple_test`);
 5. extend userspace and kernel validators from identity-only PSC to explicit
-   synthesized-lane contracts;
-6. run the bounded `FLOAT_2` silicon ladder;
+   synthesized-lane contracts (landed; pinned by the tuple replay);
+6. run the bounded F32 `FLOAT_2 + XY01` silicon cell (landed; scoped by
+   `r3v-native-attended-float2-tuple-procedure.md`);
 7. decide standing promotion in a separate change.
 
 The native implementation migrates `F32_3` before `F32_2`. Producer support for
@@ -1361,8 +1366,8 @@ does not promote another.
 1. Keep the Gallium-backed implementation current and semantically honest.
 2. Refactor existing `F32_3` and `F32_4` R2VB construction through the neutral
    source contract (landed).
-3. Land the gated `F32_2` no-submit producer transaction and validators
-   (landed; the synthesized-lane validator extension remains open).
+3. Land the gated `F32_2` no-submit producer transaction and synthesized-lane
+   validators (landed).
 4. Extract a generic Radeon DRM transport layer with host tests (landed).
 5. Deep-copy R300 fragment binaries into R3V-owned storage (landed).
 6. Create distinct Gallium-backed and native ICD identities (landed).
@@ -1384,36 +1389,18 @@ does not promote another.
     SSE2 versus SSE3 against the memcpy copy ceiling, on the K8 target
     under the `k8-sse3` profile flags -- remains open and decides which
     candidate the auto dispatch keeps).
-11. Migrate native R2VB producer and live delivery (`F32_3`, then `F32_2`);
-    the identity-delivery host model and no-submit producer emitter are
-    landed, and the attended producer-only cell delivered its carrier on
-    RS482 (2026-08-14, main `cb3d078ed41`, 313-dword IB, blake3 `680dfd6f`,
-    expected extent byte-exact, tail poison intact, empty dmesg delta;
-    procedure in `docs/hardware/r3v-native-attended-producer-procedure.md`).
-    The FP24 boundary sweep ran on RS482 (2026-08-14, main `cd28064499a`,
-    `fp24-sweep` selector, blake3 `5e1cf1dc`): nine of twelve lattice lanes
-    delivered byte-exact and the three top-exponent lanes delivered with
-    the exponent one below expectation, so the
-    `R300_FP24_MAX_FINITE_F32_BITS` ceiling in the host admission model is
-    falsified at its top bin (executed-run record in
-    `docs/hardware/r3v-native-attended-producer-procedure.md`).  The
-    upper-ceiling bisection ran on RS482 (2026-08-14, main `3bd7c9fc002`,
-    `fp24-bisect` selector, blake3 `6df52da2`): all twelve lanes through
-    `0x5fffff80` delivered byte-exact, which together with the sweep's
-    halved `0x60000000` lane locates the identity-delivery ceiling at
-    `0x5fffff80` exactly -- s1e7m16 with bias 62 and the top exponent
-    field reserved -- and `R300_FP24_MAX_FINITE_F32_BITS` now carries
-    the corrected value.  The
-    same-IB producer-plus-re-ingest cell ran on the same day and stream
-    head (blake3 `553bb0ce`, 542 dwords) and returned `REINGEST_RENDERED`
-    -- carrier byte-exact and the triangle rendered from GPU-written
-    vertices -- so the GPU-write to vertex-fetch ordering holds on one
-    submission (procedure and record in
-    `docs/hardware/r3v-native-attended-reingest-procedure.md`).  The
-    remaining silicon ladder, in order: the attended `FLOAT_4 + FLOAT_2`
-    tuple cell, then live GPU-route dispatch.  The offline halves are
-    landed: the kernel synthesized-lane validator decodes the PSC element
-    list and accepts the `FLOAT_2 + XY01 + vtx_size 6` tuple
+11. Migrate native R2VB producer and live delivery (`F32_4` control, then
+    `F32_3`, then `F32_2`).
+    The identity-delivery host model and no-submit producer emitter are
+    landed. Operator-armed producer, FP24 boundary, same-IB re-ingest, and
+    exact F32 `FLOAT_2 + XY01` cells carry retained RS482 results; their
+    procedure documents own the contracts and point to the result bundles:
+    `r3v-native-attended-producer-procedure.md`,
+    `r3v-native-attended-reingest-procedure.md`, and
+    `r3v-native-attended-float2-tuple-procedure.md`. Public live GPU-route
+    dispatch remains the next mechanism. The offline halves are landed: the
+    kernel synthesized-lane validator decodes the PSC element list and accepts
+    the `FLOAT_2 + XY01 + vtx_size 6` tuple
     (linux-radeon-gororoba `r300_tcl_bypass_vtx_check.h`), the fetched
     tuple pass and its manifest replay prove the userspace/kernel
     agreement offline (`r300-r2vb-float2-tuple-replay`, per
