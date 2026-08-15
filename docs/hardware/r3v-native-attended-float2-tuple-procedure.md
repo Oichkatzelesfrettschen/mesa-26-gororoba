@@ -1,23 +1,22 @@
 # R3V native attended FLOAT_4 + FLOAT_2 tuple cell procedure
 
-The fetched tuple cell is the hardware-ladder step that proves the PSC
-synthesized-lane expansion on silicon: the vertex data arrives through a
-two-array `3D_LOAD_VBPNTR` -- a FLOAT_4 slot-position array and a
-FLOAT_2 model array, six fetched dwords per vertex -- and the model
-element's XY01 selector asks the hardware to expand each two-dword
-record to the logical input (x, y, 0, 1) before the RS routes it to the
-US and the color backend stores it into the poisoned carrier.  The
-producer cell proved the carrier write from an embedded draw body and
-the re-ingest cell proved the fetch of GPU-written FLOAT_4 data; this
-cell changes exactly one mechanism, the fetch declaration, so the one
-open question is the silicon's expansion of a synthesized-lane FLOAT_2
-element.
+The fetched tuple cell isolates PSC synthesized-lane expansion on silicon:
+the vertex data arrives through a two-array `3D_LOAD_VBPNTR` -- a FLOAT_4
+slot-position array and a FLOAT_2 model array, six fetched dwords per vertex
+-- and the model element's XY01 selector asks the hardware to expand each
+two-dword record to the logical input (x, y, 0, 1) before the RS routes it to
+the US and the color backend stores it into the poisoned carrier.  The
+producer cell establishes the carrier write from an embedded draw body, and
+the re-ingest cell establishes the fetch of GPU-written FLOAT_4 data.  The
+executed run below decides the exact F32 `FLOAT_2 + XY01` expansion question
+for its recorded RS482 identity; other format and route questions retain
+separate frontiers.
 
-The offline kernel-parser replay accepts the stream under the
-synthesized-lane width validator (`VAP_VTX_SIZE` equals the summed
-fetch widths, six dwords), and the deployed module's parser leaves the
-PSC registers unchecked, so kernel acceptance follows a fortiori; the
-carrier bytes decide the silicon question the validators cannot.
+The offline kernel-parser replay accepts the stream under the synthesized-lane
+width validator (`VAP_VTX_SIZE` equals the summed fetch widths, six dwords).
+The retained attended run reports submit success, an empty dmesg delta, a
+retired fence, and the exact carrier bytes; Linux Radeon source owns the
+deployed parser's register semantics.
 
 `docs/hardware/r3v-native-attended-cell-procedure.md` carries the
 boundary statement, the host preconditions, the identity freeze, the
@@ -98,9 +97,11 @@ returned `CARRIER_DELIVERED`: all three slots hold the XY01 expansion
 byte-exact -- (8.0, 0.75, 0.0, 1.0), (56.0, 1.0, 0.0, 1.0),
 (999.0, 2.0, 0.0, 1.0) -- with `expected_pass=1 tail_poison_pass=1
 vertex_intact=1 mismatched=0`, empty dmesg delta, fence retired.  The
-PSC synthesized-lane expansion of a fetched FLOAT_2 element holds on
-silicon; compact vertex formats under the XY01 selector are usable on
-this chip.  The release-build preflight for this run surfaced the
+PSC synthesized-lane expansion of one fetched F32 `FLOAT_2` element
+under the `XY01` selector holds on PCI `1002:5974` RS482 for this exact
+packet and vertex extent.  Other widths, data types, selectors, and the
+public integrated delivery route remain separate evidence frontiers.  The
+release-build preflight for this run surfaced the
 producer-cell host test's NDEBUG assert-erasure segfault, fixed in
 `cbe9d2597cd` before arming.  The retained record lives in the
 `steinmarder-r300` bundle

@@ -77,8 +77,7 @@ The current live path:
   as the capture pin;
 - leaves `R300_R2VB_STANDING` and the closed automatic source-domain matrix
   unchanged; `R300_R2VB_FLOAT2_SOURCE` never joins `standing_gates[]`;
-- keeps final delivery at FP32x4;
-- has no kernel validation claim for synthesized `XY01` lanes.
+- keeps final delivery at FP32x4.
 
 ## Validator agreement
 
@@ -101,6 +100,8 @@ replay accepts the stream with its three relocations, the width predicate
 passes the tuple, and the undersized-VTX_SIZE arm rejects through the same
 predicate.
 
-Automatic live promotion remains disabled until a bounded RS480-family
-silicon ladder supplies source, output, and kernel-window evidence; the
-attended tuple cell is that ladder's next step.
+Automatic live promotion remains disabled.  The attended tuple cell establishes
+one F32 `FLOAT_2 + XY01 + VAP_VTX_SIZE 6` packet on PCI `1002:5974` RS482;
+`r3v-native-attended-float2-tuple-procedure.md` owns the executed-run record and
+its exact scope.  Public GPU-route dispatch and standing promotion remain
+separate frontiers.
