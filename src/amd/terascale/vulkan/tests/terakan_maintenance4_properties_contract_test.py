@@ -1,4 +1,3 @@
-# Copyright 2026 Mesa3D authors
 # SPDX-License-Identifier: MIT
 """Validate the Terakan maintenance4 buffer-size property contract.
 

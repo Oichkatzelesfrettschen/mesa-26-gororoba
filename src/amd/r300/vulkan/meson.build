@@ -685,6 +685,7 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
     foreach header_defect : ['missing-spdx', 'invented-copyright',
+                             'invented-project-collective-copyright',
                              'ai-disclosure', 'missing-root']
       test(
         'r3v-source-header-audit-known-bad-@0@'.format(header_defect),

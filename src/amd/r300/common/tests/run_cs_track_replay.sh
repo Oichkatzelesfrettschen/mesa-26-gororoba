@@ -1,5 +1,4 @@
 #!/bin/sh
-# Copyright 2026 Mesa3D authors
 # SPDX-License-Identifier: MIT
 #
 # Full kernel CS-parser and tracker replay of the fixed cell.

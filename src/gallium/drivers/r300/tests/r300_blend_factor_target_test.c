@@ -1,5 +1,4 @@
-/* Copyright 2026 Mesa3D authors
- * SPDX-License-Identifier: MIT
+/* SPDX-License-Identifier: MIT
  */
 
 #include <stdio.h>
