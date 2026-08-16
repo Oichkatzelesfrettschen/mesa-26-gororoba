@@ -45,7 +45,7 @@ INVALID_FIXTURES = {
 
 
 def load_json(path: Path) -> dict[str, object]:
-    value = json.loads(path.read_text(encoding="ascii"))
+    value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise TypeError(f"{path} must contain one JSON object")
     return value

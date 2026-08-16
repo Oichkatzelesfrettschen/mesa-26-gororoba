@@ -130,7 +130,7 @@ def require_private_user_mount_namespace() -> None:
     if os.getuid() != 0:
         fail("calibration user namespace does not map the caller to uid 0")
     try:
-        uid_fields = Path("/proc/self/uid_map").read_text(encoding="ascii").split()
+        uid_fields = Path("/proc/self/uid_map").read_text(encoding="utf-8").split()
         process_mount_namespace = os.readlink("/proc/self/ns/mnt")
         init_mount_namespace = os.readlink("/proc/1/ns/mnt")
     except OSError as error:

@@ -206,8 +206,8 @@ def committed_repository(repository: Path) -> Path:
     repository.mkdir(parents=True)
     source_root_control.run_git(repository, "init", "-q", "-b", "main")
     source_file = repository / "meson.build"
-    source_file.write_text("project('clean')\n", encoding="ascii")
-    (repository / "meson.options").write_text("", encoding="ascii")
+    source_file.write_text("project('clean')\n", encoding="utf-8")
+    (repository / "meson.options").write_text("", encoding="utf-8")
     commit_repository(repository, "test: add tracked source")
     return source_file
 
@@ -219,7 +219,7 @@ def source_view_values(tmp_path: Path) -> dict[str, Path | str]:
     assert isinstance(source_root, Path)
     assert isinstance(build_root, Path)
     committed_repository(source_root)
-    (source_root / "tracked-source").write_text("archive input\n", encoding="ascii")
+    (source_root / "tracked-source").write_text("archive input\n", encoding="utf-8")
     commit_repository(source_root, "test: add source view input")
     values["source_commit"] = source_root_control.run_git(
         source_root,
@@ -818,7 +818,7 @@ def test_require_clean_worktree_detects_assume_unchanged(
         "--assume-unchanged",
         "meson.build",
     )
-    source_file.write_text("project('dirty')\n", encoding="ascii")
+    source_file.write_text("project('dirty')\n", encoding="utf-8")
     with pytest.raises(source_root_control.ControlError):
         source_root_control.require_clean_worktree(
             repository,
@@ -831,9 +831,9 @@ def test_require_clean_worktree_detects_staged_only_change(
 ) -> None:
     repository = tmp_path / "repository"
     source_file = committed_repository(repository)
-    source_file.write_text("project('staged')\n", encoding="ascii")
+    source_file.write_text("project('staged')\n", encoding="utf-8")
     source_root_control.run_git(repository, "add", "meson.build")
-    source_file.write_text("project('clean')\n", encoding="ascii")
+    source_file.write_text("project('clean')\n", encoding="utf-8")
     with pytest.raises(source_root_control.ControlError):
         source_root_control.require_clean_worktree(
             repository,
@@ -848,12 +848,12 @@ def test_require_clean_worktree_rejects_ignored_subproject_sources(
     committed_repository(repository)
     subprojects = repository / "subprojects"
     subprojects.mkdir()
-    (subprojects / ".gitignore").write_text("/*/\n", encoding="ascii")
+    (subprojects / ".gitignore").write_text("/*/\n", encoding="utf-8")
     commit_repository(repository, "test: ignore populated subprojects")
     source_root_control.require_clean_worktree(repository, "test worktree")
     ignored_source = subprojects / "Vulkan-Profiles" / "meson.build"
     ignored_source.parent.mkdir()
-    ignored_source.write_text("project('ignored-input')\n", encoding="ascii")
+    ignored_source.write_text("project('ignored-input')\n", encoding="utf-8")
     with pytest.raises(source_root_control.ControlError):
         source_root_control.require_clean_worktree(repository, "test worktree")
 
@@ -863,11 +863,11 @@ def test_require_clean_worktree_accepts_ignored_build_outputs(
 ) -> None:
     repository = tmp_path / "repository"
     committed_repository(repository)
-    (repository / ".gitignore").write_text("/build/\n", encoding="ascii")
+    (repository / ".gitignore").write_text("/build/\n", encoding="utf-8")
     commit_repository(repository, "test: ignore build outputs")
     ignored_output = repository / "build" / "artifact"
     ignored_output.parent.mkdir()
-    ignored_output.write_text("regenerable\n", encoding="ascii")
+    ignored_output.write_text("regenerable\n", encoding="utf-8")
     source_root_control.require_clean_worktree(repository, "test worktree")
 
 
@@ -883,7 +883,7 @@ def test_require_hashed_wrap_sources_accepts_vulkan_profiles(
         "source_url = file:///fixtures/Vulkan-Profiles.tar\n"
         "source_filename = Vulkan-Profiles.tar\n"
         f"source_hash = {'1' * 64}\n",
-        encoding="ascii",
+        encoding="utf-8",
     )
     source_root_control.require_hashed_wrap_sources(source_view)
 
@@ -900,7 +900,7 @@ def test_require_hashed_wrap_sources_rejects_unhashed_download(
         "directory = Vulkan-Profiles-source\n"
         "source_url = file:///fixtures/Vulkan-Profiles.tar\n"
         "source_filename = Vulkan-Profiles.tar\n",
-        encoding="ascii",
+        encoding="utf-8",
     )
     with pytest.raises(
         source_root_control.ControlError,
@@ -924,7 +924,7 @@ def test_require_hashed_wrap_sources_rejects_unhashed_patch(
         f"source_hash = {'1' * 64}\n"
         "patch_url = file:///fixtures/Vulkan-Profiles-patch.tar\n"
         "patch_filename = Vulkan-Profiles-patch.tar\n",
-        encoding="ascii",
+        encoding="utf-8",
     )
     with pytest.raises(
         source_root_control.ControlError,
@@ -939,12 +939,12 @@ def test_source_view_content_digest_is_deterministic_and_complete(
     source_view = tmp_path / "source-view"
     source_view.mkdir()
     source_file = source_view / "source"
-    source_file.write_text("stable\n", encoding="ascii")
+    source_file.write_text("stable\n", encoding="utf-8")
     source_file.chmod(0o755)
     (source_view / "source-link").symlink_to("source")
     initial_digest = source_root_control.source_view_content_digest(source_view)
     assert initial_digest == source_root_control.source_view_content_digest(source_view)
-    source_file.write_text("mutated\n", encoding="ascii")
+    source_file.write_text("mutated\n", encoding="utf-8")
     assert initial_digest != source_root_control.source_view_content_digest(source_view)
 
 
@@ -963,7 +963,7 @@ def test_prepare_source_view_archives_exact_source_and_replaces_owned_view(
         "source_url = file:///fixtures/Vulkan-Profiles.tar\n"
         "source_filename = Vulkan-Profiles.tar\n"
         f"source_hash = {'2' * 64}\n",
-        encoding="ascii",
+        encoding="utf-8",
     )
     commit_repository(source_root, "test: add hashed wrap")
     values["source_commit"] = source_root_control.run_git(
@@ -985,11 +985,11 @@ def test_prepare_source_view_archives_exact_source_and_replaces_owned_view(
     source_view = source_root_control.source_view_path(values)
     nested_git_marker = source_view / "subprojects" / "old-wrap" / ".git"
     nested_git_marker.mkdir(parents=True)
-    (nested_git_marker / "HEAD").write_text("ref: refs/heads/main\n", encoding="ascii")
+    (nested_git_marker / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
 
     source_root_control.prepare_source_view(values)
 
-    assert (source_view / "tracked-source").read_text(encoding="ascii") == (
+    assert (source_view / "tracked-source").read_text(encoding="utf-8") == (
         "archive input\n"
     )
     assert not (source_view / ".git").exists()
@@ -1026,7 +1026,7 @@ def test_prepare_source_view_rejects_unhashed_wrap_before_publication(
         "directory = Vulkan-Profiles-source\n"
         "source_url = file:///fixtures/Vulkan-Profiles.tar\n"
         "source_filename = Vulkan-Profiles.tar\n",
-        encoding="ascii",
+        encoding="utf-8",
     )
     commit_repository(source_root, "test: add unhashed wrap")
     values["source_commit"] = source_root_control.run_git(
@@ -1068,7 +1068,7 @@ def test_final_identity_consumers_reject_source_view_drift(
     source_root_control.prepare_source_view(values)
     source_root_control.write_identity(values)
     source_view = source_root_control.source_view_path(values)
-    (source_view / "tracked-source").write_text("drift\n", encoding="ascii")
+    (source_view / "tracked-source").write_text("drift\n", encoding="utf-8")
 
     with pytest.raises(source_root_control.ControlError, match="content drift"):
         source_root_control.verify_identity(values)
@@ -1095,7 +1095,7 @@ def test_provisional_cleanup_accepts_mesons_source_view_population(
     source_view = source_root_control.source_view_path(values)
     populated_source = source_view / "subprojects" / "fixture" / "meson.build"
     populated_source.parent.mkdir(parents=True)
-    populated_source.write_text("project('fixture')\n", encoding="ascii")
+    populated_source.write_text("project('fixture')\n", encoding="utf-8")
     source_root_control.verify_delete_identity(values, allow_provisional=True)
 
 
@@ -1125,7 +1125,7 @@ def test_run_git_ignores_ambient_repository_and_config(
     hostile_config = tmp_path / "hostile-gitconfig"
     hostile_config.write_text(
         "[commit]\n\tgpgsign = true\n[core]\n\thooksPath = /missing\n",
-        encoding="ascii",
+        encoding="utf-8",
     )
     monkeypatch.setenv("GIT_DIR", str(hostile_repository / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(hostile_repository))
@@ -1147,7 +1147,7 @@ def test_run_git_disables_repository_fsmonitor(
     hook = tmp_path / "fsmonitor-hook"
     hook.write_text(
         "#!/bin/sh\n: > \"$GOROROBA_FSMONITOR_MARKER\"\nprintf '\\n'\n",
-        encoding="ascii",
+        encoding="utf-8",
     )
     hook.chmod(0o755)
     source_root_control.run_git(
