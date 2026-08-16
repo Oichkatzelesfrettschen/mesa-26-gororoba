@@ -4,6 +4,10 @@
 inc_amd_r300_common = include_directories('../../../amd/r300/common')
 
 files_r300 = files(
+  # Neutral R300 PM4 emitters shared with the direct Vulkan driver; the
+  # dependency points from Gallium into src/amd/r300/common alone.
+  '../../../amd/r300/common/r300_pm4_builder.c',
+  '../../../amd/r300/common/r300_r2vb_fetch_pass.c',
   'r300_blit.c',
   'r300_cb.h',
   'r300_chipset.c',
