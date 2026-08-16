@@ -112,6 +112,26 @@ main(void)
              golden.ib[golden.reloc_sites[i].ib_index]);
    }
 
+   /* Composed relocation domains preserve each use-site's declared DRM
+    * intent (RADEON_GEM_DOMAIN_GTT = 0x2 on the UMA target): the
+    * carrier is a producer color-backend write then a consumer
+    * vertex-fetch read as two separate uses, the color target takes
+    * the consuming draw's write, and no other domain bit appears.
+    */
+   assert(comp.relocs[0].role == R300_R2VB_BO_CARRIER);
+   assert(comp.relocs[0].write_domain == 2u);
+   assert(comp.relocs[0].read_domains == 0u);
+   for (uint32_t i = 1; i < comp.reloc_count; i++) {
+      if (comp.relocs[i].role == R300_R2VB_BO_CARRIER) {
+         assert(comp.relocs[i].read_domains == 2u);
+         assert(comp.relocs[i].write_domain == 0u);
+      } else {
+         assert(comp.relocs[i].role == R300_R2VB_BO_COLOR);
+         assert(comp.relocs[i].write_domain == 2u);
+         assert(comp.relocs[i].read_domains == 0u);
+      }
+   }
+
    free(composed);
    r300_tcl_bypass_triangle_release(&consumer);
    r300_r2vb_producer_pass_release(&producer);
