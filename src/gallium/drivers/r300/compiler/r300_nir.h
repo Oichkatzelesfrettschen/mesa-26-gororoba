@@ -10,9 +10,8 @@
 
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_search.h"
-#include "pipe/p_screen.h"
 #include "r300_carrier_policy.h"
-#include "r300_screen.h"
+#include "r300_chipset.h"
 #include "radeon_code.h"
 
 static inline bool
@@ -139,10 +138,8 @@ bool r300_is_only_used_as_float(const nir_alu_instr *instr);
 
 char *r300_check_control_flow(nir_shader *s);
 
-void r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen);
-
-void r300_finalize_nir(struct pipe_screen *pscreen, struct nir_shader *nir,
-                       bool optimize);
+void r300_optimize_nir(struct nir_shader *s,
+                       const struct r300_capabilities *caps);
 
 bool r300_nir_stub_deriv(nir_shader *s);
 

@@ -1402,7 +1402,7 @@ void *r300_create_fs_state_internal(struct pipe_context *pipe,
         }
     }
 
-    r300_optimize_nir(fs->state.ir.nir, r300->screen);
+    r300_optimize_nir(fs->state.ir.nir, &r300->screen->caps);
 
     /* r300_finalize_nir flagged the default-block uniforms used as a loop bound
      * or branch condition (info.num_inlinable_uniforms); the state tracker
@@ -2578,7 +2578,7 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
              r300->screen->screen.caps.max_point_size);
 
     if (r300->screen->caps.has_tcl) {
-        r300_optimize_nir(vs->state.ir.nir, r300->screen);
+        r300_optimize_nir(vs->state.ir.nir, &r300->screen->caps);
         /* R300/R400 can not do any kind of control flow, so abort early here. */
         if (!r300->screen->caps.is_r500) {
             char *msg = r300_check_control_flow(vs->state.ir.nir);

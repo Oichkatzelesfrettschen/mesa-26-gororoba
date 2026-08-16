@@ -301,7 +301,7 @@ case_unsupported_intrinsic_sets_error(void)
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
-   nir_to_rc(build_vs_with_unsupported_intrinsic(), &tc.screen.screen,
+   nir_to_rc(build_vs_with_unsupported_intrinsic(), &tc.screen.caps,
              (struct r300_fragment_program_external_state){0}, rc,
              &tc.compiler.Base);
 
@@ -322,7 +322,7 @@ check_nested_if_stops_after_error(bool error_in_else)
    union r300_shader_code rc = {.v = &tc.code};
 
    nir_to_rc(build_vs_with_unsupported_intrinsic_in_if(error_in_else),
-             &tc.screen.screen,
+             &tc.screen.caps,
              (struct r300_fragment_program_external_state){0}, rc,
              &tc.compiler.Base);
 
@@ -352,7 +352,7 @@ case_nested_loop_stops_after_error(void)
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
-   nir_to_rc(build_vs_with_unsupported_intrinsic_in_loop(), &tc.screen.screen,
+   nir_to_rc(build_vs_with_unsupported_intrinsic_in_loop(), &tc.screen.caps,
              (struct r300_fragment_program_external_state){0}, rc,
              &tc.compiler.Base);
 
@@ -398,7 +398,7 @@ case_fsub_emits_add_with_negated_rhs(void)
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
-   nir_to_rc(build_vs_with_fsub(), &tc.screen.screen,
+   nir_to_rc(build_vs_with_fsub(), &tc.screen.caps,
              (struct r300_fragment_program_external_state){0}, rc,
              &tc.compiler.Base);
 
@@ -428,7 +428,7 @@ check_narrow_iand_stops_before_int_to_float(unsigned bit_size, unsigned mask)
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
-   nir_to_rc(build_vs_with_narrow_iand(bit_size, mask), &tc.screen.screen,
+   nir_to_rc(build_vs_with_narrow_iand(bit_size, mask), &tc.screen.caps,
              (struct r300_fragment_program_external_state){0}, rc,
              &tc.compiler.Base);
 
@@ -452,7 +452,7 @@ case_fcsel_gt_emits_cmp_with_negated_condition(void)
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
-   nir_to_rc(build_vs_with_fcsel_gt(), &tc.screen.screen,
+   nir_to_rc(build_vs_with_fcsel_gt(), &tc.screen.caps,
              (struct r300_fragment_program_external_state){0}, rc,
              &tc.compiler.Base);
 
@@ -485,7 +485,7 @@ case_continue_construct_is_lowered_before_emit(void)
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
-   nir_to_rc(build_vs_with_continue_construct(), &tc.screen.screen,
+   nir_to_rc(build_vs_with_continue_construct(), &tc.screen.caps,
              (struct r300_fragment_program_external_state){0}, rc,
              &tc.compiler.Base);
 

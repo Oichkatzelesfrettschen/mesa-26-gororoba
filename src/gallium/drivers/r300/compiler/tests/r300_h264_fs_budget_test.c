@@ -166,8 +166,8 @@ run_fs(struct r300_fragment_program_compiler *c, struct rc_regalloc_state *rs,
    *raw_tex = 0;
    *sched_alu = 0;
 
-   r300_optimize_nir(nir, r300_screen(ps));
-   nir_to_rc(nir, ps, ext, code, &c->Base);
+   r300_optimize_nir(nir, &r300_screen(ps)->caps);
+   nir_to_rc(nir, &r300_screen(ps)->caps, ext, code, &c->Base);
    if (!c->Base.Error) {
       count_insts(&c->Base, raw_alu, raw_tex);
       c->Base.remove_unused_constants = true;

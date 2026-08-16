@@ -89,7 +89,7 @@ select_shader(void *ctx, nir_shader *s,
 {
    static struct r300_screen screen;
    struct pipe_screen *ps = fake_r300_screen(&screen);
-   r300_optimize_nir(s, r300_screen(ps));
+   r300_optimize_nir(s, &r300_screen(ps)->caps);
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    CHECK(r300_classic_select(ctx, s, t, NULL, 4, R300_FS_INPUT_INTERPOLATED, NULL, result), "selection ran");
@@ -310,7 +310,7 @@ case_wpos_face_semantics(void)
 
       static struct r300_screen screen;
       struct pipe_screen *ps = fake_r300_screen(&screen);
-      r300_optimize_nir(b.shader, r300_screen(ps));
+      r300_optimize_nir(b.shader, &r300_screen(ps)->caps);
 
       struct r300_shader_semantics sem;
       r300_shader_semantics_reset(&sem);
@@ -413,7 +413,7 @@ case_varying_semantics_match_fixup(void)
 
    static struct r300_screen screen;
    struct pipe_screen *ps = fake_r300_screen(&screen);
-   r300_optimize_nir(b.shader, r300_screen(ps));
+   r300_optimize_nir(b.shader, &r300_screen(ps)->caps);
 
    struct r300_shader_semantics sem;
    r300_shader_semantics_reset(&sem);
@@ -448,7 +448,7 @@ case_wpos_reconstruction(void)
 
    static struct r300_screen screen;
    struct pipe_screen *ps = fake_r300_screen(&screen);
-   r300_optimize_nir(b.shader, r300_screen(ps));
+   r300_optimize_nir(b.shader, &r300_screen(ps)->caps);
 
    struct r300_shader_semantics sem;
    r300_shader_semantics_reset(&sem);

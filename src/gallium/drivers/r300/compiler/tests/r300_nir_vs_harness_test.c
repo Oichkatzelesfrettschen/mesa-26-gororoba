@@ -195,7 +195,7 @@ run_vs(struct r300_vertex_program_compiler *c, struct rc_regalloc_state *rs,
    c->Base.max_constants = 256;
    c->Base.max_alu_insts = 256;
 
-   nir_to_rc(nir, ps, ext, code, &c->Base);
+   nir_to_rc(nir, &r300_screen(ps)->caps, ext, code, &c->Base);
 }
 
 static void

@@ -1499,7 +1499,7 @@ retry:
                                          decoded);
             nir_inline_uniforms(clone, n, decoded, aligned_offs);
         }
-        r300_optimize_nir(clone, r300->screen);
+        r300_optimize_nir(clone, &r300->screen->caps);
 
         /* nir_opt_loop_unroll refuses a trip count past the FS unroll cap
          * (max_unroll_iterations), so a loop bound larger than that survives
@@ -1619,7 +1619,7 @@ retry:
      * block, so the clone releases here on that path.  A backend retry
      * re-enters through the retry label and builds a fresh clone. */
     if (!classic_done)
-        nir_to_rc(clone, (struct pipe_screen *)r300->screen,
+        nir_to_rc(clone, &r300->screen->caps,
                   shader->compare_state, code, &compiler.Base);
     else
         ralloc_free(clone);
@@ -1934,8 +1934,8 @@ static void r300_translate_fragment_shader(
          * post-cut half, pass B's carried producers); dead-code and
          * re-optimize both so the halves the backend counts are the real
          * halves, not the whole program twice. */
-        r300_optimize_nir(pass_a, r300->screen);
-        r300_optimize_nir(pass_b, r300->screen);
+        r300_optimize_nir(pass_a, &r300->screen->caps);
+        r300_optimize_nir(pass_b, &r300->screen->caps);
 
         /* Pass B first, into the partner code object: its verdict is free
          * to take without disturbing the failed compile this shader still

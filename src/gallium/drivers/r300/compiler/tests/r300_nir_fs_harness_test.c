@@ -355,8 +355,8 @@ run_fs(struct r300_fragment_program_compiler *c, struct rc_regalloc_state *rs,
    c->Base.max_alu_insts = 64;
    c->Base.max_tex_insts = 32;
 
-   r300_optimize_nir(nir, r300_screen(ps));
-   nir_to_rc(nir, ps, ext, code, &c->Base);
+   r300_optimize_nir(nir, &r300_screen(ps)->caps);
+   nir_to_rc(nir, &r300_screen(ps)->caps, ext, code, &c->Base);
 }
 
 static void

@@ -3627,7 +3627,7 @@ r300_r2vb_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
             *transient_failure = true;
         return R300_FS_ADMIT_REJECT;
     }
-    r300_optimize_nir(fs, r300->screen);
+    r300_optimize_nir(fs, &r300->screen->caps);
     unsigned alu_len = 0;
     enum r300_fs_admission adm =
         r300_fs_measure_nir_admission(r300, fs, &alu_len,
@@ -3713,7 +3713,7 @@ r300_r2vb_split_admitted(struct r300_context *r300, nir_shader *vs_nir,
                                                       VARYING_SLOT_POS, space);
     if (pos == NULL)
         return R300_R2VB_SPLIT_TRANSIENT;
-    r300_optimize_nir(pos, r300->screen);
+    r300_optimize_nir(pos, &r300->screen->caps);
 
     struct r300_mp_partition part;
     bool admitted = false;
@@ -3728,8 +3728,8 @@ r300_r2vb_split_admitted(struct r300_context *r300, nir_shader *vs_nir,
             ralloc_free(pos);
             return R300_R2VB_SPLIT_TRANSIENT;
         }
-        r300_optimize_nir(pass_a, r300->screen);
-        r300_optimize_nir(pass_b, r300->screen);
+        r300_optimize_nir(pass_a, &r300->screen->caps);
+        r300_optimize_nir(pass_b, &r300->screen->caps);
         unsigned la = 0, lb = 0;
         enum r300_fs_admission aa =
             r300_fs_measure_nir_admission(r300, pass_a, &la,
@@ -7911,7 +7911,7 @@ static bool r300_r2vb_run_split_producer(struct r300_context *r300,
                                             VARYING_SLOT_POS, space);
         if (pos == NULL)
             return false;
-        r300_optimize_nir(pos, r300->screen);
+        r300_optimize_nir(pos, &r300->screen->caps);
         if (!r300_mp_find_vec4_cut(pos, &local_part)) {
             ralloc_free(pos);
             return false;

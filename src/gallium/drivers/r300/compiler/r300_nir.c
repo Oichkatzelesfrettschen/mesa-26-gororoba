@@ -6,7 +6,6 @@
 #include "r300_nir.h"
 
 #include "compiler/nir/nir_builder.h"
-#include "r300_screen.h"
 #include "util/log.h"
 #include "util/macros.h"
 #include "util/u_endian.h"
@@ -201,33 +200,13 @@ r300_alu_to_scalar_filter_cb(const nir_instr *instr, const void *data)
    return false;
 }
 
-/* The state tracker copies nir->info into gl_program->info right after this
- * hook and st_atom_constbuf reads num_inlinable_uniforms from there to push the
- * values through set_inlinable_constants. Flag default-block uniforms used as a
- * loop bound or branch condition here, before that copy, so a uniform-bounded
- * loop can be specialized to a constant and statically unrolled per draw
- * (R300/R400 fragment hardware has no dynamic control flow). */
 void
-r300_finalize_nir(UNUSED struct pipe_screen *pscreen, struct nir_shader *nir,
-                  UNUSED bool optimize)
+r300_optimize_nir(struct nir_shader *s,
+                  const struct r300_capabilities *caps)
 {
-   if (nir->info.stage != MESA_SHADER_FRAGMENT)
-      return;
+   bool is_r500 = caps->is_r500;
 
-   /* nir_find_inlinable_uniforms only sees a uniform once the surrounding math
-    * is folded to a constant offset, so fold before marking. */
-   NIR_PASS(_, nir, nir_opt_copy_prop);
-   NIR_PASS(_, nir, nir_opt_algebraic);
-   NIR_PASS(_, nir, nir_opt_constant_folding);
-   nir_find_inlinable_uniforms(nir);
-}
-
-void
-r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen)
-{
-   bool is_r500 = screen->caps.is_r500;
-
-   if (s->info.stage == MESA_SHADER_VERTEX && screen->caps.has_tcl) {
+   if (s->info.stage == MESA_SHADER_VERTEX && caps->has_tcl) {
       /* There is no HW support for gl_ClipVertex, so we just remove it early. */
       if (nir_shader_instructions_pass(s, remove_clip_vertex,
                                        nir_metadata_control_flow, NULL)) {
@@ -392,8 +371,8 @@ r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen)
       if (is_r500) {
          NIR_PASS(_, s, r300_transform_fs_trig_input);
       }
-   } else if (screen->caps.has_tcl) {
-      if (is_r500 || screen->caps.is_r400) {
+   } else if (caps->has_tcl) {
+      if (is_r500 || caps->is_r400) {
          NIR_PASS(_, s, r300_transform_vs_trig_input);
       }
    }

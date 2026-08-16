@@ -105,7 +105,7 @@ compile_classic(void *ctx, nir_shader *s,
 {
    static struct r300_screen screen;
    struct pipe_screen *ps = fake_r300_screen(&screen);
-   r300_optimize_nir(s, r300_screen(ps));
+   r300_optimize_nir(s, &r300_screen(ps)->caps);
 
    const struct r300_classic_target *t = r300_classic_target_get(false, false);
    struct r300_classic_select_result sel;
