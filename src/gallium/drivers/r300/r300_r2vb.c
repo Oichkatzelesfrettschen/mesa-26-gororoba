@@ -42,6 +42,7 @@
 
 #include "compiler/r300_nir.h"
 #include "amd/r300/common/r300_r2vb_fetch_pass.h"
+#include "amd/r300/common/r300_r2vb_target_state.h"
 #include "amd/r300/common/r300_r2vb_source_contract.h"
 #include "r300_context.h"
 #include "r300_r2vb_clip.h"
@@ -1931,85 +1932,17 @@ static void r2vb_emit_producer_target_prologue(struct r300_context *r300,
 {
     CS_LOCALS(r300);
 
+    /* Identity-wpos constant overrides for a gl_FragCoord-based
+     * passthrough FS (a no-op for a transform FS, whose constants are
+     * matrix externals rather than viewport state).  The scan over the
+     * compiled constant list is Gallium's; the packed quads travel to
+     * the neutral emitter as prepacked writes.
+     */
     struct r300_fragment_shader *r2vb_fs = r300_fs(r300);
     struct rc_constant_list *r2vb_consts =
         r2vb_fs && r2vb_fs->shader ? &r2vb_fs->shader->code.constants : NULL;
-    UNUSED unsigned r2vb_vp_override_dwords = 0;
-    if (r2vb_consts) {
-        for (unsigned i = 0; i < r2vb_consts->Count; i++) {
-            unsigned t = r2vb_consts->Constants[i].Type;
-            unsigned s = r2vb_consts->Constants[i].u.State[0];
-            if (t == RC_CONSTANT_STATE &&
-                (s == RC_STATE_R300_VIEWPORT_SCALE ||
-                 s == RC_STATE_R300_VIEWPORT_OFFSET))
-                r2vb_vp_override_dwords += 5;
-        }
-    }
-
-    /* ZB_CNTL through VAP_VTE_CNTL: 55 fixed dwords plus the per-matching
-     * viewport-constant wpos override.  The fixed range also installs a
-     * one-target, one-sample, full-write producer pipeline independent of
-     * application blend, alpha-test, logic-op, MRT, and sample state. */
-    BEGIN_CS(55 + (int)r2vb_vp_override_dwords);
-
-    OUT_CS_REG(R300_ZB_CNTL, 0);
-    OUT_CS_REG_SEQ(R300_GB_MSPOS0, 2);
-    OUT_CS(0x66666666);
-    OUT_CS(0x06666666);
-    OUT_CS_REG(R300_GB_AA_CONFIG, R300_GB_AA_CONFIG_AA_DISABLE);
-    OUT_CS_REG(R300_RB3D_AARESOLVE_CTL, 0);
-    OUT_CS_REG(R300_SC_SCREENDOOR, 0x00ffffff);
-    OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
-    OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
-    OUT_CS(((layout->width + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
-           ((layout->height + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
-    /* Flush the OUTGOING color buffer before retargeting RB3D_COLOROFFSET0.
-     * Every framebuffer change in the driver pairs with the gpu_flush atom's
-     * cb_flush_clean (r300_mark_fb_state_dirty marks gpu_flush dirty), which
-     * pushes dirty RB3D destination-cache tiles to memory while the old
-     * COLOROFFSET is still programmed.  A raw retarget without that barrier
-     * drops the application surface's cached pixels -- observed as a prior
-     * blitter clear-quad losing every pixel the later draw does not rewrite. */
-    OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT,
-               R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
-                   R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
-    OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT,
-               R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
-                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
-    OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
-    OUT_CS_REG(
-        R300_RB3D_CCTL,
-        r300->screen->caps.is_r500
-            ? R300_RB3D_CCTL_INDEPENDENT_COLORFORMAT_ENABLE_ENABLE
-            : 0);
-    OUT_CS_REG(R300_RB3D_COLOROFFSET0, output_gart_bo_offset);
-    OUT_CS_RELOC(output_gart_bo);
-    OUT_CS_REG(R300_RB3D_COLORPITCH0,
-               layout->pitch_pixels | R300_COLOR_FORMAT_ARGB32323232);
-    /* RGBA identity select for the transform producer (FS outputs (x,y,z,w)
-     * directly); BGRA for the passthrough producer (copies a pre-swizzled
-     * (z,y,x,w) attribute).  Both target the ARGB32323232 BO. */
-    OUT_CS_REG_SEQ(R300_US_OUT_FMT_0, 4);
-    OUT_CS(transform_mode
-               ? (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_R |
-                  R300_C1_SEL_G | R300_C2_SEL_B | R300_C3_SEL_A)
-               : (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B |
-                  R300_C1_SEL_G | R300_C2_SEL_R | R300_C3_SEL_A));
-    OUT_CS(R300_US_OUT_FMT_UNUSED);
-    OUT_CS(R300_US_OUT_FMT_UNUSED);
-    OUT_CS(R300_US_OUT_FMT_UNUSED);
-    OUT_CS_REG(R300_RB3D_ROPCNTL, 0);
-    OUT_CS_REG_SEQ(R300_RB3D_CBLEND, 3);
-    OUT_CS(0);
-    OUT_CS(0);
-    OUT_CS(RB3D_COLOR_CHANNEL_MASK_BLUE_MASK0 |
-           RB3D_COLOR_CHANNEL_MASK_GREEN_MASK0 |
-           RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
-           RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0);
-    OUT_CS_REG(R300_RB3D_DITHER_CTL, 0);
-    OUT_CS_REG(R300_FG_ALPHA_FUNC, R300_FG_ALPHA_FUNC_DISABLE);
-    /* Identity wpos for a gl_FragCoord-based passthrough FS (no-op for a
-     * transform FS, whose constants are matrix externals, not viewport state). */
+    struct r300_r2vb_target_const_write const_writes[8];
+    unsigned const_write_count = 0;
     if (r2vb_consts) {
         for (unsigned i = 0; i < r2vb_consts->Count; i++) {
             const struct rc_constant *c = &r2vb_consts->Constants[i];
@@ -2022,36 +1955,63 @@ static void r2vb_emit_producer_target_prologue(struct r300_context *r300,
                 v = 0.0f;
             else
                 continue;
-            OUT_CS_REG_SEQ(R300_PFS_PARAM_0_X + i * 16, 4);
-            OUT_CS(pack_float24(v));
-            OUT_CS(pack_float24(v));
-            OUT_CS(pack_float24(v));
-            OUT_CS(pack_float24(v));
+            if (const_write_count == ARRAY_SIZE(const_writes))
+                break;
+            struct r300_r2vb_target_const_write *w =
+                &const_writes[const_write_count++];
+            w->reg = R300_PFS_PARAM_0_X + i * 16;
+            for (unsigned k = 0; k < 4; k++)
+                w->value[k] = pack_float24(v);
         }
     }
-    OUT_CS_REG(R300_SU_CULL_MODE, 0);
-    OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
-    /* GA point size is in sixths of a pixel (the blitter encodes dimension*6 into
-     * R300_GA_POINT_SIZE, see r300_render.c), so 6 == 1 px.  R300_R2VB_POINT_SIZE
-     * overrides the rasterized size only for single-vertex producer probes: a
-     * multi-vertex producer packs attributes as a point stream, and a wide
-     * GA_POINT_SIZE would rasterize each vertex as a large splat instead of
-     * a 1-px sample.  Unset (default 1) emits 6/6. */
-    {
-        uint32_t ps6 = layout->count == 1 ? r2vb_point_size_sixths() : 6;
-        OUT_CS_REG(R300_GA_POINT_SIZE, (ps6 << R300_POINTSIZE_Y_SHIFT) |
-                                           (ps6 << R300_POINTSIZE_X_SHIFT));
-        OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
-                                             (ps6 << R300_GA_POINT_MINMAX_MAX_SHIFT));
-    }
-    OUT_CS_REG(R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
-    OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+
+    /* The neutral common emitter owns the ZB_CNTL-through-VAP_VTE_CNTL
+     * prologue; this adapter maps the Gallium facts onto its descriptor
+     * and copies the finished dwords into the CS.  GA point size is in
+     * sixths of a pixel: the single-vertex probe honors the size
+     * override, while a multi-vertex producer packs attributes as a
+     * point stream and stays at one pixel.
+     */
+    const struct r300_r2vb_target_state_params target_params = {
+        .width = layout->width,
+        .height = layout->height,
+        .pitch_pixels = layout->pitch_pixels,
+        .color_format = R300_COLOR_FORMAT_ARGB32323232,
+        .us_out_fmt0 = transform_mode
+                          ? (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_R |
+                             R300_C1_SEL_G | R300_C2_SEL_B | R300_C3_SEL_A)
+                          : (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B |
+                             R300_C1_SEL_G | R300_C2_SEL_R | R300_C3_SEL_A),
+        .rb3d_cctl =
+            r300->screen->caps.is_r500
+                ? R300_RB3D_CCTL_INDEPENDENT_COLORFORMAT_ENABLE_ENABLE
+                : 0,
+        .color_offset_bytes = output_gart_bo_offset,
+        .color_relocation_payload =
+            r300->rws->cs_lookup_buffer(&r300->cs, output_gart_bo->buf) * 4,
+        .point_size_sixths =
+            layout->count == 1 ? r2vb_point_size_sixths() : 6,
+        .const_writes = const_writes,
+        .const_write_count = const_write_count,
+    };
+
+    uint32_t target_body[R300_R2VB_TARGET_STATE_FIXED_DWORDS +
+                         8 * R300_R2VB_TARGET_CONST_WRITE_DWORDS];
+    struct r300_pm4_builder target_builder;
+    uint32_t target_color_reloc = 0;
+    r300_pm4_builder_init(&target_builder, target_body,
+                          ARRAY_SIZE(target_body));
+    if (r300_r2vb_target_state_emit(&target_builder, &target_params,
+                                    &target_color_reloc) != 0)
+        return;
+    uint32_t target_dwords = 0;
+    if (r300_pm4_builder_finish(&target_builder, &target_dwords) != 0)
+        return;
+
+    BEGIN_CS((int)target_dwords);
+    OUT_CS_TABLE(target_body, target_dwords);
     END_CS;
 
-    /* The prologue writes outside the atom cache.  Accrue restoration debt
-     * at the mutation owner, before any later return can bypass cleanup.
-     * The flags emit no packets until the next prepare_for_rendering call,
-     * so the producer draw and order tail remain contiguous. */
     r2vb_accrue_app_state_restore(r300);
     r300->vertex_arrays_dirty = true;
 }
@@ -2064,6 +2024,28 @@ static void r2vb_emit_producer_order_tail(struct r300_context *r300)
 {
     CS_LOCALS(r300);
     const char *r2vb_bar = getenv("R300_R2VB_BARRIER");
+    if (!r2vb_bar) {
+        /* Production path: the neutral common tail owns the complete
+         * publication sequence.
+         */
+        uint32_t tail[R300_R2VB_PUBLICATION_TAIL_DWORDS];
+        struct r300_pm4_builder tail_builder;
+        r300_pm4_builder_init(&tail_builder, tail,
+                              R300_R2VB_PUBLICATION_TAIL_DWORDS);
+        uint32_t tail_dwords = 0;
+        if (r300_r2vb_publication_tail_emit(&tail_builder) != 0 ||
+            r300_pm4_builder_finish(&tail_builder, &tail_dwords) != 0)
+            return;
+        BEGIN_CS((int)tail_dwords);
+        OUT_CS_TABLE(tail, tail_dwords);
+        END_CS;
+        return;
+    }
+    /* Diagnostic timing-bisection variant: R300_R2VB_BARRIER neuters
+     * named members.  A weakened barrier is unsafe for production, so
+     * it stays here behind the explicit environment gate rather than in
+     * the common emitter.
+     */
     uint32_t r2vb_zb = (r2vb_bar && strstr(r2vb_bar, "nozb"))
                            ? 0
                            : (R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |

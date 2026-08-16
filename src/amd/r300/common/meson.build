@@ -62,6 +62,23 @@ test(
   suite : ['r300'],
 )
 
+r300_r2vb_target_state_test = executable(
+  'r300_r2vb_target_state_test',
+  files('r300_pm4_builder.c', 'r300_r2vb_fetch_pass.c',
+        'r300_r2vb_target_state.c',
+        'tests/r300_r2vb_target_state_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-r2vb-target-state',
+  r300_r2vb_target_state_test,
+  suite : ['r300'],
+)
+
 r300_r2vb_producer_pass_test = executable(
   'r300_r2vb_producer_pass_test',
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',
