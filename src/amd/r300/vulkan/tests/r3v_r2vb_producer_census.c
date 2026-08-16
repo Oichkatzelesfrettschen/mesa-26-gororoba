@@ -523,7 +523,7 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
          nir_shader *pass_b = r300_mp_build_pos_pass_b(
             plan.candidate, &plan.partition, plan.num_position_inputs);
          if (pass_a) {
-            r300_optimize_nir(pass_a, &g_screen);
+            r300_optimize_nir(pass_a, &g_screen.caps);
             selected_pass_a_stats = census_selected_phase(
                row, space_name, "selected-pass-a", pass_a, attempt == 0,
                transcript, transcript_len, &clean);
@@ -533,7 +533,7 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
             clean = false;
          }
          if (pass_b) {
-            r300_optimize_nir(pass_b, &g_screen);
+            r300_optimize_nir(pass_b, &g_screen.caps);
             selected_pass_b_stats = census_selected_phase(
                row, space_name, "selected-pass-b", pass_b, attempt == 0,
                transcript, transcript_len, &clean);

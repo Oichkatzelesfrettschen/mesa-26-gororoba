@@ -340,8 +340,8 @@ oracle_fits(nir_shader *nir)
    c.AllocateHwInputs = gate_allocate_inputs;
    c.UserData = &fs_code.inputs;
 
-   r300_optimize_nir(nir, r300_screen(ps));
-   nir_to_rc(nir, ps, ext, code, &c.Base);
+   r300_optimize_nir(nir, &r300_screen(ps)->caps);
+   nir_to_rc(nir, &r300_screen(ps)->caps, ext, code, &c.Base);
    bool ok = false;
    if (!c.Base.Error) {
       c.Base.remove_unused_constants = true;
@@ -366,7 +366,7 @@ case_over_budget_chain_splits(void)
          "90-step multiply-add chain exceeds the 64-slot ceiling unsplit");
 
    nir_shader *pos = build_chain_fs(90);
-   r300_optimize_nir(pos, r300_screen(ps));
+   r300_optimize_nir(pos, &r300_screen(ps)->caps);
 
    struct r300_mp_partition part;
    bool have_cut = r300_mp_find_vec4_cut(pos, &part);
@@ -423,7 +423,7 @@ case_wide_carry_declined(void)
    struct pipe_screen *ps = fake_r300_screen(&screen);
 
    nir_shader *pos = build_parallel_chains_fs(5, 18);
-   r300_optimize_nir(pos, r300_screen(ps));
+   r300_optimize_nir(pos, &r300_screen(ps)->caps);
 
    struct r300_mp_partition part;
    bool have_cut = r300_mp_find_vec4_cut(pos, &part);
@@ -439,7 +439,7 @@ case_typed_integer_carries_require_exact_ranges(void)
    struct pipe_screen *ps = fake_r300_screen(&screen);
 
    nir_shader *signed_pos = build_integer_carry_fs(INTEGER_CARRY_SIGNED_EXACT);
-   r300_optimize_nir(signed_pos, r300_screen(ps));
+   r300_optimize_nir(signed_pos, &r300_screen(ps)->caps);
    struct r300_mp_partition signed_part;
    bool signed_cut = r300_mp_find_vec4_cut(signed_pos, &signed_part);
    CHECK(signed_cut, "range-proven signed carry admits a vec4 cut");
@@ -468,7 +468,7 @@ case_typed_integer_carries_require_exact_ranges(void)
 
    nir_shader *signed_positive_outside =
       build_integer_carry_fs(INTEGER_CARRY_SIGNED_POSITIVE_OUTSIDE);
-   r300_optimize_nir(signed_positive_outside, r300_screen(ps));
+   r300_optimize_nir(signed_positive_outside, &r300_screen(ps)->caps);
    struct r300_mp_partition signed_positive_part;
    CHECK(!r300_mp_find_vec4_cut(signed_positive_outside,
                                 &signed_positive_part),
@@ -477,7 +477,7 @@ case_typed_integer_carries_require_exact_ranges(void)
 
    nir_shader *signed_negative_outside =
       build_integer_carry_fs(INTEGER_CARRY_SIGNED_NEGATIVE_OUTSIDE);
-   r300_optimize_nir(signed_negative_outside, r300_screen(ps));
+   r300_optimize_nir(signed_negative_outside, &r300_screen(ps)->caps);
    struct r300_mp_partition signed_negative_part;
    CHECK(!r300_mp_find_vec4_cut(signed_negative_outside,
                                 &signed_negative_part),
@@ -486,7 +486,7 @@ case_typed_integer_carries_require_exact_ranges(void)
 
    nir_shader *unsigned_pos =
       build_integer_carry_fs(INTEGER_CARRY_UNSIGNED_EXACT);
-   r300_optimize_nir(unsigned_pos, r300_screen(ps));
+   r300_optimize_nir(unsigned_pos, &r300_screen(ps)->caps);
    struct r300_mp_partition unsigned_part;
    bool unsigned_cut = r300_mp_find_vec4_cut(unsigned_pos, &unsigned_part);
    CHECK(unsigned_cut, "range-proven unsigned carry admits a vec4 cut");
@@ -517,7 +517,7 @@ case_typed_integer_carries_require_exact_ranges(void)
 
    nir_shader *unsigned_outside =
       build_integer_carry_fs(INTEGER_CARRY_UNSIGNED_OUTSIDE);
-   r300_optimize_nir(unsigned_outside, r300_screen(ps));
+   r300_optimize_nir(unsigned_outside, &r300_screen(ps)->caps);
    struct r300_mp_partition unsigned_outside_part;
    CHECK(!r300_mp_find_vec4_cut(unsigned_outside, &unsigned_outside_part),
          "unsigned carry above 2^17 boundary declines");
@@ -525,7 +525,7 @@ case_typed_integer_carries_require_exact_ranges(void)
 
    nir_shader *unbounded_pos =
       build_integer_carry_fs(INTEGER_CARRY_UNSIGNED_UNBOUNDED);
-   r300_optimize_nir(unbounded_pos, r300_screen(ps));
+   r300_optimize_nir(unbounded_pos, &r300_screen(ps)->caps);
    struct r300_mp_partition unbounded_part;
    CHECK(!r300_mp_find_vec4_cut(unbounded_pos, &unbounded_part),
          "unproven uint32 carry declines the FP32 transport");
@@ -533,7 +533,7 @@ case_typed_integer_carries_require_exact_ranges(void)
 
    nir_shader *signed_to_unsigned =
       build_integer_carry_fs(INTEGER_CARRY_SIGNED_TO_UNSIGNED);
-   r300_optimize_nir(signed_to_unsigned, r300_screen(ps));
+   r300_optimize_nir(signed_to_unsigned, &r300_screen(ps)->caps);
    struct r300_mp_partition signed_to_unsigned_part;
    CHECK(!r300_mp_find_vec4_cut(signed_to_unsigned,
                                 &signed_to_unsigned_part),
@@ -542,7 +542,7 @@ case_typed_integer_carries_require_exact_ranges(void)
 
    nir_shader *unsigned_to_signed =
       build_integer_carry_fs(INTEGER_CARRY_UNSIGNED_TO_SIGNED);
-   r300_optimize_nir(unsigned_to_signed, r300_screen(ps));
+   r300_optimize_nir(unsigned_to_signed, &r300_screen(ps)->caps);
    struct r300_mp_partition unsigned_to_signed_part;
    CHECK(!r300_mp_find_vec4_cut(unsigned_to_signed,
                                 &unsigned_to_signed_part),

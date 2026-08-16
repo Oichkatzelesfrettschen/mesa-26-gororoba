@@ -436,7 +436,7 @@ plan_measure_pass(struct r300_context *r300, nir_shader *vs_nir,
             *transient_failure = true;
         return R300_FS_ADMIT_REJECT;
     }
-    r300_optimize_nir(fs, r300->screen);
+    r300_optimize_nir(fs, &r300->screen->caps);
     enum r300_fs_admission adm = r300_fs_measure_nir_admission(
         r300, fs, NULL, R300_FS_INPUT_R2VB_FLAT_VERTEX, out_cost);
     if (keep_nir)
@@ -607,8 +607,8 @@ plan_walk_split_candidates(struct r300_context *r300, nir_shader *pos,
             _mesa_hash_table_destroy(range_ht, NULL);
             return false;
         }
-        r300_optimize_nir(pass_a, r300->screen);
-        r300_optimize_nir(pass_b, r300->screen);
+        r300_optimize_nir(pass_a, &r300->screen->caps);
+        r300_optimize_nir(pass_b, &r300->screen->caps);
         struct r300_fs_admission_cost pass_a_cost;
         struct r300_fs_admission_cost pass_b_cost;
         enum r300_fs_admission aa = r300_fs_measure_nir_admission(

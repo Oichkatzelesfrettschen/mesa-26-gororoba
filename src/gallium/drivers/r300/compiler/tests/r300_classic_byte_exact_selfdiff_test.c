@@ -84,8 +84,8 @@ compile_legacy_full(nir_shader *s, struct r300_fragment_program_compiler *fc,
    fc->code = &fs_code->code;
    fc->AllocateHwInputs = allocate_identity_inputs;
 
-   r300_optimize_nir(s, r300_screen(ps));
-   nir_to_rc(s, ps, ext, code, &fc->Base);
+   r300_optimize_nir(s, &r300_screen(ps)->caps);
+   nir_to_rc(s, &r300_screen(ps)->caps, ext, code, &fc->Base);
    if (fc->Base.Error)
       return false;
 

@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "pipe/p_state.h"
 #include "util/u_debug.h"
 #include "radeon_compiler_util.h"
 #include "radeon_dataflow.h"

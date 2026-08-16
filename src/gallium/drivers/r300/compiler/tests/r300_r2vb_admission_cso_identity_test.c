@@ -376,13 +376,13 @@ run_space(enum r300_r2vb_position_space space)
       snprintf(label, sizeof(label), "over/%s halves rebuild", space_name);
       CHECK(pass_a && pass_b, label);
       if (pass_a) {
-         r300_optimize_nir(pass_a, &g_screen);
+         r300_optimize_nir(pass_a, &g_screen.caps);
          snprintf(label, sizeof(label), "over/%s carry pass", space_name);
          check_identity(label, pass_a, &plan.pass_a_cost);
          ralloc_free(pass_a);
       }
       if (pass_b) {
-         r300_optimize_nir(pass_b, &g_screen);
+         r300_optimize_nir(pass_b, &g_screen.caps);
          snprintf(label, sizeof(label), "over/%s position pass", space_name);
          check_identity(label, pass_b, &plan.pass_b_cost);
          ralloc_free(pass_b);
@@ -412,13 +412,13 @@ run_space(enum r300_r2vb_position_space space)
       snprintf(label, sizeof(label), "sint/%s halves rebuild", space_name);
       CHECK(pass_a && pass_b, label);
       if (pass_a) {
-         r300_optimize_nir(pass_a, &g_screen);
+         r300_optimize_nir(pass_a, &g_screen.caps);
          snprintf(label, sizeof(label), "sint/%s carry pass", space_name);
          check_identity(label, pass_a, &plan.pass_a_cost);
          ralloc_free(pass_a);
       }
       if (pass_b) {
-         r300_optimize_nir(pass_b, &g_screen);
+         r300_optimize_nir(pass_b, &g_screen.caps);
          snprintf(label, sizeof(label), "sint/%s position pass", space_name);
          check_identity(label, pass_b, &plan.pass_b_cost);
          ralloc_free(pass_b);

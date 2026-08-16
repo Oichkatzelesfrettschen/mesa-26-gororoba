@@ -127,7 +127,7 @@ void r300_translate_vertex_shader(struct r300_context *r300,
 
     nir_shader *clone = nir_shader_clone(NULL, shader->state.ir.nir);
     struct r300_fragment_program_external_state external_state = {};
-    nir_to_rc(clone, (struct pipe_screen *)r300->screen,
+    nir_to_rc(clone, &r300->screen->caps,
               external_state, code, &compiler.Base);
     vs->outputs.wpos = vs->outputs.num_total;
 

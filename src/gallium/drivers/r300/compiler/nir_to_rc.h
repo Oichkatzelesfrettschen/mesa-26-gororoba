@@ -8,7 +8,6 @@
 
 #include <stdbool.h>
 #include "compiler/nir/nir.h"
-#include "pipe/p_defines.h"
 #include "r300_fs.h"
 #include "r300_shader_semantics.h"
 #include "r300_vs.h"
@@ -16,7 +15,7 @@
 #include "compiler/radeon_program_constants.h"
 
 struct nir_shader;
-struct pipe_screen;
+struct r300_capabilities;
 struct r300_fragment_program_external_state;
 struct radeon_compiler;
 union r300_shader_code {
@@ -25,7 +24,7 @@ union r300_shader_code {
 };
 
 void
-nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
+nir_to_rc(struct nir_shader *s, const struct r300_capabilities *caps,
           struct r300_fragment_program_external_state state,
           union r300_shader_code rc, struct radeon_compiler *compiler);
 

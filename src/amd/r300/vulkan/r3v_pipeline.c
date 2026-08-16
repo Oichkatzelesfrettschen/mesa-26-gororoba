@@ -607,7 +607,7 @@ r3v_nir_uses_live_texture_after_r300_opt(struct pipe_screen *pscreen,
       return false;
 
    nir_shader *check = nir_shader_clone(NULL, nir);
-   r300_optimize_nir(check, r300_screen(pscreen));
+   r300_optimize_nir(check, &r300_screen(pscreen)->caps);
    bool uses_texture = r3v_nir_uses_texture(check);
    ralloc_free(check);
    return uses_texture;
@@ -1106,7 +1106,7 @@ r3v_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
       return true;
 
    nir_shader *check = nir_shader_clone(NULL, nir);
-   r300_optimize_nir(check, r300_screen(pscreen));
+   r300_optimize_nir(check, &r300_screen(pscreen)->caps);
 
    bool ok = r3v_nir_scan_static_offsets(check, op, off_src, straddle,
                                             &maybe_dynamic);

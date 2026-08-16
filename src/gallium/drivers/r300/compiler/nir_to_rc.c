@@ -14,15 +14,12 @@
 #include "compiler/radeon_compiler.h"
 #include "compiler/radeon_program.h"
 #include "compiler/radeon_program_constants.h"
-#include "pipe/p_screen.h"
-#include "pipe/p_state.h"
 #include "util/compiler.h"
 #include "util/u_debug.h"
 #include "util/u_dynarray.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "r300_nir.h"
-#include "r300_screen.h"
 
 struct ntr_immediate {
    float values[4];
@@ -2197,12 +2194,12 @@ r300_nir_lower_alpha_to_one(nir_shader *s)
  * keep the NIR, then pass us a clone.
  */
 void
-nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
+nir_to_rc(struct nir_shader *s, const struct r300_capabilities *caps,
           struct r300_fragment_program_external_state state,
           union r300_shader_code rc, struct radeon_compiler *compiler)
 {
    struct ntr_compile *c;
-   bool is_r500 = r300_screen(screen)->caps.is_r500;
+   bool is_r500 = caps->is_r500;
    c = rzalloc(NULL, struct ntr_compile);
    c->compiler = compiler;
    c->lower_fabs = !is_r500 && s->info.stage == MESA_SHADER_VERTEX;
