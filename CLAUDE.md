@@ -22,4 +22,4 @@ The em-dash substitute convention (`word--word`, closed up, no surrounding space
 
 ## Response shape
 
-Responses report results, decisions, evidence, and remaining uncertainty in mechanism-first form: changed mechanism, evidence used, validation run, tests not run and why, risks or unresolved falsifiers. Chained reasoning appears when it explains the next action or a validation requirement; the rest of the deliberation lives in thoughtspace. Responses are plain ASCII mechanism prose under durable names.
+Responses report results, decisions, evidence, and remaining uncertainty in mechanism-first form: changed mechanism, evidence used, validation run, tests not run and why, risks or unresolved falsifiers. Chained reasoning appears when it explains the next action or a validation requirement; the rest of the deliberation lives in thoughtspace. Responses are emoji-free mechanism prose under durable names.
