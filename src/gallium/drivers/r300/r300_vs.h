@@ -8,38 +8,13 @@
 #define R300_VS_H
 
 #include "pipe/p_state.h"
-#include "compiler/radeon_code.h"
+#include "compiler/r300_shader_code.h"
 
 #include "r300_context.h"
 #include "r300_shader_semantics.h"
 
 struct r300_context;
 
-struct r300_vertex_shader_code {
-    /* Parent class */
-
-    unsigned num_inputs;
-    struct r300_shader_semantics outputs;
-
-    /* Whether the shader was replaced by a dummy one due to a shader
-     * compilation failure. */
-    bool dummy;
-
-    bool wpos;
-
-    /* Numbers of constants for each type. */
-    unsigned externals_count;
-    unsigned immediates_count;
-
-    /* HWTCL-specific.  */
-    /* Machine code (if translated) */
-    struct r300_vertex_program_code code;
-
-    struct r300_vertex_shader_code *next;
-
-    /* Error message in case compilation failed. */
-    char *error;
-};
 
 struct r300_vertex_shader {
     /* Parent class */

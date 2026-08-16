@@ -849,8 +849,8 @@ r300_classic_select(void *mem_ctx, nir_shader *nir,
     * final coordinates. */
    if (ext && ext->sampler_state_count > 0) {
       const unsigned n = (unsigned)ext->sampler_state_count;
-      nir_lower_tex_shadow_swizzle tex_swizzle[PIPE_MAX_SHADER_SAMPLER_VIEWS];
-      enum compare_func tex_compare_func[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+      nir_lower_tex_shadow_swizzle tex_swizzle[R300_MAX_TEXTURE_UNITS];
+      enum compare_func tex_compare_func[R300_MAX_TEXTURE_UNITS];
       for (unsigned i = 0; i < n; i++) {
          tex_compare_func[i] = ext->unit[i].texture_compare_func;
          tex_swizzle[i].swizzle_r = GET_SWZ(ext->unit[i].texture_swizzle, 0);

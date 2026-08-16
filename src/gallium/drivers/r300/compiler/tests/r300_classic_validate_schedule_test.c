@@ -19,6 +19,7 @@
 #include "radeon_program.h"
 #include "radeon_program_constants.h"
 #include "radeon_program_pair.h"
+#include "radeon_regalloc.h"
 
 /* Oracle (b), schedule legality: the validator must PASS on the unmodified
  * legacy path (nir_to_rc -> r3xx_compile_fragment_program, the

@@ -2258,8 +2258,8 @@ nir_to_rc(struct nir_shader *s, const struct r300_capabilities *caps,
       /* Shadow lowering. */
       int num_texture_states = state.sampler_state_count;
       if (num_texture_states > 0) {
-         nir_lower_tex_shadow_swizzle tex_swizzle[PIPE_MAX_SHADER_SAMPLER_VIEWS];
-         enum compare_func tex_compare_func[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+         nir_lower_tex_shadow_swizzle tex_swizzle[R300_MAX_TEXTURE_UNITS];
+         enum compare_func tex_compare_func[R300_MAX_TEXTURE_UNITS];
 
          for (unsigned i = 0; i < num_texture_states; i++) {
             tex_compare_func[i] = state.unit[i].texture_compare_func;

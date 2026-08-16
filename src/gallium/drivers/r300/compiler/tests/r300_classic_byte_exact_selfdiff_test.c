@@ -15,6 +15,7 @@
 #include "r300_screen.h"
 #include "radeon_code.h"
 #include "radeon_compiler.h"
+#include "radeon_regalloc.h"
 
 /* Oracle (c), reference-path determinism: a determinism check on the
  * reference path itself, not a cross-implementation comparison.  Compiling the

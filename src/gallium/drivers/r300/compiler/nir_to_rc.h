@@ -8,9 +8,8 @@
 
 #include <stdbool.h>
 #include "compiler/nir/nir.h"
-#include "r300_fs.h"
+#include "r300_shader_code.h"
 #include "r300_shader_semantics.h"
-#include "r300_vs.h"
 
 #include "compiler/radeon_program_constants.h"
 
