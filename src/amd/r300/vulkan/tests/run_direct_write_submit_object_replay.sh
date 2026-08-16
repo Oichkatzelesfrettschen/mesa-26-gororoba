@@ -300,7 +300,7 @@ if not isinstance(submit_relocs_digest, str) or \
     raise SystemExit(1)
 
 if bundle_path:
-    with open(bundle_path, "w", encoding="ascii") as bundle:
+    with open(bundle_path, "w", encoding="utf-8") as bundle:
         bundle.write("family rs480\n")
         for index, row in enumerate(rows):
             bundle.write(

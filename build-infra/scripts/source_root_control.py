@@ -963,7 +963,7 @@ def require_hashed_wrap_sources(source_view: Path) -> None:
             strict=True,
         )
         try:
-            wrap_text = wrap_path.read_text(encoding="ascii")
+            wrap_text = wrap_path.read_text(encoding="utf-8")
             parser.read_string(wrap_text, source=str(wrap_path))
         except (OSError, UnicodeError, configparser.Error) as error:
             fail(f"invalid Meson wrap file {wrap_path}: {error}")
@@ -1012,7 +1012,7 @@ def source_view_content_digest(source_view: Path) -> str:
                 entry_status = entry.stat(follow_symlinks=False)
             except OSError as error:
                 fail(f"cannot stat source view entry {entry.path}: {error}")
-            mode_bytes = f"{stat.S_IMODE(entry_status.st_mode):04o}".encode("ascii")
+            mode_bytes = f"{stat.S_IMODE(entry_status.st_mode):04o}".encode("utf-8")
             digest_frame(digest, b"path", path_bytes)
             digest_frame(digest, b"mode", mode_bytes)
             if stat.S_ISDIR(entry_status.st_mode):
@@ -1023,7 +1023,7 @@ def source_view_content_digest(source_view: Path) -> str:
                 digest_frame(
                     digest,
                     b"size",
-                    str(entry_status.st_size).encode("ascii"),
+                    str(entry_status.st_size).encode("utf-8"),
                 )
                 try:
                     with open(entry.path, "rb") as source_file:
@@ -1114,7 +1114,7 @@ def root_identity_path(values: dict[str, Path | str]) -> Path:
 
 def read_identity(path: Path) -> dict[str, object]:
     try:
-        value = json.loads(path.read_text(encoding="ascii"))
+        value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         fail(f"invalid source identity {path}: {error}")
     if not isinstance(value, dict):
@@ -1397,7 +1397,7 @@ def write_json_atomic(output: Path, payload: dict[str, str | int]) -> None:
         text=True,
     )
     try:
-        with os.fdopen(descriptor, "w", encoding="ascii") as temporary:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary:
             json.dump(payload, temporary, indent=2, sort_keys=True)
             temporary.write("\n")
             temporary.flush()
