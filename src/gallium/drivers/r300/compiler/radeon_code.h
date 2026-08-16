@@ -22,6 +22,10 @@ enum r300_fs_input_semantics {
 };
 
 #define R300_PFS_MAX_ALU_INST     64
+/* R300 through R500 expose 16 texture units, so per-unit external
+ * state and the lowering scratch it feeds share this bound. */
+#define R300_MAX_TEXTURE_UNITS    16
+
 #define R300_PFS_MAX_TEX_INST     32
 #define R300_PFS_MAX_TEX_INDIRECT 4
 #define R300_PFS_NUM_TEMP_REGS    32
@@ -181,7 +185,7 @@ struct r300_fragment_program_external_state {
       unsigned lod_max_q88 : 16;
       unsigned tex_width : 16;
       unsigned tex_height : 16;
-   } unit[16];
+   } unit[R300_MAX_TEXTURE_UNITS];
 
    unsigned alpha_to_one : 1;
 
