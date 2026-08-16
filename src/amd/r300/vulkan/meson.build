@@ -875,6 +875,21 @@ if get_option('r3v-native-backend')
       ),
       suite : ['r3v'],
     )
+    # The serial status-load submitter machine validated entirely against
+    # scripted fakes: the frozen event ladder, the sampler-ready gate
+    # before IOCTL_ENTER, and the absorbing abort, with no device present.
+    test(
+      'r3v-native-status-load-machine',
+      executable(
+        'r3v_native_status_load_machine_test',
+        files('tests/r3v_native_status_load_machine.c',
+              'tests/r3v_native_status_load_machine_test.c'),
+        include_directories : [inc_include, inc_src,
+                               include_directories('.')],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
 
     # The runner emits the contract-prefixed reference cell and stops before
     # any Vulkan or DRM operation. Its refusal calibration is independent of
