@@ -119,6 +119,11 @@ struct serial_run {
    FILE *transcript;
    int sampler_fd;
    bool sampler_closed;
+   /* Set when a SAMPLER_ENTER_READ message arrives: the census read is
+    * in progress from that instant, so a submission issued after it
+    * lands inside the capture.
+    */
+   bool enter_read_seen;
    char nonce[R3V_STATUS_LOAD_NONCE_LENGTH + 1];
    struct r3v_status_load_machine machine;
    uint32_t iterations_delivered;
@@ -228,6 +233,8 @@ sampler_pump(struct serial_run *run, int timeout_ms)
                                        "sampler timestamp is not decimal");
          return;
       }
+      if (strcmp(state, "SAMPLER_ENTER_READ") == 0)
+         run->enter_read_seen = true;
       r3v_status_load_machine_sampler(&run->machine, state, (uint64_t)ns);
       /* Loop with a zero wait so a burst of datagrams drains whole. */
       timeout_ms = 0;
@@ -721,6 +728,28 @@ main(int argc, char **argv)
     * ladder.  The machine stops the run at its first failure and no
     * resubmission follows an abort.
     */
+   /* The burst's single window must overlap the census capture, so the
+    * submission waits for the sampler's ENTER_READ: the kernel is
+    * recording from that message on, and the ioctl issued after it puts
+    * the GPU-busy interval inside the capture instead of racing it.
+    * The serial cell keeps its many-window overlap and submits from
+    * READY.
+    */
+   if (burst_draws != 0) {
+      stage("census read in progress");
+      const uint64_t read_deadline =
+         run_now_ns(NULL) + (uint64_t)SAMPLER_WAIT_BUDGET_MS * 1000000ull;
+      while (run.machine.phase == R3V_STATUS_LOAD_RUNNING &&
+             !run.enter_read_seen && !run.sampler_closed &&
+             run_now_ns(NULL) < read_deadline)
+         sampler_pump(&run, 100);
+      if (!run.enter_read_seen &&
+          run.machine.phase == R3V_STATUS_LOAD_RUNNING)
+         r3v_status_load_machine_fault(&run.machine,
+                                       "census read never began within "
+                                       "the wait budget");
+   }
+
    stage("serial submissions");
    for (uint32_t i = 0; i < iterations; i++) {
       sampler_pump(&run, 0);
