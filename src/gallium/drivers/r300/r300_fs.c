@@ -18,10 +18,10 @@
 #include "r300_reg.h"
 #include "r300_texture.h"
 
-#include "compiler/radeon_compiler.h"
-#include "compiler/r300_nir.h"
+#include "amd/r300/compiler/radeon_compiler.h"
+#include "amd/r300/compiler/r300_nir.h"
 #include "nir/nir_draw_helpers.h"
-#include "compiler/nir_to_rc.h"
+#include "amd/r300/compiler/nir_to_rc.h"
 #include "compiler/classic/r300_classic_emit.h"
 #include "compiler/classic/r300_classic_regalloc.h"
 #include "nir.h"

@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: MIT
 
-# Gallium roots resolved once: r3v links the r300 Gallium driver and its
-# shader compiler, and a relative path repeated at every use site breaks
-# silently when the driver directory moves.
+# Backend roots resolved once: the optional r3v Gallium lane links the r300
+# driver, while both R300 front ends consume the compiler from src/amd/r300.
 inc_gallium_drivers = include_directories('../../../gallium/drivers')
 inc_gallium_r300 = include_directories('../../../gallium/drivers/r300')
-inc_gallium_r300_compiler = include_directories(
-  '../../../gallium/drivers/r300/compiler')
+inc_amd_r300_compiler = include_directories('../compiler')
 
 r3v_entrypoints = custom_target(
   'r3v_entrypoints',
@@ -93,8 +91,9 @@ if get_option('r3v-gallium-backend') and with_gallium_r300
   libr3v_inc += [
     inc_gallium_aux,
     inc_gallium_drivers,
-    # r300/compiler/r300_nir.h (r300_optimize_nir) includes "r300_screen.h"
-    # relative to the r300 driver dir, so put it directly on the include path.
+    # The Gallium-backed implementation still consumes r300_screen.h and the
+    # driver-side shader/context objects.  The compiler include root above is
+    # independent of this adapter include root.
     inc_gallium_r300,
   ]
   # libgallium provides Gallium auxiliary symbols (u_upload_alloc_ref,
@@ -271,7 +270,7 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
         libr3v_inc, include_directories('.'),
         inc_gallium_aux, inc_gallium_drivers,
         inc_gallium_r300,
-        inc_gallium_r300_compiler,
+        inc_amd_r300_compiler,
       ],
       dependencies : libr3v_deps + [idep_nir],
       link_with : libr3v_link_with + [libr300],
@@ -300,7 +299,7 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
         libr3v_inc, include_directories('.'),
         inc_gallium_aux, inc_gallium_drivers,
         inc_gallium_r300,
-        inc_gallium_r300_compiler,
+        inc_amd_r300_compiler,
       ],
       dependencies : libr3v_deps + [idep_nir],
       link_with : libr3v_link_with + [libr300],

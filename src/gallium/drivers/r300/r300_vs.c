@@ -10,8 +10,8 @@
 #include "r300_screen.h"
 #include "r300_reg.h"
 
-#include "compiler/nir_to_rc.h"
-#include "compiler/radeon_compiler.h"
+#include "amd/r300/compiler/nir_to_rc.h"
+#include "amd/r300/compiler/radeon_compiler.h"
 #include "nir/nir.h"
 
 

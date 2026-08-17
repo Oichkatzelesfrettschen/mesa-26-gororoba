@@ -10,7 +10,7 @@
 #include "util/u_atomic.h"
 
 #include "r300_context.h"
-#include "compiler/r300_nir.h"
+#include "amd/r300/compiler/r300_nir.h"
 #include "r300_screen.h"
 #include "r300_vs.h"
 

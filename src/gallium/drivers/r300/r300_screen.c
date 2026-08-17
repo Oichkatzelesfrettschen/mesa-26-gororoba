@@ -17,7 +17,7 @@
 #include "vl/vl_video_buffer.h"
 
 #include "r300_context.h"
-#include "compiler/r300_nir.h"
+#include "amd/r300/compiler/r300_nir.h"
 #include "r300_texture.h"
 #include "r300_screen_buffer.h"
 #include "r300_r2vb_plan.h"

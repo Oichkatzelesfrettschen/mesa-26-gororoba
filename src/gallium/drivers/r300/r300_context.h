@@ -20,8 +20,8 @@
 #include "r300_defines.h"
 #include "r300_r2vb_clip.h"
 #include "r300_screen.h"
-#include "compiler/radeon_regalloc.h"
-#include "compiler/radeon_code.h"
+#include "amd/r300/compiler/radeon_regalloc.h"
+#include "amd/r300/compiler/radeon_code.h"
 #include "compiler/shader_info.h"
 
 struct u_upload_mgr;

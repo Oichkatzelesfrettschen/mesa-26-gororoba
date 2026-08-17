@@ -11,7 +11,7 @@
 #include "r300_shader_code.h"
 #include "r300_shader_semantics.h"
 
-#include "compiler/radeon_program_constants.h"
+#include "radeon_program_constants.h"
 
 struct nir_shader;
 struct r300_capabilities;

@@ -15,8 +15,8 @@
  * 4. Known: ntr_emit_if() and ntr_emit_loop() stop after nested child-list
  *    errors, and r300_translate_vertex_shader() checks compiler.Base.Error
  *    before missing-position classification.  Symbol discovery uses
- *    (rg --fixed-strings "ntr_emit_if" src/gallium/drivers/r300/compiler/nir_to_rc.c),
- *    (rg --fixed-strings "ntr_emit_loop" src/gallium/drivers/r300/compiler/nir_to_rc.c),
+ *    (rg --fixed-strings "ntr_emit_if" src/amd/r300/compiler/nir_to_rc.c),
+ *    (rg --fixed-strings "ntr_emit_loop" src/amd/r300/compiler/nir_to_rc.c),
  *    and (rg --fixed-strings "r300_translate_vertex_shader"
  *    src/gallium/drivers/r300/r300_vs.c).
  */

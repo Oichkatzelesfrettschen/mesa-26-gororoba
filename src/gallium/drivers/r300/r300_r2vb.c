@@ -40,7 +40,7 @@
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
 
-#include "compiler/r300_nir.h"
+#include "amd/r300/compiler/r300_nir.h"
 #include "amd/r300/common/r300_r2vb_fetch_pass.h"
 #include "amd/r300/common/r300_r2vb_target_state.h"
 #include "amd/r300/common/r300_r2vb_source_contract.h"

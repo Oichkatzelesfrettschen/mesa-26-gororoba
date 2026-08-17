@@ -188,7 +188,11 @@ def main():
     ]
 
     with open(args.output, 'w') as f:
-        f.write('#include "compiler/r300_nir.h"')
+        # The generated translation unit is compiled with this directory as
+        # an include root.  Name the compiler-local header directly so the
+        # generator does not recreate the retired Gallium-relative
+        # compiler/ path after the compiler moved under src/amd/r300.
+        f.write('#include "r300_nir.h"')
 
         f.write(nir_algebraic.AlgebraicPass("r300_transform_vs_trig_input",
                                             transform_trig_input_vs_r500).render())
