@@ -445,6 +445,16 @@ main(int argc, char **argv)
       return 1;
    }
 
+   /* The census-absent declaration names a fence-latency control run:
+    * the sampler walks the barrier ladder with the census node unread,
+    * so the run differs from an observed run by exactly the census MMIO
+    * read stream.  The declaration takes the exact value 1; any other
+    * spelling leaves the run observed, and the burst submission then
+    * keeps waiting for the sampler's ENTER_READ.
+    */
+   const char *absent = getenv("R3V_STATUS_LOAD_CENSUS_ABSENT");
+   const bool census_absent = absent != NULL && strcmp(absent, "1") == 0;
+
    const char *nonce = getenv("R3V_STATUS_LOAD_RUN_NONCE");
    if (nonce == NULL || strlen(nonce) != R3V_STATUS_LOAD_NONCE_LENGTH) {
       fprintf(stderr,
@@ -733,9 +743,10 @@ main(int argc, char **argv)
     * recording from that message on, and the ioctl issued after it puts
     * the GPU-busy interval inside the capture instead of racing it.
     * The serial cell keeps its many-window overlap and submits from
-    * READY.
+    * READY.  A census-absent control run has no capture to overlap, so
+    * it submits from READY too.
     */
-   if (burst_draws != 0) {
+   if (burst_draws != 0 && !census_absent) {
       stage("census read in progress");
       const uint64_t read_deadline =
          run_now_ns(NULL) + (uint64_t)SAMPLER_WAIT_BUDGET_MS * 1000000ull;
@@ -777,6 +788,7 @@ main(int argc, char **argv)
       "  \"run_nonce\": \"%s\",\n"
       "  \"declared_submissions\": %u,\n"
       "  \"burst_draws\": %u,\n"
+      "  \"census_absent\": %s,\n"
       "  \"iterations_delivered\": %u,\n"
       "  \"machine_phase\": \"%s\",\n"
       "  \"abort_reason\": \"%s\",\n"
@@ -784,9 +796,10 @@ main(int argc, char **argv)
       "  \"last_submit_result\": %d,\n"
       "  \"last_queue_status\": \"%s\"\n"
       "}\n",
-      burst_draws != 0 ? "r3v-native-status-load-burst-outcome/1"
-                       : "r3v-native-status-load-serial-outcome/1",
-      run.nonce, iterations, burst_draws, run.iterations_delivered,
+      burst_draws != 0 ? "r3v-native-status-load-burst-outcome/2"
+                       : "r3v-native-status-load-serial-outcome/2",
+      run.nonce, iterations, burst_draws, census_absent ? "true" : "false",
+      run.iterations_delivered,
       phase == R3V_STATUS_LOAD_COMPLETE
          ? "COMPLETE"
          : (phase == R3V_STATUS_LOAD_ABORTED ? "ABORTED" : "RUNNING"),
