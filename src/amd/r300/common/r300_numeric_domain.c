@@ -12,7 +12,7 @@
  * in sync: adding a domain to the enum without a table row fails the build.
  */
 
-#include "r300_numeric_domain.h"
+#include "amd/r300/common/r300_numeric_domain.h"
 
 #include "util/macros.h"
 

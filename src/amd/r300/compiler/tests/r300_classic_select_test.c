@@ -12,7 +12,7 @@
 #include "classic/r300_classic_select.h"
 #include "r300_nir.h"
 #include "r300_screen.h"
-#include "r300_shader_semantics.h"
+#include "amd/r300/common/r300_shader_semantics.h"
 #include "radeon_program_constants.h"
 
 /* Selection corpus criterion: every corpus shader covers the admitted

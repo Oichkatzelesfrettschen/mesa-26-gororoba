@@ -16,7 +16,7 @@
 #include "r300_context.h"
 #include "r300_fs.h"
 #include "r300_screen.h"
-#include "r300_shader_semantics.h"
+#include "amd/r300/common/r300_shader_semantics.h"
 #include "r300_state_inlines.h"
 #include "r300_texture.h"
 #include "r300_vs.h"

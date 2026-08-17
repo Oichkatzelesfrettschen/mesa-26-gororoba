@@ -29,7 +29,7 @@
 #include "r300_r2vb_plan.h"
 #include "r300_reg.h"
 #include "r300_screen.h"
-#include "r300_shader_semantics.h"
+#include "amd/r300/common/r300_shader_semantics.h"
 #include "r300_vertex_format_pipe.h"
 #include "radeon_regalloc.h"
 

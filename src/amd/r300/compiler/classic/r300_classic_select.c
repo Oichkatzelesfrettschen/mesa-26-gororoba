@@ -12,7 +12,7 @@
 #include "../r300_nir.h"
 #include "../radeon_code.h"
 #include "../radeon_program_constants.h"
-#include "r300_shader_semantics.h"
+#include "amd/r300/common/r300_shader_semantics.h"
 
 /* The selector maps each nir_def to a classic source descriptor: inputs,
  * constants, and immediates map to file references with a composed swizzle,

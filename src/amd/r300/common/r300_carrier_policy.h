@@ -27,7 +27,7 @@
 #include <stdint.h>
 
 #include "util/format/u_formats.h"
-#include "r300_numeric_domain.h"
+#include "amd/r300/common/r300_numeric_domain.h"
 
 #ifdef __cplusplus
 extern "C" {

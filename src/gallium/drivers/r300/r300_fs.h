@@ -10,7 +10,7 @@
 
 #include "pipe/p_state.h"
 #include "amd/r300/compiler/r300_shader_code.h"
-#include "r300_shader_semantics.h"
+#include "amd/r300/common/r300_shader_semantics.h"
 
 struct r300_context;
 
