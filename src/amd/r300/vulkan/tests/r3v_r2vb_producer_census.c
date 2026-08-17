@@ -58,7 +58,7 @@
 
 #include "r300_context.h"
 #include "r300_fs.h"
-#include "compiler/r300_nir.h"
+#include "amd/r300/compiler/r300_nir.h"
 #include "r300_r2vb_plan.h"
 #include "r300_screen.h"
 #include "radeon_regalloc.h"

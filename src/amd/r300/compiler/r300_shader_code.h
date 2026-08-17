@@ -19,7 +19,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "compiler/radeon_code.h"
+#include "radeon_code.h"
 #include "compiler/shader_info.h"
 #include "r300_shader_semantics.h"
 

@@ -20,7 +20,7 @@
 #include "r300_screen_buffer.h"
 #include "r300_texture.h"
 #include "r300_video.h"
-#include "compiler/radeon_regalloc.h"
+#include "amd/r300/compiler/radeon_regalloc.h"
 
 #include <inttypes.h>
 

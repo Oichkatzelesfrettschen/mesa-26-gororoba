@@ -12,7 +12,8 @@
     - !reference [.gl-rules, rules]
     - changes: &r300_file_list
         - src/gallium/drivers/r300/*
-        - src/gallium/drivers/r300/compiler/**/*
+        - src/amd/r300/common/**/*
+        - src/amd/r300/compiler/**/*
         - src/gallium/drivers/r300/ci/gitlab-ci.yml
         - src/gallium/drivers/r300/ci/gitlab-ci-inc.yml
         - src/gallium/drivers/r300/ci/deqp-$DEQP_SUITE.toml
@@ -34,4 +35,3 @@
     - changes:
         *r300_file_list
       when: manual
-

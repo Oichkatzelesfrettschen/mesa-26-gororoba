@@ -11,7 +11,7 @@
 
 #include "amd/r300/common/r300_r2vb_source_contract.h"
 #include "compiler/shader_enums.h"
-#include "compiler/radeon_code.h"
+#include "amd/r300/compiler/radeon_code.h"
 #include "r300_context.h"
 #include "r300_fs.h"
 #include "r300_nir_ssa_cut.h"

@@ -21,8 +21,8 @@
 
 #include "nir/nir.h"
 #include "nir/nir_builder.h"
-#include "compiler/nir_to_rc.h"
-#include "compiler/r300_nir.h"
+#include "amd/r300/compiler/nir_to_rc.h"
+#include "amd/r300/compiler/r300_nir.h"
 
 #include "draw/draw_context.h"
 #include "draw/draw_vs.h"

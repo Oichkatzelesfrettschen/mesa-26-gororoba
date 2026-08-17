@@ -208,7 +208,7 @@ r300_pair_decode_channel(const float *reg, unsigned swz)
  * RGB.Src[], and an RGB argument can resolve through Alpha.Src[]. A NULL
  * return means the swizzle only selects ZERO/ONE/HALF/UNUSED, so no register
  * is fetched. Symbol discovery: (rg --fixed-strings 'rc_pair_get_src' src/)
- * locates src/gallium/drivers/r300/compiler/radeon_program_pair.c:175, where
+ * locates src/amd/r300/compiler/radeon_program_pair.c:175, where
  * RC_SOURCE_RGB selects RGB.Src[] and RC_SOURCE_ALPHA selects Alpha.Src[]. */
 static bool
 eval_arg_reg(struct r300_pair_eval *e, struct rc_pair_instruction *pair,

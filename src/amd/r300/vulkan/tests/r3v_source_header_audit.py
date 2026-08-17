@@ -31,6 +31,7 @@ import tempfile
 from pathlib import Path
 
 SUFFIXES = (".c", ".h", ".py")
+REPO_ROOT = Path(__file__).resolve().parents[5]
 
 # Lines a header may carry that name a holder.  Each entry is a holder this
 # tree preserves verbatim because the upstream attribution is reviewed for
@@ -40,6 +41,21 @@ REAL_COPYRIGHT_HOLDERS: tuple[str, ...] = (
     # through the move into src/amd/r300/common.
     "Nicolai Haehnle et al.",
 )
+
+# Attribution introduced to the R3V audit by a directory move is reviewed for
+# the exact historical file, not promoted into a lane-wide template.  Both
+# entries below preserve the pre-move Gallium header verbatim.  Keeping this
+# rule path-specific prevents a new file from borrowing an established
+# contributor's name merely because another file in the tree legitimately
+# carries it.
+PATH_COPYRIGHT_HOLDERS: dict[str, tuple[str, ...]] = {
+    "src/amd/r300/common/r300_capabilities.h": (
+        "Corbin Simpson <MostAwesomeDude@gmail.com>",
+    ),
+    "src/amd/r300/common/r300_shader_semantics.h": (
+        "Marek Olšák <maraeo@gmail.com>",
+    ),
+}
 
 
 def normalize_holder(holder: str) -> str:
@@ -55,6 +71,18 @@ def normalize_holder(holder: str) -> str:
 
 REAL_COPYRIGHT_HOLDER_KEYS = frozenset(
     normalize_holder(holder) for holder in REAL_COPYRIGHT_HOLDERS)
+
+
+def path_holder_keys(path: Path) -> frozenset[str]:
+    """Return reviewed holder keys for the exact repository-relative path."""
+    try:
+        path_posix = path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return frozenset()
+    for reviewed_path, holders in PATH_COPYRIGHT_HOLDERS.items():
+        if path_posix == reviewed_path:
+            return frozenset(normalize_holder(holder) for holder in holders)
+    return frozenset()
 
 # The opening lines a header rule reads.  A license grant and a copyright line
 # sit at the top of a file; a match further down is prose or test data.
@@ -101,6 +129,7 @@ def audit_file(path: Path):
         return [f"{path}: unreadable: {exc}"]
 
     defects = []
+    reviewed_holder_keys = REAL_COPYRIGHT_HOLDER_KEYS | path_holder_keys(path)
     if not any(has_spdx_identifier(line) for line in head):
         defects.append(f"{path}: no SPDX-License-Identifier in the first "
                        f"{HEADER_LINES} lines")
@@ -108,7 +137,7 @@ def audit_file(path: Path):
         match = COPYRIGHT.match(line.strip())
         if match is not None:
             holder = match.group("holder").strip()
-            if normalize_holder(holder) not in REAL_COPYRIGHT_HOLDER_KEYS:
+            if normalize_holder(holder) not in reviewed_holder_keys:
                 defects.append(f"{path}: copyright line names an unreviewed "
                                f"holder: {line.strip()}")
         if AI_DISCLOSURE.search(line):
@@ -243,13 +272,32 @@ def selftest():
         reviewed_defects = fixture_defects(reviewed_header)
         if reviewed_defects:
             raise AssertionError((name, reviewed_defects))
+    with tempfile.TemporaryDirectory() as tmp:
+        for reviewed_path, holders in PATH_COPYRIGHT_HOLDERS.items():
+            path = REPO_ROOT / reviewed_path
+            header = CLEAN_HEADER.replace(
+                "/* SPDX-License-Identifier: MIT */",
+                "/* SPDX-License-Identifier: MIT\n * Copyright 2008 " +
+                holders[0] + "\n */")
+            reviewed_defects = audit_file(path)
+            if reviewed_defects:
+                raise AssertionError((reviewed_path, reviewed_defects))
+
+            wrong_path = Path(tmp) / reviewed_path
+            wrong_path.parent.mkdir(parents=True, exist_ok=True)
+            wrong_path.write_text(header)
+            wrong_path_defects = audit_file(wrong_path)
+            if (len(wrong_path_defects) != 1 or
+                    "unreviewed holder" not in wrong_path_defects[0]):
+                raise AssertionError((str(wrong_path), wrong_path_defects))
     for name in sorted(FIXTURES):
         defects = run_fixture(name)
         expected = FIXTURE_PREDICATES[name]
         if len(defects) != 1 or expected not in defects[0]:
             raise AssertionError((name, defects))
     print(f"r3v_source_header_audit selftest: {len(FIXTURES)} isolated "
-          f"defect legs and {len(reviewed_headers) + 1} clean legs OK")
+          f"defect legs, {len(PATH_COPYRIGHT_HOLDERS)} path-attribution "
+          f"pairs, and {len(reviewed_headers) + 1} generic clean legs OK")
     return 0
 
 

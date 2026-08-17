@@ -27,7 +27,7 @@
 #include "compiler/spirv/nir_spirv.h"
 #include "r300/r300_compute_admission.h"
 #include "r300/r300_screen.h"
-#include "r300/compiler/r300_nir.h"
+#include "amd/r300/compiler/r300_nir.h"
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"

@@ -379,7 +379,7 @@ rg -n --fixed-strings -e 'radeon_drm_vk_bo_cache_sync' \
 # Triangle-cell fragment program compiler output.
 rg -n --fixed-strings -e 'r300_tcl_bypass_fs_tool' \
   -e 'r300_tcl_bypass_triangle_fs_block' \
-  src/gallium/drivers/r300/compiler/tests/r300_tcl_bypass_fs_tool.c \
+  src/amd/r300/compiler/tests/r300_tcl_bypass_fs_tool.c \
   src/amd/r300/common/r300_tcl_bypass_triangle_fs_block.h
 
 # Private fixed-cell recording outside the ICD export surface.
