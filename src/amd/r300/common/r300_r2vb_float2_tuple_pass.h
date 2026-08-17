@@ -148,4 +148,65 @@ int r300_r2vb_float2_tuple_reference_emit(
 int r300_r2vb_float2_tuple_reference_expected(uint32_t *expected,
                                               uint32_t expected_dwords);
 
+/* The burst pass raises the GPU duty cycle of one submission along the
+ * draws-per-IB axis: one IB carries the reference tuple pass whole as
+ * member 0 -- first-draw contract prefix included -- followed by
+ * draws - 1 further members, each the identical prefix-free emission
+ * retargeted to its own carrier row.  Every member's bytes come from
+ * r300_r2vb_float2_tuple_pass_emit unchanged, so member content stays
+ * byte-identical to the silicon-qualified single pass; only
+ * RB3D_COLOROFFSET0 differs, by one carrier row per member.  Each
+ * member's publication tail flushes the color caches before the next
+ * retarget, so the members own disjoint carrier rows and the delivery
+ * check decides each row independently.
+ */
+#define R300_R2VB_FLOAT2_TUPLE_BURST_MAX_DRAWS 64u
+
+struct r300_r2vb_float2_tuple_burst_ib {
+   uint32_t *ib;
+   uint32_t ib_size_dwords;
+   uint32_t draws;
+   /* Member relocation sites in member order, three per member with the
+    * single pass's [carrier, vertex, vertex] pattern, ib_index rebased
+    * into the composed stream.
+    */
+   struct r300_r2vb_float2_tuple_reloc_site
+      reloc_sites[R300_R2VB_FLOAT2_TUPLE_RELOC_SITES *
+                  R300_R2VB_FLOAT2_TUPLE_BURST_MAX_DRAWS];
+   uint32_t reloc_site_count;
+   /* The composed dword index where each member's emission begins;
+    * retained evidence splits the stream here when a verdict needs the
+    * per-member bytes.
+    */
+   uint32_t member_start[R300_R2VB_FLOAT2_TUPLE_BURST_MAX_DRAWS];
+   bool owns_ib;
+};
+
+/* One carrier row per member: the reference layout's pitch times its
+ * height times the 16-byte texel.  RB3D_COLOROFFSET0 takes each
+ * member's row offset directly, so the stride is also the member's
+ * color-offset step and the burst carrier allocation is draws rows.
+ */
+int r300_r2vb_float2_tuple_burst_member_stride_bytes(uint32_t *out);
+
+/* Emits the burst over the reference records.  draws outside
+ * 1..R300_R2VB_FLOAT2_TUPLE_BURST_MAX_DRAWS refuses with -EINVAL.  The
+ * caller owns the returned IB allocation.
+ */
+int r300_r2vb_float2_tuple_burst_reference_emit(
+   uint32_t draws, struct r300_r2vb_float2_tuple_burst_ib *out);
+
+void r300_r2vb_float2_tuple_burst_release(
+   struct r300_r2vb_float2_tuple_burst_ib *ib);
+
+/* Proves the composed sites hold the single pass's per-member pattern:
+ * three sites per member in [carrier, vertex, vertex] order, each the
+ * payload dword of a relocation NOP carrying its slot's payload, with
+ * ib_index strictly increasing across the stream and every member-0
+ * site at or past that member's recorded start.  Returns 0, -EINVAL,
+ * or -ERANGE.
+ */
+int r300_r2vb_float2_tuple_burst_validate_reloc_sites(
+   const struct r300_r2vb_float2_tuple_burst_ib *ib);
+
 #endif

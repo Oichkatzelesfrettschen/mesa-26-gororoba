@@ -7,6 +7,7 @@
  * XY01 delivery expectation, and the refusal edges.
  */
 
+#include "r300_fragment_binary.h"
 #include "r300_r2vb_float2_tuple_pass.h"
 #include "r300_r2vb_producer_pass.h"
 #include "r300_reg.h"
@@ -184,6 +185,102 @@ test_emission_contract(void)
    r300_r2vb_float2_tuple_pass_release(&pass);
 }
 
+/* The burst is member-wise byte identity: member 0 is the reference
+ * emission whole, and every later member is the prefix-free emission at
+ * its own carrier row, proven here against fresh standalone emissions.
+ */
+static void
+test_burst_member_byte_identity(void)
+{
+   uint32_t stride = 0;
+   CHECK(r300_r2vb_float2_tuple_burst_member_stride_bytes(&stride) == 0 &&
+            stride == 64,
+         "member stride is the 4-pixel reference row (64 bytes), got %u",
+         stride);
+
+   struct r300_r2vb_float2_tuple_burst_ib single;
+   CHECK(r300_r2vb_float2_tuple_burst_reference_emit(1, &single) == 0,
+         "single-member burst emission failed");
+   struct r300_r2vb_float2_tuple_ib reference;
+   CHECK(r300_r2vb_float2_tuple_reference_emit(&reference) == 0,
+         "reference emission failed");
+   CHECK(single.ib_size_dwords == reference.ib_size_dwords &&
+            memcmp(single.ib, reference.ib,
+                   reference.ib_size_dwords * sizeof(uint32_t)) == 0,
+         "a one-member burst is the reference stream byte for byte");
+   CHECK(single.reloc_site_count == R300_R2VB_FLOAT2_TUPLE_RELOC_SITES &&
+            single.member_start[0] == 0,
+         "one-member site and start bookkeeping drifted");
+   CHECK(r300_r2vb_float2_tuple_burst_validate_reloc_sites(&single) == 0,
+         "one-member burst sites failed validation");
+
+   const uint32_t draws = 4;
+   struct r300_r2vb_float2_tuple_burst_ib burst;
+   CHECK(r300_r2vb_float2_tuple_burst_reference_emit(draws, &burst) == 0,
+         "four-member burst emission failed");
+   CHECK(burst.draws == draws &&
+            burst.reloc_site_count ==
+               draws * R300_R2VB_FLOAT2_TUPLE_RELOC_SITES,
+         "burst bookkeeping drifted");
+   CHECK(r300_r2vb_float2_tuple_burst_validate_reloc_sites(&burst) == 0,
+         "burst sites failed validation");
+
+   CHECK(burst.member_start[0] == 0 &&
+            burst.member_start[1] == reference.ib_size_dwords,
+         "member 1 does not start where the reference stream ends");
+
+   struct r300_fragment_binary fs;
+   CHECK(r300_r2vb_producer_reference_fs(&fs) == 0, "reference FS failed");
+   for (uint32_t m = 0; m < draws; m++) {
+      struct r300_r2vb_float2_tuple_params params = {
+         .carrier_offset = m * stride,
+         .vertex_offset = 0,
+         .count = R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT,
+         .records = r300_r2vb_float2_tuple_reference_records,
+         .first_draw_contract = NULL,
+         .fragment_binary = &fs,
+      };
+      struct r300_r2vb_float2_tuple_ib standalone;
+      if (m == 0) {
+         standalone = reference;
+      } else {
+         CHECK(r300_r2vb_float2_tuple_pass_emit(&params, &standalone) == 0,
+               "standalone member %u emission failed", m);
+      }
+      const uint32_t start = burst.member_start[m];
+      const uint32_t end = m + 1 < draws ? burst.member_start[m + 1]
+                                         : burst.ib_size_dwords;
+      CHECK(end - start == standalone.ib_size_dwords &&
+               memcmp(&burst.ib[start], standalone.ib,
+                      standalone.ib_size_dwords * sizeof(uint32_t)) == 0,
+            "burst member %u differs from its standalone emission", m);
+      if (m != 0)
+         r300_r2vb_float2_tuple_pass_release(&standalone);
+   }
+   r300_fragment_binary_finish(&fs);
+   r300_r2vb_float2_tuple_pass_release(&reference);
+
+   /* Determinism: a second emission reproduces the stream exactly. */
+   struct r300_r2vb_float2_tuple_burst_ib again;
+   CHECK(r300_r2vb_float2_tuple_burst_reference_emit(draws, &again) == 0 &&
+            again.ib_size_dwords == burst.ib_size_dwords &&
+            memcmp(again.ib, burst.ib,
+                   burst.ib_size_dwords * sizeof(uint32_t)) == 0,
+         "burst emission is not deterministic");
+   r300_r2vb_float2_tuple_burst_release(&again);
+   r300_r2vb_float2_tuple_burst_release(&burst);
+   r300_r2vb_float2_tuple_burst_release(&single);
+
+   struct r300_r2vb_float2_tuple_burst_ib refused;
+   CHECK(r300_r2vb_float2_tuple_burst_reference_emit(0, &refused) ==
+            -EINVAL,
+         "zero draws must refuse");
+   CHECK(r300_r2vb_float2_tuple_burst_reference_emit(
+            R300_R2VB_FLOAT2_TUPLE_BURST_MAX_DRAWS + 1, &refused) ==
+            -EINVAL,
+         "draws past the bound must refuse");
+}
+
 int
 main(void)
 {
@@ -191,6 +288,7 @@ main(void)
    test_expected_is_xy01_expansion();
    test_vertex_stream_layout();
    test_emission_contract();
+   test_burst_member_byte_identity();
 
    if (failures != 0) {
       fprintf(stderr, "r300_r2vb_float2_tuple_pass_test: %u failures\n",

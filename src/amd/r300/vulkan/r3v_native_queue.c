@@ -230,6 +230,36 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
                    (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
                     R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES);
    }
+   case R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST: {
+      /* The burst shares the tuple's BO roles; its carrier is the
+       * recorded member count of reference rows, so the geometry fact
+       * binds the allocation to the composed depth.
+       */
+      uint32_t carrier_bytes;
+      if (r3v_native_burst_carrier_bytes(cmd_buffer->burst_draws,
+                                         &carrier_bytes) != 0)
+         return true;
+      if (cmd_buffer->reference_count != R300_R2VB_FLOAT2_TUPLE_SLOT_COUNT)
+         return true;
+      const struct r3v_native_bo_reference *carrier =
+         &cmd_buffer->references[R300_R2VB_FLOAT2_TUPLE_SLOT_CARRIER];
+      const struct r3v_native_bo_reference *vertex =
+         &cmd_buffer->references[R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX];
+      if (carrier->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          carrier->write_domain != RADEON_GEM_DOMAIN_GTT)
+         return true;
+      if (carrier->memory == NULL ||
+          carrier->memory->bo.size != carrier_bytes)
+         return true;
+      if (vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          vertex->write_domain != 0)
+         return true;
+      return vertex->memory == NULL ||
+             vertex->memory->bo.size !=
+                R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *
+                   (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
+                    R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES);
+   }
    case R3V_NATIVE_CELL_KIND_UNDECLARED:
    default:
       return true;
@@ -777,6 +807,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          facts.nonmaximum_extent = cell_geometry_unfrozen(cmd_buffer);
          facts.serial_submissions_consumed =
             device->serial_submissions_consumed;
+         facts.burst_recorded_draws = cmd_buffer->burst_draws;
 
          /* The serial kind admits its own token within the declared
           * bound; the full serial predicate is the evaluation below, and

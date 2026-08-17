@@ -316,11 +316,73 @@ test_serial_env_parse(void)
    unsetenv("R3V_NATIVE_AUTHORIZED_SERIAL_SUBMISSIONS");
 }
 
+/* The burst kind's predicate: the declared member count must sit inside
+ * 1..64 and equal the recorded composition depth, on top of the
+ * one-shot token; a declared burst count weakens nothing outside the
+ * burst kind.
+ */
+static void
+test_burst_draws_predicate(void)
+{
+   struct r3v_native_arming_facts facts = armed_facts();
+   facts.cell_kind = R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST;
+
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_BURST_DRAWS_UNDECLARED);
+   facts.burst_authorized_draws = R3V_NATIVE_ARMING_BURST_MAX_DRAWS + 1;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_BURST_DRAWS_UNDECLARED);
+
+   facts.burst_authorized_draws = 32;
+   facts.burst_recorded_draws = 16;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_BURST_DRAWS_MISMATCH);
+   facts.burst_recorded_draws = 32;
+   assert(r3v_native_arming_evaluate(&facts) == R3V_NATIVE_ARMING_ARMED);
+
+   /* The burst keeps the one-shot token semantics. */
+   facts.attempt_token_present = true;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_ALREADY_ATTEMPTED);
+
+   /* Outside the burst kind, burst authority changes nothing. */
+   facts = armed_facts();
+   facts.burst_authorized_draws = 8;
+   facts.burst_recorded_draws = 0;
+   assert(r3v_native_arming_evaluate(&facts) == R3V_NATIVE_ARMING_ARMED);
+}
+
+/* The burst env shares the serial bound's exact-decimal spelling. */
+static void
+test_burst_env_parse(void)
+{
+   static const struct {
+      const char *spelling;
+      uint32_t parsed;
+   } cases[] = {
+      { "1", 1 },   { "64", 64 }, { "0", 0 },   { "65", 0 },
+      { "007", 0 }, { "+4", 0 },  { "32x", 0 }, { "", 0 },
+   };
+   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+      assert(setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS",
+                    cases[i].spelling, 1) == 0);
+      char kernel[128];
+      char module[128];
+      struct r3v_native_arming_facts facts;
+      r3v_native_arming_collect(
+         &facts, R3V_NATIVE_ARMING_PCI_VENDOR, R3V_NATIVE_ARMING_PCI_DEVICE,
+         R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST, authorized_digest,
+         NULL, kernel, sizeof(kernel), module, sizeof(module));
+      assert(facts.burst_authorized_draws == cases[i].parsed);
+   }
+   unsetenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS");
+}
+
 static void
 test_verdict_names_are_distinct(void)
 {
-   const char *names[R3V_NATIVE_ARMING_SERIAL_CONTINUITY_BROKEN + 1];
-   for (int i = 0; i <= R3V_NATIVE_ARMING_SERIAL_CONTINUITY_BROKEN; i++) {
+   const char *names[R3V_NATIVE_ARMING_BURST_DRAWS_MISMATCH + 1];
+   for (int i = 0; i <= R3V_NATIVE_ARMING_BURST_DRAWS_MISMATCH; i++) {
       names[i] = r3v_native_arming_verdict_name(
          (enum r3v_native_arming_verdict)i);
       assert(names[i] != NULL && names[i][0] != '\0');
@@ -337,6 +399,8 @@ main(void)
    test_disarm_is_one_shot();
    test_serial_bound_predicate();
    test_serial_env_parse();
+   test_burst_draws_predicate();
+   test_burst_env_parse();
    test_verdict_names_are_distinct();
    printf("r3v_native_arming_test: all checks passed\n");
    return 0;

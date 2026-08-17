@@ -49,6 +49,7 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    case R3V_NATIVE_CELL_KIND_R2VB_REINGEST:
    case R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE:
    case R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL:
+   case R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST:
       break;
    case R3V_NATIVE_CELL_KIND_UNDECLARED:
    default:
@@ -102,6 +103,19 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
       return R3V_NATIVE_ARMING_ARMED;
    }
 
+   /* The burst kind keeps the one-shot token and adds the declared
+    * member depth: the operator authorizes a specific duty cycle, so a
+    * recorded composition at any other depth refuses even under a
+    * matching stream digest.
+    */
+   if (facts->cell_kind == R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST) {
+      if (facts->burst_authorized_draws < 1 ||
+          facts->burst_authorized_draws > R3V_NATIVE_ARMING_BURST_MAX_DRAWS)
+         return R3V_NATIVE_ARMING_BURST_DRAWS_UNDECLARED;
+      if (facts->burst_recorded_draws != facts->burst_authorized_draws)
+         return R3V_NATIVE_ARMING_BURST_DRAWS_MISMATCH;
+   }
+
    if (facts->attempt_token_present)
       return R3V_NATIVE_ARMING_ALREADY_ATTEMPTED;
 
@@ -151,6 +165,12 @@ r3v_native_arming_verdict_name(enum r3v_native_arming_verdict verdict)
    case R3V_NATIVE_ARMING_SERIAL_CONTINUITY_BROKEN:
       return "serial continuation without the attempt token this "
              "instance wrote";
+   case R3V_NATIVE_ARMING_BURST_DRAWS_UNDECLARED:
+      return "burst member count undeclared or outside 1..64 "
+             "(R3V_NATIVE_AUTHORIZED_BURST_DRAWS)";
+   case R3V_NATIVE_ARMING_BURST_DRAWS_MISMATCH:
+      return "recorded burst member count differs from the declared "
+             "count";
    }
    return "unknown verdict";
 }
@@ -275,6 +295,21 @@ r3v_native_arming_collect_from(
       if (serial[i] == '\0' &&
           value <= R3V_NATIVE_ARMING_SERIAL_MAX_SUBMISSIONS)
          facts->serial_authorized_submissions = value;
+   }
+
+   /* Same exact-decimal spelling as the serial bound; burst_recorded_draws
+    * is instance state the queue installs after collection.
+    */
+   const char *burst =
+      provider->read_env(provider->ctx,
+                         "R3V_NATIVE_AUTHORIZED_BURST_DRAWS");
+   if (declared(burst) && burst[0] >= '1' && burst[0] <= '9') {
+      uint32_t value = 0;
+      size_t i = 0;
+      for (; burst[i] >= '0' && burst[i] <= '9' && i < 3; i++)
+         value = value * 10 + (uint32_t)(burst[i] - '0');
+      if (burst[i] == '\0' && value <= R3V_NATIVE_ARMING_BURST_MAX_DRAWS)
+         facts->burst_authorized_draws = value;
    }
 
    kernel_storage[0] = '\0';

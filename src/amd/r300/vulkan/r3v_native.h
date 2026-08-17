@@ -220,6 +220,11 @@ struct r3v_native_cmd_buffer {
    struct r3v_native_deferred_copy *deferred_copies;
    uint32_t deferred_copy_count;
    uint32_t deferred_copy_capacity;
+   /* Member count the burst status-load cell composed; zero for every
+    * other kind.  The arming gate matches it against the declared
+    * count, and the geometry predicate sizes the carrier by it.
+    */
+   uint32_t burst_draws;
 };
 
 struct r3v_native_queue {
@@ -585,6 +590,25 @@ VkResult
 r3v_native_record_r2vb_status_load_serial(VkCommandBuffer commandBuffer,
                                           VkDeviceMemory carrierMemory,
                                           VkDeviceMemory vertexMemory);
+
+/* Records the burst status-load cell: one IB composing the tuple stream
+ * as draws members (r300_r2vb_float2_tuple_burst_reference_emit), each
+ * retargeted to its own carrier row, under the burst cell kind whose
+ * arming demands the declared member count.  The carrier allocation is
+ * draws member rows (r3v_native_burst_carrier_bytes) and is poisoned
+ * whole, so each member's delivery decides independently.
+ */
+VkResult
+r3v_native_record_r2vb_status_load_burst(VkCommandBuffer commandBuffer,
+                                         VkDeviceMemory carrierMemory,
+                                         VkDeviceMemory vertexMemory,
+                                         uint32_t draws);
+
+/* The burst cell's carrier allocation: draws member rows of the
+ * reference layout.  Returns 0 or a negative errno; draws outside the
+ * burst bound refuses with -EINVAL.
+ */
+int r3v_native_burst_carrier_bytes(uint32_t draws, uint32_t *out);
 
 /* The producer cell's carrier allocation: the reference layout's slot row
  * (pitch pixels of one FP32x4 texel, one row), the same product the
