@@ -240,6 +240,12 @@ struct r3v_native_device {
    bool submit_hazard_accepted;
    const char *manifest_dir;
    enum r3v_native_queue_status queue_status;
+   /* Serial status-load admissions this instance has counted against the
+    * declared bound; the instance that wrote the attempt token is the
+    * only one whose count is nonzero, which is what lets a continuation
+    * run under its own token while every other process stays disarmed.
+    */
+   uint32_t serial_submissions_consumed;
    /* The production path leaves this NULL and collects host facts.  The
     * drm-shim harness installs an explicit host-model provider so a missing
     * radeon module cannot become a matchable live identity. */
@@ -569,6 +575,16 @@ VkResult r3v_native_record_r2vb_reingest(VkCommandBuffer commandBuffer,
 VkResult r3v_native_record_r2vb_float2_tuple(VkCommandBuffer commandBuffer,
                                              VkDeviceMemory carrierMemory,
                                              VkDeviceMemory vertexMemory);
+
+/* Records the serial status-load cell: the frozen tuple stream and BO
+ * bindings of r3v_native_record_r2vb_float2_tuple under the serial cell
+ * kind, whose arming admits up to the declared submission bound within
+ * one device instance while the paired-status census samples.
+ */
+VkResult
+r3v_native_record_r2vb_status_load_serial(VkCommandBuffer commandBuffer,
+                                          VkDeviceMemory carrierMemory,
+                                          VkDeviceMemory vertexMemory);
 
 /* The producer cell's carrier allocation: the reference layout's slot row
  * (pitch pixels of one FP32x4 texel, one row), the same product the

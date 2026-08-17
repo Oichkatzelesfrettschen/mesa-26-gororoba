@@ -485,6 +485,25 @@ main(int argc, char **argv)
               "sink failed") == NULL)
       fail("sink_failure", "failing sink did not abort");
 
+   /* An external fault aborts a running machine with the caller's
+    * reason; a completed machine keeps its verdict.
+    */
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   r3v_status_load_machine_fault(&machine, "sampler channel closed");
+   if (r3v_status_load_machine_phase(&machine) != R3V_STATUS_LOAD_ABORTED ||
+       strstr(r3v_status_load_machine_abort_reason(&machine),
+              "channel closed") == NULL)
+      fail("external_fault", "fault did not abort with its reason");
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   drive(&fake, &machine, 1, 1, 1);
+   r3v_status_load_machine_fault(&machine, "late fault");
+   if (r3v_status_load_machine_phase(&machine) != R3V_STATUS_LOAD_COMPLETE)
+      fail("fault_after_complete", "fault re-labeled a completed run");
+
    /* The formatter refuses a short buffer instead of truncating. */
    {
       char tiny[32];
@@ -497,6 +516,6 @@ main(int argc, char **argv)
       printf("status-load machine calibration: %d failures\n", failures);
       return 1;
    }
-   printf("status-load machine calibration: 21 cases pass\n");
+   printf("status-load machine calibration: 23 cases pass\n");
    return 0;
 }

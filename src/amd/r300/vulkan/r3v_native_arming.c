@@ -48,6 +48,7 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER:
    case R3V_NATIVE_CELL_KIND_R2VB_REINGEST:
    case R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE:
+   case R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL:
       break;
    case R3V_NATIVE_CELL_KIND_UNDECLARED:
    default:
@@ -76,6 +77,31 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
 
    if (!facts->evidence_dir_present)
       return R3V_NATIVE_ARMING_EVIDENCE_ABSENT;
+
+   /* The serial kind trades the one-shot token for a declared bound: the
+    * token still disarms the directory against every other process, and
+    * within the instance that wrote it, each admission counts against the
+    * exact declared bound.  A token this instance did not write, a missing
+    * token mid-run, an undeclared bound, and an exhausted bound each
+    * refuse by name.
+    */
+   if (facts->cell_kind == R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL) {
+      if (facts->serial_authorized_submissions < 1 ||
+          facts->serial_authorized_submissions >
+             R3V_NATIVE_ARMING_SERIAL_MAX_SUBMISSIONS)
+         return R3V_NATIVE_ARMING_SERIAL_BOUND_UNDECLARED;
+      if (facts->serial_submissions_consumed >=
+          facts->serial_authorized_submissions)
+         return R3V_NATIVE_ARMING_SERIAL_BOUND_EXHAUSTED;
+      if (facts->serial_submissions_consumed == 0) {
+         if (facts->attempt_token_present)
+            return R3V_NATIVE_ARMING_ALREADY_ATTEMPTED;
+      } else if (!facts->attempt_token_present) {
+         return R3V_NATIVE_ARMING_SERIAL_CONTINUITY_BROKEN;
+      }
+      return R3V_NATIVE_ARMING_ARMED;
+   }
+
    if (facts->attempt_token_present)
       return R3V_NATIVE_ARMING_ALREADY_ATTEMPTED;
 
@@ -117,6 +143,14 @@ r3v_native_arming_verdict_name(enum r3v_native_arming_verdict verdict)
    case R3V_NATIVE_ARMING_ALREADY_ATTEMPTED:
       return "evidence directory holds an attempt token from an earlier "
              "arming";
+   case R3V_NATIVE_ARMING_SERIAL_BOUND_UNDECLARED:
+      return "serial submission bound undeclared or outside 1..64 "
+             "(R3V_NATIVE_AUTHORIZED_SERIAL_SUBMISSIONS)";
+   case R3V_NATIVE_ARMING_SERIAL_BOUND_EXHAUSTED:
+      return "declared serial submission bound is exhausted";
+   case R3V_NATIVE_ARMING_SERIAL_CONTINUITY_BROKEN:
+      return "serial continuation without the attempt token this "
+             "instance wrote";
    }
    return "unknown verdict";
 }
@@ -224,6 +258,24 @@ r3v_native_arming_collect_from(
    facts->authorized_module_srcversion =
       provider->read_env(provider->ctx,
                          "R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION");
+
+   /* Exact decimal 1..64; every other spelling -- empty, signs, leading
+    * zeros, trailing bytes, out of range -- parses to 0 and refuses the
+    * serial kind.  serial_submissions_consumed is instance state the
+    * queue installs after collection, like the extent fact.
+    */
+   const char *serial =
+      provider->read_env(provider->ctx,
+                         "R3V_NATIVE_AUTHORIZED_SERIAL_SUBMISSIONS");
+   if (declared(serial) && serial[0] >= '1' && serial[0] <= '9') {
+      uint32_t value = 0;
+      size_t i = 0;
+      for (; serial[i] >= '0' && serial[i] <= '9' && i < 3; i++)
+         value = value * 10 + (uint32_t)(serial[i] - '0');
+      if (serial[i] == '\0' &&
+          value <= R3V_NATIVE_ARMING_SERIAL_MAX_SUBMISSIONS)
+         facts->serial_authorized_submissions = value;
+   }
 
    kernel_storage[0] = '\0';
    provider->read_kernel_release(provider->ctx, kernel_storage, kernel_size);

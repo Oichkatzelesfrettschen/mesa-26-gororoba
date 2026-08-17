@@ -137,6 +137,15 @@ r3v_status_load_machine_iterate(struct r3v_status_load_machine *machine);
 int
 r3v_status_load_machine_finish(struct r3v_status_load_machine *machine);
 
+/* Aborts a running machine for a fault the ops table cannot express:
+ * a barrier-channel death, a foreign nonce, or an operator interrupt.
+ * The ABORT message is emitted once and the reason is retained; a
+ * terminal machine is left unchanged.
+ */
+void
+r3v_status_load_machine_fault(struct r3v_status_load_machine *machine,
+                              const char *reason);
+
 enum r3v_status_load_phase
 r3v_status_load_machine_phase(const struct r3v_status_load_machine *machine);
 

@@ -788,6 +788,26 @@ if get_option('r3v-native-backend')
     install : false,
   )
 
+  # Attended serial status-load cell: submits the frozen tuple stream up
+  # to the declared serial bound while the paired-status census samples,
+  # coordinated over a SOCK_SEQPACKET barrier channel by the status-load
+  # submitter machine.  Built and never registered as a test, because
+  # running it is a hardware authorization rather than a build-graph
+  # result.
+  r3v_native_attended_status_load = executable(
+    'r3v_native_attended_status_load_float2_tuple',
+    files('tests/r3v_native_attended_status_load_float2_tuple.c',
+          'tests/r3v_native_status_load_machine.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+    build_by_default : true,
+    install : false,
+  )
+
   if with_tests
     # Pure arming checks compile without drm-shim or an X server. Keeping
     # them at the native backend boundary preserves calibration in native
