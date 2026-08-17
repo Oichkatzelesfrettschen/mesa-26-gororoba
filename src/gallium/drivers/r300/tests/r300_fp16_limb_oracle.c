@@ -24,7 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "r300_numeric_domain.h"
+#include "amd/r300/common/r300_numeric_domain.h"
 #include "r300_virtual_float.h"
 
 static int g_failures = 0;

@@ -9,7 +9,7 @@
  * so format and stride decisions have a single authoritative definition.
  */
 
-#include "r300_carrier_policy.h"
+#include "amd/r300/common/r300_carrier_policy.h"
 
 #include "util/format/u_formats.h"
 

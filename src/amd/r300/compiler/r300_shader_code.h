@@ -21,7 +21,7 @@
 
 #include "radeon_code.h"
 #include "compiler/shader_info.h"
-#include "r300_shader_semantics.h"
+#include "amd/r300/common/r300_shader_semantics.h"
 
 struct r300_fragment_shader_code {
     struct rX00_fragment_program_code code;

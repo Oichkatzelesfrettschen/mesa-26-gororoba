@@ -33,7 +33,7 @@
 
 #include "nir_to_rc.h"
 #include "r300_screen.h"
-#include "r300_shader_semantics.h"
+#include "amd/r300/common/r300_shader_semantics.h"
 #include "r300_vs.h"
 #include "radeon_compiler.h"
 #include "radeon_regalloc.h"

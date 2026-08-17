@@ -10,8 +10,8 @@
 
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_search.h"
-#include "r300_capabilities.h"
-#include "r300_carrier_policy.h"
+#include "amd/r300/common/r300_capabilities.h"
+#include "amd/r300/common/r300_carrier_policy.h"
 #include "radeon_code.h"
 
 static inline bool

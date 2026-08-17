@@ -9,7 +9,7 @@
 #include <stdbool.h>
 #include "compiler/nir/nir.h"
 #include "r300_shader_code.h"
-#include "r300_shader_semantics.h"
+#include "amd/r300/common/r300_shader_semantics.h"
 
 #include "radeon_program_constants.h"
 
