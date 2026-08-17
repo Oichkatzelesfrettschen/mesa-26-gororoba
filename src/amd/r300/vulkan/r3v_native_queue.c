@@ -196,12 +196,15 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
       return color->memory == NULL ||
              color->memory->bo.size != R3V_NATIVE_TARGET_MEMORY_BYTES;
    }
-   case R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE: {
+   case R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE:
+   case R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL: {
       /* The tuple cell binds the producer's carrier row and the fetched
        * vertex BO: the carrier crosses the color backend and the frozen
        * fetch declaration, so its relocation carries the GTT domain in
        * both directions, and the vertex BO is device-read alone, sized
-       * to the reference records' two fetch arrays.
+       * to the reference records' two fetch arrays.  The serial
+       * status-load cell submits the same frozen stream, so it shares
+       * the geometry fact.
        */
       uint32_t carrier_bytes;
       if (r3v_native_producer_carrier_bytes(&carrier_bytes) != 0)
@@ -756,8 +759,19 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             sizeof(kernel_release), module_srcversion,
             sizeof(module_srcversion));
          facts.nonmaximum_extent = cell_geometry_unfrozen(cmd_buffer);
+         facts.serial_submissions_consumed =
+            device->serial_submissions_consumed;
 
-         if (facts.attempt_token_present) {
+         /* The serial kind admits its own token within the declared
+          * bound; the full serial predicate is the evaluation below, and
+          * this early refusal only keeps a foreign token from reaching
+          * evidence retention.
+          */
+         const bool serial_continuation =
+            cmd_buffer->cell_kind ==
+               R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL &&
+            device->serial_submissions_consumed > 0;
+         if (facts.attempt_token_present && !serial_continuation) {
             free(reference_indices);
             radeon_drm_vk_reloc_list_finish(&relocs);
             return vk_errorf(
@@ -902,7 +916,14 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: submission refused: %s",
                           r3v_native_arming_verdict_name(arming));
       }
-      if (r3v_native_arming_disarm(device->manifest_dir, ib_digest) != 0) {
+      /* The first admission writes the token; a serial continuation runs
+       * under the token this instance already wrote, and the evaluation
+       * above proved that pairing.  Every admission counts against the
+       * serial bound before the ioctl, so a failed ioctl still consumes
+       * its authorization.
+       */
+      if (!facts.attempt_token_present &&
+          r3v_native_arming_disarm(device->manifest_dir, ib_digest) != 0) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
@@ -910,6 +931,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: one-shot disarm failed; refusing "
                           "before the ioctl");
       }
+      if (cmd_buffer->cell_kind ==
+          R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL)
+         device->serial_submissions_consumed++;
 
       int result = radeon_drm_vk_cs_submit(&device->drm, &cs);
       const bool ioctl_accepted = result == 0;

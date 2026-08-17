@@ -1214,3 +1214,22 @@ r3v_native_record_r2vb_float2_tuple(VkCommandBuffer commandBuffer,
                       r3v_native_cell_vk_result_from_errno(install_result));
    return VK_SUCCESS;
 }
+
+/* The serial status-load cell is the tuple cell's frozen stream under
+ * its own kind: recording reuses the tuple path byte for byte, then
+ * stamps the serial kind, so the arming gate applies the serial bound
+ * to the identical PM4 the one-shot tuple cell qualified on silicon.
+ */
+VkResult
+r3v_native_record_r2vb_status_load_serial(VkCommandBuffer commandBuffer,
+                                          VkDeviceMemory carrierMemory,
+                                          VkDeviceMemory vertexMemory)
+{
+   VkResult result = r3v_native_record_r2vb_float2_tuple(
+      commandBuffer, carrierMemory, vertexMemory);
+   if (result != VK_SUCCESS)
+      return result;
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
+   return VK_SUCCESS;
+}

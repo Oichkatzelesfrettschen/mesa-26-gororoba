@@ -30,6 +30,9 @@ enum r3v_native_arming_verdict {
    R3V_NATIVE_ARMING_MODULE_MISMATCH,
    R3V_NATIVE_ARMING_EVIDENCE_ABSENT,
    R3V_NATIVE_ARMING_ALREADY_ATTEMPTED,
+   R3V_NATIVE_ARMING_SERIAL_BOUND_UNDECLARED,
+   R3V_NATIVE_ARMING_SERIAL_BOUND_EXHAUSTED,
+   R3V_NATIVE_ARMING_SERIAL_CONTINUITY_BROKEN,
 };
 
 /* The recorded cell's kind.  Each kind freezes its own render geometry,
@@ -47,6 +50,11 @@ enum r3v_native_cell_kind {
    R3V_NATIVE_CELL_KIND_R2VB_PRODUCER,
    R3V_NATIVE_CELL_KIND_R2VB_REINGEST,
    R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE,
+   /* The serial status-load cell: the fetched FLOAT_2 tuple stream
+    * submitted up to the declared serial bound while the paired-status
+    * census samples, one outstanding submission at a time.
+    */
+   R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the
@@ -84,7 +92,19 @@ struct r3v_native_arming_facts {
     */
    bool evidence_dir_present;
    bool attempt_token_present;
+   /* Serial authority: the exact-value declared submission bound
+    * (R3V_NATIVE_AUTHORIZED_SERIAL_SUBMISSIONS, decimal 1 through 64;
+    * 0 is undeclared or malformed and refuses the serial kind), and the
+    * count this device instance has already admitted.  The attempt token
+    * still disarms the directory against every other process: a serial
+    * continuation is admitted only when this instance wrote the token
+    * itself, which serial_submissions_consumed being nonzero records.
+    */
+   uint32_t serial_authorized_submissions;
+   uint32_t serial_submissions_consumed;
 };
+
+#define R3V_NATIVE_ARMING_SERIAL_MAX_SUBMISSIONS 64u
 
 /* The authorized attended-run chip: RS482, the only identity whose
  * silicon behavior the cell's falsifiers were written against.

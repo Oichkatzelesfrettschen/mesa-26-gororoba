@@ -288,6 +288,13 @@ r3v_status_load_machine_finish(struct r3v_status_load_machine *machine)
    return 0;
 }
 
+void
+r3v_status_load_machine_fault(struct r3v_status_load_machine *machine,
+                              const char *reason)
+{
+   machine_abort(machine, reason);
+}
+
 enum r3v_status_load_phase
 r3v_status_load_machine_phase(const struct r3v_status_load_machine *machine)
 {

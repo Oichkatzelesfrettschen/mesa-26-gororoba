@@ -128,6 +128,21 @@ test_tuple_kind_arms_and_undeclared_refuses(void)
    facts.cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
    assert(r3v_native_arming_evaluate(&facts) ==
           R3V_NATIVE_ARMING_UNKNOWN_CELL_KIND);
+
+   /* The serial status-load kind rides the same frozen stream and
+    * geometry contract; its own factor is the declared submission bound,
+    * and the extent factor still refuses a deviating recording.
+    */
+   facts.cell_kind = R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_SERIAL_BOUND_UNDECLARED);
+   facts.serial_authorized_submissions = 8;
+   assert(r3v_native_arming_evaluate(&facts) == R3V_NATIVE_ARMING_ARMED);
+   facts.nonmaximum_extent = true;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT);
+   facts.nonmaximum_extent = false;
+   facts.serial_authorized_submissions = 0;
 }
 
 static void
