@@ -467,3 +467,163 @@ r300_r2vb_float2_tuple_reference_expected(uint32_t *expected,
       r300_r2vb_float2_tuple_reference_records,
       R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, expected, expected_dwords);
 }
+
+int
+r300_r2vb_float2_tuple_burst_member_stride_bytes(uint32_t *out)
+{
+   struct r300_r2vb_producer_layout layout;
+   int rc = r300_r2vb_producer_layout_single_row(
+      R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, &layout);
+   if (rc != 0)
+      return rc;
+   *out = layout.pitch_pixels * layout.height * R300_R2VB_PRODUCER_CPP_BYTES;
+   return 0;
+}
+
+int
+r300_r2vb_float2_tuple_burst_reference_emit(
+   uint32_t draws, struct r300_r2vb_float2_tuple_burst_ib *out)
+{
+   memset(out, 0, sizeof(*out));
+   if (draws < 1 || draws > R300_R2VB_FLOAT2_TUPLE_BURST_MAX_DRAWS)
+      return -EINVAL;
+
+   struct r300_r2vb_producer_layout layout;
+   int rc = r300_r2vb_producer_layout_single_row(
+      R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, &layout);
+   if (rc != 0)
+      return rc;
+   const uint32_t member_stride =
+      layout.pitch_pixels * layout.height * R300_R2VB_PRODUCER_CPP_BYTES;
+
+   struct r300_first_draw_params draw_params = {
+      .chip_family = CHIP_RS480,
+      .width = layout.width,
+      .height = layout.height,
+      .min_vtx_index = 0,
+      .max_vtx_index = layout.count - 1,
+      .texture_enabled = false,
+   };
+   struct r300_first_draw_contract contract;
+   rc = r300_first_draw_contract_resolve(&draw_params, &contract);
+   if (rc != 0)
+      return rc;
+
+   struct r300_fragment_binary fs;
+   rc = r300_r2vb_producer_reference_fs(&fs);
+   if (rc != 0)
+      return rc;
+
+   /* Each member is the single pass's own emission, byte for byte, so
+    * the composition inherits the qualified stream by construction; the
+    * concatenation only rebases each member's relocation-site indices.
+    */
+   struct r300_r2vb_float2_tuple_ib
+      members[R300_R2VB_FLOAT2_TUPLE_BURST_MAX_DRAWS];
+   memset(members, 0, sizeof(members));
+   uint32_t emitted = 0;
+   uint32_t total_dwords = 0;
+   for (uint32_t m = 0; rc == 0 && m < draws; m++) {
+      struct r300_r2vb_float2_tuple_params params = {
+         .carrier_offset = m * member_stride,
+         .vertex_offset = 0,
+         .count = R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT,
+         .records = r300_r2vb_float2_tuple_reference_records,
+         .first_draw_contract = m == 0 ? &contract : NULL,
+         .fragment_binary = &fs,
+      };
+      rc = r300_r2vb_float2_tuple_pass_emit(&params, &members[m]);
+      if (rc == 0) {
+         emitted = m + 1;
+         rc = r300_r2vb_float2_tuple_pass_validate_reloc_sites(&members[m]);
+      }
+      if (rc == 0 &&
+          total_dwords > UINT32_MAX - members[m].ib_size_dwords)
+         rc = -EOVERFLOW;
+      if (rc == 0)
+         total_dwords += members[m].ib_size_dwords;
+   }
+   r300_fragment_binary_finish(&fs);
+
+   uint32_t *words = NULL;
+   if (rc == 0) {
+      words = calloc(total_dwords, sizeof(uint32_t));
+      if (words == NULL)
+         rc = -ENOMEM;
+   }
+   if (rc == 0) {
+      uint32_t base = 0;
+      for (uint32_t m = 0; m < draws; m++) {
+         out->member_start[m] = base;
+         memcpy(&words[base], members[m].ib,
+                members[m].ib_size_dwords * sizeof(uint32_t));
+         for (uint32_t s = 0; s < members[m].reloc_site_count; s++) {
+            out->reloc_sites[out->reloc_site_count++] =
+               (struct r300_r2vb_float2_tuple_reloc_site){
+                  .ib_index = base + members[m].reloc_sites[s].ib_index,
+                  .slot = members[m].reloc_sites[s].slot,
+               };
+         }
+         base += members[m].ib_size_dwords;
+      }
+      out->ib = words;
+      out->ib_size_dwords = total_dwords;
+      out->draws = draws;
+      out->owns_ib = true;
+   }
+   for (uint32_t m = 0; m < emitted; m++)
+      r300_r2vb_float2_tuple_pass_release(&members[m]);
+   if (rc != 0) {
+      free(words);
+      memset(out, 0, sizeof(*out));
+   }
+   return rc;
+}
+
+void
+r300_r2vb_float2_tuple_burst_release(
+   struct r300_r2vb_float2_tuple_burst_ib *ib)
+{
+   if (ib->owns_ib)
+      free(ib->ib);
+   memset(ib, 0, sizeof(*ib));
+}
+
+int
+r300_r2vb_float2_tuple_burst_validate_reloc_sites(
+   const struct r300_r2vb_float2_tuple_burst_ib *ib)
+{
+   static const uint32_t member_slots[R300_R2VB_FLOAT2_TUPLE_RELOC_SITES] = {
+      R300_R2VB_FLOAT2_TUPLE_SLOT_CARRIER,
+      R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX,
+      R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX,
+   };
+
+   if (ib->draws < 1 || ib->draws > R300_R2VB_FLOAT2_TUPLE_BURST_MAX_DRAWS)
+      return -EINVAL;
+   if (ib->reloc_site_count !=
+       ib->draws * R300_R2VB_FLOAT2_TUPLE_RELOC_SITES)
+      return -EINVAL;
+
+   uint32_t previous_index = 0;
+   for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
+      const struct r300_r2vb_float2_tuple_reloc_site *site =
+         &ib->reloc_sites[i];
+      const uint32_t member = i / R300_R2VB_FLOAT2_TUPLE_RELOC_SITES;
+      if (site->slot !=
+          member_slots[i % R300_R2VB_FLOAT2_TUPLE_RELOC_SITES])
+         return -EINVAL;
+      if (site->ib_index == 0 || site->ib_index >= ib->ib_size_dwords)
+         return -ERANGE;
+      if (site->ib_index <= previous_index)
+         return -ERANGE;
+      if (site->ib_index < ib->member_start[member])
+         return -ERANGE;
+      if (ib->ib[site->ib_index - 1] != CP_PACKET3(R300_PM4_PACKET3_NOP, 0))
+         return -EINVAL;
+      if (ib->ib[site->ib_index] != TUPLE_RELOC_PAYLOAD(site->slot))
+         return -EINVAL;
+      previous_index = site->ib_index;
+   }
+   return 0;
+}

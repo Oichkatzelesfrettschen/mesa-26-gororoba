@@ -24,6 +24,7 @@ r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
    cmd_buffer->ib_size_dwords = 0;
    cmd_buffer->references = NULL;
    cmd_buffer->reference_count = 0;
+   cmd_buffer->burst_draws = 0;
 }
 
 void

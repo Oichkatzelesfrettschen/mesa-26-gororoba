@@ -33,6 +33,8 @@ enum r3v_native_arming_verdict {
    R3V_NATIVE_ARMING_SERIAL_BOUND_UNDECLARED,
    R3V_NATIVE_ARMING_SERIAL_BOUND_EXHAUSTED,
    R3V_NATIVE_ARMING_SERIAL_CONTINUITY_BROKEN,
+   R3V_NATIVE_ARMING_BURST_DRAWS_UNDECLARED,
+   R3V_NATIVE_ARMING_BURST_DRAWS_MISMATCH,
 };
 
 /* The recorded cell's kind.  Each kind freezes its own render geometry,
@@ -55,6 +57,12 @@ enum r3v_native_cell_kind {
     * census samples, one outstanding submission at a time.
     */
    R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL,
+   /* The burst status-load cell: one submission whose IB carries the
+    * tuple stream as a declared number of members, each retargeted to
+    * its own carrier row, raising the GPU duty cycle of the single
+    * ioctl the one-shot token admits.
+    */
+   R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the
@@ -102,9 +110,20 @@ struct r3v_native_arming_facts {
     */
    uint32_t serial_authorized_submissions;
    uint32_t serial_submissions_consumed;
+   /* Burst authority: the exact-value declared member count
+    * (R3V_NATIVE_AUTHORIZED_BURST_DRAWS, decimal 1 through 64; 0 is
+    * undeclared or malformed and refuses the burst kind), and the
+    * member count the recorded cell actually composed, installed by the
+    * queue like the extent fact.  The two agree or the gate refuses:
+    * the operator authorizes a specific duty-cycle depth, never a
+    * kind.
+    */
+   uint32_t burst_authorized_draws;
+   uint32_t burst_recorded_draws;
 };
 
 #define R3V_NATIVE_ARMING_SERIAL_MAX_SUBMISSIONS 64u
+#define R3V_NATIVE_ARMING_BURST_MAX_DRAWS 64u
 
 /* The authorized attended-run chip: RS482, the only identity whose
  * silicon behavior the cell's falsifiers were written against.

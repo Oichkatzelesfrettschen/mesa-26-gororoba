@@ -1,10 +1,13 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Attended serial status-load cell: submits the frozen FLOAT_2 tuple
- * stream up to the declared serial bound while the paired-status census
- * samples, coordinated over a SOCK_SEQPACKET barrier channel by the
- * status-load submitter machine.  Each submission walks the full event
+ * Attended status-load runner: submits the frozen FLOAT_2 tuple stream
+ * while the paired-status census samples, coordinated over a
+ * SOCK_SEQPACKET barrier channel by the status-load submitter machine.
+ * A declared serial bound resubmits the single-draw cell up to that
+ * bound, one outstanding submission at a time; a declared burst count
+ * instead records the burst cell -- one IB composing that many members
+ * over disjoint carrier rows -- and runs one submission window.  Each submission walks the full event
  * ladder -- poison, arm, ioctl, fence, verify, retain, repoison -- and
  * the first containment, submission, completion, barrier, or
  * verification failure aborts the run with its exact reason.  The
@@ -107,6 +110,11 @@ struct serial_run {
    uint32_t vertex_bytes;
    const uint32_t *expected;
    uint32_t expected_dwords;
+   /* One member for the serial cell; the burst carrier splits into this
+    * many member rows and the oracle judges each row independently.
+    */
+   uint32_t members;
+   uint32_t member_stride_bytes;
    const char *evidence_dir;
    FILE *transcript;
    int sampler_fd;
@@ -314,22 +322,28 @@ op_verify(void *ctx, uint32_t iteration)
 {
    (void)iteration;
    struct serial_run *run = ctx;
-   struct r300_r2vb_producer_carrier_verdict verdict;
-   if (r300_r2vb_producer_carrier_check(
-          run->expected, run->expected_dwords,
-          R300_R2VB_PRODUCER_POISON_DWORD, run->carrier_map,
-          run->carrier_bytes, &verdict) != 0)
-      return -1;
+   bool all_pass = true;
+   uint32_t mismatched = 0;
+   for (uint32_t m = 0; m < run->members; m++) {
+      struct r300_r2vb_producer_carrier_verdict verdict;
+      const uint32_t *row =
+         run->carrier_map + (size_t)m * run->member_stride_bytes / 4;
+      if (r300_r2vb_producer_carrier_check(
+             run->expected, run->expected_dwords,
+             R300_R2VB_PRODUCER_POISON_DWORD, row,
+             run->member_stride_bytes, &verdict) != 0)
+         return -1;
+      if (!verdict.expected_pass || !verdict.tail_poison_pass)
+         all_pass = false;
+      mismatched += verdict.mismatched_dwords;
+   }
    const bool vertex_intact = memcmp(run->vertex_map, run->vertex_reference,
                                      run->vertex_bytes) == 0;
-   printf("[oracle] iteration=%u expected_pass=%d tail_poison_pass=%d "
-          "mismatched=%u vertex_intact=%d\n",
-          iteration, verdict.expected_pass, verdict.tail_poison_pass,
-          verdict.mismatched_dwords, vertex_intact);
+   printf("[oracle] iteration=%u members=%u members_pass=%d mismatched=%u "
+          "vertex_intact=%d\n",
+          iteration, run->members, all_pass, mismatched, vertex_intact);
    fflush(stdout);
-   return verdict.expected_pass && verdict.tail_poison_pass && vertex_intact
-             ? 0
-             : 1;
+   return all_pass && vertex_intact ? 0 : 1;
 }
 
 static int
@@ -385,6 +399,9 @@ main(int argc, char **argv)
 
    /* The declared serial bound is this run's iteration count; the driver
     * gate re-parses the same spelling, so the two bounds cannot drift.
+    * A declared burst count instead selects the burst cell: one
+    * submission window whose IB composes that many members.  The two
+    * declarations name different cells, so a run carries exactly one.
     */
    const char *serial = getenv("R3V_NATIVE_AUTHORIZED_SERIAL_SUBMISSIONS");
    uint32_t iterations = 0;
@@ -395,10 +412,29 @@ main(int argc, char **argv)
       if (serial[i] != '\0' || iterations > R3V_STATUS_LOAD_MAX_ITERATIONS)
          iterations = 0;
    }
-   if (iterations == 0) {
+   const char *burst = getenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS");
+   uint32_t burst_draws = 0;
+   if (burst != NULL && burst[0] >= '1' && burst[0] <= '9') {
+      size_t i = 0;
+      for (; burst[i] >= '0' && burst[i] <= '9' && i < 3; i++)
+         burst_draws = burst_draws * 10 + (uint32_t)(burst[i] - '0');
+      if (burst[i] != '\0' ||
+          burst_draws > R300_R2VB_FLOAT2_TUPLE_BURST_MAX_DRAWS)
+         burst_draws = 0;
+   }
+   if (burst_draws != 0 && iterations != 0) {
       fprintf(stderr,
-              "R3V_NATIVE_AUTHORIZED_SERIAL_SUBMISSIONS is not an exact "
-              "decimal 1..64\n");
+              "serial and burst declarations name different cells; "
+              "declare exactly one\n");
+      return 1;
+   }
+   if (burst_draws != 0) {
+      iterations = 1;
+   } else if (iterations == 0) {
+      fprintf(stderr,
+              "declare R3V_NATIVE_AUTHORIZED_SERIAL_SUBMISSIONS or "
+              "R3V_NATIVE_AUTHORIZED_BURST_DRAWS as an exact decimal "
+              "1..64\n");
       return 1;
    }
 
@@ -411,12 +447,26 @@ main(int argc, char **argv)
    }
    memcpy(run.nonce, nonce, R3V_STATUS_LOAD_NONCE_LENGTH + 1);
 
+   uint32_t member_stride = 0;
+   if (r300_r2vb_float2_tuple_burst_member_stride_bytes(&member_stride) !=
+       0) {
+      fprintf(stderr, "member geometry unresolved\n");
+      return 1;
+   }
    uint32_t carrier_bytes = 0;
-   if (r3v_native_producer_carrier_bytes(&carrier_bytes) != 0) {
+   if (burst_draws != 0) {
+      if (r3v_native_burst_carrier_bytes(burst_draws, &carrier_bytes) != 0) {
+         fprintf(stderr, "burst carrier geometry unresolved\n");
+         return 1;
+      }
+   } else if (r3v_native_producer_carrier_bytes(&carrier_bytes) != 0) {
       fprintf(stderr, "carrier geometry unresolved\n");
       return 1;
    }
    run.carrier_bytes = carrier_bytes;
+   run.members = burst_draws != 0 ? burst_draws : 1;
+   run.member_stride_bytes =
+      burst_draws != 0 ? member_stride : carrier_bytes;
    run.vertex_bytes = R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *
                       (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
                        R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES);
@@ -627,11 +677,15 @@ main(int argc, char **argv)
       fprintf(stderr, "command buffer preparation failed\n");
       return 1;
    }
-   if (r3v_native_record_r2vb_status_load_serial(run.cmd, carrier_memory,
-                                                 vertex_memory) !=
-          VK_SUCCESS ||
+   VkResult record_result =
+      burst_draws != 0
+         ? r3v_native_record_r2vb_status_load_burst(
+              run.cmd, carrier_memory, vertex_memory, burst_draws)
+         : r3v_native_record_r2vb_status_load_serial(
+              run.cmd, carrier_memory, vertex_memory);
+   if (record_result != VK_SUCCESS ||
        vkEndCommandBuffer(run.cmd) != VK_SUCCESS) {
-      fprintf(stderr, "serial cell recording failed\n");
+      fprintf(stderr, "status-load cell recording failed\n");
       return 1;
    }
    vkGetDeviceQueue(run.device, 0, 0, &run.queue);
@@ -690,9 +744,10 @@ main(int argc, char **argv)
    int length = snprintf(
       outcome_json, sizeof(outcome_json),
       "{\n"
-      "  \"schema\": \"r3v-native-status-load-serial-outcome/1\",\n"
+      "  \"schema\": \"%s\",\n"
       "  \"run_nonce\": \"%s\",\n"
       "  \"declared_submissions\": %u,\n"
+      "  \"burst_draws\": %u,\n"
       "  \"iterations_delivered\": %u,\n"
       "  \"machine_phase\": \"%s\",\n"
       "  \"abort_reason\": \"%s\",\n"
@@ -700,7 +755,9 @@ main(int argc, char **argv)
       "  \"last_submit_result\": %d,\n"
       "  \"last_queue_status\": \"%s\"\n"
       "}\n",
-      run.nonce, iterations, run.iterations_delivered,
+      burst_draws != 0 ? "r3v-native-status-load-burst-outcome/1"
+                       : "r3v-native-status-load-serial-outcome/1",
+      run.nonce, iterations, burst_draws, run.iterations_delivered,
       phase == R3V_STATUS_LOAD_COMPLETE
          ? "COMPLETE"
          : (phase == R3V_STATUS_LOAD_ABORTED ? "ABORTED" : "RUNNING"),
@@ -726,8 +783,9 @@ main(int argc, char **argv)
    vkDestroyInstance(instance, NULL);
 
    printf("verdict: %s (%u/%u delivered)\n",
-          phase == R3V_STATUS_LOAD_COMPLETE ? "SERIAL_COMPLETE"
-                                            : "SERIAL_ABORTED",
+          phase == R3V_STATUS_LOAD_COMPLETE
+             ? (burst_draws != 0 ? "BURST_COMPLETE" : "SERIAL_COMPLETE")
+             : (burst_draws != 0 ? "BURST_ABORTED" : "SERIAL_ABORTED"),
           run.iterations_delivered, iterations);
    fflush(stdout);
    return phase == R3V_STATUS_LOAD_COMPLETE &&
