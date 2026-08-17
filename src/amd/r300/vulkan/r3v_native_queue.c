@@ -381,11 +381,27 @@ r3v_native_queue_write_submit_object(
    uint32_t completion_index, uint32_t completion_handle,
    uint64_t completion_size,
    const char *kernel_release,
-   const char *module_srcversion)
+   const char *module_srcversion,
+   int serial_admission)
 {
-   static const char *const names[] = {
-      "submit_relocs.bin", "submit_manifest.json",
-   };
+   /* A one-shot cell retains one submit object under the fixed names; a
+    * serial admission retains its own exact ioctl payload under its
+    * 0-based admission index, so every admission's evidence lands fresh
+    * and none overwrites a retained predecessor.
+    */
+   char relocs_name[64];
+   char manifest_name[64];
+   if (serial_admission < 0) {
+      snprintf(relocs_name, sizeof(relocs_name), "submit_relocs.bin");
+      snprintf(manifest_name, sizeof(manifest_name),
+               "submit_manifest.json");
+   } else {
+      snprintf(relocs_name, sizeof(relocs_name), "submit_relocs_%02d.bin",
+               serial_admission);
+      snprintf(manifest_name, sizeof(manifest_name),
+               "submit_manifest_%02d.json", serial_admission);
+   }
+   const char *const names[] = { relocs_name, manifest_name };
    int result = r3v_native_evidence_require_fresh(
       device->manifest_dir, names, ARRAY_SIZE(names));
    if (result != 0)
@@ -512,11 +528,11 @@ r3v_native_queue_write_submit_object(
           * submit-object group in a fresh evidence directory.
           */
          result = r3v_native_evidence_write_file(
-            device->manifest_dir, "submit_relocs.bin", relocs->relocs,
+            device->manifest_dir, relocs_name, relocs->relocs,
             relocs->count * sizeof(relocs->relocs[0]));
          if (result == 0)
             result = r3v_native_evidence_write_file(
-               device->manifest_dir, "submit_manifest.json", manifest,
+               device->manifest_dir, manifest_name, manifest,
                (size_t)length);
       }
 
@@ -783,7 +799,19 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
 
-      if (device->manifest_dir != NULL &&
+      /* The serial cell resubmits one unchanged semantic stream, so the
+       * first admission retains ib.bin, relocs.bin, and manifest.json and
+       * every later admission runs under that retained copy; the arming
+       * gate re-proves the stream digest against the declared one each
+       * admission, so the retained semantic cell stays bound to every
+       * admission it covers.
+       */
+      const bool serial_kind =
+         cmd_buffer->cell_kind ==
+         R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
+      const bool semantic_cell_retained =
+         serial_kind && device->serial_submissions_consumed > 0;
+      if (device->manifest_dir != NULL && !semantic_cell_retained &&
           r3v_native_queue_write_manifest(device, cmd_buffer->ib,
                                           cmd_buffer->ib_size_dwords,
                                           &relocs) != 0) {
@@ -890,7 +918,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
              &cs, cmd_buffer->references, reference_indices,
              cmd_buffer->reference_count, completion_index,
              completion.bo.handle, completion.bo.size, kernel_release,
-             module_srcversion) != 0) {
+             module_srcversion,
+             serial_kind ? (int)device->serial_submissions_consumed
+                         : -1) != 0) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);

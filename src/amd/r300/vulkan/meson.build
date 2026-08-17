@@ -1031,6 +1031,30 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+    # Serial-cell resubmission harness on the same shim fixture: one
+    # recorded serial command buffer crosses vkQueueSubmit three times
+    # under a declared bound of three, so every per-submission queue step
+    # runs again over the same command buffer, and the exhausted bound
+    # refuses the fourth.
+    r3v_native_serial_cell_harness = executable(
+      'r3v_native_serial_cell_harness',
+      files('tests/r3v_native_serial_cell_harness.c'),
+      include_directories : r3v_native_inc,
+      dependencies : [r3v_native_deps, dep_dl],
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-serial-cell-resubmission',
+      r3v_native_serial_cell_harness,
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+
     # The harness owns a fresh manifest directory, so inherited evidence
     # paths cannot supply stale fixed-name artifacts to its verdict.
     test(
