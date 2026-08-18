@@ -48,6 +48,16 @@ if with_amd_terascale_vk
   subdir('terascale/vulkan')
 endif
 
+# R300 include roots, owned here so the compiler library, the Gallium r300
+# driver, and the R3V Vulkan driver all resolve them from one definition.
+inc_amd_r300_common = include_directories('r300/common')
+
+# The R300 shader compiler library and its include root; the Gallium r300
+# driver and the R3V Vulkan driver both consume it from this one owner.
+if with_gallium_r300 or with_ati_r300_vk
+  subdir('r300/compiler')
+endif
+
 # API-neutral R300 format/source-contract tests.  They are registered here
 # rather than in the Gallium driver subdirectory so the shared vocabulary has
 # one build owner while the Gallium adapter remains conditional on r300g.
