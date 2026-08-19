@@ -1075,6 +1075,12 @@ r3v_native_record_r2vb_reingest(VkCommandBuffer commandBuffer,
     (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +            \
      R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES))
 
+/* The FLOAT_4 model variant widens the model array to full records. */
+#define R3V_NATIVE_FLOAT4_MODEL_VERTEX_BYTES               \
+   (R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *               \
+    (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +            \
+     R300_R2VB_FLOAT4_MODEL_STRIDE_BYTES))
+
 int
 r3v_native_float2_tuple_cell_install(
    struct r3v_native_cmd_buffer *cmd_buffer,
@@ -1262,11 +1268,11 @@ r3v_native_burst_carrier_bytes(uint32_t draws, uint32_t *out)
  * decidable; the vertex stream is the single shared fetch source all
  * members read.
  */
-VkResult
-r3v_native_record_r2vb_status_load_burst(VkCommandBuffer commandBuffer,
-                                         VkDeviceMemory carrierMemory,
-                                         VkDeviceMemory vertexMemory,
-                                         uint32_t draws)
+static VkResult
+record_status_load_burst_width(VkCommandBuffer commandBuffer,
+                               VkDeviceMemory carrierMemory,
+                               VkDeviceMemory vertexMemory, uint32_t draws,
+                               bool model_float4)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
    VK_FROM_HANDLE(r3v_native_memory, carrier_memory, carrierMemory);
@@ -1295,11 +1301,14 @@ r3v_native_record_r2vb_status_load_burst(VkCommandBuffer commandBuffer,
                        "carrier",
                        draws, carrier_bytes);
    }
-   if (vertex_memory->bo.size != R3V_NATIVE_FLOAT2_TUPLE_VERTEX_BYTES) {
+   const uint32_t vertex_bytes =
+      model_float4 ? R3V_NATIVE_FLOAT4_MODEL_VERTEX_BYTES
+                   : R3V_NATIVE_FLOAT2_TUPLE_VERTEX_BYTES;
+   if (vertex_memory->bo.size != vertex_bytes) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: burst cell takes a %u-byte vertex "
                        "stream",
-                       (unsigned)R3V_NATIVE_FLOAT2_TUPLE_VERTEX_BYTES);
+                       vertex_bytes);
    }
 
    bool owns_map = carrier_memory->map == NULL;
@@ -1329,10 +1338,16 @@ r3v_native_record_r2vb_status_load_burst(VkCommandBuffer commandBuffer,
                        "r3v-native: burst vertex memory is not "
                        "CPU-mappable");
    }
-   int stream_result = r300_r2vb_float2_tuple_vertex_stream(
-      r300_r2vb_float2_tuple_reference_records,
-      R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, vertex_memory->map,
-      R3V_NATIVE_FLOAT2_TUPLE_VERTEX_BYTES);
+   int stream_result =
+      model_float4
+         ? r300_r2vb_float4_model_vertex_stream(
+              r300_r2vb_float2_tuple_reference_records,
+              R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, vertex_memory->map,
+              vertex_bytes)
+         : r300_r2vb_float2_tuple_vertex_stream(
+              r300_r2vb_float2_tuple_reference_records,
+              R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, vertex_memory->map,
+              vertex_bytes);
    if (stream_result == 0) {
       radeon_drm_vk_bo_cache_sync(&device->drm, vertex_memory->map,
                                   vertex_memory->bo.size);
@@ -1347,8 +1362,10 @@ r3v_native_record_r2vb_status_load_burst(VkCommandBuffer commandBuffer,
                       r3v_native_cell_vk_result_from_errno(stream_result));
 
    struct r300_r2vb_float2_tuple_burst_ib cell;
-   int emit_result = r300_r2vb_float2_tuple_burst_reference_emit(draws,
-                                                                 &cell);
+   int emit_result =
+      model_float4
+         ? r300_r2vb_float4_model_burst_reference_emit(draws, &cell)
+         : r300_r2vb_float2_tuple_burst_reference_emit(draws, &cell);
    if (emit_result != 0)
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(emit_result));
@@ -1384,9 +1401,35 @@ r3v_native_record_r2vb_status_load_burst(VkCommandBuffer commandBuffer,
       cmd_buffer, R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST, cell.ib,
       cell.ib_size_dwords, references, R300_R2VB_FLOAT2_TUPLE_SLOT_COUNT);
    cmd_buffer->burst_draws = draws;
+   cmd_buffer->burst_model_float4 = model_float4;
    /* install_ib took ownership of cell.ib; only the descriptor resets. */
    cell.ib = NULL;
    cell.owns_ib = false;
    r300_r2vb_float2_tuple_burst_release(&cell);
    return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_record_r2vb_status_load_burst(VkCommandBuffer commandBuffer,
+                                         VkDeviceMemory carrierMemory,
+                                         VkDeviceMemory vertexMemory,
+                                         uint32_t draws)
+{
+   return record_status_load_burst_width(commandBuffer, carrierMemory,
+                                         vertexMemory, draws, false);
+}
+
+/* The fetch-width contrast workload: the burst status-load cell over
+ * the FLOAT_4 model emission -- the model records stored and fetched
+ * at full width under the identity swizzle, VAP_VTX_SIZE 8 -- with the
+ * tuple's carrier expectation unchanged.  The arming digest binds the
+ * widened stream to its own declared evidence.
+ */
+VkResult
+r3v_native_record_r2vb_status_load_burst_float4_model(
+   VkCommandBuffer commandBuffer, VkDeviceMemory carrierMemory,
+   VkDeviceMemory vertexMemory, uint32_t draws)
+{
+   return record_status_load_burst_width(commandBuffer, carrierMemory,
+                                         vertexMemory, draws, true);
 }

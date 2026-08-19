@@ -139,6 +139,92 @@ BUNDLE
     fi
 done
 
+# The FLOAT_4 model contrast: the same composition with the model array
+# fetched at full width (vertex object 96 bytes, VAP_VTX_SIZE 8).  The
+# undersized-fetch mutation drops the declared size to 7 against the
+# eight-dword tuple.
+for draws in 4 64; do
+    dir="${workdir}/f4d${draws}"
+    mkdir "${dir}"
+    if ! "${manifest_tool}" "${dir}" "${draws}" float4-model >/dev/null; then
+        echo "manifest tool failed for float4-model draws=${draws}" >&2
+        exit 1
+    fi
+
+    carrier_size=$((draws * 64))
+    cat > "${dir}/bundle.txt" <<BUNDLE
+family rs480
+bo 0 role=carrier size=${carrier_size} read_domains=0x2 write_domain=0x2
+bo 1 role=vertex size=96 read_domains=0x2 write_domain=0x0
+BUNDLE
+
+    good=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${dir}/bundle.txt" \
+        "${dir}/ib.bin")
+    echo "${good}"
+    case "${good}" in
+        "replay dwords="*" relocs=2 draws=${draws} passed="*" verdict=ACCEPT") ;;
+        *)
+            echo "float4-model burst draws=${draws} did not replay as" \
+                 "${draws} accepted draws" >&2
+            exit 1
+            ;;
+    esac
+
+    expect_reject "undersized VAP_VTX_SIZE (float4-model draws=${draws})" \
+        --set-vtx-size 7 \
+        "${dir}/bundle.txt" "${dir}/ib.bin"
+
+    # The kernel vertex-array bound is offset-blind: r100_cs_track_check
+    # compares esize * max_indx * 4 (stride dwords times VF_MAX times
+    # four) against the BO size, so a 72-byte vertex object still passes
+    # the widened fetch whose last byte lies at 96.  The userspace
+    # emitter's 64-bit last-byte refusal is the layer that enforces the
+    # fetch tail; this arm pins the kernel model so a validator change
+    # surfaces as a test delta.
+    cat > "${dir}/bundle-narrow.txt" <<BUNDLE
+family rs480
+bo 0 role=carrier size=${carrier_size} read_domains=0x2 write_domain=0x2
+bo 1 role=vertex size=72 read_domains=0x2 write_domain=0x0
+BUNDLE
+    narrow=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${dir}/bundle-narrow.txt" \
+        "${dir}/ib.bin")
+    case "${narrow}" in
+        *"verdict=ACCEPT") ;;
+        *)
+            echo "the offset-blind kernel vertex bound changed:" \
+                 "a 72-byte vertex object no longer passes the widened" \
+                 "fetch (float4-model draws=${draws})" >&2
+            exit 1
+            ;;
+    esac
+    echo "  accept (kernel offset-blind bound): tuple-sized vertex" \
+         "object (float4-model draws=${draws})"
+
+    # The bound the kernel does enforce: a vertex object below
+    # esize * max_indx * 4 = 4 * 2 * 4 = 32 bytes rejects.
+    cat > "${dir}/bundle-undersized.txt" <<BUNDLE
+family rs480
+bo 0 role=carrier size=${carrier_size} read_domains=0x2 write_domain=0x2
+bo 1 role=vertex size=28 read_domains=0x2 write_domain=0x0
+BUNDLE
+    expect_reject "vertex object below the kernel array bound \
+(float4-model draws=${draws})" \
+        "${dir}/bundle-undersized.txt" "${dir}/ib.bin"
+
+    if [ -n "${R3V_KERNEL_REPLAY_TOOL:-}" ]; then
+        width=$("${R3V_KERNEL_REPLAY_TOOL}" "${dir}/ib.bin")
+        echo "${width}"
+        case "${width}" in
+            *"draws=${draws} pass=${draws} reject=0 decline=0"*) ;;
+            *)
+                echo "float4-model burst draws=${draws} did not pass the" \
+                     "width predicate on every member draw" >&2
+                exit 1
+                ;;
+        esac
+    fi
+done
+
 echo "run_r2vb_float2_tuple_burst_replay: the burst parses clean at both" \
-     "depths, every known-bad arm rejects, and the width predicate" \
-     "passes every member draw"
+     "depths and both model widths, every known-bad arm rejects, and the" \
+     "width predicate passes every member draw"

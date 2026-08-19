@@ -500,6 +500,29 @@ main(int argc, char **argv)
    const char *absent = getenv("R3V_STATUS_LOAD_CENSUS_ABSENT");
    const bool census_absent = absent != NULL && strcmp(absent, "1") == 0;
 
+   /* The fetch-width selector: the exact value "float4" swaps the burst
+    * workload for the FLOAT_4 model emission, the fetch-width contrast
+    * over the tuple's unchanged carrier expectation.  Absent or "float2"
+    * keeps the qualified tuple; any other spelling refuses, and the
+    * serial cell carries only the tuple stream.
+    */
+   const char *width = getenv("R3V_STATUS_LOAD_MODEL_WIDTH");
+   bool model_float4 = false;
+   if (width != NULL && width[0] != '\0' && strcmp(width, "float2") != 0) {
+      if (strcmp(width, "float4") != 0) {
+         fprintf(stderr,
+                 "R3V_STATUS_LOAD_MODEL_WIDTH takes float2 or float4\n");
+         return 1;
+      }
+      model_float4 = true;
+   }
+   if (model_float4 && burst_draws == 0) {
+      fprintf(stderr,
+              "the float4 model width rides the burst cell alone; "
+              "declare R3V_NATIVE_AUTHORIZED_BURST_DRAWS\n");
+      return 1;
+   }
+
    const char *nonce = getenv("R3V_STATUS_LOAD_RUN_NONCE");
    if (nonce == NULL || strlen(nonce) != R3V_STATUS_LOAD_NONCE_LENGTH) {
       fprintf(stderr,
@@ -529,9 +552,11 @@ main(int argc, char **argv)
    run.members = burst_draws != 0 ? burst_draws : 1;
    run.member_stride_bytes =
       burst_draws != 0 ? member_stride : carrier_bytes;
-   run.vertex_bytes = R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *
-                      (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
-                       R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES);
+   run.vertex_bytes =
+      R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *
+      (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
+       (model_float4 ? R300_R2VB_FLOAT4_MODEL_STRIDE_BYTES
+                     : R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES));
    static uint32_t expected[R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT * 4];
    run.expected = expected;
    run.expected_dwords = (uint32_t)(sizeof(expected) / sizeof(expected[0]));
@@ -542,11 +567,16 @@ main(int argc, char **argv)
    }
    static uint8_t vertex_reference[R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *
                                    (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
-                                    R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES)];
-   if (r300_r2vb_float2_tuple_vertex_stream(
-          r300_r2vb_float2_tuple_reference_records,
-          R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, vertex_reference,
-          run.vertex_bytes) != 0) {
+                                    R300_R2VB_FLOAT4_MODEL_STRIDE_BYTES)];
+   if ((model_float4
+           ? r300_r2vb_float4_model_vertex_stream(
+                r300_r2vb_float2_tuple_reference_records,
+                R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, vertex_reference,
+                run.vertex_bytes)
+           : r300_r2vb_float2_tuple_vertex_stream(
+                r300_r2vb_float2_tuple_reference_records,
+                R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, vertex_reference,
+                run.vertex_bytes)) != 0) {
       fprintf(stderr, "vertex stream serialization failed\n");
       return 1;
    }
@@ -696,8 +726,11 @@ main(int argc, char **argv)
    }
    VkResult record_result =
       burst_draws != 0
-         ? r3v_native_record_r2vb_status_load_burst(
-              run.cmd, carrier_memory, vertex_memory, burst_draws)
+         ? (model_float4
+               ? r3v_native_record_r2vb_status_load_burst_float4_model(
+                    run.cmd, carrier_memory, vertex_memory, burst_draws)
+               : r3v_native_record_r2vb_status_load_burst(
+                    run.cmd, carrier_memory, vertex_memory, burst_draws))
          : r3v_native_record_r2vb_status_load_serial(
               run.cmd, carrier_memory, vertex_memory);
    if (record_result != VK_SUCCESS ||
@@ -859,6 +892,7 @@ main(int argc, char **argv)
       "  \"run_nonce\": \"%s\",\n"
       "  \"declared_submissions\": %u,\n"
       "  \"burst_draws\": %u,\n"
+      "  \"model_width\": \"%s\",\n"
       "  \"census_absent\": %s,\n"
       "  \"iterations_delivered\": %u,\n"
       "  \"machine_phase\": \"%s\",\n"
@@ -869,7 +903,8 @@ main(int argc, char **argv)
       "}\n",
       burst_draws != 0 ? "r3v-native-status-load-burst-outcome/2"
                        : "r3v-native-status-load-serial-outcome/2",
-      run.nonce, iterations, burst_draws, census_absent ? "true" : "false",
+      run.nonce, iterations, burst_draws,
+      model_float4 ? "float4" : "float2", census_absent ? "true" : "false",
       run.iterations_delivered,
       phase == R3V_STATUS_LOAD_COMPLETE
          ? "COMPLETE"
