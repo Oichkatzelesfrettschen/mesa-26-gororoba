@@ -25,10 +25,13 @@
 #include "vk_util.h"
 
 /* Header-only pipe enums (PIPE_TEXTURE_*, PIPE_BIND_*) live in
- * pipe/p_defines.h.  PIPE_FORMAT_* values come from pipe/p_format.h
- * (already reached via util/format includes).  Only the Gallium screen
- * machinery below stays gated. */
+ * pipe/p_defines.h and serve the Gallium format queries alone;
+ * PIPE_FORMAT_* values come from util/format/u_formats.h through
+ * idep_mesautil, so the native lane compiles with no Gallium include
+ * root.  Only the Gallium screen machinery below stays gated. */
+#ifndef R3V_NATIVE_BACKEND
 #include "pipe/p_defines.h"
+#endif
 
 #ifdef R3V_GALLIUM_BACKEND
 #include "pipe/p_screen.h"
@@ -958,6 +961,7 @@ r3v_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
    }
 }
 
+#ifndef R3V_NATIVE_BACKEND
 static bool
 r3v_screen_supports_format(const struct r3v_physical_device *const device,
                               enum pipe_format format,
@@ -972,6 +976,7 @@ r3v_screen_supports_format(const struct r3v_physical_device *const device,
    return false;
 #endif
 }
+#endif /* R3V_NATIVE_BACKEND */
 
 /* True when a Gallium pipe_screen is attached.  Loader-only builds have no
  * screen, so capabilities that depend on the r300g screen and its SW-TCL draw
@@ -1036,8 +1041,7 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
    default:
       break;
    }
-   return;
-#endif
+#else /* R3V_NATIVE_BACKEND */
 
    const enum pipe_format pipe_format = r3v_vk_format_to_pipe_format(vk_format);
    if (pipe_format == PIPE_FORMAT_NONE)
@@ -1156,6 +1160,7 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
    properties->linearTilingFeatures = linear_features;
    properties->optimalTilingFeatures = image_features;
    properties->bufferFeatures = buffer_features;
+#endif /* R3V_NATIVE_BACKEND */
 }
 
 VKAPI_ATTR void VKAPI_CALL
