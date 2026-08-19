@@ -407,15 +407,15 @@ if get_option('r3v-native-backend')
     '../common/r300_tcl_bypass_triangle.c',
   )
 
-  # inc_gallium serves header-only pipe enums (PIPE_FORMAT_*, PIPE_BIND_*)
-  # in the shared loader-base files; the native sources themselves include
-  # no Gallium header, and the separation-audit test proves the linked
-  # library carries no Gallium entry symbol.
+  # The native lane compiles with no Gallium include root: PIPE_FORMAT_*
+  # comes from util/format through idep_mesautil, the p_defines enums are
+  # gated out under R3V_NATIVE_BACKEND, and the separation-audit tests
+  # prove the sources, compile commands, and linked library stay free of
+  # Gallium includes and symbols.
   r3v_native_inc = [
     inc_include,
     inc_src,
     inc_amd_common,
-    inc_gallium,
   ]
   r3v_native_deps = [
     dep_libdrm,
@@ -513,6 +513,59 @@ if get_option('r3v-native-backend')
       'r3v-native-gallium-separation-selftest',
       prog_python,
       args : [files('tests/r3v_native_separation_audit.py'), '--selftest'],
+      suite : ['r3v'],
+    )
+    # Source layer: the native compilation's sources carry no Gallium
+    # include and no Gallium runtime identifier on any line a
+    # -DR3V_NATIVE_BACKEND compile keeps.
+    test(
+      'r3v-native-gallium-separation-sources',
+      prog_python,
+      args : [files('tests/r3v_native_separation_audit.py'), '--sources']
+             + r3v_loader_base_files + r3v_native_files + files(
+        'r3v_cpu_sync.h',
+        'r3v_format.h',
+        'r3v_instance.h',
+        'r3v_memory_properties_contract.h',
+        'r3v_native.h',
+        'r3v_native_arming.h',
+        'r3v_native_identity.h',
+        'r3v_native_reference_spirv.h',
+        'r3v_physical_device.h',
+        'r3v_queue_map_range.h',
+      ),
+      suite : ['r3v'],
+    )
+    # Compile-command layer: no object of libr3v_native_impl compiles
+    # with a Gallium include dir; fails closed when the database or the
+    # native objects are absent.
+    test(
+      'r3v-native-gallium-separation-compile-commands',
+      prog_python,
+      args : [
+        files('tests/r3v_native_separation_audit.py'),
+        '--compile-commands',
+        meson.global_build_root() / 'compile_commands.json',
+        'r3v_native_impl',
+      ],
+      depends : libr3v_native_impl,
+      suite : ['r3v'],
+    )
+  endif
+  prog_readelf_r3v = find_program('readelf', required : false)
+  if with_tests and prog_readelf_r3v.found()
+    # Dynamic layer: the linked ICD's dynamic section names no Gallium
+    # library; fails closed when the artifact is absent.
+    test(
+      'r3v-native-gallium-separation-dynamic',
+      prog_python,
+      args : [
+        files('tests/r3v_native_separation_audit.py'),
+        '--dynamic',
+        prog_readelf_r3v.full_path(),
+        libvulkan_r3v_native.full_path(),
+      ],
+      depends : libvulkan_r3v_native,
       suite : ['r3v'],
     )
   endif
