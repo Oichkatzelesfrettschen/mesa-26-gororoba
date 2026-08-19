@@ -261,6 +261,8 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
       .stride = pipeline->binding_stride,
       .first_vertex = firstVertex,
       .format_id = pipeline->format_id,
+      .vertex_job = pipeline->vertex_job,
+      .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .target_memory = cmd_buffer->pass_target->memory,
       .target_fill_bytes =
          r3v_native_image_footprint_bytes(cmd_buffer->pass_target->height),

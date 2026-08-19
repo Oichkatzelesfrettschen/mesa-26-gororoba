@@ -9,6 +9,7 @@
 
 #include "r3v_native_arming.h"
 
+#include "amd/r300/compiler/r300_vertex_job.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_completion.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_device.h"
@@ -170,6 +171,12 @@ struct r3v_native_deferred_draw {
    uint32_t stride;
    uint32_t first_vertex;
    int format_id;
+   /* Pipeline lifetime ends at the application's discretion, so the
+    * deferred draw carries its own copy of the vertex job and the
+    * GPU-route identity metadata.
+    */
+   struct r300_vertex_job vertex_job;
+   bool vertex_job_identity;
    struct r3v_native_memory *target_memory;
    /* The pass target's declared footprint: the load-op clear's exact
     * byte bound at execution.
@@ -388,6 +395,13 @@ struct r3v_native_pipeline {
    int format_id;
    uint32_t binding_stride;
    uint32_t attribute_offset;
+   /* The immutable CPU vertex job the semantic front end lowered from
+    * the vertex module, and the GPU-route admission metadata: the
+    * TCL-bypass cell delivers the raw attribute stream, so only the
+    * identity job is GPU-admissible.
+    */
+   struct r300_vertex_job vertex_job;
+   bool gpu_vertex_job_identity;
    /* The viewport/scissor extent creation admitted; the draw requires
     * it equal to the pass target's extent.
     */

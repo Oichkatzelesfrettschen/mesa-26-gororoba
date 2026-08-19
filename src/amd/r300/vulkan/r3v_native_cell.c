@@ -18,6 +18,7 @@
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/cpu/r300_cpu_vertex.h"
+#include "amd/r300/cpu/r300_cpu_vertex_job.h"
 
 #include "util/macros.h"
 #include "vk_command_pool.h"
@@ -421,8 +422,12 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                             "routes through the attended cell surface",
                             route_decision.reason);
       }
+      /* The R2VB host model delivers the raw attribute stream, so it
+       * stands in only for the identity vertex job; any other admitted
+       * job executes on the CPU interpreter route below. */
       const bool r2vb_route =
-         route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL;
+         route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
+         draw->vertex_job_identity;
       int gathered = 0;
       if (result != VK_SUCCESS) {
          /* The refused route delivers nothing; the shared unmap and
@@ -448,8 +453,11 @@ r3v_native_cmd_buffer_execute_deferred_draw(
             }
          }
       } else {
-         gathered = r300_cpu_vertex_gather(
-            stream.format_id, &source, stream.first_vertex,
+         /* The CPU route executes the pipeline's vertex job; the
+          * identity job reduces to the gather, so the reference cell's
+          * carrier bytes are unchanged. */
+         gathered = r300_cpu_vertex_job_execute(
+            &draw->vertex_job, &source, stream.first_vertex,
             R300_TRIANGLE_VERTEX_DWORDS / 4, carrier->map,
             R300_TRIANGLE_VERTEX_DWORDS);
       }
