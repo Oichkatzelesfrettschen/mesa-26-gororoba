@@ -25,6 +25,7 @@
 
 #include "vk_semaphore.h"
 
+#include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "util/u_math.h"
 
@@ -2040,6 +2041,176 @@ main(void)
       r3v_native_device_refresh_delivery_gates(native_device);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_cmd) == VK_SUCCESS);
+
+      /* Restore the reference stream for the legs below. */
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, ndc_triangle, sizeof(ndc_triangle));
+      vkUnmapMemory(device, vertex_memory);
+   }
+
+   /* The public GPU-producer route: under the exact double opt-in the
+    * queue-time admission composes the producer pass ahead of the
+    * recorded consumer, poisons the carrier, and retains the CPU
+    * oracle; the host fill stays out, the read-back verdict decides
+    * delivery, and a divergence quarantines the capability.  Every
+    * refusal shape -- single gate, off-domain record, quarantine --
+    * refuses by name.
+    */
+   {
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, positive_triangle, sizeof(positive_triangle));
+      vkUnmapMemory(device, vertex_memory);
+
+      VkCommandBuffer gpu_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(gpu_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(gpu_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipeline);
+      vkCmdBindVertexBuffers(gpu_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(gpu_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(gpu_cmd);
+      assert(vkEndCommandBuffer(gpu_cmd) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_gpu, gpu_cmd);
+      const uint32_t consumer_dwords = native_gpu->ib_size_dwords;
+
+      /* The GPU gate alone selects nothing: the route resolver keeps
+       * the CPU default, so admission is a no-op and the consumer IB
+       * stands unchanged.
+       */
+      assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      assert(setenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL", "1", 1) ==
+             0);
+      r3v_native_device_refresh_delivery_gates(native_device);
+      assert(r3v_native_deferred_draw_admit_gpu_producer(
+                native_device, native_gpu) == VK_SUCCESS);
+      assert(native_gpu->cell_kind == R3V_NATIVE_CELL_KIND_TRIANGLE);
+      assert(native_gpu->ib_size_dwords == consumer_dwords);
+
+      /* The double opt-in admits: the IB becomes producer ++ consumer
+       * with the producer prefix byte-identical to the records
+       * emission, the carrier relocation gains the write domain, the
+       * carrier holds the poison, and the retained oracle is the
+       * record dwords plus the pad slot's poison.
+       */
+      assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
+      assert(r3v_native_deferred_draw_admit_gpu_producer(
+                native_device, native_gpu) == VK_SUCCESS);
+      assert(native_gpu->cell_kind ==
+             R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC);
+      assert(native_gpu->deferred_draw.gpu_producer_delivery);
+
+      struct r300_r2vb_producer_ib expected_producer;
+      assert(r300_r2vb_producer_records_emit(
+                (const float(*)[4])positive_triangle,
+                &expected_producer) == 0);
+      assert(native_gpu->deferred_draw.gpu_producer_dwords ==
+             expected_producer.ib_size_dwords);
+      assert(native_gpu->ib_size_dwords ==
+             expected_producer.ib_size_dwords + consumer_dwords);
+      assert(memcmp(native_gpu->ib, expected_producer.ib,
+                    expected_producer.ib_size_dwords * 4) == 0);
+      assert(native_gpu->references[R300_TRIANGLE_SLOT_VERTEX]
+                .write_domain == RADEON_GEM_DOMAIN_GTT);
+      r300_r2vb_producer_pass_release(&expected_producer);
+
+      assert(radeon_drm_vk_bo_map(&native_device->drm,
+                                  &native_gpu->owned_carrier->bo,
+                                  &carrier_map) == 0);
+      const uint32_t *carrier_words = carrier_map;
+      for (unsigned i = 0; i < 16; i++)
+         assert(carrier_words[i] == R300_R2VB_PRODUCER_POISON_DWORD);
+      radeon_drm_vk_bo_unmap(&native_device->drm,
+                             &native_gpu->owned_carrier->bo, carrier_map);
+      for (unsigned i = 0; i < 12; i++) {
+         uint32_t bits;
+         memcpy(&bits, &positive_triangle[i], 4);
+         assert(native_gpu->deferred_draw.gpu_expected_carrier[i] == bits);
+      }
+      for (unsigned i = 12; i < 16; i++)
+         assert(native_gpu->deferred_draw.gpu_expected_carrier[i] ==
+                R300_R2VB_PRODUCER_POISON_DWORD);
+
+      /* The deferred execution under an admitted delivery clears the
+       * target and leaves the poisoned carrier for the device.
+       */
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_gpu) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(&native_device->drm,
+                                  &native_gpu->owned_carrier->bo,
+                                  &carrier_map) == 0);
+      assert(((const uint32_t *)carrier_map)[0] ==
+             R300_R2VB_PRODUCER_POISON_DWORD);
+      radeon_drm_vk_bo_unmap(&native_device->drm,
+                             &native_gpu->owned_carrier->bo, carrier_map);
+
+      /* A resubmission re-reads the stream: the producer prefix
+       * re-emits over the live bytes at the same fixed length.
+       */
+      float shifted[12];
+      memcpy(shifted, positive_triangle, sizeof(shifted));
+      shifted[0] = 2.0f;
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, shifted, sizeof(shifted));
+      vkUnmapMemory(device, vertex_memory);
+      assert(r3v_native_deferred_draw_admit_gpu_producer(
+                native_device, native_gpu) == VK_SUCCESS);
+      uint32_t shifted_bits;
+      memcpy(&shifted_bits, &shifted[0], 4);
+      assert(native_gpu->deferred_draw.gpu_expected_carrier[0] ==
+             shifted_bits);
+
+      /* The read-back verdict: the unwritten carrier diverges from the
+       * oracle, so the verify quarantines the capability and every
+       * later admission refuses; a carrier holding the oracle bytes
+       * passes once the quarantine is lifted.
+       */
+      assert(r3v_native_deferred_draw_verify_gpu_producer(
+                native_device, native_gpu) == VK_ERROR_DEVICE_LOST);
+      assert(native_device->gpu_producer_quarantined);
+      assert(r3v_native_deferred_draw_admit_gpu_producer(
+                native_device, native_gpu) == VK_ERROR_DEVICE_LOST);
+      native_device->gpu_producer_quarantined = false;
+      assert(radeon_drm_vk_bo_map(&native_device->drm,
+                                  &native_gpu->owned_carrier->bo,
+                                  &carrier_map) == 0);
+      memcpy(carrier_map, native_gpu->deferred_draw.gpu_expected_carrier,
+             sizeof(native_gpu->deferred_draw.gpu_expected_carrier));
+      radeon_drm_vk_bo_unmap(&native_device->drm,
+                             &native_gpu->owned_carrier->bo, carrier_map);
+      assert(r3v_native_deferred_draw_verify_gpu_producer(
+                native_device, native_gpu) == VK_SUCCESS);
+      assert(!native_device->gpu_producer_quarantined);
+
+      /* The closed hazard gate still refuses the composed submission
+       * before any ioctl, after the queue-time admission ran.
+       */
+      assert(vkQueueSubmit(queue, 1,
+                           &(VkSubmitInfo){
+                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                              .commandBufferCount = 1,
+                              .pCommandBuffers = &gpu_cmd,
+                           },
+                           VK_NULL_HANDLE) == VK_ERROR_DEVICE_LOST);
+
+      /* An off-domain record refuses admission by the FP24 window. */
+      float off_domain[12];
+      memcpy(off_domain, positive_triangle, sizeof(off_domain));
+      off_domain[0] = 0.1f;
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, off_domain, sizeof(off_domain));
+      vkUnmapMemory(device, vertex_memory);
+      assert(r3v_native_deferred_draw_admit_gpu_producer(
+                native_device, native_gpu) != VK_SUCCESS);
+
+      assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      assert(unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL") == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
 
       /* Restore the reference stream for the legs below. */
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,

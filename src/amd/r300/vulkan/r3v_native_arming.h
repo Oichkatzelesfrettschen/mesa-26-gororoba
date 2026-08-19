@@ -63,6 +63,13 @@ enum r3v_native_cell_kind {
     * ioctl the one-shot token admits.
     */
    R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST,
+   /* The public GPU-producer route: the producer pass composed over the
+    * application's admitted records ahead of the recorded consumer
+    * triangle in one IB, so the device writes the carrier the consumer
+    * fetches.  The geometry contract is the consumer's maximum public
+    * extent plus the carrier's read-write GTT relocation.
+    */
+   R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

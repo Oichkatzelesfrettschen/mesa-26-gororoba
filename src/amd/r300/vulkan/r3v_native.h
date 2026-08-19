@@ -179,6 +179,16 @@ struct r3v_native_deferred_draw {
     */
    struct r300_vertex_job vertex_job;
    bool vertex_job_identity;
+   /* Set when the GPU producer route is admitted for this submission:
+    * the queue composed the producer pass ahead of the consumer IB, the
+    * carrier is poisoned instead of host-filled, and the words below
+    * are the CPU oracle the post-completion read-back is judged
+    * against -- the delivery-identity records plus the poison the
+    * odd-count pad slot keeps.
+    */
+   bool gpu_producer_delivery;
+   uint32_t gpu_producer_dwords;
+   uint32_t gpu_expected_carrier[16];
    struct r3v_native_memory *target_memory;
    /* The pass target's declared footprint: the load-op clear's exact
     * byte bound at execution.
@@ -319,6 +329,13 @@ struct r3v_native_device {
     */
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
+   /* A completed GPU-producer submission whose carrier read-back
+    * diverged from the CPU oracle quarantines the capability: every
+    * later admission on this device refuses, the evidence stays
+    * retained, and the caller sees the failure instead of bytes the
+    * two routes disagree on.
+    */
+   bool gpu_producer_quarantined;
 };
 
 VK_DEFINE_HANDLE_CASTS(r3v_native_device, vk.base, VkDevice,
@@ -598,6 +615,33 @@ VkResult r3v_native_cmd_buffer_execute_deferred_copies(
    struct r3v_native_cmd_buffer *cmd_buffer);
 
 VkResult r3v_native_cmd_buffer_execute_deferred_draw(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer);
+
+/* Submit-time admission of the public GPU-producer route.  When the
+ * deferred draw resolves to the R2VB GPU producer, the three predicates
+ * hold or the submit refuses by name: structural (F32_4 identity vertex
+ * job on the recorded triangle consumer), transport (the composed
+ * producer PM4 is dword-identical to the silicon-qualified reference
+ * outside the record payloads, proven by
+ * r300_r2vb_producer_pass_semantic_equal), and numeric (every record is
+ * an FP24 fixed point, enforced by the emitter's -EDOM refusal, with
+ * the CPU-gathered records retained as the read-back oracle).  On
+ * admission the command buffer's IB becomes producer ++ consumer, the
+ * carrier reference gains the write domain, and the carrier is poisoned
+ * so the post-completion read-back decides every slot.  A route other
+ * than the GPU producer returns VK_SUCCESS untouched.
+ */
+VkResult r3v_native_deferred_draw_admit_gpu_producer(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer);
+
+/* Post-completion verdict of an admitted GPU-producer delivery: reads
+ * the carrier back against the retained oracle.  A divergence retains
+ * the observed bytes as gpu_carrier_observed.bin beside the manifest,
+ * quarantines the capability on the device, and reports device loss.
+ */
+VkResult r3v_native_deferred_draw_verify_gpu_producer(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer);
 

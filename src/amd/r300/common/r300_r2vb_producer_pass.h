@@ -253,6 +253,30 @@ int r300_r2vb_producer_fp24_bisect_emit(struct r300_r2vb_producer_ib *out);
 int r300_r2vb_producer_fp24_bisect_expected(uint32_t *expected,
                                             uint32_t expected_dwords);
 
+/* Emits the reference-shaped pass over caller records: the reference
+ * count, single-row layout, first-draw contract prefix, and reference
+ * fragment binary, carrier offset zero -- the shape every silicon
+ * qualification ran, with only the embedded record dwords varying.
+ * Returns 0 or a negative errno; -EDOM names a record outside the FP24
+ * fixed-point domain.  The caller owns the returned IB allocation.
+ */
+int r300_r2vb_producer_records_emit(const float (*records)[4],
+                                    struct r300_r2vb_producer_ib *out);
+
+/* Proves two reference-count emissions carry one semantic PM4 contract:
+ * equal length, equal relocation sites, and dword equality everywhere
+ * outside the embedded draw's per-vertex record payloads.  The record
+ * positions derive from the emitter's own layout -- the publication
+ * tail's fixed length locates the draw packet from the stream end, and
+ * each vertex's four record dwords follow its four fixed slot-position
+ * dwords -- so a stream whose state, slot positions, or grammar differ
+ * from the reference refuses with -EINVAL while a records-only
+ * difference passes.  Returns 0 or a negative errno.
+ */
+int r300_r2vb_producer_pass_semantic_equal(
+   const struct r300_r2vb_producer_ib *a,
+   const struct r300_r2vb_producer_ib *b);
+
 /* One producer stream by durable name: the emission and its expected
  * carrier resolve together, so a tool selecting a stream cannot pair
  * one stream's bytes with another's oracle.  Every stream shares the

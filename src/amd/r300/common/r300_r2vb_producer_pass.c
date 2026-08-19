@@ -517,6 +517,73 @@ r300_r2vb_producer_reference_emit(struct r300_r2vb_producer_ib *out)
       R300_R2VB_PRODUCER_REFERENCE_COUNT, out);
 }
 
+int
+r300_r2vb_producer_records_emit(const float (*records)[4],
+                                struct r300_r2vb_producer_ib *out)
+{
+   if (records == NULL)
+      return -EINVAL;
+   return producer_fixed_stream_emit(records,
+                                     R300_R2VB_PRODUCER_REFERENCE_COUNT,
+                                     out);
+}
+
+/* The publication tail is four register writes of two dwords each, so
+ * the embedded draw packet ends a fixed eight dwords before the stream
+ * end; the packet itself is one header, one VAP_VF_CNTL dword, and
+ * count * 8 body dwords.
+ */
+#define R300_R2VB_PRODUCER_TAIL_DWORDS 8u
+
+int
+r300_r2vb_producer_pass_semantic_equal(
+   const struct r300_r2vb_producer_ib *a,
+   const struct r300_r2vb_producer_ib *b)
+{
+   if (a == NULL || b == NULL || a->ib == NULL || b->ib == NULL)
+      return -EINVAL;
+   if (a->ib_size_dwords != b->ib_size_dwords)
+      return -EINVAL;
+   if (a->reloc_site_count != b->reloc_site_count)
+      return -EINVAL;
+   for (uint32_t s = 0; s < a->reloc_site_count; s++) {
+      if (a->reloc_sites[s].ib_index != b->reloc_sites[s].ib_index ||
+          a->reloc_sites[s].slot != b->reloc_sites[s].slot)
+         return -EINVAL;
+   }
+
+   const uint32_t count = R300_R2VB_PRODUCER_REFERENCE_COUNT;
+   const uint32_t draw_dwords =
+      2u + count * R300_R2VB_PRODUCER_VTX_DWORDS;
+   if (a->ib_size_dwords < R300_R2VB_PRODUCER_TAIL_DWORDS + draw_dwords)
+      return -EINVAL;
+   const uint32_t header_index =
+      a->ib_size_dwords - R300_R2VB_PRODUCER_TAIL_DWORDS - draw_dwords;
+   const uint32_t expected_header =
+      CP_PACKET3(R300_PACKET3_3D_DRAW_IMMD_2,
+                 1u + count * R300_R2VB_PRODUCER_VTX_DWORDS - 1u);
+   if (a->ib[header_index] != expected_header ||
+       b->ib[header_index] != expected_header)
+      return -EINVAL;
+
+   const uint32_t body_index = header_index + 2u;
+   for (uint32_t i = 0; i < a->ib_size_dwords; i++) {
+      if (i >= body_index &&
+          i < body_index + count * R300_R2VB_PRODUCER_VTX_DWORDS) {
+         const uint32_t lane =
+            (i - body_index) % R300_R2VB_PRODUCER_VTX_DWORDS;
+         /* The four record dwords follow the vertex's four fixed
+          * slot-position dwords, so only they may differ.
+          */
+         if (lane >= 4u)
+            continue;
+      }
+      if (a->ib[i] != b->ib[i])
+         return -EINVAL;
+   }
+   return 0;
+}
+
 /* Hexadecimal float literals carry the exact bit patterns; the unit test
  * pins each component to its binary32 encoding, so a literal drifting
  * off the lattice fails calibration rather than shifting the sweep.

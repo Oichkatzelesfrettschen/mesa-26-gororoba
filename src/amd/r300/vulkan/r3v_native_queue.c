@@ -155,6 +155,24 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
                  R3V_NATIVE_TARGET_WIDTH ||
               cmd_buffer->deferred_draw.target_height !=
                  R3V_NATIVE_TARGET_HEIGHT);
+   case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC: {
+      /* The composed cell renders the consumer's maximum public extent
+       * and crosses the carrier through both engines, so the vertex
+       * slot's relocation carries the GTT domain in both directions.
+       */
+      if (!cmd_buffer->deferred_draw.pending ||
+          cmd_buffer->deferred_draw.target_width !=
+             R3V_NATIVE_TARGET_WIDTH ||
+          cmd_buffer->deferred_draw.target_height !=
+             R3V_NATIVE_TARGET_HEIGHT)
+         return true;
+      if (cmd_buffer->reference_count != R300_TRIANGLE_SLOT_COUNT)
+         return true;
+      const struct r3v_native_bo_reference *slot =
+         &cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX];
+      return slot->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             slot->write_domain != RADEON_GEM_DOMAIN_GTT;
+   }
    case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER: {
       uint32_t carrier_bytes;
       if (r3v_native_producer_carrier_bytes(&carrier_bytes) != 0)
@@ -1000,6 +1018,24 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          continue;
       }
 
+      /* GPU-producer admission precedes the reloc list, digest, and
+       * manifest below: an admitted route rewrites the IB to
+       * producer ++ consumer and widens the carrier's domain, so every
+       * retained and armed fact describes the composed transport.  A
+       * refused admission refuses the submit by name rather than
+       * downgrading a route the caller opted into.
+       */
+      VkResult gpu_admit =
+         r3v_native_deferred_draw_admit_gpu_producer(device, cmd_buffer);
+      if (gpu_admit != VK_SUCCESS) {
+         if (gpu_admit == VK_ERROR_OUT_OF_HOST_MEMORY ||
+             gpu_admit == VK_ERROR_OUT_OF_DEVICE_MEMORY)
+            return gpu_admit;
+         if (gpu_admit == VK_ERROR_MEMORY_MAP_FAILED)
+            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
+      }
+
       /* Recorded transfer copies execute here, per submission, through
        * host mappings -- Vulkan's execution-time ordering, the same
        * contract the deferred draw holds below.  The recording refuses
@@ -1341,6 +1377,14 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: submission or completion wait "
                           "failed: %d", result);
       }
+      /* The completed GPU-producer delivery earns the routed verdict
+       * here: the carrier read-back against the retained CPU oracle,
+       * with a divergence quarantining the capability.
+       */
+      VkResult gpu_verdict =
+         r3v_native_deferred_draw_verify_gpu_producer(device, cmd_buffer);
+      if (gpu_verdict != VK_SUCCESS)
+         return gpu_verdict;
       device->queue_status =
          r3v_native_queue_status_from_transport(ioctl_accepted, true);
    }
