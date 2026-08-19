@@ -12,7 +12,9 @@
 #include "amd/r300/compiler/r300_vertex_job.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_completion.h"
+#include "amd/radeon/drm_vk/radeon_drm_vk_cs.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_device.h"
+#include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
 
 #include "vk_buffer.h"
 #include "vk_command_buffer.h"
@@ -261,6 +263,29 @@ struct r3v_native_submission_trace {
  * R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1 gate read once at device creation;
  * manifest_dir carries R3V_NATIVE_MANIFEST_DIR when set.
  */
+/* One submission prepared ahead of vkQueueSubmit: the relocation list,
+ * the completion reference, the single CS build, the retained evidence
+ * (semantic cell and submit object), and the arming disarm all complete
+ * in the prepare call, so the matching vkQueueSubmit performs only cache
+ * publication, the DRM_RADEON_CS ioctl, and the bounded completion wait.
+ * The attended status-load runner prepares before the sampler's capture
+ * window opens; the pre-ioctl evidence fsync ladder is disk-bound
+ * (tens of milliseconds on a rotational system disk) and dominates the
+ * window otherwise.  The struct lives inside the device because the
+ * built CS's argument pointers reference its own chunk arrays and the
+ * relocation storage, so its address stays fixed between prepare and
+ * submit.
+ */
+struct r3v_native_prepared_submission {
+   bool valid;
+   struct r3v_native_cmd_buffer *cmd_buffer;
+   struct radeon_drm_vk_reloc_list relocs;
+   struct radeon_drm_vk_cs cs;
+   struct radeon_drm_vk_completion completion;
+   uint32_t completion_index;
+   uint32_t *reference_indices;
+};
+
 struct r3v_native_device {
    struct vk_device vk;
    struct r3v_physical_device *pdevice;
@@ -280,6 +305,7 @@ struct r3v_native_device {
     * drm-shim harness installs an explicit host-model provider so a missing
     * radeon module cannot become a matchable live identity. */
    const struct r3v_native_arming_provider *arming_provider;
+   struct r3v_native_prepared_submission prepared;
 };
 
 VK_DEFINE_HANDLE_CASTS(r3v_native_device, vk.base, VkDevice,
@@ -444,6 +470,27 @@ void r3v_native_cmd_buffer_install_ib(
 
 VkResult r3v_native_queue_submit(struct vk_queue *queue,
                                  struct vk_queue_submit *submit);
+
+/* Prepares one recorded command buffer's transport ahead of
+ * vkQueueSubmit: relocation list, completion reference, the single CS
+ * build, semantic-cell and submit-object retention, and the arming
+ * evaluation with its disarm token.  Authorization is consumed here, so
+ * a prepared submission that never commits still counts against the
+ * one-shot or serial bound.  Requires the open hazard gate and an
+ * evidence directory, a nonempty IB, and no pending deferred draw or
+ * copies (those execute submission-time semantics the prepare would
+ * hoist); exactly one prepared submission exists per device, and the
+ * next vkQueueSubmit either carries the same command buffer alone or
+ * refuses and releases the prepared state.
+ */
+VkResult r3v_native_queue_prepare_submission(VkDevice device,
+                                             VkCommandBuffer commandBuffer);
+
+/* Releases a prepared submission's transport state: the completion BO,
+ * the relocation list, and the reference index map.  Device teardown
+ * calls it for a prepared submission that never committed.
+ */
+void r3v_native_prepared_release(struct r3v_native_device *device);
 
 /* Reads the last native queue boundary status for an attended control.  The
  * Vulkan result remains the API error contract; this sideband status preserves

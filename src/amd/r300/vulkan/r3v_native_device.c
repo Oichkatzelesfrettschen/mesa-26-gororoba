@@ -138,6 +138,7 @@ r3v_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
       return;
 
    vk_queue_finish(&device->queue.vk);
+   r3v_native_prepared_release(device);
    radeon_drm_vk_device_finish(&device->drm);
    vk_device_finish(&device->vk);
    vk_free2(&device->vk.alloc, pAllocator, device);

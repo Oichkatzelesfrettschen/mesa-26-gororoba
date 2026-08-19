@@ -132,7 +132,7 @@ run_burst_leg(VkInstance instance,
               PFN_vkVoidFunction (*gipa)(VkInstance, const char *),
               VkPhysicalDevice physical_device,
               const struct r300_r2vb_float2_tuple_burst_ib *reference,
-              uint32_t carrier_bytes, bool resubmit,
+              uint32_t carrier_bytes, bool resubmit, bool prepare,
               const char *manifest_dir, struct burst_leg *out)
 {
    int rc = 1;
@@ -253,6 +253,27 @@ run_burst_leg(VkInstance instance,
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
 
+   if (prepare) {
+      /* The prepared lane consumes authorization ahead of the submit:
+       * the token and both evidence groups exist before any ioctl, and
+       * the following vkQueueSubmit carries the transport tail alone.
+       */
+      VkResult prepared =
+         r3v_native_queue_prepare_submission(device, command_buffer);
+      CHECK(prepared == VK_SUCCESS, "transport preparation: %d", prepared);
+      CHECK(evidence_file_present(manifest_dir, "attempt.token"),
+            "prepare writes the one-shot token before any submit");
+      CHECK(evidence_file_present(manifest_dir, "ib.bin") &&
+               evidence_file_present(manifest_dir, "submit_manifest.json"),
+            "prepare retains the semantic cell and submit object before "
+            "any submit");
+      CHECK(r3v_native_queue_prepare_submission(device, command_buffer) ==
+               VK_ERROR_DEVICE_LOST,
+            "a second prepare refuses while one is pending");
+      if (failures != 0)
+         goto done;
+   }
+
    out->submit_result = vkQueueSubmit(
       queue, 1,
       &(VkSubmitInfo){
@@ -371,7 +392,8 @@ main(void)
    setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "8", 1);
    struct burst_leg mismatch = { 0 };
    if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, false, mismatch_dir, &mismatch) != 0)
+                     carrier_bytes, false, false, mismatch_dir,
+                     &mismatch) != 0)
       goto done;
    CHECK(mismatch.submit_result == VK_ERROR_DEVICE_LOST &&
             mismatch.queue_status ==
@@ -395,13 +417,34 @@ main(void)
    setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "4", 1);
    struct burst_leg admit = { 0 };
    if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, true, admit_dir, &admit) != 0)
+                     carrier_bytes, true, false, admit_dir, &admit) != 0)
       goto done;
    CHECK(admit.submit_result == VK_SUCCESS &&
             admit.queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
          "the matching declaration admits the burst once: %d %s",
          admit.submit_result,
          r3v_native_queue_status_name(admit.queue_status));
+
+   /* Prepared leg: the transport prepares ahead of the submit, evidence
+    * and token land before any ioctl, and the commit completes; the
+    * resubmission then refuses on the token the prepare wrote.
+    */
+   char prepared_dir[] = "/tmp/r3v-native-burst-prepared-XXXXXX";
+   if (mkdtemp(prepared_dir) == NULL) {
+      fprintf(stderr, "prepared evidence directory creation failed\n");
+      return 2;
+   }
+   setenv("R3V_NATIVE_MANIFEST_DIR", prepared_dir, 1);
+   struct burst_leg prepared = { 0 };
+   if (run_burst_leg(instance, gipa, physical_device, &reference,
+                     carrier_bytes, true, true, prepared_dir,
+                     &prepared) != 0)
+      goto done;
+   CHECK(prepared.submit_result == VK_SUCCESS &&
+            prepared.queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
+         "the prepared transport commits once: %d %s",
+         prepared.submit_result,
+         r3v_native_queue_status_name(prepared.queue_status));
 
 done:
    r300_r2vb_float2_tuple_burst_release(&reference);
