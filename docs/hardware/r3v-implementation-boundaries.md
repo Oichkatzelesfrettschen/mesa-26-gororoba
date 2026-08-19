@@ -1201,6 +1201,28 @@ R2VB migration follows the fixed triangle and CPU route:
 The native route owns its BOs, PM4, packers, barriers, and completion. Calling
 the Gallium R2VB function from a native queue remains Gallium-backed execution.
 
+#### Public GPU-producer route scope
+
+The public GPU-producer route admits through `vkCmdDraw` plus `vkQueueSubmit`
+on the exact double opt-in, and its admission composes the producer pass over
+the application's gathered records ahead of the recorded triangle consumer in
+one IB. The producer embeds those records as literal `DRAW_IMMD_2` body
+dwords, so the composed stream's digest is a function of the vertex payload:
+one authorized payload per arming, and a second submission carrying different
+vertex bytes produces a digest the operator's declaration no longer matches.
+The route is payload-specific by construction, not payload-agnostic, and a
+widened payload set means a widened set of declared digests.
+
+The admission's three predicates are structural (identity vertex job over the
+`F32_4` position stream on the recorded triangle consumer), transport
+(`r300_r2vb_producer_pass_semantic_equal` against a fresh reference emission,
+which compares every dword outside the embedded record payloads), and numeric
+(the emitter's `-EDOM` refusal holds every record inside the FP24 fixed-point
+domain, and the gathered records become the post-completion read-back oracle).
+A completed submission whose carrier diverges from that oracle retains the
+observed bytes, quarantines the capability on the device, and reports device
+loss.
+
 ### Native WSI
 
 The native build initializes common WSI surface plumbing, but its extension
