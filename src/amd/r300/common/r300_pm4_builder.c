@@ -149,6 +149,37 @@ r300_pm4_emit_vertex_index_range(struct r300_pm4_builder *b,
    r300_pm4_packet0(b, R300_VAP_VF_MAX_VTX_INDX, payload, 2);
 }
 
+void
+r300_pm4_emit_immediate_points(struct r300_pm4_builder *b,
+                               uint32_t num_vertices, uint32_t vtx_dwords,
+                               const uint32_t *vertex_dwords)
+{
+   if (b->error != 0)
+      return;
+   /* The VAP_VF_CNTL vertex count occupies bits 16-31 and the PACKET3
+    * count field carries body_dwords - 1 in 14 bits, where the body is
+    * VAP_VF_CNTL plus the vertex payload.
+    */
+   const uint64_t body_dwords =
+      1u + (uint64_t)num_vertices * (uint64_t)vtx_dwords;
+   if (num_vertices == 0 || num_vertices > R300_PM4_VTX_INDX_LIMIT ||
+       vtx_dwords == 0 || body_dwords - 1 > 0x3fffu ||
+       vertex_dwords == NULL) {
+      b->error = -EINVAL;
+      return;
+   }
+   r300_pm4_reg(b, R300_VAP_VTX_SIZE, vtx_dwords);
+   r300_pm4_emit_vertex_index_range(b, 0, num_vertices - 1);
+   if (!r300_pm4_builder_reserve(b, (uint32_t)body_dwords + 1))
+      return;
+   r300_pm4_dword(b, CP_PACKET3(R300_PACKET3_3D_DRAW_IMMD_2,
+                                (uint32_t)body_dwords - 1));
+   r300_pm4_dword(b, R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED |
+                        (num_vertices << 16) |
+                        R300_VAP_VF_CNTL__PRIM_POINTS);
+   r300_pm4_block(b, vertex_dwords, num_vertices * vtx_dwords);
+}
+
 int
 r300_pm4_builder_finish(const struct r300_pm4_builder *b, uint32_t *out_count)
 {
