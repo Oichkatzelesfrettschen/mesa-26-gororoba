@@ -1,0 +1,257 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Calibration for the semantic pipeline front end: the reference cell
+ * modules admit through SPIR-V ingestion by meaning, builder-made
+ * arithmetic shaders lower to the job IR and execute to exact values,
+ * and each inadmissible construct refuses by shape.
+ */
+
+/* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
+#undef NDEBUG
+
+#include "amd/r300/common/r300_vertex_format.h"
+#include "amd/r300/compiler/r300_vertex_job_nir.h"
+#include "amd/r300/cpu/r300_cpu_vertex_job.h"
+
+#include "r3v_native_reference_spirv.h"
+
+#include "compiler/nir/nir_builder.h"
+
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+static uint32_t f_bits(float value)
+{
+   uint32_t bits;
+   memcpy(&bits, &value, sizeof(bits));
+   return bits;
+}
+
+static nir_shader *
+ingest(const uint32_t *words, size_t bytes, mesa_shader_stage stage)
+{
+   nir_shader *nir = spirv_to_nir(words, bytes / 4, NULL, stage, "main",
+                                  r300_vertex_job_spirv_options(),
+                                  r300_vertex_job_nir_options());
+   assert(nir != NULL);
+   const char *reason = NULL;
+   bool normalized = r300_vertex_job_nir_normalize(nir, &reason);
+   assert(normalized);
+   return nir;
+}
+
+/* The reference vertex module is the position pass-through, so the
+ * semantic front end must lower it to the identity job and the job
+ * must reproduce the gather bytes exactly. */
+static void test_reference_vertex_module(void)
+{
+   nir_shader *nir = ingest(r3v_reference_vertex_spirv,
+                            sizeof(r3v_reference_vertex_spirv),
+                            MESA_SHADER_VERTEX);
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   bool admitted = r300_vertex_job_from_nir(nir, &job, &reason);
+   if (!admitted) {
+      fprintf(stderr, "reference vertex refusal: %s\n", reason);
+      nir_print_shader(nir, stderr);
+   }
+   ralloc_free(nir);
+   assert(admitted);
+   assert(job.instruction_count == 2 && job.constant_count == 0);
+   assert(job.instructions[0].opcode == R300_VERTEX_JOB_OP_LOAD_INPUT);
+   assert(job.instructions[1].opcode == R300_VERTEX_JOB_OP_STORE_POSITION);
+   assert(job.instructions[1].src0 == job.instructions[0].dst);
+
+   job.input_format_id = R300_VERTEX_FORMAT_F32_4;
+   int rc = r300_cpu_vertex_job_validate(&job);
+   assert(rc == 0);
+
+   const uint32_t records[3][4] = {
+      { f_bits(1.0f), f_bits(2.0f), f_bits(3.0f), f_bits(4.0f) },
+      { 0x7fc00123u, 0x80000000u, f_bits(-5.0f), f_bits(0.5f) },
+      { f_bits(9.0f), f_bits(8.0f), f_bits(7.0f), f_bits(6.0f) },
+   };
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)records,
+      .stride = 16,
+      .size_bytes = sizeof(records),
+   };
+   uint32_t carrier[12];
+   rc = r300_cpu_vertex_job_execute(&job, &stream, 0, 3, carrier, 12);
+   assert(rc == 0);
+   assert(memcmp(carrier, records, sizeof(records)) == 0);
+}
+
+static void test_reference_fragment_module(void)
+{
+   nir_shader *nir = ingest(r3v_reference_fragment_spirv,
+                            sizeof(r3v_reference_fragment_spirv),
+                            MESA_SHADER_FRAGMENT);
+   uint32_t color[4];
+   const char *reason = NULL;
+   bool admitted = r300_fragment_nir_constant_color(nir, color, &reason);
+   ralloc_free(nir);
+   assert(admitted);
+   assert(color[0] == 0 && color[1] == 0x3f800000u && color[2] == 0 &&
+          color[3] == 0x3f800000u);
+}
+
+static nir_builder builder_for(mesa_shader_stage stage, const char *name)
+{
+   return nir_builder_init_simple_shader(stage, r300_vertex_job_nir_options(),
+                                         "%s", name);
+}
+
+static nir_def *load_attribute(nir_builder *b, unsigned base)
+{
+   return nir_load_input(b, 4, 32, nir_imm_int(b, 0), .base = base,
+                         .component = 0,
+                         .dest_type = nir_type_float32,
+                         .io_semantics.location = VERT_ATTRIB_GENERIC0,
+                         .io_semantics.num_slots = 1);
+}
+
+static void store_position(nir_builder *b, nir_def *value)
+{
+   nir_store_output(b, value, nir_imm_int(b, 0), .base = 0, .component = 0,
+                    .write_mask = 0xf, .src_type = nir_type_float32,
+                    .io_semantics.location = VARYING_SLOT_POS,
+                    .io_semantics.num_slots = 1);
+}
+
+/* ffma into a broadcast DP4: the analyzer must produce the exact
+ * opcode sequence and the interpreter the exact host-model values,
+ * with the twice-used constant deduplicated. */
+static void test_arithmetic_lowering(void)
+{
+   nir_builder b = builder_for(MESA_SHADER_VERTEX, "arith");
+   nir_def *input = load_attribute(&b, 0);
+   nir_def *coeff = nir_imm_vec4(&b, 2.0f, -0.5f, 4.0f, 1.0f);
+   nir_def *fma = nir_ffma(&b, input, coeff, coeff);
+   nir_def *dot = nir_fdot4(&b, fma, coeff);
+   store_position(&b, nir_vec4(&b, dot, dot, dot, dot));
+
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   bool admitted = r300_vertex_job_from_nir(b.shader, &job, &reason);
+   ralloc_free(b.shader);
+   assert(admitted);
+   assert(job.instruction_count == 5 && job.constant_count == 1);
+   assert(job.instructions[0].opcode == R300_VERTEX_JOB_OP_LOAD_INPUT);
+   assert(job.instructions[1].opcode == R300_VERTEX_JOB_OP_LOAD_CONSTANT);
+   assert(job.instructions[2].opcode == R300_VERTEX_JOB_OP_FMAD);
+   assert(job.instructions[3].opcode == R300_VERTEX_JOB_OP_DP4);
+   assert(job.instructions[4].opcode == R300_VERTEX_JOB_OP_STORE_POSITION);
+
+   job.input_format_id = R300_VERTEX_FORMAT_F32_4;
+   const float in[4] = { 1.5f, 3.0f, -1.0f, 0.25f };
+   const float k[4] = { 2.0f, -0.5f, 4.0f, 1.0f };
+   float expected = 0;
+   float lanes[4];
+   for (int c = 0; c < 4; c++)
+      lanes[c] = in[c] * k[c] + k[c];
+   expected = ((lanes[0] * k[0] + lanes[1] * k[1]) + lanes[2] * k[2]) +
+              lanes[3] * k[3];
+
+   const uint32_t record[4] = {
+      f_bits(in[0]), f_bits(in[1]), f_bits(in[2]), f_bits(in[3]),
+   };
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)record,
+      .stride = 16,
+      .size_bytes = sizeof(record),
+   };
+   uint32_t carrier[4];
+   int rc = r300_cpu_vertex_job_execute(&job, &stream, 0, 1, carrier, 4);
+   assert(rc == 0);
+   for (int c = 0; c < 4; c++)
+      assert(carrier[c] == f_bits(expected));
+}
+
+/* A non-green constant fragment shader reads back with its own bits;
+ * the green gate is the pipeline's, not the analyzer's. */
+static void test_fragment_constant_readback(void)
+{
+   nir_builder b = builder_for(MESA_SHADER_FRAGMENT, "red");
+   nir_def *red = nir_imm_vec4(&b, 1.0f, 0.0f, 0.0f, 1.0f);
+   nir_store_output(&b, red, nir_imm_int(&b, 0), .base = 0, .component = 0,
+                    .write_mask = 0xf, .src_type = nir_type_float32,
+                    .io_semantics.location = FRAG_RESULT_DATA0,
+                    .io_semantics.num_slots = 1);
+   uint32_t color[4];
+   const char *reason = NULL;
+   bool admitted = r300_fragment_nir_constant_color(b.shader, color, &reason);
+   ralloc_free(b.shader);
+   assert(admitted);
+   assert(color[0] == 0x3f800000u && color[1] == 0 && color[2] == 0 &&
+          color[3] == 0x3f800000u);
+}
+
+static bool vertex_admits(nir_shader *shader)
+{
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   bool admitted = r300_vertex_job_from_nir(shader, &job, &reason);
+   ralloc_free(shader);
+   return admitted;
+}
+
+static void test_refusals(void)
+{
+   /* Control flow. */
+   nir_builder b = builder_for(MESA_SHADER_VERTEX, "flow");
+   nir_def *input = load_attribute(&b, 0);
+   nir_push_if(&b, nir_imm_true(&b));
+   nir_pop_if(&b, NULL);
+   store_position(&b, input);
+   assert(!vertex_admits(b.shader));
+
+   /* Attribute outside slot 0. */
+   b = builder_for(MESA_SHADER_VERTEX, "attr1");
+   store_position(&b, load_attribute(&b, 1));
+   assert(!vertex_admits(b.shader));
+
+   /* Second position store. */
+   b = builder_for(MESA_SHADER_VERTEX, "twostore");
+   input = load_attribute(&b, 0);
+   store_position(&b, input);
+   store_position(&b, input);
+   assert(!vertex_admits(b.shader));
+
+   /* Non-identity swizzle. */
+   b = builder_for(MESA_SHADER_VERTEX, "swizzle");
+   input = load_attribute(&b, 0);
+   store_position(&b, nir_swizzle(&b, input, (unsigned[]){ 1, 0, 2, 3 }, 4));
+   assert(!vertex_admits(b.shader));
+
+   /* A scalar dot stored without its broadcast. */
+   b = builder_for(MESA_SHADER_VERTEX, "scalardot");
+   input = load_attribute(&b, 0);
+   nir_def *dot = nir_fdot4(&b, input, input);
+   nir_store_output(&b, dot, nir_imm_int(&b, 0), .base = 0, .component = 0,
+                    .write_mask = 0x1, .src_type = nir_type_float32,
+                    .io_semantics.location = VARYING_SLOT_POS,
+                    .io_semantics.num_slots = 1);
+   assert(!vertex_admits(b.shader));
+
+   /* Arithmetic outside the admitted operator set. */
+   b = builder_for(MESA_SHADER_VERTEX, "fmax");
+   input = load_attribute(&b, 0);
+   store_position(&b, nir_fmax(&b, input, input));
+   assert(!vertex_admits(b.shader));
+}
+
+int main(void)
+{
+   glsl_type_singleton_init_or_ref();
+   test_reference_vertex_module();
+   test_reference_fragment_module();
+   test_arithmetic_lowering();
+   test_fragment_constant_readback();
+   test_refusals();
+   glsl_type_singleton_decref();
+   printf("r3v_native_pipeline_frontend_test: all cases pass\n");
+   return 0;
+}
