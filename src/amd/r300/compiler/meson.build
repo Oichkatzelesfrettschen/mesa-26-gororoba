@@ -7,18 +7,20 @@
 # themselves.
 inc_amd_r300_compiler = include_directories('.')
 
-if with_gallium_r300
-  r300_nir_algebraic_c = custom_target(
-    'r300_nir_algebraic.c',
-    input : 'r300_nir_algebraic.py',
-    output : 'r300_nir_algebraic.c',
-    command : [
-      prog_python, '@INPUT@', '-p', dir_compiler_nir, '@OUTPUT@',
-    ],
-    depend_files : nir_algebraic_depends,
-  )
+# The parent meson.build enters this directory for either front end, so the
+# library builds under the same condition and a Vulkan-only configuration
+# still defines libr300_compiler.
+r300_nir_algebraic_c = custom_target(
+  'r300_nir_algebraic.c',
+  input : 'r300_nir_algebraic.py',
+  output : 'r300_nir_algebraic.c',
+  command : [
+    prog_python, '@INPUT@', '-p', dir_compiler_nir, '@OUTPUT@',
+  ],
+  depend_files : nir_algebraic_depends,
+)
 
-  files_r300_compiler = files(
+files_r300_compiler = files(
   'classic/r300_classic_emit.c',
   'classic/r300_classic_emit.h',
   'classic/r300_classic_ir.c',
@@ -93,15 +95,14 @@ if with_gallium_r300
   'radeon_variable.c',
   'radeon_variable.h',
   'radeon_vert_fc.c',
-  )
+)
 
-  libr300_compiler = static_library(
-    'r300_compiler',
-    files_r300_compiler, r300_nir_algebraic_c,
-    include_directories : [
-      inc_src, inc_include, inc_amd_r300_common, inc_amd_r300_compiler,
-    ],
-    gnu_symbol_visibility : 'hidden',
-    dependencies : [idep_mesautil, idep_nir],
-  )
-endif
+libr300_compiler = static_library(
+  'r300_compiler',
+  files_r300_compiler, r300_nir_algebraic_c,
+  include_directories : [
+    inc_src, inc_include, inc_amd_r300_common, inc_amd_r300_compiler,
+  ],
+  gnu_symbol_visibility : 'hidden',
+  dependencies : [idep_mesautil, idep_nir],
+)
