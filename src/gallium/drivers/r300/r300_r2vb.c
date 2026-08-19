@@ -1846,6 +1846,13 @@ static bool r300_r2vb_emit_producer(struct r300_context *r300,
      * DRAW_IMMD header pair); this adapter supplies the vertex facts:
      * one slot position per vertex, then the attribute dwords.
      */
+    /* The emitter's own bounds, checked before the size arithmetic: the
+     * PACKET3 count field caps the body at 0x3fff dwords, so the sums
+     * below stay far from overflow. */
+    if (num_vertices == 0 || num_vertices > R300_PM4_VTX_INDX_LIMIT ||
+        vtx_dwords == 0 ||
+        (uint64_t)num_vertices * vtx_dwords > 0x3fffu)
+        return false;
     const uint32_t payload_dwords = num_vertices * vtx_dwords;
     const uint32_t total_dwords =
         R300_PM4_IMMEDIATE_POINTS_DWORDS(num_vertices, vtx_dwords);
