@@ -4,7 +4,6 @@
 # driver, while both R300 front ends consume the compiler from src/amd/r300.
 inc_gallium_drivers = include_directories('../../../gallium/drivers')
 inc_gallium_r300 = include_directories('../../../gallium/drivers/r300')
-inc_amd_r300_compiler = include_directories('../compiler')
 
 r3v_entrypoints = custom_target(
   'r3v_entrypoints',
