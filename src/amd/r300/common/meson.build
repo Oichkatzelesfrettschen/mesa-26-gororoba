@@ -62,6 +62,22 @@ test(
   suite : ['r300'],
 )
 
+r300_r2vb_reingest_draw_test = executable(
+  'r300_r2vb_reingest_draw_test',
+  files('r300_pm4_builder.c', 'r300_r2vb_reingest_draw.c',
+        'tests/r300_r2vb_reingest_draw_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-r2vb-reingest-draw',
+  r300_r2vb_reingest_draw_test,
+  suite : ['r300'],
+)
+
 r300_pm4_compose_test = executable(
   'r300_pm4_compose_test',
   files('r300_pm4_builder.c', 'r300_pm4_compose.c',
