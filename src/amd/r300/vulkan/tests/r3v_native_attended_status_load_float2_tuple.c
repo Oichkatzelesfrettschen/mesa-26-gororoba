@@ -8,7 +8,8 @@
  * bound, one outstanding submission at a time; a declared burst count
  * instead records the burst cell -- one IB composing that many members
  * over disjoint carrier rows -- and runs one submission window.  Each submission walks the full event
- * ladder -- poison, arm, ioctl, fence, verify, retain, repoison -- and
+ * ladder -- poison, arm, queue submit, transport completion, verify, retain,
+ * repoison -- and
  * the first containment, submission, completion, barrier, or
  * verification failure aborts the run with its exact reason.  The
  * merged two-sender transcript, the per-iteration carriers, and the
@@ -203,14 +204,29 @@ sampler_pump(struct serial_run *run, int timeout_ms)
       char role[32];
       char state[32];
       char timestamp[32];
+      char protocol_magic[16];
+      char protocol_version[16];
       char nonce[R3V_STATUS_LOAD_NONCE_LENGTH + 2];
       if (!message_field(datagram, "sender_role", role, sizeof(role)) ||
           !message_field(datagram, "state", state, sizeof(state)) ||
           !message_field(datagram, "timestamp_ns", timestamp,
                          sizeof(timestamp)) ||
+          !message_field(datagram, "protocol_magic", protocol_magic,
+                         sizeof(protocol_magic)) ||
+          !message_field(datagram, "protocol_version", protocol_version,
+                         sizeof(protocol_version)) ||
           !message_field(datagram, "run_nonce", nonce, sizeof(nonce))) {
          r3v_status_load_machine_fault(&run->machine,
                                        "sampler message is malformed");
+         return;
+      }
+      char expected_protocol_version[16];
+      snprintf(expected_protocol_version, sizeof(expected_protocol_version),
+               "%u", R3V_STATUS_LOAD_PROTOCOL_VERSION);
+      if (strcmp(protocol_magic, R3V_STATUS_LOAD_PROTOCOL_MAGIC) != 0 ||
+          strcmp(protocol_version, expected_protocol_version) != 0) {
+         r3v_status_load_machine_fault(&run->machine,
+                                       "sampler protocol identity differs");
          return;
       }
       if (strcmp(role, "sampler") != 0) {
@@ -289,10 +305,38 @@ op_arm(void *ctx, uint32_t iteration)
 }
 
 static int
-op_submit(void *ctx, uint32_t iteration)
+op_submission_trace(void *ctx, enum r3v_native_submission_trace_event event)
 {
-   (void)iteration;
    struct serial_run *run = ctx;
+   enum r3v_status_load_transport_event machine_event;
+   switch (event) {
+   case R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_ENTER:
+      machine_event = R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_ENTER;
+      break;
+   case R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN:
+      machine_event = R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_RETURN;
+      break;
+   case R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_BEGIN:
+      machine_event = R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_BEGIN;
+      break;
+   case R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_RETURN:
+      machine_event = R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_RETURN;
+      break;
+   default:
+      return -1;
+   }
+   return r3v_status_load_machine_transport_event(&run->machine,
+                                                   machine_event);
+}
+
+static int
+op_submit(void *ctx, struct r3v_status_load_machine *machine,
+          uint32_t iteration)
+{
+   struct serial_run *run = ctx;
+   if (machine != &run->machine ||
+       iteration != run->machine.transport_submission_index)
+      return -1;
    run->last_submit_result =
       run->submit(run->queue, 1,
                   &(VkSubmitInfo){
@@ -302,8 +346,9 @@ op_submit(void *ctx, uint32_t iteration)
                   },
                   VK_NULL_HANDLE);
    run->last_queue_status = r3v_native_queue_submission_status(run->device);
-   /* The ioctl was reached and accepted for every status past refusal;
-    * completion is the fence operation's verdict.
+   /* The queue status carries whether transport reached the raw submission;
+    * the machine records the raw ioctl and completion boundaries through the
+    * trace hook during vkQueueSubmit.
     */
    return run->last_queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED
              ? -1
@@ -311,7 +356,7 @@ op_submit(void *ctx, uint32_t iteration)
 }
 
 static int
-op_fence_wait(void *ctx, uint32_t iteration)
+op_post_submit_check(void *ctx, uint32_t iteration)
 {
    (void)iteration;
    struct serial_run *run = ctx;
@@ -445,7 +490,7 @@ main(int argc, char **argv)
       return 1;
    }
 
-   /* The census-absent declaration names a fence-latency control run:
+   /* The census-absent declaration names a queue-call-duration control run:
     * the sampler walks the barrier ladder with the census node unread,
     * so the run differs from an observed run by exactly the census MMIO
     * read stream.  The declaration takes the exact value 1; any other
@@ -561,7 +606,7 @@ main(int argc, char **argv)
       .poison = op_poison,
       .arm = op_arm,
       .submit = op_submit,
-      .fence_wait = op_fence_wait,
+      .post_submit_check = op_post_submit_check,
       .verify = op_verify,
       .retain = op_retain,
       .repoison = op_repoison,
@@ -633,6 +678,12 @@ main(int argc, char **argv)
       fprintf(stderr, "vkCreateDevice failed\n");
       return 1;
    }
+   struct r3v_native_device *native_device =
+      r3v_native_device_from_handle(run.device);
+   native_device->submission_trace = (struct r3v_native_submission_trace){
+      .ctx = &run,
+      .emit = op_submission_trace,
+   };
    PFN_vkGetDeviceProcAddr gdpa = vkGetDeviceProcAddr;
 #define LOAD_DEVICE(name) PFN_##name name = (PFN_##name)gdpa(run.device, #name)
    LOAD_DEVICE(vkAllocateMemory);
@@ -740,8 +791,8 @@ main(int argc, char **argv)
     */
    /* The burst's single window must overlap the census capture, so the
     * submission waits for the sampler's ENTER_READ: the kernel is
-    * recording from that message on, and the ioctl issued after it puts
-    * the GPU-busy interval inside the capture instead of racing it.
+    * recording from that message on, and the queue call issued after it
+    * puts the GPU-busy interval inside the capture instead of racing it.
     * The serial cell keeps its many-window overlap and submits from
     * READY.  A census-absent control run has no capture to overlap, so
     * it submits from READY too.

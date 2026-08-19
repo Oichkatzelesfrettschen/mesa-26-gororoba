@@ -637,6 +637,16 @@ r3v_native_queue_submission_status(VkDevice _device)
                          : R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION;
 }
 
+static int
+r3v_native_submission_trace_emit(
+   struct r3v_native_device *device,
+   enum r3v_native_submission_trace_event event)
+{
+   if (device->submission_trace.emit == NULL)
+      return 0;
+   return device->submission_trace.emit(device->submission_trace.ctx, event);
+}
+
 VkResult
 r3v_native_queue_submit(struct vk_queue *queue_base,
                         struct vk_queue_submit *submit)
@@ -996,12 +1006,36 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
           R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL)
          device->serial_submissions_consumed++;
 
+      int trace_result = r3v_native_submission_trace_emit(
+         device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_ENTER);
+      if (trace_result != 0) {
+         free(reference_indices);
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: transport trace refused before "
+                          "the submission ioctl");
+      }
+
       int result = radeon_drm_vk_cs_submit(&device->drm, &cs);
+      if (r3v_native_submission_trace_emit(
+             device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
+         trace_result = -EIO;
       const bool ioctl_accepted = result == 0;
       if (ioctl_accepted) {
          device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
+         if (r3v_native_submission_trace_emit(
+                device,
+                R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_BEGIN) != 0)
+            trace_result = -EIO;
          result = radeon_drm_vk_completion_await(&device->drm, &completion);
+         if (r3v_native_submission_trace_emit(
+                device,
+                R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_RETURN) != 0)
+            trace_result = -EIO;
       }
+      if (result == 0 && trace_result != 0)
+         result = trace_result;
       if (result == 0) {
          /* Device writes landed in memory past the cache; drop every
           * stale line over the live mappings before the host reads them.

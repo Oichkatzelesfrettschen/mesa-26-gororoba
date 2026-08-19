@@ -24,12 +24,13 @@ r3v_status_load_format_message(char *buffer, size_t capacity,
       return -1;
    int length = snprintf(
       buffer, capacity,
-      "{\"protocol_magic\": \"0x52533445\", \"protocol_version\": 1, "
+      "{\"protocol_magic\": \"%s\", \"protocol_version\": %u, "
       "\"run_nonce\": \"%s\", \"submission_index\": %" PRIu32 ", "
       "\"message_sequence\": %" PRIu64 ", \"timestamp_ns\": \"%" PRIu64
       "\", \"sender_role\": \"%s\", \"state\": \"%s\"}\n",
-      nonce, submission_index, message_sequence, timestamp_ns, sender_role,
-      state);
+      R3V_STATUS_LOAD_PROTOCOL_MAGIC, R3V_STATUS_LOAD_PROTOCOL_VERSION, nonce,
+      submission_index,
+      message_sequence, timestamp_ns, sender_role, state);
    if (length <= 0 || (size_t)length >= capacity)
       return -1;
    return length;
@@ -103,7 +104,7 @@ r3v_status_load_machine_init(struct r3v_status_load_machine *machine,
    if (machine == NULL || ops == NULL || nonce == NULL)
       return -1;
    if (ops->poison == NULL || ops->arm == NULL || ops->submit == NULL ||
-       ops->fence_wait == NULL || ops->verify == NULL ||
+       ops->post_submit_check == NULL || ops->verify == NULL ||
        ops->retain == NULL || ops->repoison == NULL || ops->now_ns == NULL ||
        ops->emit == NULL)
       return -1;
@@ -124,6 +125,58 @@ r3v_status_load_machine_init(struct r3v_status_load_machine *machine,
    machine->sampler = R3V_STATUS_LOAD_SAMPLER_ABSENT;
    machine->phase = R3V_STATUS_LOAD_RUNNING;
    machine->abort_reason = "";
+   return 0;
+}
+
+int
+r3v_status_load_machine_transport_event(
+   struct r3v_status_load_machine *machine,
+   enum r3v_status_load_transport_event event)
+{
+   if (machine == NULL || machine->phase != R3V_STATUS_LOAD_RUNNING) {
+      return -1;
+   }
+
+   const char *state = NULL;
+   switch (machine->transport_phase) {
+   case R3V_STATUS_LOAD_TRANSPORT_EXPECT_CS_IOCTL_ENTER:
+      if (event == R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_ENTER) {
+         state = "CS_IOCTL_ENTER";
+         machine->transport_phase =
+            R3V_STATUS_LOAD_TRANSPORT_EXPECT_CS_IOCTL_RETURN;
+      }
+      break;
+   case R3V_STATUS_LOAD_TRANSPORT_EXPECT_CS_IOCTL_RETURN:
+      if (event == R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_RETURN) {
+         state = "CS_IOCTL_RETURN";
+         machine->transport_phase =
+            R3V_STATUS_LOAD_TRANSPORT_EXPECT_COMPLETION_WAIT_BEGIN;
+      }
+      break;
+   case R3V_STATUS_LOAD_TRANSPORT_EXPECT_COMPLETION_WAIT_BEGIN:
+      if (event == R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_BEGIN) {
+         state = "COMPLETION_WAIT_BEGIN";
+         machine->transport_phase =
+            R3V_STATUS_LOAD_TRANSPORT_EXPECT_COMPLETION_WAIT_RETURN;
+      }
+      break;
+   case R3V_STATUS_LOAD_TRANSPORT_EXPECT_COMPLETION_WAIT_RETURN:
+      if (event == R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_RETURN) {
+         state = "COMPLETION_WAIT_RETURN";
+         machine->transport_phase = R3V_STATUS_LOAD_TRANSPORT_COMPLETE;
+      }
+      break;
+   case R3V_STATUS_LOAD_TRANSPORT_IDLE:
+   case R3V_STATUS_LOAD_TRANSPORT_COMPLETE:
+      break;
+   }
+
+   if (state == NULL ||
+       emit_submitter(machine, state, machine->transport_submission_index) !=
+          0) {
+      machine_abort(machine, "transport trace transition out of order");
+      return -1;
+   }
    return 0;
 }
 
@@ -208,7 +261,7 @@ r3v_status_load_machine_iterate(struct r3v_status_load_machine *machine)
 
    /* The sampler gate: submission is refused, never attempted, when the
     * sampler is gone or was never ready, so the transcript carries ABORT
-    * here instead of an IOCTL_ENTER the checker would reject.
+    * here instead of a queue-submit entry the checker would reject.
     */
    if (machine->sampler == R3V_STATUS_LOAD_SAMPLER_STOPPED) {
       machine_abort(machine, "sampler stopped before submission");
@@ -219,24 +272,30 @@ r3v_status_load_machine_iterate(struct r3v_status_load_machine *machine)
       return -1;
    }
 
-   if (emit_submitter(machine, "IOCTL_ENTER", i) != 0)
+   if (emit_submitter(machine, "QUEUE_SUBMIT_ENTER", i) != 0)
       return -1;
-   const int submit_status = machine->ops.submit(ctx, i);
-   /* The ioctl returned either way; only its verdict differs. */
-   if (emit_submitter(machine, "IOCTL_RETURN", i) != 0)
-      return -1;
+   machine->transport_submission_index = i;
+   machine->transport_phase = R3V_STATUS_LOAD_TRANSPORT_EXPECT_CS_IOCTL_ENTER;
+   const int submit_status = machine->ops.submit(ctx, machine, i);
    if (submit_status != 0) {
-      machine_abort(machine, "submission ioctl failed");
+      machine_abort(machine, "queue submission failed");
       return -1;
    }
+   if (machine->transport_phase != R3V_STATUS_LOAD_TRANSPORT_COMPLETE) {
+      machine_abort(machine, "transport trace ended before completion wait");
+      return -1;
+   }
+   /* A complete transport trace makes the queue-call return observable. */
+   if (emit_submitter(machine, "QUEUE_SUBMIT_RETURN", i) != 0)
+      return -1;
 
-   if (emit_submitter(machine, "FENCE_WAIT_BEGIN", i) != 0)
+   if (emit_submitter(machine, "POST_SUBMIT_STATUS_CHECK_BEGIN", i) != 0)
       return -1;
-   if (machine->ops.fence_wait(ctx, i) != 0) {
-      machine_abort(machine, "fence wait failed");
+   if (machine->ops.post_submit_check(ctx, i) != 0) {
+      machine_abort(machine, "post-submit status check failed");
       return -1;
    }
-   if (emit_submitter(machine, "FENCE_SIGNALED", i) != 0)
+   if (emit_submitter(machine, "POST_SUBMIT_STATUS_CHECK_END", i) != 0)
       return -1;
 
    if (emit_submitter(machine, "VERIFY_BEGIN", i) != 0)
