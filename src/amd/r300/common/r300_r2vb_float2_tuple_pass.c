@@ -58,6 +58,35 @@ static const uint32_t tuple_psc_ext[8] = {
    0,
 };
 
+/* The FLOAT_4 model contrast: both elements fetch at full width under
+ * the identity swizzle, so the logical input equals the stored record
+ * with no PSC expansion.
+ */
+static const uint32_t float4_model_psc[8] = {
+   (R300_DATA_TYPE_FLOAT_4 | (TUPLE_PSC_SLOT_VEC << R300_DST_VEC_LOC_SHIFT)) |
+      ((R300_DATA_TYPE_FLOAT_4 |
+        (TUPLE_PSC_MODEL_VEC << R300_DST_VEC_LOC_SHIFT) | R300_LAST_VEC)
+       << 16),
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+};
+
+static const uint32_t float4_model_psc_ext[8] = {
+   R300_VAP_SWIZZLE_XYZW | (R300_VAP_SWIZZLE_XYZW << 16),
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+};
+
 static uint32_t
 float_bits(float f)
 {
@@ -90,47 +119,70 @@ write_reloc(struct r300_pm4_builder *b,
       };
 }
 
-int
-r300_r2vb_float2_tuple_vertex_stream(const float (*records)[2],
-                                     uint32_t count, uint8_t *vertex_bytes,
-                                     uint32_t vertex_capacity_bytes)
+static void
+write_le32(uint8_t **p, uint32_t bits)
+{
+   (*p)[0] = (uint8_t)bits;
+   (*p)[1] = (uint8_t)(bits >> 8);
+   (*p)[2] = (uint8_t)(bits >> 16);
+   (*p)[3] = (uint8_t)(bits >> 24);
+   *p += 4;
+}
+
+/* Serializes the slot-position array followed by the model array.  The
+ * FLOAT_4 model form stores each record's XY01 expansion explicitly, so
+ * the stored model bytes equal the logical input either fetch delivers.
+ */
+static int
+tuple_width_vertex_stream(const float (*records)[2], uint32_t count,
+                          uint8_t *vertex_bytes,
+                          uint32_t vertex_capacity_bytes, bool model_float4)
 {
    if (records == NULL || vertex_bytes == NULL || count < 1 ||
        count > R300_R2VB_PRODUCER_MAX_COUNT)
       return -EINVAL;
+   const uint32_t model_stride =
+      model_float4 ? R300_R2VB_FLOAT4_MODEL_STRIDE_BYTES
+                   : R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES;
    const uint32_t needed =
-      count * (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
-               R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES);
+      count * (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES + model_stride);
    if (vertex_capacity_bytes < needed)
       return -ENOSPC;
 
    uint8_t *p = vertex_bytes;
    for (uint32_t v = 0; v < count; v++) {
-      const uint32_t slot[4] = {
-         float_bits((float)v + 0.5f),
-         float_bits(0.5f),
-         float_bits(0.0f),
-         float_bits(1.0f),
-      };
-      for (uint32_t c = 0; c < 4; c++) {
-         p[0] = (uint8_t)slot[c];
-         p[1] = (uint8_t)(slot[c] >> 8);
-         p[2] = (uint8_t)(slot[c] >> 16);
-         p[3] = (uint8_t)(slot[c] >> 24);
-         p += 4;
-      }
+      write_le32(&p, float_bits((float)v + 0.5f));
+      write_le32(&p, float_bits(0.5f));
+      write_le32(&p, float_bits(0.0f));
+      write_le32(&p, float_bits(1.0f));
    }
    for (uint32_t v = 0; v < count; v++) {
-      for (uint32_t c = 0; c < 2; c++) {
-         const uint32_t bits = float_bits(records[v][c]);
-         p[0] = (uint8_t)bits;
-         p[1] = (uint8_t)(bits >> 8);
-         p[2] = (uint8_t)(bits >> 16);
-         p[3] = (uint8_t)(bits >> 24);
-         p += 4;
+      write_le32(&p, float_bits(records[v][0]));
+      write_le32(&p, float_bits(records[v][1]));
+      if (model_float4) {
+         write_le32(&p, float_bits(0.0f));
+         write_le32(&p, float_bits(1.0f));
       }
    }
    return 0;
+}
+
+int
+r300_r2vb_float2_tuple_vertex_stream(const float (*records)[2],
+                                     uint32_t count, uint8_t *vertex_bytes,
+                                     uint32_t vertex_capacity_bytes)
+{
+   return tuple_width_vertex_stream(records, count, vertex_bytes,
+                                    vertex_capacity_bytes, false);
+}
+
+int
+r300_r2vb_float4_model_vertex_stream(const float (*records)[2],
+                                     uint32_t count, uint8_t *vertex_bytes,
+                                     uint32_t vertex_capacity_bytes)
+{
+   return tuple_width_vertex_stream(records, count, vertex_bytes,
+                                    vertex_capacity_bytes, true);
 }
 
 int
@@ -156,10 +208,10 @@ r300_r2vb_float2_tuple_expected(const float (*records)[2], uint32_t count,
    return 0;
 }
 
-int
-r300_r2vb_float2_tuple_pass_emit(
-   const struct r300_r2vb_float2_tuple_params *params,
-   struct r300_r2vb_float2_tuple_ib *out)
+static int
+tuple_width_pass_emit(const struct r300_r2vb_float2_tuple_params *params,
+                      struct r300_r2vb_float2_tuple_ib *out,
+                      bool model_float4)
 {
    const struct r300_fragment_binary *fs = params->fragment_binary;
 
@@ -283,17 +335,19 @@ r300_r2vb_float2_tuple_pass_emit(
    r300_pm4_reg(&b, R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
    r300_pm4_reg(&b, R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
 
-   /* The two-element fetch tuple: FLOAT_4 identity plus FLOAT_2 XY01,
-    * six fetched dwords per vertex, position plus one four-component
-    * TEX0 output.  The zero tail keeps inherited elements out of the
-    * fetch; the kernel width check reads the same declaration.
+   /* The two-element fetch: FLOAT_4 identity plus the width-selected
+    * model element (FLOAT_2 XY01 at six fetched dwords, or FLOAT_4
+    * identity at eight), position plus one four-component TEX0 output.
+    * The zero tail keeps inherited elements out of the fetch; the
+    * kernel width check reads the same declaration.
     */
-   r300_pm4_packet0(&b, R300_VAP_PROG_STREAM_CNTL_0, tuple_psc,
-                    ARRAY_SIZE(tuple_psc));
-   r300_pm4_packet0(&b, R300_VAP_PROG_STREAM_CNTL_EXT_0, tuple_psc_ext,
-                    ARRAY_SIZE(tuple_psc_ext));
+   r300_pm4_packet0(&b, R300_VAP_PROG_STREAM_CNTL_0,
+                    model_float4 ? float4_model_psc : tuple_psc, 8);
+   r300_pm4_packet0(&b, R300_VAP_PROG_STREAM_CNTL_EXT_0,
+                    model_float4 ? float4_model_psc_ext : tuple_psc_ext, 8);
    r300_pm4_reg(&b, R300_VAP_VTX_SIZE,
-                R300_R2VB_FLOAT2_TUPLE_VTX_SIZE_DWORDS);
+                model_float4 ? R300_R2VB_FLOAT4_MODEL_VTX_SIZE_DWORDS
+                             : R300_R2VB_FLOAT2_TUPLE_VTX_SIZE_DWORDS);
    r300_pm4_reg(&b, R300_VAP_VTX_STATE_CNTL, 0x5555);
    r300_pm4_reg(&b, R300_VAP_VSM_VTX_ASSM,
                 R300_INPUT_CNTL_POS | R300_INPUT_CNTL_TC0);
@@ -323,9 +377,12 @@ r300_r2vb_float2_tuple_pass_emit(
    r300_pm4_emit_vertex_index_range(&b, 0, layout.count - 1);
 
    /* Two-array vertex fetch: the FLOAT_4 slot array at the vertex
-    * offset, the FLOAT_2 model array behind it, one relocation per
-    * pointer, both resolving to the vertex BO.
+    * offset, the model array behind it at its width's stride, one
+    * relocation per pointer, both resolving to the vertex BO.
     */
+   const uint32_t model_stride =
+      model_float4 ? R300_R2VB_FLOAT4_MODEL_STRIDE_BYTES
+                   : R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES;
    const uint32_t model_offset =
       params->vertex_offset +
       params->count * R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES;
@@ -333,8 +390,8 @@ r300_r2vb_float2_tuple_pass_emit(
       2 | R300_VC_FORCE_PREFETCH,
       R300_VBPNTR_SIZE0(R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES) |
          R300_VBPNTR_STRIDE0(R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES) |
-         R300_VBPNTR_SIZE1(R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES) |
-         R300_VBPNTR_STRIDE1(R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES),
+         R300_VBPNTR_SIZE1(model_stride) |
+         R300_VBPNTR_STRIDE1(model_stride),
       params->vertex_offset,
       model_offset,
    };
@@ -370,6 +427,22 @@ r300_r2vb_float2_tuple_pass_emit(
    out->ib = words;
    out->owns_ib = true;
    return 0;
+}
+
+int
+r300_r2vb_float2_tuple_pass_emit(
+   const struct r300_r2vb_float2_tuple_params *params,
+   struct r300_r2vb_float2_tuple_ib *out)
+{
+   return tuple_width_pass_emit(params, out, false);
+}
+
+int
+r300_r2vb_float4_model_pass_emit(
+   const struct r300_r2vb_float2_tuple_params *params,
+   struct r300_r2vb_float2_tuple_ib *out)
+{
+   return tuple_width_pass_emit(params, out, true);
 }
 
 void
@@ -418,8 +491,9 @@ const float r300_r2vb_float2_tuple_reference_records
    { 999.0f, 2.0f },
 };
 
-int
-r300_r2vb_float2_tuple_reference_emit(struct r300_r2vb_float2_tuple_ib *out)
+static int
+tuple_width_reference_emit(struct r300_r2vb_float2_tuple_ib *out,
+                           bool model_float4)
 {
    memset(out, 0, sizeof(*out));
 
@@ -454,9 +528,21 @@ r300_r2vb_float2_tuple_reference_emit(struct r300_r2vb_float2_tuple_ib *out)
       .first_draw_contract = &contract,
       .fragment_binary = &fs,
    };
-   rc = r300_r2vb_float2_tuple_pass_emit(&params, out);
+   rc = tuple_width_pass_emit(&params, out, model_float4);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+int
+r300_r2vb_float2_tuple_reference_emit(struct r300_r2vb_float2_tuple_ib *out)
+{
+   return tuple_width_reference_emit(out, false);
+}
+
+int
+r300_r2vb_float4_model_reference_emit(struct r300_r2vb_float2_tuple_ib *out)
+{
+   return tuple_width_reference_emit(out, true);
 }
 
 int
@@ -480,9 +566,10 @@ r300_r2vb_float2_tuple_burst_member_stride_bytes(uint32_t *out)
    return 0;
 }
 
-int
-r300_r2vb_float2_tuple_burst_reference_emit(
-   uint32_t draws, struct r300_r2vb_float2_tuple_burst_ib *out)
+static int
+tuple_width_burst_reference_emit(uint32_t draws,
+                                 struct r300_r2vb_float2_tuple_burst_ib *out,
+                                 bool model_float4)
 {
    memset(out, 0, sizeof(*out));
    if (draws < 1 || draws > R300_R2VB_FLOAT2_TUPLE_BURST_MAX_DRAWS)
@@ -532,7 +619,7 @@ r300_r2vb_float2_tuple_burst_reference_emit(
          .first_draw_contract = m == 0 ? &contract : NULL,
          .fragment_binary = &fs,
       };
-      rc = r300_r2vb_float2_tuple_pass_emit(&params, &members[m]);
+      rc = tuple_width_pass_emit(&params, &members[m], model_float4);
       if (rc == 0) {
          emitted = m + 1;
          rc = r300_r2vb_float2_tuple_pass_validate_reloc_sites(&members[m]);
@@ -578,6 +665,20 @@ r300_r2vb_float2_tuple_burst_reference_emit(
       memset(out, 0, sizeof(*out));
    }
    return rc;
+}
+
+int
+r300_r2vb_float2_tuple_burst_reference_emit(
+   uint32_t draws, struct r300_r2vb_float2_tuple_burst_ib *out)
+{
+   return tuple_width_burst_reference_emit(draws, out, false);
+}
+
+int
+r300_r2vb_float4_model_burst_reference_emit(
+   uint32_t draws, struct r300_r2vb_float2_tuple_burst_ib *out)
+{
+   return tuple_width_burst_reference_emit(draws, out, true);
 }
 
 void

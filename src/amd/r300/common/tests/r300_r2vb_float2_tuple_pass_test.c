@@ -281,6 +281,107 @@ test_burst_member_byte_identity(void)
          "draws past the bound must refuse");
 }
 
+/* The FLOAT_4 model contrast: the model array stores the XY01 expansion
+ * explicitly, the PSC declares both elements FLOAT_4 identity, and the
+ * fetch widens to eight dwords -- with the tuple's carrier expectation
+ * unchanged, so fetch width is the one differing variable.
+ */
+static void
+test_float4_model_contract(void)
+{
+   /* The widened stream: slots unchanged, model records at 16-byte
+    * stride holding (x, y, 0, 1).
+    */
+   uint8_t bytes[R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT * 32];
+   CHECK(r300_r2vb_float4_model_vertex_stream(
+            r300_r2vb_float2_tuple_reference_records,
+            R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, bytes,
+            (uint32_t)sizeof(bytes)) == 0,
+         "float4 model vertex stream serialization failed");
+   const uint32_t m0x = (uint32_t)bytes[48] | ((uint32_t)bytes[49] << 8) |
+                        ((uint32_t)bytes[50] << 16) |
+                        ((uint32_t)bytes[51] << 24);
+   const uint32_t m0z = (uint32_t)bytes[56] | ((uint32_t)bytes[57] << 8) |
+                        ((uint32_t)bytes[58] << 16) |
+                        ((uint32_t)bytes[59] << 24);
+   const uint32_t m0w = (uint32_t)bytes[60] | ((uint32_t)bytes[61] << 8) |
+                        ((uint32_t)bytes[62] << 16) |
+                        ((uint32_t)bytes[63] << 24);
+   const uint32_t m1x = (uint32_t)bytes[64] | ((uint32_t)bytes[65] << 8) |
+                        ((uint32_t)bytes[66] << 16) |
+                        ((uint32_t)bytes[67] << 24);
+   CHECK(m0x == f32_bits(8.0f), "float4 model record 0 x is not 8.0");
+   CHECK(m0z == 0, "float4 model record 0 z is not +0.0");
+   CHECK(m0w == f32_bits(1.0f), "float4 model record 0 w is not 1.0");
+   CHECK(m1x == f32_bits(56.0f), "float4 model record 1 x is not 56.0");
+   CHECK(r300_r2vb_float4_model_vertex_stream(
+            r300_r2vb_float2_tuple_reference_records,
+            R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, bytes,
+            (uint32_t)sizeof(bytes) - 1) == -ENOSPC,
+         "short float4 model storage not refused");
+
+   struct r300_r2vb_float2_tuple_ib pass;
+   CHECK(r300_r2vb_float4_model_reference_emit(&pass) == 0,
+         "float4 model reference emission failed");
+   CHECK(r300_r2vb_float2_tuple_pass_validate_reloc_sites(&pass) == 0,
+         "float4 model relocation sites invalid");
+
+   const uint32_t cntl0 =
+      (R300_DATA_TYPE_FLOAT_4 | (0u << R300_DST_VEC_LOC_SHIFT)) |
+      ((R300_DATA_TYPE_FLOAT_4 | (6u << R300_DST_VEC_LOC_SHIFT) |
+        R300_LAST_VEC)
+       << 16);
+   CHECK(ib_writes_reg(&pass, R300_VAP_PROG_STREAM_CNTL_0, cntl0),
+         "PSC CNTL_0 does not declare the FLOAT_4 + FLOAT_4 pair");
+   const uint32_t ext0 =
+      R300_VAP_SWIZZLE_XYZW | (R300_VAP_SWIZZLE_XYZW << 16);
+   CHECK(ib_writes_reg(&pass, R300_VAP_PROG_STREAM_CNTL_EXT_0, ext0),
+         "PSC EXT_0 does not carry identity on both elements");
+   CHECK(ib_writes_reg(&pass, R300_VAP_VTX_SIZE,
+                       R300_R2VB_FLOAT4_MODEL_VTX_SIZE_DWORDS),
+         "VAP_VTX_SIZE is not the eight-dword full-width fetch");
+
+   /* The contrast changes the stream: the widened emission differs from
+    * the tuple emission, dword count equal (same packet shapes).
+    */
+   struct r300_r2vb_float2_tuple_ib tuple;
+   CHECK(r300_r2vb_float2_tuple_reference_emit(&tuple) == 0,
+         "tuple reference emission failed");
+   CHECK(pass.ib_size_dwords == tuple.ib_size_dwords,
+         "the width contrast changed the packet shape");
+   CHECK(memcmp(pass.ib, tuple.ib,
+                tuple.ib_size_dwords * sizeof(uint32_t)) != 0,
+         "the width contrast left the stream bytes unchanged");
+   r300_r2vb_float2_tuple_pass_release(&tuple);
+
+   /* Burst composition: member 0 equals the reference emission whole,
+    * later members equal prefix-free standalone emissions, and the
+    * composition is deterministic.
+    */
+   struct r300_r2vb_float2_tuple_burst_ib single;
+   CHECK(r300_r2vb_float4_model_burst_reference_emit(1, &single) == 0 &&
+            single.ib_size_dwords == pass.ib_size_dwords &&
+            memcmp(single.ib, pass.ib,
+                   pass.ib_size_dwords * sizeof(uint32_t)) == 0,
+         "a one-member float4 burst is the reference stream byte for "
+         "byte");
+   struct r300_r2vb_float2_tuple_burst_ib burst;
+   CHECK(r300_r2vb_float4_model_burst_reference_emit(4, &burst) == 0,
+         "four-member float4 burst emission failed");
+   CHECK(r300_r2vb_float2_tuple_burst_validate_reloc_sites(&burst) == 0,
+         "float4 burst sites failed validation");
+   struct r300_r2vb_float2_tuple_burst_ib again;
+   CHECK(r300_r2vb_float4_model_burst_reference_emit(4, &again) == 0 &&
+            again.ib_size_dwords == burst.ib_size_dwords &&
+            memcmp(again.ib, burst.ib,
+                   burst.ib_size_dwords * sizeof(uint32_t)) == 0,
+         "float4 burst emission is not deterministic");
+   r300_r2vb_float2_tuple_burst_release(&again);
+   r300_r2vb_float2_tuple_burst_release(&burst);
+   r300_r2vb_float2_tuple_burst_release(&single);
+   r300_r2vb_float2_tuple_pass_release(&pass);
+}
+
 int
 main(void)
 {
@@ -289,6 +390,7 @@ main(void)
    test_vertex_stream_layout();
    test_emission_contract();
    test_burst_member_byte_identity();
+   test_float4_model_contract();
 
    if (failures != 0) {
       fprintf(stderr, "r300_r2vb_float2_tuple_pass_test: %u failures\n",

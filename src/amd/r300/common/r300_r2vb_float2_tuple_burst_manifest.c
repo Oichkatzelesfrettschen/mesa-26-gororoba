@@ -14,6 +14,7 @@
 #include "util/macros.h"
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,10 +47,23 @@ write_file(const char *dir, const char *name, const void *data, size_t size)
 int
 main(int argc, char **argv)
 {
-   if (argc != 3) {
-      fprintf(stderr, "usage: %s <output-directory> <draws-1-to-64>\n",
+   if (argc != 3 && argc != 4) {
+      fprintf(stderr,
+              "usage: %s <output-directory> <draws-1-to-64> "
+              "[float4-model]\n",
               argv[0]);
       return 2;
+   }
+   /* The optional mode selects the FLOAT_4 model-width contrast: same
+    * carrier expectation, the model array stored at full width.
+    */
+   bool model_float4 = false;
+   if (argc == 4) {
+      if (strcmp(argv[3], "float4-model") != 0) {
+         fprintf(stderr, "unknown mode %s\n", argv[3]);
+         return 2;
+      }
+      model_float4 = true;
    }
    const char *dir = argv[1];
    char *end = NULL;
@@ -63,7 +77,10 @@ main(int argc, char **argv)
    const uint32_t draws = (uint32_t)draws_arg;
 
    struct r300_r2vb_float2_tuple_burst_ib burst;
-   if (r300_r2vb_float2_tuple_burst_reference_emit(draws, &burst) != 0) {
+   if ((model_float4
+           ? r300_r2vb_float4_model_burst_reference_emit(draws, &burst)
+           : r300_r2vb_float2_tuple_burst_reference_emit(draws, &burst)) !=
+       0) {
       fprintf(stderr, "burst emission failed\n");
       return 1;
    }
@@ -86,16 +103,26 @@ main(int argc, char **argv)
 
    uint8_t vertex_bytes[R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *
                         (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
-                         R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES)];
-   if (r300_r2vb_float2_tuple_vertex_stream(
-          r300_r2vb_float2_tuple_reference_records,
-          R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, vertex_bytes,
-          (uint32_t)sizeof(vertex_bytes)) != 0) {
+                         R300_R2VB_FLOAT4_MODEL_STRIDE_BYTES)];
+   const uint32_t vertex_size =
+      R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *
+      (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
+       (model_float4 ? R300_R2VB_FLOAT4_MODEL_STRIDE_BYTES
+                     : R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES));
+   if ((model_float4
+           ? r300_r2vb_float4_model_vertex_stream(
+                r300_r2vb_float2_tuple_reference_records,
+                R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, vertex_bytes,
+                vertex_size)
+           : r300_r2vb_float2_tuple_vertex_stream(
+                r300_r2vb_float2_tuple_reference_records,
+                R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, vertex_bytes,
+                vertex_size)) != 0) {
       fprintf(stderr, "vertex stream serialization failed\n");
       r300_r2vb_float2_tuple_burst_release(&burst);
       return 1;
    }
-   rc |= write_file(dir, "vertex.bin", vertex_bytes, sizeof(vertex_bytes));
+   rc |= write_file(dir, "vertex.bin", vertex_bytes, vertex_size);
 
    uint32_t member_stride = 0;
    if (r300_r2vb_float2_tuple_burst_member_stride_bytes(&member_stride) !=
@@ -119,7 +146,7 @@ main(int argc, char **argv)
       (unsigned)R300_R2VB_FLOAT2_TUPLE_SLOT_CARRIER, RADEON_GEM_DOMAIN_GTT,
       RADEON_GEM_DOMAIN_GTT, carrier_size_bytes,
       (unsigned)R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX, RADEON_GEM_DOMAIN_GTT,
-      (unsigned)sizeof(vertex_bytes));
+      (unsigned)vertex_size);
    rc |= write_file(dir, "bo_table.json", bo_table, (size_t)bo_table_len);
 
    char ib_blake3_hex[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
@@ -159,8 +186,8 @@ main(int argc, char **argv)
    int manifest_len = snprintf(
       manifest, sizeof(manifest),
       "{\n"
-      "  \"schema\": \"r300-r2vb-float2-tuple-burst-pass/1\",\n"
-      "  \"emitter\": \"r300_r2vb_float2_tuple_burst\",\n"
+      "  \"schema\": \"%s\",\n"
+      "  \"emitter\": \"%s\",\n"
       "  \"draws\": %u,\n"
       "  \"ib_dwords\": %u,\n"
       "  \"ib_blake3\": \"%s\",\n"
@@ -173,10 +200,15 @@ main(int argc, char **argv)
       "  \"carrier_poison_dword\": \"0x%08x\",\n"
       "  \"expected_member_dwords\": [%s]\n"
       "}\n",
+      model_float4 ? "r300-r2vb-float4-model-burst-pass/1"
+                   : "r300-r2vb-float2-tuple-burst-pass/1",
+      model_float4 ? "r300_r2vb_float4_model_burst"
+                   : "r300_r2vb_float2_tuple_burst",
       draws, burst.ib_size_dwords, ib_blake3_hex, starts, member_stride,
       R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT,
-      R300_R2VB_FLOAT2_TUPLE_VTX_SIZE_DWORDS,
-      (unsigned)sizeof(vertex_bytes), carrier_size_bytes,
+      model_float4 ? R300_R2VB_FLOAT4_MODEL_VTX_SIZE_DWORDS
+                   : R300_R2VB_FLOAT2_TUPLE_VTX_SIZE_DWORDS,
+      (unsigned)vertex_size, carrier_size_bytes,
       R300_R2VB_PRODUCER_POISON_DWORD, carrier);
    if (manifest_len <= 0 || (size_t)manifest_len >= sizeof(manifest)) {
       fprintf(stderr, "manifest serialization overflow\n");
@@ -189,8 +221,9 @@ main(int argc, char **argv)
 
    if (rc == 0) {
       printf("r300_r2vb_float2_tuple_burst_manifest: wrote ib.bin, "
-             "vertex.bin, bo_table.json, manifest.json (draws=%u) to %s\n",
-             draws, dir);
+             "vertex.bin, bo_table.json, manifest.json (draws=%u, "
+             "model=%s) to %s\n",
+             draws, model_float4 ? "float4" : "float2", dir);
    }
    return rc;
 }

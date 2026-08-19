@@ -254,11 +254,16 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
       if (vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
           vertex->write_domain != 0)
          return true;
+      /* The recorded fetch width sizes the vertex stream: the FLOAT_4
+       * model form stores full records behind the slot array.
+       */
       return vertex->memory == NULL ||
              vertex->memory->bo.size !=
                 R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *
                    (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +
-                    R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES);
+                    (cmd_buffer->burst_model_float4
+                        ? R300_R2VB_FLOAT4_MODEL_STRIDE_BYTES
+                        : R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES));
    }
    case R3V_NATIVE_CELL_KIND_UNDECLARED:
    default:

@@ -209,4 +209,38 @@ void r300_r2vb_float2_tuple_burst_release(
 int r300_r2vb_float2_tuple_burst_validate_reloc_sites(
    const struct r300_r2vb_float2_tuple_burst_ib *ib);
 
+/* The FLOAT_4 model variant carries each model record through the fetch
+ * at full width: the vertex BO stores (x, y, 0.0, 1.0) explicitly, the
+ * PSC declares the model element FLOAT_4 under the identity swizzle,
+ * and VAP_VTX_SIZE becomes eight dwords.  The delivered carrier bytes
+ * equal the tuple pass's XY01 expansion exactly, so the two emissions
+ * differ in fetch width alone and share one delivery oracle
+ * (r300_r2vb_float2_tuple_expected).  The variant reuses the tuple
+ * types, release, and relocation-site validators; only the emission,
+ * the vertex-stream serialization, and the burst composition change.
+ */
+#define R300_R2VB_FLOAT4_MODEL_STRIDE_BYTES 16u
+#define R300_R2VB_FLOAT4_MODEL_VTX_SIZE_DWORDS 8u
+
+int r300_r2vb_float4_model_vertex_stream(const float (*records)[2],
+                                         uint32_t count,
+                                         uint8_t *vertex_bytes,
+                                         uint32_t vertex_capacity_bytes);
+
+int r300_r2vb_float4_model_pass_emit(
+   const struct r300_r2vb_float2_tuple_params *params,
+   struct r300_r2vb_float2_tuple_ib *out);
+
+/* The reference records, contract, and fragment binary of the tuple
+ * reference emission under the FLOAT_4 model fetch.
+ */
+int r300_r2vb_float4_model_reference_emit(
+   struct r300_r2vb_float2_tuple_ib *out);
+
+/* The burst composition over the FLOAT_4 model reference emission, the
+ * same draws-per-IB axis and member retargeting as the tuple burst.
+ */
+int r300_r2vb_float4_model_burst_reference_emit(
+   uint32_t draws, struct r300_r2vb_float2_tuple_burst_ib *out);
+
 #endif

@@ -35,6 +35,11 @@
     (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +                \
      R300_R2VB_FLOAT2_TUPLE_MODEL_STRIDE_BYTES))
 
+#define FLOAT4_MODEL_VERTEX_BYTES                              \
+   (R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT *                   \
+    (R300_R2VB_FLOAT2_TUPLE_SLOT_STRIDE_BYTES +                \
+     R300_R2VB_FLOAT4_MODEL_STRIDE_BYTES))
+
 #define BURST_DRAWS 4u
 
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
@@ -133,7 +138,8 @@ run_burst_leg(VkInstance instance,
               VkPhysicalDevice physical_device,
               const struct r300_r2vb_float2_tuple_burst_ib *reference,
               uint32_t carrier_bytes, bool resubmit, bool prepare,
-              const char *manifest_dir, struct burst_leg *out)
+              bool model_float4, const char *manifest_dir,
+              struct burst_leg *out)
 {
    int rc = 1;
    LOAD_INSTANCE(vkCreateDevice);
@@ -188,7 +194,8 @@ run_burst_leg(VkInstance instance,
    CHECK(result == VK_SUCCESS, "carrier vkAllocateMemory: %d", result);
    if (result != VK_SUCCESS)
       goto done;
-   allocation.allocationSize = TUPLE_VERTEX_BYTES;
+   allocation.allocationSize =
+      model_float4 ? FLOAT4_MODEL_VERTEX_BYTES : TUPLE_VERTEX_BYTES;
    result = vkAllocateMemory(device, &allocation, NULL, &vertex_memory);
    CHECK(result == VK_SUCCESS, "vertex vkAllocateMemory: %d", result);
    if (result != VK_SUCCESS)
@@ -225,8 +232,13 @@ run_burst_leg(VkInstance instance,
    if (result != VK_SUCCESS)
       goto done;
 
-   result = r3v_native_record_r2vb_status_load_burst(
-      command_buffer, carrier_memory, vertex_memory, BURST_DRAWS);
+   result = model_float4
+               ? r3v_native_record_r2vb_status_load_burst_float4_model(
+                    command_buffer, carrier_memory, vertex_memory,
+                    BURST_DRAWS)
+               : r3v_native_record_r2vb_status_load_burst(
+                    command_buffer, carrier_memory, vertex_memory,
+                    BURST_DRAWS);
    CHECK(result == VK_SUCCESS, "burst cell recording: %d", result);
    if (result != VK_SUCCESS)
       goto done;
@@ -392,7 +404,7 @@ main(void)
    setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "8", 1);
    struct burst_leg mismatch = { 0 };
    if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, false, false, mismatch_dir,
+                     carrier_bytes, false, false, false, mismatch_dir,
                      &mismatch) != 0)
       goto done;
    CHECK(mismatch.submit_result == VK_ERROR_DEVICE_LOST &&
@@ -417,7 +429,8 @@ main(void)
    setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "4", 1);
    struct burst_leg admit = { 0 };
    if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, true, false, admit_dir, &admit) != 0)
+                     carrier_bytes, true, false, false, admit_dir,
+                     &admit) != 0)
       goto done;
    CHECK(admit.submit_result == VK_SUCCESS &&
             admit.queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
@@ -437,7 +450,7 @@ main(void)
    setenv("R3V_NATIVE_MANIFEST_DIR", prepared_dir, 1);
    struct burst_leg prepared = { 0 };
    if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, true, true, prepared_dir,
+                     carrier_bytes, true, true, false, prepared_dir,
                      &prepared) != 0)
       goto done;
    CHECK(prepared.submit_result == VK_SUCCESS &&
@@ -445,6 +458,45 @@ main(void)
          "the prepared transport commits once: %d %s",
          prepared.submit_result,
          r3v_native_queue_status_name(prepared.queue_status));
+
+   /* Fetch-width leg: the FLOAT_4 model burst under its own declared
+    * digest and evidence directory -- the widened vertex object and the
+    * changed stream admit once through the same gate.
+    */
+   struct r300_r2vb_float2_tuple_burst_ib float4_reference;
+   CHECK(r300_r2vb_float4_model_burst_reference_emit(
+            BURST_DRAWS, &float4_reference) == 0,
+         "float4 model reference burst emits");
+   if (failures != 0) {
+      r300_r2vb_float2_tuple_burst_release(&float4_reference);
+      goto done;
+   }
+   char float4_digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(float4_reference.ib,
+                               float4_reference.ib_size_dwords,
+                               float4_digest);
+   CHECK(strcmp(float4_digest, reference_digest) != 0,
+         "the width contrast produces its own stream digest");
+   char float4_dir[] = "/tmp/r3v-native-burst-float4-XXXXXX";
+   if (mkdtemp(float4_dir) == NULL) {
+      fprintf(stderr, "float4 evidence directory creation failed\n");
+      r300_r2vb_float2_tuple_burst_release(&float4_reference);
+      return 2;
+   }
+   setenv("R3V_NATIVE_MANIFEST_DIR", float4_dir, 1);
+   setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", float4_digest, 1);
+   struct burst_leg float4 = { 0 };
+   int float4_rc =
+      run_burst_leg(instance, gipa, physical_device, &float4_reference,
+                    carrier_bytes, true, false, true, float4_dir, &float4);
+   r300_r2vb_float2_tuple_burst_release(&float4_reference);
+   if (float4_rc != 0)
+      goto done;
+   CHECK(float4.submit_result == VK_SUCCESS &&
+            float4.queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
+         "the float4 model burst admits once under its own digest: %d %s",
+         float4.submit_result,
+         r3v_native_queue_status_name(float4.queue_status));
 
 done:
    r300_r2vb_float2_tuple_burst_release(&reference);

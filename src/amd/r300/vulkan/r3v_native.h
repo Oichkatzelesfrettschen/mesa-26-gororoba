@@ -234,6 +234,11 @@ struct r3v_native_cmd_buffer {
     * count, and the geometry predicate sizes the carrier by it.
     */
    uint32_t burst_draws;
+   /* The burst cell's recorded fetch width: the FLOAT_4 model form
+    * carries a 96-byte vertex stream, so the geometry fact binds each
+    * width to its own vertex allocation size.
+    */
+   bool burst_model_float4;
 };
 
 struct r3v_native_queue {
@@ -682,6 +687,17 @@ r3v_native_record_r2vb_status_load_burst(VkCommandBuffer commandBuffer,
                                          VkDeviceMemory carrierMemory,
                                          VkDeviceMemory vertexMemory,
                                          uint32_t draws);
+
+/* Records the fetch-width contrast burst: the same status-load burst
+ * composition over the FLOAT_4 model emission
+ * (r300_r2vb_float4_model_burst_reference_emit) -- model records stored
+ * and fetched at full width, VAP_VTX_SIZE 8 -- against a 96-byte vertex
+ * stream, with the tuple carrier expectation unchanged.  Under the same
+ * observer this isolates fetch width as the one changed variable.
+ */
+VkResult r3v_native_record_r2vb_status_load_burst_float4_model(
+   VkCommandBuffer commandBuffer, VkDeviceMemory carrierMemory,
+   VkDeviceMemory vertexMemory, uint32_t draws);
 
 /* The burst cell's carrier allocation: draws member rows of the
  * reference layout.  Returns 0 or a negative errno; draws outside the
