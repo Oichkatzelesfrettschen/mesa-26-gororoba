@@ -406,10 +406,9 @@ r3v_native_cmd_buffer_execute_deferred_draw(
        * rather than submitting bytes the two routes disagree on.
        */
       struct r300_delivery_route_decision route_decision;
-      r300_delivery_route_resolve(
-         getenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL"),
-         getenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL"),
-         stream.format_id, &route_decision);
+      r300_delivery_route_resolve(device->r2vb_delivery_gate,
+                                  device->r2vb_gpu_delivery_gate,
+                                  stream.format_id, &route_decision);
       /* The GPU producer route names a device-side delivery this
        * deferred draw cannot execute: live producer submission routes
        * only through the operator-armed attended surface.  The exact

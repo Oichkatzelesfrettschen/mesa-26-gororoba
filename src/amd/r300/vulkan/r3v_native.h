@@ -311,6 +311,14 @@ struct r3v_native_device {
     * radeon module cannot become a matchable live identity. */
    const struct r3v_native_arming_provider *arming_provider;
    struct r3v_native_prepared_submission prepared;
+   /* R2VB delivery gates, read once at device creation: each holds the
+    * literal "1" when its environment variable carried the exact opt-in
+    * value, and NULL otherwise, so the route decision cannot drift
+    * mid-process.  r3v_native_device_refresh_delivery_gates re-runs the
+    * same read for harnesses that vary the route on one device.
+    */
+   const char *r2vb_delivery_gate;
+   const char *r2vb_gpu_delivery_gate;
 };
 
 VK_DEFINE_HANDLE_CASTS(r3v_native_device, vk.base, VkDevice,
@@ -733,6 +741,14 @@ int r3v_native_reingest_cell_install(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_memory *color_memory);
+
+/* Re-reads the two R2VB delivery gates from the environment with the
+ * device-creation rule (exact "1" or closed).  Route-calibration
+ * harnesses call it after toggling the gates; the production path reads
+ * the gates at device creation alone.
+ */
+void r3v_native_device_refresh_delivery_gates(
+   struct r3v_native_device *device);
 
 int r3v_native_float2_tuple_cell_install(
    struct r3v_native_cmd_buffer *cmd_buffer,
