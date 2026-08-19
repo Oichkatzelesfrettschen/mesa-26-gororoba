@@ -98,6 +98,27 @@ void r300_pm4_emit_vertex_index_range(struct r300_pm4_builder *b,
                                       uint32_t min_index,
                                       uint32_t max_index);
 
+/* Embedded POINTS draw with an inline vertex body: VAP_VTX_SIZE, the
+ * complete vertex-index-range pair over [0, num_vertices - 1], the
+ * 3D_DRAW_IMMD_2 header, VAP_VF_CNTL declaring an embedded vertex walk
+ * of num_vertices points, then num_vertices * vtx_dwords payload words
+ * copied verbatim.  The caller owns the vertex facts (slot coordinates,
+ * attribute ordering); this helper owns the packet grammar and sizing.
+ * num_vertices outside [1, R300_PM4_VTX_INDX_LIMIT], vtx_dwords of
+ * zero, a body whose dword count overflows the PACKET3 14-bit field, or
+ * a null payload is -EINVAL, recorded without writing any dword.
+ */
+void r300_pm4_emit_immediate_points(struct r300_pm4_builder *b,
+                                    uint32_t num_vertices,
+                                    uint32_t vtx_dwords,
+                                    const uint32_t *vertex_dwords);
+
+/* Dword total r300_pm4_emit_immediate_points produces for a given
+ * geometry: the seven-dword prefix (VTX_SIZE run, index-range run,
+ * PACKET3 header, VAP_VF_CNTL) plus the embedded body. */
+#define R300_PM4_IMMEDIATE_POINTS_DWORDS(num_vertices, vtx_dwords) \
+   (7u + (num_vertices) * (vtx_dwords))
+
 /* Publishes the dword count on success alone.  A builder that refused any
  * operation reports its first error and writes zero, so no caller reads a
  * partially written stream as a complete one.

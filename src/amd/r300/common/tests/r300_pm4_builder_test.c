@@ -383,10 +383,89 @@ test_vertex_index_range(void)
    assert(b.count == 0);
 }
 
+static void
+test_immediate_points(void)
+{
+   struct guarded g;
+   guarded_init(&g);
+   struct r300_pm4_builder b;
+   uint32_t payload[8];
+   for (uint32_t i = 0; i < ARRAY_SIZE(payload); i++)
+      payload[i] = 0x100u + i;
+
+   /* Two vertices of four dwords: the exact fifteen-dword stream, with
+    * the seven-dword prefix in packet order and the payload verbatim.
+    */
+   assert(R300_PM4_IMMEDIATE_POINTS_DWORDS(2, 4) == 15);
+   r300_pm4_builder_init(&b, g.words, 15);
+   r300_pm4_emit_immediate_points(&b, 2, 4, payload);
+   assert(b.error == 0);
+   assert(b.count == 15);
+   assert(g.words[0] == CP_PACKET0(R300_VAP_VTX_SIZE, 0));
+   assert(g.words[1] == 4);
+   assert(g.words[2] == CP_PACKET0(R300_VAP_VF_MAX_VTX_INDX, 1));
+   assert(g.words[3] == 1);
+   assert(g.words[4] == 0);
+   assert(g.words[5] == CP_PACKET3(R300_PACKET3_3D_DRAW_IMMD_2, 8));
+   assert(g.words[6] == (R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED |
+                         (2u << 16) | R300_VAP_VF_CNTL__PRIM_POINTS));
+   assert(memcmp(&g.words[7], payload, sizeof(payload)) == 0);
+   guards_hold(&g);
+
+   /* The single-vertex, single-dword minimum encodes. */
+   r300_pm4_builder_init(&b, g.words, 8);
+   r300_pm4_emit_immediate_points(&b, 1, 1, payload);
+   assert(b.error == 0 && b.count == 8);
+   assert(g.words[5] == CP_PACKET3(R300_PACKET3_3D_DRAW_IMMD_2, 1));
+   assert(g.words[7] == payload[0]);
+
+   /* Zero vertices, a vertex count past the index registers, zero vertex
+    * dwords, a body past the PACKET3 14-bit field, and a null payload
+    * each refuse without writing.
+    */
+   guarded_init(&g);
+   r300_pm4_builder_init(&b, g.words, 16);
+   r300_pm4_emit_immediate_points(&b, 0, 4, payload);
+   assert(b.error == -EINVAL && b.count == 0 && g.words[0] == 0);
+   r300_pm4_builder_init(&b, g.words, 16);
+   r300_pm4_emit_immediate_points(&b, R300_PM4_VTX_INDX_LIMIT + 1, 4,
+                                  payload);
+   assert(b.error == -EINVAL && b.count == 0);
+   r300_pm4_builder_init(&b, g.words, 16);
+   r300_pm4_emit_immediate_points(&b, 2, 0, payload);
+   assert(b.error == -EINVAL && b.count == 0);
+   r300_pm4_builder_init(&b, g.words, 16);
+   r300_pm4_emit_immediate_points(&b, 0x3fff, 2, payload);
+   assert(b.error == -EINVAL && b.count == 0);
+   r300_pm4_builder_init(&b, g.words, 16);
+   r300_pm4_emit_immediate_points(&b, 2, 4, NULL);
+   assert(b.error == -EINVAL && b.count == 0 && g.words[0] == 0);
+   guards_hold(&g);
+
+   /* One dword short of the body latches -ENOSPC and finish publishes
+    * nothing.
+    */
+   r300_pm4_builder_init(&b, g.words, 14);
+   r300_pm4_emit_immediate_points(&b, 2, 4, payload);
+   assert(b.error == -ENOSPC);
+   uint32_t published = 0xffffffffu;
+   assert(r300_pm4_builder_finish(&b, &published) == -ENOSPC);
+   assert(published == 0);
+   guards_hold(&g);
+
+   /* An error-latched builder stays a no-op. */
+   r300_pm4_builder_init(&b, g.words, 0);
+   r300_pm4_dword(&b, 0xaa);
+   assert(b.error == -ENOSPC);
+   r300_pm4_emit_immediate_points(&b, 2, 4, payload);
+   assert(b.error == -ENOSPC && b.count == 0);
+}
+
 int
 main(void)
 {
    test_vertex_index_range();
+   test_immediate_points();
    test_zero_capacity_refuses();
    test_reserve_is_exact();
    test_reserve_refuses_overflow();

@@ -41,6 +41,7 @@
 #include "compiler/nir/nir_builder.h"
 
 #include "amd/r300/compiler/r300_nir.h"
+#include "amd/r300/common/r300_pm4_builder.h"
 #include "amd/r300/common/r300_r2vb_fetch_pass.h"
 #include "amd/r300/common/r300_r2vb_target_state.h"
 #include "amd/r300/common/r300_r2vb_source_contract.h"
@@ -1840,24 +1841,33 @@ static bool r300_r2vb_emit_producer(struct r300_context *r300,
                                        output_gart_bo_offset, layout,
                                        transform_mode);
 
-    /* VTX_SIZE + the VF_MAX/VF_MIN pair + the DRAW_IMMD header pair, then
-     * the embedded body. Both index registers clamp every fetched index, so
-     * the pair keeps a stale inherited minimum from folding low indices. */
-    BEGIN_CS(7 + (int)num_vertices * (int)vtx_dwords);
-    OUT_CS_REG(R300_VAP_VTX_SIZE, vtx_dwords);
-    OUT_CS_REG_SEQ(R300_VAP_VF_MAX_VTX_INDX, 2);
-    OUT_CS(num_vertices - 1);
-    OUT_CS(0);
-    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, num_vertices * vtx_dwords);
-    OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (num_vertices << 16) |
-           R300_VAP_VF_CNTL__PRIM_POINTS);
+    /* The common emitter owns the immediate-draw packet grammar
+     * (VTX_SIZE, the complete VF_MAX/VF_MIN index-range pair, the
+     * DRAW_IMMD header pair); this adapter supplies the vertex facts:
+     * one slot position per vertex, then the attribute dwords.
+     */
+    /* The emitter's own bounds, checked before the size arithmetic: the
+     * PACKET3 count field caps the body at 0x3fff dwords, so the sums
+     * below stay far from overflow. */
+    if (num_vertices == 0 || num_vertices > R300_PM4_VTX_INDX_LIMIT ||
+        vtx_dwords == 0 ||
+        (uint64_t)num_vertices * vtx_dwords > 0x3fffu)
+        return false;
+    const uint32_t payload_dwords = num_vertices * vtx_dwords;
+    const uint32_t total_dwords =
+        R300_PM4_IMMEDIATE_POINTS_DWORDS(num_vertices, vtx_dwords);
+    uint32_t *immd = malloc((payload_dwords + total_dwords) * 4);
+    if (!immd)
+        return false;
+    uint32_t *payload = immd + total_dwords;
+    uint32_t *p = payload;
     for (uint32_t pv = 0; pv < num_vertices; pv++) {
         uint32_t slot_x = pv % layout->width;
         uint32_t slot_y = pv / layout->width;
-        OUT_CS_32F((float)slot_x + 0.5f);
-        OUT_CS_32F((float)slot_y + 0.5f);
-        OUT_CS_32F(0.0f);
-        OUT_CS_32F(1.0f);
+        *p++ = fui((float)slot_x + 0.5f);
+        *p++ = fui((float)slot_y + 0.5f);
+        *p++ = fui(0.0f);
+        *p++ = fui(1.0f);
         if (transform_mode) {
             /* One straight FP32x4 per model attribute, in input order: the producer
              * VS routes embedded attribute a to VAR0+a, the re-staged FS's input a.
@@ -1865,19 +1875,34 @@ static bool r300_r2vb_emit_producer(struct r300_context *r300,
              * which collapses to vertex_attrs[pv] for the single-attribute callers. */
             for (uint32_t a = 0; a < num_attrs; a++) {
                 const float *att = vertex_attrs[pv * num_attrs + a];
-                OUT_CS_32F(att[0]);
-                OUT_CS_32F(att[1]);
-                OUT_CS_32F(att[2]);
-                OUT_CS_32F(att[3]);
+                *p++ = fui(att[0]);
+                *p++ = fui(att[1]);
+                *p++ = fui(att[2]);
+                *p++ = fui(att[3]);
             }
         } else {
-            OUT_CS_32F(vertex_attrs[pv][2]);
-            OUT_CS_32F(vertex_attrs[pv][1]);
-            OUT_CS_32F(vertex_attrs[pv][0]);
-            OUT_CS_32F(vertex_attrs[pv][3]);
+            *p++ = fui(vertex_attrs[pv][2]);
+            *p++ = fui(vertex_attrs[pv][1]);
+            *p++ = fui(vertex_attrs[pv][0]);
+            *p++ = fui(vertex_attrs[pv][3]);
         }
     }
+
+    struct r300_pm4_builder immd_builder;
+    r300_pm4_builder_init(&immd_builder, immd, total_dwords);
+    r300_pm4_emit_immediate_points(&immd_builder, num_vertices, vtx_dwords,
+                                   payload);
+    uint32_t immd_count = 0;
+    if (r300_pm4_builder_finish(&immd_builder, &immd_count) != 0 ||
+        immd_count != total_dwords) {
+        free(immd);
+        return false;
+    }
+
+    BEGIN_CS((int)total_dwords);
+    OUT_CS_TABLE(immd, total_dwords);
     END_CS;
+    free(immd);
 
     r2vb_emit_producer_order_tail(r300);
     r300->draw_emitted_this_cs = true;
