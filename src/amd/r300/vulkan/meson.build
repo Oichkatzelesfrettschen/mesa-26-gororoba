@@ -893,9 +893,10 @@ if get_option('r3v-native-backend')
       ),
       suite : ['r3v'],
     )
-    # The serial status-load submitter machine validated entirely against
-    # scripted fakes: the frozen event ladder, the sampler-ready gate
-    # before IOCTL_ENTER, and the absorbing abort, with no device present.
+    # The serial status-load submitter machine validates entirely against
+    # scripted fakes: the queue-call and raw transport ladder, the
+    # sampler-ready gate before QUEUE_SUBMIT_ENTER, and the absorbing abort,
+    # with no device present.
     test(
       'r3v-native-status-load-machine',
       executable(

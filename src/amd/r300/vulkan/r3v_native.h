@@ -231,6 +231,23 @@ struct r3v_native_queue {
    struct vk_queue vk;
 };
 
+/* The attended status-load runner installs this optional hook while it
+ * records the exact transport interval inside vkQueueSubmit.  Ordinary
+ * queue users leave emit NULL, so the driver carries no transcript policy
+ * outside that runner.
+ */
+enum r3v_native_submission_trace_event {
+   R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_ENTER,
+   R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN,
+   R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_BEGIN,
+   R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_RETURN,
+};
+
+struct r3v_native_submission_trace {
+   void *ctx;
+   int (*emit)(void *ctx, enum r3v_native_submission_trace_event event);
+};
+
 /* The native device owns the transport device over the physical device's
  * render-node fd; no winsys, pipe_screen, or pipe_context exists in this
  * implementation.  submit_hazard_accepted mirrors the exact-value
@@ -242,6 +259,7 @@ struct r3v_native_device {
    struct r3v_physical_device *pdevice;
    struct radeon_drm_vk_device drm;
    struct r3v_native_queue queue;
+   struct r3v_native_submission_trace submission_trace;
    bool submit_hazard_accepted;
    const char *manifest_dir;
    enum r3v_native_queue_status queue_status;

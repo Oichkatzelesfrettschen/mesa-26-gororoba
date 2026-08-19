@@ -24,8 +24,10 @@
  */
 static const char *const full_ladder[] = {
    "PREPARE",       "POISONED",       "ARMED",
-   "IOCTL_ENTER",   "IOCTL_RETURN",   "FENCE_WAIT_BEGIN",
-   "FENCE_SIGNALED", "VERIFY_BEGIN",  "VERIFY_END",
+   "QUEUE_SUBMIT_ENTER", "CS_IOCTL_ENTER", "CS_IOCTL_RETURN",
+   "COMPLETION_WAIT_BEGIN", "COMPLETION_WAIT_RETURN",
+   "QUEUE_SUBMIT_RETURN", "POST_SUBMIT_STATUS_CHECK_BEGIN",
+   "POST_SUBMIT_STATUS_CHECK_END", "VERIFY_BEGIN", "VERIFY_END",
    "EVIDENCE_RETAINED", "REPOISONED",
 };
 
@@ -34,7 +36,9 @@ enum fail_stage {
    FAIL_POISON,
    FAIL_ARM,
    FAIL_SUBMIT,
-   FAIL_FENCE,
+   FAIL_TRANSPORT_TRACE,
+   FAIL_TRANSPORT_OUT_OF_ORDER,
+   FAIL_POST_SUBMIT_CHECK,
    FAIL_VERIFY_REFUSE,
    FAIL_VERIFY_MISMATCH,
    FAIL_RETAIN,
@@ -102,15 +106,33 @@ fake_arm(void *ctx, uint32_t i)
 }
 
 static int
-fake_submit(void *ctx, uint32_t i)
+fake_submit(void *ctx, struct r3v_status_load_machine *machine, uint32_t i)
 {
-   return fake_stage(ctx, FAIL_SUBMIT, i);
+   struct fake *fake = ctx;
+   if (fake_stage(fake, FAIL_SUBMIT, i) != 0)
+      return -1;
+   if (fake_stage(fake, FAIL_TRANSPORT_TRACE, i) != 0)
+      return 0;
+   if (fake_stage(fake, FAIL_TRANSPORT_OUT_OF_ORDER, i) != 0)
+      return r3v_status_load_machine_transport_event(
+         machine, R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_RETURN);
+   static const enum r3v_status_load_transport_event events[] = {
+      R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_ENTER,
+      R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_RETURN,
+      R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_BEGIN,
+      R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_RETURN,
+   };
+   for (size_t e = 0; e < sizeof(events) / sizeof(events[0]); e++) {
+      if (r3v_status_load_machine_transport_event(machine, events[e]) != 0)
+         return -1;
+   }
+   return 0;
 }
 
 static int
-fake_fence(void *ctx, uint32_t i)
+fake_post_submit_check(void *ctx, uint32_t i)
 {
-   return fake_stage(ctx, FAIL_FENCE, i);
+   return fake_stage(ctx, FAIL_POST_SUBMIT_CHECK, i);
 }
 
 static int
@@ -144,7 +166,7 @@ fake_ops(struct fake *fake)
       .poison = fake_poison,
       .arm = fake_arm,
       .submit = fake_submit,
-      .fence_wait = fake_fence,
+      .post_submit_check = fake_post_submit_check,
       .verify = fake_verify,
       .retain = fake_retain,
       .repoison = fake_repoison,
@@ -247,7 +269,7 @@ build_expected(const char **out, uint32_t full_iterations,
 {
    uint32_t count = 0;
    for (uint32_t i = 0; i < full_iterations; i++)
-      for (uint32_t s = 0; s < 11; s++)
+      for (uint32_t s = 0; s < 15; s++)
          out[count++] = full_ladder[s];
    for (uint32_t s = 0; s < partial_states; s++)
       out[count++] = full_ladder[s];
@@ -299,7 +321,7 @@ expect_abort(const char *name, const struct fake *fake,
       fail(name, "abort reason mismatch");
       return;
    }
-   const char *expected[16 * 11 + 12];
+   const char *expected[16 * 15 + 16];
    uint32_t count =
       build_expected(expected, full_iterations, partial_states, "ABORT");
    expect_submitter_states(name, fake, expected, count);
@@ -340,7 +362,7 @@ main(int argc, char **argv)
    if (r3v_status_load_machine_phase(&machine) != R3V_STATUS_LOAD_COMPLETE)
       fail("happy_path", "run did not complete");
    {
-      const char *expected[16 * 11 + 12];
+      const char *expected[16 * 15 + 16];
       uint32_t count = build_expected(expected, 2, 0, "COMPLETE");
       expect_submitter_states("happy_path", &fake, expected, count);
       /* Submitter sequences are strictly monotonic from 1 and the merged
@@ -349,6 +371,8 @@ main(int argc, char **argv)
       uint32_t submitter_lines = 0, sampler_lines = 0;
       for (uint32_t n = 0; n < fake.line_count; n++) {
          char state[64];
+         if (strstr(fake.lines[n], "\"protocol_version\": 2,") == NULL)
+            fail("happy_path", "message did not carry protocol version 2");
          if (line_state(&fake, n, "submitter", state, sizeof(state)) != NULL)
             submitter_lines++;
          if (line_state(&fake, n, "sampler", state, sizeof(state)) != NULL)
@@ -374,7 +398,7 @@ main(int argc, char **argv)
    if (r3v_status_load_machine_iterate(&machine) == 0)
       fail("iterate_after_complete", "iteration after COMPLETE accepted");
 
-   /* Sampler never ready: the run refuses before IOCTL_ENTER. */
+   /* Sampler never ready: the run refuses before QUEUE_SUBMIT_ENTER. */
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
    r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
@@ -406,13 +430,18 @@ main(int argc, char **argv)
    } operation_cases[] = {
       { "poison_failure", FAIL_POISON, "poison failed", 1 },
       { "arm_failure", FAIL_ARM, "arming failed", 2 },
-      { "submit_failure", FAIL_SUBMIT, "submission ioctl failed", 5 },
-      { "fence_failure", FAIL_FENCE, "fence wait failed", 6 },
-      { "verify_refusal", FAIL_VERIFY_REFUSE, "verification refused", 8 },
+      { "submit_failure", FAIL_SUBMIT, "queue submission failed", 4 },
+      { "transport_trace_incomplete", FAIL_TRANSPORT_TRACE,
+        "transport trace ended", 4 },
+      { "transport_trace_out_of_order", FAIL_TRANSPORT_OUT_OF_ORDER,
+        "transport trace transition out of order", 4 },
+      { "post_submit_check_failure", FAIL_POST_SUBMIT_CHECK,
+        "post-submit status check failed", 10 },
+      { "verify_refusal", FAIL_VERIFY_REFUSE, "verification refused", 12 },
       { "verify_mismatch", FAIL_VERIFY_MISMATCH, "verification mismatch",
-        9 },
-      { "retention_failure", FAIL_RETAIN, "retention failed", 9 },
-      { "repoison_failure", FAIL_REPOISON, "repoison failed", 10 },
+        13 },
+      { "retention_failure", FAIL_RETAIN, "retention failed", 13 },
+      { "repoison_failure", FAIL_REPOISON, "repoison failed", 14 },
    };
    for (size_t c = 0;
         c < sizeof(operation_cases) / sizeof(operation_cases[0]); c++) {
@@ -516,6 +545,6 @@ main(int argc, char **argv)
       printf("status-load machine calibration: %d failures\n", failures);
       return 1;
    }
-   printf("status-load machine calibration: 23 cases pass\n");
+   printf("status-load machine calibration: 25 cases pass\n");
    return 0;
 }

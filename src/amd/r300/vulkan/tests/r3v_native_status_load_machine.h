@@ -4,7 +4,7 @@
  * Submitter-side state machine for the serial status-load cell.  The
  * machine walks each submission through the frozen RS482 status-event
  * ladder (PREPARE through REPOISONED), emits one JSONL barrier message
- * per transition, and refuses IOCTL_ENTER unless the paired census
+ * per transition, and refuses QUEUE_SUBMIT_ENTER unless the paired census
  * sampler has reached SAMPLER_READY and has not stopped.  Every
  * hardware-facing operation arrives through the ops table, so the whole
  * machine validates against fakes with no device present; the attended
@@ -32,6 +32,12 @@ extern "C" {
  */
 #define R3V_STATUS_LOAD_NONCE_LENGTH 32u
 
+/* Version 2 names the high-level queue call and its inner transport
+ * boundaries separately.  Version 1 retained its original bytes and its
+ * offline reader keeps their wrapper interpretation.
+ */
+#define R3V_STATUS_LOAD_PROTOCOL_VERSION 2u
+
 /* One formatted message line: eight short fields plus the newline stays
  * well inside this bound, and the formatter rejects overflow.
  */
@@ -42,6 +48,8 @@ enum r3v_status_load_phase {
    R3V_STATUS_LOAD_COMPLETE,
    R3V_STATUS_LOAD_ABORTED,
 };
+
+struct r3v_status_load_machine;
 
 /* The sampler's resting states as the submitter tracks them.
  * SAMPLER_ENTER_READ is a recorded event inside READY, so READY absorbs
@@ -55,6 +63,22 @@ enum r3v_status_load_sampler {
    R3V_STATUS_LOAD_SAMPLER_STOPPED,
 };
 
+enum r3v_status_load_transport_event {
+   R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_ENTER,
+   R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_RETURN,
+   R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_BEGIN,
+   R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_RETURN,
+};
+
+enum r3v_status_load_transport_phase {
+   R3V_STATUS_LOAD_TRANSPORT_IDLE,
+   R3V_STATUS_LOAD_TRANSPORT_EXPECT_CS_IOCTL_ENTER,
+   R3V_STATUS_LOAD_TRANSPORT_EXPECT_CS_IOCTL_RETURN,
+   R3V_STATUS_LOAD_TRANSPORT_EXPECT_COMPLETION_WAIT_BEGIN,
+   R3V_STATUS_LOAD_TRANSPORT_EXPECT_COMPLETION_WAIT_RETURN,
+   R3V_STATUS_LOAD_TRANSPORT_COMPLETE,
+};
+
 /* Hardware-facing operations, one per ladder transition that acts.  Each
  * returns 0 on success; a nonzero return aborts the run at the exact
  * ladder position its comment names.  verify() alone distinguishes a
@@ -66,8 +90,9 @@ struct r3v_status_load_ops {
    void *ctx;
    int (*poison)(void *ctx, uint32_t iteration);
    int (*arm)(void *ctx, uint32_t iteration);
-   int (*submit)(void *ctx, uint32_t iteration);
-   int (*fence_wait)(void *ctx, uint32_t iteration);
+   int (*submit)(void *ctx, struct r3v_status_load_machine *machine,
+                 uint32_t iteration);
+   int (*post_submit_check)(void *ctx, uint32_t iteration);
    int (*verify)(void *ctx, uint32_t iteration);
    int (*retain)(void *ctx, uint32_t iteration);
    int (*repoison)(void *ctx, uint32_t iteration);
@@ -86,6 +111,8 @@ struct r3v_status_load_machine {
    enum r3v_status_load_sampler sampler;
    uint64_t last_sampler_ns;
    int have_sampler_ns;
+   uint32_t transport_submission_index;
+   enum r3v_status_load_transport_phase transport_phase;
    enum r3v_status_load_phase phase;
    const char *abort_reason;
 };
@@ -101,6 +128,17 @@ r3v_status_load_format_message(char *buffer, size_t capacity,
                                const char *nonce, uint32_t submission_index,
                                uint64_t message_sequence,
                                uint64_t timestamp_ns);
+
+/* Records one exact queue transport boundary for the iteration currently
+ * inside QUEUE_SUBMIT_ENTER.  The function accepts each boundary once in
+ * order and emits its transcript state; an unexpected callback aborts the
+ * run, so a v2 transcript cannot substitute wrapper timing for the raw
+ * DRM submission or completion wait.
+ */
+int
+r3v_status_load_machine_transport_event(
+   struct r3v_status_load_machine *machine,
+   enum r3v_status_load_transport_event event);
 
 /* Binds the ops table, the shared nonce, and the declared iteration
  * count (1 through R3V_STATUS_LOAD_MAX_ITERATIONS).  Returns 0, or -1
