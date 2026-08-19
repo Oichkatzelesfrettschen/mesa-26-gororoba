@@ -37,4 +37,19 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
                                 uint32_t first_vertex, uint32_t vertex_count,
                                 uint32_t *carrier, uint32_t carrier_dwords);
 
+/* The SSE2 execution kernel: the same contract, refusals, and carrier
+ * bytes as r300_cpu_vertex_job_execute -- the scalar interpreter is the
+ * authority and the differential test enforces bit identity.  Packed
+ * single-precision arithmetic keeps the scalar policy exactly: one
+ * rounding per elementwise operator, the FMAD product committed to
+ * binary32 before the add (the K8 SSE2/SSE3 substrate has no fused
+ * operator), and the DP4 sum accumulated in component order from the
+ * packed products so signed zeros survive.  Returns -ENOSYS where the
+ * build target lacks SSE2.
+ */
+int r300_cpu_vertex_job_execute_sse2(
+   const struct r300_vertex_job *job,
+   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords);
+
 #endif /* R300_CPU_VERTEX_JOB_H */

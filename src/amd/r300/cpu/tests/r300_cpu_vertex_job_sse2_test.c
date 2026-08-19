@@ -1,0 +1,317 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Differential equivalence of the SSE2 vertex-job kernel against the
+ * scalar interpreter: randomized valid jobs over bit-pattern-hostile
+ * inputs must produce byte-identical carriers, the numeric-policy
+ * witnesses must reproduce on the SSE2 entry directly, and every
+ * refusal must return the scalar entry's errno.  Test verdicts ride
+ * live asserts, so NDEBUG is undefined ahead of assert.h.
+ */
+
+#undef NDEBUG
+
+#include "r300_cpu_vertex_job.h"
+
+#include "amd/r300/common/r300_vertex_format.h"
+
+#include <assert.h>
+#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#define VERTEX_COUNT 8u
+#define STREAM_STRIDE 16u
+#define RANDOM_JOBS 256u
+
+/* xorshift32: a fixed-seed deterministic generator, so every run
+ * exercises the same job population.
+ */
+static uint32_t prng_state = 0x1234abcdu;
+
+static uint32_t prng(void)
+{
+   uint32_t x = prng_state;
+   x ^= x << 13;
+   x ^= x >> 17;
+   x ^= x << 5;
+   prng_state = x;
+   return x;
+}
+
+/* Bit patterns weighted toward the values that distinguish a bit-copy
+ * register file from a value model: NaN payloads, denormals, signed
+ * zeros, and infinities, beside ordinary magnitudes and raw noise.
+ */
+static uint32_t hostile_bits(void)
+{
+   static const uint32_t pool[] = {
+      0x00000000u, /* +0 */
+      0x80000000u, /* -0 */
+      0x7fa00001u, /* signaling NaN payload */
+      0x7fc00123u, /* quiet NaN payload */
+      0x00000001u, /* smallest denormal */
+      0x807fffffu, /* negative denormal */
+      0x7f800000u, /* +inf */
+      0xff800000u, /* -inf */
+      0x3f800000u, /* 1.0 */
+      0xbf800000u, /* -1.0 */
+      0x38801000u, /* 1 + 2^-12 neighborhood */
+   };
+   const uint32_t roll = prng();
+   if ((roll & 3u) == 0)
+      return pool[roll % (sizeof(pool) / sizeof(pool[0]))];
+   return prng();
+}
+
+/* Builds one random structurally valid job: every source register is
+ * already written, the final instruction is the one STORE_POSITION,
+ * and the first instruction loads the input so register 0 is live.
+ */
+static void random_job(struct r300_vertex_job *job)
+{
+   memset(job, 0, sizeof(*job));
+   job->input_format_id = R300_VERTEX_FORMAT_F32_4;
+   job->constant_count = 1 + prng() % R300_VERTEX_JOB_MAX_CONSTANTS;
+   for (uint32_t c = 0; c < job->constant_count; c++)
+      for (uint32_t lane = 0; lane < 4; lane++)
+         job->constants[c][lane] = hostile_bits();
+
+   const uint32_t body = 1 + prng() % (R300_VERTEX_JOB_MAX_INSTRUCTIONS - 2);
+   uint32_t written = 0;
+   job->instructions[0] = (struct r300_vertex_job_instruction){
+      .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT,
+      .dst = 0,
+   };
+   written |= 1u;
+   for (uint32_t i = 1; i <= body; i++) {
+      struct r300_vertex_job_instruction *inst = &job->instructions[i];
+      const uint32_t live_count = (uint32_t)__builtin_popcount(written);
+      uint8_t live[R300_VERTEX_JOB_MAX_TEMPS];
+      uint32_t n = 0;
+      for (uint8_t t = 0; t < R300_VERTEX_JOB_MAX_TEMPS; t++)
+         if (written & (1u << t))
+            live[n++] = t;
+      assert(n == live_count && n > 0);
+
+      switch (prng() % 6) {
+      case 0:
+         inst->opcode = R300_VERTEX_JOB_OP_LOAD_INPUT;
+         inst->src0 = 0;
+         break;
+      case 1:
+         inst->opcode = R300_VERTEX_JOB_OP_LOAD_CONSTANT;
+         inst->src0 = (uint8_t)(prng() % job->constant_count);
+         break;
+      case 2:
+         inst->opcode = R300_VERTEX_JOB_OP_MOV;
+         inst->src0 = live[prng() % n];
+         break;
+      case 3:
+         inst->opcode = R300_VERTEX_JOB_OP_FADD;
+         inst->src0 = live[prng() % n];
+         inst->src1 = live[prng() % n];
+         break;
+      case 4:
+         inst->opcode = (prng() & 1) ? R300_VERTEX_JOB_OP_FMUL
+                                     : R300_VERTEX_JOB_OP_DP4;
+         inst->src0 = live[prng() % n];
+         inst->src1 = live[prng() % n];
+         break;
+      default:
+         inst->opcode = R300_VERTEX_JOB_OP_FMAD;
+         inst->src0 = live[prng() % n];
+         inst->src1 = live[prng() % n];
+         inst->src2 = live[prng() % n];
+         break;
+      }
+      inst->dst = (uint8_t)(prng() % R300_VERTEX_JOB_MAX_TEMPS);
+      written |= 1u << inst->dst;
+   }
+   job->instructions[body + 1] = (struct r300_vertex_job_instruction){
+      .opcode = R300_VERTEX_JOB_OP_STORE_POSITION,
+      .src0 = 0,
+   };
+   /* The store reads a live register; register 0 is written by the
+    * first instruction and never invalidated. */
+   job->instruction_count = body + 2;
+}
+
+static void differential_random_jobs(void)
+{
+   uint32_t stream_bytes[VERTEX_COUNT * 4];
+   for (uint32_t i = 0; i < VERTEX_COUNT * 4; i++)
+      stream_bytes[i] = hostile_bits();
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)stream_bytes,
+      .stride = STREAM_STRIDE,
+      .size_bytes = sizeof(stream_bytes),
+   };
+
+   for (uint32_t trial = 0; trial < RANDOM_JOBS; trial++) {
+      struct r300_vertex_job job;
+      random_job(&job);
+      assert(r300_cpu_vertex_job_validate(&job) == 0);
+
+      uint32_t scalar[VERTEX_COUNT * 4];
+      uint32_t sse2[VERTEX_COUNT * 4];
+      memset(scalar, 0xa5, sizeof(scalar));
+      memset(sse2, 0x5a, sizeof(sse2));
+      assert(r300_cpu_vertex_job_execute(&job, &stream, 0, VERTEX_COUNT,
+                                         scalar, VERTEX_COUNT * 4) == 0);
+      assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0,
+                                              VERTEX_COUNT, sse2,
+                                              VERTEX_COUNT * 4) == 0);
+      if (memcmp(scalar, sse2, sizeof(scalar)) != 0) {
+         fprintf(stderr, "divergence at trial %u\n", trial);
+         for (uint32_t d = 0; d < VERTEX_COUNT * 4; d++)
+            if (scalar[d] != sse2[d])
+               fprintf(stderr, "  dword %u: scalar %08x sse2 %08x\n", d,
+                       scalar[d], sse2[d]);
+         assert(!"scalar and SSE2 carriers diverged");
+      }
+   }
+}
+
+/* The FMAD two-rounding witness on the SSE2 entry: a = 1 + 2^-12, so
+ * a*a rounds ties-to-even to 1 + 2^-11 and FMAD(a, a, -(1 + 2^-11))
+ * yields +0; a fused operator would yield 2^-24.
+ */
+static void witness_fmad_two_roundings(void)
+{
+   struct r300_vertex_job job = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .constant_count = 2,
+      .instruction_count = 4,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_CONSTANT, .dst = 1,
+           .src0 = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_CONSTANT, .dst = 2,
+           .src0 = 1 },
+         { .opcode = R300_VERTEX_JOB_OP_FMAD, .dst = 3, .src0 = 1,
+           .src1 = 1, .src2 = 2 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 3 },
+      },
+   };
+   for (uint32_t lane = 0; lane < 4; lane++) {
+      job.constants[0][lane] = 0x3f800800u; /* 1 + 2^-12 */
+      job.constants[1][lane] = 0xbf801000u; /* -(1 + 2^-11) */
+   }
+   const uint32_t stream_bytes[4] = { 0, 0, 0, 0 };
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)stream_bytes,
+      .stride = STREAM_STRIDE,
+      .size_bytes = sizeof(stream_bytes),
+   };
+   uint32_t out[4] = { 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu };
+   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0, 1, out, 4) ==
+          0);
+   for (uint32_t lane = 0; lane < 4; lane++)
+      assert(out[lane] == 0x00000000u);
+}
+
+/* An all-negative-zero DP4 keeps -0 on the SSE2 entry: the sum seeds
+ * from the first product instead of an additive +0. */
+static void witness_dp4_signed_zero(void)
+{
+   struct r300_vertex_job job = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .constant_count = 2,
+      .instruction_count = 4,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_CONSTANT, .dst = 0,
+           .src0 = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_CONSTANT, .dst = 1,
+           .src0 = 1 },
+         { .opcode = R300_VERTEX_JOB_OP_DP4, .dst = 2, .src0 = 0,
+           .src1 = 1 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 2 },
+      },
+   };
+   for (uint32_t lane = 0; lane < 4; lane++) {
+      job.constants[0][lane] = 0x80000000u; /* -0 */
+      job.constants[1][lane] = 0x3f800000u; /* 1.0 */
+   }
+   const uint32_t stream_bytes[4] = { 0, 0, 0, 0 };
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)stream_bytes,
+      .stride = STREAM_STRIDE,
+      .size_bytes = sizeof(stream_bytes),
+   };
+   uint32_t out[4] = { 0 };
+   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0, 1, out, 4) ==
+          0);
+   for (uint32_t lane = 0; lane < 4; lane++)
+      assert(out[lane] == 0x80000000u);
+}
+
+/* Refusal parity: the SSE2 entry shares the scalar guard, so every
+ * refusal returns the same errno with no carrier write. */
+static void refusal_parity(void)
+{
+   struct r300_vertex_job job;
+   random_job(&job);
+   uint32_t stream_bytes[VERTEX_COUNT * 4] = { 0 };
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)stream_bytes,
+      .stride = STREAM_STRIDE,
+      .size_bytes = sizeof(stream_bytes),
+   };
+   uint32_t out[VERTEX_COUNT * 4];
+
+   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0, VERTEX_COUNT,
+                                           out, VERTEX_COUNT * 4 - 1) ==
+          -ENOSPC);
+   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 1, VERTEX_COUNT,
+                                           out, VERTEX_COUNT * 4) ==
+          -EINVAL);
+   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0, VERTEX_COUNT,
+                                           stream_bytes,
+                                           VERTEX_COUNT * 4) == -EINVAL);
+   job.instruction_count = 0;
+   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0, VERTEX_COUNT,
+                                           out, VERTEX_COUNT * 4) ==
+          -EINVAL);
+}
+
+int main(void)
+{
+   /* The kernel reports -ENOSYS where the build target lacks SSE2; the
+    * differential claim is x86-only, so the test skips there. */
+   {
+      struct r300_vertex_job probe = {
+         .input_format_id = R300_VERTEX_FORMAT_F32_4,
+         .instruction_count = 2,
+         .instructions = {
+            { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },
+            { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 0 },
+         },
+      };
+      const uint32_t stream_bytes[4] = { 1, 2, 3, 4 };
+      const struct r300_cpu_vertex_stream stream = {
+         .data = (const uint8_t *)stream_bytes,
+         .stride = STREAM_STRIDE,
+         .size_bytes = sizeof(stream_bytes),
+      };
+      uint32_t out[4];
+      const int probe_result = r300_cpu_vertex_job_execute_sse2(
+         &probe, &stream, 0, 1, out, 4);
+      if (probe_result == -ENOSYS) {
+         printf("r300_cpu_vertex_job_sse2_test: SSE2 unavailable, "
+                "skipped\n");
+         return 77;
+      }
+      assert(probe_result == 0);
+      assert(out[0] == 1 && out[1] == 2 && out[2] == 3 && out[3] == 4);
+   }
+
+   differential_random_jobs();
+   witness_fmad_two_roundings();
+   witness_dp4_signed_zero();
+   refusal_parity();
+   printf("r300_cpu_vertex_job_sse2_test: %u random jobs bit-identical; "
+          "all checks passed\n",
+          RANDOM_JOBS);
+   return 0;
+}
