@@ -28,6 +28,7 @@
 #include <inttypes.h>
 #include <radeon_drm.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -382,6 +383,20 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       .format_id = draw->format_id,
    };
 
+   /* An admitted GPU-producer delivery already poisoned and published
+    * the carrier at admission; the device writes it, so the host fill,
+    * route resolution, and viewport transform below stay out and only
+    * the load-op clear executes here.
+    */
+   if (draw->gpu_producer_delivery) {
+      if (owns_map) {
+         radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+         memory->map = NULL;
+      }
+      return sentinel_fill_color(device, draw->target_memory,
+                                 draw->target_fill_bytes);
+   }
+
    bool owns_carrier_map = carrier->map == NULL;
    VkResult result = VK_SUCCESS;
    if (owns_carrier_map &&
@@ -541,6 +556,248 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     */
    return sentinel_fill_color(device, draw->target_memory,
                               draw->target_fill_bytes);
+}
+
+/* The producer footprint over the triangle's three records: the odd
+ * count pads to the four-slot pitch, sixteen dwords of C4_32_FP row.
+ */
+#define R3V_GPU_PRODUCER_CARRIER_DWORDS 16u
+
+VkResult
+r3v_native_deferred_draw_admit_gpu_producer(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
+   if (!draw->pending || draw->buffer == NULL)
+      return VK_SUCCESS;
+
+   struct r300_delivery_route_decision route;
+   r300_delivery_route_resolve(device->r2vb_delivery_gate,
+                               device->r2vb_gpu_delivery_gate,
+                               draw->format_id, &route);
+   if (route.route != R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER)
+      return VK_SUCCESS;
+
+   if (device->gpu_producer_quarantined) {
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: GPU producer capability is "
+                       "quarantined on this device; a completed delivery "
+                       "diverged from the CPU oracle");
+   }
+
+   /* Structural predicate: the identity vertex job over the F32_4
+    * position stream on the recorded triangle consumer.  The route
+    * resolver already bound the format; the job identity and the
+    * consumer kind are the remaining shape facts.
+    */
+   if (!draw->vertex_job_identity ||
+       (cmd_buffer->cell_kind != R3V_NATIVE_CELL_KIND_TRIANGLE &&
+        cmd_buffer->cell_kind !=
+           R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC)) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: GPU producer route admits the "
+                       "identity vertex job on the recorded triangle "
+                       "consumer alone");
+   }
+
+   /* The oracle read: the same execution-time gather the CPU route
+    * runs, retained as the read-back expectation.  Under the identity
+    * job and F32_4 these dwords are the records the producer embeds.
+    */
+   struct r3v_native_buffer *buffer = draw->buffer;
+   struct r3v_native_memory *memory = buffer->memory;
+   bool owns_map = memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &memory->bo, &memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: bound vertex memory is not "
+                       "CPU-mappable at submission");
+   }
+   uint32_t oracle[R300_TRIANGLE_VERTEX_DWORDS];
+   const struct r300_cpu_vertex_stream source = {
+      .data =
+         (const uint8_t *)memory->map + buffer->offset + draw->stream_base,
+      .stride = draw->stride,
+      .size_bytes = buffer->vk.size - draw->stream_base,
+   };
+   int gathered = r300_cpu_vertex_gather(
+      draw->format_id, &source, draw->first_vertex,
+      R300_TRIANGLE_VERTEX_DWORDS / 4, oracle, R300_TRIANGLE_VERTEX_DWORDS);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+      memory->map = NULL;
+   }
+   if (gathered != 0) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: vertex gather refused (%d) under the "
+                       "GPU producer route", gathered);
+   }
+
+   /* Numeric predicate: the emitter refuses a record outside the FP24
+    * fixed-point domain with -EDOM, so an admitted emission is one the
+    * delivery identity predicts byte-exact.
+    */
+   float records[R300_R2VB_PRODUCER_REFERENCE_COUNT][4];
+   memcpy(records, oracle, sizeof(records));
+   struct r300_r2vb_producer_ib producer;
+   int emit_result = r300_r2vb_producer_records_emit(
+      (const float(*)[4])records, &producer);
+   if (emit_result != 0) {
+      return vk_errorf(device,
+                       r3v_native_cell_vk_result_from_errno(emit_result),
+                       "r3v-native: GPU producer emission refused (%d)%s",
+                       emit_result,
+                       emit_result == -EDOM
+                          ? "; a record is outside the FP24 "
+                            "fixed-point domain"
+                          : "");
+   }
+
+   /* Transport predicate: the composed pass carries the
+    * silicon-qualified reference contract outside the record payloads,
+    * proven against a fresh reference emission rather than assumed
+    * from sharing the emitter.
+    */
+   struct r300_r2vb_producer_ib reference;
+   emit_result = r300_r2vb_producer_reference_emit(&reference);
+   if (emit_result == 0) {
+      emit_result = r300_r2vb_producer_pass_semantic_equal(&producer,
+                                                           &reference);
+      if (emit_result == 0)
+         emit_result =
+            r300_r2vb_producer_pass_validate_reloc_sites(&producer);
+      r300_r2vb_producer_pass_release(&reference);
+   }
+   if (emit_result != 0) {
+      r300_r2vb_producer_pass_release(&producer);
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: composed producer diverged from the "
+                       "qualified transport contract (%d)", emit_result);
+   }
+
+   /* Composition: producer ++ consumer in one IB.  The producer's
+    * carrier relocation payload and the consumer's vertex slot payload
+    * both name relocation entry zero, and the consumer's reference list
+    * already binds the carrier there, so the list only gains the write
+    * domain the color backend needs.
+    */
+   if (!draw->gpu_producer_delivery) {
+      const uint32_t combined_dwords =
+         producer.ib_size_dwords + cmd_buffer->ib_size_dwords;
+      uint32_t *combined = malloc(combined_dwords * sizeof(uint32_t));
+      if (combined == NULL) {
+         r300_r2vb_producer_pass_release(&producer);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      memcpy(combined, producer.ib,
+             producer.ib_size_dwords * sizeof(uint32_t));
+      memcpy(combined + producer.ib_size_dwords, cmd_buffer->ib,
+             cmd_buffer->ib_size_dwords * sizeof(uint32_t));
+      free(cmd_buffer->ib);
+      cmd_buffer->ib = combined;
+      cmd_buffer->ib_size_dwords = combined_dwords;
+      draw->gpu_producer_dwords = producer.ib_size_dwords;
+      cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC;
+      cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX].write_domain =
+         RADEON_GEM_DOMAIN_GTT;
+   } else {
+      /* A resubmission re-reads the stream, so the producer prefix is
+       * re-emitted in place; the reference-shaped emission is
+       * fixed-length, so a size drift names a broken invariant.
+       */
+      if (producer.ib_size_dwords != draw->gpu_producer_dwords) {
+         r300_r2vb_producer_pass_release(&producer);
+         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                          "r3v-native: recomposed producer size %u "
+                          "differs from the admitted %u",
+                          producer.ib_size_dwords,
+                          draw->gpu_producer_dwords);
+      }
+      memcpy(cmd_buffer->ib, producer.ib,
+             producer.ib_size_dwords * sizeof(uint32_t));
+   }
+   r300_r2vb_producer_pass_release(&producer);
+
+   /* The poisoned carrier crosses to the device now, so the read-back
+    * decides every slot: a record dword still holding the poison names
+    * a slot the pass left unwritten, and the pad slot must keep it.
+    */
+   struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
+   bool owns_carrier_map = carrier->map == NULL;
+   if (owns_carrier_map &&
+       radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
+                            &carrier->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: carrier memory is not CPU-mappable "
+                       "at admission");
+   }
+   uint32_t *carrier_words = carrier->map;
+   for (uint32_t i = 0; i < R3V_GPU_PRODUCER_CARRIER_DWORDS; i++)
+      carrier_words[i] = R300_R2VB_PRODUCER_POISON_DWORD;
+   radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
+                               R3V_GPU_PRODUCER_CARRIER_DWORDS * 4);
+   if (owns_carrier_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
+      carrier->map = NULL;
+   }
+
+   memcpy(draw->gpu_expected_carrier, oracle, sizeof(oracle));
+   for (uint32_t i = R300_TRIANGLE_VERTEX_DWORDS;
+        i < R3V_GPU_PRODUCER_CARRIER_DWORDS; i++)
+      draw->gpu_expected_carrier[i] = R300_R2VB_PRODUCER_POISON_DWORD;
+   draw->gpu_producer_delivery = true;
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_deferred_draw_verify_gpu_producer(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
+   if (!draw->gpu_producer_delivery)
+      return VK_SUCCESS;
+
+   struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
+   bool owns_map = carrier->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
+                            &carrier->map) != 0) {
+      device->gpu_producer_quarantined = true;
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: carrier read-back mapping failed; "
+                       "GPU producer capability quarantined");
+   }
+   const bool matches =
+      memcmp(carrier->map, draw->gpu_expected_carrier,
+             sizeof(draw->gpu_expected_carrier)) == 0;
+   if (!matches && device->manifest_dir != NULL) {
+      char path[1024];
+      int length = snprintf(path, sizeof(path),
+                            "%s/gpu_carrier_observed.bin",
+                            device->manifest_dir);
+      if (length > 0 && (size_t)length < sizeof(path)) {
+         FILE *observed = fopen(path, "wb");
+         if (observed != NULL) {
+            fwrite(carrier->map, 1, sizeof(draw->gpu_expected_carrier),
+                   observed);
+            fclose(observed);
+         }
+      }
+   }
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
+      carrier->map = NULL;
+   }
+   if (!matches) {
+      device->gpu_producer_quarantined = true;
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: GPU producer carrier diverged from "
+                       "the CPU oracle; capability quarantined and the "
+                       "observed bytes retained");
+   }
+   return VK_SUCCESS;
 }
 
 /* Carrier delivery: gathers the cell's three vertices from the caller's

@@ -583,10 +583,71 @@ test_refusals(void)
    r300_fragment_binary_finish(&fs);
 }
 
+/* Calibration of the transport-contract check: a records-only
+ * difference passes, and a state, slot-position, grammar, or length
+ * difference refuses.
+ */
+static void
+test_semantic_equal(void)
+{
+   struct r300_r2vb_producer_ib reference;
+   CHECK(r300_r2vb_producer_reference_emit(&reference) == 0);
+
+   /* Known-good: caller records distinct from the reference at every
+    * component, admitted by the FP24 window.
+    */
+   static const float distinct_records[3][4] = {
+      { 3.0f, 5.0f, 7.0f, 1.0f },
+      { 11.0f, 13.0f, 17.0f, 1.0f },
+      { 19.0f, 23.0f, 29.0f, 1.0f },
+   };
+   struct r300_r2vb_producer_ib routed;
+   CHECK(r300_r2vb_producer_records_emit(distinct_records, &routed) == 0);
+   CHECK(r300_r2vb_producer_pass_semantic_equal(&routed, &reference) == 0);
+
+   /* Known-good: the sweep stream is a records-only sibling. */
+   struct r300_r2vb_producer_ib sweep;
+   CHECK(r300_r2vb_producer_fp24_sweep_emit(&sweep) == 0);
+   CHECK(r300_r2vb_producer_pass_semantic_equal(&sweep, &reference) == 0);
+   r300_r2vb_producer_pass_release(&sweep);
+
+   /* Known-bad: a state dword outside the draw body refuses.  Index 1
+    * is the first register write's value inside the contract prefix.
+    */
+   uint32_t saved = routed.ib[1];
+   routed.ib[1] ^= 0x1u;
+   CHECK(r300_r2vb_producer_pass_semantic_equal(&routed, &reference) ==
+         -EINVAL);
+   routed.ib[1] = saved;
+
+   /* Known-bad: a slot-position dword inside the draw body refuses.
+    * The body starts two dwords past the draw header; lane 0 is the
+    * vertex's fixed x slot position.
+    */
+   const uint32_t draw_dwords = 2u + 3u * 8u;
+   const uint32_t body_index = routed.ib_size_dwords - 8u - draw_dwords + 2u;
+   saved = routed.ib[body_index];
+   routed.ib[body_index] ^= 0x1u;
+   CHECK(r300_r2vb_producer_pass_semantic_equal(&routed, &reference) ==
+         -EINVAL);
+   routed.ib[body_index] = saved;
+   CHECK(r300_r2vb_producer_pass_semantic_equal(&routed, &reference) == 0);
+
+   /* Known-bad: a length difference refuses before any dword compare. */
+   routed.ib_size_dwords--;
+   CHECK(r300_r2vb_producer_pass_semantic_equal(&routed, &reference) ==
+         -EINVAL);
+   routed.ib_size_dwords++;
+
+   r300_r2vb_producer_pass_release(&routed);
+   r300_r2vb_producer_pass_release(&reference);
+}
+
 int
 main(void)
 {
    test_reference_structure();
+   test_semantic_equal();
    test_fp24_sweep_stream();
    test_fp24_bisect_stream();
    test_layout_domain();
