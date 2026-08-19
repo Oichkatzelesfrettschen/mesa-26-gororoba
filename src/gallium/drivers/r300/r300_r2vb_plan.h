@@ -11,6 +11,7 @@
 
 #include "amd/r300/common/r300_r2vb_source_contract.h"
 #include "compiler/shader_enums.h"
+#include "amd/r300/compiler/r300_r2vb_nir.h"
 #include "amd/r300/compiler/radeon_code.h"
 #include "r300_context.h"
 #include "r300_fs.h"
@@ -149,18 +150,9 @@ struct r300_r2vb_plan_key {
     uint32_t viewport_translate[3];
 };
 
-/* The application source identity of the plan's position input, measured
- * on the bound VS at plan-build time: the surviving input variable's
- * driver location and its semantic rank among the VS inputs in ascending
- * location order.  The producer mapping contract consumes these measured
- * values; a caller passing literals asserts an identity the plan never
- * proved.  Re-ingest maps passthrough outputs by driver location because
- * component-packed variables share one physical vertex element. */
-struct r300_r2vb_position_source {
-    uint8_t app_driver_location;
-    uint8_t location_rank;
-    bool valid;
-};
+/* struct r300_r2vb_position_source, the measured application source
+ * identity of a producer pass input, lives in
+ * amd/r300/compiler/r300_r2vb_nir.h with the scans that fill it. */
 
 /* External constant-source correspondence for the retained position
  * producer.  AUTO_SINGLE mirrors only byte-addressed UBO block 0 through
@@ -266,32 +258,8 @@ struct nir_shader *r300_r2vb_build_restaged_fs_nir(struct r300_context *r300,
                                                    gl_varying_slot target,
                                                    enum r300_r2vb_position_space space);
 
-/* Identify the output location carried by a lowered store intrinsic.  NIR's
- * nir_intrinsic_store_output places the value in src[0], the location offset
- * in src[1], and the component mask in intrinsic indices (global -r
- * nir_intrinsic_store_output).  A constant offset within its declared slot
- * range becomes part of the target identity; indirect offsets and out-of-range
- * stores return false, keeping planner and live-restager admission on one
- * delivery record. */
-bool r300_r2vb_output_store_location(const struct nir_intrinsic_instr *intr,
-                                     gl_varying_slot *location);
-
-/* This helper identifies an output store whose value is a direct
- * shader-input load.  Dereference stores and lowered store_output forms use
- * this classification
- * when the producer distinguishes passthrough varyings from computed ones. */
-bool r300_r2vb_output_store_is_input_passthrough(
-    const struct nir_intrinsic_instr *intr);
-
-/* Remove output stores outside target from a caller-owned clone.  The planner
- * and live restager call this same target reduction before DCE and emission. */
-void r300_r2vb_prune_output_stores(struct nir_shader *nir,
-                                   gl_varying_slot target);
-
-/* Reduce a caller-owned clone to the position producer before structural
- * admission.  Non-position stores and the dead dependencies that feed them
- * stay outside the cv=0 cell. */
-void r300_r2vb_prune_position_only(struct nir_shader *nir);
+/* Output-store classification and pruning helpers live in
+ * amd/r300/compiler/r300_r2vb_nir.h. */
 
 /* Diagnostic typed-split gate value: exactly "1" opens; NULL, empty, and
  * every other value keep the route closed.  Pure over the string so the
@@ -363,7 +331,6 @@ void r300_r2vb_test_fail_position_input_clone_once(void);
 void r300_r2vb_test_fail_position_input_clone_after_one(void);
 /* Test calibration injects one transient failure in the source-identity scan
  * after the position-input count succeeds. */
-void r300_r2vb_test_fail_position_source_clone_once(void);
 /* Test calibration injects one transient failure at the shadow recount. */
 void r300_r2vb_test_fail_shadow_recount_once(void);
 int r300_r2vb_first_computed_varying(struct nir_shader *vs_nir);
@@ -798,20 +765,7 @@ r300_r2vb_producer_streams_rebind(const struct r300_r2vb_producer_streams *orig,
                                   uint64_t slot_bo_bytes, uint32_t count,
                                   struct r300_r2vb_producer_fetch *out);
 
-struct nir_shader;
-bool r300_r2vb_position_source_scan(struct nir_shader *vs_nir,
-                                    struct r300_r2vb_position_source *out);
-bool r300_r2vb_position_source_scan_status(
-    struct nir_shader *vs_nir, struct r300_r2vb_position_source *out,
-    bool *transient_failure);
-
-/* Source identity of the one application input feeding the computed varying
- * at `slot`: strip every store except that varying's, DCE, and require
- * exactly one surviving input.  Same rank/driver-location record as the
- * position scan, so the BO-fetch route feeds the varying pass through the
- * identical single-model-stream contract. */
-bool r300_r2vb_varying_source_scan(struct nir_shader *vs_nir, int slot,
-                                   struct r300_r2vb_position_source *out);
+/* Position/varying source scans live in amd/r300/compiler/r300_r2vb_nir.h. */
 
 /* The element mapper the delivery route uses (rank among VS inputs in
  * ascending location order), exported so the rank oracle proves the
