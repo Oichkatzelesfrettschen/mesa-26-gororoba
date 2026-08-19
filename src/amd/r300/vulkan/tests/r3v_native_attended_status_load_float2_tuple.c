@@ -568,57 +568,6 @@ main(int argc, char **argv)
       return 1;
    }
 
-   stage("sampler channel");
-   char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
-   if (snprintf(socket_path, sizeof(socket_path), "%s/sampler.sock",
-                run.evidence_dir) >= (int)sizeof(socket_path)) {
-      fprintf(stderr, "sampler socket path exceeds sun_path\n");
-      return 1;
-   }
-   int listener = socket(AF_UNIX, SOCK_SEQPACKET, 0);
-   if (listener < 0) {
-      fprintf(stderr, "sampler socket creation failed\n");
-      return 1;
-   }
-   struct sockaddr_un address = { .sun_family = AF_UNIX };
-   memcpy(address.sun_path, socket_path, strlen(socket_path) + 1);
-   if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
-       listen(listener, 1) != 0) {
-      fprintf(stderr, "sampler socket bind failed (%s)\n", strerror(errno));
-      return 1;
-   }
-   printf("[sampler] listening at %s\n", socket_path);
-   fflush(stdout);
-   struct pollfd accept_poll = { .fd = listener, .events = POLLIN };
-   if (poll(&accept_poll, 1, SAMPLER_WAIT_BUDGET_MS) <= 0) {
-      fprintf(stderr, "no sampler connected within the wait budget\n");
-      return 1;
-   }
-   run.sampler_fd = accept(listener, NULL, NULL);
-   close(listener);
-   if (run.sampler_fd < 0) {
-      fprintf(stderr, "sampler accept failed\n");
-      return 1;
-   }
-
-   const struct r3v_status_load_ops ops = {
-      .ctx = &run,
-      .poison = op_poison,
-      .arm = op_arm,
-      .submit = op_submit,
-      .post_submit_check = op_post_submit_check,
-      .verify = op_verify,
-      .retain = op_retain,
-      .repoison = op_repoison,
-      .now_ns = run_now_ns,
-      .emit = run_emit,
-   };
-   if (r3v_status_load_machine_init(&run.machine, &ops, run.nonce,
-                                    iterations) != 0) {
-      fprintf(stderr, "machine initialization refused its inputs\n");
-      return 1;
-   }
-
    stage("instance");
    PFN_vkVoidFunction (*gipa)(VkInstance, const char *) =
       vk_icdGetInstanceProcAddr;
@@ -775,6 +724,77 @@ main(int argc, char **argv)
    run.carrier_map = carrier_map;
    run.vertex_map = vertex_map;
 
+   /* The burst prepares its transport before the barrier channel even
+    * exists: relocation list, completion reference, the single CS
+    * build, the retained evidence, and the arming disarm all land
+    * here.  The sampler paces itself from its own connection, so the
+    * capture window can open any time after the socket accepts; with
+    * the disk-bound evidence ladder (tens of milliseconds, day-scale
+    * jitter) already spent, the window holds only poison, the
+    * transcript fsync, and the transport tail.  The serial cell
+    * resubmits per iteration and keeps the inline submit path.
+    */
+   if (burst_draws != 0) {
+      stage("prepare transport");
+      VkResult prep =
+         r3v_native_queue_prepare_submission(run.device, run.cmd);
+      if (prep != VK_SUCCESS) {
+         fprintf(stderr, "transport preparation refused: %d\n", prep);
+         return 1;
+      }
+   }
+
+   stage("sampler channel");
+   char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
+   if (snprintf(socket_path, sizeof(socket_path), "%s/sampler.sock",
+                run.evidence_dir) >= (int)sizeof(socket_path)) {
+      fprintf(stderr, "sampler socket path exceeds sun_path\n");
+      return 1;
+   }
+   int listener = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+   if (listener < 0) {
+      fprintf(stderr, "sampler socket creation failed\n");
+      return 1;
+   }
+   struct sockaddr_un address = { .sun_family = AF_UNIX };
+   memcpy(address.sun_path, socket_path, strlen(socket_path) + 1);
+   if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+       listen(listener, 1) != 0) {
+      fprintf(stderr, "sampler socket bind failed (%s)\n", strerror(errno));
+      return 1;
+   }
+   printf("[sampler] listening at %s\n", socket_path);
+   fflush(stdout);
+   struct pollfd accept_poll = { .fd = listener, .events = POLLIN };
+   if (poll(&accept_poll, 1, SAMPLER_WAIT_BUDGET_MS) <= 0) {
+      fprintf(stderr, "no sampler connected within the wait budget\n");
+      return 1;
+   }
+   run.sampler_fd = accept(listener, NULL, NULL);
+   close(listener);
+   if (run.sampler_fd < 0) {
+      fprintf(stderr, "sampler accept failed\n");
+      return 1;
+   }
+
+   const struct r3v_status_load_ops ops = {
+      .ctx = &run,
+      .poison = op_poison,
+      .arm = op_arm,
+      .submit = op_submit,
+      .post_submit_check = op_post_submit_check,
+      .verify = op_verify,
+      .retain = op_retain,
+      .repoison = op_repoison,
+      .now_ns = run_now_ns,
+      .emit = run_emit,
+   };
+   if (r3v_status_load_machine_init(&run.machine, &ops, run.nonce,
+                                    iterations) != 0) {
+      fprintf(stderr, "machine initialization refused its inputs\n");
+      return 1;
+   }
+
    stage("sampler ready");
    if (!sampler_wait(&run, R3V_STATUS_LOAD_SAMPLER_READY,
                      SAMPLER_WAIT_BUDGET_MS)) {
@@ -789,26 +809,6 @@ main(int argc, char **argv)
     * ladder.  The machine stops the run at its first failure and no
     * resubmission follows an abort.
     */
-   /* The burst prepares its transport before the capture window opens:
-    * relocation list, completion reference, the single CS build, the
-    * retained evidence, and the arming disarm all land here, so the
-    * submission issued after ENTER_READ carries only cache publication,
-    * the DRM_RADEON_CS ioctl, and the completion wait.  The evidence
-    * fsync ladder is disk-bound and jitters tens of milliseconds, which
-    * defeats fixed-delay census placement when it runs inside the
-    * window.  The serial cell resubmits per iteration and keeps the
-    * inline submit path.
-    */
-   if (burst_draws != 0 &&
-       run.machine.phase == R3V_STATUS_LOAD_RUNNING) {
-      stage("prepare transport");
-      VkResult prep =
-         r3v_native_queue_prepare_submission(run.device, run.cmd);
-      if (prep != VK_SUCCESS)
-         r3v_status_load_machine_fault(&run.machine,
-                                       "transport preparation refused");
-   }
-
    /* The burst's single window must overlap the census capture, so the
     * submission waits for the sampler's ENTER_READ: the kernel is
     * recording from that message on, and the queue call issued after it
