@@ -239,6 +239,25 @@ static void test_refusals(void)
           -EINVAL);
    assert(latched.count == 0);
 
+   /* The public dword count is checked: a null descriptor or an RS
+    * table length outside 1..8 (including one that would wrap the
+    * 7 + 2 * table_len arithmetic) reads 0, which no valid emission
+    * can produce. */
+   assert(r300_r2vb_reingest_draw_dwords(NULL) == 0);
+   struct r300_r2vb_reingest_rs_block bad_rs = { .table_len = 0 };
+   params = bare_params();
+   params.rs = &bad_rs;
+   assert(r300_r2vb_reingest_draw_dwords(&params) == 0);
+   bad_rs.table_len = 9;
+   assert(r300_r2vb_reingest_draw_dwords(&params) == 0);
+   bad_rs.table_len = 0x80000000u;
+   assert(r300_r2vb_reingest_draw_dwords(&params) == 0);
+   params.rs = NULL;
+   assert(r300_r2vb_reingest_draw_dwords(&params) == 18);
+
+   /* A null builder is refused outright. */
+   assert(r300_r2vb_reingest_draw_emit(NULL, &params, &relocs) == -EINVAL);
+
    /* Null destinations are refused without touching the builder. */
    uint32_t null_words[32];
    struct r300_pm4_builder null_builder;
