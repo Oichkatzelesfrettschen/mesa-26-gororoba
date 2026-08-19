@@ -1060,10 +1060,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
 
-      struct radeon_drm_vk_cs cs;
-      radeon_drm_vk_cs_build(&cs, cmd_buffer->ib,
-                             cmd_buffer->ib_size_dwords, &relocs, 0, true);
-
       char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
       char kernel_release[128];
       char module_srcversion[128];
@@ -1144,7 +1140,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       /* Finite completion: a 4-byte write-domain BO rides the relocation
        * chunk, the kernel fences it at submit, and the bounded
        * GEM_WAIT_IDLE returns when the submission retires or escalates to
-       * device loss.  The CS rebuild folds the completion reference in;
+       * device loss.  The single CS build below folds the completion
+       * reference in;
        * the semantic manifest above keeps the pre-completion relocation list,
        * while submit_manifest.json describes the final list that
        * submit_relocs.bin carries.  The completion allocates
@@ -1166,6 +1163,11 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
+      /* The one CS build on the inline path: the completion reference
+       * above finalized the relocation list, so the argument block binds
+       * the exact chunks the ioctl sends.
+       */
+      struct radeon_drm_vk_cs cs;
       radeon_drm_vk_cs_build(&cs, cmd_buffer->ib,
                              cmd_buffer->ib_size_dwords, &relocs, 0, true);
 
