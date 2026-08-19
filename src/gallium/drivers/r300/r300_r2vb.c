@@ -43,6 +43,7 @@
 #include "amd/r300/compiler/r300_nir.h"
 #include "amd/r300/common/r300_pm4_builder.h"
 #include "amd/r300/common/r300_r2vb_fetch_pass.h"
+#include "amd/r300/common/r300_r2vb_reingest_draw.h"
 #include "amd/r300/common/r300_r2vb_target_state.h"
 #include "amd/r300/common/r300_r2vb_source_contract.h"
 #include "r300_context.h"
@@ -2121,209 +2122,116 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     const bool position_only_output =
         r300_r2vb_position_only_output_enabled(ptsize_c0, ptsize_c1c);
 
-    /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
-     * optional observe redirect (stage3_color_bo) adds nine dwords.  Each
-     * optional state gate adds an independently-gated count: the shared
-     * position-output-format packet is 3 (SEQ-of-2 + header), the viewport
-     * identity override is 7, the VTE W0 override is 2 plus restore 2, the
-     * vertex-assembly packet is 3, the polygon-offset gate is 5
-     * (SEQ-of-4 + header), the stream-control gate is 8 (SEQ-of-7 + header),
-     * the fog/stipple gate is 6 (3 single writes, non-contiguous), and the
-     * rasterizer-interpolator gate is 7 + 2*rs_count (variable). */
-    BEGIN_CS((stage3_color_bo ? 27 : 18)
-             + r300_r2vb_position_only_output_dwords(ptsize_c0, ptsize_c1c)
-             + (viewport_identity_gate ? 7 : 0)
-             + r300_r2vb_vte_w0_dwords(r2vb_vte_w0_fmt)
-             + r300_r2vb_vte_restore_dwords(r2vb_vte_w0_fmt)
-             + r300_r2vb_position_only_assembly_dwords(ptsize_c1c)
-             + (polygon_offset_gate ? 5 : 0)
-             + (stream_control_gate ? 8 : 0)
-             + (fog_stipple_gate ? 6 : 0)
-             /* Rasterizer-interpolator block: GB_ENABLE(2) + RS_IP SEQ(1
-              * header + count) + RS_COUNT(3) + RS_INST SEQ(1 header + count)
-              * = 7 + 2 * count. */
-             + (rasterizer_interpolator_state
-                    ? 7 + 2 * rasterizer_interpolator_count
-                    : 0));
+    /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.
+     * The neutral re-ingest draw body under src/amd/r300/common owns the
+     * packet grammar, block order, and dword accounting; this adapter maps
+     * the Gallium facts -- the optional observe redirect, the env-gated
+     * state re-assertions, and the vertex geometry -- onto its descriptor
+     * and copies the finished dwords into the CS.  The fixed tail declares
+     * one FP32x4 stream with an explicit identity XYZW swizzle (the PSC
+     * default swizzle is not XYZW, so a prior draw's PROG_STREAM_CNTL_EXT
+     * could otherwise reinterpret the vec4), resets VAP_VTX_SIZE to that
+     * stream's four dwords (stage 1's producer set 8 for its two streams;
+     * the inherited 8 is a latent stride mismatch that makes the VAP read
+     * four dwords past each vertex, harmless for the position-only filled
+     * and line topologies but wrong), bounds the vertex-index pair to
+     * [0, num_vertices - 1] so no inherited clamp folds rows, and binds
+     * the GTT BO the CB wrote, mirroring r300_emit_vertex_arrays_swtcl.
+     * RS482 sets R300_VAP_TCL_BYPASS unconditionally (r300_state.c), so
+     * the VAP rasters these pre-transformed vertices without invoking the
+     * (absent) PVS.
+     *
+     * The VTX_SIZE reset does NOT address the POINTS re-ingest
+     * bbox-to-origin smear.  That smear appears only on a
+     * register-polluted GPU and clears on a cold power cycle; silicon
+     * measurement shows the carrier is a cold-cycle-clearable transient
+     * GPU state, not a writable register (cross-process register pollution
+     * and a power_profile clock sweep are clean negatives), and three
+     * register hypotheses -- GA_POINT_SIZE, GA_POINT_MINMAX, VAP_VTX_SIZE
+     * -- had near-zero effect on it.  The stage-1 producer's own
+     * PRIM_POINTS rasterize correctly, so the smear is specific to the
+     * re-ingest draw on a polluted GPU; POINTS is off the mesh-draw
+     * critical path. */
+    if (rasterizer_interpolator_count > 8)
+        return;
 
-    /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
-     * target and scissor to its extent so the re-ingested draw rasterizes there,
-     * leaving output_gart_bo's stage-1 vertex data intact for comparison.  The
-     * scissor follows stage3_height so the CS validator's pitch * cpp * maxy
-     * color-size bound fits stage3_color_bo (same SC_SCISSORS_BR encoding as
-     * stage 1, here for the full 2D extent rather than one row). */
+    struct r300_r2vb_reingest_redirect redirect;
+    struct r300_r2vb_reingest_rs_block rs_block;
+    struct r300_r2vb_reingest_draw_params reingest_params = {
+        .position_only_output = position_only_output,
+        .out_vtx_fmt0 = r300_r2vb_position_only_output_fmt0(),
+        .out_vtx_fmt1 = r300_r2vb_position_only_output_fmt1(),
+        .viewport_identity = viewport_identity_gate != 0,
+        .vte_w0 = r2vb_vte_w0_fmt != 0,
+        .vte_restore_word = saved_vte_control,
+        .vertex_assembly = ptsize_c1c != 0,
+        .vtx_state_cntl = r300_r2vb_position_only_vtx_state_cntl(),
+        .vsm_vtx_assm = r300_r2vb_position_only_vtx_assm(),
+        .polygon_offset_clear = polygon_offset_gate != 0,
+        .stream_control_clear = stream_control_gate != 0,
+        .fog_stipple_clear = fog_stipple_gate != 0,
+        .stream_cntl_word = R300_DATA_TYPE_FLOAT_4 | R300_LAST_VEC,
+        .stream_cntl_ext_word =
+            (R300_SWIZZLE_SELECT_X << R300_SWIZZLE_SELECT_X_SHIFT) |
+            (R300_SWIZZLE_SELECT_Y << R300_SWIZZLE_SELECT_Y_SHIFT) |
+            (R300_SWIZZLE_SELECT_Z << R300_SWIZZLE_SELECT_Z_SHIFT) |
+            (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) |
+            (0xf << R300_WRITE_ENA_SHIFT),
+        .vertex_count = num_vertices,
+        .vf_prim = reingest_vf_prim,
+        .vertex_offset_bytes = output_gart_bo_offset,
+        .vertex_bo_size_bytes = output_gart_bo->b.width0,
+        .vertex_relocation_payload =
+            r300->rws->cs_lookup_buffer(&r300->cs, output_gart_bo->buf) * 4,
+    };
     if (stage3_color_bo) {
-        OUT_CS_REG(R300_RB3D_COLOROFFSET0, 0);
-        OUT_CS_RELOC(stage3_color_bo);
-        OUT_CS_REG(R300_RB3D_COLORPITCH0, stage3_pitch | R300_COLOR_FORMAT_ARGB32323232);
-        OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
-        OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
-        OUT_CS(((stage3_width + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
-               ((stage3_height + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
+        /* The scissor follows stage3_height so the CS validator's
+         * pitch * cpp * maxy color-size bound fits stage3_color_bo (same
+         * SC_SCISSORS_BR guard-band encoding as stage 1, here for the full
+         * 2D extent rather than one row). */
+        redirect = (struct r300_r2vb_reingest_redirect){
+            .color_pitch_word =
+                stage3_pitch | R300_COLOR_FORMAT_ARGB32323232,
+            .scissor_tl_word = (1440 << R300_SCISSORS_X_SHIFT) |
+                               (1440 << R300_SCISSORS_Y_SHIFT),
+            .scissor_br_word =
+                ((stage3_width + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
+                ((stage3_height + 1440 - 1) << R300_SCISSORS_Y_SHIFT),
+            .relocation_payload =
+                r300->rws->cs_lookup_buffer(&r300->cs, stage3_color_bo->buf) * 4,
+        };
+        reingest_params.redirect = &redirect;
     }
-
-    if (position_only_output) {
-        /* Explicit position-only output vector format.  POS_PRESENT (bit 0) set;
-         * PT_SIZE_PRESENT (bit 16) and every COLOR_*_PRESENT bit cleared in 0x2090;
-         * VAP_OUTPUT_VTX_FMT_1 (0x2094) cleared so no texcoord components either.
-         * Same SEQ-of-2 form r300_emit_vap_output_state uses. */
-        OUT_CS_REG_SEQ(R300_VAP_OUTPUT_VTX_FMT_0, 2);
-        OUT_CS(r300_r2vb_position_only_output_fmt0());
-        OUT_CS(r300_r2vb_position_only_output_fmt1());
-    }
-
-    if (viewport_identity_gate) {
-        /* The direct-VB R2VB re-ingest path programs an identity viewport:
-         * scale = 1.0 and offset = 0.0 on X, Y, and Z through
-         * SE_VPORT_XSCALE..SE_VPORT_ZOFFSET (0x1d98..0x1dac). */
-        OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6);
-        OUT_CS_32F(1.0f);
-        OUT_CS_32F(0.0f);
-        OUT_CS_32F(1.0f);
-        OUT_CS_32F(0.0f);
-        OUT_CS_32F(1.0f);
-        OUT_CS_32F(0.0f);
-    }
-
-    if (r2vb_vte_w0_fmt) {
-        /* Re-write VAP_VTE_CNTL with W0_FMT in addition to XY_FMT and Z_FMT
-         * so the VAP treats W as already in window space and does NOT apply a
-         * perspective divide on the re-ingest path. */
-        OUT_CS_REG(R300_VAP_VTE_CNTL,
-                   R300_VTX_XY_FMT | R300_VTX_Z_FMT | R300_VTX_W0_FMT);
-    }
-
-    if (ptsize_c1c) {
-        /* Clean VAP_VTX_STATE_CNTL + VAP_VSM_VTX_ASSM for a position-only
-         * single-stream re-ingest.  Same SEQ-of-2 form as r300_emit.c:903. */
-        OUT_CS_REG_SEQ(R300_VAP_VTX_STATE_CNTL, 2);
-        OUT_CS(r300_r2vb_position_only_vtx_state_cntl());
-        OUT_CS(r300_r2vb_position_only_vtx_assm());
-    }
-
-    if (polygon_offset_gate) {
-        /* Polygon-offset state: SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET
-         * cleared. SEQ-of-4
-         * starting at 0x42A4. */
-        OUT_CS_REG_SEQ(R300_SU_POLY_OFFSET_FRONT_SCALE, 4);
-        OUT_CS(0);
-        OUT_CS(0);
-        OUT_CS(0);
-        OUT_CS(0);
-    }
-
-    if (stream_control_gate) {
-        /* Stream-control state: VAP_PROG_STREAM_CNTL_1..7 cleared.  SEQ-of-7
-         * starting at 0x2154. */
-        OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_1, 7);
-        OUT_CS(0);
-        OUT_CS(0);
-        OUT_CS(0);
-        OUT_CS(0);
-        OUT_CS(0);
-        OUT_CS(0);
-        OUT_CS(0);
-    }
-
-    if (fog_stipple_gate) {
-        /* Fog/stipple state: GA_TRIANGLE_STIPPLE + GA_FOG_SCALE +
-         * GA_FOG_OFFSET cleared.
-         * Three separate writes because the registers are not contiguous. */
-        OUT_CS_REG(R300_GA_TRIANGLE_STIPPLE, 0);
-        OUT_CS_REG(R300_GA_FOG_SCALE, 0);
-        OUT_CS_REG(R300_GA_FOG_OFFSET, 0);
-    }
-
     if (rasterizer_interpolator_state) {
-        /* Rasterizer-interpolator state: re-assert GB_ENABLE +
-         * RS_IP/RS_COUNT/RS_INST from the derived rs_block_state, mirroring
-         * r300_emit_rs_block_state's rs-specific tail.
-         * RS482/RS480 is not r500, so the R300_RS_* register set applies.  The
-         * VAP_OUTPUT_VTX_FMT (position-output-format gate) and
-         * VAP_VTX_STATE_CNTL/VSM_VTX_ASSM (vertex-assembly gate) subsets of the
-         * atom are deliberately NOT re-emitted here to keep the state subsets
-         * non-overlapping. */
-        OUT_CS_REG_SEQ(R300_GB_ENABLE, 1);
-        OUT_CS(rasterizer_interpolator_state->gb_enable);
-        OUT_CS_REG_SEQ(R300_RS_IP_0, rasterizer_interpolator_count);
-        OUT_CS_TABLE(rasterizer_interpolator_state->ip,
-                     rasterizer_interpolator_count);
-        OUT_CS_REG_SEQ(R300_RS_COUNT, 2);
-        OUT_CS(rasterizer_interpolator_state->count);
-        OUT_CS(rasterizer_interpolator_state->inst_count);
-        OUT_CS_REG_SEQ(R300_RS_INST_0, rasterizer_interpolator_count);
-        OUT_CS_TABLE(rasterizer_interpolator_state->inst,
-                     rasterizer_interpolator_count);
+        rs_block = (struct r300_r2vb_reingest_rs_block){
+            .gb_enable = rasterizer_interpolator_state->gb_enable,
+            .count_word = rasterizer_interpolator_state->count,
+            .inst_count_word = rasterizer_interpolator_state->inst_count,
+            .table_len = rasterizer_interpolator_count,
+        };
+        memcpy(rs_block.ip, rasterizer_interpolator_state->ip,
+               rasterizer_interpolator_count * sizeof(uint32_t));
+        memcpy(rs_block.inst, rasterizer_interpolator_state->inst,
+               rasterizer_interpolator_count * sizeof(uint32_t));
+        reingest_params.rs = &rs_block;
     }
 
-    /* Stage 3 -- re-ingest the GTT buffer as the vertex array and draw it.
-     *
-     * Declare one FP32x4 input stream with an explicit identity XYZW swizzle and
-     * all-component write enable (the PSC default swizzle is not XYZW, so a prior
-     * draw's PROG_STREAM_CNTL_EXT could otherwise reinterpret the vec4).  Then
-     * bind the same GTT BO the CB wrote, mirroring r300_emit_vertex_arrays_swtcl
-     * exactly: PKT3 COUNT=3, (num_arrays | force-prefetch), the format word
-     * size|(stride<<8) with size and stride in DWORDS (4 for FP32x4), the offset,
-     * the reserved zero dword, then the NOP-form relocation.  RS482 sets
-     * R300_VAP_TCL_BYPASS unconditionally (r300_state.c), so the VAP rasters
-     * these pre-transformed vertices without invoking the (absent) PVS. */
-    OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_0, 1);
-    OUT_CS(R300_DATA_TYPE_FLOAT_4 | R300_LAST_VEC);
-    OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_EXT_0, 1);
-    OUT_CS((R300_SWIZZLE_SELECT_X << R300_SWIZZLE_SELECT_X_SHIFT) |
-           (R300_SWIZZLE_SELECT_Y << R300_SWIZZLE_SELECT_Y_SHIFT) |
-           (R300_SWIZZLE_SELECT_Z << R300_SWIZZLE_SELECT_Z_SHIFT) |
-           (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) | (0xf << R300_WRITE_ENA_SHIFT));
-    /* Reset the output vertex size to one FP32x4 stream.  Stage 1's producer set
-     * VAP_VTX_SIZE = 8 for its two streams (position + attribute); the re-ingest
-     * declares a single FP32x4 stream, so the correct size is 4.  The inherited 8
-     * is a latent stride mismatch -- it makes the VAP treat each vertex as eight
-     * dwords (four real position dwords plus four read past the vertex).  The
-     * filled and line topologies consume only position (the first four dwords) and
-     * were pixel-exact even with the stale 8, so this is correctness hygiene that
-     * does not change their footprint.
-     *
-     * It does NOT address the POINTS re-ingest bbox-to-origin smear.  That
-     * smear is a Heisenbug: it appears only on a register-polluted GPU and
-     * clears on a cold power cycle, and silicon measurement shows the carrier
-     * is a cold-cycle-clearable transient GPU state, not a writable register
-     * (cross-process register pollution and a power_profile clock sweep are
-     * clean negatives, and the only remaining induction vector wedges the
-     * northbridge).  Three register hypotheses had near-zero effect on it --
-     * GA_POINT_SIZE, GA_POINT_MINMAX, and this VAP_VTX_SIZE -- consistent with
-     * the carrier not being a register.  The stage-1 producer's own PRIM_POINTS
-     * rasterize correctly, so the smear is specific to the re-ingest draw on a
-     * polluted GPU; POINTS is off the mesh-draw critical path. */
-    OUT_CS_REG(R300_VAP_VTX_SIZE, 4);
-    /* Re-assert the vertex-index bound for the re-ingest draw.  VAP_VF_MAX_VTX_
-     * INDX clamps every fetched index; a stale lower bound (from an inherited
-     * draw or a smaller producer) would fold high-index vertices onto a low one
-     * and rasterize a degenerate set.  The re-ingest draws all num_vertices GTT
-     * rows, so bound the pair to [0, num_vertices - 1]; the adjacent
-     * VAP_VF_MIN_VTX_INDX write keeps an inherited nonzero minimum from
-     * clamping the low rows. */
-    OUT_CS_REG_SEQ(R300_VAP_VF_MAX_VTX_INDX, 2);
-    OUT_CS(num_vertices - 1);
-    OUT_CS(0);
-    OUT_CS_PKT3(R300_PACKET3_3D_LOAD_VBPNTR, 3);
-    OUT_CS(1 | R300_VC_FORCE_PREFETCH);
-    OUT_CS(4 | (4 << 8));
-    OUT_CS(output_gart_bo_offset);
-    OUT_CS(0);
-    OUT_CS(0xc0001000); /* PKT3_NOP -- the relocation form LOAD_VBPNTR expects */
-    OUT_CS(r300->rws->cs_lookup_buffer(&r300->cs, output_gart_bo->buf) * 4);
-    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
-    OUT_CS((num_vertices << R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) | reingest_vf_prim |
-           R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST);
+    /* Every gate on with the eight-entry RS tables is 86 dwords. */
+    uint32_t reingest_body[86];
+    struct r300_pm4_builder reingest_builder;
+    struct r300_r2vb_reingest_draw_relocs reingest_relocs;
+    r300_pm4_builder_init(&reingest_builder, reingest_body,
+                          ARRAY_SIZE(reingest_body));
+    if (r300_r2vb_reingest_draw_emit(&reingest_builder, &reingest_params,
+                                     &reingest_relocs) != 0)
+        return;
+    uint32_t reingest_dwords = 0;
+    if (r300_pm4_builder_finish(&reingest_builder, &reingest_dwords) != 0 ||
+        reingest_dwords != r300_r2vb_reingest_draw_dwords(&reingest_params))
+        return;
 
-    if (r2vb_vte_w0_fmt) {
-        /* Restore the application VTE selection after the re-ingest draw.  On a
-         * live submit, this same-IB packet leaves the hardware register at the
-         * application's value before subsequent draws.  Capture mode uses
-         * RADEON_FLUSH_NOOP and never reaches DRM_RADEON_CS. */
-        OUT_CS_REG(R300_VAP_VTE_CNTL, saved_vte_control);
-    }
-
+    BEGIN_CS((int)reingest_dwords);
+    OUT_CS_TABLE(reingest_body, reingest_dwords);
     END_CS;
 }
 

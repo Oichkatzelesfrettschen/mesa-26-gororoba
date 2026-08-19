@@ -7,6 +7,7 @@ files_r300 = files(
   # dependency points from Gallium into src/amd/r300/common alone.
   '../../../amd/r300/common/r300_pm4_builder.c',
   '../../../amd/r300/common/r300_r2vb_fetch_pass.c',
+  '../../../amd/r300/common/r300_r2vb_reingest_draw.c',
   '../../../amd/r300/common/r300_r2vb_target_state.c',
   '../../../amd/r300/common/r300_carrier_policy.c',
   '../../../amd/r300/common/r300_numeric_domain.c',
