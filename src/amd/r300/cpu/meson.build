@@ -86,4 +86,21 @@ if with_tests
     ),
     suite : ['r300'],
   )
+
+  # Differential equivalence of the SSE2 job kernel against the scalar
+  # authority: randomized jobs over hostile bit patterns byte-identical,
+  # numeric-policy witnesses reproduced, refusal errnos shared.  The
+  # test self-skips where the build target lacks SSE2.
+  test(
+    'r300-cpu-vertex-job-sse2',
+    executable(
+      'r300_cpu_vertex_job_sse2_test',
+      files('tests/r300_cpu_vertex_job_sse2_test.c'),
+      include_directories : [inc_src, inc_include,
+                             include_directories('.')],
+      link_with : [libr300_cpu],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
 endif

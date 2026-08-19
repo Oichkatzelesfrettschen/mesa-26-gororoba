@@ -87,10 +87,13 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
    return 0;
 }
 
-int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
-                                const struct r300_cpu_vertex_stream *stream,
-                                uint32_t first_vertex, uint32_t vertex_count,
-                                uint32_t *carrier, uint32_t carrier_dwords)
+/* The shared execution guard: every refusal both entry points share,
+ * proven before either kernel writes a carrier byte.
+ */
+static int execute_guard(const struct r300_vertex_job *job,
+                         const struct r300_cpu_vertex_stream *stream,
+                         uint32_t first_vertex, uint32_t vertex_count,
+                         const uint32_t *carrier, uint32_t carrier_dwords)
 {
    int error = r300_cpu_vertex_job_validate(job);
    if (error)
@@ -121,6 +124,18 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
       carrier_lo + (uintptr_t)carrier_dwords * sizeof(uint32_t);
    if (carrier_lo < stream_hi && stream_lo < carrier_hi)
       return -EINVAL;
+   return 0;
+}
+
+int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
+                                const struct r300_cpu_vertex_stream *stream,
+                                uint32_t first_vertex, uint32_t vertex_count,
+                                uint32_t *carrier, uint32_t carrier_dwords)
+{
+   int error = execute_guard(job, stream, first_vertex, vertex_count,
+                             carrier, carrier_dwords);
+   if (error)
+      return error;
 
    for (uint32_t v = 0; v < vertex_count; v++) {
       uint32_t temps[R300_VERTEX_JOB_MAX_TEMPS][4];
@@ -191,3 +206,104 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
    }
    return 0;
 }
+
+#ifdef __SSE2__
+
+#include <emmintrin.h>
+
+int r300_cpu_vertex_job_execute_sse2(
+   const struct r300_vertex_job *job,
+   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
+{
+   int error = execute_guard(job, stream, first_vertex, vertex_count,
+                             carrier, carrier_dwords);
+   if (error)
+      return error;
+
+   for (uint32_t v = 0; v < vertex_count; v++) {
+      /* Registers stay 32-bit patterns; the unaligned integer loads and
+       * stores move NaN payloads, denormals, and signed zeros verbatim,
+       * and each packed operator rounds per lane exactly as the scalar
+       * interpreter's per-lane host binary32 operation does. */
+      __m128i temps[R300_VERTEX_JOB_MAX_TEMPS];
+      uint32_t input[4];
+      error = r300_cpu_vertex_gather(job->input_format_id, stream,
+                                     first_vertex + v, 1, input, 4);
+      if (error)
+         return error;
+
+      for (uint32_t i = 0; i < job->instruction_count; i++) {
+         const struct r300_vertex_job_instruction *inst =
+            &job->instructions[i];
+         switch (inst->opcode) {
+         case R300_VERTEX_JOB_OP_LOAD_INPUT:
+            temps[inst->dst] = _mm_loadu_si128((const __m128i *)input);
+            break;
+         case R300_VERTEX_JOB_OP_LOAD_CONSTANT:
+            temps[inst->dst] = _mm_loadu_si128(
+               (const __m128i *)job->constants[inst->src0]);
+            break;
+         case R300_VERTEX_JOB_OP_MOV:
+            temps[inst->dst] = temps[inst->src0];
+            break;
+         case R300_VERTEX_JOB_OP_FADD:
+            temps[inst->dst] = _mm_castps_si128(
+               _mm_add_ps(_mm_castsi128_ps(temps[inst->src0]),
+                          _mm_castsi128_ps(temps[inst->src1])));
+            break;
+         case R300_VERTEX_JOB_OP_FMUL:
+            temps[inst->dst] = _mm_castps_si128(
+               _mm_mul_ps(_mm_castsi128_ps(temps[inst->src0]),
+                          _mm_castsi128_ps(temps[inst->src1])));
+            break;
+         case R300_VERTEX_JOB_OP_FMAD:
+            /* mulps then addps: the product commits to binary32 before
+             * the add, the same two roundings the scalar policy pins. */
+            temps[inst->dst] = _mm_castps_si128(_mm_add_ps(
+               _mm_mul_ps(_mm_castsi128_ps(temps[inst->src0]),
+                          _mm_castsi128_ps(temps[inst->src1])),
+               _mm_castsi128_ps(temps[inst->src2])));
+            break;
+         case R300_VERTEX_JOB_OP_DP4: {
+            /* Packed products, then a component-order scalar sum seeded
+             * by lane 0's product, matching the scalar interpreter's
+             * signed-zero-preserving accumulation exactly. */
+            const __m128 products =
+               _mm_mul_ps(_mm_castsi128_ps(temps[inst->src0]),
+                          _mm_castsi128_ps(temps[inst->src1]));
+            float lanes[4];
+            _mm_storeu_ps(lanes, products);
+            float sum = lanes[0];
+            for (uint32_t lane = 1; lane < 4; lane++)
+               sum += lanes[lane];
+            temps[inst->dst] = _mm_castps_si128(_mm_set1_ps(sum));
+            break;
+         }
+         case R300_VERTEX_JOB_OP_STORE_POSITION:
+            _mm_storeu_si128((__m128i *)&carrier[(uint64_t)v * 4],
+                             temps[inst->src0]);
+            break;
+         }
+      }
+   }
+   return 0;
+}
+
+#else
+
+int r300_cpu_vertex_job_execute_sse2(
+   const struct r300_vertex_job *job,
+   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
+{
+   (void)job;
+   (void)stream;
+   (void)first_vertex;
+   (void)vertex_count;
+   (void)carrier;
+   (void)carrier_dwords;
+   return -ENOSYS;
+}
+
+#endif /* __SSE2__ */
