@@ -51,6 +51,8 @@ files_r300_compiler = files(
   'r500_fragprog_emit.c',
   'r500_fragprog.h',
   'r300_nir.c',
+  'r300_r2vb_nir.c',
+  'r300_r2vb_nir.h',
   'r300_nir_fold_periodic_loops.c',
   'r300_nir.h',
   'r300_nir_lower_bitwise_to_arith.c',
