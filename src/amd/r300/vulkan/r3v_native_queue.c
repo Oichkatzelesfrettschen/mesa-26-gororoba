@@ -647,6 +647,256 @@ r3v_native_submission_trace_emit(
    return device->submission_trace.emit(device->submission_trace.ctx, event);
 }
 
+void
+r3v_native_prepared_release(struct r3v_native_device *device)
+{
+   struct r3v_native_prepared_submission *prepared = &device->prepared;
+   if (!prepared->valid)
+      return;
+   radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
+   radeon_drm_vk_reloc_list_finish(&prepared->relocs);
+   free(prepared->reference_indices);
+   memset(prepared, 0, sizeof(*prepared));
+}
+
+VkResult
+r3v_native_queue_prepare_submission(VkDevice _device,
+                                    VkCommandBuffer commandBuffer)
+{
+   VK_FROM_HANDLE(r3v_native_device, device, _device);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   struct r3v_native_prepared_submission *prepared = &device->prepared;
+
+   if (prepared->valid) {
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: one submission prepares at a time; a "
+                       "prepared submission is already pending");
+   }
+   if (cmd_buffer->vk.record_result != VK_SUCCESS) {
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: the command buffer carries recording "
+                       "error %d", cmd_buffer->vk.record_result);
+   }
+   if (cmd_buffer->ib_size_dwords == 0 ||
+       cmd_buffer->deferred_draw.pending ||
+       cmd_buffer->deferred_copy_count != 0) {
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: prepare covers transport-only command "
+                       "buffers; deferred host work executes submission-time "
+                       "semantics the prepare would hoist");
+   }
+   if (!device->submit_hazard_accepted || device->manifest_dir == NULL) {
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: prepare requires the open hazard gate "
+                       "and R3V_NATIVE_MANIFEST_DIR");
+   }
+
+   radeon_drm_vk_reloc_list_init(&prepared->relocs);
+   prepared->reference_indices = NULL;
+   if (cmd_buffer->reference_count != 0) {
+      prepared->reference_indices = calloc(cmd_buffer->reference_count,
+                                           sizeof(uint32_t));
+      if (prepared->reference_indices == NULL)
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   for (uint32_t r = 0; r < cmd_buffer->reference_count; r++) {
+      const struct r3v_native_bo_reference *reference =
+         &cmd_buffer->references[r];
+      if (radeon_drm_vk_reloc_list_add(&prepared->relocs, reference->handle,
+                                       reference->read_domains,
+                                       reference->write_domain, 0,
+                                       &prepared->reference_indices[r]) !=
+          0) {
+         free(prepared->reference_indices);
+         radeon_drm_vk_reloc_list_finish(&prepared->relocs);
+         memset(prepared, 0, sizeof(*prepared));
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+   }
+
+   char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
+   char kernel_release[128];
+   char module_srcversion[128];
+   struct r3v_native_arming_facts facts;
+   r300_triangle_ib_digest_hex(cmd_buffer->ib, cmd_buffer->ib_size_dwords,
+                               ib_digest);
+   r3v_native_arming_collect_from(
+      device->arming_provider != NULL ? device->arming_provider
+                                      : r3v_native_arming_host_provider(),
+      &facts, device->pdevice->pci_vendor_id,
+      device->pdevice->pci_device_id, cmd_buffer->cell_kind, ib_digest,
+      device->manifest_dir, kernel_release, sizeof(kernel_release),
+      module_srcversion, sizeof(module_srcversion));
+   facts.nonmaximum_extent = cell_geometry_unfrozen(cmd_buffer);
+   facts.serial_submissions_consumed = device->serial_submissions_consumed;
+   facts.burst_recorded_draws = cmd_buffer->burst_draws;
+
+   const bool serial_kind =
+      cmd_buffer->cell_kind == R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
+   const bool serial_continuation =
+      serial_kind && device->serial_submissions_consumed > 0;
+   VkResult result = VK_SUCCESS;
+   if (facts.attempt_token_present && !serial_continuation) {
+      result = vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                         "r3v-native: prepare refused before evidence "
+                         "retention: %s",
+                         r3v_native_arming_verdict_name(
+                            R3V_NATIVE_ARMING_ALREADY_ATTEMPTED));
+      goto prepare_fail;
+   }
+
+   if (!(serial_kind && device->serial_submissions_consumed > 0) &&
+       r3v_native_queue_write_manifest(device, cmd_buffer->ib,
+                                       cmd_buffer->ib_size_dwords,
+                                       &prepared->relocs) != 0) {
+      result = vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                         "r3v-native: semantic-cell evidence retention "
+                         "failed; refusing before any ioctl");
+      goto prepare_fail;
+   }
+
+   if (radeon_drm_vk_completion_init(&device->drm, &prepared->completion) !=
+       0) {
+      result = vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      goto prepare_fail;
+   }
+   if (radeon_drm_vk_completion_reference(&prepared->completion,
+                                          &prepared->relocs,
+                                          &prepared->completion_index) != 0) {
+      radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
+      result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      goto prepare_fail;
+   }
+   /* The one CS build: the argument block lives in the device-resident
+    * prepared struct, so its self-referential chunk pointers stay valid
+    * until the commit's ioctl consumes them.
+    */
+   radeon_drm_vk_cs_build(&prepared->cs, cmd_buffer->ib,
+                          cmd_buffer->ib_size_dwords, &prepared->relocs, 0,
+                          true);
+
+   if (r3v_native_queue_write_submit_object(
+          device, cmd_buffer->ib, cmd_buffer->ib_size_dwords,
+          &prepared->relocs, &prepared->cs, cmd_buffer->references,
+          prepared->reference_indices, cmd_buffer->reference_count,
+          prepared->completion_index, prepared->completion.bo.handle,
+          prepared->completion.bo.size, kernel_release, module_srcversion,
+          serial_kind ? (int)device->serial_submissions_consumed : -1) !=
+       0) {
+      radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
+      result = vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                         "r3v-native: submit-object evidence retention "
+                         "failed; refusing before the ioctl");
+      goto prepare_fail;
+   }
+
+   enum r3v_native_arming_verdict arming =
+      r3v_native_arming_evaluate(&facts);
+   if (arming != R3V_NATIVE_ARMING_ARMED) {
+      radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
+      result = vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                         "r3v-native: prepare refused: %s",
+                         r3v_native_arming_verdict_name(arming));
+      goto prepare_fail;
+   }
+   /* Authorization is consumed at prepare: the token lands and the
+    * serial bound counts here, so a prepared submission that never
+    * commits still spends its admission, the same fail-closed accounting
+    * the inline path applies to a failed ioctl.
+    */
+   if (!facts.attempt_token_present &&
+       r3v_native_arming_disarm(device->manifest_dir, ib_digest) != 0) {
+      radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
+      result = vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                         "r3v-native: one-shot disarm failed; refusing "
+                         "before the ioctl");
+      goto prepare_fail;
+   }
+   if (serial_kind)
+      device->serial_submissions_consumed++;
+
+   prepared->cmd_buffer = cmd_buffer;
+   prepared->valid = true;
+   return VK_SUCCESS;
+
+prepare_fail:
+   free(prepared->reference_indices);
+   radeon_drm_vk_reloc_list_finish(&prepared->relocs);
+   memset(prepared, 0, sizeof(*prepared));
+   return result;
+}
+
+/* Commits the prepared submission: cache publication over the live
+ * mappings, the ioctl, and the bounded completion wait -- the transport
+ * tail alone, so a sampler window opened after prepare measures the
+ * kernel submission instead of evidence journaling.  Releases the
+ * prepared state on every path.
+ */
+static VkResult
+r3v_native_queue_commit_prepared(struct r3v_native_device *device,
+                                 struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   struct r3v_native_prepared_submission *prepared = &device->prepared;
+
+   for (uint32_t r = 0; r < cmd_buffer->reference_count; r++) {
+      const struct r3v_native_bo_reference *reference =
+         &cmd_buffer->references[r];
+      if (reference->memory != NULL && reference->memory->map != NULL) {
+         radeon_drm_vk_bo_cache_sync(&device->drm, reference->memory->map,
+                                     reference->memory->bo.size);
+      }
+   }
+
+   int trace_result = r3v_native_submission_trace_emit(
+      device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_ENTER);
+   if (trace_result != 0) {
+      r3v_native_prepared_release(device);
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: transport trace refused before the "
+                       "submission ioctl");
+   }
+   int result = radeon_drm_vk_cs_submit(&device->drm, &prepared->cs);
+   if (r3v_native_submission_trace_emit(
+          device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
+      trace_result = -EIO;
+   const bool ioctl_accepted = result == 0;
+   if (ioctl_accepted) {
+      device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
+      if (r3v_native_submission_trace_emit(
+             device, R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_BEGIN) != 0)
+         trace_result = -EIO;
+      result = radeon_drm_vk_completion_await(&device->drm,
+                                              &prepared->completion);
+      if (r3v_native_submission_trace_emit(
+             device,
+             R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_RETURN) != 0)
+         trace_result = -EIO;
+   }
+   if (result == 0 && trace_result != 0)
+      result = trace_result;
+   if (result == 0) {
+      for (uint32_t r = 0; r < cmd_buffer->reference_count; r++) {
+         const struct r3v_native_bo_reference *reference =
+            &cmd_buffer->references[r];
+         if (reference->memory != NULL && reference->memory->map != NULL) {
+            radeon_drm_vk_bo_cache_sync(&device->drm, reference->memory->map,
+                                        reference->memory->bo.size);
+         }
+      }
+   }
+   r3v_native_prepared_release(device);
+   if (result != 0) {
+      device->queue_status =
+         r3v_native_queue_status_from_transport(ioctl_accepted, false);
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: submission or completion wait failed: "
+                       "%d", result);
+   }
+   device->queue_status =
+      r3v_native_queue_status_from_transport(ioctl_accepted, true);
+   return VK_SUCCESS;
+}
+
 VkResult
 r3v_native_queue_submit(struct vk_queue *queue_base,
                         struct vk_queue_submit *submit)
@@ -721,6 +971,29 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       struct r3v_native_cmd_buffer *cmd_buffer = container_of(
          submit->command_buffers[i], struct r3v_native_cmd_buffer, vk);
+
+      /* A prepared submission commits through its transport tail alone.
+       * The prepared state binds one command buffer submitted by itself;
+       * any other submit shape releases the state and refuses, because
+       * the prepared evidence and consumed authorization describe
+       * exactly that one transport.
+       */
+      if (device->prepared.valid) {
+         if (device->prepared.cmd_buffer != cmd_buffer ||
+             submit->command_buffer_count != 1) {
+            r3v_native_prepared_release(device);
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "r3v-native: the prepared submission is bound "
+                             "to a different submit shape; prepared state "
+                             "released");
+         }
+         VkResult committed =
+            r3v_native_queue_commit_prepared(device, cmd_buffer);
+         if (committed != VK_SUCCESS)
+            return committed;
+         submit_has_executable_ib = true;
+         continue;
+      }
 
       /* Recorded transfer copies execute here, per submission, through
        * host mappings -- Vulkan's execution-time ordering, the same

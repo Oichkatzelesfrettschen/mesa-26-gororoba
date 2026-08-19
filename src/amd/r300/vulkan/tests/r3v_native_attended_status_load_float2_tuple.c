@@ -789,6 +789,26 @@ main(int argc, char **argv)
     * ladder.  The machine stops the run at its first failure and no
     * resubmission follows an abort.
     */
+   /* The burst prepares its transport before the capture window opens:
+    * relocation list, completion reference, the single CS build, the
+    * retained evidence, and the arming disarm all land here, so the
+    * submission issued after ENTER_READ carries only cache publication,
+    * the DRM_RADEON_CS ioctl, and the completion wait.  The evidence
+    * fsync ladder is disk-bound and jitters tens of milliseconds, which
+    * defeats fixed-delay census placement when it runs inside the
+    * window.  The serial cell resubmits per iteration and keeps the
+    * inline submit path.
+    */
+   if (burst_draws != 0 &&
+       run.machine.phase == R3V_STATUS_LOAD_RUNNING) {
+      stage("prepare transport");
+      VkResult prep =
+         r3v_native_queue_prepare_submission(run.device, run.cmd);
+      if (prep != VK_SUCCESS)
+         r3v_status_load_machine_fault(&run.machine,
+                                       "transport preparation refused");
+   }
+
    /* The burst's single window must overlap the census capture, so the
     * submission waits for the sampler's ENTER_READ: the kernel is
     * recording from that message on, and the queue call issued after it
