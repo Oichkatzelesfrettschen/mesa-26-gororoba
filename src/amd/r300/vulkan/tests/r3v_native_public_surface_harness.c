@@ -841,11 +841,13 @@ main(void)
     */
    assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
    assert(setenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+   r3v_native_device_refresh_delivery_gates(constant_device);
    assert(r3v_native_cmd_buffer_execute_deferred_draw(
              constant_device, native_constant) ==
           VK_ERROR_INITIALIZATION_FAILED);
    assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
    assert(unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL") == 0);
+   r3v_native_device_refresh_delivery_gates(constant_device);
 
    assert(r3v_native_cmd_buffer_execute_deferred_draw(
              constant_device, native_constant) == VK_SUCCESS);
@@ -1997,6 +1999,7 @@ main(void)
     */
    {
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_cmd) == VK_SUCCESS);
       assert(radeon_drm_vk_bo_map(&native_device->drm,
@@ -2012,6 +2015,7 @@ main(void)
       memcpy(map, positive_triangle, sizeof(positive_triangle));
       vkUnmapMemory(device, vertex_memory);
       assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_cmd) == VK_SUCCESS);
 
@@ -2029,9 +2033,11 @@ main(void)
        * value both keep the default delivery.
        */
       assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "0", 1) == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_cmd) == VK_SUCCESS);
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_cmd) == VK_SUCCESS);
 
@@ -2052,6 +2058,7 @@ main(void)
     */
    {
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
 
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
@@ -2075,9 +2082,11 @@ main(void)
       memcpy(map, positive_xyz, sizeof(positive_xyz));
       vkUnmapMemory(device, vertex_memory);
       assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_xyz) == VK_SUCCESS);
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
 
       float xy[6];
       for (unsigned v = 0; v < 3; v++)
@@ -2125,6 +2134,7 @@ main(void)
       memcpy(map, positive_xy, sizeof(positive_xy));
       vkUnmapMemory(device, vertex_memory);
       assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_xy) == VK_SUCCESS);
 
@@ -2144,6 +2154,7 @@ main(void)
 
       /* Replay the same F32_3 bytes before staging the F32_2 payload. */
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_xyz) == VK_SUCCESS);
       float expected_xyz_cpu[12];
@@ -2164,6 +2175,7 @@ main(void)
                              &native_xyz->owned_carrier->bo, carrier_map);
 
       assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
 
       float xy_narrow[6];
       memcpy(xy_narrow, positive_xy, sizeof(xy_narrow));
@@ -2175,6 +2187,7 @@ main(void)
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_xy) != VK_SUCCESS);
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
+      r3v_native_device_refresh_delivery_gates(native_device);
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_xy) == VK_SUCCESS);
 

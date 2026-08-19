@@ -40,6 +40,25 @@ r3v_native_manifest_dir(void)
    return value != NULL && value[0] != '\0' ? value : NULL;
 }
 
+/* An R2VB gate opens on the exact value "1" alone; the cached literal
+ * keeps the decision independent of later environment mutation.
+ */
+static const char *
+exact_gate(const char *name)
+{
+   const char *value = getenv(name);
+   return value != NULL && strcmp(value, "1") == 0 ? "1" : NULL;
+}
+
+void
+r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
+{
+   device->r2vb_delivery_gate =
+      exact_gate("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
+   device->r2vb_gpu_delivery_gate =
+      exact_gate("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
+}
+
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 r3v_GetDeviceProcAddr(VkDevice _device, const char *pName)
 {
@@ -125,6 +144,7 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
 
    device->submit_hazard_accepted = r3v_native_submit_hazard_accepted();
    device->manifest_dir = r3v_native_manifest_dir();
+   r3v_native_device_refresh_delivery_gates(device);
 
    *pDevice = r3v_native_device_to_handle(device);
    return VK_SUCCESS;
