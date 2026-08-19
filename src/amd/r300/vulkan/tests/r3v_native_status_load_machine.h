@@ -36,6 +36,7 @@ extern "C" {
  * boundaries separately.  Version 1 retained its original bytes and its
  * offline reader keeps their wrapper interpretation.
  */
+#define R3V_STATUS_LOAD_PROTOCOL_MAGIC "0x52533445"
 #define R3V_STATUS_LOAD_PROTOCOL_VERSION 2u
 
 /* One formatted message line: eight short fields plus the newline stays

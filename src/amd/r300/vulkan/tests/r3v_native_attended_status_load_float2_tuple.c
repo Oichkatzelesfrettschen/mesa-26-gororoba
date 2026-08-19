@@ -204,14 +204,29 @@ sampler_pump(struct serial_run *run, int timeout_ms)
       char role[32];
       char state[32];
       char timestamp[32];
+      char protocol_magic[16];
+      char protocol_version[16];
       char nonce[R3V_STATUS_LOAD_NONCE_LENGTH + 2];
       if (!message_field(datagram, "sender_role", role, sizeof(role)) ||
           !message_field(datagram, "state", state, sizeof(state)) ||
           !message_field(datagram, "timestamp_ns", timestamp,
                          sizeof(timestamp)) ||
+          !message_field(datagram, "protocol_magic", protocol_magic,
+                         sizeof(protocol_magic)) ||
+          !message_field(datagram, "protocol_version", protocol_version,
+                         sizeof(protocol_version)) ||
           !message_field(datagram, "run_nonce", nonce, sizeof(nonce))) {
          r3v_status_load_machine_fault(&run->machine,
                                        "sampler message is malformed");
+         return;
+      }
+      char expected_protocol_version[16];
+      snprintf(expected_protocol_version, sizeof(expected_protocol_version),
+               "%u", R3V_STATUS_LOAD_PROTOCOL_VERSION);
+      if (strcmp(protocol_magic, R3V_STATUS_LOAD_PROTOCOL_MAGIC) != 0 ||
+          strcmp(protocol_version, expected_protocol_version) != 0) {
+         r3v_status_load_machine_fault(&run->machine,
+                                       "sampler protocol identity differs");
          return;
       }
       if (strcmp(role, "sampler") != 0) {

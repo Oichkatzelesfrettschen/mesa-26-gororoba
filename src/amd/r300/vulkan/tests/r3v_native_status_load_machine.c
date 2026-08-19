@@ -24,11 +24,12 @@ r3v_status_load_format_message(char *buffer, size_t capacity,
       return -1;
    int length = snprintf(
       buffer, capacity,
-      "{\"protocol_magic\": \"0x52533445\", \"protocol_version\": %u, "
+      "{\"protocol_magic\": \"%s\", \"protocol_version\": %u, "
       "\"run_nonce\": \"%s\", \"submission_index\": %" PRIu32 ", "
       "\"message_sequence\": %" PRIu64 ", \"timestamp_ns\": \"%" PRIu64
       "\", \"sender_role\": \"%s\", \"state\": \"%s\"}\n",
-      R3V_STATUS_LOAD_PROTOCOL_VERSION, nonce, submission_index,
+      R3V_STATUS_LOAD_PROTOCOL_MAGIC, R3V_STATUS_LOAD_PROTOCOL_VERSION, nonce,
+      submission_index,
       message_sequence, timestamp_ns, sender_role, state);
    if (length <= 0 || (size_t)length >= capacity)
       return -1;

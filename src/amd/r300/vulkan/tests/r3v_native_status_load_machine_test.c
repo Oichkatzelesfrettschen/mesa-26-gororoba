@@ -371,6 +371,9 @@ main(int argc, char **argv)
       uint32_t submitter_lines = 0, sampler_lines = 0;
       for (uint32_t n = 0; n < fake.line_count; n++) {
          char state[64];
+         if (strstr(fake.lines[n],
+                    "\"protocol_magic\": \"0x52533445\",") == NULL)
+            fail("happy_path", "message did not carry protocol magic");
          if (strstr(fake.lines[n], "\"protocol_version\": 2,") == NULL)
             fail("happy_path", "message did not carry protocol version 2");
          if (line_state(&fake, n, "submitter", state, sizeof(state)) != NULL)
