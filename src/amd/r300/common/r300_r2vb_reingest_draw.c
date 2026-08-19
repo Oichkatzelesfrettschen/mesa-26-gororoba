@@ -23,6 +23,10 @@
 uint32_t r300_r2vb_reingest_draw_dwords(
    const struct r300_r2vb_reingest_draw_params *params)
 {
+   if (!params ||
+       (params->rs &&
+        (params->rs->table_len == 0 || params->rs->table_len > 8)))
+      return 0;
    uint32_t total = 18;
    if (params->redirect)
       total += 9;
@@ -50,8 +54,10 @@ int r300_r2vb_reingest_draw_emit(
    const struct r300_r2vb_reingest_draw_params *params,
    struct r300_r2vb_reingest_draw_relocs *relocs)
 {
+   if (!b)
+      return -EINVAL;
    if (!params || !relocs) {
-      if (b && !b->error)
+      if (!b->error)
          b->error = -EINVAL;
       return -EINVAL;
    }

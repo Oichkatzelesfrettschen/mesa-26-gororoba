@@ -104,17 +104,21 @@ struct r300_r2vb_reingest_draw_relocs {
  * 18-dword fixed tail plus each requested block (redirect 9,
  * position-only output 3, viewport identity 7, VTE override plus
  * restore 4, vertex assembly 3, polygon offset 5, stream control 8,
- * fog/stipple 6, rasterizer interpolator 7 + 2 * table_len).
+ * fog/stipple 6, rasterizer interpolator 7 + 2 * table_len).  A null
+ * params or an RS block whose table_len is outside 1..8 returns 0;
+ * every valid emission is at least the 18-dword tail, so 0 names an
+ * invalid descriptor and never a real size.
  */
 uint32_t r300_r2vb_reingest_draw_dwords(
    const struct r300_r2vb_reingest_draw_params *params);
 
-/* Emits the re-ingest body in block order.  Rejects, without writing
- * any dword: a null params or relocs destination, a vertex count of
- * zero or past the 16-bit index registers, a vertex stream whose last
- * fetched byte (offset + 16 * count in 64-bit arithmetic) lies past
- * its BO, and an RS block whose table_len is outside 1..8.  Returns 0,
- * or a negative errno matching the builder's first refusal.
+/* Emits the re-ingest body in block order.  A null builder returns
+ * -EINVAL.  Rejects, without writing any dword: a null params or
+ * relocs destination, a vertex count of zero or past the 16-bit index
+ * registers, a vertex stream whose last fetched byte (offset +
+ * 16 * count in 64-bit arithmetic) lies past its BO, and an RS block
+ * whose table_len is outside 1..8.  Returns 0, or a negative errno
+ * matching the builder's first refusal.
  */
 int r300_r2vb_reingest_draw_emit(
    struct r300_pm4_builder *b,
