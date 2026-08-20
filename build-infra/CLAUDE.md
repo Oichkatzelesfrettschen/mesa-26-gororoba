@@ -4,7 +4,10 @@
 configuration, install prefixes, and cache wiring. This file carries the two
 chapters that bind under `build-infra/`: the standalone build and the
 build-system and cache discipline. Every rule in `AGENTS.md` applies to work in
-this directory; this file adds the build-specific mechanism.
+this directory; this file adds the build-specific mechanism. A session started
+inside `build-infra/` loads this file and reaches the root rules through a Read
+of `AGENTS.md` at the repository root, because an ancestor loader's imports stay
+unresolved.
 
 ## Standalone build
 

@@ -74,6 +74,7 @@ These rules expand in `build-infra/CLAUDE.md` and `Validation expectations`.
 
 ### Build orchestration
 
+- `build-infra/CLAUDE.md` carries the build and cache doctrine, and a change to a Meson option, native file, host env, install prefix, build directory, or cache lane reads it first.
 - Meson plus Make both stand. Meson owns configuration and Ninja generation. Make and build-infra own host selection, audit checks, generated native overlays, clean, build, and install.
 - Build audits model Meson defaults: for an omitted or `auto` option, audit the dependencies Meson enables on the target host. An absent or `auto` option resolves to what Meson will do, not to disabled.
 - Hazard gates take an exact opt-in value such as `R300_TRACE_HAZARD_ACCEPTED=1`. Unset, empty, and zero-valued gates stay closed, and `getenv()` presence alone is not consent.

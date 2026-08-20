@@ -366,4 +366,4 @@ consolidation; remaining pump notes live only in archived provenance docs.
 
 1. Create `configs/<new-profile>.meson` with `[built-in options]` + `[project options]`.
 2. Add `rebuild-<new-profile>:` and `install-<new-profile>:` targets in the Makefile.
-3. Document the profile purpose in `AGENTS.md` under "Build profiles and host envs".
+3. Document the profile purpose in `build-infra/CLAUDE.md` under "Build profiles and host envs".
