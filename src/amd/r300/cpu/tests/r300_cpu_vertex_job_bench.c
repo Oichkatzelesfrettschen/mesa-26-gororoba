@@ -41,8 +41,14 @@
 
 #include "git_sha1.h"
 
-#ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
+/* Host qualification reads CPUID, which exists on x86 alone.  The
+ * build targets other architectures too, and there the part cannot be
+ * identified at all, so the stream marks itself rather than claiming a
+ * qualification it did not perform.
+ */
+#if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
+#define R300_CPU_VERTEX_BENCH_HAVE_CPUID 1
 #endif
 
 #include "amd/r300/common/r300_vertex_format.h"
@@ -219,6 +225,46 @@ producer_max_chain_job(int format_id, uint32_t chain_length)
    return job;
 }
 
+/* A dependent chain of one opcode, as deep as the producer can emit.
+ * r300_vertex_job_nir admits nir_op_fadd and nir_op_fmul independently
+ * of nir_op_ffma (rg --fixed-strings nir_op_fadd src/amd/r300/), so a
+ * shader lowering to an add-only or multiply-only chain is an admitted
+ * job whose executor mix the FMAD chain never times.  Scalar-to-packed
+ * cost differs per opcode, so each admitted arithmetic opcode carries
+ * its own shape rather than standing in for the others.
+ */
+static struct r300_vertex_job
+opcode_chain_job(int format_id, uint8_t opcode, uint32_t chain_length)
+{
+   struct r300_vertex_job job = {
+      .input_format_id = format_id,
+      .instruction_count = 2,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_LOAD_CONSTANT, 1, 0, 0, 0 },
+      },
+      .constant_count = 1,
+      .constants = {
+         { f_bits(1.0009765625f), f_bits(0.99951171875f),
+           f_bits(1.00048828125f), f_bits(0.9990234375f) },
+      },
+   };
+   uint8_t previous = 0;
+   if (chain_length > R300_VERTEX_JOB_MAX_TEMPS - 2)
+      chain_length = R300_VERTEX_JOB_MAX_TEMPS - 2;
+   for (uint32_t i = 0; i < chain_length; i++) {
+      uint8_t dst = (uint8_t)(2 + i);
+      job.instructions[job.instruction_count++] =
+         (struct r300_vertex_job_instruction){ opcode, dst, previous, 1, 1 };
+      previous = dst;
+   }
+   job.instructions[job.instruction_count++] =
+      (struct r300_vertex_job_instruction){
+         R300_VERTEX_JOB_OP_STORE_POSITION, 0, previous, 0, 0,
+      };
+   return job;
+}
+
 /* Known-bad calibration: a corrupted carrier byte trips the same
  * comparison the lane calibration uses as its verdict, so the
  * comparison is proven live before any timing row it certifies.
@@ -356,10 +402,11 @@ bench_cell(const struct bench_lane *lanes, const char *shape,
 int
 main(int argc, char **argv)
 {
-   /* The K8 target binary's rows decide one part's dispatch, and K8
-    * codegen elsewhere times that host's pipeline instead, so the
-    * executing CPU must identify as the qualified part or the rows mark
-    * as smoke output.  Family 0Fh alone is too wide: the K8 desktop,
+   /* Rows decide one part's dispatch, and the same code elsewhere times
+    * that host's pipeline instead, so the executing CPU must identify as
+    * the qualified part or the rows mark as smoke output.  Both binaries
+    * run this check: the generic one is built unconditionally and its
+    * unmarked rows would otherwise read as decision-grade to a recorder.  Family 0Fh alone is too wide: the K8 desktop,
     * mobile, and server models differ in cache and timing, so the check
     * reads the model too.  Model 0x68 is the Turion 64 X2 TL-66 the
     * measurement frame names; the observed stepping rides in the stream
@@ -369,7 +416,7 @@ main(int argc, char **argv)
     * host without SSE3 would fault mid-run instead of producing marked
     * rows.
     */
-#ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
+#ifdef R300_CPU_VERTEX_BENCH_HAVE_CPUID
    {
       unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
       int is_qualified = 0;
@@ -386,14 +433,20 @@ main(int argc, char **argv)
          is_qualified = family == 0xf && model == 0x68;
          has_sse3 = (ecx & bit_SSE3) != 0;
       }
+#ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
+      /* This binary compiles wholly at -march=k8-sse3, so a host
+       * without SSE3 would fault mid-run instead of producing marked
+       * rows.  The generic binary carries no such instruction floor and
+       * runs anywhere, marked. */
       if (!has_sse3) {
          fprintf(stderr,
                  "error: executing CPU lacks SSE3; this binary's "
                  "k8-sse3 codegen would fault\n");
          return 1;
       }
-      printf("# cpuid family 0x%x model 0x%x stepping 0x%x\n", family, model,
-             stepping);
+#endif
+      printf("# cpuid family 0x%x model 0x%x stepping 0x%x sse3 %d\n",
+             family, model, stepping, has_sse3);
       if (!is_qualified) {
          fprintf(stderr,
                  "warning: executing CPU is not the qualified Turion 64 X2 "
@@ -403,6 +456,13 @@ main(int argc, char **argv)
                 "evidence\n");
       }
    }
+#else
+   fprintf(stderr,
+           "warning: this architecture carries no CPUID, so the executing "
+           "part is unidentified; rows are smoke output, not dispatch "
+           "evidence\n");
+   printf("# unqualified host: rows are smoke output, not dispatch "
+          "evidence\n");
 #endif
 
    unsigned reps = 9;
@@ -446,8 +506,20 @@ main(int argc, char **argv)
    /* The row stream carries the source identity the binary was built
     * from, so a retained bundle binds the timings to a commit.
     */
-   printf("# source%s\n",
-          MESA_GIT_SHA1[0] != '\0' ? MESA_GIT_SHA1 : " unknown");
+   /* A row binds to the commit its binary was built from.  An exported
+    * tree resolves no .git, so MESA_GIT_SHA1 is empty and the binding
+    * the frame requires does not exist; the stream says so rather than
+    * printing an unknown source among otherwise unmarked rows.
+    */
+   if (MESA_GIT_SHA1[0] != '\0') {
+      printf("# source%s\n", MESA_GIT_SHA1);
+   } else {
+      fprintf(stderr,
+              "warning: the source identity is unavailable; rows are "
+              "smoke output, not dispatch evidence\n");
+      printf("# unknown source: rows are smoke output, not dispatch "
+             "evidence\n");
+   }
 
    /* An absent ISA lane marks the stream: a kernel compiled out of this
     * build reports -ENOSYS, and the marker tells a collector the stream
@@ -498,16 +570,21 @@ main(int argc, char **argv)
          r300_vertex_format_semantics(
             (enum r300_vertex_format_id)formats[f]);
       uint32_t stride = format->semantic_record_bytes;
-      struct r300_vertex_job jobs[4] = {
+      struct r300_vertex_job jobs[6] = {
          identity_job(formats[f]),
          affine_job(formats[f]),
          dp4_chain_job(formats[f]),
          producer_max_chain_job(formats[f], R300_VERTEX_JOB_MAX_TEMPS - 2),
+         opcode_chain_job(formats[f], R300_VERTEX_JOB_OP_FADD,
+                          R300_VERTEX_JOB_MAX_TEMPS - 2),
+         opcode_chain_job(formats[f], R300_VERTEX_JOB_OP_FMUL,
+                          R300_VERTEX_JOB_MAX_TEMPS - 2),
       };
-      static const char *const shapes[4] = {
+      static const char *const shapes[6] = {
          "identity", "affine", "dp4_chain", "producer_max_chain",
+         "fadd_chain", "fmul_chain",
       };
-      for (unsigned j = 0; j < 4; j++) {
+      for (unsigned j = 0; j < 6; j++) {
          for (unsigned c = 0; c < 4; c++) {
             if ((uint64_t)counts[c] * stride >
                 (uint64_t)MAX_VERTICES * 16)
