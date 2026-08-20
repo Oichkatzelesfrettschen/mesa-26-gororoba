@@ -866,6 +866,47 @@ A capability in the Gallium-backed implementation is current only when:
 The Gallium-backed ICD may remain intentionally nonconformant. It must still be
 semantically honest inside every capability it exposes.
 
+### Retirement criteria
+
+Retiring `libvulkan_r3v.so` withdraws every capability the table above
+exposes, so it is admissible only when the native ICD carries each of
+them at an evidence class that survives the withdrawal. The Gallium GL
+and GLES surface stays either way: it is r300g's, and the R3V row names
+it as the state-tracker neighbor rather than as an R3V capability.
+
+Retirement is admissible when, for every remaining row, a native
+capability exists, its semantics are the documented ones, and its
+evidence reaches at least the class the Gallium-backed row is relied on
+at today. A native entry point that refuses every input satisfies no
+row: the criterion is the admitted workload, not the presence of a
+symbol.
+
+| Gallium-backed capability | Native counterpart | Evidence class |
+|---|---|---|
+| Vulkan commands lowered into Gallium CSOs and `pipe_context` replay | one fixed render cell, recorded through public `vkCmd*` over a bounded render-pass/pipeline/draw vocabulary | silicon, one qualified payload |
+| NIR ingress through `nir_to_rc` | `r300_vertex_job_from_nir` over straight-line vec4 shapes; `r300_fragment_nir_constant_color` | host unit |
+| NIR compatibility through `nir_to_tgsi` for Draw shapes | absent | none |
+| CPU vertex execution over Gallium Draw SW TCL | `r300_cpu_vertex_job_execute` over the job IR | host unit, and silicon through the cell's carrier |
+| R300 graphics state: VAP, PSC, RS, US, TX, CB, ZB, ROP, viewport, raster | the cell's fixed state vector alone | silicon, one state vector |
+| R2VB producer, CB export, cache publication, TCL-bypass re-ingest | public GPU-producer route, one payload, F32_4 position stream, three vertices | silicon, one payload |
+| Graphics-as-compute raster kernels and multipass carriers | absent | none |
+| Video: Gallium VL MPEG-1/MPEG-2 shader decode | absent | none |
+| Memory and transfers: maps, uploads, copies, blits, clears | GEM-backed memory, one linear `B8G8R8A8_UNORM` transfer surface | host model, and silicon for the cell's carrier |
+| Queue and completion | owned Radeon DRM submission with fence retirement | silicon |
+| WSI over Gallium-exported resources | surface-query behavior alone; `VK_KHR_swapchain` and external-memory handles stay outside the native ICD | host model, and no presentation |
+| Host modeling: drm-shim identity, BO-domain, ioctl models | the same drm-shim models, exercised by the native harnesses | host model |
+
+Six rows carry a native counterpart, three of them bounded to one
+payload or one state vector; three rows have no native counterpart at
+all; WSI stops before presentation. The gap is the driver's general
+surface, so retirement is inadmissible until the rows above close, and
+the closing order is the one `Ordered development` names.
+
+Each closed row records the workload its evidence covers, so a row
+reading `silicon` for one payload closes only that payload. Widening a
+row is the capability ladder's work, and the ladder's axis order lives
+in the native execution section.
+
 ## Native Radeon DRM R3V implementation
 
 ### Required ownership
