@@ -32,9 +32,19 @@
  *   reps: timing repetitions per row (default 9); the row reports the
  *   best rep, which is the least-preempted one.
  *
+ * The stream layout is the other dimension the executors are sensitive
+ * to, because both lanes gather through r300_cpu_vertex_gather inside
+ * their measured path.  The pipeline admits a zero binding stride and
+ * every stride at least the semantic record size, and the draw adds the
+ * attribute offset to the stream base, so a tightly packed
+ * malloc-aligned stream is one admitted layout among several: a padded
+ * stride spreads records across cache lines, a zero stride collapses
+ * every vertex onto one record, and a four-byte offset moves the
+ * mapped pointer off its 16-byte alignment.
+ *
  * Output: TSV rows
- *   implementation  job_shape  format  stride  vertex_count
- *   instruction_count  reps  best_ns_per_vertex
+ *   implementation  job_shape  layout  format  stride  base_offset
+ *   vertex_count  instruction_count  reps  best_ns_per_vertex
  */
 
 #include "r300_cpu_vertex_job.h"
@@ -63,6 +73,12 @@
 #include <time.h>
 
 #define MAX_VERTICES (1u << 16)
+/* The record area holds the widest layout the bench walks: every vertex
+ * at the padded stride, plus the largest base offset.
+ */
+#define MAX_STRIDE 24u
+#define MAX_BASE_OFFSET 4u
+#define RECORD_SPAN ((uint64_t)MAX_VERTICES * MAX_STRIDE + MAX_BASE_OFFSET)
 
 typedef int (*execute_fn)(const struct r300_vertex_job *,
                           const struct r300_cpu_vertex_stream *,
@@ -276,7 +292,7 @@ calibrate_known_bad(void)
    const struct r300_cpu_vertex_stream stream = {
       .data = records,
       .stride = 16,
-      .size_bytes = (uint64_t)MAX_VERTICES * 16,
+      .size_bytes = RECORD_SPAN,
    };
    if (r300_cpu_vertex_job_execute(&job, &stream, 0, 64, carrier,
                                    MAX_VERTICES * 4) != 0 ||
@@ -348,13 +364,20 @@ struct bench_lane {
  */
 static void
 bench_cell(const struct bench_lane *lanes, const char *shape,
-           const struct r300_vertex_job *job, uint32_t stride,
-           uint32_t vertex_count, unsigned reps)
+           const char *layout, const struct r300_vertex_job *job,
+           uint32_t stride, uint32_t base_offset, uint32_t vertex_count,
+           unsigned reps)
 {
+   /* A zero stride reads one record for every vertex, so the stream
+    * spans that record alone; any other stride spans the records the
+    * count walks.  The bound is what the executor validates against.
+    */
    const struct r300_cpu_vertex_stream stream = {
-      .data = records,
+      .data = records + base_offset,
       .stride = stride,
-      .size_bytes = (uint64_t)MAX_VERTICES * stride,
+      .size_bytes = stride == 0
+         ? (uint64_t)RECORD_SPAN
+         : (uint64_t)vertex_count * stride,
    };
 
    unsigned present[LANE_COUNT];
@@ -393,9 +416,11 @@ bench_cell(const struct bench_lane *lanes, const char *shape,
       unsigned l = present[i];
       double per_vertex =
          (double)best[l] / ((double)inner * (double)vertex_count);
-      printf("%s\t%s\t%d\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32 "\t%u\t%.3f\n",
-             lanes[l].label, shape, job->input_format_id, stride,
-             vertex_count, job->instruction_count, rounded, per_vertex);
+      printf("%s\t%s\t%s\t%d\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32
+             "\t%" PRIu32 "\t%u\t%.3f\n",
+             lanes[l].label, shape, layout, job->input_format_id, stride,
+             base_offset, vertex_count, job->instruction_count, rounded,
+             per_vertex);
    }
 }
 
@@ -476,14 +501,14 @@ main(int argc, char **argv)
       reps = (unsigned)parsed;
    }
 
-   records = malloc((uint64_t)MAX_VERTICES * 16);
+   records = malloc(RECORD_SPAN);
    carrier = malloc((uint64_t)MAX_VERTICES * 16);
    reference = malloc((uint64_t)MAX_VERTICES * 16);
    if (records == NULL || carrier == NULL || reference == NULL) {
       fprintf(stderr, "allocation failure\n");
       return 1;
    }
-   fill_records(records, (uint64_t)MAX_VERTICES * 16, 0x7ab10000u);
+   fill_records(records, RECORD_SPAN, 0x7ab10000u);
 
    calibrate_known_bad();
 
@@ -550,8 +575,9 @@ main(int argc, char **argv)
       }
    }
 
-   printf("implementation\tjob_shape\tformat\tstride\tvertex_count\t"
-          "instruction_count\treps\tbest_ns_per_vertex\n");
+   printf("implementation\tjob_shape\tlayout\tformat\tstride\t"
+          "base_offset\tvertex_count\tinstruction_count\treps\t"
+          "best_ns_per_vertex\n");
 
    static const struct bench_lane lanes[LANE_COUNT] = {
       { "scalar", r300_cpu_vertex_job_execute },
@@ -593,12 +619,30 @@ main(int argc, char **argv)
          "identity", "affine", "dp4_chain", "producer_max_chain",
          "fadd_chain", "fmul_chain",
       };
+      /* The admitted layouts: the packed stream the route builds, a
+       * padded stride spreading records across cache lines, a zero
+       * stride collapsing every vertex onto one record, and a
+       * four-byte offset moving the mapped pointer off 16-byte
+       * alignment.  Each is what the pipeline accepts, so each is a
+       * workload the dispatch decision covers.
+       */
+      const struct { const char *label; uint32_t stride, base_offset; }
+      layouts[4] = {
+         { "packed", stride, 0 },
+         { "padded", stride + 8, 0 },
+         { "collapsed", 0, 0 },
+         { "offset4", stride, 4 },
+      };
       for (unsigned j = 0; j < 6; j++) {
-         for (unsigned c = 0; c < 4; c++) {
-            if ((uint64_t)counts[c] * stride >
-                (uint64_t)MAX_VERTICES * 16)
-               continue;
-            bench_cell(lanes, shapes[j], &jobs[j], stride, counts[c], reps);
+         for (unsigned y = 0; y < 4; y++) {
+            for (unsigned c = 0; c < 4; c++) {
+               if ((uint64_t)counts[c] * layouts[y].stride
+                   + layouts[y].base_offset > RECORD_SPAN)
+                  continue;
+               bench_cell(lanes, shapes[j], layouts[y].label, &jobs[j],
+                          layouts[y].stride, layouts[y].base_offset,
+                          counts[c], reps);
+            }
          }
       }
    }
