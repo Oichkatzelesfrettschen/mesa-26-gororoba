@@ -1460,7 +1460,10 @@ does not promote another.
     `r300_cpu_vertex_bench` three-way measurement -- baseline versus
     SSE2 versus SSE3 against the memcpy copy ceiling, on the K8 target
     under the `k8-sse3` profile flags -- remains open and decides which
-    candidate the auto dispatch keeps).
+    candidate the auto dispatch keeps). The job benchmark reuses heap
+    storage. Native dispatch timing remains open over the command-buffer-owned
+    mapped GTT carrier, which each submission maps, rewrites, publishes, and
+    unmaps.
 11. Migrate native R2VB producer and live delivery (`F32_4` control, then
     `F32_3`, then `F32_2`).
     The identity-delivery host model and no-submit producer emitter are

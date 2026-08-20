@@ -420,10 +420,10 @@ int r300_cpu_vertex_job_execute_sse3(
 
 #endif /* __SSE2__ */
 
-/* The native route executes the scalar interpreter.  SIMD dispatch requires
- * an end-to-end timing result over the route's single-use mapped GTT carrier;
- * the executor-only heap benchmark qualifies candidates and measures their
- * arithmetic cost without modeling that carrier.
+/* The native route executes the scalar interpreter.  The executor-only heap
+ * benchmark qualifies candidates and measures their arithmetic cost.  SIMD
+ * dispatch requires end-to-end timing over the command-buffer-owned mapped
+ * GTT carrier, including repeated submission writes and cache publication.
  */
 const char *r300_cpu_vertex_job_implementation(void)
 {
