@@ -17,8 +17,10 @@
  * shape dimension separates them: `identity` is the two-instruction job
  * the public GPU-producer route admits, where interpreter dispatch is
  * nearly the whole cost; `affine` and `dp4_chain` carry the arithmetic
- * a lowered vertex shader produces; `arith_chain` runs the instruction
- * budget deep enough that per-instruction cost dominates.  A kernel
+ * a lowered vertex shader produces; `producer_max_chain` runs the
+ * deepest dependent chain the producer can emit, where per-instruction
+ * cost dominates, and its name states that the depth is that ceiling
+ * rather than a pick.  A kernel
  * that wins one end and loses the other selects by shape rather than
  * outright, which the rows have to be able to show.
  *
@@ -184,7 +186,7 @@ dp4_chain_job(int format_id)
  * it would rest on a shape the driver cannot reach.
  */
 static struct r300_vertex_job
-arith_chain_job(int format_id, uint32_t chain_length)
+producer_max_chain_job(int format_id, uint32_t chain_length)
 {
    struct r300_vertex_job job = {
       .input_format_id = format_id,
@@ -500,10 +502,10 @@ main(int argc, char **argv)
          identity_job(formats[f]),
          affine_job(formats[f]),
          dp4_chain_job(formats[f]),
-         arith_chain_job(formats[f], R300_VERTEX_JOB_MAX_TEMPS - 2),
+         producer_max_chain_job(formats[f], R300_VERTEX_JOB_MAX_TEMPS - 2),
       };
       static const char *const shapes[4] = {
-         "identity", "affine", "dp4_chain", "arith_chain",
+         "identity", "affine", "dp4_chain", "producer_max_chain",
       };
       for (unsigned j = 0; j < 4; j++) {
          for (unsigned c = 0; c < 4; c++) {
