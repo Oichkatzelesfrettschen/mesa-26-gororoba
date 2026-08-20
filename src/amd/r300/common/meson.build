@@ -194,6 +194,51 @@ test(
   suite : ['r300'],
 )
 
+r300_r2vb_public_route_test = executable(
+  'r300_r2vb_public_route_test',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
+        'r300_r2vb_producer_pass.c', 'r300_r2vb_public_route.c',
+        'r300_tcl_bypass_triangle.c',
+        'tests/r300_r2vb_public_route_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-r2vb-public-route',
+  r300_r2vb_public_route_test,
+  suite : ['r300'],
+)
+
+# Manifest writer for the composed public GPU-producer route; the
+# offline replay drives it, and the attended run's authorization
+# declares the ib_blake3 it publishes.
+r300_r2vb_public_route_manifest = executable(
+  'r300_r2vb_public_route_manifest',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
+        'r300_r2vb_producer_pass.c', 'r300_r2vb_public_route.c',
+        'r300_r2vb_public_route_manifest.c',
+        'r300_tcl_bypass_triangle.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+
+# Offline kernel replay of the composed route, gated on
+# R3V_CS_TRACK_REPLAY_TOOL; absent tool exits 77 (meson SKIP).
+test(
+  'r300-r2vb-public-route-replay',
+  files('tests/run_r2vb_public_route_replay.sh')[0],
+  args : [r300_r2vb_public_route_manifest],
+  suite : ['r300'],
+)
+
 # Manifest writer for the re-ingest stream; the offline replay drives it.
 r300_r2vb_reingest_manifest = executable(
   'r300_r2vb_reingest_manifest',

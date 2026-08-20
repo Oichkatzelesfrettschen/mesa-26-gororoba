@@ -1221,7 +1221,16 @@ which compares every dword outside the embedded record payloads), and numeric
 domain, and the gathered records become the post-completion read-back oracle).
 A completed submission whose carrier diverges from that oracle retains the
 observed bytes, quarantines the capability on the device, and reports device
-loss.
+loss; a completed submission that agrees retains the same bytes beside the
+expectation, so a delivery is auditable from the bundle rather than from the
+exit status.
+
+`docs/hardware/r3v-native-attended-public-gpu-producer-procedure.md` carries
+the silicon cell: the arming runner that composes the route offline and
+reports the digest, the declarations the run sets, the predictions and
+falsifiers, and the two independent oracles -- the driver's carrier read-back
+and the runner's color-target compare -- that a `TARGET_DELIVERED` verdict
+requires together.
 
 ### Native WSI
 
