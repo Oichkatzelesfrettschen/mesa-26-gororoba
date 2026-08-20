@@ -1047,8 +1047,8 @@ The landed mechanisms are:
   the resolver holds closed: it requires total draw latency measured on
   silicon with public-route live delivery -- producer submission, cache
   publication, and the re-ingest stall included, gather time alone deciding
-  nothing -- and no such measurement exists while public R2VB submission
-  remains outside the landed surface.
+  nothing.  Total-latency qualification remains open for the landed public
+  F32_4 route.
 - the R2VB producer-pass PM4 emitter (`r300_r2vb_producer_pass`): the
   raster pass that writes an F32_4 carrier through the color backend --
   first-draw contract prefix, target prologue (destination-cache barrier,
@@ -1071,8 +1071,9 @@ Compute pipelines, descriptors, transfer images and copies beyond the
 bounded linear `B8G8R8A8_UNORM` family, native WSI presentation and
 external-memory handles, formats outside the accepted render and transfer
 families, silicon witnesses for non-maximum render extents or any native
-transfer operation, and public deferred-draw R2VB producer dispatch remain
-outside the landed surface. Live `DRM_RADEON_CS` evidence is split between
+transfer operation, and public R2VB producer dispatch for payloads beyond the
+authorized F32_4 triangle remain outside the landed surface. Live
+`DRM_RADEON_CS` evidence is split between
 the foundational records below and the R2VB records linked from their
 procedure documents. The first-submission record carries the bare
 inherited-state cell and its all-sentinel target;
@@ -1242,7 +1243,7 @@ R2VB migration follows the fixed triangle and CPU route:
 The native route owns its BOs, PM4, packers, barriers, and completion. Calling
 the Gallium R2VB function from a native queue remains Gallium-backed execution.
 
-#### Public GPU-producer route scope
+### Public GPU-producer route scope
 
 The public GPU-producer route admits through `vkCmdDraw` plus `vkQueueSubmit`
 on the exact double opt-in, and its admission composes the producer pass over
@@ -1388,8 +1389,9 @@ The live automatic Gallium R2VB producer admits `F32_3` and `F32_4`, and its
 live automatic Gallium final delivery admits FP32x4 only. The native
 identity-delivery host model covers `F32_4`, `F32_3`, and `F32_2` under its
 exact opt-in. Operator-armed producer, re-ingest, and exact F32
-`FLOAT_2 + XY01` cells hold on RS482; public deferred-draw producer dispatch
-remains outside the native route.
+`FLOAT_2 + XY01` cells hold on RS482. The native public route composes and
+submits one payload-specific F32_4 producer plus triangle consumer through
+`vkCmdDraw` and `vkQueueSubmit` under its exact double opt-in.
 
 The integration order separates landed no-submit source transactions from
 remaining validator, live-delivery, and silicon work:
@@ -1473,8 +1475,10 @@ does not promote another.
     `r3v-native-attended-producer-procedure.md`,
     `r3v-native-attended-reingest-procedure.md`, and
     `r3v-native-attended-float2-tuple-procedure.md`. Public live GPU-route
-    dispatch remains the next mechanism. The offline halves are landed: the
-    kernel synthesized-lane validator decodes the PSC element list and accepts
+    dispatch is landed for one authorized F32_4 triangle payload under the
+    exact double opt-in; F32_3 and F32_2 public-route migration remains open.
+    The supporting contracts are landed: the kernel synthesized-lane validator
+    decodes the PSC element list and accepts
     the `FLOAT_2 + XY01 + vtx_size 6` tuple
     (linux-radeon-gororoba `r300_tcl_bypass_vtx_check.h`), the fetched
     tuple pass and its manifest replay prove the userspace/kernel
@@ -1482,9 +1486,7 @@ does not promote another.
     `docs/hardware/r300-r2vb-float2-source-contract.md`), and
     `r300_delivery_route_resolve` carries the
     `R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER` value behind the exact
-    double opt-in -- the deferred draw refuses it by name until live
-    producer submission joins the landed surface.  Each staged cell runs
-    under its own operator-armed digest.
+    double opt-in. Each staged cell runs under its own operator-armed digest.
 12. Extend native image, transfer, and resource-scoped synchronization
     semantics; the bounded linear transfer family and its host-order barrier
     contract are landed, while broader GPU-backed transfer semantics remain
