@@ -65,6 +65,11 @@ if with_tests
   # SSE2 execution kernel, over the job shapes that separate per-vertex
   # dispatch cost from per-instruction arithmetic.  Host-specific
   # evidence like the gather bench, so no meson test wraps it either.
+  # This binary links libr300_cpu, so its rows time the object a driver
+  # from the enclosing profile links.  The r300 profiles pin
+  # -march=x86-64 -mtune=generic, keeping the ISA a subset every distcc
+  # volunteer and the target both run, so the interpreter a driver
+  # executes is the baseline codegen these rows measure.
   executable(
     'r300_cpu_vertex_job_bench',
     [files('tests/r300_cpu_vertex_job_bench.c'), sha1_h],
@@ -79,7 +84,10 @@ if with_tests
   # The K8-target job bench: both CPU sources compile at the TL-66 CPUID
   # ceiling, so the SSE2 kernel exists under the exact target codegen
   # whatever the enclosing profile's -march is, and -mtune selects the
-  # K8 scheduling model the measured assembly is read against.
+  # K8 scheduling model the measured assembly is read against.  The
+  # override reaches the interpreter too, so these rows read as the
+  # contrast: what the two lanes cost when the compiler may schedule
+  # for the target part, against the baseline ISA a driver ships.
   if host_machine.cpu_family() == 'x86_64' and \
      cc.has_argument('-march=k8-sse3') and \
      cc.has_argument('-mtune=k8-sse3')

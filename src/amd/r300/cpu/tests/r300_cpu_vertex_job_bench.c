@@ -555,6 +555,33 @@ main(int argc, char **argv)
              "evidence\n");
    }
 
+   /* Two binaries time the same lanes and disagree on the identity
+    * shape, so each stream names the object its rows measure.  This
+    * bench links libr300_cpu, which carries the enclosing profile's
+    * flags, and its rows describe the code a driver built from that
+    * profile executes.  The K8 bench recompiles the same sources under
+    * an -march override, so its rows describe codegen the profile does
+    * not produce.  The filename separates the two streams, and a
+    * locator travels apart from its bytes, so the fact rides in the
+    * stream as well.
+    */
+#ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
+   printf("# lane codegen: sources recompiled under an -march override; "
+          "a driver links libr300_cpu at the profile's flags instead\n");
+#else
+   printf("# lane codegen: libr300_cpu at the enclosing profile's "
+          "flags, as a driver from that profile links it\n");
+#endif
+   /* -march decides which instruction sets the compiler may emit for
+    * the interpreter, so the ISA the profile grants it is the fact that
+    * separates the two streams' arithmetic.
+    */
+#ifdef __SSE3__
+   printf("# lane isa: sse2, sse3\n");
+#else
+   printf("# lane isa: sse2\n");
+#endif
+
    /* An absent ISA lane marks the stream: a kernel compiled out of this
     * build reports -ENOSYS, and the marker tells a collector the stream
     * is not the two-way result, which a silent omission would hide.
