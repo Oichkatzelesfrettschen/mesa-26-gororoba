@@ -10,6 +10,8 @@
 #include "util/macros.h"
 
 #include <errno.h>
+#include <fenv.h>
+#include <math.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -35,6 +37,32 @@ static uint32_t float_result_to_bits(float value)
        (bits & 0x007fffffu) != 0)
       return 0x7fc00000u;
    return bits;
+}
+
+struct r300_cpu_float_environment {
+   fenv_t caller;
+};
+
+/* The CPU route implements one shader arithmetic environment independent of
+ * application-controlled rounding and denormal modes.  FE_DFL_ENV selects
+ * round-to-nearest and the implementation's denormal-preserving default.
+ */
+static int
+float_environment_enter(struct r300_cpu_float_environment *environment)
+{
+   if (fegetenv(&environment->caller) != 0)
+      return -ENOTSUP;
+   if (fesetenv(FE_DFL_ENV) != 0) {
+      (void)fesetenv(&environment->caller);
+      return -ENOTSUP;
+   }
+   return 0;
+}
+
+static void
+float_environment_leave(const struct r300_cpu_float_environment *environment)
+{
+   (void)fesetenv(&environment->caller);
 }
 
 int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
@@ -70,6 +98,7 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
          reads = 2;
          break;
       case R300_VERTEX_JOB_OP_FMAD:
+      case R300_VERTEX_JOB_OP_FFMA:
          reads = 3;
          break;
       case R300_VERTEX_JOB_OP_STORE_POSITION:
@@ -145,13 +174,18 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
    if (error)
       return error;
 
+   struct r300_cpu_float_environment environment;
+   error = float_environment_enter(&environment);
+   if (error)
+      return error;
+
    for (uint32_t v = 0; v < vertex_count; v++) {
       uint32_t temps[R300_VERTEX_JOB_MAX_TEMPS][4];
       uint32_t input[4];
       error = r300_cpu_vertex_gather(job->input_format_id, stream,
                                      first_vertex + v, 1, input, 4);
       if (error)
-         return error;
+         goto out;
 
       for (uint32_t i = 0; i < job->instruction_count; i++) {
          const struct r300_vertex_job_instruction *inst =
@@ -185,12 +219,19 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
              * the add, matching the fused-operator-free SSE2/SSE3
              * substrate the K8 target implements. */
             for (uint32_t lane = 0; lane < 4; lane++) {
-               const float product =
+               const volatile float product =
                   bits_to_float(temps[inst->src0][lane]) *
                   bits_to_float(temps[inst->src1][lane]);
                temps[inst->dst][lane] = float_result_to_bits(
                   product + bits_to_float(temps[inst->src2][lane]));
             }
+            break;
+         case R300_VERTEX_JOB_OP_FFMA:
+            for (uint32_t lane = 0; lane < 4; lane++)
+               temps[inst->dst][lane] = float_result_to_bits(fmaf(
+                  bits_to_float(temps[inst->src0][lane]),
+                  bits_to_float(temps[inst->src1][lane]),
+                  bits_to_float(temps[inst->src2][lane])));
             break;
          case R300_VERTEX_JOB_OP_DP4: {
             /* Seed with the first product: an additive zero seed would
@@ -212,7 +253,9 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
          }
       }
    }
-   return 0;
+out:
+   float_environment_leave(&environment);
+   return error;
 }
 
 #ifdef __SSE2__
@@ -279,6 +322,11 @@ execute_simd(const struct r300_vertex_job *job,
    if (error)
       return error;
 
+   struct r300_cpu_float_environment environment;
+   error = float_environment_enter(&environment);
+   if (error)
+      return error;
+
    for (uint32_t v = 0; v < vertex_count; v++) {
       /* Registers stay 32-bit patterns; the unaligned integer loads and
        * stores move NaN payloads, denormals, and signed zeros verbatim,
@@ -289,7 +337,7 @@ execute_simd(const struct r300_vertex_job *job,
       error = r300_cpu_vertex_gather(job->input_format_id, stream,
                                      first_vertex + v, 1, input, 4);
       if (error)
-         return error;
+         goto out;
 
       for (uint32_t i = 0; i < job->instruction_count; i++) {
          const struct r300_vertex_job_instruction *inst =
@@ -322,6 +370,20 @@ execute_simd(const struct r300_vertex_job *job,
                           _mm_castsi128_ps(temps[inst->src1])),
                _mm_castsi128_ps(temps[inst->src2]))));
             break;
+         case R300_VERTEX_JOB_OP_FFMA: {
+            float src0[4];
+            float src1[4];
+            float src2[4];
+            float result[4];
+            _mm_storeu_ps(src0, _mm_castsi128_ps(temps[inst->src0]));
+            _mm_storeu_ps(src1, _mm_castsi128_ps(temps[inst->src1]));
+            _mm_storeu_ps(src2, _mm_castsi128_ps(temps[inst->src2]));
+            for (uint32_t lane = 0; lane < 4; lane++)
+               result[lane] = fmaf(src0[lane], src1[lane], src2[lane]);
+            temps[inst->dst] = simd_float_result(
+               _mm_castps_si128(_mm_loadu_ps(result)));
+            break;
+         }
          case R300_VERTEX_JOB_OP_DP4: {
             /* Packed products, then a component-order scalar sum seeded
              * by lane 0's product, matching the scalar interpreter's
@@ -347,7 +409,9 @@ execute_simd(const struct r300_vertex_job *job,
          }
       }
    }
-   return 0;
+out:
+   float_environment_leave(&environment);
+   return error;
 }
 
 int r300_cpu_vertex_job_execute_sse2(

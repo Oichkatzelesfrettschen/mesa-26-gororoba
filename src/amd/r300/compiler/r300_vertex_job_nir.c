@@ -6,6 +6,8 @@
 
 #include "r300_vertex_job_nir.h"
 
+#include "compiler/spirv/spirv_info.h"
+
 #include <string.h>
 
 const nir_shader_compiler_options *r300_vertex_job_nir_options(void)
@@ -19,14 +21,64 @@ const nir_shader_compiler_options *r300_vertex_job_nir_options(void)
 
 const struct spirv_to_nir_options *r300_vertex_job_spirv_options(void)
 {
+   static const struct spirv_capabilities capabilities = {
+      .Shader = true,
+   };
    static const struct spirv_to_nir_options options = {
       .environment = NIR_SPIRV_VULKAN,
+      .capabilities = &capabilities,
       .ubo_addr_format = nir_address_format_32bit_index_offset,
       .ssbo_addr_format = nir_address_format_32bit_index_offset,
       .push_const_addr_format = nir_address_format_32bit_offset,
       .shared_addr_format = nir_address_format_32bit_offset,
    };
    return &options;
+}
+
+struct spirv_translation_state {
+   bool warned;
+};
+
+static void
+record_spirv_diagnostic(void *private_data, enum nir_spirv_debug_level level,
+                        size_t spirv_offset, const char *message)
+{
+   (void)spirv_offset;
+   (void)message;
+   struct spirv_translation_state *state = private_data;
+   if (level >= NIR_SPIRV_DEBUG_LEVEL_WARNING)
+      state->warned = true;
+}
+
+nir_shader *
+r300_vertex_job_spirv_to_nir(const uint32_t *words, size_t word_count,
+                             mesa_shader_stage stage,
+                             const char *entry_point_name)
+{
+   struct spirv_translation_state state = {0};
+   struct spirv_to_nir_options options =
+      *r300_vertex_job_spirv_options();
+   options.debug.func = record_spirv_diagnostic;
+   options.debug.private_data = &state;
+   nir_shader *nir = spirv_to_nir(words, word_count, NULL, stage,
+                                  entry_point_name, &options,
+                                  r300_vertex_job_nir_options());
+   if (state.warned) {
+      ralloc_free(nir);
+      return NULL;
+   }
+   return nir;
+}
+
+static bool
+float_control_modes_supported(const nir_shader *nir, const char **reason)
+{
+   if (nir->info.float_controls_execution_mode !=
+       FLOAT_CONTROLS_DEFAULT_FLOAT_CONTROL_MODE) {
+      *reason = "float-control execution mode outside the admitted policy";
+      return false;
+   }
+   return true;
 }
 
 static unsigned vec4_slots(const struct glsl_type *type, bool bindless)
@@ -42,6 +94,8 @@ bool r300_vertex_job_nir_normalize(nir_shader *nir, const char **reason)
       *reason = "stage outside the vertex/fragment cell";
       return false;
    }
+   if (!float_control_modes_supported(nir, reason))
+      return false;
 
    /* The vtn postlude: one entry point of straight-line code with
     * variables promoted to SSA. */
@@ -163,6 +217,9 @@ static bool alu_src_temp(struct job_build *b, const nir_alu_src *src,
 
 static bool build_alu(struct job_build *b, const nir_alu_instr *alu)
 {
+   if (alu->fp_math_ctrl & nir_fp_preserve_sz_inf_nan)
+      return refuse(b, "float preservation mode outside the admitted policy");
+
    const nir_def *def = &alu->def;
    if (def->bit_size != 32)
       return refuse(b, "non-32-bit arithmetic");
@@ -198,8 +255,13 @@ static bool build_alu(struct job_build *b, const nir_alu_instr *alu)
       opcode = R300_VERTEX_JOB_OP_FMUL;
       operand_count = 2;
       break;
-   case nir_op_ffma:
+   case nir_op_fmad:
+   case nir_op_ffma_weak:
       opcode = R300_VERTEX_JOB_OP_FMAD;
+      operand_count = 3;
+      break;
+   case nir_op_ffma:
+      opcode = R300_VERTEX_JOB_OP_FFMA;
       operand_count = 3;
       break;
    case nir_op_fdot4:
@@ -228,7 +290,7 @@ static bool build_alu(struct job_build *b, const nir_alu_instr *alu)
       return true;
    }
    default:
-      return refuse(b, "arithmetic outside MOV/FADD/FMUL/FMAD/DP4");
+      return refuse(b, "arithmetic outside MOV/FADD/FMUL/FMAD/FFMA/DP4");
    }
 
    if (scalar_result ? def->num_components != 1
@@ -380,6 +442,8 @@ bool r300_vertex_job_from_nir(nir_shader *nir, struct r300_vertex_job *job,
       *reason = "vertex analysis over a non-vertex shader";
       return false;
    }
+   if (!float_control_modes_supported(nir, reason))
+      return false;
    memset(job, 0, sizeof(*job));
    struct job_build build = { .job = job, .reason = reason };
    if (!build_from_block(nir, &build, false))
@@ -397,6 +461,8 @@ bool r300_fragment_nir_constant_color(nir_shader *nir,
       *reason = "fragment analysis over a non-fragment shader";
       return false;
    }
+   if (!float_control_modes_supported(nir, reason))
+      return false;
    /* The fragment shape reuses the job builder as its straight-line
     * admission: the one admitted program is LOAD_CONSTANT feeding the
     * color store, so the finished job is that constant. */

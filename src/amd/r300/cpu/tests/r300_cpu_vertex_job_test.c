@@ -13,12 +13,21 @@
 #include "r300_cpu_vertex_job.h"
 
 #include "amd/r300/common/r300_vertex_format.h"
+#include "util/detect.h"
 
 #include <assert.h>
 #include <errno.h>
+#include <fenv.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#if DETECT_ARCH_SSE
+#include <xmmintrin.h>
+#ifndef _MM_DENORMALS_ZERO_MASK
+#define _MM_DENORMALS_ZERO_MASK 0x0040
+#endif
+#endif
 
 #define CARRIER_DWORDS 64u
 #define CANARY 0xdeadbeefu
@@ -167,7 +176,7 @@ static void test_arithmetic_exact(void)
    assert(out[0] == 0x7fc00000u);
 }
 
-static void test_fmad_two_roundings(void)
+static void test_multiply_add_rounding(void)
 {
    /* a = b = 1 + 2^-12; a * b = 1 + 2^-11 + 2^-24 rounds (ties to
     * even) to 1 + 2^-11 in binary32, so the two-rounding FMAD of
@@ -192,6 +201,65 @@ static void test_fmad_two_roundings(void)
    run_one(&job, input, out);
    for (uint32_t lane = 0; lane < 4; lane++)
       assert(out[lane] == 0);
+
+   job.instructions[2].opcode = R300_VERTEX_JOB_OP_FFMA;
+   run_one(&job, input, out);
+   for (uint32_t lane = 0; lane < 4; lane++)
+      assert(out[lane] == 0x33800000u); /* 2^-24 */
+}
+
+static void test_float_environment_isolation(void)
+{
+   struct r300_vertex_job job = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .instruction_count = 4,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_LOAD_CONSTANT, 1, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_FADD, 2, 0, 1, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 2, 0, 0 },
+      },
+      .constant_count = 1,
+   };
+   fenv_t original_environment;
+   assert(fegetenv(&original_environment) == 0);
+   assert(fesetround(FE_UPWARD) == 0);
+
+#if DETECT_ARCH_SSE
+   const unsigned hostile_mxcsr =
+      _mm_getcsr() | _MM_FLUSH_ZERO_MASK | _MM_DENORMALS_ZERO_MASK;
+   _mm_setcsr(hostile_mxcsr);
+#endif
+
+   const uint32_t ones[4] = {
+      0x3f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u,
+   };
+   uint32_t out[4];
+   for (uint32_t lane = 0; lane < 4; lane++)
+      job.constants[0][lane] = 0x33800000u; /* 2^-24 */
+   run_one(&job, ones, out);
+   for (uint32_t lane = 0; lane < 4; lane++)
+      assert(out[lane] == 0x3f800000u);
+   assert(fegetround() == FE_UPWARD);
+#if DETECT_ARCH_SSE
+   assert(_mm_getcsr() == hostile_mxcsr);
+#endif
+
+   job.instructions[2].opcode = R300_VERTEX_JOB_OP_FMUL;
+   for (uint32_t lane = 0; lane < 4; lane++)
+      job.constants[0][lane] = 0x3f000000u; /* 0.5 */
+   const uint32_t smallest_normal[4] = {
+      0x00800000u, 0x00800000u, 0x00800000u, 0x00800000u,
+   };
+   run_one(&job, smallest_normal, out);
+   for (uint32_t lane = 0; lane < 4; lane++)
+      assert(out[lane] == 0x00400000u);
+   assert(fegetround() == FE_UPWARD);
+#if DETECT_ARCH_SSE
+   assert(_mm_getcsr() == hostile_mxcsr);
+#endif
+
+   assert(fesetenv(&original_environment) == 0);
 }
 
 static void test_dp4_order_and_broadcast(void)
@@ -396,7 +464,8 @@ int main(void)
    test_identity_preserves_bits();
    test_f32_2_synthesis();
    test_arithmetic_exact();
-   test_fmad_two_roundings();
+   test_multiply_add_rounding();
+   test_float_environment_isolation();
    test_dp4_order_and_broadcast();
    test_mov_preserves_nan_payload();
    test_validation_refusals();
