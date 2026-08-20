@@ -102,8 +102,17 @@ gate_open(const char *name)
 int
 main(int argc, char **argv)
 {
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+   /* --record-only builds every object and records the command buffer,
+    * then stops at the recording boundary.  The recording contract the
+    * driver enforces -- pass shape, sentinel clear, pipeline extent,
+    * draw arguments, bound stream range -- is what this program can get
+    * wrong without any device, so the shim fixture calibrates it there
+    * and the hardware mode inherits a proven sequence.
+    */
+   const bool record_only = argc == 3 && strcmp(argv[2], "--record-only") == 0;
+   if (argc != 2 && !record_only) {
+      fprintf(stderr, "usage: %s <evidence-directory> [--record-only]\n",
+              argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
@@ -111,10 +120,11 @@ main(int argc, char **argv)
    /* A silicon result binds to the real libc entry points.  A preloaded
     * interposer -- the drm-shim fixture or any other -- would let the
     * run report a silicon verdict it never earned, so any LD_PRELOAD
-    * refuses before the first Vulkan call.
+    * refuses before the first Vulkan call.  The recording mode reaches
+    * no ioctl and reports no verdict, so it runs on the fixture.
     */
    const char *preload = getenv("LD_PRELOAD");
-   if (preload != NULL && preload[0] != '\0') {
+   if (!record_only && preload != NULL && preload[0] != '\0') {
       fprintf(stderr,
               "LD_PRELOAD is set (%s); a hardware run admits no "
               "interposer\n",
@@ -128,8 +138,9 @@ main(int argc, char **argv)
     * readback directory are one directory, so a disagreement refuses.
     */
    const char *declared = getenv("R3V_NATIVE_MANIFEST_DIR");
-   if (declared == NULL || declared[0] == '\0' ||
-       !same_directory(declared, evidence_dir)) {
+   if (!record_only &&
+       (declared == NULL || declared[0] == '\0' ||
+        !same_directory(declared, evidence_dir))) {
       fprintf(stderr,
               "R3V_NATIVE_MANIFEST_DIR names %s and the argument names %s; "
               "the armed directory and the readback directory are one "
@@ -142,8 +153,9 @@ main(int argc, char **argv)
     * would select the CPU route refuses before the ioctl rather than
     * spending the one-shot token on the consumer alone.
     */
-   if (!gate_open("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") ||
-       !gate_open("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL")) {
+   if (!record_only &&
+       (!gate_open("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") ||
+        !gate_open("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL"))) {
       fprintf(stderr,
               "both R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL and "
               "R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL carry the exact "
@@ -565,8 +577,16 @@ main(int argc, char **argv)
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
 
-   const VkClearValue clear = { .color = { .float32 = { 0.0f, 0.0f, 0.0f,
-                                                        1.0f } } };
+   /* The cell realizes one load-op clear, the 0xa5a5a5a5 sentinel the
+    * target oracle reads as its exterior and canary value, so the
+    * recording admits that color alone (r3v_native_draw.c
+    * clear_is_sentinel).  Both sides evaluate the same expression, so
+    * the comparison lands on identical bits.
+    */
+   const float sentinel = (float)0xa5 / 255.0f;
+   const VkClearValue clear = { .color = { .float32 = { sentinel, sentinel,
+                                                        sentinel,
+                                                        sentinel } } };
    vkCmdBeginRenderPass(cmd,
                         &(VkRenderPassBeginInfo){
                            .sType =
@@ -584,9 +604,24 @@ main(int argc, char **argv)
    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &(VkDeviceSize){ 0 });
    vkCmdDraw(cmd, 3, 1, 0, 0);
    vkCmdEndRenderPass(cmd);
-   if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-      fprintf(stderr, "vkEndCommandBuffer failed\n");
+   /* Recording latches the first refusal and vkEndCommandBuffer returns
+    * it, so the code names which contract the sequence missed.
+    */
+   VkResult end_result = vkEndCommandBuffer(cmd);
+   if (end_result != VK_SUCCESS) {
+      fprintf(stderr, "vkEndCommandBuffer: %d\n", end_result);
       return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+
+   if (record_only) {
+      printf("record: ACCEPTED\n");
+      fflush(stdout);
+      vkDestroyCommandPool(device, pool, NULL);
+      vkFreeMemory(device, vertex_memory, NULL);
+      vkFreeMemory(device, color_memory, NULL);
+      vkDestroyDevice(device, NULL);
+      vkDestroyInstance(instance, NULL);
+      return 0;
    }
 
    VkQueue queue = VK_NULL_HANDLE;

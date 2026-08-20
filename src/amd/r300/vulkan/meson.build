@@ -1544,6 +1544,21 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
 
+    # Recording calibration for the attended public GPU-producer cell on
+    # the same fixture: the runner's own object construction and command
+    # recording run to the recording boundary and stop, so a sequence
+    # the driver's recording contract refuses fails here rather than on
+    # an authorized hardware attempt.
+    test(
+      'r3v-native-public-gpu-producer-record',
+      r3v_native_attended_public_gpu_producer,
+      args : [meson.current_build_dir(), '--record-only'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+
     # Public recording surface on the drm-shim fixture: the
     # application-shaped render-pass/pipeline/draw sequence records the
     # qualified cell through public entry points, and every contract
