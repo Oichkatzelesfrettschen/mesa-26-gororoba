@@ -5,6 +5,7 @@
 #include "r300_reg.h"
 
 #include <errno.h>
+#include <stdbool.h>
 #include <string.h>
 
 /* Scissor and clip-rectangle coordinates on non-R500 silicon carry a 1440
@@ -234,6 +235,29 @@ r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
       out->entries[out->count++] = entry;
    }
    return 0;
+}
+
+int
+r300_first_draw_contract_set_us_out_fmt_0(
+   struct r300_first_draw_contract *contract, uint32_t value)
+{
+   if (contract == NULL)
+      return -EINVAL;
+
+   /* One clause carries the format, so a second occurrence would leave
+    * the emitted target format decided by table order rather than by the
+    * cell; the scan runs to the end and refuses that shape.
+    */
+   bool found = false;
+   for (uint32_t i = 0; i < contract->count; i++) {
+      if (contract->entries[i].reg != R300_US_OUT_FMT_0)
+         continue;
+      if (found)
+         return -EINVAL;
+      contract->entries[i].value = value;
+      found = true;
+   }
+   return found ? 0 : -EINVAL;
 }
 
 int

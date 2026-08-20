@@ -59,7 +59,7 @@ exact_reference_stream(void)
    struct r300_pm4_builder b;
    memset(words, 0xa5, sizeof(words));
    r300_pm4_builder_init(&b, words, CAPACITY);
-   assert(r300_zb_depth_state_emit(&b, &reference) == 0);
+   assert(r300_zb_depth_state_emit(&b, &reference, NULL) == 0);
    assert(b.error == 0);
    assert(b.count == r300_zb_depth_state_dwords());
 
@@ -86,6 +86,35 @@ exact_reference_stream(void)
    assert(words[r300_zb_depth_state_dwords()] == 0xa5a5a5a5u);
 }
 
+/* The reported relocation index names the payload the emission wrote:
+ * ZB_FORMAT and ZB_DEPTHOFFSET each take two dwords and the relocation
+ * NOP's header takes one, so the payload is the sixth.  A caller records
+ * this as its depth-slot site, so an index naming any other dword binds
+ * the depth object to a word no packet consumes.
+ */
+static void
+reported_relocation_index(void)
+{
+   uint32_t words[CAPACITY];
+   struct r300_pm4_builder b;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   uint32_t reloc_index = R300_PM4_NO_INDEX;
+   assert(r300_zb_depth_state_emit(&b, &reference, &reloc_index) == 0);
+   assert(reloc_index == 5);
+   assert(words[reloc_index] == reference.depth_relocation_payload);
+   assert(words[reloc_index - 1] == packet3_header(R300_PM4_PACKET3_NOP, 1));
+
+   /* A refused emission leaves the caller's index untouched, so a site
+    * table cannot record a position from a call that wrote nothing.
+    */
+   struct r300_zb_depth_state_params bad = reference;
+   bad.depth_function = R300_ZS_MASK + 1;
+   uint32_t untouched = 0xabcdu;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &bad, &untouched) == -EINVAL);
+   assert(untouched == 0xabcdu);
+}
+
 static void
 depth_write_disabled(void)
 {
@@ -94,7 +123,7 @@ depth_write_disabled(void)
    struct r300_zb_depth_state_params params = reference;
    params.depth_write = false;
    r300_pm4_builder_init(&b, words, CAPACITY);
-   assert(r300_zb_depth_state_emit(&b, &params) == 0);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
    /* ZB_CNTL is the ninth dword: Z enabled, the write bit clear, so a
     * depth-tested draw that must not disturb the surface has a state. */
    assert(words[9] == R300_Z_ENABLE);
@@ -110,7 +139,7 @@ every_comparison_encodes(void)
       struct r300_zb_depth_state_params params = reference;
       params.depth_function = function;
       r300_pm4_builder_init(&b, words, CAPACITY);
-      assert(r300_zb_depth_state_emit(&b, &params) == 0);
+      assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
       assert(words[11] == function);
    }
 }
@@ -130,7 +159,7 @@ every_depth_format_encodes(void)
       struct r300_zb_depth_state_params params = reference;
       params.depth_format = formats[i];
       r300_pm4_builder_init(&b, words, CAPACITY);
-      assert(r300_zb_depth_state_emit(&b, &params) == 0);
+      assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
       assert(words[1] == formats[i]);
    }
 }
@@ -147,7 +176,7 @@ refusal_writes_nothing(const char *label,
    struct r300_pm4_builder b;
    memset(words, 0xa5, sizeof(words));
    r300_pm4_builder_init(&b, words, CAPACITY);
-   const int result = r300_zb_depth_state_emit(&b, params);
+   const int result = r300_zb_depth_state_emit(&b, params, NULL);
    if (result != expected) {
       fprintf(stderr, "%s: returned %d, expected %d\n", label, result,
               expected);
@@ -199,12 +228,12 @@ validation(void)
                           -EINVAL);
 
    /* A null builder or params is malformed whatever the capacity. */
-   assert(r300_zb_depth_state_emit(NULL, &reference) == -EINVAL);
+   assert(r300_zb_depth_state_emit(NULL, &reference, NULL) == -EINVAL);
    {
       uint32_t words[CAPACITY];
       struct r300_pm4_builder b;
       r300_pm4_builder_init(&b, words, CAPACITY);
-      assert(r300_zb_depth_state_emit(&b, NULL) == -EINVAL);
+      assert(r300_zb_depth_state_emit(&b, NULL, NULL) == -EINVAL);
       assert(b.count == 0);
    }
 }
@@ -215,7 +244,7 @@ existing_builder_error_stands(void)
    struct r300_pm4_builder b;
    r300_pm4_builder_init(&b, NULL, CAPACITY);
    assert(b.error == -EINVAL);
-   assert(r300_zb_depth_state_emit(&b, &reference) == -EINVAL);
+   assert(r300_zb_depth_state_emit(&b, &reference, NULL) == -EINVAL);
    assert(b.error == -EINVAL);
    assert(b.count == 0);
 }
@@ -228,14 +257,14 @@ capacity_one_short(void)
    struct r300_pm4_builder b;
    memset(words, 0xa5, sizeof(words));
    r300_pm4_builder_init(&b, words, needed - 1);
-   assert(r300_zb_depth_state_emit(&b, &reference) == -ENOSPC);
+   assert(r300_zb_depth_state_emit(&b, &reference, NULL) == -ENOSPC);
    assert(b.count == 0);
    for (unsigned i = 0; i < CAPACITY; i++)
       assert(words[i] == 0xa5a5a5a5u);
 
    /* Exactly the reserved capacity fits. */
    r300_pm4_builder_init(&b, words, needed);
-   assert(r300_zb_depth_state_emit(&b, &reference) == 0);
+   assert(r300_zb_depth_state_emit(&b, &reference, NULL) == 0);
    assert(b.count == needed);
 }
 
@@ -248,8 +277,8 @@ determinism(void)
    memset(second, 0xff, sizeof(second));
    r300_pm4_builder_init(&a, first, CAPACITY);
    r300_pm4_builder_init(&b, second, CAPACITY);
-   assert(r300_zb_depth_state_emit(&a, &reference) == 0);
-   assert(r300_zb_depth_state_emit(&b, &reference) == 0);
+   assert(r300_zb_depth_state_emit(&a, &reference, NULL) == 0);
+   assert(r300_zb_depth_state_emit(&b, &reference, NULL) == 0);
    assert(memcmp(first, second,
                  r300_zb_depth_state_dwords() * sizeof(uint32_t)) == 0);
 }
@@ -258,6 +287,7 @@ int
 main(void)
 {
    exact_reference_stream();
+   reported_relocation_index();
    depth_write_disabled();
    every_comparison_encodes();
    every_depth_format_encodes();
