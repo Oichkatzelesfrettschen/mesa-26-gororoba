@@ -513,6 +513,15 @@ main(int argc, char **argv)
     */
    if (MESA_GIT_SHA1[0] != '\0') {
       printf("# source%s\n", MESA_GIT_SHA1);
+      /* git_sha1_gen.py resolves HEAD alone, so a build carrying
+       * uncommitted changes prints this same identity while its sources
+       * differ from it.  The stream cannot observe the tree it was
+       * compiled from, so it names that limit and the check that closes
+       * it: a decision-grade run records an empty status alongside these
+       * rows, in an isolated worktree at the declared commit.
+       */
+      printf("# source binding: commit identity alone; the clean tree is "
+             "established by the run record, not by this stream\n");
    } else {
       fprintf(stderr,
               "warning: the source identity is unavailable; rows are "
