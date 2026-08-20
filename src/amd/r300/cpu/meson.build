@@ -61,6 +61,41 @@ if with_tests
     )
   endif
 
+  # Timing bench for the job executor: the scalar interpreter against the
+  # SSE2 execution kernel, over the job shapes that separate per-vertex
+  # dispatch cost from per-instruction arithmetic.  Host-specific
+  # evidence like the gather bench, so no meson test wraps it either.
+  executable(
+    'r300_cpu_vertex_job_bench',
+    [files('tests/r300_cpu_vertex_job_bench.c'), sha1_h],
+    include_directories : [inc_src, inc_include,
+                           include_directories('.')],
+    link_with : [libr300_cpu],
+    c_args : bench_release_args,
+    dependencies : [dep_clock],
+    gnu_symbol_visibility : 'hidden',
+  )
+
+  # The K8-target job bench: both CPU sources compile at the TL-66 CPUID
+  # ceiling, so the SSE2 kernel exists under the exact target codegen
+  # whatever the enclosing profile's -march is, and -mtune selects the
+  # K8 scheduling model the measured assembly is read against.
+  if host_machine.cpu_family() == 'x86_64' and \
+     cc.has_argument('-march=k8-sse3') and \
+     cc.has_argument('-mtune=k8-sse3')
+    executable(
+      'r300_cpu_vertex_job_bench_k8',
+      [files('r300_cpu_vertex.c', 'r300_cpu_vertex_job.c',
+             'tests/r300_cpu_vertex_job_bench.c'), sha1_h],
+      include_directories : [inc_src, inc_include,
+                             include_directories('.')],
+      c_args : ['-march=k8-sse3', '-mtune=k8-sse3',
+                '-DR300_CPU_VERTEX_BENCH_REQUIRE_K8=1'] + bench_release_args,
+      dependencies : [dep_clock],
+      gnu_symbol_visibility : 'hidden',
+    )
+  endif
+
   test(
     'r300-cpu-vertex',
     executable(
