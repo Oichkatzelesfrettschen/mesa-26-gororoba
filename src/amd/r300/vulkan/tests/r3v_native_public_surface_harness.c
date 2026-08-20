@@ -23,6 +23,8 @@
 #include "r3v_cpu_sync.h"
 #include "r3v_native_reference_spirv.h"
 
+#include "amd/r300/common/r300_r2vb_public_route.h"
+
 #include "vk_semaphore.h"
 
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
@@ -2116,6 +2118,26 @@ main(void)
       assert(native_gpu->references[R300_TRIANGLE_SLOT_VERTEX]
                 .write_domain == RADEON_GEM_DOMAIN_GTT);
       r300_r2vb_producer_pass_release(&expected_producer);
+
+      /* The stream an authorization declares is composed offline by
+       * r300_r2vb_public_route_compose, and the stream the ioctl
+       * carries is composed here at submission time.  An attended run
+       * arms on the first and submits the second, so the two
+       * compositions are compared dword for dword rather than assumed
+       * equal from sharing an emitter.
+       */
+      struct r300_r2vb_public_route_ib authorized;
+      assert(r300_r2vb_public_route_compose(
+                (const float(*)[4])positive_triangle,
+                R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT,
+                &authorized) == 0);
+      assert(r300_r2vb_public_route_validate_reloc_sites(&authorized) == 0);
+      assert(authorized.ib_size_dwords == native_gpu->ib_size_dwords);
+      assert(authorized.consumer_start_dwords ==
+             native_gpu->deferred_draw.gpu_producer_dwords);
+      assert(memcmp(authorized.ib, native_gpu->ib,
+                    authorized.ib_size_dwords * 4) == 0);
+      r300_r2vb_public_route_release(&authorized);
 
       assert(radeon_drm_vk_bo_map(&native_device->drm,
                                   &native_gpu->owned_carrier->bo,

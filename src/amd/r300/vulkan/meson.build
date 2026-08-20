@@ -863,6 +863,27 @@ if get_option('r3v-native-backend')
     install : false,
   )
 
+  # Attended public GPU-producer cell: drives the application-shaped
+  # Vulkan surface so the composed route -- producer over the
+  # application's records ahead of the consumer cell -- executes on
+  # silicon, with the driver's carrier read-back and this runner's
+  # color-target oracle as two independent verdicts.  Built and never
+  # registered as a test, because running it is a hardware authorization
+  # rather than a build-graph result.
+  r3v_native_attended_public_gpu_producer = executable(
+    'r3v_native_attended_public_gpu_producer',
+    files('tests/r3v_native_attended_public_gpu_producer.c',
+          '../common/r300_r2vb_public_route.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+    build_by_default : true,
+    install : false,
+  )
+
   # Attended serial status-load cell: submits the frozen tuple stream up
   # to the declared serial bound while the paired-status census samples,
   # coordinated over a SOCK_SEQPACKET barrier channel by the status-load
@@ -1533,7 +1554,8 @@ if get_option('r3v-native-backend')
       'r3v-native-public-surface',
       executable(
         'r3v_native_public_surface_harness',
-        files('tests/r3v_native_public_surface_harness.c'),
+        files('tests/r3v_native_public_surface_harness.c',
+              '../common/r300_r2vb_public_route.c'),
         include_directories : r3v_native_inc,
         dependencies : r3v_native_deps,
         link_whole : [libr3v_native_impl],
@@ -1600,6 +1622,37 @@ if get_option('r3v-native-backend')
         files('tests/r3v_native_producer_arming_runner_check.py'),
         r3v_native_producer_arming_runner,
         r3v_native_arming_runner,
+      ],
+      suite : ['r3v'],
+    )
+
+    # Non-submitting public GPU-producer arming runner: composes the
+    # route -- producer over the application records ahead of the
+    # consumer cell -- reports its digest, its split, and both delivery
+    # gates, then stops at the authorization boundary.  The check drives
+    # the refusal legs and the producer-half digest as the wrong cell.
+    r3v_native_public_gpu_producer_arming_runner = executable(
+      'r3v_native_public_gpu_producer_arming_runner',
+      files('r3v_native_arming.c',
+            'tests/r3v_native_public_gpu_producer_arming_runner.c',
+            '../common/r300_first_draw_state.c',
+            '../common/r300_fragment_binary.c',
+            '../common/r300_pm4_builder.c',
+            '../common/r300_r2vb_carrier_delivery.c',
+            '../common/r300_r2vb_producer_pass.c',
+            '../common/r300_r2vb_public_route.c',
+            '../common/r300_tcl_bypass_triangle.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-public-gpu-producer-arming-runner',
+      prog_python,
+      args : [
+        files('tests/r3v_native_public_gpu_producer_arming_runner_check.py'),
+        r3v_native_public_gpu_producer_arming_runner,
+        r3v_native_producer_arming_runner,
       ],
       suite : ['r3v'],
     )

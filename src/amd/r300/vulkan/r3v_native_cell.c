@@ -750,6 +750,26 @@ r3v_native_deferred_draw_admit_gpu_producer(
    return VK_SUCCESS;
 }
 
+/* Writes one carrier artifact into the evidence directory.  Retention
+ * is best-effort: the read-back verdict is already decided, and a full
+ * or read-only evidence directory changes the run's outcome through the
+ * runner's own retention check rather than here.
+ */
+static void
+retain_carrier_bytes(const char *manifest_dir, const char *name,
+                     const void *bytes, size_t size)
+{
+   char path[1024];
+   int length = snprintf(path, sizeof(path), "%s/%s", manifest_dir, name);
+   if (length <= 0 || (size_t)length >= sizeof(path))
+      return;
+   FILE *file = fopen(path, "wb");
+   if (file == NULL)
+      return;
+   fwrite(bytes, 1, size, file);
+   fclose(file);
+}
+
 VkResult
 r3v_native_deferred_draw_verify_gpu_producer(
    struct r3v_native_device *device,
@@ -772,19 +792,18 @@ r3v_native_deferred_draw_verify_gpu_producer(
    const bool matches =
       memcmp(carrier->map, draw->gpu_expected_carrier,
              sizeof(draw->gpu_expected_carrier)) == 0;
-   if (!matches && device->manifest_dir != NULL) {
-      char path[1024];
-      int length = snprintf(path, sizeof(path),
-                            "%s/gpu_carrier_observed.bin",
-                            device->manifest_dir);
-      if (length > 0 && (size_t)length < sizeof(path)) {
-         FILE *observed = fopen(path, "wb");
-         if (observed != NULL) {
-            fwrite(carrier->map, 1, sizeof(draw->gpu_expected_carrier),
-                   observed);
-            fclose(observed);
-         }
-      }
+   /* The read-back bytes are the delivery's whole result, so a match
+    * retains them beside the expectation exactly as a divergence does:
+    * an attended run whose evidence holds only its failures leaves a
+    * success unauditable.
+    */
+   if (device->manifest_dir != NULL) {
+      retain_carrier_bytes(device->manifest_dir, "gpu_carrier_observed.bin",
+                           carrier->map,
+                           sizeof(draw->gpu_expected_carrier));
+      retain_carrier_bytes(device->manifest_dir, "gpu_carrier_expected.bin",
+                           draw->gpu_expected_carrier,
+                           sizeof(draw->gpu_expected_carrier));
    }
    if (owns_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
