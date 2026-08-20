@@ -7,9 +7,10 @@
  * The bench screens SIMD candidates inside the CPU vertex-job executor.
  * The scalar interpreter is the authority for the bytes, so every lane
  * verifies its carrier against the interpreter's before its clock starts
- * and a mismatch ends the run.  The native draw path writes a single-use
- * mapped GTT carrier, while this microbenchmark reuses heap storage; an
- * end-to-end dispatch decision therefore requires native-path timing.
+ * and a mismatch ends the run.  This microbenchmark reuses one heap
+ * allocation.  The native draw path retains one GTT carrier BO with the
+ * command buffer; each submission maps, rewrites, publishes, and unmaps that
+ * BO, so an end-to-end dispatch decision requires native-path timing.
  * Results are host-specific and belong in an evidence bundle, not in a
  * meson test verdict, so the build registers no test over this executable.
  *
@@ -600,7 +601,7 @@ main(int argc, char **argv)
           "flags, shared with the native ICD\n");
 #endif
    printf("# evidence scope: executor microbenchmark; native dispatch "
-          "requires single-use mapped GTT carrier timing\n");
+          "requires command-buffer-owned mapped GTT carrier timing\n");
    printf("# carrier state: reused heap allocation\n");
    /* -march decides which instruction sets the compiler may emit for
     * the interpreter, so the ISA the profile grants it is the fact that

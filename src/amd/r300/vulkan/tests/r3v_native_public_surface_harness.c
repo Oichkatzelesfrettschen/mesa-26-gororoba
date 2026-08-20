@@ -971,8 +971,10 @@ main(void)
                  reference.ib_size_dwords * sizeof(uint32_t)) == 0);
    assert(native_cmd->reference_count == R300_TRIANGLE_SLOT_COUNT);
    assert(native_cmd->owned_carrier != NULL);
+   struct r3v_native_memory *const recorded_carrier =
+      native_cmd->owned_carrier;
    assert(native_cmd->references[R300_TRIANGLE_SLOT_VERTEX].handle ==
-          native_cmd->owned_carrier->bo.handle);
+          recorded_carrier->bo.handle);
    r300_tcl_bypass_triangle_release(&reference);
 
    /* Execution-time boundary, record side: recording defers the vertex
@@ -1858,9 +1860,9 @@ main(void)
    /* Restore and re-execute: the runtime latches the device lost after
     * the refused submit and later submits return before the driver
     * runs, so re-execution exercises the queue's execution step
-    * directly -- the harness links the implementation.  Each execution
-    * re-reads, so the carrier now equals the restored reference
-    * stream.
+    * directly -- the harness links the implementation.  The command
+    * buffer retains its carrier BO across executions, and each execution
+    * re-reads the stream into that carrier.
     */
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
           VK_SUCCESS);
@@ -1868,6 +1870,7 @@ main(void)
    vkUnmapMemory(device, vertex_memory);
    assert(r3v_native_cmd_buffer_execute_deferred_draw(
              native_device, native_cmd) == VK_SUCCESS);
+   assert(native_cmd->owned_carrier == recorded_carrier);
 
    assert(radeon_drm_vk_bo_map(&native_device->drm,
                                &native_cmd->owned_carrier->bo,
@@ -2539,7 +2542,16 @@ main(void)
 
    uint32_t mutated_fs[sizeof(r3v_reference_fragment_spirv) / 4];
    memcpy(mutated_fs, r3v_reference_fragment_spirv, sizeof(mutated_fs));
-   mutated_fs[sizeof(mutated_fs) / 4 / 2] ^= 1u;
+   bool mutated_green_constant = false;
+   for (size_t word_index = 0; word_index < ARRAY_SIZE(mutated_fs);
+        word_index++) {
+      if (mutated_fs[word_index] == 0x3f800000u) {
+         mutated_fs[word_index] = 0x3f000000u;
+         mutated_green_constant = true;
+         break;
+      }
+   }
+   assert(mutated_green_constant);
    bad_shape = contract_shape;
    bad_shape.fragment_words = mutated_fs;
    bad_shape.fragment_bytes = sizeof(mutated_fs);
