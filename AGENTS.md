@@ -497,24 +497,9 @@ Source comments cite public, durable authority; the unstable and private referen
 
 Retained-experiment vocabulary is the RCA campaign's own naming -- mutation arms, calibration arms, probe fixtures, capture cells, bundle identifiers -- and an analogy to such an experiment (`the same vacuity a mutation arm forcing an already-present value has`) is evidence chronology in disguise: the reader needs the campaign to parse it. A comment restates the property the experiment demonstrated as the mechanism itself, on the exact chip and path where it holds (`a seed equal to the value leaves an unwritten register unsatisfied, so a stream passes only when it establishes every value itself`); the experiment that discovered it lives in the commit message and the finding. Test-local API terms the file itself defines (`poison`, a parameter of the checker under test) are the code's own vocabulary and stand.
 
-Examples of forbidden source-comment authority include `companion to PR #...`, `Phase 4.4`, `Step 1 of Phase 3`, `@triang3l`, `(eirikr)`, `as of today`, `currently`, `will be exercised when Phase 5 lands`, `C-2026-04-19-06`, `LI-2026-04-17-02`, `this chip family`, `our GPU`, and `per Evergreen_ISA.txt:17572`.
-
 Source comments name durable mechanisms: exact chip, ISA/register rule, API/spec rule, kernel validator, test class, or measured behavior.
 
 Commit messages and finding documents may carry chronology and the spec section number when useful. A source comment states the mechanism or names the controlling rule in its own terms, so a reader does not need the spec open to parse it. A stable spec section or version may trail the named rule as supplemental disambiguation; the named rule itself carries the authority, and chronology lives in the commit message and the finding, as does section-number provenance. Like the American-spelling rule, this governs new or modified comments only; existing comments keep their section numbers rather than absorb churn.
-
-Preferred shape:
-
-```text
-The kernel treats WORD0 as the per-BO byte offset. It adds the relocation base
-before validation, so the shader sees the caller's intended buffer address.
-```
-
-Bad shape:
-
-```text
-Phase 8 workaround from the agent branch.
-```
 
 Mechanism controls comment length: the number of distinct load-bearing facts sets the length, and a line threshold does not. Use short labels for obvious local sections, and compact multi-sentence blocks only when the code depends on hardware behavior, API rules, kernel validation, empirical evidence, or non-local invariants. Every sentence carries a distinct contract, cause, consequence, scope, or falsifier; a sentence that repeats or paraphrases another sentence in the block is removed. Default to the shortest form that preserves the load-bearing constraint: a single sentence trailing the code, a short block for a constraint with interacting parts, and a longer block only when each added sentence still carries a distinct fact -- a cross-layer invariant that genuinely spans an API rule, a lowering pass, allocation granularity, kernel validation, and an observed failure may legitimately run long. Architecture that persists across the file moves to file or type scope (see the descriptor-layout preamble in `si_descriptors.c`); the point of use keeps only the local link in the chain. Mesa-upstream blocks for a single constraint (see `si_buffer.c`, `evergreen_state.c`) are typically four to five lines; use them to calibrate how much space a single fact deserves.
 
@@ -612,15 +597,7 @@ A TODO-family comment names three mechanism elements:
 
 A TODO-family comment carries mechanism only; reviewer breadcrumbs, PR-thread references, phase/wave/mission labels, AGENTS.md rule numbers, and deictic references such as `currently`, `previously`, `this driver`, and `our GPU` live in the commit message or PR description.
 
-Wrong shape:
-
-```text
-/* TODO: ...  Reason for deferral: outside this PR's scope.
- *       Tracking: reviewer P1 badge on the consolidated style PR.
- */
-```
-
-Right shape:
+Required shape:
 
 ```text
 /* TODO: missing work --
@@ -640,12 +617,11 @@ Right shape:
 
 Finding documents may carry chronology: dated frontmatter, `last_verified`, `evidence_class`, dated filenames, and ordered predecessors. PR or task references pair with a durable identifier.
 
-Examples:
-
-- Wrong: `the fix landed via mesa PR #34`
-- Right: `landed in commit f230cb07db6 (terakan_buffer.c::terakan_CreateBuffer size-zero guard); PR #34 / branch fix/w9-buffer-size-zero-guard for cross-link`
-- Wrong: `see issue #157`
-- Right: `see filed-finding 2026-05-15-induced-lockup-recovery-test-results.md (PR #41 if still open)`
+A reference names the durable identifier first and carries the tracker link
+beside it: `landed in commit f230cb07db6 (terakan_buffer.c::terakan_CreateBuffer
+size-zero guard); PR #34 / branch fix/w9-buffer-size-zero-guard for
+cross-link`, and `see filed-finding
+2026-05-15-induced-lockup-recovery-test-results.md (PR #41 if still open)`.
 
 Markdown loaded by agents uses exactly one H1, heading depth no deeper than `###`, frontmatter on programmatically loaded files, language tags on code fences, exact cross-references, and rule text as direct positive-declarative statements.
 
