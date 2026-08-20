@@ -7,6 +7,7 @@
 #include "r300_cpu_vertex_job.h"
 
 #include "amd/r300/common/r300_vertex_format.h"
+#include "util/macros.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -210,11 +211,40 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
 #ifdef __SSE2__
 
 #include <emmintrin.h>
+#ifdef __SSE3__
+#include <pmmintrin.h>
+#endif
 
-int r300_cpu_vertex_job_execute_sse2(
-   const struct r300_vertex_job *job,
-   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
-   uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
+/* The two SIMD candidates differ in one operation, the unaligned
+ * 128-bit load, so the body is written once and each candidate
+ * instantiates it with its own load.  Forced inlining keeps the
+ * constant selector out of the loop: each candidate compiles to a
+ * straight kernel carrying its own load form, which is what the bench
+ * times and what the objdump beside the rows shows.
+ */
+enum simd_load_form {
+   SIMD_LOAD_MOVDQU,
+   SIMD_LOAD_LDDQU,
+};
+
+static ALWAYS_INLINE __m128i
+simd_load(const void *from, enum simd_load_form form)
+{
+#ifdef __SSE3__
+   if (form == SIMD_LOAD_LDDQU)
+      return _mm_lddqu_si128((const __m128i *)from);
+#else
+   (void)form;
+#endif
+   return _mm_loadu_si128((const __m128i *)from);
+}
+
+static ALWAYS_INLINE int
+execute_simd(const struct r300_vertex_job *job,
+             const struct r300_cpu_vertex_stream *stream,
+             uint32_t first_vertex, uint32_t vertex_count,
+             uint32_t *carrier, uint32_t carrier_dwords,
+             enum simd_load_form form)
 {
    int error = execute_guard(job, stream, first_vertex, vertex_count,
                              carrier, carrier_dwords);
@@ -238,11 +268,10 @@ int r300_cpu_vertex_job_execute_sse2(
             &job->instructions[i];
          switch (inst->opcode) {
          case R300_VERTEX_JOB_OP_LOAD_INPUT:
-            temps[inst->dst] = _mm_loadu_si128((const __m128i *)input);
+            temps[inst->dst] = simd_load(input, form);
             break;
          case R300_VERTEX_JOB_OP_LOAD_CONSTANT:
-            temps[inst->dst] = _mm_loadu_si128(
-               (const __m128i *)job->constants[inst->src0]);
+            temps[inst->dst] = simd_load(job->constants[inst->src0], form);
             break;
          case R300_VERTEX_JOB_OP_MOV:
             temps[inst->dst] = temps[inst->src0];
@@ -268,7 +297,9 @@ int r300_cpu_vertex_job_execute_sse2(
          case R300_VERTEX_JOB_OP_DP4: {
             /* Packed products, then a component-order scalar sum seeded
              * by lane 0's product, matching the scalar interpreter's
-             * signed-zero-preserving accumulation exactly. */
+             * signed-zero-preserving accumulation exactly.  HADDPS adds
+             * adjacent lane pairs, so it associates the sum differently
+             * and stays out of both candidates. */
             const __m128 products =
                _mm_mul_ps(_mm_castsi128_ps(temps[inst->src0]),
                           _mm_castsi128_ps(temps[inst->src1]));
@@ -290,6 +321,44 @@ int r300_cpu_vertex_job_execute_sse2(
    return 0;
 }
 
+int r300_cpu_vertex_job_execute_sse2(
+   const struct r300_vertex_job *job,
+   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
+{
+   return execute_simd(job, stream, first_vertex, vertex_count, carrier,
+                       carrier_dwords, SIMD_LOAD_MOVDQU);
+}
+
+#ifdef __SSE3__
+
+int r300_cpu_vertex_job_execute_sse3(
+   const struct r300_vertex_job *job,
+   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
+{
+   return execute_simd(job, stream, first_vertex, vertex_count, carrier,
+                       carrier_dwords, SIMD_LOAD_LDDQU);
+}
+
+#else
+
+int r300_cpu_vertex_job_execute_sse3(
+   const struct r300_vertex_job *job,
+   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
+{
+   (void)job;
+   (void)stream;
+   (void)first_vertex;
+   (void)vertex_count;
+   (void)carrier;
+   (void)carrier_dwords;
+   return -ENOSYS;
+}
+
+#endif /* __SSE3__ */
+
 #else
 
 int r300_cpu_vertex_job_execute_sse2(
@@ -306,4 +375,29 @@ int r300_cpu_vertex_job_execute_sse2(
    return -ENOSYS;
 }
 
+int r300_cpu_vertex_job_execute_sse3(
+   const struct r300_vertex_job *job,
+   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
+{
+   (void)job;
+   (void)stream;
+   (void)first_vertex;
+   (void)vertex_count;
+   (void)carrier;
+   (void)carrier_dwords;
+   return -ENOSYS;
+}
+
 #endif /* __SSE2__ */
+
+/* The target timing bench measured both candidates against the
+ * interpreter on the qualified TL-66 and selected neither, so the route
+ * executes the interpreter and this reports it.  A later measurement
+ * that selects a candidate changes the selection here and the callers
+ * keep calling r300_cpu_vertex_job_execute.
+ */
+const char *r300_cpu_vertex_job_implementation(void)
+{
+   return "scalar";
+}

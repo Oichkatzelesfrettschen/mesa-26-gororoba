@@ -135,10 +135,10 @@ if with_tests
   # numeric-policy witnesses reproduced, refusal errnos shared.  The
   # test self-skips where the build target lacks SSE2.
   test(
-    'r300-cpu-vertex-job-sse2',
+    'r300-cpu-vertex-job-simd',
     executable(
-      'r300_cpu_vertex_job_sse2_test',
-      files('tests/r300_cpu_vertex_job_sse2_test.c'),
+      'r300_cpu_vertex_job_simd_test',
+      files('tests/r300_cpu_vertex_job_simd_test.c'),
       include_directories : [inc_src, inc_include,
                              include_directories('.')],
       link_with : [libr300_cpu],

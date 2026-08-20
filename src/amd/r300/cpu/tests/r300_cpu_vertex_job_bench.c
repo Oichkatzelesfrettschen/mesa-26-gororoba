@@ -350,7 +350,7 @@ time_one_rep(execute_fn fn, const struct r300_vertex_job *job,
    return now_ns() - t0;
 }
 
-#define LANE_COUNT 2
+#define LANE_COUNT 3
 
 struct bench_lane {
    const char *label;
@@ -600,6 +600,12 @@ main(int argc, char **argv)
          printf("# lane absent: sse2 (build carries no such instruction "
                 "set)\n");
       }
+      if (r300_cpu_vertex_job_execute_sse3(&probe, &probe_stream, 0, 3,
+                                           carrier,
+                                           MAX_VERTICES * 4) == -ENOSYS) {
+         printf("# lane absent: sse3 (build carries no such instruction "
+                "set)\n");
+      }
    }
 
    printf("implementation\tjob_shape\tlayout\tformat\tstride\t"
@@ -609,6 +615,7 @@ main(int argc, char **argv)
    static const struct bench_lane lanes[LANE_COUNT] = {
       { "scalar", r300_cpu_vertex_job_execute },
       { "sse2", r300_cpu_vertex_job_execute_sse2 },
+      { "sse3", r300_cpu_vertex_job_execute_sse3 },
    };
    /* Every format the pipeline admits as the bound attribute
     * (rg --fixed-strings attribute_format_id src/amd/r300/): each
