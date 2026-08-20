@@ -60,7 +60,7 @@ Seven principles generate the rules in this file. A case no rule names resolves 
 - A generated-file change runs the generator, or documents why the generator is unavailable.
 - A decision-grade result comes from a clean tree at the declared SHA: `git status --porcelain=v2` empty, `git diff HEAD` and `git diff --cached HEAD` empty, and `HEAD` equal to the declared source SHA, in an isolated worktree for qualification runs.
 
-These rules expand in `Standalone build` and `Validation expectations`.
+These rules expand in `build-infra/CLAUDE.md` and `Validation expectations`.
 
 ### Languages and scripts
 
@@ -74,6 +74,7 @@ These rules expand in `Standalone build` and `Validation expectations`.
 
 ### Build orchestration
 
+- `build-infra/CLAUDE.md` carries the build and cache doctrine, and a change to a Meson option, native file, host env, install prefix, build directory, or cache lane reads it first.
 - Meson plus Make both stand. Meson owns configuration and Ninja generation. Make and build-infra own host selection, audit checks, generated native overlays, clean, build, and install.
 - Build audits model Meson defaults: for an omitted or `auto` option, audit the dependencies Meson enables on the target host. An absent or `auto` option resolves to what Meson will do, not to disabled.
 - Hazard gates take an exact opt-in value such as `R300_TRACE_HAZARD_ACCEPTED=1`. Unset, empty, and zero-valued gates stay closed, and `getenv()` presence alone is not consent.
@@ -396,199 +397,16 @@ and the provider verification that separates a hardware result from an llvmpipe
 one. A `DRISWRAST` provider or an `llvmpipe` renderer string means the run
 measured software, whatever driver was under test.
 
-## Standalone build
+## Build and cache doctrine
 
-Mesa builds from this repository alone, with reproducible native files and
-environment variables. Meson owns configuration and Ninja generation. Make and
-build-infra own host selection, audit checks, generated native overlays, clean,
-build, and install. Change that split only with explicit approval for a
-build-system architecture change.
-
-Baseline standalone build:
-
-```bash
-meson setup builddir \
-  --prefix="/opt/mesa-gororoba-debug-optimized" \
-  -Dbuildtype=debugoptimized \
-  -Dgallium-drivers=r300,r600,softpipe \
-  -Dvulkan-drivers=amd_terascale \
-  -Dllvm=enabled
-ninja -C builddir
-ninja -C builddir install
-```
-
-Build-infra accepts `/opt/local/mesa-gororoba-debug-optimized` as the
-compatibility alias for the canonical debugoptimized prefix
-`/opt/mesa-gororoba-debug-optimized`. The shared-prefix list below names both
-paths.
-
-Adapt options to the checkout and current Meson option set. Use `meson configure` and repo-local options rather than guessing. Commands and scripts carry repository-relative paths, PATH-resolved tools, or explicit user roots. Discover the repository root in scripts:
-
-```bash
-repo_root=$(git rev-parse --show-toplevel)
-```
-
-Build audits model Meson defaults: for an omitted or `auto` option, audit the dependencies Meson enables on the target host. An absent option resolves to what Meson will do, not to disabled.
-
-Raw-submit and hazardous probes require exact opt-in values, such as `R300_TRACE_HAZARD_ACCEPTED=1`. Reject unset, empty, and zero-valued gates. Variable presence is not consent.
-
-### Release, debug, and measurement contamination
-
-Release and debug builds keep separate build directories and separate install prefixes, and share no object files, build directories, or install paths. Run `meson setup`, `ninja -C <builddir>`, and `ninja -C <builddir> install` completely for one build before starting the other.
-
-Silicon evidence and conformance work use `buildtype=release`; `debugoptimized` and `debug` builds change timing, allocator behavior, and GL error paths.
-
-Driver RCA and shader disassembly use a separate `buildtype=debug` build at its own prefix.
-
-Run probes against one build by pointing the loader at that build prefix and
-Meson-configured library directory:
-
-```bash
-mesa_prefix=$(meson introspect <builddir> --buildoptions | jq -r '.[] | select(.name == "prefix").value')
-mesa_libdir=$(meson introspect <builddir> --buildoptions | jq -r '.[] | select(.name == "libdir").value')
-LIBGL_DRIVERS_PATH="$mesa_prefix/$mesa_libdir/dri" \
-LD_LIBRARY_PATH="$mesa_prefix/$mesa_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-  ./probe_binary
-```
-
-For Vulkan probes, point `VK_ICD_FILENAMES` at the ICD JSON this prefix
-installed for the configured `vulkan-drivers` Meson option. `ati_r300`
-installs `r3v_icd.<cpu>.json`; `amd_terascale` installs
-`terascale_icd.<cpu>.json`. Prefer the matching leaf under the prefix rather
-than hard-coding one driver:
-
-```bash
-mesa_icd_dir="$mesa_prefix/share/vulkan/icd.d"
-# Prefer the ICD for the drivers this prefix was configured with.
-mesa_icd=$(ls "$mesa_icd_dir"/r3v_icd.*.json \
-               "$mesa_icd_dir"/terascale_icd.*.json 2>/dev/null | head -1)
-test -n "$mesa_icd" && test -f "$mesa_icd"
-```
-
-A release evidence run defines `LIBGL_DRIVERS_PATH` as
-`$mesa_prefix/$mesa_libdir/dri`, `LD_LIBRARY_PATH` as
-`$mesa_prefix/$mesa_libdir`, and `VK_ICD_FILENAMES` as `$mesa_icd`, or unsets
-each variable. A debug DRI driver or stale Vulkan ICD loaded into a release
-probe invalidates silicon evidence.
-
-### Build profiles and host envs
-
-The default build profile lives at the top of `build-infra/configs/`; the other
-profiles live in `build-infra/configs/alternates/`.  The Makefile resolves a
-bare `PROFILE=` name against both directories, so `make` invocations name a
-profile by basename regardless of which directory holds it.
-
-Each profile's `.meson` file declares its own drivers, buildtype, and
-options; read the config for the enumeration. The facts the configs do
-not state: profile `3_r300_full_debug_optimized_*` is the default
-(maximal r300 plus the `ati_r300` ICD, debugoptimized, vostro); profile
-`4_r300_full_release_*` is the conformance baseline -- GL/GLES/Piglit
-and silicon-evidence runs use it because an assertions-live debug build
-can abort a case release would pass; profile
-`5_r300_full_release_x86_64v1-gcc-distcc-cache` is the GCC diagnostic
-profile and pairs with the GCC Vostro env plus `COMPILER_FAMILY=gnu`. Configure
-it with:
-
-```sh
-make -C build-infra configure PROFILE=5_r300_full_release_x86_64v1-gcc-distcc-cache \
-  HOSTENV=vostro1000-x86-64-v1-gcc-ccache-distcc COMPILER_FAMILY=gnu
-```
-
-The `terakan_full` release/debug pair serves x130e with
-`terakan_norusticl` variants as fallbacks; and
-`r300_h264dec_full_debug_*` is a development surface.
-
-Active host envs live in `build-infra/env/`:
-`vostro1000-x86-64-v1-clang22-ccache-distcc.env` for the numbered clang
-profiles, `vostro1000-x86-64-v1-gcc-ccache-distcc.env` for the GCC profile,
-and `generic-x86-64-os.env` for ad hoc portable builds. The GCC profile uses
-`COMPILER_FAMILY=gnu`, `COMPILER_CHAIN=ccache`, and a generated gcc/g++
-toolchain overlay; its client and distcc volunteers use one matching GCC
-major, or `GOROROBA_GCC_VERSION` pins the major on every endpoint. Historical
-btver1, sapphire, zen4, and distcc-pump envs live under
-`build-infra/env/Archive/` and are not active Make `HOSTENV` values. Active
-envs set lane-specific distcc/cache policy, host CFLAGS, `-fno-emulated-tls`,
-and centralized `CCACHE_DIR`/`SCCACHE_DIR`. The validated clang lane on Linux
-x86_64 requires `-fno-emulated-tls` to avoid a libglapi link failure.
-
-### Build directories and install prefixes
-
-Each build directory maps to one install prefix; directories share no object
-files or install paths.
-
-The Makefile derives the canonical build directory from the profile:
-`build/mesa-<profile>/`. A plain `make install PROFILE=<profile>` installs to
-the isolated default prefix `/opt/local/mesa-<profile>`, which keeps profile
-artifacts separate for review, bisect, and evidence work.
-
-The shared active prefixes are only for intentional operator-selected installs:
-
-- release active tree: `/opt/local/mesa-26-gororoba`;
-- debugoptimized active tree: `/opt/mesa-gororoba-debug-optimized`, with
-  `/opt/local/mesa-gororoba-debug-optimized` as its compatibility alias.
-
-Use the `install-<profile>` targets, or pass `PREFIX=` explicitly, only when the
-goal is to replace one of those active trees. Evidence collection keeps each
-profile build in its own prefix. Install trees live outside the repository;
-an in-repo `install/` directory or suffixed variant such as `install-gallium`
-pollutes the worktree and requires separate `LIBGL_DRIVERS_PATH` or
-`VK_ICD_FILENAMES` overrides. Project builds leave system Mesa under
-`/usr/lib/` undisturbed.
-
-### Clean and reconfigure
-
-Incremental `ninja -C <builddir> clean` removes compiled objects and keeps Meson configuration. A Meson option change or a Meson upgrade requires `meson setup --wipe <builddir>`, which gives a fresh directory setup while preserving download caches. `meson-private/cmd_line.txt` is generated state and changes only through `meson setup` and `meson configure`. After `--wipe`, run `ninja -C <builddir>` and `ninja -C <builddir> install` in full before collecting evidence.
-
-## Build-system and cache discipline
-
-Native files use PATH-resolved compiler names or generated local overlays, and checked-in files name compilers by those forms only. Rust is selected by active Meson/toolchain policy.
-
-Make writes version-coupled LLVM helper tools into `$BUILDDIR/gororoba-toolchain.meson` before `meson setup`. The generator prefers the x130e LLVM major when present, honors `MESA_LLVM_VERSION` or `GOROROBA_LLVM_VERSION` when set, and otherwise selects an installed coherent `clang`/`clang++`/`llvm-config` major on the host.
-
-C/C++ cache lanes:
-
-- Warm incremental: `ccache -> distcc -> clang`, no pump. Rust:
-  `sccache -> rustc`. Use `CCACHE_PREFIX=distcc`; expect hits after a
-  populated build.
-- Historical distcc-pump envs are archived and have no active Make target. Do
-  not revive pump without a new build-system design review because upstream
-  removed the supported pump lane during profile consolidation.
-
-Active configure writes:
-
-```ini
-[binaries]
-c    = ['ccache', '<selected-clang>']
-cpp  = ['ccache', '<selected-clang++>']
-rust = ['sccache', 'rustc']
-llvm-config = '<selected-llvm-config>'
-```
-
-Historical pump configure wrote:
-
-```ini
-[binaries]
-c    = ['distcc', '<selected-clang>']
-cpp  = ['distcc', '<selected-clang++>']
-rust = ['sccache', 'rustc']
-llvm-config = '<selected-llvm-config>'
-```
-
-Pump builds run unwrapped by ccache or sccache. Wrapper scripts such as `exec ccache distcc clang "$@"` stay retired: that form causes about 93.5% `Multiple source files` ccache rejections because ccache hashes `distcc`'s mtime as the compiler. Use Meson `[binaries]` for the wrapper boundary and `CCACHE_PREFIX=distcc` for the cache chain.
-
-`RUSTC_WRAPPER` is cargo-only here; it changes neither Meson C/C++ behavior nor Meson Rust selection. The Rust sccache lane remains separate because it wraps `rustc`, not the C/C++ include-server path.
-
-The workspace patched sccache for meson-rust's multi-`--emit` form. Select the patched binary through PATH order or host env, not a baked per-user path.
-
-When cache wiring changes, consult `steinmarder/docs/workspace/ccache-sccache-wiring.md` and `steinmarder/docs/workspace/sccache-multi-emit-patch.md`, then update the reproducible recipe. A cache-miss regression gets a diagnosis before the recipe changes.
-
-Check ccache state with:
-
-```bash
-ccache --show-stats --verbose
-```
-
-Expected status: a first full build populates `~/.cache/ccache` and shows about 95% misses while filling the cache. Later rebuilds with unchanged sources should show more than 90% hits.
+`build-infra/CLAUDE.md` carries the standalone build, release and debug
+separation, build profiles and host envs, build directories and install
+prefixes, clean and reconfigure, and the distcc/ccache wiring. Meson owns
+configuration and Ninja generation; Make and build-infra own host selection,
+audit checks, generated native overlays, clean, build, and install. Changing
+that split takes explicit approval for a build-system architecture change. Read
+`build-infra/CLAUDE.md` before touching a Meson option, a native file, a host
+env, an install prefix, or a cache lane.
 
 ## Owned-origin publication and upstream intake
 
@@ -680,24 +498,9 @@ Source comments cite public, durable authority; the unstable and private referen
 
 Retained-experiment vocabulary is the RCA campaign's own naming -- mutation arms, calibration arms, probe fixtures, capture cells, bundle identifiers -- and an analogy to such an experiment (`the same vacuity a mutation arm forcing an already-present value has`) is evidence chronology in disguise: the reader needs the campaign to parse it. A comment restates the property the experiment demonstrated as the mechanism itself, on the exact chip and path where it holds (`a seed equal to the value leaves an unwritten register unsatisfied, so a stream passes only when it establishes every value itself`); the experiment that discovered it lives in the commit message and the finding. Test-local API terms the file itself defines (`poison`, a parameter of the checker under test) are the code's own vocabulary and stand.
 
-Examples of forbidden source-comment authority include `companion to PR #...`, `Phase 4.4`, `Step 1 of Phase 3`, `@triang3l`, `(eirikr)`, `as of today`, `currently`, `will be exercised when Phase 5 lands`, `C-2026-04-19-06`, `LI-2026-04-17-02`, `this chip family`, `our GPU`, and `per Evergreen_ISA.txt:17572`.
-
 Source comments name durable mechanisms: exact chip, ISA/register rule, API/spec rule, kernel validator, test class, or measured behavior.
 
 Commit messages and finding documents may carry chronology and the spec section number when useful. A source comment states the mechanism or names the controlling rule in its own terms, so a reader does not need the spec open to parse it. A stable spec section or version may trail the named rule as supplemental disambiguation; the named rule itself carries the authority, and chronology lives in the commit message and the finding, as does section-number provenance. Like the American-spelling rule, this governs new or modified comments only; existing comments keep their section numbers rather than absorb churn.
-
-Preferred shape:
-
-```text
-The kernel treats WORD0 as the per-BO byte offset. It adds the relocation base
-before validation, so the shader sees the caller's intended buffer address.
-```
-
-Bad shape:
-
-```text
-Phase 8 workaround from the agent branch.
-```
 
 Mechanism controls comment length: the number of distinct load-bearing facts sets the length, and a line threshold does not. Use short labels for obvious local sections, and compact multi-sentence blocks only when the code depends on hardware behavior, API rules, kernel validation, empirical evidence, or non-local invariants. Every sentence carries a distinct contract, cause, consequence, scope, or falsifier; a sentence that repeats or paraphrases another sentence in the block is removed. Default to the shortest form that preserves the load-bearing constraint: a single sentence trailing the code, a short block for a constraint with interacting parts, and a longer block only when each added sentence still carries a distinct fact -- a cross-layer invariant that genuinely spans an API rule, a lowering pass, allocation granularity, kernel validation, and an observed failure may legitimately run long. Architecture that persists across the file moves to file or type scope (see the descriptor-layout preamble in `si_descriptors.c`); the point of use keeps only the local link in the chain. Mesa-upstream blocks for a single constraint (see `si_buffer.c`, `evergreen_state.c`) are typically four to five lines; use them to calibrate how much space a single fact deserves.
 
@@ -795,15 +598,7 @@ A TODO-family comment names three mechanism elements:
 
 A TODO-family comment carries mechanism only; reviewer breadcrumbs, PR-thread references, phase/wave/mission labels, AGENTS.md rule numbers, and deictic references such as `currently`, `previously`, `this driver`, and `our GPU` live in the commit message or PR description.
 
-Wrong shape:
-
-```text
-/* TODO: ...  Reason for deferral: outside this PR's scope.
- *       Tracking: reviewer P1 badge on the consolidated style PR.
- */
-```
-
-Right shape:
+Required shape:
 
 ```text
 /* TODO: missing work --
@@ -823,12 +618,11 @@ Right shape:
 
 Finding documents may carry chronology: dated frontmatter, `last_verified`, `evidence_class`, dated filenames, and ordered predecessors. PR or task references pair with a durable identifier.
 
-Examples:
-
-- Wrong: `the fix landed via mesa PR #34`
-- Right: `landed in commit f230cb07db6 (terakan_buffer.c::terakan_CreateBuffer size-zero guard); PR #34 / branch fix/w9-buffer-size-zero-guard for cross-link`
-- Wrong: `see issue #157`
-- Right: `see filed-finding 2026-05-15-induced-lockup-recovery-test-results.md (PR #41 if still open)`
+A reference names the durable identifier first and carries the tracker link
+beside it: `landed in commit f230cb07db6 (terakan_buffer.c::terakan_CreateBuffer
+size-zero guard); PR #34 / branch fix/w9-buffer-size-zero-guard for
+cross-link`, and `see filed-finding
+2026-05-15-induced-lockup-recovery-test-results.md (PR #41 if still open)`.
 
 Markdown loaded by agents uses exactly one H1, heading depth no deeper than `###`, frontmatter on programmatically loaded files, language tags on code fences, exact cross-references, and rule text as direct positive-declarative statements.
 
