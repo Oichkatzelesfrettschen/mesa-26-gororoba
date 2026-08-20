@@ -44,8 +44,8 @@ struct r300_cpu_float_environment {
 };
 
 /* The CPU route implements one shader arithmetic environment independent of
- * application-controlled rounding and denormal modes.  FE_DFL_ENV selects
- * round-to-nearest and the implementation's denormal-preserving default.
+ * application-controlled rounding and denormal modes.  The executor admits
+ * FE_DFL_ENV only when it realizes round-to-nearest and preserves denormals.
  */
 static int
 float_environment_enter(struct r300_cpu_float_environment *environment)
@@ -53,6 +53,13 @@ float_environment_enter(struct r300_cpu_float_environment *environment)
    if (fegetenv(&environment->caller) != 0)
       return -ENOTSUP;
    if (fesetenv(FE_DFL_ENV) != 0) {
+      (void)fesetenv(&environment->caller);
+      return -ENOTSUP;
+   }
+   const volatile float smallest_normal = bits_to_float(0x00800000u);
+   const volatile float one_half = 0.5f;
+   if (fegetround() != FE_TONEAREST ||
+       float_result_to_bits(smallest_normal * one_half) != 0x00400000u) {
       (void)fesetenv(&environment->caller);
       return -ENOTSUP;
    }

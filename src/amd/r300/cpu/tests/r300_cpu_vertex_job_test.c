@@ -202,6 +202,9 @@ static void test_multiply_add_rounding(void)
    for (uint32_t lane = 0; lane < 4; lane++)
       assert(out[lane] == 0);
 
+   /* One rounding keeps the exact product's 2^-24 residual.  Reusing the
+    * two-rounding FMAD path produces +0 and fails this leg.
+    */
    job.instructions[2].opcode = R300_VERTEX_JOB_OP_FFMA;
    run_one(&job, input, out);
    for (uint32_t lane = 0; lane < 4; lane++)

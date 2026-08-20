@@ -32,7 +32,9 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job);
  * the gather contract); -ENOSPC when 4 * vertex_count exceeds
  * carrier_dwords; -EINVAL when the carrier range overlaps the stream
  * bytes, so an in-place rewrite cannot corrupt its own input.
- * Carrier dwords past 4 * vertex_count stay untouched.
+ * -ENOTSUP reports that the C floating-point environment cannot provide
+ * the round-to-nearest, denormal-preserving execution policy.  Carrier
+ * dwords past 4 * vertex_count stay untouched.
  */
 int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
                                 const struct r300_cpu_vertex_stream *stream,
@@ -47,11 +49,11 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
  * commits its product to binary32 before the add, FFMA rounds the
  * combined operation once, and DP4 accumulates in component order from
  * the packed products so signed zeros survive.  Execution saves the
- * caller's floating-point environment, uses round-to-nearest with
- * denormals preserved, and restores the caller's state.  Each returns
- * -ENOSYS on a build without its
- * instruction set, so a bench lane never times a different
- * implementation than its label names.
+ * caller's floating-point environment, admits FE_DFL_ENV only after
+ * calibrating round-to-nearest and denormal preservation, and restores
+ * the caller's state.  Each returns -ENOTSUP when that environment is
+ * unavailable and -ENOSYS on a build without its instruction set, so a
+ * bench lane never times a different implementation than its label names.
  *
  * SSE2 supplies every operator the job IR needs: movdqu for the
  * unaligned loads and stores that move NaN payloads, denormals, and

@@ -245,6 +245,9 @@ static void witness_fmad_two_roundings(const struct simd_lane *lane)
    for (uint32_t lane = 0; lane < 4; lane++)
       assert(out[lane] == 0x00000000u);
 
+   /* One rounding keeps the exact product's 2^-24 residual.  Reusing the
+    * two-rounding FMAD path produces +0 and fails this leg.
+    */
    job.instructions[2].opcode = R300_VERTEX_JOB_OP_FFMA;
    assert(lane->execute(&job, &stream, 0, 1, out, 4) == 0);
    for (uint32_t lane = 0; lane < 4; lane++)

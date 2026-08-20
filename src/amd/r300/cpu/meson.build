@@ -9,6 +9,7 @@ libr300_cpu = static_library(
   'r300_cpu',
   r300_cpu_files,
   include_directories : [inc_src, inc_include],
+  dependencies : [dep_m],
   gnu_symbol_visibility : 'hidden',
 )
 
