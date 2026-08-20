@@ -1,0 +1,223 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Exact-word and validation controls for the neutral R300-class depth
+ * binding and depth-test state.
+ */
+
+/* The asserts carry the verdicts, so they stay live in NDEBUG builds. */
+#undef NDEBUG
+
+#include "r300_zb_depth_state.h"
+
+#include "r300_reg.h"
+
+#include <assert.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+
+#define CAPACITY 64u
+
+/* The reference binding: a 64-pixel-pitch 16-bit integer depth surface
+ * at offset 0x2000 in its buffer object, LESS comparison with depth
+ * writes on.
+ */
+static const struct r300_zb_depth_state_params reference = {
+   .pitch_pixels = 64,
+   .depth_format = R300_DEPTHFORMAT_16BIT_INT_Z,
+   .depth_offset_bytes = 0x2000,
+   .depth_relocation_payload = 0x0000000c,
+   .depth_function = R300_ZS_LESS,
+   .depth_write = true,
+};
+
+/* A one-dword PACKET0 run: header naming one payload dword at reg,
+ * then the value.  Written from the packet grammar rather than from the
+ * emitter, so a copied mistake cannot make both sides agree.
+ */
+static uint32_t
+packet0_header(uint32_t reg)
+{
+   return (0u << 30) | ((0u) << 16) | ((reg >> 2) & 0x1fffu);
+}
+
+/* A type-3 packet header: the type bits, the count of following payload
+ * dwords less one, and the opcode.  The BO reference is a NOP carrying
+ * one payload dword.
+ */
+static uint32_t
+packet3_header(uint32_t opcode, uint32_t count)
+{
+   return (3u << 30) | ((count - 1u) << 16) | opcode;
+}
+
+static void
+exact_reference_stream(void)
+{
+   uint32_t words[CAPACITY];
+   struct r300_pm4_builder b;
+   memset(words, 0xa5, sizeof(words));
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &reference) == 0);
+   assert(b.error == 0);
+   assert(b.count == r300_zb_depth_state_dwords());
+
+   const uint32_t expected[] = {
+      packet0_header(R300_ZB_FORMAT), R300_DEPTHFORMAT_16BIT_INT_Z,
+      packet0_header(R300_ZB_DEPTHOFFSET), 0x2000,
+      packet3_header(R300_PM4_PACKET3_NOP, 1), 0x0000000c,
+      packet0_header(R300_ZB_DEPTHPITCH), 64,
+      packet0_header(R300_ZB_CNTL), R300_Z_ENABLE | R300_Z_WRITE_ENABLE,
+      packet0_header(R300_ZB_ZSTENCILCNTL), R300_ZS_LESS,
+      packet0_header(R300_ZB_BW_CNTL), 0,
+   };
+   assert(sizeof(expected) / sizeof(expected[0]) ==
+          r300_zb_depth_state_dwords());
+   for (unsigned i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
+      if (words[i] != expected[i]) {
+         fprintf(stderr, "dword %u: emitted %08x expected %08x\n", i,
+                 words[i], expected[i]);
+         assert(false);
+      }
+   }
+   /* The emitter writes exactly its reserved dwords and nothing past
+    * them, so the poison beyond the stream survives. */
+   assert(words[r300_zb_depth_state_dwords()] == 0xa5a5a5a5u);
+}
+
+static void
+depth_write_disabled(void)
+{
+   uint32_t words[CAPACITY];
+   struct r300_pm4_builder b;
+   struct r300_zb_depth_state_params params = reference;
+   params.depth_write = false;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params) == 0);
+   /* ZB_CNTL is the ninth dword: Z enabled, the write bit clear, so a
+    * depth-tested draw that must not disturb the surface has a state. */
+   assert(words[9] == R300_Z_ENABLE);
+}
+
+static void
+every_comparison_encodes(void)
+{
+   for (uint32_t function = R300_ZS_NEVER; function <= R300_ZS_ALWAYS;
+        function++) {
+      uint32_t words[CAPACITY];
+      struct r300_pm4_builder b;
+      struct r300_zb_depth_state_params params = reference;
+      params.depth_function = function;
+      r300_pm4_builder_init(&b, words, CAPACITY);
+      assert(r300_zb_depth_state_emit(&b, &params) == 0);
+      assert(words[11] == function);
+   }
+}
+
+/* A refused call leaves the builder untouched, so a caller that ignores
+ * the status cannot submit a half-written binding.
+ */
+static void
+refusal_writes_nothing(const char *label,
+                       const struct r300_zb_depth_state_params *params,
+                       int expected)
+{
+   uint32_t words[CAPACITY];
+   struct r300_pm4_builder b;
+   memset(words, 0xa5, sizeof(words));
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   const int result = r300_zb_depth_state_emit(&b, params);
+   if (result != expected) {
+      fprintf(stderr, "%s: returned %d, expected %d\n", label, result,
+              expected);
+      assert(false);
+   }
+   assert(b.count == 0);
+   for (unsigned i = 0; i < CAPACITY; i++)
+      assert(words[i] == 0xa5a5a5a5u);
+}
+
+static void
+validation(void)
+{
+   struct r300_zb_depth_state_params params;
+
+   params = reference;
+   params.depth_function = R300_ZS_ALWAYS + 1;
+   refusal_writes_nothing("function past the field", &params, -EINVAL);
+
+   params = reference;
+   params.pitch_pixels = 0;
+   refusal_writes_nothing("zero pitch", &params, -EINVAL);
+
+   params = reference;
+   params.pitch_pixels = 66;
+   refusal_writes_nothing("pitch off the four-pixel grid", &params, -EINVAL);
+
+   params = reference;
+   params.pitch_pixels = R300_DEPTHPITCH_MASK + 4;
+   refusal_writes_nothing("pitch past the field", &params, -EINVAL);
+
+   params = reference;
+   params.depth_offset_bytes = 0x2010;
+   refusal_writes_nothing("offset the low five bits reach", &params,
+                          -EINVAL);
+
+   /* A null builder or params is malformed whatever the capacity. */
+   assert(r300_zb_depth_state_emit(NULL, &reference) == -EINVAL);
+   {
+      uint32_t words[CAPACITY];
+      struct r300_pm4_builder b;
+      r300_pm4_builder_init(&b, words, CAPACITY);
+      assert(r300_zb_depth_state_emit(&b, NULL) == -EINVAL);
+      assert(b.count == 0);
+   }
+}
+
+static void
+capacity_one_short(void)
+{
+   const uint32_t needed = r300_zb_depth_state_dwords();
+   uint32_t words[CAPACITY];
+   struct r300_pm4_builder b;
+   memset(words, 0xa5, sizeof(words));
+   r300_pm4_builder_init(&b, words, needed - 1);
+   assert(r300_zb_depth_state_emit(&b, &reference) == -ENOSPC);
+   assert(b.count == 0);
+   for (unsigned i = 0; i < CAPACITY; i++)
+      assert(words[i] == 0xa5a5a5a5u);
+
+   /* Exactly the reserved capacity fits. */
+   r300_pm4_builder_init(&b, words, needed);
+   assert(r300_zb_depth_state_emit(&b, &reference) == 0);
+   assert(b.count == needed);
+}
+
+static void
+determinism(void)
+{
+   uint32_t first[CAPACITY], second[CAPACITY];
+   struct r300_pm4_builder a, b;
+   memset(first, 0, sizeof(first));
+   memset(second, 0xff, sizeof(second));
+   r300_pm4_builder_init(&a, first, CAPACITY);
+   r300_pm4_builder_init(&b, second, CAPACITY);
+   assert(r300_zb_depth_state_emit(&a, &reference) == 0);
+   assert(r300_zb_depth_state_emit(&b, &reference) == 0);
+   assert(memcmp(first, second,
+                 r300_zb_depth_state_dwords() * sizeof(uint32_t)) == 0);
+}
+
+int
+main(void)
+{
+   exact_reference_stream();
+   depth_write_disabled();
+   every_comparison_encodes();
+   validation();
+   capacity_one_short();
+   determinism();
+   printf("r300_zb_depth_state_test: all checks passed\n");
+   return 0;
+}
