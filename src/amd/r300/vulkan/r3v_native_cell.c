@@ -17,6 +17,7 @@
 #include "amd/r300/common/r300_r2vb_reingest_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
+#include "amd/r300/common/r300_zb_depth_control_cell.h"
 #include "amd/r300/cpu/r300_cpu_vertex.h"
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
 
@@ -1017,6 +1018,180 @@ r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
    /* install_ib took ownership of cell.ib; only the descriptor resets. */
    cell.ib = NULL;
    r300_direct_write_release(&cell);
+
+   return VK_SUCCESS;
+}
+
+/* Fills a live mapping of memory with a repeated 16-bit sentinel and
+ * publishes it for the unsnooped GART.  The allocation is whole 16-bit
+ * units by the recorder's size contract, so no partial unit trails the
+ * fill.
+ */
+static VkResult
+zb_depth_control_fill_u16(struct r3v_native_device *device,
+                          struct r3v_native_memory *memory, uint16_t value,
+                          const char *role)
+{
+   bool owns_map = memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &memory->bo, &memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: depth control %s memory is not "
+                       "CPU-mappable", role);
+   }
+   uint16_t *units = memory->map;
+   for (uint64_t i = 0; i < memory->bo.size / 2; i++)
+      units[i] = value;
+   radeon_drm_vk_bo_cache_sync(&device->drm, memory->map, memory->bo.size);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+      memory->map = NULL;
+   }
+   return VK_SUCCESS;
+}
+
+#define R3V_ZB_DEPTH_CONTROL_VERTEX_BYTES \
+   (R300_ZB_DEPTH_CONTROL_VERTEX_DWORDS * sizeof(uint32_t))
+
+/* Records the depth control cell: writes the six-vertex payload,
+ * sentinel-fills the color target and the Z16 depth surface, publishes
+ * each for the unsnooped GART, and installs the reference IB with the
+ * three BO references in relocation-slot order.  Each memory is exactly
+ * the cell's declared footprint, so the geometry the arming gate freezes
+ * is the shape this recorder admitted.  Recording is submit-free; the
+ * queue's hazard gate guards execution.
+ */
+VkResult
+r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
+                                   VkDeviceMemory vertexMemory,
+                                   VkDeviceMemory colorMemory,
+                                   VkDeviceMemory depthMemory)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, color_memory, colorMemory);
+   VK_FROM_HANDLE(r3v_native_memory, depth_memory, depthMemory);
+
+   if (cmd_buffer == NULL || vertex_memory == NULL || color_memory == NULL ||
+       depth_memory == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   /* Exact declared footprints: the arming gate's frozen-geometry fact
+    * compares these sizes, so a larger allocation would record a cell
+    * the gate then refuses, and the recorder names that here instead.
+    */
+   if (vertex_memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION ||
+       color_memory->bo.size != R300_ZB_DEPTH_CONTROL_COLOR_BYTES ||
+       depth_memory->bo.size != R300_ZB_DEPTH_CONTROL_DEPTH_BYTES) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: depth control needs exactly %u vertex, "
+                       "%u color, and %u depth bytes",
+                       R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION,
+                       R300_ZB_DEPTH_CONTROL_COLOR_BYTES,
+                       R300_ZB_DEPTH_CONTROL_DEPTH_BYTES);
+   }
+
+   /* Three distinct GEM objects: radeon_drm_vk_reloc_list_add folds
+    * duplicate handles into one relocation slot, which would leave a
+    * slot payload outside the relocation chunk.
+    */
+   if (vertex_memory->bo.handle == color_memory->bo.handle ||
+       vertex_memory->bo.handle == depth_memory->bo.handle ||
+       color_memory->bo.handle == depth_memory->bo.handle) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: depth control roles require three "
+                       "distinct GEM objects");
+   }
+
+   /* The vertex payload lands through the memory's CPU mapping; a
+    * NO_CPU_ACCESS placement fails here and the recorder reports it
+    * instead of submitting an unwritten stream.
+    */
+   bool owns_map = vertex_memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &vertex_memory->bo,
+                            &vertex_memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: depth control vertex memory is not "
+                       "CPU-mappable");
+   }
+   memcpy(vertex_memory->map, r300_zb_depth_control_vertices,
+          R3V_ZB_DEPTH_CONTROL_VERTEX_BYTES);
+   radeon_drm_vk_bo_cache_sync(&device->drm, vertex_memory->map,
+                               R3V_ZB_DEPTH_CONTROL_VERTEX_BYTES);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
+                             vertex_memory->map);
+      vertex_memory->map = NULL;
+   }
+
+   /* Both surfaces are sentinel-filled whole and published, so each
+    * oracle reads a deterministic pre-draw state and any device write is
+    * detectable.  The color sentinel repeats per 16-bit half, so one
+    * fill routine covers both fills without a second publication path.
+    */
+   VkResult fill_result = zb_depth_control_fill_u16(
+      device, color_memory, (uint16_t)(R300_TRIANGLE_COLOR_SENTINEL & 0xffff),
+      "color");
+   if (fill_result != VK_SUCCESS)
+      return fill_result;
+   fill_result = zb_depth_control_fill_u16(
+      device, depth_memory, R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL, "depth");
+   if (fill_result != VK_SUCCESS)
+      return fill_result;
+
+   struct r300_zb_depth_control_ib cell;
+   int emit_result = r300_zb_depth_control_reference_emit(&cell);
+   if (emit_result != 0)
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(emit_result));
+   if (r300_zb_depth_control_validate_reloc_sites(&cell) != 0) {
+      r300_zb_depth_control_release(&cell);
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   }
+
+   struct r3v_native_bo_reference *references =
+      calloc(R300_ZB_DEPTH_CONTROL_SLOT_COUNT, sizeof(*references));
+   if (references == NULL) {
+      r300_zb_depth_control_release(&cell);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX] =
+      (struct r3v_native_bo_reference){
+         .handle = vertex_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = 0,
+         .memory = vertex_memory,
+      };
+   references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR] =
+      (struct r3v_native_bo_reference){
+         .handle = color_memory->bo.handle,
+         .read_domains = 0,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = color_memory,
+      };
+   /* The depth surface crosses both directions: the host fill is the
+    * comparison's stored operand and the device writes passing
+    * fragments, so the relocation carries the GTT domain on both sides.
+    */
+   references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH] =
+      (struct r3v_native_bo_reference){
+         .handle = depth_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = depth_memory,
+      };
+
+   r3v_native_cmd_buffer_install_ib(cmd_buffer,
+                                    R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL,
+                                    cell.ib, cell.ib_size_dwords, references,
+                                    R300_ZB_DEPTH_CONTROL_SLOT_COUNT);
+   /* install_ib took ownership of cell.ib; only the descriptor resets. */
+   cell.ib = NULL;
+   r300_zb_depth_control_release(&cell);
 
    return VK_SUCCESS;
 }

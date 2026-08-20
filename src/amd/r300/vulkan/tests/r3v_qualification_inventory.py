@@ -103,6 +103,9 @@ REQUIRED_TESTS: tuple[str, ...] = (
     # r3v native: arming, dispatch, recording, submit, lifecycle, WSI.
     "r3v-native-arming",
     "r3v-native-arming-positive",
+    "r3v-native-zb-depth-control-closed",
+    "r3v-native-zb-depth-control-open",
+    "r3v-native-zb-depth-control-arming-runner",
     "r3v-native-arming-runner-refuses-undeclared",
     *R3V_FLOAT2_TUPLE_REQUIRED_TESTS,
     "r3v-native-entrypoint-audit-selftest",

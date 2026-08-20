@@ -14,6 +14,7 @@
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_r2vb_reingest_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/common/r300_zb_depth_control_cell.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_cs.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
 
@@ -172,6 +173,36 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
          &cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX];
       return slot->read_domains != RADEON_GEM_DOMAIN_GTT ||
              slot->write_domain != RADEON_GEM_DOMAIN_GTT;
+   }
+   case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL: {
+      /* The depth control binds three exact footprints: the vertex page
+       * device-read, the color target device-written, and the depth
+       * surface crossing both directions -- the host fill is the
+       * comparison's stored operand and the device writes passing
+       * fragments -- so its relocation carries the GTT domain on both
+       * sides.
+       */
+      if (cmd_buffer->reference_count != R300_ZB_DEPTH_CONTROL_SLOT_COUNT)
+         return true;
+      const struct r3v_native_bo_reference *vertex =
+         &cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX];
+      const struct r3v_native_bo_reference *color =
+         &cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR];
+      const struct r3v_native_bo_reference *depth =
+         &cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH];
+      if (vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          vertex->write_domain != 0 || vertex->memory == NULL ||
+          vertex->memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION)
+         return true;
+      if (color->read_domains != 0 ||
+          color->write_domain != RADEON_GEM_DOMAIN_GTT ||
+          color->memory == NULL ||
+          color->memory->bo.size != R300_ZB_DEPTH_CONTROL_COLOR_BYTES)
+         return true;
+      return depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             depth->write_domain != RADEON_GEM_DOMAIN_GTT ||
+             depth->memory == NULL ||
+             depth->memory->bo.size != R300_ZB_DEPTH_CONTROL_DEPTH_BYTES;
    }
    case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER: {
       uint32_t carrier_bytes;
