@@ -515,6 +515,25 @@ if get_option('r3v-native-backend')
       args : [files('tests/r3v_native_separation_audit.py'), '--selftest'],
       suite : ['r3v'],
     )
+
+    # Executable form of the boundaries doc's completion criterion that
+    # feature and extension tables come from implemented behavior: every
+    # device extension the native branch advertises names the native
+    # route that executes it, and the native feature set stays empty.
+    test(
+      'r3v-native-advertised-surface-selftest',
+      prog_python,
+      args : [files('tests/r3v_native_advertised_surface_audit.py'),
+              '--selftest'],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-advertised-surface',
+      prog_python,
+      args : [files('tests/r3v_native_advertised_surface_audit.py'),
+              '--source', files('r3v_physical_device.c')],
+      suite : ['r3v'],
+    )
     # Source layer: the native compilation's sources carry no Gallium
     # include and no Gallium runtime identifier on any line a
     # -DR3V_NATIVE_BACKEND compile keeps.
