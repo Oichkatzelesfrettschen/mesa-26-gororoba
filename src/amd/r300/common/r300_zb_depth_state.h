@@ -12,11 +12,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Binds a depth buffer and arms the depth test.  The first-draw
- * contract writes every ZB function disabled and carries the depth
- * resource words as reference artifacts for a buffer no draw binds, so
- * a cell whose output depends on the depth test establishes these
- * registers itself.
+/* Binds a depth buffer and arms the depth test.  The first-draw contract
+ * writes every ZB function disabled, and r300_first_draw_contract_resolve
+ * drops the REFERENCE_ARTIFACT disposition the depth resource words carry,
+ * so the binding reaches no stream through the contract.  A cell whose
+ * output depends on the depth test establishes these registers itself.
  *
  * ZB_DEPTHOFFSET carries a byte offset the kernel relocates, the same
  * NOP-form relocation the color target's RB3D_COLOROFFSET0 takes:
@@ -61,9 +61,16 @@ uint32_t r300_zb_depth_state_dwords(void);
  * multiple of four or exceeds the DEPTHPITCH field, or an offset the low five
  * bits reach.  A builder that already carries an error returns that first
  * error; insufficient capacity returns -ENOSPC.  Returns 0 on success.
+ *
+ * out_reloc_ib_index reports the dword index of the relocation payload
+ * this emission placed, which a cell records as its depth-slot site: the
+ * emitter placed the word, so its position comes from here rather than
+ * from a caller re-deriving the packet layout.  A caller with no site
+ * table passes NULL.  A refused emission writes nothing through it.
  */
 int r300_zb_depth_state_emit(
    struct r300_pm4_builder *builder,
-   const struct r300_zb_depth_state_params *params);
+   const struct r300_zb_depth_state_params *params,
+   uint32_t *out_reloc_ib_index);
 
 #endif /* R300_ZB_DEPTH_STATE_H */

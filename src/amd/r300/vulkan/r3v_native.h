@@ -660,6 +660,29 @@ VkResult r3v_native_cell_vk_result_from_errno(int emit_result);
 VkResult r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
                                         VkDeviceMemory colorMemory);
 
+/* Depth control recorder: lowers the two-triangle depth-test cell
+ * (src/amd/r300/common/r300_zb_depth_control_cell.h) into the command
+ * buffer from three live memories.  The recorder writes the six-vertex
+ * payload, sentinel-fills the color target with the color sentinel and
+ * the depth surface with the Z16 depth sentinel, publishes each for the
+ * unsnooped GART, and installs the reference IB with the vertex read,
+ * color write, and depth read-write GTT references in slot order.  Each
+ * memory's allocation is exactly the cell's declared footprint, so the
+ * frozen geometry the arming gate checks is the shape the recorder
+ * admitted.  Recording is submit-free; the queue's hazard gate guards
+ * execution.
+ */
+/* The depth control's vertex allocation: one page holding the six
+ * FLOAT_4 positions at its head, the size the recorder admits and the
+ * queue's frozen-geometry fact compares.
+ */
+#define R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION 4096u
+
+VkResult r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
+                                            VkDeviceMemory vertexMemory,
+                                            VkDeviceMemory colorMemory,
+                                            VkDeviceMemory depthMemory);
+
 /* Producer-only recorder: poisons the whole carrier allocation, emits the
  * reference R2VB producer pass
  * (src/amd/r300/common/r300_r2vb_producer_pass.h), and installs it with

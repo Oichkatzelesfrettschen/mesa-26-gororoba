@@ -51,7 +51,8 @@ r300_zb_depth_state_dwords(void)
 
 int
 r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
-                         const struct r300_zb_depth_state_params *params)
+                         const struct r300_zb_depth_state_params *params,
+                         uint32_t *out_reloc_ib_index)
 {
    if (builder == NULL || params == NULL)
       return -EINVAL;
@@ -80,7 +81,10 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
     * the offset and the relocation names the object.
     */
    r300_pm4_reg(builder, R300_ZB_DEPTHOFFSET, params->depth_offset_bytes);
-   r300_pm4_reloc_nop(builder, params->depth_relocation_payload);
+   const uint32_t reloc_index =
+      r300_pm4_reloc_nop(builder, params->depth_relocation_payload);
+   if (out_reloc_ib_index != NULL)
+      *out_reloc_ib_index = reloc_index;
 
    /* Linear, unswapped: a first depth cell reads the buffer back on the
     * host, and a tiled surface would need the detiling the readback

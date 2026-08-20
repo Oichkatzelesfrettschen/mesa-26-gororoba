@@ -111,6 +111,17 @@ r300_first_draw_state_dwords(const struct r300_first_draw_contract *contract)
    return contract->count * 2;
 }
 
+/* Sets the contract's single US_OUT_FMT_0 clause to the render target's
+ * output format.  The contract resolves that clause to the neutral
+ * EXPLICIT_DISABLE value, and the format a cell writes belongs to its
+ * color target, so a cell supplies the value and this helper places it.
+ * Returns 0, or -EINVAL when the contract carries no US_OUT_FMT_0 entry
+ * or carries more than one, either of which leaves the target format
+ * ambiguous.
+ */
+int r300_first_draw_contract_set_us_out_fmt_0(
+   struct r300_first_draw_contract *contract, uint32_t value);
+
 /* Poison-model checker: applies the command stream over an arbitrary
  * predecessor register state and reports every contract clause the final
  * state leaves unsatisfied. Ordering-barrier clauses require their contract

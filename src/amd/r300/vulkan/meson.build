@@ -404,6 +404,8 @@ if get_option('r3v-native-backend')
     '../common/r300_r2vb_producer_pass.c',
     '../common/r300_r2vb_reingest_pass.c',
     '../common/r300_tcl_bypass_triangle.c',
+    '../common/r300_zb_depth_control_cell.c',
+    '../common/r300_zb_depth_state.c',
   )
 
   # The native lane compiles with no Gallium include root: PIPE_FORMAT_*
@@ -846,6 +848,25 @@ if get_option('r3v-native-backend')
     install : false,
   )
 
+  # Attended depth control: performs a live DRM_RADEON_CS on RS482
+  # silicon drawing the two-triangle depth-test cell, then retains the
+  # color target and the depth surface and classifies both oracles.  Its
+  # first run is the B14 depth-control workload debut, unobserved by any
+  # reader.  Built and never registered as a test, because running it is
+  # a hardware authorization rather than a build-graph result.
+  r3v_native_attended_zb_depth_control = executable(
+    'r3v_native_attended_zb_depth_control',
+    files('tests/r3v_native_attended_zb_depth_control.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+    build_by_default : true,
+    install : false,
+  )
+
   # Attended producer-only cell: performs a live DRM_RADEON_CS on RS482
   # silicon, writing the vertex carrier alone -- no visible target and no
   # re-ingest -- so the CPU read-back of the carrier against the delivery
@@ -1247,6 +1268,31 @@ if get_option('r3v-native-backend')
         suite : ['r3v'],
       )
     endforeach
+    # Depth control harness on the same shim fixture: the two-triangle
+    # depth-test cell through the same recorder/queue/retention path,
+    # armed by the cell's own digest in the open leg.
+    r3v_native_zb_depth_control_harness = executable(
+      'r3v_native_zb_depth_control_harness',
+      files('tests/r3v_native_zb_depth_control_harness.c'),
+      include_directories : r3v_native_inc,
+      dependencies : [r3v_native_deps, dep_dl],
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    )
+    foreach cell_mode : ['closed', 'open']
+      test(
+        'r3v-native-zb-depth-control-@0@'.format(cell_mode),
+        r3v_native_zb_depth_control_harness,
+        args : [cell_mode],
+        env : r3v_native_cell_env,
+        depends : [libradeon_noop_drm_shim],
+        timeout : 60,
+        suite : ['r3v'],
+      )
+    endforeach
+
     test(
       'r3v-native-queue-transport-status',
       r3v_native_queue_status_test,
@@ -1641,6 +1687,35 @@ if get_option('r3v-native-backend')
       args : [
         files('tests/r3v_native_direct_write_arming_runner_check.py'),
         r3v_native_direct_write_arming_runner,
+        r3v_native_arming_runner,
+      ],
+      suite : ['r3v'],
+    )
+
+    # Non-submitting depth-control arming runner: reports the cell's
+    # digest and every arming factor, then stops at the authorization
+    # boundary.  The check drives the refusal legs and the wrong-cell
+    # negative against the triangle runner's digest.
+    r3v_native_zb_depth_control_arming_runner = executable(
+      'r3v_native_zb_depth_control_arming_runner',
+      files('r3v_native_arming.c',
+            'tests/r3v_native_zb_depth_control_arming_runner.c',
+            '../common/r300_first_draw_state.c',
+            '../common/r300_fragment_binary.c',
+            '../common/r300_pm4_builder.c',
+            '../common/r300_tcl_bypass_triangle.c',
+            '../common/r300_zb_depth_control_cell.c',
+            '../common/r300_zb_depth_state.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-zb-depth-control-arming-runner',
+      prog_python,
+      args : [
+        files('tests/r3v_native_zb_depth_control_arming_runner_check.py'),
+        r3v_native_zb_depth_control_arming_runner,
         r3v_native_arming_runner,
       ],
       suite : ['r3v'],

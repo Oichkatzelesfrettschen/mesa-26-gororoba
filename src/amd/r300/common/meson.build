@@ -127,6 +127,49 @@ test(
   suite : ['r300'],
 )
 
+r300_zb_depth_control_cell_test = executable(
+  'r300_zb_depth_control_cell_test',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c',
+        'r300_zb_depth_control_cell.c', 'r300_zb_depth_state.c',
+        'tests/r300_zb_depth_control_cell_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-zb-depth-control-cell',
+  r300_zb_depth_control_cell_test,
+  suite : ['r300'],
+)
+
+# Manifest writer: the no-submit evidence generator for the depth control
+# cell; the offline replay drives it.
+r300_zb_depth_control_manifest = executable(
+  'r300_zb_depth_control_manifest',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c',
+        'r300_zb_depth_control_cell.c', 'r300_zb_depth_control_manifest.c',
+        'r300_zb_depth_state.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+
+# Offline kernel replay of the depth control cell, gated on
+# R3V_CS_TRACK_REPLAY_TOOL.  ZB_DEPTHOFFSET's relocation and the
+# depth-buffer size check reach the parser here rather than on a boot.
+test(
+  'r300-zb-depth-control-replay',
+  files('tests/run_zb_depth_control_replay.sh')[0],
+  args : [r300_zb_depth_control_manifest],
+  suite : ['r300'],
+)
+
 r300_r2vb_producer_pass_test = executable(
   'r300_r2vb_producer_pass_test',
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',

@@ -70,6 +70,13 @@ enum r3v_native_cell_kind {
     * extent plus the carrier's read-write GTT relocation.
     */
    R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC,
+   /* The depth control cell: two triangles at different window depths
+    * against a host-filled Z16 surface, so the color output and the
+    * depth memory both follow the depth test.  The geometry contract is
+    * the cell's fixed 64x64 target plus the three-slot reference layout
+    * with the depth surface's read-write GTT relocation.
+    */
+   R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

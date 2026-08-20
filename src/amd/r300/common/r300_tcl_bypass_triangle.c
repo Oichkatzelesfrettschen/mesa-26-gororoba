@@ -298,22 +298,17 @@ r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs)
       "r300-tcl-bypass-triangle-compiled");
 }
 
+/* The cell's target is little-endian B8G8R8A8, so the shader's four
+ * 8-bit output components select blue, green, red, and alpha in that
+ * order; r300_first_draw_contract_set_us_out_fmt_0 places the word.
+ */
 static int
 r300_tcl_bypass_triangle_set_target_format(
    struct r300_first_draw_contract *contract)
 {
-   bool found = false;
-   for (uint32_t i = 0; i < contract->count; i++) {
-      if (contract->entries[i].reg != R300_US_OUT_FMT_0)
-         continue;
-      if (found)
-         return -EINVAL;
-      contract->entries[i].value =
-         R300_US_OUT_FMT_C4_8 | R300_C0_SEL_B | R300_C1_SEL_G |
-         R300_C2_SEL_R | R300_C3_SEL_A;
-      found = true;
-   }
-   return found ? 0 : -EINVAL;
+   return r300_first_draw_contract_set_us_out_fmt_0(
+      contract, R300_US_OUT_FMT_C4_8 | R300_C0_SEL_B | R300_C1_SEL_G |
+                   R300_C2_SEL_R | R300_C3_SEL_A);
 }
 
 int
