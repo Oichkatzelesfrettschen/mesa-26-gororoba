@@ -398,6 +398,12 @@ r3v_physical_device_init_properties(struct vk_properties *const props,
    props->supportedStencilResolveModes = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
    props->independentResolveNone = true;
    props->independentResolve     = true;
+   /* R3V exposes one fixed shader floating-point policy and no
+    * VK_KHR_shader_float_controls modes. */
+   props->denormBehaviorIndependence =
+      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
+   props->roundingModeIndependence =
+      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
 }
 
 #ifndef R3V_NATIVE_BACKEND

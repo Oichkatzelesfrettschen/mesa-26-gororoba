@@ -154,10 +154,11 @@ if with_tests
             '../cpu/r300_cpu_vertex.c', '../cpu/r300_cpu_vertex_job.c'),
       include_directories : [inc_include, inc_src,
                              include_directories('.')],
-      dependencies : [idep_nir, idep_vtn, idep_mesautil],
+      dependencies : [dep_m, idep_nir, idep_vtn, idep_mesautil],
       link_with : [libr300_compiler],
       gnu_symbol_visibility : 'hidden',
     ),
+    env : ['MESA_SPIRV_LOG_LEVEL=error'],
     suite : ['r3v'],
   )
 endif

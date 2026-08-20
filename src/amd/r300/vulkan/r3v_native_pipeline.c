@@ -54,11 +54,9 @@ stage_to_nir(const VkPipelineShaderStageCreateInfo *stage,
    if (module == NULL || stage->flags != 0 ||
        stage->pSpecializationInfo != NULL || stage->pName == NULL)
       return NULL;
-   nir_shader *nir =
-      spirv_to_nir((const uint32_t *)module->data, module->size / 4, NULL,
-                   mesa_stage, stage->pName,
-                   r300_vertex_job_spirv_options(),
-                   r300_vertex_job_nir_options());
+   nir_shader *nir = r300_vertex_job_spirv_to_nir(
+      (const uint32_t *)module->data, module->size / 4, mesa_stage,
+      stage->pName);
    if (nir == NULL)
       return NULL;
    const char *reason;

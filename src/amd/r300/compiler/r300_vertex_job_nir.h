@@ -21,6 +21,15 @@
 const nir_shader_compiler_options *r300_vertex_job_nir_options(void);
 const struct spirv_to_nir_options *r300_vertex_job_spirv_options(void);
 
+/* Translates one Vulkan SPIR-V entry point through the job front end's
+ * capability table.  Any translator warning rejects the module, so an
+ * unsupported capability cannot continue as apparently admissible NIR.
+ */
+nir_shader *r300_vertex_job_spirv_to_nir(const uint32_t *words,
+                                         size_t word_count,
+                                         mesa_shader_stage stage,
+                                         const char *entry_point_name);
+
 /* Normalizes a freshly ingested shader for the analyzers: function
  * inlining, variable-to-SSA promotion, per-member struct splitting,
  * driver-location assignment (vertex inputs by generic attribute
@@ -33,8 +42,8 @@ bool r300_vertex_job_nir_normalize(nir_shader *nir, const char **reason);
 
 /* Lowers a normalized vertex shader to the job IR: straight-line vec4
  * code over attribute 0 -- LOAD_INPUT, vec4 constants, MOV, FADD,
- * FMUL, FMAD, DP4 (a scalar dot rejoined only by its own broadcast),
- * and exactly one full store to the position output.  The caller
+ * FMUL, two-rounding FMAD, fused FFMA, DP4 (a scalar dot rejoined only
+ * by its own broadcast), and exactly one full store to the position output.  The caller
  * assigns job->input_format_id from the pipeline's vertex-input state
  * and validates the finished job.  Returns false with *reason naming
  * the first inadmissible construct; the job is unspecified on refusal.

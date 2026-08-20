@@ -21,13 +21,12 @@
 #define R300_VERTEX_JOB_MAX_TEMPS 16
 #define R300_VERTEX_JOB_MAX_CONSTANTS 32
 
-/* Arithmetic executes in host IEEE-754 binary32, one rounding per
- * operator.  FMAD is the two-rounding multiply-then-add -- the K8
- * target's SSE2/SSE3 substrate carries no fused operator, and the
- * scalar authority pins the same double rounding so a later SIMD
- * kernel can be proven bit-identical.  DP4 sums its four products in
- * component order, ((x + y) + z) + w, and broadcasts the scalar to
- * all four destination lanes.
+/* Arithmetic executes in IEEE-754 binary32 under the executor's
+ * round-to-nearest, denormal-preserving environment.  FMAD commits the
+ * product to binary32 before the add.  FFMA rounds only the combined
+ * multiply-add result.  DP4 sums its four products in component order,
+ * ((x + y) + z) + w, and broadcasts the scalar to all four destination
+ * lanes.
  */
 enum r300_vertex_job_opcode {
    /* dst = logical vec4 of input attribute src0 for the current
@@ -45,6 +44,9 @@ enum r300_vertex_job_opcode {
    /* dst = temp[src0] * temp[src1] + temp[src2], per lane, two
     * roundings. */
    R300_VERTEX_JOB_OP_FMAD,
+   /* dst = temp[src0] * temp[src1] + temp[src2], per lane, one fused
+    * rounding. */
+   R300_VERTEX_JOB_OP_FFMA,
    /* dst.xyzw = dot4(temp[src0], temp[src1]). */
    R300_VERTEX_JOB_OP_DP4,
    /* carrier vec4 of the current vertex = temp[src0].  Exactly one

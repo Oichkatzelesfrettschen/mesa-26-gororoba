@@ -9,6 +9,7 @@ libr300_cpu = static_library(
   'r300_cpu',
   r300_cpu_files,
   include_directories : [inc_src, inc_include],
+  dependencies : [dep_m],
   gnu_symbol_visibility : 'hidden',
 )
 
@@ -77,7 +78,7 @@ if with_tests
                            include_directories('.')],
     link_with : [libr300_cpu],
     c_args : bench_release_args,
-    dependencies : [dep_clock],
+    dependencies : [dep_clock, dep_m],
     gnu_symbol_visibility : 'hidden',
   )
 
@@ -99,7 +100,7 @@ if with_tests
                              include_directories('.')],
       c_args : ['-march=k8-sse3', '-mtune=k8-sse3',
                 '-DR300_CPU_VERTEX_BENCH_REQUIRE_K8=1'] + bench_release_args,
-      dependencies : [dep_clock],
+      dependencies : [dep_clock, dep_m],
       gnu_symbol_visibility : 'hidden',
     )
   endif
@@ -125,6 +126,7 @@ if with_tests
       include_directories : [inc_src, inc_include,
                              include_directories('.')],
       link_with : [libr300_cpu],
+      dependencies : [dep_m],
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r300'],
@@ -142,6 +144,7 @@ if with_tests
       include_directories : [inc_src, inc_include,
                              include_directories('.')],
       link_with : [libr300_cpu],
+      dependencies : [dep_m],
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r300'],
@@ -163,6 +166,7 @@ if with_tests
                                include_directories('.')],
         c_args : ['-march=k8-sse3', '-mtune=k8-sse3',
                   '-DR300_CPU_VERTEX_JOB_SIMD_REQUIRE_SSE3=1'],
+        dependencies : [dep_m],
         gnu_symbol_visibility : 'hidden',
       ),
       suite : ['r300'],

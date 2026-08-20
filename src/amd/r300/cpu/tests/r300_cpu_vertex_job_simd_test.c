@@ -18,9 +18,17 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <fenv.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#ifdef __SSE__
+#include <xmmintrin.h>
+#ifndef _MM_DENORMALS_ZERO_MASK
+#define _MM_DENORMALS_ZERO_MASK 0x0040
+#endif
+#endif
 
 #define VERTEX_COUNT 8u
 #define STREAM_STRIDE 16u
@@ -116,7 +124,7 @@ static void random_job(struct r300_vertex_job *job)
             live[n++] = t;
       assert(n == live_count && n > 0);
 
-      switch (prng() % 6) {
+      switch (prng() % 7) {
       case 0:
          inst->opcode = R300_VERTEX_JOB_OP_LOAD_INPUT;
          inst->src0 = 0;
@@ -140,8 +148,14 @@ static void random_job(struct r300_vertex_job *job)
          inst->src0 = live[prng() % n];
          inst->src1 = live[prng() % n];
          break;
-      default:
+      case 5:
          inst->opcode = R300_VERTEX_JOB_OP_FMAD;
+         inst->src0 = live[prng() % n];
+         inst->src1 = live[prng() % n];
+         inst->src2 = live[prng() % n];
+         break;
+      default:
+         inst->opcode = R300_VERTEX_JOB_OP_FFMA;
          inst->src0 = live[prng() % n];
          inst->src1 = live[prng() % n];
          inst->src2 = live[prng() % n];
@@ -152,10 +166,10 @@ static void random_job(struct r300_vertex_job *job)
    }
    job->instructions[body + 1] = (struct r300_vertex_job_instruction){
       .opcode = R300_VERTEX_JOB_OP_STORE_POSITION,
-      .src0 = 0,
+      .src0 = job->instructions[body].dst,
    };
-   /* The store reads a live register; register 0 is written by the
-    * first instruction and never invalidated. */
+   /* The store reads the final generated result, so the last randomized
+    * operator always reaches the differential oracle. */
    job->instruction_count = body + 2;
 }
 
@@ -188,9 +202,9 @@ static void differential_random_jobs(const struct simd_lane *lane)
          fprintf(stderr, "divergence at trial %u\n", trial);
          for (uint32_t d = 0; d < VERTEX_COUNT * 4; d++)
             if (scalar[d] != sse2[d])
-               fprintf(stderr, "  dword %u: scalar %08x sse2 %08x\n", d,
-                       scalar[d], sse2[d]);
-         assert(!"scalar and SSE2 carriers diverged");
+               fprintf(stderr, "  dword %u: scalar %08x %s %08x\n", d,
+                       scalar[d], lane->name, sse2[d]);
+         assert(!"scalar and SIMD carriers diverged");
       }
    }
 }
@@ -230,6 +244,78 @@ static void witness_fmad_two_roundings(const struct simd_lane *lane)
           0);
    for (uint32_t lane = 0; lane < 4; lane++)
       assert(out[lane] == 0x00000000u);
+
+   /* One rounding keeps the exact product's 2^-24 residual.  Reusing the
+    * two-rounding FMAD path produces +0 and fails this leg.
+    */
+   job.instructions[2].opcode = R300_VERTEX_JOB_OP_FFMA;
+   assert(lane->execute(&job, &stream, 0, 1, out, 4) == 0);
+   for (uint32_t lane = 0; lane < 4; lane++)
+      assert(out[lane] == 0x33800000u); /* 2^-24 */
+}
+
+static void witness_float_environment(const struct simd_lane *lane)
+{
+   struct r300_vertex_job job = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .constant_count = 1,
+      .instruction_count = 4,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_CONSTANT, .dst = 1,
+           .src0 = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_FADD, .dst = 2, .src0 = 0,
+           .src1 = 1 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 2 },
+      },
+   };
+   fenv_t original_environment;
+   assert(fegetenv(&original_environment) == 0);
+   assert(fesetround(FE_UPWARD) == 0);
+#ifdef __SSE__
+   const unsigned hostile_mxcsr =
+      _mm_getcsr() | _MM_FLUSH_ZERO_MASK | _MM_DENORMALS_ZERO_MASK;
+   _mm_setcsr(hostile_mxcsr);
+#endif
+
+   const uint32_t input[4] = {
+      0x3f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u,
+   };
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)input,
+      .stride = STREAM_STRIDE,
+      .size_bytes = sizeof(input),
+   };
+   for (uint32_t component = 0; component < 4; component++)
+      job.constants[0][component] = 0x33800000u; /* 2^-24 */
+   uint32_t out[4];
+   assert(lane->execute(&job, &stream, 0, 1, out, 4) == 0);
+   for (uint32_t component = 0; component < 4; component++)
+      assert(out[component] == 0x3f800000u);
+   assert(fegetround() == FE_UPWARD);
+#ifdef __SSE__
+   assert(_mm_getcsr() == hostile_mxcsr);
+#endif
+
+   job.instructions[2].opcode = R300_VERTEX_JOB_OP_FMUL;
+   for (uint32_t component = 0; component < 4; component++)
+      job.constants[0][component] = 0x3f000000u; /* 0.5 */
+   const uint32_t smallest_normal[4] = {
+      0x00800000u, 0x00800000u, 0x00800000u, 0x00800000u,
+   };
+   const struct r300_cpu_vertex_stream denorm_stream = {
+      .data = (const uint8_t *)smallest_normal,
+      .stride = STREAM_STRIDE,
+      .size_bytes = sizeof(smallest_normal),
+   };
+   assert(lane->execute(&job, &denorm_stream, 0, 1, out, 4) == 0);
+   for (uint32_t component = 0; component < 4; component++)
+      assert(out[component] == 0x00400000u);
+   assert(fegetround() == FE_UPWARD);
+#ifdef __SSE__
+   assert(_mm_getcsr() == hostile_mxcsr);
+#endif
+   assert(fesetenv(&original_environment) == 0);
 }
 
 /* An all-negative-zero DP4 keeps -0 on the SSE2 entry: the sum seeds
@@ -388,6 +474,7 @@ int main(void)
       prng_state = 0x1234abcdu;
       differential_random_jobs(lane);
       witness_fmad_two_roundings(lane);
+      witness_float_environment(lane);
       witness_dp4_signed_zero(lane);
       witness_nan_policy(lane);
       refusal_parity(lane);
