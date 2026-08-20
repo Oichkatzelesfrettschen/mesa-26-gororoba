@@ -29,6 +29,20 @@
  */
 #define DEPTH_OFFSET_ALIGNMENT 32u
 
+static bool
+depth_format_supported(uint32_t format)
+{
+   switch (format) {
+   case R300_DEPTHFORMAT_16BIT_INT_Z:
+   case R300_DEPTHFORMAT_16BIT_13E3 | R300_INVERT_13E3_LEADING_ONES:
+   case R300_DEPTHFORMAT_16BIT_13E3 | R300_INVERT_13E3_LEADING_ZEROS:
+   case R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL:
+      return true;
+   default:
+      return false;
+   }
+}
+
 uint32_t
 r300_zb_depth_state_dwords(void)
 {
@@ -46,7 +60,8 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
     * builder exactly as it was and a caller that ignores the status
     * cannot submit a half-written depth binding.
     */
-   if (params->depth_function > R300_ZS_MASK)
+   if (!depth_format_supported(params->depth_format) ||
+       params->depth_function > R300_ZS_MASK)
       return -EINVAL;
    if (params->pitch_pixels == 0 ||
        params->pitch_pixels % DEPTH_PITCH_ALIGNMENT != 0 ||
@@ -56,7 +71,7 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
       return -EINVAL;
 
    if (!r300_pm4_builder_reserve(builder, r300_zb_depth_state_dwords()))
-      return -ENOSPC;
+      return builder->error;
 
    r300_pm4_reg(builder, R300_ZB_FORMAT, params->depth_format);
 

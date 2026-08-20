@@ -31,7 +31,9 @@ struct r300_zb_depth_state_params {
     * 2 through 13, so the pitch is a multiple of four and at most 16380.
     */
    uint32_t pitch_pixels;
-   /* ZB_FORMAT depth encoding, e.g. R300_DEPTHFORMAT_16BIT_INT_Z. */
+   /* One complete ZB_FORMAT depth encoding: integer Z16, either 13E3
+    * inversion, or packed Z24/S8.
+    */
    uint32_t depth_format;
    /* Depth binding: byte offset within the buffer object and the
     * caller's relocation payload for the NOP-form relocation that
@@ -54,10 +56,11 @@ uint32_t r300_zb_depth_state_dwords(void);
 
 /* Emits the depth binding and test state.  Every parameter is validated
  * before the first dword, so a refused call leaves the builder
- * untouched: -EINVAL for a null builder or params, a depth function
- * outside R300_ZS_MASK, a pitch that is not a multiple of four or
- * exceeds the DEPTHPITCH field, or an offset the low five bits reach.
- * Returns 0 on success.
+ * untouched: -EINVAL for a null builder or params, a reserved or malformed
+ * depth format, a depth function outside R300_ZS_MASK, a pitch that is not a
+ * multiple of four or exceeds the DEPTHPITCH field, or an offset the low five
+ * bits reach.  A builder that already carries an error returns that first
+ * error; insufficient capacity returns -ENOSPC.  Returns 0 on success.
  */
 int r300_zb_depth_state_emit(
    struct r300_pm4_builder *builder,

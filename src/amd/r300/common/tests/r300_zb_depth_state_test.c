@@ -115,6 +115,26 @@ every_comparison_encodes(void)
    }
 }
 
+static void
+every_depth_format_encodes(void)
+{
+   static const uint32_t formats[] = {
+      R300_DEPTHFORMAT_16BIT_INT_Z,
+      R300_DEPTHFORMAT_16BIT_13E3 | R300_INVERT_13E3_LEADING_ONES,
+      R300_DEPTHFORMAT_16BIT_13E3 | R300_INVERT_13E3_LEADING_ZEROS,
+      R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL,
+   };
+   for (unsigned i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
+      uint32_t words[CAPACITY];
+      struct r300_pm4_builder b;
+      struct r300_zb_depth_state_params params = reference;
+      params.depth_format = formats[i];
+      r300_pm4_builder_init(&b, words, CAPACITY);
+      assert(r300_zb_depth_state_emit(&b, &params) == 0);
+      assert(words[1] == formats[i]);
+   }
+}
+
 /* A refused call leaves the builder untouched, so a caller that ignores
  * the status cannot submit a half-written binding.
  */
@@ -142,6 +162,20 @@ static void
 validation(void)
 {
    struct r300_zb_depth_state_params params;
+
+   params = reference;
+   params.depth_format = 3;
+   refusal_writes_nothing("reserved base depth format", &params, -EINVAL);
+
+   params = reference;
+   params.depth_format = R300_INVERT_13E3_LEADING_ZEROS;
+   refusal_writes_nothing("13E3 inversion on integer depth", &params,
+                          -EINVAL);
+
+   params = reference;
+   params.depth_format = R300_DEPTHFORMAT_16BIT_13E3 | (1u << 5);
+   refusal_writes_nothing("depth format bit outside the encoding", &params,
+                          -EINVAL);
 
    params = reference;
    params.depth_function = R300_ZS_ALWAYS + 1;
@@ -173,6 +207,17 @@ validation(void)
       assert(r300_zb_depth_state_emit(&b, NULL) == -EINVAL);
       assert(b.count == 0);
    }
+}
+
+static void
+existing_builder_error_stands(void)
+{
+   struct r300_pm4_builder b;
+   r300_pm4_builder_init(&b, NULL, CAPACITY);
+   assert(b.error == -EINVAL);
+   assert(r300_zb_depth_state_emit(&b, &reference) == -EINVAL);
+   assert(b.error == -EINVAL);
+   assert(b.count == 0);
 }
 
 static void
@@ -215,7 +260,9 @@ main(void)
    exact_reference_stream();
    depth_write_disabled();
    every_comparison_encodes();
+   every_depth_format_encodes();
    validation();
+   existing_builder_error_stands();
    capacity_one_short();
    determinism();
    printf("r300_zb_depth_state_test: all checks passed\n");
