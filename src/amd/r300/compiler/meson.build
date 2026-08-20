@@ -104,7 +104,7 @@ files_r300_compiler = files(
 
 libr300_compiler = static_library(
   'r300_compiler',
-  files_r300_compiler, r300_nir_algebraic_c,
+  files_r300_compiler, r300_nir_algebraic_c, spirv_info_h,
   include_directories : [
     inc_src, inc_include, inc_amd_r300_common, inc_amd_r300_compiler,
   ],

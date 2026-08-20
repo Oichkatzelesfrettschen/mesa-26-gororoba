@@ -22,6 +22,7 @@ const nir_shader_compiler_options *r300_vertex_job_nir_options(void)
 const struct spirv_to_nir_options *r300_vertex_job_spirv_options(void)
 {
    static const struct spirv_capabilities capabilities = {
+      .Matrix = true,
       .Shader = true,
    };
    static const struct spirv_to_nir_options options = {
@@ -256,8 +257,16 @@ static bool build_alu(struct job_build *b, const nir_alu_instr *alu)
       operand_count = 2;
       break;
    case nir_op_fmad:
-   case nir_op_ffma_weak:
       opcode = R300_VERTEX_JOB_OP_FMAD;
+      operand_count = 3;
+      break;
+   case nir_op_ffma_weak:
+      /* Constant folding evaluates weak FMA with fused semantics.  Precise
+       * weak FMA therefore selects FFMA everywhere, while inexact weak FMA
+       * retains its permitted two-rounding selection.
+       */
+      opcode = nir_alu_instr_is_exact(alu) ? R300_VERTEX_JOB_OP_FFMA
+                                           : R300_VERTEX_JOB_OP_FMAD;
       operand_count = 3;
       break;
    case nir_op_ffma:

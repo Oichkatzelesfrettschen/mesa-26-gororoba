@@ -181,8 +181,11 @@ static void test_multiply_add_semantic_classes(void)
                                      coefficient);
    nir_def *weak = nir_build_alu3(&b, nir_op_ffma_weak, unfused,
                                   coefficient, coefficient);
-   nir_def *strong = nir_build_alu3(&b, nir_op_ffma, weak, coefficient,
-                                    coefficient);
+   nir_def *precise_weak = nir_build_alu3(&b, nir_op_ffma_weak, weak,
+                                          coefficient, coefficient);
+   nir_def_as_alu(precise_weak)->fp_math_ctrl |= nir_fp_exact;
+   nir_def *strong = nir_build_alu3(&b, nir_op_ffma, precise_weak,
+                                    coefficient, coefficient);
    store_position(&b, strong);
 
    struct r300_vertex_job job;
@@ -190,10 +193,36 @@ static void test_multiply_add_semantic_classes(void)
    const bool admitted = r300_vertex_job_from_nir(b.shader, &job, &reason);
    ralloc_free(b.shader);
    assert(admitted);
-   assert(job.instruction_count == 6 && job.constant_count == 1);
+   assert(job.instruction_count == 7 && job.constant_count == 1);
    assert(job.instructions[2].opcode == R300_VERTEX_JOB_OP_FMAD);
    assert(job.instructions[3].opcode == R300_VERTEX_JOB_OP_FMAD);
    assert(job.instructions[4].opcode == R300_VERTEX_JOB_OP_FFMA);
+   assert(job.instructions[5].opcode == R300_VERTEX_JOB_OP_FFMA);
+}
+
+static void test_precise_weak_fma_constant_folding(void)
+{
+   nir_builder b = builder_for(MESA_SHADER_VERTEX, "precise_weak_constant");
+   nir_def *multiplicand =
+      nir_imm_vec4(&b, 0x1.001p0f, 0x1.001p0f, 0x1.001p0f, 0x1.001p0f);
+   nir_def *addend =
+      nir_imm_vec4(&b, -0x1.002p0f, -0x1.002p0f, -0x1.002p0f,
+                   -0x1.002p0f);
+   nir_def *fma = nir_build_alu3(&b, nir_op_ffma_weak, multiplicand,
+                                 multiplicand, addend);
+   nir_def_as_alu(fma)->fp_math_ctrl |= nir_fp_exact;
+   store_position(&b, fma);
+
+   const char *reason = NULL;
+   assert(r300_vertex_job_nir_normalize(b.shader, &reason));
+   struct r300_vertex_job job;
+   assert(r300_vertex_job_from_nir(b.shader, &job, &reason));
+   ralloc_free(b.shader);
+   assert(job.instruction_count == 2 && job.constant_count == 1);
+   assert(job.instructions[0].opcode == R300_VERTEX_JOB_OP_LOAD_CONSTANT);
+   assert(job.instructions[1].opcode == R300_VERTEX_JOB_OP_STORE_POSITION);
+   for (uint32_t component = 0; component < 4; component++)
+      assert(job.constants[0][component] == 0x33800000u); /* 2^-24 */
 }
 
 static void test_spirv_float_control_admission(void)
@@ -201,6 +230,7 @@ static void test_spirv_float_control_admission(void)
    const struct spirv_to_nir_options *options =
       r300_vertex_job_spirv_options();
    assert(options->capabilities != NULL);
+   assert(options->capabilities->Matrix);
    assert(options->capabilities->Shader);
    assert(!options->capabilities->DenormFlushToZero);
    assert(!options->capabilities->DenormPreserve);
@@ -317,6 +347,7 @@ int main(void)
    test_reference_fragment_module();
    test_arithmetic_lowering();
    test_multiply_add_semantic_classes();
+   test_precise_weak_fma_constant_folding();
    test_spirv_float_control_admission();
    test_fragment_constant_readback();
    test_refusals();
