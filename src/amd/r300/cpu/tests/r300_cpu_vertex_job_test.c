@@ -147,7 +147,9 @@ static void test_arithmetic_exact(void)
    assert(out[2] == f_bits((-1.0f + 4.0f) * 4.0f));
    assert(out[3] == f_bits((0.25f + 1.0f) * 1.0f));
 
-   /* inf + (-inf) is a NaN under the host binary32 policy. */
+   /* Arithmetic NaNs canonicalize independently of the host compiler's
+    * source-payload choice.
+    */
    struct r300_vertex_job nan_job = {
       .input_format_id = R300_VERTEX_FORMAT_F32_4,
       .instruction_count = 4,
@@ -162,7 +164,7 @@ static void test_arithmetic_exact(void)
    };
    const uint32_t inf_input[4] = { 0x7f800000u, 0, 0, 0 };
    run_one(&nan_job, inf_input, out);
-   assert((out[0] & 0x7f800000u) == 0x7f800000u && (out[0] & 0x007fffffu));
+   assert(out[0] == 0x7fc00000u);
 }
 
 static void test_fmad_two_roundings(void)

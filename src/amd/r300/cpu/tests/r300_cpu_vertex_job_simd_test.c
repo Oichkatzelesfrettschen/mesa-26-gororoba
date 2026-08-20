@@ -1,12 +1,12 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Differential equivalence of the SSE2 vertex-job kernel against the
- * scalar interpreter: randomized valid jobs over bit-pattern-hostile
- * inputs must produce byte-identical carriers, the numeric-policy
- * witnesses must reproduce on the SSE2 entry directly, and every
- * refusal must return the scalar entry's errno.  Test verdicts ride
- * live asserts, so NDEBUG is undefined ahead of assert.h.
+ * Differential equivalence of the SIMD vertex-job candidates against
+ * the scalar interpreter: randomized valid jobs over bit-pattern-hostile
+ * inputs produce byte-identical carriers, numeric-policy witnesses
+ * reproduce on each entry directly, and every refusal returns the scalar
+ * entry's errno.  Test verdicts ride live asserts, so NDEBUG is undefined
+ * ahead of assert.h.
  */
 
 #undef NDEBUG
@@ -14,6 +14,7 @@
 #include "r300_cpu_vertex_job.h"
 
 #include "amd/r300/common/r300_vertex_format.h"
+#include "util/macros.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -28,6 +29,26 @@
 /* xorshift32: a fixed-seed deterministic generator, so every run
  * exercises the same job population.
  */
+/* Both SIMD candidates carry one contract, so one differential body
+ * qualifies each of them: they share the scalar authority, the same
+ * refusals, and the same carrier bytes, and they differ only in the
+ * unaligned load form.  A candidate its build carries no instruction
+ * set for reports -ENOSYS and the lane skips rather than passing
+ * silently.
+ */
+struct simd_lane {
+   const char *name;
+   int (*execute)(const struct r300_vertex_job *job,
+                  const struct r300_cpu_vertex_stream *stream,
+                  uint32_t first_vertex, uint32_t vertex_count,
+                  uint32_t *carrier, uint32_t carrier_dwords);
+};
+
+static const struct simd_lane simd_lanes[] = {
+   { "sse2", r300_cpu_vertex_job_execute_sse2 },
+   { "sse3", r300_cpu_vertex_job_execute_sse3 },
+};
+
 static uint32_t prng_state = 0x1234abcdu;
 
 static uint32_t prng(void)
@@ -138,7 +159,7 @@ static void random_job(struct r300_vertex_job *job)
    job->instruction_count = body + 2;
 }
 
-static void differential_random_jobs(void)
+static void differential_random_jobs(const struct simd_lane *lane)
 {
    uint32_t stream_bytes[VERTEX_COUNT * 4];
    for (uint32_t i = 0; i < VERTEX_COUNT * 4; i++)
@@ -160,7 +181,7 @@ static void differential_random_jobs(void)
       memset(sse2, 0x5a, sizeof(sse2));
       assert(r300_cpu_vertex_job_execute(&job, &stream, 0, VERTEX_COUNT,
                                          scalar, VERTEX_COUNT * 4) == 0);
-      assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0,
+      assert(lane->execute(&job, &stream, 0,
                                               VERTEX_COUNT, sse2,
                                               VERTEX_COUNT * 4) == 0);
       if (memcmp(scalar, sse2, sizeof(scalar)) != 0) {
@@ -178,7 +199,7 @@ static void differential_random_jobs(void)
  * a*a rounds ties-to-even to 1 + 2^-11 and FMAD(a, a, -(1 + 2^-11))
  * yields +0; a fused operator would yield 2^-24.
  */
-static void witness_fmad_two_roundings(void)
+static void witness_fmad_two_roundings(const struct simd_lane *lane)
 {
    struct r300_vertex_job job = {
       .input_format_id = R300_VERTEX_FORMAT_F32_4,
@@ -205,7 +226,7 @@ static void witness_fmad_two_roundings(void)
       .size_bytes = sizeof(stream_bytes),
    };
    uint32_t out[4] = { 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu };
-   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0, 1, out, 4) ==
+   assert(lane->execute(&job, &stream, 0, 1, out, 4) ==
           0);
    for (uint32_t lane = 0; lane < 4; lane++)
       assert(out[lane] == 0x00000000u);
@@ -213,7 +234,7 @@ static void witness_fmad_two_roundings(void)
 
 /* An all-negative-zero DP4 keeps -0 on the SSE2 entry: the sum seeds
  * from the first product instead of an additive +0. */
-static void witness_dp4_signed_zero(void)
+static void witness_dp4_signed_zero(const struct simd_lane *lane)
 {
    struct r300_vertex_job job = {
       .input_format_id = R300_VERTEX_FORMAT_F32_4,
@@ -240,15 +261,68 @@ static void witness_dp4_signed_zero(void)
       .size_bytes = sizeof(stream_bytes),
    };
    uint32_t out[4] = { 0 };
-   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0, 1, out, 4) ==
+   assert(lane->execute(&job, &stream, 0, 1, out, 4) ==
           0);
    for (uint32_t lane = 0; lane < 4; lane++)
       assert(out[lane] == 0x80000000u);
 }
 
+/* Arithmetic canonicalizes every NaN to one quiet payload, while the MOV
+ * path retains the input payload.  The witness catches compiler-dependent
+ * scalar-versus-packed source selection without weakening byte-copy state.
+ */
+static void witness_nan_policy(const struct simd_lane *lane)
+{
+   struct r300_vertex_job arithmetic = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .constant_count = 1,
+      .instruction_count = 4,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_CONSTANT, .dst = 1,
+           .src0 = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_FADD, .dst = 2, .src0 = 0,
+           .src1 = 1 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 2 },
+      },
+      .constants = {
+         { 0xff800000u, 0x7fc00123u, 0x7fa00001u, 0x00000000u },
+      },
+   };
+   const uint32_t input[4] = {
+      0x7f800000u, 0x3f800000u, 0x3f800000u, 0x80000000u,
+   };
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)input,
+      .stride = STREAM_STRIDE,
+      .size_bytes = sizeof(input),
+   };
+   uint32_t scalar[4] = { 0 };
+   uint32_t candidate[4] = { 0 };
+   assert(r300_cpu_vertex_job_execute(&arithmetic, &stream, 0, 1,
+                                      scalar, 4) == 0);
+   assert(lane->execute(&arithmetic, &stream, 0, 1, candidate, 4) == 0);
+   assert(memcmp(scalar, candidate, sizeof(scalar)) == 0);
+   assert(scalar[0] == 0x7fc00000u);
+   assert(scalar[1] == 0x7fc00000u);
+   assert(scalar[2] == 0x7fc00000u);
+
+   struct r300_vertex_job copy = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .instruction_count = 3,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_MOV, .dst = 1, .src0 = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 1 },
+      },
+   };
+   assert(lane->execute(&copy, &stream, 0, 1, candidate, 4) == 0);
+   assert(memcmp(input, candidate, sizeof(input)) == 0);
+}
+
 /* Refusal parity: the SSE2 entry shares the scalar guard, so every
  * refusal returns the same errno with no carrier write. */
-static void refusal_parity(void)
+static void refusal_parity(const struct simd_lane *lane)
 {
    struct r300_vertex_job job;
    random_job(&job);
@@ -260,26 +334,31 @@ static void refusal_parity(void)
    };
    uint32_t out[VERTEX_COUNT * 4];
 
-   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0, VERTEX_COUNT,
+   assert(lane->execute(&job, &stream, 0, VERTEX_COUNT,
                                            out, VERTEX_COUNT * 4 - 1) ==
           -ENOSPC);
-   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 1, VERTEX_COUNT,
+   assert(lane->execute(&job, &stream, 1, VERTEX_COUNT,
                                            out, VERTEX_COUNT * 4) ==
           -EINVAL);
-   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0, VERTEX_COUNT,
+   assert(lane->execute(&job, &stream, 0, VERTEX_COUNT,
                                            stream_bytes,
                                            VERTEX_COUNT * 4) == -EINVAL);
    job.instruction_count = 0;
-   assert(r300_cpu_vertex_job_execute_sse2(&job, &stream, 0, VERTEX_COUNT,
+   assert(lane->execute(&job, &stream, 0, VERTEX_COUNT,
                                            out, VERTEX_COUNT * 4) ==
           -EINVAL);
 }
 
 int main(void)
 {
-   /* The kernel reports -ENOSYS where the build target lacks SSE2; the
-    * differential claim is x86-only, so the test skips there. */
-   {
+   unsigned qualified = 0;
+
+   for (unsigned l = 0; l < ARRAY_SIZE(simd_lanes); l++) {
+      const struct simd_lane *lane = &simd_lanes[l];
+
+      /* A candidate reports -ENOSYS where the build carries no such
+       * instruction set, and the differential claim is x86-only, so that
+       * lane skips while the others still run. */
       struct r300_vertex_job probe = {
          .input_format_id = R300_VERTEX_FORMAT_F32_4,
          .instruction_count = 2,
@@ -295,23 +374,43 @@ int main(void)
          .size_bytes = sizeof(stream_bytes),
       };
       uint32_t out[4];
-      const int probe_result = r300_cpu_vertex_job_execute_sse2(
-         &probe, &stream, 0, 1, out, 4);
+      const int probe_result = lane->execute(&probe, &stream, 0, 1, out, 4);
       if (probe_result == -ENOSYS) {
-         printf("r300_cpu_vertex_job_sse2_test: SSE2 unavailable, "
-                "skipped\n");
-         return 77;
+         printf("r300_cpu_vertex_job_simd_test: %s unavailable, skipped\n",
+                lane->name);
+         continue;
       }
       assert(probe_result == 0);
       assert(out[0] == 1 && out[1] == 2 && out[2] == 3 && out[3] == 4);
+
+      /* Each lane draws the same job sequence, so a divergence names the
+       * candidate rather than the draw it happened to get. */
+      prng_state = 0x1234abcdu;
+      differential_random_jobs(lane);
+      witness_fmad_two_roundings(lane);
+      witness_dp4_signed_zero(lane);
+      witness_nan_policy(lane);
+      refusal_parity(lane);
+      printf("r300_cpu_vertex_job_simd_test: %s bit-identical over %u "
+             "random jobs; all checks passed\n",
+             lane->name, RANDOM_JOBS);
+      qualified++;
    }
 
-   differential_random_jobs();
-   witness_fmad_two_roundings();
-   witness_dp4_signed_zero();
-   refusal_parity();
-   printf("r300_cpu_vertex_job_sse2_test: %u random jobs bit-identical; "
-          "all checks passed\n",
-          RANDOM_JOBS);
+   /* Every candidate absent means the build carries no SIMD lane at all,
+    * which is a skip rather than a pass: nothing was compared. */
+   if (qualified == 0) {
+      printf("r300_cpu_vertex_job_simd_test: no SIMD candidate in this "
+             "build, skipped\n");
+      return 77;
+   }
+#ifdef R300_CPU_VERTEX_JOB_SIMD_REQUIRE_SSE3
+   if (qualified != ARRAY_SIZE(simd_lanes)) {
+      fprintf(stderr,
+              "r300_cpu_vertex_job_simd_test: target build omitted a SIMD "
+              "candidate\n");
+      return 1;
+   }
+#endif
    return 0;
 }

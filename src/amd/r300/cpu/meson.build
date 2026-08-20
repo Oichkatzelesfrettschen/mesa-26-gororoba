@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: MIT
 
-# Portable CPU vertex execution: the byte-defined baseline and the SSE2
-# SIMD path behind one gather contract.  Host-only code; the native R3V
-# implementation compiles this source into its own static implementation,
-# while the CPU test links libr300_cpu.  The qualification oracle proves the
-# implementations bit-identical against an independent reference model.
+# Portable CPU vertex execution: the byte-defined baseline and SIMD paths
+# behind one gather contract.  The native R3V implementation, tests, and
+# benchmarks link this one object set, so their compiler flags and symbols
+# cannot drift apart.
+r300_cpu_files = files('r300_cpu_vertex.c', 'r300_cpu_vertex_job.c')
 libr300_cpu = static_library(
   'r300_cpu',
-  files('r300_cpu_vertex.c', 'r300_cpu_vertex_job.c'),
+  r300_cpu_files,
   include_directories : [inc_src, inc_include],
   gnu_symbol_visibility : 'hidden',
 )
@@ -61,6 +61,49 @@ if with_tests
     )
   endif
 
+  # Timing bench for the job executor: the scalar interpreter against the
+  # SSE2 execution kernel, over the job shapes that separate per-vertex
+  # dispatch cost from per-instruction arithmetic.  Host-specific
+  # evidence like the gather bench, so no meson test wraps it either.
+  # This binary links libr300_cpu, so its rows time the object a driver
+  # from the enclosing profile links.  The r300 profiles pin
+  # -march=x86-64 -mtune=generic, keeping the ISA a subset every distcc
+  # volunteer and the target both run, so the interpreter a driver
+  # executes is the baseline codegen these rows measure.
+  executable(
+    'r300_cpu_vertex_job_bench',
+    [files('tests/r300_cpu_vertex_job_bench.c'), sha1_h],
+    include_directories : [inc_src, inc_include,
+                           include_directories('.')],
+    link_with : [libr300_cpu],
+    c_args : bench_release_args,
+    dependencies : [dep_clock],
+    gnu_symbol_visibility : 'hidden',
+  )
+
+  # The K8-target job bench: both CPU sources compile at the TL-66 CPUID
+  # ceiling, so the SSE2 kernel exists under the exact target codegen
+  # whatever the enclosing profile's -march is, and -mtune selects the
+  # K8 scheduling model the measured assembly is read against.  The
+  # override reaches the interpreter too, so these rows read as the
+  # contrast: what the two lanes cost when the compiler may schedule
+  # for the target part, against the baseline ISA a driver ships.
+  if host_machine.cpu_family() == 'x86_64' and \
+     cc.has_argument('-march=k8-sse3') and \
+     cc.has_argument('-mtune=k8-sse3')
+    executable(
+      'r300_cpu_vertex_job_bench_k8',
+      [files('r300_cpu_vertex.c', 'r300_cpu_vertex_job.c',
+             'tests/r300_cpu_vertex_job_bench.c'), sha1_h],
+      include_directories : [inc_src, inc_include,
+                             include_directories('.')],
+      c_args : ['-march=k8-sse3', '-mtune=k8-sse3',
+                '-DR300_CPU_VERTEX_BENCH_REQUIRE_K8=1'] + bench_release_args,
+      dependencies : [dep_clock],
+      gnu_symbol_visibility : 'hidden',
+    )
+  endif
+
   test(
     'r300-cpu-vertex',
     executable(
@@ -92,10 +135,10 @@ if with_tests
   # numeric-policy witnesses reproduced, refusal errnos shared.  The
   # test self-skips where the build target lacks SSE2.
   test(
-    'r300-cpu-vertex-job-sse2',
+    'r300-cpu-vertex-job-simd',
     executable(
-      'r300_cpu_vertex_job_sse2_test',
-      files('tests/r300_cpu_vertex_job_sse2_test.c'),
+      'r300_cpu_vertex_job_simd_test',
+      files('tests/r300_cpu_vertex_job_simd_test.c'),
       include_directories : [inc_src, inc_include,
                              include_directories('.')],
       link_with : [libr300_cpu],
@@ -103,4 +146,26 @@ if with_tests
     ),
     suite : ['r300'],
   )
+
+  # The profile library grants SSE2 alone.  This second registered target
+  # recompiles the same executor and oracle at the K8 instruction ceiling,
+  # so the SSE3 candidate earns a test verdict instead of appearing only in
+  # an unregistered timing executable.
+  if host_machine.cpu_family() == 'x86_64' and \
+     cc.has_argument('-march=k8-sse3') and \
+     cc.has_argument('-mtune=k8-sse3')
+    test(
+      'r300-cpu-vertex-job-simd-k8',
+      executable(
+        'r300_cpu_vertex_job_simd_k8_test',
+        [r300_cpu_files, files('tests/r300_cpu_vertex_job_simd_test.c')],
+        include_directories : [inc_src, inc_include,
+                               include_directories('.')],
+        c_args : ['-march=k8-sse3', '-mtune=k8-sse3',
+                  '-DR300_CPU_VERTEX_JOB_SIMD_REQUIRE_SSE3=1'],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r300'],
+    )
+  endif
 endif

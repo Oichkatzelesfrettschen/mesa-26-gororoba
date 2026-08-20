@@ -1,9 +1,11 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Scalar CPU vertex-job interpreter: executes a compiler-lowered
- * r300_vertex_job over bound vertex records and serializes the
- * positions into the native TCL-bypass carrier.
+ * CPU vertex-job execution: runs a compiler-lowered r300_vertex_job
+ * over bound vertex records and serializes the positions into the
+ * native TCL-bypass carrier.  The scalar interpreter is the authority;
+ * the SIMD candidates are correctness-qualified specializations whose
+ * dispatch requires end-to-end native-path timing.
  */
 
 #ifndef R300_CPU_VERTEX_JOB_H
@@ -37,19 +39,52 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
                                 uint32_t first_vertex, uint32_t vertex_count,
                                 uint32_t *carrier, uint32_t carrier_dwords);
 
-/* The SSE2 execution kernel: the same contract, refusals, and carrier
- * bytes as r300_cpu_vertex_job_execute -- the scalar interpreter is the
- * authority and the differential test enforces bit identity.  Packed
- * single-precision arithmetic keeps the scalar policy exactly: one
- * rounding per elementwise operator, the FMAD product committed to
- * binary32 before the add (the K8 SSE2/SSE3 substrate has no fused
- * operator), and the DP4 sum accumulated in component order from the
- * packed products so signed zeros survive.  Returns -ENOSYS where the
- * build target lacks SSE2.
+/* The SIMD execution candidates carry the same contract, refusals, and
+ * carrier contract as r300_cpu_vertex_job_execute; the differential test
+ * enforces bit identity after arithmetic NaNs canonicalize to 0x7fc00000.
+ * Byte-copy operations preserve every payload bit.  Packed
+ * single-precision arithmetic keeps the
+ * scalar policy exactly: one rounding per elementwise operator, the
+ * FMAD product committed to binary32 before the add, and the DP4 sum
+ * accumulated in component order from the packed products so signed
+ * zeros survive.  Each returns -ENOSYS on a build without its
+ * instruction set, so a bench lane never times a different
+ * implementation than its label names.
+ *
+ * SSE2 supplies every operator the job IR needs: movdqu for the
+ * unaligned loads and stores that move NaN payloads, denormals, and
+ * signed zeros verbatim, addps and mulps for the elementwise operators,
+ * mulps then addps for FMAD because the substrate carries no fused
+ * operator, and a component-order scalar sum over the packed products
+ * for DP4.
+ *
+ * SSE3 adds one form this kernel can take and three it cannot.  Per AMD
+ * APM Vol. 4, HADDPS adds adjacent lane pairs, which associates the DP4
+ * sum as (a+b)+(c+d) where the scalar policy pins ((a+b)+c)+d; binary32
+ * addition is not associative, so the horizontal form changes the
+ * result and the bit-identity contract excludes it.  HSUBPS and ADDSUBPS
+ * compute no sum this IR expresses.  LDDQU is a load, so it moves the
+ * same bytes movdqu moves and the SSE3 candidate takes it for the input
+ * and constant loads; whether it costs less on this part is the timing
+ * bench's question, not this contract's.
+ *
+ * The K8 target's CPUID ceiling is SSE3 (CPUID.00000001:ECX[0]; the
+ * part reports no SSE4A, POPCNT, or AVX), so SSE3 is the last vector
+ * extension a candidate here can name.
  */
 int r300_cpu_vertex_job_execute_sse2(
    const struct r300_vertex_job *job,
    const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords);
+
+int r300_cpu_vertex_job_execute_sse3(
+   const struct r300_vertex_job *job,
+   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords);
+
+/* Names the implementation the CPU vertex route executes: "scalar" until
+ * end-to-end native-path timing selects a correctness-qualified candidate.
+ */
+const char *r300_cpu_vertex_job_implementation(void);
 
 #endif /* R300_CPU_VERTEX_JOB_H */
