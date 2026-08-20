@@ -172,12 +172,16 @@ dp4_chain_job(int format_id)
    return job;
 }
 
-/* A dependent FMAD chain filling the instruction budget: each operation
- * reads the previous result, so the row measures per-instruction cost
- * with the interpreter's dispatch amortized across the chain.  The
- * destinations cycle through the temps above the two the chain seeds,
- * which the read-before-write rule admits because every source was
- * written by an earlier instruction.
+/* A dependent FMAD chain as deep as the producer can emit: each
+ * operation reads the previous result, so the row measures
+ * per-instruction cost with the interpreter's dispatch amortized across
+ * the chain.  r300_vertex_job_from_nir binds every result through
+ * bind_new_temp, which allocates monotonically and refuses past the
+ * 16-temp file (rg --fixed-strings bind_new_temp src/amd/r300/), so a
+ * job reaching the CPU route carries at most 14 chained results after
+ * the input and the constant.  A deeper chain the executor accepts is
+ * a workload no pipeline produces, and a dispatch decision resting on
+ * it would rest on a shape the driver cannot reach.
  */
 static struct r300_vertex_job
 arith_chain_job(int format_id, uint32_t chain_length)
@@ -196,8 +200,10 @@ arith_chain_job(int format_id, uint32_t chain_length)
       },
    };
    uint8_t previous = 0;
+   if (chain_length > R300_VERTEX_JOB_MAX_TEMPS - 2)
+      chain_length = R300_VERTEX_JOB_MAX_TEMPS - 2;
    for (uint32_t i = 0; i < chain_length; i++) {
-      uint8_t dst = (uint8_t)(2 + i % (R300_VERTEX_JOB_MAX_TEMPS - 2));
+      uint8_t dst = (uint8_t)(2 + i);
       job.instructions[job.instruction_count++] =
          (struct r300_vertex_job_instruction){
             R300_VERTEX_JOB_OP_FMAD, dst, previous, 1, 1,
@@ -348,26 +354,34 @@ bench_cell(const struct bench_lane *lanes, const char *shape,
 int
 main(int argc, char **argv)
 {
-   /* The K8 target binary's rows decide the TL-66 dispatch, and K8
-    * codegen on another microarchitecture times that host's pipeline,
-    * so the executing CPU must identify as AMD family 0Fh (K8) or the
-    * rows mark as smoke output.  The SSE3 feature bit is a hard
-    * refusal: the whole binary compiles at -march=k8-sse3, so a host
-    * without SSE3 would fault mid-run instead of producing marked rows.
+   /* The K8 target binary's rows decide one part's dispatch, and K8
+    * codegen elsewhere times that host's pipeline instead, so the
+    * executing CPU must identify as the qualified part or the rows mark
+    * as smoke output.  Family 0Fh alone is too wide: the K8 desktop,
+    * mobile, and server models differ in cache and timing, so the check
+    * reads the model too.  Model 0x68 is the Turion 64 X2 TL-66 the
+    * measurement frame names; the observed stepping rides in the stream
+    * rather than gating it, so a different revision of the same part
+    * stays visible in the rows it produced.  The SSE3 feature bit is a
+    * hard refusal: the whole binary compiles at -march=k8-sse3, so a
+    * host without SSE3 would fault mid-run instead of producing marked
+    * rows.
     */
 #ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
    {
       unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
-      int is_k8 = 0;
+      int is_qualified = 0;
       int has_sse3 = 0;
+      unsigned family = 0, model = 0, stepping = 0;
       if (__get_cpuid(0, &eax, &ebx, &ecx, &edx) &&
           ebx == 0x68747541u /* "Auth" */ &&
           edx == 0x69746e65u /* "enti" */ &&
           ecx == 0x444d4163u /* "cAMD" */ &&
           __get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
-         unsigned base_family = (eax >> 8) & 0xf;
-         unsigned ext_family = (eax >> 20) & 0xff;
-         is_k8 = base_family == 0xf && ext_family == 0;
+         family = ((eax >> 8) & 0xf) + ((eax >> 20) & 0xff);
+         model = ((eax >> 4) & 0xf) | (((eax >> 16) & 0xf) << 4);
+         stepping = eax & 0xf;
+         is_qualified = family == 0xf && model == 0x68;
          has_sse3 = (ecx & bit_SSE3) != 0;
       }
       if (!has_sse3) {
@@ -376,11 +390,14 @@ main(int argc, char **argv)
                  "k8-sse3 codegen would fault\n");
          return 1;
       }
-      if (!is_k8) {
+      printf("# cpuid family 0x%x model 0x%x stepping 0x%x\n", family, model,
+             stepping);
+      if (!is_qualified) {
          fprintf(stderr,
-                 "warning: executing CPU is not AMD family 0Fh (K8); "
-                 "rows are smoke output, not dispatch evidence\n");
-         printf("# non-K8 host: rows are smoke output, not dispatch "
+                 "warning: executing CPU is not the qualified Turion 64 X2 "
+                 "TL-66 (family 0x0f model 0x68); rows are smoke output, "
+                 "not dispatch evidence\n");
+         printf("# unqualified host: rows are smoke output, not dispatch "
                 "evidence\n");
       }
    }
@@ -457,9 +474,16 @@ main(int argc, char **argv)
       { "scalar", r300_cpu_vertex_job_execute },
       { "sse2", r300_cpu_vertex_job_execute_sse2 },
    };
+   /* Every format the pipeline admits as the bound attribute
+    * (rg --fixed-strings attribute_format_id src/amd/r300/): each
+    * carries its own gather and expansion, so a dispatch decision
+    * covering only some of them leaves the rest unmeasured.
+    */
    static const int formats[] = {
       R300_VERTEX_FORMAT_F32_4,
+      R300_VERTEX_FORMAT_F32_3,
       R300_VERTEX_FORMAT_F32_2,
+      R300_VERTEX_FORMAT_F32_1,
    };
    /* Three vertices is the public GPU-producer route's exact draw, so
     * the smallest cell is the one a dispatch decision acts on; the
@@ -467,7 +491,7 @@ main(int argc, char **argv)
     */
    static const uint32_t counts[] = { 3, 64, 4096, MAX_VERTICES };
 
-   for (unsigned f = 0; f < 2; f++) {
+   for (unsigned f = 0; f < sizeof(formats) / sizeof(formats[0]); f++) {
       const struct r300_vertex_format_semantics *format =
          r300_vertex_format_semantics(
             (enum r300_vertex_format_id)formats[f]);
@@ -476,7 +500,7 @@ main(int argc, char **argv)
          identity_job(formats[f]),
          affine_job(formats[f]),
          dp4_chain_job(formats[f]),
-         arith_chain_job(formats[f], 48),
+         arith_chain_job(formats[f], R300_VERTEX_JOB_MAX_TEMPS - 2),
       };
       static const char *const shapes[4] = {
          "identity", "affine", "dp4_chain", "arith_chain",
