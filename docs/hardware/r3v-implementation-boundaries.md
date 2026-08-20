@@ -896,9 +896,9 @@ symbol.
 | WSI over Gallium-exported resources | surface-query behavior alone; `VK_KHR_swapchain` and external-memory handles stay outside the native ICD | host model, and no presentation |
 | Host modeling: drm-shim identity, BO-domain, ioctl models | the same drm-shim models, exercised by the native harnesses | host model |
 
-Six rows carry a native counterpart, three of them bounded to one
-payload or one state vector; three rows have no native counterpart at
-all; WSI stops before presentation. The gap is the driver's general
+Nine rows carry a native counterpart, several bounded to one payload,
+state vector, or modeled surface; three rows have no native counterpart;
+WSI stops before presentation. The gap is the driver's general
 surface, so retirement is inadmissible until the rows above close, and
 the closing order is the one `Ordered development` names.
 

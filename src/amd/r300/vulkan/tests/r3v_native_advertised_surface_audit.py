@@ -99,7 +99,7 @@ def advertised_extensions(source_text):
 
 
 def native_features_empty(source_text):
-    """True when the native branch returns before setting any feature."""
+    """True when zero initialization dominates an unconditional return."""
     text = strip_comments(source_text)
     start = text.find(FEATURE_FUNCTION)
     if start < 0:
@@ -109,28 +109,40 @@ def native_features_empty(source_text):
     body_start = text.find("{", start)
     if body_start < 0:
         raise AuditFailure(f"{FEATURE_FUNCTION} carries no body")
-    guard = text.find(NATIVE_GUARD, body_start)
+    depth = 0
+    body_end = -1
+    for index in range(body_start, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                body_end = index
+                break
+    if body_end < 0:
+        raise AuditFailure(f"{FEATURE_FUNCTION} carries an unclosed body")
+    body = text[body_start + 1:body_end]
+    guard = body.find(NATIVE_GUARD)
     if guard < 0:
         raise AuditFailure(
             f"{FEATURE_FUNCTION} carries no {NATIVE_GUARD} branch, so the "
             f"native build's feature set is whatever the Gallium body sets")
-    endif = text.find("#endif", guard)
+    endif = body.find("#endif", guard)
     if endif < 0:
         raise AuditFailure(f"the {NATIVE_GUARD} branch never closes")
-    branch = text[guard + len(NATIVE_GUARD):endif]
-    # A feature assignment inside the branch means the native build
-    # advertises that capability; the branch may only return.
-    assignment = re.search(r"features\s*->\s*([A-Za-z0-9_]+)\s*=", branch)
-    if assignment:
+    prefix = body[:guard]
+    zero_pattern = (
+        r"\s*memset\s*\(\s*features\s*,\s*0\s*,\s*"
+        r"sizeof\s*\(\s*\*features\s*\)\s*\)\s*;\s*")
+    if re.fullmatch(zero_pattern, prefix) is None:
         raise AuditFailure(
-            f"the native branch of {FEATURE_FUNCTION} sets "
-            f"features->{assignment.group(1)}, so the native build "
-            f"advertises a feature; the registry holds the native feature "
-            f"set empty")
-    if not re.search(r"\breturn\b", branch):
+            f"{FEATURE_FUNCTION} does not unconditionally zero *features "
+            f"immediately before {NATIVE_GUARD}")
+    branch = body[guard + len(NATIVE_GUARD):endif]
+    if re.fullmatch(r"\s*return\s*;\s*", branch) is None:
         raise AuditFailure(
-            f"the native branch of {FEATURE_FUNCTION} does not return, so "
-            f"the Gallium body below it sets the native feature set")
+            f"the native branch of {FEATURE_FUNCTION} is not one "
+            f"unconditional return, so the Gallium feature body may run")
     return True
 
 
@@ -160,16 +172,19 @@ def selftest():
     def check(name, ok):
         checks.append((name, ok))
 
-    def good(extensions=None, feature_branch="   return;\n"):
+    def good(extensions=None, feature_prefix=None,
+             feature_branch="   return;\n"):
         entries = extensions if extensions is not None else [
             f"      .{name} = true," for name in ADVERTISED_DEVICE_EXTENSIONS]
+        prefix = ("   memset(features, 0, sizeof(*features));\n"
+                  if feature_prefix is None else feature_prefix)
         return ("static const struct vk_device_extension_table\n"
                 f"   {EXTENSION_TABLE} = {{\n"
                 + "\n".join(entries) + "\n   };\n"
                 "\nstatic void\n"
                 f"{FEATURE_FUNCTION}(struct vk_features *features)\n"
-                "{\n   memset(features, 0, sizeof(*features));\n"
-                f"{NATIVE_GUARD}\n{feature_branch}#endif\n"
+                "{\n" + prefix
+                + f"{NATIVE_GUARD}\n{feature_branch}#endif\n"
                 "   features->robustBufferAccess = true;\n}\n")
 
     def refuses(text, fragment):
@@ -206,16 +221,37 @@ def selftest():
     check("reads a commented entry as absent",
           audit(good(entries)) == sorted(ADVERTISED_DEVICE_EXTENSIONS))
 
-    # Known-bad: a feature set inside the native branch.
+    # Known-bad: zero initialization is absent or conditional.
+    check("refuses a missing feature zero",
+          refuses(good(feature_prefix=""), "unconditionally zero"))
+    check("refuses zeroing inside the native branch",
+          refuses(good(
+              feature_prefix="",
+              feature_branch=(
+                  "   memset(features, 0, sizeof(*features));\n"
+                  "   return;\n")),
+              "unconditionally zero"))
+    check("refuses a conditional feature zero",
+          refuses(good(
+              feature_prefix=(
+                  "   if (ready)\n"
+                  "      memset(features, 0, sizeof(*features));\n")),
+                  "unconditionally zero"))
+
+    # Known-bad: the native branch contains work or falls through.
     check("refuses a feature set in the native branch",
           refuses(good(feature_branch="   features->logicOp = true;\n"
                                       "   return;\n"),
-                  "advertises a feature"))
+                  "unconditional return"))
+
+    check("refuses a conditional native return",
+          refuses(good(feature_branch="   if (ready)\n      return;\n"),
+                  "unconditional return"))
 
     # Known-bad: the native branch falling through to the Gallium body.
     check("refuses a native branch that does not return",
           refuses(good(feature_branch="   (void)features;\n"),
-                  "does not return"))
+                  "unconditional return"))
 
     # Known-bad: a value the audit cannot read leaves the surface unread.
     entries = [f"      .{name} = true," for name in ADVERTISED_DEVICE_EXTENSIONS]
