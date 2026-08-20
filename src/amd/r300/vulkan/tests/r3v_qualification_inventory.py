@@ -139,6 +139,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-direct-write-arming-positive",
     "r3v-native-direct-write-authority-parity",
     "r3v-native-public-gpu-producer-arming-runner",
+    "r3v-native-public-gpu-producer-record",
     "r3v-native-gallium-separation",
     "r3v-native-gallium-separation-selftest",
     "r3v-native-lifecycle-pair-complete",

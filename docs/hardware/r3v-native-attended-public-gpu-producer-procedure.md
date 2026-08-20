@@ -43,6 +43,18 @@ this document adds only what the public route changes.
   positions (8, 8), (56, 8), (32, 56) -- which places the producer half
   byte-identical to `r300_r2vb_producer_reference_emit` and the consumer
   half byte-identical to the qualified cell.
+- Clear value: the recording admits one load-op clear, the 0xa5a5a5a5
+  sentinel the target oracle reads as its exterior and canary value, so
+  the run passes `(float)0xa5 / 255.0f` in all four channels and any
+  other color refuses at `vkCmdBeginRenderPass`.
+- Recording calibration: `r3v_native_attended_public_gpu_producer
+  <dir> --record-only` builds every object and records the command
+  buffer on the drm-shim fixture, then stops at the recording boundary.
+  The suite runs it as `r3v-native-public-gpu-producer-record`, so a
+  sequence the driver's recording contract refuses fails there rather
+  than on an authorized hardware attempt.  The recording mode reaches no
+  ioctl, reports no verdict, and is the one mode that runs under an
+  interposer.
 - Allocations: the carrier is driver-owned and poisoned with
   `R300_R2VB_PRODUCER_POISON_DWORD` across its sixteen dwords before the
   ioctl; the color target is the cell's 64x64 B8G8R8A8 surface with the
