@@ -1,12 +1,12 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Differential equivalence of the SSE2 vertex-job kernel against the
- * scalar interpreter: randomized valid jobs over bit-pattern-hostile
- * inputs must produce byte-identical carriers, the numeric-policy
- * witnesses must reproduce on the SSE2 entry directly, and every
- * refusal must return the scalar entry's errno.  Test verdicts ride
- * live asserts, so NDEBUG is undefined ahead of assert.h.
+ * Differential equivalence of the SIMD vertex-job candidates against
+ * the scalar interpreter: randomized valid jobs over bit-pattern-hostile
+ * inputs produce byte-identical carriers, numeric-policy witnesses
+ * reproduce on each entry directly, and every refusal returns the scalar
+ * entry's errno.  Test verdicts ride live asserts, so NDEBUG is undefined
+ * ahead of assert.h.
  */
 
 #undef NDEBUG
@@ -267,6 +267,59 @@ static void witness_dp4_signed_zero(const struct simd_lane *lane)
       assert(out[lane] == 0x80000000u);
 }
 
+/* Arithmetic canonicalizes every NaN to one quiet payload, while the MOV
+ * path retains the input payload.  The witness catches compiler-dependent
+ * scalar-versus-packed source selection without weakening byte-copy state.
+ */
+static void witness_nan_policy(const struct simd_lane *lane)
+{
+   struct r300_vertex_job arithmetic = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .constant_count = 1,
+      .instruction_count = 4,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_CONSTANT, .dst = 1,
+           .src0 = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_FADD, .dst = 2, .src0 = 0,
+           .src1 = 1 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 2 },
+      },
+      .constants = {
+         { 0xff800000u, 0x7fc00123u, 0x7fa00001u, 0x00000000u },
+      },
+   };
+   const uint32_t input[4] = {
+      0x7f800000u, 0x3f800000u, 0x3f800000u, 0x80000000u,
+   };
+   const struct r300_cpu_vertex_stream stream = {
+      .data = (const uint8_t *)input,
+      .stride = STREAM_STRIDE,
+      .size_bytes = sizeof(input),
+   };
+   uint32_t scalar[4] = { 0 };
+   uint32_t candidate[4] = { 0 };
+   assert(r300_cpu_vertex_job_execute(&arithmetic, &stream, 0, 1,
+                                      scalar, 4) == 0);
+   assert(lane->execute(&arithmetic, &stream, 0, 1, candidate, 4) == 0);
+   assert(memcmp(scalar, candidate, sizeof(scalar)) == 0);
+   assert(scalar[0] == 0x7fc00000u);
+   assert(scalar[1] == 0x7fc00000u);
+   assert(scalar[2] == 0x7fc00000u);
+
+   struct r300_vertex_job copy = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .instruction_count = 3,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_MOV, .dst = 1, .src0 = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 1 },
+      },
+   };
+   assert(lane->execute(&copy, &stream, 0, 1, candidate, 4) == 0);
+   assert(memcmp(input, candidate, sizeof(input)) == 0);
+}
+
 /* Refusal parity: the SSE2 entry shares the scalar guard, so every
  * refusal returns the same errno with no carrier write. */
 static void refusal_parity(const struct simd_lane *lane)
@@ -336,6 +389,7 @@ int main(void)
       differential_random_jobs(lane);
       witness_fmad_two_roundings(lane);
       witness_dp4_signed_zero(lane);
+      witness_nan_policy(lane);
       refusal_parity(lane);
       printf("r300_cpu_vertex_job_simd_test: %s bit-identical over %u "
              "random jobs; all checks passed\n",
@@ -350,5 +404,13 @@ int main(void)
              "build, skipped\n");
       return 77;
    }
+#ifdef R300_CPU_VERTEX_JOB_SIMD_REQUIRE_SSE3
+   if (qualified != ARRAY_SIZE(simd_lanes)) {
+      fprintf(stderr,
+              "r300_cpu_vertex_job_simd_test: target build omitted a SIMD "
+              "candidate\n");
+      return 1;
+   }
+#endif
    return 0;
 }

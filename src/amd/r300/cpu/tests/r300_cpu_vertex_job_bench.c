@@ -2,25 +2,26 @@
  * SPDX-License-Identifier: MIT
  *
  * Timing bench for the CPU vertex-job executor: the scalar interpreter
- * against the SSE2 execution kernel.
+ * against the SIMD execution candidates.
  *
- * The bench decides whether the SSE2 kernel earns dispatch on the
- * target host.  The scalar interpreter is the authority for the bytes,
- * so every lane verifies its carrier against the interpreter's before
- * its clock starts and a mismatch ends the run: a lane's row is
- * evidence about the implementation its label names.  Results are
- * host-specific and belong in an evidence bundle, not in a meson test
- * verdict, so the build registers no test over this executable.
+ * The bench screens SIMD candidates inside the CPU vertex-job executor.
+ * The scalar interpreter is the authority for the bytes, so every lane
+ * verifies its carrier against the interpreter's before its clock starts
+ * and a mismatch ends the run.  The native draw path writes a single-use
+ * mapped GTT carrier, while this microbenchmark reuses heap storage; an
+ * end-to-end dispatch decision therefore requires native-path timing.
+ * Results are host-specific and belong in an evidence bundle, not in a
+ * meson test verdict, so the build registers no test over this executable.
  *
  * A job executor's cost splits between per-vertex dispatch overhead and
  * per-instruction arithmetic, and the two answer differently.  The
  * shape dimension separates them: `identity` is the two-instruction job
- * the public GPU-producer route admits, where interpreter dispatch is
- * nearly the whole cost; `affine` and `dp4_chain` carry the arithmetic
- * a lowered vertex shader produces; `producer_max_chain` runs the
- * deepest dependent chain the producer can emit, where per-instruction
- * cost dominates, and its name states that the depth is that ceiling
- * rather than a pick.  A kernel
+ * the experimental R2VB routes accept for their format subsets; `constant`
+ * is the minimal CPU-routed job;
+ * `affine` and `dp4_chain` carry the arithmetic a lowered vertex shader
+ * produces; `producer_max_chain` runs the deepest dependent chain the
+ * producer can emit, where per-instruction cost dominates, and its name
+ * states that the depth is that ceiling rather than a pick.  A kernel
  * that wins one end and loses the other selects by shape rather than
  * outright, which the rows have to be able to show.
  *
@@ -43,8 +44,9 @@
  * mapped pointer off its 16-byte alignment.
  *
  * Output: TSV rows
- *   implementation  job_shape  layout  format  stride  base_offset
- *   vertex_count  instruction_count  reps  best_ns_per_vertex
+ *   implementation  job_shape  route_scope  carrier_state  layout  format
+ *   stride  base_offset  vertex_count  instruction_count  reps
+ *   best_ns_per_vertex
  */
 
 #include "r300_cpu_vertex_job.h"
@@ -66,6 +68,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,9 +95,9 @@ now_ns(void)
    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-/* Records carry arbitrary bit patterns rather than tidy floats: the
- * executor's arithmetic is bit-defined, and a stream of NaNs and
- * denormals is the case where a microarchitecture's slow paths show.
+/* Records carry arbitrary bit patterns rather than tidy floats: arithmetic
+ * canonicalizes NaNs, while denormals and ordinary magnitudes still expose
+ * a microarchitecture's slow paths.
  */
 static void
 fill_records(uint8_t *data, uint64_t bytes, uint32_t seed)
@@ -118,8 +121,7 @@ f_bits(float value)
    return bits;
 }
 
-/* LOAD_INPUT t0; STORE_POSITION t0 -- the job the public GPU-producer
- * route admits, and the floor on per-vertex dispatch cost.
+/* LOAD_INPUT t0; STORE_POSITION t0 -- the job the public GPU route admits.
  */
 static struct r300_vertex_job
 identity_job(int format_id)
@@ -130,6 +132,27 @@ identity_job(int format_id)
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
          { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 0, 0, 0 },
+      },
+   };
+   return job;
+}
+
+/* LOAD_CONSTANT t0; STORE_POSITION t0 -- the smallest job that bypasses the
+ * identity-only GPU route and reaches the CPU executor.
+ */
+static struct r300_vertex_job
+constant_job(int format_id)
+{
+   struct r300_vertex_job job = {
+      .input_format_id = format_id,
+      .instruction_count = 2,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_CONSTANT, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 0, 0, 0 },
+      },
+      .constant_count = 1,
+      .constants = {
+         { f_bits(0.25f), f_bits(-0.5f), f_bits(0.75f), f_bits(1.0f) },
       },
    };
    return job;
@@ -201,36 +224,28 @@ dp4_chain_job(int format_id)
  * per-instruction cost with the interpreter's dispatch amortized across
  * the chain.  r300_vertex_job_from_nir binds every result through
  * bind_new_temp, which allocates monotonically and refuses past the
- * 16-temp file (rg --fixed-strings bind_new_temp src/amd/r300/), so a
- * job reaching the CPU route carries at most 14 chained results after
- * the input and the constant.  A deeper chain the executor accepts is
- * a workload no pipeline produces, and a dispatch decision resting on
- * it would rest on a shape the driver cannot reach.
+ * 16-temp file (rg --fixed-strings bind_new_temp src/amd/r300/), so one
+ * input plus 15 arithmetic results fills the producer's file.  The input
+ * supplies the remaining operands and consumes no constant temp.
  */
 static struct r300_vertex_job
 producer_max_chain_job(int format_id, uint32_t chain_length)
 {
    struct r300_vertex_job job = {
       .input_format_id = format_id,
-      .instruction_count = 2,
+      .instruction_count = 1,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
-         { R300_VERTEX_JOB_OP_LOAD_CONSTANT, 1, 0, 0, 0 },
-      },
-      .constant_count = 1,
-      .constants = {
-         { f_bits(1.0009765625f), f_bits(0.99951171875f),
-           f_bits(1.00048828125f), f_bits(0.9990234375f) },
       },
    };
    uint8_t previous = 0;
-   if (chain_length > R300_VERTEX_JOB_MAX_TEMPS - 2)
-      chain_length = R300_VERTEX_JOB_MAX_TEMPS - 2;
+   if (chain_length > R300_VERTEX_JOB_MAX_TEMPS - 1)
+      chain_length = R300_VERTEX_JOB_MAX_TEMPS - 1;
    for (uint32_t i = 0; i < chain_length; i++) {
-      uint8_t dst = (uint8_t)(2 + i);
+      uint8_t dst = (uint8_t)(1 + i);
       job.instructions[job.instruction_count++] =
          (struct r300_vertex_job_instruction){
-            R300_VERTEX_JOB_OP_FMAD, dst, previous, 1, 1,
+            R300_VERTEX_JOB_OP_FMAD, dst, previous, 0, 0,
          };
       previous = dst;
    }
@@ -254,24 +269,18 @@ opcode_chain_job(int format_id, uint8_t opcode, uint32_t chain_length)
 {
    struct r300_vertex_job job = {
       .input_format_id = format_id,
-      .instruction_count = 2,
+      .instruction_count = 1,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
-         { R300_VERTEX_JOB_OP_LOAD_CONSTANT, 1, 0, 0, 0 },
-      },
-      .constant_count = 1,
-      .constants = {
-         { f_bits(1.0009765625f), f_bits(0.99951171875f),
-           f_bits(1.00048828125f), f_bits(0.9990234375f) },
       },
    };
    uint8_t previous = 0;
-   if (chain_length > R300_VERTEX_JOB_MAX_TEMPS - 2)
-      chain_length = R300_VERTEX_JOB_MAX_TEMPS - 2;
+   if (chain_length > R300_VERTEX_JOB_MAX_TEMPS - 1)
+      chain_length = R300_VERTEX_JOB_MAX_TEMPS - 1;
    for (uint32_t i = 0; i < chain_length; i++) {
-      uint8_t dst = (uint8_t)(2 + i);
+      uint8_t dst = (uint8_t)(1 + i);
       job.instructions[job.instruction_count++] =
-         (struct r300_vertex_job_instruction){ opcode, dst, previous, 1, 1 };
+         (struct r300_vertex_job_instruction){ opcode, dst, previous, 0, 0 };
       previous = dst;
    }
    job.instructions[job.instruction_count++] =
@@ -357,6 +366,25 @@ struct bench_lane {
    execute_fn fn;
 };
 
+/* A three-vertex non-identity job always reaches the CPU executor.  Identity
+ * can instead reach the two experimental R2VB routes when their exact gates
+ * open: F32_4 is a device-producer or host-model candidate, F32_3 and F32_2
+ * are host-model candidates, and F32_1 remains on the CPU route.  Larger
+ * counts exist only
+ * to expose executor scaling because the native draw admits three vertices.
+ */
+static const char *
+native_route_scope(int format_id, bool identity, uint32_t vertex_count)
+{
+   if (vertex_count != 3)
+      return "executor_diagnostic";
+   if (!identity || format_id == R300_VERTEX_FORMAT_F32_1)
+      return "cpu_route";
+   if (format_id == R300_VERTEX_FORMAT_F32_4)
+      return "gpu_or_host_model_route_candidate";
+   return "host_model_route_candidate";
+}
+
 /* One shape-by-count cell across every lane: calibrate each lane, then
  * rotate the lanes inside every repetition so scheduler and thermal
  * drift lands within each lane's repetition set; each lane's row
@@ -364,7 +392,8 @@ struct bench_lane {
  */
 static void
 bench_cell(const struct bench_lane *lanes, const char *shape,
-           const char *layout, const struct r300_vertex_job *job,
+           const char *route_scope, const char *layout,
+           const struct r300_vertex_job *job,
            uint32_t stride, uint32_t base_offset, uint32_t vertex_count,
            unsigned reps)
 {
@@ -416,11 +445,12 @@ bench_cell(const struct bench_lane *lanes, const char *shape,
       unsigned l = present[i];
       double per_vertex =
          (double)best[l] / ((double)inner * (double)vertex_count);
-      printf("%s\t%s\t%s\t%d\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32
+      printf("%s\t%s\t%s\treused_heap\t%s\t%d\t%" PRIu32 "\t%" PRIu32
+             "\t%" PRIu32
              "\t%" PRIu32 "\t%u\t%.3f\n",
-             lanes[l].label, shape, layout, job->input_format_id, stride,
-             base_offset, vertex_count, job->instruction_count, rounded,
-             per_vertex);
+             lanes[l].label, shape, route_scope, layout,
+             job->input_format_id, stride, base_offset, vertex_count,
+             job->instruction_count, rounded, per_vertex);
    }
 }
 
@@ -555,11 +585,8 @@ main(int argc, char **argv)
              "evidence\n");
    }
 
-   /* Two binaries time the same lanes and disagree on the identity
-    * shape, so each stream names the object its rows measure.  This
-    * bench links libr300_cpu, which carries the enclosing profile's
-    * flags, and its rows describe the code a driver built from that
-    * profile executes.  The K8 bench recompiles the same sources under
+   /* This bench and the native ICD link the same libr300_cpu object set.
+    * The K8 bench recompiles the same sources under
     * an -march override, so its rows describe codegen the profile does
     * not produce.  The filename separates the two streams, and a
     * locator travels apart from its bytes, so the fact rides in the
@@ -570,8 +597,11 @@ main(int argc, char **argv)
           "a driver links libr300_cpu at the profile's flags instead\n");
 #else
    printf("# lane codegen: libr300_cpu at the enclosing profile's "
-          "flags, as a driver from that profile links it\n");
+          "flags, shared with the native ICD\n");
 #endif
+   printf("# evidence scope: executor microbenchmark; native dispatch "
+          "requires single-use mapped GTT carrier timing\n");
+   printf("# carrier state: reused heap allocation\n");
    /* -march decides which instruction sets the compiler may emit for
     * the interpreter, so the ISA the profile grants it is the fact that
     * separates the two streams' arithmetic.
@@ -608,9 +638,9 @@ main(int argc, char **argv)
       }
    }
 
-   printf("implementation\tjob_shape\tlayout\tformat\tstride\t"
-          "base_offset\tvertex_count\tinstruction_count\treps\t"
-          "best_ns_per_vertex\n");
+   printf("implementation\tjob_shape\troute_scope\tcarrier_state\tlayout\t"
+          "format\tstride\tbase_offset\tvertex_count\tinstruction_count\t"
+          "reps\tbest_ns_per_vertex\n");
 
    static const struct bench_lane lanes[LANE_COUNT] = {
       { "scalar", r300_cpu_vertex_job_execute },
@@ -628,9 +658,8 @@ main(int argc, char **argv)
       R300_VERTEX_FORMAT_F32_2,
       R300_VERTEX_FORMAT_F32_1,
    };
-   /* Three vertices is the public GPU-producer route's exact draw, so
-    * the smallest cell is the one a dispatch decision acts on; the
-    * larger counts separate per-vertex cost from call overhead.
+   /* The native path admits exactly three vertices.  Larger counts expose
+    * executor scaling and carry an explicit diagnostic scope.
     */
    static const uint32_t counts[] = { 3, 64, 4096, MAX_VERTICES };
 
@@ -639,19 +668,20 @@ main(int argc, char **argv)
          r300_vertex_format_semantics(
             (enum r300_vertex_format_id)formats[f]);
       uint32_t stride = format->semantic_record_bytes;
-      struct r300_vertex_job jobs[6] = {
+      struct r300_vertex_job jobs[7] = {
          identity_job(formats[f]),
+         constant_job(formats[f]),
          affine_job(formats[f]),
          dp4_chain_job(formats[f]),
-         producer_max_chain_job(formats[f], R300_VERTEX_JOB_MAX_TEMPS - 2),
+         producer_max_chain_job(formats[f], R300_VERTEX_JOB_MAX_TEMPS - 1),
          opcode_chain_job(formats[f], R300_VERTEX_JOB_OP_FADD,
-                          R300_VERTEX_JOB_MAX_TEMPS - 2),
+                          R300_VERTEX_JOB_MAX_TEMPS - 1),
          opcode_chain_job(formats[f], R300_VERTEX_JOB_OP_FMUL,
-                          R300_VERTEX_JOB_MAX_TEMPS - 2),
+                          R300_VERTEX_JOB_MAX_TEMPS - 1),
       };
-      static const char *const shapes[6] = {
-         "identity", "affine", "dp4_chain", "producer_max_chain",
-         "fadd_chain", "fmul_chain",
+      static const char *const shapes[7] = {
+         "identity", "constant", "affine", "dp4_chain",
+         "producer_max_chain", "fadd_chain", "fmul_chain",
       };
       /* The admitted layouts: the packed stream the route builds, a
        * padded stride spreading records across cache lines, a zero
@@ -667,13 +697,16 @@ main(int argc, char **argv)
          { "collapsed", 0, 0 },
          { "offset4", stride, 4 },
       };
-      for (unsigned j = 0; j < 6; j++) {
+      for (unsigned j = 0; j < 7; j++) {
          for (unsigned y = 0; y < 4; y++) {
             for (unsigned c = 0; c < 4; c++) {
                if ((uint64_t)counts[c] * layouts[y].stride
                    + layouts[y].base_offset > RECORD_SPAN)
                   continue;
-               bench_cell(lanes, shapes[j], layouts[y].label, &jobs[j],
+               const char *route_scope =
+                  native_route_scope(formats[f], j == 0, counts[c]);
+               bench_cell(lanes, shapes[j], route_scope, layouts[y].label,
+                          &jobs[j],
                           layouts[y].stride, layouts[y].base_offset,
                           counts[c], reps);
             }

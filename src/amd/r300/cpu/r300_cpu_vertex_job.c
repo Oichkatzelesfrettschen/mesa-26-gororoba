@@ -23,10 +23,17 @@ static float bits_to_float(uint32_t bits)
    return value;
 }
 
-static uint32_t float_to_bits(float value)
+/* Host scalar code and packed SSE choose different source NaN payloads on
+ * some GCC versions.  Arithmetic results therefore use one quiet NaN, while
+ * LOAD_INPUT, LOAD_CONSTANT, and MOV keep their byte-copy payload contract.
+ */
+static uint32_t float_result_to_bits(float value)
 {
    uint32_t bits;
    memcpy(&bits, &value, sizeof(bits));
+   if ((bits & 0x7f800000u) == 0x7f800000u &&
+       (bits & 0x007fffffu) != 0)
+      return 0x7fc00000u;
    return bits;
 }
 
@@ -163,13 +170,13 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
             break;
          case R300_VERTEX_JOB_OP_FADD:
             for (uint32_t lane = 0; lane < 4; lane++)
-               temps[inst->dst][lane] = float_to_bits(
+               temps[inst->dst][lane] = float_result_to_bits(
                   bits_to_float(temps[inst->src0][lane]) +
                   bits_to_float(temps[inst->src1][lane]));
             break;
          case R300_VERTEX_JOB_OP_FMUL:
             for (uint32_t lane = 0; lane < 4; lane++)
-               temps[inst->dst][lane] = float_to_bits(
+               temps[inst->dst][lane] = float_result_to_bits(
                   bits_to_float(temps[inst->src0][lane]) *
                   bits_to_float(temps[inst->src1][lane]));
             break;
@@ -181,7 +188,7 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
                const float product =
                   bits_to_float(temps[inst->src0][lane]) *
                   bits_to_float(temps[inst->src1][lane]);
-               temps[inst->dst][lane] = float_to_bits(
+               temps[inst->dst][lane] = float_result_to_bits(
                   product + bits_to_float(temps[inst->src2][lane]));
             }
             break;
@@ -193,7 +200,7 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
             for (uint32_t lane = 1; lane < 4; lane++)
                sum += bits_to_float(temps[inst->src0][lane]) *
                       bits_to_float(temps[inst->src1][lane]);
-            const uint32_t bits = float_to_bits(sum);
+            const uint32_t bits = float_result_to_bits(sum);
             for (uint32_t lane = 0; lane < 4; lane++)
                temps[inst->dst][lane] = bits;
             break;
@@ -239,6 +246,27 @@ simd_load(const void *from, enum simd_load_form form)
    return _mm_loadu_si128((const __m128i *)from);
 }
 
+/* Canonicalize arithmetic NaNs with integer operations after each packed
+ * result.  This is the SIMD form of float_result_to_bits and leaves every
+ * finite value, infinity, denormal, and signed zero bit-exact.
+ */
+static ALWAYS_INLINE __m128i
+simd_float_result(__m128i bits)
+{
+   const __m128i exponent_mask = _mm_set1_epi32(0x7f800000u);
+   const __m128i mantissa_mask = _mm_set1_epi32(0x007fffffu);
+   const __m128i zero = _mm_setzero_si128();
+   const __m128i exponent_all_ones =
+      _mm_cmpeq_epi32(_mm_and_si128(bits, exponent_mask), exponent_mask);
+   const __m128i mantissa_zero =
+      _mm_cmpeq_epi32(_mm_and_si128(bits, mantissa_mask), zero);
+   const __m128i nan_mask = _mm_andnot_si128(mantissa_zero,
+                                             exponent_all_ones);
+   const __m128i canonical_nan = _mm_set1_epi32(0x7fc00000u);
+   return _mm_or_si128(_mm_andnot_si128(nan_mask, bits),
+                       _mm_and_si128(nan_mask, canonical_nan));
+}
+
 static ALWAYS_INLINE int
 execute_simd(const struct r300_vertex_job *job,
              const struct r300_cpu_vertex_stream *stream,
@@ -277,22 +305,22 @@ execute_simd(const struct r300_vertex_job *job,
             temps[inst->dst] = temps[inst->src0];
             break;
          case R300_VERTEX_JOB_OP_FADD:
-            temps[inst->dst] = _mm_castps_si128(
+            temps[inst->dst] = simd_float_result(_mm_castps_si128(
                _mm_add_ps(_mm_castsi128_ps(temps[inst->src0]),
-                          _mm_castsi128_ps(temps[inst->src1])));
+                          _mm_castsi128_ps(temps[inst->src1]))));
             break;
          case R300_VERTEX_JOB_OP_FMUL:
-            temps[inst->dst] = _mm_castps_si128(
+            temps[inst->dst] = simd_float_result(_mm_castps_si128(
                _mm_mul_ps(_mm_castsi128_ps(temps[inst->src0]),
-                          _mm_castsi128_ps(temps[inst->src1])));
+                          _mm_castsi128_ps(temps[inst->src1]))));
             break;
          case R300_VERTEX_JOB_OP_FMAD:
             /* mulps then addps: the product commits to binary32 before
              * the add, the same two roundings the scalar policy pins. */
-            temps[inst->dst] = _mm_castps_si128(_mm_add_ps(
+            temps[inst->dst] = simd_float_result(_mm_castps_si128(_mm_add_ps(
                _mm_mul_ps(_mm_castsi128_ps(temps[inst->src0]),
                           _mm_castsi128_ps(temps[inst->src1])),
-               _mm_castsi128_ps(temps[inst->src2])));
+               _mm_castsi128_ps(temps[inst->src2]))));
             break;
          case R300_VERTEX_JOB_OP_DP4: {
             /* Packed products, then a component-order scalar sum seeded
@@ -308,7 +336,8 @@ execute_simd(const struct r300_vertex_job *job,
             float sum = lanes[0];
             for (uint32_t lane = 1; lane < 4; lane++)
                sum += lanes[lane];
-            temps[inst->dst] = _mm_castps_si128(_mm_set1_ps(sum));
+            temps[inst->dst] = simd_float_result(
+               _mm_castps_si128(_mm_set1_ps(sum)));
             break;
          }
          case R300_VERTEX_JOB_OP_STORE_POSITION:
@@ -391,11 +420,10 @@ int r300_cpu_vertex_job_execute_sse3(
 
 #endif /* __SSE2__ */
 
-/* The target timing bench measured both candidates against the
- * interpreter on the qualified TL-66 and selected neither, so the route
- * executes the interpreter and this reports it.  A later measurement
- * that selects a candidate changes the selection here and the callers
- * keep calling r300_cpu_vertex_job_execute.
+/* The native route executes the scalar interpreter.  SIMD dispatch requires
+ * an end-to-end timing result over the route's single-use mapped GTT carrier;
+ * the executor-only heap benchmark qualifies candidates and measures their
+ * arithmetic cost without modeling that carrier.
  */
 const char *r300_cpu_vertex_job_implementation(void)
 {

@@ -3,9 +3,9 @@
  *
  * CPU vertex-job execution: runs a compiler-lowered r300_vertex_job
  * over bound vertex records and serializes the positions into the
- * native TCL-bypass carrier.  The scalar interpreter is the authority
- * for the carrier bytes; the SIMD candidates are correctness-qualified
- * specializations whose dispatch a target timing run decides.
+ * native TCL-bypass carrier.  The scalar interpreter is the authority;
+ * the SIMD candidates are correctness-qualified specializations whose
+ * dispatch requires end-to-end native-path timing.
  */
 
 #ifndef R300_CPU_VERTEX_JOB_H
@@ -40,9 +40,10 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
                                 uint32_t *carrier, uint32_t carrier_dwords);
 
 /* The SIMD execution candidates carry the same contract, refusals, and
- * carrier bytes as r300_cpu_vertex_job_execute; the scalar interpreter
- * is the authority for the bytes and the differential test enforces bit
- * identity against it.  Packed single-precision arithmetic keeps the
+ * carrier contract as r300_cpu_vertex_job_execute; the differential test
+ * enforces bit identity after arithmetic NaNs canonicalize to 0x7fc00000.
+ * Byte-copy operations preserve every payload bit.  Packed
+ * single-precision arithmetic keeps the
  * scalar policy exactly: one rounding per elementwise operator, the
  * FMAD product committed to binary32 before the add, and the DP4 sum
  * accumulated in component order from the packed products so signed
@@ -81,8 +82,8 @@ int r300_cpu_vertex_job_execute_sse3(
    const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords);
 
-/* Names the implementation the CPU vertex route executes: "scalar"
- * while the target timing bench selects no SIMD candidate.
+/* Names the implementation the CPU vertex route executes: "scalar" until
+ * end-to-end native-path timing selects a correctness-qualified candidate.
  */
 const char *r300_cpu_vertex_job_implementation(void);
 

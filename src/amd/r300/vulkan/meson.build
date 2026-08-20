@@ -393,8 +393,6 @@ if get_option('r3v-native-backend')
     'r3v_native_queue.c',
     'r3v_native_recording.c',
     'r3v_native_transfer.c',
-    '../cpu/r300_cpu_vertex.c',
-    '../cpu/r300_cpu_vertex_job.c',
     '../common/r300_direct_write.c',
     '../common/r300_first_draw_state.c',
     '../common/r300_fragment_binary.c',
@@ -446,7 +444,7 @@ if get_option('r3v-native-backend')
     [r3v_loader_base_files, r3v_native_files, r3v_entrypoints],
     include_directories : r3v_native_inc,
     dependencies : r3v_native_compile_deps,
-    link_with : [libradeon_drm_vk, libr300_compiler],
+    link_with : [libradeon_drm_vk, libr300_compiler, libr300_cpu],
     c_args : [no_override_init_args, '-DR3V_NATIVE_BACKEND'],
     gnu_symbol_visibility : 'hidden',
   )
@@ -541,7 +539,8 @@ if get_option('r3v-native-backend')
       'r3v-native-gallium-separation-sources',
       prog_python,
       args : [files('tests/r3v_native_separation_audit.py'), '--sources']
-             + r3v_loader_base_files + r3v_native_files + files(
+             + r3v_loader_base_files + r3v_native_files + r300_cpu_files
+             + files(
         'r3v_cpu_sync.h',
         'r3v_format.h',
         'r3v_instance.h',
@@ -568,6 +567,21 @@ if get_option('r3v-native-backend')
         'r3v_native_impl',
       ],
       depends : libr3v_native_impl,
+      suite : ['r3v'],
+    )
+    # The native implementation links libr300_cpu directly.  Its compile
+    # command receives the same Gallium-independence gate as native-owned
+    # objects, so sharing the exact benchmarked object preserves separation.
+    test(
+      'r3v-native-gallium-separation-cpu-compile-commands',
+      prog_python,
+      args : [
+        files('tests/r3v_native_separation_audit.py'),
+        '--compile-commands',
+        meson.global_build_root() / 'compile_commands.json',
+        'libr300_cpu',
+      ],
+      depends : libr300_cpu,
       suite : ['r3v'],
     )
   endif

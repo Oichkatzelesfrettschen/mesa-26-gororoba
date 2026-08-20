@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: MIT
 
-# Portable CPU vertex execution: the byte-defined baseline and the SSE2
-# SIMD path behind one gather contract.  Host-only code; the native R3V
-# implementation compiles this source into its own static implementation,
-# while the CPU test links libr300_cpu.  The qualification oracle proves the
-# implementations bit-identical against an independent reference model.
+# Portable CPU vertex execution: the byte-defined baseline and SIMD paths
+# behind one gather contract.  The native R3V implementation, tests, and
+# benchmarks link this one object set, so their compiler flags and symbols
+# cannot drift apart.
+r300_cpu_files = files('r300_cpu_vertex.c', 'r300_cpu_vertex_job.c')
 libr300_cpu = static_library(
   'r300_cpu',
-  files('r300_cpu_vertex.c', 'r300_cpu_vertex_job.c'),
+  r300_cpu_files,
   include_directories : [inc_src, inc_include],
   gnu_symbol_visibility : 'hidden',
 )
@@ -146,4 +146,26 @@ if with_tests
     ),
     suite : ['r300'],
   )
+
+  # The profile library grants SSE2 alone.  This second registered target
+  # recompiles the same executor and oracle at the K8 instruction ceiling,
+  # so the SSE3 candidate earns a test verdict instead of appearing only in
+  # an unregistered timing executable.
+  if host_machine.cpu_family() == 'x86_64' and \
+     cc.has_argument('-march=k8-sse3') and \
+     cc.has_argument('-mtune=k8-sse3')
+    test(
+      'r300-cpu-vertex-job-simd-k8',
+      executable(
+        'r300_cpu_vertex_job_simd_k8_test',
+        [r300_cpu_files, files('tests/r300_cpu_vertex_job_simd_test.c')],
+        include_directories : [inc_src, inc_include,
+                               include_directories('.')],
+        c_args : ['-march=k8-sse3', '-mtune=k8-sse3',
+                  '-DR300_CPU_VERTEX_JOB_SIMD_REQUIRE_SSE3=1'],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r300'],
+    )
+  endif
 endif
