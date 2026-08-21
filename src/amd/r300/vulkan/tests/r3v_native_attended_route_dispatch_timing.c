@@ -3,20 +3,27 @@
  *
  * Attended route dispatch timing cell: drives the application-shaped
  * Vulkan surface -- render pass, pipeline, vertex buffer, draw, submit
- * -- through one declared delivery route and reads
- * CLOCK_MONOTONIC_RAW at the recording boundary and around the
- * synchronous vkQueueSubmit, whose return covers the ioctl and the
- * bounded completion wait.  The declared route must match the route
- * the device's cached delivery gates resolve, so a run cannot time one
- * route under the other's name: --route gpu requires both delivery
- * gates at their exact opt-in values and submits the composed
- * producer-plus-consumer stream; --route cpu requires both gates
- * closed and submits the consumer alone over the CPU-executed vertex
- * job.  The color oracle decides that the timed submission delivered,
- * so every timing row rests on verified bytes.  One submission, one
- * verdict, one timing row per process; repetition lives with the
- * orchestrator, which arms each repetition in a fresh evidence
- * directory.
+ * -- through one declared delivery route and retains two intervals per
+ * run.  The deciding one is the driver's own transport bracket,
+ * DRM_RADEON_CS plus the bounded completion wait; the vkQueueSubmit
+ * wall around it also spans the semantic-cell and submit-object
+ * evidence writes, the IB digest, the completion BO allocation, and
+ * the arming facts read from sysfs and uname, so the wall bounds this
+ * run's evidence I/O rather than its delivery.
+ *
+ * A run cannot time one route under the other's name.  The gate state
+ * this process sets is what the device caches, so reading it back
+ * proves nothing; instead the driver reports the route its resolver
+ * and submit-time admission actually took, and a completed submission
+ * whose observed route differs from the declared one reports the
+ * disagreement rather than a timing row.  --route gpu takes both
+ * delivery gates at their exact opt-in values and submits the composed
+ * producer-plus-consumer stream; --route cpu takes both closed and
+ * submits the consumer alone over the CPU-executed vertex job.  The
+ * color oracle decides that the timed submission delivered, so every
+ * timing row rests on verified bytes.  One submission, one verdict, one
+ * timing row per process; repetition lives with the orchestrator, which
+ * arms each repetition in a fresh evidence directory.
  */
 
 #include "r3v_native.h"
@@ -43,6 +50,7 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
  */
 enum outcome {
    OUTCOME_TARGET_DELIVERED,
+   OUTCOME_ROUTE_DISAGREEMENT,
    OUTCOME_TARGET_MISMATCH,
    OUTCOME_CANARY_DISTURBED,
    OUTCOME_CARRIER_DIVERGED,
@@ -53,6 +61,7 @@ enum outcome {
 
 static const char *const outcome_names[] = {
    [OUTCOME_TARGET_DELIVERED] = "TARGET_DELIVERED",
+   [OUTCOME_ROUTE_DISAGREEMENT] = "ROUTE_DISAGREEMENT",
    [OUTCOME_TARGET_MISMATCH] = "TARGET_MISMATCH",
    [OUTCOME_CANARY_DISTURBED] = "CANARY_DISTURBED",
    [OUTCOME_CARRIER_DIVERGED] = "CARRIER_DIVERGED",
@@ -70,13 +79,17 @@ finish(enum outcome outcome)
 }
 
 /* One raw monotonic reading in nanoseconds; the raw clock stands
- * outside NTP slew, so two readings subtract to a wall interval.
+ * outside NTP slew, so two readings subtract to a wall interval.  A
+ * clock this thread cannot read yields 0, which reads downstream as an
+ * unmeasured interval rather than as an unsigned subtraction that
+ * wrapped.
  */
 static uint64_t
 now_raw_ns(void)
 {
    struct timespec ts;
-   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+   if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) != 0)
+      return 0;
    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
@@ -714,11 +727,34 @@ main(int argc, char **argv)
    const uint64_t t_submit_return_ns = now_raw_ns();
    enum r3v_native_queue_status queue_status =
       r3v_native_queue_submission_status(device);
+   /* The route that ran, as the resolver and the submit-time admission
+    * decided it.  The delivery gates this process set are what the
+    * driver cached, so reading them back here would prove nothing; the
+    * resolver additionally requires the F32_4 stream format, and a
+    * declared gpu route over any other format resolves to a host
+    * delivery.  Comparing the observed route against the declared one is
+    * what makes a mislabeled timing row impossible.
+    */
+   const bool observed_gpu = r3v_native_queue_observed_gpu_producer(device);
+   /* The transport bracket: DRM_RADEON_CS plus the bounded completion
+    * wait.  The vkQueueSubmit wall around it also spans the semantic-cell
+    * and submit-object evidence writes, the IB digest, the completion BO
+    * allocation, and the arming facts read from sysfs and uname, so the
+    * wall bounds this run's evidence I/O rather than its delivery.  Both
+    * readings retain; the transport interval is the deciding one.
+    */
+   const unsigned long long transport_wall_ns =
+      (unsigned long long)r3v_native_queue_transport_wall_ns(device);
    printf("[submit] vkQueueSubmit returned %d status=%s\n", submit_result,
           r3v_native_queue_status_name(queue_status));
-   printf("[timing] route=%s submit_wall_ns=%llu\n",
-          gpu_route ? "gpu" : "cpu",
-          (unsigned long long)(t_submit_return_ns - t_submit_enter_ns));
+   const unsigned long long submit_wall_ns =
+      t_submit_return_ns >= t_submit_enter_ns && t_submit_enter_ns != 0
+         ? (unsigned long long)(t_submit_return_ns - t_submit_enter_ns)
+         : 0ull;
+   printf("[timing] route=%s observed=%s transport_wall_ns=%llu "
+          "submit_wall_ns=%llu\n",
+          gpu_route ? "gpu" : "cpu", observed_gpu ? "gpu" : "cpu",
+          transport_wall_ns, submit_wall_ns);
    fflush(stdout);
 
    /* Readback and retention run for every submit result: a refused or
@@ -760,6 +796,13 @@ main(int argc, char **argv)
    enum outcome outcome;
    if (!verdict.canary_pass)
       outcome = OUTCOME_CANARY_DISTURBED;
+   else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED &&
+            observed_gpu != gpu_route)
+      /* A completed submission whose delivery route is not the declared
+       * one carries a timing row for the other route; it reports the
+       * disagreement rather than the row.
+       */
+      outcome = OUTCOME_ROUTE_DISAGREEMENT;
    else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE)
       outcome = OUTCOME_COMPLETION_FAILURE;
    else if (submit_result == VK_ERROR_DEVICE_LOST)
@@ -786,8 +829,9 @@ main(int argc, char **argv)
    int length = snprintf(
       outcome_json, sizeof(outcome_json),
       "{\n"
-      "  \"schema\": \"r3v-native-route-dispatch-timing-outcome/1\",\n"
+      "  \"schema\": \"r3v-native-route-dispatch-timing-outcome/2\",\n"
       "  \"route\": \"%s\",\n"
+      "  \"observed_route\": \"%s\",\n"
       "  \"verdict\": \"%s\",\n"
       "  \"submit_result\": %d,\n"
       "  \"queue_status\": \"%s\",\n"
@@ -796,6 +840,7 @@ main(int argc, char **argv)
       "  \"t_submit_enter_ns\": \"%llu\",\n"
       "  \"t_submit_return_ns\": \"%llu\",\n"
       "  \"submit_wall_ns\": \"%llu\",\n"
+      "  \"transport_wall_ns\": \"%llu\",\n"
       "  \"color_size_bytes\": %u,\n"
       "  \"executed\": %s,\n"
       "  \"interior_pass\": %s,\n"
@@ -804,12 +849,13 @@ main(int argc, char **argv)
       "  \"interior_samples\": %u,\n"
       "  \"exterior_samples\": %u\n"
       "}\n",
-      gpu_route ? "gpu" : "cpu", outcome_names[outcome], submit_result,
+      gpu_route ? "gpu" : "cpu", observed_gpu ? "gpu" : "cpu",
+      outcome_names[outcome], submit_result,
       r3v_native_queue_status_name(queue_status), route_digest,
       (unsigned long long)t_record_done_ns,
       (unsigned long long)t_submit_enter_ns,
       (unsigned long long)t_submit_return_ns,
-      (unsigned long long)(t_submit_return_ns - t_submit_enter_ns),
+      submit_wall_ns, transport_wall_ns,
       (unsigned)R3V_NATIVE_TARGET_MEMORY_BYTES,
       verdict.executed ? "true" : "false",
       verdict.interior_pass ? "true" : "false",

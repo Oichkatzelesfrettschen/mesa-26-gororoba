@@ -310,6 +310,23 @@ struct r3v_native_device {
    bool submit_hazard_accepted;
    const char *manifest_dir;
    enum r3v_native_queue_status queue_status;
+   /* The last submission's transport interval on the raw monotonic
+    * clock: the reading immediately before DRM_RADEON_CS and the one
+    * immediately after the completion wait retires.  A caller timing a
+    * delivery route needs this bracket rather than the vkQueueSubmit
+    * wall, because the wall also spans the semantic-cell and
+    * submit-object evidence writes, the IB digest, the completion BO
+    * allocation, and the arming facts read from sysfs and uname.  Both
+    * read zero until a submission reaches the ioctl.
+    */
+   uint64_t transport_enter_ns;
+   uint64_t transport_return_ns;
+   /* Whether the last submission's deferred draw delivered its carrier
+    * through the device-side producer.  The declared route names what a
+    * caller asked for; this names what the resolver and the admission
+    * actually did, so an evidence bundle states the route that ran.
+    */
+   bool transport_gpu_producer_delivery;
    /* Serial status-load admissions this instance has counted against the
     * declared bound; the instance that wrote the attempt token is the
     * only one whose count is nonzero, which is what lets a continuation
@@ -528,6 +545,19 @@ void r3v_native_prepared_release(struct r3v_native_device *device);
  */
 enum r3v_native_queue_status
 r3v_native_queue_submission_status(VkDevice device);
+
+/* The last submission's transport interval in raw monotonic nanoseconds:
+ * DRM_RADEON_CS plus the bounded completion wait, with the evidence
+ * writes, digest, allocation, and arming reads that surround them left
+ * outside.  Returns 0 when no submission reached the ioctl.
+ */
+uint64_t r3v_native_queue_transport_wall_ns(VkDevice device);
+
+/* Whether the last submission delivered its carrier through the
+ * device-side producer route, as the resolver and the submit-time
+ * admission decided it rather than as a caller declared it.
+ */
+bool r3v_native_queue_observed_gpu_producer(VkDevice device);
 
 /* A permanent binary wait is reset after deferred execution.  Emulated
  * timeline points, temporary payloads, and same-submit re-signals retain

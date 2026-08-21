@@ -26,6 +26,7 @@
 #include <radeon_drm.h>
 #include <stdint.h>
 #include <fcntl.h>
+#include <time.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -691,6 +692,37 @@ r3v_native_queue_submission_status(VkDevice _device)
                          : R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION;
 }
 
+/* One raw monotonic reading in nanoseconds.  The raw clock stands
+ * outside NTP slew, so two readings subtract to a wall interval.  A
+ * clock this thread cannot read yields 0, which reads downstream as an
+ * unmeasured interval rather than as a wrapped one.
+ */
+static uint64_t
+r3v_native_raw_now_ns(void)
+{
+   struct timespec ts;
+   if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) != 0)
+      return 0;
+   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+uint64_t
+r3v_native_queue_transport_wall_ns(VkDevice _device)
+{
+   VK_FROM_HANDLE(r3v_native_device, device, _device);
+   if (device == NULL || device->transport_enter_ns == 0 ||
+       device->transport_return_ns < device->transport_enter_ns)
+      return 0;
+   return device->transport_return_ns - device->transport_enter_ns;
+}
+
+bool
+r3v_native_queue_observed_gpu_producer(VkDevice _device)
+{
+   VK_FROM_HANDLE(r3v_native_device, device, _device);
+   return device != NULL && device->transport_gpu_producer_delivery;
+}
+
 static int
 r3v_native_submission_trace_emit(
    struct r3v_native_device *device,
@@ -909,6 +941,13 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
                        "r3v-native: transport trace refused before the "
                        "submission ioctl");
    }
+   /* The prepared path reports the same transport bracket the inline
+    * path does, so one accessor describes both.
+    */
+   device->transport_gpu_producer_delivery =
+      cmd_buffer->deferred_draw.gpu_producer_delivery;
+   device->transport_return_ns = 0;
+   device->transport_enter_ns = r3v_native_raw_now_ns();
    int result = radeon_drm_vk_cs_submit(&device->drm, &prepared->cs);
    if (r3v_native_submission_trace_emit(
           device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
@@ -926,6 +965,7 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
              R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_RETURN) != 0)
          trace_result = -EIO;
    }
+   device->transport_return_ns = r3v_native_raw_now_ns();
    if (result == 0 && trace_result != 0)
       result = trace_result;
    if (result == 0) {
@@ -1364,6 +1404,16 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "the submission ioctl");
       }
 
+      /* The transport bracket a route measurement reads: the ioctl and
+       * the completion wait, with the evidence writes, the digest, the
+       * completion allocation, and the arming reads left outside it.
+       * The trace emission inside the bracket is one write to an already
+       * open transcript, and it runs identically on every route.
+       */
+      device->transport_gpu_producer_delivery =
+         cmd_buffer->deferred_draw.gpu_producer_delivery;
+      device->transport_return_ns = 0;
+      device->transport_enter_ns = r3v_native_raw_now_ns();
       int result = radeon_drm_vk_cs_submit(&device->drm, &cs);
       if (r3v_native_submission_trace_emit(
              device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
@@ -1381,6 +1431,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                 R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_RETURN) != 0)
             trace_result = -EIO;
       }
+      device->transport_return_ns = r3v_native_raw_now_ns();
       if (result == 0 && trace_result != 0)
          result = trace_result;
       if (result == 0) {
