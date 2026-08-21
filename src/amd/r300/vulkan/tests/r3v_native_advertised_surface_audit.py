@@ -13,10 +13,12 @@ The registry is the audit's own declaration rather than a second file to
 drift from: adding an extension to the driver and not to this list fails,
 and adding it to this list states the route that makes it true.
 
-The native feature set is separately held empty.  A feature bit is a
+The native feature set is separately held to the core-1.0 baseline: the
+mandatory robustBufferAccess grant and nothing else.  A feature bit is a
 capability claim the core entry points must honor, and the native branch
-returns before setting any, so the audit proves that early return still
-stands rather than reading the bits it would otherwise have to model.
+grants exactly that one bit before returning, so the audit proves that
+shape still stands rather than reading the bits it would otherwise have
+to model.
 
 Usage:
   r3v_native_advertised_surface_audit.py --source PATH
@@ -139,10 +141,15 @@ def native_features_empty(source_text):
             f"{FEATURE_FUNCTION} does not unconditionally zero *features "
             f"immediately before {NATIVE_GUARD}")
     branch = body[guard + len(NATIVE_GUARD):endif]
-    if re.fullmatch(r"\s*return\s*;\s*", branch) is None:
+    branch_pattern = (
+        r"\s*features\s*->\s*robustBufferAccess\s*=\s*true\s*;"
+        r"\s*return\s*;\s*")
+    if re.fullmatch(branch_pattern, branch) is None:
         raise AuditFailure(
-            f"the native branch of {FEATURE_FUNCTION} is not one "
-            f"unconditional return, so the Gallium feature body may run")
+            f"the native branch of {FEATURE_FUNCTION} is not the "
+            f"mandatory robustBufferAccess grant followed by one "
+            f"unconditional return, so the native feature set is not the "
+            f"core-1.0 baseline")
     return True
 
 
@@ -173,7 +180,8 @@ def selftest():
         checks.append((name, ok))
 
     def good(extensions=None, feature_prefix=None,
-             feature_branch="   return;\n"):
+             feature_branch="   features->robustBufferAccess = true;\n"
+                            "   return;\n"):
         entries = extensions if extensions is not None else [
             f"      .{name} = true," for name in ADVERTISED_DEVICE_EXTENSIONS]
         prefix = ("   memset(features, 0, sizeof(*features));\n"
@@ -238,20 +246,27 @@ def selftest():
                   "      memset(features, 0, sizeof(*features));\n")),
                   "unconditionally zero"))
 
-    # Known-bad: the native branch contains work or falls through.
-    check("refuses a feature set in the native branch",
+    # Known-bad: the native branch grants an optional feature, omits
+    # the mandatory grant, or falls through.
+    check("refuses an optional feature in the native branch",
           refuses(good(feature_branch="   features->logicOp = true;\n"
                                       "   return;\n"),
-                  "unconditional return"))
+                  "core-1.0 baseline"))
+
+    check("refuses a native branch without robustBufferAccess",
+          refuses(good(feature_branch="   return;\n"),
+                  "core-1.0 baseline"))
 
     check("refuses a conditional native return",
-          refuses(good(feature_branch="   if (ready)\n      return;\n"),
-                  "unconditional return"))
+          refuses(good(feature_branch=(
+                     "   features->robustBufferAccess = true;\n"
+                     "   if (ready)\n      return;\n")),
+                  "core-1.0 baseline"))
 
     # Known-bad: the native branch falling through to the Gallium body.
     check("refuses a native branch that does not return",
           refuses(good(feature_branch="   (void)features;\n"),
-                  "unconditional return"))
+                  "core-1.0 baseline"))
 
     # Known-bad: a value the audit cannot read leaves the surface unread.
     entries = [f"      .{name} = true," for name in ADVERTISED_DEVICE_EXTENSIONS]
