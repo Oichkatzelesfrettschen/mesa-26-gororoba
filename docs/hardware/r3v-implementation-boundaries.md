@@ -1270,9 +1270,13 @@ exit status.
 `docs/hardware/r3v-native-attended-public-gpu-producer-procedure.md` carries
 the silicon cell: the arming runner that composes the route offline and
 reports the digest, the declarations the run sets, the predictions and
-falsifiers, and the two independent oracles -- the driver's carrier read-back
+falsifiers, and the two fail-closed oracles -- the driver's carrier read-back
 and the runner's color-target compare -- that a `TARGET_DELIVERED` verdict
-requires together.
+requires together. The color target is downstream of the carrier, so the pair
+is serially dependent rather than independent, and each one's verdict rests on
+a pre-seeded value the correct path cannot manufacture;
+`rs482-native-delivery-route-admission-and-oracle-model.md` carries that
+model.
 
 ### Native WSI
 

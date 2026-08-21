@@ -25,6 +25,7 @@
 #include "vk_command_pool.h"
 #include "vk_log.h"
 
+#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <radeon_drm.h>
@@ -786,6 +787,15 @@ r3v_native_deferred_draw_verify_gpu_producer(
    struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
    if (!draw->gpu_producer_delivery)
       return VK_SUCCESS;
+
+   /* Admission records gpu_producer_delivery where the composition
+    * establishes it, ahead of the oracle capture, so the flag alone does
+    * not promise a populated expectation.  The submit path returns on an
+    * admission error and never reaches here, which is the invariant this
+    * read-back depends on: a verify after a failed admit would compare
+    * against a previous execution's oracle.
+    */
+   assert(draw->gpu_producer_dwords != 0);
 
    struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
    bool owns_map = carrier->map == NULL;

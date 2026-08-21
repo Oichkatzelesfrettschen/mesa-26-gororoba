@@ -341,13 +341,22 @@ make configure build test \
   COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 ```
 
-Run one host-model harness against its known-bad calibration by reverting the
-mechanism it witnesses and re-running it:
+`make build` puts the build directory at `$repo_root/build/mesa-$PROFILE`. The
+two harnesses that witness the host-coherency and prepared-transport rules run
+from there:
 
 ```sh
+builddir="$repo_root/build/mesa-4_r300_full_release_x86_64v1-clang22-distcc-cache"
 meson test -C "$builddir" --suite r3v r3v-native-public-surface
 meson test -C "$builddir" --suite r3v r3v-native-burst-cell-admission
 ```
+
+Each was calibrated by removing the mechanism it witnesses, rebuilding that
+target alone, and observing the failure, then restoring it. Reproducing a
+calibration repeats those steps: delete the named call, run
+`ninja -C "$builddir" <harness target>`, run the test above and see it fail,
+then restore the call and see it pass. The commit that introduces each witness
+records which call it removed.
 
 The kernel replays register as `r300-r2vb-public-route-replay` and
 `r300-zb-depth-control-replay` and skip with exit status 77 when
