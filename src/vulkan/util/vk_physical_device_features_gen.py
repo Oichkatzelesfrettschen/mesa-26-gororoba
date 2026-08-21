@@ -254,6 +254,12 @@ vk_physical_device_check_device_features(struct vk_physical_device *physical_dev
 % endif
 % endfor
 
+   /* Every recognized feature struct is validated, including one whose
+    * core promotion version or extension the device lacks: the supported
+    * set queried below reports false for each such feature, so enabling
+    * it returns VK_ERROR_FEATURE_NOT_PRESENT
+    * (dEQP-VK.api.device_init.create_device_unsupported_features.* on a
+    * device whose apiVersion is below the struct's promotion version). */
    vk_foreach_struct_const(features, pCreateInfo->pNext) {
       VkBaseOutStructure *supported = NULL;
       switch (features->sType) {
@@ -262,10 +268,6 @@ vk_physical_device_check_device_features(struct vk_physical_device *physical_dev
 #ifdef ${f.guard}
 % endif
       case ${f.s_type}:
-% if f.condition("physical_device") is not None:
-         if (!${f.condition("physical_device")})
-            break;
-% endif
          supported = (VkBaseOutStructure *) &supported_${f.c_type};
          break;
 % if f.guard != None:
@@ -329,10 +331,6 @@ vk_physical_device_check_device_features(struct vk_physical_device *physical_dev
 #ifdef ${f.guard}
 % endif
       case ${f.s_type}: {
-% if f.condition("physical_device") is not None:
-         if (!${f.condition("physical_device")})
-            break;
-% endif
          const ${f.c_type} *a = &supported_${f.c_type};
          const ${f.c_type} *b = (const void *) features;
 % for flag in f.features:
