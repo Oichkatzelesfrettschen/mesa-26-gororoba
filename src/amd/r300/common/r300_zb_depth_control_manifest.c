@@ -27,8 +27,12 @@ write_file(const char *dir, const char *name, const void *data, size_t size)
       return 1;
    }
    const size_t written = fwrite(data, 1, size, f);
-   fclose(f);
-   return written == size ? 0 : 1;
+   /* The flush runs at close, so the close status is where a full or
+    * over-quota directory reports itself; a manifest digest computed
+    * from memory describes bytes that never reached the file otherwise.
+    */
+   const int close_rc = fclose(f);
+   return (written == size && close_rc == 0) ? 0 : 1;
 }
 
 int

@@ -2207,8 +2207,21 @@ main(void)
              sizeof(native_gpu->deferred_draw.gpu_expected_carrier));
       radeon_drm_vk_bo_unmap(&native_device->drm,
                              &native_gpu->owned_carrier->bo, carrier_map);
+      /* Host-model read side: the carrier carries no live mapping here,
+       * so the post-completion invalidate over the command buffer's live
+       * mappings never reaches it and the read-back itself owns the
+       * invalidate.  The event record names the carrier handle, which
+       * pins the flush to the range the memcmp reads rather than to any
+       * sync the surrounding path happens to perform.
+       */
+      const uint64_t readback_sync_before =
+         native_device->drm.cache_sync_count;
       assert(r3v_native_deferred_draw_verify_gpu_producer(
                 native_device, native_gpu) == VK_SUCCESS);
+      assert(native_device->drm.cache_sync_count ==
+             readback_sync_before + 1);
+      assert(native_device->drm.cache_sync_last.bo_handle ==
+             native_gpu->owned_carrier->bo.handle);
       assert(!native_device->gpu_producer_quarantined);
 
       /* The closed hazard gate still refuses the composed submission

@@ -719,6 +719,14 @@ r3v_native_deferred_draw_admit_gpu_producer(
              producer.ib_size_dwords * sizeof(uint32_t));
    }
    r300_r2vb_producer_pass_release(&producer);
+   /* The flag names one fact: the recorded IB carries the producer prefix
+    * ahead of the consumer.  The composition above establishes it, so it is
+    * recorded here rather than at the successful tail; a failure in the
+    * carrier steps that follow leaves a composed IB, and a resubmission of
+    * this buffer re-emits the prefix in place instead of prepending a
+    * second one.
+    */
+   draw->gpu_producer_delivery = true;
 
    /* The poisoned carrier crosses to the device now, so the read-back
     * decides every slot: a record dword still holding the poison names
@@ -747,7 +755,6 @@ r3v_native_deferred_draw_admit_gpu_producer(
    for (uint32_t i = R300_TRIANGLE_VERTEX_DWORDS;
         i < R3V_GPU_PRODUCER_CARRIER_DWORDS; i++)
       draw->gpu_expected_carrier[i] = R300_R2VB_PRODUCER_POISON_DWORD;
-   draw->gpu_producer_delivery = true;
    return VK_SUCCESS;
 }
 
@@ -790,6 +797,24 @@ r3v_native_deferred_draw_verify_gpu_producer(
                        "r3v-native: carrier read-back mapping failed; "
                        "GPU producer capability quarantined");
    }
+   /* The carrier is the one device output this verdict reads, and it
+    * reaches this point with no live mapping: admission unmaps it after
+    * publishing the poison, so the post-completion invalidate over the
+    * command buffer's live mappings
+    * (rg --fixed-strings "Device writes landed in memory past the cache"
+    * src/amd/r300/vulkan/r3v_native_queue.c) passes it by.  The RS480 GART
+    * runs with request snooping disabled and every GTT mapping is
+    * ttm_cached, so the poison written at admission still covers these
+    * lines and a read through a fresh mapping returns it.  Invalidating the
+    * read extent applies the rule r3v_MapMemory states for the public path
+    * to the one internal host read of device output; the lines are clean
+    * since admission published them, so the flush carries nothing back.
+    * The BO-aware form names the carrier handle in the host-model event
+    * record, so the harness witnesses this invalidate by handle.
+    */
+   radeon_drm_vk_bo_cache_sync_for_bo(&device->drm, &carrier->bo,
+                                      carrier->map,
+                                      sizeof(draw->gpu_expected_carrier));
    const bool matches =
       memcmp(carrier->map, draw->gpu_expected_carrier,
              sizeof(draw->gpu_expected_carrier)) == 0;

@@ -147,16 +147,24 @@ static int execute_guard(const struct r300_vertex_job *job,
    if ((uint64_t)vertex_count * 4 > carrier_dwords)
       return -ENOSPC;
 
-   /* Whole-range last-byte bound in 64-bit arithmetic, so the
-    * per-vertex gathers below cannot fail after the carrier has been
-    * written.  A zero stride repeats the first record. */
+   /* Whole-range last-byte bound, so the per-vertex gathers below cannot
+    * fail after the carrier has been written.  The comparison divides,
+    * matching r300_cpu_vertex_gather's own bound: last_vertex reaches
+    * 2^32.3 and the stride reaches 2^32, so the product form wraps and a
+    * wrapped residue admits a range the per-vertex gather then refuses
+    * mid-carrier.  A zero stride repeats the first record, which the
+    * record-bytes bound alone covers.
+    */
    const struct r300_vertex_format_semantics *format =
       r300_vertex_format_semantics(job->input_format_id);
-   const uint64_t last_vertex = (uint64_t)first_vertex + vertex_count - 1;
-   const uint64_t last_byte =
-      last_vertex * stream->stride + format->semantic_record_bytes;
-   if (last_byte > stream->size_bytes)
+   if (stream->size_bytes < format->semantic_record_bytes)
       return -EINVAL;
+   if (stream->stride != 0) {
+      const uint64_t last_vertex = (uint64_t)first_vertex + vertex_count - 1;
+      if (last_vertex > (stream->size_bytes -
+                         format->semantic_record_bytes) / stream->stride)
+         return -EINVAL;
+   }
 
    /* The carrier may share an allocation with the stream (an in-place
     * restaging), but an overlapping byte range would let stores
@@ -242,12 +250,24 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
             break;
          case R300_VERTEX_JOB_OP_DP4: {
             /* Seed with the first product: an additive zero seed would
-             * rewrite an all-negative-zero dot product to +0. */
-            float sum = bits_to_float(temps[inst->src0][0]) *
-                        bits_to_float(temps[inst->src1][0]);
-            for (uint32_t lane = 1; lane < 4; lane++)
-               sum += bits_to_float(temps[inst->src0][lane]) *
-                      bits_to_float(temps[inst->src1][lane]);
+             * rewrite an all-negative-zero dot product to +0.  Each
+             * product commits to binary32 through a volatile object
+             * before it joins the sum, the same defense FMAD above
+             * carries: an accumulate written as sum += a * b is a
+             * contraction candidate, and a target with a fused operator
+             * would round the pair once and diverge from the packed
+             * multiply-then-add the SSE2 kernel executes.
+             */
+            const volatile float seed =
+               bits_to_float(temps[inst->src0][0]) *
+               bits_to_float(temps[inst->src1][0]);
+            float sum = seed;
+            for (uint32_t lane = 1; lane < 4; lane++) {
+               const volatile float product =
+                  bits_to_float(temps[inst->src0][lane]) *
+                  bits_to_float(temps[inst->src1][lane]);
+               sum += product;
+            }
             const uint32_t bits = float_result_to_bits(sum);
             for (uint32_t lane = 0; lane < 4; lane++)
                temps[inst->dst][lane] = bits;
