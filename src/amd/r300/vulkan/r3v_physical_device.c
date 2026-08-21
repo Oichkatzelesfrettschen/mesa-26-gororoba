@@ -60,6 +60,28 @@ r3v_hybrid_compute_enabled(void)
    return gate && strcmp(gate, R3V_HYBRID_COMPUTE_ENV_VALUE) == 0;
 }
 
+#ifndef R3V_NATIVE_BACKEND
+/* The registry dependency graph makes four advertised extensions invalid
+ * at apiVersion 1.0 on this device: VK_KHR_create_renderpass2 requires
+ * VK_KHR_multiview, whose mandatory multiview feature needs layered
+ * rendering (maxFramebufferLayers is 1 here, so no honest multiview
+ * exists); VK_KHR_maintenance5 requires core 1.1;
+ * VK_KHR_depth_stencil_resolve sits on create_renderpass2 and
+ * VK_KHR_dynamic_rendering on depth_stencil_resolve.  The default
+ * surface withholds all four, so every advertised extension satisfies
+ * its registry dependencies (dEQP-VK.info.device_extension_dependencies).
+ * zink_device_info.py marks create_renderpass2, dynamic_rendering, and
+ * maintenance5 required=True, so the zink lane opens the full baseline
+ * surface with this exact opt-in and carries the dependency violation as
+ * its recorded conformance cost. */
+static bool
+r3v_zink_baseline_surface_enabled(void)
+{
+   const char *gate = getenv("R3V_ZINK_BASELINE_SURFACE");
+   return gate && strcmp(gate, "1") == 0;
+}
+#endif
+
 static const char *
 r3v_chip_name_from_pci_device_id(uint32_t pci_device_id)
 {
@@ -905,8 +927,21 @@ r3v_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
    const struct vk_device_extension_table *supported_extensions =
       &r3v_native_device_extensions_supported;
 #else
+   /* The registry-invalid four and their feature bits leave the surface
+    * together; the gate rationale sits at
+    * r3v_zink_baseline_surface_enabled. */
+   struct vk_device_extension_table gallium_extensions =
+      r3v_device_extensions_supported;
+   if (!r3v_zink_baseline_surface_enabled()) {
+      gallium_extensions.KHR_create_renderpass2 = false;
+      gallium_extensions.KHR_depth_stencil_resolve = false;
+      gallium_extensions.KHR_dynamic_rendering = false;
+      gallium_extensions.KHR_maintenance5 = false;
+      features.dynamicRendering = false;
+      features.maintenance5 = false;
+   }
    const struct vk_device_extension_table *supported_extensions =
-      &r3v_device_extensions_supported;
+      &gallium_extensions;
 #endif
    VkResult result = vk_physical_device_init(&device->vk, &instance->vk,
                                              supported_extensions,
