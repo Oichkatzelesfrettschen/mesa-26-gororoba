@@ -672,22 +672,34 @@ def evaluate(registered: set[str], options: dict[str, object],
         if absence in failures:
             registration_failures.append(absence)
 
-    if not qualification:
-        if require_tests:
-            if registration_failures:
-                print("verdict: REGISTRATION FAILURE "
-                      f"({len(registration_failures)} absences)",
-                      file=sys.stderr)
-                return 1
-            print("verdict: every required test is registered")
-            return 0
-        print("verdict: inventory (qualification gate not requested)")
+    return verdict(qualification, require_tests, failures,
+                   registration_failures)
+
+
+def verdict(qualification: bool, require_tests: bool, failures: list[str],
+            registration_failures: list[str]) -> int:
+    """The mode's verdict over the absences the report already named.
+
+    Each mode reads one list and prints one line: the qualification gate
+    judges every absence, the registration gate judges the absences a
+    build decides for itself, and the report mode judges none.  The two
+    gates are mutually exclusive at the argument parser, so no call
+    reaches here asking for both."""
+    if qualification:
+        if failures:
+            print(f"verdict: QUALIFICATION FAILURE ({len(failures)} absences)",
+                  file=sys.stderr)
+            return 1
+        print("verdict: qualification inventory complete")
         return 0
-    if failures:
-        print(f"verdict: QUALIFICATION FAILURE ({len(failures)} absences)",
-              file=sys.stderr)
-        return 1
-    print("verdict: qualification inventory complete")
+    if require_tests:
+        if registration_failures:
+            print("verdict: REGISTRATION FAILURE "
+                  f"({len(registration_failures)} absences)", file=sys.stderr)
+            return 1
+        print("verdict: every required test is registered")
+        return 0
+    print("verdict: inventory (qualification gate not requested)")
     return 0
 
 
@@ -840,8 +852,12 @@ def run_selftest() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("builddir", nargs="?", type=Path)
-    parser.add_argument("--qualification", action="store_true")
-    parser.add_argument("--require-tests", action="store_true")
+    # The two gates judge different absence sets, so asking for both
+    # names no verdict; the parser refuses rather than letting one win
+    # silently.
+    gate = parser.add_mutually_exclusive_group()
+    gate.add_argument("--qualification", action="store_true")
+    gate.add_argument("--require-tests", action="store_true")
     parser.add_argument("--fixture", choices=["zero-native"])
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
