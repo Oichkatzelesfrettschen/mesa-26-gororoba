@@ -46,7 +46,7 @@
 # probe without changing the system default.
 pkgname=mesa-gororoba-debug-optimized
 pkgver=26.2.0
-pkgrel=17
+pkgrel=18
 epoch=2
 pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, ati_r300/r3v ICD + anti-lag/device-select implicit Vulkan layers, files under /opt'
 arch=('x86_64')
@@ -101,7 +101,7 @@ source=('mesa-gororoba-debug-optimized-env.sh'
         'mesa-gororoba-debug-optimized-native-run')
 sha256sums=('91fde174cd155c2e0062f98b1443a9eaf18f8f7a04ba74c6d5617de65a5d857a'
             '7c279f5d678dc077525c3af11db649bdc252e7031166ed8f805fb4a2e0dc0fcf'
-            'f8db66c82784d69bc0bff339ce0d56747e5a89092aac70a77bfab3b3b97fdcab')
+            'cea1341e7aa02ef54bf8acfe8b6e92b07f86b5dd441f650163a05a7e5578b634')
 
 _prefix=/opt/mesa-gororoba-debug-optimized
 # The canonical build-infra builddir to repack, and the source root for the
