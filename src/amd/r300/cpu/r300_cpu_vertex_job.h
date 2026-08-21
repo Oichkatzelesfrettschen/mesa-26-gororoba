@@ -13,7 +13,7 @@
 
 #include "r300_cpu_vertex.h"
 
-#include "amd/r300/compiler/r300_vertex_job.h"
+#include "amd/r300/common/r300_vertex_job.h"
 
 /* Structural validation, independent of any vertex data: opcode set,
  * register and constant bounds, attribute-0-only inputs, every source

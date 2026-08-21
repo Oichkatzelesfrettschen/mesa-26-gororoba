@@ -10,7 +10,7 @@
 #include "r3v_native_arming.h"
 
 #include "amd/r300/common/r300_compute_job.h"
-#include "amd/r300/compiler/r300_vertex_job.h"
+#include "amd/r300/common/r300_vertex_job.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_completion.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_cs.h"

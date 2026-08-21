@@ -1,0 +1,871 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Direct SPIR-V admission for the vertex-job IR.
+ */
+
+#include "r300_vertex_spirv.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+/* The opcode and enumerant values below are the SPIR-V specification's
+ * numeric assignments (Khronos SPIR-V, section 3: binary form); the
+ * reader carries its own table so admission depends on no external
+ * header.
+ */
+enum {
+   SPV_MAGIC = 0x07230203u,
+
+   R300_VERTEX_SPIRV_ID_BOUND_MAX = 4096,
+
+   OP_SOURCE = 3,
+   OP_SOURCE_EXTENSION = 4,
+   OP_NAME = 5,
+   OP_MEMBER_NAME = 6,
+   OP_STRING = 7,
+   OP_LINE = 8,
+   OP_EXTENSION = 10,
+   OP_EXT_INST_IMPORT = 11,
+   OP_EXT_INST = 12,
+   OP_MEMORY_MODEL = 14,
+   OP_ENTRY_POINT = 15,
+   OP_EXECUTION_MODE = 16,
+   OP_CAPABILITY = 17,
+   OP_TYPE_VOID = 19,
+   OP_TYPE_INT = 21,
+   OP_TYPE_FLOAT = 22,
+   OP_TYPE_VECTOR = 23,
+   OP_TYPE_ARRAY = 28,
+   OP_TYPE_STRUCT = 30,
+   OP_TYPE_POINTER = 32,
+   OP_TYPE_FUNCTION = 33,
+   OP_CONSTANT = 43,
+   OP_CONSTANT_COMPOSITE = 44,
+   OP_FUNCTION = 54,
+   OP_FUNCTION_END = 56,
+   OP_VARIABLE = 59,
+   OP_LOAD = 61,
+   OP_STORE = 62,
+   OP_ACCESS_CHAIN = 65,
+   OP_IN_BOUNDS_ACCESS_CHAIN = 66,
+   OP_DECORATE = 71,
+   OP_MEMBER_DECORATE = 72,
+   OP_COMPOSITE_CONSTRUCT = 80,
+   OP_F_ADD = 129,
+   OP_F_MUL = 133,
+   OP_DOT = 148,
+   OP_LABEL = 248,
+   OP_RETURN = 253,
+   OP_NO_LINE = 317,
+   OP_MODULE_PROCESSED = 330,
+
+   GLSL_STD_450_FMA = 50,
+
+   CAP_SHADER = 1,
+   EXEC_MODEL_VERTEX = 0,
+   EXEC_MODEL_FRAGMENT = 4,
+   EXEC_MODE_ORIGIN_UPPER_LEFT = 7,
+   ADDRESSING_LOGICAL = 0,
+
+   SC_INPUT = 1,
+   SC_OUTPUT = 3,
+   SC_FUNCTION = 7,
+
+   DECOR_RELAXED_PRECISION = 0,
+   DECOR_BLOCK = 2,
+   DECOR_BUILTIN = 11,
+   DECOR_LOCATION = 30,
+
+   BUILTIN_POSITION = 0,
+   BUILTIN_POINT_SIZE = 1,
+   BUILTIN_CLIP_DISTANCE = 3,
+   BUILTIN_CULL_DISTANCE = 4,
+};
+
+/* Per-result-id record: the module walk classifies every id once, and
+ * the body walk reads the classifications back.  The kinds cover
+ * exactly the admitted grammar.
+ */
+enum id_kind {
+   ID_UNSET = 0,
+   ID_TYPE_VOID,
+   ID_TYPE_FLOAT32,
+   ID_TYPE_VEC4,
+   ID_TYPE_INT32,
+   /* Fixed-length float arrays: legal only as gl_PerVertex tail
+    * members, so the kind carries no structure. */
+   ID_TYPE_FLOAT_ARRAY,
+   ID_TYPE_STRUCT_PERVERTEX,
+   ID_TYPE_POINTER,
+   ID_TYPE_FUNCTION,
+   ID_CONST_FLOAT,
+   ID_CONST_INT,
+   ID_CONST_VEC4,
+   ID_EXT_IMPORT_GLSL,
+   ID_VAR_INPUT_POS,
+   ID_VAR_OUTPUT_PERVERTEX,
+   ID_VAR_OUTPUT_POS_DIRECT,
+   ID_VAR_OUTPUT_COLOR,
+   ID_VAR_FUNCTION,
+   ID_FUNCTION,
+   ID_LABEL,
+   /* Body values. */
+   ID_PTR_POSITION,
+   ID_VAL_VEC4,
+   ID_VAL_SCALAR_BROADCAST,
+};
+
+struct id_info {
+   uint8_t kind;
+   /* ID_TYPE_POINTER: storage class (a), pointee type id (b).
+    * ID_CONST_FLOAT / ID_CONST_INT: the 32-bit pattern or value (a).
+    * ID_CONST_VEC4: lane patterns (vec), materialized flag (b), temp
+    * (c).  ID_VAL_VEC4 / ID_VAL_SCALAR_BROADCAST: the job temp (a).
+    * ID_VAR_FUNCTION: the value id the last recognized store left in
+    * the variable (b).
+    */
+   uint32_t a;
+   uint32_t b;
+   uint32_t c;
+   uint32_t vec[4];
+   /* Decorations, collected before definitions are read. */
+   bool has_location, has_builtin, has_m0_builtin;
+   uint32_t location, builtin, m0_builtin;
+};
+
+struct reader {
+   const uint32_t *words;
+   size_t count;
+   struct id_info *ids;
+   uint32_t bound;
+   struct r300_vertex_job *job;
+   uint32_t next_temp;
+   const char **reason;
+};
+
+static bool refuse(struct reader *r, const char *why)
+{
+   *r->reason = why;
+   return false;
+}
+
+static struct id_info *info(struct reader *r, uint32_t id)
+{
+   return id != 0 && id < r->bound ? &r->ids[id] : NULL;
+}
+
+/* A fresh result id: inside the bound and not yet defined, so a module
+ * redefining an id refuses instead of overwriting the classification.
+ */
+static struct id_info *define(struct reader *r, uint32_t id)
+{
+   struct id_info *entry = info(r, id);
+   if (entry == NULL || entry->kind != ID_UNSET)
+      return NULL;
+   return entry;
+}
+
+static bool id_is(struct reader *r, uint32_t id, enum id_kind kind)
+{
+   const struct id_info *entry = info(r, id);
+   return entry != NULL && entry->kind == kind;
+}
+
+static bool const_int_is(struct reader *r, uint32_t id, uint32_t value)
+{
+   const struct id_info *entry = info(r, id);
+   return entry != NULL && entry->kind == ID_CONST_INT &&
+          entry->a == value;
+}
+
+static bool emit(struct reader *r, uint8_t opcode, uint8_t dst,
+                 uint8_t src0, uint8_t src1, uint8_t src2)
+{
+   struct r300_vertex_job *job = r->job;
+   if (job->instruction_count >= R300_VERTEX_JOB_MAX_INSTRUCTIONS)
+      return refuse(r, "vertex program exceeds the instruction budget");
+   job->instructions[job->instruction_count++] =
+      (struct r300_vertex_job_instruction){ opcode, dst, src0, src1, src2 };
+   return true;
+}
+
+static bool new_temp(struct reader *r, uint8_t *temp)
+{
+   if (r->next_temp >= R300_VERTEX_JOB_MAX_TEMPS)
+      return refuse(r, "vertex program exceeds the 16-temp file");
+   *temp = (uint8_t)r->next_temp++;
+   return true;
+}
+
+/* Resolves a value id to the temp that carries it as a vec4, emitting
+ * the deduplicated LOAD_CONSTANT the first time a composite constant
+ * is consumed.  A Dot result reaches an operand only through its own
+ * four-way replicate, so a broadcast scalar refuses here.
+ */
+static bool value_temp(struct reader *r, uint32_t id, uint8_t *temp)
+{
+   struct id_info *entry = info(r, id);
+   if (entry == NULL)
+      return refuse(r, "operand outside the bound");
+   switch (entry->kind) {
+   case ID_VAL_VEC4:
+      *temp = (uint8_t)entry->a;
+      return true;
+   case ID_CONST_VEC4: {
+      if (entry->b != 0) {
+         *temp = (uint8_t)entry->c;
+         return true;
+      }
+      struct r300_vertex_job *job = r->job;
+      uint32_t slot = job->constant_count;
+      for (uint32_t c = 0; c < job->constant_count; c++) {
+         if (memcmp(job->constants[c], entry->vec,
+                    sizeof(entry->vec)) == 0) {
+            slot = c;
+            break;
+         }
+      }
+      if (slot == job->constant_count) {
+         if (slot >= R300_VERTEX_JOB_MAX_CONSTANTS)
+            return refuse(r, "vertex program exceeds the constant file");
+         memcpy(job->constants[slot], entry->vec, sizeof(entry->vec));
+         job->constant_count++;
+      }
+      uint8_t dst;
+      if (!new_temp(r, &dst))
+         return false;
+      if (!emit(r, R300_VERTEX_JOB_OP_LOAD_CONSTANT, dst, (uint8_t)slot,
+                0, 0))
+         return false;
+      entry->b = 1;
+      entry->c = dst;
+      *temp = dst;
+      return true;
+   }
+   default:
+      return refuse(r, "operand outside the admitted straight line");
+   }
+}
+
+/* One admitted gl_PerVertex shape: member 0 is the vec4 Position
+ * builtin, and any tail members are the float or float-array builtins
+ * a GLSL declaration carries along.
+ */
+static bool struct_members_admit_pervertex(struct reader *r,
+                                           const uint32_t *w, uint32_t len)
+{
+   if (len < 3 || !id_is(r, w[2], ID_TYPE_VEC4))
+      return false;
+   for (uint32_t m = 3; m < len; m++) {
+      if (!id_is(r, w[m], ID_TYPE_FLOAT32) &&
+          !id_is(r, w[m], ID_TYPE_FLOAT_ARRAY))
+         return false;
+   }
+   return true;
+}
+
+static bool
+admit_module(const uint32_t *words, size_t word_count,
+             struct id_info *ids, uint32_t bound, uint32_t exec_model,
+             struct r300_vertex_job *job, uint32_t color_bits[4],
+             const char **reason)
+{
+   struct reader reader = {
+      .words = words,
+      .count = word_count,
+      .ids = ids,
+      .bound = bound,
+      .job = job,
+      .reason = reason,
+   };
+   struct reader *r = &reader;
+   const bool fragment = exec_model == EXEC_MODEL_FRAGMENT;
+
+   bool capability_shader = false;
+   bool memory_model_logical = false;
+   uint32_t entry_point = 0;
+   uint32_t input_var = 0;
+   uint32_t output_var = 0;
+
+   /* Body state: the entry function's straight-line walk. */
+   bool in_function = false;
+   bool function_seen = false;
+   bool label_seen = false;
+   bool returned = false;
+   bool stored = false;
+
+   size_t at = 5;
+   while (at < word_count) {
+      const uint32_t first = words[at];
+      const uint32_t opcode = first & 0xffffu;
+      const uint32_t len = first >> 16;
+      if (len == 0 || at + len > word_count) {
+         *reason = "instruction overruns the module";
+         return false;
+      }
+      const uint32_t *w = &words[at];
+      at += len;
+
+      switch (opcode) {
+      case OP_SOURCE:
+      case OP_SOURCE_EXTENSION:
+      case OP_NAME:
+      case OP_MEMBER_NAME:
+      case OP_STRING:
+      case OP_LINE:
+      case OP_NO_LINE:
+      case OP_MODULE_PROCESSED:
+         break;
+
+      case OP_CAPABILITY:
+         if (len != 2 || w[1] != CAP_SHADER)
+            return refuse(r, "capability outside Shader");
+         capability_shader = true;
+         break;
+
+      case OP_EXTENSION:
+         return refuse(r, "SPIR-V extension outside the admitted grammar");
+
+      case OP_EXT_INST_IMPORT: {
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL || len < 3)
+            return refuse(r, "malformed extended-instruction import");
+         /* The GLSL.std.450 set alone supplies an admitted instruction
+          * (Fma); any other import still refuses at its use.
+          */
+         static const char glsl_450[] = "GLSL.std.450";
+         const size_t name_words = len - 2;
+         if (name_words != sizeof(glsl_450) / 4 + 1 ||
+             memcmp(&w[2], glsl_450, sizeof(glsl_450)) != 0)
+            return refuse(r,
+                          "extended-instruction import outside "
+                          "GLSL.std.450");
+         entry->kind = ID_EXT_IMPORT_GLSL;
+         break;
+      }
+
+      case OP_MEMORY_MODEL:
+         if (len != 3 || w[1] != ADDRESSING_LOGICAL)
+            return refuse(r, "memory model outside Logical addressing");
+         memory_model_logical = true;
+         break;
+
+      case OP_ENTRY_POINT:
+         if (len < 3 || w[1] != exec_model)
+            return refuse(r, "entry point outside the requested model");
+         if (entry_point != 0)
+            return refuse(r, "more than one entry point");
+         entry_point = w[2];
+         break;
+
+      case OP_EXECUTION_MODE:
+         if (fragment && len == 3 && w[1] == entry_point &&
+             entry_point != 0 && w[2] == EXEC_MODE_ORIGIN_UPPER_LEFT)
+            break;
+         return refuse(r, "execution mode outside the admitted grammar");
+
+      case OP_DECORATE: {
+         if (len < 3)
+            return refuse(r, "malformed decoration");
+         struct id_info *entry = info(r, w[1]);
+         if (entry == NULL)
+            return refuse(r, "decoration names an id outside the bound");
+         switch (w[2]) {
+         case DECOR_LOCATION:
+            if (len != 4)
+               return refuse(r, "malformed decoration");
+            entry->has_location = true;
+            entry->location = w[3];
+            break;
+         case DECOR_BUILTIN:
+            if (len != 4)
+               return refuse(r, "malformed decoration");
+            entry->has_builtin = true;
+            entry->builtin = w[3];
+            break;
+         case DECOR_BLOCK:
+         case DECOR_RELAXED_PRECISION:
+            break;
+         default:
+            return refuse(r, "decoration outside the admitted grammar");
+         }
+         break;
+      }
+
+      case OP_MEMBER_DECORATE: {
+         if (len < 4)
+            return refuse(r, "malformed member decoration");
+         struct id_info *entry = info(r, w[1]);
+         if (entry == NULL)
+            return refuse(r, "decoration names an id outside the bound");
+         if (w[3] != DECOR_BUILTIN || len != 5)
+            return refuse(r,
+                          "member decoration outside the builtin block");
+         if (w[2] == 0) {
+            entry->has_m0_builtin = true;
+            entry->m0_builtin = w[4];
+         } else if (w[4] != BUILTIN_POINT_SIZE &&
+                    w[4] != BUILTIN_CLIP_DISTANCE &&
+                    w[4] != BUILTIN_CULL_DISTANCE) {
+            return refuse(r,
+                          "member builtin outside the gl_PerVertex tail");
+         }
+         break;
+      }
+
+      case OP_TYPE_VOID: {
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL || len != 2)
+            return refuse(r, "malformed type");
+         entry->kind = ID_TYPE_VOID;
+         break;
+      }
+
+      case OP_TYPE_FLOAT: {
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL || len != 3)
+            return refuse(r, "malformed type");
+         if (w[2] != 32)
+            return refuse(r, "float width outside 32 bits");
+         entry->kind = ID_TYPE_FLOAT32;
+         break;
+      }
+
+      case OP_TYPE_INT: {
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL || len != 4)
+            return refuse(r, "malformed type");
+         if (w[2] != 32)
+            return refuse(r, "integer width outside 32 bits");
+         entry->kind = ID_TYPE_INT32;
+         break;
+      }
+
+      case OP_TYPE_VECTOR: {
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL || len != 4)
+            return refuse(r, "malformed type");
+         if (!id_is(r, w[2], ID_TYPE_FLOAT32) || w[3] != 4)
+            return refuse(r, "vector type outside vec4 float");
+         entry->kind = ID_TYPE_VEC4;
+         break;
+      }
+
+      case OP_TYPE_ARRAY: {
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL || len != 4)
+            return refuse(r, "malformed type");
+         if (!id_is(r, w[2], ID_TYPE_FLOAT32) ||
+             !id_is(r, w[3], ID_CONST_INT))
+            return refuse(r,
+                          "array type outside the gl_PerVertex tail");
+         entry->kind = ID_TYPE_FLOAT_ARRAY;
+         break;
+      }
+
+      case OP_TYPE_STRUCT: {
+         /* Decorations landed on this id before the definition. */
+         struct id_info *entry = info(r, w[1]);
+         if (entry == NULL || len < 3)
+            return refuse(r, "malformed type");
+         if (entry->kind != ID_UNSET)
+            return refuse(r, "result id defined twice");
+         if (!entry->has_m0_builtin ||
+             entry->m0_builtin != BUILTIN_POSITION ||
+             !struct_members_admit_pervertex(r, w, len))
+            return refuse(r, "struct type outside gl_PerVertex");
+         entry->kind = ID_TYPE_STRUCT_PERVERTEX;
+         break;
+      }
+
+      case OP_TYPE_POINTER: {
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL || len != 4)
+            return refuse(r, "malformed type");
+         entry->kind = ID_TYPE_POINTER;
+         entry->a = w[2];
+         entry->b = w[3];
+         break;
+      }
+
+      case OP_TYPE_FUNCTION: {
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL || len < 3)
+            return refuse(r, "malformed type");
+         if (len != 3 || !id_is(r, w[2], ID_TYPE_VOID))
+            return refuse(r, "function type outside void()");
+         entry->kind = ID_TYPE_FUNCTION;
+         break;
+      }
+
+      case OP_CONSTANT: {
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL || len != 4)
+            return refuse(r, "malformed constant");
+         if (id_is(r, w[1], ID_TYPE_FLOAT32))
+            entry->kind = ID_CONST_FLOAT;
+         else if (id_is(r, w[1], ID_TYPE_INT32))
+            entry->kind = ID_CONST_INT;
+         else
+            return refuse(r, "constant type outside 32-bit scalars");
+         entry->a = w[3];
+         break;
+      }
+
+      case OP_CONSTANT_COMPOSITE: {
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL || len != 7)
+            return refuse(r, "malformed composite constant");
+         if (!id_is(r, w[1], ID_TYPE_VEC4))
+            return refuse(r, "composite constant outside vec4 float");
+         for (uint32_t c = 0; c < 4; c++) {
+            const struct id_info *lane = info(r, w[3 + c]);
+            if (lane == NULL || lane->kind != ID_CONST_FLOAT)
+               return refuse(r,
+                             "composite constant outside literal floats");
+            entry->vec[c] = lane->a;
+         }
+         entry->kind = ID_CONST_VEC4;
+         break;
+      }
+
+      case OP_VARIABLE: {
+         struct id_info *entry = info(r, w[2]);
+         if (entry == NULL || len != 4)
+            return refuse(r, "malformed variable");
+         if (entry->kind != ID_UNSET)
+            return refuse(r, "result id defined twice");
+         const uint32_t storage_class = w[3];
+         const struct id_info *ptr = info(r, w[1]);
+         if (ptr == NULL || ptr->kind != ID_TYPE_POINTER ||
+             ptr->a != storage_class)
+            return refuse(r, "variable type outside a matching pointer");
+         switch (storage_class) {
+         case SC_INPUT:
+            if (fragment)
+               return refuse(r, "fragment shader reads an input");
+            if (!id_is(r, ptr->b, ID_TYPE_VEC4) || !entry->has_location ||
+                entry->location != 0)
+               return refuse(r,
+                             "vertex input outside attribute 0 as vec4");
+            if (input_var != 0)
+               return refuse(r, "more than one vertex input");
+            entry->kind = ID_VAR_INPUT_POS;
+            input_var = w[2];
+            break;
+         case SC_OUTPUT:
+            if (output_var != 0)
+               return refuse(r, "more than one shader output");
+            if (fragment) {
+               if (!id_is(r, ptr->b, ID_TYPE_VEC4) ||
+                   !entry->has_location || entry->location != 0)
+                  return refuse(r,
+                                "fragment output outside color 0 as vec4");
+               entry->kind = ID_VAR_OUTPUT_COLOR;
+            } else if (id_is(r, ptr->b, ID_TYPE_STRUCT_PERVERTEX)) {
+               entry->kind = ID_VAR_OUTPUT_PERVERTEX;
+            } else if (id_is(r, ptr->b, ID_TYPE_VEC4) &&
+                       entry->has_builtin &&
+                       entry->builtin == BUILTIN_POSITION) {
+               entry->kind = ID_VAR_OUTPUT_POS_DIRECT;
+            } else {
+               return refuse(r,
+                             "vertex output outside the Position builtin");
+            }
+            output_var = w[2];
+            break;
+         case SC_FUNCTION:
+            if (!in_function)
+               return refuse(r, "function variable outside a function");
+            if (!id_is(r, ptr->b, ID_TYPE_VEC4) &&
+                !id_is(r, ptr->b, ID_TYPE_FLOAT32))
+               return refuse(r,
+                             "function variable outside the 32-bit float "
+                             "model");
+            entry->kind = ID_VAR_FUNCTION;
+            entry->b = 0; /* holds no value yet */
+            break;
+         default:
+            return refuse(r, "storage class outside the admitted grammar");
+         }
+         break;
+      }
+
+      case OP_FUNCTION: {
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL || len != 5)
+            return refuse(r, "malformed function");
+         if (function_seen)
+            return refuse(r, "more than one function");
+         if (w[2] != entry_point)
+            return refuse(r, "function outside the entry point");
+         entry->kind = ID_FUNCTION;
+         function_seen = true;
+         in_function = true;
+         break;
+      }
+
+      case OP_LABEL: {
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL || len != 2 || !in_function)
+            return refuse(r, "malformed label");
+         if (label_seen)
+            return refuse(r, "control flow outside straight-line code");
+         entry->kind = ID_LABEL;
+         label_seen = true;
+         break;
+      }
+
+      case OP_ACCESS_CHAIN:
+      case OP_IN_BOUNDS_ACCESS_CHAIN: {
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL || len != 5 || !in_function || returned)
+            return refuse(r, "malformed access chain");
+         const struct id_info *base = info(r, w[3]);
+         if (base == NULL || base->kind != ID_VAR_OUTPUT_PERVERTEX ||
+             !const_int_is(r, w[4], 0))
+            return refuse(r,
+                          "access chain outside the Position member");
+         entry->kind = ID_PTR_POSITION;
+         break;
+      }
+
+      case OP_LOAD: {
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL || (len != 4 && len != 5) || !in_function ||
+             returned)
+            return refuse(r, "malformed load");
+         if (len == 5 && w[4] != 0)
+            return refuse(r, "memory operands outside the grammar");
+         const struct id_info *ptr = info(r, w[3]);
+         if (ptr == NULL)
+            return refuse(r, "load outside the bound");
+         if (ptr->kind == ID_VAR_INPUT_POS) {
+            if (!id_is(r, w[1], ID_TYPE_VEC4))
+               return refuse(r, "load outside one vec4");
+            uint8_t dst;
+            if (!new_temp(r, &dst) ||
+                !emit(r, R300_VERTEX_JOB_OP_LOAD_INPUT, dst, 0, 0, 0))
+               return false;
+            entry->kind = ID_VAL_VEC4;
+            entry->a = dst;
+         } else if (ptr->kind == ID_VAR_FUNCTION) {
+            /* The variable forwards the value it holds. */
+            const struct id_info *held = info(r, ptr->b);
+            if (held == NULL ||
+                (held->kind != ID_VAL_VEC4 &&
+                 held->kind != ID_CONST_VEC4 &&
+                 held->kind != ID_VAL_SCALAR_BROADCAST))
+               return refuse(r,
+                             "function variable read before a "
+                             "recognized write");
+            *entry = *held;
+         } else {
+            return refuse(r, "load outside the admitted pointers");
+         }
+         break;
+      }
+
+      case OP_STORE: {
+         if ((len != 3 && len != 4) || !in_function || returned)
+            return refuse(r, "malformed store");
+         if (len == 4 && w[3] != 0)
+            return refuse(r, "memory operands outside the grammar");
+         struct id_info *ptr = info(r, w[1]);
+         const struct id_info *value = info(r, w[2]);
+         if (ptr == NULL || value == NULL)
+            return refuse(r, "store outside the bound");
+         if (ptr->kind == ID_VAR_FUNCTION) {
+            if (value->kind != ID_VAL_VEC4 &&
+                value->kind != ID_CONST_VEC4 &&
+                value->kind != ID_VAL_SCALAR_BROADCAST)
+               return refuse(r,
+                             "function variable holds a value outside "
+                             "the vec4 straight line");
+            ptr->b = w[2];
+         } else if (!fragment && (ptr->kind == ID_PTR_POSITION ||
+                                  ptr->kind == ID_VAR_OUTPUT_POS_DIRECT)) {
+            if (stored)
+               return refuse(r, "second position store");
+            uint8_t src;
+            if (!value_temp(r, w[2], &src))
+               return false;
+            if (!emit(r, R300_VERTEX_JOB_OP_STORE_POSITION, 0, src, 0, 0))
+               return false;
+            stored = true;
+         } else if (fragment && ptr->kind == ID_VAR_OUTPUT_COLOR) {
+            if (stored)
+               return refuse(r, "second color store");
+            if (value->kind != ID_CONST_VEC4)
+               return refuse(r,
+                             "fragment program outside one constant "
+                             "color");
+            memcpy(color_bits, value->vec, 4 * sizeof(uint32_t));
+            stored = true;
+         } else {
+            return refuse(r, "store outside the admitted pointers");
+         }
+         break;
+      }
+
+      case OP_F_ADD:
+      case OP_F_MUL: {
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL || len != 5 || !in_function || returned)
+            return refuse(r, "malformed arithmetic");
+         if (!id_is(r, w[1], ID_TYPE_VEC4))
+            return refuse(r, "arithmetic width outside the vec4 model");
+         uint8_t src0, src1, dst;
+         if (!value_temp(r, w[3], &src0) || !value_temp(r, w[4], &src1) ||
+             !new_temp(r, &dst))
+            return false;
+         if (!emit(r,
+                   opcode == OP_F_ADD ? R300_VERTEX_JOB_OP_FADD
+                                      : R300_VERTEX_JOB_OP_FMUL,
+                   dst, src0, src1, 0))
+            return false;
+         entry->kind = ID_VAL_VEC4;
+         entry->a = dst;
+         break;
+      }
+
+      case OP_EXT_INST: {
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL || len != 8 || !in_function || returned)
+            return refuse(r,
+                          "extended instruction outside GLSL.std.450 Fma");
+         if (!id_is(r, w[3], ID_EXT_IMPORT_GLSL) ||
+             w[4] != GLSL_STD_450_FMA || !id_is(r, w[1], ID_TYPE_VEC4))
+            return refuse(r,
+                          "extended instruction outside GLSL.std.450 Fma");
+         uint8_t src0, src1, src2, dst;
+         if (!value_temp(r, w[5], &src0) || !value_temp(r, w[6], &src1) ||
+             !value_temp(r, w[7], &src2) || !new_temp(r, &dst))
+            return false;
+         /* Vulkan GLSL fma() carries fused semantics, so the selection
+          * is FFMA's single rounding. */
+         if (!emit(r, R300_VERTEX_JOB_OP_FFMA, dst, src0, src1, src2))
+            return false;
+         entry->kind = ID_VAL_VEC4;
+         entry->a = dst;
+         break;
+      }
+
+      case OP_DOT: {
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL || len != 5 || !in_function || returned)
+            return refuse(r, "malformed arithmetic");
+         if (!id_is(r, w[1], ID_TYPE_FLOAT32))
+            return refuse(r, "dot result outside one 32-bit float");
+         uint8_t src0, src1, dst;
+         if (!value_temp(r, w[3], &src0) || !value_temp(r, w[4], &src1) ||
+             !new_temp(r, &dst))
+            return false;
+         if (!emit(r, R300_VERTEX_JOB_OP_DP4, dst, src0, src1, 0))
+            return false;
+         entry->kind = ID_VAL_SCALAR_BROADCAST;
+         entry->a = dst;
+         break;
+      }
+
+      case OP_COMPOSITE_CONSTRUCT: {
+         /* The one admitted vec4 construction is a broadcast scalar's
+          * own replicate, which the DP4 temp already carries. */
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL || len != 7 || !in_function || returned)
+            return refuse(r, "malformed composite construction");
+         const struct id_info *scalar = info(r, w[3]);
+         if (!id_is(r, w[1], ID_TYPE_VEC4) || scalar == NULL ||
+             scalar->kind != ID_VAL_SCALAR_BROADCAST || w[4] != w[3] ||
+             w[5] != w[3] || w[6] != w[3])
+            return refuse(r,
+                          "vec4 construction outside a DP4 broadcast");
+         entry->kind = ID_VAL_VEC4;
+         entry->a = scalar->a;
+         break;
+      }
+
+      case OP_RETURN:
+         if (len != 1 || !in_function || !label_seen)
+            return refuse(r, "malformed return");
+         returned = true;
+         break;
+
+      case OP_FUNCTION_END:
+         if (len != 1 || !in_function || !returned)
+            return refuse(r, "function ends before returning");
+         in_function = false;
+         break;
+
+      default:
+         return refuse(r, "opcode outside the vec4 straight line");
+      }
+   }
+
+   if (!capability_shader || !memory_model_logical || entry_point == 0)
+      return refuse(r, "module preamble outside the admitted grammar");
+   if (in_function || !function_seen || !returned)
+      return refuse(r, "entry function did not complete");
+   if (!stored)
+      return refuse(r, fragment ? "missing color-0 store"
+                                : "missing position store");
+   return true;
+}
+
+static bool
+admit_words(const uint32_t *words, size_t word_count, uint32_t exec_model,
+            struct r300_vertex_job *job, uint32_t color_bits[4],
+            const char **reason)
+{
+   *reason = "unrecognized module";
+   if (words == NULL || word_count < 5)
+      return false;
+   if (words[0] != SPV_MAGIC) {
+      *reason = "SPIR-V magic number absent";
+      return false;
+   }
+   const uint32_t bound = words[3];
+   if (bound == 0 || bound > R300_VERTEX_SPIRV_ID_BOUND_MAX) {
+      *reason = "result-id bound outside the admitted module size";
+      return false;
+   }
+   /* The id table scales with the module's declared bound, so it lives
+    * on the heap rather than growing the caller's stack by the bound
+    * ceiling.
+    */
+   struct id_info *ids = calloc(bound, sizeof(*ids));
+   if (ids == NULL) {
+      *reason = "id-table allocation failed";
+      return false;
+   }
+   const bool admitted = admit_module(words, word_count, ids, bound,
+                                      exec_model, job, color_bits, reason);
+   free(ids);
+   return admitted;
+}
+
+bool r300_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
+                                struct r300_vertex_job *job,
+                                const char **reason)
+{
+   memset(job, 0, sizeof(*job));
+   uint32_t unused_color[4];
+   if (!admit_words(words, word_count, EXEC_MODEL_VERTEX, job,
+                    unused_color, reason))
+      return false;
+   /* The store emits last by construction; the caller assigns
+    * input_format_id and validates the finished job. */
+   return true;
+}
+
+bool r300_fragment_constant_color_from_spirv(const uint32_t *words,
+                                             size_t word_count,
+                                             uint32_t color_bits[4],
+                                             const char **reason)
+{
+   struct r300_vertex_job scratch;
+   memset(&scratch, 0, sizeof(scratch));
+   return admit_words(words, word_count, EXEC_MODEL_FRAGMENT, &scratch,
+                      color_bits, reason);
+}

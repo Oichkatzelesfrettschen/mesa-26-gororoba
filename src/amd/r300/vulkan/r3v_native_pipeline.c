@@ -10,7 +10,7 @@
 #include "r3v_entrypoints.h"
 
 #include "amd/r300/common/r300_vertex_format.h"
-#include "amd/r300/compiler/r300_vertex_job_nir.h"
+#include "amd/r300/common/r300_vertex_spirv.h"
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
 
 #include "vk_log.h"
@@ -41,30 +41,25 @@ r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
           subpass->depth_stencil_attachment == NULL;
 }
 
-/* SPIR-V ingestion for the semantic front end: plain spirv_to_nir plus
- * the shared normalization, so the driver and the front-end calibration
- * tests prepare shaders through one path.  Specialization and stage
- * flags stay outside the admitted subset.
+/* SPIR-V ingestion for the semantic front end: the direct word-stream
+ * admitter in common/r300_vertex_spirv.c, so the driver reads the
+ * module itself with no intermediate compiler representation.
+ * Specialization and stage flags stay outside the admitted subset, and
+ * the entry name is pinned to "main": the admitted grammar carries one
+ * entry point, so the pin makes the pName-to-OpEntryPoint match hold
+ * by construction.
  */
-static nir_shader *
-stage_to_nir(const VkPipelineShaderStageCreateInfo *stage,
-             mesa_shader_stage mesa_stage)
+static const uint32_t *
+stage_words(const VkPipelineShaderStageCreateInfo *stage,
+            size_t *word_count)
 {
    VK_FROM_HANDLE(vk_shader_module, module, stage->module);
    if (module == NULL || stage->flags != 0 ||
-       stage->pSpecializationInfo != NULL || stage->pName == NULL)
+       stage->pSpecializationInfo != NULL || stage->pName == NULL ||
+       strcmp(stage->pName, "main") != 0 || module->size % 4 != 0)
       return NULL;
-   nir_shader *nir = r300_vertex_job_spirv_to_nir(
-      (const uint32_t *)module->data, module->size / 4, mesa_stage,
-      stage->pName);
-   if (nir == NULL)
-      return NULL;
-   const char *reason;
-   if (!r300_vertex_job_nir_normalize(nir, &reason)) {
-      ralloc_free(nir);
-      return NULL;
-   }
-   return nir;
+   *word_count = module->size / 4;
+   return (const uint32_t *)module->data;
 }
 
 /* The qualified fragment binary is the solid-green constant write, so
@@ -123,23 +118,18 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
       return false;
 
    const char *reason;
-   bool admitted = false;
-   nir_shader *vs = stage_to_nir(vertex, MESA_SHADER_VERTEX);
-   if (vs != NULL) {
-      admitted = r300_vertex_job_from_nir(vs, job, &reason);
-      ralloc_free(vs);
-   }
-   if (!admitted)
+   size_t vs_words = 0;
+   const uint32_t *vs_data = stage_words(vertex, &vs_words);
+   if (vs_data == NULL ||
+       !r300_vertex_job_from_spirv(vs_data, vs_words, job, &reason))
       return false;
 
    uint32_t color_bits[4];
-   admitted = false;
-   nir_shader *fs = stage_to_nir(fragment, MESA_SHADER_FRAGMENT);
-   if (fs != NULL) {
-      admitted = r300_fragment_nir_constant_color(fs, color_bits, &reason);
-      ralloc_free(fs);
-   }
-   return admitted &&
+   size_t fs_words = 0;
+   const uint32_t *fs_data = stage_words(fragment, &fs_words);
+   return fs_data != NULL &&
+          r300_fragment_constant_color_from_spirv(fs_data, fs_words,
+                                                  color_bits, &reason) &&
           memcmp(color_bits, r3v_native_green_bits,
                  sizeof(color_bits)) == 0;
 }
