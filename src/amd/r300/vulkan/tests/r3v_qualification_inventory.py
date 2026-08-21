@@ -23,6 +23,11 @@ Missing or changing deployment identity keeps the qualification gate closed.
 
 Modes:
   <builddir>                  inventory report, exit 0 when readable
+  <builddir> --require-tests  report plus fatal verdict on a required test
+                              absent from its suite, or on an option that
+                              removes the native tests wholesale; the
+                              deployment identity and replay tooling a host
+                              supplies stay reported rather than deciding
   <builddir> --qualification  report plus fatal verdict on any absence
   --fixture zero-native       the historic zero-native-test build: the real
                               required set evaluated against a test list with
@@ -574,13 +579,20 @@ class MissingKernelReplayProbes(GoodProbes):
 
 def evaluate(registered: set[str], options: dict[str, object],
              qualification: bool,
-             probes: HostProbes | None = None) -> int:
+             probes: HostProbes | None = None,
+             require_tests: bool = False) -> int:
     """Report the inventory; in qualification mode, any absence is fatal.
     Every row prints before the verdict so a failing run names each missing
-    item rather than the first."""
+    item rather than the first.
+
+    require_tests decides on the registered test set alone, which is the
+    claim a build can make about itself: a package boundary can prove the
+    suite it ships and cannot supply the replay tooling and deployment
+    identity a qualification run reads from the host."""
     if probes is None:
         probes = HostProbes()
     failures: list[str] = []
+    registration_failures: list[str] = []
 
     native = options.get("r3v-native-backend")
     native_on = str(native) in ("enabled", "auto", "True", "true")
@@ -654,8 +666,21 @@ def evaluate(registered: set[str], options: dict[str, object],
         else:
             print(f"missing required test: {name} from suite {suite}")
         failures.append(f"required test {name} not registered in suite {suite}")
+        registration_failures.append(name)
+
+    for absence in ("r3v-native-backend not enabled", "build-tests disabled"):
+        if absence in failures:
+            registration_failures.append(absence)
 
     if not qualification:
+        if require_tests:
+            if registration_failures:
+                print("verdict: REGISTRATION FAILURE "
+                      f"({len(registration_failures)} absences)",
+                      file=sys.stderr)
+                return 1
+            print("verdict: every required test is registered")
+            return 0
         print("verdict: inventory (qualification gate not requested)")
         return 0
     if failures:
@@ -784,10 +809,31 @@ def run_selftest() -> int:
     if missing_b3sum == 0:
         print("selftest: missing b3sum passed the gate", file=sys.stderr)
         return 1
+    # The require-tests mode decides on registration alone, so it refuses
+    # a build missing a required test while a host that supplies neither
+    # the replay tooling nor a module identity still passes: those
+    # absences are the qualification gate's to judge, not the package
+    # boundary's.
+    require_bad = evaluate(collect(zero_native(complete_entries)),
+                           QUALIFYING_OPTIONS, qualification=False,
+                           probes=probes, require_tests=True)
+    if require_bad == 0:
+        print("selftest: zero-native fixture passed the require-tests gate",
+              file=sys.stderr)
+        return 1
+    require_good = evaluate(collect(complete_entries), QUALIFYING_OPTIONS,
+                            qualification=False,
+                            probes=MissingKernelReplayProbes(),
+                            require_tests=True)
+    if require_good != 0:
+        print("selftest: the complete set failed the require-tests gate over "
+              "a host absence", file=sys.stderr)
+        return 1
     print("selftest: gate refuses zero-native, each missing or misplaced "
           "FLOAT_2 tuple test, missing kernel replay, missing Gallium "
           "known-bad, and missing b3sum; admits dual-backend and native-only "
-          "sets")
+          "sets; require-tests refuses zero-native and admits a complete set "
+          "under a host absence")
     return 0
 
 
@@ -795,6 +841,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("builddir", nargs="?", type=Path)
     parser.add_argument("--qualification", action="store_true")
+    parser.add_argument("--require-tests", action="store_true")
     parser.add_argument("--fixture", choices=["zero-native"])
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
@@ -807,7 +854,8 @@ def main() -> int:
         parser.error("a build directory, --fixture, or --selftest is required")
     entries = load_tests(args.builddir)
     options = load_options(args.builddir)
-    return evaluate(collect(entries), options, args.qualification)
+    return evaluate(collect(entries), options, args.qualification,
+                    require_tests=args.require_tests)
 
 
 if __name__ == "__main__":
