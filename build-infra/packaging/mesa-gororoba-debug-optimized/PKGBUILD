@@ -58,8 +58,9 @@ depends=(
   wayland zlib zstd vulkan-icd-loader libunwind valgrind
 )
 # No toolchain makedepends: the build-infra builddir is already compiled; this
-# package only stages and symlinks it with meson install --no-rebuild.
-makedepends=(meson ninja)
+# package only stages and symlinks it with meson install --no-rebuild.  python
+# runs the promotion gate in check().
+makedepends=(meson ninja python)
 # System-driver metadata, mirroring the release mesa-gororoba package and
 # additionally superseding it: installing the debug package takes over the
 # system /usr Mesa from stock mesa OR the release build.  conflicts blocks
@@ -104,10 +105,15 @@ sha256sums=('91fde174cd155c2e0062f98b1443a9eaf18f8f7a04ba74c6d5617de65a5d857a'
 
 _prefix=/opt/mesa-gororoba-debug-optimized
 # The canonical build-infra builddir to repack, and the source root for the
-# license file.  Override from the make/env (GOROROBA_DEBUG_BUILDDIR /
-# GOROROBA_DEBUG_SRCROOT) when packaging on a different host.
-_builddir="${GOROROBA_DEBUG_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache}"
-_srcroot="${GOROROBA_DEBUG_SRCROOT:-/home/eirikr/workspaces/mesa/mesa-26-gororoba}"
+# license file and the promotion gate.  The recipe sits three levels below the
+# source root it belongs to, so the default resolves from the recipe's own
+# location and the tree carries no packager's home directory.  Override from
+# the make/env (GOROROBA_DEBUG_BUILDDIR / GOROROBA_DEBUG_SRCROOT) when
+# packaging from a copied recipe or against another checkout.
+_profile=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
+_recipe_srcroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+_srcroot="${GOROROBA_DEBUG_SRCROOT:-${_recipe_srcroot}}"
+_builddir="${GOROROBA_DEBUG_BUILDDIR:-${_srcroot}/build/mesa-${_profile}}"
 
 # Link every entry of ${_prefix}/<rel> into ${pkgdir}/usr/<rel> as a symlink
 # back to the absolute /opt path, so the stock GL/EGL/GLX/GBM/Vulkan/VA loaders
@@ -141,6 +147,36 @@ _link_into_usr() {
     esac
     ln -sfn "${_prefix}/${rel}/${base}" "${dst}/${base}"
   done
+}
+
+# The promotion gate: this package is the one that stages the native ICD, so
+# the surface it ships carries an evidence row for every capability it
+# advertises.  The advertised-surface audit reads the native extension table
+# and the feature-set guard out of the source root being repacked, and the
+# qualification inventory reads the builddir's registered test set, so a
+# capability added without its route or a required test dropped from a suite
+# refuses the package rather than shipping.  The two programs are the same ones
+# the r3v suite registers; running them here puts the gate at the package
+# boundary, where the artifact leaves the tree.
+check() {
+  local vulkan_dir="${_srcroot}/src/amd/r300/vulkan"
+  local audit="${vulkan_dir}/tests/r3v_native_advertised_surface_audit.py"
+  local inventory="${vulkan_dir}/tests/r3v_qualification_inventory.py"
+
+  if [ ! -f "${audit}" ] || [ ! -f "${inventory}" ]; then
+    echo "ERROR: promotion gate programs not found under ${vulkan_dir}" >&2
+    echo "       set GOROROBA_DEBUG_SRCROOT to the Mesa source root" >&2
+    return 1
+  fi
+  if [ ! -f "${_builddir}/build.ninja" ]; then
+    echo "ERROR: build-infra builddir not found at ${_builddir}" >&2
+    return 1
+  fi
+
+  python3 "${audit}" --selftest
+  python3 "${audit}" --source "${vulkan_dir}/r3v_physical_device.c"
+  python3 "${inventory}" --selftest
+  python3 "${inventory}" "${_builddir}"
 }
 
 package() {
