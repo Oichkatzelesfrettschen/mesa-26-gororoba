@@ -939,6 +939,43 @@ struct r300_compute_const_fill_pattern {
 void r300_nir_detect_const_fill_pattern(const struct nir_shader *s,
                                         struct r300_compute_const_fill_pattern *out);
 
+/* UBO word gather (UBO_WORD_GATHER): a straight-line kernel whose every
+ * store writes one 32-bit word loaded from a uniform buffer, with every
+ * address a compile-time constant and no invocation-index consumption:
+ *
+ *     result[K_i / 4] = ubo(set_i, binding_i, elem_i).word[C_i / 4];
+ *
+ * The value never touches the FP24 ALU, so the replay is a CPU descriptor
+ * walk: read each source word at the descriptor offset plus its dynamic
+ * offset plus C_i, write it at the destination descriptor offset plus its
+ * dynamic offset plus K_i.  Detection requires the pre-explicit_io shape
+ * the classifier walks: vulkan_resource_index (constant array index) ->
+ * load_vulkan_descriptor -> load_ubo(desc.x, desc.y + C) stored by
+ * store_ssbo(value, desc.x, desc.y + K), one output SSBO across all
+ * stores, and an instruction allowlist that excludes every system value,
+ * so a gid-dependent kernel can never match. */
+#define R300_UBO_WORD_GATHER_MAX 16
+
+struct r300_compute_ubo_word_gather_elem {
+   uint32_t ubo_set;
+   uint32_t ubo_binding;
+   uint32_t ubo_array_index;
+   uint32_t ubo_byte_offset;
+   uint32_t dst_byte_offset;
+};
+
+struct r300_compute_ubo_word_gather_pattern {
+   bool     is_ubo_word_gather;
+   uint32_t output_ssbo_set;
+   uint32_t output_ssbo_binding;
+   uint32_t output_ssbo_array_index;
+   uint8_t  count;
+   struct r300_compute_ubo_word_gather_elem elem[R300_UBO_WORD_GATHER_MAX];
+};
+
+void r300_nir_detect_ubo_word_gather(const struct nir_shader *s,
+                                     struct r300_compute_ubo_word_gather_pattern *out);
+
 /* Virtual IEEE FP16 classification pattern (IEEE16_CLASSIFY_LUT):
  * out[gid] = classify(in[gid]). Samples 1-component raw bits, writes vec4 color carrier. */
 struct r300_compute_ieee16_classify_pattern {

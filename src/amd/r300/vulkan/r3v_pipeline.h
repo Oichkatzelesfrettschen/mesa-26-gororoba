@@ -250,6 +250,12 @@ struct r3v_pipeline {
     * constant are in const_fill.const_value[0..3] (R=byte 0). */
    struct r300_compute_const_fill_pattern const_fill;
 
+   /* UBO word gather (UBO_WORD_GATHER) detected at pipeline-create time:
+    * every store writes one 32-bit uniform-buffer word at compile-time
+    * constant addresses with no invocation-index consumption.  Replays as
+    * a CPU descriptor walk applying each descriptor's dynamic offset. */
+   struct r300_compute_ubo_word_gather_pattern ubo_word_gather;
+
    /* Invocation-index consumption classified at pipeline-create time.
     * Address-only consumption rides raster texel position (the full
     * 2048x2048 fold is honest); value consumption must materialize
@@ -514,7 +520,8 @@ r3v_pipeline_matched_raster_verb(const struct r3v_pipeline *pl)
           pl->predicated_store.is_predicated_store ||
           pl->multitap_gather.is_multitap_gather ||
           pl->ieee16_classify.is_ieee16_classify ||
-          pl->ieee16_mul.is_ieee16_mul;
+          pl->ieee16_mul.is_ieee16_mul ||
+          pl->ubo_word_gather.is_ubo_word_gather;
 }
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_pipeline, base, VkPipeline,

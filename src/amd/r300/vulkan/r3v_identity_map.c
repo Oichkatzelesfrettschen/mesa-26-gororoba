@@ -10,6 +10,7 @@
 #include "r3v_device.h"
 #include "r3v_pipeline.h"
 #include "r3v_descriptor.h"
+#include "r3v_ubo_binding.h"
 #include "r3v_buffer.h"
 #include "r3v_cmd_buffer.h"
 
@@ -5333,6 +5334,159 @@ r3v_const_fill_dispatch_replay(struct r3v_device *device,
    pipe->buffer_unmap(pipe, xfer);
    IDM_LOG("constfill done total_invocations=%llu fill_bytes=%llu",
            (unsigned long long)total_invocations, (unsigned long long)fill_bytes);
+   return true;
+}
+
+/* Resolve one (set, binding, array element) coordinate from the bound sets to
+ * its descriptor plus the effective base byte offset inside the backing
+ * buffer: the descriptor offset plus, for a dynamic descriptor type, the
+ * dynamic offset bound for it (Vulkan 1.4, descriptor sets chapter: dynamic
+ * offsets order by binding number then array element within the set). */
+static const struct r3v_descriptor *
+ubo_gather_resolve(const struct r3v_cmd_bind_descriptor_sets *binds,
+                   uint32_t set_index, uint32_t binding, uint32_t elem,
+                   VkDeviceSize *base_offset)
+{
+   if (set_index >= binds->set_count)
+      return NULL;
+   const struct r3v_descriptor_set *set = binds->sets[set_index];
+   if (!set || !set->layout)
+      return NULL;
+
+   const struct r3v_descriptor_set_layout *layout = set->layout;
+   for (uint32_t i = 0; i < layout->binding_count; i++) {
+      const struct r3v_dsl_binding *bnd = &layout->bindings[i];
+      if (bnd->binding != binding)
+         continue;
+      if (elem >= bnd->count)
+         return NULL;
+
+      const struct r3v_descriptor *desc =
+         &set->descriptors[bnd->offset + elem];
+      VkDeviceSize offset = desc->buf.offset;
+
+      if (r3v_descriptor_type_is_dynamic(bnd->type)) {
+         const uint32_t dyn_index =
+            r3v_ubo_dynamic_offset_index(layout, binding, elem);
+         if (dyn_index == UINT32_MAX ||
+             !binds->dynamic_offset_count_by_set ||
+             !binds->dynamic_offsets_by_set ||
+             dyn_index >= binds->dynamic_offset_count_by_set[set_index])
+            return NULL;
+         offset += binds->dynamic_offsets_by_set[set_index][dyn_index];
+      }
+
+      *base_offset = offset;
+      return desc;
+   }
+   return NULL;
+}
+
+bool
+r3v_ubo_word_gather_dispatch_replay(struct r3v_device *device,
+                                    const struct r3v_pipeline *pl,
+                                    const struct r3v_cmd_dispatch *dispatch,
+                                    const struct r3v_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe = device->pipe;
+   const struct r300_compute_ubo_word_gather_pattern *pat =
+      pl ? &pl->ubo_word_gather : NULL;
+
+   if (!pipe || !pat || !pat->is_ubo_word_gather || !dispatch || !binds ||
+       binds->set_count == 0 || binds->first_set != 0 || pat->count == 0) {
+      IDM_LOG("ubo_gather early-return null-or-empty-binds");
+      return false;
+   }
+
+   VkDeviceSize out_base = 0;
+   const struct r3v_descriptor *out_desc =
+      ubo_gather_resolve(binds, pat->output_ssbo_set,
+                         pat->output_ssbo_binding,
+                         pat->output_ssbo_array_index, &out_base);
+   if (!out_desc || !out_desc->buf.buffer ||
+       (out_desc->type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
+        out_desc->type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)) {
+      IDM_LOG("ubo_gather early-return output-descriptor-miss");
+      return false;
+   }
+   VK_FROM_HANDLE(r3v_buffer, out_buf, out_desc->buf.buffer);
+   if (!out_buf || !out_buf->resource) {
+      IDM_LOG("ubo_gather early-return null-output-resource");
+      return false;
+   }
+
+   for (uint32_t k = 0; k < pat->count; k++) {
+      const struct r300_compute_ubo_word_gather_elem *e = &pat->elem[k];
+
+      VkDeviceSize src_base = 0;
+      const struct r3v_descriptor *src_desc =
+         ubo_gather_resolve(binds, e->ubo_set, e->ubo_binding,
+                            e->ubo_array_index, &src_base);
+      if (!src_desc || !src_desc->buf.buffer ||
+          (src_desc->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+           src_desc->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)) {
+         IDM_LOG("ubo_gather early-return elem=%u source-descriptor-miss", k);
+         return false;
+      }
+      VK_FROM_HANDLE(r3v_buffer, src_buf, src_desc->buf.buffer);
+      if (!src_buf || !src_buf->resource) {
+         IDM_LOG("ubo_gather early-return elem=%u null-source-resource", k);
+         return false;
+      }
+
+      const VkDeviceSize src_size = src_buf->resource->width0;
+      const VkDeviceSize dst_size = out_buf->resource->width0;
+      const VkDeviceSize src_off = src_base + e->ubo_byte_offset;
+      const VkDeviceSize dst_off = out_base + e->dst_byte_offset;
+      if (src_size < 4 || src_off > src_size - 4 ||
+          dst_size < 4 || dst_off > dst_size - 4 ||
+          src_off > INT_MAX - 4 || dst_off > INT_MAX - 4) {
+         IDM_LOG("ubo_gather early-return elem=%u range-overflow", k);
+         return false;
+      }
+
+      struct pipe_box src_box;
+      memset(&src_box, 0, sizeof(src_box));
+      src_box.x = (int)src_off;
+      src_box.width = 4;
+      src_box.height = 1;
+      src_box.depth = 1;
+
+      struct pipe_transfer *src_xfer = NULL;
+      const void *src_ptr = pipe->buffer_map(pipe, src_buf->resource, 0,
+                                             PIPE_MAP_READ, &src_box,
+                                             &src_xfer);
+      if (!src_ptr) {
+         IDM_LOG("ubo_gather early-return elem=%u source-map-failed", k);
+         return false;
+      }
+      uint32_t word;
+      memcpy(&word, src_ptr, 4);
+      pipe->buffer_unmap(pipe, src_xfer);
+
+      struct pipe_box dst_box;
+      memset(&dst_box, 0, sizeof(dst_box));
+      dst_box.x = (int)dst_off;
+      dst_box.width = 4;
+      dst_box.height = 1;
+      dst_box.depth = 1;
+
+      struct pipe_transfer *dst_xfer = NULL;
+      void *dst_ptr = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                       PIPE_MAP_WRITE, &dst_box, &dst_xfer);
+      if (!dst_ptr) {
+         IDM_LOG("ubo_gather early-return elem=%u dest-map-failed", k);
+         return false;
+      }
+      memcpy(dst_ptr, &word, 4);
+      pipe->buffer_unmap(pipe, dst_xfer);
+
+      IDM_LOG("ubo_gather elem=%u ubo(%u,%u,%u)+%u -> out+%u word=0x%08x",
+              k, e->ubo_set, e->ubo_binding, e->ubo_array_index,
+              e->ubo_byte_offset, e->dst_byte_offset, word);
+   }
+
+   IDM_LOG("ubo_gather done count=%u", pat->count);
    return true;
 }
 

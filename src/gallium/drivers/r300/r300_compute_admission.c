@@ -5424,6 +5424,228 @@ r300_nir_detect_const_fill_pattern(const nir_shader *s,
    out->is_const_fill    = true;
 }
 
+/* Trace one scalar SSA def through mov and constant-addend iadd back to the
+ * vulkan_resource_index instruction behind a load_vulkan_descriptor, carrying
+ * the component selected by the swizzles and the accumulated constant addend.
+ * Any other producer invalidates the reference. */
+struct ubo_gather_ref {
+   const nir_intrinsic_instr *res_index;
+   unsigned component;
+   uint64_t addend;
+   bool valid;
+};
+
+static void
+ubo_gather_trace(const nir_def *def, unsigned comp, struct ubo_gather_ref *out)
+{
+   out->valid = false;
+   uint64_t addend = 0;
+
+   for (unsigned guard = 0; guard < 64 && def; guard++) {
+      const nir_instr *pi = nir_def_instr(def);
+
+      if (pi->type == nir_instr_type_alu) {
+         const nir_alu_instr *alu = nir_instr_as_alu(pi);
+         if (alu->op == nir_op_mov) {
+            comp = alu->src[0].swizzle[comp];
+            def = alu->src[0].src.ssa;
+            continue;
+         }
+         if (alu->op == nir_op_iadd) {
+            unsigned var_src;
+            if (nir_src_is_const(alu->src[0].src))
+               var_src = 1;
+            else if (nir_src_is_const(alu->src[1].src))
+               var_src = 0;
+            else
+               return;
+            const unsigned const_src = var_src ^ 1u;
+            const uint64_t c = nir_src_comp_as_uint(
+               alu->src[const_src].src, alu->src[const_src].swizzle[comp]);
+            if (addend > UINT64_MAX - c)
+               return;
+            addend += c;
+            comp = alu->src[var_src].swizzle[comp];
+            def = alu->src[var_src].src.ssa;
+            continue;
+         }
+         return;
+      }
+
+      if (pi->type == nir_instr_type_intrinsic) {
+         const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(pi);
+         if (intr->intrinsic != nir_intrinsic_load_vulkan_descriptor)
+            return;
+         const nir_def *rsrc = intr->src[0].ssa;
+         if (!rsrc ||
+             nir_def_instr(rsrc)->type != nir_instr_type_intrinsic)
+            return;
+         const nir_intrinsic_instr *ri =
+            nir_instr_as_intrinsic(nir_def_instr(rsrc));
+         if (ri->intrinsic != nir_intrinsic_vulkan_resource_index)
+            return;
+         out->res_index = ri;
+         out->component = comp;
+         out->addend    = addend;
+         out->valid     = true;
+         return;
+      }
+
+      return;
+   }
+}
+
+/* True when the two references name the same descriptor: identical
+ * vulkan_resource_index coordinates (set, binding, constant array index),
+ * whether or not the SSA chains share instructions. */
+static bool
+ubo_gather_ref_same_descriptor(const struct ubo_gather_ref *a,
+                               const struct ubo_gather_ref *b)
+{
+   if (!a->valid || !b->valid)
+      return false;
+   if (!nir_src_is_const(a->res_index->src[0]) ||
+       !nir_src_is_const(b->res_index->src[0]))
+      return false;
+   return nir_intrinsic_desc_set(a->res_index) ==
+             nir_intrinsic_desc_set(b->res_index) &&
+          nir_intrinsic_binding(a->res_index) ==
+             nir_intrinsic_binding(b->res_index) &&
+          nir_src_as_uint(a->res_index->src[0]) ==
+             nir_src_as_uint(b->res_index->src[0]);
+}
+
+void
+r300_nir_detect_ubo_word_gather(const nir_shader *s,
+                                struct r300_compute_ubo_word_gather_pattern *out)
+{
+   memset(out, 0, sizeof(*out));
+
+   /* Exactly one entry function with one straight-line block: control flow
+    * would multiply the block count, and a multi-impl module is outside the
+    * admitted grammar. */
+   nir_function_impl *impl = NULL;
+   nir_foreach_function_impl (it, s) {
+      if (impl)
+         return;
+      impl = it;
+   }
+   if (!impl || exec_list_length(&impl->body) != 1)
+      return;
+
+   /* Instruction allowlist.  System-value intrinsics are absent from it, so
+    * a kernel consuming any invocation index cannot match; every store is
+    * then invocation-independent and one replay pass is the whole dispatch. */
+   nir_foreach_block (block, impl) {
+      nir_foreach_instr (instr, block) {
+         switch (instr->type) {
+         case nir_instr_type_load_const:
+            break;
+         case nir_instr_type_alu: {
+            const nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op != nir_op_mov && alu->op != nir_op_iadd)
+               return;
+            break;
+         }
+         case nir_instr_type_intrinsic: {
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_vulkan_resource_index &&
+                intr->intrinsic != nir_intrinsic_load_vulkan_descriptor &&
+                intr->intrinsic != nir_intrinsic_load_ubo &&
+                intr->intrinsic != nir_intrinsic_store_ssbo)
+               return;
+            break;
+         }
+         default:
+            return;
+         }
+      }
+   }
+
+   struct ubo_gather_ref out_ref = {0};
+   unsigned count = 0;
+
+   nir_foreach_block (block, impl) {
+      nir_foreach_instr (instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         const nir_intrinsic_instr *store = nir_instr_as_intrinsic(instr);
+         if (store->intrinsic != nir_intrinsic_store_ssbo)
+            continue;
+
+         if (count >= R300_UBO_WORD_GATHER_MAX)
+            return;
+         if (store->num_components != 1 ||
+             store->src[0].ssa->bit_size != 32)
+            return;
+         if (nir_intrinsic_has_write_mask(store) &&
+             nir_intrinsic_write_mask(store) !=
+                BITFIELD_MASK(store->num_components))
+            return;
+
+         /* The stored value is one 32-bit load_ubo word addressed as
+          * (desc.x, desc.y + C). */
+         const nir_instr *vp = nir_def_instr(store->src[0].ssa);
+         if (vp->type != nir_instr_type_intrinsic)
+            return;
+         const nir_intrinsic_instr *load = nir_instr_as_intrinsic(vp);
+         if (load->intrinsic != nir_intrinsic_load_ubo ||
+             load->num_components != 1 || load->def.bit_size != 32)
+            return;
+
+         struct ubo_gather_ref ubo_idx, ubo_off;
+         ubo_gather_trace(load->src[0].ssa, 0, &ubo_idx);
+         ubo_gather_trace(load->src[1].ssa, 0, &ubo_off);
+         if (!ubo_gather_ref_same_descriptor(&ubo_idx, &ubo_off) ||
+             ubo_idx.component != 0 || ubo_idx.addend != 0 ||
+             ubo_off.component != 1)
+            return;
+         if (ubo_off.addend > UINT32_MAX ||
+             (ubo_off.addend & 3u) != 0)
+            return;
+
+         /* The destination is (desc.x, desc.y + K) against one output SSBO
+          * shared by every store. */
+         struct ubo_gather_ref dst_idx, dst_off;
+         ubo_gather_trace(store->src[1].ssa, 0, &dst_idx);
+         ubo_gather_trace(store->src[2].ssa, 0, &dst_off);
+         if (!ubo_gather_ref_same_descriptor(&dst_idx, &dst_off) ||
+             dst_idx.component != 0 || dst_idx.addend != 0 ||
+             dst_off.component != 1)
+            return;
+         if (dst_off.addend > UINT32_MAX ||
+             (dst_off.addend & 3u) != 0)
+            return;
+         if (count == 0)
+            out_ref = dst_idx;
+         else if (!ubo_gather_ref_same_descriptor(&out_ref, &dst_idx))
+            return;
+
+         out->elem[count].ubo_set =
+            nir_intrinsic_desc_set(ubo_idx.res_index);
+         out->elem[count].ubo_binding =
+            nir_intrinsic_binding(ubo_idx.res_index);
+         out->elem[count].ubo_array_index =
+            (uint32_t)nir_src_as_uint(ubo_idx.res_index->src[0]);
+         out->elem[count].ubo_byte_offset = (uint32_t)ubo_off.addend;
+         out->elem[count].dst_byte_offset = (uint32_t)dst_off.addend;
+         count++;
+      }
+   }
+
+   if (count == 0)
+      return;
+   if (!nir_src_is_const(out_ref.res_index->src[0]))
+      return;
+
+   out->output_ssbo_set     = nir_intrinsic_desc_set(out_ref.res_index);
+   out->output_ssbo_binding = nir_intrinsic_binding(out_ref.res_index);
+   out->output_ssbo_array_index =
+      (uint32_t)nir_src_as_uint(out_ref.res_index->src[0]);
+   out->count = (uint8_t)count;
+   out->is_ubo_word_gather = true;
+}
+
 /* Invocation-index consumption classifier.
  *
  * Walks the SSA use chains of every invocation-index intrinsic and reports

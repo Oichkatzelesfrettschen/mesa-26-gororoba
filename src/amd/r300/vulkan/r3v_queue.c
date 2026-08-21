@@ -825,6 +825,9 @@ r3v_replay_dispatch(struct r3v_device *device,
       ok = r3v_identity_map_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->const_fill.is_const_fill)
       ok = r3v_const_fill_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->ubo_word_gather.is_ubo_word_gather)
+      ok = r3v_ubo_word_gather_dispatch_replay(device, pl, d,
+                                               last_bind_dsets);
    else if (pl->affine_iota.is_affine_iota)
       ok = r3v_affine_iota_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->multilimb_mul.is_multilimb_mul)
@@ -910,12 +913,14 @@ r3v_replay_dispatch(struct r3v_device *device,
     * R300_COMPUTE_REJECT_UNKNOWN_SHAPE is the canonical label for this case. */
    if (pl) {
       mesa_logw("r3v: dispatch no-op (unknown shape): admit=%d "
-                "identity=%d binary=%d unary=%d const_fill=%d",
+                "identity=%d binary=%d unary=%d const_fill=%d "
+                "ubo_gather=%d",
                 (int)pl->admission.admissible,
                 (int)pl->identity_map.is_identity_map,
                 (int)pl->binary_map.is_binary_map,
                 (int)pl->unary_map.is_unary_map,
-                (int)pl->const_fill.is_const_fill);
+                (int)pl->const_fill.is_const_fill,
+                (int)pl->ubo_word_gather.is_ubo_word_gather);
    }
    return VK_SUCCESS;
 }
