@@ -8,8 +8,19 @@
  * reference is the recorded triangle consumer verbatim, so this test
  * pins that identity dword for dword and proves the two digests
  * differ, which is what keeps one route's authorization from admitting
- * the other's stream.  Checks are explicit so the test decides the
- * same way under NDEBUG.
+ * the other's stream.
+ *
+ * The runner also states one triangle in two spaces, because the two
+ * routes admit different ones: the GPU producer route declares
+ * R300_CARRIER_POSITION_WINDOW and takes the screen-space records
+ * directly, while the CPU route declares R300_CARRIER_POSITION_CLIP,
+ * validates the clip volume, and realizes the viewport transform as
+ * (ndc + 1) * extent / 2.  The NDC the runner derives must return to
+ * the screen-space record bit for bit, or the two legs would render
+ * different triangles and the timing pair would compare two workloads,
+ * so the round trip is pinned here in binary32.
+ *
+ * Checks are explicit so the test decides the same way under NDEBUG.
  */
 
 #include "amd/r300/common/r300_r2vb_public_route.h"
@@ -59,10 +70,33 @@ main(void)
    if (strcmp(cpu_digest, consumer_digest) != 0)
       return fail("cpu digest differs from the recorded consumer digest");
 
+   /* The CPU leg's derivation and the driver's transform, in the order
+    * the two run, over the exact extent the cell declares.
+    */
+   for (unsigned v = 0; v < R300_TRIANGLE_VERTEX_DWORDS / 4; v++) {
+      const float *window = &r300_tcl_bypass_triangle_vertices[v * 4];
+      const float ndc_x =
+         window[0] * 2.0f / (float)R300_TRIANGLE_TARGET_WIDTH - 1.0f;
+      const float ndc_y =
+         window[1] * 2.0f / (float)R300_TRIANGLE_TARGET_HEIGHT - 1.0f;
+      if (!(ndc_x >= -1.0f && ndc_x <= 1.0f) ||
+          !(ndc_y >= -1.0f && ndc_y <= 1.0f))
+         return fail("a derived record lies outside the clip volume");
+      if (!(window[2] >= 0.0f && window[2] <= 1.0f) || window[3] != 1.0f)
+         return fail("a record's depth or w leaves the admitted domain");
+      const float back_x =
+         (ndc_x + 1.0f) * ((float)R300_TRIANGLE_TARGET_WIDTH / 2.0f);
+      const float back_y =
+         (ndc_y + 1.0f) * ((float)R300_TRIANGLE_TARGET_HEIGHT / 2.0f);
+      if (back_x != window[0] || back_y != window[1])
+         return fail("the clip-space round trip does not return the "
+                     "screen-space record");
+   }
+
    r300_r2vb_public_route_release(&route);
    r300_tcl_bypass_triangle_release(&consumer);
-   printf("route-timing-digest: consumer slice identity holds; "
-          "gpu %.8s.. cpu %.8s..\n",
+   printf("route-timing-digest: consumer slice identity holds and the "
+          "clip round trip is exact; gpu %.8s.. cpu %.8s..\n",
           gpu_digest, cpu_digest);
    return 0;
 }
