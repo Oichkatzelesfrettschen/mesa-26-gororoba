@@ -3,6 +3,7 @@
  */
 
 #include "r3v_memory.h"
+#include "r3v_entrypoints.h"
 #include "r3v_buffer.h"
 #include "r3v_image.h"
 #include "r3v_device.h"
@@ -990,4 +991,17 @@ r3v_GetMemoryFdPropertiesKHR(VkDevice _device,
    /* Both advertised memory types back an imported dma-buf on the UMA pool. */
    pMemoryFdProperties->memoryTypeBits = 0x3;
    return VK_SUCCESS;
+}
+
+/* The committed size is defined for lazily-allocated memory.  Both
+ * advertised memory types commit their whole allocation at
+ * r3v_AllocateMemory and neither carries
+ * VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, so no memory object this
+ * command accepts exists and the report is zero.
+ */
+VKAPI_ATTR void VKAPI_CALL
+r3v_GetDeviceMemoryCommitment(VkDevice _device, VkDeviceMemory memory,
+                                 VkDeviceSize *pCommittedMemoryInBytes)
+{
+   *pCommittedMemoryInBytes = 0;
 }

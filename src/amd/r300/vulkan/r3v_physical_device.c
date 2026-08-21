@@ -286,12 +286,26 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
 
    props->discreteQueuePriorities = 2;
 
+#ifdef R3V_NATIVE_BACKEND
+   /* The native feature set carries neither largePoints nor wideLines,
+    * and a device without those features reports the fixed [1,1] size
+    * ranges with zero granularity (Vulkan 1.0, Limit Requirements:
+    * granularity applies only when the corresponding feature is
+    * supported). */
+   props->pointSizeRange[0] = 1.0f;
+   props->pointSizeRange[1] = 1.0f;
+   props->lineWidthRange[0] = 1.0f;
+   props->lineWidthRange[1] = 1.0f;
+   props->pointSizeGranularity = 0.0f;
+   props->lineWidthGranularity = 0.0f;
+#else
    props->pointSizeRange[0] = 1.0f;
    props->pointSizeRange[1] = 64.0f;
    props->lineWidthRange[0] = 1.0f;
    props->lineWidthRange[1] = 8.0f;
    props->pointSizeGranularity = 0.125f;
    props->lineWidthGranularity = 0.125f;
+#endif
 
    props->strictLines = VK_FALSE;
    props->standardSampleLocations = VK_TRUE;
@@ -587,10 +601,15 @@ r3v_physical_device_init_features(struct vk_features *features)
 {
    memset(features, 0, sizeof(*features));
 #ifdef R3V_NATIVE_BACKEND
-   /* The native implementation executes no optional feature; the feature
-    * set is the empty core-1.0 baseline, and each bit returns with the
-    * native route that makes it true.
-    */
+   /* The native implementation executes no optional feature; the
+    * feature set is the core-1.0 baseline, and each optional bit
+    * returns with the native route that makes it true.
+    * robustBufferAccess is core 1.0's one mandatory feature, and the
+    * native lane keeps its semantics by admission: every buffer range
+    * a recorded command names is validated against its binding and
+    * memory bound before execution, so no admitted access reaches out
+    * of bounds. */
+   features->robustBufferAccess = true;
    return;
 #endif
    features->robustBufferAccess = true;

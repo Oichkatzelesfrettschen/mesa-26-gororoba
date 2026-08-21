@@ -157,6 +157,24 @@ r3v_GetImageMemoryRequirements2(VkDevice _device,
    }
 }
 
+/* VK_KHR_get_memory_requirements2 includes the sparse form of the
+ * query, and the device exposes no sparse residency, so an image's
+ * sparse requirement set is empty: a zero count with the caller's
+ * array untouched.
+ */
+VKAPI_ATTR void VKAPI_CALL
+r3v_GetImageSparseMemoryRequirements2(VkDevice _device,
+   const VkImageSparseMemoryRequirementsInfo2 *pInfo,
+   uint32_t *pSparseMemoryRequirementCount,
+   VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
+{
+   (void)_device;
+   (void)pInfo;
+   (void)pSparseMemoryRequirements;
+
+   *pSparseMemoryRequirementCount = 0;
+}
+
 /* The render family binds at offset zero because its color reference names
  * the BO base and its dedicated-allocation requirement keeps that address
  * stable.  The transfer family binds any aligned suballocation whose

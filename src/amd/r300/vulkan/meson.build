@@ -142,23 +142,23 @@ if with_tests
     suite : ['r3v'],
   )
 
-  # Semantic pipeline front end: the reference cell modules admit
-  # through SPIR-V ingestion by meaning, builder-made arithmetic lowers
-  # to the job IR and executes to exact values, and inadmissible
-  # constructs refuse by shape.
+  # Native pipeline front end: the reference cell modules admit
+  # through the direct SPIR-V word-stream reader by meaning, admitted
+  # jobs execute to exact bytes, and inadmissible or malformed streams
+  # refuse by shape.  The admitter is plain C over words, so the test
+  # carries no compiler-stack dependency.
   test(
     'r3v-native-pipeline-frontend',
     executable(
       'r3v_native_pipeline_frontend_test',
       files('tests/r3v_native_pipeline_frontend_test.c',
+            '../common/r300_vertex_spirv.c',
             '../cpu/r300_cpu_vertex.c', '../cpu/r300_cpu_vertex_job.c'),
       include_directories : [inc_include, inc_src,
                              include_directories('.')],
-      dependencies : [dep_m, idep_nir, idep_vtn, idep_mesautil],
-      link_with : [libr300_compiler],
+      dependencies : [dep_m],
       gnu_symbol_visibility : 'hidden',
     ),
-    env : ['MESA_SPIRV_LOG_LEVEL=error'],
     suite : ['r3v'],
   )
 
@@ -415,6 +415,7 @@ if get_option('r3v-native-backend')
     'r3v_native_recording.c',
     'r3v_native_transfer.c',
     '../common/r300_compute_spirv.c',
+    '../common/r300_vertex_spirv.c',
     '../common/r300_direct_write.c',
     '../common/r300_first_draw_state.c',
     '../common/r300_fragment_binary.c',
@@ -445,10 +446,6 @@ if get_option('r3v-native-backend')
     idep_vulkan_runtime,
     idep_vulkan_util,
     idep_vulkan_wsi,
-    # The semantic pipeline front end ingests SPIR-V through vtn and
-    # analyzes NIR; both stay free of Gallium.
-    idep_nir,
-    idep_vtn,
   ]
 
   # One compile of the native implementation feeds both the ICD shared
@@ -468,7 +465,7 @@ if get_option('r3v-native-backend')
     [r3v_loader_base_files, r3v_native_files, r3v_entrypoints],
     include_directories : r3v_native_inc,
     dependencies : r3v_native_compile_deps,
-    link_with : [libradeon_drm_vk, libr300_compiler, libr300_cpu],
+    link_with : [libradeon_drm_vk, libr300_cpu],
     c_args : [no_override_init_args, '-DR3V_NATIVE_BACKEND'],
     gnu_symbol_visibility : 'hidden',
   )

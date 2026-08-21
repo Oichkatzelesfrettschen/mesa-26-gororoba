@@ -560,6 +560,33 @@ if with_tests
     suite : ['r300'],
   )
 
+  # The two vertex front ends over one job IR: the NIR front end (the
+  # Gallium consumer's path) and the direct SPIR-V admitter (the native
+  # ICD's path) must produce identical jobs, color bits, and refusals
+  # from the reference modules.
+  test(
+    'r300-vertex-front-end-parity',
+    executable(
+      'r300_vertex_front_end_parity_test',
+      files('../../../amd/r300/compiler/tests/r300_vertex_front_end_parity_test.c',
+            '../../../amd/r300/common/r300_vertex_spirv.c',
+            '../../../amd/r300/cpu/r300_cpu_vertex.c',
+            '../../../amd/r300/cpu/r300_cpu_vertex_job.c'),
+      c_args : r300_test_c_args,
+      include_directories : [
+        inc_src, inc_include,
+        inc_amd_r300_common,
+        inc_amd_r300_compiler,
+        include_directories('../../../amd/r300/vulkan'),
+      ],
+      link_with : [libr300_compiler],
+      dependencies : [dep_m, idep_mesautil, idep_nir, idep_vtn],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    env : ['MESA_SPIRV_LOG_LEVEL=error'],
+    suite : ['r300'],
+  )
+
   # Classic fragment-compiler target descriptor: diffs every budget field
   # against the radeon_code.h authority and the r300_fs.c selection logic.
   test(

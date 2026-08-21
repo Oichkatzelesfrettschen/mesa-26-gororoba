@@ -884,7 +884,7 @@ symbol.
 | Gallium-backed capability | Native counterpart | Evidence class |
 |---|---|---|
 | Vulkan commands lowered into Gallium CSOs and `pipe_context` replay | one fixed render cell, recorded through public `vkCmd*` over a bounded render-pass/pipeline/draw vocabulary | silicon, one qualified payload |
-| NIR ingress through `nir_to_rc` | `r300_vertex_job_from_nir` over straight-line vec4 shapes; `r300_fragment_nir_constant_color` | host unit |
+| NIR ingress through `nir_to_rc` | `r300_vertex_job_from_spirv` and `r300_fragment_constant_color_from_spirv` admit the straight-line vec4 shapes from SPIR-V words directly (no NIR); the NIR front end `r300_vertex_job_from_nir` remains in `compiler/` as the Gallium consumer's path over the same common job IR, held to parity by `r300-vertex-front-end-parity` | host unit |
 | NIR compatibility through `nir_to_tgsi` for Draw shapes | covered by the `nir_to_rc` and CPU-vertex-execution rows: `nir_to_tgsi` is r300g's internal bridge into the Draw module (`draw_vs_exec.c`), the ICD never calls it, and no Vulkan-reachable shape resolves only through it | host unit, through the covering rows |
 | CPU vertex execution over Gallium Draw SW TCL | `r300_cpu_vertex_job_execute` over the job IR | host unit, and silicon through the cell's carrier |
 | R300 graphics state: VAP, PSC, RS, US, TX, CB, ZB, ROP, viewport, raster | the cell's fixed state vector alone | silicon, one state vector |

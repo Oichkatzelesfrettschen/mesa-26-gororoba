@@ -132,6 +132,10 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-loader-application-symbols",
     "r3v-native-loader-application-symbols-known-bad",
     "r3v-native-recording-poison",
+    # Vertex front ends: the native ICD's direct SPIR-V admission and
+    # its parity with the NIR front end over the one job IR.
+    "r3v-native-pipeline-frontend",
+    "r300-vertex-front-end-parity",
     # Compute surface: the direct SPIR-V admission, the CPU executor,
     # and the end-to-end gate-off/gate-on dispatch under the shim.
     "r300-cpu-compute-job",

@@ -9,7 +9,7 @@
 #ifndef R300_VERTEX_JOB_NIR_H
 #define R300_VERTEX_JOB_NIR_H
 
-#include "r300_vertex_job.h"
+#include "amd/r300/common/r300_vertex_job.h"
 
 #include "compiler/nir/nir.h"
 #include "compiler/spirv/nir_spirv.h"

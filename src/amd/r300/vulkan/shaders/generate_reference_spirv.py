@@ -29,6 +29,8 @@ STAGES = (
      HERE / "r3v_reference_identity_map.comp"),
     ("r3v_reference_scatter_reject_spirv",
      HERE / "r3v_reference_scatter_reject.comp"),
+    ("r3v_reference_vertex_arith_spirv",
+     HERE / "r3v_reference_vertex_arith.vert"),
 )
 
 

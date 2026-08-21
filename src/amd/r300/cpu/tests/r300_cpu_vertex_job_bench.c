@@ -65,7 +65,7 @@
 #endif
 
 #include "amd/r300/common/r300_vertex_format.h"
-#include "amd/r300/compiler/r300_vertex_job.h"
+#include "amd/r300/common/r300_vertex_job.h"
 
 #include <errno.h>
 #include <inttypes.h>

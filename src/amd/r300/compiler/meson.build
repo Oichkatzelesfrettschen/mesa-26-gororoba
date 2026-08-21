@@ -60,7 +60,6 @@ files_r300_compiler = files(
   'r300_nir_lower_ieee16.c',
   'r300_nir_lower_vs_system_values.c',
   'r300_shader_code.h',
-  'r300_vertex_job.h',
   'r300_vertex_job_nir.c',
   'r300_vertex_job_nir.h',
   'r500_nir_lower_fcsel.c',
