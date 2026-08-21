@@ -946,10 +946,15 @@ r3v_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
    /* The public recording surface records the graphics command subset
     * -- render pass, pipeline bind, vertex bind, draw -- on this
     * family, so GRAPHICS is advertised.  Each further bit returns with
-    * the recording surface that executes it.
+    * the recording surface that executes it: COMPUTE returns with the
+    * dispatch recording and the CPU compute route, behind the same
+    * exact R3V_HYBRID_COMPUTE_EXPERIMENTAL=1 opt-in as the
+    * Gallium-backed lane, because the admitted kernel subset stays
+    * nonconformant against the full compute contract the bit claims.
     */
-   (void)pdev;
    VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT;
+   if (pdev->hybrid_compute_enabled)
+      queue_flags |= VK_QUEUE_COMPUTE_BIT;
 #else
    VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT;
 

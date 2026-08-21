@@ -161,6 +161,25 @@ if with_tests
     env : ['MESA_SPIRV_LOG_LEVEL=error'],
     suite : ['r3v'],
   )
+
+  # Direct SPIR-V compute admission: the reference identity-map module
+  # admits by meaning and executes to exact bytes, the reference
+  # scatter module refuses, and malformed word streams refuse by
+  # bounds.  The admitter is plain C over words, so the test carries no
+  # compiler-stack dependency.
+  test(
+    'r3v-native-compute-frontend',
+    executable(
+      'r3v_native_compute_frontend_test',
+      files('tests/r3v_native_compute_frontend_test.c',
+            '../common/r300_compute_spirv.c',
+            '../cpu/r300_cpu_compute_job.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('.')],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
 endif
 
 # Build-time guard for the DP4 compute-as-raster fragment shader shape: the FS
@@ -384,6 +403,7 @@ if get_option('r3v-native-backend')
     'r3v_native_arming.c',
     'r3v_native_cell.c',
     'r3v_native_cmd.c',
+    'r3v_native_compute.c',
     'r3v_native_device.c',
     'r3v_native_draw.c',
     'r3v_native_image.c',
@@ -394,6 +414,7 @@ if get_option('r3v-native-backend')
     'r3v_native_queue.c',
     'r3v_native_recording.c',
     'r3v_native_transfer.c',
+    '../common/r300_compute_spirv.c',
     '../common/r300_direct_write.c',
     '../common/r300_first_draw_state.c',
     '../common/r300_fragment_binary.c',
@@ -1489,6 +1510,28 @@ if get_option('r3v-native-backend')
       r3v_native_loader_env = environment(r3v_native_cell_vars + {
         'VK_DRIVER_FILES' : _native_dev_icd.full_path(),
       })
+      # End-to-end dispatch through the native compute surface: the
+      # gate-off leg proves the family withholds COMPUTE and pipeline
+      # creation refuses; the gate-on leg drives the reference
+      # identity-map module through descriptors, recording, and
+      # submission to exact output bytes under the drm-shim transport.
+      test(
+        'r3v-native-compute-dispatch',
+        executable(
+          'r3v_native_compute_dispatch_test',
+          files('tests/r3v_native_compute_dispatch_test.c'),
+          include_directories : [inc_include, inc_src,
+                                 include_directories('.')],
+          dependencies : [dep_vulkan_loader, idep_mesautil],
+          c_args : [no_override_init_args],
+        ),
+        env : r3v_native_loader_env,
+        depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
+                   _native_dev_icd],
+        timeout : 120,
+        suite : ['r3v'],
+      )
+
       test(
         'r3v-native-loader-sweep',
         executable(
