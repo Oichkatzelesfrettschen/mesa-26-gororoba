@@ -45,6 +45,7 @@ cs_builder(const char *name)
 }
 
 static void prepare_detect_shader(nir_shader *nir);
+static nir_shader *build_const_fill_u32(void);
 
 /* Admissible: load a value, FP24-range fadd, write the buffer output. */
 static nir_shader *
@@ -1348,6 +1349,128 @@ prepare_detect_shader(nir_shader *nir)
        * inline constants the detectors capture from. */
       NIR_PASS(progress, nir, nir_opt_constant_folding);
    } while (progress);
+}
+
+/* UBO word gather: the pre-explicit_io Vulkan shape the r3v classifier walks.
+ * Descriptors reach the loads as vulkan_resource_index (constant array
+ * index) -> load_vulkan_descriptor vec2 (.x buffer index, .y base offset). */
+static nir_def *
+ubo_gather_descriptor(nir_builder *b, unsigned set, unsigned binding,
+                      unsigned elem)
+{
+   nir_def *ri = nir_vulkan_resource_index(b, 2, 32, nir_imm_int(b, (int)elem),
+                                           .desc_set = set, .binding = binding);
+   return nir_load_vulkan_descriptor(b, 2, 32, ri);
+}
+
+static void
+ubo_gather_emit_copy(nir_builder *b, nir_def *out_desc, unsigned ubo_binding,
+                     unsigned ubo_elem, unsigned ubo_byte_offset,
+                     unsigned dst_byte_offset)
+{
+   nir_def *u = ubo_gather_descriptor(b, 0, ubo_binding, ubo_elem);
+   nir_def *w = nir_load_ubo(b, 1, 32, nir_channel(b, u, 0),
+                             nir_iadd(b, nir_channel(b, u, 1),
+                                      nir_imm_int(b, (int)ubo_byte_offset)),
+                             .align_mul = 4, .align_offset = 0, .range = 4);
+   nir_store_ssbo(b, w, nir_channel(b, out_desc, 0),
+                  nir_iadd(b, nir_channel(b, out_desc, 1),
+                           nir_imm_int(b, (int)dst_byte_offset)),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+}
+
+static nir_shader *
+build_ubo_word_gather(void)
+{
+   nir_builder b = cs_builder("cs_ubo_word_gather");
+   nir_def *out = ubo_gather_descriptor(&b, 0, 3, 0);
+   ubo_gather_emit_copy(&b, out, 2, 0, 0, 0);
+   ubo_gather_emit_copy(&b, out, 0, 1, 4, 4);
+   ubo_gather_emit_copy(&b, out, 1, 0, 8, 8);
+   return b.shader;
+}
+
+/* gid-consuming store offset: excluded from the allowlist, so the gather
+ * detector must refuse even though every value is a UBO word. */
+static nir_shader *
+build_ubo_word_gather_gid_offset(void)
+{
+   nir_builder b = cs_builder("cs_ubo_word_gather_gid");
+   nir_def *out = ubo_gather_descriptor(&b, 0, 1, 0);
+   nir_def *u = ubo_gather_descriptor(&b, 0, 0, 0);
+   nir_def *w = nir_load_ubo(&b, 1, 32, nir_channel(&b, u, 0),
+                             nir_channel(&b, u, 1),
+                             .align_mul = 4, .align_offset = 0, .range = 4);
+   nir_def *gid_off =
+      nir_imul(&b, nir_load_global_invocation_index(&b, 32),
+               nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, w, nir_channel(&b, out, 0),
+                  nir_iadd(&b, nir_channel(&b, out, 1), gid_off),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* Two stores targeting two different SSBO descriptors: the gather contract
+ * carries one output SSBO, so the detector must refuse. */
+static nir_shader *
+build_ubo_word_gather_split_output(void)
+{
+   nir_builder b = cs_builder("cs_ubo_word_gather_split");
+   nir_def *out_a = ubo_gather_descriptor(&b, 0, 1, 0);
+   nir_def *out_b = ubo_gather_descriptor(&b, 0, 2, 0);
+   ubo_gather_emit_copy(&b, out_a, 0, 0, 0, 0);
+   ubo_gather_emit_copy(&b, out_b, 0, 0, 0, 0);
+   return b.shader;
+}
+
+static void
+case_ubo_word_gather(void)
+{
+   nir_shader *nir = build_ubo_word_gather();
+   struct r300_compute_ubo_word_gather_pattern g = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_detect_ubo_word_gather(nir, &g);
+   CHECK(g.is_ubo_word_gather, "ubo-gather: shape detected");
+   CHECK(g.count == 3, "ubo-gather: three elements recorded");
+   CHECK(g.output_ssbo_set == 0 && g.output_ssbo_binding == 3 &&
+         g.output_ssbo_array_index == 0,
+         "ubo-gather: output descriptor coordinates recorded");
+   CHECK(g.elem[0].ubo_binding == 2 && g.elem[0].ubo_array_index == 0 &&
+         g.elem[0].ubo_byte_offset == 0 && g.elem[0].dst_byte_offset == 0,
+         "ubo-gather: element 0 addresses recorded");
+   CHECK(g.elem[1].ubo_binding == 0 && g.elem[1].ubo_array_index == 1 &&
+         g.elem[1].ubo_byte_offset == 4 && g.elem[1].dst_byte_offset == 4,
+         "ubo-gather: element 1 records the descriptor array index");
+   CHECK(g.elem[2].ubo_binding == 1 && g.elem[2].ubo_byte_offset == 8 &&
+         g.elem[2].dst_byte_offset == 8,
+         "ubo-gather: element 2 addresses recorded");
+   ralloc_free(nir);
+
+   nir_shader *gid = build_ubo_word_gather_gid_offset();
+   struct r300_compute_ubo_word_gather_pattern gg = {0};
+   prepare_detect_shader(gid);
+   r300_nir_detect_ubo_word_gather(gid, &gg);
+   CHECK(!gg.is_ubo_word_gather,
+         "ubo-gather refuses a gid-dependent store offset");
+   ralloc_free(gid);
+
+   nir_shader *split = build_ubo_word_gather_split_output();
+   struct r300_compute_ubo_word_gather_pattern gs = {0};
+   prepare_detect_shader(split);
+   r300_nir_detect_ubo_word_gather(split, &gs);
+   CHECK(!gs.is_ubo_word_gather,
+         "ubo-gather refuses two distinct output descriptors");
+   ralloc_free(split);
+
+   /* The const-fill kernel (gid-addressed store, immediate value) must not
+    * cross-match: its offset chain consumes the invocation index. */
+   nir_shader *cf = build_const_fill_u32();
+   struct r300_compute_ubo_word_gather_pattern gcf = {0};
+   prepare_detect_shader(cf);
+   r300_nir_detect_ubo_word_gather(cf, &gcf);
+   CHECK(!gcf.is_ubo_word_gather, "ubo-gather refuses the const-fill shape");
+   ralloc_free(cf);
 }
 
 static void
@@ -4294,6 +4417,7 @@ main(void)
    case_octonion_algebra_metadata();
    case_const_fill_metadata();
    case_constfill_regression();
+   case_ubo_word_gather();
    case_index_consumption();
    case_compute_global_id_system_value_lowering();
    case_affine_iota();

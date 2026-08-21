@@ -442,6 +442,21 @@ r3v_const_fill_dispatch_replay(struct r3v_device *device,
                                    const struct r3v_cmd_dispatch *dispatch,
                                    const struct r3v_cmd_bind_descriptor_sets *binds);
 
+/* UBO_WORD_GATHER dispatch replay: every stored word is a uniform-buffer
+ * word at addresses fixed at pipeline-create time, so the replay is a pure
+ * CPU descriptor walk with no GPU work.  Each element reads 4 bytes at the
+ * source descriptor's offset plus its bound dynamic offset plus the
+ * compile-time member offset and writes them at the output descriptor's
+ * offset plus its bound dynamic offset plus the compile-time store offset.
+ * Every miss -- absent set, absent descriptor, wrong descriptor type, or a
+ * range the backing buffer cannot hold -- returns false and the caller
+ * no-ops the dispatch. */
+bool
+r3v_ubo_word_gather_dispatch_replay(struct r3v_device *device,
+                                    const struct r3v_pipeline *pl,
+                                    const struct r3v_cmd_dispatch *dispatch,
+                                    const struct r3v_cmd_bind_descriptor_sets *binds);
+
 /* AFFINE_IOTA dispatch replay: out[gid] = stride * gid + offset, the first
  * verb that materializes the work-item index as an FP24 value.  Draws a quad
  * whose texcoord varying is in TEXEL units (vertex corners 0..width and

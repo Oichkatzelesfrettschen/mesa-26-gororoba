@@ -2514,6 +2514,7 @@ r3v_classify_compute_kernel(struct r3v_device *device,
                                struct r300_compute_ieee16_classify_pattern *ieee16_classify,
                                struct r300_compute_ieee16_mul_pattern *ieee16_mul,
                                struct r300_compute_const_fill_pattern *constfill,
+                               struct r300_compute_ubo_word_gather_pattern *ubo_gather,
                                struct r300_compute_index_pattern *index_consumption,
                                struct r300_compute_affine_iota_pattern *affine_iota,
                                struct r300_compute_multilimb_mul_pattern *multilimb_mul,
@@ -2622,6 +2623,7 @@ r3v_classify_compute_kernel(struct r3v_device *device,
    r300_nir_detect_ieee16_classify(nir, ieee16_classify);
    r300_nir_detect_ieee16_mul(nir, ieee16_mul);
    r300_nir_detect_const_fill_pattern(nir, constfill);
+   r300_nir_detect_ubo_word_gather(nir, ubo_gather);
    r300_nir_classify_index_consumption(nir, index_consumption);
    r300_nir_detect_affine_iota_pattern(nir, affine_iota);
    r300_nir_detect_multilimb_mul_pattern(nir, multilimb_mul);
@@ -5189,6 +5191,7 @@ r3v_create_one_compute_pipeline(struct r3v_device *device,
    struct r300_compute_ieee16_classify_pattern ieee16_classify_pat = {0};
    struct r300_compute_ieee16_mul_pattern ieee16_mul_pat = {0};
    struct r300_compute_const_fill_pattern constfill_pat = {0};
+   struct r300_compute_ubo_word_gather_pattern ubo_gather_pat = {0};
    struct r300_compute_index_pattern index_pat = {0};
    struct r300_compute_affine_iota_pattern affine_iota_pat = {0};
    struct r300_compute_multilimb_mul_pattern multilimb_pat = {0};
@@ -5210,7 +5213,8 @@ r3v_create_one_compute_pipeline(struct r3v_device *device,
                                        &odiv_pat, &otrans_pat,
                                        &qfmadd_pat, &qfmmul_pat,
                                        &ieee16_classify_pat, &ieee16_mul_pat,
-                                       &constfill_pat, &index_pat,
+                                       &constfill_pat, &ubo_gather_pat,
+                                       &index_pat,
                                        &affine_iota_pat, &multilimb_pat,
                                        &cas_pat, &log4_pat,
                                        local_size))
@@ -5270,6 +5274,7 @@ r3v_create_one_compute_pipeline(struct r3v_device *device,
    pl->ieee16_classify = ieee16_classify_pat;
    pl->ieee16_mul = ieee16_mul_pat;
    pl->const_fill = constfill_pat;
+   pl->ubo_word_gather = ubo_gather_pat;
    pl->index_consumption = index_pat;
    pl->affine_iota = affine_iota_pat;
    pl->multilimb_mul = multilimb_pat;
