@@ -719,6 +719,14 @@ r3v_native_deferred_draw_admit_gpu_producer(
              producer.ib_size_dwords * sizeof(uint32_t));
    }
    r300_r2vb_producer_pass_release(&producer);
+   /* The flag names one fact: the recorded IB carries the producer prefix
+    * ahead of the consumer.  The composition above establishes it, so it is
+    * recorded here rather than at the successful tail; a failure in the
+    * carrier steps that follow leaves a composed IB, and a resubmission of
+    * this buffer re-emits the prefix in place instead of prepending a
+    * second one.
+    */
+   draw->gpu_producer_delivery = true;
 
    /* The poisoned carrier crosses to the device now, so the read-back
     * decides every slot: a record dword still holding the poison names
@@ -747,7 +755,6 @@ r3v_native_deferred_draw_admit_gpu_producer(
    for (uint32_t i = R300_TRIANGLE_VERTEX_DWORDS;
         i < R3V_GPU_PRODUCER_CARRIER_DWORDS; i++)
       draw->gpu_expected_carrier[i] = R300_R2VB_PRODUCER_POISON_DWORD;
-   draw->gpu_producer_delivery = true;
    return VK_SUCCESS;
 }
 
