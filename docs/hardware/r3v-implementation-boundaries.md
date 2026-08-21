@@ -885,22 +885,35 @@ symbol.
 |---|---|---|
 | Vulkan commands lowered into Gallium CSOs and `pipe_context` replay | one fixed render cell, recorded through public `vkCmd*` over a bounded render-pass/pipeline/draw vocabulary | silicon, one qualified payload |
 | NIR ingress through `nir_to_rc` | `r300_vertex_job_from_nir` over straight-line vec4 shapes; `r300_fragment_nir_constant_color` | host unit |
-| NIR compatibility through `nir_to_tgsi` for Draw shapes | absent | none |
+| NIR compatibility through `nir_to_tgsi` for Draw shapes | covered by the `nir_to_rc` and CPU-vertex-execution rows: `nir_to_tgsi` is r300g's internal bridge into the Draw module (`draw_vs_exec.c`), the ICD never calls it, and no Vulkan-reachable shape resolves only through it | host unit, through the covering rows |
 | CPU vertex execution over Gallium Draw SW TCL | `r300_cpu_vertex_job_execute` over the job IR | host unit, and silicon through the cell's carrier |
 | R300 graphics state: VAP, PSC, RS, US, TX, CB, ZB, ROP, viewport, raster | the cell's fixed state vector alone | silicon, one state vector |
 | R2VB producer, CB export, cache publication, TCL-bypass re-ingest | public GPU-producer route, one payload, F32_4 position stream, three vertices | silicon, one payload |
-| Graphics-as-compute raster kernels and multipass carriers | absent | none |
-| Video: Gallium VL MPEG-1/MPEG-2 shader decode | absent | none |
+| Graphics-as-compute: `VK_QUEUE_COMPUTE_BIT` and `vkCmdDispatch` over raster kernels and multipass carriers, behind the `R3V_HYBRID_COMPUTE_EXPERIMENTAL` gate | absent; the native ICD advertises `VK_QUEUE_GRAPHICS_BIT` alone | none |
+| Video: Gallium VL MPEG-1/MPEG-2 shader decode | reclassified out of the Vulkan surface: `libgalliumvl` decode reaches applications through the GL state trackers alone, neither ICD names a `VK_KHR_video_*` symbol, so it retires with the GL carve-out above | not an R3V capability |
 | Memory and transfers: maps, uploads, copies, blits, clears | GEM-backed memory, one linear `B8G8R8A8_UNORM` transfer surface | host model, and silicon for the cell's carrier |
 | Queue and completion | owned Radeon DRM submission with fence retirement | silicon |
 | WSI over Gallium-exported resources | surface-query behavior alone; `VK_KHR_swapchain` and external-memory handles stay outside the native ICD | host model, and no presentation |
 | Host modeling: drm-shim identity, BO-domain, ioctl models | the same drm-shim models, exercised by the native harnesses | host model |
 
-Nine rows carry a native counterpart, several bounded to one payload,
-state vector, or modeled surface; three rows have no native counterpart;
-WSI stops before presentation. The gap is the driver's general
-surface, so retirement is inadmissible until the rows above close, and
-the closing order is the one `Ordered development` names.
+Ten rows carry a native counterpart, several bounded to one payload,
+state vector, or modeled surface; the video row leaves the Vulkan
+comparison the way GL and GLES did; graphics-as-compute is the one row
+with no native counterpart; WSI stops before presentation. The gap is
+the driver's general surface plus that row, so retirement is
+inadmissible until the rows above close, and the closing order is the
+one `Ordered development` names.
+
+The video scope for the native ICD is fixed by silicon:
+`VK_KHR_video_queue` and every decode or encode profile need a decode
+engine, a queue with `VK_QUEUE_VIDEO_DECODE_BIT_KHR`, planar 4:2:0 DPB
+formats, and entropy decode, and RS482 supplies none of them -- the
+texture and render-target tables carry packed 4:2:2 (`YUYV`/`UYVY`
+through `R300_EASY_TX_FORMAT(..., YVYU422)`) alone, and CABAC/CAVLC is
+serial integer work the FP24 fragment ALU cannot express. The one
+implementable video-adjacent surface is
+`VK_KHR_sampler_ycbcr_conversion` scoped to packed 4:2:2 presentation
+of externally decoded content; planar 4:2:0 stays outside it.
 
 Each closed row records the workload its evidence covers, so a row
 reading `silicon` for one payload closes only that payload. Widening a
