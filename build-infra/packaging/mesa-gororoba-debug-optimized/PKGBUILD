@@ -173,10 +173,14 @@ check() {
     return 1
   fi
 
-  python3 "${audit}" --selftest
-  python3 "${audit}" --source "${vulkan_dir}/r3v_physical_device.c"
-  python3 "${inventory}" --selftest
-  python3 "${inventory}" "${_builddir}"
+  # Each instrument proves itself on its own known-good and known-bad
+  # inputs before it judges the tree, and every refusal is fatal here
+  # rather than by the caller's shell options.
+  python3 "${audit}" --selftest || return 1
+  python3 "${audit}" --source "${vulkan_dir}/r3v_physical_device.c" \
+    || return 1
+  python3 "${inventory}" --selftest || return 1
+  python3 "${inventory}" "${_builddir}" --require-tests || return 1
 }
 
 package() {
