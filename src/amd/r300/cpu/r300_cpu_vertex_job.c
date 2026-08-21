@@ -242,12 +242,24 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
             break;
          case R300_VERTEX_JOB_OP_DP4: {
             /* Seed with the first product: an additive zero seed would
-             * rewrite an all-negative-zero dot product to +0. */
-            float sum = bits_to_float(temps[inst->src0][0]) *
-                        bits_to_float(temps[inst->src1][0]);
-            for (uint32_t lane = 1; lane < 4; lane++)
-               sum += bits_to_float(temps[inst->src0][lane]) *
-                      bits_to_float(temps[inst->src1][lane]);
+             * rewrite an all-negative-zero dot product to +0.  Each
+             * product commits to binary32 through a volatile object
+             * before it joins the sum, the same defense FMAD above
+             * carries: an accumulate written as sum += a * b is a
+             * contraction candidate, and a target with a fused operator
+             * would round the pair once and diverge from the packed
+             * multiply-then-add the SSE2 kernel executes.
+             */
+            const volatile float seed =
+               bits_to_float(temps[inst->src0][0]) *
+               bits_to_float(temps[inst->src1][0]);
+            float sum = seed;
+            for (uint32_t lane = 1; lane < 4; lane++) {
+               const volatile float product =
+                  bits_to_float(temps[inst->src0][lane]) *
+                  bits_to_float(temps[inst->src1][lane]);
+               sum += product;
+            }
             const uint32_t bits = float_result_to_bits(sum);
             for (uint32_t lane = 0; lane < 4; lane++)
                temps[inst->dst][lane] = bits;

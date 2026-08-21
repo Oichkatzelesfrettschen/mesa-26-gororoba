@@ -211,6 +211,36 @@ static void test_multiply_add_rounding(void)
       assert(out[lane] == 0x33800000u); /* 2^-24 */
 }
 
+static void test_dot_product_rounding(void)
+{
+   /* DP4 sums four products in component order, each rounded to
+    * binary32 before it joins the sum.  Component 0 seeds the sum with
+    * -1, component 1 contributes (1 + 2^-12)^2, which rounds (ties to
+    * even) to 1 + 2^-11, and the ordered sum is 2^-11 exactly.  A fused
+    * multiply-add over the second component would round the pair once
+    * and keep the 2^-24 residual, giving 2^-11 + 2^-24, so this leg
+    * pins the accumulator against contraction on an FMA-capable target.
+    */
+   const float a = 1.0f + 0x1.0p-12f;
+   struct r300_vertex_job job = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .instruction_count = 4,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_LOAD_CONSTANT, 1, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_DP4, 2, 0, 1, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 2, 0, 0 },
+      },
+      .constant_count = 1,
+      .constants = { { f_bits(-1.0f), f_bits(a), 0u, 0u } },
+   };
+   const uint32_t input[4] = { f_bits(1.0f), f_bits(a), 0u, 0u };
+   uint32_t out[4];
+   run_one(&job, input, out);
+   for (uint32_t lane = 0; lane < 4; lane++)
+      assert(out[lane] == 0x3a000000u); /* 2^-11 */
+}
+
 static void test_float_environment_isolation(void)
 {
    struct r300_vertex_job job = {
@@ -468,6 +498,7 @@ int main(void)
    test_f32_2_synthesis();
    test_arithmetic_exact();
    test_multiply_add_rounding();
+   test_dot_product_rounding();
    test_float_environment_isolation();
    test_dp4_order_and_broadcast();
    test_mov_preserves_nan_payload();
