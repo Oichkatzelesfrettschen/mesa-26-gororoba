@@ -1430,6 +1430,11 @@ Mesa behavior changes land in Mesa. Kernel changes land in the kernel source
 repository. Package policy lands in the package repository. Target evidence and
 findings remain in the evidence repository.
 
+`rs482-native-delivery-route-admission-and-oracle-model.md` carries the native
+lane's route topology, admission calculus, host-coherency model, oracle
+structure, evidence ladder, and artifact profile; this document keeps the
+ownership boundary and the completion criteria.
+
 ## Ordered development
 
 The landed surfaces carry source, host-unit, build/link, no-submit, drm-shim,
