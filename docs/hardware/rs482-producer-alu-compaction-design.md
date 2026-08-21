@@ -90,8 +90,13 @@ from `IDCT8DP4ExactBound.v`. That bound is FP32's 24-bit-mantissa envelope and
 does not hold on RS482 FP24, whose mantissa is 16 bits (17 significand). It would
 admit arithmetic outside the exact FP24 integer window the driver's own catalog
 defines. The generic inequality `|dp8| <= 8*B^2` is valid; the RS482 refinement
-is `2^17`, not `2^24`. The `2^17` correction is tracked as PROOF-FP24-01
-(fixing the proof and its mirror) and gates every FP24-exact rule here. The
+is `2^17`, not `2^24`. PROOF-FP24-01 carried the `2^17`
+correction into the proof, and it has landed: `IDCT8DP4ExactBound.v` now proves
+`dp8_exact_threshold` (`8*B^2 <= 2^17 <-> B <= 128` for nonnegative `B`) and
+`fp24_admit_strict_spec` (the strict gate is exactly `B <= 127`), with the
+FLX(17) representability half in `FP24Representable.v` `fp24_int_exact_inclusive`
+and the transform application in `R2VBTransformDP4.v` `mvp4_rows_exact`, all with
+zero admits. The
 exactness obligation is the stepwise accumulation staying in the `2^17`
 exact-integer interval, proved with the accumulation order and the inclusive
 boundary explicit, not inferred from the final sum alone.
@@ -614,9 +619,11 @@ Compaction implementation is gated on correcting the proof contract and mining a
 real workload. Optimizing `recur90` because it is the available synthetic case
 would produce a rule with no measured demand and an unproven FP24 contract.
 
-1. PROOF-FP24-01: correct `IDCT8DP4ExactBound.v` and its mirror -- remove the
-   `2^24` / `B <= 1448` hardware claim, prove the RS482 stepwise accumulation
-   against `2^17`. DOC-COMPACT-01 (this correction) cites the corrected theorem.
+1. PROOF-FP24-01: LANDED. `IDCT8DP4ExactBound.v` carries `fp24_window`,
+   `dp8_exact_boundary` (`8*128^2 = 2^17 < 8*129^2`), `dp8_exact_threshold`, and
+   `fp24_admit_strict_spec`; the `2^24` / `B <= 1448` hardware claim is gone. The
+   remaining obligation is the stepwise-accumulation ordering statement, which
+   the threshold bounds but does not itself order.
 2. HBTCL-08a: telemetry-only standing-route classification of real draws --
    single-pass fits, typed-split needs, over-budget one-vec4 unsplittable
    producers, and the exact over-budget NIR shapes that recur. This supplies an
@@ -726,8 +733,10 @@ Driver: `r300_fragprog_emit.c` (`R300_PFS_MAX_ALU_INST`), `radeon_optimize.c`,
 External proof and reduction evidence (open_gororoba, cited by name; the proofs
 live there, this document carries the citation):
 `proofs/theories/IDCT8EvenOdd.v` (`idct8_butterfly_eq_dense`, real-algebra 64 ->
-32 multiplies), `proofs/theories/IDCT8DP4ExactBound.v` (generic `|dp8| <= 8*B^2`;
-its `2^24` / `B <= 1448` hardware label is corrected to `2^17` by PROOF-FP24-01),
+32 multiplies), `proofs/theories/IDCT8DP4ExactBound.v` (generic `|dp8| <= 8*B^2`
+plus the RS482 window: `dp8_exact_threshold` and `fp24_admit_strict_spec`),
+`proofs/theories/FP24Representable.v` (`fp24_int_exact_inclusive`, FLX(17)),
+`proofs/theories/R2VBTransformDP4.v` (`mvp4_rows_exact`),
 `proofs/theories/CDFusedBilinear.v` (`CDFusedBilinearSurface`),
 `proofs/theories/FloatAxioms.v` (`FLOAT_OPS`, a field signature, algebraic layer
 only), `proofs/theories/HurwitzTheorem.v` (composition bound `n in {1,2,4,8}`),

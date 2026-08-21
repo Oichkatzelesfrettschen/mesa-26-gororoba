@@ -121,9 +121,11 @@ a named measurement.  The derivations, in dependency order:
 - `2^17 = 131072` (the exact-integer window): a binary format with a 17-bit
   significand represents every integer of magnitude up to `2^17`
   exactly, and `2^17` itself is exact as `1.0 x 2^17`.  Above it, integer
-  spacing exceeds 1 and exactness fails.  Proven mechanically:
-  the Rocq/Flocq FLX(17) refinement in open_gororoba
-  (`IDCT8DP4ExactBound`), extracted to C through CertiRocq.
+  spacing exceeds 1 and exactness fails.  Proven mechanically: the Rocq/Flocq
+  FLX(17) refinement in open_gororoba is `FP24Representable.v`
+  `fp24_int_exact_inclusive`, and the integer-window half is
+  `IDCT8DP4ExactBound.v` `dp8_exact_threshold`; the transform application is
+  `R2VBTransformDP4.v` `mvp4_rows_exact`, extracted to C through CertiRocq.
 - `8 * B^2 <= 2^17` (the DP4-chain exactness bound): an 8-term dot-product
   row (the IDCT8 shape, and the general 8-wide MAC accumulation) sums 8
   products each bounded by `B^2`; the accumulator peak is `8 * B^2`, and

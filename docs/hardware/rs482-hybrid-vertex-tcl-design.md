@@ -54,9 +54,14 @@ concrete path already scaffolded in `open_gororoba`:
 3. **Two named boundaries remain explicit.** (a) The
    `FLOAT_OPS`-to-concrete-float mapping: for vertex math held in the FP24
    exact-integer window -- Qm.f (fixed-point with m integer bits and f fractional bits) with `m + f <= 17` -- it reduces to integer
-   arithmetic whose exactness is *proven* (`IDCT8DP4ExactBound.v`:
-   `8*1448^2 < 2^24`, `2^17 < 2^24`), closing this boundary in that window;
-   outside it, it is a bounded worst-case-ulp boundary. (b) The generated-code
+   arithmetic whose exactness is *proven* against the RS482 FP24 window: the
+   integer half is `IDCT8DP4ExactBound.v` `dp8_exact_threshold`
+   (`8*B^2 <= 2^17 <-> B <= 128` for nonnegative `B`) with `fp24_admit_strict_spec`
+   pinning the strict production gate at `B <= 127`, and the representability
+   half is `FP24Representable.v` `fp24_int_exact_inclusive` (`|n| <= 2^17` is
+   FLX(17)-exact), applied to the transform by `R2VBTransformDP4.v`
+   `mvp4_rows_exact`, all with zero admits. That closes this boundary in that
+   window; outside it, it is a bounded worst-case-ulp boundary. (b) The generated-code
    boundary is collapsed only for kernels actually accepted by CertiRocq and
    recorded with their generated C/Clight artifact, runtime/ABI assumptions, and
    extraction command. Until a kernel takes that lane, a hand C translation
@@ -450,7 +455,7 @@ silicon or a bounded next increment from two demonstrated pieces.
 
 | Block | Role | Evidence |
 | --- | --- | --- |
-| Fragment ALU (US, pixel path) | The transform: `M*v` as 4 `DP4`, and non-linear per-vertex math -- quaternion rotation as 4 `DP4` (HW-confirmed, 3/3 within 0.05), octonion 16 `DP4`, Walsh-Hadamard multiply-free and bit-exact in the FP24 window (the exact-integer bound is *proven* in Rocq -- open_gororoba `proofs/theories/IDCT8DP4ExactBound.v`: `8*1448^2 < 2^24` and `2^17 < 2^24`, zero admits) | demonstrated on silicon; the 64-ALU ceiling is hard for dependent chains (R400 code banks execute but live temporaries do not cross the bank boundary), so over-budget kernels split with explicit state transport (HBTCL-04f) |
+| Fragment ALU (US, pixel path) | The transform: `M*v` as 4 `DP4`, and non-linear per-vertex math -- quaternion rotation as 4 `DP4` (HW-confirmed, 3/3 within 0.05), octonion 16 `DP4`, Walsh-Hadamard multiply-free and bit-exact in the FP24 window (the exact-integer bound is *proven* in Rocq against the FP24 window -- open_gororoba `proofs/theories/IDCT8DP4ExactBound.v` `dp8_exact_threshold`: `8*B^2 <= 2^17 <-> B <= 128`, with `fp24_admit_strict_spec` at the strict `B <= 127` production gate, and `proofs/theories/FP24Representable.v` `fp24_int_exact_inclusive` for FLX(17) representability, zero admits) | demonstrated on silicon; the 64-ALU ceiling is hard for dependent chains (R400 code banks execute but live temporaries do not cross the bank boundary), so over-budget kernels split with explicit state transport (HBTCL-04f) |
 | TAM/TDM/TIM (texture) | Fetch the MVP matrix and vertex attributes as textures -- **in the R2VB producer fragment shader**, which can sample; the VAP-side vertex-texture-fetch is architecturally gated off (`GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS = 0`), so this must live in the producer, not the vertex stage | gate measured; producer wiring to build |
 | RB3D (3D backend) | One-pass multi-attribute export: four `C4_32_FP` / `R300_COLOR_FORMAT_ARGB32323232` MRT targets route per-output-location as the FP32 vertex carrier (byte-exact RGBA8 remains a separate numeric-domain proof, not the vertex export format) -- position, normal, texcoord each to its own target in a single transform pass | MRT demonstrated byte-exact; combine with R2VB (HBTCL-09) |
 | E2/RB2D/CBA2D (2D blit) | Move transformed vertices GART->VAP-input, or scatter/gather vertex streams, instead of a CPU copy + `cb_flush` | unexplored: the 2D engine appears once in the corpus (H.264 block-copy), never probed for vertices (HBTCL-10) |
