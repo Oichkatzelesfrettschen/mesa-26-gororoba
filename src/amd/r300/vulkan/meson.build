@@ -939,6 +939,26 @@ if get_option('r3v-native-backend')
     install : false,
   )
 
+  # Attended route dispatch timing cell: one declared-route submission
+  # with CLOCK_MONOTONIC_RAW readings at the recording boundary and
+  # around the synchronous vkQueueSubmit, so the CPU and GPU delivery
+  # routes earn comparable timing rows on verified bytes.  Built and
+  # never registered as a test, because running it is a hardware
+  # authorization rather than a build-graph result.
+  r3v_native_attended_route_dispatch_timing = executable(
+    'r3v_native_attended_route_dispatch_timing',
+    files('tests/r3v_native_attended_route_dispatch_timing.c',
+          '../common/r300_r2vb_public_route.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+    build_by_default : true,
+    install : false,
+  )
+
   # Attended serial status-load cell: submits the frozen tuple stream up
   # to the declared serial bound while the paired-status census samples,
   # coordinated over a SOCK_SEQPACKET barrier channel by the status-load
@@ -1633,6 +1653,48 @@ if get_option('r3v-native-backend')
       'r3v-native-public-gpu-producer-record',
       r3v_native_attended_public_gpu_producer,
       args : [meson.current_build_dir(), '--record-only'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+
+    # The timing runner's CPU-route authorization rests on the consumer
+    # slice of the offline composition being the recorded consumer cell
+    # verbatim; this host test pins that identity and the digest
+    # separation between the two routes' declarations.
+    test(
+      'r3v-native-route-timing-digest',
+      executable(
+        'r3v_native_route_timing_digest_test',
+        files('tests/r3v_native_route_timing_digest_test.c',
+              '../common/r300_r2vb_public_route.c'),
+        include_directories : r3v_native_inc,
+        dependencies : r3v_native_deps,
+        link_whole : [libr3v_native_impl],
+        link_with : [libradeon_drm_vk],
+        c_args : [no_override_init_args],
+        gnu_symbol_visibility : 'hidden',
+      ),
+      suite : ['r3v'],
+    )
+
+    # Recording calibration for the timing runner on the fixture, one
+    # leg per declared route, so a recording-contract deviation fails
+    # here rather than on an authorized hardware attempt.
+    test(
+      'r3v-native-route-timing-record-cpu',
+      r3v_native_attended_route_dispatch_timing,
+      args : [meson.current_build_dir(), 'cpu', '--record-only'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-route-timing-record-gpu',
+      r3v_native_attended_route_dispatch_timing,
+      args : [meson.current_build_dir(), 'gpu', '--record-only'],
       env : r3v_native_cell_env,
       depends : [libradeon_noop_drm_shim],
       timeout : 60,
