@@ -72,44 +72,6 @@ r3v_CreateQueryPool(VkDevice _device,
    return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 }
 
-/* The descriptor types form one route: a set layout feeds a pipeline layout,
- * a pool allocates sets, and a set binds into a pipeline.  Recording refuses
- * every bind, so the route terminates at its first link and each member
- * refuses rather than handing back a descriptor object with no consumer.
- */
-VKAPI_ATTR VkResult VKAPI_CALL
-r3v_CreateDescriptorSetLayout(VkDevice _device,
-                              const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
-                              const VkAllocationCallbacks *pAllocator,
-                              VkDescriptorSetLayout *pSetLayout)
-{
-   VK_FROM_HANDLE(r3v_native_device, device, _device);
-   *pSetLayout = VK_NULL_HANDLE;
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-r3v_CreateDescriptorPool(VkDevice _device,
-                         const VkDescriptorPoolCreateInfo *pCreateInfo,
-                         const VkAllocationCallbacks *pAllocator,
-                         VkDescriptorPool *pDescriptorPool)
-{
-   VK_FROM_HANDLE(r3v_native_device, device, _device);
-   *pDescriptorPool = VK_NULL_HANDLE;
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-r3v_AllocateDescriptorSets(VkDevice _device,
-                           const VkDescriptorSetAllocateInfo *pAllocateInfo,
-                           VkDescriptorSet *pDescriptorSets)
-{
-   VK_FROM_HANDLE(r3v_native_device, device, _device);
-   for (uint32_t i = 0; i < pAllocateInfo->descriptorSetCount; i++)
-      pDescriptorSets[i] = VK_NULL_HANDLE;
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-}
-
 /* Destruction of the null handle is a specified no-op, and the creation
  * commands above hand back no other handle, so each of these performs the
  * no-op for every input a valid program can present.
@@ -137,35 +99,6 @@ VKAPI_ATTR void VKAPI_CALL
 r3v_DestroyQueryPool(VkDevice _device, VkQueryPool queryPool,
                      const VkAllocationCallbacks *pAllocator)
 {
-}
-
-VKAPI_ATTR void VKAPI_CALL
-r3v_DestroyDescriptorPool(VkDevice _device, VkDescriptorPool descriptorPool,
-                          const VkAllocationCallbacks *pAllocator)
-{
-}
-
-/* Freeing zero sets is the one form of this command a valid program reaches,
- * and it succeeds.  vkFreeDescriptorSets permits VK_ERROR_UNKNOWN and
- * VK_ERROR_VALIDATION_FAILED alone, so a refusal here would report an
- * implementation failure for a call that asks nothing.
- */
-VKAPI_ATTR VkResult VKAPI_CALL
-r3v_FreeDescriptorSets(VkDevice _device, VkDescriptorPool descriptorPool,
-                       uint32_t descriptorSetCount,
-                       const VkDescriptorSet *pDescriptorSets)
-{
-   return VK_SUCCESS;
-}
-
-/* Resetting a pool recycles the sets it allocated.  No pool exists, so the
- * recycling has no subject and the command succeeds having done it.
- */
-VKAPI_ATTR VkResult VKAPI_CALL
-r3v_ResetDescriptorPool(VkDevice _device, VkDescriptorPool descriptorPool,
-                        VkDescriptorPoolResetFlags flags)
-{
-   return VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -197,17 +130,6 @@ r3v_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool,
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
    return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-}
-
-/* Writing zero descriptors is the one form a valid program reaches, and the
- * command returns void, so it performs that write and returns.
- */
-VKAPI_ATTR void VKAPI_CALL
-r3v_UpdateDescriptorSets(VkDevice _device, uint32_t descriptorWriteCount,
-                         const VkWriteDescriptorSet *pDescriptorWrites,
-                         uint32_t descriptorCopyCount,
-                         const VkCopyDescriptorSet *pDescriptorCopies)
-{
 }
 
 /* The committed size is defined for lazily-allocated memory.  Every native

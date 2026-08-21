@@ -765,6 +765,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    }
    if (cmd_buffer->ib_size_dwords == 0 ||
        cmd_buffer->deferred_draw.pending ||
+       cmd_buffer->deferred_dispatch.pending ||
        cmd_buffer->deferred_copy_count != 0) {
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                        "r3v-native: prepare covers transport-only command "
@@ -1126,10 +1127,19 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
 
       /* A zero-IB command buffer can still carry a deferred load-op clear
-       * from an empty render pass.  Execute that host-side work before
-       * treating the buffer as having no transport submission.
+       * from an empty render pass, or a recorded dispatch on the CPU
+       * compute route.  Execute that host-side work before treating the
+       * buffer as having no transport submission.
        */
       if (cmd_buffer->ib_size_dwords == 0) {
+         VkResult dispatched =
+            r3v_native_cmd_buffer_execute_deferred_dispatch(device,
+                                                            cmd_buffer);
+         if (dispatched != VK_SUCCESS) {
+            if (dispatched == VK_ERROR_MEMORY_MAP_FAILED)
+               return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+            return vk_error(device, VK_ERROR_DEVICE_LOST);
+         }
          VkResult deferred =
             r3v_native_cmd_buffer_execute_deferred_draw(device, cmd_buffer);
          if (deferred != VK_SUCCESS) {

@@ -4,7 +4,8 @@
 # behind one gather contract.  The native R3V implementation, tests, and
 # benchmarks link this one object set, so their compiler flags and symbols
 # cannot drift apart.
-r300_cpu_files = files('r300_cpu_vertex.c', 'r300_cpu_vertex_job.c')
+r300_cpu_files = files('r300_cpu_compute_job.c', 'r300_cpu_vertex.c',
+                       'r300_cpu_vertex_job.c')
 libr300_cpu = static_library(
   'r300_cpu',
   r300_cpu_files,
@@ -136,6 +137,19 @@ if with_tests
   # authority: randomized jobs over hostile bit patterns byte-identical,
   # numeric-policy witnesses reproduced, refusal errnos shared.  The
   # test self-skips where the build target lacks SSE2.
+  test(
+    'r300-cpu-compute-job',
+    executable(
+      'r300_cpu_compute_job_test',
+      files('tests/r300_cpu_compute_job_test.c'),
+      include_directories : [inc_src, inc_include,
+                             include_directories('.')],
+      link_with : [libr300_cpu],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   test(
     'r300-cpu-vertex-job-simd',
     executable(

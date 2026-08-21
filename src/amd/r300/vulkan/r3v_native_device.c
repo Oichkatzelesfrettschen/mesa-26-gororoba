@@ -68,23 +68,6 @@ r3v_GetDeviceProcAddr(VkDevice _device, const char *pName)
    return vk_device_get_proc_addr(device, pName);
 }
 
-/* Compute pipeline creation declines: the native implementation owns no
- * compute route, and a successful no-op pipeline would be a semantic
- * defect.  Graphics pipelines live in r3v_native_pipeline.c.
- */
-VKAPI_ATTR VkResult VKAPI_CALL
-r3v_CreateComputePipelines(VkDevice _device, VkPipelineCache pipelineCache,
-                           uint32_t createInfoCount,
-                           const VkComputePipelineCreateInfo *pCreateInfos,
-                           const VkAllocationCallbacks *pAllocator,
-                           VkPipeline *pPipelines)
-{
-   VK_FROM_HANDLE(r3v_native_device, device, _device);
-   for (uint32_t i = 0; i < createInfoCount; i++)
-      pPipelines[i] = VK_NULL_HANDLE;
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-}
-
 VkResult
 r3v_CreateDevice(VkPhysicalDevice physicalDevice,
                  const VkDeviceCreateInfo *pCreateInfo,

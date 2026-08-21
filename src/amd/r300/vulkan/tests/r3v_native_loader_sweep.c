@@ -238,14 +238,37 @@ call_create_query_pool(void)
    return (result != VK_SUCCESS && pool == VK_NULL_HANDLE) ? 0 : 1;
 }
 
+/* The descriptor-set-layout surface is live for the compute route:
+ * the storage-buffer contract admits (the empty layout among it), and
+ * a binding type outside it refuses with the handle cleared.
+ */
 static int
 call_create_descriptor_set_layout(void)
 {
-   VkDescriptorSetLayout layout = (VkDescriptorSetLayout)(uintptr_t)0x1;
+   VkDescriptorSetLayout layout = VK_NULL_HANDLE;
    VkResult result = vkCreateDescriptorSetLayout(
       device,
       &(VkDescriptorSetLayoutCreateInfo){
          .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+      },
+      NULL, &layout);
+   if (result != VK_SUCCESS || layout == VK_NULL_HANDLE)
+      return 1;
+   vkDestroyDescriptorSetLayout(device, layout, NULL);
+
+   layout = (VkDescriptorSetLayout)(uintptr_t)0x1;
+   result = vkCreateDescriptorSetLayout(
+      device,
+      &(VkDescriptorSetLayoutCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+         .bindingCount = 1,
+         .pBindings =
+            &(VkDescriptorSetLayoutBinding){
+               .binding = 0,
+               .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+               .descriptorCount = 1,
+               .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
       },
       NULL, &layout);
    return (result != VK_SUCCESS && layout == VK_NULL_HANDLE) ? 0 : 1;
@@ -728,7 +751,8 @@ main(void)
    in_child("vkCreateSampler refuses", call_create_sampler);
    in_child("vkCreateDescriptorPool refuses", call_create_descriptor_pool);
    in_child("vkCreateQueryPool refuses", call_create_query_pool);
-   in_child("vkCreateDescriptorSetLayout refuses",
+   in_child("vkCreateDescriptorSetLayout admits the storage contract "
+            "and refuses outside it",
             call_create_descriptor_set_layout);
    in_child("vkCreateBufferView refuses over a live buffer",
             call_create_buffer_view);

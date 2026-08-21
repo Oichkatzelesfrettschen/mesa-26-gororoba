@@ -101,7 +101,7 @@ NATIVE_BEHAVIOR = {
     "InvalidateMappedMemoryRanges": "NATIVE_LIVE",
     "CreateGraphicsPipelines": "NATIVE_LIVE",
     "DestroyPipeline": "NATIVE_LIVE",
-    "CreateComputePipelines": "CORE_FAIL_CLOSED",
+    "CreateComputePipelines": "NATIVE_LIVE",
     "BindImageMemory": "NATIVE_LIVE",
     "CreateImage": "NATIVE_LIVE",
     "CreateImageView": "NATIVE_LIVE",
@@ -109,9 +109,9 @@ NATIVE_BEHAVIOR = {
     "CreateSampler": "CORE_FAIL_CLOSED",
     "CreateEvent": "CORE_FAIL_CLOSED",
     "CreateQueryPool": "CORE_FAIL_CLOSED",
-    "CreateDescriptorSetLayout": "CORE_FAIL_CLOSED",
-    "CreateDescriptorPool": "CORE_FAIL_CLOSED",
-    "AllocateDescriptorSets": "CORE_FAIL_CLOSED",
+    "CreateDescriptorSetLayout": "NATIVE_LIVE",
+    "CreateDescriptorPool": "NATIVE_LIVE",
+    "AllocateDescriptorSets": "NATIVE_LIVE",
     "GetEventStatus": "CORE_FAIL_CLOSED",
     "SetEvent": "CORE_FAIL_CLOSED",
     "ResetEvent": "CORE_FAIL_CLOSED",
@@ -126,10 +126,10 @@ NATIVE_BEHAVIOR = {
     "DestroySampler": "CORE_NULL_DESTROY_SAFE",
     "DestroyEvent": "CORE_NULL_DESTROY_SAFE",
     "DestroyQueryPool": "CORE_NULL_DESTROY_SAFE",
-    "DestroyDescriptorPool": "CORE_NULL_DESTROY_SAFE",
-    "FreeDescriptorSets": "CORE_NULL_DESTROY_SAFE",
-    "ResetDescriptorPool": "CORE_NULL_DESTROY_SAFE",
-    "UpdateDescriptorSets": "CORE_NULL_DESTROY_SAFE",
+    "DestroyDescriptorPool": "NATIVE_LIVE",
+    "FreeDescriptorSets": "NATIVE_LIVE",
+    "ResetDescriptorPool": "NATIVE_LIVE",
+    "UpdateDescriptorSets": "NATIVE_LIVE",
 }
 
 # The public recording surface's live command subset: the one begin/bind/
@@ -137,6 +137,8 @@ NATIVE_BEHAVIOR = {
 # other vkCmd* keeps the fail-closed prefix resolution.
 NATIVE_LIVE_CMDS = {
     "CmdBeginRenderPass",
+    "CmdBindDescriptorSets",
+    "CmdDispatch",
     "CmdEndRenderPass",
     "CmdBindPipeline",
     "CmdBindVertexBuffers",

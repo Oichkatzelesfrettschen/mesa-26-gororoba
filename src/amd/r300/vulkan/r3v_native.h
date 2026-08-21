@@ -9,6 +9,7 @@
 
 #include "r3v_native_arming.h"
 
+#include "amd/r300/common/r300_compute_job.h"
 #include "amd/r300/compiler/r300_vertex_job.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_completion.h"
@@ -19,6 +20,7 @@
 #include "vk_buffer.h"
 #include "vk_command_buffer.h"
 #include "vk_command_pool.h"
+#include "vk_descriptor_set_layout.h"
 #include "vk_device.h"
 #include "vk_device_memory.h"
 #include "vk_queue.h"
@@ -163,6 +165,77 @@ struct r3v_native_deferred_copy {
  */
 #define R3V_NATIVE_DEFERRED_COPY_INITIAL_CAPACITY 16
 
+/* The compute descriptor surface: a set layout admits storage-buffer
+ * bindings under the compute stage inside the binding bound, a pool
+ * allocates sets against its declared capacity, and a set holds one
+ * buffer range per binding.  vkUpdateDescriptorSets returns void, so a
+ * write outside the admitted contract poisons the set and the dispatch
+ * recording refuses it, keeping the surface fail-closed without a
+ * result channel.
+ */
+#define R3V_NATIVE_DESCRIPTOR_BINDING_MAX 4
+#define R3V_NATIVE_DESCRIPTOR_POOL_SET_MAX 16
+
+struct r3v_native_descriptor_set_layout {
+   struct vk_descriptor_set_layout vk;
+   bool binding_present[R3V_NATIVE_DESCRIPTOR_BINDING_MAX];
+};
+
+struct r3v_native_descriptor_binding {
+   bool bound;
+   struct r3v_native_buffer *buffer;
+   VkDeviceSize offset;
+   /* Resolved byte range: VK_WHOLE_SIZE resolves against the buffer at
+    * the write, so the dispatch admission compares plain numbers.
+    */
+   VkDeviceSize range;
+};
+
+struct r3v_native_descriptor_set {
+   struct vk_object_base base;
+   struct r3v_native_descriptor_set_layout *layout;
+   bool poisoned;
+   struct r3v_native_descriptor_binding
+      bindings[R3V_NATIVE_DESCRIPTOR_BINDING_MAX];
+};
+
+struct r3v_native_descriptor_pool {
+   struct vk_object_base base;
+   uint32_t max_sets;
+   uint32_t set_count;
+   struct r3v_native_descriptor_set *sets[R3V_NATIVE_DESCRIPTOR_POOL_SET_MAX];
+};
+
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_descriptor_set_layout, vk.base,
+                               VkDescriptorSetLayout,
+                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_descriptor_set, base,
+                               VkDescriptorSet,
+                               VK_OBJECT_TYPE_DESCRIPTOR_SET)
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_descriptor_pool, base,
+                               VkDescriptorPool,
+                               VK_OBJECT_TYPE_DESCRIPTOR_POOL)
+
+/* One recorded dispatch, resolved at record time to the two memory
+ * ranges the CPU compute route moves at submission.  The recording
+ * proves the ranges cover the invocation footprint, so execution
+ * re-checks only what can change between record and submit: the
+ * memory binding.
+ */
+struct r3v_native_deferred_dispatch {
+   bool pending;
+   struct r300_compute_job job;
+   uint32_t group_counts[3];
+   struct r3v_native_buffer *input_buffer;
+   struct r3v_native_buffer *output_buffer;
+   /* Byte offsets into each buffer's bound memory, the buffer bind
+    * offset and the descriptor offset already summed.
+    */
+   uint64_t input_memory_offset;
+   uint64_t output_memory_offset;
+   uint64_t byte_count;
+};
+
 struct r3v_native_deferred_draw {
    bool pending;
    struct r3v_native_buffer *buffer;
@@ -239,6 +312,15 @@ struct r3v_native_cmd_buffer {
    struct r3v_native_deferred_copy *deferred_copies;
    uint32_t deferred_copy_count;
    uint32_t deferred_copy_capacity;
+   /* The compute recording state: a dispatch-only command buffer binds
+    * a compute pipeline and one set-0 descriptor set and records one
+    * dispatch; the recording refuses a mix with the render pass or the
+    * transfer copies, so the buffer carries exactly one execution
+    * shape.
+    */
+   struct r3v_native_pipeline *bound_compute_pipeline;
+   struct r3v_native_descriptor_set *bound_compute_set;
+   struct r3v_native_deferred_dispatch deferred_dispatch;
    /* Member count the burst status-load cell composed; zero for every
     * other kind.  The arming gate matches it against the declared
     * count, and the geometry predicate sizes the carrier by it.
@@ -465,6 +547,13 @@ struct r3v_native_image_view {
  */
 struct r3v_native_pipeline {
    struct vk_object_base base;
+   /* Set for a compute pipeline: compute_job is the admitted lowering
+    * and the graphics fields below stay zero.  The bind and dispatch
+    * recordings check the kind, so one handle type serves both bind
+    * points without a graphics field ever reading as compute state.
+    */
+   bool is_compute;
+   struct r300_compute_job compute_job;
    int format_id;
    uint32_t binding_stride;
    uint32_t attribute_offset;
@@ -645,6 +734,16 @@ VkResult r3v_native_cmd_buffer_execute_deferred_copies(
    struct r3v_native_cmd_buffer *cmd_buffer);
 
 VkResult r3v_native_cmd_buffer_execute_deferred_draw(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer);
+
+/* Executes the command buffer's recorded dispatch at submission
+ * through host mappings of the two bound memories, the CPU compute
+ * route: the record-time admission proved the ranges, so execution
+ * resolves mappings, re-checks the memory bindings, runs the job, and
+ * publishes the output for the unsnooped GART.
+ */
+VkResult r3v_native_cmd_buffer_execute_deferred_dispatch(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer);
 

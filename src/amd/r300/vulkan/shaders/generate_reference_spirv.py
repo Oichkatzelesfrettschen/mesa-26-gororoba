@@ -25,6 +25,10 @@ HEADER = HERE.parent / "r3v_native_reference_spirv.h"
 STAGES = (
     ("r3v_reference_vertex_spirv", HERE / "r3v_reference_triangle.vert"),
     ("r3v_reference_fragment_spirv", HERE / "r3v_reference_triangle.frag"),
+    ("r3v_reference_identity_map_spirv",
+     HERE / "r3v_reference_identity_map.comp"),
+    ("r3v_reference_scatter_reject_spirv",
+     HERE / "r3v_reference_scatter_reject.comp"),
 )
 
 

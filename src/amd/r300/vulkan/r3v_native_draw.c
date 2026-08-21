@@ -125,12 +125,25 @@ r3v_CmdBindPipeline(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
    VK_FROM_HANDLE(r3v_native_pipeline, pipeline, _pipeline);
 
-   if (pipelineBindPoint != VK_PIPELINE_BIND_POINT_GRAPHICS ||
-       pipeline == NULL) {
+   if (pipeline == NULL) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
-   cmd_buffer->bound_pipeline = pipeline;
+   /* Each bind point admits its own pipeline kind alone, so a compute
+    * pipeline can never stand where the draw lowering reads graphics
+    * state, and the reverse bind refuses the same way.
+    */
+   if (pipelineBindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS &&
+       !pipeline->is_compute) {
+      cmd_buffer->bound_pipeline = pipeline;
+      return;
+   }
+   if (pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE &&
+       pipeline->is_compute) {
+      cmd_buffer->bound_compute_pipeline = pipeline;
+      return;
+   }
+   poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
 }
 
 VKAPI_ATTR void VKAPI_CALL
