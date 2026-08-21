@@ -442,8 +442,30 @@ main(int argc, char **argv)
       fprintf(stderr, "vertex map failed\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
-   memcpy(map, r300_tcl_bypass_triangle_vertices,
-          sizeof(r300_tcl_bypass_triangle_vertices));
+   /* The two routes admit different input spaces for the same rendered
+    * triangle, and each leg writes the form its route admits.  The GPU
+    * producer route declares R300_CARRIER_POSITION_WINDOW, so the
+    * device pass rasterizes the screen-space records and the consumer
+    * binds the carrier untransformed; the CPU route declares
+    * R300_CARRIER_POSITION_CLIP, validates the clip volume, and
+    * realizes the one viewport transform itself as
+    * (ndc + 1) * extent / 2.  Feeding the screen-space records to the
+    * CPU route refuses every vertex as outside the clip volume, so the
+    * NDC below is the same triangle stated in that route's own space.
+    * Both legs therefore render one triangle to one target and the
+    * color oracle holds each to it; the transform each route performs
+    * is part of what the interval measures.
+    */
+   float records[R300_TRIANGLE_VERTEX_DWORDS];
+   memcpy(records, r300_tcl_bypass_triangle_vertices, sizeof(records));
+   if (!gpu_route) {
+      for (unsigned v = 0; v < R300_TRIANGLE_VERTEX_DWORDS / 4; v++) {
+         float *pos = &records[v * 4];
+         pos[0] = pos[0] * 2.0f / (float)R3V_NATIVE_TARGET_WIDTH - 1.0f;
+         pos[1] = pos[1] * 2.0f / (float)R3V_NATIVE_TARGET_HEIGHT - 1.0f;
+      }
+   }
+   memcpy(map, records, sizeof(records));
    vkUnmapMemory(device, vertex_memory);
 
    stage("pipeline");
