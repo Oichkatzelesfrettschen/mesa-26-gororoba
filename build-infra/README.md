@@ -54,7 +54,12 @@ diagnostic gate; conformance and silicon evidence stay on profile 4_.  A zink
 attribution probe sets `VK_ICD_FILENAMES` to the generated `r3v_icd.<cpu>.json`
 from the profile install prefix before setting
 `MESA_LOADER_DRIVER_OVERRIDE=zink`, so the Vulkan loader selects the `ati_r300`
-ICD built by the profile.  Conformance and silicon-evidence runs use profile 4_
+ICD built by the profile.  A zink run also sets
+`R3V_ZINK_BASELINE_SURFACE=1`: zink hard-requires create_renderpass2,
+dynamic_rendering, and maintenance5, whose registry dependencies a
+Vulkan 1.0 device without multiview cannot satisfy, so the default r3v
+surface withholds them and the gate opens the full zink baseline with
+that dependency violation as its recorded conformance cost.  Conformance and silicon-evidence runs use profile 4_
 (`4_r300_full_release`, now under `alternates/`) because an asserts-live debug
 build can abort a CTS/Piglit case that release would pass.  `make install
 PROFILE=...` lands in the isolated per-profile prefix `/opt/local/mesa-<profile>`
