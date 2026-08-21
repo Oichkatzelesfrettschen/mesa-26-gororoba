@@ -138,8 +138,8 @@ run_burst_leg(VkInstance instance,
               VkPhysicalDevice physical_device,
               const struct r300_r2vb_float2_tuple_burst_ib *reference,
               uint32_t carrier_bytes, bool resubmit, bool prepare,
-              bool model_float4, const char *manifest_dir,
-              struct burst_leg *out)
+              bool reset_after_prepare, bool model_float4,
+              const char *manifest_dir, struct burst_leg *out)
 {
    int rc = 1;
    LOAD_INSTANCE(vkCreateDevice);
@@ -175,6 +175,7 @@ run_burst_leg(VkInstance instance,
    LOAD_DEVICE(vkCreateCommandPool);
    LOAD_DEVICE(vkDestroyCommandPool);
    LOAD_DEVICE(vkAllocateCommandBuffers);
+   LOAD_DEVICE(vkResetCommandBuffer);
    LOAD_DEVICE(vkBeginCommandBuffer);
    LOAD_DEVICE(vkEndCommandBuffer);
    LOAD_DEVICE(vkQueueSubmit);
@@ -284,6 +285,20 @@ run_burst_leg(VkInstance instance,
             "a second prepare refuses while one is pending");
       if (failures != 0)
          goto done;
+      if (reset_after_prepare) {
+         /* The prepared CS names this buffer's IB storage rather than a
+          * copy of it, and the commit guard admits on command-buffer
+          * pointer equality, which a reset preserves.  Releasing the IB
+          * therefore retires the prepared transport, so no ioctl can
+          * reach freed dwords.
+          */
+         VkResult reset = vkResetCommandBuffer(command_buffer, 0);
+         CHECK(reset == VK_SUCCESS, "reset after prepare: %d", reset);
+         CHECK(!native_device->prepared.valid,
+               "the command-buffer reset retires the prepared transport");
+         rc = 0;
+         goto done;
+      }
    }
 
    out->submit_result = vkQueueSubmit(
@@ -404,8 +419,8 @@ main(void)
    setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "8", 1);
    struct burst_leg mismatch = { 0 };
    if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, false, false, false, mismatch_dir,
-                     &mismatch) != 0)
+                     carrier_bytes, false, false, false, false,
+                     mismatch_dir, &mismatch) != 0)
       goto done;
    CHECK(mismatch.submit_result == VK_ERROR_DEVICE_LOST &&
             mismatch.queue_status ==
@@ -429,7 +444,7 @@ main(void)
    setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "4", 1);
    struct burst_leg admit = { 0 };
    if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, true, false, false, admit_dir,
+                     carrier_bytes, true, false, false, false, admit_dir,
                      &admit) != 0)
       goto done;
    CHECK(admit.submit_result == VK_SUCCESS &&
@@ -450,7 +465,7 @@ main(void)
    setenv("R3V_NATIVE_MANIFEST_DIR", prepared_dir, 1);
    struct burst_leg prepared = { 0 };
    if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, true, true, false, prepared_dir,
+                     carrier_bytes, true, true, false, false, prepared_dir,
                      &prepared) != 0)
       goto done;
    CHECK(prepared.submit_result == VK_SUCCESS &&
@@ -458,6 +473,22 @@ main(void)
          "the prepared transport commits once: %d %s",
          prepared.submit_result,
          r3v_native_queue_status_name(prepared.queue_status));
+
+   /* Reset-after-prepare leg: the IB release retires the prepared
+    * transport, so a buffer reset between prepare and submit leaves no
+    * CS aimed at freed storage.
+    */
+   char reset_dir[] = "/tmp/r3v-native-burst-reset-XXXXXX";
+   if (mkdtemp(reset_dir) == NULL) {
+      fprintf(stderr, "reset evidence directory creation failed\n");
+      return 2;
+   }
+   setenv("R3V_NATIVE_MANIFEST_DIR", reset_dir, 1);
+   struct burst_leg reset_leg = { 0 };
+   if (run_burst_leg(instance, gipa, physical_device, &reference,
+                     carrier_bytes, false, true, true, false, reset_dir,
+                     &reset_leg) != 0)
+      goto done;
 
    /* Fetch-width leg: the FLOAT_4 model burst under its own declared
     * digest and evidence directory -- the widened vertex object and the
@@ -488,7 +519,8 @@ main(void)
    struct burst_leg float4 = { 0 };
    int float4_rc =
       run_burst_leg(instance, gipa, physical_device, &float4_reference,
-                    carrier_bytes, true, false, true, float4_dir, &float4);
+                    carrier_bytes, true, false, false, true, float4_dir,
+                    &float4);
    r300_r2vb_float2_tuple_burst_release(&float4_reference);
    if (float4_rc != 0)
       goto done;

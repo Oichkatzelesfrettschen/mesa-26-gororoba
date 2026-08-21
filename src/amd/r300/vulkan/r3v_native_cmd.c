@@ -17,6 +17,23 @@
 static void
 r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
 {
+   /* radeon_drm_vk_cs_build binds the IB chunk to this pointer rather than
+    * copying the dwords (rg --fixed-strings RADEON_CHUNK_ID_IB
+    * src/amd/radeon/drm_vk/radeon_drm_vk_cs.c), so a prepared submission
+    * names storage this free returns to the allocator.  The prepared state
+    * admits a commit on command-buffer pointer equality alone, and both a
+    * reset and a destroy-then-reallocate keep that pointer equal, so the IB
+    * release is the point that retires the transport holding it.  A
+    * host-model carrier installs an IB with no device attached, so the
+    * base device decides whether a prepared submission can exist at all.
+    */
+   if (cmd_buffer->vk.base.device != NULL) {
+      struct r3v_native_device *device = container_of(
+         cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+      if (device->prepared.valid && device->prepared.cmd_buffer == cmd_buffer)
+         r3v_native_prepared_release(device);
+   }
+
    free(cmd_buffer->ib);
    free(cmd_buffer->references);
    cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
