@@ -12,12 +12,23 @@
  * baseline or SSE2) is decided inside r300_cpu_vertex_gather by the
  * qualified K8 measurement, so the route selector carries no lane
  * choice.  The R2VB host model engages only by exact experimental
- * opt-in.  A production R2VB promotion is a measurement decision the
- * selector holds closed: it requires total draw latency -- producer
- * submission, cache publication, and the re-ingest stall included, not
- * gather time alone -- measured on silicon with live delivery, and no
- * such measurement exists while live R2VB submission remains outside
- * the landed surface.
+ * opt-in.  A production R2VB promotion is a measurement decision, and
+ * the measurement it required has run: total draw latency -- producer
+ * submission, cache publication, and the re-ingest stall included,
+ * rather than gather time alone -- over the transport bracket of
+ * DRM_RADEON_CS plus the bounded completion wait, on RS482 silicon
+ * with live delivery.  Twelve alternating rounds put the CPU route at
+ * a 95.3 us median against the GPU producer's 114.6 us, with all
+ * twelve within-round paired differences agreeing in sign, so the CPU
+ * route leads by 0.1077 of its own median.  The selector therefore
+ * keeps the CPU default as the faster route rather than as the
+ * incumbent one.
+ *
+ * That result is bounded to the admitted geometry: three vertices,
+ * with the application's records riding as literal DRAW_IMMD_2 body
+ * dwords.  The host gather scales with vertex count while the
+ * producer's command overhead does not, so a wider admitted set is a
+ * separate measurement and does not inherit this decision.
  */
 enum r300_delivery_route {
    R300_DELIVERY_ROUTE_CPU = 0,
