@@ -58,10 +58,9 @@ cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relr
 platforms = ['x11', 'wayland']
 gallium-drivers = ['r300']
 vulkan-drivers = ['ati_r300']
-r3v-gallium-backend = true
-# The Gallium-free native ICD (libvulkan_r3v_native) rides beside the Gallium
-# backend; this release profile is where its ELF, DT_NEEDED, and separation
-# audits produce the conformance-grade build proof.
+# The Gallium-free native ICD (libvulkan_r3v_native); this release profile is
+# where its ELF, DT_NEEDED, and separation audits produce the
+# conformance-grade build proof.
 r3v-native-backend = true
 
 # Maximal OpenGL/GLES surface: RS480 exposes desktop GL 2.1 and GLES 2.0; build

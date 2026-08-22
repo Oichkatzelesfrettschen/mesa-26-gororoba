@@ -17,9 +17,7 @@ extern "C" {
 #endif
 
 struct _drmDevice;
-struct pipe_screen;
 struct r3v_instance;
-struct radeon_winsys;
 
 struct r3v_physical_device {
    struct vk_physical_device vk;
@@ -49,13 +47,6 @@ struct r3v_physical_device {
     * mid-process. */
    bool hybrid_compute_enabled;
 
-#ifdef R3V_GALLIUM_BACKEND
-   /* Gallium r300g oracle used for physical-device format queries.
-    * The screen owns its radeon_winsys reference and is destroyed before
-    * the render-node fd is closed. */
-   struct radeon_winsys *rws;
-   struct pipe_screen *screen;
-#endif
 
    /* Timeline sync type emulated on top of the binary cpu_sync.  radeon has no
     * DRM_CAP_SYNCOBJ (see below), so there is no hardware timeline; the binary

@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: MIT
 
-# Backend roots resolved once: the optional r3v Gallium lane links the r300
-# driver, while both R300 front ends consume the compiler from src/amd/r300.
-inc_gallium_drivers = include_directories('../../../gallium/drivers')
-inc_gallium_r300 = include_directories('../../../gallium/drivers/r300')
-
 r3v_entrypoints = custom_target(
   'r3v_entrypoints',
   input : [vk_entrypoints_gen, vk_api_xml],
@@ -21,108 +16,12 @@ r3v_entrypoints = custom_target(
   depend_files : vk_entrypoints_gen_depend_files,
 )
 
-libr3v_files = files(
+# The loader-base files: instance, physical device, and the CPU-timeline
+# sync type; the native ICD below builds them over the Radeon DRM transport.
+r3v_loader_base_files = files(
   'r3v_instance.c',
   'r3v_physical_device.c',
   'r3v_cpu_sync.c',
-)
-
-# The Gallium arm appends to libr3v_files below; the native ICD builds from
-# this loader-base snapshot.
-r3v_loader_base_files = libr3v_files
-
-libr3v_deps = [
-  dep_libdrm,
-  idep_mesautil,
-  idep_vulkan_runtime,
-  idep_vulkan_util,
-  # Both lanes call wsi_device_init/finish and register the WSI
-  # entrypoint tables, so the full WSI dependency belongs to the base
-  # library, not the Gallium arm.
-  idep_vulkan_wsi,
-]
-
-libr3v_inc = [
-  inc_include,
-  inc_src,
-  # Header-only: pipe/p_defines.h enums (PIPE_TEXTURE_*, PIPE_BIND_*) appear
-  # in format-query signatures the loader-only lane compiles too; the
-  # Gallium LIBRARY dependency stays gated below.
-  inc_gallium,
-]
-
-libr3v_link_with = []
-libr3v_c_args = [no_override_init_args]
-
-# Gallium-backed device and submit path.  Gated behind r3v-gallium-backend
-# so the loader-only R0 build (no Gallium dependency) continues to work.
-# with_gallium_r300 is set by the parent meson.build when gallium-drivers
-# includes r300; guard both options so the build fails clearly if only one
-# is set.
-# Processed from src/meson.build AFTER subdir('gallium') so that driver_r300
-# and libgallium are in scope.
-if get_option('r3v-gallium-backend') and not with_gallium_r300
-  error('r3v-gallium-backend requires gallium-drivers to include r300; ' +
-        'add r300 to -Dgallium-drivers or disable -Dr3v-gallium-backend')
-endif
-if get_option('r3v-gallium-backend') and with_gallium_r300
-  libr3v_files += files(
-    'r3v_device.c',
-    'r3v_queue.c',
-    'r3v_memory.c',
-    'r3v_buffer.c',
-    'r3v_image.c',
-    'r3v_shader_module.c',
-    'r3v_render_pass.c',
-    'r3v_framebuffer.c',
-    'r3v_cmd_buffer.c',
-    'r3v_descriptor.c',
-    'r3v_identity_map.c',
-    'r3v_dp4_fs_nir.c',
-    'r3v_pipeline.c',
-    'r3v_object.c',
-  )
-  libr3v_deps += [
-    idep_nir,
-    driver_r300,
-  ]
-  libr3v_inc += [
-    inc_gallium_aux,
-    inc_gallium_drivers,
-    # The Gallium-backed implementation still consumes r300_screen.h and the
-    # driver-side shader/context objects.  The compiler include root above is
-    # independent of this adapter include root.
-    inc_gallium_r300,
-  ]
-  # libgallium provides Gallium auxiliary symbols (u_upload_alloc_ref,
-  # u_default_texture_subdata, etc.) that libr300.a references but does
-  # not define.  Must be in link_with (not dependencies) because meson
-  # tracks it as a static_library object, not a declare_dependency.
-  # libgalliumvl resolves the g3dvl video backend symbols the r300 screen and
-  # context now reference (vl_create_mpeg12_decoder via r300_video.c,
-  # vl_video_buffer_is_format_supported via r300_screen.c); --gc-sections drops
-  # the decode kernels when the codec is disabled.
-  libr3v_link_with += [libr300_common, libgallium, libgalliumvl]
-  libr3v_c_args += ['-DR3V_GALLIUM_BACKEND']
-endif
-
-libvulkan_r3v = shared_library(
-  'vulkan_r3v',
-  [libr3v_files, r3v_entrypoints],
-  vs_module_defs : vulkan_api_def,
-  include_directories : libr3v_inc,
-  dependencies : libr3v_deps,
-  link_with : libr3v_link_with,
-  c_args : libr3v_c_args,
-  link_args : [
-    ld_args_build_id,
-    ld_args_bsymbolic,
-    ld_args_gc_sections,
-    vulkan_icd_link_args,
-  ],
-  link_depends : vulkan_icd_link_depends,
-  gnu_symbol_visibility : 'hidden',
-  install : true,
 )
 
 # Memory-property contract: the native heap stays under the RS48x platform
@@ -179,138 +78,12 @@ if with_tests
     ),
     suite : ['r3v'],
   )
-
-  # P2 cutover ledger: derive every Gallium-backed ICD implementation and
-  # test input from the option-gated Meson blocks, then require a durable
-  # owner disposition.  The selftest mutates the same live ledger so a missing
-  # row, invented Gallium caller, invented common consumer, or Vulkan-shaped
-  # moved interface is known to fail before the live verdict is trusted.
-  test(
-    'r3v-gallium-ownership-disposition-selftest',
-    prog_python,
-    args : [files('tests/r3v_gallium_ownership_disposition.py'),
-            '--selftest'],
-    suite : ['r3v'],
-  )
-  test(
-    'r3v-gallium-ownership-disposition',
-    prog_python,
-    args : [files('tests/r3v_gallium_ownership_disposition.py')],
-    suite : ['r3v'],
-  )
 endif
 
-# Build-time guard for the DP4 compute-as-raster fragment shader shape: the FS
-# NIR builder must give the 2D sampler a 2-component coordinate (a vec4 coord
-# trips nir_build_tex_struct's assert and aborted every DP4 compute pipeline
-# create on an asserts-enabled build).  Compiles the extracted builder against
-# NIR alone, no pipe_context.
-if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
-  test(
-    'r3v-dp4-fs-nir',
-    executable(
-      'r3v_dp4_fs_nir_test',
-      files('r3v_dp4_fs_nir.c', 'tests/r3v_dp4_fs_nir_test.c'),
-      include_directories : [inc_include, inc_src, include_directories('.')],
-      dependencies : [idep_nir, idep_mesautil],
-      gnu_symbol_visibility : 'hidden',
-    ),
-    suite : ['r3v'],
-  )
-  test(
-    'r3v-render-pass-feedback',
-    executable(
-      'r3v_render_pass_feedback_test',
-      files('tests/r3v_render_pass_feedback_test.c'),
-      include_directories : [libr3v_inc, include_directories('.')],
-      dependencies : libr3v_deps,
-      link_with : libr3v_link_with,
-      c_args : libr3v_c_args,
-      gnu_symbol_visibility : 'hidden',
-    ),
-    suite : ['r3v'],
-  )
-  test(
-    'r3v-static-offset',
-    executable(
-      'r3v_static_offset_test',
-      files('r3v_dp4_fs_nir.c', 'tests/r3v_static_offset_test.c',
-            '../common/r300_fragment_binary.c'),
-      include_directories : [libr3v_inc, include_directories('.')],
-      dependencies : libr3v_deps,
-      link_with : libr3v_link_with,
-      c_args : libr3v_c_args,
-      gnu_symbol_visibility : 'hidden',
-    ),
-    suite : ['r3v'],
-  )
-  test(
-    'r3v-queue-map-range',
-    executable(
-      'r3v_queue_map_range_test',
-      files('tests/r3v_queue_map_range_test.c'),
-      include_directories : [include_directories('.')],
-      gnu_symbol_visibility : 'hidden',
-    ),
-    suite : ['r3v'],
-  )
-endif
-
-# ICD JSON manifest.  The loader discovers ICDs by scanning
-# /usr/share/vulkan/icd.d/ for *.json files and following the
-# library_path entry.  vk_icd_gen emits the canonical form so the
-# version negotiation matches what r3v_instance.c implements.
 icd_lib_path = join_paths(get_option('prefix'), get_option('libdir'))
-icd_file_name = 'libvulkan_r3v.so'
-
-r3v_icd = custom_target(
-  'r3v_icd',
-  input : [vk_icd_gen, vk_api_xml],
-  output : 'r3v_icd.@0@.json'.format(host_machine.cpu()),
-  command : [
-    prog_python, '@INPUT0@',
-    '--api-version', '1.0',
-    '--xml', '@INPUT1@',
-    '--icd-lib-path', icd_lib_path,
-    '--icd-filename', icd_file_name,
-    '--out', '@OUTPUT@',
-  ],
-  build_by_default : true,
-  install_dir : with_vulkan_icd_dir,
-  install : true,
-)
-
-# Devenv ICD: when running meson devenv, point the loader at the build
-# directory copy of the library so
-# `VK_ICD_FILENAMES=<build>/r3v_devenv_icd.<cpu>.json` picks up the
-# in-tree build (see `_dev_icdname`).
-_dev_icdname = 'r3v_devenv_icd.@0@.json'.format(host_machine.cpu())
-_dev_icd = custom_target(
-  'r3v_devenv_icd',
-  input : [vk_icd_gen, vk_api_xml],
-  output : _dev_icdname,
-  command : [
-    prog_python, '@INPUT0@',
-    '--api-version', '1.0',
-    '--xml', '@INPUT1@',
-    '--icd-lib-path', meson.current_build_dir(),
-    '--icd-filename', icd_file_name,
-    '--out', '@OUTPUT@',
-  ],
-  build_by_default : true,
-  install : false,
-)
-
-devenv.append('VK_ICD_FILENAMES', _dev_icd.full_path())
-if get_option('r3v-gallium-backend') and with_gallium_r300
-  devenv.append('VK_DRIVER_FILES', _dev_icd.full_path())
-endif
-
-# Native ICD identity: libvulkan_r3v_native builds the loader-base files over
-# the generic Radeon DRM transport with no Gallium runtime ownership.  The
-# two ICDs coexist under one loader; each option produces its own library and
-# manifest, and the separation-audit test proves the native library carries
-# no Gallium entry symbol.
+# Native ICD: libvulkan_r3v_native builds the loader-base files over the
+# generic Radeon DRM transport with no Gallium runtime ownership; the
+# separation-audit test proves the library carries no Gallium entry symbol.
 if get_option('r3v-native-backend')
   r3v_native_files = files(
     'r3v_native_arming.c',
@@ -452,8 +225,7 @@ if get_option('r3v-native-backend')
         'r3v_native_reference_spirv.h',
         'r3v_physical_device.h',
         'r3v_private.h',
-        'r3v_queue_map_range.h',
-      ),
+        ),
       depends : r3v_entrypoints,
       suite : ['r3v'],
     )
@@ -494,7 +266,6 @@ if get_option('r3v-native-backend')
         'r3v_native_identity.h',
         'r3v_native_reference_spirv.h',
         'r3v_physical_device.h',
-        'r3v_queue_map_range.h',
       ),
       suite : ['r3v'],
     )

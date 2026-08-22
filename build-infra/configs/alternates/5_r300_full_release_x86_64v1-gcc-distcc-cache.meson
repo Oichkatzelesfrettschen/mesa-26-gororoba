@@ -48,7 +48,6 @@ platforms = ['x11', 'wayland']
 # another installed device.
 gallium-drivers = ['r300', 'zink']
 vulkan-drivers = ['ati_r300']
-r3v-gallium-backend = true
 
 opengl = true
 gles1 = 'enabled'

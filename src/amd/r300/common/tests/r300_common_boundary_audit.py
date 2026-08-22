@@ -105,10 +105,6 @@ NATIVE_BACKEND_MACROS = {
 NATIVE_PIPE_TOKEN_EXCEPTIONS = ("pipe_format",)
 NATIVE_PIPE_ENUM_PREFIX_EXCEPTIONS = ("PIPE_FORMAT_",)
 ROOT_ONLY_INCLUDE_PREFIXES = ("r300/",)
-NATIVE_FORWARD_DECLARATION_EXCEPTIONS = {
-    ("r3v_physical_device.h", "pipe_screen"),
-    ("r3v_physical_device.h", "radeon_winsys"),
-}
 
 
 def strip_comments(text: str) -> str:
@@ -315,12 +311,6 @@ def source_lines(layer: str, text: str):
     return enumerate(stripped.splitlines(), start=1)
 
 
-def forward_declaration_name(line: str) -> str | None:
-    declaration = re.fullmatch(
-        r"\s*(?:struct|union)\s+([A-Za-z_]\w*)\s*;\s*", line)
-    return declaration.group(1) if declaration else None
-
-
 def include_has_prefix(include: str, prefix: str) -> bool:
     """Match project-root and relative spellings of a forbidden include."""
     include = posixpath.normpath(include.replace("\\", "/"))
@@ -360,15 +350,6 @@ def audit_sources(layer: str, paths: list[Path]) -> int:
                 continue
 
             code = strip_literals(line)
-            forward_name = forward_declaration_name(code)
-            if (layer == "native" and forward_name is not None and
-                    (path.name, forward_name) in
-                    NATIVE_FORWARD_DECLARATION_EXCEPTIONS):
-                # The shared physical-device header retains two declarations
-                # for its inactive Gallium arm.  This exact transition expires
-                # when that arm is deleted; every other declaration is gated.
-                continue
-
             if layer != "native":
                 vk_type = re.search(r"\bVk[A-Z][A-Za-z0-9_]*\b", code)
                 if vk_type:
@@ -412,8 +393,8 @@ def audit_sources(layer: str, paths: list[Path]) -> int:
     qualification = ""
     if layer == "native":
         qualification = (
-            "; exact pipe_format and physical-device forward-declaration "
-            "transitions retire with the dual-backend adapter")
+            "; exact pipe_format transition retires with the dual-backend "
+            "adapter")
     print(f"r300_common_boundary_audit: {layer}: {len(paths)} sources clean"
           f"{qualification}")
     return AUDIT_OK

@@ -27,7 +27,6 @@ CONSUMERS = {
     "r300g",
     "compiler",
     "native",
-    "legacy-r3v",
     "cpu",
     "none",
 }
@@ -241,19 +240,6 @@ def _resolve_include(repo_root: Path, source: Path, include: str,
 def _domain_source_lines(domain: str, text: str):
     if domain == "native":
         return source_lines("native", text)
-    if domain == "legacy-r3v":
-        # Reuse the boundary audit's calibrated backend-expression walker.
-        # Swapping the two known macro names makes its native truth table
-        # describe the legacy Gallium-backed Vulkan compilation instead.
-        placeholder = "R300_CONSUMER_CENSUS_NATIVE_PLACEHOLDER"
-        if placeholder in text:
-            raise ValueError("legacy backend predicate placeholder collision")
-        legacy_text = text.replace("R3V_NATIVE_BACKEND", placeholder)
-        legacy_text = legacy_text.replace(
-            "R3V_GALLIUM_BACKEND", "R3V_NATIVE_BACKEND")
-        legacy_text = legacy_text.replace(
-            placeholder, "R3V_GALLIUM_BACKEND")
-        return source_lines("native", legacy_text)
     return source_lines("common", text)
 
 
@@ -270,9 +256,7 @@ def _inside(path: Path, roots: tuple[Path, ...]) -> bool:
 def production_consumers(repo_root: Path) -> dict[str, frozenset[str]]:
     validate_common_build_graph(repo_root)
     loader_base = _meson_files(
-        repo_root, "src/amd/r300/vulkan/meson.build", "libr3v_files")
-    legacy_r3v = _meson_files(
-        repo_root, "src/amd/r300/vulkan/meson.build", "libr3v_files", "+=")
+        repo_root, "src/amd/r300/vulkan/meson.build", "r3v_loader_base_files")
     domain_roots = {
         "r300g": _meson_files(
             repo_root, "src/gallium/drivers/r300/meson.build", "files_r300"),
@@ -285,7 +269,6 @@ def production_consumers(repo_root: Path) -> dict[str, frozenset[str]]:
             loader_base |
             _meson_files(repo_root, "src/amd/r300/vulkan/meson.build",
                          "r3v_native_files")),
-        "legacy-r3v": loader_base | legacy_r3v,
     }
     common = (repo_root / "src/amd/r300/common").resolve()
     domain_boundaries = {
@@ -295,8 +278,6 @@ def production_consumers(repo_root: Path) -> dict[str, frozenset[str]]:
             (repo_root / "src/amd/r300/compiler").resolve(), common),
         "cpu": ((repo_root / "src/amd/r300/cpu").resolve(), common),
         "native": (
-            (repo_root / "src/amd/r300/vulkan").resolve(), common),
-        "legacy-r3v": (
             (repo_root / "src/amd/r300/vulkan").resolve(), common),
     }
     universe = _source_universe(repo_root)
@@ -503,8 +484,7 @@ def _selftest_production_consumers() -> bool:
             '#include "../common/cpu_only.h"\n')
         _write_fixture(
             root, "src/amd/r300/vulkan/meson.build",
-            "libr3v_files = files('legacy.c')\n"
-            "libr3v_files += files('legacy_extra.c')\n"
+            "r3v_loader_base_files = files('loader.c')\n"
             "r3v_native_files = files('native.c')\n"
             "libr3v_native_impl = static_library(\n"
             "  'r3v_native_impl', r3v_native_files,\n"
@@ -514,16 +494,8 @@ def _selftest_production_consumers() -> bool:
             root, "src/amd/meson.build",
             "subdir('r300/common')\nsubdir('r300/compiler')\n")
         _write_fixture(
-            root, "src/amd/r300/vulkan/legacy.c",
-            '#ifdef R3V_NATIVE_BACKEND\n'
-            '#include "../common/native_arm.h"\n'
-            '#else\n'
-            '#include "../common/legacy_arm.h"\n'
-            '#endif\n')
-        _write_fixture(
-            root, "src/amd/r300/vulkan/legacy_extra.c",
-            '#include "../compiler/foreign.h"\n'
-            '#include "../common/legacy_only.h"\n')
+            root, "src/amd/r300/vulkan/loader.c",
+            '#include "../common/native_arm.h"\n')
         _write_fixture(
             root, "src/amd/r300/common/meson.build",
             "r300_common_contract_files = "
@@ -541,7 +513,7 @@ def _selftest_production_consumers() -> bool:
             root, "src/amd/r300/common/evidence_manifest.c", "")
         for name in (
                 "shared.h", "cpu_only.h", "foreign_owned.h",
-                "native_arm.h", "legacy_arm.h", "legacy_only.h",
+                "native_arm.h",
                 "orphan.h", "r300_compute_spirv.h",
                 "r300_delivery_route.h", "r300_vertex_spirv.h"):
             _write_fixture(root, f"src/amd/r300/common/{name}", "")
@@ -560,8 +532,6 @@ def _selftest_production_consumers() -> bool:
             "cpu_only.h": frozenset(("cpu",)),
             "foreign_owned.h": frozenset(("compiler",)),
             "native_arm.h": frozenset(("native",)),
-            "legacy_arm.h": frozenset(("legacy-r3v",)),
-            "legacy_only.h": frozenset(("legacy-r3v",)),
             "orphan.h": frozenset(),
             "orphan.c": frozenset(),
             "r300_compute_spirv.h": frozenset(("native",)),
@@ -693,16 +663,8 @@ def selftest() -> int:
     if not _selftest_production_consumers():
         return 1
 
-    try:
-        tuple(_domain_source_lines(
-            "legacy-r3v", "R300_CONSUMER_CENSUS_NATIVE_PLACEHOLDER"))
-    except ValueError:
-        pass
-    else:
-        print("selftest legacy predicate placeholder collision did not refuse")
-        return 1
 
-    print(f"r300_common_consumer_census: {len(cases) + 6} checks passed")
+    print(f"r300_common_consumer_census: {len(cases) + 5} checks passed")
     return 0
 
 

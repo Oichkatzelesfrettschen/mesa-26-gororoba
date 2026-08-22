@@ -50,7 +50,6 @@ platforms = ['x11', 'wayland']
 # this profile keeps steppable; zink itself needs no llvm.
 gallium-drivers = ['r300', 'zink']
 vulkan-drivers = ['ati_r300']
-r3v-gallium-backend = true
 
 # Maximal OpenGL/GLES surface (desktop GL, GLES1, GLES2).
 opengl = true
