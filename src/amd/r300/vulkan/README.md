@@ -37,7 +37,7 @@ or conformance semantics. `r3v_private.h` owns the canonical
 | Mesa family | `CHIP_RS480` | `r300_parse_chipset()` |
 | Generation | R3xx | AMD R3xx Register Reference Guide |
 | Mesa-classified vertex FPUs | 0 | `r300_parse_chipset()` |
-| Vulkan compute queue | not exposed | no documented R3xx compute-dispatch surface |
+| Vulkan compute queue | behind the exact `R3V_HYBRID_COMPUTE_EXPERIMENTAL=1` opt-in (CPU compute route) | `r3v_native_compute.c` |
 | Kernel driver | `radeon` | Linux `drivers/gpu/drm/radeon/` |
 | Renderer string | `ATI RS480` | r300g `r300_get_renderer()` |
 
@@ -51,33 +51,28 @@ Gallium Draw software TCL because Mesa classifies the family with
 silicon can never execute a hardware vertex program. The RS, TX, US, CB, and ZB
 graphics blocks remain hardware-backed.
 
-## Current execution architecture
+## Execution architecture
 
-Vulkan commands are recorded as `r3v_cmd_entry` records and replayed at submit
-time through the device's Gallium `pipe_context`.
+Vulkan commands are recorded into command-buffer-owned state and executed at
+queue submission over the Radeon DRM transport.
 
 ```text
-Vulkan command recording
--> r3v_cmd_entry stream
--> Gallium pipe_context replay
--> r300g state and shader objects
--> Radeon winsys command submission
--> Gallium fence completion
+Vulkan command recording (r3v_native_recording.c, r3v_native_cmd.c)
+-> admitted draw or dispatch (r3v_native_draw.c, r3v_native_compute.c)
+-> vertex gather through the CPU executor (src/amd/r300/cpu/) into the
+   command-buffer-owned GTT carrier, or the R2VB producer route under its
+   exact opt-in; compute kernels execute on the CPU route
+-> fixed-cell PM4 lowering over the common contracts
+   (src/amd/r300/common/)
+-> prepared submission: relocation list, completion BO, arming evaluation,
+   DRM_RADEON_CS through src/amd/radeon/drm_vk/
+-> finite completion (write-domain BO plus bounded GEM_WAIT_IDLE)
 ```
 
-`struct r3v_device` owns:
-
-- a `radeon_winsys`;
-- a Gallium `pipe_screen`;
-- a Gallium `pipe_context`;
-- the r3v queue and Vulkan object registries.
-
-`VkDeviceMemory`, `VkBuffer`, and `VkImage` currently own or borrow
-`pipe_resource` objects. Queue submission flushes Gallium, waits for the Gallium
-fence, and synchronizes host-shadow resources.
-
-Pipeline barriers issue a Gallium flush and update r3v's image-layout ledger.
-Gallium's dirty-atom machinery re-emits required R300 state before later draws.
+`struct r3v_native_device` owns the DRM transport, the GEM-backed
+`VkDeviceMemory` objects (one BO per allocation), the descriptor, pipeline,
+image, and queue objects, and the prepared submission; no Gallium screen,
+context, or resource takes part.
 
 ## Native ICD status
 
@@ -141,21 +136,20 @@ in `docs/hardware/r3v-implementation-boundaries.md`.
 
 ## Compute status
 
-The graphics-as-compute classifier recognizes a bounded raster-compute corpus.
-Those paths remain graphics pipeline executions, not a Vulkan compute queue.
-
-An unsupported or unrecognized compute shape can still reach a successful
-pipeline or no-op dispatch in the current experimental implementation. That is
-a semantic defect. Unsupported work must ultimately fail at a documented API
-boundary; successful no-op commands never count as Vulkan support.
-
-No queue family advertises `VK_QUEUE_COMPUTE_BIT` unless the exact
-`R3V_HYBRID_COMPUTE_EXPERIMENTAL=1` opt-in enables the gated hybrid-compute
-experiment. That queue exposure remains experimental and nonconformant.
+Behind the exact `R3V_HYBRID_COMPUTE_EXPERIMENTAL=1` opt-in the one queue
+family advertises `VK_QUEUE_COMPUTE_BIT`; `r3v_CreateComputePipelines` admits
+the identity-map kernel from SPIR-V words directly into the common compute
+job (`src/amd/r300/common/r300_compute_spirv.c`), storage-buffer
+descriptors bind on set 0, one dispatch records per command buffer, and
+`r300_cpu_compute_job_execute` runs it at submission.  Every module outside
+the admitted subset refuses at pipeline creation, so no admitted pipeline
+reaches an unmatched no-op.  With the opt-in unset, compute pipeline creation
+refuses.  The exposure remains experimental and nonconformant; widening it
+means more admitted kernel shapes and a GPU raster-carrier route.
 
 ## R2VB source-format work
 
-The live Gallium r300 R2VB producer admits `R32G32B32_FLOAT` and
+r300g's live R2VB producer admits `R32G32B32_FLOAT` and
 `R32G32B32A32_FLOAT` source records, routed through the neutral
 vertex-format contract with a byte-identity test pin. Final delivery remains
 FP32x4.
@@ -171,21 +165,13 @@ Narrow source fetch support never implies narrow final-delivery support.
 
 ## Repository layout
 
-### Retirement of the Gallium-backed lane
+### Retired lane
 
-The Gallium-backed Vulkan lane is deleted: its Vulkan object, dispatch,
-queue, descriptor, render-pass, framebuffer, image, memory, and pipeline
-sources, the `r3v-gallium-backend` option, and the `R3V_GALLIUM_BACKEND`
-conditionals are gone, together with r300g's `r300_compute_admission`
-classifier whose only production caller was that lane.  The differential
-value each former cross-lane test carried lives on in fixtures that run
-without it: `r3v-native-format-features`, `r3v-native-descriptor`, the
-native burst harness's submit-lifetime legs, the r300g-owned
-`r300-r2vb-typed-route-oracle` and `r300-r2vb-producer-census` over the
-typed-carry corpus and its sha256 manifest, and the vertex front-end parity
-manifest.  No implementation moved into r300g or common: nothing had an
-r300g production caller, and the common contracts arrived through their own
-P1 train.
+A Gallium-backed Vulkan lane preceded the ICD and is deleted; the
+retirement section of `docs/hardware/r3v-implementation-boundaries.md`
+maps each of its former capabilities to the mechanism that carries it and
+names the retained manifests, the common-IR parity test, and the rebound
+fixtures that are the differential reference.
 
 ```text
 src/amd/radeon/drm_vk/     Gallium-free Radeon DRM transport (BO, PRIME,
