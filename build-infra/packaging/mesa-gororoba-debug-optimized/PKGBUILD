@@ -46,7 +46,7 @@
 # probe without changing the system default.
 pkgname=mesa-gororoba-debug-optimized
 pkgver=26.2.0
-pkgrel=19
+pkgrel=20
 epoch=2
 pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, ati_r300/r3v ICD + anti-lag/device-select implicit Vulkan layers, files under /opt'
 arch=('x86_64')
@@ -97,11 +97,9 @@ install="${pkgname}.install"
 # Only the loader-helper scripts are package sources; the binaries come from the
 # prebuilt build-infra builddir (see _builddir), not from a git checkout.
 source=('mesa-gororoba-debug-optimized-env.sh'
-        'mesa-gororoba-debug-optimized-run'
-        'mesa-gororoba-debug-optimized-native-run')
+        'mesa-gororoba-debug-optimized-run')
 sha256sums=('91fde174cd155c2e0062f98b1443a9eaf18f8f7a04ba74c6d5617de65a5d857a'
-            '7c279f5d678dc077525c3af11db649bdc252e7031166ed8f805fb4a2e0dc0fcf'
-            'cea1341e7aa02ef54bf8acfe8b6e92b07f86b5dd441f650163a05a7e5578b634')
+            '7c279f5d678dc077525c3af11db649bdc252e7031166ed8f805fb4a2e0dc0fcf')
 
 _prefix=/opt/mesa-gororoba-debug-optimized
 # The canonical build-infra builddir to repack, and the source root for the
@@ -149,8 +147,8 @@ _link_into_usr() {
   done
 }
 
-# The promotion gate: this package is the one that stages the native ICD, so
-# the surface it ships carries an evidence row for every capability it
+# The promotion gate: this package stages the r3v ICD under its /opt prefix,
+# so the surface it ships carries an evidence row for every capability it
 # advertises.  The advertised-surface audit reads the native extension table
 # and the feature-set guard out of the source root being repacked, and the
 # qualification inventory reads the builddir's registered test set, so a
@@ -251,8 +249,6 @@ PYGATE
 
   install -Dm755 "${srcdir}/mesa-gororoba-debug-optimized-run" \
     "${pkgdir}/usr/bin/mesa-gororoba-debug-optimized-run"
-  install -Dm755 "${srcdir}/mesa-gororoba-debug-optimized-native-run" \
-    "${pkgdir}/usr/bin/mesa-gororoba-debug-optimized-native-run"
   install -Dm644 "${srcdir}/mesa-gororoba-debug-optimized-env.sh" \
     "${pkgdir}/etc/opt/mesa-gororoba-debug-optimized/mesa-gororoba-debug-optimized-env.sh"
 
