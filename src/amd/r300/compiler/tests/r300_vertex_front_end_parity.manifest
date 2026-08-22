@@ -1,0 +1,16 @@
+# Vertex front-end parity manifest: BLAKE3 of the shapes both live front
+# ends -- the NIR front end (compiler/r300_vertex_job_nir.c) and the direct
+# SPIR-V admitter (common/r300_vertex_spirv.c) -- accept over one job IR.
+# identity_vertex binds the module bytes, the canonical job both front ends
+# produce bit-identically, and the executed carrier over the reference
+# records; arith_vertex binds the module bytes and the executed carrier
+# (its two jobs may select instructions differently, so no job row);
+# constant_fragment binds the module bytes and the color bits.
+# r300_vertex_front_end_parity_test rebuilds every row and refuses drift.
+identity_vertex spirv 9b21df8c8c1bef91b3d1a4b8eed5fa19d073d3a406b5233af5160444ba751955
+identity_vertex job 5c2af0400716b50cca2dabc693e49a380c9b495ce08e8d5c6b6b535f8cf8b2fe
+identity_vertex carrier 0a951b05401619c77d9e6a07fa80fea77f15ca69d9d807ef16f300ac87bcf074
+constant_fragment spirv c9a4726cead4a65604a80d310b14df14aaf1ada00d6a29c70911cea7b4b930e4
+constant_fragment color c67a2c9fe0bf04e4ec76d1c25959380f278c838ba5dabc19e2ee76743af45e6e
+arith_vertex spirv e255396db9b99e590c4d603a27209028afbf2a8a31574fb87aa945da6bdc1aa3
+arith_vertex carrier f654f65419da9f0836b25d09b8cc1f24760b090b2115cedf5e00dae6dfdb4a64

@@ -165,6 +165,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     # its parity with the NIR front end over the one job IR.
     "r3v-native-pipeline-frontend",
     "r300-vertex-front-end-parity",
+    "r300-vertex-front-end-parity-known-bad-divergent-job",
     # R2VB typed-route oracle over the SPIR-V-derived vertex representation,
     # owned by the r300g planner lane.
     "r300-r2vb-typed-route-oracle",

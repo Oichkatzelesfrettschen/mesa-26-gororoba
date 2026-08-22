@@ -650,26 +650,42 @@ if with_tests
   # Gallium consumer's path) and the direct SPIR-V admitter (the native
   # ICD's path) must produce identical jobs, color bits, and refusals
   # from the reference modules.
+  # The retained parity manifest binds the admitted shapes' module bytes,
+  # canonical job, executed carrier, and color bits to BLAKE3 rows; the
+  # known-bad binds a job one opcode away from the one both front ends
+  # produced, so the manifest row is the single verdict that fails.
+  r300_vertex_front_end_parity_test = executable(
+    'r300_vertex_front_end_parity_test',
+    files('../../../amd/r300/compiler/tests/r300_vertex_front_end_parity_test.c',
+          '../../../amd/r300/common/r300_vertex_spirv.c',
+          '../../../amd/r300/cpu/r300_cpu_vertex.c',
+          '../../../amd/r300/cpu/r300_cpu_vertex_job.c'),
+    c_args : r300_test_c_args,
+    include_directories : [
+      inc_src, inc_include,
+      inc_amd_r300_common,
+      inc_amd_r300_compiler,
+      include_directories('../../../amd/r300/vulkan'),
+    ],
+    link_with : [libr300_compiler],
+    dependencies : [dep_m, idep_mesautil, idep_nir, idep_vtn],
+    gnu_symbol_visibility : 'hidden',
+  )
+  r300_vertex_front_end_parity_manifest = files(
+    '../../../amd/r300/compiler/tests/r300_vertex_front_end_parity.manifest')
   test(
     'r300-vertex-front-end-parity',
-    executable(
-      'r300_vertex_front_end_parity_test',
-      files('../../../amd/r300/compiler/tests/r300_vertex_front_end_parity_test.c',
-            '../../../amd/r300/common/r300_vertex_spirv.c',
-            '../../../amd/r300/cpu/r300_cpu_vertex.c',
-            '../../../amd/r300/cpu/r300_cpu_vertex_job.c'),
-      c_args : r300_test_c_args,
-      include_directories : [
-        inc_src, inc_include,
-        inc_amd_r300_common,
-        inc_amd_r300_compiler,
-        include_directories('../../../amd/r300/vulkan'),
-      ],
-      link_with : [libr300_compiler],
-      dependencies : [dep_m, idep_mesautil, idep_nir, idep_vtn],
-      gnu_symbol_visibility : 'hidden',
-    ),
+    r300_vertex_front_end_parity_test,
+    args : [r300_vertex_front_end_parity_manifest],
     env : ['MESA_SPIRV_LOG_LEVEL=error'],
+    suite : ['r300'],
+  )
+  test(
+    'r300-vertex-front-end-parity-known-bad-divergent-job',
+    r300_vertex_front_end_parity_test,
+    args : ['--inject-divergent-job', r300_vertex_front_end_parity_manifest],
+    env : ['MESA_SPIRV_LOG_LEVEL=error'],
+    should_fail : true,
     suite : ['r300'],
   )
 
