@@ -1,14 +1,10 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Drives the burst status-load cell through the native ICD on the
- * Radeon noop drm-shim: a four-member burst recorded against a
- * four-row carrier, refused while the declared member count disagrees
- * with the recorded composition, admitted once under the matching
- * declaration, and refused again by the one-shot token.  The
- * mismatch leg runs on its own device and evidence directory because a
- * refused arming still retains the semantic cell, which is the
- * single-write contract the one-shot evidence keeps.
+ * Drives burst admission and prepared-submission lifetime through the native
+ * ICD on the Radeon noop drm-shim. Each leg owns one device and evidence
+ * directory because prepare consumes the one-shot authorization before any
+ * submit ioctl.
  */
 
 #include <dlfcn.h>
@@ -132,13 +128,58 @@ struct burst_leg {
    enum r3v_native_queue_status queue_status;
 };
 
+enum burst_lifetime_mode {
+   BURST_LIFETIME_NONE,
+   BURST_LIFETIME_COMMIT,
+   BURST_LIFETIME_RESET,
+   BURST_LIFETIME_DIFFERENT_COMMAND_BUFFER,
+   BURST_LIFETIME_SUBMIT_SHAPE,
+   BURST_LIFETIME_TRACE_REFUSAL,
+   BURST_LIFETIME_TEARDOWN,
+   BURST_LIFETIME_KNOWN_BAD_RESET,
+   BURST_LIFETIME_KNOWN_BAD_BINDING,
+   BURST_LIFETIME_KNOWN_BAD_TEARDOWN,
+};
+
+struct lifetime_trace {
+   unsigned event_count;
+   bool refuse_ioctl_enter;
+};
+
+static int
+lifetime_trace_emit(void *ctx, enum r3v_native_submission_trace_event event)
+{
+   struct lifetime_trace *trace = ctx;
+   trace->event_count++;
+   return trace->refuse_ioctl_enter &&
+          event == R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_ENTER
+             ? -1
+             : 0;
+}
+
+static int
+live_bo_backing_files(void)
+{
+   int (*counter)(void) =
+      (int (*)(void))dlsym(RTLD_DEFAULT,
+                           "drm_shim_test_live_bo_backing_files");
+   return counter != NULL ? counter() : -1;
+}
+
+static bool
+prepared_state_released(const struct r3v_native_prepared_submission *prepared)
+{
+   return !prepared->valid && prepared->cmd_buffer == NULL &&
+          prepared->reference_indices == NULL && prepared->relocs.count == 0;
+}
+
 static int
 run_burst_leg(VkInstance instance,
               PFN_vkVoidFunction (*gipa)(VkInstance, const char *),
               VkPhysicalDevice physical_device,
               const struct r300_r2vb_float2_tuple_burst_ib *reference,
-              uint32_t carrier_bytes, bool resubmit, bool prepare,
-              bool reset_after_prepare, bool model_float4,
+              uint32_t carrier_bytes, bool resubmit,
+              enum burst_lifetime_mode lifetime_mode, bool model_float4,
               const char *manifest_dir, struct burst_leg *out)
 {
    int rc = 1;
@@ -184,7 +225,9 @@ run_burst_leg(VkInstance instance,
    VkDeviceMemory carrier_memory = VK_NULL_HANDLE;
    VkDeviceMemory vertex_memory = VK_NULL_HANDLE;
    VkCommandPool pool = VK_NULL_HANDLE;
+   VkCommandBuffer command_buffers[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+   VkCommandBuffer other_command_buffer = VK_NULL_HANDLE;
 
    VkMemoryAllocateInfo allocation = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -212,18 +255,24 @@ run_burst_leg(VkInstance instance,
    CHECK(result == VK_SUCCESS, "vkCreateCommandPool: %d", result);
    if (result != VK_SUCCESS)
       goto done;
+   const bool needs_other_command_buffer =
+      lifetime_mode == BURST_LIFETIME_DIFFERENT_COMMAND_BUFFER ||
+      lifetime_mode == BURST_LIFETIME_SUBMIT_SHAPE ||
+      lifetime_mode == BURST_LIFETIME_KNOWN_BAD_BINDING;
    result = vkAllocateCommandBuffers(
       device,
       &(VkCommandBufferAllocateInfo){
          .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
          .commandPool = pool,
          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-         .commandBufferCount = 1,
+         .commandBufferCount = needs_other_command_buffer ? 2 : 1,
       },
-      &command_buffer);
+      command_buffers);
    CHECK(result == VK_SUCCESS, "vkAllocateCommandBuffers: %d", result);
    if (result != VK_SUCCESS)
       goto done;
+   command_buffer = command_buffers[0];
+   other_command_buffer = command_buffers[1];
    result = vkBeginCommandBuffer(
       command_buffer,
       &(VkCommandBufferBeginInfo){
@@ -232,6 +281,20 @@ run_burst_leg(VkInstance instance,
    CHECK(result == VK_SUCCESS, "vkBeginCommandBuffer: %d", result);
    if (result != VK_SUCCESS)
       goto done;
+
+   if (needs_other_command_buffer) {
+      result = vkBeginCommandBuffer(
+         other_command_buffer,
+         &(VkCommandBufferBeginInfo){
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+         });
+      CHECK(result == VK_SUCCESS, "other vkBeginCommandBuffer: %d", result);
+      if (result == VK_SUCCESS)
+         result = vkEndCommandBuffer(other_command_buffer);
+      CHECK(result == VK_SUCCESS, "other vkEndCommandBuffer: %d", result);
+      if (result != VK_SUCCESS)
+         goto done;
+   }
 
    result = model_float4
                ? r3v_native_record_r2vb_status_load_burst_float4_model(
@@ -266,7 +329,20 @@ run_burst_leg(VkInstance instance,
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
 
-   if (prepare) {
+   struct lifetime_trace trace = {0};
+   if (lifetime_mode != BURST_LIFETIME_NONE) {
+      native_device->submission_trace = (struct r3v_native_submission_trace){
+         .ctx = &trace,
+         .emit = lifetime_trace_emit,
+      };
+   }
+
+   int live_before_prepare = -1;
+   if (lifetime_mode == BURST_LIFETIME_TEARDOWN ||
+       lifetime_mode == BURST_LIFETIME_KNOWN_BAD_TEARDOWN)
+      live_before_prepare = live_bo_backing_files();
+
+   if (lifetime_mode != BURST_LIFETIME_NONE) {
       /* The prepared lane consumes authorization ahead of the submit:
        * the token and both evidence groups exist before any ioctl, and
        * the following vkQueueSubmit carries the transport tail alone.
@@ -283,19 +359,113 @@ run_burst_leg(VkInstance instance,
       CHECK(r3v_native_queue_prepare_submission(device, command_buffer) ==
                VK_ERROR_DEVICE_LOST,
             "a second prepare refuses while one is pending");
+      CHECK(native_device->prepared.valid &&
+               native_device->prepared.cmd_buffer == native_cmd &&
+               native_device->prepared.reference_indices != NULL &&
+               native_device->prepared.relocs.count ==
+                  native_cmd->reference_count + 1,
+            "the refused second prepare preserves the first prepared state");
       if (failures != 0)
          goto done;
-      if (reset_after_prepare) {
+      if (lifetime_mode == BURST_LIFETIME_RESET ||
+          lifetime_mode == BURST_LIFETIME_KNOWN_BAD_RESET) {
          /* The prepared CS names this buffer's IB storage rather than a
           * copy of it, and the commit guard admits on command-buffer
           * pointer equality, which a reset preserves.  Releasing the IB
           * therefore retires the prepared transport, so no ioctl can
           * reach freed dwords.
           */
+         if (lifetime_mode == BURST_LIFETIME_KNOWN_BAD_RESET)
+            native_device->prepared.cmd_buffer = NULL;
          VkResult reset = vkResetCommandBuffer(command_buffer, 0);
          CHECK(reset == VK_SUCCESS, "reset after prepare: %d", reset);
-         CHECK(!native_device->prepared.valid,
+         CHECK(prepared_state_released(&native_device->prepared),
                "the command-buffer reset retires the prepared transport");
+         CHECK(trace.event_count == 0,
+               "reset after prepare reaches no submission ioctl");
+         if (native_device->prepared.valid) {
+            native_device->prepared.cmd_buffer = native_cmd;
+            r3v_native_prepared_release(native_device);
+         }
+         rc = 0;
+         goto done;
+      }
+
+      if (lifetime_mode == BURST_LIFETIME_DIFFERENT_COMMAND_BUFFER ||
+          lifetime_mode == BURST_LIFETIME_KNOWN_BAD_BINDING) {
+         if (lifetime_mode == BURST_LIFETIME_KNOWN_BAD_BINDING) {
+            native_device->prepared.cmd_buffer =
+               r3v_native_cmd_buffer_from_handle(other_command_buffer);
+         }
+         out->submit_result = vkQueueSubmit(
+            queue, 1,
+            &(VkSubmitInfo){
+               .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+               .commandBufferCount = 1,
+               .pCommandBuffers = &other_command_buffer,
+            },
+            VK_NULL_HANDLE);
+         out->queue_status = r3v_native_queue_submission_status(device);
+         CHECK(out->submit_result == VK_ERROR_DEVICE_LOST &&
+                  out->queue_status ==
+                     R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED,
+               "a different command buffer refuses the prepared transport");
+         CHECK(prepared_state_released(&native_device->prepared),
+               "the different-buffer refusal releases prepared state");
+         CHECK(trace.event_count == 0,
+               "the different-buffer refusal reaches no submission ioctl");
+         rc = 0;
+         goto done;
+      }
+
+      if (lifetime_mode == BURST_LIFETIME_SUBMIT_SHAPE) {
+         VkCommandBuffer shape[2] = {command_buffer, other_command_buffer};
+         out->submit_result = vkQueueSubmit(
+            queue, 1,
+            &(VkSubmitInfo){
+               .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+               .commandBufferCount = 2,
+               .pCommandBuffers = shape,
+            },
+            VK_NULL_HANDLE);
+         out->queue_status = r3v_native_queue_submission_status(device);
+         CHECK(out->submit_result == VK_ERROR_DEVICE_LOST &&
+                  out->queue_status ==
+                     R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED,
+               "a different submit shape refuses the prepared transport");
+         CHECK(prepared_state_released(&native_device->prepared),
+               "the submit-shape refusal releases prepared state");
+         CHECK(trace.event_count == 0,
+               "the submit-shape refusal reaches no submission ioctl");
+         rc = 0;
+         goto done;
+      }
+
+      if (lifetime_mode == BURST_LIFETIME_TRACE_REFUSAL)
+         trace.refuse_ioctl_enter = true;
+
+      if (lifetime_mode == BURST_LIFETIME_TEARDOWN ||
+          lifetime_mode == BURST_LIFETIME_KNOWN_BAD_TEARDOWN) {
+         const int live_prepared = live_bo_backing_files();
+         CHECK(live_before_prepare >= 0 &&
+                  live_prepared == live_before_prepare + 1,
+               "prepare adds one completion BO to the shim resource census");
+         if (lifetime_mode == BURST_LIFETIME_KNOWN_BAD_TEARDOWN)
+            native_device->prepared.valid = false;
+         /* This internal harness deliberately hands teardown a live command
+          * pool and memory objects.  The verdict is narrower than Vulkan
+          * child-object lifetime: only the completion BO added by prepare is
+          * compared with the pre-prepare shim census.
+          */
+         vkDestroyDevice(device, NULL);
+         device = VK_NULL_HANDLE;
+         pool = VK_NULL_HANDLE;
+         carrier_memory = VK_NULL_HANDLE;
+         vertex_memory = VK_NULL_HANDLE;
+         CHECK(live_bo_backing_files() <= live_before_prepare,
+               "device teardown releases the uncommitted prepared BO");
+         CHECK(trace.event_count == 0,
+               "device teardown reaches no submission ioctl");
          rc = 0;
          goto done;
       }
@@ -310,6 +480,25 @@ run_burst_leg(VkInstance instance,
       },
       VK_NULL_HANDLE);
    out->queue_status = r3v_native_queue_submission_status(device);
+
+   if (lifetime_mode == BURST_LIFETIME_COMMIT) {
+      CHECK(out->submit_result == VK_SUCCESS &&
+               out->queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
+            "the matching prepared transport commits once");
+      CHECK(prepared_state_released(&native_device->prepared),
+            "the matching commit releases prepared state");
+      CHECK(trace.event_count == 4,
+            "the matching commit records ioctl and completion boundaries");
+   } else if (lifetime_mode == BURST_LIFETIME_TRACE_REFUSAL) {
+      CHECK(out->submit_result == VK_ERROR_DEVICE_LOST &&
+               out->queue_status ==
+                  R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED,
+            "a trace refusal stops before the submission ioctl");
+      CHECK(prepared_state_released(&native_device->prepared),
+            "the pre-ioctl refusal releases prepared state");
+      CHECK(trace.event_count == 1,
+            "the pre-ioctl refusal records only the enter boundary");
+   }
 
    if (resubmit && out->submit_result == VK_SUCCESS) {
       CHECK(evidence_file_present(manifest_dir, "attempt.token"),
@@ -338,17 +527,71 @@ run_burst_leg(VkInstance instance,
    rc = 0;
 
 done:
-   if (pool != VK_NULL_HANDLE)
-      vkDestroyCommandPool(device, pool, NULL);
-   vkFreeMemory(device, carrier_memory, NULL);
-   vkFreeMemory(device, vertex_memory, NULL);
-   vkDestroyDevice(device, NULL);
+   if (device != VK_NULL_HANDLE) {
+      if (pool != VK_NULL_HANDLE)
+         vkDestroyCommandPool(device, pool, NULL);
+      vkFreeMemory(device, carrier_memory, NULL);
+      vkFreeMemory(device, vertex_memory, NULL);
+      vkDestroyDevice(device, NULL);
+   }
    return rc;
 }
 
-int
-main(void)
+static bool
+mode_selected(const char *selected, const char *mode)
 {
+   return selected == NULL || strcmp(selected, mode) == 0;
+}
+
+static int
+run_lifetime_leg(VkInstance instance,
+                 PFN_vkVoidFunction (*gipa)(VkInstance, const char *),
+                 VkPhysicalDevice physical_device,
+                 const struct r300_r2vb_float2_tuple_burst_ib *reference,
+                 uint32_t carrier_bytes, enum burst_lifetime_mode mode,
+                 const char *directory_stem)
+{
+   char directory[128];
+   int length = snprintf(directory, sizeof(directory),
+                         "/tmp/r3v-native-%s-XXXXXX", directory_stem);
+   if (length < 0 || (size_t)length >= sizeof(directory) ||
+       mkdtemp(directory) == NULL) {
+      fprintf(stderr, "%s evidence directory creation failed\n",
+              directory_stem);
+      return 2;
+   }
+
+   setenv("R3V_NATIVE_MANIFEST_DIR", directory, 1);
+   struct burst_leg leg = {0};
+   return run_burst_leg(instance, gipa, physical_device, reference,
+                        carrier_bytes, false, mode, false, directory, &leg);
+}
+
+int
+main(int argc, char **argv)
+{
+   const char *selected = argc == 2 ? argv[1] : NULL;
+   if (argc > 2) {
+      fprintf(stderr, "usage: %s [admission|commit|reset|different-buffer|"
+                      "submit-shape|trace-refusal|teardown|"
+                      "known-bad-reset|known-bad-binding|"
+                      "known-bad-teardown]\n",
+              argv[0]);
+      return 2;
+   }
+   if (selected != NULL && strcmp(selected, "admission") != 0 &&
+       strcmp(selected, "commit") != 0 && strcmp(selected, "reset") != 0 &&
+       strcmp(selected, "different-buffer") != 0 &&
+       strcmp(selected, "submit-shape") != 0 &&
+       strcmp(selected, "trace-refusal") != 0 &&
+       strcmp(selected, "teardown") != 0 &&
+       strcmp(selected, "known-bad-reset") != 0 &&
+       strcmp(selected, "known-bad-binding") != 0 &&
+       strcmp(selected, "known-bad-teardown") != 0) {
+      fprintf(stderr, "unknown mode: %s\n", selected);
+      return 2;
+   }
+
    if (attest_shim_provider() != 0)
       return 3;
 
@@ -406,129 +649,175 @@ main(void)
    if (physical_device == VK_NULL_HANDLE)
       return 1;
 
-   /* Mismatch leg: the declared count disagrees with the recorded
-    * composition, so the arming refuses before the ioctl and before any
-    * token exists.
-    */
-   char mismatch_dir[] = "/tmp/r3v-native-burst-mismatch-XXXXXX";
-   if (mkdtemp(mismatch_dir) == NULL) {
-      fprintf(stderr, "mismatch evidence directory creation failed\n");
-      return 2;
-   }
-   setenv("R3V_NATIVE_MANIFEST_DIR", mismatch_dir, 1);
-   setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "8", 1);
-   struct burst_leg mismatch = { 0 };
-   if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, false, false, false, false,
-                     mismatch_dir, &mismatch) != 0)
-      goto done;
-   CHECK(mismatch.submit_result == VK_ERROR_DEVICE_LOST &&
-            mismatch.queue_status ==
-               R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED,
-         "a declared count of 8 over a 4-member composition refuses: "
-         "%d %s",
-         mismatch.submit_result,
-         r3v_native_queue_status_name(mismatch.queue_status));
-   CHECK(!evidence_file_present(mismatch_dir, "attempt.token"),
-         "the refused mismatch writes no attempt token");
+   if (mode_selected(selected, "admission")) {
+      /* Mismatch leg: the declared count disagrees with the recorded
+       * composition, so the arming refuses before the ioctl and before any
+       * token exists.
+       */
+      char mismatch_dir[] = "/tmp/r3v-native-burst-mismatch-XXXXXX";
+      if (mkdtemp(mismatch_dir) == NULL) {
+         fprintf(stderr, "mismatch evidence directory creation failed\n");
+         return 2;
+      }
+      setenv("R3V_NATIVE_MANIFEST_DIR", mismatch_dir, 1);
+      setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "8", 1);
+      struct burst_leg mismatch = {0};
+      if (run_burst_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, false, BURST_LIFETIME_NONE, false,
+                        mismatch_dir, &mismatch) != 0)
+         goto done;
+      CHECK(mismatch.submit_result == VK_ERROR_DEVICE_LOST &&
+               mismatch.queue_status ==
+                  R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED,
+            "a declared count of 8 over a 4-member composition refuses: "
+            "%d %s",
+            mismatch.submit_result,
+            r3v_native_queue_status_name(mismatch.queue_status));
+      CHECK(!evidence_file_present(mismatch_dir, "attempt.token"),
+            "the refused mismatch writes no attempt token");
 
-   /* Admission leg: matching declaration, one admitted submission, then
-    * the one-shot token refuses the resubmission.
-    */
-   char admit_dir[] = "/tmp/r3v-native-burst-cell-XXXXXX";
-   if (mkdtemp(admit_dir) == NULL) {
-      fprintf(stderr, "evidence directory creation failed\n");
-      return 2;
+      /* Admission leg: matching declaration, one admitted submission, then
+       * the one-shot token refuses the resubmission.
+       */
+      char admit_dir[] = "/tmp/r3v-native-burst-cell-XXXXXX";
+      if (mkdtemp(admit_dir) == NULL) {
+         fprintf(stderr, "evidence directory creation failed\n");
+         return 2;
+      }
+      setenv("R3V_NATIVE_MANIFEST_DIR", admit_dir, 1);
+      setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "4", 1);
+      struct burst_leg admit = {0};
+      if (run_burst_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, true, BURST_LIFETIME_NONE, false,
+                        admit_dir, &admit) != 0)
+         goto done;
+      CHECK(admit.submit_result == VK_SUCCESS &&
+               admit.queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
+            "the matching declaration admits the burst once: %d %s",
+            admit.submit_result,
+            r3v_native_queue_status_name(admit.queue_status));
    }
-   setenv("R3V_NATIVE_MANIFEST_DIR", admit_dir, 1);
-   setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "4", 1);
-   struct burst_leg admit = { 0 };
-   if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, true, false, false, false, admit_dir,
-                     &admit) != 0)
-      goto done;
-   CHECK(admit.submit_result == VK_SUCCESS &&
-            admit.queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
-         "the matching declaration admits the burst once: %d %s",
-         admit.submit_result,
-         r3v_native_queue_status_name(admit.queue_status));
 
    /* Prepared leg: the transport prepares ahead of the submit, evidence
     * and token land before any ioctl, and the commit completes; the
     * resubmission then refuses on the token the prepare wrote.
     */
-   char prepared_dir[] = "/tmp/r3v-native-burst-prepared-XXXXXX";
-   if (mkdtemp(prepared_dir) == NULL) {
-      fprintf(stderr, "prepared evidence directory creation failed\n");
-      return 2;
+   if (mode_selected(selected, "commit")) {
+      char prepared_dir[] = "/tmp/r3v-native-burst-prepared-XXXXXX";
+      if (mkdtemp(prepared_dir) == NULL) {
+         fprintf(stderr, "prepared evidence directory creation failed\n");
+         return 2;
+      }
+      setenv("R3V_NATIVE_MANIFEST_DIR", prepared_dir, 1);
+      struct burst_leg prepared = {0};
+      if (run_burst_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, true, BURST_LIFETIME_COMMIT, false,
+                        prepared_dir, &prepared) != 0)
+         goto done;
+      CHECK(prepared.submit_result == VK_SUCCESS &&
+               prepared.queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
+            "the prepared transport commits once: %d %s",
+            prepared.submit_result,
+            r3v_native_queue_status_name(prepared.queue_status));
    }
-   setenv("R3V_NATIVE_MANIFEST_DIR", prepared_dir, 1);
-   struct burst_leg prepared = { 0 };
-   if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, true, true, false, false, prepared_dir,
-                     &prepared) != 0)
-      goto done;
-   CHECK(prepared.submit_result == VK_SUCCESS &&
-            prepared.queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
-         "the prepared transport commits once: %d %s",
-         prepared.submit_result,
-         r3v_native_queue_status_name(prepared.queue_status));
 
    /* Reset-after-prepare leg: the IB release retires the prepared
     * transport, so a buffer reset between prepare and submit leaves no
     * CS aimed at freed storage.
     */
-   char reset_dir[] = "/tmp/r3v-native-burst-reset-XXXXXX";
-   if (mkdtemp(reset_dir) == NULL) {
-      fprintf(stderr, "reset evidence directory creation failed\n");
-      return 2;
+   if (mode_selected(selected, "reset")) {
+      char reset_dir[] = "/tmp/r3v-native-burst-reset-XXXXXX";
+      if (mkdtemp(reset_dir) == NULL) {
+         fprintf(stderr, "reset evidence directory creation failed\n");
+         return 2;
+      }
+      setenv("R3V_NATIVE_MANIFEST_DIR", reset_dir, 1);
+      struct burst_leg reset_leg = {0};
+      if (run_burst_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, false, BURST_LIFETIME_RESET, false,
+                        reset_dir, &reset_leg) != 0)
+         goto done;
    }
-   setenv("R3V_NATIVE_MANIFEST_DIR", reset_dir, 1);
-   struct burst_leg reset_leg = { 0 };
-   if (run_burst_leg(instance, gipa, physical_device, &reference,
-                     carrier_bytes, false, true, true, false, reset_dir,
-                     &reset_leg) != 0)
+
+   setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "4", 1);
+   if (mode_selected(selected, "different-buffer") &&
+       run_lifetime_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes,
+                        BURST_LIFETIME_DIFFERENT_COMMAND_BUFFER,
+                        "submit-lifetime-different-buffer") != 0)
+      goto done;
+   if (mode_selected(selected, "submit-shape") &&
+       run_lifetime_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, BURST_LIFETIME_SUBMIT_SHAPE,
+                        "submit-lifetime-submit-shape") != 0)
+      goto done;
+   if (mode_selected(selected, "trace-refusal") &&
+       run_lifetime_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, BURST_LIFETIME_TRACE_REFUSAL,
+                        "submit-lifetime-trace-refusal") != 0)
+      goto done;
+   if (mode_selected(selected, "teardown") &&
+       run_lifetime_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, BURST_LIFETIME_TEARDOWN,
+                        "submit-lifetime-teardown") != 0)
+      goto done;
+   if (selected != NULL && strcmp(selected, "known-bad-reset") == 0 &&
+       run_lifetime_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, BURST_LIFETIME_KNOWN_BAD_RESET,
+                        "submit-lifetime-known-bad-reset") != 0)
+      goto done;
+   if (selected != NULL && strcmp(selected, "known-bad-binding") == 0 &&
+       run_lifetime_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, BURST_LIFETIME_KNOWN_BAD_BINDING,
+                        "submit-lifetime-known-bad-binding") != 0)
+      goto done;
+   if (selected != NULL && strcmp(selected, "known-bad-teardown") == 0 &&
+       run_lifetime_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, BURST_LIFETIME_KNOWN_BAD_TEARDOWN,
+                        "submit-lifetime-known-bad-teardown") != 0)
       goto done;
 
    /* Fetch-width leg: the FLOAT_4 model burst under its own declared
     * digest and evidence directory -- the widened vertex object and the
     * changed stream admit once through the same gate.
     */
-   struct r300_r2vb_float2_tuple_burst_ib float4_reference;
-   CHECK(r300_r2vb_float4_model_burst_reference_emit(
-            BURST_DRAWS, &float4_reference) == 0,
-         "float4 model reference burst emits");
-   if (failures != 0) {
+   if (mode_selected(selected, "admission")) {
+      struct r300_r2vb_float2_tuple_burst_ib float4_reference;
+      CHECK(r300_r2vb_float4_model_burst_reference_emit(
+               BURST_DRAWS, &float4_reference) == 0,
+            "float4 model reference burst emits");
+      if (failures != 0) {
+         r300_r2vb_float2_tuple_burst_release(&float4_reference);
+         goto done;
+      }
+      char float4_digest[BLAKE3_OUT_LEN * 2 + 1];
+      r300_triangle_ib_digest_hex(float4_reference.ib,
+                                  float4_reference.ib_size_dwords,
+                                  float4_digest);
+      CHECK(strcmp(float4_digest, reference_digest) != 0,
+            "the width contrast produces its own stream digest");
+      char float4_dir[] = "/tmp/r3v-native-burst-float4-XXXXXX";
+      if (mkdtemp(float4_dir) == NULL) {
+         fprintf(stderr, "float4 evidence directory creation failed\n");
+         r300_r2vb_float2_tuple_burst_release(&float4_reference);
+         return 2;
+      }
+      setenv("R3V_NATIVE_MANIFEST_DIR", float4_dir, 1);
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", float4_digest, 1);
+      struct burst_leg float4 = {0};
+      int float4_rc =
+         run_burst_leg(instance, gipa, physical_device, &float4_reference,
+                       carrier_bytes, true, BURST_LIFETIME_NONE, true,
+                       float4_dir, &float4);
       r300_r2vb_float2_tuple_burst_release(&float4_reference);
-      goto done;
+      if (float4_rc != 0)
+         goto done;
+      CHECK(float4.submit_result == VK_SUCCESS &&
+               float4.queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
+            "the float4 model burst admits once under its own digest: %d %s",
+            float4.submit_result,
+            r3v_native_queue_status_name(float4.queue_status));
    }
-   char float4_digest[BLAKE3_OUT_LEN * 2 + 1];
-   r300_triangle_ib_digest_hex(float4_reference.ib,
-                               float4_reference.ib_size_dwords,
-                               float4_digest);
-   CHECK(strcmp(float4_digest, reference_digest) != 0,
-         "the width contrast produces its own stream digest");
-   char float4_dir[] = "/tmp/r3v-native-burst-float4-XXXXXX";
-   if (mkdtemp(float4_dir) == NULL) {
-      fprintf(stderr, "float4 evidence directory creation failed\n");
-      r300_r2vb_float2_tuple_burst_release(&float4_reference);
-      return 2;
-   }
-   setenv("R3V_NATIVE_MANIFEST_DIR", float4_dir, 1);
-   setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", float4_digest, 1);
-   struct burst_leg float4 = { 0 };
-   int float4_rc =
-      run_burst_leg(instance, gipa, physical_device, &float4_reference,
-                    carrier_bytes, true, false, false, true, float4_dir,
-                    &float4);
-   r300_r2vb_float2_tuple_burst_release(&float4_reference);
-   if (float4_rc != 0)
-      goto done;
-   CHECK(float4.submit_result == VK_SUCCESS &&
-            float4.queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
-         "the float4 model burst admits once under its own digest: %d %s",
-         float4.submit_result,
-         r3v_native_queue_status_name(float4.queue_status));
 
 done:
    r300_r2vb_float2_tuple_burst_release(&reference);

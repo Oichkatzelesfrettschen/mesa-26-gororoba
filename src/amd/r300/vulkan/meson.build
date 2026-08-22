@@ -255,16 +255,6 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
     suite : ['r3v'],
   )
   test(
-    'r3v-submit-lifetime',
-    executable(
-      'r3v_submit_lifetime_test',
-      files('tests/r3v_submit_lifetime_test.c'),
-      include_directories : [include_directories('.')],
-      gnu_symbol_visibility : 'hidden',
-    ),
-    suite : ['r3v'],
-  )
-  test(
     'r3v-ubo-binding',
     executable(
       'r3v_ubo_binding_test',
@@ -1290,10 +1280,10 @@ if get_option('r3v-native-backend')
       suite : ['r3v'],
     )
 
-    # Burst-cell harness on the same shim fixture: a four-member burst
-    # refused while the declared member count disagrees with the
-    # recorded composition, admitted once under the matching
-    # declaration, then refused by the one-shot token.
+    # Burst-cell harness on the same shim fixture: the admission leg covers
+    # the four-member composition and one-shot token, while the lifetime legs
+    # drive the surviving native prepare/commit/reset state through distinct
+    # command-buffer, submit-shape, pre-ioctl refusal, and teardown paths.
     r3v_native_burst_cell_harness = executable(
       'r3v_native_burst_cell_harness',
       files('tests/r3v_native_burst_cell_harness.c'),
@@ -1307,11 +1297,46 @@ if get_option('r3v-native-backend')
     test(
       'r3v-native-burst-cell-admission',
       r3v_native_burst_cell_harness,
+      args : ['admission'],
       env : r3v_native_cell_env,
       depends : [libradeon_noop_drm_shim],
       timeout : 60,
       suite : ['r3v'],
     )
+    foreach lifetime_leg : [
+      ['commit', 'commit'],
+      ['reset', 'reset'],
+      ['different-command-buffer', 'different-buffer'],
+      ['submit-shape', 'submit-shape'],
+      ['trace-refusal', 'trace-refusal'],
+      ['teardown', 'teardown'],
+    ]
+      test(
+        'r3v-native-submit-lifetime-@0@'.format(lifetime_leg[0]),
+        r3v_native_burst_cell_harness,
+        args : [lifetime_leg[1]],
+        env : r3v_native_cell_env,
+        depends : [libradeon_noop_drm_shim],
+        timeout : 60,
+        suite : ['r3v'],
+      )
+    endforeach
+    foreach known_bad_leg : [
+      ['reset-release', 'known-bad-reset'],
+      ['command-buffer-binding', 'known-bad-binding'],
+      ['teardown-release', 'known-bad-teardown'],
+    ]
+      test(
+        'r3v-native-submit-lifetime-known-bad-@0@'.format(known_bad_leg[0]),
+        r3v_native_burst_cell_harness,
+        args : [known_bad_leg[1]],
+        env : r3v_native_cell_env,
+        depends : [libradeon_noop_drm_shim],
+        timeout : 60,
+        should_fail : true,
+        suite : ['r3v'],
+      )
+    endforeach
 
     # The harness owns a fresh manifest directory, so inherited evidence
     # paths cannot supply stale fixed-name artifacts to its verdict.
