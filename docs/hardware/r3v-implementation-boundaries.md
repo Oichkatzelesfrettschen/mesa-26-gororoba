@@ -6,8 +6,8 @@ The current-source statements in this document describe
 `mesa-26-gororoba` at the commit that carries this document revision;
 `git log -1 -- docs/hardware/r3v-implementation-boundaries.md` names it.
 
-The current Gallium-backed implementation is live code. The native R3V ICD
-exists as a distinct Gallium-free library with an owned Radeon DRM transport,
+The R3V ICD, `libvulkan_r3v.so` under `driverName` `r3v`, is a Gallium-free
+library with an owned Radeon DRM transport,
 GEM-backed memory whose host coherency the driver maintains itself over the
 unsnooped GART, queue and command-carrier objects, and one privately
 injected fixed-cell PM4 lowering path carrying a compiler-produced fragment
@@ -89,14 +89,16 @@ and drm-shim evidence rather than GPU-transfer or silicon evidence. Broader
 transfer formats, usages, GPU copy packets, and target transfer observations
 remain open. The [Vulkan queues rule](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#devsandqueues-physical-device-queue-properties)
 requires an implementation that exposes graphics to expose at least one
-family supporting both graphics and compute. The native source branch reports
-`VK_QUEUE_GRAPHICS_BIT` only from
-`r3v_GetPhysicalDeviceQueueFamilyProperties2`, while
-`r3v_native_device.c:r3v_CreateComputePipelines` returns
-`R3V_NATIVE_REFUSAL_RESULT`; this is an experimental nonconformant source
-surface rather than a Vulkan 1.0 capability claim. Native promotion remains
-blocked until a family advertises both operations and the compute route
-executes them. The
+family supporting both graphics and compute. The one family reports
+`VK_QUEUE_GRAPHICS_BIT`, and `VK_QUEUE_COMPUTE_BIT` only behind the exact
+`R3V_HYBRID_COMPUTE_EXPERIMENTAL=1` opt-in, under which
+`r3v_native_compute.c` admits the identity-map kernel from SPIR-V words into
+the common compute job and executes it on the CPU route at submission while
+every other module refuses at pipeline creation; with the opt-in unset,
+`r3v_CreateComputePipelines` returns `R3V_NATIVE_REFUSAL_RESULT`. This is an
+experimental nonconformant surface rather than a Vulkan 1.0 capability claim,
+and promotion stays blocked until the compute route stands without its
+opt-in. The
 extent gap is closed: `vkCreateImage` accepts every extent inside the
 reported 64x64 maximum, and the cell family realizes it -- in TCL
 bypass the extent reaches the hardware through the `SC_SCISSORS_BR`
@@ -124,13 +126,16 @@ and conformance boundaries; that document owns the source-format transaction.
 
 ## Purpose
 
-R3V has three distinct boundaries:
+R3V has two distinct boundaries:
 
-1. the current Gallium-backed experimental Vulkan ICD;
-2. a future native R3V implementation with R3V-owned memory, queues, command
-   lowering, PM4, and completion;
-3. complete Vulkan command semantics, synchronization, WSI, feature exposure,
+1. the R3V implementation: R3V-owned memory, queues, command lowering, PM4,
+   and completion over the Radeon DRM transport;
+2. complete Vulkan command semantics, synchronization, WSI, feature exposure,
    and conformance.
+
+The Gallium-backed Vulkan lane that preceded the implementation is retired;
+the retirement section below names the mechanism or fixture that carries each
+of its former capabilities.
 
 A result at one boundary never closes another. Source architecture, build and
 link identity, runtime reachability, silicon execution, API semantics, and
@@ -192,85 +197,6 @@ function_body() {
   sed -n "/^$1(/,/^}/p" "$2"
 }
 
-native_branch() {
-  function_body "$1" "$2" | native_branch_filter
-}
-
-native_branch_filter() {
-  awk '
-    function is_native_opener(line) {
-      return line ~ /^[[:space:]]*#[[:space:]]*ifdef[[:space:]]+R3V_NATIVE_BACKEND[[:space:]]*$/
-    }
-    function is_open_directive(line) {
-      return line ~ /^[[:space:]]*#[[:space:]]*(if|ifdef|ifndef)([[:space:]]|$)/
-    }
-    is_native_opener($0) {
-      in_native=1
-      depth=1
-      print
-      next
-    }
-    in_native && is_open_directive($0) {
-      depth++
-      print
-      next
-    }
-    in_native && /^[[:space:]]*#[[:space:]]*(else|elif)([[:space:]]|$)/ \
-      && depth == 1 { exit }
-    in_native && /^[[:space:]]*#[[:space:]]*endif([[:space:]]|$)/ {
-      if (depth == 1)
-        exit
-      depth--
-      print
-      next
-    }
-    in_native { print }
-  '
-}
-
-# Directive fixtures keep native_branch exact: both accepted spellings enter
-# the branch, while comments and suffixed macro names stay outside it.
-native_plain_fixture=$(cat <<'EOF'
-#ifdef R3V_NATIVE_BACKEND
-native_plain
-#else
-gallium_plain
-#endif
-EOF
-)
-native_spaced_fixture=$(cat <<'EOF'
-# ifdef R3V_NATIVE_BACKEND
-native_spaced
-#else
-gallium_spaced
-#endif
-EOF
-)
-native_comment_fixture=$(cat <<'EOF'
-/* #ifdef R3V_NATIVE_BACKEND */
-comment_text
-#else
-gallium_comment
-#endif
-EOF
-)
-native_suffix_fixture=$(cat <<'EOF'
-#ifdef R3V_NATIVE_BACKEND_EXTRA
-suffix_text
-#else
-gallium_suffix
-#endif
-EOF
-)
-native_plain=$(printf '%s\n' "$native_plain_fixture" | native_branch_filter)
-native_spaced=$(printf '%s\n' "$native_spaced_fixture" | native_branch_filter)
-native_comment=$(printf '%s\n' "$native_comment_fixture" | native_branch_filter)
-native_suffix=$(printf '%s\n' "$native_suffix_fixture" | native_branch_filter)
-printf '%s\n' "$native_plain" | rg -n --fixed-strings 'native_plain'
-printf '%s\n' "$native_spaced" | rg -n --fixed-strings 'native_spaced'
-test -z "$native_comment"
-test -z "$native_suffix"
-
 # Absence checks accept only ripgrep's status 1 no-match result.  A match
 # fails the check, and an execution error propagates to the ledger.
 assert_absent() {
@@ -307,50 +233,18 @@ native_initializer() {
   sed -n "/$1 = {/,/^[[:space:]]*};/p" "$2"
 }
 
-# Gallium-backed R3V build and link boundary.
-rg -n --fixed-strings -e 'r3v-gallium-backend' -e 'driver_r300' \
-  -e 'libgalliumvl' \
-  src/meson.build \
+# One ICD identity and its separation audit; the r300g source tree carries
+# no Vulkan entry point.
+rg -n --fixed-strings -e "'vulkan_r3v'" -e "output : 'r3v_icd." \
+  -e 'separation' \
   src/amd/r300/vulkan/meson.build
+test "$(rg -l --fixed-strings 'VKAPI_CALL' src/gallium/drivers/r300 | wc -l)" -eq 0
 
-# r3v_device owns the Gallium screen and context.
-rg -n --fixed-strings -e 'struct r3v_device' -e 'radeon_winsys' \
-  -e 'pipe_screen' -e 'pipe_context' \
-  src/amd/r300/vulkan/r3v_device.h \
-  src/amd/r300/vulkan/r3v_device.c
-
-# Gallium queue replay and fence completion.
-rg -n --fixed-strings -e 'pipe->flush' -e 'fence_finish' \
-  src/amd/r300/vulkan/r3v_queue.c
-
-# Direct-backend consent still falls through to Gallium.
-rg -n --fixed-strings 'R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED' \
-  src/amd/r300/vulkan/r3v_queue.c \
-  src/amd/r300/vulkan/r3v_device.c
-
-# Extracted shader descriptors borrow Gallium-owned storage.
-rg -n --fixed-strings -e 'r300_fs_get_hw_code' \
-  -e 'r3v_pipeline_own_fs_binary' \
-  src/gallium/drivers/r300/r300_public.h \
-  src/amd/r300/vulkan/r3v_pipeline.c
-
-# Unsupported compute shapes complete without execution.
-rg -n --fixed-strings -e 'r3v_CreateComputePipelines' \
-  -e 'R300_COMPUTE_REJECT_UNKNOWN_SHAPE' \
-  src/amd/r300/vulkan/r3v_pipeline.c \
-  src/amd/r300/vulkan/r3v_cmd_buffer.c
-
-# Current R2VB source and delivery domains.
+# r300g's R2VB source and delivery domains.
 rg -n --fixed-strings -e 'r300_r2vb_producer_input_preflight' \
   -e 'r300_r2vb_delivery_element_preflight' \
   src/gallium/drivers/r300/r300_r2vb.c \
   src/amd/r300/common/r300_r2vb_source_contract.h
-
-# Native ICD build identity and separation audit.
-rg -n --fixed-strings -e 'r3v-native-backend' \
-  -e 'libvulkan_r3v_native' -e 'separation' \
-  meson.options \
-  src/amd/r300/vulkan/meson.build
 
 # Gallium-free Radeon DRM transport.
 rg -n --fixed-strings -e 'radeon_drm_vk_cs_build' \
@@ -399,19 +293,17 @@ rg -n --fixed-strings 'execute_deferred_draw' \
   src/amd/r300/vulkan/r3v_native_cell.c \
   src/amd/r300/vulkan/r3v_native_queue.c
 
-# Native queue branch and compute refusal, scoped to their functions.
-native_queue=$(native_branch \
+# Queue family and the gated compute surface, scoped to their functions.
+native_queue=$(function_body \
   r3v_GetPhysicalDeviceQueueFamilyProperties2 \
   src/amd/r300/vulkan/r3v_physical_device.c)
 printf '%s\n' "$native_queue" | rg -n --fixed-strings \
-  -e 'VK_QUEUE_GRAPHICS_BIT' -e '#ifdef R3V_NATIVE_BACKEND'
-assert_absent "$native_queue" 'VK_QUEUE_COMPUTE_BIT'
-native_compute=$(function_body r3v_CreateComputePipelines \
-  src/amd/r300/vulkan/r3v_native_device.c)
-printf '%s\n' "$native_compute" | rg -n --fixed-strings \
-  'R3V_NATIVE_REFUSAL_RESULT'
+  -e 'VK_QUEUE_GRAPHICS_BIT' -e 'hybrid_compute_enabled'
+rg -n --fixed-strings -e 'hybrid_compute_enabled' \
+  -e 'R3V_NATIVE_REFUSAL_RESULT' -e 'r300_compute_job_from_spirv' \
+  src/amd/r300/vulkan/r3v_native_compute.c
 
-# Native extension table and dispatch overlay, scoped to the native branch.
+# Extension table and dispatch overlay.
 native_extensions=$(native_initializer \
   r3v_native_device_extensions_supported \
   src/amd/r300/vulkan/r3v_physical_device.c)
@@ -425,15 +317,15 @@ native_create=$(function_body r3v_CreateDevice \
 printf '%s\n' "$native_create" | rg -n --fixed-strings \
   -e 'r3v_device_entrypoints' -e 'vk_common_device_entrypoints'
 
-# Native linear B8G8R8A8 format mask and usage gates.
-native_format=$(native_branch r3v_get_format_properties \
+# Linear B8G8R8A8 format mask and usage gates.
+native_format=$(function_body r3v_get_format_properties \
   src/amd/r300/vulkan/r3v_physical_device.c)
 printf '%s\n' "$native_format" | rg -n --fixed-strings \
   -e 'VK_FORMAT_B8G8R8A8_UNORM' \
   -e 'VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT' \
   -e 'VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT' \
   -e 'VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT'
-native_image_query=$(native_branch r3v_get_image_format_properties \
+native_image_query=$(function_body r3v_get_image_format_properties \
   src/amd/r300/vulkan/r3v_physical_device.c)
 printf '%s\n' "$native_image_query" | rg -n --fixed-strings \
   -e 'VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT' \
@@ -446,7 +338,8 @@ printf '%s\n' "$native_image_create" | rg -n --fixed-strings \
   -e 'VK_IMAGE_USAGE_TRANSFER_SRC_BIT' \
   -e 'VK_IMAGE_USAGE_TRANSFER_DST_BIT'
 assert_absent "$native_format" 'r3v_vk_format_to_pipe_format'
-assert_absent "$native_image_query" 'r3v_image_usage_supported'
+printf '%s\n' "$native_image_query" | rg -n --fixed-strings \
+  -e 'r3v_native_transfer_query' -e 'r3v_image_usage_supported'
 
 # Public query/create usage matrix: zero, color-only, each transfer bit,
 # both transfer bits, and every mixed color/transfer combination all run
@@ -804,84 +697,36 @@ rg -n --fixed-strings -e 'r3v-native-loader-application' \
 python3 src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py --selftest
 ```
 
-## Current Gallium-backed R3V implementation
+## Retired Gallium-backed lane
 
-### Ownership boundary
+A Gallium-backed Vulkan lane preceded the implementation: it recorded
+Vulkan commands and replayed them through r300g's `pipe_context`, with
+Gallium resources, CSOs, winsys command buffers, and fences as its execution
+substrate.  That lane is deleted from the tree, with its Meson option, its
+conditionals, its DSO, and r300g's compute-admission classifier whose only
+production caller it was.  The differential value its cross-lane tests
+carried lives on in references that run without it:
 
-The functional R3V ICD is built with Gallium r300 support and links
-`driver_r300`, `libgallium`, and `libgalliumvl` into
-`libvulkan_r3v.so`.
+- retained manifests: the submit manifests and digest-bound submit objects
+  the queue retains under `R3V_NATIVE_MANIFEST_DIR`, the typed-carry corpus
+  sha256 manifest (`src/gallium/drivers/r300/tests/typed_carry_corpus/
+  r300_typed_carry_reference.sha256`, three rows equal to the retained RS482
+  bundle digests), and the vertex front-end parity manifest
+  (`src/amd/r300/compiler/tests/r300_vertex_front_end_parity.manifest`);
+- common-IR parity: `r300-vertex-front-end-parity` holds the NIR front end
+  (r300g's) and the direct SPIR-V admitter (the ICD's) to identical jobs,
+  carriers, and color bits over the one job IR;
+- exact fixtures: `r3v-native-format-features`, `r3v-native-descriptor`,
+  the native burst harness's submit-lifetime legs, and the r300g-owned
+  `r300-r2vb-typed-route-oracle` and `r300-r2vb-producer-census` over the
+  corpus.
 
-`struct r3v_device` owns a `radeon_winsys`, `pipe_screen`, and
-`pipe_context`. Vulkan buffers, images, and device memory own or borrow
-`pipe_resource` objects. Queue submission replays recorded commands through
-Gallium, flushes the `pipe_context`, waits for a Gallium fence, and synchronizes
-host-shadow resources.
+The table below maps each former lane capability to the mechanism that
+carries it and the evidence class that mechanism holds; a row reading
+`silicon` for one payload closes only that payload, and widening a row is
+the capability ladder's work.
 
-The `R3V_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1` selector records explicit consent
-for direct submission experiments. It does not select an implemented direct
-backend; submission still executes the Gallium replay path.
-
-The r300 extraction API exposes precompiled shader descriptors, including the
-fragment US/FG PM4 block. Those descriptors still reference Gallium CSO
-storage. They are bridge inputs, not R3V-owned native binaries.
-
-### Included Mesa mechanisms
-
-| Surface | Current mechanism |
-|---|---|
-| OpenGL and GLES | Gallium state trackers over r300g |
-| Experimental Vulkan | SPIR-V and Vulkan commands lowered into Gallium CSOs and `pipe_context` replay |
-| NIR ingress | r300 NIR lowering, `nir_to_rc`, and the direct Draw NIR executor where admitted |
-| NIR compatibility | `nir_to_tgsi` for Draw shapes outside the direct executor |
-| CPU vertex execution | Gallium Draw SW TCL, including direct NIR, TGSI, and optional LLVM lanes |
-| R300 graphics | RC compilation plus VAP, PSC, RS, US, TX, CB, ZB, ROP, viewport, and raster state |
-| R2VB | fragment-ALU producer, CB export to GTT, cache publication, and TCL-bypass re-ingest |
-| Graphics-as-compute | explicitly admitted raster kernels and multipass carriers |
-| Video | Gallium VL MPEG-1/MPEG-2 shader decode and separately gated experiments |
-| Memory and transfers | `pipe_resource`, Gallium winsys BOs, maps, uploads, copies, blits, and clears |
-| Queue and completion | synchronous Gallium replay and Gallium fences |
-| WSI | common WSI over Gallium-exported resources or a separate software fallback |
-| Host modeling | Radeon drm-shim identity, BO-domain, and ioctl models |
-
-The Xserver, glamor packaging, Radeon DDX, KMS policy, installed package
-identity, kernel parser, and retained target bundles are qualification
-dependencies or evidence authorities. Their source does not become Mesa-owned
-by participating in the end-to-end qualification boundary.
-
-### Maintenance criteria
-
-A capability in the Gallium-backed implementation is current only when:
-
-- its tests are present in the normal build graph;
-- every admitted command executes its documented semantics;
-- unsupported commands fail or decline at a documented boundary;
-- source, build, runtime, silicon, conformance, and deployment evidence are
-  labeled separately;
-- current Mesa, kernel, package, and target identities are retained for
-  hardware claims;
-- each verdict producer has known-good and known-bad calibration;
-- PALM or Terakan silicon observations are not promoted into RS480 facts.
-
-The Gallium-backed ICD may remain intentionally nonconformant. It must still be
-semantically honest inside every capability it exposes.
-
-### Retirement criteria
-
-Retiring `libvulkan_r3v.so` withdraws every capability the table above
-exposes, so it is admissible only when the native ICD carries each of
-them at an evidence class that survives the withdrawal. The Gallium GL
-and GLES surface stays either way: it is r300g's, and the R3V row names
-it as the state-tracker neighbor rather than as an R3V capability.
-
-Retirement is admissible when, for every remaining row, a native
-capability exists, its semantics are the documented ones, and its
-evidence reaches at least the class the Gallium-backed row is relied on
-at today. A native entry point that refuses every input satisfies no
-row: the criterion is the admitted workload, not the presence of a
-symbol.
-
-| Gallium-backed capability | Native counterpart | Evidence class |
+| Former lane capability | Surviving mechanism | Evidence class |
 |---|---|---|
 | Vulkan commands lowered into Gallium CSOs and `pipe_context` replay | one fixed render cell, recorded through public `vkCmd*` over a bounded render-pass/pipeline/draw vocabulary | silicon, one qualified payload |
 | NIR ingress through `nir_to_rc` | `r300_vertex_job_from_spirv` and `r300_fragment_constant_color_from_spirv` admit the straight-line vec4 shapes from SPIR-V words directly (no NIR); the NIR front end `r300_vertex_job_from_nir` remains in `compiler/` as the Gallium consumer's path over the same common job IR, held to parity by `r300-vertex-front-end-parity` | host unit |
@@ -896,15 +741,14 @@ symbol.
 | WSI over Gallium-exported resources | surface-query behavior alone; `VK_KHR_swapchain` and external-memory handles stay outside the native ICD | host model, and no presentation |
 | Host modeling: drm-shim identity, BO-domain, ioctl models | the same drm-shim models, exercised by the native harnesses | host model |
 
-Eleven rows carry a native counterpart, several bounded to one
-payload, state vector, kernel, or modeled surface; the video row
-leaves the Vulkan comparison the way GL and GLES did; WSI stops before
-presentation. The graphics-as-compute counterpart admits the
-identity-map kernel where the Gallium lane admits a raster-verb
-corpus, so that row's widening -- more admitted kernel shapes, and
-GPU raster-carrier execution beside the CPU route -- plus the
-driver's general surface is the remaining gap, and the closing order
-is the one `Ordered development` names.
+Eleven rows carry a surviving mechanism, several bounded to one payload,
+state vector, kernel, or modeled surface; the video row leaves the Vulkan
+comparison the way GL and GLES did; WSI stops before presentation. The
+graphics-as-compute mechanism admits the identity-map kernel where the lane
+admitted a raster-verb corpus, so that row's widening -- more admitted
+kernel shapes, and GPU raster-carrier execution beside the CPU route --
+plus the driver's general surface is the remaining gap, and the closing
+order is the one `Ordered development` names.
 
 The video scope for the native ICD is fixed by silicon:
 `VK_KHR_video_queue` and every decode or encode profile need a decode
@@ -917,30 +761,23 @@ implementable video-adjacent surface is
 `VK_KHR_sampler_ycbcr_conversion` scoped to packed 4:2:2 presentation
 of externally decoded content; planar 4:2:0 stays outside it.
 
-Each closed row records the workload its evidence covers, so a row
-reading `silicon` for one payload closes only that payload. Widening a
-row is the capability ladder's work, and the ladder's axis order lives
-in the native execution section.
-
-## Native Radeon DRM R3V implementation
+## R3V implementation
 
 ### Required ownership
 
-A native R3V ICD owns its Vulkan objects, BOs, memory bindings, command buffers,
-execution graph, queues, PM4, synchronization, and completion. Its complete
-functional build omits runtime ownership by `driver_r300`, `libgallium`,
-`libgalliumvl`, `pipe_context`, `pipe_screen`, `pipe_resource`, and Gallium CSOs.
+The R3V ICD owns its Vulkan objects, BOs, memory bindings, command buffers,
+execution graph, queues, PM4, synchronization, and completion. Its build
+omits runtime ownership by `driver_r300`, `libgallium`, `libgalliumvl`,
+`pipe_context`, `pipe_screen`, `pipe_resource`, and Gallium CSOs, and the
+separation audit proves it at the source, compile-command, object, and DSO
+layers.
 
-A loader-only skeleton is not the native implementation. A direct selector that
-falls back to Gallium is not the native implementation. Extracted PM4 that
-still aliases a Gallium CSO is not native ownership.
+### Current state
 
-### Current native state
-
-`-Dr3v-native-backend=true` builds `libvulkan_r3v_native.so` beside the
-Gallium-backed ICD; the separation audit holds its exports to the three
-`vk_icd*` symbols and its dependency list free of Gallium runtime libraries.
-The landed mechanisms are:
+`libvulkan_r3v.so` is the ICD (`r3v_icd.<cpu>.json`, `driverName` `r3v`);
+the separation audit holds its exports to the three `vk_icd*` symbols and
+its dependency list free of Gallium runtime libraries.  The landed
+mechanisms are:
 
 - the Gallium-free transport `src/amd/radeon/drm_vk/` (ioctl vtable seam,
   BO/PRIME refcount, relocation dedupe, three-chunk CS build/submit split,
@@ -949,12 +786,11 @@ The landed mechanisms are:
   and structural validator;
 - native device, memory (one owned GEM BO per `VkDeviceMemory`), buffer,
   image, image-view, pipeline, queue, and command-carrier objects;
-  reporting narrowed to executable source routes: the native queue family
-  remains an experimental graphics-only surface because
-  `r3v_GetPhysicalDeviceQueueFamilyProperties2` emits
-  `VK_QUEUE_GRAPHICS_BIT` while `r3v_native_device.c:r3v_CreateComputePipelines`
-  refuses. The Vulkan 1.0 queue-family rule therefore keeps native promotion
-  open until one family advertises and executes both graphics and compute.
+  reporting narrowed to executable source routes: the queue family reports
+  `VK_QUEUE_GRAPHICS_BIT`, and `VK_QUEUE_COMPUTE_BIT` only under the exact
+  `R3V_HYBRID_COMPUTE_EXPERIMENTAL=1` opt-in that admits the identity-map
+  kernel (`r3v_native_compute.c`). The Vulkan 1.0 queue-family rule keeps
+  promotion open until the compute route stands without its opt-in.
   Format properties advertise one linear `B8G8R8A8_UNORM`
   `linearTilingFeatures` mask containing
   `VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT`,
@@ -1187,9 +1023,10 @@ owned BO under an explicit unsnooped-UMA visibility contract.
 
 ### Owned pipeline binaries
 
-The existing r300 extraction API is a migration bridge. A native pipeline must
-deep-copy every consumed word and subordinate table into R3V-owned storage
-before the Gallium CSO can be destroyed.
+The pipeline owns its fragment binary: `r300_fragment_binary` holds every
+consumed word and subordinate table in R3V-owned storage, produced by the
+compiler tool (`r300_tcl_bypass_fs_tool`) for the fixed cell, with no
+Gallium CSO in the path.
 
 The first owned fragment binary carries:
 
@@ -1199,9 +1036,8 @@ The first owned fragment binary carries:
 - a content hash;
 - source compiler identity.
 
-A temporary build-time compiler bridge may produce the binary. The runtime
-artifact and queue path must remain valid after all Gallium objects are
-released.
+A build-time compiler tool may produce the binary; the runtime artifact and
+queue path depend on no Gallium object.
 
 ### Native execution and first hardware witness
 
@@ -1232,8 +1068,8 @@ does an attended RS480-family target submit the known-good cell.
 
 ### CPU vertex execution and R2VB migration
 
-The first general native vertex route is NIR-driven but independent of Gallium
-Draw ownership:
+The general vertex route admits SPIR-V words directly into the common job IR
+(no NIR) and is independent of Gallium Draw:
 
 ```text
 Vulkan vertex and index state
@@ -1255,8 +1091,8 @@ R2VB migration follows the fixed triangle and CPU route:
 5. add computed varyings one measured shape at a time;
 6. add hybrid carriers only with an explicit final VAP join.
 
-The native route owns its BOs, PM4, packers, barriers, and completion. Calling
-the Gallium R2VB function from a native queue remains Gallium-backed execution.
+The route owns its BOs, PM4, packers, barriers, and completion; r300g's R2VB
+planner belongs to the GL lane and is never an R3V execution path.
 
 ### Public GPU-producer route scope
 
@@ -1317,16 +1153,16 @@ native image-memory BO
 -> retirement and reuse
 ```
 
-X11 and Wayland are independent qualification cells. A Gallium resource export
-does not close native presentation.
+X11 and Wayland are independent qualification cells. A resource exported by
+the GL lane does not close presentation.
 
 ### Completion criteria
 
 The native implementation is complete only when:
 
-- native and Gallium-backed ICDs have distinct build and runtime identities;
-- the complete native functional target links without Gallium runtime
-  ownership;
+- one ICD identity: `libvulkan_r3v.so`, `r3v_icd.<cpu>.json`, `driverName`
+  `r3v` (landed);
+- the functional target links without Gallium runtime ownership (landed);
 - dependency, symbol, and include audits prove that separation;
 - memory owns real BOs and bound objects are views;
 - queues submit bounded direct PM4 and complete finitely;
@@ -1355,8 +1191,8 @@ the API contract. It requires:
 - default promotion only after image, queue, memory, execution, and WSI
   identities are current and replayable.
 
-Complete Vulkan semantics never follow merely because Gallium emulates an
-operation or because the native queue can submit one direct draw.
+Complete Vulkan semantics never follow merely because r300g's GL lane
+performs an operation or because the queue can submit one direct draw.
 
 ## R300 extraction boundary
 
@@ -1386,10 +1222,10 @@ R300-specific mechanisms remain under R300 common or Vulkan code:
 - R300 draw packet construction;
 - R2VB producer and delivery semantics.
 
-Gallium-owned objects remain in the Gallium-backed implementation:
-`pipe_context`, `pipe_screen`, `pipe_resource`, dirty atoms, CSO lifetime,
-Draw/vbuf ownership, `u_upload`, `u_blitter`, transfer helpers, VL decoder
-ownership, and Gallium winsys command buffers and fences.
+Gallium-owned objects stay in r300g: `pipe_context`, `pipe_screen`,
+`pipe_resource`, dirty atoms, CSO lifetime, Draw/vbuf ownership, `u_upload`,
+`u_blitter`, transfer helpers, VL decoder ownership, and Gallium winsys
+command buffers and fences.
 
 A helper becomes common code only after its inputs and outputs are independent
 value types and its tests run without a Gallium object.
@@ -1404,11 +1240,11 @@ F32_3 -> 3 physical dwords -> XYZ1 logical vec4
 F32_4 -> 4 physical dwords -> XYZW logical vec4
 ```
 
-The live automatic Gallium R2VB producer admits `F32_3` and `F32_4`, and its
-live automatic Gallium final delivery admits FP32x4 only. The native
+r300g's live automatic R2VB producer admits `F32_3` and `F32_4`, and its
+live automatic final delivery admits FP32x4 only. The R3V
 identity-delivery host model covers `F32_4`, `F32_3`, and `F32_2` under its
 exact opt-in. Operator-armed producer, re-ingest, and exact F32
-`FLOAT_2 + XY01` cells hold on RS482. The native public route composes and
+`FLOAT_2 + XY01` cells hold on RS482. The public route composes and
 submits one payload-specific F32_4 producer plus triangle consumer through
 `vkCmdDraw` and `vkQueueSubmit` under its exact double opt-in.
 
@@ -1437,7 +1273,7 @@ a narrow source never implies narrow final-delivery support.
 
 | Repository | Authority |
 |---|---|
-| `mesa-26-gororoba` | Gallium-backed and native R3V userspace, compilers, state packs, R2VB, WSI, and tests |
+| `mesa-26-gororoba` | the R3V ICD, r300g, compilers, state packs, R2VB, WSI, and tests |
 | `steinmarder-r300` (separate repository; `src/re/r300/` and root `results/`) | RS480 frontier, probes, falsifiers, findings, manifests, and target result bundles |
 | `vostro1000-re` | K8 and platform behavior plus CPU-executor qualification |
 | `linux-radeon-gororoba` | Radeon parser, GEM, GART, faults, completion, recovery, and containment |
@@ -1461,14 +1297,15 @@ offline kernel-parser, and bounded attended-silicon evidence classes as
 stated above. The ordered list marks remaining mechanisms; one evidence class
 does not promote another.
 
-1. Keep the Gallium-backed implementation current and semantically honest.
+1. Keep the retired lane's differential references current: the retained
+   manifests, the common-IR parity test, and the rebound fixtures (landed).
 2. Refactor existing `F32_3` and `F32_4` R2VB construction through the neutral
    source contract (landed).
 3. Land the gated `F32_2` no-submit producer transaction and synthesized-lane
    validators (landed).
 4. Extract a generic Radeon DRM transport layer with host tests (landed).
 5. Deep-copy R300 fragment binaries into R3V-owned storage (landed).
-6. Create distinct Gallium-backed and native ICD identities (landed).
+6. Collapse to one ICD identity, `libvulkan_r3v.so` under `r3v` (landed).
 7. Build native BO, memory, command, queue, and completion ownership (landed;
    native render and transfer image families, host-mapped transfer records,
    and private fixed-cell recording each keep a bounded ownership contract).
@@ -1518,8 +1355,9 @@ does not promote another.
 13. Prove native same-GPU WSI.
 14. Complete Vulkan semantics and conformance before default promotion.
 
-The Gallium-backed implementation remains the differential reference and a
-useful bounded acceleration path while native work proceeds.
+The retained manifests, the common-IR parity test, and the rebound fixtures
+are the differential reference; r300g's GL lane is the state-tracker
+neighbor, not an R3V execution path.
 
 ## Evidence classes
 

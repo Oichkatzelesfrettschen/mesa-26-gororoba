@@ -1,8 +1,9 @@
 # R300 compiler boundary
 
-This directory owns the R300 through R500 shader compiler.  Gallium and the
-direct R300 Vulkan implementation are clients of this code; neither front end
-owns it.
+This directory owns the R300 through R500 shader compiler.  Gallium r300 is
+its client; the R3V ICD links none of it and admits SPIR-V directly into the
+common job IR in `src/amd/r300/common/`, where the two front ends meet under
+`r300-vertex-front-end-parity`.
 
 The production compiler consumes only compiler-local headers, Mesa-wide
 compiler and utility interfaces, and API-neutral contracts from

@@ -21,12 +21,6 @@ build-infra/Makefile	r300_icd_manifest	r3v_icd.<cpu>.json	packaging promotion (P
 build-infra/Makefile	r300_devenv_icd	r3v_devenv_icd.<cpu>.json	packaging promotion (P12)	the stale-artifact scan for r300vk-era install prefixes retires when the operator confirms no such prefix remains on the hosts
 build-infra/docs/last-100-pr-review-comment-audit.md	r300vk	r3v	review-audit corpus	the review-comment audit corpus is archived out of the tree or regenerated against current paths
 build-infra/docs/last-100-pr-review-comment-audit.md	R300VK	R3V_	review-audit corpus	the review-comment audit corpus is archived out of the tree or regenerated against current paths
-docs/hardware/r3v-implementation-boundaries.md	R3V_NATIVE_BACKEND	no lane macro	documentation cutover (T2.8)	the boundaries document is rewritten for the one ICD
-docs/hardware/r3v-implementation-boundaries.md	libvulkan_r3v_native	libvulkan_r3v.so	documentation cutover (T2.8)	the boundaries document is rewritten for the one ICD
-docs/hardware/r3v-implementation-boundaries.md	r3v-gallium-backend	no lane option	documentation cutover (T2.8)	the boundaries document is rewritten for the one ICD
-docs/hardware/r3v-implementation-boundaries.md	r3v-native-backend	no lane option	documentation cutover (T2.8)	the boundaries document is rewritten for the one ICD
-src/amd/r300/vulkan/README.md	R3V_GALLIUM_BACKEND	no lane macro	documentation cutover (T2.8)	the README's retirement paragraph folds into the boundaries document's history
-src/amd/r300/vulkan/README.md	r3v-gallium-backend	no lane option	documentation cutover (T2.8)	the README's retirement paragraph folds into the boundaries document's history
 src/amd/r300/common/tests/r300_common_boundary_audit.py	R3V_GALLIUM_BACKEND	no lane macro	dual-backend conditional-model retirement	the backend-macro walkers reduce to plain line iteration and their macro selftest cases leave, since no source names either macro
 src/amd/r300/common/tests/r300_common_boundary_audit.py	R3V_NATIVE_BACKEND	no lane macro	dual-backend conditional-model retirement	the backend-macro walkers reduce to plain line iteration and their macro selftest cases leave, since no source names either macro
 src/amd/r300/vulkan/tests/r3v_native_separation_audit.py	R3V_GALLIUM_BACKEND	no lane macro	dual-backend conditional-model retirement	the backend-macro walkers reduce to plain line iteration and their macro selftest cases leave, since no source names either macro
