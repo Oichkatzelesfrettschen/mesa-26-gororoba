@@ -11,20 +11,18 @@
 
 #include "amd/r300/common/r300_carrier_policy.h"
 
-#include "util/format/u_formats.h"
+#include <stddef.h>
 
 /* Identity-map carrier: the output format and stride match the input format.
- * In practice the orchestrator determines the actual pipe_format from the
- * descriptor binding at dispatch time, so this instance records NONE as a
- * sentinel indicating "derive from descriptor"; value_format and bit_format
- * are set to the RGBA8 default the dispatch-replay uses when no override is
- * provided by the caller. */
+ * In practice the orchestrator determines the actual API format from the
+ * descriptor binding at dispatch time.  This instance records the RGBA8
+ * default the dispatch-replay uses when the caller provides no override. */
 const struct r300_carrier_policy r300_carrier_identity = {
    .name                = "identity",
    .domain              = R300_NUM_DOMAIN_FP24_RTZ,
    .encoding            = R300_CARRIER_ENC_IDENTITY,
-   .value_format        = PIPE_FORMAT_R8G8B8A8_UNORM,
-   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .value_format        = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
+   .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
    .max_exact_result    = 0,     /* passthrough: no integer result to bound */
@@ -41,8 +39,8 @@ const struct r300_carrier_policy r300_carrier_dp4_u7 = {
    .name                = "dp4-u7-exact",
    .domain              = R300_NUM_DOMAIN_U7_DOT,
    .encoding            = R300_CARRIER_ENC_RGBA8_UINT,
-   .value_format        = PIPE_FORMAT_R32G32B32A32_FLOAT,
-   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .value_format        = R300_CARRIER_FORMAT_R32G32B32A32_FLOAT,
+   .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 16,
    .output_stride       = 4,
    .max_exact_result    = 64516,  /* 4*(2^7-1)^2, hardware-confirmed */
@@ -58,8 +56,8 @@ const struct r300_carrier_policy r300_carrier_dp4_u8_boundary = {
    .name                = "dp4-u8-boundary",
    .domain              = R300_NUM_DOMAIN_U8_OFFGRID,
    .encoding            = R300_CARRIER_ENC_RGBA8_UINT,
-   .value_format        = PIPE_FORMAT_R32G32B32A32_FLOAT,
-   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .value_format        = R300_CARRIER_FORMAT_R32G32B32A32_FLOAT,
+   .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 16,
    .output_stride       = 4,
    .max_exact_result    = 131072,  /* FP24 exact integer window */
@@ -76,8 +74,8 @@ const struct r300_carrier_policy r300_carrier_blend_acc = {
    .name                = "blend-acc-reduction",
    .domain              = R300_NUM_DOMAIN_RB3D_BLEND,
    .encoding            = R300_CARRIER_ENC_RGBA8_UNORM,
-   .value_format        = PIPE_FORMAT_R8G8B8A8_UNORM,
-   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .value_format        = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
+   .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
    .max_exact_result    = 0,     /* per-bin sum range depends on input values and bin count */
@@ -95,8 +93,8 @@ const struct r300_carrier_policy r300_carrier_zpass = {
    .name                = "zpass-count",
    .domain              = R300_NUM_DOMAIN_ZPASS_COUNT,
    .encoding            = R300_CARRIER_ENC_UINT32_COUNTER,
-   .value_format        = PIPE_FORMAT_R8G8B8A8_UNORM,
-   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .value_format        = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
+   .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
    .max_exact_result    = 0,     /* count is unbounded within the RT extent */
@@ -108,8 +106,8 @@ const struct r300_carrier_policy r300_carrier_ieee16_classify = {
    .name                = "ieee16-classify",
    .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
    .encoding            = R300_CARRIER_ENC_FP16_RAWBITS_RGBA8,
-   .value_format        = PIPE_FORMAT_R32_FLOAT,
-   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .value_format        = R300_CARRIER_FORMAT_R32_FLOAT,
+   .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
    .max_exact_result    = 65535,  /* all 16-bit patterns */
@@ -121,8 +119,8 @@ const struct r300_carrier_policy r300_carrier_ieee16_mul = {
    .name                = "ieee16-mul",
    .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
    .encoding            = R300_CARRIER_ENC_RGBA8_U24,
-   .value_format        = PIPE_FORMAT_R32G32_FLOAT,
-   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .value_format        = R300_CARRIER_FORMAT_R32G32_FLOAT,
+   .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 8,
    .output_stride       = 4,
    .max_exact_result    = 4190209, /* 2047 * 2047 */
@@ -134,8 +132,8 @@ const struct r300_carrier_policy r300_carrier_ieee16_result = {
    .name                = "ieee16-result",
    .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
    .encoding            = R300_CARRIER_ENC_RGBA8_U16,
-   .value_format        = PIPE_FORMAT_R32_FLOAT,
-   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .value_format        = R300_CARRIER_FORMAT_R32_FLOAT,
+   .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
    .max_exact_result    = 65535,
@@ -147,8 +145,8 @@ const struct r300_carrier_policy r300_carrier_ieee16_debug = {
    .name                = "ieee16-debug",
    .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
    .encoding            = R300_CARRIER_ENC_RGBA8_UINT,
-   .value_format        = PIPE_FORMAT_R32_FLOAT,
-   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .value_format        = R300_CARRIER_FORMAT_R32_FLOAT,
+   .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
    .max_exact_result    = 0,

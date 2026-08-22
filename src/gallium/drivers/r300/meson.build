@@ -966,10 +966,27 @@ if with_tests
     ),
     suite : ['r300'],
   )
-  # Gallium adapter contracts over the API-neutral common vocabulary: the
-  # pipe_format vertex-format adapter and the R2VB source contract.  Both
+  # Gallium adapter contracts over the API-neutral common vocabulary: carrier
+  # and vertex identities map to pipe_format here, while the common policies
+  # and R2VB source contract retain no Gallium dependency.  These adapters
   # exercise Gallium-side headers, so they build here rather than under
   # src/amd/r300/common.
+  test(
+    'r300-carrier-format-pipe',
+    executable(
+      'r300_carrier_format_pipe_test',
+      files('tests/r300_carrier_format_pipe_test.c'),
+      c_args : r300_test_c_args,
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux,
+        inc_amd_r300_common, include_directories('.'),
+      ],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   test(
     'r300-vertex-format-pipe',
     executable(
