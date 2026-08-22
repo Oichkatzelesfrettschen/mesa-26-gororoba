@@ -1288,36 +1288,10 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       radeon_drm_vk_cs_build(&cs, cmd_buffer->ib,
                              cmd_buffer->ib_size_dwords, &relocs, 0, true);
 
-      /* The public draw's vertex reads and load-op clear execute here,
-       * per submission, so the stream bytes the carrier travels with are
-       * the ones live at submit -- Vulkan's execution-time ordering --
-       * and an unsubmitted command buffer leaves application memory
-       * untouched.  Execution precedes the hazard gate because the
-       * deferred work is CPU-side; the gate guards the ioctl alone.
-       */
-      VkResult deferred =
-         r3v_native_cmd_buffer_execute_deferred_draw(device, cmd_buffer);
-      if (deferred != VK_SUCCESS) {
-         free(reference_indices);
-         radeon_drm_vk_completion_finish(&device->drm, &completion);
-         radeon_drm_vk_reloc_list_finish(&relocs);
-         /* vkQueueSubmit's registry contract carries host and device
-          * exhaustion plus device loss, so a map failure reports as
-          * host exhaustion -- the exhausted resource is host address
-          * space -- and any other execution failure reports as device
-          * loss.
-          */
-         if (deferred == VK_ERROR_MEMORY_MAP_FAILED)
-            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-         if (deferred != VK_ERROR_OUT_OF_HOST_MEMORY &&
-             deferred != VK_ERROR_OUT_OF_DEVICE_MEMORY)
-            return vk_error(device, VK_ERROR_DEVICE_LOST);
-         return deferred;
-      }
-
       /* The submission ioctl opens only on the exact-value hazard gate; the
        * closed gate completes the full build, retains the manifest, and
-       * fails closed instead of reporting an execution that did not run.
+       * fails closed with application memory untouched: the deferred
+       * draw's writes come after every gate below.
        */
       if (!device->submit_hazard_accepted) {
          free(reference_indices);
@@ -1327,23 +1301,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: submission gate closed; set "
                           "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1 for an "
                           "attended run");
-      }
-
-      /* The RS480 GART reads and writes with request snooping disabled,
-       * and every GTT mapping is ttm_cached, so the driver keeps the
-       * HOST_COHERENT promise itself: every referenced memory with a live
-       * CPU mapping publishes its cache lines before the submission ioctl
-       * and invalidates them after completion, the only device-access
-       * window the synchronous submit model has.
-       */
-      for (uint32_t r = 0; r < cmd_buffer->reference_count; r++) {
-         const struct r3v_native_bo_reference *reference =
-            &cmd_buffer->references[r];
-         if (reference->memory != NULL && reference->memory->map != NULL) {
-            radeon_drm_vk_bo_cache_sync(&device->drm,
-                                        reference->memory->map,
-                                        reference->memory->bo.size);
-         }
       }
 
       /* The collected arming facts carry the same kernel and module identity
@@ -1384,6 +1341,53 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: submission refused: %s",
                           r3v_native_arming_verdict_name(arming));
       }
+
+      /* The public draw's vertex reads and load-op clear execute here,
+       * per submission, so the stream bytes the carrier travels with are
+       * the ones live at submit -- Vulkan's execution-time ordering.
+       * Every gate, allocation, mapping, retention, and the arming
+       * verdict precede this point, so a refused or failed submission
+       * leaves the application's target and carrier bytes untouched, and
+       * the one-shot disarm below follows it, so a refused draw spends no
+       * authorization.
+       */
+      VkResult deferred =
+         r3v_native_cmd_buffer_execute_deferred_draw(device, cmd_buffer);
+      if (deferred != VK_SUCCESS) {
+         free(reference_indices);
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         /* vkQueueSubmit's registry contract carries host and device
+          * exhaustion plus device loss, so a map failure reports as
+          * host exhaustion -- the exhausted resource is host address
+          * space -- and any other execution failure reports as device
+          * loss.
+          */
+         if (deferred == VK_ERROR_MEMORY_MAP_FAILED)
+            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         if (deferred != VK_ERROR_OUT_OF_HOST_MEMORY &&
+             deferred != VK_ERROR_OUT_OF_DEVICE_MEMORY)
+            return vk_error(device, VK_ERROR_DEVICE_LOST);
+         return deferred;
+      }
+
+      /* The RS480 GART reads and writes with request snooping disabled,
+       * and every GTT mapping is ttm_cached, so the driver keeps the
+       * HOST_COHERENT promise itself: every referenced memory with a live
+       * CPU mapping publishes its cache lines before the submission ioctl
+       * and invalidates them after completion, the only device-access
+       * window the synchronous submit model has.
+       */
+      for (uint32_t r = 0; r < cmd_buffer->reference_count; r++) {
+         const struct r3v_native_bo_reference *reference =
+            &cmd_buffer->references[r];
+         if (reference->memory != NULL && reference->memory->map != NULL) {
+            radeon_drm_vk_bo_cache_sync(&device->drm,
+                                        reference->memory->map,
+                                        reference->memory->bo.size);
+         }
+      }
+
       /* The first admission writes the token; a serial continuation runs
        * under the token this instance already wrote, and the evaluation
        * above proved that pairing.  Every admission counts against the

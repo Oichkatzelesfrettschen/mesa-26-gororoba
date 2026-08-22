@@ -5,9 +5,11 @@
  * render-pass/pipeline/draw sequence records the qualified triangle
  * cell through public entry points alone, and every contract deviation
  * refuses.  The hazard gate stays closed, so each vkQueueSubmit refuses
- * before the ioctl; the submit attempts exist because the deferred
- * vertex gather and load-op clear execute at submission, and the
- * harness verifies that execution-time boundary from both sides.
+ * before the ioctl and before the deferred vertex gather and load-op
+ * clear; the harness verifies that a refused submit leaves the carrier
+ * and the target untouched, and proves the execution-time boundary --
+ * the stream re-read and the clear realized at execution -- by driving
+ * the deferred executor directly.
  */
 
 /* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
@@ -990,9 +992,11 @@ main(void)
    vkUnmapMemory(device, color_memory);
 
    /* Execution-time boundary, submit side: the stream bytes the carrier
-    * travels with are the ones live at submission, so a write after
-    * recording is honored and each submission re-reads.  The closed
-    * hazard gate refuses the ioctl after the deferred execution ran.
+    * travels with are the ones live at execution, so a write after
+    * recording is honored and each execution re-reads.  The closed
+    * hazard gate refuses before the deferred execution, so the refused
+    * submit below changes nothing and the direct execution that follows
+    * carries the re-read proof.
     */
    uint32_t original_first_dword;
    memcpy(&original_first_dword, ndc_triangle,
@@ -1827,6 +1831,18 @@ main(void)
       vkFreeMemory(device, mem_b, NULL);
    }
 
+   /* Pre-commit refusal leaves bytes unchanged: the closed gate refuses
+    * before the deferred draw, so the carrier keeps its pre-submit
+    * content and the target keeps its seed.
+    */
+   uint32_t carrier_before[R300_TRIANGLE_VERTEX_DWORDS];
+   void *carrier_map = NULL;
+   assert(radeon_drm_vk_bo_map(&native_device->drm,
+                               &native_cmd->owned_carrier->bo,
+                               &carrier_map) == 0);
+   memcpy(carrier_before, carrier_map, sizeof(carrier_before));
+   radeon_drm_vk_bo_unmap(&native_device->drm,
+                          &native_cmd->owned_carrier->bo, carrier_map);
    const VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
       .commandBufferCount = 1,
@@ -1834,8 +1850,23 @@ main(void)
    };
    assert(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE) ==
           VK_ERROR_DEVICE_LOST);
+   assert(radeon_drm_vk_bo_map(&native_device->drm,
+                               &native_cmd->owned_carrier->bo,
+                               &carrier_map) == 0);
+   assert(memcmp(carrier_before, carrier_map, sizeof(carrier_before)) == 0);
+   radeon_drm_vk_bo_unmap(&native_device->drm,
+                          &native_cmd->owned_carrier->bo, carrier_map);
+   assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&color_map) == VK_SUCCESS);
+   assert(color_map[0] == COLOR_SEED);
+   assert(color_map[(R3V_NATIVE_TARGET_MEMORY_BYTES / 4) - 1] == COLOR_SEED);
+   vkUnmapMemory(device, color_memory);
 
-   void *carrier_map = NULL;
+   /* The execution re-reads the live stream: the deferred executor,
+    * driven directly, carries the mutated record into the carrier.
+    */
+   assert(r3v_native_cmd_buffer_execute_deferred_draw(
+             native_device, native_cmd) == VK_SUCCESS);
    assert(radeon_drm_vk_bo_map(&native_device->drm,
                                &native_cmd->owned_carrier->bo,
                                &carrier_map) == 0);
@@ -1859,9 +1890,9 @@ main(void)
 
    /* Restore and re-execute: the runtime latches the device lost after
     * the refused submit and later submits return before the driver
-    * runs, so re-execution exercises the queue's execution step
-    * directly -- the harness links the implementation.  The command
-    * buffer retains its carrier BO across executions, and each execution
+    * runs, so execution exercises the queue's execution step directly
+    * -- the harness links the implementation.  The command buffer
+    * retains its carrier BO across executions, and each execution
     * re-reads the stream into that carrier.
     */
    assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
@@ -1880,9 +1911,8 @@ main(void)
    radeon_drm_vk_bo_unmap(&native_device->drm,
                           &native_cmd->owned_carrier->bo, carrier_map);
 
-   /* The load-op clear executed at submission over the image's declared
-    * footprint alone: sentinel inside, the page past the footprint
-    * untouched.
+   /* The load-op clear executed over the image's declared footprint
+    * alone: sentinel inside, the page past the footprint untouched.
     */
    assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                       (void **)&color_map) == VK_SUCCESS);
