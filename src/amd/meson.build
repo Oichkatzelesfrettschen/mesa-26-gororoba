@@ -58,10 +58,10 @@ if with_gallium_r300 or with_ati_r300_vk
   subdir('r300/compiler')
 endif
 
-# API-neutral R300 format/source-contract tests.  They are registered here
-# rather than in the Gallium driver subdirectory so the shared vocabulary has
-# one build owner while the Gallium adapter remains conditional on r300g.
-if with_tests and with_gallium_r300
+# API-neutral R300 silicon-contract tests.  They are registered here rather
+# than in either API driver, so both r300g and a native-only R3V build exercise
+# the shared vocabulary while their adapters remain independently optional.
+if with_tests and (with_gallium_r300 or with_ati_r300_vk)
   subdir('r300/common')
 endif
 
