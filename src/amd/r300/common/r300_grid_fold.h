@@ -8,6 +8,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "amd/r300/common/r300_numeric_domain.h"
+
 /* Grid-fold model for compute-as-raster dispatch replay.
  *
  * The R300 fragment ALU is FP24 (1 sign, 7 exponent, 16 mantissa bits, a
@@ -25,7 +27,7 @@
  *  - A linear-indexed kernel (index class LINEAR) materializes
  *    gid = y * width + x as a single FP24 value.  Index identity holds only
  *    while every gid in [0, total - 1] is exactly representable, so total
- *    must stay at or below 2^17.
+ *    may contain at most 2^17 + 1 invocations: the final exact gid is 2^17.
  *
  *  - A strided kernel (index class STRIDED) materializes a * gid + b.  The
  *    multiply of two exact integers and the following add are exact in FP24
@@ -38,18 +40,15 @@
  * arithmetic is always exact; the binding constraint is dim_y * dim_z <= 2048.
  */
 
-/* Largest integer N such that every integer in [0, N] is exact in FP24. */
-#define R300_FP24_EXACT_INT_CEILING ((uint32_t)1 << 17)
-
 /* Common safe raster axis for a surface that is both rendered and sampled:
  * the R300 2D texture axis cap (2048), which is the smaller of the sampler
  * limit and the 2560 color-render limit.  The fold uses it so every grid
  * surface stays sampleable as well as renderable. */
 #define R300_RASTER_AXIS_CAP 2048u
 
-/* How the admitted kernel consumes the synthetic work-item index.  The
- * admission detectors classify this from the NIR consumption shape of
- * load_global_invocation_id / the lowered index varying. */
+/* How the admitted kernel consumes the synthetic work-item index.  Each API
+ * front end maps its own compiler representation onto this hardware-facing
+ * class before asking the common exactness gate for a decision. */
 enum r300_grid_index_class {
    /* Index never read: output addressed implicitly by texel position
     * (CONSTFILL, pure map kernels). */
@@ -64,13 +63,14 @@ enum r300_grid_index_class {
 };
 
 /* True when every linear index in [0, total_invocations - 1] is exactly
- * representable in FP24.  The boundary total == 2^17 is admissible: the
- * largest materialized index is then 2^17 - 1. */
+ * representable in FP24.  R300_FP24_EXACT_INT_CEILING bounds the index, not
+ * the count: total == 2^17 + 1 is admissible because its largest materialized
+ * index is exactly 2^17. */
 static inline bool
 r300_grid_linear_index_exact(uint64_t total_invocations)
 {
    return total_invocations > 0 &&
-          total_invocations <= R300_FP24_EXACT_INT_CEILING;
+          total_invocations - 1 <= R300_FP24_EXACT_INT_CEILING;
 }
 
 /* True when a * gid + b stays inside the FP24 exact-integer window for
@@ -84,11 +84,16 @@ r300_grid_strided_index_exact(uint64_t total_invocations,
 {
    if (total_invocations == 0)
       return false;
+   if (offset > R300_FP24_EXACT_INT_CEILING)
+      return false;
    if (stride == 0)
-      return offset <= R300_FP24_EXACT_INT_CEILING;
-   const uint64_t max_value =
-      (uint64_t)stride * (total_invocations - 1) + offset;
-   return max_value <= R300_FP24_EXACT_INT_CEILING;
+      return true;
+
+   /* Compare in the bounded domain instead of materializing
+    * stride * (total - 1) + offset.  A hostile uint64_t invocation count
+    * could overflow that product and wrap back into the exact window. */
+   return total_invocations - 1 <=
+          (R300_FP24_EXACT_INT_CEILING - offset) / stride;
 }
 
 /* Admission guard dispatched on index class.  Position-addressed classes are

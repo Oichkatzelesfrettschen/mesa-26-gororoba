@@ -60,7 +60,7 @@ const struct r300_carrier_policy r300_carrier_dp4_u8_boundary = {
    .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 16,
    .output_stride       = 4,
-   .max_exact_result    = 131072,  /* FP24 exact integer window */
+   .max_exact_result    = R300_FP24_EXACT_INT_CEILING,
    .encodes_full_uint32 = false,
    .requires_fp32_rt    = false,
 };

@@ -14,7 +14,7 @@
 #include "r3v_buffer.h"
 #include "r3v_cmd_buffer.h"
 
-#include "r300/r300_grid_fold.h"
+#include "amd/r300/common/r300_grid_fold.h"
 
 #include "compiler/shader_enums.h"
 #include "pipe/p_context.h"

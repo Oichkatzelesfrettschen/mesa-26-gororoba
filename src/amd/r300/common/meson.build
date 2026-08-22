@@ -61,6 +61,19 @@ r300_format_contract_test_includes = [
   include_directories('.'),
 ]
 
+r300_grid_fold_test = executable(
+  'r300_grid_fold_test',
+  files('tests/r300_grid_fold_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-grid-fold',
+  r300_grid_fold_test,
+  suite : ['r300'],
+)
+
 # The source audit proves the namespace and include boundary.  This archive
 # audit proves the separately compiled common object set cannot hide an
 # undefined Gallium, NIR, VTN, or TGSI dependency behind an inline or generated

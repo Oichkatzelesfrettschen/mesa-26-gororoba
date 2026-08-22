@@ -29,6 +29,10 @@
 extern "C" {
 #endif
 
+/* Largest integer N such that every integer in [0, N] is exact in FP24.
+ * This is a silicon numeric-domain constant, not an API or compiler policy. */
+#define R300_FP24_EXACT_INT_CEILING ((uint32_t)1 << 17)
+
 /* Rounding contract for an arithmetic domain.  EXACT captures the
  * FP24 integer window (result is the mathematical value when bounded).
  * TRUNCATE is the FP24 RTZ model for out-of-window floating-point ops.
