@@ -871,23 +871,21 @@ r3v_get_image_format_properties(
       max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_3D:
-      /* r3v backs every image with a single PIPE_TEXTURE_2D resource of
-       * depth0 == 1 (r3v_image_create_tile_resources), so a 3D image's
-       * depth slices have no storage and any depth > 1 access reads or writes
-       * the wrong slice.  Report VK_IMAGE_TYPE_3D unsupported so this query,
-       * vkCreateImage, and the transfer/blit replay agree, and a 3D image test
-       * is NotSupported rather than silently incorrect.  This is a deliberate,
-       * deferred conformance gap: VK 1.0 requires maxImageDimension3D >= 256,
-       * which r3v reports as a device limit but cannot honor per format
-       * until a real 3D resource path exists. */
+      /* Every image is one flat 2D linear layer over its GEM BO
+       * (r3v_native_image.c), so a 3D image's depth slices have no storage.
+       * Report VK_IMAGE_TYPE_3D unsupported so this query, vkCreateImage,
+       * and the transfer path agree, and a 3D image test is NotSupported
+       * rather than silently incorrect.  VK 1.0 requires
+       * maxImageDimension3D >= 256, which the device limit reports and no
+       * format honors until a 3D layout exists. */
       goto unsupported;
    default:
       goto unsupported;
    }
 
-   /* A linear image is one row-major r300g tile, so its extent is bounded by
-    * the single-tile limit vkCreateImage's linear accept gate enforces.
-    * Report the same bound here so the two stay one contract. */
+   /* A linear image is one row-major span, so its extent is bounded by the
+    * single-span render dimension vkCreateImage's linear accept gate
+    * enforces.  Report the same bound here so the two stay one contract. */
    if (info->tiling == VK_IMAGE_TILING_LINEAR) {
       max_extent.width = MIN2(max_extent.width,
                               R3V_R3XX_MAX_RENDER_DIMENSION);
@@ -895,14 +893,11 @@ r3v_get_image_format_properties(
                                R3V_R3XX_MAX_RENDER_DIMENSION);
    }
 
-   /* r3v has no multisample path: the image model is single-sample r300g
-    * tiles with a CPU transfer/clear replay and no MSAA resolve, so every image
-    * format supports exactly one sample.  Reporting more lets a test build a
-    * multisample image and then resolve it (CmdResolveImage), which the runtime
-    * lowers through an unimplemented destination path and crashes.  The VK 1.0
-    * framebuffer*SampleCounts device limits keep the required 4x minimum; this is
-    * the per-format image capability, which is honestly single-sample.  The two
-    * differ until a real MSAA path exists -- a known, deferred conformance gap. */
+   /* There is no multisample path: images are single-sample flat layers
+    * with host-mapped transfers and no resolve, so every format supports
+    * exactly one sample.  The VK 1.0 framebuffer*SampleCounts device limits
+    * keep the required 4x minimum; this is the per-format image capability,
+    * which is single-sample until a multisample layout and resolve exist. */
    *image_properties = (VkImageFormatProperties){
       .maxExtent = max_extent,
       .maxMipLevels = max_mip_levels,
