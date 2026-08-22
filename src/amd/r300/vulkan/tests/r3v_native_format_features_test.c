@@ -13,7 +13,14 @@
 #include <vulkan/vulkan.h>
 
 static unsigned failures;
-static bool inject_uniform_texel_buffer;
+
+enum mutation_mode {
+   MUTATION_NONE,
+   MUTATION_UNIFORM_TEXEL_BUFFER,
+   MUTATION_PROPERTIES2_DISAGREEMENT,
+};
+
+static enum mutation_mode mutation;
 
 #define CHECK(condition, ...)                                                \
    do {                                                                      \
@@ -41,8 +48,13 @@ check_format_features(
    };
    properties2_query(physical_device, format, &properties2);
 
-   if (inject_uniform_texel_buffer && format == VK_FORMAT_R32_SFLOAT) {
+   if (mutation == MUTATION_UNIFORM_TEXEL_BUFFER &&
+       format == VK_FORMAT_R32_SFLOAT) {
       legacy.bufferFeatures |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
+      properties2.formatProperties.bufferFeatures |=
+         VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
+   } else if (mutation == MUTATION_PROPERTIES2_DISAGREEMENT &&
+              format == VK_FORMAT_R32_SFLOAT) {
       properties2.formatProperties.bufferFeatures |=
          VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
    }
@@ -64,9 +76,15 @@ int
 main(int argc, char **argv)
 {
    if (argc == 2 && strcmp(argv[1], "--inject-uniform-texel-buffer") == 0) {
-      inject_uniform_texel_buffer = true;
+      mutation = MUTATION_UNIFORM_TEXEL_BUFFER;
+   } else if (argc == 2 &&
+              strcmp(argv[1], "--inject-properties2-disagreement") == 0) {
+      mutation = MUTATION_PROPERTIES2_DISAGREEMENT;
    } else if (argc != 1) {
-      fprintf(stderr, "usage: %s [--inject-uniform-texel-buffer]\n", argv[0]);
+      fprintf(stderr,
+              "usage: %s [--inject-uniform-texel-buffer | "
+              "--inject-properties2-disagreement]\n",
+              argv[0]);
       return 2;
    }
 

@@ -1579,6 +1579,17 @@ if get_option('r3v-native-backend')
         timeout : 120,
         suite : ['r3v'],
       )
+      test(
+        'r3v-native-format-features-known-bad-query-disagreement',
+        r3v_native_format_features_test,
+        args : ['--inject-properties2-disagreement'],
+        env : r3v_native_loader_env,
+        depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
+                   _native_dev_icd],
+        should_fail : true,
+        timeout : 120,
+        suite : ['r3v'],
+      )
       # End-to-end dispatch through the native compute surface: the
       # gate-off leg proves the family withholds COMPUTE and pipeline
       # creation refuses; the gate-on leg drives the reference

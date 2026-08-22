@@ -202,9 +202,9 @@ In particular:
   already-present native R3V mechanisms;
 - `r3v-native-format-features` preserves the former format fixture through
   `vkGetPhysicalDeviceFormatProperties` and
-  `vkGetPhysicalDeviceFormatProperties2KHR`; its calibrated texel-buffer
-  mutation reaches the same public-query comparison through the native ICD
-  alone.
+  `vkGetPhysicalDeviceFormatProperties2KHR`; separate calibrated mutations
+  exercise its exact feature-mask and cross-query agreement verdicts through
+  the native ICD alone.
 
 The verifier refuses missing or stale rows, a Gallium move without a present
 production caller, a common extraction without two present bases, and any

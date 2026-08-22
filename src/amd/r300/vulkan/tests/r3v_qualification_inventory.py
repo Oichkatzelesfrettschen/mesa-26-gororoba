@@ -134,6 +134,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-direct-table-sweep-known-bad-higher-core",
     "r3v-native-direct-table-sweep-known-bad-promoted-alias",
     "r3v-native-format-features",
+    "r3v-native-format-features-known-bad-query-disagreement",
     "r3v-native-format-features-known-bad-texel-buffer",
     "r3v-native-loader-sweep",
     "r3v-native-loader-application",
