@@ -22,7 +22,7 @@
 #include "compiler/glsl_types.h"
 
 #include "r300_compute_admission.h"
-#include "r300_grid_fold.h"
+#include "amd/r300/common/r300_grid_fold.h"
 
 static unsigned g_failures;
 
@@ -3693,10 +3693,10 @@ case_index_consumption(void)
    ralloc_free(zero_workgroup);
 
    /* FP24 exact-ceiling guard boundaries (pure arithmetic, no NIR). */
-   CHECK(r300_grid_linear_index_exact(131072),
-         "linear total 2^17 admits (largest index 2^17 - 1)");
-   CHECK(!r300_grid_linear_index_exact(131073),
-         "linear total 2^17 + 1 rejects");
+   CHECK(r300_grid_linear_index_exact(131073),
+         "linear total 2^17 + 1 admits (largest index 2^17)");
+   CHECK(!r300_grid_linear_index_exact(131074),
+         "linear total 2^17 + 2 rejects");
    CHECK(r300_grid_strided_index_exact(32768, 4, 0),
          "strided 4 * (2^15 - 1) admits");
    CHECK(!r300_grid_strided_index_exact(32770, 4, 0),

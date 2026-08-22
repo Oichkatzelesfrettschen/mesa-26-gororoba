@@ -28,11 +28,9 @@
 
 #include "r300_nir.h"
 
+#include "amd/r300/common/r300_numeric_domain.h"
 #include "compiler/nir/nir_builder.h"
 #include "util/hash_table.h"
-
-/* FP24 RTZ represents integers exactly only up to this bound. */
-#define R300_FP24_EXACT_INT 131072u /* 2^17 */
 
 struct bitwise_state {
    bool unsupported;
@@ -62,7 +60,7 @@ scalar_is_exact_integer(struct bitwise_state *st, nir_shader *s,
                         nir_scalar scalar)
 {
    return nir_unsigned_upper_bound(s, st->range_ht, scalar) <=
-          R300_FP24_EXACT_INT;
+          R300_FP24_EXACT_INT_CEILING;
 }
 
 static bool
@@ -184,7 +182,7 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
          moduli[component] = masks[component] + 1;
          if (moduli[component] == 0 ||
              (moduli[component] & (moduli[component] - 1)) != 0 ||
-             moduli[component] > R300_FP24_EXACT_INT)
+             moduli[component] > R300_FP24_EXACT_INT_CEILING)
             goto unsupported;
       }
 

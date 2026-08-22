@@ -7,16 +7,12 @@
 
 #include "r300_nir_ssa_cut.h"
 
+#include "amd/r300/common/r300_numeric_domain.h"
 #include "nir_builder.h"
 #include "util/hash_table.h"
 #include "util/macros.h"
 
 #include <limits.h>
-
-/* The carry BO stores FP32, but R300 executes these conversions through its
- * FP24 RTZ fragment ALU. r300_numeric_domain.c records 2^17 as that ALU's
- * exact integer bound. */
-#define R300_MP_FP24_EXACT_INT 131072u
 
 /* fneg/fabs fold into RC source modifiers and mov copy-propagates, so a
  * modifier tail over a carried value is free in pass B; carrying the base
@@ -436,7 +432,7 @@ r300_mp_select_r2vb_transport(nir_shader *shader,
             nir_scalar scalar = nir_get_scalar(base, component);
             if (semantic_type == nir_type_uint) {
                 if (nir_unsigned_upper_bound(shader, range_ht, scalar) >
-                    R300_MP_FP24_EXACT_INT) {
+                    R300_FP24_EXACT_INT_CEILING) {
                     if (decline)
                         *decline = R300_MP_TRANSPORT_UNSIGNED_RANGE;
                     return false;
@@ -444,8 +440,8 @@ r300_mp_select_r2vb_transport(nir_shader *shader,
             } else {
                 int32_t lo, hi;
                 r300_mp_signed_range(shader, range_ht, scalar, &lo, &hi, 0);
-                if (lo < -(int32_t)R300_MP_FP24_EXACT_INT ||
-                    hi > (int32_t)R300_MP_FP24_EXACT_INT) {
+                if (lo < -(int32_t)R300_FP24_EXACT_INT_CEILING ||
+                    hi > (int32_t)R300_FP24_EXACT_INT_CEILING) {
                     if (decline)
                         *decline = R300_MP_TRANSPORT_SIGNED_RANGE;
                     return false;

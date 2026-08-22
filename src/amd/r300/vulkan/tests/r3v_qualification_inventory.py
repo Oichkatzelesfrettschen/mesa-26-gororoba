@@ -87,6 +87,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-tcl-bypass-triangle",
     "r300-delivery-route",
     "r300-r2vb-carrier-delivery",
+    "r300-grid-fold",
     "r300-common-boundary-audit-selftest",
     "r300-common-boundary-audit-common-sources",
     "r300-common-boundary-audit-common-objects",
