@@ -47,7 +47,7 @@
 struct simd_lane {
    const char *name;
    int (*execute)(const struct r300_vertex_job *job,
-                  const struct r300_cpu_vertex_stream *stream,
+                  const struct r300_vertex_stream *stream,
                   uint32_t first_vertex, uint32_t vertex_count,
                   uint32_t *carrier, uint32_t carrier_dwords);
 };
@@ -178,7 +178,7 @@ static void differential_random_jobs(const struct simd_lane *lane)
    uint32_t stream_bytes[VERTEX_COUNT * 4];
    for (uint32_t i = 0; i < VERTEX_COUNT * 4; i++)
       stream_bytes[i] = hostile_bits();
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)stream_bytes,
       .stride = STREAM_STRIDE,
       .size_bytes = sizeof(stream_bytes),
@@ -234,7 +234,7 @@ static void witness_fmad_two_roundings(const struct simd_lane *lane)
       job.constants[1][lane] = 0xbf801000u; /* -(1 + 2^-11) */
    }
    const uint32_t stream_bytes[4] = { 0, 0, 0, 0 };
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)stream_bytes,
       .stride = STREAM_STRIDE,
       .size_bytes = sizeof(stream_bytes),
@@ -281,7 +281,7 @@ static void witness_float_environment(const struct simd_lane *lane)
    const uint32_t input[4] = {
       0x3f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u,
    };
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)input,
       .stride = STREAM_STRIDE,
       .size_bytes = sizeof(input),
@@ -303,7 +303,7 @@ static void witness_float_environment(const struct simd_lane *lane)
    const uint32_t smallest_normal[4] = {
       0x00800000u, 0x00800000u, 0x00800000u, 0x00800000u,
    };
-   const struct r300_cpu_vertex_stream denorm_stream = {
+   const struct r300_vertex_stream denorm_stream = {
       .data = (const uint8_t *)smallest_normal,
       .stride = STREAM_STRIDE,
       .size_bytes = sizeof(smallest_normal),
@@ -341,7 +341,7 @@ static void witness_dp4_signed_zero(const struct simd_lane *lane)
       job.constants[1][lane] = 0x3f800000u; /* 1.0 */
    }
    const uint32_t stream_bytes[4] = { 0, 0, 0, 0 };
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)stream_bytes,
       .stride = STREAM_STRIDE,
       .size_bytes = sizeof(stream_bytes),
@@ -378,7 +378,7 @@ static void witness_nan_policy(const struct simd_lane *lane)
    const uint32_t input[4] = {
       0x7f800000u, 0x3f800000u, 0x3f800000u, 0x80000000u,
    };
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)input,
       .stride = STREAM_STRIDE,
       .size_bytes = sizeof(input),
@@ -413,7 +413,7 @@ static void refusal_parity(const struct simd_lane *lane)
    struct r300_vertex_job job;
    random_job(&job);
    uint32_t stream_bytes[VERTEX_COUNT * 4] = { 0 };
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)stream_bytes,
       .stride = STREAM_STRIDE,
       .size_bytes = sizeof(stream_bytes),
@@ -454,7 +454,7 @@ int main(void)
          },
       };
       const uint32_t stream_bytes[4] = { 1, 2, 3, 4 };
-      const struct r300_cpu_vertex_stream stream = {
+      const struct r300_vertex_stream stream = {
          .data = (const uint8_t *)stream_bytes,
          .stride = STREAM_STRIDE,
          .size_bytes = sizeof(stream_bytes),

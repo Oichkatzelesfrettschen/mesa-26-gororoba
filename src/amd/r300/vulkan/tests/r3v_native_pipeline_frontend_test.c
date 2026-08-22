@@ -60,7 +60,7 @@ static void test_reference_vertex_module(void)
       { 0x7fc00123u, 0x80000000u, f_bits(-5.0f), f_bits(0.5f) },
       { f_bits(9.0f), f_bits(8.0f), f_bits(7.0f), f_bits(6.0f) },
    };
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)records,
       .stride = 16,
       .size_bytes = sizeof(records),
@@ -147,7 +147,7 @@ static void test_reference_arith_module(void)
    const uint32_t record[4] = {
       f_bits(in[0]), f_bits(in[1]), f_bits(in[2]), f_bits(in[3]),
    };
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)record,
       .stride = 16,
       .size_bytes = sizeof(record),

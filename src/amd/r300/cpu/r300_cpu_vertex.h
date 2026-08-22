@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 
+#include "amd/r300/common/r300_vertex_stream.h"
+
 /* The executor realizes the PSC lane semantics on the host: each output
  * lane takes the physical component or synthesized constant that
  * r300_vertex_format_semantics.select names, so the CPU-built carrier
@@ -37,21 +39,6 @@
  * selection.
  */
 
-/* One bound attribute stream: data points at the first record of the
- * first vertex (binding base plus attribute offset already applied),
- * stride is the byte distance between records (zero repeats the first
- * record for every vertex), and size_bytes bounds
- * the readable range from data.  The gather validates every requested
- * record against the bound in 64-bit arithmetic and refuses a range it
- * cannot prove readable, so a malformed binding rejects instead of
- * reading outside the mapped vertex data.
- */
-struct r300_cpu_vertex_stream {
-   const uint8_t *data;
-   uint32_t stride;
-   uint64_t size_bytes;
-};
-
 /* Gathers vertex_count records starting at first_vertex into the
  * carrier as packed logical vec4 dwords (VAP_VTX_SIZE = 4) in the
  * little-endian carrier encoding.  The carrier is the caller's mapped
@@ -60,7 +47,7 @@ struct r300_cpu_vertex_stream {
  * -EINVAL.  Returns 0 on success.
  */
 int r300_cpu_vertex_gather(int format_id,
-                           const struct r300_cpu_vertex_stream *stream,
+                           const struct r300_vertex_stream *stream,
                            uint32_t first_vertex, uint32_t vertex_count,
                            uint32_t *carrier, uint32_t carrier_dwords);
 
@@ -68,7 +55,7 @@ int r300_cpu_vertex_gather(int format_id,
  * same contract as r300_cpu_vertex_gather.
  */
 int r300_cpu_vertex_gather_baseline(
-   int format_id, const struct r300_cpu_vertex_stream *stream,
+   int format_id, const struct r300_vertex_stream *stream,
    uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
    uint32_t carrier_dwords);
 
@@ -79,12 +66,12 @@ int r300_cpu_vertex_gather_baseline(
  * times a different implementation than its label names.
  */
 int r300_cpu_vertex_gather_sse2(
-   int format_id, const struct r300_cpu_vertex_stream *stream,
+   int format_id, const struct r300_vertex_stream *stream,
    uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
    uint32_t carrier_dwords);
 
 int r300_cpu_vertex_gather_sse3(
-   int format_id, const struct r300_cpu_vertex_stream *stream,
+   int format_id, const struct r300_vertex_stream *stream,
    uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
    uint32_t carrier_dwords);
 

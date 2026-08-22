@@ -135,7 +135,7 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
  * proven before either kernel writes a carrier byte.
  */
 static int execute_guard(const struct r300_vertex_job *job,
-                         const struct r300_cpu_vertex_stream *stream,
+                         const struct r300_vertex_stream *stream,
                          uint32_t first_vertex, uint32_t vertex_count,
                          const uint32_t *carrier, uint32_t carrier_dwords)
 {
@@ -180,7 +180,7 @@ static int execute_guard(const struct r300_vertex_job *job,
 }
 
 int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
-                                const struct r300_cpu_vertex_stream *stream,
+                                const struct r300_vertex_stream *stream,
                                 uint32_t first_vertex, uint32_t vertex_count,
                                 uint32_t *carrier, uint32_t carrier_dwords)
 {
@@ -339,7 +339,7 @@ simd_float_result(__m128i bits)
 
 static ALWAYS_INLINE int
 execute_simd(const struct r300_vertex_job *job,
-             const struct r300_cpu_vertex_stream *stream,
+             const struct r300_vertex_stream *stream,
              uint32_t first_vertex, uint32_t vertex_count,
              uint32_t *carrier, uint32_t carrier_dwords,
              enum simd_load_form form)
@@ -443,7 +443,7 @@ out:
 
 int r300_cpu_vertex_job_execute_sse2(
    const struct r300_vertex_job *job,
-   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *stream, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
 {
    return execute_simd(job, stream, first_vertex, vertex_count, carrier,
@@ -454,7 +454,7 @@ int r300_cpu_vertex_job_execute_sse2(
 
 int r300_cpu_vertex_job_execute_sse3(
    const struct r300_vertex_job *job,
-   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *stream, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
 {
    return execute_simd(job, stream, first_vertex, vertex_count, carrier,
@@ -465,7 +465,7 @@ int r300_cpu_vertex_job_execute_sse3(
 
 int r300_cpu_vertex_job_execute_sse3(
    const struct r300_vertex_job *job,
-   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *stream, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
 {
    (void)job;
@@ -483,7 +483,7 @@ int r300_cpu_vertex_job_execute_sse3(
 
 int r300_cpu_vertex_job_execute_sse2(
    const struct r300_vertex_job *job,
-   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *stream, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
 {
    (void)job;
@@ -497,7 +497,7 @@ int r300_cpu_vertex_job_execute_sse2(
 
 int r300_cpu_vertex_job_execute_sse3(
    const struct r300_vertex_job *job,
-   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *stream, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
 {
    (void)job;

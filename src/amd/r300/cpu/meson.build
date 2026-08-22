@@ -119,6 +119,24 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Differential equivalence between the API-neutral R2VB delivery model and
+  # the portable and selected CPU gathers belongs to the CPU consumer.  The
+  # resulting build edge points from the CPU consumer into common.
+  test(
+    'r300-r2vb-carrier-delivery',
+    executable(
+      'r300_r2vb_carrier_delivery_test',
+      files('../common/r300_r2vb_carrier_delivery.c',
+            'tests/r300_r2vb_carrier_delivery_test.c'),
+      include_directories : [inc_src, inc_include,
+                             include_directories('.'),
+                             inc_amd_r300_common],
+      link_with : [libr300_cpu],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   test(
     'r300-cpu-vertex-job',
     executable(

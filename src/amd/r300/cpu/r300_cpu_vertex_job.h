@@ -37,7 +37,7 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job);
  * dwords past 4 * vertex_count stay untouched.
  */
 int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
-                                const struct r300_cpu_vertex_stream *stream,
+                                const struct r300_vertex_stream *stream,
                                 uint32_t first_vertex, uint32_t vertex_count,
                                 uint32_t *carrier, uint32_t carrier_dwords);
 
@@ -78,12 +78,12 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
  */
 int r300_cpu_vertex_job_execute_sse2(
    const struct r300_vertex_job *job,
-   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *stream, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords);
 
 int r300_cpu_vertex_job_execute_sse3(
    const struct r300_vertex_job *job,
-   const struct r300_cpu_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *stream, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords);
 
 /* Names the implementation the CPU vertex route executes: "scalar" until

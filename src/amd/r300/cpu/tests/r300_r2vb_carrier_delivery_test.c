@@ -14,6 +14,7 @@
 #include "r300_r2vb_carrier_delivery.h"
 
 #include "amd/r300/common/r300_vertex_format.h"
+#include "amd/r300/cpu/r300_cpu_vertex.h"
 #include "r300_us_source_read.h"
 
 #include <assert.h>
@@ -100,7 +101,7 @@ test_three_way_identity(void)
          store_le32(data + v * STRIDE + lane * 4, bits);
       }
    }
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = data,
       .stride = STRIDE,
       .size_bytes = sizeof(data),
@@ -151,7 +152,7 @@ test_zero_stride_identity(void)
       for (unsigned lane = 0; lane < record_size / 4; lane++)
          store_le32(data + lane * 4, admitted_bits[lane]);
 
-      const struct r300_cpu_vertex_stream stream = {
+      const struct r300_vertex_stream stream = {
          .data = data,
          .stride = 0,
          .size_bytes = record_size,
@@ -187,7 +188,7 @@ test_refusals(void)
 {
    uint8_t data[4 * 16];
    memset(data, 0, sizeof(data));
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = data,
       .stride = 16,
       .size_bytes = sizeof(data),
@@ -200,7 +201,7 @@ test_refusals(void)
    /* A stride below the record size describes overlapping records, the
     * binding the gather refuses; delivery holds the same contract.
     */
-   const struct r300_cpu_vertex_stream overlapping = {
+   const struct r300_vertex_stream overlapping = {
       .data = data,
       .stride = 12,
       .size_bytes = sizeof(data),
@@ -219,7 +220,7 @@ test_refusals(void)
     * delivery holds the same contract instead of reading past the
     * stream.
     */
-   const struct r300_cpu_vertex_stream wrap = {
+   const struct r300_vertex_stream wrap = {
       .data = data,
       .stride = 0xffffffffu,
       .size_bytes = 16,
@@ -291,7 +292,7 @@ test_synthesized_identity(void)
       const uint32_t leading_off_grid = 0x3dcccccdu;
       store_le32(data, leading_off_grid);
 
-      const struct r300_cpu_vertex_stream stream = {
+      const struct r300_vertex_stream stream = {
          .data = data,
          .stride = stride,
          .size_bytes = sizeof(data),
@@ -329,7 +330,7 @@ test_synthesized_identity(void)
       memcpy(bad, data, sizeof(data));
       const uint32_t off_grid = 0x3dcccccdu;
       store_le32(bad + (first + 1) * stride + (lanes - 1) * 4, off_grid);
-      const struct r300_cpu_vertex_stream bad_stream = {
+      const struct r300_vertex_stream bad_stream = {
          .data = bad,
          .stride = stride,
          .size_bytes = sizeof(bad),

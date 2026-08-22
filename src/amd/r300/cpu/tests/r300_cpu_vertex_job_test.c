@@ -45,11 +45,11 @@ static void fill_canary(uint32_t *carrier)
       carrier[i] = CANARY;
 }
 
-static struct r300_cpu_vertex_stream stream_of(const void *data,
+static struct r300_vertex_stream stream_of(const void *data,
                                                uint32_t stride,
                                                uint64_t size_bytes)
 {
-   struct r300_cpu_vertex_stream stream = {
+   struct r300_vertex_stream stream = {
       .data = (const uint8_t *)data,
       .stride = stride,
       .size_bytes = size_bytes,
@@ -81,7 +81,7 @@ static void test_identity_preserves_bits(void)
       { f_bits(3.0f), f_bits(4.0f), f_bits(5.0f), f_bits(6.0f) },
    };
    const struct r300_vertex_job job = identity_job(R300_VERTEX_FORMAT_F32_4);
-   const struct r300_cpu_vertex_stream stream =
+   const struct r300_vertex_stream stream =
       stream_of(records, 16, sizeof(records));
    uint32_t carrier[CARRIER_DWORDS];
    fill_canary(carrier);
@@ -103,7 +103,7 @@ static void test_f32_2_synthesis(void)
       { 0x7fc00042u, f_bits(0.5f) },
    };
    const struct r300_vertex_job job = identity_job(R300_VERTEX_FORMAT_F32_2);
-   const struct r300_cpu_vertex_stream stream =
+   const struct r300_vertex_stream stream =
       stream_of(records, 8, sizeof(records));
    uint32_t carrier[CARRIER_DWORDS];
    fill_canary(carrier);
@@ -122,7 +122,7 @@ static void run_one(const struct r300_vertex_job *job,
                     const uint32_t input[4], uint32_t out[4])
 {
    uint32_t carrier[4];
-   const struct r300_cpu_vertex_stream stream = stream_of(input, 16, 16);
+   const struct r300_vertex_stream stream = stream_of(input, 16, 16);
    int rc = r300_cpu_vertex_job_execute(job, &stream, 0, 1, carrier, 4);
    assert(rc == 0);
    memcpy(out, carrier, sizeof(carrier));
@@ -422,7 +422,7 @@ static void test_execute_refusals_no_partial_write(void)
 {
    const uint32_t records[3][4] = { { 1, 2, 3, 4 } };
    const struct r300_vertex_job job = identity_job(R300_VERTEX_FORMAT_F32_4);
-   struct r300_cpu_vertex_stream stream =
+   struct r300_vertex_stream stream =
       stream_of(records, 16, sizeof(records));
    uint32_t carrier[CARRIER_DWORDS];
 
@@ -449,7 +449,7 @@ static void test_execute_refusals_no_partial_write(void)
 
    /* Carrier overlapping the stream bytes refuses before writing. */
    static uint32_t shared[16] = { 1, 2, 3, 4 };
-   struct r300_cpu_vertex_stream aliased =
+   struct r300_vertex_stream aliased =
       stream_of(shared, 16, sizeof(shared));
    rc = r300_cpu_vertex_job_execute(&job, &aliased, 0, 1, shared + 8, 8);
    assert(rc == -EINVAL);
@@ -478,7 +478,7 @@ static void test_determinism(void)
          { f_bits(1.25f), f_bits(-2.0f), f_bits(3.5f), f_bits(0.75f) },
       },
    };
-   const struct r300_cpu_vertex_stream stream =
+   const struct r300_vertex_stream stream =
       stream_of(records, 16, sizeof(records));
    uint32_t first[CARRIER_DWORDS], second[CARRIER_DWORDS];
    fill_canary(first);

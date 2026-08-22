@@ -12,7 +12,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "amd/r300/cpu/r300_cpu_vertex.h"
+#include "amd/r300/common/r300_vertex_stream.h"
 
 /* The R2VB producer routes every attribute through the US fragment
  * datapath: the input registers, the copy, and the interpolator carry
@@ -49,7 +49,7 @@ bool r300_r2vb_fp24_identity_admits(uint32_t bits);
  * so the synthesis needs no admission scan.  Returns 0 on success.
  */
 int r300_r2vb_identity_deliver(
-   int format_id, const struct r300_cpu_vertex_stream *stream,
+   int format_id, const struct r300_vertex_stream *stream,
    uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
    uint32_t carrier_dwords);
 
