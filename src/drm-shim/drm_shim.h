@@ -212,8 +212,12 @@ void drm_shim_test_arm_fd_discovery_barrier(int ready_fd,
 void drm_shim_test_internal_fds(int *root_fd, int *lease_fd);
 void drm_shim_test_arm_path_snapshot_barrier(int ready_fd,
                                              int release_fd);
-int drm_shim_test_live_bo_backing_files(void);
 #endif
+/* Exported from every shim build so a preloading harness can dlsym() the
+ * live BO backing-file and GEM-object censuses.
+ */
+int drm_shim_test_live_bo_backing_files(void);
+int drm_shim_test_live_bos(void);
 int drm_shim_fd_register(int fd, struct shim_fd *shim_fd);
 void drm_shim_fd_unregister(int fd);
 void drm_shim_fd_unregister_range(unsigned first_fd, unsigned last_fd);

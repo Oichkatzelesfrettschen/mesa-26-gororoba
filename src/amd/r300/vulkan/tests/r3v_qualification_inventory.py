@@ -144,6 +144,18 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-loader-application-symbols",
     "r3v-native-loader-application-symbols-known-bad",
     "r3v-native-recording-poison",
+    # Native prepared submission lifetime: commit, reset, shape refusals,
+    # pre-ioctl failure, teardown, and one single-reason calibration per
+    # releaser or binding guard.
+    "r3v-native-submit-lifetime-commit",
+    "r3v-native-submit-lifetime-reset",
+    "r3v-native-submit-lifetime-different-command-buffer",
+    "r3v-native-submit-lifetime-submit-shape",
+    "r3v-native-submit-lifetime-trace-refusal",
+    "r3v-native-submit-lifetime-teardown",
+    "r3v-native-submit-lifetime-known-bad-reset-release",
+    "r3v-native-submit-lifetime-known-bad-command-buffer-binding",
+    "r3v-native-submit-lifetime-known-bad-teardown-release",
     # Vertex front ends: the native ICD's direct SPIR-V admission and
     # its parity with the NIR front end over the one job IR.
     "r3v-native-pipeline-frontend",

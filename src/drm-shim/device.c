@@ -102,8 +102,33 @@ drm_shim_fd_backing_matches(const struct shim_fd *shim_fd, int fd);
 static void drm_shim_forget_non_cloexec_fd_locked(int fd);
 void
 drm_shim_file_release_posix_locks(struct shim_fd *shim_fd);
-#ifdef DRM_SHIM_TEST
+/* Live count of BO backing files the shim holds open.  A harness that
+ * preloads the shim reads it through dlsym() to compare resource censuses
+ * around a prepare or a teardown, so the counter and its reader live in
+ * every shim build, and the reader is exported past the library's hidden
+ * default visibility.
+ */
 static int live_bo_backing_files;
+static int live_bos;
+
+PUBLIC int
+drm_shim_test_live_bo_backing_files(void)
+{
+   return p_atomic_read(&live_bo_backing_files);
+}
+
+/* Live count of GEM objects the shim owns in this process.  A BO that is
+ * never mapped (a 4-byte completion object waited through
+ * DRM_RADEON_GEM_WAIT_IDLE) holds no backing file, so the object census
+ * is the one that observes its creation and release.
+ */
+PUBLIC int
+drm_shim_test_live_bos(void)
+{
+   return p_atomic_read(&live_bos);
+}
+
+#ifdef DRM_SHIM_TEST
 static int force_duplicate_query_error;
 static int force_kcmp_error;
 static bool force_kcmp_result;
@@ -111,12 +136,6 @@ static int forced_kcmp_result;
 static int fd_discovery_barrier_ready_fd = -1;
 static int fd_discovery_barrier_release_fd = -1;
 static int fd_discovery_barrier_remaining;
-
-int
-drm_shim_test_live_bo_backing_files(void)
-{
-   return p_atomic_read(&live_bo_backing_files);
-}
 
 void
 drm_shim_test_force_fd_identity_errors(int duplicate_query_error,
@@ -2988,6 +3007,7 @@ drm_shim_bo_init(struct shim_bo *bo, size_t size)
    bo->size = (uint32_t)size;
    bo->owner_pid = getpid();
    p_atomic_set(&bo->refcount, 1);
+   p_atomic_inc(&live_bos);
 
    return 0;
 }
@@ -3036,10 +3056,9 @@ drm_shim_bo_put(struct shim_bo *bo)
 
    if (bo->mmap_offset) {
       drm_shim_backing_destroy(bo->mmap_offset);
-#ifdef DRM_SHIM_TEST
       p_atomic_dec(&live_bo_backing_files);
-#endif
    }
+   p_atomic_dec(&live_bos);
    free(bo);
 }
 
@@ -3060,9 +3079,7 @@ drm_shim_bo_put_handle(struct shim_bo *bo)
 
    if (mmap_offset) {
       drm_shim_backing_destroy(mmap_offset);
-#ifdef DRM_SHIM_TEST
       p_atomic_dec(&live_bo_backing_files);
-#endif
    }
    drm_shim_bo_put(bo);
 }
@@ -3119,9 +3136,7 @@ drm_shim_bo_get_mmap_offset(struct shim_fd *shim_fd, struct shim_bo *bo,
          mtx_unlock(&shim_device.lock);
          return ret;
       }
-#ifdef DRM_SHIM_TEST
       p_atomic_inc(&live_bo_backing_files);
-#endif
       _mesa_hash_table_u64_insert(shim_device.offset_map, bo->mmap_offset,
                                   bo);
    }
