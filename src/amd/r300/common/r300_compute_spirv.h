@@ -27,8 +27,10 @@
  * the address, control flow, and every opcode outside the recognized
  * grammar refuse with *reason naming the construct; the job is
  * unspecified on refusal.
+ * entry_name binds the OpEntryPoint literal byte for byte.
  */
 bool r300_compute_job_from_spirv(const uint32_t *words, size_t word_count,
+                                 const char *entry_name,
                                  struct r300_compute_job *job,
                                  const char **reason);
 

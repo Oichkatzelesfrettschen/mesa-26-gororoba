@@ -30,7 +30,7 @@ static void test_reference_identity_module(void)
    const char *reason = NULL;
    bool admitted = r300_compute_job_from_spirv(
       r3v_reference_identity_map_spirv,
-      sizeof(r3v_reference_identity_map_spirv) / 4, &job, &reason);
+      sizeof(r3v_reference_identity_map_spirv) / 4, "main", &job, &reason);
    if (!admitted)
       fprintf(stderr, "identity refusal: %s\n", reason);
    assert(admitted);
@@ -69,7 +69,7 @@ static void test_reference_scatter_module(void)
    const char *reason = NULL;
    bool admitted = r300_compute_job_from_spirv(
       r3v_reference_scatter_reject_spirv,
-      sizeof(r3v_reference_scatter_reject_spirv) / 4, &job, &reason);
+      sizeof(r3v_reference_scatter_reject_spirv) / 4, "main", &job, &reason);
    assert(!admitted);
    assert(reason != NULL);
    assert(strstr(reason, "arithmetic") != NULL);
@@ -84,7 +84,7 @@ static void test_wrong_stage_refuses(void)
    const char *reason = NULL;
    bool admitted = r300_compute_job_from_spirv(
       r3v_reference_vertex_spirv,
-      sizeof(r3v_reference_vertex_spirv) / 4, &job, &reason);
+      sizeof(r3v_reference_vertex_spirv) / 4, "main", &job, &reason);
    assert(!admitted);
    assert(reason != NULL);
 }
@@ -100,23 +100,42 @@ static void test_malformed_streams_refuse(void)
       sizeof(r3v_reference_identity_map_spirv) / 4;
 
    /* Empty and header-only streams. */
-   assert(!r300_compute_job_from_spirv(NULL, 0, &job, &reason));
+   assert(!r300_compute_job_from_spirv(NULL, 0, "main", &job, &reason));
    assert(!r300_compute_job_from_spirv(r3v_reference_identity_map_spirv,
-                                       4, &job, &reason));
+                                       4, "main", &job, &reason));
 
    /* A wrong magic number. */
    uint32_t mutated[2048];
    assert(words <= 2048);
    memcpy(mutated, r3v_reference_identity_map_spirv, words * 4);
    mutated[0] ^= 1;
-   assert(!r300_compute_job_from_spirv(mutated, words, &job, &reason));
+   assert(!r300_compute_job_from_spirv(mutated, words, "main", &job, &reason));
+
+   /* The OpEntryPoint literal binds to the requested name byte for
+    * byte; a NULL request refuses before the module is read.
+    */
+   assert(!r300_compute_job_from_spirv(r3v_reference_identity_map_spirv,
+                                       words, "other", &job, &reason));
+   assert(strcmp(reason, "entry point name outside the request") == 0);
+   assert(!r300_compute_job_from_spirv(r3v_reference_identity_map_spirv,
+                                       words, NULL, &job, &reason));
+
+   /* A one-word final instruction refuses on its length before any
+    * operand is read; after the kernel's store only the return and the
+    * function end are admitted, so it reports as work after the store.
+    */
+   memcpy(mutated, r3v_reference_identity_map_spirv, words * 4);
+   mutated[words] = (1u << 16) | 19u;
+   assert(!r300_compute_job_from_spirv(mutated, words + 1, "main", &job,
+                                       &reason));
+   assert(strcmp(reason, "instruction after the final output store") == 0);
 
    /* Truncation at every boundary keeps the reader inside the stream:
     * either an instruction overruns or the function never completes.
     */
    for (size_t cut = 5; cut < words; cut++) {
       assert(!r300_compute_job_from_spirv(r3v_reference_identity_map_spirv,
-                                          cut, &job, &reason));
+                                          cut, "main", &job, &reason));
    }
 
    /* Every single-word mutation either still refuses or still admits
@@ -127,7 +146,7 @@ static void test_malformed_streams_refuse(void)
       memcpy(mutated, r3v_reference_identity_map_spirv, words * 4);
       mutated[i] ^= 0x10001u;
       struct r300_compute_job mutated_job;
-      if (r300_compute_job_from_spirv(mutated, words, &mutated_job,
+      if (r300_compute_job_from_spirv(mutated, words, "main", &mutated_job,
                                       &reason)) {
          assert(mutated_job.op == R300_COMPUTE_JOB_OP_IDENTITY);
          assert(mutated_job.input_binding !=

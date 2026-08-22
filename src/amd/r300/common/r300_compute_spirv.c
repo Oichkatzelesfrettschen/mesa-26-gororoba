@@ -140,6 +140,7 @@ struct reader {
    struct id_info *ids;
    uint32_t bound;
    const char **reason;
+   const char *entry_name;
 };
 
 static bool refuse(struct reader *r, const char *why)
@@ -201,6 +202,7 @@ static bool ssbo_layout_is_word_array(struct reader *r, uint32_t var_id)
 
 static bool
 admit_module(const uint32_t *words, size_t word_count,
+             const char *entry_name,
              struct id_info *ids, uint32_t bound,
              struct r300_compute_job *job, const char **reason)
 {
@@ -210,6 +212,7 @@ admit_module(const uint32_t *words, size_t word_count,
       .ids = ids,
       .bound = bound,
       .reason = reason,
+      .entry_name = entry_name,
    };
    struct reader *r = &reader;
 
@@ -239,6 +242,15 @@ admit_module(const uint32_t *words, size_t word_count,
       const uint32_t *w = &words[at];
       at += len;
 
+      /* The kernel's store ends the admitted body: only the return, the
+       * function end, and line markers follow it, so a module carrying
+       * work after its store refuses rather than lowering to a job that
+       * discards it. */
+      if (stored_value != 0 && opcode != OP_RETURN &&
+          opcode != OP_FUNCTION_END && opcode != OP_LINE &&
+          opcode != OP_NO_LINE)
+         return refuse(r, "instruction after the final output store");
+
       switch (opcode) {
       case OP_SOURCE:
       case OP_SOURCE_EXTENSION:
@@ -263,8 +275,10 @@ admit_module(const uint32_t *words, size_t word_count,
          /* The import alone is inert; OpExtInst has no allowlist entry,
           * so an imported instruction still refuses at its use.
           */
+         if (len < 3)
+            return refuse(r, "malformed extended-instruction import");
          struct id_info *entry = define(r, w[1]);
-         if (entry == NULL || len < 3)
+         if (entry == NULL)
             return refuse(r, "malformed extended-instruction import");
          entry->kind = ID_EXT_IMPORT;
          break;
@@ -281,6 +295,18 @@ admit_module(const uint32_t *words, size_t word_count,
             return refuse(r, "entry point outside the GLCompute model");
          if (entry_point != 0)
             return refuse(r, "more than one entry point");
+         {
+            /* The literal name occupies whole words from w[3] and ends
+             * inside the instruction; it binds to the requested entry
+             * point byte for byte, so a module whose entry point carries
+             * another name refuses before its body is read. */
+            const size_t name_words = len - 3;
+            const size_t name_bytes = name_words * sizeof(uint32_t);
+            const size_t want = strlen(r->entry_name);
+            if (name_words == 0 || want + 1 > name_bytes ||
+                memcmp(&w[3], r->entry_name, want + 1) != 0)
+               return refuse(r, "entry point name outside the request");
+         }
          entry_point = w[2];
          break;
 
@@ -366,16 +392,20 @@ admit_module(const uint32_t *words, size_t word_count,
          break;
 
       case OP_TYPE_VOID: {
+         if (len != 2)
+            return refuse(r, "malformed type");
          struct id_info *entry = define(r, w[1]);
-         if (entry == NULL || len != 2)
+         if (entry == NULL)
             return refuse(r, "malformed type");
          entry->kind = ID_TYPE_VOID;
          break;
       }
 
       case OP_TYPE_INT: {
+         if (len != 4)
+            return refuse(r, "malformed type");
          struct id_info *entry = define(r, w[1]);
-         if (entry == NULL || len != 4)
+         if (entry == NULL)
             return refuse(r, "malformed type");
          if (w[2] != 32)
             return refuse(r, "integer width outside 32 bits");
@@ -387,8 +417,10 @@ admit_module(const uint32_t *words, size_t word_count,
          return refuse(r, "float type outside the identity-map subset");
 
       case OP_TYPE_VECTOR: {
+         if (len != 4)
+            return refuse(r, "malformed type");
          struct id_info *entry = define(r, w[1]);
-         if (entry == NULL || len != 4)
+         if (entry == NULL)
             return refuse(r, "malformed type");
          if (!id_is(r, w[2], ID_TYPE_INT32) || w[3] != 3)
             return refuse(r, "vector type outside the uint3 builtin");
@@ -401,8 +433,10 @@ admit_module(const uint32_t *words, size_t word_count,
           * definition; entry->c == 1 marks it recorded and entry->b
           * carries the stride.
           */
+         if (len != 3)
+            return refuse(r, "malformed type");
          struct id_info *entry = info(r, w[1]);
-         if (entry == NULL || len != 3)
+         if (entry == NULL)
             return refuse(r, "malformed type");
          if (entry->kind != ID_UNSET)
             return refuse(r, "result id defined twice");
@@ -417,8 +451,10 @@ admit_module(const uint32_t *words, size_t word_count,
           * definition; has_builtin marks it recorded and a carries the
           * offset.
           */
+         if (len < 2)
+            return refuse(r, "malformed type");
          struct id_info *entry = info(r, w[1]);
-         if (entry == NULL || len < 2)
+         if (entry == NULL)
             return refuse(r, "malformed type");
          if (entry->kind != ID_UNSET)
             return refuse(r, "result id defined twice");
@@ -431,8 +467,10 @@ admit_module(const uint32_t *words, size_t word_count,
       }
 
       case OP_TYPE_POINTER: {
+         if (len != 4)
+            return refuse(r, "malformed type");
          struct id_info *entry = define(r, w[1]);
-         if (entry == NULL || len != 4)
+         if (entry == NULL)
             return refuse(r, "malformed type");
          entry->kind = ID_TYPE_POINTER;
          entry->a = w[2];
@@ -441,8 +479,10 @@ admit_module(const uint32_t *words, size_t word_count,
       }
 
       case OP_TYPE_FUNCTION: {
+         if (len < 3)
+            return refuse(r, "malformed type");
          struct id_info *entry = define(r, w[1]);
-         if (entry == NULL || len < 3)
+         if (entry == NULL)
             return refuse(r, "malformed type");
          if (len != 3 || !id_is(r, w[2], ID_TYPE_VOID))
             return refuse(r, "function type outside void()");
@@ -451,8 +491,10 @@ admit_module(const uint32_t *words, size_t word_count,
       }
 
       case OP_CONSTANT: {
+         if (len != 4)
+            return refuse(r, "malformed constant");
          struct id_info *entry = define(r, w[2]);
-         if (entry == NULL || len != 4)
+         if (entry == NULL)
             return refuse(r, "malformed constant");
          if (!id_is(r, w[1], ID_TYPE_INT32))
             return refuse(r, "constant type outside 32-bit integers");
@@ -462,8 +504,10 @@ admit_module(const uint32_t *words, size_t word_count,
       }
 
       case OP_CONSTANT_COMPOSITE: {
+         if (len != 6)
+            return refuse(r, "malformed composite constant");
          struct id_info *entry = info(r, w[2]);
-         if (entry == NULL || len != 6)
+         if (entry == NULL)
             return refuse(r, "malformed composite constant");
          if (entry->kind != ID_UNSET)
             return refuse(r, "result id defined twice");
@@ -494,8 +538,10 @@ admit_module(const uint32_t *words, size_t word_count,
       }
 
       case OP_VARIABLE: {
+         if (len < 4)
+            return refuse(r, "malformed variable");
          struct id_info *entry = info(r, w[2]);
-         if (entry == NULL || len < 4)
+         if (entry == NULL)
             return refuse(r, "malformed variable");
          if (entry->kind != ID_UNSET)
             return refuse(r, "result id defined twice");
@@ -547,8 +593,10 @@ admit_module(const uint32_t *words, size_t word_count,
       }
 
       case OP_FUNCTION: {
+         if (len != 5)
+            return refuse(r, "malformed function");
          struct id_info *entry = define(r, w[2]);
-         if (entry == NULL || len != 5)
+         if (entry == NULL)
             return refuse(r, "malformed function");
          if (function_seen)
             return refuse(r, "more than one function");
@@ -561,8 +609,10 @@ admit_module(const uint32_t *words, size_t word_count,
       }
 
       case OP_LABEL: {
+         if (len != 2 || !in_function)
+            return refuse(r, "malformed label");
          struct id_info *entry = define(r, w[1]);
-         if (entry == NULL || len != 2 || !in_function)
+         if (entry == NULL)
             return refuse(r, "malformed label");
          if (label_seen)
             return refuse(r, "control flow outside straight-line code");
@@ -573,8 +623,10 @@ admit_module(const uint32_t *words, size_t word_count,
 
       case OP_ACCESS_CHAIN:
       case OP_IN_BOUNDS_ACCESS_CHAIN: {
+         if (len < 5 || !in_function || returned)
+            return refuse(r, "malformed access chain");
          struct id_info *entry = define(r, w[2]);
-         if (entry == NULL || len < 5 || !in_function || returned)
+         if (entry == NULL)
             return refuse(r, "malformed access chain");
          const struct id_info *base = info(r, w[3]);
          if (base == NULL)
@@ -607,9 +659,10 @@ admit_module(const uint32_t *words, size_t word_count,
       }
 
       case OP_LOAD: {
+         if ((len != 4 && len != 5) || !in_function || returned)
+            return refuse(r, "malformed load");
          struct id_info *entry = define(r, w[2]);
-         if (entry == NULL || (len != 4 && len != 5) || !in_function ||
-             returned)
+         if (entry == NULL)
             return refuse(r, "malformed load");
          if (len == 5 && w[4] != 0)
             return refuse(r, "memory operands outside the grammar");
@@ -731,11 +784,12 @@ admit_module(const uint32_t *words, size_t word_count,
 }
 
 bool r300_compute_job_from_spirv(const uint32_t *words, size_t word_count,
+                                 const char *entry_name,
                                  struct r300_compute_job *job,
                                  const char **reason)
 {
    *reason = "unrecognized module";
-   if (words == NULL || word_count < 5)
+   if (words == NULL || word_count < 5 || entry_name == NULL)
       return false;
    if (words[0] != SPV_MAGIC) {
       *reason = "SPIR-V magic number absent";
@@ -756,7 +810,7 @@ bool r300_compute_job_from_spirv(const uint32_t *words, size_t word_count,
       return false;
    }
    const bool admitted =
-      admit_module(words, word_count, ids, bound, job, reason);
+      admit_module(words, word_count, entry_name, ids, bound, job, reason);
    free(ids);
    return admitted;
 }

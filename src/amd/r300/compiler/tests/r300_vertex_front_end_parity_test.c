@@ -441,7 +441,7 @@ static void test_front_end_parity(void)
    ralloc_free(nir);
    assert(r300_vertex_job_from_spirv(
       r3v_reference_vertex_spirv,
-      sizeof(r3v_reference_vertex_spirv) / 4, &direct_job, &reason));
+      sizeof(r3v_reference_vertex_spirv) / 4, "main", &direct_job, &reason));
    assert(memcmp(&nir_job, &direct_job, sizeof(nir_job)) == 0);
    record_words_digest("identity_vertex", "spirv", r3v_reference_vertex_spirv,
                        sizeof(r3v_reference_vertex_spirv) / 4);
@@ -483,7 +483,8 @@ static void test_front_end_parity(void)
    ralloc_free(nir);
    assert(r300_fragment_constant_color_from_spirv(
       r3v_reference_fragment_spirv,
-      sizeof(r3v_reference_fragment_spirv) / 4, direct_color, &reason));
+      sizeof(r3v_reference_fragment_spirv) / 4,
+      "main", direct_color, &reason));
    assert(memcmp(nir_color, direct_color, sizeof(nir_color)) == 0);
    record_words_digest("constant_fragment", "spirv",
                        r3v_reference_fragment_spirv,
@@ -502,7 +503,7 @@ static void test_front_end_parity(void)
    ralloc_free(nir);
    assert(r300_vertex_job_from_spirv(
       r3v_reference_vertex_arith_spirv,
-      sizeof(r3v_reference_vertex_arith_spirv) / 4, &direct_job,
+      sizeof(r3v_reference_vertex_arith_spirv) / 4, "main", &direct_job,
       &reason));
    nir_job.input_format_id = R300_VERTEX_FORMAT_F32_4;
    direct_job.input_format_id = R300_VERTEX_FORMAT_F32_4;
@@ -536,11 +537,11 @@ static void test_front_end_parity(void)
              MESA_SHADER_VERTEX, "main") == NULL);
    assert(!r300_vertex_job_from_spirv(
       r3v_reference_identity_map_spirv,
-      sizeof(r3v_reference_identity_map_spirv) / 4, &direct_job,
+      sizeof(r3v_reference_identity_map_spirv) / 4, "main", &direct_job,
       &reason));
    assert(!r300_vertex_job_from_spirv(
       r3v_reference_scatter_reject_spirv,
-      sizeof(r3v_reference_scatter_reject_spirv) / 4, &direct_job,
+      sizeof(r3v_reference_scatter_reject_spirv) / 4, "main", &direct_job,
       &reason));
 }
 

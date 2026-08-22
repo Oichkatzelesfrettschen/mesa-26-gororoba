@@ -121,7 +121,8 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    size_t vs_words = 0;
    const uint32_t *vs_data = stage_words(vertex, &vs_words);
    if (vs_data == NULL ||
-       !r300_vertex_job_from_spirv(vs_data, vs_words, job, &reason))
+       !r300_vertex_job_from_spirv(vs_data, vs_words, vertex->pName, job,
+                                   &reason))
       return false;
 
    uint32_t color_bits[4];
@@ -129,6 +130,7 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    const uint32_t *fs_data = stage_words(fragment, &fs_words);
    return fs_data != NULL &&
           r300_fragment_constant_color_from_spirv(fs_data, fs_words,
+                                                  fragment->pName,
                                                   color_bits, &reason) &&
           memcmp(color_bits, r3v_native_green_bits,
                  sizeof(color_bits)) == 0;
