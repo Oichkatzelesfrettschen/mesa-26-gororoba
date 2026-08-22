@@ -61,6 +61,12 @@ r300_vertex_job_spirv_to_nir(const uint32_t *words, size_t word_count,
       *r300_vertex_job_spirv_options();
    options.debug.func = record_spirv_diagnostic;
    options.debug.private_data = &state;
+   /* Refusal is this front end's normal outcome for a module outside
+    * the admitted subset (a compute module offered as a vertex stage),
+    * so a parse failure returns NULL through the diagnostic instead of
+    * breaking into the debugger in a debug build.
+    */
+   options.skip_os_break_in_debug_build = true;
    nir_shader *nir = spirv_to_nir(words, word_count, NULL, stage,
                                   entry_point_name, &options,
                                   r300_vertex_job_nir_options());
