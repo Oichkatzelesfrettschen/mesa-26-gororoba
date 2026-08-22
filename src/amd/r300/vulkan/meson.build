@@ -261,34 +261,6 @@ endif
 # library_path entry.  vk_icd_gen emits the canonical form so the
 # version negotiation matches what r3v_instance.c implements.
 icd_lib_path = join_paths(get_option('prefix'), get_option('libdir'))
-# Route-chain oracle for the R2VB producer plan, frontend-integration tier:
-# the typed-carry corpus SPIR-V through the production r3v preparation
-# (r3v_prepare_shader_nir) into the r300 producer planner, both position
-# spaces.  Compiles the pipeline translation unit directly so the oracle and
-# the driver share one preparation.
-if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
-  test(
-    'r3v-r2vb-typed-route-oracle',
-    executable(
-      'r3v_r2vb_typed_route_oracle_test',
-      [r3v_entrypoints[0], files('r3v_pipeline.c', 'r3v_dp4_fs_nir.c',
-                                 '../common/r300_fragment_binary.c',
-                                 'tests/r3v_r2vb_typed_route_oracle_test.c')],
-      include_directories : [
-        libr3v_inc, include_directories('.'),
-        inc_gallium_aux, inc_gallium_drivers,
-        inc_gallium_r300,
-        inc_amd_r300_compiler,
-      ],
-      dependencies : libr3v_deps + [idep_nir],
-      link_with : libr3v_link_with + [libr300],
-      c_args : libr3v_c_args,
-      gnu_symbol_visibility : 'hidden',
-    ),
-    suite : ['r3v'],
-  )
-endif
-
 # Producer resource census: every corpus specimen (typed-carry SPIR-V plus
 # synthetic fitting and over-budget anchors) through the production plan
 # chain, emitting one machine-readable row per specimen with the plan cost

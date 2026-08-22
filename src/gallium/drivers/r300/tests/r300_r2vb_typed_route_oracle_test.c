@@ -3,21 +3,26 @@
  */
 
 /*
- * Route-chain oracle for the R2VB producer plan, frontend-integration tier:
- * the typed-carry corpus SPIR-V modules through the production r3v
- * preparation (r3v_prepare_shader_nir: vk_spirv_to_nir with r3v's options
- * plus the full r3v vertex lowering chain) into the same producer planner the
- * driver caches.  The typed split's original unreachability was a
- * representation-boundary defect -- synthetic NIR tests were green while the
- * SPIR-V-derived application VS (literal UBO address arithmetic, weak-ffma
- * multiply-adds, push constants lowered onto constant block 0) rejected at
- * the route -- so this tier plans the exact representation the route
- * consumes, on the exact modules the silicon gate replays.
+ * Route-chain oracle for the R2VB producer plan, SPIR-V-derived tier: the
+ * typed-carry corpus modules enter as SPIR-V, lower to the vertex-shader
+ * NIR shape r300g's planner consumes, and plan through the production
+ * r300_r2vb_plan_producer on a fake SW-TCL screen and context.  The typed
+ * split's original unreachability was a representation-boundary defect --
+ * hand-built NIR tests were green while a SPIR-V-derived application VS
+ * (literal constant-block address arithmetic, weak-ffma multiply-adds, a
+ * 128-byte constant window lowered onto block 0) rejected at the route --
+ * so this tier plans that representation on the exact modules the silicon
+ * gate replays.
  *
- * The screen carries the production SW-TCL options
- * (r300_screen_init_nir_options with has_tcl = false selects the gallivm
- * vertex table, whose keep_weak_ffma is the load-bearing representation
- * fact), so the prepared NIR matches what a created screen produces.
+ * The adapter below is the test's own front end.  spirv_to_nir runs with
+ * the r300 vertex options (Vulkan environment, 32-bit index/offset buffer
+ * addressing, the screen's SW-TCL NIR options whose keep_weak_ffma is the
+ * representation fact the rows depend on); the module's 128-byte constant
+ * block folds onto uniform block 0 and lowers to load_ubo_vec4 with a
+ * literal block index, the form r300g's GL uniform-to-block-0 path feeds
+ * the planner and nir_to_rc; vertex inputs take their dense attribute
+ * slot as driver_location and outputs are assigned, as the state tracker
+ * would have done before create_vs_state.
  *
  * Rows, in both clip and window space: the bounded-signed and
  * bounded-unsigned modules plan SPLIT with {f,i} and {f,u} carries; the
@@ -43,20 +48,16 @@
  * route.
  */
 
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "nir.h"
-
-#include "r3v_device.h"
-#include "r3v_pipeline.h"
-#include "r3v_private.h"
-#include "r3v_shader_module.h"
-
-#include "vulkan/runtime/vk_instance.h"
-#include "vulkan/runtime/vk_physical_device.h"
+#include "nir_builder.h"
+#include "compiler/spirv/nir_spirv.h"
+#include "compiler/spirv/spirv_info.h"
 
 #include "r300_context.h"
 #include "r300_r2vb_plan.h"
@@ -79,14 +80,10 @@ static unsigned g_failures;
 
 static struct r300_screen g_screen;
 static struct r300_context g_context;
-static struct vk_instance g_vk_instance;
-static struct vk_physical_device g_vk_pdev;
-static struct r3v_device g_r3v_device;
 
-/* The preparation reads device->vk.physical (base SPIR-V capabilities from a
- * zeroed physical device) and device->screen (caps and NIR options); the
- * planner additionally reads the r300 context's screen, regalloc state, and
- * viewport.  has_tcl = false selects the production SW-TCL tables. */
+/* The planner reads the context's screen (caps and NIR options), the
+ * fragment regalloc state, and the viewport.  has_tcl = false selects the
+ * production SW-TCL tables. */
 static void
 fake_stack_init(void)
 {
@@ -105,48 +102,182 @@ fake_stack_init(void)
    g_context.viewport.translate[0] = 320.0f;
    g_context.viewport.translate[1] = 240.0f;
    g_context.viewport.translate[2] = 0.5f;
-
-   /* The SPIR-V capability derivation reads the instance's requested API
-    * version; everything else stays at the zeroed (base-capability)
-    * defaults, matching a 1.0 instance with no extensions. */
-   memset(&g_vk_instance, 0, sizeof(g_vk_instance));
-   g_vk_instance.app_info.api_version = VK_API_VERSION_1_0;
-   memset(&g_vk_pdev, 0, sizeof(g_vk_pdev));
-   g_vk_pdev.instance = &g_vk_instance;
-   memset(&g_r3v_device, 0, sizeof(g_r3v_device));
-   g_r3v_device.vk.physical = &g_vk_pdev;
-   g_r3v_device.screen = (struct pipe_screen *)&g_screen;
 }
 
-/* Run one corpus module through the production preparation to the bound
- * application VS NIR.  The module wraps into an r3v_shader_module exactly as
- * vkCreateShaderModule stores it. */
+/* The corpus modules declare a 128-byte constant window (the Vulkan
+ * push-constant block); r300 has one float constant file per stage, so the
+ * window lowers onto uniform block 0 exactly as a GL uniform block does. */
+#define CONSTANT_WINDOW_BYTES 128u
+
+static const struct glsl_type *
+block0_type(unsigned size_bytes)
+{
+   return glsl_array_type(glsl_vec4_type(), DIV_ROUND_UP(size_bytes, 16), 16);
+}
+
+/* Declare a sized uniform block 0: the compiler sizes RC constants from the
+ * nir_var_mem_ubo interface declaration, and load_ubo alone carries no size. */
+static void
+declare_block0_ubo(nir_shader *nir, unsigned size_bytes)
+{
+   const struct glsl_type *ubo_type = block0_type(size_bytes);
+   struct glsl_struct_field field = {
+      .type = ubo_type,
+      .name = "data",
+      .location = -1,
+   };
+   nir_variable *ubo = nir_variable_create(nir, nir_var_mem_ubo, ubo_type,
+                                           "block0_ubo");
+   ubo->data.driver_location = 0;
+   ubo->data.binding = 0;
+   ubo->data.explicit_binding = 1;
+   ubo->interface_type = glsl_interface_type(
+      &field, 1, GLSL_INTERFACE_PACKING_STD430, false, "__block0_ubo");
+   nir->info.num_ubos = MAX2(nir->info.num_ubos, 1);
+   nir->info.first_ubo_is_default_ubo = true;
+}
+
+/* load_push_constant(offset) -> load_ubo(block 0, BASE + offset), so the
+ * window flows through nir_lower_ubo_vec4 like any block-0 uniform. */
+static void
+lower_constant_window_to_block0(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      bool progress = false;
+      nir_builder b = nir_builder_create(impl);
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_push_constant)
+               continue;
+            b.cursor = nir_before_instr(instr);
+            nir_def *off = intr->src[0].ssa;
+            unsigned base = nir_intrinsic_base(intr);
+            if (base)
+               off = nir_iadd_imm(&b, off, base);
+            nir_def *val = nir_load_ubo(
+               &b, intr->def.num_components, intr->def.bit_size,
+               nir_imm_int(&b, 0), off,
+               .align_mul = nir_intrinsic_align_mul(intr),
+               .align_offset = nir_intrinsic_align_offset(intr),
+               .range_base = 0, .range = CONSTANT_WINDOW_BYTES);
+            nir_def_rewrite_uses(&intr->def, val);
+            nir_instr_remove(instr);
+            progress = true;
+         }
+      }
+      nir_progress(progress, impl, nir_metadata_control_flow);
+   }
+   declare_block0_ubo(nir, CONSTANT_WINDOW_BYTES);
+}
+
+/* Every block load names literal block 0: nir_lower_explicit_io rebuilds the
+ * index as a vec construct, and nir_to_rc asserts a literal 0. */
+static void
+pin_block_index_zero(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      bool progress = false;
+      nir_builder b = nir_builder_create(impl);
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_ubo &&
+                intr->intrinsic != nir_intrinsic_load_ubo_vec4)
+               continue;
+            b.cursor = nir_before_instr(instr);
+            nir_src_rewrite(&intr->src[0], nir_imm_int(&b, 0));
+            progress = true;
+         }
+      }
+      nir_progress(progress, impl, nir_metadata_control_flow);
+   }
+}
+
+/* Dense attribute slots: the draw path reads driver_location as the AOS
+ * row index, and the state tracker assigns it before create_vs_state. */
+static bool
+assign_input_locations(nir_shader *nir)
+{
+   unsigned input_span = 0;
+   nir_foreach_shader_in_variable(var, nir) {
+      if (var->data.location < VERT_ATTRIB_GENERIC0)
+         return false;
+      const unsigned driver_location =
+         var->data.location - VERT_ATTRIB_GENERIC0;
+      const unsigned slots = glsl_count_attribute_slots(var->type, false);
+      var->data.driver_location = driver_location;
+      input_span = MAX2(input_span, driver_location + slots);
+   }
+   nir->num_inputs = input_span;
+   return true;
+}
+
+/* One corpus module to the vertex-shader NIR the planner consumes. */
 static nir_shader *
 prepare_module(const uint32_t *words, size_t size_bytes)
 {
-   struct r3v_shader_module *mod =
-      calloc(1, sizeof(*mod) + size_bytes);
-   if (!mod)
-      return NULL;
-   /* The handle cast validates the object type vk_object_base_init would
-    * stamp. */
-   mod->base.type = VK_OBJECT_TYPE_SHADER_MODULE;
-   mod->code_size = size_bytes;
-   memcpy(mod->code, words, size_bytes);
-
-   const VkPipelineShaderStageCreateInfo stage_info = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-      .stage = VK_SHADER_STAGE_VERTEX_BIT,
-      .module = r3v_shader_module_to_handle(mod),
-      .pName = "main",
+   static const struct spirv_capabilities capabilities = {
+      .Matrix = true,
+      .Shader = true,
    };
-
-   nir_shader *nir = NULL;
-   VkResult result = r3v_prepare_shader_nir(&g_r3v_device, &stage_info,
-                                            NULL, NULL, &nir);
-   free(mod);
-   if (result != VK_SUCCESS)
+   const struct spirv_to_nir_options options = {
+      .environment = NIR_SPIRV_VULKAN,
+      .capabilities = &capabilities,
+      .ubo_addr_format = nir_address_format_32bit_index_offset,
+      .ssbo_addr_format = nir_address_format_32bit_index_offset,
+      .push_const_addr_format = nir_address_format_32bit_offset,
+      .shared_addr_format = nir_address_format_32bit_offset,
+      .skip_os_break_in_debug_build = true,
+   };
+   nir_shader *nir =
+      spirv_to_nir(words, size_bytes / 4, NULL, MESA_SHADER_VERTEX, "main",
+                   &options, g_screen.screen.nir_options[MESA_SHADER_VERTEX]);
+   if (!nir)
       return NULL;
+   nir_validate_shader(nir, "after spirv_to_nir");
+
+   /* The SPIR-V module's function shape normalizes to one entry point with
+    * straight-line body before any driver lowering: initializers land at
+    * the top of their function, returns lower, calls inline, the other
+    * entry points leave, struct copies split, and dead interface
+    * variables go. */
+   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp);
+   NIR_PASS(_, nir, nir_lower_returns);
+   NIR_PASS(_, nir, nir_inline_functions);
+   NIR_PASS(_, nir, nir_opt_copy_prop);
+   NIR_PASS(_, nir, nir_opt_constant_folding);
+   NIR_PASS(_, nir, nir_opt_deref);
+   nir_remove_non_cmat_call_entrypoints(nir);
+   NIR_PASS(_, nir, nir_lower_variable_initializers, ~0);
+   NIR_PASS(_, nir, nir_split_var_copies);
+   NIR_PASS(_, nir, nir_split_per_member_structs);
+   NIR_PASS(_, nir, nir_remove_dead_variables,
+            nir_var_shader_in | nir_var_shader_out | nir_var_system_value,
+            NULL);
+   NIR_PASS(_, nir, nir_propagate_invariant, false);
+
+   NIR_PASS(_, nir, nir_lower_global_vars_to_local);
+   NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
+            nir_var_function_temp | nir_var_shader_out, UINT32_MAX);
+   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
+            nir_address_format_32bit_offset);
+   lower_constant_window_to_block0(nir);
+   NIR_PASS(_, nir, nir_lower_explicit_io,
+            nir_var_mem_ubo | nir_var_mem_ssbo,
+            nir_address_format_32bit_index_offset);
+   NIR_PASS(_, nir, nir_lower_ubo_vec4);
+   NIR_PASS(_, nir, nir_opt_constant_folding);
+   pin_block_index_zero(nir);
+   if (!assign_input_locations(nir)) {
+      ralloc_free(nir);
+      return NULL;
+   }
+   nir_assign_io_var_locations(nir, nir_var_shader_out);
    return nir;
 }
 
@@ -247,7 +378,7 @@ run_row(const struct corpus_row *row, enum r300_r2vb_position_space space)
    char label[96];
 
    nir_shader *vs = prepare_module(row->spirv, row->spirv_size);
-   snprintf(label, sizeof(label), "%s/%s prepares through r3v", row->name,
+   snprintf(label, sizeof(label), "%s/%s prepares to vertex NIR", row->name,
             space_name);
    CHECK(vs != NULL, label);
    if (!vs)

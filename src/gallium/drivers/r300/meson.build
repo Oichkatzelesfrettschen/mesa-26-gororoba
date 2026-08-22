@@ -360,6 +360,35 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Route-chain oracle, SPIR-V-derived tier: the typed-carry corpus modules
+  # lower to the vertex NIR shape the planner consumes (literal block-0
+  # constant addressing, weak-ffma multiply-adds) and plan through the
+  # production r300_r2vb_plan_producer in both position spaces.  The corpus
+  # header stays at its retained-reference home under amd/r300/vulkan/tests
+  # until its own relocation.
+  test(
+    'r300-r2vb-typed-route-oracle',
+    executable(
+      'r300_r2vb_typed_route_oracle_test',
+      files('tests/r300_r2vb_typed_route_oracle_test.c'),
+      c_args : r300_test_c_args,
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        inc_amd_r300_common,
+        inc_amd_r300_compiler,
+        include_directories('../../../amd/r300/vulkan/tests'),
+      ],
+      # r300_screen_init_nir_options pulls the screen object, whose video
+      # entry points resolve from libgalliumvl.
+      link_with : [libr300, libgalliumvl, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_vtn,
+                      idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    env : ['MESA_SPIRV_LOG_LEVEL=error'],
+    suite : ['r300'],
+  )
+
   # Admission-versus-CSO identity: the plan's throwaway measurement and the
   # actual fragment-shader CSO precompile run the same program under the same
   # flat-producer contract, on the plan's canonical baseline and on both
