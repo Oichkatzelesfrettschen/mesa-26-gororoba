@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Gallium-separation audit for the native R3V ICD.
 
-Native ownership requires that libvulkan_r3v_native carries no Gallium or
+Native ownership requires that libvulkan_r3v carries no Gallium or
 radeon-winsys runtime symbol in any binding.  The audit walks the full nm
 symbol table (defined and undefined, local and global), so a statically
 linked Gallium object with hidden visibility fails the same as a dynamic
