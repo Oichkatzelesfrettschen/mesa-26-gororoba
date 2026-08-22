@@ -204,6 +204,8 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-gallium-separation",
     "r3v-native-gallium-separation-selftest",
     "r3v-native-gallium-separation-known-bad",
+    "r3v-rename-ratchet",
+    "r3v-rename-ratchet-selftest",
     "r3v-native-common-boundary-sources",
     "r3v-native-common-boundary-objects",
     "r3v-native-common-boundary-final-dso",
