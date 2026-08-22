@@ -18,7 +18,7 @@ this document adds only what the re-ingest cell changes.
 
 - Runner: `r3v_native_attended_reingest` (native backend build).
 - Recorder: `r3v_native_record_r2vb_reingest`; the installed IB is
-  byte-identical to `r300_r2vb_reingest_reference_emit` -- the reference
+  byte-identical to `r300_r2vb_reingest_pass_emit` -- the reference
   producer emission concatenated with the reference triangle emission --
   and the arming digest binds to the concatenation.
 - Arming digest source: `r3v_native_reingest_arming_runner` builds the

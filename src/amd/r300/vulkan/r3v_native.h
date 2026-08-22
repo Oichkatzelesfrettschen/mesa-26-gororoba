@@ -847,7 +847,7 @@ VkResult r3v_native_record_r2vb_producer_fp24_bisect(
 /* Records the producer-plus-re-ingest cell: one IB carrying the
  * reference producer pass into the carrier followed by the reference
  * triangle draw fetching that carrier as its vertex stream
- * (r300_r2vb_reingest_reference_emit), so a completed run proves the
+ * (r300_r2vb_reingest_pass_emit), so a completed run proves the
  * GPU-write to vertex-fetch ordering on one submission.  The carrier is
  * poisoned and the color target sentinel-filled at record, so the
  * producer stage and the consuming draw each keep a decidable verdict.

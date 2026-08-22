@@ -32,7 +32,7 @@ static void
 test_composition(void)
 {
    struct r300_r2vb_reingest_ib pass;
-   CHECK(r300_r2vb_reingest_reference_emit(&pass) == 0);
+   CHECK(r300_r2vb_reingest_pass_emit(&pass) == 0);
    CHECK(r300_r2vb_reingest_validate_reloc_sites(&pass) == 0);
 
    struct r300_r2vb_producer_ib producer;
@@ -85,7 +85,7 @@ test_composition(void)
 
    /* Determinism: a second emission carries identical bytes. */
    struct r300_r2vb_reingest_ib again;
-   CHECK(r300_r2vb_reingest_reference_emit(&again) == 0);
+   CHECK(r300_r2vb_reingest_pass_emit(&again) == 0);
    CHECK(again.ib_size_dwords == pass.ib_size_dwords);
    CHECK(memcmp(again.ib, pass.ib,
                 pass.ib_size_dwords * sizeof(uint32_t)) == 0);
@@ -100,7 +100,7 @@ static void
 test_validator_refusals(void)
 {
    struct r300_r2vb_reingest_ib pass;
-   CHECK(r300_r2vb_reingest_reference_emit(&pass) == 0);
+   CHECK(r300_r2vb_reingest_pass_emit(&pass) == 0);
 
    /* A site count off the contract refuses. */
    struct r300_r2vb_reingest_ib mutated = pass;

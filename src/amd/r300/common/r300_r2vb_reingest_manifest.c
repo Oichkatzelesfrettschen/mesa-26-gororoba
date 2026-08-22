@@ -53,7 +53,7 @@ main(int argc, char **argv)
    const char *dir = argv[1];
 
    struct r300_r2vb_reingest_ib pass;
-   if (r300_r2vb_reingest_reference_emit(&pass) != 0) {
+   if (r300_r2vb_reingest_pass_emit(&pass) != 0) {
       fprintf(stderr, "re-ingest emission failed\n");
       return 1;
    }

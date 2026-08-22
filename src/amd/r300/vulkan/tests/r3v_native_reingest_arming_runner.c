@@ -28,7 +28,7 @@ static int
 cell_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
 {
    struct r300_r2vb_reingest_ib cell;
-   if (r300_r2vb_reingest_reference_emit(&cell) != 0)
+   if (r300_r2vb_reingest_pass_emit(&cell) != 0)
       return 1;
 
    r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, out);
