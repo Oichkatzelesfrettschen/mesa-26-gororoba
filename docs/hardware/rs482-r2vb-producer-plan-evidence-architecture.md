@@ -94,7 +94,7 @@ Two measurement instruments feed the compaction research from this stack:
   temp file, `O_EXCL`, rename; unlink on failure), an existing file
   verifies byte-for-byte before deduplicating, and the summary prints once
   per context epoch through atomic counter loads.
-- Producer-resource census (`r3v_r2vb_producer_census.c`): every corpus
+- Producer-resource census (`r300_r2vb_producer_census.c`): every corpus
   specimen runs the plan chain and records post-compiler statistics under
   named phases (`walk` for the diagnostic candidate walk;
   `selected-baseline`, `pass-a`, `pass-b` for explicit recompiles of the
@@ -206,7 +206,7 @@ properties, each with its implementing mechanism:
 | Instrument | Checks | Calibration classes |
 |---|---|---|
 | Plan oracle (`r300_r2vb_plan_oracle_test`) | 87 | admit/decline per reason; both spaces; cv=0/cv=1 cell semantics; typed rows in both directions |
-| Census (`r3v_r2vb_producer_census`) | 174 | per-specimen expectations mirror the route-chain oracle; determinism run twice; fail-closed capture |
+| Census (`r300_r2vb_producer_census`) | 264 | per-specimen expectations mirror the route-chain oracle; determinism run twice; fail-closed capture; row table complete against the corpus manifest, missing/extra member calibrated |
 | Telemetry (`r300_r2vb_telemetry_test`) | 18 | closed/open gate; dedup; full-hash name; damaged-file republish; structural-reject non-retention |
 | Identity (`r300_r2vb_admission_cso_identity_test`) | 36 | program + constant identity, baseline and halves, both spaces |
 | Shadow counter | corpus-level | zero on the closure corpus with engagement proven |

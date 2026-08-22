@@ -7,8 +7,8 @@
  * module is the recur90 over-budget chain plus one typed head; the
  * GLSL sources are the fixtures of record. */
 
-#ifndef R3V_TYPED_CARRY_SPIRV_H
-#define R3V_TYPED_CARRY_SPIRV_H
+#ifndef R300_TYPED_CARRY_REFERENCE_H
+#define R300_TYPED_CARRY_REFERENCE_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -5128,4 +5128,4 @@ static const uint32_t t_bool_carry_spirv[] = {
    0x00000156, 0x000100fd, 0x00010038,
 };
 
-#endif /* R3V_TYPED_CARRY_SPIRV_H */
+#endif /* R300_TYPED_CARRY_REFERENCE_H */
