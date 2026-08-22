@@ -42,7 +42,8 @@ static void test_reference_vertex_module(void)
    struct r300_vertex_job job;
    const char *reason = NULL;
    bool admitted = r300_vertex_job_from_spirv(
-      r3v_reference_vertex_spirv, WORDS(r3v_reference_vertex_spirv), &job,
+      r3v_reference_vertex_spirv, WORDS(r3v_reference_vertex_spirv),
+      "main", &job,
       &reason);
    if (!admitted)
       fprintf(stderr, "reference vertex refusal: %s\n", reason);
@@ -77,6 +78,7 @@ static void test_reference_fragment_module(void)
    const char *reason = NULL;
    assert(r300_fragment_constant_color_from_spirv(
       r3v_reference_fragment_spirv, WORDS(r3v_reference_fragment_spirv),
+      "main",
       color, &reason));
    assert(color[0] == 0 && color[1] == 0x3f800000u && color[2] == 0 &&
           color[3] == 0x3f800000u);
@@ -105,7 +107,8 @@ static void test_reference_fragment_module(void)
       at += len;
    }
    assert(patched);
-   assert(r300_fragment_constant_color_from_spirv(red, WORDS(red), color,
+   assert(r300_fragment_constant_color_from_spirv(red, WORDS(red),
+   "main", color,
                                                   &reason));
    assert(color[0] == 0x3f800000u && color[1] == 0 && color[2] == 0 &&
           color[3] == 0x3f800000u);
@@ -121,7 +124,7 @@ static void test_reference_arith_module(void)
    const char *reason = NULL;
    bool admitted = r300_vertex_job_from_spirv(
       r3v_reference_vertex_arith_spirv,
-      WORDS(r3v_reference_vertex_arith_spirv), &job, &reason);
+      WORDS(r3v_reference_vertex_arith_spirv), "main", &job, &reason);
    if (!admitted)
       fprintf(stderr, "reference arith refusal: %s\n", reason);
    assert(admitted);
@@ -169,25 +172,29 @@ static void test_module_refusals(void)
    /* The compute modules carry the GLCompute entry model. */
    assert(!r300_vertex_job_from_spirv(r3v_reference_identity_map_spirv,
                                       WORDS(r3v_reference_identity_map_spirv),
+                                      "main",
                                       &job, &reason));
    assert(!r300_vertex_job_from_spirv(r3v_reference_scatter_reject_spirv,
                                       WORDS(r3v_reference_scatter_reject_spirv),
+                                      "main",
                                       &job, &reason));
 
    /* Stage crosses: the fragment module refuses as a vertex program
     * and the vertex module as a fragment program. */
    assert(!r300_vertex_job_from_spirv(r3v_reference_fragment_spirv,
                                       WORDS(r3v_reference_fragment_spirv),
+                                      "main",
                                       &job, &reason));
    assert(!r300_fragment_constant_color_from_spirv(
-      r3v_reference_vertex_spirv, WORDS(r3v_reference_vertex_spirv), color,
+      r3v_reference_vertex_spirv, WORDS(r3v_reference_vertex_spirv),
+      "main", color,
       &reason));
 
    /* The fragment path admits constants alone, so the arithmetic
     * module refuses there. */
    assert(!r300_fragment_constant_color_from_spirv(
       r3v_reference_vertex_arith_spirv,
-      WORDS(r3v_reference_vertex_arith_spirv), color, &reason));
+      WORDS(r3v_reference_vertex_arith_spirv), "main", color, &reason));
 }
 
 /* Malformed streams: NULL, short, wrong magic, and every word-boundary
@@ -198,21 +205,103 @@ static void test_malformed_streams(void)
    struct r300_vertex_job job;
    const char *reason = NULL;
 
-   assert(!r300_vertex_job_from_spirv(NULL, 0, &job, &reason));
-   assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv, 4, &job,
+   assert(!r300_vertex_job_from_spirv(NULL, 0, "main", &job, &reason));
+   assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv, 4,
+                                      "main", &job,
                                       &reason));
 
    uint32_t bad_magic[WORDS(r3v_reference_vertex_spirv)];
    memcpy(bad_magic, r3v_reference_vertex_spirv, sizeof(bad_magic));
    bad_magic[0] ^= 1;
-   assert(!r300_vertex_job_from_spirv(bad_magic, WORDS(bad_magic), &job,
+   assert(!r300_vertex_job_from_spirv(bad_magic, WORDS(bad_magic),
+   "main", &job,
                                       &reason));
 
    for (size_t count = 5; count < WORDS(r3v_reference_vertex_spirv);
         count++) {
       assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv, count,
+                                         "main",
                                          &job, &reason));
    }
+}
+
+/* Entry-point binding: the OpEntryPoint literal binds to the requested
+ * name byte for byte, and a NULL request refuses before the module is
+ * read.
+ */
+static void test_entry_name_binding(void)
+{
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv,
+                                      WORDS(r3v_reference_vertex_spirv),
+                                      "other", &job, &reason));
+   assert(strcmp(reason, "entry point name outside the request") == 0);
+   assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv,
+                                      WORDS(r3v_reference_vertex_spirv),
+                                      "mai", &job, &reason));
+   assert(strcmp(reason, "entry point name outside the request") == 0);
+   assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv,
+                                      WORDS(r3v_reference_vertex_spirv),
+                                      NULL, &job, &reason));
+   uint32_t color[4];
+   assert(!r300_fragment_constant_color_from_spirv(
+      r3v_reference_fragment_spirv, WORDS(r3v_reference_fragment_spirv),
+      "other", color, &reason));
+   assert(strcmp(reason, "entry point name outside the request") == 0);
+}
+
+/* A one-word final instruction (OpTypeVoid with length 1 appended after
+ * OpFunctionEnd) refuses on its length before any operand is read, so
+ * the reader's last access stays inside the module.
+ */
+static void test_short_final_instruction(void)
+{
+   uint32_t words[WORDS(r3v_reference_vertex_spirv) + 1];
+   memcpy(words, r3v_reference_vertex_spirv,
+          sizeof(r3v_reference_vertex_spirv));
+   words[WORDS(r3v_reference_vertex_spirv)] = (1u << 16) | 19u;
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   assert(!r300_vertex_job_from_spirv(words, WORDS(words), "main", &job,
+                                      &reason));
+   assert(strcmp(reason, "instruction after the final output store") == 0);
+}
+
+/* Work after the final output store: the body's first OpLoad repeated
+ * after the OpStore refuses as an instruction after the store rather
+ * than lowering to a job that discards it.
+ */
+static void test_instruction_after_store(void)
+{
+   enum { OP_LOAD = 61, OP_STORE = 62 };
+   const size_t n = WORDS(r3v_reference_vertex_spirv);
+   size_t load_at = 0, load_len = 0, store_end = 0;
+   for (size_t at = 5; at < n;) {
+      const uint32_t len = r3v_reference_vertex_spirv[at] >> 16;
+      const uint32_t op = r3v_reference_vertex_spirv[at] & 0xffffu;
+      assert(len != 0 && at + len <= n);
+      if (op == OP_LOAD && load_at == 0) {
+         load_at = at;
+         load_len = len;
+      }
+      if (op == OP_STORE)
+         store_end = at + len;
+      at += len;
+   }
+   assert(load_at != 0 && store_end != 0 && store_end < n);
+   uint32_t words[WORDS(r3v_reference_vertex_spirv) + 8];
+   assert(load_len <= 8);
+   memcpy(words, r3v_reference_vertex_spirv, store_end * 4);
+   memcpy(words + store_end, r3v_reference_vertex_spirv + load_at,
+          load_len * 4);
+   memcpy(words + store_end + load_len, r3v_reference_vertex_spirv + store_end,
+          (n - store_end) * 4);
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   assert(!r300_vertex_job_from_spirv(words, n + load_len, "main", &job,
+                                      &reason));
+   assert(strcmp(reason, "instruction after the final output store") == 0);
 }
 
 /* Single-word mutation sweep: every one-word XOR of the identity
@@ -228,7 +317,7 @@ static void test_mutation_sweep(void)
       for (uint32_t bit = 0; bit < 32; bit += 7) {
          memcpy(mutated, r3v_reference_vertex_spirv, sizeof(mutated));
          mutated[word] ^= 1u << bit;
-         if (!r300_vertex_job_from_spirv(mutated, WORDS(mutated), &job,
+         if (!r300_vertex_job_from_spirv(mutated, WORDS(mutated), "main", &job,
                                          &reason))
             continue;
          assert(job.instruction_count == 2);
@@ -247,6 +336,9 @@ int main(void)
    test_reference_arith_module();
    test_module_refusals();
    test_malformed_streams();
+   test_entry_name_binding();
+   test_short_final_instruction();
+   test_instruction_after_store();
    test_mutation_sweep();
    printf("r3v_native_pipeline_frontend_test: all cases pass\n");
    return 0;

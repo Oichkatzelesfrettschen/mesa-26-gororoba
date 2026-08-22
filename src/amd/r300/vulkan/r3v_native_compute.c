@@ -298,13 +298,14 @@ create_compute_pipeline(struct r3v_native_device *device,
        info->stage.stage != VK_SHADER_STAGE_COMPUTE_BIT ||
        info->stage.flags != 0 ||
        info->stage.pSpecializationInfo != NULL ||
-       module->size % 4 != 0)
+       info->stage.pName == NULL || module->size % 4 != 0)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    struct r300_compute_job job;
    const char *reason = NULL;
    if (!r300_compute_job_from_spirv((const uint32_t *)module->data,
-                                    module->size / 4, &job, &reason)) {
+                                    module->size / 4, info->stage.pName,
+                                    &job, &reason)) {
       return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
                        "r3v-native: compute module refused: %s", reason);
    }

@@ -28,8 +28,10 @@
  * recognized grammar refuse with *reason naming the construct; the job
  * leaves with input_format_id unassigned and is unspecified on
  * refusal.
+ * entry_name binds the OpEntryPoint literal byte for byte.
  */
 bool r300_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
+                                const char *entry_name,
                                 struct r300_vertex_job *job,
                                 const char **reason);
 
@@ -41,6 +43,7 @@ bool r300_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
  */
 bool r300_fragment_constant_color_from_spirv(const uint32_t *words,
                                              size_t word_count,
+                                             const char *entry_name,
                                              uint32_t color_bits[4],
                                              const char **reason);
 

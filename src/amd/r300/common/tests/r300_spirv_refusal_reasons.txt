@@ -1,0 +1,118 @@
+# Refusal reasons named by r300_vertex_spirv.c and r300_compute_spirv.c,
+# one per line; r300_spirv_refusal_reasons.py keeps this ledger equal
+# to the set the sources carry.
+LocalSize execution mode absent
+SPIR-V extension outside the admitted grammar
+SPIR-V magic number absent
+WorkgroupSize constant disagrees with LocalSize
+access chain outside the Position member
+access chain outside the admitted bases
+access chain outside the bound
+arithmetic outside the identity-map subset
+arithmetic width outside the vec4 model
+array type outside the gl_PerVertex tail
+capability outside Shader
+composite constant outside literal floats
+composite constant outside literal words
+composite constant outside uint3
+composite constant outside vec4 float
+constant type outside 32-bit integers
+constant type outside 32-bit scalars
+control flow outside straight-line code
+control or memory barrier
+decoration names an id outside the bound
+decoration outside the admitted grammar
+dot result outside one 32-bit float
+entry function did not complete
+entry point name outside the request
+entry point outside the GLCompute model
+entry point outside the requested model
+execution mode outside LocalSize
+execution mode outside the admitted grammar
+extended instruction outside GLSL.std.450 Fma
+extended-instruction import outside GLSL.std.450
+float type outside the identity-map subset
+float width outside 32 bits
+fragment output outside color 0 as vec4
+fragment program outside one constant color
+fragment shader reads an input
+function ends before returning
+function outside the entry point
+function type outside void()
+function variable holds a value outside the invocation index
+function variable holds a value outside the vec4 straight line
+function variable outside a function
+function variable outside one 32-bit word
+function variable outside the 32-bit float model
+function variable read before a recognized write
+id-table allocation failed
+input variable outside gl_GlobalInvocationID
+instruction after the final output store
+instruction overruns the module
+integer width outside 32 bits
+invocation-id access outside the x channel
+kernel lacks the load/store pair
+load and store share one binding
+load outside one 32-bit word
+load outside one vec4
+load outside the admitted pointers
+load outside the bound
+malformed access chain
+malformed arithmetic
+malformed composite constant
+malformed composite construction
+malformed constant
+malformed decoration
+malformed extended-instruction import
+malformed function
+malformed label
+malformed load
+malformed member decoration
+malformed return
+malformed store
+malformed type
+malformed variable
+member builtin outside the gl_PerVertex tail
+member decoration outside the admitted grammar
+member decoration outside the builtin block
+member layout outside the single-member word array
+memory model outside Logical addressing
+memory operands outside the grammar
+module preamble outside the admitted grammar
+more than one entry point
+more than one function
+more than one shader output
+more than one storage load
+more than one storage store
+more than one vertex input
+opcode outside the identity-map subset
+opcode outside the vec4 straight line
+operand outside the admitted straight line
+operand outside the bound
+result id defined twice
+result-id bound outside the admitted module size
+second color store
+second position store
+storage access outside member 0 of the word array
+storage address outside the flattened invocation index
+storage atomic
+storage buffer outside descriptor set 0
+storage buffer without set and binding decorations
+storage class outside the admitted grammar
+storage layout outside the 4-byte word array
+store outside the admitted pointers
+store outside the bound
+stored value is not the loaded word
+struct type outside gl_PerVertex
+unrecognized module
+variable initializer outside the grammar
+variable type outside a matching pointer
+vec4 construction outside a DP4 broadcast
+vector type outside the uint3 builtin
+vector type outside vec4 float
+vertex input outside attribute 0 as vec4
+vertex output outside the Position builtin
+vertex program exceeds the 16-temp file
+vertex program exceeds the constant file
+vertex program exceeds the instruction budget
+workgroup shared memory

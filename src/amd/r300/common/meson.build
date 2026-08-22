@@ -565,6 +565,23 @@ r300_triangle_manifest = executable(
 # proves the helper, this proves the executable published what the helper
 # computed.
 test(
+  'r300-spirv-refusal-reasons',
+  prog_python,
+  args : [files('tests/r300_spirv_refusal_reasons.py'),
+          files('tests/r300_spirv_refusal_reasons.txt'),
+          files('r300_vertex_spirv.c'), files('r300_compute_spirv.c')],
+  suite : ['r300'],
+)
+test(
+  'r300-spirv-refusal-reasons-selftest',
+  prog_python,
+  args : [files('tests/r300_spirv_refusal_reasons.py'), '--selftest',
+          files('tests/r300_spirv_refusal_reasons.txt'),
+          files('r300_vertex_spirv.c'), files('r300_compute_spirv.c')],
+  suite : ['r300'],
+)
+
+test(
   'r300-triangle-manifest-integration',
   prog_python,
   args : [files('tests/r300_triangle_manifest_check.py'),
