@@ -47,7 +47,6 @@ ADVERTISED_DEVICE_EXTENSIONS = {
         "states the image's offset-zero binding to an allocator",
 }
 
-NATIVE_GUARD = "#ifdef R3V_NATIVE_BACKEND"
 EXTENSION_TABLE = "r3v_native_device_extensions_supported"
 FEATURE_FUNCTION = "r3v_physical_device_init_features"
 
@@ -101,7 +100,8 @@ def advertised_extensions(source_text):
 
 
 def native_features_empty(source_text):
-    """True when zero initialization dominates an unconditional return."""
+    """True when the feature function zeroes *features and grants exactly
+    the core-1.0 mandatory robustBufferAccess bit."""
     text = strip_comments(source_text)
     start = text.find(FEATURE_FUNCTION)
     if start < 0:
@@ -124,32 +124,23 @@ def native_features_empty(source_text):
     if body_end < 0:
         raise AuditFailure(f"{FEATURE_FUNCTION} carries an unclosed body")
     body = text[body_start + 1:body_end]
-    guard = body.find(NATIVE_GUARD)
-    if guard < 0:
-        raise AuditFailure(
-            f"{FEATURE_FUNCTION} carries no {NATIVE_GUARD} branch, so the "
-            f"native build's feature set is whatever the Gallium body sets")
-    endif = body.find("#endif", guard)
-    if endif < 0:
-        raise AuditFailure(f"the {NATIVE_GUARD} branch never closes")
-    prefix = body[:guard]
     zero_pattern = (
         r"\s*memset\s*\(\s*features\s*,\s*0\s*,\s*"
-        r"sizeof\s*\(\s*\*features\s*\)\s*\)\s*;\s*")
-    if re.fullmatch(zero_pattern, prefix) is None:
+        r"sizeof\s*\(\s*\*features\s*\)\s*\)\s*;")
+    zero = re.match(zero_pattern, body)
+    if zero is None:
         raise AuditFailure(
             f"{FEATURE_FUNCTION} does not unconditionally zero *features "
-            f"immediately before {NATIVE_GUARD}")
-    branch = body[guard + len(NATIVE_GUARD):endif]
-    branch_pattern = (
+            f"as its first statement")
+    rest = body[zero.end():]
+    rest_pattern = (
         r"\s*features\s*->\s*robustBufferAccess\s*=\s*true\s*;"
-        r"\s*return\s*;\s*")
-    if re.fullmatch(branch_pattern, branch) is None:
+        r"(\s*return\s*;)?\s*")
+    if re.fullmatch(rest_pattern, rest) is None:
         raise AuditFailure(
-            f"the native branch of {FEATURE_FUNCTION} is not the "
-            f"mandatory robustBufferAccess grant followed by one "
-            f"unconditional return, so the native feature set is not the "
-            f"core-1.0 baseline")
+            f"{FEATURE_FUNCTION} is not the zeroed struct plus the "
+            f"mandatory robustBufferAccess grant alone, so the feature set "
+            f"is not the core-1.0 baseline")
     return True
 
 
@@ -180,8 +171,7 @@ def selftest():
         checks.append((name, ok))
 
     def good(extensions=None, feature_prefix=None,
-             feature_branch="   features->robustBufferAccess = true;\n"
-                            "   return;\n"):
+             feature_branch="   features->robustBufferAccess = true;\n"):
         entries = extensions if extensions is not None else [
             f"      .{name} = true," for name in ADVERTISED_DEVICE_EXTENSIONS]
         prefix = ("   memset(features, 0, sizeof(*features));\n"
@@ -191,9 +181,7 @@ def selftest():
                 + "\n".join(entries) + "\n   };\n"
                 "\nstatic void\n"
                 f"{FEATURE_FUNCTION}(struct vk_features *features)\n"
-                "{\n" + prefix
-                + f"{NATIVE_GUARD}\n{feature_branch}#endif\n"
-                "   features->robustBufferAccess = true;\n}\n")
+                "{\n" + prefix + feature_branch + "}\n")
 
     def refuses(text, fragment):
         try:
@@ -229,15 +217,15 @@ def selftest():
     check("reads a commented entry as absent",
           audit(good(entries)) == sorted(ADVERTISED_DEVICE_EXTENSIONS))
 
-    # Known-bad: zero initialization is absent or conditional.
+    # Known-bad: zero initialization is absent, late, or conditional.
     check("refuses a missing feature zero",
           refuses(good(feature_prefix=""), "unconditionally zero"))
-    check("refuses zeroing inside the native branch",
+    check("refuses zeroing after the grant",
           refuses(good(
               feature_prefix="",
               feature_branch=(
-                  "   memset(features, 0, sizeof(*features));\n"
-                  "   return;\n")),
+                  "   features->robustBufferAccess = true;\n"
+                  "   memset(features, 0, sizeof(*features));\n")),
               "unconditionally zero"))
     check("refuses a conditional feature zero",
           refuses(good(
@@ -246,27 +234,24 @@ def selftest():
                   "      memset(features, 0, sizeof(*features));\n")),
                   "unconditionally zero"))
 
-    # Known-bad: the native branch grants an optional feature, omits
-    # the mandatory grant, or falls through.
-    check("refuses an optional feature in the native branch",
-          refuses(good(feature_branch="   features->logicOp = true;\n"
-                                      "   return;\n"),
+    # Known-bad: an optional feature beside the mandatory grant, the
+    # mandatory grant missing, or a grant behind a condition.
+    check("refuses an optional feature grant",
+          refuses(good(feature_branch="   features->robustBufferAccess = true;\n"
+                                      "   features->logicOp = true;\n"),
                   "core-1.0 baseline"))
-
-    check("refuses a native branch without robustBufferAccess",
+    check("refuses a body without robustBufferAccess",
           refuses(good(feature_branch="   return;\n"),
                   "core-1.0 baseline"))
-
-    check("refuses a conditional native return",
+    check("refuses a conditional grant",
           refuses(good(feature_branch=(
-                     "   features->robustBufferAccess = true;\n"
-                     "   if (ready)\n      return;\n")),
+                     "   if (ready)\n"
+                     "      features->robustBufferAccess = true;\n")),
                   "core-1.0 baseline"))
-
-    # Known-bad: the native branch falling through to the Gallium body.
-    check("refuses a native branch that does not return",
-          refuses(good(feature_branch="   (void)features;\n"),
-                  "core-1.0 baseline"))
+    check("admits the grant followed by one return",
+          audit(good(feature_branch="   features->robustBufferAccess = true;\n"
+                                    "   return;\n"))
+          == sorted(ADVERTISED_DEVICE_EXTENSIONS))
 
     # Known-bad: a value the audit cannot read leaves the surface unread.
     entries = [f"      .{name} = true," for name in ADVERTISED_DEVICE_EXTENSIONS]

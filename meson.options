@@ -917,17 +917,10 @@ option(
 )
 
 option(
-  'r3v-gallium-backend',
-  type : 'boolean',
-  value : true,
-  description : 'Enable the Gallium-backed r300 device/submit path in r3v (requires -Dgallium-drivers to include r300). Default true. Set false only for a loader-only skeleton that builds without a Gallium backend; that skeleton does not implement a working vkCreateDevice.',
-)
-
-option(
   'r3v-native-backend',
   type : 'boolean',
   value : false,
-  description : 'Build the native R3V ICD (libvulkan_r3v_native) over the generic Radeon DRM transport, with no Gallium runtime ownership. Coexists with r3v-gallium-backend; each option produces its own library and ICD manifest.',
+  description : 'Build the native R3V ICD (libvulkan_r3v_native) over the generic Radeon DRM transport, with no Gallium runtime ownership.',
 )
 
 option(

@@ -59,10 +59,8 @@ platforms = ['x11', 'wayland']
 # profile instruments; zink itself needs no llvm.
 gallium-drivers = ['r300', 'zink']
 vulkan-drivers = ['ati_r300']
-r3v-gallium-backend = true
-# The Gallium-free native ICD (libvulkan_r3v_native) rides beside the Gallium
-# backend as a second library; its drm-shim harness and separation audits run
-# from this build's test graph.
+# The Gallium-free native ICD (libvulkan_r3v_native); its drm-shim harness
+# and separation audits run from this build's test graph.
 r3v-native-backend = true
 
 # Maximal OpenGL/GLES surface (desktop GL, GLES1, GLES2).

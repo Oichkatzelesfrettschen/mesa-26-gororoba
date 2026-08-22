@@ -77,16 +77,6 @@ extern "C" {
 #define R3V_CONFORMANCE_STATUS "experimental_nonconformant_graphics_without_compute"
 #define R3V_HYBRID_COMPUTE_STATUS "experimental_nonconformant_hybrid_compute_queue"
 
-/* Backend identity labels for the Gallium-mediated submit path.
- * RS482/RS485 has no hardware vertex processor (num_vert_fpus == 0 for
- * the RS480 family per r300_parse_chipset()); Gallium Draw handles TCL in
- * software.  The fragment stage runs through the Radeon Compiler RC path
- * via nir_to_rc inside r300g. */
-#define R3V_BACKEND_LABEL       "r300g_gallium_mediated"
-#define R3V_VERTEX_EXEC_LOCUS   "gallium_draw_sw_tcl"
-#define R3V_FRAGMENT_EXEC_LOCUS "r300_rc_hardware_program"
-#define R3V_MEMORY_MODEL_LABEL  "experimental_resource_backed"
-
 /* The number of fragment Gallium texture units r300 exposes.  Shared between the
  * pipeline (which flattens combined-image-sampler descriptors from every
  * descriptor set into this unit space) and the replay (which binds them). */

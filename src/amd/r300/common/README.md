@@ -31,11 +31,8 @@ decision rules below.
   rather than describing hardware and moves with that policy.
 
 Consumer tags name build domains: `r300g`, `compiler`, `native`, and `cpu`.
-The temporary `legacy-r3v` tag names the Gallium-backed Vulkan experiment;
-it is not r300g and it is not the native Vulkan product.  P2 deletes that
-domain after its reusable compiler mechanisms move to r300g.  `none` means
-the component is an evidence producer rather than a production object.  Test
-names are exact Meson registrations.
+`none` means the component is an evidence producer rather than a production
+object.  Test names are exact Meson registrations.
 
 A consumer is measured from a domain's registered production source roots and
 the C include graph.  Each implementation unit compiled once into
@@ -51,9 +48,9 @@ executables with `main()` rather than driver objects.
 | Files | API-neutral contract | Production consumers | Standalone proof | Owner decision |
 |---|---|---|---|---|
 | `r300_capabilities.h` | Chip capability record shared by screen and compiler decisions. | `r300g`, `compiler` | `r300-nir-vs-harness` | `KEEP_SHARED` |
-| `r300_reg.h`<br>`r300_shader_semantics.h` | Register encodings and shader semantic vocabulary. | `r300g`, `compiler`, `native`, `legacy-r3v` | `r300-pm4-builder`, `r300-nir-to-rc` | `KEEP_SHARED` |
-| `r300_numeric_domain.c`<br>`r300_numeric_domain.h`<br>`r300_us_source_read.h` | FP24 and source-read numeric domains. | `r300g`, `compiler`, `native`, `legacy-r3v` | `r300-fp16-limb-oracle`, `r300-classic-pair-value` | `KEEP_SHARED` |
-| `r300_grid_fold.h` | FP24-exact invocation-index guards and bounded 1D/2D/3D folds onto the R300 sampleable raster. | `legacy-r3v` | `r300-grid-fold` | `KEEP_SILICON_CONTRACT` |
+| `r300_reg.h`<br>`r300_shader_semantics.h` | Register encodings and shader semantic vocabulary. | `r300g`, `compiler`, `native` | `r300-pm4-builder`, `r300-nir-to-rc` | `KEEP_SHARED` |
+| `r300_numeric_domain.c`<br>`r300_numeric_domain.h`<br>`r300_us_source_read.h` | FP24 and source-read numeric domains. | `r300g`, `compiler`, `native` | `r300-fp16-limb-oracle`, `r300-classic-pair-value` | `KEEP_SHARED` |
+| `r300_grid_fold.h` | FP24-exact invocation-index guards and bounded 1D/2D/3D folds onto the R300 sampleable raster. | `none` | `r300-grid-fold` | `KEEP_SILICON_CONTRACT` |
 | `r300_vertex_format.h`<br>`r300_vertex_stream.h` | API-neutral vertex formats and byte-addressed stream records. | `r300g`, `native`, `cpu` | `r300-vertex-format-pipe`, `r300-cpu-vertex` | `KEEP_SHARED` |
 | `r300_compute_job.h`<br>`r300_vertex_job.h` | Neutral compute and vertex job IR. | `compiler`, `native`, `cpu` | `r300-cpu-compute-job`, `r300-cpu-vertex-job`, `r300-vertex-front-end-parity` | `KEEP_SHARED` |
 | `r300_compute_spirv.c`<br>`r300_compute_spirv.h`<br>`r300_vertex_spirv.c`<br>`r300_vertex_spirv.h` | Direct SPIR-V admission into neutral jobs.  SPIR-V is the Vulkan front-end input, not an R300 hardware contract. | `native` | `r3v-native-compute-frontend`, `r3v-native-pipeline-frontend`, `r300-vertex-front-end-parity` | `MOVE_TO_R3V_FRONTEND` |
@@ -65,7 +62,7 @@ executables with `main()` rather than driver objects.
 | `r300_r2vb_reingest_draw.c`<br>`r300_r2vb_reingest_draw.h` | Gallium-consumed R2VB reingest draw emission. | `r300g` | `r300-r2vb-reingest-draw` | `KEEP_SILICON_CONTRACT` |
 | `r300_r2vb_carrier_delivery.c`<br>`r300_r2vb_carrier_delivery.h` | Byte-defined R2VB carrier delivery model. | `native` | `r300-r2vb-carrier-delivery` | `KEEP_SILICON_CONTRACT` |
 | `r300_first_draw_state.c`<br>`r300_first_draw_state.h` | Self-contained first-draw register contract and poison-state checker. | `native` | `r300-first-draw-state` | `KEEP_SILICON_CONTRACT` |
-| `r300_fragment_binary.c`<br>`r300_fragment_binary.h` | Owned US/FG binary bytes, structural admission, and content identity.  The contract is hardware-owned; Vulkan-specific ownership wording is removed during the single-ICD cutover. | `native`, `legacy-r3v` | `r300-fragment-binary` | `KEEP_SILICON_CONTRACT` |
+| `r300_fragment_binary.c`<br>`r300_fragment_binary.h` | Owned US/FG binary bytes, structural admission, and content identity.  The contract is hardware-owned. | `native` | `r300-fragment-binary` | `KEEP_SILICON_CONTRACT` |
 | `r300_tcl_bypass_triangle.c`<br>`r300_tcl_bypass_triangle.h`<br>`r300_tcl_bypass_triangle_fs_block.h` | Fixed TCL-bypass triangle hardware plan and generated fragment block. | `native` | `r300-tcl-bypass-triangle`, `r300-tcl-bypass-fs-block-regeneration` | `KEEP_SILICON_CONTRACT` |
 | `r300_direct_write.c`<br>`r300_direct_write.h` | 2D direct-write control cell, relocation sites, and readback oracle. | `native` | `r300-direct-write`, `r300-direct-write-cs-track-replay` | `KEEP_SILICON_CONTRACT` |
 | `r300_r2vb_producer_pass.c`<br>`r300_r2vb_producer_pass.h`<br>`r300_r2vb_producer_fs_block.h` | R2VB producer hardware plan, publication tail, and generated fragment block. | `native` | `r300-r2vb-producer-pass`, `r300-r2vb-producer-replay`, `r300-r2vb-producer-fs-block-regeneration` | `KEEP_SILICON_CONTRACT` |
@@ -92,11 +89,6 @@ through the parity tests.  Until that P2 source move lands, the two readers and
 the delivery-route selector are named in
 `r300_common_pending_r3v_move_files`: one archive owns their object bytes, but
 the build arrangement does not supersede their `MOVE_TO_R3V_*` dispositions.
-
-The `legacy-r3v` rows expose the Gallium-backed Vulkan experiment's current
-dependencies without making it a durable owner.  P2 moves its reusable NIR
-compiler mechanisms to r300g and deletes that Vulkan adapter; no
-`legacy-r3v` tag survives the single-ICD cutover.
 
 The delivery-route selector moves to Vulkan because its environment gates and
 measured default choose one R3V execution policy.  The R2VB passes and PM4

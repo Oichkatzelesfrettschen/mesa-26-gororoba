@@ -146,7 +146,6 @@ build() {
     -D gallium-drivers=r300,zink \
     -D vulkan-drivers=ati_r300 \
     -D vulkan-layers=anti-lag,device-select \
-    -D r3v-gallium-backend=true \
     -D gallium-rusticl=false \
     -D llvm=disabled \
     -D draw-use-llvm=false \

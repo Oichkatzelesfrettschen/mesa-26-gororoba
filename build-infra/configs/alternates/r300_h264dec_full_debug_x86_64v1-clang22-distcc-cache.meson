@@ -19,7 +19,6 @@ cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relr
 platforms = ['x11', 'wayland']
 gallium-drivers = ['r300', 'zink', 'softpipe']
 vulkan-drivers = ['ati_r300']
-r3v-gallium-backend = true
 opengl = true
 gles1 = 'enabled'
 gles2 = 'enabled'

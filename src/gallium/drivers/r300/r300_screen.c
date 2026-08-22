@@ -591,17 +591,11 @@ static void r300_init_screen_caps(struct r300_screen* r300screen)
    caps->shareable_shaders = false;
 
    caps->max_gs_invocations = 32;
-   /* SSBO advertised ceiling.  Default 128 MB matches the conservative
-    * radeon GART size (gartsize=128 module default).  When the kernel has
-    * been provisioned with a 1 GB GART -- the radeon-unified-dkms package
-    * with gartsize=1024 in zz-radeon-forensic.conf, live boot showing
-    * "PCIE GART of 1024M enabled" and the GTT window at 0xC0000000-
-    * 0xFFFFFFFF -- advertise a 512 MB single-buffer ceiling so Vulkan /
-    * GL callers can actually allocate inside the extra GART.  The kernel-
-    * side 1 GB GART stays kernel territory; this only raises the
-    * userspace advertise so a Vulkan application's
-    * vkGetPhysicalDeviceProperties.limits.maxStorageBufferRange matches
-    * the substrate's real capacity. */
+   /* Shader-buffer ceiling: the advertised single-buffer size tracks the
+    * kernel-reported GART.  The 128 MB default matches the radeon gartsize
+    * module default; a kernel provisioned with a 1 GB GART raises the
+    * ceiling to 512 MB so a GL caller can allocate inside the extra
+    * aperture.  The GART size itself stays kernel territory. */
    if (r300screen->info.gart_size_kb >= 1024u * 1024u)
       caps->max_shader_buffer_size = 1 << 29; /* 512 MB */
    else

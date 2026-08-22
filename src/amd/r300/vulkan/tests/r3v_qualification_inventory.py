@@ -179,10 +179,6 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-cpu-compute-job",
     "r3v-native-compute-frontend",
     "r3v-native-compute-dispatch",
-    # P2 ownership cutover: the fake lane cannot retain dormant NIR or move a
-    # Vulkan-shaped interface into r300g/common without this calibrated gate.
-    "r3v-gallium-ownership-disposition-selftest",
-    "r3v-gallium-ownership-disposition",
     "r3v-native-submit-object-replay",
     "r3v-native-triangle-cell-closed",
     "r3v-native-triangle-cell-open",
@@ -207,6 +203,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-route-timing-record-gpu",
     "r3v-native-gallium-separation",
     "r3v-native-gallium-separation-selftest",
+    "r3v-native-gallium-separation-known-bad",
     "r3v-native-common-boundary-sources",
     "r3v-native-common-boundary-objects",
     "r3v-native-common-boundary-final-dso",
@@ -234,13 +231,6 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "radeon-drm-vk-cs",
     "radeon-drm-vk-reloc",
     "radeon-noop-drm-shim-default",
-)
-
-# The real Gallium DSO exists only when the optional backend is enabled.  Its
-# required status follows the Meson option so native-only qualification does
-# not silently claim a test that cannot register.
-GALLIUM_REQUIRED_TESTS: tuple[str, ...] = (
-    "r3v-native-gallium-separation-known-bad",
 )
 
 # Suites whose entries the zero-native fixture removes: the historic build
@@ -278,9 +268,7 @@ def required_test_suite(name: str) -> str:
 
 
 def required_tests(options: dict[str, object]) -> tuple[str, ...]:
-    gallium_backend = options.get("r3v-gallium-backend")
-    if str(gallium_backend) in ("enabled", "auto", "True", "true"):
-        return REQUIRED_TESTS + GALLIUM_REQUIRED_TESTS
+    del options
     return REQUIRED_TESTS
 
 
@@ -661,8 +649,6 @@ def evaluate(registered: set[str], options: dict[str, object],
 
     gallium = options.get("gallium-drivers")
     print(f"option gallium-drivers: {gallium}")
-    gallium_backend = options.get("r3v-gallium-backend")
-    print(f"option r3v-gallium-backend: {gallium_backend}")
 
     for name in ("nm", "Xvfb", "b3sum"):
         present = probes.tool_present(name)
@@ -788,12 +774,10 @@ def zero_native(entries: list[dict]) -> list[dict]:
 
 
 QUALIFYING_OPTIONS = {"r3v-native-backend": "enabled", "build-tests": True,
-                      "gallium-drivers": ["r300"],
-                      "r3v-gallium-backend": True}
+                      "gallium-drivers": ["r300"]}
 
 NATIVE_ONLY_OPTIONS = dict(QUALIFYING_OPTIONS)
 NATIVE_ONLY_OPTIONS["gallium-drivers"] = []
-NATIVE_ONLY_OPTIONS["r3v-gallium-backend"] = False
 
 
 def run_fixture() -> int:
@@ -857,17 +841,6 @@ def run_selftest() -> int:
                            probes=probes)
     if native_only != 0:
         print("selftest: native-only set failed the gate", file=sys.stderr)
-        return 1
-    missing_gallium_known_bad = [
-        entry for entry in complete_entries
-        if entry["name"] != GALLIUM_REQUIRED_TESTS[0]
-    ]
-    missing_known_bad = evaluate(collect(missing_gallium_known_bad),
-                                 QUALIFYING_OPTIONS, qualification=True,
-                                 probes=probes)
-    if missing_known_bad == 0:
-        print("selftest: missing Gallium known-bad leg passed the gate",
-              file=sys.stderr)
         return 1
     missing_b3sum = evaluate(collect(complete_entries),
                              QUALIFYING_OPTIONS, qualification=True,
