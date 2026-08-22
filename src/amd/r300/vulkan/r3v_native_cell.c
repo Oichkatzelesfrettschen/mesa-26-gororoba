@@ -408,10 +408,14 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                          "r3v-native: carrier memory is not CPU-mappable "
                          "at submission");
    } else {
+      /* robustBufferAccess enabled at device creation makes an
+       * out-of-bounds vertex record read zeros; with the feature off the
+       * same record refuses the draw before any write. */
       const struct r300_vertex_stream source = {
          .data = stream.records,
          .stride = stream.stride,
          .size_bytes = stream.size_bytes,
+         .oob_reads_zero = device->vk.enabled_features.robustBufferAccess,
       };
       /* Delivery route selection lives in r300_delivery_route_resolve:
        * the CPU gather is the default and the semantic oracle, and the
@@ -441,9 +445,19 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       /* The R2VB host model delivers the raw attribute stream, so it
        * stands in only for the identity vertex job; any other admitted
        * job executes on the CPU interpreter route below. */
+      /* The R2VB host model delivers in-bounds records alone, as the
+       * device fetch it models would; a robust range with a record
+       * outside the bound executes on the CPU route, which substitutes. */
       const bool r2vb_route =
          route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
-         draw->vertex_job_identity;
+         draw->vertex_job_identity &&
+         r300_cpu_vertex_range_in_bounds(stream.format_id, &source,
+                                         stream.first_vertex,
+                                         R300_TRIANGLE_VERTEX_DWORDS / 4);
+      /* The CPU route stages its records on the host and the carrier
+       * receives them only after the clip-volume check below, so a
+       * refused record leaves the carrier untouched. */
+      uint32_t staged[R300_TRIANGLE_VERTEX_DWORDS];
       int gathered = 0;
       if (result != VK_SUCCESS) {
          /* The refused route delivers nothing; the shared unmap and
@@ -474,7 +488,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
           * carrier bytes are unchanged. */
          gathered = r300_cpu_vertex_job_execute(
             &draw->vertex_job, &source, stream.first_vertex,
-            R300_TRIANGLE_VERTEX_DWORDS / 4, carrier->map,
+            R300_TRIANGLE_VERTEX_DWORDS / 4, staged,
             R300_TRIANGLE_VERTEX_DWORDS);
       }
       if (result == VK_SUCCESS && gathered != 0) {
@@ -504,7 +518,8 @@ r3v_native_cmd_buffer_execute_deferred_draw(
           * outside it refuses, and the submit reports device loss.
           */
          float positions[R300_TRIANGLE_VERTEX_DWORDS];
-         memcpy(positions, carrier->map, sizeof(positions));
+         memcpy(positions, r2vb_route ? carrier->map : (void *)staged,
+                sizeof(positions));
          for (unsigned v = 0;
               result == VK_SUCCESS && v < R300_TRIANGLE_VERTEX_DWORDS / 4;
               v++) {
@@ -527,6 +542,8 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          }
          if (result == VK_SUCCESS)
             memcpy(carrier->map, positions, sizeof(positions));
+      } else if (result == VK_SUCCESS && !r2vb_route) {
+         memcpy(carrier->map, staged, sizeof(staged));
       }
       /* Publication is delivery-unconditional: a WINDOW-space carrier
        * skips the transform branch above yet its bytes still cross to

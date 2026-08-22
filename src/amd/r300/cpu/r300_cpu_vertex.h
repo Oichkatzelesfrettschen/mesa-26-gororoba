@@ -8,6 +8,7 @@
 #ifndef R300_CPU_VERTEX_H
 #define R300_CPU_VERTEX_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "amd/r300/common/r300_vertex_stream.h"
@@ -50,6 +51,15 @@ int r300_cpu_vertex_gather(int format_id,
                            const struct r300_vertex_stream *stream,
                            uint32_t first_vertex, uint32_t vertex_count,
                            uint32_t *carrier, uint32_t carrier_dwords);
+
+/* True when every record of the range lies inside the stream bound; the
+ * gather reads such a range verbatim, and under the stream's robust rule
+ * substitutes zeros for the records outside it.
+ */
+bool r300_cpu_vertex_range_in_bounds(int format_id,
+                                     const struct r300_vertex_stream *stream,
+                                     uint32_t first_vertex,
+                                     uint32_t vertex_count);
 
 /* The portable byte-copy baseline the SIMD paths qualify against; the
  * same contract as r300_cpu_vertex_gather.

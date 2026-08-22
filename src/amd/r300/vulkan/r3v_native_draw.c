@@ -225,14 +225,21 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
     * enforces at submission: the last requested record closes inside
     * the readable range, so a stream the execution would refuse
     * poisons here where the application still sees the recording error.
+    * With robustBufferAccess enabled the execution reads an
+    * out-of-bounds record as zeros instead, so the draw records.
     */
    const struct r300_vertex_format_semantics *format =
       r300_vertex_format_semantics(
          (enum r300_vertex_format_id)pipeline->format_id);
    const uint64_t available = buffer->vk.size - stream_base;
-   if (format == NULL || available < format->semantic_record_bytes ||
-       ((uint64_t)firstVertex + 2) * pipeline->binding_stride >
-          available - format->semantic_record_bytes) {
+   if (format == NULL) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+   if (!device->vk.enabled_features.robustBufferAccess &&
+       (available < format->semantic_record_bytes ||
+        ((uint64_t)firstVertex + 2) * pipeline->binding_stride >
+           available - format->semantic_record_bytes)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }

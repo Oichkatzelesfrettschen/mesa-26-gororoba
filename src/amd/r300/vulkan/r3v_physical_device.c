@@ -407,11 +407,12 @@ r3v_physical_device_init_features(struct vk_features *features)
    /* The native implementation executes no optional feature; the
     * feature set is the core-1.0 baseline, and each optional bit
     * returns with the native route that makes it true.
-    * robustBufferAccess is core 1.0's one mandatory feature, and the
-    * native lane keeps its semantics by admission: every buffer range
-    * a recorded command names is validated against its binding and
-    * memory bound before execution, so no admitted access reaches out
-    * of bounds. */
+    * robustBufferAccess is core 1.0's one mandatory feature: enabled,
+    * an out-of-bounds vertex record reads zeros through the CPU vertex
+    * executor (r300_vertex_stream.oob_reads_zero) and storage ranges
+    * are validated against their binding and memory bound at
+    * admission; disabled, the out-of-bounds record refuses the draw
+    * before any write. */
    features->robustBufferAccess = true;
 }
 

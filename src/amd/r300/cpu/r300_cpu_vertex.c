@@ -26,6 +26,29 @@
 static const uint8_t lane_zero_bytes[4] = { 0x00, 0x00, 0x00, 0x00 };
 static const uint8_t lane_one_bytes[4] = { 0x00, 0x00, 0x80, 0x3f };
 
+/* Every record from first_vertex through the range's last lies inside the
+ * stream bound: the last record's start plus its record bytes fits
+ * size_bytes.  The comparison divides rather than multiplies -- the last
+ * index is at most 2^33 and the stride is at least the record size, so no
+ * intermediate can wrap into an in-range value.  A zero stride reads the
+ * one record at the base for every vertex.
+ */
+static bool
+range_in_bounds(const struct r300_vertex_format_semantics *format,
+                const struct r300_vertex_stream *stream,
+                uint32_t first_vertex, uint32_t vertex_count)
+{
+   if (vertex_count == 0)
+      return true;
+   if (stream->size_bytes < format->semantic_record_bytes)
+      return false;
+   if (stream->stride == 0)
+      return true;
+   const uint64_t last_index = (uint64_t)first_vertex + vertex_count - 1;
+   return last_index <= (stream->size_bytes -
+                         format->semantic_record_bytes) / stream->stride;
+}
+
 static int
 validate(const struct r300_vertex_format_semantics **format_out,
          int format_id, const struct r300_vertex_stream *stream,
@@ -52,19 +75,25 @@ validate(const struct r300_vertex_format_semantics **format_out,
        * at most 2^33 and the stride is at least the record size, so no
        * intermediate can wrap into an in-range value.
        */
-      if (stream->size_bytes < format->semantic_record_bytes)
+      if (!stream->oob_reads_zero &&
+          !range_in_bounds(format, stream, first_vertex, vertex_count))
          return -EINVAL;
-      if (stream->stride != 0) {
-         uint64_t last_index = (uint64_t)first_vertex + vertex_count - 1;
-         if (last_index > (stream->size_bytes -
-                           format->semantic_record_bytes) / stream->stride)
-            return -EINVAL;
-      }
    }
    if (vertex_count > carrier_dwords / 4)
       return -ENOSPC;
    *format_out = format;
    return 0;
+}
+
+bool
+r300_cpu_vertex_range_in_bounds(int format_id,
+                                const struct r300_vertex_stream *stream,
+                                uint32_t first_vertex, uint32_t vertex_count)
+{
+   const struct r300_vertex_format_semantics *format =
+      r300_vertex_format_semantics((enum r300_vertex_format_id)format_id);
+   return format != NULL && stream != NULL &&
+          range_in_bounds(format, stream, first_vertex, vertex_count);
 }
 
 int
@@ -79,10 +108,19 @@ r300_cpu_vertex_gather_baseline(
    if (result != 0)
       return result;
 
-   const uint8_t *record =
-      stream->data + (uint64_t)first_vertex * stream->stride;
    uint8_t *out = (uint8_t *)carrier;
    for (uint32_t v = 0; v < vertex_count; v++) {
+      /* Under the robust rule an out-of-bounds record reads raw zeros for
+       * its physical components; the format's ZERO and ONE selectors
+       * still synthesize the absent components.  The record pointer forms
+       * only inside the bound. */
+      const bool in_bounds =
+         !stream->oob_reads_zero ||
+         range_in_bounds(format, stream, first_vertex + v, 1);
+      const uint8_t *record =
+         in_bounds ? stream->data +
+                        (uint64_t)(first_vertex + v) * stream->stride
+                   : NULL;
       for (unsigned lane = 0; lane < 4; lane++) {
          const uint8_t *src;
          switch (format->select[lane]) {
@@ -96,12 +134,12 @@ r300_cpu_vertex_gather_baseline(
             /* X..W name physical components; the vocabulary orders the
              * selector values so the component index is the selector.
              */
-            src = record + (unsigned)format->select[lane] * 4;
+            src = in_bounds ? record + (unsigned)format->select[lane] * 4
+                            : lane_zero_bytes;
             break;
          }
          memcpy(out + lane * 4, src, 4);
       }
-      record += stream->stride;
       out += 16;
    }
    return 0;
@@ -254,7 +292,8 @@ r300_cpu_vertex_gather_sse2(int format_id,
                          vertex_count, carrier, carrier_dwords);
    if (result != 0)
       return result;
-   if (!sse2_pattern_matches(format))
+   if (!sse2_pattern_matches(format) ||
+       !range_in_bounds(format, stream, first_vertex, vertex_count))
       return -EINVAL;
    return gather_sse2(format, stream, first_vertex, vertex_count, carrier);
 #else
@@ -280,7 +319,8 @@ r300_cpu_vertex_gather_sse3(int format_id,
                          vertex_count, carrier, carrier_dwords);
    if (result != 0)
       return result;
-   if (!sse2_pattern_matches(format))
+   if (!sse2_pattern_matches(format) ||
+       !range_in_bounds(format, stream, first_vertex, vertex_count))
       return -EINVAL;
    return gather_sse3(format, stream, first_vertex, vertex_count, carrier);
 #else
@@ -306,7 +346,10 @@ r300_cpu_vertex_gather(int format_id,
                          vertex_count, carrier, carrier_dwords);
    if (result != 0)
       return result;
-   if (sse2_pattern_matches(format))
+   /* The SIMD kernels load whole records, so a robust range with a record
+    * outside the bound takes the byte-copy baseline's substitution. */
+   if (sse2_pattern_matches(format) &&
+       range_in_bounds(format, stream, first_vertex, vertex_count))
       return gather_sse2(format, stream, first_vertex, vertex_count,
                          carrier);
 #endif

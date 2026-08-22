@@ -1654,7 +1654,9 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   )
   foreach submit_arm : ['armed', 'gate-closed', 'retention-unwritable',
                         'authorization-refused', 'map-failure',
-                        'ioctl-refused', 'completion-failure']
+                        'ioctl-refused', 'completion-failure',
+                        'robust-oob-enabled', 'robust-oob-w0-refused',
+                        'robust-oob-disabled']
     test(
       'r3v-native-submit-order-@0@'.format(submit_arm),
       r3v_native_submit_order_harness,
