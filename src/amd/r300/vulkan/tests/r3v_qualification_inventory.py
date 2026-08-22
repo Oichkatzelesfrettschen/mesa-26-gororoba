@@ -165,6 +165,9 @@ REQUIRED_TESTS: tuple[str, ...] = (
     # its parity with the NIR front end over the one job IR.
     "r3v-native-pipeline-frontend",
     "r300-vertex-front-end-parity",
+    # R2VB typed-route oracle over the SPIR-V-derived vertex representation,
+    # owned by the r300g planner lane.
+    "r300-r2vb-typed-route-oracle",
     # Compute surface: the direct SPIR-V admission, the CPU executor,
     # and the end-to-end gate-off/gate-on dispatch under the shim.
     "r300-cpu-compute-job",

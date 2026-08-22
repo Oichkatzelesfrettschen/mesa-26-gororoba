@@ -184,9 +184,9 @@ source and test inputs from the option-gated Meson blocks, then adds the one
 r300g-resident compute classifier whose only production caller is the fake
 pipeline.  Physical registration in `files_r300` is not consumer evidence.
 
-At the current cutover boundary the ledger covers 42 files and six named
+At the current cutover boundary the ledger covers 41 files and six named
 candidate functions: 39 files are deleted with the fake Vulkan lifetime, and
-three tests/corpora retain only their differential value under a named future
+two tests/corpora retain only their differential value under a named future
 owner.  No implementation is classified `MOVE_R300G` or `EXTRACT_COMMON`.
 In particular:
 
@@ -195,9 +195,13 @@ In particular:
 - `r3v_identity_map.*` and the queue replay combine Vulkan descriptor,
   command, and submission lifetimes with Gallium objects and are deleted as
   units rather than renamed into r300g;
-- the typed-carry route oracle and producer census retain fixture value for
-  the existing `r300_r2vb_plan_producer` mechanism after their Vulkan front
-  end is removed;
+- `r300-r2vb-typed-route-oracle` (`src/gallium/drivers/r300/tests/`)
+  preserves the former typed-route oracle through a test-owned SPIR-V-derived
+  vertex front end (spirv_to_nir with the r300 vertex options, the 128-byte
+  constant window folded onto uniform block 0, `load_ubo_vec4` with a literal
+  block index, dense attribute slots) into the production
+  `r300_r2vb_plan_producer`; the producer census retains fixture value for the
+  same mechanism after its Vulkan front end is removed;
 - `r3v-native-descriptor` preserves the former descriptor and UBO-binding
   fixtures through the public layout, pool, set, update, bind, and dispatch
   entry points: layout and pool admission (immutable-sampler pointers,
