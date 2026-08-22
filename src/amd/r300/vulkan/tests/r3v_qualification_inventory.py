@@ -168,6 +168,9 @@ REQUIRED_TESTS: tuple[str, ...] = (
     # R2VB typed-route oracle over the SPIR-V-derived vertex representation,
     # owned by the r300g planner lane.
     "r300-r2vb-typed-route-oracle",
+    "r300-r2vb-producer-census",
+    "r300-r2vb-producer-census-known-bad-missing-corpus-member",
+    "r300-r2vb-producer-census-known-bad-extra-corpus-member",
     # Compute surface: the direct SPIR-V admission, the CPU executor,
     # and the end-to-end gate-off/gate-on dispatch under the shim.
     "r300-cpu-compute-job",

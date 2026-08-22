@@ -1,5 +1,5 @@
 #!/bin/sh
-# Regenerate r3v_typed_carry_spirv.h from the checked-in typed-carry corpus
+# Regenerate r300_typed_carry_reference.h from the checked-in typed-carry corpus
 # vertex shaders.  Each module is the recur90 over-budget chain plus one typed
 # head whose transport class the R2VB producer plan must select or decline;
 # the GLSL sources are the fixtures of record and the header is their SPIR-V
@@ -7,7 +7,7 @@
 # dependency.  Requires glslangValidator (glslang) on PATH.
 set -eu
 cd "$(dirname "$0")"
-out=r3v_typed_carry_spirv.h
+out=r300_typed_carry_reference.h
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -49,7 +49,7 @@ emit_spirv_words()
   printf ' * vertex shaders in this directory (glslangValidator -V).  Each\n'
   printf ' * module is the recur90 over-budget chain plus one typed head; the\n'
   printf ' * GLSL sources are the fixtures of record. */\n\n'
-  printf '#ifndef R3V_TYPED_CARRY_SPIRV_H\n#define R3V_TYPED_CARRY_SPIRV_H\n\n'
+  printf '#ifndef R300_TYPED_CARRY_REFERENCE_H\n#define R300_TYPED_CARRY_REFERENCE_H\n\n'
   printf '#include <stdint.h>\n#include <stddef.h>\n\n'
   for v in t_*.vert; do
     name=$(basename "$v" .vert)
@@ -72,6 +72,6 @@ emit_spirv_words()
     printf '};\n'
     printf '\n'
   done
-  printf '#endif /* R3V_TYPED_CARRY_SPIRV_H */\n'
+  printf '#endif /* R300_TYPED_CARRY_REFERENCE_H */\n'
 } > "$out"
 echo "wrote $out"

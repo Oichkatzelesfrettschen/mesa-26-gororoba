@@ -30,6 +30,13 @@
  * record (capacity) or a truncated line fails the row, and the determinism
  * check covers the full statistics transcript, not only the summary row.
  *
+ * The SPIR-V specimens enter through the test-owned front end in
+ * r300_spirv_vertex_fixture.h, and the row table proves complete against
+ * that header's corpus manifest: every corpus module has exactly one row
+ * and every SPIR-V row names a corpus module, so a retained module without
+ * a census row or a row mining a module outside the corpus fails before any
+ * data is emitted.  Two injected mutations calibrate those two failures.
+ *
  * Census rows feed the compaction rule selection in
  * docs/hardware/rs482-producer-alu-compaction-design.md: which shapes occur,
  * which are ALU-bound rather than temp or constant bound, and how the
@@ -48,14 +55,6 @@
 #include "nir.h"
 #include "nir_builder.h"
 
-#include "r3v_device.h"
-#include "r3v_pipeline.h"
-#include "r3v_private.h"
-#include "r3v_shader_module.h"
-
-#include "vulkan/runtime/vk_instance.h"
-#include "vulkan/runtime/vk_physical_device.h"
-
 #include "r300_context.h"
 #include "r300_fs.h"
 #include "amd/r300/compiler/r300_nir.h"
@@ -63,7 +62,7 @@
 #include "r300_screen.h"
 #include "radeon_regalloc.h"
 
-#include "typed_carry_corpus/r3v_typed_carry_spirv.h"
+#include "r300_spirv_vertex_fixture.h"
 
 static unsigned g_failures;
 
@@ -77,11 +76,18 @@ static unsigned g_failures;
       }                                   \
    } while (0)
 
+enum mutation_mode {
+   MUTATION_NONE,
+   /* One corpus module loses its census row. */
+   MUTATION_MISSING_CORPUS_MEMBER,
+   /* One census row names a module outside the corpus manifest. */
+   MUTATION_EXTRA_CORPUS_MEMBER,
+};
+
+static enum mutation_mode mutation;
+
 static struct r300_screen g_screen;
 static struct r300_context g_context;
-static struct vk_instance g_vk_instance;
-static struct vk_physical_device g_vk_pdev;
-static struct r3v_device g_r3v_device;
 
 /* Statistics lines captured from one planner invocation.  rc_run_compiler
  * emits one SHADER_INFO line per compile that survives to emit, in compile
@@ -146,6 +152,9 @@ transcript_append_stats(char *transcript, size_t len, const char *phase)
    }
 }
 
+/* The planner reads the context's screen (caps and NIR options), the
+ * fragment regalloc state, the debug callback, and the viewport.
+ * has_tcl = false selects the production SW-TCL tables. */
 static void
 fake_stack_init(void)
 {
@@ -165,46 +174,13 @@ fake_stack_init(void)
    g_context.viewport.translate[0] = 320.0f;
    g_context.viewport.translate[1] = 240.0f;
    g_context.viewport.translate[2] = 0.5f;
-
-   memset(&g_vk_instance, 0, sizeof(g_vk_instance));
-   vk_object_base_instance_init(&g_vk_instance, &g_vk_instance.base,
-                                VK_OBJECT_TYPE_INSTANCE);
-   list_inithead(&g_vk_instance.debug_utils.instance_callbacks);
-   list_inithead(&g_vk_instance.debug_utils.callbacks);
-   g_vk_instance.app_info.api_version = VK_API_VERSION_1_0;
-   memset(&g_vk_pdev, 0, sizeof(g_vk_pdev));
-   vk_object_base_instance_init(&g_vk_instance, &g_vk_pdev.base,
-                                VK_OBJECT_TYPE_PHYSICAL_DEVICE);
-   g_vk_pdev.instance = &g_vk_instance;
-   memset(&g_r3v_device, 0, sizeof(g_r3v_device));
-   vk_object_base_init(&g_r3v_device.vk, &g_r3v_device.vk.base,
-                       VK_OBJECT_TYPE_DEVICE);
-   g_r3v_device.vk.physical = &g_vk_pdev;
-   g_r3v_device.screen = (struct pipe_screen *)&g_screen;
 }
 
 static nir_shader *
 prepare_module(const uint32_t *words, size_t size_bytes)
 {
-   struct r3v_shader_module *mod = calloc(1, sizeof(*mod) + size_bytes);
-   if (!mod)
-      return NULL;
-   mod->base.type = VK_OBJECT_TYPE_SHADER_MODULE;
-   mod->code_size = size_bytes;
-   memcpy(mod->code, words, size_bytes);
-
-   const VkPipelineShaderStageCreateInfo stage_info = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-      .stage = VK_SHADER_STAGE_VERTEX_BIT,
-      .module = r3v_shader_module_to_handle(mod),
-      .pName = "main",
-   };
-
-   nir_shader *nir = NULL;
-   VkResult result = r3v_prepare_shader_nir(&g_r3v_device, &stage_info,
-                                            NULL, NULL, &nir);
-   free(mod);
-   return result == VK_SUCCESS ? nir : NULL;
+   return r300_spirv_fixture_prepare_vertex(
+      words, size_bytes, g_screen.screen.nir_options[MESA_SHADER_VERTEX]);
 }
 
 /* Synthetic anchors built on the screen's production vertex options: a
@@ -249,7 +225,7 @@ begin_vs(const char *name)
    };
    ubo->interface_type = glsl_interface_type(
       &ubo_field, 1, GLSL_INTERFACE_PACKING_STD430, false,
-      "__r3v_census_ubo");
+      "__census_ubo");
    v.b.shader->info.num_ubos = 1;
 
    v.pos = nir_load_var(&v.b, in_pos);
@@ -306,7 +282,15 @@ struct census_row {
     * transport alphabet for the selected partition. */
    char required_carry;
    const char *allowed_carry;
+   /* r300_nir_lower_bool_to_float_fs rewrites position-feeding bcsel(fcmp)
+    * into fcsel_ge float form once the window transform makes the select an
+    * ALU operand, so a boolean-carry module's window cell measures a
+    * class-none producer with a float-only carry. */
+   bool window_bool_lowered;
 };
+
+#define CORPUS_ROW(module, ...) \
+   { #module, module##_spirv, sizeof(module##_spirv), NULL, __VA_ARGS__ }
 
 static const struct census_row rows[] = {
    { "census_float_fits", NULL, 0, build_float_fits,
@@ -315,37 +299,76 @@ static const struct census_row rows[] = {
    { "census_float_over", NULL, 0, build_float_over_budget,
      R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
      false, R300_R2VB_TYPED_SOURCE_NONE, 0, "f" },
-   { "t_bool", t_bool_spirv, sizeof(t_bool_spirv), NULL,
-     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
-     false, R300_R2VB_TYPED_SOURCE_NONE, 0, "f" },
-   { "t_sint_exact", t_sint_exact_spirv, sizeof(t_sint_exact_spirv), NULL,
-     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
-     true, R300_R2VB_TYPED_SOURCE_SINT, 'i', "fi" },
-   { "t_uint_exact", t_uint_exact_spirv, sizeof(t_uint_exact_spirv), NULL,
-     R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
-     true, R300_R2VB_TYPED_SOURCE_UINT, 'u', "fu" },
-   { "t_sint_pos_outside", t_sint_pos_outside_spirv,
-     sizeof(t_sint_pos_outside_spirv), NULL,
-     R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_SIGNED_RANGE,
-     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
-   { "t_sint_neg_outside", t_sint_neg_outside_spirv,
-     sizeof(t_sint_neg_outside_spirv), NULL,
-     R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_SIGNED_RANGE,
-     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
-   { "t_uint_outside", t_uint_outside_spirv, sizeof(t_uint_outside_spirv),
-     NULL, R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_UNSIGNED_RANGE,
-     true, R300_R2VB_TYPED_SOURCE_UINT, 0, "" },
-   { "t_uint_unbounded", t_uint_unbounded_spirv,
-     sizeof(t_uint_unbounded_spirv), NULL,
-     R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_UNSIGNED_RANGE,
-     true, R300_R2VB_TYPED_SOURCE_UINT, 0, "" },
-   { "t_sint_to_uint", t_sint_to_uint_spirv, sizeof(t_sint_to_uint_spirv),
-     NULL, R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_MIXED_SIGNEDNESS,
-     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
-   { "t_uint_to_sint", t_uint_to_sint_spirv, sizeof(t_uint_to_sint_spirv),
-     NULL, R300_R2VB_PLAN_REJECT, R300_R2VB_PLAN_MIXED_SIGNEDNESS,
-     true, R300_R2VB_TYPED_SOURCE_SINT, 0, "" },
+   CORPUS_ROW(t_bool, R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
+              false, R300_R2VB_TYPED_SOURCE_NONE, 0, "f"),
+   CORPUS_ROW(t_bool_carry, R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
+              true, R300_R2VB_TYPED_SOURCE_BOOL, 'b', "bf", true),
+   CORPUS_ROW(t_sint_exact, R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
+              true, R300_R2VB_TYPED_SOURCE_SINT, 'i', "fi"),
+   CORPUS_ROW(t_uint_exact, R300_R2VB_PLAN_SPLIT, R300_R2VB_PLAN_OK,
+              true, R300_R2VB_TYPED_SOURCE_UINT, 'u', "fu"),
+   CORPUS_ROW(t_sint_pos_outside, R300_R2VB_PLAN_REJECT,
+              R300_R2VB_PLAN_SIGNED_RANGE,
+              true, R300_R2VB_TYPED_SOURCE_SINT, 0, ""),
+   CORPUS_ROW(t_sint_neg_outside, R300_R2VB_PLAN_REJECT,
+              R300_R2VB_PLAN_SIGNED_RANGE,
+              true, R300_R2VB_TYPED_SOURCE_SINT, 0, ""),
+   CORPUS_ROW(t_uint_outside, R300_R2VB_PLAN_REJECT,
+              R300_R2VB_PLAN_UNSIGNED_RANGE,
+              true, R300_R2VB_TYPED_SOURCE_UINT, 0, ""),
+   CORPUS_ROW(t_uint_unbounded, R300_R2VB_PLAN_REJECT,
+              R300_R2VB_PLAN_UNSIGNED_RANGE,
+              true, R300_R2VB_TYPED_SOURCE_UINT, 0, ""),
+   CORPUS_ROW(t_sint_to_uint, R300_R2VB_PLAN_REJECT,
+              R300_R2VB_PLAN_MIXED_SIGNEDNESS,
+              true, R300_R2VB_TYPED_SOURCE_SINT, 0, ""),
+   CORPUS_ROW(t_uint_to_sint, R300_R2VB_PLAN_REJECT,
+              R300_R2VB_PLAN_MIXED_SIGNEDNESS,
+              true, R300_R2VB_TYPED_SOURCE_SINT, 0, ""),
 };
+
+/* A module outside the corpus manifest: the extra-member mutation rows it
+ * under a corpus-shaped name. */
+static const uint32_t outside_corpus_spirv[4] = { 0x07230203u, 0, 0, 0 };
+
+/* The row table against the corpus manifest: every corpus module has
+ * exactly one SPIR-V row, and every SPIR-V row names a corpus module. */
+static void
+check_corpus_completeness(const struct census_row *table, unsigned count)
+{
+   const unsigned corpus_count = ARRAY_SIZE(r300_spirv_fixture_corpus);
+   unsigned rows_per_entry[ARRAY_SIZE(r300_spirv_fixture_corpus)] = { 0 };
+   bool every_row_in_corpus = true;
+   for (unsigned i = 0; i < count; i++) {
+      if (table[i].spirv == NULL)
+         continue;
+      bool found = false;
+      for (unsigned c = 0; c < corpus_count; c++) {
+         if (r300_spirv_fixture_corpus[c].spirv == table[i].spirv &&
+             r300_spirv_fixture_corpus[c].spirv_size == table[i].spirv_size) {
+            rows_per_entry[c]++;
+            found = true;
+         }
+      }
+      if (!found) {
+         printf("    row %s names a module outside the corpus manifest\n",
+                table[i].name);
+         every_row_in_corpus = false;
+      }
+   }
+   bool every_entry_rowed = true;
+   for (unsigned c = 0; c < corpus_count; c++) {
+      if (rows_per_entry[c] != 1) {
+         printf("    corpus module %s has %u census rows\n",
+                r300_spirv_fixture_corpus[c].name, rows_per_entry[c]);
+         every_entry_rowed = false;
+      }
+   }
+   CHECK(every_entry_rowed,
+         "every corpus module has exactly one census row");
+   CHECK(every_row_in_corpus,
+         "every SPIR-V census row names a corpus module");
+}
 
 /* Stable names for the machine-readable row: enum renumbering must never
  * silently reinterpret archived census output. */
@@ -467,6 +490,20 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
    char label[96];
    char line_first[512], line_second[512];
 
+   /* Window-space boolean lowering: the per-space expectation of a
+    * boolean-carry module. */
+   bool prepared_has_typed = row->prepared_has_typed;
+   enum r300_r2vb_typed_source_class typed_source_class =
+      row->typed_source_class;
+   char required_carry = row->required_carry;
+   const char *allowed_carry = row->allowed_carry;
+   if (row->window_bool_lowered && space == R300_R2VB_POSITION_WINDOW) {
+      prepared_has_typed = false;
+      typed_source_class = R300_R2VB_TYPED_SOURCE_NONE;
+      required_carry = 0;
+      allowed_carry = "f";
+   }
+
    g_transcript[0][0] = '\0';
    g_transcript[1][0] = '\0';
 
@@ -554,21 +591,21 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
          CHECK(plan.primary_reason == row->primary_reason, label);
          snprintf(label, sizeof(label), "%s/%s typed producer contract",
                   row->name, space_name);
-         CHECK(plan.has_typed_source == row->prepared_has_typed &&
-                  plan.typed_source_class == row->typed_source_class,
+         CHECK(plan.has_typed_source == prepared_has_typed &&
+                  plan.typed_source_class == typed_source_class,
                label);
          if (row->action == R300_R2VB_PLAN_SPLIT &&
              plan.action == R300_R2VB_PLAN_SPLIT) {
             char sig[R300_MP_MAX_CARRY_COMPS + 1];
             carry_sig(&plan, sig, sizeof(sig));
-            bool has_required = row->required_carry == 0 ||
-                                strchr(sig, row->required_carry) != NULL;
+            bool has_required = required_carry == 0 ||
+                                strchr(sig, required_carry) != NULL;
             bool all_allowed = true;
             for (const char *c = sig; *c; c++)
-               if (!strchr(row->allowed_carry, *c))
+               if (!strchr(allowed_carry, *c))
                   all_allowed = false;
             snprintf(label, sizeof(label), "%s/%s carry {%s} within {%s}",
-                     row->name, space_name, sig, row->allowed_carry);
+                     row->name, space_name, sig, allowed_carry);
             CHECK(has_required && all_allowed, label);
          }
          if (plan.action == R300_R2VB_PLAN_SINGLE ||
@@ -608,22 +645,6 @@ run_row(const struct census_row *row, enum r300_r2vb_position_space space)
 }
 
 static void
-check_fragment_pipeline_layout_guard(void)
-{
-   const VkPipelineShaderStageCreateInfo stage_info = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-      .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-      .module = VK_NULL_HANDLE,
-      .pName = "main",
-   };
-   nir_shader *nir = NULL;
-   VkResult result = r3v_prepare_shader_nir(&g_r3v_device, &stage_info, NULL,
-                                            NULL, &nir);
-   CHECK(result == VK_ERROR_FEATURE_NOT_PRESENT && nir == NULL,
-         "fragment preparation rejects a missing pipeline layout");
-}
-
-static void
 check_carry_signature_component_width(void)
 {
    nir_builder b = nir_builder_init_simple_shader(
@@ -646,13 +667,44 @@ check_carry_signature_component_width(void)
 }
 
 int
-main(void)
+main(int argc, char **argv)
 {
+   if (argc == 2 && strcmp(argv[1], "--inject-missing-corpus-member") == 0) {
+      mutation = MUTATION_MISSING_CORPUS_MEMBER;
+   } else if (argc == 2 &&
+              strcmp(argv[1], "--inject-extra-corpus-member") == 0) {
+      mutation = MUTATION_EXTRA_CORPUS_MEMBER;
+   } else if (argc != 1) {
+      fprintf(stderr,
+              "usage: %s [--inject-missing-corpus-member|"
+              "--inject-extra-corpus-member]\n",
+              argv[0]);
+      return 2;
+   }
+
    glsl_type_singleton_init_or_ref();
    fake_stack_init();
 
-   check_fragment_pipeline_layout_guard();
    check_carry_signature_component_width();
+
+   /* The mutated table: one corpus row dropped, or one row added that names
+    * a module outside the manifest; the completeness check runs on it. */
+   struct census_row table[ARRAY_SIZE(rows) + 1];
+   unsigned table_count = 0;
+   for (unsigned i = 0; i < ARRAY_SIZE(rows); i++) {
+      if (mutation == MUTATION_MISSING_CORPUS_MEMBER &&
+          rows[i].spirv == t_uint_exact_spirv)
+         continue;
+      table[table_count++] = rows[i];
+   }
+   if (mutation == MUTATION_EXTRA_CORPUS_MEMBER) {
+      table[table_count] = rows[2];
+      table[table_count].name = "t_outside_corpus";
+      table[table_count].spirv = outside_corpus_spirv;
+      table[table_count].spirv_size = sizeof(outside_corpus_spirv);
+      table_count++;
+   }
+   check_corpus_completeness(table, table_count);
 
    for (unsigned i = 0; i < ARRAY_SIZE(rows); i++) {
       run_row(&rows[i], R300_R2VB_POSITION_CLIP);

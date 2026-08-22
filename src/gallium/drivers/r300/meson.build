@@ -363,9 +363,7 @@ if with_tests
   # Route-chain oracle, SPIR-V-derived tier: the typed-carry corpus modules
   # lower to the vertex NIR shape the planner consumes (literal block-0
   # constant addressing, weak-ffma multiply-adds) and plan through the
-  # production r300_r2vb_plan_producer in both position spaces.  The corpus
-  # header stays at its retained-reference home under amd/r300/vulkan/tests
-  # until its own relocation.
+  # production r300_r2vb_plan_producer in both position spaces.
   test(
     'r300-r2vb-typed-route-oracle',
     executable(
@@ -376,8 +374,7 @@ if with_tests
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         inc_amd_r300_common,
         inc_amd_r300_compiler,
-        include_directories('../../../amd/r300/vulkan/tests'),
-      ],
+        ],
       # r300_screen_init_nir_options pulls the screen object, whose video
       # entry points resolve from libgalliumvl.
       link_with : [libr300, libgalliumvl, libgallium],
@@ -388,6 +385,45 @@ if with_tests
     env : ['MESA_SPIRV_LOG_LEVEL=error'],
     suite : ['r300'],
   )
+
+  # Producer resource census over the R2VB corpus: every specimen (the
+  # typed-carry modules through the SPIR-V-derived fixture plus synthetic
+  # fitting and over-budget anchors) through the production plan chain,
+  # one machine-readable row per specimen with the plan cost vectors and
+  # the RC statistics of every compile; verdicts reproduce the typed-route
+  # oracle, the row table proves complete against the corpus manifest, and
+  # two injected mutations calibrate the missing-member and extra-member
+  # failures.
+  r300_r2vb_producer_census = executable(
+    'r300_r2vb_producer_census',
+    files('tests/r300_r2vb_producer_census.c'),
+    c_args : r300_test_c_args,
+    include_directories : [
+      inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+      inc_amd_r300_common,
+      inc_amd_r300_compiler,
+    ],
+    link_with : [libr300, libgalliumvl, libgallium],
+    dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_vtn,
+                    idep_xmlconfig],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'r300-r2vb-producer-census',
+    r300_r2vb_producer_census,
+    env : ['MESA_SPIRV_LOG_LEVEL=error'],
+    suite : ['r300'],
+  )
+  foreach census_mutation : ['missing-corpus-member', 'extra-corpus-member']
+    test(
+      'r300-r2vb-producer-census-known-bad-@0@'.format(census_mutation),
+      r300_r2vb_producer_census,
+      args : ['--inject-@0@'.format(census_mutation)],
+      env : ['MESA_SPIRV_LOG_LEVEL=error'],
+      should_fail : true,
+      suite : ['r300'],
+    )
+  endforeach
 
   # Admission-versus-CSO identity: the plan's throwaway measurement and the
   # actual fragment-shader CSO precompile run the same program under the same
