@@ -254,31 +254,6 @@ if with_tests and get_option('r3v-gallium-backend') and with_gallium_r300
     ),
     suite : ['r3v'],
   )
-  test(
-    'r3v-ubo-binding',
-    executable(
-      'r3v_ubo_binding_test',
-      files('tests/r3v_ubo_binding_test.c'),
-      include_directories : [libr3v_inc, include_directories('.')],
-      dependencies : libr3v_deps,
-      gnu_symbol_visibility : 'hidden',
-    ),
-    suite : ['r3v'],
-  )
-  test(
-    'r3v-descriptor',
-    executable(
-      'r3v_descriptor_test',
-      [r3v_entrypoints[0], files('r3v_descriptor.c',
-                                'tests/r3v_descriptor_test.c')],
-      include_directories : [libr3v_inc, include_directories('.')],
-      dependencies : libr3v_deps,
-      link_with : libr3v_link_with,
-      c_args : libr3v_c_args,
-      gnu_symbol_visibility : 'hidden',
-    ),
-    suite : ['r3v'],
-  )
 endif
 
 # ICD JSON manifest.  The loader discovers ICDs by scanning
@@ -1608,6 +1583,50 @@ if get_option('r3v-native-backend')
         'r3v-native-format-features-known-bad-query-disagreement',
         r3v_native_format_features_test,
         args : ['--inject-properties2-disagreement'],
+        env : r3v_native_loader_env,
+        depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
+                   _native_dev_icd],
+        should_fail : true,
+        timeout : 120,
+        suite : ['r3v'],
+      )
+      # Descriptor contract through the public surface: layout and pool
+      # admission, pool capacity across free and reset, the descriptor
+      # offset as the executed base, VK_WHOLE_SIZE clipped at the buffer
+      # end, and poison-on-void-update refusing the dispatch recording.
+      # Two calibrated mutations report an over-range write as admitted
+      # and a past-capacity allocation as admitted.
+      r3v_native_descriptor_test = executable(
+        'r3v_native_descriptor_test',
+        files('tests/r3v_native_descriptor_test.c'),
+        include_directories : [inc_include, include_directories('.')],
+        dependencies : [dep_vulkan_loader],
+        c_args : [no_override_init_args],
+      )
+      test(
+        'r3v-native-descriptor',
+        r3v_native_descriptor_test,
+        env : r3v_native_loader_env,
+        depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
+                   _native_dev_icd],
+        timeout : 120,
+        suite : ['r3v'],
+      )
+      test(
+        'r3v-native-descriptor-known-bad-unpoisoned-oversize-write',
+        r3v_native_descriptor_test,
+        args : ['--inject-unpoisoned-oversize-write'],
+        env : r3v_native_loader_env,
+        depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
+                   _native_dev_icd],
+        should_fail : true,
+        timeout : 120,
+        suite : ['r3v'],
+      )
+      test(
+        'r3v-native-descriptor-known-bad-pool-overflow-admits',
+        r3v_native_descriptor_test,
+        args : ['--inject-pool-overflow-admits'],
         env : r3v_native_loader_env,
         depends : [libradeon_noop_drm_shim, libvulkan_r3v_native,
                    _native_dev_icd],

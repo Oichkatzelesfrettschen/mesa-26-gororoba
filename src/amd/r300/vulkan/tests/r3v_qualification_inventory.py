@@ -136,6 +136,11 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-format-features",
     "r3v-native-format-features-known-bad-query-disagreement",
     "r3v-native-format-features-known-bad-texel-buffer",
+    # Native descriptor contract: layout/pool admission, pool capacity,
+    # offset and VK_WHOLE_SIZE range semantics, poison-on-void-update.
+    "r3v-native-descriptor",
+    "r3v-native-descriptor-known-bad-unpoisoned-oversize-write",
+    "r3v-native-descriptor-known-bad-pool-overflow-admits",
     "r3v-native-loader-sweep",
     "r3v-native-loader-application",
     "r3v-native-loader-application-known-bad-ib",

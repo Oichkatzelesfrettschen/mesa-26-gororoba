@@ -31,14 +31,12 @@ FILE	src/amd/r300/vulkan/r3v_shader_module.c	-	DELETE	-	-	FAKE_VULKAN_SHADER_LIF
 FILE	src/amd/r300/vulkan/r3v_shader_module.h	-	DELETE	-	-	FAKE_VULKAN_SHADER_LIFETIME
 FILE	src/amd/r300/vulkan/r3v_submit_lifetime.h	-	DELETE	-	-	FAKE_QUEUE_HELPER_WITH_NO_NATIVE_CALLER
 FILE	src/amd/r300/vulkan/r3v_ubo_binding.h	-	DELETE	-	-	FAKE_DESCRIPTOR_BINDING_POLICY
-FILE	src/amd/r300/vulkan/tests/r3v_descriptor_test.c	-	KEEP_FIXTURE	src/amd/r300/vulkan/tests/r3v_native_descriptor_test.c	src/amd/r300/vulkan/r3v_native_compute.c::r3v_UpdateDescriptorSets	PRESERVE_NATIVE_DESCRIPTOR_VALUE
 FILE	src/amd/r300/vulkan/tests/r3v_dp4_fs_nir_test.c	-	DELETE	-	-	DORMANT_BUILDER_TEST_NO_R300G_CALLER
 FILE	src/amd/r300/vulkan/tests/r3v_queue_map_range_test.c	-	DELETE	-	-	FAKE_GALLIUM_MAP_POLICY_TEST
 FILE	src/amd/r300/vulkan/tests/r3v_r2vb_producer_census.c	-	KEEP_FIXTURE	src/gallium/drivers/r300/tests/r300_r2vb_producer_census.c	src/gallium/drivers/r300/r300_r2vb_plan.c::r300_r2vb_plan_producer	PRESERVE_R300G_PLANNER_CENSUS
 FILE	src/amd/r300/vulkan/tests/r3v_r2vb_typed_route_oracle_test.c	-	KEEP_FIXTURE	src/gallium/drivers/r300/tests/r300_r2vb_typed_route_oracle_test.c	src/gallium/drivers/r300/r300_r2vb_plan.c::r300_r2vb_plan_producer	PRESERVE_R300G_TYPED_ROUTE_ORACLE
 FILE	src/amd/r300/vulkan/tests/r3v_render_pass_feedback_test.c	-	DELETE	-	-	FAKE_RENDER_PASS_IMPLEMENTATION_TEST
 FILE	src/amd/r300/vulkan/tests/r3v_static_offset_test.c	-	DELETE	-	-	FAKE_VULKAN_TO_NIR_TEST
-FILE	src/amd/r300/vulkan/tests/r3v_ubo_binding_test.c	-	KEEP_FIXTURE	src/amd/r300/vulkan/tests/r3v_native_ubo_binding_test.c	src/amd/r300/vulkan/r3v_native_compute.c::r3v_UpdateDescriptorSets	PRESERVE_NATIVE_ROBUST_BINDING_VALUE
 FILE	src/amd/r300/vulkan/tests/typed_carry_corpus/r3v_typed_carry_spirv.h	-	KEEP_FIXTURE	src/gallium/drivers/r300/tests/typed_carry_corpus/r300_typed_carry_reference.h	src/gallium/drivers/r300/r300_r2vb_plan.c::r300_r2vb_plan_producer	PRESERVE_R300G_TYPED_CARRY_REFERENCE
 FILE	src/gallium/drivers/r300/r300_compute_admission.c	-	DELETE	-	-	DORMANT_NIR_NO_R300G_CALLER
 FILE	src/gallium/drivers/r300/r300_compute_admission.h	-	DELETE	-	-	DORMANT_NIR_NO_R300G_CALLER

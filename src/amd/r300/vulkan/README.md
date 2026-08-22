@@ -184,9 +184,9 @@ source and test inputs from the option-gated Meson blocks, then adds the one
 r300g-resident compute classifier whose only production caller is the fake
 pipeline.  Physical registration in `files_r300` is not consumer evidence.
 
-At the current cutover boundary the ledger covers 44 files and six named
+At the current cutover boundary the ledger covers 42 files and six named
 candidate functions: 39 files are deleted with the fake Vulkan lifetime, and
-five tests/corpora retain only their differential value under a named future
+three tests/corpora retain only their differential value under a named future
 owner.  No implementation is classified `MOVE_R300G` or `EXTRACT_COMMON`.
 In particular:
 
@@ -198,8 +198,18 @@ In particular:
 - the typed-carry route oracle and producer census retain fixture value for
   the existing `r300_r2vb_plan_producer` mechanism after their Vulkan front
   end is removed;
-- descriptor and UBO fixtures retain value only as tests of already-present
-  native R3V mechanisms;
+- `r3v-native-descriptor` preserves the former descriptor and UBO-binding
+  fixtures through the public layout, pool, set, update, bind, and dispatch
+  entry points: layout and pool admission (immutable-sampler pointers,
+  arrays, non-compute stages, non-storage types, and update-after-bind all
+  refuse), pool capacity across free and reset, the descriptor offset as the
+  executed base at the advertised storage alignment, `VK_WHOLE_SIZE` clipped
+  at the buffer end, and poison-on-void-update refusing the dispatch
+  recording for every out-of-contract write and for copies; separate
+  calibrated mutations report an over-range write as admitted and a
+  past-capacity allocation as admitted. The fake lane's dynamic-offset and
+  Gallium constant-span rules stay with the deletion-bound replay because the
+  native surface admits no dynamic descriptors.
 - `r3v-native-format-features` preserves the former format fixture through
   `vkGetPhysicalDeviceFormatProperties` and
   `vkGetPhysicalDeviceFormatProperties2KHR`; separate calibrated mutations
