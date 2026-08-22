@@ -21,6 +21,7 @@
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_shim_arming.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/common/tests/r300_retained_route_digests.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_ioctl.h"
 
 #include <assert.h>
@@ -134,6 +135,30 @@ file_present(const char *dir, const char *name)
    return stat(path, &status) == 0;
 }
 
+/* The retained ib.bin is the little-endian dword stream the kernel parser
+ * reads; decoding it dword by dword keeps the digest host-order neutral. */
+static void
+retained_ib_digest(const char *dir, char out[2 * R300_TRIANGLE_DIGEST_SIZE + 1],
+                   uint32_t *out_dwords)
+{
+   char path[4096];
+   snprintf(path, sizeof(path), "%s/ib.bin", dir);
+   FILE *file = fopen(path, "rb");
+   assert(file != NULL);
+   uint8_t bytes[R300_RETAINED_CPU_ROUTE_IB_DWORDS * 4 + 4];
+   const size_t read_bytes = fread(bytes, 1, sizeof(bytes), file);
+   fclose(file);
+   assert(read_bytes % 4 == 0 && read_bytes < sizeof(bytes));
+   uint32_t dwords[R300_RETAINED_CPU_ROUTE_IB_DWORDS + 1];
+   for (size_t i = 0; i < read_bytes / 4; i++) {
+      dwords[i] = (uint32_t)bytes[4 * i] | (uint32_t)bytes[4 * i + 1] << 8 |
+                  (uint32_t)bytes[4 * i + 2] << 16 |
+                  (uint32_t)bytes[4 * i + 3] << 24;
+   }
+   *out_dwords = (uint32_t)(read_bytes / 4);
+   r300_triangle_ib_digest_hex(dwords, *out_dwords, out);
+}
+
 #define DEVICE_COMMANDS(f)                                                 \
    f(vkAllocateMemory) f(vkFreeMemory) f(vkMapMemory) f(vkUnmapMemory)     \
    f(vkCreateBuffer) f(vkDestroyBuffer) f(vkBindBufferMemory)              \
@@ -240,6 +265,8 @@ run_arm(enum arm arm, const char *name)
    char reference_digest[BLAKE3_OUT_LEN * 2 + 1];
    r300_triangle_ib_digest_hex(reference.ib, reference.ib_size_dwords,
                                reference_digest);
+   assert(reference.ib_size_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
+   assert(strcmp(reference_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
    r300_tcl_bypass_triangle_release(&reference);
    if (arm == ARM_AUTHORIZATION_REFUSED) {
       char wrong[BLAKE3_OUT_LEN * 2 + 1];
@@ -725,6 +752,17 @@ run_arm(enum arm arm, const char *name)
       assert(!ib_retained);
    else if (arm != ARM_GATE_CLOSED && arm != ARM_KNOWN_BAD_PREMATURE_DRAW)
       assert(ib_retained);
+
+   /* The bytes the armed submit retained and handed to the ioctl are the
+    * retained CPU route identity, so the re-sequenced submit path moves
+    * no dword of the reference cell. */
+   if (arm == ARM_ARMED) {
+      char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+      uint32_t submitted_dwords;
+      retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);
+      assert(submitted_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
+      assert(strcmp(submitted_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
+   }
 
    vkDestroyCommandPool(device, pool, NULL);
    vkDestroyPipeline(device, pipeline, NULL);

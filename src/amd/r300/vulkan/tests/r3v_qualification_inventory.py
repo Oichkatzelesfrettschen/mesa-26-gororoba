@@ -209,6 +209,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-public-gpu-producer-arming-runner",
     "r3v-native-public-gpu-producer-record",
     "r3v-native-route-timing-digest",
+    "r3v-native-route-timing-digest-known-bad-consumer-drift",
     "r3v-native-route-timing-record-cpu",
     "r3v-native-route-timing-record-gpu",
     "r3v-native-gallium-separation",

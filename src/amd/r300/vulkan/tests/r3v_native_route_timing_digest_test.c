@@ -20,12 +20,21 @@
  * different triangles and the timing pair would compare two workloads,
  * so the round trip is pinned here in binary32.
  *
+ * Both digests, the composed length, and the consumer split are pinned
+ * to the retained RS482 route identities, so a composer or emitter
+ * change reports as a movement against the bytes silicon executed.
+ * `--inject-consumer-drift` flips one consumer dword after
+ * composition and must fail on the CPU pin alone, which calibrates the
+ * pins' sensitivity.
+ *
  * Checks are explicit so the test decides the same way under NDEBUG.
  */
 
 #include "amd/r300/common/r300_r2vb_public_route.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/common/tests/r300_retained_route_digests.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -37,8 +46,13 @@ fail(const char *what)
 }
 
 int
-main(void)
+main(int argc, char **argv)
 {
+   const bool inject_consumer_drift =
+      argc == 2 && strcmp(argv[1], "--inject-consumer-drift") == 0;
+   if (argc > 1 && !inject_consumer_drift)
+      return fail("usage: [--inject-consumer-drift]");
+
    struct r300_r2vb_public_route_ib route;
    if (r300_r2vb_public_route_reference_compose(&route) != 0)
       return fail("route composition failed");
@@ -46,6 +60,20 @@ main(void)
    struct r300_tcl_bypass_triangle_ib consumer;
    if (r300_tcl_bypass_triangle_reference_emit(&consumer) != 0)
       return fail("consumer reference emission failed");
+
+   if (route.ib_size_dwords != R300_RETAINED_GPU_ROUTE_IB_DWORDS)
+      return fail("composed stream length differs from the retained "
+                  "GPU route");
+   if (route.consumer_start_dwords !=
+       R300_RETAINED_GPU_ROUTE_CONSUMER_START_DWORDS)
+      return fail("consumer split differs from the retained GPU route");
+   if (consumer.ib_size_dwords != R300_RETAINED_CPU_ROUTE_IB_DWORDS)
+      return fail("consumer cell length differs from the retained "
+                  "CPU route");
+   if (inject_consumer_drift) {
+      consumer.ib[consumer.ib_size_dwords - 1] ^= 1u;
+      route.ib[route.ib_size_dwords - 1] ^= 1u;
+   }
 
    if (route.ib_size_dwords <= route.consumer_start_dwords)
       return fail("composed stream carries no consumer slice");
@@ -69,6 +97,10 @@ main(void)
       return fail("the two route digests coincide");
    if (strcmp(cpu_digest, consumer_digest) != 0)
       return fail("cpu digest differs from the recorded consumer digest");
+   if (strcmp(cpu_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) != 0)
+      return fail("cpu digest differs from the retained CPU route");
+   if (strcmp(gpu_digest, R300_RETAINED_GPU_ROUTE_IB_BLAKE3) != 0)
+      return fail("gpu digest differs from the retained GPU route");
 
    /* The CPU leg's derivation and the driver's transform, in the order
     * the two run, over the exact extent the cell declares.

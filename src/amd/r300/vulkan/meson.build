@@ -1563,19 +1563,28 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   # slice of the offline composition being the recorded consumer cell
   # verbatim; this host test pins that identity and the digest
   # separation between the two routes' declarations.
+  r3v_native_route_timing_digest_test = executable(
+    'r3v_native_route_timing_digest_test',
+    files('tests/r3v_native_route_timing_digest_test.c',
+          '../common/r300_r2vb_public_route.c'),
+    include_directories : r3v_native_inc,
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
   test(
     'r3v-native-route-timing-digest',
-    executable(
-      'r3v_native_route_timing_digest_test',
-      files('tests/r3v_native_route_timing_digest_test.c',
-            '../common/r300_r2vb_public_route.c'),
-      include_directories : r3v_native_inc,
-      dependencies : r3v_native_deps,
-      link_whole : [libr3v_native_impl],
-      link_with : [libradeon_drm_vk],
-      c_args : [no_override_init_args],
-      gnu_symbol_visibility : 'hidden',
-    ),
+    r3v_native_route_timing_digest_test,
+    suite : ['r3v'],
+  )
+  # Calibration: one flipped consumer dword moves the CPU pin.
+  test(
+    'r3v-native-route-timing-digest-known-bad-consumer-drift',
+    r3v_native_route_timing_digest_test,
+    args : ['--inject-consumer-drift'],
+    should_fail : true,
     suite : ['r3v'],
   )
 
