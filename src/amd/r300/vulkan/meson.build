@@ -179,6 +179,25 @@ if with_tests
     ),
     suite : ['r3v'],
   )
+
+  # P2 cutover ledger: derive every Gallium-backed ICD implementation and
+  # test input from the option-gated Meson blocks, then require a durable
+  # owner disposition.  The selftest mutates the same live ledger so a missing
+  # row, invented Gallium caller, invented common consumer, or Vulkan-shaped
+  # moved interface is known to fail before the live verdict is trusted.
+  test(
+    'r3v-gallium-ownership-disposition-selftest',
+    prog_python,
+    args : [files('tests/r3v_gallium_ownership_disposition.py'),
+            '--selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-gallium-ownership-disposition',
+    prog_python,
+    args : [files('tests/r3v_gallium_ownership_disposition.py')],
+    suite : ['r3v'],
+  )
 endif
 
 # Build-time guard for the DP4 compute-as-raster fragment shader shape: the FS

@@ -1,0 +1,24 @@
+{
+  "schema": "r3v-gallium-ownership-known-bad/v1",
+  "cases": [
+    {
+      "name": "missing-row",
+      "path": "src/amd/r300/vulkan/r3v_buffer.c"
+    },
+    {
+      "name": "false-gallium-caller",
+      "path": "src/gallium/drivers/r300/r300_compute_admission.c",
+      "basis": "src/gallium/drivers/r300/r300_screen.c::r300_caller_that_does_not_exist"
+    },
+    {
+      "name": "false-common-consumer",
+      "path": "src/amd/r300/vulkan/tests/fixtures/r3v_gallium_ownership_neutral_source.c",
+      "basis": "src/gallium/drivers/r300/r300_screen.c::r300_screen_create;src/amd/r300/vulkan/r3v_native_queue.c::missing_second_consumer"
+    },
+    {
+      "name": "forbidden-vulkan-vocabulary",
+      "path": "src/amd/r300/vulkan/tests/fixtures/r3v_gallium_ownership_forbidden_source.c",
+      "basis": "src/gallium/drivers/r300/r300_screen.c::r300_screen_create"
+    }
+  ]
+}

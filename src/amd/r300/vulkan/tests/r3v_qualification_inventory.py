@@ -150,6 +150,10 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-cpu-compute-job",
     "r3v-native-compute-frontend",
     "r3v-native-compute-dispatch",
+    # P2 ownership cutover: the fake lane cannot retain dormant NIR or move a
+    # Vulkan-shaped interface into r300g/common without this calibrated gate.
+    "r3v-gallium-ownership-disposition-selftest",
+    "r3v-gallium-ownership-disposition",
     "r3v-native-submit-object-replay",
     "r3v-native-triangle-cell-closed",
     "r3v-native-triangle-cell-open",
