@@ -157,12 +157,15 @@ lifetime_trace_emit(void *ctx, enum r3v_native_submission_trace_event event)
              : 0;
 }
 
+/* The completion BO prepare creates is a 4-byte GEM object the transport
+ * waits on and never maps, so the shim's object census is the one that
+ * sees it; -1 reports a shim without the counter and fails the verdict.
+ */
 static int
-live_bo_backing_files(void)
+live_bos(void)
 {
    int (*counter)(void) =
-      (int (*)(void))dlsym(RTLD_DEFAULT,
-                           "drm_shim_test_live_bo_backing_files");
+      (int (*)(void))dlsym(RTLD_DEFAULT, "drm_shim_test_live_bos");
    return counter != NULL ? counter() : -1;
 }
 
@@ -340,7 +343,7 @@ run_burst_leg(VkInstance instance,
    int live_before_prepare = -1;
    if (lifetime_mode == BURST_LIFETIME_TEARDOWN ||
        lifetime_mode == BURST_LIFETIME_KNOWN_BAD_TEARDOWN)
-      live_before_prepare = live_bo_backing_files();
+      live_before_prepare = live_bos();
 
    if (lifetime_mode != BURST_LIFETIME_NONE) {
       /* The prepared lane consumes authorization ahead of the submit:
@@ -446,23 +449,23 @@ run_burst_leg(VkInstance instance,
 
       if (lifetime_mode == BURST_LIFETIME_TEARDOWN ||
           lifetime_mode == BURST_LIFETIME_KNOWN_BAD_TEARDOWN) {
-         const int live_prepared = live_bo_backing_files();
+         const int live_prepared = live_bos();
          CHECK(live_before_prepare >= 0 &&
                   live_prepared == live_before_prepare + 1,
-               "prepare adds one completion BO to the shim resource census");
+               "prepare adds one completion BO to the shim object census");
          if (lifetime_mode == BURST_LIFETIME_KNOWN_BAD_TEARDOWN)
             native_device->prepared.valid = false;
          /* This internal harness deliberately hands teardown a live command
           * pool and memory objects.  The verdict is narrower than Vulkan
           * child-object lifetime: only the completion BO added by prepare is
-          * compared with the pre-prepare shim census.
+          * compared with the pre-prepare shim object census.
           */
          vkDestroyDevice(device, NULL);
          device = VK_NULL_HANDLE;
          pool = VK_NULL_HANDLE;
          carrier_memory = VK_NULL_HANDLE;
          vertex_memory = VK_NULL_HANDLE;
-         CHECK(live_bo_backing_files() <= live_before_prepare,
+         CHECK(live_bos() <= live_before_prepare,
                "device teardown releases the uncommitted prepared BO");
          CHECK(trace.event_count == 0,
                "device teardown reaches no submission ioctl");
@@ -698,6 +701,11 @@ main(int argc, char **argv)
             r3v_native_queue_status_name(admit.queue_status));
    }
 
+   /* Every prepared leg declares the four-member burst; a single selected
+    * mode reaches here without the admission leg's declaration.
+    */
+   setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "4", 1);
+
    /* Prepared leg: the transport prepares ahead of the submit, evidence
     * and token land before any ioctl, and the commit completes; the
     * resubmission then refuses on the token the prepare wrote.
@@ -739,7 +747,6 @@ main(int argc, char **argv)
          goto done;
    }
 
-   setenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS", "4", 1);
    if (mode_selected(selected, "different-buffer") &&
        run_lifetime_leg(instance, gipa, physical_device, &reference,
                         carrier_bytes,
