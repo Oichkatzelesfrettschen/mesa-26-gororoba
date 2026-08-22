@@ -3,14 +3,8 @@
 
 
 files_r300 = files(
-  # Neutral R300 PM4 emitters shared with the direct Vulkan driver; the
-  # dependency points from Gallium into src/amd/r300/common alone.
-  '../../../amd/r300/common/r300_pm4_builder.c',
-  '../../../amd/r300/common/r300_r2vb_fetch_pass.c',
-  '../../../amd/r300/common/r300_r2vb_reingest_draw.c',
-  '../../../amd/r300/common/r300_r2vb_target_state.c',
-  '../../../amd/r300/common/r300_carrier_policy.c',
-  '../../../amd/r300/common/r300_numeric_domain.c',
+  # Header-only shader semantics remain a source dependency; common
+  # implementation units come from the single libr300_common object owner.
   '../../../amd/r300/common/r300_shader_semantics.h',
   'r300_blit.c',
   'r300_cb.h',
@@ -76,7 +70,7 @@ libr300 = static_library(
     inc_amd_r300_common, inc_amd_r300_compiler,
   ],
   gnu_symbol_visibility : 'hidden',
-  link_with : [libr300_compiler],
+  link_with : [libr300_common, libr300_compiler],
   dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
 )
 

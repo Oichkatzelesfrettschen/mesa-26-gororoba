@@ -37,11 +37,14 @@ domain after its reusable compiler mechanisms move to r300g.  `none` means
 the component is an evidence producer rather than a production object.  Test
 names are exact Meson registrations.
 
-A consumer is measured from a domain's registered production source roots,
-directly compiled common `.c` files, and the C include graph.  Linking another
-domain's static library does not relabel every input of that library: those
-sources remain consumers of their owning domain.  Include traversal stops at
-another domain's source boundary for the same reason.
+A consumer is measured from a domain's registered production source roots and
+the C include graph.  Each implementation unit compiled once into
+`libr300_common` inherits the domains that reach its public same-stem header;
+linking the archive alone labels no source as consumed.  The checker refuses a
+production domain that compiles a registered common implementation directly,
+and include traversal stops at another domain's source boundary.  Manifest
+writers are deliberately excluded from the archive because they are evidence
+executables with `main()` rather than driver objects.
 
 ## Consumer census
 
@@ -49,11 +52,11 @@ another domain's source boundary for the same reason.
 |---|---|---|---|---|
 | `r300_capabilities.h` | Chip capability record shared by screen and compiler decisions. | `r300g`, `compiler` | `r300-nir-vs-harness` | `KEEP_SHARED` |
 | `r300_reg.h`<br>`r300_shader_semantics.h` | Register encodings and shader semantic vocabulary. | `r300g`, `compiler`, `native`, `legacy-r3v` | `r300-pm4-builder`, `r300-nir-to-rc` | `KEEP_SHARED` |
-| `r300_numeric_domain.c`<br>`r300_numeric_domain.h`<br>`r300_us_source_read.h` | FP24 and source-read numeric domains. | `r300g`, `compiler`, `native` | `r300-fp16-limb-oracle`, `r300-classic-pair-value` | `KEEP_SHARED` |
+| `r300_numeric_domain.c`<br>`r300_numeric_domain.h`<br>`r300_us_source_read.h` | FP24 and source-read numeric domains. | `compiler`, `native` | `r300-fp16-limb-oracle`, `r300-classic-pair-value` | `KEEP_SHARED` |
 | `r300_vertex_format.h`<br>`r300_vertex_stream.h` | API-neutral vertex formats and byte-addressed stream records. | `r300g`, `native`, `cpu` | `r300-vertex-format-pipe`, `r300-cpu-vertex` | `KEEP_SHARED` |
 | `r300_compute_job.h`<br>`r300_vertex_job.h` | Neutral compute and vertex job IR. | `compiler`, `native`, `cpu` | `r300-cpu-compute-job`, `r300-cpu-vertex-job`, `r300-vertex-front-end-parity` | `KEEP_SHARED` |
 | `r300_compute_spirv.c`<br>`r300_compute_spirv.h`<br>`r300_vertex_spirv.c`<br>`r300_vertex_spirv.h` | Direct SPIR-V admission into neutral jobs.  SPIR-V is the Vulkan front-end input, not an R300 hardware contract. | `native` | `r3v-native-compute-frontend`, `r3v-native-pipeline-frontend`, `r300-vertex-front-end-parity` | `MOVE_TO_R3V_FRONTEND` |
-| `r300_carrier_policy.c`<br>`r300_carrier_policy.h` | Numeric-domain, carrier-encoding, format, and stride policy for raster-backed operations. | `r300g`, `compiler` | `r300-carrier-policy`, `r300-carrier-format-pipe` | `KEEP_SHARED` |
+| `r300_carrier_policy.c`<br>`r300_carrier_policy.h` | Numeric-domain, carrier-encoding, format, and stride policy for raster-backed operations. | `compiler` | `r300-carrier-policy`, `r300-carrier-format-pipe` | `KEEP_SILICON_CONTRACT` |
 | `r300_pm4_builder.c`<br>`r300_pm4_builder.h` | Bounded PM4 word construction and error propagation. | `r300g`, `native` | `r300-pm4-builder` | `KEEP_SHARED` |
 | `r300_pm4_compose.c`<br>`r300_pm4_compose.h` | Role-based PM4 fragment composition and relocation rebasing. | `none` | `r300-pm4-compose`, `r300-r2vb-reingest-compose-parity` | `KEEP_SILICON_CONTRACT` |
 | `r300_r2vb_source_contract.h` | R2VB source format, stride, swizzle, and fetch contract. | `r300g` | `r300-r2vb-source-contract` | `KEEP_SILICON_CONTRACT` |
@@ -84,7 +87,10 @@ another domain's source boundary for the same reason.
 The direct-SPIR-V readers move to the Vulkan front end because their only
 production input is Vulkan SPIR-V.  The NIR-to-job path remains in the r300
 compiler for r300g, and both front ends continue to meet at the neutral job IR
-through the parity tests.
+through the parity tests.  Until that P2 source move lands, the two readers and
+the delivery-route selector are named in
+`r300_common_pending_r3v_move_files`: one archive owns their object bytes, but
+the build arrangement does not supersede their `MOVE_TO_R3V_*` dispositions.
 
 The `legacy-r3v` rows expose the Gallium-backed Vulkan experiment's current
 dependencies without making it a durable owner.  P2 moves its reusable NIR
@@ -101,3 +107,12 @@ compile no runtime object into either driver and publish exact PM4 and
 relocation artifacts for offline kernel-parser replay.  Their row-by-row
 decisions keep evidence tooling from being misreported as a second production
 consumer.
+
+The single-object cutover removed two source-list-only consumer labels.  r300g
+previously compiled `r300_carrier_policy.c` and `r300_numeric_domain.c` as
+members of `files_r300`, but no landed r300g production root reaches either
+public contract.  Archive linkage does not restore that claim: the numeric
+domain remains shared by compiler and native reachability, while carrier policy
+stays common on its calibrated silicon-contract proofs.  A future r300g
+carrier adapter earns the `r300g` label only when its production source reaches
+the public header.

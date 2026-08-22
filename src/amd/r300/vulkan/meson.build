@@ -81,7 +81,6 @@ if get_option('r3v-gallium-backend') and with_gallium_r300
     'r3v_dp4_fs_nir.c',
     'r3v_pipeline.c',
     'r3v_object.c',
-    '../common/r300_fragment_binary.c',
   )
   libr3v_deps += [
     idep_nir,
@@ -103,7 +102,7 @@ if get_option('r3v-gallium-backend') and with_gallium_r300
   # context now reference (vl_create_mpeg12_decoder via r300_video.c,
   # vl_video_buffer_is_format_supported via r300_screen.c); --gc-sections drops
   # the decode kernels when the codec is disabled.
-  libr3v_link_with += [libgallium, libgalliumvl]
+  libr3v_link_with += [libr300_common, libgallium, libgalliumvl]
   libr3v_c_args += ['-DR3V_GALLIUM_BACKEND']
 endif
 
@@ -414,20 +413,6 @@ if get_option('r3v-native-backend')
     'r3v_native_queue.c',
     'r3v_native_recording.c',
     'r3v_native_transfer.c',
-    '../common/r300_compute_spirv.c',
-    '../common/r300_vertex_spirv.c',
-    '../common/r300_direct_write.c',
-    '../common/r300_first_draw_state.c',
-    '../common/r300_fragment_binary.c',
-    '../common/r300_pm4_builder.c',
-    '../common/r300_delivery_route.c',
-    '../common/r300_r2vb_carrier_delivery.c',
-    '../common/r300_r2vb_float2_tuple_pass.c',
-    '../common/r300_r2vb_producer_pass.c',
-    '../common/r300_r2vb_reingest_pass.c',
-    '../common/r300_tcl_bypass_triangle.c',
-    '../common/r300_zb_depth_control_cell.c',
-    '../common/r300_zb_depth_state.c',
   )
 
   # The native lane compiles with no Gallium include root: PIPE_FORMAT_*
@@ -465,7 +450,7 @@ if get_option('r3v-native-backend')
     [r3v_loader_base_files, r3v_native_files, r3v_entrypoints],
     include_directories : r3v_native_inc,
     dependencies : r3v_native_compile_deps,
-    link_with : [libradeon_drm_vk, libr300_cpu],
+    link_with : [libradeon_drm_vk, libr300_common, libr300_cpu],
     c_args : [no_override_init_args, '-DR3V_NATIVE_BACKEND'],
     gnu_symbol_visibility : 'hidden',
   )
@@ -660,6 +645,22 @@ if get_option('r3v-native-backend')
         libr3v_native_impl.full_path(),
       ],
       depends : libr3v_native_impl,
+      suite : ['r3v'],
+    )
+    # The implementation archive check catches undefined forbidden
+    # dependencies before resolution; this final-artifact leg separately
+    # proves that none remain unresolved after the installed ICD is composed.
+    # The adjacent full-symbol separation audit covers forbidden definitions.
+    test(
+      'r3v-native-common-boundary-final-dso',
+      prog_python,
+      args : [
+        r300_common_boundary_audit,
+        '--objects',
+        prog_nm_r3v.full_path(),
+        libvulkan_r3v_native.full_path(),
+      ],
+      depends : libvulkan_r3v_native,
       suite : ['r3v'],
     )
     test(

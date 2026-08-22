@@ -52,17 +52,16 @@ endif
 # driver, and the R3V Vulkan driver all resolve them from one definition.
 inc_amd_r300_common = include_directories('r300/common')
 
-# The R300 shader compiler library and its include root; the Gallium r300
-# driver and the R3V Vulkan driver both consume it from this one owner.
+# The R300 common object library is built before either API consumer; its
+# source census separately ratchets the three pending P2 ownership moves.
+# Its tests remain gated inside the subdirectory, so a production-only build
+# still gets the one object owner without registering host proof binaries.
 if with_gallium_r300 or with_ati_r300_vk
-  subdir('r300/compiler')
-endif
-
-# API-neutral R300 silicon-contract tests.  They are registered here rather
-# than in either API driver, so both r300g and a native-only R3V build exercise
-# the shared vocabulary while their adapters remain independently optional.
-if with_tests and (with_gallium_r300 or with_ati_r300_vk)
   subdir('r300/common')
+
+  # The R300 shader compiler is a Gallium/NIR consumer of common contracts;
+  # the pure Vulkan lane does not link it.
+  subdir('r300/compiler')
 endif
 
 # Portable CPU vertex execution for the native R3V lane; host-only, with
