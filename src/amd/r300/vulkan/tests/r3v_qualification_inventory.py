@@ -171,6 +171,8 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-r2vb-producer-census",
     "r300-r2vb-producer-census-known-bad-missing-corpus-member",
     "r300-r2vb-producer-census-known-bad-extra-corpus-member",
+    "r300-typed-carry-reference",
+    "r300-typed-carry-reference-selftest",
     # Compute surface: the direct SPIR-V admission, the CPU executor,
     # and the end-to-end gate-off/gate-on dispatch under the shim.
     "r300-cpu-compute-job",
