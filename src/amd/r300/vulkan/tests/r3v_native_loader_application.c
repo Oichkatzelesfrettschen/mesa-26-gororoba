@@ -433,11 +433,10 @@ main(void)
    vkCmdEndRenderPass(cmd);
    assert(vkEndCommandBuffer(cmd) == VK_SUCCESS);
 
-   /* The closed hazard gate refuses the ioctl after the deferred
-    * execution ran, so the loader-observed verdict is device loss while
-    * the recording's execution-time semantics are already observable in
-    * application memory; the IB manifest the submit retained is the
-    * wrapper's byte-equality evidence.
+   /* The closed hazard gate refuses before the deferred draw executes,
+    * so the loader-observed verdict is device loss with the application's
+    * memory untouched; the IB manifest the submit retained before the
+    * gate is the wrapper's byte-equality evidence.
     */
    assert(vkQueueSubmit(queue, 1,
                         &(VkSubmitInfo){
@@ -447,16 +446,17 @@ main(void)
                         },
                         VK_NULL_HANDLE) == VK_ERROR_DEVICE_LOST);
 
-   /* Readback oracle: the load-op clear filled exactly the image
-    * footprint with the sentinel, and the seeded tail past it
-    * survived.  The footprint is the declared memory contract -- the
-    * row pitch times the height plus one oracle-headroom row -- pinned
-    * against the requirements query so the oracle and the driver share
-    * one definition, then swept in full.  An oracle failure exits with
-    * status 3, its own verdict class; the corrupt fixtures write one
-    * deviating dword through the application's own mapping before the
-    * sweep, so the exact-status calibration legs prove the sweep still
-    * judges bytes.
+   /* Readback oracle: the refused submit left the whole allocation at
+    * its seed -- the load-op clear did not run, and neither did anything
+    * past the footprint.  The footprint is the declared memory contract
+    * -- the row pitch times the height plus one oracle-headroom row --
+    * pinned against the requirements query so the oracle and the driver
+    * share one definition, then swept in full together with the tail.
+    * An oracle failure exits with status 3, its own verdict class; the
+    * corrupt fixtures write one sentinel dword through the application's
+    * own mapping before the sweep, inside the footprint or past it, so
+    * the exact-status calibration legs prove the sweep still judges
+    * bytes.
     */
    {
       const VkDeviceSize footprint_bytes =
@@ -471,24 +471,19 @@ main(void)
          getenv("R3V_LOADER_APP_FIXTURE_CORRUPT_TAIL");
       const VkDeviceSize footprint_dwords = footprint_bytes / 4;
       if (corrupt_footprint != NULL && strcmp(corrupt_footprint, "1") == 0)
-         color_map[footprint_dwords / 2] = COLOR_SEED;
+         color_map[footprint_dwords / 2] = SENTINEL_PIXEL;
       if (corrupt_tail != NULL && strcmp(corrupt_tail, "1") == 0)
          color_map[footprint_dwords + 1] = SENTINEL_PIXEL;
       VkDeviceSize mismatches = 0;
-      for (VkDeviceSize i = 0; i < footprint_dwords; i++) {
-         if (color_map[i] != SENTINEL_PIXEL)
-            mismatches++;
-      }
-      for (VkDeviceSize i = footprint_dwords;
-           i < (footprint_bytes + 4096) / 4; i++) {
+      for (VkDeviceSize i = 0; i < (footprint_bytes + 4096) / 4; i++) {
          if (color_map[i] != COLOR_SEED)
             mismatches++;
       }
       vkUnmapMemory(device, color_memory);
       if (mismatches != 0) {
          fprintf(stderr,
-                 "readback oracle: %llu deviating dwords in the cleared "
-                 "footprint or seeded tail\n",
+                 "readback oracle: %llu deviating dwords in the seeded "
+                 "footprint or tail after the refused submit\n",
                  (unsigned long long)mismatches);
          return 3;
       }
