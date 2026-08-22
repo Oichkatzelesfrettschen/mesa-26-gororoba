@@ -159,6 +159,9 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-submit-order-ioctl-refused",
     "r3v-native-submit-order-completion-failure",
     "r3v-native-submit-order-known-bad-premature-draw",
+    "r3v-native-submit-order-robust-oob-enabled",
+    "r3v-native-submit-order-robust-oob-w0-refused",
+    "r3v-native-submit-order-robust-oob-disabled",
     # Native prepared submission lifetime: commit, reset, shape refusals,
     # pre-ioctl failure, teardown, and one single-reason calibration per
     # releaser or binding guard.

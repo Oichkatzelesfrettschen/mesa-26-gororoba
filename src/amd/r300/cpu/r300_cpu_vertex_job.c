@@ -147,24 +147,14 @@ static int execute_guard(const struct r300_vertex_job *job,
    if ((uint64_t)vertex_count * 4 > carrier_dwords)
       return -ENOSPC;
 
-   /* Whole-range last-byte bound, so the per-vertex gathers below cannot
-    * fail after the carrier has been written.  The comparison divides,
-    * matching r300_cpu_vertex_gather's own bound: last_vertex reaches
-    * 2^32.3 and the stride reaches 2^32, so the product form wraps and a
-    * wrapped residue admits a range the per-vertex gather then refuses
-    * mid-carrier.  A zero stride repeats the first record, which the
-    * record-bytes bound alone covers.
-    */
-   const struct r300_vertex_format_semantics *format =
-      r300_vertex_format_semantics(job->input_format_id);
-   if (stream->size_bytes < format->semantic_record_bytes)
+   /* Whole-range bound up front, so the per-vertex gathers below cannot
+    * fail after the carrier has been written; under the stream's robust
+    * rule the gathers substitute instead of refusing, and the range
+    * needs no bound. */
+   if (!stream->oob_reads_zero &&
+       !r300_cpu_vertex_range_in_bounds(job->input_format_id, stream,
+                                        first_vertex, vertex_count))
       return -EINVAL;
-   if (stream->stride != 0) {
-      const uint64_t last_vertex = (uint64_t)first_vertex + vertex_count - 1;
-      if (last_vertex > (stream->size_bytes -
-                         format->semantic_record_bytes) / stream->stride)
-         return -EINVAL;
-   }
 
    /* The carrier may share an allocation with the stream (an in-place
     * restaging), but an overlapping byte range would let stores

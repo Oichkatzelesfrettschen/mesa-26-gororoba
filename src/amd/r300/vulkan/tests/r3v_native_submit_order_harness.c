@@ -65,7 +65,17 @@ enum arm {
     * the ordering this harness refuses -- so the untouched verdicts of
     * the gate-closed arm must fail. */
    ARM_KNOWN_BAD_PREMATURE_DRAW,
+   /* Robust buffer access over a two-record vertex buffer under the
+    * three-vertex draw: enabled, the F32_3 attribute's third record
+    * reads (0, 0, 0, 1) and the armed submit delivers; enabled with an
+    * F32_4 attribute, the third record reads w = 0, outside the CPU
+    * route's admitted clip volume, and the draw refuses by name;
+    * disabled, the record-time bound proof refuses the recording. */
+   ARM_ROBUST_OOB_ENABLED,
+   ARM_ROBUST_OOB_W0_REFUSED,
+   ARM_ROBUST_OOB_DISABLED,
 };
+
 
 static const struct {
    const char *name;
@@ -79,6 +89,9 @@ static const struct {
    { "ioctl-refused", ARM_IOCTL_REFUSED },
    { "completion-failure", ARM_COMPLETION_FAILURE },
    { "known-bad-premature-draw", ARM_KNOWN_BAD_PREMATURE_DRAW },
+   { "robust-oob-enabled", ARM_ROBUST_OOB_ENABLED },
+   { "robust-oob-w0-refused", ARM_ROBUST_OOB_W0_REFUSED },
+   { "robust-oob-disabled", ARM_ROBUST_OOB_DISABLED },
 };
 
 /* Injection over the transport's ioctl seam: the saved production table
@@ -313,12 +326,21 @@ run_arm(enum arm arm, const char *name)
    VkResult enumerated = enumerate(instance, &pdev_count, &pdev);
    assert((enumerated == VK_SUCCESS || enumerated == VK_INCOMPLETE) &&
           pdev_count == 1);
+   const bool robust_arm = arm == ARM_ROBUST_OOB_ENABLED ||
+                           arm == ARM_ROBUST_OOB_W0_REFUSED ||
+                           arm == ARM_ROBUST_OOB_DISABLED;
+   const bool robust_enabled = arm == ARM_ROBUST_OOB_ENABLED ||
+                               arm == ARM_ROBUST_OOB_W0_REFUSED;
+   const VkPhysicalDeviceFeatures robust_features = {
+      .robustBufferAccess = VK_TRUE,
+   };
    const float priority = 1.0f;
    VkDevice device = VK_NULL_HANDLE;
    assert(create_device(
              pdev,
              &(VkDeviceCreateInfo){
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                .pEnabledFeatures = robust_enabled ? &robust_features : NULL,
                 .queueCreateInfoCount = 1,
                 .pQueueCreateInfos =
                    &(VkDeviceQueueCreateInfo){
@@ -409,7 +431,9 @@ run_arm(enum arm arm, const char *name)
    assert(vkCreateBuffer(device,
                          &(VkBufferCreateInfo){
                             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                            .size = 256,
+                            /* Two 16-byte records under a three-vertex
+                             * draw for the robust arms. */
+                            .size = robust_arm ? 32 : 256,
                             .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                          },
@@ -512,7 +536,10 @@ run_arm(enum arm arm, const char *name)
                          &(VkVertexInputAttributeDescription){
                             .location = 0,
                             .binding = 0,
-                            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+                            .format = (arm == ARM_ROBUST_OOB_ENABLED ||
+                                       arm == ARM_ROBUST_OOB_DISABLED)
+                                         ? VK_FORMAT_R32G32B32_SFLOAT
+                                         : VK_FORMAT_R32G32B32A32_SFLOAT,
                             .offset = 0,
                          },
                    },
@@ -629,7 +656,17 @@ run_arm(enum arm arm, const char *name)
    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &(VkDeviceSize){ 0 });
    vkCmdDraw(cmd, 3, 1, 0, 0);
    vkCmdEndRenderPass(cmd);
-   assert(vkEndCommandBuffer(cmd) == VK_SUCCESS);
+   const VkResult ended = vkEndCommandBuffer(cmd);
+   if (arm == ARM_ROBUST_OOB_DISABLED) {
+      /* The feature off, the record-time bound proof poisons the
+       * recording, so the application sees the refusal at end and
+       * nothing reaches the queue. */
+      assert(ended == R3V_NATIVE_REFUSAL_RESULT);
+      printf("%s: record refused at vkEndCommandBuffer (%d)\n", name,
+             ended);
+      return 0;
+   }
+   assert(ended == VK_SUCCESS);
 
    struct r3v_native_cmd_buffer *native_cmd =
       r3v_native_cmd_buffer_from_handle(cmd);
@@ -681,13 +718,29 @@ run_arm(enum arm arm, const char *name)
    const bool carrier_is_reference =
       memcmp(carrier_after, r300_tcl_bypass_triangle_vertices,
              sizeof(carrier_after)) == 0;
+   /* The robust delivery: the two in-bounds records transform as the
+    * reference, and the third reads (0, 0, 0, 1), the window center. */
+   uint32_t robust_expected[R300_TRIANGLE_VERTEX_DWORDS];
+   memcpy(robust_expected, r300_tcl_bypass_triangle_vertices,
+          sizeof(robust_expected));
+   {
+      const float center[4] = { (float)R3V_NATIVE_TARGET_WIDTH / 2.0f,
+                                (float)R3V_NATIVE_TARGET_HEIGHT / 2.0f,
+                                0.0f, 1.0f };
+      memcpy(&robust_expected[8], center, sizeof(center));
+   }
+   const bool carrier_is_robust =
+      memcmp(carrier_after, robust_expected, sizeof(carrier_after)) == 0;
    const bool token = file_present(manifest_dir, "attempt.token");
 
    printf("%s: result=%d status=%d cs_ioctls=%u failed_mmaps=%u "
           "carrier=%s token=%s\n",
           name, submitted, status, cs_ioctls, failed_mmaps,
-          carrier_untouched ? "untouched"
-                            : (carrier_is_reference ? "reference" : "other"),
+          carrier_untouched
+             ? "untouched"
+             : (carrier_is_reference
+                   ? "reference"
+                   : (carrier_is_robust ? "robust" : "other")),
           token ? "spent" : "unspent");
    fflush(stdout);
 
@@ -699,6 +752,28 @@ run_arm(enum arm arm, const char *name)
       assert(carrier_is_reference);
       check_target(device, &target, true, name);
       assert(token);
+      break;
+   case ARM_ROBUST_OOB_ENABLED:
+      assert(submitted == VK_SUCCESS);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(cs_ioctls == 1);
+      assert(carrier_is_robust);
+      check_target(device, &target, true, name);
+      assert(token);
+      break;
+   case ARM_ROBUST_OOB_DISABLED:
+      /* Returned above at vkEndCommandBuffer. */
+      assert(!"unreachable");
+      break;
+   case ARM_ROBUST_OOB_W0_REFUSED:
+      /* Refuses inside the deferred draw, after every gate and before
+       * any write: the w = 0 record leaves the admitted clip volume. */
+      assert(submitted == VK_ERROR_DEVICE_LOST);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
+      assert(cs_ioctls == 0);
+      assert(carrier_untouched);
+      check_target(device, &target, false, name);
+      assert(!token);
       break;
    case ARM_GATE_CLOSED:
    case ARM_KNOWN_BAD_PREMATURE_DRAW:

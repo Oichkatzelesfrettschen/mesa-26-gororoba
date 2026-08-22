@@ -492,9 +492,94 @@ static void test_determinism(void)
    assert(memcmp(first, second, sizeof(first)) == 0);
 }
 
+/* Robust reads: with oob_reads_zero clear an out-of-bounds range refuses
+ * before any write; set, the records inside the bound gather verbatim and
+ * each record outside reads raw zeros with the absent components
+ * synthesized (0, 0, 1), on the dispatcher, the baseline, and the job
+ * executor alike.
+ */
+static void test_robust_out_of_bounds_reads_zero(void)
+{
+   const float records[8] = { 1.0f, 2.0f, 3.0f, 4.0f,
+                              5.0f, 6.0f, 7.0f, 8.0f };
+   uint32_t carrier[CARRIER_DWORDS];
+   uint32_t baseline[CARRIER_DWORDS];
+
+   /* Two 16-byte records, three vertices requested: the third is outside. */
+   struct r300_vertex_stream stream = stream_of(records, 16, 32);
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &stream, 0, 3,
+                                 carrier, CARRIER_DWORDS) == -EINVAL);
+   assert(carrier[0] == CANARY && carrier[11] == CANARY);
+   assert(!r300_cpu_vertex_range_in_bounds(R300_VERTEX_FORMAT_F32_4,
+                                           &stream, 0, 3));
+   assert(r300_cpu_vertex_range_in_bounds(R300_VERTEX_FORMAT_F32_4,
+                                          &stream, 0, 2));
+
+   stream.oob_reads_zero = true;
+   static const struct {
+      enum r300_vertex_format_id format;
+      uint32_t tail[4];
+   } rows[] = {
+      { R300_VERTEX_FORMAT_F32_4, { 0, 0, 0, 0 } },
+      { R300_VERTEX_FORMAT_F32_3, { 0, 0, 0, 0x3f800000u } },
+      { R300_VERTEX_FORMAT_F32_2, { 0, 0, 0, 0x3f800000u } },
+   };
+   for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+      fill_canary(carrier);
+      fill_canary(baseline);
+      assert(r300_cpu_vertex_gather(rows[i].format, &stream, 0, 3, carrier,
+                                    CARRIER_DWORDS) == 0);
+      assert(r300_cpu_vertex_gather_baseline(rows[i].format, &stream, 0, 3,
+                                             baseline, CARRIER_DWORDS) == 0);
+      assert(memcmp(carrier, baseline, 12 * sizeof(uint32_t)) == 0);
+      assert(carrier[0] == f_bits(1.0f) && carrier[4] == f_bits(5.0f));
+      assert(memcmp(&carrier[8], rows[i].tail, sizeof(rows[i].tail)) == 0);
+      assert(carrier[12] == CANARY);
+
+      /* The identity job executes the same rule. */
+      struct r300_vertex_job job = {
+         .input_format_id = rows[i].format,
+         .instruction_count = 2,
+         .instructions = {
+            { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },
+            { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 0 },
+         },
+      };
+      fill_canary(baseline);
+      assert(r300_cpu_vertex_job_execute(&job, &stream, 0, 3, baseline,
+                                         CARRIER_DWORDS) == 0);
+      assert(memcmp(carrier, baseline, 12 * sizeof(uint32_t)) == 0);
+      stream.oob_reads_zero = false;
+      fill_canary(baseline);
+      assert(r300_cpu_vertex_job_execute(&job, &stream, 0, 3, baseline,
+                                         CARRIER_DWORDS) == -EINVAL);
+      assert(baseline[0] == CANARY);
+      stream.oob_reads_zero = true;
+   }
+
+   /* A stream shorter than one record reads every vertex as zeros. */
+   struct r300_vertex_stream short_stream = stream_of(records, 16, 8);
+   short_stream.oob_reads_zero = true;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_3, &short_stream,
+                                 0, 2, carrier, CARRIER_DWORDS) == 0);
+   assert(carrier[0] == 0 && carrier[3] == 0x3f800000u &&
+          carrier[4] == 0 && carrier[7] == 0x3f800000u);
+
+   /* Zero stride reads the base record for every vertex, in or out. */
+   struct r300_vertex_stream constant = stream_of(records, 0, 16);
+   constant.oob_reads_zero = true;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_gather(R300_VERTEX_FORMAT_F32_4, &constant, 0, 3,
+                                 carrier, CARRIER_DWORDS) == 0);
+   assert(carrier[8] == f_bits(1.0f) && carrier[11] == f_bits(4.0f));
+}
+
 int main(void)
 {
    test_identity_preserves_bits();
+   test_robust_out_of_bounds_reads_zero();
    test_f32_2_synthesis();
    test_arithmetic_exact();
    test_multiply_add_rounding();
