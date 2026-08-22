@@ -149,6 +149,16 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-loader-application-symbols",
     "r3v-native-loader-application-symbols-known-bad",
     "r3v-native-recording-poison",
+    # Submit-order matrix: armed control, four pre-commit refusals that
+    # leave bytes untouched, two post-execution transport failures.
+    "r3v-native-submit-order-armed",
+    "r3v-native-submit-order-gate-closed",
+    "r3v-native-submit-order-retention-unwritable",
+    "r3v-native-submit-order-authorization-refused",
+    "r3v-native-submit-order-map-failure",
+    "r3v-native-submit-order-ioctl-refused",
+    "r3v-native-submit-order-completion-failure",
+    "r3v-native-submit-order-known-bad-premature-draw",
     # Native prepared submission lifetime: commit, reset, shape refusals,
     # pre-ioctl failure, teardown, and one single-reason calibration per
     # releaser or binding guard.

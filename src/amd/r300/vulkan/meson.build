@@ -1626,6 +1626,49 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     suite : ['r3v'],
   )
 
+  # Submit-order matrix: one public draw with a load-op clear per arm on a
+  # fresh device; the armed arm executes and spends its token, every
+  # pre-commit failure (closed gate, unwritable evidence directory, refused
+  # authorization, failed vertex mapping) leaves target and carrier
+  # untouched with the authorization unspent, and the two transport
+  # failures (refused CS ioctl, failed completion wait) come after the one
+  # execution.  Failures inject through the transport's ioctl table.
+  r3v_native_submit_order_harness = executable(
+    'r3v_native_submit_order_harness',
+    files('tests/r3v_native_submit_order_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach submit_arm : ['armed', 'gate-closed', 'retention-unwritable',
+                        'authorization-refused', 'map-failure',
+                        'ioctl-refused', 'completion-failure']
+    test(
+      'r3v-native-submit-order-@0@'.format(submit_arm),
+      r3v_native_submit_order_harness,
+      args : [submit_arm],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  # Calibration: a draw executed ahead of a refused submit is the
+  # ordering the matrix refuses, so the untouched verdicts fail on it.
+  test(
+    'r3v-native-submit-order-known-bad-premature-draw',
+    r3v_native_submit_order_harness,
+    args : ['known-bad-premature-draw'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    should_fail : true,
+    timeout : 60,
+    suite : ['r3v'],
+  )
+
   # Non-submitting direct-write arming runner: reports the control
   # cell's digest and every arming factor, then stops at the
   # authorization boundary.  The check drives the refusal legs and the
