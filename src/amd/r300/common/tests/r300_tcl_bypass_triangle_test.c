@@ -15,6 +15,7 @@
 #include "r300_fragment_binary.h"
 #include "r300_reg.h"
 #include "r300_tcl_bypass_triangle.h"
+#include "tests/r300_retained_route_digests.h"
 
 #include "util/macros.h"
 #include "util/mesa-blake3.h"
@@ -572,12 +573,15 @@ test_reference_emit_is_the_single_authority(void)
    r300_tcl_bypass_triangle_release(&ref);
 }
 
-/* The contract cell's exact size and content, pinned so a change to the emitter,
- * the contract, or the fragment binary reports as a size or digest movement
- * rather than as a silently different cell.  The digest is the one the
- * staging manifest and the arming gate carry.
+/* The contract cell's exact size and content, pinned to the retained
+ * silicon identity so a change to the emitter, the contract, or the
+ * fragment binary reports as a size or digest movement rather than as a
+ * silently different cell.  The digest is the one the staging manifest and
+ * the arming gate carry; it hashes the little-endian dword stream the
+ * manifest writes and the kernel parser reads, independent of host byte
+ * order.
  */
-#define R300_TRIANGLE_CONTRACT_CELL_DWORDS 231
+#define R300_TRIANGLE_CONTRACT_CELL_DWORDS R300_RETAINED_CPU_ROUTE_IB_DWORDS
 
 static void
 test_contract_cell_size_and_digest_are_pinned(void)
@@ -586,26 +590,9 @@ test_contract_cell_size_and_digest_are_pinned(void)
    assert(r300_tcl_bypass_triangle_reference_emit(&ref) == 0);
    assert(ref.ib_size_dwords == R300_TRIANGLE_CONTRACT_CELL_DWORDS);
 
-   /* The reference cell hashes as the little-endian dword stream the manifest
-    * writes and the kernel parser reads.  Serializing each dword before the
-    * hash keeps the pinned identity independent of host byte order.
-    */
-   static const uint8_t expected[BLAKE3_OUT_LEN] = {
-      0xdd, 0xbb, 0x5e, 0x9e, 0x38, 0x25, 0x79, 0x94,
-      0xa5, 0x43, 0x3a, 0x3e, 0x0a, 0xf1, 0xcf, 0x0d,
-      0xa0, 0x94, 0xac, 0xb8, 0xfd, 0x6c, 0x1b, 0x7d,
-      0x7f, 0x09, 0x91, 0x6f, 0xa3, 0xd4, 0x18, 0x21,
-   };
-   uint8_t serialized[R300_TRIANGLE_CONTRACT_CELL_DWORDS * sizeof(uint32_t)];
-   r300_triangle_ib_serialize(ref.ib, ref.ib_size_dwords, serialized);
-
-   blake3_hash digest;
-   struct mesa_blake3 ctx;
-   _mesa_blake3_init(&ctx);
-   _mesa_blake3_update(&ctx, serialized,
-                       ref.ib_size_dwords * sizeof(uint32_t));
-   _mesa_blake3_final(&ctx, digest);
-   assert(memcmp(digest, expected, sizeof(expected)) == 0);
+   char digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(ref.ib, ref.ib_size_dwords, digest);
+   assert(strcmp(digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
 
    r300_tcl_bypass_triangle_release(&ref);
 }
