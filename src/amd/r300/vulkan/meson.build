@@ -539,6 +539,23 @@ if with_tests
     args : [files('tests/r3v_source_header_audit.py'), '--selftest'],
     suite : ['r3v'],
   )
+
+  # Rename and identity ratchet: every surviving pre-rename or lane-identity
+  # spelling is a ledger row (path, token, replacement, owner, removal
+  # condition) and a row leaves with its spelling, so the count only falls.
+  test(
+    'r3v-rename-ratchet',
+    prog_python,
+    args : [files('tests/r3v_rename_ratchet.py'),
+            meson.project_source_root()],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-rename-ratchet-selftest',
+    prog_python,
+    args : [files('tests/r3v_rename_ratchet.py'), '--selftest'],
+    suite : ['r3v'],
+  )
   foreach header_defect : ['missing-spdx', 'invented-copyright',
                            'invented-project-collective-copyright',
                            'ai-disclosure', 'missing-root']
