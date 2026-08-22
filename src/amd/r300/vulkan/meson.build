@@ -528,10 +528,34 @@ if get_option('r3v-native-backend')
   # native library defines no Gallium or winsys entry symbol, in any binding.
   prog_nm_r3v = find_program('nm', required : false)
   if with_tests
+    r300_common_boundary_audit = files(
+      '../common/tests/r300_common_boundary_audit.py')
     test(
       'r3v-native-gallium-separation-selftest',
       prog_python,
       args : [files('tests/r3v_native_separation_audit.py'), '--selftest'],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-common-boundary-sources',
+      prog_python,
+      args : [r300_common_boundary_audit, '--sources', 'native']
+             + r3v_loader_base_files + r3v_native_files + r300_cpu_files
+             + [r3v_entrypoints[0], r3v_entrypoints[1]]
+             + files(
+        'r3v_cpu_sync.h',
+        'r3v_format.h',
+        'r3v_instance.h',
+        'r3v_memory_properties_contract.h',
+        'r3v_native.h',
+        'r3v_native_arming.h',
+        'r3v_native_identity.h',
+        'r3v_native_reference_spirv.h',
+        'r3v_physical_device.h',
+        'r3v_private.h',
+        'r3v_queue_map_range.h',
+      ),
+      depends : r3v_entrypoints,
       suite : ['r3v'],
     )
 
@@ -624,6 +648,20 @@ if get_option('r3v-native-backend')
     )
   endif
   if with_tests and prog_nm_r3v.found()
+    # Undefined references are the object-level boundary: an inline or
+    # generated source path cannot hide a reachable NIR/Gallium dependency.
+    test(
+      'r3v-native-common-boundary-objects',
+      prog_python,
+      args : [
+        r300_common_boundary_audit,
+        '--objects',
+        prog_nm_r3v.full_path(),
+        libr3v_native_impl.full_path(),
+      ],
+      depends : libr3v_native_impl,
+      suite : ['r3v'],
+    )
     test(
       'r3v-native-gallium-separation',
       prog_python,

@@ -15,6 +15,67 @@ libr300_cpu = static_library(
 )
 
 if with_tests
+  # The boundary instrument is hosted with the neutral CPU consumer so both
+  # native-only and Gallium-only R300 test builds execute the same common and
+  # CPU source census through the consumer that both configurations build.
+  r300_common_boundary_audit = files(
+    '../common/tests/r300_common_boundary_audit.py')
+  test(
+    'r300-common-boundary-audit-selftest',
+    prog_python,
+    args : [r300_common_boundary_audit, '--selftest'],
+    suite : ['r300'],
+  )
+  test(
+    'r300-common-boundary-audit-common-sources',
+    prog_python,
+    args : [r300_common_boundary_audit, '--tree', 'common',
+            meson.current_source_dir() / '../common'],
+    suite : ['r300'],
+  )
+  test(
+    'r300-common-boundary-audit-cpu-sources',
+    prog_python,
+    args : [r300_common_boundary_audit, '--tree', 'cpu',
+            meson.current_source_dir()],
+    suite : ['r300'],
+  )
+  test(
+    'r300-common-boundary-audit-known-bad-source',
+    prog_python,
+    args : [
+      r300_common_boundary_audit,
+      '--expect-source-status', '1',
+      'forbidden include pipe/p_context.h', 'common',
+      files('../common/tests/fixtures/' +
+            'r300_common_boundary_known_bad_source.txt'),
+    ],
+    suite : ['r300'],
+  )
+
+  prog_nm_r300_common_boundary = find_program('nm', required : false)
+  if prog_nm_r300_common_boundary.found()
+    r300_common_boundary_known_bad_object = static_library(
+      'r300_common_boundary_known_bad_object',
+      files('../common/tests/fixtures/' +
+            'r300_common_boundary_known_bad_object.c'),
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r300-common-boundary-audit-known-bad-object',
+      prog_python,
+      args : [
+        r300_common_boundary_audit,
+        '--expect-object-status', '1',
+        'forbidden undefined symbol nir_r300_common_boundary_known_bad',
+        prog_nm_r300_common_boundary.full_path(),
+        r300_common_boundary_known_bad_object.full_path(),
+      ],
+      depends : r300_common_boundary_known_bad_object,
+      suite : ['r300'],
+    )
+  endif
+
   # Silicon timing evidence comes from buildtype=release, so the bench
   # learns the Meson build type here -- compiler macros alone cannot
   # separate release from debugoptimized with b_ndebug -- and marks any
