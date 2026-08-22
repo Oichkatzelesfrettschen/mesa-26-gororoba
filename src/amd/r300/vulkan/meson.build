@@ -588,22 +588,27 @@ if get_option('r3v-native-backend')
       depends : libvulkan_r3v_native,
       suite : ['r3v'],
     )
-    # Known-bad calibration: the Gallium-backed library carries
-    # r300_screen_create, so the audit must fail on it.
-    if get_option('r3v-gallium-backend') and with_gallium_r300
-      test(
-        'r3v-native-gallium-separation-known-bad',
-        prog_python,
-        args : [
-          files('tests/r3v_native_separation_audit.py'),
-          '--expect-status', '1',
-          prog_nm_r3v.full_path(),
-          libvulkan_r3v.full_path(),
-        ],
-        depends : libvulkan_r3v,
-        suite : ['r3v'],
-      )
-    endif
+    # Known-bad calibration: a synthetic shared object exporting
+    # r300_screen_create, one symbol of the audit's forbidden set, so the
+    # audit refuses it with no Gallium library in the build.
+    r3v_native_separation_known_bad = shared_library(
+      'r3v_native_separation_known_bad',
+      files('tests/fixtures/r3v_native_separation_known_bad.c'),
+      include_directories : [inc_include, inc_src],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-gallium-separation-known-bad',
+      prog_python,
+      args : [
+        files('tests/r3v_native_separation_audit.py'),
+        '--expect-status', '1',
+        prog_nm_r3v.full_path(),
+        r3v_native_separation_known_bad.full_path(),
+      ],
+      depends : r3v_native_separation_known_bad,
+      suite : ['r3v'],
+    )
 
     # Dispatch-closure audit: the common overlay populates 1.0 bridge slots
     # whose downstream dispatch targets the native link set does not carry,
