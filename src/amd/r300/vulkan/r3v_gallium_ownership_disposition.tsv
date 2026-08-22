@@ -33,7 +33,6 @@ FILE	src/amd/r300/vulkan/r3v_submit_lifetime.h	-	DELETE	-	-	FAKE_QUEUE_HELPER_WI
 FILE	src/amd/r300/vulkan/r3v_ubo_binding.h	-	DELETE	-	-	FAKE_DESCRIPTOR_BINDING_POLICY
 FILE	src/amd/r300/vulkan/tests/r3v_descriptor_test.c	-	KEEP_FIXTURE	src/amd/r300/vulkan/tests/r3v_native_descriptor_test.c	src/amd/r300/vulkan/r3v_native_compute.c::r3v_UpdateDescriptorSets	PRESERVE_NATIVE_DESCRIPTOR_VALUE
 FILE	src/amd/r300/vulkan/tests/r3v_dp4_fs_nir_test.c	-	DELETE	-	-	DORMANT_BUILDER_TEST_NO_R300G_CALLER
-FILE	src/amd/r300/vulkan/tests/r3v_format_features_test.c	-	KEEP_FIXTURE	src/amd/r300/vulkan/tests/r3v_native_format_features_test.c	src/amd/r300/vulkan/r3v_physical_device.c::r3v_GetPhysicalDeviceFormatProperties2	PRESERVE_NATIVE_FORMAT_VALUE
 FILE	src/amd/r300/vulkan/tests/r3v_queue_map_range_test.c	-	DELETE	-	-	FAKE_GALLIUM_MAP_POLICY_TEST
 FILE	src/amd/r300/vulkan/tests/r3v_r2vb_producer_census.c	-	KEEP_FIXTURE	src/gallium/drivers/r300/tests/r300_r2vb_producer_census.c	src/gallium/drivers/r300/r300_r2vb_plan.c::r300_r2vb_plan_producer	PRESERVE_R300G_PLANNER_CENSUS
 FILE	src/amd/r300/vulkan/tests/r3v_r2vb_typed_route_oracle_test.c	-	KEEP_FIXTURE	src/gallium/drivers/r300/tests/r300_r2vb_typed_route_oracle_test.c	src/gallium/drivers/r300/r300_r2vb_plan.c::r300_r2vb_plan_producer	PRESERVE_R300G_TYPED_ROUTE_ORACLE
