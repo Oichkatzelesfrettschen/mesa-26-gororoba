@@ -290,10 +290,10 @@ the lease through Make:
 ```bash
 make -C build-infra build \
   PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache \
-  NINJA_TARGETS=src/amd/r300/vulkan/r3v_descriptor_test
+  NINJA_TARGETS=src/amd/r300/vulkan/r3v_native_descriptor_test
 make -C build-infra test \
   PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache \
-  MESON_TEST_ARGS='--print-errorlogs r3v-descriptor'
+  MESON_TEST_ARGS='--print-errorlogs r3v-native-descriptor'
 ```
 
 Run `make -C build-infra build-lease-test` to prove that a held lease rejects
