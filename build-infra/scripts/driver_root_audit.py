@@ -9,11 +9,9 @@ pass-through directories that carry no meson.build, so a reader resolving the
 path by analogy with a sibling family reaches a directory holding no sources.
 
 The audit pins each family's root, every `subdir()` call that enters it, and
-the installed artifact definitions.  A family reached from more than one
-configuration has more than one entry point, and each is required: the r300
-Vulkan root is entered from `src/amd/meson.build` in a loader-only build and
-from `src/meson.build` in a Gallium-backed build, so checking one leaves the
-other free to lose the ICD while the verdict still reads OK.
+the installed artifact definitions.  Every family is entered from
+`src/amd/meson.build`; the r300 Vulkan root is entered there under
+`with_ati_r300_vk`, and losing that entry loses the ICD.
 
 Artifact identity is read from the definitions rather than from the presence
 of a name: an assignment target, a comment, or a stale reference keeps the
@@ -31,12 +29,10 @@ import tempfile
 from pathlib import Path
 
 # Family namespace -> every meson.build that enters that family's vulkan/ root.
-# The r300 root is reached from both the loader-only and the Gallium-backed
-# configuration, and losing either entry loses the ICD in that configuration.
 AMD_VULKAN_FAMILIES = {
     "src/amd/vulkan": ["src/amd/meson.build"],
     "src/amd/terascale/vulkan": ["src/amd/meson.build"],
-    "src/amd/r300/vulkan": ["src/amd/meson.build", "src/meson.build"],
+    "src/amd/r300/vulkan": ["src/amd/meson.build"],
 }
 
 # Driver identity survives a directory move: the DSO name the loader resolves
@@ -197,7 +193,7 @@ def self_test():
         (base / "src/amd/meson.build").write_text(
             "subdir('vulkan')\nsubdir('terascale/vulkan')\n"
             "subdir('r300/vulkan')\n")
-        (base / "src/meson.build").write_text("subdir('amd/r300/vulkan')\n")
+        (base / "src/meson.build").write_text("subdir('amd')\n")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -207,44 +203,39 @@ def self_test():
         cases.append(("known-good tree", check_tree(good), []))
 
         # 1. The pre-move defect in full: the leaf holds the sources and the
-        #    Gallium-backed entry spells the leaf.
+        #    entry spells the leaf.
         bad = tmp / "retired-leaf"
         stage_good(bad)
         (bad / "src/amd/r300/vulkan/meson.build").unlink()
         leaf = bad / "src/amd/r300/vulkan/r3v"
         leaf.mkdir(parents=True)
         _write_family(bad, "src/amd/r300/vulkan/r3v")
-        (bad / "src/meson.build").write_text("subdir('amd/r300/vulkan/r3v')\n")
+        (bad / "src/amd/meson.build").write_text(
+            "subdir('vulkan')\nsubdir('terascale/vulkan')\n"
+            "subdir('r300/vulkan/r3v')\n")
         cases.append(("known-bad: retired leaf holds the sources", check_tree(bad), [
             "missing driver root meson.build: src/amd/r300/vulkan/meson.build",
-            "src/meson.build does not enter amd/r300/vulkan via subdir()",
+            "src/amd/meson.build does not enter r300/vulkan via subdir()",
             "retired driver-named leaf present: src/amd/r300/vulkan/r3v",
         ]))
 
-        # 2. The loader-only entry alone is removed.  The Gallium-backed entry
-        #    still resolves, so a single-entry audit reports OK here.
-        bad = tmp / "loader-entry-dropped"
+        # 2. The entry is removed.
+        bad = tmp / "entry-dropped"
         stage_good(bad)
         (bad / "src/amd/meson.build").write_text(
             "subdir('vulkan')\nsubdir('terascale/vulkan')\n")
-        cases.append(("known-bad: loader-only entry dropped", check_tree(bad), [
+        cases.append(("known-bad: entry dropped", check_tree(bad), [
             "src/amd/meson.build does not enter r300/vulkan via subdir()",
         ]))
 
-        # 3. The Gallium-backed entry alone is removed.
-        bad = tmp / "gallium-entry-dropped"
-        stage_good(bad)
-        (bad / "src/meson.build").write_text("subdir('amd/common')\n")
-        cases.append(("known-bad: Gallium-backed entry dropped", check_tree(bad), [
-            "src/meson.build does not enter amd/r300/vulkan via subdir()",
-        ]))
-
-        # 4. The entry is present but commented out.
+        # 3. The entry is present but commented out.
         bad = tmp / "entry-commented"
         stage_good(bad)
-        (bad / "src/meson.build").write_text("# subdir('amd/r300/vulkan')\n")
+        (bad / "src/amd/meson.build").write_text(
+            "subdir('vulkan')\nsubdir('terascale/vulkan')\n"
+            "# subdir('r300/vulkan')\n")
         cases.append(("known-bad: entry commented out", check_tree(bad), [
-            "src/meson.build does not enter amd/r300/vulkan via subdir()",
+            "src/amd/meson.build does not enter r300/vulkan via subdir()",
         ]))
 
         # 5. The artifact names survive as an assignment target and a comment

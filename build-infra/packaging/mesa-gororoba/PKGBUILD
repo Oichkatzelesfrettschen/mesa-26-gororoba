@@ -1,9 +1,12 @@
 # Maintainer: mesa-26-gororoba maintainers
 # mesa-gororoba: a system Mesa replacement build from the mesa-26-gororoba fork.
 # It installs the r300 Gallium GL driver, the zink GL-on-Vulkan Gallium
-# driver, the XA/Xv 2D-acceleration state tracker (libxatracker), and the
-# ati_r300 (r3v) Vulkan ICD into the normal Mesa loader paths so RS482
-# daily-driver testing uses the fork by default.
+# driver, and the XA/Xv 2D-acceleration state tracker (libxatracker) into
+# the normal Mesa loader paths so RS482 daily-driver testing uses the fork by
+# default.  The ati_r300 (r3v) Vulkan ICD is staged under
+# /usr/share/mesa-gororoba/vulkan/icd.d and selected by mesa-gororoba-run and
+# the profile.d/environment.d policy (opt-in): its package-default promotion
+# into /usr/share/vulkan/icd.d waits for its conformance and WSI gates.
 #
 # Scope is deliberately RS482-focused: r300 hardware GL + the r3v Vulkan
 # ICD + zink riding that ICD for the GL-atop-Vulkan lane + XA/Xv and
@@ -42,7 +45,7 @@
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=17
+pkgrel=18
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
@@ -90,9 +93,9 @@ source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-goror
         'radeon_icd.i686.json'
         '20-rs482-modesetting-glamor.conf')
 sha256sums=('SKIP'
-            'a83e217b881bbcc7d0462100cb5934c39f07bddbf499d3039537b18bbe8423a8'
+            '5607116bfd3dd77065035fea211be8fa0966b8b5f3e6386e4d2382dedcd8a6b3'
             '1aba100cad006b67b31be2c5c31814e25a58d74c320d556678136bef726138c9'
-            '54b80ef22798f325b76c7926569e987c50aa57c4458ca02737c821439bed02e2'
+            '20b9fcbdd020fc7ccfcca3dfc46165f2a40649a16303d9f89be6168e2b1595dc'
             '1d13d57d3acf8e7a7ef05dba363d3415a648a971c36447e5dcec259337668fd9'
             'e3c0eb4cbf29bfed92683ea07bcd91b21df7383aead8e1d30526e8d8cb90094a'
             'db99ee65f746c9f122477d2cb4e47a184a0153012c992b74e1f1cf0e65187ebd')
@@ -172,6 +175,13 @@ build() {
 
 package() {
   meson install -C build --no-rebuild --destdir "${pkgdir}"
+
+  # The r3v ICD stays off the system loader's search path until its
+  # promotion gate: stage its manifest under the package's own directory,
+  # where mesa-gororoba-env.sh names it through VK_DRIVER_FILES.
+  install -dm755 "${pkgdir}/usr/share/mesa-gororoba/vulkan/icd.d"
+  mv "${pkgdir}/usr/share/vulkan/icd.d"/r3v_icd*.json \
+    "${pkgdir}/usr/share/mesa-gororoba/vulkan/icd.d/"
 
   install -Dm755 mesa-gororoba-run \
     "${pkgdir}/usr/bin/mesa-gororoba-run"

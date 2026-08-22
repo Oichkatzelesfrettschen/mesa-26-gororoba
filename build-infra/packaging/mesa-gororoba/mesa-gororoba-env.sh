@@ -22,7 +22,7 @@ mesa_26_gororoba_prepend_path GBM_BACKENDS_PATH "${GOROROBA_MESA_PREFIX}/lib/gbm
 mesa_26_gororoba_prepend_path __EGL_VENDOR_LIBRARY_DIRS "${GOROROBA_MESA_PREFIX}/share/glvnd/egl_vendor.d"
 
 export __EGL_VENDOR_LIBRARY_FILENAMES="${__EGL_VENDOR_LIBRARY_FILENAMES:-${GOROROBA_MESA_PREFIX}/share/glvnd/egl_vendor.d/50_mesa.json}"
-export VK_DRIVER_FILES="${VK_DRIVER_FILES:-${GOROROBA_MESA_PREFIX}/share/vulkan/icd.d/r3v_icd.x86_64.json}"
+export VK_DRIVER_FILES="${VK_DRIVER_FILES:-${GOROROBA_MESA_PREFIX}/share/mesa-gororoba/vulkan/icd.d/r3v_icd.x86_64.json}"
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-${VK_DRIVER_FILES}}"
 export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-r300}"
 export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-0}"

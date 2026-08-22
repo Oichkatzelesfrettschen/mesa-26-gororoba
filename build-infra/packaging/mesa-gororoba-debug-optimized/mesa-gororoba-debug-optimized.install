@@ -21,9 +21,9 @@ mesa-gororoba-debug is now the active system Mesa (mesa-git packaging model).
 Its real files live under ${_debug_prefix} (debugoptimized, kept out of /usr);
 the stock /usr loader paths are package-managed symlinks into that tree:
   /usr/lib/libGL* /usr/lib/libEGL* /usr/lib/libgallium-*.so /usr/lib/libvulkan_r3v.so
-  /usr/lib/dri/*  /usr/share/vulkan/icd.d/ (Gallium and release ICDs)  /usr/share/glvnd/egl_vendor.d/*
-  The native r3v ICD manifests remain under ${_debug_prefix}/share/vulkan/icd.d
-  and are selected only by the scoped native launcher.
+  /usr/lib/dri/*  /usr/share/glvnd/egl_vendor.d/*
+  The r3v ICD manifest stays under ${_debug_prefix}/share/vulkan/icd.d, off the
+  system loader's search path, and is selected by the scoped launcher.
 Compatibility aliases (probes and build-infra scripts):
   /opt/local/mesa-gororoba-debug-optimized -> ${_debug_prefix}
   /opt/share/mesa-gororoba-debug-optimized -> ${_debug_prefix}
@@ -34,8 +34,6 @@ mesa-gororoba.  Revert the system driver with:
   pacman -U mesa-gororoba        # back to the release /usr build
 For a one-command scoped probe without changing the default, use:
   mesa-gororoba-debug-optimized-run vulkaninfo --summary
-For the native r3v ICD retained under /opt, use:
-  mesa-gororoba-debug-optimized-native-run vulkaninfo --summary
 MSG
 }
 

@@ -5,7 +5,9 @@ _notes() {
   cat <<'EOF'
 mesa-gororoba installed an RS482-scoped fork build into the system Mesa prefix:
   * GL: r300 hardware + llvmpipe software fallback (egl/glx/gles/gbm/glvnd).
-  * Vulkan: ati_r300 (r3v) ICD under /usr/share/vulkan/icd.d.
+  * Vulkan: ati_r300 (r3v) ICD staged under /usr/share/mesa-gororoba/vulkan/icd.d,
+    selected by mesa-gororoba-run and the profile.d/environment.d policy; it
+    is not on the system loader's default search path until its promotion gate.
   * VA-API: r300 MPEG-1/2 decode through the normal libva DRI path.
   * Loader policy: profile.d and environment.d entries prefer r300 for shells
     and user sessions; mesa-gororoba-run scopes the same variables to one
