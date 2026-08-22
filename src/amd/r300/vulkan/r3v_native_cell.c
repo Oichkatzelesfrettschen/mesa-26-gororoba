@@ -408,7 +408,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                          "r3v-native: carrier memory is not CPU-mappable "
                          "at submission");
    } else {
-      const struct r300_cpu_vertex_stream source = {
+      const struct r300_vertex_stream source = {
          .data = stream.records,
          .stride = stream.stride,
          .size_bytes = stream.size_bytes,
@@ -617,7 +617,7 @@ r3v_native_deferred_draw_admit_gpu_producer(
                        "CPU-mappable at submission");
    }
    uint32_t oracle[R300_TRIANGLE_VERTEX_DWORDS];
-   const struct r300_cpu_vertex_stream source = {
+   const struct r300_vertex_stream source = {
       .data =
          (const uint8_t *)memory->map + buffer->offset + draw->stream_base,
       .stride = draw->stride,
@@ -928,7 +928,7 @@ r3v_native_record_tcl_bypass_triangle_gathered(
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: vertex source overlaps carrier");
    }
-   const struct r300_cpu_vertex_stream source = {
+   const struct r300_vertex_stream source = {
       .data = stream->records,
       .stride = stream->stride,
       .size_bytes = stream->size_bytes,

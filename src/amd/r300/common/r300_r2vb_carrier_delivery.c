@@ -46,7 +46,7 @@ static const uint8_t lane_one_bytes[4] = { 0x00, 0x00, 0x80, 0x3f };
 
 int
 r300_r2vb_identity_deliver(
-   int format_id, const struct r300_cpu_vertex_stream *stream,
+   int format_id, const struct r300_vertex_stream *stream,
    uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
    uint32_t carrier_dwords)
 {

@@ -28,7 +28,7 @@ static const uint8_t lane_one_bytes[4] = { 0x00, 0x00, 0x80, 0x3f };
 
 static int
 validate(const struct r300_vertex_format_semantics **format_out,
-         int format_id, const struct r300_cpu_vertex_stream *stream,
+         int format_id, const struct r300_vertex_stream *stream,
          uint32_t first_vertex, uint32_t vertex_count,
          const uint32_t *carrier, uint32_t carrier_dwords)
 {
@@ -69,7 +69,7 @@ validate(const struct r300_vertex_format_semantics **format_out,
 
 int
 r300_cpu_vertex_gather_baseline(
-   int format_id, const struct r300_cpu_vertex_stream *stream,
+   int format_id, const struct r300_vertex_stream *stream,
    uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier,
    uint32_t carrier_dwords)
 {
@@ -118,7 +118,7 @@ r300_cpu_vertex_gather_baseline(
  */
 static int
 gather_sse2(const struct r300_vertex_format_semantics *format,
-            const struct r300_cpu_vertex_stream *stream,
+            const struct r300_vertex_stream *stream,
             uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier)
 {
    const uint8_t *record =
@@ -219,7 +219,7 @@ sse2_pattern_matches(const struct r300_vertex_format_semantics *format)
  */
 static int
 gather_sse3(const struct r300_vertex_format_semantics *format,
-            const struct r300_cpu_vertex_stream *stream,
+            const struct r300_vertex_stream *stream,
             uint32_t first_vertex, uint32_t vertex_count, uint32_t *carrier)
 {
    if (format->id == R300_VERTEX_FORMAT_F32_4) {
@@ -244,7 +244,7 @@ gather_sse3(const struct r300_vertex_format_semantics *format,
  */
 int
 r300_cpu_vertex_gather_sse2(int format_id,
-                            const struct r300_cpu_vertex_stream *stream,
+                            const struct r300_vertex_stream *stream,
                             uint32_t first_vertex, uint32_t vertex_count,
                             uint32_t *carrier, uint32_t carrier_dwords)
 {
@@ -270,7 +270,7 @@ r300_cpu_vertex_gather_sse2(int format_id,
 
 int
 r300_cpu_vertex_gather_sse3(int format_id,
-                            const struct r300_cpu_vertex_stream *stream,
+                            const struct r300_vertex_stream *stream,
                             uint32_t first_vertex, uint32_t vertex_count,
                             uint32_t *carrier, uint32_t carrier_dwords)
 {
@@ -296,7 +296,7 @@ r300_cpu_vertex_gather_sse3(int format_id,
 
 int
 r300_cpu_vertex_gather(int format_id,
-                       const struct r300_cpu_vertex_stream *stream,
+                       const struct r300_vertex_stream *stream,
                        uint32_t first_vertex, uint32_t vertex_count,
                        uint32_t *carrier, uint32_t carrier_dwords)
 {

@@ -623,7 +623,7 @@ r300_r2vb_producer_fp24_sweep_expected(uint32_t *expected,
    if (expected_dwords < R300_R2VB_PRODUCER_FP24_SWEEP_COUNT * 4)
       return -ENOSPC;
 
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)r300_r2vb_producer_fp24_sweep_records,
       .stride = 4 * sizeof(float),
       .size_bytes = (uint64_t)R300_R2VB_PRODUCER_FP24_SWEEP_COUNT * 4 *
@@ -669,7 +669,7 @@ r300_r2vb_producer_fp24_bisect_expected(uint32_t *expected,
    if (expected_dwords < R300_R2VB_PRODUCER_FP24_BISECT_COUNT * 4)
       return -ENOSPC;
 
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)r300_r2vb_producer_fp24_bisect_records,
       .stride = 4 * sizeof(float),
       .size_bytes = (uint64_t)R300_R2VB_PRODUCER_FP24_BISECT_COUNT * 4 *
@@ -709,7 +709,7 @@ r300_r2vb_producer_reference_expected(uint32_t *expected,
    if (expected_dwords < R300_R2VB_PRODUCER_REFERENCE_COUNT * 4)
       return -ENOSPC;
 
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = (const uint8_t *)r300_tcl_bypass_triangle_vertices,
       .stride = 4 * sizeof(float),
       .size_bytes = (uint64_t)R300_R2VB_PRODUCER_REFERENCE_COUNT * 4 *

@@ -50,7 +50,7 @@
 
 #define MAX_VERTICES (1u << 18)
 
-typedef int (*gather_fn)(int, const struct r300_cpu_vertex_stream *,
+typedef int (*gather_fn)(int, const struct r300_vertex_stream *,
                          uint32_t, uint32_t, uint32_t *, uint32_t);
 
 /* The memcpy ceiling: one bulk copy of the bytes the F32_4 packed
@@ -59,7 +59,7 @@ typedef int (*gather_fn)(int, const struct r300_cpu_vertex_stream *,
  */
 static int
 gather_memcpy_ceiling(int format_id,
-                      const struct r300_cpu_vertex_stream *stream,
+                      const struct r300_vertex_stream *stream,
                       uint32_t first_vertex, uint32_t vertex_count,
                       uint32_t *carrier, uint32_t carrier_dwords)
 {
@@ -101,7 +101,7 @@ static uint32_t *reference;
 static void
 calibrate_known_bad(void)
 {
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = records,
       .stride = 16,
       .size_bytes = (uint64_t)MAX_VERTICES * 16,
@@ -133,7 +133,7 @@ calibrate_known_bad(void)
  */
 static int
 calibrate_lane(const char *label, gather_fn fn, int format_id,
-               const struct r300_cpu_vertex_stream *stream,
+               const struct r300_vertex_stream *stream,
                uint32_t vertex_count, int allow_unsupported)
 {
    int rc = fn(format_id, stream, 0, vertex_count, carrier,
@@ -162,7 +162,7 @@ calibrate_lane(const char *label, gather_fn fn, int format_id,
 
 static uint64_t
 time_one_rep(gather_fn fn, int format_id,
-             const struct r300_cpu_vertex_stream *stream,
+             const struct r300_vertex_stream *stream,
              uint32_t vertex_count, unsigned inner)
 {
    uint64_t t0 = now_ns();
@@ -189,7 +189,7 @@ static void
 bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
             uint32_t base_offset, uint32_t vertex_count, unsigned reps)
 {
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = records + base_offset,
       .stride = stride,
       .size_bytes = (uint64_t)MAX_VERTICES * stride,
@@ -339,7 +339,7 @@ main(int argc, char **argv)
     * omission would let a two-way stream read as complete.
     */
    {
-      const struct r300_cpu_vertex_stream probe_stream = {
+      const struct r300_vertex_stream probe_stream = {
          .data = records,
          .stride = 16,
          .size_bytes = 64,

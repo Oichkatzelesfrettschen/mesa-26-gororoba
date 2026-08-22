@@ -85,7 +85,7 @@
 #define RECORD_SPAN ((uint64_t)MAX_VERTICES * MAX_STRIDE + MAX_BASE_OFFSET)
 
 typedef int (*execute_fn)(const struct r300_vertex_job *,
-                          const struct r300_cpu_vertex_stream *,
+                          const struct r300_vertex_stream *,
                           uint32_t, uint32_t, uint32_t *, uint32_t);
 
 static uint64_t
@@ -299,7 +299,7 @@ static void
 calibrate_known_bad(void)
 {
    const struct r300_vertex_job job = identity_job(R300_VERTEX_FORMAT_F32_4);
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = records,
       .stride = 16,
       .size_bytes = RECORD_SPAN,
@@ -329,7 +329,7 @@ calibrate_known_bad(void)
 static int
 calibrate_lane(const char *label, const char *shape, execute_fn fn,
                const struct r300_vertex_job *job,
-               const struct r300_cpu_vertex_stream *stream,
+               const struct r300_vertex_stream *stream,
                uint32_t vertex_count)
 {
    int rc = fn(job, stream, 0, vertex_count, carrier, MAX_VERTICES * 4);
@@ -351,7 +351,7 @@ calibrate_lane(const char *label, const char *shape, execute_fn fn,
 
 static uint64_t
 time_one_rep(execute_fn fn, const struct r300_vertex_job *job,
-             const struct r300_cpu_vertex_stream *stream,
+             const struct r300_vertex_stream *stream,
              uint32_t vertex_count, unsigned inner)
 {
    uint64_t t0 = now_ns();
@@ -402,7 +402,7 @@ bench_cell(const struct bench_lane *lanes, const char *shape,
     * spans that record alone; any other stride spans the records the
     * count walks.  The bound is what the executor validates against.
     */
-   const struct r300_cpu_vertex_stream stream = {
+   const struct r300_vertex_stream stream = {
       .data = records + base_offset,
       .stride = stride,
       .size_bytes = stride == 0
@@ -620,7 +620,7 @@ main(int argc, char **argv)
    {
       const struct r300_vertex_job probe =
          identity_job(R300_VERTEX_FORMAT_F32_4);
-      const struct r300_cpu_vertex_stream probe_stream = {
+      const struct r300_vertex_stream probe_stream = {
          .data = records,
          .stride = 16,
          .size_bytes = 64,
