@@ -176,6 +176,38 @@ Narrow source fetch support never implies narrow final-delivery support.
 
 ## Repository layout
 
+### P2 ownership cutover
+
+`r3v_gallium_ownership_disposition.tsv` is the finite retirement ledger for
+the Gallium-backed Vulkan experiment.  Its verifier derives the fake lane's
+source and test inputs from the option-gated Meson blocks, then adds the one
+r300g-resident compute classifier whose only production caller is the fake
+pipeline.  Physical registration in `files_r300` is not consumer evidence.
+
+At the current cutover boundary the ledger covers 46 files and six named
+candidate functions: 39 files are deleted with the fake Vulkan lifetime, and
+seven tests/corpora retain only their differential value under a named future
+owner.  No implementation is classified `MOVE_R300G` or `EXTRACT_COMMON`.
+In particular:
+
+- `r300_compute_admission.*` and `r3v_dp4_fs_nir.*` have no r300g production
+  caller and therefore do not earn preservation or a compute capability;
+- `r3v_identity_map.*` and the queue replay combine Vulkan descriptor,
+  command, and submission lifetimes with Gallium objects and are deleted as
+  units rather than renamed into r300g;
+- the typed-carry route oracle and producer census retain fixture value for
+  the existing `r300_r2vb_plan_producer` mechanism after their Vulkan front
+  end is removed;
+- format, descriptor, UBO, and submit-lifetime fixtures retain value only as
+  tests of already-present native R3V mechanisms.
+
+The verifier refuses missing or stale rows, a Gallium move without a present
+production caller, a common extraction without two present bases, and any
+`Vk*`, `vk_*`, `r3v_*`, Vulkan, or TGSI vocabulary in a proposed r300g
+interface.  Common extraction additionally refuses pipe, NIR, and VTN.  Four
+single-reason known-bad cases calibrate those refusal classes.  This ledger is
+not a capability or conformance claim and moves no implementation by itself.
+
 ```text
 src/amd/radeon/drm_vk/     Gallium-free Radeon DRM transport (BO, PRIME,
                            relocation, CS build/submit, finite completion)
