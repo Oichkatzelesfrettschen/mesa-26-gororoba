@@ -26,7 +26,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "util/format/u_formats.h"
 #include "amd/r300/common/r300_numeric_domain.h"
 
 #ifdef __cplusplus
@@ -74,16 +73,29 @@ enum r300_carrier_encoding {
    R300_CARRIER_ENC_FP16_RAWBITS_RGBA8,
 };
 
+/* API-neutral format identity for carrier policy.  Consumer adapters map
+ * these identities to their own format vocabulary; the policy itself carries
+ * only the channel layout and numeric representation that the R300 mechanism
+ * requires. */
+enum r300_carrier_format {
+   R300_CARRIER_FORMAT_INVALID = 0,
+   R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
+   R300_CARRIER_FORMAT_R32_FLOAT,
+   R300_CARRIER_FORMAT_R32G32_FLOAT,
+   R300_CARRIER_FORMAT_R32G32B32A32_FLOAT,
+   R300_CARRIER_FORMAT_COUNT,
+};
+
 /* Full carrier policy for one virtual op family.  One instance per admitted
- * virtual op.  The orchestrator resolves the concrete pipe_format and stride
+ * virtual op.  The orchestrator resolves the concrete API format and stride
  * from the bound descriptor sets at dispatch time; these fields define the
  * canonical contract so the orchestrator and readback logic agree. */
 struct r300_carrier_policy {
    const char                 *name;              /* stable diagnostic label */
    enum r300_numeric_domain    domain;
    enum r300_carrier_encoding  encoding;
-   enum pipe_format            value_format;      /* SSBO input texture format */
-   enum pipe_format            bit_format;        /* RT output carrier format */
+   enum r300_carrier_format    value_format;      /* SSBO input texture format */
+   enum r300_carrier_format    bit_format;        /* RT output carrier format */
    unsigned                    input_stride;      /* bytes per element in the input buffer */
    unsigned                    output_stride;     /* bytes per element in the output buffer */
    unsigned                    max_exact_result;  /* max integer result with exact encoding; 0 = N/A */
