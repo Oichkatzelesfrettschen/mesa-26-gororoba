@@ -425,6 +425,33 @@ if with_tests
     )
   endforeach
 
+  # Typed-carry retained reference: every module's SPIR-V byte image and
+  # every fixture of record match the checked-in sha256 manifest, three rows
+  # of which reproduce the retained silicon bundle's digests; the selftest
+  # calibrates the mutated-word, extra-module, ghost-row, edited-source, and
+  # removed-module refusals.
+  r300_typed_carry_reference_check = files(
+    'tests/r300_typed_carry_reference_check.py')
+  r300_typed_carry_reference_inputs = [
+    files('tests/typed_carry_corpus/r300_typed_carry_reference.h'),
+    files('tests/typed_carry_corpus/r300_typed_carry_reference.sha256'),
+    meson.current_source_dir() / 'tests/typed_carry_corpus',
+  ]
+  test(
+    'r300-typed-carry-reference',
+    prog_python,
+    args : [r300_typed_carry_reference_check] +
+           r300_typed_carry_reference_inputs,
+    suite : ['r300'],
+  )
+  test(
+    'r300-typed-carry-reference-selftest',
+    prog_python,
+    args : [r300_typed_carry_reference_check, '--selftest'] +
+           r300_typed_carry_reference_inputs,
+    suite : ['r300'],
+  )
+
   # Admission-versus-CSO identity: the plan's throwaway measurement and the
   # actual fragment-shader CSO precompile run the same program under the same
   # flat-producer contract, on the plan's canonical baseline and on both
