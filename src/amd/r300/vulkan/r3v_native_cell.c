@@ -1432,7 +1432,7 @@ r3v_native_reingest_cell_install(struct r3v_native_cmd_buffer *cmd_buffer,
                                  struct r3v_native_memory *color_memory)
 {
    struct r300_r2vb_reingest_ib cell;
-   int emit_result = r300_r2vb_reingest_reference_emit(&cell);
+   int emit_result = r300_r2vb_reingest_pass_emit(&cell);
    if (emit_result != 0)
       return emit_result;
    emit_result = r300_r2vb_reingest_validate_reloc_sites(&cell);

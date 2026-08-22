@@ -71,7 +71,7 @@ struct r300_r2vb_reingest_ib {
  * Returns 0 or a negative errno; the caller owns the returned IB
  * allocation.
  */
-int r300_r2vb_reingest_reference_emit(struct r300_r2vb_reingest_ib *out);
+int r300_r2vb_reingest_pass_emit(struct r300_r2vb_reingest_ib *out);
 
 void r300_r2vb_reingest_pass_release(struct r300_r2vb_reingest_ib *ib);
 

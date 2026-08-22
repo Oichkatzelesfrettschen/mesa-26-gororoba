@@ -39,7 +39,7 @@ _Static_assert((int)R300_TRIANGLE_SLOT_COLOR ==
                "color entry");
 
 int
-r300_r2vb_reingest_reference_emit(struct r300_r2vb_reingest_ib *out)
+r300_r2vb_reingest_pass_emit(struct r300_r2vb_reingest_ib *out)
 {
    memset(out, 0, sizeof(*out));
 

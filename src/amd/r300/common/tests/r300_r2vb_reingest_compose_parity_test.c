@@ -25,7 +25,7 @@ main(void)
 {
    /* Golden oracle: the fixed concatenation. */
    struct r300_r2vb_reingest_ib golden;
-   assert(r300_r2vb_reingest_reference_emit(&golden) == 0);
+   assert(r300_r2vb_reingest_pass_emit(&golden) == 0);
    assert(r300_r2vb_reingest_validate_reloc_sites(&golden) == 0);
 
    /* The same two component emissions become composer fragments. */
