@@ -92,6 +92,8 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-common-boundary-audit-cpu-sources",
     "r300-common-boundary-audit-known-bad-source",
     "r300-common-boundary-audit-known-bad-object",
+    "r300-common-consumer-census-selftest",
+    "r300-common-consumer-census",
     "r300-r2vb-producer-pass",
     "r300-r2vb-producer-replay",
     "r300-r2vb-producer-fp24-sweep-replay",
