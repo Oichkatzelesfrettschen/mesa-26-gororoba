@@ -15,6 +15,21 @@ libr300_cpu = static_library(
 )
 
 if with_tests
+  r300_common_consumer_census = files(
+    '../common/tests/r300_common_consumer_census.py')
+  test(
+    'r300-common-consumer-census-selftest',
+    prog_python,
+    args : [r300_common_consumer_census, '--selftest'],
+    suite : ['r300'],
+  )
+  test(
+    'r300-common-consumer-census',
+    prog_python,
+    args : [r300_common_consumer_census, meson.project_source_root()],
+    suite : ['r300'],
+  )
+
   # The boundary instrument is hosted with the neutral CPU consumer so both
   # native-only and Gallium-only R300 test builds execute the same common and
   # CPU source census through the consumer that both configurations build.
