@@ -82,7 +82,7 @@ The run proceeds only when all of the following hold.
     "$R3V_NATIVE_MANIFEST_DIR/build-options.txt"
   sha256sum \
     "$R3V_BUILD_DIR/src/amd/r300/vulkan/r3v_native_attended_cell" \
-    "$R3V_BUILD_DIR/src/amd/r300/vulkan/libvulkan_r3v_native.so" \
+    "$R3V_BUILD_DIR/src/amd/r300/vulkan/libvulkan_r3v.so" \
     >"$R3V_NATIVE_MANIFEST_DIR/build-artifacts.sha256"
   ```
 
@@ -320,10 +320,9 @@ prediction is not revised after the fact.
   reboot cleanly.
 - A wedged host: power-cycle. The off-box log is the only record that
   survives, which is why it is a precondition.
-- The native ICD is a separate library from the Gallium-backed one and
-  is selected only by its own manifest, so removing
-  `r3v_native_icd.<cpu>.json` from the loader's search path restores the
-  host to its pre-run driver configuration without rebuilding.
+- The ICD is selected only by its own manifest, so removing
+  `r3v_icd.<cpu>.json` from the loader's search path restores the host to
+  its pre-run driver configuration without rebuilding.
 
 ## Retained record
 

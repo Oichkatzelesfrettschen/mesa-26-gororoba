@@ -636,12 +636,6 @@ def evaluate(registered: set[str], options: dict[str, object],
     failures: list[str] = []
     registration_failures: list[str] = []
 
-    native = options.get("r3v-native-backend")
-    native_on = str(native) in ("enabled", "auto", "True", "true")
-    print(f"option r3v-native-backend: {native}")
-    if not native_on:
-        failures.append("r3v-native-backend not enabled")
-
     build_tests = options.get("build-tests")
     print(f"option build-tests: {build_tests}")
     if str(build_tests) not in ("True", "true"):
@@ -708,9 +702,8 @@ def evaluate(registered: set[str], options: dict[str, object],
         failures.append(f"required test {name} not registered in suite {suite}")
         registration_failures.append(name)
 
-    for absence in ("r3v-native-backend not enabled", "build-tests disabled"):
-        if absence in failures:
-            registration_failures.append(absence)
+    if "build-tests disabled" in failures:
+        registration_failures.append("build-tests disabled")
 
     return verdict(qualification, require_tests, failures,
                    registration_failures)
@@ -773,8 +766,7 @@ def zero_native(entries: list[dict]) -> list[dict]:
             if not any(s in NATIVE_SUITES for s in suite_names(e))]
 
 
-QUALIFYING_OPTIONS = {"r3v-native-backend": "enabled", "build-tests": True,
-                      "gallium-drivers": ["r300"]}
+QUALIFYING_OPTIONS = {"build-tests": True, "gallium-drivers": ["r300"]}
 
 NATIVE_ONLY_OPTIONS = dict(QUALIFYING_OPTIONS)
 NATIVE_ONLY_OPTIONS["gallium-drivers"] = []

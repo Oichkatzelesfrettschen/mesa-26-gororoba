@@ -8,7 +8,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 WORKDIR=$(mktemp -d "${TMPDIR:-/var/tmp}/native-debugoptimized-launcher-test.XXXXXX")
 launcher="$HERE/mesa-gororoba-debug-optimized/mesa-gororoba-debug-optimized-native-run"
 alternate_prefix="$WORKDIR/alternate-prefix"
-manifest="$alternate_prefix/share/vulkan/icd.d/r3v_native_icd.x86_64.json"
+manifest="$alternate_prefix/share/vulkan/icd.d/r3v_icd.x86_64.json"
 env_file="$WORKDIR/alternate-env.sh"
 
 cleanup() {
@@ -33,7 +33,7 @@ if NATIVE_LAUNCHER_PREFIX="$WORKDIR/missing-prefix" \
   exit 1
 fi
 grep -Fqx \
-  "native r3v ICD manifest is unavailable: $WORKDIR/missing-prefix/share/vulkan/icd.d/r3v_native_icd.x86_64.json" \
+  "native r3v ICD manifest is unavailable: $WORKDIR/missing-prefix/share/vulkan/icd.d/r3v_icd.x86_64.json" \
   "$WORKDIR/missing.out"
 
 NATIVE_LAUNCHER_PREFIX="$alternate_prefix" \

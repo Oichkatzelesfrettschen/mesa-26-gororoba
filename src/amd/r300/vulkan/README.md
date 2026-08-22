@@ -81,10 +81,9 @@ Gallium's dirty-atom machinery re-emits required R300 state before later draws.
 
 ## Native ICD status
 
-`-Dr3v-native-backend=true` builds `libvulkan_r3v_native.so`, a second ICD
-(manifest `r3v_native_icd.<cpu>.json`) that owns its Radeon DRM transport
-through `src/amd/radeon/drm_vk/` and links no Gallium runtime library; a
-separation-audit test enforces that boundary. The native library owns
+`libvulkan_r3v.so` (manifest `r3v_icd.<cpu>.json`, `driverName` `r3v`)
+owns its Radeon DRM transport through `src/amd/radeon/drm_vk/` and links no
+Gallium runtime library; a separation-audit test enforces that boundary. The native library owns
 GEM-backed `VkDeviceMemory` (one BO per allocation, buffer-only), a queue
 whose submission path builds the three-chunk `DRM_RADEON_CS` object, and
 command-carrier objects. Fragment binaries are deep-copied into R3V-owned
@@ -230,14 +229,13 @@ The ICD builds with no Gallium dependency:
 ```sh
 meson setup builddir-r3v \
     -Dvulkan-drivers=ati_r300 \
-    -Dr3v-native-backend=true \
     -Dgallium-drivers= \
     -Dopengl=false -Dgles1=false -Dgles2=false \
     -Dglx=disabled -Degl=disabled \
     -Dplatforms=x11 -Dllvm=disabled -Dlibunwind=disabled \
     -Dbuildtype=debug
 
-ninja -C builddir-r3v src/amd/r300/vulkan/libvulkan_r3v_native.so
+ninja -C builddir-r3v src/amd/r300/vulkan/libvulkan_r3v.so
 ```
 
 Adding `drm-shim` to `-Dtools` builds the render-node model the cell

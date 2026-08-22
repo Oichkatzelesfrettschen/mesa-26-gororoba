@@ -137,10 +137,10 @@ _link_into_usr() {
     # vulkan-mesa-layers owns the explicit overlay under /usr.
     case "${rel}/${base}" in
       lib/libVkLayer_MESA_overlay.so) continue ;;
-      # The native ICD stays an /opt development artifact.  The system loader
-      # follows every manifest in /usr/share/vulkan/icd.d, while this package's
-      # activation environment names only the Gallium r3v manifest.
-      share/vulkan/icd.d/r3v_native_icd*.json) continue ;;
+      # The r3v ICD stays an /opt development artifact behind its own
+      # launcher until its package-default promotion gate: the system loader
+      # follows every manifest in /usr/share/vulkan/icd.d.
+      share/vulkan/icd.d/r3v_icd*.json) continue ;;
     esac
     case "${base}" in
       *.a) continue ;;
