@@ -1,5 +1,52 @@
 # SPDX-License-Identifier: MIT
 
+# One object owner for the R300 contracts consumed by r300g and the pure
+# Vulkan implementation.  Manifest writers stay test executables: their main
+# functions publish evidence and are not driver objects.
+r300_common_contract_files = files(
+  'r300_carrier_policy.c',
+  'r300_direct_write.c',
+  'r300_first_draw_state.c',
+  'r300_fragment_binary.c',
+  'r300_numeric_domain.c',
+  'r300_pm4_builder.c',
+  'r300_pm4_compose.c',
+  'r300_r2vb_carrier_delivery.c',
+  'r300_r2vb_fetch_pass.c',
+  'r300_r2vb_float2_tuple_pass.c',
+  'r300_r2vb_producer_pass.c',
+  'r300_r2vb_public_route.c',
+  'r300_r2vb_reingest_draw.c',
+  'r300_r2vb_reingest_pass.c',
+  'r300_r2vb_target_state.c',
+  'r300_tcl_bypass_triangle.c',
+  'r300_zb_depth_control_cell.c',
+  'r300_zb_depth_state.c',
+)
+
+# These implementation units still reside in common while the P2 ownership
+# cutover is pending.  Keeping the exceptions named separately prevents the
+# archive from laundering a Vulkan front end or product policy into the
+# durable common contract: the consumer census continues to require their
+# MOVE_TO_R3V_* dispositions.
+r300_common_pending_r3v_move_files = files(
+  'r300_compute_spirv.c',
+  'r300_delivery_route.c',
+  'r300_vertex_spirv.c',
+)
+
+r300_common_files = r300_common_contract_files + r300_common_pending_r3v_move_files
+
+libr300_common = static_library(
+  'r300_common',
+  r300_common_files,
+  include_directories : [inc_src, inc_include, inc_amd_common,
+                         include_directories('.')],
+  dependencies : [dep_m, idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+
+if with_tests
 # Host-only tests over the API-neutral R300 hardware vocabulary.  Everything
 # here builds against inc_src, inc_include, inc_amd_common, and this
 # directory alone, which keeps the common layer's independence from the
@@ -13,6 +60,26 @@ r300_format_contract_test_includes = [
   inc_amd_common,
   include_directories('.'),
 ]
+
+# The source audit proves the namespace and include boundary.  This archive
+# audit proves the separately compiled common object set cannot hide an
+# undefined Gallium, NIR, VTN, or TGSI dependency behind an inline or generated
+# source path.
+prog_nm_r300_common = find_program('nm', required : false)
+if prog_nm_r300_common.found()
+  test(
+    'r300-common-boundary-audit-common-objects',
+    prog_python,
+    args : [
+      files('tests/r300_common_boundary_audit.py'),
+      '--objects',
+      prog_nm_r300_common.full_path(),
+      libr300_common.full_path(),
+    ],
+    depends : libr300_common,
+    suite : ['r300'],
+  )
+endif
 
 r300_carrier_policy_test = executable(
   'r300_carrier_policy_test',
@@ -611,3 +678,4 @@ test(
   r300_first_draw_state_test,
   suite : ['r300'],
 )
+endif
