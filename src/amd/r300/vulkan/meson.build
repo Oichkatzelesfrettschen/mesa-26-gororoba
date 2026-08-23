@@ -703,6 +703,25 @@ r3v_native_attended_public_gpu_producer = executable(
   install : false,
 )
 
+# Attended computed-varying triangle cell: the varying vertex and
+# pass-through fragment modules through the public surface on the CPU
+# route, so one vertex-computed varying crosses the RS interpolator into
+# the color target on silicon.  Built and never registered as a test,
+# because running it is a hardware authorization rather than a
+# build-graph result.
+r3v_native_attended_varying_triangle = executable(
+  'r3v_native_attended_varying_triangle',
+  files('tests/r3v_native_attended_varying_triangle.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 # Attended route dispatch timing cell: one declared-route submission
 # with CLOCK_MONOTONIC_RAW readings at the recording boundary and
 # around the synchronous vkQueueSubmit, so the CPU, immediate GPU
@@ -870,6 +889,25 @@ if with_tests
       files('tests/r3v_native_arming_runner_check.py'),
       r3v_native_arming_runner,
     ],
+    suite : ['r3v'],
+  )
+  # The varying cell's two authorities -- the arming runner's --varying
+  # emission and the manifest writer's --varying ib.bin -- are one byte
+  # stream, so the digest the operator declares from either names the
+  # recorded cell.
+  test(
+    'r3v-native-arming-runner-varying-ib-identity',
+    find_program('sh'),
+    args : [
+      '-c',
+      'set -e; d=$(mktemp -d); trap \'rm -rf "$d"\' EXIT; ' +
+      '"$1" --varying --emit-ib "$d/runner.bin"; ' +
+      '"$2" "$d" --varying >/dev/null; cmp "$d/runner.bin" "$d/ib.bin"',
+      'varying-ib-identity',
+      r3v_native_arming_runner.full_path(),
+      r300_triangle_manifest.full_path(),
+    ],
+    depends : [r3v_native_arming_runner, r300_triangle_manifest],
     suite : ['r3v'],
   )
 endif
@@ -1563,6 +1601,17 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The varying triangle cell's recording on the same fixture: the
+  # varying pipeline admits and the draw records the varying cell.
+  test(
+    'r3v-native-varying-triangle-record',
+    r3v_native_attended_varying_triangle,
+    args : [meson.current_build_dir(), '--record-only'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The fetched cell shares the runner and the recording; its mode is the
   # composition the admission selects and the digest the run declares,
   # and each source width records its own stride and attribute format.
@@ -1695,7 +1744,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                         'gpu-fetched-stride-misaligned',
                         'gpu-fetched-out-of-domain',
                         'gpu-fetched-out-of-bounds',
-                        'gpu-fetched-aliased-source']
+                        'gpu-fetched-aliased-source', 'varying-armed',
+                        'varying-fragment-mismatch', 'varying-missing']
     test(
       'r3v-native-submit-order-@0@'.format(submit_arm),
       r3v_native_submit_order_harness,

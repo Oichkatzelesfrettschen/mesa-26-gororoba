@@ -43,6 +43,8 @@
  */
 #define R3V_TRIANGLE_VERTEX_BYTES \
    (R300_TRIANGLE_VERTEX_DWORDS * sizeof(float))
+#define R3V_TRIANGLE_VARYING_VERTEX_BYTES \
+   (R300_TRIANGLE_VARYING_VERTEX_DWORDS * sizeof(float))
 
 static VkResult
 record_triangle_cell_tail(struct r3v_native_device *device,
@@ -235,7 +237,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                struct r3v_native_cmd_buffer *cmd_buffer,
                                struct r3v_native_memory *vertex_memory,
                                struct r3v_native_memory *color_memory,
-                               uint32_t width, uint32_t height)
+                               uint32_t width, uint32_t height,
+                               bool varying)
 {
    VkResult role_result = validate_triangle_memory_roles(
       device, vertex_memory, color_memory);
@@ -251,7 +254,9 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     */
    struct r300_tcl_bypass_triangle_ib cell;
    int emit_result =
-      r300_tcl_bypass_triangle_extent_emit(width, height, &cell);
+      varying
+         ? r300_tcl_bypass_triangle_varying_extent_emit(width, height, &cell)
+         : r300_tcl_bypass_triangle_extent_emit(width, height, &cell);
    if (emit_result != 0)
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(emit_result));
@@ -316,7 +321,7 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory,
                                          R3V_NATIVE_TARGET_WIDTH,
-                                         R3V_NATIVE_TARGET_HEIGHT);
+                                         R3V_NATIVE_TARGET_HEIGHT, false);
 }
 
 VkResult
@@ -324,7 +329,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
-   struct r3v_native_image *target_image)
+   struct r3v_native_image *target_image, bool varying)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
    VkResult role_result = validate_triangle_memory_roles(
@@ -332,17 +337,19 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    if (role_result != VK_SUCCESS)
       return role_result;
 
-   if (carrier_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
+   const size_t carrier_bytes = varying ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
+                                        : R3V_TRIANGLE_VERTEX_BYTES;
+   if (carrier_memory->bo.size < carrier_bytes ||
        color_memory->bo.size <
           r3v_native_image_footprint_bytes(target_image->height)) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: triangle cell needs %zu vertex bytes "
                        "and the target image's declared footprint",
-                       (size_t)R3V_TRIANGLE_VERTEX_BYTES);
+                       carrier_bytes);
    }
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
                                          color_memory, target_image->width,
-                                         target_image->height);
+                                         target_image->height, varying);
 }
 
 /* Submission-time execution of the public render pass: an empty pass applies
@@ -461,8 +468,13 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                                          R300_TRIANGLE_VERTEX_DWORDS / 4);
       /* The CPU route stages its records on the host and the carrier
        * receives them only after the clip-volume check below, so a
-       * refused record leaves the carrier untouched. */
-      uint32_t staged[R300_TRIANGLE_VERTEX_DWORDS];
+       * refused record leaves the carrier untouched.  A job storing
+       * the varying writes eight-dword records; the positions sit at
+       * the head of each record for the transform below. */
+      const uint32_t record_dwords =
+         r300_vertex_job_record_dwords(&draw->vertex_job);
+      const uint32_t staged_dwords = 3 * record_dwords;
+      uint32_t staged[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
       int gathered = 0;
       if (result != VK_SUCCESS) {
          /* The refused route delivers nothing; the shared unmap and
@@ -493,8 +505,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
           * carrier bytes are unchanged. */
          gathered = r300_cpu_vertex_job_execute(
             &draw->vertex_job, &source, stream.first_vertex,
-            R300_TRIANGLE_VERTEX_DWORDS / 4, staged,
-            R300_TRIANGLE_VERTEX_DWORDS);
+            R300_TRIANGLE_VERTEX_DWORDS / 4, staged, staged_dwords);
       }
       if (result == VK_SUCCESS && gathered != 0) {
          const char *operation = r2vb_route ? "R2VB delivery" : "CPU gather";
@@ -522,13 +533,16 @@ r3v_native_cmd_buffer_execute_deferred_draw(
           * clip coincide and the raster needs no clipper; a record
           * outside it refuses, and the submit reports device loss.
           */
-         float positions[R300_TRIANGLE_VERTEX_DWORDS];
+         float positions[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+         const uint32_t position_dwords =
+            r2vb_route ? R300_TRIANGLE_VERTEX_DWORDS : staged_dwords;
+         const uint32_t position_stride = r2vb_route ? 4 : record_dwords;
          memcpy(positions, r2vb_route ? carrier->map : (void *)staged,
-                sizeof(positions));
+                position_dwords * sizeof(float));
          for (unsigned v = 0;
               result == VK_SUCCESS && v < R300_TRIANGLE_VERTEX_DWORDS / 4;
               v++) {
-            float *pos = &positions[v * 4];
+            float *pos = &positions[v * position_stride];
             /* Negated-conjunction bounds: an unordered comparison
              * fails its conjunct, so a NaN component refuses instead
              * of passing every ordered test.
@@ -546,9 +560,10 @@ r3v_native_cmd_buffer_execute_deferred_draw(
             pos[1] = (pos[1] + 1.0f) * ((float)draw->target_height / 2.0f);
          }
          if (result == VK_SUCCESS)
-            memcpy(carrier->map, positions, sizeof(positions));
+            memcpy(carrier->map, positions,
+                   position_dwords * sizeof(float));
       } else if (result == VK_SUCCESS && !r2vb_route) {
-         memcpy(carrier->map, staged, sizeof(staged));
+         memcpy(carrier->map, staged, staged_dwords * sizeof(uint32_t));
       }
       /* Publication is delivery-unconditional: a WINDOW-space carrier
        * skips the transform branch above yet its bytes still cross to
@@ -556,7 +571,9 @@ r3v_native_cmd_buffer_execute_deferred_draw(
        */
       if (result == VK_SUCCESS)
          radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
-                                     R3V_TRIANGLE_VERTEX_BYTES);
+                                     r2vb_route ? R3V_TRIANGLE_VERTEX_BYTES
+                                                : staged_dwords *
+                                                     sizeof(uint32_t));
       if (owns_carrier_map) {
          radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
          carrier->map = NULL;

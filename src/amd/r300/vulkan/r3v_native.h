@@ -586,6 +586,11 @@ struct r3v_native_pipeline {
     */
    struct r300_vertex_job vertex_job;
    bool gpu_vertex_job_identity;
+   /* Set when the vertex job stores the location-0 varying and the
+    * fragment module is the pass-through: the draw records the varying
+    * cell over eight-dword records.
+    */
+   bool varying;
    /* The viewport/scissor extent creation admitted; the draw requires
     * it equal to the pass target's extent.
     */
@@ -750,15 +755,17 @@ VkResult r3v_native_record_tcl_bypass_triangle_gathered(
    const struct r3v_native_vertex_stream_desc *stream);
 
 /* Record-only cell installer for the public draw lowering: emits the
- * fixed cell IB against the carrier and color references and installs
- * it, with no memory writes.  The vertex gather and the sentinel clear
- * ride cmd_buffer->deferred_draw and execute at queue submission.
+ * fixed cell IB -- the varying cell when the bound pipeline's job stores
+ * the varying, the position-only cell otherwise -- against the carrier
+ * and color references and installs it, with no memory writes.  The
+ * vertex gather and the sentinel clear ride cmd_buffer->deferred_draw
+ * and execute at queue submission.
  */
 VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
-   struct r3v_native_image *target_image);
+   struct r3v_native_image *target_image, bool varying);
 
 /* Executes the command buffer's deferred draw at submission: gathers the
  * bound stream through the CPU vertex executor into the owned carrier

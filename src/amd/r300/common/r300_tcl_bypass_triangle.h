@@ -40,6 +40,13 @@ struct r300_tcl_bypass_triangle_params {
     * r300_first_draw_state_test consumes that form as its known-bad input.
     */
    const struct r300_first_draw_contract *first_draw_contract;
+   /* When set, each vertex record carries a second FLOAT_4 behind the
+    * position: the TEX0 varying the VAP declares as a four-component
+    * output, RS_IP_0 / RS_INST_0 route to US input 0, and the fragment
+    * binary reads (r300_tcl_bypass_triangle_varying_fs).  The fetch is
+    * eight dwords per vertex at a 32-byte stride.
+    */
+   bool varying;
 };
 
 /* One IB position whose payload names a relocation slot. */
@@ -106,6 +113,12 @@ int r300_tcl_bypass_triangle_validate_reloc_sites(
  */
 int r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs);
 
+/* Builds the varying cell's fragment binary: the varying-passthrough US
+ * block that moves interpolator 0 to the color output.  Returns 0 or a
+ * negative errno; the caller owns the binary.
+ */
+int r300_tcl_bypass_triangle_varying_fs(struct r300_fragment_binary *fs);
+
 /* Resolves the first-draw contract for the cell's 64x64 target and three
  * vertices with the texture block disabled.  Every pre-hardware consumer
  * -- manifest tool, native recorder, harness reference -- takes the
@@ -144,6 +157,20 @@ int r300_tcl_bypass_triangle_reference_emit(
  */
 int r300_tcl_bypass_triangle_extent_emit(
    uint32_t width, uint32_t height,
+   struct r300_tcl_bypass_triangle_ib *out);
+
+/* The varying cell at an extent inside the published maximum, and its
+ * reference form at the maximum: the reference contract and pitch over
+ * position-plus-varying records with the pass-through fragment binary.
+ * The family relates to the position-only cell as its extent family
+ * does: every extent differs from the varying reference in the two
+ * scissor-family dwords alone.
+ */
+int r300_tcl_bypass_triangle_varying_extent_emit(
+   uint32_t width, uint32_t height,
+   struct r300_tcl_bypass_triangle_ib *out);
+
+int r300_tcl_bypass_triangle_varying_reference_emit(
    struct r300_tcl_bypass_triangle_ib *out);
 
 /* The cell's render geometry.  The manifest publishes these and the contract
@@ -235,6 +262,10 @@ struct r300_triangle_oracle_verdict {
    bool canary_pass;
    uint32_t interior_samples;
    uint32_t exterior_samples;
+   /* The varying oracle's largest per-channel byte distance between an
+    * interior sample and its interpolated expectation; the constant-color
+    * oracle compares exactly and reports zero. */
+   uint32_t interior_max_deviation;
 };
 
 void r300_tcl_bypass_triangle_oracle(
@@ -256,6 +287,22 @@ void r300_tcl_bypass_triangle_extent_oracle(
    uint32_t width, uint32_t height, const uint32_t *pixels,
    uint32_t size_bytes, struct r300_triangle_oracle_verdict *verdict);
 
+/* The varying oracle: the interior expectation is the barycentric
+ * interpolation, at each sample's pixel center, of the three vertex
+ * colors (RGBA per vertex in vertex order, the analytic window-space
+ * triangle through the viewport transform at the extent), each channel
+ * converted to 8 bits by rounding; an interior sample passes when every
+ * channel lies within R300_TRIANGLE_VARYING_ORACLE_TOLERANCE bytes of
+ * that expectation, the band the RS interpolator's FP24 arithmetic and
+ * the UNORM conversion stay inside.  Exterior, canary, and extent rules
+ * are the constant-color oracle's.
+ */
+#define R300_TRIANGLE_VARYING_ORACLE_TOLERANCE 2u
+void r300_tcl_bypass_triangle_varying_extent_oracle(
+   uint32_t width, uint32_t height, const float vertex_colors[12],
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_oracle_verdict *verdict);
+
 /* The pretransformed screen-space triangle for a 64x64 color target: three
  * FLOAT_4 positions, sixteen bytes each, the payload of the cell's vertex
  * BO.
@@ -263,5 +310,18 @@ void r300_tcl_bypass_triangle_extent_oracle(
 #define R300_TRIANGLE_VERTEX_DWORDS 12
 extern const float
    r300_tcl_bypass_triangle_vertices[R300_TRIANGLE_VERTEX_DWORDS];
+
+/* The reference varying payload: the same three positions, each followed
+ * by the color the reference varying vertex program computes from the
+ * clip-space triangle (tint = fma(position, (0.5, 0.5, 0, 0),
+ * (0.5, 0.5, 0.25, 1))), so the carrier the CPU route writes for that
+ * program over the NDC reference triangle is this array byte for byte.
+ * The colors alone, in vertex order, are the varying oracle's vertex
+ * colors.
+ */
+#define R300_TRIANGLE_VARYING_VERTEX_DWORDS 24
+extern const float r300_tcl_bypass_triangle_varying_vertices
+   [R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+extern const float r300_tcl_bypass_triangle_varying_colors[12];
 
 #endif /* R300_TCL_BYPASS_TRIANGLE_H */

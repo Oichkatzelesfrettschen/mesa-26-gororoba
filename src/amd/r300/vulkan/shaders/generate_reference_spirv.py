@@ -31,6 +31,10 @@ STAGES = (
      HERE / "r3v_reference_scatter_reject.comp"),
     ("r3v_reference_vertex_arith_spirv",
      HERE / "r3v_reference_vertex_arith.vert"),
+    ("r3v_reference_vertex_varying_spirv",
+     HERE / "r3v_reference_vertex_varying.vert"),
+    ("r3v_reference_fragment_varying_spirv",
+     HERE / "r3v_reference_fragment_varying.frag"),
 )
 
 

@@ -107,7 +107,9 @@ static void random_job(struct r300_vertex_job *job)
       for (uint32_t lane = 0; lane < 4; lane++)
          job->constants[c][lane] = hostile_bits();
 
-   const uint32_t body = 1 + prng() % (R300_VERTEX_JOB_MAX_INSTRUCTIONS - 2);
+   /* The body leaves room for the input load, an optional varying
+    * store, and the position store inside the instruction budget. */
+   const uint32_t body = 1 + prng() % (R300_VERTEX_JOB_MAX_INSTRUCTIONS - 3);
    uint32_t written = 0;
    job->instructions[0] = (struct r300_vertex_job_instruction){
       .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT,
@@ -164,13 +166,29 @@ static void random_job(struct r300_vertex_job *job)
       inst->dst = (uint8_t)(prng() % R300_VERTEX_JOB_MAX_TEMPS);
       written |= 1u << inst->dst;
    }
-   job->instructions[body + 1] = (struct r300_vertex_job_instruction){
+   uint32_t tail = body + 1;
+   /* Half the population stores a varying from a live register ahead
+    * of the position store, so the eight-dword record path -- the
+    * second vector's placement and the record stride -- reaches the
+    * differential oracle beside the four-dword path. */
+   if (prng() & 1) {
+      uint8_t live[R300_VERTEX_JOB_MAX_TEMPS];
+      uint32_t n = 0;
+      for (uint8_t t = 0; t < R300_VERTEX_JOB_MAX_TEMPS; t++)
+         if (written & (1u << t))
+            live[n++] = t;
+      job->instructions[tail++] = (struct r300_vertex_job_instruction){
+         .opcode = R300_VERTEX_JOB_OP_STORE_VARYING,
+         .src0 = live[prng() % n],
+      };
+   }
+   job->instructions[tail] = (struct r300_vertex_job_instruction){
       .opcode = R300_VERTEX_JOB_OP_STORE_POSITION,
       .src0 = job->instructions[body].dst,
    };
    /* The store reads the final generated result, so the last randomized
     * operator always reaches the differential oracle. */
-   job->instruction_count = body + 2;
+   job->instruction_count = tail + 1;
 }
 
 static void differential_random_jobs(const struct simd_lane *lane)
@@ -188,19 +206,20 @@ static void differential_random_jobs(const struct simd_lane *lane)
       struct r300_vertex_job job;
       random_job(&job);
       assert(r300_cpu_vertex_job_validate(&job) == 0);
+      const uint32_t carrier_dwords =
+         VERTEX_COUNT * r300_vertex_job_record_dwords(&job);
 
-      uint32_t scalar[VERTEX_COUNT * 4];
-      uint32_t sse2[VERTEX_COUNT * 4];
+      uint32_t scalar[VERTEX_COUNT * 8];
+      uint32_t sse2[VERTEX_COUNT * 8];
       memset(scalar, 0xa5, sizeof(scalar));
       memset(sse2, 0x5a, sizeof(sse2));
       assert(r300_cpu_vertex_job_execute(&job, &stream, 0, VERTEX_COUNT,
-                                         scalar, VERTEX_COUNT * 4) == 0);
-      assert(lane->execute(&job, &stream, 0,
-                                              VERTEX_COUNT, sse2,
-                                              VERTEX_COUNT * 4) == 0);
-      if (memcmp(scalar, sse2, sizeof(scalar)) != 0) {
+                                         scalar, carrier_dwords) == 0);
+      assert(lane->execute(&job, &stream, 0, VERTEX_COUNT, sse2,
+                           carrier_dwords) == 0);
+      if (memcmp(scalar, sse2, carrier_dwords * sizeof(uint32_t)) != 0) {
          fprintf(stderr, "divergence at trial %u\n", trial);
-         for (uint32_t d = 0; d < VERTEX_COUNT * 4; d++)
+         for (uint32_t d = 0; d < carrier_dwords; d++)
             if (scalar[d] != sse2[d])
                fprintf(stderr, "  dword %u: scalar %08x %s %08x\n", d,
                        scalar[d], lane->name, sse2[d]);
@@ -418,21 +437,19 @@ static void refusal_parity(const struct simd_lane *lane)
       .stride = STREAM_STRIDE,
       .size_bytes = sizeof(stream_bytes),
    };
-   uint32_t out[VERTEX_COUNT * 4];
+   uint32_t out[VERTEX_COUNT * 8];
+   const uint32_t carrier_dwords =
+      VERTEX_COUNT * r300_vertex_job_record_dwords(&job);
 
-   assert(lane->execute(&job, &stream, 0, VERTEX_COUNT,
-                                           out, VERTEX_COUNT * 4 - 1) ==
-          -ENOSPC);
-   assert(lane->execute(&job, &stream, 1, VERTEX_COUNT,
-                                           out, VERTEX_COUNT * 4) ==
-          -EINVAL);
-   assert(lane->execute(&job, &stream, 0, VERTEX_COUNT,
-                                           stream_bytes,
-                                           VERTEX_COUNT * 4) == -EINVAL);
+   assert(lane->execute(&job, &stream, 0, VERTEX_COUNT, out,
+                        carrier_dwords - 1) == -ENOSPC);
+   assert(lane->execute(&job, &stream, 1, VERTEX_COUNT, out,
+                        carrier_dwords) == -EINVAL);
+   assert(lane->execute(&job, &stream, 0, VERTEX_COUNT, stream_bytes,
+                        carrier_dwords) == -EINVAL);
    job.instruction_count = 0;
-   assert(lane->execute(&job, &stream, 0, VERTEX_COUNT,
-                                           out, VERTEX_COUNT * 4) ==
-          -EINVAL);
+   assert(lane->execute(&job, &stream, 0, VERTEX_COUNT, out,
+                        carrier_dwords) == -EINVAL);
 }
 
 int main(void)

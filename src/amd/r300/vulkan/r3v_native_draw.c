@@ -265,7 +265,8 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    }
 
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
-      device, cmd_buffer, carrier, cmd_buffer->pass_target);
+      device, cmd_buffer, carrier, cmd_buffer->pass_target,
+      pipeline->varying);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);

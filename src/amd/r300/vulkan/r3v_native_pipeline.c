@@ -92,13 +92,17 @@ attribute_format_id(VkFormat format)
 }
 
 /* Semantic stage admission: the vertex module lowers to the CPU job IR
- * and the fragment module reads back as the qualified constant color.
- * The job leaves with input_format_id unassigned; the caller binds it
- * from the vertex-input state and validates the finished job.
+ * and the fragment module reads back as the shape the job's outputs
+ * select -- the qualified constant color for a position-only job, the
+ * varying pass-through for a job that stores the location-0 varying --
+ * so a fragment program reading an unwritten varying or ignoring a
+ * written one refuses the pipeline.  The job leaves with
+ * input_format_id unassigned; the caller binds it from the vertex-input
+ * state and validates the finished job.
  */
 static bool
 stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
-                        struct r300_vertex_job *job)
+                        struct r300_vertex_job *job, bool *varying)
 {
    if (info->stageCount != 2)
       return false;
@@ -128,8 +132,13 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    uint32_t color_bits[4];
    size_t fs_words = 0;
    const uint32_t *fs_data = stage_words(fragment, &fs_words);
-   return fs_data != NULL &&
-          r300_fragment_constant_color_from_spirv(fs_data, fs_words,
+   if (fs_data == NULL)
+      return false;
+   *varying = r300_vertex_job_has_varying(job);
+   if (*varying)
+      return r300_fragment_varying_passthrough_from_spirv(
+         fs_data, fs_words, fragment->pName, &reason);
+   return r300_fragment_constant_color_from_spirv(fs_data, fs_words,
                                                   fragment->pName,
                                                   color_bits, &reason) &&
           memcmp(color_bits, r3v_native_green_bits,
@@ -241,11 +250,12 @@ create_pipeline(struct r3v_native_device *device,
       r300_vertex_format_semantics(format_id);
    uint32_t target_width = 0, target_height = 0;
    struct r300_vertex_job job;
+   bool varying = false;
    if (format == NULL || info->flags != 0 ||
        (vi->pVertexBindingDescriptions[0].stride != 0 &&
         vi->pVertexBindingDescriptions[0].stride <
            format->semantic_record_bytes) ||
-       !stages_build_vertex_job(info, &job) ||
+       !stages_build_vertex_job(info, &job, &varying) ||
        !fixed_state_matches_cell(info, &target_width, &target_height) ||
        layout == NULL || layout->set_count != 0 ||
        layout->push_range_count != 0 ||
@@ -268,6 +278,7 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->target_width = target_width;
    pipeline->target_height = target_height;
    pipeline->vertex_job = job;
+   pipeline->varying = varying;
    /* GPU-route admission metadata: the qualified TCL-bypass cell
     * delivers the raw attribute stream, so only the identity job
     * (LOAD_INPUT feeding the position store) is GPU-admissible; every

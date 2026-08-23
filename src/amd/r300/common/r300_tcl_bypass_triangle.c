@@ -4,6 +4,7 @@
 #include "r300_first_draw_state.h"
 #include "r300_fragment_binary.h"
 #include "r300_pm4_builder.h"
+#include "r300_r2vb_producer_fs_block.h"
 #include "r300_tcl_bypass_triangle_fs_block.h"
 
 #include "r300_reg.h"
@@ -26,6 +27,14 @@
  * requires on every VAP_PROG_STREAM_CNTL_EXT word.
  */
 #define R300_TRIANGLE_PSC_EXT_IDENTITY 0xF688F688u
+
+/* The varying record's second element lands in VAP vector 6, the
+ * texture-coordinate-0 vector of the TCL-bypass output layout (position
+ * 0, point size 1, colors 2-5, texture coordinates from 6; r300g
+ * r300_stream_locations_notcl), the vector RS_IP_0's texture pointer 0
+ * reads.
+ */
+#define R300_TRIANGLE_VARYING_DST_VEC 6u
 
 /* Holds the bare-cell state plus the two-dword-per-clause first-draw
  * contract prefix; the prefix emission checks its room against this bound
@@ -121,12 +130,24 @@ r300_tcl_bypass_triangle_emit_into(
    /* Vertex path: pretransformed positions bypass the TCL block, one
     * FLOAT_4 stream lands whole in output vector zero, and every PSC
     * extended selector stays identity, so the kernel's vertex-output check
-    * can prove VAP_VTX_SIZE = 4 covers the fetch.
+    * can prove VAP_VTX_SIZE = 4 covers the fetch.  The varying cell adds a
+    * second FLOAT_4 element into the texture-coordinate-0 vector, declares
+    * it as a four-component TEX0 output, and fetches eight dwords per
+    * vertex, the identity-list arithmetic the same check proves.
     */
+   const uint32_t record_dwords = params->varying ? 8 : 4;
    r300_pm4_reg(&b, R300_VAP_CNTL_STATUS, R300_VAP_TCL_BYPASS);
    r300_pm4_reg(&b, R300_VAP_PROG_STREAM_CNTL_0,
-                R300_DATA_TYPE_FLOAT_4 | (0 << R300_DST_VEC_LOC_SHIFT) |
-                   R300_LAST_VEC);
+                params->varying
+                   ? (R300_DATA_TYPE_FLOAT_4 |
+                      (0 << R300_DST_VEC_LOC_SHIFT)) |
+                        ((R300_DATA_TYPE_FLOAT_4 |
+                          (R300_TRIANGLE_VARYING_DST_VEC
+                           << R300_DST_VEC_LOC_SHIFT) |
+                          R300_LAST_VEC)
+                         << 16)
+                   : R300_DATA_TYPE_FLOAT_4 | (0 << R300_DST_VEC_LOC_SHIFT) |
+                        R300_LAST_VEC);
    static const uint32_t psc_ext_identity[8] = {
       R300_TRIANGLE_PSC_EXT_IDENTITY, R300_TRIANGLE_PSC_EXT_IDENTITY,
       R300_TRIANGLE_PSC_EXT_IDENTITY, R300_TRIANGLE_PSC_EXT_IDENTITY,
@@ -137,8 +158,34 @@ r300_tcl_bypass_triangle_emit_into(
                     ARRAY_SIZE(psc_ext_identity));
    r300_pm4_reg(&b, R300_VAP_OUTPUT_VTX_FMT_0,
                 R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
-   r300_pm4_reg(&b, R300_VAP_OUTPUT_VTX_FMT_1, 0);
-   r300_pm4_reg(&b, R300_VAP_VTX_SIZE, 4);
+   r300_pm4_reg(&b, R300_VAP_OUTPUT_VTX_FMT_1,
+                params->varying ? R300_VAP_OUTPUT_VTX_FMT_1__4_COMPONENTS
+                                : 0);
+   r300_pm4_reg(&b, R300_VAP_VTX_SIZE, record_dwords);
+   if (params->varying) {
+      /* The assembler admits position plus texture coordinate 0, and
+       * the RS routes that varying: RS_COUNT declares four interpolated
+       * components with no rasterized colors, RS_IP_0 reads texture
+       * pointer 0 and selects its four channels in order, RS_INST_0
+       * writes the result to US input register 0, and RS_INST_COUNT of
+       * zero runs instruction 0 alone.  The first-draw contract wrote
+       * the position-only forms of these registers ahead of the cell,
+       * so the varying cell establishes its own values here.
+       */
+      r300_pm4_reg(&b, R300_VAP_VSM_VTX_ASSM,
+                   R300_INPUT_CNTL_POS | R300_INPUT_CNTL_TC0);
+      r300_pm4_reg(&b, R300_RS_COUNT,
+                   R300_IT_COUNT(4) | R300_IC_COUNT(0) | R300_HIRES_EN);
+      r300_pm4_reg(&b, R300_RS_INST_COUNT, 0);
+      r300_pm4_reg(&b, R300_RS_IP_0,
+                   R300_RS_TEX_PTR(0) | R300_RS_SEL_S(R300_RS_SEL_C0) |
+                      R300_RS_SEL_T(R300_RS_SEL_C1) |
+                      R300_RS_SEL_R(R300_RS_SEL_C2) |
+                      R300_RS_SEL_Q(R300_RS_SEL_C3));
+      r300_pm4_reg(&b, R300_RS_INST_0,
+                   R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
+                      R300_RS_INST_TEX_ADDR(0));
+   }
 
    /* Fragment program: the owned binary's US/FG block verbatim, then the
     * two register values the descriptor keeps outside the sequence.
@@ -157,10 +204,11 @@ r300_tcl_bypass_triangle_emit_into(
    write_reloc(&b, out, R300_TRIANGLE_SLOT_COLOR);
    r300_pm4_reg(&b, R300_RB3D_COLORPITCH0, params->color_pitch_format);
 
-   /* Vertex fetch: one array, sixteen bytes per vertex, stride sixteen. */
+   /* Vertex fetch: one array, one record per vertex, stride one record. */
+   const uint32_t record_bytes = record_dwords * 4;
    const uint32_t vbpntr[3] = {
       1 | R300_VC_FORCE_PREFETCH,
-      R300_VBPNTR_SIZE0(16) | R300_VBPNTR_STRIDE0(16),
+      R300_VBPNTR_SIZE0(record_bytes) | R300_VBPNTR_STRIDE0(record_bytes),
       params->vertex_offset,
    };
    r300_pm4_packet3(&b, R300_PACKET3_3D_LOAD_VBPNTR, vbpntr,
@@ -298,6 +346,22 @@ r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs)
       "r300-tcl-bypass-triangle-compiled");
 }
 
+int
+r300_tcl_bypass_triangle_varying_fs(struct r300_fragment_binary *fs)
+{
+   /* The varying-passthrough US program moves interpolator 0 to the
+    * color output and carries no output-format dependence -- US_OUT_FMT
+    * rides the first-draw contract -- so the block the R2VB producer
+    * pass compiled shades this cell's ARGB8888 target unchanged.
+    */
+   return r300_fragment_binary_init(
+      fs, r300_r2vb_producer_fs_block,
+      sizeof(r300_r2vb_producer_fs_block) /
+         sizeof(r300_r2vb_producer_fs_block[0]),
+      R300_R2VB_PRODUCER_FS_FG_DEPTH_SRC, R300_R2VB_PRODUCER_FS_US_OUT_W,
+      "r300-varying-passthrough-compiled");
+}
+
 /* The cell's target is little-endian B8G8R8A8, so the shader's four
  * 8-bit output components select blue, green, red, and alpha in that
  * order; r300_first_draw_contract_set_us_out_fmt_0 places the word.
@@ -333,17 +397,17 @@ r300_tcl_bypass_triangle_reference_contract(
    return r300_tcl_bypass_triangle_set_target_format(out);
 }
 
-int
-r300_tcl_bypass_triangle_extent_emit(
-   uint32_t width, uint32_t height,
-   struct r300_tcl_bypass_triangle_ib *out)
+static int
+extent_emit(uint32_t width, uint32_t height, bool varying,
+            struct r300_tcl_bypass_triangle_ib *out)
 {
    if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
        height > R300_TRIANGLE_TARGET_HEIGHT)
       return -EINVAL;
 
    struct r300_fragment_binary fs;
-   int rc = r300_tcl_bypass_triangle_reference_fs(&fs);
+   int rc = varying ? r300_tcl_bypass_triangle_varying_fs(&fs)
+                    : r300_tcl_bypass_triangle_reference_fs(&fs);
    if (rc != 0)
       return rc;
 
@@ -377,10 +441,19 @@ r300_tcl_bypass_triangle_extent_emit(
          r300_rb3d_colorpitch0_pack_argb8888(R300_TRIANGLE_TARGET_PITCH_PIXELS),
       .fragment_binary = &fs,
       .first_draw_contract = &contract,
+      .varying = varying,
    };
    rc = r300_tcl_bypass_triangle_emit(&params, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+int
+r300_tcl_bypass_triangle_extent_emit(
+   uint32_t width, uint32_t height,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   return extent_emit(width, height, false, out);
 }
 
 int
@@ -390,6 +463,22 @@ r300_tcl_bypass_triangle_reference_emit(
    return r300_tcl_bypass_triangle_extent_emit(R300_TRIANGLE_TARGET_WIDTH,
                                                R300_TRIANGLE_TARGET_HEIGHT,
                                                out);
+}
+
+int
+r300_tcl_bypass_triangle_varying_extent_emit(
+   uint32_t width, uint32_t height,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   return extent_emit(width, height, true, out);
+}
+
+int
+r300_tcl_bypass_triangle_varying_reference_emit(
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   return extent_emit(R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+                      true, out);
 }
 
 uint32_t
@@ -623,6 +712,99 @@ r300_tcl_bypass_triangle_extent_oracle(
    }
 }
 
+/* Rounds a normalized channel to its UNORM8 byte, the conversion the
+ * color buffer applies to the shaded value.
+ */
+static uint32_t
+unorm8_round(float value)
+{
+   if (!(value > 0.0f))
+      return 0;
+   if (value >= 1.0f)
+      return 255;
+   return (uint32_t)(value * 255.0f + 0.5f);
+}
+
+void
+r300_tcl_bypass_triangle_varying_extent_oracle(
+   uint32_t width, uint32_t height, const float vertex_colors[12],
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_oracle_verdict *verdict)
+{
+   /* The constant-color oracle carries the geometry, the exterior and
+    * canary passes, and the sample qualification; it judges the interior
+    * against the constant draw color, so its interior verdict is
+    * discarded and recomputed here against the interpolated expectation
+    * over the same candidates.
+    */
+   r300_tcl_bypass_triangle_extent_oracle(width, height, pixels, size_bytes,
+                                          verdict);
+   if (verdict->interior_samples == 0 && verdict->exterior_samples == 0 &&
+       !verdict->executed)
+      return;
+
+   const struct triangle_geometry g = triangle_geometry_at(width, height);
+   const uint32_t pixel_count = size_bytes / 4;
+   const float cx = (g.v[0] + g.v[2] + g.v[4]) / 3.0f;
+   const float cy = (g.v[1] + g.v[3] + g.v[5]) / 3.0f;
+   const float interior_candidates[8] = {
+      cx, cy,
+      (cx + g.v[0]) / 2.0f, (cy + g.v[1]) / 2.0f,
+      (cx + g.v[2]) / 2.0f, (cy + g.v[3]) / 2.0f,
+      (cx + g.v[4]) / 2.0f, (cy + g.v[5]) / 2.0f,
+   };
+   /* Twice the signed area; the barycentric weights divide the edge
+    * functions by it.  The extent oracle above refused a degenerate
+    * extent, so the area is nonzero here. */
+   const float area = triangle_edgef(g.v[0], g.v[1], g.v[2], g.v[3],
+                                     g.v[4], g.v[5]);
+   verdict->interior_pass = true;
+   verdict->interior_samples = 0;
+   verdict->interior_max_deviation = 0;
+   for (unsigned i = 0; i < 4; i++) {
+      uint32_t x, y;
+      if (!triangle_pixel_candidate(interior_candidates[i * 2 + 0],
+                                    interior_candidates[i * 2 + 1], width,
+                                    height, &x, &y))
+         continue;
+      const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+      if (triangle_signed_margin(&g, px, py) < R300_TRIANGLE_ORACLE_MARGIN)
+         continue;
+      verdict->interior_samples++;
+      const uint32_t index = y * R300_TRIANGLE_TARGET_PITCH_PIXELS + x;
+      if (index >= pixel_count) {
+         verdict->interior_pass = false;
+         continue;
+      }
+      /* Weight of vertex i is the edge function of the opposite edge. */
+      const float w0 = triangle_edgef(g.v[2], g.v[3], g.v[4], g.v[5], px, py) /
+                       area;
+      const float w1 = triangle_edgef(g.v[4], g.v[5], g.v[0], g.v[1], px, py) /
+                       area;
+      const float w2 = 1.0f - w0 - w1;
+      const uint32_t observed = pixels[index];
+      /* B8G8R8A8: byte 0 blue, 1 green, 2 red, 3 alpha; the vertex
+       * colors are RGBA. */
+      static const unsigned channel_of_byte[4] = { 2, 1, 0, 3 };
+      for (unsigned byte = 0; byte < 4; byte++) {
+         const unsigned c = channel_of_byte[byte];
+         const float value = w0 * vertex_colors[c] +
+                             w1 * vertex_colors[4 + c] +
+                             w2 * vertex_colors[8 + c];
+         const uint32_t expected = unorm8_round(value);
+         const uint32_t got = (observed >> (8 * byte)) & 0xffu;
+         const uint32_t deviation =
+            got > expected ? got - expected : expected - got;
+         if (deviation > verdict->interior_max_deviation)
+            verdict->interior_max_deviation = deviation;
+         if (deviation > R300_TRIANGLE_VARYING_ORACLE_TOLERANCE)
+            verdict->interior_pass = false;
+      }
+   }
+   if (verdict->interior_samples == 0)
+      verdict->interior_pass = false;
+}
+
 void
 r300_tcl_bypass_triangle_oracle(const uint32_t *pixels, uint32_t size_bytes,
                                 struct r300_triangle_oracle_verdict *verdict)
@@ -639,6 +821,19 @@ const float r300_tcl_bypass_triangle_vertices[R300_TRIANGLE_VERTEX_DWORDS] = {
     8.0f,  8.0f, 0.0f, 1.0f,
    56.0f,  8.0f, 0.0f, 1.0f,
    32.0f, 56.0f, 0.0f, 1.0f,
+};
+
+const float r300_tcl_bypass_triangle_varying_colors[12] = {
+   0.125f, 0.125f, 0.25f, 1.0f,
+   0.875f, 0.125f, 0.25f, 1.0f,
+   0.5f,   0.875f, 0.25f, 1.0f,
+};
+
+const float r300_tcl_bypass_triangle_varying_vertices
+   [R300_TRIANGLE_VARYING_VERTEX_DWORDS] = {
+    8.0f,  8.0f, 0.0f, 1.0f, 0.125f, 0.125f, 0.25f, 1.0f,
+   56.0f,  8.0f, 0.0f, 1.0f, 0.875f, 0.125f, 0.25f, 1.0f,
+   32.0f, 56.0f, 0.0f, 1.0f, 0.5f,   0.875f, 0.25f, 1.0f,
 };
 
 void

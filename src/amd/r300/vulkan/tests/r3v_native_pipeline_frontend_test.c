@@ -162,6 +162,132 @@ static void test_reference_arith_module(void)
       assert(carrier[c] == f_bits(expected));
 }
 
+/* The computed-varying pair: the vertex module lowers to a job storing
+ * one varying ahead of the position -- whatever order the module stores
+ * its outputs in -- and executes to eight-dword records that carry the
+ * reference varying payload over the NDC triangle; the fragment module
+ * admits as the pass-through shape alone.
+ */
+static void test_reference_varying_modules(void)
+{
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   bool admitted = r300_vertex_job_from_spirv(
+      r3v_reference_vertex_varying_spirv,
+      WORDS(r3v_reference_vertex_varying_spirv), "main", &job, &reason);
+   if (!admitted)
+      fprintf(stderr, "reference varying refusal: %s\n", reason);
+   assert(admitted);
+   assert(r300_vertex_job_has_varying(&job));
+   assert(r300_vertex_job_record_dwords(&job) == 8);
+   assert(job.instructions[job.instruction_count - 1].opcode ==
+          R300_VERTEX_JOB_OP_STORE_POSITION);
+   unsigned varying_stores = 0;
+   for (uint32_t i = 0; i < job.instruction_count; i++)
+      varying_stores +=
+         job.instructions[i].opcode == R300_VERTEX_JOB_OP_STORE_VARYING;
+   assert(varying_stores == 1);
+   job.input_format_id = R300_VERTEX_FORMAT_F32_4;
+   assert(r300_cpu_vertex_job_validate(&job) == 0);
+
+   /* The NDC reference triangle; the job leaves the position in clip
+    * space (the route transforms it) and computes the tint. */
+   const float ndc[12] = { -0.75f, -0.75f, 0.0f, 1.0f, 0.75f, -0.75f,
+                           0.0f,   1.0f,   0.0f, 0.75f, 0.0f, 1.0f };
+   const struct r300_vertex_stream stream = {
+      .data = (const uint8_t *)ndc,
+      .stride = 16,
+      .size_bytes = sizeof(ndc),
+   };
+   uint32_t carrier[24];
+   assert(r300_cpu_vertex_job_execute(&job, &stream, 0, 3, carrier, 24) ==
+          0);
+   for (unsigned v = 0; v < 3; v++) {
+      assert(memcmp(&carrier[v * 8], &ndc[v * 4], 16) == 0);
+      for (unsigned c = 0; c < 4; c++) {
+         static const float scale[4] = { 0.5f, 0.5f, 0.0f, 0.0f };
+         static const float bias[4] = { 0.5f, 0.5f, 0.25f, 1.0f };
+         assert(carrier[v * 8 + 4 + c] ==
+                f_bits(fmaf(ndc[v * 4 + c], scale[c], bias[c])));
+      }
+   }
+
+   assert(r300_fragment_varying_passthrough_from_spirv(
+      r3v_reference_fragment_varying_spirv,
+      WORDS(r3v_reference_fragment_varying_spirv), "main", &reason));
+   /* Each fragment admitter refuses the other's shape. */
+   uint32_t color[4];
+   assert(!r300_fragment_constant_color_from_spirv(
+      r3v_reference_fragment_varying_spirv,
+      WORDS(r3v_reference_fragment_varying_spirv), "main", color, &reason));
+   assert(strcmp(reason, "fragment shader reads an input") == 0);
+   assert(!r300_fragment_varying_passthrough_from_spirv(
+      r3v_reference_fragment_spirv, WORDS(r3v_reference_fragment_spirv),
+      "main", &reason));
+   assert(strcmp(reason,
+                 "fragment program outside the varying pass-through") == 0);
+   /* The position-only modules keep lowering to varying-free jobs. */
+   assert(r300_vertex_job_from_spirv(r3v_reference_vertex_spirv,
+                                     WORDS(r3v_reference_vertex_spirv),
+                                     "main", &job, &reason));
+   assert(!r300_vertex_job_has_varying(&job));
+}
+
+/* Known-bads on the varying vertex module: the varying store removed
+ * (the declared output left unwritten), and the varying store doubled.
+ * Both mutate the generated words at the OpStore whose pointer is the
+ * varying variable, located by the Location decoration on an Output
+ * variable.
+ */
+static void test_varying_module_known_bads(void)
+{
+   enum { OP_DECORATE = 71, OP_VARIABLE = 59, OP_STORE = 62,
+          DECOR_LOCATION = 30, SC_OUTPUT = 3 };
+   const uint32_t *m = r3v_reference_vertex_varying_spirv;
+   const size_t n = WORDS(r3v_reference_vertex_varying_spirv);
+   uint32_t varying_id = 0, store_at = 0, store_len = 0;
+   for (size_t at = 5; at < n;) {
+      const uint32_t len = m[at] >> 16, op = m[at] & 0xffffu;
+      assert(len != 0 && at + len <= n);
+      if (op == OP_VARIABLE && m[at + 3] == SC_OUTPUT) {
+         /* A Location-decorated Output variable is the varying. */
+         for (size_t d = 5; d < n;) {
+            const uint32_t dlen = m[d] >> 16, dop = m[d] & 0xffffu;
+            if (dop == OP_DECORATE && m[d + 1] == m[at + 2] &&
+                m[d + 2] == DECOR_LOCATION)
+               varying_id = m[at + 2];
+            d += dlen;
+         }
+      }
+      if (op == OP_STORE && varying_id != 0 && m[at + 1] == varying_id) {
+         store_at = (uint32_t)at;
+         store_len = len;
+      }
+      at += len;
+   }
+   assert(varying_id != 0 && store_at != 0 && store_len == 3);
+
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   /* Removed: the words after the store close the gap. */
+   uint32_t removed[WORDS(r3v_reference_vertex_varying_spirv)];
+   memcpy(removed, m, store_at * 4);
+   memcpy(removed + store_at, m + store_at + store_len,
+          (n - store_at - store_len) * 4);
+   assert(!r300_vertex_job_from_spirv(removed, n - store_len, "main", &job,
+                                      &reason));
+   assert(strcmp(reason, "vertex varying output left unwritten") == 0);
+   /* Doubled: the store repeated in place. */
+   uint32_t doubled[WORDS(r3v_reference_vertex_varying_spirv) + 3];
+   memcpy(doubled, m, (store_at + store_len) * 4);
+   memcpy(doubled + store_at + store_len, m + store_at, store_len * 4);
+   memcpy(doubled + store_at + 2 * store_len, m + store_at + store_len,
+          (n - store_at - store_len) * 4);
+   assert(!r300_vertex_job_from_spirv(doubled, n + store_len, "main", &job,
+                                      &reason));
+   assert(strcmp(reason, "second varying store") == 0);
+}
+
 /* Whole-module refusals: each inadmissible module names its construct. */
 static void test_module_refusals(void)
 {
@@ -334,6 +460,8 @@ int main(void)
    test_reference_vertex_module();
    test_reference_fragment_module();
    test_reference_arith_module();
+   test_reference_varying_modules();
+   test_varying_module_known_bads();
    test_module_refusals();
    test_malformed_streams();
    test_entry_name_binding();

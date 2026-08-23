@@ -416,6 +416,97 @@ static void test_validation_refusals(void)
       },
    };
    expect_refusal(&two_stores, -EINVAL);
+   /* The varying store: at most one, from a written register, ahead of
+    * the final position store. */
+   struct r300_vertex_job varying_last = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .instruction_count = 3,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_VARYING, 0, 0, 0, 0 },
+      },
+   };
+   expect_refusal(&varying_last, -EINVAL);
+   struct r300_vertex_job two_varyings = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .instruction_count = 4,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_VARYING, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_VARYING, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 0, 0, 0 },
+      },
+   };
+   expect_refusal(&two_varyings, -EINVAL);
+   struct r300_vertex_job varying_unwritten = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .instruction_count = 3,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_VARYING, 0, 1, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 0, 0, 0 },
+      },
+   };
+   expect_refusal(&varying_unwritten, -EINVAL);
+}
+
+/* A job storing a varying writes eight-dword records: position then
+ * varying per vertex at the eight-dword stride, the placement the
+ * consumer's two-FLOAT_4 fetch reads; the record count sets -ENOSPC,
+ * and dwords past the last record stay untouched.
+ */
+static void test_varying_store_records(void)
+{
+   struct r300_vertex_job job = {
+      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .constant_count = 1,
+      .instruction_count = 5,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_LOAD_CONSTANT, 1, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_FADD, 2, 0, 1, 0 },
+         { R300_VERTEX_JOB_OP_STORE_VARYING, 0, 2, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 0, 0, 0 },
+      },
+   };
+   for (uint32_t lane = 0; lane < 4; lane++)
+      job.constants[0][lane] = f_bits(0.5f);
+   assert(r300_vertex_job_has_varying(&job));
+   assert(r300_vertex_job_record_dwords(&job) == 8);
+   assert(r300_cpu_vertex_job_validate(&job) == 0);
+
+   const uint32_t records[3][4] = {
+      { f_bits(1.0f), f_bits(2.0f), f_bits(3.0f), f_bits(4.0f) },
+      { f_bits(-1.0f), f_bits(0.0f), f_bits(0.25f), f_bits(1.0f) },
+      { 0x7fc00123u, 0x80000000u, f_bits(8.0f), f_bits(1.0f) },
+   };
+   struct r300_vertex_stream stream = stream_of(records, 16, sizeof(records));
+   uint32_t carrier[CARRIER_DWORDS];
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute(&job, &stream, 0, 3, carrier, 24) == 0);
+   for (uint32_t v = 0; v < 3; v++) {
+      assert(memcmp(&carrier[v * 8], records[v], 16) == 0);
+      for (uint32_t lane = 0; lane < 4; lane++) {
+         float in;
+         memcpy(&in, &records[v][lane], sizeof(in));
+         const float sum = in + 0.5f;
+         uint32_t expect = f_bits(sum);
+         if ((expect & 0x7f800000u) == 0x7f800000u &&
+             (expect & 0x007fffffu) != 0)
+            expect = 0x7fc00000u;
+         assert(carrier[v * 8 + 4 + lane] == expect);
+      }
+   }
+   for (uint32_t i = 24; i < CARRIER_DWORDS; i++)
+      assert(carrier[i] == CANARY);
+
+   /* One dword short of three eight-dword records refuses whole. */
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute(&job, &stream, 0, 3, carrier, 23) ==
+          -ENOSPC);
+   for (uint32_t i = 0; i < CARRIER_DWORDS; i++)
+      assert(carrier[i] == CANARY);
 }
 
 static void test_execute_refusals_no_partial_write(void)
@@ -588,6 +679,7 @@ int main(void)
    test_dp4_order_and_broadcast();
    test_mov_preserves_nan_payload();
    test_validation_refusals();
+   test_varying_store_records();
    test_execute_refusals_no_partial_write();
    test_determinism();
    printf("r300_cpu_vertex_job_test: all cases pass\n");

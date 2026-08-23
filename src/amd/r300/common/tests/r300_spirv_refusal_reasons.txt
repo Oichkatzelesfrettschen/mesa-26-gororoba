@@ -116,3 +116,10 @@ vertex program exceeds the 16-temp file
 vertex program exceeds the constant file
 vertex program exceeds the instruction budget
 workgroup shared memory
+fragment input outside varying 0 as vec4
+more than one fragment input
+vertex varying outside location 0
+more than one vertex varying output
+second varying store
+fragment program outside the varying pass-through
+vertex varying output left unwritten

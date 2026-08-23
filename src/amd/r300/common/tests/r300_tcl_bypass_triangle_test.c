@@ -16,6 +16,7 @@
 #include "r300_reg.h"
 #include "r300_tcl_bypass_triangle.h"
 #include "tests/r300_retained_route_digests.h"
+#include "tests/r300_varying_cell_digests.h"
 
 #include "util/macros.h"
 #include "util/mesa-blake3.h"
@@ -40,7 +41,12 @@ struct tracker {
    bool ext_nonidentity;
    uint32_t draw_vf_cntl;
    unsigned draw_count;
-   unsigned reloc_nop_count;
+   unsigned reloc_nop_count;   /* The varying cell's additional registers and the vertex-array word. */
+   uint32_t psc0, vsm_vtx_assm, rs_count, rs_inst_count, rs_ip0, rs_inst0;
+   bool psc0_seen, vsm_vtx_assm_seen, rs_count_seen, rs_inst_count_seen,
+      rs_ip0_seen, rs_inst0_seen;
+   uint32_t vbpntr_size_stride;
+   bool vbpntr_seen;
 };
 
 static void
@@ -84,6 +90,24 @@ track(struct tracker *t, const uint32_t *ib, uint32_t count)
                if (value != 0xF688F688u)
                   t->ext_nonidentity = true;
                t->ext_seen_mask |= 1u << ((r - 0x21E0) >> 2);
+            } else if (r == R300_VAP_PROG_STREAM_CNTL_0) {
+               t->psc0 = value;
+               t->psc0_seen = true;
+            } else if (r == R300_VAP_VSM_VTX_ASSM) {
+               t->vsm_vtx_assm = value;
+               t->vsm_vtx_assm_seen = true;
+            } else if (r == R300_RS_COUNT) {
+               t->rs_count = value;
+               t->rs_count_seen = true;
+            } else if (r == R300_RS_INST_COUNT) {
+               t->rs_inst_count = value;
+               t->rs_inst_count_seen = true;
+            } else if (r == R300_RS_IP_0) {
+               t->rs_ip0 = value;
+               t->rs_ip0_seen = true;
+            } else if (r == R300_RS_INST_0) {
+               t->rs_inst0 = value;
+               t->rs_inst0_seen = true;
             }
          }
       } else if (type == 3) {
@@ -93,6 +117,9 @@ track(struct tracker *t, const uint32_t *ib, uint32_t count)
             t->draw_count++;
          } else if (op == 0x1000) {
             t->reloc_nop_count++;
+         } else if (op == R300_PACKET3_3D_LOAD_VBPNTR) {
+            t->vbpntr_size_stride = ib[i + 2];
+            t->vbpntr_seen = true;
          }
       } else {
          assert(!"unexpected packet type");
@@ -826,10 +853,274 @@ test_extent_emit_deviates_in_scissor_words_alone(void)
    r300_tcl_bypass_triangle_release(&reference);
 }
 
+/* The varying cell: the position-only cell's contract, target, and draw
+ * over position-plus-varying records.  Its stream declares the tuple the
+ * kernel's TCL-bypass vertex-output check proves -- position plus one
+ * four-component texture coordinate, VAP_VTX_SIZE 8, an all-identity
+ * two-element PSC list whose second element lands in the
+ * texture-coordinate-0 vector -- routes the varying through RS_IP_0 /
+ * RS_INST_0 to US input 0, fetches 32-byte records, and carries the
+ * pass-through fragment binary; its size and digest pin the cell the
+ * attended surface submits.
+ */
+static void
+test_varying_cell_tuple_and_digest_are_pinned(void)
+{
+   struct r300_tcl_bypass_triangle_ib cell;
+   assert(r300_tcl_bypass_triangle_varying_reference_emit(&cell) == 0);
+   assert(cell.ib_size_dwords == R300_VARYING_CELL_IB_DWORDS);
+   char digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, digest);
+   assert(strcmp(digest, R300_VARYING_CELL_IB_BLAKE3) == 0);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
+   struct tracker t;
+   memset(&t, 0, sizeof(t));
+   track(&t, cell.ib, cell.ib_size_dwords);
+   assert(t.cntl_status_seen && (t.cntl_status & (1u << 8)));
+   assert(t.fmt0_seen && t.fmt0 == 0x1);
+   assert(t.fmt1_seen && t.fmt1 == R300_VAP_OUTPUT_VTX_FMT_1__4_COMPONENTS);
+   assert(t.vtx_size_seen && t.vtx_size == 8);
+   assert(t.ext_seen_mask == 0xff && !t.ext_nonidentity);
+   /* Two FLOAT_4 elements: vector 0, then vector 6 terminating the
+    * list; the summed identity fetch of eight dwords equals VTX_SIZE. */
+   assert(t.psc0_seen &&
+          t.psc0 == ((R300_DATA_TYPE_FLOAT_4 |
+                      (0 << R300_DST_VEC_LOC_SHIFT)) |
+                     ((R300_DATA_TYPE_FLOAT_4 |
+                       (6 << R300_DST_VEC_LOC_SHIFT) | R300_LAST_VEC)
+                      << 16)));
+   assert(t.vsm_vtx_assm_seen &&
+          t.vsm_vtx_assm == (R300_INPUT_CNTL_POS | R300_INPUT_CNTL_TC0));
+   assert(t.rs_count_seen &&
+          t.rs_count == (R300_IT_COUNT(4) | R300_IC_COUNT(0) | R300_HIRES_EN));
+   assert(t.rs_inst_count_seen && t.rs_inst_count == 0);
+   assert(t.rs_ip0_seen &&
+          t.rs_ip0 == (R300_RS_TEX_PTR(0) | R300_RS_SEL_S(R300_RS_SEL_C0) |
+                       R300_RS_SEL_T(R300_RS_SEL_C1) |
+                       R300_RS_SEL_R(R300_RS_SEL_C2) |
+                       R300_RS_SEL_Q(R300_RS_SEL_C3)));
+   assert(t.rs_inst0_seen &&
+          t.rs_inst0 == (R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
+                         R300_RS_INST_TEX_ADDR(0)));
+   assert(t.vbpntr_seen &&
+          t.vbpntr_size_stride ==
+             (R300_VBPNTR_SIZE0(32) | R300_VBPNTR_STRIDE0(32)));
+   assert(t.draw_count == 1 && (t.draw_vf_cntl >> 16) == 3);
+
+   /* The position-only reference keeps its retained identity beside the
+    * varying cell: the two are distinct cells from one emitter. */
+   struct r300_tcl_bypass_triangle_ib reference;
+   assert(r300_tcl_bypass_triangle_reference_emit(&reference) == 0);
+   assert(reference.ib_size_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
+   char reference_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(reference.ib, reference.ib_size_dwords,
+                               reference_digest);
+   assert(strcmp(reference_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
+   assert(strcmp(reference_digest, digest) != 0);
+   r300_tcl_bypass_triangle_release(&reference);
+   r300_tcl_bypass_triangle_release(&cell);
+}
+
+/* The varying extent family holds the position-only family's invariant:
+ * the maximum extent is the varying reference byte for byte, and every
+ * other extent deviates in the two scissor-family payloads alone.
+ */
+static void
+test_varying_extent_emit_deviates_in_scissor_words_alone(void)
+{
+   struct r300_tcl_bypass_triangle_ib reference;
+   assert(r300_tcl_bypass_triangle_varying_reference_emit(&reference) == 0);
+   struct r300_tcl_bypass_triangle_ib anchor;
+   assert(r300_tcl_bypass_triangle_varying_extent_emit(
+             R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+             &anchor) == 0);
+   assert(anchor.ib_size_dwords == reference.ib_size_dwords);
+   assert(memcmp(anchor.ib, reference.ib,
+                 reference.ib_size_dwords * sizeof(uint32_t)) == 0);
+   r300_tcl_bypass_triangle_release(&anchor);
+
+   const uint32_t reference_br =
+      ((R300_TRIANGLE_TARGET_WIDTH - 1 + R300_SCISSORS_OFFSET)
+       << R300_SCISSORS_X_SHIFT) |
+      ((R300_TRIANGLE_TARGET_HEIGHT - 1 + R300_SCISSORS_OFFSET)
+       << R300_SCISSORS_Y_SHIFT);
+   static const uint32_t extents[][2] = { { 1, 1 }, { 17, 33 }, { 64, 1 } };
+   for (unsigned i = 0; i < ARRAY_SIZE(extents); i++) {
+      const uint32_t extent_br =
+         ((extents[i][0] - 1 + R300_SCISSORS_OFFSET)
+          << R300_SCISSORS_X_SHIFT) |
+         ((extents[i][1] - 1 + R300_SCISSORS_OFFSET)
+          << R300_SCISSORS_Y_SHIFT);
+      struct r300_tcl_bypass_triangle_ib cell;
+      assert(r300_tcl_bypass_triangle_varying_extent_emit(
+                extents[i][0], extents[i][1], &cell) == 0);
+      assert(cell.ib_size_dwords == reference.ib_size_dwords);
+      uint32_t deviating = 0;
+      for (uint32_t d = 0; d < cell.ib_size_dwords; d++) {
+         if (cell.ib[d] != reference.ib[d]) {
+            assert(reference.ib[d] == reference_br);
+            assert(cell.ib[d] == extent_br);
+            deviating++;
+         }
+      }
+      assert(deviating == 2);
+      r300_tcl_bypass_triangle_release(&cell);
+   }
+   struct r300_tcl_bypass_triangle_ib refused;
+   assert(r300_tcl_bypass_triangle_varying_extent_emit(0, 32, &refused) ==
+          -EINVAL);
+   assert(r300_tcl_bypass_triangle_varying_extent_emit(
+             R300_TRIANGLE_TARGET_WIDTH + 1, 32, &refused) == -EINVAL);
+   r300_tcl_bypass_triangle_release(&reference);
+}
+
+/* Edge function of (a, b) at p, the oracle's own arithmetic. */
+static float
+edge(const float *a, const float *b, float px, float py)
+{
+   return (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0]);
+}
+
+static uint32_t
+unorm8(float v)
+{
+   if (!(v > 0.0f))
+      return 0;
+   if (v >= 1.0f)
+      return 255;
+   return (uint32_t)(v * 255.0f + 0.5f);
+}
+
+/* Fills a 64x64 sentinel target with the analytic gradient -- the
+ * barycentric interpolation of the reference varying colors at every
+ * pixel center inside the window-space triangle -- with each channel
+ * offset by bias bytes (clamped), and the canary row at the sentinel.
+ */
+static void
+render_gradient(uint32_t *pixels, int bias)
+{
+   const float *v0 = &r300_tcl_bypass_triangle_vertices[0];
+   const float *v1 = &r300_tcl_bypass_triangle_vertices[4];
+   const float *v2 = &r300_tcl_bypass_triangle_vertices[8];
+   const float area = edge(v0, v1, v2[0], v2[1]);
+   for (uint32_t i = 0; i < R300_TRIANGLE_COLOR_BYTES / 4; i++)
+      pixels[i] = R300_TRIANGLE_COLOR_SENTINEL;
+   for (uint32_t y = 0; y < R300_TRIANGLE_TARGET_HEIGHT; y++) {
+      for (uint32_t x = 0; x < R300_TRIANGLE_TARGET_WIDTH; x++) {
+         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+         const float w0 = edge(v1, v2, px, py) / area;
+         const float w1 = edge(v2, v0, px, py) / area;
+         const float w2 = 1.0f - w0 - w1;
+         if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f)
+            continue;
+         uint32_t dword = 0;
+         static const unsigned channel_of_byte[4] = { 2, 1, 0, 3 };
+         for (unsigned byte = 0; byte < 4; byte++) {
+            const unsigned c = channel_of_byte[byte];
+            const float value =
+               w0 * r300_tcl_bypass_triangle_varying_colors[c] +
+               w1 * r300_tcl_bypass_triangle_varying_colors[4 + c] +
+               w2 * r300_tcl_bypass_triangle_varying_colors[8 + c];
+            int b = (int)unorm8(value) + bias;
+            b = b < 0 ? 0 : b > 255 ? 255 : b;
+            dword |= (uint32_t)b << (8 * byte);
+         }
+         pixels[y * R300_TRIANGLE_TARGET_PITCH_PIXELS + x] = dword;
+      }
+   }
+}
+
+/* The varying oracle's calibration: the analytic gradient passes with
+ * zero deviation; a gradient biased by the tolerance passes and reports
+ * it; one byte past the tolerance fails the interior; the constant draw
+ * color -- the position-only cell's output -- fails the interior, so a
+ * pipeline that dropped the varying cannot pass this oracle; an
+ * unexecuted target reports no execution; and the sentinel-filled
+ * exterior and canary rules carry over.
+ */
+static void
+test_varying_oracle_calibration(void)
+{
+   static uint32_t pixels[R300_TRIANGLE_COLOR_BYTES / 4];
+   struct r300_triangle_oracle_verdict v;
+
+   render_gradient(pixels, 0);
+   r300_tcl_bypass_triangle_varying_extent_oracle(
+      R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+      r300_tcl_bypass_triangle_varying_colors, pixels, sizeof(pixels), &v);
+   assert(v.executed && v.interior_pass && v.exterior_pass && v.canary_pass);
+   assert(v.interior_samples == 4 && v.exterior_samples > 0);
+   assert(v.interior_max_deviation == 0);
+
+   render_gradient(pixels, (int)R300_TRIANGLE_VARYING_ORACLE_TOLERANCE);
+   r300_tcl_bypass_triangle_varying_extent_oracle(
+      R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+      r300_tcl_bypass_triangle_varying_colors, pixels, sizeof(pixels), &v);
+   assert(v.interior_pass &&
+          v.interior_max_deviation == R300_TRIANGLE_VARYING_ORACLE_TOLERANCE);
+
+   render_gradient(pixels, -(int)R300_TRIANGLE_VARYING_ORACLE_TOLERANCE - 1);
+   r300_tcl_bypass_triangle_varying_extent_oracle(
+      R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+      r300_tcl_bypass_triangle_varying_colors, pixels, sizeof(pixels), &v);
+   assert(!v.interior_pass && v.exterior_pass && v.canary_pass);
+   assert(v.interior_max_deviation ==
+          R300_TRIANGLE_VARYING_ORACLE_TOLERANCE + 1);
+
+   /* The constant draw color over the whole triangle. */
+   render_gradient(pixels, 0);
+   for (uint32_t i = 0; i < R300_TRIANGLE_COLOR_BYTES / 4; i++)
+      if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL)
+         pixels[i] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
+   r300_tcl_bypass_triangle_varying_extent_oracle(
+      R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+      r300_tcl_bypass_triangle_varying_colors, pixels, sizeof(pixels), &v);
+   assert(v.executed && !v.interior_pass && v.exterior_pass &&
+          v.canary_pass);
+
+   /* Unexecuted: the sentinel everywhere. */
+   for (uint32_t i = 0; i < R300_TRIANGLE_COLOR_BYTES / 4; i++)
+      pixels[i] = R300_TRIANGLE_COLOR_SENTINEL;
+   r300_tcl_bypass_triangle_varying_extent_oracle(
+      R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+      r300_tcl_bypass_triangle_varying_colors, pixels, sizeof(pixels), &v);
+   assert(!v.executed && !v.interior_pass && v.exterior_pass &&
+          v.canary_pass);
+
+   /* A disturbed canary row fails whatever the interior holds. */
+   render_gradient(pixels, 0);
+   pixels[R300_TRIANGLE_TARGET_PITCH_PIXELS * R300_TRIANGLE_TARGET_HEIGHT] =
+      0;
+   r300_tcl_bypass_triangle_varying_extent_oracle(
+      R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+      r300_tcl_bypass_triangle_varying_colors, pixels, sizeof(pixels), &v);
+   assert(v.interior_pass && !v.canary_pass);
+
+   /* An inadmissible extent fails closed with zero samples. */
+   r300_tcl_bypass_triangle_varying_extent_oracle(
+      0, R300_TRIANGLE_TARGET_HEIGHT, r300_tcl_bypass_triangle_varying_colors,
+      pixels, sizeof(pixels), &v);
+   assert(!v.interior_pass && v.interior_samples == 0);
+
+   /* The varying reference payload is the positions plus these colors. */
+   for (unsigned i = 0; i < 3; i++) {
+      assert(memcmp(&r300_tcl_bypass_triangle_varying_vertices[i * 8],
+                    &r300_tcl_bypass_triangle_vertices[i * 4],
+                    4 * sizeof(float)) == 0);
+      assert(memcmp(&r300_tcl_bypass_triangle_varying_vertices[i * 8 + 4],
+                    &r300_tcl_bypass_triangle_varying_colors[i * 4],
+                    4 * sizeof(float)) == 0);
+   }
+}
+
 int
 main(void)
 {
    test_contract_cell_size_and_digest_are_pinned();
+   test_varying_cell_tuple_and_digest_are_pinned();
+   test_varying_extent_emit_deviates_in_scissor_words_alone();
+   test_varying_oracle_calibration();
    test_emit_into_holds_its_capacity();
    test_emit_into_does_not_own_caller_storage();
    test_reloc_site_mutations_refuse();

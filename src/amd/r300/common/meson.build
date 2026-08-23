@@ -699,6 +699,15 @@ test(
   args : [r300_triangle_manifest],
   suite : ['r300'],
 )
+# The varying cell through the same parser and tracker: the two-element
+# PSC list, VAP_VTX_SIZE 8, the TEX0 output declaration, and the 32-byte
+# vertex-array record all inside the vertex-output check's proven scope.
+test(
+  'r300-varying-cell-cs-track-replay',
+  files('tests/run_cs_track_replay.sh')[0],
+  args : [r300_triangle_manifest, '--varying'],
+  suite : ['r300'],
+)
 
 # The 2D solid-fill direct-write control cell: the emitter, its oracle,
 # the manifest writer, and the offline kernel-parser replay with the

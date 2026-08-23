@@ -25,6 +25,7 @@
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/tests/r300_fetched_route_digests.h"
 #include "amd/r300/common/tests/r300_retained_route_digests.h"
+#include "amd/r300/common/tests/r300_varying_cell_digests.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_ioctl.h"
 
 #include <assert.h>
@@ -112,6 +113,17 @@ enum arm {
    ARM_GPU_FETCHED_OUT_OF_DOMAIN,
    ARM_GPU_FETCHED_OUT_OF_BOUNDS,
    ARM_GPU_FETCHED_ALIASED_SOURCE,
+   /* The computed-varying pipeline on the CPU route: the varying vertex
+    * and pass-through fragment modules record the varying cell (its
+    * digest the declared authorization), the deferred draw writes
+    * eight-dword records -- the transformed reference positions with
+    * the computed tint -- and the armed submit delivers; a varying
+    * vertex module bound with the constant fragment module, and the
+    * position-only vertex module bound with the pass-through fragment
+    * module, each refuse at pipeline creation. */
+   ARM_VARYING_ARMED,
+   ARM_VARYING_FRAGMENT_MISMATCH,
+   ARM_VARYING_MISSING,
 };
 
 
@@ -140,6 +152,9 @@ static const struct {
    { "gpu-fetched-out-of-domain", ARM_GPU_FETCHED_OUT_OF_DOMAIN },
    { "gpu-fetched-out-of-bounds", ARM_GPU_FETCHED_OUT_OF_BOUNDS },
    { "gpu-fetched-aliased-source", ARM_GPU_FETCHED_ALIASED_SOURCE },
+   { "varying-armed", ARM_VARYING_ARMED },
+   { "varying-fragment-mismatch", ARM_VARYING_FRAGMENT_MISMATCH },
+   { "varying-missing", ARM_VARYING_MISSING },
 };
 
 /* Injection over the transport's ioctl seam: the saved production table
@@ -353,6 +368,9 @@ run_arm(enum arm arm, const char *name)
        * fetched composition. */
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
              R300_RETAINED_GPU_ROUTE_IB_BLAKE3, 1);
+   } else if (arm == ARM_VARYING_ARMED) {
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", R300_VARYING_CELL_IB_BLAKE3,
+             1);
    } else if (fetched_arm) {
       /* The offline no-submit composition identity of the fetched route
        * over this arm's exact geometry: one-page source at offset zero,
@@ -618,12 +636,21 @@ run_arm(enum arm arm, const char *name)
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
              },
              NULL, &layout) == VK_SUCCESS);
-   VkShaderModule vs = make_module(device, r3v_reference_vertex_spirv,
-                                   sizeof(r3v_reference_vertex_spirv));
-   VkShaderModule fs = make_module(device, r3v_reference_fragment_spirv,
-                                   sizeof(r3v_reference_fragment_spirv));
+   const bool varying_vs =
+      arm == ARM_VARYING_ARMED || arm == ARM_VARYING_FRAGMENT_MISMATCH;
+   const bool varying_fs = arm == ARM_VARYING_ARMED || arm == ARM_VARYING_MISSING;
+   VkShaderModule vs =
+      varying_vs ? make_module(device, r3v_reference_vertex_varying_spirv,
+                               sizeof(r3v_reference_vertex_varying_spirv))
+                 : make_module(device, r3v_reference_vertex_spirv,
+                               sizeof(r3v_reference_vertex_spirv));
+   VkShaderModule fs =
+      varying_fs ? make_module(device, r3v_reference_fragment_varying_spirv,
+                               sizeof(r3v_reference_fragment_varying_spirv))
+                 : make_module(device, r3v_reference_fragment_spirv,
+                               sizeof(r3v_reference_fragment_spirv));
    VkPipeline pipeline = VK_NULL_HANDLE;
-   assert(vkCreateGraphicsPipelines(
+   const VkResult created = vkCreateGraphicsPipelines(
              device, VK_NULL_HANDLE, 1,
              &(VkGraphicsPipelineCreateInfo){
                 .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -721,7 +748,16 @@ run_arm(enum arm arm, const char *name)
                 .layout = layout,
                 .renderPass = pass,
              },
-             NULL, &pipeline) == VK_SUCCESS);
+             NULL, &pipeline);
+   if (arm == ARM_VARYING_FRAGMENT_MISMATCH || arm == ARM_VARYING_MISSING) {
+      /* The stage pair names two fragment shapes for one job, so the
+       * pipeline refuses and nothing records. */
+      assert(created == R3V_NATIVE_REFUSAL_RESULT);
+      assert(pipeline == VK_NULL_HANDLE);
+      printf("%s: pipeline refused (%d)\n", name, created);
+      return 0;
+   }
+   assert(created == VK_SUCCESS);
 
    VkCommandPool pool = VK_NULL_HANDLE;
    assert(vkCreateCommandPool(
@@ -796,7 +832,26 @@ run_arm(enum arm arm, const char *name)
    struct r3v_native_cmd_buffer *native_cmd =
       r3v_native_cmd_buffer_from_handle(cmd);
    assert(native_cmd->ib_size_dwords != 0 && native_cmd->owned_carrier);
-   uint32_t carrier_before[R300_TRIANGLE_VERTEX_DWORDS];
+   /* The recorded cell is the varying cell exactly when the pipeline
+    * carries the varying: its dword count and digest are the pinned
+    * identity the arm declared. */
+   {
+      char recorded_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+      r300_triangle_ib_digest_hex(native_cmd->ib, native_cmd->ib_size_dwords,
+                                  recorded_digest);
+      if (arm == ARM_VARYING_ARMED) {
+         assert(native_cmd->ib_size_dwords == R300_VARYING_CELL_IB_DWORDS);
+         assert(strcmp(recorded_digest, R300_VARYING_CELL_IB_BLAKE3) == 0);
+      } else {
+         assert(native_cmd->ib_size_dwords ==
+                R300_RETAINED_CPU_ROUTE_IB_DWORDS);
+         assert(strcmp(recorded_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) ==
+                0);
+      }
+   }
+   /* The carrier snapshots cover the varying record span; the
+    * position-only arms leave the tail untouched. */
+   uint32_t carrier_before[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
    {
       void *carrier_map = NULL;
       assert(radeon_drm_vk_bo_map(&native_device->drm,
@@ -836,7 +891,7 @@ run_arm(enum arm arm, const char *name)
    if (arm == ARM_RETENTION_UNWRITABLE)
       assert(chmod(manifest_dir, 0700) == 0);
 
-   uint32_t carrier_after[R300_TRIANGLE_VERTEX_DWORDS];
+   uint32_t carrier_after[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
    {
       void *carrier_map = NULL;
       assert(radeon_drm_vk_bo_map(&native_device->drm,
@@ -853,7 +908,10 @@ run_arm(enum arm arm, const char *name)
       carrier_is_poison &= carrier_after[i] == R300_R2VB_PRODUCER_POISON_DWORD;
    const bool carrier_is_reference =
       memcmp(carrier_after, r300_tcl_bypass_triangle_vertices,
-             sizeof(carrier_after)) == 0;
+             sizeof(r300_tcl_bypass_triangle_vertices)) == 0;
+   const bool carrier_is_varying_reference =
+      memcmp(carrier_after, r300_tcl_bypass_triangle_varying_vertices,
+             sizeof(r300_tcl_bypass_triangle_varying_vertices)) == 0;
    /* The robust delivery: the two in-bounds records transform as the
     * reference, and the third reads (0, 0, 0, 1), the window center. */
    uint32_t robust_expected[R300_TRIANGLE_VERTEX_DWORDS];
@@ -866,7 +924,7 @@ run_arm(enum arm arm, const char *name)
       memcpy(&robust_expected[8], center, sizeof(center));
    }
    const bool carrier_is_robust =
-      memcmp(carrier_after, robust_expected, sizeof(carrier_after)) == 0;
+      memcmp(carrier_after, robust_expected, sizeof(robust_expected)) == 0;
    const bool token = file_present(manifest_dir, "attempt.token");
 
    printf("%s: result=%d status=%d cs_ioctls=%u failed_mmaps=%u "
@@ -874,11 +932,13 @@ run_arm(enum arm arm, const char *name)
           name, submitted, status, cs_ioctls, failed_mmaps,
           carrier_untouched
              ? "untouched"
-             : (carrier_is_reference
-                   ? "reference"
-                   : (carrier_is_robust
-                         ? "robust"
-                         : (carrier_is_poison ? "poison" : "other"))),
+             : (carrier_is_varying_reference
+                   ? "varying"
+                   : (carrier_is_reference
+                         ? "reference"
+                         : (carrier_is_robust
+                               ? "robust"
+                               : (carrier_is_poison ? "poison" : "other")))),
           token ? "spent" : "unspent");
    fflush(stdout);
 
@@ -890,6 +950,24 @@ run_arm(enum arm arm, const char *name)
       assert(carrier_is_reference);
       check_target(device, &target, true, name);
       assert(token);
+      break;
+   case ARM_VARYING_ARMED:
+      /* The CPU route executed the varying job: each record is the
+       * transformed reference position followed by the computed tint,
+       * the payload the varying oracle's vertex colors name. */
+      assert(submitted == VK_SUCCESS);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(cs_ioctls == 1);
+      assert(carrier_is_varying_reference);
+      assert(native_cmd->cell_kind == R3V_NATIVE_CELL_KIND_TRIANGLE);
+      assert(native_cmd->reference_count == R300_TRIANGLE_SLOT_COUNT);
+      check_target(device, &target, true, name);
+      assert(token);
+      break;
+   case ARM_VARYING_FRAGMENT_MISMATCH:
+   case ARM_VARYING_MISSING:
+      /* Returned above at pipeline creation. */
+      assert(!"unreachable");
       break;
    case ARM_ROBUST_OOB_ENABLED:
       assert(submitted == VK_SUCCESS);
