@@ -134,13 +134,16 @@ reference pass), offline kernel-parser replay with known-bad arms
 (`r300-compute-identity-carrier-cs-track-replay`), and the drm-shim arms
 (`r3v-native-compute-gpu-route-*`: the composed route, the gate-off CPU
 route, the domain, alias, and ceiling refusals, the gate table, the
-comparator's pre-seeded agreement, and the quarantine refusal); no attended
-RS482 delivery yet (the attended surface is
-`r3v_native_attended_compute_identity` with
-`docs/hardware/r3v-native-attended-compute-identity-procedure.md` and the
-arming runner's `--compute-identity` mode; its first delivery is the
-operator-armed run that procedure names), so the
-route advertises nothing and stays behind its gate. `r300-compute-verb-ledger`
+comparator's pre-seeded agreement, and the quarantine refusal), and one
+attended RS482 delivery through `r3v_native_attended_compute_identity`
+under `docs/hardware/r3v-native-attended-compute-identity-procedure.md`
+(steinmarder-r300 bundle
+`r3v-native-compute-identity-carrier-cell-first-delivery-rs482`:
+`TARGET_DELIVERED`, the output equal to the input over all 256 bytes,
+dmesg delta zero), so the identity verb's GPU route is silicon-delivered
+for that shape; the route stays behind its gate, and the compute queue
+bit waits on the verb surface the advertised-surface audit requires.
+`r300-compute-verb-ledger`
 pins the rows and calibrates the checker. The
 extent gap is closed: `vkCreateImage` accepts every extent inside the
 reported 64x64 maximum, and the cell family realizes it -- in TCL
