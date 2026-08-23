@@ -9,6 +9,7 @@
 #ifndef R300_VERTEX_JOB_H
 #define R300_VERTEX_JOB_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* The register file is vec4-shaped like the VAP PVS it stands in for;
@@ -52,6 +53,11 @@ enum r300_vertex_job_opcode {
    /* carrier vec4 of the current vertex = temp[src0].  Exactly one
     * per job, as its final instruction. */
    R300_VERTEX_JOB_OP_STORE_POSITION,
+   /* varying vec4 of the current vertex = temp[src0]: the second
+    * record vector, the TEX0 varying the consumer's RS routes to US
+    * input 0.  At most one per job, before the position store; a job
+    * that carries it writes eight-dword records. */
+   R300_VERTEX_JOB_OP_STORE_VARYING,
 };
 
 struct r300_vertex_job_instruction {
@@ -71,5 +77,31 @@ struct r300_vertex_job {
    uint32_t constant_count;
    uint32_t constants[R300_VERTEX_JOB_MAX_CONSTANTS][4];
 };
+
+/* The carrier record the job writes per vertex: the position vec4, then
+ * the varying vec4 when the job stores one.  The VAP fetch of the same
+ * stream declares the record as one FLOAT_4 element per vector, so the
+ * dword count here is the VAP_VTX_SIZE the consumer programs.
+ */
+#define R300_VERTEX_JOB_POSITION_DWORDS 4u
+#define R300_VERTEX_JOB_VARYING_DWORDS 4u
+
+static inline bool
+r300_vertex_job_has_varying(const struct r300_vertex_job *job)
+{
+   for (uint32_t i = 0; i < job->instruction_count; i++) {
+      if (job->instructions[i].opcode == R300_VERTEX_JOB_OP_STORE_VARYING)
+         return true;
+   }
+   return false;
+}
+
+static inline uint32_t
+r300_vertex_job_record_dwords(const struct r300_vertex_job *job)
+{
+   return R300_VERTEX_JOB_POSITION_DWORDS +
+          (r300_vertex_job_has_varying(job) ? R300_VERTEX_JOB_VARYING_DWORDS
+                                             : 0u);
+}
 
 #endif /* R300_VERTEX_JOB_H */

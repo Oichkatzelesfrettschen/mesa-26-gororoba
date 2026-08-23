@@ -82,6 +82,7 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
       return -EINVAL;
 
    uint32_t written = 0;
+   bool varying_stored = false;
    for (uint32_t i = 0; i < job->instruction_count; i++) {
       const struct r300_vertex_job_instruction *inst = &job->instructions[i];
       const bool last = i + 1 == job->instruction_count;
@@ -113,11 +114,21 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
              !(written & (1u << inst->src0)))
             return -EINVAL;
          continue;
+      case R300_VERTEX_JOB_OP_STORE_VARYING:
+         /* One varying at most, stored from a written register ahead
+          * of the final position store; the record layout derives from
+          * its presence alone. */
+         if (last || varying_stored ||
+             inst->src0 >= R300_VERTEX_JOB_MAX_TEMPS ||
+             !(written & (1u << inst->src0)))
+            return -EINVAL;
+         varying_stored = true;
+         continue;
       default:
          return -EINVAL;
       }
-      /* The one store is the final instruction, so everything else is
-       * a register write and its sources must already hold values. */
+      /* The stores write the carrier alone, so everything else is a
+       * register write and its sources must already hold values. */
       if (last || inst->dst >= R300_VERTEX_JOB_MAX_TEMPS)
          return -EINVAL;
       const uint8_t srcs[3] = { inst->src0, inst->src1, inst->src2 };
@@ -144,7 +155,8 @@ static int execute_guard(const struct r300_vertex_job *job,
       return error;
    if (!stream || !stream->data || !carrier || vertex_count == 0)
       return -EINVAL;
-   if ((uint64_t)vertex_count * 4 > carrier_dwords)
+   if ((uint64_t)vertex_count * r300_vertex_job_record_dwords(job) >
+       carrier_dwords)
       return -ENOSPC;
 
    /* Whole-range bound up front, so the per-vertex gathers below cannot
@@ -184,7 +196,9 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
    if (error)
       return error;
 
+   const uint32_t record_dwords = r300_vertex_job_record_dwords(job);
    for (uint32_t v = 0; v < vertex_count; v++) {
+      uint32_t *record = &carrier[(uint64_t)v * record_dwords];
       uint32_t temps[R300_VERTEX_JOB_MAX_TEMPS][4];
       uint32_t input[4];
       error = r300_cpu_vertex_gather(job->input_format_id, stream,
@@ -264,8 +278,11 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
             break;
          }
          case R300_VERTEX_JOB_OP_STORE_POSITION:
-            memcpy(&carrier[(uint64_t)v * 4], temps[inst->src0],
-                   4 * sizeof(uint32_t));
+            memcpy(record, temps[inst->src0], 4 * sizeof(uint32_t));
+            break;
+         case R300_VERTEX_JOB_OP_STORE_VARYING:
+            memcpy(&record[R300_VERTEX_JOB_POSITION_DWORDS],
+                   temps[inst->src0], 4 * sizeof(uint32_t));
             break;
          }
       }
@@ -344,7 +361,9 @@ execute_simd(const struct r300_vertex_job *job,
    if (error)
       return error;
 
+   const uint32_t record_dwords = r300_vertex_job_record_dwords(job);
    for (uint32_t v = 0; v < vertex_count; v++) {
+      uint32_t *record = &carrier[(uint64_t)v * record_dwords];
       /* Registers stay 32-bit patterns; the unaligned integer loads and
        * stores move NaN payloads, denormals, and signed zeros verbatim,
        * and each packed operator rounds per lane exactly as the scalar
@@ -420,8 +439,12 @@ execute_simd(const struct r300_vertex_job *job,
             break;
          }
          case R300_VERTEX_JOB_OP_STORE_POSITION:
-            _mm_storeu_si128((__m128i *)&carrier[(uint64_t)v * 4],
-                             temps[inst->src0]);
+            _mm_storeu_si128((__m128i *)record, temps[inst->src0]);
+            break;
+         case R300_VERTEX_JOB_OP_STORE_VARYING:
+            _mm_storeu_si128(
+               (__m128i *)&record[R300_VERTEX_JOB_POSITION_DWORDS],
+               temps[inst->src0]);
             break;
          }
       }

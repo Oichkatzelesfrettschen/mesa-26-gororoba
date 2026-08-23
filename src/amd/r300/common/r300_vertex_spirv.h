@@ -22,8 +22,10 @@
  * subset is straight-line vec4 code over one location-0 vec4 float
  * input: loads of that input, vec4 float composite constants, FAdd,
  * FMul, GLSL.std.450 Fma (fused), Dot rejoined only by its own
- * four-way replicate, and exactly one full store of the Position
- * builtin as the program's result.  Descriptors, push constants,
+ * four-way replicate, exactly one full store of the Position builtin
+ * as the program's result, and at most one full store of a location-0
+ * vec4 output, the varying the job stores ahead of the position.  A
+ * declared varying must be stored.  Descriptors, push constants,
  * control flow, non-32-bit types, and every opcode outside the
  * recognized grammar refuse with *reason naming the construct; the job
  * leaves with input_format_id unassigned and is unspecified on
@@ -46,5 +48,17 @@ bool r300_fragment_constant_color_from_spirv(const uint32_t *words,
                                              const char *entry_name,
                                              uint32_t color_bits[4],
                                              const char **reason);
+
+/* Reads an admitted SPIR-V fragment module as the varying pass-through:
+ * a straight-line Fragment entry function whose single store writes
+ * the loaded location-0 vec4 input to the location-0 output unchanged.
+ * A constant-color module refuses here and a pass-through module
+ * refuses in r300_fragment_constant_color_from_spirv, so a pipeline
+ * names the fragment shape it binds.
+ */
+bool r300_fragment_varying_passthrough_from_spirv(const uint32_t *words,
+                                                  size_t word_count,
+                                                  const char *entry_name,
+                                                  const char **reason);
 
 #endif /* R300_VERTEX_SPIRV_H */

@@ -106,7 +106,13 @@ enum id_kind {
    ID_VAR_INPUT_POS,
    ID_VAR_OUTPUT_PERVERTEX,
    ID_VAR_OUTPUT_POS_DIRECT,
+   /* The vertex module's location-0 vec4 output, the one varying the
+    * carrier record carries beside the position. */
+   ID_VAR_OUTPUT_VARYING,
    ID_VAR_OUTPUT_COLOR,
+   /* The fragment module's location-0 vec4 input, the interpolated
+    * varying. */
+   ID_VAR_INPUT_VARYING,
    ID_VAR_FUNCTION,
    ID_FUNCTION,
    ID_LABEL,
@@ -114,6 +120,19 @@ enum id_kind {
    ID_PTR_POSITION,
    ID_VAL_VEC4,
    ID_VAL_SCALAR_BROADCAST,
+   /* The fragment module's loaded varying: the only value the
+    * pass-through program stores. */
+   ID_VAL_VARYING,
+};
+
+/* The fragment program shapes the two fragment admitters accept: one
+ * constant color, or the location-0 varying passed through unchanged.
+ * The vertex admitter carries neither.
+ */
+enum fragment_shape {
+   FRAGMENT_SHAPE_NONE = 0,
+   FRAGMENT_SHAPE_CONSTANT_COLOR,
+   FRAGMENT_SHAPE_VARYING_PASSTHROUGH,
 };
 
 struct id_info {
@@ -269,8 +288,9 @@ static bool struct_members_admit_pervertex(struct reader *r,
 static bool
 admit_module(const uint32_t *words, size_t word_count,
              struct id_info *ids, uint32_t bound, uint32_t exec_model,
-             const char *entry_name, struct r300_vertex_job *job,
-             uint32_t color_bits[4], const char **reason)
+             enum fragment_shape shape, const char *entry_name,
+             struct r300_vertex_job *job, uint32_t color_bits[4],
+             const char **reason)
 {
    struct reader reader = {
       .words = words,
@@ -289,13 +309,21 @@ admit_module(const uint32_t *words, size_t word_count,
    uint32_t entry_point = 0;
    uint32_t input_var = 0;
    uint32_t output_var = 0;
+   /* The vertex varying output and the fragment varying input; a
+    * module declares each at most once. */
+   uint32_t varying_var = 0;
 
-   /* Body state: the entry function's straight-line walk. */
+   /* Body state: the entry function's straight-line walk.  The
+    * position store is recorded and emitted after the walk, so the job
+    * keeps STORE_POSITION as its final instruction whatever order the
+    * module stores its outputs in; the varying store emits in place. */
    bool in_function = false;
    bool function_seen = false;
    bool label_seen = false;
    bool returned = false;
    bool stored = false;
+   bool varying_stored = false;
+   uint8_t position_src = 0;
 
    size_t at = 5;
    while (at < word_count) {
@@ -312,8 +340,12 @@ admit_module(const uint32_t *words, size_t word_count,
       /* The final output store ends the admitted body: only the
        * return, the function end, and line markers follow it, so a
        * module carrying work after its last store refuses rather than
-       * lowering to a job that discards it. */
-      if (stored && opcode != OP_RETURN && opcode != OP_FUNCTION_END &&
+       * lowering to a job that discards it.  A vertex module that
+       * declares a varying has two output stores, and the later of the
+       * two is the final one. */
+      const bool final_stored =
+         stored && (fragment || varying_var == 0 || varying_stored);
+      if (final_stored && opcode != OP_RETURN && opcode != OP_FUNCTION_END &&
           opcode != OP_LINE && opcode != OP_NO_LINE)
          return refuse(r, "instruction after the final output store");
 
@@ -589,8 +621,19 @@ admit_module(const uint32_t *words, size_t word_count,
             return refuse(r, "variable type outside a matching pointer");
          switch (storage_class) {
          case SC_INPUT:
-            if (fragment)
+            if (fragment && shape != FRAGMENT_SHAPE_VARYING_PASSTHROUGH)
                return refuse(r, "fragment shader reads an input");
+            if (fragment) {
+               if (!id_is(r, ptr->b, ID_TYPE_VEC4) ||
+                   !entry->has_location || entry->location != 0)
+                  return refuse(r,
+                                "fragment input outside varying 0 as vec4");
+               if (varying_var != 0)
+                  return refuse(r, "more than one fragment input");
+               entry->kind = ID_VAR_INPUT_VARYING;
+               varying_var = w[2];
+               break;
+            }
             if (!id_is(r, ptr->b, ID_TYPE_VEC4) || !entry->has_location ||
                 entry->location != 0)
                return refuse(r,
@@ -601,6 +644,18 @@ admit_module(const uint32_t *words, size_t word_count,
             input_var = w[2];
             break;
          case SC_OUTPUT:
+            if (!fragment && id_is(r, ptr->b, ID_TYPE_VEC4) &&
+                !entry->has_builtin && entry->has_location) {
+               /* The one varying: location 0, vec4, beside the
+                * position output. */
+               if (entry->location != 0)
+                  return refuse(r, "vertex varying outside location 0");
+               if (varying_var != 0)
+                  return refuse(r, "more than one vertex varying output");
+               entry->kind = ID_VAR_OUTPUT_VARYING;
+               varying_var = w[2];
+               break;
+            }
             if (output_var != 0)
                return refuse(r, "more than one shader output");
             if (fragment) {
@@ -703,6 +758,10 @@ admit_module(const uint32_t *words, size_t word_count,
                return false;
             entry->kind = ID_VAL_VEC4;
             entry->a = dst;
+         } else if (ptr->kind == ID_VAR_INPUT_VARYING) {
+            if (!id_is(r, w[1], ID_TYPE_VEC4))
+               return refuse(r, "load outside one vec4");
+            entry->kind = ID_VAL_VARYING;
          } else if (ptr->kind == ID_VAR_FUNCTION) {
             /* The variable forwards the value it holds. */
             const struct id_info *held = info(r, ptr->b);
@@ -741,20 +800,33 @@ admit_module(const uint32_t *words, size_t word_count,
                                   ptr->kind == ID_VAR_OUTPUT_POS_DIRECT)) {
             if (stored)
                return refuse(r, "second position store");
+            if (!value_temp(r, w[2], &position_src))
+               return false;
+            stored = true;
+         } else if (!fragment && ptr->kind == ID_VAR_OUTPUT_VARYING) {
+            if (varying_stored)
+               return refuse(r, "second varying store");
             uint8_t src;
             if (!value_temp(r, w[2], &src))
                return false;
-            if (!emit(r, R300_VERTEX_JOB_OP_STORE_POSITION, 0, src, 0, 0))
+            if (!emit(r, R300_VERTEX_JOB_OP_STORE_VARYING, 0, src, 0, 0))
                return false;
-            stored = true;
+            varying_stored = true;
          } else if (fragment && ptr->kind == ID_VAR_OUTPUT_COLOR) {
             if (stored)
                return refuse(r, "second color store");
-            if (value->kind != ID_CONST_VEC4)
-               return refuse(r,
-                             "fragment program outside one constant "
-                             "color");
-            memcpy(color_bits, value->vec, 4 * sizeof(uint32_t));
+            if (shape == FRAGMENT_SHAPE_VARYING_PASSTHROUGH) {
+               if (value->kind != ID_VAL_VARYING)
+                  return refuse(r,
+                                "fragment program outside the varying "
+                                "pass-through");
+            } else {
+               if (value->kind != ID_CONST_VEC4)
+                  return refuse(r,
+                                "fragment program outside one constant "
+                                "color");
+               memcpy(color_bits, value->vec, 4 * sizeof(uint32_t));
+            }
             stored = true;
          } else {
             return refuse(r, "store outside the admitted pointers");
@@ -872,13 +944,22 @@ admit_module(const uint32_t *words, size_t word_count,
    if (!stored)
       return refuse(r, fragment ? "missing color-0 store"
                                 : "missing position store");
+   /* A declared varying the program never writes would reach the
+    * interpolator undefined, so the shape refuses instead of lowering
+    * to a record with an unwritten vector. */
+   if (!fragment && varying_var != 0 && !varying_stored)
+      return refuse(r, "vertex varying output left unwritten");
+   if (!fragment &&
+       !emit(r, R300_VERTEX_JOB_OP_STORE_POSITION, 0, position_src, 0, 0))
+      return false;
    return true;
 }
 
 static bool
 admit_words(const uint32_t *words, size_t word_count, uint32_t exec_model,
-            const char *entry_name, struct r300_vertex_job *job,
-            uint32_t color_bits[4], const char **reason)
+            enum fragment_shape shape, const char *entry_name,
+            struct r300_vertex_job *job, uint32_t color_bits[4],
+            const char **reason)
 {
    *reason = "unrecognized module";
    if (words == NULL || word_count < 5 || entry_name == NULL)
@@ -902,7 +983,7 @@ admit_words(const uint32_t *words, size_t word_count, uint32_t exec_model,
       return false;
    }
    const bool admitted = admit_module(words, word_count, ids, bound,
-                                      exec_model, entry_name, job,
+                                      exec_model, shape, entry_name, job,
                                       color_bits, reason);
    free(ids);
    return admitted;
@@ -915,10 +996,11 @@ bool r300_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
 {
    memset(job, 0, sizeof(*job));
    uint32_t unused_color[4];
-   if (!admit_words(words, word_count, EXEC_MODEL_VERTEX, entry_name, job,
-                    unused_color, reason))
+   if (!admit_words(words, word_count, EXEC_MODEL_VERTEX,
+                    FRAGMENT_SHAPE_NONE, entry_name, job, unused_color,
+                    reason))
       return false;
-   /* The store emits last by construction; the caller assigns
+   /* The position store emits last by construction; the caller assigns
     * input_format_id and validates the finished job. */
    return true;
 }
@@ -931,6 +1013,20 @@ bool r300_fragment_constant_color_from_spirv(const uint32_t *words,
 {
    struct r300_vertex_job scratch;
    memset(&scratch, 0, sizeof(scratch));
-   return admit_words(words, word_count, EXEC_MODEL_FRAGMENT, entry_name, &scratch,
+   return admit_words(words, word_count, EXEC_MODEL_FRAGMENT,
+                      FRAGMENT_SHAPE_CONSTANT_COLOR, entry_name, &scratch,
                       color_bits, reason);
+}
+
+bool r300_fragment_varying_passthrough_from_spirv(const uint32_t *words,
+                                                  size_t word_count,
+                                                  const char *entry_name,
+                                                  const char **reason)
+{
+   struct r300_vertex_job scratch;
+   uint32_t unused_color[4];
+   memset(&scratch, 0, sizeof(scratch));
+   return admit_words(words, word_count, EXEC_MODEL_FRAGMENT,
+                      FRAGMENT_SHAPE_VARYING_PASSTHROUGH, entry_name,
+                      &scratch, unused_color, reason);
 }

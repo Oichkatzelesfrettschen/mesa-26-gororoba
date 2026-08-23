@@ -12,6 +12,7 @@
 
 #include <errno.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,8 +35,14 @@ write_file(const char *dir, const char *name, const void *data, size_t size)
 int
 main(int argc, char **argv)
 {
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <output-directory>\n", argv[0]);
+   /* --varying writes the varying cell: position-plus-varying records,
+    * the pass-through fragment binary, and the same contract and target;
+    * its own ib.bin and digest, a distinct cell from the position-only
+    * reference.
+    */
+   const bool varying = argc == 3 && strcmp(argv[2], "--varying") == 0;
+   if (argc != 2 && !varying) {
+      fprintf(stderr, "usage: %s <output-directory> [--varying]\n", argv[0]);
       return 2;
    }
    const char *dir = argv[1];
@@ -44,7 +51,8 @@ main(int argc, char **argv)
     * resolves the same binary the reference emission bakes into the IB.
     */
    struct r300_fragment_binary fs;
-   if (r300_tcl_bypass_triangle_reference_fs(&fs) != 0) {
+   if ((varying ? r300_tcl_bypass_triangle_varying_fs(&fs)
+                : r300_tcl_bypass_triangle_reference_fs(&fs)) != 0) {
       fprintf(stderr, "fragment binary construction failed\n");
       return 1;
    }
@@ -60,7 +68,8 @@ main(int argc, char **argv)
    }
 
    struct r300_tcl_bypass_triangle_ib cell;
-   if (r300_tcl_bypass_triangle_reference_emit(&cell) != 0) {
+   if ((varying ? r300_tcl_bypass_triangle_varying_reference_emit(&cell)
+                : r300_tcl_bypass_triangle_reference_emit(&cell)) != 0) {
       fprintf(stderr, "triangle emission failed\n");
       r300_fragment_binary_finish(&fs);
       return 1;
@@ -130,7 +139,7 @@ main(int argc, char **argv)
       manifest, sizeof(manifest),
       "{\n"
       "  \"schema\": \"r300-tcl-bypass-cell/1\",\n"
-      "  \"cell_kind\": \"contract-prefixed-successor\",\n"
+      "  \"cell_kind\": \"%s\",\n"
       "  \"emitter\": \"r300_tcl_bypass_triangle\",\n"
       "  \"ib_dwords\": %u,\n"
       "  \"draw_dword\": %u,\n"
@@ -143,6 +152,7 @@ main(int argc, char **argv)
       "  \"target_pitch_pixels\": %u,\n"
       "  \"allocation_rows\": %u\n"
       "}\n",
+      varying ? "contract-prefixed-varying" : "contract-prefixed-successor",
       cell.ib_size_dwords, draw_dword, ib_blake3_hex, hash_hex,
       contract.count, sites, R300_TRIANGLE_TARGET_WIDTH,
       R300_TRIANGLE_TARGET_HEIGHT, R300_TRIANGLE_TARGET_PITCH_PIXELS,

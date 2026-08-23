@@ -1088,7 +1088,13 @@ R2VB migration follows the fixed triangle and CPU route:
 2. migrate the qualified `FLOAT_3` producer source with `XYZ1` reconstruction;
 3. add `FLOAT_2` only after `XY01` userspace and kernel validators agree;
 4. migrate qualified count, grid, and topology cells;
-5. add computed varyings one measured shape at a time;
+5. add computed varyings one measured shape at a time: the first shape is
+   one location-0 vec4 varying the vertex job computes, carried as the
+   record's second FLOAT_4 into the texture-coordinate-0 vector and routed
+   through RS_IP_0 / RS_INST_0 to the pass-through fragment program (the
+   varying triangle cell on the CPU route, runner
+   `r3v_native_attended_varying_triangle`, procedure
+   `r3v-native-attended-varying-triangle-procedure.md`);
 6. add hybrid carriers only with an explicit final VAP join.
 
 The route owns its BOs, PM4, packers, barriers, and completion; r300g's R2VB

@@ -121,6 +121,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-zb-depth-control-open",
     "r3v-native-zb-depth-control-arming-runner",
     "r3v-native-arming-runner-refuses-undeclared",
+    "r3v-native-arming-runner-varying-ib-identity",
     *R3V_FLOAT2_TUPLE_REQUIRED_TESTS,
     "r3v-native-entrypoint-audit-selftest",
     "r3v-native-entrypoint-audit-baseline",
@@ -172,6 +173,9 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-submit-order-gpu-fetched-out-of-domain",
     "r3v-native-submit-order-gpu-fetched-out-of-bounds",
     "r3v-native-submit-order-gpu-fetched-aliased-source",
+    "r3v-native-submit-order-varying-armed",
+    "r3v-native-submit-order-varying-fragment-mismatch",
+    "r3v-native-submit-order-varying-missing",
     # Native prepared submission lifetime: commit, reset, shape refusals,
     # pre-ioctl failure, teardown, and one single-reason calibration per
     # releaser or binding guard.
@@ -221,6 +225,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-direct-write-authority-parity",
     "r3v-native-public-gpu-producer-arming-runner",
     "r3v-native-public-gpu-producer-record",
+    "r3v-native-varying-triangle-record",
     "r3v-native-fetched-gpu-producer-arming-runner",
     "r3v-native-fetched-gpu-producer-record-f32_4",
     "r3v-native-fetched-gpu-producer-record-f32_3",

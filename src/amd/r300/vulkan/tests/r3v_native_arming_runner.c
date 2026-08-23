@@ -15,6 +15,7 @@
 #include "util/mesa-blake3.h"
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,21 @@
  */
 static uint32_t cell_width = R300_TRIANGLE_TARGET_WIDTH;
 static uint32_t cell_height = R300_TRIANGLE_TARGET_HEIGHT;
+/* --varying selects the varying triangle cell: position-plus-varying
+ * records through the pass-through fragment binary, the cell the
+ * computed-varying pipeline records, with its own digest.
+ */
+static bool cell_varying = false;
+
+static int
+cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
+{
+   return cell_varying
+             ? r300_tcl_bypass_triangle_varying_extent_emit(cell_width,
+                                                            cell_height, cell)
+             : r300_tcl_bypass_triangle_extent_emit(cell_width, cell_height,
+                                                    cell);
+}
 
 /* Builds the cell at the selected extent and returns its IB digest,
  * the content an authorization declares through
@@ -43,8 +59,7 @@ static int
 cell_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
 {
    struct r300_tcl_bypass_triangle_ib cell;
-   if (r300_tcl_bypass_triangle_extent_emit(cell_width, cell_height,
-                                            &cell) != 0)
+   if (cell_emit(&cell) != 0)
       return 1;
 
    r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, out);
@@ -75,8 +90,7 @@ static int
 emit_reference_ib(const char *path)
 {
    struct r300_tcl_bypass_triangle_ib cell;
-   if (r300_tcl_bypass_triangle_extent_emit(cell_width, cell_height,
-                                            &cell) != 0) {
+   if (cell_emit(&cell) != 0) {
       fprintf(stderr, "cell construction failed\n");
       return 2;
    }
@@ -105,6 +119,10 @@ int
 main(int argc, char **argv)
 {
    int argi = 1;
+   if (argc >= argi + 1 && strcmp(argv[argi], "--varying") == 0) {
+      cell_varying = true;
+      argi += 1;
+   }
    if (argc >= argi + 3 && strcmp(argv[argi], "--extent") == 0) {
       /* Authorization input parses fail-closed: the value is judged in
        * the unnarrowed type against errno, the end pointer, and the
@@ -166,8 +184,8 @@ main(int argc, char **argv)
     */
    if (argc != argi + 1) {
       fprintf(stderr,
-              "usage: %s [--extent <w> <h>] <evidence-directory> | "
-              "[--extent <w> <h>] --emit-ib <path>\n",
+              "usage: %s [--varying] [--extent <w> <h>] <evidence-directory> "
+              "| [--varying] [--extent <w> <h>] --emit-ib <path>\n",
               argv[0]);
       return 2;
    }

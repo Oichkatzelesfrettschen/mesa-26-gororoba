@@ -13,14 +13,17 @@
 # passing it.  An unset variable is an absent configuration and skips; a set
 # variable naming something unusable is a broken configuration and fails.
 #
-# Usage: run_cs_track_replay.sh <r300_triangle_manifest-binary>
+# Usage: run_cs_track_replay.sh <r300_triangle_manifest-binary> [--varying]
+# The optional --varying selects the manifest tool's varying cell: the
+# same bundle (one vertex page, the 65-row target), a 32-byte record.
 
 set -eu
 
-if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <r300_triangle_manifest-binary>" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    echo "usage: $0 <r300_triangle_manifest-binary> [--varying]" >&2
     exit 1
 fi
+cell_arg="${2:-}"
 
 if [ -z "${R3V_CS_TRACK_REPLAY_TOOL:-}" ]; then
     echo "R3V_CS_TRACK_REPLAY_TOOL unset; CS-track replay not run" >&2
@@ -49,7 +52,8 @@ fi
 workdir=$(mktemp -d)
 trap 'rm -rf "${workdir}"' EXIT
 
-if ! "${manifest_tool}" "${workdir}" >/dev/null; then
+# shellcheck disable=SC2086
+if ! "${manifest_tool}" "${workdir}" ${cell_arg} >/dev/null; then
     echo "manifest tool failed" >&2
     exit 1
 fi
