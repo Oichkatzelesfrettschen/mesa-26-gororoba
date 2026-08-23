@@ -911,7 +911,7 @@ if with_tests
   # CPU oracle for the virtual IEEE FP16 machine (R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL).
   # Tests domain catalog registration, all 65536 FP16 classifications, and
   # representative multiply pairs (2-limb base-64 vs direct reference).
-  # Hardware not run; RS482 silicon probing is the next gate.
+  # This executable validates the CPU oracle only.
   test(
     'r300-fp16-limb-oracle',
     executable(

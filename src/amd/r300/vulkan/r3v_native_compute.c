@@ -1,13 +1,12 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Native R3V compute surface: storage-buffer descriptors, compute
- * pipeline creation through the direct SPIR-V admission, the dispatch
- * recording, and the CPU compute route that executes it at queue
- * submission.  The surface stands behind the exact
- * R3V_HYBRID_COMPUTE_EXPERIMENTAL=1 opt-in the queue-family compute
- * bit advertises under, and every out-of-contract input refuses at
- * pipeline creation or recording rather than executing as a no-op.
+ * Native R3V compute surface: storage-buffer descriptors, direct SPIR-V
+ * admission, dispatch recording, the default CPU execution route, and the
+ * separately gated R2VB identity-map GPU route.  The surface stands behind
+ * the exact R3V_HYBRID_COMPUTE_EXPERIMENTAL=1 opt-in the queue-family compute
+ * bit advertises under.  Every out-of-contract input refuses before device
+ * work rather than executing as a no-op.
  */
 
 #include "r3v_native.h"
@@ -872,4 +871,3 @@ r3v_native_deferred_dispatch_verify_gpu(struct r3v_native_device *device,
    }
    return VK_SUCCESS;
 }
-

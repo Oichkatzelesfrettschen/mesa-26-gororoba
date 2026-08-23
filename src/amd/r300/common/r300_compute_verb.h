@@ -41,6 +41,8 @@ enum r300_compute_verb_unit {
    /* The R2VB producer carrier: records through the VAP fetch, the US
     * varying datapath, and a C4_32_FP color export. */
    R300_COMPUTE_VERB_UNIT_R2VB_CARRIER,
+   /* The RB3D color-buffer clear path, with no fragment-ALU arithmetic. */
+   R300_COMPUTE_VERB_UNIT_RB3D_CLEAR,
 };
 
 /* What a route may promise against the CPU oracle.  The class is part

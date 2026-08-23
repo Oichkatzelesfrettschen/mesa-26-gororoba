@@ -3,10 +3,10 @@
  *
  * Registry implementation for the RS482/r300 typed numeric domain model.
  *
- * The per-domain descriptor table and virtual op catalog defined here are the
- * single source of truth for domain properties (rounding model, exact integer
- * bound, significand width, special-value policy, evidence tier) and for the
- * substrate virtual op inventory (name, theorem, status, Mesa hook).
+ * The per-domain descriptor table defines numeric traits (rounding model,
+ * exact bound kind and value, significand width, special-value policy, and
+ * evidence tier).  The legacy virtual-op catalog records operation names,
+ * theorems, status, and descriptive implementation labels.
  *
  * Build-time assertions keep the domain table and the r300_numeric_domain enum
  * in sync: adding a domain to the enum without a table row fails the build.
@@ -24,6 +24,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_FP24_RTZ,
       .name              = "fp24-rtz",
       .rounding          = R300_ROUND_TRUNCATE,
+      .exact_bound_kind  = R300_BOUND_MAX_ABS_INCLUSIVE,
       .exact_int_bound   = R300_FP24_EXACT_INT_CEILING,
       .significand_bits  = 17,      /* 1 implicit + 16 stored mantissa bits */
       .has_nan           = false,
@@ -37,6 +38,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_FP16_STORAGE,
       .name              = "fp16-storage",
       .rounding          = R300_ROUND_TRUNCATE,  /* FP24 RTZ on the compute side */
+      .exact_bound_kind  = R300_BOUND_NONE,
       .exact_int_bound   = 0,
       .significand_bits  = 11,                   /* 1 implicit + 10 stored */
       .has_nan           = true,                 /* IEEE FP16 has NaN */
@@ -50,6 +52,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_FP32_STORAGE,
       .name              = "fp32-storage",
       .rounding          = R300_ROUND_TRUNCATE,  /* FP24 RTZ on the compute side */
+      .exact_bound_kind  = R300_BOUND_NONE,
       .exact_int_bound   = 0,
       .significand_bits  = 24,                   /* 1 implicit + 23 stored */
       .has_nan           = true,
@@ -63,6 +66,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_Q16_16,
       .name              = "q16.16",
       .rounding          = R300_ROUND_EXACT,
+      .exact_bound_kind  = R300_BOUND_MAX_ABS_INCLUSIVE,
       .exact_int_bound   = 131071,  /* 2^17-1: (2^16-1)+(2^16-1)+1 for two-limb add */
       .significand_bits  = 0,
       .has_nan           = false,
@@ -78,6 +82,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_U7_DOT,
       .name              = "u7-dot",
       .rounding          = R300_ROUND_EXACT,
+      .exact_bound_kind  = R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
       .exact_int_bound   = 64516,  /* 4*(2^7-1)^2 = 4*127^2 = 64516 */
       .significand_bits  = 0,
       .has_nan           = false,
@@ -91,6 +96,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_U7_CONV5,
       .name              = "u7-conv5",
       .rounding          = R300_ROUND_EXACT,
+      .exact_bound_kind  = R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
       .exact_int_bound   = 80645,  /* 5*(2^7-1)^2 = 5*127^2 = 80645 */
       .significand_bits  = 0,
       .has_nan           = false,
@@ -104,6 +110,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_I8_MAG_DOT,
       .name              = "i8-mag-dot",
       .rounding          = R300_ROUND_EXACT,
+      .exact_bound_kind  = R300_BOUND_MAX_ABS_INCLUSIVE,
       .exact_int_bound   = 64516,  /* |sum| <= 4*127^2 = 64516 */
       .significand_bits  = 0,
       .has_nan           = false,
@@ -117,6 +124,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_U8_OFFGRID,
       .name              = "u8-offgrid",
       .rounding          = R300_ROUND_TRUNCATE,  /* FP24 RTZ for out-of-window values */
+      .exact_bound_kind  = R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
       .exact_int_bound   = R300_FP24_EXACT_INT_CEILING,
       .significand_bits  = 0,
       .has_nan           = false,
@@ -130,6 +138,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_TX_INT6_WEIGHT,
       .name              = "tx-int6-weight",
       .rounding          = R300_ROUND_BIASED,
+      .exact_bound_kind  = R300_BOUND_NONE,
       .exact_int_bound   = 0,
       .significand_bits  = 6,  /* 6-bit bilinear weight */
       .has_nan           = false,
@@ -143,6 +152,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_RB3D_BLEND,
       .name              = "rb3d-blend",
       .rounding          = R300_ROUND_CLAMP,
+      .exact_bound_kind  = R300_BOUND_NONE,
       .exact_int_bound   = 0,
       .significand_bits  = 0,
       .has_nan           = false,
@@ -156,6 +166,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_ROP_BOOL,
       .name              = "rop-bool",
       .rounding          = R300_ROUND_EXACT,
+      .exact_bound_kind  = R300_BOUND_NONE,
       .exact_int_bound   = 0,
       .significand_bits  = 0,
       .has_nan           = false,
@@ -169,20 +180,23 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_U8_STENCIL,
       .name              = "u8-stencil",
       .rounding          = R300_ROUND_CLAMP,
+      .exact_bound_kind  = R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
       .exact_int_bound   = 255,
       .significand_bits  = 0,
       .has_nan           = false,
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = false,  /* per-pixel state machine, not PFS ALU */
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,  /* INCR confirmed; DECR/INVERT/WRAP pending */
-      .theorem           = "INCR confirmed; DECR/INVERT/WRAP need targeted probes",
+      /* INCR/INVERT confirmed; DECR/WRAP pending. */
+      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
+      .theorem           = "INCR and INVERT confirmed; DECR/WRAP need targeted probes",
    },
    {
       .domain            = R300_NUM_DOMAIN_ZPASS_COUNT,
       .name              = "zpass-count",
       .rounding          = R300_ROUND_EXACT,
-      .exact_int_bound   = 0,      /* count is unbounded within the RT extent */
+      .exact_bound_kind  = R300_BOUND_UNBOUNDED_BY_DOMAIN,
+      .exact_int_bound   = 0,
       .significand_bits  = 0,
       .has_nan           = false,
       .has_inf           = false,
@@ -195,6 +209,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_VAP_FORMAT_INGEST,
       .name              = "vap-format-ingest",
       .rounding          = R300_ROUND_EXACT,   /* format decode is lossless for supported formats */
+      .exact_bound_kind  = R300_BOUND_NONE,
       .exact_int_bound   = 0,
       .significand_bits  = 0,
       .has_nan           = false,
@@ -208,6 +223,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .domain            = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
       .name              = "ieee-fp16-virtual",
       .rounding          = R300_ROUND_RNE,
+      .exact_bound_kind  = R300_BOUND_NONE,
       .exact_int_bound   = 0,
       .significand_bits  = 11,    /* 1 implicit + 10 stored; normals in [1024..2047] */
       .has_nan           = true,
@@ -241,8 +257,9 @@ r300_vop_status_is_carrier_pending(enum r300_vop_status status)
 
 /* Virtual op catalog for the RS482 compute-as-raster substrate.
  *
- * Each row records one named virtual op: domain, status, theorem, and Mesa
- * detection hook.  External evidence paths belong in retained bundles and
+ * Each row records one named virtual op: domain, status, theorem, and an
+ * optional descriptive implementation label.  External evidence paths belong
+ * in retained bundles and
  * findings, not compiled Mesa metadata.  The catalog is the C-side
  * representation of the TSV substrate table; the two must be kept in sync when
  * a new op is confirmed.
@@ -254,42 +271,42 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = in[gid]: passthrough via fullscreen TEX + RB3D export",
-      .mesa_hook       = "r300_nir_detect_identity_map",
+      .implementation_label = "r300_nir_detect_identity_map",
    },
    {
       .op_name         = "BINARY_MAP",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = f(a[gid], b[gid]) for admitted binary FP24 ops",
-      .mesa_hook       = "r300_nir_detect_binary_map",
+      .implementation_label = "r300_nir_detect_binary_map",
    },
    {
       .op_name         = "BLEND_ACC_REDUCTION",
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "histogram add via RB3D COMB_FCN_ADD blend accumulation",
-      .mesa_hook       = "r300_nir_detect_blend_acc_reduction",
+      .implementation_label = "r300_nir_detect_blend_acc_reduction",
    },
    {
       .op_name         = "ZPASS_COVERAGE_COUNT",
       .domain          = R300_NUM_DOMAIN_ZPASS_COUNT,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "predicated fragment count via ZB_ZPASS_DATA occlusion-query path",
-      .mesa_hook       = "r300_nir_detect_zpass_reduction",
+      .implementation_label = "r300_nir_detect_zpass_reduction",
    },
    {
       .op_name         = "MULTIPASS_PING_PONG_SCAN",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "self-iterated doubling via dependent FBO ping-pong passes",
-      .mesa_hook       = "r300_nir_detect_multipass_scan_pattern",
+      .implementation_label = "r300_nir_detect_multipass_scan_pattern",
    },
    {
       .op_name         = "PREDICATED_MASKED_STORE",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "per-element conditional store via per-pixel KILL_IF discard",
-      .mesa_hook       = "r300_nir_detect_predicated_store_pattern",
+      .implementation_label = "r300_nir_detect_predicated_store_pattern",
    },
    {
       .op_name         = "MULTITAP_GATHER",
@@ -297,14 +314,14 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "N-tap neighborhood sum via multi-TEX fragment draw; "
                          "integer-exact for per-tap UNORM8 sum <= 255",
-      .mesa_hook       = "r300_nir_detect_multitap_gather_pattern",
+      .implementation_label = "r300_nir_detect_multitap_gather_pattern",
    },
    {
       .op_name         = "DP4_UINT7_EXACT",
       .domain          = R300_NUM_DOMAIN_U7_DOT,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "4*(2^7-1)^2 = 64516 < 2^17: byte-exact for U7-magnitude operands",
-      .mesa_hook       = "r300_nir_detect_dp4_pattern",
+      .implementation_label = "r300_nir_detect_dp4_pattern",
    },
    {
       .op_name         = "DP4_INT8_SIGNED_CARRIER_PENDING",
@@ -312,14 +329,14 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_CARRIER_PENDING,
       .theorem         = "|a_i|,|b_i| <= 127: |sum| <= 64516 < 2^17; signed DP4 arithmetic is exact, "
                          "but Mesa must add a signed byte carrier before dispatch readback can route it",
-      .mesa_hook       = NULL,
+      .implementation_label = NULL,
    },
    {
       .op_name         = "DP4_UINT8_OFFGRID_ROUNDS",
       .domain          = R300_NUM_DOMAIN_U8_OFFGRID,
       .status          = R300_VOP_BOUNDARY,
       .theorem         = "4*(2^8-1)^2 = 260100 > 2^17; above-window results are FP24-approximate",
-      .mesa_hook       = "r300_nir_detect_dp4_pattern",
+      .implementation_label = "r300_nir_detect_dp4_pattern",
    },
    {
       .op_name         = "QUADRATIC_DISCRIMINANT_OFFGRID",
@@ -329,7 +346,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "B^2, A*C, B^2-A*C reach ~10^8 (180x-1600x the 2^17 = 131072 exact "
                          "window), so FP24 RTZ rounds them off-grid and perturbs t by ~1e-4, "
                          "enough to cross the [0,1) repeat boundary",
-      .mesa_hook       = NULL,  /* no NIR detector: the quadratic is emitted by glamor GLSL, not a Mesa pass */
+      /* Glamor emits this quadratic directly; Mesa has no NIR detector. */
+      .implementation_label = NULL,
    },
    {
       .op_name         = "Q16_16_ADD",
@@ -339,7 +357,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "The NIR detector classifies the shape; no production carrier "
                          "or dispatch path consumes it",
       /* The detector is test-only; production classification does not invoke it. */
-      .mesa_hook       = NULL,
+      .implementation_label = NULL,
    },
    {
       .op_name         = "Q16_16_MUL",
@@ -348,7 +366,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "(2^6-1)^2 = 3969 per limb; 4-column sum <= 15876 < 2^17 "
                          "per column.  The production detector, carrier, and dispatch "
                          "path are absent",
-      .mesa_hook       = NULL,  /* no detector yet; requires 4x6-bit limb-multiply NIR pattern */
+      /* A 4x6-bit limb-multiply detector remains absent. */
+      .implementation_label = NULL,
    },
    {
       .op_name         = "Q16_16_MAC",
@@ -374,7 +393,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "limbs when negative).  Host oracle r300_q16_16_mac_multilimb_oracle.c "
                          "bit-exact (tol 0) over 2,000,000 random triples.  Production "
                          "NIR admission, carrier, and dispatch remain absent",
-      .mesa_hook       = NULL,  /* R300_R2VB_QMAC dump gate; detector (limb MAC NIR pattern) pending */
+      /* The limb-MAC NIR detector remains pending. */
+      .implementation_label = NULL,
    },
    {
       .op_name         = "IEEE16_CLASSIFY_LUT",
@@ -383,7 +403,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "FP16 bit[15]=sign, bits[14:10]=exp(0..31), bits[9:0]=mantissa; "
                          "class determined by (exp==0, exp==31, mantissa==0) partition; "
                          "15/15 bit patterns exact on RS482 (rs482_fp16_pow2_carry_exactness_20260607)",
-      .mesa_hook       = "r300_nir_lower_ieee16_classify",
+      .implementation_label = "r300_nir_lower_ieee16_classify",
    },
    {
       .op_name         = "IEEE16_MUL_RNE",
@@ -392,7 +412,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "2-limb base-64: c1=a0*b1+a1*b0 <= 2*63*31=3906 < 2^17; "
                          "carry limbs (r0,r1,r2) 12/12 exact on RS482; "
                          "RNE round from guard/sticky/lsb (rs482_fp16_pow2_carry_exactness_20260607)",
-      .mesa_hook       = "r300_nir_lower_ieee16_mul_normal_rne",
+      .implementation_label = "r300_nir_lower_ieee16_mul_normal_rne",
    },
    {
       .op_name         = "QMUL_HAMILTON",
@@ -401,7 +421,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "Hamilton product = Cayley-Dickson multiplication at dim 4 = four "
                          "sign-permuted DP4s; sign-for-sign the machine-verified quat_mul; "
                          "integer self-check (1,2,3,4)*(5,6,7,8) = (-60,12,30,24) exact on RS482",
-      .mesa_hook       = "r300_nir_detect_qmul_pattern",  /* QMUL = 4 sign-permuted DP4s; canonical 4-dot detector */
+      /* QMUL is four sign-permuted DP4s. */
+      .implementation_label = "r300_nir_detect_qmul_pattern",
    },
    {
       .op_name         = "QDIV",
@@ -422,7 +443,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "two-in/one-out replay core; HW-confirmed 4/4 on RS480 by qdiv_vk_probe "
                          "(a/1=a, 1/(2i)=-0.5i, 4i/2i=2 bit-exact; x/x=1 within FP16 RT tol), the "
                          "FS compiling to 23 fragment ALU ops -- far under the 64-ALU limit",
-      .mesa_hook       = "r300_nir_detect_qdiv_pattern",
+      .implementation_label = "r300_nir_detect_qdiv_pattern",
    },
    {
       .op_name         = "QROTATE_SANDWICH",
@@ -435,7 +456,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "C876_quat_rotation_eq_matrix (C876_QuaternionRotation.v, on the Quat "
                          "type).  HW-confirmed 4/4 by qrotate_vk_probe vs a CPU sandwich on "
                          "RS482",
-      .mesa_hook       = "r300_nir_detect_qrotate_pattern",  /* QROTATE = nested 2-Hamilton sandwich detector */
+      /* QROTATE is a nested two-Hamilton sandwich. */
+      .implementation_label = "r300_nir_detect_qrotate_pattern",
    },
    {
       .op_name         = "MAT4VEC",
@@ -463,7 +485,9 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "The first-class op is HW-confirmed 4/4 byte-exact on RS482 (mat4vec_vk_"
                          "probe: matrix {2,0,0,5; 0,3,0,7; 0,0,4,9; 0,0,0,1} times four vertices, "
                          "GPU == CPU oracle to maxabs 0.0, QMUL control unregressed)",
-      .mesa_hook       = "r300_nir_detect_mat4vec_pattern",  /* vec4 op HW-confirmed 4/4: 5-load detector (4 broadcast matrix rows + per-element vertex) maps each row offset to descriptor-base + lane*16, broadcast-matrix dispatch */
+      /* The descriptive five-load shape is four broadcast matrix rows plus
+       * one per-element vertex. */
+      .implementation_label = "r300_nir_detect_mat4vec_pattern",
    },
    {
       .op_name         = "OMUL_OCTONION",
@@ -477,7 +501,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "passes (r3v_build_omul_lo/hi_fs_nir) emit the halves, and the "
                          "two-pass dispatch fills the result -- HW-confirmed 4/4 exact on "
                          "RS482 by omul_vk_probe, the Hurwitz norm holding exactly",
-      .mesa_hook       = "r300_nir_detect_omul_pattern",
+      .implementation_label = "r300_nir_detect_omul_pattern",
    },
    {
       .op_name         = "OADD",
@@ -487,7 +511,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "add over two output halves, zero DP4.  Admitted by "
                          "r300_nir_detect_oaddsub_pattern (is_sub=false) and filled in one "
                          "MRT pass; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe oadd",
-      .mesa_hook       = "r300_nir_detect_oaddsub_pattern",
+      .implementation_label = "r300_nir_detect_oaddsub_pattern",
    },
    {
       .op_name         = "OSUB",
@@ -496,7 +520,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "octonion subtraction (a,b)-(c,d) = (a-c, b-d), componentwise vec8 "
                          "sub, zero DP4.  The is_sub=true form of the oaddsub detector, same "
                          "single MRT pass; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe osub",
-      .mesa_hook       = "r300_nir_detect_oaddsub_pattern",
+      .implementation_label = "r300_nir_detect_oaddsub_pattern",
    },
    {
       .op_name         = "OCONJ",
@@ -507,7 +531,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "(scalar lane kept, vector lanes negated), the upper half the full "
                          "negation of b; zero DP4.  Admitted by r300_nir_detect_oconj_pattern, "
                          "filled in one MRT pass; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe",
-      .mesa_hook       = "r300_nir_detect_oconj_pattern",
+      .implementation_label = "r300_nir_detect_oconj_pattern",
    },
    {
       .op_name         = "ONORM",
@@ -518,7 +542,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "|xy|^2=|x|^2|y|^2 OMUL confirms (Hurwitz at dim 8).  Admitted by "
                          "r300_nir_detect_onorm_pattern and dispatched on the 2-in/1-out "
                          "core; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe onorm",
-      .mesa_hook       = "r300_nir_detect_onorm_pattern",
+      .implementation_label = "r300_nir_detect_onorm_pattern",
    },
    {
       .op_name         = "ODIV",
@@ -539,7 +563,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "sibling (same detector, is_left).  Division stays DIM-8-ONLY: at dim "
                          "16 conj/N is only a pseudo-inverse (sedenion zero divisors, Moreno G2 / "
                          "de Marrais box-kites; oct_norm_mul holds, sed_norm_fails)",
-      .mesa_hook       = "r300_nir_detect_odiv_pattern",
+      .implementation_label = "r300_nir_detect_odiv_pattern",
    },
    {
       .op_name         = "ODIV_L",
@@ -556,7 +580,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "under the 64-ALU limit; the synthesize step picks odiv_l_lo/hi.  The "
                          "identity is y*out == x (left), vs out*y == x for right.  HW-confirmed "
                          "4/4 on RS482 by odiv_l_vk_probe.  DIM-8-ONLY (same Hurwitz wall)",
-      .mesa_hook       = "r300_nir_detect_odiv_pattern",
+      .implementation_label = "r300_nir_detect_odiv_pattern",
    },
    {
       .op_name         = "OTRANS",
@@ -577,7 +601,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "through a scratch intermediate t (32 DP4s far exceed the 64-ALU "
                          "R300 fragment limit): pass 1 t=x*v, pass 2 t*conj(x).  HW-confirmed "
                          "4/4 on RS482 by otrans_vk_probe vs a CPU sandwich",
-      .mesa_hook       = "r300_nir_detect_otrans_pattern",
+      .implementation_label = "r300_nir_detect_otrans_pattern",
    },
    {
       .op_name         = "SED_DIV_DOWNCAST_ADMIT",
@@ -599,7 +623,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "on RS482, r2vb_sed_q0_verify).  So the admission predicate is a "
                          "two-operand hi-half-zero test feeding the octonion ODIV lane; the "
                          "general dim-16 division stays REJECTED (Hurwitz wall, see ODIV)",
-      .mesa_hook       = NULL,  /* admission predicate; reuses the octonion ODIV detector on the downcast lane */
+      /* The admitted downcast lane reuses the octonion ODIV shape. */
+      .implementation_label = NULL,
    },
    {
       .op_name         = "QADD",
@@ -610,7 +635,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "vec4s).  A value_is_float binary map now dispatches in the FP "
                          "domain (FP32 sampler, FP16 RT, FP32 readback) instead of UNORM8, "
                          "HW-confirmed 4/4 on RS482 by qadd_vk_probe",
-      .mesa_hook       = "r300_nir_detect_binary_map",
+      .implementation_label = "r300_nir_detect_binary_map",
    },
    {
       .op_name         = "QSUB",
@@ -619,7 +644,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "quaternion subtraction a-b = componentwise vec4 sub, zero DP4; "
                          "binary-map(nir_op_fsub) on the same FP-domain dispatch as QADD, "
                          "HW-confirmed 4/4 on RS482 by qsub_vk_probe",
-      .mesa_hook       = "r300_nir_detect_binary_map",
+      .implementation_label = "r300_nir_detect_binary_map",
    },
    {
       .op_name         = "QDOT",
@@ -628,7 +653,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "quaternion inner product <a,b> = dot(a,b) = one DP4; served by "
                          "the dp4 detector (f2u32(fdot4) store) and HW-confirmed 4/4 by "
                          "reuse of the dp4 dispatch",
-      .mesa_hook       = "r300_nir_detect_dp4_pattern",
+      .implementation_label = "r300_nir_detect_dp4_pattern",
    },
    {
       .op_name         = "QCONJ",
@@ -641,7 +666,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "single-load vec4 sign flip is admitted by r300_nir_detect_qconj_"
                          "pattern and dispatched on the 1-in/1-out FP16-RT core, HW-"
                          "confirmed 4/4 (exact) on RS482 by qconj_vk_probe",
-      .mesa_hook       = "r300_nir_detect_qconj_pattern",
+      .implementation_label = "r300_nir_detect_qconj_pattern",
    },
    {
       .op_name         = "QNORM",
@@ -653,7 +678,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "single-load self-dot splat vec4(dot(a,a)) by r300_nir_detect_"
                          "qnorm_pattern and dispatched on the 1-in/1-out FP16-RT core, HW-"
                          "confirmed 4/4 on RS482 by qnorm_vk_probe (the kernel reads lane 0)",
-      .mesa_hook       = "r300_nir_detect_qnorm_pattern",
+      .implementation_label = "r300_nir_detect_qnorm_pattern",
    },
    {
       .op_name         = "QNORMALIZE",
@@ -669,7 +694,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "single-load fmul(a, frsq(dot(a,a)).xxxx) by r300_nir_detect_"
                          "qnormalize_pattern and dispatched on the 1-in/1-out FP16-RT core, "
                          "HW-confirmed 4/4 on RS482 by qnormalize_vk_probe (|out| = 1)",
-      .mesa_hook       = "r300_nir_detect_qnormalize_pattern",
+      .implementation_label = "r300_nir_detect_qnormalize_pattern",
    },
    {
       .op_name         = "QFMADD",
@@ -684,7 +709,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "target (a substrate-native FMA, the blend-acc path already drives "
                          "it); here it is a straightforward ALU add.  HW-confirmed 4/4 on "
                          "RS482 by qfmadd_vk_probe vs a CPU Hamilton-product-plus-add",
-      .mesa_hook       = "r300_nir_detect_qfmadd_pattern",
+      .implementation_label = "r300_nir_detect_qfmadd_pattern",
    },
    {
       .op_name         = "QFMMUL",
@@ -699,7 +724,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "Admitted by r300_nir_detect_qfmmul_pattern (find t = qmul(a,b), "
                          "verify the store is qmul(t,c)) and dispatched on the three-in/"
                          "one-out core.  HW-confirmed 4/4 on RS482 by qfmmul_vk_probe",
-      .mesa_hook       = "r300_nir_detect_qfmmul_pattern",
+      .implementation_label = "r300_nir_detect_qfmmul_pattern",
    },
    {
       /* QF scalar tier (quaternion x real scalar), the broadcast-operand lever. */
@@ -725,7 +750,9 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "quaternions, GPU == CPU oracle to maxabs 0.0).  QFADD/QFSUB are masked "
                          "adds on the real part, QFDIV = a*rcp(s), QFTRANS = s*a + t*(1,0,0,0) a "
                          "MAD -- the remaining scalar-tier forms, 0 DP4 componentwise",
-      .mesa_hook       = "r300_nir_detect_qfmul_pattern",  /* broadcast scalar -> CONST[0].x, 1 TEX + 1 MUL FS; binary_map width-guard keeps the classes disjoint */
+      /* Broadcast scalar: CONST[0].x, one TEX, and one MUL; the binary-map
+       * width guard keeps the classes disjoint. */
+      .implementation_label = "r300_nir_detect_qfmul_pattern",
    },
    {
       /* Degenerate constant-fill: out[gid] = C for every element.  The
@@ -744,7 +771,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "C rides the RGBA8 RB3D clear color, the RT-to-buffer "
                          "identity-map readback copy delivers C to every element; "
                          "no per-element fragment ALU needed",
-      .mesa_hook       = "r300_nir_detect_const_fill_pattern",
+      .implementation_label = "r300_nir_detect_const_fill_pattern",
    },
    {
       /* First verb that materializes the work-item index as an FP24 VALUE:
@@ -761,7 +788,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "FLR-snapped texel-unit varying; exact for "
                          "stride * (total - 1) + offset <= 2^17 (probe: 131072 "
                          "elements byte-exact at the ceiling, explicit no-op above)",
-      .mesa_hook       = "r300_nir_detect_affine_iota_pattern",
+      .implementation_label = "r300_nir_detect_affine_iota_pattern",
    },
    {
       /* 32x32 -> 64-bit integer multiply on the FP24 ALU: each factor splits
@@ -779,7 +806,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "replay verb: 1024/1024 elements exact end-to-end "
                          "(low-32 wraparound), sampled bytes snapped with "
                          "floor(v * 255 + 0.5) before limb extraction",
-      .mesa_hook       = "r300_nir_detect_multilimb_mul_pattern",
+      .implementation_label = "r300_nir_detect_multilimb_mul_pattern",
    },
    {
       /* One log4 tree level per LINEAR tap at a 2x2 texel corner: the 6-bit
@@ -793,7 +820,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "sum mod 4 == 0 (UNORM8 inter-level carrier); off-grid "
                          "sums quantize within one byte; UNORM8 payloads only "
                          "(float payloads point-sample on RS482)",
-      .mesa_hook       = "r300_nir_detect_log4_pool_pattern",
+      .implementation_label = "r300_nir_detect_log4_pool_pattern",
    },
    {
       /* Versioned CAS: GL exposes ONE stencil ref, so REPLACE writes the
@@ -813,7 +840,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "probe ladder "
                          "advance(0) = all, advance(0) = none, advance(1) = all, "
                          "end state EQUAL 2 = all",
-      .mesa_hook       = NULL,  /* no NIR kernel: dispatched via stencil-op HW state (not pattern recognition) */
+      /* The mechanism is stencil state rather than a NIR kernel. */
+      .implementation_label = NULL,
    },
    {
       /* CAS ROUTE A: per-element constant-operand compare-and-swap on the
@@ -830,7 +858,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "select; pre-image copy returns old; probe 10/10 "
                          "patterns x 4096 elements exact incl one-bit deltas "
                          "and the operand-order discriminator",
-      .mesa_hook       = "r300_nir_detect_cas_pattern",
+      .implementation_label = "r300_nir_detect_cas_pattern",
    },
    {
       /* QFM subtract shares the admitted Hamilton-product shape with QFMADD. */
@@ -840,7 +868,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "fused multiply-sub a*b - c uses four Hamilton-product DP4s and "
                          "one vec4 SUB.  The QFMADD detector records the non-commutative "
                          "fsub form and pipeline synthesis preserves it in the fragment NIR",
-      .mesa_hook       = "r300_nir_detect_qfmadd_pattern",  /* is_sub selects the subtracting fragment shader */
+      /* is_sub selects the subtracting fragment shader. */
+      .implementation_label = "r300_nir_detect_qfmadd_pattern",
    },
    {
       /* COMB_FCN_MIN: result = min(src_factor * src, dst_factor * dst).
@@ -856,7 +885,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "out[gid] = min(a[gid], b[gid]) via R300_COMB_FCN_MIN "
                          "(VK_BLEND_OP_MIN, factors ONE/ONE ignored per spec); "
                          "byte-exact over UNORM8 carrier: 6/6 cases RS482 silicon",
-      .mesa_hook       = NULL,  /* no NIR pattern detector yet; dispatched via pipeline blend_op state */
+      /* The mechanism is pipeline blend-op state. */
+      .implementation_label = NULL,
    },
    {
       /* COMB_FCN_MAX: result = max(src_factor * src, dst_factor * dst).
@@ -869,7 +899,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "out[gid] = max(a[gid], b[gid]) via R300_COMB_FCN_MAX "
                          "(VK_BLEND_OP_MAX, factors ONE/ONE ignored per spec); "
                          "byte-exact over UNORM8 carrier: 6/6 cases RS482 silicon",
-      .mesa_hook       = NULL,  /* no NIR pattern detector yet; dispatched via pipeline blend_op state */
+      /* The mechanism is pipeline blend-op state. */
+      .implementation_label = NULL,
    },
    {
       /* COMB_FCN_SUB_CLAMP: result = clamp(src - dst, 0, 1) over UNORM8.
@@ -884,7 +915,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "out[gid] = max(a[gid] - b[gid], 0) via R300_COMB_FCN_SUB_CLAMP "
                          "(VK_BLEND_OP_SUBTRACT on UNORM8 target); clamp is UNORM8 format "
                          "saturation; byte-exact: 6/6 cases RS482 silicon",
-      .mesa_hook       = NULL,  /* no NIR pattern detector yet; dispatched via pipeline blend_op state */
+      /* The mechanism is pipeline blend-op state. */
+      .implementation_label = NULL,
    },
    {
       /* Four independent RGBA8_UNORM render targets written in parallel by
@@ -903,7 +935,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "parallel independent scatter writes via MRT; "
                          "byte-exact 4/4 attachments on RS482 silicon "
                          "(r300_substrate_probe.sh PROBE_MRT4)",
-      .mesa_hook       = NULL,  /* no NIR pattern detector yet; dispatched via 4-attachment renderpass */
+      /* The mechanism is a four-attachment render pass. */
+      .implementation_label = NULL,
    },
    {
       /* VK_STENCIL_OP_INVERT flips all 8 bits of the stencil plane per
@@ -921,7 +954,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "flips all 8 stencil bits per fragment; 0xA5 -> 0x5A "
                          "bit-exact on RS482 silicon (r300_substrate_probe.sh "
                          "PROBE_STENCIL_INVERT)",
-      .mesa_hook       = NULL,  /* dispatched via stencil-op HW state; no NIR pattern */
+      /* The mechanism is stencil-op state rather than a NIR pattern. */
+      .implementation_label = NULL,
    },
    /* NULL sentinel -- keep last */
    { .op_name = NULL },

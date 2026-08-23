@@ -1,12 +1,11 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Carrier policy for the RS482 compute-as-raster dispatch-replay.
+ * Carrier-policy contracts for candidate RS482 compute-as-raster paths.
  *
- * A carrier policy describes the buffer format and stride contract for a
- * particular virtual op lowering: what the input SSBO is typed as (value
- * format), what the output SSBO carrier is (bit format), and what the exact
- * result range guarantee is.
+ * A carrier policy describes a possible buffer format and stride contract:
+ * what an input SSBO would be typed as (value format), what an output SSBO
+ * carrier would use (bit format), and what exact result range is represented.
  *
  * The DP4 path established the canonical form: R32G32B32A32_FLOAT input
  * (stride 16) -> FP24 DP4 ALU -> RGBA8 integer-encoded uint output (stride 4,
@@ -15,9 +14,8 @@
  * EXT_color_buffer_float is absent), so float-domain results that need exact
  * byte readback must be encoded through a byte carrier such as RGBA8.
  *
- * The carrier policy provides a single definition shared by the orchestrator
- * (r3v_compute.c dispatch-replay) and the readback logic so both sides
- * agree on how to pack and unpack results.
+ * These compiled objects are contract inventory.  No current runtime route
+ * selects them merely because they are registered here.
  */
 
 #ifndef R300_CARRIER_POLICY_H
@@ -35,15 +33,14 @@ extern "C" {
 /* Encoding strategy for the output carrier.  Determines how the virtual op's
  * result is packed into the render-target and unpacked on readback. */
 enum r300_carrier_encoding {
-   /* RGBA8 byte-level integer encoding.  A uint result <= 16777215 (2^24-1)
-    * packs into the R, G, B, A bytes little-endian:
+   /* RGBA8 byte-level integer encoding.  The packer emits the low three bytes
+    * and optionally the high byte in little-endian order:
     *   R = (result      ) & 0xff
     *   G = (result >>  8) & 0xff
     *   B = (result >> 16) & 0xff
     *   A = (result >> 24) & 0xff
-    * The DP4 path uses this encoding; byte values are exact because the
-    * FP24 exact-integer window guarantees integer precision up to 2^17 for
-    * U7-magnitude operands. */
+    * Exactness depends on the numeric domain that produces the value; the U7
+    * DP4 contract, for example, remains inside the FP24 exact-integer window. */
    R300_CARRIER_ENC_RGBA8_UINT,
 
    /* Identity: the output format matches the input format; no re-encoding.
@@ -86,10 +83,8 @@ enum r300_carrier_format {
    R300_CARRIER_FORMAT_COUNT,
 };
 
-/* Full carrier policy for one virtual op family.  One instance per admitted
- * virtual op.  The orchestrator resolves the concrete API format and stride
- * from the bound descriptor sets at dispatch time; these fields define the
- * canonical contract so the orchestrator and readback logic agree. */
+/* One candidate carrier contract.  Operations may share a policy or have no
+ * policy, and a policy object does not certify a live route. */
 struct r300_carrier_policy {
    const char                 *name;              /* stable diagnostic label */
    enum r300_numeric_domain    domain;
@@ -98,23 +93,23 @@ struct r300_carrier_policy {
    enum r300_carrier_format    bit_format;        /* RT output carrier format */
    unsigned                    input_stride;      /* bytes per element in the input buffer */
    unsigned                    output_stride;     /* bytes per element in the output buffer */
-   unsigned                    max_exact_result;  /* max integer result with exact encoding; 0 = N/A */
-   bool                        encodes_full_uint32; /* true when the A channel carries bits 24-31 */
+   enum r300_bound_kind        max_exact_result_kind;
+   uint64_t                    max_exact_result;
+   bool                        pack_alpha_byte;   /* A carries bits 24-31 */
    bool                        requires_fp32_rt;  /* true = not viable on RS482 */
 };
 
-/* Canonical carrier policy instances.
+/* Compiled carrier-policy objects.
  *
  * r300_carrier_identity: identity-map (out[gid] = in[gid]).
- *   Input and output share the format; the orchestrator determines
- *   the actual format from the descriptor binding at dispatch time.
+ *   This candidate uses RGBA8 input and output with identical strides.
  *
  * r300_carrier_dp4_u7: DP4 with U7-magnitude operands (exact).
  *   Input: R32G32B32A32_FLOAT, stride 16 (one vec4 operand per element).
  *   Output: R8G8B8A8_UNORM, stride 4 (RGBA8 uint-encoded result).
  *   Max exact result: 64516 (4*(2^7-1)^2, hardware-confirmed).
  *   Uses RGBA8_UINT encoding; the A channel carries bits 24-31 when the
- *   result exceeds 2^16, but the U7-exact domain caps at 64516 < 2^17,
+ *   result reaches 2^24, but the U7-exact domain caps at 64516 < 2^17,
  *   so the A byte is always zero for admitted exact-domain results.
  *
  * r300_carrier_dp4_u8_boundary: DP4 with U8 operands (precision boundary).
@@ -143,8 +138,8 @@ extern const struct r300_carrier_policy r300_carrier_ieee16_debug;
  * magnitude.  Returns r300_carrier_dp4_u7 (exact) when max_operand_magnitude
  * <= 127, r300_carrier_dp4_u8_boundary (precision-boundary) for 128..255, and
  * NULL outside the unsigned-byte carrier domain.
- * The operand magnitude is not visible at NIR classify time; callers that know
- * the runtime bound use this helper to select the right policy before dispatch.
+ * The operand magnitude is not visible at NIR classify time; a selector that
+ * knows the runtime bound can use this helper without implying route liveness.
  */
 const struct r300_carrier_policy *
 r300_carrier_dp4_select(unsigned max_operand_magnitude);

@@ -8,15 +8,15 @@
  *      R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL (rounding=RNE, significand_bits=11,
  *      is_native_compute=false, evidence=HW_CONFIRMED), keeps the five-term
  *      U7 convolution domain distinct from the four-term U7 dot domain, and
- *      ships no retained external evidence identifiers in the virtual-op
- *      catalog.
+ *      verifies explicit bound kinds for bounded and unbounded domains.
  *   2. Classification: all 65536 FP16 raw bit patterns produce the correct
  *      r300_fp16_class value (compare classify_fp16() against fp16_class_ref()).
  *   3. Multiply: ~30 representative pairs -- 2-limb result matches the C
  *      reference (direct uint32 multiply + RNE rounding from the carry triple).
  *
- * Hardware not run.  This is a CPU-only oracle test; RS482 silicon probing is
- * the next gate (fp16_class_lut_probe, fp16_mul_rne_probe on RS482 hardware).
+ * This executable is a CPU-only oracle.  Silicon provenance and route status
+ * belong to the retained evidence and compute-verb authorities respectively;
+ * this test does not infer either from its own execution environment.
  */
 
 #include <stdbool.h>
@@ -39,11 +39,43 @@ static int g_failures = 0;
       }                                                        \
    } while (0)
 
+static bool
+bound_value_valid(enum r300_bound_kind kind, uint64_t value)
+{
+   switch (kind) {
+   case R300_BOUND_MAX_ABS_INCLUSIVE:
+   case R300_BOUND_MAX_UNSIGNED_INCLUSIVE:
+      return value != 0;
+   case R300_BOUND_NONE:
+   case R300_BOUND_INPUT_DEPENDENT:
+   case R300_BOUND_UNBOUNDED_BY_DOMAIN:
+      return value == 0;
+   }
+   return false;
+}
+
 /* Suite 1: Domain catalog. */
 
 static void
 test_domain_catalog(void)
 {
+   for (unsigned i = 0; i < R300_NUM_DOMAIN_COUNT; i++) {
+      const struct r300_numeric_domain_info *info =
+         r300_numeric_domain_info((enum r300_numeric_domain)i);
+      char label[128];
+      snprintf(label, sizeof(label),
+               "catalog: bound kind/value agree for %s", info->name);
+      CHECK(bound_value_valid(info->exact_bound_kind, info->exact_int_bound),
+            label);
+   }
+   CHECK(!bound_value_valid(R300_BOUND_MAX_UNSIGNED_INCLUSIVE, 0),
+         "catalog validator rejects a zero bounded value");
+   CHECK(!bound_value_valid(R300_BOUND_NONE, 1),
+         "catalog validator rejects a value without a bound kind");
+   CHECK(!bound_value_valid(
+            (enum r300_bound_kind)(R300_BOUND_UNBOUNDED_BY_DOMAIN + 1), 0),
+         "catalog validator rejects a bound kind outside the enum");
+
    const struct r300_numeric_domain_info *fp16_info =
       r300_numeric_domain_info(R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL);
 
@@ -51,6 +83,8 @@ test_domain_catalog(void)
          "catalog: domain field matches enum value");
    CHECK(fp16_info->rounding == R300_ROUND_RNE,
          "catalog: rounding == R300_ROUND_RNE");
+   CHECK(fp16_info->exact_bound_kind == R300_BOUND_NONE,
+         "catalog: FP16 virtual domain has no integer bound");
    CHECK(fp16_info->significand_bits == 11,
          "catalog: significand_bits == 11");
    CHECK(fp16_info->has_nan == true,
@@ -73,14 +107,21 @@ test_domain_catalog(void)
    const struct r300_numeric_domain_info *u8_offgrid =
       r300_numeric_domain_info(R300_NUM_DOMAIN_U8_OFFGRID);
 
-   CHECK(u7_dot->exact_int_bound == 64516,
+   CHECK(u7_dot->exact_bound_kind == R300_BOUND_MAX_UNSIGNED_INCLUSIVE &&
+            u7_dot->exact_int_bound == 64516,
          "catalog: U7 dot exact bound covers four terms");
-   CHECK(u7_conv5->exact_int_bound == 80645,
+   CHECK(u7_conv5->exact_bound_kind == R300_BOUND_MAX_UNSIGNED_INCLUSIVE &&
+            u7_conv5->exact_int_bound == 80645,
          "catalog: U7 conv5 exact bound covers five terms");
    CHECK(u7_conv5->rounding == R300_ROUND_EXACT,
          "catalog: U7 conv5 is exact");
-   CHECK(u8_offgrid->exact_int_bound == 131072,
+   CHECK(u8_offgrid->exact_bound_kind == R300_BOUND_MAX_UNSIGNED_INCLUSIVE &&
+            u8_offgrid->exact_int_bound == 131072,
          "catalog: U8 offgrid exact subset covers the FP24 integer window");
+   const struct r300_numeric_domain_info *zpass =
+      r300_numeric_domain_info(R300_NUM_DOMAIN_ZPASS_COUNT);
+   CHECK(zpass->exact_bound_kind == R300_BOUND_UNBOUNDED_BY_DOMAIN,
+         "catalog: ZPASS count is unbounded by the numeric domain");
 
    CHECK(!r300_vop_status_is_carrier_pending(R300_VOP_HW_CONFIRMED),
          "catalog status: HW_CONFIRMED does not mark carrier pending");
@@ -119,32 +160,22 @@ test_domain_catalog(void)
          "catalog: signed DP4 carrier-pending row exists");
    CHECK(signed_dp4 != NULL && signed_dp4->status == R300_VOP_CARRIER_PENDING,
          "catalog: signed DP4 does not advertise a dispatch carrier");
-   CHECK(signed_dp4 != NULL && signed_dp4->mesa_hook == NULL,
-         "catalog: signed DP4 has no Mesa dispatch hook until its carrier exists");
    CHECK(quad_disc != NULL,
          "catalog: QUADRATIC_DISCRIMINANT_OFFGRID row exists");
    CHECK(quad_disc != NULL && quad_disc->status == R300_VOP_BOUNDARY,
          "catalog: quadratic discriminant is a documented precision boundary");
    CHECK(quad_disc != NULL && quad_disc->domain == R300_NUM_DOMAIN_FP24_RTZ,
          "catalog: quadratic discriminant lives in the FP24 RTZ root domain");
-   CHECK(quad_disc != NULL && quad_disc->mesa_hook == NULL,
-         "catalog: quadratic discriminant has no Mesa hook (glamor-emitted, not a Mesa pass)");
    CHECK(q16_add != NULL && q16_add->status == R300_VOP_CARRIER_PENDING &&
             r300_vop_status_is_carrier_pending(q16_add->status),
          "catalog: Q16.16 ADD remains carrier-pending after shape detection");
-   CHECK(q16_add != NULL && q16_add->mesa_hook == NULL,
-         "catalog: Q16.16 ADD detector is test-only, no production hook");
    CHECK(q16_mul != NULL && q16_mul->status == R300_VOP_CARRIER_PENDING &&
             r300_vop_status_is_carrier_pending(q16_mul->status),
          "catalog: Q16.16 MUL remains carrier-pending");
-   CHECK(q16_mul != NULL && q16_mul->mesa_hook == NULL,
-         "catalog: Q16.16 MUL has no detector");
    CHECK(q16_mac != NULL &&
             q16_mac->status == R300_VOP_HW_CONFIRMED_CARRIER_PENDING &&
             r300_vop_status_is_carrier_pending(q16_mac->status),
          "catalog: Q16.16 MAC is HW-confirmed with the production carrier pending");
-   CHECK(q16_mac != NULL && q16_mac->mesa_hook == NULL,
-         "catalog: Q16.16 MAC has no production detector");
 }
 
 /* Suite 2: FP16 classification. */
@@ -684,9 +715,8 @@ test_multiply(void)
             loop_total - loop_mismatches, loop_total, loop_mismatches);
    CHECK(loop_mismatches == 0, label);
 
-   printf("note: hardware not run; this is a CPU-only oracle test.\n");
-   printf("note: RS482 silicon probing (fp16_class_lut_probe, fp16_mul_rne_probe)\n");
-   printf("note: is the next gate before any GPU-side implementation.\n");
+   printf("note: this executable validates the CPU oracle only.\n");
+   printf("note: silicon provenance and route state are recorded outside this oracle.\n");
 }
 
 int main(void)
