@@ -80,7 +80,7 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
     * hardware span; r3v composes the Vulkan 4096 floor from that fast path
     * plus a residual span when an image exceeds the single-span limit. */
    props->maxImageDimension1D = R3V_VK10_MIN_IMAGE_DIMENSION_1D;
-   props->maxImageDimension2D = R3V_VK10_MIN_IMAGE_DIMENSION_2D;
+   props->maxImageDimension2D = R3V_MAX_IMAGE_DIMENSION_2D;
    props->maxImageDimension3D = 256;
    props->maxImageDimensionCube = R3V_VK10_MIN_IMAGE_DIMENSION_CUBE;
    props->maxImageArrayLayers = 256;
@@ -209,8 +209,8 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
 
    /* Single viewport for R3xx graphics path. */
    props->maxViewports = 1;
-   props->maxViewportDimensions[0] = R3V_VK10_MIN_VIEWPORT_DIMENSION;
-   props->maxViewportDimensions[1] = R3V_VK10_MIN_VIEWPORT_DIMENSION;
+   props->maxViewportDimensions[0] = R3V_MAX_RENDER_EXTENT;
+   props->maxViewportDimensions[1] = R3V_MAX_RENDER_EXTENT;
    props->viewportBoundsRange[0] = -8192.0f;
    props->viewportBoundsRange[1] = 8191.0f;
    props->viewportSubPixelBits = 0;
@@ -228,16 +228,10 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
    props->maxInterpolationOffset = 0.4375f;
    props->subPixelInterpolationOffsetBits = 4;
 
-   /* The Vulkan 1.0 floor.  r300_set_framebuffer_state refuses anything
-    * wider or taller than 2560, but reporting 2560 here breaks zink's
-    * surfaceless default-framebuffer completeness (measured: every GL FBO
-    * context fails "Framebuffer is not complete" with 2560 advertised), so
-    * the floor stays and the replay clamps recorded render areas to the
-    * silicon cap instead -- the stale-zsbuf clear crash is prevented by the
-    * clamp, and an oversize bind degrades to the r300g refusal warning
-    * rather than corrupting state. */
-   props->maxFramebufferWidth = R3V_VK10_MIN_FRAMEBUFFER_DIMENSION;
-   props->maxFramebufferHeight = R3V_VK10_MIN_FRAMEBUFFER_DIMENSION;
+   /* The render pass admits the render family's extent alone, so the
+    * framebuffer limits advertise the executed 64-pixel ceiling. */
+   props->maxFramebufferWidth = R3V_MAX_RENDER_EXTENT;
+   props->maxFramebufferHeight = R3V_MAX_RENDER_EXTENT;
    props->maxFramebufferLayers = 1;
 
    props->framebufferColorSampleCounts = R3V_SUPPORTED_SAMPLE_COUNTS;
@@ -897,9 +891,7 @@ r3v_get_image_format_properties(
 
    /* There is no multisample path: images are single-sample flat layers
     * with host-mapped transfers and no resolve, so every format supports
-    * exactly one sample.  The VK 1.0 framebuffer*SampleCounts device limits
-    * keep the required 4x minimum; this is the per-format image capability,
-    * which is single-sample until a multisample layout and resolve exist. */
+    * exactly one sample, matching the single-sample device limits. */
    *image_properties = (VkImageFormatProperties){
       .maxExtent = max_extent,
       .maxMipLevels = max_mip_levels,
