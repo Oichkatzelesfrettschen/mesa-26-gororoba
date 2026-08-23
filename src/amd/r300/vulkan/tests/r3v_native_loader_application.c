@@ -16,6 +16,8 @@
 
 #include "r3v_native_reference_spirv.h"
 
+#include "amd/r300/common/r300_chip_identity.h"
+
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -98,7 +100,8 @@ main(void)
 
    VkPhysicalDeviceProperties props;
    vkGetPhysicalDeviceProperties(pdev, &props);
-   assert(props.vendorID == 0x1002 && props.deviceID == 0x5974);
+   assert(props.vendorID == R300_PCI_VENDOR_ATI &&
+          props.deviceID == R300_PCI_DEVICE_RS482);
 
    const float priority = 1.0f;
    VkDevice device = VK_NULL_HANDLE;
