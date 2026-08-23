@@ -45,6 +45,16 @@ enum r300_delivery_route {
     * rather than downgrading silently.
     */
    R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER = 2,
+   /* The device-side producer fetching the application's vertex BO
+    * through the two-array fetched body, with a driver-owned slot BO as
+    * the first array, instead of embedding the gathered records as
+    * DRAW_IMMD_2 dwords.  Selecting it takes the two producer gates plus
+    * the fetched gate at their exact values and F32_4; the stream is a
+    * new cell with a no-submit composition identity and no retained
+    * silicon delivery yet, so the third gate keeps the qualified
+    * immediate route reachable beside it.
+    */
+   R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED = 3,
 };
 
 /* The coordinate space the selected route leaves in the carrier.  Both
@@ -75,11 +85,15 @@ struct r300_delivery_route_decision {
  * and every other value stay closed, so variable presence is not
  * consent.  The R2VB host model covers F32_4, F32_3, and F32_2; any
  * other format keeps the CPU route whatever the gates say.  The GPU
- * producer route takes both gates open and F32_4; with the base gate
- * closed the GPU gate alone selects nothing.
+ * producer route takes both producer gates open and F32_4; with the
+ * base gate closed the GPU gate alone selects nothing.  The fetched
+ * producer route takes all three gates open and F32_4; the fetched gate
+ * alone, or with only one producer gate, selects nothing.
  */
 void r300_delivery_route_resolve(const char *gate_value,
-                                 const char *gpu_gate_value, int format_id,
+                                 const char *gpu_gate_value,
+                                 const char *fetched_gate_value,
+                                 int format_id,
                                  struct r300_delivery_route_decision *out);
 
 #endif /* R300_DELIVERY_ROUTE_H */

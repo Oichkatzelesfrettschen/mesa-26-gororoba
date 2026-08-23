@@ -13,6 +13,7 @@ r300_common_contract_files = files(
   'r300_pm4_compose.c',
   'r300_r2vb_carrier_delivery.c',
   'r300_r2vb_fetch_pass.c',
+  'r300_r2vb_fetched_producer.c',
   'r300_r2vb_float2_tuple_pass.c',
   'r300_r2vb_producer_pass.c',
   'r300_r2vb_public_route.c',
@@ -328,6 +329,26 @@ r300_r2vb_reingest_compose_parity_test = executable(
 test(
   'r300-r2vb-reingest-compose-parity',
   r300_r2vb_reingest_compose_parity_test,
+  suite : ['r300'],
+)
+
+r300_r2vb_fetched_producer_test = executable(
+  'r300_r2vb_fetched_producer_test',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_pm4_compose.c',
+        'r300_r2vb_carrier_delivery.c', 'r300_r2vb_fetch_pass.c',
+        'r300_r2vb_fetched_producer.c', 'r300_r2vb_producer_pass.c',
+        'r300_tcl_bypass_triangle.c',
+        'tests/r300_r2vb_fetched_producer_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-r2vb-fetched-producer',
+  r300_r2vb_fetched_producer_test,
   suite : ['r300'],
 )
 

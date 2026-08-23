@@ -55,6 +55,13 @@ r3v_native_cmd_buffer_release_recording(
       vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_carrier);
       cmd_buffer->owned_carrier = NULL;
    }
+   if (cmd_buffer->owned_slot != NULL) {
+      struct r3v_native_device *device = container_of(
+         cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+      radeon_drm_vk_bo_free(&device->drm, &cmd_buffer->owned_slot->bo);
+      vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_slot);
+      cmd_buffer->owned_slot = NULL;
+   }
    vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->deferred_copies);
    cmd_buffer->deferred_copies = NULL;
    cmd_buffer->deferred_copy_capacity = 0;

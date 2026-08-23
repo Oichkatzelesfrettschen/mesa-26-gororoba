@@ -77,6 +77,14 @@ enum r3v_native_cell_kind {
     * with the depth surface's read-write GTT relocation.
     */
    R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL,
+   /* The fetched GPU-producer route: the fetched producer composed ahead
+    * of the recorded consumer triangle, the producer reading the
+    * application's vertex BO and a driver-owned slot BO through the
+    * two-array fetched body.  The geometry contract is the consumer's
+    * maximum public extent plus four relocations: the carrier read-write,
+    * the color target written, the slot and source arrays read.
+    */
+   R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

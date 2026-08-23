@@ -52,6 +52,7 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    case R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST:
    case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC:
    case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL:
+   case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED:
       break;
    case R3V_NATIVE_CELL_KIND_UNDECLARED:
    default:

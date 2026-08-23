@@ -57,6 +57,8 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
       exact_gate("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
    device->r2vb_gpu_delivery_gate =
       exact_gate("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
+   device->r2vb_fetched_gate =
+      exact_gate("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL");
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL

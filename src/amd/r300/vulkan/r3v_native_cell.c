@@ -12,6 +12,7 @@
 #include "amd/r300/common/r300_direct_write.h"
 #include "amd/r300/common/r300_delivery_route.h"
 #include "amd/r300/common/r300_r2vb_carrier_delivery.h"
+#include "amd/r300/common/r300_r2vb_fetched_producer.h"
 #include "amd/r300/common/r300_r2vb_float2_tuple_pass.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_r2vb_reingest_pass.h"
@@ -22,6 +23,7 @@
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
 
 #include "util/macros.h"
+#include "vk_alloc.h"
 #include "vk_command_pool.h"
 #include "vk_log.h"
 
@@ -429,6 +431,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       struct r300_delivery_route_decision route_decision;
       r300_delivery_route_resolve(device->r2vb_delivery_gate,
                                   device->r2vb_gpu_delivery_gate,
+                                  device->r2vb_fetched_gate,
                                   stream.format_id, &route_decision);
       /* The GPU producer route names a device-side delivery this
        * deferred draw cannot execute: live producer submission routes
@@ -436,7 +439,9 @@ r3v_native_cmd_buffer_execute_deferred_draw(
        * double opt-in therefore refuses the draw by name instead of
        * downgrading to a host copy the caller did not select.
        */
-      if (route_decision.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER) {
+      if (route_decision.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER ||
+          route_decision.route ==
+             R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED) {
          result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                             "r3v-native: %s; live producer submission "
                             "routes through the attended cell surface",
@@ -582,6 +587,333 @@ r3v_native_cmd_buffer_execute_deferred_draw(
  */
 #define R3V_GPU_PRODUCER_CARRIER_DWORDS 16u
 
+/* The slot-position BO: one GTT page holds the three reference records
+ * with the page-granular GEM allocation the memory contract uses.
+ */
+#define R3V_FETCHED_SLOT_BO_BYTES 4096u
+
+/* The fetched route's reference-list order, which is the relocation-chunk
+ * order the composed payloads name: the consumer's two slots keep their
+ * indices and the producer's two arrays follow.
+ */
+enum r3v_fetched_reference {
+   R3V_FETCHED_REFERENCE_CARRIER = R300_TRIANGLE_SLOT_VERTEX,
+   R3V_FETCHED_REFERENCE_COLOR = R300_TRIANGLE_SLOT_COLOR,
+   R3V_FETCHED_REFERENCE_SLOT = 2,
+   R3V_FETCHED_REFERENCE_SOURCE = 3,
+   R3V_FETCHED_REFERENCE_COUNT = 4,
+};
+
+/* Admits the fetched GPU-producer route for the pending deferred draw:
+ * the producer fetches the bound vertex BO and a driver-owned slot BO,
+ * composed ahead of the recorded consumer through the role composer.
+ * Every fallible step -- oracle, geometry, composition, slot allocation,
+ * reference list -- completes before the command buffer changes, so a
+ * refusal leaves the recorded IB, references, carrier, and kind exactly
+ * as recorded and the next submission sees no half-applied state.
+ */
+static VkResult
+admit_fetched_producer(struct r3v_native_device *device,
+                       struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
+
+   if (device->gpu_producer_quarantined) {
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: GPU producer capability is "
+                       "quarantined on this device; a completed delivery "
+                       "diverged from the CPU oracle");
+   }
+   if (!draw->vertex_job_identity ||
+       (cmd_buffer->cell_kind != R3V_NATIVE_CELL_KIND_TRIANGLE &&
+        cmd_buffer->cell_kind !=
+           R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED)) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: fetched GPU producer route admits the "
+                       "identity vertex job on the recorded triangle "
+                       "consumer alone");
+   }
+
+   /* Source geometry: the first fetched record's byte offset inside the
+    * bound memory's BO, dword-granular, with the stride the pipeline
+    * declared.  The VBPNTR pointer is a 32-bit byte offset.
+    */
+   struct r3v_native_buffer *buffer = draw->buffer;
+   struct r3v_native_memory *memory = buffer->memory;
+   const uint64_t first_byte = buffer->offset + draw->stream_base +
+                               (uint64_t)draw->first_vertex * draw->stride;
+   if (first_byte > UINT32_MAX) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: fetched source offset %" PRIu64
+                       " exceeds the 32-bit vertex pointer",
+                       first_byte);
+   }
+   const struct r300_r2vb_fetched_source source = {
+      .format_id = draw->format_id,
+      .offset_bytes = (uint32_t)first_byte,
+      .stride_bytes = draw->stride,
+      .bo_size_bytes = memory->bo.size,
+   };
+
+   /* The four relocations resolve one BO each: the reloc list folds
+    * duplicate handles into one entry, which would shift the chunk index
+    * the composed payloads name.  The carrier and slot BOs are
+    * driver-owned and distinct by construction; the application's source
+    * memory must not be the color target's.
+    */
+   struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
+   if (memory->bo.handle == draw->target_memory->bo.handle ||
+       memory->bo.handle == carrier->bo.handle) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: fetched source memory aliases another "
+                       "bound buffer object; the route binds four distinct "
+                       "relocations");
+   }
+
+   /* The oracle: the delivery identity over the source stream, the bytes
+    * the device fetch and the US identity path reproduce, refusing an
+    * out-of-domain component (-EDOM) or an out-of-bounds record; the CPU
+    * gather re-derives the same bytes, the executor remaining the oracle
+    * of record.  The fetched route delivers in-bounds records alone, so
+    * robustBufferAccess's zero substitution has no device-side form here
+    * and an out-of-bounds range refuses by name.
+    */
+   bool owns_map = memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &memory->bo, &memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: bound vertex memory is not "
+                       "CPU-mappable at submission");
+   }
+   uint32_t expected[R300_TRIANGLE_VERTEX_DWORDS];
+   uint32_t oracle[R300_TRIANGLE_VERTEX_DWORDS];
+   const struct r300_vertex_stream stream = {
+      .data =
+         (const uint8_t *)memory->map + buffer->offset + draw->stream_base,
+      .stride = draw->stride,
+      .size_bytes = buffer->vk.size - draw->stream_base,
+   };
+   int delivered = r300_r2vb_identity_deliver(
+      draw->format_id, &stream, draw->first_vertex,
+      R300_TRIANGLE_VERTEX_DWORDS / 4, expected, R300_TRIANGLE_VERTEX_DWORDS);
+   int gathered = delivered == 0
+                     ? r300_cpu_vertex_gather(draw->format_id, &stream,
+                                              draw->first_vertex,
+                                              R300_TRIANGLE_VERTEX_DWORDS / 4,
+                                              oracle,
+                                              R300_TRIANGLE_VERTEX_DWORDS)
+                     : 0;
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+      memory->map = NULL;
+   }
+   if (delivered != 0) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: fetched delivery oracle refused (%d)%s",
+                       delivered,
+                       delivered == -EDOM
+                          ? "; a record is outside the FP24 fixed-point "
+                            "domain"
+                          : "; the route fetches in-bounds records alone");
+   }
+   if (gathered != 0 || memcmp(oracle, expected, sizeof(oracle)) != 0) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: CPU gather (%d) diverged from the "
+                       "delivery identity under the fetched route",
+                       gathered);
+   }
+
+   /* The consumer half is the recorded cell: the whole IB on first
+    * admission, the slice past the producer prefix on resubmission.  Its
+    * two relocation sites carry the triangle slots as payloads.
+    */
+   const bool composed_before =
+      cmd_buffer->cell_kind == R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED;
+   const uint32_t *consumer_words =
+      composed_before ? cmd_buffer->ib + draw->gpu_producer_dwords
+                      : cmd_buffer->ib;
+   const uint32_t consumer_dwords =
+      composed_before ? cmd_buffer->ib_size_dwords - draw->gpu_producer_dwords
+                      : cmd_buffer->ib_size_dwords;
+   uint32_t site_index[2];
+   uint32_t site_payload[2];
+   const int sites = r300_pm4_scan_reloc_sites(
+      consumer_words, consumer_dwords, site_index, site_payload, 2);
+   uint32_t carrier_site = 0;
+   uint32_t color_site = 0;
+   if (sites == 2) {
+      for (unsigned i = 0; i < 2; i++) {
+         if (site_payload[i] == R300_TRIANGLE_SLOT_VERTEX * 4)
+            carrier_site = site_index[i];
+         else if (site_payload[i] == R300_TRIANGLE_SLOT_COLOR * 4)
+            color_site = site_index[i];
+      }
+   }
+   if (sites != 2 || carrier_site == 0 || color_site == 0) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: recorded consumer carries %d "
+                       "relocation sites; the fetched route composes over "
+                       "the triangle's carrier and color sites",
+                       sites);
+   }
+
+   const struct r300_r2vb_fetched_route_params route_params = {
+      .source = source,
+      .slot_offset_bytes = 0,
+      .slot_bo_size_bytes = R3V_FETCHED_SLOT_BO_BYTES,
+      .consumer_words = consumer_words,
+      .consumer_dwords = consumer_dwords,
+      .consumer_carrier_site = carrier_site,
+      .consumer_color_site = color_site,
+      .roles = {
+         .chunk_index = {
+            [R300_R2VB_BO_CARRIER] = R3V_FETCHED_REFERENCE_CARRIER,
+            [R300_R2VB_BO_COLOR] = R3V_FETCHED_REFERENCE_COLOR,
+            [R300_R2VB_BO_SLOT] = R3V_FETCHED_REFERENCE_SLOT,
+            [R300_R2VB_BO_MODEL] = R3V_FETCHED_REFERENCE_SOURCE,
+         },
+      },
+   };
+   struct r300_r2vb_fetched_route_ib route;
+   int composed = r300_r2vb_fetched_route_compose(&route_params, &route);
+   if (composed == 0 && device->gpu_producer_compose_inject_errno != 0) {
+      r300_r2vb_fetched_route_release(&route);
+      composed = device->gpu_producer_compose_inject_errno;
+   }
+   if (composed != 0) {
+      return vk_errorf(device, r3v_native_cell_vk_result_from_errno(composed),
+                       "r3v-native: fetched route composition refused "
+                       "(%d)", composed);
+   }
+   /* The composition binds exactly the five sites over four roles, and
+    * the consumer slice lands verbatim past the producer prefix.
+    */
+   if (route.composition.reloc_count != 5 ||
+       route.ib_size_dwords != route.consumer_start_dwords + consumer_dwords) {
+      r300_r2vb_fetched_route_release(&route);
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: fetched route composed %u sites over "
+                       "%u dwords; five sites and a verbatim consumer "
+                       "slice are the contract",
+                       route.composition.reloc_count, route.ib_size_dwords);
+   }
+
+   /* The slot BO: allocated once per command buffer, its records
+    * rewritten on every admission so the content matches the pass the
+    * composition just emitted.
+    */
+   struct r3v_native_memory *slot = cmd_buffer->owned_slot;
+   if (slot == NULL) {
+      slot = vk_zalloc(&cmd_buffer->vk.pool->alloc, sizeof(*slot), 8,
+                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (slot == NULL) {
+         r300_r2vb_fetched_route_release(&route);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      if (radeon_drm_vk_bo_create(&device->drm, R3V_FETCHED_SLOT_BO_BYTES,
+                                  R3V_NATIVE_MEMORY_ALIGNMENT,
+                                  RADEON_GEM_DOMAIN_GTT, 0, false,
+                                  &slot->bo) != 0) {
+         vk_free(&cmd_buffer->vk.pool->alloc, slot);
+         r300_r2vb_fetched_route_release(&route);
+         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      }
+   }
+   void *slot_map = NULL;
+   if (radeon_drm_vk_bo_map(&device->drm, &slot->bo, &slot_map) != 0) {
+      if (cmd_buffer->owned_slot == NULL) {
+         radeon_drm_vk_bo_free(&device->drm, &slot->bo);
+         vk_free(&cmd_buffer->vk.pool->alloc, slot);
+      }
+      r300_r2vb_fetched_route_release(&route);
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: slot memory is not CPU-mappable at "
+                       "admission");
+   }
+   uint32_t slot_words[R300_R2VB_PRODUCER_REFERENCE_COUNT * 4];
+   ASSERTED const int positioned = r300_r2vb_fetched_producer_slot_positions(
+      R300_R2VB_PRODUCER_REFERENCE_COUNT, slot_words, ARRAY_SIZE(slot_words));
+   assert(positioned == 0);
+   memcpy(slot_map, slot_words, sizeof(slot_words));
+   radeon_drm_vk_bo_cache_sync(&device->drm, slot_map, sizeof(slot_words));
+   radeon_drm_vk_bo_unmap(&device->drm, &slot->bo, slot_map);
+
+   /* The reference list: the consumer's two slots in place, the carrier
+    * gaining the color backend's write domain, then the slot and source
+    * arrays device-read.
+    */
+   struct r3v_native_bo_reference *references =
+      calloc(R3V_FETCHED_REFERENCE_COUNT, sizeof(*references));
+   if (references == NULL) {
+      if (cmd_buffer->owned_slot == NULL) {
+         radeon_drm_vk_bo_free(&device->drm, &slot->bo);
+         vk_free(&cmd_buffer->vk.pool->alloc, slot);
+      }
+      r300_r2vb_fetched_route_release(&route);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   references[R3V_FETCHED_REFERENCE_CARRIER] =
+      cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX];
+   references[R3V_FETCHED_REFERENCE_CARRIER].read_domains =
+      RADEON_GEM_DOMAIN_GTT;
+   references[R3V_FETCHED_REFERENCE_CARRIER].write_domain =
+      RADEON_GEM_DOMAIN_GTT;
+   references[R3V_FETCHED_REFERENCE_COLOR] =
+      cmd_buffer->references[R300_TRIANGLE_SLOT_COLOR];
+   references[R3V_FETCHED_REFERENCE_SLOT] = (struct r3v_native_bo_reference){
+      .handle = slot->bo.handle,
+      .read_domains = RADEON_GEM_DOMAIN_GTT,
+      .write_domain = 0,
+      .memory = slot,
+   };
+   references[R3V_FETCHED_REFERENCE_SOURCE] =
+      (struct r3v_native_bo_reference){
+         .handle = memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = 0,
+         .memory = memory,
+      };
+
+   /* Every fallible step has completed: install the composed stream. */
+   free(cmd_buffer->ib);
+   free(cmd_buffer->references);
+   cmd_buffer->ib = route.ib;
+   cmd_buffer->ib_size_dwords = route.ib_size_dwords;
+   cmd_buffer->references = references;
+   cmd_buffer->reference_count = R3V_FETCHED_REFERENCE_COUNT;
+   cmd_buffer->owned_slot = slot;
+   cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED;
+   draw->gpu_producer_dwords = route.consumer_start_dwords;
+   draw->gpu_producer_delivery = true;
+   route.ib = NULL;
+
+   /* The poisoned carrier crosses to the device now; the read-back judges
+    * every slot against the delivery identity plus the pad slot's poison.
+    */
+   bool owns_carrier_map = carrier->map == NULL;
+   if (owns_carrier_map &&
+       radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
+                            &carrier->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: carrier memory is not CPU-mappable "
+                       "at admission");
+   }
+   uint32_t *carrier_words = carrier->map;
+   for (uint32_t i = 0; i < R3V_GPU_PRODUCER_CARRIER_DWORDS; i++)
+      carrier_words[i] = R300_R2VB_PRODUCER_POISON_DWORD;
+   radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
+                               R3V_GPU_PRODUCER_CARRIER_DWORDS * 4);
+   if (owns_carrier_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
+      carrier->map = NULL;
+   }
+   memcpy(draw->gpu_expected_carrier, expected, sizeof(expected));
+   for (uint32_t i = R300_TRIANGLE_VERTEX_DWORDS;
+        i < R3V_GPU_PRODUCER_CARRIER_DWORDS; i++)
+      draw->gpu_expected_carrier[i] = R300_R2VB_PRODUCER_POISON_DWORD;
+   return VK_SUCCESS;
+}
+
 VkResult
 r3v_native_deferred_draw_admit_gpu_producer(
    struct r3v_native_device *device,
@@ -594,7 +926,10 @@ r3v_native_deferred_draw_admit_gpu_producer(
    struct r300_delivery_route_decision route;
    r300_delivery_route_resolve(device->r2vb_delivery_gate,
                                device->r2vb_gpu_delivery_gate,
-                               draw->format_id, &route);
+                               device->r2vb_fetched_gate, draw->format_id,
+                               &route);
+   if (route.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED)
+      return admit_fetched_producer(device, cmd_buffer);
    if (route.route != R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER)
       return VK_SUCCESS;
 
