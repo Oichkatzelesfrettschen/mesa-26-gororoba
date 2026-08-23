@@ -49,10 +49,11 @@ enum r300_delivery_route {
     * through the two-array fetched body, with a driver-owned slot BO as
     * the first array, instead of embedding the gathered records as
     * DRAW_IMMD_2 dwords.  Selecting it takes the two producer gates plus
-    * the fetched gate at their exact values and F32_4; the stream is a
-    * new cell with a no-submit composition identity and no retained
-    * silicon delivery yet, so the third gate keeps the qualified
-    * immediate route reachable beside it.
+    * the fetched gate at their exact values and one of F32_4, F32_3,
+    * F32_2: the one emitter fills a narrower record's missing lanes
+    * through the fetch swizzle, so each width is its own cell with its
+    * own composition identity, retained on silicon per width.  The third
+    * gate keeps the qualified immediate route reachable beside it.
     */
    R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED = 3,
 };
@@ -87,8 +88,9 @@ struct r300_delivery_route_decision {
  * other format keeps the CPU route whatever the gates say.  The GPU
  * producer route takes both producer gates open and F32_4; with the
  * base gate closed the GPU gate alone selects nothing.  The fetched
- * producer route takes all three gates open and F32_4; the fetched gate
- * alone, or with only one producer gate, selects nothing.
+ * producer route takes all three gates open and any of the three host
+ * model widths; the fetched gate alone, or with only one producer gate,
+ * selects nothing.
  */
 void r300_delivery_route_resolve(const char *gate_value,
                                  const char *gpu_gate_value,

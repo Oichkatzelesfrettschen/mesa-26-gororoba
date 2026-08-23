@@ -100,9 +100,11 @@ main(void)
 
    printf("r300_delivery_route_test: all checks passed\n");
 
-   /* The fetched route takes all three gates; the fetched gate alone or
-    * with one producer gate selects nothing new, and F32_3/F32_2 keep
-    * the host model under all three.
+   /* The fetched route takes all three gates over each of the three
+    * host-model widths, naming the width in its clause; the fetched gate
+    * alone or with one producer gate selects nothing new, and F32_3 and
+    * F32_2 keep the host model under the two producer gates because the
+    * immediate producer embeds F32_4 records alone.
     */
    r300_delivery_route_resolve("1", "1", "1", R300_VERTEX_FORMAT_F32_4, &d);
    assert(d.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED);
@@ -121,9 +123,22 @@ main(void)
       assert(d.route == R300_DELIVERY_ROUTE_CPU);
    }
    r300_delivery_route_resolve("1", "1", "1", R300_VERTEX_FORMAT_F32_3, &d);
-   assert(d.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL);
+   assert(d.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED);
+   assert(d.position_space == R300_CARRIER_POSITION_WINDOW);
+   assert(d.reason != NULL && strstr(d.reason, "F32_3") != NULL);
    r300_delivery_route_resolve("1", "1", "1", R300_VERTEX_FORMAT_F32_2, &d);
-   assert(d.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL);
+   assert(d.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED);
+   assert(d.position_space == R300_CARRIER_POSITION_WINDOW);
+   assert(d.reason != NULL && strstr(d.reason, "F32_2") != NULL);
+   for (unsigned i = 0; i < sizeof(closed_gates) / sizeof(closed_gates[0]);
+        i++) {
+      r300_delivery_route_resolve("1", "1", closed_gates[i],
+                                  R300_VERTEX_FORMAT_F32_3, &d);
+      assert(d.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL);
+      r300_delivery_route_resolve("1", closed_gates[i], "1",
+                                  R300_VERTEX_FORMAT_F32_2, &d);
+      assert(d.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL);
+   }
    r300_delivery_route_resolve("1", "1", "1", R300_VERTEX_FORMAT_F32_1, &d);
    assert(d.route == R300_DELIVERY_ROUTE_CPU);
 

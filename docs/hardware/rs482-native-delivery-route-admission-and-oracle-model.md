@@ -416,17 +416,20 @@ model.
 - Source-format migration. F32_3 and F32_2 public routes remain open, and the
   FLOAT_4 model fetch already pins a kernel fact the widened width exposed.
   The fetched producer emits all three widths and pins their composed
-  digests; the resolver opens the fetched route for F32_4 alone until each
-  width's attended cell is retained.
+  digests, and the resolver opens the fetched route per width under the
+  three exact gates; a width's delivery verdict is its own retained cell,
+  and F32_4 is the one retained so far.
 - Fetched-route closure. The fetched F32_4 route composes at submit time
   byte-identical to its offline composition (the submit-order harness's
   `gpu-fetched-composed` arm proves the digests equal through the arming
   gate), refuses atomically on an injected composition failure, replays
   through the kernel parser as `dwords=547 relocs=4 draws=2 ACCEPT`, and is
   delivered on RS482 (bundle
-  `r3v-native-fetched-gpu-producer-route-first-delivery-rs482`); the open
-  items are the F32_3 and F32_2 cells and a timing cut over the fetched
-  route against the measured CPU default.
+  `r3v-native-fetched-gpu-producer-route-first-delivery-rs482`); the
+  F32_3 and F32_2 compositions pass the same harness arms
+  (`gpu-fetched-composed-f32_3`, `-f32_2`) and kernel replays and await
+  their own retained cells; the remaining open item is a timing cut over
+  the fetched route against the measured CPU default.
 - Fetch-tail enforcement. The offset-blind kernel bound leaves userspace as the
   enforcing layer. A kernel-side offset-aware bound would move that obligation;
   until then a replay `ACCEPT` is not a statement about the fetch window.

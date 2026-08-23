@@ -1562,16 +1562,20 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     suite : ['r3v'],
   )
   # The fetched cell shares the runner and the recording; its mode is the
-  # composition the admission selects and the digest the run declares.
-  test(
-    'r3v-native-fetched-gpu-producer-record',
-    r3v_native_attended_public_gpu_producer,
-    args : [meson.current_build_dir(), '--record-only', '--fetched'],
-    env : r3v_native_cell_env,
-    depends : [libradeon_noop_drm_shim],
-    timeout : 60,
-    suite : ['r3v'],
-  )
+  # composition the admission selects and the digest the run declares,
+  # and each source width records its own stride and attribute format.
+  foreach fetched_width : ['f32_4', 'f32_3', 'f32_2']
+    test(
+      'r3v-native-fetched-gpu-producer-record-@0@'.format(fetched_width),
+      r3v_native_attended_public_gpu_producer,
+      args : [meson.current_build_dir(), '--record-only',
+              '--fetched=@0@'.format(fetched_width)],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
 
   # The timing runner's CPU-route authorization rests on the consumer
   # slice of the offline composition being the recorded consumer cell
@@ -1671,6 +1675,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                         'ioctl-refused', 'completion-failure',
                         'robust-oob-enabled', 'robust-oob-w0-refused',
                         'robust-oob-disabled', 'gpu-fetched-composed',
+                        'gpu-fetched-composed-f32_3',
+                        'gpu-fetched-composed-f32_2',
                         'gpu-fetched-compose-failure',
                         'gpu-fetched-wrong-digest',
                         'gpu-fetched-offset-misaligned',

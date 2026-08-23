@@ -5,10 +5,13 @@
  * reference fetched producer over a one-page source at offset zero ahead
  * of the reference TCL-bypass consumer at its maximum extent, roles bound
  * CARRIER 0, COLOR 1, SLOT 2, SOURCE 3.  Evidence class: host composition
- * through r300_r2vb_fetched_route_reference_compose; no silicon run has
- * retained these streams, so a pin here guards the emitter against drift
- * and names the bytes an attended run would authorize, and carries no
- * delivery verdict.
+ * through r300_r2vb_fetched_route_reference_compose.  The F32_4 stream is
+ * also the silicon identity of the retained RS482 delivery
+ * (steinmarder-r300 bundle
+ * r3v-native-fetched-gpu-producer-route-first-delivery-rs482); the F32_3
+ * and F32_2 pins guard the emitter against drift and name the bytes
+ * their attended runs authorize, and carry no delivery verdict until a
+ * bundle retains them.
  */
 
 #ifndef R300_FETCHED_ROUTE_DIGESTS_H
