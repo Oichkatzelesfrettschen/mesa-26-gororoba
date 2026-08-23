@@ -92,6 +92,19 @@ enum arm {
    ARM_GPU_FETCHED_COMPOSED,
    ARM_GPU_FETCHED_COMPOSE_FAILURE,
    ARM_GPU_FETCHED_WRONG_DIGEST,
+   /* The fetched admission's named refusals, each before any write: a
+    * bind offset the VBPNTR pointer cannot carry (2), a binding stride
+    * the stride field cannot carry (18), a record outside the FP24
+    * fixed-point domain (the NDC triangle's negative components), a
+    * two-record buffer under the three-vertex draw with robustBufferAccess
+    * on (the fetched route has no zero-substitution form), and a source
+    * bound into the color target's memory (one relocation entry would
+    * fold two roles). */
+   ARM_GPU_FETCHED_OFFSET_MISALIGNED,
+   ARM_GPU_FETCHED_STRIDE_MISALIGNED,
+   ARM_GPU_FETCHED_OUT_OF_DOMAIN,
+   ARM_GPU_FETCHED_OUT_OF_BOUNDS,
+   ARM_GPU_FETCHED_ALIASED_SOURCE,
 };
 
 
@@ -113,6 +126,11 @@ static const struct {
    { "gpu-fetched-composed", ARM_GPU_FETCHED_COMPOSED },
    { "gpu-fetched-compose-failure", ARM_GPU_FETCHED_COMPOSE_FAILURE },
    { "gpu-fetched-wrong-digest", ARM_GPU_FETCHED_WRONG_DIGEST },
+   { "gpu-fetched-offset-misaligned", ARM_GPU_FETCHED_OFFSET_MISALIGNED },
+   { "gpu-fetched-stride-misaligned", ARM_GPU_FETCHED_STRIDE_MISALIGNED },
+   { "gpu-fetched-out-of-domain", ARM_GPU_FETCHED_OUT_OF_DOMAIN },
+   { "gpu-fetched-out-of-bounds", ARM_GPU_FETCHED_OUT_OF_BOUNDS },
+   { "gpu-fetched-aliased-source", ARM_GPU_FETCHED_ALIASED_SOURCE },
 };
 
 /* Injection over the transport's ioctl seam: the saved production table
@@ -304,9 +322,16 @@ run_arm(enum arm arm, const char *name)
    assert(reference.ib_size_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
    assert(strcmp(reference_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
    r300_tcl_bypass_triangle_release(&reference);
+   const bool fetched_refusal_arm =
+      arm == ARM_GPU_FETCHED_OFFSET_MISALIGNED ||
+      arm == ARM_GPU_FETCHED_STRIDE_MISALIGNED ||
+      arm == ARM_GPU_FETCHED_OUT_OF_DOMAIN ||
+      arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS ||
+      arm == ARM_GPU_FETCHED_ALIASED_SOURCE;
    const bool fetched_arm = arm == ARM_GPU_FETCHED_COMPOSED ||
                             arm == ARM_GPU_FETCHED_COMPOSE_FAILURE ||
-                            arm == ARM_GPU_FETCHED_WRONG_DIGEST;
+                            arm == ARM_GPU_FETCHED_WRONG_DIGEST ||
+                            fetched_refusal_arm;
    if (arm == ARM_AUTHORIZATION_REFUSED) {
       char wrong[BLAKE3_OUT_LEN * 2 + 1];
       memcpy(wrong, reference_digest, sizeof(wrong));
@@ -374,7 +399,16 @@ run_arm(enum arm arm, const char *name)
                            arm == ARM_ROBUST_OOB_W0_REFUSED ||
                            arm == ARM_ROBUST_OOB_DISABLED;
    const bool robust_enabled = arm == ARM_ROBUST_OOB_ENABLED ||
-                               arm == ARM_ROBUST_OOB_W0_REFUSED;
+                               arm == ARM_ROBUST_OOB_W0_REFUSED ||
+                               arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS;
+   /* Per-arm stream geometry: the bind offset, binding stride, buffer
+    * size, and whether the buffer binds into the color target's memory. */
+   const VkDeviceSize bind_offset =
+      arm == ARM_GPU_FETCHED_OFFSET_MISALIGNED ? 2 : 0;
+   const uint32_t binding_stride =
+      arm == ARM_GPU_FETCHED_STRIDE_MISALIGNED ? 18 : 16;
+   const bool short_buffer = robust_arm || arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS;
+   const bool alias_target = arm == ARM_GPU_FETCHED_ALIASED_SOURCE;
    const VkPhysicalDeviceFeatures robust_features = {
       .robustBufferAccess = VK_TRUE,
    };
@@ -476,27 +510,41 @@ run_arm(enum arm arm, const char *name)
                          &(VkBufferCreateInfo){
                             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                             /* Two 16-byte records under a three-vertex
-                             * draw for the robust arms. */
-                            .size = robust_arm ? 32 : 256,
+                             * draw for the robust and out-of-bounds
+                             * arms. */
+                            .size = short_buffer ? 32 : 256,
                             .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                          },
                          NULL, &vertex_buffer) == VK_SUCCESS);
-   assert(vkBindBufferMemory(device, vertex_buffer, vertex_memory, 0) ==
-          VK_SUCCESS);
-   {
+   if (alias_target) {
+      /* The source bound into the color target's allocation, on the
+       * seeded page past the image footprint: the admission refuses the
+       * aliased handle before it reads a record, so the page keeps its
+       * seed and no record is written. */
+      const VkDeviceSize alias_offset = (target.footprint_bytes + 4095) &
+                                        ~(VkDeviceSize)4095;
+      assert(alias_offset + 256 <= target.footprint_bytes + 4096);
+      assert(vkBindBufferMemory(device, vertex_buffer, target.memory,
+                                alias_offset) == VK_SUCCESS);
+   } else {
+      assert(vkBindBufferMemory(device, vertex_buffer, vertex_memory, 0) ==
+             VK_SUCCESS);
       void *map = NULL;
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
       /* The fetched route declares a window-space carrier and admits
        * FP24 fixed points alone, so the fetched arms bind the reference
-       * cell's own window-space records; every other arm binds the NDC
-       * triangle the CPU route transforms. */
-      if (fetched_arm)
-         memcpy(map, r300_tcl_bypass_triangle_vertices,
-                sizeof(r300_tcl_bypass_triangle_vertices));
-      else
-         memcpy(map, ndc_triangle, sizeof(ndc_triangle));
+       * cell's own window-space records at the arm's bind offset and
+       * stride; the out-of-domain arm and every CPU-route arm bind the
+       * NDC triangle, whose negative components the CPU route transforms
+       * and the fetched route refuses. */
+      const float *records = fetched_arm && arm != ARM_GPU_FETCHED_OUT_OF_DOMAIN
+                                ? r300_tcl_bypass_triangle_vertices
+                                : ndc_triangle;
+      for (unsigned v = 0; v < 3; v++)
+         memcpy((uint8_t *)map + bind_offset + v * binding_stride,
+                &records[v * 4], 4 * sizeof(float));
       vkUnmapMemory(device, vertex_memory);
    }
 
@@ -580,7 +628,7 @@ run_arm(enum arm arm, const char *name)
                       .pVertexBindingDescriptions =
                          &(VkVertexInputBindingDescription){
                             .binding = 0,
-                            .stride = 16,
+                            .stride = binding_stride,
                             .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
                          },
                       .vertexAttributeDescriptionCount = 1,
@@ -705,7 +753,8 @@ run_arm(enum arm arm, const char *name)
       },
       VK_SUBPASS_CONTENTS_INLINE);
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-   vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &(VkDeviceSize){ 0 });
+   vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer,
+                          &(VkDeviceSize){ bind_offset });
    vkCmdDraw(cmd, 3, 1, 0, 0);
    vkCmdEndRenderPass(cmd);
    const VkResult ended = vkEndCommandBuffer(cmd);
@@ -918,9 +967,14 @@ run_arm(enum arm arm, const char *name)
       assert(file_present(manifest_dir, "gpu_carrier_observed.bin"));
       break;
    case ARM_GPU_FETCHED_COMPOSE_FAILURE:
-      /* The injected composition failure refuses the admission before
-       * any allocation, reference, IB, or carrier write: the recording
-       * is exactly as recorded. */
+   case ARM_GPU_FETCHED_OFFSET_MISALIGNED:
+   case ARM_GPU_FETCHED_STRIDE_MISALIGNED:
+   case ARM_GPU_FETCHED_OUT_OF_DOMAIN:
+   case ARM_GPU_FETCHED_OUT_OF_BOUNDS:
+   case ARM_GPU_FETCHED_ALIASED_SOURCE:
+      /* The injected composition failure and each named admission
+       * refusal stop before any allocation, reference, IB, or carrier
+       * write: the recording is exactly as recorded. */
       assert(submitted == VK_ERROR_DEVICE_LOST);
       assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
       assert(cs_ioctls == 0);
@@ -957,7 +1011,7 @@ run_arm(enum arm arm, const char *name)
     * retain none. */
    const bool ib_retained = file_present(manifest_dir, "ib.bin");
    if (arm == ARM_RETENTION_UNWRITABLE ||
-       arm == ARM_GPU_FETCHED_COMPOSE_FAILURE)
+       arm == ARM_GPU_FETCHED_COMPOSE_FAILURE || fetched_refusal_arm)
       assert(!ib_retained);
    else if (arm != ARM_GATE_CLOSED && arm != ARM_KNOWN_BAD_PREMATURE_DRAW)
       assert(ib_retained);

@@ -1669,7 +1669,12 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                         'robust-oob-enabled', 'robust-oob-w0-refused',
                         'robust-oob-disabled', 'gpu-fetched-composed',
                         'gpu-fetched-compose-failure',
-                        'gpu-fetched-wrong-digest']
+                        'gpu-fetched-wrong-digest',
+                        'gpu-fetched-offset-misaligned',
+                        'gpu-fetched-stride-misaligned',
+                        'gpu-fetched-out-of-domain',
+                        'gpu-fetched-out-of-bounds',
+                        'gpu-fetched-aliased-source']
     test(
       'r3v-native-submit-order-@0@'.format(submit_arm),
       r3v_native_submit_order_harness,
