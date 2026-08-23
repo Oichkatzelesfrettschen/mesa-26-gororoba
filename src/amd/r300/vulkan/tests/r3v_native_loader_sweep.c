@@ -229,16 +229,19 @@ call_create_descriptor_pool(void)
 static int
 call_create_query_pool(void)
 {
-   VkQueryPool pool = (VkQueryPool)(uintptr_t)0x1;
+   VkQueryPool pool = VK_NULL_HANDLE;
    VkResult result = vkCreateQueryPool(
       device,
       &(VkQueryPoolCreateInfo){
          .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
          .queryType = VK_QUERY_TYPE_OCCLUSION,
-         .queryCount = 1,
+         .queryCount = 4,
       },
       NULL, &pool);
-   return (result != VK_SUCCESS && pool == VK_NULL_HANDLE) ? 0 : 1;
+   if (result != VK_SUCCESS || pool == VK_NULL_HANDLE)
+      return 1;
+   vkDestroyQueryPool(device, pool, NULL);
+   return 0;
 }
 
 /* The descriptor-set-layout surface is live for the compute route:
@@ -754,7 +757,8 @@ main(void)
    in_child("vkCreateSampler records state and destroys",
             call_create_sampler);
    in_child("vkCreateDescriptorPool refuses", call_create_descriptor_pool);
-   in_child("vkCreateQueryPool refuses", call_create_query_pool);
+   in_child("vkCreateQueryPool constructs the occlusion pool",
+            call_create_query_pool);
    in_child("vkCreateDescriptorSetLayout admits the storage contract "
             "and refuses outside it",
             call_create_descriptor_set_layout);

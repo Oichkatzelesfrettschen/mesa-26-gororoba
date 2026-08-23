@@ -201,6 +201,38 @@ struct r3v_native_deferred_copy {
 #define R3V_NATIVE_DESCRIPTOR_BINDING_MAX 4
 #define R3V_NATIVE_DESCRIPTOR_POOL_SET_MAX 16
 
+/* An occlusion query pool: per-query availability plus the counted
+ * value's one admitted case.  The recording admits a query span that
+ * contains no fragment-producing command, so the samples-passed count
+ * is exactly zero and the pool stores availability alone; submission
+ * of the recorded span publishes it.
+ */
+#define R3V_NATIVE_QUERY_POOL_MAX_QUERIES 64
+
+struct r3v_native_query_pool {
+   struct vk_object_base base;
+   uint32_t query_count;
+   /* 0 = reset (unavailable), 1 = available with value zero. */
+   uint8_t state[R3V_NATIVE_QUERY_POOL_MAX_QUERIES];
+};
+
+/* One recorded query state transition, applied at queue submission in
+ * recorded order.
+ */
+enum r3v_native_query_op_kind {
+   R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE,
+   R3V_NATIVE_QUERY_OP_RESET,
+};
+
+struct r3v_native_query_op {
+   enum r3v_native_query_op_kind kind;
+   struct r3v_native_query_pool *pool;
+   uint32_t first_query;
+   uint32_t query_count;
+};
+
+#define R3V_NATIVE_QUERY_OP_MAX 16
+
 struct r3v_native_descriptor_set_layout {
    struct vk_descriptor_set_layout vk;
    bool binding_present[R3V_NATIVE_DESCRIPTOR_BINDING_MAX];
@@ -396,6 +428,14 @@ struct r3v_native_cmd_buffer {
     * recording; the draw of a dynamic-state pipeline resolves its
     * extent here.
     */
+   /* The recorded query ops and the one active span: a begun query
+    * refuses every fragment-producing command until its end, so the
+    * zero count the availability publishes is exact.
+    */
+   struct r3v_native_query_op query_ops[R3V_NATIVE_QUERY_OP_MAX];
+   uint32_t query_op_count;
+   struct r3v_native_query_pool *active_query_pool;
+   uint32_t active_query;
    bool viewport_set;
    bool scissor_set;
    VkViewport dynamic_viewport;
@@ -778,6 +818,8 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_image_view, base, VkImageView,
                                VK_OBJECT_TYPE_IMAGE_VIEW)
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_sampler, base, VkSampler,
                                VK_OBJECT_TYPE_SAMPLER)
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_query_pool, base, VkQueryPool,
+                               VK_OBJECT_TYPE_QUERY_POOL)
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_pipeline, base, VkPipeline,
                                VK_OBJECT_TYPE_PIPELINE)
 

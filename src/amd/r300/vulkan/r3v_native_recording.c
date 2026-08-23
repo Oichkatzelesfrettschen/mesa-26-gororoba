@@ -303,6 +303,20 @@ r3v_native_copy_buffer_range_ok(const struct r3v_native_buffer *buffer,
    return true;
 }
 
+static struct r3v_native_query_op *
+r3v_native_query_op_slot(struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   if (cmd_buffer->query_op_count == R3V_NATIVE_QUERY_OP_MAX)
+      return NULL;
+   return &cmd_buffer->query_ops[cmd_buffer->query_op_count];
+}
+
+/* The begun query admits a span with no fragment-producing command --
+ * the pass begin refuses while it is active -- so the samples-passed
+ * count is exactly zero and the end publishes availability alone.
+ * PRECISE requires the withheld occlusionQueryPrecise feature, and an
+ * imprecise zero is exact here anyway, so a nonzero flag refuses.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdBeginQuery(
    VkCommandBuffer commandBuffer,
@@ -310,7 +324,17 @@ r3v_CmdBeginQuery(
    uint32_t query,
    VkQueryControlFlags flags)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_query_pool, pool, queryPool);
+
+   if (pool == NULL || flags != 0 || query >= pool->query_count ||
+       cmd_buffer->active_query_pool != NULL ||
+       cmd_buffer->pass_target != NULL) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   cmd_buffer->active_query_pool = pool;
+   cmd_buffer->active_query = query;
 }
 
 
@@ -785,7 +809,24 @@ r3v_CmdEndQuery(
    VkQueryPool queryPool,
    uint32_t query)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_query_pool, pool, queryPool);
+
+   struct r3v_native_query_op *op = r3v_native_query_op_slot(cmd_buffer);
+   if (op == NULL || pool == NULL ||
+       cmd_buffer->active_query_pool != pool ||
+       cmd_buffer->active_query != query) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   *op = (struct r3v_native_query_op){
+      .kind = R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE,
+      .pool = pool,
+      .first_query = query,
+      .query_count = 1,
+   };
+   cmd_buffer->query_op_count++;
+   cmd_buffer->active_query_pool = NULL;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -939,6 +980,9 @@ r3v_CmdResetEvent(
    r3v_native_cmd_poison(commandBuffer);
 }
 
+/* The reset returns each named query to unavailable at submission, in
+ * recorded order with the ends around it.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdResetQueryPool(
    VkCommandBuffer commandBuffer,
@@ -946,7 +990,24 @@ r3v_CmdResetQueryPool(
    uint32_t firstQuery,
    uint32_t queryCount)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_query_pool, pool, queryPool);
+
+   struct r3v_native_query_op *op = r3v_native_query_op_slot(cmd_buffer);
+   if (op == NULL || pool == NULL || cmd_buffer->pass_target != NULL ||
+       cmd_buffer->active_query_pool == pool ||
+       firstQuery >= pool->query_count ||
+       queryCount > pool->query_count - firstQuery) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   *op = (struct r3v_native_query_op){
+      .kind = R3V_NATIVE_QUERY_OP_RESET,
+      .pool = pool,
+      .first_query = firstQuery,
+      .query_count = queryCount,
+   };
+   cmd_buffer->query_op_count++;
 }
 
 /* Resolve reads a multisampled source, and image creation admits
