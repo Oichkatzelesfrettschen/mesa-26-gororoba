@@ -85,6 +85,12 @@ enum r3v_native_cell_kind {
     * the color target written, the slot and source arrays read.
     */
    R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED,
+   /* The compute identity carrier: the fetched producer pass alone, the
+    * input storage buffer as its source array and the output storage
+    * buffer as its carrier row, under the compute gate and the identity
+    * verb's own gate.  The geometry contract is three relocations: the
+    * output written, the slot and input arrays read. */
+   R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

@@ -209,6 +209,33 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
       return source->read_domains != RADEON_GEM_DOMAIN_GTT ||
              source->write_domain != 0 || source->memory == NULL;
    }
+   case R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER: {
+      /* The compute identity carrier binds three relocations: the
+       * output written by the color backend, the slot array (the
+       * admission's own page) and the input array device-read.
+       */
+      if (!cmd_buffer->deferred_dispatch.pending ||
+          !cmd_buffer->deferred_dispatch.gpu_carrier_delivery)
+         return true;
+      if (cmd_buffer->reference_count != 3)
+         return true;
+      const struct r3v_native_bo_reference *output =
+         &cmd_buffer->references[0];
+      const struct r3v_native_bo_reference *slot =
+         &cmd_buffer->references[1];
+      const struct r3v_native_bo_reference *input =
+         &cmd_buffer->references[2];
+      if (output->read_domains != 0 ||
+          output->write_domain != RADEON_GEM_DOMAIN_GTT ||
+          output->memory == NULL)
+         return true;
+      if (slot->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          slot->write_domain != 0 || slot->memory == NULL ||
+          slot->memory != cmd_buffer->owned_slot)
+         return true;
+      return input->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             input->write_domain != 0 || input->memory == NULL;
+   }
    case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL: {
       /* The depth control binds three exact footprints: the vertex page
        * device-read, the color target device-written, and the depth
@@ -761,7 +788,12 @@ enum r3v_native_observed_route
 r3v_native_queue_observed_route(VkDevice _device)
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
-   if (device == NULL || !device->transport_gpu_producer_delivery)
+   if (device == NULL)
+      return R3V_NATIVE_OBSERVED_ROUTE_CPU;
+   if (device->transport_cell_kind ==
+       R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER)
+      return R3V_NATIVE_OBSERVED_ROUTE_COMPUTE_IDENTITY_CARRIER;
+   if (!device->transport_gpu_producer_delivery)
       return R3V_NATIVE_OBSERVED_ROUTE_CPU;
    return device->transport_cell_kind ==
                 R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED
@@ -779,6 +811,8 @@ r3v_native_observed_route_name(enum r3v_native_observed_route route)
       return "gpu";
    case R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER_FETCHED:
       return "fetched";
+   case R3V_NATIVE_OBSERVED_ROUTE_COMPUTE_IDENTITY_CARRIER:
+      return "compute-identity-carrier";
    }
    return "unknown";
 }
@@ -1160,6 +1194,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        */
       VkResult gpu_admit =
          r3v_native_deferred_draw_admit_gpu_producer(device, cmd_buffer);
+      if (gpu_admit == VK_SUCCESS)
+         gpu_admit = r3v_native_deferred_dispatch_admit_gpu(device, cmd_buffer);
       if (gpu_admit != VK_SUCCESS) {
          if (gpu_admit == VK_ERROR_OUT_OF_HOST_MEMORY ||
              gpu_admit == VK_ERROR_OUT_OF_DEVICE_MEMORY)
@@ -1541,6 +1577,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        */
       VkResult gpu_verdict =
          r3v_native_deferred_draw_verify_gpu_producer(device, cmd_buffer);
+      if (gpu_verdict == VK_SUCCESS)
+         gpu_verdict =
+            r3v_native_deferred_dispatch_verify_gpu(device, cmd_buffer);
       if (gpu_verdict != VK_SUCCESS)
          return gpu_verdict;
       device->queue_status =

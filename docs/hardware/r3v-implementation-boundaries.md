@@ -112,10 +112,26 @@ what the substrate cannot lower (scatter, image store, shared memory or
 barrier, general atomic, integer shift); six failure clauses bind every
 route: refuse at admission, exact gate per verb, no fallback after submit,
 refuse before write, oracle divergence quarantines, advertise after silicon.
-The identity map is the one verb whose CPU route executes, its GPU route is
-precommitted on the R2VB carrier under the FP24 window, and no GPU route
-executes; `r300-compute-verb-ledger` pins the rows and calibrates the
-checker. The
+The identity map is the one verb whose CPU route executes, and the one
+whose GPU route executes: under the compute gate and its own exact gate
+`R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL=1`, a dispatch of whole F32_4
+records (at most 1024, input and output in distinct buffer objects, input
+offset dword-granular, output offset 32-byte aligned, every input word
+inside the FP24 fixed-point window) admits the compute identity carrier
+pass (`src/amd/r300/common/r300_compute_identity_carrier.h`: the fetched
+producer alone, the input storage buffer as its source array and the output
+storage buffer as its C4_32_FP slot row; cell kind
+`COMPUTE_IDENTITY_CARRIER`, three relocations) and records the CPU oracle;
+after the completion wait the output reads back against the oracle, both
+retained beside the submit objects, and a divergence quarantines the
+capability with device loss; every refusal names its cause before any
+allocation, reference, IB, or write, and a closed verb gate keeps the CPU
+route. Evidence: host unit (`r300-compute-identity-carrier`, the pinned
+reference pass), offline kernel-parser replay with known-bad arms
+(`r300-compute-identity-carrier-cs-track-replay`), and the drm-shim arms
+(`r3v-native-compute-gpu-route-*`); no attended RS482 delivery yet, so the
+route advertises nothing and stays behind its gate. `r300-compute-verb-ledger`
+pins the rows and calibrates the checker. The
 extent gap is closed: `vkCreateImage` accepts every extent inside the
 reported 64x64 maximum, and the cell family realizes it -- in TCL
 bypass the extent reaches the hardware through the `SC_SCISSORS_BR`

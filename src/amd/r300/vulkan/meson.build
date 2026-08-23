@@ -1775,6 +1775,34 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       suite : ['r3v'],
     )
   endforeach
+  # The identity verb's GPU route under the compute gate and the verb's
+  # gate: the composed carrier pass against its pin, the shim's empty
+  # delivery quarantining on the oracle divergence, and the named
+  # refusals (FP24 domain, one buffer object for both ranges, a record
+  # count past the single-row ceiling) each before any write; with the verb gate
+  # closed the dispatch keeps the CPU route.
+  r3v_native_compute_gpu_route_harness = executable(
+    'r3v_native_compute_gpu_route_harness',
+    files('tests/r3v_native_compute_gpu_route_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach compute_arm : ['gate-off-cpu', 'composed', 'out-of-domain-refused',
+                         'alias-refused', 'ceiling-refused']
+    test(
+      'r3v-native-compute-gpu-route-@0@'.format(compute_arm),
+      r3v_native_compute_gpu_route_harness,
+      args : [compute_arm],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
   # Calibration: a draw executed ahead of a refused submit is the
   # ordering the matrix refuses, so the untouched verdicts fail on it.
   test(

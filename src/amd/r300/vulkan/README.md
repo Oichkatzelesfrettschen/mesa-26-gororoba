@@ -74,8 +74,11 @@ Vulkan command recording (r3v_native_recording.c, r3v_native_cmd.c)
    reading the bound vertex BO under a further exact opt-in; both keep
    one source relocation role, so they admit the slot-0 identity job
    alone); compute kernels execute on the CPU route for the one verb the
-   ledger `common/r300_compute_verb.h` marks executing (identity map);
-   the remaining verbs and every GPU route are precommitted rows
+   ledger `common/r300_compute_verb.h` marks executing (identity map),
+   or on its GPU route -- the compute identity carrier, the fetched
+   producer over the input and output storage buffers -- under the verb's
+   exact gate with the CPU bit copy as the read-back oracle; the
+   remaining verbs are precommitted rows
 -> fixed-cell PM4 lowering over the common contracts
    (src/amd/r300/common/)
 -> prepared submission: relocation list, completion BO, arming evaluation,

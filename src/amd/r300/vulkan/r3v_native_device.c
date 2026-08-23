@@ -7,6 +7,8 @@
 
 #include "r3v_native.h"
 
+#include "amd/r300/common/r300_compute_verb.h"
+
 #include "r3v_entrypoints.h"
 #include "r3v_physical_device.h"
 #include "r3v_private.h"
@@ -59,6 +61,8 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
       exact_gate("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
    device->r2vb_fetched_gate =
       exact_gate("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL");
+   device->compute_identity_gpu_gate = exact_gate(
+      r300_compute_verb_row(R300_COMPUTE_VERB_IDENTITY_MAP)->gpu_gate);
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL

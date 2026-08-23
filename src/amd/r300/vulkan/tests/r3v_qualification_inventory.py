@@ -112,6 +112,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-tcl-bypass-offline-replay",
     "r300-cs-track-replay",
     "r300-compute-verb-ledger",
+    "r300-compute-identity-carrier",
     "r300-staging-manifest",
     "r300-staging-manifest-runner-selftest",
     "r300-triangle-manifest-integration",
@@ -201,6 +202,11 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-submit-order-instanced-zero-refused",
     "r3v-native-submit-order-instanced-out-of-bounds-refused",
     "r3v-native-submit-order-instanced-fetched-refused",
+    "r3v-native-compute-gpu-route-gate-off-cpu",
+    "r3v-native-compute-gpu-route-composed",
+    "r3v-native-compute-gpu-route-out-of-domain-refused",
+    "r3v-native-compute-gpu-route-alias-refused",
+    "r3v-native-compute-gpu-route-ceiling-refused",
     # Native prepared submission lifetime: commit, reset, shape refusals,
     # pre-ioctl failure, teardown, and one single-reason calibration per
     # releaser or binding guard.
