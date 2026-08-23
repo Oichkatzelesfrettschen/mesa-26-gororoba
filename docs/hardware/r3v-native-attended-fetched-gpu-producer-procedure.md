@@ -170,8 +170,9 @@ field. `color.bin`, `gpu_carrier_observed.bin`, and
 its expectation. The `steinmarder-r300` bundle seals these beside the
 run's dmesg delta, the loaded-module identity, and the arming report;
 the retained digest becomes that width's fetched-route silicon identity.
-The F32_4 cell is retained as
-`r3v-native-fetched-gpu-producer-route-first-delivery-rs482`; the F32_3
-and F32_2 cells run the same procedure with their width named on the
-runner, the arming runner, and the declared digest, one evidence directory
-and one arming per width.
+The three widths are retained as
+`r3v-native-fetched-gpu-producer-route-first-delivery-rs482` (F32_4),
+`r3v-native-fetched-gpu-producer-route-f32-3-delivery-rs482`, and
+`r3v-native-fetched-gpu-producer-route-f32-2-delivery-rs482`, each from
+its own evidence directory and its own arming with the width named on the
+runner, the arming runner, and the declared digest.
