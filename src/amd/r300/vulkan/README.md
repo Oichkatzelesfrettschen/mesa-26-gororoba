@@ -61,7 +61,9 @@ Vulkan command recording (r3v_native_recording.c, r3v_native_cmd.c)
 -> admitted draw or dispatch (r3v_native_draw.c, r3v_native_compute.c)
 -> vertex gather through the CPU executor (src/amd/r300/cpu/) into the
    command-buffer-owned GTT carrier, or the R2VB producer route under its
-   exact opt-in; compute kernels execute on the CPU route
+   exact opt-in (immediate producer, or the fetched producer reading the
+   bound vertex BO under a further exact opt-in); compute kernels execute
+   on the CPU route
 -> fixed-cell PM4 lowering over the common contracts
    (src/amd/r300/common/)
 -> prepared submission: relocation list, completion BO, arming evaluation,

@@ -13,6 +13,7 @@
 
 struct r300_first_draw_contract;
 struct r300_fragment_binary;
+struct r300_pm4_builder;
 
 /* The producer pass renders one point per vertex into an ARGB32323232
  * (C4_32_FP) color target, so each rasterized pixel stores one FP32x4
@@ -116,6 +117,27 @@ struct r300_r2vb_producer_ib {
     */
    bool owns_ib;
 };
+
+/* The three fixed emitters the immediate and fetched producer passes
+ * share.  The prologue covers the slot-row target state from ZB_CNTL
+ * through VAP_VTE_CNTL -- depth and antialias off, scissor on the slot
+ * row, the destination-cache barrier, the carrier retarget to C4_32_FP
+ * with its relocation NOP (index returned through carrier_site,
+ * R300_PM4_NO_INDEX when the write refused), the BGRA output select, the
+ * full-write color backend, one-pixel points, and TCL bypass with clip off
+ * and VTE passthrough.  The fragment emitter writes the owned binary's
+ * US/FG block plus FG_DEPTH_SRC and US_W_FMT.  The tail emitter writes the
+ * publication tail: color-cache flush, 3D idle-clean wait, and
+ * VAP_PVS_STATE_FLUSH_REG = 0.
+ */
+void r300_r2vb_producer_prologue_emit(
+   struct r300_pm4_builder *b, uint32_t carrier_offset,
+   const struct r300_r2vb_producer_layout *layout, uint32_t *carrier_site);
+
+void r300_r2vb_producer_fs_emit(struct r300_pm4_builder *b,
+                                const struct r300_fragment_binary *fs);
+
+void r300_r2vb_producer_tail_emit(struct r300_pm4_builder *b);
 
 /* Emits the complete producer pass: the first-draw contract prefix when
  * the params carry one, then the target prologue (destination-cache

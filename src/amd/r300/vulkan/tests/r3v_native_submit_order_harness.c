@@ -20,7 +20,10 @@
 #include "r3v_native.h"
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_shim_arming.h"
+#include "amd/r300/common/r300_r2vb_fetched_producer.h"
+#include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/common/tests/r300_fetched_route_digests.h"
 #include "amd/r300/common/tests/r300_retained_route_digests.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_ioctl.h"
 
@@ -74,6 +77,21 @@ enum arm {
    ARM_ROBUST_OOB_ENABLED,
    ARM_ROBUST_OOB_W0_REFUSED,
    ARM_ROBUST_OOB_DISABLED,
+   /* The fetched GPU-producer route under the three exact gates, over
+    * the reference window-space records: composed, the submit-time IB
+    * equals the offline no-submit composition byte for byte (the arming
+    * gate compares the two digests), the reference list binds four BOs,
+    * the slot BO holds the slot positions, and the shim -- which executes
+    * no producer -- leaves the carrier poisoned, so the read-back verdict
+    * reports device loss and quarantines the capability; with the
+    * composition refused by injection the recording, references,
+    * carrier, and slot allocation stay exactly as recorded; with the
+    * immediate route's retained digest declared, the gate refuses the
+    * composed stream as a bundle mismatch, the fetched stream being a
+    * distinct cell. */
+   ARM_GPU_FETCHED_COMPOSED,
+   ARM_GPU_FETCHED_COMPOSE_FAILURE,
+   ARM_GPU_FETCHED_WRONG_DIGEST,
 };
 
 
@@ -92,6 +110,9 @@ static const struct {
    { "robust-oob-enabled", ARM_ROBUST_OOB_ENABLED },
    { "robust-oob-w0-refused", ARM_ROBUST_OOB_W0_REFUSED },
    { "robust-oob-disabled", ARM_ROBUST_OOB_DISABLED },
+   { "gpu-fetched-composed", ARM_GPU_FETCHED_COMPOSED },
+   { "gpu-fetched-compose-failure", ARM_GPU_FETCHED_COMPOSE_FAILURE },
+   { "gpu-fetched-wrong-digest", ARM_GPU_FETCHED_WRONG_DIGEST },
 };
 
 /* Injection over the transport's ioctl seam: the saved production table
@@ -158,11 +179,13 @@ retained_ib_digest(const char *dir, char out[2 * R300_TRIANGLE_DIGEST_SIZE + 1],
    snprintf(path, sizeof(path), "%s/ib.bin", dir);
    FILE *file = fopen(path, "rb");
    assert(file != NULL);
-   uint8_t bytes[R300_RETAINED_CPU_ROUTE_IB_DWORDS * 4 + 4];
+   /* Sized past the longest retained stream the arms submit: the
+    * composed fetched route. */
+   uint8_t bytes[R300_FETCHED_F32_4_ROUTE_IB_DWORDS * 4 + 4];
    const size_t read_bytes = fread(bytes, 1, sizeof(bytes), file);
    fclose(file);
    assert(read_bytes % 4 == 0 && read_bytes < sizeof(bytes));
-   uint32_t dwords[R300_RETAINED_CPU_ROUTE_IB_DWORDS + 1];
+   uint32_t dwords[R300_FETCHED_F32_4_ROUTE_IB_DWORDS + 1];
    for (size_t i = 0; i < read_bytes / 4; i++) {
       dwords[i] = (uint32_t)bytes[4 * i] | (uint32_t)bytes[4 * i + 1] << 8 |
                   (uint32_t)bytes[4 * i + 2] << 16 |
@@ -281,11 +304,25 @@ run_arm(enum arm arm, const char *name)
    assert(reference.ib_size_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
    assert(strcmp(reference_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
    r300_tcl_bypass_triangle_release(&reference);
+   const bool fetched_arm = arm == ARM_GPU_FETCHED_COMPOSED ||
+                            arm == ARM_GPU_FETCHED_COMPOSE_FAILURE ||
+                            arm == ARM_GPU_FETCHED_WRONG_DIGEST;
    if (arm == ARM_AUTHORIZATION_REFUSED) {
       char wrong[BLAKE3_OUT_LEN * 2 + 1];
       memcpy(wrong, reference_digest, sizeof(wrong));
       wrong[0] = wrong[0] == '0' ? '1' : '0';
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", wrong, 1);
+   } else if (arm == ARM_GPU_FETCHED_WRONG_DIGEST) {
+      /* The immediate route's retained identity, declared against the
+       * fetched composition. */
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
+             R300_RETAINED_GPU_ROUTE_IB_BLAKE3, 1);
+   } else if (fetched_arm) {
+      /* The offline no-submit composition identity of the fetched F32_4
+       * route over this arm's exact geometry: one-page source at offset
+       * zero, stride 16, one-page slot BO, the reference consumer. */
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
+             R300_FETCHED_F32_4_ROUTE_IB_BLAKE3, 1);
    } else {
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", reference_digest, 1);
    }
@@ -294,8 +331,15 @@ run_arm(enum arm arm, const char *name)
    setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", host.release, 1);
    setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
           R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
-   unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
-   unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
+   if (fetched_arm) {
+      setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1);
+      setenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL", "1", 1);
+      setenv("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL", "1", 1);
+   } else {
+      unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
+      unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
+      unsetenv("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL");
+   }
 
    PFN_vkVoidFunction (*gipa)(VkInstance, const char *) =
       vk_icdGetInstanceProcAddr;
@@ -444,7 +488,15 @@ run_arm(enum arm arm, const char *name)
       void *map = NULL;
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
-      memcpy(map, ndc_triangle, sizeof(ndc_triangle));
+      /* The fetched route declares a window-space carrier and admits
+       * FP24 fixed points alone, so the fetched arms bind the reference
+       * cell's own window-space records; every other arm binds the NDC
+       * triangle the CPU route transforms. */
+      if (fetched_arm)
+         memcpy(map, r300_tcl_bypass_triangle_vertices,
+                sizeof(r300_tcl_bypass_triangle_vertices));
+      else
+         memcpy(map, ndc_triangle, sizeof(ndc_triangle));
       vkUnmapMemory(device, vertex_memory);
    }
 
@@ -686,6 +738,13 @@ run_arm(enum arm arm, const char *name)
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_cmd) == VK_SUCCESS);
    }
+   if (arm == ARM_GPU_FETCHED_COMPOSE_FAILURE)
+      native_device->gpu_producer_compose_inject_errno = -ENOMEM;
+   const uint32_t references_before = native_cmd->reference_count;
+   const enum r3v_native_cell_kind kind_before = native_cmd->cell_kind;
+   assert(references_before == R300_TRIANGLE_SLOT_COUNT);
+   assert(kind_before == R3V_NATIVE_CELL_KIND_TRIANGLE);
+   assert(native_cmd->owned_slot == NULL);
 
    inject_live = true;
    const VkResult submitted = vkQueueSubmit(
@@ -700,6 +759,7 @@ run_arm(enum arm arm, const char *name)
    const enum r3v_native_queue_status status =
       r3v_native_queue_submission_status(device);
    native_device->drm.ops = saved_ops;
+   native_device->gpu_producer_compose_inject_errno = 0;
    if (arm == ARM_RETENTION_UNWRITABLE)
       assert(chmod(manifest_dir, 0700) == 0);
 
@@ -715,6 +775,9 @@ run_arm(enum arm arm, const char *name)
    }
    const bool carrier_untouched =
       memcmp(carrier_before, carrier_after, sizeof(carrier_before)) == 0;
+   bool carrier_is_poison = true;
+   for (unsigned i = 0; i < R300_TRIANGLE_VERTEX_DWORDS; i++)
+      carrier_is_poison &= carrier_after[i] == R300_R2VB_PRODUCER_POISON_DWORD;
    const bool carrier_is_reference =
       memcmp(carrier_after, r300_tcl_bypass_triangle_vertices,
              sizeof(carrier_after)) == 0;
@@ -740,7 +803,9 @@ run_arm(enum arm arm, const char *name)
              ? "untouched"
              : (carrier_is_reference
                    ? "reference"
-                   : (carrier_is_robust ? "robust" : "other")),
+                   : (carrier_is_robust
+                         ? "robust"
+                         : (carrier_is_poison ? "poison" : "other"))),
           token ? "spent" : "unspent");
    fflush(stdout);
 
@@ -817,13 +882,82 @@ run_arm(enum arm arm, const char *name)
       check_target(device, &target, true, name);
       assert(token);
       break;
+   case ARM_GPU_FETCHED_COMPOSED:
+      /* The ioctl ran on the composed stream and the token was spent;
+       * the shim executes no producer, so the carrier still holds the
+       * poison the admission published, the read-back verdict reports
+       * device loss, and the capability quarantines.  The status stays
+       * at SUBMITTED: the verdict returns before the completion status
+       * is recorded. */
+      assert(submitted == VK_ERROR_DEVICE_LOST);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMITTED);
+      assert(cs_ioctls == 1);
+      assert(carrier_is_poison);
+      assert(native_device->gpu_producer_quarantined);
+      assert(native_cmd->cell_kind ==
+             R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED);
+      assert(native_cmd->reference_count == 4);
+      assert(native_cmd->owned_slot != NULL);
+      assert(native_cmd->references[2].memory == native_cmd->owned_slot);
+      assert(native_cmd->references[3].handle ==
+             r3v_native_memory_from_handle(vertex_memory)->bo.handle);
+      {
+         void *slot_map = NULL;
+         assert(radeon_drm_vk_bo_map(&native_device->drm,
+                                     &native_cmd->owned_slot->bo,
+                                     &slot_map) == 0);
+         uint32_t slot_expected[12];
+         assert(r300_r2vb_fetched_producer_slot_positions(
+                   3, slot_expected, 12) == 0);
+         assert(memcmp(slot_map, slot_expected, sizeof(slot_expected)) == 0);
+         radeon_drm_vk_bo_unmap(&native_device->drm,
+                                &native_cmd->owned_slot->bo, slot_map);
+      }
+      check_target(device, &target, true, name);
+      assert(token);
+      assert(file_present(manifest_dir, "gpu_carrier_observed.bin"));
+      break;
+   case ARM_GPU_FETCHED_COMPOSE_FAILURE:
+      /* The injected composition failure refuses the admission before
+       * any allocation, reference, IB, or carrier write: the recording
+       * is exactly as recorded. */
+      assert(submitted == VK_ERROR_DEVICE_LOST);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
+      assert(cs_ioctls == 0);
+      assert(carrier_untouched);
+      assert(native_cmd->cell_kind == kind_before);
+      assert(native_cmd->reference_count == references_before);
+      assert(native_cmd->owned_slot == NULL);
+      assert(!native_device->gpu_producer_quarantined);
+      check_target(device, &target, false, name);
+      assert(!token);
+      break;
+   case ARM_GPU_FETCHED_WRONG_DIGEST:
+      /* The admission composed the fetched stream and poisoned the
+       * driver-owned carrier; the arming gate then refused the stream
+       * against the immediate route's identity, so no ioctl ran, the
+       * token is unspent, and the application-visible target is
+       * untouched. */
+      assert(submitted == VK_ERROR_DEVICE_LOST);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
+      assert(cs_ioctls == 0);
+      assert(carrier_is_poison);
+      assert(native_cmd->cell_kind ==
+             R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED);
+      assert(native_cmd->reference_count == 4);
+      assert(!native_device->gpu_producer_quarantined);
+      check_target(device, &target, false, name);
+      assert(!token);
+      break;
    }
 
    /* Evidence retention precedes the gate verdict: every armed-gate arm
-    * that reached retention keeps ib.bin; the closed gate and the
-    * unwritable directory retain none. */
+    * that reached retention keeps ib.bin; the closed gate, the
+    * unwritable directory, and the admission refused ahead of retention
+    * retain none. */
    const bool ib_retained = file_present(manifest_dir, "ib.bin");
-   if (arm == ARM_RETENTION_UNWRITABLE)
+   if (arm == ARM_RETENTION_UNWRITABLE ||
+       arm == ARM_GPU_FETCHED_COMPOSE_FAILURE)
       assert(!ib_retained);
    else if (arm != ARM_GATE_CLOSED && arm != ARM_KNOWN_BAD_PREMATURE_DRAW)
       assert(ib_retained);
@@ -837,6 +971,19 @@ run_arm(enum arm arm, const char *name)
       retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);
       assert(submitted_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
       assert(strcmp(submitted_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
+   }
+   /* The fetched arms that reached retention retained the submit-time
+    * composition, and its bytes are the offline no-submit composition's
+    * -- the digest the composed arm's gate matched and the wrong-digest
+    * arm's gate refused against the immediate route's identity. */
+   if (arm == ARM_GPU_FETCHED_COMPOSED || arm == ARM_GPU_FETCHED_WRONG_DIGEST) {
+      char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+      uint32_t submitted_dwords;
+      retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);
+      assert(submitted_dwords == R300_FETCHED_F32_4_ROUTE_IB_DWORDS);
+      assert(strcmp(submitted_digest, R300_FETCHED_F32_4_ROUTE_IB_BLAKE3) ==
+             0);
+      assert(strcmp(submitted_digest, R300_RETAINED_GPU_ROUTE_IB_BLAKE3) != 0);
    }
 
    vkDestroyCommandPool(device, pool, NULL);

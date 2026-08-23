@@ -280,7 +280,9 @@ struct r3v_native_deferred_draw {
  * surface's begin/bind/draw progress; a command outside the qualified
  * contract poisons the buffer, so EndCommandBuffer returns the error and
  * the queue refuses it.  owned_carrier is the CPU_VERTEX node's gather
- * destination, allocated at draw recording and released with the buffer;
+ * destination, allocated at draw recording and released with the buffer,
+ * and owned_slot is the fetched producer's slot-position array, allocated
+ * at the first fetched admission and released with the buffer;
  * deferred_draw carries the vertex and clear work the queue executes at
  * submission.
  */
@@ -299,6 +301,12 @@ struct r3v_native_cmd_buffer {
    bool vertex_bound;
    bool draw_recorded;
    struct r3v_native_memory *owned_carrier;
+   /* The fetched producer's slot-position BO, allocated at the first
+    * fetched admission and released with the buffer; it holds the
+    * (v + 0.5, 0.5, 0, 1) record per vertex the fetched body's first
+    * array reads.
+    */
+   struct r3v_native_memory *owned_slot;
    struct r3v_native_deferred_draw deferred_draw;
    /* Recorded transfer copies, executed in order at submission through
     * host mappings of the bound memory.  A command buffer carries
@@ -428,6 +436,14 @@ struct r3v_native_device {
     */
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
+   const char *r2vb_fetched_gate;
+   /* Failure injection at the fetched route's composition boundary: a
+    * nonzero negative errno makes the admission treat the composed route
+    * as refused with that errno, after the emitters ran and before any
+    * allocation, reference, IB, or carrier write.  Test harnesses set it;
+    * the production path leaves it zero.
+    */
+   int gpu_producer_compose_inject_errno;
    /* A completed GPU-producer submission whose carrier read-back
     * diverged from the CPU oracle quarantines the capability: every
     * later admission on this device refuses, the evidence stays

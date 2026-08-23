@@ -79,6 +79,147 @@ static_assert(1u + R300_R2VB_PRODUCER_MAX_COUNT *
                  R300_PM4_MAX_RUN,
               "the embedded body fits the PACKET3 payload bound");
 
+/* The slot-row target prologue shared by the immediate and fetched passes;
+ * the carrier relocation NOP lands behind RB3D_COLOROFFSET0 and its index
+ * returns through carrier_site (R300_PM4_NO_INDEX when the write refused).
+ */
+void
+r300_r2vb_producer_prologue_emit(struct r300_pm4_builder *b,
+                                 uint32_t carrier_offset,
+                                 const struct r300_r2vb_producer_layout *layout,
+                                 uint32_t *carrier_site)
+{
+   /* Target prologue.  Depth and antialias off, screendoor open, scissor
+    * confined to the slot row under the non-R500 1440 raster bias.
+    */
+   r300_pm4_reg(b, R300_ZB_CNTL, 0);
+   static const uint32_t mspos[2] = { 0x66666666, 0x06666666 };
+   r300_pm4_packet0(b, R300_GB_MSPOS0, mspos, ARRAY_SIZE(mspos));
+   r300_pm4_reg(b, R300_GB_AA_CONFIG, R300_GB_AA_CONFIG_AA_DISABLE);
+   r300_pm4_reg(b, R300_RB3D_AARESOLVE_CTL, 0);
+   r300_pm4_reg(b, R300_SC_SCREENDOOR, 0x00ffffff);
+   const uint32_t scissors[2] = {
+      (1440u << R300_SCISSORS_X_SHIFT) | (1440u << R300_SCISSORS_Y_SHIFT),
+      ((layout->width + 1440u - 1u) << R300_SCISSORS_X_SHIFT) |
+         ((layout->height + 1440u - 1u) << R300_SCISSORS_Y_SHIFT),
+   };
+   r300_pm4_packet0(b, R300_SC_SCISSORS_TL, scissors,
+                    ARRAY_SIZE(scissors));
+
+   /* Destination-cache barrier before the retarget: dirty tiles of the
+    * previously bound target flush while its COLOROFFSET is still
+    * programmed, so the retarget cannot drop another surface's cached
+    * pixels.
+    */
+   r300_pm4_reg(b, R300_ZB_ZCACHE_CTLSTAT,
+                R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                   R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+   r300_pm4_reg(b, R300_RB3D_DSTCACHE_CTLSTAT,
+                R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+   r300_pm4_reg(b, RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+
+   /* Carrier retarget: one color target, FP32x4 pixels.  The pitch word
+    * travels plain because the submission sets
+    * RADEON_CS_KEEP_TILING_FLAGS.
+    */
+   r300_pm4_reg(b, R300_RB3D_CCTL, 0);
+   r300_pm4_reg(b, R300_RB3D_COLOROFFSET0, carrier_offset);
+   *carrier_site = r300_pm4_reloc_nop(
+      b, R300_R2VB_PRODUCER_RELOC_PAYLOAD(R300_R2VB_PRODUCER_SLOT_CARRIER));
+   r300_pm4_reg(b, R300_RB3D_COLORPITCH0,
+                layout->pitch_pixels | R300_COLOR_FORMAT_ARGB32323232);
+
+   /* BGRA output select: the record reaches the US pre-swizzled as
+    * (z, y, x, w) -- embedded in that order by the immediate pass, or
+    * swizzled by the fetched pass's PROG_STREAM_CNTL_EXT select -- and
+    * the select reverses it, so the carrier stores the source
+    * (x, y, z, w) bytes.
+    */
+   const uint32_t us_out_fmt[4] = {
+      R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
+         R300_C2_SEL_R | R300_C3_SEL_A,
+      R300_US_OUT_FMT_UNUSED,
+      R300_US_OUT_FMT_UNUSED,
+      R300_US_OUT_FMT_UNUSED,
+   };
+   r300_pm4_packet0(b, R300_US_OUT_FMT_0, us_out_fmt,
+                    ARRAY_SIZE(us_out_fmt));
+
+   /* Full-write color backend: ROP, blend, dither, and alpha test each
+    * pass every shaded dword through unchanged.
+    */
+   r300_pm4_reg(b, R300_RB3D_ROPCNTL, 0);
+   const uint32_t cblend[3] = {
+      0,
+      0,
+      RB3D_COLOR_CHANNEL_MASK_BLUE_MASK0 |
+         RB3D_COLOR_CHANNEL_MASK_GREEN_MASK0 |
+         RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
+         RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0,
+   };
+   r300_pm4_packet0(b, R300_RB3D_CBLEND, cblend, ARRAY_SIZE(cblend));
+   r300_pm4_reg(b, R300_RB3D_DITHER_CTL, 0);
+   r300_pm4_reg(b, R300_FG_ALPHA_FUNC, R300_FG_ALPHA_FUNC_DISABLE);
+
+   r300_pm4_reg(b, R300_SU_CULL_MODE, 0);
+   r300_pm4_reg(b, R300_SC_CLIP_RULE, 0xFFFF);
+
+   /* One-pixel points: GA_POINT_SIZE holds sixths of a pixel per axis,
+    * so 6/6 rasterizes each slot vertex as exactly its own pixel.
+    */
+   r300_pm4_reg(b, R300_GA_POINT_SIZE,
+                (6u << R300_POINTSIZE_Y_SHIFT) |
+                   (6u << R300_POINTSIZE_X_SHIFT));
+   r300_pm4_reg(b, R300_GA_POINT_MINMAX,
+                (6u << R300_GA_POINT_MINMAX_MIN_SHIFT) |
+                   (6u << R300_GA_POINT_MINMAX_MAX_SHIFT));
+
+   /* Pretransformed slot positions bypass the TCL block; clip off and
+    * VTE passthrough deliver each (slot + 0.5) center to the raster
+    * unchanged.
+    */
+   r300_pm4_reg(b, R300_VAP_CNTL_STATUS, R300_VAP_TCL_BYPASS);
+   r300_pm4_reg(b, R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
+   r300_pm4_reg(b, R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+}
+
+/* Fragment program: the owned binary's US/FG block verbatim, then the two
+ * register values the descriptor keeps outside the sequence.  The block
+ * establishes the US code the slot pixels shade through, so the carrier
+ * receives the interpolated record rather than whatever program the
+ * previous client left resident.
+ */
+void
+r300_r2vb_producer_fs_emit(struct r300_pm4_builder *b,
+                           const struct r300_fragment_binary *fs)
+{
+   r300_pm4_block(b, fs->cb_code, fs->cb_code_size);
+   r300_pm4_reg(b, R300_FG_DEPTH_SRC, fs->fg_depth_src);
+   r300_pm4_reg(b, R300_US_W_FMT, fs->us_out_w);
+}
+
+void
+r300_r2vb_producer_tail_emit(struct r300_pm4_builder *b)
+{
+   /* Publication tail: push the carrier out of the color caches, wait
+    * 3D idle-clean, then sync the VAP.  The cache flushes leave the
+    * vertex cache untouched, and a later vertex fetch of this same BO
+    * can return stale content the vertex cache kept from an earlier
+    * fetch of the recycled GART page; writing zero to
+    * VAP_PVS_STATE_FLUSH_REG synchronizes the engine and clears that
+    * state before the re-ingest.
+    */
+   r300_pm4_reg(b, R300_ZB_ZCACHE_CTLSTAT,
+                R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                   R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+   r300_pm4_reg(b, R300_RB3D_DSTCACHE_CTLSTAT,
+                R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+   r300_pm4_reg(b, RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+   r300_pm4_reg(b, R300_VAP_PVS_STATE_FLUSH_REG, 0);
+}
+
 int
 r300_r2vb_producer_layout_single_row(uint32_t count,
                                      struct r300_r2vb_producer_layout *out)
@@ -92,30 +233,6 @@ r300_r2vb_producer_layout_single_row(uint32_t count,
    out->height = 1;
    out->pitch_pixels = row;
    return 0;
-}
-
-static void
-write_reloc(struct r300_pm4_builder *b, struct r300_r2vb_producer_ib *out,
-            uint32_t slot)
-{
-   if (b->error != 0)
-      return;
-   if (slot >= R300_R2VB_PRODUCER_SLOT_COUNT ||
-       out->reloc_site_count >= R300_R2VB_PRODUCER_SLOT_COUNT) {
-      b->error = -EINVAL;
-      return;
-   }
-
-   const uint32_t index =
-      r300_pm4_reloc_nop(b, R300_R2VB_PRODUCER_RELOC_PAYLOAD(slot));
-   if (index == R300_PM4_NO_INDEX)
-      return;
-
-   out->reloc_sites[out->reloc_site_count++] =
-      (struct r300_r2vb_producer_reloc_site){
-         .ib_index = index,
-         .slot = slot,
-      };
 }
 
 static uint32_t
@@ -185,96 +302,16 @@ r300_r2vb_producer_pass_emit_into(
       }
    }
 
-   /* Target prologue.  Depth and antialias off, screendoor open, scissor
-    * confined to the slot row under the non-R500 1440 raster bias.
-    */
-   r300_pm4_reg(&b, R300_ZB_CNTL, 0);
-   static const uint32_t mspos[2] = { 0x66666666, 0x06666666 };
-   r300_pm4_packet0(&b, R300_GB_MSPOS0, mspos, ARRAY_SIZE(mspos));
-   r300_pm4_reg(&b, R300_GB_AA_CONFIG, R300_GB_AA_CONFIG_AA_DISABLE);
-   r300_pm4_reg(&b, R300_RB3D_AARESOLVE_CTL, 0);
-   r300_pm4_reg(&b, R300_SC_SCREENDOOR, 0x00ffffff);
-   const uint32_t scissors[2] = {
-      (1440u << R300_SCISSORS_X_SHIFT) | (1440u << R300_SCISSORS_Y_SHIFT),
-      ((layout->width + 1440u - 1u) << R300_SCISSORS_X_SHIFT) |
-         ((layout->height + 1440u - 1u) << R300_SCISSORS_Y_SHIFT),
-   };
-   r300_pm4_packet0(&b, R300_SC_SCISSORS_TL, scissors,
-                    ARRAY_SIZE(scissors));
-
-   /* Destination-cache barrier before the retarget: dirty tiles of the
-    * previously bound target flush while its COLOROFFSET is still
-    * programmed, so the retarget cannot drop another surface's cached
-    * pixels.
-    */
-   r300_pm4_reg(&b, R300_ZB_ZCACHE_CTLSTAT,
-                R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
-                   R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
-   r300_pm4_reg(&b, R300_RB3D_DSTCACHE_CTLSTAT,
-                R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
-                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
-   r300_pm4_reg(&b, RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
-
-   /* Carrier retarget: one color target, FP32x4 pixels.  The pitch word
-    * travels plain because the submission sets
-    * RADEON_CS_KEEP_TILING_FLAGS.
-    */
-   r300_pm4_reg(&b, R300_RB3D_CCTL, 0);
-   r300_pm4_reg(&b, R300_RB3D_COLOROFFSET0, params->carrier_offset);
-   write_reloc(&b, out, R300_R2VB_PRODUCER_SLOT_CARRIER);
-   r300_pm4_reg(&b, R300_RB3D_COLORPITCH0,
-                layout->pitch_pixels | R300_COLOR_FORMAT_ARGB32323232);
-
-   /* BGRA output select: the embedded records travel pre-swizzled as
-    * (z, y, x, w), and the select reverses that order, so the carrier
-    * stores the source (x, y, z, w) bytes.
-    */
-   const uint32_t us_out_fmt[4] = {
-      R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
-         R300_C2_SEL_R | R300_C3_SEL_A,
-      R300_US_OUT_FMT_UNUSED,
-      R300_US_OUT_FMT_UNUSED,
-      R300_US_OUT_FMT_UNUSED,
-   };
-   r300_pm4_packet0(&b, R300_US_OUT_FMT_0, us_out_fmt,
-                    ARRAY_SIZE(us_out_fmt));
-
-   /* Full-write color backend: ROP, blend, dither, and alpha test each
-    * pass every shaded dword through unchanged.
-    */
-   r300_pm4_reg(&b, R300_RB3D_ROPCNTL, 0);
-   const uint32_t cblend[3] = {
-      0,
-      0,
-      RB3D_COLOR_CHANNEL_MASK_BLUE_MASK0 |
-         RB3D_COLOR_CHANNEL_MASK_GREEN_MASK0 |
-         RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
-         RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0,
-   };
-   r300_pm4_packet0(&b, R300_RB3D_CBLEND, cblend, ARRAY_SIZE(cblend));
-   r300_pm4_reg(&b, R300_RB3D_DITHER_CTL, 0);
-   r300_pm4_reg(&b, R300_FG_ALPHA_FUNC, R300_FG_ALPHA_FUNC_DISABLE);
-
-   r300_pm4_reg(&b, R300_SU_CULL_MODE, 0);
-   r300_pm4_reg(&b, R300_SC_CLIP_RULE, 0xFFFF);
-
-   /* One-pixel points: GA_POINT_SIZE holds sixths of a pixel per axis,
-    * so 6/6 rasterizes each slot vertex as exactly its own pixel.
-    */
-   r300_pm4_reg(&b, R300_GA_POINT_SIZE,
-                (6u << R300_POINTSIZE_Y_SHIFT) |
-                   (6u << R300_POINTSIZE_X_SHIFT));
-   r300_pm4_reg(&b, R300_GA_POINT_MINMAX,
-                (6u << R300_GA_POINT_MINMAX_MIN_SHIFT) |
-                   (6u << R300_GA_POINT_MINMAX_MAX_SHIFT));
-
-   /* Pretransformed slot positions bypass the TCL block; clip off and
-    * VTE passthrough deliver each (slot + 0.5) center to the raster
-    * unchanged.
-    */
-   r300_pm4_reg(&b, R300_VAP_CNTL_STATUS, R300_VAP_TCL_BYPASS);
-   r300_pm4_reg(&b, R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
-   r300_pm4_reg(&b, R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+   uint32_t carrier_site = R300_PM4_NO_INDEX;
+   r300_r2vb_producer_prologue_emit(&b, params->carrier_offset, layout,
+                                    &carrier_site);
+   if (b.error == 0) {
+      out->reloc_sites[out->reloc_site_count++] =
+         (struct r300_r2vb_producer_reloc_site){
+            .ib_index = carrier_site,
+            .slot = R300_R2VB_PRODUCER_SLOT_CARRIER,
+         };
+   }
 
    /* Complete VAP input and output tuple: two FP32x4 inputs (slot position
     * and model varying), a position plus one four-component TEX0 output,
@@ -318,15 +355,7 @@ r300_r2vb_producer_pass_emit_into(
                 R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
                    R300_RS_INST_TEX_ADDR(0));
 
-   /* Fragment program: the owned binary's US/FG block verbatim, then the
-    * two register values the descriptor keeps outside the sequence.  The
-    * block establishes the US code the slot pixels shade through, so the
-    * carrier receives the interpolated record rather than whatever
-    * program the previous client left resident.
-    */
-   r300_pm4_block(&b, fs->cb_code, fs->cb_code_size);
-   r300_pm4_reg(&b, R300_FG_DEPTH_SRC, fs->fg_depth_src);
-   r300_pm4_reg(&b, R300_US_W_FMT, fs->us_out_w);
+   r300_r2vb_producer_fs_emit(&b, fs);
 
    /* Embedded POINTS draw: the packet carries VAP_VF_CNTL and then
     * count * 8 dwords, one slot position plus one pre-swizzled record
@@ -354,22 +383,7 @@ r300_r2vb_producer_pass_emit_into(
       }
    }
 
-   /* Publication tail: push the carrier out of the color caches, wait
-    * 3D idle-clean, then sync the VAP.  The cache flushes leave the
-    * vertex cache untouched, and a later vertex fetch of this same BO
-    * can return stale content the vertex cache kept from an earlier
-    * fetch of the recycled GART page; writing zero to
-    * VAP_PVS_STATE_FLUSH_REG synchronizes the engine and clears that
-    * state before the re-ingest.
-    */
-   r300_pm4_reg(&b, R300_ZB_ZCACHE_CTLSTAT,
-                R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
-                   R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
-   r300_pm4_reg(&b, R300_RB3D_DSTCACHE_CTLSTAT,
-                R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
-                   R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
-   r300_pm4_reg(&b, RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
-   r300_pm4_reg(&b, R300_VAP_PVS_STATE_FLUSH_REG, 0);
+   r300_r2vb_producer_tail_emit(&b);
 
    const int rc = r300_pm4_builder_finish(&b, &out->ib_size_dwords);
    if (rc != 0) {

@@ -175,6 +175,40 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
       return slot->read_domains != RADEON_GEM_DOMAIN_GTT ||
              slot->write_domain != RADEON_GEM_DOMAIN_GTT;
    }
+   case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED: {
+      /* The fetched composition renders the consumer's maximum public
+       * extent over four relocations: the carrier crosses both engines,
+       * the color target is written, and the slot and source arrays are
+       * device-read; the slot array is the admission's own page.
+       */
+      if (!cmd_buffer->deferred_draw.pending ||
+          cmd_buffer->deferred_draw.target_width !=
+             R3V_NATIVE_TARGET_WIDTH ||
+          cmd_buffer->deferred_draw.target_height !=
+             R3V_NATIVE_TARGET_HEIGHT)
+         return true;
+      if (cmd_buffer->reference_count != 4)
+         return true;
+      const struct r3v_native_bo_reference *carrier =
+         &cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX];
+      const struct r3v_native_bo_reference *color =
+         &cmd_buffer->references[R300_TRIANGLE_SLOT_COLOR];
+      const struct r3v_native_bo_reference *slot =
+         &cmd_buffer->references[2];
+      const struct r3v_native_bo_reference *source =
+         &cmd_buffer->references[3];
+      if (carrier->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          carrier->write_domain != RADEON_GEM_DOMAIN_GTT)
+         return true;
+      if (color->write_domain != RADEON_GEM_DOMAIN_GTT)
+         return true;
+      if (slot->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          slot->write_domain != 0 || slot->memory == NULL ||
+          slot->memory != cmd_buffer->owned_slot)
+         return true;
+      return source->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             source->write_domain != 0 || source->memory == NULL;
+   }
    case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL: {
       /* The depth control binds three exact footprints: the vertex page
        * device-read, the color target device-written, and the depth

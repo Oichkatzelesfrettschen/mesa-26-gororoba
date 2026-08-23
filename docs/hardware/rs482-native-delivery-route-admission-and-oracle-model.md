@@ -52,7 +52,14 @@ That makes vertex transform a substituted function with two implementations:
 - the CPU route, where `r300_cpu_vertex_job_execute` interprets a vertex job on
   the host and writes the carrier directly;
 - the GPU producer route, where a fragment program computes the transform and
-  RB3D writes the carrier as a render target, the R2VB shape.
+  RB3D writes the carrier as a render target, the R2VB shape.  It has two
+  producer forms: the immediate producer embeds the admitted records as
+  `3D_DRAW_IMMD_2` body dwords (the silicon-delivered form), and the fetched
+  producer (`common/r300_r2vb_fetched_producer.c`) reads the application's
+  vertex BO and a driver-owned slot-position BO through the two-array
+  `LOAD_VBPNTR` + `DRAW_VBUF_2` body, with the `(z, y, x, w)` reordering moved
+  from the embedded record into the source element's PSC swizzle so every US,
+  RS, and RB register value of the qualified immediate pass stays identical.
 
 Both deliver into the same carrier and the same consumer draw reads it. The
 engineering problem is therefore route equivalence rather than route correctness
@@ -61,8 +68,14 @@ and the first is admissible only against a declared arithmetic semantics.
 
 ## Route topology
 
-`r300_delivery_route_resolve` takes the two cached gate values and the source
-format and returns one decision. The device caches each gate at creation as the
+`r300_delivery_route_resolve` takes the three cached gate values and the source
+format and returns one decision: the CPU route by default, the R2VB host model
+under `R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL=1`, the immediate GPU producer
+with `R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL=1` added, and the fetched GPU
+producer with `R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL=1` added to both;
+the fetched route is a new cell with a no-submit composition identity
+(`common/tests/r300_fetched_route_digests.h`) and no retained silicon delivery,
+so the third gate keeps the qualified immediate route reachable beside it. The device caches each gate at creation as the
 literal `"1"` or closed, so the route cannot drift mid-process, and a harness
 that varies a gate on one device calls
 `r3v_native_device_refresh_delivery_gates` to re-run the same creation-time read.
@@ -393,10 +406,20 @@ model.
   to generalize.
 - Source-format migration. F32_3 and F32_2 public routes remain open, and the
   FLOAT_4 model fetch already pins a kernel fact the widened width exposed.
+  The fetched producer emits all three widths and pins their composed
+  digests; the resolver opens the fetched route for F32_4 alone until each
+  width's attended cell is retained.
+- Fetched-route closure. The fetched F32_4 route composes at submit time
+  byte-identical to its offline composition (the submit-order harness's
+  `gpu-fetched-composed` arm proves the digests equal through the arming
+  gate) and refuses atomically on an injected composition failure; closing
+  needs the kernel-parser replay of the composed stream and an attended
+  RS482 cell whose carrier read-back equals the delivery identity.
 - Fetch-tail enforcement. The offset-blind kernel bound leaves userspace as the
   enforcing layer. A kernel-side offset-aware bound would move that obligation;
   until then a replay `ACCEPT` is not a statement about the fetch window.
-- Injection surface. The admission fault path and the read-back's stale-mapping
-  path both lack harness injection hooks. A fault-injection layer over
+- Injection surface. The fetched route's composition boundary carries an
+  injection hook (`gpu_producer_compose_inject_errno`); the immediate
+  admission fault path and the read-back's stale-mapping path still lack one. A fault-injection layer over
   `radeon_drm_vk_bo_map` would make both testable and would let the coherency
   rule be witnessed negatively rather than only positively.
