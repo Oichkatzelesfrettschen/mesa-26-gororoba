@@ -1222,6 +1222,26 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          memset(&op->pool->state[op->first_query], value, op->query_count);
       }
 
+      /* Recorded event transitions and waits execute here, in order:
+       * a wait finding its event unsignaled is unsatisfiable on the
+       * synchronous timeline and the submission is lost.
+       */
+      for (uint32_t e = 0; e < cmd_buffer->event_op_count; e++) {
+         const struct r3v_native_event_op *op = &cmd_buffer->event_ops[e];
+         switch (op->kind) {
+         case R3V_NATIVE_EVENT_OP_SET:
+            op->event->signaled = true;
+            break;
+         case R3V_NATIVE_EVENT_OP_RESET:
+            op->event->signaled = false;
+            break;
+         case R3V_NATIVE_EVENT_OP_WAIT:
+            if (!op->event->signaled)
+               return vk_error(device, VK_ERROR_DEVICE_LOST);
+            break;
+         }
+      }
+
       VkResult copies =
          r3v_native_cmd_buffer_execute_deferred_copies(device, cmd_buffer);
       if (copies != VK_SUCCESS) {

@@ -75,6 +75,7 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->scissor_set = false;
    cmd_buffer->query_op_count = 0;
    cmd_buffer->active_query_pool = NULL;
+   cmd_buffer->event_op_count = 0;
    memset(cmd_buffer->bound_vertex_buffers, 0,
           sizeof(cmd_buffer->bound_vertex_buffers));
    memset(cmd_buffer->bound_vertex_offsets, 0,

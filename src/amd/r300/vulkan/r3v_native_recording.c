@@ -303,6 +303,22 @@ r3v_native_copy_buffer_range_ok(const struct r3v_native_buffer *buffer,
    return true;
 }
 
+static void
+r3v_native_record_event_op(VkCommandBuffer commandBuffer, VkEvent _event,
+                           enum r3v_native_event_op_kind kind)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_event, event, _event);
+
+   if (event == NULL || cmd_buffer->pass_target != NULL ||
+       cmd_buffer->event_op_count == R3V_NATIVE_EVENT_OP_MAX) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   cmd_buffer->event_ops[cmd_buffer->event_op_count++] =
+      (struct r3v_native_event_op){ .kind = kind, .event = event };
+}
+
 static struct r3v_native_query_op *
 r3v_native_query_op_slot(struct r3v_native_cmd_buffer *cmd_buffer)
 {
@@ -1006,7 +1022,9 @@ r3v_CmdResetEvent(
    VkEvent event,
    VkPipelineStageFlags stageMask)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   (void)stageMask;
+   r3v_native_record_event_op(commandBuffer, event,
+                              R3V_NATIVE_EVENT_OP_RESET);
 }
 
 /* The reset returns each named query to unavailable at submission, in
@@ -1083,13 +1101,20 @@ r3v_CmdSetDepthBounds(
    r3v_native_cmd_poison(commandBuffer);
 }
 
+/* The recorded set executes at submission after every earlier
+ * recorded operation has completed on the one synchronous timeline,
+ * so any stage mask's completion is already implied and the mask
+ * itself records nothing.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdSetEvent(
    VkCommandBuffer commandBuffer,
    VkEvent event,
    VkPipelineStageFlags stageMask)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   (void)stageMask;
+   r3v_native_record_event_op(commandBuffer, event,
+                              R3V_NATIVE_EVENT_OP_SET);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1210,6 +1235,13 @@ r3v_CmdUpdateBuffer(
    cmd_buffer->deferred_copy_count++;
 }
 
+/* The wait carries synchronization alone: barrier work travels
+ * through vkCmdPipelineBarrier's admitted vocabulary, so a wait
+ * naming barriers refuses.  At submission the wait checks its events
+ * in recorded order; an unsignaled event is a dependency no later
+ * work can satisfy on the synchronous timeline, and the submission
+ * reports device loss.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdWaitEvents(
    VkCommandBuffer commandBuffer,
@@ -1224,7 +1256,16 @@ r3v_CmdWaitEvents(
    uint32_t imageMemoryBarrierCount,
    const VkImageMemoryBarrier *pImageMemoryBarriers)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   (void)srcStageMask;
+   (void)dstStageMask;
+   if (eventCount == 0 || memoryBarrierCount != 0 ||
+       bufferMemoryBarrierCount != 0 || imageMemoryBarrierCount != 0) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   for (uint32_t i = 0; i < eventCount; i++)
+      r3v_native_record_event_op(commandBuffer, pEvents[i],
+                                 R3V_NATIVE_EVENT_OP_WAIT);
 }
 
 VKAPI_ATTR void VKAPI_CALL

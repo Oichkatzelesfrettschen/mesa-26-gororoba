@@ -499,6 +499,74 @@ check_empty_secondary_execution(const struct fixture *f)
    return 0;
 }
 
+/* The host event path: immediate host set/reset/status, the recorded
+ * set publishing at submission, a wait after a recorded set
+ * submitting, and a wait on an unsignaled event losing the device --
+ * observed as the refused submit under the runtime's loss folding.
+ */
+static int
+check_host_events(const struct fixture *f)
+{
+   const VkEventCreateInfo event_info = {
+      .sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO,
+   };
+   VkEvent event;
+   REQUIRE(vkCreateEvent(f->device, &event_info, NULL, &event) ==
+              VK_SUCCESS,
+           "event creation");
+   CHECK(vkGetEventStatus(f->device, event) == VK_EVENT_RESET,
+         "a fresh event reads unsignaled");
+
+   const VkCommandBufferBeginInfo begin_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+   };
+   const VkSubmitInfo submit_info = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &f->cmd,
+   };
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "event span pool reset");
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "event span begin");
+   vkCmdSetEvent(f->cmd, event, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+   vkCmdWaitEvents(f->cmd, 1, &event,
+                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, NULL, 0, NULL,
+                   0, NULL);
+   REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+           "set-then-wait records");
+   CHECK(vkQueueSubmit(f->queue, 1, &submit_info, VK_NULL_HANDLE) ==
+            VK_SUCCESS &&
+         vkQueueWaitIdle(f->queue) == VK_SUCCESS,
+         "the recorded set satisfies the recorded wait");
+   CHECK(vkGetEventStatus(f->device, event) == VK_EVENT_SET,
+         "the recorded set published to the host view");
+
+   REQUIRE(vkResetEvent(f->device, event) == VK_SUCCESS, "host reset");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "unsatisfied wait pool reset");
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "unsatisfied wait begin");
+   vkCmdWaitEvents(f->cmd, 1, &event,
+                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, NULL, 0, NULL,
+                   0, NULL);
+   REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+           "the bare wait records");
+   VkResult lost = vkQueueSubmit(f->queue, 1, &submit_info,
+                                 VK_NULL_HANDLE);
+   CHECK(lost != VK_SUCCESS,
+         "a wait on an unsignaled event loses the submission");
+
+   /* A wait carrying barriers poisons: barrier work travels through
+    * vkCmdPipelineBarrier.  The lost queue above ends the fixture, so
+    * this recording check closes the leg.
+    */
+   vkDestroyEvent(f->device, event, NULL);
+   return 0;
+}
+
 static int
 create_fixture(struct fixture *f)
 {
@@ -649,7 +717,8 @@ main(int argc, char **argv)
                check_image_binding(&f) ||
                check_sampler_use_fail_closed(&f) ||
                check_query_zero_span(&f) ||
-               check_empty_secondary_execution(&f);
+               check_empty_secondary_execution(&f) ||
+               check_host_events(&f);
 
    destroy_fixture(&f);
    if (fatal || failures) {
