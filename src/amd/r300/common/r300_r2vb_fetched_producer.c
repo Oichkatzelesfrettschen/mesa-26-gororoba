@@ -380,9 +380,6 @@ reference_geometry_emit(const struct r300_r2vb_fetched_source *source,
    return rc;
 }
 
-/* One GTT page: the reference BO size for each fetched array. */
-#define R300_R2VB_FETCHED_REFERENCE_BO_BYTES 4096u
-
 int
 r300_r2vb_fetched_producer_reference_emit(
    int format_id, struct r300_r2vb_fetched_producer_ib *out)

@@ -397,6 +397,43 @@ test(
   suite : ['r300'],
 )
 
+# Manifest writer for the composed fetched route; the offline replay
+# drives it, once per admitted source width.
+r300_r2vb_fetched_route_manifest = executable(
+  'r300_r2vb_fetched_route_manifest',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_pm4_compose.c',
+        'r300_r2vb_carrier_delivery.c', 'r300_r2vb_fetch_pass.c',
+        'r300_r2vb_fetched_producer.c', 'r300_r2vb_fetched_route_manifest.c',
+        'r300_r2vb_producer_pass.c', 'r300_tcl_bypass_triangle.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+
+# Offline kernel replay of the composed fetched route per width, gated
+# on R3V_CS_TRACK_REPLAY_TOOL; absent tool exits 77 (meson SKIP).
+test(
+  'r300-r2vb-fetched-route-replay-f32_4',
+  files('tests/run_r2vb_fetched_route_replay.sh')[0],
+  args : [r300_r2vb_fetched_route_manifest, 'f32_4'],
+  suite : ['r300'],
+)
+test(
+  'r300-r2vb-fetched-route-replay-f32_3',
+  files('tests/run_r2vb_fetched_route_replay.sh')[0],
+  args : [r300_r2vb_fetched_route_manifest, 'f32_3'],
+  suite : ['r300'],
+)
+test(
+  'r300-r2vb-fetched-route-replay-f32_2',
+  files('tests/run_r2vb_fetched_route_replay.sh')[0],
+  args : [r300_r2vb_fetched_route_manifest, 'f32_2'],
+  suite : ['r300'],
+)
+
 # Manifest writer for the re-ingest stream; the offline replay drives it.
 r300_r2vb_reingest_manifest = executable(
   'r300_r2vb_reingest_manifest',

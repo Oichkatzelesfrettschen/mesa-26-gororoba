@@ -371,8 +371,12 @@ calibration repeats those steps: delete the named call, run
 then restore the call and see it pass. The commit that introduces each witness
 records which call it removed.
 
-The kernel replays register as `r300-r2vb-public-route-replay` and
-`r300-zb-depth-control-replay` and skip with exit status 77 when
+The kernel replays register as `r300-r2vb-public-route-replay`,
+`r300-r2vb-fetched-route-replay-{f32_4,f32_3,f32_2}` (the composed fetched
+route parses as two draws over four relocation entries; its known-bad arms pin
+the parser's offset-blind vertex-array bound at stride times count - 1 for
+the slot and source arrays and reject a source relocation past the chunk
+table), and `r300-zb-depth-control-replay`, and skip with exit status 77 when
 `R3V_CS_TRACK_REPLAY_TOOL` is unset. Attended silicon runs follow their own
 procedure documents, which own the gate spellings, the preflight, the rollback,
 and the retained-record shape.
