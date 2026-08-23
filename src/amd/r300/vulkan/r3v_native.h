@@ -302,6 +302,11 @@ struct r3v_native_deferred_draw {
    uint32_t stream_mask;
    struct r3v_native_deferred_stream streams[R300_VERTEX_JOB_MAX_INPUTS];
    uint32_t first_vertex;
+   /* Vertices per instance: a multiple of three, at least three; the
+    * host expands vertex_count * instance_count records into the cell
+    * family's vertex list.
+    */
+   uint32_t vertex_count;
    /* An indexed draw dereferences its indices on the host at execution:
     * index_bytes (2 or 4) names the bound index type, index_base is
     * the bind offset into index_buffer, and each of the three indices
@@ -868,6 +873,11 @@ struct r3v_native_vertex_stream_desc {
    uint64_t size_bytes;
    uint32_t stride;
    uint32_t first_vertex;
+   /* Vertices per instance: a multiple of three, at least three; the
+    * host expands vertex_count * instance_count records into the cell
+    * family's vertex list.
+    */
+   uint32_t vertex_count;
    int format_id;
 };
 

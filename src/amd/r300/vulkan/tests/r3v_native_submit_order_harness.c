@@ -188,6 +188,12 @@ enum arm {
    ARM_VERTEX_INDEX_ARMED,
    ARM_INSTANCED_ROBUST_ARMED,
    ARM_INSTANCED_ZERO_REFUSED,
+   /* A six-vertex one-instance list: the recording installs the
+    * two-triangle family member and the CPU route gathers all six
+    * records; a count that is not a whole number of triangles refuses
+    * at recording. */
+   ARM_MULTI_TRIANGLE_ARMED,
+   ARM_NON_TRIANGLE_COUNT_REFUSED,
    ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED,
    ARM_INSTANCED_FETCHED_REFUSED,
 };
@@ -245,6 +251,8 @@ static const struct {
    { "vertex-index-armed", ARM_VERTEX_INDEX_ARMED },
    { "instanced-robust-armed", ARM_INSTANCED_ROBUST_ARMED },
    { "instanced-zero-refused", ARM_INSTANCED_ZERO_REFUSED },
+   { "multi-triangle-armed", ARM_MULTI_TRIANGLE_ARMED },
+   { "non-triangle-count-refused", ARM_NON_TRIANGLE_COUNT_REFUSED },
    { "instanced-out-of-bounds-refused", ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED },
    { "instanced-fetched-refused", ARM_INSTANCED_FETCHED_REFUSED },
 };
@@ -483,7 +491,8 @@ run_arm(enum arm arm, const char *name)
                                     arm == ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED;
    const bool two_triangle_arm = arm == ARM_INSTANCED_ARMED ||
                                  arm == ARM_INSTANCED_INDEX_ARMED ||
-                                 arm == ARM_INSTANCED_FETCHED_REFUSED;
+                                 arm == ARM_INSTANCED_FETCHED_REFUSED ||
+                                 arm == ARM_MULTI_TRIANGLE_ARMED;
    struct r300_tcl_bypass_triangle_ib two_triangles;
    assert(r300_tcl_bypass_triangle_family_emit(
              R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, false, 2,
@@ -747,6 +756,18 @@ run_arm(enum arm arm, const char *name)
                              : v) *
                          4],
                 record_bytes);
+      /* The multi-triangle arm's second triangle: the NDC reference
+       * translated by (0.0625, 0, 0, 0), exact in binary32. */
+      if (arm == ARM_MULTI_TRIANGLE_ARMED) {
+         for (unsigned v = 0; v < 3; v++) {
+            float second[4];
+            memcpy(second, &ndc_triangle[v * 4], 16);
+            second[0] += 0.0625f;
+            memcpy((uint8_t *)map + bind_offset +
+                      (3 + v) * binding_stride,
+                   second, record_bytes);
+         }
+      }
       /* The interleaved layout carries the varying reference colors as
        * the F32_4 at offset 16 of each 32-byte record. */
       if (interleaved_arm) {
@@ -1192,7 +1213,9 @@ run_arm(enum arm arm, const char *name)
    /* The instanced arms' draw parameters: instances from firstInstance,
     * and the vertex-index arm's firstVertex. */
    const uint32_t instance_count =
-      arm == ARM_INSTANCED_ZERO_REFUSED ? 0 : two_triangle_arm ? 2
+      arm == ARM_INSTANCED_ZERO_REFUSED    ? 0
+      : arm == ARM_MULTI_TRIANGLE_ARMED    ? 1
+      : two_triangle_arm                   ? 2
       : arm == ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED ? 2 : 1;
    const uint32_t first_instance =
       arm == ARM_INSTANCED_FIRST_INSTANCE_ARMED ? 1
@@ -1216,7 +1239,11 @@ run_arm(enum arm arm, const char *name)
                                                           : 0,
                        arm == ARM_INDEXED_PERMUTED_ARMED ? -3 : 0, 0);
    } else {
-      vkCmdDraw(cmd, 3, instance_count, first_vertex, first_instance);
+      vkCmdDraw(cmd,
+                arm == ARM_MULTI_TRIANGLE_ARMED          ? 6
+                : arm == ARM_NON_TRIANGLE_COUNT_REFUSED ? 4
+                                                        : 3,
+                instance_count, first_vertex, first_instance);
    }
    vkCmdEndRenderPass(cmd);
    const VkResult ended = vkEndCommandBuffer(cmd);
@@ -1228,6 +1255,7 @@ run_arm(enum arm arm, const char *name)
        arm == ARM_INDEXED_UINT8_REFUSED ||
        arm == ARM_INDEXED_ALIAS_TARGET_REFUSED ||
        arm == ARM_INSTANCED_ZERO_REFUSED ||
+       arm == ARM_NON_TRIANGLE_COUNT_REFUSED ||
        arm == ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED) {
       /* A zero instance count and an instance record past the offset
        * buffer's bound with the feature off each poison the draw at
@@ -1340,7 +1368,19 @@ run_arm(enum arm arm, const char *name)
     * viewport transform, instance-major. */
    float expected_carrier[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
    unsigned expected_records = 0;
-   {
+   if (arm == ARM_MULTI_TRIANGLE_ARMED) {
+      /* Six records, one instance: the reference triangle then its
+       * translated twin, each through the viewport transform. */
+      for (unsigned v = 0; v < 6; v++) {
+         float *record = &expected_carrier[v * 4];
+         memcpy(record, &ndc_triangle[(v % 3) * 4], 16);
+         if (v >= 3)
+            record[0] += 0.0625f;
+         record[0] = (record[0] + 1.0f) * (R3V_NATIVE_TARGET_WIDTH / 2.0f);
+         record[1] = (record[1] + 1.0f) * (R3V_NATIVE_TARGET_HEIGHT / 2.0f);
+      }
+      expected_records = 6;
+   } else {
       const unsigned instances = instance_count ? instance_count : 1;
       for (unsigned i = 0; i < instances; i++) {
          for (unsigned v = 0; v < 3; v++) {
@@ -1478,6 +1518,7 @@ run_arm(enum arm arm, const char *name)
    case ARM_INSTANCED_INDEX_ARMED:
    case ARM_VERTEX_INDEX_ARMED:
    case ARM_INSTANCED_ROBUST_ARMED:
+   case ARM_MULTI_TRIANGLE_ARMED:
       /* The CPU route expanded the instances: the carrier holds each
        * instance's transformed triangle in instance order -- the robust
        * arm's out-of-bounds offset record read zeros, so its carrier is
@@ -1491,6 +1532,7 @@ run_arm(enum arm arm, const char *name)
       assert(token);
       break;
    case ARM_INSTANCED_ZERO_REFUSED:
+   case ARM_NON_TRIANGLE_COUNT_REFUSED:
    case ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED:
       /* Returned above at vkEndCommandBuffer. */
       assert(!"unreachable");
@@ -1683,7 +1725,8 @@ run_arm(enum arm arm, const char *name)
    }
    /* The two-instance armed arms submitted the two-triangle family
     * member the recording installed. */
-   if (arm == ARM_INSTANCED_ARMED || arm == ARM_INSTANCED_INDEX_ARMED) {
+   if (arm == ARM_INSTANCED_ARMED || arm == ARM_INSTANCED_INDEX_ARMED ||
+       arm == ARM_MULTI_TRIANGLE_ARMED) {
       char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       uint32_t submitted_dwords;
       retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);

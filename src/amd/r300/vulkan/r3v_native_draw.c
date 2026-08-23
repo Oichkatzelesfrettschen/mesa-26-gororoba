@@ -229,6 +229,7 @@ stream_overlaps_target(const struct r3v_native_memory *memory, uint64_t lo,
  */
 struct draw_args {
    bool indexed;
+   uint32_t vertex_count;
    uint32_t first_vertex;
    uint32_t first_index;
    int32_t vertex_offset;
@@ -240,13 +241,14 @@ struct draw_args {
  * recording installs the cell IB against a command-buffer-owned GTT
  * carrier and the pass target's memory, and the vertex gather plus the
  * load-op clear ride deferred_draw to queue submission, so resource
- * reads and the clear carry execution-time semantics.  The cell draws
- * exactly three vertices per instance, so the accepted draw arguments
- * are that shape: a linear draw with any firstVertex the bound range
- * proves readable, or an indexed draw whose three indices the record
+ * reads and the clear carry execution-time semantics.  The cell
+ * family draws whole triangles, so the accepted draw arguments are
+ * that shape: a linear draw of vertex_count vertices (a positive
+ * multiple of three) from any firstVertex the bound range proves
+ * readable, or an indexed draw whose vertex_count indices the record
  * proves readable, over instance_count instances from first_instance
- * that the host expands into the cell family's 3 * instance_count
- * vertex list.
+ * that the host expands into the family's vertex_count *
+ * instance_count vertex list.
  */
 static void
 record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
@@ -269,7 +271,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       return;
    }
 
-   /* An indexed draw reads its three indices from the bound index
+   /* An indexed draw reads its indices from the bound index
     * buffer at execution, so the record proves the index range alone:
     * the buffer is bound, the range from first_index closes inside the
     * buffer (robustBufferAccess covers vertex records; the index range
@@ -293,7 +295,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       if (index_base > index_buffer->vk.size ||
           index_buffer->offset > memory->bo.size ||
           index_buffer->vk.size > memory->bo.size - index_buffer->offset ||
-          ((uint64_t)args->first_index + 3) * index_bytes >
+          ((uint64_t)args->first_index + args->vertex_count) * index_bytes >
              index_buffer->vk.size - index_base ||
           stream_overlaps_target(memory, index_buffer->offset + index_base,
                                  index_buffer->vk.size - index_base,
@@ -315,7 +317,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    /* Every attribute slot the job reads resolves to a stream: its
     * binding is bound, the readable range is the bound buffer past the
     * bind and attribute offsets, the buffer range closes inside the
-    * bound memory (BindBufferMemory2 recorded it without validating),
+    * bound memory,
     * and the range shares no byte with the pass target.  The early
     * bound proof at recording is the same arithmetic the gather
     * enforces at submission: the last requested record closes inside
@@ -373,7 +375,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       const uint64_t last_record =
          instance_rate
             ? (uint64_t)args->first_instance + args->instance_count - 1
-            : (uint64_t)args->first_vertex + 2;
+            : (uint64_t)args->first_vertex + args->vertex_count - 1;
       if (record_bound_proved &&
           !device->vk.enabled_features.robustBufferAccess &&
           (available < format->semantic_record_bytes ||
@@ -407,7 +409,9 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    const uint64_t carrier_record_bytes =
       4 * r300_vertex_job_record_dwords(&pipeline->vertex_job);
    const uint64_t carrier_bytes =
-      (3 * (uint64_t)args->instance_count * carrier_record_bytes + 4095) &
+      ((uint64_t)args->vertex_count * args->instance_count *
+          carrier_record_bytes +
+       4095) &
       ~(uint64_t)4095;
    if (radeon_drm_vk_bo_create(&device->drm, carrier_bytes,
                                R3V_NATIVE_MEMORY_ALIGNMENT,
@@ -420,7 +424,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
 
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
       device, cmd_buffer, carrier, cmd_buffer->pass_target,
-      pipeline->varying, args->instance_count);
+      pipeline->varying,
+      (args->vertex_count / 3) * args->instance_count);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);
@@ -433,6 +438,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .pending = true,
       .stream_mask = pipeline->attribute_mask,
       .first_vertex = args->first_vertex,
+      .vertex_count = args->vertex_count,
       .indexed = args->indexed,
       .index_buffer = index_buffer,
       .index_base = index_base,
@@ -466,25 +472,42 @@ instance_range_admitted(uint32_t instanceCount)
    return instanceCount >= 1 && instanceCount <= R3V_NATIVE_MAX_DRAW_INSTANCES;
 }
 
+/* The vertex-list shape both draws accept: whole triangles (a count
+ * that is a positive multiple of three), expanded per instance, with
+ * the triangle product inside the cell family's ceiling -- the
+ * family's vertex list tops out at 3 * R3V_NATIVE_MAX_DRAW_INSTANCES
+ * vertices, the VAP_VF_MAX_VTX_INDX bound.
+ */
+static bool
+list_shape_admitted(uint32_t vertexCount, uint32_t instanceCount)
+{
+   if (vertexCount < 3 || vertexCount % 3 != 0 ||
+       !instance_range_admitted(instanceCount))
+      return false;
+   return (uint64_t)(vertexCount / 3) * instanceCount <=
+          R3V_NATIVE_MAX_DRAW_INSTANCES;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
             uint32_t instanceCount, uint32_t firstVertex,
             uint32_t firstInstance)
 {
-   if (vertexCount != 3 || !instance_range_admitted(instanceCount)) {
+   if (!list_shape_admitted(vertexCount, instanceCount)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
    record_draw(commandBuffer, &(struct draw_args){
+                                 .vertex_count = vertexCount,
                                  .first_vertex = firstVertex,
                                  .first_instance = firstInstance,
                                  .instance_count = instanceCount,
                               });
 }
 
-/* The indexed draw keeps the cell's three-vertex shape: three indices
- * from first_index, dereferenced on the host at execution into the
- * three carrier records the consumer draws linearly, with vertexOffset
+/* The indexed draw keeps the family's whole-triangle shape: indexCount
+ * indices from first_index, dereferenced on the host at execution into
+ * the carrier records the consumer draws linearly, with vertexOffset
  * summed onto each index.  The pipeline admission already holds
  * primitive restart disabled, so the restart value is an ordinary
  * index here.
@@ -494,12 +517,13 @@ r3v_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount,
                    uint32_t instanceCount, uint32_t firstIndex,
                    int32_t vertexOffset, uint32_t firstInstance)
 {
-   if (indexCount != 3 || !instance_range_admitted(instanceCount)) {
+   if (!list_shape_admitted(indexCount, instanceCount)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
    record_draw(commandBuffer, &(struct draw_args){
                                  .indexed = true,
+                                 .vertex_count = indexCount,
                                  .first_index = firstIndex,
                                  .vertex_offset = vertexOffset,
                                  .first_instance = firstInstance,
