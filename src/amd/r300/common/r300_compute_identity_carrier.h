@@ -13,8 +13,10 @@
 #ifndef R300_COMPUTE_IDENTITY_CARRIER_H
 #define R300_COMPUTE_IDENTITY_CARRIER_H
 
+#include "r300_numeric_domain.h"
 #include "r300_r2vb_fetched_producer.h"
 #include "r300_r2vb_producer_pass.h"
+#include "r300_vertex_format.h"
 
 #include <stdint.h>
 
@@ -31,6 +33,27 @@
  * VBPNTR pointer's unit. */
 #define R300_COMPUTE_IDENTITY_CARRIER_OUTPUT_ALIGN 32u
 #define R300_COMPUTE_IDENTITY_CARRIER_INPUT_ALIGN 4u
+
+/* Typed certificate for the executing route.  The descriptor owns the
+ * operation/implementation join and the physical grouping/admission geometry;
+ * API adapters map its neutral route ID to their own execution cell. */
+struct r300_compute_identity_carrier_contract {
+   enum r300_operation_id operation_id;
+   enum r300_operation_implementation_id implementation_id;
+   enum r300_gpu_route_contract_id gpu_route_contract_id;
+   enum r300_route_admission_id admission_id;
+   enum r300_numeric_domain domain;
+   enum r300_vertex_format_id input_format_id;
+   struct r300_r2vb_producer_target target;
+   uint32_t record_dwords;
+   uint32_t record_bytes;
+   uint32_t max_records;
+   uint32_t input_alignment;
+   uint32_t output_alignment;
+};
+
+extern const struct r300_compute_identity_carrier_contract
+   r300_compute_identity_carrier_contract;
 
 struct r300_compute_identity_carrier_params {
    uint32_t record_count;

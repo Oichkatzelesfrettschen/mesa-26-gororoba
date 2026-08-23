@@ -895,6 +895,7 @@ if with_tests
     'r3v_native_arming_runner',
     files('r3v_native_arming.c', 'tests/r3v_native_arming_runner.c',
           '../common/r300_compute_identity_carrier.c',
+          '../common/r300_compute_identity_carrier_contract.c',
           '../common/r300_first_draw_state.c',
           '../common/r300_fragment_binary.c',
           '../common/r300_pm4_builder.c',

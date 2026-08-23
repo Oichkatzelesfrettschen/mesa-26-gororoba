@@ -36,58 +36,51 @@ test_rows_well_formed(void)
 
 struct catalog_binding_expectation {
    enum r300_compute_verb verb;
-   const char *op_name;
+   enum r300_operation_id operation_id;
    enum r300_numeric_domain domain;
    enum r300_compute_verb_unit unit;
    enum r300_compute_verb_exactness exactness;
 };
 
 static const struct catalog_binding_expectation catalog_bindings[] = {
-   { R300_COMPUTE_VERB_IDENTITY_MAP, "IDENTITY_MAP",
+   { R300_COMPUTE_VERB_IDENTITY_MAP, R300_OPERATION_ID_IDENTITY_MAP,
      R300_NUM_DOMAIN_FP24_RTZ, R300_COMPUTE_VERB_UNIT_R2VB_CARRIER,
      R300_COMPUTE_VERB_FP24_EXACT_WINDOW },
-   { R300_COMPUTE_VERB_CONST_FILL, "CONSTFILL",
+   { R300_COMPUTE_VERB_CONST_FILL, R300_OPERATION_ID_CONSTFILL,
      R300_NUM_DOMAIN_RB3D_BLEND, R300_COMPUTE_VERB_UNIT_RB3D_CLEAR,
      R300_COMPUTE_VERB_BIT_EXACT },
-   { R300_COMPUTE_VERB_BINARY_ARITHMETIC_MAP, "BINARY_MAP",
+   { R300_COMPUTE_VERB_BINARY_ARITHMETIC_MAP,
+     R300_OPERATION_ID_BINARY_MAP,
      R300_NUM_DOMAIN_FP24_RTZ, R300_COMPUTE_VERB_UNIT_US_FP24_ALU,
      R300_COMPUTE_VERB_FP24_EXACT_WINDOW },
-   { R300_COMPUTE_VERB_MULTITAP_GATHER, "MULTITAP_GATHER",
+   { R300_COMPUTE_VERB_MULTITAP_GATHER,
+     R300_OPERATION_ID_MULTITAP_GATHER,
      R300_NUM_DOMAIN_FP24_RTZ, R300_COMPUTE_VERB_UNIT_US_FP24_ALU,
      R300_COMPUTE_VERB_FP24_EXACT_WINDOW },
-   { R300_COMPUTE_VERB_PREDICATED_STORE, "PREDICATED_MASKED_STORE",
+   { R300_COMPUTE_VERB_PREDICATED_STORE,
+     R300_OPERATION_ID_PREDICATED_MASKED_STORE,
      R300_NUM_DOMAIN_FP24_RTZ, R300_COMPUTE_VERB_UNIT_TX_RB3D_COPY,
      R300_COMPUTE_VERB_BIT_EXACT },
-   { R300_COMPUTE_VERB_MULTIPASS_SCAN, "MULTIPASS_PING_PONG_SCAN",
+   { R300_COMPUTE_VERB_MULTIPASS_SCAN,
+     R300_OPERATION_ID_MULTIPASS_PING_PONG_SCAN,
      R300_NUM_DOMAIN_FP24_RTZ, R300_COMPUTE_VERB_UNIT_US_FP24_ALU,
      R300_COMPUTE_VERB_FP24_EXACT_WINDOW },
-   { R300_COMPUTE_VERB_REDUCE, "BLEND_ACC_REDUCTION",
+   { R300_COMPUTE_VERB_REDUCE, R300_OPERATION_ID_BLEND_ACC_REDUCTION,
      R300_NUM_DOMAIN_RB3D_BLEND, R300_COMPUTE_VERB_UNIT_RB3D_BLEND,
      R300_COMPUTE_VERB_FP24_EXACT_WINDOW },
-   { R300_COMPUTE_VERB_SATURATING_DIFF, "SATURATING_DIFF",
+   { R300_COMPUTE_VERB_SATURATING_DIFF,
+     R300_OPERATION_ID_SATURATING_DIFF,
      R300_NUM_DOMAIN_RB3D_BLEND, R300_COMPUTE_VERB_UNIT_RB3D_BLEND,
      R300_COMPUTE_VERB_BIT_EXACT },
-   { R300_COMPUTE_VERB_PARALLEL_4OUT_MAP, "PARALLEL_4OUT_MAP",
+   { R300_COMPUTE_VERB_PARALLEL_4OUT_MAP,
+     R300_OPERATION_ID_PARALLEL_4OUT_MAP,
      R300_NUM_DOMAIN_FP24_RTZ, R300_COMPUTE_VERB_UNIT_US_FP24_ALU,
      R300_COMPUTE_VERB_FP24_EXACT_WINDOW },
-   { R300_COMPUTE_VERB_STENCIL_INVERT, "STENCIL_INVERT_NOT",
+   { R300_COMPUTE_VERB_STENCIL_INVERT,
+     R300_OPERATION_ID_STENCIL_INVERT_NOT,
      R300_NUM_DOMAIN_U8_STENCIL, R300_COMPUTE_VERB_UNIT_ZB_STENCIL,
      R300_COMPUTE_VERB_BIT_EXACT },
 };
-
-static const struct r300_virtual_op_info *
-catalog_op_by_name(const char *name, unsigned *matches)
-{
-   const struct r300_virtual_op_info *found = NULL;
-   *matches = 0;
-   for (unsigned i = 0; i < r300_virtual_op_count(); i++) {
-      if (strcmp(r300_virtual_op_catalog[i].op_name, name) == 0) {
-         found = &r300_virtual_op_catalog[i];
-         (*matches)++;
-      }
-   }
-   return found;
-}
 
 static bool
 catalog_binding_set_valid(
@@ -111,14 +104,15 @@ catalog_binding_set_valid(
          return false;
       }
       for (unsigned j = 0; j < i; j++) {
-         if (strcmp(expectations[j].op_name, expectations[i].op_name) == 0) {
+         if (expectations[j].operation_id == expectations[i].operation_id) {
             *reason = "duplicate expectation operation";
             return false;
          }
       }
    }
    for (uint32_t i = 0; i < row_count; i++) {
-      const unsigned expected_coverage = rows[i].catalog_op == NULL ? 0 : 1;
+      const unsigned expected_coverage =
+         rows[i].operation_id == R300_OPERATION_ID_NONE ? 0 : 1;
       if (coverage[i] != expected_coverage) {
          *reason = "catalog binding coverage disagrees";
          return false;
@@ -142,9 +136,8 @@ catalog_binding_valid(const struct r300_compute_verb_row *row,
                       const struct catalog_binding_expectation *expected,
                       const char **reason)
 {
-   if (row->catalog_op == NULL ||
-       strcmp(row->catalog_op, expected->op_name) != 0 ||
-       strcmp(op->op_name, expected->op_name) != 0) {
+   if (row->operation_id != expected->operation_id ||
+       op->operation_id != expected->operation_id) {
       *reason = "operation identity disagrees";
       return false;
    }
@@ -184,7 +177,7 @@ catalog_binding_valid(const struct r300_compute_verb_row *row,
 
 /* Every catalog op named by the ledger resolves exactly once, and the ten
  * current joins agree on domain, unit, exactness, evidence, and route state.
- * Rows without a catalog operation remain explicitly NULL. */
+ * Rows without a catalog operation remain explicitly NONE. */
 static void
 test_catalog_binding(void)
 {
@@ -200,14 +193,10 @@ test_catalog_binding(void)
    for (unsigned i = 0; i < binding_count; i++) {
       const struct catalog_binding_expectation *expected = &catalog_bindings[i];
       const struct r300_compute_verb_row *row = &rows[expected->verb];
-      unsigned matches = 0;
       const struct r300_virtual_op_info *op =
-         catalog_op_by_name(expected->op_name, &matches);
+         r300_virtual_op_info_for_id(expected->operation_id);
       reason = NULL;
-      if (matches != 1)
-         fprintf(stderr, "catalog op %s resolved %u times\n",
-                 expected->op_name, matches);
-      assert(matches == 1);
+      assert(op != NULL);
       assert(catalog_binding_valid(row, op, expected, &reason));
       assert(reason == NULL);
    }
@@ -224,9 +213,8 @@ test_catalog_binding_calibration(void)
    const struct catalog_binding_expectation *expected = &catalog_bindings[3];
    const struct r300_compute_verb_row *row =
       r300_compute_verb_row(expected->verb);
-   unsigned matches = 0;
    const struct r300_virtual_op_info *op =
-      catalog_op_by_name(expected->op_name, &matches);
+      r300_virtual_op_info_for_id(expected->operation_id);
    struct r300_compute_verb_row mutated_row = *row;
    struct r300_virtual_op_info mutated_op = *op;
    struct catalog_binding_expectation
@@ -237,9 +225,9 @@ test_catalog_binding_calibration(void)
    const struct r300_compute_verb_row *rows = r300_compute_verb_rows(&row_count);
    const char *reason = NULL;
 
-   assert(matches == 1);
+   assert(op != NULL);
 
-   mutated_row.catalog_op = "BINARY_MAP";
+   mutated_row.operation_id = R300_OPERATION_ID_BINARY_MAP;
    assert(!catalog_binding_valid(&mutated_row, op, expected, &reason));
    assert(strcmp(reason, "operation identity disagrees") == 0);
 
@@ -294,7 +282,7 @@ test_catalog_binding_calibration(void)
    assert(strcmp(reason, "duplicate expectation verb") == 0);
 
    memcpy(mutated_bindings, catalog_bindings, sizeof(mutated_bindings));
-   mutated_bindings[1].op_name = mutated_bindings[0].op_name;
+   mutated_bindings[1].operation_id = mutated_bindings[0].operation_id;
    assert(!catalog_binding_set_valid(mutated_bindings, binding_count, rows,
                                      row_count, &reason));
    assert(strcmp(reason, "duplicate expectation operation") == 0);
@@ -334,6 +322,71 @@ test_checker_calibration(void)
    assert(strcmp(reason, "two rows share one gate") == 0);
 
    memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_CONST_FILL].operation_id =
+      R300_OPERATION_ID_COUNT;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "operation identity outside the catalog enum") == 0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_CONST_FILL].implementation_id =
+      R300_OPERATION_IMPLEMENTATION_COUNT;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason,
+                 "implementation identity outside the implementation enum") ==
+          0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_CONST_FILL].gpu_route_contract_id =
+      R300_GPU_ROUTE_CONTRACT_COUNT;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "route contract outside the route-contract enum") ==
+          0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_IDENTITY_MAP].implementation_id =
+      R300_OPERATION_IMPLEMENTATION_NONE;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "implementation and route contract are partial") == 0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_IDENTITY_MAP].gpu_route_contract_id =
+      R300_GPU_ROUTE_CONTRACT_NONE;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "implementation and route contract are partial") == 0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_CONST_FILL].cpu_route =
+      (enum r300_compute_verb_route_status)
+         (R300_COMPUTE_VERB_ROUTE_EXECUTING + 1);
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "route status outside the route-status enum") == 0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_CONST_FILL].implementation_id =
+      R300_OPERATION_IMPLEMENTATION_R2VB_FETCHED_IDENTITY_CARRIER;
+   mutated[R300_COMPUTE_VERB_CONST_FILL].gpu_route_contract_id =
+      R300_GPU_ROUTE_CONTRACT_R2VB_COMPUTE_IDENTITY_CARRIER;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason,
+                 "absent GPU route carries an implementation contract") == 0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_CONST_FILL].gpu_route =
+      R300_COMPUTE_VERB_ROUTE_PRECOMMITTED;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "GPU route lacks an implementation contract") == 0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_BITWISE_LOGICOP_MAP].gpu_route =
+      R300_COMPUTE_VERB_ROUTE_PRECOMMITTED;
+   mutated[R300_COMPUTE_VERB_BITWISE_LOGICOP_MAP].implementation_id =
+      R300_OPERATION_IMPLEMENTATION_R2VB_FETCHED_IDENTITY_CARRIER;
+   mutated[R300_COMPUTE_VERB_BITWISE_LOGICOP_MAP].gpu_route_contract_id =
+      R300_GPU_ROUTE_CONTRACT_R2VB_COMPUTE_IDENTITY_CARRIER;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "GPU route lacks an operation identity") == 0);
+
+   memcpy(mutated, rows, sizeof(mutated));
    mutated[R300_COMPUTE_VERB_REDUCE].index_class =
       (enum r300_grid_index_class)(R300_GRID_INDEX_STRIDED + 1);
    assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
@@ -346,6 +399,12 @@ test_checker_calibration(void)
    assert(strcmp(reason, "unit outside the compute-verb enum") == 0);
 
    memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_REDUCE].exactness =
+      (enum r300_compute_verb_exactness)(R300_COMPUTE_VERB_FP24_BOUNDED + 1);
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "exactness outside the exactness enum") == 0);
+
+   memcpy(mutated, rows, sizeof(mutated));
    mutated[R300_COMPUTE_VERB_IDENTITY_MAP].tolerance = 0.5f;
    assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
    assert(strcmp(reason, "tolerance disagrees with the exactness class") == 0);
@@ -355,9 +414,14 @@ test_checker_calibration(void)
    assert(strcmp(reason, "tolerance disagrees with the exactness class") == 0);
 
    memcpy(mutated, rows, sizeof(mutated));
-   mutated[R300_COMPUTE_VERB_BITWISE_LOGICOP_MAP].gpu_route =
-      R300_COMPUTE_VERB_ROUTE_EXECUTING;
-   mutated[R300_COMPUTE_VERB_BITWISE_LOGICOP_MAP].evidence =
+   mutated[R300_COMPUTE_VERB_CONST_FILL].evidence =
+      (enum r300_compute_verb_evidence)
+         (R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED + 1);
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "evidence outside the evidence enum") == 0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_IDENTITY_MAP].evidence =
       R300_COMPUTE_VERB_EVIDENCE_SOURCE_GROUNDED;
    assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
    assert(strcmp(reason,
@@ -365,9 +429,40 @@ test_checker_calibration(void)
           0);
 
    memcpy(mutated, rows, sizeof(mutated));
-   mutated[R300_COMPUTE_VERB_CONST_FILL].unit = R300_COMPUTE_VERB_UNIT_HOST;
+   mutated[R300_COMPUTE_VERB_IDENTITY_MAP].operation_id =
+      R300_OPERATION_ID_QFMSUB;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason,
+                 "executing GPU route has an inadmissible catalog status") ==
+          0);
+
+   memcpy(mutated, rows, sizeof(mutated));
    mutated[R300_COMPUTE_VERB_CONST_FILL].gpu_route =
       R300_COMPUTE_VERB_ROUTE_PRECOMMITTED;
+   mutated[R300_COMPUTE_VERB_CONST_FILL].implementation_id =
+      R300_OPERATION_IMPLEMENTATION_R2VB_FETCHED_IDENTITY_CARRIER;
+   mutated[R300_COMPUTE_VERB_CONST_FILL].gpu_route_contract_id =
+      R300_GPU_ROUTE_CONTRACT_R2VB_COMPUTE_IDENTITY_CARRIER;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "operation and implementation contract disagree") ==
+          0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_CONST_FILL].operation_id =
+      R300_OPERATION_ID_IDENTITY_MAP;
+   mutated[R300_COMPUTE_VERB_CONST_FILL].gpu_route =
+      R300_COMPUTE_VERB_ROUTE_EXECUTING;
+   mutated[R300_COMPUTE_VERB_CONST_FILL].implementation_id =
+      R300_OPERATION_IMPLEMENTATION_R2VB_FETCHED_IDENTITY_CARRIER;
+   mutated[R300_COMPUTE_VERB_CONST_FILL].gpu_route_contract_id =
+      R300_GPU_ROUTE_CONTRACT_R2VB_COMPUTE_IDENTITY_CARRIER;
+   assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
+   assert(strcmp(reason, "implementation contract and verb shape disagree") ==
+          0);
+
+   memcpy(mutated, rows, sizeof(mutated));
+   mutated[R300_COMPUTE_VERB_IDENTITY_MAP].unit =
+      R300_COMPUTE_VERB_UNIT_HOST;
    assert(!r300_compute_verb_rows_valid(mutated, count, &reason));
    assert(strcmp(reason, "host unit with a GPU route") == 0);
 
@@ -397,6 +492,11 @@ test_precommitment(void)
       &rows[R300_COMPUTE_VERB_IDENTITY_MAP];
    assert(identity->unit == R300_COMPUTE_VERB_UNIT_R2VB_CARRIER);
    assert(identity->exactness == R300_COMPUTE_VERB_FP24_EXACT_WINDOW);
+   assert(identity->operation_id == R300_OPERATION_ID_IDENTITY_MAP);
+   assert(identity->implementation_id ==
+          R300_OPERATION_IMPLEMENTATION_R2VB_FETCHED_IDENTITY_CARRIER);
+   assert(identity->gpu_route_contract_id ==
+          R300_GPU_ROUTE_CONTRACT_R2VB_COMPUTE_IDENTITY_CARRIER);
    assert(identity->gpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING);
    assert(strcmp(identity->gpu_gate,
                  "R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL") == 0);

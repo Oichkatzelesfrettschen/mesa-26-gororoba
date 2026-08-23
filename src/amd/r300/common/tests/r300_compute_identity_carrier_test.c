@@ -12,6 +12,7 @@
 #undef NDEBUG
 
 #include "r300_compute_identity_carrier.h"
+#include "r300_reg.h"
 #include "r300_r2vb_producer_pass.h"
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_vertex_format.h"
@@ -21,6 +22,38 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+
+static void
+test_route_contract(void)
+{
+   const struct r300_compute_identity_carrier_contract *contract =
+      &r300_compute_identity_carrier_contract;
+   assert(contract->operation_id == R300_OPERATION_ID_IDENTITY_MAP);
+   assert(contract->implementation_id ==
+          R300_OPERATION_IMPLEMENTATION_R2VB_FETCHED_IDENTITY_CARRIER);
+   assert(contract->gpu_route_contract_id ==
+          R300_GPU_ROUTE_CONTRACT_R2VB_COMPUTE_IDENTITY_CARRIER);
+   assert(contract->admission_id == R300_ROUTE_ADMISSION_R2VB_FP24_IDENTITY);
+   assert(contract->domain == R300_NUM_DOMAIN_FP24_RTZ);
+   assert(contract->input_format_id == R300_VERTEX_FORMAT_F32_4);
+   assert(contract->target.rb3d_color_format ==
+          R300_COLOR_FORMAT_ARGB32323232);
+   assert(contract->target.us_out_fmt[0] ==
+          (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
+           R300_C2_SEL_R | R300_C3_SEL_A));
+   for (unsigned i = 1; i < 4; i++)
+      assert(contract->target.us_out_fmt[i] == R300_US_OUT_FMT_UNUSED);
+   assert(contract->record_dwords ==
+          R300_COMPUTE_IDENTITY_CARRIER_RECORD_DWORDS);
+   assert(contract->record_bytes == R300_COMPUTE_IDENTITY_CARRIER_RECORD_BYTES);
+   assert(contract->record_bytes == R300_R2VB_PRODUCER_CPP_BYTES);
+   assert(contract->record_bytes == contract->record_dwords * sizeof(uint32_t));
+   assert(contract->max_records == R300_COMPUTE_IDENTITY_CARRIER_MAX_RECORDS);
+   assert(contract->input_alignment ==
+          R300_COMPUTE_IDENTITY_CARRIER_INPUT_ALIGN);
+   assert(contract->output_alignment ==
+          R300_COMPUTE_IDENTITY_CARRIER_OUTPUT_ALIGN);
+}
 
 static void
 test_reference_structure_and_digest(void)
@@ -168,6 +201,7 @@ main(int argc, char **argv)
       r300_r2vb_fetched_producer_release(&pass);
       return 0;
    }
+   test_route_contract();
    test_reference_structure_and_digest();
    test_refusals();
    test_expected_matches_bit_copy_inside_window();

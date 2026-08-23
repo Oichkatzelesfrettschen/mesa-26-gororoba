@@ -14,6 +14,7 @@
 
 #include "r300_compute_job.h"
 #include "r300_grid_fold.h"
+#include "r300_numeric_domain.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -123,10 +124,14 @@ enum r300_compute_verb {
 struct r300_compute_verb_row {
    enum r300_compute_verb verb;
    const char *name;
-   /* The r300_virtual_op_catalog row (r300_numeric_domain.h) whose
-    * domain and status the verb inherits, or NULL for a verb the catalog
-    * carries no row for; the ledger test resolves every named op. */
-   const char *catalog_op;
+   /* The catalog operation whose semantic domain and historical status this
+    * verb references, or NONE when the legacy catalog has no matching row. */
+   enum r300_operation_id operation_id;
+   /* The implementation and route contract are a pair.  Both are NONE for an
+    * absent GPU route and both are concrete for a precommitted or executing
+    * route. */
+   enum r300_operation_implementation_id implementation_id;
+   enum r300_gpu_route_contract_id gpu_route_contract_id;
    /* How the kernel consumes the invocation index (r300_grid_fold.h):
     * a GPU route bounds its invocations by this class through the
     * FP24 exact-index guards, never by the CPU ceiling. */

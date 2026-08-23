@@ -68,6 +68,7 @@ enum r300_carrier_encoding {
 
    /* Raw FP16 bitwise storage packed into RGBA8: raw bits in R/G, B/A carry class/flags. */
    R300_CARRIER_ENC_FP16_RAWBITS_RGBA8,
+   R300_CARRIER_ENC_COUNT,
 };
 
 /* API-neutral format identity for carrier policy.  Consumer adapters map
@@ -87,6 +88,7 @@ enum r300_carrier_format {
  * policy, and a policy object does not certify a live route. */
 struct r300_carrier_policy {
    const char                 *name;              /* stable diagnostic label */
+   enum r300_operation_id      operation_id;
    enum r300_numeric_domain    domain;
    enum r300_carrier_encoding  encoding;
    enum r300_carrier_format    value_format;      /* SSBO input texture format */
@@ -133,6 +135,11 @@ extern const struct r300_carrier_policy r300_carrier_ieee16_classify;
 extern const struct r300_carrier_policy r300_carrier_ieee16_mul;
 extern const struct r300_carrier_policy r300_carrier_ieee16_result;
 extern const struct r300_carrier_policy r300_carrier_ieee16_debug;
+
+/* Iterable candidate-policy registry.  Its rows describe storage/carrier
+ * possibilities only; the compute-verb ledger owns route liveness. */
+const struct r300_carrier_policy *const *
+r300_carrier_policies(unsigned *count);
 
 /* Select the appropriate unsigned DP4 carrier policy given the maximum operand
  * magnitude.  Returns r300_carrier_dp4_u7 (exact) when max_operand_magnitude

@@ -37,6 +37,25 @@ bound_value_valid(enum r300_bound_kind kind, uint64_t value)
 static bool
 policy_valid(const struct r300_carrier_policy *policy, const char **reason)
 {
+   if ((unsigned)policy->operation_id >= R300_OPERATION_ID_COUNT) {
+      *reason = "operation identity outside the catalog enum";
+      return false;
+   }
+   if ((unsigned)policy->domain >= R300_NUM_DOMAIN_COUNT) {
+      *reason = "numeric domain outside the domain enum";
+      return false;
+   }
+   if ((unsigned)policy->encoding >= R300_CARRIER_ENC_COUNT) {
+      *reason = "encoding outside the carrier-encoding enum";
+      return false;
+   }
+   if (policy->value_format <= R300_CARRIER_FORMAT_INVALID ||
+       policy->value_format >= R300_CARRIER_FORMAT_COUNT ||
+       policy->bit_format <= R300_CARRIER_FORMAT_INVALID ||
+       policy->bit_format >= R300_CARRIER_FORMAT_COUNT) {
+      *reason = "format outside the carrier-format enum";
+      return false;
+   }
    if (!bound_value_valid(policy->max_exact_result_kind,
                           policy->max_exact_result)) {
       *reason = "bound kind and value disagree";
@@ -66,6 +85,9 @@ policy_valid(const struct r300_carrier_policy *policy, const char **reason)
    case R300_CARRIER_ENC_IDENTITY:
    case R300_CARRIER_ENC_RGBA8_UNORM:
       break;
+   case R300_CARRIER_ENC_COUNT:
+      *reason = "encoding outside the carrier-encoding enum";
+      return false;
    }
 
    if ((policy->max_exact_result_kind == R300_BOUND_MAX_ABS_INCLUSIVE ||
@@ -84,6 +106,7 @@ check_policy_formats(void)
    static const struct {
       const struct r300_carrier_policy *policy;
       const char *name;
+      enum r300_operation_id operation_id;
       enum r300_numeric_domain domain;
       enum r300_carrier_encoding encoding;
       enum r300_carrier_format value_format;
@@ -96,54 +119,63 @@ check_policy_formats(void)
       bool requires_fp32_rt;
    } cases[] = {
       { &r300_carrier_identity,
-        "identity", R300_NUM_DOMAIN_FP24_RTZ, R300_CARRIER_ENC_IDENTITY,
+        "identity", R300_OPERATION_ID_IDENTITY_MAP,
+        R300_NUM_DOMAIN_FP24_RTZ, R300_CARRIER_ENC_IDENTITY,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         4, 4, R300_BOUND_NONE, 0, false, false },
       { &r300_carrier_dp4_u7,
-        "dp4-u7-exact", R300_NUM_DOMAIN_U7_DOT,
+        "dp4-u7-exact", R300_OPERATION_ID_DP4_UINT7_EXACT,
+        R300_NUM_DOMAIN_U7_DOT,
         R300_CARRIER_ENC_RGBA8_UINT,
         R300_CARRIER_FORMAT_R32G32B32A32_FLOAT,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         16, 4, R300_BOUND_MAX_UNSIGNED_INCLUSIVE, 64516, false, false },
       { &r300_carrier_dp4_u8_boundary,
-        "dp4-u8-boundary", R300_NUM_DOMAIN_U8_OFFGRID,
+        "dp4-u8-boundary", R300_OPERATION_ID_DP4_UINT8_OFFGRID_ROUNDS,
+        R300_NUM_DOMAIN_U8_OFFGRID,
         R300_CARRIER_ENC_RGBA8_UINT,
         R300_CARRIER_FORMAT_R32G32B32A32_FLOAT,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         16, 4, R300_BOUND_MAX_UNSIGNED_INCLUSIVE, 131072, false, false },
       { &r300_carrier_blend_acc,
-        "blend-acc-reduction", R300_NUM_DOMAIN_RB3D_BLEND,
+        "blend-acc-reduction", R300_OPERATION_ID_BLEND_ACC_REDUCTION,
+        R300_NUM_DOMAIN_RB3D_BLEND,
         R300_CARRIER_ENC_RGBA8_UNORM,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         4, 4, R300_BOUND_INPUT_DEPENDENT, 0, false, false },
       { &r300_carrier_zpass,
-        "zpass-count", R300_NUM_DOMAIN_ZPASS_COUNT,
+        "zpass-count", R300_OPERATION_ID_ZPASS_COVERAGE_COUNT,
+        R300_NUM_DOMAIN_ZPASS_COUNT,
         R300_CARRIER_ENC_UINT32_COUNTER,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         4, 4, R300_BOUND_MAX_UNSIGNED_INCLUSIVE, UINT32_MAX, false, false },
       { &r300_carrier_ieee16_classify,
-        "ieee16-classify", R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
+        "ieee16-classify", R300_OPERATION_ID_IEEE16_CLASSIFY_LUT,
+        R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
         R300_CARRIER_ENC_FP16_RAWBITS_RGBA8,
         R300_CARRIER_FORMAT_R32_FLOAT,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         4, 4, R300_BOUND_MAX_UNSIGNED_INCLUSIVE, 65535, false, false },
       { &r300_carrier_ieee16_mul,
-        "ieee16-mul", R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
+        "ieee16-mul", R300_OPERATION_ID_IEEE16_MUL_RNE,
+        R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
         R300_CARRIER_ENC_RGBA8_U24,
         R300_CARRIER_FORMAT_R32G32_FLOAT,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         8, 4, R300_BOUND_MAX_UNSIGNED_INCLUSIVE, 4190209, false, false },
       { &r300_carrier_ieee16_result,
-        "ieee16-result", R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
+        "ieee16-result", R300_OPERATION_ID_NONE,
+        R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
         R300_CARRIER_ENC_RGBA8_U16,
         R300_CARRIER_FORMAT_R32_FLOAT,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
         4, 4, R300_BOUND_MAX_UNSIGNED_INCLUSIVE, 65535, false, false },
       { &r300_carrier_ieee16_debug,
-        "ieee16-debug", R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
+        "ieee16-debug", R300_OPERATION_ID_NONE,
+        R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
         R300_CARRIER_ENC_RGBA8_UINT,
         R300_CARRIER_FORMAT_R32_FLOAT,
         R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
@@ -153,6 +185,7 @@ check_policy_formats(void)
    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
       const char *reason = NULL;
       CHECK(strcmp(cases[i].policy->name, cases[i].name) == 0 &&
+               cases[i].policy->operation_id == cases[i].operation_id &&
                cases[i].policy->domain == cases[i].domain &&
                cases[i].policy->encoding == cases[i].encoding,
             cases[i].name);
@@ -172,6 +205,25 @@ check_policy_formats(void)
       CHECK(policy_valid(cases[i].policy, &reason) && reason == NULL,
             cases[i].name);
    }
+}
+
+static void
+check_policy_registry(void)
+{
+   unsigned count = 0;
+   const struct r300_carrier_policy *const *policies =
+      r300_carrier_policies(&count);
+   CHECK(count == 9, "carrier registry contains every candidate policy");
+   CHECK(r300_carrier_policies(NULL) == policies,
+         "carrier registry accepts an omitted count");
+   bool rows_are_distinct = true;
+   for (unsigned i = 0; i < count; i++) {
+      rows_are_distinct &= policies[i] != NULL;
+      for (unsigned j = 0; j < i; j++)
+         rows_are_distinct &= policies[i] != policies[j];
+   }
+   CHECK(rows_are_distinct,
+         "carrier registry has no null or duplicate object");
 }
 
 static void
@@ -210,6 +262,38 @@ check_policy_validation(void)
    CHECK(!policy_valid(&mutated, &reason) &&
             strcmp(reason, "bound kind and value disagree") == 0,
          "bound kind rejects values outside the enum");
+
+   mutated = r300_carrier_identity;
+   mutated.operation_id = R300_OPERATION_ID_COUNT;
+   CHECK(!policy_valid(&mutated, &reason) &&
+            strcmp(reason, "operation identity outside the catalog enum") ==
+               0,
+         "policy rejects an invalid operation identity");
+
+   mutated = r300_carrier_ieee16_result;
+   mutated.domain = R300_NUM_DOMAIN_COUNT;
+   CHECK(!policy_valid(&mutated, &reason) &&
+            strcmp(reason, "numeric domain outside the domain enum") == 0,
+         "unbound policy rejects an invalid numeric domain");
+
+   mutated = r300_carrier_identity;
+   mutated.encoding = R300_CARRIER_ENC_COUNT;
+   CHECK(!policy_valid(&mutated, &reason) &&
+            strcmp(reason, "encoding outside the carrier-encoding enum") ==
+               0,
+         "policy rejects an invalid carrier encoding");
+
+   mutated = r300_carrier_identity;
+   mutated.value_format = R300_CARRIER_FORMAT_INVALID;
+   CHECK(!policy_valid(&mutated, &reason) &&
+            strcmp(reason, "format outside the carrier-format enum") == 0,
+         "policy rejects an invalid value format");
+
+   mutated = r300_carrier_identity;
+   mutated.bit_format = R300_CARRIER_FORMAT_COUNT;
+   CHECK(!policy_valid(&mutated, &reason) &&
+            strcmp(reason, "format outside the carrier-format enum") == 0,
+         "policy rejects an invalid bit format");
 }
 
 static void
@@ -231,6 +315,7 @@ int
 main(void)
 {
    check_policy_formats();
+   check_policy_registry();
    check_policy_validation();
    check_dp4_selection();
 

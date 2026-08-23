@@ -54,6 +54,17 @@ struct r300_r2vb_producer_layout {
    uint32_t pitch_pixels;
 };
 
+/* Complete color-backend target state for one producer carrier.  The color
+ * format is the shifted RB3D_COLORPITCH format field; us_out_fmt contains the
+ * four consecutive US_OUT_FMT register values, including channel selects. */
+struct r300_r2vb_producer_target {
+   uint32_t rb3d_color_format;
+   uint32_t us_out_fmt[4];
+};
+
+extern const struct r300_r2vb_producer_target
+   r300_r2vb_producer_target_c4_32_fp;
+
 /* One C4_32_FP texel holds four binary32 components, so a slot occupies
  * sixteen carrier bytes.
  */
@@ -132,7 +143,8 @@ struct r300_r2vb_producer_ib {
  */
 void r300_r2vb_producer_prologue_emit(
    struct r300_pm4_builder *b, uint32_t carrier_offset,
-   const struct r300_r2vb_producer_layout *layout, uint32_t *carrier_site);
+   const struct r300_r2vb_producer_layout *layout,
+   const struct r300_r2vb_producer_target *target, uint32_t *carrier_site);
 
 void r300_r2vb_producer_fs_emit(struct r300_pm4_builder *b,
                                 const struct r300_fragment_binary *fs);

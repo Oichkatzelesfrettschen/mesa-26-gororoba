@@ -565,6 +565,19 @@ r3v_native_cmd_buffer_execute_deferred_dispatch(
    return VK_SUCCESS;
 }
 
+static enum r3v_native_cell_kind
+r3v_native_compute_cell_kind(enum r300_gpu_route_contract_id contract_id)
+{
+   switch (contract_id) {
+   case R300_GPU_ROUTE_CONTRACT_R2VB_COMPUTE_IDENTITY_CARRIER:
+      return R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER;
+   case R300_GPU_ROUTE_CONTRACT_NONE:
+   case R300_GPU_ROUTE_CONTRACT_COUNT:
+      return R3V_NATIVE_CELL_KIND_UNDECLARED;
+   }
+   return R3V_NATIVE_CELL_KIND_UNDECLARED;
+}
+
 /* The identity verb's GPU route admission.  The route is selected by the
  * compute gate (the device exists only under it) and the verb's own
  * exact gate; with the verb gate closed the dispatch keeps the CPU
@@ -585,9 +598,19 @@ r3v_native_deferred_dispatch_admit_gpu(struct r3v_native_device *device,
     * every other verb's gate selects nothing for this job. */
    const struct r300_compute_verb_row *verb =
       r300_compute_verb_for_job(&dispatch->job);
+   const struct r300_compute_identity_carrier_contract *contract =
+      &r300_compute_identity_carrier_contract;
+   const enum r3v_native_cell_kind cell_kind =
+      verb != NULL
+         ? r3v_native_compute_cell_kind(verb->gpu_route_contract_id)
+         : R3V_NATIVE_CELL_KIND_UNDECLARED;
    if (verb == NULL || verb->gpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING ||
        device->compute_verb_gates[verb->verb] == NULL ||
-       verb->verb != R300_COMPUTE_VERB_IDENTITY_MAP)
+       verb->operation_id != contract->operation_id ||
+       verb->implementation_id != contract->implementation_id ||
+       verb->gpu_route_contract_id != contract->gpu_route_contract_id ||
+       contract->admission_id != R300_ROUTE_ADMISSION_R2VB_FP24_IDENTITY ||
+       cell_kind == R3V_NATIVE_CELL_KIND_UNDECLARED)
       return VK_SUCCESS;
    if (device->gpu_compute_quarantined) {
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -599,20 +622,18 @@ r3v_native_deferred_dispatch_admit_gpu(struct r3v_native_device *device,
    /* The carrier moves whole F32_4 records inside the single-row
     * ceiling; a dispatch outside that shape refuses by name under the
     * open gate rather than taking a route the gate did not select. */
-   if (dispatch->byte_count % R300_COMPUTE_IDENTITY_CARRIER_RECORD_BYTES !=
-          0 ||
-       dispatch->byte_count / R300_COMPUTE_IDENTITY_CARRIER_RECORD_BYTES >
-          R300_COMPUTE_IDENTITY_CARRIER_MAX_RECORDS) {
+   if (dispatch->byte_count % contract->record_bytes != 0 ||
+       dispatch->byte_count / contract->record_bytes >
+          contract->max_records) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: compute identity carrier moves whole "
                        "F32_4 records, at most %u; the dispatch names %"
                        PRIu64 " bytes",
-                       R300_COMPUTE_IDENTITY_CARRIER_MAX_RECORDS,
+                       contract->max_records,
                        dispatch->byte_count);
    }
    const uint32_t records =
-      (uint32_t)(dispatch->byte_count /
-                 R300_COMPUTE_IDENTITY_CARRIER_RECORD_BYTES);
+      (uint32_t)(dispatch->byte_count / contract->record_bytes);
    struct r3v_native_memory *input_memory = dispatch->input_buffer->memory;
    struct r3v_native_memory *output_memory =
       dispatch->output_buffer->memory;
@@ -632,12 +653,8 @@ r3v_native_deferred_dispatch_admit_gpu(struct r3v_native_device *device,
    }
    if (dispatch->input_memory_offset > UINT32_MAX ||
        dispatch->output_memory_offset > UINT32_MAX ||
-       dispatch->input_memory_offset %
-             R300_COMPUTE_IDENTITY_CARRIER_INPUT_ALIGN !=
-          0 ||
-       dispatch->output_memory_offset %
-             R300_COMPUTE_IDENTITY_CARRIER_OUTPUT_ALIGN !=
-          0) {
+       dispatch->input_memory_offset % contract->input_alignment != 0 ||
+       dispatch->output_memory_offset % contract->output_alignment != 0) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: compute identity carrier takes a "
                        "dword-granular input offset and a 32-byte-aligned "
@@ -667,7 +684,7 @@ r3v_native_deferred_dispatch_admit_gpu(struct r3v_native_device *device,
    if (result != VK_SUCCESS)
       return result;
    const uint32_t expected_dwords =
-      records * R300_COMPUTE_IDENTITY_CARRIER_RECORD_DWORDS;
+      records * contract->record_dwords;
    uint32_t *expected = vk_alloc(&cmd_buffer->vk.pool->alloc,
                                  (size_t)expected_dwords * sizeof(uint32_t),
                                  8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -681,7 +698,8 @@ r3v_native_deferred_dispatch_admit_gpu(struct r3v_native_device *device,
       input_words, records, expected, expected_dwords);
    const bool bit_copy_agrees =
       modeled == 0 &&
-      memcmp(expected, input_words, (size_t)expected_dwords * 4) == 0;
+      memcmp(expected, input_words,
+             (size_t)expected_dwords * sizeof(uint32_t)) == 0;
    release_memory(device, input_memory, input_owned);
    if (modeled != 0 || !bit_copy_agrees) {
       vk_free(&cmd_buffer->vk.pool->alloc, expected);
@@ -800,8 +818,7 @@ r3v_native_deferred_dispatch_admit_gpu(struct r3v_native_device *device,
    /* Every fallible step has completed: install the pass. */
    cmd_buffer->owned_slot = slot;
    r3v_native_cmd_buffer_install_ib(
-      cmd_buffer, R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER, pass.ib,
-      pass.ib_size_dwords, references, 3);
+      cmd_buffer, cell_kind, pass.ib, pass.ib_size_dwords, references, 3);
    pass.ib = NULL;
    r300_r2vb_fetched_producer_release(&pass);
    dispatch->gpu_carrier_delivery = true;
@@ -838,7 +855,7 @@ r3v_native_deferred_dispatch_verify_gpu(struct r3v_native_device *device,
    struct r3v_native_memory *output_memory =
       dispatch->output_buffer->memory;
    const size_t bytes = (size_t)dispatch->gpu_record_count *
-                        R300_COMPUTE_IDENTITY_CARRIER_RECORD_BYTES;
+                        r300_compute_identity_carrier_contract.record_bytes;
    uint8_t *output_map = NULL;
    bool output_owned = false;
    if (map_memory(device, output_memory, &output_map, &output_owned) !=

@@ -79,6 +79,17 @@ static_assert(1u + R300_R2VB_PRODUCER_MAX_COUNT *
                  R300_PM4_MAX_RUN,
               "the embedded body fits the PACKET3 payload bound");
 
+const struct r300_r2vb_producer_target r300_r2vb_producer_target_c4_32_fp = {
+   .rb3d_color_format = R300_COLOR_FORMAT_ARGB32323232,
+   .us_out_fmt = {
+      R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
+         R300_C2_SEL_R | R300_C3_SEL_A,
+      R300_US_OUT_FMT_UNUSED,
+      R300_US_OUT_FMT_UNUSED,
+      R300_US_OUT_FMT_UNUSED,
+   },
+};
+
 /* The slot-row target prologue shared by the immediate and fetched passes;
  * the carrier relocation NOP lands behind RB3D_COLOROFFSET0 and its index
  * returns through carrier_site (R300_PM4_NO_INDEX when the write refused).
@@ -87,8 +98,11 @@ void
 r300_r2vb_producer_prologue_emit(struct r300_pm4_builder *b,
                                  uint32_t carrier_offset,
                                  const struct r300_r2vb_producer_layout *layout,
-                                 uint32_t *carrier_site)
+                                 const struct r300_r2vb_producer_target *target,
+   uint32_t *carrier_site)
 {
+   if (target == NULL)
+      target = &r300_r2vb_producer_target_c4_32_fp;
    /* Target prologue.  Depth and antialias off, screendoor open, scissor
     * confined to the slot row under the non-R500 1440 raster bias.
     */
@@ -128,7 +142,7 @@ r300_r2vb_producer_prologue_emit(struct r300_pm4_builder *b,
    *carrier_site = r300_pm4_reloc_nop(
       b, R300_R2VB_PRODUCER_RELOC_PAYLOAD(R300_R2VB_PRODUCER_SLOT_CARRIER));
    r300_pm4_reg(b, R300_RB3D_COLORPITCH0,
-                layout->pitch_pixels | R300_COLOR_FORMAT_ARGB32323232);
+                layout->pitch_pixels | target->rb3d_color_format);
 
    /* BGRA output select: the record reaches the US pre-swizzled as
     * (z, y, x, w) -- embedded in that order by the immediate pass, or
@@ -136,15 +150,8 @@ r300_r2vb_producer_prologue_emit(struct r300_pm4_builder *b,
     * the select reverses it, so the carrier stores the source
     * (x, y, z, w) bytes.
     */
-   const uint32_t us_out_fmt[4] = {
-      R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
-         R300_C2_SEL_R | R300_C3_SEL_A,
-      R300_US_OUT_FMT_UNUSED,
-      R300_US_OUT_FMT_UNUSED,
-      R300_US_OUT_FMT_UNUSED,
-   };
-   r300_pm4_packet0(b, R300_US_OUT_FMT_0, us_out_fmt,
-                    ARRAY_SIZE(us_out_fmt));
+   r300_pm4_packet0(b, R300_US_OUT_FMT_0, target->us_out_fmt,
+                    ARRAY_SIZE(target->us_out_fmt));
 
    /* Full-write color backend: ROP, blend, dither, and alpha test each
     * pass every shaded dword through unchanged.
@@ -303,8 +310,9 @@ r300_r2vb_producer_pass_emit_into(
    }
 
    uint32_t carrier_site = R300_PM4_NO_INDEX;
-   r300_r2vb_producer_prologue_emit(&b, params->carrier_offset, layout,
-                                    &carrier_site);
+   r300_r2vb_producer_prologue_emit(
+      &b, params->carrier_offset, layout,
+      &r300_r2vb_producer_target_c4_32_fp, &carrier_site);
    if (b.error == 0) {
       out->reloc_sites[out->reloc_site_count++] =
          (struct r300_r2vb_producer_reloc_site){

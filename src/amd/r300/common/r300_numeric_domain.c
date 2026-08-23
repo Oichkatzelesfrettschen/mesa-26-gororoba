@@ -265,51 +265,54 @@ r300_vop_status_is_carrier_pending(enum r300_vop_status status)
  * a new op is confirmed.
  *
  * Terminated by a row with op_name == NULL. */
+#define OP(id)                                                                \
+   .operation_id = R300_OPERATION_ID_##id, .op_name = #id
+
 const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
-      .op_name         = "IDENTITY_MAP",
+      OP(IDENTITY_MAP),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = in[gid]: passthrough via fullscreen TEX + RB3D export",
       .implementation_label = "r300_nir_detect_identity_map",
    },
    {
-      .op_name         = "BINARY_MAP",
+      OP(BINARY_MAP),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = f(a[gid], b[gid]) for admitted binary FP24 ops",
       .implementation_label = "r300_nir_detect_binary_map",
    },
    {
-      .op_name         = "BLEND_ACC_REDUCTION",
+      OP(BLEND_ACC_REDUCTION),
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "histogram add via RB3D COMB_FCN_ADD blend accumulation",
       .implementation_label = "r300_nir_detect_blend_acc_reduction",
    },
    {
-      .op_name         = "ZPASS_COVERAGE_COUNT",
+      OP(ZPASS_COVERAGE_COUNT),
       .domain          = R300_NUM_DOMAIN_ZPASS_COUNT,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "predicated fragment count via ZB_ZPASS_DATA occlusion-query path",
       .implementation_label = "r300_nir_detect_zpass_reduction",
    },
    {
-      .op_name         = "MULTIPASS_PING_PONG_SCAN",
+      OP(MULTIPASS_PING_PONG_SCAN),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "self-iterated doubling via dependent FBO ping-pong passes",
       .implementation_label = "r300_nir_detect_multipass_scan_pattern",
    },
    {
-      .op_name         = "PREDICATED_MASKED_STORE",
+      OP(PREDICATED_MASKED_STORE),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "per-element conditional store via per-pixel KILL_IF discard",
       .implementation_label = "r300_nir_detect_predicated_store_pattern",
    },
    {
-      .op_name         = "MULTITAP_GATHER",
+      OP(MULTITAP_GATHER),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "N-tap neighborhood sum via multi-TEX fragment draw; "
@@ -317,14 +320,14 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_multitap_gather_pattern",
    },
    {
-      .op_name         = "DP4_UINT7_EXACT",
+      OP(DP4_UINT7_EXACT),
       .domain          = R300_NUM_DOMAIN_U7_DOT,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "4*(2^7-1)^2 = 64516 < 2^17: byte-exact for U7-magnitude operands",
       .implementation_label = "r300_nir_detect_dp4_pattern",
    },
    {
-      .op_name         = "DP4_INT8_SIGNED_CARRIER_PENDING",
+      OP(DP4_INT8_SIGNED_CARRIER_PENDING),
       .domain          = R300_NUM_DOMAIN_I8_MAG_DOT,
       .status          = R300_VOP_CARRIER_PENDING,
       .theorem         = "|a_i|,|b_i| <= 127: |sum| <= 64516 < 2^17; signed DP4 arithmetic is exact, "
@@ -332,14 +335,14 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = NULL,
    },
    {
-      .op_name         = "DP4_UINT8_OFFGRID_ROUNDS",
+      OP(DP4_UINT8_OFFGRID_ROUNDS),
       .domain          = R300_NUM_DOMAIN_U8_OFFGRID,
       .status          = R300_VOP_BOUNDARY,
       .theorem         = "4*(2^8-1)^2 = 260100 > 2^17; above-window results are FP24-approximate",
       .implementation_label = "r300_nir_detect_dp4_pattern",
    },
    {
-      .op_name         = "QUADRATIC_DISCRIMINANT_OFFGRID",
+      OP(QUADRATIC_DISCRIMINANT_OFFGRID),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_BOUNDARY,
       .theorem         = "two-circle gradient t = (B +/- sqrt(B^2 - A*C))/A: the intermediates "
@@ -350,7 +353,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = NULL,
    },
    {
-      .op_name         = "Q16_16_ADD",
+      OP(Q16_16_ADD),
       .domain          = R300_NUM_DOMAIN_Q16_16,
       .status          = R300_VOP_CARRIER_PENDING,
       .theorem         = "(2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17; limb carry exact.  "
@@ -360,7 +363,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = NULL,
    },
    {
-      .op_name         = "Q16_16_MUL",
+      OP(Q16_16_MUL),
       .domain          = R300_NUM_DOMAIN_Q16_16,
       .status          = R300_VOP_CARRIER_PENDING,
       .theorem         = "(2^6-1)^2 = 3969 per limb; 4-column sum <= 15876 < 2^17 "
@@ -370,7 +373,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = NULL,
    },
    {
-      .op_name         = "Q16_16_MAC",
+      OP(Q16_16_MAC),
       .domain          = R300_NUM_DOMAIN_Q16_16,
       .status          = R300_VOP_HW_CONFIRMED_CARRIER_PENDING,
       .theorem         = "out = a*b + c in Q16.16, carried multi-limb at base 2^4 / 8 limbs.  "
@@ -397,7 +400,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = NULL,
    },
    {
-      .op_name         = "IEEE16_CLASSIFY_LUT",
+      OP(IEEE16_CLASSIFY_LUT),
       .domain          = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "FP16 bit[15]=sign, bits[14:10]=exp(0..31), bits[9:0]=mantissa; "
@@ -406,7 +409,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_lower_ieee16_classify",
    },
    {
-      .op_name         = "IEEE16_MUL_RNE",
+      OP(IEEE16_MUL_RNE),
       .domain          = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "2-limb base-64: c1=a0*b1+a1*b0 <= 2*63*31=3906 < 2^17; "
@@ -415,7 +418,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_lower_ieee16_mul_normal_rne",
    },
    {
-      .op_name         = "QMUL_HAMILTON",
+      OP(QMUL_HAMILTON),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "Hamilton product = Cayley-Dickson multiplication at dim 4 = four "
@@ -425,7 +428,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_qmul_pattern",
    },
    {
-      .op_name         = "QDIV",
+      OP(QDIV),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion right division out = a/b = a*inv(b), inv(b) = "
@@ -446,7 +449,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_qdiv_pattern",
    },
    {
-      .op_name         = "QROTATE_SANDWICH",
+      OP(QROTATE_SANDWICH),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "vertex rotation q*v*conj(q) = two Hamilton products = eight DP4s.  "
@@ -460,7 +463,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_qrotate_pattern",
    },
    {
-      .op_name         = "MAT4VEC",
+      OP(MAT4VEC),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "general 4x4 vertex transform out[j] = M * p[j], component i = "
@@ -490,7 +493,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_mat4vec_pattern",
    },
    {
-      .op_name         = "OMUL_OCTONION",
+      OP(OMUL_OCTONION),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "octonion product (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) "
@@ -504,7 +507,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_omul_pattern",
    },
    {
-      .op_name         = "OADD",
+      OP(OADD),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "octonion addition (a,b)+(c,d) = (a+c, b+d), componentwise vec8 "
@@ -514,7 +517,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_oaddsub_pattern",
    },
    {
-      .op_name         = "OSUB",
+      OP(OSUB),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "octonion subtraction (a,b)-(c,d) = (a-c, b-d), componentwise vec8 "
@@ -523,7 +526,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_oaddsub_pattern",
    },
    {
-      .op_name         = "OCONJ",
+      OP(OCONJ),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "octonion conjugate conj((a,b)) = (conj(a), -b) = Cayley-Dickson "
@@ -534,7 +537,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_oconj_pattern",
    },
    {
-      .op_name         = "ONORM",
+      OP(ONORM),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "octonion squared norm |(a,b)|^2 = dot(a,a) + dot(b,b), broadcast "
@@ -545,7 +548,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_onorm_pattern",
    },
    {
-      .op_name         = "ODIV",
+      OP(ODIV),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "octonion right division out = x/y = x*inv(y), inv(y) = "
@@ -566,7 +569,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_odiv_pattern",
    },
    {
-      .op_name         = "ODIV_L",
+      OP(ODIV_L),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "octonion left division out = y\\x = inv(y)*x, inv(y) = "
@@ -583,7 +586,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_odiv_pattern",
    },
    {
-      .op_name         = "OTRANS",
+      OP(OTRANS),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "octonion sandwich transform out = x*v*conj(x), the octonion "
@@ -604,7 +607,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_otrans_pattern",
    },
    {
-      .op_name         = "SED_DIV_DOWNCAST_ADMIT",
+      OP(SED_DIV_DOWNCAST_ADMIT),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_NUMERIC_DERIVED,
       .theorem         = "dim-16 sedenion division is admissible IFF both operands lie in the "
@@ -627,7 +630,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = NULL,
    },
    {
-      .op_name         = "QADD",
+      OP(QADD),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion addition a+b = componentwise vec4 add, zero DP4; "
@@ -638,7 +641,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_binary_map",
    },
    {
-      .op_name         = "QSUB",
+      OP(QSUB),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion subtraction a-b = componentwise vec4 sub, zero DP4; "
@@ -647,7 +650,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_binary_map",
    },
    {
-      .op_name         = "QDOT",
+      OP(QDOT),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion inner product <a,b> = dot(a,b) = one DP4; served by "
@@ -656,7 +659,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_dp4_pattern",
    },
    {
-      .op_name         = "QCONJ",
+      OP(QCONJ),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion conjugate conj(a) = (a.x,-a.y,-a.z,-a.w), zero DP4; "
@@ -669,7 +672,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_qconj_pattern",
    },
    {
-      .op_name         = "QNORM",
+      OP(QNORM),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion squared norm |a|^2 = dot(a,a) = one DP4; "
@@ -681,7 +684,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_qnorm_pattern",
    },
    {
-      .op_name         = "QNORMALIZE",
+      OP(QNORMALIZE),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion normalize a/|a| = a * rsqrt(|a|^2); one DP4 (QNORM) "
@@ -697,7 +700,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_qnormalize_pattern",
    },
    {
-      .op_name         = "QFMADD",
+      OP(QFMADD),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion fused multiply-add out = a*b + c: the Hamilton "
@@ -712,7 +715,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = "r300_nir_detect_qfmadd_pattern",
    },
    {
-      .op_name         = "QFMMUL",
+      OP(QFMMUL),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion fused triple product out = a*b*c = (a*b)*c: two "
@@ -728,7 +731,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    },
    {
       /* QF scalar tier (quaternion x real scalar), the broadcast-operand lever. */
-      .op_name         = "QFMUL",
+      OP(QFMUL),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion-scalar product out[gid] = a[gid] * s: a per-element vec4 "
@@ -764,7 +767,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * a clear."  Not a compute domain -- no FP24 ALU participates; this is
        * a degenerate SSBO-store verb realized entirely by the RB3D clear unit
        * and the identity-map readback copy. */
-      .op_name         = "CONSTFILL",
+      OP(CONSTFILL),
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = C for all gid: degenerate store is a clear; "
@@ -781,7 +784,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * index, evaluates the affine, and byte-decomposes little-endian into
        * the RGBA8 export.  One-dimensional dispatches only; the dispatch
        * gate bounds stride * (total - 1) + offset by 2^17. */
-      .op_name         = "AFFINE_IOTA",
+      OP(AFFINE_IOTA),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = stride * gid + offset, gid from per-axis "
@@ -797,7 +800,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * an exact FP24 integer (the U7_CONV5 property).
        * Carry propagation over the byte-decomposed columns is integer
        * bookkeeping outside the FP24 ALU in the single-pass catalog entry. */
-      .op_name         = "MULTILIMB7_U32_MUL",
+      OP(MULTILIMB7_U32_MUL),
       .domain          = R300_NUM_DOMAIN_U7_CONV5,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "a * b for 32-bit a, b via five 7-bit limbs: every "
@@ -813,7 +816,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * filter weights put 0.25 on-grid, so the tap is the exact quarter sum.
        * The recorded LIMIT is the UNORM8 render-target quantization between
        * levels: a level is byte-exact iff its 2x2 sum is divisible by 4. */
-      .op_name         = "LOG4_BILINEAR_REDUCE",
+      OP(LOG4_BILINEAR_REDUCE),
       .domain          = R300_NUM_DOMAIN_TX_INT6_WEIGHT,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "sum/4 per 2x2 via one LINEAR corner tap, exact iff "
@@ -830,7 +833,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * version v, where v < 255, to v + 1 and returns the success count from
        * the same draw's ZPASS query.  Version 255 is a saturating terminal
        * state for INCR, not an advance. */
-      .op_name         = "STENCIL_VERSIONED_CAS",
+      OP(STENCIL_VERSIONED_CAS),
       .domain          = R300_NUM_DOMAIN_U8_STENCIL,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "func EQUAL v + op INCR + SAMPLES_PASSED for "
@@ -849,7 +852,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * per guard), so no ZB involvement; the bytewise SEQ compare has no
        * 2^17 ceiling.  The contended multi-pass form rides the separate
        * stencil-backed STENCIL_VERSIONED_CAS mechanism. */
-      .op_name         = "CAS_CONST_U32",
+      OP(CAS_CONST_U32),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "old = comp_swap(guard[gid], C_expect, C_new): "
@@ -862,7 +865,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    },
    {
       /* QFM subtract shares the admitted Hamilton-product shape with QFMADD. */
-      .op_name         = "QFMSUB",
+      OP(QFMSUB),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_NUMERIC_DERIVED,
       .theorem         = "fused multiply-sub a*b - c uses four Hamilton-product DP4s and "
@@ -879,7 +882,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * (rg --fixed-strings R300_COMB_FCN_MIN src/).
        * RS482 probe (r300_substrate_probe.sh): 6/6 byte-exact
        * (min(96,160)=96, min(192,64)=64 for both RGBA channels). */
-      .op_name         = "REDUCE_MIN",
+      OP(REDUCE_MIN),
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = min(a[gid], b[gid]) via R300_COMB_FCN_MIN "
@@ -893,7 +896,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * R300_COMB_FCN_MAX = (5 << 12); r300_translate_blend_function selects it
        * (rg --fixed-strings R300_COMB_FCN_MAX src/).
        * RS482 probe: 6/6 byte-exact (max(96,160)=160, max(192,64)=192). */
-      .op_name         = "REDUCE_MAX",
+      OP(REDUCE_MAX),
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = max(a[gid], b[gid]) via R300_COMB_FCN_MAX "
@@ -909,7 +912,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * selects it (rg --fixed-strings R300_COMB_FCN_SUB_CLAMP src/).
        * Equivalent to saturating subtract sat_sub(a, b) = max(a - b, 0).
        * RS482 probe: 6/6 byte-exact (sat(96-160)=0, 192-64=128). */
-      .op_name         = "SATURATING_DIFF",
+      OP(SATURATING_DIFF),
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = max(a[gid] - b[gid], 0) via R300_COMB_FCN_SUB_CLAMP "
@@ -928,7 +931,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * but distinct FS output locations route to distinct color buffers.
        * RS482 probe: 4-attachment framebuffer, FS writes 0x01020304 /
        * 0x05060708 / 0x090a0b0c / 0x0d0e0f10 -- all 4 readback byte-exact. */
-      .op_name         = "PARALLEL_4OUT_MAP",
+      OP(PARALLEL_4OUT_MAP),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out_k[gid] = f_k(gid) for k in {0,1,2,3}: four "
@@ -947,7 +950,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * Bitwise contract: INVERT(x) = ~x for all x in [0, 255].
        * RS482 probe: fill 0xA5, INVERT once, readback 0x5A -- exact.
        * Enables bitwise NOT on U8 stencil payloads without the ALU. */
-      .op_name         = "STENCIL_INVERT_NOT",
+      OP(STENCIL_INVERT_NOT),
       .domain          = R300_NUM_DOMAIN_U8_STENCIL,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "INVERT(x) = ~x for x in [0,255]: VK_STENCIL_OP_INVERT "
@@ -958,15 +961,33 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .implementation_label = NULL,
    },
    /* NULL sentinel -- keep last */
-   { .op_name = NULL },
+   { .operation_id = R300_OPERATION_ID_NONE, .op_name = NULL },
 };
+
+#undef OP
 
 unsigned
 r300_virtual_op_count(void)
 {
+   STATIC_ASSERT(ARRAY_SIZE(r300_virtual_op_catalog) ==
+                 R300_OPERATION_ID_COUNT);
    /* Count entries up to the NULL sentinel. */
    unsigned n = 0;
    while (r300_virtual_op_catalog[n].op_name)
       n++;
    return n;
+}
+
+const struct r300_virtual_op_info *
+r300_virtual_op_info_for_id(enum r300_operation_id operation_id)
+{
+   STATIC_ASSERT(ARRAY_SIZE(r300_virtual_op_catalog) ==
+                 R300_OPERATION_ID_COUNT);
+   if (operation_id <= R300_OPERATION_ID_NONE ||
+       operation_id >= R300_OPERATION_ID_COUNT)
+      return NULL;
+   const struct r300_virtual_op_info *info =
+      &r300_virtual_op_catalog[(unsigned)operation_id - 1];
+   return info->operation_id == operation_id && info->op_name != NULL ? info
+                                                                      : NULL;
 }

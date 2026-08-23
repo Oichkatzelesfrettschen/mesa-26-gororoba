@@ -227,6 +227,87 @@ r300_numeric_domain_info(enum r300_numeric_domain domain);
  * pending. */
 bool r300_vop_status_is_carrier_pending(enum r300_vop_status status);
 
+/* Stable API-neutral identities for the legacy virtual-operation inventory.
+ * NONE is used by registries that have no matching catalog operation.  Values
+ * are append-only: retain every assigned number when adding or retiring an
+ * operation.  Strings are diagnostic labels only and must not be used as
+ * joins. */
+enum r300_operation_id {
+   R300_OPERATION_ID_NONE = 0,
+   R300_OPERATION_ID_IDENTITY_MAP = 1,
+   R300_OPERATION_ID_BINARY_MAP = 2,
+   R300_OPERATION_ID_BLEND_ACC_REDUCTION = 3,
+   R300_OPERATION_ID_ZPASS_COVERAGE_COUNT = 4,
+   R300_OPERATION_ID_MULTIPASS_PING_PONG_SCAN = 5,
+   R300_OPERATION_ID_PREDICATED_MASKED_STORE = 6,
+   R300_OPERATION_ID_MULTITAP_GATHER = 7,
+   R300_OPERATION_ID_DP4_UINT7_EXACT = 8,
+   R300_OPERATION_ID_DP4_INT8_SIGNED_CARRIER_PENDING = 9,
+   R300_OPERATION_ID_DP4_UINT8_OFFGRID_ROUNDS = 10,
+   R300_OPERATION_ID_QUADRATIC_DISCRIMINANT_OFFGRID = 11,
+   R300_OPERATION_ID_Q16_16_ADD = 12,
+   R300_OPERATION_ID_Q16_16_MUL = 13,
+   R300_OPERATION_ID_Q16_16_MAC = 14,
+   R300_OPERATION_ID_IEEE16_CLASSIFY_LUT = 15,
+   R300_OPERATION_ID_IEEE16_MUL_RNE = 16,
+   R300_OPERATION_ID_QMUL_HAMILTON = 17,
+   R300_OPERATION_ID_QDIV = 18,
+   R300_OPERATION_ID_QROTATE_SANDWICH = 19,
+   R300_OPERATION_ID_MAT4VEC = 20,
+   R300_OPERATION_ID_OMUL_OCTONION = 21,
+   R300_OPERATION_ID_OADD = 22,
+   R300_OPERATION_ID_OSUB = 23,
+   R300_OPERATION_ID_OCONJ = 24,
+   R300_OPERATION_ID_ONORM = 25,
+   R300_OPERATION_ID_ODIV = 26,
+   R300_OPERATION_ID_ODIV_L = 27,
+   R300_OPERATION_ID_OTRANS = 28,
+   R300_OPERATION_ID_SED_DIV_DOWNCAST_ADMIT = 29,
+   R300_OPERATION_ID_QADD = 30,
+   R300_OPERATION_ID_QSUB = 31,
+   R300_OPERATION_ID_QDOT = 32,
+   R300_OPERATION_ID_QCONJ = 33,
+   R300_OPERATION_ID_QNORM = 34,
+   R300_OPERATION_ID_QNORMALIZE = 35,
+   R300_OPERATION_ID_QFMADD = 36,
+   R300_OPERATION_ID_QFMMUL = 37,
+   R300_OPERATION_ID_QFMUL = 38,
+   R300_OPERATION_ID_CONSTFILL = 39,
+   R300_OPERATION_ID_AFFINE_IOTA = 40,
+   R300_OPERATION_ID_MULTILIMB7_U32_MUL = 41,
+   R300_OPERATION_ID_LOG4_BILINEAR_REDUCE = 42,
+   R300_OPERATION_ID_STENCIL_VERSIONED_CAS = 43,
+   R300_OPERATION_ID_CAS_CONST_U32 = 44,
+   R300_OPERATION_ID_QFMSUB = 45,
+   R300_OPERATION_ID_REDUCE_MIN = 46,
+   R300_OPERATION_ID_REDUCE_MAX = 47,
+   R300_OPERATION_ID_SATURATING_DIFF = 48,
+   R300_OPERATION_ID_PARALLEL_4OUT_MAP = 49,
+   R300_OPERATION_ID_STENCIL_INVERT_NOT = 50,
+   R300_OPERATION_ID_COUNT = 51,
+};
+
+/* Stable implementation and GPU-route identities live beside the operation
+ * vocabulary.  They do not imply route state; the compute-verb ledger owns
+ * readiness. */
+enum r300_operation_implementation_id {
+   R300_OPERATION_IMPLEMENTATION_NONE = 0,
+   R300_OPERATION_IMPLEMENTATION_R2VB_FETCHED_IDENTITY_CARRIER = 1,
+   R300_OPERATION_IMPLEMENTATION_COUNT = 2,
+};
+
+enum r300_gpu_route_contract_id {
+   R300_GPU_ROUTE_CONTRACT_NONE = 0,
+   R300_GPU_ROUTE_CONTRACT_R2VB_COMPUTE_IDENTITY_CARRIER = 1,
+   R300_GPU_ROUTE_CONTRACT_COUNT = 2,
+};
+
+enum r300_route_admission_id {
+   R300_ROUTE_ADMISSION_NONE = 0,
+   R300_ROUTE_ADMISSION_R2VB_FP24_IDENTITY = 1,
+   R300_ROUTE_ADMISSION_COUNT = 2,
+};
+
 /* Virtual operation descriptor: one row per named virtual op in the
  * RS482 compute-as-raster substrate catalog.  Each op lives in a specific
  * numeric domain, has a named theorem, and carries a status plus an optional
@@ -234,6 +315,7 @@ bool r300_vop_status_is_carrier_pending(enum r300_vop_status status);
  * required to resolve; it may name a current, historical, or proposed
  * implementation until typed implementation IDs replace it. */
 struct r300_virtual_op_info {
+   enum r300_operation_id      operation_id;
    const char                 *op_name;          /* e.g. "DP4_UINT7_EXACT" */
    enum r300_numeric_domain    domain;
    enum r300_vop_status        status;
@@ -247,6 +329,11 @@ extern const struct r300_virtual_op_info r300_virtual_op_catalog[];
 
 /* Number of entries in r300_virtual_op_catalog[] (excludes the NULL sentinel). */
 unsigned r300_virtual_op_count(void);
+
+/* Resolve a stable operation identity.  NONE, values outside the enum, and a
+ * catalog whose row no longer round-trips its ID fail closed with NULL. */
+const struct r300_virtual_op_info *
+r300_virtual_op_info_for_id(enum r300_operation_id operation_id);
 
 #ifdef __cplusplus
 }
