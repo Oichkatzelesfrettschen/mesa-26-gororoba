@@ -73,6 +73,8 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->bound_pipeline = NULL;
    cmd_buffer->viewport_set = false;
    cmd_buffer->scissor_set = false;
+   cmd_buffer->query_op_count = 0;
+   cmd_buffer->active_query_pool = NULL;
    memset(cmd_buffer->bound_vertex_buffers, 0,
           sizeof(cmd_buffer->bound_vertex_buffers));
    memset(cmd_buffer->bound_vertex_offsets, 0,
@@ -177,10 +179,12 @@ r3v_EndCommandBuffer(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
-   /* A render pass left open has no closing lowering, so the buffer
-    * poisons instead of becoming executable with an incomplete pass.
+   /* A render pass left open has no closing lowering, and a query
+    * left active has no end publishing its availability, so the buffer
+    * poisons instead of becoming executable with either incomplete.
     */
-   if (cmd_buffer->pass_target != NULL) {
+   if (cmd_buffer->pass_target != NULL ||
+       cmd_buffer->active_query_pool != NULL) {
       vk_command_buffer_set_error(&cmd_buffer->vk,
                                   R3V_NATIVE_REFUSAL_RESULT);
    }

@@ -1211,6 +1211,17 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * a buffer mixing copies with the pass, so a copy-carrying
        * buffer has no IB and finishes at the continue.
        */
+      /* Recorded query transitions publish here, in recorded order:
+       * an end makes its query available with the exact zero count,
+       * a reset returns its range to unavailable.
+       */
+      for (uint32_t q = 0; q < cmd_buffer->query_op_count; q++) {
+         const struct r3v_native_query_op *op = &cmd_buffer->query_ops[q];
+         const uint8_t value =
+            op->kind == R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE ? 1 : 0;
+         memset(&op->pool->state[op->first_query], value, op->query_count);
+      }
+
       VkResult copies =
          r3v_native_cmd_buffer_execute_deferred_copies(device, cmd_buffer);
       if (copies != VK_SUCCESS) {

@@ -60,7 +60,11 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
     * cell does not carry, so it refuses instead of recording a pass whose
     * load op never executes.
     */
+   /* An active occlusion query's zero count is exact only while no
+    * fragment-producing span records, so the pass refuses inside one.
+    */
    if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
+       cmd_buffer->active_query_pool != NULL ||
        cmd_buffer->deferred_draw.pending ||
        cmd_buffer->deferred_copy_count != 0 ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||

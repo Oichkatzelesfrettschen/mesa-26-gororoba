@@ -329,6 +329,99 @@ check_sampler_use_fail_closed(const struct fixture *f)
    return 0;
 }
 
+/* The occlusion query lifecycle over the zero-fragment span: results
+ * read NOT_READY before the span submits, the submitted end publishes
+ * the exact zero with availability, the recorded reset returns the
+ * query to unavailable, and the fail-closed edges poison -- an end
+ * without a begin, an open query at vkEndCommandBuffer, and a pass
+ * begun inside an active span.
+ */
+static int
+check_query_zero_span(const struct fixture *f)
+{
+   const VkQueryPoolCreateInfo pool_info = {
+      .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+      .queryType = VK_QUERY_TYPE_OCCLUSION,
+      .queryCount = 4,
+   };
+   VkQueryPool pool;
+   REQUIRE(vkCreateQueryPool(f->device, &pool_info, NULL, &pool) ==
+              VK_SUCCESS,
+           "occlusion pool creation");
+
+   uint64_t words[2] = { 0xdeadbeefdeadbeefull, 0xdeadbeefdeadbeefull };
+   CHECK(vkGetQueryPoolResults(f->device, pool, 1, 1, sizeof(words), words,
+                               sizeof(words), VK_QUERY_RESULT_64_BIT) ==
+            VK_NOT_READY,
+         "an unsubmitted query reads NOT_READY");
+
+   const VkCommandBufferBeginInfo begin_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+   };
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "query pool span reset");
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "query span begin");
+   vkCmdBeginQuery(f->cmd, pool, 1, 0);
+   vkCmdEndQuery(f->cmd, pool, 1);
+   REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+           "the zero-fragment span records");
+   const VkSubmitInfo submit_info = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &f->cmd,
+   };
+   REQUIRE(vkQueueSubmit(f->queue, 1, &submit_info, VK_NULL_HANDLE) ==
+              VK_SUCCESS,
+           "query span submit");
+   REQUIRE(vkQueueWaitIdle(f->queue) == VK_SUCCESS, "query span idle");
+
+   CHECK(vkGetQueryPoolResults(f->device, pool, 1, 1, sizeof(words), words,
+                               sizeof(words),
+                               VK_QUERY_RESULT_64_BIT |
+                                  VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) ==
+            VK_SUCCESS &&
+         words[0] == 0 && words[1] == 1,
+         "the submitted end publishes the exact zero, available");
+
+   /* The recorded reset returns the query to unavailable. */
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "query reset span reset");
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "query reset begin");
+   vkCmdResetQueryPool(f->cmd, pool, 0, 4);
+   REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+           "the reset records");
+   REQUIRE(vkQueueSubmit(f->queue, 1, &submit_info, VK_NULL_HANDLE) ==
+              VK_SUCCESS,
+           "query reset submit");
+   REQUIRE(vkQueueWaitIdle(f->queue) == VK_SUCCESS, "query reset idle");
+   CHECK(vkGetQueryPoolResults(f->device, pool, 1, 1, sizeof(words), words,
+                               sizeof(words), VK_QUERY_RESULT_64_BIT) ==
+            VK_NOT_READY,
+         "the submitted reset returns the query to unavailable");
+
+   /* Fail-closed edges. */
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "query edge reset");
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "query edge begin");
+   vkCmdEndQuery(f->cmd, pool, 0);
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "an end without a begin poisons the recording");
+
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "open query reset");
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "open query begin");
+   vkCmdBeginQuery(f->cmd, pool, 0, 0);
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "a query left active poisons vkEndCommandBuffer");
+
+   vkDestroyQueryPool(f->device, pool, NULL);
+   return 0;
+}
+
 static int
 create_fixture(struct fixture *f)
 {
@@ -477,7 +570,8 @@ main(int argc, char **argv)
                check_buffer_view_refusal(&f) ||
                check_buffer_binding(&f) ||
                check_image_binding(&f) ||
-               check_sampler_use_fail_closed(&f);
+               check_sampler_use_fail_closed(&f) ||
+               check_query_zero_span(&f);
 
    destroy_fixture(&f);
    if (fatal || failures) {

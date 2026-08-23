@@ -90,6 +90,12 @@ r3v_CreateEvent(VkDevice _device, const VkEventCreateInfo *pCreateInfo,
    return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 }
 
+/* Occlusion pools construct as availability state: the recording
+ * admits a query span containing no fragment-producing command, so
+ * the counted value is exactly zero and the pool stores availability
+ * alone.  Pipeline statistics and timestamps stay refused -- neither
+ * feature is advertised and no counter route exists.
+ */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateQueryPool(VkDevice _device,
                     const VkQueryPoolCreateInfo *pCreateInfo,
@@ -97,8 +103,23 @@ r3v_CreateQueryPool(VkDevice _device,
                     VkQueryPool *pQueryPool)
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
+
    *pQueryPool = VK_NULL_HANDLE;
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   if (pCreateInfo->flags != 0 ||
+       pCreateInfo->queryType != VK_QUERY_TYPE_OCCLUSION ||
+       pCreateInfo->queryCount < 1 ||
+       pCreateInfo->queryCount > R3V_NATIVE_QUERY_POOL_MAX_QUERIES)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   struct r3v_native_query_pool *pool =
+      vk_object_zalloc(&device->vk, pAllocator, sizeof(*pool),
+                       VK_OBJECT_TYPE_QUERY_POOL);
+   if (pool == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   pool->query_count = pCreateInfo->queryCount;
+
+   *pQueryPool = r3v_native_query_pool_to_handle(pool);
+   return VK_SUCCESS;
 }
 
 /* Destruction of the null handle is a specified no-op, and the creation
@@ -131,9 +152,15 @@ r3v_DestroyEvent(VkDevice _device, VkEvent event,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-r3v_DestroyQueryPool(VkDevice _device, VkQueryPool queryPool,
+r3v_DestroyQueryPool(VkDevice _device, VkQueryPool _pool,
                      const VkAllocationCallbacks *pAllocator)
 {
+   VK_FROM_HANDLE(r3v_native_device, device, _device);
+   VK_FROM_HANDLE(r3v_native_query_pool, pool, _pool);
+
+   if (pool == NULL)
+      return;
+   vk_object_free(&device->vk, pAllocator, pool);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -157,14 +184,57 @@ r3v_ResetEvent(VkDevice _device, VkEvent event)
    return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 }
 
+/* Availability publishes at queue submission and vkQueueSubmit
+ * executes the recorded span synchronously, so WAIT never blocks: the
+ * state each query holds when this call runs is its final state.  An
+ * available query writes its zero count in the caller's word size; an
+ * unavailable one writes nothing and the call reports VK_NOT_READY
+ * unless PARTIAL asked for the zero anyway, and WITH_AVAILABILITY
+ * appends the state word either way.
+ */
 VKAPI_ATTR VkResult VKAPI_CALL
-r3v_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool,
+r3v_GetQueryPoolResults(VkDevice _device, VkQueryPool _pool,
                         uint32_t firstQuery, uint32_t queryCount,
                         size_t dataSize, void *pData, VkDeviceSize stride,
                         VkQueryResultFlags flags)
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   VK_FROM_HANDLE(r3v_native_query_pool, pool, _pool);
+
+   const bool wide = (flags & VK_QUERY_RESULT_64_BIT) != 0;
+   const bool with_availability =
+      (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != 0;
+   const bool partial = (flags & VK_QUERY_RESULT_PARTIAL_BIT) != 0;
+   const uint32_t word_bytes = wide ? 8 : 4;
+   const uint32_t per_query_bytes = word_bytes * (with_availability ? 2 : 1);
+
+   if (pool == NULL || firstQuery >= pool->query_count ||
+       queryCount > pool->query_count - firstQuery ||
+       stride < per_query_bytes || stride % word_bytes != 0 ||
+       queryCount == 0 ||
+       dataSize < (size_t)(queryCount - 1) * stride + per_query_bytes)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   VkResult result = VK_SUCCESS;
+   for (uint32_t q = 0; q < queryCount; q++) {
+      const bool available = pool->state[firstQuery + q] != 0;
+      uint8_t *out = (uint8_t *)pData + (size_t)q * stride;
+      if (!available && !partial && !with_availability) {
+         result = VK_NOT_READY;
+         continue;
+      }
+      if (available || partial) {
+         const uint64_t zero = 0;
+         memcpy(out, &zero, word_bytes);
+      }
+      if (with_availability) {
+         const uint64_t state = available ? 1 : 0;
+         memcpy(out + word_bytes, &state, word_bytes);
+      }
+      if (!available && !partial)
+         result = VK_NOT_READY;
+   }
+   return result;
 }
 
 /* The committed size is defined for lazily-allocated memory.  Every native
