@@ -184,7 +184,7 @@ check_timeline_wait_consumption(void)
    f(vkDestroyPipeline) f(vkCreateCommandPool) f(vkDestroyCommandPool)     \
    f(vkAllocateCommandBuffers) f(vkBeginCommandBuffer)                     \
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
-   f(vkCmdClearAttachments)                                                 \
+   f(vkCmdClearAttachments) f(vkCmdSetViewport) f(vkCmdSetScissor)          \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
    f(vkCmdCopyBuffer) f(vkCmdCopyBufferToImage) f(vkCmdCopyImage)          \
    f(vkCmdCopyImageToBuffer)                                               \
@@ -271,6 +271,9 @@ struct pipeline_shape {
    /* Viewport/scissor extent; zero selects the maximum target extent. */
    uint32_t extent_width;
    uint32_t extent_height;
+   /* Declare viewport and scissor dynamic; the vkCmdSet values then
+    * carry the extent. */
+   VkBool32 dynamic_viewport_scissor;
 };
 
 static VkResult
@@ -375,6 +378,17 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
                                     VK_COLOR_COMPONENT_A_BIT,
                },
          },
+      .pDynamicState =
+         shape->dynamic_viewport_scissor
+            ? &(VkPipelineDynamicStateCreateInfo){
+                 .sType =
+                    VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                 .dynamicStateCount = 2,
+                 .pDynamicStates =
+                    (VkDynamicState[]){ VK_DYNAMIC_STATE_VIEWPORT,
+                                        VK_DYNAMIC_STATE_SCISSOR },
+              }
+            : NULL,
       .layout = layout,
       .renderPass = pass,
    };
@@ -993,6 +1007,85 @@ main(void)
       VkCommandBuffer outside_cmd = fresh_cmd();
       vkCmdClearAttachments(outside_cmd, 1, &red, 1, &rect);
       assert(vkEndCommandBuffer(outside_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+   }
+
+   /* Dynamic viewport/scissor: the pipeline declares the pair dynamic
+    * and the recorded vkCmdSet values carry the extent, held to the
+    * cell shape at the draw.  The set persists across the pass
+    * boundary (recorded before vkCmdBeginRenderPass); unset state, a
+    * mismatched extent, and a non-identity depth range each refuse.
+    */
+   {
+      struct pipeline_shape dynamic_shape = contract_shape;
+      dynamic_shape.dynamic_viewport_scissor = VK_TRUE;
+      VkPipeline dynamic_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&dynamic_shape, pass, layout,
+                           &dynamic_pipeline) == VK_SUCCESS);
+      const VkViewport full_viewport = {
+         .width = (float)R3V_NATIVE_TARGET_WIDTH,
+         .height = (float)R3V_NATIVE_TARGET_HEIGHT,
+         .maxDepth = 1.0f,
+      };
+      const VkRect2D full_scissor = {
+         .extent = { R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT },
+      };
+
+      VkCommandBuffer dyn_cmd = fresh_cmd();
+      vkCmdSetViewport(dyn_cmd, 0, 1, &full_viewport);
+      vkCmdSetScissor(dyn_cmd, 0, 1, &full_scissor);
+      vkCmdBeginRenderPass(dyn_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(dyn_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        dynamic_pipeline);
+      vkCmdBindVertexBuffers(dyn_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(dyn_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(dyn_cmd);
+      assert(vkEndCommandBuffer(dyn_cmd) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_dyn, dyn_cmd);
+      assert(native_dyn->ib_size_dwords != 0);
+
+      VkCommandBuffer unset_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(unset_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(unset_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        dynamic_pipeline);
+      vkCmdBindVertexBuffers(unset_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(unset_cmd, 3, 1, 0, 0);
+      assert(vkEndCommandBuffer(unset_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+
+      VkCommandBuffer small_cmd = fresh_cmd();
+      const VkViewport small_viewport = {
+         .width = 32.0f, .height = 32.0f, .maxDepth = 1.0f,
+      };
+      const VkRect2D small_scissor = { .extent = { 32, 32 } };
+      vkCmdSetViewport(small_cmd, 0, 1, &small_viewport);
+      vkCmdSetScissor(small_cmd, 0, 1, &small_scissor);
+      vkCmdBeginRenderPass(small_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(small_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        dynamic_pipeline);
+      vkCmdBindVertexBuffers(small_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(small_cmd, 3, 1, 0, 0);
+      assert(vkEndCommandBuffer(small_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+
+      VkCommandBuffer depth_cmd = fresh_cmd();
+      VkViewport shallow_viewport = full_viewport;
+      shallow_viewport.maxDepth = 0.5f;
+      vkCmdSetViewport(depth_cmd, 0, 1, &shallow_viewport);
+      vkCmdSetScissor(depth_cmd, 0, 1, &full_scissor);
+      vkCmdBeginRenderPass(depth_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(depth_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        dynamic_pipeline);
+      vkCmdBindVertexBuffers(depth_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(depth_cmd, 3, 1, 0, 0);
+      assert(vkEndCommandBuffer(depth_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+
+      vkDestroyPipeline(device, dynamic_pipeline, NULL);
    }
 
    /* The positive leg: the full public sequence ends EXECUTABLE and

@@ -71,6 +71,8 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->deferred_copy_capacity = 0;
    cmd_buffer->pass_target = NULL;
    cmd_buffer->bound_pipeline = NULL;
+   cmd_buffer->viewport_set = false;
+   cmd_buffer->scissor_set = false;
    memset(cmd_buffer->bound_vertex_buffers, 0,
           sizeof(cmd_buffer->bound_vertex_buffers));
    memset(cmd_buffer->bound_vertex_offsets, 0,

@@ -1010,6 +1010,10 @@ r3v_CmdSetLineWidth(
    r3v_native_cmd_poison(commandBuffer);
 }
 
+/* The one scissor slot records for the dynamic-state pipeline; the
+ * draw holds the value to the cell shape, so the set itself admits any
+ * rectangle.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdSetScissor(
    VkCommandBuffer commandBuffer,
@@ -1017,7 +1021,14 @@ r3v_CmdSetScissor(
    uint32_t scissorCount,
    const VkRect2D *pScissors)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+
+   if (firstScissor != 0 || scissorCount != 1) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   cmd_buffer->dynamic_scissor = pScissors[0];
+   cmd_buffer->scissor_set = true;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1047,6 +1058,9 @@ r3v_CmdSetStencilWriteMask(
    r3v_native_cmd_poison(commandBuffer);
 }
 
+/* The one viewport slot records for the dynamic-state pipeline,
+ * mirroring the scissor's record-then-judge contract.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdSetViewport(
    VkCommandBuffer commandBuffer,
@@ -1054,7 +1068,14 @@ r3v_CmdSetViewport(
    uint32_t viewportCount,
    const VkViewport *pViewports)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+
+   if (firstViewport != 0 || viewportCount != 1) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   cmd_buffer->dynamic_viewport = pViewports[0];
+   cmd_buffer->viewport_set = true;
 }
 
 /* The update captures the application bytes at record into storage the
