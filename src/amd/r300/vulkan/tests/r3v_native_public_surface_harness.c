@@ -269,6 +269,14 @@ struct pipeline_shape {
    VkFormat attribute_format;
    uint32_t stride;
    VkBool32 blend_enable;
+   /* With blend_enable, select the identity configuration (ONE, ZERO,
+    * ADD) instead of the zero-initialized factors. */
+   VkBool32 blend_identity;
+   /* Zero the color write mask (the no-channel shape). */
+   VkBool32 write_mask_zero;
+   /* Enable the logic op; the op itself. */
+   VkBool32 logic_op_enable;
+   VkLogicOp logic_op;
    const uint32_t *fragment_words;
    size_t fragment_bytes;
    /* Viewport/scissor extent; zero selects the maximum target extent. */
@@ -372,13 +380,28 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
             .sType =
                VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
             .attachmentCount = 1,
+            .logicOpEnable = shape->logic_op_enable,
+            .logicOp = shape->logic_op,
             .pAttachments =
                &(VkPipelineColorBlendAttachmentState){
                   .blendEnable = shape->blend_enable,
-                  .colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
-                                    VK_COLOR_COMPONENT_G_BIT |
-                                    VK_COLOR_COMPONENT_B_BIT |
-                                    VK_COLOR_COMPONENT_A_BIT,
+                  .srcColorBlendFactor = shape->blend_identity
+                                            ? VK_BLEND_FACTOR_ONE
+                                            : VK_BLEND_FACTOR_ZERO,
+                  .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+                  .colorBlendOp = VK_BLEND_OP_ADD,
+                  .srcAlphaBlendFactor = shape->blend_identity
+                                            ? VK_BLEND_FACTOR_ONE
+                                            : VK_BLEND_FACTOR_ZERO,
+                  .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+                  .alphaBlendOp = VK_BLEND_OP_ADD,
+                  .colorWriteMask =
+                     shape->write_mask_zero
+                        ? 0
+                        : VK_COLOR_COMPONENT_R_BIT |
+                             VK_COLOR_COMPONENT_G_BIT |
+                             VK_COLOR_COMPONENT_B_BIT |
+                             VK_COLOR_COMPONENT_A_BIT,
                },
          },
       .pDepthStencilState =
@@ -1020,6 +1043,38 @@ main(void)
       VkCommandBuffer outside_cmd = fresh_cmd();
       vkCmdClearAttachments(outside_cmd, 1, &red, 1, &rect);
       assert(vkEndCommandBuffer(outside_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+   }
+
+   /* Blend, logic op, and write mask: the identity blend (ONE, ZERO,
+    * ADD) and the COPY logic op equal the straight write and admit; a
+    * zero write mask admits and collapses the draw; the zeroed blend
+    * factors and any other logic op refuse.
+    */
+   {
+      struct pipeline_shape cb_shape = contract_shape;
+      VkPipeline cb_pipeline = VK_NULL_HANDLE;
+      cb_shape.blend_enable = VK_TRUE;
+      cb_shape.blend_identity = VK_TRUE;
+      assert(make_pipeline(&cb_shape, pass, layout, &cb_pipeline) ==
+             VK_SUCCESS);
+      vkDestroyPipeline(device, cb_pipeline, NULL);
+
+      cb_shape = contract_shape;
+      cb_shape.logic_op_enable = VK_TRUE;
+      cb_shape.logic_op = VK_LOGIC_OP_COPY;
+      assert(make_pipeline(&cb_shape, pass, layout, &cb_pipeline) ==
+             VK_SUCCESS);
+      vkDestroyPipeline(device, cb_pipeline, NULL);
+
+      cb_shape.logic_op = VK_LOGIC_OP_XOR;
+      assert(make_pipeline(&cb_shape, pass, layout, &cb_pipeline) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+
+      cb_shape = contract_shape;
+      cb_shape.write_mask_zero = VK_TRUE;
+      assert(make_pipeline(&cb_shape, pass, layout, &cb_pipeline) ==
+             VK_SUCCESS);
+      vkDestroyPipeline(device, cb_pipeline, NULL);
    }
 
    /* Depth/stencil state: the fully disabled struct admits (the pass
