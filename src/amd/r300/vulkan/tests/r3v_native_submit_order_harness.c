@@ -141,6 +141,31 @@ enum arm {
    ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED,
    ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED,
    ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED,
+   /* Indexed draws on the CPU route: three UINT16 indices 0, 1, 2
+    * deliver the reference carrier; UINT32 indices read from the second
+    * entry of the index buffer under base vertex -3 over a permuted
+    * vertex buffer dereference, sum, and deliver the reference carrier
+    * in the index order; with robustBufferAccess on and restart disabled
+    * on the pipeline, the UINT16 restart value 0xffff is an ordinary
+    * index past the bound, so the F32_3 record reads (0, 0, 0, 1) and
+    * the draw delivers the robust carrier; restart enabled on the
+    * pipeline refuses at creation; an index past the bound with the
+    * feature off refuses at execution before any write; an index range
+    * past the index buffer, an unbound index buffer, a UINT8 index type,
+    * and an index buffer bound into the pass target's footprint each
+    * refuse at recording; and the fetched gates over an indexed draw
+    * refuse at admission, the producer routes fetching one linear
+    * source range. */
+   ARM_INDEXED_ARMED,
+   ARM_INDEXED_PERMUTED_ARMED,
+   ARM_INDEXED_ROBUST_RESTART_ARMED,
+   ARM_INDEXED_RESTART_ENABLED_REFUSED,
+   ARM_INDEXED_OUT_OF_BOUNDS_REFUSED,
+   ARM_INDEXED_RANGE_REFUSED,
+   ARM_INDEXED_UNBOUND_REFUSED,
+   ARM_INDEXED_UINT8_REFUSED,
+   ARM_INDEXED_ALIAS_TARGET_REFUSED,
+   ARM_INDEXED_FETCHED_REFUSED,
 };
 
 
@@ -180,6 +205,16 @@ static const struct {
    { "multi-attribute-alias-target-refused",
      ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED },
    { "multi-attribute-fetched-refused", ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED },
+   { "indexed-armed", ARM_INDEXED_ARMED },
+   { "indexed-permuted-armed", ARM_INDEXED_PERMUTED_ARMED },
+   { "indexed-robust-restart-armed", ARM_INDEXED_ROBUST_RESTART_ARMED },
+   { "indexed-restart-enabled-refused", ARM_INDEXED_RESTART_ENABLED_REFUSED },
+   { "indexed-out-of-bounds-refused", ARM_INDEXED_OUT_OF_BOUNDS_REFUSED },
+   { "indexed-range-refused", ARM_INDEXED_RANGE_REFUSED },
+   { "indexed-unbound-refused", ARM_INDEXED_UNBOUND_REFUSED },
+   { "indexed-uint8-refused", ARM_INDEXED_UINT8_REFUSED },
+   { "indexed-alias-target-refused", ARM_INDEXED_ALIAS_TARGET_REFUSED },
+   { "indexed-fetched-refused", ARM_INDEXED_FETCHED_REFUSED },
 };
 
 /* Injection over the transport's ioctl seam: the saved production table
@@ -275,6 +310,7 @@ retained_ib_digest(const char *dir, char out[2 * R300_TRIANGLE_DIGEST_SIZE + 1],
    f(vkAllocateCommandBuffers) f(vkBeginCommandBuffer)                     \
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
+   f(vkCmdBindIndexBuffer) f(vkCmdDrawIndexed)                             \
    f(vkCmdPipelineBarrier) f(vkGetDeviceQueue) f(vkQueueSubmit)            \
    f(vkDestroyDevice)
 #define DECLARE(name) static PFN_##name name;
@@ -395,6 +431,16 @@ run_arm(enum arm arm, const char *name)
     * binding 1. */
    const bool interleaved_arm = arm == ARM_MULTI_ATTRIBUTE_INTERLEAVED_ARMED ||
                                arm == ARM_MULTI_ATTRIBUTE_OVERLAP_REFUSED;
+   const bool indexed_arm = arm == ARM_INDEXED_ARMED ||
+                            arm == ARM_INDEXED_PERMUTED_ARMED ||
+                            arm == ARM_INDEXED_ROBUST_RESTART_ARMED ||
+                            arm == ARM_INDEXED_RESTART_ENABLED_REFUSED ||
+                            arm == ARM_INDEXED_OUT_OF_BOUNDS_REFUSED ||
+                            arm == ARM_INDEXED_RANGE_REFUSED ||
+                            arm == ARM_INDEXED_UNBOUND_REFUSED ||
+                            arm == ARM_INDEXED_UINT8_REFUSED ||
+                            arm == ARM_INDEXED_ALIAS_TARGET_REFUSED ||
+                            arm == ARM_INDEXED_FETCHED_REFUSED;
    /* The varying cell is the recorded identity of every arm whose job
     * stores the varying. */
    const bool varying_cell_arm = arm == ARM_VARYING_ARMED || multi_arm;
@@ -431,7 +477,8 @@ run_arm(enum arm arm, const char *name)
    setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", host.release, 1);
    setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
           R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
-   if (fetched_arm || arm == ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED) {
+   if (fetched_arm || arm == ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED ||
+       arm == ARM_INDEXED_FETCHED_REFUSED) {
       setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1);
       setenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL", "1", 1);
       setenv("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL", "1", 1);
@@ -475,13 +522,16 @@ run_arm(enum arm arm, const char *name)
                            arm == ARM_ROBUST_OOB_DISABLED;
    const bool robust_enabled = arm == ARM_ROBUST_OOB_ENABLED ||
                                arm == ARM_ROBUST_OOB_W0_REFUSED ||
-                               arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS;
+                               arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS ||
+                               arm == ARM_INDEXED_ROBUST_RESTART_ARMED;
    /* Per-arm stream geometry: the bind offset, binding stride, record
     * width, buffer size, and whether the buffer binds into the color
     * target's memory. */
    const VkDeviceSize bind_offset =
       arm == ARM_GPU_FETCHED_OFFSET_MISALIGNED ? 2 : 0;
-   const uint32_t record_bytes = arm == ARM_GPU_FETCHED_COMPOSED_F32_3 ? 12
+   const uint32_t record_bytes = arm == ARM_GPU_FETCHED_COMPOSED_F32_3 ||
+                                       arm == ARM_INDEXED_ROBUST_RESTART_ARMED
+                                    ? 12
                                  : arm == ARM_GPU_FETCHED_COMPOSED_F32_2 ? 8
                                                                          : 16;
    const uint32_t binding_stride =
@@ -623,9 +673,16 @@ run_arm(enum arm arm, const char *name)
       const float *records = fetched_arm && arm != ARM_GPU_FETCHED_OUT_OF_DOMAIN
                                 ? r300_tcl_bypass_triangle_vertices
                                 : ndc_triangle;
+      /* The permuted indexed arm stores the records as (v1, v2, v0), so
+       * only the index order restores the reference triangle. */
+      static const unsigned permuted_order[3] = { 1, 2, 0 };
       for (unsigned v = 0; v < 3; v++)
          memcpy((uint8_t *)map + bind_offset + v * binding_stride,
-                &records[v * 4], record_bytes);
+                &records[(arm == ARM_INDEXED_PERMUTED_ARMED
+                             ? permuted_order[v]
+                             : v) *
+                         4],
+                record_bytes);
       /* The interleaved layout carries the varying reference colors as
        * the F32_4 at offset 16 of each 32-byte record. */
       if (interleaved_arm) {
@@ -672,6 +729,57 @@ run_arm(enum arm arm, const char *name)
             memcpy((uint8_t *)map + v * 12,
                    &r300_tcl_bypass_triangle_varying_colors[v * 4], 12);
          vkUnmapMemory(device, color_memory);
+      }
+   }
+
+   /* The index buffer of the indexed arms: sixteen bytes in its own
+    * allocation -- or, for the alias arm, bound at the start of the
+    * pass target's memory.  UINT16 0, 1, 2 for the plain arm; UINT32
+    * 99, 5, 3, 4 for the permuted arm (read from entry 1 under base
+    * vertex -3: vertices 2, 0, 1); UINT16 0, 1, 0xffff for the robust
+    * restart-value arm; UINT16 0, 1, 7 for the out-of-bounds arm. */
+   VkDeviceMemory index_memory = VK_NULL_HANDLE;
+   VkBuffer index_buffer = VK_NULL_HANDLE;
+   if (indexed_arm) {
+      assert(vkAllocateMemory(device,
+                              &(VkMemoryAllocateInfo){
+                                 .sType =
+                                    VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                 .allocationSize = 4096,
+                                 .memoryTypeIndex = 0,
+                              },
+                              NULL, &index_memory) == VK_SUCCESS);
+      assert(vkCreateBuffer(device,
+                            &(VkBufferCreateInfo){
+                               .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                               .size = 16,
+                               .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                            },
+                            NULL, &index_buffer) == VK_SUCCESS);
+      if (arm == ARM_INDEXED_ALIAS_TARGET_REFUSED) {
+         assert(vkBindBufferMemory(device, index_buffer, target.memory, 0) ==
+                VK_SUCCESS);
+      } else {
+         assert(vkBindBufferMemory(device, index_buffer, index_memory, 0) ==
+                VK_SUCCESS);
+         void *map = NULL;
+         assert(vkMapMemory(device, index_memory, 0, VK_WHOLE_SIZE, 0,
+                            &map) == VK_SUCCESS);
+         if (arm == ARM_INDEXED_PERMUTED_ARMED) {
+            const uint32_t indices[4] = { 99, 5, 3, 4 };
+            memcpy(map, indices, sizeof(indices));
+         } else {
+            const uint16_t indices[4] = {
+               0, 1,
+               arm == ARM_INDEXED_ROBUST_RESTART_ARMED    ? 0xffffu
+               : arm == ARM_INDEXED_OUT_OF_BOUNDS_REFUSED ? 7
+                                                           : 2,
+               0
+            };
+            memcpy(map, indices, sizeof(indices));
+         }
+         vkUnmapMemory(device, index_memory);
       }
    }
 
@@ -808,7 +916,8 @@ run_arm(enum arm arm, const char *name)
                             .binding = 0,
                             .format = (arm == ARM_ROBUST_OOB_ENABLED ||
                                        arm == ARM_ROBUST_OOB_DISABLED ||
-                                       arm == ARM_GPU_FETCHED_COMPOSED_F32_3)
+                                       arm == ARM_GPU_FETCHED_COMPOSED_F32_3 ||
+                                       arm == ARM_INDEXED_ROBUST_RESTART_ARMED)
                                          ? VK_FORMAT_R32G32B32_SFLOAT
                                       : arm == ARM_GPU_FETCHED_COMPOSED_F32_2
                                          ? VK_FORMAT_R32G32_SFLOAT
@@ -821,6 +930,8 @@ run_arm(enum arm arm, const char *name)
                       .sType =
                          VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                       .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                      .primitiveRestartEnable =
+                         arm == ARM_INDEXED_RESTART_ENABLED_REFUSED,
                    },
                 .pViewportState =
                    &(VkPipelineViewportStateCreateInfo){
@@ -872,9 +983,11 @@ run_arm(enum arm arm, const char *name)
              },
              NULL, &pipeline);
    if (arm == ARM_VARYING_FRAGMENT_MISMATCH || arm == ARM_VARYING_MISSING ||
-       arm == ARM_MULTI_ATTRIBUTE_OVERLAP_REFUSED) {
-      /* The stage pair names two fragment shapes for one job, or the
-       * color attribute's record crosses its binding's stride, so the
+       arm == ARM_MULTI_ATTRIBUTE_OVERLAP_REFUSED ||
+       arm == ARM_INDEXED_RESTART_ENABLED_REFUSED) {
+      /* The stage pair names two fragment shapes for one job, the
+       * color attribute's record crosses its binding's stride, or
+       * primitive restart is enabled on the list topology, so the
        * pipeline refuses and nothing records. */
       assert(created == R3V_NATIVE_REFUSAL_RESULT);
       assert(pipeline == VK_NULL_HANDLE);
@@ -942,15 +1055,40 @@ run_arm(enum arm arm, const char *name)
    if (multi_arm && !interleaved_arm &&
        arm != ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED)
       vkCmdBindVertexBuffers(cmd, 1, 1, &color_buffer, &(VkDeviceSize){ 0 });
-   vkCmdDraw(cmd, 3, 1, 0, 0);
+   if (indexed_arm) {
+      if (arm != ARM_INDEXED_UNBOUND_REFUSED) {
+         vkCmdBindIndexBuffer(cmd, index_buffer, 0,
+                              arm == ARM_INDEXED_PERMUTED_ARMED
+                                 ? VK_INDEX_TYPE_UINT32
+                              : arm == ARM_INDEXED_UINT8_REFUSED
+                                 ? VK_INDEX_TYPE_UINT8_EXT
+                                 : VK_INDEX_TYPE_UINT16);
+      }
+      /* The permuted arm reads entries 1..3 under base vertex -3; the
+       * range arm asks for entries 6..8 of an eight-entry buffer. */
+      vkCmdDrawIndexed(cmd, 3, 1,
+                       arm == ARM_INDEXED_PERMUTED_ARMED ? 1
+                       : arm == ARM_INDEXED_RANGE_REFUSED ? 6
+                                                          : 0,
+                       arm == ARM_INDEXED_PERMUTED_ARMED ? -3 : 0, 0);
+   } else {
+      vkCmdDraw(cmd, 3, 1, 0, 0);
+   }
    vkCmdEndRenderPass(cmd);
    const VkResult ended = vkEndCommandBuffer(cmd);
    if (arm == ARM_ROBUST_OOB_DISABLED ||
        arm == ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED ||
-       arm == ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED) {
+       arm == ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED ||
+       arm == ARM_INDEXED_RANGE_REFUSED ||
+       arm == ARM_INDEXED_UNBOUND_REFUSED ||
+       arm == ARM_INDEXED_UINT8_REFUSED ||
+       arm == ARM_INDEXED_ALIAS_TARGET_REFUSED) {
       /* The feature off, the record-time bound proof poisons the
        * recording; the color binding left unbound, and the color stream
-       * inside the pass target's footprint, each poison the draw: the
+       * inside the pass target's footprint, each poison the draw; the
+       * index range past the index buffer, the index buffer left
+       * unbound, the UINT8 index type, and the index buffer inside the
+       * pass target's footprint each poison the indexed draw: the
        * application sees the refusal at end and nothing reaches the
        * queue, the seeded target untouched. */
       assert(ended == R3V_NATIVE_REFUSAL_RESULT);
@@ -1076,12 +1214,50 @@ run_arm(enum arm arm, const char *name)
 
    switch (arm) {
    case ARM_ARMED:
+   case ARM_INDEXED_ARMED:
+   case ARM_INDEXED_PERMUTED_ARMED:
+      /* The indexed arms deliver the reference carrier: the plain
+       * indices name the records in order, and the permuted arm's
+       * dereference, first-index offset, and base-vertex sum restore
+       * the reference order from the permuted buffer. */
       assert(submitted == VK_SUCCESS);
       assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
       assert(cs_ioctls == 1);
       assert(carrier_is_reference);
       check_target(device, &target, true, name);
       assert(token);
+      break;
+   case ARM_INDEXED_ROBUST_RESTART_ARMED:
+      /* Restart disabled, 0xffff is an index past the bound; robust on,
+       * the F32_3 record reads (0, 0, 0, 1), the window center. */
+      assert(submitted == VK_SUCCESS);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(cs_ioctls == 1);
+      assert(carrier_is_robust);
+      check_target(device, &target, true, name);
+      assert(token);
+      break;
+   case ARM_INDEXED_OUT_OF_BOUNDS_REFUSED:
+      /* The index selects vertex 7 of a three-record stream with the
+       * feature off: the executor refuses at execution, after every
+       * gate and before any write. */
+      assert(submitted == VK_ERROR_DEVICE_LOST);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
+      assert(cs_ioctls == 0);
+      assert(carrier_untouched);
+      check_target(device, &target, false, name);
+      assert(!token);
+      break;
+   case ARM_INDEXED_RESTART_ENABLED_REFUSED:
+      /* Returned above at pipeline creation. */
+      assert(!"unreachable");
+      break;
+   case ARM_INDEXED_RANGE_REFUSED:
+   case ARM_INDEXED_UNBOUND_REFUSED:
+   case ARM_INDEXED_UINT8_REFUSED:
+   case ARM_INDEXED_ALIAS_TARGET_REFUSED:
+      /* Returned above at vkEndCommandBuffer. */
+      assert(!"unreachable");
       break;
    case ARM_VARYING_ARMED:
    case ARM_MULTI_ATTRIBUTE_ARMED:
@@ -1112,7 +1288,9 @@ run_arm(enum arm arm, const char *name)
       assert(!"unreachable");
       break;
    case ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED:
-      /* The fetched admission refuses the two-slot job before any
+   case ARM_INDEXED_FETCHED_REFUSED:
+      /* The fetched admission refuses the two-slot job, and the
+       * producer admission refuses the indexed draw, before any
        * allocation, reference, IB, or carrier write: the recording is
        * exactly as recorded, the gate unreached, the token unspent. */
       assert(submitted == VK_ERROR_DEVICE_LOST);
@@ -1273,7 +1451,8 @@ run_arm(enum arm arm, const char *name)
    const bool ib_retained = file_present(manifest_dir, "ib.bin");
    if (arm == ARM_RETENTION_UNWRITABLE ||
        arm == ARM_GPU_FETCHED_COMPOSE_FAILURE || fetched_refusal_arm ||
-       arm == ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED)
+       arm == ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED ||
+       arm == ARM_INDEXED_FETCHED_REFUSED)
       assert(!ib_retained);
    else if (arm != ARM_GATE_CLOSED && arm != ARM_KNOWN_BAD_PREMATURE_DRAW)
       assert(ib_retained);
@@ -1281,7 +1460,8 @@ run_arm(enum arm arm, const char *name)
    /* The bytes the armed submit retained and handed to the ioctl are the
     * retained CPU route identity, so the re-sequenced submit path moves
     * no dword of the reference cell. */
-   if (arm == ARM_ARMED) {
+   if (arm == ARM_ARMED || arm == ARM_INDEXED_ARMED ||
+       arm == ARM_INDEXED_PERMUTED_ARMED) {
       char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       uint32_t submitted_dwords;
       retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);
@@ -1326,6 +1506,8 @@ run_arm(enum arm arm, const char *name)
    vkFreeMemory(device, vertex_memory, NULL);
    vkDestroyBuffer(device, color_buffer, NULL);
    vkFreeMemory(device, color_memory, NULL);
+   vkDestroyBuffer(device, index_buffer, NULL);
+   vkFreeMemory(device, index_memory, NULL);
    vkDestroyImageView(device, target.view, NULL);
    vkDestroyImage(device, target.image, NULL);
    vkFreeMemory(device, target.memory, NULL);

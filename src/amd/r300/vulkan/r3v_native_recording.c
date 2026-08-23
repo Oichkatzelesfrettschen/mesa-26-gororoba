@@ -315,16 +315,6 @@ r3v_CmdBeginQuery(
 
 
 VKAPI_ATTR void VKAPI_CALL
-r3v_CmdBindIndexBuffer(
-   VkCommandBuffer commandBuffer,
-   VkBuffer buffer,
-   VkDeviceSize offset,
-   VkIndexType indexType)
-{
-   r3v_native_cmd_poison(commandBuffer);
-}
-
-VKAPI_ATTR void VKAPI_CALL
 r3v_CmdBlitImage(
    VkCommandBuffer commandBuffer,
    VkImage srcImage,
@@ -618,18 +608,6 @@ r3v_CmdDispatchIndirect(
    VkCommandBuffer commandBuffer,
    VkBuffer buffer,
    VkDeviceSize offset)
-{
-   r3v_native_cmd_poison(commandBuffer);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-r3v_CmdDrawIndexed(
-   VkCommandBuffer commandBuffer,
-   uint32_t indexCount,
-   uint32_t instanceCount,
-   uint32_t firstIndex,
-   int32_t vertexOffset,
-   uint32_t firstInstance)
 {
    r3v_native_cmd_poison(commandBuffer);
 }

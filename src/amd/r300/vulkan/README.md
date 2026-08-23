@@ -61,7 +61,9 @@ Vulkan command recording (r3v_native_recording.c, r3v_native_cmd.c)
 -> admitted draw or dispatch (r3v_native_draw.c, r3v_native_compute.c)
 -> vertex gather through the CPU executor (src/amd/r300/cpu/) into the
    command-buffer-owned GTT carrier, one stream per attribute slot the
-   job reads over its bound per-vertex binding (a vertex job that stores
+   job reads over its bound per-vertex binding, linearly from the first
+   vertex or through the three indices an indexed draw reads from the
+   bound index buffer at execution (a vertex job that stores
    the location-0 varying writes eight-dword records, and the draw
    records the varying triangle cell whose RS routes that second FLOAT_4
    to the pass-through fragment program), or the R2VB producer route

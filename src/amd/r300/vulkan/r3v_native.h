@@ -266,6 +266,20 @@ struct r3v_native_deferred_draw {
    uint32_t stream_mask;
    struct r3v_native_deferred_stream streams[R300_VERTEX_JOB_MAX_INPUTS];
    uint32_t first_vertex;
+   /* An indexed draw dereferences its indices on the host at execution:
+    * index_bytes (2 or 4) names the bound index type, index_base is
+    * the bind offset into index_buffer, and each of the three indices
+    * from first_index on sums with vertex_offset in 32-bit wrapping
+    * arithmetic to the vertex number the streams gather.  The record
+    * proved the index range readable; the vertex numbers are judged at
+    * execution under the robust rule like any other record.
+    */
+   bool indexed;
+   struct r3v_native_buffer *index_buffer;
+   uint64_t index_base;
+   uint32_t index_bytes;
+   uint32_t first_index;
+   int32_t vertex_offset;
    /* Pipeline lifetime ends at the application's discretion, so the
     * deferred draw carries its own copy of the vertex job and the
     * GPU-route identity metadata.
@@ -323,6 +337,13 @@ struct r3v_native_cmd_buffer {
       *bound_vertex_buffers[R3V_NATIVE_MAX_VERTEX_BINDINGS];
    VkDeviceSize bound_vertex_offsets[R3V_NATIVE_MAX_VERTEX_BINDINGS];
    uint32_t vertex_bound_mask;
+   /* The index buffer from CmdBindIndexBuffer: the buffer, its bind
+    * offset, and the index size in bytes the bound VkIndexType names
+    * (2 for UINT16, 4 for UINT32); zero bytes is no binding.
+    */
+   struct r3v_native_buffer *bound_index_buffer;
+   VkDeviceSize bound_index_offset;
+   uint32_t bound_index_bytes;
    bool draw_recorded;
    struct r3v_native_memory *owned_carrier;
    /* The fetched producer's slot-position BO, allocated at the first
