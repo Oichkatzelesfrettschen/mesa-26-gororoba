@@ -152,6 +152,11 @@ void r300_r2vb_fetched_producer_release(
 int r300_r2vb_fetched_producer_validate_reloc_sites(
    const struct r300_r2vb_fetched_producer_ib *ib);
 
+/* One GTT page: the reference BO size for each fetched array, and the
+ * slot BO size the driver's admission allocates.
+ */
+#define R300_R2VB_FETCHED_REFERENCE_BO_BYTES 4096u
+
 /* Emits the reference-shaped pass for a width: the reference count and
  * single-row layout, the first-draw contract prefix, the reference
  * fragment binary, carrier and slot offsets zero, the source at offset
