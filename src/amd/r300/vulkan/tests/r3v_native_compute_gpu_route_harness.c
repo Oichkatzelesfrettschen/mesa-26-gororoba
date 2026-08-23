@@ -280,13 +280,16 @@ run_arm(enum arm arm, const char *name)
    vkGetDeviceQueue(device, 0, 0, &queue);
 
    /* Input and output: one page each (the alias arm binds both buffers
-    * into one page at distinct offsets, ranges disjoint -- the CPU
-    * route's admissible shape, the carrier's refused one); the ceiling
-    * arm dispatches 65 groups over five-page buffers. */
+    * into one two-page allocation at distinct page-aligned offsets,
+    * ranges disjoint -- the CPU route's admissible shape, the
+    * carrier's refused one); the ceiling arm dispatches 65 groups over
+    * five-page buffers. */
    const uint32_t groups = arm == ARM_CEILING_REFUSED ? CEILING_GROUPS : 1;
    const uint32_t words = groups * GROUP_WORDS;
    const VkDeviceSize bytes = (VkDeviceSize)words * 4;
-   const VkDeviceSize allocation = (bytes + 4095) & ~(VkDeviceSize)4095;
+   const VkDeviceSize allocation =
+      ((bytes + 4095) & ~(VkDeviceSize)4095) +
+      (arm == ARM_ALIAS_REFUSED ? 4096 : 0);
    VkDeviceMemory input_memory = VK_NULL_HANDLE, output_memory = VK_NULL_HANDLE;
    assert(vkAllocateMemory(device,
                            &(VkMemoryAllocateInfo){
@@ -320,7 +323,7 @@ run_arm(enum arm arm, const char *name)
              VK_SUCCESS);
    }
    const VkDeviceSize output_bind_offset =
-      arm == ARM_ALIAS_REFUSED ? 2048 : 0;
+      arm == ARM_ALIAS_REFUSED ? 4096 : 0;
    assert(vkBindBufferMemory(device, input_buffer, input_memory, 0) ==
           VK_SUCCESS);
    assert(vkBindBufferMemory(device, output_buffer, output_memory,
@@ -329,7 +332,7 @@ run_arm(enum arm arm, const char *name)
    assert(vkMapMemory(device, input_memory, 0, VK_WHOLE_SIZE, 0,
                       (void **)&input_map) == VK_SUCCESS);
    if (arm == ARM_ALIAS_REFUSED) {
-      output_map = input_map + 2048 / 4;
+      output_map = input_map + 4096 / 4;
    } else {
       assert(vkMapMemory(device, output_memory, 0, VK_WHOLE_SIZE, 0,
                          (void **)&output_map) == VK_SUCCESS);

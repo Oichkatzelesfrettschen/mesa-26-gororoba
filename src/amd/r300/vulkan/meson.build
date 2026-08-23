@@ -1461,6 +1461,50 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       timeout : 120,
       suite : ['r3v'],
     )
+    # Object-lifetime contract through the public surface: sampler
+    # creation as recorded state with anisotropy refused and use
+    # poisoned at the descriptor write, buffer-view refusal under the
+    # advertised format table, and the once-only host-visible binding
+    # admission for buffers and images.  Two calibrated mutations
+    # report a rebind and a wrong-type bind as admitted.
+    r3v_native_object_lifetime_test = executable(
+      'r3v_native_object_lifetime_test',
+      files('tests/r3v_native_object_lifetime_test.c'),
+      include_directories : [inc_include, include_directories('.')],
+      dependencies : [dep_vulkan_loader],
+      c_args : [no_override_init_args],
+    )
+    test(
+      'r3v-native-object-lifetime',
+      r3v_native_object_lifetime_test,
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v,
+                 _dev_icd],
+      timeout : 120,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-object-lifetime-known-bad-rebind-admits',
+      r3v_native_object_lifetime_test,
+      args : ['--inject-rebind-admits'],
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v,
+                 _dev_icd],
+      should_fail : true,
+      timeout : 120,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-object-lifetime-known-bad-wrong-type-bind-admits',
+      r3v_native_object_lifetime_test,
+      args : ['--inject-wrong-type-bind-admits'],
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v,
+                 _dev_icd],
+      should_fail : true,
+      timeout : 120,
+      suite : ['r3v'],
+    )
     # End-to-end dispatch through the native compute surface: the
     # gate-off leg proves the family withholds COMPUTE and pipeline
     # creation refuses; the gate-on leg drives the reference

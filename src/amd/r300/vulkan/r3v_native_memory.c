@@ -213,15 +213,37 @@ r3v_GetBufferMemoryRequirements2(VkDevice _device,
    r3v_native_fill_buffer_dedicated_requirements(pMemoryRequirements);
 }
 
+/* Binding happens exactly once per buffer, at an aligned offset whose
+ * buffer-sized footprint closes inside the allocation, to the one
+ * host-visible type the requirement admits: the draw's submission-time
+ * gather reads every bound buffer through a CPU mapping, and type 1
+ * allocates with RADEON_GEM_NO_CPU_ACCESS.  Each bind runs the full
+ * admission, and the first refusal reports after every remaining bind
+ * has been attempted, matching the image batch contract.
+ */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_BindBufferMemory2(VkDevice _device, uint32_t bindInfoCount,
                       const VkBindBufferMemoryInfo *pBindInfos)
 {
+   VK_FROM_HANDLE(r3v_native_device, device, _device);
+   VkResult result = VK_SUCCESS;
+
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       VK_FROM_HANDLE(r3v_native_buffer, buffer, pBindInfos[i].buffer);
       VK_FROM_HANDLE(r3v_native_memory, memory, pBindInfos[i].memory);
+      const VkDeviceSize offset = pBindInfos[i].memoryOffset;
+
+      if (buffer == NULL || memory == NULL || buffer->memory != NULL ||
+          memory->vk.memory_type_index != 0 ||
+          offset % R3V_NATIVE_MEMORY_ALIGNMENT != 0 ||
+          offset > memory->bo.size ||
+          buffer->vk.size > memory->bo.size - offset) {
+         if (result == VK_SUCCESS)
+            result = vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+         continue;
+      }
       buffer->memory = memory;
-      buffer->offset = pBindInfos[i].memoryOffset;
+      buffer->offset = offset;
    }
-   return VK_SUCCESS;
+   return result;
 }
