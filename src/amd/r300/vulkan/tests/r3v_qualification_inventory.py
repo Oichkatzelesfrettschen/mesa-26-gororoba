@@ -75,6 +75,12 @@ R3V_FLOAT2_TUPLE_REQUIRED_TESTS: tuple[str, ...] = (
 FLOAT2_TUPLE_REQUIRED_TESTS = (
     R300_FLOAT2_TUPLE_REQUIRED_TESTS + R3V_FLOAT2_TUPLE_REQUIRED_TESTS)
 
+R300_LIVENESS_REQUIRED_TESTS: tuple[str, ...] = (
+    "r300-common-liveness-census-selftest",
+    "r300-common-liveness-census",
+    "r300-common-liveness-census-archives",
+)
+
 # The qualification-critical tests.  A name here is load-bearing evidence for
 # the qualification verdict: transport admission, arming, dispatch closure,
 # parser replay, or a known-bad calibration whose absence would let a broken
@@ -96,6 +102,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-common-boundary-audit-known-bad-object",
     "r300-common-consumer-census-selftest",
     "r300-common-consumer-census",
+    *R300_LIVENESS_REQUIRED_TESTS,
     "r300-r2vb-producer-pass",
     "r300-r2vb-producer-replay",
     "r300-r2vb-producer-fp24-sweep-replay",
@@ -899,6 +906,18 @@ def run_selftest() -> int:
             qualification=True, probes=probes)
         if misplaced_tuple == 0:
             print("selftest: misplaced FLOAT_2 tuple test passed the gate: " +
+                  missing_test, file=sys.stderr)
+            return 1
+    for missing_test in R300_LIVENESS_REQUIRED_TESTS:
+        missing_liveness_test = [
+            entry for entry in complete_entries
+            if entry["name"] != missing_test
+        ]
+        missing_liveness = evaluate(
+            collect(missing_liveness_test), QUALIFYING_OPTIONS,
+            qualification=True, probes=probes)
+        if missing_liveness == 0:
+            print("selftest: missing liveness census test passed the gate: " +
                   missing_test, file=sys.stderr)
             return 1
     native_only = evaluate(collect(synthetic_complete(NATIVE_ONLY_OPTIONS)),

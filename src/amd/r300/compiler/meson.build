@@ -110,3 +110,22 @@ libr300_compiler = static_library(
   gnu_symbol_visibility : 'hidden',
   dependencies : [idep_mesautil, idep_nir],
 )
+
+# Source registration and declaration reach run from common.  This artifact
+# leg independently proves that the named common and compiler symbols are
+# defined by the archives built for the same configuration.
+prog_nm_r300_liveness = find_program('nm', required : false)
+if with_tests and prog_nm_r300_liveness.found()
+  test(
+    'r300-common-liveness-census-archives',
+    prog_python,
+    args : [files('../common/tests/r300_common_liveness_census.py'),
+            meson.project_source_root(),
+            '--archives',
+            '--nm', prog_nm_r300_liveness.full_path(),
+            '--common-archive', libr300_common.full_path(),
+            '--compiler-archive', libr300_compiler.full_path()],
+    depends : [libr300_common, libr300_compiler],
+    suite : ['r300'],
+  )
+endif

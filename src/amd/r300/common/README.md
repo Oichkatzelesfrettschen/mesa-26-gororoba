@@ -85,6 +85,50 @@ executables with `main()` rather than driver objects.
 | `r300_triangle_manifest.c` | Test-only triangle evidence writer. | `none` | `r300-triangle-manifest-integration`, `r300-cs-track-replay` | `KEEP_SILICON_CONTRACT` |
 | `r300_zb_depth_control_manifest.c` | Test-only depth-control evidence writer. | `none` | `r300-zb-depth-control-replay` | `KEEP_SILICON_CONTRACT` |
 
+## Liveness census
+
+The consumer census records an API-neutral contract's ownership and header
+reachability.  This table records different facts for the carrier inventory:
+
+- `BUILD_REGISTERED` means the provider source belongs to the named Meson
+  archive target.
+- `ARCHIVE_DEFINED` means the archive test finds the subject with `nm` after a
+  build.
+- `Contract reach` records production compilation paths that include the
+  declaration header; object reference remains a separate fact.
+- `Production references` records non-provider production source references.
+- `Route selected` records an exact production selector adapter.  The checker
+  rejects positive values until that adapter and its wrong-selector calibration
+  land.
+- `Hardware executed` records an exact typed silicon-evidence adapter.  The
+  checker rejects positive values until that external binding lands.
+- `Evidence-only references` records tests and manifest writers as provenance
+  facts.
+
+The checker derives the carrier subjects from the registry, verifies their
+Meson membership and declaration-header reach, separates production from test
+references, and separately verifies compiled definitions.  The archive leg
+establishes archive membership and global-definition facts.  The reference,
+route-selection, and hardware-execution columns keep call, route, and silicon
+facts distinct for `libr300_common` and `r300_nir.c`.  Every current route and
+hardware cell is `none`, so a future positive claim must extend the checker
+with its exact adapter and a known-bad calibration.
+
+| Subject | Build registration | Archive definition | Contract reach | Production references | Route selected | Hardware executed | Evidence-only references |
+|---|---|---|---|---|---|---|---|
+| `r300_carrier_identity` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c` |
+| `r300_carrier_dp4_u7` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c`, `src/amd/r300/common/tests/r300_operation_ledger_test.c` |
+| `r300_carrier_dp4_u8_boundary` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c` |
+| `r300_carrier_blend_acc` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c` |
+| `r300_carrier_zpass` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c` |
+| `r300_carrier_ieee16_classify` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c` |
+| `r300_carrier_ieee16_mul` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c` |
+| `r300_carrier_ieee16_result` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c`, `src/amd/r300/common/tests/r300_operation_ledger_test.c` |
+| `r300_carrier_ieee16_debug` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c` |
+| `r300_carrier_policies` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c`, `src/amd/r300/common/tests/r300_operation_ledger_test.c` |
+| `r300_carrier_dp4_select` | `libr300_common` | `libr300_common` | `compiler`, `r300g` | `none` | `none` | `none` | `src/amd/r300/common/tests/r300_carrier_policy_test.c` |
+| `r300_nir_build_carrier_pack` | `libr300_compiler` | `libr300_compiler` | `compiler`, `r300g` | `none` | `none` | `none` | `none` |
+
 ## Migration consequences
 
 The direct-SPIR-V readers move to the Vulkan front end because their only
@@ -108,9 +152,12 @@ consumer.
 
 The single-object cutover removed two source-list-only consumer labels.  r300g
 previously compiled `r300_carrier_policy.c` and `r300_numeric_domain.c` as
-members of `files_r300`, but no landed r300g production root reaches either
-public contract.  Archive linkage does not restore that claim: the numeric
-domain remains shared by compiler and native reachability, while carrier policy
-stays common on its calibrated silicon-contract proofs.  A future r300g
-carrier adapter earns the `r300g` label only when its production source reaches
-the public header.
+members of `files_r300`, but no landed r300g production source references
+either registry's symbols.  Compiler headers carry the carrier declarations
+into r300g compilation, as the liveness table records; declaration reach is a
+separate fact from object reference and route selection.  Archive linkage does
+not create either of those facts: the numeric domain remains shared by compiler
+and native reachability, while carrier policy stays common on its calibrated
+silicon-contract proofs.  A future r300g carrier adapter earns the `r300g`
+consumer label when production code references the carrier registry or selects
+one of its policies.
