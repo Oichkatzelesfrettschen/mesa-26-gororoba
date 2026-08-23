@@ -789,6 +789,85 @@ static void test_robust_out_of_bounds_reads_zero(void)
    assert(carrier[8] == f_bits(1.0f) && carrier[11] == f_bits(4.0f));
 }
 
+/* The indexed form: a vertex-id list permutes and repeats the records
+ * of the linear form, each listed vertex bounds on its own (robust
+ * substitutes, clear refuses before any write), and a NULL list
+ * refuses. */
+static void test_indexed_execution(void)
+{
+   const float records[16] = { 1.0f, 2.0f, 3.0f, 4.0f,
+                               5.0f, 6.0f, 7.0f, 8.0f,
+                               9.0f, 10.0f, 11.0f, 12.0f,
+                               13.0f, 14.0f, 15.0f, 16.0f };
+   struct r300_vertex_stream stream = stream_of(records, 16, 64);
+   struct r300_vertex_job job = {
+      .input_format_ids[0] = R300_VERTEX_FORMAT_F32_4,
+      .instruction_count = 2,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 0 },
+      },
+   };
+   uint32_t carrier[CARRIER_DWORDS];
+   uint32_t linear[CARRIER_DWORDS];
+
+   /* A permutation with a repeat: records 3, 0, 3. */
+   const uint32_t ids[3] = { 3, 0, 3 };
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_indexed(&job, &stream, ids, 3, carrier,
+                                              CARRIER_DWORDS) == 0);
+   assert(carrier[0] == f_bits(13.0f) && carrier[3] == f_bits(16.0f));
+   assert(carrier[4] == f_bits(1.0f) && carrier[7] == f_bits(4.0f));
+   assert(carrier[8] == f_bits(13.0f) && carrier[11] == f_bits(16.0f));
+   assert(carrier[12] == CANARY);
+
+   /* The identity list equals the linear form byte for byte. */
+   const uint32_t identity[3] = { 1, 2, 3 };
+   fill_canary(carrier);
+   fill_canary(linear);
+   assert(r300_cpu_vertex_job_execute_indexed(&job, &stream, identity, 3,
+                                              carrier, CARRIER_DWORDS) == 0);
+   assert(r300_cpu_vertex_job_execute(&job, &stream, 1, 3, linear,
+                                      CARRIER_DWORDS) == 0);
+   assert(memcmp(carrier, linear, sizeof(carrier)) == 0);
+
+   /* A listed vertex past the bound: clear refuses before any write,
+    * robust reads it as zeros while the in-bounds entries deliver, and
+    * the same holds for the wrapped 32-bit sum a negative base vertex
+    * forms. */
+   const uint32_t out_of_bounds[3] = { 0, 4, 1 };
+   const uint32_t wrapped[3] = { 0, 0xffffffffu, 1 };
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_indexed(&job, &stream, out_of_bounds,
+                                              3, carrier,
+                                              CARRIER_DWORDS) == -EINVAL);
+   assert(carrier[0] == CANARY && carrier[11] == CANARY);
+   assert(r300_cpu_vertex_job_execute_indexed(&job, &stream, wrapped, 3,
+                                              carrier,
+                                              CARRIER_DWORDS) == -EINVAL);
+   assert(carrier[0] == CANARY);
+   stream.oob_reads_zero = true;
+   for (int list = 0; list < 2; list++) {
+      fill_canary(carrier);
+      assert(r300_cpu_vertex_job_execute_indexed(
+                &job, &stream, list ? wrapped : out_of_bounds, 3, carrier,
+                CARRIER_DWORDS) == 0);
+      assert(carrier[0] == f_bits(1.0f) && carrier[3] == f_bits(4.0f));
+      assert(carrier[4] == 0 && carrier[5] == 0 && carrier[6] == 0 &&
+             carrier[7] == 0);
+      assert(carrier[8] == f_bits(5.0f) && carrier[11] == f_bits(8.0f));
+   }
+   stream.oob_reads_zero = false;
+
+   /* A NULL list and a zero count refuse. */
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_indexed(&job, &stream, NULL, 3, carrier,
+                                              CARRIER_DWORDS) == -EINVAL);
+   assert(r300_cpu_vertex_job_execute_indexed(&job, &stream, ids, 0, carrier,
+                                              CARRIER_DWORDS) == -EINVAL);
+   assert(carrier[0] == CANARY);
+}
+
 int main(void)
 {
    test_identity_preserves_bits();
@@ -803,6 +882,7 @@ int main(void)
    test_validation_refusals();
    test_varying_store_records();
    test_multi_attribute_slots();
+   test_indexed_execution();
    test_execute_refusals_no_partial_write();
    test_determinism();
    printf("r300_cpu_vertex_job_test: all cases pass\n");

@@ -384,7 +384,8 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     * read zeros; with the feature off the same record refuses the draw
     * before any write. */
    struct r300_vertex_stream sources[R300_VERTEX_JOB_MAX_INPUTS] = { 0 };
-   struct r3v_native_memory *owned_maps[R300_VERTEX_JOB_MAX_INPUTS];
+   /* One owned map per read slot plus the index buffer's. */
+   struct r3v_native_memory *owned_maps[R300_VERTEX_JOB_MAX_INPUTS + 1];
    uint32_t owned_map_count = 0;
    VkResult result = VK_SUCCESS;
    for (uint32_t slot = 0; slot < R300_VERTEX_JOB_MAX_INPUTS; slot++) {
@@ -410,6 +411,43 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          .size_bytes = stream_desc->buffer->vk.size - stream_desc->stream_base,
          .oob_reads_zero = device->vk.enabled_features.robustBufferAccess,
       };
+   }
+   /* The indexed draw reads its three indices now, at execution, so an
+    * index written between record and submit is honored like a vertex
+    * write: each index sums with the base vertex in 32-bit wrapping
+    * arithmetic (a negative sum wraps past any bound and the robust
+    * rule judges it as an out-of-bounds record), and the vertex
+    * numbers drive the gather in place of the linear range. */
+   uint32_t vertex_ids[R300_TRIANGLE_VERTEX_DWORDS / 4] = { 0 };
+   if (result == VK_SUCCESS && draw->indexed) {
+      struct r3v_native_memory *memory = draw->index_buffer->memory;
+      if (memory->map == NULL) {
+         if (radeon_drm_vk_bo_map(&device->drm, &memory->bo,
+                                  &memory->map) != 0) {
+            result = vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                               "r3v-native: bound index memory is not "
+                               "CPU-mappable at submission");
+         } else {
+            owned_maps[owned_map_count++] = memory;
+         }
+      }
+      if (result == VK_SUCCESS) {
+         const uint8_t *indices =
+            (const uint8_t *)memory->map + draw->index_buffer->offset +
+            draw->index_base +
+            (uint64_t)draw->first_index * draw->index_bytes;
+         for (uint32_t v = 0; v < R300_TRIANGLE_VERTEX_DWORDS / 4; v++) {
+            uint32_t index;
+            if (draw->index_bytes == 2) {
+               uint16_t index16;
+               memcpy(&index16, indices + v * 2, sizeof(index16));
+               index = index16;
+            } else {
+               memcpy(&index, indices + v * 4, sizeof(index));
+            }
+            vertex_ids[v] = index + (uint32_t)draw->vertex_offset;
+         }
+      }
    }
    if (result != VK_SUCCESS) {
       for (uint32_t i = 0; i < owned_map_count; i++) {
@@ -490,12 +528,13 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       /* The R2VB host model delivers the raw attribute stream, so it
        * stands in only for the identity vertex job; any other admitted
        * job executes on the CPU interpreter route below. */
-      /* The R2VB host model delivers in-bounds records alone, as the
-       * device fetch it models would; a robust range with a record
-       * outside the bound executes on the CPU route, which substitutes. */
+      /* The R2VB host model delivers one linear range of in-bounds
+       * records, as the device fetch it models would; a robust range
+       * with a record outside the bound, and an indexed draw whose
+       * dereference happens on the host, each execute on the CPU route. */
       const bool r2vb_route =
          route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
-         draw->vertex_job_identity &&
+         draw->vertex_job_identity && !draw->indexed &&
          r300_cpu_vertex_range_in_bounds(stream.format_id, &source,
                                          stream.first_vertex,
                                          R300_TRIANGLE_VERTEX_DWORDS / 4);
@@ -536,9 +575,14 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          /* The CPU route executes the pipeline's vertex job over every
           * stream it reads; the identity job reduces to the gather, so
           * the reference cell's carrier bytes are unchanged. */
-         gathered = r300_cpu_vertex_job_execute(
-            &draw->vertex_job, sources, stream.first_vertex,
-            R300_TRIANGLE_VERTEX_DWORDS / 4, staged, staged_dwords);
+         gathered =
+            draw->indexed
+               ? r300_cpu_vertex_job_execute_indexed(
+                    &draw->vertex_job, sources, vertex_ids,
+                    R300_TRIANGLE_VERTEX_DWORDS / 4, staged, staged_dwords)
+               : r300_cpu_vertex_job_execute(
+                    &draw->vertex_job, sources, stream.first_vertex,
+                    R300_TRIANGLE_VERTEX_DWORDS / 4, staged, staged_dwords);
       }
       if (result == VK_SUCCESS && gathered != 0) {
          const char *operation = r2vb_route ? "R2VB delivery" : "CPU gather";
@@ -999,10 +1043,21 @@ r3v_native_deferred_draw_admit_gpu_producer(
                                   ? draw->streams[0].format_id
                                   : R300_VERTEX_FORMAT_INVALID,
                                &route);
+   if (route.route != R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED &&
+       route.route != R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER)
+      return VK_SUCCESS;
+   /* Both producer routes fetch the source records as one linear range
+    * (embedded immediates or the VBPNTR array); an indexed draw
+    * dereferences its indices on the host, so it refuses by name rather
+    * than taking a route whose source order the indices do not drive. */
+   if (draw->indexed) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: GPU producer routes fetch one linear "
+                       "source range; an indexed draw executes on the CPU "
+                       "route");
+   }
    if (route.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED)
       return admit_fetched_producer(device, cmd_buffer);
-   if (route.route != R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER)
-      return VK_SUCCESS;
 
    if (device->gpu_producer_quarantined) {
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,

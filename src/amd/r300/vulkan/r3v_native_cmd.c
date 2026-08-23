@@ -73,6 +73,9 @@ r3v_native_cmd_buffer_release_recording(
    memset(cmd_buffer->bound_vertex_offsets, 0,
           sizeof(cmd_buffer->bound_vertex_offsets));
    cmd_buffer->vertex_bound_mask = 0;
+   cmd_buffer->bound_index_buffer = NULL;
+   cmd_buffer->bound_index_offset = 0;
+   cmd_buffer->bound_index_bytes = 0;
    cmd_buffer->draw_recorded = false;
    cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){0};
    cmd_buffer->deferred_copy_count = 0;

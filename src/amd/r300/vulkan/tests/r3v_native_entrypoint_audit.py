@@ -142,7 +142,9 @@ NATIVE_LIVE_CMDS = {
     "CmdEndRenderPass",
     "CmdBindPipeline",
     "CmdBindVertexBuffers",
+    "CmdBindIndexBuffer",
     "CmdDraw",
+    "CmdDrawIndexed",
 }
 
 # Dispatch dependencies the source scanner cannot see through simple
@@ -684,7 +686,7 @@ def selftest():
     behavior_legs = (
         ("CmdInvented", {"CmdInvented"}, set(), "CORE_FAIL_CLOSED"),
         ("CmdDraw", {"CmdDraw"}, set(), "NATIVE_LIVE"),
-        ("CmdDrawIndexed", {"CmdDrawIndexed"}, set(), "CORE_FAIL_CLOSED"),
+        ("CmdDrawIndirect", {"CmdDrawIndirect"}, set(), "CORE_FAIL_CLOSED"),
         ("Invented", {"Invented"}, set(), "UNCLASSIFIED"),
         ("MapMemory", {"MapMemory"}, set(), "NATIVE_LIVE"),
         ("Bridged", set(), {"Bridged"}, "COMMON_CLOSED"),

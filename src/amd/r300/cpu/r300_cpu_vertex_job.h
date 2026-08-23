@@ -49,6 +49,23 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
                                 uint32_t first_vertex, uint32_t vertex_count,
                                 uint32_t *carrier, uint32_t carrier_dwords);
 
+/* The indexed form of the same contract: relative vertex v executes
+ * vertex number vertex_ids[v] and writes record v, so the carrier is
+ * the de-indexed stream a TCL-bypass consumer draws linearly.  Each
+ * listed vertex bounds on its own under the read slot's rule (a robust
+ * stream reads a listed record outside its bound as zeros; a clear one
+ * refuses the whole execution before any write), a NULL list is
+ * -EINVAL, and the remaining refusals are those of the linear form.
+ * The list holds vertex numbers after the index fetch and base-vertex
+ * sum; the caller's index buffer, index type, and restart policy stay
+ * above this executor.  Scalar interpreter only; the SIMD candidates
+ * keep the linear range.
+ */
+int r300_cpu_vertex_job_execute_indexed(
+   const struct r300_vertex_job *job,
+   const struct r300_vertex_stream *streams, const uint32_t *vertex_ids,
+   uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords);
+
 /* The SIMD execution candidates carry the same contract, refusals, and
  * carrier contract as r300_cpu_vertex_job_execute; the differential test
  * enforces bit identity after arithmetic NaNs canonicalize to 0x7fc00000.

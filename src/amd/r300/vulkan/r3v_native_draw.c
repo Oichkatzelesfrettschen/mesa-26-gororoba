@@ -177,6 +177,32 @@ r3v_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
    }
 }
 
+/* The index types the host dereference reads: UINT16 and UINT32, the
+ * two Vulkan 1.0 types.  UINT8 rides an extension the device withholds
+ * and NONE names no buffer, so both refuse.  The bind offset is a
+ * multiple of the index size (the Vulkan bind rule), and the whole
+ * call is checked before any state changes.
+ */
+VKAPI_ATTR void VKAPI_CALL
+r3v_CmdBindIndexBuffer(VkCommandBuffer commandBuffer, VkBuffer _buffer,
+                       VkDeviceSize offset, VkIndexType indexType)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_buffer, buffer, _buffer);
+
+   const uint32_t index_bytes = indexType == VK_INDEX_TYPE_UINT16   ? 2
+                                : indexType == VK_INDEX_TYPE_UINT32 ? 4
+                                                                     : 0;
+   if (index_bytes == 0 || buffer == NULL || buffer->memory == NULL ||
+       offset > buffer->vk.size || offset % index_bytes != 0) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+   cmd_buffer->bound_index_buffer = buffer;
+   cmd_buffer->bound_index_offset = offset;
+   cmd_buffer->bound_index_bytes = index_bytes;
+}
+
 /* True when the byte range [lo, lo + bytes) of one bound memory shares
  * a byte with the pass target's footprint in the same buffer object.
  * The draw's load-op clear and color writes land in that footprint
@@ -196,19 +222,29 @@ stream_overlaps_target(const struct r3v_native_memory *memory, uint64_t lo,
    return lo < target_hi && target_lo < lo + bytes;
 }
 
+/* The draw arguments the two draw entry points lower: a linear draw
+ * names its first vertex; an indexed draw names the first index and the
+ * base vertex and reads the bound index buffer at execution.
+ */
+struct draw_args {
+   bool indexed;
+   uint32_t first_vertex;
+   uint32_t first_index;
+   int32_t vertex_offset;
+};
+
 /* The draw lowering realizes the CPU_VERTEX node and the fixed cell:
  * recording installs the cell IB against a command-buffer-owned GTT
  * carrier and the pass target's memory, and the vertex gather plus the
  * load-op clear ride deferred_draw to queue submission, so resource
  * reads and the clear carry execution-time semantics.  The cell draws
  * exactly three vertices in one instance, so the accepted draw
- * arguments are that shape with any firstVertex the bound range proves
- * readable.
+ * arguments are that shape: a linear draw with any firstVertex the
+ * bound range proves readable, or an indexed draw whose three indices
+ * the record proves readable.
  */
-VKAPI_ATTR void VKAPI_CALL
-r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
-            uint32_t instanceCount, uint32_t firstVertex,
-            uint32_t firstInstance)
+static void
+record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
@@ -217,10 +253,43 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    struct r3v_native_pipeline *pipeline = cmd_buffer->bound_pipeline;
 
    if (cmd_buffer->pass_target == NULL || pipeline == NULL ||
-       cmd_buffer->draw_recorded || vertexCount != 3 ||
-       instanceCount != 1 || firstInstance != 0) {
+       cmd_buffer->draw_recorded) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
+   }
+
+   /* An indexed draw reads its three indices from the bound index
+    * buffer at execution, so the record proves the index range alone:
+    * the buffer is bound, the range from first_index closes inside the
+    * buffer (robustBufferAccess covers vertex records; the index range
+    * itself has no robust form in this device, so it refuses), the
+    * buffer closes inside its memory, and the range shares no byte with
+    * the pass target, the same host-read-before-clear hazard a vertex
+    * stream carries.  The vertex numbers the indices select are judged
+    * at execution under the robust rule.
+    */
+   struct r3v_native_buffer *index_buffer = NULL;
+   uint64_t index_base = 0;
+   if (args->indexed) {
+      index_buffer = cmd_buffer->bound_index_buffer;
+      const uint32_t index_bytes = cmd_buffer->bound_index_bytes;
+      if (index_buffer == NULL || index_bytes == 0) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+      struct r3v_native_memory *memory = index_buffer->memory;
+      index_base = cmd_buffer->bound_index_offset;
+      if (index_base > index_buffer->vk.size ||
+          index_buffer->offset > memory->bo.size ||
+          index_buffer->vk.size > memory->bo.size - index_buffer->offset ||
+          ((uint64_t)args->first_index + 3) * index_bytes >
+             index_buffer->vk.size - index_base ||
+          stream_overlaps_target(memory, index_buffer->offset + index_base,
+                                 index_buffer->vk.size - index_base,
+                                 cmd_buffer->pass_target)) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
    }
 
    /* The pipeline's viewport/scissor claim and the pass target carry
@@ -282,9 +351,10 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
          poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
          return;
       }
-      if (!device->vk.enabled_features.robustBufferAccess &&
+      if (!args->indexed &&
+          !device->vk.enabled_features.robustBufferAccess &&
           (available < format->semantic_record_bytes ||
-           ((uint64_t)firstVertex + 2) * stride >
+           ((uint64_t)args->first_vertex + 2) * stride >
               available - format->semantic_record_bytes)) {
          poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
          return;
@@ -331,7 +401,13 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
       .pending = true,
       .stream_mask = pipeline->attribute_mask,
-      .first_vertex = firstVertex,
+      .first_vertex = args->first_vertex,
+      .indexed = args->indexed,
+      .index_buffer = index_buffer,
+      .index_base = index_base,
+      .index_bytes = args->indexed ? cmd_buffer->bound_index_bytes : 0,
+      .first_index = args->first_index,
+      .vertex_offset = args->vertex_offset,
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .target_memory = cmd_buffer->pass_target->memory,
@@ -342,4 +418,41 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    };
    memcpy(cmd_buffer->deferred_draw.streams, streams, sizeof(streams));
    cmd_buffer->draw_recorded = true;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
+            uint32_t instanceCount, uint32_t firstVertex,
+            uint32_t firstInstance)
+{
+   if (vertexCount != 3 || instanceCount != 1 || firstInstance != 0) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+   record_draw(commandBuffer, &(struct draw_args){
+                                 .first_vertex = firstVertex,
+                              });
+}
+
+/* The indexed draw keeps the cell's three-vertex shape: three indices
+ * from first_index, dereferenced on the host at execution into the
+ * three carrier records the consumer draws linearly, with vertexOffset
+ * summed onto each index.  The pipeline admission already holds
+ * primitive restart disabled, so the restart value is an ordinary
+ * index here.
+ */
+VKAPI_ATTR void VKAPI_CALL
+r3v_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount,
+                   uint32_t instanceCount, uint32_t firstIndex,
+                   int32_t vertexOffset, uint32_t firstInstance)
+{
+   if (indexCount != 3 || instanceCount != 1 || firstInstance != 0) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+   record_draw(commandBuffer, &(struct draw_args){
+                                 .indexed = true,
+                                 .first_index = firstIndex,
+                                 .vertex_offset = vertexOffset,
+                              });
 }

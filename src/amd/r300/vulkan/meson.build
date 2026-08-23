@@ -1751,7 +1751,15 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                         'multi-attribute-overlap-refused',
                         'multi-attribute-unbound-refused',
                         'multi-attribute-alias-target-refused',
-                        'multi-attribute-fetched-refused']
+                        'multi-attribute-fetched-refused',
+                        'indexed-armed', 'indexed-permuted-armed',
+                        'indexed-robust-restart-armed',
+                        'indexed-restart-enabled-refused',
+                        'indexed-out-of-bounds-refused',
+                        'indexed-range-refused', 'indexed-unbound-refused',
+                        'indexed-uint8-refused',
+                        'indexed-alias-target-refused',
+                        'indexed-fetched-refused']
     test(
       'r3v-native-submit-order-@0@'.format(submit_arm),
       r3v_native_submit_order_harness,

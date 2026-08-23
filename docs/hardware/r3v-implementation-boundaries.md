@@ -1106,7 +1106,19 @@ R2VB migration follows the fixed triangle and CPU route:
    unbound binding and a stream sharing bytes with the pass target, and
    the composed GPU-producer routes keep one source relocation role, so
    they admit the slot-0 identity job alone;
-7. add hybrid carriers only with an explicit final VAP join.
+7. draw indexed: the three UINT16 or UINT32 indices are read from the
+   bound index buffer at execution, each summed with the base vertex in
+   32-bit wrapping arithmetic, and the CPU executor gathers the named
+   vertices into the same carrier (the de-indexed stream the consumer
+   draws linearly, so the IB identity is unchanged); the record proves
+   the index range inside the index buffer and outside the pass target,
+   the vertex numbers fall under the robust rule at execution (zeros
+   with robustBufferAccess, refusal before any write without it), the
+   pipeline holds primitive restart disabled so the restart value is an
+   ordinary index, a UINT8 index type refuses at the bind, and the
+   producer routes refuse an indexed draw, fetching one linear source
+   range;
+8. add hybrid carriers only with an explicit final VAP join.
 
 The route owns its BOs, PM4, packers, barriers, and completion; r300g's R2VB
 planner belongs to the GL lane and is never an R3V execution path.
