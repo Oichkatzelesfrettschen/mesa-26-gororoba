@@ -5,6 +5,8 @@
 # functions publish evidence and are not driver objects.
 r300_common_contract_files = files(
   'r300_carrier_policy.c',
+  'r300_chip_identity.c',
+  'r300_chipset.c',
   'r300_compute_identity_carrier.c',
   'r300_compute_identity_carrier_contract.c',
   'r300_compute_verb.c',
@@ -142,6 +144,21 @@ test(
 test(
   'r300-grid-fold',
   r300_grid_fold_test,
+  suite : ['r300'],
+)
+
+r300_chip_identity_test = executable(
+  'r300_chip_identity_test',
+  files('tests/r300_chip_identity_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  link_with : libr300_common,
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-chip-identity',
+  r300_chip_identity_test,
   suite : ['r300'],
 )
 

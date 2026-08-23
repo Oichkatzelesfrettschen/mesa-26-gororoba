@@ -55,6 +55,13 @@ PATH_COPYRIGHT_HOLDERS: dict[str, tuple[str, ...]] = {
     "src/amd/r300/common/r300_shader_semantics.h": (
         "Marek Olšák <maraeo@gmail.com>",
     ),
+    "src/amd/r300/common/r300_chipset.c": (
+        "Corbin Simpson <MostAwesomeDude@gmail.com>",
+        "Marek Olšák <maraeo@gmail.com>",
+    ),
+    "src/amd/r300/common/r300_chipset.h": (
+        "Corbin Simpson <MostAwesomeDude@gmail.com>",
+    ),
 }
 
 
