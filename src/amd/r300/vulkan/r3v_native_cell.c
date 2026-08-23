@@ -460,7 +460,19 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     * arithmetic (a negative sum wraps past any bound and the robust
     * rule judges it as an out-of-bounds record), and the vertex
     * numbers drive the gather in place of the linear range. */
-   uint32_t vertex_ids[R300_TRIANGLE_VERTEX_DWORDS / 4] = { 0 };
+   uint32_t vertex_ids_stack[R300_TRIANGLE_VERTEX_DWORDS / 4] = { 0 };
+   uint32_t *vertex_ids = vertex_ids_stack;
+   uint32_t *vertex_ids_heap = NULL;
+   if (result == VK_SUCCESS && draw->indexed &&
+       draw->vertex_count > ARRAY_SIZE(vertex_ids_stack)) {
+      vertex_ids_heap =
+         vk_alloc(&device->vk.alloc,
+                  (size_t)draw->vertex_count * sizeof(uint32_t), 8,
+                  VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (vertex_ids_heap == NULL)
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      vertex_ids = vertex_ids_heap;
+   }
    if (result == VK_SUCCESS && draw->indexed) {
       struct r3v_native_memory *memory = draw->index_buffer->memory;
       if (memory->map == NULL) {
@@ -478,7 +490,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
             (const uint8_t *)memory->map + draw->index_buffer->offset +
             draw->index_base +
             (uint64_t)draw->first_index * draw->index_bytes;
-         for (uint32_t v = 0; v < R300_TRIANGLE_VERTEX_DWORDS / 4; v++) {
+         for (uint32_t v = 0; v < draw->vertex_count; v++) {
             uint32_t index;
             if (draw->index_bytes == 2) {
                uint16_t index16;
@@ -492,6 +504,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       }
    }
    if (result != VK_SUCCESS) {
+      vk_free(&device->vk.alloc, vertex_ids_heap);
       for (uint32_t i = 0; i < owned_map_count; i++) {
          radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
                                 owned_maps[i]->map);
@@ -522,6 +535,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     * the load-op clear executes here.
     */
    if (draw->gpu_producer_delivery) {
+      vk_free(&device->vk.alloc, vertex_ids_heap);
       for (uint32_t i = 0; i < owned_map_count; i++) {
          radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
                                 owned_maps[i]->map);
@@ -541,7 +555,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     * allocation released before return. */
    const uint32_t record_dwords =
       r300_vertex_job_record_dwords(&draw->vertex_job);
-   const uint32_t record_count = 3 * draw->instance_count;
+   const uint32_t record_count = draw->vertex_count * draw->instance_count;
    const uint32_t staged_dwords = record_count * record_dwords;
    uint32_t staged_stack[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
    uint32_t *staged_heap = NULL;
@@ -604,7 +618,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       const bool r2vb_route =
          route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
          draw->vertex_job_identity && !draw->indexed &&
-         draw->instance_count == 1 &&
+         draw->instance_count == 1 && draw->vertex_count == 3 &&
          r300_cpu_vertex_range_in_bounds(stream.format_id, &source,
                                          stream.first_vertex,
                                          R300_TRIANGLE_VERTEX_DWORDS / 4);
@@ -641,7 +655,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          const struct r300_cpu_vertex_draw cpu_draw = {
             .vertex_ids = draw->indexed ? vertex_ids : NULL,
             .first_vertex = stream.first_vertex,
-            .vertex_count = R300_TRIANGLE_VERTEX_DWORDS / 4,
+            .vertex_count = draw->vertex_count,
             .first_instance = draw->first_instance,
             .instance_count = draw->instance_count,
          };
@@ -731,6 +745,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       carrier->map = NULL;
    }
    vk_free(&device->vk.alloc, staged_heap);
+   vk_free(&device->vk.alloc, vertex_ids_heap);
 
    for (uint32_t i = 0; i < owned_map_count; i++) {
       radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
@@ -1134,6 +1149,15 @@ r3v_native_deferred_draw_admit_gpu_producer(
    /* The producers deliver one instance's three records; the host
     * expansion of further instances, and the per-instance streams and
     * InstanceIndex it feeds, belong to the CPU route. */
+   /* The producer cells embed exactly the reference three records, so
+    * a multi-triangle list refuses the producer routes by name.
+    */
+   if (draw->vertex_count != 3) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: GPU producer routes deliver the "
+                       "three-record cell; a multi-triangle list executes "
+                       "on the CPU route");
+   }
    if (draw->instance_count != 1) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: GPU producer routes fetch one linear "
