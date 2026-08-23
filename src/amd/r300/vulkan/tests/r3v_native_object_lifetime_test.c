@@ -422,6 +422,83 @@ check_query_zero_span(const struct fixture *f)
    return 0;
 }
 
+/* Secondary command buffers: the empty recorded sequence executes as
+ * an exact no-op through vkCmdExecuteCommands and the whole primary
+ * submits; a secondary carrying recorded work, and an execute inside
+ * a render pass or of a primary-level buffer, each poison.
+ */
+static int
+check_empty_secondary_execution(const struct fixture *f)
+{
+   const VkCommandBufferAllocateInfo secondary_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .commandPool = f->cmd_pool,
+      .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+      .commandBufferCount = 1,
+   };
+   VkCommandBuffer secondary;
+   REQUIRE(vkAllocateCommandBuffers(f->device, &secondary_info,
+                                    &secondary) == VK_SUCCESS,
+           "secondary allocation");
+   const VkCommandBufferInheritanceInfo inheritance = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+   };
+   const VkCommandBufferBeginInfo secondary_begin = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .pInheritanceInfo = &inheritance,
+   };
+   REQUIRE(vkBeginCommandBuffer(secondary, &secondary_begin) ==
+              VK_SUCCESS,
+           "secondary begin");
+   REQUIRE(vkEndCommandBuffer(secondary) == VK_SUCCESS,
+           "empty secondary end");
+
+   const VkCommandBufferBeginInfo begin_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+   };
+   /* A pool reset would return the live secondary too, so the primary
+    * begins directly (an implicit reset of the primary alone). */
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "primary begin for execute");
+   vkCmdExecuteCommands(f->cmd, 1, &secondary);
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "executing the empty secondary records");
+   const VkSubmitInfo submit_info = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &f->cmd,
+   };
+   CHECK(vkQueueSubmit(f->queue, 1, &submit_info, VK_NULL_HANDLE) ==
+            VK_SUCCESS &&
+         vkQueueWaitIdle(f->queue) == VK_SUCCESS,
+         "the primary with the no-op execute submits");
+
+   /* A primary-level buffer in the list poisons. */
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "primary begin for the level refusal");
+   vkCmdExecuteCommands(f->cmd, 1, &f->cmd);
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "executing a primary-level buffer poisons");
+
+   /* A secondary carrying recorded dynamic state poisons the execute. */
+   REQUIRE(vkBeginCommandBuffer(secondary, &secondary_begin) ==
+              VK_SUCCESS,
+           "secondary re-begin");
+   const VkViewport viewport = { .width = 64.0f, .height = 64.0f,
+                                 .maxDepth = 1.0f };
+   vkCmdSetViewport(secondary, 0, 1, &viewport);
+   REQUIRE(vkEndCommandBuffer(secondary) == VK_SUCCESS,
+           "stateful secondary end");
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "primary begin for the stateful refusal");
+   vkCmdExecuteCommands(f->cmd, 1, &secondary);
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "executing a secondary with recorded state poisons");
+
+   vkFreeCommandBuffers(f->device, f->cmd_pool, 1, &secondary);
+   return 0;
+}
+
 static int
 create_fixture(struct fixture *f)
 {
@@ -571,7 +648,8 @@ main(int argc, char **argv)
                check_buffer_binding(&f) ||
                check_image_binding(&f) ||
                check_sampler_use_fail_closed(&f) ||
-               check_query_zero_span(&f);
+               check_query_zero_span(&f) ||
+               check_empty_secondary_execution(&f);
 
    destroy_fixture(&f);
    if (fatal || failures) {
