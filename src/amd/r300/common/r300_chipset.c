@@ -5,14 +5,10 @@
  */
 
 #include "r300_chipset.h"
-#include "winsys/radeon_winsys.h"
-
-#include "util/u_debug.h"
-#include "util/u_memory.h"
-#include "util/u_process.h"
+#include "r300_chip_identity.h"
 
 #include <stdio.h>
-#include <errno.h>
+#include <stdlib.h>
 
 /* r300_chipset: A file all to itself for deducing the various properties of
  * Radeons. */
@@ -20,19 +16,14 @@
 /* Parse a PCI ID and fill an r300_capabilities struct with information. */
 void r300_parse_chipset(uint32_t pci_id, struct r300_capabilities* caps)
 {
-    switch (pci_id) {
-#define CHIPSET(pci_id, name, chipfamily) \
-        case pci_id: \
-            caps->family = CHIP_##chipfamily; \
-            break;
-#include "pci_ids/r300_pci_ids.h"
-#undef CHIPSET
+    struct r300_chip_identity identity;
 
-    default:
+    if (!r300_chip_identity_lookup(R300_PCI_VENDOR_ATI, pci_id, &identity)) {
         fprintf(stderr, "r300: Warning: Unknown chipset 0x%x\nAborting...",
                 pci_id);
         abort();
     }
+    caps->family = identity.family;
 
     /* Defaults. */
     caps->high_second_pipe = false;
@@ -49,7 +40,7 @@ void r300_parse_chipset(uint32_t pci_id, struct r300_capabilities* caps)
         caps->num_vert_fpus = 4;
         caps->has_cmask = true; /* guessed because there is also HiZ */
         caps->hiz_ram = R300_HIZ_LIMIT;
-        caps->zmask_ram = PIPE_ZMASK_SIZE;
+        caps->zmask_ram = R300_ZMASK_SIZE_PER_PIPE;
         break;
 
     case CHIP_RV350:
@@ -87,28 +78,28 @@ void r300_parse_chipset(uint32_t pci_id, struct r300_capabilities* caps)
         caps->num_vert_fpus = 6;
         caps->has_cmask = true; /* guessed because there is also HiZ */
         caps->hiz_ram = R300_HIZ_LIMIT;
-        caps->zmask_ram = PIPE_ZMASK_SIZE;
+        caps->zmask_ram = R300_ZMASK_SIZE_PER_PIPE;
         break;
 
     case CHIP_R520:
         caps->num_vert_fpus = 8;
         caps->has_cmask = true;
         caps->hiz_ram = R300_HIZ_LIMIT;
-        caps->zmask_ram = PIPE_ZMASK_SIZE;
+        caps->zmask_ram = R300_ZMASK_SIZE_PER_PIPE;
         break;
 
     case CHIP_RV515:
         caps->num_vert_fpus = 2;
         caps->has_cmask = true;
         caps->hiz_ram = R300_HIZ_LIMIT;
-        caps->zmask_ram = PIPE_ZMASK_SIZE;
+        caps->zmask_ram = R300_ZMASK_SIZE_PER_PIPE;
         break;
 
     case CHIP_RV530:
         caps->num_vert_fpus = 5;
         caps->has_cmask = true;
         caps->hiz_ram = RV530_HIZ_LIMIT;
-        caps->zmask_ram = PIPE_ZMASK_SIZE;
+        caps->zmask_ram = R300_ZMASK_SIZE_PER_PIPE;
         break;
 
     case CHIP_R580:
@@ -117,7 +108,7 @@ void r300_parse_chipset(uint32_t pci_id, struct r300_capabilities* caps)
         caps->num_vert_fpus = 8;
         caps->has_cmask = true;
         caps->hiz_ram = RV530_HIZ_LIMIT;
-        caps->zmask_ram = PIPE_ZMASK_SIZE;
+        caps->zmask_ram = R300_ZMASK_SIZE_PER_PIPE;
         break;
     }
 

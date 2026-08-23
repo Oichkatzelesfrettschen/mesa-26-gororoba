@@ -5,7 +5,7 @@
 #include <stdio.h>
 
 #include "c11/threads.h"
-#include "r300_chipset.h"
+#include "amd/r300/common/r300_chipset.h"
 #include "r300_r2vb.h"
 #include "r300_r2vb_capture_gate.h"
 

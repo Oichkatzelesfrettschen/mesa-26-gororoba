@@ -7,7 +7,7 @@
 #ifndef R300_SCREEN_H
 #define R300_SCREEN_H
 
-#include "r300_chipset.h"
+#include "amd/r300/common/r300_chipset.h"
 #include "r300_hb_tcl.h"
 #include "winsys/radeon_winsys.h"
 #include "pipe/p_screen.h"
