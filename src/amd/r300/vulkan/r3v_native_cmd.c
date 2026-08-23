@@ -81,6 +81,8 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->deferred_copy_count = 0;
    cmd_buffer->bound_compute_pipeline = NULL;
    cmd_buffer->bound_compute_set = NULL;
+   vk_free(&cmd_buffer->vk.pool->alloc,
+           cmd_buffer->deferred_dispatch.gpu_expected);
    cmd_buffer->deferred_dispatch =
       (struct r3v_native_deferred_dispatch){0};
 }

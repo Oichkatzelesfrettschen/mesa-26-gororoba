@@ -13,16 +13,17 @@
      R300_COMPUTE_VERB_ROUTE_##cpu, R300_COMPUTE_VERB_ROUTE_##gpu,         \
      R300_COMPUTE_VERB_EVIDENCE_##ev, gate }
 
-/* The identity map's GPU route is precommitted onto the R2VB producer
- * carrier, whose US datapath narrows to FP24: the route promises the
- * FP24 exact window and refuses outside it, while the CPU route moves
- * every 32-bit pattern.  The transcendental tolerances are the bounds
+/* The identity map's GPU route executes on the R2VB producer carrier
+ * (r300_compute_identity_carrier.h) under its exact gate, whose US
+ * datapath narrows to FP24: the route promises the FP24 exact window
+ * and refuses outside it, while the CPU route moves every 32-bit
+ * pattern.  The transcendental tolerances are the bounds
  * the retained RS482 deliveries held (smooth-monotone functions near
  * 1e-3, range-reduced sin and cos near 2e-2, pow and div near 1e-3).
  */
 static const struct r300_compute_verb_row rows[R300_COMPUTE_VERB_COUNT] = {
    ROW(IDENTITY_MAP, "identity_map", "IDENTITY_MAP", LINEAR, R2VB_CARRIER, FP24_EXACT_WINDOW, 0.0f,
-       EXECUTING, PRECOMMITTED, SILICON_RETAINED,
+       EXECUTING, EXECUTING, SILICON_RETAINED,
        "R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL"),
    ROW(CONST_FILL, "const_fill", "CONSTFILL", NONE, HOST, BIT_EXACT, 0.0f, ABSENT, ABSENT,
        SILICON_RETAINED, "R3V_NATIVE_COMPUTE_CONST_FILL_GPU_EXPERIMENTAL"),

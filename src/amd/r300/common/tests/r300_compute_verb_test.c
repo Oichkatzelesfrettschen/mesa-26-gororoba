@@ -130,26 +130,28 @@ test_checker_calibration(void)
 }
 
 /* The precommitment the routes rest on: the identity map alone executes
- * on the CPU route, its GPU route is precommitted on the R2VB carrier
- * under the FP24 window, no GPU route executes, and the job op maps
- * onto that row and onto nothing else. */
+ * on the CPU route and on a GPU route -- the R2VB carrier under the FP24
+ * window, behind its exact gate -- every other GPU route is absent, and
+ * the job op maps onto that row and onto nothing else. */
 static void
 test_precommitment(void)
 {
    uint32_t count = 0;
    const struct r300_compute_verb_row *rows = r300_compute_verb_rows(&count);
    for (uint32_t i = 0; i < count; i++) {
-      assert(rows[i].gpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING);
-      if (i == R300_COMPUTE_VERB_IDENTITY_MAP)
+      if (i == R300_COMPUTE_VERB_IDENTITY_MAP) {
          assert(rows[i].cpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING);
-      else
+         assert(rows[i].gpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING);
+      } else {
          assert(rows[i].cpu_route == R300_COMPUTE_VERB_ROUTE_ABSENT);
+         assert(rows[i].gpu_route == R300_COMPUTE_VERB_ROUTE_ABSENT);
+      }
    }
    const struct r300_compute_verb_row *identity =
       &rows[R300_COMPUTE_VERB_IDENTITY_MAP];
    assert(identity->unit == R300_COMPUTE_VERB_UNIT_R2VB_CARRIER);
    assert(identity->exactness == R300_COMPUTE_VERB_FP24_EXACT_WINDOW);
-   assert(identity->gpu_route == R300_COMPUTE_VERB_ROUTE_PRECOMMITTED);
+   assert(identity->gpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING);
    assert(strcmp(identity->gpu_gate,
                  "R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL") == 0);
 

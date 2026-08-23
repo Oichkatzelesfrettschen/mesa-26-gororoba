@@ -15,14 +15,24 @@
 #include "r3v_entrypoints.h"
 #include "r3v_physical_device.h"
 
+#include "amd/r300/common/r300_compute_identity_carrier.h"
 #include "amd/r300/common/r300_compute_spirv.h"
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/cpu/r300_cpu_compute_job.h"
 
+#include "util/macros.h"
+#include "vk_alloc.h"
 #include "vk_log.h"
 #include "vk_pipeline_layout.h"
 #include "vk_shader_module.h"
 
+#include <assert.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <radeon_drm.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void
@@ -555,3 +565,309 @@ r3v_native_cmd_buffer_execute_deferred_dispatch(
    }
    return VK_SUCCESS;
 }
+
+/* The identity verb's GPU route admission.  The route is selected by the
+ * compute gate (the device exists only under it) and the verb's own
+ * exact gate; with the verb gate closed the dispatch keeps the CPU
+ * route.  Every admission check precedes every allocation, reference,
+ * IB, and write, so a refusal leaves the recording as recorded and the
+ * output untouched (the ledger's refuse-before-write clause).
+ */
+VkResult
+r3v_native_deferred_dispatch_admit_gpu(struct r3v_native_device *device,
+                                       struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   struct r3v_native_deferred_dispatch *dispatch =
+      &cmd_buffer->deferred_dispatch;
+   if (!dispatch->pending || dispatch->gpu_carrier_delivery)
+      return VK_SUCCESS;
+   if (device->compute_identity_gpu_gate == NULL)
+      return VK_SUCCESS;
+   const struct r300_compute_verb_row *verb =
+      r300_compute_verb_for_job(&dispatch->job);
+   if (verb == NULL || verb->verb != R300_COMPUTE_VERB_IDENTITY_MAP ||
+       verb->gpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING)
+      return VK_SUCCESS;
+   if (device->gpu_compute_quarantined) {
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: GPU compute capability is quarantined "
+                       "on this device; a completed delivery diverged from "
+                       "the CPU oracle");
+   }
+
+   /* The carrier moves whole F32_4 records inside the single-row
+    * ceiling; a dispatch outside that shape refuses by name under the
+    * open gate rather than taking a route the gate did not select. */
+   if (dispatch->byte_count % R300_COMPUTE_IDENTITY_CARRIER_RECORD_BYTES !=
+          0 ||
+       dispatch->byte_count / R300_COMPUTE_IDENTITY_CARRIER_RECORD_BYTES >
+          R300_COMPUTE_IDENTITY_CARRIER_MAX_RECORDS) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: compute identity carrier moves whole "
+                       "F32_4 records, at most %u; the dispatch names %"
+                       PRIu64 " bytes",
+                       R300_COMPUTE_IDENTITY_CARRIER_MAX_RECORDS,
+                       dispatch->byte_count);
+   }
+   const uint32_t records =
+      (uint32_t)(dispatch->byte_count /
+                 R300_COMPUTE_IDENTITY_CARRIER_RECORD_BYTES);
+   struct r3v_native_memory *input_memory = dispatch->input_buffer->memory;
+   struct r3v_native_memory *output_memory =
+      dispatch->output_buffer->memory;
+   if (input_memory == NULL || output_memory == NULL) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: dispatch buffer is unbound at "
+                       "admission");
+   }
+   /* The three relocations resolve one BO each: the reloc list folds
+    * duplicate handles into one entry, which would shift the chunk
+    * index the pass payloads name. */
+   if (input_memory->bo.handle == output_memory->bo.handle) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: compute identity carrier binds the "
+                       "input and output as two relocations; one buffer "
+                       "object holds both");
+   }
+   if (dispatch->input_memory_offset > UINT32_MAX ||
+       dispatch->output_memory_offset > UINT32_MAX ||
+       dispatch->input_memory_offset %
+             R300_COMPUTE_IDENTITY_CARRIER_INPUT_ALIGN !=
+          0 ||
+       dispatch->output_memory_offset %
+             R300_COMPUTE_IDENTITY_CARRIER_OUTPUT_ALIGN !=
+          0) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: compute identity carrier takes a "
+                       "dword-granular input offset and a 32-byte-aligned "
+                       "output offset inside the 32-bit pointer; the "
+                       "dispatch binds %" PRIu64 " and %" PRIu64,
+                       dispatch->input_memory_offset,
+                       dispatch->output_memory_offset);
+   }
+   struct r300_r2vb_producer_layout layout;
+   if (r300_compute_identity_carrier_layout(records, &layout) != 0 ||
+       r300_compute_identity_carrier_output_bytes(&layout) >
+          output_memory->bo.size - dispatch->output_memory_offset) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: the output memory holds fewer bytes "
+                       "past the offset than the %u-slot row's color "
+                       "bound", layout.pitch_pixels);
+   }
+
+   /* The oracle: the FP24 identity over the input records -- the bytes
+    * the fetch, the US datapath, and the C4_32_FP export reproduce --
+    * refusing a word outside the window with -EDOM; inside the window
+    * the result is the bit copy the CPU route writes. */
+   uint8_t *input_map = NULL;
+   bool input_owned = false;
+   VkResult result = map_memory(device, input_memory, &input_map,
+                                &input_owned);
+   if (result != VK_SUCCESS)
+      return result;
+   const uint32_t expected_dwords =
+      records * R300_COMPUTE_IDENTITY_CARRIER_RECORD_DWORDS;
+   uint32_t *expected = vk_alloc(&cmd_buffer->vk.pool->alloc,
+                                 (size_t)expected_dwords * sizeof(uint32_t),
+                                 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (expected == NULL) {
+      release_memory(device, input_memory, input_owned);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   const uint32_t *input_words =
+      (const uint32_t *)(input_map + dispatch->input_memory_offset);
+   const int modeled = r300_compute_identity_carrier_expected(
+      input_words, records, expected, expected_dwords);
+   const bool bit_copy_agrees =
+      modeled == 0 &&
+      memcmp(expected, input_words, (size_t)expected_dwords * 4) == 0;
+   release_memory(device, input_memory, input_owned);
+   if (modeled != 0 || !bit_copy_agrees) {
+      vk_free(&cmd_buffer->vk.pool->alloc, expected);
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       modeled == -EDOM
+                          ? "r3v-native: compute identity carrier oracle "
+                            "refused: an input word is outside the FP24 "
+                            "fixed-point window"
+                       : modeled != 0
+                          ? "r3v-native: compute identity carrier oracle "
+                            "refused (%d)"
+                          : "r3v-native: compute identity carrier oracle "
+                            "diverged from the CPU bit copy (%d)",
+                       modeled);
+   }
+
+   /* The pass over the bound geometry. */
+   const uint64_t slot_bytes =
+      ((uint64_t)records * R300_R2VB_FETCHED_PRODUCER_SLOT_RECORD_BYTES +
+       4095) & ~(uint64_t)4095;
+   const struct r300_compute_identity_carrier_params params = {
+      .record_count = records,
+      .carrier_offset = (uint32_t)dispatch->output_memory_offset,
+      .carrier_bo_size_bytes = output_memory->bo.size,
+      .source_offset = (uint32_t)dispatch->input_memory_offset,
+      .source_bo_size_bytes = input_memory->bo.size,
+      .slot_offset_bytes = 0,
+      .slot_bo_size_bytes = slot_bytes,
+   };
+   struct r300_r2vb_fetched_producer_ib pass;
+   const int emitted = r300_compute_identity_carrier_emit(&params, &pass);
+   if (emitted != 0) {
+      vk_free(&cmd_buffer->vk.pool->alloc, expected);
+      return vk_errorf(device, r3v_native_cell_vk_result_from_errno(emitted),
+                       "r3v-native: compute identity carrier emission "
+                       "refused (%d)", emitted);
+   }
+
+   /* The slot BO: allocated per command buffer at the records' size,
+    * its positions rewritten on every admission. */
+   struct r3v_native_memory *slot = cmd_buffer->owned_slot;
+   if (slot != NULL && slot->bo.size < slot_bytes) {
+      radeon_drm_vk_bo_free(&device->drm, &slot->bo);
+      vk_free(&cmd_buffer->vk.pool->alloc, slot);
+      slot = NULL;
+      cmd_buffer->owned_slot = NULL;
+   }
+   if (slot == NULL) {
+      slot = vk_zalloc(&cmd_buffer->vk.pool->alloc, sizeof(*slot), 8,
+                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (slot == NULL) {
+         r300_r2vb_fetched_producer_release(&pass);
+         vk_free(&cmd_buffer->vk.pool->alloc, expected);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      if (radeon_drm_vk_bo_create(&device->drm, slot_bytes,
+                                  R3V_NATIVE_MEMORY_ALIGNMENT,
+                                  RADEON_GEM_DOMAIN_GTT, 0, false,
+                                  &slot->bo) != 0) {
+         vk_free(&cmd_buffer->vk.pool->alloc, slot);
+         r300_r2vb_fetched_producer_release(&pass);
+         vk_free(&cmd_buffer->vk.pool->alloc, expected);
+         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      }
+   }
+   void *slot_map = NULL;
+   if (radeon_drm_vk_bo_map(&device->drm, &slot->bo, &slot_map) != 0) {
+      if (cmd_buffer->owned_slot == NULL) {
+         radeon_drm_vk_bo_free(&device->drm, &slot->bo);
+         vk_free(&cmd_buffer->vk.pool->alloc, slot);
+      }
+      r300_r2vb_fetched_producer_release(&pass);
+      vk_free(&cmd_buffer->vk.pool->alloc, expected);
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: slot memory is not CPU-mappable at "
+                       "admission");
+   }
+   const uint32_t slot_dwords =
+      records * (R300_R2VB_FETCHED_PRODUCER_SLOT_RECORD_BYTES / 4);
+   ASSERTED const int positioned = r300_r2vb_fetched_producer_slot_positions(
+      records, slot_map, slot_dwords);
+   assert(positioned == 0);
+   radeon_drm_vk_bo_cache_sync(&device->drm, slot_map,
+                               (size_t)slot_dwords * 4);
+   radeon_drm_vk_bo_unmap(&device->drm, &slot->bo, slot_map);
+
+   struct r3v_native_bo_reference *references =
+      calloc(3, sizeof(*references));
+   if (references == NULL) {
+      if (cmd_buffer->owned_slot == NULL) {
+         radeon_drm_vk_bo_free(&device->drm, &slot->bo);
+         vk_free(&cmd_buffer->vk.pool->alloc, slot);
+      }
+      r300_r2vb_fetched_producer_release(&pass);
+      vk_free(&cmd_buffer->vk.pool->alloc, expected);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   references[0] = (struct r3v_native_bo_reference){
+      .handle = output_memory->bo.handle,
+      .read_domains = 0,
+      .write_domain = RADEON_GEM_DOMAIN_GTT,
+      .memory = output_memory,
+   };
+   references[1] = (struct r3v_native_bo_reference){
+      .handle = slot->bo.handle,
+      .read_domains = RADEON_GEM_DOMAIN_GTT,
+      .write_domain = 0,
+      .memory = slot,
+   };
+   references[2] = (struct r3v_native_bo_reference){
+      .handle = input_memory->bo.handle,
+      .read_domains = RADEON_GEM_DOMAIN_GTT,
+      .write_domain = 0,
+      .memory = input_memory,
+   };
+   /* Every fallible step has completed: install the pass. */
+   cmd_buffer->owned_slot = slot;
+   r3v_native_cmd_buffer_install_ib(
+      cmd_buffer, R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER, pass.ib,
+      pass.ib_size_dwords, references, 3);
+   pass.ib = NULL;
+   r300_r2vb_fetched_producer_release(&pass);
+   dispatch->gpu_carrier_delivery = true;
+   dispatch->gpu_record_count = records;
+   dispatch->gpu_expected = expected;
+   return VK_SUCCESS;
+}
+
+static void
+retain_words(const char *dir, const char *name, const void *bytes,
+             size_t size)
+{
+   char path[4096];
+   const int length = snprintf(path, sizeof(path), "%s/%s", dir, name);
+   if (length <= 0 || (size_t)length >= sizeof(path))
+      return;
+   FILE *file = fopen(path, "wb");
+   if (file == NULL)
+      return;
+   fwrite(bytes, 1, size, file);
+   fclose(file);
+}
+
+VkResult
+r3v_native_deferred_dispatch_verify_gpu(struct r3v_native_device *device,
+                                        struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   struct r3v_native_deferred_dispatch *dispatch =
+      &cmd_buffer->deferred_dispatch;
+   if (!dispatch->gpu_carrier_delivery)
+      return VK_SUCCESS;
+   assert(dispatch->gpu_expected != NULL && dispatch->gpu_record_count != 0);
+
+   struct r3v_native_memory *output_memory =
+      dispatch->output_buffer->memory;
+   const size_t bytes = (size_t)dispatch->gpu_record_count *
+                        R300_COMPUTE_IDENTITY_CARRIER_RECORD_BYTES;
+   uint8_t *output_map = NULL;
+   bool output_owned = false;
+   if (map_memory(device, output_memory, &output_map, &output_owned) !=
+       VK_SUCCESS) {
+      device->gpu_compute_quarantined = true;
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: compute output read-back mapping "
+                       "failed; GPU compute capability quarantined");
+   }
+   /* The device wrote the output past the host's cache, so the read
+    * extent invalidates before the compare (the rule r3v_MapMemory
+    * states for the public path). */
+   uint8_t *observed = output_map + dispatch->output_memory_offset;
+   radeon_drm_vk_bo_cache_sync_for_bo(&device->drm, &output_memory->bo,
+                                      observed, bytes);
+   const bool matches = memcmp(observed, dispatch->gpu_expected, bytes) == 0;
+   if (device->manifest_dir != NULL) {
+      retain_words(device->manifest_dir, "gpu_compute_observed.bin",
+                   observed, bytes);
+      retain_words(device->manifest_dir, "gpu_compute_expected.bin",
+                   dispatch->gpu_expected, bytes);
+   }
+   release_memory(device, output_memory, output_owned);
+   if (!matches) {
+      device->gpu_compute_quarantined = true;
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: compute identity carrier output "
+                       "diverged from the CPU oracle; capability "
+                       "quarantined and the observed bytes retained");
+   }
+   return VK_SUCCESS;
+}
+

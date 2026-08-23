@@ -248,6 +248,14 @@ struct r3v_native_deferred_dispatch {
    uint64_t input_memory_offset;
    uint64_t output_memory_offset;
    uint64_t byte_count;
+   /* Set when the identity verb's GPU route admitted this dispatch: the
+    * queue installed the compute identity carrier pass, the device
+    * writes the output, and gpu_expected (gpu_record_count * 4 dwords,
+    * command-pool allocated) is the CPU oracle the post-completion
+    * read-back is judged against. */
+   bool gpu_carrier_delivery;
+   uint32_t gpu_record_count;
+   uint32_t *gpu_expected;
 };
 
 /* One attribute slot's stream at draw time: the bound buffer of the
@@ -503,6 +511,10 @@ struct r3v_native_device {
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;
+   /* The identity verb's GPU route gate (the ledger row's gpu_gate),
+    * read the same way; with the compute gate it selects the compute
+    * identity carrier for an admissible dispatch. */
+   const char *compute_identity_gpu_gate;
    /* Failure injection at the fetched route's composition boundary: a
     * nonzero negative errno makes the admission treat the composed route
     * as refused with that errno, after the emitters ran and before any
@@ -517,6 +529,9 @@ struct r3v_native_device {
     * two routes disagree on.
     */
    bool gpu_producer_quarantined;
+   /* Set when a completed compute identity carrier delivery diverged
+    * from the CPU oracle; every later GPU compute admission refuses. */
+   bool gpu_compute_quarantined;
 };
 
 VK_DEFINE_HANDLE_CASTS(r3v_native_device, vk.base, VkDevice,
@@ -764,6 +779,7 @@ enum r3v_native_observed_route {
    R3V_NATIVE_OBSERVED_ROUTE_CPU = 0,
    R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER = 1,
    R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER_FETCHED = 2,
+   R3V_NATIVE_OBSERVED_ROUTE_COMPUTE_IDENTITY_CARRIER = 3,
 };
 
 enum r3v_native_observed_route
@@ -872,6 +888,24 @@ VkResult r3v_native_cmd_buffer_execute_deferred_draw(
  * publishes the output for the unsnooped GART.
  */
 VkResult r3v_native_cmd_buffer_execute_deferred_dispatch(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer);
+
+/* The identity verb's GPU route: under the compute gate and the verb's
+ * gate, an admissible dispatch (whole F32_4 records inside the carrier
+ * ceiling, input and output in distinct buffer objects at the aligned
+ * offsets, every input word inside the FP24 window) installs the
+ * compute identity carrier pass over three references and records the
+ * CPU oracle; a closed gate leaves the CPU route; a refusal names its
+ * cause before any allocation, reference, IB, or write.  After the
+ * completion wait the verifier reads the output back against the
+ * oracle, retains both beside the submit objects, and a divergence
+ * quarantines the capability with device loss.
+ */
+VkResult r3v_native_deferred_dispatch_admit_gpu(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer);
+VkResult r3v_native_deferred_dispatch_verify_gpu(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer);
 

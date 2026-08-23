@@ -5,6 +5,7 @@
 # functions publish evidence and are not driver objects.
 r300_common_contract_files = files(
   'r300_carrier_policy.c',
+  'r300_compute_identity_carrier.c',
   'r300_compute_verb.c',
   'r300_direct_write.c',
   'r300_first_draw_state.c',
@@ -426,6 +427,48 @@ r300_r2vb_fetched_route_manifest = executable(
                          include_directories('.')],
   dependencies : [idep_mesautil],
   gnu_symbol_visibility : 'hidden',
+)
+
+# The compute identity carrier pass: structure, pinned reference digest,
+# refusals, and the host model against the CPU route's bit copy.
+r300_compute_identity_carrier_sources = files(
+  'r300_compute_identity_carrier.c', 'r300_first_draw_state.c',
+  'r300_fragment_binary.c', 'r300_pm4_builder.c', 'r300_pm4_compose.c',
+  'r300_r2vb_carrier_delivery.c', 'r300_r2vb_fetch_pass.c',
+  'r300_r2vb_fetched_producer.c', 'r300_r2vb_producer_pass.c',
+  'r300_tcl_bypass_triangle.c')
+r300_compute_identity_carrier_test = executable(
+  'r300_compute_identity_carrier_test',
+  [r300_compute_identity_carrier_sources,
+   files('tests/r300_compute_identity_carrier_test.c')],
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-compute-identity-carrier',
+  r300_compute_identity_carrier_test,
+  suite : ['r300'],
+)
+r300_compute_identity_carrier_manifest = executable(
+  'r300_compute_identity_carrier_manifest',
+  [r300_compute_identity_carrier_sources,
+   files('r300_compute_identity_carrier_manifest.c')],
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+# Offline kernel replay of the reference compute identity carrier pass:
+# one draw over three relocation entries, gated on R3V_CS_TRACK_REPLAY_TOOL.
+test(
+  'r300-compute-identity-carrier-cs-track-replay',
+  files('tests/run_compute_identity_carrier_replay.sh')[0],
+  args : [r300_compute_identity_carrier_manifest],
+  suite : ['r300'],
 )
 
 # Offline kernel replay of the composed fetched route per width, gated
