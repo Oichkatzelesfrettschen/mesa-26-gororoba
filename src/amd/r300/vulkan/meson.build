@@ -1461,6 +1461,50 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       timeout : 120,
       suite : ['r3v'],
     )
+    # Transfer-op contract through the public surface: dword-pattern
+    # fills with whole-size truncation, inline updates from
+    # record-time-captured bytes, unit-scale blits lowered onto the
+    # image copy executor, and the overlap, scale, flip, alignment,
+    # and unsupported-layout refusals.  Two calibrated mutations
+    # report a scaling blit and an overlapping copy as admitted.
+    r3v_native_transfer_ops_test = executable(
+      'r3v_native_transfer_ops_test',
+      files('tests/r3v_native_transfer_ops_test.c'),
+      include_directories : [inc_include, include_directories('.')],
+      dependencies : [dep_vulkan_loader],
+      c_args : [no_override_init_args],
+    )
+    test(
+      'r3v-native-transfer-ops',
+      r3v_native_transfer_ops_test,
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v,
+                 _dev_icd],
+      timeout : 120,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-transfer-ops-known-bad-scaled-blit-admits',
+      r3v_native_transfer_ops_test,
+      args : ['--inject-scaled-blit-admits'],
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v,
+                 _dev_icd],
+      should_fail : true,
+      timeout : 120,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-transfer-ops-known-bad-overlap-copy-admits',
+      r3v_native_transfer_ops_test,
+      args : ['--inject-overlap-copy-admits'],
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v,
+                 _dev_icd],
+      should_fail : true,
+      timeout : 120,
+      suite : ['r3v'],
+    )
     # Object-lifetime contract through the public surface: sampler
     # creation as recorded state with anisotropy refused and use
     # poisoned at the descriptor write, buffer-view refusal under the
