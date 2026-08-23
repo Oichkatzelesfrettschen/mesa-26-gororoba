@@ -53,7 +53,7 @@ static void test_reference_vertex_module(void)
    assert(job.instructions[1].opcode == R300_VERTEX_JOB_OP_STORE_POSITION);
    assert(job.instructions[1].src0 == job.instructions[0].dst);
 
-   job.input_format_id = R300_VERTEX_FORMAT_F32_4;
+   job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
    assert(r300_cpu_vertex_job_validate(&job) == 0);
 
    const uint32_t records[3][4] = {
@@ -135,7 +135,7 @@ static void test_reference_arith_module(void)
    assert(job.instructions[3].opcode == R300_VERTEX_JOB_OP_DP4);
    assert(job.instructions[4].opcode == R300_VERTEX_JOB_OP_STORE_POSITION);
 
-   job.input_format_id = R300_VERTEX_FORMAT_F32_4;
+   job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
    assert(r300_cpu_vertex_job_validate(&job) == 0);
 
    const float in[4] = { 1.5f, 3.0f, -1.0f, 0.25f };
@@ -187,7 +187,7 @@ static void test_reference_varying_modules(void)
       varying_stores +=
          job.instructions[i].opcode == R300_VERTEX_JOB_OP_STORE_VARYING;
    assert(varying_stores == 1);
-   job.input_format_id = R300_VERTEX_FORMAT_F32_4;
+   job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
    assert(r300_cpu_vertex_job_validate(&job) == 0);
 
    /* The NDC reference triangle; the job leaves the position in clip
@@ -286,6 +286,89 @@ static void test_varying_module_known_bads(void)
    assert(!r300_vertex_job_from_spirv(doubled, n + store_len, "main", &job,
                                       &reason));
    assert(strcmp(reason, "second varying store") == 0);
+}
+
+/* The two-attribute module: location 0 feeds the position, location 1
+ * the varying, so the job reads slots 0 and 1 and executes over one
+ * stream per slot; the color stream at its own stride reaches the
+ * record's varying vector verbatim.  Known-bads mutate the Location
+ * decorations: location 16 lies beyond the slot count, and two inputs
+ * at one location collide.
+ */
+static void test_reference_two_attribute_module(void)
+{
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   const uint32_t *m = r3v_reference_vertex_two_attributes_spirv;
+   const size_t n = WORDS(r3v_reference_vertex_two_attributes_spirv);
+   bool admitted = r300_vertex_job_from_spirv(m, n, "main", &job, &reason);
+   if (!admitted)
+      fprintf(stderr, "reference two-attribute refusal: %s\n", reason);
+   assert(admitted);
+   assert(r300_vertex_job_input_mask(&job) == 0x3u);
+   assert(r300_vertex_job_has_varying(&job));
+   job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
+   job.input_format_ids[1] = R300_VERTEX_FORMAT_F32_3;
+   assert(r300_cpu_vertex_job_validate(&job) == 0);
+
+   const float ndc[12] = { -0.75f, -0.75f, 0.0f, 1.0f, 0.75f, -0.75f,
+                           0.0f,   1.0f,   0.0f, 0.75f, 0.0f, 1.0f };
+   const float colors[9] = { 0.125f, 0.125f, 0.25f, 0.875f, 0.125f,
+                             0.25f,  0.5f,   0.875f, 0.25f };
+   const struct r300_vertex_stream streams[2] = {
+      { .data = (const uint8_t *)ndc, .stride = 16,
+        .size_bytes = sizeof(ndc) },
+      { .data = (const uint8_t *)colors, .stride = 12,
+        .size_bytes = sizeof(colors) },
+   };
+   uint32_t carrier[24];
+   assert(r300_cpu_vertex_job_execute(&job, streams, 0, 3, carrier, 24) ==
+          0);
+   for (unsigned v = 0; v < 3; v++) {
+      assert(memcmp(&carrier[v * 8], &ndc[v * 4], 16) == 0);
+      assert(memcmp(&carrier[v * 8 + 4], &colors[v * 3], 12) == 0);
+      assert(carrier[v * 8 + 7] == f_bits(1.0f));
+   }
+
+   /* The Location decorations of the two Input variables. */
+   enum { OP_DECORATE = 71, OP_VARIABLE = 59, DECOR_LOCATION = 30,
+          SC_INPUT = 1 };
+   uint32_t location_at[2] = { 0, 0 };
+   unsigned located = 0;
+   for (size_t at = 5; at < n;) {
+      const uint32_t len = m[at] >> 16, op = m[at] & 0xffffu;
+      assert(len != 0 && at + len <= n);
+      if (op == OP_VARIABLE && m[at + 3] == SC_INPUT) {
+         for (size_t d = 5; d < n;) {
+            const uint32_t dlen = m[d] >> 16, dop = m[d] & 0xffffu;
+            if (dop == OP_DECORATE && m[d + 1] == m[at + 2] &&
+                m[d + 2] == DECOR_LOCATION) {
+               assert(located < 2);
+               location_at[located++] = (uint32_t)d + 3;
+            }
+            d += dlen;
+         }
+      }
+      at += len;
+   }
+   assert(located == 2);
+   uint32_t mutated[WORDS(r3v_reference_vertex_two_attributes_spirv)];
+   memcpy(mutated, m, n * 4);
+   /* The color input relocated beyond the slot count. */
+   const unsigned color_index = m[location_at[0]] == 1 ? 0 : 1;
+   mutated[location_at[color_index]] = R300_VERTEX_JOB_MAX_INPUTS;
+   assert(!r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(strcmp(reason,
+                 "vertex input location beyond the attribute slots") == 0);
+   /* The color input relocated onto the position's location. */
+   mutated[location_at[color_index]] = 0;
+   assert(!r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(strcmp(reason, "two vertex inputs at one location") == 0);
+   /* The slot count itself admits: location 15 is the last slot. */
+   mutated[location_at[color_index]] = R300_VERTEX_JOB_MAX_INPUTS - 1;
+   assert(r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(r300_vertex_job_input_mask(&job) ==
+          (1u | 1u << (R300_VERTEX_JOB_MAX_INPUTS - 1)));
 }
 
 /* Whole-module refusals: each inadmissible module names its construct. */
@@ -462,6 +545,7 @@ int main(void)
    test_reference_arith_module();
    test_reference_varying_modules();
    test_varying_module_known_bads();
+   test_reference_two_attribute_module();
    test_module_refusals();
    test_malformed_streams();
    test_entry_name_binding();

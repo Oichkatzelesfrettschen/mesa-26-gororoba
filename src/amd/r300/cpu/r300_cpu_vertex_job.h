@@ -16,10 +16,11 @@
 #include "amd/r300/common/r300_vertex_job.h"
 
 /* Structural validation, independent of any vertex data: opcode set,
- * register and constant bounds, attribute-0-only inputs, every source
- * register written before its first read, at most one STORE_VARYING
- * ahead of the final instruction, and exactly one STORE_POSITION as
- * the final instruction.  Returns 0 or -EINVAL.
+ * register and constant bounds, a bound format on every attribute slot
+ * a LOAD_INPUT reads, every source register written before its first
+ * read, at most one STORE_VARYING ahead of the final instruction, and
+ * exactly one STORE_POSITION as the final instruction.  Returns 0 or
+ * -EINVAL.
  */
 int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job);
 
@@ -28,19 +29,23 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job);
  * the stored position as a packed vec4, then the stored varying when
  * the job carries one -- at carrier[record_dwords * relative_vertex]
  * with record_dwords = r300_vertex_job_record_dwords(job), the carrier
- * layout the VAP fetch of the same stream produces.  All refusals
- * precede the first carrier write: -EINVAL for a job that fails
- * validation, a zero vertex count, or a record range the stream bound
- * cannot prove readable (64-bit last-byte arithmetic, matching the
- * gather contract); -ENOSPC when record_dwords * vertex_count exceeds
- * carrier_dwords; -EINVAL when the carrier range overlaps the stream
- * bytes, so an in-place rewrite cannot corrupt its own input.
- * -ENOTSUP reports that the C floating-point environment cannot provide
- * the round-to-nearest, denormal-preserving execution policy.  Carrier
- * dwords past record_dwords * vertex_count stay untouched.
+ * layout the VAP fetch of the same stream produces.  streams[slot]
+ * serves each attribute slot in r300_vertex_job_input_mask(job); a
+ * single-slot job reads streams[0] alone, so a pointer to one stream
+ * serves it, and an unread slot's entry is never touched.  All
+ * refusals precede the first carrier write: -EINVAL for a job that
+ * fails validation, a zero vertex count, a read slot whose stream has
+ * no data, or a record range a read slot's bound cannot prove readable
+ * (64-bit last-byte arithmetic, matching the gather contract); -ENOSPC
+ * when record_dwords * vertex_count exceeds carrier_dwords; -EINVAL
+ * when the carrier range overlaps a read stream's bytes, so an in-place
+ * rewrite cannot corrupt its own input.  -ENOTSUP reports that the C
+ * floating-point environment cannot provide the round-to-nearest,
+ * denormal-preserving execution policy.  Carrier dwords past
+ * record_dwords * vertex_count stay untouched.
  */
 int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
-                                const struct r300_vertex_stream *stream,
+                                const struct r300_vertex_stream *streams,
                                 uint32_t first_vertex, uint32_t vertex_count,
                                 uint32_t *carrier, uint32_t carrier_dwords);
 
@@ -81,12 +86,12 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
  */
 int r300_cpu_vertex_job_execute_sse2(
    const struct r300_vertex_job *job,
-   const struct r300_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *streams, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords);
 
 int r300_cpu_vertex_job_execute_sse3(
    const struct r300_vertex_job *job,
-   const struct r300_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *streams, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords);
 
 /* Names the implementation the CPU vertex route executes: "scalar" until

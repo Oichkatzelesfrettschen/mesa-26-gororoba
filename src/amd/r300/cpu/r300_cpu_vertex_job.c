@@ -78,8 +78,6 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
        job->instruction_count > R300_VERTEX_JOB_MAX_INSTRUCTIONS ||
        job->constant_count > R300_VERTEX_JOB_MAX_CONSTANTS)
       return -EINVAL;
-   if (!r300_vertex_format_semantics(job->input_format_id))
-      return -EINVAL;
 
    uint32_t written = 0;
    bool varying_stored = false;
@@ -89,8 +87,11 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
       uint32_t reads = 0;
       switch (inst->opcode) {
       case R300_VERTEX_JOB_OP_LOAD_INPUT:
-         /* The single-binding subset carries attribute 0 only. */
-         if (inst->src0 != 0)
+         /* A read slot carries a bound format; the executor gathers
+          * it from that slot's stream. */
+         if (inst->src0 >= R300_VERTEX_JOB_MAX_INPUTS ||
+             !r300_vertex_format_semantics(
+                job->input_format_ids[inst->src0]))
             return -EINVAL;
          break;
       case R300_VERTEX_JOB_OP_LOAD_CONSTANT:
@@ -143,50 +144,81 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
 }
 
 /* The shared execution guard: every refusal both entry points share,
- * proven before either kernel writes a carrier byte.
+ * proven before either kernel writes a carrier byte.  streams[slot]
+ * serves each slot the job reads; slots it leaves unread need no
+ * stream.
  */
 static int execute_guard(const struct r300_vertex_job *job,
-                         const struct r300_vertex_stream *stream,
+                         const struct r300_vertex_stream *streams,
                          uint32_t first_vertex, uint32_t vertex_count,
                          const uint32_t *carrier, uint32_t carrier_dwords)
 {
    int error = r300_cpu_vertex_job_validate(job);
    if (error)
       return error;
-   if (!stream || !stream->data || !carrier || vertex_count == 0)
+   if (!streams || !carrier || vertex_count == 0)
       return -EINVAL;
    if ((uint64_t)vertex_count * r300_vertex_job_record_dwords(job) >
        carrier_dwords)
       return -ENOSPC;
 
-   /* Whole-range bound up front, so the per-vertex gathers below cannot
-    * fail after the carrier has been written; under the stream's robust
-    * rule the gathers substitute instead of refusing, and the range
-    * needs no bound. */
-   if (!stream->oob_reads_zero &&
-       !r300_cpu_vertex_range_in_bounds(job->input_format_id, stream,
-                                        first_vertex, vertex_count))
-      return -EINVAL;
-
-   /* The carrier may share an allocation with the stream (an in-place
-    * restaging), but an overlapping byte range would let stores
-    * corrupt records later vertices read. */
-   const uintptr_t stream_lo = (uintptr_t)stream->data;
-   const uintptr_t stream_hi = stream_lo + (uintptr_t)stream->size_bytes;
    const uintptr_t carrier_lo = (uintptr_t)carrier;
    const uintptr_t carrier_hi =
       carrier_lo + (uintptr_t)carrier_dwords * sizeof(uint32_t);
-   if (carrier_lo < stream_hi && stream_lo < carrier_hi)
-      return -EINVAL;
+   const uint32_t input_mask = r300_vertex_job_input_mask(job);
+   for (uint32_t slot = 0; slot < R300_VERTEX_JOB_MAX_INPUTS; slot++) {
+      if (!(input_mask & (1u << slot)))
+         continue;
+      const struct r300_vertex_stream *stream = &streams[slot];
+      if (!stream->data)
+         return -EINVAL;
+      /* Whole-range bound up front, so the per-vertex gathers below
+       * cannot fail after the carrier has been written; under the
+       * stream's robust rule the gathers substitute instead of
+       * refusing, and the range needs no bound. */
+      if (!stream->oob_reads_zero &&
+          !r300_cpu_vertex_range_in_bounds(job->input_format_ids[slot],
+                                           stream, first_vertex,
+                                           vertex_count))
+         return -EINVAL;
+
+      /* The carrier may share an allocation with a stream (an in-place
+       * restaging), but an overlapping byte range would let stores
+       * corrupt records later vertices read. */
+      const uintptr_t stream_lo = (uintptr_t)stream->data;
+      const uintptr_t stream_hi = stream_lo + (uintptr_t)stream->size_bytes;
+      if (carrier_lo < stream_hi && stream_lo < carrier_hi)
+         return -EINVAL;
+   }
+   return 0;
+}
+
+/* Gathers the current vertex's logical vec4 from every slot the job
+ * reads; an unread slot's lanes stay unwritten and no LOAD_INPUT names
+ * it, so validation keeps the read set and the gather set equal. */
+static int gather_inputs(const struct r300_vertex_job *job,
+                         const struct r300_vertex_stream *streams,
+                         uint32_t input_mask, uint32_t vertex,
+                         uint32_t inputs[R300_VERTEX_JOB_MAX_INPUTS][4])
+{
+   for (uint32_t slot = 0; slot < R300_VERTEX_JOB_MAX_INPUTS; slot++) {
+      if (!(input_mask & (1u << slot)))
+         continue;
+      int error = r300_cpu_vertex_gather(job->input_format_ids[slot],
+                                         &streams[slot], vertex, 1,
+                                         inputs[slot], 4);
+      if (error)
+         return error;
+   }
    return 0;
 }
 
 int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
-                                const struct r300_vertex_stream *stream,
+                                const struct r300_vertex_stream *streams,
                                 uint32_t first_vertex, uint32_t vertex_count,
                                 uint32_t *carrier, uint32_t carrier_dwords)
 {
-   int error = execute_guard(job, stream, first_vertex, vertex_count,
+   int error = execute_guard(job, streams, first_vertex, vertex_count,
                              carrier, carrier_dwords);
    if (error)
       return error;
@@ -197,12 +229,13 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
       return error;
 
    const uint32_t record_dwords = r300_vertex_job_record_dwords(job);
+   const uint32_t input_mask = r300_vertex_job_input_mask(job);
    for (uint32_t v = 0; v < vertex_count; v++) {
       uint32_t *record = &carrier[(uint64_t)v * record_dwords];
       uint32_t temps[R300_VERTEX_JOB_MAX_TEMPS][4];
-      uint32_t input[4];
-      error = r300_cpu_vertex_gather(job->input_format_id, stream,
-                                     first_vertex + v, 1, input, 4);
+      uint32_t inputs[R300_VERTEX_JOB_MAX_INPUTS][4];
+      error = gather_inputs(job, streams, input_mask, first_vertex + v,
+                            inputs);
       if (error)
          goto out;
 
@@ -211,7 +244,8 @@ int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
             &job->instructions[i];
          switch (inst->opcode) {
          case R300_VERTEX_JOB_OP_LOAD_INPUT:
-            memcpy(temps[inst->dst], input, sizeof(input));
+            memcpy(temps[inst->dst], inputs[inst->src0],
+                   sizeof(inputs[inst->src0]));
             break;
          case R300_VERTEX_JOB_OP_LOAD_CONSTANT:
             memcpy(temps[inst->dst], job->constants[inst->src0],
@@ -346,12 +380,12 @@ simd_float_result(__m128i bits)
 
 static ALWAYS_INLINE int
 execute_simd(const struct r300_vertex_job *job,
-             const struct r300_vertex_stream *stream,
+             const struct r300_vertex_stream *streams,
              uint32_t first_vertex, uint32_t vertex_count,
              uint32_t *carrier, uint32_t carrier_dwords,
              enum simd_load_form form)
 {
-   int error = execute_guard(job, stream, first_vertex, vertex_count,
+   int error = execute_guard(job, streams, first_vertex, vertex_count,
                              carrier, carrier_dwords);
    if (error)
       return error;
@@ -362,6 +396,7 @@ execute_simd(const struct r300_vertex_job *job,
       return error;
 
    const uint32_t record_dwords = r300_vertex_job_record_dwords(job);
+   const uint32_t input_mask = r300_vertex_job_input_mask(job);
    for (uint32_t v = 0; v < vertex_count; v++) {
       uint32_t *record = &carrier[(uint64_t)v * record_dwords];
       /* Registers stay 32-bit patterns; the unaligned integer loads and
@@ -369,9 +404,9 @@ execute_simd(const struct r300_vertex_job *job,
        * and each packed operator rounds per lane exactly as the scalar
        * interpreter's per-lane host binary32 operation does. */
       __m128i temps[R300_VERTEX_JOB_MAX_TEMPS];
-      uint32_t input[4];
-      error = r300_cpu_vertex_gather(job->input_format_id, stream,
-                                     first_vertex + v, 1, input, 4);
+      uint32_t inputs[R300_VERTEX_JOB_MAX_INPUTS][4];
+      error = gather_inputs(job, streams, input_mask, first_vertex + v,
+                            inputs);
       if (error)
          goto out;
 
@@ -380,7 +415,7 @@ execute_simd(const struct r300_vertex_job *job,
             &job->instructions[i];
          switch (inst->opcode) {
          case R300_VERTEX_JOB_OP_LOAD_INPUT:
-            temps[inst->dst] = simd_load(input, form);
+            temps[inst->dst] = simd_load(inputs[inst->src0], form);
             break;
          case R300_VERTEX_JOB_OP_LOAD_CONSTANT:
             temps[inst->dst] = simd_load(job->constants[inst->src0], form);
@@ -456,10 +491,10 @@ out:
 
 int r300_cpu_vertex_job_execute_sse2(
    const struct r300_vertex_job *job,
-   const struct r300_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *streams, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
 {
-   return execute_simd(job, stream, first_vertex, vertex_count, carrier,
+   return execute_simd(job, streams, first_vertex, vertex_count, carrier,
                        carrier_dwords, SIMD_LOAD_MOVDQU);
 }
 
@@ -467,10 +502,10 @@ int r300_cpu_vertex_job_execute_sse2(
 
 int r300_cpu_vertex_job_execute_sse3(
    const struct r300_vertex_job *job,
-   const struct r300_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *streams, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
 {
-   return execute_simd(job, stream, first_vertex, vertex_count, carrier,
+   return execute_simd(job, streams, first_vertex, vertex_count, carrier,
                        carrier_dwords, SIMD_LOAD_LDDQU);
 }
 
@@ -478,11 +513,11 @@ int r300_cpu_vertex_job_execute_sse3(
 
 int r300_cpu_vertex_job_execute_sse3(
    const struct r300_vertex_job *job,
-   const struct r300_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *streams, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
 {
    (void)job;
-   (void)stream;
+   (void)streams;
    (void)first_vertex;
    (void)vertex_count;
    (void)carrier;
@@ -496,11 +531,11 @@ int r300_cpu_vertex_job_execute_sse3(
 
 int r300_cpu_vertex_job_execute_sse2(
    const struct r300_vertex_job *job,
-   const struct r300_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *streams, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
 {
    (void)job;
-   (void)stream;
+   (void)streams;
    (void)first_vertex;
    (void)vertex_count;
    (void)carrier;
@@ -510,11 +545,11 @@ int r300_cpu_vertex_job_execute_sse2(
 
 int r300_cpu_vertex_job_execute_sse3(
    const struct r300_vertex_job *job,
-   const struct r300_vertex_stream *stream, uint32_t first_vertex,
+   const struct r300_vertex_stream *streams, uint32_t first_vertex,
    uint32_t vertex_count, uint32_t *carrier, uint32_t carrier_dwords)
 {
    (void)job;
-   (void)stream;
+   (void)streams;
    (void)first_vertex;
    (void)vertex_count;
    (void)carrier;

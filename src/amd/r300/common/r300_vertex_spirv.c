@@ -103,7 +103,9 @@ enum id_kind {
    ID_CONST_INT,
    ID_CONST_VEC4,
    ID_EXT_IMPORT_GLSL,
-   ID_VAR_INPUT_POS,
+   /* A vertex module's located vec4 input: the attribute slot the
+    * location names rides in a. */
+   ID_VAR_INPUT_ATTRIBUTE,
    ID_VAR_OUTPUT_PERVERTEX,
    ID_VAR_OUTPUT_POS_DIRECT,
    /* The vertex module's location-0 vec4 output, the one varying the
@@ -307,7 +309,9 @@ admit_module(const uint32_t *words, size_t word_count,
    bool capability_shader = false;
    bool memory_model_logical = false;
    uint32_t entry_point = 0;
-   uint32_t input_var = 0;
+   /* The attribute slots the vertex module declares, one bit per
+    * location. */
+   uint32_t input_mask = 0;
    uint32_t output_var = 0;
    /* The vertex varying output and the fragment varying input; a
     * module declares each at most once. */
@@ -634,14 +638,20 @@ admit_module(const uint32_t *words, size_t word_count,
                varying_var = w[2];
                break;
             }
-            if (!id_is(r, ptr->b, ID_TYPE_VEC4) || !entry->has_location ||
-                entry->location != 0)
+            if (!id_is(r, ptr->b, ID_TYPE_VEC4) || !entry->has_location)
+               return refuse(r, "vertex input outside a located vec4");
+            /* One attribute slot per location, inside the slot count
+             * the job IR and the published maxVertexInputAttributes
+             * share. */
+            if (entry->location >= R300_VERTEX_JOB_MAX_INPUTS)
                return refuse(r,
-                             "vertex input outside attribute 0 as vec4");
-            if (input_var != 0)
-               return refuse(r, "more than one vertex input");
-            entry->kind = ID_VAR_INPUT_POS;
-            input_var = w[2];
+                             "vertex input location beyond the attribute "
+                             "slots");
+            if (input_mask & (1u << entry->location))
+               return refuse(r, "two vertex inputs at one location");
+            entry->kind = ID_VAR_INPUT_ATTRIBUTE;
+            entry->a = entry->location;
+            input_mask |= 1u << entry->location;
             break;
          case SC_OUTPUT:
             if (!fragment && id_is(r, ptr->b, ID_TYPE_VEC4) &&
@@ -749,12 +759,13 @@ admit_module(const uint32_t *words, size_t word_count,
          const struct id_info *ptr = info(r, w[3]);
          if (ptr == NULL)
             return refuse(r, "load outside the bound");
-         if (ptr->kind == ID_VAR_INPUT_POS) {
+         if (ptr->kind == ID_VAR_INPUT_ATTRIBUTE) {
             if (!id_is(r, w[1], ID_TYPE_VEC4))
                return refuse(r, "load outside one vec4");
             uint8_t dst;
             if (!new_temp(r, &dst) ||
-                !emit(r, R300_VERTEX_JOB_OP_LOAD_INPUT, dst, 0, 0, 0))
+                !emit(r, R300_VERTEX_JOB_OP_LOAD_INPUT, dst,
+                      (uint8_t)ptr->a, 0, 0))
                return false;
             entry->kind = ID_VAL_VEC4;
             entry->a = dst;
@@ -1001,7 +1012,7 @@ bool r300_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
                     reason))
       return false;
    /* The position store emits last by construction; the caller assigns
-    * input_format_id and validates the finished job. */
+    * input_format_ids and validates the finished job. */
    return true;
 }
 

@@ -128,7 +128,7 @@ static struct r300_vertex_job
 identity_job(int format_id)
 {
    struct r300_vertex_job job = {
-      .input_format_id = format_id,
+      .input_format_ids = { format_id },
       .instruction_count = 2,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -145,7 +145,7 @@ static struct r300_vertex_job
 constant_job(int format_id)
 {
    struct r300_vertex_job job = {
-      .input_format_id = format_id,
+      .input_format_ids = { format_id },
       .instruction_count = 2,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_CONSTANT, 0, 0, 0, 0 },
@@ -166,7 +166,7 @@ static struct r300_vertex_job
 affine_job(int format_id)
 {
    struct r300_vertex_job job = {
-      .input_format_id = format_id,
+      .input_format_ids = { format_id },
       .instruction_count = 5,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -192,7 +192,7 @@ static struct r300_vertex_job
 dp4_chain_job(int format_id)
 {
    struct r300_vertex_job job = {
-      .input_format_id = format_id,
+      .input_format_ids = { format_id },
       .instruction_count = 13,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -233,7 +233,7 @@ static struct r300_vertex_job
 producer_max_chain_job(int format_id, uint32_t chain_length)
 {
    struct r300_vertex_job job = {
-      .input_format_id = format_id,
+      .input_format_ids = { format_id },
       .instruction_count = 1,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -269,7 +269,7 @@ static struct r300_vertex_job
 opcode_chain_job(int format_id, uint8_t opcode, uint32_t chain_length)
 {
    struct r300_vertex_job job = {
-      .input_format_id = format_id,
+      .input_format_ids = { format_id },
       .instruction_count = 1,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -342,7 +342,7 @@ calibrate_lane(const char *label, const char *shape, execute_fn fn,
       fprintf(stderr,
               "calibration failure: %s shape %s format %d stride %" PRIu32
               " count %" PRIu32 "\n",
-              label, shape, job->input_format_id, stream->stride,
+              label, shape, job->input_format_ids[0], stream->stride,
               vertex_count);
       exit(1);
    }
@@ -450,7 +450,7 @@ bench_cell(const struct bench_lane *lanes, const char *shape,
              "\t%" PRIu32
              "\t%" PRIu32 "\t%u\t%.3f\n",
              lanes[l].label, shape, route_scope, layout,
-             job->input_format_id, stride, base_offset, vertex_count,
+             job->input_format_ids[0], stride, base_offset, vertex_count,
              job->instruction_count, rounded, per_vertex);
    }
 }

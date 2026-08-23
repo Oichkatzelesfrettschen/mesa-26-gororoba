@@ -464,7 +464,7 @@ bool r300_vertex_job_from_nir(nir_shader *nir, struct r300_vertex_job *job,
    if (!build_from_block(nir, &build, false))
       return false;
    /* The store emits last by construction; the caller assigns
-    * input_format_id and validates the finished job. */
+    * input_format_ids and validates the finished job. */
    return true;
 }
 

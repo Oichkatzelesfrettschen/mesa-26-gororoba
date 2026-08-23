@@ -888,7 +888,7 @@ main(void)
    assert(vkEndCommandBuffer(empty_cmd) == VK_SUCCESS);
    assert(native_empty->ib_size_dwords == 0);
    assert(native_empty->deferred_draw.pending);
-   assert(native_empty->deferred_draw.buffer == NULL);
+   assert(native_empty->deferred_draw.stream_mask == 0);
    assert(native_empty->owned_carrier == NULL);
    uint32_t *empty_color_map = NULL;
    assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,

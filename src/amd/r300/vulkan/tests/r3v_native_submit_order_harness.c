@@ -124,6 +124,23 @@ enum arm {
    ARM_VARYING_ARMED,
    ARM_VARYING_FRAGMENT_MISMATCH,
    ARM_VARYING_MISSING,
+   /* The two-attribute module (location 0 position, location 1 color
+    * passed to the varying) on the CPU route: over two bindings (F32_4
+    * positions at stride 16, F32_3 colors at stride 12) and over one
+    * interleaved binding (32-byte records, the color at offset 16),
+    * each records the varying cell and delivers the varying reference
+    * carrier; a color attribute whose record crosses its binding's
+    * stride refuses at pipeline creation; a color binding left unbound
+    * and a color buffer bound into the pass target's footprint each
+    * refuse at draw recording; and the fetched producer gates over the
+    * two-binding pipeline refuse at admission, the route binding one
+    * source relocation role. */
+   ARM_MULTI_ATTRIBUTE_ARMED,
+   ARM_MULTI_ATTRIBUTE_INTERLEAVED_ARMED,
+   ARM_MULTI_ATTRIBUTE_OVERLAP_REFUSED,
+   ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED,
+   ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED,
+   ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED,
 };
 
 
@@ -155,6 +172,14 @@ static const struct {
    { "varying-armed", ARM_VARYING_ARMED },
    { "varying-fragment-mismatch", ARM_VARYING_FRAGMENT_MISMATCH },
    { "varying-missing", ARM_VARYING_MISSING },
+   { "multi-attribute-armed", ARM_MULTI_ATTRIBUTE_ARMED },
+   { "multi-attribute-interleaved-armed",
+     ARM_MULTI_ATTRIBUTE_INTERLEAVED_ARMED },
+   { "multi-attribute-overlap-refused", ARM_MULTI_ATTRIBUTE_OVERLAP_REFUSED },
+   { "multi-attribute-unbound-refused", ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED },
+   { "multi-attribute-alias-target-refused",
+     ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED },
+   { "multi-attribute-fetched-refused", ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED },
 };
 
 /* Injection over the transport's ioctl seam: the saved production table
@@ -358,6 +383,21 @@ run_arm(enum arm arm, const char *name)
                             arm == ARM_GPU_FETCHED_COMPOSE_FAILURE ||
                             arm == ARM_GPU_FETCHED_WRONG_DIGEST ||
                             fetched_refusal_arm;
+   const bool multi_arm = arm == ARM_MULTI_ATTRIBUTE_ARMED ||
+                          arm == ARM_MULTI_ATTRIBUTE_INTERLEAVED_ARMED ||
+                          arm == ARM_MULTI_ATTRIBUTE_OVERLAP_REFUSED ||
+                          arm == ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED ||
+                          arm == ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED ||
+                          arm == ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED;
+   /* The interleaved arm reads both attributes from binding 0; the
+    * overlap arm names the interleaved layout with the color record
+    * crossing the stride; every other multi arm binds the color through
+    * binding 1. */
+   const bool interleaved_arm = arm == ARM_MULTI_ATTRIBUTE_INTERLEAVED_ARMED ||
+                               arm == ARM_MULTI_ATTRIBUTE_OVERLAP_REFUSED;
+   /* The varying cell is the recorded identity of every arm whose job
+    * stores the varying. */
+   const bool varying_cell_arm = arm == ARM_VARYING_ARMED || multi_arm;
    if (arm == ARM_AUTHORIZATION_REFUSED) {
       char wrong[BLAKE3_OUT_LEN * 2 + 1];
       memcpy(wrong, reference_digest, sizeof(wrong));
@@ -368,7 +408,7 @@ run_arm(enum arm arm, const char *name)
        * fetched composition. */
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
              R300_RETAINED_GPU_ROUTE_IB_BLAKE3, 1);
-   } else if (arm == ARM_VARYING_ARMED) {
+   } else if (varying_cell_arm) {
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", R300_VARYING_CELL_IB_BLAKE3,
              1);
    } else if (fetched_arm) {
@@ -391,7 +431,7 @@ run_arm(enum arm arm, const char *name)
    setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", host.release, 1);
    setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
           R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
-   if (fetched_arm) {
+   if (fetched_arm || arm == ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED) {
       setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1);
       setenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL", "1", 1);
       setenv("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL", "1", 1);
@@ -445,7 +485,9 @@ run_arm(enum arm arm, const char *name)
                                  : arm == ARM_GPU_FETCHED_COMPOSED_F32_2 ? 8
                                                                          : 16;
    const uint32_t binding_stride =
-      arm == ARM_GPU_FETCHED_STRIDE_MISALIGNED ? 18 : record_bytes;
+      arm == ARM_GPU_FETCHED_STRIDE_MISALIGNED ? 18
+      : interleaved_arm                        ? 32
+                                               : record_bytes;
    const bool short_buffer = robust_arm || arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS;
    const bool alias_target = arm == ARM_GPU_FETCHED_ALIASED_SOURCE;
    const VkPhysicalDeviceFeatures robust_features = {
@@ -584,7 +626,53 @@ run_arm(enum arm arm, const char *name)
       for (unsigned v = 0; v < 3; v++)
          memcpy((uint8_t *)map + bind_offset + v * binding_stride,
                 &records[v * 4], record_bytes);
+      /* The interleaved layout carries the varying reference colors as
+       * the F32_4 at offset 16 of each 32-byte record. */
+      if (interleaved_arm) {
+         for (unsigned v = 0; v < 3; v++)
+            memcpy((uint8_t *)map + bind_offset + v * binding_stride + 16,
+                   &r300_tcl_bypass_triangle_varying_colors[v * 4], 16);
+      }
       vkUnmapMemory(device, vertex_memory);
+   }
+   /* The color binding of the two-binding multi arms: F32_3 records of
+    * the varying reference colors (alpha synthesizes to 1) at stride
+    * 12, in its own allocation -- or, for the alias arm, bound at the
+    * start of the pass target's memory, inside the footprint the clear
+    * and the draw write. */
+   VkDeviceMemory color_memory = VK_NULL_HANDLE;
+   VkBuffer color_buffer = VK_NULL_HANDLE;
+   if (multi_arm && !interleaved_arm) {
+      assert(vkAllocateMemory(device,
+                              &(VkMemoryAllocateInfo){
+                                 .sType =
+                                    VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                 .allocationSize = 4096,
+                                 .memoryTypeIndex = 0,
+                              },
+                              NULL, &color_memory) == VK_SUCCESS);
+      assert(vkCreateBuffer(device,
+                            &(VkBufferCreateInfo){
+                               .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                               .size = 64,
+                               .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                            },
+                            NULL, &color_buffer) == VK_SUCCESS);
+      if (arm == ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED) {
+         assert(vkBindBufferMemory(device, color_buffer, target.memory, 0) ==
+                VK_SUCCESS);
+      } else {
+         assert(vkBindBufferMemory(device, color_buffer, color_memory, 0) ==
+                VK_SUCCESS);
+         void *map = NULL;
+         assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                            &map) == VK_SUCCESS);
+         for (unsigned v = 0; v < 3; v++)
+            memcpy((uint8_t *)map + v * 12,
+                   &r300_tcl_bypass_triangle_varying_colors[v * 4], 12);
+         vkUnmapMemory(device, color_memory);
+      }
    }
 
    VkRenderPass pass = VK_NULL_HANDLE;
@@ -640,15 +728,48 @@ run_arm(enum arm arm, const char *name)
       arm == ARM_VARYING_ARMED || arm == ARM_VARYING_FRAGMENT_MISMATCH;
    const bool varying_fs = arm == ARM_VARYING_ARMED || arm == ARM_VARYING_MISSING;
    VkShaderModule vs =
-      varying_vs ? make_module(device, r3v_reference_vertex_varying_spirv,
-                               sizeof(r3v_reference_vertex_varying_spirv))
-                 : make_module(device, r3v_reference_vertex_spirv,
-                               sizeof(r3v_reference_vertex_spirv));
+      multi_arm
+         ? make_module(device, r3v_reference_vertex_two_attributes_spirv,
+                       sizeof(r3v_reference_vertex_two_attributes_spirv))
+      : varying_vs
+         ? make_module(device, r3v_reference_vertex_varying_spirv,
+                       sizeof(r3v_reference_vertex_varying_spirv))
+         : make_module(device, r3v_reference_vertex_spirv,
+                       sizeof(r3v_reference_vertex_spirv));
    VkShaderModule fs =
-      varying_fs ? make_module(device, r3v_reference_fragment_varying_spirv,
-                               sizeof(r3v_reference_fragment_varying_spirv))
-                 : make_module(device, r3v_reference_fragment_spirv,
-                               sizeof(r3v_reference_fragment_spirv));
+      varying_fs || multi_arm
+         ? make_module(device, r3v_reference_fragment_varying_spirv,
+                       sizeof(r3v_reference_fragment_varying_spirv))
+         : make_module(device, r3v_reference_fragment_spirv,
+                       sizeof(r3v_reference_fragment_spirv));
+   /* The multi arms' vertex input: the color attribute at location 1
+    * reads binding 1 (F32_3, stride 12) or, interleaved, binding 0 at
+    * offset 16 (F32_4); the overlap arm places it at offset 20, so its
+    * 16 bytes cross the 32-byte stride. */
+   const VkVertexInputBindingDescription multi_bindings[2] = {
+      { .binding = 0, .stride = binding_stride,
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+      { .binding = 1, .stride = 12, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+   };
+   const VkVertexInputAttributeDescription multi_attributes[2] = {
+      { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+        .offset = 0 },
+      interleaved_arm
+         ? (VkVertexInputAttributeDescription){
+              .location = 1, .binding = 0,
+              .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+              .offset = arm == ARM_MULTI_ATTRIBUTE_OVERLAP_REFUSED ? 20 : 16 }
+         : (VkVertexInputAttributeDescription){
+              .location = 1, .binding = 1,
+              .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 },
+   };
+   const VkPipelineVertexInputStateCreateInfo multi_vertex_input = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+      .vertexBindingDescriptionCount = interleaved_arm ? 1 : 2,
+      .pVertexBindingDescriptions = multi_bindings,
+      .vertexAttributeDescriptionCount = 2,
+      .pVertexAttributeDescriptions = multi_attributes,
+   };
    VkPipeline pipeline = VK_NULL_HANDLE;
    const VkResult created = vkCreateGraphicsPipelines(
              device, VK_NULL_HANDLE, 1,
@@ -669,6 +790,7 @@ run_arm(enum arm arm, const char *name)
                         .pName = "main" },
                    },
                 .pVertexInputState =
+                   multi_arm ? &multi_vertex_input :
                    &(VkPipelineVertexInputStateCreateInfo){
                       .sType =
                          VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -749,8 +871,10 @@ run_arm(enum arm arm, const char *name)
                 .renderPass = pass,
              },
              NULL, &pipeline);
-   if (arm == ARM_VARYING_FRAGMENT_MISMATCH || arm == ARM_VARYING_MISSING) {
-      /* The stage pair names two fragment shapes for one job, so the
+   if (arm == ARM_VARYING_FRAGMENT_MISMATCH || arm == ARM_VARYING_MISSING ||
+       arm == ARM_MULTI_ATTRIBUTE_OVERLAP_REFUSED) {
+      /* The stage pair names two fragment shapes for one job, or the
+       * color attribute's record crosses its binding's stride, so the
        * pipeline refuses and nothing records. */
       assert(created == R3V_NATIVE_REFUSAL_RESULT);
       assert(pipeline == VK_NULL_HANDLE);
@@ -815,14 +939,22 @@ run_arm(enum arm arm, const char *name)
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer,
                           &(VkDeviceSize){ bind_offset });
+   if (multi_arm && !interleaved_arm &&
+       arm != ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED)
+      vkCmdBindVertexBuffers(cmd, 1, 1, &color_buffer, &(VkDeviceSize){ 0 });
    vkCmdDraw(cmd, 3, 1, 0, 0);
    vkCmdEndRenderPass(cmd);
    const VkResult ended = vkEndCommandBuffer(cmd);
-   if (arm == ARM_ROBUST_OOB_DISABLED) {
+   if (arm == ARM_ROBUST_OOB_DISABLED ||
+       arm == ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED ||
+       arm == ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED) {
       /* The feature off, the record-time bound proof poisons the
-       * recording, so the application sees the refusal at end and
-       * nothing reaches the queue. */
+       * recording; the color binding left unbound, and the color stream
+       * inside the pass target's footprint, each poison the draw: the
+       * application sees the refusal at end and nothing reaches the
+       * queue, the seeded target untouched. */
       assert(ended == R3V_NATIVE_REFUSAL_RESULT);
+      check_target(device, &target, false, name);
       printf("%s: record refused at vkEndCommandBuffer (%d)\n", name,
              ended);
       return 0;
@@ -839,7 +971,7 @@ run_arm(enum arm arm, const char *name)
       char recorded_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       r300_triangle_ib_digest_hex(native_cmd->ib, native_cmd->ib_size_dwords,
                                   recorded_digest);
-      if (arm == ARM_VARYING_ARMED) {
+      if (varying_cell_arm) {
          assert(native_cmd->ib_size_dwords == R300_VARYING_CELL_IB_DWORDS);
          assert(strcmp(recorded_digest, R300_VARYING_CELL_IB_BLAKE3) == 0);
       } else {
@@ -952,9 +1084,13 @@ run_arm(enum arm arm, const char *name)
       assert(token);
       break;
    case ARM_VARYING_ARMED:
+   case ARM_MULTI_ATTRIBUTE_ARMED:
+   case ARM_MULTI_ATTRIBUTE_INTERLEAVED_ARMED:
       /* The CPU route executed the varying job: each record is the
-       * transformed reference position followed by the computed tint,
-       * the payload the varying oracle's vertex colors name. */
+       * transformed reference position followed by the computed tint --
+       * or, for the two-attribute job, the color attribute gathered
+       * from its own binding or its interleaved offset -- the payload
+       * the varying oracle's vertex colors name. */
       assert(submitted == VK_SUCCESS);
       assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
       assert(cs_ioctls == 1);
@@ -966,8 +1102,29 @@ run_arm(enum arm arm, const char *name)
       break;
    case ARM_VARYING_FRAGMENT_MISMATCH:
    case ARM_VARYING_MISSING:
+   case ARM_MULTI_ATTRIBUTE_OVERLAP_REFUSED:
       /* Returned above at pipeline creation. */
       assert(!"unreachable");
+      break;
+   case ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED:
+   case ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED:
+      /* Returned above at vkEndCommandBuffer. */
+      assert(!"unreachable");
+      break;
+   case ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED:
+      /* The fetched admission refuses the two-slot job before any
+       * allocation, reference, IB, or carrier write: the recording is
+       * exactly as recorded, the gate unreached, the token unspent. */
+      assert(submitted == VK_ERROR_DEVICE_LOST);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
+      assert(cs_ioctls == 0);
+      assert(carrier_untouched);
+      assert(native_cmd->cell_kind == kind_before);
+      assert(native_cmd->reference_count == references_before);
+      assert(native_cmd->owned_slot == NULL);
+      assert(!native_device->gpu_producer_quarantined);
+      check_target(device, &target, false, name);
+      assert(!token);
       break;
    case ARM_ROBUST_OOB_ENABLED:
       assert(submitted == VK_SUCCESS);
@@ -1115,7 +1272,8 @@ run_arm(enum arm arm, const char *name)
     * retain none. */
    const bool ib_retained = file_present(manifest_dir, "ib.bin");
    if (arm == ARM_RETENTION_UNWRITABLE ||
-       arm == ARM_GPU_FETCHED_COMPOSE_FAILURE || fetched_refusal_arm)
+       arm == ARM_GPU_FETCHED_COMPOSE_FAILURE || fetched_refusal_arm ||
+       arm == ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED)
       assert(!ib_retained);
    else if (arm != ARM_GATE_CLOSED && arm != ARM_KNOWN_BAD_PREMATURE_DRAW)
       assert(ib_retained);
@@ -1166,6 +1324,8 @@ run_arm(enum arm arm, const char *name)
    vkDestroyRenderPass(device, pass, NULL);
    vkDestroyBuffer(device, vertex_buffer, NULL);
    vkFreeMemory(device, vertex_memory, NULL);
+   vkDestroyBuffer(device, color_buffer, NULL);
+   vkFreeMemory(device, color_memory, NULL);
    vkDestroyImageView(device, target.view, NULL);
    vkDestroyImage(device, target.image, NULL);
    vkFreeMemory(device, target.memory, NULL);

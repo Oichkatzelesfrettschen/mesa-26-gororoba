@@ -70,14 +70,17 @@ static void put_u32(uint8_t **cursor, uint32_t value)
 }
 
 /* Canonical job bytes: every field in declaration order, little-endian,
- * only the live instruction and constant prefixes, no padding. */
+ * every attribute slot's format, only the live instruction and constant
+ * prefixes, no padding. */
 static void record_job_digest(const char *shape, const char *field,
                               const struct r300_vertex_job *job)
 {
-   uint8_t bytes[4 + 4 + R300_VERTEX_JOB_MAX_INSTRUCTIONS * 5 + 4 +
+   uint8_t bytes[4 * R300_VERTEX_JOB_MAX_INPUTS + 4 +
+                 R300_VERTEX_JOB_MAX_INSTRUCTIONS * 5 + 4 +
                  R300_VERTEX_JOB_MAX_CONSTANTS * 16];
    uint8_t *cursor = bytes;
-   put_u32(&cursor, (uint32_t)job->input_format_id);
+   for (uint32_t slot = 0; slot < R300_VERTEX_JOB_MAX_INPUTS; slot++)
+      put_u32(&cursor, (uint32_t)job->input_format_ids[slot]);
    put_u32(&cursor, job->instruction_count);
    for (uint32_t i = 0; i < job->instruction_count; i++) {
       const struct r300_vertex_job_instruction *in = &job->instructions[i];
@@ -147,7 +150,7 @@ static void test_reference_vertex_module(void)
    assert(job.instructions[1].opcode == R300_VERTEX_JOB_OP_STORE_POSITION);
    assert(job.instructions[1].src0 == job.instructions[0].dst);
 
-   job.input_format_id = R300_VERTEX_FORMAT_F32_4;
+   job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
    int rc = r300_cpu_vertex_job_validate(&job);
    assert(rc == 0);
 
@@ -230,7 +233,7 @@ static void test_arithmetic_lowering(void)
    assert(job.instructions[3].opcode == R300_VERTEX_JOB_OP_DP4);
    assert(job.instructions[4].opcode == R300_VERTEX_JOB_OP_STORE_POSITION);
 
-   job.input_format_id = R300_VERTEX_FORMAT_F32_4;
+   job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
    const float in[4] = { 1.5f, 3.0f, -1.0f, 0.25f };
    const float k[4] = { 2.0f, -0.5f, 4.0f, 1.0f };
    float expected = 0;
@@ -456,7 +459,7 @@ static void test_front_end_parity(void)
    }
    {
       struct r300_vertex_job identity = direct_job;
-      identity.input_format_id = R300_VERTEX_FORMAT_F32_4;
+      identity.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
       assert(r300_cpu_vertex_job_validate(&identity) == 0);
       const uint32_t identity_records[3][4] = {
          { f_bits(1.0f), f_bits(2.0f), f_bits(3.0f), f_bits(4.0f) },
@@ -505,8 +508,8 @@ static void test_front_end_parity(void)
       r3v_reference_vertex_arith_spirv,
       sizeof(r3v_reference_vertex_arith_spirv) / 4, "main", &direct_job,
       &reason));
-   nir_job.input_format_id = R300_VERTEX_FORMAT_F32_4;
-   direct_job.input_format_id = R300_VERTEX_FORMAT_F32_4;
+   nir_job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
+   direct_job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
    assert(r300_cpu_vertex_job_validate(&nir_job) == 0);
    assert(r300_cpu_vertex_job_validate(&direct_job) == 0);
    const uint32_t records[2][4] = {

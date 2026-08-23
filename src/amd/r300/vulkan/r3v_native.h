@@ -17,6 +17,7 @@
 #include "amd/radeon/drm_vk/radeon_drm_vk_device.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
 
+
 #include "vk_buffer.h"
 #include "vk_command_buffer.h"
 #include "vk_command_pool.h"
@@ -27,6 +28,15 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
+/* The vertex-input limits the physical device publishes and the
+ * pipeline admission enforces: binding count (R300 VAP_PROG_STREAM_CNTL
+ * carries 16 attribute streams; the attribute count is
+ * R300_VERTEX_JOB_MAX_INPUTS), attribute offset, and binding stride.
+ */
+#define R3V_NATIVE_MAX_VERTEX_BINDINGS 16u
+#define R3V_NATIVE_MAX_VERTEX_ATTRIBUTE_OFFSET 2047u
+#define R3V_NATIVE_MAX_VERTEX_BINDING_STRIDE 2048u
 
 /* The result every native refusal returns.  Each command's registry entry
  * fixes the results it may return, and VK_ERROR_UNKNOWN is the one error the
@@ -236,16 +246,26 @@ struct r3v_native_deferred_dispatch {
    uint64_t byte_count;
 };
 
-struct r3v_native_deferred_draw {
-   bool pending;
+/* One attribute slot's stream at draw time: the bound buffer of the
+ * attribute's binding, the bind offset plus the attribute offset into
+ * the buffer range, the binding stride, and the attribute format.
+ */
+struct r3v_native_deferred_stream {
    struct r3v_native_buffer *buffer;
-   /* Bind offset plus the pipeline's attribute offset, into the buffer
-    * range.
-    */
    uint64_t stream_base;
    uint32_t stride;
-   uint32_t first_vertex;
    int format_id;
+};
+
+struct r3v_native_deferred_draw {
+   bool pending;
+   /* The attribute slots the vertex job reads, one bit per slot; zero
+    * is a pass carrying its load-op clear alone.  streams[slot] is
+    * filled for each set bit.
+    */
+   uint32_t stream_mask;
+   struct r3v_native_deferred_stream streams[R300_VERTEX_JOB_MAX_INPUTS];
+   uint32_t first_vertex;
    /* Pipeline lifetime ends at the application's discretion, so the
     * deferred draw carries its own copy of the vertex job and the
     * GPU-route identity metadata.
@@ -296,9 +316,13 @@ struct r3v_native_cmd_buffer {
 
    struct r3v_native_image *pass_target;
    struct r3v_native_pipeline *bound_pipeline;
-   struct r3v_native_buffer *bound_vertex_buffer;
-   VkDeviceSize bound_vertex_offset;
-   bool vertex_bound;
+   /* Per-binding vertex buffers from CmdBindVertexBuffers, one bit of
+    * vertex_bound_mask per bound binding.
+    */
+   struct r3v_native_buffer
+      *bound_vertex_buffers[R3V_NATIVE_MAX_VERTEX_BINDINGS];
+   VkDeviceSize bound_vertex_offsets[R3V_NATIVE_MAX_VERTEX_BINDINGS];
+   uint32_t vertex_bound_mask;
    bool draw_recorded;
    struct r3v_native_memory *owned_carrier;
    /* The fetched producer's slot-position BO, allocated at the first
@@ -562,10 +586,19 @@ struct r3v_native_image_view {
    struct r3v_native_image *image;
 };
 
+/* One vertex attribute the job reads: its binding, the attribute offset
+ * into that binding's record, and the F32 format of its data.
+ */
+struct r3v_native_vertex_attribute {
+   uint32_t binding;
+   uint32_t offset;
+   int format_id;
+};
+
 /* The qualified graphics pipeline: creation admits exactly the fixed
  * cell's state vector plus the vertex-input freedom the CPU executor
- * covers, so the pipeline's own state is the one attribute's format,
- * stride, and offset.
+ * covers, so the pipeline's own state is the per-vertex F32 attributes
+ * the job reads, each over its binding's stride.
  */
 struct r3v_native_pipeline {
    struct vk_object_base base;
@@ -576,9 +609,14 @@ struct r3v_native_pipeline {
     */
    bool is_compute;
    struct r300_compute_job compute_job;
-   int format_id;
-   uint32_t binding_stride;
-   uint32_t attribute_offset;
+   /* The attribute slots the vertex job reads (r300_vertex_job_input_mask
+    * of vertex_job), each described in attributes[slot], and the stride
+    * of every binding an attribute names.
+    */
+   uint32_t attribute_mask;
+   struct r3v_native_vertex_attribute
+      attributes[R300_VERTEX_JOB_MAX_INPUTS];
+   uint32_t binding_strides[R3V_NATIVE_MAX_VERTEX_BINDINGS];
    /* The immutable CPU vertex job the semantic front end lowered from
     * the vertex module, and the GPU-route admission metadata: the
     * TCL-bypass cell delivers the raw attribute stream, so only the

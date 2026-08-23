@@ -70,9 +70,9 @@ static const uint32_t r3v_native_green_bits[4] = {
    0, 0x3f800000u, 0, 0x3f800000u,
 };
 
-/* The one vertex-input freedom the CPU executor covers: a single
- * binding of per-vertex F32 records with one location-0 attribute at
- * any offset the draw-time bound can prove readable.
+/* The vertex-input freedom the CPU executor covers: per-vertex F32
+ * records, each attribute the job reads at any offset the draw-time
+ * bound can prove readable.
  */
 static enum r300_vertex_format_id
 attribute_format_id(VkFormat format)
@@ -91,14 +91,84 @@ attribute_format_id(VkFormat format)
    }
 }
 
+/* Vertex-input admission over the lowered job: every binding is
+ * per-vertex with its stride inside maxVertexInputBindingStride and
+ * declared once; every attribute names a declared binding, a location
+ * inside the job's slots, an F32 format, an offset inside
+ * maxVertexInputAttributeOffset, and is declared once; and each
+ * attribute the job reads closes inside its binding's stride when the
+ * stride is nonzero, so consecutive records of one binding share no
+ * bytes and the per-record bound arithmetic describes every read.  An
+ * attribute the job leaves unread is admitted and carries no stream.
+ * The job's read slots each take their format here; a read slot with
+ * no attribute stays R300_VERTEX_FORMAT_INVALID and the job validation
+ * that follows refuses it.
+ */
+static bool
+vertex_input_admit(const VkPipelineVertexInputStateCreateInfo *vi,
+                   struct r300_vertex_job *job,
+                   struct r3v_native_pipeline *out)
+{
+   if (vi == NULL ||
+       vi->vertexBindingDescriptionCount > R3V_NATIVE_MAX_VERTEX_BINDINGS ||
+       vi->vertexAttributeDescriptionCount > R300_VERTEX_JOB_MAX_INPUTS)
+      return false;
+   uint32_t declared_bindings = 0;
+   for (uint32_t b = 0; b < vi->vertexBindingDescriptionCount; b++) {
+      const VkVertexInputBindingDescription *binding =
+         &vi->pVertexBindingDescriptions[b];
+      if (binding->binding >= R3V_NATIVE_MAX_VERTEX_BINDINGS ||
+          (declared_bindings & (1u << binding->binding)) ||
+          binding->inputRate != VK_VERTEX_INPUT_RATE_VERTEX ||
+          binding->stride > R3V_NATIVE_MAX_VERTEX_BINDING_STRIDE)
+         return false;
+      declared_bindings |= 1u << binding->binding;
+      out->binding_strides[binding->binding] = binding->stride;
+   }
+   const uint32_t read_mask = r300_vertex_job_input_mask(job);
+   uint32_t declared_attributes = 0;
+   for (uint32_t a = 0; a < vi->vertexAttributeDescriptionCount; a++) {
+      const VkVertexInputAttributeDescription *attribute =
+         &vi->pVertexAttributeDescriptions[a];
+      const enum r300_vertex_format_id format_id =
+         attribute_format_id(attribute->format);
+      const struct r300_vertex_format_semantics *format =
+         r300_vertex_format_semantics(format_id);
+      if (attribute->location >= R300_VERTEX_JOB_MAX_INPUTS ||
+          (declared_attributes & (1u << attribute->location)) ||
+          attribute->binding >= R3V_NATIVE_MAX_VERTEX_BINDINGS ||
+          !(declared_bindings & (1u << attribute->binding)) ||
+          format == NULL ||
+          attribute->offset > R3V_NATIVE_MAX_VERTEX_ATTRIBUTE_OFFSET)
+         return false;
+      declared_attributes |= 1u << attribute->location;
+      if (!(read_mask & (1u << attribute->location)))
+         continue;
+      const uint32_t stride = out->binding_strides[attribute->binding];
+      if (stride != 0 &&
+          (uint64_t)attribute->offset + format->semantic_record_bytes >
+             stride)
+         return false;
+      out->attributes[attribute->location] =
+         (struct r3v_native_vertex_attribute){
+            .binding = attribute->binding,
+            .offset = attribute->offset,
+            .format_id = (int)format_id,
+         };
+      job->input_format_ids[attribute->location] = (int)format_id;
+   }
+   out->attribute_mask = read_mask;
+   return true;
+}
+
 /* Semantic stage admission: the vertex module lowers to the CPU job IR
  * and the fragment module reads back as the shape the job's outputs
  * select -- the qualified constant color for a position-only job, the
  * varying pass-through for a job that stores the location-0 varying --
  * so a fragment program reading an unwritten varying or ignoring a
  * written one refuses the pipeline.  The job leaves with
- * input_format_id unassigned; the caller binds it from the vertex-input
- * state and validates the finished job.
+ * input_format_ids unassigned; the caller binds them from the
+ * vertex-input state and validates the finished job.
  */
 static bool
 stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
@@ -234,36 +304,17 @@ create_pipeline(struct r3v_native_device *device,
    VK_FROM_HANDLE(vk_render_pass, pass, info->renderPass);
    VK_FROM_HANDLE(vk_pipeline_layout, layout, info->layout);
 
-   const VkPipelineVertexInputStateCreateInfo *vi = info->pVertexInputState;
-   enum r300_vertex_format_id format_id = R300_VERTEX_FORMAT_INVALID;
-   if (vi != NULL && vi->vertexBindingDescriptionCount == 1 &&
-       vi->vertexAttributeDescriptionCount == 1 &&
-       vi->pVertexBindingDescriptions[0].binding == 0 &&
-       vi->pVertexBindingDescriptions[0].inputRate ==
-          VK_VERTEX_INPUT_RATE_VERTEX &&
-       vi->pVertexAttributeDescriptions[0].location == 0 &&
-       vi->pVertexAttributeDescriptions[0].binding == 0)
-      format_id =
-         attribute_format_id(vi->pVertexAttributeDescriptions[0].format);
-
-   const struct r300_vertex_format_semantics *format =
-      r300_vertex_format_semantics(format_id);
    uint32_t target_width = 0, target_height = 0;
    struct r300_vertex_job job;
    bool varying = false;
-   if (format == NULL || info->flags != 0 ||
-       (vi->pVertexBindingDescriptions[0].stride != 0 &&
-        vi->pVertexBindingDescriptions[0].stride <
-           format->semantic_record_bytes) ||
-       !stages_build_vertex_job(info, &job, &varying) ||
+   struct r3v_native_pipeline admitted = { 0 };
+   if (info->flags != 0 || !stages_build_vertex_job(info, &job, &varying) ||
+       !vertex_input_admit(info->pVertexInputState, &job, &admitted) ||
+       r300_cpu_vertex_job_validate(&job) != 0 ||
        !fixed_state_matches_cell(info, &target_width, &target_height) ||
        layout == NULL || layout->set_count != 0 ||
        layout->push_range_count != 0 ||
        !r3v_native_render_pass_matches_cell(pass) || info->subpass != 0)
-      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-
-   job.input_format_id = (int)format_id;
-   if (r300_cpu_vertex_job_validate(&job) != 0)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    struct r3v_native_pipeline *pipeline =
@@ -272,21 +323,25 @@ create_pipeline(struct r3v_native_device *device,
    if (pipeline == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   pipeline->format_id = (int)format_id;
-   pipeline->binding_stride = vi->pVertexBindingDescriptions[0].stride;
-   pipeline->attribute_offset = vi->pVertexAttributeDescriptions[0].offset;
+   pipeline->attribute_mask = admitted.attribute_mask;
+   memcpy(pipeline->attributes, admitted.attributes,
+          sizeof(pipeline->attributes));
+   memcpy(pipeline->binding_strides, admitted.binding_strides,
+          sizeof(pipeline->binding_strides));
    pipeline->target_width = target_width;
    pipeline->target_height = target_height;
    pipeline->vertex_job = job;
    pipeline->varying = varying;
    /* GPU-route admission metadata: the qualified TCL-bypass cell
     * delivers the raw attribute stream, so only the identity job
-    * (LOAD_INPUT feeding the position store) is GPU-admissible; every
-    * other admitted job executes on the CPU route.
+    * (LOAD_INPUT of slot 0 feeding the position store) is
+    * GPU-admissible; every other admitted job executes on the CPU
+    * route.
     */
    pipeline->gpu_vertex_job_identity =
       job.instruction_count == 2 && job.constant_count == 0 &&
       job.instructions[0].opcode == R300_VERTEX_JOB_OP_LOAD_INPUT &&
+      job.instructions[0].src0 == 0 &&
       job.instructions[1].opcode == R300_VERTEX_JOB_OP_STORE_POSITION &&
       job.instructions[1].src0 == job.instructions[0].dst;
 
