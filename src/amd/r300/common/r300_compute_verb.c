@@ -25,7 +25,7 @@ static const struct r300_compute_verb_row rows[R300_COMPUTE_VERB_COUNT] = {
    ROW(IDENTITY_MAP, "identity_map", "IDENTITY_MAP", LINEAR, R2VB_CARRIER, FP24_EXACT_WINDOW, 0.0f,
        EXECUTING, EXECUTING, SILICON_RETAINED,
        "R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL"),
-   ROW(CONST_FILL, "const_fill", "CONSTFILL", NONE, HOST, BIT_EXACT, 0.0f, ABSENT, ABSENT,
+   ROW(CONST_FILL, "const_fill", "CONSTFILL", NONE, RB3D_CLEAR, BIT_EXACT, 0.0f, ABSENT, ABSENT,
        SILICON_RETAINED, "R3V_NATIVE_COMPUTE_CONST_FILL_GPU_EXPERIMENTAL"),
    ROW(UNARY_AFFINE_MAP, "unary_affine_map", NULL, NONE, US_FP24_ALU, FP24_EXACT_WINDOW,
        0.0f, ABSENT, ABSENT, SILICON_RETAINED,
@@ -44,7 +44,7 @@ static const struct r300_compute_verb_row rows[R300_COMPUTE_VERB_COUNT] = {
    ROW(BITWISE_LOGICOP_MAP, "bitwise_logicop_map", NULL, NONE, RB3D_ROP, BIT_EXACT, 0.0f,
        ABSENT, ABSENT, SILICON_RETAINED,
        "R3V_NATIVE_COMPUTE_BITWISE_GPU_EXPERIMENTAL"),
-   ROW(MULTITAP_GATHER, "multitap_gather", "MULTITAP_GATHER", COORD, TX_RB3D_COPY, FP24_EXACT_WINDOW,
+   ROW(MULTITAP_GATHER, "multitap_gather", "MULTITAP_GATHER", COORD, US_FP24_ALU, FP24_EXACT_WINDOW,
        0.0f, ABSENT, ABSENT, SILICON_RETAINED,
        "R3V_NATIVE_COMPUTE_MULTITAP_GPU_EXPERIMENTAL"),
    ROW(PREDICATED_STORE, "predicated_store", "PREDICATED_MASKED_STORE",
@@ -154,6 +154,10 @@ r300_compute_verb_rows_valid(const struct r300_compute_verb_row *table,
       }
       if ((unsigned)row->index_class > R300_GRID_INDEX_STRIDED) {
          *reason = "index class outside the grid-fold enum";
+         return false;
+      }
+      if ((unsigned)row->unit > R300_COMPUTE_VERB_UNIT_RB3D_CLEAR) {
+         *reason = "unit outside the compute-verb enum";
          return false;
       }
       const bool bounded = row->exactness == R300_COMPUTE_VERB_FP24_BOUNDED;

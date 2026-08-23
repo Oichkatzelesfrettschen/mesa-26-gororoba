@@ -1,22 +1,19 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Carrier policy instances for the RS482 compute-as-raster dispatch-replay.
+ * Carrier-policy contracts for candidate RS482 compute-as-raster paths.
  *
- * These static instances define the canonical buffer format and stride
- * contracts for each admitted virtual op family.  The orchestrator in
- * r3v_compute.c and the readback path both reference these instances
- * so format and stride decisions have a single authoritative definition.
+ * These static instances define API-neutral buffer formats, strides, and
+ * result bounds.  They remain contract inventory until a consumer explicitly
+ * selects one; compilation and registration do not make a route executable.
  */
 
 #include "amd/r300/common/r300_carrier_policy.h"
 
 #include <stddef.h>
 
-/* Identity-map carrier: the output format and stride match the input format.
- * In practice the orchestrator determines the actual API format from the
- * descriptor binding at dispatch time.  This instance records the RGBA8
- * default the dispatch-replay uses when the caller provides no override. */
+/* Candidate identity-map carrier: RGBA8 input and output with equal strides.
+ * This is not the executing R2VB F32_4 identity-carrier route. */
 const struct r300_carrier_policy r300_carrier_identity = {
    .name                = "identity",
    .domain              = R300_NUM_DOMAIN_FP24_RTZ,
@@ -25,8 +22,9 @@ const struct r300_carrier_policy r300_carrier_identity = {
    .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
-   .max_exact_result    = 0,     /* passthrough: no integer result to bound */
-   .encodes_full_uint32 = false,
+   .max_exact_result_kind = R300_BOUND_NONE,
+   .max_exact_result    = 0,
+   .pack_alpha_byte     = false,
    .requires_fp32_rt    = false,
 };
 
@@ -34,7 +32,7 @@ const struct r300_carrier_policy r300_carrier_identity = {
  * Input is R32G32B32A32_FLOAT (one vec4 operand per element, stride 16).
  * Output is R8G8B8A8_UNORM (RGBA8 integer-encoded result, stride 4).
  * The result fits in three bytes (64516 < 2^17 < 2^24), so the A channel
- * is zero for every exact-domain result; encodes_full_uint32 is false. */
+ * is zero for every exact-domain result; pack_alpha_byte is false. */
 const struct r300_carrier_policy r300_carrier_dp4_u7 = {
    .name                = "dp4-u7-exact",
    .domain              = R300_NUM_DOMAIN_U7_DOT,
@@ -43,8 +41,9 @@ const struct r300_carrier_policy r300_carrier_dp4_u7 = {
    .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 16,
    .output_stride       = 4,
+   .max_exact_result_kind = R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
    .max_exact_result    = 64516,  /* 4*(2^7-1)^2, hardware-confirmed */
-   .encodes_full_uint32 = false,
+   .pack_alpha_byte     = false,
    .requires_fp32_rt    = false,
 };
 
@@ -60,16 +59,16 @@ const struct r300_carrier_policy r300_carrier_dp4_u8_boundary = {
    .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 16,
    .output_stride       = 4,
+   .max_exact_result_kind = R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
    .max_exact_result    = R300_FP24_EXACT_INT_CEILING,
-   .encodes_full_uint32 = false,
+   .pack_alpha_byte     = false,
    .requires_fp32_rt    = false,
 };
 
 /* Blend-add accumulation: the output is a 1xN RB3D render target holding per-bin
  * normalized float sums accumulated by the RB3D COMB_FCN_ADD blend equation.
- * The input format is element-typed; the orchestrator derives it from the
- * descriptor binding.  RGBA8_UNORM is the output carrier because blend
- * hardware accumulates normalized float channels. */
+ * RGBA8_UNORM is the candidate output carrier because blend hardware
+ * accumulates normalized float channels. */
 const struct r300_carrier_policy r300_carrier_blend_acc = {
    .name                = "blend-acc-reduction",
    .domain              = R300_NUM_DOMAIN_RB3D_BLEND,
@@ -78,8 +77,9 @@ const struct r300_carrier_policy r300_carrier_blend_acc = {
    .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
-   .max_exact_result    = 0,     /* per-bin sum range depends on input values and bin count */
-   .encodes_full_uint32 = false,
+   .max_exact_result_kind = R300_BOUND_INPUT_DEPENDENT,
+   .max_exact_result    = 0,
+   .pack_alpha_byte     = false,
    .requires_fp32_rt    = false,
 };
 
@@ -97,8 +97,9 @@ const struct r300_carrier_policy r300_carrier_zpass = {
    .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
-   .max_exact_result    = 0,     /* count is unbounded within the RT extent */
-   .encodes_full_uint32 = false,
+   .max_exact_result_kind = R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
+   .max_exact_result    = UINT32_MAX,
+   .pack_alpha_byte     = false,
    .requires_fp32_rt    = false,
 };
 
@@ -110,8 +111,9 @@ const struct r300_carrier_policy r300_carrier_ieee16_classify = {
    .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
+   .max_exact_result_kind = R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
    .max_exact_result    = 65535,  /* all 16-bit patterns */
-   .encodes_full_uint32 = false,
+   .pack_alpha_byte     = false,
    .requires_fp32_rt    = false,
 };
 
@@ -123,8 +125,9 @@ const struct r300_carrier_policy r300_carrier_ieee16_mul = {
    .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 8,
    .output_stride       = 4,
+   .max_exact_result_kind = R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
    .max_exact_result    = 4190209, /* 2047 * 2047 */
-   .encodes_full_uint32 = false,
+   .pack_alpha_byte     = false,
    .requires_fp32_rt    = false,
 };
 
@@ -136,8 +139,9 @@ const struct r300_carrier_policy r300_carrier_ieee16_result = {
    .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
+   .max_exact_result_kind = R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
    .max_exact_result    = 65535,
-   .encodes_full_uint32 = false,
+   .pack_alpha_byte     = false,
    .requires_fp32_rt    = false,
 };
 
@@ -149,8 +153,9 @@ const struct r300_carrier_policy r300_carrier_ieee16_debug = {
    .bit_format          = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 4,
    .output_stride       = 4,
+   .max_exact_result_kind = R300_BOUND_NONE,
    .max_exact_result    = 0,
-   .encodes_full_uint32 = true,
+   .pack_alpha_byte     = true,
    .requires_fp32_rt    = false,
 };
 

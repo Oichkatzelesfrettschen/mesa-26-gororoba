@@ -49,13 +49,24 @@ enum r300_rounding_model {
    R300_ROUND_RNE,       /* round-to-nearest-even: IEEE 754 default, emulated */
 };
 
-/* Evidence tier for a domain or virtual op claim.  Tier values match the repo
- * evidence hierarchy: earlier tiers carry stronger authority. */
+/* Evidence tier for a domain or virtual-op claim.  Later values carry
+ * stronger claim authority; only HW_CONFIRMED records silicon observation. */
 enum r300_evidence_tier {
    R300_EVIDENCE_SPECULATIVE,     /* conjecture only; no arithmetic proof */
    R300_EVIDENCE_NUMERIC_DERIVED, /* arithmetic bound proven; silicon not probed */
    R300_EVIDENCE_SPEC_GROUNDED,   /* ISA/spec-derived; not silicon-measured */
    R300_EVIDENCE_HW_CONFIRMED,    /* tier-1: RS482 silicon measurement */
+};
+
+/* Meaning of an exact numeric bound.  The kind, rather than the numeric
+ * value, distinguishes an inapplicable bound from a domain whose operation
+ * count is not bounded by the numeric representation. */
+enum r300_bound_kind {
+   R300_BOUND_NONE = 0,
+   R300_BOUND_MAX_ABS_INCLUSIVE,
+   R300_BOUND_MAX_UNSIGNED_INCLUSIVE,
+   R300_BOUND_INPUT_DEPENDENT,
+   R300_BOUND_UNBOUNDED_BY_DOMAIN,
 };
 
 /* Status of a virtual operation in the substrate catalog. */
@@ -195,7 +206,8 @@ struct r300_numeric_domain_info {
    enum r300_numeric_domain    domain;
    const char                 *name;              /* short stable token */
    enum r300_rounding_model    rounding;
-   unsigned                    exact_int_bound;   /* max |n| exactly representable; 0 = N/A */
+   enum r300_bound_kind        exact_bound_kind;
+   uint64_t                    exact_int_bound;
    unsigned                    significand_bits;  /* for float domains (with implicit 1); 0 = N/A */
    bool                        has_nan;
    bool                        has_inf;
@@ -217,14 +229,16 @@ bool r300_vop_status_is_carrier_pending(enum r300_vop_status status);
 
 /* Virtual operation descriptor: one row per named virtual op in the
  * RS482 compute-as-raster substrate catalog.  Each op lives in a specific
- * numeric domain, is realized by a specific hardware unit, has a named
- * theorem, and carries a status and the name of its Mesa detection hook. */
+ * numeric domain, has a named theorem, and carries a status plus an optional
+ * descriptive implementation label.  The label is inventory prose and is not
+ * required to resolve; it may name a current, historical, or proposed
+ * implementation until typed implementation IDs replace it. */
 struct r300_virtual_op_info {
    const char                 *op_name;          /* e.g. "DP4_UINT7_EXACT" */
    enum r300_numeric_domain    domain;
    enum r300_vop_status        status;
    const char                 *theorem;          /* bound proof or NULL */
-   const char                 *mesa_hook;        /* NIR detector function name or NULL */
+   const char                 *implementation_label;
 };
 
 /* The known virtual op catalog.  Terminated by a row with op_name == NULL.

@@ -470,7 +470,7 @@ r300_nir_build_carrier_pack(nir_builder *b,
          nir_fmul_imm(b, nir_ffloor(b, nir_fmul_imm(b, flh, 1.0 / 256.0)), 256.0));
 
       nir_def *a = nir_imm_float(b, 0.0);
-      if (policy->encodes_full_uint32) {
+      if (policy->pack_alpha_byte) {
          /* 4-byte LE: A = (v/16777216)%256 */
          nir_def *fla = nir_ffloor(b, nir_fmul_imm(b, value, 1.0 / 16777216.0));
          a = nir_fsub(b, fla,
