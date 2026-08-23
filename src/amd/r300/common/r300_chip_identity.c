@@ -70,6 +70,32 @@ r300_die_class_from_family(enum radeon_family family,
    }
 }
 
+/* Field values cross-checked against their macro homes by the
+ * r300-chip-identity test: the FP24 ceiling against r300_grid_fold.h and
+ * the cache registers against r300_reg.h.
+ */
+const struct r300_die_facts r300_rs480_die_facts = {
+   .vertex_engine_absent = true,
+   .uma_framebuffer_from_nb_tom = true,
+   .gart_requires_snoop_disable = true,
+   .fp24_exact_int_ceiling = 1u << 17,
+   .dp4_limb_ceiling_bits = 7,
+   .us_program_depth = 64,
+   .sampler_dimension_max = 2048,
+   .render_span_max = 2560,
+   .tiled_row_max = 2048,
+   .point_size_max = 64,
+   .hw_line_width_max = 8,
+   .dstcache_ctlstat_reg = 0x4e4c,
+   .zcache_ctlstat_reg = 0x4f18,
+   .dstcache_ctlstat_at_rest = 0x00000002,
+   .zcache_ctlstat_at_rest = 0x00000001,
+   .video_decode_engine_absent = true,
+   .specimen_pci_revision = 0x00,
+   .specimen_subsystem_vendor = 0x1028,
+   .specimen_subsystem_device = 0x022a,
+};
+
 bool
 r300_chip_identity_lookup(uint16_t pci_vendor, uint16_t pci_device,
                           struct r300_chip_identity *identity)
@@ -87,6 +113,8 @@ r300_chip_identity_lookup(uint16_t pci_vendor, uint16_t pci_device,
       identity->pci_device = row->pci_device;
       identity->family = row->family;
       identity->die_class = die_class;
+      identity->die_facts =
+         row->family == CHIP_RS480 ? &r300_rs480_die_facts : NULL;
       return true;
    }
    return false;

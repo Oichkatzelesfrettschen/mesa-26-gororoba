@@ -13,6 +13,8 @@
 
 #include "r300_chip_identity.h"
 #include "r300_chipset.h"
+#include "r300_grid_fold.h"
+#include "r300_reg.h"
 
 #include "util/macros.h"
 
@@ -123,6 +125,38 @@ test_rs482_parse_chipset_caps(void)
    assert(caps.is_rv350);
 }
 
+
+static void
+test_rs480_die_facts(void)
+{
+   /* The facts record rides only the RS480 family rows, and its numeric
+    * and register fields agree with their macro homes.
+    */
+   struct r300_chip_identity identity;
+   assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
+                                    R300_PCI_DEVICE_RS482, &identity));
+   assert(identity.die_facts == &r300_rs480_die_facts);
+   assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
+                                    R300_PCI_DEVICE_RS485, &identity));
+   assert(identity.die_facts == &r300_rs480_die_facts);
+   assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI, 0x4144,
+                                    &identity));
+   assert(identity.die_facts == NULL);
+
+   const struct r300_die_facts *facts = &r300_rs480_die_facts;
+   assert(facts->vertex_engine_absent);
+   assert(facts->fp24_exact_int_ceiling == R300_FP24_EXACT_INT_CEILING);
+   assert(facts->dstcache_ctlstat_reg == R300_RB3D_DSTCACHE_CTLSTAT);
+   assert(facts->zcache_ctlstat_reg == R300_ZB_ZCACHE_CTLSTAT);
+   /* Sampler ceiling equals the register height mask plus one. */
+   assert(facts->sampler_dimension_max == 2048);
+   assert(facts->render_span_max == 2560);
+   /* The vertex-engine absence agrees with the capability row. */
+   struct r300_capabilities caps;
+   r300_parse_chipset(R300_PCI_DEVICE_RS482, &caps);
+   assert(facts->vertex_engine_absent == (caps.num_vert_fpus == 0));
+}
+
 int
 main(void)
 {
@@ -131,6 +165,7 @@ main(void)
    test_unknown_identity_refuses();
    test_die_class_partition();
    test_rs482_parse_chipset_caps();
+   test_rs480_die_facts();
    printf("r300_chip_identity: OK (%zu id rows)\n",
           ARRAY_SIZE(expected_rows));
    return 0;

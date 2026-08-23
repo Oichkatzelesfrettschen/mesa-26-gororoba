@@ -39,11 +39,94 @@ enum r300_die_class {
    R300_DIE_CLASS_R500,
 };
 
+
+/* Measured facts for the RS480 die class (RS480/RS482/RS485, one shared
+ * register database across 1002:5954/5955/5974/5975).  Every row is exact
+ * RS482 (1002:5974) evidence unless its comment widens the claim; the
+ * commit history and the steinmarder-r300 findings named per field carry
+ * the provenance.  The die classes other than RS480 carry no facts row,
+ * so the one struct is the finite map and a separate quirk header would
+ * duplicate it.
+ */
+struct r300_die_facts {
+   /* The PVS/SE_TCL vertex transform engine is absent from the die, so
+    * every vertex route is TCL bypass over produced window-space records
+    * (finding 2026-05-31-rs482-has-tcl-gate-and-hardware-unit-map.md).
+    */
+   bool vertex_engine_absent;
+
+   /* The UMA framebuffer carveout is sized from NB_TOM, and the GART
+    * route is a noncoherent HyperTransport link that is ready only with
+    * snooping disabled, so host reads of device output take an explicit
+    * cache sync (findings 2026-06-03-rs482-sideport-flag-uma-framebuffer
+    * .md; the host-read invalidate rule remains hypothesized).
+    */
+   bool uma_framebuffer_from_nb_tom;
+   bool gart_requires_snoop_disable;
+
+   /* FP24 (s1e7m16) fragment ALU: exact integer window and the DP4
+    * multi-limb multiply limb-width ceiling, with a 64-instruction US
+    * program depth (findings 2026-05-31-rs482-floating-point-engine-
+    * synthesis.md, 2026-05-29-rs482-dp4-vectorized-multilimb-multiply-
+    * limb-width-ceiling.md).
+    */
+   uint32_t fp24_exact_int_ceiling;
+   uint32_t dp4_limb_ceiling_bits;
+   uint32_t us_program_depth;
+
+   /* Dimension ceilings: sampler 2048 (R300_TX_HEIGHTMASK), render span
+    * 2560, tiled row 2048; larger surfaces are composed, not native
+    * (finding 2026-07-18-r2vb-auto-single-canary-producer-slot-row-
+    * ceiling.md; the sampler ceiling is the R300_TX_HEIGHTMASK encoding
+    * measured through the tile-stitch sampler probe).  Point size tops
+    * at 64 and the hardware line-width
+    * range ends at 8 (finding 2026-06-20-rs482-point-line-size-limit-
+    * is-not-the-colorbuffer-dimension.md).
+    */
+   uint32_t sampler_dimension_max;
+   uint32_t render_span_max;
+   uint32_t tiled_row_max;
+   uint32_t point_size_max;
+   uint32_t hw_line_width_max;
+
+   /* Cache publication registers written in the first-draw contract and
+    * every R2VB publication tail; at rest they read 0x00000002 and
+    * 0x00000001 (findings 2026-08-19-rs480-rb3d-dstcache-ctlstat-armed-
+    * debut.md, 2026-08-20-rs480-zb-zcache-ctlstat-armed-debut.md,
+    * silicon).
+    */
+   uint32_t dstcache_ctlstat_reg;
+   uint32_t zcache_ctlstat_reg;
+   uint32_t dstcache_ctlstat_at_rest;
+   uint32_t zcache_ctlstat_at_rest;
+
+   /* No video decode engine; texture sampling covers packed 4:2:2 only,
+    * so planar 4:2:0 is absent (docs/hardware/r3v-implementation-
+    * boundaries.md).
+    */
+   bool video_decode_engine_absent;
+
+   /* The attended RS482 specimen: PCI revision and subsystem read from
+    * the target (lspci/setpci on 1002:5974, revision 0x00, subsystem
+    * 1028:022a).  Specimen identity, not a die-class key.
+    */
+   uint8_t specimen_pci_revision;
+   uint16_t specimen_subsystem_vendor;
+   uint16_t specimen_subsystem_device;
+};
+
 struct r300_chip_identity {
    uint16_t pci_device;
    enum radeon_family family;
    enum r300_die_class die_class;
+   /* Non-null only where measured facts exist for the die; the RS480
+    * family rows share the r300_rs480_die_facts record.
+    */
+   const struct r300_die_facts *die_facts;
 };
+
+/* The RS480-class facts record, exact-RS482 measured. */
+extern const struct r300_die_facts r300_rs480_die_facts;
 
 /* Resolve a PCI vendor/device pair against the r300_pci_ids table.  An id
  * outside the table, a vendor other than ATI, or a null output refuses, so
