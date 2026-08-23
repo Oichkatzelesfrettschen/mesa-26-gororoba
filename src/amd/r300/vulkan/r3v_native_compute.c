@@ -581,12 +581,14 @@ r3v_native_deferred_dispatch_admit_gpu(struct r3v_native_device *device,
       &cmd_buffer->deferred_dispatch;
    if (!dispatch->pending || dispatch->gpu_carrier_delivery)
       return VK_SUCCESS;
-   if (device->compute_identity_gpu_gate == NULL)
-      return VK_SUCCESS;
+   /* The job's own verb row selects the route: its gate open and its
+    * GPU route executing; the identity map is the one such row, and
+    * every other verb's gate selects nothing for this job. */
    const struct r300_compute_verb_row *verb =
       r300_compute_verb_for_job(&dispatch->job);
-   if (verb == NULL || verb->verb != R300_COMPUTE_VERB_IDENTITY_MAP ||
-       verb->gpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING)
+   if (verb == NULL || verb->gpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING ||
+       device->compute_verb_gates[verb->verb] == NULL ||
+       verb->verb != R300_COMPUTE_VERB_IDENTITY_MAP)
       return VK_SUCCESS;
    if (device->gpu_compute_quarantined) {
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,

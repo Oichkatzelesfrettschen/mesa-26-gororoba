@@ -54,6 +54,21 @@ enum arm {
    /* A record count past the single-row ceiling refuses at admission:
     * 65 workgroups name 1040 records over the 1024-slot row. */
    ARM_CEILING_REFUSED,
+   /* The gate table: every ledger row's gate opens on the literal "1"
+    * alone -- "0", "", "yes", and unset stay closed -- and an open gate
+    * on a row without an executing GPU route selects nothing, so the
+    * identity dispatch keeps the CPU route under every other gate. */
+   ARM_GATE_TABLE,
+   /* The oracle's positive side, calibrated: the output pre-seeded with
+    * the expected bytes reads back as agreement after the shim's empty
+    * delivery, so the verdict is decided by the bytes -- COMPLETED, no
+    * quarantine, both byte files retained.  A calibration of the
+    * comparator, never a delivery claim: the pre-seed is what the
+    * device would have had to write. */
+   ARM_PRESEEDED_AGREEMENT,
+   /* After a divergence quarantines the capability, a further dispatch
+    * refuses at admission with nothing installed. */
+   ARM_QUARANTINED_REFUSED,
 };
 
 static const struct {
@@ -65,6 +80,9 @@ static const struct {
    { "out-of-domain-refused", ARM_OUT_OF_DOMAIN_REFUSED },
    { "alias-refused", ARM_ALIAS_REFUSED },
    { "ceiling-refused", ARM_CEILING_REFUSED },
+   { "gate-table", ARM_GATE_TABLE },
+   { "preseeded-agreement", ARM_PRESEEDED_AGREEMENT },
+   { "quarantined-refused", ARM_QUARANTINED_REFUSED },
 };
 
 static const struct radeon_drm_vk_ioctl_ops *saved_ops;
@@ -123,10 +141,20 @@ run_arm(enum arm arm, const char *name)
    setenv("R3V_HYBRID_COMPUTE_EXPERIMENTAL", "1", 1);
    const char *verb_gate =
       r300_compute_verb_row(R300_COMPUTE_VERB_IDENTITY_MAP)->gpu_gate;
-   if (arm == ARM_GATE_OFF_CPU)
-      unsetenv(verb_gate);
-   else
+   uint32_t verb_count = 0;
+   const struct r300_compute_verb_row *rows =
+      r300_compute_verb_rows(&verb_count);
+   for (uint32_t v = 0; v < verb_count; v++)
+      unsetenv(rows[v].gpu_gate);
+   if (arm == ARM_GATE_TABLE) {
+      /* Every gate but the identity's open, the identity's closed by a
+       * value other than the literal. */
+      for (uint32_t v = 0; v < verb_count; v++)
+         setenv(rows[v].gpu_gate, v == R300_COMPUTE_VERB_IDENTITY_MAP ? "yes"
+                                                                    : "1", 1);
+   } else if (arm != ARM_GATE_OFF_CPU) {
       setenv(verb_gate, "1", 1);
+   }
 
    /* The declared authorization: the reference pass's pinned identity. */
    struct r300_r2vb_fetched_producer_ib reference;
@@ -199,8 +227,33 @@ run_arm(enum arm arm, const char *name)
    injected_ops = *saved_ops;
    injected_ops.command_write_read = counting_command_write_read;
    native_device->drm.ops = &injected_ops;
-   assert((native_device->compute_identity_gpu_gate != NULL) ==
-          (arm != ARM_GATE_OFF_CPU));
+   assert((native_device->compute_verb_gates[R300_COMPUTE_VERB_IDENTITY_MAP] !=
+           NULL) == (arm != ARM_GATE_OFF_CPU && arm != ARM_GATE_TABLE));
+   if (arm == ARM_GATE_TABLE) {
+      /* The table read at device creation: the literal opens, every
+       * other value stays closed, and a refresh re-reads each gate. */
+      for (uint32_t v = 0; v < verb_count; v++) {
+         const bool open = native_device->compute_verb_gates[v] != NULL;
+         assert(open == (v != R300_COMPUTE_VERB_IDENTITY_MAP));
+      }
+      static const char *const closed_values[] = { "0", "", "yes", "1 ",
+                                                   "01" };
+      for (unsigned c = 0; c < sizeof(closed_values) / sizeof(closed_values[0]);
+           c++) {
+         setenv(verb_gate, closed_values[c], 1);
+         r3v_native_device_refresh_delivery_gates(native_device);
+         assert(native_device->compute_verb_gates[R300_COMPUTE_VERB_IDENTITY_MAP] ==
+                NULL);
+      }
+      setenv(verb_gate, "1", 1);
+      r3v_native_device_refresh_delivery_gates(native_device);
+      assert(strcmp(native_device->compute_verb_gates
+                       [R300_COMPUTE_VERB_IDENTITY_MAP], "1") == 0);
+      unsetenv(verb_gate);
+      r3v_native_device_refresh_delivery_gates(native_device);
+      assert(native_device->compute_verb_gates[R300_COMPUTE_VERB_IDENTITY_MAP] ==
+             NULL);
+   }
 
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
@@ -270,7 +323,8 @@ run_arm(enum arm arm, const char *name)
       input_words[5] = 0xbf800000u; /* -1.0: outside the window */
    memcpy(input_map, input_words, bytes);
    for (uint32_t i = 0; i < words; i++)
-      output_map[i] = OUTPUT_SEED;
+      output_map[i] = arm == ARM_PRESEEDED_AGREEMENT ? input_words[i]
+                                                     : OUTPUT_SEED;
 
    const VkDescriptorSetLayoutBinding bindings[2] = {
       { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -423,6 +477,7 @@ run_arm(enum arm arm, const char *name)
 
    switch (arm) {
    case ARM_GATE_OFF_CPU:
+   case ARM_GATE_TABLE:
       /* The CPU route: the bit copy lands, no IB, no ioctl. */
       assert(submitted == VK_SUCCESS);
       assert(cs_ioctls == 0);
@@ -430,11 +485,15 @@ run_arm(enum arm arm, const char *name)
       assert(output_is_input);
       assert(!native_device->gpu_compute_quarantined);
       break;
-   case ARM_COMPOSED: {
-      /* The recorded stream is the reference pass, the ioctl ran, the
-       * shim wrote nothing, the read-back diverged: device loss,
-       * quarantine, both byte files retained, the seed still in place
-       * (the route never writes the output from the host). */
+   case ARM_COMPOSED:
+   case ARM_PRESEEDED_AGREEMENT:
+   case ARM_QUARANTINED_REFUSED: {
+      /* The recorded stream is the reference pass and the ioctl ran.
+       * The shim wrote nothing: with the seed in place the read-back
+       * diverged -- device loss, quarantine, both byte files retained,
+       * the seed untouched (the route never writes the output from the
+       * host); with the expected bytes pre-seeded the comparator reads
+       * agreement -- COMPLETED, no quarantine, the same two files. */
       assert(native_cmd->cell_kind ==
              R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER);
       assert(native_cmd->ib_size_dwords ==
@@ -451,11 +510,18 @@ run_arm(enum arm arm, const char *name)
              R300_COMPUTE_IDENTITY_CARRIER_REFERENCE_RECORDS);
       assert(memcmp(native_cmd->deferred_dispatch.gpu_expected, input_words,
                     bytes) == 0);
-      assert(submitted == VK_ERROR_DEVICE_LOST);
-      assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMITTED);
       assert(cs_ioctls == 1);
-      assert(output_is_seed);
-      assert(native_device->gpu_compute_quarantined);
+      if (arm == ARM_PRESEEDED_AGREEMENT) {
+         assert(submitted == VK_SUCCESS);
+         assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+         assert(output_is_input);
+         assert(!native_device->gpu_compute_quarantined);
+      } else {
+         assert(submitted == VK_ERROR_DEVICE_LOST);
+         assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMITTED);
+         assert(output_is_seed);
+         assert(native_device->gpu_compute_quarantined);
+      }
       assert(file_present(manifest_dir, "ib.bin"));
       assert(file_present(manifest_dir, "gpu_compute_observed.bin"));
       assert(file_present(manifest_dir, "gpu_compute_expected.bin"));
@@ -475,6 +541,45 @@ run_arm(enum arm arm, const char *name)
          assert(memcmp(slot_map, slot_expected, sizeof(slot_expected)) == 0);
          radeon_drm_vk_bo_unmap(&native_device->drm,
                                 &native_cmd->owned_slot->bo, slot_map);
+      }
+      if (arm == ARM_QUARANTINED_REFUSED) {
+         /* A second dispatch recorded after the divergence: its
+          * admission refuses on the quarantine with nothing installed
+          * -- the runtime marks the queue lost after the first submit,
+          * so the admission is driven directly and judged on the
+          * recording it leaves. */
+         VkCommandBuffer second = VK_NULL_HANDLE;
+         assert(vkAllocateCommandBuffers(
+                   device,
+                   &(VkCommandBufferAllocateInfo){
+                      .sType =
+                         VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                      .commandPool = cmd_pool,
+                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                      .commandBufferCount = 1,
+                   },
+                   &second) == VK_SUCCESS);
+         assert(vkBeginCommandBuffer(
+                   second,
+                   &(VkCommandBufferBeginInfo){
+                      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                   }) == VK_SUCCESS);
+         vkCmdBindPipeline(second, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+         vkCmdBindDescriptorSets(second, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                 layout, 0, 1, &set, 0, NULL);
+         vkCmdDispatch(second, groups, 1, 1);
+         assert(vkEndCommandBuffer(second) == VK_SUCCESS);
+         struct r3v_native_cmd_buffer *native_second =
+            r3v_native_cmd_buffer_from_handle(second);
+         assert(native_second->deferred_dispatch.pending);
+         const VkResult admitted = r3v_native_deferred_dispatch_admit_gpu(
+            native_device, native_second);
+         assert(admitted == VK_ERROR_DEVICE_LOST);
+         assert(native_second->ib_size_dwords == 0);
+         assert(native_second->reference_count == 0);
+         assert(native_second->owned_slot == NULL);
+         assert(!native_second->deferred_dispatch.gpu_carrier_delivery);
+         assert(native_second->deferred_dispatch.gpu_expected == NULL);
       }
       break;
    }

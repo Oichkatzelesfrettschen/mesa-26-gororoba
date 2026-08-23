@@ -1780,7 +1780,11 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   # delivery quarantining on the oracle divergence, and the named
   # refusals (FP24 domain, one buffer object for both ranges, a record
   # count past the single-row ceiling) each before any write; with the verb gate
-  # closed the dispatch keeps the CPU route.
+  # closed the dispatch keeps the CPU route.  The gate-table arm proves
+  # every ledger gate's exact-value read and that a non-identity gate
+  # selects nothing; the pre-seeded arm calibrates the comparator's
+  # positive side; the quarantined arm proves the refusal after a
+  # divergence.
   r3v_native_compute_gpu_route_harness = executable(
     'r3v_native_compute_gpu_route_harness',
     files('tests/r3v_native_compute_gpu_route_harness.c'),
@@ -1792,7 +1796,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     gnu_symbol_visibility : 'hidden',
   )
   foreach compute_arm : ['gate-off-cpu', 'composed', 'out-of-domain-refused',
-                         'alias-refused', 'ceiling-refused']
+                         'alias-refused', 'ceiling-refused', 'gate-table',
+                         'preseeded-agreement', 'quarantined-refused']
     test(
       'r3v-native-compute-gpu-route-@0@'.format(compute_arm),
       r3v_native_compute_gpu_route_harness,
