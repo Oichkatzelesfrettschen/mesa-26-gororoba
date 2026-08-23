@@ -618,6 +618,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       const bool r2vb_route =
          route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
          draw->vertex_job_identity && !draw->indexed &&
+         draw->cull_mode == VK_CULL_MODE_NONE &&
          draw->instance_count == 1 && draw->vertex_count == 3 &&
          r300_cpu_vertex_range_in_bounds(stream.format_id, &source,
                                          stream.first_vertex,
@@ -722,6 +723,43 @@ r3v_native_cmd_buffer_execute_deferred_draw(
             pos[0] = (pos[0] + 1.0f) * ((float)draw->target_width / 2.0f);
             pos[1] = (pos[1] + 1.0f) * ((float)draw->target_height / 2.0f);
             memcpy(&records[v * position_stride], pos, sizeof(pos));
+         }
+         /* Facing cull in window coordinates: the signed area
+          * 2A = (x1-x0)(y2-y0) - (x2-x0)(y1-y0), positive for a
+          * counter-clockwise triangle; a culled triangle's three
+          * records collapse to its first vertex, a degenerate
+          * triangle the raster draws no fragment for, so the IB and
+          * record count stand.  A zero-area triangle already draws
+          * nothing and passes through.
+          */
+         if (result == VK_SUCCESS &&
+             draw->cull_mode != VK_CULL_MODE_NONE) {
+            for (uint32_t t = 0; t + 3 <= position_count; t += 3) {
+               float p[3][2];
+               for (unsigned v = 0; v < 3; v++)
+                  memcpy(p[v], &records[(t + v) * position_stride],
+                         sizeof(p[v]));
+               const double area2 =
+                  ((double)p[1][0] - p[0][0]) *
+                     ((double)p[2][1] - p[0][1]) -
+                  ((double)p[2][0] - p[0][0]) *
+                     ((double)p[1][1] - p[0][1]);
+               if (area2 == 0.0)
+                  continue;
+               const bool counter_clockwise = area2 > 0.0;
+               const bool front_facing =
+                  counter_clockwise ==
+                  (draw->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+               const VkCullModeFlags facing_bit =
+                  front_facing ? VK_CULL_MODE_FRONT_BIT
+                               : VK_CULL_MODE_BACK_BIT;
+               if ((draw->cull_mode & facing_bit) == 0)
+                  continue;
+               for (unsigned v = 1; v < 3; v++)
+                  memcpy(&records[(t + v) * position_stride],
+                         &records[t * position_stride],
+                         (size_t)position_stride * sizeof(uint32_t));
+            }
          }
          if (result == VK_SUCCESS)
             memcpy(carrier->map, records,
@@ -1149,6 +1187,16 @@ r3v_native_deferred_draw_admit_gpu_producer(
    /* The producers deliver one instance's three records; the host
     * expansion of further instances, and the per-instance streams and
     * InstanceIndex it feeds, belong to the CPU route. */
+   /* The host applies culling by collapsing records after its own
+    * transform, and the producer routes deliver records the device
+    * transformed, so a culling pipeline executes on the CPU route.
+    */
+   if (draw->cull_mode != VK_CULL_MODE_NONE) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: GPU producer routes deliver "
+                       "untouched records; a culling pipeline executes "
+                       "on the CPU route");
+   }
    /* The producer cells embed exactly the reference three records, so
     * a multi-triangle list refuses the producer routes by name.
     */

@@ -194,6 +194,12 @@ enum arm {
     * at recording. */
    ARM_MULTI_TRIANGLE_ARMED,
    ARM_NON_TRIANGLE_COUNT_REFUSED,
+   /* Host winding cull: the reference triangle is counter-clockwise in
+    * window coordinates, so back culling under CCW front face keeps it
+    * (the carrier is the reference) and under CW front face collapses
+    * it to degenerate records of its first vertex. */
+   ARM_CULL_BACK_KEPT_ARMED,
+   ARM_CULL_BACK_DROPPED_ARMED,
    ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED,
    ARM_INSTANCED_FETCHED_REFUSED,
 };
@@ -253,6 +259,8 @@ static const struct {
    { "instanced-zero-refused", ARM_INSTANCED_ZERO_REFUSED },
    { "multi-triangle-armed", ARM_MULTI_TRIANGLE_ARMED },
    { "non-triangle-count-refused", ARM_NON_TRIANGLE_COUNT_REFUSED },
+   { "cull-back-kept-armed", ARM_CULL_BACK_KEPT_ARMED },
+   { "cull-back-dropped-armed", ARM_CULL_BACK_DROPPED_ARMED },
    { "instanced-out-of-bounds-refused", ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED },
    { "instanced-fetched-refused", ARM_INSTANCED_FETCHED_REFUSED },
 };
@@ -1109,7 +1117,14 @@ run_arm(enum arm arm, const char *name)
                       .sType =
                          VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                       .polygonMode = VK_POLYGON_MODE_FILL,
-                      .cullMode = VK_CULL_MODE_NONE,
+                      .cullMode = (arm == ARM_CULL_BACK_KEPT_ARMED ||
+                                   arm == ARM_CULL_BACK_DROPPED_ARMED)
+                                     ? VK_CULL_MODE_BACK_BIT
+                                     : VK_CULL_MODE_NONE,
+                      .frontFace =
+                         arm == ARM_CULL_BACK_DROPPED_ARMED
+                            ? VK_FRONT_FACE_CLOCKWISE
+                            : VK_FRONT_FACE_COUNTER_CLOCKWISE,
                       .lineWidth = 1.0f,
                    },
                 .pMultisampleState =
@@ -1368,7 +1383,17 @@ run_arm(enum arm arm, const char *name)
     * viewport transform, instance-major. */
    float expected_carrier[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
    unsigned expected_records = 0;
-   if (arm == ARM_MULTI_TRIANGLE_ARMED) {
+   if (arm == ARM_CULL_BACK_DROPPED_ARMED) {
+      /* The culled triangle collapses to three copies of its first
+       * transformed record. */
+      float first[4];
+      memcpy(first, &ndc_triangle[0], 16);
+      first[0] = (first[0] + 1.0f) * (R3V_NATIVE_TARGET_WIDTH / 2.0f);
+      first[1] = (first[1] + 1.0f) * (R3V_NATIVE_TARGET_HEIGHT / 2.0f);
+      for (unsigned v = 0; v < 3; v++)
+         memcpy(&expected_carrier[v * 4], first, 16);
+      expected_records = 3;
+   } else if (arm == ARM_MULTI_TRIANGLE_ARMED) {
       /* Six records, one instance: the reference triangle then its
        * translated twin, each through the viewport transform. */
       for (unsigned v = 0; v < 6; v++) {
@@ -1442,6 +1467,7 @@ run_arm(enum arm arm, const char *name)
    case ARM_ARMED:
    case ARM_INDEXED_ARMED:
    case ARM_INDEXED_PERMUTED_ARMED:
+   case ARM_CULL_BACK_KEPT_ARMED:
       /* The indexed arms deliver the reference carrier: the plain
        * indices name the records in order, and the permuted arm's
        * dereference, first-index offset, and base-vertex sum restore
@@ -1519,6 +1545,7 @@ run_arm(enum arm arm, const char *name)
    case ARM_VERTEX_INDEX_ARMED:
    case ARM_INSTANCED_ROBUST_ARMED:
    case ARM_MULTI_TRIANGLE_ARMED:
+   case ARM_CULL_BACK_DROPPED_ARMED:
       /* The CPU route expanded the instances: the carrier holds each
        * instance's transformed triangle in instance order -- the robust
        * arm's out-of-bounds offset record read zeros, so its carrier is

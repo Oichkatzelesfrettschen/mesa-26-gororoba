@@ -327,6 +327,12 @@ struct r3v_native_deferred_draw {
     * consumes; InstanceIndex observes first_instance + instance. */
    uint32_t first_instance;
    uint32_t instance_count;
+   /* The pipeline's facing state, applied by the host after the
+    * viewport transform: a culled triangle's records collapse to its
+    * first vertex.
+    */
+   VkCullModeFlags cull_mode;
+   VkFrontFace front_face;
    /* Pipeline lifetime ends at the application's discretion, so the
     * deferred draw carries its own copy of the vertex job and the
     * GPU-route identity metadata.
@@ -751,6 +757,13 @@ struct r3v_native_pipeline {
    bool dynamic_viewport_scissor;
    uint32_t target_width;
    uint32_t target_height;
+   /* Rasterization facing state: the host computes each triangle's
+    * signed area in window coordinates and collapses a culled triangle
+    * to degenerate records the raster draws nothing for, so the IB is
+    * unchanged by culling.
+    */
+   VkCullModeFlags cull_mode;
+   VkFrontFace front_face;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_image, base, VkImage,

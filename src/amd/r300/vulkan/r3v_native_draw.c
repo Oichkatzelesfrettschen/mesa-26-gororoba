@@ -471,6 +471,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .vertex_offset = args->vertex_offset,
       .first_instance = args->first_instance,
       .instance_count = args->instance_count,
+      .cull_mode = pipeline->cull_mode,
+      .front_face = pipeline->front_face,
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .target_memory = cmd_buffer->pass_target->memory,
