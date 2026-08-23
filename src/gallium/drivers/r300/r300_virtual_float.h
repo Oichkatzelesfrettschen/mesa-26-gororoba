@@ -25,7 +25,7 @@
  *   Normalization: P >= 2^21 iff r2 >= 512 (proven: r1 <= 63 and r0 <= 63
  *   so the low 12 bits contribute at most 4095; 511*4096+4095 < 2^21).
  *
- * Evidence tier: R300_EVIDENCE_HW_CONFIRMED -- carry limbs (r0,r1,r2) 12/12 exact
+ * Retained silicon evidence: carry limbs (r0,r1,r2) 12/12 exact
  * and classification 15/15 exact on RS482 hardware (rs482_fp16_pow2_carry_exactness_20260607).
  */
 

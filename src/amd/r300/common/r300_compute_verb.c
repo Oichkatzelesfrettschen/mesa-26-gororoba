@@ -7,13 +7,15 @@
 #include <stddef.h>
 #include <string.h>
 
-#define ROW(v, n, op, impl, contract, idx, u, ex, tol, cpu, gpu, ev, gate)  \
-   { R300_COMPUTE_VERB_##v, n, R300_OPERATION_ID_##op,                     \
-     R300_OPERATION_IMPLEMENTATION_##impl,                                 \
-     R300_GPU_ROUTE_CONTRACT_##contract, R300_GRID_INDEX_##idx,            \
-     R300_COMPUTE_VERB_UNIT_##u, R300_COMPUTE_VERB_##ex, tol,              \
-     R300_COMPUTE_VERB_ROUTE_##cpu, R300_COMPUTE_VERB_ROUTE_##gpu,         \
-     R300_COMPUTE_VERB_EVIDENCE_##ev, gate }
+#define ROW(v, n, op, impl, contract, idx, u, ex, tol, cpu, gpu, ev, scope,  \
+            gate)                                                           \
+   { R300_COMPUTE_VERB_##v, n, R300_OPERATION_ID_##op,                      \
+     R300_OPERATION_IMPLEMENTATION_##impl,                                  \
+     R300_GPU_ROUTE_CONTRACT_##contract, R300_GRID_INDEX_##idx,             \
+     R300_COMPUTE_VERB_UNIT_##u, R300_COMPUTE_VERB_##ex, tol,               \
+     R300_COMPUTE_VERB_ROUTE_##cpu, R300_COMPUTE_VERB_ROUTE_##gpu,          \
+     R300_COMPUTE_VERB_EVIDENCE_##ev,                                       \
+     R300_COMPUTE_VERB_EVIDENCE_SCOPE_##scope, gate }
 
 /* The identity map's GPU route executes on the R2VB producer carrier
  * (r300_compute_identity_carrier.h) under its exact gate, whose US
@@ -27,57 +29,63 @@ static const struct r300_compute_verb_row rows[R300_COMPUTE_VERB_COUNT] = {
    ROW(IDENTITY_MAP, "identity_map", IDENTITY_MAP,
        R2VB_FETCHED_IDENTITY_CARRIER, R2VB_COMPUTE_IDENTITY_CARRIER,
        LINEAR, R2VB_CARRIER, FP24_EXACT_WINDOW, 0.0f,
-       EXECUTING, EXECUTING, SILICON_RETAINED,
+       EXECUTING, EXECUTING, SILICON_RETAINED, NATIVE_GPU_ROUTE_CELL,
        "R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL"),
    ROW(CONST_FILL, "const_fill", CONSTFILL, NONE, NONE, NONE, RB3D_CLEAR,
        BIT_EXACT, 0.0f, ABSENT, ABSENT,
-       SILICON_RETAINED, "R3V_NATIVE_COMPUTE_CONST_FILL_GPU_EXPERIMENTAL"),
-   ROW(UNARY_AFFINE_MAP, "unary_affine_map", NONE, NONE, NONE, NONE,
+       SILICON_RETAINED, RASTER_CELL,
+       "R3V_NATIVE_COMPUTE_CONST_FILL_GPU_EXPERIMENTAL"),
+   ROW(UNARY_AFFINE_MAP, "unary_affine_map", UNARY_AFFINE_MAP,
+       NONE, NONE, NONE,
        US_FP24_ALU, FP24_EXACT_WINDOW,
-       0.0f, ABSENT, ABSENT, SILICON_RETAINED,
+       0.0f, ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_AFFINE_GPU_EXPERIMENTAL"),
    ROW(BINARY_ARITHMETIC_MAP, "binary_arithmetic_map", BINARY_MAP,
        NONE, NONE, NONE, US_FP24_ALU,
-       FP24_EXACT_WINDOW, 0.0f, ABSENT, ABSENT, SILICON_RETAINED,
+       FP24_EXACT_WINDOW, 0.0f, ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_BINARY_GPU_EXPERIMENTAL"),
-   ROW(UNARY_TRANSCENDENTAL_MAP, "unary_transcendental_map", NONE, NONE,
-       NONE, NONE, US_FP24_ALU,
-       FP24_BOUNDED, 0.03f, ABSENT, ABSENT, SILICON_RETAINED,
+   ROW(UNARY_TRANSCENDENTAL_MAP, "unary_transcendental_map",
+       UNARY_TRANSCENDENTAL_MAP,
+       NONE, NONE, NONE, US_FP24_ALU,
+       FP24_BOUNDED, 0.03f, ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_UNARY_TRANSCENDENTAL_GPU_EXPERIMENTAL"),
-   ROW(BINARY_TRANSCENDENTAL_MAP, "binary_transcendental_map", NONE, NONE,
-       NONE, NONE, US_FP24_ALU,
-       FP24_BOUNDED, 0.03f, ABSENT, ABSENT, SILICON_RETAINED,
+   ROW(BINARY_TRANSCENDENTAL_MAP, "binary_transcendental_map",
+       BINARY_TRANSCENDENTAL_MAP,
+       NONE, NONE, NONE, US_FP24_ALU,
+       FP24_BOUNDED, 0.03f, ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_BINARY_TRANSCENDENTAL_GPU_EXPERIMENTAL"),
-   ROW(BITWISE_LOGICOP_MAP, "bitwise_logicop_map", NONE, NONE, NONE, NONE,
+   ROW(BITWISE_LOGICOP_MAP, "bitwise_logicop_map", BITWISE_LOGICOP_MAP,
+       NONE, NONE, NONE,
        RB3D_ROP, BIT_EXACT, 0.0f,
-       ABSENT, ABSENT, SILICON_RETAINED,
+       ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_BITWISE_GPU_EXPERIMENTAL"),
    ROW(MULTITAP_GATHER, "multitap_gather", MULTITAP_GATHER, NONE, NONE,
        COORD, US_FP24_ALU, FP24_EXACT_WINDOW,
-       0.0f, ABSENT, ABSENT, SILICON_RETAINED,
+       0.0f, ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_MULTITAP_GPU_EXPERIMENTAL"),
    ROW(PREDICATED_STORE, "predicated_store", PREDICATED_MASKED_STORE,
        NONE, NONE, NONE, TX_RB3D_COPY, BIT_EXACT, 0.0f,
-       ABSENT, ABSENT, SILICON_RETAINED,
+       ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_PREDICATED_GPU_EXPERIMENTAL"),
    ROW(MULTIPASS_SCAN, "multipass_scan", MULTIPASS_PING_PONG_SCAN,
        NONE, NONE, NONE, US_FP24_ALU, FP24_EXACT_WINDOW, 0.0f,
-       ABSENT, ABSENT, SILICON_RETAINED,
+       ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_MULTIPASS_GPU_EXPERIMENTAL"),
    ROW(REDUCE, "reduce", BLEND_ACC_REDUCTION, NONE, NONE, NONE, RB3D_BLEND,
        FP24_EXACT_WINDOW, 0.0f, ABSENT, ABSENT,
-       SILICON_RETAINED, "R3V_NATIVE_COMPUTE_REDUCE_GPU_EXPERIMENTAL"),
+       SILICON_RETAINED, RASTER_CELL,
+       "R3V_NATIVE_COMPUTE_REDUCE_GPU_EXPERIMENTAL"),
    ROW(SATURATING_DIFF, "saturating_diff", SATURATING_DIFF, NONE, NONE,
        NONE, RB3D_BLEND, BIT_EXACT, 0.0f,
-       ABSENT, ABSENT, SILICON_RETAINED,
+       ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_SATURATING_DIFF_GPU_EXPERIMENTAL"),
    ROW(PARALLEL_4OUT_MAP, "parallel_4out_map", PARALLEL_4OUT_MAP, NONE, NONE,
        NONE, US_FP24_ALU,
-       FP24_EXACT_WINDOW, 0.0f, ABSENT, ABSENT, SILICON_RETAINED,
+       FP24_EXACT_WINDOW, 0.0f, ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_PARALLEL_4OUT_GPU_EXPERIMENTAL"),
    ROW(STENCIL_INVERT, "stencil_invert", STENCIL_INVERT_NOT, NONE, NONE,
        NONE, ZB_STENCIL, BIT_EXACT, 0.0f,
-       ABSENT, ABSENT, SILICON_RETAINED,
+       ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_STENCIL_INVERT_GPU_EXPERIMENTAL"),
 };
 
@@ -156,17 +164,19 @@ r300_compute_verb_rows_valid(const struct r300_compute_verb_row *table,
          *reason = "row without a name or a gate";
          return false;
       }
+      if (row->operation_id == R300_OPERATION_ID_NONE) {
+         *reason = "compute verb lacks an operation identity";
+         return false;
+      }
       if ((unsigned)row->operation_id >= R300_OPERATION_ID_COUNT) {
          *reason = "operation identity outside the catalog enum";
          return false;
       }
-      const struct r300_virtual_op_info *operation = NULL;
-      if (row->operation_id != R300_OPERATION_ID_NONE) {
-         operation = r300_virtual_op_info_for_id(row->operation_id);
-         if (operation == NULL) {
-            *reason = "operation identity does not resolve";
-            return false;
-         }
+      const struct r300_virtual_op_info *operation =
+         r300_virtual_op_info_for_id(row->operation_id);
+      if (operation == NULL) {
+         *reason = "operation identity does not resolve";
+         return false;
       }
       if ((unsigned)row->implementation_id >=
           R300_OPERATION_IMPLEMENTATION_COUNT) {
@@ -201,11 +211,6 @@ r300_compute_verb_rows_valid(const struct r300_compute_verb_row *table,
          *reason = "GPU route lacks an implementation contract";
          return false;
       }
-      if (row->gpu_route != R300_COMPUTE_VERB_ROUTE_ABSENT &&
-          operation == NULL) {
-         *reason = "GPU route lacks an operation identity";
-         return false;
-      }
       for (uint32_t j = 0; j < i; j++) {
          if (strcmp(table[j].name, row->name) == 0) {
             *reason = "two rows share one name";
@@ -238,9 +243,44 @@ r300_compute_verb_rows_valid(const struct r300_compute_verb_row *table,
          *reason = "evidence outside the evidence enum";
          return false;
       }
+      if ((unsigned)row->evidence_scope >
+          R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL) {
+         *reason = "evidence scope outside the evidence-scope enum";
+         return false;
+      }
+      const bool evidence_scope_matches =
+         (row->evidence == R300_COMPUTE_VERB_EVIDENCE_HOST &&
+          row->evidence_scope ==
+             R300_COMPUTE_VERB_EVIDENCE_SCOPE_HOST_EXECUTOR) ||
+         (row->evidence == R300_COMPUTE_VERB_EVIDENCE_SOURCE_GROUNDED &&
+          row->evidence_scope ==
+             R300_COMPUTE_VERB_EVIDENCE_SCOPE_UNIT_CONTRACT) ||
+         (row->evidence == R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED &&
+          (row->evidence_scope ==
+              R300_COMPUTE_VERB_EVIDENCE_SCOPE_RASTER_CELL ||
+           row->evidence_scope ==
+              R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL));
+      if (!evidence_scope_matches) {
+         *reason = "evidence strength and scope disagree";
+         return false;
+      }
+      if (row->evidence_scope ==
+             R300_COMPUTE_VERB_EVIDENCE_SCOPE_RASTER_CELL &&
+          row->gpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING) {
+         *reason = "raster-cell evidence attached to an executing GPU route";
+         return false;
+      }
+      if (row->evidence_scope ==
+             R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL &&
+          row->gpu_route == R300_COMPUTE_VERB_ROUTE_ABSENT) {
+         *reason = "native-route-cell evidence without a proposed GPU route";
+         return false;
+      }
       if (row->gpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING &&
-          row->evidence != R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED) {
-         *reason = "GPU route executing without retained silicon evidence";
+          (row->evidence != R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED ||
+           row->evidence_scope !=
+              R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL)) {
+         *reason = "executing GPU route lacks retained native-route-cell evidence";
          return false;
       }
       if (row->gpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING &&
