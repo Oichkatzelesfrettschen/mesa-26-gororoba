@@ -65,6 +65,25 @@ r300_format_contract_test_includes = [
   include_directories('.'),
 ]
 
+# The consumer census records API-neutral ownership.  The liveness census
+# separately proves build registration, declaration reach, non-owner symbol
+# references, and evidence-only uses for the candidate carrier inventory.  Its
+# route-selection and hardware-execution cells stay fail-closed until exact
+# adapters establish those stronger facts.
+r300_common_liveness_census = files('tests/r300_common_liveness_census.py')
+test(
+  'r300-common-liveness-census-selftest',
+  prog_python,
+  args : [r300_common_liveness_census, '--selftest'],
+  suite : ['r300'],
+)
+test(
+  'r300-common-liveness-census',
+  prog_python,
+  args : [r300_common_liveness_census, meson.project_source_root()],
+  suite : ['r300'],
+)
+
 r300_grid_fold_test = executable(
   'r300_grid_fold_test',
   files('tests/r300_grid_fold_test.c'),
